@@ -31,7 +31,7 @@ architecture rtl of OLS_Logic_Analyzer_wrapper is
     attribute chip_pin of CLK : signal is "H6";
     attribute chip_pin of UART_RX : signal is "A4";
     attribute chip_pin of UART_TX : signal is "B4";
-    attribute chip_pin of GPIO : signal is "M3,L3,M2,M1,N3,N2,K2,K1";
+    attribute chip_pin of GPIO : signal is "K1,K2,N2,N3,M1,M2,L3,M3";
     attribute chip_pin of sdram_addr : signal is "K6,M5,N5,J8,N10,M11,N9,L10,M13,N8,N4,M10";
     attribute chip_pin of sdram_ba : signal is "N6,K8";
     attribute chip_pin of sdram_cas_n : signal is "N7";
@@ -40,9 +40,11 @@ architecture rtl of OLS_Logic_Analyzer_wrapper is
     attribute chip_pin of sdram_ras_n : signal is "M7";
     attribute chip_pin of sdram_we_n : signal is "K7";
     attribute chip_pin of sdram_clk : signal is "M9";
-    attribute chip_pin of sdram_dq : signal is "D11,G10,F10,F9,E10,D9,G9,F8,F13,E12,E13,D12,C12,B12,B13,A12";
-    attribute chip_pin of sdram_dqm : signal is "E9,F12";
-    attribute chip_pin of LED : signal is "A8,A9,A11,A10,B10,C9,C10,D8";
+    attribute chip_pin of sdram_dq : signal is "A12,B13,B12,C12,D12,E13,E12,F13,F8,G9,D9,E10,F9,F10,G10,D11";
+    attribute chip_pin of sdram_dqm : signal is "F12,E9";
+    attribute chip_pin of sdram_addr : signal is "M10,N4,N8,M13,L10,N9,M11,N10,J8,N5,M5,K6";
+    attribute chip_pin of sdram_ba : signal is "K8,N6";
+    attribute chip_pin of LED : signal is "D8,C10,C9,B10,A10,A11,A9,A8";
     attribute chip_pin of SEN_SDI : signal is "J7";
     attribute chip_pin of SEN_SPC : signal is "J6";
     attribute chip_pin of SEN_CS : signal is "L5";
