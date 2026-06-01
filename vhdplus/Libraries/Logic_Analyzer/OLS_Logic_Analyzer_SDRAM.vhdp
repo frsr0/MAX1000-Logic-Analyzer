@@ -2,12 +2,12 @@ Component OLS_Logic_Analyzer
 (
     Generic
     (
-        Baud_Rate       : INTEGER := 12000000;     --data link baud rate in bits/second
+        Baud_Rate       : INTEGER := 921600;     --data link baud rate in bits/second
         Max_Samples     : NATURAL := 1000000;      --1Mio samples
         Buffer_Size     : NATURAL := 10000;        --Samples before trigger
-        Channels        : NATURAL := 4;            --1-32 inputs
+        Channels        : NATURAL := 8;            --1-32 inputs
     );
-    Inputs             : IN  STD_LOGIC_VECTOR(Channels-1 downto 0);
+    GPIO              : IN  STD_LOGIC_VECTOR(Channels-1 downto 0);
     
     UART_RX            : IN  STD_LOGIC := '1';
     UART_TX            : OUT STD_LOGIC := '1';
@@ -25,7 +25,7 @@ Component OLS_Logic_Analyzer
 )
 {
     
-    OLS_Interface_Inputs(Channels-1 downto 0) <= Inputs;
+    OLS_Interface_Inputs(Channels-1 downto 0) <= GPIO;
     
     CONSTANT sub_steps    : NATURAL := 16/Channels;
     OLS_Interface_Outputs(Channels-1 downto 0) <= LA_Out(((OLS_Interface_Address mod sub_steps + 1)*Channels)-1 downto (OLS_Interface_Address mod sub_steps)*Channels);
@@ -87,7 +87,7 @@ Component OLS_Logic_Analyzer
         Start_Offset => OLS_Interface_Start_Offset,
         Run          => OLS_Interface_Run,
         Full         => OLS_Interface_Full,
-        Inputs       => Inputs,
+        Inputs       => GPIO,
         Address      => LA_Address,
         Outputs      => LA_Out,
         sdram_addr   => sdram_addr,

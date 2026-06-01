@@ -1,13 +1,18 @@
 ﻿<Project>
   <ItemGroup>
-    <File Include="Libraries/UART.vhdp" />
-    <File Include="Libraries/Logic_Analyzer/OLS_Interface.vhdp" />
+    <File Include="../src/SDRAM_Controller_Custom.vhd" />
+    <File Include="Generated/Fast_Logic_Analyzer_SDRAM.vhd" />
+    <File Include="Generated/OLS_Interface.vhd" />
+    <File Include="Generated/OLS_Logic_Analyzer.vhd" />
+    <File Include="Generated/SDRAM_Interface.vhd" />
+    <File Include="Generated/UART_Interface.vhd" />
     <File Include="Libraries/Logic_Analyzer/Fast_Logic_Analyzer_SDRAM.vhdp" />
+    <File Include="Libraries/Logic_Analyzer/OLS_Interface.vhdp" />
     <File Include="Libraries/Logic_Analyzer/OLS_Logic_Analyzer_SDRAM.vhdp" />
-    <File Include="Libraries/Logic_Analyzer/SDRAM_Interface.vhdp" />
     <File Include="Libraries/Logic_Analyzer/SDRAM_Controller.vhdp" />
     <File Include="Libraries/Logic_Analyzer/SDRAM_PLL.qip" />
     <File Include="Libraries/Logic_Analyzer/SDRAM_PLL.vhd" />
+    <File Include="Libraries/UART.vhdp" />
     <File Include="OLS_Logic_Analyzer.vhdp" />
   </ItemGroup>
   <PropertyGroup>

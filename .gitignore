@@ -5,3 +5,14 @@ __pycache__/
 *.cf
 vhdplus/Generated/
 vhdl_ls.toml
+vhdplus/db/
+
+vhdplus/incremental_db/
+
+vhdplus/output_files/
+
+vhdplus/*.qpf
+
+vhdplus/*.qsf
+
+MAX1000 User Guide.pdf

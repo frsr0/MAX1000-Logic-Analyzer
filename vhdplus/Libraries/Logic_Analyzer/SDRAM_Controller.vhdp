@@ -74,6 +74,9 @@ Component SDRAM_Interface
         VHDL
         {
             component SDRAM_Controller is
+            generic (
+                CLK_Frequency : natural := 12000000
+            );
             port (
                 sdram_addr            : out   std_logic_vector(11 downto 0);                    -- addr
                 sdram_ba              : out   std_logic_vector(1 downto 0);                     -- ba
@@ -91,9 +94,11 @@ Component SDRAM_Interface
                 sdram_s_writedata     : in    std_logic_vector(15 downto 0) := (others => 'X'); -- writedata
                 sdram_s_read_n        : in    std_logic                     := 'X';             -- read_n
                 sdram_s_write_n       : in    std_logic                     := 'X';             -- write_n
+                sdram_s_burst         : in    std_logic                     := 'X';             -- burst
                 sdram_s_readdata      : out   std_logic_vector(15 downto 0);                    -- readdata
                 sdram_s_readdatavalid : out   std_logic;                                        -- readdatavalid
                 sdram_s_waitrequest   : out   std_logic;                                        -- waitrequest
+                sdram_s_idle          : out   std_logic;                                        -- idle
                 
                 reset_reset_n         : in    std_logic                     := 'X';             -- reset_n
                 clk_in_clk            : in    std_logic                     := 'X'              -- clk
