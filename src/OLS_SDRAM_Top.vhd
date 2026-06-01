@@ -54,6 +54,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_i2c_test   : std_logic := '0';
   signal fast_clk       : std_logic := '0';
   signal fast_mode      : std_logic := '0';
+  signal continuous_mode : std_logic := '0';
+  signal buffer_full     : std_logic_vector(1 downto 0) := (others => '0');
+  signal buffer_ack      : std_logic_vector(1 downto 0) := (others => '0');
 signal core_clk       : std_logic := '0';
   signal gpio_out      : std_logic_vector(7 downto 0) := (others => '0');
   signal gpio_dir      : std_logic_vector(7 downto 0) := (others => '0');
@@ -119,7 +122,10 @@ signal core_clk       : std_logic := '0';
     Gen_I2C_Test   : OUT STD_LOGIC := '0';
     Armed          : OUT STD_LOGIC := '0';
     Fast_Mode      : OUT STD_LOGIC := '0';
-    Status        : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0')
+    Status        : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+    Continuous_Mode : OUT STD_LOGIC := '0';
+    Buffer_Full     : IN  STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
+    Buffer_Ack      : OUT STD_LOGIC_VECTOR(1 downto 0) := (others => '0')
   );
   END COMPONENT;
 
@@ -291,7 +297,10 @@ BEGIN
     Gen_I2C_Test   => gen_i2c_test,
     Armed          => open,
     Fast_Mode      => fast_mode,
-    Status        => core_status
+    Status        => core_status,
+    Continuous_Mode => continuous_mode,
+    Buffer_Full     => buffer_full,
+    Buffer_Ack      => buffer_ack
   );
   
   -- LED PWM controller: smooth fade between states

@@ -36,7 +36,11 @@ port (
     s_burst      : out std_logic := '0';
     Armed        : in  std_logic := '0';
     Fast_Mode    : in  std_logic := '0';
-    FAST_CLK     : in  std_logic := '0'
+    FAST_CLK     : in  std_logic := '0';
+    -- Double-buffer control
+    Continuous_Mode : in std_logic := '0';
+    Buffer_Full     : out std_logic_vector(1 downto 0) := (others => '0');
+    Buffer_Ack      : in std_logic_vector(1 downto 0) := (others => '0')
 );
 end Fast_Logic_Analyzer_SDRAM;
 
@@ -76,6 +80,12 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal bram_wdata : std_logic_vector(15 downto 0) := (others => '0');
   signal bram_raddr : natural range 0 to BRAM_SIZE-1 := 0;
   signal bram_rdata : std_logic_vector(15 downto 0) := (others => '0');
+
+  -- Double-buffer state
+  signal buf_sel    : std_logic := '0';
+  signal buf_full_a : std_logic := '0';
+  signal buf_full_b : std_logic := '0';
+  signal full_pending : std_logic := '0';
 
   component SDRAM_Interface is
   generic (
@@ -140,13 +150,14 @@ begin
     end if;
   end process;
 
-  -- Main: capture samples directly to SDRAM, read back from SDRAM
+  -- Main: capture samples to SDRAM via dual buffer, read back from SDRAM
   process (pclk)
     variable step_r  : natural range 0 to sub_steps := 0;
     variable run_r   : std_logic := '0';
     variable rd_mode : boolean := true;
     variable wbuf    : std_logic_vector(15 downto 0) := (others => '0');
-    variable waddr   : natural range 0 to 15000000 := 0;
+    variable waddr_a   : natural range 0 to 15000000 := 0;
+    variable waddr_b   : natural range 0 to 15000000 := 0;
     variable a_reg   : natural range 0 to 15000000 := 15000000;
     variable wip        : boolean := false;
     variable wr_last    : std_logic_vector(1 downto 0) := "00";
@@ -168,31 +179,66 @@ begin
     variable flush_idx   : natural range 0 to BRAM_SIZE-1 := 0;
     variable flush_total : natural range 0 to BRAM_SIZE := 0;
     variable flush_sync : boolean := false;
+    variable buf_limit : natural range 0 to 15000000 := 0;
+    variable write_addr : std_logic_vector(21 downto 0) := (others => '0');
   begin
     if rising_edge(pclk) then
       bram_wren <= '0';
+
+      -- Buffer ack handling (evaluated every cycle)
+      if Buffer_Ack(0) = '1' then
+        buf_full_a <= '0';
+        if buf_sel = '0' and buf_full_b = '1' then
+          -- A was waiting to be written (B is full), reset pointer now
+          waddr_a := 0;
+        end if;
+      end if;
+      if Buffer_Ack(1) = '1' then
+        buf_full_b <= '0';
+        if buf_sel = '1' and buf_full_a = '1' then
+          -- B was waiting to be written (A is full), reset pointer now
+          waddr_b := 0;
+        end if;
+      end if;
+      -- Continuous mode backpressure handling
+      if Continuous_Mode = '1' then
+        if full_i = '1' and (Buffer_Ack(0) = '1' or Buffer_Ack(1) = '1') then
+          full_i <= '0';
+          full_pending <= '0';
+          rd_mode := false;  -- back to capture so FLA fills freed buffer
+        end if;
+        if full_pending = '1' and f_cnt = 0
+           and not wip and not wr_pend and burst_rem = 0 then
+          full_i <= '1';
+          full_pending <= '0';
+          rd_mode := true;  -- enter readout so OLS can read completed buffer
+        end if;
+      end if;
+
       if Run /= run_r then
-        waddr := 0; step_r := 0;
-        if Run = '1' then full_i <= '0'; end if;  -- reset full on new capture start only
+        waddr_a := 0; waddr_b := 0; step_r := 0;
+        buf_sel <= '0';
+        buf_full_a <= '0';
+        buf_full_b <= '0';
+        full_pending <= '0';
+        if Run = '1' then full_i <= '0'; end if;
         if Run = '0' then
           rd_mode := true;
         elsif Fast_Mode = '1' then
-          -- Fast mode trigger: continue BRAM circular buffer for post-trigger samples
           rd_mode := false;
           bram_post_cnt := 0;
         else
           rd_mode := false;
-          -- Trigger fired: start flushing BRAM to FIFO (only if pre-trigger samples exist)
           if Armed = '1' and bram_cnt > 0 then
             flush_rem := bram_cnt;
             flush_total := bram_cnt;
             if bram_cnt < BRAM_SIZE then
-              flush_idx := 0;  -- BRAM not wrapped, oldest at 0
+              flush_idx := 0;
             else
-              flush_idx := bram_wp;  -- wrapped: oldest is at next write position
+              flush_idx := bram_wp;
             end if;
-            bram_raddr <= flush_idx;  -- prime first flush read
-            flush_sync := false;     -- skip one cycle for BRAM read latency
+            bram_raddr <= flush_idx;
+            flush_sync := false;
           end if;
           bram_cnt := 0;
         end if;
@@ -200,7 +246,7 @@ begin
         s_wr <= '0'; s_rd <= '0';
       end if;
 
-      -- Fast mode pre-trigger: enter capture mode when armed, not triggered
+      -- Fast mode pre-trigger
       if Fast_Mode = '1' and Armed = '1' and Run = '0' and rd_mode then
         rd_mode := false;
         bram_cnt := 0;
@@ -210,13 +256,11 @@ begin
         -- READOUT
         s_wr <= '0'; s_burst_i <= '0';
         if Fast_Mode = '1' then
-          -- Fast mode: read directly from BRAM (circular wrap aware)
           if Address /= a_reg then
             a_reg := Address;
             if bram_cnt + bram_post_cnt <= BRAM_SIZE then
-              bram_raddr <= Address;  -- not wrapped
+              bram_raddr <= Address;
             else
-              -- Wrapped: oldest data is at bram_wp (next write position)
               bram_raddr <= (bram_wp + Address) mod BRAM_SIZE;
             end if;
           end if;
@@ -226,7 +270,6 @@ begin
             Outputs <= (others => '0');
           end if;
         else
-          -- Normal mode: read from SDRAM
           if Address /= a_reg then
             a_reg := Address;
             s_addr <= std_logic_vector(to_unsigned(Address, 22));
@@ -244,17 +287,14 @@ begin
         -- CAPTURE
 
         -- Write pump: three mutually exclusive paths.
-        -- Path 1 (highest priority): burst in progress
         if burst_rem > 0 then
           s_burst_i <= '1';
           if not burst_phase then
-            -- Drive s_wr high with current burst entry
             s_addr  <= burst_buf(4 - burst_rem)(37 downto 16);
             s_wdata <= burst_buf(4 - burst_rem)(15 downto 0);
             s_wr    <= '1';
             burst_phase := true;
           else
-            -- Drive s_wr low: creates falling edge for controller edge detect
             s_wr    <= '0';
             burst_phase := false;
             burst_rem := burst_rem - 1;
@@ -264,7 +304,6 @@ begin
             end if;
           end if;
 
-        -- Path 2: single write pending
         elsif wr_pend then
           s_addr  <= wr_pend_addr;
           s_wdata <= wr_pend_data;
@@ -272,10 +311,8 @@ begin
           wip     := true;
           wr_pend := false;
 
-        -- Path 3: pop from FIFO
         elsif f_cnt > 0 and not wip then
           if f_cnt >= 4 then
-            -- Pop 4 entries into burst buffer
             for i in 0 to 3 loop
               burst_buf(i) := fifo_mem(f_tail);
               if f_tail = FIFO_Depth-1 then f_tail := 0;
@@ -285,12 +322,10 @@ begin
             burst_rem   := 4;
             burst_phase := false;
             s_burst_i     <= '1';
-            -- Drive first entry now; next cycle burst_rem>0 starts toggling
             s_addr  <= burst_buf(0)(37 downto 16);
             s_wdata <= burst_buf(0)(15 downto 0);
             s_wr    <= '1';
           else
-            -- Single write (unchanged)
             wr_pend      := true;
             wr_pend_addr := fifo_mem(f_tail)(37 downto 16);
             wr_pend_data := fifo_mem(f_tail)(15 downto 0);
@@ -300,7 +335,7 @@ begin
           end if;
         end if;
 
-        -- Track in-progress SDRAM write completion (falling edge of s_busy)
+        -- Track SDRAM write completion
         if wip then
           wr_last := wr_last(0) & s_busy;
           if wr_last = "10" then
@@ -308,30 +343,30 @@ begin
           end if;
         end if;
 
-        -- Sample new data when tick arrives; write to BRAM (pre-trigger) or FIFO (post-trigger)
+        -- Sample new data when tick arrives
         if sample_en = '1' then
           wbuf(((step_r + 1) * Channels) - 1 downto step_r * Channels) := Inputs;
 
-          if step_r = sub_steps - 1 then
+            if step_r = sub_steps - 1 then
             -- Full 16-bit word ready
             if flush_rem > 0 then
               -- Flush BRAM to FIFO (pre-trigger samples flushed after trigger)
               if f_cnt < FIFO_Depth then
                 if flush_sync then
-                  fifo_mem(f_head) <= std_logic_vector(to_unsigned(waddr, 22)) & bram_rdata;
+                  fifo_mem(f_head) <= std_logic_vector(to_unsigned(waddr_a, 22)) & bram_rdata;
                   if f_head = FIFO_Depth-1 then f_head := 0;
                   else f_head := f_head + 1; end if;
                   f_cnt := f_cnt + 1;
-                  waddr := waddr + 1;
+                  waddr_a := waddr_a + 1;
                   flush_rem := flush_rem - 1;
                 end if;
                 flush_sync := true;
                 if flush_idx = BRAM_SIZE-1 then flush_idx := 0;
                 else flush_idx := flush_idx + 1; end if;
-                bram_raddr <= flush_idx;  -- prime next flush read
+                bram_raddr <= flush_idx;
               end if;
             elsif Armed = '1' and Run = '0' then
-              -- Pre-trigger: store in BRAM (circular buffer)
+              -- Pre-trigger BRAM (circular)
               bram_waddr <= bram_wp;
               bram_wdata <= wbuf;
               bram_wren <= '1';
@@ -339,7 +374,7 @@ begin
               else bram_wp := bram_wp + 1; end if;
               if bram_cnt < BRAM_SIZE then bram_cnt := bram_cnt + 1; end if;
             elsif Fast_Mode = '1' and Armed = '1' then
-              -- Fast mode post-trigger: continue BRAM circular buffer
+              -- Fast mode post-trigger
               bram_waddr <= bram_wp;
               bram_wdata <= wbuf;
               bram_wren <= '1';
@@ -348,12 +383,51 @@ begin
               if bram_cnt < BRAM_SIZE then bram_cnt := bram_cnt + 1; end if;
               bram_post_cnt := bram_post_cnt + 1;
             elsif f_cnt < FIFO_Depth then
-              -- Post-trigger: push captured word to FIFO
-              fifo_mem(f_head) <= std_logic_vector(to_unsigned(waddr, 22)) & wbuf;
-              if f_head = FIFO_Depth-1 then f_head := 0;
-              else f_head := f_head + 1; end if;
-              f_cnt := f_cnt + 1;
-              waddr := waddr + 1;
+              -- Post-trigger: write to current buffer via FIFO
+              if Continuous_Mode = '1' then
+                if buf_full_a = '1' and buf_full_b = '1' then
+                  null;  -- both full: stall, no write
+                else
+                  -- Double-buffer mode
+                  buf_limit := Samples / (2 * sub_steps);
+                  if buf_sel = '0' then
+                    write_addr := std_logic_vector(to_unsigned(waddr_a, 22));
+                    if waddr_a + 1 >= buf_limit then
+                      buf_full_a <= '1';
+                      if buf_full_b = '1' then
+                        full_pending <= '1';
+                      else
+                        buf_sel <= '1';
+                        waddr_b := 0;
+                      end if;
+                    end if;
+                    waddr_a := waddr_a + 1;
+                  else
+                    write_addr := std_logic_vector(to_unsigned(buf_limit + waddr_b, 22));
+                    if waddr_b + 1 >= buf_limit then
+                      buf_full_b <= '1';
+                      if buf_full_a = '1' then
+                        full_pending <= '1';
+                      else
+                        buf_sel <= '0';
+                        waddr_a := 0;
+                      end if;
+                    end if;
+                    waddr_b := waddr_b + 1;
+                  end if;
+                  fifo_mem(f_head) <= write_addr & wbuf;
+                  if f_head = FIFO_Depth-1 then f_head := 0;
+                  else f_head := f_head + 1; end if;
+                  f_cnt := f_cnt + 1;
+                end if;
+              else
+                -- Single-buffer mode (legacy)
+                fifo_mem(f_head) <= std_logic_vector(to_unsigned(waddr_a, 22)) & wbuf;
+                if f_head = FIFO_Depth-1 then f_head := 0;
+                else f_head := f_head + 1; end if;
+                f_cnt := f_cnt + 1;
+                waddr_a := waddr_a + 1;
+              end if;
             end if;
           end if;
 
@@ -362,22 +436,27 @@ begin
           end if;
         end if;
 
-        -- Assert Full: normal mode (SDRAM) vs fast mode (BRAM only)
+        -- Assert Full
         if not rd_mode and full_i = '0' then
           if Fast_Mode = '1' then
-            -- Fast mode: capture BRAM_SIZE post-trigger words (fills circular buffer)
             if bram_post_cnt >= BRAM_SIZE then
               full_i <= '1';
               rd_mode := true;
             end if;
-          elsif waddr >= (Samples / sub_steps) + flush_total
-             and f_cnt = 0
-             and not wip
-             and not wr_pend
-             and burst_rem = 0
-          then
-            full_i <= '1';
-            rd_mode := true;
+          elsif Continuous_Mode = '1' then
+            -- Backpressure handled at top of process (full_pending logic)
+            null;
+          else
+            -- Single-buffer mode: Full when waddr_a reaches target
+            if waddr_a >= (Samples / sub_steps)
+               and f_cnt = 0
+               and not wip
+               and not wr_pend
+               and burst_rem = 0
+            then
+              full_i <= '1';
+              rd_mode := true;
+            end if;
           end if;
         end if;
       end if;
@@ -385,12 +464,11 @@ begin
       -- Drive fifo_cnt signal from variable for external visibility
       fifo_cnt <= f_cnt;
 
-      -- Status(3 downto 0): run_r, wip, s_rd, full_i
+      -- Status
       Status(0) <= run_r;
       if wip then Status(1) <= '1'; else Status(1) <= '0'; end if;
       Status(2) <= s_rd;
       Status(3) <= full_i;
-      -- Status(7 downto 4): fifo_cnt binary (4 bits, 0-15)
       if    f_cnt >= 8 then Status(7) <= '1'; else Status(7) <= '0'; end if;
       if    f_cnt = 4 or f_cnt = 5 or f_cnt = 6 or f_cnt = 7
          or f_cnt = 12 or f_cnt = 13 or f_cnt = 14 or f_cnt = 15
@@ -406,6 +484,8 @@ begin
 
   Full <= full_i;
   s_burst <= s_burst_i;
+  Buffer_Full(0) <= buf_full_a;
+  Buffer_Full(1) <= buf_full_b;
 
   SDRAM_Interface1 : SDRAM_Interface
   generic map (Sim => Sim, Write_Latency => Write_Latency, Read_Latency => Read_Latency, Page_Latency => Page_Latency)

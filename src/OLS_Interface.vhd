@@ -35,8 +35,11 @@ PORT (
    Gen_I2C_Rd_Len : OUT NATURAL range 0 to 255 := 0;
    Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
      Gen_I2C_Test   : OUT STD_LOGIC := '0';
-     Armed          : OUT STD_LOGIC := '0';
-     Fast_Mode      : OUT STD_LOGIC := '0'
+      Armed          : OUT STD_LOGIC := '0';
+      Fast_Mode      : OUT STD_LOGIC := '0';
+      Continuous_Mode : OUT STD_LOGIC := '0';
+      Buffer_Full     : IN  STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
+      Buffer_Ack      : OUT STD_LOGIC_VECTOR(1 downto 0) := (others => '0')
 
 );
 END OLS_Interface;
@@ -72,6 +75,11 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL gen_i2c_dev_r_int  : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL gen_i2c_test_int   : STD_LOGIC := '0';
   SIGNAL fast_mode_i        : STD_LOGIC := '0';
+  SIGNAL continuous_mode_i   : STD_LOGIC := '0';
+  SIGNAL cont_buf_sel        : STD_LOGIC := '0';
+  SIGNAL cont_rem            : NATURAL range 0 to 1048576 := 0;
+  SIGNAL cont_base_addr      : NATURAL range 0 to 1048576 := 0;
+  SIGNAL buffer_ack_i        : STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
   SIGNAL proto_trig_enable   : STD_LOGIC := '0';
   SIGNAL proto_trig_protocol : STD_LOGIC_VECTOR(1 downto 0) := "00";
   SIGNAL proto_trig_match    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
@@ -118,12 +126,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
 BEGIN
   PROCESS (CLK)  
     VARIABLE ctr : INTEGER range 0 to 4 := 0;
-    VARIABLE Thread23 : NATURAL range 0 to 4 := 0;
+    VARIABLE Thread23 : NATURAL range 0 to 5 := 0;
     VARIABLE Thread26 : NATURAL range 0 to 34 := 0;
     VARIABLE Thread30 : NATURAL range 0 to 3 := 0;
     VARIABLE Thread31 : NATURAL range 0 to 4 := 0;
     VARIABLE Thread38 : NATURAL range 0 to 7 := 0;
-    VARIABLE Thread44 : NATURAL range 0 to 27 := 0;
+    VARIABLE Thread44 : NATURAL range 0 to 28 := 0;
     VARIABLE Thread45 : NATURAL range 0 to 4 := 0;
     VARIABLE Thread49 : NATURAL range 0 to 2 := 0;
     VARIABLE Thread51 : NATURAL range 0 to 5 := 0;
@@ -189,10 +197,20 @@ BEGIN
       IF (Full = '1') THEN
         CASE (Thread23) IS
           WHEN 0 =>
-            addr <= 0;
+            IF continuous_mode_i = '1' THEN
+              addr <= cont_base_addr;
+            ELSE
+              addr <= 0;
+            END IF;
             Thread23 := 1;
           WHEN 1 =>
-            IF ( addr < Samples) THEN 
+            IF continuous_mode_i = '1' THEN
+              IF cont_rem > 0 THEN
+                Thread23 := 2;
+              ELSE
+                Thread23 := 4;  -- buffer done
+              END IF;
+            ELSIF ( addr < Samples) THEN 
               Thread23 := Thread23 + 1;
             ELSE
               Thread23 := Thread23 + 2;
@@ -251,14 +269,45 @@ BEGIN
       END CASE;
     WHEN 33 =>
       addr <= addr + 1;
+      IF continuous_mode_i = '1' AND cont_rem > 0 THEN
+        cont_rem <= cont_rem - 1;
+      END IF;
       Thread26 := 0;
       Thread23 := 1;
               WHEN others => Thread26 := 0;
             END CASE;
           WHEN 3 =>
-            Run_OLS <= '0';
-            Run <= '0';
-            Thread23 := 0;
+            IF continuous_mode_i = '1' THEN
+              Thread23 := 4;  -- continuous: ack and continue
+            ELSE
+              Run_OLS <= '0';
+              Run <= '0';
+              Thread23 := 0;
+            END IF;
+          WHEN 4 =>
+            -- Buffer read complete: ack the buffer we just finished
+            buffer_ack_i <= (others => '0');
+            buffer_ack_i(0) <= NOT cont_buf_sel;
+            buffer_ack_i(1) <= cont_buf_sel;
+            -- Set up for the NEXT buffer (after toggle)
+            IF cont_buf_sel = '0' THEN
+              -- Just read buffer A; next is buffer B at offset Samples/2
+              cont_base_addr <= Samples / 2;
+            ELSE
+              -- Just read buffer B; next is buffer A at offset 0
+              cont_base_addr <= 0;
+            END IF;
+            cont_rem <= Samples / 2;
+            cont_buf_sel <= NOT cont_buf_sel;
+            Thread23 := 5;
+          WHEN 5 =>
+            buffer_ack_i <= (others => '0');
+            -- Check if next buffer is already full
+            IF (Buffer_Full(0) = '1' AND cont_buf_sel = '0') OR
+               (Buffer_Full(1) = '1' AND cont_buf_sel = '1') THEN
+              addr <= cont_base_addr;
+              Thread23 := 1;
+            END IF;
           WHEN others => Thread23 := 0;
         END CASE;
       END IF;
@@ -324,6 +373,7 @@ BEGIN
           WHEN 1 =>
             Run_OLS <= '0';
             Run <= '0';
+            continuous_mode_i <= '0';
             Thread44 := 0;
                 Thread45 := 0;
                 Thread38 := 0;
@@ -539,6 +589,8 @@ BEGIN
                 Thread44 := Thread44 + 19;
               WHEN x"A9" =>
                 Thread44 := Thread44 + 20;
+              WHEN x"AA" =>
+                Thread44 := Thread44 + 21;
               WHEN others =>
                 Thread44 := Thread44 + 10;
             END CASE;
@@ -651,6 +703,17 @@ BEGIN
             Thread44 := 0;
                 Thread45 := 0;
                 Thread38 := 0;
+          WHEN 28 =>
+            continuous_mode_i <= data(0);
+            IF data(0) = '1' THEN
+              cont_buf_sel <= '0';
+              cont_base_addr <= 0;
+              cont_rem <= Read_Count / 2;
+              Run_OLS <= '1';
+            END IF;
+            Thread44 := 0;
+                Thread45 := 0;
+                Thread38 := 0;
           WHEN others => Thread44 := 0;
         END CASE;
       WHEN others => Thread38 := 0;
@@ -674,6 +737,8 @@ BEGIN
   Gen_I2C_Dev_R  <= gen_i2c_dev_r_int;
   Gen_I2C_Test   <= gen_i2c_test_int;
   Fast_Mode      <= fast_mode_i;
+  Continuous_Mode <= continuous_mode_i;
+  Buffer_Ack      <= buffer_ack_i;
   Armed          <= Run_OLS;
 
   UART_Interface1 : UART_Interface

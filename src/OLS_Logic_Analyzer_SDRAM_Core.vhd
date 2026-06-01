@@ -42,7 +42,10 @@ PORT (
     Gen_I2C_Test   : OUT STD_LOGIC := '0';
     Armed          : OUT STD_LOGIC := '0';
     Fast_Mode      : OUT STD_LOGIC := '0';
-    Status        : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0')
+    Status        : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+    Continuous_Mode : OUT STD_LOGIC := '0';
+    Buffer_Full     : IN  STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
+    Buffer_Ack      : OUT STD_LOGIC_VECTOR(1 downto 0) := (others => '0')
 
 );
 END OLS_Logic_Analyzer;
@@ -74,6 +77,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL gen_i2c_test_i      : STD_LOGIC := '0';
   SIGNAL armed_i             : STD_LOGIC := '0';
   SIGNAL fast_mode_i         : STD_LOGIC := '0';
+  SIGNAL continuous_mode_i   : STD_LOGIC := '0';
+  SIGNAL buffer_full_i       : STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
+  SIGNAL buffer_ack_i        : STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
   SIGNAL fla_status          : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   COMPONENT OLS_Interface IS
   GENERIC (
@@ -106,10 +112,13 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
     Gen_I2C_Rd_Len : OUT NATURAL range 0 to 255 := 0;
    Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
      Gen_I2C_Test   : OUT STD_LOGIC := '0';
-     Armed          : OUT STD_LOGIC := '0';
-     Fast_Mode      : OUT STD_LOGIC := '0'
-    );
-    END COMPONENT;
+      Armed          : OUT STD_LOGIC := '0';
+      Fast_Mode      : OUT STD_LOGIC := '0';
+      Continuous_Mode : OUT STD_LOGIC := '0';
+      Buffer_Full     : IN  STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
+      Buffer_Ack      : OUT STD_LOGIC_VECTOR(1 downto 0) := (others => '0')
+     );
+     END COMPONENT;
    COMPONENT Fast_Logic_Analyzer_SDRAM IS
   GENERIC (
       Max_Samples    : NATURAL := 3000000; 
@@ -141,10 +150,13 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
     s_burst     : OUT std_logic := '0';
     Armed       : IN  std_logic := '0';
     Fast_Mode   : IN  std_logic := '0';
-    FAST_CLK    : IN  std_logic := '0'
+     FAST_CLK    : IN  std_logic := '0';
+     Continuous_Mode : IN  std_logic := '0';
+     Buffer_Full     : OUT std_logic_vector(1 downto 0) := (others => '0');
+     Buffer_Ack      : IN  std_logic_vector(1 downto 0) := (others => '0')
 
-  );
-  END COMPONENT;
+   );
+   END COMPONENT;
   
 BEGIN
 
@@ -175,7 +187,10 @@ BEGIN
     Gen_TX_Pin    => Gen_TX_Pin_i,Gen_SCL_Pin   => Gen_SCL_Pin_i,
     Gen_I2C_Rd_Len => gen_i2c_rd_len_i,Gen_I2C_Dev_R  => gen_i2c_dev_r_i,Gen_I2C_Test   => gen_i2c_test_i,
     Armed          => armed_i,
-    Fast_Mode      => fast_mode_i
+    Fast_Mode      => fast_mode_i,
+    Continuous_Mode => continuous_mode_i,
+    Buffer_Full     => buffer_full_i,
+    Buffer_Ack      => buffer_ack_i
     
   );
   Fast_Logic_Analyzer_SDRAM1 : Fast_Logic_Analyzer_SDRAM
@@ -187,7 +202,10 @@ BEGIN
     Status       => fla_status,
     Armed        => armed_i,
     Fast_Mode    => fast_mode_i,
-    FAST_CLK     => FAST_CLK
+    FAST_CLK     => FAST_CLK,
+    Continuous_Mode => continuous_mode_i,
+    Buffer_Full     => buffer_full_i,
+    Buffer_Ack      => buffer_ack_i
   );
   
 END BEHAVIORAL;

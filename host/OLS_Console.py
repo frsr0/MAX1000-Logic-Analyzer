@@ -40,6 +40,7 @@ CMD_GEN_PINS=0xA6
 CMD_I2C_TEST=0xA7
 CMD_FAST_MODE=0xA8
 CMD_TRIG_PROTO=0xA9
+CMD_CONT_CAPTURE=0xAA
 CMD_FLAGS  = 0x82
 CMD_DELAY  = 0xC2
 CMD_TMASK  = 0xC0
@@ -257,16 +258,17 @@ class OLSDevice:
         self.ser.write(bytes([CMD_GEN_STRT]) + struct.pack('<I', 0))
 
     def rolling_capture(self, rate_hz, chunk_nsamp, buffer_nsamp, stop_evt, progress_cb=None,
-                        gen_data=None, gen_baud=115200, gen_tx_pin=3, full_out=None):
-        """Generator: continuous rolling capture, re-arms without CMD_RESET between chunks.
-        
-        Yields (partial_data, samples_so_far) each chunk for live GUI updates.
-        If gen_data is provided, loads it into the generator after config
-        and starts gen with each ARM (gen data spans multiple chunks).
-        If full_out is provided (bytearray), every chunk is appended without trimming
-        for full capture accumulation.
+                        gen_data=None, gen_baud=115200, gen_tx_pin=3, full_out=None,
+                        use_continuous=True):
+        """Generator: continuous rolling capture with dual-buffer FPGA support.
+
+        If use_continuous=True (default), sends CMD_CONT_CAPTURE for gap-free
+        dual-buffer capture (requires updated FPGA firmware).
+        If use_continuous=False, uses legacy ARM-loop (gaps between chunks).
+
+        Yields (partial_data, samples_so_far) per completion for live GUI updates.
+        If full_out is provided (bytearray), every chunk is appended without trimming.
         """
-        # Configure once: divider, count, flags, raw_mode
         self.ser.reset_input_buffer()
         for _ in range(5):
             self.ser.write(bytes([CMD_RESET]))
@@ -276,20 +278,24 @@ class OLSDevice:
         self._short(CMD_XON)
         div = max(0, int(self.sys_clk / rate_hz) - 1)
         self._long(CMD_DIVIDER, div & 0xFFFFFF)
-        self._long(CMD_RCOUNT, chunk_nsamp)
-        self._long(CMD_DCOUNT, chunk_nsamp)
+
+        need = chunk_nsamp * self._stride
+        if use_continuous:
+            total_nsamp = (buffer_nsamp // 2) * 2
+            need_per_buf = (total_nsamp // 2) * self._stride
+        else:
+            total_nsamp = chunk_nsamp
+            need_per_buf = need
+        self._long(CMD_RCOUNT, total_nsamp)
+        self._long(CMD_DCOUNT, total_nsamp)
         self._long(CMD_TMASK, 0)
         self._long(CMD_TVALUE, 0)
         self._long(CMD_FLAGS, self._raw_flags)
         self._long(CMD_DELAY, 0)
         self._short(CMD_XOFF)
-        # Fast mode for fast re-arms — skip for debug
-        # self._long(CMD_FAST_MODE, 1)
-        self._long(CMD_TRIG_PROTO, 0)  # disable protocol trigger
-        time.sleep(0.002)  # settle before rolling loop
+        self._long(CMD_TRIG_PROTO, 0)
+        time.sleep(0.002)
 
-        # Load gen data after config (CMD_RESET does not affect Signal_Gen FIFO
-        # but loading after ensures clean state for the gen timing)
         if gen_data:
             self._long(CMD_GEN_PROTO, 0)
             div_b = max(1, self.sys_clk // gen_baud)
@@ -300,66 +306,65 @@ class OLSDevice:
 
         buf = b''
         seq = 0
-        # Readout sends Samples (= chunk_nsamp) addresses, each producing stride bytes
-        need = chunk_nsamp * self._stride
-        while not stop_evt.is_set():
-            # First arm: CMD_RESET for clean state, then ARM
-            if seq == 0:
-                self._short(CMD_RESET)
-            # Check for pending gen (queued by Send button — NO serial from main thread)
-            use_gen = gen_data
-            if self._pending_gen is not None:
-                g = self._pending_gen
-                self._pending_gen = None
-                # Drain stale FIFO by starting gen, then load fresh data
-                self.ser.write(bytes([CMD_ARM, CMD_GEN_STRT]) + struct.pack('<I', 0))
-                time.sleep(0.05)  # wait for gen to drain FIFO (~575 bytes @ 115200)
-                self._long(CMD_GEN_PROTO, 0)
-                div_b = max(1, self.sys_clk // g['baud'])
-                self._long(CMD_GEN_BAUD, div_b & 0xFFFF)
-                self._load_block(g['data'])
-                self._pins(tx_pin=g['tx_pin'])
-                use_gen = True
-            if use_gen:
-                self.ser.write(bytes([CMD_ARM, CMD_GEN_STRT]) + struct.pack('<I', 0))
+        yield_granule = 1024 * self._stride
+        max_bytes = buffer_nsamp * self._stride
+        old_to = self.ser.timeout
+        self.ser.timeout = 0.5
+
+        try:
+            if use_continuous:
+                # Continuous dual-buffer mode (new firmware)
+                self._long(CMD_CONT_CAPTURE, 1)
+                time.sleep(0.005)
+                while not stop_evt.is_set():
+                    chunk = b''
+                    deadline = time.time() + max(2.0, total_nsamp / rate_hz * 4)
+                    while len(chunk) < need_per_buf and time.time() < deadline:
+                        if stop_evt.is_set(): break
+                        c = self.ser.read(min(4096, need_per_buf - len(chunk)))
+                        chunk += c
+                        if len(c) == 0: time.sleep(0.001)
+                    if stop_evt.is_set(): break
+                    if len(chunk) < need_per_buf: break
+                    pos = 0
+                    while pos < len(chunk):
+                        block = chunk[pos:pos + yield_granule]
+                        pos += len(block)
+                        if full_out is not None: full_out.extend(block)
+                        buf += block
+                        if len(buf) > max_bytes: buf = buf[-max_bytes:]
+                        seq += len(block) // self._stride
+                        if progress_cb: progress_cb(buf, seq, buffer_nsamp)
+                        yield buf, seq, buffer_nsamp
             else:
-                self._short(CMD_ARM)
-            # Wait for Full: capture time = chunk_nsamp/rate_hz, double for margin
-            cap_wait = max(0.005, chunk_nsamp / rate_hz * 2 + 0.005)
-            time.sleep(cap_wait)
-            # Read chunk data (use short timeout so stop_evt is checked frequently)
-            old_to = self.ser.timeout
-            self.ser.timeout = 0.5
-            chunk = b''
-            deadline = time.time() + 2.0  # 2s timeout per chunk
-            try:
-                while len(chunk) < need and time.time() < deadline:
-                    if stop_evt.is_set():
-                        break
-                    c = self.ser.read(min(4096, need - len(chunk)))
-                    chunk += c
-                    if len(c) == 0:
-                        time.sleep(0.001)
-            finally:
-                self.ser.timeout = old_to
-            if stop_evt.is_set():
-                break
-            if len(chunk) < need:
-                break  # timeout or device unresponsive
-            # Full accumulation (no trimming)
-            if full_out is not None:
-                full_out.extend(chunk)
-            # Append to PC buffer (trimmed)
-            buf += chunk
-            # Trim buffer to buffer_nsamp
-            max_bytes = buffer_nsamp * self._stride
-            if len(buf) > max_bytes:
-                buf = buf[-max_bytes:]
-            seq += 1
-            if progress_cb:
-                progress_cb(buf, seq * chunk_nsamp, buffer_nsamp)
-            # Yield control back for GUI update
-            yield buf, seq * chunk_nsamp, buffer_nsamp
+                # Legacy ARM-loop mode (compatible with all firmware)
+                while not stop_evt.is_set():
+                    if seq == 0:
+                        for _ in range(5):
+                            self.ser.write(bytes([CMD_RESET]))
+                            time.sleep(0.005)
+                        time.sleep(0.1)
+                        self.ser.reset_input_buffer()
+                    self._short(CMD_ARM)
+                    cap_wait = max(0.02, chunk_nsamp / rate_hz + 0.02)
+                    time.sleep(cap_wait)
+                    chunk = b''
+                    deadline = time.time() + 5.0
+                    while len(chunk) < need and time.time() < deadline:
+                        if stop_evt.is_set(): break
+                        c = self.ser.read(min(4096, need - len(chunk)))
+                        chunk += c
+                        if len(c) == 0: time.sleep(0.001)
+                    if stop_evt.is_set(): break
+                    if len(chunk) < need: break
+                    if full_out is not None: full_out.extend(chunk)
+                    buf += chunk
+                    if len(buf) > max_bytes: buf = buf[-max_bytes:]
+                    seq += 1
+                    if progress_cb: progress_cb(buf, seq * chunk_nsamp, buffer_nsamp)
+                    yield buf, seq * chunk_nsamp, buffer_nsamp
+        finally:
+            self.ser.timeout = old_to
         self.ser.reset_input_buffer()
 
     def start_gen(self):

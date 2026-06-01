@@ -144,17 +144,17 @@ BEGIN
              ELSE
                sdram_s_waitrequest <= '0';
                sdram_s_readdatavalid <= '1';
-               sdram_s_readdata <= sdram_ram(TO_INTEGER(UNSIGNED(sdram_s_address)));
-               wait_r := true;
+                sdram_s_readdata <= sdram_ram(TO_INTEGER(UNSIGNED(sdram_s_address)));
+                wait_r := true;
              END IF;
            ELSE
              sdram_s_readdatavalid <= '0';
            END IF;
-         ELSIF (sdram_s_write_n = '0') THEN
-           IF (not wait_r) THEN
-             IF (sdram_s_waitrequest = '0') THEN
-               sdram_s_waitrequest <= '1';
-               sdram_ram(TO_INTEGER(UNSIGNED(sdram_s_address))) <= sdram_s_writedata;
+          ELSIF (sdram_s_write_n = '0') THEN
+            IF (not wait_r) THEN
+              IF (sdram_s_waitrequest = '0') THEN
+                sdram_s_waitrequest <= '1';
+                sdram_ram(TO_INTEGER(UNSIGNED(sdram_s_address))) <= sdram_s_writedata;
              ELSE
                sdram_s_waitrequest <= '0';
                wait_r := true;

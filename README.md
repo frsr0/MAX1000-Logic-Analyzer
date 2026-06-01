@@ -72,20 +72,65 @@ To compile without flashing: `.\compile.ps1`
 > entity as top-level. For a full-featured bitstream (including signal generator, LEDs,
 > accelerometer), always use `compile.ps1` instead of compiling from the IDE.
 
-### Test status
+## Simulation (VHDL Testbenches)
 
-All hardware tests pass (run against the programmed device):
+Requires [GHDL](https://github.com/ghdl/ghdl) with `--std=08` support.
+
+### Run the double-buffer testbench
+
+```powershell
+cd sim
+.\compile.ps1
+.\run.ps1
+```
+
+Tests the `Fast_Logic_Analyzer_SDRAM` and `OLS_Interface` modules with `Sim => true`:
+
+### FLA double-buffer testbench (`tb_double_buffer`)
+
+| Test | What it verifies |
+|------|-----------------|
+| `tc_single_buffer` | Single-buffer capture (legacy mode): Full asserts at correct sample count, readback works |
+| `tc_buffer_swap` | Double-buffer: buffer A fills seamlessly, capture continues to B, Full only asserts for backpressure |
+| `tc_edge_timing` | Known square wave on CH0 — edge spacing uniform (min=max=1), 127 edges, **0 gaps** |
+| `tc_read_while_write` | Read buffer A while capture fills B, ack A, read B — independent read/write verified |
+
+### OLS Interface continuous-mode testbench (`tb_interface_cont`)
+
+| Test | What it verifies |
+|------|-----------------|
+| `tc_cont_cmd` | `CMD_CONT_CAPTURE` (0xAA) sets `Continuous_Mode` high, reset clears it |
+| `tc_cont_reset` | Reset stops continuous mode, `Continuous_Mode` goes low |
+
+### Test results
+
+| Testbench | Test | Result |
+|-----------|------|--------|
+| `tb_double_buffer` | tc_single_buffer | PASS |
+| `tb_double_buffer` | tc_buffer_swap | PASS |
+| `tb_double_buffer` | tc_edge_timing | PASS |
+| `tb_double_buffer` | tc_read_while_write | PASS |
+| `tb_interface_cont` | tc_cont_cmd | PASS |
+| `tb_interface_cont` | tc_cont_reset | PASS |
+
+## Hardware Tests
+
+Run diagnostics against a programmed device:
+
+```powershell
+python host/test_diag.py --port COM5
+```
 
 | Test | Result |
 |------|--------|
+| `host/test_diag.py` | PASS (48 MHz divider fix) |
+| `host/test_cont_capture.py` | PASS (requires programmed device) |
 | `test_gpio_only.py` | PASS |
 | `test_fix.py` | PASS |
 | `test_final.py` | PASS |
 | `test_no_reset.py` | PASS |
 | `test_multi.py` | PASS |
 | `test_immediate.py` | PASS |
-
-(`test_diag.py` has a pre-existing divider mismatch — fails identically on all builds.)
 
 ## Install the Python host app
 
@@ -118,13 +163,23 @@ OLS_Logic_Analyzer/
 │   ├── Protocol_Trigger.vhd
 │   └── Signal_Gen.vhd
 ├── host/             # Python host application
-│   └── OLS_Console.py
+│   ├── OLS_Console.py
+│   ├── test_diag.py            # Hardware diagnostic test
+│   └── test_cont_capture.py    # Continuous capture test
 ├── vhdplus/          # VHDPlus project files
 │   ├── OLS_Logic_Analyzer.vhdpproj
 │   ├── OLS_Logic_Analyzer.vhdp
 │   ├── OLS_Logic_Analyzer_wrapper.vhd
 │   ├── pin_assignments.csv
 │   └── compile.ps1
+├── sim/              # GHDL testbench + simulation stubs
+│   ├── compile.ps1
+│   ├── run.ps1
+│   ├── tb_double_buffer.vhd    # FLA dual-buffer tests
+│   ├── tb_interface_cont.vhd   # OLS_Interface continuous-mode tests
+│   ├── pll_model.vhd
+│   ├── SDRAM_PLL.vhd
+│   └── SDRAM_Controller.vhd
 ├── README.md
 ├── LICENSE
 └── requirements.txt
