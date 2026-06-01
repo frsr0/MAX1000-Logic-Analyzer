@@ -1,0 +1,27 @@
+Main
+(
+    CLK       : IN  STD_LOGIC;
+    UART_RX   : IN  STD_LOGIC;
+    UART_TX   : OUT STD_LOGIC;
+    GPIO      : INOUT STD_LOGIC_VECTOR(7 downto 0);
+    sdram_addr  : OUT STD_LOGIC_VECTOR(11 downto 0);
+    sdram_ba    : OUT STD_LOGIC_VECTOR(1 downto 0);
+    sdram_cas_n : OUT STD_LOGIC;
+    sdram_cke   : OUT STD_LOGIC;
+    sdram_cs_n  : OUT STD_LOGIC;
+    sdram_dq    : INOUT STD_LOGIC_VECTOR(15 downto 0);
+    sdram_dqm   : OUT STD_LOGIC_VECTOR(1 downto 0);
+    sdram_ras_n : OUT STD_LOGIC;
+    sdram_we_n  : OUT STD_LOGIC;
+    sdram_clk   : OUT STD_LOGIC;
+    SEN_SDI     : INOUT STD_LOGIC;
+    SEN_SPC     : INOUT STD_LOGIC;
+    SEN_CS      : OUT   STD_LOGIC;
+    SEN_SDO     : IN    STD_LOGIC;
+    LED         : OUT STD_LOGIC_VECTOR(7 downto 0);
+)
+{
+    -- OLS_SDRAM_Top is the top-level entity
+    -- Pin assignments configured via Tools -> Pin Planner
+    -- Use pin_assignments.csv as the starting point
+}
