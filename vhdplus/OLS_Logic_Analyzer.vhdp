@@ -21,7 +21,6 @@ Main
     LED         : OUT STD_LOGIC_VECTOR(7 downto 0);
 )
 {
-    -- OLS_SDRAM_Top is the top-level entity
-    -- Pin assignments configured via Tools -> Pin Planner
-    -- Use pin_assignments.csv as the starting point
+    -- Top-level wrapper for OLS_SDRAM_Top
+    -- Import pin assignments: Tools -> Pin Planner -> Import -> pin_assignments.csv
 }

@@ -1,15 +1,16 @@
-<Project>
+﻿<Project>
   <ItemGroup>
-    <File Include="..\src\OLS_SDRAM_Top.vhd" />
-    <File Include="..\src\OLS_Logic_Analyzer_SDRAM_Core.vhd" />
-    <File Include="..\src\Fast_Logic_Analyzer_SDRAM.vhd" />
-    <File Include="..\src\OLS_Interface.vhd" />
-    <File Include="..\src\UART_Interface.vhd" />
-    <File Include="..\src\Protocol_Trigger.vhd" />
-    <File Include="..\src\Signal_Gen.vhd" />
-    <File Include="..\src\SDRAM_Interface.vhd" />
-    <File Include="..\src\SDRAM_Controller_Custom.vhd" />
-    <File Include="..\src\SDRAM_PLL.vhd" />
+    <File Include="../src/Fast_Logic_Analyzer_SDRAM.vhd" />
+    <File Include="../src/OLS_Interface.vhd" />
+    <File Include="../src/OLS_Logic_Analyzer_SDRAM_Core.vhd" />
+    <File Include="../src/OLS_SDRAM_Top.vhd" />
+    <File Include="../src/Protocol_Trigger.vhd" />
+    <File Include="../src/SDRAM_Controller_Custom.vhd" />
+    <File Include="../src/SDRAM_Interface.vhd" />
+    <File Include="../src/SDRAM_PLL.vhd" />
+    <File Include="../src/Signal_Gen.vhd" />
+    <File Include="../src/UART_Interface.vhd" />
+    <File Include="Generated/OLS_Logic_Analyzer.vhd" />
     <File Include="OLS_Logic_Analyzer.vhdp" />
   </ItemGroup>
   <PropertyGroup>

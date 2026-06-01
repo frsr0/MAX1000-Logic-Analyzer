@@ -3,3 +3,5 @@ __pycache__/
 .vhdpproj.user
 *.o
 *.cf
+vhdplus/Generated/
+vhdl_ls.toml
