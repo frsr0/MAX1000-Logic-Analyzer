@@ -1,0 +1,44 @@
+Main
+(
+    UART_RX       : IN  STD_LOGIC := '1';
+    UART_TX       : OUT STD_LOGIC := '1';
+    GPIO          : INOUT STD_LOGIC_VECTOR(7 downto 0);
+    sdram_addr    : OUT STD_LOGIC_VECTOR(11 downto 0);
+    sdram_ba      : OUT STD_LOGIC_VECTOR(1 downto 0);
+    sdram_cas_n   : OUT STD_LOGIC;
+    sdram_cke     : OUT STD_LOGIC := '1';
+    sdram_cs_n    : OUT STD_LOGIC := '0';
+    sdram_dq      : INOUT STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+    sdram_dqm     : OUT STD_LOGIC_VECTOR(1 downto 0);
+    sdram_ras_n   : OUT STD_LOGIC;
+    sdram_we_n    : OUT STD_LOGIC;
+    sdram_clk     : OUT STD_LOGIC;
+    SEN_SDI       : INOUT STD_LOGIC;
+    SEN_SPC       : INOUT STD_LOGIC;
+    SEN_CS        : OUT   STD_LOGIC := '1';
+    SEN_SDO       : IN    STD_LOGIC := '0';
+    LED           : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0')
+)
+{
+    NewComponent OLS_MaxScope
+    (
+        UART_RX       => UART_RX,
+        UART_TX       => UART_TX,
+        GPIO          => GPIO,
+        sdram_addr    => sdram_addr,
+        sdram_ba      => sdram_ba,
+        sdram_cas_n   => sdram_cas_n,
+        sdram_cke     => sdram_cke,
+        sdram_cs_n    => sdram_cs_n,
+        sdram_dq      => sdram_dq,
+        sdram_dqm     => sdram_dqm,
+        sdram_ras_n   => sdram_ras_n,
+        sdram_we_n    => sdram_we_n,
+        sdram_clk     => sdram_clk,
+        SEN_SDI       => SEN_SDI,
+        SEN_SPC       => SEN_SPC,
+        SEN_CS        => SEN_CS,
+        SEN_SDO       => SEN_SDO,
+        LED           => LED
+    );
+}
