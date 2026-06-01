@@ -10,8 +10,6 @@
     <File Include="../src/SDRAM_PLL.vhd" />
     <File Include="../src/Signal_Gen.vhd" />
     <File Include="../src/UART_Interface.vhd" />
-    <File Include="Generated/OLS_Logic_Analyzer.vhd" />
-    <File Include="OLS_Logic_Analyzer.vhdp" />
     <File Include="OLS_Logic_Analyzer_wrapper.vhd" />
   </ItemGroup>
   <PropertyGroup>
