@@ -1,0 +1,42 @@
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+
+entity OLS_Logic_Analyzer is
+port (
+    CLK       : IN  STD_LOGIC;
+    UART_RX   : IN  STD_LOGIC;
+    UART_TX   : OUT STD_LOGIC;
+    GPIO      : INOUT STD_LOGIC_VECTOR(7 downto 0);
+    sdram_addr  : OUT STD_LOGIC_VECTOR(11 downto 0);
+    sdram_ba    : OUT STD_LOGIC_VECTOR(1 downto 0);
+    sdram_cas_n : OUT STD_LOGIC;
+    sdram_cke   : OUT STD_LOGIC;
+    sdram_cs_n  : OUT STD_LOGIC;
+    sdram_dq    : INOUT STD_LOGIC_VECTOR(15 downto 0);
+    sdram_dqm   : OUT STD_LOGIC_VECTOR(1 downto 0);
+    sdram_ras_n : OUT STD_LOGIC;
+    sdram_we_n  : OUT STD_LOGIC;
+    sdram_clk   : OUT STD_LOGIC;
+    SEN_SDI     : INOUT STD_LOGIC;
+    SEN_SPC     : INOUT STD_LOGIC;
+    SEN_CS      : OUT   STD_LOGIC;
+    SEN_SDO     : IN    STD_LOGIC;
+    LED         : OUT STD_LOGIC_VECTOR(7 downto 0)
+);
+end OLS_Logic_Analyzer;
+
+architecture rtl of OLS_Logic_Analyzer is
+begin
+    core : entity work.OLS_SDRAM_Top
+    port map (
+        CLK => CLK, UART_RX => UART_RX, UART_TX => UART_TX,
+        GPIO => GPIO, LED => LED,
+        sdram_addr => sdram_addr, sdram_ba => sdram_ba,
+        sdram_cas_n => sdram_cas_n, sdram_cke => sdram_cke,
+        sdram_cs_n => sdram_cs_n, sdram_dq => sdram_dq,
+        sdram_dqm => sdram_dqm, sdram_ras_n => sdram_ras_n,
+        sdram_we_n => sdram_we_n, sdram_clk => sdram_clk,
+        SEN_SDI => SEN_SDI, SEN_SPC => SEN_SPC,
+        SEN_CS => SEN_CS, SEN_SDO => SEN_SDO
+    );
+end rtl;
