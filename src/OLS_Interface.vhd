@@ -306,7 +306,8 @@ BEGIN
             IF (Buffer_Full(0) = '1' AND cont_buf_sel = '0') OR
                (Buffer_Full(1) = '1' AND cont_buf_sel = '1') THEN
               addr <= cont_base_addr;
-              Thread23 := 1;
+              Thread26 := 0;         -- reset sub-read state
+              Thread23 := 2;         -- skip state 1, start reading immediately
             END IF;
           WHEN others => Thread23 := 0;
         END CASE;
