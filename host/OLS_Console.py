@@ -8,6 +8,13 @@ import sys, os, json, struct, time, threading, math, argparse, itertools, re
 from collections import namedtuple
 from datetime import datetime
 
+# SPI device backend (30 MHz fast mode)
+try:
+    from ols_spi_device import OLSDeviceSPI, find_spi_device
+    HAS_SPI = True
+except ImportError:
+    HAS_SPI = False
+
 try:
     import serial, serial.tools.list_ports
 except ImportError:
@@ -778,8 +785,9 @@ class WaveformDisplay(tk.Canvas):
 class OLScope:
     """Main application: combines device control, waveform view, and protocol tools."""
 
-    def __init__(self):
+    def __init__(self, backend='UART'):
         self.dev = None
+        self._backend = backend
         self.ch_data = []
         self.ch_names = [f"CH{i}" for i in range(8)]
         self.samplerate = 1_000_000
@@ -810,7 +818,8 @@ class OLScope:
 
     def _build_ui(self):
         self.win = tk.Tk()
-        self.win.title("OLS MaxScope — Protocol Analyzer")
+        title = "OLS MaxScope — " + ("SPI @ 30 MHz" if self._backend == 'SPI' else "UART")
+        self.win.title(title)
         self.win.geometry("1000x700")
         self.win.minsize(700, 500)
 
@@ -904,6 +913,7 @@ class OLScope:
     def _build_side_panel(self, parent):
         nb = ttk.Notebook(parent)
         nb.pack(fill='both', expand=True)
+        self.nb = nb
 
         # Generator tab
         gen_f = ttk.Frame(nb, padding=5)
@@ -1082,10 +1092,16 @@ class OLScope:
         self._update_ui_state(connected=self.dev is not None)
 
     def _connect(self):
-        port = self.port_cb.get()
-        if not port: return
         try:
-            self.dev = OLSDevice(port)
+            if self._backend == 'SPI':
+                self.dev = OLSDeviceSPI()
+                self.dev.open()
+                label = "SPI @ 30 MHz"
+            else:
+                port = self.port_cb.get()
+                if not port: return
+                self.dev = OLSDevice(port)
+                label = port
             # Verify device responds
             self.dev.reset()
             meta = self.dev.get_metadata()
@@ -1093,7 +1109,7 @@ class OLScope:
                 self.dev.close()
                 self.dev = None
                 raise RuntimeError("FPGA not responding — check power and programming")
-            self.status['text'] = f"Connected to {port} (meta: {len(meta)}B)"
+            self.status['text'] = f"Connected via {label} (meta: {len(meta)}B)"
             self._update_ui_state(connected=True)
         except Exception as e:
             self.status['text'] = f"Connect failed: {e}"
@@ -1107,7 +1123,14 @@ class OLScope:
         self.status['text'] = "Disconnected"
 
     def _update_ui_state(self, connected=True):
-        pass  # buttons are always enabled in this UI
+        if self._backend == 'SPI' and hasattr(self, 'gen_proto'):
+            for w in (self.gen_proto, self.gen_baud, self.gen_addr, self.gen_func,
+                      self.gen_tx_pin, self.gen_scl_pin, self.gen_data,
+                      self.gen_send_btn, self.gen_send_cap_btn):
+                try: w.configure(state='disabled')
+                except: pass
+            try: self.nb.tab(0, state='disabled')
+            except: pass
 
     def _dec_show_channels(self, event=None):
         proto = self.dec_proto.get()
@@ -2012,6 +2035,62 @@ def cli_mode(args):
         dev.close()
     return 0
 
+def splash_choose():
+    """Show backend selection dialog. Returns 'UART', 'SPI', or None."""
+    win = tk.Tk()
+    win.title("OLS MaxScope — Select Backend")
+    win.geometry("420x280")
+    win.resizable(False, False)
+    win.configure(bg='#1a1a2e')
+
+    # Detect available backends
+    has_spi = HAS_SPI and find_spi_device()
+
+    f = ttk.Frame(win, padding=20)
+    f.pack(fill='both', expand=True)
+
+    ttk.Label(f, text="OLS MaxScope — Logic Analyzer",
+              font=('Helvetica', 14, 'bold')).pack(pady=(0,20))
+
+    ttk.Label(f, text="Select communication backend:",
+              font=('Helvetica', 10)).pack(pady=(0,10))
+
+    result = [None]
+
+    def pick(backend):
+        result[0] = backend
+        win.destroy()
+
+    btn_f = ttk.Frame(f)
+    btn_f.pack(pady=10)
+
+    uart_btn = ttk.Button(btn_f, text="UART (slow, 12 Mbps)\nSerial port — generator support",
+                          command=lambda: pick('UART'), width=35)
+    uart_btn.pack(pady=5)
+
+    if has_spi:
+        spi_btn = ttk.Button(btn_f, text="SPI (fast, 30 MHz)\nFTDI Channel B — no generator",
+                             command=lambda: pick('SPI'), width=35)
+        spi_btn.pack(pady=5)
+    else:
+        spi_lbl = ttk.Label(btn_f, text="SPI (30 MHz) — FTDI not detected",
+                            foreground='gray')
+        spi_lbl.pack(pady=5)
+
+    ttk.Button(f, text="Cancel", command=win.destroy).pack(pady=10)
+    win.protocol("WM_DELETE_WINDOW", win.destroy)
+    win.update_idletasks()
+    win.deiconify()
+    # Center
+    ww = win.winfo_width(); wh = win.winfo_height()
+    sw = win.winfo_screenwidth(); sh = win.winfo_screenheight()
+    win.geometry(f"{ww}x{wh}+{(sw-ww)//2}+{(sh-wh)//2}")
+    win.focus_force()
+    win.grab_set()
+    win.wait_window()
+    return result[0]
+
+
 if __name__ == '__main__':
     if '--cli' in sys.argv or len(sys.argv) > 1 and sys.argv[1] in ('capture','decode','send'):
         # Filter out --cli so argparse doesn't choke on it
@@ -2034,8 +2113,26 @@ if __name__ == '__main__':
         p.add_argument('--func', default='0x03')
         p.add_argument('--tx-pin', type=int, default=3)
         p.add_argument('--scl-pin', type=int, default=1)
+        p.add_argument('--backend', default='UART', choices=['UART','SPI'])
         args = p.parse_args(argv[1:])
+        if args.backend == 'SPI' and HAS_SPI and args.command == 'capture':
+            # SPI CLI capture
+            dev = OLSDeviceSPI()
+            dev.open()
+            data = dev.capture(rate_hz=args.rate, nsamples=args.samples, timeout=args.timeout or 5)
+            ch_data, ns = samples_to_channels(data)
+            print(f"Captured {len(data)} bytes ({ns} samples) via SPI")
+            if args.output:
+                with open(args.output, 'wb') as f: f.write(data)
+            ch0 = ch_data[0]
+            trans = sum(1 for i in range(1, len(ch0)) if ch0[i] != ch0[i-1])
+            print(f"CH0: {sum(ch0)}H/{len(ch0)-sum(ch0)}L, {trans} transitions")
+            dev.close()
+            sys.exit(0)
         sys.exit(cli_mode(args))
     else:
-        app = OLScope()
+        backend = splash_choose()
+        if backend is None:
+            sys.exit(0)
+        app = OLScope(backend=backend)
         app.run()

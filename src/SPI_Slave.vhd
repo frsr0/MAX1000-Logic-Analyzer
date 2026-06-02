@@ -14,7 +14,8 @@ entity SPI_Slave2 is
     SPI_Preamble   : in  std_logic_vector(7 downto 0) := (others => '0');
     TX_Ready   : out std_logic := '0';
     RX_Data    : out std_logic_vector(7 downto 0) := (others => '0');
-    RX_Valid   : out std_logic := '0'
+    RX_Valid   : out std_logic := '0';
+    PipeDepth  : in  natural range 2 to 8 := 8
   );
 end SPI_Slave2;
 
@@ -100,6 +101,7 @@ begin
           end if;
         end if;
 
+        -- Shift register pipeline
         reload_sync0 <= reload_pending;
         reload_sync1 <= reload_sync0;
         reload_sync2 <= reload_sync1;
@@ -109,6 +111,7 @@ begin
         reload_sync6 <= reload_sync5;
         reload_sync7 <= reload_sync6;
 
+        -- Reload on 8th falling edge (original working code)
         if sck_fall = '1' and reload_sync7 = '1' then
           tx_shift <= TX_Data;
           reload_pending <= '0';

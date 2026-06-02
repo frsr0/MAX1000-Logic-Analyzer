@@ -101,9 +101,14 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL cont_rem            : NATURAL range 0 to 1048576 := 0;
   SIGNAL cont_base_addr      : NATURAL range 0 to 1048576 := 0;
   SIGNAL cont_prefetch       : STD_LOGIC := '0';
+  SIGNAL prev_buf_sel        : NATURAL range 0 to 2 := 0;
   SIGNAL buffer_ack_i        : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
   SIGNAL spi_preamble        : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL proto_trig_enable   : STD_LOGIC := '0';
+  SIGNAL cmd_was_multibyte   : STD_LOGIC := '0';
+  SIGNAL saved_command       : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+  SIGNAL ch_mode             : STD_LOGIC := '0';  -- 0=8ch/500k, 1=4ch/4M
+  SIGNAL pipe_depth          : NATURAL range 2 to 8 := 8;
   SIGNAL proto_trig_protocol : STD_LOGIC_VECTOR(1 downto 0) := "00";
   SIGNAL proto_trig_match    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL proto_trig_bauddiv  : NATURAL range 1 to 65535 := 416;
@@ -157,6 +162,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
     TX_Data    : IN  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     SPI_Preamble   : IN  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     TX_Ready   : OUT STD_LOGIC := '0';
+    PipeDepth  : IN  NATURAL range 2 to 8 := 8;
     RX_Data    : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     RX_Valid   : OUT STD_LOGIC := '0'
   );
@@ -246,10 +252,17 @@ BEGIN
             Thread23 := 1;
           WHEN 1 =>
             IF continuous_mode_i = '1' THEN
-              IF cont_prefetch = '1' THEN
-                -- Prefetch was primed in previous cycle: ack, read immediately
+              IF fast_mode_i = '1' THEN
+                -- Fast mode continuous: single buffer, no prefetch
+                IF cont_rem > 0 THEN
+                  Thread23 := 2;
+                ELSE
+                  Thread23 := 4;
+                END IF;
+              ELSIF cont_prefetch = '1' THEN
+                -- Prefetch was primed in previous cycle: ack completed buffer, read next
                 buffer_ack_i <= (others => '0');
-                buffer_ack_i(cont_buf_sel) <= '1';
+                buffer_ack_i(prev_buf_sel) <= '1';
                 cont_prefetch <= '0';
                 Thread26 := 0;
                 Thread23 := 2;
@@ -259,6 +272,7 @@ BEGIN
                 -- Last address: try to prefetch next buffer
                 next_sel := (cont_buf_sel + 1) mod 3;
                 IF Buffer_Full(next_sel) = '1' THEN
+                  prev_buf_sel <= cont_buf_sel;
                   cont_prefetch <= '1';
                   cont_buf_sel <= next_sel;
                   CASE next_sel IS
@@ -353,13 +367,20 @@ BEGIN
             -- Buffer read complete: ack the buffer we just finished
             buffer_ack_i <= (others => '0');
             buffer_ack_i(cont_buf_sel) <= '1';
-            -- Cycle to next buffer (0→1→2→0)
-            CASE cont_buf_sel IS
-              WHEN 0 => cont_base_addr <= Samples / 3;  cont_buf_sel <= 1;
-              WHEN 1 => cont_base_addr <= 2 * (Samples / 3);  cont_buf_sel <= 2;
-              WHEN 2 => cont_base_addr <= 0;  cont_buf_sel <= 0;
-            END CASE;
-            cont_rem <= Samples / 3;
+            IF fast_mode_i = '1' THEN
+              -- Fast mode: single BRAM buffer, stay on 0, reload 1024 words
+              cont_base_addr <= 0;
+              cont_buf_sel <= 0;
+              cont_rem <= 1024;
+            ELSE
+              -- SDRAM: cycle to next buffer (0→1→2→0)
+              CASE cont_buf_sel IS
+                WHEN 0 => cont_base_addr <= Samples / 3;  cont_buf_sel <= 1;
+                WHEN 1 => cont_base_addr <= 2 * (Samples / 3);  cont_buf_sel <= 2;
+                WHEN 2 => cont_base_addr <= 0;  cont_buf_sel <= 0;
+              END CASE;
+              cont_rem <= Samples / 3;
+            END IF;
             Thread23 := 5;
           WHEN 5 =>
             buffer_ack_i <= (others => '0');
@@ -404,10 +425,20 @@ BEGIN
           Thread38 := 4;
         END IF;
       WHEN 4 =>
-        IF command(7) = '0' THEN
+        IF Thread44 = 0 THEN
+          saved_command <= command;
+          cmd_was_multibyte <= command(7);
+          IF command(7) = '0' THEN
+            Thread38 := Thread38 + 1;
+          ELSE
+            Thread38 := Thread38 + 2;
+          END IF;
+        ELSIF Thread44 = 18 OR Thread44 = 19 THEN
           Thread38 := Thread38 + 1;
-        ELSE
+        ELSIF cmd_was_multibyte = '1' THEN
           Thread38 := Thread38 + 2;
+        ELSE
+          Thread38 := Thread38 + 1;
         END IF;
       WHEN (4+1) =>
         CASE (Thread44) IS
@@ -438,6 +469,9 @@ BEGIN
             Run_OLS <= '0';
             Run <= '0';
             continuous_mode_i <= '0';
+            ch_mode <= '0';
+            saved_command <= (others => '0');
+            cmd_was_multibyte <= '0';
             Trigger_Mask <= (others => '0');
             proto_trig_enable <= '0';
             Thread23 := 0;
@@ -666,7 +700,8 @@ BEGIN
           WHEN 5 to 6 =>
             Thread44 := Thread44 + 1;
           WHEN 7 =>
-            CASE (command) IS
+            cmd_was_multibyte <= '0';
+            CASE (saved_command) IS
               WHEN x"c0" =>
                 Thread44 := Thread44 + 1;
               WHEN x"c1" =>
@@ -713,6 +748,8 @@ BEGIN
                 Thread44 := Thread44 + 30;
               WHEN x"AD" =>
                 Thread44 := Thread44 + 31;
+              WHEN x"AE" =>
+                Thread44 := 32;
               WHEN others =>
                 Thread44 := Thread44 + 10;
             END CASE;
@@ -852,6 +889,11 @@ BEGIN
             Thread44 := 0;
                 Thread45 := 0;
                 Thread38 := 0;
+          WHEN 32 =>
+            ch_mode <= data(0);
+            Thread44 := 0;
+                Thread45 := 0;
+                Thread38 := 0;
           WHEN others => Thread44 := 0;
         END CASE;
       WHEN others => Thread38 := 0;
@@ -868,6 +910,9 @@ BEGIN
     END IF;
   END IF;
   END PROCESS;
+
+  -- Pipeline depth: 8 for 8ch/500k, 4 for 4ch/4M
+  pipe_depth <= 8 when ch_mode = '0' else 4;
 
   -- SPI preamble byte: zero-waste status on every transaction
   spi_preamble <= Run & Run_OLS & Full & interface_mode_i &
@@ -915,6 +960,7 @@ BEGIN
     CS_n       => SPI_CS,
     TX_Data    => UART_TX_Data,
     SPI_Preamble   => spi_preamble,
+    PipeDepth  => pipe_depth,
     TX_Ready   => SPI_TX_Ready,
     RX_Data    => SPI_RX_Data,
     RX_Valid   => SPI_RX_Valid

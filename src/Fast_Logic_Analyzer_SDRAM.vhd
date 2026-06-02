@@ -201,6 +201,13 @@ begin
           waddr_1 := 0;
         end if;
       end if;
+      if Buffer_Ack(2) = '1' then
+        buf_full(2) <= '0';
+        if buf_sel = "10" and buf_full(1) = '1' then
+          -- C was waiting to be written (B is full), reset pointer now
+          waddr_2 := 0;
+        end if;
+      end if;
       -- Continuous mode backpressure handling
       if Continuous_Mode = '1' then
         if full_i = '1' and (Buffer_Ack(0) = '1' or Buffer_Ack(1) = '1' or Buffer_Ack(2) = '1') then
@@ -211,6 +218,9 @@ begin
           full_pending <= '0';
           rd_mode := false;
           full_clr_pending <= '0';
+          if Fast_Mode = '1' then
+            bram_post_cnt := 0;
+          end if;
         end if;
         if full_pending = '1' and f_cnt = 0
            and not wip and not wr_pend and burst_rem = 0 then
@@ -462,6 +472,9 @@ begin
             if bram_post_cnt >= BRAM_SIZE then
               full_i <= '1';
               rd_mode := true;
+              if Continuous_Mode = '1' then
+                buf_full(0) <= '1';
+              end if;
             end if;
           elsif Continuous_Mode = '1' then
             -- Backpressure handled at top of process (full_pending logic)
