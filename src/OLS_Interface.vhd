@@ -38,8 +38,8 @@ PORT (
       Armed          : OUT STD_LOGIC := '0';
       Fast_Mode      : OUT STD_LOGIC := '0';
       Continuous_Mode : OUT STD_LOGIC := '0';
-      Buffer_Full     : IN  STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
-      Buffer_Ack      : OUT STD_LOGIC_VECTOR(1 downto 0) := (others => '0')
+      Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
+      Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0')
 
 );
 END OLS_Interface;
@@ -76,10 +76,11 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL gen_i2c_test_int   : STD_LOGIC := '0';
   SIGNAL fast_mode_i        : STD_LOGIC := '0';
   SIGNAL continuous_mode_i   : STD_LOGIC := '0';
-  SIGNAL cont_buf_sel        : STD_LOGIC := '0';
+  SIGNAL cont_buf_sel        : NATURAL range 0 to 2 := 0;
   SIGNAL cont_rem            : NATURAL range 0 to 1048576 := 0;
   SIGNAL cont_base_addr      : NATURAL range 0 to 1048576 := 0;
-  SIGNAL buffer_ack_i        : STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
+  SIGNAL cont_prefetch       : STD_LOGIC := '0';
+  SIGNAL buffer_ack_i        : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
   SIGNAL proto_trig_enable   : STD_LOGIC := '0';
   SIGNAL proto_trig_protocol : STD_LOGIC_VECTOR(1 downto 0) := "00";
   SIGNAL proto_trig_match    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
@@ -136,6 +137,7 @@ BEGIN
     VARIABLE Thread49 : NATURAL range 0 to 2 := 0;
     VARIABLE Thread51 : NATURAL range 0 to 5 := 0;
     VARIABLE blk_len  : NATURAL range 0 to 255 := 0;
+    VARIABLE next_sel : NATURAL range 0 to 2 := 0;
   BEGIN
   IF RISING_EDGE(CLK) THEN
     Gen_Load_We <= '0';
@@ -202,13 +204,34 @@ BEGIN
             ELSE
               addr <= 0;
             END IF;
+            cont_prefetch <= '0';
             Thread23 := 1;
           WHEN 1 =>
             IF continuous_mode_i = '1' THEN
-              IF cont_rem > 0 THEN
+              IF cont_prefetch = '1' THEN
+                -- Prefetch was primed in previous cycle: ack, read immediately
+                buffer_ack_i <= (others => '0');
+                buffer_ack_i(cont_buf_sel) <= '1';
+                cont_prefetch <= '0';
+                Thread26 := 0;
+                Thread23 := 2;
+              ELSIF cont_rem > 1 THEN
+                Thread23 := 2;  -- normal read (more than 1 addr left)
+              ELSIF cont_rem = 1 THEN
+                -- Last address: try to prefetch next buffer
+                next_sel := (cont_buf_sel + 1) mod 3;
+                IF Buffer_Full(next_sel) = '1' THEN
+                  cont_prefetch <= '1';
+                  cont_buf_sel <= next_sel;
+                  CASE next_sel IS
+                    WHEN 0 => cont_base_addr <= 0;
+                    WHEN 1 => cont_base_addr <= Samples / 3;
+                    WHEN 2 => cont_base_addr <= 2 * (Samples / 3);
+                  END CASE;
+                END IF;
                 Thread23 := 2;
               ELSE
-                Thread23 := 4;  -- buffer done
+                Thread23 := 4;  -- buffer done, no prefetch
               END IF;
             ELSIF ( addr < Samples) THEN 
               Thread23 := Thread23 + 1;
@@ -265,6 +288,10 @@ BEGIN
           wr_ctr <= wr_ctr + 1;
           Thread30 := 0;
           Thread26 := 31;
+          -- Prefetch: change Address to next buffer's base after last byte sent
+          IF cont_prefetch = '1' AND wr_ctr = 0 THEN
+            Address <= cont_base_addr;
+          END IF;
         WHEN others => Thread30 := 0;
       END CASE;
     WHEN 33 =>
@@ -287,27 +314,24 @@ BEGIN
           WHEN 4 =>
             -- Buffer read complete: ack the buffer we just finished
             buffer_ack_i <= (others => '0');
-            buffer_ack_i(0) <= NOT cont_buf_sel;
-            buffer_ack_i(1) <= cont_buf_sel;
-            -- Set up for the NEXT buffer (after toggle)
-            IF cont_buf_sel = '0' THEN
-              -- Just read buffer A; next is buffer B at offset Samples/2
-              cont_base_addr <= Samples / 2;
-            ELSE
-              -- Just read buffer B; next is buffer A at offset 0
-              cont_base_addr <= 0;
-            END IF;
-            cont_rem <= Samples / 2;
-            cont_buf_sel <= NOT cont_buf_sel;
+            buffer_ack_i(cont_buf_sel) <= '1';
+            -- Cycle to next buffer (0→1→2→0)
+            CASE cont_buf_sel IS
+              WHEN 0 => cont_base_addr <= Samples / 3;  cont_buf_sel <= 1;
+              WHEN 1 => cont_base_addr <= 2 * (Samples / 3);  cont_buf_sel <= 2;
+              WHEN 2 => cont_base_addr <= 0;  cont_buf_sel <= 0;
+            END CASE;
+            cont_rem <= Samples / 3;
             Thread23 := 5;
           WHEN 5 =>
             buffer_ack_i <= (others => '0');
             -- Check if next buffer is already full
-            IF (Buffer_Full(0) = '1' AND cont_buf_sel = '0') OR
-               (Buffer_Full(1) = '1' AND cont_buf_sel = '1') THEN
+            IF (cont_buf_sel = 0 AND Buffer_Full(0) = '1') OR
+               (cont_buf_sel = 1 AND Buffer_Full(1) = '1') OR
+               (cont_buf_sel = 2 AND Buffer_Full(2) = '1') THEN
               addr <= cont_base_addr;
-              Thread26 := 0;         -- reset sub-read state
-              Thread23 := 2;         -- skip state 1, start reading immediately
+              Thread26 := 0;
+              Thread23 := 2;
             END IF;
           WHEN others => Thread23 := 0;
         END CASE;
@@ -707,9 +731,10 @@ BEGIN
           WHEN 28 =>
             continuous_mode_i <= data(0);
             IF data(0) = '1' THEN
-              cont_buf_sel <= '0';
+              cont_buf_sel <= 0;
               cont_base_addr <= 0;
-              cont_rem <= Read_Count / 2;
+              cont_prefetch <= '0';
+              cont_rem <= Read_Count / 3;
               Run_OLS <= '1';
             END IF;
             Thread44 := 0;

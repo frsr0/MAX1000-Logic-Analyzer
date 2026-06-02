@@ -27,8 +27,8 @@ architecture sim of tb_double_buffer is
   signal fast_clk     : std_logic := '0';
   signal status       : std_logic_vector(7 downto 0);
   signal cont_mode    : std_logic := '0';
-  signal buf_full     : std_logic_vector(1 downto 0) := (others => '0');
-  signal buf_ack      : std_logic_vector(1 downto 0) := (others => '0');
+  signal buf_full     : std_logic_vector(2 downto 0) := (others => '0');
+  signal buf_ack      : std_logic_vector(2 downto 0) := (others => '0');
 
   -- Debug signal (probed via VHDL-2008 external name)
   signal sample_en   : std_logic;

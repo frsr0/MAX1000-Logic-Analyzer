@@ -39,8 +39,8 @@ port (
     FAST_CLK     : in  std_logic := '0';
     -- Double-buffer control
     Continuous_Mode : in std_logic := '0';
-    Buffer_Full     : out std_logic_vector(1 downto 0) := (others => '0');
-    Buffer_Ack      : in std_logic_vector(1 downto 0) := (others => '0')
+    Buffer_Full     : out std_logic_vector(2 downto 0) := (others => '0');
+    Buffer_Ack      : in std_logic_vector(2 downto 0) := (others => '0')
 );
 end Fast_Logic_Analyzer_SDRAM;
 
@@ -81,10 +81,9 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal bram_raddr : natural range 0 to BRAM_SIZE-1 := 0;
   signal bram_rdata : std_logic_vector(15 downto 0) := (others => '0');
 
-  -- Double-buffer state
-  signal buf_sel    : std_logic := '0';
-  signal buf_full_a : std_logic := '0';
-  signal buf_full_b : std_logic := '0';
+  -- Triple-buffer state
+  signal buf_sel    : std_logic_vector(1 downto 0) := "00";
+  signal buf_full   : std_logic_vector(2 downto 0) := (others => '0');
   signal full_pending : std_logic := '0';
 
   component SDRAM_Interface is
@@ -156,8 +155,9 @@ begin
     variable run_r   : std_logic := '0';
     variable rd_mode : boolean := true;
     variable wbuf    : std_logic_vector(15 downto 0) := (others => '0');
-    variable waddr_a   : natural range 0 to 15000000 := 0;
-    variable waddr_b   : natural range 0 to 15000000 := 0;
+    variable waddr_0   : natural range 0 to 15000000 := 0;
+    variable waddr_1   : natural range 0 to 15000000 := 0;
+    variable waddr_2   : natural range 0 to 15000000 := 0;
     variable a_reg   : natural range 0 to 15000000 := 15000000;
     variable wip        : boolean := false;
     variable wr_last    : std_logic_vector(1 downto 0) := "00";
@@ -187,17 +187,17 @@ begin
 
       -- Buffer ack handling (evaluated every cycle)
       if Buffer_Ack(0) = '1' then
-        buf_full_a <= '0';
-        if buf_sel = '0' and buf_full_b = '1' then
+        buf_full(0) <= '0';
+        if buf_sel = "00" and buf_full(1) = '1' then
           -- A was waiting to be written (B is full), reset pointer now
-          waddr_a := 0;
+          waddr_0 := 0;
         end if;
       end if;
       if Buffer_Ack(1) = '1' then
-        buf_full_b <= '0';
-        if buf_sel = '1' and buf_full_a = '1' then
+        buf_full(1) <= '0';
+        if buf_sel = "01" and buf_full(0) = '1' then
           -- B was waiting to be written (A is full), reset pointer now
-          waddr_b := 0;
+          waddr_1 := 0;
         end if;
       end if;
       -- Continuous mode backpressure handling
@@ -216,10 +216,10 @@ begin
       end if;
 
       if Run /= run_r then
-        waddr_a := 0; waddr_b := 0; step_r := 0;
-        buf_sel <= '0';
-        buf_full_a <= '0';
-        buf_full_b <= '0';
+        waddr_0 := 0; waddr_1 := 0; waddr_2 := 0; step_r := 0;
+        buf_sel <= "00";
+        buf_full(0) <= '0';
+        buf_full(1) <= '0';
         full_pending <= '0';
         if Run = '1' then full_i <= '0'; end if;
         if Run = '0' then
@@ -353,11 +353,11 @@ begin
               -- Flush BRAM to FIFO (pre-trigger samples flushed after trigger)
               if f_cnt < FIFO_Depth then
                 if flush_sync then
-                  fifo_mem(f_head) <= std_logic_vector(to_unsigned(waddr_a, 22)) & bram_rdata;
+                  fifo_mem(f_head) <= std_logic_vector(to_unsigned(waddr_0, 22)) & bram_rdata;
                   if f_head = FIFO_Depth-1 then f_head := 0;
                   else f_head := f_head + 1; end if;
                   f_cnt := f_cnt + 1;
-                  waddr_a := waddr_a + 1;
+                  waddr_0 := waddr_0 + 1;
                   flush_rem := flush_rem - 1;
                 end if;
                 flush_sync := true;
@@ -385,35 +385,35 @@ begin
             elsif f_cnt < FIFO_Depth then
               -- Post-trigger: write to current buffer via FIFO
               if Continuous_Mode = '1' then
-                if buf_full_a = '1' and buf_full_b = '1' then
+                if buf_full(0) = '1' and buf_full(1) = '1' then
                   null;  -- both full: stall, no write
                 else
                   -- Double-buffer mode
-                  buf_limit := Samples / (2 * sub_steps);
-                  if buf_sel = '0' then
-                    write_addr := std_logic_vector(to_unsigned(waddr_a, 22));
-                    if waddr_a + 1 >= buf_limit then
-                      buf_full_a <= '1';
-                      if buf_full_b = '1' then
+                  buf_limit := Samples / (3 * sub_steps);
+                  if buf_sel = "00" then
+                    write_addr := std_logic_vector(to_unsigned(waddr_0, 22));
+                    if waddr_0 + 1 >= buf_limit then
+                      buf_full(0) <= '1';
+                      if buf_full(1) = '1' then
                         full_pending <= '1';
                       else
-                        buf_sel <= '1';
-                        waddr_b := 0;
+                        buf_sel <= "01";
+                        waddr_1 := 0;
                       end if;
                     end if;
-                    waddr_a := waddr_a + 1;
+                    waddr_0 := waddr_0 + 1;
                   else
-                    write_addr := std_logic_vector(to_unsigned(buf_limit + waddr_b, 22));
-                    if waddr_b + 1 >= buf_limit then
-                      buf_full_b <= '1';
-                      if buf_full_a = '1' then
+                    write_addr := std_logic_vector(to_unsigned(buf_limit + waddr_1, 22));
+                    if waddr_1 + 1 >= buf_limit then
+                      buf_full(1) <= '1';
+                      if buf_full(0) = '1' then
                         full_pending <= '1';
                       else
-                        buf_sel <= '0';
-                        waddr_a := 0;
+                        buf_sel <= "00";
+                        waddr_0 := 0;
                       end if;
                     end if;
-                    waddr_b := waddr_b + 1;
+                    waddr_1 := waddr_1 + 1;
                   end if;
                   fifo_mem(f_head) <= write_addr & wbuf;
                   if f_head = FIFO_Depth-1 then f_head := 0;
@@ -422,11 +422,11 @@ begin
                 end if;
               else
                 -- Single-buffer mode (legacy)
-                fifo_mem(f_head) <= std_logic_vector(to_unsigned(waddr_a, 22)) & wbuf;
+                fifo_mem(f_head) <= std_logic_vector(to_unsigned(waddr_0, 22)) & wbuf;
                 if f_head = FIFO_Depth-1 then f_head := 0;
                 else f_head := f_head + 1; end if;
                 f_cnt := f_cnt + 1;
-                waddr_a := waddr_a + 1;
+                waddr_0 := waddr_0 + 1;
               end if;
             end if;
           end if;
@@ -447,8 +447,8 @@ begin
             -- Backpressure handled at top of process (full_pending logic)
             null;
           else
-            -- Single-buffer mode: Full when waddr_a reaches target
-            if waddr_a >= (Samples / sub_steps)
+            -- Single-buffer mode: Full when waddr_0 reaches target
+            if waddr_0 >= (Samples / sub_steps)
                and f_cnt = 0
                and not wip
                and not wr_pend
@@ -484,8 +484,9 @@ begin
 
   Full <= full_i;
   s_burst <= s_burst_i;
-  Buffer_Full(0) <= buf_full_a;
-  Buffer_Full(1) <= buf_full_b;
+  Buffer_Full(0) <= buf_full(0);
+  Buffer_Full(2) <= buf_full(2);
+  Buffer_Full(1) <= buf_full(1);
 
   SDRAM_Interface1 : SDRAM_Interface
   generic map (Sim => Sim, Write_Latency => Write_Latency, Read_Latency => Read_Latency, Page_Latency => Page_Latency)

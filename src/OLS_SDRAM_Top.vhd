@@ -15,12 +15,12 @@ PORT (
   UART_TX : OUT STD_LOGIC := '1';
   GPIO    : INOUT STD_LOGIC_VECTOR(7 downto 0);
   sdram_addr  : OUT std_logic_vector(11 downto 0);
-  sdram_ba    : OUT std_logic_vector(1 downto 0);
+  sdram_ba    : OUT STD_LOGIC_VECTOR(1 downto 0);
   sdram_cas_n : OUT std_logic;
   sdram_cke   : OUT std_logic;
   sdram_cs_n  : OUT std_logic;
   sdram_dq    : INOUT std_logic_vector(15 downto 0) := (others => '0');
-  sdram_dqm   : OUT std_logic_vector(1 downto 0);
+  sdram_dqm   : OUT STD_LOGIC_VECTOR(1 downto 0);
   sdram_ras_n : OUT std_logic;
   sdram_we_n  : OUT std_logic;
     sdram_clk   : OUT std_logic;
@@ -55,8 +55,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal fast_clk       : std_logic := '0';
   signal fast_mode      : std_logic := '0';
   signal continuous_mode : std_logic := '0';
-  signal buffer_full     : std_logic_vector(1 downto 0) := (others => '0');
-  signal buffer_ack      : std_logic_vector(1 downto 0) := (others => '0');
+  signal buffer_full     : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
+  signal buffer_ack      : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
 signal core_clk       : std_logic := '0';
   signal gpio_out      : std_logic_vector(7 downto 0) := (others => '0');
   signal gpio_dir      : std_logic_vector(7 downto 0) := (others => '0');
@@ -100,10 +100,10 @@ signal core_clk       : std_logic := '0';
     UART_RX  : IN  STD_LOGIC := '1';
     UART_TX  : OUT STD_LOGIC := '1';
     sdram_addr  : OUT std_logic_vector(11 downto 0);
-    sdram_ba    : OUT std_logic_vector(1 downto 0);
+    sdram_ba    : OUT STD_LOGIC_VECTOR(1 downto 0);
     sdram_cas_n : OUT std_logic;
     sdram_dq    : INOUT std_logic_vector(15 downto 0) := (others => '0');
-    sdram_dqm   : OUT std_logic_vector(1 downto 0);
+    sdram_dqm   : OUT STD_LOGIC_VECTOR(1 downto 0);
     sdram_ras_n : OUT std_logic;
     sdram_we_n  : OUT std_logic;
     sdram_cke   : OUT std_logic := '1';
@@ -124,8 +124,8 @@ signal core_clk       : std_logic := '0';
     Fast_Mode      : OUT STD_LOGIC := '0';
     Status        : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Continuous_Mode : OUT STD_LOGIC := '0';
-    Buffer_Full     : IN  STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
-    Buffer_Ack      : OUT STD_LOGIC_VECTOR(1 downto 0) := (others => '0')
+    Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
+    Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0')
   );
   END COMPONENT;
 

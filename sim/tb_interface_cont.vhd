@@ -72,7 +72,7 @@ begin
       Armed => open,
       Fast_Mode => open,
       Continuous_Mode => open,
-      Buffer_Full => "00",
+      Buffer_Full => "000",
       Buffer_Ack => open
     );
 

@@ -281,8 +281,8 @@ class OLSDevice:
 
         need = chunk_nsamp * self._stride
         if use_continuous:
-            total_nsamp = (buffer_nsamp // 2) * 2
-            need_per_buf = (total_nsamp // 2) * self._stride
+            total_nsamp = (buffer_nsamp // 3) * 3
+            need_per_buf = total_nsamp // 3 * self._stride
         else:
             total_nsamp = chunk_nsamp
             need_per_buf = need

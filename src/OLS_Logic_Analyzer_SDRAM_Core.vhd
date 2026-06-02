@@ -44,8 +44,8 @@ PORT (
     Fast_Mode      : OUT STD_LOGIC := '0';
     Status        : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Continuous_Mode : OUT STD_LOGIC := '0';
-    Buffer_Full     : IN  STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
-    Buffer_Ack      : OUT STD_LOGIC_VECTOR(1 downto 0) := (others => '0')
+    Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
+    Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0')
 
 );
 END OLS_Logic_Analyzer;
@@ -78,8 +78,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL armed_i             : STD_LOGIC := '0';
   SIGNAL fast_mode_i         : STD_LOGIC := '0';
   SIGNAL continuous_mode_i   : STD_LOGIC := '0';
-  SIGNAL buffer_full_i       : STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
-  SIGNAL buffer_ack_i        : STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
+  SIGNAL buffer_full_i       : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
+  SIGNAL buffer_ack_i        : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
   SIGNAL fla_status          : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   COMPONENT OLS_Interface IS
   GENERIC (
@@ -115,8 +115,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
       Armed          : OUT STD_LOGIC := '0';
       Fast_Mode      : OUT STD_LOGIC := '0';
       Continuous_Mode : OUT STD_LOGIC := '0';
-      Buffer_Full     : IN  STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
-      Buffer_Ack      : OUT STD_LOGIC_VECTOR(1 downto 0) := (others => '0')
+      Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
+      Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0')
      );
      END COMPONENT;
    COMPONENT Fast_Logic_Analyzer_SDRAM IS
@@ -152,8 +152,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
     Fast_Mode   : IN  std_logic := '0';
      FAST_CLK    : IN  std_logic := '0';
      Continuous_Mode : IN  std_logic := '0';
-     Buffer_Full     : OUT std_logic_vector(1 downto 0) := (others => '0');
-     Buffer_Ack      : IN  std_logic_vector(1 downto 0) := (others => '0')
+     Buffer_Full     : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
+     Buffer_Ack      : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0')
 
    );
    END COMPONENT;
