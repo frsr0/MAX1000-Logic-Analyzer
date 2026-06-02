@@ -365,6 +365,11 @@ class OLSDevice:
                     yield buf, seq * chunk_nsamp, buffer_nsamp
         finally:
             self.ser.timeout = old_to
+            try:
+                for _ in range(5):
+                    self.ser.write(bytes([CMD_RESET]))
+                    time.sleep(0.005)
+            except: pass
         self.ser.reset_input_buffer()
 
     def start_gen(self):

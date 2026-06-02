@@ -399,6 +399,8 @@ BEGIN
             Run_OLS <= '0';
             Run <= '0';
             continuous_mode_i <= '0';
+            Thread23 := 0;
+            Thread26 := 0;
             Thread44 := 0;
                 Thread45 := 0;
                 Thread38 := 0;
