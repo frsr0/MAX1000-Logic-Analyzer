@@ -262,7 +262,7 @@ BEGIN
 
   SDRAM_Analyzer : OLS_Logic_Analyzer
   GENERIC MAP (
-    Baud_Rate    => 921600,
+    Baud_Rate    => 12000000,
     CLK_Frequency => System_CLK_Frequency,
     Max_Samples  => 1048576,
     Channels     => 8,

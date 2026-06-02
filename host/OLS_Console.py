@@ -52,7 +52,7 @@ def find_port():
     """Auto-detect OLS device by scanning COM ports."""
     for p in serial.tools.list_ports.comports():
         try:
-            s = serial.Serial(p.device, 921600, timeout=0.5)
+            s = serial.Serial(p.device, 12000000, timeout=0.5)
             time.sleep(0.005)
             s.reset_input_buffer()
             s.write(bytes([CMD_RESET]))
@@ -74,7 +74,7 @@ class OLSDevice:
         self.port = port or find_port()
         if not self.port:
             raise RuntimeError("No OLS device found")
-        self.ser = serial.Serial(self.port, 921600, timeout=3)
+        self.ser = serial.Serial(self.port, 12000000, timeout=3)
         time.sleep(0.2)
         self.ser.reset_input_buffer()
         self.gen_pins = {'tx': 3, 'scl': 1}

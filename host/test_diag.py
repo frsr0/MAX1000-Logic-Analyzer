@@ -12,7 +12,7 @@ CMD_GEN_PINS = 0xA6
 def find_port():
     for p in serial.tools.list_ports.comports():
         try:
-            s = serial.Serial(p.device, 921600, timeout=0.5)
+            s = serial.Serial(p.device, 12000000, timeout=0.5)
             time.sleep(0.005); s.reset_input_buffer()
             s.write(bytes([CMD_RESET])); time.sleep(0.005); s.reset_input_buffer()
             s.write(bytes([CMD_ID])); time.sleep(0.003)
@@ -93,7 +93,7 @@ def main():
     args = ap.parse_args()
     port = args.port or find_port()
     if not port: print("No OLS device found. Use --port COMx"); return 1
-    ser = serial.Serial(port, 921600, timeout=5)
+    ser = serial.Serial(port, 12000000, timeout=5)
     time.sleep(0.2)
     print(f'Connected to {port}')
     print('\n=== Check FPGA responsiveness ===')
