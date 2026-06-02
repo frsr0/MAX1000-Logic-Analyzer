@@ -16,3 +16,10 @@ vhdplus/*.qpf
 vhdplus/*.qsf
 
 MAX1000 User Guide.pdf
+
+# Build artifacts
+*.qpf
+*.qsf
+db/
+output_files/
+*.vcd
