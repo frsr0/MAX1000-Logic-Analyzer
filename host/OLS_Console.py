@@ -976,6 +976,7 @@ class OLScope:
         ttk.Checkbutton(trg_f, text="Fast mode (120 MHz, 1024 samples max)",
                         variable=self.fast_mode_var).grid(row=8, column=0, columnspan=2, sticky='w', pady=2)
         ttk.Separator(trg_f, orient='horizontal').grid(row=9, column=0, columnspan=2, sticky='ew', pady=4)
+        ttk.Separator(trg_f, orient='horizontal').grid(row=10, column=0, columnspan=2, sticky='ew', pady=4)
         ttk.Label(trg_f, text="Protocol Trigger:").grid(row=10, column=0, columnspan=2, sticky='w', pady=2)
         self.proto_trig_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(trg_f, text="Enable", variable=self.proto_trig_var).grid(row=11, column=0, sticky='w', pady=1)

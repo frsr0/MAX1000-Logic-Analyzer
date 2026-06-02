@@ -25,7 +25,25 @@ class OLS:
         self.speed_hz = speed_hz
 
     def open(self):
-        d = ft.open(self.channel)
+        # Auto-detect SPI channel: scan FTDI devices for the non-JTAG one
+        n = ft.createDeviceInfoList()
+        idx = self.channel
+        for i in range(n):
+            try:
+                t = ft.open(i)
+                info = t.getDeviceInfo()
+                t.close()
+                desc = info.get('description', b'').decode()
+                # Pick the Blaster B / SPI channel (not JTAG Blaster A)
+                if 'B' in desc or 'SPI' in desc or 'Serial' in desc:
+                    idx = i
+                    break
+                # Fallback: second device is usually SPI
+                if i == 1:
+                    idx = i
+            except:
+                pass
+        d = ft.open(idx)
         d.setBitMode(0xff, 0x00); time.sleep(0.05)
         d.setBitMode(0xff, 0x02); time.sleep(0.05)
         d.write(b'\xaa'); time.sleep(0.02)

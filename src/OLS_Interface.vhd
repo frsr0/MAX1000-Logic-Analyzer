@@ -44,7 +44,7 @@ PORT (
       Fast_Mode      : OUT STD_LOGIC := '0';
       Continuous_Mode : OUT STD_LOGIC := '0';
       Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-      Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0')
+       Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0')
 
 );
 END OLS_Interface;

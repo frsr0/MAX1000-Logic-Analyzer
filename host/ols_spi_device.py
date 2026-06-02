@@ -60,71 +60,6 @@ class OLSDeviceSPI:
         if self.spi:
             self.spi.set_fast_mode(enable)
 
-    def capture(self, rate_hz=1000000, nsamples=5000, timeout=6,
-                 trigger=None, capture_time=None, progress_cb=None, stop_evt=None):
-        """Single-shot capture via SPI. Returns raw bytes (4 per sample)."""
-        if not self.spi:
-            return b''
-        if capture_time is not None:
-            nsamples = int(capture_time * rate_hz)
-            nsamples = max(2, min(nsamples, 500000))
-
-        self.spi.reset()
-        self.spi.flush()
-
-        # Enable fast mode (BRAM) for speed
-        self.spi.set_fast_mode(True)
-
-        # Configure sample count and divider
-        self.spi.set_sample_count(nsamples)
-        div = max(0, int(self.sys_clk / rate_hz) - 1)
-        self.spi.set_divider(div)
-
-        # Configure trigger
-        if trigger is None:
-            mask = 0; value = 0
-        elif isinstance(trigger, int):
-            mask = trigger; value = 0
-        elif trigger == 'rising':
-            mask = (1 << 30) | 1; value = 1
-        elif trigger == 'falling':
-            mask = (2 << 30) | 1; value = 0
-        else:
-            mask = 0; value = 0
-        self.spi.set_trigger_mask(mask)
-        self.spi.set_trigger_value(value)
-
-        # Arm capture
-        self.spi.arm()
-        self.spi.flush()
-
-        # Wait for capture to complete
-        need = nsamples * self._stride
-        deadline = time.time() + timeout
-
-        # Estimate capture time and wait
-        cap_time = max(0.002, nsamples / max(rate_hz, 1000) * 1.5)
-        time.sleep(min(cap_time, deadline - time.time()))
-
-        # Poll for stop event
-        while time.time() < deadline:
-            if stop_evt and stop_evt.is_set():
-                break
-            if progress_cb:
-                progress_cb(b'', 0, nsamples)
-            break
-
-        # Read captured data via chained read
-        try:
-            raw = self.spi.chained_read(need)
-            data = raw[:need]
-        except:
-            data = b''
-
-        if progress_cb and data:
-            progress_cb(data, nsamples, nsamples)
-        return data
-
     def rolling_capture(self, rate_hz, chunk_nsamp, buffer_nsamp,
                          stop_evt, progress_cb=None, gen_data=None, gen_baud=115200,
                          gen_tx_pin=3, full_out=None, use_continuous=True):
@@ -182,8 +117,19 @@ def find_spi_device():
     """Check if SPI device (FTDI Channel B) is available."""
     try:
         import ftd2xx as ft
-        d = ft.open(1)
-        d.close()
-        return True
+        n = ft.createDeviceInfoList()
+        for i in range(n):
+            try:
+                t = ft.open(i)
+                info = t.getDeviceInfo()
+                t.close()
+                desc = info.get('description', b'').decode()
+                if 'B' in desc or 'SPI' in desc:
+                    return True
+                if i == 1:  # second device is usually SPI
+                    return True
+            except:
+                pass
+        return False
     except:
         return False

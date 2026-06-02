@@ -31,7 +31,7 @@ architecture rtl of OLS_Logic_Analyzer_wrapper is
     -- Quartus pin assignments
     attribute chip_pin : string;
     attribute chip_pin of CLK : signal is "H6";
-    attribute chip_pin of GPIO : signal is "K1,K2,N2,N3,M1,M2,L3,M3";
+    attribute chip_pin of GPIO : signal is "J1,H4,H5,K10,H8,E4,F1,E3";
     attribute chip_pin of LED : signal is "D8,C10,C9,B10,A10,A11,A9,A8";
     attribute chip_pin of sdram_addr : signal is "M10,N4,N8,M13,L10,N9,M11,N10,J8,N5,M5,K6";
     attribute chip_pin of sdram_ba : signal is "K8,N6";

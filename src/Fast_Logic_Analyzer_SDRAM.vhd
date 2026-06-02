@@ -41,7 +41,7 @@ port (
     Continuous_Mode : in std_logic := '0';
     Buffer_Full     : out std_logic_vector(2 downto 0) := (others => '0');
     Buffer_Ack      : in std_logic_vector(2 downto 0) := (others => '0')
-);
+  );
 end Fast_Logic_Analyzer_SDRAM;
 
 architecture rtl of Fast_Logic_Analyzer_SDRAM is
