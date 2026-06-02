@@ -8,7 +8,7 @@ end tb_interface_cont;
 
 architecture sim of tb_interface_cont is
   constant CLK_PERIOD : time := 20.833 ns;
-  constant BIT_TIME   : time := 52 * CLK_PERIOD;
+  constant BIT_TIME   : time := 52 * CLK_PERIOD;  -- 3 Mbps @ 48 MHz
 
   signal clk       : std_logic := '0';
   signal running   : boolean := true;
