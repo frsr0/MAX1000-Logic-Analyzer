@@ -12,7 +12,9 @@ ENTITY OLS_SDRAM_Top IS
 PORT (
   CLK     : IN STD_LOGIC;  -- 12 MHz input
   UART_RX : IN STD_LOGIC := '1';
-  UART_TX : OUT STD_LOGIC := '1';
+  UART_TX : INOUT STD_LOGIC := 'Z';
+  SPI_CS  : IN  STD_LOGIC := '1';
+  SPI_MISO : OUT STD_LOGIC := 'Z';
   GPIO    : INOUT STD_LOGIC_VECTOR(7 downto 0);
   sdram_addr  : OUT std_logic_vector(11 downto 0);
   sdram_ba    : OUT STD_LOGIC_VECTOR(1 downto 0);
@@ -58,6 +60,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal buffer_full     : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
   signal buffer_ack      : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
 signal core_clk       : std_logic := '0';
+signal sdram_clk_pll  : std_logic := '0';
   signal gpio_out      : std_logic_vector(7 downto 0) := (others => '0');
   signal gpio_dir      : std_logic_vector(7 downto 0) := (others => '0');
   signal core_status   : std_logic_vector(7 downto 0) := (others => '0');
@@ -68,6 +71,9 @@ signal core_clk       : std_logic := '0';
   signal uart_rx_last  : std_logic := '1';
   signal capt_done     : std_logic := '0';
   signal run_last      : std_logic := '0';
+  signal interface_mode : std_logic := '0';
+  signal core_uart_tx  : std_logic := '1';
+  signal spi_mosi_int  : std_logic := '0';
 
   -- LED PWM controller
   signal pwm_cnt      : integer range 0 to 256 := 0;
@@ -99,6 +105,10 @@ signal core_clk       : std_logic := '0';
     Inputs   : IN  STD_LOGIC_VECTOR(Channels-1 downto 0);
     UART_RX  : IN  STD_LOGIC := '1';
     UART_TX  : OUT STD_LOGIC := '1';
+    SPI_CS   : IN  STD_LOGIC := '1';
+    SPI_MOSI : IN  STD_LOGIC := '0';
+    SPI_MISO : OUT STD_LOGIC := 'Z';
+    Interface_Mode : OUT STD_LOGIC := '0';
     sdram_addr  : OUT std_logic_vector(11 downto 0);
     sdram_ba    : OUT STD_LOGIC_VECTOR(1 downto 0);
     sdram_cas_n : OUT std_logic;
@@ -156,7 +166,7 @@ BEGIN
   -- Otherwise bypass (use CLK directly for stock 12 MHz hardware).
   gen_use_pll : if PLL_MULT /= 1 or PLL_DIV /= 1 generate
     pll_inst : entity work.SDRAM_PLL
-      port map (inclk0 => CLK, c0 => sys_clk, c1 => fast_clk, locked => pll_locked);
+      port map (inclk0 => CLK, c0 => sys_clk, c1 => fast_clk, c2 => sdram_clk_pll, locked => pll_locked);
   end generate;
   gen_no_pll : if PLL_MULT = 1 and PLL_DIV = 1 generate
     sys_clk <= CLK;
@@ -167,6 +177,9 @@ BEGIN
   -- Always run core at 48 MHz. fast_clk (120 MHz) feeds the FLA directly
   -- for BRAM writes during fast mode (via FAST_CLK port on Core).
   core_clk <= sys_clk;
+  
+  -- SDRAM clock from PLL c2 (-90° phase shift relative to core)
+  sdram_clk <= sdram_clk_pll;
 
   -- Tristate GPIO buffers: each pin is output when gpio_dir=1, else input (high-Z)
   gpio_buf: for i in 0 to 7 generate
@@ -242,6 +255,10 @@ BEGIN
   end process;
   test_out <= test_div(9);
 
+  -- B4 pin sharing: UART_TX (output) in UART mode, SPI_MOSI (input) in SPI mode
+  UART_TX <= core_uart_tx when interface_mode = '0' else 'Z';
+  spi_mosi_int <= UART_TX;
+
   -- Drive selected GPIO pin with generator signal when active
   pin_drive: process(sys_clk)
   begin
@@ -273,7 +290,11 @@ BEGIN
     FAST_CLK => fast_clk,
     Inputs   => internal_data,
     UART_RX  => UART_RX,
-    UART_TX  => UART_TX,
+    UART_TX  => core_uart_tx,
+    SPI_CS   => SPI_CS,
+    SPI_MOSI => spi_mosi_int,
+    SPI_MISO => SPI_MISO,
+    Interface_Mode => interface_mode,
     sdram_addr  => sdram_addr,
     sdram_ba    => sdram_ba,
     sdram_cas_n => sdram_cas_n,
@@ -283,7 +304,7 @@ BEGIN
     sdram_dqm   => sdram_dqm,
     sdram_ras_n => sdram_ras_n,
     sdram_we_n  => sdram_we_n,
-    sdram_clk   => sdram_clk,
+    sdram_clk    => open,
     Gen_Load_Byte => gen_load_byte,
     Gen_Load_We   => gen_load_we,
     Gen_Start     => gen_start,

@@ -4,19 +4,21 @@ param(
 )
 
 $GHDL = "ghdl"
-$STD = "--std=08"
+$STD = ""
 $WRK = "--work=work"
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 
 Write-Host "=== Compiling OLS simulation sources ==="
 Write-Host "  Sources: $SrcDir"
 Write-Host ""
 
 $files = @(
-    (Join-Path $SimDir "SDRAM_Controller.vhd"),
-    (Join-Path $SimDir "SDRAM_PLL.vhd"),
     (Join-Path $SimDir "pll_model.vhd"),
+    (Join-Path $SimDir "SDRAM_PLL.vhd"),
+    (Join-Path $SimDir "SDRAM_Controller.vhd"),
+    (Join-Path $SrcDir "SPI_Slave.vhd"),
+    (Join-Path $SrcDir "ADC_Controller.vhd"),
     (Join-Path $SrcDir "UART_Interface.vhd"),
     (Join-Path $SrcDir "OLS_Interface.vhd"),
     (Join-Path $SrcDir "Signal_Gen.vhd"),
@@ -26,20 +28,25 @@ $files = @(
     (Join-Path $SrcDir "OLS_Logic_Analyzer_SDRAM_Core.vhd"),
     (Join-Path $SrcDir "OLS_SDRAM_Top.vhd"),
     (Join-Path $SimDir "tb_double_buffer.vhd"),
-    (Join-Path $SimDir "tb_interface_cont.vhd")
+    (Join-Path $SimDir "tb_interface_cont.vhd"),
+    (Join-Path $SimDir "tb_pipelined_handoff.vhd"),
+    (Join-Path $SimDir "tb_uart_baud.vhd"),
+    (Join-Path $SimDir "tb_spi_slave.vhd"),
+    (Join-Path $SimDir "tb_adc_controller.vhd")
 )
 
 $ok = 0; $fail = 0
 foreach ($f in $files) {
     $name = Split-Path $f -Leaf
     Write-Host "  $name ... " -NoNewline
-    $output = & $GHDL -a $STD $WRK "$f" 2>&1
-    if ($LASTEXITCODE -eq 0) {
+    $output = cmd /c "`"$GHDL`" -a --std=08 $WRK `"$f`" 2>&1" | Out-String
+    $exit = $LASTEXITCODE
+    if ($exit -eq 0) {
         Write-Host "OK"
         $ok++
     } else {
         Write-Host "FAILED"
-        Write-Host $output
+        $output
         $fail++
     }
 }

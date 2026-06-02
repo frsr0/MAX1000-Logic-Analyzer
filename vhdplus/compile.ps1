@@ -81,6 +81,7 @@ if ($wpuLines.Count -gt 0) {
 # Build port map connections
 $portMapLines = @()
 $portMapLines += "        CLK => CLK, UART_RX => UART_RX, UART_TX => UART_TX,"
+$portMapLines += "        SPI_CS => SPI_CS, SPI_MISO => SPI_MISO,"
 $portMapLines += "        GPIO => GPIO, LED => LED,"
 $portMapLines += "        sdram_addr => sdram_addr, sdram_ba => sdram_ba,"
 $portMapLines += "        sdram_cas_n => sdram_cas_n, sdram_cke => sdram_cke,"
@@ -99,7 +100,9 @@ entity OLS_Logic_Analyzer_wrapper is
 port (
     CLK       : IN  STD_LOGIC;
     UART_RX   : IN  STD_LOGIC;
-    UART_TX   : OUT STD_LOGIC;
+    UART_TX   : INOUT STD_LOGIC;
+    SPI_CS    : IN  STD_LOGIC := '1';
+    SPI_MISO  : OUT STD_LOGIC := 'Z';
     GPIO      : INOUT STD_LOGIC_VECTOR(7 downto 0);
     sdram_addr  : OUT STD_LOGIC_VECTOR(11 downto 0);
     sdram_ba    : OUT STD_LOGIC_VECTOR(1 downto 0);
@@ -180,6 +183,8 @@ $qsfLines = @(
     'set_global_assignment -name VHDL_FILE ../src/UART_Interface.vhd',
     'set_global_assignment -name VHDL_FILE ../src/SDRAM_Interface.vhd',
     'set_global_assignment -name VHDL_FILE ../src/SDRAM_Controller_Custom.vhd',
+    'set_global_assignment -name VHDL_FILE ../src/SPI_Slave.vhd',
+    'set_global_assignment -name VHDL_FILE ../src/ADC_Controller.vhd',
     'set_global_assignment -name VHDL_FILE ../src/Protocol_Trigger.vhd',
     'set_global_assignment -name VHDL_FILE ../src/Signal_Gen.vhd',
     'set_global_assignment -name VHDL_FILE OLS_Logic_Analyzer_wrapper.vhd',

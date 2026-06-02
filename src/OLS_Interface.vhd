@@ -9,13 +9,18 @@ ENTITY OLS_Interface IS
       CLK_Frequency   :   INTEGER     := 12000000;    
     Baud_Rate       :   INTEGER     := 115200;      
     Max_Samples     :   NATURAL     := 25000;       
-    OS_Rate         :   NATURAL     := 16          
+    OS_Rate         :   NATURAL     := 16;          
+    Def_IFace       :   NATURAL     := 0            
 
   );
 PORT (
   CLK : IN STD_LOGIC;
   UART_RX      : IN  STD_LOGIC := '1';
   UART_TX      : OUT STD_LOGIC := '1';
+  SPI_CS       : IN  STD_LOGIC := '1';
+  SPI_MOSI     : IN  STD_LOGIC := '0';
+  SPI_MISO     : OUT STD_LOGIC := 'Z';
+  Interface_Mode : OUT STD_LOGIC := '0';
   Inputs       : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');  
   Rate_Div     : BUFFER NATURAL range 1 to CLK_Frequency := 12; 
   Samples      : BUFFER NATURAL range 1 to Max_Samples   := Max_Samples;  
@@ -59,9 +64,25 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL Channel_Groups : STD_LOGIC_VECTOR(3 downto 0) := "0000";
   SIGNAL UART_TX_Enable     : STD_LOGIC := '0';
   SIGNAL UART_TX_Busy       : STD_LOGIC := '0';
-  SIGNAL UART_TX_Data       : STD_LOGIC_VECTOR (8-1 DOWNTO 0) := (others => '0');
+  SIGNAL UART_TX_Data : STD_LOGIC_VECTOR (8-1 DOWNTO 0) := (others => '0');
   SIGNAL UART_RX_Busy       : STD_LOGIC := '0';
   SIGNAL UART_RX_Data       : STD_LOGIC_VECTOR (8-1 DOWNTO 0) := (others => '0');
+
+  -- Initialize interface mode from Def_IFace generic
+  impure function init_iface return std_logic is
+  begin
+    if Def_IFace /= 0 then return '1'; else return '0'; end if;
+  end function;
+  SIGNAL interface_mode_i : STD_LOGIC := init_iface;
+  SIGNAL analog_channel_i : NATURAL range 0 to 7 := 0;
+  SIGNAL analog_mode_i    : STD_LOGIC := '0';
+  SIGNAL SPI_TX_Ready     : STD_LOGIC := '0';
+  SIGNAL SPI_RX_Valid     : STD_LOGIC := '0';
+  SIGNAL SPI_RX_Data      : STD_LOGIC_VECTOR (8-1 DOWNTO 0) := (others => '0');
+  -- Muxed signals for UART/SPI mode selection
+  SIGNAL effective_TX_Busy : STD_LOGIC := '0';
+  SIGNAL effective_RX_Busy : STD_LOGIC := '0';
+  SIGNAL effective_RX_Data : STD_LOGIC_VECTOR (8-1 DOWNTO 0) := (others => '0');
 
   SIGNAL addr : NATURAL := 0;
   SIGNAL wr_ctr : NATURAL range 0 to 18 := 0;
@@ -81,6 +102,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL cont_base_addr      : NATURAL range 0 to 1048576 := 0;
   SIGNAL cont_prefetch       : STD_LOGIC := '0';
   SIGNAL buffer_ack_i        : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
+  SIGNAL spi_preamble        : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL proto_trig_enable   : STD_LOGIC := '0';
   SIGNAL proto_trig_protocol : STD_LOGIC_VECTOR(1 downto 0) := "00";
   SIGNAL proto_trig_match    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
@@ -123,7 +145,23 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
 
   );
   END COMPONENT;
-  
+
+  COMPONENT SPI_Slave2 IS
+  PORT (
+    sys_clk    : IN  STD_LOGIC;
+    reset      : IN  STD_LOGIC := '0';
+    SCK        : IN  STD_LOGIC := '0';
+    MOSI       : IN  STD_LOGIC := '0';
+    MISO       : OUT STD_LOGIC := 'Z';
+    CS_n       : IN  STD_LOGIC := '1';
+    TX_Data    : IN  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+    SPI_Preamble   : IN  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+    TX_Ready   : OUT STD_LOGIC := '0';
+    RX_Data    : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+    RX_Valid   : OUT STD_LOGIC := '0'
+  );
+  END COMPONENT;
+
 BEGIN
   PROCESS (CLK)  
     VARIABLE ctr : INTEGER range 0 to 4 := 0;
@@ -132,7 +170,7 @@ BEGIN
     VARIABLE Thread30 : NATURAL range 0 to 3 := 0;
     VARIABLE Thread31 : NATURAL range 0 to 4 := 0;
     VARIABLE Thread38 : NATURAL range 0 to 7 := 0;
-    VARIABLE Thread44 : NATURAL range 0 to 28 := 0;
+    VARIABLE Thread44 : NATURAL range 0 to 32 := 0;
     VARIABLE Thread45 : NATURAL range 0 to 4 := 0;
     VARIABLE Thread49 : NATURAL range 0 to 2 := 0;
     VARIABLE Thread51 : NATURAL range 0 to 5 := 0;
@@ -195,8 +233,8 @@ BEGIN
           END IF;
         END IF;
         inputs_prev <= Inputs;
-    ELSE
-      IF (Full = '1') THEN
+    END IF;
+      IF (Full = '1' AND (interface_mode_i = '1' OR Run = '1')) THEN
         CASE (Thread23) IS
           WHEN 0 =>
             IF continuous_mode_i = '1' THEN
@@ -262,14 +300,14 @@ BEGIN
                     ELSE
                       Thread30 := Thread30 + 2;
                     END IF;
-                  WHEN (0+1) =>
+                        WHEN (0+1) =>
                     CASE (Thread31) IS
                       WHEN 0 =>
                         UART_TX_Data <= Outputs((wr_ctr+1)*8-1 downto wr_ctr*8);
                         UART_TX_Enable <= '1';
                         Thread31 := 1;
                       WHEN 1 =>
-                        IF (UART_TX_Busy = '0') THEN
+                        IF (effective_TX_Busy = '0') THEN
                         ELSE
                           Thread31 := Thread31 + 1;
                         END IF;
@@ -277,7 +315,7 @@ BEGIN
                         UART_TX_Enable <= '0';
                         Thread31 := 3;
                       WHEN 3 =>
-                        IF (UART_TX_Busy = '1') THEN
+                        IF (effective_TX_Busy = '1') THEN
                         ELSE
                           Thread31 := 0;
                         Thread30 := 2;
@@ -336,23 +374,22 @@ BEGIN
           WHEN others => Thread23 := 0;
         END CASE;
       END IF;
-    END IF;
     CASE (Thread38) IS
       WHEN 0 =>
         Thread38 := 1;
       WHEN 1 =>
-        IF (UART_RX_Busy = '0') THEN
+        IF (effective_RX_Busy = '0') THEN
         ELSE
           Thread38 := Thread38 + 1;
         END IF;
       WHEN 2 =>
-        IF (UART_RX_Busy = '1') THEN
+        IF (effective_RX_Busy = '1') THEN
         ELSE
           Thread38 := Thread38 + 1;
         END IF;
       WHEN 3 =>
         IF (blk_mode = '1') THEN
-          Gen_Load_Byte <= UART_RX_Data;
+          Gen_Load_Byte <= effective_RX_Data;
           gen_load_cnt <= 1;
           IF (blk_len > 0) THEN
             blk_len := blk_len - 1;
@@ -363,11 +400,11 @@ BEGIN
           END IF;
           Thread38 := 0;
         ELSE
-          command <= UART_RX_Data;
+          command <= effective_RX_Data;
           Thread38 := 4;
         END IF;
       WHEN 4 =>
-        IF (command(7) = '0') THEN 
+        IF command(7) = '0' THEN
           Thread38 := Thread38 + 1;
         ELSE
           Thread38 := Thread38 + 2;
@@ -382,6 +419,8 @@ BEGIN
                 Thread44 := Thread44 + 2;
               WHEN x"02" =>
                 Thread44 := Thread44 + 3;
+              WHEN x"03" =>
+                Thread44 := 19;
               WHEN x"04" =>
                 Thread44 := 18;
               WHEN x"05" =>
@@ -399,6 +438,8 @@ BEGIN
             Run_OLS <= '0';
             Run <= '0';
             continuous_mode_i <= '0';
+            Trigger_Mask <= (others => '0');
+            proto_trig_enable <= '0';
             Thread23 := 0;
             Thread26 := 0;
             Thread44 := 0;
@@ -425,14 +466,14 @@ BEGIN
                     Thread49 := 0;
                     Thread38 := 0;
                     END IF;
-                  WHEN (1+1) =>
+                    WHEN (1+1) =>
                     CASE (Thread51) IS
                       WHEN 0 =>
                         UART_TX_Data <= ID(wr_ctr*8-1 downto (wr_ctr-1)*8);
                         UART_TX_Enable <= '1';
                         Thread51 := 1;
                       WHEN 1 =>
-                        IF (UART_TX_Busy = '0') THEN
+                        IF (effective_TX_Busy = '0') THEN
                         ELSE
                           Thread51 := Thread51 + 1;
                         END IF;
@@ -440,7 +481,7 @@ BEGIN
                         UART_TX_Enable <= '0';
                         Thread51 := 3;
                       WHEN 3 =>
-                        IF (UART_TX_Busy = '1') THEN
+                        IF (effective_TX_Busy = '1') THEN
                         ELSE
                           Thread51 := Thread51 + 1;
                         END IF;
@@ -481,7 +522,11 @@ BEGIN
                 wr_ctr <= 18;
                 Thread49 := 1;
               WHEN 1 =>
-                IF (wr_ctr > 0) THEN
+                IF (command = x"01") THEN
+                  Thread44 := 2; Thread49 := 0; Thread51 := 0;
+                ELSIF (command = x"00") THEN
+                  Thread44 := 1; Thread49 := 0; Thread51 := 0;
+                ELSIF (wr_ctr > 0) THEN
                   Thread49 := Thread49 + 1;
                 ELSE
                   Thread44 := 0;
@@ -516,7 +561,7 @@ BEGIN
                     UART_TX_Enable <= '1';
                     Thread51 := 1;
                   WHEN 1 =>
-                    IF (UART_TX_Busy = '0') THEN
+                    IF (effective_TX_Busy = '0') THEN
                     ELSE
                       Thread51 := Thread51 + 1;
                     END IF;
@@ -524,10 +569,54 @@ BEGIN
                     UART_TX_Enable <= '0';
                     Thread51 := 3;
                   WHEN 3 =>
-                    IF (UART_TX_Busy = '1') THEN
+                    IF (effective_TX_Busy = '1') THEN
                     ELSE
                       Thread51 := Thread51 + 1;
                     END IF;
+                  WHEN 4 =>
+                    wr_ctr <= wr_ctr - 1;
+                    Thread49 := 1;
+                    Thread51 := 0;
+                  WHEN others => Thread51 := 0;
+                END CASE;
+              WHEN others => Thread49 := 0;
+            END CASE;
+          WHEN 19 =>
+            CASE (Thread49) IS
+              WHEN 0 =>
+                wr_ctr <= 4;
+                Thread49 := 1;
+              WHEN 1 =>
+                IF (wr_ctr > 0) THEN
+                  Thread49 := Thread49 + 1;
+                ELSE
+                  Thread44 := 0;
+                  Thread45 := 0;
+                  Thread49 := 0;
+                  Thread38 := 0;
+                END IF;
+              WHEN 2 =>
+                CASE (Thread51) IS
+                  WHEN 0 =>
+                    CASE (wr_ctr) IS
+                      WHEN 4 => UART_TX_Data <= Run & Run_OLS & Full & interface_mode_i &
+                                                    continuous_mode_i & fast_mode_i & "00";
+                      WHEN 3 => UART_TX_Data <= std_logic_vector(to_unsigned(Read_Count mod 256, 8));
+                      WHEN 2 => UART_TX_Data <= std_logic_vector(to_unsigned(Read_Count / 256, 8));
+                      WHEN 1 => UART_TX_Data <= std_logic_vector(to_unsigned(Rate_Div mod 256, 8));
+                      WHEN others => null;
+                    END CASE;
+                    UART_TX_Enable <= '1';
+                    Thread51 := 1;
+                  WHEN 1 =>
+                    IF (effective_TX_Busy = '0') THEN
+                    ELSE Thread51 := Thread51 + 1; END IF;
+                  WHEN 2 =>
+                    UART_TX_Enable <= '0';
+                    Thread51 := 3;
+                  WHEN 3 =>
+                    IF (effective_TX_Busy = '1') THEN
+                    ELSE Thread51 := Thread51 + 1; END IF;
                   WHEN 4 =>
                     wr_ctr <= wr_ctr - 1;
                     Thread49 := 1;
@@ -556,17 +645,17 @@ BEGIN
               WHEN 0 =>
                 Thread45 := 1;
               WHEN 1 =>
-                IF (UART_RX_Busy = '0') THEN
+                IF (effective_RX_Busy = '0') THEN
                 ELSE
                   Thread45 := Thread45 + 1;
                 END IF;
               WHEN 2 =>
-                IF (UART_RX_Busy = '1') THEN
+                IF (effective_RX_Busy = '1') THEN
                 ELSE
                   Thread45 := Thread45 + 1;
                 END IF;
               WHEN 3 =>
-                data((ctr+1)*8-1 downto ctr*8) <= UART_RX_Data;
+                data((ctr+1)*8-1 downto ctr*8) <= effective_RX_Data;
 
 
                  ctr := ctr + 1;
@@ -618,6 +707,12 @@ BEGIN
                 Thread44 := Thread44 + 20;
               WHEN x"AA" =>
                 Thread44 := Thread44 + 21;
+              WHEN x"AB" =>
+                Thread44 := Thread44 + 22;
+              WHEN x"AC" =>
+                Thread44 := Thread44 + 30;
+              WHEN x"AD" =>
+                Thread44 := Thread44 + 31;
               WHEN others =>
                 Thread44 := Thread44 + 10;
             END CASE;
@@ -742,6 +837,21 @@ BEGIN
             Thread44 := 0;
                 Thread45 := 0;
                 Thread38 := 0;
+          WHEN 29 =>
+            interface_mode_i <= data(0);
+            Thread44 := 0;
+                Thread45 := 0;
+                Thread38 := 0;
+          WHEN 30 =>
+            analog_channel_i <= TO_INTEGER(UNSIGNED(data(3 downto 0)));
+            Thread44 := 0;
+                Thread45 := 0;
+                Thread38 := 0;
+          WHEN 31 =>
+            analog_mode_i <= data(0);
+            Thread44 := 0;
+                Thread45 := 0;
+                Thread38 := 0;
           WHEN others => Thread44 := 0;
         END CASE;
       WHEN others => Thread38 := 0;
@@ -758,6 +868,10 @@ BEGIN
     END IF;
   END IF;
   END PROCESS;
+
+  -- SPI preamble byte: zero-waste status on every transaction
+  spi_preamble <= Run & Run_OLS & Full & interface_mode_i &
+                  continuous_mode_i & fast_mode_i & "00";
 
   Gen_TX_Pin  <= gen_tx_pin_int;
   Gen_SCL_Pin <= gen_scl_pin_int;
@@ -788,5 +902,40 @@ BEGIN
     UART_Channel => proto_trig_channel,
     Trigger      => proto_trig_pulse
   );
-  
+
+  Interface_Mode <= interface_mode_i;
+
+  SPI_Slave1 : SPI_Slave2
+  PORT MAP (
+    sys_clk    => CLK,
+    reset      => '0',
+    SCK        => UART_RX,    -- SPI_SCK on same pin as UART_RX (A4/BDBUS0)
+    MOSI       => SPI_MOSI,   -- shared with UART_TX pin (B4/BDBUS1)
+    MISO       => SPI_MISO,
+    CS_n       => SPI_CS,
+    TX_Data    => UART_TX_Data,
+    SPI_Preamble   => spi_preamble,
+    TX_Ready   => SPI_TX_Ready,
+    RX_Data    => SPI_RX_Data,
+    RX_Valid   => SPI_RX_Valid
+  );
+
+  spi_adapter: process(CLK)
+  begin
+    if rising_edge(CLK) then
+      if interface_mode_i = '1' then
+        if UART_TX_Enable = '1' then
+          effective_TX_Busy <= '1';
+        elsif SPI_RX_Valid = '1' then
+          effective_TX_Busy <= '0';
+        end if;
+      else
+        effective_TX_Busy <= UART_TX_Busy;
+      end if;
+    end if;
+  end process;
+
+  effective_RX_Busy <= UART_RX_Busy when interface_mode_i = '0' else SPI_RX_Valid;
+  effective_RX_Data <= UART_RX_Data when interface_mode_i = '0' else SPI_RX_Data;
+
 END BEHAVIORAL;

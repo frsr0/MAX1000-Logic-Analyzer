@@ -39,5 +39,22 @@ if ((Run-Test "tb_interface_cont" "tc_cont_cmd"    "500us"  "cont_cmd.vcd")    -
 if ((Run-Test "tb_interface_cont" "tc_cont_reset"  "500us"  "cont_reset.vcd")  -eq 1) { $pass++ } else { $fail++ }
 
 Write-Host ""
+Write-Host "=== SPI Slave testbench ==="
+Write-Host ""
+if ((Run-Test "tb_spi_slave" "tc_basic"         "50us"  "spi_basic.vcd")       -eq 1) { $pass++ } else { $fail++ }
+if ((Run-Test "tb_spi_slave" "tc_duplex"        "50us"  "spi_duplex.vcd")      -eq 1) { $pass++ } else { $fail++ }
+if ((Run-Test "tb_spi_slave" "tc_multi_byte"    "100us" "spi_multi_byte.vcd")  -eq 1) { $pass++ } else { $fail++ }
+if ((Run-Test "tb_spi_slave" "tc_cs_abort"      "50us"  "spi_cs_abort.vcd")    -eq 1) { $pass++ } else { $fail++ }
+if ((Run-Test "tb_spi_slave" "tc_high_speed"    "50us"  "spi_high_speed.vcd")  -eq 1) { $pass++ } else { $fail++ }
+
+Write-Host ""
+Write-Host "=== ADC Controller testbench ==="
+Write-Host ""
+if ((Run-Test "tb_adc_controller" "tc_basic"          "300us" "adc_basic.vcd")       -eq 1) { $pass++ } else { $fail++ }
+if ((Run-Test "tb_adc_controller" "tc_multi_channel"  "500us" "adc_multi.vcd")       -eq 1) { $pass++ } else { $fail++ }
+if ((Run-Test "tb_adc_controller" "tc_back_to_back"   "500us" "adc_back2back.vcd")   -eq 1) { $pass++ } else { $fail++ }
+if ((Run-Test "tb_adc_controller" "tc_busy_timing"    "300us" "adc_busy.vcd")        -eq 1) { $pass++ } else { $fail++ }
+
+Write-Host ""
 Write-Host "=== Results: $pass passed, $fail failed ==="
 exit $fail

@@ -42,7 +42,7 @@ ARCHITECTURE BEHAVIORAL OF SDRAM_Interface IS
 
   component SDRAM_Controller is
   generic (
-    CLK_Frequency : natural := 12000000
+    CLK_Frequency : natural := 48000000
   );
   port (
   sdram_addr            : out   std_logic_vector(11 downto 0);                    
@@ -99,8 +99,8 @@ BEGIN
    Idle <= sdram_s_idle;
 
   u187: if NOT sim generate
-  reset_reset_n <= '1';  -- no PLL, use 12MHz directly
-  CLK_150_Out <= CLK;    -- bypass PLL, use 12MHz directly
+  reset_reset_n <= '1';  -- PLL locked, no external reset needed
+  CLK_150_Out <= CLK;    -- 48 MHz core clock from PLL
   sdram_clk <= CLK;
   u0 : component SDRAM_Controller
   port map (

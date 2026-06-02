@@ -52,6 +52,8 @@ SEN_SDI,J7,Bidirectional,3.3-V LVCMOS
 SEN_SPC,J6,Bidirectional,3.3-V LVCMOS
 SEN_CS,L5,Output,3.3-V LVCMOS
 SEN_SDO,K5,Input,3.3-V LVCMOS
+SPI_CS,A6,Input,3.3-V LVCMOS
+SPI_MISO,B5,Output,3.3-V LVCMOS
 LED_0,A8,Output,2.5 V
 LED_1,A9,Output,2.5 V
 LED_2,A11,Output,2.5 V

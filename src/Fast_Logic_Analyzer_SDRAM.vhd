@@ -439,11 +439,14 @@ begin
                 end if;
               else
                 -- Single-buffer mode (legacy)
-                fifo_mem(f_head) <= std_logic_vector(to_unsigned(waddr_0, 22)) & wbuf;
-                if f_head = FIFO_Depth-1 then f_head := 0;
-                else f_head := f_head + 1; end if;
-                f_cnt := f_cnt + 1;
-                waddr_0 := waddr_0 + 1;
+                -- Stop at target to let FIFO drain, then Full fires
+                if waddr_0 < (Samples / sub_steps) then
+                  fifo_mem(f_head) <= std_logic_vector(to_unsigned(waddr_0, 22)) & wbuf;
+                  if f_head = FIFO_Depth-1 then f_head := 0;
+                  else f_head := f_head + 1; end if;
+                  f_cnt := f_cnt + 1;
+                  waddr_0 := waddr_0 + 1;
+                end if;
               end if;
             end if;
           end if;

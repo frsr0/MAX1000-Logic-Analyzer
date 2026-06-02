@@ -5,7 +5,9 @@ entity OLS_Logic_Analyzer_wrapper is
 port (
     CLK       : IN  STD_LOGIC;
     UART_RX   : IN  STD_LOGIC;
-    UART_TX   : OUT STD_LOGIC;
+    UART_TX   : INOUT STD_LOGIC;
+    SPI_CS    : IN  STD_LOGIC := '1';
+    SPI_MISO  : OUT STD_LOGIC := 'Z';
     GPIO      : INOUT STD_LOGIC_VECTOR(7 downto 0);
     sdram_addr  : OUT STD_LOGIC_VECTOR(11 downto 0);
     sdram_ba    : OUT STD_LOGIC_VECTOR(1 downto 0);
@@ -45,6 +47,8 @@ architecture rtl of OLS_Logic_Analyzer_wrapper is
     attribute chip_pin of SEN_SDI : signal is "J7";
     attribute chip_pin of SEN_SDO : signal is "K5";
     attribute chip_pin of SEN_SPC : signal is "J6";
+    attribute chip_pin of SPI_CS : signal is "A6";
+    attribute chip_pin of SPI_MISO : signal is "B5";
     attribute chip_pin of UART_RX : signal is "A4";
     attribute chip_pin of UART_TX : signal is "B4";
     -- I/O standards
@@ -58,6 +62,7 @@ begin
     core : entity work.OLS_SDRAM_Top
     port map (
         CLK => CLK, UART_RX => UART_RX, UART_TX => UART_TX,
+        SPI_CS => SPI_CS, SPI_MISO => SPI_MISO,
         GPIO => GPIO, LED => LED,
         sdram_addr => sdram_addr, sdram_ba => sdram_ba,
         sdram_cas_n => sdram_cas_n, sdram_cke => sdram_cke,
