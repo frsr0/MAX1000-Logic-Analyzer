@@ -18,6 +18,15 @@ CMD_FAST_MODE       = 0xA8
 CMD_CONTINUOUS      = 0xAA
 CMD_CH_MODE         = 0xAE
 
+# Generator command constants (shared with UART backend)
+CMD_GEN_LOAD   = 0xA0
+CMD_GEN_STRT   = 0xA1
+CMD_GEN_BAUD   = 0xA2
+CMD_GEN_BLK    = 0xA3
+CMD_GEN_PROTO  = 0xA4
+CMD_GEN_PINS   = 0xA6
+CMD_I2C_TEST   = 0xA7
+
 class OLS:
     def __init__(self, channel=1, speed_hz=30000000):
         self.dev = None
@@ -74,6 +83,30 @@ class OLS:
         time.sleep(0.001)
         return self.dev.read(5)
 
+    def bulk_write(self, data):
+        """Send arbitrary-length bytes via SPI (CS held low for entire transfer).
+        
+        Uses MPSSE combined write+read (0x31) so the FTDI clocks in the
+        slave's reply simultaneously; return data is discarded.
+        Length limit: 65536 bytes per call.
+        """
+        if not data or not self.dev:
+            return
+        n = len(data)
+        lo = (n - 1) & 0xFF
+        hi = ((n - 1) >> 8) & 0xFF
+        self.dev.write(b'\x80\x00\x0b')
+        self.dev.write(bytes([0x31, lo, hi]))
+        self.dev.write(data)
+        self.dev.write(b'\x80\x08\x0b')
+        time.sleep(0.002)
+        try:
+            q = self.dev.getQueueStatus()
+            if q:
+                self.dev.read(q)
+        except:
+            pass
+
     def flush(self):
         """Discard stale FIFO data"""
         time.sleep(0.005)
@@ -87,7 +120,7 @@ class OLS:
         self.flush()
 
     def arm(self):
-        self.tx(CMD_ARM2)
+        self.tx(CMD_ARM)
         self.flush()
 
     def set_sample_count(self, n):

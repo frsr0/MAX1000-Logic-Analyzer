@@ -101,18 +101,12 @@ begin
           end if;
         end if;
 
-        -- Shift register pipeline
+        -- Pipeline: 2-stage delay (reduced from 8; everything is same sys_clk domain)
         reload_sync0 <= reload_pending;
         reload_sync1 <= reload_sync0;
-        reload_sync2 <= reload_sync1;
-        reload_sync3 <= reload_sync2;
-        reload_sync4 <= reload_sync3;
-        reload_sync5 <= reload_sync4;
-        reload_sync6 <= reload_sync5;
-        reload_sync7 <= reload_sync6;
 
-        -- Reload on 8th falling edge (original working code)
-        if sck_fall = '1' and reload_sync7 = '1' then
+        -- Reload TX_Data onto MISO shift register (2-cycle delay from RX_Valid)
+        if sck_fall = '1' and reload_sync1 = '1' then
           tx_shift <= TX_Data;
           reload_pending <= '0';
         elsif sck_fall = '1' then

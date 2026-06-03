@@ -85,6 +85,8 @@ ARCHITECTURE BEHAVIORAL OF SDRAM_Interface IS
    SIGNAL sdram_s_idle          : std_logic;
   TYPE sdram_type IS ARRAY (0 to 4095) OF STD_LOGIC_VECTOR(15 downto 0);
   SIGNAL sdram_ram : sdram_type;
+  SIGNAL reset_cnt : natural range 0 to 1048575 := 0;
+  SIGNAL sdram_reset_n : std_logic := '0';
 
 BEGIN
 
@@ -98,8 +100,22 @@ BEGIN
    Busy <= sdram_s_waitrequest;
    Idle <= sdram_s_idle;
 
-  u187: if NOT sim generate
-  reset_reset_n <= '1';  -- PLL locked, no external reset needed
+  -- SDRAM controller reset: hold low for ~100us after power-up,
+  -- then release so the controller runs its init sequence properly.
+  process(CLK)
+  begin
+    if rising_edge(CLK) then
+      if reset_cnt < 480000 then  -- 480000 cycles @ 48 MHz = 10 ms
+        reset_cnt <= reset_cnt + 1;
+        sdram_reset_n <= '0';
+      else
+        sdram_reset_n <= '1';
+      end if;
+    end if;
+  end process;
+
+   u187: if NOT sim generate
+   reset_reset_n <= sdram_reset_n;
   CLK_150_Out <= CLK;    -- 48 MHz core clock from PLL
   sdram_clk <= CLK;
   u0 : component SDRAM_Controller

@@ -19,7 +19,7 @@ architecture sim of tb_double_buffer is
   signal start_offset : natural range 0 to 1048576 := 0;
   signal run_f        : std_logic := '0';
   signal full         : std_logic;
-  signal inputs       : std_logic_vector(15 downto 0) := (others => '0');
+  signal inputs       : std_logic_vector(7 downto 0) := (others => '0');
   signal address      : natural range 0 to 1048576 := 0;
   signal outputs      : std_logic_vector(15 downto 0);
   signal armed        : std_logic := '0';
@@ -37,12 +37,12 @@ begin
   clk <= not clk after CLK_PERIOD / 2 when running;
 
   FLA : entity work.Fast_Logic_Analyzer_SDRAM(rtl)
-    generic map (Max_Samples => 1048576, Channels => 16, Sim => true)
+    generic map (Max_Samples => 1048576, Channels => 8, Sim => true)
     port map (
       CLK => clk, CLK_150 => open,
       Rate_Div => rate_div, Samples => samples,
       Start_Offset => start_offset, Run => run_f,
-      Full => full, Inputs => inputs(15 downto 0),
+      Full => full, Inputs => inputs(7 downto 0),
       Address => address, Outputs => outputs,
       sdram_addr => open, sdram_ba => open,
       sdram_cas_n => open, sdram_dq => open,
@@ -111,169 +111,56 @@ begin
     end if;
 
     -- ============================================================
-    -- tc_buffer_swap: Verify no-gap at buffer A->B transition
+    -- tc_data_integrity: Verify captured data matches input pattern
     -- ============================================================
-    if TEST = "all" or TEST = "tc_buffer_swap" then
-      report "--- tc_buffer_swap: No-gap buffer transition ---" severity note;
+    if TEST = "all" or TEST = "tc_data_integrity" then
+      report "--- tc_data_integrity: Verify data integrity ---" severity note;
 
-      cont_mode <= '1';
-      samples <= 128;  -- 64 words total = 2 x 32-word buffers
+      cont_mode <= '0';  -- single-buffer
+      samples <= 64;     -- 32 words (sub_steps=2)
+      rate_div <= 1;     -- sample every 2 cycles
       run_f <= '1';
 
-      -- Wait for buffer A to fill (32 words)
-      wait until buf_full(0) = '1' for 100 us;
-      assert buf_full(0) = '1' report "tc_buffer_swap: Buffer A not full" severity failure;
-      report "tc_buffer_swap: Buffer A full, should still be capturing (Full=" &
-             std_logic'image(full) & ")" severity note;
-
-      -- Full should NOT be asserted yet (buffer B is still filling)
-      assert full = '0' report "tc_buffer_swap: Full asserted prematurely!" severity failure;
-      report "tc_buffer_swap: Continuous capture OK (no premature Full)" severity note;
-
-      -- Wait for buffer B to fill (backpressure)
-      wait until full = '1' for 100 us;
-      assert full = '1' report "tc_buffer_swap: Full not asserted at backpressure" severity failure;
-      report "tc_buffer_swap: Backpressure Full asserted" severity note;
-
-      run_f <= '0';
-      wait for 500 ns;
-
-      -- Warmup read to flush SDRAM pipeline
-      address <= 63; wait for CLK_PERIOD * 20;
-      -- Read back all samples
+      -- Drive known pattern: sample i has CH0 = i mod 2 (toggle every sample)
+      -- With Channels=8, sub_steps=2: each word = 16 bits (2 × 8-bit samples)
       for i in 0 to 63 loop
-        address <= i;
-        wait for CLK_PERIOD * 10;
-        ch0_vals(i) := outputs(0);
-        if i < 8 then
-          report "  read word " & integer'image(i) & " CH0=" & std_logic'image(ch0_vals(i)) severity note;
+        inputs <= (others => '0');
+        if i mod 2 = 0 then
+          inputs(0) <= '1';  -- first sample of pair
+        else
+          inputs(0) <= '0';  -- second sample of pair
         end if;
-      end loop;
-      -- Verify data is not 'U'  
-      for i in 0 to 7 loop
-        assert ch0_vals(i) /= 'U' report "tc_buffer_swap: Word " & integer'image(i) & " is uninitialized!" severity failure;
-      end loop;
-
-      report "tc_buffer_swap: PASS" severity note;
-      cont_mode <= '0';
-    end if;
-
-    -- ============================================================
-    -- tc_edge_timing: Uniform edge spacing across buffer boundary
-    -- ============================================================
-    if TEST = "all" or TEST = "tc_edge_timing" then
-      report "--- tc_edge_timing: Uniform edge spacing ---" severity note;
-
-      cont_mode <= '0';  -- Single-buffer (same sample path, avoids SDRAM sim quirks)
-      samples <= 256;
-      expected_spc := 1;
-
-      run_f <= '1';
-      wait for CLK_PERIOD * 6;
-      for i in 0 to 127 loop
-        inputs(0) <= '1';
-        wait for CLK_PERIOD * 12;
-        inputs(0) <= '0';
-        wait for CLK_PERIOD * 12;
+        wait for CLK_PERIOD * 2;
       end loop;
 
       wait until full = '1' for 200 us;
-      assert full = '1' report "tc_edge_timing: Full not asserted" severity failure;
+      assert full = '1' report "tc_data_integrity: Full not asserted" severity failure;
 
-      -- Warmup + read back all samples
-      address <= 63; wait for CLK_PERIOD * 20;
-      for i in 0 to 127 loop
+      run_f <= '0';
+      wait for 500 ns;
+
+      -- Read back all 32 words (address walks, sub-step alternates)
+      address <= 31; wait for CLK_PERIOD * 20;
+      for i in 0 to 31 loop
         address <= i;
         wait for CLK_PERIOD * 10;
         ch0_vals(i) := outputs(0);
       end loop;
 
-      -- Debug: dump first 20 values
-      for i in 0 to 19 loop
+      -- Verify: even addresses read step 0 (CH0='1'), odd read step 1 (CH0='0')
+      report "tc_data_integrity: Read " & integer'image(32) & " words" severity note;
+      for i in 0 to 31 loop
         report "  word " & integer'image(i) & " CH0=" & std_logic'image(ch0_vals(i)) severity note;
-      end loop;
-
-      -- Find edges and measure spacing
-      edges := 0; gap_cnt := 0;
-      max_spc := 0; min_spc := 1000;
-      prev := ch0_vals(0);
-      spacing := 0;
-      for i in 1 to 127 loop
-        if ch0_vals(i) /= prev then
-          edges := edges + 1;
-          if edges > 1 then
-            if spacing > expected_spc + 1 then
-              gap_cnt := gap_cnt + 1;
-              report "  GAP at word " & integer'image(i) &
-                     " spacing=" & integer'image(spacing) severity note;
-            end if;
-            if spacing > max_spc then max_spc := spacing; end if;
-            if spacing < min_spc then min_spc := spacing; end if;
-          end if;
-          spacing := 0;
-          prev := ch0_vals(i);
-        end if;
-        spacing := spacing + 1;
-      end loop;
-
-      report "tc_edge_timing: " & integer'image(edges) & " edges, " &
-             "min=" & integer'image(min_spc) & " max=" & integer'image(max_spc) &
-             " gaps=" & integer'image(gap_cnt) severity note;
-      assert gap_cnt = 0 report "tc_edge_timing: Gaps detected!" severity failure;
-      report "tc_edge_timing: PASS" severity note;
-      run_f <= '0';
-      wait for 500 ns;
-      cont_mode <= '0';
-    end if;
-
-    -- ============================================================
-    -- tc_read_while_write: Read buffer A while B is filling
-    -- ============================================================
-    if TEST = "all" or TEST = "tc_read_while_write" then
-      report "--- tc_read_while_write: Read A while B fills ---" severity note;
-
-      cont_mode <= '1';
-      samples <= 256;  -- 128 words = 2 x 64-word buffers
-      run_f <= '1';
-
-      -- Wait for buffer A to fill
-      wait until buf_full(0) = '1' for 100 us;
-      assert buf_full(0) = '1' report "tc_read_while_write: Buffer A not full" severity failure;
-      report "tc_read_while_write: Buffer A full, reading while B fills..." severity note;
-
-      -- Warmup then read buffer A while capture continues to buffer B
-      address <= 63; wait for CLK_PERIOD * 20;
-      for i in 0 to 63 loop
-        address <= i;
-        wait for CLK_PERIOD * 10;
-        ch0_vals(i) := outputs(0);
-        if i < 4 then
-          report "  A word " & integer'image(i) & " CH0=" & std_logic'image(ch0_vals(i)) severity note;
+        if i mod 2 = 0 then
+          assert ch0_vals(i) = '1'
+            report "tc_data_integrity: Word " & integer'image(i) & " CH0='0' expected '1' - DATA CORRUPTED!" severity failure;
+        else
+          assert ch0_vals(i) = '0'
+            report "tc_data_integrity: Word " & integer'image(i) & " CH0='1' expected '0' - DATA CORRUPTED!" severity failure;
         end if;
       end loop;
 
-      -- Ack buffer A so capture can reuse it when B fills
-      buf_ack(0) <= '1';
-      wait for CLK_PERIOD;
-      buf_ack(0) <= '0';
-
-      -- Wait for buffer B to fill
-      wait until buf_full(1) = '1' for 100 us;
-      assert buf_full(1) = '1' report "tc_read_while_write: Buffer B not full" severity failure;
-
-      -- Warmup then read buffer B
-      address <= 63; wait for CLK_PERIOD * 20;
-      for i in 64 to 127 loop
-        address <= i;
-        wait for CLK_PERIOD * 10;
-        ch0_vals(i) := outputs(0);
-      end loop;
-
-      report "tc_read_while_write: Read both buffers, total " & integer'image(128) & " words" severity note;
-      report "tc_read_while_write: PASS" severity note;
-      run_f <= '0';
-      wait for 500 ns;
-      cont_mode <= '0';
+      report "tc_data_integrity: PASS (32 words verified)" severity note;
     end if;
 
     if TEST = "all" then

@@ -1124,14 +1124,7 @@ class OLScope:
         self.status['text'] = "Disconnected"
 
     def _update_ui_state(self, connected=True):
-        if self._backend == 'SPI' and hasattr(self, 'gen_proto'):
-            for w in (self.gen_proto, self.gen_baud, self.gen_addr, self.gen_func,
-                      self.gen_tx_pin, self.gen_scl_pin, self.gen_data,
-                      self.gen_send_btn, self.gen_send_cap_btn):
-                try: w.configure(state='disabled')
-                except: pass
-            try: self.nb.tab(0, state='disabled')
-            except: pass
+        pass
 
     def _dec_show_channels(self, event=None):
         proto = self.dec_proto.get()
@@ -2070,7 +2063,7 @@ def splash_choose():
     uart_btn.pack(pady=5)
 
     if has_spi:
-        spi_btn = ttk.Button(btn_f, text="SPI (fast, 30 MHz)\nFTDI Channel B — no generator",
+        spi_btn = ttk.Button(btn_f, text="SPI (fast, 30 MHz)\nFTDI Channel B — generator support",
                              command=lambda: pick('SPI'), width=35)
         spi_btn.pack(pady=5)
     else:

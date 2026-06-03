@@ -161,7 +161,7 @@ begin
     variable waddr_2   : natural range 0 to 15000000 := 0;
     variable a_reg   : natural range 0 to 15000000 := 15000000;
     variable wip        : boolean := false;
-    variable wr_last    : std_logic_vector(1 downto 0) := "00";
+    variable wr_cnt   : natural range 0 to 3 := 0;
     variable wr_pend    : boolean := false;
     variable wr_pend_addr : std_logic_vector(21 downto 0) := (others => '0');
     variable wr_pend_data : std_logic_vector(15 downto 0) := (others => '0');
@@ -325,7 +325,7 @@ begin
           wip     := true;
           wr_pend := false;
 
-        elsif f_cnt > 0 and not wip then
+        elsif fifo_cnt > 0 and not wip then
           if f_cnt >= 4 then
             for i in 0 to 3 loop
               burst_buf(i) := fifo_mem(f_tail);
@@ -349,11 +349,12 @@ begin
           end if;
         end if;
 
-        -- Track SDRAM write completion
+        -- Track SDRAM write completion (2-cycle timeout, no waitrequest dependency)
         if wip then
-          wr_last := wr_last(0) & s_busy;
-          if wr_last = "10" then
-            s_wr <= '0'; wip := false; wr_last := "00";
+          if wr_cnt < 2 then
+            wr_cnt := wr_cnt + 1;
+          else
+            s_wr <= '0'; wip := false; wr_cnt := 0;
           end if;
         end if;
 
@@ -469,7 +470,7 @@ begin
         -- Assert Full
         if not rd_mode and full_i = '0' then
           if Fast_Mode = '1' then
-            if bram_post_cnt >= BRAM_SIZE then
+            if bram_post_cnt >= (Samples / sub_steps) then
               full_i <= '1';
               rd_mode := true;
               if Continuous_Mode = '1' then

@@ -88,8 +88,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL wr_ctr : NATURAL range 0 to 18 := 0;
   SIGNAL blk_mode  : STD_LOGIC := '0';
   SIGNAL blk_len_s : NATURAL range 0 to 255 := 0;
-  SIGNAL gen_start_cnt : NATURAL range 0 to 31 := 0;
-  SIGNAL gen_load_cnt  : NATURAL range 0 to 31 := 0;  -- probe
+  SIGNAL gen_start_cnt : NATURAL range 0 to 63 := 0;
+  SIGNAL gen_load_cnt  : NATURAL range 0 to 63 := 0;  -- probe
    SIGNAL gen_tx_pin_int  : NATURAL range 0 to 7 := 0;
    SIGNAL gen_scl_pin_int : NATURAL range 0 to 7 := 0;
   SIGNAL gen_i2c_rd_len_int : NATURAL range 0 to 255 := 0;
@@ -114,6 +114,15 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL proto_trig_bauddiv  : NATURAL range 1 to 65535 := 416;
   SIGNAL proto_trig_channel  : NATURAL range 0 to 7 := 0;
   SIGNAL proto_trig_pulse    : STD_LOGIC := '0';
+  -- 21-cycle bit-serial divider for /3 (replaces 58-level lpm_divide)
+  SIGNAL div3_shift   : STD_LOGIC_VECTOR(20 downto 0) := (others => '0');
+  SIGNAL div3_acc     : NATURAL range 0 to 3 := 0;
+  SIGNAL div3_result  : NATURAL range 0 to 1048576 := 0;
+  SIGNAL div3_count   : NATURAL range 0 to 31 := 0;
+  SIGNAL div3_busy    : STD_LOGIC := '0';
+  SIGNAL div3_pending : STD_LOGIC := '0';
+  SIGNAL samples_div3  : NATURAL range 0 to 1048576 := 0;
+  SIGNAL samples_2div3 : NATURAL range 0 to 1048576 := 0;
   COMPONENT Protocol_Trigger IS
   port (
     CLK          : in  std_logic;
@@ -186,6 +195,7 @@ BEGIN
   IF RISING_EDGE(CLK) THEN
     Gen_Load_We <= '0';
     Gen_Start <= '0';
+    div3_pending <= '0';
     IF (Divider < CLK_Frequency) THEN
       Rate_Div <= Divider + 1;
     ELSE
@@ -277,8 +287,8 @@ BEGIN
                   cont_buf_sel <= next_sel;
                   CASE next_sel IS
                     WHEN 0 => cont_base_addr <= 0;
-                    WHEN 1 => cont_base_addr <= Samples / 3;
-                    WHEN 2 => cont_base_addr <= 2 * (Samples / 3);
+                    WHEN 1 => cont_base_addr <= samples_div3;
+                    WHEN 2 => cont_base_addr <= samples_2div3;
                   END CASE;
                 END IF;
                 Thread23 := 2;
@@ -375,11 +385,11 @@ BEGIN
             ELSE
               -- SDRAM: cycle to next buffer (0→1→2→0)
               CASE cont_buf_sel IS
-                WHEN 0 => cont_base_addr <= Samples / 3;  cont_buf_sel <= 1;
-                WHEN 1 => cont_base_addr <= 2 * (Samples / 3);  cont_buf_sel <= 2;
+                WHEN 0 => cont_base_addr <= samples_div3;  cont_buf_sel <= 1;
+                WHEN 1 => cont_base_addr <= samples_2div3;  cont_buf_sel <= 2;
                 WHEN 2 => cont_base_addr <= 0;  cont_buf_sel <= 0;
               END CASE;
-              cont_rem <= Samples / 3;
+              cont_rem <= samples_div3;
             END IF;
             Thread23 := 5;
           WHEN 5 =>
@@ -411,7 +421,7 @@ BEGIN
       WHEN 3 =>
         IF (blk_mode = '1') THEN
           Gen_Load_Byte <= effective_RX_Data;
-          gen_load_cnt <= 1;
+          gen_load_cnt <= 24;
           IF (blk_len > 0) THEN
             blk_len := blk_len - 1;
             blk_len_s <= blk_len;
@@ -779,7 +789,8 @@ BEGIN
                 Thread38 := 0;
           WHEN 13 =>
             Read_Count  <= TO_INTEGER(UNSIGNED(data(15 downto 0)));
-          Delay_Count <= TO_INTEGER(UNSIGNED(data(31 downto 16)));
+            div3_pending <= '1';
+            Delay_Count <= TO_INTEGER(UNSIGNED(data(31 downto 16)));
             Thread44 := 0;
                 Thread45 := 0;
                 Thread38 := 0;
@@ -795,6 +806,7 @@ BEGIN
                 Thread38 := 0;
           WHEN 16 =>
             Read_Count  <= TO_INTEGER(UNSIGNED(data(29 downto 0)));
+            div3_pending <= '1';
             Thread44 := 0;
                 Thread45 := 0;
                 Thread38 := 0;
@@ -805,12 +817,12 @@ BEGIN
                 Thread45 := 0;
           WHEN 18 =>
             Gen_Load_Byte <= data(7 downto 0);
-            gen_load_cnt <= 1;
+            gen_load_cnt <= 24;
             Thread44 := 0;
                 Thread45 := 0;
                 Thread38 := 0;
           WHEN 19 =>
-            gen_start_cnt <= 2;
+            gen_start_cnt <= 24;
             Thread44 := 0;
                 Thread45 := 0;
                 Thread38 := 0;
@@ -868,7 +880,11 @@ BEGIN
               cont_buf_sel <= 0;
               cont_base_addr <= 0;
               cont_prefetch <= '0';
-              cont_rem <= Read_Count / 3;
+              IF div3_busy = '0' THEN
+                cont_rem <= samples_div3;
+              ELSE
+                cont_rem <= Read_Count / 4;  -- quick estimate, divider still running
+              END IF;
               Run_OLS <= '1';
             END IF;
             Thread44 := 0;
@@ -911,7 +927,38 @@ BEGIN
   END IF;
   END PROCESS;
 
-  -- Pipeline depth: 8 for 8ch/500k, 4 for 4ch/4M
+  -- ─── 21-cycle bit-serial divider solves lpm_divide timing hole ─────
+  -- N/3 computed one bit at a time (MSB first). Takes 21 cycles = 0.44us.
+  -- Triggered by div3_pending pulse from main process when Read_Count changes.
+  divider_proc: process(CLK)
+    variable acc : natural range 0 to 3 := 0;
+  begin
+    if rising_edge(CLK) then
+      if div3_pending = '1' then
+        div3_shift <= std_logic_vector(to_unsigned(Read_Count, 21));
+        div3_acc   <= 0;
+        div3_result <= 0;
+        div3_count  <= 21;
+        div3_busy  <= '1';
+      elsif div3_busy = '1' and div3_count > 0 then
+        acc := div3_acc * 2;
+        if div3_shift(20) = '1' then acc := acc + 1; end if;
+        div3_shift <= div3_shift(19 downto 0) & '0';
+        div3_acc <= acc;
+        if acc >= 3 then
+          div3_result <= div3_result + 1;
+          div3_acc <= acc - 3;
+        end if;
+        div3_count <= div3_count - 1;
+        if div3_count = 1 then
+          div3_busy <= '0';
+          samples_div3  <= div3_result;
+          samples_2div3 <= div3_result + div3_result;
+        end if;
+      end if;
+    end if;
+  end process;
+
   pipe_depth <= 8 when ch_mode = '0' else 4;
 
   -- SPI preamble byte: zero-waste status on every transaction
