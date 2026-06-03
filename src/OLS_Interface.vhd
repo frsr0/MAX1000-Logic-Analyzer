@@ -457,13 +457,28 @@ BEGIN
             Thread38 := Thread38 + 2;  -- to 6 (accumulate)
           END IF;
         ELSIF Thread44 = 0 AND cmd_was_multibyte = '1' THEN
-          -- Data byte before accumulate started: skip saved_command overwrite
-          Thread38 := Thread38 + 2;  -- to 6, keep saved_command from command byte
+          -- Single-byte command (bit7=0) arriving after a multi-byte command.
+          -- Must go through dispatch (Thread38=5), not accumulate (Thread38=6).
+          cmd_was_multibyte <= '0';
+          IF command(7) = '0' THEN
+            Thread38 := Thread38 + 1;  -- to 5 for dispatch
+          ELSE
+            Thread38 := Thread38 + 2;  -- to 6 for accumulate
+          END IF;
         ELSIF Thread44 = 18 OR Thread44 = 19 THEN
           Thread38 := Thread38 + 1;
+        ELSIF cmd_was_multibyte = '1' AND Thread44 <= 3 THEN
+          -- Data byte or new command arriving while accumulate is in setup
+          -- (Thread44 still 0-3).  Use command(7) to decide: bit7=0 means
+          -- it's a new single-byte command (ARM, Reset); bit7=1 is a data byte.
+          cmd_was_multibyte <= '0';
+          IF command(7) = '0' THEN
+            Thread38 := Thread38 + 1;  -- to 5 (dispatch)
+          ELSE
+            Thread38 := Thread38 + 2;  -- to 6 (accumulate)
+          END IF;
         ELSIF cmd_was_multibyte = '1' THEN
-          -- Data byte for a multi-byte command (already accumulated at Thread38=3).
-          -- Advance to Thread38=6 where the accumulate state machine continues.
+          -- Data byte arriving during accumulate (Thread44 >= 4).
           Thread38 := Thread38 + 2;
         ELSE
           Thread38 := Thread38 + 1;
