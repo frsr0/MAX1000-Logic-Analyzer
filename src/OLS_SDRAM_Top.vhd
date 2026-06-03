@@ -65,6 +65,8 @@ signal sdram_clk_pll  : std_logic := '0';
   signal gpio_dir      : std_logic_vector(7 downto 0) := (others => '0');
   signal core_status   : std_logic_vector(7 downto 0) := (others => '0');
   signal test_div      : std_logic_vector(9 downto 0) := (others => '0');
+  attribute preserve : boolean;
+  attribute preserve of test_div : signal is true;
   signal test_out      : std_logic := '0';
   signal com_act_cnt   : integer range 0 to 200_000_000 := 0;
   signal com_active    : std_logic := '0';
@@ -245,11 +247,11 @@ BEGIN
     end loop;
   end process;
 
-  -- Test divider: 10-bit counter
-  -- Output frequency = System_CLK_Frequency / 2^10
-  process(sys_clk)
+  -- Test divider: 10-bit counter on 12 MHz CLK, output on CH0 at ~11.7 kHz
+  -- (using CLK directly avoids PLL lock dependency)
+  process(CLK)
   begin
-    if rising_edge(sys_clk) then
+    if rising_edge(CLK) then
       test_div <= std_logic_vector(unsigned(test_div) + 1);
     end if;
   end process;
