@@ -1,6 +1,6 @@
 """
 OLS Logic Analyzer - SPI Host Library
-Fast capture via BRAM, 30 MHz SPI, zero-waste preamble, rolling/continuous mode.
+Fixed MPSSE driver: batched writes, 0x87, correct init, drain.
 """
 import ftd2xx as ft
 import time
@@ -18,7 +18,6 @@ CMD_FAST_MODE       = 0xA8
 CMD_CONTINUOUS      = 0xAA
 CMD_CH_MODE         = 0xAE
 
-# Generator command constants (shared with UART backend)
 CMD_GEN_LOAD   = 0xA0
 CMD_GEN_STRT   = 0xA1
 CMD_GEN_BAUD   = 0xA2
@@ -27,14 +26,60 @@ CMD_GEN_PROTO  = 0xA4
 CMD_GEN_PINS   = 0xA6
 CMD_I2C_TEST   = 0xA7
 
+PIN_DIR     = 0x3B
+GPIO_CS_HI  = 0x08
+GPIO_CS_LO  = 0x00
+SLEEP_TICK  = 0.003
+
+
 class OLS:
-    def __init__(self, channel=1, speed_hz=30000000):
-        self.dev = None
+    """FTDI MPSSE SPI host for OLS Logic Analyzer.
+
+    All MPSSE commands are batched into a single write() per transaction
+    to avoid USB frame splitting that breaks the MPSSE pipeline.
+    """
+    def __init__(self, channel=1, speed_hz=12000000):
         self.channel = channel
         self.speed_hz = speed_hz
+        self.dev = None
+
+    # ── Low-level helpers ────────────────────────────────────────────
+
+    def _drain(self):
+        if not self.dev:
+            return
+        q = self.dev.getQueueStatus()
+        if q:
+            self.dev.read(q)
+
+    def _read_n(self, n, timeout=0.5):
+        raw = b''
+        deadline = time.time() + timeout
+        while len(raw) < n and time.time() < deadline:
+            q = self.dev.getQueueStatus()
+            if q:
+                raw += self.dev.read(q)
+            elif not raw:
+                time.sleep(0.001)
+        return raw
+
+    def _read_all(self, timeout=0.5):
+        raw = b''
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            q = self.dev.getQueueStatus()
+            if q:
+                raw += self.dev.read(q)
+            elif raw:
+                break
+            else:
+                time.sleep(0.001)
+        return raw
+
+    # ── Device lifecycle ─────────────────────────────────────────────
 
     def open(self):
-        # Auto-detect SPI channel: scan FTDI devices for the non-JTAG one
+        """Open FTDI Channel B, enter MPSSE mode, configure SPI."""
         n = ft.createDeviceInfoList()
         idx = self.channel
         for i in range(n):
@@ -42,85 +87,175 @@ class OLS:
                 t = ft.open(i)
                 info = t.getDeviceInfo()
                 t.close()
-                desc = info.get('description', b'').decode()
-                # Pick the Blaster B / SPI channel (not JTAG Blaster A)
-                if 'B' in desc or 'SPI' in desc or 'Serial' in desc:
+                desc = info.get('description', b'').decode().strip()
+                # Match descriptions ending with 'B', '2', or containing 'SPI'
+                if desc.endswith('B') or desc.endswith('2') or 'SPI' in desc:
                     idx = i
                     break
-                # Fallback: second device is usually SPI
                 if i == 1:
                     idx = i
             except:
                 pass
+
         d = ft.open(idx)
-        d.setBitMode(0xff, 0x00); time.sleep(0.05)
-        d.setBitMode(0xff, 0x02); time.sleep(0.05)
-        d.write(b'\xaa'); time.sleep(0.02)
-        d.write(b'\xab'); time.sleep(0.02)
+        d.setBitMode(0xFF, 0); time.sleep(0.05)
+        d.setBitMode(0xFF, 2); time.sleep(0.1)
         d.purge()
-        d.write(b'\x8a\x00\x00')
-        d.write(b'\x85\x00\x00')
-        d.write(b'\x86\x00\x00')
-        d.write(b'\x9e\x00\x00')
-        if self.speed_hz > 0:
-            div = max(0, int(60000000 / (self.speed_hz * 2) - 1))
-            d.write(bytes([0x86, div & 0xFF, (div >> 8) & 0xFF]))
-        d.write(b'\x80\x08\x0b')
-        d.purge()
+        time.sleep(SLEEP_TICK)
+        q = d.getQueueStatus()
+        if q:
+            d.read(q)
+
+        # Correct init sequence batched in one write
+        div = max(0, 60_000_000 // (2 * self.speed_hz) - 1)
+        d.write(bytes([
+            0x4B, 0x01,                           # 4-pin mode
+            0x85,                                 # disable loopback
+            0x94, 0x00,                           # disable clock /5
+            0x86, div & 0xFF, (div >> 8) & 0xFF,  # clock divisor
+            0x80, GPIO_CS_HI, PIN_DIR,            # GPIO init (CS high)
+        ]))
+        # Drain stale data — GPIO readback arrives asynchronously
+        time.sleep(0.010)
+        q = d.getQueueStatus()
+        if q:
+            d.read(q)
+        time.sleep(SLEEP_TICK)
+        q = d.getQueueStatus()
+        if q:
+            d.read(q)
+
         self.dev = d
 
     def close(self):
         if self.dev:
-            self.dev.close()
+            try:
+                self.dev.setBitMode(0xFF, 0)
+                self.dev.close()
+            except:
+                pass
             self.dev = None
 
-    def tx(self, cmd, data=b'\x11\x11\x11\x11'):
-        """5-byte SPI transaction. Returns [preamble, b0, b1, b2, b3]"""
-        self.dev.write(b'\x80\x00\x0b')
-        self.dev.write(bytes([0x31, 0x04, 0x00]))
-        self.dev.write(bytes([cmd]) + data)
-        self.dev.write(b'\x80\x08\x0b')
-        time.sleep(0.001)
-        return self.dev.read(5)
+    # ── SPI transaction methods ──────────────────────────────────────
+
+    def _xfer(self, data, read_len=None):
+        """Full-duplex SPI: batched write + 0x87, return read bytes.
+
+        Sends GPIO CS-low + 0x11(data) + 0x87 + GPIO CS-high + 0x87
+        in one write() call. Polls getQueueStatus for response.
+        """
+        if read_len is None:
+            read_len = len(data)
+        total = max(len(data), read_len)
+        if read_len > len(data):
+            data = data + bytes([0x00] * (read_len - len(data)))
+        buf = bytes([0x80, GPIO_CS_LO, PIN_DIR])           # CS low
+        buf += bytes([0x11, (total - 1) & 0xFF, ((total - 1) >> 8) & 0xFF])
+        buf += data
+        buf += bytes([0x87])                                # flush
+        buf += bytes([0x80, GPIO_CS_HI, PIN_DIR])          # CS high
+        buf += bytes([0x87])                                # flush
+        self._drain()
+        self.dev.write(buf)
+        time.sleep(SLEEP_TICK)
+        resp = self._read_n(total)
+        return resp[:read_len]
+
+    def _xfer_cmd(self, cmd, data=None):
+        """5-byte command xfer. Returns [preamble, b0, b1, b2, b3]."""
+        if data is None:
+            data = b'\x00\x00\x00\x00'
+        payload = bytes([cmd]) + data[:4]
+        for retry in range(3):
+            self._drain()
+            buf = bytes([0x80, GPIO_CS_LO, PIN_DIR])
+            buf += bytes([0x31, 0x04, 0x00])
+            buf += payload
+            buf += bytes([0x87])
+            buf += bytes([0x80, GPIO_CS_HI, PIN_DIR])
+            buf += bytes([0x87])
+            self.dev.write(buf)
+            time.sleep(SLEEP_TICK)
+            r = self._read_all(timeout=0.050)
+            # Skip GPIO readback bytes at start, keep last 5
+            if len(r) >= 5:
+                last5 = r[-5:]
+                if last5 != b'\xff\xff\xff\xff\xff':
+                    return last5
+            self._drain()
+            time.sleep(SLEEP_TICK)
+        return b''
+
+    def _xfer_write_bulk(self, data):
+        """Bulk write: send bytes via 0x11 + 0x87. Returns response bytes."""
+        if not data:
+            return b''
+        n = len(data)
+        for retry in range(3):
+            self._drain()
+            buf = bytes([0x80, GPIO_CS_LO, PIN_DIR])
+            buf += bytes([0x11, (n - 1) & 0xFF, ((n - 1) >> 8) & 0xFF])
+            buf += data
+            buf += bytes([0x87])
+            buf += bytes([0x80, GPIO_CS_HI, PIN_DIR])
+            buf += bytes([0x87])
+            self.dev.write(buf)
+            time.sleep(SLEEP_TICK)
+            r = self._read_n(n)
+            if r and r != b'\xff' * n:
+                return r
+            self._drain()
+            time.sleep(SLEEP_TICK)
+        return self._read_all()
+
+    def _xfer_read_only(self, nbytes):
+        """Read nbytes using 0x31 + 0x11 (NOP) so MOSI stays driven high,
+        avoiding 0x00 (CMD_RESET) on the FPGA SPI slave.
+
+        0x20 would float MOSI low → 0x00 → resets the capture engine mid-readout.
+        """
+        if nbytes == 0:
+            return b''
+        self._drain()
+        buf = bytes([0x80, GPIO_CS_LO, PIN_DIR])
+        # Send NOP (0x11) bytes while clocking in MISO — 0x31 returns data inline.
+        # Chunked at 64 bytes to stay within FTDI internal buffer limits.
+        remaining = nbytes
+        chunk = 64
+        while remaining > 0:
+            n = min(chunk, remaining)
+            buf += bytes([0x31, (n - 1) & 0xFF, ((n - 1) >> 8) & 0xFF])
+            buf += bytes([0x11] * n)
+            remaining -= n
+        buf += bytes([0x87])
+        buf += bytes([0x80, GPIO_CS_HI, PIN_DIR])
+        buf += bytes([0x87])
+        self.dev.write(buf)
+        time.sleep(SLEEP_TICK)
+        return self._read_n(nbytes)
+
+    # ── Public API for OLSDeviceSPI ──────────────────────────────────
+
+    def tx(self, cmd, data=None):
+        """5-byte SPI command. Returns [preamble, b0, b1, b2, b3]."""
+        r = self._xfer_cmd(cmd, data)
+        return r if r else b''
 
     def bulk_write(self, data):
-        """Send arbitrary-length bytes via SPI (CS held low for entire transfer).
-        
-        Uses MPSSE combined write+read (0x31) so the FTDI clocks in the
-        slave's reply simultaneously; return data is discarded.
-        Length limit: 65536 bytes per call.
-        """
-        if not data or not self.dev:
-            return
-        n = len(data)
-        lo = (n - 1) & 0xFF
-        hi = ((n - 1) >> 8) & 0xFF
-        self.dev.write(b'\x80\x00\x0b')
-        self.dev.write(bytes([0x31, lo, hi]))
-        self.dev.write(data)
-        self.dev.write(b'\x80\x08\x0b')
-        time.sleep(0.002)
-        try:
-            q = self.dev.getQueueStatus()
-            if q:
-                self.dev.read(q)
-        except:
-            pass
+        """Send arbitrary-length bytes via SPI."""
+        self._xfer_write_bulk(data)
 
     def flush(self):
-        """Discard stale FIFO data"""
-        time.sleep(0.005)
-        try:
-            q = self.dev.getQueueStatus()
-            if q: self.dev.read(q)
-        except: pass
+        """Discard stale FIFO data."""
+        self._drain()
 
     def reset(self):
         self.tx(CMD_RESET)
         self.flush()
 
     def arm(self):
-        self.tx(CMD_ARM)
+        # Use 0x11 (CMD_XON, no-op) padding — 0x00 would be CMD_RESET and clear Run_OLS
+        self.tx(CMD_ARM, b'\x11\x11\x11\x11')
         self.flush()
 
     def set_sample_count(self, n):
@@ -132,10 +267,10 @@ class OLS:
         self.tx(CMD_SET_DIVIDER, bytes([lo, hi, ext, 0]))
 
     def set_trigger_mask(self, m):
-        self.tx(CMD_SET_TRIGGER_MASK, bytes([(m >> (8*i)) & 0xFF for i in range(4)]))
+        self.tx(CMD_SET_TRIGGER_MASK, bytes([(m >> (8 * i)) & 0xFF for i in range(4)]))
 
     def set_trigger_value(self, v):
-        self.tx(CMD_SET_TRIGGER_VAL, bytes([(v >> (8*i)) & 0xFF for i in range(4)]))
+        self.tx(CMD_SET_TRIGGER_VAL, bytes([(v >> (8 * i)) & 0xFF for i in range(4)]))
 
     def set_fast_mode(self, enable=True):
         self.tx(CMD_FAST_MODE, bytes([1 if enable else 0, 0, 0, 0]))
@@ -144,22 +279,19 @@ class OLS:
         self.tx(CMD_CONTINUOUS, bytes([0, 1 if enable else 0, 0, 0]))
 
     def set_ch_mode(self, mode_4ch=False):
-        """False=8ch/500k, True=4ch/4M"""
         self.tx(CMD_CH_MODE, bytes([0, 1 if mode_4ch else 0, 0, 0]))
 
     def chained_read(self, nbytes):
-        """Read nbytes of data via chained ARM+read. Returns data bytes (no preamble)."""
+        """Read nbytes via 0x20. Returns data bytes (no preamble)."""
+        if not self.dev or nbytes == 0:
+            return b''
         total = nbytes + 1
-        self.dev.write(b'\x80\x00\x0b')
-        self.dev.write(bytes([0x31, (total - 1) & 0xFF, (total - 1) >> 8]))
-        self.dev.write(b'\x11' * total)
-        self.dev.write(b'\x80\x08\x0b')
-        time.sleep(0.005)
-        raw = self.dev.read(total)
-        return raw[1:] if len(raw) > 1 else b''
+        r = self._xfer_read_only(total)
+        return r[1:] if len(r) > 1 else b''
+
+    # ── Convenience ──────────────────────────────────────────────────
 
     def capture_single(self, nsamples=256, divider=1):
-        """Configure, arm, wait, read single-shot capture data."""
         self.reset()
         self.arm()
         self.set_sample_count(nsamples)
@@ -168,12 +300,10 @@ class OLS:
         self.set_trigger_value(0xFF)
         self.set_fast_mode(True)
         self.arm()
-        # Wait for capture to complete
         time.sleep(0.01)
         return self.chained_read(nsamples * 4)
 
     def capture_rolling(self, nsamples=256, divider=1):
-        """Configure and read rolling/continuous capture data."""
         self.reset()
         self.arm()
         self.set_sample_count(nsamples)
@@ -182,31 +312,4 @@ class OLS:
         self.set_trigger_value(0xFF)
         self.set_fast_mode(True)
         self.set_continuous(True)
-        # Continuous mode auto-arms; data should be available immediately
         return self.chained_read(nsamples * 4)
-
-
-if __name__ == '__main__':
-    ols = OLS()
-    ols.open()
-    print("OLS @ 30 MHz SPI")
-
-    # Single-shot test
-    data = ols.capture_single(64, 1)
-    if data:
-        gaps = sum(1 for i in range(0, len(data)-3, 4) if all(b==0 for b in data[i:i+4]))
-        uniq = len(set(data))
-        print(f"Single-shot: {len(data)} bytes, gaps={gaps}, uniq={uniq}")
-    else:
-        print("Single-shot failed")
-
-    # Rolling test
-    data = ols.capture_rolling(64, 1)
-    if data:
-        gaps = sum(1 for i in range(0, len(data)-3, 4) if all(b==0 for b in data[i:i+4]))
-        uniq = len(set(data))
-        print(f"Rolling:     {len(data)} bytes, gaps={gaps}, uniq={uniq}")
-    else:
-        print("Rolling failed")
-
-    ols.close()

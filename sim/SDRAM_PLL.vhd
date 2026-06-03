@@ -10,6 +10,7 @@ entity SDRAM_PLL is
     inclk0 : in  std_logic;
     c0     : out std_logic;
     c1     : out std_logic;
+    c2     : out std_logic;
     locked : out std_logic
   );
 end SDRAM_PLL;
@@ -25,5 +26,6 @@ begin
 
   c0 <= sysclk;
   c1 <= sysclk;
+  c2 <= sysclk;
   locked <= lock;
 end sim;

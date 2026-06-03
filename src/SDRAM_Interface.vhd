@@ -42,7 +42,7 @@ ARCHITECTURE BEHAVIORAL OF SDRAM_Interface IS
 
   component SDRAM_Controller is
   generic (
-    CLK_Frequency : natural := 48000000
+    CLK_Frequency : natural := 24000000
   );
   port (
   sdram_addr            : out   std_logic_vector(11 downto 0);                    

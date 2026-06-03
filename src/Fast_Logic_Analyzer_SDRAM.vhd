@@ -175,7 +175,7 @@ begin
     variable burst_buf   : burst_buf_t;
     variable bram_wp   : natural range 0 to BRAM_SIZE-1 := 0;
     variable bram_cnt  : natural range 0 to BRAM_SIZE := 0;
-    variable bram_post_cnt : natural range 0 to BRAM_SIZE := 0;
+    variable bram_post_cnt : natural range 0 to 15000000 := 0;
     variable flush_rem   : natural range 0 to BRAM_SIZE := 0;
     variable flush_idx   : natural range 0 to BRAM_SIZE-1 := 0;
     variable flush_total : natural range 0 to BRAM_SIZE := 0;

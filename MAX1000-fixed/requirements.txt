@@ -1,0 +1,2 @@
+pyserial>=3.0
+pyftdi>=0.55.0

@@ -5,7 +5,7 @@ Wraps ols_spi.py with the same interface the GUI expects, including generator su
 import time
 import struct
 import threading
-from ols_spi import OLS as OLS_SPI
+from ols_spi import OLS as OLS_SPI, GPIO_CS_LO, GPIO_CS_HI, PIN_DIR
 
 # Reuse the same command constants from ols_spi
 CMD_RESET       = 0x00
@@ -102,13 +102,30 @@ class OLSDeviceSPI:
         self._long(CMD_GEN_PINS, val)
 
     def _load_block(self, data):
-        """Load bytes into the generator FIFO via CMD_GEN_BLK + bulk write."""
+        """Load bytes into the generator FIFO via batched CMD_GEN_BLK + bulk write.
+
+        CMD_GEN_BLK and the data bytes are sent in a single CS-low burst so the
+        FPGA stays in gen-load mode throughout (CS does not go high between them).
+        """
         if not data or not self.spi:
             return
         n = len(data)
-        self._long(CMD_GEN_BLK, n)
-        time.sleep(0.005)
-        self.spi.bulk_write(data)
+        d = self.spi.dev
+        d.write(
+            bytes([0x80, GPIO_CS_LO, PIN_DIR])                        # CS low
+            + bytes([0x31, 4, 0])                                      # 5-byte GEN_BLK cmd
+            + bytes([CMD_GEN_BLK]) + struct.pack('<I', n)              # [0xA3, lo, hi, ...]
+            + bytes([0x11, (n - 1) & 0xFF, ((n - 1) >> 8) & 0xFF])    # data bytes via 0x11
+            + data
+            + bytes([0x87])                                            # flush
+            + bytes([0x80, GPIO_CS_HI, PIN_DIR])                       # CS high
+            + bytes([0x87])                                            # flush
+        )
+        time.sleep(0.003)
+        # Drain response bytes
+        q = d.getQueueStatus()
+        if q:
+            d.read(q)
 
     def send_uart(self, data_bytes, baud=115200, tx_pin=None):
         """Load bytes and start UART generator."""
@@ -213,50 +230,48 @@ class OLSDeviceSPI:
         self._long(CMD_FAST_MODE, 1)
         self.spi.flush()
 
-        # ARM + GEN_STRT + chained read in one burst (CS held low, no padding)
-        # Matches UART backend's back-to-back byte stream
+        # ARM + GEN_STRT in single CS-low burst so generator starts within
+        # microseconds of arm (separate tx() calls have ~9ms of sleep/drain
+        # between them — enough for the entire capture to finish first).
         need = rc * self._stride
-        d = self.spi.dev
-        d.write(b'\x80\x00\x0b')  # CS low
-        d.write(bytes([0x31, 0, 0]))  # write+read 1 byte
-        d.write(bytes([CMD_ARM]))     # ARM only, no padding
-        d.write(bytes([0x31, 0, 0]))  # write+read 1 byte
-        d.write(bytes([CMD_GEN_STRT])) # GEN_STRT only, no padding
-        # chained read: all samples + preamble
-        total = need + 1
-        d.write(bytes([0x31, (total - 1) & 0xFF, ((total - 1) >> 8) & 0xFF]))
-        d.write(b'\x11' * total)
-        d.write(b'\x80\x08\x0b')  # CS high
-
-        data = b''
         deadline = time.time() + timeout
-        last_report = 0
-        arm_gen_resp = 2  # 1 byte ARM + 1 byte GEN_STRT response
-        while len(data) < need and time.time() < deadline:
-            if stop_evt and stop_evt.is_set():
-                break
-            # Read whatever is available
-            time.sleep(0.001)
-            q = d.getQueueStatus()
-            if q:
-                raw = d.read(q)
-                if len(data) == 0 and len(raw) > arm_gen_resp:
-                    # First read: skip ARM + GEN_STRT responses and preamble
-                    chunk = raw[arm_gen_resp + 1:]
-                    data += chunk
-                elif len(data) > 0:
-                    data += raw
-            if progress_cb and len(data) > 0:
-                got = len(data) // 4
-                if got > last_report + 50 or got >= rc:
-                    progress_cb(data[:got * 4], got, rc)
-                    last_report = got
-        if data:
-            for i in range(len(data) // 4):
-                if data[i * 4:(i + 1) * 4] != b'\x00\x00\x00\x00':
-                    data = data[i * 4:]
+
+        d = self.spi.dev
+        buf = bytes([0x80, GPIO_CS_LO, PIN_DIR])
+        # ARM with 0x11 padding (0x00 = CMD_RESET, would clear Run_OLS)
+        buf += bytes([0x31, 0x04, 0x00])
+        buf += bytes([CMD_ARM, 0x11, 0x11, 0x11, 0x11])
+        # GEN_STRT (multi-byte, consumes 4 bytes as data)
+        buf += bytes([0x31, 0x04, 0x00])
+        buf += bytes([CMD_GEN_STRT, 0x00, 0x00, 0x00, 0x00])
+        buf += bytes([0x87])
+        buf += bytes([0x80, GPIO_CS_HI, PIN_DIR])
+        buf += bytes([0x87])
+        self.spi._drain()
+        d.write(buf)
+        time.sleep(0.003)
+        q = d.getQueueStatus()
+        if q:
+            d.read(q)
+
+        # Wait for capture to complete before reading back
+        cap_time = rc / rate_hz
+        wait = min(cap_time + 0.005, max(0, deadline - time.time() - 0.5))
+        if wait > 0:
+            time.sleep(wait)
+
+        samples = self.spi.chained_read(need)
+
+        if progress_cb and samples:
+            ns = len(samples) // 4
+            progress_cb(samples, ns, rc)
+
+        if samples:
+            for i in range(len(samples) // 4):
+                if samples[i * 4:(i + 1) * 4] != b'\x00\x00\x00\x00':
+                    samples = samples[i * 4:]
                     break
-        return data
+        return samples
 
     # ─── Single-shot capture ───────────────────────────────────────
 
@@ -308,69 +323,32 @@ class OLSDeviceSPI:
         # Enable fast mode (BRAM) to bypass SDRAM hardware init issues
         self._long(CMD_FAST_MODE, 1)
 
-        # ARM + chained read in one burst (no gap, no padding)
+        # ARM using proven OLS class method, then chained_read.
         self.spi.flush()
         rc = max(1, nsamples)
         need = rc * self._stride
-        d = self.spi.dev
-        total = need + 1
-        d.write(b'\x80\x00\x0b')
-        d.write(bytes([0x31, 0, 0]))  # 1 byte transaction
-        d.write(bytes([CMD_ARM]))     # ARM only
-        d.write(bytes([0x31, (total - 1) & 0xFF, ((total - 1) >> 8) & 0xFF]))
-        d.write(b'\x11' * total)
-        d.write(b'\x80\x08\x0b')
-
-        data = b''
         deadline = time.time() + timeout
-        last_report = 0
-        arm_resp = 1  # 1 byte ARM response
-        while len(data) < need and time.time() < deadline:
-            if stop_evt and stop_evt.is_set():
-                break
-            time.sleep(0.001)
-            q = d.getQueueStatus()
-            if q:
-                raw = d.read(q)
-                if len(data) == 0 and len(raw) > arm_resp:
-                    chunk = raw[arm_resp + 1:]
-                    data += chunk
-                elif len(data) > 0:
-                    data += raw
-            if progress_cb and len(data) > 0:
-                got = len(data) // 4
-                if got > last_report + 50 or got >= rc:
-                    progress_cb(data[:got * 4], got, rc)
-                    last_report = got
-        if data:
-            for i in range(len(data) // 4):
-                if data[i * 4:(i + 1) * 4] != b'\x00\x00\x00\x00':
-                    data = data[i * 4:]
-                    break
-        return data
 
-        need = rc * self._stride
-        data = b''
-        deadline = time.time() + timeout
-        last_report = 0
-        while len(data) < need and time.time() < deadline:
-            if stop_evt and stop_evt.is_set():
-                break
-            chunk = self.spi.chained_read(min(4096, need - len(data)))
-            data += chunk
-            if progress_cb:
-                got = len(data) // 4
-                if got > last_report + 50 or got >= rc:
-                    progress_cb(data[:got * 4], got, rc)
-                    last_report = got
-            if len(chunk) == 0:
-                time.sleep(0.001)
-        if data:
-            for i in range(len(data) // 4):
-                if data[i * 4:(i + 1) * 4] != b'\x00\x00\x00\x00':
-                    data = data[i * 4:]
+        self.spi.arm()
+        self.spi.flush()
+
+        cap_time = rc / rate_hz
+        wait = min(cap_time + 0.005, max(0, deadline - time.time() - 0.5))
+        if wait > 0:
+            time.sleep(wait)
+
+        samples = self.spi.chained_read(need)
+
+        if progress_cb and samples:
+            ns = len(samples) // 4
+            progress_cb(samples, ns, rc)
+
+        if samples:
+            for i in range(len(samples) // 4):
+                if samples[i * 4:(i + 1) * 4] != b'\x00\x00\x00\x00':
+                    samples = samples[i * 4:]
                     break
-        return data
+        return samples
 
     # ─── Rolling capture with generator support ────────────────────
 
@@ -390,10 +368,10 @@ class OLSDeviceSPI:
         self.spi.set_trigger_mask(0)
         self.spi.set_trigger_value(0)
         self.spi.set_fast_mode(True)
-        self.spi.set_continuous(True)
         self.spi.flush()
 
-        # Load generator data if provided
+        # Load generator data BEFORE starting continuous capture, so the
+        # interface is in idle mode (Run='0') and processes gen commands.
         if gen_data:
             self._long(CMD_GEN_PROTO, 0)
             div_b = max(1, self.sys_clk // gen_baud)
@@ -401,6 +379,10 @@ class OLSDeviceSPI:
             self._load_block(gen_data)
             self._pins(tx_pin=gen_tx_pin)
             time.sleep(0.01)
+            self.spi.flush()
+
+        self.spi.set_continuous(True)
+        self.spi.flush()
 
         buf = b''
         seq = 0
@@ -442,7 +424,7 @@ def find_spi_device():
                 info = t.getDeviceInfo()
                 t.close()
                 desc = info.get('description', b'').decode()
-                if 'B' in desc or 'SPI' in desc:
+                if desc.endswith('B') or 'SPI' in desc:
                     return True
                 if i == 1:
                     return True

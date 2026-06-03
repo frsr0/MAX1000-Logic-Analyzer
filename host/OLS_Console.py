@@ -1106,6 +1106,11 @@ class OLScope:
             # Verify device responds
             self.dev.reset()
             meta = self.dev.get_metadata()
+            dbg = f"[DBG] Connected backend={self._backend} meta={len(meta)}B"
+            if hasattr(self.dev, 'spi') and self.dev.spi:
+                q = self.dev.spi.dev.getQueueStatus() if hasattr(self.dev.spi, 'dev') else 0
+                dbg += f" queue={q}"
+            print(dbg)
             if len(meta) == 0:
                 self.dev.close()
                 self.dev = None
@@ -1315,6 +1320,8 @@ class OLScope:
                         self.capture_progress = (got, total)
                         self.capture_result = (buf, rate, got, stride)
                 else:
+                    need_bytes = nsamp * getattr(self.dev, '_stride', 4)
+                    print(f"[DBG] capture rate={rate} nsamp={nsamp} expect_bytes={need_bytes} trigger={trigger}")
                     data = self.dev.capture(
                         rate_hz=rate, nsamples=nsamp,
                         timeout=max(3, nsamp//10000 + 2),
@@ -1322,6 +1329,9 @@ class OLScope:
                         trigger=trigger,
                         stop_evt=self.stop_evt
                     )
+                    print(f"[DBG] capture returned {len(data)} bytes")
+                    if len(data) >= 8:
+                        print(f"[DBG] first 8 bytes hex: {data[:8].hex()}")
                     self.capture_result = (data, rate, nsamp)
             except Exception as e:
                 self.capture_result = e
@@ -1447,9 +1457,16 @@ class OLScope:
     def _load_capture(self, data, rate, stride=4):
         """Load captured data into the waveform view."""
         if not data:
+            print("[DBG] _load_capture: data is empty")
             self.status['text'] = "Capture returned 0 bytes — FPGA not responding"
             return
         ch_data, ns = samples_to_channels(data, stride=stride)
+        ch0 = ch_data[0]
+        trans = sum(1 for i in range(1, len(ch0)) if ch0[i] != ch0[i-1])
+        print(f"[DBG] _load_capture: {len(data)}B {ns}samples {trans}CH0trans")
+        if ns > 0:
+            print(f"[DBG] CH0 first 20: {''.join(str(ch0[i]) for i in range(min(20, ns)))}")
+            print(f"[DBG] raw first 16B hex: {data[:16].hex()}")
         self.ch_data = ch_data
         self.samplerate = rate
         self.captured_bytes = data
@@ -1457,8 +1474,6 @@ class OLScope:
         self.decoded_i2c = []
         self.wave.load(ch_data, self.ch_names, self.samplerate)
         self._fit_view()  # ensure full waveform fits after capture completes
-        ch0 = ch_data[0]
-        trans = sum(1 for i in range(1, len(ch0)) if ch0[i] != ch0[i-1])
         self.status['text'] = f"Captured {len(data)} bytes ({ns} samples, {trans} CH0 transitions)"
 
     def _fit_view(self):
@@ -1685,12 +1700,18 @@ class OLScope:
         rate = int(rate_str.replace('kHz','000').replace('MHz','000000'))
         nsamp = int(self.samp_cb.get())
         self.status['text'] = f"Capturing with generator {nsamp} @ {rate/1e6:.1f} MHz..."
+        print(f"[DBG] capture_with_gen rate={rate} nsamp={nsamp} expect_bytes={nsamp*4}")
         self.win.update()
         try:
             data = self.dev.capture_with_gen(rate_hz=rate, nsamples=nsamp)
         except Exception as e:
+            print(f"[DBG] capture_with_gen EXCEPTION: {e}")
             self.status['text'] = f"Capture error: {e}"
             return
+        
+        print(f"[DBG] capture_with_gen returned {len(data)} bytes")
+        if len(data) >= 8:
+            print(f"[DBG] first 8 bytes hex: {data[:8].hex()}")
         
         if not data:
             self.status['text'] = "Capture returned 0 bytes"
@@ -1705,6 +1726,9 @@ class OLScope:
         self.wave.load(ch_data, self.ch_names, self.samplerate)
         ch0 = ch_data[0]
         trans = sum(1 for i in range(1, len(ch0)) if ch0[i] != ch0[i-1])
+        print(f"[DBG] capture result: {ns} samples, {trans} CH0 transitions")
+        if ns > 0:
+            print(f"[DBG] CH0 first 20: {''.join(str(ch0[i]) for i in range(min(20, ns)))}")
         self.status['text'] = f"Captured {ns} samples ({trans} CH0 transitions)"
         self._decode()
 

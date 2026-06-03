@@ -5,7 +5,7 @@ use IEEE.numeric_std.all;
 ENTITY OLS_SDRAM_Top IS
   generic (
     TX_PIN      : natural range 0 to 7 := 3;   -- generator output pin
-    PLL_MULT    : positive := 4;               -- PLL multiply (4x = 48 MHz from 12 MHz)
+    PLL_MULT    : positive := 2;               -- PLL multiply (2x = 24 MHz from 12 MHz)
     PLL_DIV     : positive := 1;                -- PLL divide
     Sim         : boolean := false
   );

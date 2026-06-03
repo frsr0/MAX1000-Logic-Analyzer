@@ -1,0 +1,33 @@
+; ols_eeprom_recovery.inf - Override to bind FTDI driver to corrupted VID/PID
+; Uses Include/Needs to reference the existing FTDI driver from DriverStore.
+
+[Version]
+Signature="$Windows NT$"
+Class=USB
+ClassGUID={36fc9e60-c465-11cf-8056-444553540000}
+Provider=FTDI
+DriverVer=10/28/2024,2.12.36.20
+
+[Manufacturer]
+%FTDI%=OlsHw,NTamd64
+
+[OlsHw.NTamd64]
+%USB\VID_746E&PID_0004&MI_00.DeviceDesc%=OlsRecoveryBus.NTamd64,USB\VID_746E&PID_0004&MI_00
+%USB\VID_746E&PID_0004&MI_01.DeviceDesc%=OlsRecoveryBus.NTamd64,USB\VID_746E&PID_0004&MI_01
+
+[OlsRecoveryBus.NTamd64]
+Include=ftdibus.inf
+Needs=FtdiBus.NTamd64
+
+[OlsRecoveryBus.NTamd64.Services]
+Include=ftdibus.inf
+Needs=FtdiBus.NTamd64.Services
+
+[OlsRecoveryBus.NTamd64.HW]
+Include=ftdibus.inf
+Needs=FtdiBus.NTamd64.HW
+
+[Strings]
+FTDI="FTDI"
+USB\VID_746E&PID_0004&MI_00.DeviceDesc="OLS FT2232H Recovery Interface A"
+USB\VID_746E&PID_0004&MI_01.DeviceDesc="OLS FT2232H Recovery Interface B"
