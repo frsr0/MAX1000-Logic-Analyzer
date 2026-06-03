@@ -211,15 +211,9 @@ class OLSDeviceSPI:
         time.sleep(0.02)
         self.spi.flush()
 
-        # Re-load generator config after reset (CMD_RESET wipes gen state)
+        # Generator: reset handler sets Gen_Baud_Div=208, Gen_Proto=0.
+        # Only set pins (FIFO loaded by send_uart before capture_with_gen).
         if self._gen_data is not None:
-            self.spi._xfer_cmd(CMD_GEN_PROTO, struct.pack('<I', 0))  # UART mode
-            div_b = max(1, self.sys_clk // self._gen_baud)
-            self.spi._xfer_cmd(CMD_GEN_BAUD, struct.pack('<I', div_b & 0xFFFF))
-            self._load_block(self._gen_data)
-            self._pins(tx_pin=self._gen_tx_pin)
-            self.spi.flush()
-            self._load_block(self._gen_data)
             self._pins(tx_pin=self._gen_tx_pin)
             self.spi.flush()
 

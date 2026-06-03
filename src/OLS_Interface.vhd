@@ -488,6 +488,10 @@ BEGIN
             cmd_was_multibyte <= '0';
             Trigger_Mask <= (others => '0');
             proto_trig_enable <= '0';
+            -- Default generator config: UART mode, 115200 baud (208 @ 24 MHz)
+            Gen_Baud_Div <= x"00D0";
+            Gen_Proto <= '0';
+            blk_mode <= '0';
             Thread23 := 0;
             Thread26 := 0;
             Thread44 := 0;
