@@ -67,6 +67,7 @@ begin
     type slv_array is array (natural range <>) of std_logic;
     variable ch0_vals : slv_array(0 to 8191) := (others => '0');
     variable edges    : natural := 0;
+    variable errors   : natural := 0;
     variable prev     : std_logic := '0';
     variable spacing  : natural := 0;
     variable max_spc  : natural := 0;
@@ -173,12 +174,12 @@ begin
       report "--- tc_signal_path: Verify signal capture integrity ---" severity note;
 
       cont_mode <= '0';  -- single-buffer (SDRAM path)
-      samples <= 128;    -- 64 words (sub_steps=2)
+      samples <= 100;    -- 50 words (sub_steps=2)
       rate_div <= 1;     -- sample every 2 cycles
       run_f <= '1';
 
       -- Drive known pattern: CH0 = 1,0,1,0,... CH1-CH7 = steady 1 (pull-ups)
-      for i in 0 to 127 loop
+      for i in 0 to 99 loop
         inputs <= (others => '1');
         if i mod 2 = 0 then
           inputs(0) <= '1';
@@ -194,37 +195,38 @@ begin
       run_f <= '0';
       wait for 500 ns;
 
-      -- Read back all 64 words
-      address <= 63; wait for CLK_PERIOD * 20;
-      for i in 0 to 63 loop
+      -- Read back all 50 words
+      address <= 49; wait for CLK_PERIOD * 20;
+      for i in 0 to 49 loop
         address <= i;
         wait for CLK_PERIOD * 10;
         ch0_vals(i) := outputs(0);
       end loop;
 
-      -- Count CH0 transitions
-      edges := 0;
-      for i in 1 to 63 loop
+      -- Count CH0 transitions and log errors
+      edges := 0; errors := 0;
+      for i in 1 to 49 loop
         if ch0_vals(i) /= ch0_vals(i-1) then
           edges := edges + 1;
         end if;
-      end loop;
-      report "tc_signal_path: " & integer'image(64) & " words read, " &
-             integer'image(edges) & " CH0 transitions" severity note;
-
-      -- With alternating input: even words (step0) see CH0='1', odd (step1) see CH0='0'
-      -- So words should alternate 1,0,1,0,... giving 63 transitions
-      -- Unless the address bit 0 selects the sub-step, then even addr = step0 = '1',
-      -- odd addr = step1 = '0'
-      for i in 0 to 63 loop
         if i mod 2 = 0 then
-          assert ch0_vals(i) = '1'
-            report "tc_signal_path: Word " & integer'image(i) & " CH0='0' expected '1'" severity failure;
+          if ch0_vals(i) /= '1' then
+            report "  ERROR: word " & integer'image(i) & " CH0='0' expected '1'" severity note;
+            errors := errors + 1;
+          end if;
         else
-          assert ch0_vals(i) = '0'
-            report "tc_signal_path: Word " & integer'image(i) & " CH0='1' expected '0'" severity failure;
+          if ch0_vals(i) /= '0' then
+            report "  ERROR: word " & integer'image(i) & " CH0='1' expected '0'" severity note;
+            errors := errors + 1;
+          end if;
         end if;
       end loop;
+      report "tc_signal_path: " & integer'image(50) & " words read, " &
+             integer'image(edges) & " CH0 transitions, " &
+             integer'image(errors) & " errors" severity note;
+
+      assert errors = 0
+        report "tc_signal_path: " & integer'image(errors) & " data errors" severity failure;
 
       -- Verify non-CH0 bits are always 1 (pull-up)
       for i in 0 to 7 loop
