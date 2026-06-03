@@ -163,6 +163,83 @@ begin
       report "tc_data_integrity: PASS (32 words verified)" severity note;
     end if;
 
+    -- ============================================================
+    -- tc_signal_path: Verify capture sees toggling signals (like test_out)
+    -- Uses SDRAM path (proven working) with known input pattern.
+    -- Drives CH0 with alternating 1/0 pattern, captures, reads back,
+    -- and verifies every word matches expectations.
+    -- ============================================================
+    if TEST = "all" or TEST = "tc_signal_path" then
+      report "--- tc_signal_path: Verify signal capture integrity ---" severity note;
+
+      cont_mode <= '0';  -- single-buffer (SDRAM path)
+      samples <= 128;    -- 64 words (sub_steps=2)
+      rate_div <= 1;     -- sample every 2 cycles
+      run_f <= '1';
+
+      -- Drive known pattern: CH0 = 1,0,1,0,... CH1-CH7 = steady 1 (pull-ups)
+      for i in 0 to 127 loop
+        inputs <= (others => '1');
+        if i mod 2 = 0 then
+          inputs(0) <= '1';
+        else
+          inputs(0) <= '0';
+        end if;
+        wait for CLK_PERIOD * 2;  -- rate_div+1 = 2
+      end loop;
+
+      wait until full = '1' for 200 us;
+      assert full = '1' report "tc_signal_path: Full not asserted" severity failure;
+
+      run_f <= '0';
+      wait for 500 ns;
+
+      -- Read back all 64 words
+      address <= 63; wait for CLK_PERIOD * 20;
+      for i in 0 to 63 loop
+        address <= i;
+        wait for CLK_PERIOD * 10;
+        ch0_vals(i) := outputs(0);
+      end loop;
+
+      -- Count CH0 transitions
+      edges := 0;
+      for i in 1 to 63 loop
+        if ch0_vals(i) /= ch0_vals(i-1) then
+          edges := edges + 1;
+        end if;
+      end loop;
+      report "tc_signal_path: " & integer'image(64) & " words read, " &
+             integer'image(edges) & " CH0 transitions" severity note;
+
+      -- With alternating input: even words (step0) see CH0='1', odd (step1) see CH0='0'
+      -- So words should alternate 1,0,1,0,... giving 63 transitions
+      -- Unless the address bit 0 selects the sub-step, then even addr = step0 = '1',
+      -- odd addr = step1 = '0'
+      for i in 0 to 63 loop
+        if i mod 2 = 0 then
+          assert ch0_vals(i) = '1'
+            report "tc_signal_path: Word " & integer'image(i) & " CH0='0' expected '1'" severity failure;
+        else
+          assert ch0_vals(i) = '0'
+            report "tc_signal_path: Word " & integer'image(i) & " CH0='1' expected '0'" severity failure;
+        end if;
+      end loop;
+
+      -- Verify non-CH0 bits are always 1 (pull-up)
+      for i in 0 to 7 loop
+        address <= i;
+        wait for CLK_PERIOD * 10;
+        for c in 1 to 7 loop
+          assert outputs(c) = '1'
+            report "tc_signal_path: CH" & integer'image(c) & " word " & integer'image(i) &
+                   " = " & std_logic'image(outputs(c)) & " expected '1'" severity failure;
+        end loop;
+      end loop;
+
+      report "tc_signal_path: PASS (" & integer'image(edges) & " transitions)" severity note;
+    end if;
+
     if TEST = "all" then
       report "ALL TESTS: PASS" severity note;
     end if;
