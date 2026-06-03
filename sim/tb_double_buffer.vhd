@@ -242,6 +242,46 @@ begin
       report "tc_signal_path: PASS (" & integer'image(edges) & " transitions)" severity note;
     end if;
 
+    -- ============================================================
+    -- tc_all_ones: Verify all-1s inputs produce 0xFF output
+    -- Matches hardware behavior (GPIO pull-ups + CH0 stuck at 1)
+    -- ============================================================
+    if TEST = "all" or TEST = "tc_all_ones" then
+      report "--- tc_all_ones: All-1s inputs should give 0xFF ---" severity note;
+
+      cont_mode <= '0';
+      samples <= 32;     -- 16 words
+      rate_div <= 1;
+      run_f <= '1';
+
+      -- Drive all inputs to '1'
+      for i in 0 to 31 loop
+        inputs <= (others => '1');
+        wait for CLK_PERIOD * 2;
+      end loop;
+
+      wait until full = '1' for 200 us;
+      assert full = '1' report "tc_all_ones: Full not asserted" severity failure;
+
+      run_f <= '0';
+      wait for 500 ns;
+
+      -- Read back and verify all bytes are 0xFF
+      address <= 15; wait for CLK_PERIOD * 20;
+      for i in 0 to 15 loop
+        address <= i;
+        wait for CLK_PERIOD * 10;
+        -- Check all 8 output bits are '1'
+        for c in 0 to 7 loop
+          assert outputs(c) = '1'
+            report "tc_all_ones: Word " & integer'image(i) & " CH" & integer'image(c) &
+                   " = " & std_logic'image(outputs(c)) & " expected '1'" severity failure;
+        end loop;
+      end loop;
+
+      report "tc_all_ones: PASS (all outputs = '1')" severity note;
+    end if;
+
     if TEST = "all" then
       report "ALL TESTS: PASS" severity note;
     end if;

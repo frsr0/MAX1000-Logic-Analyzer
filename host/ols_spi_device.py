@@ -213,14 +213,15 @@ class OLSDeviceSPI:
         self._long(CMD_FAST_MODE, 1)
         self.spi.flush()
 
-        # ARM + GEN_STRT + chained read in one burst (CS held low)
+        # ARM + GEN_STRT + chained read in one burst (CS held low, no padding)
+        # Matches UART backend's back-to-back byte stream
         need = rc * self._stride
         d = self.spi.dev
         d.write(b'\x80\x00\x0b')  # CS low
-        d.write(bytes([0x31, 4, 0]))
-        d.write(bytes([CMD_ARM]) + b'\x11\x11\x11\x11')  # ARM
-        d.write(bytes([0x31, 4, 0]))
-        d.write(bytes([CMD_GEN_STRT]) + b'\x11\x11\x11\x11')  # GEN_STRT
+        d.write(bytes([0x31, 0, 0]))  # write+read 1 byte
+        d.write(bytes([CMD_ARM]))     # ARM only, no padding
+        d.write(bytes([0x31, 0, 0]))  # write+read 1 byte
+        d.write(bytes([CMD_GEN_STRT])) # GEN_STRT only, no padding
         # chained read: all samples + preamble
         total = need + 1
         d.write(bytes([0x31, (total - 1) & 0xFF, ((total - 1) >> 8) & 0xFF]))
@@ -230,7 +231,7 @@ class OLSDeviceSPI:
         data = b''
         deadline = time.time() + timeout
         last_report = 0
-        arm_gen_resp = 10  # 5 bytes ARM + 5 bytes GEN_STRT response
+        arm_gen_resp = 2  # 1 byte ARM + 1 byte GEN_STRT response
         while len(data) < need and time.time() < deadline:
             if stop_evt and stop_evt.is_set():
                 break
@@ -307,15 +308,15 @@ class OLSDeviceSPI:
         # Enable fast mode (BRAM) to bypass SDRAM hardware init issues
         self._long(CMD_FAST_MODE, 1)
 
-        # ARM + chained read in one burst (no gap)
+        # ARM + chained read in one burst (no gap, no padding)
         self.spi.flush()
         rc = max(1, nsamples)
         need = rc * self._stride
         d = self.spi.dev
         total = need + 1
         d.write(b'\x80\x00\x0b')
-        d.write(bytes([0x31, 4, 0]))
-        d.write(bytes([CMD_ARM]) + b'\x11\x11\x11\x11')
+        d.write(bytes([0x31, 0, 0]))  # 1 byte transaction
+        d.write(bytes([CMD_ARM]))     # ARM only
         d.write(bytes([0x31, (total - 1) & 0xFF, ((total - 1) >> 8) & 0xFF]))
         d.write(b'\x11' * total)
         d.write(b'\x80\x08\x0b')
@@ -323,7 +324,7 @@ class OLSDeviceSPI:
         data = b''
         deadline = time.time() + timeout
         last_report = 0
-        arm_resp = 5
+        arm_resp = 1  # 1 byte ARM response
         while len(data) < need and time.time() < deadline:
             if stop_evt and stop_evt.is_set():
                 break
