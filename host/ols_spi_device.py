@@ -44,6 +44,9 @@ class OLSDeviceSPI:
         self._raw_flags = 0
         self._pending_gen = None
         self.gen_pins = {'tx': 3, 'scl': 1}
+        self._gen_data = None
+        self._gen_baud = 115200
+        self._gen_tx_pin = 3
         self.spi = None
 
     def open(self):
@@ -138,6 +141,9 @@ class OLSDeviceSPI:
 
     def send_uart(self, data_bytes, baud=115200, tx_pin=None):
         """Load bytes and start UART generator."""
+        self._gen_data = data_bytes
+        self._gen_baud = baud
+        self._gen_tx_pin = tx_pin if tx_pin is not None else 3
         self._long(CMD_GEN_PROTO, 0)  # UART
         div = max(1, self.sys_clk // baud)
         self._long(CMD_GEN_BAUD, div & 0xFFFF)
@@ -204,6 +210,15 @@ class OLSDeviceSPI:
         self.reset()
         time.sleep(0.02)
         self.spi.flush()
+
+        # Re-load generator config after reset (CMD_RESET wipes gen state)
+        if self._gen_data is not None:
+            self._long(CMD_GEN_PROTO, 0)
+            div_b = max(1, self.sys_clk // self._gen_baud)
+            self._long(CMD_GEN_BAUD, div_b & 0xFFFF)
+            self._load_block(self._gen_data)
+            self._pins(tx_pin=self._gen_tx_pin)
+            self.spi.flush()
 
         self._short(CMD_XON)
         div = max(0, int(self.sys_clk / rate_hz) - 1)

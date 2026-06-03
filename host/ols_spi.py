@@ -286,24 +286,13 @@ class OLS:
         The response layout from the FTDI is:
           [GPIO_readback, MISO_0(preamble), MISO_1..MISO_N(TX_Data)]
         We skip GPIO_readback and preamble, returning just TX_Data.
-        The FPGA sends bytes per sample as: [pad, sample, pad, pad].
-        To match the decoder convention (sample at offset 0 within stride),
-        we swap bytes 0 and 1 in each 4-byte group.
         """
         if not self.dev or nbytes == 0:
             return b''
         want = nbytes + 2
         r = self._xfer_read_only(want)
         if len(r) > 2:
-            raw = r[2:2 + nbytes]
-            # Swap bytes 0 and 1 in each 4-byte group to align sample at offset 0
-            if len(raw) >= 4:
-                result = bytearray(raw)
-                for i in range(0, len(result), 4):
-                    if i + 1 < len(result):
-                        result[i], result[i+1] = result[i+1], result[i]
-                return bytes(result)
-            return raw
+            return r[2:2 + nbytes]
         return b''
 
     # ── Convenience ──────────────────────────────────────────────────
