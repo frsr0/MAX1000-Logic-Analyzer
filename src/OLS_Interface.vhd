@@ -438,12 +438,18 @@ BEGIN
              (ctr < 4 AND command(7) = '1' AND effective_RX_Data(7) = '1') THEN
             data((ctr+1)*8-1 downto ctr*8) <= effective_RX_Data;
             ctr := ctr + 1;
+            -- After all 4 bytes, force dispatch
+            IF ctr = 4 THEN
+              report "FIX: forcing Thread44=7 for saved=0x" & to_hstring(saved_command) severity note;
+              Thread44 := 7;
+              Thread45 := 0;
+            END IF;
           END IF;
           command <= effective_RX_Data;
           Thread38 := 4;
         END IF;
       WHEN 4 =>
-        IF Thread44 = 0 THEN
+        IF Thread44 = 0 AND cmd_was_multibyte = '0' THEN
           saved_command <= command;
           cmd_was_multibyte <= command(7);
           IF command(7) = '0' THEN
@@ -451,6 +457,9 @@ BEGIN
           ELSE
             Thread38 := Thread38 + 2;  -- to 6 (accumulate)
           END IF;
+        ELSIF Thread44 = 0 AND cmd_was_multibyte = '1' THEN
+          -- Data byte before accumulate started: skip saved_command overwrite
+          Thread38 := Thread38 + 2;  -- to 6, keep saved_command from command byte
         ELSIF Thread44 = 18 OR Thread44 = 19 THEN
           Thread38 := Thread38 + 1;
         ELSIF cmd_was_multibyte = '1' THEN

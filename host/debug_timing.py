@@ -1,8 +1,8 @@
-"""Measure gen baud rate and decode."""
+"""Quick baud timing check."""
 import sys, time
 sys.path.insert(0, '.')
 from ols_spi_device import OLSDeviceSPI
-from OLS_Console import samples_to_channels, decode_uart
+from OLS_Console import samples_to_channels
 
 dev = OLSDeviceSPI(sys_clk_hz=24000000)
 dev.open()
@@ -22,14 +22,10 @@ if data:
             prev = i
     if bits:
         avg = sum(bits) / len(bits)
-        div = 24000000 / (1000000/avg) - 1
-        print(f'Avg bit: {avg:.1f} us, div={div:.0f}')
-    dec = decode_uart(ch, 1000000, 3, 115200)
-    if dec:
-        text = ''.join(chr(r.value) if 32<=r.value<127 else '.' for r in dec)
-        print(f'Decoded: "{text}"')
-        vals = [r.value for r in dec]
-        print(f'Bytes: {vals}')
-        if 72 in vals or 101 in vals:
-            print('Found H or e!')
+        print(f'Avg bit: {avg:.2f} us')
+        print(f'Baud: {1000000/avg:.0f}')
+        div = 24000000/(1000000/avg)-1
+        print(f'Gen_Baud_Div = {div:.0f}')
+        if 7 < avg < 10:
+            print('*** CORRECT 115200 baud! ***')
 dev.close()
