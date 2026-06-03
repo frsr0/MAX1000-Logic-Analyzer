@@ -138,7 +138,7 @@ class OLS:
         self.tx(CMD_SET_TRIGGER_VAL, bytes([(v >> (8*i)) & 0xFF for i in range(4)]))
 
     def set_fast_mode(self, enable=True):
-        self.tx(CMD_FAST_MODE, bytes([0, 1 if enable else 0, 0, 0]))
+        self.tx(CMD_FAST_MODE, bytes([1 if enable else 0, 0, 0, 0]))
 
     def set_continuous(self, enable=True):
         self.tx(CMD_CONTINUOUS, bytes([0, 1 if enable else 0, 0, 0]))

@@ -209,6 +209,10 @@ class OLSDeviceSPI:
         # Drain responses from configure commands before the capture burst
         self.spi.flush()
 
+        # Enable fast mode (BRAM) to bypass SDRAM hardware init issues
+        self._long(CMD_FAST_MODE, 1)
+        self.spi.flush()
+
         # ARM + GEN_STRT + chained read in one burst (CS held low)
         need = rc * self._stride
         d = self.spi.dev
@@ -299,6 +303,9 @@ class OLSDeviceSPI:
         self._long(CMD_FLAGS, self._raw_flags)
         self._long(CMD_DELAY, 0)
         self._short(CMD_XOFF)
+
+        # Enable fast mode (BRAM) to bypass SDRAM hardware init issues
+        self._long(CMD_FAST_MODE, 1)
 
         # ARM + chained read in one burst (no gap)
         self.spi.flush()
