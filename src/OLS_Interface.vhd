@@ -10,7 +10,7 @@ ENTITY OLS_Interface IS
     Baud_Rate       :   INTEGER     := 115200;      
     Max_Samples     :   NATURAL     := 25000;       
     OS_Rate         :   NATURAL     := 16;          
-    Def_IFace       :   NATURAL     := 0            
+    Def_IFace       :   NATURAL     := 1            
 
   );
 PORT (
@@ -1022,7 +1022,13 @@ BEGIN
       if interface_mode_i = '1' then
         if UART_TX_Enable = '1' then
           effective_TX_Busy <= '1';
-        elsif SPI_RX_Valid = '1' then
+        elsif effective_TX_Busy = '1' then
+          -- Clear one cycle after Enable: TX_Data has been presented to the
+          -- SPI slave's TX_Data port.  The slave latches it on the next
+          -- sck_fall (guaranteed to arrive later at any SPI rate supported
+          -- by the sys_clk oversampling).  Cannot wait for SPI_RX_Valid
+          -- because no SCK edges arrive for status responses — the host
+          -- reads TX_Data in the next SPI transaction.
           effective_TX_Busy <= '0';
         end if;
       else

@@ -62,10 +62,11 @@ class OLSDeviceSPI:
         time.sleep(0.02)
         self.spi.flush()
         # Switch to SPI mode (0xAB, data(0)=1).
-        # FPGA defaults to UART mode after reset; without this switch,
-        # Thread23 readout never starts (needs interface_mode_i='1' OR Run='1').
+        # VHDL data register stores RX bytes LSB-first:
+        #   data(7:0)=1st byte, data(15:8)=2nd, data(23:16)=3rd, data(31:24)=4th
+        # interface_mode_i <= data(0). We need data(0)=1 → 1st byte must have bit0=1.
+        # struct.pack('<I', 1) = [0x01, 0, 0, 0] → 1st byte=0x01 → data(0)=1.
         self._long(0xAB, 1)
-        self.spi.flush()
 
     def get_metadata(self):
         """Return 50-byte metadata block (same format as UART backend)."""
