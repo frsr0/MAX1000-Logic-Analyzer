@@ -433,6 +433,12 @@ BEGIN
           END IF;
           Thread38 := 0;
         ELSE
+          -- Accumulate data bytes for multi-byte commands at byte-receive time
+          IF (cmd_was_multibyte = '1' AND ctr < 4) OR 
+             (ctr < 4 AND command(7) = '1' AND effective_RX_Data(7) = '1') THEN
+            data((ctr+1)*8-1 downto ctr*8) <= effective_RX_Data;
+            ctr := ctr + 1;
+          END IF;
           command <= effective_RX_Data;
           Thread38 := 4;
         END IF;
@@ -441,9 +447,9 @@ BEGIN
           saved_command <= command;
           cmd_was_multibyte <= command(7);
           IF command(7) = '0' THEN
-            Thread38 := Thread38 + 1;
+            Thread38 := Thread38 + 1;  -- to 5 (dispatch)
           ELSE
-            Thread38 := Thread38 + 2;
+            Thread38 := Thread38 + 2;  -- to 6 (accumulate)
           END IF;
         ELSIF Thread44 = 18 OR Thread44 = 19 THEN
           Thread38 := Thread38 + 1;

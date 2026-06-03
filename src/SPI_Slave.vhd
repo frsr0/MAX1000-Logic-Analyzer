@@ -120,7 +120,7 @@ begin
           rx_shift <= rx_shift(6 downto 0) & MOSI;
           if bit_cnt = 7 then
             rx_byte_f  <= rx_shift(6 downto 0) & MOSI;
-            rx_valid_cnt <= 80;  -- hold for ~670 ns at 120 MHz
+            rx_valid_cnt <= 24;  -- hold for ~200 ns at 120 MHz
             bit_cnt    <= 0;
             reload_pending <= '1';
           else
