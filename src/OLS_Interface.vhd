@@ -434,25 +434,12 @@ BEGIN
           Thread38 := 0;
         ELSE
           command <= effective_RX_Data;
-          -- If this is a data byte for a multi-byte command, accumulate it
-          IF cmd_was_multibyte = '1' AND ctr < 4 THEN
-            data((ctr+1)*8-1 downto ctr*8) <= effective_RX_Data;
-            ctr := ctr + 1;
-            -- After all 4 bytes, jump to dispatch (Thread45 may be stuck waiting
-            -- for Busy='1' that was consumed by this byte's reception).
-            IF ctr = 4 THEN
-              cmd_was_multibyte <= '0';  -- prevent further accumulation
-              Thread44 := 5;             -- skip stuck accumulate, go to dispatch
-              Thread45 := 0;
-            END IF;
-          END IF;
           Thread38 := 4;
         END IF;
       WHEN 4 =>
         IF Thread44 = 0 THEN
           saved_command <= command;
           cmd_was_multibyte <= command(7);
-          ctr := 0;  -- reset accumulator for new command
           IF command(7) = '0' THEN
             Thread38 := Thread38 + 1;
           ELSE
@@ -693,8 +680,7 @@ BEGIN
           WHEN 0 to 1 =>
             Thread44 := Thread44 + 1;
           WHEN 2 =>
-            -- ctr initialized at Thread38=4 for each new command.
-            -- DO NOT reset here: it may overwrite ctr from Thread38=3 accumulation.
+            ctr := 0;
             Thread44 := 3;
           WHEN 3 =>
             IF ( ctr < 4) THEN 
