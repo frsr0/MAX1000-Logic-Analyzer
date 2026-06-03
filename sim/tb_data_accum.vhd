@@ -40,7 +40,7 @@ architecture sim of tb_data_accum is
     signal mosi_sig : inout std_logic;
     signal miso_sig : in    std_logic;
     signal cs_sig   : inout std_logic;
-    constant SCK_PERIOD : in time := 100 ns  -- 10 MHz
+    constant SCK_PERIOD : in time := 33 ns  -- ~30 MHz
   ) is
     constant HALF : time := SCK_PERIOD / 2;
     variable b : std_logic_vector(7 downto 0);

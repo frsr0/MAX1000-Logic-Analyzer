@@ -37,7 +37,7 @@ architecture rtl of SPI_Slave2 is
   signal bit_cnt     : natural range 0 to 7 := 0;
   signal rx_byte_f   : std_logic_vector(7 downto 0) := (others => '0');
   signal rx_valid_f  : std_logic := '0';
-  signal rx_valid_cnt : natural range 0 to 31 := 0;
+  signal rx_valid_cnt : natural range 0 to 127 := 0;
   signal reload_pending : std_logic := '0';
 
   -- TX_Data CDC (sys_clk -> fast_clk): 2-stage, TX_Data stable for full byte
@@ -120,7 +120,7 @@ begin
           rx_shift <= rx_shift(6 downto 0) & MOSI;
           if bit_cnt = 7 then
             rx_byte_f  <= rx_shift(6 downto 0) & MOSI;
-            rx_valid_cnt <= 24;
+            rx_valid_cnt <= 80;  -- hold for ~670 ns at 120 MHz
             bit_cnt    <= 0;
             reload_pending <= '1';
           else

@@ -219,6 +219,9 @@ class OLSDeviceSPI:
             self._load_block(self._gen_data)
             self._pins(tx_pin=self._gen_tx_pin)
             self.spi.flush()
+            self._load_block(self._gen_data)
+            self._pins(tx_pin=self._gen_tx_pin)
+            self.spi.flush()
 
         self._short(CMD_XON)
         div = max(0, int(self.sys_clk / rate_hz) - 1)
