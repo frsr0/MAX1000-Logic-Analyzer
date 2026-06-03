@@ -68,6 +68,7 @@ signal sdram_clk_pll  : std_logic := '0';
   attribute preserve : boolean;
   attribute preserve of test_div : signal is true;
   signal test_out      : std_logic := '0';
+  signal reg_data      : std_logic_vector(7 downto 0) := (others => '0');
   signal com_act_cnt   : integer range 0 to 200_000_000 := 0;
   signal com_active    : std_logic := '0';
   signal uart_rx_last  : std_logic := '1';
@@ -256,6 +257,14 @@ BEGIN
     end if;
   end process;
   test_out <= test_div(9);
+  
+  -- Register internal_data before FLA to break delta cycle chain
+  process(CLK)
+  begin
+    if rising_edge(CLK) then
+      reg_data <= internal_data;
+    end if;
+  end process;
 
   -- B4 pin sharing: UART_TX (output) in UART mode, SPI_MOSI (input) in SPI mode
   UART_TX <= core_uart_tx when interface_mode = '0' else 'Z';
@@ -290,7 +299,7 @@ BEGIN
   PORT MAP (
     CLK => core_clk,
     FAST_CLK => fast_clk,
-    Inputs   => internal_data,
+    Inputs   => reg_data,
     UART_RX  => UART_RX,
     UART_TX  => core_uart_tx,
     SPI_CS   => SPI_CS,
