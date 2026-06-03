@@ -1,0 +1,26 @@
+Fixes applied in pre-merge commit (1d3564f) that are NOT present in MAX1000-fixed:
+
+VHDL fixes (not in MAX1000-fixed):
+1. Fast_Logic_Analyzer_SDRAM.vhd: bram_post_cnt range 0..BRAM_SIZE → 0..15000000
+   - Needed for Fast-mode captures with RCOUNT > 1024 (counter couldn't reach target)
+   
+2. OLS_Interface.vhd: SPI TX Busy fix (Bug 2)
+   - Clears effective_TX_Busy one cycle after UART_TX_Enable instead of on SPI_RX_Valid
+   - Original cleared on SPI_RX_Valid, causing one-sample lag on SPI readout
+   - See block comment "FIX (Bug 2)" in the source
+
+3. OLS_Logic_Analyzer_SDRAM_Core.vhd: LA_Address range 0..Max_Samples → 0..Max_Samples-1
+   - NOTE: MAX1000-fixed has 0..Max_Samples; our change may be a regression
+
+Clock changes (reverted by MAX1000-fixed):
+4. OLS_SDRAM_Top.vhd: PLL_MULT 4 → 2 (48 MHz → 24 MHz sys_clk)
+5. SDRAM_Interface.vhd: CLK_Frequency 48000000 → 24000000
+6. src/SDRAM_PLL.vhd: clk0_multiply_by 4 → 2
+7. vhdplus/Libraries/Logic_Analyzer/SDRAM_PLL.vhd: clk0_multiply_by 4 → 2
+
+Host code fixes (kept in working tree, not from MAX1000-fixed):
+8. ols_spi.py: _xfer_read_only uses 0x31+0x11 NOPs instead of 0x20 (floating MOSI)
+   - Prevents 0x00 (CMD_RESET) from being sent during read-only transactions
+9. ols_spi.py: tx() with no data sends only 1 byte (cmd alone), not 5 bytes
+   - Original sent b'\x11\x11\x11\x11' after every short command (Bug 4)
+10. ols_spi_device.py: capture_with_gen() - batched ARM+GEN_STRT in single CS-low burst

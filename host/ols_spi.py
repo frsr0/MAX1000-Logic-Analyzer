@@ -282,12 +282,29 @@ class OLS:
         self.tx(CMD_CH_MODE, bytes([0, 1 if mode_4ch else 0, 0, 0]))
 
     def chained_read(self, nbytes):
-        """Read nbytes via 0x20. Returns data bytes (no preamble)."""
+        """Read nbytes via 0x31 + NOPs. Returns data bytes (no preamble).
+        The response layout from the FTDI is:
+          [GPIO_readback, MISO_0(preamble), MISO_1..MISO_N(TX_Data)]
+        We skip GPIO_readback and preamble, returning just TX_Data.
+        The FPGA sends bytes per sample as: [pad, sample, pad, pad].
+        To match the decoder convention (sample at offset 0 within stride),
+        we swap bytes 0 and 1 in each 4-byte group.
+        """
         if not self.dev or nbytes == 0:
             return b''
-        total = nbytes + 1
-        r = self._xfer_read_only(total)
-        return r[1:] if len(r) > 1 else b''
+        want = nbytes + 2
+        r = self._xfer_read_only(want)
+        if len(r) > 2:
+            raw = r[2:2 + nbytes]
+            # Swap bytes 0 and 1 in each 4-byte group to align sample at offset 0
+            if len(raw) >= 4:
+                result = bytearray(raw)
+                for i in range(0, len(result), 4):
+                    if i + 1 < len(result):
+                        result[i], result[i+1] = result[i+1], result[i]
+                return bytes(result)
+            return raw
+        return b''
 
     # ── Convenience ──────────────────────────────────────────────────
 

@@ -61,6 +61,11 @@ class OLSDeviceSPI:
         self.spi.reset()
         time.sleep(0.02)
         self.spi.flush()
+        # Switch to SPI mode (0xAB, data(0)=1).
+        # FPGA defaults to UART mode after reset; without this switch,
+        # Thread23 readout never starts (needs interface_mode_i='1' OR Run='1').
+        self._long(0xAB, 1)
+        self.spi.flush()
 
     def get_metadata(self):
         """Return 50-byte metadata block (same format as UART backend)."""

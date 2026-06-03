@@ -67,7 +67,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL OLS_Interface_Inputs        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL LA_Out : STD_LOGIC_VECTOR(15 downto 0);
   SIGNAL Fast_Logic_Analyzer_SDRAM_CLK_150      : STD_LOGIC;
-  SIGNAL LA_Address       : NATURAL          range 0 to Max_Samples := 0;
+  SIGNAL LA_Address       : NATURAL          range 0 to Max_Samples-1 := 0;
   SIGNAL Gen_Load_Byte_i    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL Gen_Load_We_i      : STD_LOGIC := '0';
   SIGNAL Gen_Start_i        : STD_LOGIC := '0';

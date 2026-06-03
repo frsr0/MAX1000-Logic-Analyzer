@@ -1,85 +1,40 @@
-"""Debug: check status bytes after generator commands."""
-import time, sys, struct
+"""Test generator directly - verify gen_tx appears on GPIO pin."""
+import sys, time
 sys.path.insert(0, '.')
-from ols_spi import OLS
+from ols_spi_device import OLSDeviceSPI
 
-spi = OLS(channel=0, speed_hz=12000000)
-spi.open()
-d = spi.dev
+dev = OLSDeviceSPI(sys_clk_hz=48000000)
+dev.open()
+d = dev.spi.dev
 
-def tx(cmd, data=None):
-    if data is None:
-        data = b'\x00\x00\x00\x00'
-    payload = bytes([cmd]) + data[:4]
-    d.write(bytes([0x80, 0x00, 0x3B]) + bytes([0x31, 4, 0]) + payload + bytes([0x87]) + bytes([0x80, 0x08, 0x3B]) + bytes([0x87]))
-    time.sleep(0.005)
-    q = d.getQueueStatus()
-    if q:
-        r = d.read(q)
-        if len(r) >= 5:
-            return r[-5:]
-    return b''
+# 1. Load gen with 'Hello' and start it
+print("=== Load and start generator ===")
+dev.send_uart(b'Hello', baud=115200, tx_pin=3)
+time.sleep(0.02)
+dev.spi.flush()
 
-def show_status(label, r):
-    if len(r) >= 5:
-        sb = r[0]
-        print(f'{label}: {sb:08b} (Run={sb>>7&1} RO={sb>>6&1} Full={sb>>5&1} iface={sb>>4&1} cont={sb>>3&1} fast={sb>>2&1} b1={sb>>1&1} b0={sb&1})')
-    else:
-        print(f'{label}: no response')
+# Start generator
+dev._long(0xA1, 0)  # GEN_STRT
+time.sleep(0.02)
+dev.spi.flush()
 
-# Reset
-r = tx(0x00)
-show_status('After reset', r)
+# 2. Read status to check gen_busy
+# In MAX1000-fixed, tx() doesn't capture MISO properly.
+# Let's check GPIO pin with a meter/scope note
+print("Generator should be running on GPIO(3) now")
+print("Check with oscilloscope or logic probe on TX_PIN(3)")
 
-# GEN_PROTO = UART
-r = tx(0xA4, bytes([0,0,0,0]))
-show_status('GEN_PROTO', r)
+# 3. Try capture while gen is running
+print("\n=== Capture with gen already running ===")
+data = dev.capture(rate_hz=1000000, nsamples=100)
+if data:
+    ch = [[] for _ in range(8)]
+    for i in range(0, len(data), 4):
+        b0 = data[i]
+        for c in range(8):
+            ch[c].append((b0 >> c) & 1)
+    for c in range(8):
+        tr = sum(1 for i in range(1, len(ch[c])) if ch[c][i] != ch[c][i-1])
+        print(f'  CH{c}: {tr} tr, {sum(ch[c])}/{len(ch[c])} ones')
 
-# GEN_BAUD
-r = tx(0xA2, struct.pack('<I', 48000000//115200 & 0xFFFF))
-show_status('GEN_BAUD', r)
-
-# Block load "Hello"
-n = 5
-data = b'Hello'
-d.write(bytes([0x80, 0x00, 0x3B]) + bytes([0x31, 4, 0]) + bytes([0xA3]) + struct.pack('<I', n) + bytes([0x11, (n-1)&0xFF, ((n-1)>>8)&0xFF]) + data + bytes([0x87]) + bytes([0x80, 0x08, 0x3B]) + bytes([0x87]))
-time.sleep(0.005)
-q = d.getQueueStatus()
-if q: d.read(q)
-print('Block load done')
-
-# GEN_PINS = 3
-r = tx(0xA6, bytes([3,0,0,0]))
-show_status('GEN_PINS', r)
-
-# Status check
-r = tx(0x11)  # XON (no-op)
-show_status('Status before ARM', r)
-
-# ARM with 0x11 padding
-r = tx(0x01, b'\x11\x11\x11\x11')
-show_status('ARM', r)
-
-# Status after ARM
-r = tx(0x11)
-show_status('After ARM', r)
-
-# GEN_STRT
-r = tx(0xA1, bytes([0,0,0,0]))
-show_status('GEN_STRT', r)
-
-# Status after GEN_STRT
-r = tx(0x11)
-show_status('After GEN_STRT', r)
-
-# Wait and check
-time.sleep(0.05)
-r = tx(0x11)
-show_status('50ms later', r)
-
-time.sleep(0.5)
-r = tx(0x11)
-show_status('550ms later', r)
-
-spi.close()
-print('Done')
+dev.close()

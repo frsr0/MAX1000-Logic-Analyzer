@@ -963,7 +963,7 @@ BEGIN
 
   -- SPI preamble byte: zero-waste status on every transaction
   spi_preamble <= Run & Run_OLS & Full & interface_mode_i &
-                  continuous_mode_i & fast_mode_i & Gen_Busy & '0';
+                  continuous_mode_i & fast_mode_i & "00";
 
   Gen_TX_Pin  <= gen_tx_pin_int;
   Gen_SCL_Pin <= gen_scl_pin_int;
