@@ -440,7 +440,6 @@ BEGIN
             ctr := ctr + 1;
             -- After all 4 bytes, force dispatch
             IF ctr = 4 THEN
-              report "FIX: forcing Thread44=7 for saved=0x" & to_hstring(saved_command) severity note;
               Thread44 := 7;
               Thread45 := 0;
             END IF;

@@ -30,10 +30,10 @@ architecture rtl of Signal_Gen is
   signal tail  : natural range 0 to FIFO_DEPTH-1 := 0;
   signal count : natural range 0 to FIFO_DEPTH := 0;
   signal tx_active : std_logic := '0';
-  constant BAUD_DIV_115200 : natural := 208;
-  signal baud_div_int : std_logic_vector(15 downto 0) := x"00D0";
+  -- baud_div_r: registered copy of Baud_Div port, latched on Start.
+  -- FIX: original code had hardcoded BAUD_DIV_115200 and ignored the Baud_Div port.
+  signal baud_div_r : natural range 0 to 65535 := 208;
 begin
-  baud_div_int <= x"00D0";
   Active <= tx_active;
   Busy   <= tx_active;
 
@@ -75,7 +75,7 @@ begin
         ----------------------------------------------------
         -- UART TX with optional Modbus CRC-16 append
         ----------------------------------------------------
-        if baud_cnt < BAUD_DIV_115200 - 1 then
+        if baud_cnt < baud_div_r - 1 then
           baud_cnt := baud_cnt + 1;
         else
           baud_cnt := 0;
@@ -131,7 +131,7 @@ begin
         ----------------------------------------------------
         -- I2C Master
         ----------------------------------------------------
-        if baud_cnt < BAUD_DIV_115200 - 1 then
+        if baud_cnt < baud_div_r - 1 then
           baud_cnt := baud_cnt + 1;
         else
           baud_cnt := 0;
