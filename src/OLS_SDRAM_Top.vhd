@@ -68,11 +68,6 @@ signal sdram_clk_pll  : std_logic := '0';
   attribute preserve : boolean;
   attribute preserve of test_div : signal is true;
   signal test_out      : std_logic := '0';
-  signal reg_data      : std_logic_vector(7 downto 0) := (others => '0');
-  signal pll_areset    : std_logic := '1';  -- hold PLL in reset initially
-  signal pll_areset_cnt : natural range 0 to 255 := 0;
-  signal pll_lock_ok   : std_logic := '0';
-  signal sys_clk_sel   : std_logic := '0';  -- 0=CLK, 1=PLL
   signal com_act_cnt   : integer range 0 to 200_000_000 := 0;
   signal com_active    : std_logic := '0';
   signal uart_rx_last  : std_logic := '1';
@@ -171,35 +166,9 @@ BEGIN
 
   -- PLL: when PLL_MULT/PLL_DIV != 1, generate faster system clock.
   -- Otherwise bypass (use CLK directly for stock 12 MHz hardware).
-  -- PLL reset: hold areset low for ~5us after power-up, then release
-  process(CLK)
-  begin
-    if rising_edge(CLK) then
-      if pll_areset_cnt < 60 then  -- 60 * 83ns = 5us at 12MHz
-        pll_areset_cnt <= pll_areset_cnt + 1;
-        pll_areset <= '1';
-      else
-        pll_areset <= '0';  -- release PLL reset
-      end if;
-      -- Wait for PLL lock, fall back to CLK if not locked after ~100us
-      if pll_lock_ok = '0' then
-        if pll_areset_cnt = 0 then
-          pll_areset_cnt <= 1;  -- start count on first CLK edge
-        end if;
-        if pll_areset_cnt > 1200 then  -- ~100us timeout
-          sys_clk_sel <= '0';  -- fall back to CLK
-          pll_lock_ok <= '1';
-        elsif pll_locked = '1' then
-          sys_clk_sel <= '1';  -- use PLL clock
-          pll_lock_ok <= '1';
-        end if;
-      end if;
-    end if;
-  end process;
-
   gen_use_pll : if PLL_MULT /= 1 or PLL_DIV /= 1 generate
     pll_inst : entity work.SDRAM_PLL
-      port map (areset => pll_areset, inclk0 => CLK, c0 => sys_clk, c1 => fast_clk, c2 => sdram_clk_pll, locked => pll_locked);
+      port map (inclk0 => CLK, c0 => sys_clk, c1 => fast_clk, c2 => sdram_clk_pll, locked => pll_locked);
   end generate;
   gen_no_pll : if PLL_MULT = 1 and PLL_DIV = 1 generate
     sys_clk <= CLK;
@@ -207,8 +176,7 @@ BEGIN
     pll_locked <= '1';
   end generate;
 
-  -- Clock selection: use PLL output if lock OK, else fall back to CLK  
-  core_clk <= sys_clk when (pll_lock_ok = '1' and pll_locked = '1') else CLK;
+  core_clk <= sys_clk;
   
   -- SDRAM clock from PLL c2 (-90° phase shift relative to core)
   sdram_clk <= sdram_clk_pll;
@@ -286,14 +254,6 @@ BEGIN
   end process;
   test_out <= test_div(9);
   
-  -- Register internal_data before FLA to break delta cycle chain
-  process(core_clk)
-  begin
-    if rising_edge(core_clk) then
-      reg_data <= internal_data;
-    end if;
-  end process;
-  
   -- B4 pin sharing: UART_TX (output) in UART mode, SPI_MOSI (input) in SPI mode
   UART_TX <= core_uart_tx when interface_mode = '0' else 'Z';
   spi_mosi_int <= UART_TX;
@@ -327,7 +287,7 @@ BEGIN
   PORT MAP (
     CLK => core_clk,
     FAST_CLK => fast_clk,
-    Inputs   => reg_data,
+    Inputs   => internal_data,
     UART_RX  => UART_RX,
     UART_TX  => core_uart_tx,
     SPI_CS   => SPI_CS,
