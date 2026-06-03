@@ -15,6 +15,7 @@ ENTITY OLS_Interface IS
   );
 PORT (
   CLK : IN STD_LOGIC;
+  FAST_CLK : IN STD_LOGIC := '0';
   UART_RX      : IN  STD_LOGIC := '1';
   UART_TX      : OUT STD_LOGIC := '1';
   SPI_CS       : IN  STD_LOGIC := '1';
@@ -163,6 +164,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   COMPONENT SPI_Slave2 IS
   PORT (
     sys_clk    : IN  STD_LOGIC;
+    fast_clk   : IN  STD_LOGIC := '0';
     reset      : IN  STD_LOGIC := '0';
     SCK        : IN  STD_LOGIC := '0';
     MOSI       : IN  STD_LOGIC := '0';
@@ -1000,6 +1002,7 @@ BEGIN
   SPI_Slave1 : SPI_Slave2
   PORT MAP (
     sys_clk    => CLK,
+    fast_clk   => FAST_CLK,
     reset      => '0',
     SCK        => UART_RX,    -- SPI_SCK on same pin as UART_RX (A4/BDBUS0)
     MOSI       => SPI_MOSI,   -- shared with UART_TX pin (B4/BDBUS1)

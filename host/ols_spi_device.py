@@ -47,7 +47,7 @@ class OLSDeviceSPI:
         self.spi = None
 
     def open(self):
-        self.spi = OLS_SPI(speed_hz=12000000)
+        self.spi = OLS_SPI(speed_hz=30000000)
         self.spi.open()
 
     def close(self):
@@ -92,7 +92,10 @@ class OLSDeviceSPI:
             self.spi.tx(cmd)
 
     def _long(self, cmd, val32):
-        """Send command + 4-byte value."""
+        """Send command + 4-byte value (little-endian, as original).
+        VHDL data register: data(31:24)=1st RX byte, data(7:0)=4th.
+        struct.pack('<I') puts LSB first, matching the OLS protocol.
+        """
         if self.spi:
             data = struct.pack('<I', val32)
             self.spi.tx(cmd, data)
@@ -119,7 +122,7 @@ class OLSDeviceSPI:
         d.write(
             bytes([0x80, GPIO_CS_LO, PIN_DIR])                        # CS low
             + bytes([0x31, 4, 0])                                      # 5-byte GEN_BLK cmd
-            + bytes([CMD_GEN_BLK]) + struct.pack('<I', n)              # [0xA3, lo, hi, ...]
+            + bytes([CMD_GEN_BLK]) + struct.pack('>I', n)              # [0xA3, hi, ..., lo]
             + bytes([0x11, (n - 1) & 0xFF, ((n - 1) >> 8) & 0xFF])    # data bytes via 0x11
             + data
             + bytes([0x87])                                            # flush

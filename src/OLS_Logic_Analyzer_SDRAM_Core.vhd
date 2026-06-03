@@ -95,6 +95,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   );
   PORT (
     CLK : IN STD_LOGIC;
+    FAST_CLK : IN STD_LOGIC := '0';
     UART_RX      : IN  STD_LOGIC := '1';
     UART_TX      : OUT STD_LOGIC := '1';
     SPI_CS       : IN  STD_LOGIC := '1';
@@ -190,7 +191,9 @@ BEGIN
   GENERIC MAP (
       CLK_Frequency => CLK_Frequency,Baud_Rate     => Baud_Rate,Max_Samples   => Max_Samples,OS_Rate       => 13,Def_IFace     => 1
   ) PORT MAP (
-    CLK           => Fast_Logic_Analyzer_SDRAM_CLK_150,UART_RX       => UART_RX,UART_TX       => UART_TX,SPI_CS        => SPI_CS,SPI_MOSI      => SPI_MOSI,SPI_MISO      => SPI_MISO,Interface_Mode=> Interface_Mode,Inputs        => OLS_Interface_Inputs,Rate_Div      => OLS_Interface_Rate_Div,Samples       => OLS_Interface_Samples,Start_Offset  => OLS_Interface_Start_Offset,Run           => OLS_Interface_Run,Full          => OLS_Interface_Full,Address       => OLS_Interface_Address,Outputs       => OLS_Interface_Outputs,
+    CLK           => Fast_Logic_Analyzer_SDRAM_CLK_150,
+    FAST_CLK      => FAST_CLK,
+    UART_RX       => UART_RX,UART_TX       => UART_TX,SPI_CS        => SPI_CS,SPI_MOSI      => SPI_MOSI,SPI_MISO      => SPI_MISO,Interface_Mode=> Interface_Mode,Inputs        => OLS_Interface_Inputs,Rate_Div      => OLS_Interface_Rate_Div,Samples       => OLS_Interface_Samples,Start_Offset  => OLS_Interface_Start_Offset,Run           => OLS_Interface_Run,Full          => OLS_Interface_Full,Address       => OLS_Interface_Address,Outputs       => OLS_Interface_Outputs,
     Gen_Load_Byte => Gen_Load_Byte_i,Gen_Load_We   => Gen_Load_We_i,Gen_Start     => Gen_Start_i,Gen_Baud_Div  => Gen_Baud_Div_i,Gen_Busy      => Gen_Busy_i,Gen_Proto     => Gen_Proto_i,
     Gen_TX_Pin    => Gen_TX_Pin_i,Gen_SCL_Pin   => Gen_SCL_Pin_i,
     Gen_I2C_Rd_Len => gen_i2c_rd_len_i,Gen_I2C_Dev_R  => gen_i2c_dev_r_i,Gen_I2C_Test   => gen_i2c_test_i,
