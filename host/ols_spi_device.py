@@ -38,7 +38,7 @@ CMD_TVALUE     = 0xC1
 class OLSDeviceSPI:
     """SPI backend device — implements capture, rolling capture, and generator."""
 
-    def __init__(self, sys_clk_hz=48000000):
+    def __init__(self, sys_clk_hz=24000000):
         self.sys_clk = sys_clk_hz
         self._stride = 4
         self._raw_flags = 0
@@ -126,7 +126,7 @@ class OLSDeviceSPI:
         d.write(
             bytes([0x80, GPIO_CS_LO, PIN_DIR])                        # CS low
             + bytes([0x31, 4, 0])                                      # 5-byte GEN_BLK cmd
-            + bytes([CMD_GEN_BLK]) + struct.pack('>I', n)              # [0xA3, hi, ..., lo]
+            + bytes([CMD_GEN_BLK]) + struct.pack('<I', n)              # [0xA3, lo, ..., hi]
             + bytes([0x11, (n - 1) & 0xFF, ((n - 1) >> 8) & 0xFF])    # data bytes via 0x11
             + data
             + bytes([0x87])                                            # flush
@@ -213,9 +213,9 @@ class OLSDeviceSPI:
 
         # Re-load generator config after reset (CMD_RESET wipes gen state)
         if self._gen_data is not None:
-            self._long(CMD_GEN_PROTO, 0)
+            self.spi._xfer_cmd(CMD_GEN_PROTO, struct.pack('<I', 0))  # UART mode
             div_b = max(1, self.sys_clk // self._gen_baud)
-            self._long(CMD_GEN_BAUD, div_b & 0xFFFF)
+            self.spi._xfer_cmd(CMD_GEN_BAUD, struct.pack('<I', div_b & 0xFFFF))
             self._load_block(self._gen_data)
             self._pins(tx_pin=self._gen_tx_pin)
             self.spi.flush()

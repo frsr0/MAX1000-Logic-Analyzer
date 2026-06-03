@@ -434,12 +434,25 @@ BEGIN
           Thread38 := 0;
         ELSE
           command <= effective_RX_Data;
+          -- If this is a data byte for a multi-byte command, accumulate it
+          IF cmd_was_multibyte = '1' AND ctr < 4 THEN
+            data((ctr+1)*8-1 downto ctr*8) <= effective_RX_Data;
+            ctr := ctr + 1;
+            -- After all 4 bytes, jump to dispatch (Thread45 may be stuck waiting
+            -- for Busy='1' that was consumed by this byte's reception).
+            IF ctr = 4 THEN
+              cmd_was_multibyte <= '0';  -- prevent further accumulation
+              Thread44 := 5;             -- skip stuck accumulate, go to dispatch
+              Thread45 := 0;
+            END IF;
+          END IF;
           Thread38 := 4;
         END IF;
       WHEN 4 =>
         IF Thread44 = 0 THEN
           saved_command <= command;
           cmd_was_multibyte <= command(7);
+          ctr := 0;  -- reset accumulator for new command
           IF command(7) = '0' THEN
             Thread38 := Thread38 + 1;
           ELSE
@@ -448,6 +461,8 @@ BEGIN
         ELSIF Thread44 = 18 OR Thread44 = 19 THEN
           Thread38 := Thread38 + 1;
         ELSIF cmd_was_multibyte = '1' THEN
+          -- Data byte for a multi-byte command (already accumulated at Thread38=3).
+          -- Advance to Thread38=6 where the accumulate state machine continues.
           Thread38 := Thread38 + 2;
         ELSE
           Thread38 := Thread38 + 1;
@@ -678,7 +693,8 @@ BEGIN
           WHEN 0 to 1 =>
             Thread44 := Thread44 + 1;
           WHEN 2 =>
-            ctr := 0;
+            -- ctr initialized at Thread38=4 for each new command.
+            -- DO NOT reset here: it may overwrite ctr from Thread38=3 accumulation.
             Thread44 := 3;
           WHEN 3 =>
             IF ( ctr < 4) THEN 
@@ -701,10 +717,10 @@ BEGIN
                   Thread45 := Thread45 + 1;
                 END IF;
               WHEN 3 =>
-                data((ctr+1)*8-1 downto ctr*8) <= effective_RX_Data;
-
-
-                 ctr := ctr + 1;
+                IF ctr < 4 THEN
+                  data((ctr+1)*8-1 downto ctr*8) <= effective_RX_Data;
+                  ctr := ctr + 1;
+                END IF;
                 Thread45 := 0;
                 Thread44 := 3;
               WHEN others => Thread45 := 0;
@@ -933,7 +949,7 @@ BEGIN
   -- N/3 computed one bit at a time (MSB first). Takes 21 cycles = 0.44us.
   -- Triggered by div3_pending pulse from main process when Read_Count changes.
   divider_proc: process(CLK)
-    variable acc : natural range 0 to 3 := 0;
+    variable acc : natural range 0 to 6 := 0;
   begin
     if rising_edge(CLK) then
       if div3_pending = '1' then
