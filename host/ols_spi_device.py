@@ -38,7 +38,7 @@ CMD_TVALUE     = 0xC1
 class OLSDeviceSPI:
     """SPI backend device — implements capture, rolling capture, and generator."""
 
-    def __init__(self, sys_clk_hz=24000000):
+    def __init__(self, sys_clk_hz=48000000):
         self.sys_clk = sys_clk_hz
         self._stride = 4
         self._raw_flags = 0
@@ -211,11 +211,7 @@ class OLSDeviceSPI:
         time.sleep(0.02)
         self.spi.flush()
 
-        # Generator: reset handler sets Gen_Baud_Div=208, Gen_Proto=0.
-        # Only set pins (FIFO loaded by send_uart before capture_with_gen).
-        if self._gen_data is not None:
-            self._pins(tx_pin=self._gen_tx_pin)
-            self.spi.flush()
+        # Generator: configuration done in the reload block before ARM
 
         self._short(CMD_XON)
         div = max(0, int(self.sys_clk / rate_hz) - 1)
@@ -251,9 +247,16 @@ class OLSDeviceSPI:
         self._long(CMD_FAST_MODE, 1)
         self.spi.flush()
 
-        # ARM + GEN_STRT in single CS-low burst so generator starts within
-        # microseconds of arm (separate tx() calls have ~9ms of sleep/drain
-        # between them — enough for the entire capture to finish first).
+        # Load gen FIFO right before ARM (minimize time between gen start and capture)
+        if self._gen_data is not None:
+            self._long(CMD_GEN_PROTO, 0)  # UART
+            div = max(1, self.sys_clk // self._gen_baud)
+            self._long(CMD_GEN_BAUD, div & 0xFFFF)
+            self._pins(tx_pin=self._gen_tx_pin)
+            self._load_block(self._gen_data)
+            self.spi.flush()
+
+        # ARM + GEN_STRT in single CS-low burst
         need = rc * self._stride
         deadline = time.time() + timeout
 
@@ -262,9 +265,6 @@ class OLSDeviceSPI:
         # ARM with 0x11 padding (0x00 = CMD_RESET, would clear Run_OLS)
         buf += bytes([0x31, 0x04, 0x00])
         buf += bytes([CMD_ARM, 0x11, 0x11, 0x11, 0x11])
-        # GEN_STRT (multi-byte, consumes 4 bytes as data)
-        buf += bytes([0x31, 0x04, 0x00])
-        buf += bytes([CMD_GEN_STRT, 0x00, 0x00, 0x00, 0x00])
         buf += bytes([0x87])
         buf += bytes([0x80, GPIO_CS_HI, PIN_DIR])
         buf += bytes([0x87])
