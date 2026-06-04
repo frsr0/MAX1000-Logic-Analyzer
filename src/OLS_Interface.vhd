@@ -86,10 +86,13 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL effective_RX_Busy : STD_LOGIC := '0';
   SIGNAL effective_RX_Data : STD_LOGIC_VECTOR (8-1 DOWNTO 0) := (others => '0');
 
+  -- Generator FIFO depth (matches Signal_Gen.vhd generic)
+  constant GEN_FIFO_DEPTH : natural := 256;
+
   SIGNAL addr : NATURAL := 0;
   SIGNAL wr_ctr : NATURAL range 0 to 18 := 0;
   SIGNAL blk_mode  : STD_LOGIC := '0';
-  SIGNAL blk_len_s : NATURAL range 0 to 255 := 0;
+  SIGNAL blk_len_s : NATURAL range 0 to GEN_FIFO_DEPTH := 0;
   SIGNAL gen_start_cnt : NATURAL range 0 to 63 := 0;
   SIGNAL gen_load_cnt  : NATURAL range 0 to 63 := 0;  -- probe
    SIGNAL gen_tx_pin_int  : NATURAL range 0 to 7 := 3;
@@ -193,7 +196,7 @@ BEGIN
     VARIABLE Thread45 : NATURAL range 0 to 4 := 0;
     VARIABLE Thread49 : NATURAL range 0 to 2 := 0;
     VARIABLE Thread51 : NATURAL range 0 to 5 := 0;
-    VARIABLE blk_len  : NATURAL range 0 to 255 := 0;
+    VARIABLE blk_len  : NATURAL range 0 to GEN_FIFO_DEPTH := 0;
     VARIABLE next_sel : NATURAL range 0 to 2 := 0;
   BEGIN
   IF RISING_EDGE(CLK) THEN
@@ -537,6 +540,7 @@ BEGIN
             -- Default generator config: UART mode, 115200 baud (208 @ 24 MHz)
             Gen_Baud_Div <= x"0341";  -- 833 = 115200 @ 96 MHz
             Gen_Proto <= '0';
+            gen_spi_test_int <= '0';
             blk_mode <= '0';
             Thread23 := 0;
             Thread26 := 0;
@@ -889,7 +893,18 @@ BEGIN
                 Thread38 := 0;
           WHEN 21 =>
             blk_mode <= '1';
-            blk_len := TO_INTEGER(UNSIGNED(data(7 downto 0)));
+            -- 9-bit TO_INTEGER is always safe (max 511).
+            -- Clamp to GEN_FIFO_DEPTH if the 32-bit length exceeds it.
+            if unsigned(data(31 downto 9)) /= 0 then
+              -- pragma translate_off
+              report "blk_len clamped to GEN_FIFO_DEPTH=" & integer'image(GEN_FIFO_DEPTH) severity warning;
+              -- pragma translate_on
+              blk_len := GEN_FIFO_DEPTH;
+            elsif TO_INTEGER(UNSIGNED(data(8 downto 0))) > GEN_FIFO_DEPTH then
+              blk_len := GEN_FIFO_DEPTH;
+            else
+              blk_len := TO_INTEGER(UNSIGNED(data(8 downto 0)));
+            end if;
             blk_len_s <= blk_len;
             Thread44 := 0;
                 Thread45 := 0;
@@ -1019,6 +1034,11 @@ BEGIN
       end if;
     end if;
   end process;
+
+  -- Gen-FIFO depth invariant (simulation-only check)
+  -- pragma translate_off
+  assert GEN_FIFO_DEPTH > 0 report "GEN_FIFO_DEPTH must be > 0" severity failure;
+  -- pragma translate_on
 
   pipe_depth <= 8 when ch_mode = '0' else 4;
 

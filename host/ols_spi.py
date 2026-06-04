@@ -162,14 +162,23 @@ class OLS:
         return resp[:read_len]
 
     def _xfer_cmd(self, cmd, data=None):
-        """5-byte command xfer. Returns [preamble, b0, b1, b2, b3]."""
+        """6-byte command xfer. Returns [preamble, b0, b1, b2, b3].
+
+        Format: [0x11, cmd, d0, d1, d2, d3]
+
+          Byte 0 (0x11) is a no-op padding byte (CMD_XON, bit7=0 → single-byte,
+          resets to idle).  Byte 1 (cmd) sets Thread38=4 with Thread44=0, so
+          saved_command latches the correct cmd byte.  Bytes 2-5 accumulate
+          cleanly into data(7:0..31:24) with no shift.
+        """
         if data is None:
-            data = b'\x00\x00\x00\x00'
-        payload = bytes([cmd]) + data[:4]
+            data = b'\x11\x11\x11\x11'  # NOP padding
+        payload = bytes([0x11, cmd]) + data[:4]
+        n = len(payload)  # 6
         for retry in range(3):
             self._drain()
             buf = bytes([0x80, GPIO_CS_LO, PIN_DIR])
-            buf += bytes([0x31, 0x04, 0x00])
+            buf += bytes([0x31, n - 1, 0x00])
             buf += payload
             buf += bytes([0x87])
             buf += bytes([0x80, GPIO_CS_HI, PIN_DIR])
@@ -177,7 +186,6 @@ class OLS:
             self.dev.write(buf)
             time.sleep(SLEEP_TICK)
             r = self._read_all(timeout=0.050)
-            # Skip GPIO readback bytes at start, keep last 5
             if len(r) >= 5:
                 last5 = r[-5:]
                 if last5 != b'\xff\xff\xff\xff\xff':
@@ -276,10 +284,12 @@ class OLS:
         self.tx(CMD_FAST_MODE, bytes([1 if enable else 0, 0, 0, 0]))
 
     def set_continuous(self, enable=True):
-        self.tx(CMD_CONTINUOUS, bytes([0, 1 if enable else 0, 0, 0]))
+        # FPGA reads data(0) = bit 0 of first byte (OLS_Interface.vhd:934)
+        self.tx(CMD_CONTINUOUS, bytes([1 if enable else 0, 0, 0, 0]))
 
     def set_ch_mode(self, mode_4ch=False):
-        self.tx(CMD_CH_MODE, bytes([0, 1 if mode_4ch else 0, 0, 0]))
+        # FPGA reads data(0) = bit 0 of first byte (OLS_Interface.vhd:965)
+        self.tx(CMD_CH_MODE, bytes([1 if mode_4ch else 0, 0, 0, 0]))
 
     def chained_read(self, nbytes):
         """Read nbytes via 0x31 + NOPs. Returns data bytes (no preamble).
