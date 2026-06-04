@@ -450,8 +450,8 @@ BEGIN
           Thread38 := 4;
         END IF;
       WHEN 4 =>
-        IF command = x"A1" THEN
-          -- GEN_STRT: dispatch directly, bypass accumulate
+        IF command = x"A1" OR command = x"AF" THEN
+          -- GEN_STRT / CMD_SPI_TEST: dispatch directly, bypass accumulate
           cmd_was_multibyte <= '0';
           Thread38 := Thread38 + 1;  -- to 5
         ELSIF Thread44 = 0 AND cmd_was_multibyte = '0' THEN
@@ -509,6 +509,11 @@ BEGIN
                 Thread44 := Thread44 + 8;  -- proto select
               WHEN x"A1" =>
                 gen_start_cnt <= 24;
+                Thread44 := 0;
+                Thread45 := 0;
+                Thread38 := 0;
+              WHEN x"AF" =>
+                gen_spi_test_int <= '1';
                 Thread44 := 0;
                 Thread45 := 0;
                 Thread38 := 0;
