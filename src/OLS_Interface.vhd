@@ -425,7 +425,7 @@ BEGIN
       WHEN 3 =>
         IF (blk_mode = '1') THEN
           Gen_Load_Byte <= effective_RX_Data;
-          gen_load_cnt <= 24;
+          gen_load_cnt <= 2;
           IF (blk_len > 0) THEN
             blk_len := blk_len - 1;
             blk_len_s <= blk_len;
@@ -508,7 +508,7 @@ BEGIN
               WHEN x"06" =>
                 Thread44 := Thread44 + 8;  -- proto select
               WHEN x"A1" =>
-                gen_start_cnt <= 24;
+                gen_start_cnt <= 2;
                 Thread44 := 0;
                 Thread45 := 0;
                 Thread38 := 0;
@@ -872,12 +872,12 @@ BEGIN
                 Thread45 := 0;
           WHEN 18 =>
             Gen_Load_Byte <= data(7 downto 0);
-            gen_load_cnt <= 24;
+            gen_load_cnt <= 1;
             Thread44 := 0;
                 Thread45 := 0;
                 Thread38 := 0;
           WHEN 19 =>
-            gen_start_cnt <= 24;
+            gen_start_cnt <= 2;
             Thread44 := 0;
                 Thread45 := 0;
                 Thread38 := 0;

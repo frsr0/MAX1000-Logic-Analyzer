@@ -31,7 +31,7 @@ architecture rtl of Signal_Gen is
   signal tail  : natural range 0 to FIFO_DEPTH-1 := 0;
   signal count : natural range 0 to FIFO_DEPTH := 0;
   signal tx_active   : std_logic := '0';
-  signal baud_div_r  : natural := 416;   -- latched from Baud_Div on Start
+  signal baud_div_r  : std_logic_vector(15 downto 0) := x"01A0";  -- 416 = 115200 @ 48 MHz
   attribute keep : boolean;
   attribute keep of baud_div_r : signal is true;
 begin
@@ -53,7 +53,7 @@ begin
     variable rd_remain : natural range 0 to 255 := 0;
     variable rd_byte   : std_logic_vector(7 downto 0) := (others => '0');
     variable read_active : boolean := false;
-    variable spi_state : natural range 0 to 3 := 0;
+    variable spi_state : natural range 0 to 4 := 0;
     variable spi_bit  : natural range 0 to 8 := 0;
   begin
     if rising_edge(CLK) then
@@ -67,7 +67,7 @@ begin
       -- Start trigger: latch Baud_Div for all protocol modes
       if Start = '1' and tx_active = '0' then
         tx_active <= '1';
-        baud_div_r <= to_integer(unsigned(Baud_Div));
+        baud_div_r <= Baud_Div;
       end if;
 
       if tx_active = '0' then
@@ -80,7 +80,7 @@ begin
         ----------------------------------------------------
         -- SPI Master
         ----------------------------------------------------
-        if baud_cnt < baud_div_r - 1 then
+        if baud_cnt < to_integer(unsigned(baud_div_r)) - 1 then
           baud_cnt := baud_cnt + 1;
         else
           baud_cnt := 0;
@@ -91,10 +91,14 @@ begin
                 tail <= (tail + 1) mod FIFO_DEPTH;
                 count <= count - 1;
                 spi_bit := 0;
-                spi_state := 1;
+                spi_state := 3;  -- CS setup, not direct clock
               else
                 tx_active <= '0';
               end if;
+            when 3 =>  -- CS setup: SCLK idle high for one baud period
+              Scl_Out <= '1';
+              Tx_Out <= data_buf(7);
+              spi_state := 1;
             when 1 =>  -- SCLK low, output bit
               Scl_Out <= '0';
               Tx_Out <= data_buf(7 - spi_bit);
@@ -108,7 +112,7 @@ begin
                   tail <= (tail + 1) mod FIFO_DEPTH;
                   count <= count - 1;
                   spi_bit := 0;
-                  spi_state := 1;
+                  spi_state := 3;  -- setup between bytes
                 else
                   tx_active <= '0';
                   spi_state := 0;
@@ -124,7 +128,7 @@ begin
         ----------------------------------------------------
         -- UART TX with optional Modbus CRC-16 append
         ----------------------------------------------------
-        if baud_cnt < baud_div_r - 1 then
+        if baud_cnt < to_integer(unsigned(baud_div_r)) - 1 then
           baud_cnt := baud_cnt + 1;
         else
           baud_cnt := 0;
@@ -180,7 +184,7 @@ begin
         ----------------------------------------------------
         -- I2C Master
         ----------------------------------------------------
-        if baud_cnt < baud_div_r - 1 then
+        if baud_cnt < to_integer(unsigned(baud_div_r)) - 1 then
           baud_cnt := baud_cnt + 1;
         else
           baud_cnt := 0;
