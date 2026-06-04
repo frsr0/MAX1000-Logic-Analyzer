@@ -1,23 +1,47 @@
-"""Check which FTDI device is opened."""
-import sys, time
-sys.path.insert(0, '.')
-from ols_spi_device import OLSDeviceSPI
+"""Test FTDI MPSSE GPIO read back."""
+import ftd2xx as ft
+import time
 
-dev = OLSDeviceSPI(sys_clk_hz=48000000)
+d = ft.open(1)  # Channel B
+d.setBitMode(0xFF, 0); time.sleep(0.05)
+d.setBitMode(0xFF, 2); time.sleep(0.1)  # MPSSE mode
+d.purge()
+time.sleep(0.01)
 
-# Before open, check what channel will be used
-print(f'OLS spi object: dev.spi.channel = {dev.spi.channel}')
-
-dev.open()
-d = dev.spi.dev
-
-# After open, check device info
-info = d.getDeviceInfo()
-print(f'Opened: type={info.get("type")}, desc={info.get("description")}, serial={info.get("serial")}')
-
-# Simple read
-d.setTimeouts(100, 100)
+# Drain any stale data
 q = d.getQueueStatus()
-print(f'Queue status: {q}')
+if q:
+    print(f"Draining {q} stale bytes")
+    d.read(q)
 
-dev.close()
+# MPSSE GPIO read: 0x81 reads low byte
+print("Sending GPIO read commands...")
+buf = bytes([0x81, 0x87])  # Read GPIO low + flush
+d.write(buf)
+time.sleep(0.01)
+q = d.getQueueStatus()
+print(f"Queue after GPIO read: {q}")
+if q:
+    r = d.read(q)
+    print(f"Read: {r.hex()} ({len(r)} bytes)")
+
+# Try multiple writes + reads
+print("\nTrying 0x31 loopback test...")
+buf = bytes([0x80, 0x08, 0x3B])  # Set GPIO: CS=high, dir=0x3B
+buf += bytes([0x31, 0x00, 0x00, 0x11])  # 0x31 send 1 byte (0x11)
+buf += bytes([0x87])  # flush
+buf += bytes([0x80, 0x00, 0x3B])  # CS low
+buf += bytes([0x31, 0x00, 0x00, 0x11])  # 0x31 send 1 byte (0x11)
+buf += bytes([0x87])  # flush
+buf += bytes([0x80, 0x08, 0x3B])  # CS high
+buf += bytes([0x87])  # flush
+print(f"Buffer: {buf.hex()}")
+d.write(buf)
+time.sleep(0.01)
+q = d.getQueueStatus()
+print(f"Queue after 0x31: {q}")
+if q:
+    r = d.read(q)
+    print(f"Read: {r.hex()} ({len(r)} bytes)")
+
+d.close()
