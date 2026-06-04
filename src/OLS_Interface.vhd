@@ -198,7 +198,7 @@ BEGIN
   BEGIN
   IF RISING_EDGE(CLK) THEN
     Gen_Load_We <= '0';
-    Gen_Start <= '0';
+    Gen_Start <= '1';  -- Force gen always ready to transmit
     div3_pending <= '0';
     IF (Divider < CLK_Frequency) THEN
       Rate_Div <= Divider + 1;
@@ -509,7 +509,6 @@ BEGIN
                 Thread44 := Thread44 + 8;  -- proto select
               WHEN x"A1" =>
                 gen_start_cnt <= 24;
-                Gen_Start <= '1';  -- DEBUG: direct start
                 Thread44 := 0;
                 Thread45 := 0;
                 Thread38 := 0;

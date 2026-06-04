@@ -159,6 +159,7 @@ signal sdram_clk_pll  : std_logic := '0';
     I2C_Rd_Len : in natural range 0 to 255 := 0;
     I2C_Dev_R  : in std_logic_vector(7 downto 0) := (others => '0');
     Sda_In     : in std_logic := '1';
+    SPI_Mode  : in std_logic := '0';
     CRC_En    : in std_logic := '0';
     CRC_Poly  : in std_logic_vector(15 downto 0) := x"A001"
   );
@@ -429,6 +430,7 @@ BEGIN
     I2C_Rd_Len => gen_i2c_rd_len,
     I2C_Dev_R  => gen_i2c_dev_r,
     Sda_In     => SEN_SDI,
+    SPI_Mode   => gen_spi_test,
     CRC_En     => '0',
     CRC_Poly   => x"A001"
   );

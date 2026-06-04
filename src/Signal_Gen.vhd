@@ -11,6 +11,7 @@ entity Signal_Gen is
     Start     : in  std_logic;
     Baud_Div  : in  std_logic_vector(15 downto 0);
     Proto     : in  std_logic := '0';  -- 0=UART, 1=I2C
+    SPI_Mode  : in  std_logic := '0';  -- 1=SPI (overrides Proto)
     Tx_Out    : out std_logic := '1';
     Scl_Out   : out std_logic := '1';
     Busy      : out std_logic := '0';
@@ -30,7 +31,7 @@ architecture rtl of Signal_Gen is
   signal tail  : natural range 0 to FIFO_DEPTH-1 := 0;
   signal count : natural range 0 to FIFO_DEPTH := 0;
   signal tx_active : std_logic := '0';
-  constant fixed_baud_c : natural := 24000;  -- 48 MHz / 24000 = 2000 baud, I2C = 1 kHz
+  constant fixed_baud_c : natural := 100;  -- SMALL for debug: 48 MHz / 100 = 480 kHz
 begin
   Active <= tx_active;
   Busy   <= tx_active;
@@ -50,6 +51,8 @@ begin
     variable rd_remain : natural range 0 to 255 := 0;
     variable rd_byte   : std_logic_vector(7 downto 0) := (others => '0');
     variable read_active : boolean := false;
+    variable spi_state : natural range 0 to 3 := 0;
+    variable spi_bit  : natural range 0 to 8 := 0;
   begin
     if rising_edge(CLK) then
       -- FIFO write (common to both protocols)
@@ -67,8 +70,53 @@ begin
       if tx_active = '0' then
         baud_cnt := 0; bit_cnt := 0; byte_active := false;
         i2c_state := 0; i2c_bit := 0; rd_remain := 0; read_active := false;
+        spi_state := 0; spi_bit := 0;
         crc := (others => '0'); crc_run := false; crc_rem := 0; crc_done := false;
         Tx_Out <= '1'; Scl_Out <= '1';
+      elsif SPI_Mode = '1' then
+        ----------------------------------------------------
+        -- SPI Master
+        ----------------------------------------------------
+        if baud_cnt < fixed_baud_c - 1 then
+          baud_cnt := baud_cnt + 1;
+        else
+          baud_cnt := 0;
+          case spi_state is
+            when 0 =>  -- Idle / load byte
+              if count > 0 then
+                data_buf := fifo(tail);
+                tail <= (tail + 1) mod FIFO_DEPTH;
+                count <= count - 1;
+                spi_bit := 0;
+                spi_state := 1;
+              else
+                tx_active <= '0';
+              end if;
+            when 1 =>  -- SCLK low, output bit
+              Scl_Out <= '0';
+              Tx_Out <= data_buf(7 - spi_bit);
+              spi_state := 2;
+            when 2 =>  -- SCLK high, slave samples MOSI
+              Scl_Out <= '1';
+              spi_bit := spi_bit + 1;
+              if spi_bit >= 8 then
+                if count > 0 then
+                  data_buf := fifo(tail);
+                  tail <= (tail + 1) mod FIFO_DEPTH;
+                  count <= count - 1;
+                  spi_bit := 0;
+                  spi_state := 1;
+                else
+                  tx_active <= '0';
+                  spi_state := 0;
+                end if;
+              else
+                spi_state := 1;
+              end if;
+            when others =>
+              spi_state := 0;
+          end case;
+        end if;
       elsif Proto = '0' then
         ----------------------------------------------------
         -- UART TX with optional Modbus CRC-16 append
@@ -125,7 +173,7 @@ begin
             byte_active := false;
           end if;
         end if;
-      else
+      elsif Proto = '1' then
         ----------------------------------------------------
         -- I2C Master
         ----------------------------------------------------
