@@ -1,8 +1,10 @@
-"""I2C test: read accelerometer WHO_AM_I register (0x0F).
-LIS3DH address = 0x19 (SDO low). WHO_AM_I should return 0x33."""
+"""SPI test: read accelerometer WHO_AM_I via SPI.
+Uses I2C state machine (Proto=1) with SPI pin drives.
+SEN_CS driven low via gen_spi_test.
+MISO captured on TX pin channel (SEN_SDO)."""
 import sys, time, struct
 sys.path.insert(0, '.')
-from ols_spi_device import OLSDeviceSPI
+from ols_spi_device import OLSDeviceSPI, CMD_SPI_TEST
 from ols_spi import GPIO_CS_LO, GPIO_CS_HI, PIN_DIR
 
 dev = OLSDeviceSPI()
@@ -22,92 +24,137 @@ def tx5(cmd, b0=0, b1=0, b2=0, b3=0):
     q = d.getQueueStatus()
     if q: d.read(q)
 
-# Reset
 for _ in range(3): tx5(0x00)
 
-# Set up I2C to read accelerometer WHO_AM_I
-# LIS3DH addr = 0x19 (if SDO=L). WHO_AM_I = 0x0F. Return 0x33.
-dev_addr = 0x19
-reg_addr = 0x0F  # WHO_AM_I
-read_len = 1
+LIS3DH_ADDR = 0x19
+WHO_AM_I = 0x0F
+dev_w = (LIS3DH_ADDR << 1) & 0xFE  # 0x32
 
-dev_w = (dev_addr << 1) & 0xFE  # 0x32 (write)
-dev_r = (dev_addr << 1) | 0x01  # 0x33 (read)
+# Proto = I2C (reuse I2C state machine for SPI)
+tx5(0xA4, 1, 0, 0, 0)
 
-# Set proto=I2C, pins, baud
-tx5(0xA4, 1, 0, 0, 0)  # CMD_GEN_PROTO=1 (I2C)
-tx5(0xA6, 3, 1, 0, 0)  # CMD_GEN_PINS: tx=3 (SDA), scl=1 (SCL)
-baud_div = 48000000 // 100000 // 2  # 240 = 100 kHz I2C
-tx5(0xA2, baud_div & 0xFF, (baud_div >> 8) & 0xFF, 0, 0)
+# Pins: SCLK on CH1, MOSI on CH3 (tx_pin=3, scl_pin=1)
+tx5(0xA6, 3, 1, 0, 0)
 
-# Load write frame via CMD_GEN_BLK
+# Load write frame: [read_cmd, dummy_byte]
+# read_cmd = 0x0F | 0x80 = 0x8F (register + read bit)
+read_cmd = WHO_AM_I | 0x80
 n = 2
 buf = bytes([0x80, GPIO_CS_LO, PIN_DIR])
 buf += bytes([0x31, 0x04, 0x00])
-buf += bytes([0xA3]) + struct.pack('<I', n)  # CMD_GEN_BLK + 2-byte length
+buf += bytes([0xA3]) + struct.pack('<I', n)
 buf += bytes([0x11, (n-1) & 0xFF, ((n-1) >> 8) & 0xFF])
-buf += bytes([dev_w, reg_addr])  # write addr + reg
+buf += bytes([read_cmd, 0x00])  # read command + dummy byte
 buf += bytes([0x87])
 buf += bytes([0x80, GPIO_CS_HI, PIN_DIR])
 buf += bytes([0x87])
-d.write(buf)
-time.sleep(0.003)
+d.write(buf); time.sleep(0.003)
 q = d.getQueueStatus()
 if q: d.read(q)
 
-# Set CMD_I2C_TEST
-# flags: bit0=test_mode, bits15:8=read_len, bits23:16=dev_r
-flags = (1 if True else 0) | (read_len << 8) | (dev_r << 16)
-tx5(0xA7, flags & 0xFF, (flags >> 8) & 0xFF, (flags >> 16) & 0xFF, (flags >> 24) & 0xFF)
+# Enable SPI test mode (gen_spi_test=1 drives SEN_CS low, push-pull for MOSI/SCLK)
+tx5(CMD_SPI_TEST, 1, 0, 0, 0)
 
-# Configure capture
-ns = 2000
-tx5(0x80, 47, 0, 0, 0)  # divider = 1 MHz (48 MHz / 48)
-tx5(0x84, ns & 0xFF, (ns >> 8) & 0xFF, 0, 0)
-tx5(0x83, ns & 0xFF, (ns >> 8) & 0xFF, 0, 0)
+# Capture at 200 kHz, 5000 samples
+div_val = 48000000 // 200000 - 1  # 239
+tx5(0x80, div_val & 0xFF, (div_val >> 8) & 0xFF, (div_val >> 16) & 0xFF, 0)
+tx5(0x84, 5000 & 0xFF, (5000 >> 8) & 0xFF, 0, 0)
+tx5(0x83, 5000 & 0xFF, (5000 >> 8) & 0xFF, 0, 0)
 tx5(0x82, 0, 0, 0, 0)
 tx5(0xC0, 0, 0, 0, 0)
 tx5(0xC1, 0, 0, 0, 0)
-tx5(0x02, 0, 0, 0, 0)  # flags
-tx5(0xA8, 1, 0, 0, 0)  # fast mode
+tx5(0x02, 0, 0, 0, 0)
+tx5(0xA8, 1, 0, 0, 0)
 
-# ARM + GEN_STRT in batch
+# ARM + GEN_STRT
 buf = bytes([0x80, GPIO_CS_LO, PIN_DIR])
 buf += bytes([0x31, 0x04, 0x00])
-buf += bytes([0x01, 0x11, 0x11, 0x11, 0x11])  # ARM
+buf += bytes([0x01, 0x11, 0x11, 0x11, 0x11])
 buf += bytes([0x31, 0x04, 0x00])
-buf += bytes([0xA1, 0x11, 0x11, 0x11, 0x11])  # GEN_STRT
+buf += bytes([0xA1, 0x11, 0x11, 0x11, 0x11])
 buf += bytes([0x87])
 buf += bytes([0x80, GPIO_CS_HI, PIN_DIR])
 buf += bytes([0x87])
-d.write(buf)
-time.sleep(0.003)
+d.write(buf); time.sleep(0.003)
 q = d.getQueueStatus()
 if q: d.read(q)
 
-time.sleep(0.020)
+time.sleep(0.050)
 
-# Read back
-s = dev.spi.chained_read(ns * 4)
-if s:
-    from OLS_Console import samples_to_channels
-    ch, ns = samples_to_channels(s)
-    # I2C mode: CH3 = SEN_SDI (SDA), CH1 = gen_scl (SCL if scl_pin=1)
-    scl_pin = 1
-    sda = ch[3]
-    scl = ch[scl_pin] if scl_pin < 8 else [0]*ns
-    tr_sda = sum(1 for i in range(1, ns) if sda[i] != sda[i-1])
-    tr_scl = sum(1 for i in range(1, ns) if scl[i] != scl[i-1])
-    print(f'SDA (CH3): {tr_sda} tr, {sum(sda)}/{ns} ones')
-    print(f'SCL (CH{scl_pin}): {tr_scl} tr, {sum(scl)}/{ns} ones')
-    # Show SDA waveform
-    bar = ''.join('#' if sda[i] else ' ' for i in range(ns))
-    print(f'SDA: |{bar[:200]}|')
-    if ns > 200: print(f'     |{bar[200:400]}|')
-    if ns > 400: print(f'     |{bar[400:600]}|')
-    # Show SCL
-    bar_s = ''.join('#' if scl[i] else ' ' for i in range(ns))
-    print(f'SCL: |{bar_s[:200]}|')
-    if ns > 200: print(f'     |{bar_s[200:400]}|')
+s = dev.spi.chained_read(5000 * 4)
+if not s:
+    print("No data"); dev.close(); exit()
+
+from OLS_Console import samples_to_channels
+ch, nsamp = samples_to_channels(s)
+
+# SPI mode: CH3 = MISO (SEN_SDO via capture mux), CH1 = test_out
+MISO = ch[3]
+SCLK = ch[1]  # GPIO(1) or gen_scl if gen_i2c_test=1
+
+def decode_spi(miso, sclk, samplerate_hz):
+    """Simple SPI decoder: look for SCLK edges, sample MISO on rising edge."""
+    ns = len(miso)
+    result = []
+    i = 1
+    while i < ns - 8:
+        # Find rising edge of SCLK after idle
+        if sclk[i-1] == 0 and sclk[i] == 1:
+            # Potential start of SPI transaction
+            byte_val = 0
+            for bit in range(8):
+                # Sample MISO on SCLK rising edge
+                while i < ns - 1 and not (sclk[i-1] == 0 and sclk[i] == 1):
+                    i += 1
+                if i >= ns - 1: break
+                byte_val = (byte_val << 1) | miso[i]
+                i += 1
+                # Skip to next rising edge
+            result.append(byte_val)
+            # Skip ACK-like gap (9th SCLK)
+            while i < ns - 1 and not (sclk[i-1] == 0 and sclk[i] == 1):
+                i += 1
+        i += 1
+    return result
+
+tr_miso = sum(1 for i in range(1, nsamp) if MISO[i] != MISO[i-1])
+tr_sclk = sum(1 for i in range(1, nsamp) if SCLK[i] != SCLK[i-1])
+print(f"MISO (CH3): {tr_miso} tr, {sum(MISO)}/{nsamp} ones")
+print(f"SCLK (CH1): {tr_sclk} tr, {sum(SCLK)}/{nsamp} ones")
+
+# Manual bit decode: mark each SCLK cycle and sample MISO
+decoded_bytes = []
+i = 0
+while i < nsamp - 9:
+    if SCLK[i] == 0 and SCLK[i+1] == 1:  # rising edge
+        byte_val = 0
+        for bit in range(8):
+            byte_val = (byte_val << 1) | MISO[i]  # sample at rising edge
+            # Move to next rising edge
+            j = i + 1
+            while j < nsamp - 1 and not (SCLK[j-1] == 0 and SCLK[j] == 1):
+                j += 1
+            if j >= nsamp - 1: break
+            i = j
+        if byte_val > 0 or (tr_miso > 0 and len(decoded_bytes) < 4):
+            decoded_bytes.append(byte_val)
+        # Skip the ACK bit (9th SCLK)
+        j = i + 1
+        while j < nsamp - 1 and not (SCLK[j-1] == 0 and SCLK[j] == 1):
+            j += 1
+        i = j
+    i += 1
+
+print(f"\nSPI decoded bytes: {[hex(b) for b in decoded_bytes]}")
+if 0x33 in decoded_bytes:
+    print(" *** LIS3DH CONFIRMED! WHO_AM_I = 0x33 ***")
+elif decoded_bytes:
+    print(f" Chip ID: 0x{decoded_bytes[-1]:02X} (expected 0x33 for LIS3DH)")
+
+# Show waveforms
+miso_str = ''.join('#' if MISO[i] else ' ' for i in range(min(1000, nsamp)))
+sclk_str = ''.join('#' if SCLK[i] else ' ' for i in range(min(1000, nsamp)))
+print(f"\nMISO: |{miso_str}|")
+print(f"SCLK: |{sclk_str}|")
 
 dev.close()

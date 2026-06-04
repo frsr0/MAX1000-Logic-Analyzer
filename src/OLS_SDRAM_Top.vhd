@@ -54,6 +54,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_i2c_rd_len : natural range 0 to 255 := 0;
   signal gen_i2c_dev_r  : std_logic_vector(7 downto 0) := (others => '0');
   signal gen_i2c_test   : std_logic := '0';
+  signal gen_spi_test   : std_logic := '0';
   signal fast_clk       : std_logic := '0';
   signal fast_mode      : std_logic := '0';
   signal continuous_mode : std_logic := '0';
@@ -132,7 +133,8 @@ signal sdram_clk_pll  : std_logic := '0';
     Gen_I2C_Rd_Len : OUT NATURAL range 0 to 255 := 0;
     Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Gen_I2C_Test   : OUT STD_LOGIC := '0';
-    Armed          : OUT STD_LOGIC := '0';
+    Gen_SPI_Test   : OUT STD_LOGIC := '0';
+     Armed          : OUT STD_LOGIC := '0';
     Fast_Mode      : OUT STD_LOGIC := '0';
     Status        : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Continuous_Mode : OUT STD_LOGIC := '0';
@@ -215,24 +217,27 @@ BEGIN
     end if;
   end process;
 
-  -- Accelerometer: CS high = I2C mode
-  SEN_CS <= '1';
+  -- Accelerometer: CS high = I2C mode, CS low = SPI mode
+  SEN_CS <= '0' when gen_spi_test = '1' and gen_busy = '1' else '1';
 
-  -- Test mode mux: route gen_tx/SDA and gen_scl/SCL to accelerometer pins
-  -- Open-drain: only drive low, release (Z) for high so accelerometer can pull low for ACK
-  SEN_SDI <= '0' when gen_i2c_test = '1' and gen_busy = '1' and gen_tx = '0' else 'Z';
-  SEN_SPC <= '0' when gen_i2c_test = '1' and gen_busy = '1' and gen_scl = '0' else 'Z';
+  -- Test mode mux: SPI uses push-pull, I2C uses open-drain
+  SEN_SDI <= gen_tx when gen_spi_test = '1' and gen_busy = '1' else
+             '0' when gen_i2c_test = '1' and gen_busy = '1' and gen_tx = '0' else 'Z';
+  SEN_SPC <= gen_scl when gen_spi_test = '1' and gen_busy = '1' else
+             '0' when gen_i2c_test = '1' and gen_busy = '1' and gen_scl = '0' else 'Z';
 
-  -- Capture mux: CH0 = test counter. When gen is active, gen_tx (UART TX / I2C SDA)
-  -- appears on the TX pin channel, gen_scl (I2C SCL) appears on the SCL pin channel.
-  -- All other channels read their GPIO pin directly.
-  capture_mux: process(test_out, gen_busy, gen_tx_pin, gen_scl_pin, gen_tx, gen_scl, GPIO, gen_i2c_test, SEN_SDI)
+  -- Capture mux: CH0 = test counter. When gen is active, gen_tx routed to TX pin.
+  -- I2C mode: capture SEN_SDI (external SDA) on TX pin, gen_scl on SCL pin.
+  -- SPI mode: capture SEN_SDO (external MISO) on TX pin, gen_scl on SCL pin.
+  capture_mux: process(test_out, gen_busy, gen_tx_pin, gen_scl_pin, gen_tx, gen_scl, GPIO, gen_i2c_test, gen_spi_test, SEN_SDI, SEN_SDO)
   begin
     for i in 0 to 7 loop
       if i = 0 then
         internal_data(i) <= test_out;
       elsif gen_busy = '1' and gen_tx_pin = i then
-        if gen_i2c_test = '1' then
+        if gen_spi_test = '1' then
+          internal_data(i) <= SEN_SDO;  -- SPI test: MISO from accelerometer
+        elsif gen_i2c_test = '1' then
           internal_data(i) <= SEN_SDI;  -- I2C test: external SDA
         else
           internal_data(i) <= gen_tx;   -- UART TX / I2C SDA output
@@ -315,6 +320,7 @@ BEGIN
     Gen_I2C_Rd_Len => gen_i2c_rd_len,
     Gen_I2C_Dev_R  => gen_i2c_dev_r,
     Gen_I2C_Test   => gen_i2c_test,
+    Gen_SPI_Test   => gen_spi_test,
     Armed          => open,
     Fast_Mode      => fast_mode,
     Status        => core_status,

@@ -44,6 +44,7 @@ PORT (
     Gen_I2C_Rd_Len : OUT NATURAL range 0 to 255 := 0;
     Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Gen_I2C_Test   : OUT STD_LOGIC := '0';
+    Gen_SPI_Test   : OUT STD_LOGIC := '0';
     Armed          : OUT STD_LOGIC := '0';
     Fast_Mode      : OUT STD_LOGIC := '0';
     Status        : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
@@ -79,6 +80,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL gen_i2c_rd_len_i    : NATURAL range 0 to 255 := 0;
   SIGNAL gen_i2c_dev_r_i     : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL gen_i2c_test_i      : STD_LOGIC := '0';
+  SIGNAL gen_spi_test_i      : STD_LOGIC := '0';
   SIGNAL armed_i             : STD_LOGIC := '0';
   SIGNAL fast_mode_i         : STD_LOGIC := '0';
   SIGNAL continuous_mode_i   : STD_LOGIC := '0';
@@ -121,6 +123,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
     Gen_I2C_Rd_Len : OUT NATURAL range 0 to 255 := 0;
    Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
      Gen_I2C_Test   : OUT STD_LOGIC := '0';
+     Gen_SPI_Test   : OUT STD_LOGIC := '0';
       Armed          : OUT STD_LOGIC := '0';
       Fast_Mode      : OUT STD_LOGIC := '0';
       Continuous_Mode : OUT STD_LOGIC := '0';
@@ -184,6 +187,7 @@ BEGIN
   Gen_I2C_Rd_Len <= gen_i2c_rd_len_i;
   Gen_I2C_Dev_R  <= gen_i2c_dev_r_i;
   Gen_I2C_Test   <= gen_i2c_test_i;
+  Gen_SPI_Test   <= gen_spi_test_i;
   Armed          <= armed_i;
   Fast_Mode      <= fast_mode_i;
   Status <= fla_status;
@@ -196,7 +200,8 @@ BEGIN
     UART_RX       => UART_RX,UART_TX       => UART_TX,SPI_CS        => SPI_CS,SPI_MOSI      => SPI_MOSI,SPI_MISO      => SPI_MISO,Interface_Mode=> Interface_Mode,Inputs        => OLS_Interface_Inputs,Rate_Div      => OLS_Interface_Rate_Div,Samples       => OLS_Interface_Samples,Start_Offset  => OLS_Interface_Start_Offset,Run           => OLS_Interface_Run,Full          => OLS_Interface_Full,Address       => OLS_Interface_Address,Outputs       => OLS_Interface_Outputs,
     Gen_Load_Byte => Gen_Load_Byte_i,Gen_Load_We   => Gen_Load_We_i,Gen_Start     => Gen_Start_i,Gen_Baud_Div  => Gen_Baud_Div_i,Gen_Busy      => Gen_Busy_i,Gen_Proto     => Gen_Proto_i,
     Gen_TX_Pin    => Gen_TX_Pin_i,Gen_SCL_Pin   => Gen_SCL_Pin_i,
-    Gen_I2C_Rd_Len => gen_i2c_rd_len_i,Gen_I2C_Dev_R  => gen_i2c_dev_r_i,Gen_I2C_Test   => gen_i2c_test_i,
+    Gen_I2C_Rd_Len => gen_i2c_rd_len_i,Gen_I2C_Dev_R  => gen_i2c_dev_r_i,    Gen_I2C_Test   => gen_i2c_test_i,
+    Gen_SPI_Test   => gen_spi_test_i,
     Armed          => armed_i,
     Fast_Mode      => fast_mode_i,
     Continuous_Mode => continuous_mode_i,

@@ -30,7 +30,7 @@ architecture rtl of Signal_Gen is
   signal tail  : natural range 0 to FIFO_DEPTH-1 := 0;
   signal count : natural range 0 to FIFO_DEPTH := 0;
   signal tx_active : std_logic := '0';
-  constant fixed_baud_c : natural := 416;  -- 48 MHz / 416 = 115385 baud
+  constant fixed_baud_c : natural := 24000;  -- 48 MHz / 24000 = 2000 baud, I2C = 1 kHz
 begin
   Active <= tx_active;
   Busy   <= tx_active;

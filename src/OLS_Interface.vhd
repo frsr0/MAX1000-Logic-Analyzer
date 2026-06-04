@@ -40,8 +40,9 @@ PORT (
    Gen_SCL_Pin   : OUT NATURAL range 0 to 7 := 0;
    Gen_I2C_Rd_Len : OUT NATURAL range 0 to 255 := 0;
    Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
-     Gen_I2C_Test   : OUT STD_LOGIC := '0';
-      Armed          : OUT STD_LOGIC := '0';
+    Gen_I2C_Test   : OUT STD_LOGIC := '0';
+    Gen_SPI_Test   : OUT STD_LOGIC := '0';
+     Armed          : OUT STD_LOGIC := '0';
       Fast_Mode      : OUT STD_LOGIC := '0';
       Continuous_Mode : OUT STD_LOGIC := '0';
       Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
@@ -95,7 +96,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
    SIGNAL gen_scl_pin_int : NATURAL range 0 to 7 := 0;
   SIGNAL gen_i2c_rd_len_int : NATURAL range 0 to 255 := 0;
   SIGNAL gen_i2c_dev_r_int  : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
-  SIGNAL gen_i2c_test_int   : STD_LOGIC := '0';
+   SIGNAL gen_i2c_test_int   : STD_LOGIC := '0';
+   SIGNAL gen_spi_test_int   : STD_LOGIC := '1';  -- DEBUG: force SPI mode
   SIGNAL fast_mode_i        : STD_LOGIC := '0';
   SIGNAL continuous_mode_i   : STD_LOGIC := '0';
   SIGNAL cont_buf_sel        : NATURAL range 0 to 2 := 0;
@@ -187,7 +189,7 @@ BEGIN
     VARIABLE Thread30 : NATURAL range 0 to 3 := 0;
     VARIABLE Thread31 : NATURAL range 0 to 4 := 0;
     VARIABLE Thread38 : NATURAL range 0 to 7 := 0;
-    VARIABLE Thread44 : NATURAL range 0 to 32 := 0;
+    VARIABLE Thread44 : NATURAL range 0 to 39 := 0;
     VARIABLE Thread45 : NATURAL range 0 to 4 := 0;
     VARIABLE Thread49 : NATURAL range 0 to 2 := 0;
     VARIABLE Thread51 : NATURAL range 0 to 5 := 0;
@@ -507,6 +509,7 @@ BEGIN
                 Thread44 := Thread44 + 8;  -- proto select
               WHEN x"A1" =>
                 gen_start_cnt <= 24;
+                Gen_Start <= '1';  -- DEBUG: direct start
                 Thread44 := 0;
                 Thread45 := 0;
                 Thread38 := 0;
@@ -806,6 +809,8 @@ BEGIN
                 Thread44 := Thread44 + 31;
               WHEN x"AE" =>
                 Thread44 := 32;
+              WHEN x"AF" =>
+                Thread44 := 33;
               WHEN others =>
                 Thread44 := Thread44 + 10;
             END CASE;
@@ -956,6 +961,11 @@ BEGIN
             Thread44 := 0;
                 Thread45 := 0;
                 Thread38 := 0;
+          WHEN 33 =>
+            gen_spi_test_int <= data(0);
+            Thread44 := 0;
+                Thread45 := 0;
+                Thread38 := 0;
           WHEN others => Thread44 := 0;
         END CASE;
       WHEN others => Thread38 := 0;
@@ -1016,6 +1026,7 @@ BEGIN
   Gen_I2C_Rd_Len <= gen_i2c_rd_len_int;
   Gen_I2C_Dev_R  <= gen_i2c_dev_r_int;
   Gen_I2C_Test   <= gen_i2c_test_int;
+  Gen_SPI_Test   <= gen_spi_test_int;
   Fast_Mode      <= fast_mode_i;
   Continuous_Mode <= continuous_mode_i;
   Buffer_Ack      <= buffer_ack_i;
