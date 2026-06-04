@@ -464,14 +464,57 @@ def modbus_crc16(data):
                 crc >>= 1
     return crc
 
+# ─── Glitch Filter ──────────────────────────────────────────────
+
+def glitch_filter(signal, threshold=3):
+    """Digital glitch rejection: require `threshold` consecutive equal samples 
+    before switching output state.
+
+    Rejects single/double-sample noise spikes while preserving logic levels 
+    and edge timing.  A single-sample glitch (e.g. 0 1 0) is suppressed; 
+    a genuine edge (e.g. 0 1 1 1) passes after `threshold` samples.
+
+    Behaves like the hardware glitch filters built into FPGA and MCU 
+    I²C/UART/SPI peripherals — suitable for cleaning captured waveforms 
+    before protocol decoding.
+
+    Parameters
+    ----------
+    signal : list[int]
+        Binary waveform (0 or 1 per sample).
+    threshold : int
+        Number of consecutive equal samples required to accept a transition.
+        Default 3 (rejects single/double glitches at any sample rate).
+
+    Returns
+    -------
+    list[int] — filtered copy of `signal` (original unmodified).
+    """
+    out = list(signal)
+    stable = signal[0]
+    cnt = 0
+    for i in range(len(signal)):
+        if signal[i] == stable:
+            cnt = 0
+            out[i] = stable
+        else:
+            cnt += 1
+            if cnt >= threshold:
+                stable = signal[i]
+                cnt = 0
+            out[i] = stable
+    return out
+
 # ─── Protocol Decoders ───────────────────────────────────────────
 
 DecodedByte = namedtuple('DecodedByte', ['pos', 'value', 'time_ns'])
 
-def decode_uart(ch, samplerate, ch_idx=0, baud=115200):
+def decode_uart(ch, samplerate, ch_idx=0, baud=115200, filter_threshold=0):
     """Decode UART from a channel. Returns list of DecodedByte."""
     spb = samplerate / baud  # samples per bit (float)
     sig = ch[ch_idx]
+    if filter_threshold > 0:
+        sig = glitch_filter(sig, filter_threshold)
     result = []
     i = 0
     min_need = int(spb * 10)
@@ -496,10 +539,13 @@ def decode_uart(ch, samplerate, ch_idx=0, baud=115200):
         i += 1
     return result
 
-def decode_i2c(ch, samplerate, scl_idx=2, sda_idx=3):
+def decode_i2c(ch, samplerate, scl_idx=2, sda_idx=3, filter_threshold=0):
     """Simple I2C decoder. Returns list of (type, value) strings."""
     scl = ch[scl_idx]
     sda = ch[sda_idx]
+    if filter_threshold > 0:
+        scl = glitch_filter(scl, filter_threshold)
+        sda = glitch_filter(sda, filter_threshold)
     result = []
     i = 0
     while i < len(scl) - 20:
@@ -525,6 +571,36 @@ def decode_i2c(ch, samplerate, scl_idx=2, sda_idx=3):
                     result.append(("STOP", None))
                     break
             break
+        i += 1
+    return result
+
+def decode_spi(ch, samplerate, miso_idx=3, sclk_idx=1, filter_threshold=0):
+    """Simple SPI decoder (mode 0: sample on SCLK rising edge).
+    
+    Returns list of (byte_value,).  The caller groups bytes into transactions
+    using CS or packet boundaries.
+    """
+    miso = ch[miso_idx]
+    sclk = ch[sclk_idx]
+    if filter_threshold > 0:
+        miso = glitch_filter(miso, filter_threshold)
+        sclk = glitch_filter(sclk, filter_threshold)
+
+    result = []
+    i = 1
+    while i < len(sclk) - 8:
+        # Find SCLK rising edge
+        if sclk[i - 1] == 0 and sclk[i] == 1:
+            byte_val = 0
+            for bit in range(8):
+                # Sample MISO at this SCLK rising edge
+                if i < len(miso):
+                    byte_val = (byte_val << 1) | (1 if miso[i] else 0)
+                # Advance to next SCLK rising edge (skip falling + rising)
+                i += 1
+                while i < len(sclk) - 1 and not (sclk[i - 1] == 0 and sclk[i] == 1):
+                    i += 1
+            result.append(byte_val)
         i += 1
     return result
 
