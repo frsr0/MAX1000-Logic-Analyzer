@@ -5,24 +5,22 @@ use IEEE.numeric_std.all;
 ENTITY OLS_SDRAM_Top IS
   generic (
     TX_PIN      : natural range 0 to 7 := 3;   -- generator output pin
-    PLL_MULT    : positive := 2;               -- PLL multiply (2x = 24 MHz from 12 MHz)
+    PLL_MULT    : positive := 4;               -- PLL multiply (4x = 48 MHz from 12 MHz)
     PLL_DIV     : positive := 1;                -- PLL divide
     Sim         : boolean := false
   );
 PORT (
   CLK     : IN STD_LOGIC;  -- 12 MHz input
   UART_RX : IN STD_LOGIC := '1';
-  UART_TX : INOUT STD_LOGIC := 'Z';
-  SPI_CS  : IN  STD_LOGIC := '1';
-  SPI_MISO : OUT STD_LOGIC := 'Z';
+  UART_TX : OUT STD_LOGIC := '1';
   GPIO    : INOUT STD_LOGIC_VECTOR(7 downto 0);
   sdram_addr  : OUT std_logic_vector(11 downto 0);
-  sdram_ba    : OUT STD_LOGIC_VECTOR(1 downto 0);
+  sdram_ba    : OUT std_logic_vector(1 downto 0);
   sdram_cas_n : OUT std_logic;
   sdram_cke   : OUT std_logic;
   sdram_cs_n  : OUT std_logic;
   sdram_dq    : INOUT std_logic_vector(15 downto 0) := (others => '0');
-  sdram_dqm   : OUT STD_LOGIC_VECTOR(1 downto 0);
+  sdram_dqm   : OUT std_logic_vector(1 downto 0);
   sdram_ras_n : OUT std_logic;
   sdram_we_n  : OUT std_logic;
     sdram_clk   : OUT std_logic;
@@ -56,26 +54,17 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_i2c_test   : std_logic := '0';
   signal fast_clk       : std_logic := '0';
   signal fast_mode      : std_logic := '0';
-  signal continuous_mode : std_logic := '0';
-  signal buffer_full     : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-  signal buffer_ack      : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
 signal core_clk       : std_logic := '0';
-signal sdram_clk_pll  : std_logic := '0';
   signal gpio_out      : std_logic_vector(7 downto 0) := (others => '0');
   signal gpio_dir      : std_logic_vector(7 downto 0) := (others => '0');
   signal core_status   : std_logic_vector(7 downto 0) := (others => '0');
   signal test_div      : std_logic_vector(9 downto 0) := (others => '0');
-  attribute preserve : boolean;
-  attribute preserve of test_div : signal is true;
   signal test_out      : std_logic := '0';
   signal com_act_cnt   : integer range 0 to 200_000_000 := 0;
   signal com_active    : std_logic := '0';
   signal uart_rx_last  : std_logic := '1';
   signal capt_done     : std_logic := '0';
   signal run_last      : std_logic := '0';
-  signal interface_mode : std_logic := '0';
-  signal core_uart_tx  : std_logic := '1';
-  signal spi_mosi_int  : std_logic := '0';
 
   -- LED PWM controller
   signal pwm_cnt      : integer range 0 to 256 := 0;
@@ -107,15 +96,11 @@ signal sdram_clk_pll  : std_logic := '0';
     Inputs   : IN  STD_LOGIC_VECTOR(Channels-1 downto 0);
     UART_RX  : IN  STD_LOGIC := '1';
     UART_TX  : OUT STD_LOGIC := '1';
-    SPI_CS   : IN  STD_LOGIC := '1';
-    SPI_MOSI : IN  STD_LOGIC := '0';
-    SPI_MISO : OUT STD_LOGIC := 'Z';
-    Interface_Mode : OUT STD_LOGIC := '0';
     sdram_addr  : OUT std_logic_vector(11 downto 0);
-    sdram_ba    : OUT STD_LOGIC_VECTOR(1 downto 0);
+    sdram_ba    : OUT std_logic_vector(1 downto 0);
     sdram_cas_n : OUT std_logic;
     sdram_dq    : INOUT std_logic_vector(15 downto 0) := (others => '0');
-    sdram_dqm   : OUT STD_LOGIC_VECTOR(1 downto 0);
+    sdram_dqm   : OUT std_logic_vector(1 downto 0);
     sdram_ras_n : OUT std_logic;
     sdram_we_n  : OUT std_logic;
     sdram_cke   : OUT std_logic := '1';
@@ -134,10 +119,7 @@ signal sdram_clk_pll  : std_logic := '0';
     Gen_I2C_Test   : OUT STD_LOGIC := '0';
     Armed          : OUT STD_LOGIC := '0';
     Fast_Mode      : OUT STD_LOGIC := '0';
-    Status        : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
-    Continuous_Mode : OUT STD_LOGIC := '0';
-    Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-    Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0')
+    Status        : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0')
   );
   END COMPONENT;
 
@@ -168,7 +150,7 @@ BEGIN
   -- Otherwise bypass (use CLK directly for stock 12 MHz hardware).
   gen_use_pll : if PLL_MULT /= 1 or PLL_DIV /= 1 generate
     pll_inst : entity work.SDRAM_PLL
-      port map (inclk0 => CLK, c0 => sys_clk, c1 => fast_clk, c2 => sdram_clk_pll, locked => pll_locked);
+      port map (inclk0 => CLK, c0 => sys_clk, c1 => fast_clk, locked => pll_locked);
   end generate;
   gen_no_pll : if PLL_MULT = 1 and PLL_DIV = 1 generate
     sys_clk <= CLK;
@@ -176,10 +158,9 @@ BEGIN
     pll_locked <= '1';
   end generate;
 
+  -- Always run core at 48 MHz. fast_clk (120 MHz) feeds the FLA directly
+  -- for BRAM writes during fast mode (via FAST_CLK port on Core).
   core_clk <= sys_clk;
-  
-  -- SDRAM clock from PLL c2 (-90° phase shift relative to core)
-  sdram_clk <= sdram_clk_pll;
 
   -- Tristate GPIO buffers: each pin is output when gpio_dir=1, else input (high-Z)
   gpio_buf: for i in 0 to 7 generate
@@ -245,18 +226,15 @@ BEGIN
     end loop;
   end process;
 
-  -- Test divider: 10-bit counter, output on CH0 at ~11.7 kHz (12MHz CLK) or ~46.9kHz (48MHz PLL)
-  process(core_clk)
+  -- Test divider: 10-bit counter
+  -- Output frequency = System_CLK_Frequency / 2^10
+  process(sys_clk)
   begin
-    if rising_edge(core_clk) then
+    if rising_edge(sys_clk) then
       test_div <= std_logic_vector(unsigned(test_div) + 1);
     end if;
   end process;
   test_out <= test_div(9);
-  
-  -- B4 pin sharing: UART_TX (output) in UART mode, SPI_MOSI (input) in SPI mode
-  UART_TX <= core_uart_tx when interface_mode = '0' else 'Z';
-  spi_mosi_int <= UART_TX;
 
   -- Drive selected GPIO pin with generator signal when active
   pin_drive: process(sys_clk)
@@ -278,7 +256,7 @@ BEGIN
 
   SDRAM_Analyzer : OLS_Logic_Analyzer
   GENERIC MAP (
-    Baud_Rate    => 12000000,
+    Baud_Rate    => 921600,
     CLK_Frequency => System_CLK_Frequency,
     Max_Samples  => 1048576,
     Channels     => 8,
@@ -289,11 +267,7 @@ BEGIN
     FAST_CLK => fast_clk,
     Inputs   => internal_data,
     UART_RX  => UART_RX,
-    UART_TX  => core_uart_tx,
-    SPI_CS   => SPI_CS,
-    SPI_MOSI => spi_mosi_int,
-    SPI_MISO => SPI_MISO,
-    Interface_Mode => interface_mode,
+    UART_TX  => UART_TX,
     sdram_addr  => sdram_addr,
     sdram_ba    => sdram_ba,
     sdram_cas_n => sdram_cas_n,
@@ -303,7 +277,7 @@ BEGIN
     sdram_dqm   => sdram_dqm,
     sdram_ras_n => sdram_ras_n,
     sdram_we_n  => sdram_we_n,
-    sdram_clk    => open,
+    sdram_clk   => sdram_clk,
     Gen_Load_Byte => gen_load_byte,
     Gen_Load_We   => gen_load_we,
     Gen_Start     => gen_start,
@@ -317,10 +291,7 @@ BEGIN
     Gen_I2C_Test   => gen_i2c_test,
     Armed          => open,
     Fast_Mode      => fast_mode,
-    Status        => core_status,
-    Continuous_Mode => continuous_mode,
-    Buffer_Full     => buffer_full,
-    Buffer_Ack      => buffer_ack
+    Status        => core_status
   );
   
   -- LED PWM controller: smooth fade between states

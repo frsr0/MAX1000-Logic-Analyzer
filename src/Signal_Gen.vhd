@@ -30,11 +30,6 @@ architecture rtl of Signal_Gen is
   signal tail  : natural range 0 to FIFO_DEPTH-1 := 0;
   signal count : natural range 0 to FIFO_DEPTH := 0;
   signal tx_active : std_logic := '0';
-  -- baud_div_r: registered copy of Baud_Div port, latched on Start.
-  -- FIX: original code had hardcoded BAUD_DIV_115200 and ignored the Baud_Div port.
-  constant FIXED_BAUD : natural := 208;
-  attribute keep : boolean;
-  attribute keep of FIXED_BAUD : constant is true;
 begin
   Active <= tx_active;
   Busy   <= tx_active;
@@ -77,15 +72,17 @@ begin
         ----------------------------------------------------
         -- UART TX with optional Modbus CRC-16 append
         ----------------------------------------------------
-        if baud_cnt < FIXED_BAUD - 1 then
+        if baud_cnt < to_integer(unsigned(Baud_Div)) - 1 then
           baud_cnt := baud_cnt + 1;
         else
           baud_cnt := 0;
           if not byte_active then
             if count > 0 then
+              -- Load next data byte from FIFO
               data_buf := fifo(tail);
               tail <= (tail + 1) mod FIFO_DEPTH;
               count <= count - 1;
+              -- Update CRC with this byte
               if CRC_En = '1' then
                 if not crc_run then crc := x"FFFF"; crc_run := true; end if;
                 crc := crc xor (x"00" & data_buf);
@@ -102,10 +99,11 @@ begin
               bit_cnt := 1;
               byte_active := true;
             elsif CRC_En = '1' and crc_run and crc_rem > 0 then
+              -- Send next CRC byte
               if crc_rem = 2 then
-                data_buf := crc(7 downto 0);
+                data_buf := crc(7 downto 0);  -- CRC low
               else
-                data_buf := crc(15 downto 8);
+                data_buf := crc(15 downto 8); -- CRC high
               end if;
               crc_rem := crc_rem - 1;
               if crc_rem = 0 then crc_done := true; end if;
@@ -131,9 +129,12 @@ begin
         end if;
       else
         ----------------------------------------------------
-        -- I2C Master
+        -- I2C Master with read support
+        -- States: 0=START, 1=SCL_LOW, 2=SCL_HIGH, 3=SCL_LOW_ADV,
+        --         4=ACK, 5=STOP, 6=REP_START1, 7=REP_START2,
+        --         8=RD_LOW, 9=RD_HIGH, 10=RD_ACK, 11=RD_NACK
         ----------------------------------------------------
-        if baud_cnt < FIXED_BAUD - 1 then
+        if baud_cnt < to_integer(unsigned(Baud_Div)) - 1 then
           baud_cnt := baud_cnt + 1;
         else
           baud_cnt := 0;
