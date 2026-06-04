@@ -1,31 +1,53 @@
-library ieee;
-use ieee.std_logic_1164.all;
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
 
 entity SDRAM_PLL is
-  generic (
-    MULTIPLY_BY : positive := 1;
-    DIVIDE_BY   : positive := 1
-  );
   port (
-    inclk0 : in  std_logic;
-    c0     : out std_logic;
-    c1     : out std_logic;
-    c2     : out std_logic;
-    locked : out std_logic
+    areset  : in  std_logic := '0';
+    inclk0  : in  std_logic := '0';
+    c0      : out std_logic;
+    c1      : out std_logic;
+    c2      : out std_logic;
+    locked  : out std_logic
   );
 end SDRAM_PLL;
 
 architecture sim of SDRAM_PLL is
-  constant INPUT_FREQ : real := 12.0e6;
-  signal sysclk : std_logic;
-  signal lock   : std_logic;
+  component PLL_Model is
+    generic (
+      INPUT_FREQ   : real := 12.0e6;
+      MULTIPLY_BY  : natural := 8;
+      DIVIDE_BY    : natural := 1;
+      FAST_MULT    : natural := 10;
+      FAST_DIV     : natural := 1;
+      SDRAM_MULT   : natural := 8;
+      SDRAM_DIV    : natural := 1;
+      LOCK_CYCLES  : natural := 100
+    );
+    port (
+      inclk0  : in  std_logic;
+      c0      : out std_logic;
+      c1      : out std_logic;
+      c2      : out std_logic;
+      locked  : out std_logic
+    );
+  end component;
 begin
-  pll : entity work.pll_model
-    generic map (MULTIPLY_BY => MULTIPLY_BY, DIVIDE_BY => DIVIDE_BY, INPUT_FREQ => INPUT_FREQ)
-    port map (inclk0 => inclk0, c0 => sysclk, locked => lock);
-
-  c0 <= sysclk;
-  c1 <= sysclk;
-  c2 <= sysclk;
-  locked <= lock;
+  pll : PLL_Model
+    generic map (
+      INPUT_FREQ  => 12.0e6,
+      MULTIPLY_BY => 8,
+      DIVIDE_BY   => 1,
+      FAST_MULT   => 10,
+      FAST_DIV    => 1,
+      SDRAM_MULT  => 8,
+      SDRAM_DIV   => 1
+    )
+    port map (
+      inclk0 => inclk0,
+      c0     => c0,
+      c1     => c1,
+      c2     => c2,
+      locked => locked
+    );
 end sim;

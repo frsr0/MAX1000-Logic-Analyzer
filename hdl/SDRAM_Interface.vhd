@@ -160,7 +160,7 @@ BEGIN
              ELSE
                sdram_s_waitrequest <= '0';
                sdram_s_readdatavalid <= '1';
-                sdram_s_readdata <= sdram_ram(TO_INTEGER(UNSIGNED(sdram_s_address)));
+                sdram_s_readdata <= sdram_ram(TO_INTEGER(UNSIGNED(sdram_s_address)) mod 4096);
                 wait_r := true;
              END IF;
            ELSE
@@ -170,7 +170,7 @@ BEGIN
             IF (not wait_r) THEN
               IF (sdram_s_waitrequest = '0') THEN
                 sdram_s_waitrequest <= '1';
-                sdram_ram(TO_INTEGER(UNSIGNED(sdram_s_address))) <= sdram_s_writedata;
+                sdram_ram(TO_INTEGER(UNSIGNED(sdram_s_address)) mod 4096) <= sdram_s_writedata;
              ELSE
                sdram_s_waitrequest <= '0';
                wait_r := true;

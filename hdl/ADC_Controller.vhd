@@ -41,10 +41,13 @@ begin
         adc_clk_cnt <= adc_clk_cnt + 1;
       end if;
       adc_clk_prev <= adc_clk_i;
+      if adc_clk_i = '1' and adc_clk_prev = '0' then
+        adc_clk_rise <= '1';
+      else
+        adc_clk_rise <= '0';
+      end if;
     end if;
   end process;
-
-  adc_clk_rise <= '1' when adc_clk_i = '1' and adc_clk_prev = '0' else '0';
 
   main_proc: process(sys_clk)
   begin

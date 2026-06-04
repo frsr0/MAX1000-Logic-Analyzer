@@ -122,7 +122,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL proto_trig_pulse    : STD_LOGIC := '0';
   -- 21-cycle bit-serial divider for /3 (replaces 58-level lpm_divide)
   SIGNAL div3_shift   : STD_LOGIC_VECTOR(20 downto 0) := (others => '0');
-  SIGNAL div3_acc     : NATURAL range 0 to 3 := 0;
+  SIGNAL div3_acc     : NATURAL range 0 to 7 := 0;
   SIGNAL div3_result  : NATURAL range 0 to 1048576 := 0;
   SIGNAL div3_count   : NATURAL range 0 to 31 := 0;
   SIGNAL div3_busy    : STD_LOGIC := '0';
@@ -221,7 +221,7 @@ BEGIN
       IF (Read_Count-Delay_Count < Max_Samples) THEN
         Start_Offset <= Read_Count-Delay_Count;
       ELSE
-        Start_Offset <= Max_Samples;
+        Start_Offset <= Max_Samples - 1;
       END IF;
     ELSE
       IF (Read_Count > Max_Samples) THEN
@@ -255,7 +255,9 @@ BEGIN
             Run <= '1';
           END IF;
         END IF;
-        inputs_prev <= Inputs;
+        IF Run_OLS = '1' THEN
+          inputs_prev <= Inputs;
+        END IF;
     END IF;
       IF (Full = '1' AND (interface_mode_i = '1' OR Run = '1')) THEN
         CASE (Thread23) IS
@@ -619,22 +621,22 @@ BEGIN
                 Thread45 := 0;
                 Thread38 := 0;
           WHEN 18 =>
-            CASE (Thread49) IS
+            -- CMD_GEN_LOAD (0xA0, multi-byte): single-cycle load
+            IF saved_command = x"A0" THEN
+              Gen_Load_Byte <= data(7 downto 0);
+              gen_load_cnt <= 1;
+              Thread44 := 0; Thread45 := 0; Thread38 := 0;
+            ELSE
+              -- CMD_METADATA (0x04, single-byte): 18-byte ID string send
+              CASE (Thread49) IS
               WHEN 0 =>
                 wr_ctr <= 18;
                 Thread49 := 1;
               WHEN 1 =>
-                IF (command = x"01") THEN
-                  Thread44 := 2; Thread49 := 0; Thread51 := 0;
-                ELSIF (command = x"00") THEN
-                  Thread44 := 1; Thread49 := 0; Thread51 := 0;
-                ELSIF (wr_ctr > 0) THEN
+                IF (wr_ctr > 0) THEN
                   Thread49 := Thread49 + 1;
                 ELSE
-                  Thread44 := 0;
-                  Thread45 := 0;
-                  Thread49 := 0;
-                  Thread38 := 0;
+                  Thread44 := 0; Thread45 := 0; Thread49 := 0; Thread38 := 0;
                 END IF;
               WHEN 2 =>
                 CASE (Thread51) IS
@@ -663,70 +665,119 @@ BEGIN
                     UART_TX_Enable <= '1';
                     Thread51 := 1;
                   WHEN 1 =>
-                    IF (effective_TX_Busy = '0') THEN
-                    ELSE
-                      Thread51 := Thread51 + 1;
-                    END IF;
+                    IF (effective_TX_Busy = '0') THEN ELSE Thread51 := Thread51 + 1; END IF;
                   WHEN 2 =>
-                    UART_TX_Enable <= '0';
-                    Thread51 := 3;
+                    UART_TX_Enable <= '0'; Thread51 := 3;
                   WHEN 3 =>
-                    IF (effective_TX_Busy = '1') THEN
-                    ELSE
-                      Thread51 := Thread51 + 1;
-                    END IF;
+                    IF (effective_TX_Busy = '1') THEN ELSE Thread51 := Thread51 + 1; END IF;
                   WHEN 4 =>
-                    wr_ctr <= wr_ctr - 1;
-                    Thread49 := 1;
-                    Thread51 := 0;
+                    wr_ctr <= wr_ctr - 1; Thread49 := 1; Thread51 := 0;
                   WHEN others => Thread51 := 0;
                 END CASE;
               WHEN others => Thread49 := 0;
             END CASE;
-          WHEN 19 =>
-            CASE (Thread49) IS
-              WHEN 0 =>
-                wr_ctr <= 4;
-                Thread49 := 1;
-              WHEN 1 =>
-                IF (wr_ctr > 0) THEN
-                  Thread49 := Thread49 + 1;
-                ELSE
-                  Thread44 := 0;
-                  Thread45 := 0;
-                  Thread49 := 0;
-                  Thread38 := 0;
-                END IF;
-              WHEN 2 =>
-                CASE (Thread51) IS
-                  WHEN 0 =>
-                    CASE (wr_ctr) IS
-                      WHEN 4 => UART_TX_Data <= Run & Run_OLS & Full & interface_mode_i &
-                                                    continuous_mode_i & fast_mode_i & "00";
-                      WHEN 3 => UART_TX_Data <= std_logic_vector(to_unsigned(Read_Count mod 256, 8));
-                      WHEN 2 => UART_TX_Data <= std_logic_vector(to_unsigned(Read_Count / 256, 8));
-                      WHEN 1 => UART_TX_Data <= std_logic_vector(to_unsigned(Rate_Div mod 256, 8));
-                      WHEN others => null;
-                    END CASE;
-                    UART_TX_Enable <= '1';
-                    Thread51 := 1;
-                  WHEN 1 =>
-                    IF (effective_TX_Busy = '0') THEN
-                    ELSE Thread51 := Thread51 + 1; END IF;
-                  WHEN 2 =>
-                    UART_TX_Enable <= '0';
-                    Thread51 := 3;
-                  WHEN 3 =>
-                    IF (effective_TX_Busy = '1') THEN
-                    ELSE Thread51 := Thread51 + 1; END IF;
-                  WHEN 4 =>
-                    wr_ctr <= wr_ctr - 1;
-                    Thread49 := 1;
-                    Thread51 := 0;
-                  WHEN others => Thread51 := 0;
-                END CASE;
-              WHEN others => Thread49 := 0;
-            END CASE;
+            END IF;
+          WHEN 9 =>
+            Trigger_Values <= data;
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 10 =>
+            null;
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 11 =>
+            null;
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 12 =>
+            Divider <= TO_INTEGER(UNSIGNED(data(23 downto 0)));
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 13 =>
+            null;
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 14 =>
+            Channel_Groups <= data(5 downto 2);
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 15 =>
+            Delay_Count <= TO_INTEGER(UNSIGNED(data(29 downto 0)));
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 16 =>
+            Read_Count <= TO_INTEGER(UNSIGNED(data(29 downto 0)));
+            div3_pending <= '1';
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 17 =>
+            null;
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 20 =>
+            Gen_Baud_Div <= data(15 downto 0);
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 21 =>
+            blk_mode <= '1';
+            if unsigned(data(31 downto 9)) /= 0 then
+              blk_len_s <= 256;
+            elsif TO_INTEGER(UNSIGNED(data(8 downto 0))) > 256 then
+              blk_len_s <= 256;
+            else
+              blk_len_s <= TO_INTEGER(UNSIGNED(data(8 downto 0)));
+            end if;
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 22 =>
+            Gen_Proto <= data(0);
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 23 =>
+            null;
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 24 =>
+            gen_tx_pin_int <= TO_INTEGER(UNSIGNED(data(7 downto 0))) mod 8;
+            gen_scl_pin_int <= TO_INTEGER(UNSIGNED(data(15 downto 8))) mod 8;
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 25 =>
+            gen_i2c_test_int <= data(0);
+            gen_i2c_rd_len_int <= TO_INTEGER(UNSIGNED(data(15 downto 8)));
+            gen_i2c_dev_r_int <= data(23 downto 16);
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 26 =>
+            fast_mode_i <= data(0);
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 27 =>
+            proto_trig_enable <= data(15);
+            proto_trig_protocol <= data(13 downto 12);
+            proto_trig_match <= data(7 downto 0);
+            proto_trig_channel <= TO_INTEGER(UNSIGNED(data(10 downto 8)));
+            proto_trig_bauddiv <= TO_INTEGER(UNSIGNED(data(31 downto 16)));
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 28 =>
+            continuous_mode_i <= data(0);
+            IF data(0) = '1' THEN
+              cont_buf_sel <= 0;
+              cont_base_addr <= 0;
+              cont_prefetch <= '0';
+              IF div3_busy = '0' THEN
+                cont_rem <= samples_div3;
+              ELSE
+                cont_rem <= Read_Count / 4;
+              END IF;
+              Run_OLS <= '1';
+            END IF;
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 29 =>
+            interface_mode_i <= data(0);
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 30 =>
+            analog_channel_i <= TO_INTEGER(UNSIGNED(data(3 downto 0)));
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 31 =>
+            analog_mode_i <= data(0);
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 32 =>
+            ch_mode <= data(0);
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 33 =>
+            gen_spi_test_int <= data(0);
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 37 =>
+            interface_mode_i <= data(0);
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 38 =>
+            null;
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
           WHEN others => Thread44 := 0;
         END CASE;
       WHEN 6 =>
@@ -823,169 +874,7 @@ BEGIN
               WHEN others =>
                 Thread44 := Thread44 + 10;
             END CASE;
-          WHEN 8 =>
-            Trigger_Mask   <= data;
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 9 =>
-            Trigger_Values <= data;
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 10 =>
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 11 =>
-            null;
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 12 =>
-            Divider <= TO_INTEGER(UNSIGNED(data(23 downto 0)));
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 13 =>
-            Read_Count  <= TO_INTEGER(UNSIGNED(data(15 downto 0)));
-            div3_pending <= '1';
-            Delay_Count <= TO_INTEGER(UNSIGNED(data(31 downto 16)));
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 14 =>
-            Channel_Groups <= data(5 downto 2);
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 15 =>
-            Delay_Count <= TO_INTEGER(UNSIGNED(data(29 downto 0)));
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 16 =>
-            Read_Count  <= TO_INTEGER(UNSIGNED(data(29 downto 0)));
-            div3_pending <= '1';
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 17 =>
-            null;
-            Thread38 := 0;
-                Thread44 := 0;
-                Thread45 := 0;
-          WHEN 18 =>
-            Gen_Load_Byte <= data(7 downto 0);
-          gen_load_cnt <= 1;
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 19 =>
-            gen_start_cnt <= 3;
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 20 =>
-            Gen_Baud_Div <= data(15 downto 0);
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 21 =>
-            blk_mode <= '1';
-            -- 9-bit TO_INTEGER is always safe (max 511).
-            -- Clamp to GEN_FIFO_DEPTH if the 32-bit length exceeds it.
-            if unsigned(data(31 downto 9)) /= 0 then
-              -- pragma translate_off
-              report "blk_len clamped to GEN_FIFO_DEPTH=" & integer'image(GEN_FIFO_DEPTH) severity warning;
-              -- pragma translate_on
-              blk_len := GEN_FIFO_DEPTH;
-            elsif TO_INTEGER(UNSIGNED(data(8 downto 0))) > GEN_FIFO_DEPTH then
-              blk_len := GEN_FIFO_DEPTH;
-            else
-              blk_len := TO_INTEGER(UNSIGNED(data(8 downto 0)));
-            end if;
-            blk_len_s <= blk_len;
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 22 =>
-            Gen_Proto <= data(0);
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 23 =>
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 24 =>
-            gen_tx_pin_int <= TO_INTEGER(UNSIGNED(data(7 downto 0))) mod 8;
-            gen_scl_pin_int <= TO_INTEGER(UNSIGNED(data(15 downto 8))) mod 8;
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 25 =>
-            gen_i2c_test_int <= data(0);
-            gen_i2c_rd_len_int <= TO_INTEGER(UNSIGNED(data(15 downto 8)));
-            gen_i2c_dev_r_int <= data(23 downto 16);
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 26 =>
-            fast_mode_i <= data(0);
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 27 =>
-            proto_trig_enable   <= data(15);
-            proto_trig_protocol <= data(13 downto 12);
-            proto_trig_match    <= data(7 downto 0);
-            proto_trig_channel  <= TO_INTEGER(UNSIGNED(data(10 downto 8)));
-            proto_trig_bauddiv  <= TO_INTEGER(UNSIGNED(data(31 downto 16)));
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 28 =>
-            continuous_mode_i <= data(0);
-            IF data(0) = '1' THEN
-              cont_buf_sel <= 0;
-              cont_base_addr <= 0;
-              cont_prefetch <= '0';
-              IF div3_busy = '0' THEN
-                cont_rem <= samples_div3;
-              ELSE
-                cont_rem <= Read_Count / 4;  -- quick estimate, divider still running
-              END IF;
-              Run_OLS <= '1';
-            END IF;
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 29 =>
-            interface_mode_i <= data(0);
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 30 =>
-            analog_channel_i <= TO_INTEGER(UNSIGNED(data(3 downto 0)));
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 31 =>
-            analog_mode_i <= data(0);
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 32 =>
-            ch_mode <= data(0);
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 33 =>
-            gen_spi_test_int <= data(0);
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
+            Thread38 := 5;  -- transition to command execution after accumulate
           WHEN others => Thread44 := 0;
         END CASE;
       WHEN others => Thread38 := 0;

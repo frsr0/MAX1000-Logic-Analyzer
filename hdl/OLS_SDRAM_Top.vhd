@@ -60,8 +60,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal continuous_mode : std_logic := '0';
   signal buffer_full     : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
   signal buffer_ack      : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-signal core_clk       : std_logic := '0';
-signal sdram_clk_pll  : std_logic := '0';
+  signal sdram_clk_pll  : std_logic := '0';
   signal gpio_out      : std_logic_vector(7 downto 0) := (others => '0');
   signal gpio_dir      : std_logic_vector(7 downto 0) := (others => '0');
   signal core_status   : std_logic_vector(7 downto 0) := (others => '0');
@@ -179,8 +178,6 @@ BEGIN
     pll_locked <= '1';
   end generate;
 
-  core_clk <= sys_clk;
-  
   -- SDRAM clock from PLL c2 (-90° phase shift relative to core)
   sdram_clk <= sdram_clk_pll;
 
@@ -252,9 +249,9 @@ BEGIN
   end process;
 
   -- Test divider: 10-bit counter, output on CH0 at ~11.7 kHz (12MHz CLK) or ~46.9kHz (48MHz PLL)
-  process(core_clk)
+  process(sys_clk)
   begin
-    if rising_edge(core_clk) then
+    if rising_edge(sys_clk) then
       test_div <= std_logic_vector(unsigned(test_div) + 1);
     end if;
   end process;
@@ -269,8 +266,10 @@ BEGIN
   begin
     if rising_edge(sys_clk) then
       if gen_busy = '1' then
-        gpio_out(TX_PIN) <= gen_tx;
-        gpio_dir(TX_PIN) <= '1';
+        gpio_out <= (others => '0');
+        gpio_dir <= (others => '0');
+        gpio_out(gen_tx_pin) <= gen_tx;
+        gpio_dir(gen_tx_pin) <= '1';
         if gen_proto = '1' then  -- I2C: also drive SCL
           gpio_out(gen_scl_pin) <= gen_scl;
           gpio_dir(gen_scl_pin) <= '1';
@@ -284,14 +283,14 @@ BEGIN
 
   SDRAM_Analyzer : OLS_Logic_Analyzer
   GENERIC MAP (
-    Baud_Rate    => 12000000,
+    Baud_Rate    => 115200,
     CLK_Frequency => System_CLK_Frequency,
     Max_Samples  => 1048576,
     Channels     => 8,
     Sim          => Sim
   )
   PORT MAP (
-    CLK => core_clk,
+    CLK => sys_clk,
     FAST_CLK => fast_clk,
     Inputs   => internal_data,
     UART_RX  => UART_RX,
@@ -427,6 +426,7 @@ BEGIN
     Tx_Out    => gen_tx,
     Scl_Out   => gen_scl,
     Busy      => gen_busy,
+    Active    => open,
     I2C_Rd_Len => gen_i2c_rd_len,
     I2C_Dev_R  => gen_i2c_dev_r,
     Sda_In     => SEN_SDI,

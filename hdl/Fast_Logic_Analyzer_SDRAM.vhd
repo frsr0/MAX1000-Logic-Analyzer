@@ -14,7 +14,7 @@ entity Fast_Logic_Analyzer_SDRAM is
 port (
   CLK          : in  std_logic;
   CLK_150      : out std_logic;
-  Rate_Div     : in  natural range 1 to 12000000 := 12;
+  Rate_Div     : in  natural range 1 to 150000000 := 12;
   Samples      : in  natural range 1 to Max_Samples := Max_Samples;
   Start_Offset : in  natural range 0 to Max_Samples := 0;
   Run          : in  std_logic := '0';
@@ -62,6 +62,10 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
    signal s_burst_i : std_logic := '0';
    signal s_idle  : std_logic := '0';
   signal full_i      : std_logic := '0';
+  signal run_sync1   : std_logic := '0';
+  signal run_sync2   : std_logic := '0';
+  signal samples_div_p  : natural range 0 to Max_Samples := 0;
+  signal samples_div6_p : natural range 0 to Max_Samples := 0;
   signal samples_d1   : natural range 0 to Max_Samples := 0;
   signal samples_div  : natural range 0 to Max_Samples := 0;
   signal samples_div6 : natural range 0 to Max_Samples := 0;
@@ -138,7 +142,7 @@ begin
 
   -- Divider: assert sample_en for one cycle every Rate_Div PLL clocks
   process (pclk)
-    variable cnt : natural range 0 to 12000000 := 0;
+     variable cnt : natural range 0 to 150000000 := 0;
   begin
     if rising_edge(pclk) then
       if cnt >= Rate_Div - 1 then
@@ -162,16 +166,35 @@ begin
     end if;
   end process;
 
+  -- 2FF synchronizer: Run from CLK domain into pclk domain
+  process(pclk)
+  begin
+    if rising_edge(pclk) then
+      run_sync1 <= Run;
+      run_sync2 <= run_sync1;
+    end if;
+  end process;
+
+  -- Re-register CLK-domain divide results into pclk domain
+  process(pclk)
+  begin
+    if rising_edge(pclk) then
+      samples_div_p  <= samples_div;
+      samples_div6_p <= samples_div6;
+    end if;
+  end process;
+
   -- Main: capture samples to SDRAM via dual buffer, read back from SDRAM
   process (pclk)
     variable step_r  : natural range 0 to sub_steps := 0;
     variable run_r   : std_logic := '0';
     variable rd_mode : boolean := true;
+    variable read_addr : natural := 0;
     variable wbuf    : std_logic_vector(15 downto 0) := (others => '0');
-    variable waddr_0   : natural range 0 to 15000000 := 0;
-    variable waddr_1   : natural range 0 to 15000000 := 0;
-    variable waddr_2   : natural range 0 to 15000000 := 0;
-    variable a_reg   : natural range 0 to 15000000 := 15000000;
+    variable waddr_0   : natural range 0 to Max_Samples := 0;
+    variable waddr_1   : natural range 0 to Max_Samples := 0;
+    variable waddr_2   : natural range 0 to Max_Samples := 0;
+    variable a_reg   : natural range 0 to Max_Samples := Max_Samples;
     variable wip        : boolean := false;
     variable wr_cnt   : natural range 0 to 3 := 0;
     variable wr_pend    : boolean := false;
@@ -242,13 +265,19 @@ begin
         end if;
       end if;
 
-      if Run /= run_r then
+      if run_sync2 /= run_r then
         waddr_0 := 0; waddr_1 := 0; waddr_2 := 0; step_r := 0;
+        f_head := 0; f_tail := 0; f_cnt := 0;
+        wbuf := (others => '0');
+        bram_wp := 0; bram_cnt := 0;
+        flush_rem := 0; flush_sync := false;
+        rd_pend := '0';
+        wr_pend := false; burst_rem := 0; wip := false; wr_cnt := 0;
         buf_sel <= "00";
         buf_full(0) <= '0'; buf_full(1) <= '0'; buf_full(2) <= '0';
+        full_i <= '0';
         full_pending <= '0'; full_clr_pending <= '0';
-        if Run = '1' then full_i <= '0'; end if;
-        if Run = '0' then
+        if run_sync2 = '0' then
           rd_mode := true;
         elsif Fast_Mode = '1' then
           rd_mode := false;
@@ -268,12 +297,12 @@ begin
           end if;
           bram_cnt := 0;
         end if;
-        run_r := Run;
+        run_r := run_sync2;
         s_wr <= '0'; s_rd <= '0';
       end if;
 
       -- Fast mode pre-trigger
-      if Fast_Mode = '1' and Armed = '1' and Run = '0' and rd_mode then
+      if Fast_Mode = '1' and Armed = '1' and run_sync2 = '0' and rd_mode then
         rd_mode := false;
         bram_cnt := 0;
       end if;
@@ -282,30 +311,41 @@ begin
         -- READOUT
         s_wr <= '0'; s_burst_i <= '0';
         if Fast_Mode = '1' then
-          if Address /= a_reg then
-            a_reg := Address;
-            if bram_cnt + bram_post_cnt <= BRAM_SIZE then
-              bram_raddr <= Address;
-            else
-              bram_raddr <= (bram_wp + Address) mod BRAM_SIZE;
+          read_addr := Address + Start_Offset;
+          if read_addr /= a_reg then
+            a_reg := read_addr;
+            if read_addr < bram_cnt + bram_post_cnt then
+              if bram_cnt + bram_post_cnt <= BRAM_SIZE then
+                bram_raddr <= read_addr;
+              else
+                bram_raddr <= (bram_wp + read_addr) mod BRAM_SIZE;
+              end if;
             end if;
           end if;
-          if Address < bram_cnt + bram_post_cnt then
+          if read_addr < bram_cnt + bram_post_cnt then
             Outputs <= bram_rdata;
           else
             Outputs <= (others => '0');
           end if;
         else
-          if Address /= a_reg then
-            a_reg := Address;
-            s_addr <= std_logic_vector(to_unsigned(Address, 22));
-            s_rd <= '1';
-            rd_pend := '1';
+          read_addr := Address + Start_Offset;
+          if read_addr /= a_reg then
+            a_reg := read_addr;
+            if read_addr < samples_div_p then
+              s_addr <= std_logic_vector(to_unsigned(read_addr, 22));
+              s_rd <= '1';
+              rd_pend := '1';
+            else
+              s_rd <= '0';
+              rd_pend := '0';
+            end if;
           end if;
           if s_rvalid = '1' and rd_pend = '1' then
             Outputs <= s_rdata;
             s_rd <= '0';
             rd_pend := '0';
+          elsif read_addr >= samples_div_p then
+            Outputs <= (others => '0');
           end if;
         end if;
 
@@ -321,12 +361,13 @@ begin
             s_wr    <= '1';
             burst_phase := true;
           else
-            s_wr    <= '0';
+            s_wr        <= '0';
             burst_phase := false;
-            burst_rem := burst_rem - 1;
+            burst_rem   := burst_rem - 1;
             if burst_rem = 0 then
-              wip    := true;
               s_burst_i <= '0';
+              wr_cnt    := 0;
+              wip       := false;
             end if;
           end if;
 
@@ -337,7 +378,7 @@ begin
           wip     := true;
           wr_pend := false;
 
-        elsif fifo_cnt > 0 and not wip then
+        elsif f_cnt > 0 and not wip then
           if f_cnt >= 4 then
             for i in 0 to 3 loop
               burst_buf(i) := fifo_mem(f_tail);
@@ -347,10 +388,6 @@ begin
             end loop;
             burst_rem   := 4;
             burst_phase := false;
-            s_burst_i     <= '1';
-            s_addr  <= burst_buf(0)(37 downto 16);
-            s_wdata <= burst_buf(0)(15 downto 0);
-            s_wr    <= '1';
           else
             wr_pend      := true;
             wr_pend_addr := fifo_mem(f_tail)(37 downto 16);
@@ -361,8 +398,8 @@ begin
           end if;
         end if;
 
-        -- Track SDRAM write completion (2-cycle timeout, no waitrequest dependency)
-        if wip then
+        -- Track SDRAM write completion (single writes only)
+        if wip and burst_rem = 0 then
           if wr_cnt < 2 then
             wr_cnt := wr_cnt + 1;
           else
@@ -392,7 +429,7 @@ begin
                 else flush_idx := flush_idx + 1; end if;
                 bram_raddr <= flush_idx;
               end if;
-            elsif Armed = '1' and Run = '0' then
+            elsif Armed = '1' and run_sync2 = '0' then
               -- Pre-trigger BRAM (circular)
               bram_waddr <= bram_wp;
               bram_wdata <= wbuf;
@@ -416,7 +453,7 @@ begin
                   null;  -- all 3 full: stall, no write
                 else
                   -- Double-buffer mode
-                  buf_limit := samples_div6;
+                  buf_limit := samples_div6_p;
                   if buf_sel = "00" then
                     write_addr := std_logic_vector(to_unsigned(waddr_0, 22));
                     if waddr_0 + 1 >= buf_limit then
@@ -463,7 +500,7 @@ begin
               else
                 -- Single-buffer mode (legacy)
                 -- Stop at target to let FIFO drain, then Full fires
-                if waddr_0 < samples_div then
+                if waddr_0 < samples_div_p then
                   fifo_mem(f_head) <= std_logic_vector(to_unsigned(waddr_0, 22)) & wbuf;
                   if f_head = FIFO_Depth-1 then f_head := 0;
                   else f_head := f_head + 1; end if;
@@ -482,7 +519,7 @@ begin
         -- Assert Full
         if not rd_mode and full_i = '0' then
           if Fast_Mode = '1' then
-            if bram_post_cnt >= samples_div then
+            if bram_post_cnt >= samples_div_p then
               full_i <= '1';
               rd_mode := true;
               if Continuous_Mode = '1' then
@@ -494,7 +531,7 @@ begin
             null;
           else
             -- Single-buffer mode: Full when waddr_0 reaches target
-            if waddr_0 >= samples_div
+            if waddr_0 >= samples_div_p
                and f_cnt = 0
                and not wip
                and not wr_pend

@@ -1,109 +1,102 @@
-library ieee;
-use ieee.std_logic_1164.all;
-use ieee.numeric_std.all;
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+use IEEE.numeric_std.all;
+use work.sim_pkg.all;
 
 entity tb_adc_controller is
-  generic (TEST : string := "tc_basic");
+  generic (
+    CLK_FREQ : natural := 96000000
+  );
 end tb_adc_controller;
 
-architecture sim of tb_adc_controller is
-  constant CLK_PERIOD : time := 20.833 ns;  -- 48 MHz
+architecture bench of tb_adc_controller is
+  constant CLK_PERIOD : time := 1 sec / real(CLK_FREQ);
 
-  signal sys_clk       : std_logic := '0';
-  signal reset         : std_logic := '0';
-  signal channel_sel   : natural range 0 to 7 := 0;
-  signal start         : std_logic := '0';
-  signal busy          : std_logic;
-  signal result        : std_logic_vector(11 downto 0);
-  signal result_valid  : std_logic;
-
+  signal clk    : std_logic := '0';
+  signal reset  : std_logic := '0';
+  signal ch_sel : natural range 0 to 7 := 0;
+  signal start  : std_logic := '0';
+  signal busy   : std_logic;
+  signal result : std_logic_vector(11 downto 0);
+  signal valid  : std_logic;
 begin
 
-  sys_clk <= not sys_clk after CLK_PERIOD / 2;
+  gen_clk(clk, CLK_PERIOD / 2);
 
-  uut: entity work.ADC_Controller
+  DUT : entity work.ADC_Controller
     port map (
-      sys_clk      => sys_clk,
+      sys_clk      => clk,
       reset        => reset,
-      channel_sel  => channel_sel,
+      channel_sel  => ch_sel,
       start        => start,
       busy         => busy,
       result       => result,
-      result_valid => result_valid
+      result_valid => valid
     );
 
-  stimuli: process
+  process
   begin
+    report "=== ADC Controller tests ===";
+
+    -- Test 1: Single conversion on CH0
+    report "Test 1: Single conversion CH0";
+    ch_sel <= 0;
+    start <= '1';
+    wait_cycles(clk, 1);
+    start <= '0';
+    wait_until(clk, busy, '1', 10 us, "ADC should go busy");
+    wait_until(clk, valid, '1', 100 us, "ADC should produce result");
+    check(valid = '1', "Result valid not asserted");
+    wait_cycles(clk, 2);
+    check(busy = '0', "ADC should be idle after result");
+    report "Test 1: PASS";
+
+    -- Test 2: All 8 channels
+    report "Test 2: Multi-channel scan";
+    for ch in 0 to 7 loop
+      ch_sel <= ch;
+      start <= '1';
+      wait_cycles(clk, 1);
+      start <= '0';
+      wait_until(clk, valid, '1', 100 us, "ADC CH" & integer'image(ch) & " timeout");
+      check(valid = '1', "Valid asserted on CH" & integer'image(ch));
+    end loop;
+    report "Test 2: PASS";
+
+    -- Test 3: Back-to-back conversions
+    report "Test 3: Back-to-back conversions";
+    for i in 0 to 15 loop
+      ch_sel <= i mod 8;
+      start <= '1';
+      wait_cycles(clk, 1);
+      start <= '0';
+      wait_until(clk, valid, '1', 100 us, "ADC back-to-back " & integer'image(i) & " timeout");
+      wait_cycles(clk, 2);
+    end loop;
+    report "Test 3: PASS";
+
+    -- Test 4: Reset during conversion
+    report "Test 4: Reset during conversion";
+    ch_sel <= 0;
+    start <= '1';
+    wait_cycles(clk, 1);
+    start <= '0';
+    wait_until(clk, busy, '1', 10 us, "ADC should go busy");
     reset <= '1';
-    wait for 100 ns;
+    wait_cycles(clk, 5);
+    check(busy = '0', "ADC should not be busy after reset");
     reset <= '0';
-    wait for 200 ns;
+    wait_cycles(clk, 5);
+    check(valid = '0', "Valid should be cleared after reset");
+    -- Normal conversion after reset
+    start <= '1';
+    wait_cycles(clk, 1);
+    start <= '0';
+    wait_until(clk, valid, '1', 100 us, "ADC after reset timeout");
+    report "Test 4: PASS";
 
-    if TEST = "tc_basic" then
-      report "=== tc_basic: single conversion channel 0 ===";
-      channel_sel <= 0;
-      start <= '1';
-      wait for CLK_PERIOD;
-      start <= '0';
-      wait until result_valid = '1' for 200 us;
-      if result_valid = '1' then
-        report "tc_basic: conversion complete, result=" & to_hstring(result) severity note;
-      else
-        report "tc_basic: timeout waiting for conversion" severity error;
-      end if;
-      wait for 10 us;
-
-    elsif TEST = "tc_multi_channel" then
-      report "=== tc_multi_channel: convert on all 8 channels ===";
-      for ch in 0 to 7 loop
-        channel_sel <= ch;
-        start <= '1';
-        wait for CLK_PERIOD;
-        start <= '0';
-        wait until result_valid = '1' for 200 us;
-        if result_valid = '1' then
-          report "Ch" & integer'image(ch) & " = 0x" & to_hstring(result) severity note;
-        else
-          report "Ch" & integer'image(ch) & " timeout" severity error;
-        end if;
-        wait for 5 us;
-      end loop;
-
-    elsif TEST = "tc_back_to_back" then
-      report "=== tc_back_to_back: rapid conversions ===";
-      for i in 0 to 15 loop
-        channel_sel <= i mod 8;
-        start <= '1';
-        wait for CLK_PERIOD;
-        start <= '0';
-        wait until result_valid = '1' for 200 us;
-        if result_valid = '0' then
-          report "conversion " & integer'image(i) & " timeout" severity error;
-        end if;
-        wait for 1 us;
-      end loop;
-      report "tc_back_to_back: all 16 conversions complete" severity note;
-
-    elsif TEST = "tc_busy_timing" then
-      report "=== tc_busy_timing: verify busy duration ===";
-      channel_sel <= 0;
-      start <= '1';
-      wait for CLK_PERIOD;
-      start <= '0';
-      if busy = '1' then
-        report "tc_busy_timing: busy asserted after start" severity note;
-      end if;
-      wait until result_valid = '1' for 200 us;
-      if busy = '0' then
-        report "tc_busy_timing: busy deasserted after result" severity note;
-      end if;
-      wait for 10 us;
-
-    else
-      report "Unknown test: " & TEST severity failure;
-    end if;
-
-    report "Test " & TEST & " complete" severity note;
+    report "=== ALL ADC CONTROLLER TESTS PASSED ===";
     wait;
   end process;
-end sim;
+
+end bench;

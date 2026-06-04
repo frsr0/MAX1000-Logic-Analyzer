@@ -6,7 +6,7 @@ use IEEE.numeric_std.all;
 
 ENTITY OLS_Logic_Analyzer IS
   GENERIC (
-      Baud_Rate       : INTEGER := 12000000;     
+      Baud_Rate       : INTEGER := 115200;     
       CLK_Frequency   : INTEGER := 12000000;     
     Max_Samples     : NATURAL := 1000000;      
     Channels        : NATURAL := 4;
@@ -58,7 +58,7 @@ END OLS_Logic_Analyzer;
 ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
 
   CONSTANT sub_steps    : NATURAL := 16/Channels;
-  SIGNAL OLS_Interface_Rate_Div      : NATURAL          range 1 to 12000000 := 12;
+  SIGNAL OLS_Interface_Rate_Div      : NATURAL          range 1 to 150000000 := 12;
   SIGNAL OLS_Interface_Samples       : NATURAL          range 1 to Max_Samples := Max_Samples;
   SIGNAL OLS_Interface_Start_Offset  : NATURAL          range 0 to Max_Samples := 0;
   SIGNAL OLS_Interface_Run           : STD_LOGIC := '0';
@@ -68,7 +68,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL OLS_Interface_Inputs        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL LA_Out : STD_LOGIC_VECTOR(15 downto 0);
   SIGNAL Fast_Logic_Analyzer_SDRAM_CLK_150      : STD_LOGIC;
-  SIGNAL LA_Address       : NATURAL          range 0 to Max_Samples-1 := 0;
+  SIGNAL LA_Address       : NATURAL          range 0 to Max_Samples := 0;
   SIGNAL Gen_Load_Byte_i    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL Gen_Load_We_i      : STD_LOGIC := '0';
   SIGNAL Gen_Start_i        : STD_LOGIC := '0';
@@ -131,16 +131,19 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
       Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0')
      );
      END COMPONENT;
-   COMPONENT Fast_Logic_Analyzer_SDRAM IS
+    COMPONENT Fast_Logic_Analyzer_SDRAM IS
   GENERIC (
-      Max_Samples    : NATURAL := 3000000; 
+      Max_Samples    : NATURAL := 3000000;
     Channels       : NATURAL range 1 to 16 := 16;
-    Sim            : boolean := false
+    Sim            : boolean := false;
+    Write_Latency  : natural := 10;
+    Read_Latency   : natural := 3;
+    Page_Latency   : natural := 3
   );
   PORT (
     CLK : IN STD_LOGIC;
     CLK_150     : OUT STD_LOGIC;
-    Rate_Div     : IN  NATURAL range 1 to 12000000 := 12; 
+    Rate_Div     : IN  NATURAL range 1 to 150000000 := 12; 
     Samples      : IN  NATURAL range 1 to Max_Samples   := Max_Samples;  
     Start_Offset : IN  NATURAL range 0 to Max_Samples   := 0;  
     Run         : IN  STD_LOGIC := '0'; 
@@ -173,6 +176,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
 BEGIN
 
   OLS_Interface_Inputs(Channels-1 downto 0) <= Inputs;
+  -- Bits 31 downto Channels are intentionally held '0'. OLS_Interface expects
+  -- a 32-bit bus; channels beyond the configured width appear as constant low.
 
   OLS_Interface_Outputs(Channels-1 downto 0) <= LA_Out(((OLS_Interface_Address mod sub_steps + 1)*Channels)-1 downto (OLS_Interface_Address mod sub_steps)*Channels);
   LA_Address <= OLS_Interface_Address/sub_steps;
@@ -193,7 +198,7 @@ BEGIN
   Status <= fla_status;
   OLS_Interface1 : OLS_Interface
   GENERIC MAP (
-      CLK_Frequency => CLK_Frequency,Baud_Rate     => Baud_Rate,Max_Samples   => Max_Samples,OS_Rate       => 13,Def_IFace     => 1
+      CLK_Frequency => 150000000,Baud_Rate     => Baud_Rate,Max_Samples   => Max_Samples,OS_Rate       => 13,Def_IFace     => 1
   ) PORT MAP (
     CLK           => Fast_Logic_Analyzer_SDRAM_CLK_150,
     FAST_CLK      => FAST_CLK,

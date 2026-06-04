@@ -160,9 +160,9 @@ BEGIN
   BEGIN
   IF RISING_EDGE(CLK) THEN
     IF (Reset = '1') THEN
-      tx_count := 0;                                                              
-      TX <= '1';                                                                  
-      TX_Busy <= '1';                                                             
+      tx_count := 0;
+      TX <= '1';
+      TX_Busy <= '0';
       tx_state <= idle;
     ELSE
       CASE (tx_state) IS

@@ -97,7 +97,7 @@ architecture rtl of SDRAM_Controller is
     constant TRFC_CYCLES : natural := cycles_for_ns(T_RFC, CLK_Frequency);
 
     -- Refresh timing: need 8192 refreshes per 64ms → one every 7.8125us
-    constant REF_CYCLES  : natural := natural(7812500.0 * real(CLK_Frequency) / 1000000000.0 + 0.5);
+    constant REF_CYCLES  : natural := cycles_for_ns(7812.5, CLK_Frequency);
 
     type state_type is (
         ST_INIT, ST_INIT_NOP,
@@ -109,7 +109,7 @@ architecture rtl of SDRAM_Controller is
         ST_RD, ST_CL_WAIT, ST_RD_DATA,
         ST_WR, ST_TWR,
         ST_PRE2, ST_TRP2,
-        ST_RFSH, ST_TRFC,
+        ST_RFSH_PRE, ST_RFSH, ST_TRFC,
         ST_DEASSERT
     );
     signal state : state_type := ST_INIT;
@@ -185,12 +185,14 @@ begin
     sdram_dq <= buf_wd when dq_oe = '1' else (others => 'Z');
     sdram_s_idle <= '1' when state = ST_IDLE else '0';
 
+    -- synthesis translate_off
     process(max_write_depth)
     begin
         if now > 0 fs then
             report "max_write_depth=" & integer'image(max_write_depth) severity note;
         end if;
     end process;
+    -- synthesis translate_on
 
     process(clk_in_clk, reset_reset_n)
         variable v_depth : natural := 0;
@@ -327,10 +329,12 @@ begin
                         ref_req <= '0';
                         sdram_s_waitrequest <= '1';
                         if row_open = '1' then
-                            -- Close open row before refresh
+                            -- Precharge before refresh (tRP requirement)
                             s_ras <= '0'; s_we <= '0';
                             s_addr(10) <= '1'; s_ba <= active_bank;
-                            state <= ST_RFSH;  -- will precharge during TRP that follows RFSH
+                            row_open <= '0';
+                            timer <= TRP_CYCLES - 1;
+                            state <= ST_RFSH_PRE;
                         else
                             state <= ST_RFSH;
                         end if;
@@ -474,6 +478,13 @@ begin
                     end if;
 
                 -- REFRESH
+                when ST_RFSH_PRE =>
+                    if timer = 0 then
+                        state <= ST_RFSH;
+                    else
+                        timer <= timer - 1;
+                    end if;
+
                 when ST_RFSH =>
                     s_ras <= '0'; s_cas <= '0';
                     row_open <= '0';

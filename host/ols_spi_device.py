@@ -70,7 +70,7 @@ class OLSDeviceSPI:
         #   data(7:0)=1st byte, data(15:8)=2nd, data(23:16)=3rd, data(31:24)=4th
         # interface_mode_i <= data(0). We need data(0)=1 → 1st byte must have bit0=1.
         # struct.pack('<I', 1) = [0x01, 0, 0, 0] → 1st byte=0x01 → data(0)=1.
-        self._long(0xAB, 1)
+        self._long(0xAC, 1)
 
     def get_metadata(self):
         """Return 50-byte metadata block (same format as UART backend)."""
@@ -598,6 +598,10 @@ class OLSDeviceSPI:
             self.start_gen()
 
         self.spi.set_continuous(True)
+        self.spi.flush()
+
+        # ARM the capture
+        self.spi.arm()
         self.spi.flush()
 
         buf = b''

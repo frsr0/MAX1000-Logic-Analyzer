@@ -43,7 +43,7 @@ begin
             end if;
 
           when START =>
-            if baud_timer = Baud_Div - 1 then
+            if baud_timer = (Baud_Div / 2) - 1 then
               baud_timer := 0;
               bit_cnt := 0;
               state := BITS;

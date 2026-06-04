@@ -26,18 +26,20 @@ end Signal_Gen;
 
 architecture rtl of Signal_Gen is
   type fifo_t is array (0 to FIFO_DEPTH-1) of std_logic_vector(7 downto 0);
+  constant FIXED_BAUD_DIV : std_logic_vector(15 downto 0) := x"00D0";  -- 208 = 115200 @ 24 MHz
   signal fifo  : fifo_t := (others => (others => '0'));
   signal head  : natural range 0 to FIFO_DEPTH-1 := 0;
   signal tail  : natural range 0 to FIFO_DEPTH-1 := 0;
   signal count : natural range 0 to FIFO_DEPTH := 0;
   signal tx_active   : std_logic := '0';
-  signal baud_div_r  : std_logic_vector(15 downto 0) := x"00D0";  -- 208 = 115200 @ 24 MHz
+  signal baud_div_r  : std_logic_vector(15 downto 0) := FIXED_BAUD_DIV;
 begin
   Active <= tx_active;
   Busy   <= tx_active;
 
   process(CLK)
     variable baud_cnt : natural range 0 to 65535 := 0;
+    variable baud_div_cnt : natural := 1;
     variable bit_cnt  : natural range 0 to 15 := 0;
     variable data_buf : std_logic_vector(7 downto 0) := (others => '0');
     variable byte_active : boolean := false;
@@ -55,6 +57,14 @@ begin
     variable spi_bit  : natural range 0 to 8 := 0;
   begin
     if rising_edge(CLK) then
+      baud_div_cnt := to_integer(unsigned(baud_div_r));
+      if baud_div_cnt = 0 then
+        baud_div_cnt := to_integer(unsigned(FIXED_BAUD_DIV));
+      end if;
+      if baud_div_cnt = 0 then
+        baud_div_cnt := 1;
+      end if;
+
       -- FIFO write (common to both protocols)
       if Load_We = '1' and count < FIFO_DEPTH then
         fifo(head) <= Load_Byte;
@@ -65,7 +75,11 @@ begin
       -- Start trigger: latch Baud_Div for all protocol modes
       if Start = '1' and tx_active = '0' then
         tx_active <= '1';
-        baud_div_r <= Baud_Div;
+        if Baud_Div = x"0000" then
+          baud_div_r <= FIXED_BAUD_DIV;
+        else
+          baud_div_r <= Baud_Div;
+        end if;
       end if;
 
 
@@ -79,7 +93,7 @@ begin
         ----------------------------------------------------
         -- SPI Master
         ----------------------------------------------------
-        if baud_cnt < to_integer(unsigned(baud_div_r)) - 1 then
+        if baud_cnt < baud_div_cnt - 1 then
           baud_cnt := baud_cnt + 1;
         else
           baud_cnt := 0;
@@ -127,7 +141,7 @@ begin
         ----------------------------------------------------
         -- UART TX with optional Modbus CRC-16 append
         ----------------------------------------------------
-        if baud_cnt < to_integer(unsigned(baud_div_r)) - 1 then
+        if baud_cnt < baud_div_cnt - 1 then
           baud_cnt := baud_cnt + 1;
         else
           baud_cnt := 0;
@@ -183,7 +197,7 @@ begin
         ----------------------------------------------------
         -- I2C Master
         ----------------------------------------------------
-        if baud_cnt < to_integer(unsigned(baud_div_r)) - 1 then
+        if baud_cnt < baud_div_cnt - 1 then
           baud_cnt := baud_cnt + 1;
         else
           baud_cnt := 0;
@@ -298,6 +312,7 @@ begin
               else
                 Tx_Out <= '0';  -- ACK
                 rd_remain := rd_remain - 1;
+                i2c_bit := 0;
                 i2c_state := 8;  -- next read byte
               end if;
 
