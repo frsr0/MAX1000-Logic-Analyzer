@@ -150,15 +150,27 @@ class OLSDeviceSPI:
         self._long(CMD_GEN_BAUD, div & 0xFFFF)
         self._load_block(data_bytes)
         self._pins(tx_pin=tx_pin)
+        # MUST start the generator — send_uart() previously omitted this
+        # critical step, so Gen_Start never pulsed and the generator never ran.
+        self.start_gen()
 
     def start_gen(self):
-        """Start the signal generator."""
-        self._long(CMD_GEN_STRT, 0)
+        """Start the signal generator.
+
+        Uses 0x11 (CMD_XON/NOP) padding for the 4 trailer bytes — never 0x00,
+        which decodes as CMD_RESET on the FPGA and clears Run_OLS, Run,
+        Gen_Baud_Div, Gen_Proto, and blk_mode (OLS_Interface.vhd:528-545).
+        """
+        if self.spi:
+            self.spi.tx(CMD_GEN_STRT, b'\x11\x11\x11\x11')
 
     def fast_start_gen(self):
-        """Start gen without delay (used by rolling capture)."""
+        """Start gen without delay (used by rolling capture).
+
+        Uses 0x11 padding — same rationale as start_gen().
+        """
         if self.spi:
-            self.spi.tx(CMD_GEN_STRT)
+            self.spi.tx(CMD_GEN_STRT, b'\x11\x11\x11\x11')
 
     def modbus_crc16(self, data):
         """Compute Modbus RTU CRC-16."""
@@ -257,12 +269,15 @@ class OLSDeviceSPI:
             self._load_block(self._gen_data)
             self.spi.flush()
 
-        # ARM + GEN_STRT in single CS-low burst
+        # GEN_STRT + ARM in single CS-low burst
         need = rc * self._stride
         deadline = time.time() + timeout
 
         d = self.spi.dev
         buf = bytes([0x80, GPIO_CS_LO, PIN_DIR])
+        # GEN_STRT with 0x11 padding
+        buf += bytes([0x31, 0x04, 0x00])
+        buf += bytes([CMD_GEN_STRT, 0x11, 0x11, 0x11, 0x11])
         # ARM with 0x11 padding (0x00 = CMD_RESET, would clear Run_OLS)
         buf += bytes([0x31, 0x04, 0x00])
         buf += bytes([CMD_ARM, 0x11, 0x11, 0x11, 0x11])
@@ -402,6 +417,7 @@ class OLSDeviceSPI:
             self._pins(tx_pin=gen_tx_pin)
             time.sleep(0.01)
             self.spi.flush()
+            self.start_gen()
 
         self.spi.set_continuous(True)
         self.spi.flush()
