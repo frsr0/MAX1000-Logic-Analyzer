@@ -97,7 +97,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL gen_i2c_rd_len_int : NATURAL range 0 to 255 := 0;
   SIGNAL gen_i2c_dev_r_int  : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
    SIGNAL gen_i2c_test_int   : STD_LOGIC := '0';
-   SIGNAL gen_spi_test_int   : STD_LOGIC := '1';  -- DEBUG: force SPI mode
+   SIGNAL gen_spi_test_int   : STD_LOGIC := '0';
   SIGNAL fast_mode_i        : STD_LOGIC := '0';
   SIGNAL continuous_mode_i   : STD_LOGIC := '0';
   SIGNAL cont_buf_sel        : NATURAL range 0 to 2 := 0;
@@ -198,7 +198,7 @@ BEGIN
   BEGIN
   IF RISING_EDGE(CLK) THEN
     Gen_Load_We <= '0';
-    Gen_Start <= '1';  -- Force gen always ready to transmit
+    Gen_Start <= '0';
     div3_pending <= '0';
     IF (Divider < CLK_Frequency) THEN
       Rate_Div <= Divider + 1;

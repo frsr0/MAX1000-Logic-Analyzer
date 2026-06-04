@@ -30,8 +30,10 @@ architecture rtl of Signal_Gen is
   signal head  : natural range 0 to FIFO_DEPTH-1 := 0;
   signal tail  : natural range 0 to FIFO_DEPTH-1 := 0;
   signal count : natural range 0 to FIFO_DEPTH := 0;
-  signal tx_active : std_logic := '0';
-  constant fixed_baud_c : natural := 100;  -- SMALL for debug: 48 MHz / 100 = 480 kHz
+  signal tx_active   : std_logic := '0';
+  signal baud_div_r  : natural := 416;   -- latched from Baud_Div on Start
+  attribute keep : boolean;
+  attribute keep of baud_div_r : signal is true;
 begin
   Active <= tx_active;
   Busy   <= tx_active;
@@ -62,9 +64,10 @@ begin
         count <= count + 1;
       end if;
 
-      -- Start trigger
+      -- Start trigger: latch Baud_Div for all protocol modes
       if Start = '1' and tx_active = '0' then
         tx_active <= '1';
+        baud_div_r <= to_integer(unsigned(Baud_Div));
       end if;
 
       if tx_active = '0' then
@@ -77,7 +80,7 @@ begin
         ----------------------------------------------------
         -- SPI Master
         ----------------------------------------------------
-        if baud_cnt < to_integer(unsigned(Baud_Div)) - 1 then
+        if baud_cnt < baud_div_r - 1 then
           baud_cnt := baud_cnt + 1;
         else
           baud_cnt := 0;
@@ -121,7 +124,7 @@ begin
         ----------------------------------------------------
         -- UART TX with optional Modbus CRC-16 append
         ----------------------------------------------------
-        if baud_cnt < fixed_baud_c - 1 then
+        if baud_cnt < baud_div_r - 1 then
           baud_cnt := baud_cnt + 1;
         else
           baud_cnt := 0;
@@ -177,7 +180,7 @@ begin
         ----------------------------------------------------
         -- I2C Master
         ----------------------------------------------------
-        if baud_cnt < fixed_baud_c - 1 then
+        if baud_cnt < baud_div_r - 1 then
           baud_cnt := baud_cnt + 1;
         else
           baud_cnt := 0;
