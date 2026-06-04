@@ -511,7 +511,7 @@ DecodedByte = namedtuple('DecodedByte', ['pos', 'value', 'time_ns'])
 
 def decode_uart(ch, samplerate, ch_idx=0, baud=115200, filter_threshold=0):
     """Decode UART from a channel. Returns list of DecodedByte."""
-    spb = samplerate / baud  # samples per bit (float)
+    spb = samplerate / baud
     sig = ch[ch_idx]
     if filter_threshold > 0:
         sig = glitch_filter(sig, filter_threshold)
@@ -521,17 +521,18 @@ def decode_uart(ch, samplerate, ch_idx=0, baud=115200, filter_threshold=0):
     while i < len(sig) - min_need:
         # Look for falling edge (start bit)
         if sig[i] == 1 and i + 1 < len(sig) and sig[i + 1] == 0:
-            # Sample at centre of each bit using float positions, floor to nearest sample
-            start_centre = i + 1 + spb / 2
+            # Accumulate sample positions using round() to minimise drift
+            centre = i + 1 + spb / 2  # centre of start bit
             byte = 0
             valid = True
             for b in range(8):
-                bit_pos = int(start_centre + (b + 1) * spb)
+                centre += spb  # move to centre of next data bit
+                bit_pos = int(round(centre))
                 if bit_pos >= len(sig):
                     valid = False; break
                 byte |= (sig[bit_pos] << b)
-            # Check stop bit (should be 1)
-            stop_pos = int(start_centre + 9 * spb)
+            centre += spb  # move to centre of stop bit
+            stop_pos = int(round(centre))
             if valid and stop_pos < len(sig) and sig[stop_pos] == 1:
                 result.append(DecodedByte(pos=i, value=byte, time_ns=i * 1e9 / samplerate))
                 i = stop_pos
