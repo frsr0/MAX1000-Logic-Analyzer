@@ -425,7 +425,7 @@ BEGIN
       WHEN 3 =>
         IF (blk_mode = '1') THEN
           Gen_Load_Byte <= effective_RX_Data;
-          gen_load_cnt <= 3;
+          gen_load_cnt <= 1;
           IF (blk_len > 0) THEN
             blk_len := blk_len - 1;
             blk_len_s <= blk_len;
@@ -534,7 +534,7 @@ BEGIN
             Trigger_Mask <= (others => '0');
             proto_trig_enable <= '0';
             -- Default generator config: UART mode, 115200 baud (208 @ 24 MHz)
-            Gen_Baud_Div <= x"01A0";  -- 416 = 115200 @ 48 MHz
+            Gen_Baud_Div <= x"00D0";  -- 208 = 115200 @ 24 MHz
             Gen_Proto <= '0';
             blk_mode <= '0';
             Thread23 := 0;
@@ -872,7 +872,7 @@ BEGIN
                 Thread45 := 0;
           WHEN 18 =>
             Gen_Load_Byte <= data(7 downto 0);
-            gen_load_cnt <= 3;
+          gen_load_cnt <= 1;
             Thread44 := 0;
                 Thread45 := 0;
                 Thread38 := 0;
