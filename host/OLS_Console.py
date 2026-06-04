@@ -518,23 +518,32 @@ def decode_uart(ch, samplerate, ch_idx=0, baud=115200, filter_threshold=0):
     result = []
     i = 0
     min_need = int(spb * 10)
+    last_stop = -int(spb * 10)  # prevent re-decoding same edge
     while i < len(sig) - min_need:
+        if i - last_stop < int(spb * 8):
+            i += 1; continue  # too close to previous frame
         # Look for falling edge (start bit)
         if sig[i] == 1 and i + 1 < len(sig) and sig[i + 1] == 0:
-            # Accumulate sample positions using round() to minimise drift
-            centre = i + 1 + spb / 2  # centre of start bit
+            centre = i + 1 + spb / 2
             byte = 0
             valid = True
             for b in range(8):
-                centre += spb  # move to centre of next data bit
+                centre += spb
                 bit_pos = int(round(centre))
                 if bit_pos >= len(sig):
                     valid = False; break
                 byte |= (sig[bit_pos] << b)
-            centre += spb  # move to centre of stop bit
+            centre += spb
             stop_pos = int(round(centre))
-            if valid and stop_pos < len(sig) and sig[stop_pos] == 1:
+            stop_ok = False
+            for d in (-1, 0, 1):
+                p = stop_pos + d
+                if 0 <= p < len(sig) and sig[p] == 1:
+                    stop_ok = True
+                    break
+            if valid and stop_ok:
                 result.append(DecodedByte(pos=i, value=byte, time_ns=i * 1e9 / samplerate))
+                last_stop = stop_pos
                 i = stop_pos
                 continue
         i += 1
