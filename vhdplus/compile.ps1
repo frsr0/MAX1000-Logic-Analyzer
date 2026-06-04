@@ -66,16 +66,9 @@ foreach ($base in ($ioMap.Keys | Sort-Object)) {
         $ioLines += "    attribute io_standard of $base : signal is `"$std`";"
         $hasIoStandard = $true
     }
-    # Detect pull-up needs (e.g., SEN_SDI/SPC are open-drain I2C)
-    if ($base -match '^SEN_(SDI|SPC)$') {
-        $wpuLines += "    attribute weak_pull_up_resistor of $base : signal is `"ON`";"
-    }
 }
 if ($hasIoStandard) {
     $ioLines = @("    -- I/O standards", "    attribute io_standard : string;") + $ioLines
-}
-if ($wpuLines.Count -gt 0) {
-    $wpuLines = @("    -- Pull-ups", "    attribute weak_pull_up_resistor : string;") + $wpuLines
 }
 
 # Build port map connections
@@ -125,7 +118,6 @@ end OLS_Logic_Analyzer_wrapper;
 architecture rtl of OLS_Logic_Analyzer_wrapper is
 $($attrLines -join "`n")
 $($ioLines -join "`n")
-$($wpuLines -join "`n")
 begin
     core : entity work.OLS_SDRAM_Top
     port map (
@@ -188,7 +180,19 @@ $qsfLines = @(
     'set_global_assignment -name VHDL_FILE ../src/Protocol_Trigger.vhd',
     'set_global_assignment -name VHDL_FILE ../src/Signal_Gen.vhd',
     'set_global_assignment -name VHDL_FILE OLS_Logic_Analyzer_wrapper.vhd',
-    'set_global_assignment -name QIP_FILE Libraries/Logic_Analyzer/SDRAM_PLL.qip'
+    'set_global_assignment -name QIP_FILE Libraries/Logic_Analyzer/SDRAM_PLL.qip',
+    '',
+    '# Weak pull-ups on all GPIO and I2C/SPI pins',
+    'set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to GPIO[0]',
+    'set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to GPIO[1]',
+    'set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to GPIO[2]',
+    'set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to GPIO[3]',
+    'set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to GPIO[4]',
+    'set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to GPIO[5]',
+    'set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to GPIO[6]',
+    'set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to GPIO[7]',
+    'set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to SEN_SDI',
+    'set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to SEN_SPC'
 )
 Set-Content -Path $QSF -Value $qsfLines -Encoding ASCII
 Write-Host "Generated $QSF with wrapper as top-level"

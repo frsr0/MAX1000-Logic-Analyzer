@@ -54,10 +54,6 @@ architecture rtl of OLS_Logic_Analyzer_wrapper is
     -- I/O standards
     attribute io_standard : string;
     attribute io_standard of LED : signal is "2.5 V";
-    -- Pull-ups
-    attribute weak_pull_up_resistor : string;
-    attribute weak_pull_up_resistor of SEN_SDI : signal is "ON";
-    attribute weak_pull_up_resistor of SEN_SPC : signal is "ON";
 begin
     core : entity work.OLS_SDRAM_Top
     port map (
