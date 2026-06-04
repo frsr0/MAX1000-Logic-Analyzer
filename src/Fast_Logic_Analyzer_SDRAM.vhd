@@ -61,7 +61,10 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
    signal s_busy  : std_logic := '0';
    signal s_burst_i : std_logic := '0';
    signal s_idle  : std_logic := '0';
-  signal full_i  : std_logic := '0';
+  signal full_i      : std_logic := '0';
+  signal samples_d1   : natural range 0 to Max_Samples := 0;
+  signal samples_div  : natural range 0 to Max_Samples := 0;
+  signal samples_div6 : natural range 0 to Max_Samples := 0;
 
   -- Write FIFO (depth 16, 38-bit entries: addr(21:0) & wdata(15:0))
   constant FIFO_Depth : natural := 16;
@@ -121,6 +124,15 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   end component;
 
 begin
+
+  -- 2-stage pipeline to break LPM_DIVIDE (44.8 ns) across two clock cycles (83 ns)
+  process(CLK) begin
+    if rising_edge(CLK) then
+      samples_d1   <= Samples;
+      samples_div  <= samples_d1 / sub_steps;
+      samples_div6 <= samples_d1 / (3 * sub_steps);
+    end if;
+  end process;
 
   CLK_150 <= pclk;
 
@@ -404,7 +416,7 @@ begin
                   null;  -- all 3 full: stall, no write
                 else
                   -- Double-buffer mode
-                  buf_limit := Samples / (3 * sub_steps);
+                  buf_limit := samples_div6;
                   if buf_sel = "00" then
                     write_addr := std_logic_vector(to_unsigned(waddr_0, 22));
                     if waddr_0 + 1 >= buf_limit then
@@ -451,7 +463,7 @@ begin
               else
                 -- Single-buffer mode (legacy)
                 -- Stop at target to let FIFO drain, then Full fires
-                if waddr_0 < (Samples / sub_steps) then
+                if waddr_0 < samples_div then
                   fifo_mem(f_head) <= std_logic_vector(to_unsigned(waddr_0, 22)) & wbuf;
                   if f_head = FIFO_Depth-1 then f_head := 0;
                   else f_head := f_head + 1; end if;
@@ -470,7 +482,7 @@ begin
         -- Assert Full
         if not rd_mode and full_i = '0' then
           if Fast_Mode = '1' then
-            if bram_post_cnt >= (Samples / sub_steps) then
+            if bram_post_cnt >= samples_div then
               full_i <= '1';
               rd_mode := true;
               if Continuous_Mode = '1' then
@@ -482,7 +494,7 @@ begin
             null;
           else
             -- Single-buffer mode: Full when waddr_0 reaches target
-            if waddr_0 >= (Samples / sub_steps)
+            if waddr_0 >= samples_div
                and f_cnt = 0
                and not wip
                and not wr_pend

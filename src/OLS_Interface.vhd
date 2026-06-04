@@ -535,7 +535,7 @@ BEGIN
             Trigger_Mask <= (others => '0');
             proto_trig_enable <= '0';
             -- Default generator config: UART mode, 115200 baud (208 @ 24 MHz)
-            Gen_Baud_Div <= x"00D0";  -- 208 = 115200 @ 24 MHz
+            Gen_Baud_Div <= x"0341";  -- 833 = 115200 @ 96 MHz
             Gen_Proto <= '0';
             blk_mode <= '0';
             Thread23 := 0;

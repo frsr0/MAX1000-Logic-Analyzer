@@ -39,7 +39,7 @@ CMD_TVALUE     = 0xC1
 class OLSDeviceSPI:
     """SPI backend device — implements capture, rolling capture, and generator."""
 
-    def __init__(self, sys_clk_hz=24000000):
+    def __init__(self, sys_clk_hz=96000000):
         self.sys_clk = sys_clk_hz
         self._stride = 4
         self._raw_flags = 0

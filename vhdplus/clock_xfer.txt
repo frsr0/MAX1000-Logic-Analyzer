@@ -4,6 +4,9 @@
 ; From Clock                                                             ; To Clock                                                               ; RR Paths     ; FR Paths ; RF Paths ; FF Paths ;
 +------------------------------------------------------------------------+------------------------------------------------------------------------+--------------+----------+----------+----------+
 ; core|\gen_use_pll:pll_inst|altpll_component|auto_generated|pll1|clk[0] ; core|\gen_use_pll:pll_inst|altpll_component|auto_generated|pll1|clk[0] ; > 2147483647 ; 0        ; 0        ; 0        ;
+; core|\gen_use_pll:pll_inst|altpll_component|auto_generated|pll1|clk[1] ; core|\gen_use_pll:pll_inst|altpll_component|auto_generated|pll1|clk[0] ; 9            ; 0        ; 0        ; 0        ;
+; core|\gen_use_pll:pll_inst|altpll_component|auto_generated|pll1|clk[0] ; core|\gen_use_pll:pll_inst|altpll_component|auto_generated|pll1|clk[1] ; 14           ; 0        ; 0        ; 0        ;
+; core|\gen_use_pll:pll_inst|altpll_component|auto_generated|pll1|clk[1] ; core|\gen_use_pll:pll_inst|altpll_component|auto_generated|pll1|clk[1] ; 407          ; 0        ; 0        ; 0        ;
 +------------------------------------------------------------------------+------------------------------------------------------------------------+--------------+----------+----------+----------+
 Entries labeled "false path" only account for clock-to-clock false paths and not path-based false paths. As a result, actual path counts may be lower than reported.
 
@@ -13,6 +16,27 @@ Entries labeled "false path" only account for clock-to-clock false paths and not
 ; From Clock                                                             ; To Clock                                                               ; RR Paths     ; FR Paths ; RF Paths ; FF Paths ;
 +------------------------------------------------------------------------+------------------------------------------------------------------------+--------------+----------+----------+----------+
 ; core|\gen_use_pll:pll_inst|altpll_component|auto_generated|pll1|clk[0] ; core|\gen_use_pll:pll_inst|altpll_component|auto_generated|pll1|clk[0] ; > 2147483647 ; 0        ; 0        ; 0        ;
+; core|\gen_use_pll:pll_inst|altpll_component|auto_generated|pll1|clk[1] ; core|\gen_use_pll:pll_inst|altpll_component|auto_generated|pll1|clk[0] ; 9            ; 0        ; 0        ; 0        ;
+; core|\gen_use_pll:pll_inst|altpll_component|auto_generated|pll1|clk[0] ; core|\gen_use_pll:pll_inst|altpll_component|auto_generated|pll1|clk[1] ; 14           ; 0        ; 0        ; 0        ;
+; core|\gen_use_pll:pll_inst|altpll_component|auto_generated|pll1|clk[1] ; core|\gen_use_pll:pll_inst|altpll_component|auto_generated|pll1|clk[1] ; 407          ; 0        ; 0        ; 0        ;
 +------------------------------------------------------------------------+------------------------------------------------------------------------+--------------+----------+----------+----------+
+Entries labeled "false path" only account for clock-to-clock false paths and not path-based false paths. As a result, actual path counts may be lower than reported.
+
++---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+; Recovery Transfers                                                                                                                                                                          ;
++------------------------------------------------------------------------+------------------------------------------------------------------------+----------+----------+----------+----------+
+; From Clock                                                             ; To Clock                                                               ; RR Paths ; FR Paths ; RF Paths ; FF Paths ;
++------------------------------------------------------------------------+------------------------------------------------------------------------+----------+----------+----------+----------+
+; core|\gen_use_pll:pll_inst|altpll_component|auto_generated|pll1|clk[0] ; core|\gen_use_pll:pll_inst|altpll_component|auto_generated|pll1|clk[0] ; 176      ; 0        ; 0        ; 0        ;
++------------------------------------------------------------------------+------------------------------------------------------------------------+----------+----------+----------+----------+
+Entries labeled "false path" only account for clock-to-clock false paths and not path-based false paths. As a result, actual path counts may be lower than reported.
+
++---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+; Removal Transfers                                                                                                                                                                           ;
++------------------------------------------------------------------------+------------------------------------------------------------------------+----------+----------+----------+----------+
+; From Clock                                                             ; To Clock                                                               ; RR Paths ; FR Paths ; RF Paths ; FF Paths ;
++------------------------------------------------------------------------+------------------------------------------------------------------------+----------+----------+----------+----------+
+; core|\gen_use_pll:pll_inst|altpll_component|auto_generated|pll1|clk[0] ; core|\gen_use_pll:pll_inst|altpll_component|auto_generated|pll1|clk[0] ; 176      ; 0        ; 0        ; 0        ;
++------------------------------------------------------------------------+------------------------------------------------------------------------+----------+----------+----------+----------+
 Entries labeled "false path" only account for clock-to-clock false paths and not path-based false paths. As a result, actual path counts may be lower than reported.
 
