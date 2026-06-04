@@ -77,7 +77,7 @@ begin
         ----------------------------------------------------
         -- SPI Master
         ----------------------------------------------------
-        if baud_cnt < fixed_baud_c - 1 then
+        if baud_cnt < to_integer(unsigned(Baud_Div)) - 1 then
           baud_cnt := baud_cnt + 1;
         else
           baud_cnt := 0;

@@ -219,7 +219,7 @@ BEGIN
   end process;
 
   -- Accelerometer: CS high = I2C mode, CS low = SPI mode
-  SEN_CS <= '0' when gen_spi_test = '1' and gen_busy = '1' else '1';
+  SEN_CS <= '0' when gen_spi_test = '1' else '1';  -- SPI mode: CS always low when enabled
 
   -- Test mode mux: SPI uses push-pull, I2C uses open-drain
   SEN_SDI <= gen_tx when gen_spi_test = '1' and gen_busy = '1' else
