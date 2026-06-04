@@ -31,9 +31,7 @@ architecture rtl of Signal_Gen is
   signal tail  : natural range 0 to FIFO_DEPTH-1 := 0;
   signal count : natural range 0 to FIFO_DEPTH := 0;
   signal tx_active   : std_logic := '0';
-  signal baud_div_r  : std_logic_vector(15 downto 0) := x"01A0";  -- 416 = 115200 @ 48 MHz
-  attribute keep : boolean;
-  attribute keep of baud_div_r : signal is true;
+  signal baud_div_r  : std_logic_vector(15 downto 0) := x"00D0";  -- 208 = 115200 @ 24 MHz
 begin
   Active <= tx_active;
   Busy   <= tx_active;
@@ -69,6 +67,7 @@ begin
         tx_active <= '1';
         baud_div_r <= Baud_Div;
       end if;
+
 
       if tx_active = '0' then
         baud_cnt := 0; bit_cnt := 0; byte_active := false;

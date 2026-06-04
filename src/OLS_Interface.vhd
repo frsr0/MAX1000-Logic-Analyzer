@@ -509,6 +509,7 @@ BEGIN
                 Thread44 := Thread44 + 8;  -- proto select
               WHEN x"A1" =>
                 gen_start_cnt <= 3;
+                Gen_Start <= '1';  -- direct pulse
                 Thread44 := 0;
                 Thread45 := 0;
                 Thread38 := 0;

@@ -41,7 +41,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal sys_clk     : std_logic := '0';
   signal pll_locked  : std_logic := '0';
   signal internal_data : std_logic_vector(7 downto 0);
-  signal gen_busy      : std_logic;
+  signal gen_busy      : std_logic := '0';
   signal gen_tx        : std_logic;
   signal gen_scl       : std_logic;
   signal gen_load_byte : std_logic_vector(7 downto 0);
@@ -434,6 +434,4 @@ BEGIN
     CRC_En     => '0',
     CRC_Poly   => x"A001"
   );
-  -- gen_busy driven by Signal_Gen.Busy
-
 END BEHAVIORAL;
