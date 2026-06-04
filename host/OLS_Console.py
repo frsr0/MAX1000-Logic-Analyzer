@@ -646,9 +646,10 @@ class WaveformDisplay(tk.Canvas):
     MIN_PX_PER_SAMPLE = 0.5
     MAX_PX_PER_SAMPLE = 50
 
-    def __init__(self, parent, **kw):
+    def __init__(self, parent, master=None, **kw):
         super().__init__(parent, bg='white', **kw)
-        self.ch_data = []     # list of lists, each 0/1
+        self.master = master
+        self.ch_data = []
         self.ch_names = []
         self.samplerate = 1_000_000
         self.num_samples = 0
@@ -803,29 +804,81 @@ class WaveformDisplay(tk.Canvas):
         # Draw channels
         for ci in range(nch):
             y0 = ruler_h + ci * (self.CH_HEIGHT + self.CH_GAP)
-            # Label
             name = self.ch_names[ci] if ci < len(self.ch_names) else f"D{ci}"
+            is_dec = any(name.endswith(f'_{p}') for p in ['UART','I2C','SPI'])
+            is_filt = name.endswith('_f')
+
+            # Label
+            clr = '#2a7' if is_dec else '#069' if is_filt else '#000'
             self.create_text(2, y0 + self.CH_HEIGHT/2, text=name, anchor='w',
-                            font=('Consolas', 9))
-            # Signal line
+                            font=('Consolas', 9), fill=clr)
+
             samples = self.ch_data[ci]
             start = max(0, int(self.scroll_x))
             end = min(len(samples), int(self.scroll_x + w / self.px_scale) + 1)
-            if start >= end: continue
-            points = []
-            prev = None
-            for si in range(start, end):
-                v = samples[si]
-                px = self.LABEL_WIDTH + (si - self.scroll_x) * self.px_scale
-                py = y0 + (0 if v else self.CH_HEIGHT)
-                if prev is not None and v != prev:
-                    # Vertical edge
-                    lpx = self.LABEL_WIDTH + (si - 1 - self.scroll_x) * self.px_scale
-                    points.extend([lpx, py, px, py])
-                points.extend([px, py])
-                prev = v
-            if points:
-                self.create_line(points, fill='#0066cc', width=1.3)
+
+            if is_dec:
+                # Decoder annotation row: thin baseline + coloured text boxes
+                mid_y = y0 + self.CH_HEIGHT / 2
+                self.create_line(self.LABEL_WIDTH, mid_y, w, mid_y, fill='#ccc', width=0.5)
+                spb_samp = 0  # samples-per-bit for UART, used for frame width
+                if '_UART' in name:
+                    # Find the decoder slot for this channel
+                    for si, slot in enumerate(getattr(self.master, 'decoder_slots', [])):
+                        if not slot.get('enabled'): continue
+                        dname = f"{slot['src_str']}_UART"
+                        if dname == name:
+                            spb_samp = self.samplerate / slot.get('baud', 115200)
+                            for f in slot.get('frames', []):
+                                if f['type'] != 'byte': continue
+                                px = self.LABEL_WIDTH + (f['pos'] - self.scroll_x) * self.px_scale
+                                fw = 10 * spb_samp * self.px_scale
+                                if px + fw < self.LABEL_WIDTH or px > w: continue
+                                self.create_rectangle(px, y0, px+fw, y0+self.CH_HEIGHT,
+                                                     outline='#2a7', width=0.5, fill='#e8ffe8')
+                                txt = chr(f['val']) if 32 <= f['val'] < 127 else f'[{f["val"]:02X}]'
+                                self.create_text(px+2, y0+2, text=txt, anchor='nw',
+                                                font=('Consolas', 6), fill='#2a7')
+                elif '_SPI' in name:
+                    for si, slot in enumerate(getattr(self.master, 'decoder_slots', [])):
+                        if not slot.get('enabled'): continue
+                        dname = f"{slot['src_str']}_SPI"
+                        if dname == name:
+                            for f in slot.get('frames', []):
+                                if f['type'] != 'byte': continue
+                                # approximate position — no pos from decode_spi
+                                pass
+                elif '_I2C' in name:
+                    for si, slot in enumerate(getattr(self.master, 'decoder_slots', [])):
+                        if not slot.get('enabled'): continue
+                        dname = f"{slot['src_str']}_I2C"
+                        if dname == name:
+                            for f in slot.get('frames', []):
+                                if f['type'] == 'START':
+                                    self.create_text(self.LABEL_WIDTH+4, mid_y, text='S',
+                                                    font=('Consolas', 8), fill='#a72')
+                                elif f['type'] == 'STOP':
+                                    self.create_rectangle(px-10, y0, px+4, y0+self.CH_HEIGHT,
+                                                         outline='#a72', width=0.5)
+                                    self.create_text(px-8, y0+2, text='P',
+                                                    font=('Consolas', 8), fill='#a72')
+            else:
+                # Normal / filtered waveform line
+                if start >= end: continue
+                points = []
+                prev = None
+                for si in range(start, end):
+                    v = samples[si]
+                    px = self.LABEL_WIDTH + (si - self.scroll_x) * self.px_scale
+                    py = y0 + (0 if v else self.CH_HEIGHT)
+                    if prev is not None and v != prev:
+                        lpx = self.LABEL_WIDTH + (si - 1 - self.scroll_x) * self.px_scale
+                        points.extend([lpx, py, px, py])
+                    points.extend([px, py])
+                    prev = v
+                if points:
+                    wf_clr = '#2a7' if is_filt else '#0066cc'
+                    self.create_line(points, fill=wf_clr, width=1.3)
 
             # Channel separator
             self.create_line(0, y0 + self.CH_HEIGHT + self.CH_GAP/2,
@@ -868,8 +921,10 @@ class OLScope:
         self.ch_names = [f"CH{i}" for i in range(8)]
         self.samplerate = 1_000_000
         self.captured_bytes = b''
-        self.decoded_uart = []
-        self.decoded_i2c = []
+        # Filter + decoder config (populated by GUI, consumed by _process_decoders)
+        self.filter_threshold = 3
+        self.filter_enabled = [False] * 8          # per-channel filter toggle
+        self.decoder_slots = []                    # list of dicts, up to 8
         self.capture_running = False
         self.capture_progress = (0, 0)
         self.capture_result = None
@@ -957,7 +1012,7 @@ class OLScope:
         # Waveform frame
         wf_frame = ttk.Frame(main)
         main.add(wf_frame, weight=3)
-        self.wave = WaveformDisplay(wf_frame)
+        self.wave = WaveformDisplay(wf_frame, master=self)
         self.wave.pack(fill='both', expand=True)
 
         # Scrollbar for waveform
@@ -1069,29 +1124,42 @@ class OLScope:
         self.proto_baud.grid(row=12, column=1, sticky='e')
         self.trig_frame = trg_f
 
-        # Decoder tab
+        # Decoder tab — filter + decoder configuration
         dec_f = ttk.Frame(nb, padding=5)
         nb.add(dec_f, text="Decode")
-        ttk.Label(dec_f, text="Protocol:").grid(row=0, column=0, sticky='w')
-        self.dec_proto = ttk.Combobox(dec_f, values=['UART', 'I2C', 'Modbus'], state='readonly', width=10)
-        self.dec_proto.set('UART'); self.dec_proto.grid(row=0, column=1, sticky='w')
-        self.dec_proto.bind('<<ComboboxSelected>>', self._dec_show_channels)
-        ttk.Label(dec_f, text="Baud:").grid(row=1, column=0, sticky='w')
-        self.dec_baud = ttk.Entry(dec_f, width=12)
-        self.dec_baud.insert(0, '115200'); self.dec_baud.grid(row=1, column=1, sticky='w')
-        ttk.Label(dec_f, text="UART RX Ch:").grid(row=2, column=0, sticky='w')
-        self.dec_ch = ttk.Combobox(dec_f, values=list(range(8)), state='readonly', width=4)
-        self.dec_ch.set('0'); self.dec_ch.grid(row=2, column=1, sticky='w')
-        self.dec_sda_lbl = ttk.Label(dec_f, text="I2C SDA Ch:")
-        self.dec_sda = ttk.Combobox(dec_f, values=list(range(8)), state='readonly', width=4)
-        self.dec_sda.set('2')
-        self.dec_scl_lbl = ttk.Label(dec_f, text="I2C SCL Ch:")
-        self.dec_scl = ttk.Combobox(dec_f, values=list(range(8)), state='readonly', width=4)
-        self.dec_scl.set('3')
-        self._dec_show_channels()
-        ttk.Button(dec_f, text="Decode", command=self._decode).grid(row=6, column=0, columnspan=2, pady=5)
-        self.dec_out = tk.Text(dec_f, height=8, width=28, font=('Consolas', 8))
-        self.dec_out.grid(row=7, column=0, columnspan=2, sticky='nsew')
+        row = 0
+        ttk.Label(dec_f, text="Glitch threshold:").grid(row=row, column=0, sticky='w')
+        self.dec_thresh = ttk.Combobox(dec_f, values=['2','3','5','0'], width=4, state='readonly')
+        self.dec_thresh.set('3'); self.dec_thresh.grid(row=row, column=1, sticky='w')
+        row += 1
+        ttk.Separator(dec_f, orient='horizontal').grid(row=row, column=0, columnspan=3, sticky='ew', pady=4)
+        row += 1
+        ttk.Label(dec_f, text="Filtered channels:").grid(row=row, column=0, columnspan=3, sticky='w')
+        row += 1
+        self.filter_vars = []
+        f_ch_frame = ttk.Frame(dec_f)
+        f_ch_frame.grid(row=row, column=0, columnspan=3, sticky='w')
+        for ci in range(8):
+            var = tk.BooleanVar(value=False)
+            self.filter_vars.append(var)
+            ttk.Checkbutton(f_ch_frame, text=f"CH{ci}", variable=var).pack(side='left', padx=1)
+        row += 1
+        ttk.Separator(dec_f, orient='horizontal').grid(row=row, column=0, columnspan=3, sticky='ew', pady=4)
+        row += 1
+        ttk.Label(dec_f, text="Decoders:").grid(row=row, column=0, columnspan=3, sticky='w')
+        row += 1
+        self.decoder_frame = ttk.Frame(dec_f)
+        self.decoder_frame.grid(row=row, column=0, columnspan=3, sticky='nsew')
+        self.decoder_ui = []
+        for di in range(8):
+            self._add_decoder_ui(di)
+        row += 1
+        ttk.Separator(dec_f, orient='horizontal').grid(row=row, column=0, columnspan=3, sticky='ew', pady=4)
+        row += 1
+        ttk.Button(dec_f, text="Apply Decoders", command=self._apply_decoders).grid(row=row, column=0, columnspan=2, pady=3)
+        row += 1
+        self.dec_out = tk.Text(dec_f, height=6, width=28, font=('Consolas', 7))
+        self.dec_out.grid(row=row, column=0, columnspan=3, sticky='nsew')
         dec_f.columnconfigure(1, weight=1)
 
         # Export tab
@@ -1207,18 +1275,88 @@ class OLScope:
     def _update_ui_state(self, connected=True):
         pass
 
-    def _dec_show_channels(self, event=None):
-        proto = self.dec_proto.get()
-        if proto == 'UART' or proto == 'Modbus':
-            self.dec_sda_lbl.grid_remove()
-            self.dec_sda.grid_remove()
-            self.dec_scl_lbl.grid_remove()
-            self.dec_scl.grid_remove()
-        elif proto == 'I2C':
-            self.dec_sda_lbl.grid(row=3, column=0, sticky='w')
-            self.dec_sda.grid(row=3, column=1, sticky='w')
-            self.dec_scl_lbl.grid(row=4, column=0, sticky='w')
-            self.dec_scl.grid(row=4, column=1, sticky='w')
+    def _add_decoder_ui(self, di):
+        """Create a decoder slot UI in the decoder_frame."""
+        frame = ttk.LabelFrame(self.decoder_frame, text=f"Decoder {di+1}", padding=3)
+        frame.pack(fill='x', pady=1)
+        vars_d = {}
+        # Enable checkbox
+        var_en = tk.BooleanVar(value=False)
+        ttk.Checkbutton(frame, text="Enable", variable=var_en).pack(anchor='w')
+        vars_d['en'] = var_en
+        # Row: source channel
+        r1 = ttk.Frame(frame)
+        r1.pack(fill='x')
+        ttk.Label(r1, text="Src CH:").pack(side='left')
+        var_src = ttk.Combobox(r1, values=list(range(8)) + [f"{i}_f" for i in range(8)], width=5, state='readonly')
+        var_src.set('0'); var_src.pack(side='left', padx=2)
+        vars_d['src'] = var_src
+        ttk.Label(r1, text="Proto:").pack(side='left')
+        var_proto = ttk.Combobox(r1, values=['UART','I2C','SPI'], width=6, state='readonly')
+        var_proto.set('UART'); var_proto.pack(side='left', padx=2)
+        vars_d['proto'] = var_proto
+        # Row: protocol params
+        r2 = ttk.Frame(frame)
+        r2.pack(fill='x')
+        ttk.Label(r2, text="Baud:").pack(side='left')
+        var_baud = ttk.Entry(r2, width=10)
+        var_baud.insert(0, '115200'); var_baud.pack(side='left', padx=2)
+        vars_d['baud'] = var_baud
+        ttk.Label(r2, text="Threshold:").pack(side='left')
+        var_th = ttk.Combobox(r2, values=['0','2','3','5'], width=3, state='readonly')
+        var_th.set('3'); var_th.pack(side='left', padx=2)
+        vars_d['thresh'] = var_th
+        # I2C channel selectors (shown/hidden by proto)
+        var_sda_lbl = ttk.Label(r2, text="SDA:")
+        var_sda = ttk.Combobox(r2, values=list(range(8)), width=3, state='readonly')
+        var_sda.set('3')
+        var_scl_lbl = ttk.Label(r2, text="SCL:")
+        var_scl = ttk.Combobox(r2, values=list(range(8)), width=3, state='readonly')
+        var_scl.set('1')
+        vars_d['sda'] = var_sda; vars_d['scl'] = var_scl
+        vars_d['sda_lbl'] = var_sda_lbl; vars_d['scl_lbl'] = var_scl_lbl
+        # Proto change → show/hide I2C fields
+        def _on_proto_change(*_):
+            p = var_proto.get()
+            if p == 'I2C':
+                var_sda_lbl.pack(side='left', padx=(4,0)); var_sda.pack(side='left', padx=1)
+                var_scl_lbl.pack(side='left', padx=(4,0)); var_scl.pack(side='left', padx=1)
+                var_baud.pack_forget(); ttk.Label(r2, text="Baud:").pack_forget()
+            else:
+                var_sda_lbl.pack_forget(); var_sda.pack_forget()
+                var_scl_lbl.pack_forget(); var_scl.pack_forget()
+                ttk.Label(r2, text="Baud:").pack(side='left'); var_baud.pack(side='left', padx=2)
+        var_proto.bind('<<ComboboxSelected>>', _on_proto_change)
+        self.decoder_ui.append((frame, vars_d))
+
+    def _apply_decoders(self):
+        """Read UI state into self.decoder_slots + filter config, rebuild channels."""
+        self.filter_threshold = int(self.dec_thresh.get())
+        self.filter_enabled = [v.get() for v in self.filter_vars]
+        slots = []
+        for di, (frame, vd) in enumerate(self.decoder_ui):
+            if not vd['en'].get():
+                continue
+            src = vd['src'].get()
+            proto = vd['proto'].get()
+            slot = {
+                'enabled': True,
+                'src_str': src,
+                'src_idx': int(src) if src.isdigit() else int(src[0]),
+                'src_is_filtered': '_f' in src,
+                'proto': proto,
+                'baud': int(vd['baud'].get()) if proto != 'I2C' else 0,
+                'thresh': int(vd['thresh'].get()),
+                'sda_idx': int(vd['sda'].get()),
+                'scl_idx': int(vd['scl'].get()),
+                'frames': [],
+                'sig': [],
+            }
+            slots.append(slot)
+        self.decoder_slots = slots
+        if self.ch_data:
+            self._process_decoders()
+            self.wave.redraw()
 
     def _get_rate(self):
         rate_str = self.rate_cb.get()
@@ -1514,6 +1652,10 @@ class OLScope:
                     self.wave.ch_data[ci] = self.wave.ch_data[ci][trim:]
                 self.wave.num_samples = max_keep
 
+        # Apply filters + decoders to partial data
+        self.ch_data = self.wave.ch_data
+        self._process_decoders()
+
         # Throttle Canvas redraw to ~5fps (200ms min interval)
         now = time.time()
         dt = now - self._last_live_redraw
@@ -1546,9 +1688,8 @@ class OLScope:
         self.ch_data = ch_data
         self.samplerate = rate
         self.captured_bytes = data
-        self.decoded_uart = []
-        self.decoded_i2c = []
-        self.wave.load(ch_data, self.ch_names, self.samplerate)
+        self._process_decoders()
+        self.wave.load(self.ch_data, self.ch_names, self.samplerate)
         self._fit_view()  # ensure full waveform fits after capture completes
         self.status['text'] = f"Captured {len(data)} bytes ({ns} samples, {trans} CH0 transitions)"
 
@@ -1596,76 +1737,112 @@ class OLScope:
         # TX Pin label
         self.gen_tx_lbl.configure(text='TX Pin (SDA):' if is_i2c else 'TX Pin:')
 
-    def _decode(self):
-        if not self.ch_data:
+    def _process_decoders(self):
+        """Build filtered + decoded channels, append to ch_data/ch_names.
+        
+        Reads self.decoder_slots and self.filter config, appends new rows to
+        self.ch_data and self.ch_names.  Each decoded row carries a visualisation
+        signal (pulses at frame positions) plus the frame list in the slot dict.
+        """
+        ns = len(self.ch_data[0]) if self.ch_data else 0
+        if ns == 0:
             return
-        proto = self.dec_proto.get()
-        self.dec_out.delete('1.0', 'end')
-        if proto == 'UART':
-            baud = int(self.dec_baud.get())
-            ch_idx = int(self.dec_ch.get())
-            res = decode_uart(self.ch_data, self.samplerate, ch_idx, baud)
-            self.decoded_uart = res
-            if res:
-                text = '\n'.join(f"@{r.pos:6d}  0x{r.value:02X}  '{chr(r.value) if 32<=r.value<127 else '.'}'"
-                                for r in res[:50])
-                if len(res) > 50:
-                    text += f'\n... ({len(res)} total)'
-                self.dec_out.insert('1.0', text)
-                self.status['text'] = f"Decoded {len(res)} UART bytes"
-            else:
-                self.dec_out.insert('1.0', "No UART data found")
-        elif proto == 'I2C':
-            sda_idx = int(self.dec_sda.get())
-            scl_idx = int(self.dec_scl.get())
-            res = decode_i2c(self.ch_data, self.samplerate, scl_idx, sda_idx)
-            self.decoded_i2c = res
-            text = '\n'.join(f"{t}" + (f"  0x{v:02X} '{chr(v) if 32<=v<127 else '.'}'" if v is not None else "")
-                            for t, v in res)
-            self.dec_out.insert('1.0', text if text else "No I2C data found")
-            self.status['text'] = f"Decoded {len(res)} I2C events"
-        elif proto == 'Modbus':
-            baud = int(self.dec_baud.get())
-            ch_idx = int(self.dec_ch.get())
-            frames = decode_modbus(self.ch_data, self.samplerate, ch_idx, baud)
-            if frames:
-                lines = []
-                for f in frames:
-                    data_hex = ' '.join(f'{b:02X}' for b in f.data)
-                    crc_str = "OK" if f.crc_ok else "BAD"
-                    lines.append(f"Addr=0x{f.addr:02X} Func=0x{f.func:02X} Data=[{data_hex}] CRC=0x{f.crc:04X} {crc_str}")
-                self.dec_out.insert('1.0', '\n'.join(lines))
-                self.status['text'] = f"Decoded {len(frames)} Modbus frames"
-            else:
-                self.dec_out.insert('1.0', "No Modbus frames found")
-        self._annotate_decode()
 
-    def _annotate_decode(self):
-        """Overlay decode markers on the waveform canvas."""
-        w = self.wave
-        w.delete('dec_ann')
-        if self.decoded_uart:
-            ch_idx = int(self.dec_ch.get())
-            spb = self.samplerate / int(self.dec_baud.get())
-            ruler_y = 20
-            ch_top = ruler_y + ch_idx * (w.CH_HEIGHT + w.CH_GAP)
-            ch_bot = ch_top + w.CH_HEIGHT
-            for r in self.decoded_uart:
-                px = w.LABEL_WIDTH + (r.pos + 1 - w.scroll_x) * w.px_scale
-                frame_w = 10 * spb * w.px_scale
-                w.create_rectangle(px, ch_top - 2, px + frame_w, ch_bot + 2,
-                                  outline='green', width=0.5, tags='dec_ann')
-                txt = chr(r.value) if 32 <= r.value < 127 else f'0x{r.value:02X}'
-                w.create_text(px + 2, ch_top + 2, text=txt, anchor='nw',
-                            font=('Consolas', 6), fill='green', tags='dec_ann')
-        if self.decoded_i2c:
-            ch_top = 20 + len(self.ch_data) * (w.CH_HEIGHT + w.CH_GAP) + 10
-            for item in self.decoded_i2c:
-                t, v = item
-                lbl = f"{t}" if v is None else f"{t} 0x{v:02X}"
-                w.create_text(w.LABEL_WIDTH + 4, ch_top, text=lbl, anchor='nw',
-                            font=('Consolas', 7), fill='darkgreen', tags='dec_ann')
-                ch_top += 14
+        th = self.filter_threshold if hasattr(self, 'filter_threshold') else 3
+        filt = self.filter_enabled if hasattr(self, 'filter_enabled') else [False]*8
+        base_n = 8  # always 8 raw channels
+
+        # Start from base channel list, append new rows
+        new_data = list(self.ch_data[:base_n])
+        new_names = list(self.ch_names[:base_n])
+
+        # Filtered channels
+        for ci in range(8):
+            if ci < len(filt) and filt[ci] and ci < len(self.ch_data):
+                f = glitch_filter(self.ch_data[ci], th)
+                new_data.append(f)
+                new_names.append(f"{self.ch_names[ci]}_f")
+
+        # Decoder channels
+        slots = getattr(self, 'decoder_slots', [])
+        dec_text_lines = []
+        for si, slot in enumerate(slots):
+            if not slot.get('enabled', False):
+                continue
+            src = slot['src_str']
+            src_idx = slot['src_idx']
+            # Find which row in new_data corresponds to the source
+            src_row = None
+            for ri in range(len(new_data)):
+                if (src.isdigit() and ri == src_idx) or \
+                   (not src.isdigit() and new_names[ri] == src):
+                    src_row = ri
+                    break
+            if src_row is None:
+                continue
+
+            sig_arr = [0] * ns  # visualisation pulse train
+            frames = []
+            th_slot = slot.get('thresh', 0)
+            proto = slot.get('proto', 'UART')
+            chan_data = [new_data[src_row]]  # wrap single channel for decoder API
+
+            if proto == 'UART':
+                from_baud = slot.get('baud', 115200)
+                dec = decode_uart(chan_data, self.samplerate, 0, from_baud,
+                                  filter_threshold=th_slot if th_slot > 0 else 0)
+                for r in dec:
+                    frames.append({'type': 'byte', 'pos': r.pos, 'val': r.value,
+                                   'end': r.pos + int(10 * self.samplerate / from_baud)})
+                    for j in range(r.pos, min(r.pos + int(10 * self.samplerate / from_baud), ns)):
+                        if j < len(sig_arr): sig_arr[j] = 1
+            elif proto == 'I2C':
+                sda_src = slot.get('sda_idx', 3)
+                scl_src = slot.get('scl_idx', 1)
+                dec = decode_i2c(chan_data, self.samplerate, scl_src, sda_src,
+                                 filter_threshold=th_slot if th_slot > 0 else 0)
+                for item in dec:
+                    t, v = item
+                    frames.append({'type': t, 'val': v})
+                    # Short pulse for each event
+                    pos = 0  # approximate position — not available from decode_i2c
+                    if pos < ns: sig_arr[pos] = 1
+            elif proto == 'SPI':
+                dec = decode_spi(chan_data, self.samplerate, 0, 1,
+                                 filter_threshold=th_slot if th_slot > 0 else 0)
+                for bv in dec:
+                    frames.append({'type': 'byte', 'val': bv})
+
+            slot['frames'] = frames
+            slot['sig'] = sig_arr
+            new_data.append(sig_arr)
+            new_names.append(f"{src}_{proto}")
+
+            # Build text for the decode output pane
+            line = f"#{si+1} {src} {proto}: "
+            if proto == 'UART':
+                text = ''.join(chr(f['val']) if 32 <= f['val'] < 127 else f'[{f["val"]:02X}]'
+                              for f in frames[:50])
+                if len(frames) > 50: text += '...'
+                line += f'"{text}"  ({len(frames)} bytes)'
+            elif proto == 'I2C':
+                parts = []
+                for f in frames[:30]:
+                    if f['type'] == 'START': parts.append('S')
+                    elif f['type'] == 'STOP': parts.append('P')
+                    elif f['val'] is not None: parts.append(f"0x{f['val']:02X}")
+                line += ' '.join(parts)
+            elif proto == 'SPI':
+                line += ' '.join(f"0x{f['val']:02X}" for f in frames[:30])
+            dec_text_lines.append(line)
+
+        self.ch_data = new_data
+        self.ch_names = new_names
+
+        # Update the decode text output
+        if hasattr(self, 'dec_out'):
+            self.dec_out.delete('1.0', 'end')
+            self.dec_out.insert('1.0', '\n'.join(dec_text_lines) if dec_text_lines else "No decoders active")
 
     def _gen_send(self):
         if not self.dev: return
