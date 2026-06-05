@@ -238,7 +238,7 @@ begin
               if byte_active then
                 if i2c_state = 1 then
                   Tx_Out <= data_buf(7);
-                  i2c_bit := 1;
+                  i2c_bit := 0;
                   i2c_state := 2;
                 end if;
               end if;
