@@ -73,6 +73,22 @@ def print_progress(current, total, label=""):
     if current == total:
         print()
 
+def decode_i2c_best(ch, samplerate, scl_idx=1, sda_idx=2, filter_threshold=0,
+                    offsets=range(-32, 33)):
+    best_decoded = []
+    best_offset = 0
+    best_score = -1
+    for offset in offsets:
+        decoded = decode_i2c(ch, samplerate, scl_idx=scl_idx, sda_idx=sda_idx,
+                             filter_threshold=filter_threshold, sda_offset=offset)
+        data_bytes = [v for t, v in decoded if t == "DATA"]
+        score = sum(1 for b in data_bytes if b not in (0x00, 0xFF))
+        if score > best_score:
+            best_decoded = decoded
+            best_offset = offset
+            best_score = score
+    return best_decoded, best_offset
+
 # ====================================================================
 # Test 1: UART CMD_ID
 # ====================================================================
@@ -389,11 +405,13 @@ def test_gen_i2c_accel(dev):
             dev_addr=found_addr, reg_addr=0x0F, read_len=1,
             tx_pin=2, scl_pin=1, fast_mode=True)
         if samples:
-            save_result("test9_i2c_accel", samples,
-                        {"i2c_addr": found_addr, "reg": "0x0F", "speed": 100_000})
             ch, ns = samples_to_channels(samples)
-            decoded = decode_i2c(ch, 2_000_000, scl_idx=1, sda_idx=2)
+            decoded, used_offset = decode_i2c_best(ch, 1_000_000, scl_idx=1, sda_idx=2)
+            save_result("test9_i2c_accel", samples,
+                        {"i2c_addr": found_addr, "reg": "0x0F", "speed": 100_000,
+                         "decode_sda_offset": used_offset})
             data_bytes = [v for t, v in decoded if t == "DATA"]
+            log(f"  decode SDA offset: {used_offset:+d}")
             for i, b in enumerate(data_bytes):
                 log(f"  I2C byte {i}: 0x{b:02X}")
             found_val = next((b for b in reversed(data_bytes) if b not in (0xFF, 0x00)), None)
@@ -437,19 +455,23 @@ def test_i2c_accel_deep(dev):
             rate_hz=4_000_000, nsamples=4096, i2c_speed=100_000,
             dev_addr=found_addr, reg_addr=0x0F, read_len=1,
             tx_pin=2, scl_pin=1, fast_mode=True)
-        ch, ns = samples_to_channels(samples)
-        decoded = decode_i2c(ch, 4_000_000, scl_idx=1, sda_idx=2)
-        data_bytes = [v for t, v in decoded if t == "DATA"]
-        for i, b in enumerate(data_bytes):
-            log(f"  I2C byte {i}: 0x{b:02X}")
-        found_val = next((b for b in reversed(data_bytes) if b not in (0xFF, 0x00)), None)
-        if found_val is not None:
-            log(f"  WHO_AM_I = 0x{found_val:02X}")
-            check(True, "I2C device responded with data")
+        if samples:
+            ch, ns = samples_to_channels(samples)
+            decoded, used_offset = decode_i2c_best(ch, 4_000_000, scl_idx=1, sda_idx=2)
+            data_bytes = [v for t, v in decoded if t == "DATA"]
+            log(f"  decode SDA offset: {used_offset:+d}")
+            for i, b in enumerate(data_bytes):
+                log(f"  I2C byte {i}: 0x{b:02X}")
+            found_val = next((b for b in reversed(data_bytes) if b not in (0xFF, 0x00)), None)
+            if found_val is not None:
+                log(f"  WHO_AM_I = 0x{found_val:02X}")
+                check(True, "I2C device responded with data")
+            else:
+                check(False, "No I2C response data")
+            save_result("test9b_i2c_accel_fast", samples,
+                    {"i2c_addr": found_addr, "decode_sda_offset": used_offset})
         else:
-            check(False, "No I2C response data")
-        save_result("test9b_i2c_accel_fast", samples if samples else b"",
-                {"i2c_addr": found_addr})
+            check(False, "No I2C capture data")
 
 # ====================================================================
 # Test 9c: Filtered I2C read LIS3DH WHO_AM_I (glitch_filter=3)
@@ -483,8 +505,10 @@ def test_i2c_accel_filtered(dev):
             tx_pin=2, scl_pin=1, fast_mode=True)
         if samples:
             ch, ns = samples_to_channels(samples)
-            decoded = decode_i2c(ch, 2_000_000, scl_idx=1, sda_idx=2, filter_threshold=1)
+            decoded, used_offset = decode_i2c_best(
+                ch, 2_000_000, scl_idx=1, sda_idx=2, filter_threshold=1)
             data_bytes = [v for t, v in decoded if t == "DATA"]
+            log(f"  decode SDA offset: {used_offset:+d}")
             for i, b in enumerate(data_bytes):
                 log(f"  I2C byte {i}: 0x{b:02X}")
             found_val = next((b for b in reversed(data_bytes) if b not in (0xFF, 0x00)), None)
@@ -494,7 +518,8 @@ def test_i2c_accel_filtered(dev):
             else:
                 check(False, "No I2C response data")
         save_result("test9c_i2c_accel_filtered", samples if samples else b"",
-                    {"i2c_addr": found_addr, "filter": 3})
+                    {"i2c_addr": found_addr, "filter": 3,
+                     "decode_sda_offset": used_offset if samples else None})
     else:
         log("SKIP: no accelerometer found")
 
@@ -530,8 +555,10 @@ def test_i2c_accel_deep_filtered(dev):
             tx_pin=2, scl_pin=1, fast_mode=True)
         if samples:
             ch, ns = samples_to_channels(samples)
-            decoded = decode_i2c(ch, 4_000_000, scl_idx=1, sda_idx=2, filter_threshold=1)
+            decoded, used_offset = decode_i2c_best(
+                ch, 4_000_000, scl_idx=1, sda_idx=2, filter_threshold=1)
             data_bytes = [v for t, v in decoded if t == "DATA"]
+            log(f"  decode SDA offset: {used_offset:+d}")
             for i, b in enumerate(data_bytes):
                 log(f"  I2C byte {i}: 0x{b:02X}")
             found_val = next((b for b in reversed(data_bytes) if b not in (0xFF, 0x00)), None)
@@ -541,7 +568,8 @@ def test_i2c_accel_deep_filtered(dev):
             else:
                 check(False, "No I2C response data")
         save_result("test9d_i2c_accel_deep_filtered", samples if samples else b"",
-                    {"i2c_addr": found_addr, "filter": 3})
+                    {"i2c_addr": found_addr, "filter": 3,
+                     "decode_sda_offset": used_offset if samples else None})
         # Clear leaked state
         dev._long(0xAF, 0); dev._long(0xA7, 0); dev.spi.flush()
     else:

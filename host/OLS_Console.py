@@ -549,7 +549,7 @@ def decode_uart(ch, samplerate, ch_idx=0, baud=115200, filter_threshold=0):
         i += 1
     return result
 
-def decode_i2c(ch, samplerate, scl_idx=2, sda_idx=3, filter_threshold=0):
+def decode_i2c(ch, samplerate, scl_idx=2, sda_idx=3, filter_threshold=0, sda_offset=0):
     """Simple I2C decoder. Returns list of (type, value) strings."""
     scl = ch[scl_idx]
     sda = ch[sda_idx]
@@ -589,8 +589,10 @@ def decode_i2c(ch, samplerate, scl_idx=2, sda_idx=3, filter_threshold=0):
                     while hi_start + hi_count < len(scl) and scl[hi_start + hi_count] == 1:
                         hi_count += 1
                     mid = hi_start + hi_count // 2  # midpoint of SCL high
-                    if mid >= len(scl): break
-                    byte = (byte << 1) | sda[mid]
+                    sample_pos = max(0, min(len(sda) - 1, mid + sda_offset))
+                    if mid >= len(scl):
+                        break
+                    byte = (byte << 1) | sda[sample_pos]
                     i = mid
                 while i < len(scl) - 2 and not (scl[i] == 0 and scl[i + 1] == 1):
                     i += 1

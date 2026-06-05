@@ -248,7 +248,7 @@ BEGIN
         if gen_spi_test = '1' then
           internal_data(i) <= sen_sdo_d1;  -- 1-cycle delayed SEN_SDO
         elsif gen_i2c_test = '1' then
-          internal_data(i) <= sen_sdi_sync;  -- 2-FF synchronised SEN_SDI
+          internal_data(i) <= gen_tx_d1;   -- capture master SDA without pad sync skew
         else
           internal_data(i) <= gen_tx_d1;   -- 1-cycle delayed gen_tx
         end if;

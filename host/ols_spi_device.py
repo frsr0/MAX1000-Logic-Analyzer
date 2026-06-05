@@ -441,34 +441,26 @@ class OLSDeviceSPI:
         self.spi.flush()
         time.sleep(0.01)
 
-        # Back-to-back: GEN_STRT + ARM + NOPs to read during auto-readout
+        # Arm first, then start the generator in the same CS-low burst.  The
+        # capture completes before readout, so returned bytes are only samples.
         need = rc * self._stride
         d = self.spi.dev
         buf = bytes([0x80, GPIO_CS_LO, PIN_DIR])
-        buf += bytes([0x31, 0x04, 0x00, CMD_GEN_STRT, 0x11, 0x11, 0x11, 0x11])
         buf += bytes([0x31, 0x04, 0x00, CMD_ARM, 0x11, 0x11, 0x11, 0x11])
-        remaining = need
-        while remaining > 0:
-            n = min(128, remaining)
-            buf += bytes([0x31, (n-1) & 0xFF, ((n-1) >> 8) & 0xFF])
-            buf += bytes([0x11] * n)
-            remaining -= n
+        buf += bytes([0x31, 0x04, 0x00, CMD_GEN_STRT, 0x11, 0x11, 0x11, 0x11])
         buf += bytes([0x87, 0x80, GPIO_CS_HI, PIN_DIR, 0x87])
         self.spi._drain()
         d.write(buf)
-        time.sleep(0.02)
-        r = self.spi._read_all(timeout=0.05)
-        if r and len(r) > 6:
-            samples = r[6:6 + need]
-        else:
-            samples = b''
+        time.sleep(0.003)
+        q = d.getQueueStatus()
+        if q:
+            d.read(q)
 
-        if samples:
-            for i in range(len(samples)):
-                if samples[i] != 0x00:
-                    samples = samples[i:]
-                    break
-        return samples
+        cap_time = rc / rate_hz
+        wait = min(cap_time + 0.02, max(0.0, timeout - 0.1))
+        if wait > 0:
+            time.sleep(wait)
+        return self.spi.chained_read(need)
 
     # ─── I2C rolling capture ────────────────────────────────────
 
