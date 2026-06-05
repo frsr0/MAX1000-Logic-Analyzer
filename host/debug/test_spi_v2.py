@@ -43,7 +43,7 @@ d.write(bytes([0x94, 0x00]))  # Disable CLK divide by 5 (use 60MHz base)
 time.sleep(0.01)
 
 # GPIO init: CS high. All outputs except MISO(bit2)
-PIN_DIR = 0x3B
+PIN_DIR = 0x0B
 d.write(bytes([0x80, 0x08, PIN_DIR]))
 time.sleep(0.001)
 

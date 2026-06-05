@@ -26,7 +26,7 @@ CMD_GEN_PROTO  = 0xA4
 CMD_GEN_PINS   = 0xA6
 CMD_I2C_TEST   = 0xA7
 
-PIN_DIR     = 0x3B
+PIN_DIR     = 0x0B   # CLK(0), MOSI(1), CS(3) outputs only; BDBUS4-7 inputs
 GPIO_CS_HI  = 0x08
 GPIO_CS_LO  = 0x00
 SLEEP_TICK  = 0.003

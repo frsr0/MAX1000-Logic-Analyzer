@@ -2,7 +2,7 @@
 """OLS MPSSE SPI host driver via FT2232H Channel B."""
 import time, struct, ftd2xx as ft
 
-PIN_DIR     = 0x3B   # SCK/B0, MOSI/B1, CS/B3 out; MISO/B2 in
+PIN_DIR     = 0x0B   # SCK/B0, MOSI/B1, CS/B3 out; MISO/B2 in
 GPIO_INIT   = 0x08   # CS high, SCK low, MOSI low
 GPIO_CS_LO  = 0x00
 GPIO_CS_HI  = 0x08

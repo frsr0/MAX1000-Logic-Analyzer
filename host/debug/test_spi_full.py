@@ -4,7 +4,7 @@ import serial, serial.tools.list_ports as lp, time, struct
 
 CMD_SET_IFACE = 0xAB
 CMD_ID = 0x02
-PIN_DIR = 0x3B
+PIN_DIR = 0x0B
 
 def find_ols():
     for p in lp.comports():

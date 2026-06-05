@@ -57,6 +57,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL command : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL data    : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL Run_OLS  : STD_LOGIC := '0';
+  -- Debug: toggle on each CMD_ARM hit
+  SIGNAL dbg_rx_valid_seen : STD_LOGIC := '0';  -- toggles on rising edge of SPI_RX_Valid
+  SIGNAL dbg_thread38_seen_3 : STD_LOGIC := '0';  -- toggles when Thread38 enters state 3
   SIGNAL Trigger_Mask   : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL Trigger_Values : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL inputs_prev    : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
@@ -92,7 +95,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL gen_start_cnt : NATURAL range 0 to 63 := 0;
   SIGNAL gen_load_cnt  : NATURAL range 0 to 63 := 0;  -- probe
    SIGNAL gen_tx_pin_int  : NATURAL range 0 to 7 := 3;
-   SIGNAL gen_scl_pin_int : NATURAL range 0 to 7 := 0;
+   SIGNAL gen_scl_pin_int : NATURAL range 0 to 7 := 1;  -- default=1 (CH0 is test counter, can't use 0)
   SIGNAL gen_i2c_rd_len_int : NATURAL range 0 to 255 := 0;
   SIGNAL gen_i2c_dev_r_int  : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
    SIGNAL gen_i2c_test_int   : STD_LOGIC := '0';
@@ -450,6 +453,10 @@ BEGIN
             END IF;
           END IF;
           command <= effective_RX_Data;
+          -- Debug: toggles when any byte is received (Thread38 enters state 3)
+          dbg_thread38_seen_3 <= NOT dbg_thread38_seen_3;
+          -- Debug: capture received byte in UART_TX_Data for readback
+          UART_TX_Data <= effective_RX_Data;
           Thread38 := 4;
         END IF;
       WHEN 4 =>
@@ -471,6 +478,7 @@ BEGIN
           -- Must go through dispatch (Thread38=5), not accumulate (Thread38=6).
           cmd_was_multibyte <= '0';
           IF command(7) = '0' THEN
+            Thread44 := 0;
             Thread38 := Thread38 + 1;  -- to 5 for dispatch
           ELSE
             ctr := 0;
@@ -482,8 +490,10 @@ BEGIN
           -- Data byte or new command arriving while accumulate is in setup
           -- (Thread44 still 0-3).  Use command(7) to decide: bit7=0 means
           -- it's a new single-byte command (ARM, Reset); bit7=1 is a data byte.
+          -- Must reset Thread44 to 0 so dispatch hits WHEN 0, not the reset handler at WHEN 1.
           cmd_was_multibyte <= '0';
           IF command(7) = '0' THEN
+            Thread44 := 0;
             Thread38 := Thread38 + 1;  -- to 5 (dispatch)
           ELSE
             ctr := 0;
@@ -501,9 +511,18 @@ BEGIN
           WHEN 0 =>
             CASE (command) IS
               WHEN x"00" =>
+                -- CMD_RESET: route through Thread44=1 to clear Run_OLS etc.
                 Thread44 := Thread44 + 1;
               WHEN x"01" =>
-                Thread44 := Thread44 + 2;
+                -- CMD_ARM: inline Run_OLS to bypass the WHEN 2 handler
+                UART_TX_Data <= x"AA";
+                Run_OLS <= '1';
+                IF continuous_mode_i = '0' THEN
+                  Thread23 := 0;
+                END IF;
+                Thread44 := 0;
+                Thread45 := 0;
+                Thread38 := 0;
               WHEN x"02" =>
                 Thread44 := Thread44 + 3;
               WHEN x"03" =>
@@ -541,8 +560,8 @@ BEGIN
             cmd_was_multibyte <= '0';
             Trigger_Mask <= (others => '0');
             proto_trig_enable <= '0';
-            -- Default generator config: UART mode, 115200 baud (208 @ 24 MHz)
-            Gen_Baud_Div <= x"01A0";  -- 416 = 115200 @ 48 MHz
+            -- Default generator config: baud=0 defers to Signal_Gen constant; caller must set CMD_GEN_BAUD explicitly
+            Gen_Baud_Div <= (others => '0');
             Gen_Proto <= '0';
             gen_spi_test_int <= '0';
             blk_mode <= '0';
@@ -553,6 +572,7 @@ BEGIN
                 Thread45 := 0;
                 Thread38 := 0;
           WHEN 2 =>
+            UART_TX_Data <= x"BB";
             Run_OLS <= '1';
             IF continuous_mode_i = '0' THEN
               Thread23 := 0;
@@ -790,7 +810,7 @@ BEGIN
           WHEN 38 =>
             null;
             Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN others => Thread44 := 0;
+          WHEN others => Thread44 := 0; Thread45 := 0; Thread38 := 0;
         END CASE;
       WHEN 6 =>
         CASE (Thread44) IS
@@ -835,7 +855,18 @@ BEGIN
             Thread44 := Thread44 + 1;
           WHEN 7 =>
             cmd_was_multibyte <= '0';
+            Thread38 := 5;  -- default: transition to command execution after accumulate
             CASE (saved_command) IS
+              -- Multi-byte prefix (0x11): actual command is first accumulated byte
+              WHEN x"11" =>
+                IF data(7 downto 0) = x"01" THEN
+                  -- Multi-byte CMD_ARM
+                  Run_OLS <= '1';
+                  Thread23 := 0;
+                  Thread44 := 0; Thread45 := 0; Thread38 := 0;
+                ELSE
+                  Thread44 := Thread44 + 10;
+                END IF;
               WHEN x"c0" =>
                 Thread44 := Thread44 + 1;
               WHEN x"c1" =>
@@ -889,8 +920,7 @@ BEGIN
               WHEN others =>
                 Thread44 := Thread44 + 10;
             END CASE;
-            Thread38 := 5;  -- transition to command execution after accumulate
-          WHEN others => Thread44 := 0;
+          WHEN others => Thread44 := 0; Thread45 := 0; Thread38 := 0;
         END CASE;
       WHEN others => Thread38 := 0;
     END CASE;
@@ -947,8 +977,10 @@ BEGIN
   pipe_depth <= 8 when ch_mode = '0' else 4;
 
   -- SPI preamble byte: zero-waste status on every transaction
+  -- bit1 = dbg_rx_valid_seen (toggles on rising edge of SPI_RX_Valid)
+  -- bit0 = dbg_thread38_seen_3 (toggles on entry to Thread38=3)
   spi_preamble <= Run & Run_OLS & Full & interface_mode_i &
-                  continuous_mode_i & fast_mode_i & "00";
+                  continuous_mode_i & fast_mode_i & dbg_rx_valid_seen & dbg_thread38_seen_3;
 
   Gen_TX_Pin  <= gen_tx_pin_int;
   Gen_SCL_Pin <= gen_scl_pin_int;
@@ -1023,5 +1055,19 @@ BEGIN
 
   effective_RX_Busy <= UART_RX_Busy when interface_mode_i = '0' else SPI_RX_Valid;
   effective_RX_Data <= UART_RX_Data when interface_mode_i = '0' else SPI_RX_Data;
+
+  -- Debug: rising-edge detect on SPI_RX_Valid (sys_clk domain)
+  rx_valid_edge: process(CLK)
+    variable rv_s1 : std_logic := '0';
+    variable rv_s2 : std_logic := '0';
+  begin
+    if rising_edge(CLK) then
+      rv_s2 := rv_s1;          -- old value (previous cycle)
+      rv_s1 := SPI_RX_Valid;   -- new value (this cycle)
+      if rv_s1 = '1' and rv_s2 = '0' then
+        dbg_rx_valid_seen <= NOT dbg_rx_valid_seen;
+      end if;
+    end if;
+  end process;
 
 END BEHAVIORAL;

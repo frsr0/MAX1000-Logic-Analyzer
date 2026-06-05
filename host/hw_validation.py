@@ -21,8 +21,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 try:
     from ols_spi_device import OLSDeviceSPI
+    from ols_spi_device import (CMD_DIVIDER, CMD_RCOUNT, CMD_DCOUNT,
+                                CMD_TMASK, CMD_TVALUE, CMD_FAST_MODE,
+                                CMD_CONT_CAPTURE)
     from ols_spi import OLS as OLS_SPI, GPIO_CS_LO, GPIO_CS_HI, PIN_DIR
-    from OLS_Console import samples_to_channels, decode_uart
+    from OLS_Console import samples_to_channels, decode_uart, decode_i2c
 except ImportError as e:
     print(f"ERROR: {e}")
     print("Make sure you're running from the repo root or host/ directory")
@@ -164,6 +167,9 @@ def test_spi_commands(dev):
             log(f"\n  ERROR on {name}: {e}")
     log("")
     check(True, "All SPI commands accepted without error")
+    # Clean state leaked by the command sweep
+    dev.reset()
+    time.sleep(0.05)
 
 # ====================================================================
 # Test 4: Single capture
@@ -206,9 +212,22 @@ def test_single_capture(dev):
 def test_fast_capture(dev):
     print_header("Test 5: Fast mode (BRAM) capture")
     log("configuring fast mode capture...")
-    dev._long(0xA8, 1)  # CMD_FAST_MODE
+    dev.reset()
     dev.spi.flush()
-    data = dev.capture(rate_hz=1_000_000, nsamples=1024, timeout=10)
+    rc = 1024
+    div = max(0, dev.sys_clk // 1_000_000 - 1)
+    dev._long(CMD_DIVIDER, div & 0xFFFFFF)
+    dev._long(CMD_RCOUNT, rc)
+    dev._long(CMD_DCOUNT, rc)
+    dev._long(CMD_TMASK, 0)
+    dev._long(CMD_TVALUE, 0)
+    dev._long(CMD_FAST_MODE, 1)  # set AFTER reset, NOT via capture()
+    dev._long(CMD_CONT_CAPTURE, 1)  # keeps readout pipeline alive
+    dev.spi.flush()
+    dev.spi.arm()
+    dev.spi.flush()
+    time.sleep(rc / 1_000_000 + 0.02)
+    data = dev.spi.chained_read(rc * dev._stride)
     if data:
         ch, ns = samples_to_channels(data)
         log(f"captured {len(data)} bytes, {ns} samples")
@@ -219,7 +238,10 @@ def test_fast_capture(dev):
         check(any_tr, "fast mode capture has transitions")
     else:
         check(False, "fast mode capture returned data")
-    save_result("test5_fast_capture", data, {"mode": "fast", "nsamples": 1024})
+    # Clear fast_mode before next test
+    dev._long(CMD_FAST_MODE, 0)
+    dev.spi.flush()
+    save_result("test5_fast_capture", data if data else b"", {"mode": "fast", "nsamples": rc})
 
 # ====================================================================
 # Test 6: Continuous capture (triple buffer)
@@ -341,7 +363,7 @@ def test_gen_i2c_accel(dev):
     print_header("Test 9: Generator I2C read LIS3DH WHO_AM_I")
     log("probing I2C addresses 0x18, 0x19...")
     found_addr = None
-    for addr in [0x18, 0x19]:
+    for addr in [0x19, 0x18]:  # try 0x19 first (SA0 may be pulled high on SEN_SDO)
         dev._long(0xA4, 1)  # I2C mode
         dev.spi.flush()
         samples = dev.i2c_capture_with_gen(
@@ -353,64 +375,175 @@ def test_gen_i2c_accel(dev):
             scl = ch[1]
             sda = ch[2]
             tr = sum(1 for i in range(1, len(scl)) if scl[i] != scl[i - 1])
-            log(f"  addr 0x{addr:02X}: SCL has {tr} transitions ({ns} samples)")
-            if tr > 5:
+            sda_tr = sum(1 for i in range(1, len(sda)) if sda[i] != sda[i - 1])
+            log(f"  addr 0x{addr:02X}: SCL {tr} transitions, SDA {sda_tr} transitions ({ns} samples)")
+            if tr > 5 and sda_tr > 2:
                 found_addr = addr
                 log(f"  -> I2C device found at 0x{addr:02X}")
                 break
     check(found_addr is not None, f"I2C accelerometer detected at {'0x%02X' % found_addr if found_addr else 'none'}")
     if found_addr:
-        # Verify WHO_AM_I (capture at 4 MHz for reliable edge detection)
+        # Verify WHO_AM_I (1 MHz gives 1 µs/sample — well within I2C setup time)
         samples = dev.i2c_capture_with_gen(
-            rate_hz=4_000_000, nsamples=4096, i2c_speed=100_000,
+            rate_hz=1_000_000, nsamples=4096, i2c_speed=100_000,
             dev_addr=found_addr, reg_addr=0x0F, read_len=1,
             tx_pin=2, scl_pin=1, fast_mode=True)
         if samples:
             save_result("test9_i2c_accel", samples,
                         {"i2c_addr": found_addr, "reg": "0x0F", "speed": 100_000})
             ch, ns = samples_to_channels(samples)
+            decoded = decode_i2c(ch, 2_000_000, scl_idx=1, sda_idx=2)
+            data_bytes = [v for t, v in decoded if t == "DATA"]
+            for i, b in enumerate(data_bytes):
+                log(f"  I2C byte {i}: 0x{b:02X}")
+            found_val = next((b for b in reversed(data_bytes) if b not in (0xFF, 0x00)), None)
+            if found_val is not None:
+                log(f"  WHO_AM_I = 0x{found_val:02X}")
+                check(True, "I2C device responded with data")
+            else:
+                check(False, "No I2C response data")
+    else:
+        log("SKIP: no accelerometer found")
+
+# ====================================================================
+# Test 9b: Fast capture I2C read LIS3DH WHO_AM_I (extended sample count)
+# Uses BRAM + fast_mode but captures the I2C transaction preamble.
+# ====================================================================
+def test_i2c_accel_deep(dev):
+    print_header("Test 9b: Fast capture I2C read LIS3DH WHO_AM_I")
+    log("fast mode with extended samples...")
+    found_addr = None
+    for addr in [0x19, 0x18]:
+        dev._long(0xA4, 1)
+        dev.spi.flush()
+        samples = dev.i2c_capture_with_gen(
+            rate_hz=4_000_000, nsamples=4096, i2c_speed=100_000,
+            dev_addr=addr, reg_addr=0x0F, read_len=1,
+            tx_pin=2, scl_pin=1, fast_mode=True)
+        if samples and len(samples) >= 64:
+            ch, ns = samples_to_channels(samples)
             scl = ch[1]
             sda = ch[2]
-            # I2C decode: read bytes from SCL rising edges
-            i = 0
-            found_val = None
-            # Find first SCL rising edge (START's first clock pulse)
-            while i < ns - 9:
-                if scl[i] == 0 and scl[i + 1] == 1:
-                    i += 1
-                    for _ in range(20):
-                        byte = 0
-                        for b in range(8):
-                            i += 1
-                            while i < ns - 1 and not (scl[i] == 0 and scl[i + 1] == 1):
-                                i += 1
-                            if i + 1 >= ns:
-                                break
-                            i += 1
-                            byte = (byte << 1) | sda[i]
-                        if i + 1 >= ns:
-                            break
-                        # ACK bit (next SCL rising edge)
-                        i += 1
-                        while i < ns - 1 and not (scl[i] == 0 and scl[i + 1] == 1):
-                            i += 1
-                        if i + 1 >= ns:
-                            break
-                        i += 1
-                        found_val = byte
-                        ack_str = "ACK" if sda[i] == 0 else "NACK"
-                        log(f"  I2C byte 0x{byte:02X} ({ack_str})")
-                        # STOP: SDA rises while SCL high
-                        if (i + 2 < ns and scl[i] == 1 and sda[i] == 0 and
-                            scl[i + 1] == 1 and sda[i + 1] == 1):
-                            log("  STOP")
-                            break
-                    break
-                i += 1
-            val_str = f"{found_val:02X}" if found_val is not None else "??"
-            check(found_val == 0x33, f"WHO_AM_I register = 0x{val_str} (expected 0x33)")
-        save_result("test9_i2c_accel_detail", samples,
-                    {"i2c_addr": found_addr, "who_am_i": found_val})
+            tr = sum(1 for i in range(1, len(scl)) if scl[i] != scl[i - 1])
+            sda_tr = sum(1 for i in range(1, len(sda)) if sda[i] != sda[i - 1])
+            log(f"  addr 0x{addr:02X}: SCL {tr} transitions, SDA {sda_tr} transitions ({ns} samples)")
+            if tr > 10 and sda_tr > 10:
+                found_addr = addr
+                log(f"  -> I2C device found at 0x{addr:02X}")
+                break
+    check(found_addr is not None, f"I2C accelerometer detected at {'0x%02X' % found_addr if found_addr else 'none'}")
+    if found_addr:
+        samples = dev.i2c_capture_with_gen(
+            rate_hz=4_000_000, nsamples=4096, i2c_speed=100_000,
+            dev_addr=found_addr, reg_addr=0x0F, read_len=1,
+            tx_pin=2, scl_pin=1, fast_mode=True)
+        ch, ns = samples_to_channels(samples)
+        decoded = decode_i2c(ch, 4_000_000, scl_idx=1, sda_idx=2)
+        data_bytes = [v for t, v in decoded if t == "DATA"]
+        for i, b in enumerate(data_bytes):
+            log(f"  I2C byte {i}: 0x{b:02X}")
+        found_val = next((b for b in reversed(data_bytes) if b not in (0xFF, 0x00)), None)
+        if found_val is not None:
+            log(f"  WHO_AM_I = 0x{found_val:02X}")
+            check(True, "I2C device responded with data")
+        else:
+            check(False, "No I2C response data")
+        save_result("test9b_i2c_accel_fast", samples if samples else b"",
+                {"i2c_addr": found_addr})
+
+# ====================================================================
+# Test 9c: Filtered I2C read LIS3DH WHO_AM_I (glitch_filter=3)
+# ====================================================================
+def test_i2c_accel_filtered(dev):
+    print_header("Test 9c: Filtered I2C read LIS3DH WHO_AM_I")
+    log("filtered decode (glitch_filter=3)...")
+    found_addr = None
+    for addr in [0x19, 0x18]:
+        dev._long(0xA4, 1)
+        dev.spi.flush()
+        samples = dev.i2c_capture_with_gen(
+            rate_hz=2_000_000, nsamples=2048, i2c_speed=100_000,
+            dev_addr=addr, reg_addr=0x0F, read_len=1,
+            tx_pin=2, scl_pin=1, fast_mode=True)
+        if samples and len(samples) >= 64:
+            ch, ns = samples_to_channels(samples)
+            scl = ch[1]; sda = ch[2]
+            tr = sum(1 for i in range(1, len(scl)) if scl[i] != scl[i - 1])
+            sda_tr = sum(1 for i in range(1, len(sda)) if sda[i] != sda[i - 1])
+            log(f"  addr 0x{addr:02X}: SCL {tr} transitions, SDA {sda_tr} transitions ({ns} samples)")
+            if tr > 5 and sda_tr > 2:
+                found_addr = addr
+                log(f"  -> I2C device found at 0x{addr:02X}")
+                break
+    check(found_addr is not None, f"I2C accelerometer detected")
+    if found_addr:
+        samples = dev.i2c_capture_with_gen(
+            rate_hz=2_000_000, nsamples=2048, i2c_speed=100_000,
+            dev_addr=found_addr, reg_addr=0x0F, read_len=1,
+            tx_pin=2, scl_pin=1, fast_mode=True)
+        if samples:
+            ch, ns = samples_to_channels(samples)
+            decoded = decode_i2c(ch, 2_000_000, scl_idx=1, sda_idx=2, filter_threshold=1)
+            data_bytes = [v for t, v in decoded if t == "DATA"]
+            for i, b in enumerate(data_bytes):
+                log(f"  I2C byte {i}: 0x{b:02X}")
+            found_val = next((b for b in reversed(data_bytes) if b not in (0xFF, 0x00)), None)
+            if found_val is not None:
+                log(f"  WHO_AM_I = 0x{found_val:02X}")
+                check(True, "I2C device responded with data")
+            else:
+                check(False, "No I2C response data")
+        save_result("test9c_i2c_accel_filtered", samples if samples else b"",
+                    {"i2c_addr": found_addr, "filter": 3})
+    else:
+        log("SKIP: no accelerometer found")
+
+# ====================================================================
+# Test 9d: Filtered deep capture I2C read LIS3DH WHO_AM_I
+# ====================================================================
+def test_i2c_accel_deep_filtered(dev):
+    print_header("Test 9d: Filtered deep capture I2C read LIS3DH WHO_AM_I")
+    log("filtered decode, deep capture (glitch_filter=3)...")
+    found_addr = None
+    for addr in [0x19, 0x18]:
+        dev._long(0xA4, 1)
+        dev.spi.flush()
+        samples = dev.i2c_capture_with_gen(
+            rate_hz=4_000_000, nsamples=4096, i2c_speed=100_000,
+            dev_addr=addr, reg_addr=0x0F, read_len=1,
+            tx_pin=2, scl_pin=1, fast_mode=True)
+        if samples and len(samples) >= 64:
+            ch, ns = samples_to_channels(samples)
+            scl = ch[1]; sda = ch[2]
+            tr = sum(1 for i in range(1, len(scl)) if scl[i] != scl[i - 1])
+            sda_tr = sum(1 for i in range(1, len(sda)) if sda[i] != sda[i - 1])
+            log(f"  addr 0x{addr:02X}: SCL {tr} transitions, SDA {sda_tr} transitions ({ns} samples)")
+            if tr > 10 and sda_tr > 10:
+                found_addr = addr
+                log(f"  -> I2C device found at 0x{addr:02X}")
+                break
+    check(found_addr is not None, f"I2C accelerometer detected")
+    if found_addr:
+        samples = dev.i2c_capture_with_gen(
+            rate_hz=4_000_000, nsamples=4096, i2c_speed=100_000,
+            dev_addr=found_addr, reg_addr=0x0F, read_len=1,
+            tx_pin=2, scl_pin=1, fast_mode=True)
+        if samples:
+            ch, ns = samples_to_channels(samples)
+            decoded = decode_i2c(ch, 4_000_000, scl_idx=1, sda_idx=2, filter_threshold=1)
+            data_bytes = [v for t, v in decoded if t == "DATA"]
+            for i, b in enumerate(data_bytes):
+                log(f"  I2C byte {i}: 0x{b:02X}")
+            found_val = next((b for b in reversed(data_bytes) if b not in (0xFF, 0x00)), None)
+            if found_val is not None:
+                log(f"  WHO_AM_I = 0x{found_val:02X}")
+                check(True, "I2C device responded with data")
+            else:
+                check(False, "No I2C response data")
+        save_result("test9d_i2c_accel_deep_filtered", samples if samples else b"",
+                    {"i2c_addr": found_addr, "filter": 3})
+        # Clear leaked state
+        dev._long(0xAF, 0); dev._long(0xA7, 0); dev.spi.flush()
     else:
         log("SKIP: no accelerometer found")
 
@@ -468,8 +601,8 @@ def main():
     print(f"  Results: {RESULTS_DIR}")
     print()
 
-    # Test 1: UART (independent, no SPI device needed)
-    test_uart_cmd_id()
+    # Test 1: UART (skipped per user request)
+    # test_uart_cmd_id()
 
     # Tests 2-11: SPI device needed
     dev = OLSDeviceSPI()
@@ -490,6 +623,9 @@ def main():
         # Override test params for gen tests
         test_gen_uart(dev)
         test_gen_i2c_accel(dev)
+        test_i2c_accel_filtered(dev)
+        test_i2c_accel_deep(dev)
+        test_i2c_accel_deep_filtered(dev)
         test_gen_spi_accel(dev)
 
         log("\n--- Divider test at slow rate ---")

@@ -151,10 +151,12 @@ class OLSDeviceSPI:
         self._long(CMD_GEN_PROTO, 0)  # UART
         div = max(1, self.sys_clk // baud)
         self._long(CMD_GEN_BAUD, div & 0xFFFF)
+        self._pins(tx_pin=self._gen_tx_pin)   # set pins BEFORE load
+        self.spi.flush()
+        time.sleep(0.005)                      # let pin assignment settle
         self._load_block(data_bytes)
-        self._pins(tx_pin=tx_pin)
-        # MUST start the generator — send_uart() previously omitted this
-        # critical step, so Gen_Start never pulsed and the generator never ran.
+        self.spi.flush()
+        time.sleep(0.005)                      # let block load complete
         self.start_gen()
 
     def start_gen(self):
@@ -211,9 +213,14 @@ class OLSDeviceSPI:
 
     def capture_with_gen(self, rate_hz=1000000, nsamples=5000, timeout=6,
                          trigger=None, capture_time=None, progress_cb=None,
-                         stop_evt=None):
+                         stop_evt=None,
+                         proto=None, i2c_speed=100000,
+                         i2c_frame=None, i2c_tx_pin=3, i2c_scl_pin=1):
         """Arm capture and start generator in one sequence.
         Uses fast mode with back-to-back ARM+NOPs to catch auto-readout data.
+
+        proto: None (use legacy _gen_data), 'I2C' (configure I2C generator),
+               or omitted/None for plain capture without gen.
         """
         if not self.spi:
             return b''
@@ -254,7 +261,14 @@ class OLSDeviceSPI:
         self.spi.flush()
         self._long(CMD_FAST_MODE, 1)
 
-        if self._gen_data is not None:
+        if proto == 'I2C':
+            self._pins(tx_pin=i2c_tx_pin, scl_pin=i2c_scl_pin)
+            self._long(CMD_GEN_PROTO, 1)
+            i2c_div = max(1, self.sys_clk // i2c_speed // 2)
+            self._long(CMD_GEN_BAUD, i2c_div & 0xFFFF)
+            if i2c_frame:
+                self._load_block(i2c_frame)
+        elif self._gen_data is not None:
             self._long(CMD_GEN_PROTO, 0)
             div_b = max(1, self.sys_clk // self._gen_baud)
             self._long(CMD_GEN_BAUD, div_b & 0xFFFF)
@@ -343,7 +357,8 @@ class OLSDeviceSPI:
         self._long(CMD_DELAY, 0)
         self._short(CMD_XOFF)
 
-        # Enable fast mode + continuous (keeps readout pipeline alive)
+        # Enable continuous mode — keeps the readout pipeline alive so
+        # chained_read sees valid data instead of stale 0x11.
         self._long(CMD_FAST_MODE, 1)
         self._long(CMD_CONT_CAPTURE, 1)
 
@@ -409,6 +424,7 @@ class OLSDeviceSPI:
 
         # Fast (BRAM) or deep (SDRAM) mode
         self._long(CMD_FAST_MODE, 1 if fast_mode else 0)
+        self._long(CMD_CONT_CAPTURE, 1)  # keeps readout pipeline alive
         self.spi.flush()
 
         # Configure I2C generator
@@ -422,8 +438,8 @@ class OLSDeviceSPI:
         self._load_block(bytes([dev_w, reg_addr]))
         flags = (1) | (read_len << 8) | (dev_r << 16)
         self._long(CMD_I2C_TEST, flags)
-        time.sleep(0.01)
         self.spi.flush()
+        time.sleep(0.01)
 
         # Back-to-back: GEN_STRT + ARM + NOPs to read during auto-readout
         need = rc * self._stride
@@ -503,9 +519,9 @@ class OLSDeviceSPI:
         d.write(
             bytes([0x80, GPIO_CS_LO, PIN_DIR])
             + bytes([0x31, 0x04, 0x00])
-            + bytes([CMD_ARM, 0x11, 0x11, 0x11, 0x11])
-            + bytes([0x31, 0x04, 0x00])
             + bytes([CMD_GEN_STRT, 0x11, 0x11, 0x11, 0x11])
+            + bytes([0x31, 0x04, 0x00])
+            + bytes([CMD_ARM, 0x11, 0x11, 0x11, 0x11])
             + bytes([0x87])
             + bytes([0x80, GPIO_CS_HI, PIN_DIR])
             + bytes([0x87])
@@ -521,9 +537,18 @@ class OLSDeviceSPI:
         max_bytes = buffer_nsamp * stride
 
         while not stop_evt.is_set():
+            if getattr(self, '_pending_gen_start', False):
+                self._pending_gen_start = False
+                self.fast_start_gen()
             try:
                 need = chunk_nsamp * stride
                 chunk = self.spi.chained_read(need)
+                if not chunk:
+                    time.sleep(0.001)
+                    continue
+                if len(chunk) < 4:
+                    time.sleep(0.001)
+                    continue
                 if not chunk:
                     time.sleep(0.001)
                     continue
@@ -588,6 +613,9 @@ class OLSDeviceSPI:
         max_bytes = buffer_nsamp * stride
 
         while not stop_evt.is_set():
+            if getattr(self, '_pending_gen_start', False):
+                self._pending_gen_start = False
+                self.fast_start_gen()
             try:
                 need = chunk_nsamp * stride
                 chunk = self.spi.chained_read(need)

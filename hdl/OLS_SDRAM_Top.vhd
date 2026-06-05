@@ -72,6 +72,14 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   attribute preserve of test_out : signal is true;
   signal registered_ch0 : std_logic := '0';
   attribute preserve of registered_ch0 : signal is true;
+  signal sen_sdi_meta : std_logic := '1';  -- first stage: captures metastable SEN_SDI
+  signal sen_sdi_sync : std_logic := '1';  -- second stage: resolved, clean
+  signal gen_scl_d1   : std_logic := '0';  -- 1-cycle delayed SCL for capture
+  signal gen_scl_d2   : std_logic := '0';  -- 2-cycle delayed SCL (matches sen_sdi_sync delay)
+  signal gen_tx_d1    : std_logic := '0';  -- 1-cycle delayed gen_tx (to match pipeline)
+  signal registered_ch0_d1 : std_logic := '0';  -- 1-cycle delayed CH0 (to match pipeline)
+  signal gpio_d1      : std_logic_vector(7 downto 0) := (others => '0');  -- 1-cycle delayed GPIO
+  signal sen_sdo_d1   : std_logic := '0';  -- 1-cycle delayed SEN_SDO
   signal com_act_cnt   : integer range 0 to 200_000_000 := 0;
   signal com_active    : std_logic := '0';
   signal uart_rx_last  : std_logic := '1';
@@ -231,23 +239,23 @@ BEGIN
   -- Capture mux: CH0 = test counter. When gen is active, gen_tx routed to TX pin.
   -- I2C mode: capture SEN_SDI (external SDA) on TX pin, gen_scl on SCL pin.
   -- SPI mode: capture SEN_SDO (external MISO) on TX pin, gen_scl on SCL pin.
-  capture_mux: process(test_out, gen_busy, gen_tx_pin, gen_scl_pin, gen_tx, gen_scl, GPIO, gen_i2c_test, gen_spi_test, SEN_SDI, SEN_SDO)
+  capture_mux: process(test_out, gen_busy, gen_tx_pin, gen_scl_pin, gen_tx, gen_scl, GPIO, gen_i2c_test, gen_spi_test, SEN_SDI, SEN_SDO, gen_tx_d1, gpio_d1, sen_sdo_d1, registered_ch0_d1)
   begin
     for i in 0 to 7 loop
       if i = 0 then
-        internal_data(i) <= registered_ch0;
+        internal_data(i) <= registered_ch0_d1;  -- 1-cycle delayed to match pipeline
       elsif gen_busy = '1' and gen_tx_pin = i then
         if gen_spi_test = '1' then
-          internal_data(i) <= SEN_SDO;  -- SPI test: MISO from accelerometer
+          internal_data(i) <= sen_sdo_d1;  -- 1-cycle delayed SEN_SDO
         elsif gen_i2c_test = '1' then
-          internal_data(i) <= SEN_SDI;  -- I2C test: external SDA
+          internal_data(i) <= sen_sdi_sync;  -- 2-FF synchronised SEN_SDI
         else
-          internal_data(i) <= gen_tx;   -- UART TX / I2C SDA output
+          internal_data(i) <= gen_tx_d1;   -- 1-cycle delayed gen_tx
         end if;
       elsif gen_busy = '1' and gen_i2c_test = '1' and gen_scl_pin = i then
-        internal_data(i) <= gen_scl;   -- I2C SCL output
+        internal_data(i) <= gen_scl_d2;  -- 2-cycle delayed SCL (matches sen_sdi_sync timing)
       else
-        internal_data(i) <= GPIO(i);
+        internal_data(i) <= gpio_d1(i);  -- 1-cycle delayed GPIO
       end if;
     end loop;
   end process;
@@ -262,7 +270,23 @@ BEGIN
       registered_ch0 <= test_div(9);
     end if;
   end process;
-  
+
+  -- Two-flop synchroniser for SEN_SDI (external bidirectional SDA pin).
+  -- First flop captures the asynchronous input into sys_clk domain.
+  -- Second flop resolves any metastability before use in capture mux / generator.
+  process(sys_clk) begin
+    if rising_edge(sys_clk) then
+      sen_sdi_meta <= SEN_SDI;
+      sen_sdi_sync <= sen_sdi_meta;
+      gen_scl_d1 <= gen_scl;
+      gen_scl_d2 <= gen_scl_d1;
+      gen_tx_d1 <= gen_tx;
+      registered_ch0_d1 <= registered_ch0;
+      gpio_d1 <= GPIO;
+      sen_sdo_d1 <= SEN_SDO;
+    end if;
+  end process;
+
   -- B4 pin sharing: UART_TX (output) in UART mode, SPI_MOSI (input) in SPI mode
   UART_TX <= core_uart_tx when interface_mode = '0' else 'Z';
   spi_mosi_int <= UART_TX;
@@ -276,7 +300,7 @@ BEGIN
         gpio_dir <= (others => '0');
         gpio_out(gen_tx_pin) <= gen_tx;
         gpio_dir(gen_tx_pin) <= '1';
-        if gen_proto = '1' then  -- I2C: also drive SCL
+        if gen_proto = '1' then
           gpio_out(gen_scl_pin) <= gen_scl;
           gpio_dir(gen_scl_pin) <= '1';
         end if;
@@ -436,7 +460,7 @@ BEGIN
     Active    => open,
     I2C_Rd_Len => gen_i2c_rd_len,
     I2C_Dev_R  => gen_i2c_dev_r,
-    Sda_In     => SEN_SDI,
+    Sda_In     => sen_sdi_sync,  -- synchronised SEN_SDI (avoid metastability in I2C readback)
     SPI_Mode   => gen_spi_test,
     CRC_En     => '0',
     CRC_Poly   => x"A001"

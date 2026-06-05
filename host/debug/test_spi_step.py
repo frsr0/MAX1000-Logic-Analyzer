@@ -1,7 +1,7 @@
 import sys, time, struct, serial, serial.tools.list_ports as lp
 
 CMD_SET_IFACE = 0xAB
-PIN_DIR = 0x3B
+PIN_DIR = 0x0B
 SYS_CLK = 48000000
 
 # Find OLS

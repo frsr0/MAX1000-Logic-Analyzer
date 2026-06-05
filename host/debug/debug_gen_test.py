@@ -40,13 +40,13 @@ dev._long(0xA2, uart_div & 0xFFFF)  # CMD_GEN_BAUD
 n = 1
 d = dev.spi.dev
 d.write(
-    bytes([0x80, 0x00, 0x3B])  # CS low
+    bytes([0x80, 0x00, 0x0B])  # CS low
     + bytes([0x31, 4, 0])  # 5-byte send
     + bytes([0xA3]) + bytes([n, 0, 0, 0])  # CMD_GEN_BLK + length=1
     + bytes([0x11, (n-1) & 0xFF, ((n-1) >> 8) & 0xFF])  # data bytes via 0x11
     + bytes([0x55])  # the byte
     + bytes([0x87])  # flush
-    + bytes([0x80, 0x08, 0x3B])  # CS high
+    + bytes([0x80, 0x08, 0x0B])  # CS high
     + bytes([0x87])  # flush
 )
 time.sleep(0.003)

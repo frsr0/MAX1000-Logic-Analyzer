@@ -261,8 +261,8 @@ class OLSDevice:
             self._raw_flags = 0
 
     def fast_start_gen(self):
-        """Start generator without the 5ms sleep in _long(). Used by rolling capture to avoid gen finishing before ARM."""
-        self.ser.write(bytes([CMD_GEN_STRT]) + struct.pack('<I', 0))
+        """Start generator without the 5ms sleep. Uses _short to avoid 0x00 CMD_RESET."""
+        self._short(CMD_GEN_STRT)
 
     def rolling_capture(self, rate_hz, chunk_nsamp, buffer_nsamp, stop_evt, progress_cb=None,
                         gen_data=None, gen_baud=115200, gen_tx_pin=3, full_out=None,
@@ -380,7 +380,7 @@ class OLSDevice:
         self.ser.reset_input_buffer()
 
     def start_gen(self):
-        self._long(CMD_GEN_STRT, 0)
+        self._short(CMD_GEN_STRT)  # _short only, never _long — 0x00 data bytes = CMD_RESET
 
     def modbus_crc16(self, data):
         """Compute Modbus RTU CRC-16."""
@@ -559,25 +559,45 @@ def decode_i2c(ch, samplerate, scl_idx=2, sda_idx=3, filter_threshold=0):
     result = []
     i = 0
     while i < len(scl) - 20:
-        # Detect START: SDA↓ while SCL↑
-        if scl[i] == 1 and sda[i] == 1 and i + 1 < len(scl) and scl[i + 1] == 1 and sda[i + 1] == 0:
-            result.append(("START", None))
+        # Find SCL rising edge then look for SDA↓ nearby
+        if scl[i] == 0 and scl[i + 1] == 1:
+            # Check if SDA goes low within the next 3 samples (START detection with pipeline delay)
+            for k in range(i, min(i + 4, len(scl))):
+                if sda[k] == 0 and sda[k - 1] == 1:
+                    # Accept first START (idle bus check relaxed — capture starts near gen fire)
+                    if not result:
+                        result.append(("START", None))
+                        i = k
+                    break
+            if result and result[-1][0] == "START":
+                pass  # continue to byte decode
+            elif not result:
+                i += 1
+                continue
+            else:
+                i += 1
+                continue
             # Read bytes until STOP
             for _ in range(20):
                 byte = 0
                 for b in range(8):
-                    # Wait for SCL rising edge
-                    while i < len(scl) - 1 and not (scl[i] == 0 and scl[i + 1] == 1):
+                    while i < len(scl) - 2 and not (scl[i] == 0 and scl[i + 1] == 1):
                         i += 1
-                    i += 1  # past rising edge
-                    if i >= len(scl): break
-                    byte = (byte << 1) | sda[i]
-                # ACK bit
-                while i < len(scl) - 1 and not (scl[i] == 0 and scl[i + 1] == 1):
+                    # Find the midpoint of SCL high by counting high samples
+                    hi_start = i + 1  # first sample after rising edge
+                    hi_count = 0
+                    while hi_start + hi_count < len(scl) and scl[hi_start + hi_count] == 1:
+                        hi_count += 1
+                    mid = hi_start + hi_count // 2  # midpoint of SCL high
+                    if mid >= len(scl): break
+                    byte = (byte << 1) | sda[mid]
+                    i = mid
+                while i < len(scl) - 2 and not (scl[i] == 0 and scl[i + 1] == 1):
                     i += 1
                 result.append(("DATA", byte))
-                # Check for STOP: SDA↑ while SCL↑
-                if i + 2 < len(scl) and scl[i] == 1 and sda[i - 1] == 0 and sda[i] == 1:
+                # STOP: SDA↑ while SCL↑ (allow 2-sample window for pipeline)
+                if (i > 0 and i + 2 < len(scl) and scl[i] == 1 and sda[i - 1] == 0 and
+                    any(sda[j] == 1 for j in range(i, min(i + 3, len(scl))))):
                     result.append(("STOP", None))
                     break
             break
@@ -1091,7 +1111,60 @@ class OLScope:
         self.gen_send_cap_btn.grid(row=7, column=1, pady=5)
         self._gen_show_proto_fields()
 
-        # Trigger tab
+        # Accelerometer tab
+        acc_f = ttk.Frame(nb, padding=5)
+        nb.add(acc_f, text="Accelerometer")
+        r = 0
+        ttk.Label(acc_f, text="I2C Addr:").grid(row=r, column=0, sticky='w')
+        self.acc_addr = ttk.Combobox(acc_f, values=['0x18', '0x19'], state='readonly', width=6)
+        self.acc_addr.set('0x18'); self.acc_addr.grid(row=r, column=1, sticky='w')
+        r += 1
+        ttk.Label(acc_f, text="I2C Speed:").grid(row=r, column=0, sticky='w')
+        self.acc_speed = ttk.Entry(acc_f, width=10)
+        self.acc_speed.insert(0, '100000'); self.acc_speed.grid(row=r, column=1, sticky='w')
+        r += 1
+        ttk.Label(acc_f, text="SDA Pin:").grid(row=r, column=0, sticky='w')
+        self.acc_sda_pin = ttk.Combobox(acc_f, values=list(range(8)), state='readonly', width=4)
+        self.acc_sda_pin.set('2'); self.acc_sda_pin.grid(row=r, column=1, sticky='w')
+        ttk.Label(acc_f, text="SCL Pin:").grid(row=r, column=2, padx=4)
+        self.acc_scl_pin = ttk.Combobox(acc_f, values=list(range(8)), state='readonly', width=4)
+        self.acc_scl_pin.set('1'); self.acc_scl_pin.grid(row=r, column=3, sticky='w')
+        r += 1
+        ttk.Separator(acc_f, orient='horizontal').grid(row=r, column=0, columnspan=4, sticky='ew', pady=4)
+        r += 1
+        ttk.Label(acc_f, text="Common Commands:").grid(row=r, column=0, columnspan=4, sticky='w')
+        r += 1
+        bf = ttk.Frame(acc_f)
+        bf.grid(row=r, column=0, columnspan=4, pady=2)
+        ttk.Button(bf, text="Who Am I", width=10, command=lambda: self._accel_read(0x0F, 1)).pack(side='left', padx=1)
+        ttk.Button(bf, text="Read X", width=8, command=lambda: self._accel_read(0x28, 2)).pack(side='left', padx=1)
+        ttk.Button(bf, text="Read Y", width=8, command=lambda: self._accel_read(0x2A, 2)).pack(side='left', padx=1)
+        ttk.Button(bf, text="Read Z", width=8, command=lambda: self._accel_read(0x2C, 2)).pack(side='left', padx=1)
+        ttk.Button(bf, text="Read All", width=8, command=lambda: self._accel_read(0x28, 6)).pack(side='left', padx=1)
+        r += 1
+        ttk.Separator(acc_f, orient='horizontal').grid(row=r, column=0, columnspan=4, sticky='ew', pady=4)
+        r += 1
+        ttk.Label(acc_f, text="Custom Register Read:").grid(row=r, column=0, columnspan=4, sticky='w')
+        r += 1
+        cf = ttk.Frame(acc_f)
+        cf.grid(row=r, column=0, columnspan=4, pady=2)
+        ttk.Label(cf, text="Reg:").pack(side='left')
+        self.acc_reg = ttk.Entry(cf, width=6)
+        self.acc_reg.pack(side='left', padx=2)
+        self.acc_reg.insert(0, '0x0F')
+        ttk.Label(cf, text="Len:").pack(side='left')
+        self.acc_len = ttk.Entry(cf, width=4)
+        self.acc_len.pack(side='left', padx=2)
+        self.acc_len.insert(0, '1')
+        ttk.Button(cf, text="Read", command=lambda: self._accel_read(
+            int(self.acc_reg.get(), 16), int(self.acc_len.get()))).pack(side='left', padx=4)
+        r += 1
+        ttk.Separator(acc_f, orient='horizontal').grid(row=r, column=0, columnspan=4, sticky='ew', pady=4)
+        r += 1
+        ttk.Label(acc_f, text="Result:").grid(row=r, column=0, columnspan=4, sticky='w')
+        r += 1
+        self.acc_result = tk.Text(acc_f, height=6, width=38, state='disabled')
+        self.acc_result.grid(row=r, column=0, columnspan=4, pady=2)
         trg_f = ttk.Frame(nb, padding=5)
         nb.add(trg_f, text="Trigger")
         ttk.Label(trg_f, text="Mode:").grid(row=0, column=0, sticky='w', pady=2)
@@ -1892,13 +1965,7 @@ class OLScope:
                 self.dev._long(CMD_GEN_BAUD, div & 0xFFFF)
                 frame = bytes([(addr << 1) & 0xFF]) + data_s.encode()
                 self.dev._load_block(frame)
-            elif proto == 'Modbus':
-                slave = int(self.gen_addr.get(), 16)
-                func = int(self.gen_func.get(), 16)
-                payload = data_s.encode()
-                self.dev.send_modbus(slave, func, payload,
-                                     baud=int(self.gen_baud.get()),
-                                     tx_pin=tx_pin)
+                self.dev.start_gen()
             # If rolling checkbox is on, queue gen params — rolling thread loads + starts gen
             if self.rolling_var.get():
                 self.dev._pending_gen = {
@@ -1939,13 +2006,47 @@ class OLScope:
                 self.dev.send_uart(data_s.encode(), int(self.gen_baud.get()),
                                    tx_pin=tx_pin)
             elif proto == 'I2C':
-                self.dev._pins(tx_pin=tx_pin, scl_pin=scl_pin)
                 addr = int(self.gen_addr.get(), 16)
-                self.dev._long(CMD_GEN_PROTO, 1)
-                div = max(1, self.dev.sys_clk // int(self.gen_baud.get()) // 2)
-                self.dev._long(CMD_GEN_BAUD, div & 0xFFFF)
-                frame = bytes([(addr << 1) & 0xFF]) + data_s.encode()
-                self.dev._load_block(frame)
+                i2c_frame = bytes([(addr << 1) & 0xFF]) + data_s.encode()
+                # If rolling capture is active, load gen manually — rolling loop handles start
+                if self.capture_running and self.rolling_var.get():
+                    self.dev._pins(tx_pin=tx_pin, scl_pin=scl_pin)
+                    self.dev._long(CMD_GEN_PROTO, 1)
+                    div = max(1, self.dev.sys_clk // int(self.gen_baud.get()) // 2)
+                    self.dev._long(CMD_GEN_BAUD, div & 0xFFFF)
+                    self.dev._load_block(i2c_frame)
+                else:
+                    # Non-rolling: let capture_with_gen handle everything after reset
+                    rate_str = self.rate_cb.get()
+                    rate = int(rate_str.replace('kHz','000').replace('MHz','000000'))
+                    nsamp = int(self.samp_cb.get())
+                    self.status['text'] = f"Capturing with generator {nsamp} @ {rate/1e6:.1f} MHz..."
+                    self.win.update()
+                    try:
+                        data = self.dev.capture_with_gen(
+                            rate_hz=rate, nsamples=nsamp,
+                            proto='I2C',
+                            i2c_speed=int(self.gen_baud.get()),
+                            i2c_frame=i2c_frame,
+                            i2c_tx_pin=tx_pin,
+                            i2c_scl_pin=scl_pin,
+                        )
+                    except Exception as e:
+                        self.status['text'] = f"Capture error: {e}"
+                        return
+                    if not data:
+                        self.status['text'] = "Capture returned 0 bytes"
+                        return
+                    ch_data, ns = samples_to_channels(data)
+                    self.ch_data = ch_data
+                    self.samplerate = rate
+                    self.captured_bytes = data
+                    self.decoded_uart = []
+                    self.decoded_i2c = []
+                    self.wave.load(ch_data, self.ch_names, self.samplerate)
+                    self.status['text'] = f"Captured {ns} samples"
+                    self._decode()
+                    return
             elif proto == 'Modbus':
                 slave = int(self.gen_addr.get(), 16)
                 func = int(self.gen_func.get(), 16)
@@ -1999,6 +2100,65 @@ class OLScope:
             print(f"[DBG] CH0 first 20: {''.join(str(ch0[i]) for i in range(min(20, ns)))}")
         self.status['text'] = f"Captured {ns} samples ({trans} CH0 transitions)"
         self._decode()
+
+    def _accel_read(self, reg_addr, read_len):
+        """Read LIS3DH register(s) via I2C and display result."""
+        if not self.dev:
+            self.status['text'] = "No device"
+            return
+        try:
+            addr = int(self.acc_addr.get(), 16)
+            speed = int(self.acc_speed.get())
+            sda_pin = int(self.acc_sda_pin.get())
+            scl_pin = int(self.acc_scl_pin.get())
+            rate = 4_000_000
+            nsamp = max(50000, read_len * 200)
+            self.status['text'] = f"Reading accel reg 0x{reg_addr:02X}..."
+            self.win.update()
+            data = self.dev.i2c_capture_with_gen(
+                rate_hz=rate, nsamples=nsamp, i2c_speed=speed,
+                dev_addr=addr, reg_addr=reg_addr,
+                read_len=read_len,
+                tx_pin=sda_pin, scl_pin=scl_pin, fast_mode=False)
+            if not data:
+                self._show_accel_result("No data returned")
+                return
+            ch, ns = samples_to_channels(data)
+            self.ch_data = ch
+            self.samplerate = rate
+            self.captured_bytes = data
+            self.decoded_uart = []
+            self.decoded_i2c = []
+            self.wave.load(ch, self.ch_names, self.samplerate)
+            self._decode()
+            # Parse I2C decoded bytes
+            decoded = decode_i2c(ch, rate, scl_idx=scl_pin, sda_idx=sda_pin)
+            data_bytes = [v for t, v in decoded if t == "DATA"]
+            if reg_addr in (0x28, 0x2A, 0x2C) and read_len >= 2:
+                raw = (data_bytes[-2] | (data_bytes[-1] << 8))
+                val = raw - 65536 if raw >= 32768 else raw
+                mg = val * 1000 // 16384
+                label = {0x28: "X", 0x2A: "Y", 0x2C: "Z"}.get(reg_addr, "?")
+                self._show_accel_result(f"{label} axis: {raw:04X} ({val: d}) = {mg} mg")
+            elif reg_addr == 0x0F and data_bytes:
+                who = data_bytes[-1]
+                ok = "✓ LIS3DH" if who == 0x33 else f"✗ 0x{who:02X} (expected 0x33)"
+                self._show_accel_result(f"WHO_AM_I = 0x{who:02X}  {ok}")
+            elif data_bytes:
+                pairs = [f"0x{v:02X}" for v in data_bytes[-read_len:]]
+                self._show_accel_result(f"Data: {' '.join(pairs)}")
+            else:
+                self._show_accel_result("No I2C data decoded")
+            if ns > 0:
+                self.status['text'] = f"Accel: {ns} samples"
+        except Exception as e:
+            self._show_accel_result(f"Error: {e}")
+
+    def _show_accel_result(self, text):
+        self.acc_result.config(state='normal')
+        self.acc_result.delete('1.0', 'end')
+        self.acc_result.insert('1.0', text)
+        self.acc_result.config(state='disabled')
 
     def _export_ols(self):
         if not self.captured_bytes:

@@ -26,7 +26,7 @@ end Signal_Gen;
 
 architecture rtl of Signal_Gen is
   type fifo_t is array (0 to FIFO_DEPTH-1) of std_logic_vector(7 downto 0);
-  constant FIXED_BAUD_DIV : std_logic_vector(15 downto 0) := x"01A0";  -- 416 = 115200 @ 48 MHz
+  constant FIXED_BAUD_DIV : std_logic_vector(15 downto 0) := x"00F0";  -- 240 = 100 kHz I2C @ 48 MHz
   signal fifo  : fifo_t := (others => (others => '0'));
   signal head  : natural range 0 to FIFO_DEPTH-1 := 0;
   signal tail  : natural range 0 to FIFO_DEPTH-1 := 0;
@@ -47,7 +47,7 @@ begin
     variable crc_rem  : natural range 0 to 3 := 0;
     variable crc_done : boolean := false;
     variable crc_idx  : natural range 0 to 2 := 0;
-    variable i2c_state : natural range 0 to 13 := 0;
+    variable i2c_state : natural range 0 to 15 := 0;
     variable i2c_bit  : natural range 0 to 8 := 0;
     variable rd_remain : natural range 0 to 255 := 0;
     variable rd_byte   : std_logic_vector(7 downto 0) := (others => '0');
@@ -56,12 +56,6 @@ begin
     variable spi_bit  : natural range 0 to 8 := 0;
   begin
     if rising_edge(CLK) then
-      if Baud_Div = x"0000" then
-        baud_limit := to_integer(unsigned(FIXED_BAUD_DIV)) - 1;
-      else
-        baud_limit := to_integer(unsigned(Baud_Div)) - 1;
-      end if;
-
       -- FIFO write (common to both protocols)
       if Load_We = '1' and count < FIFO_DEPTH then
         fifo(head) <= Load_Byte;
@@ -69,8 +63,13 @@ begin
         count <= count + 1;
       end if;
 
-      -- Start trigger: begin transmission
+      -- Start trigger: latch baud divisor and begin transmission
       if Start = '1' and tx_active = '0' then
+        if Baud_Div = x"0000" then
+          baud_limit := to_integer(unsigned(FIXED_BAUD_DIV)) - 1;
+        else
+          baud_limit := to_integer(unsigned(Baud_Div)) - 1;
+        end if;
         tx_active <= '1';
       end if;
 
@@ -284,19 +283,23 @@ begin
 
             when 9 =>  -- RD_HIGH: raise SCL
               Scl_Out <= '1';
-              i2c_state := 12;
+              i2c_state := 10;  -- go to SETUP, not directly to SAMPLE
 
-            when 12 =>  -- RD_SAMPLE: SCL high, sample SDA (slave has driven it)
+            when 10 =>  -- RD_SETUP: one-cycle wait for SDA to settle after SCL rises
+              Scl_Out <= '1';
+              i2c_state := 12;  -- now safe to sample
+
+            when 12 =>  -- RD_SAMPLE: SCL high, sample SDA
               Scl_Out <= '1';
               rd_byte(7 - i2c_bit) := Sda_In;
               i2c_bit := i2c_bit + 1;
               if i2c_bit < 8 then
                 i2c_state := 8;
               else
-                i2c_state := 10;
+                i2c_state := 14;  -- was 10, renumbered to avoid RD_SETUP collision
               end if;
 
-            when 10 =>  -- RD_ACK: drive ACK (or NACK if last)
+            when 14 =>  -- RD_ACK: drive ACK (or NACK if last)
               Scl_Out <= '0';
               if rd_remain = 0 then
                 Tx_Out <= '1';  -- NACK for last byte

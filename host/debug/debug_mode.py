@@ -17,7 +17,7 @@ for mode_label, mode_val in [("RESET(0)", 0), ("ASYNCBB(1)", 1), ("SYNCBB(2)", 2
         d.read(q)
     
     # Try simple MPSSE command: set GPIO
-    buf = bytes([0x80, 0x08, 0x3B, 0x87])
+    buf = bytes([0x80, 0x08, 0x0B, 0x87])
     try:
         d.write(buf)
         time.sleep(0.01)

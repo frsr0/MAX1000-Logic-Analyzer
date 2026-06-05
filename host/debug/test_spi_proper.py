@@ -29,7 +29,7 @@ def switch_uart(port, mode):
     s.close()
     print(f'  Switched to {mode} mode')
 
-PIN_DIR = 0x3B  # direction: SCK, MOSI, CS, BDBUS4-5 out; MISO, BDBUS6-7 in
+PIN_DIR = 0x0B  # direction: SCK, MOSI, CS, BDBUS4-5 out; MISO, BDBUS6-7 in
 PIN_CS_HIGH = 0x08  # CS high
 PIN_CS_LOW  = 0x00  # CS low
 

@@ -1,29 +1,36 @@
-__pycache__/
-*.pyc
-.vhdpproj.user
-*.o
-*.cf
-vhdplus/Generated/
-vhdl_ls.toml
-vhdplus/db/
-
-vhdplus/incremental_db/
-
-vhdplus/output_files/
-
-vhdplus/*.qpf
-
-vhdplus/*.qsf
-
-MAX1000 User Guide.pdf
-
-# Build artifacts
+# Quartus Prime build artifacts
+hdl/db/
+hdl/incremental_db/
+hdl/greybox_tmp/
+db/
+*.rpt
+*.done
+*.jdi
+*.pin
+*.pof
+*.sof
+*.smsg
+*.sld
+*.summary
 *.qpf
 *.qsf
-db/
-output_files/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Simulation artifacts
 *.vcd
-hdl/incremental_db/
-hdl/sim/work/
-host/hw_results/
+*.ghw
+*.cf
+work/
+
+# OS
 *.zip
+
+# IDE
+vhdl_ls.toml
+
+# Test outputs
+host/hw_results/
