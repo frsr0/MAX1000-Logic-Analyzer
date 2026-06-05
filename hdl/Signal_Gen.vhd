@@ -36,6 +36,7 @@ architecture rtl of Signal_Gen is
 begin
   Active <= tx_active;
   Busy   <= tx_active;
+  baud_div_r <= FIXED_BAUD_DIV when Baud_Div = x"0000" else Baud_Div;
 
   process(CLK)
     variable baud_cnt : natural range 0 to 65535 := 0;
@@ -58,12 +59,6 @@ begin
   begin
     if rising_edge(CLK) then
       baud_div_cnt := to_integer(unsigned(baud_div_r));
-      if baud_div_cnt = 0 then
-        baud_div_cnt := to_integer(unsigned(FIXED_BAUD_DIV));
-      end if;
-      if baud_div_cnt = 0 then
-        baud_div_cnt := 1;
-      end if;
 
       -- FIFO write (common to both protocols)
       if Load_We = '1' and count < FIFO_DEPTH then
@@ -72,14 +67,9 @@ begin
         count <= count + 1;
       end if;
 
-      -- Start trigger: latch Baud_Div for all protocol modes
+      -- Start trigger: begin transmission
       if Start = '1' and tx_active = '0' then
         tx_active <= '1';
-        if Baud_Div = x"0000" then
-          baud_div_r <= FIXED_BAUD_DIV;
-        else
-          baud_div_r <= Baud_Div;
-        end if;
       end if;
 
 
