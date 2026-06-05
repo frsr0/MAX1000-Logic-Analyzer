@@ -33,10 +33,12 @@ architecture rtl of Signal_Gen is
   signal count : natural range 0 to FIFO_DEPTH := 0;
   signal tx_active   : std_logic := '0';
   signal baud_div_r  : std_logic_vector(15 downto 0) := FIXED_BAUD_DIV;
+  signal baud_limit  : natural range 0 to 65535 := 0;
 begin
   Active <= tx_active;
   Busy   <= tx_active;
   baud_div_r <= FIXED_BAUD_DIV when Baud_Div = x"0000" else Baud_Div;
+  baud_limit <= to_integer(unsigned(baud_div_r)) - 1;
 
   process(CLK)
     variable baud_cnt : natural range 0 to 65535 := 0;
@@ -83,7 +85,7 @@ begin
         ----------------------------------------------------
         -- SPI Master
         ----------------------------------------------------
-        if baud_cnt < baud_div_cnt - 1 then
+        if baud_cnt < baud_limit then
           baud_cnt := baud_cnt + 1;
         else
           baud_cnt := 0;
@@ -131,7 +133,7 @@ begin
         ----------------------------------------------------
         -- UART TX with optional Modbus CRC-16 append
         ----------------------------------------------------
-        if baud_cnt < baud_div_cnt - 1 then
+        if baud_cnt < baud_limit then
           baud_cnt := baud_cnt + 1;
         else
           baud_cnt := 0;
@@ -187,7 +189,7 @@ begin
         ----------------------------------------------------
         -- I2C Master
         ----------------------------------------------------
-        if baud_cnt < baud_div_cnt - 1 then
+        if baud_cnt < baud_limit then
           baud_cnt := baud_cnt + 1;
         else
           baud_cnt := 0;

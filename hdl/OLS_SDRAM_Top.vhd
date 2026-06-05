@@ -47,7 +47,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_load_byte : std_logic_vector(7 downto 0);
   signal gen_load_we   : std_logic;
   signal gen_start     : std_logic;
-  signal gen_baud_div  : std_logic_vector(15 downto 0);
+  signal gen_baud_div_s : std_logic_vector(15 downto 0);
   signal gen_proto     : std_logic;
   signal gen_tx_pin    : natural range 0 to 7 := 0;
   signal gen_scl_pin   : natural range 0 to 7 := 0;
@@ -318,7 +318,7 @@ BEGIN
     Gen_Load_Byte => gen_load_byte,
     Gen_Load_We   => gen_load_we,
     Gen_Start     => gen_start,
-    Gen_Baud_Div  => gen_baud_div,
+    Gen_Baud_Div  => gen_baud_div_s,
     Gen_Busy      => gen_busy,
     Gen_Proto     => gen_proto,
     Gen_TX_Pin    => gen_tx_pin,
@@ -428,7 +428,7 @@ BEGIN
     Load_Byte => gen_load_byte,
     Load_We   => gen_load_we,
     Start     => gen_start,
-    Baud_Div  => gen_baud_div,
+    Baud_Div  => gen_baud_div_s,
     Proto     => gen_proto,
     Tx_Out    => gen_tx,
     Scl_Out   => gen_scl,
