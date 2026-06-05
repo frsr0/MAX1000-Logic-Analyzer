@@ -299,17 +299,21 @@ begin
                 i2c_state := 14;  -- was 10, renumbered to avoid RD_SETUP collision
               end if;
 
-            when 14 =>  -- RD_ACK: drive ACK (or NACK if last)
+            when 14 =>  -- RD_ACK: drive ACK (or NACK if last), start SCL low
               Scl_Out <= '0';
               if rd_remain = 0 then
                 Tx_Out <= '1';  -- NACK for last byte
-                i2c_state := 11;
+                i2c_state := 11;  -- SCL↑, then STOP
               else
-                Tx_Out <= '0';  -- ACK
-                rd_remain := rd_remain - 1;
-                i2c_bit := 0;
-                i2c_state := 8;  -- next read byte
+                Tx_Out <= '0';  -- ACK (drive SDA low)
+                i2c_state := 15;  -- complete the ACK SCL pulse
               end if;
+
+            when 15 =>  -- RD_ACK_HIGH: complete the ACK SCL pulse
+              Scl_Out <= '1';
+              rd_remain := rd_remain - 1;
+              i2c_bit := 0;
+              i2c_state := 8;  -- next read byte
 
             when 11 =>  -- RD_NACK_PULSE: SCL high after NACK, then STOP
               Scl_Out <= '1';
