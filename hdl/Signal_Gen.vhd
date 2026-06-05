@@ -32,17 +32,13 @@ architecture rtl of Signal_Gen is
   signal tail  : natural range 0 to FIFO_DEPTH-1 := 0;
   signal count : natural range 0 to FIFO_DEPTH := 0;
   signal tx_active   : std_logic := '0';
-  signal baud_div_r  : std_logic_vector(15 downto 0) := FIXED_BAUD_DIV;
-  signal baud_limit  : natural range 0 to 65535 := 0;
 begin
   Active <= tx_active;
   Busy   <= tx_active;
-  baud_div_r <= FIXED_BAUD_DIV when Baud_Div = x"0000" else Baud_Div;
-  baud_limit <= to_integer(unsigned(baud_div_r)) - 1;
 
   process(CLK)
-    variable baud_cnt : natural range 0 to 65535 := 0;
-    variable baud_div_cnt : natural := 1;
+    variable baud_cnt   : natural range 0 to 65535 := 0;
+    variable baud_limit : natural range 0 to 65535 := 0;
     variable bit_cnt  : natural range 0 to 15 := 0;
     variable data_buf : std_logic_vector(7 downto 0) := (others => '0');
     variable byte_active : boolean := false;
@@ -60,7 +56,11 @@ begin
     variable spi_bit  : natural range 0 to 8 := 0;
   begin
     if rising_edge(CLK) then
-      baud_div_cnt := to_integer(unsigned(baud_div_r));
+      if Baud_Div = x"0000" then
+        baud_limit := to_integer(unsigned(FIXED_BAUD_DIV)) - 1;
+      else
+        baud_limit := to_integer(unsigned(Baud_Div)) - 1;
+      end if;
 
       -- FIFO write (common to both protocols)
       if Load_We = '1' and count < FIFO_DEPTH then
