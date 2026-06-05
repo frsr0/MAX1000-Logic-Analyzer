@@ -721,12 +721,14 @@ BEGIN
             blk_mode <= '1';
             if unsigned(data(31 downto 9)) /= 0 then
               blk_len_s <= 256;
+              blk_len := 256;
             elsif TO_INTEGER(UNSIGNED(data(8 downto 0))) > 256 then
               blk_len_s <= 256;
+              blk_len := 256;
             else
               blk_len_s <= TO_INTEGER(UNSIGNED(data(8 downto 0)));
+              blk_len := TO_INTEGER(UNSIGNED(data(8 downto 0)));
             end if;
-            blk_len := blk_len_s;
             Thread44 := 0; Thread45 := 0; Thread38 := 0;
           WHEN 22 =>
             Gen_Proto <= data(0);

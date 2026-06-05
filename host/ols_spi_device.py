@@ -425,33 +425,27 @@ class OLSDeviceSPI:
         time.sleep(0.01)
         self.spi.flush()
 
-        # GEN_STRT + ARM in single CS-low burst
+        # Back-to-back: GEN_STRT + ARM + NOPs to read during auto-readout
         need = rc * self._stride
-        deadline = time.time() + timeout
-
         d = self.spi.dev
         buf = bytes([0x80, GPIO_CS_LO, PIN_DIR])
-        buf += bytes([0x31, 0x04, 0x00])
-        buf += bytes([CMD_GEN_STRT, 0x11, 0x11, 0x11, 0x11])
-        buf += bytes([0x31, 0x04, 0x00])
-        buf += bytes([CMD_ARM, 0x11, 0x11, 0x11, 0x11])
-        buf += bytes([0x87])
-        buf += bytes([0x80, GPIO_CS_HI, PIN_DIR])
-        buf += bytes([0x87])
+        buf += bytes([0x31, 0x04, 0x00, CMD_GEN_STRT, 0x11, 0x11, 0x11, 0x11])
+        buf += bytes([0x31, 0x04, 0x00, CMD_ARM, 0x11, 0x11, 0x11, 0x11])
+        remaining = need
+        while remaining > 0:
+            n = min(128, remaining)
+            buf += bytes([0x31, (n-1) & 0xFF, ((n-1) >> 8) & 0xFF])
+            buf += bytes([0x11] * n)
+            remaining -= n
+        buf += bytes([0x87, 0x80, GPIO_CS_HI, PIN_DIR, 0x87])
         self.spi._drain()
         d.write(buf)
-        time.sleep(0.003)
-        q = d.getQueueStatus()
-        if q:
-            d.read(q)
-
-        # Wait for capture to complete
-        cap_time = rc / rate_hz
-        wait = min(cap_time + 0.005, max(0, deadline - time.time() - 0.5))
-        if wait > 0:
-            time.sleep(wait)
-
-        samples = self.spi.chained_read(need)
+        time.sleep(0.02)
+        r = self.spi._read_all(timeout=0.05)
+        if r and len(r) > 6:
+            samples = r[6:6 + need]
+        else:
+            samples = b''
 
         if samples:
             for i in range(len(samples)):
