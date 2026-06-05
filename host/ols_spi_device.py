@@ -39,7 +39,7 @@ CMD_TVALUE     = 0xC1
 class OLSDeviceSPI:
     """SPI backend device — implements capture, rolling capture, and generator."""
 
-    def __init__(self, sys_clk_hz=96000000):
+    def __init__(self, sys_clk_hz=48000000):
         self.sys_clk = sys_clk_hz
         self._stride = 4
         self._raw_flags = 0
@@ -212,10 +212,8 @@ class OLSDeviceSPI:
     def capture_with_gen(self, rate_hz=1000000, nsamples=5000, timeout=6,
                          trigger=None, capture_time=None, progress_cb=None,
                          stop_evt=None):
-        """Arm capture and start generator in one sequence (gen runs during capture).
-        
-        ARM, GEN_STRT, and chained read are batched in a single CS-low burst
-        so the generator starts within microseconds of arm.
+        """Arm capture and start generator in one sequence.
+        Uses fast mode with back-to-back ARM+NOPs to catch auto-readout data.
         """
         if not self.spi:
             return b''
@@ -227,12 +225,10 @@ class OLSDeviceSPI:
         time.sleep(0.02)
         self.spi.flush()
 
-        # Generator: configuration done in the reload block before ARM
-
         self._short(CMD_XON)
+        rc = max(1, nsamples)
         div = max(0, int(self.sys_clk / rate_hz) - 1)
         self._long(CMD_DIVIDER, div & 0xFFFFFF)
-        rc = max(1, nsamples)
         self._long(CMD_RCOUNT, rc)
         self._long(CMD_DCOUNT, rc)
         if trigger is None:
@@ -255,52 +251,39 @@ class OLSDeviceSPI:
         self._long(CMD_FLAGS, self._raw_flags)
         self._long(CMD_DELAY, 0)
         self._short(CMD_XOFF)
-
-        # Drain responses from configure commands before the capture burst
         self.spi.flush()
-
-        # Enable fast mode (BRAM) to bypass SDRAM hardware init issues
         self._long(CMD_FAST_MODE, 1)
-        self.spi.flush()
 
-        # Load gen FIFO right before ARM (minimize time between gen start and capture)
         if self._gen_data is not None:
-            self._long(CMD_GEN_PROTO, 0)  # UART
-            div = max(1, self.sys_clk // self._gen_baud)
-            self._long(CMD_GEN_BAUD, div & 0xFFFF)
+            self._long(CMD_GEN_PROTO, 0)
+            div_b = max(1, self.sys_clk // self._gen_baud)
+            self._long(CMD_GEN_BAUD, div_b & 0xFFFF)
             self._pins(tx_pin=self._gen_tx_pin)
             self._load_block(self._gen_data)
-            self.spi.flush()
+        self.spi.flush()
 
-        # GEN_STRT + ARM in single CS-low burst
+        # Back-to-back: GEN_STRT + ARM + NOPs to read during auto-readout
         need = rc * self._stride
-        deadline = time.time() + timeout
-
         d = self.spi.dev
         buf = bytes([0x80, GPIO_CS_LO, PIN_DIR])
-        # GEN_STRT with 0x11 padding
-        buf += bytes([0x31, 0x04, 0x00])
-        buf += bytes([CMD_GEN_STRT, 0x11, 0x11, 0x11, 0x11])
-        # ARM with 0x11 padding (0x00 = CMD_RESET, would clear Run_OLS)
-        buf += bytes([0x31, 0x04, 0x00])
-        buf += bytes([CMD_ARM, 0x11, 0x11, 0x11, 0x11])
-        buf += bytes([0x87])
-        buf += bytes([0x80, GPIO_CS_HI, PIN_DIR])
-        buf += bytes([0x87])
+        buf += bytes([0x31, 0x04, 0x00, CMD_GEN_STRT, 0x11, 0x11, 0x11, 0x11])
+        buf += bytes([0x31, 0x04, 0x00, CMD_ARM, 0x11, 0x11, 0x11, 0x11])
+        # Immediately start NOPs to read captured data
+        remaining = need
+        while remaining > 0:
+            n = min(128, remaining)
+            buf += bytes([0x31, (n-1) & 0xFF, ((n-1) >> 8) & 0xFF])
+            buf += bytes([0x11] * n)
+            remaining -= n
+        buf += bytes([0x87, 0x80, GPIO_CS_HI, PIN_DIR, 0x87])
         self.spi._drain()
         d.write(buf)
-        time.sleep(0.003)
-        q = d.getQueueStatus()
-        if q:
-            d.read(q)
-
-        # Wait for capture to complete before reading back
-        cap_time = rc / rate_hz
-        wait = min(cap_time + 0.005, max(0, deadline - time.time() - 0.5))
-        if wait > 0:
-            time.sleep(wait)
-
-        samples = self.spi.chained_read(need)
+        time.sleep(0.02)
+        r = self.spi._read_all(timeout=0.05)
+        if r and len(r) > 6:
+            samples = r[6:6 + need]
+        else:
+            samples = b''
 
         if progress_cb and samples:
             ns = len(samples)
@@ -360,10 +343,10 @@ class OLSDeviceSPI:
         self._long(CMD_DELAY, 0)
         self._short(CMD_XOFF)
 
-        # Enable fast mode (BRAM) to bypass SDRAM hardware init issues
+        # Enable fast mode + continuous (keeps readout pipeline alive)
         self._long(CMD_FAST_MODE, 1)
+        self._long(CMD_CONT_CAPTURE, 1)
 
-        # ARM using proven OLS class method, then chained_read.
         self.spi.flush()
         rc = max(1, nsamples)
         need = rc * self._stride

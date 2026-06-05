@@ -70,12 +70,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL UART_RX_Busy       : STD_LOGIC := '0';
   SIGNAL UART_RX_Data       : STD_LOGIC_VECTOR (8-1 DOWNTO 0) := (others => '0');
 
-  -- Initialize interface mode from Def_IFace generic
-  impure function init_iface return std_logic is
-  begin
-    if Def_IFace /= 0 then return '1'; else return '0'; end if;
-  end function;
-  SIGNAL interface_mode_i : STD_LOGIC := init_iface;
+  -- Initialize interface mode from Def_IFace generic (1 = SPI, 0 = UART)
+  SIGNAL interface_mode_i : STD_LOGIC := '1';
   SIGNAL analog_channel_i : NATURAL range 0 to 7 := 0;
   SIGNAL analog_mode_i    : STD_LOGIC := '0';
   SIGNAL SPI_TX_Ready     : STD_LOGIC := '0';
@@ -187,7 +183,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
 BEGIN
   PROCESS (CLK)  
     VARIABLE ctr : INTEGER range 0 to 4 := 0;
-    VARIABLE Thread23 : NATURAL range 0 to 5 := 0;
+    VARIABLE Thread23 : NATURAL range 0 to 6 := 0;
     VARIABLE Thread26 : NATURAL range 0 to 34 := 0;
     VARIABLE Thread30 : NATURAL range 0 to 3 := 0;
     VARIABLE Thread31 : NATURAL range 0 to 4 := 0;
@@ -380,8 +376,10 @@ BEGIN
             ELSE
               Run_OLS <= '0';
               Run <= '0';
-              Thread23 := 0;
+              Thread23 := 6;  -- non-continuous: idle (was 0, looped into second all-zero readout)
             END IF;
+          WHEN 6 =>
+            null;  -- idle after non-continuous single-shot readout
           WHEN 4 =>
             -- Buffer read complete: ack the buffer we just finished
             buffer_ack_i <= (others => '0');
@@ -441,10 +439,10 @@ BEGIN
           Thread38 := 0;
         ELSE
           -- Accumulate data bytes for multi-byte commands at byte-receive time
-          IF (cmd_was_multibyte = '1' AND ctr < 4) OR 
-             (ctr < 4 AND command(7) = '1' AND effective_RX_Data(7) = '1') THEN
-            data((ctr+1)*8-1 downto ctr*8) <= effective_RX_Data;
-            ctr := ctr + 1;
+           IF (cmd_was_multibyte = '1' AND ctr < 4) OR 
+              (ctr < 4 AND command(7) = '1' AND effective_RX_Data(7) = '1') THEN
+             data((ctr+1)*8-1 downto ctr*8) <= effective_RX_Data;
+             ctr := ctr + 1;
             -- After all 4 bytes, force dispatch
             IF ctr = 4 THEN
               Thread44 := 7;
@@ -455,8 +453,8 @@ BEGIN
           Thread38 := 4;
         END IF;
       WHEN 4 =>
-        IF command = x"A1" OR command = x"AF" THEN
-          -- GEN_STRT / CMD_SPI_TEST: dispatch directly, bypass accumulate
+        IF command = x"A1" THEN
+          -- GEN_STRT: dispatch directly, bypass accumulate
           cmd_was_multibyte <= '0';
           Thread38 := Thread38 + 1;  -- to 5
         ELSIF Thread44 = 0 AND cmd_was_multibyte = '0' THEN
@@ -465,6 +463,7 @@ BEGIN
           IF command(7) = '0' THEN
             Thread38 := Thread38 + 1;  -- to 5 (dispatch)
           ELSE
+            ctr := 0;
             Thread38 := Thread38 + 2;  -- to 6 (accumulate)
           END IF;
         ELSIF Thread44 = 0 AND cmd_was_multibyte = '1' THEN
@@ -474,6 +473,7 @@ BEGIN
           IF command(7) = '0' THEN
             Thread38 := Thread38 + 1;  -- to 5 for dispatch
           ELSE
+            ctr := 0;
             Thread38 := Thread38 + 2;  -- to 6 for accumulate
           END IF;
         ELSIF Thread44 = 18 OR Thread44 = 19 THEN
@@ -486,10 +486,12 @@ BEGIN
           IF command(7) = '0' THEN
             Thread38 := Thread38 + 1;  -- to 5 (dispatch)
           ELSE
+            ctr := 0;
             Thread38 := Thread38 + 2;  -- to 6 (accumulate)
           END IF;
         ELSIF cmd_was_multibyte = '1' THEN
           -- Data byte arriving during accumulate (Thread44 >= 4).
+          ctr := 0;
           Thread38 := Thread38 + 2;
         ELSE
           Thread38 := Thread38 + 1;
@@ -540,10 +542,11 @@ BEGIN
             Trigger_Mask <= (others => '0');
             proto_trig_enable <= '0';
             -- Default generator config: UART mode, 115200 baud (208 @ 24 MHz)
-            Gen_Baud_Div <= x"0341";  -- 833 = 115200 @ 96 MHz
+            Gen_Baud_Div <= x"01A0";  -- 416 = 115200 @ 48 MHz
             Gen_Proto <= '0';
             gen_spi_test_int <= '0';
             blk_mode <= '0';
+            interface_mode_i <= '1';  -- reset to SPI mode
             Thread23 := 0;
             Thread26 := 0;
             Thread44 := 0;
@@ -551,6 +554,9 @@ BEGIN
                 Thread38 := 0;
           WHEN 2 =>
             Run_OLS <= '1';
+            IF continuous_mode_i = '0' THEN
+              Thread23 := 0;
+            END IF;
             Thread44 := 0;
                 Thread45 := 0;
                 Thread38 := 0;
@@ -677,6 +683,9 @@ BEGIN
               WHEN others => Thread49 := 0;
             END CASE;
             END IF;
+          WHEN 19 =>
+            null;
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
           WHEN 9 =>
             Trigger_Values <= data;
             Thread44 := 0; Thread45 := 0; Thread38 := 0;
@@ -717,6 +726,7 @@ BEGIN
             else
               blk_len_s <= TO_INTEGER(UNSIGNED(data(8 downto 0)));
             end if;
+            blk_len := blk_len_s;
             Thread44 := 0; Thread45 := 0; Thread38 := 0;
           WHEN 22 =>
             Gen_Proto <= data(0);
@@ -782,13 +792,16 @@ BEGIN
         END CASE;
       WHEN 6 =>
         CASE (Thread44) IS
-          WHEN 0 to 1 =>
+          WHEN 0 =>
+            ctr := 0;
+            Thread44 := 1;
+          WHEN 1 =>
             Thread44 := Thread44 + 1;
           WHEN 2 =>
             ctr := 0;
             Thread44 := 3;
           WHEN 3 =>
-            IF ( ctr < 4) THEN 
+            IF ( ctr < 4) THEN
               Thread44 := Thread44 + 1;
             ELSE
               Thread44 := Thread44 + 2;

@@ -26,7 +26,7 @@ end Signal_Gen;
 
 architecture rtl of Signal_Gen is
   type fifo_t is array (0 to FIFO_DEPTH-1) of std_logic_vector(7 downto 0);
-  constant FIXED_BAUD_DIV : std_logic_vector(15 downto 0) := x"00D0";  -- 208 = 115200 @ 24 MHz
+  constant FIXED_BAUD_DIV : std_logic_vector(15 downto 0) := x"01A0";  -- 416 = 115200 @ 48 MHz
   signal fifo  : fifo_t := (others => (others => '0'));
   signal head  : natural range 0 to FIFO_DEPTH-1 := 0;
   signal tail  : natural range 0 to FIFO_DEPTH-1 := 0;

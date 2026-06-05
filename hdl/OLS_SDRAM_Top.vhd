@@ -5,7 +5,7 @@ use IEEE.numeric_std.all;
 ENTITY OLS_SDRAM_Top IS
   generic (
     TX_PIN      : natural range 0 to 7 := 3;   -- generator output pin
-    PLL_MULT    : positive := 8;               -- PLL multiply (8x = 96 MHz from 12 MHz)
+    PLL_MULT    : positive := 4;               -- PLL multiply (4x = 48 MHz from 12 MHz)
     PLL_DIV     : positive := 1;                -- PLL divide
     Sim         : boolean := false
   );
@@ -58,6 +58,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal fast_clk       : std_logic := '0';
   signal fast_mode      : std_logic := '0';
   signal continuous_mode : std_logic := '0';
+  signal armed_i        : std_logic := '0';
   signal buffer_full     : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
   signal buffer_ack      : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
   signal sdram_clk_pll  : std_logic := '0';
@@ -68,6 +69,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   attribute preserve : boolean;
   attribute preserve of test_div : signal is true;
   signal test_out      : std_logic := '0';
+  attribute preserve of test_out : signal is true;
+  signal registered_ch0 : std_logic := '0';
+  attribute preserve of registered_ch0 : signal is true;
   signal com_act_cnt   : integer range 0 to 200_000_000 := 0;
   signal com_active    : std_logic := '0';
   signal uart_rx_last  : std_logic := '1';
@@ -231,7 +235,7 @@ BEGIN
   begin
     for i in 0 to 7 loop
       if i = 0 then
-        internal_data(i) <= test_out;
+        internal_data(i) <= registered_ch0;
       elsif gen_busy = '1' and gen_tx_pin = i then
         if gen_spi_test = '1' then
           internal_data(i) <= SEN_SDO;  -- SPI test: MISO from accelerometer
@@ -248,14 +252,16 @@ BEGIN
     end loop;
   end process;
 
-  -- Test divider: 10-bit counter, output on CH0 at ~11.7 kHz (12MHz CLK) or ~46.9kHz (48MHz PLL)
+  -- Test divider: free-running counter, registered output on CH0
+  -- test_out toggles at sys_clk / 512 (48 MHz / 1024 = 46.9 kHz)
   process(sys_clk)
   begin
     if rising_edge(sys_clk) then
       test_div <= std_logic_vector(unsigned(test_div) + 1);
+      test_out <= test_div(9);
+      registered_ch0 <= test_div(9);
     end if;
   end process;
-  test_out <= test_div(9);
   
   -- B4 pin sharing: UART_TX (output) in UART mode, SPI_MOSI (input) in SPI mode
   UART_TX <= core_uart_tx when interface_mode = '0' else 'Z';
@@ -321,7 +327,7 @@ BEGIN
     Gen_I2C_Dev_R  => gen_i2c_dev_r,
     Gen_I2C_Test   => gen_i2c_test,
     Gen_SPI_Test   => gen_spi_test,
-    Armed          => open,
+    Armed          => armed_i,
     Fast_Mode      => fast_mode,
     Status        => core_status,
     Continuous_Mode => continuous_mode,
@@ -365,6 +371,7 @@ BEGIN
         led_raw(4) <= gen_busy;
         led_raw(5) <= com_active;
         led_raw(6) <= capt_done;
+
       end if;
       -- Set targets when raw changes (LED 7 driven by breathing state machine)
       for i in 0 to 6 loop

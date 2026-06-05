@@ -656,9 +656,9 @@ class WaveformDisplay(tk.Canvas):
     MIN_PX_PER_SAMPLE = 0.5
     MAX_PX_PER_SAMPLE = 50
 
-    def __init__(self, parent, master=None, **kw):
+    def __init__(self, parent, app=None, **kw):
         super().__init__(parent, bg='white', **kw)
-        self.master = master
+        self.app = app
         self.ch_data = []
         self.ch_names = []
         self.samplerate = 1_000_000
@@ -834,7 +834,7 @@ class WaveformDisplay(tk.Canvas):
                 spb_samp = 0  # samples-per-bit for UART, used for frame width
                 if '_UART' in name:
                     # Find the decoder slot for this channel
-                    for si, slot in enumerate(getattr(self.master, 'decoder_slots', [])):
+                    for si, slot in enumerate(getattr(self.app, 'decoder_slots', [])):
                         if not slot.get('enabled'): continue
                         dname = f"{slot['src_str']}_UART"
                         if dname == name:
@@ -850,7 +850,7 @@ class WaveformDisplay(tk.Canvas):
                                 self.create_text(px+2, y0+2, text=txt, anchor='nw',
                                                 font=('Consolas', 6), fill='#2a7')
                 elif '_SPI' in name:
-                    for si, slot in enumerate(getattr(self.master, 'decoder_slots', [])):
+                    for si, slot in enumerate(getattr(self.app, 'decoder_slots', [])):
                         if not slot.get('enabled'): continue
                         dname = f"{slot['src_str']}_SPI"
                         if dname == name:
@@ -859,7 +859,7 @@ class WaveformDisplay(tk.Canvas):
                                 # approximate position — no pos from decode_spi
                                 pass
                 elif '_I2C' in name:
-                    for si, slot in enumerate(getattr(self.master, 'decoder_slots', [])):
+                    for si, slot in enumerate(getattr(self.app, 'decoder_slots', [])):
                         if not slot.get('enabled'): continue
                         dname = f"{slot['src_str']}_I2C"
                         if dname == name:
@@ -924,9 +924,10 @@ class WaveformDisplay(tk.Canvas):
 class OLScope:
     """Main application: combines device control, waveform view, and protocol tools."""
 
-    def __init__(self, backend='UART'):
+    def __init__(self, backend='UART', root=None):
         self.dev = None
         self._backend = backend
+        self.win = root  # may be None for CLI
         self.ch_data = []
         self.ch_names = [f"CH{i}" for i in range(8)]
         self.samplerate = 1_000_000
@@ -958,7 +959,6 @@ class OLScope:
         self._build_ui()
 
     def _build_ui(self):
-        self.win = tk.Tk()
         title = "OLS MaxScope — " + ("SPI @ 30 MHz" if self._backend == 'SPI' else "UART")
         self.win.title(title)
         self.win.geometry("1000x700")
@@ -1022,7 +1022,7 @@ class OLScope:
         # Waveform frame
         wf_frame = ttk.Frame(main)
         main.add(wf_frame, weight=3)
-        self.wave = WaveformDisplay(wf_frame, master=self)
+        self.wave = WaveformDisplay(wf_frame, app=self)
         self.wave.pack(fill='both', expand=True)
 
         # Scrollbar for waveform
@@ -1049,7 +1049,6 @@ class OLScope:
         self.status.pack(fill='x')
 
         self._scan_ports()
-        self._auto_connect()
 
     def _build_side_panel(self, parent):
         nb = ttk.Notebook(parent)
@@ -1238,6 +1237,12 @@ class OLScope:
 
     def _auto_connect(self):
         """Auto-detect and connect to OLS device."""
+        if self._backend == 'SPI':
+            if find_spi_device():
+                self._connect()
+                return
+            self.status['text'] = "No SPI device found — connect manually"
+            return
         port = find_port()
         if port:
             self.port_cb.set(port)
@@ -2317,24 +2322,23 @@ def cli_mode(args):
     return 0
 
 def splash_choose():
-    """Show backend selection dialog. Returns 'UART', 'SPI', or None."""
+    """Auto-detect backend, optionally showing a dialog when both are available.
+    Returns 'UART', 'SPI', or None."""
+    has_spi = HAS_SPI and find_spi_device()
+    has_uart = bool(find_port())
+
+    if has_spi and not has_uart:
+        return 'SPI'
+    if has_uart and not has_spi:
+        return 'UART'
+    if not has_spi and not has_uart:
+        return None
+
+    # Both available — show picker
     win = tk.Tk()
     win.title("OLS MaxScope — Select Backend")
     win.geometry("420x280")
     win.resizable(False, False)
-    win.configure(bg='#1a1a2e')
-
-    # Detect available backends
-    has_spi = HAS_SPI and find_spi_device()
-
-    f = ttk.Frame(win, padding=20)
-    f.pack(fill='both', expand=True)
-
-    ttk.Label(f, text="OLS MaxScope — Logic Analyzer",
-              font=('Helvetica', 14, 'bold')).pack(pady=(0,20))
-
-    ttk.Label(f, text="Select communication backend:",
-              font=('Helvetica', 10)).pack(pady=(0,10))
 
     result = [None]
 
@@ -2342,27 +2346,21 @@ def splash_choose():
         result[0] = backend
         win.destroy()
 
+    f = ttk.Frame(win, padding=20)
+    f.pack(fill='both', expand=True)
+    ttk.Label(f, text="OLS MaxScope — Logic Analyzer",
+              font=('Helvetica', 14, 'bold')).pack(pady=(0,20))
+    ttk.Label(f, text="Select communication backend:",
+              font=('Helvetica', 10)).pack(pady=(0,10))
     btn_f = ttk.Frame(f)
     btn_f.pack(pady=10)
-
-    uart_btn = ttk.Button(btn_f, text="UART (slow, 12 Mbps)\nSerial port — generator support",
-                          command=lambda: pick('UART'), width=35)
-    uart_btn.pack(pady=5)
-
-    if has_spi:
-        spi_btn = ttk.Button(btn_f, text="SPI (fast, 30 MHz)\nFTDI Channel B — generator support",
-                             command=lambda: pick('SPI'), width=35)
-        spi_btn.pack(pady=5)
-    else:
-        spi_lbl = ttk.Label(btn_f, text="SPI (30 MHz) — FTDI not detected",
-                            foreground='gray')
-        spi_lbl.pack(pady=5)
-
+    ttk.Button(btn_f, text="UART (slow, 12 Mbps)\nSerial port — generator support",
+               command=lambda: pick('UART'), width=35).pack(pady=5)
+    ttk.Button(btn_f, text="SPI (fast, 30 MHz)\nFTDI Channel B — generator support",
+               command=lambda: pick('SPI'), width=35).pack(pady=5)
     ttk.Button(f, text="Cancel", command=win.destroy).pack(pady=10)
     win.protocol("WM_DELETE_WINDOW", win.destroy)
     win.update_idletasks()
-    win.deiconify()
-    # Center
     ww = win.winfo_width(); wh = win.winfo_height()
     sw = win.winfo_screenwidth(); sh = win.winfo_screenheight()
     win.geometry(f"{ww}x{wh}+{(sw-ww)//2}+{(sh-wh)//2}")
@@ -2414,6 +2412,11 @@ if __name__ == '__main__':
     else:
         backend = splash_choose()
         if backend is None:
-            sys.exit(0)
-        app = OLScope(backend=backend)
+            print("No OLS device found — exiting")
+            sys.exit(1)
+        root = tk.Tk()
+        root.withdraw()
+        app = OLScope(backend=backend, root=root)
+        root.deiconify()
+        app.win.after(100, app._auto_connect)
         app.run()

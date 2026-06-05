@@ -279,6 +279,7 @@ begin
         full_pending <= '0'; full_clr_pending <= '0';
         if run_sync2 = '0' then
           rd_mode := true;
+          bram_post_cnt := 0;
         elsif Fast_Mode = '1' then
           rd_mode := false;
           bram_post_cnt := 0;
