@@ -1,6 +1,7 @@
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
-use IEEE.numeric_std.all; 
+use IEEE.numeric_std.all;
+use work.led_controller_pkg.all;
 
 ENTITY OLS_SDRAM_Top IS
   generic (
@@ -119,18 +120,13 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal pin_map_channel  : natural range 0 to LA_CHANNELS-1 := 0;
   signal pin_map_pin      : natural range 0 to PIN_POOL_SIZE-1 := 0;
 
-  -- LED PWM controller
-  signal pwm_cnt      : integer range 0 to 256 := 0;
-  type bright_array is array(0 to 7) of integer range 0 to 255;
-  signal led_bright   : bright_array := (others => 0);
-  signal led_target   : bright_array := (others => 0);
-  signal led_raw      : std_logic_vector(7 downto 0) := (others => '0');
-  signal led_raw_prev : std_logic_vector(7 downto 0) := (others => '0');
-  signal fade_cnt     : integer range 0 to 511 := 0;
-
-  type breath_state_t is (BR_OFF, BR_RISE, BR_ON, BR_FALL);
-  signal breath_state : breath_state_t := BR_OFF;
-  signal breath_timer : integer range 0 to 255 := 0;
+  -- PWM engine (shared by LED controller)
+  signal pwm_cnt       : integer range 0 to 256 := 0;
+  signal fade_cnt      : integer range 0 to 511 := 0;
+  signal fade_tick     : std_logic := '0';
+  signal led_bright    : led_bright_array := (others => 0);
+  signal led_target    : led_bright_array := (others => 0);
+  signal led_fade_step : led_step_array := (others => 1);
 
   constant COM_ACT_MAX : integer := System_CLK_Frequency;
 
@@ -488,74 +484,47 @@ BEGIN
     Pin_Map_Pin     => pin_map_pin
   );
   
-  -- LED PWM controller
+  -- PWM carrier counter
   process(sys_clk)
-    variable b : integer range 0 to 255;
   begin
     if rising_edge(sys_clk) then
       if pwm_cnt = 256 then pwm_cnt <= 0;
       else pwm_cnt <= pwm_cnt + 1;
       end if;
       if pwm_cnt = 255 then
-        if fade_cnt < 511 then
-          fade_cnt <= fade_cnt + 1;
-        else
-          fade_cnt <= 0;
+        if fade_cnt < 511 then fade_cnt <= fade_cnt + 1;
+        else fade_cnt <= 0;
         end if;
       end if;
+      fade_tick <= '0';
       if pwm_cnt = 255 and fade_cnt = 511 then
-        for i in 0 to 6 loop
+        fade_tick <= '1';
+      end if;
+    end if;
+  end process;
+
+  -- Brightness tracking with per-LED configurable step size
+  process(sys_clk)
+  begin
+    if rising_edge(sys_clk) then
+      if fade_tick = '1' then
+        for i in 0 to 7 loop
           if led_bright(i) < led_target(i) then
-            led_bright(i) <= led_bright(i) + 1;
+            if led_bright(i) + led_fade_step(i) >= led_target(i) then
+              led_bright(i) <= led_target(i);
+            else
+              led_bright(i) <= led_bright(i) + led_fade_step(i);
+            end if;
           elsif led_bright(i) > led_target(i) then
-            led_bright(i) <= led_bright(i) - 1;
+            if led_bright(i) <= led_fade_step(i) then
+              led_bright(i) <= led_target(i);
+            elsif led_bright(i) - led_fade_step(i) <= led_target(i) then
+              led_bright(i) <= led_target(i);
+            else
+              led_bright(i) <= led_bright(i) - led_fade_step(i);
+            end if;
           end if;
         end loop;
-      end if;
-
-      if pwm_cnt = 255 then
-        led_raw_prev <= led_raw;
-        led_raw(3 downto 0) <= core_status(3 downto 0);
-        led_raw(4) <= gen_busy;
-        led_raw(5) <= com_active;
-        led_raw(6) <= capt_done;
-      end if;
-      for i in 0 to 6 loop
-        if led_raw(i) /= led_raw_prev(i) then
-          if led_raw(i) = '1' then
-            led_target(i) <= 255;
-          else
-            led_target(i) <= 0;
-          end if;
-        end if;
-      end loop;
-
-      if pwm_cnt = 255 and fade_cnt = 511 then
-        case breath_state is
-          when BR_OFF =>
-            led_target(7) <= 0;
-            if breath_timer < 5 then breath_timer <= breath_timer + 1;
-            else breath_state <= BR_RISE; breath_timer <= 0; end if;
-          when BR_RISE =>
-            led_target(7) <= 255;
-            if breath_timer < 255 then breath_timer <= breath_timer + 1;
-            else breath_state <= BR_ON; breath_timer <= 0; end if;
-          when BR_ON =>
-            led_target(7) <= 255;
-            if breath_timer < 100 then breath_timer <= breath_timer + 1;
-            else breath_state <= BR_FALL; breath_timer <= 0; end if;
-          when BR_FALL =>
-            led_target(7) <= 0;
-            if breath_timer < 255 then breath_timer <= breath_timer + 1;
-            else breath_state <= BR_OFF; breath_timer <= 0; end if;
-        end case;
-      end if;
-      if pwm_cnt = 255 and fade_cnt = 511 then
-        if led_bright(7) < led_target(7) then
-          led_bright(7) <= led_bright(7) + 1;
-        elsif led_bright(7) > led_target(7) then
-          led_bright(7) <= led_bright(7) - 1;
-        end if;
       end if;
     end if;
   end process;
@@ -563,6 +532,22 @@ BEGIN
   led_out: for i in 0 to 7 generate
     LED(i) <= '1' when pwm_cnt < led_bright(i) else '0';
   end generate;
+
+  LED_CTRL: entity work.LED_Controller
+    port map (
+      clk             => sys_clk,
+      rst             => '0',
+      armed           => armed_i,
+      capture_run     => core_status(0),
+      capture_full    => core_status(3),
+      continuous_mode => continuous_mode,
+      host_connected  => interface_mode,
+      ch_4_mode       => '0',
+      fifo_activity   => core_status(7 downto 4),
+      fade_tick       => fade_tick,
+      led_target      => led_target,
+      fade_step       => led_fade_step
+    );
 
   GEN : Signal_Gen
   generic map (FIFO_DEPTH => 256)
