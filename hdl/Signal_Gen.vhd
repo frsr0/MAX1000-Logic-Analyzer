@@ -50,7 +50,6 @@ begin
     variable i2c_state : natural range 0 to 15 := 0;
     variable i2c_bit  : natural range 0 to 8 := 0;
     variable rd_remain : natural range 0 to 255 := 0;
-    variable rd_byte   : std_logic_vector(7 downto 0) := (others => '0');
     variable read_active : boolean := false;
     variable spi_state : natural range 0 to 4 := 0;
     variable spi_bit  : natural range 0 to 8 := 0;
@@ -291,7 +290,6 @@ begin
 
             when 12 =>  -- RD_SAMPLE: SCL high, sample SDA
               Scl_Out <= '1';
-              rd_byte(7 - i2c_bit) := Sda_In;
               i2c_bit := i2c_bit + 1;
               if i2c_bit < 8 then
                 i2c_state := 8;

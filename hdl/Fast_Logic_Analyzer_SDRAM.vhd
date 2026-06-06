@@ -61,9 +61,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal s_rd    : std_logic := '0';
   signal s_rdata : std_logic_vector(15 downto 0) := (others => '0');
    signal s_rvalid: std_logic := '0';
-   signal s_busy  : std_logic := '0';
    signal s_burst_i : std_logic := '0';
-   signal s_idle  : std_logic := '0';
   signal full_i      : std_logic := '0';
   signal run_sync1   : std_logic := '0';
   signal run_sync2   : std_logic := '0';
@@ -216,7 +214,6 @@ begin
     variable bram_post_cnt : natural range 0 to 15000000 := 0;
     variable flush_rem   : natural range 0 to BRAM_SIZE := 0;
     variable flush_idx   : natural range 0 to BRAM_SIZE-1 := 0;
-    variable flush_total : natural range 0 to BRAM_SIZE := 0;
     variable flush_sync : boolean := false;
     variable buf_limit : natural range 0 to 15000000 := 0;
     variable write_addr : std_logic_vector(21 downto 0) := (others => '0');
@@ -297,7 +294,6 @@ begin
           rd_mode := false;
           if Armed = '1' and bram_cnt > 0 then
             flush_rem := bram_cnt;
-            flush_total := bram_cnt;
             if bram_cnt < BRAM_SIZE then
               flush_idx := 0;
             else
@@ -612,8 +608,8 @@ begin
     Read_Enable  => s_rd,
     Read_Data    => s_rdata,
     Read_Valid   => s_rvalid,
-    Busy         => s_busy,
-    Idle         => s_idle,
+    Busy         => open,
+    Idle         => open,
     sdram_addr   => sdram_addr,
     sdram_ba     => sdram_ba,
     sdram_cas_n  => sdram_cas_n,

@@ -84,7 +84,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL analog_ch0_i     : NATURAL range 0 to 15 := 0;
   SIGNAL analog_ch1_i     : NATURAL range 0 to 15 := 1;
   SIGNAL analog_mode_i    : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-  SIGNAL SPI_TX_Ready     : STD_LOGIC := '0';
   SIGNAL SPI_RX_Valid     : STD_LOGIC := '0';
   SIGNAL SPI_RX_Data      : STD_LOGIC_VECTOR (8-1 DOWNTO 0) := (others => '0');
   -- Muxed signals for UART/SPI mode selection
@@ -98,7 +97,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL addr : NATURAL := 0;
   SIGNAL wr_ctr : NATURAL range 0 to 18 := 0;
   SIGNAL blk_mode  : STD_LOGIC := '0';
-  SIGNAL blk_len_s : NATURAL range 0 to GEN_FIFO_DEPTH := 0;
   SIGNAL gen_start_cnt : NATURAL range 0 to 63 := 0;
   SIGNAL gen_load_cnt  : NATURAL range 0 to 63 := 0;  -- probe
    SIGNAL gen_tx_pin_int  : NATURAL range 0 to 31 := 3;
@@ -442,7 +440,6 @@ BEGIN
           gen_load_cnt <= 1;
           IF (blk_len > 0) THEN
             blk_len := blk_len - 1;
-            blk_len_s <= blk_len;
           END IF;
           IF (blk_len = 0) THEN
             blk_mode <= '0';
@@ -751,13 +748,10 @@ BEGIN
           WHEN 21 =>
             blk_mode <= '1';
             if unsigned(data(31 downto 9)) /= 0 then
-              blk_len_s <= 256;
               blk_len := 256;
             elsif TO_INTEGER(UNSIGNED(data(8 downto 0))) > 256 then
-              blk_len_s <= 256;
               blk_len := 256;
             else
-              blk_len_s <= TO_INTEGER(UNSIGNED(data(8 downto 0)));
               blk_len := TO_INTEGER(UNSIGNED(data(8 downto 0)));
             end if;
             Thread44 := 0; Thread45 := 0; Thread38 := 0;
@@ -1056,7 +1050,7 @@ BEGIN
     TX_Data    => UART_TX_Data,
     SPI_Preamble   => spi_preamble,
     PipeDepth  => pipe_depth,
-    TX_Ready   => SPI_TX_Ready,
+    TX_Ready   => open,
     RX_Data    => SPI_RX_Data,
     RX_Valid   => SPI_RX_Valid
   );

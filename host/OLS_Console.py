@@ -516,6 +516,8 @@ def glitch_filter(signal, threshold=3):
     -------
     list[int] — filtered copy of `signal` (original unmodified).
     """
+    if not signal:
+        return []
     out = list(signal)
     stable = signal[0]
     cnt = 0
@@ -659,6 +661,7 @@ def decode_spi(ch, samplerate, miso_idx=3, sclk_idx=1, filter_threshold=0):
                 while i < len(sclk) - 1 and not (sclk[i - 1] == 0 and sclk[i] == 1):
                     i += 1
             result.append(byte_val)
+            i -= 1
         i += 1
     return result
 

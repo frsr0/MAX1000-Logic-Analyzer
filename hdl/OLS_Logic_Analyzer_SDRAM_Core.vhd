@@ -220,6 +220,8 @@ BEGIN
   Analog_Ch0 <= analog_ch0_i;
   Analog_Ch1 <= analog_ch1_i;
   Status <= fla_status;
+  Continuous_Mode <= continuous_mode_i;
+  Buffer_Ack <= buffer_ack_i;
   Pin_Map_Write <= pin_map_write_i;
   Pin_Map_Channel <= pin_map_channel_i;
   Pin_Map_Pin <= pin_map_pin_i;

@@ -29,10 +29,7 @@ architecture rtl of ADC_Controller is
   signal cmd_eop       : std_logic := '0';
   signal cmd_ready     : std_logic := '0';
   signal rsp_valid     : std_logic := '0';
-  signal rsp_channel   : std_logic_vector(4 downto 0) := (others => '0');
   signal rsp_data      : std_logic_vector(11 downto 0) := (others => '0');
-  signal rsp_sop       : std_logic := '0';
-  signal rsp_eop       : std_logic := '0';
 
   type state_t is (INIT, IDLE, SEND_CMD, WAIT_RSP, DONE0, DONE1);
   signal state : state_t := INIT;
@@ -103,10 +100,10 @@ begin
       cmd_eop           => cmd_eop,
       cmd_ready         => cmd_ready,
       rsp_valid         => rsp_valid,
-      rsp_channel       => rsp_channel,
+      rsp_channel       => open,
       rsp_data          => rsp_data,
-      rsp_sop           => rsp_sop,
-      rsp_eop           => rsp_eop,
+      rsp_sop           => open,
+      rsp_eop           => open,
       clk_in_pll_c0     => sys_clk,
       clk_in_pll_locked => sys_clk_locked,
       sync_valid        => open,

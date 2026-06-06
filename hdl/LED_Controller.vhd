@@ -7,9 +7,6 @@ package led_controller_pkg is
     type led_step_array  is array(0 to 7) of integer range 1 to 32;
 end package;
 
-package body led_controller_pkg is
-end package body;
-
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.numeric_std.all;
@@ -222,8 +219,11 @@ begin
                                     else b_timer := b_timer + 1; end if;
                             end case;
 
-                            led_target(0) <= 255 when
-                                (b_state = BR_RISE or b_state = BR_ON) else 0;
+                            if b_state = BR_RISE or b_state = BR_ON then
+                                led_target(0) <= 255;
+                            else
+                                led_target(0) <= 0;
+                            end if;
                             for i in 1 to 7 loop
                                 led_target(i) <= 0;
                             end loop;
@@ -257,8 +257,11 @@ begin
                             end case;
 
                             for i in 0 to 7 loop
-                                led_target(i) <= 255 when
-                                    (b_state = BR_RISE or b_state = BR_ON) else 0;
+                                if b_state = BR_RISE or b_state = BR_ON then
+                                    led_target(i) <= 255;
+                                else
+                                    led_target(i) <= 0;
+                                end if;
                                 fade_step(i) <= b_delta;
                             end loop;
 
@@ -289,8 +292,11 @@ begin
                             end case;
 
                             for i in 0 to 7 loop
-                                led_target(i) <= 255 when
-                                    (b_state = BR_RISE or b_state = BR_ON) else 0;
+                                if b_state = BR_RISE or b_state = BR_ON then
+                                    led_target(i) <= 255;
+                                else
+                                    led_target(i) <= 0;
+                                end if;
                                 fade_step(i) <= b_delta;
                             end loop;
 
@@ -306,7 +312,11 @@ begin
                             end if;
 
                             for i in 0 to 7 loop
-                                led_target(i) <= 255 when fl_on else 0;
+                                if fl_on then
+                                    led_target(i) <= 255;
+                                else
+                                    led_target(i) <= 0;
+                                end if;
                                 fade_step(i) <= FLASH_STEP;
                             end loop;
 
@@ -349,10 +359,7 @@ begin
                                     led_target(i) <= 0;
                                 else
                                     p := r_phase + i * ROLL_PHASE_STEP;
-                                    q := p;
-                                    if p >= 256 then q := p - 256; end if;
-                                    if p >= 512 then q := p - 512; end if;
-                                    if p >= 768 then q := p - 768; end if;
+                                    q := p mod 256;
                                     led_target(i) <= triangle(q);
                                 end if;
                                 fade_step(i) <= 1;

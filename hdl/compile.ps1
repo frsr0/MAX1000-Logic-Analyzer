@@ -46,6 +46,7 @@ $attrLines += "    -- Quartus pin assignments"
 # Declare attribute types first
 $attrLines += "    attribute chip_pin : string;"
 foreach ($base in ($pinMap.Keys | Sort-Object)) {
+    if ($base -eq "GPIO") { continue }  # GPIO -> MKR_D + PMOD (hardcoded below)
     $pins = $pinMap[$base]
     if ($pins.Count -eq 1 -and $pins.ContainsKey(-1)) {
         $val = $pins[-1]
@@ -55,6 +56,9 @@ foreach ($base in ($pinMap.Keys | Sort-Object)) {
     }
     $attrLines += "    attribute chip_pin of $base : signal is `"$val`";"
 }
+# Hardcoded pin assignments for MKR_D and PMOD (match physical board)
+$attrLines += "    attribute chip_pin of MKR_D : signal is `"H8,K10,H5,H4,J1,J2,L12,J12,J13,K11,K12,J10,H10,H13,G12`";"
+$attrLines += "    attribute chip_pin of PMOD : signal is `"M3,L3,M2,M1,N3,N2,K2,K1`";"
 
 # Build io_standard attributes (only for LED currently, but catch any with explicit standard)
 $ioLines = @()
@@ -63,19 +67,16 @@ $wpuLines = @()
 foreach ($base in ($ioMap.Keys | Sort-Object)) {
     $std = $ioMap[$base]
     if ($std -and $std -ne "3.3-V LVCMOS" -and $std -ne "3.3-V LVCMOS") {
-        $ioLines += "    attribute io_standard of $base : signal is `"$std`";"
+        $ioLines += "    -- IO standard for $base"
         $hasIoStandard = $true
     }
-}
-if ($hasIoStandard) {
-    $ioLines = @("    -- I/O standards", "    attribute io_standard : string;") + $ioLines
 }
 
 # Build port map connections
 $portMapLines = @()
 $portMapLines += "        CLK => CLK, UART_RX => UART_RX, UART_TX => UART_TX,"
 $portMapLines += "        SPI_CS => SPI_CS, SPI_MISO => SPI_MISO,"
-$portMapLines += "        GPIO => GPIO, LED => LED,"
+$portMapLines += "        MKR_D => MKR_D, PMOD => PMOD, LED => LED,"
 $portMapLines += "        sdram_addr => sdram_addr, sdram_ba => sdram_ba,"
 $portMapLines += "        sdram_cas_n => sdram_cas_n, sdram_cke => sdram_cke,"
 $portMapLines += "        sdram_cs_n => sdram_cs_n, sdram_dq => sdram_dq,"
@@ -96,7 +97,8 @@ port (
     UART_TX   : INOUT STD_LOGIC;
     SPI_CS    : IN  STD_LOGIC := '1';
     SPI_MISO  : OUT STD_LOGIC := 'Z';
-    GPIO      : INOUT STD_LOGIC_VECTOR(7 downto 0);
+    MKR_D     : INOUT STD_LOGIC_VECTOR(14 downto 0) := (others => 'Z');
+    PMOD      : INOUT STD_LOGIC_VECTOR(7 downto 0) := (others => 'Z');
     sdram_addr  : OUT STD_LOGIC_VECTOR(11 downto 0);
     sdram_ba    : OUT STD_LOGIC_VECTOR(1 downto 0);
     sdram_cas_n : OUT STD_LOGIC;
@@ -169,6 +171,7 @@ $qsfLines = @(
     'set_global_assignment -name INTERNAL_FLASH_UPDATE_MODE "SINGLE IMAGE WITH ERAM"',
     '',
     'set_global_assignment -name VHDL_FILE OLS_SDRAM_Top.vhd',
+    'set_global_assignment -name VHDL_FILE LED_Controller.vhd',
     'set_global_assignment -name VHDL_FILE OLS_Logic_Analyzer_SDRAM_Core.vhd',
     'set_global_assignment -name VHDL_FILE Fast_Logic_Analyzer_SDRAM.vhd',
     'set_global_assignment -name VHDL_FILE OLS_Interface.vhd',
@@ -181,6 +184,9 @@ $qsfLines = @(
     'set_global_assignment -name VHDL_FILE Signal_Gen.vhd',
     'set_global_assignment -name VHDL_FILE SDRAM_PLL.vhd',
     'set_global_assignment -name VHDL_FILE OLS_Logic_Analyzer_wrapper.vhd',
+    '',
+    '# Altera Modular ADC II IP',
+    'set_global_assignment -name QIP_FILE MAX10_ADC/synthesis/MAX10_ADC.qip',
     '',
     '# Weak pull-ups on all GPIO and I2C/SPI pins',
     'set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to GPIO[0]',

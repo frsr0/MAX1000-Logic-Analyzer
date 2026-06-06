@@ -118,7 +118,9 @@ BEGIN
    reset_reset_n <= sdram_reset_n;
   CLK_150_Out <= CLK;    -- 48 MHz core clock from PLL
   sdram_clk <= CLK;
-  u0 : component SDRAM_Controller
+  sdram_s_byteenable_n <= (others => '0');
+  sdram_s_chipselect <= '1';
+   u0 : component SDRAM_Controller
   port map (
   sdram_addr            => sdram_addr,            
   sdram_ba              => sdram_ba,              

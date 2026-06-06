@@ -61,11 +61,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_i2c_test   : std_logic := '0';
   signal gen_spi_test   : std_logic := '0';
   signal fast_clk       : std_logic := '0';
-  signal fast_mode      : std_logic := '0';
   signal continuous_mode : std_logic := '0';
   signal armed_i        : std_logic := '0';
-  signal buffer_full     : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-  signal buffer_ack      : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
   signal sdram_clk_pll  : std_logic := '0';
 
   -- Expanded output drive (covers all bidirectional pins)
@@ -95,11 +92,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_tx_d1    : std_logic := '0';
   signal registered_ch0_d1 : std_logic := '0';
   signal sen_sdo_d1   : std_logic := '0';
-  signal com_act_cnt   : integer range 0 to 200_000_000 := 0;
-  signal com_active    : std_logic := '0';
-  signal uart_rx_last  : std_logic := '1';
-  signal capt_done     : std_logic := '0';
-  signal run_last      : std_logic := '0';
+
   signal interface_mode : std_logic := '0';
   signal core_uart_tx  : std_logic := '1';
   signal spi_mosi_int  : std_logic := '0';
@@ -109,8 +102,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal analog_stream_mode : std_logic := '0';
   signal analog_frame_data  : std_logic_vector(63 downto 0) := (others => '0');
   signal analog_frame_len   : natural range 1 to 8 := 1;
-  signal adc0_busy, adc1_busy : std_logic := '0';
-  signal adc0_valid, adc1_valid : std_logic := '0';
   signal adc0_result, adc1_result : std_logic_vector(11 downto 0) := (others => '0');
   signal adc_start : std_logic := '0';
   signal adc_div   : natural range 0 to 255 := 0;
@@ -128,7 +119,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal led_target    : led_bright_array := (others => 0);
   signal led_fade_step : led_step_array := (others => 1);
 
-  constant COM_ACT_MAX : integer := System_CLK_Frequency;
 
   COMPONENT OLS_Logic_Analyzer IS
   GENERIC (
@@ -255,33 +245,6 @@ BEGIN
   gen_pmod_drive : for i in 0 to 7 generate
     PMOD(i) <= pin_out(15+i) when pin_dir(15+i) = '1' else 'Z';
   end generate;
-
-  process(sys_clk)
-  begin
-    if rising_edge(sys_clk) then
-      uart_rx_last <= UART_RX;
-      if UART_RX = '0' and uart_rx_last = '1' then
-        com_act_cnt <= COM_ACT_MAX;
-      elsif com_act_cnt > 0 then
-        com_act_cnt <= com_act_cnt - 1;
-      end if;
-      if com_act_cnt > 0 then
-        com_active <= '1';
-      else
-        com_active <= '0';
-      end if;
-    end if;
-  end process;
-
-  process(sys_clk)
-  begin
-    if rising_edge(sys_clk) then
-      run_last <= core_status(0);
-      if run_last = '1' and core_status(0) = '0' then
-        capt_done <= not capt_done;
-      end if;
-    end if;
-  end process;
 
   SEN_CS <= '0' when gen_spi_test = '1' and gen_busy = '1' else '1';
 
@@ -417,14 +380,14 @@ BEGIN
       reset => '0',
       ch0_sel => analog_ch0,
       ch0_start => adc_start,
-      ch0_busy => adc0_busy,
+      ch0_busy => open,
       ch0_result => adc0_result,
-      ch0_valid => adc0_valid,
+      ch0_valid => open,
       ch1_sel => analog_ch1,
       ch1_start => adc_start,
-      ch1_busy => adc1_busy,
+      ch1_busy => open,
       ch1_result => adc1_result,
-      ch1_valid => adc1_valid
+      ch1_valid => open
     );
 
   SDRAM_Analyzer : OLS_Logic_Analyzer
@@ -468,14 +431,14 @@ BEGIN
     Gen_I2C_Test   => gen_i2c_test,
     Gen_SPI_Test   => gen_spi_test,
     Armed          => armed_i,
-    Fast_Mode      => fast_mode,
+    Fast_Mode      => open,
     Analog_Mode    => analog_mode,
     Analog_Ch0     => analog_ch0,
     Analog_Ch1     => analog_ch1,
     Status        => core_status,
     Continuous_Mode => continuous_mode,
-    Buffer_Full     => buffer_full,
-    Buffer_Ack      => buffer_ack,
+    Buffer_Full     => "000",
+    Buffer_Ack      => open,
     Analog_Frame_Data => analog_frame_data,
     Analog_Frame_Len  => analog_frame_len,
     Analog_Stream_Mode => analog_stream_mode,
