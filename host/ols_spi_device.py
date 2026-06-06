@@ -35,6 +35,52 @@ CMD_FLAGS      = 0x82
 CMD_DELAY      = 0xC2
 CMD_TMASK      = 0xC0
 CMD_TVALUE     = 0xC1
+CMD_ANALOG_CFG = 0xB0
+CMD_PIN_MAP = 0xBB
+
+ANALOG_MODE_DIGITAL8 = 0
+ANALOG_MODE_MIXED1 = 1
+ANALOG_MODE_MIXED2 = 2
+ANALOG_MODE_ANALOG1 = 3
+ANALOG_MODE_ANALOG2 = 4
+
+NUM_CHANNELS = 16
+
+
+def analog_frame_stride(mode):
+    if mode == ANALOG_MODE_MIXED1:
+        return 4
+    if mode == ANALOG_MODE_MIXED2:
+        return 5
+    if mode == ANALOG_MODE_ANALOG1:
+        return 2
+    if mode == ANALOG_MODE_ANALOG2:
+        return 3
+    return 2  # DIGITAL16
+
+
+def decode_analog_frames(data, mode):
+    stride = analog_frame_stride(mode)
+    frames = []
+    for i in range(0, len(data) // stride):
+        frame = data[i * stride:(i + 1) * stride]
+        row = {"digital": None, "adc": []}
+        if mode == ANALOG_MODE_DIGITAL8:
+            row["digital"] = frame[0] | (frame[1] << 8)
+        elif mode == ANALOG_MODE_MIXED1:
+            row["digital"] = frame[0] | (frame[1] << 8)
+            row["adc"].append(frame[2] | ((frame[3] & 0x0F) << 8))
+        elif mode == ANALOG_MODE_MIXED2:
+            row["digital"] = frame[0] | (frame[1] << 8)
+            row["adc"].append(frame[2] | ((frame[3] & 0x0F) << 8))
+            row["adc"].append(((frame[3] >> 4) & 0x0F) | (frame[4] << 4))
+        elif mode == ANALOG_MODE_ANALOG1:
+            row["adc"].append(frame[0] | ((frame[1] & 0x0F) << 8))
+        elif mode == ANALOG_MODE_ANALOG2:
+            row["adc"].append(frame[0] | ((frame[1] & 0x0F) << 8))
+            row["adc"].append(((frame[1] >> 4) & 0x0F) | (frame[2] << 4))
+        frames.append(row)
+    return frames
 
 class OLSDeviceSPI:
     """SPI backend device — implements capture, rolling capture, and generator."""
@@ -49,10 +95,25 @@ class OLSDeviceSPI:
         self._gen_baud = 115200
         self._gen_tx_pin = 3
         self.spi = None
+        self.analog_mode = ANALOG_MODE_DIGITAL8
+        self.analog_ch0 = 0
+        self.analog_ch1 = 1
 
     def open(self):
-        self.spi = OLS_SPI(speed_hz=30000000)
-        self.spi.open()
+        for attempt in range(3):
+            try:
+                self.spi = OLS_SPI(speed_hz=30000000)
+                self.spi.open()
+                return
+            except Exception as e:
+                self.spi = None
+                if attempt == 2:
+                    raise
+                time.sleep(0.2)
+
+    def _ensure_open(self):
+        if self.spi is None or getattr(self.spi, 'dev', None) is None:
+            self.open()
 
     def close(self):
         if self.spi:
@@ -60,9 +121,16 @@ class OLSDeviceSPI:
             self.spi = None
 
     def reset(self):
-        if not self.spi:
-            return
-        self.spi.reset()
+        self._ensure_open()
+        for attempt in range(2):
+            try:
+                self.spi.reset()
+                break
+            except (AttributeError, Exception):
+                self.spi = None
+                if attempt == 1:
+                    raise
+                self._ensure_open()
         time.sleep(0.02)
         self.spi.flush()
         # Switch to SPI mode (0xAB, data(0)=1).
@@ -74,13 +142,27 @@ class OLSDeviceSPI:
 
     def get_metadata(self):
         """Return 50-byte metadata block (same format as UART backend)."""
-        if not self.spi:
-            return b''
+        self._ensure_open()
         r = self.spi.tx(CMD_METADATA)
         return bytes(r) + b'\x00' * (50 - len(r))
 
     def raw_mode(self, enable=True):
         self._stride = 1 if enable else 4
+
+    def set_analog_config(self, mode, ch0=0, ch1=1):
+        self.analog_mode = mode & 0x7
+        self.analog_ch0 = ch0 & 0xF
+        self.analog_ch1 = ch1 & 0xF
+        payload = self.analog_mode | (self.analog_ch0 << 4) | (self.analog_ch1 << 8)
+        self._long(CMD_ANALOG_CFG, payload)
+
+    def set_pin_map(self, channel, pin_index):
+        """Map a LA channel to a physical pin index. 0xBB command."""
+        payload = (channel & 0xFF) | ((pin_index & 0xFF) << 8)
+        self._long(CMD_PIN_MAP, payload)
+
+    def decode_analog_frames(self, data, mode=None):
+        return decode_analog_frames(data, self.analog_mode if mode is None else mode)
 
     def fast_mode(self, enable=True):
         if self.spi:
@@ -108,7 +190,7 @@ class OLSDeviceSPI:
             self.gen_pins['tx'] = tx_pin
         if scl_pin is not None:
             self.gen_pins['scl'] = scl_pin
-        val = (self.gen_pins['tx'] & 7) | ((self.gen_pins['scl'] & 7) << 8)
+        val = (self.gen_pins['tx'] & 0x1F) | ((self.gen_pins['scl'] & 0x1F) << 8)
         self._long(CMD_GEN_PINS, val)
 
     def _load_block(self, data):
@@ -215,15 +297,15 @@ class OLSDeviceSPI:
                          trigger=None, capture_time=None, progress_cb=None,
                          stop_evt=None,
                          proto=None, i2c_speed=100000,
-                         i2c_frame=None, i2c_tx_pin=3, i2c_scl_pin=1):
+                         i2c_frame=None, i2c_tx_pin=3, i2c_scl_pin=1,
+                         gen_first=True):
         """Arm capture and start generator in one sequence.
         Uses fast mode with back-to-back ARM+NOPs to catch auto-readout data.
 
         proto: None (use legacy _gen_data), 'I2C' (configure I2C generator),
                or omitted/None for plain capture without gen.
         """
-        if not self.spi:
-            return b''
+        self._ensure_open()
         if capture_time is not None:
             nsamples = int(capture_time * rate_hz)
             nsamples = max(2, min(nsamples, 500000))
@@ -256,6 +338,7 @@ class OLSDeviceSPI:
         self._long(CMD_TMASK, mask)
         self._long(CMD_TVALUE, value)
         self._long(CMD_FLAGS, self._raw_flags)
+        self.set_analog_config(self.analog_mode, self.analog_ch0, self.analog_ch1)
         self._long(CMD_DELAY, 0)
         self._short(CMD_XOFF)
         self.spi.flush()
@@ -276,12 +359,18 @@ class OLSDeviceSPI:
             self._load_block(self._gen_data)
         self.spi.flush()
 
-        # Back-to-back: GEN_STRT + ARM + NOPs to read during auto-readout
+        # Back-to-back: GEN_STRT + ARM (or ARM + GEN_STRT) + NOPs for readout
+        # gen_first=True: start gen before arm (for gen that runs long, e.g. loop)
+        # gen_first=False: arm first, then start gen (for short bursts like UART 'Hello')
         need = rc * self._stride
         d = self.spi.dev
         buf = bytes([0x80, GPIO_CS_LO, PIN_DIR])
-        buf += bytes([0x31, 0x04, 0x00, CMD_GEN_STRT, 0x11, 0x11, 0x11, 0x11])
-        buf += bytes([0x31, 0x04, 0x00, CMD_ARM, 0x11, 0x11, 0x11, 0x11])
+        if gen_first:
+            buf += bytes([0x31, 0x04, 0x00, CMD_GEN_STRT, 0x11, 0x11, 0x11, 0x11])
+            buf += bytes([0x31, 0x04, 0x00, CMD_ARM, 0x11, 0x11, 0x11, 0x11])
+        else:
+            buf += bytes([0x31, 0x04, 0x00, CMD_ARM, 0x11, 0x11, 0x11, 0x11])
+            buf += bytes([0x31, 0x04, 0x00, CMD_GEN_STRT, 0x11, 0x11, 0x11, 0x11])
         # Immediately start NOPs to read captured data
         remaining = need
         while remaining > 0:
@@ -320,8 +409,7 @@ class OLSDeviceSPI:
         trigger: None (immediate), 'rising', or 'falling'.
         stop_evt: threading.Event — set to abort capture early.
         """
-        if not self.spi:
-            return b''
+        self._ensure_open()
         if capture_time is not None:
             nsamples = int(capture_time * rate_hz)
             nsamples = max(2, min(nsamples, 500000))
@@ -354,6 +442,7 @@ class OLSDeviceSPI:
         self._long(CMD_TMASK, mask)
         self._long(CMD_TVALUE, value)
         self._long(CMD_FLAGS, self._raw_flags)
+        self.set_analog_config(self.analog_mode, self.analog_ch0, self.analog_ch1)
         self._long(CMD_DELAY, 0)
         self._short(CMD_XOFF)
 
@@ -388,6 +477,22 @@ class OLSDeviceSPI:
                     break
         return samples
 
+    def capture_analog(self, rate_hz=100000, frames=4096, mode=ANALOG_MODE_MIXED2,
+                       ch0=0, ch1=1, timeout=6, progress_cb=None, stop_evt=None):
+        stride = analog_frame_stride(mode)
+        self.raw_mode(True)
+        self.set_analog_config(mode, ch0, ch1)
+        data = self.capture(
+            rate_hz=rate_hz * stride,
+            nsamples=frames * stride,
+            timeout=timeout,
+            trigger=None,
+            progress_cb=progress_cb,
+            stop_evt=stop_evt,
+        )
+        trimmed = data[:frames * stride]
+        return trimmed, decode_analog_frames(trimmed, mode)
+
     # ─── I2C capture with generator ──────────────────────────────
 
     def i2c_capture_with_gen(self, rate_hz=400000, nsamples=2000, timeout=6,
@@ -401,8 +506,7 @@ class OLSDeviceSPI:
 
         Returns raw capture bytes (4 bytes per sample).
         """
-        if not self.spi:
-            return b''
+        self._ensure_open()
 
         self.reset()
         time.sleep(0.02)
@@ -476,8 +580,7 @@ class OLSDeviceSPI:
 
         Yields (buf, seq, buffer_nsamp) per buffer completion.
         """
-        if not self.spi:
-            return
+        self._ensure_open()
 
         self.spi.reset()
         self.spi.flush()
@@ -565,8 +668,7 @@ class OLSDeviceSPI:
                         stop_evt, progress_cb=None, gen_data=None, gen_baud=115200,
                         gen_tx_pin=3, full_out=None, use_continuous=True):
         """Continuous rolling capture via SPI, with optional generator."""
-        if not self.spi:
-            return
+        self._ensure_open()
 
         self.spi.reset()
         self.spi.flush()

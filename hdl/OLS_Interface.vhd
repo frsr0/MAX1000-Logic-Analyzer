@@ -36,8 +36,8 @@ PORT (
   Gen_Baud_Div  : OUT STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   Gen_Busy      : IN  STD_LOGIC := '0';
   Gen_Proto     : OUT STD_LOGIC;
-   Gen_TX_Pin    : OUT NATURAL range 0 to 7 := 0;
-   Gen_SCL_Pin   : OUT NATURAL range 0 to 7 := 0;
+    Gen_TX_Pin    : OUT NATURAL range 0 to 31 := 0;
+    Gen_SCL_Pin   : OUT NATURAL range 0 to 31 := 0;
    Gen_I2C_Rd_Len : OUT NATURAL range 0 to 255 := 0;
    Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Gen_I2C_Test   : OUT STD_LOGIC := '0';
@@ -45,8 +45,14 @@ PORT (
      Armed          : OUT STD_LOGIC := '0';
       Fast_Mode      : OUT STD_LOGIC := '0';
       Continuous_Mode : OUT STD_LOGIC := '0';
-      Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-       Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0')
+      Analog_Mode     : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
+       Analog_Ch0      : OUT NATURAL range 0 to 15 := 0;
+       Analog_Ch1      : OUT NATURAL range 0 to 15 := 1;
+       Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
+       Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
+       Pin_Map_Write   : OUT STD_LOGIC := '0';
+       Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
+       Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0
 
 );
 END OLS_Interface;
@@ -75,8 +81,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
 
   -- Initialize interface mode from Def_IFace generic (1 = SPI, 0 = UART)
   SIGNAL interface_mode_i : STD_LOGIC := '1';
-  SIGNAL analog_channel_i : NATURAL range 0 to 7 := 0;
-  SIGNAL analog_mode_i    : STD_LOGIC := '0';
+  SIGNAL analog_ch0_i     : NATURAL range 0 to 15 := 0;
+  SIGNAL analog_ch1_i     : NATURAL range 0 to 15 := 1;
+  SIGNAL analog_mode_i    : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
   SIGNAL SPI_TX_Ready     : STD_LOGIC := '0';
   SIGNAL SPI_RX_Valid     : STD_LOGIC := '0';
   SIGNAL SPI_RX_Data      : STD_LOGIC_VECTOR (8-1 DOWNTO 0) := (others => '0');
@@ -94,8 +101,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL blk_len_s : NATURAL range 0 to GEN_FIFO_DEPTH := 0;
   SIGNAL gen_start_cnt : NATURAL range 0 to 63 := 0;
   SIGNAL gen_load_cnt  : NATURAL range 0 to 63 := 0;  -- probe
-   SIGNAL gen_tx_pin_int  : NATURAL range 0 to 7 := 3;
-   SIGNAL gen_scl_pin_int : NATURAL range 0 to 7 := 1;  -- default=1 (CH0 is test counter, can't use 0)
+   SIGNAL gen_tx_pin_int  : NATURAL range 0 to 31 := 3;
+   SIGNAL gen_scl_pin_int : NATURAL range 0 to 31 := 1;  -- default=1 (CH0 is test counter, can't use 0)
   SIGNAL gen_i2c_rd_len_int : NATURAL range 0 to 255 := 0;
   SIGNAL gen_i2c_dev_r_int  : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
    SIGNAL gen_i2c_test_int   : STD_LOGIC := '0';
@@ -191,7 +198,7 @@ BEGIN
     VARIABLE Thread30 : NATURAL range 0 to 3 := 0;
     VARIABLE Thread31 : NATURAL range 0 to 4 := 0;
     VARIABLE Thread38 : NATURAL range 0 to 7 := 0;
-    VARIABLE Thread44 : NATURAL range 0 to 39 := 0;
+    VARIABLE Thread44 : NATURAL range 0 to 40 := 0;
     VARIABLE Thread45 : NATURAL range 0 to 4 := 0;
     VARIABLE Thread49 : NATURAL range 0 to 2 := 0;
     VARIABLE Thread51 : NATURAL range 0 to 5 := 0;
@@ -202,6 +209,7 @@ BEGIN
     Gen_Load_We <= '0';
     Gen_Start <= '0';
     div3_pending <= '0';
+    Pin_Map_Write <= '0';
     IF (Divider < CLK_Frequency) THEN
       Rate_Div <= Divider + 1;
     ELSE
@@ -556,6 +564,9 @@ BEGIN
             Run <= '0';
             continuous_mode_i <= '0';
             ch_mode <= '0';
+            analog_mode_i <= (others => '0');
+            analog_ch0_i <= 0;
+            analog_ch1_i <= 1;
             saved_command <= (others => '0');
             cmd_was_multibyte <= '0';
             Trigger_Mask <= (others => '0');
@@ -674,7 +685,7 @@ BEGIN
                       WHEN 15 => UART_TX_Data <= x"53";
                       WHEN 14 => UART_TX_Data <= x"00";
                       WHEN 13 => UART_TX_Data <= x"40";
-                      WHEN 12 => UART_TX_Data <= x"08";
+                      WHEN 12 => UART_TX_Data <= x"10";
                       WHEN 11 => UART_TX_Data <= x"21";
                       WHEN 10 => UART_TX_Data <= x"00";
                       WHEN 9  => UART_TX_Data <= x"10";
@@ -757,8 +768,8 @@ BEGIN
             null;
             Thread44 := 0; Thread45 := 0; Thread38 := 0;
           WHEN 24 =>
-            gen_tx_pin_int <= TO_INTEGER(UNSIGNED(data(7 downto 0))) mod 8;
-            gen_scl_pin_int <= TO_INTEGER(UNSIGNED(data(15 downto 8))) mod 8;
+            gen_tx_pin_int <= TO_INTEGER(UNSIGNED(data(7 downto 0))) mod 32;
+            gen_scl_pin_int <= TO_INTEGER(UNSIGNED(data(15 downto 8))) mod 32;
             Thread44 := 0; Thread45 := 0; Thread38 := 0;
           WHEN 25 =>
             gen_i2c_test_int <= data(0);
@@ -793,16 +804,26 @@ BEGIN
             interface_mode_i <= data(0);
             Thread44 := 0; Thread45 := 0; Thread38 := 0;
           WHEN 30 =>
-            analog_channel_i <= TO_INTEGER(UNSIGNED(data(3 downto 0)));
+            analog_ch0_i <= TO_INTEGER(UNSIGNED(data(3 downto 0))) mod 16;
             Thread44 := 0; Thread45 := 0; Thread38 := 0;
           WHEN 31 =>
-            analog_mode_i <= data(0);
+            analog_mode_i <= "00" & data(0);
             Thread44 := 0; Thread45 := 0; Thread38 := 0;
           WHEN 32 =>
             ch_mode <= data(0);
             Thread44 := 0; Thread45 := 0; Thread38 := 0;
           WHEN 33 =>
             gen_spi_test_int <= data(0);
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 34 =>
+            analog_mode_i <= data(2 downto 0);
+            analog_ch0_i <= TO_INTEGER(UNSIGNED(data(7 downto 4))) mod 16;
+            analog_ch1_i <= TO_INTEGER(UNSIGNED(data(11 downto 8))) mod 16;
+            Thread44 := 0; Thread45 := 0; Thread38 := 0;
+          WHEN 35 =>
+            Pin_Map_Channel <= TO_INTEGER(UNSIGNED(data(7 downto 0)));
+            Pin_Map_Pin <= TO_INTEGER(UNSIGNED(data(15 downto 8)));
+            Pin_Map_Write <= '1';
             Thread44 := 0; Thread45 := 0; Thread38 := 0;
           WHEN 37 =>
             interface_mode_i <= data(0);
@@ -913,6 +934,10 @@ BEGIN
                 Thread44 := Thread44 + 30;
               WHEN x"AD" =>
                 Thread44 := Thread44 + 31;
+              WHEN x"BB" =>
+                Thread44 := 35;
+              WHEN x"B0" =>
+                Thread44 := 34;
               WHEN x"AE" =>
                 Thread44 := 32;
               WHEN x"AF" =>
@@ -990,8 +1015,12 @@ BEGIN
   Gen_SPI_Test   <= gen_spi_test_int;
   Fast_Mode      <= fast_mode_i;
   Continuous_Mode <= continuous_mode_i;
+  Analog_Mode <= analog_mode_i;
+  Analog_Ch0 <= analog_ch0_i;
+  Analog_Ch1 <= analog_ch1_i;
   Buffer_Ack      <= buffer_ack_i;
   Armed          <= Run_OLS;
+  -- Pin_Map_Write is driven from the main process (default low, pulsed in CMD_PIN_MAP handler)
 
   UART_Interface1 : UART_Interface
   GENERIC MAP (

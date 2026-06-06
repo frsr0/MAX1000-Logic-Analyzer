@@ -39,19 +39,27 @@ PORT (
   Gen_Baud_Div  : OUT STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   Gen_Busy      : IN  STD_LOGIC := '0';
   Gen_Proto     : OUT STD_LOGIC;
-    Gen_TX_Pin    : OUT NATURAL range 0 to 7 := 0;
-    Gen_SCL_Pin   : OUT NATURAL range 0 to 7 := 0;
+    Gen_TX_Pin    : OUT NATURAL range 0 to 31 := 0;
+    Gen_SCL_Pin   : OUT NATURAL range 0 to 31 := 0;
     Gen_I2C_Rd_Len : OUT NATURAL range 0 to 255 := 0;
     Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Gen_I2C_Test   : OUT STD_LOGIC := '0';
     Gen_SPI_Test   : OUT STD_LOGIC := '0';
     Armed          : OUT STD_LOGIC := '0';
     Fast_Mode      : OUT STD_LOGIC := '0';
+    Analog_Mode    : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
+    Analog_Ch0     : OUT NATURAL range 0 to 15 := 0;
+    Analog_Ch1     : OUT NATURAL range 0 to 15 := 1;
     Status        : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Continuous_Mode : OUT STD_LOGIC := '0';
     Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-    Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0')
-
+    Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
+    Analog_Frame_Data : IN STD_LOGIC_VECTOR(63 downto 0) := (others => '0');
+    Analog_Frame_Len  : IN NATURAL range 1 to 8 := 1;
+    Analog_Stream_Mode : IN STD_LOGIC := '0';
+    Pin_Map_Write  : OUT STD_LOGIC := '0';
+    Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
+    Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0
 );
 END OLS_Logic_Analyzer;
 
@@ -75,8 +83,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL Gen_Baud_Div_i     : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   SIGNAL Gen_Proto_i       : STD_LOGIC := '0';
   SIGNAL Gen_Busy_i         : STD_LOGIC := '0';
-  SIGNAL Gen_TX_Pin_i       : NATURAL range 0 to 7 := 0;
-  SIGNAL Gen_SCL_Pin_i      : NATURAL range 0 to 7 := 0;
+  SIGNAL Gen_TX_Pin_i       : NATURAL range 0 to 31 := 0;
+  SIGNAL Gen_SCL_Pin_i      : NATURAL range 0 to 31 := 0;
   SIGNAL gen_i2c_rd_len_i    : NATURAL range 0 to 255 := 0;
   SIGNAL gen_i2c_dev_r_i     : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL gen_i2c_test_i      : STD_LOGIC := '0';
@@ -87,6 +95,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL buffer_full_i       : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
   SIGNAL buffer_ack_i        : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
   SIGNAL fla_status          : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+  SIGNAL analog_mode_i       : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
+  SIGNAL analog_ch0_i        : NATURAL range 0 to 15 := 0;
+  SIGNAL analog_ch1_i        : NATURAL range 0 to 15 := 1;
+  SIGNAL pin_map_write_i     : STD_LOGIC := '0';
+  SIGNAL pin_map_channel_i   : NATURAL range 0 to 15 := 0;
+  SIGNAL pin_map_pin_i       : NATURAL range 0 to 31 := 0;
   COMPONENT OLS_Interface IS
   GENERIC (
       CLK_Frequency   :   INTEGER     := 12000000;    
@@ -118,8 +132,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
     Gen_Baud_Div  : OUT STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   Gen_Busy      : IN  STD_LOGIC := '0';
   Gen_Proto     : OUT STD_LOGIC := '0';
-    Gen_TX_Pin    : OUT NATURAL range 0 to 7 := 0;
-    Gen_SCL_Pin   : OUT NATURAL range 0 to 7 := 0;
+    Gen_TX_Pin    : OUT NATURAL range 0 to 31 := 0;
+    Gen_SCL_Pin   : OUT NATURAL range 0 to 31 := 0;
     Gen_I2C_Rd_Len : OUT NATURAL range 0 to 255 := 0;
    Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
      Gen_I2C_Test   : OUT STD_LOGIC := '0';
@@ -127,8 +141,14 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
       Armed          : OUT STD_LOGIC := '0';
       Fast_Mode      : OUT STD_LOGIC := '0';
       Continuous_Mode : OUT STD_LOGIC := '0';
+      Analog_Mode     : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
+      Analog_Ch0      : OUT NATURAL range 0 to 15 := 0;
+      Analog_Ch1      : OUT NATURAL range 0 to 15 := 1;
       Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-      Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0')
+      Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
+      Pin_Map_Write   : OUT STD_LOGIC := '0';
+      Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
+      Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0
      );
      END COMPONENT;
     COMPONENT Fast_Logic_Analyzer_SDRAM IS
@@ -168,7 +188,10 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
      FAST_CLK    : IN  std_logic := '0';
      Continuous_Mode : IN  std_logic := '0';
      Buffer_Full     : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-     Buffer_Ack      : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0')
+     Buffer_Ack      : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
+     Analog_Frame_Data : IN STD_LOGIC_VECTOR(63 downto 0) := (others => '0');
+     Analog_Frame_Len  : IN NATURAL range 1 to 8 := 1;
+     Analog_Stream_Mode : IN STD_LOGIC := '0'
 
    );
    END COMPONENT;
@@ -176,8 +199,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
 BEGIN
 
   OLS_Interface_Inputs(Channels-1 downto 0) <= Inputs;
-  -- Bits 31 downto Channels are intentionally held '0'. OLS_Interface expects
-  -- a 32-bit bus; channels beyond the configured width appear as constant low.
 
   OLS_Interface_Outputs(Channels-1 downto 0) <= LA_Out(((OLS_Interface_Address mod sub_steps + 1)*Channels)-1 downto (OLS_Interface_Address mod sub_steps)*Channels);
   LA_Address <= OLS_Interface_Address/sub_steps;
@@ -195,7 +216,13 @@ BEGIN
   Gen_SPI_Test   <= gen_spi_test_i;
   Armed          <= armed_i;
   Fast_Mode      <= fast_mode_i;
+  Analog_Mode <= analog_mode_i;
+  Analog_Ch0 <= analog_ch0_i;
+  Analog_Ch1 <= analog_ch1_i;
   Status <= fla_status;
+  Pin_Map_Write <= pin_map_write_i;
+  Pin_Map_Channel <= pin_map_channel_i;
+  Pin_Map_Pin <= pin_map_pin_i;
   OLS_Interface1 : OLS_Interface
   GENERIC MAP (
       CLK_Frequency => CLK_Frequency,Baud_Rate     => Baud_Rate,Max_Samples   => Max_Samples,OS_Rate       => 13,Def_IFace     => 1
@@ -209,9 +236,15 @@ BEGIN
     Gen_SPI_Test   => gen_spi_test_i,
     Armed          => armed_i,
     Fast_Mode      => fast_mode_i,
+    Analog_Mode    => analog_mode_i,
+    Analog_Ch0     => analog_ch0_i,
+    Analog_Ch1     => analog_ch1_i,
     Continuous_Mode => continuous_mode_i,
     Buffer_Full     => buffer_full_i,
-    Buffer_Ack      => buffer_ack_i
+    Buffer_Ack      => buffer_ack_i,
+    Pin_Map_Write  => pin_map_write_i,
+    Pin_Map_Channel => pin_map_channel_i,
+    Pin_Map_Pin     => pin_map_pin_i
     
   );
   Fast_Logic_Analyzer_SDRAM1 : Fast_Logic_Analyzer_SDRAM
@@ -226,7 +259,10 @@ BEGIN
     FAST_CLK     => FAST_CLK,
     Continuous_Mode => continuous_mode_i,
     Buffer_Full     => buffer_full_i,
-    Buffer_Ack      => buffer_ack_i
+    Buffer_Ack      => buffer_ack_i,
+    Analog_Frame_Data => Analog_Frame_Data,
+    Analog_Frame_Len  => Analog_Frame_Len,
+    Analog_Stream_Mode => Analog_Stream_Mode
   );
   
 END BEHAVIORAL;

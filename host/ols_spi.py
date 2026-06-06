@@ -30,6 +30,7 @@ PIN_DIR     = 0x0B   # CLK(0), MOSI(1), CS(3) outputs only; BDBUS4-7 inputs
 GPIO_CS_HI  = 0x08
 GPIO_CS_LO  = 0x00
 SLEEP_TICK  = 0.003
+READ_CHUNK  = 16384
 
 
 class OLS:
@@ -100,6 +101,14 @@ class OLS:
         d = ft.open(idx)
         d.setBitMode(0xFF, 0); time.sleep(0.05)
         d.setBitMode(0xFF, 2); time.sleep(0.1)
+        try:
+            d.setLatencyTimer(1)
+        except:
+            pass
+        try:
+            d.setUSBParameters(65536, 65536)
+        except:
+            pass
         d.purge()
         time.sleep(SLEEP_TICK)
         q = d.getQueueStatus()
@@ -157,7 +166,6 @@ class OLS:
         buf += bytes([0x87])                                # flush
         self._drain()
         self.dev.write(buf)
-        time.sleep(SLEEP_TICK)
         resp = self._read_n(total)
         return resp[:read_len]
 
@@ -184,7 +192,6 @@ class OLS:
             buf += bytes([0x80, GPIO_CS_HI, PIN_DIR])
             buf += bytes([0x87])
             self.dev.write(buf)
-            time.sleep(SLEEP_TICK)
             r = self._read_all(timeout=0.050)
             if len(r) >= 5:
                 last5 = r[-5:]
@@ -208,7 +215,6 @@ class OLS:
             buf += bytes([0x80, GPIO_CS_HI, PIN_DIR])
             buf += bytes([0x87])
             self.dev.write(buf)
-            time.sleep(SLEEP_TICK)
             r = self._read_n(n)
             if r and r != b'\xff' * n:
                 return r
@@ -227,9 +233,8 @@ class OLS:
         self._drain()
         buf = bytes([0x80, GPIO_CS_LO, PIN_DIR])
         # Send NOP (0x11) bytes while clocking in MISO — 0x31 returns data inline.
-        # Chunked at 64 bytes to stay within FTDI internal buffer limits.
         remaining = nbytes
-        chunk = 64
+        chunk = READ_CHUNK
         while remaining > 0:
             n = min(chunk, remaining)
             buf += bytes([0x31, (n - 1) & 0xFF, ((n - 1) >> 8) & 0xFF])
@@ -239,7 +244,6 @@ class OLS:
         buf += bytes([0x80, GPIO_CS_HI, PIN_DIR])
         buf += bytes([0x87])
         self.dev.write(buf)
-        time.sleep(SLEEP_TICK)
         return self._read_n(nbytes)
 
     # ── Public API for OLSDeviceSPI ──────────────────────────────────

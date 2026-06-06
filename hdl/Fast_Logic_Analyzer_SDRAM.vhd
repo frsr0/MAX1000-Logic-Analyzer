@@ -40,7 +40,10 @@ port (
     -- Double-buffer control
     Continuous_Mode : in std_logic := '0';
     Buffer_Full     : out std_logic_vector(2 downto 0) := (others => '0');
-    Buffer_Ack      : in std_logic_vector(2 downto 0) := (others => '0')
+    Buffer_Ack      : in std_logic_vector(2 downto 0) := (others => '0');
+    Analog_Frame_Data : in std_logic_vector(63 downto 0) := (others => '0');
+    Analog_Frame_Len  : in natural range 1 to 8 := 1;
+    Analog_Stream_Mode : in std_logic := '0'
   );
 end Fast_Logic_Analyzer_SDRAM;
 
@@ -217,6 +220,10 @@ begin
     variable flush_sync : boolean := false;
     variable buf_limit : natural range 0 to 15000000 := 0;
     variable write_addr : std_logic_vector(21 downto 0) := (others => '0');
+    variable analog_frame : std_logic_vector(63 downto 0) := (others => '0');
+    variable analog_len   : natural range 1 to 8 := 1;
+    variable analog_idx   : natural range 0 to 7 := 0;
+    variable next_word    : std_logic_vector(15 downto 0) := (others => '0');
   begin
     if rising_edge(pclk) then
       bram_wren <= '0';
@@ -269,6 +276,9 @@ begin
         waddr_0 := 0; waddr_1 := 0; waddr_2 := 0; step_r := 0;
         f_head := 0; f_tail := 0; f_cnt := 0;
         wbuf := (others => '0');
+        analog_frame := (others => '0');
+        analog_len := 1;
+        analog_idx := 0;
         bram_wp := 0; bram_cnt := 0;
         flush_rem := 0; flush_sync := false;
         rd_pend := '0';
@@ -410,7 +420,17 @@ begin
 
         -- Sample new data when tick arrives
         if sample_en = '1' then
-          wbuf(((step_r + 1) * Channels) - 1 downto step_r * Channels) := Inputs;
+          if Analog_Stream_Mode = '1' then
+            if analog_idx = 0 then
+              analog_frame := Analog_Frame_Data;
+              analog_len := Analog_Frame_Len;
+            end if;
+            next_word := (others => '0');
+            next_word(7 downto 0) := analog_frame((analog_idx * 8) + 7 downto analog_idx * 8);
+            wbuf(((step_r + 1) * Channels) - 1 downto step_r * Channels) := next_word;
+          else
+            wbuf(((step_r + 1) * Channels) - 1 downto step_r * Channels) := Inputs;
+          end if;
 
             if step_r = sub_steps - 1 then
             -- Full 16-bit word ready
@@ -514,6 +534,13 @@ begin
 
           if step_r = sub_steps - 1 then step_r := 0;
           else step_r := step_r + 1;
+          end if;
+          if Analog_Stream_Mode = '1' then
+            if analog_idx + 1 >= analog_len then
+              analog_idx := 0;
+            else
+              analog_idx := analog_idx + 1;
+            end if;
           end if;
         end if;
 

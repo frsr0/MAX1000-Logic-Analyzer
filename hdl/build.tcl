@@ -22,6 +22,9 @@ set_global_assignment -name VHDL_FILE Fast_Logic_Analyzer_SDRAM.vhd
 set_global_assignment -name VHDL_FILE OLS_Logic_Analyzer_SDRAM_Core.vhd
 set_global_assignment -name VHDL_FILE OLS_Logic_Analyzer_wrapper.vhd
 
+# Altera Modular ADC II IP (generate via IP Catalog before compilation)
+# set_global_assignment -name QIP_FILE MAX10_ADC.qip
+
 load_package flow
 execute_module -tool map
 execute_module -tool fit
