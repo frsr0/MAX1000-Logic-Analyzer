@@ -2019,7 +2019,7 @@ class OLScope:
             elif proto == 'I2C':
                 sda_src = slot.get('sda_idx', 3)
                 scl_src = slot.get('scl_idx', 1)
-                dec = decode_i2c(chan_data, self.samplerate, scl_src, sda_src,
+                dec = decode_i2c(new_data, self.samplerate, scl_src, sda_src,
                                  filter_threshold=th_slot if th_slot > 0 else 0)
                 for item in dec:
                     t, v = item
@@ -2028,7 +2028,9 @@ class OLScope:
                     pos = 0  # approximate position — not available from decode_i2c
                     if pos < ns: sig_arr[pos] = 1
             elif proto == 'SPI':
-                dec = decode_spi(chan_data, self.samplerate, 0, 1,
+                spi_miso = slot.get('sda_idx', 3)
+                spi_sclk = slot.get('scl_idx', 1)
+                dec = decode_spi(new_data, self.samplerate, spi_miso, spi_sclk,
                                  filter_threshold=th_slot if th_slot > 0 else 0)
                 for bv in dec:
                     frames.append({'type': 'byte', 'val': bv})

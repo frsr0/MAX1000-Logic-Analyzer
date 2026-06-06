@@ -1,10 +1,6 @@
 import sys
 from unittest.mock import MagicMock, patch
 
-sys.modules['tkinter'] = MagicMock()
-sys.modules['tkinter.ttk'] = MagicMock()
-sys.modules['tkinter.filedialog'] = MagicMock()
-sys.modules['tkinter.messagebox'] = MagicMock()
 sys.modules['serial'] = MagicMock()
 sys.modules['serial.tools'] = MagicMock()
 sys.modules['serial.tools.list_ports'] = MagicMock()

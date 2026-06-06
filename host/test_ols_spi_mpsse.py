@@ -124,6 +124,26 @@ class TestOLS_SPI_MPSSE:
         assert mock_d.write.called
 
     @patch('ols_spi_mpsse.ft')
+    def test_gpio(self, mock_ft):
+        mock_d = _make_mock_dev()
+        mock_ft.open.return_value = mock_d
+        import ols_spi_mpsse
+        inst = ols_spi_mpsse.OLS_SPI_MPSSE(channel=1, spi_hz=12000000)
+        mock_d.reset_mock()
+        inst._gpio(0x08)
+        mock_d.write.assert_called_with(bytes([0x80, 0x08, 0x0B]))
+
+    @patch('ols_spi_mpsse.ft')
+    def test_sync_wait_immediate(self, mock_ft):
+        mock_d = _make_mock_dev(get_qty=100)
+        mock_ft.open.return_value = mock_d
+        import ols_spi_mpsse
+        inst = ols_spi_mpsse.OLS_SPI_MPSSE(channel=1, spi_hz=12000000)
+        mock_d.reset_mock()
+        inst._sync_wait(10)
+        assert mock_d.getQueueStatus.called
+
+    @patch('ols_spi_mpsse.ft')
     def test_close(self, mock_ft):
         mock_d = _make_mock_dev()
         mock_ft.open.return_value = mock_d
