@@ -23,7 +23,7 @@ PORT (
   SPI_MISO     : OUT STD_LOGIC := 'Z';
   Interface_Mode : OUT STD_LOGIC := '0';
   Inputs       : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');  
-  Rate_Div     : BUFFER NATURAL range 1 to CLK_Frequency := 12; 
+  Rate_Div     : BUFFER NATURAL range 1 to 150000000 := 12; 
   Samples      : BUFFER NATURAL range 1 to Max_Samples   := Max_Samples;  
   Start_Offset : BUFFER NATURAL range 0 to Max_Samples   := 0;  
   Run          : BUFFER STD_LOGIC := '0'; 

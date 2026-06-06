@@ -14,7 +14,7 @@ architecture bench of tb_adc_controller is
 
   signal clk    : std_logic := '0';
   signal reset  : std_logic := '0';
-  signal ch_sel : natural range 0 to 7 := 0;
+  signal ch_sel : natural range 0 to 15 := 0;
   signal start  : std_logic := '0';
   signal busy   : std_logic;
   signal result : std_logic_vector(11 downto 0);
@@ -25,17 +25,25 @@ begin
 
   DUT : entity work.ADC_Controller
     port map (
-      sys_clk      => clk,
-      reset        => reset,
-      channel_sel  => ch_sel,
-      start        => start,
-      busy         => busy,
-      result       => result,
-      result_valid => valid
+      sys_clk        => clk,
+      sys_clk_locked => '1',
+      reset          => reset,
+      ch0_sel        => ch_sel,
+      ch0_start      => start,
+      ch0_busy       => busy,
+      ch0_result     => result,
+      ch0_valid      => valid,
+      ch1_sel        => 0,
+      ch1_start      => '0',
+      ch1_busy       => open,
+      ch1_result     => open,
+      ch1_valid      => open
     );
 
   process
   begin
+    -- Wait for ADC INIT phase (4096 cycles at 96 MHz ~43 us)
+    wait_cycles(clk, 5000);
     report "=== ADC Controller tests ===";
 
     -- Test 1: Single conversion on CH0
@@ -86,7 +94,8 @@ begin
     wait_cycles(clk, 5);
     check(busy = '0', "ADC should not be busy after reset");
     reset <= '0';
-    wait_cycles(clk, 5);
+    -- Wait for ADC re-init (4096 cycles after reset)
+    wait_cycles(clk, 5000);
     check(valid = '0', "Valid should be cleared after reset");
     -- Normal conversion after reset
     start <= '1';

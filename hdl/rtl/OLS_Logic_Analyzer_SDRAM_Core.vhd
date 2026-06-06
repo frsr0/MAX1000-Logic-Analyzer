@@ -66,7 +66,7 @@ END OLS_Logic_Analyzer;
 ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
 
   CONSTANT sub_steps    : NATURAL := 16/Channels;
-  SIGNAL OLS_Interface_Rate_Div      : NATURAL          range 1 to CLK_Frequency := 12;
+  SIGNAL OLS_Interface_Rate_Div      : NATURAL          range 1 to 150000000 := 12;
   SIGNAL OLS_Interface_Samples       : NATURAL          range 1 to Max_Samples := Max_Samples;
   SIGNAL OLS_Interface_Start_Offset  : NATURAL          range 0 to Max_Samples := 0;
   SIGNAL OLS_Interface_Run           : STD_LOGIC := '0';
@@ -119,7 +119,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
     SPI_MISO     : OUT STD_LOGIC := 'Z';
     Interface_Mode : OUT STD_LOGIC := '0';
     Inputs       : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');  
-    Rate_Div     : BUFFER NATURAL range 1 to CLK_Frequency := 12; 
+    Rate_Div     : BUFFER NATURAL range 1 to 150000000 := 12; 
     Samples      : BUFFER NATURAL range 1 to Max_Samples   := Max_Samples;  
     Start_Offset : BUFFER NATURAL range 0 to Max_Samples   := 0;  
     Run          : BUFFER STD_LOGIC := '0'; 

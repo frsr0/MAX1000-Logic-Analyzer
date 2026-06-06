@@ -1,6 +1,0 @@
-{
-  "i2c_addr": 25,
-  "reg": "0x0F",
-  "speed": 100000,
-  "decode_sda_offset": -28
-}

@@ -8,6 +8,10 @@ import sys, os, json, struct, time, threading, math, argparse, itertools, re
 from collections import namedtuple
 from datetime import datetime
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+__version__ = "1.0.0"
+
 # SPI device backend (30 MHz fast mode)
 try:
     from driver.ols_spi_device import (
@@ -2664,11 +2668,12 @@ def splash_choose():
     return result[0]
 
 
-if __name__ == '__main__':
-    if '--cli' in sys.argv or len(sys.argv) > 1 and sys.argv[1] in ('capture','decode','send'):
+def main():
+    if '--cli' in sys.argv or len(sys.argv) > 1 and sys.argv[1] in ('capture','decode','send','--help','-h','--version'):
         # Filter out --cli so argparse doesn't choke on it
         argv = [a for a in sys.argv if a != '--cli']
         p = argparse.ArgumentParser(description='OLS MaxScope CLI')
+        p.add_argument('--version', action='version', version=f'OLS MaxScope {__version__}')
         p.add_argument('command', nargs='?', default='capture',
                       choices=['capture','decode','send'])
         p.add_argument('--port', default=None)
@@ -2714,3 +2719,6 @@ if __name__ == '__main__':
         root.deiconify()
         app.win.after(100, app._auto_connect)
         app.run()
+
+if __name__ == '__main__':
+    main()

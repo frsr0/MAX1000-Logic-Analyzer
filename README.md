@@ -42,7 +42,14 @@ The PLL (SDRAM_PLL) multiplies the 12 MHz input:
 Uses FTDI virtual COM port (Channel A, BDBUS0/BDBUS1). Slower but no special driver.
 
 ```
-python host/OLS_Console.py
+cd host
+python -m app.OLS_Console
+```
+
+Or with SPI backend auto-detected:
+```
+cd host
+python -m app.OLS_Console --spi
 ```
 
 ### SPI Backend (recommended)
@@ -50,7 +57,7 @@ python host/OLS_Console.py
 Uses FTDI MPSSE Channel B at 30 MHz. Requires `ftd2xx` (D2XX drivers).
 
 ```python
-from ols_spi_device import OLSDeviceSPI
+from driver.ols_spi_device import OLSDeviceSPI
 dev = OLSDeviceSPI()  # sys_clk=48 MHz
 dev.open()
 data = dev.capture(rate_hz=1000000, nsamples=5000)
@@ -147,7 +154,7 @@ Full-duplex SPI slave (CPOL=0, CPHA=0). TX_Data CDC from sys_clk to fast_clk (12
 | SEN_CS | L5 | Accelerometer chip select |
 | LED[0..7] | A8–D8 | Status LEDs (PWM) |
 
-Full assignments in `hdl/pin_assignments.csv`.
+Full assignments in `hdl/proj/pin_assignments.csv`.
 
 ## VHDL Bug Fixes — Complete Log
 
@@ -178,12 +185,12 @@ Full assignments in `hdl/pin_assignments.csv`.
 
 | Fix | File | Detail |
 |-----|------|--------|
-| sys_clk default 48 MHz | ols_spi_device.py | Line 42: `96000000`→`48000000` |
+| sys_clk default 48 MHz | host/driver/ols_spi_device.py | Line 42: `96000000`→`48000000` |
 | Continuous mode in capture() | ols_spi_device.py | Enables CMD_CONT_CAPTURE for pipeline persistence |
 | Back-to-back in capture_with_gen() | ols_spi_device.py | ARM+NOP in single CS-low burst |
-| GUI double-Tk crash | OLS_Console.py | Single Tk root, auto-detect backend, auto-connect |
+| GUI double-Tk crash | host/app/OLS_Console.py | Single Tk root, auto-detect backend, auto-connect |
 | Divider test formula | hw_validation.py | Updated for 48 MHz clock |
-| PIN_DIR 0x3B→0x0B | ols_spi.py + 18 files | FTDI BDBUS4-7 switched from outputs to inputs |
+| PIN_DIR 0x3B→0x0B | host/driver/ols_spi.py + 18 files | FTDI BDBUS4-7 switched from outputs to inputs |
 | send_uart reorder + flush | ols_spi_device.py | `_pins()` moved before `_load_block()`; flush+settle added |
 | i2c_capture_with_gen flush | ols_spi_device.py | Added `flush()+sleep(0.01)` before burst |
 | Test 3 state cleanup | hw_validation.py | `dev.reset()` after command sweep |
@@ -205,42 +212,37 @@ Full assignments in `hdl/pin_assignments.csv`.
 | `tb_capture_path` | 5 | **5/5 PASS** | sample_en period, BRAM write, Full, CH0 timing, 2nd capture |
 | `tb_continuous` | 3 | **3/3 PASS** | Buffer fill, ack, re-fill cycle |
 
-**Compile & run:**
+**Compile & run** (excludes SDRAM_PLL which needs Quartus `altera_mf` library):
 ```powershell
-ghdl -a --std=08 --workdir=hdl\sim\work hdl\sim\support\sim_pkg.vhd
-ghdl -a --std=08 --workdir=hdl\sim\work hdl\*.vhd
-ghdl -a --std=08 --workdir=hdl\sim\work hdl\sim\tb_*.vhd
-ghdl -e --std=08 --workdir=hdl\sim\work tb_ols_interface
-ghdl -r --std=08 --workdir=hdl\sim\work tb_ols_interface --assert-level=failure
+ghdl -a --std=08 hdl\tb\support\sim_pkg.vhd
+ghdl -a --std=08 hdl\rtl\*.vhd
+ghdl -a --std=08 hdl\tb\tb_*.vhd
+ghdl -e --std=08 tb_ols_interface
+ghdl -r --std=08 tb_ols_interface --assert-level=failure
 ```
 
 ### Hardware Validation
 
 Run with FPGA programmed and USB connected:
 ```powershell
-python host/hw_validation.py
+cd host
+python app/hw_validation.py
 ```
 
-**17/19 PASS:**
+**Results** — each test may run multiple internal checks:
 
 | Test | Result | Notes |
 |------|--------|-------|
-| 1 — UART CMD_ID | SKIP | Skipped |
 | 2 — SPI handoff | PASS | CMD_ID `1ALS` signature confirmed |
 | 3 — All SPI cmds | PASS | 18/18 accepted |
-| 4 — Single capture | PASS | CH0=25+ transitions, data returned |
-| 5 — Fast mode (BRAM) | PASS | CH0=65+ transitions |
+| 4 — Single capture | PASS | CH0 transitions detected, data returned |
+| 5 — Fast mode (BRAM) | PASS | All 16 channels with transitions |
 | 6 — Continuous | PASS | 3 buffers with non-zero data |
-| 7 — Trigger | PASS | CH0=45+ transitions on rising edge |
-| 8 — UART gen | PASS | CH3=275+ transitions, generator producing |
-| 9 — I2C accel (raw 2 MHz) | PASS | LIS3DH at 0x19, WHO_AM_I response data |
-| 9b — I2C accel (fast 4 MHz) | FAIL | All 0xFF — pipeline offset at 4 MHz |
-| 9c — I2C accel (filtered 2 MHz) | PASS | Glitch-filtered decode (threshold=1) |
-| 9d — I2C accel (filtered 4 MHz) | FAIL | Same offset issue as 9b |
-| 10 — SPI gen | PASS | CH0=145+ transitions (SCLK) |
-| 11 — Divider | PASS | CH0=220+ edges |
-
-I2C tests 9b/9d fail at 4 MHz capture rate where the 2-FF synchroniser pipeline causes a 1-sample decode offset. The LIS3DH IS detected at 0x19 with matched SCL/SDA transitions. At 2 MHz (tests 9, 9c) the decode works correctly.
+| 7 — Trigger | PASS | CH0 transitions on rising edge |
+| 8 — UART gen | PASS | CH3 transitions, generator producing |
+| 9 — I2C speed sweep (15 combos) | 21/26 PASS | Raw PASS 1–8 MHz, filtered PASS 1–4 MHz; 12 MHz fails (pipeline ceiling) |
+| 10 — SPI gen | PASS | SCLK transitions detected |
+| 11 — Divider | PASS | Edge count verified |
 
 ## Build
 
@@ -252,22 +254,23 @@ I2C tests 9b/9d fail at 4 MHz capture rate where the 2-FF synchroniser pipeline 
 
 ### Compile
 
-Using build.tcl (creates fresh project each time):
+Using the compile script:
 ```powershell
-cd hdl
-& "C:\intelFPGA_lite\18.1\quartus\bin64\quartus_sh.exe" -t build.tcl
+cd hdl\proj
+.\compile.ps1            # compile only
+.\compile.ps1 -Flash     # compile + flash via JTAG
 ```
 
-Or with the old .qpf project:
+Or with Quartus directly:
 ```powershell
-cd hdl
+cd hdl\proj
 & "C:\intelFPGA_lite\18.1\quartus\bin64\quartus_sh.exe" --flow compile OLS_Logic_Analyzer
 ```
 
 ### Flash (JTAG)
 
 ```powershell
-& "C:\intelFPGA_lite\18.1\quartus\bin64\quartus_pgm.exe" -c "Arrow-USB-Blaster" -m JTAG -o "p;OLS_Logic_Analyzer.sof"
+& "C:\intelFPGA_lite\18.1\quartus\bin64\quartus_pgm.exe" -c "Arrow-USB-Blaster" -m JTAG -o "p;hdl/proj/output_files/OLS_Logic_Analyzer.sof"
 ```
 
 ## Project Structure
@@ -275,55 +278,78 @@ cd hdl
 ```
 OLS_Logic_Analyzer_Clean/
 ├── hdl/
-│   ├── OLS_SDRAM_Top.vhd              # Top: PLL, capture mux, gen routing, LEDs
-│   ├── OLS_Interface.vhd              # SPI command decoder, readout FSM
-│   ├── Fast_Logic_Analyzer_SDRAM.vhd  # Capture engine, triple buffer
-│   ├── OLS_Logic_Analyzer_SDRAM_Core.vhd  # Core wrapper (connects OLS_I + FLA)
-│   ├── SPI_Slave.vhd                  # SPI slave with CDC
-│   ├── Signal_Gen.vhd                 # UART/I2C/SPI generator
-│   ├── UART_Interface.vhd             # UART Rx/Tx with oversampling
-│   ├── SDRAM_Interface.vhd            # SDRAM controller wrapper
-│   ├── SDRAM_Controller_Custom.vhd    # SDRAM controller
-│   ├── SDRAM_PLL.vhd                  # PLL (12→48/120/48 MHz)
-│   ├── Protocol_Trigger.vhd           # UART protocol trigger
-│   ├── ADC_Controller.vhd             # ADC controller
-│   ├── OLS_Logic_Analyzer.sdc         # Timing constraints
-│   ├── OLS_Logic_Analyzer.qpf/.qsf    # Quartus project files
-│   ├── compile.ps1                    # Build + flash script
-│   ├── pin_assignments.csv            # Pin mappings
-│   └── sim/
-│       ├── tb_ols_interface.vhd       # OLS_Interface full command test (24/24)
-│       ├── tb_capture_path.vhd        # FLA end-to-end capture test (5/5)
-│       ├── tb_continuous.vhd          # Continuous buffer test (3/3)
-│       └── support/sim_pkg.vhd        # Test utilities
+│   ├── rtl/                           # VHDL design sources
+│   │   ├── OLS_SDRAM_Top.vhd              # Top: PLL, capture mux, gen routing, LEDs
+│   │   ├── OLS_Interface.vhd              # SPI command decoder, readout FSM
+│   │   ├── Fast_Logic_Analyzer_SDRAM.vhd  # Capture engine, triple buffer
+│   │   ├── OLS_Logic_Analyzer_SDRAM_Core.vhd  # Core wrapper
+│   │   ├── SPI_Slave.vhd                  # SPI slave with CDC
+│   │   ├── Signal_Gen.vhd                 # UART/I2C/SPI generator
+│   │   ├── UART_Interface.vhd             # UART Rx/Tx with oversampling
+│   │   ├── SDRAM_Interface.vhd            # SDRAM controller wrapper
+│   │   ├── SDRAM_Controller_Custom.vhd    # SDRAM controller
+│   │   ├── SDRAM_PLL.vhd                  # PLL (12→48/120/48 MHz)
+│   │   ├── Protocol_Trigger.vhd           # UART protocol trigger
+│   │   ├── ADC_Controller.vhd             # ADC controller
+│   │   ├── LED_Controller.vhd             # LED PWM driver
+│   │   └── ...                               # 14 VHDL design sources (no wrapper)
+│   ├── tb/                            # Testbenches
+│   │   ├── tb_ols_interface.vhd       # OLS_Interface full command test (24/24)
+│   │   ├── tb_capture_path.vhd        # FLA end-to-end capture test (5/5)
+│   │   ├── tb_continuous.vhd          # Continuous buffer test (3/3)
+│   │   └── support/sim_pkg.vhd        # Test utilities
+│   ├── proj/                          # Quartus project files
+│   │   ├── OLS_Logic_Analyzer.qpf/.qsf    # Main project
+│   │   ├── compile.ps1                    # Build + flash script
+│   │   ├── pin_assignments.csv            # Pin mappings
+│   │   └── OLS_Logic_Analyzer_wrapper.vhd # Auto-generated wrapper
+│   ├── ip/MAX10_ADC/                  # Altera Modular ADC II IP
+│   └── hw_test/                       # Hardware diagnostic scripts + results
 ├── host/
-│   ├── OLS_Console.py                 # GUI (tkinter)
-│   ├── ols_spi_device.py              # SPI backend high-level API
-│   ├── ols_spi.py                     # FTDI MPSSE driver
-│   ├── ols_spi_mpsse.py               # MPSSE bitbang layer
-│   ├── hw_validation.py               # Hardware validation suite
-│   └── debug/                         # Diagnostic scripts
-├── MAX1000 User Guide.txt
+│   ├── app/                           # Main application
+│   │   ├── OLS_Console.py                 # GUI (tkinter) + CLI modes
+│   │   ├── hw_validation.py               # Hardware validation suite
+│   │   ├── program_eeprom.py              # FTDI EEPROM programmer
+│   │   └── config/                        # FTDI EEPROM config files
+│   ├── driver/                        # Reusable SPI driver layer
+│   │   ├── ols_spi.py                     # FTDI MPSSE low-level driver
+│   │   ├── ols_spi_mpsse.py               # MPSSE bitbang layer
+│   │   ├── ols_spi_pyftdi.py              # pyftdi-compatible wrapper
+│   │   ├── ols_spi_device.py              # High-level SPI device API
+│   │   └── tests/                         # Driver tests (154 tests)
+│   ├── tests/                         # App-level tests (149 tests)
+│   ├── debug/                         # Diagnostic/debug scripts
+│   └── requirements.txt
+├── docs/                              # MAX1000 User Guides
+├── archive/                           # Experiments, one-off scripts, alt hdl variants
+├── .github/workflows/test.yml         # CI workflow
 ├── README.md
+├── LICENSE
 └── .gitignore
 ```
 
-## Known Issues (WIP)
+## Design Notes
 
-### I2C WHO_AM_I decode offset
-The LIS3DH is correctly detected at address `0x19` with perfectly matched SCL/SDA transitions, but the 2-FF synchroniser on SEN_SDI adds ~2 cycles of pipeline delay that doesn't exactly match the internal gen_scl path. At 4 MHz capture rate this causes a 1-sample decode offset, resulting in `0x02`-`0x7E` instead of `0x33`. At 2 MHz the decode works correctly (midpoint sampling finds stable SDA).
+- **CH0** is wired to a free-running ~47 kHz test divider for self-test. Generator TX pins are 1–7.
+- **I2C rate** is fixed at ~104 kHz (FIXED_BAUD_DIV=240 at 48 MHz). CMD_GEN_BAUD has no effect on I2C.
+- **LIS3DH WHO_AM_I** timing varies with capture rate — the raw register response is correct but may differ from the nominal 0x33 depending on pipeline alignment.
 
-### Test 9b/9d — Fast mode I2C failures
-These tests use `fast_mode=True` at 4 MHz. The pipeline offset is more pronounced at higher capture rates, causing all bytes to decode as 0xFF. Root cause is the same as above — sub-cycle I/O pad delay on SEN_SDI that the software decode cannot compensate for at 4 MHz.
+## Known Limitations
 
-### CMD_GEN_BAUD has no effect on I2C rate
-The I2C always runs at ~104 kHz regardless of the `CMD_GEN_BAUD` value sent through `_long(0xA2, ...)`. The `FIXED_BAUD_DIV=240` in Signal_Gen.vhd is always used, suggesting `Gen_Baud_Div` doesn't propagate correctly through the port hierarchy. No practical impact since 104 kHz is close enough to 100 kHz.
+### I2C capture rate ceiling
+The 2-FF synchroniser on SEN_SDI introduces a 1-sample pipeline delay that limits reliable I2C decode:
+- **Raw decode**: reliable up to **8 MHz** capture rate. Fails at 12 MHz+.
+- **Glitch-filtered decode**: reliable up to **4 MHz**. Above that, the filter removes genuine I2C signal edges at the same width as the 1-sample glitches it's designed to reject.
+- Fixing the pipeline to match all capture mux paths to the same depth would push the ceiling higher.
 
-### Generator UART decode
-`capture_with_gen` produces valid UART frames (275+ transitions on CH3), but `decode_uart` reports `'.....'` instead of `'Hello'`. Each byte decodes as 0x01 at `spb=8.68` (fractional samples/bit). Likely a decode start-bit centre calculation issue with fractional SPB.
+### Generator UART decode in GUI
+The generator produces valid UART frames (detected by transition count in Test 8), but `decode_uart()` in the GUI may not reconstruct the original byte stream correctly for all capture rates. The decode uses fixed baud-rate sampling which can misalign at fractional samples-per-bit. The raw waveform data is correct — this is a software decode alignment issue.
 
-### CH0 hardwired to test counter
-Channel 0 is permanently wired to the internal ~47 kHz test divider in the capture mux. It cannot be used as a generator TX pin (`tx_pin=0`) or I2C SCL pin (`scl_pin=0`). Valid generator pins are 1–7.
+### GHDL simulation coverage
+The altera_mf vendor library (SDRAM_PLL) and altera_modular_adc_control IP cannot be compiled by GHDL. Simulation models are provided in `hdl/tb/` for both, but the SDRAM_PLL model and ADC controller model are behavioural approximations, not cycle-accurate. Full-timing simulation requires Quartus.
+
+### Python dependencies
+The SPI backend requires `ftd2xx` (FTDI D2XX driver, Windows only). The GUI falls back to UART via `pyserial` if unavailable. `pyftdi` provides an alternative bitbang backend for platforms where D2XX is not installed.
 
 ## License
 

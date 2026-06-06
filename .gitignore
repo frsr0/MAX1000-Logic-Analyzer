@@ -12,8 +12,16 @@ db/
 *.smsg
 *.sld
 *.summary
+
+# Track project configs but ignore generated wrappers
 *.qpf
 *.qsf
+!hdl/proj/OLS_Logic_Analyzer.qpf
+!hdl/proj/OLS_Logic_Analyzer.qsf
+hdl/proj/OLS_Logic_Analyzer_wrapper.vhd
+hdl/proj/incremental_db/
+hdl/proj/db/
+hdl/proj/output_files/
 
 # Python bytecode
 __pycache__/
@@ -33,4 +41,4 @@ work/
 vhdl_ls.toml
 
 # Test outputs
-host/hw_results/
+hdl/hw_test/hw_results/

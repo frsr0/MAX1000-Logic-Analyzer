@@ -42,8 +42,8 @@ architecture bench of tb_core is
   signal gen_baud_div  : std_logic_vector(15 downto 0);
   signal gen_busy      : std_logic := '0';
   signal gen_proto     : std_logic;
-  signal gen_tx_pin    : natural range 0 to 7;
-  signal gen_scl_pin   : natural range 0 to 7;
+  signal gen_tx_pin    : natural range 0 to 31;
+  signal gen_scl_pin   : natural range 0 to 31;
   signal gen_i2c_rd_len : natural range 0 to 255;
   signal gen_i2c_dev_r  : std_logic_vector(7 downto 0);
   signal gen_i2c_test   : std_logic;

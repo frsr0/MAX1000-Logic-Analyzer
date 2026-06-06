@@ -23,7 +23,8 @@ architecture bench of tb_top is
   signal sck     : std_logic := '0';
   signal spi_mosi : std_logic := '0';
   signal spi_miso : std_logic;
-  signal gpio    : std_logic_vector(7 downto 0) := (others => 'Z');
+  signal mkr_d  : std_logic_vector(14 downto 0) := (others => 'Z');
+  signal pmod   : std_logic_vector(7 downto 0) := (others => 'Z');
 
   signal sdram_addr : std_logic_vector(11 downto 0);
   signal sdram_ba   : std_logic_vector(1 downto 0);
@@ -61,7 +62,7 @@ architecture bench of tb_top is
   -- VHDL-2008 hierarchical probes into OLS_SDRAM_Top internals
   signal test_div_probe    : std_logic_vector(9 downto 0);
   signal test_out_probe    : std_logic;
-  signal internal_data_probe : std_logic_vector(7 downto 0);
+  signal internal_data_probe : std_logic_vector(15 downto 0);
 
   procedure spi_cmd(
     signal cs_n   : out std_logic;
@@ -89,7 +90,7 @@ begin
   -- Probe internal signals (VHDL-2008 external names)
   test_div_probe    <= << signal .tb_top.DUT.test_div      : std_logic_vector(9 downto 0) >>;
   test_out_probe    <= << signal .tb_top.DUT.test_out      : std_logic >>;
-  internal_data_probe <= << signal .tb_top.DUT.internal_data : std_logic_vector(7 downto 0) >>;
+  internal_data_probe <= << signal .tb_top.DUT.internal_data : std_logic_vector(15 downto 0) >>;
 
   -- Pull-ups on I2C bus
   sen_sdi <= sen_sdi_pu;
@@ -126,7 +127,8 @@ begin
       UART_TX => uart_tx,
       SPI_CS  => spi_cs,
       SPI_MISO => spi_miso,
-      GPIO    => gpio,
+      MKR_D   => mkr_d,
+      PMOD    => pmod,
       sdram_addr => sdram_addr,
       sdram_ba   => sdram_ba,
       sdram_cas_n => sdram_cas_n,

@@ -109,7 +109,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   -- Pin map write from host command
   signal pin_map_write    : std_logic := '0';
   signal pin_map_channel  : natural range 0 to LA_CHANNELS-1 := 0;
-  signal pin_map_pin      : natural range 0 to PIN_POOL_SIZE-1 := 0;
+  signal pin_map_pin      : natural range 0 to 31 := 0;
 
   -- PWM engine (shared by LED controller)
   signal pwm_cnt       : integer range 0 to 256 := 0;

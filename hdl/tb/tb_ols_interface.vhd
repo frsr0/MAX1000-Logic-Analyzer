@@ -23,7 +23,7 @@ architecture bench of tb_ols_interface is
   signal spi_miso : std_logic;
   signal iface_mode : std_logic;
   signal inputs : std_logic_vector(31 downto 0) := (others => '0');
-  signal rate_div  : natural range 1 to CLK_FREQ;
+  signal rate_div  : natural range 1 to 150000000;
   signal samples   : natural range 1 to 25000;
   signal start_offset : natural range 0 to 25000;
   signal run       : std_logic;
@@ -36,8 +36,8 @@ architecture bench of tb_ols_interface is
   signal gen_baud_div  : std_logic_vector(15 downto 0);
   signal gen_busy      : std_logic := '0';
   signal gen_proto     : std_logic;
-  signal gen_tx_pin    : natural range 0 to 7;
-  signal gen_scl_pin   : natural range 0 to 7;
+  signal gen_tx_pin    : natural range 0 to 31;
+  signal gen_scl_pin   : natural range 0 to 31;
   signal gen_i2c_rd_len : natural range 0 to 255;
   signal gen_i2c_dev_r  : std_logic_vector(7 downto 0);
   signal gen_i2c_test   : std_logic;
@@ -50,8 +50,8 @@ architecture bench of tb_ols_interface is
   signal gen_load_we_clr : std_logic := '0';
   signal continuous_mode : std_logic;
   signal analog_mode : std_logic_vector(2 downto 0);
-  signal analog_ch0  : natural range 0 to 7;
-  signal analog_ch1  : natural range 0 to 7;
+  signal analog_ch0  : natural range 0 to 15;
+  signal analog_ch1  : natural range 0 to 15;
   signal buffer_full  : std_logic_vector(2 downto 0) := (others => '0');
   signal buffer_ack   : std_logic_vector(2 downto 0);
 
