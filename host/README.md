@@ -67,7 +67,7 @@ Hardware validation suite — 14 tests exercising every FPGA data path. Run with
 | 133 | `test_spi_handoff(dev)` | SPI handoff: CMD_ID signature confirmed (1ALS) over SPI |
 | 157 | `test_spi_commands(dev)` | All 18 SPI commands are accepted (no timeout) |
 | 195 | `test_single_capture(dev)` | CH0 transition capture with divider, XON/XOFF, readout |
-| 229 | `test_fast_capture(dev)` | Fast mode (BRAM) with all 8 channels, transition check |
+| 229 | `test_fast_capture(dev)` | Fast mode (BRAM) with all 16 channels, transition check |
 | 266 | `test_continuous_capture(dev)` | Triple buffer handshake: 3 buffers with non-zero data |
 | 319 | `test_trigger_edge(dev)` | Edge trigger on CH0 rising, verify pre-trigger data |
 | 340 | `test_gen_uart(dev)` | Generator UART on CH3, verify transitions at baud rate |

@@ -1,11 +1,15 @@
 # OLS Logic Analyzer — MAX1000
 
-Open-source 8-channel logic analyzer for the Arrow MAX1000 board (Intel MAX10 10M08SAU169C8G + 64 Mbit SDRAM + LIS3DH accelerometer). Dual host interface: **UART (FTDI VCP)** or **SPI (FTDI MPSSE)**.
+Open-source multi-channel logic analyzer for the Arrow MAX1000 board (Intel MAX10 10M08SAU169C8G + 64 Mbit SDRAM + built-in ADC + LIS3DH accelerometer). Dual host interface: **UART (FTDI VCP)** or **SPI (FTDI MPSSE)**.
 
 ## Features
 
-- **8 logic channels**, up to **24 MHz** sample rate
-- **Deep capture**: up to 500,000 samples via SDRAM
+- **16 physical channels**, arbitrarily mappable to any of 23 pin pool (PMOD + MKR headers)
+- **Channel mode**: 8-ch / 500k samples or 4-ch / 4M samples (CMD_CH_MODE)
+- **Analog sampling**: built-in MAX10 ADC, multiplexed across 8 analog inputs
+- **5 capture modes**: Digital 8/16, Mixed 1/2, Analog 1/2 (combine digital + ADC)
+- **Sample rate**: up to **24 MHz** (8-ch), up to **48 MHz** (4-ch)
+- **Deep capture**: up to 4,000,000 samples via SDRAM
 - **Fast capture**: 1,024 samples via BRAM (M9K, no SDRAM needed)
 - **Rolling / continuous capture**: triple-buffer scheme with prefetch
 - **Edge trigger**: rising/falling on any channel
@@ -14,6 +18,39 @@ Open-source 8-channel logic analyzer for the Arrow MAX1000 board (Intel MAX10 10
 - **Accelerometer control**: Dedicated GUI tab for LIS3DH register read/write
 - **Protocol decode**: UART, I2C with waveform annotation
 - **Board self-test**: free-running ~47 kHz test signal on CH0
+
+## Capture Modes
+
+The FPGA supports five capture modes selected via `CMD_ANALOG_CFG` (0xB0). Analog modes interleave MAX10 ADC samples with digital data into framed output words.
+
+| Mode | Value | Digital channels | ADC channels | Frame size | Description |
+|------|-------|-----------------|--------------|------------|-------------|
+| Digital 8 | 0 | 16 | — | 2 bytes | All 16 digital channels, no ADC |
+| Mixed 1 | 1 | 16 | 1 | 4 bytes | 16 digital + 1 ADC (12-bit) |
+| Mixed 2 | 2 | 16 | 2 | 5 bytes | 16 digital + 2 ADC (12-bit each) |
+| Analog 1 | 3 | — | 1 | 2 bytes | 1 ADC only (12-bit) |
+| Analog 2 | 4 | — | 2 | 3 bytes | 2 ADC only (12-bit each) |
+
+ADC channels 0 and 1 are independently configurable to any of the 8 analog inputs (MAX1000 AIN0–AIN7, bank 1A). In idle the ADC free-runs at ~1 MHz (48 MHz / 48 divider).
+
+**Python host API:**
+
+```python
+from driver.ols_spi_device import OLSDeviceSPI, ANALOG_MODE_MIXED2
+
+dev = OLSDeviceSPI()
+dev.open()
+
+# Configure analog: Mixed2 on AIN2 and AIN5
+dev.set_analog_config(ANALOG_MODE_MIXED2, ch0=2, ch1=5)
+
+# Capture 4096 analog frames
+raw, frames = dev.capture_analog(
+    rate_hz=100000, frames=4096, mode=ANALOG_MODE_MIXED2
+)
+for f in frames:
+    print(f"digital={f['digital']:04x}, adc={f['adc']}")
+```
 
 ## Clock Architecture
 
@@ -81,14 +118,16 @@ Clock generation (PLL), capture mux, generator signal routing, LED PWM, pin tris
 
 **test_div**: Free-running 10-bit counter on `sys_clk`. Bit 9 drives `registered_ch0` (double-registered with `preserve` attribute) which feeds CH0 through `capture_mux`. Output frequency = 48 MHz / 1024 = 46.875 kHz.
 
-**capture_mux**: Combinatorial mux per channel:
-- CH0 = `registered_ch0_d1` (test signal, 1-cycle pipelined)
-- CHi = `gen_tx_d1` when `gen_busy` and `gen_tx_pin = i` (1-cycle pipelined)
-- CHi = `sen_sdo_d1`/`sen_sdi_sync` in SPI/I2C test mode (synchronised/pipelined)
-- CHi = `gpio_d1(i)` otherwise (1-cycle pipelined)
+**capture_mux**: Combinatorial mux per channel (i = 0..15):
+- CH0 = `registered_ch0_d1` (test signal, 2-cycle pipelined)
+- CHi = `gen_tx_d1` when `gen_busy` and `gen_tx_pin = pin_map(i)` (generator output)
+- CHi = `sen_sdo_d1`/`gen_tx_d1` in SPI/I2C test mode (synchronised/pipelined)
+- CHi = `pin_pool_d1(pin_map(i))` otherwise (physical pin via remappable pin map)
 - SCL in I2C test mode = `gen_scl_d2` (2-cycle pipelined, matches sen_sdi_sync)
 
-All capture channels have uniform 2-cycle pipeline depth for aligned sampling.
+All capture channels have uniform 2-cycle pipeline depth for aligned sampling. Physical pin mapping is configurable at runtime via `CMD_PIN_MAP` (0xBB).
+
+**Analog stream**: When `analog_mode /= "000"`, the capture engine reads framed analog data (digital + ADC samples) instead of raw pins. The ADC controller multiplexes two channels from AIN[0..7] at ~1 MHz, selected by `analog_ch0` / `analog_ch1`.
 
 ### OLS_Interface.vhd — Command processor + readout FSM
 
@@ -119,7 +158,7 @@ Samples Inputs at `sample_en` rate, stores in BRAM (fast mode) or FIFO→SDRAM (
 
 **Divider**: Free-running counter, `sample_en` fires every `Rate_Div` pclk cycles.
 
-**BRAM:** M9K block, 1024×16-bit. Written every `sub_steps` sample events (2 for 8 channels) when `Fast_Mode='1' AND Armed='1'`.
+**BRAM:** M9K block, 1024×16-bit. Written every `sub_steps` sample events (1 for 16 channels) when `Fast_Mode='1' AND Armed='1'`.
 
 **Full assertion:** When `bram_post_cnt >= samples_div_p` (fast mode) or `waddr_0 >= samples_div_p` (SDRAM).
 
@@ -147,12 +186,17 @@ Full-duplex SPI slave (CPOL=0, CPHA=0). TX_Data CDC from sys_clk to fast_clk (12
 | SPI_CS | AG2 | SPI chip select |
 | SPI_MISO | AF1 | SPI MISO |
 | SPI_SCK | AG1 | SPI clock (shared with UART_RX) |
-| GPIO[0..7] | PMOD | Logic analyzer channels |
+| PMOD[0..7] | PMOD | 8-bit PMOD header (channels 15–22 in pin pool) |
+| MKR_D[0..4] | MKR header | MikroBus digital (channels 0–4 in pin pool) |
+| MKR_D[5..14] | MKR header | MikroBus digital (channels 5–14 in pin pool) |
+| AIN[0..7] | Bank 1A | MAX10 analog inputs (ADC mux) |
 | SEN_SDI | J7 | Accelerometer MOSI |
 | SEN_SDO | K5 | Accelerometer MISO |
 | SEN_SPC | J6 | Accelerometer clock |
 | SEN_CS | L5 | Accelerometer chip select |
 | LED[0..7] | A8–D8 | Status LEDs (PWM) |
+
+All 16 logic analyzer channels are software-mapped to any of the 23 digital pins in the pin pool (MKR_D[0..14] + PMOD[0..7]) via `CMD_PIN_MAP` (0xBB).
 
 Full assignments in `hdl/proj/pin_assignments.csv`.
 
@@ -330,7 +374,9 @@ OLS_Logic_Analyzer_Clean/
 
 ## Design Notes
 
-- **CH0** is wired to a free-running ~47 kHz test divider for self-test. Generator TX pins are 1–7.
+- **CH0** is wired to a free-running ~47 kHz test divider for self-test. Generator TX pins are configurable.
+- **Pin map**: 16 logical channels are mapped to 23 physical pins (MKR_D[0..14] + PMOD[0..7]) at runtime via `CMD_PIN_MAP`. Default mapping is identity (CHi → pin i). The `set_pin_map(channel, pin_index)` API remaps any channel to any pin.
+- **Channel mode**: `CMD_CH_MODE` switches between 8-ch / 500k max samples (default) and 4-ch / 4M max samples. This trades channel count for sample depth.
 - **I2C rate** is fixed at ~104 kHz (FIXED_BAUD_DIV=240 at 48 MHz). CMD_GEN_BAUD has no effect on I2C.
 - **LIS3DH WHO_AM_I** timing varies with capture rate — the raw register response is correct but may differ from the nominal 0x33 depending on pipeline alignment.
 
