@@ -1,0 +1,4 @@
+{
+  "i2c_addr": 25,
+  "decode_sda_offset": -28
+}
