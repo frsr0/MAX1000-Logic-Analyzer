@@ -2,6 +2,22 @@ from unittest.mock import MagicMock, patch
 import sys, types
 import pytest
 
+# Prevent ftd2xx from loading libftd2xx.so at import time during tests
+if 'ftd2xx' not in sys.modules:
+    _mock_ft = types.ModuleType('ftd2xx')
+    _mock_ft.createDeviceInfoList = MagicMock(return_value=0)
+    _mock_ft.listDevices = MagicMock(return_value=0)
+    _mock_ft.open = MagicMock()
+    _mock_ft.openEx = MagicMock()
+    _mock_ft.FTD2XX = MagicMock()
+    _mock_ft.DeviceError = Exception
+    _mock_ft.call_ft = MagicMock()
+    _mock_ft.getDeviceInfoDetail = MagicMock()
+    _mock_ft.getLibraryVersion = MagicMock()
+    _mock_ft.setVIDPID = MagicMock()
+    _mock_ft.getVIDPID = MagicMock()
+    sys.modules['ftd2xx'] = _mock_ft
+
 
 def _make_smart_dev():
     d = MagicMock()
