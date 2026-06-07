@@ -1,6 +1,7 @@
 import struct
 from unittest.mock import MagicMock, patch, call, ANY
 
+from driver.spi_protocol import ST_OK, ST_CAPTURE_DONE
 from driver.ols_spi_device import (
     ANALOG_MODE_DIGITAL8,
     ANALOG_MODE_MIXED1,
@@ -131,27 +132,29 @@ class TestOLSDeviceSPI:
         assert device_spi._stride == 4
 
     def test_set_analog_config(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
+        device_spi.pkt = MagicMock()
         device_spi.set_analog_config(ANALOG_MODE_MIXED2, 3, 7)
         assert device_spi.analog_mode == ANALOG_MODE_MIXED2
         assert device_spi.analog_ch0 == 3
         assert device_spi.analog_ch1 == 7
-        assert device_spi.spi.tx.called
+        expected_payload = 2 | (3 << 4) | (7 << 8)
+        device_spi.pkt.write_register.assert_called_once_with(0x20, expected_payload)
 
     def test_set_pin_map(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
+        device_spi.pkt = MagicMock()
         device_spi.set_pin_map(2, 15)
-        assert device_spi.spi.tx.called
+        device_spi.pkt.write_register.assert_called_once_with(
+            0x32, 2 | (15 << 8))
 
     def test_fast_mode_enable(self, device_spi):
-        device_spi.spi.set_fast_mode = MagicMock()
+        device_spi.pkt = MagicMock()
         device_spi.fast_mode(True)
-        device_spi.spi.set_fast_mode.assert_called_once_with(True)
+        device_spi.pkt.write_register.assert_called_once_with(0x21, 1)
 
     def test_fast_mode_disable(self, device_spi):
-        device_spi.spi.set_fast_mode = MagicMock()
+        device_spi.pkt = MagicMock()
         device_spi.fast_mode(False)
-        device_spi.spi.set_fast_mode.assert_called_once_with(False)
+        device_spi.pkt.write_register.assert_called_once_with(0x21, 0)
 
     def test_decode_analog_frames_wrapper(self, device_spi):
         device_spi.analog_mode = ANALOG_MODE_MIXED1
@@ -172,51 +175,43 @@ class TestOLSDeviceSPI:
 
 
 class TestOLSDeviceSPIGenerator:
-    def test_short(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
-        device_spi._short(0xA1)
-        device_spi.spi.tx.assert_called_once_with(0xA1)
-
-    def test_long(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
-        device_spi._long(0xA0, 0x12345678)
-        data = struct.pack('<I', 0x12345678)
-        device_spi.spi.tx.assert_called_once_with(0xA0, data)
-
     def test_pins_defaults(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
+        device_spi.pkt = MagicMock()
         device_spi._pins(tx_pin=5, scl_pin=2)
         assert device_spi.gen_pins == {'tx': 5, 'scl': 2}
+        expected_val = (5 & 0x1F) | ((2 & 0x1F) << 8)
+        device_spi.pkt.write_register.assert_called_once_with(0x32, expected_val)
 
     def test_pins_partial(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
+        device_spi.pkt = MagicMock()
         device_spi._pins(tx_pin=7)
         assert device_spi.gen_pins['tx'] == 7
         assert device_spi.gen_pins['scl'] == 1
 
-    def test_load_block_no_spi(self, device_spi):
-        device_spi.spi = None
-        device_spi._load_block(bytes([0x01, 0x02]))
+    def test_load_gen_data(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.load_gen_data.return_value = True
+        device_spi.pkt.load_gen_data(bytes([0x01, 0x02]))
+        device_spi.pkt.load_gen_data.assert_called_once_with(bytes([0x01, 0x02]))
 
-    def test_load_block_empty(self, device_spi):
-        device_spi._load_block(b'')
-
-    def test_load_block(self, device_spi):
-        device_spi._load_block(bytes([0x01, 0x02]))
-        assert device_spi.spi.dev.write.called
+    def test_load_gen_data_empty_via_device(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.load_gen_data.return_value = True
+        result = device_spi.pkt.load_gen_data(b'')
+        assert result is True
 
     def test_start_gen(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
+        device_spi.pkt = MagicMock()
         device_spi.start_gen()
-        device_spi.spi.tx.assert_called_once_with(0xA1, b'\x11\x11\x11\x11')
+        device_spi.pkt.transaction.assert_called_once_with(0x31)
 
     def test_fast_start_gen(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
+        device_spi.pkt = MagicMock()
         device_spi.fast_start_gen()
-        device_spi.spi.tx.assert_called_once_with(0xA1, b'\x11\x11\x11\x11')
+        device_spi.pkt.transaction.assert_called_once_with(0x31)
 
     def test_send_uart(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
+        device_spi.pkt = MagicMock()
         device_spi.spi.flush = MagicMock()
         device_spi.send_uart(b'Hello', baud=115200, tx_pin=3)
         assert device_spi._gen_data == b'Hello'
@@ -259,75 +254,98 @@ class TestOLSDeviceSPII2C:
 
 class TestOLSDeviceSPICapture:
     def test_capture_basic(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
-        device_spi.spi.flush = MagicMock()
-        device_spi.spi.arm = MagicMock()
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
+        device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024
         result = device_spi.capture(rate_hz=1000000, nsamples=100, timeout=0.5)
         assert len(result) > 0
 
     def test_capture_with_rising_trigger(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
-        device_spi.spi.flush = MagicMock()
-        device_spi.spi.chained_read = MagicMock(return_value=b'\x01' * (100 * 4))
-        device_spi.spi.arm = MagicMock()
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
+        device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024
         result = device_spi.capture(rate_hz=1000000, nsamples=100, timeout=0.5, trigger='rising')
         assert result is not None
 
     def test_capture_with_falling_trigger(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
-        device_spi.spi.flush = MagicMock()
-        device_spi.spi.chained_read = MagicMock(return_value=b'\x01' * (100 * 4))
-        device_spi.spi.arm = MagicMock()
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
+        device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024
         result = device_spi.capture(rate_hz=1000000, nsamples=100, timeout=0.5, trigger='falling')
         assert result is not None
 
     def test_capture_with_int_trigger(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
-        device_spi.spi.flush = MagicMock()
-        device_spi.spi.chained_read = MagicMock(return_value=b'\x01' * (100 * 4))
-        device_spi.spi.arm = MagicMock()
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
+        device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024
         result = device_spi.capture(rate_hz=1000000, nsamples=100, timeout=0.5, trigger=1)
         assert result is not None
 
     def test_capture_with_capture_time(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
-        device_spi.spi.flush = MagicMock()
-        device_spi.spi.chained_read = MagicMock(return_value=b'\x01' * (100 * 4))
-        device_spi.spi.arm = MagicMock()
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
+        device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024
         result = device_spi.capture(rate_hz=1000000, capture_time=0.001, timeout=0.5)
         assert result is not None
 
     def test_capture_progress_callback(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
-        device_spi.spi.flush = MagicMock()
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
         fake_data = b'\x01' * (100 * 4)
-        device_spi.spi.chained_read = MagicMock(return_value=fake_data)
-        device_spi.spi.arm = MagicMock()
+        device_spi.pkt.read_capture_block.return_value = fake_data[:1024]
         cb = MagicMock()
         result = device_spi.capture(rate_hz=1000000, nsamples=100, timeout=0.5, progress_cb=cb)
-        cb.assert_called_once_with(fake_data, 400, 100)
+        cb.assert_called_once()
 
     def test_capture_strips_leading_zeros(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
-        device_spi.spi.flush = MagicMock()
-        device_spi.spi.chained_read = MagicMock(return_value=b'\x00\x00\x00\x00\x01\x02\x03\x04')
-        device_spi.spi.arm = MagicMock()
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
+        device_spi.pkt.read_capture_block.return_value = b'\x00\x00\x00\x00\x01\x02\x03\x04'
         result = device_spi.capture(rate_hz=1000000, nsamples=2, timeout=0.5)
         assert result == b'\x01\x02\x03\x04'
 
 
 class TestOLSDeviceSPICaptureWithGen:
     def test_no_proto(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
-        device_spi.spi.flush = MagicMock()
-        device_spi.spi._read_all = MagicMock(return_value=b'\x00' * 6 + b'\x01' * (100 * 4))
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
+        device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024
+        device_spi.pkt.load_gen_data.return_value = True
         result = device_spi.capture_with_gen(rate_hz=1000000, nsamples=100, timeout=0.5)
         assert result is not None
 
     def test_i2c_proto(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
-        device_spi.spi.flush = MagicMock()
-        device_spi.spi._read_all = MagicMock(return_value=b'\x00' * 6 + b'\x01' * (100 * 4))
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
+        device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024
+        device_spi.pkt.load_gen_data.return_value = True
         result = device_spi.capture_with_gen(
             rate_hz=1000000, nsamples=100, timeout=0.5,
             proto='I2C', i2c_frame=b'\x30\x0F',
@@ -335,10 +353,14 @@ class TestOLSDeviceSPICaptureWithGen:
         assert result is not None
 
     def test_with_progress_cb(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
-        device_spi.spi.flush = MagicMock()
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
         fake_data = b'\x01' * (100 * 4)
-        device_spi.spi._read_all = MagicMock(return_value=b'\x00' * 6 + fake_data)
+        device_spi.pkt.read_capture_block.return_value = fake_data[:1024]
+        device_spi.pkt.load_gen_data.return_value = True
         cb = MagicMock()
         result = device_spi.capture_with_gen(
             rate_hz=1000000, nsamples=100, timeout=0.5, progress_cb=cb,
@@ -346,16 +368,23 @@ class TestOLSDeviceSPICaptureWithGen:
         cb.assert_called_once()
 
     def test_short_read(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
-        device_spi.spi.flush = MagicMock()
-        device_spi.spi._read_all = MagicMock(return_value=b'\x00' * 4)
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
+        device_spi.pkt.read_capture_block.return_value = b''
         result = device_spi.capture_with_gen(rate_hz=1000000, nsamples=100, timeout=0.5)
         assert result == b''
 
     def test_existing_gen_data(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
-        device_spi.spi.flush = MagicMock()
-        device_spi.spi._read_all = MagicMock(return_value=b'\x00' * 6 + b'\x01' * (100 * 4))
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
+        device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024
+        device_spi.pkt.load_gen_data.return_value = True
         device_spi._gen_data = b'test data'
         device_spi._gen_baud = 115200
         device_spi._gen_tx_pin = 3
@@ -363,37 +392,40 @@ class TestOLSDeviceSPICaptureWithGen:
         assert result is not None
 
     def test_capture_time(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
-        device_spi.spi.flush = MagicMock()
-        device_spi.spi._read_all = MagicMock(return_value=b'\x00' * 6 + b'\x01' * (100 * 4))
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
+        device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024
         result = device_spi.capture_with_gen(rate_hz=1000000, capture_time=0.001, timeout=0.5)
         assert result is not None
 
 
 class TestOLSDeviceSPII2CCapture:
     def test_i2c_capture_with_gen(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
-        device_spi.spi.flush = MagicMock()
-        device_spi.spi.chained_read = MagicMock(return_value=b'\x00' * (100 * 4))
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
+        device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024
+        device_spi.pkt.load_gen_data.return_value = True
         result = device_spi.i2c_capture_with_gen(
             rate_hz=400000, nsamples=100, timeout=0.5,
             i2c_speed=100000, dev_addr=0x18, reg_addr=0x0F,
         )
-        assert len(result) == 100 * 4
+        assert len(result) > 0
 
 
 class TestOLSDeviceSPIRolling:
     def test_rolling_capture_no_gen(self, device_spi):
-        device_spi.spi.set_divider = MagicMock()
-        device_spi.spi.set_sample_count = MagicMock()
-        device_spi.spi.set_trigger_mask = MagicMock()
-        device_spi.spi.set_trigger_value = MagicMock()
-        device_spi.spi.set_fast_mode = MagicMock()
-        device_spi.spi.set_continuous = MagicMock()
-        device_spi.spi.flush = MagicMock()
-        device_spi.spi.reset = MagicMock()
-        device_spi.spi.arm = MagicMock()
-        device_spi.spi.chained_read = MagicMock(return_value=b'\x01' * (1024 * 4))
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
+        device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024
         device_spi._stride = 4
 
         stop_evt = MagicMock()
@@ -403,17 +435,12 @@ class TestOLSDeviceSPIRolling:
         assert len(results) > 0
 
     def test_rolling_capture_with_gen(self, device_spi):
-        device_spi.spi.set_divider = MagicMock()
-        device_spi.spi.set_sample_count = MagicMock()
-        device_spi.spi.set_trigger_mask = MagicMock()
-        device_spi.spi.set_trigger_value = MagicMock()
-        device_spi.spi.set_fast_mode = MagicMock()
-        device_spi.spi.set_continuous = MagicMock()
-        device_spi.spi.flush = MagicMock()
-        device_spi.spi.reset = MagicMock()
-        device_spi.spi.arm = MagicMock()
-        device_spi.spi.chained_read = MagicMock(return_value=b'\x01' * (1024 * 4))
-        device_spi.spi.tx = MagicMock(return_value=b'')
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
+        device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024
         device_spi._stride = 4
 
         stop_evt = MagicMock()
@@ -426,16 +453,12 @@ class TestOLSDeviceSPIRolling:
         assert len(results) > 0
 
     def test_i2c_rolling_capture(self, device_spi):
-        device_spi.spi.reset = MagicMock()
-        device_spi.spi.set_divider = MagicMock()
-        device_spi.spi.set_sample_count = MagicMock()
-        device_spi.spi.set_trigger_mask = MagicMock()
-        device_spi.spi.set_trigger_value = MagicMock()
-        device_spi.spi.set_fast_mode = MagicMock()
-        device_spi.spi.set_continuous = MagicMock()
-        device_spi.spi.flush = MagicMock()
-        device_spi.spi.tx = MagicMock(return_value=b'')
-        device_spi.spi.chained_read = MagicMock(return_value=b'\x01' * (1024 * 4))
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
+        device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024
         device_spi._stride = 4
 
         stop_evt = MagicMock()

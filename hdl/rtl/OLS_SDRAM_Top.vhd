@@ -12,9 +12,9 @@ ENTITY OLS_SDRAM_Top IS
   );
 PORT (
   CLK     : IN STD_LOGIC;
-  UART_RX : IN STD_LOGIC := '1';
-  UART_TX : INOUT STD_LOGIC := 'Z';
   SPI_CS  : IN  STD_LOGIC := '1';
+  SPI_SCK : IN  STD_LOGIC := '0';
+  SPI_MOSI : IN  STD_LOGIC := '0';
   SPI_MISO : OUT STD_LOGIC := 'Z';
   -- Expanded I/O
   MKR_D   : INOUT STD_LOGIC_VECTOR(14 downto 0) := (others => 'Z');
@@ -49,6 +49,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_busy      : std_logic := '0';
   signal gen_tx        : std_logic;
   signal gen_scl       : std_logic;
+  signal gen_active    : std_logic;
   signal gen_load_byte : std_logic_vector(7 downto 0);
   signal gen_load_we   : std_logic;
   signal gen_start     : std_logic;
@@ -60,6 +61,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_i2c_dev_r  : std_logic_vector(7 downto 0) := (others => '0');
   signal gen_i2c_test   : std_logic := '0';
   signal gen_spi_test   : std_logic := '0';
+  signal gen_fifo_count : std_logic_vector(7 downto 0) := (others => '0');
+  signal gen_busy_latch : std_logic := '0';
   signal fast_clk       : std_logic := '0';
   signal continuous_mode : std_logic := '0';
   signal armed_i        : std_logic := '0';
@@ -92,10 +95,10 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_tx_d1    : std_logic := '0';
   signal registered_ch0_d1 : std_logic := '0';
   signal sen_sdo_d1   : std_logic := '0';
+  attribute preserve of gen_start : signal is true;
+  attribute preserve of gen_tx : signal is true;
+  attribute preserve of gen_busy : signal is true;
 
-  signal interface_mode : std_logic := '0';
-  signal core_uart_tx  : std_logic := '1';
-  signal spi_mosi_int  : std_logic := '0';
   signal analog_mode   : std_logic_vector(2 downto 0) := (others => '0');
   signal analog_ch0    : natural range 0 to 15 := 0;
   signal analog_ch1    : natural range 0 to 15 := 1;
@@ -122,7 +125,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
 
   COMPONENT OLS_Logic_Analyzer IS
   GENERIC (
-      Baud_Rate   : INTEGER := 12000000;
       CLK_Frequency : INTEGER := 12000000;
     Max_Samples : NATURAL := 1000000;
     Channels    : NATURAL := LA_CHANNELS;
@@ -132,12 +134,11 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     CLK : IN STD_LOGIC;
     FAST_CLK : IN STD_LOGIC := '0';
     Inputs   : IN  STD_LOGIC_VECTOR(Channels-1 downto 0);
-    UART_RX  : IN  STD_LOGIC := '1';
-    UART_TX  : OUT STD_LOGIC := '1';
     SPI_CS   : IN  STD_LOGIC := '1';
+    SPI_SCK  : IN  STD_LOGIC := '0';
     SPI_MOSI : IN  STD_LOGIC := '0';
     SPI_MISO : OUT STD_LOGIC := 'Z';
-    Interface_Mode : OUT STD_LOGIC := '0';
+    Interface_Mode : OUT STD_LOGIC := '1';
     sdram_addr  : OUT std_logic_vector(11 downto 0);
     sdram_ba    : OUT STD_LOGIC_VECTOR(1 downto 0);
     sdram_cas_n : OUT std_logic;
@@ -153,6 +154,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Gen_Start     : OUT STD_LOGIC := '0';
     Gen_Baud_Div  : OUT STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
     Gen_Busy      : IN  STD_LOGIC := '0';
+    Gen_Fifo_Count : IN STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Gen_Proto     : OUT STD_LOGIC := '0';
     Gen_TX_Pin    : OUT NATURAL range 0 to 31 := 0;
     Gen_SCL_Pin   : OUT NATURAL range 0 to 31 := 0;
@@ -209,6 +211,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Scl_Out   : out std_logic := '1';
     Busy      : out std_logic := '0';
     Active    : out std_logic := '0';
+    Fifo_Count : out std_logic_vector(7 downto 0) := (others => '0');
     I2C_Rd_Len : in natural range 0 to 255 := 0;
     I2C_Dev_R  : in std_logic_vector(7 downto 0) := (others => '0');
     Sda_In     : in std_logic := '1';
@@ -305,8 +308,7 @@ BEGIN
     end if;
   end process;
 
-  UART_TX <= core_uart_tx when interface_mode = '0' else 'Z';
-  spi_mosi_int <= UART_TX;
+
 
   -- Drive selected pin with generator signal when active
   pin_drive: process(sys_clk)
@@ -392,7 +394,6 @@ BEGIN
 
   SDRAM_Analyzer : OLS_Logic_Analyzer
   GENERIC MAP (
-    Baud_Rate    => 115200,
     CLK_Frequency => System_CLK_Frequency,
     Max_Samples  => 1048576,
     Channels     => LA_CHANNELS,
@@ -402,12 +403,11 @@ BEGIN
     CLK => sys_clk,
     FAST_CLK => fast_clk,
     Inputs   => internal_data,
-    UART_RX  => UART_RX,
-    UART_TX  => core_uart_tx,
     SPI_CS   => SPI_CS,
-    SPI_MOSI => spi_mosi_int,
+    SPI_SCK  => SPI_SCK,
+    SPI_MOSI => SPI_MOSI,
     SPI_MISO => SPI_MISO,
-    Interface_Mode => interface_mode,
+    Interface_Mode => open,
     sdram_addr  => sdram_addr,
     sdram_ba    => sdram_ba,
     sdram_cas_n => sdram_cas_n,
@@ -423,6 +423,7 @@ BEGIN
     Gen_Start     => gen_start,
     Gen_Baud_Div  => gen_baud_div_s,
     Gen_Busy      => gen_busy,
+    Gen_Fifo_Count => gen_fifo_count,
     Gen_Proto     => gen_proto,
     Gen_TX_Pin    => gen_tx_pin,
     Gen_SCL_Pin   => gen_scl_pin,
@@ -492,9 +493,19 @@ BEGIN
     end if;
   end process;
 
-  led_out: for i in 0 to 7 generate
+  led_out: for i in 0 to 6 generate
     LED(i) <= '1' when pwm_cnt < led_bright(i) else '0';
   end generate;
+  -- LED7: latched gen start indicator (OR of all gen status signals)
+  process(sys_clk)
+  begin
+    if rising_edge(sys_clk) then
+      if gen_busy = '1' then gen_busy_latch <= '1'; end if;
+      if gen_active = '1' then gen_busy_latch <= '1'; end if;
+      if gen_start = '1' then gen_busy_latch <= '1'; end if;
+    end if;
+  end process;
+  LED(7) <= gen_busy_latch;
 
   LED_CTRL: entity work.LED_Controller
     port map (
@@ -504,7 +515,7 @@ BEGIN
       capture_run     => core_status(0),
       capture_full    => core_status(3),
       continuous_mode => continuous_mode,
-      host_connected  => interface_mode,
+      host_connected  => '1',
       ch_4_mode       => '0',
       fifo_activity   => core_status(7 downto 4),
       fade_tick       => fade_tick,
@@ -524,7 +535,8 @@ BEGIN
     Tx_Out    => gen_tx,
     Scl_Out   => gen_scl,
     Busy      => gen_busy,
-    Active    => open,
+    Active    => gen_active,
+    Fifo_Count => gen_fifo_count,
     I2C_Rd_Len => gen_i2c_rd_len,
     I2C_Dev_R  => gen_i2c_dev_r,
     Sda_In     => sen_sdi_sync,

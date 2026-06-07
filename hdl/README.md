@@ -2,22 +2,23 @@
 
 ## Architecture Overview
 
-The FPGA design targets the Intel MAX10 10M08SAU169C8G on the Arrow MAX1000 board. The PLL multiplies the 12 MHz input to generate three clock domains:
+The FPGA design targets the Intel MAX10 10M08SAU169C8G on the Arrow MAX1000 board. The PLL multiplies the 12 MHz input to generate four clock domains:
 
 | Output | Multiply | Frequency | Domain |
 |--------|----------|-----------|--------|
 | c0 | ×4 | 48 MHz | Core logic (OLS_Interface, FLA, SDRAM) |
 | c1 | ×10 | 120 MHz | SPI slave (fast_clk) |
 | c2 | ×4 | 48 MHz, −90° | SDRAM clock |
+| c3 | ×2 | 24 MHz | Signal generator (GEN_CLK) |
 
-The system clock frequency is computed as `12_000_000 * PLL_MULT / PLL_DIV` with defaults `PLL_MULT=4, PLL_DIV=1` → 48 MHz.
+The system clock frequency is computed as `12_000_000 * PLL_MULT / PLL_DIV` with defaults `PLL_MULT=4, PLL_DIV=1` → 48 MHz.  
 
 ### Top-down hierarchy
 
 ```
 OLS_Logic_Analyzer_wrapper      — pin assignment wrapper (auto-generated from CSV, in proj/)
 └── OLS_SDRAM_Top               — system integration, I/O pin pool, capture mux
-    ├── SDRAM_PLL               — PLL (3-output clock generation)
+    ├── SDRAM_PLL               — PLL (4-output clock generation)
     ├── OLS_Logic_Analyzer      — core (command/control + capture + generator)
     │   ├── OLS_Interface       — SPI/UART command decoder & readout state machine
     │   ├── Fast_Logic_Analyzer_SDRAM — capture engine, triple buffer, SDRAM bridge

@@ -16,6 +16,7 @@ entity Signal_Gen is
     Scl_Out   : out std_logic := '1';
     Busy      : out std_logic := '0';
     Active    : out std_logic := '0';
+    Fifo_Count : out std_logic_vector(7 downto 0) := (others => '0');
     I2C_Rd_Len : in natural range 0 to 255 := 0;
     I2C_Dev_R  : in std_logic_vector(7 downto 0) := (others => '0');
     Sda_In     : in std_logic := '1';
@@ -32,9 +33,12 @@ architecture rtl of Signal_Gen is
   signal tail  : natural range 0 to FIFO_DEPTH-1 := 0;
   signal count : natural range 0 to FIFO_DEPTH := 0;
   signal tx_active   : std_logic := '0';
+  attribute preserve : boolean;
+  attribute preserve of tx_active : signal is true;
 begin
   Active <= tx_active;
   Busy   <= tx_active;
+  Fifo_Count <= std_logic_vector(to_unsigned(count, 8));
 
   process(CLK)
     variable baud_cnt   : natural range 0 to 65535 := 0;

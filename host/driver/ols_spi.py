@@ -50,7 +50,7 @@ class OLS:
         if not self.dev:
             return
         q = self.dev.getQueueStatus()
-        if q:
+        if isinstance(q, int) and q > 0:
             self.dev.read(q)
 
     def _read_n(self, n, timeout=0.5):
@@ -58,8 +58,13 @@ class OLS:
         deadline = time.time() + timeout
         while len(raw) < n and time.time() < deadline:
             q = self.dev.getQueueStatus()
-            if q:
-                raw += self.dev.read(q)
+            if not isinstance(q, int):
+                break
+            if q > 0:
+                chunk = self.dev.read(q)
+                if not isinstance(chunk, (bytes, bytearray)):
+                    break
+                raw += chunk
             elif not raw:
                 time.sleep(0.001)
         return raw
@@ -69,8 +74,13 @@ class OLS:
         deadline = time.time() + timeout
         while time.time() < deadline:
             q = self.dev.getQueueStatus()
-            if q:
-                raw += self.dev.read(q)
+            if not isinstance(q, int):
+                break
+            if q > 0:
+                chunk = self.dev.read(q)
+                if not isinstance(chunk, (bytes, bytearray)):
+                    break
+                raw += chunk
             elif raw:
                 break
             else:
@@ -252,6 +262,30 @@ class OLS:
         """5-byte SPI command. Returns [preamble, b0, b1, b2, b3]."""
         r = self._xfer_cmd(cmd, data)
         return r if r else b''
+
+    def tx_bytes(self, data, read_len=None):
+        """Full-duplex SPI using 0x31 (MSB-first write+read)."""
+        if not self.dev:
+            return b''
+        if read_len is None:
+            read_len = len(data)
+        total = max(len(data), read_len)
+        payload = bytes(data)
+        payload += bytes([0xFF] * (total - len(data)))  # padding for read
+        self._drain()
+        buf = bytes([0x80, GPIO_CS_LO, PIN_DIR])
+        buf += bytes([0x31, (total - 1) & 0xFF, ((total - 1) >> 8) & 0xFF])
+        buf += payload
+        buf += bytes([0x87])
+        buf += bytes([0x80, GPIO_CS_HI, PIN_DIR])
+        buf += bytes([0x87])
+        self.dev.write(buf)
+        resp = self._read_n(total)
+        return resp[:read_len] if resp else b''
+
+    def tx_read(self, n):
+        """Standalone read: send 0xFF, capture MISO (bit-reversed)."""
+        return self.tx_bytes(bytes([0xFF] * n), read_len=n)
 
     def bulk_write(self, data):
         """Send arbitrary-length bytes via SPI."""

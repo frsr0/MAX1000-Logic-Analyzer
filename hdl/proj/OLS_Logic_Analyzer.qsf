@@ -23,6 +23,9 @@ set_global_assignment -name VHDL_FILE ../rtl/OLS_SDRAM_Top.vhd
 set_global_assignment -name VHDL_FILE ../rtl/LED_Controller.vhd
 set_global_assignment -name VHDL_FILE ../rtl/OLS_Logic_Analyzer_SDRAM_Core.vhd
 set_global_assignment -name VHDL_FILE ../rtl/Fast_Logic_Analyzer_SDRAM.vhd
+set_global_assignment -name VHDL_FILE ../rtl/spi_protocol_pkg.vhd
+set_global_assignment -name VHDL_FILE ../rtl/spi_packet_rx.vhd
+set_global_assignment -name VHDL_FILE ../rtl/spi_packet_tx.vhd
 set_global_assignment -name VHDL_FILE ../rtl/OLS_Interface.vhd
 set_global_assignment -name VHDL_FILE ../rtl/UART_Interface.vhd
 set_global_assignment -name VHDL_FILE ../rtl/SDRAM_Interface.vhd

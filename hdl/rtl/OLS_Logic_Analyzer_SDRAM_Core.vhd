@@ -6,7 +6,6 @@ use IEEE.numeric_std.all;
 
 ENTITY OLS_Logic_Analyzer IS
   GENERIC (
-      Baud_Rate       : INTEGER := 115200;     
       CLK_Frequency   : INTEGER := 12000000;     
     Max_Samples     : NATURAL := 1000000;      
     Channels        : NATURAL := 4;
@@ -17,12 +16,11 @@ PORT (
   CLK : IN STD_LOGIC;
   FAST_CLK : IN STD_LOGIC := '0';
   Inputs             : IN  STD_LOGIC_VECTOR(Channels-1 downto 0);
-  UART_RX            : IN  STD_LOGIC := '1';
-  UART_TX            : OUT STD_LOGIC := '1';
   SPI_CS             : IN  STD_LOGIC := '1';
+  SPI_SCK            : IN  STD_LOGIC := '0';
   SPI_MOSI           : IN  STD_LOGIC := '0';
   SPI_MISO           : OUT STD_LOGIC := 'Z';
-  Interface_Mode     : OUT STD_LOGIC := '0';
+  Interface_Mode     : OUT STD_LOGIC := '1';
   sdram_addr  : OUT std_logic_vector (11 downto 0);
   sdram_ba    : OUT std_logic_vector (1 downto 0);
   sdram_cas_n : OUT std_logic;
@@ -38,6 +36,7 @@ PORT (
   Gen_Start     : OUT STD_LOGIC := '0';
   Gen_Baud_Div  : OUT STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   Gen_Busy      : IN  STD_LOGIC := '0';
+  Gen_Fifo_Count : IN STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   Gen_Proto     : OUT STD_LOGIC;
     Gen_TX_Pin    : OUT NATURAL range 0 to 31 := 0;
     Gen_SCL_Pin   : OUT NATURAL range 0 to 31 := 0;
@@ -104,20 +103,16 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   COMPONENT OLS_Interface IS
   GENERIC (
       CLK_Frequency   :   INTEGER     := 12000000;    
-    Baud_Rate       :   INTEGER     := 115200;      
-    Max_Samples     :   NATURAL     := 25000;       
-    OS_Rate         :   NATURAL     := 16;
-    Def_IFace       :   NATURAL     := 0
+    Max_Samples     :   NATURAL     := 25000       
   );
   PORT (
     CLK : IN STD_LOGIC;
     FAST_CLK : IN STD_LOGIC := '0';
-    UART_RX      : IN  STD_LOGIC := '1';
-    UART_TX      : OUT STD_LOGIC := '1';
     SPI_CS       : IN  STD_LOGIC := '1';
+    SPI_SCK      : IN  STD_LOGIC := '0';
     SPI_MOSI     : IN  STD_LOGIC := '0';
     SPI_MISO     : OUT STD_LOGIC := 'Z';
-    Interface_Mode : OUT STD_LOGIC := '0';
+    Interface_Mode : OUT STD_LOGIC := '1';
     Inputs       : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');  
     Rate_Div     : BUFFER NATURAL range 1 to 150000000 := 12; 
     Samples      : BUFFER NATURAL range 1 to Max_Samples   := Max_Samples;  
@@ -131,6 +126,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
     Gen_Start     : OUT STD_LOGIC := '0';
     Gen_Baud_Div  : OUT STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   Gen_Busy      : IN  STD_LOGIC := '0';
+  Gen_Fifo_Count : IN STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   Gen_Proto     : OUT STD_LOGIC := '0';
     Gen_TX_Pin    : OUT NATURAL range 0 to 31 := 0;
     Gen_SCL_Pin   : OUT NATURAL range 0 to 31 := 0;
@@ -227,12 +223,12 @@ BEGIN
   Pin_Map_Pin <= pin_map_pin_i;
   OLS_Interface1 : OLS_Interface
   GENERIC MAP (
-      CLK_Frequency => CLK_Frequency,Baud_Rate     => Baud_Rate,Max_Samples   => Max_Samples,OS_Rate       => 13,Def_IFace     => 1
+      CLK_Frequency => CLK_Frequency,Max_Samples   => Max_Samples
   ) PORT MAP (
-    CLK           => Fast_Logic_Analyzer_SDRAM_CLK_150,
+    CLK           => CLK,
     FAST_CLK      => FAST_CLK,
-    UART_RX       => UART_RX,UART_TX       => UART_TX,SPI_CS        => SPI_CS,SPI_MOSI      => SPI_MOSI,SPI_MISO      => SPI_MISO,Interface_Mode=> Interface_Mode,Inputs        => OLS_Interface_Inputs,Rate_Div      => OLS_Interface_Rate_Div,Samples       => OLS_Interface_Samples,Start_Offset  => OLS_Interface_Start_Offset,Run           => OLS_Interface_Run,Full          => OLS_Interface_Full,Address       => OLS_Interface_Address,Outputs       => OLS_Interface_Outputs,
-    Gen_Load_Byte => Gen_Load_Byte_i,Gen_Load_We   => Gen_Load_We_i,Gen_Start     => Gen_Start_i,Gen_Baud_Div  => Gen_Baud_Div_i,Gen_Busy      => Gen_Busy_i,Gen_Proto     => Gen_Proto_i,
+    SPI_CS        => SPI_CS,SPI_SCK       => SPI_SCK,SPI_MOSI      => SPI_MOSI,SPI_MISO      => SPI_MISO,Interface_Mode=> Interface_Mode,Inputs        => OLS_Interface_Inputs,Rate_Div      => OLS_Interface_Rate_Div,Samples       => OLS_Interface_Samples,Start_Offset  => OLS_Interface_Start_Offset,Run           => OLS_Interface_Run,Full          => OLS_Interface_Full,Address       => OLS_Interface_Address,Outputs       => OLS_Interface_Outputs,
+    Gen_Load_Byte => Gen_Load_Byte_i,Gen_Load_We   => Gen_Load_We_i,Gen_Start     => Gen_Start_i,Gen_Baud_Div  => Gen_Baud_Div_i,Gen_Busy      => Gen_Busy_i,Gen_Fifo_Count => Gen_Fifo_Count,Gen_Proto     => Gen_Proto_i,
     Gen_TX_Pin    => Gen_TX_Pin_i,Gen_SCL_Pin   => Gen_SCL_Pin_i,
     Gen_I2C_Rd_Len => gen_i2c_rd_len_i,Gen_I2C_Dev_R  => gen_i2c_dev_r_i,    Gen_I2C_Test   => gen_i2c_test_i,
     Gen_SPI_Test   => gen_spi_test_i,

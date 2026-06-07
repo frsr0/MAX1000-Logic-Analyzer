@@ -215,6 +215,7 @@ begin
     variable flush_rem   : natural range 0 to BRAM_SIZE := 0;
     variable flush_idx   : natural range 0 to BRAM_SIZE-1 := 0;
     variable flush_sync : boolean := false;
+    variable bram_prepend_sz : natural range 0 to BRAM_SIZE := 0;
     variable buf_limit : natural range 0 to 15000000 := 0;
     variable write_addr : std_logic_vector(21 downto 0) := (others => '0');
     variable analog_frame : std_logic_vector(63 downto 0) := (others => '0');
@@ -270,6 +271,22 @@ begin
       end if;
 
       if run_sync2 /= run_r then
+        -- Save pre-trigger BRAM count BEFORE resetting variables
+        if run_sync2 = '1' and Fast_Mode = '0' then
+          flush_rem := bram_cnt;
+          if bram_cnt < BRAM_SIZE then
+            flush_idx := 0;
+          else
+            flush_idx := bram_wp;
+          end if;
+          flush_sync := false;
+        else
+          flush_rem := 0;
+          flush_idx := 0;
+          flush_sync := false;
+        end if;
+        bram_prepend_sz := flush_rem;  -- save for Full assertion
+
         waddr_0 := 0; waddr_1 := 0; waddr_2 := 0; step_r := 0;
         f_head := 0; f_tail := 0; f_cnt := 0;
         wbuf := (others => '0');
@@ -277,7 +294,6 @@ begin
         analog_len := 1;
         analog_idx := 0;
         bram_wp := 0; bram_cnt := 0;
-        flush_rem := 0; flush_sync := false;
         rd_pend := '0';
         wr_pend := false; burst_rem := 0; wip := false; wr_cnt := 0;
         buf_sel <= "00";
@@ -292,17 +308,6 @@ begin
           bram_post_cnt := 0;
         else
           rd_mode := false;
-          if Armed = '1' and bram_cnt > 0 then
-            flush_rem := bram_cnt;
-            if bram_cnt < BRAM_SIZE then
-              flush_idx := 0;
-            else
-              flush_idx := bram_wp;
-            end if;
-            bram_raddr <= flush_idx;
-            flush_sync := false;
-          end if;
-          bram_cnt := 0;
         end if;
         run_r := run_sync2;
         s_wr <= '0'; s_rd <= '0';
@@ -405,6 +410,25 @@ begin
           end if;
         end if;
 
+        -- Fast BRAM flush: drain pre-trigger buffer at pclk rate (not sample_en rate).
+        -- Completes in ~1024 pclk cycles = ~7 us, losing at most 1 sample at any rate.
+        if flush_rem > 0 then
+          if f_cnt < FIFO_Depth then
+            if flush_sync then
+              fifo_mem(f_head) <= std_logic_vector(to_unsigned(waddr_0, 22)) & bram_rdata;
+              if f_head = FIFO_Depth-1 then f_head := 0;
+              else f_head := f_head + 1; end if;
+              f_cnt := f_cnt + 1;
+              waddr_0 := waddr_0 + 1;
+              flush_rem := flush_rem - 1;
+            end if;
+            flush_sync := true;
+            if flush_idx = BRAM_SIZE-1 then flush_idx := 0;
+            else flush_idx := flush_idx + 1; end if;
+            bram_raddr <= flush_idx;
+          end if;
+        end if;
+
         -- Track SDRAM write completion (single writes only)
         if wip and burst_rem = 0 then
           if wr_cnt < 2 then
@@ -430,23 +454,7 @@ begin
 
             if step_r = sub_steps - 1 then
             -- Full 16-bit word ready
-            if flush_rem > 0 then
-              -- Flush BRAM to FIFO (pre-trigger samples flushed after trigger)
-              if f_cnt < FIFO_Depth then
-                if flush_sync then
-                  fifo_mem(f_head) <= std_logic_vector(to_unsigned(waddr_0, 22)) & bram_rdata;
-                  if f_head = FIFO_Depth-1 then f_head := 0;
-                  else f_head := f_head + 1; end if;
-                  f_cnt := f_cnt + 1;
-                  waddr_0 := waddr_0 + 1;
-                  flush_rem := flush_rem - 1;
-                end if;
-                flush_sync := true;
-                if flush_idx = BRAM_SIZE-1 then flush_idx := 0;
-                else flush_idx := flush_idx + 1; end if;
-                bram_raddr <= flush_idx;
-              end if;
-            elsif Armed = '1' and run_sync2 = '0' then
+            if Armed = '1' and run_sync2 = '0' then
               -- Pre-trigger BRAM (circular)
               bram_waddr <= bram_wp;
               bram_wdata <= wbuf;

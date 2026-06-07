@@ -46,7 +46,7 @@ $attrLines += "    -- Quartus pin assignments"
 # Declare attribute types first
 $attrLines += "    attribute chip_pin : string;"
 foreach ($base in ($pinMap.Keys | Sort-Object)) {
-    if ($base -eq "GPIO") { continue }  # GPIO -> MKR_D + PMOD (hardcoded below)
+    if ($base -eq "GPIO" -or $base -eq "UART_RX" -or $base -eq "UART_TX") { continue }  # GPIO -> MKR_D + PMOD; UART pins are SPI aliases
     $pins = $pinMap[$base]
     if ($pins.Count -eq 1 -and $pins.ContainsKey(-1)) {
         $val = $pins[-1]
@@ -55,6 +55,13 @@ foreach ($base in ($pinMap.Keys | Sort-Object)) {
         $val = $ordered -join ","
     }
     $attrLines += "    attribute chip_pin of $base : signal is `"$val`";"
+}
+# FTDI Channel B shares the old UART-named pins: BDBUS0=SCK, BDBUS1=MOSI.
+if ($pinMap.ContainsKey("UART_RX")) {
+    $attrLines += "    attribute chip_pin of SPI_SCK : signal is `"$($pinMap["UART_RX"][-1])`";"
+}
+if ($pinMap.ContainsKey("UART_TX")) {
+    $attrLines += "    attribute chip_pin of SPI_MOSI : signal is `"$($pinMap["UART_TX"][-1])`";"
 }
 # Hardcoded pin assignments for MKR_D and PMOD (match physical board)
 $attrLines += "    attribute chip_pin of MKR_D : signal is `"H8,K10,H5,H4,J1,J2,L12,J12,J13,K11,K12,J10,H10,H13,G12`";"
@@ -74,8 +81,8 @@ foreach ($base in ($ioMap.Keys | Sort-Object)) {
 
 # Build port map connections
 $portMapLines = @()
-$portMapLines += "        CLK => CLK, UART_RX => UART_RX, UART_TX => UART_TX,"
-$portMapLines += "        SPI_CS => SPI_CS, SPI_MISO => SPI_MISO,"
+$portMapLines += "        CLK => CLK,"
+$portMapLines += "        SPI_CS => SPI_CS, SPI_SCK => SPI_SCK, SPI_MOSI => SPI_MOSI, SPI_MISO => SPI_MISO,"
 $portMapLines += "        MKR_D => MKR_D, PMOD => PMOD, LED => LED,"
 $portMapLines += "        sdram_addr => sdram_addr, sdram_ba => sdram_ba,"
 $portMapLines += "        sdram_cas_n => sdram_cas_n, sdram_cke => sdram_cke,"
@@ -93,9 +100,9 @@ use IEEE.STD_LOGIC_1164.ALL;
 entity OLS_Logic_Analyzer_wrapper is
 port (
     CLK       : IN  STD_LOGIC;
-    UART_RX   : IN  STD_LOGIC;
-    UART_TX   : INOUT STD_LOGIC;
     SPI_CS    : IN  STD_LOGIC := '1';
+    SPI_SCK   : IN  STD_LOGIC := '0';
+    SPI_MOSI  : IN  STD_LOGIC := '0';
     SPI_MISO  : OUT STD_LOGIC := 'Z';
     MKR_D     : INOUT STD_LOGIC_VECTOR(14 downto 0) := (others => 'Z');
     PMOD      : INOUT STD_LOGIC_VECTOR(7 downto 0) := (others => 'Z');
@@ -174,6 +181,9 @@ $qsfLines = @(
     'set_global_assignment -name VHDL_FILE ../rtl/LED_Controller.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/OLS_Logic_Analyzer_SDRAM_Core.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/Fast_Logic_Analyzer_SDRAM.vhd',
+    'set_global_assignment -name VHDL_FILE ../rtl/spi_protocol_pkg.vhd',
+    'set_global_assignment -name VHDL_FILE ../rtl/spi_packet_rx.vhd',
+    'set_global_assignment -name VHDL_FILE ../rtl/spi_packet_tx.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/OLS_Interface.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/UART_Interface.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/SDRAM_Interface.vhd',

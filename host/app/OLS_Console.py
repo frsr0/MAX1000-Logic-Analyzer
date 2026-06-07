@@ -189,6 +189,7 @@ class OLSDevice:
             if len(chunk) == 0:
                 time.sleep(0.001)
         if data:
+            data = data[:len(data) - (len(data) % 4)]
             for i in range(len(data)//4):
                 if data[i*4:(i+1)*4] != b'\x00\x00\x00\x00':
                     data = data[i*4:]
@@ -246,6 +247,7 @@ class OLSDevice:
             if len(chunk) == 0:
                 time.sleep(0.001)
         if data:
+            data = data[:len(data) - (len(data) % 4)]
             for i in range(len(data)//4):
                 if data[i*4:(i+1)*4] != b'\x00\x00\x00\x00':
                     data = data[i*4:]
@@ -595,7 +597,7 @@ def decode_i2c(ch, samplerate, scl_idx=2, sda_idx=3, filter_threshold=0, sda_off
         if scl[i] == 0 and scl[i + 1] == 1:
             # Check if SDA goes low within the next 3 samples (START detection with pipeline delay)
             for k in range(i, min(i + 4, len(scl))):
-                if sda[k] == 0 and sda[k - 1] == 1:
+                if k > i and sda[k] == 0 and sda[k - 1] == 1:
                     # Accept first START (idle bus check relaxed — capture starts near gen fire)
                     if not result:
                         result.append(("START", None))
@@ -843,7 +845,7 @@ class WaveformDisplay(tk.Canvas):
         self.create_rectangle(0, ruler_y, w, ruler_h, fill='#eee', outline='')
         # Time ticks
         px_per_div = 100  # pixels between tick marks
-        if self.px_scale > 0:
+        if self.px_scale > 0 and self.samplerate > 0:
             samples_per_div = px_per_div / self.px_scale
             time_per_div = samples_per_div / self.samplerate
             # Find a nice round time per div
@@ -974,8 +976,12 @@ class WaveformDisplay(tk.Canvas):
             measurements.append((marker, m, time_ns))
 
         if len(measurements) == 2:
-            dt_ns = abs(measurements[1][2] - measurements[0][2])
-            dsamp = abs(measurements[1][1] - measurements[0][1])
+            m1_idx, m1_samp, m1_time = measurements[0]
+            m2_idx, m2_samp, m2_time = measurements[1]
+            if None in (m1_samp, m2_samp, m1_time, m2_time):
+                return
+            dt_ns = abs(m2_time - m1_time)
+            dsamp = abs(m2_samp - m1_samp)
             freq = 1e9 / dt_ns if dt_ns > 0 else 0
             msr_y = self.total_height() - 20
             txt = f"Δt = {dt_ns/1000:.1f} µs  ({dsamp} samples)  f = {freq/1000:.1f} kHz"
@@ -1514,8 +1520,11 @@ class OLScope:
             self.wave.redraw()
 
     def _get_rate(self):
-        rate_str = self.rate_cb.get()
-        return int(rate_str.replace('kHz','000').replace('MHz','000000'))
+        try:
+            rate_str = self.rate_cb.get()
+            return max(1, int(rate_str.replace('kHz','000').replace('MHz','000000')))
+        except (ValueError, AttributeError):
+            return 1_000_000
 
     def _get_samples(self):
         return int(self.samp_cb.get())
@@ -1862,6 +1871,9 @@ class OLScope:
             self.status['text'] = "Capture returned 0 bytes — FPGA not responding"
             return
         ch_data, ns = samples_to_channels(data, stride=stride)
+        if ns == 0 or not ch_data or not ch_data[0]:
+            self.status['text'] = "No samples decoded from capture"
+            return
         ch0 = ch_data[0]
         trans = sum(1 for i in range(1, len(ch0)) if ch0[i] != ch0[i-1])
         print(f"[DBG] _load_capture: {len(data)}B {ns}samples {trans}CH0trans")
@@ -2183,7 +2195,8 @@ class OLScope:
                     self.decoded_i2c = []
                     self.wave.load(ch_data, self.ch_names, self.samplerate)
                     self.status['text'] = f"Captured {ns} samples"
-                    self._decode()
+                    self._process_decoders()
+                    self.wave.redraw()
                     return
             elif proto == 'Modbus':
                 slave = int(self.gen_addr.get(), 16)
@@ -2225,6 +2238,9 @@ class OLScope:
             return
         
         ch_data, ns = samples_to_channels(data)
+        if ns == 0 or not ch_data or not ch_data[0]:
+            self.status['text'] = "No samples decoded from capture"
+            return
         self.ch_data = ch_data
         self.samplerate = rate
         self.captured_bytes = data
@@ -2237,7 +2253,8 @@ class OLScope:
         if ns > 0:
             print(f"[DBG] CH0 first 20: {''.join(str(ch0[i]) for i in range(min(20, ns)))}")
         self.status['text'] = f"Captured {ns} samples ({trans} CH0 transitions)"
-        self._decode()
+        self._process_decoders()
+        self.wave.redraw()
 
     def _accel_read(self, reg_addr, read_len):
         """Read LIS3DH register(s) via I2C and display result."""
@@ -2268,11 +2285,12 @@ class OLScope:
             self.decoded_uart = []
             self.decoded_i2c = []
             self.wave.load(ch, self.ch_names, self.samplerate)
-            self._decode()
+            self._process_decoders()
+            self.wave.redraw()
             # Parse I2C decoded bytes
             decoded = decode_i2c(ch, rate, scl_idx=scl_pin, sda_idx=sda_pin)
             data_bytes = [v for t, v in decoded if t == "DATA"]
-            if reg_addr in (0x28, 0x2A, 0x2C) and read_len >= 2:
+            if reg_addr in (0x28, 0x2A, 0x2C) and read_len >= 2 and len(data_bytes) >= 2:
                 raw = (data_bytes[-2] | (data_bytes[-1] << 8))
                 val = raw - 65536 if raw >= 32768 else raw
                 mg = val * 1000 // 16384
@@ -2305,7 +2323,8 @@ class OLScope:
         fname = filedialog.asksaveasfilename(defaultextension='.ols',
                                               filetypes=[('OLS files', '*.ols'), ('All', '*.*')])
         if not fname: return
-        ch_data, ns = samples_to_channels(self.captured_bytes)
+        stride = getattr(self, 'capture_stride', 4)
+        ch_data, ns = samples_to_channels(self.captured_bytes, stride=stride)
         rate = self.samplerate
         with open(fname, 'w') as f:
             f.write(f';Rate: {rate}\n')
@@ -2314,7 +2333,8 @@ class OLScope:
             for i in range(ns):
                 byte = 0
                 for c in range(NUM_CHANNELS):
-                    byte |= (ch_data[c][i] << c)
+                    if c < len(ch_data) and i < len(ch_data[c]):
+                        byte |= (ch_data[c][i] << c)
                 f.write(f'{byte:04x}@{i}\n')
         self.status['text'] = f"Saved {fname}"
 
@@ -2346,14 +2366,16 @@ unitsize=1
         with zipfile.ZipFile(fname, 'w', zipfile.ZIP_DEFLATED) as zf:
             zf.writestr('metadata', meta)
             # Extract first byte (group0) of each sample
-            logic = bytes([self.captured_bytes[i * 4] for i in range(len(self.captured_bytes)//4)])
+            stride = getattr(self, 'capture_stride', 4)
+            logic = bytes([self.captured_bytes[i * stride] for i in range(len(self.captured_bytes)//stride)])
             zf.writestr('logic-1', logic)
         self.status['text'] = f"Saved {fname}"
 
     def _export_clip(self):
         if not self.captured_bytes:
             return
-        ch_data, ns = samples_to_channels(self.captured_bytes)
+        stride = getattr(self, 'capture_stride', 4)
+        ch_data, ns = samples_to_channels(self.captured_bytes, stride=stride)
         lines = [f"Samplerate: {self.samplerate} Hz, Samples: {ns}"]
         ch0 = ''.join(str(ch_data[0][i]) for i in range(min(200, ns)))
         lines.append(f"CH0[0:{min(200,ns)}]: {ch0}")
@@ -2397,7 +2419,8 @@ unitsize=1
             for i in range(ns):
                 byte = 0
                 for c in range(NUM_CHANNELS):
-                    byte |= (ch[c][i] << c)
+                    if c < len(ch) and i < len(ch[c]):
+                        byte |= (ch[c][i] << c)
                 f.write(f'{byte:04x}@{i}\n')
         self.status['text'] = f"Exported range M1={m1}..M2={m2} ({ns} samples) to {fname}"
 
@@ -2490,7 +2513,9 @@ unitsize=1
             self.logger_count += 1
             c = self.logger_count
             chd, ns = samples_to_channels(data)
-            edges = [sum(1 for i in range(1, ns) if chd[ci][i] != chd[ci][i-1]) for ci in range(NUM_CHANNELS)]
+            edges = [sum(1 for i in range(1, min(ns, len(chd[ci]))) if chd[ci][i] != chd[ci][i-1]) for ci in range(min(len(chd), NUM_CHANNELS))]
+            while len(edges) < NUM_CHANNELS:
+                edges.append(0)
             ts = time.strftime('%Y-%m-%d %H:%M:%S')
             row = [ts, c, ns] + edges + [data.hex()[:120]]
             self._append_csv_row(row)
@@ -2541,7 +2566,9 @@ def cli_mode(args):
             with open(args.output, 'wb') as f:
                 f.write(data)
             print(f"Saved raw to {args.output}")
-        # Show CH0 transitions
+        if ns == 0 or not ch_data or not ch_data[0]:
+            print("No samples decoded from capture")
+            return 1
         ch0 = ch_data[0]
         trans = sum(1 for i in range(1, len(ch0)) if ch0[i] != ch0[i-1])
         print(f"CH0: {sum(ch0)}H/{len(ch0)-sum(ch0)}L, {trans} transitions")
@@ -2555,7 +2582,11 @@ def cli_mode(args):
         elif args.format == 'sr':
             import zipfile
             with zipfile.ZipFile(args.input) as zf:
-                data = zf.read([n for n in zf.namelist() if n.startswith('logic')][0])
+                logic_files = [n for n in zf.namelist() if n.startswith('logic')]
+                if not logic_files:
+                    print("Error: no 'logic' file in SR archive")
+                    return 1
+                data = zf.read(logic_files[0])
         ch_data, ns = samples_to_channels(data)
         rate = args.rate or 1_000_000
         if args.protocol == 'uart':
@@ -2702,6 +2733,10 @@ def main():
             print(f"Captured {len(data)} bytes ({ns} samples) via SPI")
             if args.output:
                 with open(args.output, 'wb') as f: f.write(data)
+            if ns == 0 or not ch_data or not ch_data[0]:
+                print("No samples decoded from capture")
+                dev.close()
+                sys.exit(1)
             ch0 = ch_data[0]
             trans = sum(1 for i in range(1, len(ch0)) if ch0[i] != ch0[i-1])
             print(f"CH0: {sum(ch0)}H/{len(ch0)-sum(ch0)}L, {trans} transitions")
@@ -2711,8 +2746,8 @@ def main():
     else:
         backend = splash_choose()
         if backend is None:
-            print("No OLS device found — exiting")
-            sys.exit(1)
+            backend = 'UART'
+            print("No OLS device detected — opening in disconnected state")
         root = tk.Tk()
         root.withdraw()
         app = OLScope(backend=backend, root=root)

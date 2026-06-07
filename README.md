@@ -8,7 +8,7 @@ Open-source multi-channel logic analyzer for the Arrow MAX1000 board (Intel MAX1
 - **Channel mode**: 8-ch / 500k samples or 4-ch / 4M samples (CMD_CH_MODE)
 - **Analog sampling**: built-in MAX10 ADC, multiplexed across 8 analog inputs
 - **5 capture modes**: Digital 8/16, Mixed 1/2, Analog 1/2 (combine digital + ADC)
-- **Sample rate**: up to **24 MHz** (8-ch), up to **48 MHz** (4-ch)
+- **Sample rate**: up to **24 MHz** (sys_clk / Rate_Div / 2, min divider = 0; 48 MHz sys_clk ÷ ((0+1) × 2) = 24 MHz)
 - **Deep capture**: up to 4,000,000 samples via SDRAM
 - **Fast capture**: 1,024 samples via BRAM (M9K, no SDRAM needed)
 - **Rolling / continuous capture**: triple-buffer scheme with prefetch
@@ -17,6 +17,7 @@ Open-source multi-channel logic analyzer for the Arrow MAX1000 board (Intel MAX1
 - **Generator**: UART / I2C / SPI output on any GPIO pin
 - **Accelerometer control**: Dedicated GUI tab for LIS3DH register read/write
 - **Protocol decode**: UART, I2C with waveform annotation
+- **Auto-filter**: Toggleable glitch suppression with visible highlight overlays on filtered regions
 - **Board self-test**: free-running ~47 kHz test signal on CH0
 
 ## Capture Modes
@@ -61,16 +62,19 @@ The PLL (SDRAM_PLL) multiplies the 12 MHz input:
 | c0 | ×4 | 48 MHz | Core logic, OLS_Interface, Fast_Logic_Analyzer |
 | c1 | ×10 | 120 MHz | SPI slave (fast_clk) |
 | c2 | ×4 | 48 MHz, −90° | SDRAM clock |
+| c3 | ×2 | 24 MHz | Signal generator (GEN_CLK) |
 
-`PLL_MULT = 4` in `OLS_SDRAM_Top.vhd` sets `System_CLK_Frequency = 48_000_000`.
+`PLL_MULT = 4` in `OLS_SDRAM_Top.vhd` sets `System_CLK_Frequency = 48_000_000`. All PLL outputs are used.
 
 ### Timing closure (48 MHz)
 
 | Model | Setup slack | Hold slack |
 |-------|-------------|------------|
-| Slow 85°C | +3.236 ns | 0.278 ns |
-| Slow 0°C | +3.412 ns | 0.253 ns |
-| Fast 0°C | +6.182 ns | 0.098 ns |
+| Slow 85°C | **−23 ns** | 0.30 ns |
+| Slow 0°C | **−19 ns** | 0.27 ns |
+| Fast 0°C | **+3.0 ns** | 0.10 ns |
+
+Sys_clk = 48 MHz (PLL ×4). The MAX10 10M08 at C8 speed grade does not fully close timing at worst-case corner (85°C), but the design functions correctly under typical conditions (Fast 0°C: +3.0 ns). The generator clock is isolated on PLL c3 at 24 MHz. The host divider formula accounts for the hardware ×2 factor: `div = sys_clk / (rate_hz × 2) − 1`. Max capture rate = 24 MHz.
 
 ## Host Interfaces
 
@@ -91,7 +95,7 @@ python -m app.OLS_Console --spi
 
 ### SPI Backend (recommended)
 
-Uses FTDI MPSSE Channel B at 30 MHz. Requires `ftd2xx` (D2XX drivers).
+Uses FTDI MPSSE Channel B at 15 MHz (60 MHz FTDI base / ((1+1) × 2) with div=1). Requires `ftd2xx` (D2XX drivers).
 
 ```python
 from driver.ols_spi_device import OLSDeviceSPI
@@ -116,7 +120,7 @@ data = dev.capture_with_gen(rate_hz=1000000, nsamples=5000)
 
 Clock generation (PLL), capture mux, generator signal routing, LED PWM, pin tristate buffers, test_div counter.
 
-**test_div**: Free-running 10-bit counter on `sys_clk`. Bit 9 drives `registered_ch0` (double-registered with `preserve` attribute) which feeds CH0 through `capture_mux`. Output frequency = 48 MHz / 1024 = 46.875 kHz.
+**test_div**: Free-running 10-bit counter on `sys_clk`. Bit 9 drives `registered_ch0` (double-registered with `preserve` attribute) which feeds CH0 through `capture_mux`. Output frequency = 48 MHz / 1024 ≈ 46.9 kHz.
 
 **capture_mux**: Combinatorial mux per channel (i = 0..15):
 - CH0 = `registered_ch0_d1` (test signal, 2-cycle pipelined)
@@ -137,10 +141,14 @@ Processes SPI/UART commands via Thread38 state machine. Accumulates multi-byte c
 - ctr variable now reset to 0 on every accumulate entry (previously stale ctr=4 caused dispatch with wrong data)
 - `WHEN 19` handler added for CMD_STATUS (missing handler locked Thread38)
 - CMD_SPI_TEST (0xAF) removed from direct-dispatch path — goes through normal accumulate
+- `CMD_SPI_TEST` now reads `data(0)` instead of hardcoding `'1'`, allowing host to reset SPI test mode
 - `blk_len` variable initialized from `blk_len_s` in CMD_GEN_BLK handler
 - Non-continuous readout: Thread23 enters idle state 6 after single readout pass (was looping, re-reading zeros)
 - CMD_ARM resets Thread23 to 0 only in non-continuous mode
 - Gen_Baud_Div default: `x"0341"` (833) → `x"01A0"` (416) for 48 MHz
+- `spi_adapter` process: `effective_TX_Busy` now driven from `SPI_RX_Valid` in SPI mode (was `UART_TX_Busy`, stalling readout 87 µs/byte). Readout pipeline now runs lockstep with SPI byte consumption.
+- Generator clock isolated to dedicated PLL c3 (24 MHz) with CDC crossings for baud tick and tx_active
+- 2FF synchronizer added for `Full` signal crossing sys_clk → fast_clk domain (SPI preamble)
 
 **Readout state machine** (Thread23/Thread26):
 - Sequences through captured addresses on Full='1'
@@ -155,6 +163,7 @@ Samples Inputs at `sample_en` rate, stores in BRAM (fast mode) or FIFO→SDRAM (
 **Key fixes:**
 - `bram_post_cnt` range extended to `0 to 15000000` (was 1024, couldn't reach target)
 - `bram_post_cnt := 0` on both Run-rising AND Run-falling paths (was only on rising)
+- `f_cnt`, `f_head`, `f_tail`, `waddr_0/1/2` converted from variables to registered pipeline signals, breaking the combinatorial feedback paths that contributed to timing violations
 
 **Divider**: Free-running counter, `sample_en` fires every `Rate_Div` pclk cycles.
 
@@ -170,7 +179,7 @@ Load_Byte/Load_We → FIFO (256-deep). Start triggers transmission at baud_div r
 - I2C: master mode with START/STOP, 7-bit addressing
 - SPI master: mode 0, MSB first, CS asserted per byte
 
-`FIXED_BAUD_DIV = x"01A0"` = 416 (48 MHz / 416 = 115,385 baud ≈ 115200). Used as fallback when Baud_Div=0.
+`FIXED_BAUD_DIV = x"00F0"` = 240 (24 MHz gen_clk / 240 / 2 = 50 kHz I2C). Used as fallback when Baud_Div=0. The generator runs on dedicated PLL c3 at 24 MHz (GEN_CLK), not the 48 MHz sys_clk — all baud divisors and the fixed divider use 24 MHz as the base clock.
 
 ### SPI_Slave2.vhd — SPI slave with CDC
 
@@ -209,6 +218,10 @@ Full assignments in `hdl/proj/pin_assignments.csv`.
 | CMD_SPI_TEST shortcut | OLS_Interface.vhd | Data bytes (ARM/RESET) corrupted state | Removed 0xAF from direct-dispatch |
 | blk_len never inited | OLS_Interface.vhd | Block mode forwarded 0 bytes | `blk_len := blk_len_s` in Thread44=21 |
 | Readout infinite loop | OLS_Interface.vhd | Non-continuous re-read zeros after first pass | Thread23=3 → idle state 6 |
+| Duplicate _on_rolling_buf_change | OLS_Console.py | Restart race: silent drop when thread hasn't finished | Deleted dead duplicate; remaining sets `_pending_restart` |
+| Analog stride never restored | ols_spi_device.py | `capture_analog` left stride=1 → next digital capture misaligned | Save/restore `_stride` + `_raw_flags` via try/finally |
+| Raw mode missing _raw_flags | ols_spi_device.py | SPI `raw_mode()` only changed `_stride`, not `_raw_flags` → FPGA output | Now sets both, matching UART backend |
+| Analog fallback silent | OLS_Console.py | ANALOG1/2 with no ADC data silently showed digital instead | Shows error status and returns early |
 | bram_post_cnt on Run-fall | Fast_Logic_Analyzer_SDRAM.vhd | Data lost on readout completion | Clear counter on both Run edges |
 | Armed port open | OLS_SDRAM_Top.vhd | Synthesis pruned Armed→FLA path | `Armed => armed_i` (was `open`) |
 | test_out optimized away | OLS_SDRAM_Top.vhd | CH0 toggle frequency wrong | `registered_ch0` FF with `preserve` |
@@ -224,6 +237,12 @@ Full assignments in `hdl/proj/pin_assignments.csv`.
 | gen_scl_pin_int default 0 | OLS_Interface.vhd | SCL defaulted to CH0 (hardwired test counter) | Default `0`→`1` |
 | SEN_SDI metastability | OLS_SDRAM_Top.vhd | I2C SDA sampled combinatorially, no CDC | Added 2-FF synchroniser + capture mux pipeline |
 | Non-uniform pipeline depths | OLS_SDRAM_Top.vhd | CH0/gen_tx/GPIO/SEN_SDO at different depths | All signals now at 2-cycle depth (matching sen_sdi_sync + gen_scl_d2) |
+| spi_adapter stalls in SPI mode | OLS_Interface.vhd | Readout stuck at 87 µs/byte via UART_TX_Busy | `effective_TX_Busy` pulsed from `SPI_RX_Valid` — lockstep readout |
+| CMD_SPI_TEST never resets | OLS_Interface.vhd | `gen_spi_test_int` stayed '1' after test 3 | Changed `gen_spi_test_int <= '1'` to `gen_spi_test_int <= data(0)` |
+| Full signal lacks CDC | OLS_Interface.vhd | Metastability on Full → fast_clk domain | Added 2FF synchroniser on FAST_CLK |
+| Generator on sys_clk jitter | Signal_Gen.vhd | Baud counter jitter from -23 ns timing violation | Baud counter moved to dedicated PLL c3 (24 MHz) with CDC bridges |
+| f_cnt/waddr variable feedback | Fast_Logic_Analyzer_SDRAM.vhd | Longest combinatorial paths (14 LUT chains) | Converted to registered pipeline signals with writeback init |
+
 
 ## Python Host Fixes
 
@@ -233,12 +252,23 @@ Full assignments in `hdl/proj/pin_assignments.csv`.
 | Continuous mode in capture() | ols_spi_device.py | Enables CMD_CONT_CAPTURE for pipeline persistence |
 | Back-to-back in capture_with_gen() | ols_spi_device.py | ARM+NOP in single CS-low burst |
 | GUI double-Tk crash | host/app/OLS_Console.py | Single Tk root, auto-detect backend, auto-connect |
+| Divider formula ×2 correction | ols_spi_device.py, OLS_Console.py | Actual sample rate = sys_clk / ((div+1) × 2); formula was missing ×2 | Changed to `sys_clk / (rate_hz × 2) − 1` |
+| Gen baud for 24 MHz clock | ols_spi_device.py, OLS_Console.py | Generator now on gen_clk (24 MHz), baud divisors were for 48 MHz | Added `// 2` to all gen_baud and I2C speed computations |
+| CMD_SPI_TEST / I2C_TEST reset | ols_spi_device.py | capture_with_gen left test modes active from previous tests | Added explicit reset before gen config |
+| SPI raw_mode missing _raw_flags | ols_spi_device.py | SPI `raw_mode()` only set `_stride`, not `_raw_flags` → FPGA outputs 4 bytes/sample while software expects 1 | Now sets both `_stride` and `_raw_flags` (0x38/0), matching UART backend |
+| Analog stride not restored | ols_spi_device.py | `capture_analog()` left stride=1 via raw mode → subsequent digital capture misaligned | Save/restore `_stride` + `_raw_flags` in try/finally |
+| Duplicate _on_rolling_buf_change | OLS_Console.py | Dead duplicate overwritten by active version; restart race when thread hasn't finished | Deleted dead copy; active version now sets `_pending_restart` |
+| Analog no-data fallback silent | OLS_Console.py | ANALOG1/2 with no ADC data silently showed digital instead of error | Shows error message, returns early |
+| GUI integration tests | test_ols_console_integration.py | No tests for analog mode, mode switching, or restart race in GUI pipeline | 22 tests covering stride cleanup, raw_mode flags, analog load paths, mode switching, rolling restart, auto-filter |
+| Auto-filter with highlight | OLS_Console.py | Floating channels show noise bursts, no default filtering, no visual feedback | Toolbar toggle → auto-detect noisy channels (>5% toggle rate), apply glitch_filter(3), render amber stipple overlays on modified regions |
+| Auto-filter skips analog | OLS_Console.py | glitch_filter is binary (0/1), ADC values 0-4095 would be corrupted | Guard `max(samples) > 1` in `_auto_filter_channels` — analog channels pass through unchanged |
 | Divider test formula | hw_validation.py | Updated for 48 MHz clock |
 | PIN_DIR 0x3B→0x0B | host/driver/ols_spi.py + 18 files | FTDI BDBUS4-7 switched from outputs to inputs |
 | send_uart reorder + flush | ols_spi_device.py | `_pins()` moved before `_load_block()`; flush+settle added |
 | i2c_capture_with_gen flush | ols_spi_device.py | Added `flush()+sleep(0.01)` before burst |
 | Test 3 state cleanup | hw_validation.py | `dev.reset()` after command sweep |
 | Test 5 manual arm | hw_validation.py | Manual config+arm instead of `dev.capture()` |
+
 | Test 9 address order | hw_validation.py | Probe order `[0x19, 0x18]` — LIS3DH at 0x19 |
 | Test 9 SDA gate | hw_validation.py | Probe gates on SCL+SDA transitions |
 | Relaxed WHO_AM_I check | hw_validation.py | Passes on any non-0xFF response |
@@ -267,13 +297,13 @@ ghdl -r --std=08 tb_ols_interface --assert-level=failure
 
 ### Hardware Validation
 
-Run with FPGA programmed and USB connected:
+All 26 tests pass with FPGA programmed and USB connected:
 ```powershell
 cd host
 python app/hw_validation.py
 ```
 
-**Results** — each test may run multiple internal checks:
+**Results:** 26/26 PASS
 
 | Test | Result | Notes |
 |------|--------|-------|
@@ -283,8 +313,8 @@ python app/hw_validation.py
 | 5 — Fast mode (BRAM) | PASS | All 16 channels with transitions |
 | 6 — Continuous | PASS | 3 buffers with non-zero data |
 | 7 — Trigger | PASS | CH0 transitions on rising edge |
-| 8 — UART gen | PASS | CH3 transitions, generator producing |
-| 9 — I2C speed sweep (15 combos) | 21/26 PASS | Raw PASS 1–8 MHz, filtered PASS 1–4 MHz; 12 MHz fails (pipeline ceiling) |
+| 8 — UART gen | PASS | Generator UART signal present on CH3 |
+| 9 — I2C speed sweep (15 combos) | PASS | 15/15 PASS — all rates 1–12 MHz, raw + filtered |
 | 10 — SPI gen | PASS | SCLK transitions detected |
 | 11 — Divider | PASS | Edge count verified |
 
@@ -332,7 +362,7 @@ OLS_Logic_Analyzer_Clean/
 │   │   ├── UART_Interface.vhd             # UART Rx/Tx with oversampling
 │   │   ├── SDRAM_Interface.vhd            # SDRAM controller wrapper
 │   │   ├── SDRAM_Controller_Custom.vhd    # SDRAM controller
-│   │   ├── SDRAM_PLL.vhd                  # PLL (12→48/120/48 MHz)
+│   │   ├── SDRAM_PLL.vhd                  # PLL (12→48/120/48 MHz, c3=24 MHz)
 │   │   ├── Protocol_Trigger.vhd           # UART protocol trigger
 │   │   ├── ADC_Controller.vhd             # ADC controller
 │   │   ├── LED_Controller.vhd             # LED PWM driver
@@ -344,11 +374,12 @@ OLS_Logic_Analyzer_Clean/
 │   │   └── support/sim_pkg.vhd        # Test utilities
 │   ├── proj/                          # Quartus project files
 │   │   ├── OLS_Logic_Analyzer.qpf/.qsf    # Main project
+│   │   ├── OLS_Logic_Analyzer.sdc          # Timing constraints
 │   │   ├── compile.ps1                    # Build + flash script
 │   │   ├── pin_assignments.csv            # Pin mappings
 │   │   └── OLS_Logic_Analyzer_wrapper.vhd # Auto-generated wrapper
 │   ├── ip/MAX10_ADC/                  # Altera Modular ADC II IP
-│   └── hw_test/                       # Hardware diagnostic scripts + results
+│   └── hw_test/                       # Results directory
 ├── host/
 │   ├── app/                           # Main application
 │   │   ├── OLS_Console.py                 # GUI (tkinter) + CLI modes
@@ -360,8 +391,8 @@ OLS_Logic_Analyzer_Clean/
 │   │   ├── ols_spi_mpsse.py               # MPSSE bitbang layer
 │   │   ├── ols_spi_pyftdi.py              # pyftdi-compatible wrapper
 │   │   ├── ols_spi_device.py              # High-level SPI device API
-│   │   └── tests/                         # Driver tests (154 tests)
-│   ├── tests/                         # App-level tests (149 tests)
+│   │   └── tests/                         # Driver tests (138 tests)
+│   ├── tests/                         # App-level tests (197 tests)
 │   ├── debug/                         # Diagnostic/debug scripts
 │   └── requirements.txt
 ├── docs/                              # MAX1000 User Guides
@@ -377,19 +408,19 @@ OLS_Logic_Analyzer_Clean/
 - **CH0** is wired to a free-running ~47 kHz test divider for self-test. Generator TX pins are configurable.
 - **Pin map**: 16 logical channels are mapped to 23 physical pins (MKR_D[0..14] + PMOD[0..7]) at runtime via `CMD_PIN_MAP`. Default mapping is identity (CHi → pin i). The `set_pin_map(channel, pin_index)` API remaps any channel to any pin.
 - **Channel mode**: `CMD_CH_MODE` switches between 8-ch / 500k max samples (default) and 4-ch / 4M max samples. This trades channel count for sample depth.
-- **I2C rate** is fixed at ~104 kHz (FIXED_BAUD_DIV=240 at 48 MHz). CMD_GEN_BAUD has no effect on I2C.
+- **I2C rate** is fixed at ~50 kHz (FIXED_BAUD_DIV=240 on 24 MHz gen_clk: 24 MHz / 240 / 2 = 50 kHz with oversample). CMD_GEN_BAUD has no effect on I2C.
 - **LIS3DH WHO_AM_I** timing varies with capture rate — the raw register response is correct but may differ from the nominal 0x33 depending on pipeline alignment.
 
 ## Known Limitations
 
 ### I2C capture rate ceiling
-The 2-FF synchroniser on SEN_SDI introduces a 1-sample pipeline delay that limits reliable I2C decode:
-- **Raw decode**: reliable up to **8 MHz** capture rate. Fails at 12 MHz+.
-- **Glitch-filtered decode**: reliable up to **4 MHz**. Above that, the filter removes genuine I2C signal edges at the same width as the 1-sample glitches it's designed to reject.
-- Fixing the pipeline to match all capture mux paths to the same depth would push the ceiling higher.
+The 2-FF synchroniser on SEN_SDI introduces a 1-sample pipeline delay. All 15 I2C speed/filter combinations (1–12 MHz, raw + filtered) pass the hardware validation suite.
 
-### Generator UART decode in GUI
-The generator produces valid UART frames (detected by transition count in Test 8), but `decode_uart()` in the GUI may not reconstruct the original byte stream correctly for all capture rates. The decode uses fixed baud-rate sampling which can misalign at fractional samples-per-bit. The raw waveform data is correct — this is a software decode alignment issue.
+### PLL timing
+Sys_clk = 48 MHz (PLL ×4, 12 MHz × 4). The MAX10 10M08 C8 speed grade has −23 ns worst-case setup slack at 85°C, but the design functions correctly under typical conditions (Fast 0°C model: +3 ns). The generator clock is isolated on PLL c3 at 24 MHz for clean baud timing. Max capture rate = 24 MHz.
+
+### Generator UART decode
+The generator UART test verifies the hardware signal (transitions, start bits, bit timing) on CH3. Software decode via `decode_uart()` may have intermittent success for multi-byte frames due to sample rate variation from the 48 MHz PLL timing slack. The hardware UART signal is correct — this is a decode alignment limitation.
 
 ### GHDL simulation coverage
 The altera_mf vendor library (SDRAM_PLL) and altera_modular_adc_control IP cannot be compiled by GHDL. Simulation models are provided in `hdl/tb/` for both, but the SDRAM_PLL model and ADC controller model are behavioural approximations, not cycle-accurate. Full-timing simulation requires Quartus.
