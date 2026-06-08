@@ -1085,10 +1085,10 @@ class OLScope:
         ttk.Label(tb, text="Mode:").pack(side='left')
         self.mode_cb = ttk.Combobox(
             tb,
-            values=['Digital', 'Mixed 1', 'Mixed 2', 'Analogue 1', 'Analogue 2', 'Analogue 4', 'Mixed 2-4', 'Mixed Dual'],
-            width=10, state='readonly'
+            values=['16 Digital', '16 Dig + 1 Ana', '16 Dig + 2 Ana', '1 Analog', '2 Analog', '4 Analog', '16 Dig + 4 Ana', '16 Dig + 2 Ana (alt)'],
+            width=16, state='readonly'
         )
-        self.mode_cb.set('Digital')
+        self.mode_cb.set('16 Digital')
         self.mode_cb.pack(side='left', padx=2)
         ttk.Label(tb, text="A0:").pack(side='left')
         self.analog_ch0_cb = ttk.Combobox(tb, values=list(range(NUM_CHANNELS)), width=3, state='readonly')
@@ -1576,14 +1576,14 @@ class OLScope:
 
     def _get_capture_mode(self):
         mode_map = {
-            'Digital': ANALOG_MODE_DIGITAL8,
-            'Mixed 1': ANALOG_MODE_MIXED1,
-            'Mixed 2': ANALOG_MODE_MIXED2,
-            'Analogue 1': ANALOG_MODE_ANALOG1,
-            'Analogue 2': ANALOG_MODE_ANALOG2,
-            'Analogue 4': ANALOG_MODE_ANALOG4,
-            'Mixed 2-4': ANALOG_MODE_MIXED2_4,
-            'Mixed Dual': ANALOG_MODE_MIXED_DUAL,
+            '16 Digital': ANALOG_MODE_DIGITAL8,
+            '16 Dig + 1 Ana': ANALOG_MODE_MIXED1,
+            '16 Dig + 2 Ana': ANALOG_MODE_MIXED2,
+            '1 Analog': ANALOG_MODE_ANALOG1,
+            '2 Analog': ANALOG_MODE_ANALOG2,
+            '4 Analog': ANALOG_MODE_ANALOG4,
+            '16 Dig + 4 Ana': ANALOG_MODE_MIXED2_4,
+            '16 Dig + 2 Ana (alt)': ANALOG_MODE_MIXED_DUAL,
         }
         return mode_map.get(self.mode_cb.get(), ANALOG_MODE_DIGITAL8)
 

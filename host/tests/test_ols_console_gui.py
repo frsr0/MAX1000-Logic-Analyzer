@@ -126,31 +126,31 @@ class TestOLScopeGetters:
     def test_get_capture_mode_digital(self):
         scope = _make_scope()
         scope.mode_cb = MagicMock()
-        scope.mode_cb.get.return_value = 'Digital'
+        scope.mode_cb.get.return_value = '16 Digital'
         assert scope._get_capture_mode() == ANALOG_MODE_DIGITAL8
 
     def test_get_capture_mode_mixed1(self):
         scope = _make_scope()
         scope.mode_cb = MagicMock()
-        scope.mode_cb.get.return_value = 'Mixed 1'
+        scope.mode_cb.get.return_value = '16 Dig + 1 Ana'
         assert scope._get_capture_mode() == ANALOG_MODE_MIXED1
 
     def test_get_capture_mode_mixed2(self):
         scope = _make_scope()
         scope.mode_cb = MagicMock()
-        scope.mode_cb.get.return_value = 'Mixed 2'
+        scope.mode_cb.get.return_value = '16 Dig + 2 Ana'
         assert scope._get_capture_mode() == ANALOG_MODE_MIXED2
 
     def test_get_capture_mode_analog1(self):
         scope = _make_scope()
         scope.mode_cb = MagicMock()
-        scope.mode_cb.get.return_value = 'Analogue 1'
+        scope.mode_cb.get.return_value = '1 Analog'
         assert scope._get_capture_mode() == ANALOG_MODE_ANALOG1
 
     def test_get_capture_mode_analog2(self):
         scope = _make_scope()
         scope.mode_cb = MagicMock()
-        scope.mode_cb.get.return_value = 'Analogue 2'
+        scope.mode_cb.get.return_value = '2 Analog'
         assert scope._get_capture_mode() == ANALOG_MODE_ANALOG2
 
     def test_get_capture_mode_unknown_defaults_to_digital(self):
