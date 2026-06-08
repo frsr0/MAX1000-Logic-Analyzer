@@ -977,6 +977,11 @@ class WaveformDisplay(tk.Canvas):
                     if is_analog:
                         self.create_text(w - 4, y0 + 2, text=f"{max(samples[start:end]):04d}",
                                          anchor='ne', font=('Consolas', 7), fill='#b05a00')
+                        # Voltage scale (3.3V ref, 12-bit ADC: 0-4095)
+                        for v_label, frac in [('3.3V', 1.0), ('1.65V', 0.5), ('0V', 0.0)]:
+                            vy = y0 + self.CH_HEIGHT - frac * self.CH_HEIGHT
+                            self.create_text(1, vy, text=v_label, anchor='w',
+                                             font=('Consolas', 6), fill='#b05a00')
 
             # Channel separator
             self.create_line(0, y0 + self.CH_HEIGHT + self.CH_GAP/2,
@@ -1025,6 +1030,8 @@ class OLScope:
         self.capture_mode = ANALOG_MODE_DIGITAL8
         self.analog_ch0_sel = 0
         self.analog_ch1_sel = 1
+        self.analog_ch2_sel = 2
+        self.analog_ch3_sel = 3
         self.last_analog_frames = []
         self.samplerate = 1_000_000
         self.captured_bytes = b''
@@ -1090,14 +1097,20 @@ class OLScope:
         )
         self.mode_cb.set('16 Digital')
         self.mode_cb.pack(side='left', padx=2)
-        ttk.Label(tb, text="A0:").pack(side='left')
-        self.analog_ch0_cb = ttk.Combobox(tb, values=list(range(NUM_CHANNELS)), width=3, state='readonly')
-        self.analog_ch0_cb.set('0')
-        self.analog_ch0_cb.pack(side='left', padx=1)
-        ttk.Label(tb, text="A1:").pack(side='left')
-        self.analog_ch1_cb = ttk.Combobox(tb, values=list(range(NUM_CHANNELS)), width=3, state='readonly')
-        self.analog_ch1_cb.set('1')
-        self.analog_ch1_cb.pack(side='left', padx=1)
+        self.mode_cb.bind('<<ComboboxSelected>>', self._mode_changed)
+        self._analog_labels = {}
+        self._analog_combos = {}
+        for ai in range(4):
+            lbl = ttk.Label(tb, text=f"A{ai}:")
+            cb = ttk.Combobox(tb, values=list(range(NUM_CHANNELS)), width=3, state='readonly')
+            cb.set(str(ai))
+            self._analog_labels[ai] = lbl
+            self._analog_combos[ai] = cb
+        # Pack A0, A1 by default; A2, A3 hidden until needed
+        self._analog_labels[0].pack(side='left'); self._analog_combos[0].pack(side='left', padx=1)
+        self._analog_labels[1].pack(side='left'); self._analog_combos[1].pack(side='left', padx=1)
+        self._analog_labels[2].pack_forget(); self._analog_combos[2].pack_forget()
+        self._analog_labels[3].pack_forget(); self._analog_combos[3].pack_forget()
 
         ttk.Label(tb, text="Time:").pack(side='left')
         self.time_var = tk.StringVar(value='5.000 ms')
@@ -1510,6 +1523,24 @@ class OLScope:
     def _update_ui_state(self, connected=True):
         pass
 
+    def _mode_changed(self, event=None):
+        """Show/hide analog channel selectors based on current mode."""
+        mode = self._get_capture_mode()
+        ana_count = 0
+        if mode in (ANALOG_MODE_MIXED1, ANALOG_MODE_ANALOG1):
+            ana_count = 1
+        elif mode in (ANALOG_MODE_MIXED2, ANALOG_MODE_ANALOG2, ANALOG_MODE_MIXED_DUAL):
+            ana_count = 2
+        elif mode in (ANALOG_MODE_ANALOG4, ANALOG_MODE_MIXED2_4):
+            ana_count = 4
+        for ai in range(4):
+            if ai < ana_count:
+                self._analog_labels[ai].pack(side='left')
+                self._analog_combos[ai].pack(side='left', padx=1)
+            else:
+                self._analog_labels[ai].pack_forget()
+                self._analog_combos[ai].pack_forget()
+
     def _add_decoder_ui(self, di):
         """Create a decoder slot UI in the decoder_frame."""
         frame = ttk.LabelFrame(self.decoder_frame, text=f"Decoder {di+1}", padding=3)
@@ -1732,8 +1763,10 @@ class OLScope:
         self.wave.delete('all')
         rolling = self.rolling_var.get()
         self.capture_mode = self._get_capture_mode()
-        self.analog_ch0_sel = int(self.analog_ch0_cb.get())
-        self.analog_ch1_sel = int(self.analog_ch1_cb.get())
+        self.analog_ch0_sel = int(self._analog_combos[0].get())
+        self.analog_ch1_sel = int(self._analog_combos[1].get())
+        self.analog_ch2_sel = int(self._analog_combos[2].get())
+        self.analog_ch3_sel = int(self._analog_combos[3].get())
         if self.capture_mode != ANALOG_MODE_DIGITAL8:
             self.capture_stride = analog_frame_stride(self.capture_mode)
         else:
@@ -1787,22 +1820,34 @@ class OLScope:
                         buf_nsamp = 50000
                     buf_nsamp = max(1000, min(buf_nsamp, 500000))
                     self.captured_bytes = bytearray()
+                    ana = self.capture_mode != ANALOG_MODE_DIGITAL8
+                    if ana:
+                        self.dev.set_analog_config(self.capture_mode,
+                            self.analog_ch0_sel, self.analog_ch1_sel)
+                        as_ = analog_frame_stride(self.capture_mode)
+                    else:
+                        as_ = self.dev._stride
                     gen = self.dev.rolling_capture(
                         rate_hz=rate, chunk_nsamp=1024, buffer_nsamp=buf_nsamp,
                         stop_evt=self.stop_evt, progress_cb=None,
-                        full_out=self.captured_bytes
+                        full_out=self.captured_bytes, stride=as_
                     )
                     # Rolling: iterate generator, update capture_result per chunk
                     for buf, got, total in gen:
-                        stride = self.dev._stride
                         self.capture_partial = buf
                         self.capture_progress = (got, total)
-                        self.capture_result = (buf, rate, got, stride)
+                        if ana:
+                            frames = decode_analog_frames(buf, self.capture_mode)
+                            self.capture_result = (buf, rate, got, as_, frames, self.capture_mode)
+                        else:
+                            stride = self.dev._stride
+                            self.capture_result = (buf, rate, got, stride)
                 else:
                     if self.capture_mode != ANALOG_MODE_DIGITAL8 and hasattr(self.dev, 'capture_analog'):
                         data, frames = self.dev.capture_analog(
                             rate_hz=rate, frames=nsamp, mode=self.capture_mode,
                             ch0=self.analog_ch0_sel, ch1=self.analog_ch1_sel,
+                            ch2=self.analog_ch2_sel, ch3=self.analog_ch3_sel,
                             timeout=max(3, nsamp // 10000 + 2),
                             stop_evt=self.stop_evt
                         )
@@ -1907,13 +1952,30 @@ class OLScope:
         partial = getattr(self, 'capture_partial', None)
         if partial is None or len(partial) < 4:
             return
-        stride = getattr(self, 'capture_stride', 4)
-        raw = getattr(self, 'raw_mode_var', None) and self.raw_mode_var.get()
-        if raw and stride == 4:
-            trimmed = len(partial) - (len(partial) % 4)
-            partial = bytes(partial[i] for i in range(0, trimmed, 4)) if trimmed else b''
-            stride = 1
-        ch_partial, ns = samples_to_channels(partial, stride=stride)
+        ana = self.capture_mode != ANALOG_MODE_DIGITAL8
+        if ana:
+            frames = decode_analog_frames(partial, self.capture_mode)
+            ns = len(frames)
+            if ns < 1:
+                return
+            num_ch = 16  # show at least 16 digital channels
+            ch_partial = [[] for _ in range(num_ch)]
+            for fr in frames:
+                d = fr.get('digital', 0)
+                for c in range(num_ch):
+                    ch_partial[c].append((d >> c) & 1 if d is not None else 0)
+            # Append analog series
+            if frames and frames[0].get('adc'):
+                for ai in range(len(frames[0]['adc'])):
+                    ch_partial.append([fr['adc'][ai] for fr in frames])
+        else:
+            stride = getattr(self, 'capture_stride', 4)
+            raw = getattr(self, 'raw_mode_var', None) and self.raw_mode_var.get()
+            if raw and stride == 4:
+                trimmed = len(partial) - (len(partial) % 4)
+                partial = bytes(partial[i] for i in range(0, trimmed, 4)) if trimmed else b''
+                stride = 1
+            ch_partial, ns = samples_to_channels(partial, stride=stride)
         if ns < 2:
             return
         if ns == self.wave.num_samples and not (self.capture_running and self.rolling_var.get()):

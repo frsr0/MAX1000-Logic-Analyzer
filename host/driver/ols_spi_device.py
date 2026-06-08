@@ -184,7 +184,7 @@ class OLSDeviceSPI:
         # SPI backend: raw mode is display-only. FPGA always sends 4 bytes/sample.
         # _stride is used by the GUI to pick stride=1 for raw display.
 
-    def set_analog_config(self, mode, ch0=0, ch1=0):
+    def set_analog_config(self, mode, ch0=0, ch1=0, ch2=2, ch3=3):
         self.analog_mode = mode & 0x7
         self.analog_ch0 = ch0 & 0xF
         self.analog_ch1 = ch1 & 0xF
@@ -628,9 +628,10 @@ class OLSDeviceSPI:
 
     def rolling_capture(self, rate_hz, chunk_nsamp, buffer_nsamp,
                         stop_evt, progress_cb=None, gen_data=None, gen_baud=115200,
-                        gen_tx_pin=3, full_out=None, use_continuous=True):
+                        gen_tx_pin=3, full_out=None, use_continuous=True, stride=None):
         self._ensure_open()
-        stride = self._stride
+        if stride is None:
+            stride = self._stride
         max_bytes = buffer_nsamp * stride
 
         div = max(0, int(self.sys_clk / rate_hz) - 1)
@@ -643,6 +644,8 @@ class OLSDeviceSPI:
         self.pkt.write_register(REG_FLAGS, self._raw_flags)
         self.pkt.write_register(REG_FAST_MODE, 1)
         self.set_debug_ch0(self.debug_ch0_enabled)
+        if self.analog_mode != ANALOG_MODE_DIGITAL8:
+            self.set_analog_config(self.analog_mode, self.analog_ch0, self.analog_ch1)
 
         if gen_data:
             self.pkt.write_register(REG_GEN_PROTO, 0)
