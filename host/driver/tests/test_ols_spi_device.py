@@ -169,9 +169,11 @@ class TestOLSDeviceSPI:
         assert result[0]["digital"] == 0x003C
 
     def test_get_metadata(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'\x11' + b'\x00' * 49)
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.transaction.return_value = (0, 0, b'\x10\x17\x00\xf0\x01')
         result = device_spi.get_metadata()
-        assert len(result) == 50
+        assert result[:2] == b'\x10\x17'
+        assert len(result) == 5
 
     def test_read_preamble(self, device_spi):
         device_spi.pkt = MagicMock()

@@ -1454,7 +1454,7 @@ class OLScope:
             if len(meta) == 0:
                 self.dev.close()
                 self.dev = None
-                raise RuntimeError("FPGA not responding — check power and programming")
+                raise RuntimeError("FPGA not responding — need spi-focus firmware. Program the MAX1000 with the bitstream from this branch (hdl/proj/).")
             self.status['text'] = f"Connected via {label} (meta: {len(meta)}B)"
             self._update_ui_state(connected=True)
         except Exception as e:

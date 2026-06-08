@@ -169,9 +169,9 @@ class OLSDeviceSPI:
     def get_metadata(self):
         self._ensure_open()
         result = self.pkt.transaction(CMD_GET_METADATA)
-        if result:
+        if result and len(result[2]) >= 2:
             return result[2]
-        return b'\x00' * 50
+        return b''
 
     def raw_mode(self, enable=True):
         self._stride = 1 if enable else 4
