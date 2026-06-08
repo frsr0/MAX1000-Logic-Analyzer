@@ -53,6 +53,7 @@ REG_GEN_PROTO     = 0x30
 REG_GEN_BAUD      = 0x31
 REG_GEN_PINS      = 0x32
 REG_GEN_DATA      = 0x33
+REG_DEBUG_CH0_ENABLE = 0x40
 REG_IFACE_MODE    = 0xF0
 
 # Status codes

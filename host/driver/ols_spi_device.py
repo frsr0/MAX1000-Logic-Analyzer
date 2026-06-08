@@ -13,7 +13,7 @@ from driver.spi_protocol import (
     REG_TRIGGER_MASK, REG_TRIGGER_VALUE, REG_FLAGS,
     REG_FAST_MODE, REG_CONT_MODE,
     REG_GEN_PROTO, REG_GEN_BAUD, REG_GEN_PINS, REG_GEN_DATA,
-    REG_IFACE_MODE,
+    REG_IFACE_MODE, REG_DEBUG_CH0_ENABLE,
     ST_OK, ST_CAPTURE_DONE,
 )
 
@@ -92,6 +92,7 @@ class OLSDeviceSPI:
         self.analog_mode = ANALOG_MODE_DIGITAL8
         self.analog_ch0 = 0
         self.analog_ch1 = 1
+        self.debug_ch0_enabled = False
 
     @property
     def pkt(self):
@@ -162,6 +163,15 @@ class OLSDeviceSPI:
 
     def decode_analog_frames(self, data, mode=None):
         return decode_analog_frames(data, self.analog_mode if mode is None else mode)
+
+    def set_debug_ch0(self, enable=True):
+        self.debug_ch0_enabled = bool(enable)
+        self.pkt.write_register(REG_DEBUG_CH0_ENABLE, 1 if enable else 0)
+
+    def read_preamble(self):
+        """Read debug status register. Bit1 = debug_ch0_enable, bit0 = gen_busy."""
+        v = self.pkt.read_register(REG_DEBUG_CH0_ENABLE)
+        return v if v >= 0 else 0
 
     def fast_mode(self, enable=True):
         self.pkt.write_register(REG_FAST_MODE, 1 if enable else 0)

@@ -69,6 +69,7 @@ package spi_protocol_pkg is
   constant REG_GEN_PINS     : reg_addr_t := x"32";
   constant REG_GEN_DATA     : reg_addr_t := x"33";
   constant REG_IFACE_MODE   : reg_addr_t := x"F0";
+  constant REG_DEBUG_CH0_ENABLE : reg_addr_t := x"40";
 
   -- ── Helper: CRC-16-IBM ──────────────────────────────────────────
   function crc16(data : std_logic_vector; init : std_logic_vector(15 downto 0) := x"FFFF")

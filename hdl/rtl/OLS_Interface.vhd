@@ -49,8 +49,9 @@ PORT (
        Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
        Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
        Pin_Map_Write   : OUT STD_LOGIC := '0';
-       Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
-       Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0
+        Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
+        Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
+        Debug_Ch0_Enable : OUT STD_LOGIC := '0'
 
 );
 END OLS_Interface;
@@ -114,6 +115,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL dbg_bad_frame_seen  : STD_LOGIC := '0';
 
   SIGNAL ch_mode             : STD_LOGIC := '0';  -- 0=8ch/500k, 1=4ch/4M
+  SIGNAL debug_ch0_enable_i  : STD_LOGIC := '0';
   SIGNAL pipe_depth          : NATURAL range 2 to 8 := 8;
   SIGNAL proto_trig_protocol : STD_LOGIC_VECTOR(1 downto 0) := "00";
   SIGNAL proto_trig_match    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
@@ -126,9 +128,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   attribute preserve of gen_start_cnt : signal is true;
   attribute preserve of gen_load_cnt : signal is true;
   attribute preserve of gen_start_req : signal is true;
-  attribute preserve of Gen_Load_We : signal is true;
-  attribute preserve of Gen_Load_Byte : signal is true;
-  attribute preserve of Gen_Start : signal is true;
 
   -- SPI packet protocol signals (streaming architecture — no wide payload buses)
   SIGNAL spi_cs_rise      : STD_LOGIC := '0';
@@ -331,6 +330,8 @@ BEGIN
             gen_i2c_dev_r_int <= disp_reg_wdata(23 downto 16);
           END IF;
 
+        WHEN REG_DEBUG_CH0_ENABLE =>
+          debug_ch0_enable_i <= disp_reg_wdata(0);
         WHEN others => null;
       END CASE;
     END IF;
@@ -678,6 +679,7 @@ BEGIN
   Analog_Ch1 <= analog_ch1_i;
   Buffer_Ack      <= buffer_ack_i;
   Armed          <= Run_OLS;
+  Debug_Ch0_Enable <= debug_ch0_enable_i;
   -- Pin_Map_Write is driven from the main process (default low, pulsed in CMD_PIN_MAP handler)
 
   Proto_Trigger1 : Protocol_Trigger
@@ -912,6 +914,8 @@ BEGIN
                     reg_val(1) := gen_spi_test_int;
                     reg_val(15 downto 8) := std_logic_vector(to_unsigned(gen_i2c_rd_len_int, 8));
                     reg_val(23 downto 16) := gen_i2c_dev_r_int;
+                  when REG_DEBUG_CH0_ENABLE =>
+                    reg_val(0) := debug_ch0_enable_i;
                   when others => null;
                 end case;
                 rsp_buf(0) := reg_val(7 downto 0);

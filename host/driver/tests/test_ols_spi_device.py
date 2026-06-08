@@ -173,6 +173,34 @@ class TestOLSDeviceSPI:
         result = device_spi.get_metadata()
         assert len(result) == 50
 
+    def test_read_preamble(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.read_register.return_value = 2  # bit1=1 (debug ON)
+        pre = device_spi.read_preamble()
+        assert pre == 2
+        device_spi.pkt.read_register.assert_called_once_with(0x40)
+
+    def test_read_preamble_returns_zero_on_empty(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.read_register.return_value = -1
+        pre = device_spi.read_preamble()
+        assert pre == 0
+
+    def test_set_debug_ch0_enable(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.set_debug_ch0(True)
+        assert device_spi.debug_ch0_enabled is True
+        device_spi.pkt.write_register.assert_called_once_with(0x40, 1)
+
+    def test_set_debug_ch0_disable(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.set_debug_ch0(False)
+        assert device_spi.debug_ch0_enabled is False
+        device_spi.pkt.write_register.assert_called_once_with(0x40, 0)
+
+    def test_set_debug_ch0_default(self, device_spi):
+        assert device_spi.debug_ch0_enabled is False
+
 
 class TestOLSDeviceSPIGenerator:
     def test_pins_defaults(self, device_spi):

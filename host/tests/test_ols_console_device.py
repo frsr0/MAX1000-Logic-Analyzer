@@ -10,7 +10,7 @@ from app.OLS_Console import CMD_METADATA, CMD_XON, CMD_XOFF, CMD_DIVIDER, CMD_RC
 from app.OLS_Console import CMD_DCOUNT, CMD_TMASK, CMD_TVALUE, CMD_FLAGS, CMD_DELAY
 from app.OLS_Console import CMD_ARM, CMD_GEN_PROTO, CMD_GEN_BAUD, CMD_GEN_BLK
 from app.OLS_Console import CMD_FAST_MODE, CMD_TRIG_PROTO, CMD_I2C_TEST
-from app.OLS_Console import CMD_CONT_CAPTURE
+from app.OLS_Console import CMD_CONT_CAPTURE, CMD_DEBUG_CH0_ON, CMD_DEBUG_CH0_OFF
 
 
 def _make_serial(port='COM99'):
@@ -115,6 +115,24 @@ class TestOLSDeviceLowLevel:
         result = dev.get_metadata()
         assert len(result) == 50
         ser.write.assert_called_with(bytes([CMD_METADATA]))
+
+
+    @patch('app.OLS_Console.serial.Serial')
+    def test_set_debug_ch0(self, mock_serial):
+        ser = _make_serial()
+        mock_serial.return_value = ser
+        dev = OLSDevice(port='COM99')
+        assert dev.debug_ch0_enabled is False
+        ser.reset_mock()
+
+        dev.set_debug_ch0(True)
+        assert dev.debug_ch0_enabled is True
+        ser.write.assert_called_with(bytes([CMD_DEBUG_CH0_ON]))
+
+        ser.reset_mock()
+        dev.set_debug_ch0(False)
+        assert dev.debug_ch0_enabled is False
+        ser.write.assert_called_with(bytes([CMD_DEBUG_CH0_OFF]))
 
 
 class TestOLSDeviceModeSetters:

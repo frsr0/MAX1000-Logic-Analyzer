@@ -103,6 +103,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal analog_ch0    : natural range 0 to 15 := 0;
   signal analog_ch1    : natural range 0 to 15 := 1;
   signal analog_stream_mode : std_logic := '0';
+  signal debug_ch0_enable : std_logic := '0';
   signal analog_frame_data  : std_logic_vector(63 downto 0) := (others => '0');
   signal analog_frame_len   : natural range 1 to 8 := 1;
   signal adc0_result, adc1_result : std_logic_vector(11 downto 0) := (others => '0');
@@ -176,7 +177,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Analog_Stream_Mode : IN STD_LOGIC := '0';
     Pin_Map_Write  : OUT STD_LOGIC := '0';
     Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
-    Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0
+    Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
+    Debug_Ch0_Enable : OUT STD_LOGIC := '0'
   );
   END COMPONENT;
 
@@ -256,13 +258,14 @@ BEGIN
   SEN_SPC <= gen_scl when gen_spi_test = '1' and gen_busy = '1' else
              '0' when gen_i2c_test = '1' and gen_busy = '1' and gen_scl = '0' else 'Z';
 
-  -- Capture mux: each LA channel reads from pin_pool via pin_map
+  -- Capture mux: each LA channel reads from pin_pool via pin_map.
+  -- CH0 can optionally expose the internal divider debug signal.
   capture_mux: process(pin_pool_d1, pin_map, gen_busy, gen_tx_pin, gen_scl_pin,
                        gen_tx_d1, gen_scl_d2, sen_sdo_d1, gen_i2c_test, gen_spi_test,
-                       registered_ch0_d1)
+                       registered_ch0_d1, debug_ch0_enable)
   begin
     for i in 0 to LA_CHANNELS-1 loop
-      if i = 0 then
+      if i = 0 and debug_ch0_enable = '1' then
         internal_data(i) <= registered_ch0_d1;
       elsif gen_busy = '1' and gen_tx_pin = pin_map(i) then
         if gen_spi_test = '1' then
@@ -311,21 +314,25 @@ BEGIN
 
 
   -- Drive selected pin with generator signal when active
+  -- When debug_ch0_enable='1', CH0 (MKR_D0) outputs the internal test divider
   pin_drive: process(sys_clk)
   begin
     if rising_edge(sys_clk) then
+      pin_out <= (others => '0');
+      pin_dir <= (others => '0');
+
       if gen_busy = '1' then
-        pin_out <= (others => '0');
-        pin_dir <= (others => '0');
         pin_out(gen_tx_pin) <= gen_tx;
         pin_dir(gen_tx_pin) <= '1';
         if gen_proto = '1' then
           pin_out(gen_scl_pin) <= gen_scl;
           pin_dir(gen_scl_pin) <= '1';
         end if;
-      else
-        pin_out <= (others => '0');
-        pin_dir <= (others => '0');
+      end if;
+
+      if debug_ch0_enable = '1' then
+        pin_out(0) <= registered_ch0;
+        pin_dir(0) <= '1';
       end if;
     end if;
   end process;
@@ -445,7 +452,8 @@ BEGIN
     Analog_Stream_Mode => analog_stream_mode,
     Pin_Map_Write  => pin_map_write,
     Pin_Map_Channel => pin_map_channel,
-    Pin_Map_Pin     => pin_map_pin
+    Pin_Map_Pin     => pin_map_pin,
+    Debug_Ch0_Enable => debug_ch0_enable
   );
   
   -- PWM carrier counter

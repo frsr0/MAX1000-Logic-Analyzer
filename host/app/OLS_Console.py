@@ -68,6 +68,9 @@ CMD_TMASK  = 0xC0
 CMD_TVALUE = 0xC1
 CMD_ANALOG_CFG = 0xB0
 CMD_PIN_MAP = 0xBB
+CMD_DEBUG_CH0_OFF = 0x0B
+CMD_DEBUG_CH0_ON = 0x0C
+CMD_DEBUG_CH0 = CMD_DEBUG_CH0_ON
 
 NUM_CHANNELS = 16
 
@@ -107,6 +110,7 @@ class OLSDevice:
         self._stride = 4
         self._raw_flags = 0
         self._pending_gen = None
+        self.debug_ch0_enabled = False
 
     def _short(self, cmd):
         self.ser.write(bytes([cmd]))
@@ -121,6 +125,10 @@ class OLSDevice:
         if scl_pin is not None: self.gen_pins['scl'] = scl_pin
         val = (self.gen_pins['tx'] & 7) | ((self.gen_pins['scl'] & 7) << 8)
         self._long(CMD_GEN_PINS, val)
+
+    def set_debug_ch0(self, enable=True):
+        self.debug_ch0_enabled = bool(enable)
+        self._short(CMD_DEBUG_CH0_ON if enable else CMD_DEBUG_CH0_OFF)
 
     def reset(self):
         for _ in range(5):
@@ -207,6 +215,7 @@ class OLSDevice:
             time.sleep(0.005)
         time.sleep(0.05)
         self.ser.reset_input_buffer()
+        self.set_debug_ch0(self.debug_ch0_enabled)
         self._short(CMD_XON)
         div = max(0, int(self.sys_clk / rate_hz) - 1)
         self._long(CMD_DIVIDER, div & 0xFFFFFF)
@@ -302,6 +311,7 @@ class OLSDevice:
             time.sleep(0.005)
         time.sleep(0.05)
         self.ser.reset_input_buffer()
+        self.set_debug_ch0(self.debug_ch0_enabled)
         self._short(CMD_XON)
         div = max(0, int(self.sys_clk / rate_hz) - 1)
         self._long(CMD_DIVIDER, div & 0xFFFFFF)
@@ -1261,9 +1271,15 @@ class OLScope:
         self.fast_mode_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(trg_f, text="Fast mode (120 MHz, 1024 samples max)",
                         variable=self.fast_mode_var).grid(row=8, column=0, columnspan=2, sticky='w', pady=2)
-        ttk.Separator(trg_f, orient='horizontal').grid(row=9, column=0, columnspan=2, sticky='ew', pady=4)
-        ttk.Separator(trg_f, orient='horizontal').grid(row=10, column=0, columnspan=2, sticky='ew', pady=4)
-        ttk.Label(trg_f, text="Protocol Trigger:").grid(row=10, column=0, columnspan=2, sticky='w', pady=2)
+        self.debug_ch0_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(trg_f, text="Drive CH0 debug square wave",
+                        variable=self.debug_ch0_var,
+                        command=self._debug_ch0_changed).grid(row=9, column=0, columnspan=2, sticky='w', pady=2)
+        ttk.Label(trg_f,
+            text="WARNING: CH0 becomes FPGA output when enabled.\nDo not connect to driven signal. Scope use only.",
+            foreground='red', font=('Consolas', 7)).grid(row=10, column=0, columnspan=2, sticky='w')
+        ttk.Separator(trg_f, orient='horizontal').grid(row=11, column=0, columnspan=2, sticky='ew', pady=4)
+        ttk.Label(trg_f, text="Protocol Trigger:").grid(row=12, column=0, columnspan=2, sticky='w', pady=2)
         self.proto_trig_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(trg_f, text="Enable", variable=self.proto_trig_var).grid(row=11, column=0, sticky='w', pady=1)
         ttk.Label(trg_f, text="Match (hex):").grid(row=11, column=1, sticky='w')
@@ -1411,6 +1427,10 @@ class OLScope:
             # Verify device responds
             self.dev.reset()
             meta = self.dev.get_metadata()
+            # Apply GUI debug CH0 state to hardware after reset
+            self._apply_debug_ch0_setting()
+            if hasattr(self.dev, 'set_debug_ch0'):
+                self.dev.set_debug_ch0(self.debug_ch0_var.get())
             dbg = f"[DBG] Connected backend={self._backend} meta={len(meta)}B"
             if hasattr(self.dev, 'spi') and self.dev.spi:
                 q = self.dev.spi.dev.getQueueStatus() if hasattr(self.dev.spi, 'dev') else 0
@@ -1425,6 +1445,18 @@ class OLScope:
         except Exception as e:
             self.status['text'] = f"Connect failed: {e}"
             messagebox.showerror("Connect Error", str(e))
+
+    def _debug_ch0_changed(self):
+        enable = self.debug_ch0_var.get()
+        if self.dev and hasattr(self.dev, 'set_debug_ch0'):
+            try:
+                self.dev.set_debug_ch0(enable)
+            except Exception as e:
+                self.status['text'] = f"CH0 debug update failed: {e}"
+
+    def _apply_debug_ch0_setting(self):
+        if self.dev and hasattr(self, 'debug_ch0_var') and hasattr(self.dev, 'debug_ch0_enabled'):
+            self.dev.debug_ch0_enabled = self.debug_ch0_var.get()
 
     def _disconnect(self):
         if self.dev:

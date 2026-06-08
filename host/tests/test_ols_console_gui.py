@@ -8,6 +8,7 @@ sys.modules['serial.tools.list_ports'] = MagicMock()
 from app.OLS_Console import OLScope, WaveformDisplay, NUM_CHANNELS
 from app.OLS_Console import ANALOG_MODE_DIGITAL8, ANALOG_MODE_MIXED1, ANALOG_MODE_MIXED2
 from app.OLS_Console import ANALOG_MODE_ANALOG1, ANALOG_MODE_ANALOG2
+from app.OLS_Console import CMD_DEBUG_CH0_ON, CMD_DEBUG_CH0_OFF
 
 
 def _make_scope(backend='UART'):
@@ -289,6 +290,34 @@ class TestOLScopeTrigModeChanged:
         scope.trig_frame.winfo_children.return_value = []
         scope._trig_mode_changed()
         assert scope.trig_frame.winfo_children.called
+
+    def test_debug_ch0_changed_updates_device(self):
+        scope = _make_scope()
+        scope.dev = MagicMock()
+        scope.debug_ch0_var = MagicMock()
+
+        scope.debug_ch0_var.get.return_value = True
+        scope._debug_ch0_changed()
+        scope.dev.set_debug_ch0.assert_called_once_with(True)
+
+        scope.dev.reset_mock()
+        scope.debug_ch0_var.get.return_value = False
+        scope._debug_ch0_changed()
+        scope.dev.set_debug_ch0.assert_called_once_with(False)
+
+    def test_apply_debug_ch0_setting_syncs_to_device(self):
+        scope = _make_scope()
+        scope.dev = MagicMock()
+        scope.dev.debug_ch0_enabled = True
+        scope.debug_ch0_var = MagicMock()
+
+        scope.debug_ch0_var.get.return_value = False
+        scope._apply_debug_ch0_setting()
+        assert scope.dev.debug_ch0_enabled is False
+
+        scope.debug_ch0_var.get.return_value = True
+        scope._apply_debug_ch0_setting()
+        assert scope.dev.debug_ch0_enabled is True
 
 
 class TestOLScopeGenShowProtoFields:
