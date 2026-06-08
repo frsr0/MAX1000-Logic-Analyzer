@@ -848,6 +848,17 @@ class WaveformDisplay(tk.Canvas):
     def _on_release(self, e):
         self.dragging = None
 
+    def highlight_channel(self, ch_idx):
+        """Highlight a channel label in the waveform so the user can find it."""
+        self.redraw()
+        y0 = 20 + ch_idx * (self.CH_HEIGHT + self.CH_GAP)
+        cw = self.winfo_width()
+        self.create_rectangle(self.LABEL_WIDTH - 4, y0 - 1, cw, y0 + self.CH_HEIGHT + 1,
+                              outline='#ff0', fill='', width=2, tags='highlight')
+    def redraw(self):
+        self.delete('all')
+        w = self.winfo_width()
+
     def total_height(self):
         n = len(self.ch_data)
         return n * (self.CH_HEIGHT + self.CH_GAP) + 20 + 40  # channels + ruler + decode
@@ -2293,12 +2304,11 @@ class OLScope:
             self.status['text'] = f"Gen error: {e}"
 
     def _gen_send_capture(self):
-        """Load gen, then arm-capture + start gen (gen runs during capture)."""
+        """Atomic generator capture via CMD_GEN_CAPTURE hardware FSM."""
         if not self.dev: return
         proto = self.gen_proto.get()
         data_s = self.gen_data.get('1.0', 'end-1c')
         if not data_s: return
-        # If rolling checkbox is on, queue gen params — rolling thread handles it
         if self.rolling_var.get():
             try:
                 tx_pin = int(self.gen_tx_pin.get())
@@ -2311,95 +2321,44 @@ class OLScope:
             }
             self.status['text'] = "Generator queued — appears in rolling window"
             return
-        self.status['text'] = "Loading generator..."
-        self.win.update()
-        try:
-            tx_pin = int(self.gen_tx_pin.get())
-            scl_pin = int(self.gen_scl_pin.get())
-            if proto == 'UART':
-                self.dev.send_uart(data_s.encode(), int(self.gen_baud.get()),
-                                   tx_pin=tx_pin)
-            elif proto == 'I2C':
-                addr = int(self.gen_addr.get(), 16)
-                i2c_frame = bytes([(addr << 1) & 0xFF]) + data_s.encode()
-                # If rolling capture is active, load gen manually — rolling loop handles start
-                if self.capture_running and self.rolling_var.get():
-                    self.dev._pins(tx_pin=tx_pin, scl_pin=scl_pin)
-                    self.dev._long(CMD_GEN_PROTO, 1)
-                    div = max(1, self.dev.sys_clk // int(self.gen_baud.get()) // 2)
-                    self.dev._long(CMD_GEN_BAUD, div & 0xFFFF)
-                    self.dev._load_block(i2c_frame)
-                else:
-                    # Non-rolling: let capture_with_gen handle everything after reset
-                    rate_str = self.rate_cb.get()
-                    rate = int(rate_str.replace('kHz','000').replace('MHz','000000'))
-                    nsamp = int(self.samp_cb.get())
-                    self.status['text'] = f"Capturing with generator {nsamp} @ {rate/1e6:.1f} MHz..."
-                    self.win.update()
-                    try:
-                        data = self.dev.capture_with_gen(
-                            rate_hz=rate, nsamples=nsamp,
-                            proto='I2C',
-                            i2c_speed=int(self.gen_baud.get()),
-                            i2c_frame=i2c_frame,
-                            i2c_tx_pin=tx_pin,
-                            i2c_scl_pin=scl_pin,
-                        )
-                    except Exception as e:
-                        self.status['text'] = f"Capture error: {e}"
-                        return
-                    if not data:
-                        self.status['text'] = "Capture returned 0 bytes"
-                        return
-                    ch_data, ns = samples_to_channels(data)
-                    self.ch_data = ch_data
-                    self.samplerate = rate
-                    self.captured_bytes = data
-                    self.decoded_uart = []
-                    self.decoded_i2c = []
-                    self.wave.load(ch_data, self.ch_names, self.samplerate)
-                    self.status['text'] = f"Captured {ns} samples"
-                    self._process_decoders()
-                    self.wave.redraw()
-                    return
-            elif proto == 'Modbus':
-                slave = int(self.gen_addr.get(), 16)
-                func = int(self.gen_func.get(), 16)
-                payload = data_s.encode()
-                self.dev.send_modbus(slave, func, payload,
-                                     baud=int(self.gen_baud.get()),
-                                     tx_pin=tx_pin)
-        except Exception as e:
-            self.status['text'] = f"Gen load error: {e}"
-            return
-        
-        # If rolling capture is active, just load gen — rolling loop captures it
-        if self.capture_running and self.rolling_var.get():
-            self.dev._pending_gen_start = True
-            self.status['text'] = "Generator loaded — data appears in rolling buffer"
-            return
 
-        # Atomic generated capture via hardware CMD_GEN_CAPTURE
         rate_str = self.rate_cb.get()
         rate = int(rate_str.replace('kHz','000').replace('MHz','000000'))
         nsamp = int(self.samp_cb.get())
         self.status['text'] = f"Capturing with generator {nsamp} @ {rate/1e6:.1f} MHz..."
         print(f"[DBG] gen_capture rate={rate} nsamp={nsamp}")
         self.win.update()
+
         try:
-            data = self.dev.capture_with_gen(rate_hz=rate, nsamples=nsamp, timeout=6)
+            tx_pin = int(self.gen_tx_pin.get())
+            scl_pin = int(self.gen_scl_pin.get())
+            if proto == 'I2C':
+                addr = int(self.gen_addr.get(), 16)
+                i2c_frame = bytes([(addr << 1) & 0xFF]) + data_s.encode()
+                data = self.dev.capture_with_gen(
+                    rate_hz=rate, nsamples=nsamp, timeout=6,
+                    proto='I2C',
+                    i2c_speed=int(self.gen_baud.get()),
+                    i2c_frame=i2c_frame,
+                    i2c_tx_pin=tx_pin,
+                    i2c_scl_pin=scl_pin,
+                )
+            else:
+                # UART / Modbus: use _gen_data to pass to capture_with_gen
+                self.dev._gen_data = data_s.encode()
+                self.dev._gen_baud = int(self.gen_baud.get())
+                self.dev._gen_tx_pin = tx_pin
+                data = self.dev.capture_with_gen(rate_hz=rate, nsamples=nsamp, timeout=6)
         except Exception as e:
             print(f"[DBG] gen_capture EXCEPTION: {e}")
             self.status['text'] = f"Capture error: {e}"
             return
+
         print(f"[DBG] gen_capture returned {len(data)} bytes")
-        if len(data) >= 8:
-            print(f"[DBG] first 8 bytes hex: {data[:8].hex()}")
-        
         if not data:
             self.status['text'] = "Capture returned 0 bytes"
             return
-        
+
         ch_data, ns = samples_to_channels(data)
         if ns == 0 or not ch_data or not ch_data[0]:
             self.status['text'] = "No samples decoded from capture"
@@ -2407,15 +2366,11 @@ class OLScope:
         self.ch_data = ch_data
         self.samplerate = rate
         self.captured_bytes = data
-        self.decoded_uart = []
-        self.decoded_i2c = []
         self.wave.load(ch_data, self.ch_names, self.samplerate)
-        ch0 = ch_data[0]
-        trans = sum(1 for i in range(1, len(ch0)) if ch0[i] != ch0[i-1])
-        print(f"[DBG] capture result: {ns} samples, {trans} CH0 transitions")
-        if ns > 0:
-            print(f"[DBG] CH0 first 20: {''.join(str(ch0[i]) for i in range(min(20, ns)))}")
-        self.status['text'] = f"Captured {ns} samples ({trans} CH0 transitions)"
+        ch_tx = ch_data[tx_pin] if 0 <= tx_pin < len(ch_data) else ch_data[0]
+        trans = sum(1 for i in range(1, len(ch_tx)) if ch_tx[i] != ch_tx[i-1])
+        self.status['text'] = f"Captured {ns} samples ({trans} trans on CH{tx_pin})"
+        self.wave.highlight_channel(tx_pin)
         self._process_decoders()
         self.wave.redraw()
 
