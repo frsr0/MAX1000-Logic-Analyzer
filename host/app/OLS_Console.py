@@ -1288,7 +1288,10 @@ class OLScope:
         ttk.Label(trg_f,
             text="WARNING: CH0 becomes FPGA output when enabled.\nDo not connect to driven signal. Scope use only.",
             foreground='red', font=('Consolas', 7)).grid(row=10, column=0, columnspan=2, sticky='w')
-        ttk.Separator(trg_f, orient='horizontal').grid(row=11, column=0, columnspan=2, sticky='ew', pady=4)
+        self.raw_mode_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(trg_f, text="Raw mode — 8 ch only (higher throughput)",
+                        variable=self.raw_mode_var).grid(row=11, column=0, columnspan=2, sticky='w', pady=2)
+        ttk.Separator(trg_f, orient='horizontal').grid(row=12, column=0, columnspan=2, sticky='ew', pady=4)
         ttk.Label(trg_f, text="Protocol Trigger:").grid(row=12, column=0, columnspan=2, sticky='w', pady=2)
         self.proto_trig_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(trg_f, text="Enable", variable=self.proto_trig_var).grid(row=11, column=0, sticky='w', pady=1)
@@ -1705,7 +1708,7 @@ class OLScope:
         if self.capture_mode != ANALOG_MODE_DIGITAL8:
             self.capture_stride = analog_frame_stride(self.capture_mode)
         else:
-            self.capture_stride = 1 if rolling and self.dev else 4
+            self.capture_stride = 4  # FPGA always sends 4-byte samples
         self.capture_nsamp = nsamp
         if rolling:
             self.capture_window = int(self.rolling_buf_var.get())
@@ -1737,6 +1740,14 @@ class OLScope:
             try:
                 if fast:
                     self.dev.fast_mode(True)
+                raw = self.raw_mode_var.get()
+                if hasattr(self.dev, 'raw_mode') and not hasattr(self.dev, 'pkt'):
+                    # UART backend: raw mode is real (1 byte/sample)
+                    self.dev.raw_mode(raw)
+                else:
+                    # SPI backend: raw mode is display-only, always 4 bytes
+                    self.dev._stride = 1 if raw else 4
+                    self.dev._raw_flags = 0  # always send all bytes
                 if proto_enable:
                     self.dev.trigger_decode(match_byte=match_byte, channel=proto_ch, baud=proto_baud, enable=True)
                 if rolling:
@@ -1745,7 +1756,6 @@ class OLScope:
                     except:
                         buf_nsamp = 50000
                     buf_nsamp = max(1000, min(buf_nsamp, 500000))
-                    self.dev.raw_mode(True)  # 1 byte/sample for speed
                     self.captured_bytes = bytearray()
                     gen = self.dev.rolling_capture(
                         rate_hz=rate, chunk_nsamp=1024, buffer_nsamp=buf_nsamp,
@@ -1868,6 +1878,11 @@ class OLScope:
         if partial is None or len(partial) < 4:
             return
         stride = getattr(self, 'capture_stride', 4)
+        raw = getattr(self, 'raw_mode_var', None) and self.raw_mode_var.get()
+        if raw and stride == 4:
+            trimmed = len(partial) - (len(partial) % 4)
+            partial = bytes(partial[i] for i in range(0, trimmed, 4)) if trimmed else b''
+            stride = 1
         ch_partial, ns = samples_to_channels(partial, stride=stride)
         if ns < 2:
             return
@@ -1916,6 +1931,12 @@ class OLScope:
             print("[DBG] _load_capture: data is empty")
             self.status['text'] = "Capture returned 0 bytes — FPGA not responding"
             return
+        # Raw mode: display-only, extract first byte of each 4-byte word
+        raw = getattr(self, 'raw_mode_var', None) and self.raw_mode_var.get()
+        if raw and stride == 4:
+            trimmed = len(data) - (len(data) % 4)
+            data = bytes(data[i] for i in range(0, trimmed, 4)) if trimmed else b''
+            stride = 1
         ch_data, ns = samples_to_channels(data, stride=stride)
         if ns == 0 or not ch_data or not ch_data[0]:
             self.status['text'] = "No samples decoded from capture"
