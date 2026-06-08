@@ -356,8 +356,9 @@ class OLSDeviceSPI:
         samples = bytes(accumulated[:need])
 
         if samples:
-            for i in range(len(samples)):
-                if samples[i] != 0x00:
+            s = self._stride
+            for i in range(0, len(samples), s):
+                if samples[i:i+s] != b'\x00' * s:
                     samples = samples[i:]
                     break
 
@@ -402,8 +403,8 @@ class OLSDeviceSPI:
             value = 0
         self.pkt.write_register(REG_TRIGGER_MASK, mask)
         self.pkt.write_register(REG_TRIGGER_VALUE, value)
-        self.pkt.write_register(REG_FLAGS, self._raw_flags)
         self.set_analog_config(self.analog_mode, self.analog_ch0, self.analog_ch1)
+        self.pkt.write_register(REG_FLAGS, self._raw_flags)
         self.pkt.write_register(REG_FAST_MODE, 1)
 
         self.spi.flush()
@@ -430,8 +431,9 @@ class OLSDeviceSPI:
         samples = bytes(accumulated[:need])
 
         if samples:
-            for i in range(len(samples)):
-                if samples[i] != 0x00:
+            s = self._stride
+            for i in range(0, len(samples), s):
+                if samples[i:i+s] != b'\x00' * s:
                     samples = samples[i:]
                     break
 
@@ -603,7 +605,7 @@ class OLSDeviceSPI:
         self.pkt.write_register(REG_DELAY_COUNT, rc)
         self.pkt.write_register(REG_TRIGGER_MASK, 0)
         self.pkt.write_register(REG_TRIGGER_VALUE, 0)
-        self.pkt.write_register(REG_FLAGS, 0)
+        self.pkt.write_register(REG_FLAGS, self._raw_flags)
         self.pkt.write_register(REG_FAST_MODE, 1)
 
         if gen_data:

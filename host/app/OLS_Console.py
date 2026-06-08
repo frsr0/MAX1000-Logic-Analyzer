@@ -477,11 +477,14 @@ def samples_to_channels(data, num_ch=NUM_CHANNELS, stride=4):
     data: bytes
     stride: bytes per sample from SPI readback
     num_ch <= 8: uses 1 byte per sample
-    8 < num_ch <= 16: uses 2 bytes per sample
+    8 < num_ch <= 16 or stride < 2: uses 2 bytes per sample
     num_ch > 16: uses 4 bytes per sample (up to 32 ch)
     Returns: list of per-channel lists, each with sample values 0/1
     """
-    if num_ch <= 8:
+    if stride < 2:
+        need_bytes = 1
+        num_ch = min(num_ch, 8)
+    elif num_ch <= 8:
         need_bytes = 1
     elif num_ch <= 16:
         need_bytes = 2
@@ -1854,7 +1857,8 @@ class OLScope:
                 self._load_analog_capture(data, rate, frames, mode, stride)
             else:
                 data, rate, nsamp = res  # normal mode
-                self._load_capture(data, rate)
+                stride = getattr(self.dev, '_stride', 4) if self.dev else 4
+                self._load_capture(data, rate, stride)
             self._update_export_size_label()
             self.capture_running = False
             self.stop_btn.configure(state='disabled')
