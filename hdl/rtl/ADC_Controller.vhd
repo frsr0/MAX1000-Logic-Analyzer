@@ -44,11 +44,12 @@ architecture rtl of ADC_Controller is
   type state_t is (INIT, IDLE, SEND_CMD, WAIT_RSP, DONE);
   signal state : state_t := INIT;
   signal init_cnt : natural range 0 to 4095 := 0;
-  signal ch_busy   : std_logic_vector(3 downto 0) := "0000";
-  signal ch_sel    : natural range 0 to 15 := 0;
-  signal ch_index  : natural range 0 to 3 := 0;
+  signal start_arm : std_logic := '0';
   signal ch_req    : std_logic_vector(3 downto 0) := "0000";
+  signal ch_index  : natural range 0 to 3 := 0;
+  signal ch_busy   : std_logic_vector(3 downto 0) := "0000";
   signal ch_done   : std_logic_vector(3 downto 0) := "0000";
+  signal busy_send : std_logic := '0';
   signal ch0_r     : std_logic_vector(11 downto 0) := (others => '0');
   signal ch1_r     : std_logic_vector(11 downto 0) := (others => '0');
   signal ch2_r     : std_logic_vector(11 downto 0) := (others => '0');
@@ -159,13 +160,14 @@ begin
           when IDLE =>
             ch_busy <= "0000";
             -- Capture start requests and begin sequencing
-            ch_req(0) <= ch0_start;
-            ch_req(1) <= ch1_start;
-            ch_req(2) <= ch2_start;
-            ch_req(3) <= ch3_start;
+            -- Use the start signals directly (ch_req is signal, must be evaluated same cycle)
             if ch0_start = '1' or ch1_start = '1' or ch2_start = '1' or ch3_start = '1' then
+              ch_req(0) <= ch0_start;
+              ch_req(1) <= ch1_start;
+              ch_req(2) <= ch2_start;
+              ch_req(3) <= ch3_start;
+              ch_busy <= (ch0_start & ch1_start & ch2_start & ch3_start);
               ch_index <= 0;
-              ch_busy <= ch_req;
               state <= SEND_CMD;
             end if;
 

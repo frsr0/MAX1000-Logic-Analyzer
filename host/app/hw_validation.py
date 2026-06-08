@@ -19,10 +19,10 @@ import sys, time, os, json
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-NUM_CHANNELS = 16
+NUM_CHANNELS = 23
 
 try:
-    from driver.ols_spi_device import OLSDeviceSPI
+    from driver.ols_spi_device import OLSDeviceSPI, NUM_CHANNELS as SPI_NUM_CH
     from driver.spi_protocol import (
         CMD_ABORT_CAPTURE, CMD_ARM_CAPTURE,
         CMD_GEN_START, CMD_GEN_LOAD, CMD_GET_METADATA,
@@ -602,6 +602,44 @@ def test_divider_accuracy(dev):
     save_result("test11_divider", data, {"rate_hz": rate_hz})
 
 # ====================================================================
+# Test 12b: 23-channel capture
+# ====================================================================
+def test_23ch_capture(dev):
+    print_header("Test 12b: 23-channel digital capture")
+    check(SPI_NUM_CH == 23, f"NUM_CHANNELS should be 23, got {SPI_NUM_CH}")
+    dev.reset()
+    data = dev.capture(rate_hz=1_000_000, nsamples=512, timeout=10)
+    if data:
+        ch, ns = samples_to_channels(data, num_ch=23)
+        log(f"Captured {ns} samples across {len(ch)} channels")
+        ch_counts = [sum(ch[c]) for c in range(23)]
+        log(f"CH0 ones: {ch_counts[0]}, CH22 ones: {ch_counts[22]}")
+        check(any(c > 0 for c in ch_counts), "At least some channels show activity")
+    else:
+        check(False, "23-channel capture returned no data")
+    save_result("test12b_23ch", data, {"nsamples": 512})
+    log("Test 12b: PASS")
+
+# ====================================================================
+# Test 12c: Analog 4-channel mode
+# ====================================================================
+def test_analog4_mode(dev):
+    print_header("Test 12c: Analog 4-channel mode")
+    dev.set_analog_config(5, 0, 1)  # ANALOG_MODE_ANALOG4 on ch0/ch1
+    data = dev.capture(rate_hz=1_000_000, nsamples=256, timeout=10)
+    if data:
+        stride = 6  # Analog4 = 6 bytes/frame
+        nf = len(data) // stride
+        log(f"Analog4: {nf} frames, {len(data)} bytes, stride={stride}")
+        if data:
+            log(f"first frame hex: {data[:stride].hex()}")
+        check(nf > 0, "Received at least one analog frame")
+    else:
+        check(False, "Analog4 capture returned no data")
+    save_result("test12c_analog4", data, {"mode": "analog4"})
+    log("Test 12c: PASS")
+
+# ====================================================================
 # Main
 # ====================================================================
 def main():
@@ -638,6 +676,10 @@ def main():
 
         log("\n--- Divider test at slow rate ---")
         test_divider_accuracy(dev)
+
+        log("\n--- 23-channel + Analog4 tests ---")
+        test_23ch_capture(dev)
+        test_analog4_mode(dev)
 
     except Exception as e:
         log(f"\nERROR: {e}")
