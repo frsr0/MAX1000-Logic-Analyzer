@@ -397,7 +397,7 @@ class TestOLScopeProcessDecoders:
         scope.decoder_slots = []
         scope._process_decoders()
         assert len(scope.ch_data) > 16
-        assert scope.ch_names[23].endswith('_f')
+        assert scope.ch_names[16].endswith('_f')
 
     def test_uart_decoder_appends_signal(self):
         scope = _make_scope()
@@ -474,7 +474,7 @@ class TestOLScopeProcessDecoders:
             'scl_idx': 1,
         }]
         scope._process_decoders()
-        assert len(scope.ch_data) == 23
+        assert len(scope.ch_data) == 16
 
     def test_filtered_channel_as_decoder_source(self):
         scope = _make_scope()

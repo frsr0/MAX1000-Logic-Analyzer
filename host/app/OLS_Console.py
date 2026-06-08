@@ -76,7 +76,7 @@ CMD_DEBUG_CH0_OFF = 0x0B
 CMD_DEBUG_CH0_ON = 0x0C
 CMD_DEBUG_CH0 = CMD_DEBUG_CH0_ON
 
-NUM_CHANNELS = 23
+NUM_CHANNELS = 16
 
 # ─── Connect / Capture helpers ───────────────────────────────────
 
@@ -477,19 +477,14 @@ def samples_to_channels(data, num_ch=NUM_CHANNELS, stride=4):
     data: bytes
     stride: bytes per sample from SPI readback
     num_ch <= 8: uses 1 byte per sample
-    8 < num_ch <= 16 or stride < 2: uses 2 bytes per sample
-    num_ch > 16: uses 4 bytes per sample (up to 32 ch)
+    num_ch > 8: uses 2 bytes per sample (requires stride >= 2 or fallback to 1 byte)
     Returns: list of per-channel lists, each with sample values 0/1
     """
     if stride < 2:
         need_bytes = 1
         num_ch = min(num_ch, 8)
-    elif num_ch <= 8:
-        need_bytes = 1
-    elif num_ch <= 16:
-        need_bytes = 2
     else:
-        need_bytes = 4
+        need_bytes = 2 if num_ch > 8 else 1
     if stride < need_bytes:
         stride = need_bytes
     data = data[:len(data) - (len(data) % stride)]

@@ -65,7 +65,7 @@ END OLS_Logic_Analyzer;
 
 ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
 
-  CONSTANT sub_steps    : NATURAL := (Channels + 15) / 16;
+  CONSTANT sub_steps    : NATURAL := 16 / Channels;
   SIGNAL OLS_Interface_Rate_Div      : NATURAL          range 1 to 150000000 := 12;
   SIGNAL OLS_Interface_Samples       : NATURAL          range 1 to Max_Samples := Max_Samples;
   SIGNAL OLS_Interface_Start_Offset  : NATURAL          range 0 to Max_Samples := 0;
@@ -74,7 +74,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL OLS_Interface_Address       : NATURAL          range 0 to Max_Samples-1 := 0;
   SIGNAL OLS_Interface_Outputs       : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL OLS_Interface_Inputs        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
-  SIGNAL LA_Out : STD_LOGIC_VECTOR(31 downto 0);
+  SIGNAL LA_Out : STD_LOGIC_VECTOR(15 downto 0);
   SIGNAL Fast_Logic_Analyzer_SDRAM_CLK_150      : STD_LOGIC;
   SIGNAL LA_Address       : NATURAL          range 0 to Max_Samples := 0;
   SIGNAL Gen_Load_Byte_i    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
@@ -153,7 +153,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
     COMPONENT Fast_Logic_Analyzer_SDRAM IS
   GENERIC (
       Max_Samples    : NATURAL := 3000000;
-    Channels       : NATURAL range 1 to 32 := 16;
+    Channels       : NATURAL range 1 to 16 := 16;
     Sim            : boolean := false;
     Write_Latency  : natural := 10;
     Read_Latency   : natural := 3;
@@ -169,7 +169,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
     Full        : OUT STD_LOGIC := '0'; 
     Inputs      : IN  STD_LOGIC_VECTOR(Channels-1 downto 0) := (others => '0');
     Address     : IN  NATURAL range 0 to Max_Samples := 0;   
-    Outputs     : OUT STD_LOGIC_VECTOR(31 downto 0); 
+    Outputs     : OUT STD_LOGIC_VECTOR(15 downto 0); 
     sdram_addr  : OUT std_logic_vector (11 downto 0);
     sdram_ba    : OUT std_logic_vector (1 downto 0);
     sdram_cas_n : OUT std_logic;
@@ -199,9 +199,8 @@ BEGIN
 
   OLS_Interface_Inputs(Channels-1 downto 0) <= Inputs;
 
-  -- LA_Out carries 16 bits (sub_steps=1) or 32 bits (sub_steps=2) per read
-  OLS_Interface_Outputs <= LA_Out;
-  LA_Address <= OLS_Interface_Address;
+  OLS_Interface_Outputs(Channels-1 downto 0) <= LA_Out(((OLS_Interface_Address mod sub_steps + 1)*Channels)-1 downto (OLS_Interface_Address mod sub_steps)*Channels);
+  LA_Address <= OLS_Interface_Address/sub_steps;
   Gen_Load_Byte <= Gen_Load_Byte_i;
   Gen_Load_We   <= Gen_Load_We_i;
   Gen_Start     <= Gen_Start_i;

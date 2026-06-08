@@ -39,7 +39,7 @@ ANALOG_MODE_ANALOG4 = 5
 ANALOG_MODE_MIXED2_4 = 6
 ANALOG_MODE_MIXED_DUAL = 7
 
-NUM_CHANNELS = 23
+NUM_CHANNELS = 16
 
 
 def analog_frame_stride(mode):
@@ -57,7 +57,7 @@ def analog_frame_stride(mode):
         return 8
     if mode == ANALOG_MODE_MIXED_DUAL:
         return 6
-    return 3  # Digital23
+    return 2  # Digital16
 
 
 def decode_analog_frames(data, mode):
@@ -67,7 +67,7 @@ def decode_analog_frames(data, mode):
         frame = data[i * stride:(i + 1) * stride]
         row = {"digital": None, "adc": []}
         if mode == ANALOG_MODE_DIGITAL8:
-            row["digital"] = frame[0] | (frame[1] << 8) | ((frame[2] & 0x7F) << 16)
+            row["digital"] = frame[0] | (frame[1] << 8)
         elif mode == ANALOG_MODE_MIXED1:
             row["digital"] = frame[0] | (frame[1] << 8)
             row["adc"].append(frame[2] | ((frame[3] & 0x0F) << 8))
@@ -92,11 +92,11 @@ def decode_analog_frames(data, mode):
             row["adc"].append(frame[5] | ((frame[6] & 0x0F) << 8))
             row["adc"].append(((frame[6] >> 4) & 0x0F) | (frame[7] << 4))
         elif mode == ANALOG_MODE_MIXED_DUAL:
-            row["digital"] = frame[0] | (frame[1] << 8) | ((frame[2] & 0x7F) << 16)
-            row["adc"].append(frame[3] | ((frame[4] & 0x0F) << 8))
-            row["adc"].append(((frame[4] >> 4) & 0x0F) | (frame[5] << 4))
+            row["digital"] = frame[0] | (frame[1] << 8)
+            row["adc"].append(frame[2] | ((frame[3] & 0x0F) << 8))
+            row["adc"].append(((frame[3] >> 4) & 0x0F) | (frame[4] << 4))
         else:
-            row["digital"] = frame[0] | (frame[1] << 8) | ((frame[2] & 0x7F) << 16)
+            row["digital"] = frame[0] | (frame[1] << 8)
         frames.append(row)
     return frames
 

@@ -49,7 +49,7 @@ PORT (
        Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
        Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
        Pin_Map_Write   : OUT STD_LOGIC := '0';
-        Pin_Map_Channel : OUT NATURAL range 0 to 31 := 0;
+        Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
         Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
         Debug_Ch0_Enable : OUT STD_LOGIC := '0'
 
@@ -840,7 +840,7 @@ BEGIN
 
             when CMD_GET_METADATA =>
               rsp_buf(0) := x"10";
-              rsp_buf(1) := x"17";  -- 23 channels
+              rsp_buf(1) := x"10";  -- 16 channels
               rsp_buf(2) := x"00";
               rsp_buf(3) := x"F0";
               rsp_buf(4) := x"01";

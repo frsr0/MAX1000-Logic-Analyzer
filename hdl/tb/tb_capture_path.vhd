@@ -22,7 +22,7 @@ architecture bench of tb_capture_path is
   signal full     : std_logic;
   signal inputs   : std_logic_vector(CHANNELS-1 downto 0) := (others => '0');
   signal address  : natural range 0 to 3000000 := 0;
-  signal outputs  : std_logic_vector(31 downto 0);
+  signal outputs  : std_logic_vector(15 downto 0);
   signal armed    : std_logic := '0';
   signal fast_mode : std_logic := '0';
   signal continuous_mode : std_logic := '0';
@@ -111,7 +111,7 @@ begin
     );
 
   process
-    variable rdata : std_logic_vector(31 downto 0);
+    variable rdata : std_logic_vector(15 downto 0);
     variable prev_ch0 : std_logic := 'U';
   begin
     wait_cycles(clk, 50);
@@ -175,17 +175,16 @@ begin
       wait_cycles(clk, 5);
       rdata := outputs;
       check(not is_x(rdata), "Outputs must be known at addr " & integer'image(addr));
-      -- With sub_steps = ceil(Channels/16) = 1 for 8 ch, each word = one 8-channel sample
-      -- sample period = 40ns. CH0 toggles every 80ns → 2 samples per toggle level.
-      -- Check CH0 is valid (not X or Z)
-      if addr = 0 and rdata(0) /= prev_ch0 then
-        -- initialize prev_ch0 from first sample
-        prev_ch0 := rdata(0);
-      elsif addr > 0 then
-        check(rdata(0) = prev_ch0 or (rdata(0) /= prev_ch0 and addr mod 2 = 0),
-              "CH0 should hold for 2 samples then toggle at addr " & integer'image(addr));
-        prev_ch0 := rdata(0);
+      -- CH0 is captured in bit 0 of each half-word
+      -- Both halves of a word should have same CH0 (captured 40ns apart, CH0 toggles every 80ns)
+      check(rdata(0) = rdata(8), "CH0 mismatch within word at addr " & integer'image(addr) &
+            ": lo=" & std_logic'image(rdata(0)) & " hi=" & std_logic'image(rdata(8)));
+      -- Adjacent words should have opposite CH0 (80ns between words = 1 CH0 toggle)
+      if addr > 0 then
+        check(rdata(0) /= prev_ch0, "CH0 should toggle between words at addr " & integer'image(addr) &
+              ": prev=" & std_logic'image(prev_ch0) & " cur=" & std_logic'image(rdata(0)));
       end if;
+      prev_ch0 := rdata(0);
     end loop;
     report "Test 3: PASS";
 
