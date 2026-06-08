@@ -2379,21 +2379,22 @@ class OLScope:
             self.status['text'] = "Generator loaded — data appears in rolling buffer"
             return
 
-        # Capture with generator running during capture window
+        # Generator is already running from send_uart() above.
+        # Capture while gen is active (don't call capture_with_gen which resets).
         rate_str = self.rate_cb.get()
         rate = int(rate_str.replace('kHz','000').replace('MHz','000000'))
         nsamp = int(self.samp_cb.get())
         self.status['text'] = f"Capturing with generator {nsamp} @ {rate/1e6:.1f} MHz..."
-        print(f"[DBG] capture_with_gen rate={rate} nsamp={nsamp} expect_bytes={nsamp*4}")
+        print(f"[DBG] gen_capture rate={rate} nsamp={nsamp}")
         self.win.update()
         try:
-            data = self.dev.capture_with_gen(rate_hz=rate, nsamples=nsamp)
+            # Use capture() which resets but gen keeps running through it
+            data = self.dev.capture(rate_hz=rate, nsamples=nsamp, timeout=6)
         except Exception as e:
-            print(f"[DBG] capture_with_gen EXCEPTION: {e}")
+            print(f"[DBG] gen_capture EXCEPTION: {e}")
             self.status['text'] = f"Capture error: {e}"
             return
-        
-        print(f"[DBG] capture_with_gen returned {len(data)} bytes")
+        print(f"[DBG] gen_capture returned {len(data)} bytes")
         if len(data) >= 8:
             print(f"[DBG] first 8 bytes hex: {data[:8].hex()}")
         
