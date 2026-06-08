@@ -17,7 +17,7 @@ from driver.ols_spi_device import (
 
 class TestAnalogFrameStride:
     def test_digital8(self):
-        assert analog_frame_stride(ANALOG_MODE_DIGITAL8) == 2
+        assert analog_frame_stride(ANALOG_MODE_DIGITAL8) == 3
 
     def test_mixed1(self):
         assert analog_frame_stride(ANALOG_MODE_MIXED1) == 4
@@ -31,18 +31,18 @@ class TestAnalogFrameStride:
     def test_analog2(self):
         assert analog_frame_stride(ANALOG_MODE_ANALOG2) == 3
 
-    def test_unknown_mode_defaults_to_2(self):
-        assert analog_frame_stride(99) == 2
+    def test_unknown_mode_defaults_to_3(self):
+        assert analog_frame_stride(99) == 3
 
 
 class TestDecodeAnalogFrames:
     def test_digital8_single(self):
-        rows = decode_analog_frames(bytes([0xA5, 0x03]), ANALOG_MODE_DIGITAL8)
+        rows = decode_analog_frames(bytes([0xA5, 0x03, 0x00]), ANALOG_MODE_DIGITAL8)
         assert len(rows) == 1
         assert rows[0]["digital"] == 0x03A5
 
     def test_digital8_multi(self):
-        data = bytes([0x01, 0x00, 0x02, 0x00, 0x04, 0x00])
+        data = bytes([0x01, 0x00, 0x00, 0x02, 0x00, 0x00, 0x04, 0x00, 0x00])
         rows = decode_analog_frames(data, ANALOG_MODE_DIGITAL8)
         assert len(rows) == 3
         assert rows[0]["digital"] == 0x0001
@@ -91,7 +91,7 @@ class TestDecodeAnalogFrames:
         assert rows == []
 
     def test_partial_frame_skipped(self):
-        rows = decode_analog_frames(bytes([0x01, 0x00, 0x02]), ANALOG_MODE_DIGITAL8)
+        rows = decode_analog_frames(bytes([0x01, 0x00, 0x00, 0x02]), ANALOG_MODE_DIGITAL8)
         assert len(rows) == 1
         assert rows[0]["digital"] == 0x0001
 

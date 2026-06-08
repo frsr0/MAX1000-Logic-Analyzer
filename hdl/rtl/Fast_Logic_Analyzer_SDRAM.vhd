@@ -5,7 +5,7 @@ use IEEE.numeric_std.all;
 entity Fast_Logic_Analyzer_SDRAM is
   generic (
     Max_Samples : natural := 3000000;
-    Channels    : natural range 1 to 16 := 16;
+    Channels    : natural range 1 to 32 := 16;
     Sim         : boolean := false;
     Write_Latency : natural := 10;
     Read_Latency  : natural := 3;
@@ -21,7 +21,7 @@ port (
   Full         : out std_logic := '0';
   Inputs       : in  std_logic_vector(Channels-1 downto 0) := (others => '0');
   Address      : in  natural range 0 to Max_Samples := 0;
-  Outputs      : out std_logic_vector(15 downto 0);
+  Outputs      : out std_logic_vector(31 downto 0);
   sdram_addr   : out std_logic_vector(11 downto 0);
   sdram_ba     : out std_logic_vector(1 downto 0);
   sdram_cas_n  : out std_logic;
@@ -49,7 +49,8 @@ end Fast_Logic_Analyzer_SDRAM;
 
 architecture rtl of Fast_Logic_Analyzer_SDRAM is
 
-  constant sub_steps : natural := 16 / Channels;
+  -- sub_steps = ceil(Channels / 16): 1 for ≤16 ch, 2 for 17-32 ch
+  constant sub_steps : natural := (Channels + 15) / 16;
 
   signal pclk : std_logic;
 
@@ -73,21 +74,22 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
 
   -- Write FIFO (depth 16, 38-bit entries: addr(21:0) & wdata(15:0))
   constant FIFO_Depth : natural := 16;
+  -- FIFO: addr(21:0) & wdata(15:0) = 38 bits per entry (2 entries per 32-bit sample)
   type fifo_array is array (0 to FIFO_Depth-1) of std_logic_vector(37 downto 0);
   signal fifo_mem  : fifo_array := (others => (others => '0'));
   signal fifo_cnt  : natural range 0 to FIFO_Depth := 0;
 
-  -- Pre-trigger BRAM (circular buffer, holds samples before trigger fires)
+  -- Pre-trigger BRAM: 32-bit wide (uses 2 M9K blocks)
   constant BRAM_SIZE : natural := 1024;
-  type bram_array is array(0 to BRAM_SIZE-1) of std_logic_vector(15 downto 0);
+  type bram_array is array(0 to BRAM_SIZE-1) of std_logic_vector(31 downto 0);
   signal bram : bram_array := (others => (others => '0'));
   attribute ramstyle : string;
   attribute ramstyle of bram : signal is "M9K";
   signal bram_wren  : std_logic := '0';
   signal bram_waddr : natural range 0 to BRAM_SIZE-1 := 0;
-  signal bram_wdata : std_logic_vector(15 downto 0) := (others => '0');
+  signal bram_wdata : std_logic_vector(31 downto 0) := (others => '0');
   signal bram_raddr : natural range 0 to BRAM_SIZE-1 := 0;
-  signal bram_rdata : std_logic_vector(15 downto 0) := (others => '0');
+  signal bram_rdata : std_logic_vector(31 downto 0) := (others => '0');
 
   -- Triple-buffer state
   signal buf_sel    : std_logic_vector(1 downto 0) := "00";
@@ -191,7 +193,7 @@ begin
     variable run_r   : std_logic := '0';
     variable rd_mode : boolean := true;
     variable read_addr : natural := 0;
-    variable wbuf    : std_logic_vector(15 downto 0) := (others => '0');
+    variable wbuf    : std_logic_vector(31 downto 0) := (others => '0');
     variable waddr_0   : natural range 0 to Max_Samples := 0;
     variable waddr_1   : natural range 0 to Max_Samples := 0;
     variable waddr_2   : natural range 0 to Max_Samples := 0;
@@ -202,6 +204,7 @@ begin
     variable wr_pend_addr : std_logic_vector(21 downto 0) := (others => '0');
     variable wr_pend_data : std_logic_vector(15 downto 0) := (others => '0');
     variable rd_pend : std_logic := '0';
+    variable rd_phase : std_logic := '0';  -- 0=read low word, 1=read high word
     variable f_head  : natural range 0 to FIFO_Depth-1 := 0;
     variable f_tail  : natural range 0 to FIFO_Depth-1 := 0;
     variable f_cnt   : natural range 0 to FIFO_Depth := 0;
@@ -221,7 +224,7 @@ begin
     variable analog_frame : std_logic_vector(63 downto 0) := (others => '0');
     variable analog_len   : natural range 1 to 8 := 1;
     variable analog_idx   : natural range 0 to 7 := 0;
-    variable next_word    : std_logic_vector(15 downto 0) := (others => '0');
+    variable next_word    : std_logic_vector(31 downto 0) := (others => '0');
   begin
     if rising_edge(pclk) then
       bram_wren <= '0';
@@ -294,7 +297,7 @@ begin
         analog_len := 1;
         analog_idx := 0;
         bram_wp := 0; bram_cnt := 0;
-        rd_pend := '0';
+        rd_pend := '0'; rd_phase := '0';
         wr_pend := false; burst_rem := 0; wip := false; wr_cnt := 0;
         buf_sel <= "00";
         buf_full(0) <= '0'; buf_full(1) <= '0'; buf_full(2) <= '0';
@@ -340,10 +343,12 @@ begin
             Outputs <= (others => '0');
           end if;
         else
-          read_addr := Address + Start_Offset;
+          -- SDRAM readout: Address gives the logical sample index.
+          -- For sub_steps=2, each logical sample occupies 2 consecutive SDRAM words.
+          read_addr := (Address + Start_Offset) * sub_steps;
           if read_addr /= a_reg then
             a_reg := read_addr;
-            if read_addr < samples_div_p then
+            if read_addr < samples_div_p * sub_steps then
               s_addr <= std_logic_vector(to_unsigned(read_addr, 22));
               s_rd <= '1';
               rd_pend := '1';
@@ -352,11 +357,24 @@ begin
               rd_pend := '0';
             end if;
           end if;
-          if s_rvalid = '1' and rd_pend = '1' then
-            Outputs <= s_rdata;
+          -- Pipelined read: use rd_phase for multi-word readout
+          if rd_pend = '1' and s_rvalid = '1' and rd_phase = '0' then
+            Outputs(15 downto 0) <= s_rdata;
+            if sub_steps > 1 then
+              rd_phase := '1';
+              s_addr <= std_logic_vector(to_unsigned(a_reg + 1, 22));
+              s_rd <= '1';
+            else
+              s_rd <= '0';
+              rd_pend := '0';
+            end if;
+          elsif rd_pend = '1' and s_rvalid = '1' and rd_phase = '1' then
+            Outputs(31 downto 16) <= s_rdata;
             s_rd <= '0';
             rd_pend := '0';
-          elsif read_addr >= samples_div_p then
+            rd_phase := '0';
+          end if;
+          if read_addr >= samples_div_p * sub_steps and rd_pend = '0' then
             Outputs <= (others => '0');
           end if;
         end if;
@@ -446,14 +464,26 @@ begin
               analog_len := Analog_Frame_Len;
             end if;
             next_word := (others => '0');
-            next_word(7 downto 0) := analog_frame((analog_idx * 8) + 7 downto analog_idx * 8);
-            wbuf(((step_r + 1) * Channels) - 1 downto step_r * Channels) := next_word;
+            -- Pack 16 bits per sub_step from analog frame bytes
+            for b in 0 to 15 loop
+              if analog_idx * 16 + b < analog_len * 8 then
+                next_word(b) := analog_frame(analog_idx * 16 + b);
+              end if;
+            end loop;
+            wbuf((step_r + 1) * 16 - 1 downto step_r * 16) := next_word(15 downto 0);
           else
-            wbuf(((step_r + 1) * Channels) - 1 downto step_r * Channels) := Inputs;
+            -- Pack 16 input channels per sub_step, zero-pad if fewer than 16
+            for c in 0 to 15 loop
+              if step_r * 16 + c < Channels then
+                wbuf(step_r * 16 + c) := Inputs(step_r * 16 + c);
+              else
+                wbuf(step_r * 16 + c) := '0';
+              end if;
+            end loop;
           end if;
 
             if step_r = sub_steps - 1 then
-            -- Full 16-bit word ready
+            -- Full word ready: 16-bit (sub_steps=1) or 32-bit (sub_steps=2)
             if Armed = '1' and run_sync2 = '0' then
               -- Pre-trigger BRAM (circular)
               bram_waddr <= bram_wp;
@@ -517,20 +547,38 @@ begin
                     end if;
                     waddr_2 := waddr_2 + 1;
                   end if;
-                  fifo_mem(f_head) <= write_addr & wbuf;
+                  -- Write lower 16 bits
+                  fifo_mem(f_head) <= write_addr & wbuf(15 downto 0);
                   if f_head = FIFO_Depth-1 then f_head := 0;
                   else f_head := f_head + 1; end if;
                   f_cnt := f_cnt + 1;
+                  -- If sub_steps=2, write upper 16 bits to next address
+                  if sub_steps > 1 then
+                    fifo_mem(f_head) <= std_logic_vector(unsigned(write_addr) + 1) & wbuf(31 downto 16);
+                    if f_head = FIFO_Depth-1 then f_head := 0;
+                    else f_head := f_head + 1; end if;
+                    f_cnt := f_cnt + 1;
+                  end if;
                 end if;
               else
                 -- Single-buffer mode (legacy)
                 -- Stop at target to let FIFO drain, then Full fires
                 if waddr_0 < samples_div_p then
-                  fifo_mem(f_head) <= std_logic_vector(to_unsigned(waddr_0, 22)) & wbuf;
+                  -- Write lower 16 bits
+                  fifo_mem(f_head) <= std_logic_vector(to_unsigned(waddr_0, 22)) & wbuf(15 downto 0);
                   if f_head = FIFO_Depth-1 then f_head := 0;
                   else f_head := f_head + 1; end if;
                   f_cnt := f_cnt + 1;
-                  waddr_0 := waddr_0 + 1;
+                  -- If sub_steps=2, write upper 16 bits to next address
+                  if sub_steps > 1 then
+                    fifo_mem(f_head) <= std_logic_vector(to_unsigned(waddr_0 + 1, 22)) & wbuf(31 downto 16);
+                    if f_head = FIFO_Depth-1 then f_head := 0;
+                    else f_head := f_head + 1; end if;
+                    f_cnt := f_cnt + 1;
+                    waddr_0 := waddr_0 + 2;
+                  else
+                    waddr_0 := waddr_0 + 1;
+                  end if;
                 end if;
               end if;
             end if;

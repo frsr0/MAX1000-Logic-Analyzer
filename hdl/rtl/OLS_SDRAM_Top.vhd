@@ -40,7 +40,7 @@ END OLS_SDRAM_Top;
 ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
 
   constant System_CLK_Frequency : natural := 12000000 * PLL_MULT / PLL_DIV;
-  constant LA_CHANNELS : natural := 16;
+  constant LA_CHANNELS : natural := 23;
   constant PIN_POOL_SIZE : natural := 23;
 
   signal sys_clk     : std_logic := '0';
@@ -78,7 +78,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
 
   -- Pin map registers: each LA channel i reads pin_pool(pin_map(i))
   type pin_map_t is array(0 to LA_CHANNELS-1) of natural range 0 to PIN_POOL_SIZE-1;
-  signal pin_map      : pin_map_t := (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15);
+  signal pin_map      : pin_map_t := (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22);
 
   signal core_status   : std_logic_vector(7 downto 0) := (others => '0');
   signal test_div      : std_logic_vector(9 downto 0) := (others => '0');
@@ -106,7 +106,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal debug_ch0_enable : std_logic := '0';
   signal analog_frame_data  : std_logic_vector(63 downto 0) := (others => '0');
   signal analog_frame_len   : natural range 1 to 8 := 1;
-  signal adc0_result, adc1_result : std_logic_vector(11 downto 0) := (others => '0');
+  signal adc0_result, adc1_result, adc2_result, adc3_result : std_logic_vector(11 downto 0) := (others => '0');
   signal adc_start : std_logic := '0';
   signal adc_div   : natural range 0 to 255 := 0;
 
@@ -176,7 +176,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Analog_Frame_Len  : IN NATURAL range 1 to 8 := 1;
     Analog_Stream_Mode : IN STD_LOGIC := '0';
     Pin_Map_Write  : OUT STD_LOGIC := '0';
-    Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
+    Pin_Map_Channel : OUT NATURAL range 0 to 31 := 0;
     Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
     Debug_Ch0_Enable : OUT STD_LOGIC := '0'
   );
@@ -196,7 +196,17 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     ch1_start      : in  std_logic := '0';
     ch1_busy       : out std_logic := '1';
     ch1_result     : out std_logic_vector(11 downto 0) := (others => '0');
-    ch1_valid      : out std_logic := '0'
+    ch1_valid      : out std_logic := '0';
+    ch2_sel        : in  natural range 0 to 15 := 2;
+    ch2_start      : in  std_logic := '0';
+    ch2_busy       : out std_logic := '1';
+    ch2_result     : out std_logic_vector(11 downto 0) := (others => '0');
+    ch2_valid      : out std_logic := '0';
+    ch3_sel        : in  natural range 0 to 15 := 3;
+    ch3_start      : in  std_logic := '0';
+    ch3_busy       : out std_logic := '1';
+    ch3_result     : out std_logic_vector(11 downto 0) := (others => '0');
+    ch3_valid      : out std_logic := '0'
   );
   END COMPONENT;
 
@@ -360,7 +370,7 @@ BEGIN
           analog_frame_data(27 downto 16) <= adc0_result;
           analog_frame_len <= 4;
         when "010" =>
-          -- Mixed2: 16 digital + 2 ADC (5 bytes in 64-bit frame)
+          -- Mixed2: 16 digital + 2 ADC (5 bytes)
           analog_frame_data(15 downto 0) <= internal_data;
           analog_frame_data(27 downto 16) <= adc0_result;
           analog_frame_data(39 downto 28) <= adc1_result;
@@ -374,10 +384,31 @@ BEGIN
           analog_frame_data(11 downto 0) <= adc0_result;
           analog_frame_data(23 downto 12) <= adc1_result;
           analog_frame_len <= 3;
-        when others =>
-          -- Digital16: 16 digital (2 bytes)
+        when "101" =>
+          -- Analog4: 4 ADC (6 bytes)
+          analog_frame_data(11 downto 0) <= adc0_result;
+          analog_frame_data(23 downto 12) <= adc1_result;
+          analog_frame_data(35 downto 24) <= adc2_result;
+          analog_frame_data(47 downto 36) <= adc3_result;
+          analog_frame_len <= 6;
+        when "110" =>
+          -- Mixed2-4: 16 digital + 4 ADC (8 bytes, fills 64-bit frame)
           analog_frame_data(15 downto 0) <= internal_data;
-          analog_frame_len <= 2;
+          analog_frame_data(27 downto 16) <= adc0_result;
+          analog_frame_data(39 downto 28) <= adc1_result;
+          analog_frame_data(51 downto 40) <= adc2_result;
+          analog_frame_data(63 downto 52) <= adc3_result;
+          analog_frame_len <= 8;
+        when "111" =>
+          -- MixedDual: 23 digital + 2 ADC (6 bytes)
+          analog_frame_data(22 downto 0) <= internal_data;
+          analog_frame_data(34 downto 23) <= adc0_result;
+          analog_frame_data(46 downto 35) <= adc1_result;
+          analog_frame_len <= 6;
+        when others =>
+          -- Digital23: 23 digital (3 bytes)
+          analog_frame_data(22 downto 0) <= internal_data;
+          analog_frame_len <= 3;
       end case;
     end if;
   end process;
@@ -396,7 +427,17 @@ BEGIN
       ch1_start => adc_start,
       ch1_busy => open,
       ch1_result => adc1_result,
-      ch1_valid => open
+      ch1_valid => open,
+      ch2_sel => 2,
+      ch2_start => adc_start,
+      ch2_busy => open,
+      ch2_result => adc2_result,
+      ch2_valid => open,
+      ch3_sel => 3,
+      ch3_start => adc_start,
+      ch3_busy => open,
+      ch3_result => adc3_result,
+      ch3_valid => open
     );
 
   SDRAM_Analyzer : OLS_Logic_Analyzer

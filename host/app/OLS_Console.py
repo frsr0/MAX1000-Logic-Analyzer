@@ -18,6 +18,7 @@ try:
         OLSDeviceSPI, find_spi_device,
         ANALOG_MODE_DIGITAL8, ANALOG_MODE_MIXED1, ANALOG_MODE_MIXED2,
         ANALOG_MODE_ANALOG1, ANALOG_MODE_ANALOG2,
+        ANALOG_MODE_ANALOG4, ANALOG_MODE_MIXED2_4, ANALOG_MODE_MIXED_DUAL,
         decode_analog_frames, analog_frame_stride,
     )
     HAS_SPI = True
@@ -28,6 +29,9 @@ except ImportError:
     ANALOG_MODE_MIXED2 = 2
     ANALOG_MODE_ANALOG1 = 3
     ANALOG_MODE_ANALOG2 = 4
+    ANALOG_MODE_ANALOG4 = 5
+    ANALOG_MODE_MIXED2_4 = 6
+    ANALOG_MODE_MIXED_DUAL = 7
 
 try:
     import serial, serial.tools.list_ports
@@ -72,7 +76,7 @@ CMD_DEBUG_CH0_OFF = 0x0B
 CMD_DEBUG_CH0_ON = 0x0C
 CMD_DEBUG_CH0 = CMD_DEBUG_CH0_ON
 
-NUM_CHANNELS = 16
+NUM_CHANNELS = 23
 
 # ─── Connect / Capture helpers ───────────────────────────────────
 
@@ -473,10 +477,16 @@ def samples_to_channels(data, num_ch=NUM_CHANNELS, stride=4):
     data: bytes
     stride: bytes per sample from SPI readback
     num_ch <= 8: uses 1 byte per sample
-    num_ch > 8: uses 2 bytes per sample (requires stride >= 2 or fallback to 1 byte)
+    8 < num_ch <= 16: uses 2 bytes per sample
+    num_ch > 16: uses 4 bytes per sample (up to 32 ch)
     Returns: list of per-channel lists, each with sample values 0/1
     """
-    need_bytes = 2 if num_ch > 8 else 1
+    if num_ch <= 8:
+        need_bytes = 1
+    elif num_ch <= 16:
+        need_bytes = 2
+    else:
+        need_bytes = 4
     if stride < need_bytes:
         stride = need_bytes
     data = data[:len(data) - (len(data) % stride)]
@@ -488,8 +498,10 @@ def samples_to_channels(data, num_ch=NUM_CHANNELS, stride=4):
         off = i * stride
         if num_ch <= 8:
             word = data[off]
-        else:
+        elif num_ch <= 16:
             word = data[off] | (data[off + 1] << 8)
+        else:
+            word = data[off] | (data[off + 1] << 8) | (data[off + 2] << 16) | (data[off + 3] << 24)
         for c in range(num_ch):
             ch[c].append((word >> c) & 1)
     return ch, samples
@@ -1075,7 +1087,7 @@ class OLScope:
         ttk.Label(tb, text="Mode:").pack(side='left')
         self.mode_cb = ttk.Combobox(
             tb,
-            values=['Digital', 'Mixed 1', 'Mixed 2', 'Analogue 1', 'Analogue 2'],
+            values=['Digital', 'Mixed 1', 'Mixed 2', 'Analogue 1', 'Analogue 2', 'Analogue 4', 'Mixed 2-4', 'Mixed Dual'],
             width=10, state='readonly'
         )
         self.mode_cb.set('Digital')
@@ -1568,6 +1580,9 @@ class OLScope:
             'Mixed 2': ANALOG_MODE_MIXED2,
             'Analogue 1': ANALOG_MODE_ANALOG1,
             'Analogue 2': ANALOG_MODE_ANALOG2,
+            'Analogue 4': ANALOG_MODE_ANALOG4,
+            'Mixed 2-4': ANALOG_MODE_MIXED2_4,
+            'Mixed Dual': ANALOG_MODE_MIXED_DUAL,
         }
         return mode_map.get(self.mode_cb.get(), ANALOG_MODE_DIGITAL8)
 
@@ -1929,8 +1944,13 @@ class OLScope:
         digital = [[] for _ in range(NUM_CHANNELS)]
         analog_series = []
         analog_count = 0
-        if mode in (ANALOG_MODE_MIXED1, ANALOG_MODE_MIXED2, ANALOG_MODE_ANALOG1, ANALOG_MODE_ANALOG2):
+        if mode in (ANALOG_MODE_MIXED1, ANALOG_MODE_MIXED2, ANALOG_MODE_ANALOG1, ANALOG_MODE_ANALOG2,
+                    ANALOG_MODE_ANALOG4, ANALOG_MODE_MIXED2_4, ANALOG_MODE_MIXED_DUAL):
             analog_count = 1 if mode in (ANALOG_MODE_MIXED1, ANALOG_MODE_ANALOG1) else 2
+            if mode in (ANALOG_MODE_ANALOG4, ANALOG_MODE_MIXED2_4):
+                analog_count = 4
+            elif mode == ANALOG_MODE_MIXED_DUAL:
+                analog_count = 2
             analog_series = [[] for _ in range(analog_count)]
         for row in rows:
             d = row.get('digital')

@@ -35,8 +35,11 @@ ANALOG_MODE_MIXED1 = 1
 ANALOG_MODE_MIXED2 = 2
 ANALOG_MODE_ANALOG1 = 3
 ANALOG_MODE_ANALOG2 = 4
+ANALOG_MODE_ANALOG4 = 5
+ANALOG_MODE_MIXED2_4 = 6
+ANALOG_MODE_MIXED_DUAL = 7
 
-NUM_CHANNELS = 16
+NUM_CHANNELS = 23
 
 
 def analog_frame_stride(mode):
@@ -48,7 +51,13 @@ def analog_frame_stride(mode):
         return 2
     if mode == ANALOG_MODE_ANALOG2:
         return 3
-    return 2
+    if mode == ANALOG_MODE_ANALOG4:
+        return 6
+    if mode == ANALOG_MODE_MIXED2_4:
+        return 8
+    if mode == ANALOG_MODE_MIXED_DUAL:
+        return 6
+    return 3  # Digital23
 
 
 def decode_analog_frames(data, mode):
@@ -58,7 +67,7 @@ def decode_analog_frames(data, mode):
         frame = data[i * stride:(i + 1) * stride]
         row = {"digital": None, "adc": []}
         if mode == ANALOG_MODE_DIGITAL8:
-            row["digital"] = frame[0] | (frame[1] << 8)
+            row["digital"] = frame[0] | (frame[1] << 8) | ((frame[2] & 0x7F) << 16)
         elif mode == ANALOG_MODE_MIXED1:
             row["digital"] = frame[0] | (frame[1] << 8)
             row["adc"].append(frame[2] | ((frame[3] & 0x0F) << 8))
@@ -71,6 +80,23 @@ def decode_analog_frames(data, mode):
         elif mode == ANALOG_MODE_ANALOG2:
             row["adc"].append(frame[0] | ((frame[1] & 0x0F) << 8))
             row["adc"].append(((frame[1] >> 4) & 0x0F) | (frame[2] << 4))
+        elif mode == ANALOG_MODE_ANALOG4:
+            row["adc"].append(frame[0] | ((frame[1] & 0x0F) << 8))
+            row["adc"].append(((frame[1] >> 4) & 0x0F) | (frame[2] << 4))
+            row["adc"].append(frame[3] | ((frame[4] & 0x0F) << 8))
+            row["adc"].append(((frame[4] >> 4) & 0x0F) | (frame[5] << 4))
+        elif mode == ANALOG_MODE_MIXED2_4:
+            row["digital"] = frame[0] | (frame[1] << 8)
+            row["adc"].append(frame[2] | ((frame[3] & 0x0F) << 8))
+            row["adc"].append(((frame[3] >> 4) & 0x0F) | (frame[4] << 4))
+            row["adc"].append(frame[5] | ((frame[6] & 0x0F) << 8))
+            row["adc"].append(((frame[6] >> 4) & 0x0F) | (frame[7] << 4))
+        elif mode == ANALOG_MODE_MIXED_DUAL:
+            row["digital"] = frame[0] | (frame[1] << 8) | ((frame[2] & 0x7F) << 16)
+            row["adc"].append(frame[3] | ((frame[4] & 0x0F) << 8))
+            row["adc"].append(((frame[4] >> 4) & 0x0F) | (frame[5] << 4))
+        else:
+            row["digital"] = frame[0] | (frame[1] << 8) | ((frame[2] & 0x7F) << 16)
         frames.append(row)
     return frames
 
