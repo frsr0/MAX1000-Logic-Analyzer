@@ -1469,6 +1469,9 @@ class OLScope:
 
     def _debug_ch0_changed(self):
         enable = self.debug_ch0_var.get()
+        # Don't send to hardware during capture — apply on next capture start
+        if getattr(self, 'capture_running', False):
+            return
         if self.dev and hasattr(self.dev, 'set_debug_ch0'):
             try:
                 self.dev.set_debug_ch0(enable)
@@ -1477,6 +1480,9 @@ class OLScope:
 
     def _apply_schmitt(self):
         if not self.dev or not hasattr(self.dev, 'set_schmitt'):
+            return
+        # Don't send to hardware during capture — apply on next capture start
+        if getattr(self, 'capture_running', False):
             return
         try:
             enable = self.schmitt_var.get()
