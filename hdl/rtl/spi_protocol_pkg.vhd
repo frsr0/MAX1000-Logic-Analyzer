@@ -35,6 +35,8 @@ package spi_protocol_pkg is
   constant CMD_GEN_START        : cmd_t := x"31";
   constant CMD_GEN_STOP         : cmd_t := x"32";
   constant CMD_GEN_LOAD         : cmd_t := x"33";
+  constant CMD_GEN_CAPTURE      : cmd_t := x"34";
+  constant CMD_GEN_STATUS       : cmd_t := x"35";
 
   -- ── Status codes ────────────────────────────────────────────────
   subtype status_t is std_logic_vector(7 downto 0);

@@ -9,6 +9,9 @@ entity Signal_Gen is
     Load_Byte : in  std_logic_vector(7 downto 0);
     Load_We   : in  std_logic;
     Start     : in  std_logic;
+    Start_Ack : out std_logic := '0';
+    Start_Reject : out std_logic := '0';
+    Done_Pulse   : out std_logic := '0';
     Baud_Div  : in  std_logic_vector(15 downto 0);
     Proto     : in  std_logic := '0';  -- 0=UART, 1=I2C
     SPI_Mode  : in  std_logic := '0';  -- 1=SPI (overrides Proto)
@@ -33,14 +36,19 @@ architecture rtl of Signal_Gen is
   signal tail  : natural range 0 to FIFO_DEPTH-1 := 0;
   signal count : natural range 0 to FIFO_DEPTH := 0;
   signal tx_active   : std_logic := '0';
+  signal start_d     : std_logic := '0';
+  signal done_pulse_i : std_logic := '0';
   attribute preserve : boolean;
   attribute preserve of tx_active : signal is true;
+  attribute preserve of count : signal is true;
 begin
   Active <= tx_active;
   Busy   <= tx_active;
   Fifo_Count <= std_logic_vector(to_unsigned(count, 8));
+  Done_Pulse <= done_pulse_i;
 
   process(CLK)
+    variable start_rise : std_logic := '0';
     variable baud_cnt   : natural range 0 to 65535 := 0;
     variable baud_limit : natural range 0 to 65535 := 0;
     variable bit_cnt  : natural range 0 to 15 := 0;
@@ -59,6 +67,10 @@ begin
     variable spi_bit  : natural range 0 to 8 := 0;
   begin
     if rising_edge(CLK) then
+      Start_Ack <= '0';
+      Start_Reject <= '0';
+      done_pulse_i <= '0';
+
       -- FIFO write (common to both protocols)
       if Load_We = '1' and count < FIFO_DEPTH then
         fifo(head) <= Load_Byte;
@@ -66,14 +78,23 @@ begin
         count <= count + 1;
       end if;
 
-      -- Start trigger: latch baud divisor and begin transmission
-      if Start = '1' and tx_active = '0' then
-        if Baud_Div = x"0000" then
-          baud_limit := to_integer(unsigned(FIXED_BAUD_DIV)) - 1;
+      -- Edge-detect Start
+      start_rise := Start and not start_d;
+      start_d <= Start;
+
+      -- Start trigger: accept only on rising edge
+      if start_rise = '1' and tx_active = '0' then
+        if count > 0 or (Proto = '1' and I2C_Rd_Len > 0) then
+          if Baud_Div = x"0000" then
+            baud_limit := to_integer(unsigned(FIXED_BAUD_DIV)) - 1;
+          else
+            baud_limit := to_integer(unsigned(Baud_Div)) - 1;
+          end if;
+          tx_active <= '1';
+          Start_Ack <= '1';
         else
-          baud_limit := to_integer(unsigned(Baud_Div)) - 1;
+          Start_Reject <= '1';
         end if;
-        tx_active <= '1';
       end if;
 
 
@@ -100,7 +121,7 @@ begin
                 spi_bit := 0;
                 spi_state := 3;  -- CS setup, not direct clock
               else
-                tx_active <= '0';
+                tx_active <= '0'; done_pulse_i <= '1';
               end if;
             when 3 =>  -- CS setup: SCLK idle high for one baud period
               Scl_Out <= '1';
@@ -121,7 +142,7 @@ begin
                   spi_bit := 0;
                   spi_state := 3;  -- setup between bytes
                 else
-                  tx_active <= '0';
+                  tx_active <= '0'; done_pulse_i <= '1';
                   spi_state := 0;
                 end if;
               else
@@ -172,12 +193,12 @@ begin
               byte_active := true;
             elsif CRC_En = '1' and crc_run then
               if crc_done then
-                tx_active <= '0';
+                tx_active <= '0'; done_pulse_i <= '1';
               else
                 crc_rem := 2;
               end if;
             else
-              tx_active <= '0';
+              tx_active <= '0'; done_pulse_i <= '1';
             end if;
           elsif bit_cnt <= 8 then
             Tx_Out <= data_buf(bit_cnt - 1);
@@ -261,7 +282,7 @@ begin
 
             when 5 =>  -- STOP: SDA↑ while SCL↑
               Scl_Out <= '1'; Tx_Out <= '1';
-              tx_active <= '0';
+              tx_active <= '0'; done_pulse_i <= '1';
               i2c_state := 0;
 
             when 13 =>  -- SCL_LOW_BEFORE_REP: pull SCL low after ACK, slave releases SDA

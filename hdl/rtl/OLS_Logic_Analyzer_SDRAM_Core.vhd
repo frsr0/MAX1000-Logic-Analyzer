@@ -61,7 +61,11 @@ PORT (
     Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
     Debug_Ch0_Enable : OUT STD_LOGIC := '0';
     Schmitt_Enable   : OUT STD_LOGIC := '0';
-    Schmitt_Threshold : OUT NATURAL range 0 to 7 := 3
+    Schmitt_Threshold : OUT NATURAL range 0 to 7 := 3;
+    Gen_Start_Ack    : IN  STD_LOGIC := '0';
+    Gen_Start_Reject : IN  STD_LOGIC := '0';
+    Gen_Done_Pulse   : IN  STD_LOGIC := '0';
+    Gen_Capture_Active : OUT STD_LOGIC := '0'
 );
 END OLS_Logic_Analyzer;
 
@@ -106,6 +110,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL debug_ch0_enable_i  : STD_LOGIC := '0';
   SIGNAL schmitt_enable_i    : STD_LOGIC := '0';
   SIGNAL schmitt_threshold_i : NATURAL range 0 to 7 := 3;
+  SIGNAL gen_capture_active_i : STD_LOGIC := '0';
   COMPONENT OLS_Interface IS
   GENERIC (
       CLK_Frequency   :   INTEGER     := 12000000;    
@@ -153,7 +158,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
       Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
       Debug_Ch0_Enable : OUT STD_LOGIC := '0';
       Schmitt_Enable   : OUT STD_LOGIC := '0';
-      Schmitt_Threshold : OUT NATURAL range 0 to 7 := 3
+      Schmitt_Threshold : OUT NATURAL range 0 to 7 := 3;
+      Gen_Capture_Active : OUT STD_LOGIC := '0'
      );
      END COMPONENT;
     COMPONENT Fast_Logic_Analyzer_SDRAM IS
@@ -233,6 +239,7 @@ BEGIN
   Debug_Ch0_Enable <= debug_ch0_enable_i;
   Schmitt_Enable   <= schmitt_enable_i;
   Schmitt_Threshold <= schmitt_threshold_i;
+  Gen_Capture_Active <= gen_capture_active_i;
   OLS_Interface1 : OLS_Interface
   GENERIC MAP (
       CLK_Frequency => CLK_Frequency,Max_Samples   => Max_Samples
@@ -257,7 +264,8 @@ BEGIN
     Pin_Map_Pin     => pin_map_pin_i,
     Debug_Ch0_Enable => debug_ch0_enable_i,
     Schmitt_Enable   => schmitt_enable_i,
-    Schmitt_Threshold => schmitt_threshold_i
+    Schmitt_Threshold => schmitt_threshold_i,
+    Gen_Capture_Active => gen_capture_active_i
     
   );
   Fast_Logic_Analyzer_SDRAM1 : Fast_Logic_Analyzer_SDRAM

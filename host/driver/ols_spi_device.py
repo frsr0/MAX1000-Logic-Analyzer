@@ -7,7 +7,7 @@ import threading
 from driver.ols_spi import OLS as OLS_SPI
 from driver.spi_protocol import (
     SPIDevice,
-    CMD_ABORT_CAPTURE, CMD_GEN_START, CMD_GEN_LOAD,
+    CMD_ABORT_CAPTURE,     CMD_GEN_START, CMD_GEN_LOAD, CMD_GEN_CAPTURE, CMD_GEN_STATUS,
     CMD_GET_METADATA,
     REG_DIVIDER, REG_SAMPLE_COUNT, REG_DELAY_COUNT,
     REG_TRIGGER_MASK, REG_TRIGGER_VALUE, REG_FLAGS,
@@ -15,7 +15,7 @@ from driver.spi_protocol import (
     REG_GEN_PROTO, REG_GEN_BAUD, REG_GEN_PINS, REG_GEN_DATA,
     REG_IFACE_MODE, REG_DEBUG_CH0_ENABLE,
     REG_SCHMITT_ENABLE, REG_SCHMITT_THRESHOLD,
-    ST_OK, ST_CAPTURE_DONE,
+    ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_DONE,
 )
 
 # Legacy UART-style command opcodes (kept for hw_validation.py compat)
@@ -287,6 +287,11 @@ class OLSDeviceSPI:
                          proto=None, i2c_speed=100000,
                          i2c_frame=None, i2c_tx_pin=3, i2c_scl_pin=1,
                          gen_first=False):
+        """Atomic generator capture using CMD_GEN_CAPTURE.
+        
+        The FPGA arms capture, waits a guard period, then starts the generator
+        in hardware — no timing-critical host round-trips.
+        """
         self._ensure_open()
         if capture_time is not None:
             nsamples = int(capture_time * rate_hz)
@@ -332,6 +337,7 @@ class OLSDeviceSPI:
         self.pkt.write_register(REG_FLAGS, self._raw_flags)
         self.set_analog_config(self.analog_mode, self.analog_ch0, self.analog_ch1)
 
+        # Configure generator
         if proto == 'I2C':
             self._pins(tx_pin=i2c_tx_pin, scl_pin=i2c_scl_pin)
             self.pkt.write_register(REG_GEN_PROTO, 1)
@@ -350,26 +356,20 @@ class OLSDeviceSPI:
         self.pkt.write_register(REG_FAST_MODE, 1)
 
         has_gen = (proto == 'I2C' and i2c_frame) or self._gen_data is not None
-
-        status = self.pkt.arm_capture()
-        if status < 0:
+        if not has_gen:
             return b''
 
-        if has_gen:
-            if proto == 'I2C' and i2c_frame:
-                payload = i2c_frame
-            else:
-                payload = self._gen_data
-            if payload:
-                repeat = max(1, min(50, 256 // max(1, len(payload))))
-                self.pkt.load_gen_data(payload * repeat)
-                self.pkt.transaction(CMD_GEN_START)
-                self.spi.flush()
+        # Atomic generated capture via hardware FSM
+        r = self.pkt.transaction(CMD_GEN_CAPTURE, timeout=1.0)
+        if r is None or r[0] not in (0, ST_CAPTURE_ARMED):
+            return b''
 
         deadline = time.time() + timeout
+        capture_active_seen = False
         while time.time() < deadline:
             st = self.pkt.get_status()
-            if st.get('capture_status', -1) == ST_CAPTURE_DONE:
+            cs = st.get('capture_status', -1)
+            if cs == ST_CAPTURE_DONE:
                 break
             if stop_evt and stop_evt.is_set():
                 return b''

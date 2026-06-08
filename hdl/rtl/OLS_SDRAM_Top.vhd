@@ -99,6 +99,10 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   -- Schmitt trigger / digital hysteresis filter
   signal schmitt_enable    : std_logic := '0';
   signal schmitt_threshold : natural range 0 to 7 := 3;
+  signal gen_capture_active : std_logic := '0';
+  signal gen_start_ack_i    : std_logic;
+  signal gen_start_reject_i : std_logic;
+  signal gen_done_pulse_i   : std_logic;
   signal pin_pool_clean    : std_logic_vector(PIN_POOL_SIZE-1 downto 0);
   type schmitt_cnt_t is array(0 to PIN_POOL_SIZE-1) of natural range 0 to 7;
   signal schmitt_cnt   : schmitt_cnt_t := (others => 0);
@@ -188,7 +192,11 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
     Debug_Ch0_Enable : OUT STD_LOGIC := '0';
     Schmitt_Enable   : OUT STD_LOGIC := '0';
-    Schmitt_Threshold : OUT NATURAL range 0 to 7 := 3
+    Schmitt_Threshold : OUT NATURAL range 0 to 7 := 3;
+    Gen_Start_Ack    : IN  STD_LOGIC := '0';
+    Gen_Start_Reject : IN  STD_LOGIC := '0';
+    Gen_Done_Pulse   : IN  STD_LOGIC := '0';
+    Gen_Capture_Active : OUT STD_LOGIC := '0'
   );
   END COMPONENT;
 
@@ -227,6 +235,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Load_Byte : in  std_logic_vector(7 downto 0);
     Load_We   : in  std_logic;
     Start     : in  std_logic;
+    Start_Ack : out std_logic := '0';
+    Start_Reject : out std_logic := '0';
+    Done_Pulse   : out std_logic := '0';
     Baud_Div  : in  std_logic_vector(15 downto 0);
     Proto     : in  std_logic := '0';
     Tx_Out    : out std_logic := '1';
@@ -279,16 +290,14 @@ BEGIN
              '0' when gen_i2c_test = '1' and gen_busy = '1' and gen_scl = '0' else 'Z';
 
   -- Capture mux: each LA channel reads from pin_pool via pin_map.
-  -- CH0 can optionally expose the internal divider debug signal.
-  -- Pins are Schmitt-filtered when schmitt_enable is active.
+  -- Generator capture (gen_capture_active or gen_busy) has highest priority,
+  -- followed by I2C SCL loopback, then debug CH0, then physical pins.
   capture_mux: process(pin_pool_clean, pin_map, gen_busy, gen_tx_pin, gen_scl_pin,
                        gen_tx_d1, gen_scl_d2, sen_sdo_d1, gen_i2c_test, gen_spi_test,
-                       registered_ch0_d1, debug_ch0_enable)
+                       registered_ch0_d1, debug_ch0_enable, gen_capture_active)
   begin
     for i in 0 to LA_CHANNELS-1 loop
-      if i = 0 and debug_ch0_enable = '1' then
-        internal_data(i) <= registered_ch0_d1;
-      elsif gen_busy = '1' and gen_tx_pin = pin_map(i) then
+      if (gen_capture_active = '1' or gen_busy = '1') and gen_tx_pin = pin_map(i) then
         if gen_spi_test = '1' then
           internal_data(i) <= sen_sdo_d1;
         elsif gen_i2c_test = '1' then
@@ -298,6 +307,8 @@ BEGIN
         end if;
       elsif gen_busy = '1' and gen_i2c_test = '1' and gen_scl_pin = pin_map(i) then
         internal_data(i) <= gen_scl_d2;
+      elsif i = 0 and debug_ch0_enable = '1' then
+        internal_data(i) <= registered_ch0_d1;
       else
         internal_data(i) <= pin_pool_clean(pin_map(i));
       end if;
@@ -335,12 +346,17 @@ BEGIN
 
 
   -- Drive selected pin with generator signal when active
-  -- When debug_ch0_enable='1', CH0 (MKR_D0) outputs the internal test divider
+  -- Generator output has priority over debug CH0 on any pin.
   pin_drive: process(sys_clk)
   begin
     if rising_edge(sys_clk) then
       pin_out <= (others => '0');
       pin_dir <= (others => '0');
+
+      if debug_ch0_enable = '1' then
+        pin_out(0) <= registered_ch0;
+        pin_dir(0) <= '1';
+      end if;
 
       if gen_busy = '1' then
         pin_out(gen_tx_pin) <= gen_tx;
@@ -349,11 +365,6 @@ BEGIN
           pin_out(gen_scl_pin) <= gen_scl;
           pin_dir(gen_scl_pin) <= '1';
         end if;
-      end if;
-
-      if debug_ch0_enable = '1' then
-        pin_out(0) <= registered_ch0;
-        pin_dir(0) <= '1';
       end if;
     end if;
   end process;
@@ -531,7 +542,11 @@ BEGIN
     Pin_Map_Pin     => pin_map_pin,
     Debug_Ch0_Enable => debug_ch0_enable,
     Schmitt_Enable   => schmitt_enable,
-    Schmitt_Threshold => schmitt_threshold
+    Schmitt_Threshold => schmitt_threshold,
+    Gen_Start_Ack    => gen_start_ack_i,
+    Gen_Start_Reject => gen_start_reject_i,
+    Gen_Done_Pulse   => gen_done_pulse_i,
+    Gen_Capture_Active => gen_capture_active
   );
   
   -- PWM carrier counter
@@ -616,6 +631,9 @@ BEGIN
     Load_Byte => gen_load_byte,
     Load_We   => gen_load_we,
     Start     => gen_start,
+    Start_Ack => gen_start_ack_i,
+    Start_Reject => gen_start_reject_i,
+    Done_Pulse   => gen_done_pulse_i,
     Baud_Div  => gen_baud_div_s,
     Proto     => gen_proto,
     Tx_Out    => gen_tx,

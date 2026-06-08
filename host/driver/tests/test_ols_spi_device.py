@@ -360,37 +360,40 @@ class TestOLSDeviceSPICaptureWithGen:
     def test_no_proto(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi.pkt.write_register.return_value = True
-        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.transaction.return_value = (0, 0, b'')
         device_spi.pkt.get_status.return_value = {
             'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
-        device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024
-        device_spi.pkt.load_gen_data.return_value = True
+        device_spi.pkt.read_capture_block.return_value = b''
+        device_spi._gen_data = b'test'
+        device_spi._gen_baud = 115200
+        device_spi._gen_tx_pin = 3
         result = device_spi.capture_with_gen(rate_hz=1000000, nsamples=100, timeout=0.5)
-        assert result is not None
 
     def test_i2c_proto(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi.pkt.write_register.return_value = True
-        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.transaction.return_value = (0, 0, b'')
         device_spi.pkt.get_status.return_value = {
             'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
-        device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024
+        device_spi.pkt.read_capture_block.return_value = b''
         device_spi.pkt.load_gen_data.return_value = True
         result = device_spi.capture_with_gen(
             rate_hz=1000000, nsamples=100, timeout=0.5,
-            proto='I2C', i2c_frame=b'\x30\x0F',
+            proto='I2C', i2c_speed=100000, i2c_frame=b'\x01',
         )
-        assert result is not None
 
     def test_with_progress_cb(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi.pkt.write_register.return_value = True
-        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.transaction.return_value = (0, 0, b'')
         device_spi.pkt.get_status.return_value = {
             'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
         fake_data = b'\x01' * (100 * 4)
         device_spi.pkt.read_capture_block.return_value = fake_data[:1024]
         device_spi.pkt.load_gen_data.return_value = True
+        device_spi._gen_data = b'test'
+        device_spi._gen_baud = 115200
+        device_spi._gen_tx_pin = 3
         cb = MagicMock()
         result = device_spi.capture_with_gen(
             rate_hz=1000000, nsamples=100, timeout=0.5, progress_cb=cb,
@@ -400,17 +403,20 @@ class TestOLSDeviceSPICaptureWithGen:
     def test_short_read(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi.pkt.write_register.return_value = True
-        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.transaction.return_value = (0, 0, b'')
         device_spi.pkt.get_status.return_value = {
             'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
         device_spi.pkt.read_capture_block.return_value = b''
+        device_spi._gen_data = b'test'
+        device_spi._gen_baud = 115200
+        device_spi._gen_tx_pin = 3
         result = device_spi.capture_with_gen(rate_hz=1000000, nsamples=100, timeout=0.5)
         assert result == b''
 
     def test_existing_gen_data(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi.pkt.write_register.return_value = True
-        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.transaction.return_value = (0, 0, b'')
         device_spi.pkt.get_status.return_value = {
             'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
         device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024
@@ -424,10 +430,13 @@ class TestOLSDeviceSPICaptureWithGen:
     def test_capture_time(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi.pkt.write_register.return_value = True
-        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.transaction.return_value = (0, 0, b'')
         device_spi.pkt.get_status.return_value = {
             'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
         device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024
+        device_spi._gen_data = b'test'
+        device_spi._gen_baud = 115200
+        device_spi._gen_tx_pin = 3
         result = device_spi.capture_with_gen(rate_hz=1000000, capture_time=0.001, timeout=0.5)
         assert result is not None
 

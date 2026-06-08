@@ -53,7 +53,8 @@ PORT (
         Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
         Debug_Ch0_Enable : OUT STD_LOGIC := '0';
         Schmitt_Enable   : OUT STD_LOGIC := '0';
-        Schmitt_Threshold : OUT NATURAL range 0 to 7 := 3
+        Schmitt_Threshold : OUT NATURAL range 0 to 7 := 3;
+        Gen_Capture_Active : OUT STD_LOGIC := '0'
 
 );
 END OLS_Interface;
@@ -120,6 +121,14 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL debug_ch0_enable_i  : STD_LOGIC := '0';
   SIGNAL schmitt_enable_i    : STD_LOGIC := '0';
   SIGNAL schmitt_threshold_i : NATURAL range 0 to 7 := 3;
+  SIGNAL gen_capture_active_i  : STD_LOGIC := '0';
+  SIGNAL gen_capture_done_i    : STD_LOGIC := '0';
+  SIGNAL gen_capture_error_i   : STD_LOGIC := '0';
+  SIGNAL gen_start_pulse     : STD_LOGIC := '0';
+  SIGNAL gen_capture_guard   : NATURAL range 0 to 255 := 0;
+  SIGNAL gen_capture_start   : STD_LOGIC := '0';
+  type gen_cap_state_t is (GENCAP_IDLE, GENCAP_ARM, GENCAP_GUARD, GENCAP_WAIT_BUSY, GENCAP_RUNNING, GENCAP_DONE, GENCAP_ERROR);
+  SIGNAL gen_cap_state : gen_cap_state_t := GENCAP_IDLE;
   SIGNAL pipe_depth          : NATURAL range 2 to 8 := 8;
   SIGNAL proto_trig_protocol : STD_LOGIC_VECTOR(1 downto 0) := "00";
   SIGNAL proto_trig_match    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
@@ -615,7 +624,7 @@ BEGIN
       IF disp_abort = '1' THEN
         gen_start_req <= '0';
         gen_load_events <= (others => '0');
-      ELSIF disp_gen_start = '1' OR (pkt_ok = '1' AND pkt_cmd_active = CMD_GEN_START) THEN
+      ELSIF disp_gen_start = '1' OR gen_start_pulse = '1' OR (pkt_ok = '1' AND pkt_cmd_active = CMD_GEN_START) THEN
         gen_start_req <= '1';
       ELSIF Gen_Busy = '0' AND gen_busy_d = '1' THEN
         gen_start_req <= '0';
@@ -625,6 +634,58 @@ BEGIN
       IF gen_start_req = '1' THEN
         Gen_Start <= '1';
       END IF;
+    END IF;
+  END PROCESS;
+
+  -- Generated-capture FSM: guard period + GEN_START after ARM.
+  -- Capture is armed by CMD_GEN_CAPTURE via disp_arm in main process.
+  gen_capture_fsm: PROCESS (CLK)
+    VARIABLE guard_var : NATURAL range 0 to 255 := 0;
+    VARIABLE disp_arm_d : STD_LOGIC := '0';
+  BEGIN
+    IF RISING_EDGE(CLK) THEN
+      gen_start_pulse <= '0';
+      IF disp_abort = '1' THEN
+        gen_cap_state <= GENCAP_IDLE;
+        gen_capture_active_i <= '0';
+        gen_capture_done_i <= '0';
+        gen_capture_error_i <= '0';
+      ELSE
+        CASE gen_cap_state IS
+          WHEN GENCAP_IDLE =>
+            IF disp_arm = '1' AND disp_arm_d = '0' THEN
+              guard_var := 16;
+              gen_cap_state <= GENCAP_GUARD;
+            END IF;
+          WHEN GENCAP_GUARD =>
+            IF guard_var > 0 THEN
+              guard_var := guard_var - 1;
+            ELSE
+              gen_start_pulse <= '1';
+              gen_cap_state <= GENCAP_WAIT_BUSY;
+            END IF;
+          WHEN GENCAP_WAIT_BUSY =>
+            IF Gen_Busy = '1' THEN
+              gen_capture_active_i <= '1';
+              gen_cap_state <= GENCAP_RUNNING;
+            END IF;
+          WHEN GENCAP_RUNNING =>
+            IF Gen_Busy = '0' THEN
+              gen_capture_active_i <= '0';
+              gen_capture_done_i <= '1';
+              gen_cap_state <= GENCAP_DONE;
+            END IF;
+          WHEN GENCAP_DONE =>
+            NULL;
+          WHEN GENCAP_ERROR =>
+            gen_capture_error_i <= '1';
+            gen_capture_active_i <= '0';
+            gen_cap_state <= GENCAP_IDLE;
+          WHEN OTHERS =>
+            NULL;
+        END CASE;
+      END IF;
+      disp_arm_d := disp_arm;
     END IF;
   END PROCESS;
 
@@ -690,6 +751,7 @@ BEGIN
   Debug_Ch0_Enable <= debug_ch0_enable_i;
   Schmitt_Enable   <= schmitt_enable_i;
   Schmitt_Threshold <= schmitt_threshold_i;
+  Gen_Capture_Active <= gen_capture_active_i;
   -- Pin_Map_Write is driven from the main process (default low, pulsed in CMD_PIN_MAP handler)
 
   Proto_Trigger1 : Protocol_Trigger
@@ -953,6 +1015,28 @@ BEGIN
             when CMD_GEN_LOAD =>
               -- GEN_LOAD payload bytes were already written to Gen_Load_Byte
               -- by rx_stream_handler during RX.  Nothing more to do.
+              st := BUILD_RSP;
+
+            when CMD_GEN_CAPTURE =>
+              if gen_cap_state = GENCAP_IDLE then
+                disp_arm <= '1';
+                rsp_stat_v := ST_CAPTURE_ARMED;
+              else
+                rsp_stat_v := ST_BUSY;
+              end if;
+              st := BUILD_RSP;
+
+            when CMD_GEN_STATUS =>
+              rsp_buf(0)(0) := Gen_Busy;
+              rsp_buf(0)(1) := '0';  -- start_ack sticky (no separate signal)
+              rsp_buf(0)(2) := gen_capture_error_i;
+              rsp_buf(0)(3) := gen_capture_active_i;
+              rsp_buf(0)(4) := gen_capture_done_i;
+              rsp_buf(0)(5) := '0';  -- start_reject (no separate signal)
+              IF unsigned(Gen_Fifo_Count) > 0 THEN rsp_buf(0)(6) := '1'; ELSE rsp_buf(0)(6) := '0'; END IF;
+              rsp_buf(0)(7) := '0';
+              rsp_buf_len := 1;
+              rsp_len_v := 1;
               st := BUILD_RSP;
 
             when others =>

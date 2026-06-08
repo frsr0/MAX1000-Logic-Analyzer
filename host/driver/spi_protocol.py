@@ -39,6 +39,8 @@ CMD_GEN_CONFIG        = 0x30
 CMD_GEN_START         = 0x31
 CMD_GEN_STOP          = 0x32
 CMD_GEN_LOAD          = 0x33
+CMD_GEN_CAPTURE       = 0x34
+CMD_GEN_STATUS        = 0x35
 
 # Register addresses
 REG_DIVIDER       = 0x00
