@@ -1469,10 +1469,13 @@ class OLScope:
 
     def _debug_ch0_changed(self):
         enable = self.debug_ch0_var.get()
-        # Don't send to hardware during capture — apply on next capture start
-        if getattr(self, 'capture_running', False):
+        if not self.dev:
             return
-        if self.dev and hasattr(self.dev, 'set_debug_ch0'):
+        is_live = getattr(self, 'capture_running', False) and hasattr(self.dev, '_pending_debug_enable')
+        if is_live:
+            self.dev.debug_ch0_enabled = enable
+            self.dev._pending_debug_enable = enable
+        elif hasattr(self.dev, 'set_debug_ch0'):
             try:
                 self.dev.set_debug_ch0(enable)
             except Exception as e:
@@ -1481,13 +1484,15 @@ class OLScope:
     def _apply_schmitt(self):
         if not self.dev or not hasattr(self.dev, 'set_schmitt'):
             return
-        # Don't send to hardware during capture — apply on next capture start
-        if getattr(self, 'capture_running', False):
-            return
         try:
             enable = self.schmitt_var.get()
             thresh = int(self.schmitt_thresh_var.get())
-            self.dev.set_schmitt(enable, thresh)
+            is_live = getattr(self, 'capture_running', False) and hasattr(self.dev, '_pending_schmitt_enable')
+            if is_live:
+                self.dev._pending_schmitt_enable = enable
+                self.dev._pending_schmitt_threshold = thresh
+            else:
+                self.dev.set_schmitt(enable, thresh)
         except Exception as e:
             self.status['text'] = f"Schmitt trigger update failed: {e}"
 

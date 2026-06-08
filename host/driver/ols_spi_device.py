@@ -120,6 +120,10 @@ class OLSDeviceSPI:
         self.analog_ch0 = 0
         self.analog_ch1 = 1
         self.debug_ch0_enabled = False
+        # Pending flag for live toggling during rolling capture
+        self._pending_debug_enable = None
+        self._pending_schmitt_enable = None
+        self._pending_schmitt_threshold = None
 
     @property
     def pkt(self):
@@ -291,10 +295,19 @@ class OLSDeviceSPI:
         self.reset()
         time.sleep(0.02)
         self.spi.flush()
+        # Apply pending GUI changes
+        if self._pending_debug_enable is not None:
+            self.debug_ch0_enabled = self._pending_debug_enable
+            self._pending_debug_enable = None
+        if self._pending_schmitt_enable is not None:
+            self._pending_schmitt_enable = None
+        if self._pending_schmitt_threshold is not None:
+            self._pending_schmitt_threshold = None
         self.set_debug_ch0(self.debug_ch0_enabled)
 
         div = max(0, int(self.sys_clk / rate_hz) - 1)
         rc = max(1, nsamples)
+
         self.pkt.write_register(REG_DIVIDER, div & 0xFFFFFF)
         self.pkt.write_register(REG_SAMPLE_COUNT, rc)
         self.pkt.write_register(REG_DELAY_COUNT, rc)
@@ -393,6 +406,13 @@ class OLSDeviceSPI:
         self.reset()
         time.sleep(0.02)
         self.spi.flush()
+        if self._pending_debug_enable is not None:
+            self.debug_ch0_enabled = self._pending_debug_enable
+            self._pending_debug_enable = None
+        if self._pending_schmitt_enable is not None:
+            self._pending_schmitt_enable = None
+        if self._pending_schmitt_threshold is not None:
+            self._pending_schmitt_threshold = None
         self.set_debug_ch0(self.debug_ch0_enabled)
 
         div = max(0, int(self.sys_clk / rate_hz) - 1)
@@ -638,6 +658,17 @@ class OLSDeviceSPI:
         seq = 0
 
         while not stop_evt.is_set():
+            # Apply pending GUI changes before each chunk
+            if self._pending_debug_enable is not None:
+                self.pkt.write_register(REG_DEBUG_CH0_ENABLE, 1 if self._pending_debug_enable else 0)
+                self.debug_ch0_enabled = self._pending_debug_enable
+                self._pending_debug_enable = None
+            if self._pending_schmitt_enable is not None:
+                self.pkt.write_register(REG_SCHMITT_ENABLE, 1 if self._pending_schmitt_enable else 0)
+                self._pending_schmitt_enable = None
+            if self._pending_schmitt_threshold is not None:
+                self.pkt.write_register(REG_SCHMITT_THRESHOLD, self._pending_schmitt_threshold)
+                self._pending_schmitt_threshold = None
             self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
             self.pkt.arm_capture()
 
