@@ -175,6 +175,10 @@ class OLSDeviceSPI:
 
     def raw_mode(self, enable=True):
         self._stride = 1 if enable else 4
+        if enable:
+            self._raw_flags = 0x38  # Channel_Groups = "1110" → only byte 0
+        else:
+            self._raw_flags = 0
 
     def set_analog_config(self, mode, ch0=0, ch1=0):
         self.analog_mode = mode & 0x7
@@ -379,10 +383,10 @@ class OLSDeviceSPI:
         self.reset()
         time.sleep(0.02)
         self.spi.flush()
+        self.set_debug_ch0(self.debug_ch0_enabled)
 
         div = max(0, int(self.sys_clk / rate_hz) - 1)
         rc = max(1, nsamples)
-
         self.pkt.write_register(REG_DIVIDER, div & 0xFFFFFF)
         self.pkt.write_register(REG_SAMPLE_COUNT, rc)
         self.pkt.write_register(REG_DELAY_COUNT, rc)
