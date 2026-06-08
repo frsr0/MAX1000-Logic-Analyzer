@@ -112,7 +112,7 @@ begin
 
   process
     variable rdata : std_logic_vector(15 downto 0);
-    variable prev_ch0 : std_logic := '0';
+    variable prev_ch0 : std_logic := 'U';
   begin
     wait_cycles(clk, 50);
 

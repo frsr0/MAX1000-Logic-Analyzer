@@ -1,48 +1,40 @@
 """
-SPI-based OLS device backend — drop-in replacement for UART OLSDevice.
-Wraps ols_spi.py with the same interface the GUI expects, including generator support.
+SPI-based OLS device backend using packet protocol.
 """
 import time
 import struct
 import threading
-from driver.ols_spi import OLS as OLS_SPI, GPIO_CS_LO, GPIO_CS_HI, PIN_DIR
+from driver.ols_spi import OLS as OLS_SPI
+from driver.spi_protocol import (
+    SPIDevice,
+    CMD_ABORT_CAPTURE,     CMD_GEN_START, CMD_GEN_LOAD, CMD_GEN_CAPTURE, CMD_GEN_STATUS,
+    CMD_GET_METADATA,
+    REG_DIVIDER, REG_SAMPLE_COUNT, REG_DELAY_COUNT,
+    REG_TRIGGER_MASK, REG_TRIGGER_VALUE, REG_FLAGS,
+    REG_FAST_MODE, REG_CONT_MODE,
+    REG_GEN_PROTO, REG_GEN_BAUD, REG_GEN_PINS, REG_GEN_DATA,
+    REG_IFACE_MODE, REG_DEBUG_CH0_ENABLE,
+    REG_SCHMITT_ENABLE, REG_SCHMITT_THRESHOLD,
+    ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_DONE,
+)
 
-# Reuse the same command constants from ols_spi
-CMD_RESET       = 0x00
-CMD_ARM         = 0x01
-CMD_ARM2        = 0x02
-CMD_SPI_STATUS  = 0x03
-CMD_METADATA    = 0x04
-CMD_XON         = 0x11
-CMD_XOFF        = 0x13
+# Legacy opcodes for hw_validation.py compat
+CMD_DIVIDER       = 0x80
+CMD_RCOUNT        = 0x84
+CMD_TMASK         = 0xC0
+CMD_TVALUE        = 0xC1
 
-# Generator commands (mirror OLS_Console.py constants)
-CMD_GEN_LOAD   = 0xA0
-CMD_GEN_STRT   = 0xA1
-CMD_GEN_BAUD   = 0xA2
-CMD_GEN_BLK    = 0xA3
-CMD_GEN_PROTO  = 0xA4
-CMD_GEN_PINS   = 0xA6
-CMD_I2C_TEST   = 0xA7
-CMD_SPI_TEST   = 0xAF
-CMD_FAST_MODE  = 0xA8
-CMD_TRIG_PROTO = 0xA9
-CMD_CONT_CAPTURE = 0xAA
-CMD_DIVIDER    = 0x80
-CMD_DCOUNT     = 0x83
-CMD_RCOUNT     = 0x84
-CMD_FLAGS      = 0x82
-CMD_DELAY      = 0xC2
-CMD_TMASK      = 0xC0
-CMD_TVALUE     = 0xC1
-CMD_ANALOG_CFG = 0xB0
-CMD_PIN_MAP = 0xBB
+# GPIO/MPSSE constants re-exported for hw_validation.py
+from driver.ols_spi import GPIO_CS_LO, GPIO_CS_HI, PIN_DIR
 
 ANALOG_MODE_DIGITAL8 = 0
 ANALOG_MODE_MIXED1 = 1
 ANALOG_MODE_MIXED2 = 2
 ANALOG_MODE_ANALOG1 = 3
 ANALOG_MODE_ANALOG2 = 4
+ANALOG_MODE_ANALOG4 = 5
+ANALOG_MODE_MIXED2_4 = 6
+ANALOG_MODE_MIXED_DUAL = 7
 
 NUM_CHANNELS = 16
 
@@ -56,7 +48,13 @@ def analog_frame_stride(mode):
         return 2
     if mode == ANALOG_MODE_ANALOG2:
         return 3
-    return 2  # DIGITAL16
+    if mode == ANALOG_MODE_ANALOG4:
+        return 6
+    if mode == ANALOG_MODE_MIXED2_4:
+        return 8
+    if mode == ANALOG_MODE_MIXED_DUAL:
+        return 6
+    return 2  # Digital16
 
 
 def decode_analog_frames(data, mode):
@@ -79,11 +77,29 @@ def decode_analog_frames(data, mode):
         elif mode == ANALOG_MODE_ANALOG2:
             row["adc"].append(frame[0] | ((frame[1] & 0x0F) << 8))
             row["adc"].append(((frame[1] >> 4) & 0x0F) | (frame[2] << 4))
+        elif mode == ANALOG_MODE_ANALOG4:
+            row["adc"].append(frame[0] | ((frame[1] & 0x0F) << 8))
+            row["adc"].append(((frame[1] >> 4) & 0x0F) | (frame[2] << 4))
+            row["adc"].append(frame[3] | ((frame[4] & 0x0F) << 8))
+            row["adc"].append(((frame[4] >> 4) & 0x0F) | (frame[5] << 4))
+        elif mode == ANALOG_MODE_MIXED2_4:
+            row["digital"] = frame[0] | (frame[1] << 8)
+            row["adc"].append(frame[2] | ((frame[3] & 0x0F) << 8))
+            row["adc"].append(((frame[3] >> 4) & 0x0F) | (frame[4] << 4))
+            row["adc"].append(frame[5] | ((frame[6] & 0x0F) << 8))
+            row["adc"].append(((frame[6] >> 4) & 0x0F) | (frame[7] << 4))
+        elif mode == ANALOG_MODE_MIXED_DUAL:
+            row["digital"] = frame[0] | (frame[1] << 8)
+            row["adc"].append(frame[2] | ((frame[3] & 0x0F) << 8))
+            row["adc"].append(((frame[3] >> 4) & 0x0F) | (frame[4] << 4))
+        else:
+            row["digital"] = frame[0] | (frame[1] << 8)
         frames.append(row)
     return frames
 
+
 class OLSDeviceSPI:
-    """SPI backend device — implements capture, rolling capture, and generator."""
+    """SPI backend using packet protocol — replaces old UART-style byte commands."""
 
     def __init__(self, sys_clk_hz=48000000):
         self.sys_clk = sys_clk_hz
@@ -95,18 +111,36 @@ class OLSDeviceSPI:
         self._gen_baud = 115200
         self._gen_tx_pin = 3
         self.spi = None
+        self._pkt = None
         self.analog_mode = ANALOG_MODE_DIGITAL8
         self.analog_ch0 = 0
         self.analog_ch1 = 1
+        self.debug_ch0_enabled = False
+        # Pending flag for live toggling during rolling capture
+        self._pending_debug_enable = None
+        self._pending_schmitt_enable = None
+        self._pending_schmitt_threshold = None
+
+    @property
+    def pkt(self):
+        if self._pkt is None and self.spi is not None:
+            self._pkt = SPIDevice(self.spi)
+        return self._pkt
+
+    @pkt.setter
+    def pkt(self, val):
+        self._pkt = val
 
     def open(self):
         for attempt in range(3):
             try:
                 self.spi = OLS_SPI(speed_hz=30000000)
                 self.spi.open()
+                self._pkt = SPIDevice(self.spi)
                 return
             except Exception as e:
                 self.spi = None
+                self._pkt = None
                 if attempt == 2:
                     raise
                 time.sleep(0.2)
@@ -119,148 +153,100 @@ class OLSDeviceSPI:
         if self.spi:
             self.spi.close()
             self.spi = None
+            self._pkt = None
 
     def reset(self):
         self._ensure_open()
-        for attempt in range(2):
-            try:
-                self.spi.reset()
-                break
-            except (AttributeError, Exception):
-                self.spi = None
-                if attempt == 1:
-                    raise
-                self._ensure_open()
-        time.sleep(0.02)
+        self.pkt.transaction(CMD_ABORT_CAPTURE)
+        self.pkt.write_register(REG_DIVIDER, 0)
+        self.pkt.write_register(REG_SAMPLE_COUNT, 2)
+        self.pkt.write_register(REG_TRIGGER_MASK, 0)
+        self.pkt.write_register(REG_TRIGGER_VALUE, 0)
+        self.pkt.write_register(REG_FLAGS, 0)
+        self.pkt.write_register(REG_IFACE_MODE, 1)
         self.spi.flush()
-        # Switch to SPI mode (0xAB, data(0)=1).
-        # VHDL data register stores RX bytes LSB-first:
-        #   data(7:0)=1st byte, data(15:8)=2nd, data(23:16)=3rd, data(31:24)=4th
-        # interface_mode_i <= data(0). We need data(0)=1 → 1st byte must have bit0=1.
-        # struct.pack('<I', 1) = [0x01, 0, 0, 0] → 1st byte=0x01 → data(0)=1.
-        self._long(0xAC, 1)
+        time.sleep(0.02)
 
     def get_metadata(self):
-        """Return 50-byte metadata block (same format as UART backend)."""
         self._ensure_open()
-        r = self.spi.tx(CMD_METADATA)
-        return bytes(r) + b'\x00' * (50 - len(r))
+        result = self.pkt.transaction(CMD_GET_METADATA)
+        if result and len(result[2]) >= 2:
+            return result[2]
+        return b''
 
     def raw_mode(self, enable=True):
         self._stride = 1 if enable else 4
+        self._raw_flags = 0
+        # SPI backend: raw mode is display-only. FPGA always sends 4 bytes/sample.
+        # _stride is used by the GUI to pick stride=1 for raw display.
 
-    def set_analog_config(self, mode, ch0=0, ch1=1):
+    def set_analog_config(self, mode, ch0=0, ch1=0, ch2=2, ch3=3):
         self.analog_mode = mode & 0x7
         self.analog_ch0 = ch0 & 0xF
         self.analog_ch1 = ch1 & 0xF
         payload = self.analog_mode | (self.analog_ch0 << 4) | (self.analog_ch1 << 8)
-        self._long(CMD_ANALOG_CFG, payload)
+        self.pkt.write_register(REG_FLAGS, payload)
 
     def set_pin_map(self, channel, pin_index):
-        """Map a LA channel to a physical pin index. 0xBB command."""
-        payload = (channel & 0xFF) | ((pin_index & 0xFF) << 8)
-        self._long(CMD_PIN_MAP, payload)
+        payload = channel | (pin_index << 8)
+        self.pkt.write_register(REG_GEN_PINS, payload)
 
     def decode_analog_frames(self, data, mode=None):
         return decode_analog_frames(data, self.analog_mode if mode is None else mode)
 
-    def fast_mode(self, enable=True):
-        if self.spi:
-            self.spi.set_fast_mode(enable)
-
-    # ─── Generator methods ──────────────────────────────────────────
-
-    def _short(self, cmd):
-        """Send a single command byte (padded to 5-byte SPI tx)."""
-        if self.spi:
-            self.spi.tx(cmd)
-
-    def _long(self, cmd, val32):
-        """Send command + 4-byte value (little-endian, as original).
-        VHDL data register: data(31:24)=1st RX byte, data(7:0)=4th.
-        struct.pack('<I') puts LSB first, matching the OLS protocol.
+    def set_schmitt(self, enable=True, threshold=3):
+        """Enable/disable digital hysteresis filter (Schmitt trigger).
+        
+        When enabled, each input pin requires `threshold` consecutive equal
+        samples before accepting a transition.  This rejects glitches.
+        threshold: 0-7 clock cycles at sys_clk rate (~21ns per cycle).
         """
-        if self.spi:
-            data = struct.pack('<I', val32)
-            self.spi.tx(cmd, data)
+        self.pkt.write_register(REG_SCHMITT_ENABLE, 1 if enable else 0)
+        self.pkt.write_register(REG_SCHMITT_THRESHOLD, max(0, min(7, threshold)))
+
+    def set_debug_ch0(self, enable=True):
+        self.debug_ch0_enabled = bool(enable)
+        self.pkt.write_register(REG_DEBUG_CH0_ENABLE, 1 if enable else 0)
+
+    def read_preamble(self):
+        """Read debug status register. Bit1 = debug_ch0_enable, bit0 = gen_busy."""
+        v = self.pkt.read_register(REG_DEBUG_CH0_ENABLE)
+        return v if v >= 0 else 0
+
+    def fast_mode(self, enable=True):
+        self.pkt.write_register(REG_FAST_MODE, 1 if enable else 0)
 
     def _pins(self, tx_pin=None, scl_pin=None):
-        """Set generator TX and SCL pin assignments."""
         if tx_pin is not None:
             self.gen_pins['tx'] = tx_pin
         if scl_pin is not None:
             self.gen_pins['scl'] = scl_pin
         val = (self.gen_pins['tx'] & 0x1F) | ((self.gen_pins['scl'] & 0x1F) << 8)
-        self._long(CMD_GEN_PINS, val)
-
-    def _load_block(self, data):
-        """Load bytes into the generator FIFO via batched CMD_GEN_BLK + bulk write.
-
-        CMD_GEN_BLK and data bytes are sent in a single 0x31 transfer so the
-        FPGA stays in block-load mode throughout.  Format:
-
-          [0xA3, 0xA3, n, 0, 0, 0, data[0] .. data[n-1]]
-
-        The first 0xA3 pre-seeds the command register (VHDL 1-cycle signal delay
-        workaround).  The second 0xA3 + length bytes trigger the accumulate
-        dispatch, setting blk_mode='1' with blk_len=n.  Subsequent data bytes
-        then flow directly to the FIFO via Thread38=3 (blk_mode bypass).
-        """
-        if not data or not self.spi:
-            return
-        n = len(data)
-        d = self.spi.dev
-        payload = bytes([0x11, CMD_GEN_BLK, n, 0, 0, 0]) + data
-        total = len(payload)
-        d.write(
-            bytes([0x80, GPIO_CS_LO, PIN_DIR])
-            + bytes([0x31, total - 1, 0x00])
-            + payload
-            + bytes([0x87])
-            + bytes([0x80, GPIO_CS_HI, PIN_DIR])
-            + bytes([0x87])
-        )
-        time.sleep(0.003)
-        q = d.getQueueStatus()
-        if q:
-            d.read(q)
+        self.pkt.write_register(REG_GEN_PINS, val)
 
     def send_uart(self, data_bytes, baud=115200, tx_pin=None):
-        """Load bytes and start UART generator."""
         self._gen_data = data_bytes
         self._gen_baud = baud
         self._gen_tx_pin = tx_pin if tx_pin is not None else 3
-        self._long(CMD_GEN_PROTO, 0)  # UART
+        self.pkt.write_register(REG_GEN_PROTO, 0)
         div = max(1, self.sys_clk // baud)
-        self._long(CMD_GEN_BAUD, div & 0xFFFF)
-        self._pins(tx_pin=self._gen_tx_pin)   # set pins BEFORE load
+        self.pkt.write_register(REG_GEN_BAUD, div & 0xFFFF)
+        self._pins(tx_pin=self._gen_tx_pin)
         self.spi.flush()
-        time.sleep(0.005)                      # let pin assignment settle
-        self._load_block(data_bytes)
+        time.sleep(0.005)
+        self.pkt.load_gen_data(data_bytes)
         self.spi.flush()
-        time.sleep(0.005)                      # let block load complete
+        time.sleep(0.005)
         self.start_gen()
 
     def start_gen(self):
-        """Start the signal generator.
-
-        Uses 0x11 (CMD_XON/NOP) padding for the 4 trailer bytes — never 0x00,
-        which decodes as CMD_RESET on the FPGA and clears Run_OLS, Run,
-        Gen_Baud_Div, Gen_Proto, and blk_mode (OLS_Interface.vhd:528-545).
-        """
-        if self.spi:
-            self.spi.tx(CMD_GEN_STRT, b'\x11\x11\x11\x11')
+        self.pkt.transaction(CMD_GEN_START)
+        self.spi.flush()
 
     def fast_start_gen(self):
-        """Start gen without delay (used by rolling capture).
-
-        Uses 0x11 padding — same rationale as start_gen().
-        """
-        if self.spi:
-            self.spi.tx(CMD_GEN_STRT, b'\x11\x11\x11\x11')
+        self.start_gen()
 
     def modbus_crc16(self, data):
-        """Compute Modbus RTU CRC-16."""
         crc = 0xFFFF
         for b in data:
             crc ^= b
@@ -272,7 +258,6 @@ class OLSDeviceSPI:
         return crc
 
     def send_modbus(self, slave_addr, func_code, data, baud=9600, tx_pin=3):
-        """Load and send a Modbus RTU frame via UART generator."""
         frame = bytes([slave_addr, func_code]) + data
         crc = self.modbus_crc16(frame)
         frame += struct.pack('<H', crc)
@@ -280,17 +265,16 @@ class OLSDeviceSPI:
 
     def i2c_read_setup(self, dev_addr, reg_addr, read_len=1, test_mode=True,
                        speed=100000, tx_pin=3, scl_pin=1):
-        """Set up I2C read from device register."""
         dev_w = (dev_addr << 1) & 0xFE
         dev_r = (dev_addr << 1) | 0x01
         self._pins(tx_pin=tx_pin, scl_pin=scl_pin)
         time.sleep(0.01)
-        self._long(CMD_GEN_PROTO, 1)  # I2C
+        self.pkt.write_register(REG_GEN_PROTO, 1)
         div = max(1, self.sys_clk // speed // 2)
-        self._long(CMD_GEN_BAUD, div & 0xFFFF)
-        self._load_block(bytes([dev_w, reg_addr]))
+        self.pkt.write_register(REG_GEN_BAUD, div & 0xFFFF)
+        self.pkt.load_gen_data(bytes([dev_w, reg_addr]))
         flags = (1 if test_mode else 0) | (read_len << 8) | (dev_r << 16)
-        self._long(CMD_I2C_TEST, flags)
+        self.pkt.write_register(REG_GEN_DATA, flags)
         time.sleep(0.01)
 
     def capture_with_gen(self, rate_hz=1000000, nsamples=5000, timeout=6,
@@ -298,12 +282,11 @@ class OLSDeviceSPI:
                          stop_evt=None,
                          proto=None, i2c_speed=100000,
                          i2c_frame=None, i2c_tx_pin=3, i2c_scl_pin=1,
-                         gen_first=True):
-        """Arm capture and start generator in one sequence.
-        Uses fast mode with back-to-back ARM+NOPs to catch auto-readout data.
-
-        proto: None (use legacy _gen_data), 'I2C' (configure I2C generator),
-               or omitted/None for plain capture without gen.
+                         gen_first=False):
+        """Atomic generator capture using CMD_GEN_CAPTURE.
+        
+        The FPGA arms capture, waits a guard period, then starts the generator
+        in hardware — no timing-critical host round-trips.
         """
         self._ensure_open()
         if capture_time is not None:
@@ -313,13 +296,23 @@ class OLSDeviceSPI:
         self.reset()
         time.sleep(0.02)
         self.spi.flush()
+        # Apply pending GUI changes
+        if self._pending_debug_enable is not None:
+            self.debug_ch0_enabled = self._pending_debug_enable
+            self._pending_debug_enable = None
+        if self._pending_schmitt_enable is not None:
+            self._pending_schmitt_enable = None
+        if self._pending_schmitt_threshold is not None:
+            self._pending_schmitt_threshold = None
+        self.set_debug_ch0(self.debug_ch0_enabled)
 
-        self._short(CMD_XON)
-        rc = max(1, nsamples)
         div = max(0, int(self.sys_clk / rate_hz) - 1)
-        self._long(CMD_DIVIDER, div & 0xFFFFFF)
-        self._long(CMD_RCOUNT, rc)
-        self._long(CMD_DCOUNT, rc)
+        rc = max(1, nsamples)
+
+        self.pkt.write_register(REG_DIVIDER, div & 0xFFFFFF)
+        self.pkt.write_register(REG_SAMPLE_COUNT, rc)
+        self.pkt.write_register(REG_DELAY_COUNT, rc)
+
         if trigger is None:
             mask = 0
             value = 0
@@ -335,80 +328,72 @@ class OLSDeviceSPI:
         else:
             mask = 0
             value = 0
-        self._long(CMD_TMASK, mask)
-        self._long(CMD_TVALUE, value)
-        self._long(CMD_FLAGS, self._raw_flags)
+        self.pkt.write_register(REG_TRIGGER_MASK, mask)
+        self.pkt.write_register(REG_TRIGGER_VALUE, value)
+        self.pkt.write_register(REG_FLAGS, self._raw_flags)
         self.set_analog_config(self.analog_mode, self.analog_ch0, self.analog_ch1)
-        self._long(CMD_DELAY, 0)
-        self._short(CMD_XOFF)
-        self.spi.flush()
-        self._long(CMD_FAST_MODE, 1)
 
+        # Configure generator
         if proto == 'I2C':
             self._pins(tx_pin=i2c_tx_pin, scl_pin=i2c_scl_pin)
-            self._long(CMD_GEN_PROTO, 1)
+            self.pkt.write_register(REG_GEN_PROTO, 1)
             i2c_div = max(1, self.sys_clk // i2c_speed // 2)
-            self._long(CMD_GEN_BAUD, i2c_div & 0xFFFF)
+            self.pkt.write_register(REG_GEN_BAUD, i2c_div & 0xFFFF)
             if i2c_frame:
-                self._load_block(i2c_frame)
+                self.pkt.load_gen_data(i2c_frame)
         elif self._gen_data is not None:
-            self._long(CMD_GEN_PROTO, 0)
+            self.pkt.write_register(REG_GEN_PROTO, 0)
             div_b = max(1, self.sys_clk // self._gen_baud)
-            self._long(CMD_GEN_BAUD, div_b & 0xFFFF)
+            self.pkt.write_register(REG_GEN_BAUD, div_b & 0xFFFF)
             self._pins(tx_pin=self._gen_tx_pin)
-            self._load_block(self._gen_data)
+            self.pkt.load_gen_data(self._gen_data)
         self.spi.flush()
 
-        # Back-to-back: GEN_STRT + ARM (or ARM + GEN_STRT) + NOPs for readout
-        # gen_first=True: start gen before arm (for gen that runs long, e.g. loop)
-        # gen_first=False: arm first, then start gen (for short bursts like UART 'Hello')
-        need = rc * self._stride
-        d = self.spi.dev
-        buf = bytes([0x80, GPIO_CS_LO, PIN_DIR])
-        if gen_first:
-            buf += bytes([0x31, 0x04, 0x00, CMD_GEN_STRT, 0x11, 0x11, 0x11, 0x11])
-            buf += bytes([0x31, 0x04, 0x00, CMD_ARM, 0x11, 0x11, 0x11, 0x11])
-        else:
-            buf += bytes([0x31, 0x04, 0x00, CMD_ARM, 0x11, 0x11, 0x11, 0x11])
-            buf += bytes([0x31, 0x04, 0x00, CMD_GEN_STRT, 0x11, 0x11, 0x11, 0x11])
-        # Immediately start NOPs to read captured data
-        remaining = need
-        while remaining > 0:
-            n = min(128, remaining)
-            buf += bytes([0x31, (n-1) & 0xFF, ((n-1) >> 8) & 0xFF])
-            buf += bytes([0x11] * n)
-            remaining -= n
-        buf += bytes([0x87, 0x80, GPIO_CS_HI, PIN_DIR, 0x87])
-        self.spi._drain()
-        d.write(buf)
-        time.sleep(0.02)
-        r = self.spi._read_all(timeout=0.05)
-        if r and len(r) > 6:
-            samples = r[6:6 + need]
-        else:
-            samples = b''
+        self.pkt.write_register(REG_FAST_MODE, 1)
 
-        if progress_cb and samples:
-            ns = len(samples)
-            progress_cb(samples, ns, rc)
+        has_gen = (proto == 'I2C' and i2c_frame) or self._gen_data is not None
+        if not has_gen:
+            return b''
+
+        # Atomic generated capture via hardware FSM
+        r = self.pkt.transaction(CMD_GEN_CAPTURE, timeout=1.0)
+        if r is None or r[0] not in (0, ST_CAPTURE_ARMED):
+            return b''
+
+        deadline = time.time() + timeout
+        capture_active_seen = False
+        while time.time() < deadline:
+            st = self.pkt.get_status()
+            cs = st.get('capture_status', -1)
+            if cs == ST_CAPTURE_DONE:
+                break
+            if stop_evt and stop_evt.is_set():
+                return b''
+            time.sleep(0.001)
+
+        need = rc * self._stride
+        accumulated = bytearray()
+        for block_addr in range(0, need, 1024):
+            block = self.pkt.read_capture_block(block_addr)
+            if block:
+                accumulated.extend(block)
+        samples = bytes(accumulated[:need])
 
         if samples:
-            for i in range(len(samples)):
-                if samples[i] != 0x00:
+            s = self._stride
+            for i in range(0, len(samples), s):
+                if samples[i:i+s] != b'\x00' * s:
                     samples = samples[i:]
                     break
-        return samples
 
-    # ─── Single-shot capture ───────────────────────────────────────
+        if progress_cb and samples:
+            progress_cb(samples, len(samples) // self._stride, rc)
+
+        return samples
 
     def capture(self, rate_hz=1000000, nsamples=5000, timeout=6,
                 trigger=None, capture_time=None, progress_cb=None,
                 stop_evt=None):
-        """Arm capture, return raw bytes (4 bytes per sample).
-
-        trigger: None (immediate), 'rising', or 'falling'.
-        stop_evt: threading.Event — set to abort capture early.
-        """
         self._ensure_open()
         if capture_time is not None:
             nsamples = int(capture_time * rate_hz)
@@ -417,13 +402,21 @@ class OLSDeviceSPI:
         self.reset()
         time.sleep(0.02)
         self.spi.flush()
+        if self._pending_debug_enable is not None:
+            self.debug_ch0_enabled = self._pending_debug_enable
+            self._pending_debug_enable = None
+        if self._pending_schmitt_enable is not None:
+            self._pending_schmitt_enable = None
+        if self._pending_schmitt_threshold is not None:
+            self._pending_schmitt_threshold = None
+        self.set_debug_ch0(self.debug_ch0_enabled)
 
-        self._short(CMD_XON)
         div = max(0, int(self.sys_clk / rate_hz) - 1)
-        self._long(CMD_DIVIDER, div & 0xFFFFFF)
         rc = max(1, nsamples)
-        self._long(CMD_RCOUNT, rc)
-        self._long(CMD_DCOUNT, rc)
+        self.pkt.write_register(REG_DIVIDER, div & 0xFFFFFF)
+        self.pkt.write_register(REG_SAMPLE_COUNT, rc)
+        self.pkt.write_register(REG_DELAY_COUNT, rc)
+
         if trigger is None:
             mask = 0
             value = 0
@@ -439,42 +432,46 @@ class OLSDeviceSPI:
         else:
             mask = 0
             value = 0
-        self._long(CMD_TMASK, mask)
-        self._long(CMD_TVALUE, value)
-        self._long(CMD_FLAGS, self._raw_flags)
+        self.pkt.write_register(REG_TRIGGER_MASK, mask)
+        self.pkt.write_register(REG_TRIGGER_VALUE, value)
         self.set_analog_config(self.analog_mode, self.analog_ch0, self.analog_ch1)
-        self._long(CMD_DELAY, 0)
-        self._short(CMD_XOFF)
-
-        # Enable continuous mode — keeps the readout pipeline alive so
-        # chained_read sees valid data instead of stale 0x11.
-        self._long(CMD_FAST_MODE, 1)
-        self._long(CMD_CONT_CAPTURE, 1)
+        self.pkt.write_register(REG_FLAGS, self._raw_flags)
+        self.pkt.write_register(REG_FAST_MODE, 1)
 
         self.spi.flush()
-        rc = max(1, nsamples)
-        need = rc * self._stride
+
+        status = self.pkt.arm_capture()
+        if status < 0:
+            return b''
+
         deadline = time.time() + timeout
+        while time.time() < deadline:
+            st = self.pkt.get_status()
+            if st.get('capture_status', 0) == ST_CAPTURE_DONE:
+                break
+            if stop_evt and stop_evt.is_set():
+                return b''
+            time.sleep(0.001)
 
-        self.spi.arm()
-        self.spi.flush()
+        need = rc * self._stride
+        accumulated = bytearray()
+        for block_addr in range(0, need, 1024):
+            block = self.pkt.read_capture_block(block_addr)
+            if block:
+                accumulated.extend(block)
+        samples = bytes(accumulated[:need])
 
-        cap_time = rc / rate_hz
-        wait = min(cap_time + 0.005, max(0, deadline - time.time() - 0.5))
-        if wait > 0:
-            time.sleep(wait)
-
-        samples = self.spi.chained_read(need)
+        if samples:
+            s = self._stride
+            for i in range(0, len(samples), s):
+                if samples[i:i+s] != b'\x00' * s:
+                    samples = samples[i:]
+                    break
 
         if progress_cb and samples:
             ns = len(samples)
             progress_cb(samples, ns, rc)
 
-        if samples:
-            for i in range(len(samples)):
-                if samples[i] != 0x00:
-                    samples = samples[i:]
-                    break
         return samples
 
     def capture_analog(self, rate_hz=100000, frames=4096, mode=ANALOG_MODE_MIXED2,
@@ -493,250 +490,246 @@ class OLSDeviceSPI:
         trimmed = data[:frames * stride]
         return trimmed, decode_analog_frames(trimmed, mode)
 
-    # ─── I2C capture with generator ──────────────────────────────
-
     def i2c_capture_with_gen(self, rate_hz=400000, nsamples=2000, timeout=6,
                               i2c_speed=100000, dev_addr=0x18, reg_addr=0x0F,
                               read_len=1, tx_pin=2, scl_pin=1, fast_mode=True):
-        """Arm capture and start I2C generator in one sequence.
-
-        Configures the generator as an I2C master to read from a device
-        register, then arms capture and starts the gen in a single CS-low
-        burst so the I2C transaction appears in the capture window.
-
-        Returns raw capture bytes (4 bytes per sample).
-        """
         self._ensure_open()
+        # I2C must stay active long enough to overlap post-ARM SPI load+start.
+        i2c_speed = min(i2c_speed, 8_000)
 
         self.reset()
         time.sleep(0.02)
         self.spi.flush()
 
-        # Configure capture
-        self._short(CMD_XON)
         div = max(0, int(self.sys_clk / rate_hz) - 1)
-        self._long(CMD_DIVIDER, div & 0xFFFFFF)
         rc = max(1, nsamples)
-        self._long(CMD_RCOUNT, rc)
-        self._long(CMD_DCOUNT, rc)
-        self._long(CMD_TMASK, 0)
-        self._long(CMD_TVALUE, 0)
-        self._long(CMD_FLAGS, self._raw_flags)
-        self._long(CMD_DELAY, 0)
-        self._short(CMD_XOFF)
+        self.pkt.write_register(REG_DIVIDER, div & 0xFFFFFF)
+        self.pkt.write_register(REG_SAMPLE_COUNT, rc)
+        self.pkt.write_register(REG_DELAY_COUNT, rc)
+        self.pkt.write_register(REG_TRIGGER_MASK, 0)
+        self.pkt.write_register(REG_TRIGGER_VALUE, 0)
+        self.pkt.write_register(REG_FLAGS, self._raw_flags)
         self.spi.flush()
 
-        # Fast (BRAM) or deep (SDRAM) mode
-        self._long(CMD_FAST_MODE, 1 if fast_mode else 0)
-        self._long(CMD_CONT_CAPTURE, 1)  # keeps readout pipeline alive
+        self.pkt.write_register(REG_FAST_MODE, 1 if fast_mode else 0)
         self.spi.flush()
 
-        # Configure I2C generator
         dev_w = (dev_addr << 1) & 0xFE
         dev_r = (dev_addr << 1) | 0x01
         self._pins(tx_pin=tx_pin, scl_pin=scl_pin)
         time.sleep(0.01)
-        self._long(CMD_GEN_PROTO, 1)  # I2C
+        self.pkt.write_register(REG_GEN_PROTO, 1)
         i2c_div = max(1, self.sys_clk // i2c_speed // 2)
-        self._long(CMD_GEN_BAUD, i2c_div & 0xFFFF)
-        self._load_block(bytes([dev_w, reg_addr]))
+        self.pkt.write_register(REG_GEN_BAUD, i2c_div & 0xFFFF)
+        self.pkt.load_gen_data(bytes([dev_w, reg_addr]))
         flags = (1) | (read_len << 8) | (dev_r << 16)
-        self._long(CMD_I2C_TEST, flags)
+        self.pkt.write_register(REG_GEN_DATA, flags)
         self.spi.flush()
         time.sleep(0.01)
 
-        # Arm first, then start the generator in the same CS-low burst.  The
-        # capture completes before readout, so returned bytes are only samples.
-        need = rc * self._stride
-        d = self.spi.dev
-        buf = bytes([0x80, GPIO_CS_LO, PIN_DIR])
-        buf += bytes([0x31, 0x04, 0x00, CMD_ARM, 0x11, 0x11, 0x11, 0x11])
-        buf += bytes([0x31, 0x04, 0x00, CMD_GEN_STRT, 0x11, 0x11, 0x11, 0x11])
-        buf += bytes([0x87, 0x80, GPIO_CS_HI, PIN_DIR, 0x87])
-        self.spi._drain()
-        d.write(buf)
-        time.sleep(0.003)
-        q = d.getQueueStatus()
-        if q:
-            d.read(q)
+        status = self.pkt.arm_capture()
+        if status < 0:
+            return b''
+        self.spi.flush()
+        self.pkt.load_gen_data(bytes([dev_w, reg_addr]))
+        self.pkt.transaction(CMD_GEN_START)
+        self.spi.flush()
 
         cap_time = rc / rate_hz
         wait = min(cap_time + 0.02, max(0.0, timeout - 0.1))
         if wait > 0:
             time.sleep(wait)
-        return self.spi.chained_read(need)
 
-    # ─── I2C rolling capture ────────────────────────────────────
+        need = rc * self._stride
+        accumulated = bytearray()
+        for block_addr in range(0, need, 1024):
+            block = self.pkt.read_capture_block(block_addr)
+            if block:
+                accumulated.extend(block)
+        self.pkt.transaction(CMD_ABORT_CAPTURE)
+        self.spi.flush()
+        return bytes(accumulated[:need])
 
     def i2c_rolling_capture(self, rate_hz, chunk_nsamp, buffer_nsamp,
                              stop_evt, progress_cb=None, i2c_speed=100000,
                              dev_addr=0x18, reg_addr=0x0F, read_len=1,
                              tx_pin=2, scl_pin=1, full_out=None, use_continuous=True):
-        """Continuous rolling capture via SPI with I2C generator.
-
-        Configures the generator as an I2C master, sets continuous mode,
-        then arms capture AND starts gen in a single CS-low burst so the
-        I2C transaction appears in the first buffer.
-
-        Yields (buf, seq, buffer_nsamp) per buffer completion.
-        """
         self._ensure_open()
-
-        self.spi.reset()
-        self.spi.flush()
+        stride = self._stride
+        max_bytes = buffer_nsamp * stride
 
         div = max(0, int(self.sys_clk / rate_hz) - 1)
-        self.spi.set_divider(div)
-        self.spi.set_sample_count(buffer_nsamp)
-        self.spi.set_trigger_mask(0)
-        self.spi.set_trigger_value(0)
-        self.spi.set_fast_mode(True)
-        self.spi.flush()
+        rc = max(1, buffer_nsamp)
+        self.pkt.write_register(REG_DIVIDER, div & 0xFFFFFF)
+        self.pkt.write_register(REG_SAMPLE_COUNT, rc)
+        self.pkt.write_register(REG_DELAY_COUNT, rc)
+        self.pkt.write_register(REG_TRIGGER_MASK, 0)
+        self.pkt.write_register(REG_TRIGGER_VALUE, 0)
+        self.pkt.write_register(REG_FLAGS, 0)
+        self.pkt.write_register(REG_FAST_MODE, 1)
 
-        # Configure I2C generator (do NOT start it yet)
         dev_w = (dev_addr << 1) & 0xFE
         dev_r = (dev_addr << 1) | 0x01
         self._pins(tx_pin=tx_pin, scl_pin=scl_pin)
-        self._long(CMD_GEN_PROTO, 1)  # I2C
+        self.pkt.write_register(REG_GEN_PROTO, 1)
         i2c_div = max(1, self.sys_clk // i2c_speed // 2)
-        self._long(CMD_GEN_BAUD, i2c_div & 0xFFFF)
-        self._load_block(bytes([dev_w, reg_addr]))
+        self.pkt.write_register(REG_GEN_BAUD, i2c_div & 0xFFFF)
+        self.pkt.load_gen_data(bytes([dev_w, reg_addr]))
         flags = (1) | (read_len << 8) | (dev_r << 16)
-        self._long(CMD_I2C_TEST, flags)
-        time.sleep(0.01)
+        self.pkt.write_register(REG_GEN_DATA, flags)
         self.spi.flush()
-
-        # Set continuous mode, then ARM + start_gen in burst
-        self.spi.set_continuous(True)
-        self.spi.flush()
-
-        d = self.spi.dev
-        d.write(
-            bytes([0x80, GPIO_CS_LO, PIN_DIR])
-            + bytes([0x31, 0x04, 0x00])
-            + bytes([CMD_GEN_STRT, 0x11, 0x11, 0x11, 0x11])
-            + bytes([0x31, 0x04, 0x00])
-            + bytes([CMD_ARM, 0x11, 0x11, 0x11, 0x11])
-            + bytes([0x87])
-            + bytes([0x80, GPIO_CS_HI, PIN_DIR])
-            + bytes([0x87])
-        )
-        time.sleep(0.003)
-        q = d.getQueueStatus()
-        if q:
-            d.read(q)
 
         buf = b''
         seq = 0
-        stride = self._stride
-        max_bytes = buffer_nsamp * stride
 
         while not stop_evt.is_set():
-            if getattr(self, '_pending_gen_start', False):
-                self._pending_gen_start = False
-                self.fast_start_gen()
-            try:
-                need = chunk_nsamp * stride
-                chunk = self.spi.chained_read(need)
-                if not chunk:
-                    time.sleep(0.001)
-                    continue
-                if len(chunk) < 4:
-                    time.sleep(0.001)
-                    continue
-                if not chunk:
-                    time.sleep(0.001)
-                    continue
-                if len(chunk) < 4:
-                    time.sleep(0.001)
-                    continue
-                if full_out is not None:
-                    full_out.extend(chunk)
-                buf += chunk
-                if len(buf) > max_bytes:
-                    buf = buf[-max_bytes:]
-                seq += len(chunk) // stride
-                if progress_cb:
-                    progress_cb(buf, seq, buffer_nsamp)
-                yield buf, seq, buffer_nsamp
-            except Exception:
-                break
+            self.pkt.arm_capture()
+            self.spi.flush()
+            self.pkt.transaction(CMD_GEN_START, timeout=1.0)
 
-    # ─── Rolling capture with generator support ────────────────────
+            cap_time = chunk_nsamp / rate_hz
+            time.sleep(max(cap_time * 0.8, 0.002))
+
+            deadline = time.time() + max(cap_time + 0.2, 0.05)
+            while time.time() < deadline:
+                st = self.pkt.get_status()
+                cs = st.get('capture_status', -1)
+                if cs in (0x12, 0x13):
+                    break
+                if stop_evt.is_set():
+                    return
+                time.sleep(0.0005)
+
+            need = chunk_nsamp * stride
+            data = bytearray()
+            for addr in range(0, need, 1024):
+                block = self.pkt.read_capture_block(addr)
+                if block:
+                    data.extend(block)
+            data = bytes(data[:need])
+
+            if not data:
+                time.sleep(0.001)
+                continue
+
+            if full_out is not None:
+                full_out.extend(data)
+            buf += data
+            if len(buf) > max_bytes:
+                buf = buf[-max_bytes:]
+            seq += len(data) // stride
+            if progress_cb:
+                progress_cb(buf, seq, buffer_nsamp)
+            yield buf, seq, buffer_nsamp
 
     def rolling_capture(self, rate_hz, chunk_nsamp, buffer_nsamp,
                         stop_evt, progress_cb=None, gen_data=None, gen_baud=115200,
-                        gen_tx_pin=3, full_out=None, use_continuous=True):
-        """Continuous rolling capture via SPI, with optional generator."""
+                        gen_tx_pin=3, full_out=None, use_continuous=True, stride=None):
         self._ensure_open()
-
-        self.spi.reset()
-        self.spi.flush()
-
-        div = max(0, int(self.sys_clk / rate_hz) - 1)
-        self.spi.set_divider(div)
-        self.spi.set_sample_count(buffer_nsamp)
-        self.spi.set_trigger_mask(0)
-        self.spi.set_trigger_value(0)
-        self.spi.set_fast_mode(True)
-        self.spi.flush()
-
-        # Load generator data BEFORE starting continuous capture, so the
-        # interface is in idle mode (Run='0') and processes gen commands.
-        if gen_data:
-            self._long(CMD_GEN_PROTO, 0)
-            div_b = max(1, self.sys_clk // gen_baud)
-            self._long(CMD_GEN_BAUD, div_b & 0xFFFF)
-            self._load_block(gen_data)
-            self._pins(tx_pin=gen_tx_pin)
-            time.sleep(0.01)
-            self.spi.flush()
-            self.start_gen()
-
-        self.spi.set_continuous(True)
-        self.spi.flush()
-
-        # ARM the capture
-        self.spi.arm()
-        self.spi.flush()
-
-        buf = b''
-        seq = 0
-        stride = self._stride
-        yield_granule = 1024 * stride
+        if stride is None:
+            stride = self._stride
         max_bytes = buffer_nsamp * stride
 
+        div = max(0, int(self.sys_clk / rate_hz) - 1)
+        rc = max(1, buffer_nsamp)
+        self.pkt.write_register(REG_DIVIDER, div & 0xFFFFFF)
+        self.pkt.write_register(REG_SAMPLE_COUNT, rc)
+        self.pkt.write_register(REG_DELAY_COUNT, rc)
+        self.pkt.write_register(REG_TRIGGER_MASK, 0)
+        self.pkt.write_register(REG_TRIGGER_VALUE, 0)
+        self.pkt.write_register(REG_FLAGS, self._raw_flags)
+        self.pkt.write_register(REG_FAST_MODE, 1)
+        self.set_debug_ch0(self.debug_ch0_enabled)
+        if self.analog_mode != ANALOG_MODE_DIGITAL8:
+            self.set_analog_config(self.analog_mode, self.analog_ch0, self.analog_ch1)
+
+        if gen_data:
+            self.pkt.write_register(REG_GEN_PROTO, 0)
+            div_b = max(1, self.sys_clk // gen_baud)
+            self.pkt.write_register(REG_GEN_BAUD, div_b & 0xFFFF)
+            self._pins(tx_pin=gen_tx_pin)
+            self.pkt.load_gen_data(gen_data)
+            self.spi.flush()
+            self.pkt.transaction(CMD_GEN_START, timeout=1.0)
+
+        self.spi.flush()
+        buf = b''
+        seq = 0
+
         while not stop_evt.is_set():
-            if getattr(self, '_pending_gen_start', False):
-                self._pending_gen_start = False
-                self.fast_start_gen()
-            try:
-                need = chunk_nsamp * stride
-                chunk = self.spi.chained_read(need)
-                if not chunk:
-                    time.sleep(0.001)
-                    continue
-                if len(chunk) < 4:
-                    time.sleep(0.001)
-                    continue
-                if full_out is not None:
-                    full_out.extend(chunk)
-                buf += chunk
-                if len(buf) > max_bytes:
-                    buf = buf[-max_bytes:]
-                seq += len(chunk) // stride
-                if progress_cb:
-                    progress_cb(buf, seq, buffer_nsamp)
-                yield buf, seq, buffer_nsamp
-            except Exception:
-                break
+            # Apply pending GUI changes before each chunk
+            if self._pending_debug_enable is not None:
+                self.pkt.write_register(REG_DEBUG_CH0_ENABLE, 1 if self._pending_debug_enable else 0)
+                self.debug_ch0_enabled = self._pending_debug_enable
+                self._pending_debug_enable = None
+            if self._pending_schmitt_enable is not None:
+                self.pkt.write_register(REG_SCHMITT_ENABLE, 1 if self._pending_schmitt_enable else 0)
+                self._pending_schmitt_enable = None
+            if self._pending_schmitt_threshold is not None:
+                self.pkt.write_register(REG_SCHMITT_THRESHOLD, self._pending_schmitt_threshold)
+                self._pending_schmitt_threshold = None
+            self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+            self.pkt.arm_capture()
+
+            cap_time = chunk_nsamp / rate_hz
+            time.sleep(max(cap_time * 0.8, 0.002))
+
+            deadline = time.time() + max(cap_time + 0.2, 0.05)
+            while time.time() < deadline:
+                st = self.pkt.get_status()
+                cs = st.get('capture_status', -1)
+                if cs in (0x12, 0x13):
+                    break
+                if stop_evt.is_set():
+                    return
+                time.sleep(0.0005)
+
+            need = chunk_nsamp * stride
+            data = bytearray()
+            for addr in range(0, need, 1024):
+                block = self.pkt.read_capture_block(addr)
+                if block:
+                    data.extend(block)
+            data = bytes(data[:need])
+
+            if not data:
+                time.sleep(0.001)
+                continue
+
+            if full_out is not None:
+                full_out.extend(data)
+            buf += data
+            if len(buf) > max_bytes:
+                buf = buf[-max_bytes:]
+            seq += len(data) // stride
+            if progress_cb:
+                progress_cb(buf, seq, buffer_nsamp)
+            yield buf, seq, buffer_nsamp
 
 
 def find_spi_device():
-    """Check if SPI device (FTDI Channel B) is available."""
     try:
         import ftd2xx as ft
         n = ft.createDeviceInfoList()
+        if n == 0:
+            return False
+        seen_serials = set()
+        for i in range(n):
+            try:
+                entry = ft.listDevices(i)
+                serial = entry[0] if isinstance(entry, list) else entry
+                if isinstance(serial, bytes):
+                    serial = serial.decode()
+                desc = entry[1] if isinstance(entry, list) and len(entry) > 1 else ''
+                if isinstance(desc, bytes):
+                    desc = desc.decode()
+                if desc.endswith('B') or 'SPI' in desc:
+                    return True
+                if serial in seen_serials:
+                    return True
+                seen_serials.add(serial)
+            except:
+                pass
         for i in range(n):
             try:
                 t = ft.open(i)

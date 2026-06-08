@@ -4,9 +4,9 @@ use IEEE.STD_LOGIC_1164.ALL;
 entity OLS_Logic_Analyzer_wrapper is
 port (
     CLK       : IN  STD_LOGIC;
-    UART_RX   : IN  STD_LOGIC;
-    UART_TX   : INOUT STD_LOGIC;
     SPI_CS    : IN  STD_LOGIC := '1';
+    SPI_SCK   : IN  STD_LOGIC := '0';
+    SPI_MOSI  : IN  STD_LOGIC := '0';
     SPI_MISO  : OUT STD_LOGIC := 'Z';
     MKR_D     : INOUT STD_LOGIC_VECTOR(14 downto 0) := (others => 'Z');
     PMOD      : INOUT STD_LOGIC_VECTOR(7 downto 0) := (others => 'Z');
@@ -49,16 +49,16 @@ architecture rtl of OLS_Logic_Analyzer_wrapper is
     attribute chip_pin of SEN_SPC : signal is "J6";
     attribute chip_pin of SPI_CS : signal is "A6";
     attribute chip_pin of SPI_MISO : signal is "B5";
-    attribute chip_pin of UART_RX : signal is "A4";
-    attribute chip_pin of UART_TX : signal is "B4";
+    attribute chip_pin of SPI_SCK : signal is "A4";
+    attribute chip_pin of SPI_MOSI : signal is "B4";
     attribute chip_pin of MKR_D : signal is "H8,K10,H5,H4,J1,J2,L12,J12,J13,K11,K12,J10,H10,H13,G12";
     attribute chip_pin of PMOD : signal is "M3,L3,M2,M1,N3,N2,K2,K1";
     -- IO standard for LED
 begin
     core : entity work.OLS_SDRAM_Top
     port map (
-        CLK => CLK, UART_RX => UART_RX, UART_TX => UART_TX,
-        SPI_CS => SPI_CS, SPI_MISO => SPI_MISO,
+        CLK => CLK,
+        SPI_CS => SPI_CS, SPI_SCK => SPI_SCK, SPI_MOSI => SPI_MOSI, SPI_MISO => SPI_MISO,
         MKR_D => MKR_D, PMOD => PMOD, LED => LED,
         sdram_addr => sdram_addr, sdram_ba => sdram_ba,
         sdram_cas_n => sdram_cas_n, sdram_cke => sdram_cke,

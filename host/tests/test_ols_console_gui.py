@@ -5,9 +5,10 @@ sys.modules['serial'] = MagicMock()
 sys.modules['serial.tools'] = MagicMock()
 sys.modules['serial.tools.list_ports'] = MagicMock()
 
-from app.OLS_Console import OLScope, WaveformDisplay, NUM_CHANNELS
+from app.OLS_Console import OLScope, WaveformDisplay, NUM_CHANNELS, samples_to_channels
 from app.OLS_Console import ANALOG_MODE_DIGITAL8, ANALOG_MODE_MIXED1, ANALOG_MODE_MIXED2
-from app.OLS_Console import ANALOG_MODE_ANALOG1, ANALOG_MODE_ANALOG2
+from app.OLS_Console import ANALOG_MODE_ANALOG1, ANALOG_MODE_ANALOG2, ANALOG_MODE_ANALOG4
+from app.OLS_Console import ANALOG_MODE_MIXED2_4, ANALOG_MODE_MIXED_DUAL
 
 
 def _make_scope(backend='UART'):
@@ -125,31 +126,31 @@ class TestOLScopeGetters:
     def test_get_capture_mode_digital(self):
         scope = _make_scope()
         scope.mode_cb = MagicMock()
-        scope.mode_cb.get.return_value = 'Digital'
+        scope.mode_cb.get.return_value = '16 Digital'
         assert scope._get_capture_mode() == ANALOG_MODE_DIGITAL8
 
     def test_get_capture_mode_mixed1(self):
         scope = _make_scope()
         scope.mode_cb = MagicMock()
-        scope.mode_cb.get.return_value = 'Mixed 1'
+        scope.mode_cb.get.return_value = '16 Dig + 1 Ana'
         assert scope._get_capture_mode() == ANALOG_MODE_MIXED1
 
     def test_get_capture_mode_mixed2(self):
         scope = _make_scope()
         scope.mode_cb = MagicMock()
-        scope.mode_cb.get.return_value = 'Mixed 2'
+        scope.mode_cb.get.return_value = '16 Dig + 2 Ana'
         assert scope._get_capture_mode() == ANALOG_MODE_MIXED2
 
     def test_get_capture_mode_analog1(self):
         scope = _make_scope()
         scope.mode_cb = MagicMock()
-        scope.mode_cb.get.return_value = 'Analogue 1'
+        scope.mode_cb.get.return_value = '1 Analog'
         assert scope._get_capture_mode() == ANALOG_MODE_ANALOG1
 
     def test_get_capture_mode_analog2(self):
         scope = _make_scope()
         scope.mode_cb = MagicMock()
-        scope.mode_cb.get.return_value = 'Analogue 2'
+        scope.mode_cb.get.return_value = '2 Analog'
         assert scope._get_capture_mode() == ANALOG_MODE_ANALOG2
 
     def test_get_capture_mode_unknown_defaults_to_digital(self):
@@ -289,6 +290,34 @@ class TestOLScopeTrigModeChanged:
         scope.trig_frame.winfo_children.return_value = []
         scope._trig_mode_changed()
         assert scope.trig_frame.winfo_children.called
+
+    def test_debug_ch0_changed_updates_device(self):
+        scope = _make_scope()
+        scope.dev = MagicMock()
+        scope.debug_ch0_var = MagicMock()
+
+        scope.debug_ch0_var.get.return_value = True
+        scope._debug_ch0_changed()
+        scope.dev.set_debug_ch0.assert_called_once_with(True)
+
+        scope.dev.reset_mock()
+        scope.debug_ch0_var.get.return_value = False
+        scope._debug_ch0_changed()
+        scope.dev.set_debug_ch0.assert_called_once_with(False)
+
+    def test_apply_debug_ch0_setting_syncs_to_device(self):
+        scope = _make_scope()
+        scope.dev = MagicMock()
+        scope.dev.debug_ch0_enabled = True
+        scope.debug_ch0_var = MagicMock()
+
+        scope.debug_ch0_var.get.return_value = False
+        scope._apply_debug_ch0_setting()
+        assert scope.dev.debug_ch0_enabled is False
+
+        scope.debug_ch0_var.get.return_value = True
+        scope._apply_debug_ch0_setting()
+        assert scope.dev.debug_ch0_enabled is True
 
 
 class TestOLScopeGenShowProtoFields:

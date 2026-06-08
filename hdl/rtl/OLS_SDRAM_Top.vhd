@@ -12,9 +12,9 @@ ENTITY OLS_SDRAM_Top IS
   );
 PORT (
   CLK     : IN STD_LOGIC;
-  UART_RX : IN STD_LOGIC := '1';
-  UART_TX : INOUT STD_LOGIC := 'Z';
   SPI_CS  : IN  STD_LOGIC := '1';
+  SPI_SCK : IN  STD_LOGIC := '0';
+  SPI_MOSI : IN  STD_LOGIC := '0';
   SPI_MISO : OUT STD_LOGIC := 'Z';
   -- Expanded I/O
   MKR_D   : INOUT STD_LOGIC_VECTOR(14 downto 0) := (others => 'Z');
@@ -46,9 +46,11 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal sys_clk     : std_logic := '0';
   signal pll_locked  : std_logic := '0';
   signal internal_data : std_logic_vector(LA_CHANNELS-1 downto 0);
+  signal internal_data_r : std_logic_vector(LA_CHANNELS-1 downto 0) := (others => '0');
   signal gen_busy      : std_logic := '0';
   signal gen_tx        : std_logic;
   signal gen_scl       : std_logic;
+  signal gen_active    : std_logic;
   signal gen_load_byte : std_logic_vector(7 downto 0);
   signal gen_load_we   : std_logic;
   signal gen_start     : std_logic;
@@ -60,6 +62,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_i2c_dev_r  : std_logic_vector(7 downto 0) := (others => '0');
   signal gen_i2c_test   : std_logic := '0';
   signal gen_spi_test   : std_logic := '0';
+  signal gen_fifo_count : std_logic_vector(7 downto 0) := (others => '0');
+  signal gen_busy_latch : std_logic := '0';
   signal fast_clk       : std_logic := '0';
   signal continuous_mode : std_logic := '0';
   signal armed_i        : std_logic := '0';
@@ -91,18 +95,30 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_scl_d2   : std_logic := '0';
   signal gen_tx_d1    : std_logic := '0';
   signal registered_ch0_d1 : std_logic := '0';
-  signal sen_sdo_d1   : std_logic := '0';
 
-  signal interface_mode : std_logic := '0';
-  signal core_uart_tx  : std_logic := '1';
-  signal spi_mosi_int  : std_logic := '0';
+  -- Schmitt trigger / digital hysteresis filter
+  signal schmitt_enable    : std_logic := '0';
+  signal schmitt_threshold : natural range 0 to 7 := 3;
+  signal gen_capture_active : std_logic := '0';
+  signal gen_start_ack_i    : std_logic;
+  signal gen_start_reject_i : std_logic;
+  signal gen_done_pulse_i   : std_logic;
+  signal pin_pool_clean    : std_logic_vector(PIN_POOL_SIZE-1 downto 0);
+  type schmitt_cnt_t is array(0 to PIN_POOL_SIZE-1) of natural range 0 to 7;
+  signal schmitt_cnt   : schmitt_cnt_t := (others => 0);
+  signal schmitt_stable : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
+  attribute preserve of gen_start : signal is true;
+  attribute preserve of gen_tx : signal is true;
+  attribute preserve of gen_busy : signal is true;
+
   signal analog_mode   : std_logic_vector(2 downto 0) := (others => '0');
   signal analog_ch0    : natural range 0 to 15 := 0;
   signal analog_ch1    : natural range 0 to 15 := 1;
   signal analog_stream_mode : std_logic := '0';
+  signal debug_ch0_enable : std_logic := '0';
   signal analog_frame_data  : std_logic_vector(63 downto 0) := (others => '0');
   signal analog_frame_len   : natural range 1 to 8 := 1;
-  signal adc0_result, adc1_result : std_logic_vector(11 downto 0) := (others => '0');
+  signal adc0_result, adc1_result, adc2_result, adc3_result : std_logic_vector(11 downto 0) := (others => '0');
   signal adc_start : std_logic := '0';
   signal adc_div   : natural range 0 to 255 := 0;
 
@@ -122,7 +138,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
 
   COMPONENT OLS_Logic_Analyzer IS
   GENERIC (
-      Baud_Rate   : INTEGER := 12000000;
       CLK_Frequency : INTEGER := 12000000;
     Max_Samples : NATURAL := 1000000;
     Channels    : NATURAL := LA_CHANNELS;
@@ -132,12 +147,11 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     CLK : IN STD_LOGIC;
     FAST_CLK : IN STD_LOGIC := '0';
     Inputs   : IN  STD_LOGIC_VECTOR(Channels-1 downto 0);
-    UART_RX  : IN  STD_LOGIC := '1';
-    UART_TX  : OUT STD_LOGIC := '1';
     SPI_CS   : IN  STD_LOGIC := '1';
+    SPI_SCK  : IN  STD_LOGIC := '0';
     SPI_MOSI : IN  STD_LOGIC := '0';
     SPI_MISO : OUT STD_LOGIC := 'Z';
-    Interface_Mode : OUT STD_LOGIC := '0';
+    Interface_Mode : OUT STD_LOGIC := '1';
     sdram_addr  : OUT std_logic_vector(11 downto 0);
     sdram_ba    : OUT STD_LOGIC_VECTOR(1 downto 0);
     sdram_cas_n : OUT std_logic;
@@ -153,6 +167,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Gen_Start     : OUT STD_LOGIC := '0';
     Gen_Baud_Div  : OUT STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
     Gen_Busy      : IN  STD_LOGIC := '0';
+    Gen_Fifo_Count : IN STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Gen_Proto     : OUT STD_LOGIC := '0';
     Gen_TX_Pin    : OUT NATURAL range 0 to 31 := 0;
     Gen_SCL_Pin   : OUT NATURAL range 0 to 31 := 0;
@@ -174,7 +189,14 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Analog_Stream_Mode : IN STD_LOGIC := '0';
     Pin_Map_Write  : OUT STD_LOGIC := '0';
     Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
-    Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0
+    Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
+    Debug_Ch0_Enable : OUT STD_LOGIC := '0';
+    Schmitt_Enable   : OUT STD_LOGIC := '0';
+    Schmitt_Threshold : OUT NATURAL range 0 to 7 := 3;
+    Gen_Start_Ack    : IN  STD_LOGIC := '0';
+    Gen_Start_Reject : IN  STD_LOGIC := '0';
+    Gen_Done_Pulse   : IN  STD_LOGIC := '0';
+    Gen_Capture_Active : OUT STD_LOGIC := '0'
   );
   END COMPONENT;
 
@@ -192,7 +214,17 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     ch1_start      : in  std_logic := '0';
     ch1_busy       : out std_logic := '1';
     ch1_result     : out std_logic_vector(11 downto 0) := (others => '0');
-    ch1_valid      : out std_logic := '0'
+    ch1_valid      : out std_logic := '0';
+    ch2_sel        : in  natural range 0 to 15 := 2;
+    ch2_start      : in  std_logic := '0';
+    ch2_busy       : out std_logic := '1';
+    ch2_result     : out std_logic_vector(11 downto 0) := (others => '0');
+    ch2_valid      : out std_logic := '0';
+    ch3_sel        : in  natural range 0 to 15 := 3;
+    ch3_start      : in  std_logic := '0';
+    ch3_busy       : out std_logic := '1';
+    ch3_result     : out std_logic_vector(11 downto 0) := (others => '0');
+    ch3_valid      : out std_logic := '0'
   );
   END COMPONENT;
 
@@ -203,12 +235,16 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Load_Byte : in  std_logic_vector(7 downto 0);
     Load_We   : in  std_logic;
     Start     : in  std_logic;
+    Start_Ack : out std_logic := '0';
+    Start_Reject : out std_logic := '0';
+    Done_Pulse   : out std_logic := '0';
     Baud_Div  : in  std_logic_vector(15 downto 0);
     Proto     : in  std_logic := '0';
     Tx_Out    : out std_logic := '1';
     Scl_Out   : out std_logic := '1';
     Busy      : out std_logic := '0';
     Active    : out std_logic := '0';
+    Fifo_Count : out std_logic_vector(7 downto 0) := (others => '0');
     I2C_Rd_Len : in natural range 0 to 255 := 0;
     I2C_Dev_R  : in std_logic_vector(7 downto 0) := (others => '0');
     Sda_In     : in std_logic := '1';
@@ -253,28 +289,31 @@ BEGIN
   SEN_SPC <= gen_scl when gen_spi_test = '1' and gen_busy = '1' else
              '0' when gen_i2c_test = '1' and gen_busy = '1' and gen_scl = '0' else 'Z';
 
-  -- Capture mux: each LA channel reads from pin_pool via pin_map
-  capture_mux: process(pin_pool_d1, pin_map, gen_busy, gen_tx_pin, gen_scl_pin,
-                       gen_tx_d1, gen_scl_d2, sen_sdo_d1, gen_i2c_test, gen_spi_test,
-                       registered_ch0_d1)
+  -- Capture mux: combinational, uses gen_capture_active (not gen_busy)
+  -- as the generator loopback selector.  Registered output for deterministic
+  -- sampling.
+  capture_mux: process(pin_pool_clean, pin_map, gen_tx_pin, gen_scl_pin,
+                       gen_tx_d1, gen_scl_d2, gen_i2c_test,
+                       registered_ch0_d1, debug_ch0_enable, gen_capture_active)
   begin
     for i in 0 to LA_CHANNELS-1 loop
-      if i = 0 then
-        internal_data(i) <= registered_ch0_d1;
-      elsif gen_busy = '1' and gen_tx_pin = pin_map(i) then
-        if gen_spi_test = '1' then
-          internal_data(i) <= sen_sdo_d1;
-        elsif gen_i2c_test = '1' then
-          internal_data(i) <= gen_tx_d1;
-        else
-          internal_data(i) <= gen_tx_d1;
-        end if;
-      elsif gen_busy = '1' and gen_i2c_test = '1' and gen_scl_pin = pin_map(i) then
+      if gen_capture_active = '1' and gen_tx_pin = pin_map(i) then
+        internal_data(i) <= gen_tx_d1;
+      elsif gen_capture_active = '1' and gen_i2c_test = '1' and gen_scl_pin = pin_map(i) then
         internal_data(i) <= gen_scl_d2;
+      elsif i = 0 and debug_ch0_enable = '1' then
+        internal_data(i) <= registered_ch0_d1;
       else
-        internal_data(i) <= pin_pool_d1(pin_map(i));
+        internal_data(i) <= pin_pool_clean(pin_map(i));
       end if;
     end loop;
+  end process;
+
+  process(sys_clk)
+  begin
+    if rising_edge(sys_clk) then
+      internal_data_r <= internal_data;
+    end if;
   end process;
 
   process(sys_clk)
@@ -296,7 +335,6 @@ BEGIN
       gen_scl_d2 <= gen_scl_d1;
       gen_tx_d1 <= gen_tx;
       registered_ch0_d1 <= registered_ch0;
-      sen_sdo_d1 <= SEN_SDO;
 
       -- Pin map write from host command
       if pin_map_write = '1' then
@@ -305,30 +343,61 @@ BEGIN
     end if;
   end process;
 
-  UART_TX <= core_uart_tx when interface_mode = '0' else 'Z';
-  spi_mosi_int <= UART_TX;
+
 
   -- Drive selected pin with generator signal when active
+  -- Generator output has priority over debug CH0 on any pin.
   pin_drive: process(sys_clk)
   begin
     if rising_edge(sys_clk) then
+      pin_out <= (others => '0');
+      pin_dir <= (others => '0');
+
+      if debug_ch0_enable = '1' then
+        pin_out(0) <= registered_ch0;
+        pin_dir(0) <= '1';
+      end if;
+
       if gen_busy = '1' then
-        pin_out <= (others => '0');
-        pin_dir <= (others => '0');
-        pin_out(gen_tx_pin) <= gen_tx;
-        pin_dir(gen_tx_pin) <= '1';
-        if gen_proto = '1' then
-          pin_out(gen_scl_pin) <= gen_scl;
-          pin_dir(gen_scl_pin) <= '1';
+        if gen_tx_pin < PIN_POOL_SIZE then
+          pin_out(gen_tx_pin) <= gen_tx;
+          pin_dir(gen_tx_pin) <= '1';
         end if;
-      else
-        pin_out <= (others => '0');
-        pin_dir <= (others => '0');
+        if gen_proto = '1' then
+          if gen_scl_pin < PIN_POOL_SIZE then
+            pin_out(gen_scl_pin) <= gen_scl;
+            pin_dir(gen_scl_pin) <= '1';
+          end if;
+        end if;
       end if;
     end if;
   end process;
 
   analog_stream_mode <= '1' when analog_mode /= "000" else '0';
+
+  -- Digital hysteresis filter (Schmitt trigger): requires N consecutive equal
+  -- samples before accepting a transition, rejecting glitches below threshold.
+  process(sys_clk)
+  begin
+    if rising_edge(sys_clk) then
+      for i in 0 to PIN_POOL_SIZE-1 loop
+        if schmitt_enable = '1' then
+          if pin_pool(i) = schmitt_stable(i) then
+            schmitt_cnt(i) <= 0;
+          elsif schmitt_cnt(i) < schmitt_threshold then
+            schmitt_cnt(i) <= schmitt_cnt(i) + 1;
+          else
+            schmitt_stable(i) <= pin_pool(i);
+            schmitt_cnt(i) <= 0;
+          end if;
+        else
+          schmitt_stable(i) <= pin_pool(i);
+          schmitt_cnt(i) <= 0;
+        end if;
+      end loop;
+    end if;
+  end process;
+  pin_pool_clean <= schmitt_stable;
 
   process(sys_clk)
   begin
@@ -347,12 +416,12 @@ BEGIN
       case analog_mode is
         when "001" =>
           -- Mixed1: 16 digital + 1 ADC (4 bytes)
-          analog_frame_data(15 downto 0) <= internal_data;
+          analog_frame_data(15 downto 0) <= internal_data_r(15 downto 0);
           analog_frame_data(27 downto 16) <= adc0_result;
           analog_frame_len <= 4;
         when "010" =>
-          -- Mixed2: 16 digital + 2 ADC (5 bytes in 64-bit frame)
-          analog_frame_data(15 downto 0) <= internal_data;
+          -- Mixed2: 16 digital + 2 ADC (5 bytes)
+          analog_frame_data(15 downto 0) <= internal_data_r(15 downto 0);
           analog_frame_data(27 downto 16) <= adc0_result;
           analog_frame_data(39 downto 28) <= adc1_result;
           analog_frame_len <= 5;
@@ -365,9 +434,30 @@ BEGIN
           analog_frame_data(11 downto 0) <= adc0_result;
           analog_frame_data(23 downto 12) <= adc1_result;
           analog_frame_len <= 3;
+        when "101" =>
+          -- Analog4: 4 ADC (6 bytes)
+          analog_frame_data(11 downto 0) <= adc0_result;
+          analog_frame_data(23 downto 12) <= adc1_result;
+          analog_frame_data(35 downto 24) <= adc2_result;
+          analog_frame_data(47 downto 36) <= adc3_result;
+          analog_frame_len <= 6;
+        when "110" =>
+          -- Mixed2-4: 16 digital + 4 ADC (8 bytes, fills 64-bit frame)
+          analog_frame_data(15 downto 0) <= internal_data_r(15 downto 0);
+          analog_frame_data(27 downto 16) <= adc0_result;
+          analog_frame_data(39 downto 28) <= adc1_result;
+          analog_frame_data(51 downto 40) <= adc2_result;
+          analog_frame_data(63 downto 52) <= adc3_result;
+          analog_frame_len <= 8;
+        when "111" =>
+          -- MixedDual: 16 digital + 2 ADC (6 bytes)
+          analog_frame_data(15 downto 0) <= internal_data_r;
+          analog_frame_data(31 downto 20) <= adc0_result;
+          analog_frame_data(43 downto 32) <= adc1_result;
+          analog_frame_len <= 6;
         when others =>
           -- Digital16: 16 digital (2 bytes)
-          analog_frame_data(15 downto 0) <= internal_data;
+          analog_frame_data(15 downto 0) <= internal_data_r;
           analog_frame_len <= 2;
       end case;
     end if;
@@ -387,12 +477,21 @@ BEGIN
       ch1_start => adc_start,
       ch1_busy => open,
       ch1_result => adc1_result,
-      ch1_valid => open
+      ch1_valid => open,
+      ch2_sel => 2,
+      ch2_start => adc_start,
+      ch2_busy => open,
+      ch2_result => adc2_result,
+      ch2_valid => open,
+      ch3_sel => 3,
+      ch3_start => adc_start,
+      ch3_busy => open,
+      ch3_result => adc3_result,
+      ch3_valid => open
     );
 
   SDRAM_Analyzer : OLS_Logic_Analyzer
   GENERIC MAP (
-    Baud_Rate    => 115200,
     CLK_Frequency => System_CLK_Frequency,
     Max_Samples  => 1048576,
     Channels     => LA_CHANNELS,
@@ -401,13 +500,12 @@ BEGIN
   PORT MAP (
     CLK => sys_clk,
     FAST_CLK => fast_clk,
-    Inputs   => internal_data,
-    UART_RX  => UART_RX,
-    UART_TX  => core_uart_tx,
+    Inputs   => internal_data_r,
     SPI_CS   => SPI_CS,
-    SPI_MOSI => spi_mosi_int,
+    SPI_SCK  => SPI_SCK,
+    SPI_MOSI => SPI_MOSI,
     SPI_MISO => SPI_MISO,
-    Interface_Mode => interface_mode,
+    Interface_Mode => open,
     sdram_addr  => sdram_addr,
     sdram_ba    => sdram_ba,
     sdram_cas_n => sdram_cas_n,
@@ -423,6 +521,7 @@ BEGIN
     Gen_Start     => gen_start,
     Gen_Baud_Div  => gen_baud_div_s,
     Gen_Busy      => gen_busy,
+    Gen_Fifo_Count => gen_fifo_count,
     Gen_Proto     => gen_proto,
     Gen_TX_Pin    => gen_tx_pin,
     Gen_SCL_Pin   => gen_scl_pin,
@@ -444,7 +543,14 @@ BEGIN
     Analog_Stream_Mode => analog_stream_mode,
     Pin_Map_Write  => pin_map_write,
     Pin_Map_Channel => pin_map_channel,
-    Pin_Map_Pin     => pin_map_pin
+    Pin_Map_Pin     => pin_map_pin,
+    Debug_Ch0_Enable => debug_ch0_enable,
+    Schmitt_Enable   => schmitt_enable,
+    Schmitt_Threshold => schmitt_threshold,
+    Gen_Start_Ack    => gen_start_ack_i,
+    Gen_Start_Reject => gen_start_reject_i,
+    Gen_Done_Pulse   => gen_done_pulse_i,
+    Gen_Capture_Active => gen_capture_active
   );
   
   -- PWM carrier counter
@@ -492,9 +598,19 @@ BEGIN
     end if;
   end process;
 
-  led_out: for i in 0 to 7 generate
+  led_out: for i in 0 to 6 generate
     LED(i) <= '1' when pwm_cnt < led_bright(i) else '0';
   end generate;
+  -- LED7: latched gen start indicator (OR of all gen status signals)
+  process(sys_clk)
+  begin
+    if rising_edge(sys_clk) then
+      if gen_busy = '1' then gen_busy_latch <= '1'; end if;
+      if gen_active = '1' then gen_busy_latch <= '1'; end if;
+      if gen_start = '1' then gen_busy_latch <= '1'; end if;
+    end if;
+  end process;
+  LED(7) <= gen_busy_latch;
 
   LED_CTRL: entity work.LED_Controller
     port map (
@@ -504,7 +620,7 @@ BEGIN
       capture_run     => core_status(0),
       capture_full    => core_status(3),
       continuous_mode => continuous_mode,
-      host_connected  => interface_mode,
+      host_connected  => '1',
       ch_4_mode       => '0',
       fifo_activity   => core_status(7 downto 4),
       fade_tick       => fade_tick,
@@ -519,12 +635,16 @@ BEGIN
     Load_Byte => gen_load_byte,
     Load_We   => gen_load_we,
     Start     => gen_start,
+    Start_Ack => gen_start_ack_i,
+    Start_Reject => gen_start_reject_i,
+    Done_Pulse   => gen_done_pulse_i,
     Baud_Div  => gen_baud_div_s,
     Proto     => gen_proto,
     Tx_Out    => gen_tx,
     Scl_Out   => gen_scl,
     Busy      => gen_busy,
-    Active    => open,
+    Active    => gen_active,
+    Fifo_Count => gen_fifo_count,
     I2C_Rd_Len => gen_i2c_rd_len,
     I2C_Dev_R  => gen_i2c_dev_r,
     Sda_In     => sen_sdi_sync,

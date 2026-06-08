@@ -16,20 +16,22 @@ entity SPI_Slave2 is
     TX_Ready   : out std_logic := '0';
     RX_Data    : out std_logic_vector(7 downto 0) := (others => '0');
     RX_Valid   : out std_logic := '0';
-    PipeDepth  : in  natural range 2 to 8 := 8
+    CS_Rise    : out std_logic := '0'  -- pulse on CS rise (mid-packet abort)
   );
 end SPI_Slave2;
 
 architecture rtl of SPI_Slave2 is
   -- fast_clk domain: full SPI engine (120 MHz, plenty for 30 MHz SCK)
+  signal sck_meta    : std_logic := '0';
   signal sck_sync    : std_logic := '0';
-  signal cs_sync     : std_logic := '0';
+  signal cs_meta     : std_logic := '1';
+  signal cs_sync     : std_logic := '1';
   signal sck_prev    : std_logic := '0';
   signal cs_prev     : std_logic := '0';
   signal sck_rise    : std_logic := '0';
   signal sck_fall    : std_logic := '0';
   signal cs_fall     : std_logic := '0';
-  signal cs_rise     : std_logic := '0';
+  signal cs_rise_int : std_logic := '0';
   signal cs_active   : std_logic := '0';
 
   signal rx_shift    : std_logic_vector(7 downto 0) := (others => '0');
@@ -48,9 +50,15 @@ architecture rtl of SPI_Slave2 is
 
   -- CDC outputs (fast_clk -> sys_clk)
   signal rx_byte_q   : std_logic_vector(7 downto 0) := (others => '0');
+  signal tx_ready_q  : std_logic := '0';
   signal rx_valid_s1 : std_logic := '0';
   signal rx_valid_s2 : std_logic := '0';
   signal rx_valid_s3 : std_logic := '0';
+  signal rx_valid_pending : std_logic := '0';
+  signal rx_valid_q  : std_logic := '0';
+  signal cs_rise_s1  : std_logic := '0';
+  signal cs_rise_s2  : std_logic := '0';
+  signal cs_rise_s3  : std_logic := '0';
 begin
 
   -- TX_Data CDC: sys_clk -> fast_clk
@@ -68,8 +76,8 @@ begin
   fast_proc: process(fast_clk)
   begin
     if rising_edge(fast_clk) then
-      sck_sync <= SCK;
-      cs_sync  <= CS_n;
+      sck_meta <= SCK;    sck_sync <= sck_meta;
+      cs_meta  <= CS_n;   cs_sync  <= cs_meta;
       sck_prev <= sck_sync;
       cs_prev  <= cs_sync;
 
@@ -82,8 +90,8 @@ begin
       if cs_sync = '0' and cs_prev = '1' then cs_fall <= '1';
       else cs_fall <= '0'; end if;
 
-      if cs_sync = '1' and cs_prev = '0' then cs_rise <= '1';
-      else cs_rise <= '0'; end if;
+      if cs_sync = '1' and cs_prev = '0' then cs_rise_int <= '1';
+      else cs_rise_int <= '0'; end if;
 
       if cs_sync = '0' then cs_active <= '1';
       else cs_active <= '0'; end if;
@@ -110,9 +118,8 @@ begin
         rx_valid_cnt <= 0;
         reload_pending <= '0';
 
-      elsif cs_rise = '1' then
+      elsif cs_rise_int = '1' then
         bit_cnt <= 0;
-        rx_valid_cnt <= 0;
         reload_pending <= '0';
 
       elsif cs_active = '1' then
@@ -150,16 +157,32 @@ begin
       rx_valid_s1 <= rx_valid_f;
       rx_valid_s2 <= rx_valid_s1;
       rx_valid_s3 <= rx_valid_s2;
+      cs_rise_s1  <= cs_rise_int;
+      cs_rise_s2  <= cs_rise_s1;
+      cs_rise_s3  <= cs_rise_s2;
+      rx_valid_q <= rx_valid_pending;
+      rx_valid_pending <= '0';
 
       if rx_valid_s2 = '1' and rx_valid_s3 = '0' then
         rx_byte_q <= rx_byte_f;
+        rx_valid_pending <= '1';
       end if;
     end if;
   end process;
 
   RX_Data  <= rx_byte_q;
-  RX_Valid <= rx_valid_s3;
+  RX_Valid <= rx_valid_q;  -- pulse after RX_Data is stable in sys_clk domain
+  CS_Rise  <= cs_rise_s2 and not cs_rise_s3;    -- single-cycle pulse on CS deassert
 
-  TX_Ready <= '1';
+  -- TX_Ready: pulse after each received byte to match TX to SPI byte rate.
+  -- The SPI slave reloads tx_shift with TX_Data after each byte is received.
+  -- TX should advance one state per byte so response bytes align with SPI reads.
+  tx_ready_delay: process(sys_clk)
+  begin
+    if rising_edge(sys_clk) then
+      tx_ready_q <= rx_valid_s2 and not rx_valid_s3;
+    end if;
+  end process;
+  TX_Ready <= tx_ready_q;
 
 end rtl;

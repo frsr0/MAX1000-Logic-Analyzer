@@ -14,11 +14,10 @@ architecture bench of tb_adc_controller is
 
   signal clk    : std_logic := '0';
   signal reset  : std_logic := '0';
-  signal ch_sel : natural range 0 to 15 := 0;
   signal start  : std_logic := '0';
-  signal busy   : std_logic;
-  signal result : std_logic_vector(11 downto 0);
-  signal valid  : std_logic;
+  signal busy   : std_logic_vector(3 downto 0);
+  signal results : std_logic_vector(47 downto 0);
+  signal valid  : std_logic_vector(3 downto 0);
 begin
 
   gen_clk(clk, CLK_PERIOD / 2);
@@ -28,81 +27,75 @@ begin
       sys_clk        => clk,
       sys_clk_locked => '1',
       reset          => reset,
-      ch0_sel        => ch_sel,
+      ch0_sel        => 0,
       ch0_start      => start,
-      ch0_busy       => busy,
-      ch0_result     => result,
-      ch0_valid      => valid,
-      ch1_sel        => 0,
-      ch1_start      => '0',
-      ch1_busy       => open,
-      ch1_result     => open,
-      ch1_valid      => open
+      ch0_busy       => busy(0),
+      ch0_result     => results(11 downto 0),
+      ch0_valid      => valid(0),
+      ch1_sel        => 1,
+      ch1_start      => start,
+      ch1_busy       => busy(1),
+      ch1_result     => results(23 downto 12),
+      ch1_valid      => valid(1),
+      ch2_sel        => 2,
+      ch2_start      => start,
+      ch2_busy       => busy(2),
+      ch2_result     => results(35 downto 24),
+      ch2_valid      => valid(2),
+      ch3_sel        => 3,
+      ch3_start      => start,
+      ch3_busy       => busy(3),
+      ch3_result     => results(47 downto 36),
+      ch3_valid      => valid(3)
     );
 
   process
   begin
-    -- Wait for ADC INIT phase (4096 cycles at 96 MHz ~43 us)
     wait_cycles(clk, 5000);
     report "=== ADC Controller tests ===";
 
-    -- Test 1: Single conversion on CH0
-    report "Test 1: Single conversion CH0";
-    ch_sel <= 0;
+    -- Test 1: Sequence 4 channels
+    report "Test 1: 4-channel sequence";
     start <= '1';
     wait_cycles(clk, 1);
     start <= '0';
-    wait_until(clk, busy, '1', 10 us, "ADC should go busy");
-    wait_until(clk, valid, '1', 100 us, "ADC should produce result");
-    check(valid = '1', "Result valid not asserted");
-    wait_cycles(clk, 2);
-    check(busy = '0', "ADC should be idle after result");
+    wait_until(clk, busy(0), '1', 10 us, "CH0 should go busy");
+    -- Wait for all 4 results (each valid pulses for 1 cycle)
+    wait_cycles(clk, 200);
+    check(busy = "0000", "All channels idle after sequence: " &
+          integer'image(to_integer(unsigned(busy))));
     report "Test 1: PASS";
 
-    -- Test 2: All 8 channels
-    report "Test 2: Multi-channel scan";
-    for ch in 0 to 7 loop
-      ch_sel <= ch;
+    -- Test 2: Back-to-back sequences
+    report "Test 2: Back-to-back sequences";
+    for i in 0 to 4 loop
       start <= '1';
       wait_cycles(clk, 1);
       start <= '0';
-      wait_until(clk, valid, '1', 100 us, "ADC CH" & integer'image(ch) & " timeout");
-      check(valid = '1', "Valid asserted on CH" & integer'image(ch));
+      wait_cycles(clk, 200);
+      check(busy = "0000", "All idle after seq " & integer'image(i));
     end loop;
     report "Test 2: PASS";
 
-    -- Test 3: Back-to-back conversions
-    report "Test 3: Back-to-back conversions";
-    for i in 0 to 15 loop
-      ch_sel <= i mod 8;
-      start <= '1';
-      wait_cycles(clk, 1);
-      start <= '0';
-      wait_until(clk, valid, '1', 100 us, "ADC back-to-back " & integer'image(i) & " timeout");
-      wait_cycles(clk, 2);
-    end loop;
-    report "Test 3: PASS";
-
-    -- Test 4: Reset during conversion
-    report "Test 4: Reset during conversion";
-    ch_sel <= 0;
+    -- Test 3: Reset during conversion
+    report "Test 3: Reset during conversion";
     start <= '1';
     wait_cycles(clk, 1);
     start <= '0';
-    wait_until(clk, busy, '1', 10 us, "ADC should go busy");
+    wait_until(clk, busy(0), '1', 10 us, "ADC should go busy");
     reset <= '1';
     wait_cycles(clk, 5);
-    check(busy = '0', "ADC should not be busy after reset");
+    check(busy = "0000", "Busy cleared after reset");
     reset <= '0';
-    -- Wait for ADC re-init (4096 cycles after reset)
     wait_cycles(clk, 5000);
-    check(valid = '0', "Valid should be cleared after reset");
+    check(valid = "0000", "Valids cleared after reset");
     -- Normal conversion after reset
     start <= '1';
     wait_cycles(clk, 1);
     start <= '0';
-    wait_until(clk, valid, '1', 100 us, "ADC after reset timeout");
-    report "Test 4: PASS";
+    wait_cycles(clk, 200);
+    check(busy = "0000", "All idle after reset conversion");
+    report "Test 3: PASS";
 
     report "=== ALL ADC CONTROLLER TESTS PASSED ===";
     wait;

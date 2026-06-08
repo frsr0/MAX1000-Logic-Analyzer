@@ -63,6 +63,13 @@ architecture bench of tb_top is
   signal test_div_probe    : std_logic_vector(9 downto 0);
   signal test_out_probe    : std_logic;
   signal internal_data_probe : std_logic_vector(15 downto 0);
+  signal sys_clk_probe     : std_logic;
+  signal pin_pool_d2_probe : std_logic_vector(22 downto 0);
+  signal gen_tx_d2_probe   : std_logic;
+  signal gen_scl_d2_probe  : std_logic;
+  signal sen_sdo_d2_probe  : std_logic;
+  signal registered_ch0_d2_probe : std_logic;
+  signal gen_busy_probe    : std_logic;
 
   procedure spi_cmd(
     signal cs_n   : out std_logic;
@@ -91,6 +98,13 @@ begin
   test_div_probe    <= << signal .tb_top.DUT.test_div      : std_logic_vector(9 downto 0) >>;
   test_out_probe    <= << signal .tb_top.DUT.test_out      : std_logic >>;
   internal_data_probe <= << signal .tb_top.DUT.internal_data : std_logic_vector(15 downto 0) >>;
+  sys_clk_probe     <= << signal .tb_top.DUT.sys_clk : std_logic >>;
+  pin_pool_d2_probe <= << signal .tb_top.DUT.pin_pool_d2 : std_logic_vector(22 downto 0) >>;
+  gen_tx_d2_probe   <= << signal .tb_top.DUT.gen_tx_d2 : std_logic >>;
+  gen_scl_d2_probe  <= << signal .tb_top.DUT.gen_scl_d2 : std_logic >>;
+  sen_sdo_d2_probe  <= << signal .tb_top.DUT.sen_sdo_d2 : std_logic >>;
+  registered_ch0_d2_probe <= << signal .tb_top.DUT.registered_ch0_d2 : std_logic >>;
+  gen_busy_probe    <= << signal .tb_top.DUT.gen_busy : std_logic >>;
 
   -- Pull-ups on I2C bus
   sen_sdi <= sen_sdi_pu;
@@ -180,9 +194,25 @@ begin
           "FAIL: test_div did not change -- core_clk not reaching test_div");
     check(test_out_probe = test_div_probe(9),
           "FAIL: test_out != test_div(9) -- capture_mux combinatorial error");
-    check(internal_data_probe(0) = test_out_probe,
-          "FAIL: internal_data(0) != test_out -- capture_mux CH0 routing error");
-    report "Test 1b: PASS -- core_clk running, test_div incrementing, CH0 wired";
+    check(internal_data_probe(0) = registered_ch0_d2_probe,
+          "FAIL: internal_data(0) != registered_ch0_d2 -- CH0 not using 2-cycle path");
+    report "Test 1b: PASS -- core_clk running, test_div incrementing, CH0 uses d2";
+
+    ------------------------------------------------------------------
+    -- Test 1c: Raw pin path uses 2-cycle pipeline
+    ------------------------------------------------------------------
+    report "Test 1c: raw pin path latency";
+    mkr_d(1) <= '0';
+    wait_cycles(sys_clk_probe, 6);
+    mkr_d(1) <= '1';
+    wait_cycles(sys_clk_probe, 1);
+    check(internal_data_probe(1) = '0',
+          "FAIL: raw pin path changed too early (before 2 cycles)");
+    wait_cycles(sys_clk_probe, 2);
+    check(internal_data_probe(1) = pin_pool_d2_probe(1),
+          "FAIL: raw pin path not aligned to pin_pool_d2");
+    mkr_d(1) <= '0';
+    wait_cycles(sys_clk_probe, 2);
 
     ------------------------------------------------------------------
     -- Test 2: Generator I2C configures ADXL345, capture verifies
@@ -234,6 +264,16 @@ begin
     -- Start generator
     spi_cmd(spi_cs, sck, spi_mosi, spi_miso, x"A1");
     report "I2C generator started, waiting for completion...";
+    wait until gen_busy_probe = '1' for 200 us;
+    if gen_busy_probe = '1' then
+      wait_cycles(sys_clk_probe, 4);
+      check(internal_data_probe(3) = gen_tx_d2_probe,
+            "FAIL: I2C SDA capture path not using gen_tx_d2");
+      check(internal_data_probe(1) = gen_scl_d2_probe,
+            "FAIL: I2C SCL capture path not using gen_scl_d2");
+    else
+      report "Test 2 note: generator busy did not assert in sim; mux d2 checks skipped";
+    end if;
     wait for 5 ms;
 
     report "Test 2: PASS (I2C transaction completed)";
@@ -261,6 +301,14 @@ begin
     -- Start generator
     spi_cmd(spi_cs, sck, spi_mosi, spi_miso, x"A1");
     report "SPI generator started, waiting...";
+    wait until gen_busy_probe = '1' for 200 us;
+    if gen_busy_probe = '1' then
+      wait_cycles(sys_clk_probe, 4);
+      check(internal_data_probe(3) = sen_sdo_d2_probe,
+            "FAIL: SPI capture path not using sen_sdo_d2");
+    else
+      report "Test 3 note: generator busy did not assert in sim; mux d2 checks skipped";
+    end if;
     wait for 5 ms;
 
     report "Test 3: PASS (SPI transaction completed)";

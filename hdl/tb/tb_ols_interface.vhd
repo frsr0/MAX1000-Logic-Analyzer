@@ -54,11 +54,13 @@ architecture bench of tb_ols_interface is
   signal analog_ch1  : natural range 0 to 15;
   signal buffer_full  : std_logic_vector(2 downto 0) := (others => '0');
   signal buffer_ack   : std_logic_vector(2 downto 0);
+  signal debug_ch0_enable : std_logic;
 
   -- Probes for internal signals (VHDL-2008 external names)
   signal iface_mode_i : std_logic;
   signal eff_rx_busy  : std_logic;
   signal fast_mode_i  : std_logic;
+  signal debug_ch0_enable_i : std_logic;
 
   -- SPI SCK goes to UART_RX pin (pin-sharing in hardware)
   signal uart_rx_drv : std_logic := '1';
@@ -143,13 +145,15 @@ begin
       Analog_Ch0   => analog_ch0,
       Analog_Ch1   => analog_ch1,
       Buffer_Full     => buffer_full,
-      Buffer_Ack      => buffer_ack
+      Buffer_Ack      => buffer_ack,
+      Debug_Ch0_Enable => debug_ch0_enable
     );
 
   -- Probe internal signals
   iface_mode_i <= << signal .tb_ols_interface.dut.interface_mode_i : std_logic >>;
   eff_rx_busy  <= << signal .tb_ols_interface.dut.effective_rx_busy : std_logic >>;
   fast_mode_i  <= << signal .tb_ols_interface.dut.fast_mode_i : std_logic >>;
+  debug_ch0_enable_i <= << signal .tb_ols_interface.dut.debug_ch0_enable_i : std_logic >>;
 
   -- Capture gen_start pulse (single driver: only this process)
   process(clk)
@@ -186,6 +190,85 @@ begin
     spi_cmd5(spi_cs, spi_sck, spi_mosi, spi_miso, SPI_HALF, x"11", x"11111111", reply);
     pre := reply(0);
     report "Initial preamble: " & to_hstring(pre) & " iface=" & std_logic'image(pre(4));
+    check(debug_ch0_enable = '0', "debug_ch0_enable should be '0' after reset");
+    check(pre(1) = '0', "Preamble bit1 = '0' after reset");
+    report "Debug CH0 default OFF: PASS";
+
+    ------------------------------------------------------------------
+    -- Debug CH0 commands
+    ------------------------------------------------------------------
+    report "Debug: CMD_DEBUG_CH0_ON";
+    spi_cmd(spi_cs, spi_sck, spi_mosi, spi_miso, x"0C", x"11111111");
+    wait_cycles(clk, 50);
+    check(debug_ch0_enable = '1', "debug_ch0_enable should be '1' after ON");
+    spi_cmd5(spi_cs, spi_sck, spi_mosi, spi_miso, SPI_HALF, x"11", x"11111111", reply);
+    pre := reply(0);
+    check(pre(1) = '1', "Preamble bit1 = '1' after ON");
+    report "Debug ON: PASS";
+
+    report "Debug: CMD_DEBUG_CH0_OFF";
+    spi_cmd(spi_cs, spi_sck, spi_mosi, spi_miso, x"0B", x"11111111");
+    wait_cycles(clk, 50);
+    check(debug_ch0_enable = '0', "debug_ch0_enable should be '0' after OFF");
+    spi_cmd5(spi_cs, spi_sck, spi_mosi, spi_miso, SPI_HALF, x"11", x"11111111", reply);
+    pre := reply(0);
+    check(pre(1) = '0', "Preamble bit1 = '0' after OFF");
+    report "Debug OFF: PASS";
+
+    ------------------------------------------------------------------
+    -- Edge case: redundant ON when already ON
+    ------------------------------------------------------------------
+    report "Debug: redundant ON->ON";
+    spi_cmd(spi_cs, spi_sck, spi_mosi, spi_miso, x"0C", x"11111111");
+    wait_cycles(clk, 10);
+    check(debug_ch0_enable = '1', "debug_ch0_enable should be '1' after 1st ON");
+    spi_cmd(spi_cs, spi_sck, spi_mosi, spi_miso, x"0C", x"11111111");
+    wait_cycles(clk, 10);
+    check(debug_ch0_enable = '1', "debug_ch0_enable stays '1' after redundant ON->ON");
+    report "Redundant ON->ON: PASS";
+
+    ------------------------------------------------------------------
+    -- Edge case: redundant OFF when already OFF
+    ------------------------------------------------------------------
+    report "Debug: redundant OFF->OFF";
+    spi_cmd(spi_cs, spi_sck, spi_mosi, spi_miso, x"0B", x"11111111");
+    wait_cycles(clk, 10);
+    check(debug_ch0_enable = '0', "debug_ch0_enable should be '0' after 1st OFF");
+    spi_cmd(spi_cs, spi_sck, spi_mosi, spi_miso, x"0B", x"11111111");
+    wait_cycles(clk, 10);
+    check(debug_ch0_enable = '0', "debug_ch0_enable stays '0' after redundant OFF->OFF");
+    report "Redundant OFF->OFF: PASS";
+
+    ------------------------------------------------------------------
+    -- Alternate command path: 0xBC prefix (Thread44=36)
+    ------------------------------------------------------------------
+    report "Debug: 0xBC prefix enable (data(0)=1)";
+    spi_cmd5(spi_cs, spi_sck, spi_mosi, spi_miso, SPI_HALF, x"BC", x"00000001", reply);
+    wait_cycles(clk, 50);
+    check(debug_ch0_enable = '1', "debug_ch0_enable should be '1' after 0xBC enable");
+    report "0xBC prefix enable: PASS";
+
+    report "Debug: 0xBC prefix disable (data(0)=0)";
+    spi_cmd5(spi_cs, spi_sck, spi_mosi, spi_miso, SPI_HALF, x"BC", x"00000000", reply);
+    wait_cycles(clk, 50);
+    check(debug_ch0_enable = '0', "debug_ch0_enable should be '0' after 0xBC disable");
+    report "0xBC prefix disable: PASS";
+
+    ------------------------------------------------------------------
+    -- Preamble bit0 = Gen_Busy
+    ------------------------------------------------------------------
+    report "Debug: Preamble bit0 = Gen_Busy";
+    gen_busy <= '1';
+    wait_cycles(clk, 5);
+    spi_cmd5(spi_cs, spi_sck, spi_mosi, spi_miso, SPI_HALF, x"11", x"11111111", reply);
+    pre := reply(0);
+    check(pre(0) = '1', "Preamble bit0 = '1' when Gen_Busy='1'");
+    gen_busy <= '0';
+    wait_cycles(clk, 5);
+    spi_cmd5(spi_cs, spi_sck, spi_mosi, spi_miso, SPI_HALF, x"11", x"11111111", reply);
+    pre := reply(0);
+    check(pre(0) = '0', "Preamble bit0 = '0' when Gen_Busy='0'");
+    report "Preamble bit0 Gen_Busy: PASS";
 
     report "=== OLS Interface tests ===";
 

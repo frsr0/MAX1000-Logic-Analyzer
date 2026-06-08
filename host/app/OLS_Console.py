@@ -18,6 +18,7 @@ try:
         OLSDeviceSPI, find_spi_device,
         ANALOG_MODE_DIGITAL8, ANALOG_MODE_MIXED1, ANALOG_MODE_MIXED2,
         ANALOG_MODE_ANALOG1, ANALOG_MODE_ANALOG2,
+        ANALOG_MODE_ANALOG4, ANALOG_MODE_MIXED2_4, ANALOG_MODE_MIXED_DUAL,
         decode_analog_frames, analog_frame_stride,
     )
     HAS_SPI = True
@@ -28,6 +29,9 @@ except ImportError:
     ANALOG_MODE_MIXED2 = 2
     ANALOG_MODE_ANALOG1 = 3
     ANALOG_MODE_ANALOG2 = 4
+    ANALOG_MODE_ANALOG4 = 5
+    ANALOG_MODE_MIXED2_4 = 6
+    ANALOG_MODE_MIXED_DUAL = 7
 
 try:
     import serial, serial.tools.list_ports
@@ -42,417 +46,9 @@ try:
 except:
     HAS_TK = False
 
-# ─── Protocol constants ───────────────────────────────────────────
-CMD_RESET   = 0x00
-CMD_ARM     = 0x01
-CMD_ID      = 0x02
-CMD_METADATA= 0x04
-CMD_XON     = 0x11
-CMD_XOFF    = 0x13
-CMD_DIVIDER = 0x80
-CMD_RCOUNT  = 0x84  # mapped to Read_Count with shift fix
-CMD_DCOUNT  = 0x83  # mapped to Delay_Count with shift fix
-CMD_GEN_LOAD= 0xA0
-CMD_GEN_STRT= 0xA1
-CMD_GEN_BAUD= 0xA2
-CMD_GEN_BLK = 0xA3
-CMD_GEN_PROTO=0xA4
-CMD_GEN_PINS=0xA6
-CMD_I2C_TEST=0xA7
-CMD_FAST_MODE=0xA8
-CMD_TRIG_PROTO=0xA9
-CMD_CONT_CAPTURE=0xAA
-CMD_FLAGS  = 0x82
-CMD_DELAY  = 0xC2
-CMD_TMASK  = 0xC0
-CMD_TVALUE = 0xC1
-CMD_ANALOG_CFG = 0xB0
-CMD_PIN_MAP = 0xBB
+# SPI backend only — all constants from driver.spi_protocol
 
 NUM_CHANNELS = 16
-
-# ─── Connect / Capture helpers ───────────────────────────────────
-
-def find_port():
-    """Auto-detect OLS device by scanning COM ports."""
-    for p in serial.tools.list_ports.comports():
-        try:
-            s = serial.Serial(p.device, 12000000, timeout=0.5)
-            time.sleep(0.005)
-            s.reset_input_buffer()
-            s.write(bytes([CMD_RESET]))
-            time.sleep(0.005)
-            s.reset_input_buffer()
-            s.write(bytes([CMD_ID]))
-            time.sleep(0.003)
-            resp = s.read(4)
-            s.close()
-            if resp[:4] == b'1ALS':
-                return p.device
-        except: pass
-    return None
-
-class OLSDevice:
-    """Thin wrapper around serial connection to the OLS."""
-
-    def __init__(self, port=None, sys_clk_hz=48000000):
-        self.port = port or find_port()
-        if not self.port:
-            raise RuntimeError("No OLS device found")
-        self.ser = serial.Serial(self.port, 12000000, timeout=3)
-        time.sleep(0.2)
-        self.ser.reset_input_buffer()
-        self.gen_pins = {'tx': 3, 'scl': 1}
-        self.sys_clk = sys_clk_hz          # PLL system clock (48 MHz default)
-        self._stride = 4
-        self._raw_flags = 0
-        self._pending_gen = None
-
-    def _short(self, cmd):
-        self.ser.write(bytes([cmd]))
-        time.sleep(0.005)
-
-    def _long(self, cmd, val32):
-        self.ser.write(bytes([cmd]) + struct.pack('<I', val32))
-        time.sleep(0.005)
-
-    def _pins(self, tx_pin=None, scl_pin=None):
-        if tx_pin is not None: self.gen_pins['tx'] = tx_pin
-        if scl_pin is not None: self.gen_pins['scl'] = scl_pin
-        val = (self.gen_pins['tx'] & 7) | ((self.gen_pins['scl'] & 7) << 8)
-        self._long(CMD_GEN_PINS, val)
-
-    def reset(self):
-        for _ in range(5):
-            self._short(CMD_RESET)
-        time.sleep(0.05)
-        self.ser.reset_input_buffer()
-
-    def get_metadata(self):
-        self._short(CMD_METADATA)
-        time.sleep(0.1)
-        data = self.ser.read(50)
-        return data
-
-    def capture(self, rate_hz=1000000, nsamples=5000, timeout=6, trigger=None, capture_time=None, progress_cb=None, stop_evt=None):
-        """Arm capture, return raw bytes (4 bytes per sample).
-        
-        trigger: None (immediate), 'rising', or 'falling'.
-        stop_evt: threading.Event — set to abort capture early and return partial data.
-        """
-        if capture_time is not None:
-            nsamples = int(capture_time * rate_hz)
-            nsamples = max(2, min(nsamples, 500000))
-        self.ser.reset_input_buffer()
-        for _ in range(5):
-            self.ser.write(bytes([CMD_RESET]))
-            time.sleep(0.005)
-        time.sleep(0.05)
-        self.ser.reset_input_buffer()
-        self._short(CMD_XON)
-        div = max(0, int(self.sys_clk / rate_hz) - 1)
-        self._long(CMD_DIVIDER, div & 0xFFFFFF)
-        rc = max(1, nsamples)
-        self._long(CMD_RCOUNT, rc)
-        self._long(CMD_DCOUNT, rc)
-        if trigger is None:
-            mask = 0; value = 0
-        elif isinstance(trigger, int):
-            mask = trigger; value = 0
-        elif trigger == 'rising':
-            mask = (1 << 30) | 1; value = 1
-        elif trigger == 'falling':
-            mask = (2 << 30) | 1; value = 0
-        else:
-            mask = 0; value = 0
-        self._long(CMD_TMASK, mask)
-        self._long(CMD_TVALUE, value)
-        self._long(CMD_FLAGS, self._raw_flags)
-        self._long(CMD_DELAY, 0)
-        self._short(CMD_XOFF)
-        time.sleep(0.01)
-        self._short(CMD_ARM)
-        need = rc * self._stride
-        data = b''
-        deadline = time.time() + timeout
-        last_report = 0
-        while len(data) < need and time.time() < deadline:
-            if stop_evt and stop_evt.is_set():
-                break
-            chunk = self.ser.read(min(4096, need - len(data)))
-            data += chunk
-            if progress_cb:
-                got = len(data) // 4
-                if got > last_report + 50 or got >= rc:
-                    progress_cb(data[:got*4], got, rc)
-                    last_report = got
-            if len(chunk) == 0:
-                time.sleep(0.001)
-        if data:
-            for i in range(len(data)//4):
-                if data[i*4:(i+1)*4] != b'\x00\x00\x00\x00':
-                    data = data[i*4:]
-                    break
-        return data
-
-    def capture_with_gen(self, rate_hz=1000000, nsamples=5000, timeout=6, trigger=None, capture_time=None, progress_cb=None, stop_evt=None):
-        """Arm capture and start generator in one sequence (gen runs during capture)."""
-        if capture_time is not None:
-            nsamples = int(capture_time * rate_hz)
-            nsamples = max(2, min(nsamples, 500000))
-        self.ser.reset_input_buffer()
-        for _ in range(5):
-            self.ser.write(bytes([CMD_RESET]))
-            time.sleep(0.005)
-        time.sleep(0.05)
-        self.ser.reset_input_buffer()
-        self._short(CMD_XON)
-        div = max(0, int(self.sys_clk / rate_hz) - 1)
-        self._long(CMD_DIVIDER, div & 0xFFFFFF)
-        rc = max(1, nsamples)
-        self._long(CMD_RCOUNT, rc)
-        self._long(CMD_DCOUNT, rc)
-        if trigger is None:
-            mask = 0; value = 0
-        elif isinstance(trigger, int):
-            mask = trigger; value = 0
-        elif trigger == 'rising':
-            mask = (1 << 30) | 1; value = 1
-        elif trigger == 'falling':
-            mask = (2 << 30) | 1; value = 0
-        else:
-            mask = 0; value = 0
-        self._long(CMD_TMASK, mask)
-        self._long(CMD_TVALUE, value)
-        self._long(CMD_FLAGS, self._raw_flags)
-        self._long(CMD_DELAY, 0)
-        self._short(CMD_XOFF)
-        # ARM and GEN_STRT back-to-back (one write, no inter-byte gap)
-        self.ser.write(bytes([CMD_ARM, CMD_GEN_STRT]) + struct.pack('<I', 0))
-        need = rc * self._stride
-        data = b''
-        deadline = time.time() + timeout
-        last_report = 0
-        while len(data) < need and time.time() < deadline:
-            if stop_evt and stop_evt.is_set():
-                break
-            chunk = self.ser.read(min(4096, need - len(data)))
-            data += chunk
-            if progress_cb:
-                got = len(data) // 4
-                if got > last_report + 50 or got >= rc:
-                    progress_cb(data[:got*4], got, rc)
-                    last_report = got
-            if len(chunk) == 0:
-                time.sleep(0.001)
-        if data:
-            for i in range(len(data)//4):
-                if data[i*4:(i+1)*4] != b'\x00\x00\x00\x00':
-                    data = data[i*4:]
-                    break
-        return data
-
-    def send_uart(self, data_bytes, baud=115200, tx_pin=None):
-        """Load bytes and start UART generator."""
-        self._long(CMD_GEN_PROTO, 0)  # UART
-        div = max(1, self.sys_clk // baud)
-        self._long(CMD_GEN_BAUD, div & 0xFFFF)
-        self._load_block(data_bytes)
-        self._pins(tx_pin=tx_pin)  # PINS last (state machine ordering)
-
-    def _load_block(self, data):
-        if not data: return
-        n = len(data)
-        self._long(CMD_GEN_BLK, n)  # cmd + 4-byte length
-        time.sleep(0.005)
-        for b in data:
-            self.ser.write(bytes([b]))
-            time.sleep(0.002)
-
-    def raw_mode(self, enable=True):
-        """Toggle raw mode: 1 byte per sample instead of 4. Uses Channel_Groups to skip zero bytes."""
-        if enable:
-            self._stride = 1
-            self._raw_flags = 0x38  # Channel_Groups = "1110" → only byte 0
-        else:
-            self._stride = 4
-            self._raw_flags = 0
-
-    def fast_start_gen(self):
-        """Start generator without the 5ms sleep. Uses _short to avoid 0x00 CMD_RESET."""
-        self._short(CMD_GEN_STRT)
-
-    def rolling_capture(self, rate_hz, chunk_nsamp, buffer_nsamp, stop_evt, progress_cb=None,
-                        gen_data=None, gen_baud=115200, gen_tx_pin=3, full_out=None,
-                        use_continuous=True):
-        """Generator: continuous rolling capture with dual-buffer FPGA support.
-
-        If use_continuous=True (default), sends CMD_CONT_CAPTURE for gap-free
-        dual-buffer capture (requires updated FPGA firmware).
-        If use_continuous=False, uses legacy ARM-loop (gaps between chunks).
-
-        Yields (partial_data, samples_so_far) per completion for live GUI updates.
-        If full_out is provided (bytearray), every chunk is appended without trimming.
-        """
-        self.ser.reset_input_buffer()
-        for _ in range(5):
-            self.ser.write(bytes([CMD_RESET]))
-            time.sleep(0.005)
-        time.sleep(0.05)
-        self.ser.reset_input_buffer()
-        self._short(CMD_XON)
-        div = max(0, int(self.sys_clk / rate_hz) - 1)
-        self._long(CMD_DIVIDER, div & 0xFFFFFF)
-
-        need = chunk_nsamp * self._stride
-        if use_continuous:
-            total_nsamp = (buffer_nsamp // 3) * 3
-            need_per_buf = total_nsamp // 3 * self._stride
-        else:
-            total_nsamp = chunk_nsamp
-            need_per_buf = need
-        self._long(CMD_RCOUNT, total_nsamp)
-        self._long(CMD_DCOUNT, total_nsamp)
-        self._long(CMD_TMASK, 0)
-        self._long(CMD_TVALUE, 0)
-        self._long(CMD_FLAGS, self._raw_flags)
-        self._long(CMD_DELAY, 0)
-        self._short(CMD_XOFF)
-        self._long(CMD_TRIG_PROTO, 0)
-        time.sleep(0.002)
-
-        if gen_data:
-            self._long(CMD_GEN_PROTO, 0)
-            div_b = max(1, self.sys_clk // gen_baud)
-            self._long(CMD_GEN_BAUD, div_b & 0xFFFF)
-            self._load_block(gen_data)
-            self._pins(tx_pin=gen_tx_pin)
-            time.sleep(0.01)
-
-        buf = b''
-        seq = 0
-        yield_granule = 1024 * self._stride
-        max_bytes = buffer_nsamp * self._stride
-        old_to = self.ser.timeout
-        self.ser.timeout = 0.5
-
-        try:
-            if use_continuous:
-                # Continuous dual-buffer mode (new firmware)
-                self._long(CMD_CONT_CAPTURE, 1)
-                time.sleep(0.005)
-                while not stop_evt.is_set():
-                    chunk = b''
-                    deadline = time.time() + max(2.0, total_nsamp / rate_hz * 4)
-                    while len(chunk) < need_per_buf and time.time() < deadline:
-                        if stop_evt.is_set(): break
-                        c = self.ser.read(min(4096, need_per_buf - len(chunk)))
-                        chunk += c
-                        if len(c) == 0: time.sleep(0.001)
-                    if stop_evt.is_set(): break
-                    if len(chunk) < need_per_buf: break
-                    pos = 0
-                    while pos < len(chunk):
-                        block = chunk[pos:pos + yield_granule]
-                        pos += len(block)
-                        if full_out is not None: full_out.extend(block)
-                        buf += block
-                        if len(buf) > max_bytes: buf = buf[-max_bytes:]
-                        seq += len(block) // self._stride
-                        if progress_cb: progress_cb(buf, seq, buffer_nsamp)
-                        yield buf, seq, buffer_nsamp
-            else:
-                # Legacy ARM-loop mode (compatible with all firmware)
-                while not stop_evt.is_set():
-                    if seq == 0:
-                        for _ in range(5):
-                            self.ser.write(bytes([CMD_RESET]))
-                            time.sleep(0.005)
-                        time.sleep(0.1)
-                        self.ser.reset_input_buffer()
-                    self._short(CMD_ARM)
-                    cap_wait = max(0.02, chunk_nsamp / rate_hz + 0.02)
-                    time.sleep(cap_wait)
-                    chunk = b''
-                    deadline = time.time() + 5.0
-                    while len(chunk) < need and time.time() < deadline:
-                        if stop_evt.is_set(): break
-                        c = self.ser.read(min(4096, need - len(chunk)))
-                        chunk += c
-                        if len(c) == 0: time.sleep(0.001)
-                    if stop_evt.is_set(): break
-                    if len(chunk) < need: break
-                    if full_out is not None: full_out.extend(chunk)
-                    buf += chunk
-                    if len(buf) > max_bytes: buf = buf[-max_bytes:]
-                    seq += 1
-                    if progress_cb: progress_cb(buf, seq * chunk_nsamp, buffer_nsamp)
-                    yield buf, seq * chunk_nsamp, buffer_nsamp
-        finally:
-            self.ser.timeout = old_to
-            try:
-                for _ in range(5):
-                    self.ser.write(bytes([CMD_RESET]))
-                    time.sleep(0.005)
-            except: pass
-        self.ser.reset_input_buffer()
-
-    def start_gen(self):
-        self._short(CMD_GEN_STRT)  # _short only, never _long — 0x00 data bytes = CMD_RESET
-
-    def modbus_crc16(self, data):
-        """Compute Modbus RTU CRC-16."""
-        crc = 0xFFFF
-        for b in data:
-            crc ^= b
-            for _ in range(8):
-                if crc & 1:
-                    crc = (crc >> 1) ^ 0xA001
-                else:
-                    crc >>= 1
-        return crc
-
-    def send_modbus(self, slave_addr, func_code, data, baud=9600, tx_pin=3):
-        """Load and send a Modbus RTU frame via UART generator."""
-        frame = bytes([slave_addr, func_code]) + data
-        crc = modbus_crc16(frame)
-        frame += struct.pack('<H', crc)
-        self.send_uart(frame, baud=baud, tx_pin=tx_pin)
-
-    def i2c_read_setup(self, dev_addr, reg_addr, read_len=1, test_mode=True,
-                       speed=100000, tx_pin=3, scl_pin=1):
-        """Set up I2C read from device register. Returns nothing; call capture_with_gen to run."""
-        dev_w = (dev_addr << 1) & 0xFE
-        dev_r = (dev_addr << 1) | 0x01
-        self._pins(tx_pin=tx_pin, scl_pin=scl_pin)
-        time.sleep(0.01)
-        self._long(CMD_GEN_PROTO, 1)  # I2C
-        div = max(1, self.sys_clk // speed // 2)
-        self._long(CMD_GEN_BAUD, div & 0xFFFF)
-        # Load write frame: [dev_W, reg_addr]
-        self._load_block(bytes([dev_w, reg_addr]))
-        # Set read params via CMD_I2C_TEST
-        flags = (1 if test_mode else 0) | (read_len << 8) | (dev_r << 16)
-        self._long(CMD_I2C_TEST, flags)
-        time.sleep(0.01)
-
-    def fast_mode(self, enable=True):
-        """Enable or disable fast capture mode (BRAM-only, no SDRAM)."""
-        self._long(CMD_FAST_MODE, 1 if enable else 0)
-
-    def trigger_decode(self, match_byte, channel=0, baud=115200, enable=True, protocol=0):
-        """Configure protocol trigger for UART byte match.
-        
-        Called before capture() to set which byte to trigger on.
-        protocol: 0=UART, 1=I2C, 2=Modbus
-        """
-        div = max(1, self.sys_clk // baud)
-        val = ((div & 0xFFFF) << 16) | ((1 if enable else 0) << 15) | ((protocol & 3) << 12) | ((channel & 7) << 8) | (match_byte & 0xFF)
-        self._long(CMD_TRIG_PROTO, val)
-
-    def close(self):
-        try: self.ser.close()
-        except: pass
 
 # ─── Sample processing ──────────────────────────────────────────
 
@@ -464,7 +60,11 @@ def samples_to_channels(data, num_ch=NUM_CHANNELS, stride=4):
     num_ch > 8: uses 2 bytes per sample (requires stride >= 2 or fallback to 1 byte)
     Returns: list of per-channel lists, each with sample values 0/1
     """
-    need_bytes = 2 if num_ch > 8 else 1
+    if stride < 2:
+        need_bytes = 1
+        num_ch = min(num_ch, 8)
+    else:
+        need_bytes = 2 if num_ch > 8 else 1
     if stride < need_bytes:
         stride = need_bytes
     data = data[:len(data) - (len(data) % stride)]
@@ -476,8 +76,10 @@ def samples_to_channels(data, num_ch=NUM_CHANNELS, stride=4):
         off = i * stride
         if num_ch <= 8:
             word = data[off]
-        else:
+        elif num_ch <= 16:
             word = data[off] | (data[off + 1] << 8)
+        else:
+            word = data[off] | (data[off + 1] << 8) | (data[off + 2] << 16) | (data[off + 3] << 24)
         for c in range(num_ch):
             ch[c].append((word >> c) & 1)
     return ch, samples
@@ -595,7 +197,7 @@ def decode_i2c(ch, samplerate, scl_idx=2, sda_idx=3, filter_threshold=0, sda_off
         if scl[i] == 0 and scl[i + 1] == 1:
             # Check if SDA goes low within the next 3 samples (START detection with pipeline delay)
             for k in range(i, min(i + 4, len(scl))):
-                if sda[k] == 0 and sda[k - 1] == 1:
+                if k > i and sda[k] == 0 and sda[k - 1] == 1:
                     # Accept first START (idle bus check relaxed — capture starts near gen fire)
                     if not result:
                         result.append(("START", None))
@@ -826,6 +428,17 @@ class WaveformDisplay(tk.Canvas):
     def _on_release(self, e):
         self.dragging = None
 
+    def highlight_channel(self, ch_idx):
+        """Highlight a channel label in the waveform so the user can find it."""
+        self.redraw()
+        y0 = 20 + ch_idx * (self.CH_HEIGHT + self.CH_GAP)
+        cw = self.winfo_width()
+        self.create_rectangle(self.LABEL_WIDTH - 4, y0 - 1, cw, y0 + self.CH_HEIGHT + 1,
+                              outline='#ff0', fill='', width=2, tags='highlight')
+    def redraw(self):
+        self.delete('all')
+        w = self.winfo_width()
+
     def total_height(self):
         n = len(self.ch_data)
         return n * (self.CH_HEIGHT + self.CH_GAP) + 20 + 40  # channels + ruler + decode
@@ -843,7 +456,7 @@ class WaveformDisplay(tk.Canvas):
         self.create_rectangle(0, ruler_y, w, ruler_h, fill='#eee', outline='')
         # Time ticks
         px_per_div = 100  # pixels between tick marks
-        if self.px_scale > 0:
+        if self.px_scale > 0 and self.samplerate > 0:
             samples_per_div = px_per_div / self.px_scale
             time_per_div = samples_per_div / self.samplerate
             # Find a nice round time per div
@@ -955,6 +568,11 @@ class WaveformDisplay(tk.Canvas):
                     if is_analog:
                         self.create_text(w - 4, y0 + 2, text=f"{max(samples[start:end]):04d}",
                                          anchor='ne', font=('Consolas', 7), fill='#b05a00')
+                        # Voltage scale (3.3V ref, 12-bit ADC: 0-4095)
+                        for v_label, frac in [('3.3V', 1.0), ('1.65V', 0.5), ('0V', 0.0)]:
+                            vy = y0 + self.CH_HEIGHT - frac * self.CH_HEIGHT
+                            self.create_text(1, vy, text=v_label, anchor='w',
+                                             font=('Consolas', 6), fill='#b05a00')
 
             # Channel separator
             self.create_line(0, y0 + self.CH_HEIGHT + self.CH_GAP/2,
@@ -974,8 +592,12 @@ class WaveformDisplay(tk.Canvas):
             measurements.append((marker, m, time_ns))
 
         if len(measurements) == 2:
-            dt_ns = abs(measurements[1][2] - measurements[0][2])
-            dsamp = abs(measurements[1][1] - measurements[0][1])
+            m1_idx, m1_samp, m1_time = measurements[0]
+            m2_idx, m2_samp, m2_time = measurements[1]
+            if None in (m1_samp, m2_samp, m1_time, m2_time):
+                return
+            dt_ns = abs(m2_time - m1_time)
+            dsamp = abs(m2_samp - m1_samp)
             freq = 1e9 / dt_ns if dt_ns > 0 else 0
             msr_y = self.total_height() - 20
             txt = f"Δt = {dt_ns/1000:.1f} µs  ({dsamp} samples)  f = {freq/1000:.1f} kHz"
@@ -999,6 +621,8 @@ class OLScope:
         self.capture_mode = ANALOG_MODE_DIGITAL8
         self.analog_ch0_sel = 0
         self.analog_ch1_sel = 1
+        self.analog_ch2_sel = 2
+        self.analog_ch3_sel = 3
         self.last_analog_frames = []
         self.samplerate = 1_000_000
         self.captured_bytes = b''
@@ -1059,19 +683,25 @@ class OLScope:
         ttk.Label(tb, text="Mode:").pack(side='left')
         self.mode_cb = ttk.Combobox(
             tb,
-            values=['Digital', 'Mixed 1', 'Mixed 2', 'Analogue 1', 'Analogue 2'],
-            width=10, state='readonly'
+            values=['16 Digital', '16 Dig + 1 Ana', '16 Dig + 2 Ana', '1 Analog', '2 Analog', '4 Analog', '16 Dig + 4 Ana', '16 Dig + 2 Ana (alt)'],
+            width=16, state='readonly'
         )
-        self.mode_cb.set('Digital')
+        self.mode_cb.set('16 Digital')
         self.mode_cb.pack(side='left', padx=2)
-        ttk.Label(tb, text="A0:").pack(side='left')
-        self.analog_ch0_cb = ttk.Combobox(tb, values=list(range(NUM_CHANNELS)), width=3, state='readonly')
-        self.analog_ch0_cb.set('0')
-        self.analog_ch0_cb.pack(side='left', padx=1)
-        ttk.Label(tb, text="A1:").pack(side='left')
-        self.analog_ch1_cb = ttk.Combobox(tb, values=list(range(NUM_CHANNELS)), width=3, state='readonly')
-        self.analog_ch1_cb.set('1')
-        self.analog_ch1_cb.pack(side='left', padx=1)
+        self.mode_cb.bind('<<ComboboxSelected>>', self._mode_changed)
+        self._analog_labels = {}
+        self._analog_combos = {}
+        for ai in range(4):
+            lbl = ttk.Label(tb, text=f"A{ai}:")
+            cb = ttk.Combobox(tb, values=list(range(NUM_CHANNELS)), width=3, state='readonly')
+            cb.set(str(ai))
+            self._analog_labels[ai] = lbl
+            self._analog_combos[ai] = cb
+        # Pack A0, A1 by default; A2, A3 hidden until needed
+        self._analog_labels[0].pack(side='left'); self._analog_combos[0].pack(side='left', padx=1)
+        self._analog_labels[1].pack(side='left'); self._analog_combos[1].pack(side='left', padx=1)
+        self._analog_labels[2].pack_forget(); self._analog_combos[2].pack_forget()
+        self._analog_labels[3].pack_forget(); self._analog_combos[3].pack_forget()
 
         ttk.Label(tb, text="Time:").pack(side='left')
         self.time_var = tk.StringVar(value='5.000 ms')
@@ -1255,9 +885,26 @@ class OLScope:
         self.fast_mode_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(trg_f, text="Fast mode (120 MHz, 1024 samples max)",
                         variable=self.fast_mode_var).grid(row=8, column=0, columnspan=2, sticky='w', pady=2)
-        ttk.Separator(trg_f, orient='horizontal').grid(row=9, column=0, columnspan=2, sticky='ew', pady=4)
-        ttk.Separator(trg_f, orient='horizontal').grid(row=10, column=0, columnspan=2, sticky='ew', pady=4)
-        ttk.Label(trg_f, text="Protocol Trigger:").grid(row=10, column=0, columnspan=2, sticky='w', pady=2)
+        self.debug_ch0_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(trg_f, text="Drive CH0 debug square wave",
+                        variable=self.debug_ch0_var,
+                        command=self._debug_ch0_changed).grid(row=9, column=0, columnspan=2, sticky='w', pady=2)
+        ttk.Label(trg_f,
+            text="WARNING: CH0 becomes FPGA output when enabled.\nDo not connect to driven signal. Scope use only.",
+            foreground='red', font=('Consolas', 7)).grid(row=10, column=0, columnspan=2, sticky='w')
+        self.raw_mode_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(trg_f, text="Raw mode — 8 ch only (higher throughput)",
+                        variable=self.raw_mode_var).grid(row=11, column=0, columnspan=2, sticky='w', pady=2)
+        self.schmitt_var = tk.BooleanVar(value=False)
+        self.schmitt_thresh_var = tk.StringVar(value='3')
+        ttk.Checkbutton(trg_f, text="Schmitt trigger (glitch filter)",
+                        variable=self.schmitt_var,
+                        command=self._apply_schmitt).grid(row=12, column=0, columnspan=2, sticky='w', pady=2)
+        ttk.Label(trg_f, text="Thresh:").grid(row=12, column=1, sticky='e')
+        ttk.Spinbox(trg_f, from_=1, to=7, width=3, textvariable=self.schmitt_thresh_var,
+                    command=self._apply_schmitt).grid(row=12, column=1, sticky='e', padx=(0,50))
+        ttk.Separator(trg_f, orient='horizontal').grid(row=14, column=0, columnspan=2, sticky='ew', pady=4)
+        ttk.Label(trg_f, text="Protocol Trigger:").grid(row=14, column=0, columnspan=2, sticky='w', pady=2)
         self.proto_trig_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(trg_f, text="Enable", variable=self.proto_trig_var).grid(row=11, column=0, sticky='w', pady=1)
         ttk.Label(trg_f, text="Match (hex):").grid(row=11, column=1, sticky='w')
@@ -1376,35 +1023,25 @@ class OLScope:
         self.status['text'] = f"Found {len(ports)} port(s)"
 
     def _auto_connect(self):
-        """Auto-detect and connect to OLS device."""
-        if self._backend == 'SPI':
-            if find_spi_device():
-                self._connect()
-                return
-            self.status['text'] = "No SPI device found — connect manually"
-            return
-        port = find_port()
-        if port:
-            self.port_cb.set(port)
+        """Auto-detect and connect to OLS device via SPI."""
+        if find_spi_device():
             self._connect()
-        else:
-            self.status['text'] = "No OLS device found — connect manually"
-        self._update_ui_state(connected=self.dev is not None)
+            return
+        self.status['text'] = "No SPI device found — connect manually"
+        self._update_ui_state(connected=False)
 
     def _connect(self):
         try:
-            if self._backend == 'SPI':
-                self.dev = OLSDeviceSPI()
-                self.dev.open()
-                label = "SPI @ 30 MHz"
-            else:
-                port = self.port_cb.get()
-                if not port: return
-                self.dev = OLSDevice(port)
-                label = port
+            self.dev = OLSDeviceSPI()
+            self.dev.open()
+            label = "SPI @ 30 MHz"
             # Verify device responds
             self.dev.reset()
             meta = self.dev.get_metadata()
+            # Apply GUI debug CH0 state to hardware after reset
+            self._apply_debug_ch0_setting()
+            if hasattr(self.dev, 'set_debug_ch0'):
+                self.dev.set_debug_ch0(self.debug_ch0_var.get())
             dbg = f"[DBG] Connected backend={self._backend} meta={len(meta)}B"
             if hasattr(self.dev, 'spi') and self.dev.spi:
                 q = self.dev.spi.dev.getQueueStatus() if hasattr(self.dev.spi, 'dev') else 0
@@ -1413,12 +1050,45 @@ class OLScope:
             if len(meta) == 0:
                 self.dev.close()
                 self.dev = None
-                raise RuntimeError("FPGA not responding — check power and programming")
+                raise RuntimeError("FPGA not responding — need spi-focus firmware. Program the MAX1000 with the bitstream from this branch (hdl/proj/).")
             self.status['text'] = f"Connected via {label} (meta: {len(meta)}B)"
             self._update_ui_state(connected=True)
         except Exception as e:
             self.status['text'] = f"Connect failed: {e}"
             messagebox.showerror("Connect Error", str(e))
+
+    def _debug_ch0_changed(self):
+        enable = self.debug_ch0_var.get()
+        if not self.dev:
+            return
+        is_live = getattr(self, 'capture_running', False) and hasattr(self.dev, '_pending_debug_enable')
+        if is_live:
+            self.dev.debug_ch0_enabled = enable
+            self.dev._pending_debug_enable = enable
+        elif hasattr(self.dev, 'set_debug_ch0'):
+            try:
+                self.dev.set_debug_ch0(enable)
+            except Exception as e:
+                self.status['text'] = f"CH0 debug update failed: {e}"
+
+    def _apply_schmitt(self):
+        if not self.dev or not hasattr(self.dev, 'set_schmitt'):
+            return
+        try:
+            enable = self.schmitt_var.get()
+            thresh = int(self.schmitt_thresh_var.get())
+            is_live = getattr(self, 'capture_running', False) and hasattr(self.dev, '_pending_schmitt_enable')
+            if is_live:
+                self.dev._pending_schmitt_enable = enable
+                self.dev._pending_schmitt_threshold = thresh
+            else:
+                self.dev.set_schmitt(enable, thresh)
+        except Exception as e:
+            self.status['text'] = f"Schmitt trigger update failed: {e}"
+
+    def _apply_debug_ch0_setting(self):
+        if self.dev and hasattr(self, 'debug_ch0_var') and hasattr(self.dev, 'debug_ch0_enabled'):
+            self.dev.debug_ch0_enabled = self.debug_ch0_var.get()
 
     def _disconnect(self):
         if self.dev:
@@ -1429,6 +1099,24 @@ class OLScope:
 
     def _update_ui_state(self, connected=True):
         pass
+
+    def _mode_changed(self, event=None):
+        """Show/hide analog channel selectors based on current mode."""
+        mode = self._get_capture_mode()
+        ana_count = 0
+        if mode in (ANALOG_MODE_MIXED1, ANALOG_MODE_ANALOG1):
+            ana_count = 1
+        elif mode in (ANALOG_MODE_MIXED2, ANALOG_MODE_ANALOG2, ANALOG_MODE_MIXED_DUAL):
+            ana_count = 2
+        elif mode in (ANALOG_MODE_ANALOG4, ANALOG_MODE_MIXED2_4):
+            ana_count = 4
+        for ai in range(4):
+            if ai < ana_count:
+                self._analog_labels[ai].pack(side='left')
+                self._analog_combos[ai].pack(side='left', padx=1)
+            else:
+                self._analog_labels[ai].pack_forget()
+                self._analog_combos[ai].pack_forget()
 
     def _add_decoder_ui(self, di):
         """Create a decoder slot UI in the decoder_frame."""
@@ -1514,19 +1202,25 @@ class OLScope:
             self.wave.redraw()
 
     def _get_rate(self):
-        rate_str = self.rate_cb.get()
-        return int(rate_str.replace('kHz','000').replace('MHz','000000'))
+        try:
+            rate_str = self.rate_cb.get()
+            return max(1, int(rate_str.replace('kHz','000').replace('MHz','000000')))
+        except (ValueError, AttributeError):
+            return 1_000_000
 
     def _get_samples(self):
         return int(self.samp_cb.get())
 
     def _get_capture_mode(self):
         mode_map = {
-            'Digital': ANALOG_MODE_DIGITAL8,
-            'Mixed 1': ANALOG_MODE_MIXED1,
-            'Mixed 2': ANALOG_MODE_MIXED2,
-            'Analogue 1': ANALOG_MODE_ANALOG1,
-            'Analogue 2': ANALOG_MODE_ANALOG2,
+            '16 Digital': ANALOG_MODE_DIGITAL8,
+            '16 Dig + 1 Ana': ANALOG_MODE_MIXED1,
+            '16 Dig + 2 Ana': ANALOG_MODE_MIXED2,
+            '1 Analog': ANALOG_MODE_ANALOG1,
+            '2 Analog': ANALOG_MODE_ANALOG2,
+            '4 Analog': ANALOG_MODE_ANALOG4,
+            '16 Dig + 4 Ana': ANALOG_MODE_MIXED2_4,
+            '16 Dig + 2 Ana (alt)': ANALOG_MODE_MIXED_DUAL,
         }
         return mode_map.get(self.mode_cb.get(), ANALOG_MODE_DIGITAL8)
 
@@ -1646,12 +1340,14 @@ class OLScope:
         self.wave.delete('all')
         rolling = self.rolling_var.get()
         self.capture_mode = self._get_capture_mode()
-        self.analog_ch0_sel = int(self.analog_ch0_cb.get())
-        self.analog_ch1_sel = int(self.analog_ch1_cb.get())
+        self.analog_ch0_sel = int(self._analog_combos[0].get())
+        self.analog_ch1_sel = int(self._analog_combos[1].get())
+        self.analog_ch2_sel = int(self._analog_combos[2].get())
+        self.analog_ch3_sel = int(self._analog_combos[3].get())
         if self.capture_mode != ANALOG_MODE_DIGITAL8:
             self.capture_stride = analog_frame_stride(self.capture_mode)
         else:
-            self.capture_stride = 1 if rolling and self.dev else 4
+            self.capture_stride = 4  # FPGA always sends 4-byte samples
         self.capture_nsamp = nsamp
         if rolling:
             self.capture_window = int(self.rolling_buf_var.get())
@@ -1683,6 +1379,15 @@ class OLScope:
             try:
                 if fast:
                     self.dev.fast_mode(True)
+                raw = self.raw_mode_var.get()
+                if hasattr(self.dev, 'raw_mode') and not hasattr(self.dev, 'pkt'):
+                    # UART backend: raw mode is real (1 byte/sample)
+                    self.dev.raw_mode(raw)
+                else:
+                    # SPI backend: raw mode is display-only, always 4 bytes
+                    self.dev._stride = 1 if raw else 4
+                    self.dev._raw_flags = 0  # always send all bytes
+                self._apply_schmitt()
                 if proto_enable:
                     self.dev.trigger_decode(match_byte=match_byte, channel=proto_ch, baud=proto_baud, enable=True)
                 if rolling:
@@ -1691,24 +1396,35 @@ class OLScope:
                     except:
                         buf_nsamp = 50000
                     buf_nsamp = max(1000, min(buf_nsamp, 500000))
-                    self.dev.raw_mode(True)  # 1 byte/sample for speed
                     self.captured_bytes = bytearray()
+                    ana = self.capture_mode != ANALOG_MODE_DIGITAL8
+                    if ana:
+                        self.dev.set_analog_config(self.capture_mode,
+                            self.analog_ch0_sel, self.analog_ch1_sel)
+                        as_ = analog_frame_stride(self.capture_mode)
+                    else:
+                        as_ = self.dev._stride
                     gen = self.dev.rolling_capture(
                         rate_hz=rate, chunk_nsamp=1024, buffer_nsamp=buf_nsamp,
                         stop_evt=self.stop_evt, progress_cb=None,
-                        full_out=self.captured_bytes
+                        full_out=self.captured_bytes, stride=as_
                     )
                     # Rolling: iterate generator, update capture_result per chunk
                     for buf, got, total in gen:
-                        stride = self.dev._stride
                         self.capture_partial = buf
                         self.capture_progress = (got, total)
-                        self.capture_result = (buf, rate, got, stride)
+                        if ana:
+                            frames = decode_analog_frames(buf, self.capture_mode)
+                            self.capture_result = (buf, rate, got, as_, frames, self.capture_mode)
+                        else:
+                            stride = self.dev._stride
+                            self.capture_result = (buf, rate, got, stride)
                 else:
                     if self.capture_mode != ANALOG_MODE_DIGITAL8 and hasattr(self.dev, 'capture_analog'):
                         data, frames = self.dev.capture_analog(
                             rate_hz=rate, frames=nsamp, mode=self.capture_mode,
                             ch0=self.analog_ch0_sel, ch1=self.analog_ch1_sel,
+                            ch2=self.analog_ch2_sel, ch3=self.analog_ch3_sel,
                             timeout=max(3, nsamp // 10000 + 2),
                             stop_evt=self.stop_evt
                         )
@@ -1798,7 +1514,8 @@ class OLScope:
                 self._load_analog_capture(data, rate, frames, mode, stride)
             else:
                 data, rate, nsamp = res  # normal mode
-                self._load_capture(data, rate)
+                stride = getattr(self.dev, '_stride', 4) if self.dev else 4
+                self._load_capture(data, rate, stride)
             self._update_export_size_label()
             self.capture_running = False
             self.stop_btn.configure(state='disabled')
@@ -1812,8 +1529,30 @@ class OLScope:
         partial = getattr(self, 'capture_partial', None)
         if partial is None or len(partial) < 4:
             return
-        stride = getattr(self, 'capture_stride', 4)
-        ch_partial, ns = samples_to_channels(partial, stride=stride)
+        ana = self.capture_mode != ANALOG_MODE_DIGITAL8
+        if ana:
+            frames = decode_analog_frames(partial, self.capture_mode)
+            ns = len(frames)
+            if ns < 1:
+                return
+            num_ch = 16  # show at least 16 digital channels
+            ch_partial = [[] for _ in range(num_ch)]
+            for fr in frames:
+                d = fr.get('digital', 0)
+                for c in range(num_ch):
+                    ch_partial[c].append((d >> c) & 1 if d is not None else 0)
+            # Append analog series
+            if frames and frames[0].get('adc'):
+                for ai in range(len(frames[0]['adc'])):
+                    ch_partial.append([fr['adc'][ai] for fr in frames])
+        else:
+            stride = getattr(self, 'capture_stride', 4)
+            raw = getattr(self, 'raw_mode_var', None) and self.raw_mode_var.get()
+            if raw and stride == 4:
+                trimmed = len(partial) - (len(partial) % 4)
+                partial = bytes(partial[i] for i in range(0, trimmed, 4)) if trimmed else b''
+                stride = 1
+            ch_partial, ns = samples_to_channels(partial, stride=stride)
         if ns < 2:
             return
         if ns == self.wave.num_samples and not (self.capture_running and self.rolling_var.get()):
@@ -1861,7 +1600,16 @@ class OLScope:
             print("[DBG] _load_capture: data is empty")
             self.status['text'] = "Capture returned 0 bytes — FPGA not responding"
             return
+        # Raw mode: display-only, extract first byte of each 4-byte word
+        raw = getattr(self, 'raw_mode_var', None) and self.raw_mode_var.get()
+        if raw and stride == 4:
+            trimmed = len(data) - (len(data) % 4)
+            data = bytes(data[i] for i in range(0, trimmed, 4)) if trimmed else b''
+            stride = 1
         ch_data, ns = samples_to_channels(data, stride=stride)
+        if ns == 0 or not ch_data or not ch_data[0]:
+            self.status['text'] = "No samples decoded from capture"
+            return
         ch0 = ch_data[0]
         trans = sum(1 for i in range(1, len(ch0)) if ch0[i] != ch0[i-1])
         print(f"[DBG] _load_capture: {len(data)}B {ns}samples {trans}CH0trans")
@@ -1885,8 +1633,13 @@ class OLScope:
         digital = [[] for _ in range(NUM_CHANNELS)]
         analog_series = []
         analog_count = 0
-        if mode in (ANALOG_MODE_MIXED1, ANALOG_MODE_MIXED2, ANALOG_MODE_ANALOG1, ANALOG_MODE_ANALOG2):
+        if mode in (ANALOG_MODE_MIXED1, ANALOG_MODE_MIXED2, ANALOG_MODE_ANALOG1, ANALOG_MODE_ANALOG2,
+                    ANALOG_MODE_ANALOG4, ANALOG_MODE_MIXED2_4, ANALOG_MODE_MIXED_DUAL):
             analog_count = 1 if mode in (ANALOG_MODE_MIXED1, ANALOG_MODE_ANALOG1) else 2
+            if mode in (ANALOG_MODE_ANALOG4, ANALOG_MODE_MIXED2_4):
+                analog_count = 4
+            elif mode == ANALOG_MODE_MIXED_DUAL:
+                analog_count = 2
             analog_series = [[] for _ in range(analog_count)]
         for row in rows:
             d = row.get('digital')
@@ -2117,12 +1870,11 @@ class OLScope:
             self.status['text'] = f"Gen error: {e}"
 
     def _gen_send_capture(self):
-        """Load gen, then arm-capture + start gen (gen runs during capture)."""
+        """Atomic generator capture via CMD_GEN_CAPTURE hardware FSM."""
         if not self.dev: return
         proto = self.gen_proto.get()
         data_s = self.gen_data.get('1.0', 'end-1c')
         if not data_s: return
-        # If rolling checkbox is on, queue gen params — rolling thread handles it
         if self.rolling_var.get():
             try:
                 tx_pin = int(self.gen_tx_pin.get())
@@ -2135,109 +1887,58 @@ class OLScope:
             }
             self.status['text'] = "Generator queued — appears in rolling window"
             return
-        self.status['text'] = "Loading generator..."
-        self.win.update()
-        try:
-            tx_pin = int(self.gen_tx_pin.get())
-            scl_pin = int(self.gen_scl_pin.get())
-            if proto == 'UART':
-                self.dev.send_uart(data_s.encode(), int(self.gen_baud.get()),
-                                   tx_pin=tx_pin)
-            elif proto == 'I2C':
-                addr = int(self.gen_addr.get(), 16)
-                i2c_frame = bytes([(addr << 1) & 0xFF]) + data_s.encode()
-                # If rolling capture is active, load gen manually — rolling loop handles start
-                if self.capture_running and self.rolling_var.get():
-                    self.dev._pins(tx_pin=tx_pin, scl_pin=scl_pin)
-                    self.dev._long(CMD_GEN_PROTO, 1)
-                    div = max(1, self.dev.sys_clk // int(self.gen_baud.get()) // 2)
-                    self.dev._long(CMD_GEN_BAUD, div & 0xFFFF)
-                    self.dev._load_block(i2c_frame)
-                else:
-                    # Non-rolling: let capture_with_gen handle everything after reset
-                    rate_str = self.rate_cb.get()
-                    rate = int(rate_str.replace('kHz','000').replace('MHz','000000'))
-                    nsamp = int(self.samp_cb.get())
-                    self.status['text'] = f"Capturing with generator {nsamp} @ {rate/1e6:.1f} MHz..."
-                    self.win.update()
-                    try:
-                        data = self.dev.capture_with_gen(
-                            rate_hz=rate, nsamples=nsamp,
-                            proto='I2C',
-                            i2c_speed=int(self.gen_baud.get()),
-                            i2c_frame=i2c_frame,
-                            i2c_tx_pin=tx_pin,
-                            i2c_scl_pin=scl_pin,
-                        )
-                    except Exception as e:
-                        self.status['text'] = f"Capture error: {e}"
-                        return
-                    if not data:
-                        self.status['text'] = "Capture returned 0 bytes"
-                        return
-                    ch_data, ns = samples_to_channels(data)
-                    self.ch_data = ch_data
-                    self.samplerate = rate
-                    self.captured_bytes = data
-                    self.decoded_uart = []
-                    self.decoded_i2c = []
-                    self.wave.load(ch_data, self.ch_names, self.samplerate)
-                    self.status['text'] = f"Captured {ns} samples"
-                    self._decode()
-                    return
-            elif proto == 'Modbus':
-                slave = int(self.gen_addr.get(), 16)
-                func = int(self.gen_func.get(), 16)
-                payload = data_s.encode()
-                self.dev.send_modbus(slave, func, payload,
-                                     baud=int(self.gen_baud.get()),
-                                     tx_pin=tx_pin)
-        except Exception as e:
-            self.status['text'] = f"Gen load error: {e}"
-            return
-        
-        # If rolling capture is active, just load gen — rolling loop captures it
-        if self.capture_running and self.rolling_var.get():
-            self.dev._pending_gen_start = True
-            self.status['text'] = "Generator loaded — data appears in rolling buffer"
-            return
 
-        # Capture with generator running during capture window
         rate_str = self.rate_cb.get()
         rate = int(rate_str.replace('kHz','000').replace('MHz','000000'))
         nsamp = int(self.samp_cb.get())
         self.status['text'] = f"Capturing with generator {nsamp} @ {rate/1e6:.1f} MHz..."
-        print(f"[DBG] capture_with_gen rate={rate} nsamp={nsamp} expect_bytes={nsamp*4}")
+        print(f"[DBG] gen_capture rate={rate} nsamp={nsamp}")
         self.win.update()
+
         try:
-            data = self.dev.capture_with_gen(rate_hz=rate, nsamples=nsamp)
+            tx_pin = int(self.gen_tx_pin.get())
+            scl_pin = int(self.gen_scl_pin.get())
+            if proto == 'I2C':
+                addr = int(self.gen_addr.get(), 16)
+                i2c_frame = bytes([(addr << 1) & 0xFF]) + data_s.encode()
+                data = self.dev.capture_with_gen(
+                    rate_hz=rate, nsamples=nsamp, timeout=6,
+                    proto='I2C',
+                    i2c_speed=int(self.gen_baud.get()),
+                    i2c_frame=i2c_frame,
+                    i2c_tx_pin=tx_pin,
+                    i2c_scl_pin=scl_pin,
+                )
+            else:
+                # UART / Modbus: use _gen_data to pass to capture_with_gen
+                self.dev._gen_data = data_s.encode()
+                self.dev._gen_baud = int(self.gen_baud.get())
+                self.dev._gen_tx_pin = tx_pin
+                data = self.dev.capture_with_gen(rate_hz=rate, nsamples=nsamp, timeout=6)
         except Exception as e:
-            print(f"[DBG] capture_with_gen EXCEPTION: {e}")
+            print(f"[DBG] gen_capture EXCEPTION: {e}")
             self.status['text'] = f"Capture error: {e}"
             return
-        
-        print(f"[DBG] capture_with_gen returned {len(data)} bytes")
-        if len(data) >= 8:
-            print(f"[DBG] first 8 bytes hex: {data[:8].hex()}")
-        
+
+        print(f"[DBG] gen_capture returned {len(data)} bytes")
         if not data:
             self.status['text'] = "Capture returned 0 bytes"
             return
-        
+
         ch_data, ns = samples_to_channels(data)
+        if ns == 0 or not ch_data or not ch_data[0]:
+            self.status['text'] = "No samples decoded from capture"
+            return
         self.ch_data = ch_data
         self.samplerate = rate
         self.captured_bytes = data
-        self.decoded_uart = []
-        self.decoded_i2c = []
         self.wave.load(ch_data, self.ch_names, self.samplerate)
-        ch0 = ch_data[0]
-        trans = sum(1 for i in range(1, len(ch0)) if ch0[i] != ch0[i-1])
-        print(f"[DBG] capture result: {ns} samples, {trans} CH0 transitions")
-        if ns > 0:
-            print(f"[DBG] CH0 first 20: {''.join(str(ch0[i]) for i in range(min(20, ns)))}")
-        self.status['text'] = f"Captured {ns} samples ({trans} CH0 transitions)"
-        self._decode()
+        ch_tx = ch_data[tx_pin] if 0 <= tx_pin < len(ch_data) else ch_data[0]
+        trans = sum(1 for i in range(1, len(ch_tx)) if ch_tx[i] != ch_tx[i-1])
+        self.status['text'] = f"Captured {ns} samples ({trans} trans on CH{tx_pin})"
+        self.wave.highlight_channel(tx_pin)
+        self._process_decoders()
+        self.wave.redraw()
 
     def _accel_read(self, reg_addr, read_len):
         """Read LIS3DH register(s) via I2C and display result."""
@@ -2268,11 +1969,12 @@ class OLScope:
             self.decoded_uart = []
             self.decoded_i2c = []
             self.wave.load(ch, self.ch_names, self.samplerate)
-            self._decode()
+            self._process_decoders()
+            self.wave.redraw()
             # Parse I2C decoded bytes
             decoded = decode_i2c(ch, rate, scl_idx=scl_pin, sda_idx=sda_pin)
             data_bytes = [v for t, v in decoded if t == "DATA"]
-            if reg_addr in (0x28, 0x2A, 0x2C) and read_len >= 2:
+            if reg_addr in (0x28, 0x2A, 0x2C) and read_len >= 2 and len(data_bytes) >= 2:
                 raw = (data_bytes[-2] | (data_bytes[-1] << 8))
                 val = raw - 65536 if raw >= 32768 else raw
                 mg = val * 1000 // 16384
@@ -2305,7 +2007,8 @@ class OLScope:
         fname = filedialog.asksaveasfilename(defaultextension='.ols',
                                               filetypes=[('OLS files', '*.ols'), ('All', '*.*')])
         if not fname: return
-        ch_data, ns = samples_to_channels(self.captured_bytes)
+        stride = getattr(self, 'capture_stride', 4)
+        ch_data, ns = samples_to_channels(self.captured_bytes, stride=stride)
         rate = self.samplerate
         with open(fname, 'w') as f:
             f.write(f';Rate: {rate}\n')
@@ -2314,7 +2017,8 @@ class OLScope:
             for i in range(ns):
                 byte = 0
                 for c in range(NUM_CHANNELS):
-                    byte |= (ch_data[c][i] << c)
+                    if c < len(ch_data) and i < len(ch_data[c]):
+                        byte |= (ch_data[c][i] << c)
                 f.write(f'{byte:04x}@{i}\n')
         self.status['text'] = f"Saved {fname}"
 
@@ -2346,14 +2050,16 @@ unitsize=1
         with zipfile.ZipFile(fname, 'w', zipfile.ZIP_DEFLATED) as zf:
             zf.writestr('metadata', meta)
             # Extract first byte (group0) of each sample
-            logic = bytes([self.captured_bytes[i * 4] for i in range(len(self.captured_bytes)//4)])
+            stride = getattr(self, 'capture_stride', 4)
+            logic = bytes([self.captured_bytes[i * stride] for i in range(len(self.captured_bytes)//stride)])
             zf.writestr('logic-1', logic)
         self.status['text'] = f"Saved {fname}"
 
     def _export_clip(self):
         if not self.captured_bytes:
             return
-        ch_data, ns = samples_to_channels(self.captured_bytes)
+        stride = getattr(self, 'capture_stride', 4)
+        ch_data, ns = samples_to_channels(self.captured_bytes, stride=stride)
         lines = [f"Samplerate: {self.samplerate} Hz, Samples: {ns}"]
         ch0 = ''.join(str(ch_data[0][i]) for i in range(min(200, ns)))
         lines.append(f"CH0[0:{min(200,ns)}]: {ch0}")
@@ -2397,7 +2103,8 @@ unitsize=1
             for i in range(ns):
                 byte = 0
                 for c in range(NUM_CHANNELS):
-                    byte |= (ch[c][i] << c)
+                    if c < len(ch) and i < len(ch[c]):
+                        byte |= (ch[c][i] << c)
                 f.write(f'{byte:04x}@{i}\n')
         self.status['text'] = f"Exported range M1={m1}..M2={m2} ({ns} samples) to {fname}"
 
@@ -2490,7 +2197,9 @@ unitsize=1
             self.logger_count += 1
             c = self.logger_count
             chd, ns = samples_to_channels(data)
-            edges = [sum(1 for i in range(1, ns) if chd[ci][i] != chd[ci][i-1]) for ci in range(NUM_CHANNELS)]
+            edges = [sum(1 for i in range(1, min(ns, len(chd[ci]))) if chd[ci][i] != chd[ci][i-1]) for ci in range(min(len(chd), NUM_CHANNELS))]
+            while len(edges) < NUM_CHANNELS:
+                edges.append(0)
             ts = time.strftime('%Y-%m-%d %H:%M:%S')
             row = [ts, c, ns] + edges + [data.hex()[:120]]
             self._append_csv_row(row)
@@ -2518,20 +2227,20 @@ unitsize=1
 # ─── CLI Mode ──────────────────────────────────────────────────
 
 def cli_mode(args):
-    """Command-line interface for automated capture and testing."""
+    """Command-line interface for automated capture and testing (SPI only)."""
     if args.command == 'decode' and args.input:
-        port = None
-    else:
-        port = args.port or find_port()
-    if not port and args.command != 'decode':
-        print("No OLS device found. Use --port COMx")
-        return 1
-
-    if port:
-        dev = OLSDevice(port)
-        print(f"Connected to {port}")
-    else:
         dev = None
+    else:
+        if not HAS_SPI:
+            print("ERROR: SPI backend unavailable (ftd2xx required)")
+            return 1
+        dev = OLSDeviceSPI()
+        try:
+            dev.open()
+            print("Connected via SPI @ 30 MHz")
+        except Exception as e:
+            print(f"ERROR: Cannot open SPI device: {e}")
+            return 1
 
     if args.command == 'capture':
         data = dev.capture(rate_hz=args.rate, nsamples=args.samples, timeout=args.timeout or 5)
@@ -2541,7 +2250,9 @@ def cli_mode(args):
             with open(args.output, 'wb') as f:
                 f.write(data)
             print(f"Saved raw to {args.output}")
-        # Show CH0 transitions
+        if ns == 0 or not ch_data or not ch_data[0]:
+            print("No samples decoded from capture")
+            return 1
         ch0 = ch_data[0]
         trans = sum(1 for i in range(1, len(ch0)) if ch0[i] != ch0[i-1])
         print(f"CH0: {sum(ch0)}H/{len(ch0)-sum(ch0)}L, {trans} transitions")
@@ -2555,7 +2266,11 @@ def cli_mode(args):
         elif args.format == 'sr':
             import zipfile
             with zipfile.ZipFile(args.input) as zf:
-                data = zf.read([n for n in zf.namelist() if n.startswith('logic')][0])
+                logic_files = [n for n in zf.namelist() if n.startswith('logic')]
+                if not logic_files:
+                    print("Error: no 'logic' file in SR archive")
+                    return 1
+                data = zf.read(logic_files[0])
         ch_data, ns = samples_to_channels(data)
         rate = args.rate or 1_000_000
         if args.protocol == 'uart':
@@ -2620,43 +2335,9 @@ def cli_mode(args):
     return 0
 
 def splash_choose():
-    """Auto-detect backend, optionally showing a dialog when both are available.
-    Returns 'UART', 'SPI', or None."""
-    has_spi = HAS_SPI and find_spi_device()
-    has_uart = bool(find_port())
-
-    if has_spi and not has_uart:
+    """Auto-detect SPI device. Returns 'SPI' or None."""
+    if HAS_SPI and find_spi_device():
         return 'SPI'
-    if has_uart and not has_spi:
-        return 'UART'
-    if not has_spi and not has_uart:
-        return None
-
-    # Both available — show picker
-    win = tk.Tk()
-    win.title("OLS MaxScope — Select Backend")
-    win.geometry("420x280")
-    win.resizable(False, False)
-
-    result = [None]
-
-    def pick(backend):
-        result[0] = backend
-        win.destroy()
-
-    f = ttk.Frame(win, padding=20)
-    f.pack(fill='both', expand=True)
-    ttk.Label(f, text="OLS MaxScope — Logic Analyzer",
-              font=('Helvetica', 14, 'bold')).pack(pady=(0,20))
-    ttk.Label(f, text="Select communication backend:",
-              font=('Helvetica', 10)).pack(pady=(0,10))
-    btn_f = ttk.Frame(f)
-    btn_f.pack(pady=10)
-    ttk.Button(btn_f, text="UART (slow, 12 Mbps)\nSerial port — generator support",
-               command=lambda: pick('UART'), width=35).pack(pady=5)
-    ttk.Button(btn_f, text="SPI (fast, 30 MHz)\nFTDI Channel B — generator support",
-               command=lambda: pick('SPI'), width=35).pack(pady=5)
-    ttk.Button(f, text="Cancel", command=win.destroy).pack(pady=10)
     win.protocol("WM_DELETE_WINDOW", win.destroy)
     win.update_idletasks()
     ww = win.winfo_width(); wh = win.winfo_height()
@@ -2702,6 +2383,10 @@ def main():
             print(f"Captured {len(data)} bytes ({ns} samples) via SPI")
             if args.output:
                 with open(args.output, 'wb') as f: f.write(data)
+            if ns == 0 or not ch_data or not ch_data[0]:
+                print("No samples decoded from capture")
+                dev.close()
+                sys.exit(1)
             ch0 = ch_data[0]
             trans = sum(1 for i in range(1, len(ch0)) if ch0[i] != ch0[i-1])
             print(f"CH0: {sum(ch0)}H/{len(ch0)-sum(ch0)}L, {trans} transitions")
@@ -2711,8 +2396,8 @@ def main():
     else:
         backend = splash_choose()
         if backend is None:
-            print("No OLS device found — exiting")
-            sys.exit(1)
+            backend = 'UART'
+            print("No OLS device detected — opening in disconnected state")
         root = tk.Tk()
         root.withdraw()
         app = OLScope(backend=backend, root=root)

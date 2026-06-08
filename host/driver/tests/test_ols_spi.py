@@ -1,3 +1,8 @@
+import struct
+
+from driver.spi_protocol import ST_OK, SYNC_RSP, crc16, parse_response
+
+
 class TestOLSInit:
     def test_defaults(self, ols):
         assert ols.channel == 1
@@ -132,6 +137,12 @@ class TestOLSPublicAPI:
         ols.bulk_write(bytes([0x01, 0x02]))
         assert mock_dev.write.called
 
+    def test_tx_bytes_keeps_packet_bytes_msb_first(self, ols, mock_dev):
+        ols.tx_bytes(bytes([0x55, 0xAA, 0x03, 0x42]))
+        buf = mock_dev.write.call_args[0][0]
+        payload_start = buf.index(0x31) + 3
+        assert buf[payload_start:payload_start + 4] == bytes([0x55, 0xAA, 0x03, 0x42])
+
     def test_flush(self, ols, mock_dev):
         ols.flush()
         assert mock_dev.getQueueStatus.called
@@ -213,3 +224,25 @@ class TestOLSConvenience:
     def test_capture_rolling_no_exception(self, ols, mock_dev):
         result = ols.capture_rolling(nsamples=16, divider=1)
         assert len(result) > 0
+
+
+class TestSPIPacketProtocol:
+    def test_parse_response_round_trip(self):
+        payload = b'abc'
+        frame = SYNC_RSP + bytes([0x12, 0x34]) + struct.pack('<H', len(payload))
+        frame += payload + struct.pack('<H', crc16(frame[2:] + payload))
+        parsed = parse_response(frame)
+        assert parsed == (0x12, 0x34, payload)
+
+    def test_parse_response_rejects_short_frame(self):
+        assert parse_response(b'\xAA\x55\x00') is None
+
+    def test_parse_response_consumes_exact_packet_length(self):
+        resp1 = SYNC_RSP + bytes([0x00, 0x01]) + struct.pack('<H', 2) + b'xy'
+        resp1 += struct.pack('<H', crc16(resp1[2:]))
+        resp2 = SYNC_RSP + bytes([ST_OK, 0x02]) + struct.pack('<H', 0)
+        resp2 += struct.pack('<H', crc16(resp2[2:]))
+        buf = resp1 + resp2
+        parsed1 = parse_response(buf)
+        assert parsed1 == (0x00, 0x01, b'xy')
+        assert parse_response(buf[len(resp1):]) == (ST_OK, 0x02, b'')

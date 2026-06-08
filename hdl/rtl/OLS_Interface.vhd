@@ -1,27 +1,24 @@
   
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
-use IEEE.numeric_std.all; 
+use IEEE.numeric_std.all;
+use work.spi_protocol_pkg.all; 
 
 
 ENTITY OLS_Interface IS
   GENERIC (
       CLK_Frequency   :   INTEGER     := 12000000;    
-    Baud_Rate       :   INTEGER     := 115200;      
-    Max_Samples     :   NATURAL     := 25000;       
-    OS_Rate         :   NATURAL     := 16;          
-    Def_IFace       :   NATURAL     := 1            
+    Max_Samples     :   NATURAL     := 25000       
 
   );
 PORT (
   CLK : IN STD_LOGIC;
   FAST_CLK : IN STD_LOGIC := '0';
-  UART_RX      : IN  STD_LOGIC := '1';
-  UART_TX      : OUT STD_LOGIC := '1';
   SPI_CS       : IN  STD_LOGIC := '1';
+  SPI_SCK      : IN  STD_LOGIC := '0';
   SPI_MOSI     : IN  STD_LOGIC := '0';
   SPI_MISO     : OUT STD_LOGIC := 'Z';
-  Interface_Mode : OUT STD_LOGIC := '0';
+  Interface_Mode : OUT STD_LOGIC := '1';
   Inputs       : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');  
   Rate_Div     : BUFFER NATURAL range 1 to 150000000 := 12; 
   Samples      : BUFFER NATURAL range 1 to Max_Samples   := Max_Samples;  
@@ -35,6 +32,7 @@ PORT (
   Gen_Start     : OUT STD_LOGIC := '0';
   Gen_Baud_Div  : OUT STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   Gen_Busy      : IN  STD_LOGIC := '0';
+  Gen_Fifo_Count : IN STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   Gen_Proto     : OUT STD_LOGIC;
     Gen_TX_Pin    : OUT NATURAL range 0 to 31 := 0;
     Gen_SCL_Pin   : OUT NATURAL range 0 to 31 := 0;
@@ -51,21 +49,23 @@ PORT (
        Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
        Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
        Pin_Map_Write   : OUT STD_LOGIC := '0';
-       Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
-       Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0
+        Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
+        Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
+        Debug_Ch0_Enable : OUT STD_LOGIC := '0';
+        Schmitt_Enable   : OUT STD_LOGIC := '0';
+        Schmitt_Threshold : OUT NATURAL range 0 to 7 := 3;
+         Gen_Capture_Active : OUT STD_LOGIC := '0';
+         Gen_Start_Ack      : IN  STD_LOGIC := '0';
+         Gen_Start_Reject   : IN  STD_LOGIC := '0';
+         Gen_Done_Pulse     : IN  STD_LOGIC := '0'
 
 );
 END OLS_Interface;
 
 ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
 
-  CONSTANT ID : STD_LOGIC_VECTOR(31 downto 0) := x"31414c53";
-  SIGNAL command : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
-  SIGNAL data    : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL Run_OLS  : STD_LOGIC := '0';
-  -- Debug: toggle on each CMD_ARM hit
-  SIGNAL dbg_rx_valid_seen : STD_LOGIC := '0';  -- toggles on rising edge of SPI_RX_Valid
-  SIGNAL dbg_thread38_seen_3 : STD_LOGIC := '0';  -- toggles when Thread38 enters state 3
+  SIGNAL dbg_rx_valid_seen : STD_LOGIC := '0';
   SIGNAL Trigger_Mask   : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL Trigger_Values : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL inputs_prev    : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
@@ -73,38 +73,38 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL Read_Count  : NATURAL := 0;
   SIGNAL Delay_Count : NATURAL := 0;
   SIGNAL Channel_Groups : STD_LOGIC_VECTOR(3 downto 0) := "0000";
-  SIGNAL UART_TX_Enable     : STD_LOGIC := '0';
-  SIGNAL UART_TX_Busy       : STD_LOGIC := '0';
-  SIGNAL UART_TX_Data : STD_LOGIC_VECTOR (8-1 DOWNTO 0) := (others => '0');
-  SIGNAL UART_RX_Busy       : STD_LOGIC := '0';
-  SIGNAL UART_RX_Data       : STD_LOGIC_VECTOR (8-1 DOWNTO 0) := (others => '0');
-
-  -- Initialize interface mode from Def_IFace generic (1 = SPI, 0 = UART)
-  SIGNAL interface_mode_i : STD_LOGIC := '1';
   SIGNAL analog_ch0_i     : NATURAL range 0 to 15 := 0;
   SIGNAL analog_ch1_i     : NATURAL range 0 to 15 := 1;
   SIGNAL analog_mode_i    : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
   SIGNAL SPI_RX_Valid     : STD_LOGIC := '0';
   SIGNAL SPI_RX_Data      : STD_LOGIC_VECTOR (8-1 DOWNTO 0) := (others => '0');
-  -- Muxed signals for UART/SPI mode selection
-  SIGNAL effective_TX_Busy : STD_LOGIC := '0';
-  SIGNAL effective_RX_Busy : STD_LOGIC := '0';
-  SIGNAL effective_RX_Data : STD_LOGIC_VECTOR (8-1 DOWNTO 0) := (others => '0');
+  -- SPI mode only: directly use SPI signals (no UART muxing)
+  SIGNAL spi_tx_busy       : STD_LOGIC := '0';
+  SIGNAL rx_count_debug    : STD_LOGIC_VECTOR(3 downto 0) := (others => '0');
 
   -- Generator FIFO depth (matches Signal_Gen.vhd generic)
   constant GEN_FIFO_DEPTH : natural := 256;
 
   SIGNAL addr : NATURAL := 0;
   SIGNAL wr_ctr : NATURAL range 0 to 18 := 0;
-  SIGNAL blk_mode  : STD_LOGIC := '0';
+
   SIGNAL gen_start_cnt : NATURAL range 0 to 63 := 0;
-  SIGNAL gen_load_cnt  : NATURAL range 0 to 63 := 0;  -- probe
+  SIGNAL gen_start_req : STD_LOGIC := '0';
+  SIGNAL gen_busy_d    : STD_LOGIC := '0';
+  SIGNAL gen_load_cnt  : NATURAL range 0 to 63 := 0;
+  SIGNAL gen_load_events : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+  SIGNAL gen_reg_load_req  : STD_LOGIC := '0';
+  SIGNAL gen_reg_load_byte : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+  SIGNAL disp_gen_load_d   : STD_LOGIC := '0';
+  SIGNAL gen_reg_load_req_d : STD_LOGIC := '0';
    SIGNAL gen_tx_pin_int  : NATURAL range 0 to 31 := 3;
    SIGNAL gen_scl_pin_int : NATURAL range 0 to 31 := 1;  -- default=1 (CH0 is test counter, can't use 0)
   SIGNAL gen_i2c_rd_len_int : NATURAL range 0 to 255 := 0;
   SIGNAL gen_i2c_dev_r_int  : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
    SIGNAL gen_i2c_test_int   : STD_LOGIC := '0';
    SIGNAL gen_spi_test_int   : STD_LOGIC := '0';
+   SIGNAL gen_proto_int      : STD_LOGIC := '0';
+   SIGNAL gen_baud_div_int   : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   SIGNAL fast_mode_i        : STD_LOGIC := '0';
   SIGNAL continuous_mode_i   : STD_LOGIC := '0';
   SIGNAL cont_buf_sel        : NATURAL range 0 to 2 := 0;
@@ -114,16 +114,86 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL prev_buf_sel        : NATURAL range 0 to 2 := 0;
   SIGNAL buffer_ack_i        : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
   SIGNAL spi_preamble        : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+  SIGNAL spi_tx_ready_i      : STD_LOGIC := '0';
   SIGNAL proto_trig_enable   : STD_LOGIC := '0';
-  SIGNAL cmd_was_multibyte   : STD_LOGIC := '0';
-  SIGNAL saved_command       : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+  SIGNAL dbg_pkt_ok_seen     : STD_LOGIC := '0';
+  SIGNAL dbg_bad_crc_seen    : STD_LOGIC := '0';
+  SIGNAL dbg_bad_frame_seen  : STD_LOGIC := '0';
+
   SIGNAL ch_mode             : STD_LOGIC := '0';  -- 0=8ch/500k, 1=4ch/4M
+  SIGNAL debug_ch0_enable_i  : STD_LOGIC := '0';
+  SIGNAL schmitt_enable_i    : STD_LOGIC := '0';
+  SIGNAL schmitt_threshold_i : NATURAL range 0 to 7 := 3;
+  SIGNAL gen_capture_active_i  : STD_LOGIC := '0';
+  SIGNAL gen_capture_done_i    : STD_LOGIC := '0';
+  SIGNAL gen_capture_error_i   : STD_LOGIC := '0';
+  SIGNAL gen_start_pulse     : STD_LOGIC := '0';
+  SIGNAL gen_capture_guard   : NATURAL range 0 to 255 := 0;
+  SIGNAL gen_capture_start   : STD_LOGIC := '0';
+  type gen_cap_state_t is (GENCAP_IDLE, GENCAP_LOOPBACK_ON, GENCAP_ARM, GENCAP_GUARD, GENCAP_WAIT_BUSY, GENCAP_RUNNING, GENCAP_WAIT_FULL, GENCAP_DONE, GENCAP_ERROR);
+  SIGNAL gen_cap_state : gen_cap_state_t := GENCAP_IDLE;
   SIGNAL pipe_depth          : NATURAL range 2 to 8 := 8;
   SIGNAL proto_trig_protocol : STD_LOGIC_VECTOR(1 downto 0) := "00";
   SIGNAL proto_trig_match    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL proto_trig_bauddiv  : NATURAL range 1 to 65535 := 416;
   SIGNAL proto_trig_channel  : NATURAL range 0 to 7 := 0;
   SIGNAL proto_trig_pulse    : STD_LOGIC := '0';
+
+  -- Synthesis preserve: prevent Quartus from optimizing away gen start chain
+  attribute preserve : boolean;
+  attribute preserve of gen_start_cnt : signal is true;
+  attribute preserve of gen_load_cnt : signal is true;
+  attribute preserve of gen_start_req : signal is true;
+
+  -- SPI packet protocol signals (streaming architecture — no wide payload buses)
+  SIGNAL spi_cs_rise      : STD_LOGIC := '0';
+  SIGNAL pkt_cmd_active       : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+  SIGNAL pkt_seq              : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+  SIGNAL pkt_payload_len      : NATURAL range 0 to MAX_RX_PAYLOAD_BYTES := 0;
+  SIGNAL pkt_payload_byte     : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+  SIGNAL pkt_payload_valid    : STD_LOGIC := '0';
+  SIGNAL pkt_payload_last     : STD_LOGIC := '0';
+  SIGNAL pkt_ok               : STD_LOGIC := '0';
+  SIGNAL pkt_err              : STD_LOGIC := '0';
+  SIGNAL pkt_err_bad_crc      : STD_LOGIC := '0';
+  SIGNAL pkt_err_bad_sync     : STD_LOGIC := '0';
+  SIGNAL pkt_err_oversize     : STD_LOGIC := '0';
+  -- First 8 payload bytes captured for quick dispatch access
+  TYPE payload_header_t IS ARRAY(0 TO 7) OF STD_LOGIC_VECTOR(7 DOWNTO 0);
+  SIGNAL rx_payload_header    : payload_header_t := (others => (others => '0'));
+  SIGNAL rx_header_idx        : NATURAL range 0 TO 7 := 0;
+  SIGNAL rx_header_len        : NATURAL range 0 TO MAX_RX_PAYLOAD_BYTES := 0;
+  -- TX streaming interface
+  SIGNAL pkt_tx_byte          : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+  SIGNAL pkt_tx_valid         : STD_LOGIC := '0';
+  SIGNAL pkt_tx_done          : STD_LOGIC := '0';
+  SIGNAL pkt_tx_payload_ready : STD_LOGIC := '0';
+  SIGNAL pkt_idle_byte        : STD_LOGIC := '0';
+  SIGNAL disp_tx_build        : STD_LOGIC := '0';
+  SIGNAL disp_tx_status       : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+  SIGNAL disp_tx_len          : NATURAL range 0 to MAX_TX_PAYLOAD_BYTES := 0;
+  SIGNAL disp_tx_seq          : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+  SIGNAL disp_tx_payload_in   : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+  SIGNAL disp_tx_payload_vld  : STD_LOGIC := '0';
+  SIGNAL disp_arm             : STD_LOGIC := '0';
+  SIGNAL disp_gen_arm         : STD_LOGIC := '0';
+  SIGNAL disp_abort           : STD_LOGIC := '0';
+  SIGNAL disp_reg_write       : STD_LOGIC := '0';
+  SIGNAL disp_reg_addr        : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+  SIGNAL disp_reg_wdata       : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL disp_gen_start       : STD_LOGIC := '0';
+  SIGNAL disp_gen_load    : STD_LOGIC := '0';
+  SIGNAL disp_gen_data    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+  SIGNAL block_rd_pending     : STD_LOGIC := '0';
+  SIGNAL block_rd_ack         : STD_LOGIC := '0';
+  SIGNAL block_rd_addr        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL block_rd_state       : NATURAL range 0 to 6 := 0;
+  SIGNAL block_rd_wc          : NATURAL range 0 to 256 := 0;
+  SIGNAL block_addr_reg       : NATURAL range 0 to 1048575 := 0;
+  SIGNAL sig_rd_pend_d1       : STD_LOGIC := '0';
+  TYPE block_buf_t IS ARRAY(0 TO 255) OF STD_LOGIC_VECTOR(31 DOWNTO 0);
+  SIGNAL block_buf            : block_buf_t := (others => (others => '0'));
+
   -- 21-cycle bit-serial divider for /3 (replaces 58-level lpm_divide)
   SIGNAL div3_shift   : STD_LOGIC_VECTOR(20 downto 0) := (others => '0');
   SIGNAL div3_acc     : NATURAL range 0 to 7 := 0;
@@ -145,30 +215,47 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
     Trigger      : out std_logic
   );
   END COMPONENT;
-  COMPONENT UART_Interface IS
-  GENERIC (
-      CLK_Frequency   :   INTEGER     := 12000000;    
-    Baud_Rate       :   INTEGER     := 19200;       
-    OS_Rate         :   INTEGER     := 16;          
-    D_Width         :   INTEGER     := 8;           
-    Parity          :   INTEGER     := 0;           
-    Parity_EO       :   STD_LOGIC   := '0'         
-
-  );
+  COMPONENT spi_packet_rx IS
   PORT (
-    CLK : IN STD_LOGIC;
-    Reset       : IN    STD_LOGIC := '0';                       
-    RX          : IN    STD_LOGIC := '1';                       
-    TX          : OUT   STD_LOGIC := '1';                       
-    TX_Enable   : IN    STD_LOGIC := '0';                       
-    TX_Busy     : OUT   STD_LOGIC := '0';                       
-    TX_Data     : IN    STD_LOGIC_VECTOR(D_Width-1 DOWNTO 0) := (others => '0');    
-    RX_Busy     : OUT   STD_LOGIC := '0';                       
-    RX_Data     : OUT   STD_LOGIC_VECTOR(D_Width-1 DOWNTO 0) := (others => '0');    
-    RX_Error    : OUT   STD_LOGIC := '0'                       
-
+    clk         : IN  STD_LOGIC;
+    rst         : IN  STD_LOGIC := '0';
+    rx_byte     : IN  STD_LOGIC_VECTOR(7 downto 0);
+    rx_valid    : IN  STD_LOGIC;
+    cs_rise     : IN  STD_LOGIC := '0';
+    cmd_active  : OUT STD_LOGIC_VECTOR(7 downto 0);
+    seq         : OUT STD_LOGIC_VECTOR(7 downto 0);
+    payload_len : OUT NATURAL range 0 to MAX_RX_PAYLOAD_BYTES;
+    payload_byte   : OUT STD_LOGIC_VECTOR(7 downto 0);
+    payload_valid  : OUT STD_LOGIC;
+    payload_last   : OUT STD_LOGIC;
+    packet_ok   : OUT STD_LOGIC;
+    packet_err  : OUT STD_LOGIC;
+    err_bad_crc  : OUT STD_LOGIC;
+    err_bad_sync : OUT STD_LOGIC;
+    err_oversize : OUT STD_LOGIC
   );
   END COMPONENT;
+
+  COMPONENT spi_packet_tx IS
+  PORT (
+    clk         : IN  STD_LOGIC;
+    rst         : IN  STD_LOGIC := '0';
+    req_seq     : IN  STD_LOGIC_VECTOR(7 downto 0);
+    build       : IN  STD_LOGIC;
+    rsp_status  : IN  STD_LOGIC_VECTOR(7 downto 0);
+    rsp_len     : IN  NATURAL range 0 to MAX_TX_PAYLOAD_BYTES;
+    payload_byte_in  : IN  STD_LOGIC_VECTOR(7 downto 0);
+    payload_valid_in : IN  STD_LOGIC;
+    payload_ready    : OUT STD_LOGIC;
+    tx_ready    : IN  STD_LOGIC := '1';
+    tx_byte     : OUT STD_LOGIC_VECTOR(7 downto 0);
+    tx_valid    : OUT STD_LOGIC;
+    tx_done     : OUT STD_LOGIC;
+    idle_byte   : OUT STD_LOGIC
+  );
+  END COMPONENT;
+
+
 
   COMPONENT SPI_Slave2 IS
   PORT (
@@ -182,32 +269,94 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
     TX_Data    : IN  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     SPI_Preamble   : IN  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     TX_Ready   : OUT STD_LOGIC := '0';
-    PipeDepth  : IN  NATURAL range 2 to 8 := 8;
     RX_Data    : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
-    RX_Valid   : OUT STD_LOGIC := '0'
+    RX_Valid   : OUT STD_LOGIC := '0';
+    CS_Rise    : OUT STD_LOGIC := '0'
   );
   END COMPONENT;
 
 BEGIN
   PROCESS (CLK)  
-    VARIABLE ctr : INTEGER range 0 to 4 := 0;
     VARIABLE Thread23 : NATURAL range 0 to 6 := 0;
     VARIABLE Thread26 : NATURAL range 0 to 34 := 0;
     VARIABLE Thread30 : NATURAL range 0 to 3 := 0;
     VARIABLE Thread31 : NATURAL range 0 to 4 := 0;
-    VARIABLE Thread38 : NATURAL range 0 to 7 := 0;
-    VARIABLE Thread44 : NATURAL range 0 to 40 := 0;
-    VARIABLE Thread45 : NATURAL range 0 to 4 := 0;
-    VARIABLE Thread49 : NATURAL range 0 to 2 := 0;
-    VARIABLE Thread51 : NATURAL range 0 to 5 := 0;
-    VARIABLE blk_len  : NATURAL range 0 to GEN_FIFO_DEPTH := 0;
     VARIABLE next_sel : NATURAL range 0 to 2 := 0;
   BEGIN
   IF RISING_EDGE(CLK) THEN
-    Gen_Load_We <= '0';
-    Gen_Start <= '0';
     div3_pending <= '0';
     Pin_Map_Write <= '0';
+    gen_reg_load_req <= '0';
+    IF disp_arm = '1' THEN
+      Run_OLS <= '1';
+      Thread23 := 0;
+    END IF;
+    IF disp_abort = '1' THEN
+      Run_OLS <= '0';
+      Run <= '0';
+    END IF;
+    IF disp_reg_write = '1' THEN
+      CASE disp_reg_addr IS
+        WHEN REG_DIVIDER =>
+          Divider <= TO_INTEGER(UNSIGNED(disp_reg_wdata(23 downto 0)));
+        WHEN REG_SAMPLE_COUNT =>
+          Read_Count <= TO_INTEGER(UNSIGNED(disp_reg_wdata(29 downto 0)));
+          div3_pending <= '1';
+        WHEN REG_DELAY_COUNT =>
+          Delay_Count <= TO_INTEGER(UNSIGNED(disp_reg_wdata(29 downto 0)));
+        WHEN REG_TRIGGER_MASK =>
+          Trigger_Mask <= disp_reg_wdata;
+        WHEN REG_TRIGGER_VALUE =>
+          Trigger_Values <= disp_reg_wdata;
+        WHEN REG_FLAGS =>
+          fast_mode_i <= disp_reg_wdata(0);
+          continuous_mode_i <= disp_reg_wdata(1);
+          ch_mode <= disp_reg_wdata(2);
+        WHEN REG_FAST_MODE =>
+          fast_mode_i <= disp_reg_wdata(0);
+        WHEN REG_CONT_MODE =>
+          continuous_mode_i <= disp_reg_wdata(0);
+          IF disp_reg_wdata(0) = '1' THEN
+            cont_buf_sel <= 0;
+            cont_base_addr <= 0;
+            cont_prefetch <= '0';
+            IF div3_busy = '0' THEN
+              cont_rem <= samples_div3;
+            ELSE
+              cont_rem <= Read_Count / 4;
+            END IF;
+            Run_OLS <= '1';
+          END IF;
+        WHEN REG_GEN_PROTO =>
+          gen_proto_int <= disp_reg_wdata(0);
+        WHEN REG_GEN_BAUD =>
+          gen_baud_div_int <= disp_reg_wdata(15 downto 0);
+        WHEN REG_GEN_PINS =>
+          gen_tx_pin_int <= TO_INTEGER(UNSIGNED(disp_reg_wdata(4 downto 0)));
+          gen_scl_pin_int <= TO_INTEGER(UNSIGNED(disp_reg_wdata(12 downto 8)));
+        WHEN REG_GEN_DATA =>
+          -- Legacy CMD_I2C_TEST (0xA7) layout when upper bytes are set.
+          -- Low-byte-only writes load the gen FIFO without touching mode flags.
+          IF disp_reg_wdata(31 downto 8) = x"000000" THEN
+            gen_reg_load_byte <= disp_reg_wdata(7 downto 0);
+            gen_reg_load_req <= '1';
+          ELSE
+            gen_i2c_test_int <= disp_reg_wdata(0);
+            gen_spi_test_int <= disp_reg_wdata(1);
+            gen_i2c_rd_len_int <= TO_INTEGER(UNSIGNED(disp_reg_wdata(15 downto 8)));
+            gen_i2c_dev_r_int <= disp_reg_wdata(23 downto 16);
+          END IF;
+
+        WHEN REG_DEBUG_CH0_ENABLE =>
+          debug_ch0_enable_i <= disp_reg_wdata(0);
+        WHEN REG_SCHMITT_ENABLE =>
+          schmitt_enable_i <= disp_reg_wdata(0);
+        WHEN REG_SCHMITT_THRESHOLD =>
+          schmitt_threshold_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(2 downto 0)));
+        WHEN others => null;
+      END CASE;
+    END IF;
+
     IF (Divider < CLK_Frequency) THEN
       Rate_Div <= Divider + 1;
     ELSE
@@ -222,7 +371,11 @@ BEGIN
     ELSE
       Samples <= Max_Samples;
     END IF;
-    IF (Read_Count > Delay_Count) THEN
+    -- Delay_Count=0 means read from sample 0 (legacy CMD_DELAY 0xC2 was a no-op).
+    -- For triggered captures, set 0 < Delay_Count < Read_Count for pre-trigger depth.
+    IF Delay_Count = 0 THEN
+      Start_Offset <= 0;
+    ELSIF (Read_Count > Delay_Count) THEN
       IF (Read_Count-Delay_Count < Max_Samples) THEN
         Start_Offset <= Read_Count-Delay_Count;
       ELSE
@@ -264,7 +417,7 @@ BEGIN
           inputs_prev <= Inputs;
         END IF;
     END IF;
-      IF (Full = '1' AND (interface_mode_i = '1' OR Run = '1')) THEN
+      IF (Full = '1' OR Run = '1') THEN
         CASE (Thread23) IS
           WHEN 0 =>
             IF continuous_mode_i = '1' THEN
@@ -317,7 +470,9 @@ BEGIN
           WHEN (1+1) =>
             CASE (Thread26) IS
       WHEN 0 =>
-        Address <= addr;
+        IF block_rd_state = 0 THEN
+          Address <= addr;
+        END IF;
         Thread26 := 1;
       WHEN 1 to 29 =>
         Thread26 := Thread26 + 1;
@@ -341,22 +496,10 @@ BEGIN
                         WHEN (0+1) =>
                     CASE (Thread31) IS
                       WHEN 0 =>
-                        UART_TX_Data <= Outputs((wr_ctr+1)*8-1 downto wr_ctr*8);
-                        UART_TX_Enable <= '1';
-                        Thread31 := 1;
-                      WHEN 1 =>
-                        IF (effective_TX_Busy = '0') THEN
-                        ELSE
-                          Thread31 := Thread31 + 1;
-                        END IF;
-                      WHEN 2 =>
-                        UART_TX_Enable <= '0';
-                        Thread31 := 3;
-                      WHEN 3 =>
-                        IF (effective_TX_Busy = '1') THEN
-                        ELSE
+                        -- SPI mode: wait for SPI to be ready
+                        IF spi_tx_ready_i = '1' THEN
                           Thread31 := 0;
-                        Thread30 := 2;
+                          Thread30 := 2;
                         END IF;
                       WHEN others => Thread31 := 0;
                     END CASE;
@@ -365,7 +508,7 @@ BEGIN
           Thread30 := 0;
           Thread26 := 31;
           -- Prefetch: change Address to next buffer's base after last byte sent
-          IF cont_prefetch = '1' AND wr_ctr = 0 THEN
+          IF cont_prefetch = '1' AND wr_ctr = 0 AND block_rd_state = 0 THEN
             Address <= cont_base_addr;
           END IF;
         WHEN others => Thread30 := 0;
@@ -421,539 +564,139 @@ BEGIN
           WHEN others => Thread23 := 0;
         END CASE;
       END IF;
-    CASE (Thread38) IS
-      WHEN 0 =>
-        Thread38 := 1;
+    -- ── Block read state machine (for CMD_READ_CAPTURE) ──────────────
+    sig_rd_pend_d1 <= block_rd_pending;
+    IF block_rd_pending = '1' AND sig_rd_pend_d1 = '0' THEN
+      block_addr_reg <= TO_INTEGER(UNSIGNED(block_rd_addr(31 downto 2)));
+      block_rd_wc <= 0;
+      block_rd_state <= 1;
+    END IF;
+    CASE block_rd_state IS
       WHEN 1 =>
-        IF (effective_RX_Busy = '0') THEN
-        ELSE
-          Thread38 := Thread38 + 1;
-        END IF;
+        Address <= block_addr_reg + block_rd_wc;
+        block_rd_state <= 2;
       WHEN 2 =>
-        IF (effective_RX_Busy = '1') THEN
-        ELSE
-          Thread38 := Thread38 + 1;
-        END IF;
+        block_rd_state <= 3;
       WHEN 3 =>
-        IF (blk_mode = '1') THEN
-          Gen_Load_Byte <= effective_RX_Data;
-          gen_load_cnt <= 1;
-          IF (blk_len > 0) THEN
-            blk_len := blk_len - 1;
-          END IF;
-          IF (blk_len = 0) THEN
-            blk_mode <= '0';
-          END IF;
-          Thread38 := 0;
-        ELSE
-          -- Accumulate data bytes for multi-byte commands at byte-receive time
-           IF (cmd_was_multibyte = '1' AND ctr < 4) OR 
-              (ctr < 4 AND command(7) = '1' AND effective_RX_Data(7) = '1') THEN
-             data((ctr+1)*8-1 downto ctr*8) <= effective_RX_Data;
-             ctr := ctr + 1;
-            -- After all 4 bytes, force dispatch
-            IF ctr = 4 THEN
-              Thread44 := 7;
-              Thread45 := 0;
-            END IF;
-          END IF;
-          command <= effective_RX_Data;
-          -- Debug: toggles when any byte is received (Thread38 enters state 3)
-          dbg_thread38_seen_3 <= NOT dbg_thread38_seen_3;
-          -- Debug: capture received byte in UART_TX_Data for readback
-          UART_TX_Data <= effective_RX_Data;
-          Thread38 := 4;
-        END IF;
+        block_rd_state <= 4;
       WHEN 4 =>
-        IF command = x"A1" THEN
-          -- GEN_STRT: dispatch directly, bypass accumulate
-          cmd_was_multibyte <= '0';
-          Thread38 := Thread38 + 1;  -- to 5
-        ELSIF Thread44 = 0 AND cmd_was_multibyte = '0' THEN
-          saved_command <= command;
-          cmd_was_multibyte <= command(7);
-          IF command(7) = '0' THEN
-            Thread38 := Thread38 + 1;  -- to 5 (dispatch)
-          ELSE
-            ctr := 0;
-            Thread38 := Thread38 + 2;  -- to 6 (accumulate)
-          END IF;
-        ELSIF Thread44 = 0 AND cmd_was_multibyte = '1' THEN
-          -- Single-byte command (bit7=0) arriving after a multi-byte command.
-          -- Must go through dispatch (Thread38=5), not accumulate (Thread38=6).
-          cmd_was_multibyte <= '0';
-          IF command(7) = '0' THEN
-            Thread44 := 0;
-            Thread38 := Thread38 + 1;  -- to 5 for dispatch
-          ELSE
-            ctr := 0;
-            Thread38 := Thread38 + 2;  -- to 6 for accumulate
-          END IF;
-        ELSIF Thread44 = 18 OR Thread44 = 19 THEN
-          Thread38 := Thread38 + 1;
-        ELSIF cmd_was_multibyte = '1' AND Thread44 <= 3 THEN
-          -- Data byte or new command arriving while accumulate is in setup
-          -- (Thread44 still 0-3).  Use command(7) to decide: bit7=0 means
-          -- it's a new single-byte command (ARM, Reset); bit7=1 is a data byte.
-          -- Must reset Thread44 to 0 so dispatch hits WHEN 0, not the reset handler at WHEN 1.
-          cmd_was_multibyte <= '0';
-          IF command(7) = '0' THEN
-            Thread44 := 0;
-            Thread38 := Thread38 + 1;  -- to 5 (dispatch)
-          ELSE
-            ctr := 0;
-            Thread38 := Thread38 + 2;  -- to 6 (accumulate)
-          END IF;
-        ELSIF cmd_was_multibyte = '1' THEN
-          -- Data byte arriving during accumulate (Thread44 >= 4).
-          ctr := 0;
-          Thread38 := Thread38 + 2;
+        block_buf(block_rd_wc) <= Outputs;
+        IF block_rd_wc < 255 THEN
+          block_rd_wc <= block_rd_wc + 1;
+          block_rd_state <= 1;
         ELSE
-          Thread38 := Thread38 + 1;
+          block_rd_state <= 5;
         END IF;
-      WHEN (4+1) =>
-        CASE (Thread44) IS
-          WHEN 0 =>
-            CASE (command) IS
-              WHEN x"00" =>
-                -- CMD_RESET: route through Thread44=1 to clear Run_OLS etc.
-                Thread44 := Thread44 + 1;
-              WHEN x"01" =>
-                -- CMD_ARM: inline Run_OLS to bypass the WHEN 2 handler
-                UART_TX_Data <= x"AA";
-                Run_OLS <= '1';
-                IF continuous_mode_i = '0' THEN
-                  Thread23 := 0;
-                END IF;
-                Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-              WHEN x"02" =>
-                Thread44 := Thread44 + 3;
-              WHEN x"03" =>
-                Thread44 := 19;
-              WHEN x"04" =>
-                Thread44 := 18;
-              WHEN x"05" =>
-                Thread44 := Thread44 + 7;  -- blk_mode entry
-              WHEN x"06" =>
-                Thread44 := Thread44 + 8;  -- proto select
-              WHEN x"A1" =>
-                gen_start_cnt <= 3;
-                Gen_Start <= '1';  -- direct pulse
-                Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-              WHEN x"AF" =>
-                gen_spi_test_int <= '1';
-                Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-              WHEN x"11" =>
-                Thread44 := Thread44 + 4;
-              WHEN x"13" =>
-                Thread44 := Thread44 + 5;
-              WHEN others =>
-                Thread44 := Thread44 + 6;
-            END CASE;
-          WHEN 1 =>
-            Run_OLS <= '0';
-            Run <= '0';
-            continuous_mode_i <= '0';
-            ch_mode <= '0';
-            analog_mode_i <= (others => '0');
-            analog_ch0_i <= 0;
-            analog_ch1_i <= 1;
-            saved_command <= (others => '0');
-            cmd_was_multibyte <= '0';
-            Trigger_Mask <= (others => '0');
-            proto_trig_enable <= '0';
-            -- Default generator config: baud=0 defers to Signal_Gen constant; caller must set CMD_GEN_BAUD explicitly
-            Gen_Baud_Div <= (others => '0');
-            Gen_Proto <= '0';
-            gen_spi_test_int <= '0';
-            blk_mode <= '0';
-            interface_mode_i <= '1';  -- reset to SPI mode
-            Thread23 := 0;
-            Thread26 := 0;
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 2 =>
-            UART_TX_Data <= x"BB";
-            Run_OLS <= '1';
-            IF continuous_mode_i = '0' THEN
-              Thread23 := 0;
-            END IF;
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-
-              Thread45 := 0;
-          WHEN 3 =>
-                CASE (Thread49) IS
-                  WHEN 0 =>
-                    wr_ctr <= 4;
-                    Thread49 := 1;
-                  WHEN 1 =>
-                    IF ( wr_ctr > 0) THEN 
-                      Thread49 := Thread49 + 1;
-                    ELSE
-                      Thread44 := 0;
-                    Thread45 := 0;
-                    Thread49 := 0;
-                    Thread38 := 0;
-                    END IF;
-                    WHEN (1+1) =>
-                    CASE (Thread51) IS
-                      WHEN 0 =>
-                        UART_TX_Data <= ID(wr_ctr*8-1 downto (wr_ctr-1)*8);
-                        UART_TX_Enable <= '1';
-                        Thread51 := 1;
-                      WHEN 1 =>
-                        IF (effective_TX_Busy = '0') THEN
-                        ELSE
-                          Thread51 := Thread51 + 1;
-                        END IF;
-                      WHEN 2 =>
-                        UART_TX_Enable <= '0';
-                        Thread51 := 3;
-                      WHEN 3 =>
-                        IF (effective_TX_Busy = '1') THEN
-                        ELSE
-                          Thread51 := Thread51 + 1;
-                        END IF;
-                      WHEN 4 =>
-                        wr_ctr <= wr_ctr - 1;
-                        Thread49 := 1;
-                        Thread51 := 0;
-                      WHEN others => Thread51 := 0;
-                    END CASE;
-                  WHEN others => Thread49 := 0;
-                END CASE;
-          WHEN 4 =>
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 5 =>
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 6 =>
-            null;
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 7 =>
-            blk_mode <= '1';
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 8 =>
-            Gen_Proto <= data(0);
-            Thread44 := 0;
-                Thread45 := 0;
-                Thread38 := 0;
-          WHEN 18 =>
-            -- CMD_GEN_LOAD (0xA0, multi-byte): single-cycle load
-            IF saved_command = x"A0" THEN
-              Gen_Load_Byte <= data(7 downto 0);
-              gen_load_cnt <= 1;
-              Thread44 := 0; Thread45 := 0; Thread38 := 0;
-            ELSE
-              -- CMD_METADATA (0x04, single-byte): 18-byte ID string send
-              CASE (Thread49) IS
-              WHEN 0 =>
-                wr_ctr <= 18;
-                Thread49 := 1;
-              WHEN 1 =>
-                IF (wr_ctr > 0) THEN
-                  Thread49 := Thread49 + 1;
-                ELSE
-                  Thread44 := 0; Thread45 := 0; Thread49 := 0; Thread38 := 0;
-                END IF;
-              WHEN 2 =>
-                CASE (Thread51) IS
-                  WHEN 0 =>
-                    CASE (wr_ctr) IS
-                      WHEN 18 => UART_TX_Data <= x"01";
-                      WHEN 17 => UART_TX_Data <= x"4F";
-                      WHEN 16 => UART_TX_Data <= x"4C";
-                      WHEN 15 => UART_TX_Data <= x"53";
-                      WHEN 14 => UART_TX_Data <= x"00";
-                      WHEN 13 => UART_TX_Data <= x"40";
-                      WHEN 12 => UART_TX_Data <= x"10";
-                      WHEN 11 => UART_TX_Data <= x"21";
-                      WHEN 10 => UART_TX_Data <= x"00";
-                      WHEN 9  => UART_TX_Data <= x"10";
-                      WHEN 8  => UART_TX_Data <= x"00";
-                      WHEN 7  => UART_TX_Data <= x"00";
-                      WHEN 6  => UART_TX_Data <= x"23";
-                      WHEN 5  => UART_TX_Data <= x"00";
-                      WHEN 4  => UART_TX_Data <= x"B7";
-                      WHEN 3  => UART_TX_Data <= x"1B";
-                      WHEN 2  => UART_TX_Data <= x"00";
-                      WHEN 1  => UART_TX_Data <= x"00";
-                      WHEN others => null;
-                    END CASE;
-                    UART_TX_Enable <= '1';
-                    Thread51 := 1;
-                  WHEN 1 =>
-                    IF (effective_TX_Busy = '0') THEN ELSE Thread51 := Thread51 + 1; END IF;
-                  WHEN 2 =>
-                    UART_TX_Enable <= '0'; Thread51 := 3;
-                  WHEN 3 =>
-                    IF (effective_TX_Busy = '1') THEN ELSE Thread51 := Thread51 + 1; END IF;
-                  WHEN 4 =>
-                    wr_ctr <= wr_ctr - 1; Thread49 := 1; Thread51 := 0;
-                  WHEN others => Thread51 := 0;
-                END CASE;
-              WHEN others => Thread49 := 0;
-            END CASE;
-            END IF;
-          WHEN 19 =>
-            null;
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 9 =>
-            Trigger_Values <= data;
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 10 =>
-            null;
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 11 =>
-            null;
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 12 =>
-            Divider <= TO_INTEGER(UNSIGNED(data(23 downto 0)));
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 13 =>
-            null;
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 14 =>
-            Channel_Groups <= data(5 downto 2);
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 15 =>
-            Delay_Count <= TO_INTEGER(UNSIGNED(data(29 downto 0)));
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 16 =>
-            Read_Count <= TO_INTEGER(UNSIGNED(data(29 downto 0)));
-            div3_pending <= '1';
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 17 =>
-            null;
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 20 =>
-            Gen_Baud_Div <= data(15 downto 0);
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 21 =>
-            blk_mode <= '1';
-            if unsigned(data(31 downto 9)) /= 0 then
-              blk_len := 256;
-            elsif TO_INTEGER(UNSIGNED(data(8 downto 0))) > 256 then
-              blk_len := 256;
-            else
-              blk_len := TO_INTEGER(UNSIGNED(data(8 downto 0)));
-            end if;
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 22 =>
-            Gen_Proto <= data(0);
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 23 =>
-            null;
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 24 =>
-            gen_tx_pin_int <= TO_INTEGER(UNSIGNED(data(7 downto 0))) mod 32;
-            gen_scl_pin_int <= TO_INTEGER(UNSIGNED(data(15 downto 8))) mod 32;
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 25 =>
-            gen_i2c_test_int <= data(0);
-            gen_i2c_rd_len_int <= TO_INTEGER(UNSIGNED(data(15 downto 8)));
-            gen_i2c_dev_r_int <= data(23 downto 16);
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 26 =>
-            fast_mode_i <= data(0);
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 27 =>
-            proto_trig_enable <= data(15);
-            proto_trig_protocol <= data(13 downto 12);
-            proto_trig_match <= data(7 downto 0);
-            proto_trig_channel <= TO_INTEGER(UNSIGNED(data(10 downto 8)));
-            proto_trig_bauddiv <= TO_INTEGER(UNSIGNED(data(31 downto 16)));
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 28 =>
-            continuous_mode_i <= data(0);
-            IF data(0) = '1' THEN
-              cont_buf_sel <= 0;
-              cont_base_addr <= 0;
-              cont_prefetch <= '0';
-              IF div3_busy = '0' THEN
-                cont_rem <= samples_div3;
-              ELSE
-                cont_rem <= Read_Count / 4;
-              END IF;
-              Run_OLS <= '1';
-            END IF;
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 29 =>
-            interface_mode_i <= data(0);
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 30 =>
-            analog_ch0_i <= TO_INTEGER(UNSIGNED(data(3 downto 0))) mod 16;
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 31 =>
-            analog_mode_i <= "00" & data(0);
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 32 =>
-            ch_mode <= data(0);
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 33 =>
-            gen_spi_test_int <= data(0);
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 34 =>
-            analog_mode_i <= data(2 downto 0);
-            analog_ch0_i <= TO_INTEGER(UNSIGNED(data(7 downto 4))) mod 16;
-            analog_ch1_i <= TO_INTEGER(UNSIGNED(data(11 downto 8))) mod 16;
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 35 =>
-            Pin_Map_Channel <= TO_INTEGER(UNSIGNED(data(7 downto 0)));
-            Pin_Map_Pin <= TO_INTEGER(UNSIGNED(data(15 downto 8)));
-            Pin_Map_Write <= '1';
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 37 =>
-            interface_mode_i <= data(0);
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN 38 =>
-            null;
-            Thread44 := 0; Thread45 := 0; Thread38 := 0;
-          WHEN others => Thread44 := 0; Thread45 := 0; Thread38 := 0;
-        END CASE;
+      WHEN 5 =>
+        block_rd_ack <= '1';
+        block_rd_state <= 6;
       WHEN 6 =>
-        CASE (Thread44) IS
-          WHEN 0 =>
-            ctr := 0;
-            Thread44 := 1;
-          WHEN 1 =>
-            Thread44 := Thread44 + 1;
-          WHEN 2 =>
-            ctr := 0;
-            Thread44 := 3;
-          WHEN 3 =>
-            IF ( ctr < 4) THEN
-              Thread44 := Thread44 + 1;
-            ELSE
-              Thread44 := Thread44 + 2;
-            END IF;
-          WHEN (3+1) =>
-            CASE (Thread45) IS
-              WHEN 0 =>
-                Thread45 := 1;
-              WHEN 1 =>
-                IF (effective_RX_Busy = '0') THEN
-                ELSE
-                  Thread45 := Thread45 + 1;
-                END IF;
-              WHEN 2 =>
-                IF (effective_RX_Busy = '1') THEN
-                ELSE
-                  Thread45 := Thread45 + 1;
-                END IF;
-              WHEN 3 =>
-                IF ctr < 4 THEN
-                  data((ctr+1)*8-1 downto ctr*8) <= effective_RX_Data;
-                  ctr := ctr + 1;
-                END IF;
-                Thread45 := 0;
-                Thread44 := 3;
-              WHEN others => Thread45 := 0;
-            END CASE;
-          WHEN 5 to 6 =>
-            Thread44 := Thread44 + 1;
-          WHEN 7 =>
-            cmd_was_multibyte <= '0';
-            Thread38 := 5;  -- default: transition to command execution after accumulate
-            CASE (saved_command) IS
-              -- Multi-byte prefix (0x11): actual command is first accumulated byte
-              WHEN x"11" =>
-                IF data(7 downto 0) = x"01" THEN
-                  -- Multi-byte CMD_ARM
-                  Run_OLS <= '1';
-                  Thread23 := 0;
-                  Thread44 := 0; Thread45 := 0; Thread38 := 0;
-                ELSE
-                  Thread44 := Thread44 + 10;
-                END IF;
-              WHEN x"c0" =>
-                Thread44 := Thread44 + 1;
-              WHEN x"c1" =>
-                Thread44 := Thread44 + 2;
-              WHEN x"c2" =>
-                Thread44 := Thread44 + 3;
-              WHEN x"c3" =>
-                Thread44 := Thread44 + 4;
-              WHEN x"80" =>
-                Thread44 := Thread44 + 5;
-              WHEN x"81" =>
-                Thread44 := Thread44 + 6;
-              WHEN x"82" =>
-                Thread44 := Thread44 + 7;
-              WHEN x"83" =>
-                Thread44 := Thread44 + 8;
-              WHEN x"84" =>
-                Thread44 := Thread44 + 9;
-              WHEN x"A0" =>
-                Thread44 := Thread44 + 11;
-              WHEN x"A1" =>
-                Thread44 := Thread44 + 12;
-              WHEN x"A2" =>
-                Thread44 := Thread44 + 13;
-              WHEN x"A3" =>
-                Thread44 := Thread44 + 14;
-              WHEN x"A4" =>
-                Thread44 := Thread44 + 15;
-              WHEN x"A5" =>
-                Thread44 := Thread44 + 16;
-              WHEN x"A6" =>
-                Thread44 := Thread44 + 17;
-              WHEN x"A7" =>
-                Thread44 := Thread44 + 18;
-              WHEN x"A8" =>
-                Thread44 := Thread44 + 19;
-              WHEN x"A9" =>
-                Thread44 := Thread44 + 20;
-              WHEN x"AA" =>
-                Thread44 := Thread44 + 21;
-              WHEN x"AB" =>
-                Thread44 := Thread44 + 22;
-              WHEN x"AC" =>
-                Thread44 := Thread44 + 30;
-              WHEN x"AD" =>
-                Thread44 := Thread44 + 31;
-              WHEN x"BB" =>
-                Thread44 := 35;
-              WHEN x"B0" =>
-                Thread44 := 34;
-              WHEN x"AE" =>
-                Thread44 := 32;
-              WHEN x"AF" =>
-                Thread44 := 33;
-              WHEN others =>
-                Thread44 := Thread44 + 10;
-            END CASE;
-          WHEN others => Thread44 := 0; Thread45 := 0; Thread38 := 0;
-        END CASE;
-      WHEN others => Thread38 := 0;
+        IF block_rd_pending = '0' THEN
+          block_rd_ack <= '0';
+          block_rd_state <= 0;
+        END IF;
+      WHEN OTHERS =>
+        null;
     END CASE;
-    -- Stretch Gen_Start to 2 cycles: ensures Signal_Gen sees it (same clock domain)
-    IF gen_start_cnt > 0 THEN
-      Gen_Start <= '1';
-      gen_start_cnt <= gen_start_cnt - 1;
-    END IF;
-    -- Stretch Gen_Load_We to 2 cycles: ensures Signal_Gen sees it (same clock domain)
-    IF gen_load_cnt > 0 THEN
-      Gen_Load_We <= '1';
-      gen_load_cnt <= gen_load_cnt - 1;
-    END IF;
   END IF;
+  END PROCESS;
+
+  -- Generator load/start: dedicated process so FIFO writes and Start are not
+  -- lost across the dispatch/streaming handshake timing.
+  gen_ctl: PROCESS (CLK)
+  BEGIN
+    IF RISING_EDGE(CLK) THEN
+      Gen_Load_We <= '0';
+      Gen_Start <= '0';
+
+      IF (disp_gen_load = '1' AND disp_gen_load_d = '0')
+         OR (gen_reg_load_req = '1' AND gen_reg_load_req_d = '0') THEN
+        IF disp_gen_load = '1' AND disp_gen_load_d = '0' THEN
+          Gen_Load_Byte <= disp_gen_data;
+        ELSE
+          Gen_Load_Byte <= gen_reg_load_byte;
+        END IF;
+        Gen_Load_We <= '1';
+        IF unsigned(gen_load_events) < 255 THEN
+          gen_load_events <= std_logic_vector(unsigned(gen_load_events) + 1);
+        END IF;
+      END IF;
+      disp_gen_load_d <= disp_gen_load;
+      gen_reg_load_req_d <= gen_reg_load_req;
+
+      -- Hold start through the full transmission; clear after Gen_Busy falls.
+      IF disp_abort = '1' THEN
+        gen_start_req <= '0';
+        gen_load_events <= (others => '0');
+      ELSIF disp_gen_start = '1' OR gen_start_pulse = '1' OR (pkt_ok = '1' AND pkt_cmd_active = CMD_GEN_START) THEN
+        gen_start_req <= '1';
+      ELSIF Gen_Busy = '0' AND gen_busy_d = '1' THEN
+        gen_start_req <= '0';
+      END IF;
+      gen_busy_d <= Gen_Busy;
+
+      IF gen_start_req = '1' THEN
+        Gen_Start <= '1';
+      END IF;
+    END IF;
+  END PROCESS;
+
+  -- Generated-capture FSM: guard period + GEN_START after ARM.
+  -- gen_capture_active is set when Gen_Busy goes high and held until
+  -- Full (capture buffer full), ensuring the loopback mux stays active
+  -- until the capture completes — not tied to gen_busy duration alone.
+  gen_capture_fsm: PROCESS (CLK)
+    VARIABLE guard_var : NATURAL range 0 to 255 := 0;
+    VARIABLE disp_gen_arm_d : STD_LOGIC := '0';
+  BEGIN
+    IF RISING_EDGE(CLK) THEN
+      gen_start_pulse <= '0';
+      IF disp_abort = '1' THEN
+        gen_cap_state <= GENCAP_IDLE;
+        gen_capture_active_i <= '0';
+        gen_capture_done_i <= '0';
+        gen_capture_error_i <= '0';
+      ELSE
+        CASE gen_cap_state IS
+          WHEN GENCAP_IDLE =>
+            IF disp_gen_arm = '1' AND disp_gen_arm_d = '0' THEN
+              guard_var := 48;
+              gen_cap_state <= GENCAP_GUARD;
+            END IF;
+          WHEN GENCAP_GUARD =>
+            IF guard_var > 0 THEN
+              guard_var := guard_var - 1;
+            ELSE
+              gen_start_pulse <= '1';
+              gen_cap_state <= GENCAP_WAIT_BUSY;
+            END IF;
+          WHEN GENCAP_WAIT_BUSY =>
+            IF Gen_Busy = '1' OR Gen_Start_Ack = '1' THEN
+              gen_capture_active_i <= '1';
+              gen_cap_state <= GENCAP_RUNNING;
+            END IF;
+          WHEN GENCAP_RUNNING =>
+            IF Gen_Busy = '0' AND gen_busy_d = '1' THEN
+              gen_cap_state <= GENCAP_WAIT_FULL;
+            END IF;
+          WHEN GENCAP_WAIT_FULL =>
+            IF Full = '1' THEN
+              gen_capture_active_i <= '0';
+              gen_capture_done_i <= '1';
+              gen_cap_state <= GENCAP_DONE;
+            END IF;
+          WHEN GENCAP_DONE =>
+            NULL;
+          WHEN GENCAP_ERROR =>
+            gen_capture_error_i <= '1';
+            gen_capture_active_i <= '0';
+            gen_cap_state <= GENCAP_IDLE;
+          WHEN OTHERS =>
+            NULL;
+        END CASE;
+      END IF;
+      disp_gen_arm_d := disp_gen_arm;
+    END IF;
   END PROCESS;
 
   -- ─── 21-cycle bit-serial divider solves lpm_divide timing hole ─────
@@ -995,13 +738,14 @@ BEGIN
 
   pipe_depth <= 8 when ch_mode = '0' else 4;
 
-  -- SPI preamble byte: zero-waste status on every transaction
-  -- bit1 = dbg_rx_valid_seen (toggles on rising edge of SPI_RX_Valid)
-  -- bit0 = dbg_thread38_seen_3 (toggles on entry to Thread38=3)
-  spi_preamble <= Run & Run_OLS & Full & interface_mode_i &
-                  continuous_mode_i & fast_mode_i & dbg_rx_valid_seen & dbg_thread38_seen_3;
+  -- Bring-up/status preamble: run flags plus sticky SPI packet diagnostics.
+  spi_preamble <= Run & Run_OLS & Full & '1' &
+                  dbg_rx_valid_seen & dbg_pkt_ok_seen &
+                  dbg_bad_crc_seen & dbg_bad_frame_seen;
 
-  Gen_TX_Pin  <= gen_tx_pin_int;
+  Gen_Proto    <= gen_proto_int;
+  Gen_Baud_Div <= gen_baud_div_int;
+  Gen_TX_Pin   <= gen_tx_pin_int;
   Gen_SCL_Pin <= gen_scl_pin_int;
   Gen_I2C_Rd_Len <= gen_i2c_rd_len_int;
   Gen_I2C_Dev_R  <= gen_i2c_dev_r_int;
@@ -1014,15 +758,11 @@ BEGIN
   Analog_Ch1 <= analog_ch1_i;
   Buffer_Ack      <= buffer_ack_i;
   Armed          <= Run_OLS;
+  Debug_Ch0_Enable <= debug_ch0_enable_i;
+  Schmitt_Enable   <= schmitt_enable_i;
+  Schmitt_Threshold <= schmitt_threshold_i;
+  Gen_Capture_Active <= gen_capture_active_i;
   -- Pin_Map_Write is driven from the main process (default low, pulsed in CMD_PIN_MAP handler)
-
-  UART_Interface1 : UART_Interface
-  GENERIC MAP (
-      CLK_Frequency => CLK_Frequency,Baud_Rate     => Baud_Rate,OS_Rate       => OS_Rate,D_Width       => 8,Parity        => 0,Parity_EO     => '0'
-  ) PORT MAP (
-    CLK => CLK,
-    Reset         => '0',RX            => UART_RX,TX            => UART_TX,TX_Enable     => UART_TX_Enable,TX_Busy       => UART_TX_Busy,TX_Data       => UART_TX_Data,RX_Busy       => UART_RX_Busy,RX_Data       => UART_RX_Data,RX_Error      => OPEN
-  );
 
   Proto_Trigger1 : Protocol_Trigger
   PORT MAP (
@@ -1036,48 +776,375 @@ BEGIN
     Trigger      => proto_trig_pulse
   );
 
-  Interface_Mode <= interface_mode_i;
+  Interface_Mode <= '1';
 
-  SPI_Slave1 : SPI_Slave2
+  -- Mux TX_Data between UART path (UART mode) and packet protocol (SPI mode)
+  spi_tx_mux : block
+    signal spi_tx_tdata : std_logic_vector(7 downto 0) := x"FF";
+  begin
+    spi_tx_tdata <= pkt_tx_byte;
+    SPI_Slave1 : SPI_Slave2
+    PORT MAP (
+      sys_clk    => CLK,
+      fast_clk   => FAST_CLK,
+      reset      => '0',
+      SCK        => SPI_SCK,
+      MOSI       => SPI_MOSI,
+      MISO       => SPI_MISO,
+      CS_n       => SPI_CS,
+      TX_Data    => spi_tx_tdata,
+      SPI_Preamble   => spi_preamble,
+      TX_Ready   => spi_tx_ready_i,
+      RX_Data    => SPI_RX_Data,
+      RX_Valid   => SPI_RX_Valid,
+      CS_Rise    => spi_cs_rise
+    );
+  end block;
+
+  -- ── SPI Packet Protocol (parallel path, SPI mode only) ───────────
+  -- Decode SPI byte stream into framed packets
+  pkt_rx_inst : spi_packet_rx
   PORT MAP (
-    sys_clk    => CLK,
-    fast_clk   => FAST_CLK,
-    reset      => '0',
-    SCK        => UART_RX,    -- SPI_SCK on same pin as UART_RX (A4/BDBUS0)
-    MOSI       => SPI_MOSI,   -- shared with UART_TX pin (B4/BDBUS1)
-    MISO       => SPI_MISO,
-    CS_n       => SPI_CS,
-    TX_Data    => UART_TX_Data,
-    SPI_Preamble   => spi_preamble,
-    PipeDepth  => pipe_depth,
-    TX_Ready   => open,
-    RX_Data    => SPI_RX_Data,
-    RX_Valid   => SPI_RX_Valid
+    clk         => CLK,
+    rst         => '0',
+    rx_byte     => SPI_RX_Data,
+    rx_valid    => SPI_RX_Valid,
+    cs_rise     => spi_cs_rise,
+    seq         => pkt_seq,
+    payload_len => pkt_payload_len,
+    payload_byte   => pkt_payload_byte,
+    payload_valid  => pkt_payload_valid,
+    payload_last   => pkt_payload_last,
+    cmd_active     => pkt_cmd_active,
+    packet_ok   => pkt_ok,
+    packet_err  => pkt_err,
+    err_bad_crc  => pkt_err_bad_crc,
+    err_bad_sync => pkt_err_bad_sync,
+    err_oversize => pkt_err_oversize
   );
 
-  spi_adapter: process(CLK)
+  -- ── RX payload header capture & GEN_LOAD streaming ───────────────
+  -- Captures first 8 payload bytes for quick dispatch access.
+  -- Routes GEN_LOAD payload bytes to disp_gen_data (caught by main process).
+  rx_stream_handler: process(CLK)
   begin
     if rising_edge(CLK) then
-      if interface_mode_i = '1' then
-        if UART_TX_Enable = '1' then
-          effective_TX_Busy <= '1';
-        elsif effective_TX_Busy = '1' then
-          -- Clear one cycle after Enable: TX_Data has been presented to the
-          -- SPI slave's TX_Data port.  The slave latches it on the next
-          -- sck_fall (guaranteed to arrive later at any SPI rate supported
-          -- by the sys_clk oversampling).  Cannot wait for SPI_RX_Valid
-          -- because no SCK edges arrive for status responses — the host
-          -- reads TX_Data in the next SPI transaction.
-          effective_TX_Busy <= '0';
+      disp_gen_load <= '0';
+      if pkt_payload_valid = '1' then
+        if rx_header_idx < 8 then
+          rx_payload_header(rx_header_idx) <= pkt_payload_byte;
         end if;
-      else
-        effective_TX_Busy <= UART_TX_Busy;
+        rx_header_idx <= rx_header_idx + 1;
+        if pkt_cmd_active = CMD_GEN_LOAD then
+          disp_gen_data <= pkt_payload_byte;
+          disp_gen_load <= '1';
+        end if;
+      end if;
+      if pkt_ok = '1' or pkt_err = '1' then
+        rx_header_idx <= 0;
       end if;
     end if;
   end process;
+  rx_header_len <= pkt_payload_len;
 
-  effective_RX_Busy <= UART_RX_Busy when interface_mode_i = '0' else SPI_RX_Valid;
-  effective_RX_Data <= UART_RX_Data when interface_mode_i = '0' else SPI_RX_Data;
+  -- ── SPI Packet Protocol: Dispatch & Response Builder (streaming) ─
+  -- All control registers are small (no wide payload buses).
+  -- Block read data is streamed directly from block_buf to the TX.
+  spi_pkt_dispatch: process(CLK)
+    type state_t is (IDLE, EXEC, WAIT_BLOCK, BUILD_RSP, FEED_TX, WAIT_TX);
+    variable st : state_t := IDLE;
+    variable rsp_seq_v : std_logic_vector(7 downto 0) := (others => '0');
+    variable rsp_stat_v : std_logic_vector(7 downto 0) := ST_OK;
+    variable rsp_len_v : natural range 0 to MAX_TX_PAYLOAD_BYTES := 0;
+    -- Small response buffer (8 bytes covers all non-block-read responses)
+    type rspbuf_t is array(0 to 7) of std_logic_vector(7 downto 0);
+    variable rsp_buf : rspbuf_t;
+    variable rsp_buf_len : natural range 0 to 8 := 0;
+    variable rsp_buf_idx : natural range 0 to 8 := 0;
+    variable reg_val : std_logic_vector(31 downto 0) := (others => '0');
+    -- Block-read streaming state
+    variable blk_wc : natural range 0 to 255 := 0;  -- word counter
+    variable blk_bc : natural range 0 to 3 := 0;    -- byte-within-word counter
+    -- Flag: true when payload comes from block_buf, not rsp_buf
+    variable feeding_block : boolean := false;
+    variable feed_wait_ready_low : boolean := false;
+    variable block_last_v : boolean := false;
+  begin
+    if rising_edge(CLK) then
+      -- Defaults
+      disp_tx_build <= '0';
+      disp_arm <= '0';
+      disp_gen_arm <= '0';
+      disp_abort <= '0';
+      disp_reg_write <= '0';
+      disp_gen_start <= '0';
+      disp_tx_payload_vld <= '0';
+
+      case st is
+        when IDLE =>
+          if pkt_ok = '1' then
+            rsp_seq_v := pkt_seq;
+            rsp_stat_v := ST_OK;
+            rsp_len_v := 0;
+            rsp_buf_len := 0;
+            feeding_block := false;
+            feed_wait_ready_low := false;
+            st := EXEC;
+          end if;
+
+        when EXEC =>
+          case pkt_cmd_active is
+            when CMD_PING =>
+              rsp_buf(0) := x"01";
+              rsp_buf(1) := x"01";
+              rsp_buf(2) := x"00";
+              rsp_buf_len := 3;
+              rsp_len_v := 3;
+              st := BUILD_RSP;
+
+            when CMD_GET_STATUS =>
+              if Run_OLS = '1' and Run = '0' then
+                rsp_stat_v := ST_CAPTURE_ARMED;
+              elsif Run = '1' and Full = '0' then
+                rsp_stat_v := ST_CAPTURE_BUSY;
+              elsif Full = '1' then
+                rsp_stat_v := ST_CAPTURE_DONE;
+              else
+                rsp_stat_v := ST_CAPTURE_IDLE;
+              end if;
+              rsp_buf(0) := Gen_Fifo_Count;
+              rsp_buf(2) := gen_load_events;
+              rsp_buf(1)(0) := Gen_Busy;
+              rsp_buf(1)(1) := gen_start_req;
+              rsp_buf(1)(7 downto 2) := (others => '0');
+              rsp_buf_len := 3;
+              rsp_len_v := 3;
+              st := BUILD_RSP;
+
+            when CMD_GET_METADATA =>
+              rsp_buf(0) := x"10";
+              rsp_buf(1) := x"10";  -- 16 channels
+              rsp_buf(2) := x"00";
+              rsp_buf(3) := x"F0";
+              rsp_buf(4) := x"01";
+              rsp_buf_len := 5;
+              rsp_len_v := 5;
+              st := BUILD_RSP;
+
+            when CMD_ARM_CAPTURE =>
+              disp_arm <= '1';
+              rsp_stat_v := ST_CAPTURE_ARMED;
+              st := BUILD_RSP;
+
+            when CMD_ABORT_CAPTURE =>
+              disp_abort <= '1';
+              rsp_stat_v := ST_CAPTURE_IDLE;
+              st := BUILD_RSP;
+
+            when CMD_READ_CAPTURE =>
+              if rx_header_len >= 4 then
+                block_rd_addr(7 downto 0)   <= rx_payload_header(0);
+                block_rd_addr(15 downto 8)  <= rx_payload_header(1);
+                block_rd_addr(23 downto 16) <= rx_payload_header(2);
+                block_rd_addr(31 downto 24) <= rx_payload_header(3);
+                block_rd_pending <= '1';
+                st := WAIT_BLOCK;
+              else
+                rsp_stat_v := ST_BAD_LEN;
+                st := BUILD_RSP;
+              end if;
+
+            when CMD_WRITE_REG =>
+              if rx_header_len >= 5 then
+                disp_reg_addr <= rx_payload_header(0);
+                disp_reg_wdata(7 downto 0)   <= rx_payload_header(1);
+                disp_reg_wdata(15 downto 8)  <= rx_payload_header(2);
+                disp_reg_wdata(23 downto 16) <= rx_payload_header(3);
+                disp_reg_wdata(31 downto 24) <= rx_payload_header(4);
+                disp_reg_write <= '1';
+              else
+                rsp_stat_v := ST_BAD_LEN;
+              end if;
+              st := BUILD_RSP;
+
+            when CMD_READ_REG =>
+              if rx_header_len >= 1 then
+                reg_val := (others => '0');
+                case rx_payload_header(0) is
+                  when REG_DIVIDER =>
+                    reg_val(23 downto 0) := std_logic_vector(to_unsigned(Divider, 24));
+                  when REG_SAMPLE_COUNT =>
+                    reg_val(29 downto 0) := std_logic_vector(to_unsigned(Read_Count, 30));
+                  when REG_DELAY_COUNT =>
+                    reg_val(29 downto 0) := std_logic_vector(to_unsigned(Delay_Count, 30));
+                  when REG_TRIGGER_MASK =>
+                    reg_val := Trigger_Mask;
+                  when REG_TRIGGER_VALUE =>
+                    reg_val := Trigger_Values;
+                  when REG_FLAGS | REG_FAST_MODE =>
+                    reg_val(0) := fast_mode_i;
+                  when REG_CONT_MODE =>
+                    reg_val(0) := continuous_mode_i;
+                  when REG_GEN_PROTO =>
+                    reg_val(0) := gen_proto_int;
+                  when REG_GEN_BAUD =>
+                    reg_val(15 downto 0) := gen_baud_div_int;
+                  when REG_GEN_PINS =>
+                    reg_val(4 downto 0) := std_logic_vector(to_unsigned(gen_tx_pin_int, 5));
+                    reg_val(12 downto 8) := std_logic_vector(to_unsigned(gen_scl_pin_int, 5));
+                  when REG_GEN_DATA =>
+                    reg_val(0) := gen_i2c_test_int;
+                    reg_val(1) := gen_spi_test_int;
+                    reg_val(15 downto 8) := std_logic_vector(to_unsigned(gen_i2c_rd_len_int, 8));
+                    reg_val(23 downto 16) := gen_i2c_dev_r_int;
+                  when REG_DEBUG_CH0_ENABLE =>
+                    reg_val(0) := debug_ch0_enable_i;
+                  when REG_SCHMITT_ENABLE =>
+                    reg_val(0) := schmitt_enable_i;
+                  when REG_SCHMITT_THRESHOLD =>
+                    reg_val(2 downto 0) := std_logic_vector(to_unsigned(schmitt_threshold_i, 3));
+                  when others => null;
+                end case;
+                rsp_buf(0) := reg_val(7 downto 0);
+                rsp_buf(1) := reg_val(15 downto 8);
+                rsp_buf(2) := reg_val(23 downto 16);
+                rsp_buf(3) := reg_val(31 downto 24);
+                rsp_buf_len := 4;
+                rsp_len_v := 4;
+              else
+                rsp_stat_v := ST_BAD_LEN;
+              end if;
+              st := BUILD_RSP;
+
+            when CMD_GEN_START =>
+              disp_gen_start <= '1';
+              st := BUILD_RSP;
+
+            when CMD_GEN_STOP =>
+              st := BUILD_RSP;
+
+            when CMD_GEN_LOAD =>
+              -- GEN_LOAD payload bytes were already written to Gen_Load_Byte
+              -- by rx_stream_handler during RX.  Nothing more to do.
+              st := BUILD_RSP;
+
+            when CMD_GEN_CAPTURE =>
+              if gen_cap_state = GENCAP_IDLE then
+                disp_gen_arm <= '1';
+                disp_arm <= '1';
+                rsp_stat_v := ST_CAPTURE_ARMED;
+              else
+                rsp_stat_v := ST_BUSY;
+              end if;
+              st := BUILD_RSP;
+
+            when CMD_GEN_STATUS =>
+              rsp_buf(0)(0) := Gen_Busy;
+              rsp_buf(0)(1) := Gen_Start_Ack;
+              rsp_buf(0)(2) := gen_capture_error_i;
+              rsp_buf(0)(3) := gen_capture_active_i;
+              rsp_buf(0)(4) := gen_capture_done_i;
+              rsp_buf(0)(5) := Gen_Start_Reject;
+              IF unsigned(Gen_Fifo_Count) > 0 THEN rsp_buf(0)(6) := '1'; ELSE rsp_buf(0)(6) := '0'; END IF;
+              rsp_buf(0)(7) := Gen_Done_Pulse;
+              rsp_buf_len := 1;
+              rsp_len_v := 1;
+              st := BUILD_RSP;
+
+            when others =>
+              rsp_stat_v := ST_BAD_CMD;
+              st := BUILD_RSP;
+          end case;
+
+        when WAIT_BLOCK =>
+          if block_rd_ack = '1' then
+            rsp_len_v := 1024;
+            block_rd_pending <= '0';
+            blk_wc := 0;
+            blk_bc := 0;
+            feeding_block := true;
+            st := BUILD_RSP;
+          end if;
+
+        when BUILD_RSP =>
+          disp_tx_seq <= rsp_seq_v;
+          disp_tx_status <= rsp_stat_v;
+          disp_tx_len <= rsp_len_v;
+          disp_tx_build <= '1';
+          if rsp_len_v = 0 then
+            st := WAIT_TX;
+          else
+            rsp_buf_idx := 0;
+            feed_wait_ready_low := false;
+            st := FEED_TX;
+          end if;
+
+        when FEED_TX =>
+          if feed_wait_ready_low then
+            if pkt_tx_payload_ready = '0' then
+              feed_wait_ready_low := false;
+            end if;
+          elsif pkt_tx_payload_ready = '1' then
+            if feeding_block then
+              -- Stream from block_buf (256 x 32-bit = 1024 bytes)
+              disp_tx_payload_in <= block_buf(blk_wc)(blk_bc * 8 + 7 downto blk_bc * 8);
+              disp_tx_payload_vld <= '1';
+              feed_wait_ready_low := true;
+              block_last_v := (blk_wc = 255 and blk_bc = 3);
+              if block_last_v then
+                st := WAIT_TX;
+              else
+                if blk_bc < 3 then
+                  blk_bc := blk_bc + 1;
+                else
+                  blk_bc := 0;
+                  if blk_wc < 255 then
+                    blk_wc := blk_wc + 1;
+                  end if;
+                end if;
+              end if;
+            else
+              -- Stream from rsp_buf
+              if rsp_buf_idx < rsp_buf_len then
+                disp_tx_payload_in <= rsp_buf(rsp_buf_idx);
+                disp_tx_payload_vld <= '1';
+                feed_wait_ready_low := true;
+                rsp_buf_idx := rsp_buf_idx + 1;
+              end if;
+              if rsp_buf_idx >= rsp_buf_len then
+                st := WAIT_TX;
+              end if;
+            end if;
+          end if;
+
+        when WAIT_TX =>
+          if pkt_tx_done = '1' then
+            st := IDLE;
+          end if;
+      end case;
+    end if;
+  end process;
+
+  -- Build response packets from dispatch output (streaming payload)
+  pkt_tx_inst : spi_packet_tx
+  PORT MAP (
+    clk         => CLK,
+    rst         => '0',
+    req_seq     => disp_tx_seq,
+    build       => disp_tx_build,
+    rsp_status  => disp_tx_status,
+    rsp_len     => disp_tx_len,
+    payload_byte_in  => disp_tx_payload_in,
+    payload_valid_in => disp_tx_payload_vld,
+    payload_ready    => pkt_tx_payload_ready,
+    tx_ready    => spi_tx_ready_i,
+    tx_byte     => pkt_tx_byte,
+    tx_valid    => pkt_tx_valid,
+    tx_done     => pkt_tx_done,
+    idle_byte   => pkt_idle_byte
+  );
+
+
 
   -- Debug: rising-edge detect on SPI_RX_Valid (sys_clk domain)
   rx_valid_edge: process(CLK)
@@ -1085,10 +1152,19 @@ BEGIN
     variable rv_s2 : std_logic := '0';
   begin
     if rising_edge(CLK) then
-      rv_s2 := rv_s1;          -- old value (previous cycle)
-      rv_s1 := SPI_RX_Valid;   -- new value (this cycle)
+      rv_s2 := rv_s1;
+      rv_s1 := SPI_RX_Valid;
       if rv_s1 = '1' and rv_s2 = '0' then
-        dbg_rx_valid_seen <= NOT dbg_rx_valid_seen;
+        dbg_rx_valid_seen <= '1';
+      end if;
+      if pkt_ok = '1' then
+        dbg_pkt_ok_seen <= '1';
+      end if;
+      if pkt_err_bad_crc = '1' then
+        dbg_bad_crc_seen <= '1';
+      end if;
+      if pkt_err_bad_sync = '1' or pkt_err_oversize = '1' then
+        dbg_bad_frame_seen <= '1';
       end if;
     end if;
   end process;

@@ -16,7 +16,17 @@ entity ADC_Controller is
     ch1_start      : in  std_logic := '0';
     ch1_busy       : out std_logic := '1';
     ch1_result     : out std_logic_vector(11 downto 0) := (others => '0');
-    ch1_valid      : out std_logic := '0'
+    ch1_valid      : out std_logic := '0';
+    ch2_sel        : in  natural range 0 to 15 := 2;
+    ch2_start      : in  std_logic := '0';
+    ch2_busy       : out std_logic := '1';
+    ch2_result     : out std_logic_vector(11 downto 0) := (others => '0');
+    ch2_valid      : out std_logic := '0';
+    ch3_sel        : in  natural range 0 to 15 := 3;
+    ch3_start      : in  std_logic := '0';
+    ch3_busy       : out std_logic := '1';
+    ch3_result     : out std_logic_vector(11 downto 0) := (others => '0');
+    ch3_valid      : out std_logic := '0'
   );
 end ADC_Controller;
 
@@ -31,13 +41,19 @@ architecture rtl of ADC_Controller is
   signal rsp_valid     : std_logic := '0';
   signal rsp_data      : std_logic_vector(11 downto 0) := (others => '0');
 
-  type state_t is (INIT, IDLE, SEND_CMD, WAIT_RSP, DONE0, DONE1);
+  type state_t is (INIT, IDLE, SEND_CMD, WAIT_RSP, DONE);
   signal state : state_t := INIT;
   signal init_cnt : natural range 0 to 4095 := 0;
-  signal ch0_busy_i  : std_logic := '0';
-  signal ch1_busy_i  : std_logic := '1';
-  signal ch0_r       : std_logic_vector(11 downto 0) := (others => '0');
-  signal ch1_r       : std_logic_vector(11 downto 0) := (others => '0');
+  signal start_arm : std_logic := '0';
+  signal ch_req    : std_logic_vector(3 downto 0) := "0000";
+  signal ch_index  : natural range 0 to 3 := 0;
+  signal ch_busy   : std_logic_vector(3 downto 0) := "0000";
+  signal ch_done   : std_logic_vector(3 downto 0) := "0000";
+  signal busy_send : std_logic := '0';
+  signal ch0_r     : std_logic_vector(11 downto 0) := (others => '0');
+  signal ch1_r     : std_logic_vector(11 downto 0) := (others => '0');
+  signal ch2_r     : std_logic_vector(11 downto 0) := (others => '0');
+  signal ch3_r     : std_logic_vector(11 downto 0) := (others => '0');
 
   component altera_modular_adc_control is
     generic (
@@ -119,14 +135,18 @@ begin
         cmd_valid <= '0';
         cmd_sop <= '0';
         cmd_eop <= '0';
-        ch0_busy_i <= '0';
-        ch1_busy_i <= '1';
+        ch_busy <= "0000";
+        ch_req <= "0000";
+        ch_done <= "0000";
         ch0_r <= (others => '0');
         ch1_r <= (others => '0');
+        ch2_r <= (others => '0');
+        ch3_r <= (others => '0');
       else
         cmd_valid <= '0';
         cmd_sop <= '0';
         cmd_eop <= '0';
+        ch_done <= (others => '0');
 
         case state is
 
@@ -134,51 +154,68 @@ begin
             if init_cnt < 4095 then
               init_cnt <= init_cnt + 1;
             else
-              ch1_busy_i <= '0';
               state <= IDLE;
             end if;
 
           when IDLE =>
-            ch0_busy_i <= '0';
-            ch1_busy_i <= '0';
-            if ch0_start = '1' then
-              ch0_busy_i <= '1';
-              cmd_channel <= std_logic_vector(to_unsigned(ch0_sel, 5));
-              cmd_valid <= '1';
-              cmd_sop <= '1';
-              cmd_eop <= '1';
-              state <= SEND_CMD;
-            elsif ch1_start = '1' then
-              ch1_busy_i <= '1';
-              cmd_channel <= std_logic_vector(to_unsigned(ch1_sel, 5));
-              cmd_valid <= '1';
-              cmd_sop <= '1';
-              cmd_eop <= '1';
+            ch_busy <= "0000";
+            -- Capture start requests and begin sequencing
+            -- Use the start signals directly (ch_req is signal, must be evaluated same cycle)
+            if ch0_start = '1' or ch1_start = '1' or ch2_start = '1' or ch3_start = '1' then
+              ch_req(0) <= ch0_start;
+              ch_req(1) <= ch1_start;
+              ch_req(2) <= ch2_start;
+              ch_req(3) <= ch3_start;
+              ch_busy <= (ch0_start & ch1_start & ch2_start & ch3_start);
+              ch_index <= 0;
               state <= SEND_CMD;
             end if;
 
           when SEND_CMD =>
-            if cmd_ready = '1' then
-              state <= WAIT_RSP;
+            -- Select next requested channel
+            if ch_req(ch_index) = '1' then
+              case ch_index is
+                when 0 => cmd_channel <= std_logic_vector(to_unsigned(ch0_sel, 5));
+                when 1 => cmd_channel <= std_logic_vector(to_unsigned(ch1_sel, 5));
+                when 2 => cmd_channel <= std_logic_vector(to_unsigned(ch2_sel, 5));
+                when others => cmd_channel <= std_logic_vector(to_unsigned(ch3_sel, 5));
+              end case;
+              cmd_valid <= '1';
+              cmd_sop <= '1';
+              cmd_eop <= '1';
+              if cmd_ready = '1' then
+                state <= WAIT_RSP;
+              end if;
+            else
+              -- Skip to next channel
+              if ch_index < 3 then
+                ch_index <= ch_index + 1;
+              else
+                ch_busy <= "0000";
+                state <= IDLE;
+              end if;
             end if;
 
           when WAIT_RSP =>
             if rsp_valid = '1' then
-              if ch0_busy_i = '1' then
-                ch0_r <= rsp_data;
-                state <= DONE0;
+              case ch_index is
+                when 0 => ch0_r <= rsp_data;
+                when 1 => ch1_r <= rsp_data;
+                when 2 => ch2_r <= rsp_data;
+                when others => ch3_r <= rsp_data;
+              end case;
+              ch_done(ch_index) <= '1';
+              if ch_index < 3 then
+                ch_index <= ch_index + 1;
+                state <= SEND_CMD;
               else
-                ch1_r <= rsp_data;
-                state <= DONE1;
+                -- All requested channels done
+                state <= DONE;
               end if;
             end if;
 
-          when DONE0 =>
-            ch0_busy_i <= '0';
-            state <= IDLE;
-
-          when DONE1 =>
-            ch1_busy_i <= '0';
+          when DONE =>
+            ch_busy <= "0000";
             state <= IDLE;
 
         end case;
@@ -186,11 +223,17 @@ begin
     end if;
   end process;
 
-  ch0_busy  <= ch0_busy_i;
-  ch1_busy  <= ch1_busy_i;
+  ch0_busy  <= ch_busy(0);
+  ch1_busy  <= ch_busy(1);
+  ch2_busy  <= ch_busy(2);
+  ch3_busy  <= ch_busy(3);
   ch0_result <= ch0_r;
   ch1_result <= ch1_r;
-  ch0_valid <= '1' when state = DONE0 else '0';
-  ch1_valid <= '1' when state = DONE1 else '0';
+  ch2_result <= ch2_r;
+  ch3_result <= ch3_r;
+  ch0_valid <= ch_done(0);
+  ch1_valid <= ch_done(1);
+  ch2_valid <= ch_done(2);
+  ch3_valid <= ch_done(3);
 
 end rtl;

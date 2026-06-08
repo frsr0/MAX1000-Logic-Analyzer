@@ -2,30 +2,30 @@
 
 ## Architecture Overview
 
-The FPGA design targets the Intel MAX10 10M08SAU169C8G on the Arrow MAX1000 board. The PLL multiplies the 12 MHz input to generate three clock domains:
+The FPGA design targets the Intel MAX10 10M08SAU169C8G on the Arrow MAX1000 board. The PLL multiplies the 12 MHz input to generate four clock domains:
 
 | Output | Multiply | Frequency | Domain |
 |--------|----------|-----------|--------|
 | c0 | ×4 | 48 MHz | Core logic (OLS_Interface, FLA, SDRAM) |
 | c1 | ×10 | 120 MHz | SPI slave (fast_clk) |
 | c2 | ×4 | 48 MHz, −90° | SDRAM clock |
+| c3 | ×2 | 24 MHz | Signal generator (GEN_CLK) |
 
-The system clock frequency is computed as `12_000_000 * PLL_MULT / PLL_DIV` with defaults `PLL_MULT=4, PLL_DIV=1` → 48 MHz.
+The system clock frequency is computed as `12_000_000 * PLL_MULT / PLL_DIV` with defaults `PLL_MULT=4, PLL_DIV=1` → 48 MHz.  
 
 ### Top-down hierarchy
 
 ```
 OLS_Logic_Analyzer_wrapper      — pin assignment wrapper (auto-generated from CSV, in proj/)
 └── OLS_SDRAM_Top               — system integration, I/O pin pool, capture mux
-    ├── SDRAM_PLL               — PLL (3-output clock generation)
+    ├── SDRAM_PLL               — PLL (4-output clock generation)
     ├── OLS_Logic_Analyzer      — core (command/control + capture + generator)
-    │   ├── OLS_Interface       — SPI/UART command decoder & readout state machine
+    │   ├── OLS_Interface       — SPI command decoder & readout state machine
     │   ├── Fast_Logic_Analyzer_SDRAM — capture engine, triple buffer, SDRAM bridge
     │   │   └── SDRAM_Interface → SDRAM_Controller (Avalon-MM SDRAM controller)
     │   ├── Signal_Gen          — UART/I2C/SPI protocol generator with FIFO
     │   ├── Protocol_Trigger    — UART byte-level trigger detector
     │   ├── SPI_Slave2          — full-duplex SPI slave with CDC (sys → fast clock)
-    │   └── UART_Interface      — UART 8N1 RX/TX with configurable baud
     ├── LED_Controller          — 8-LED animation engine (breathing, armed, capture)
     └── ADC_Controller          — MAX10 internal ADC wrapper (altera_modular_adc)
 ```
@@ -34,23 +34,24 @@ OLS_Logic_Analyzer_wrapper      — pin assignment wrapper (auto-generated from 
 
 ## RTL Modules
 
-### `rtl/OLS_SDRAM_Top.vhd` (535 lines)
+### `rtl/OLS_SDRAM_Top.vhd` (655 lines)
 **Entity:** `OLS_SDRAM_Top`
 
 System integration module connecting all subsystems. Key functions:
 
 - **Clock generation**: Instantiates `SDRAM_PLL`, distributes sys_clk (48 MHz) and fast_clk (120 MHz)
-- **Pin pool routing**: 23-pin pool (MKR_D[14:0] + PMOD[7:0]) mapped to 16 LA channels via `pin_map` register. The pin map is writable from the host via `CMD_PIN_MAP (0xBB)`, allowing any channel to probe any physical pin
-- **Capture mux**: Per-channel combinatorial mux with uniform 2-cycle pipeline:
-  - `capture_mux(LA_CHANNELS-1 downto 0)` = `gen_tx_d1` when gen_busy and gen_tx_pin = i
-  - = `sen_sdo_d1` (or `sen_sdi_sync` in I2C test mode) for SEN/SDI signals
-  - = `gpio_d1` (pipelined input) otherwise
-  - SCL in I2C test mode = `gen_scl_d2` (2-cycle to match sen_sdi_sync pipeline)
+- **Pin pool routing**: 23-pin pool (MKR_D[14:0] + PMOD[7:0]) mapped to 16 LA channels via `pin_map` register. The pin map is writable from the host, allowing any channel to probe any physical pin
+- **Capture mux**: Combinational mux + registered output (`internal_data_r`). Generator loopback controlled by `gen_capture_active` (not `gen_busy`):
+  - Priority 1: `gen_tx_d1` on `gen_tx_pin` when `gen_capture_active='1'`
+  - Priority 2: `gen_scl_d2` on `gen_scl_pin` when `gen_capture_active='1'` and `gen_i2c_test='1'`
+  - Priority 3: `registered_ch0_d1` on CH0 when `debug_ch0_enable='1'`
+  - Default: `pin_pool_clean(pin_map(i))` (Schmitt-filtered physical pin)
+- **Generator output priority**: `gen_busy` controls physical pin drive; `gen_capture_active` controls internal loopback routing. Two independent mechanisms.
 - **Programmable pin map**: 16 entries, each selects one of 23 pool pins for an LA channel. Written via command interface with `pin_map_write`/`pin_map_channel`/`pin_map_pin` signals
-- **Test divider**: Free-running 10-bit counter on sys_clk, bit 9 registered through `preserved_ch0` (with `preserve` attribute) → 46.875 kHz on CH0
-- **SEN/CDE**: 2-FF synchroniser on `sen_sdi`, pipeline registers on gen_tx, gen_scl, sen_sdo, registered_ch0 to ensure uniform 2-cycle depth
+- **Test divider**: Free-running 10-bit counter on sys_clk, bit 9 registered through `registered_ch0` → 46.875 kHz on CH0
+- **Synchronisers**: 2-FF on `sen_sdi`, pipeline registers on gen_tx, gen_scl, registered_ch0 for uniform clock-domain crossing
 
-### `rtl/OLS_Logic_Analyzer_SDRAM_Core.vhd` (270 lines)
+### `rtl/OLS_Logic_Analyzer_SDRAM_Core.vhd` (298 lines)
 **Entity:** `OLS_Logic_Analyzer`
 
 The core wrapper that instantiates and connects `OLS_Interface`, `Fast_Logic_Analyzer_SDRAM`, `Signal_Gen`, `Protocol_Trigger`, and `SPI_Slave2`. Defines sample width: `sub_steps = 16 / Channels`.
@@ -60,10 +61,10 @@ The core wrapper that instantiates and connects `OLS_Interface`, `Fast_Logic_Ana
 
 Routes `Buffer_Full[2:0]` / `Buffer_Ack[2:0]` between interface and FLA for continuous capture handshake.
 
-### `rtl/OLS_Interface.vhd` (1096 lines) — Largest module
+### `rtl/OLS_Interface.vhd` (1172 lines) — Largest module
 **Entity:** `OLS_Interface`
 
-Command/control interface implementing the OLS protocol. Parses SPI and UART command streams.
+Command/control interface implementing the OLS protocol. Parses SPI command streams. (UART host backend removed in v1.1; UART is still supported as a decode/generate protocol.)
 
 **Key constants**: `ID = x"31414c53"` — ASCII "SLA1" (reversed), returned by CMD_ID.
 
@@ -134,10 +135,11 @@ Full-duplex SPI slave with clock-domain crossing.
 - Configurable `PipeDepth` (2..8) for pipeline balancing
 - Bit counter: 0..7, `rx_valid_cnt` (0..127) counts bytes for continuous readout without re-arming
 
-### `rtl/UART_Interface.vhd` (203 lines)
+### `rtl/UART_Interface.vhd` (203 lines) — Legacy (not instantiated in v1.1)
 **Entity:** `UART_Interface`
 
 Async UART transmitter and receiver. 8N1 default, configurable data width, parity, oversampling.
+This module is compiled but no longer instantiated in the top-level design. UART host backend was removed in v1.1 in favour of the SPI packet protocol. UART is still supported as a capture/decode/generator protocol.
 
 **TX path**: `idle` → `transmit`. Shifts out start bit (0), data (LSB first), stop bit (1) at `baud_pulse` rate.
 **RX path**: `idle` → `receive`. Detects start bit (0), samples at midpoint (`actual_os_rate/2`), shifts in data, checks stop bit and parity.
@@ -171,19 +173,21 @@ Custom SDRAM controller with full state machine: power-on init (precharge, refre
 
 Altera ALTPLL megafunction. 12 MHz input, three outputs: c0 (×4, 48 MHz), c1 (×10, 120 MHz), c2 (×4, 48 MHz, −90° phase shift). Has `locked` output for PLL lock detection.
 
-### `rtl/Signal_Gen.vhd` (327 lines)
+### `rtl/Signal_Gen.vhd` (441 lines)
 **Entity:** `Signal_Gen`
 
 Configurable protocol signal generator with 256-byte FIFO.
 
 **Protocols**:
-- **UART** (Proto=0): Shifts out start bit + 8 data (LSB first) + stop bit. Baud rate from `Baud_Div` or `FIXED_BAUD_DIV (0x00F0=240)` fallback
-- **I2C** (Proto=1): Master mode. Generates START, 7-bit address + R/W, ACK/NACK, data bytes, STOP. Supports multi-byte read via `I2C_Rd_Len` and `I2C_Dev_R`. CRC-16 option with configurable polynomial
-- **SPI** (Proto=0, SPI_Mode=1): Mode 0 (CPOL=0, CPHA=0), MSB first, CS asserted per byte
+- **UART** (Proto=0): Explicit registered FSM (`uart_state_t`). Shifts out start bit `0`, 8 data bits LSB-first, stop bit `1`. Baud rate from `Baud_Div` or `FIXED_BAUD_DIV (0x00F0=240)` fallback. CRC-16 append (MODBUS compatible via `CRC_Poly`) optional via `CRC_En`.
+- **SPI** (Proto=0, SPI_Mode=1): Mode 0 (CPOL=0, CPHA=0), MSB first, CS asserted per byte. Used for on-board accelerometer reads.
+- **I2C** (Proto=1): Master mode. Generates START, 7-bit address + R/W, ACK/NACK, data bytes, STOP. Supports multi-byte read via `I2C_Rd_Len` and `I2C_Dev_R`.
 
-**CRC**: CRC-16 with configurable polynomial (default `x"A001"` = MODBUS). Active after `CRC_En` is set, appends CRC after data.
+**UART state machine** (4 states): `UART_IDLE → UART_START_BIT → UART_DATA_BITS → UART_STOP_BIT`. On accepted start, loads first FIFO byte, outputs start bit `0`, then 8 data bits (LSB first), then stop bit `1`. Loads next byte from FIFO on stop bit if available. Handles CRC append after FIFO empties.
 
-**I2C state machine** (15 states, `i2c_state` 0..14): START→ADDR+W→ACK→DATA→ACK→...→STOP for writes; adds repeated START→ADDR+R→RD_DATA→NACK→STOP for reads.
+**Start arbitration**: Common `start_rise` detection dispatches to SPI/UART/I2C based on `SPI_Mode` and `Proto`. Uses `start_accept_v` flag to prevent the idle-reset block from overwriting start initialization on the same clock cycle.
+
+**Signals**: `Busy`, `Active` follow `tx_active`. `Start_Ack` pulses on accepted start, `Start_Reject` on rejected (empty FIFO). `Done_Pulse` fires after final stop bit.
 
 ### `rtl/Protocol_Trigger.vhd` (87 lines)
 **Entity:** `Protocol_Trigger`

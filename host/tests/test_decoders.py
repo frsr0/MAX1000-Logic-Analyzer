@@ -108,9 +108,8 @@ class TestSamplesToChannels:
     def test_stride_fallback(self):
         data = bytes([0xFF, 0x00])
         ch, count = samples_to_channels(data, num_ch=16, stride=1)
-        assert count == 1
-        assert ch[0] == [1]
-        assert ch[8] == [0]
+        assert count == 2
+        assert ch[0] == [1, 0]
 
 
 import struct
