@@ -51,7 +51,9 @@ PORT (
        Pin_Map_Write   : OUT STD_LOGIC := '0';
         Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
         Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
-        Debug_Ch0_Enable : OUT STD_LOGIC := '0'
+        Debug_Ch0_Enable : OUT STD_LOGIC := '0';
+        Schmitt_Enable   : OUT STD_LOGIC := '0';
+        Schmitt_Threshold : OUT NATURAL range 0 to 7 := 3
 
 );
 END OLS_Interface;
@@ -116,6 +118,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
 
   SIGNAL ch_mode             : STD_LOGIC := '0';  -- 0=8ch/500k, 1=4ch/4M
   SIGNAL debug_ch0_enable_i  : STD_LOGIC := '0';
+  SIGNAL schmitt_enable_i    : STD_LOGIC := '0';
+  SIGNAL schmitt_threshold_i : NATURAL range 0 to 7 := 3;
   SIGNAL pipe_depth          : NATURAL range 2 to 8 := 8;
   SIGNAL proto_trig_protocol : STD_LOGIC_VECTOR(1 downto 0) := "00";
   SIGNAL proto_trig_match    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
@@ -332,6 +336,10 @@ BEGIN
 
         WHEN REG_DEBUG_CH0_ENABLE =>
           debug_ch0_enable_i <= disp_reg_wdata(0);
+        WHEN REG_SCHMITT_ENABLE =>
+          schmitt_enable_i <= disp_reg_wdata(0);
+        WHEN REG_SCHMITT_THRESHOLD =>
+          schmitt_threshold_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(2 downto 0)));
         WHEN others => null;
       END CASE;
     END IF;
@@ -680,6 +688,8 @@ BEGIN
   Buffer_Ack      <= buffer_ack_i;
   Armed          <= Run_OLS;
   Debug_Ch0_Enable <= debug_ch0_enable_i;
+  Schmitt_Enable   <= schmitt_enable_i;
+  Schmitt_Threshold <= schmitt_threshold_i;
   -- Pin_Map_Write is driven from the main process (default low, pulsed in CMD_PIN_MAP handler)
 
   Proto_Trigger1 : Protocol_Trigger
@@ -916,6 +926,10 @@ BEGIN
                     reg_val(23 downto 16) := gen_i2c_dev_r_int;
                   when REG_DEBUG_CH0_ENABLE =>
                     reg_val(0) := debug_ch0_enable_i;
+                  when REG_SCHMITT_ENABLE =>
+                    reg_val(0) := schmitt_enable_i;
+                  when REG_SCHMITT_THRESHOLD =>
+                    reg_val(2 downto 0) := std_logic_vector(to_unsigned(schmitt_threshold_i, 3));
                   when others => null;
                 end case;
                 rsp_buf(0) := reg_val(7 downto 0);

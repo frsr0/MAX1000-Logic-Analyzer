@@ -95,6 +95,14 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_tx_d1    : std_logic := '0';
   signal registered_ch0_d1 : std_logic := '0';
   signal sen_sdo_d1   : std_logic := '0';
+
+  -- Schmitt trigger / digital hysteresis filter
+  signal schmitt_enable    : std_logic := '0';
+  signal schmitt_threshold : natural range 0 to 7 := 3;
+  signal pin_pool_clean    : std_logic_vector(PIN_POOL_SIZE-1 downto 0);
+  type schmitt_cnt_t is array(0 to PIN_POOL_SIZE-1) of natural range 0 to 7;
+  signal schmitt_cnt   : schmitt_cnt_t := (others => 0);
+  signal schmitt_stable : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
   attribute preserve of gen_start : signal is true;
   attribute preserve of gen_tx : signal is true;
   attribute preserve of gen_busy : signal is true;
@@ -178,7 +186,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Pin_Map_Write  : OUT STD_LOGIC := '0';
     Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
     Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
-    Debug_Ch0_Enable : OUT STD_LOGIC := '0'
+    Debug_Ch0_Enable : OUT STD_LOGIC := '0';
+    Schmitt_Enable   : OUT STD_LOGIC := '0';
+    Schmitt_Threshold : OUT NATURAL range 0 to 7 := 3
   );
   END COMPONENT;
 
@@ -270,7 +280,8 @@ BEGIN
 
   -- Capture mux: each LA channel reads from pin_pool via pin_map.
   -- CH0 can optionally expose the internal divider debug signal.
-  capture_mux: process(pin_pool_d1, pin_map, gen_busy, gen_tx_pin, gen_scl_pin,
+  -- Pins are Schmitt-filtered when schmitt_enable is active.
+  capture_mux: process(pin_pool_clean, pin_map, gen_busy, gen_tx_pin, gen_scl_pin,
                        gen_tx_d1, gen_scl_d2, sen_sdo_d1, gen_i2c_test, gen_spi_test,
                        registered_ch0_d1, debug_ch0_enable)
   begin
@@ -288,7 +299,7 @@ BEGIN
       elsif gen_busy = '1' and gen_i2c_test = '1' and gen_scl_pin = pin_map(i) then
         internal_data(i) <= gen_scl_d2;
       else
-        internal_data(i) <= pin_pool_d1(pin_map(i));
+        internal_data(i) <= pin_pool_clean(pin_map(i));
       end if;
     end loop;
   end process;
@@ -348,6 +359,30 @@ BEGIN
   end process;
 
   analog_stream_mode <= '1' when analog_mode /= "000" else '0';
+
+  -- Digital hysteresis filter (Schmitt trigger): requires N consecutive equal
+  -- samples before accepting a transition, rejecting glitches below threshold.
+  process(sys_clk)
+  begin
+    if rising_edge(sys_clk) then
+      for i in 0 to PIN_POOL_SIZE-1 loop
+        if schmitt_enable = '1' then
+          if pin_pool(i) = schmitt_stable(i) then
+            schmitt_cnt(i) <= 0;
+          elsif schmitt_cnt(i) < schmitt_threshold then
+            schmitt_cnt(i) <= schmitt_cnt(i) + 1;
+          else
+            schmitt_stable(i) <= pin_pool(i);
+            schmitt_cnt(i) <= 0;
+          end if;
+        else
+          schmitt_stable(i) <= pin_pool(i);
+          schmitt_cnt(i) <= 0;
+        end if;
+      end loop;
+    end if;
+  end process;
+  pin_pool_clean <= schmitt_stable;
 
   process(sys_clk)
   begin
@@ -494,7 +529,9 @@ BEGIN
     Pin_Map_Write  => pin_map_write,
     Pin_Map_Channel => pin_map_channel,
     Pin_Map_Pin     => pin_map_pin,
-    Debug_Ch0_Enable => debug_ch0_enable
+    Debug_Ch0_Enable => debug_ch0_enable,
+    Schmitt_Enable   => schmitt_enable,
+    Schmitt_Threshold => schmitt_threshold
   );
   
   -- PWM carrier counter

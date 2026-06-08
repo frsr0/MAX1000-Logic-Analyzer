@@ -1291,8 +1291,16 @@ class OLScope:
         self.raw_mode_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(trg_f, text="Raw mode — 8 ch only (higher throughput)",
                         variable=self.raw_mode_var).grid(row=11, column=0, columnspan=2, sticky='w', pady=2)
-        ttk.Separator(trg_f, orient='horizontal').grid(row=12, column=0, columnspan=2, sticky='ew', pady=4)
-        ttk.Label(trg_f, text="Protocol Trigger:").grid(row=12, column=0, columnspan=2, sticky='w', pady=2)
+        self.schmitt_var = tk.BooleanVar(value=False)
+        self.schmitt_thresh_var = tk.StringVar(value='3')
+        ttk.Checkbutton(trg_f, text="Schmitt trigger (glitch filter)",
+                        variable=self.schmitt_var,
+                        command=self._apply_schmitt).grid(row=12, column=0, columnspan=2, sticky='w', pady=2)
+        ttk.Label(trg_f, text="Thresh:").grid(row=12, column=1, sticky='e')
+        ttk.Spinbox(trg_f, from_=1, to=7, width=3, textvariable=self.schmitt_thresh_var,
+                    command=self._apply_schmitt).grid(row=12, column=1, sticky='e', padx=(0,50))
+        ttk.Separator(trg_f, orient='horizontal').grid(row=14, column=0, columnspan=2, sticky='ew', pady=4)
+        ttk.Label(trg_f, text="Protocol Trigger:").grid(row=14, column=0, columnspan=2, sticky='w', pady=2)
         self.proto_trig_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(trg_f, text="Enable", variable=self.proto_trig_var).grid(row=11, column=0, sticky='w', pady=1)
         ttk.Label(trg_f, text="Match (hex):").grid(row=11, column=1, sticky='w')
@@ -1466,6 +1474,16 @@ class OLScope:
                 self.dev.set_debug_ch0(enable)
             except Exception as e:
                 self.status['text'] = f"CH0 debug update failed: {e}"
+
+    def _apply_schmitt(self):
+        if not self.dev or not hasattr(self.dev, 'set_schmitt'):
+            return
+        try:
+            enable = self.schmitt_var.get()
+            thresh = int(self.schmitt_thresh_var.get())
+            self.dev.set_schmitt(enable, thresh)
+        except Exception as e:
+            self.status['text'] = f"Schmitt trigger update failed: {e}"
 
     def _apply_debug_ch0_setting(self):
         if self.dev and hasattr(self, 'debug_ch0_var') and hasattr(self.dev, 'debug_ch0_enabled'):
@@ -1748,6 +1766,7 @@ class OLScope:
                     # SPI backend: raw mode is display-only, always 4 bytes
                     self.dev._stride = 1 if raw else 4
                     self.dev._raw_flags = 0  # always send all bytes
+                self._apply_schmitt()
                 if proto_enable:
                     self.dev.trigger_decode(match_byte=match_byte, channel=proto_ch, baud=proto_baud, enable=True)
                 if rolling:

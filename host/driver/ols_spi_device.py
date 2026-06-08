@@ -14,6 +14,7 @@ from driver.spi_protocol import (
     REG_FAST_MODE, REG_CONT_MODE,
     REG_GEN_PROTO, REG_GEN_BAUD, REG_GEN_PINS, REG_GEN_DATA,
     REG_IFACE_MODE, REG_DEBUG_CH0_ENABLE,
+    REG_SCHMITT_ENABLE, REG_SCHMITT_THRESHOLD,
     ST_OK, ST_CAPTURE_DONE,
 )
 
@@ -192,6 +193,16 @@ class OLSDeviceSPI:
 
     def decode_analog_frames(self, data, mode=None):
         return decode_analog_frames(data, self.analog_mode if mode is None else mode)
+
+    def set_schmitt(self, enable=True, threshold=3):
+        """Enable/disable digital hysteresis filter (Schmitt trigger).
+        
+        When enabled, each input pin requires `threshold` consecutive equal
+        samples before accepting a transition.  This rejects glitches.
+        threshold: 0-7 clock cycles at sys_clk rate (~21ns per cycle).
+        """
+        self.pkt.write_register(REG_SCHMITT_ENABLE, 1 if enable else 0)
+        self.pkt.write_register(REG_SCHMITT_THRESHOLD, max(0, min(7, threshold)))
 
     def set_debug_ch0(self, enable=True):
         self.debug_ch0_enabled = bool(enable)
