@@ -277,9 +277,10 @@ class OLSDeviceSPI:
         self.reset()
         time.sleep(0.02)
         self.spi.flush()
+        self.set_debug_ch0(self.debug_ch0_enabled)
 
-        rc = max(1, nsamples)
         div = max(0, int(self.sys_clk / rate_hz) - 1)
+        rc = max(1, nsamples)
         self.pkt.write_register(REG_DIVIDER, div & 0xFFFFFF)
         self.pkt.write_register(REG_SAMPLE_COUNT, rc)
         self.pkt.write_register(REG_DELAY_COUNT, rc)
@@ -607,6 +608,7 @@ class OLSDeviceSPI:
         self.pkt.write_register(REG_TRIGGER_VALUE, 0)
         self.pkt.write_register(REG_FLAGS, self._raw_flags)
         self.pkt.write_register(REG_FAST_MODE, 1)
+        self.set_debug_ch0(self.debug_ch0_enabled)
 
         if gen_data:
             self.pkt.write_register(REG_GEN_PROTO, 0)
@@ -622,6 +624,7 @@ class OLSDeviceSPI:
         seq = 0
 
         while not stop_evt.is_set():
+            self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
             self.pkt.arm_capture()
 
             cap_time = chunk_nsamp / rate_hz
