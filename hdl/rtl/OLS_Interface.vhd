@@ -654,7 +654,7 @@ BEGIN
         CASE gen_cap_state IS
           WHEN GENCAP_IDLE =>
             IF disp_arm = '1' AND disp_arm_d = '0' THEN
-              guard_var := 16;
+              guard_var := 48;
               gen_cap_state <= GENCAP_GUARD;
             END IF;
           WHEN GENCAP_GUARD =>

@@ -24,13 +24,13 @@ NUM_CHANNELS = 23
 try:
     from driver.ols_spi_device import OLSDeviceSPI, NUM_CHANNELS as SPI_NUM_CH
     from driver.spi_protocol import (
-        CMD_ABORT_CAPTURE, CMD_ARM_CAPTURE,
-        CMD_GEN_START, CMD_GEN_LOAD, CMD_GET_METADATA,
+        SPIDevice, CMD_GEN_CAPTURE, CMD_GEN_STATUS, CMD_GET_STATUS,
         REG_DIVIDER, REG_SAMPLE_COUNT, REG_DELAY_COUNT,
-        REG_TRIGGER_MASK, REG_TRIGGER_VALUE, REG_FLAGS,
-        REG_FAST_MODE, REG_CONT_MODE,
+        REG_TRIGGER_MASK, REG_TRIGGER_VALUE,
+        REG_FLAGS, REG_FAST_MODE, REG_CONT_MODE,
         REG_GEN_PROTO, REG_GEN_BAUD, REG_GEN_PINS, REG_GEN_DATA,
         REG_IFACE_MODE,
+        GEN_FLAG_I2C_TEST, GEN_FLAG_SPI_TEST,
         ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_BUSY, ST_CAPTURE_DONE,
     )
     from driver.ols_spi import OLS as OLS_SPI
@@ -553,8 +553,10 @@ def test_i2c_sweep(dev):
 def test_gen_spi_accel(dev):
     print_header("Test 10: Generator SPI read accelerometer")
     log("configuring SPI generator test mode...")
-    # Note: SPI_TEST mode (old CMD 0xAF) not yet exposed via packet protocol.
-    # Generator output will be visible on internal channels without it.
+    # Enable SPI_TEST mode via REG_GEN_DATA bit 1.
+    # Upper byte non-zero to route into mode-config (not FIFO-load) branch.
+    reg_data = GEN_FLAG_SPI_TEST | (2 << 8)  # bit 1=spi_test, byte[1]=2 for non-zero check
+    dev.pkt.write_register(REG_GEN_DATA, reg_data)
     dev.pkt.write_register(REG_GEN_BAUD, 100)  # SPI speed
     dev.spi.flush()
     # Load block: SPI read command for DEVID (0x0F)

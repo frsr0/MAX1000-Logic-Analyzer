@@ -60,6 +60,10 @@ REG_SCHMITT_ENABLE    = 0x41
 REG_SCHMITT_THRESHOLD = 0x42
 REG_IFACE_MODE    = 0xF0
 
+# REG_GEN_DATA flag bits (written with upper byte non-zero to enter mode-config branch)
+GEN_FLAG_I2C_TEST  = 0x01  # bit 0
+GEN_FLAG_SPI_TEST  = 0x02  # bit 1
+
 # Status codes
 ST_OK            = 0x00
 ST_BAD_CRC       = 0x01

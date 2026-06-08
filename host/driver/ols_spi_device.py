@@ -18,15 +18,11 @@ from driver.spi_protocol import (
     ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_DONE,
 )
 
-# Legacy UART-style command opcodes (kept for hw_validation.py compat)
+# Legacy opcodes for hw_validation.py compat
 CMD_DIVIDER       = 0x80
 CMD_RCOUNT        = 0x84
-CMD_DCOUNT        = 0x83
 CMD_TMASK         = 0xC0
 CMD_TVALUE        = 0xC1
-CMD_FAST_MODE     = 0xA8
-CMD_CONT_CAPTURE  = 0xAA
-CMD_ARM           = 0x01
 
 # GPIO/MPSSE constants re-exported for hw_validation.py
 from driver.ols_spi import GPIO_CS_LO, GPIO_CS_HI, PIN_DIR

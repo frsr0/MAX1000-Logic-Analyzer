@@ -2,7 +2,7 @@
 
 ## Overview
 
-The host software provides GUI application, CLI capture, protocol decoders, hardware validation, and a layered SPI driver stack for communicating with the FPGA over FTDI FT2232H (Channel B, MPSSE mode at 15 MHz).
+The host software provides GUI application, CLI capture, protocol decoders, hardware validation, and a SPI driver stack for communicating with the FPGA over FTDI FT2232H (Channel B, MPSSE mode at 15 MHz).
 
 **Entry points**:
 - `cd host && python -m app.OLS_Console` — GUI mode
@@ -13,7 +13,7 @@ The host software provides GUI application, CLI capture, protocol decoders, hard
 
 ## Application Layer
 
-### `app/OLS_Console.py` (2,783 lines)
+### `app/OLS_Console.py` (2,409 lines)
 
 The main application. Supports two modes:
 
@@ -25,54 +25,51 @@ The main application. Supports two modes:
 
 | Line | Function | Purpose |
 |------|----------|---------|
-| 76 | `find_port()` | Enumerates serial ports, matches FTDI by VID/PID or serial prefix `OLS_` |
-| 459 | `samples_to_channels(data, num_ch, stride)` | Deinterleaves captured byte data into per-channel bit arrays |
-| 403 | `modbus_crc16(data)` | MODBUS CRC-16 (poly 0x8005) |
-| 499 | `glitch_filter(signal, threshold)` | Removes pulses shorter than `threshold` samples |
-| 557 | `decode_uart(ch, samplerate, ...)` | UART frame decoder. Samples at midpoint, looks for start bit (0), reads 8 data bits, verifies stop bit (1). Returns hex frame list |
-| 628 | `decode_i2c(ch, samplerate, ...)` | I2C frame decoder. Detects START (SDA falling while SCL high), reads byte+ACK, detects STOP (SDA rising while SCL high). Optional glitch filter and SDA offset |
-| 712 | `decode_spi(ch, samplerate, ...)` | SPI frame decoder (mode 0). Samples MISO on SCLK rising edges, detects CS falling as start |
-| 745 | `decode_modbus(ch, samplerate, ...)` | MODBUS RTU decode. Parses UART frames, concatenates into packets, validates CRC |
-| 2590 | `cli_mode(args)` | CLI dispatcher for capture/decode/send subcommands |
-| 2620 | `splash_choose()` | Dialog box for backend selection (none = exit) |
+| 50 | `samples_to_channels(data, num_ch, stride)` | Deinterleaves captured byte data into per-channel bit arrays |
+| 52 | `modbus_crc16(data)` | MODBUS CRC-16 (poly 0x8005) |
+| 55 | `glitch_filter(signal, threshold)` | Removes pulses shorter than `threshold` samples |
+| 60 | `decode_uart(ch, samplerate, ...)` | UART frame decoder. Samples at midpoint, looks for start bit (0), reads 8 data bits, verifies stop bit (1). Returns hex frame list |
+| 131 | `decode_i2c(ch, samplerate, ...)` | I2C frame decoder. Detects START (SDA falling while SCL high), reads byte+ACK, detects STOP (SDA rising while SCL high). Optional glitch filter and SDA offset |
+| 215 | `decode_spi(ch, samplerate, ...)` | SPI frame decoder (mode 0). Samples MISO on SCLK rising edges, detects CS falling as start |
+| 248 | `decode_modbus(ch, samplerate, ...)` | MODBUS RTU decode. Parses UART frames, concatenates into packets, validates CRC |
+| 2310 | `cli_mode(args)` | CLI dispatcher for capture/decode/send subcommands |
+| 2344 | `splash_choose()` | Dialog box for backend selection (none = exit) |
 
 #### Classes
 
-**`OLSDevice`** (line 95): UART backend device class. Opens serial port, sends commands as 5-byte transactions (opcode + 4 data bytes). Methods: `cmd_id()`, `cmd_metadata()`, `arm()`, `read_capture()`, `send_uart()`, `gen_data()`, `i2c_test()`, `spi_test()`. Flow control with XON/XOFF. Uses `find_port()` for auto-detection.
+**`WaveformDisplay`** (line 289): tkinter Canvas subclass for drawing digital waveforms. Supports zoom (mouse wheel + Ctrl), pan (drag), analog overlay (ADC samples as filled area), edge triggers (click to place), per-channel labels, scrollbar, RLE-compressed rendering for large captures, and filter mask highlight overlays (amber stipple rectangles over glitch-suppressed regions).
 
-**`WaveformDisplay`** (line 776): tkinter Canvas subclass for drawing digital waveforms. Supports zoom (mouse wheel + Ctrl), pan (drag), analog overlay (ADC samples as filled area), edge triggers (click to place), per-channel labels, scrollbar, RLE-compressed rendering for large captures, and filter mask highlight overlays (amber stipple rectangles over glitch-suppressed regions).
-
-**`OLScope`** (line 1061): Main GUI window. Contains:
+**`OLScope`** (line 570): Main GUI window. Contains:
 - Capture controls (rate, samples, trigger config, fast/continuous mode) with auto-filter toggle — glitch suppression with amber highlight overlays on filtered waveform regions
 - Channel display with labels, color coding, pin mapping
 - Generator tab (UART/I2C/SPI data entry, baud, pins, send button)
 - Accelerometer tab (LIS3DH register read/write, WHO_AM_I)
 - Protocol decode panel (decode type, channel select, results table)
 - Session management: CSV, JSON, and Saleae Logic (.sal) export, capture history
+- Debug CH0 square wave toggle (register-controlled, safe-default OFF)
+- Schmitt trigger per-pin controls (enable + threshold per channel)
 - Auto-connect at startup via `app.after(100, _auto_connect)`
 
-#### Imports/Dependencies
+### `app/hw_validation.py` (709 lines)
 
-Hard SPI backend is optional (`HAS_SPI` flag). Falls back to UART-only if `driver.ols_spi_device` can't be imported. App sets `sys.path` so `driver/` is importable from `app/`.
+Hardware validation suite — 12 tests exercising every FPGA data path. Run with FPGA programmed and USB connected.
 
-### `app/hw_validation.py` (629 lines)
-
-Hardware validation suite — 10 tests exercising every FPGA data path. Run with FPGA programmed and USB connected.
-
-**10 test functions**:
+**12 test functions**:
 
 | Line | Function | What it tests |
 |------|----------|---------------|
-| 133 | `test_spi_handoff(dev)` | SPI handoff: CMD_ID signature confirmed (1ALS) over SPI |
-| 157 | `test_spi_commands(dev)` | All 18 SPI commands are accepted (no timeout) |
-| 195 | `test_single_capture(dev)` | CH0 transition capture with divider, XON/XOFF, readout |
-| 229 | `test_fast_capture(dev)` | Fast mode (BRAM) with all 16 channels, transition check |
-| 255 | `test_continuous_capture(dev)` | Triple buffer handshake: 3 buffers with non-zero data |
-| 308 | `test_trigger_edge(dev)` | Edge trigger on CH0 rising, verify pre-trigger data |
-| 329 | `test_gen_uart(dev)` | Generator UART on CH3, verify UART signal present |
-| 425 | `test_i2c_sweep(dev)` | I2C read LIS3DH WHO_AM_I at 0x19, 15 speed/filter combos |
-| 495 | `test_gen_spi_accel(dev)` | SPI generator mode: SCLK transitions detected |
-| 519 | `test_divider_accuracy(dev)` | Divider edge count verified against expected |
+| 134 | `test_spi_handoff(dev)` | SPI handoff: CMD_ID signature confirmed (1ALS) over SPI |
+| 158 | `test_spi_commands(dev)` | All 18 SPI commands are accepted (no timeout) |
+| 197 | `test_single_capture(dev)` | CH0 transition capture with divider, readout |
+| 231 | `test_fast_capture(dev)` | Fast mode (BRAM) with all 16 channels, transition check |
+| 257 | `test_continuous_capture(dev)` | Triple buffer handshake: 3 buffers with non-zero data |
+| 310 | `test_trigger_edge(dev)` | Edge trigger on CH0 rising, verify pre-trigger data |
+| 331 | `test_gen_uart(dev)` | Generator UART on CH3, verify UART signal present |
+| 427 | `test_i2c_sweep(dev)` | I2C read LIS3DH WHO_AM_I at 0x19, 15 speed/filter combos |
+| 497 | `test_gen_spi_accel(dev)` | SPI generator mode: SCLK transitions detected (with SPI_TEST flag) |
+| 522 | `test_divider_accuracy(dev)` | Divider edge count verified against expected |
+| 597 | `test_analog_modes(dev)` | All 8 analog capture modes produce data with correct stride |
+| 637 | `test_schmitt_capture(dev)` | Schmitt trigger on/off toggle affects capture waveform |
 
 Status debug (`read_status()`) reads SPI preamble byte (Run/Run_OLS/Full bits). CH0 half-period measurement computes actual capture sample rate. Average half-period used for stable measurement across multiple test runs.
 
@@ -102,31 +99,42 @@ Initialization: `ft.open(channel=1)` → `setBitMode(0xFF, 0)` → `setBitMode(0
 
 **Key methods**:
 - `xfer(data, read_len)` — Batched MPSSE write: CS low → `0x11` + length → data → `0x87` (send immediate) → wait for queue → read response → CS high
+- `tx(cmd)` — Single-byte command transaction
+- `tx_bytes(data)` / `tx_read(length)` — Raw byte/read transactions
 - `cmd_id()`, `cmd_metadata()` — Standard OLS commands
-- `short_cmd(cmd)` / `long_cmd(cmd, val)` — 5-byte transaction helpers
-- `arm()`, `reset()` — Capture control
-- `capture_simple(samples, rate_hz)` — End-to-end: reset → XON → divider → count → arm → wait → readout
-- `read_capture_blocks()` — Chunked readout (16 KB per loop iteration)
+- `cmd_status()` — Read SPI status preamble byte
 
 Constants: `PIN_DIR = 0x0B` (BDBUS0-1,3 out; BDBUS2 in; BDBUS4-7 all inputs), `GPIO_CS_HI = 0x08`, `GPIO_CS_LO = 0x00`, `SLEEP_TICK = 0.003`, `READ_CHUNK = 16384`.
 
-### `driver/ols_spi_device.py` (771 lines)
-**Class `OLSDeviceSPI`** — High-level SPI backend, drop-in for UART `OLSDevice`.
+### `driver/spi_protocol.py` (280 lines)
+**Class `SPIDevice`** — Packet-protocol SPI client.
 
-Wraps `OLS` with the API the GUI expects. Adds: continuous capture (signal handler thread), generator support (load byte, start, baud, protocol, pins), analog mode configuration, pin map write, trigger config.
+Implements the SPI packet protocol: SYNC(0x55AA) + CMD + SEQ + LEN + payload + CRC16. Handles framing, sequence matching, retry, and response parsing.
+
+**Packet commands**: CMD_PING, CMD_GET_STATUS, CMD_GET_METADATA, CMD_ARM_CAPTURE, CMD_ABORT_CAPTURE, CMD_READ_CAPTURE, CMD_WRITE_REG (0x20), CMD_READ_REG (0x21), CMD_GEN_CONFIG, CMD_GEN_START, CMD_GEN_STOP, CMD_GEN_LOAD, CMD_GEN_CAPTURE (0x34), CMD_GEN_STATUS (0x35).
+
+**18 read/write registers**: divider, sample/delay count, trigger mask/value, flags, fast/cont mode, gen proto/baud/pins/data, debug CH0 enable, Schmitt enable/threshold, interface mode.
+
+### `driver/ols_spi_device.py` (747 lines)
+**Class `OLSDeviceSPI`** — High-level SPI backend.
+
+Wraps `OLS` + `SPIDevice` with the API the GUI expects. Adds: continuous capture (signal handler thread), generator support (load byte, start, baud, protocol, pins), analog mode configuration, pin map write, trigger config, Schmitt trigger, debug CH0 toggle.
 
 **Key methods**:
 - `open()` / `close()` — FTDI device lifecycle
 - `cmd_id()`, `cmd_metadata()` — Returns device signature / metadata dict
-- `capture(rate_hz, nsamples, timeout)` — Full capture: configure divider, count, flags → arm → wait → readout (block-wise)
+- `capture(rate_hz, nsamples, timeout)` — Full capture: configure via packet protocol → CMD_ARM_CAPTURE → wait → block-wise readout
 - `capture_continuous(rate_hz, nsamples, callback)` — Continuous mode: signal handler thread calls callback per buffer
-- `send_uart(data, baud, tx_pin)` → `_pins()` → `_load_block()` → `start()` → flush + settle
+- `capture_with_gen(rate_hz, nsamples, ...)` — Atomic generator capture: CMD_GEN_CAPTURE arms + starts in hardware (no host-timed round-trips)
 - `i2c_capture_with_gen(dev_addr, register, ...)` — I2C read with combined generator + capture
-- `reset()` — Issues CMD_RESET 5 times
-- `analog_frame_stride(mode)` — Returns per-mode frame byte width
+- `i2c_rolling_capture(dev_addr, register, ...)` — Continuous I2C read with generator
+- `reset()` — Issues CMD_PING / hardware reset sequence
+- `set_debug_ch0(enable)` — Register-based debug CH0 toggle
+- `set_schmitt(enable, threshold)` — Schmitt trigger per-pin configuration
+- `analog_frame_stride(mode)` — Returns per-mode ADC frame byte width
 - `decode_analog_frames(data, mode)` — Parses interleaved ADC+digital frame data into dict list
 
-Module-level constants replicate the VHDL command set: `CMD_RESET=0x00` through `CMD_PIN_MAP=0xBB`. Five analog mode constants (DIGITAL8=0 through ANALOG2=4).
+Module-level constants replicate the VHDL command set. Five analog mode constants (DIGITAL8=0 through ANALOG2=4). Gen flag constants (GEN_FLAG_I2C_TEST, GEN_FLAG_SPI_TEST).
 
 ### `driver/ols_spi_mpsse.py` (105 lines)
 **Class `OLS_SPI_MPSSE`** — Minimal lowest-level MPSSE driver.
@@ -151,26 +159,24 @@ Bitbangs SPI on Channel B (uses ftd2xx bitbang mode, not MPSSE) because the Arro
 
 ## Tests
 
-### `tests/` (7 files, 197 tests)
+### `tests/` (4 files, 143 tests)
 
 | File | Tests | What it covers |
 |------|-------|----------------|
-| `test_ols_console_device.py` | 39 | `OLSDevice` init, cmd_id (mock returns `1ALS`), cmd_metadata (18-byte parse), capture commands, generator (send_uart, gen_data, i2c_test), XON/XOFF flow control, rolling/continuous capture |
 | `test_ols_console_gui.py` | 55 | `OLScope` zoom/pan, analog mode, waveform rendering (RLE), edge triggers, time/buffer/rate display, decoder processing, CSV/JSON/SAL export, session zip, CLI mode |
 | `test_ols_console_integration.py` | 25 | GUI + mocked SPI device integration: analog stride cleanup, raw_mode flags, analog capture pipeline, mode switching, rolling restart race prevention, auto-filter noise suppression with diff masks, waveform filter highlight rendering, analog auto-filter exclusion, mode+filter interaction |
 | `test_decoders.py` | 57 | `glitch_filter` (threshold 0/1/3), `decode_uart` (fractional samples/bit, truncated frame rejection), `decode_i2c` (high-rate alignment, filter threshold capping), `decode_spi` (mode 0), `decode_modbus` (CRC validate), `modbus_crc16`, `samples_to_channels` (4/8/16 ch) |
 | `test_analog_decode.py` | 4 | `decode_analog_frames()` for MIXED1, MIXED2, ANALOG1, ANALOG2 — stride and unpack correctness |
-| `test_hw_validation_helpers.py` | 12 | `log()` formatting, `save_result()` JSON I/O, `check()` pass/fail counting, `decode_i2c_best` scoring |
-| `test_find_port.py` | 5 | `find_port()` serial matching, VID/PID matching, fallback, no-device |
+| `test_hw_validation_helpers.py` | 2 | `log()` formatting, `check()` pass/fail counting |
 
 Run: `python -m pytest host/tests/ -q`
 
-### `driver/tests/` (4 files, 138 tests)
+### `driver/tests/` (4 files, 124 tests)
 
 | File | Tests | What it covers |
 |------|-------|----------------|
 | `test_ols_spi.py` | 43 | `OLS` init (mock ftd2xx), cmd_id, cmd_metadata, cmd_arm, cmd_status, read_capture (empty/full), xfer batching, chained read, ch_mode |
-| `test_ols_spi_device.py` | 68 | `OLSDeviceSPI` init, `find_spi_device()` (mock ftd2xx device enumeration), `decode_analog_frames`/`analog_frame_stride` (all modes), generator trigger, capture integration (ARM→wait→readout), pin map write, analog config, rolling capture |
+| `test_ols_spi_device.py` | 54 | `OLSDeviceSPI` init, `find_spi_device()` (mock ftd2xx device enumeration), `decode_analog_frames`/`analog_frame_stride` (all modes), generator trigger, capture integration (ARM→wait→readout), pin map write, analog config, rolling capture |
 | `test_ols_spi_mpsse.py` | 12 | `OLS_SPI_MPSSE` init, gpio_set, spi_transfer, cmd_id, cmd_metadata, cmd_arm, close |
 | `test_ols_spi_pyftdi.py` | 15 | `SpiPort` write/read/exchange, `SpiController` get_port, context manager, frequency→delay calculation |
 
@@ -204,8 +210,7 @@ Located in `host/debug/` — 42 scripts for hardware troubleshooting, protocol d
 ## Requirements
 
 ```
-pyserial>=3.0
 pyftdi>=0.55.0
 ```
 
-The SPI backend uses `ftd2xx` (FTDI D2XX driver) for MPSSE mode. The GUI falls back to UART if it's not available.
+The SPI backend uses `ftd2xx` (FTDI D2XX driver) for MPSSE mode. The GUI requires `ftd2xx` for hardware access.

@@ -5,10 +5,10 @@ sys.modules['serial'] = MagicMock()
 sys.modules['serial.tools'] = MagicMock()
 sys.modules['serial.tools.list_ports'] = MagicMock()
 
-from app.OLS_Console import OLScope, WaveformDisplay, NUM_CHANNELS
+from app.OLS_Console import OLScope, WaveformDisplay, NUM_CHANNELS, samples_to_channels
 from app.OLS_Console import ANALOG_MODE_DIGITAL8, ANALOG_MODE_MIXED1, ANALOG_MODE_MIXED2
-from app.OLS_Console import ANALOG_MODE_ANALOG1, ANALOG_MODE_ANALOG2
-from app.OLS_Console import CMD_DEBUG_CH0_ON, CMD_DEBUG_CH0_OFF
+from app.OLS_Console import ANALOG_MODE_ANALOG1, ANALOG_MODE_ANALOG2, ANALOG_MODE_ANALOG4
+from app.OLS_Console import ANALOG_MODE_MIXED2_4, ANALOG_MODE_MIXED_DUAL
 
 
 def _make_scope(backend='UART'):
