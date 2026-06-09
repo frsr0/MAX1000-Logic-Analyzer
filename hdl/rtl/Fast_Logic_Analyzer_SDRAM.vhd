@@ -109,6 +109,26 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal full_pending : std_logic := '0';
   signal full_clr_pending : std_logic := '0';
 
+  -- Registered flush-done status to break fast_mode_i → flush_rem → LessThan10 →
+  -- fifo_head_v → Add18 → LessThan18 → fifo_head_r critical path.
+  signal flush_done_r : std_logic := '0';
+
+  -- Registered run-edge event detection: breaks run_r → process_5~0 → burst_rem →
+  -- fifo_tail → fifo_head → Add18 → LessThan18 → fifo_head_r critical path.
+  -- run_level_r replaces the run_r process variable.
+  signal run_level_r : std_logic := '0';
+  signal run_edge_r  : std_logic := '0';
+  signal run_start_r : std_logic := '0';
+  signal run_stop_r  : std_logic := '0';
+
+  -- Registered sample-rate divider: pre-computed rate_div_r - 1 breaks the
+  -- Rate_Div → Add0 (28-bit subtractor) → LessThan0 → cnt carry chain path.
+  -- Down-counter uses cnt = 0 (fast NOR gate) instead of cnt >= threshold
+  -- (slow 28-bit comparator). Rate_Div changes only when the user sets
+  -- the sample rate (before capture starts), so 1-cycle latency is harmless.
+  signal rate_div_r    : natural range 1 to 150000000 := 12;
+  signal rate_div_m1_r : natural range 0 to 150000000 := 11;
+
   -- FIFO enqueue pipeline (registered writes to break critical path)
   signal enq_valid0 : boolean := false;
   signal enq_valid1 : boolean := false;
@@ -181,16 +201,19 @@ begin
 
   CLK_150 <= pclk;
 
-  -- Divider: assert sample_en for one cycle every Rate_Div PLL clocks
+  -- Divider: assert sample_en for one cycle every Rate_Div PLL clocks.
+  -- Down-counter uses cnt = 0 (fast NOR gate) instead of cnt >= threshold
+  -- (slow 28-bit comparator). rate_div_m1_r is pre-computed in a separate
+  -- registered process.
   process (pclk)
      variable cnt : natural range 0 to 150000000 := 0;
   begin
     if rising_edge(pclk) then
-      if cnt >= Rate_Div - 1 then
-        cnt := 0;
+      if cnt = 0 then
+        cnt := rate_div_m1_r;
         sample_en <= '1';
       else
-        cnt := cnt + 1;
+        cnt := cnt - 1;
         sample_en <= '0';
       end if;
     end if;
@@ -216,6 +239,37 @@ begin
     end if;
   end process;
 
+  -- Registered run-edge event detection: produces single-cycle pulses for
+  -- run start, run stop, and any edge. run_level_r replaces the run_r variable.
+  -- This breaks the run_r → process_5~0 → burst_rem → fifo_tail → fifo_head →
+  -- Add18 → LessThan18 → fifo_head_r timing path by registering the edge decode
+  -- in a separate process with minimal fanout.
+  process(pclk)
+  begin
+    if rising_edge(pclk) then
+      run_edge_r  <= run_sync2 xor run_level_r;
+      run_start_r <= run_sync2 and not run_level_r;
+      run_stop_r  <= (not run_sync2) and run_level_r;
+      run_level_r <= run_sync2;
+    end if;
+  end process;
+
+  -- Register Rate_Div into pclk domain and pre-compute rate_div_r - 1 to
+  -- break the 28-bit carry chain comparator path (rate_div_r → Add0 →
+  -- LessThan0 → cnt). Down-counter uses cnt = 0 (fast NOR) instead of
+  -- cnt >= rate_div_r (slow 28-bit comparator).
+  process(pclk)
+  begin
+    if rising_edge(pclk) then
+      rate_div_r    <= Rate_Div;
+      if Rate_Div > 1 then
+        rate_div_m1_r <= Rate_Div - 1;
+      else
+        rate_div_m1_r <= 0;
+      end if;
+    end if;
+  end process;
+
   -- Re-register CLK-domain divide results into pclk domain; pre-compute buffer limits
   process(pclk)
   begin
@@ -237,7 +291,6 @@ begin
   -- Main: capture samples to SDRAM via dual buffer, read back from SDRAM
   process (pclk)
     variable step_r  : natural range 0 to sub_steps := 0;
-    variable run_r   : std_logic := '0';
     variable rd_mode : boolean := true;
     variable read_addr : natural := 0;
     variable wbuf    : std_logic_vector(15 downto 0) := (others => '0');
@@ -332,9 +385,11 @@ begin
         end if;
       end if;
 
-      if run_sync2 /= run_r then
+      if run_edge_r = '1' then
+        -- HARD CAPTURE INIT/RESET: registered run-edge event.
+        -- Skip all normal FIFO/pump logic for this cycle.
         -- Save pre-trigger BRAM count BEFORE resetting variables
-        if run_sync2 = '1' and Fast_Mode = '0' then
+        if run_start_r = '1' and Fast_Mode = '0' then
           flush_rem := bram_cnt;
           if bram_cnt < BRAM_SIZE then
             flush_idx := 0;
@@ -363,18 +418,19 @@ begin
         buf_full(0) <= '0'; buf_full(1) <= '0'; buf_full(2) <= '0';
         full_i <= '0';
         full_pending <= '0'; full_clr_pending <= '0';
-        if run_sync2 = '0' then
+        if run_stop_r = '1' then
           rd_mode := true;
           bram_post_cnt := 0;
-        elsif Fast_Mode = '1' then
+        elsif run_start_r = '1' and Fast_Mode = '1' then
           rd_mode := false;
           bram_post_cnt := 0;
-        else
+        elsif run_start_r = '1' then
           rd_mode := false;
         end if;
-        run_r := run_sync2;
         s_wr <= '0'; s_rd <= '0';
-      end if;
+
+      else
+      -- Normal capture/readout/write-pump logic (skipped on run-edge cycle)
 
       -- Fast mode pre-trigger
       if Fast_Mode = '1' and Armed = '1' and run_sync2 = '0' and rd_mode then
@@ -560,10 +616,11 @@ begin
               else bram_wp := bram_wp + 1; end if;
               if bram_cnt < BRAM_SIZE then bram_cnt := bram_cnt + 1; end if;
               bram_post_cnt := bram_post_cnt + 1;
-            elsif (sub_steps = 1 and fifo_count_v < FIFO_Depth
-                                and not enq_valid0 and not enq_valid1) or
-                  (sub_steps > 1 and fifo_count_v < FIFO_Depth - 1
-                                and not enq_valid0 and not enq_valid1) then
+            elsif flush_done_r = '1' and
+                  ((sub_steps = 1 and fifo_count_v < FIFO_Depth
+                                  and not enq_valid0 and not enq_valid1) or
+                   (sub_steps > 1 and fifo_count_v < FIFO_Depth - 1
+                                  and not enq_valid0 and not enq_valid1)) then
               -- Post-trigger: write to current buffer via FIFO
               if Continuous_Mode = '1' then
                 if buf_full(0) = '1' and buf_full(1) = '1' and buf_full(2) = '1' then
@@ -682,18 +739,26 @@ begin
             end if;
           end if;
         end if;
-      end if;
+      end if; -- end rd_mode
+      end if; -- end run_edge_r else
 
       -- Commit next-state values to registered signals
       fifo_head_r <= fifo_head_v;
       fifo_tail_r <= fifo_tail_v;
       fifo_cnt_r  <= fifo_count_v;
 
+      -- Register flush-done status to break timing path
+      if flush_rem = 0 then
+        flush_done_r <= '1';
+      else
+        flush_done_r <= '0';
+      end if;
+
       -- Drive fifo_cnt signal for external visibility
       fifo_cnt <= fifo_count_v;
 
       -- Status
-      Status(0) <= run_r;
+      Status(0) <= run_level_r;
       if wip then Status(1) <= '1'; else Status(1) <= '0'; end if;
       Status(2) <= s_rd;
       Status(3) <= full_i;

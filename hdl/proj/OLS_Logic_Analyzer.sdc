@@ -61,12 +61,16 @@ set_multicycle_path -hold 1 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|wadd
 set_multicycle_path -setup 2 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|bram_raddr[*]}]
 set_multicycle_path -hold 1 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|bram_raddr[*]}]
 
-# cnt: Sample-rate prescaler counter. Rate_Div only changes on SPI command
-# (extremely infrequent), so the 28-bit comparison can use 2 cycles.
-set_multicycle_path -setup 2 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|cnt[*]}]
-set_multicycle_path -hold 1 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|cnt[*]}]
+# Outputs[*]: Readout output register depends on the same Add4 + LessThan4
+# chain (bram_cnt + bram_post_cnt comparison) that feeds bram_raddr.
+# bram_rdata is 1 cycle behind bram_raddr (BRAM pipeline), so Outputs captures
+# stale BRAM data anyway. Only active during readout; fifo_cnt_r is stable
+# because the FIFO is not being written during readout.
+set_multicycle_path -setup 2 -from [get_registers {*Fast_Logic_Analyzer_SDRAM1|fifo_cnt_r[*]}] -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|Outputs[*]}]
+set_multicycle_path -hold 1 -from [get_registers {*Fast_Logic_Analyzer_SDRAM1|fifo_cnt_r[*]}] -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|Outputs[*]}]
 
-# fifo_head_r: FIFO head register depends on the waddr adder/comparator chain.
-# Updated at sample rate, not pclk rate.
-set_multicycle_path -setup 2 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|fifo_head_r[*]}]
-set_multicycle_path -hold 1 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|fifo_head_r[*]}]
+# full_pending: Status signal depends on the waddr adder/comparator chain
+# (fast_mode_i → flush_rem → LessThan10 → fifo_head_v → Add18 → LessThan15 → full_pending).
+# Only checked when FIFO is empty (slow readout), so 2-cycle path is safe.
+set_multicycle_path -setup 2 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|full_pending}]
+set_multicycle_path -hold 1 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|full_pending}]
