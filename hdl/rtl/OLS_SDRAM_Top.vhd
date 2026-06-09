@@ -6,7 +6,7 @@ use work.led_controller_pkg.all;
 ENTITY OLS_SDRAM_Top IS
   generic (
     TX_PIN      : natural range 0 to 31 := 3;
-    PLL_MULT    : positive := 4;
+    PLL_MULT    : positive := 8;
     PLL_DIV     : positive := 1;
     Sim         : boolean := false
   );

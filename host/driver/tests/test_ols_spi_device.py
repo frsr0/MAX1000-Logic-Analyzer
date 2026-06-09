@@ -98,7 +98,7 @@ class TestDecodeAnalogFrames:
 
 class TestOLSDeviceSPI:
     def test_init(self, device_spi):
-        assert device_spi.sys_clk == 48000000
+        assert device_spi.sys_clk == 96000000
         assert device_spi._stride == 4
         assert device_spi.gen_pins == {'tx': 3, 'scl': 1}
         assert device_spi.analog_mode == ANALOG_MODE_DIGITAL8

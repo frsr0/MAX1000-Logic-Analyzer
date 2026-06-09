@@ -162,7 +162,7 @@ All registers are 32-bit. Written via `CMD_WRITE_REG(addr, value)`, read via `CM
 
 | Addr | Name | Bits | Description |
 |------|------|------|-------------|
-| `0x00` | REG_DIVIDER | 23:0 | Sample rate divider. Actual rate = sys_clk / ((div+1) × 2). Max value = 16,777,215 → min rate ~1.43 Hz at 48 MHz. |
+| `0x00` | REG_DIVIDER | 23:0 | Sample rate divider. Actual rate = sys_clk / ((div+1) × 2). Max value = 16,777,215 → min rate ~2.86 Hz at 96 MHz. |
 | `0x01` | REG_SAMPLE_COUNT | 29:0 | Number of samples to capture (1–1,000,000). |
 | `0x02` | REG_DELAY_COUNT | 29:0 | Trigger delay count. Start_Offset = Read_Count - Delay_Count. |
 
@@ -303,7 +303,7 @@ div = sys_clk / (rate_hz × 2) − 1
 actual_rate = sys_clk / ((div + 1) × 2)
 ```
 
-`sys_clk` = 48 MHz (PLL ×4 from 12 MHz). Minimum div = 0 → 24 MHz. Maximum div = 16,777,215 → ~1.43 Hz.
+`sys_clk` = 96 MHz (PLL ×8 from 12 MHz). Minimum div = 0 → 48 MHz. Maximum div = 16,777,215 → ~2.86 Hz.
 
 ### Memory Architecture
 
@@ -311,7 +311,7 @@ actual_rate = sys_clk / ((div + 1) × 2)
 |--------|------|-------|-------|
 | BRAM (M9K) | 1024 words | 16 bits | Pre-trigger circular buffer + fast capture (no SDRAM). |
 | SDRAM write FIFO | 16 entries | 38 bits (22 addr + 16 data) | Write buffer between capture engine and SDRAM controller. |
-| SDRAM | 64 Mbit | 16 bits | Deep capture storage. 48 MHz burst writes (up to 4 words/burst). |
+| SDRAM | 64 Mbit | 16 bits | Deep capture storage. 96 MHz burst writes (up to 4 words/burst). |
 | Block read buffer | 256 entries | 32 bits | Readout buffer for CMD_READ_CAPTURE (1 block = 256 × 4 = 1024 bytes). |
 | Generator FIFO | 256 entries | 8 bits | UART/I2C/SPI transmit data (push via CMD_GEN_LOAD). |
 
@@ -323,18 +323,17 @@ SDRAM is split into 3 equal buffers. Each buffer holds `Samples / 3` logical sam
 
 | Output | Multiply | Divide | Frequency | Domain |
 |--------|----------|--------|-----------|--------|
-| c0 | ×4 | 1 | 48 MHz | Core logic, OLS_Interface, capture engine |
+| c0 | ×8 | 1 | 96 MHz | Core logic, OLS_Interface, capture engine |
 | c1 | ×10 | 1 | 120 MHz | SPI slave (fast_clk) |
-| c2 | ×4 | 1 | 48 MHz, −90° | SDRAM clock |
-| c3 | ×2 | 1 | 24 MHz | Signal generator (GEN_CLK) |
+| c2 | ×8 | 1 | 96 MHz, −90° | SDRAM clock |
 
-All PLL outputs from 12 MHz input. PLL_MULT=4, PLL_DIV=1 in OLS_SDRAM_Top.vhd.
+All PLL outputs from 12 MHz input. PLL_MULT=8, PLL_DIV=1 in OLS_SDRAM_Top.vhd.
 
 ## Generator Architecture
 
 ### Signal_Gen.vhd
 
-The generator operates on its own clock domain (PLL c3 at 24 MHz) with CDC crossings:
+The generator runs on sys_clk (96 MHz) with CDC crossings:
 
 - **FIFO**: 256 deep × 8-bit. Push via `Load_Byte` + `Load_We` (from OLS_Interface gen_ctl process).
 - **Start**: Edge-triggered (rising edge only). `Start_Ack` pulses when accepted. `Start_Reject` pulses when FIFO empty. Holding Start high does NOT retrigger.
@@ -430,7 +429,7 @@ Byte 2: gen_load_events counter (0–255)
 
 ## Packet Reception (FPGA)
 
-1. **SPI_Slave2**: CDC from fast_clk (120 MHz) to sys_clk (48 MHz). RX bytes arrive with `RX_Valid` strobe.
+1. **SPI_Slave2**: CDC from fast_clk (120 MHz) to sys_clk (96 MHz). RX bytes arrive with `RX_Valid` strobe.
 2. **spi_packet_rx**: Detects SYNC_REQ `0x55 0xAA`, extracts CMD, SEQ, LEN. Streams payload bytes to `disp_gen_data` during `CMD_GEN_LOAD`. Asserts `pkt_ok` on valid complete packet.
 3. **Main dispatch**: State machine processes `pkt_cmd_active` and dispatches to handler (`CMD_WRITE_REG`, `CMD_ARM_CAPTURE`, etc.).
 4. **spi_packet_tx**: Builds response packet with SYNC_RSP, STATUS, SEQ, LEN, payload bytes, CRC. Streams to SPI slave's TX FIFO.
@@ -589,10 +588,9 @@ Commands include:
 
 | Output | Multiply | Frequency | Domain |
 |--------|----------|-----------|--------|
-| c0 | ×4 | 48 MHz | Core logic, OLS_Interface, capture engine |
+| c0 | ×8 | 96 MHz | Core logic, OLS_Interface, capture engine |
 | c1 | ×10 | 120 MHz | SPI slave (fast_clk) |
-| c2 | ×4 | 48 MHz, −90° | SDRAM clock |
-| c3 | ×2 | 24 MHz | Signal generator (GEN_CLK) |
+| c2 | ×8 | 96 MHz, −90° | SDRAM clock |
 
 ### Packet Protocol Layering
 
@@ -633,7 +631,7 @@ This eliminates host timing dependency — the generator start and capture are s
 
 ## Debug CH0
 
-CH0 can drive a ~47 kHz square wave (48 MHz / 1024) on the MKR D0 pin for scope probing:
+CH0 can drive a ~94 kHz square wave (96 MHz / 1024) on the MKR D0 pin for scope probing:
 
 - Default: **OFF** (CH0 is normal input/Hi-Z)
 - Toggle via GUI checkbox or `dev.set_debug_ch0(True)`
@@ -646,7 +644,7 @@ CH0 can drive a ~47 kHz square wave (48 MHz / 1024) on the MKR D0 pin for scope 
 Per-pin digital hysteresis filter, sits between physical pin and capture mux:
 
 - When enabled: input transitions require `threshold` consecutive equal samples before being accepted
-- Rejects glitches shorter than `threshold` sys_clk cycles (~21 ns each at 48 MHz)
+- Rejects glitches shorter than `threshold` sys_clk cycles (~10.4 ns each at 96 MHz)
 - Default: OFF (zero added delay, purely combinatorial)
 - Tunable live via GUI or `dev.set_schmitt(enable=True, threshold=3)`
 - Implemented with 23 counters (one per physical pin), efficient LE usage

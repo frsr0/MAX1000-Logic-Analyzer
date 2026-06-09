@@ -6,7 +6,7 @@ use work.spi_protocol_pkg.all;
 
 entity tb_gen_start_sim is
   generic (
-    CLK_FREQ : natural := 48000000;
+    CLK_FREQ : natural := 96000000;
     SPI_HALF : time    := 100 ns
   );
 end tb_gen_start_sim;

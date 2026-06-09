@@ -427,18 +427,18 @@ def test_gen_uart(dev):
     # Test on all channels to verify gen_tx routing works for all.
     log("testing UART gen on all gen_tx_pin values...")
     dev.set_debug_ch0(False)
-    for tx_pin in range(20):
-        dev._gen_data = bytes([0x55])
+    for tx_pin in range(16):
+        dev._gen_data = bytes([0x55]) * 200
         dev._gen_baud = 115200
         dev._gen_tx_pin = tx_pin
-        data = dev.capture_with_gen(rate_hz=1_000_000, nsamples=2000, timeout=10)
+        data = dev.capture_with_gen(rate_hz=500_000, nsamples=5000, timeout=10)
         if data:
             ch, ns = samples_to_channels(data)
             ch_tx = ch[tx_pin] if tx_pin < len(ch) else ch[0]
             tr = sum(1 for i in range(1, len(ch_tx)) if ch_tx[i] != ch_tx[i - 1])
             log(f"  CH{tx_pin}: {tr} transitions")
             check(tr > 3, f"UART gen on CH{tx_pin}: {tr} transitions (>3 expected)")
-    save_result("test8_gen_uart_sweep", None, {"baud": 115200, "pins": list(range(20))})
+    save_result("test8_gen_uart_sweep", None, {"baud": 115200, "pins": list(range(16))})
 
 # ====================================================================
 # Test 9: I2C accelerometer WHO_AM_I

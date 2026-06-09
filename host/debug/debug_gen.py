@@ -3,7 +3,7 @@ import sys, time
 sys.path.insert(0, '.')
 from ols_spi_device import OLSDeviceSPI
 
-dev = OLSDeviceSPI(sys_clk_hz=48000000)
+dev = OLSDeviceSPI(sys_clk_hz=96000000)
 dev.open()
 d = dev.spi.dev
 

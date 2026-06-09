@@ -101,7 +101,7 @@ def decode_analog_frames(data, mode):
 class OLSDeviceSPI:
     """SPI backend using packet protocol — replaces old UART-style byte commands."""
 
-    def __init__(self, sys_clk_hz=48000000):
+    def __init__(self, sys_clk_hz=96000000):
         self.sys_clk = sys_clk_hz
         self._stride = 4
         self._raw_flags = 0
