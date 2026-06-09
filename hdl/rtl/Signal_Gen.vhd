@@ -30,7 +30,7 @@ end Signal_Gen;
 
 architecture rtl of Signal_Gen is
   type fifo_t is array (0 to FIFO_DEPTH-1) of std_logic_vector(7 downto 0);
-  constant FIXED_BAUD_DIV : std_logic_vector(15 downto 0) := x"00F0";  -- 240 = 100 kHz I2C @ 48 MHz
+  constant FIXED_BAUD_DIV : std_logic_vector(15 downto 0) := x"01E0";  -- 480 = 100 kHz I2C @ 96 MHz
   signal fifo  : fifo_t := (others => (others => '0'));
   signal head  : natural range 0 to FIFO_DEPTH-1 := 0;
   signal tail  : natural range 0 to FIFO_DEPTH-1 := 0;
@@ -38,6 +38,10 @@ architecture rtl of Signal_Gen is
   signal tx_active   : std_logic := '0';
   signal start_d     : std_logic := '0';
   signal done_pulse_i : std_logic := '0';
+
+  -- Registered byte-load stage for SPI/I2C (breaks FIFO read → Tx_Out path)
+  signal byte_buf    : std_logic_vector(7 downto 0) := (others => '0');
+  signal byte_ready  : std_logic := '0';
 
   -- UART explicit registered FSM
   type uart_state_t is (
@@ -80,6 +84,8 @@ architecture rtl of Signal_Gen is
   attribute preserve : boolean;
   attribute preserve of tx_active : signal is true;
   attribute preserve of count : signal is true;
+  attribute preserve of byte_buf : signal is true;
+  attribute preserve of byte_ready : signal is true;
 begin
   Active <= tx_active;
   Busy   <= tx_active;
@@ -133,19 +139,20 @@ begin
         end if;
 
         if SPI_Mode = '1' and count > 0 then
-          -- SPI start — queue first byte in data_buf, let FSM handle it
+          -- SPI start — queue first byte in byte_buf (registered), let FSM handle it
           start_accept_v := '1';
           Start_Ack <= '1';
           tx_active <= '1';
           uart_state <= UART_IDLE;
           uart_baud_cnt <= 0;
           uart_baud_limit <= baud_limit_v;
-          data_buf := fifo(tail);
+          byte_buf <= fifo(tail);
+          byte_ready <= '1';
           tail <= (tail + 1) mod FIFO_DEPTH;
           count <= count - 1;
           spi_bit := 0;
           spi_state := 3;  -- CS setup, not state 0 (prevents double-load)
-          Tx_Out <= data_buf(7);
+          Tx_Out <= '1';  -- Will be updated on next cycle when byte_buf is ready
           Scl_Out <= '1';
 
         elsif SPI_Mode = '0' and Proto = '0' and count > 0 then
@@ -201,12 +208,13 @@ begin
         i2c_state := 0; i2c_bit := 0; rd_remain := 0; read_active := false;
         spi_state := 0; spi_bit := 0;
         byte_active := false; bit_cnt := 0;
+        byte_ready <= '0';
         crc := (others => '0'); crc_run := false; crc_rem := 0; crc_done := false;
         Tx_Out <= '1'; Scl_Out <= '1';
 
       elsif SPI_Mode = '1' then
         ----------------------------------------------------
-        -- SPI Master (unchanged variable-driven)
+        -- SPI Master (registered byte-load stage)
         ----------------------------------------------------
         if baud_cnt < baud_limit_v then
           baud_cnt := baud_cnt + 1;
@@ -215,7 +223,8 @@ begin
           case spi_state is
             when 0 =>  -- Idle / load byte
               if count > 0 then
-                data_buf := fifo(tail);
+                byte_buf <= fifo(tail);
+                byte_ready <= '1';
                 tail <= (tail + 1) mod FIFO_DEPTH;
                 count <= count - 1;
                 spi_bit := 0;
@@ -223,20 +232,24 @@ begin
               else
                 tx_active <= '0'; done_pulse_i <= '1';
               end if;
-            when 3 =>  -- CS setup
+            when 3 =>  -- CS setup (wait for byte_ready)
               Scl_Out <= '1';
-              Tx_Out <= data_buf(7);
-              spi_state := 1;
+              if byte_ready = '1' then
+                Tx_Out <= byte_buf(7);
+                byte_ready <= '0';
+                spi_state := 1;
+              end if;
             when 1 =>  -- SCLK low, output bit
               Scl_Out <= '0';
-              Tx_Out <= data_buf(7 - spi_bit);
+              Tx_Out <= byte_buf(7 - spi_bit);
               spi_state := 2;
             when 2 =>  -- SCLK high
               Scl_Out <= '1';
               spi_bit := spi_bit + 1;
               if spi_bit >= 8 then
                 if count > 0 then
-                  data_buf := fifo(tail);
+                  byte_buf <= fifo(tail);
+                  byte_ready <= '1';
                   tail <= (tail + 1) mod FIFO_DEPTH;
                   count <= count - 1;
                   spi_bit := 0;
@@ -319,7 +332,7 @@ begin
 
       elsif Proto = '1' then
         ----------------------------------------------------
-        -- I2C Master (unchanged variable-driven)
+        -- I2C Master (registered byte-load stage)
         ----------------------------------------------------
         if baud_cnt < baud_limit_v then
           baud_cnt := baud_cnt + 1;
@@ -335,7 +348,8 @@ begin
               if byte_active = false then
                 if count > 0 then
                   Scl_Out <= '0';
-                  data_buf := fifo(tail);
+                  byte_buf <= fifo(tail);
+                  byte_ready <= '1';
                   tail <= (tail + 1) mod FIFO_DEPTH;
                   count <= count - 1;
                   i2c_bit := 0; byte_active := true;
@@ -356,8 +370,9 @@ begin
                 Scl_Out <= '0';
               end if;
               if byte_active then
-                if i2c_state = 1 then
-                  Tx_Out <= data_buf(7);
+                if i2c_state = 1 and byte_ready = '1' then
+                  Tx_Out <= byte_buf(7);
+                  byte_ready <= '0';
                   i2c_bit := 0;
                   i2c_state := 2;
                 end if;
@@ -368,7 +383,7 @@ begin
             when 3 =>
               Scl_Out <= '0';
               if i2c_bit < 8 then
-                Tx_Out <= data_buf(7 - i2c_bit);
+                Tx_Out <= byte_buf(7 - i2c_bit);
                 i2c_bit := i2c_bit + 1;
                 i2c_state := 2;
               else
@@ -393,7 +408,8 @@ begin
               i2c_state := 7;
             when 7 =>
               Scl_Out <= '1'; Tx_Out <= '0';
-              data_buf := I2C_Dev_R;
+              byte_buf <= I2C_Dev_R;
+              byte_ready <= '1';
               byte_active := true;
               i2c_bit := 0;
               i2c_state := 1;

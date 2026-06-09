@@ -4,7 +4,7 @@ use IEEE.numeric_std.all;
 
 entity SDRAM_Controller is
   generic (
-    CLK_Frequency : natural := 12000000  -- Hz
+    CLK_Frequency : natural := 96000000  -- Hz
   );
 port (
     sdram_addr  : out std_logic_vector(11 downto 0);

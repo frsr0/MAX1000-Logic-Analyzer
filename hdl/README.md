@@ -2,16 +2,15 @@
 
 ## Architecture Overview
 
-The FPGA design targets the Intel MAX10 10M08SAU169C8G on the Arrow MAX1000 board. The PLL multiplies the 12 MHz input to generate four clock domains:
+The FPGA design targets the Intel MAX10 10M08SAU169C8G on the Arrow MAX1000 board. The PLL multiplies the 12 MHz input to generate three clock domains:
 
 | Output | Multiply | Frequency | Domain |
 |--------|----------|-----------|--------|
-| c0 | ×4 | 48 MHz | Core logic (OLS_Interface, FLA, SDRAM) |
+| c0 | ×8 | 96 MHz | Core logic (OLS_Interface, FLA, SDRAM) |
 | c1 | ×10 | 120 MHz | SPI slave (fast_clk) |
-| c2 | ×4 | 48 MHz, −90° | SDRAM clock |
-| c3 | ×2 | 24 MHz | Signal generator (GEN_CLK) |
+| c2 | ×8 | 96 MHz, −90° | SDRAM clock |
 
-The system clock frequency is computed as `12_000_000 * PLL_MULT / PLL_DIV` with defaults `PLL_MULT=4, PLL_DIV=1` → 48 MHz.  
+The system clock frequency is computed as `12_000_000 * PLL_MULT / PLL_DIV` with defaults `PLL_MULT=8, PLL_DIV=1` → 96 MHz.  
 
 ### Top-down hierarchy
 
@@ -39,7 +38,7 @@ OLS_Logic_Analyzer_wrapper      — pin assignment wrapper (auto-generated from 
 
 System integration module connecting all subsystems. Key functions:
 
-- **Clock generation**: Instantiates `SDRAM_PLL`, distributes sys_clk (48 MHz) and fast_clk (120 MHz)
+- **Clock generation**: Instantiates `SDRAM_PLL`, distributes sys_clk (96 MHz) and fast_clk (120 MHz)
 - **Pin pool routing**: 23-pin pool (MKR_D[14:0] + PMOD[7:0]) mapped to 16 LA channels via `pin_map` register. The pin map is writable from the host, allowing any channel to probe any physical pin
 - **Capture mux**: Combinational mux + registered output (`internal_data_r`). Generator loopback controlled by `gen_capture_active` (not `gen_busy`):
   - Priority 1: `gen_tx_d1` on `gen_tx_pin` when `gen_capture_active='1'`
@@ -128,7 +127,7 @@ High-speed capture engine. Samples up to 16 channels at programmable rates.
 Full-duplex SPI slave with clock-domain crossing.
 
 **Key design**:
-- SPI engine runs on `fast_clk` (120 MHz), TX/RX data crosses to `sys_clk` (48 MHz)
+- SPI engine runs on `fast_clk` (120 MHz), TX/RX data crosses to `sys_clk` (96 MHz)
 - 2-stage synchroniser for TX_Data and SPI_Preamble (sys → fast)
 - 3-stage synchroniser for RX_Valid (fast → sys)
 - Preamble byte loaded at CS falling edge → first MISO byte is status, zero-waste protocol
@@ -151,7 +150,7 @@ Key detail: `actual_os_rate = min(OS_Rate, CLK_Frequency / Baud_Rate)` prevents 
 
 Wrapper around `SDRAM_Controller`. Provides simplified address/data/control interface.
 
-- Generates reset: holds `sdram_reset_n` low for 480,000 cycles (10 ms @ 48 MHz), then releases for PLL + SDRAM init
+- Generates reset: holds `sdram_reset_n` low for 480,000 cycles (5 ms @ 96 MHz), then releases for PLL + SDRAM init
 - Simulation mode (`Sim=true`): bypasses real controller, uses local RAM array for behavioral modelling
 - Maps `Address[21:0]`, `Write_Enable`, `Write_Data[15:0]`, `Read_Enable` to Avalon-MM signals
 - Exposes `Busy`, `Idle`, `Read_Valid` handshake
@@ -166,12 +165,12 @@ Custom SDRAM controller with full state machine: power-on init (precharge, refre
 - `sdram_s_writedata[15:0]` / `sdram_s_write_n`, `sdram_s_readdata[15:0]` / `sdram_s_read_n`
 - `sdram_s_burst`, `sdram_s_readdatavalid`, `sdram_s_waitrequest`
 
-**Timing**: RCD=2, RP=2, RFC=7, CL=2 (all clock cycles at 48 MHz, ~20.8 ns each). Compatible with 64 Mbit SDRAM (12 row / 8 column / 2 bank).
+**Timing**: RCD=2, RP=2, RFC=7, CL=2 (all clock cycles at 96 MHz, ~10.4 ns each). Compatible with 64 Mbit SDRAM (12 row / 8 column / 2 bank).
 
 ### `rtl/SDRAM_PLL.vhd` (412 lines)
 **Entity:** `SDRAM_PLL`
 
-Altera ALTPLL megafunction. 12 MHz input, three outputs: c0 (×4, 48 MHz), c1 (×10, 120 MHz), c2 (×4, 48 MHz, −90° phase shift). Has `locked` output for PLL lock detection.
+Altera ALTPLL megafunction. 12 MHz input, three outputs: c0 (×8, 96 MHz), c1 (×10, 120 MHz), c2 (×8, 96 MHz, −90° phase shift). Has `locked` output for PLL lock detection.
 
 ### `rtl/Signal_Gen.vhd` (441 lines)
 **Entity:** `Signal_Gen`
@@ -323,4 +322,4 @@ Altera Modular ADC II for MAX10. Includes:
 - `simulation/MAX10_ADC.vhd` — Simulation wrapper
 - `simulation/submodules/MAX10_ADC_modular_adc_0.vhd` — ADC submodule
 
-Entity `MAX10_ADC` has Avalon-ST command/response interface: `command_valid/channel/sop/eop/ready`, `response_valid/channel/data/sop/eop`. ADC clock from PLL c0 (48 MHz), PLL locked signal as reset qualifier.
+Entity `MAX10_ADC` has Avalon-ST command/response interface: `command_valid/channel/sop/eop/ready`, `response_valid/channel/data/sop/eop`. ADC clock from PLL c0 (96 MHz), PLL locked signal as reset qualifier.

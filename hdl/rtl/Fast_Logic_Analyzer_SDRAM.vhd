@@ -1,6 +1,8 @@
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.numeric_std.all;
+library lpm;
+use lpm.lpm_components.all;
 
 entity Fast_Logic_Analyzer_SDRAM is
   generic (
@@ -71,11 +73,23 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal samples_div  : natural range 0 to Max_Samples := 0;
   signal samples_div6 : natural range 0 to Max_Samples := 0;
 
+  -- Pipelined divide-by-3 (LPM_DIVIDE with 4-stage pipeline)
+  signal lpm_numer : std_logic_vector(21 downto 0) := (others => '0');
+  signal lpm_quot  : std_logic_vector(21 downto 0) := (others => '0');
+
   -- Write FIFO (depth 16, 38-bit entries: addr(21:0) & wdata(15:0))
   constant FIFO_Depth : natural := 16;
   type fifo_array is array (0 to FIFO_Depth-1) of std_logic_vector(37 downto 0);
   signal fifo_mem  : fifo_array := (others => (others => '0'));
-  signal fifo_cnt  : natural range 0 to FIFO_Depth := 0;
+  signal fifo_head_r   : natural range 0 to FIFO_Depth-1 := 0;
+  signal fifo_tail_r   : natural range 0 to FIFO_Depth-1 := 0;
+  signal fifo_cnt_r    : natural range 0 to FIFO_Depth := 0;
+  signal fifo_cnt      : natural range 0 to FIFO_Depth := 0;
+  signal buf_limit_r   : natural range 0 to Max_Samples := 0;
+  signal buf_last_r    : natural range 0 to Max_Samples := 0;
+  signal buf_base0_r   : natural range 0 to Max_Samples := 0;
+  signal buf_base1_r   : natural range 0 to Max_Samples := 0;
+  signal buf_base2_r   : natural range 0 to Max_Samples := 0;
 
   -- Pre-trigger BRAM (circular buffer, holds samples before trigger fires)
   constant BRAM_SIZE : natural := 1024;
@@ -94,6 +108,40 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal buf_full   : std_logic_vector(2 downto 0) := (others => '0');
   signal full_pending : std_logic := '0';
   signal full_clr_pending : std_logic := '0';
+
+  -- Per-buffer remaining-word count (replaces waddr_N >= buf_last_r compare)
+  signal buf_rem_0      : natural range 0 to Max_Samples := 0;
+  signal buf_rem_1      : natural range 0 to Max_Samples := 0;
+  signal buf_rem_2      : natural range 0 to Max_Samples := 0;
+  signal buf_rem_single : natural range 0 to Max_Samples := 0;
+
+  -- Registered flush-done status to break fast_mode_i → flush_rem → LessThan10 →
+  -- fifo_head_v → Add18 → LessThan18 → fifo_head_r critical path.
+  signal flush_done_r : std_logic := '0';
+
+  -- Registered run-edge event detection: breaks run_r → process_5~0 → burst_rem →
+  -- fifo_tail → fifo_head → Add18 → LessThan18 → fifo_head_r critical path.
+  -- run_level_r replaces the run_r process variable.
+  signal run_level_r : std_logic := '0';
+  signal run_edge_r  : std_logic := '0';
+  signal run_start_r : std_logic := '0';
+  signal run_stop_r  : std_logic := '0';
+
+  -- Registered sample-rate divider: pre-computed rate_div_r - 1 breaks the
+  -- Rate_Div → Add0 (28-bit subtractor) → LessThan0 → cnt carry chain path.
+  -- Down-counter uses cnt = 0 (fast NOR gate) instead of cnt >= threshold
+  -- (slow 28-bit comparator). Rate_Div changes only when the user sets
+  -- the sample rate (before capture starts), so 1-cycle latency is harmless.
+  signal rate_div_r    : natural range 1 to 150000000 := 12;
+  signal rate_div_m1_r : natural range 0 to 150000000 := 11;
+
+  -- FIFO enqueue pipeline (registered writes to break critical path)
+  signal enq_valid0 : boolean := false;
+  signal enq_valid1 : boolean := false;
+  signal enq_data0  : std_logic_vector(37 downto 0) := (others => '0');
+  signal enq_data1  : std_logic_vector(37 downto 0) := (others => '0');
+  signal enq_head0  : natural range 0 to FIFO_Depth-1 := 0;
+  signal enq_head1  : natural range 0 to FIFO_Depth-1 := 0;
 
   component SDRAM_Interface is
   generic (
@@ -130,27 +178,48 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
 
 begin
 
-  -- 2-stage pipeline to break LPM_DIVIDE (44.8 ns) across two clock cycles (83 ns)
+  -- 4-stage pipelined divide-by-3 (replaces combinatorial /3 with 38 LUT levels)
+  u_div6 : lpm_divide
+    generic map (
+      LPM_WIDTHN => 22,
+      LPM_WIDTHD => 2,
+      LPM_NREPRESENTATION => "UNSIGNED",
+      LPM_DREPRESENTATION => "UNSIGNED",
+      LPM_PIPELINE => 4
+    )
+    port map (
+      clock    => CLK,
+      numer    => lpm_numer,
+      denom    => "11",
+      quotient => lpm_quot,
+      remain   => open
+    );
+
+  -- Pipeline: register input, LPM divides over 4 cycles, register output
   process(CLK) begin
     if rising_edge(CLK) then
       samples_d1   <= Samples;
-      samples_div  <= samples_d1 / sub_steps;
-      samples_div6 <= samples_d1 / (3 * sub_steps);
+      lpm_numer    <= std_logic_vector(to_unsigned(samples_d1, 22));
+      samples_div  <= samples_d1;
+      samples_div6 <= to_integer(unsigned(lpm_quot));
     end if;
   end process;
 
   CLK_150 <= pclk;
 
-  -- Divider: assert sample_en for one cycle every Rate_Div PLL clocks
+  -- Divider: assert sample_en for one cycle every Rate_Div PLL clocks.
+  -- Down-counter uses cnt = 0 (fast NOR gate) instead of cnt >= threshold
+  -- (slow 28-bit comparator). rate_div_m1_r is pre-computed in a separate
+  -- registered process.
   process (pclk)
      variable cnt : natural range 0 to 150000000 := 0;
   begin
     if rising_edge(pclk) then
-      if cnt >= Rate_Div - 1 then
-        cnt := 0;
+      if cnt = 0 then
+        cnt := rate_div_m1_r;
         sample_en <= '1';
       else
-        cnt := cnt + 1;
+        cnt := cnt - 1;
         sample_en <= '0';
       end if;
     end if;
@@ -176,22 +245,61 @@ begin
     end if;
   end process;
 
-  -- Re-register CLK-domain divide results into pclk domain
+  -- Registered run-edge event detection: produces single-cycle pulses for
+  -- run start, run stop, and any edge. run_level_r replaces the run_r variable.
+  -- This breaks the run_r → process_5~0 → burst_rem → fifo_tail → fifo_head →
+  -- Add18 → LessThan18 → fifo_head_r timing path by registering the edge decode
+  -- in a separate process with minimal fanout.
+  process(pclk)
+  begin
+    if rising_edge(pclk) then
+      run_edge_r  <= run_sync2 xor run_level_r;
+      run_start_r <= run_sync2 and not run_level_r;
+      run_stop_r  <= (not run_sync2) and run_level_r;
+      run_level_r <= run_sync2;
+    end if;
+  end process;
+
+  -- Register Rate_Div into pclk domain and pre-compute rate_div_r - 1 to
+  -- break the 28-bit carry chain comparator path (rate_div_r → Add0 →
+  -- LessThan0 → cnt). Down-counter uses cnt = 0 (fast NOR) instead of
+  -- cnt >= rate_div_r (slow 28-bit comparator).
+  process(pclk)
+  begin
+    if rising_edge(pclk) then
+      rate_div_r    <= Rate_Div;
+      if Rate_Div > 1 then
+        rate_div_m1_r <= Rate_Div - 1;
+      else
+        rate_div_m1_r <= 0;
+      end if;
+    end if;
+  end process;
+
+  -- Re-register CLK-domain divide results into pclk domain; pre-compute buffer limits
   process(pclk)
   begin
     if rising_edge(pclk) then
       samples_div_p  <= samples_div;
       samples_div6_p <= samples_div6;
+      buf_limit_r    <= samples_div6;
+      if samples_div6 > 0 then
+        buf_last_r <= samples_div6 - 1;
+      else
+        buf_last_r <= 0;
+      end if;
+      buf_base0_r    <= 0;
+      buf_base1_r    <= samples_div6;
+      buf_base2_r    <= samples_div6 + samples_div6;
     end if;
   end process;
 
   -- Main: capture samples to SDRAM via dual buffer, read back from SDRAM
   process (pclk)
     variable step_r  : natural range 0 to sub_steps := 0;
-    variable run_r   : std_logic := '0';
     variable rd_mode : boolean := true;
     variable read_addr : natural := 0;
-    variable wbuf    : std_logic_vector(15 downto 0) := (others => '0');
+    variable wbuf    : std_logic_vector(31 downto 0) := (others => '0');
     variable waddr_0   : natural range 0 to Max_Samples := 0;
     variable waddr_1   : natural range 0 to Max_Samples := 0;
     variable waddr_2   : natural range 0 to Max_Samples := 0;
@@ -202,9 +310,9 @@ begin
     variable wr_pend_addr : std_logic_vector(21 downto 0) := (others => '0');
     variable wr_pend_data : std_logic_vector(15 downto 0) := (others => '0');
     variable rd_pend : std_logic := '0';
-    variable f_head  : natural range 0 to FIFO_Depth-1 := 0;
-    variable f_tail  : natural range 0 to FIFO_Depth-1 := 0;
-    variable f_cnt   : natural range 0 to FIFO_Depth := 0;
+    variable fifo_head_v  : natural range 0 to FIFO_Depth-1 := 0;
+    variable fifo_tail_v  : natural range 0 to FIFO_Depth-1 := 0;
+    variable fifo_count_v : natural range 0 to FIFO_Depth := 0;
     variable burst_rem   : natural range 0 to 4 := 0;
     variable burst_phase : boolean := false;
     type burst_buf_t is array(0 to 3) of std_logic_vector(37 downto 0);
@@ -216,7 +324,6 @@ begin
     variable flush_idx   : natural range 0 to BRAM_SIZE-1 := 0;
     variable flush_sync : boolean := false;
     variable bram_prepend_sz : natural range 0 to BRAM_SIZE := 0;
-    variable buf_limit : natural range 0 to 15000000 := 0;
     variable write_addr : std_logic_vector(21 downto 0) := (others => '0');
     variable analog_frame : std_logic_vector(63 downto 0) := (others => '0');
     variable analog_len   : natural range 1 to 8 := 1;
@@ -225,10 +332,24 @@ begin
   begin
     if rising_edge(pclk) then
       bram_wren <= '0';
+      fifo_head_v  := fifo_head_r;
+      fifo_tail_v  := fifo_tail_r;
+      fifo_count_v := fifo_cnt_r;
+
+      -- Commit previous-cycle pending enqueue entries into fifo_mem
+      if enq_valid0 then
+        fifo_mem(enq_head0) <= enq_data0;
+        enq_valid0 <= false;
+      end if;
+      if enq_valid1 then
+        fifo_mem(enq_head1) <= enq_data1;
+        enq_valid1 <= false;
+      end if;
 
       -- Buffer ack handling (evaluated every cycle)
       if Buffer_Ack(0) = '1' then
         buf_full(0) <= '0';
+        buf_rem_0   <= buf_limit_r;
         if buf_sel = "00" and buf_full(1) = '1' then
           -- A was waiting to be written (B is full), reset pointer now
           waddr_0 := 0;
@@ -236,6 +357,7 @@ begin
       end if;
       if Buffer_Ack(1) = '1' then
         buf_full(1) <= '0';
+        buf_rem_1   <= buf_limit_r;
         if buf_sel = "01" and buf_full(0) = '1' then
           -- B was waiting to be written (A is full), reset pointer now
           waddr_1 := 0;
@@ -243,6 +365,7 @@ begin
       end if;
       if Buffer_Ack(2) = '1' then
         buf_full(2) <= '0';
+        buf_rem_2   <= buf_limit_r;
         if buf_sel = "10" and buf_full(1) = '1' then
           -- C was waiting to be written (B is full), reset pointer now
           waddr_2 := 0;
@@ -262,17 +385,20 @@ begin
             bram_post_cnt := 0;
           end if;
         end if;
-        if full_pending = '1' and f_cnt = 0
-           and not wip and not wr_pend and burst_rem = 0 then
+        if full_pending = '1' and fifo_count_v = 0
+           and not wip and not wr_pend and burst_rem = 0
+           and not enq_valid0 and not enq_valid1 then
           full_i <= '1';
           full_pending <= '0';
           rd_mode := true;  -- enter readout so OLS can read completed buffer
         end if;
       end if;
 
-      if run_sync2 /= run_r then
+      if run_edge_r = '1' then
+        -- HARD CAPTURE INIT/RESET: registered run-edge event.
+        -- Skip all normal FIFO/pump logic for this cycle.
         -- Save pre-trigger BRAM count BEFORE resetting variables
-        if run_sync2 = '1' and Fast_Mode = '0' then
+        if run_start_r = '1' and Fast_Mode = '0' then
           flush_rem := bram_cnt;
           if bram_cnt < BRAM_SIZE then
             flush_idx := 0;
@@ -288,7 +414,12 @@ begin
         bram_prepend_sz := flush_rem;  -- save for Full assertion
 
         waddr_0 := 0; waddr_1 := 0; waddr_2 := 0; step_r := 0;
-        f_head := 0; f_tail := 0; f_cnt := 0;
+        buf_rem_0 <= buf_limit_r;
+        buf_rem_1 <= buf_limit_r;
+        buf_rem_2 <= buf_limit_r;
+        buf_rem_single <= samples_div_p;
+        fifo_head_v := 0; fifo_tail_v := 0; fifo_count_v := 0;
+        enq_valid0 <= false; enq_valid1 <= false;
         wbuf := (others => '0');
         analog_frame := (others => '0');
         analog_len := 1;
@@ -300,18 +431,19 @@ begin
         buf_full(0) <= '0'; buf_full(1) <= '0'; buf_full(2) <= '0';
         full_i <= '0';
         full_pending <= '0'; full_clr_pending <= '0';
-        if run_sync2 = '0' then
+        if run_stop_r = '1' then
           rd_mode := true;
           bram_post_cnt := 0;
-        elsif Fast_Mode = '1' then
+        elsif run_start_r = '1' and Fast_Mode = '1' then
           rd_mode := false;
           bram_post_cnt := 0;
-        else
+        elsif run_start_r = '1' then
           rd_mode := false;
         end if;
-        run_r := run_sync2;
         s_wr <= '0'; s_rd <= '0';
-      end if;
+
+      else
+      -- Normal capture/readout/write-pump logic (skipped on run-edge cycle)
 
       -- Fast mode pre-trigger
       if Fast_Mode = '1' and Armed = '1' and run_sync2 = '0' and rd_mode then
@@ -390,35 +522,38 @@ begin
           wip     := true;
           wr_pend := false;
 
-        elsif f_cnt > 0 and not wip then
-          if f_cnt >= 4 then
+        elsif fifo_count_v > 0 and not wip and not enq_valid0 and not enq_valid1 then
+          if fifo_count_v >= 4 then
             for i in 0 to 3 loop
-              burst_buf(i) := fifo_mem(f_tail);
-              if f_tail = FIFO_Depth-1 then f_tail := 0;
-              else f_tail := f_tail + 1; end if;
-              f_cnt := f_cnt - 1;
+              burst_buf(i) := fifo_mem(fifo_tail_v);
+              if fifo_tail_v = FIFO_Depth-1 then fifo_tail_v := 0;
+              else fifo_tail_v := fifo_tail_v + 1; end if;
+              fifo_count_v := fifo_count_v - 1;
             end loop;
             burst_rem   := 4;
             burst_phase := false;
           else
             wr_pend      := true;
-            wr_pend_addr := fifo_mem(f_tail)(37 downto 16);
-            wr_pend_data := fifo_mem(f_tail)(15 downto 0);
-            if f_tail = FIFO_Depth-1 then f_tail := 0;
-            else f_tail := f_tail + 1; end if;
-            f_cnt := f_cnt - 1;
+            wr_pend_addr := fifo_mem(fifo_tail_v)(37 downto 16);
+            wr_pend_data := fifo_mem(fifo_tail_v)(15 downto 0);
+            if fifo_tail_v = FIFO_Depth-1 then fifo_tail_v := 0;
+            else fifo_tail_v := fifo_tail_v + 1; end if;
+            fifo_count_v := fifo_count_v - 1;
           end if;
         end if;
 
         -- Fast BRAM flush: drain pre-trigger buffer at pclk rate (not sample_en rate).
         -- Completes in ~1024 pclk cycles = ~7 us, losing at most 1 sample at any rate.
+        -- Uses enq_valid0 pipeline (not direct fifo_mem write) for timing-clean FIFO access.
         if flush_rem > 0 then
-          if f_cnt < FIFO_Depth then
+          if fifo_count_v < FIFO_Depth and not enq_valid0 and not enq_valid1 then
             if flush_sync then
-              fifo_mem(f_head) <= std_logic_vector(to_unsigned(waddr_0, 22)) & bram_rdata;
-              if f_head = FIFO_Depth-1 then f_head := 0;
-              else f_head := f_head + 1; end if;
-              f_cnt := f_cnt + 1;
+              enq_data0  <= std_logic_vector(to_unsigned(waddr_0, 22)) & bram_rdata;
+              enq_head0  <= fifo_head_v;
+              enq_valid0 <= true;
+              if fifo_head_v = FIFO_Depth-1 then fifo_head_v := 0;
+              else fifo_head_v := fifo_head_v + 1; end if;
+              fifo_count_v := fifo_count_v + 1;
               waddr_0 := waddr_0 + 1;
               flush_rem := flush_rem - 1;
             end if;
@@ -454,10 +589,36 @@ begin
 
             if step_r = sub_steps - 1 then
             -- Full 16-bit word ready
+            -- ALWAYS compute write address and FIFO data (unconditionally).
+            -- This removes the comparator chain from the enq_data0 enable path,
+            -- fixing the critical timing path: fast_mode_i -> flush -> Add18 -> LessThan18 -> enq_data0 enable.
+            if Continuous_Mode = '1' then
+              if buf_sel = "00" then
+                write_addr := std_logic_vector(to_unsigned(waddr_0, 22));
+              elsif buf_sel = "01" then
+                write_addr := std_logic_vector(to_unsigned(buf_base1_r + waddr_1, 22));
+              else
+                write_addr := std_logic_vector(to_unsigned(buf_base2_r + waddr_2, 22));
+              end if;
+            else
+              write_addr := std_logic_vector(to_unsigned(waddr_0, 22));
+            end if;
+            enq_data0 <= write_addr & wbuf(15 downto 0);
+            enq_head0 <= fifo_head_v;
+            if sub_steps > 1 then
+              enq_data1 <= std_logic_vector(unsigned(write_addr) + 1) & wbuf(31 downto 16);
+              -- Pre-compute next head for upper word (fifo_head_v after increment)
+              if fifo_head_v = FIFO_Depth-1 then
+                enq_head1 <= 0;
+              else
+                enq_head1 <= fifo_head_v + 1;
+              end if;
+            end if;
+
             if Armed = '1' and run_sync2 = '0' then
               -- Pre-trigger BRAM (circular)
               bram_waddr <= bram_wp;
-              bram_wdata <= wbuf;
+              bram_wdata <= wbuf(15 downto 0);
               bram_wren <= '1';
               if bram_wp = BRAM_SIZE-1 then bram_wp := 0;
               else bram_wp := bram_wp + 1; end if;
@@ -465,89 +626,109 @@ begin
             elsif Fast_Mode = '1' and Armed = '1' then
               -- Fast mode post-trigger
               bram_waddr <= bram_wp;
-              bram_wdata <= wbuf;
+              bram_wdata <= wbuf(15 downto 0);
               bram_wren <= '1';
               if bram_wp = BRAM_SIZE-1 then bram_wp := 0;
               else bram_wp := bram_wp + 1; end if;
               if bram_cnt < BRAM_SIZE then bram_cnt := bram_cnt + 1; end if;
               bram_post_cnt := bram_post_cnt + 1;
-            elsif f_cnt < FIFO_Depth then
+            elsif flush_done_r = '1' and
+                  ((sub_steps = 1 and fifo_count_v < FIFO_Depth
+                                  and not enq_valid0 and not enq_valid1) or
+                   (sub_steps > 1 and fifo_count_v < FIFO_Depth - 1
+                                  and not enq_valid0 and not enq_valid1)) then
               -- Post-trigger: write to current buffer via FIFO
               if Continuous_Mode = '1' then
                 if buf_full(0) = '1' and buf_full(1) = '1' and buf_full(2) = '1' then
                   null;  -- all 3 full: stall, no write
                 else
-                  -- Double-buffer mode
-                  buf_limit := samples_div6_p;
-                  if buf_sel = "00" then
-                    write_addr := std_logic_vector(to_unsigned(waddr_0, 22));
-                    if waddr_0 + 1 >= buf_limit then
-                      buf_full(0) <= '1';
-                      if buf_full(1) = '1' and buf_full(2) = '1' then
-                        full_pending <= '1';
-                      else
-                        if buf_full(1) = '0' then buf_sel <= "01"; waddr_1 := 0;
-                        else buf_sel <= "10"; waddr_2 := 0; end if;
-                      end if;
-                    end if;
-                    waddr_0 := waddr_0 + 1;
-                  elsif buf_sel = "01" then
-                    write_addr := std_logic_vector(to_unsigned(buf_limit + waddr_1, 22));
-                    if waddr_1 + 1 >= buf_limit then
-                      buf_full(1) <= '1';
-                      if buf_full(0) = '1' and buf_full(2) = '1' then
-                        full_pending <= '1';
-                      else
-                        if buf_full(2) = '0' then buf_sel <= "10"; waddr_2 := 0;
-                        else buf_sel <= "00"; waddr_0 := 0; end if;
-                      end if;
-                    end if;
-                    waddr_1 := waddr_1 + 1;
+                  -- If current buffer is full, switch to next available buffer first
+                  if (buf_sel = "00" and buf_full(0) = '1') then
+                    if buf_full(1) = '0' then buf_sel <= "01"; waddr_1 := 0; buf_rem_1 <= buf_limit_r;
+                    else                     buf_sel <= "10"; waddr_2 := 0; buf_rem_2 <= buf_limit_r; end if;
+                  elsif (buf_sel = "01" and buf_full(1) = '1') then
+                    if buf_full(2) = '0' then buf_sel <= "10"; waddr_2 := 0; buf_rem_2 <= buf_limit_r;
+                    else                     buf_sel <= "00"; waddr_0 := 0; buf_rem_0 <= buf_limit_r; end if;
+                  elsif (buf_sel = "10" and buf_full(2) = '1') then
+                    if buf_full(0) = '0' then buf_sel <= "00"; waddr_0 := 0; buf_rem_0 <= buf_limit_r;
+                    else                     buf_sel <= "01"; waddr_1 := 0; buf_rem_1 <= buf_limit_r; end if;
                   else
-                    -- buf_sel = "10": write to buffer C
-                    write_addr := std_logic_vector(to_unsigned(2 * buf_limit + waddr_2, 22));
-                    if waddr_2 + 1 >= buf_limit then
-                      buf_full(2) <= '1';
-                      if buf_full(0) = '1' and buf_full(1) = '1' then
-                        full_pending <= '1';
+                    -- Current buffer is not full: normal buffer-logic
+                    if buf_sel = "00" then
+                      if buf_rem_0 = 1 then
+                        buf_full(0) <= '1';  buf_rem_0 <= 0;
+                        if buf_full(1) = '1' and buf_full(2) = '1' then
+                          full_pending <= '1';
+                        else
+                          if buf_full(1) = '0' then buf_sel <= "01"; waddr_1 := 0; buf_rem_1 <= buf_limit_r;
+                          else                     buf_sel <= "10"; waddr_2 := 0; buf_rem_2 <= buf_limit_r; end if;
+                        end if;
                       else
-                        if buf_full(0) = '0' then buf_sel <= "00"; waddr_0 := 0;
-                        else buf_sel <= "01"; waddr_1 := 0; end if;
+                        buf_rem_0 <= buf_rem_0 - 1;
                       end if;
+                      waddr_0 := waddr_0 + 1;
+                    elsif buf_sel = "01" then
+                      if buf_rem_1 = 1 then
+                        buf_full(1) <= '1';  buf_rem_1 <= 0;
+                        if buf_full(0) = '1' and buf_full(2) = '1' then
+                          full_pending <= '1';
+                        else
+                          if buf_full(2) = '0' then buf_sel <= "10"; waddr_2 := 0; buf_rem_2 <= buf_limit_r;
+                          else                     buf_sel <= "00"; waddr_0 := 0; buf_rem_0 <= buf_limit_r; end if;
+                        end if;
+                      else
+                        buf_rem_1 <= buf_rem_1 - 1;
+                      end if;
+                      waddr_1 := waddr_1 + 1;
+                    else
+                      -- buf_sel = "10": write to buffer C
+                      if buf_rem_2 = 1 then
+                        buf_full(2) <= '1';  buf_rem_2 <= 0;
+                        if buf_full(0) = '1' and buf_full(1) = '1' then
+                          full_pending <= '1';
+                        else
+                          if buf_full(0) = '0' then buf_sel <= "00"; waddr_0 := 0; buf_rem_0 <= buf_limit_r;
+                          else                     buf_sel <= "01"; waddr_1 := 0; buf_rem_1 <= buf_limit_r; end if;
+                        end if;
+                      else
+                        buf_rem_2 <= buf_rem_2 - 1;
+                      end if;
+                      waddr_2 := waddr_2 + 1;
                     end if;
-                    waddr_2 := waddr_2 + 1;
                   end if;
-                  -- Write lower 16 bits
-                  fifo_mem(f_head) <= write_addr & wbuf(15 downto 0);
-                  if f_head = FIFO_Depth-1 then f_head := 0;
-                  else f_head := f_head + 1; end if;
-                  f_cnt := f_cnt + 1;
+                  -- Commit to FIFO (enq_data0/enq_data1/enq_head0/enq_head1 already set above)
+                  enq_valid0 <= true;
+                  if fifo_head_v = FIFO_Depth-1 then fifo_head_v := 0;
+                  else fifo_head_v := fifo_head_v + 1; end if;
+                  fifo_count_v := fifo_count_v + 1;
                   -- If sub_steps=2, write upper 16 bits to next address
                   if sub_steps > 1 then
-                    fifo_mem(f_head) <= std_logic_vector(unsigned(write_addr) + 1) & wbuf(31 downto 16);
-                    if f_head = FIFO_Depth-1 then f_head := 0;
-                    else f_head := f_head + 1; end if;
-                    f_cnt := f_cnt + 1;
+                    enq_valid1 <= true;
+                    if fifo_head_v = FIFO_Depth-1 then fifo_head_v := 0;
+                    else fifo_head_v := fifo_head_v + 1; end if;
+                    fifo_count_v := fifo_count_v + 1;
                   end if;
                 end if;
               else
-                -- Single-buffer mode (legacy)
+                -- Single-buffer mode (countdown-based)
                 -- Stop at target to let FIFO drain, then Full fires
-                if waddr_0 < samples_div_p then
-                  -- Write lower 16 bits
-                  fifo_mem(f_head) <= std_logic_vector(to_unsigned(waddr_0, 22)) & wbuf(15 downto 0);
-                  if f_head = FIFO_Depth-1 then f_head := 0;
-                  else f_head := f_head + 1; end if;
-                  f_cnt := f_cnt + 1;
+                if buf_rem_single > 0 then
+                  -- Commit to FIFO (enq_data0/enq_data1/enq_head0/enq_head1 already set above)
+                  enq_valid0 <= true;
+                  if fifo_head_v = FIFO_Depth-1 then fifo_head_v := 0;
+                  else fifo_head_v := fifo_head_v + 1; end if;
+                  fifo_count_v := fifo_count_v + 1;
                   -- If sub_steps=2, write upper 16 bits to next address
                   if sub_steps > 1 then
-                    fifo_mem(f_head) <= std_logic_vector(to_unsigned(waddr_0 + 1, 22)) & wbuf(31 downto 16);
-                    if f_head = FIFO_Depth-1 then f_head := 0;
-                    else f_head := f_head + 1; end if;
-                    f_cnt := f_cnt + 1;
+                    enq_valid1 <= true;
+                    if fifo_head_v = FIFO_Depth-1 then fifo_head_v := 0;
+                    else fifo_head_v := fifo_head_v + 1; end if;
+                    fifo_count_v := fifo_count_v + 1;
                     waddr_0 := waddr_0 + 2;
+                    buf_rem_single <= buf_rem_single - 2;
                   else
                     waddr_0 := waddr_0 + 1;
+                    buf_rem_single <= buf_rem_single - 1;
                   end if;
                 end if;
               end if;
@@ -580,37 +761,52 @@ begin
             -- Backpressure handled at top of process (full_pending logic)
             null;
           else
-            -- Single-buffer mode: Full when waddr_0 reaches target
-            if waddr_0 >= samples_div_p
-               and f_cnt = 0
+            -- Single-buffer mode: Full when buf_rem_single = 0 and FIFO drained
+            if buf_rem_single = 0
+               and fifo_count_v = 0
                and not wip
                and not wr_pend
                and burst_rem = 0
+               and not enq_valid0
+               and not enq_valid1
             then
               full_i <= '1';
               rd_mode := true;
             end if;
           end if;
         end if;
+      end if; -- end rd_mode
+      end if; -- end run_edge_r else
+
+      -- Commit next-state values to registered signals
+      fifo_head_r <= fifo_head_v;
+      fifo_tail_r <= fifo_tail_v;
+      fifo_cnt_r  <= fifo_count_v;
+
+      -- Register flush-done status to break timing path
+      if flush_rem = 0 then
+        flush_done_r <= '1';
+      else
+        flush_done_r <= '0';
       end if;
 
-      -- Drive fifo_cnt signal from variable for external visibility
-      fifo_cnt <= f_cnt;
+      -- Drive fifo_cnt signal for external visibility
+      fifo_cnt <= fifo_count_v;
 
       -- Status
-      Status(0) <= run_r;
+      Status(0) <= run_level_r;
       if wip then Status(1) <= '1'; else Status(1) <= '0'; end if;
       Status(2) <= s_rd;
       Status(3) <= full_i;
-      if    f_cnt >= 8 then Status(7) <= '1'; else Status(7) <= '0'; end if;
-      if    f_cnt = 4 or f_cnt = 5 or f_cnt = 6 or f_cnt = 7
-         or f_cnt = 12 or f_cnt = 13 or f_cnt = 14 or f_cnt = 15
+      if    fifo_count_v >= 8 then Status(7) <= '1'; else Status(7) <= '0'; end if;
+      if    fifo_count_v = 4 or fifo_count_v = 5 or fifo_count_v = 6 or fifo_count_v = 7
+         or fifo_count_v = 12 or fifo_count_v = 13 or fifo_count_v = 14 or fifo_count_v = 15
          then Status(6) <= '1'; else Status(6) <= '0'; end if;
-      if    f_cnt = 2 or f_cnt = 3 or f_cnt = 6 or f_cnt = 7
-         or f_cnt = 10 or f_cnt = 11 or f_cnt = 14 or f_cnt = 15
+      if    fifo_count_v = 2 or fifo_count_v = 3 or fifo_count_v = 6 or fifo_count_v = 7
+         or fifo_count_v = 10 or fifo_count_v = 11 or fifo_count_v = 14 or fifo_count_v = 15
          then Status(5) <= '1'; else Status(5) <= '0'; end if;
-      if    f_cnt = 1 or f_cnt = 3 or f_cnt = 5 or f_cnt = 7
-         or f_cnt = 9 or f_cnt = 11 or f_cnt = 13 or f_cnt = 15
+      if    fifo_count_v = 1 or fifo_count_v = 3 or fifo_count_v = 5 or fifo_count_v = 7
+         or fifo_count_v = 9 or fifo_count_v = 11 or fifo_count_v = 13 or fifo_count_v = 15
          then Status(4) <= '1'; else Status(4) <= '0'; end if;
     end if;
   end process;
