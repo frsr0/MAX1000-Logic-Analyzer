@@ -114,6 +114,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL prev_buf_sel        : NATURAL range 0 to 2 := 0;
   SIGNAL buffer_ack_i        : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
   SIGNAL spi_preamble        : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+  SIGNAL spi_preamble_r      : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL spi_tx_ready_i      : STD_LOGIC := '0';
   SIGNAL proto_trig_enable   : STD_LOGIC := '0';
   SIGNAL dbg_pkt_ok_seen     : STD_LOGIC := '0';
@@ -739,9 +740,16 @@ BEGIN
   pipe_depth <= 8 when ch_mode = '0' else 4;
 
   -- Bring-up/status preamble: run flags plus sticky SPI packet diagnostics.
+  -- Registered on sys_clk before crossing to fast_clk SPI slave domain.
   spi_preamble <= Run & Run_OLS & Full & '1' &
                   dbg_rx_valid_seen & dbg_pkt_ok_seen &
                   dbg_bad_crc_seen & dbg_bad_frame_seen;
+  process(CLK)
+  begin
+    if rising_edge(CLK) then
+      spi_preamble_r <= spi_preamble;
+    end if;
+  end process;
 
   Gen_Proto    <= gen_proto_int;
   Gen_Baud_Div <= gen_baud_div_int;
@@ -793,7 +801,7 @@ BEGIN
       MISO       => SPI_MISO,
       CS_n       => SPI_CS,
       TX_Data    => spi_tx_tdata,
-      SPI_Preamble   => spi_preamble,
+      SPI_Preamble   => spi_preamble_r,
       TX_Ready   => spi_tx_ready_i,
       RX_Data    => SPI_RX_Data,
       RX_Valid   => SPI_RX_Valid,

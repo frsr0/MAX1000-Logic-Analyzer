@@ -8,6 +8,8 @@ set_global_assignment -name TOP_LEVEL_ENTITY OLS_Logic_Analyzer_wrapper
 set_global_assignment -name NUM_PARALLEL_PROCESSORS 10
 set_global_assignment -name INTERNAL_FLASH_UPDATE_MODE "SINGLE IMAGE WITH ERAM"
 
+set_global_assignment -name SDC_FILE OLS_Logic_Analyzer.sdc
+
 set_global_assignment -name VHDL_FILE OLS_SDRAM_Top.vhd
 set_global_assignment -name VHDL_FILE LED_Controller.vhd
 set_global_assignment -name VHDL_FILE OLS_Interface.vhd
