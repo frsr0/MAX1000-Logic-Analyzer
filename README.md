@@ -372,17 +372,17 @@ State: GENCAP_IDLE
 
 - `disp_arm` is set by `CMD_GEN_CAPTURE` same as `CMD_ARM_CAPTURE` — captures are armed identically.
 - `gen_start_pulse` feeds into gen_ctl's `gen_start_req` logic alongside `disp_gen_start` (CMD_GEN_START).
-- During GENCAP_RUNNING, `gen_capture_active` forces the capture mux to route `gen_tx_d1` to the assigned channel, even overriding debug CH0.
+- During GENCAP_RUNNING, `gen_capture_active` forces the capture mux to route `gen_tx_d2` to the assigned channel, even overriding debug CH0.
 - On abort (`CMD_ABORT_CAPTURE` → `disp_abort`), the FSM resets to IDLE immediately.
 
 ## Capture Mux Priority
 
-The combinatorial capture mux in OLS_SDRAM_Top prioritises signals:
+The registered capture mux in OLS_SDRAM_Top prioritises signals (inside `process(sys_clk)`, eliminating the combinational timing hazard where `gen_capture_active` could arrive too late):
 
 ```
 1. gen_capture_active = '1' OR gen_busy = '1'
-   AND gen_tx_pin = pin_map(i)        → route gen_tx_d1 to channel i
-   (generator output, includes SPI/SEN_SDO loopback)
+   AND gen_tx_pin = pin_map(i)        → route gen_tx_d2 to channel i
+   (generator loopback, 2-cycle pipeline)
 
 2. gen_busy = '1' AND gen_i2c_test = '1'
    AND gen_scl_pin = pin_map(i)       → route gen_scl_d2 to channel i
@@ -625,7 +625,7 @@ This eliminates host timing dependency — the generator start and capture are s
 ## Capture Mux Priority
 
 ```
-1. gen_capture_active OR gen_busy → route gen_tx_d1 to gen_tx_pin channel
+1. gen_capture_active OR gen_busy → route gen_tx_d2 to gen_tx_pin channel
 2. gen_busy + I2C test mode → route gen_scl_d2 to gen_scl_pin channel
 3. debug_ch0_enable on CH0 → route registered_ch0_d1 (test divider)
 4. else → route pin_pool_clean(pin_map(i)) (physical pin via Schmitt filter)

@@ -45,7 +45,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
 
   signal sys_clk     : std_logic := '0';
   signal pll_locked  : std_logic := '0';
-  signal internal_data : std_logic_vector(LA_CHANNELS-1 downto 0);
   signal internal_data_r : std_logic_vector(LA_CHANNELS-1 downto 0) := (others => '0');
   signal gen_busy      : std_logic := '0';
   signal gen_tx        : std_logic;
@@ -76,6 +75,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   -- Physical pin pool (all digital-capable inputs)
   signal pin_pool     : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
   signal pin_pool_d1  : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
+  signal pin_pool_d2  : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
 
   -- Pin map registers: each LA channel i reads pin_pool(pin_map(i))
   type pin_map_t is array(0 to LA_CHANNELS-1) of natural range 0 to PIN_POOL_SIZE-1;
@@ -94,7 +94,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_scl_d1   : std_logic := '0';
   signal gen_scl_d2   : std_logic := '0';
   signal gen_tx_d1    : std_logic := '0';
+  signal gen_tx_d2    : std_logic := '0';
   signal registered_ch0_d1 : std_logic := '0';
+  signal registered_ch0_d2 : std_logic := '0';
 
   -- Schmitt trigger / digital hysteresis filter
   signal schmitt_enable    : std_logic := '0';
@@ -289,30 +291,24 @@ BEGIN
   SEN_SPC <= gen_scl when gen_spi_test = '1' and gen_busy = '1' else
              '0' when gen_i2c_test = '1' and gen_busy = '1' and gen_scl = '0' else 'Z';
 
-  -- Capture mux: combinational, uses gen_capture_active (not gen_busy)
-  -- as the generator loopback selector.  Registered output for deterministic
-  -- sampling.
-  capture_mux: process(pin_pool_clean, pin_map, gen_tx_pin, gen_scl_pin,
-                       gen_tx_d1, gen_scl_d2, gen_i2c_test,
-                       registered_ch0_d1, debug_ch0_enable, gen_capture_active)
-  begin
-    for i in 0 to LA_CHANNELS-1 loop
-      if gen_capture_active = '1' and gen_tx_pin = pin_map(i) then
-        internal_data(i) <= gen_tx_d1;
-      elsif gen_capture_active = '1' and gen_i2c_test = '1' and gen_scl_pin = pin_map(i) then
-        internal_data(i) <= gen_scl_d2;
-      elsif i = 0 and debug_ch0_enable = '1' then
-        internal_data(i) <= registered_ch0_d1;
-      else
-        internal_data(i) <= pin_pool_clean(pin_map(i));
-      end if;
-    end loop;
-  end process;
-
+  -- Registered capture mux: uses gen_tx_d2 (2-cycle loopback pipeline) and
+  -- gen_capture_active.  Combining mux + register eliminates the combinational
+  -- select timing hazard where gen_capture_active (deep hierarchy path) could
+  -- arrive too late relative to generator data.
   process(sys_clk)
   begin
     if rising_edge(sys_clk) then
-      internal_data_r <= internal_data;
+      for i in 0 to LA_CHANNELS-1 loop
+        if gen_capture_active = '1' and gen_tx_pin = pin_map(i) then
+          internal_data_r(i) <= gen_tx_d2;
+        elsif gen_capture_active = '1' and gen_i2c_test = '1' and gen_scl_pin = pin_map(i) then
+          internal_data_r(i) <= gen_scl_d2;
+        elsif i = 0 and debug_ch0_enable = '1' then
+          internal_data_r(i) <= registered_ch0_d1;
+        else
+          internal_data_r(i) <= pin_pool_clean(pin_map(i));
+        end if;
+      end loop;
     end if;
   end process;
 
@@ -329,12 +325,15 @@ BEGIN
   process(sys_clk) begin
     if rising_edge(sys_clk) then
       pin_pool_d1 <= pin_pool;
+      pin_pool_d2 <= pin_pool_d1;
       sen_sdi_meta <= SEN_SDI;
       sen_sdi_sync <= sen_sdi_meta;
       gen_scl_d1 <= gen_scl;
       gen_scl_d2 <= gen_scl_d1;
       gen_tx_d1 <= gen_tx;
+      gen_tx_d2 <= gen_tx_d1;
       registered_ch0_d1 <= registered_ch0;
+      registered_ch0_d2 <= registered_ch0_d1;
 
       -- Pin map write from host command
       if pin_map_write = '1' then
