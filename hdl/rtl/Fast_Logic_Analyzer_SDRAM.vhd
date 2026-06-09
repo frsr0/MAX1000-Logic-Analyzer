@@ -109,6 +109,12 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal full_pending : std_logic := '0';
   signal full_clr_pending : std_logic := '0';
 
+  -- Per-buffer remaining-word count (replaces waddr_N >= buf_last_r compare)
+  signal buf_rem_0      : natural range 0 to Max_Samples := 0;
+  signal buf_rem_1      : natural range 0 to Max_Samples := 0;
+  signal buf_rem_2      : natural range 0 to Max_Samples := 0;
+  signal buf_rem_single : natural range 0 to Max_Samples := 0;
+
   -- Registered flush-done status to break fast_mode_i → flush_rem → LessThan10 →
   -- fifo_head_v → Add18 → LessThan18 → fifo_head_r critical path.
   signal flush_done_r : std_logic := '0';
@@ -293,7 +299,7 @@ begin
     variable step_r  : natural range 0 to sub_steps := 0;
     variable rd_mode : boolean := true;
     variable read_addr : natural := 0;
-    variable wbuf    : std_logic_vector(15 downto 0) := (others => '0');
+    variable wbuf    : std_logic_vector(31 downto 0) := (others => '0');
     variable waddr_0   : natural range 0 to Max_Samples := 0;
     variable waddr_1   : natural range 0 to Max_Samples := 0;
     variable waddr_2   : natural range 0 to Max_Samples := 0;
@@ -343,6 +349,7 @@ begin
       -- Buffer ack handling (evaluated every cycle)
       if Buffer_Ack(0) = '1' then
         buf_full(0) <= '0';
+        buf_rem_0   <= buf_limit_r;
         if buf_sel = "00" and buf_full(1) = '1' then
           -- A was waiting to be written (B is full), reset pointer now
           waddr_0 := 0;
@@ -350,6 +357,7 @@ begin
       end if;
       if Buffer_Ack(1) = '1' then
         buf_full(1) <= '0';
+        buf_rem_1   <= buf_limit_r;
         if buf_sel = "01" and buf_full(0) = '1' then
           -- B was waiting to be written (A is full), reset pointer now
           waddr_1 := 0;
@@ -357,6 +365,7 @@ begin
       end if;
       if Buffer_Ack(2) = '1' then
         buf_full(2) <= '0';
+        buf_rem_2   <= buf_limit_r;
         if buf_sel = "10" and buf_full(1) = '1' then
           -- C was waiting to be written (B is full), reset pointer now
           waddr_2 := 0;
@@ -405,6 +414,10 @@ begin
         bram_prepend_sz := flush_rem;  -- save for Full assertion
 
         waddr_0 := 0; waddr_1 := 0; waddr_2 := 0; step_r := 0;
+        buf_rem_0 <= buf_limit_r;
+        buf_rem_1 <= buf_limit_r;
+        buf_rem_2 <= buf_limit_r;
+        buf_rem_single <= samples_div_p;
         fifo_head_v := 0; fifo_tail_v := 0; fifo_count_v := 0;
         enq_valid0 <= false; enq_valid1 <= false;
         wbuf := (others => '0');
@@ -531,10 +544,13 @@ begin
 
         -- Fast BRAM flush: drain pre-trigger buffer at pclk rate (not sample_en rate).
         -- Completes in ~1024 pclk cycles = ~7 us, losing at most 1 sample at any rate.
+        -- Uses enq_valid0 pipeline (not direct fifo_mem write) for timing-clean FIFO access.
         if flush_rem > 0 then
-          if fifo_count_v < FIFO_Depth then
+          if fifo_count_v < FIFO_Depth and not enq_valid0 and not enq_valid1 then
             if flush_sync then
-              fifo_mem(fifo_head_v) <= std_logic_vector(to_unsigned(waddr_0, 22)) & bram_rdata;
+              enq_data0  <= std_logic_vector(to_unsigned(waddr_0, 22)) & bram_rdata;
+              enq_head0  <= fifo_head_v;
+              enq_valid0 <= true;
               if fifo_head_v = FIFO_Depth-1 then fifo_head_v := 0;
               else fifo_head_v := fifo_head_v + 1; end if;
               fifo_count_v := fifo_count_v + 1;
@@ -602,7 +618,7 @@ begin
             if Armed = '1' and run_sync2 = '0' then
               -- Pre-trigger BRAM (circular)
               bram_waddr <= bram_wp;
-              bram_wdata <= wbuf;
+              bram_wdata <= wbuf(15 downto 0);
               bram_wren <= '1';
               if bram_wp = BRAM_SIZE-1 then bram_wp := 0;
               else bram_wp := bram_wp + 1; end if;
@@ -610,7 +626,7 @@ begin
             elsif Fast_Mode = '1' and Armed = '1' then
               -- Fast mode post-trigger
               bram_waddr <= bram_wp;
-              bram_wdata <= wbuf;
+              bram_wdata <= wbuf(15 downto 0);
               bram_wren <= '1';
               if bram_wp = BRAM_SIZE-1 then bram_wp := 0;
               else bram_wp := bram_wp + 1; end if;
@@ -626,41 +642,59 @@ begin
                 if buf_full(0) = '1' and buf_full(1) = '1' and buf_full(2) = '1' then
                   null;  -- all 3 full: stall, no write
                 else
-                  -- Buffer-full and pointer logic
-                  if buf_sel = "00" then
-                    if waddr_0 >= buf_last_r then
-                      buf_full(0) <= '1';
-                      if buf_full(1) = '1' and buf_full(2) = '1' then
-                        full_pending <= '1';
-                      else
-                        if buf_full(1) = '0' then buf_sel <= "01"; waddr_1 := 0;
-                        else buf_sel <= "10"; waddr_2 := 0; end if;
-                      end if;
-                    end if;
-                    waddr_0 := waddr_0 + 1;
-                  elsif buf_sel = "01" then
-                    if waddr_1 >= buf_last_r then
-                      buf_full(1) <= '1';
-                      if buf_full(0) = '1' and buf_full(2) = '1' then
-                        full_pending <= '1';
-                      else
-                        if buf_full(2) = '0' then buf_sel <= "10"; waddr_2 := 0;
-                        else buf_sel <= "00"; waddr_0 := 0; end if;
-                      end if;
-                    end if;
-                    waddr_1 := waddr_1 + 1;
+                  -- If current buffer is full, switch to next available buffer first
+                  if (buf_sel = "00" and buf_full(0) = '1') then
+                    if buf_full(1) = '0' then buf_sel <= "01"; waddr_1 := 0; buf_rem_1 <= buf_limit_r;
+                    else                     buf_sel <= "10"; waddr_2 := 0; buf_rem_2 <= buf_limit_r; end if;
+                  elsif (buf_sel = "01" and buf_full(1) = '1') then
+                    if buf_full(2) = '0' then buf_sel <= "10"; waddr_2 := 0; buf_rem_2 <= buf_limit_r;
+                    else                     buf_sel <= "00"; waddr_0 := 0; buf_rem_0 <= buf_limit_r; end if;
+                  elsif (buf_sel = "10" and buf_full(2) = '1') then
+                    if buf_full(0) = '0' then buf_sel <= "00"; waddr_0 := 0; buf_rem_0 <= buf_limit_r;
+                    else                     buf_sel <= "01"; waddr_1 := 0; buf_rem_1 <= buf_limit_r; end if;
                   else
-                    -- buf_sel = "10": write to buffer C
-                    if waddr_2 >= buf_last_r then
-                      buf_full(2) <= '1';
-                      if buf_full(0) = '1' and buf_full(1) = '1' then
-                        full_pending <= '1';
+                    -- Current buffer is not full: normal buffer-logic
+                    if buf_sel = "00" then
+                      if buf_rem_0 = 1 then
+                        buf_full(0) <= '1';  buf_rem_0 <= 0;
+                        if buf_full(1) = '1' and buf_full(2) = '1' then
+                          full_pending <= '1';
+                        else
+                          if buf_full(1) = '0' then buf_sel <= "01"; waddr_1 := 0; buf_rem_1 <= buf_limit_r;
+                          else                     buf_sel <= "10"; waddr_2 := 0; buf_rem_2 <= buf_limit_r; end if;
+                        end if;
                       else
-                        if buf_full(0) = '0' then buf_sel <= "00"; waddr_0 := 0;
-                        else buf_sel <= "01"; waddr_1 := 0; end if;
+                        buf_rem_0 <= buf_rem_0 - 1;
                       end if;
+                      waddr_0 := waddr_0 + 1;
+                    elsif buf_sel = "01" then
+                      if buf_rem_1 = 1 then
+                        buf_full(1) <= '1';  buf_rem_1 <= 0;
+                        if buf_full(0) = '1' and buf_full(2) = '1' then
+                          full_pending <= '1';
+                        else
+                          if buf_full(2) = '0' then buf_sel <= "10"; waddr_2 := 0; buf_rem_2 <= buf_limit_r;
+                          else                     buf_sel <= "00"; waddr_0 := 0; buf_rem_0 <= buf_limit_r; end if;
+                        end if;
+                      else
+                        buf_rem_1 <= buf_rem_1 - 1;
+                      end if;
+                      waddr_1 := waddr_1 + 1;
+                    else
+                      -- buf_sel = "10": write to buffer C
+                      if buf_rem_2 = 1 then
+                        buf_full(2) <= '1';  buf_rem_2 <= 0;
+                        if buf_full(0) = '1' and buf_full(1) = '1' then
+                          full_pending <= '1';
+                        else
+                          if buf_full(0) = '0' then buf_sel <= "00"; waddr_0 := 0; buf_rem_0 <= buf_limit_r;
+                          else                     buf_sel <= "01"; waddr_1 := 0; buf_rem_1 <= buf_limit_r; end if;
+                        end if;
+                      else
+                        buf_rem_2 <= buf_rem_2 - 1;
+                      end if;
+                      waddr_2 := waddr_2 + 1;
                     end if;
-                    waddr_2 := waddr_2 + 1;
                   end if;
                   -- Commit to FIFO (enq_data0/enq_data1/enq_head0/enq_head1 already set above)
                   enq_valid0 <= true;
@@ -676,9 +710,9 @@ begin
                   end if;
                 end if;
               else
-                -- Single-buffer mode (legacy)
+                -- Single-buffer mode (countdown-based)
                 -- Stop at target to let FIFO drain, then Full fires
-                if waddr_0 < samples_div_p then
+                if buf_rem_single > 0 then
                   -- Commit to FIFO (enq_data0/enq_data1/enq_head0/enq_head1 already set above)
                   enq_valid0 <= true;
                   if fifo_head_v = FIFO_Depth-1 then fifo_head_v := 0;
@@ -691,8 +725,10 @@ begin
                     else fifo_head_v := fifo_head_v + 1; end if;
                     fifo_count_v := fifo_count_v + 1;
                     waddr_0 := waddr_0 + 2;
+                    buf_rem_single <= buf_rem_single - 2;
                   else
                     waddr_0 := waddr_0 + 1;
+                    buf_rem_single <= buf_rem_single - 1;
                   end if;
                 end if;
               end if;
@@ -725,8 +761,8 @@ begin
             -- Backpressure handled at top of process (full_pending logic)
             null;
           else
-            -- Single-buffer mode: Full when waddr_0 reaches target
-            if waddr_0 >= samples_div_p
+            -- Single-buffer mode: Full when buf_rem_single = 0 and FIFO drained
+            if buf_rem_single = 0
                and fifo_count_v = 0
                and not wip
                and not wr_pend

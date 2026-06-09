@@ -27,33 +27,11 @@ set_multicycle_path -hold 1 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|full
 set_multicycle_path -setup 2 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|rd_mode}]
 set_multicycle_path -hold 1 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|rd_mode}]
 
-# fifo_cnt_r: The count computation shares the waddr adder/comparator chain.
-# With the enq_valid0/1 pipeline, FIFO writes are delayed 1 cycle, so the count
-# register can tolerate 1 extra cycle of setup slack.
-set_multicycle_path -setup 2 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|fifo_cnt_r[*]}]
-set_multicycle_path -hold 1 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|fifo_cnt_r[*]}]
-
-# buf_sel and buf_full: Buffer-select and buffer-full flags depend on the same
-# waddr adder/comparator chain. These change at the sample rate, not pclk rate.
-set_multicycle_path -setup 2 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|buf_sel[*]}]
-set_multicycle_path -hold 1 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|buf_sel[*]}]
-set_multicycle_path -setup 2 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|buf_full[*]}]
-set_multicycle_path -hold 1 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|buf_full[*]}]
-
 # Status[*]: LED bar-graph status outputs depend on fifo_count_v which flows
 # through the waddr adder/comparator chain. Status is read by OLS interface at
 # a much slower rate (not pclk rate), so 2-cycle path is safe.
 set_multicycle_path -setup 2 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|Status[*]}]
 set_multicycle_path -hold 1 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|Status[*]}]
-
-# waddr_0/1/2: Write-address variables (inferred as registers) depend on the same
-# waddr adder/comparator chain. Updated at sample rate inside sample_en.
-set_multicycle_path -setup 2 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|waddr_0[*]}]
-set_multicycle_path -hold 1 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|waddr_0[*]}]
-set_multicycle_path -setup 2 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|waddr_1[*]}]
-set_multicycle_path -hold 1 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|waddr_1[*]}]
-set_multicycle_path -setup 2 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|waddr_2[*]}]
-set_multicycle_path -hold 1 -to [get_registers {*Fast_Logic_Analyzer_SDRAM1|waddr_2[*]}]
 
 # bram_raddr: BRAM read address depends on the readout address computation
 # (Add4 + LessThan4 carry chains) which shares logic with the waddr chain.
