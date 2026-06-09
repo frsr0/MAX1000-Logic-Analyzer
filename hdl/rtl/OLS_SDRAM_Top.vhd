@@ -118,9 +118,10 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal analog_ch1    : natural range 0 to 15 := 1;
   signal analog_stream_mode : std_logic := '0';
   signal debug_ch0_enable : std_logic := '0';
-  signal analog_frame_data  : std_logic_vector(63 downto 0) := (others => '0');
-  signal analog_frame_len   : natural range 1 to 8 := 1;
+  signal analog_frame_data  : std_logic_vector(127 downto 0) := (others => '0');
+  signal analog_frame_len   : natural range 1 to 14 := 1;
   signal adc0_result, adc1_result, adc2_result, adc3_result : std_logic_vector(11 downto 0) := (others => '0');
+  signal adc4_result, adc5_result, adc6_result, adc7_result : std_logic_vector(11 downto 0) := (others => '0');
   signal adc_start : std_logic := '0';
   signal adc_div   : natural range 0 to 255 := 0;
 
@@ -186,8 +187,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Continuous_Mode : OUT STD_LOGIC := '0';
     Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
     Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-    Analog_Frame_Data : IN STD_LOGIC_VECTOR(63 downto 0) := (others => '0');
-    Analog_Frame_Len  : IN NATURAL range 1 to 8 := 1;
+    Analog_Frame_Data : IN STD_LOGIC_VECTOR(127 downto 0) := (others => '0');
+    Analog_Frame_Len  : IN NATURAL range 1 to 14 := 1;
     Analog_Stream_Mode : IN STD_LOGIC := '0';
     Pin_Map_Write  : OUT STD_LOGIC := '0';
     Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
@@ -226,7 +227,27 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     ch3_start      : in  std_logic := '0';
     ch3_busy       : out std_logic := '1';
     ch3_result     : out std_logic_vector(11 downto 0) := (others => '0');
-    ch3_valid      : out std_logic := '0'
+    ch3_valid      : out std_logic := '0';
+    ch4_sel        : in  natural range 0 to 15 := 4;
+    ch4_start      : in  std_logic := '0';
+    ch4_busy       : out std_logic := '1';
+    ch4_result     : out std_logic_vector(11 downto 0) := (others => '0');
+    ch4_valid      : out std_logic := '0';
+    ch5_sel        : in  natural range 0 to 15 := 5;
+    ch5_start      : in  std_logic := '0';
+    ch5_busy       : out std_logic := '1';
+    ch5_result     : out std_logic_vector(11 downto 0) := (others => '0');
+    ch5_valid      : out std_logic := '0';
+    ch6_sel        : in  natural range 0 to 15 := 6;
+    ch6_start      : in  std_logic := '0';
+    ch6_busy       : out std_logic := '1';
+    ch6_result     : out std_logic_vector(11 downto 0) := (others => '0');
+    ch6_valid      : out std_logic := '0';
+    ch7_sel        : in  natural range 0 to 15 := 7;
+    ch7_start      : in  std_logic := '0';
+    ch7_busy       : out std_logic := '1';
+    ch7_result     : out std_logic_vector(11 downto 0) := (others => '0');
+    ch7_valid      : out std_logic := '0'
   );
   END COMPONENT;
 
@@ -372,7 +393,7 @@ BEGIN
     end if;
   end process;
 
-  analog_stream_mode <= '1' when analog_mode /= "000" else '0';
+  analog_stream_mode <= '1' when analog_mode(0) = '1' else '0';
 
   -- Digital hysteresis filter (Schmitt trigger): requires N consecutive equal
   -- samples before accepting a transition, rejecting glitches below threshold.
@@ -401,7 +422,7 @@ BEGIN
   process(sys_clk)
   begin
     if rising_edge(sys_clk) then
-      if adc_div = 47 then
+      if adc_div = 13 then
         adc_div <= 0;
         adc_start <= '1';
       else
@@ -412,53 +433,26 @@ BEGIN
       -- Default: all analog_frame_data bytes zero
       analog_frame_data <= (others => '0');
 
-      case analog_mode is
-        when "001" =>
-          -- Mixed1: 16 digital + 1 ADC (4 bytes)
-          analog_frame_data(15 downto 0) <= internal_data_r(15 downto 0);
-          analog_frame_data(27 downto 16) <= adc0_result;
-          analog_frame_len <= 4;
-        when "010" =>
-          -- Mixed2: 16 digital + 2 ADC (5 bytes)
-          analog_frame_data(15 downto 0) <= internal_data_r(15 downto 0);
-          analog_frame_data(27 downto 16) <= adc0_result;
-          analog_frame_data(39 downto 28) <= adc1_result;
-          analog_frame_len <= 5;
-        when "011" =>
-          -- Analog1: 1 ADC (2 bytes)
-          analog_frame_data(11 downto 0) <= adc0_result;
-          analog_frame_len <= 2;
-        when "100" =>
-          -- Analog2: 2 ADC (3 bytes)
-          analog_frame_data(11 downto 0) <= adc0_result;
-          analog_frame_data(23 downto 12) <= adc1_result;
-          analog_frame_len <= 3;
-        when "101" =>
-          -- Analog4: 4 ADC (6 bytes)
-          analog_frame_data(11 downto 0) <= adc0_result;
-          analog_frame_data(23 downto 12) <= adc1_result;
-          analog_frame_data(35 downto 24) <= adc2_result;
-          analog_frame_data(47 downto 36) <= adc3_result;
-          analog_frame_len <= 6;
-        when "110" =>
-          -- Mixed2-4: 16 digital + 4 ADC (8 bytes, fills 64-bit frame)
-          analog_frame_data(15 downto 0) <= internal_data_r(15 downto 0);
-          analog_frame_data(27 downto 16) <= adc0_result;
-          analog_frame_data(39 downto 28) <= adc1_result;
-          analog_frame_data(51 downto 40) <= adc2_result;
-          analog_frame_data(63 downto 52) <= adc3_result;
-          analog_frame_len <= 8;
-        when "111" =>
-          -- MixedDual: 16 digital + 2 ADC (6 bytes)
-          analog_frame_data(15 downto 0) <= internal_data_r;
-          analog_frame_data(31 downto 20) <= adc0_result;
-          analog_frame_data(43 downto 32) <= adc1_result;
-          analog_frame_len <= 6;
-        when others =>
-          -- Digital16: 16 digital (2 bytes)
-          analog_frame_data(15 downto 0) <= internal_data_r;
-          analog_frame_len <= 2;
-      end case;
+      -- Simplified capture modes:
+      --   analog_mode(0) = analog_enable (1 = include ADC in frame)
+      --   Higher bits reserved for future ch_count
+      if analog_mode(0) = '0' then
+        -- Digital only: 16 digital (2 bytes)
+        analog_frame_data(15 downto 0) <= internal_data_r;
+        analog_frame_len <= 2;
+      else
+        -- Mixed: 16 digital + 8 ADC (14 bytes = 2 + 12 bytes for 8 × 12-bit)
+        analog_frame_data(15 downto 0) <= internal_data_r(15 downto 0);
+        analog_frame_data(27 downto 16) <= adc0_result;
+        analog_frame_data(39 downto 28) <= adc1_result;
+        analog_frame_data(51 downto 40) <= adc2_result;
+        analog_frame_data(63 downto 52) <= adc3_result;
+        analog_frame_data(75 downto 64) <= adc4_result;
+        analog_frame_data(87 downto 76) <= adc5_result;
+        analog_frame_data(99 downto 88) <= adc6_result;
+        analog_frame_data(111 downto 100) <= adc7_result;
+        analog_frame_len <= 14;
+      end if;
     end if;
   end process;
 
@@ -486,7 +480,27 @@ BEGIN
       ch3_start => adc_start,
       ch3_busy => open,
       ch3_result => adc3_result,
-      ch3_valid => open
+      ch3_valid => open,
+      ch4_sel => 4,
+      ch4_start => adc_start,
+      ch4_busy => open,
+      ch4_result => adc4_result,
+      ch4_valid => open,
+      ch5_sel => 5,
+      ch5_start => adc_start,
+      ch5_busy => open,
+      ch5_result => adc5_result,
+      ch5_valid => open,
+      ch6_sel => 6,
+      ch6_start => adc_start,
+      ch6_busy => open,
+      ch6_result => adc6_result,
+      ch6_valid => open,
+      ch7_sel => 7,
+      ch7_start => adc_start,
+      ch7_busy => open,
+      ch7_result => adc7_result,
+      ch7_valid => open
     );
 
   SDRAM_Analyzer : OLS_Logic_Analyzer

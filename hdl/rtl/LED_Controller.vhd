@@ -86,7 +86,37 @@ architecture rtl of LED_Controller is
         end if;
     end function;
 
+    -- Input pipeline registers to break long combinatorial path from
+    -- capture engine (Fast_Logic_Analyzer_SDRAM) through hierarchy boundaries.
+    signal armed_r       : std_logic := '0';
+    signal capture_run_r : std_logic := '0';
+    signal capture_full_r: std_logic := '0';
+    signal cont_mode_r   : std_logic := '0';
+    signal host_conn_r   : std_logic := '0';
+    signal fifo_act_r    : std_logic_vector(3 downto 0) := (others => '0');
+    signal fade_tick_r   : std_logic := '0';
+
+    -- Pipeline registers for rolling capture animation speed.
+    -- r_speed depends on r_act_sum * (ROLL_SPEED_MAX - ROLL_SPEED_MIN) / (ROLL_ACT_AVG * 4),
+    -- which creates a long combinatorial path through multipliers and dividers.
+    -- Registering r_speed breaks this into two 96 MHz cycles.
+    signal r_speed_r     : natural range 1 to 8 := 1;
+
 begin
+
+    -- Input pipeline registers
+    process(clk)
+    begin
+        if rising_edge(clk) then
+            armed_r       <= armed;
+            capture_run_r <= capture_run;
+            capture_full_r<= capture_full;
+            cont_mode_r   <= continuous_mode;
+            host_conn_r   <= host_connected;
+            fifo_act_r    <= fifo_activity;
+            fade_tick_r   <= fade_tick;
+        end if;
+    end process;
 
     process(clk)
         variable state     : led_state_t := ST_IDLE;
@@ -108,9 +138,9 @@ begin
 
         variable r_phase   : natural range 0 to 255 := 0;
         variable r_div     : natural range 0 to 15 := 0;
-        variable r_speed   : natural range 1 to 8 := 1;
         variable r_act_sum : natural range 0 to 255 := 0;
         variable r_act_cnt : natural range 0 to 255 := 0;
+        variable r_speed_var : natural range 1 to 8 := 1;
 
         variable p, q      : natural range 0 to 1023;
         variable activity  : natural range 0 to 4;
@@ -125,7 +155,7 @@ begin
                 fl_timer  := 0;
                 r_phase   := 0;
                 r_div     := 0;
-                r_speed   := ROLL_SPEED_MIN;
+                r_speed_var := ROLL_SPEED_MIN;
                 r_act_sum := 0;
                 r_act_cnt := 0;
                 hc_d1     := '0';
@@ -135,9 +165,9 @@ begin
                 -- State transitions (hc_d1 is from previous cycle — updated at end)
                 case state is
                     when ST_IDLE =>
-                        if host_connected = '1' and hc_d1 = '0' then
+                        if host_conn_r = '1' and hc_d1 = '0' then
                             next_s := ST_HOST_CONFIRM;
-                        elsif armed = '1' and capture_run = '0' then
+                        elsif armed_r = '1' and capture_run_r = '0' then
                             next_s := ST_TRIGGER_ARMED;
                         else
                             next_s := ST_IDLE;
@@ -156,8 +186,8 @@ begin
                         end if;
 
                     when ST_TRIGGER_ARMED =>
-                        if capture_run = '1' then
-                            if continuous_mode = '1' then
+                        if capture_run_r = '1' then
+                            if cont_mode_r = '1' then
                                 next_s := ST_ROLLING_CAPTURE;
                             else
                                 next_s := ST_SINGLE_CAPTURE;
@@ -167,8 +197,8 @@ begin
                         end if;
 
                     when ST_SINGLE_CAPTURE =>
-                        if capture_full = '1' or capture_run = '0' then
-                            if armed = '1' then
+                        if capture_full_r = '1' or capture_run_r = '0' then
+                            if armed_r = '1' then
                                 next_s := ST_TRIGGER_ARMED;
                             else
                                 next_s := ST_IDLE;
@@ -178,7 +208,7 @@ begin
                         end if;
 
                     when ST_ROLLING_CAPTURE =>
-                        if capture_full = '1' or capture_run = '0' then
+                        if capture_full_r = '1' or capture_run_r = '0' then
                             next_s := ST_IDLE;
                         else
                             next_s := ST_ROLLING_CAPTURE;
@@ -191,7 +221,7 @@ begin
                     b_cycle := 0;
                 end if;
 
-                if fade_tick = '1' then
+                if fade_tick_r = '1' then
                     case state is
                         when ST_IDLE =>
                             b_delta  := 1;
@@ -322,28 +352,29 @@ begin
 
                         when ST_ROLLING_CAPTURE =>
                             activity := 0;
-                            if fifo_activity(0) = '1' then activity := activity + 1; end if;
-                            if fifo_activity(1) = '1' then activity := activity + 1; end if;
-                            if fifo_activity(2) = '1' then activity := activity + 1; end if;
-                            if fifo_activity(3) = '1' then activity := activity + 1; end if;
+                            if fifo_act_r(0) = '1' then activity := activity + 1; end if;
+                            if fifo_act_r(1) = '1' then activity := activity + 1; end if;
+                            if fifo_act_r(2) = '1' then activity := activity + 1; end if;
+                            if fifo_act_r(3) = '1' then activity := activity + 1; end if;
 
                             r_act_sum := r_act_sum + activity;
                             r_act_cnt := r_act_cnt + 1;
                             if r_act_cnt >= ROLL_ACT_AVG then
                                 r_act_cnt := 0;
-                                r_speed := ROLL_SPEED_MIN
+                                r_speed_var := ROLL_SPEED_MIN
                                     + (r_act_sum * (ROLL_SPEED_MAX - ROLL_SPEED_MIN))
                                     / (ROLL_ACT_AVG * 4);
-                                if r_speed < ROLL_SPEED_MIN then
-                                    r_speed := ROLL_SPEED_MIN;
+                                if r_speed_var < ROLL_SPEED_MIN then
+                                    r_speed_var := ROLL_SPEED_MIN;
                                 end if;
-                                if r_speed > ROLL_SPEED_MAX then
-                                    r_speed := ROLL_SPEED_MAX;
+                                if r_speed_var > ROLL_SPEED_MAX then
+                                    r_speed_var := ROLL_SPEED_MAX;
                                 end if;
                                 r_act_sum := 0;
                             end if;
+                            r_speed_r <= r_speed_var;
 
-                            if r_div >= r_speed - 1 then
+                            if r_div >= r_speed_r - 1 then
                                 r_div := 0;
                                 if r_phase = 255 then
                                     r_phase := 0;
@@ -367,7 +398,7 @@ begin
                     end case;
                 end if;
 
-                hc_d1 := host_connected;
+                hc_d1 := host_conn_r;
                 state := next_s;
             end if;
         end if;

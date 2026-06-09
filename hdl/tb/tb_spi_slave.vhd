@@ -6,7 +6,7 @@ use work.sim_pkg.all;
 entity tb_spi_slave is
   generic (
     CLK_FREQ  : natural := 96000000;
-    FAST_FREQ : natural := 120000000;
+    FAST_FREQ : natural := 96000000;
     SPI_HALF  : time := 50 ns  -- 10 MHz SCK
   );
 end tb_spi_slave;

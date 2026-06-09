@@ -37,8 +37,6 @@ set_global_assignment -name VHDL_FILE ../rtl/Signal_Gen.vhd
 set_global_assignment -name VHDL_FILE ../rtl/SDRAM_PLL.vhd
 set_global_assignment -name VHDL_FILE OLS_Logic_Analyzer_wrapper.vhd
 
-set_global_assignment -name SDC_FILE OLS_Logic_Analyzer.sdc
-
 # Altera Modular ADC II IP
 set_global_assignment -name QIP_FILE ../ip/MAX10_ADC/synthesis/MAX10_ADC.qip
 

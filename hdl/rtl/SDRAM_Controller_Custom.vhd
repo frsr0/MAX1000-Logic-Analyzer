@@ -130,12 +130,12 @@ architecture rtl of SDRAM_Controller is
     signal pend_wn : std_logic := '0';
     signal pend_wn_next : std_logic := '0';
 
-    -- Burst FIFO: stores up to 4 addr+data pairs during burst load
-    type burst_fifo_array is array(0 to 3) of std_logic_vector(37 downto 0);
+    -- Burst FIFO: stores up to 8 addr+data pairs during burst load
+    type burst_fifo_array is array(0 to 7) of std_logic_vector(37 downto 0);
     signal burst_fifo      : burst_fifo_array := (others => (others => '0'));
-    signal burst_fifo_cnt  : natural range 0 to 4 := 0;
-    signal burst_fifo_head : natural range 0 to 3 := 0;
-    signal burst_fifo_tail : natural range 0 to 3 := 0;
+    signal burst_fifo_cnt  : natural range 0 to 8 := 0;
+    signal burst_fifo_head : natural range 0 to 7 := 0;
+    signal burst_fifo_tail : natural range 0 to 7 := 0;
     signal burst_active    : std_logic := '0';
     signal burst_cnt       : natural range 0 to 3 := 0;
 
@@ -246,9 +246,9 @@ begin
             elsif last_wn = '1' and sdram_s_write_n = '0' then
                 if sdram_s_burst = '1' then
                     -- Burst load: push addr+data into internal FIFO
-                    if burst_fifo_cnt < 4 then
+                    if burst_fifo_cnt < 8 then
                         burst_fifo(burst_fifo_head) <= sdram_s_address & sdram_s_writedata;
-                        if burst_fifo_head = 3 then burst_fifo_head <= 0;
+                        if burst_fifo_head = 7 then burst_fifo_head <= 0;
                         else burst_fifo_head <= burst_fifo_head + 1; end if;
                         burst_fifo_cnt <= burst_fifo_cnt + 1;
                     end if;
@@ -378,7 +378,7 @@ begin
                         else
                             state <= ST_ACT;
                         end if;
-                    elsif burst_fifo_cnt = 4 then
+                    elsif burst_fifo_cnt >= 4 then
                         -- Start burst write: pop first entry from FIFO
                         burst_active <= '1';
                         dq_oe <= '1';
@@ -387,7 +387,7 @@ begin
                         bank_r <= burst_fifo(burst_fifo_tail)(37 downto 36);
                         row_r  <= burst_fifo(burst_fifo_tail)(35 downto 24);
                         col_r  <= burst_fifo(burst_fifo_tail)(23 downto 16);
-                        if burst_fifo_tail = 3 then burst_fifo_tail <= 0;
+                        if burst_fifo_tail = 7 then burst_fifo_tail <= 0;
                         else burst_fifo_tail <= burst_fifo_tail + 1; end if;
                         burst_fifo_cnt <= burst_fifo_cnt - 1;
                         sdram_s_waitrequest <= '1';
@@ -441,7 +441,7 @@ begin
                             buf_a <= burst_fifo(burst_fifo_tail)(37 downto 16);
                             buf_wd <= burst_fifo(burst_fifo_tail)(15 downto 0);
                             col_r <= burst_fifo(burst_fifo_tail)(23 downto 16);
-                            if burst_fifo_tail = 3 then burst_fifo_tail <= 0;
+                            if burst_fifo_tail = 7 then burst_fifo_tail <= 0;
                             else burst_fifo_tail <= burst_fifo_tail + 1; end if;
                             burst_fifo_cnt <= burst_fifo_cnt - 1;
                         end if;
@@ -532,7 +532,7 @@ begin
                         else
                             state <= ST_ACT;
                         end if;
-                elsif burst_fifo_cnt = 4 then
+                elsif burst_fifo_cnt >= 4 then
                     -- Next burst waiting: start immediately
                     burst_active <= '1';
                     dq_oe <= '1';
@@ -541,7 +541,7 @@ begin
                     bank_r <= burst_fifo(burst_fifo_tail)(37 downto 36);
                     row_r  <= burst_fifo(burst_fifo_tail)(35 downto 24);
                     col_r  <= burst_fifo(burst_fifo_tail)(23 downto 16);
-                    if burst_fifo_tail = 3 then burst_fifo_tail <= 0;
+                    if burst_fifo_tail = 7 then burst_fifo_tail <= 0;
                     else burst_fifo_tail <= burst_fifo_tail + 1; end if;
                     burst_fifo_cnt <= burst_fifo_cnt - 1;
                     sdram_s_waitrequest <= '1';
