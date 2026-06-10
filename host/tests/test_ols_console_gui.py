@@ -234,8 +234,9 @@ class TestOLScopeRateLimits:
         scope._update_time_display = MagicMock()
         scope._update_rate_info = MagicMock()
         scope._update_buf_estimate = MagicMock()
+        scope.fast_mode_var = _MockVar(value=False)
         rate = scope._apply_rate('999MHz')
-        assert rate == 96_000_000
+        assert rate == 100_000_000
 
     def test_rate_below_min_clamps_up(self):
         """0 Hz clamps to 1 Hz."""
@@ -247,6 +248,7 @@ class TestOLScopeRateLimits:
         scope._update_time_display = MagicMock()
         scope._update_rate_info = MagicMock()
         scope._update_buf_estimate = MagicMock()
+        scope.fast_mode_var = _MockVar(value=False)
         rate = scope._apply_rate('0Hz')
         assert rate == 1
 
@@ -260,6 +262,7 @@ class TestOLScopeRateLimits:
         scope._update_time_display = MagicMock()
         scope._update_rate_info = MagicMock()
         scope._update_buf_estimate = MagicMock()
+        scope.fast_mode_var = _MockVar(value=False)
         rate = scope._apply_rate('not-a-rate')
         assert rate == 1_000_000
 

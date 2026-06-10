@@ -136,7 +136,7 @@ class OLScope:
 
         ttk.Label(tb, text="Rate:").pack(side='left')
         self.rate_cb = ttk.Combobox(tb,
-            values=['1kHz','10kHz','100kHz','500kHz','1MHz','2MHz','3MHz','4MHz','6MHz','8MHz','12MHz','16MHz','24MHz','32MHz','48MHz','96MHz','Fast 120MHz'],
+            values=['1kHz','10kHz','100kHz','500kHz','1MHz','2MHz','3MHz','4MHz','6MHz','8MHz','10MHz','12MHz','16MHz','24MHz','32MHz','48MHz','50MHz','80MHz','100MHz','200MHz','Fast 200MHz'],
             width=10, state='normal')
         self.rate_cb.set('1MHz'); self.rate_cb.pack(side='left', padx=2)
         self.rate_cb.bind('<<ComboboxSelected>>', self._on_rate_changed)
@@ -356,7 +356,7 @@ class OLScope:
         nb.add(log_f, text="Data Logger")
         row = 0
         ttk.Label(log_f, text="Rate:").grid(row=row, column=0, sticky='w')
-        self.log_rate = ttk.Combobox(log_f, values=['100kHz','500kHz','1MHz','2MHz','4MHz'],
+        self.log_rate = ttk.Combobox(log_f, values=['100kHz','500kHz','1MHz','2MHz','4MHz','8MHz','16MHz','32MHz','50MHz','100MHz'],
                                      width=8, state='readonly')
         self.log_rate.set('1MHz'); self.log_rate.grid(row=row, column=1, sticky='w')
         ttk.Label(log_f, text="Samples:").grid(row=row, column=2, sticky='w')
@@ -502,7 +502,7 @@ class OLScope:
             row=tr, column=0, columnspan=4, sticky='ew', pady=2)
         tr += 1
         self.fast_mode_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(self.trig_frame, text="Fast mode (120 MHz, 1024 samples max)",
+        ttk.Checkbutton(self.trig_frame, text="Fast mode (BRAM, 1024 samples max)",
                         variable=self.fast_mode_var).grid(
             row=tr, column=0, columnspan=4, sticky='w', pady=1)
         tr += 1
@@ -641,11 +641,11 @@ class OLScope:
         """Parse, clamp, and apply rate. Returns rate in Hz."""
         max_rate = self._get_max_rate()
         try:
-            if raw.lower() == 'fast 120mhz':
-                rate = 120_000_000
+            if raw.lower() in ('fast 200mhz', 'fast 120mhz'):
+                rate = 200_000_000 if raw.lower() == 'fast 200mhz' else 120_000_000
                 self.fast_mode_var.set(True)
                 self._nsamp = 1024
-                self.rate_cb.set('Fast 120MHz')
+                self.rate_cb.set('Fast 200MHz' if raw.lower() == 'fast 200mhz' else 'Fast 120MHz')
             else:
                 if self.fast_mode_var.get():
                     self.fast_mode_var.set(False)
@@ -668,8 +668,10 @@ class OLScope:
         return rate
 
     def _fmt_rate(self, rate_hz):
+        if rate_hz >= 200_000_000:
+            return '200MHz'
         if rate_hz >= 120_000_000:
-            return 'Fast 120MHz'
+            return '120MHz'
         if rate_hz >= 1_000_000:
             return f'{rate_hz / 1_000_000:.3g}MHz'.replace('.0', '')
         if rate_hz >= 1_000:
@@ -679,7 +681,16 @@ class OLScope:
     def _get_max_rate(self):
         """Return the maximum allowed rate based on mode and capture type."""
         mode = self._get_capture_mode()
-        max_rate = 96_000_000  # sysclk limit
+        max_rate = 100_000_000
+        if self.dev is not None:
+            try:
+                clk = self.dev.sys_clk
+                if isinstance(clk, (int, float)):
+                    max_rate = int(clk)
+            except (AttributeError, TypeError):
+                pass
+        if self.fast_mode_var.get():
+            max_rate = max_rate * 2
         if self.capture_type.get() == 'rolling':
             stride = analog_frame_stride(mode)
             rolling_limit = int(self.ROLLING_READBACK_MB_PER_S * 1_000_000 / stride)
@@ -1049,7 +1060,8 @@ class OLScope:
             fast = False
             self.fast_mode_var.set(False)
         if fast:
-            rate = min(rate, 120_000_000)
+            max_fast = self._get_max_rate()
+            rate = min(rate, max_fast)
             nsamp = min(nsamp, 1024)
         # Build trigger mask from UI
         trig_mode_val = self.trig_mode.get()
