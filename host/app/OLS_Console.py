@@ -507,15 +507,21 @@ class OLScope:
             row=tr, column=0, columnspan=4, sticky='w', pady=1)
         tr += 1
         self.debug_ch0_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(self.trig_frame, text="Drive CH0 debug square wave",
+        self.debug_ch0_freq_var = tk.StringVar(value='100000')
+        self.debug_ch0_duty_var = tk.StringVar(value='50')
+        df = ttk.Frame(self.trig_frame)
+        df.grid(row=tr, column=0, columnspan=4, sticky='w', pady=1)
+        ttk.Checkbutton(df, text="CH0 debug PWM",
                         variable=self.debug_ch0_var,
-                        command=self._debug_ch0_changed).grid(
-            row=tr, column=0, columnspan=4, sticky='w', pady=1)
-        tr += 1
-        ttk.Label(self.trig_frame,
-            text="WARNING: CH0 becomes FPGA output when enabled.",
-            foreground='red', font=('Consolas', 7)).grid(
-            row=tr, column=0, columnspan=4, sticky='w')
+                        command=self._debug_ch0_changed).pack(side='left')
+        ttk.Label(df, text="Freq(Hz):").pack(side='left', padx=(8, 2))
+        ttk.Spinbox(df, from_=1, to=50000000, width=10,
+                    textvariable=self.debug_ch0_freq_var,
+                    command=self._debug_ch0_changed).pack(side='left')
+        ttk.Label(df, text="Duty(%):").pack(side='left', padx=(4, 2))
+        ttk.Spinbox(df, from_=1, to=99, width=4,
+                    textvariable=self.debug_ch0_duty_var,
+                    command=self._debug_ch0_changed).pack(side='left')
         tr += 1
         self.raw_mode_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(self.trig_frame, text="Raw mode (8 ch, higher throughput)",
@@ -767,13 +773,22 @@ class OLScope:
         enable = self.debug_ch0_var.get()
         if not self.dev:
             return
+        try:
+            freq = int(self.debug_ch0_freq_var.get())
+            duty = int(self.debug_ch0_duty_var.get())
+            duty = max(1, min(99, duty))
+        except ValueError:
+            freq = 100000
+            duty = 50
         is_live = getattr(self, 'capture_running', False) and hasattr(self.dev, '_pending_debug_enable')
         if is_live:
             self.dev.debug_ch0_enabled = enable
             self.dev._pending_debug_enable = enable
+            self.dev._pending_debug_freq = freq
+            self.dev._pending_debug_duty = duty
         elif hasattr(self.dev, 'set_debug_ch0'):
             try:
-                self.dev.set_debug_ch0(enable)
+                self.dev.set_debug_ch0(enable, freq_hz=freq, duty_pct=duty)
             except Exception as e:
                 self.status['text'] = f"CH0 debug update failed: {e}"
 

@@ -140,6 +140,8 @@ class OLSDeviceSPI:
         self.debug_ch0_enabled = False
         # Pending flag for live toggling during rolling capture
         self._pending_debug_enable = None
+        self._pending_debug_freq = None
+        self._pending_debug_duty = None
         self._pending_schmitt_enable = None
         self._pending_schmitt_threshold = None
 
@@ -720,7 +722,14 @@ class OLSDeviceSPI:
 
         while not stop_evt.is_set():
             # Apply pending GUI changes before each chunk
-            if self._pending_debug_enable is not None:
+            if self._pending_debug_enable is not None or self._pending_debug_freq is not None:
+                if self._pending_debug_freq is not None:
+                    period = max(2, int(self.sys_clk / self._pending_debug_freq))
+                    duty = max(1, min(period - 1, int(period * (self._pending_debug_duty or 50) / 100)))
+                    self.pkt.write_register(REG_DEBUG_CH0_PERIOD, period & 0xFFFFFFFF)
+                    self.pkt.write_register(REG_DEBUG_CH0_DUTY, duty & 0xFFFFFFFF)
+                    self._pending_debug_freq = None
+                    self._pending_debug_duty = None
                 self.pkt.write_register(REG_DEBUG_CH0_ENABLE, 1 if self._pending_debug_enable else 0)
                 self.debug_ch0_enabled = self._pending_debug_enable
                 self._pending_debug_enable = None
