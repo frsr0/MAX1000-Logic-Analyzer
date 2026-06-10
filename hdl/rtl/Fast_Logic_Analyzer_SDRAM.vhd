@@ -136,16 +136,13 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal cfg_valid_edge  : std_logic := '0';
   signal cfg_ack_toggle  : std_logic := '0';
 
-  -- Old 2FF rate_div (kept for backward compat, replaced by config handshake)
-  signal rate_div_s1   : natural range 1 to 150000000 := 12;
-  signal rate_div_f    : natural range 1 to 150000000 := 12;
   signal rate_div_m1_f : natural range 0 to 150000000 := 11;
 
   signal run_f_s1  : std_logic := '0';
   signal run_f_s2   : std_logic := '0';
   signal Inputs_r   : std_logic_vector(Channels-1 downto 0) := (others => '0');
-  signal run_f_edge : std_logic := '0';
-  signal run_f_start : std_logic := '0';
+  signal Armed_s1   : std_logic := '0';
+  signal Armed_f    : std_logic := '0';
   signal run_f_level : std_logic := '0';
   signal fifo_overflow_f  : std_logic := '0';
   signal overflow_toggle  : std_logic := '0';
@@ -155,6 +152,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal overflow_clk     : std_logic := '0';
   signal sample_remaining : natural range 0 to 3000000 := 0;
   signal run_stop_overflow : std_logic := '0';
+  signal status_overflow   : std_logic := '0';
 
   constant AFIFO_DEPTH : natural := 4096;
   constant AFIFO_WIDTH : natural := 16;
@@ -175,29 +173,9 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal bram_wren   : std_logic := '0';
   signal bram_waddr  : natural range 0 to BRAM_SIZE-1 := 0;
   signal bram_wdata  : std_logic_vector(15 downto 0) := (others => '0');
-  signal bram_raddr  : natural range 0 to BRAM_SIZE-1 := 0;
-  signal bram_rdata  : std_logic_vector(15 downto 0) := (others => '0');
-  signal bram_wp_f   : natural range 0 to BRAM_SIZE := 0;
-  signal bram_cnt_f  : natural range 0 to BRAM_SIZE := 0;
-
-  -- Frozen pointer snapshot (FAST_CLK domain, latched on cfg_valid_edge)
-  signal bram_wp_snap   : natural range 0 to BRAM_SIZE-1 := 0;
-  signal bram_cnt_snap  : natural range 0 to BRAM_SIZE := 0;
-  signal snap_toggle    : std_logic := '0';
-  signal snap_t_s1      : std_logic := '0';
-  signal snap_t_s2      : std_logic := '0';
-  signal snap_t_s3      : std_logic := '0';
-  signal snap_valid_clk : std_logic := '0';
-
-  -- BRAM snapshot data CDC: 2FF per signal
-  signal bram_wp_cdc_s1  : natural range 0 to BRAM_SIZE-1 := 0;
-  signal bram_wp_cdc_s2  : natural range 0 to BRAM_SIZE-1 := 0;
-  signal bram_cnt_cdc_s1 : natural range 0 to BRAM_SIZE := 0;
-  signal bram_cnt_cdc_s2 : natural range 0 to BRAM_SIZE := 0;
-  signal snap_flush_done : std_logic := '0';
-  signal flush_in_progress : std_logic := '0';
-  signal flush_remaining : natural range 0 to BRAM_SIZE := 0;
-  signal flush_addr     : natural range 0 to BRAM_SIZE-1 := 0;
+  -- BRAM read port (FAST_CLK domain): used during flush-to-FIFO
+  signal bram_raddr_f  : natural range 0 to BRAM_SIZE-1 := 0;
+  signal bram_rdata_f  : std_logic_vector(15 downto 0) := (others => '0');
 
   component SDRAM_Interface is
   generic (
@@ -415,79 +393,124 @@ begin
     if rising_edge(FAST_CLK) then
       run_f_s1 <= run_sync2;
       run_f_s2 <= run_f_s1;
-      run_f_edge <= run_f_s2 xor run_f_level;
-      run_f_start <= run_f_s2 and not run_f_level;
       run_f_level <= run_f_s2;
+    end if;
+  end process;
+
+  -- Armed CDC: CLK domain -> FAST_CLK domain (2FF)
+  process(FAST_CLK)
+  begin
+    if rising_edge(FAST_CLK) then
+      Armed_s1 <= Armed;
+      Armed_f  <= Armed_s1;
     end if;
   end process;
 
   -- Fast capture process: runs at 120 MHz on FAST_CLK
   -- Samples Inputs, packs into 16-bit words.
   -- When Armed and pre-trigger: writes to circular BRAM.
-  -- On cfg_valid_edge (trigger/starts): snapshots BRAM pointers, pushes live
-  --   samples to async FIFO until cfg_samples_f reached.
+  -- On cfg_valid_edge (trigger/starts): flushes BRAM to async FIFO,
+  --   then pushes live samples until cfg_samples_f reached.
   process(FAST_CLK)
-    variable cnt     : natural range 0 to 150000000 := 0;
-    variable step_r  : natural range 0 to sub_steps := 0;
-    variable wbuf    : std_logic_vector(31 downto 0) := (others => '0');
-    variable bram_wp  : natural range 0 to BRAM_SIZE-1 := 0;
-    variable bram_cnt : natural range 0 to BRAM_SIZE := 0;
+    variable cnt       : natural range 0 to 150000000 := 0;
+    variable step_r    : natural range 0 to sub_steps := 0;
+    variable wbuf      : std_logic_vector(31 downto 0) := (others => '0');
+    variable bram_wp   : natural range 0 to BRAM_SIZE-1 := 0;
+    variable bram_cnt  : natural range 0 to BRAM_SIZE := 0;
+    -- State: 0=pre-trigger, 1=flush BRAM to FIFO, 2=live capture
+    variable state     : natural range 0 to 2 := 0;
+    variable flush_raddr : natural range 0 to BRAM_SIZE-1 := 0;
+    variable flush_rem   : natural range 0 to BRAM_SIZE := 0;
   begin
     if rising_edge(FAST_CLK) then
       Inputs_r <= Inputs;
       fifo_wr <= '0';
       bram_wren <= '0';
 
-      -- Armed + Run deasserted = pre-trigger: circular BRAM write
-      if Armed = '1' and run_f_level = '0' and cfg_valid_edge = '0' and fifo_overflow_f = '0' then
-        if cnt = 0 then
-          cnt := rate_div_m1_f;
-          wbuf(((step_r + 1) * Channels) - 1 downto step_r * Channels) := Inputs_r;
-          if step_r = sub_steps - 1 then
-            bram_waddr <= bram_wp;
-            bram_wdata <= wbuf(15 downto 0);
-            bram_wren <= '1';
-            if bram_wp = BRAM_SIZE-1 then bram_wp := 0;
-            else bram_wp := bram_wp + 1; end if;
-            if bram_cnt < BRAM_SIZE then bram_cnt := bram_cnt + 1; end if;
-            step_r := 0;
-          else
-            step_r := step_r + 1;
-          end if;
-        else
-          cnt := cnt - 1;
-        end if;
-
-      -- Config handshake edge: snapshot BRAM pointers, start live capture
-      elsif cfg_valid_edge = '1' then
-        bram_wp_f <= bram_wp;
-        bram_cnt_f <= bram_cnt;
+      -- Config handshake edge: transition from pre-trigger to flush/capture
+      if cfg_valid_edge = '1' then
         cnt := 0;
         step_r := 0;
         wbuf := (others => '0');
         sample_remaining <= cfg_samples_f;
         fifo_overflow_f <= '0';
-
-      -- Post-trigger: push live samples to async FIFO
-      elsif fifo_overflow_f = '0' then
-        if cnt = 0 then
-          cnt := rate_div_m1_f;
-          wbuf(((step_r + 1) * Channels) - 1 downto step_r * Channels) := Inputs_r;
-          if step_r = sub_steps - 1 then
-            if fifo_wrfull = '0' and sample_remaining /= 0 then
-              fifo_wdata <= wbuf(15 downto 0);
-              fifo_wr <= '1';
-              sample_remaining <= sample_remaining - 1;
-            end if;
-            if fifo_wrfull = '1' or sample_remaining <= 1 then
-              fifo_overflow_f <= '1';
-            end if;
-            step_r := 0;
+        if bram_cnt > 0 then
+          if bram_wp >= bram_cnt then
+            flush_raddr := bram_wp - bram_cnt;
           else
-            step_r := step_r + 1;
+            flush_raddr := BRAM_SIZE - bram_cnt + bram_wp;
           end if;
+          flush_rem := bram_cnt;
+          state := 1;
         else
-          cnt := cnt - 1;
+          state := 2;
+        end if;
+
+      -- State machine (only runs when not in overflow)
+      elsif fifo_overflow_f = '0' then
+
+        -- State 0: Pre-trigger — circular BRAM write
+        if state = 0 then
+          if Armed_f = '1' and run_f_level = '0' then
+            if cnt = 0 then
+              cnt := rate_div_m1_f;
+              wbuf(((step_r + 1) * Channels) - 1 downto step_r * Channels) := Inputs_r;
+              if step_r = sub_steps - 1 then
+                bram_waddr <= bram_wp;
+                bram_wdata <= wbuf(15 downto 0);
+                bram_wren <= '1';
+                if bram_wp = BRAM_SIZE-1 then bram_wp := 0;
+                else bram_wp := bram_wp + 1; end if;
+                if bram_cnt < BRAM_SIZE then bram_cnt := bram_cnt + 1; end if;
+                step_r := 0;
+              else
+                step_r := step_r + 1;
+              end if;
+            else
+              cnt := cnt - 1;
+            end if;
+          end if;
+
+        -- State 1: Flush BRAM to async FIFO (pre-trigger samples first)
+        elsif state = 1 then
+          if flush_rem > 0 then
+            if fifo_wrfull = '0' then
+              bram_raddr_f <= flush_raddr;
+              -- Skip write on first cycle (BRAM read is registered)
+              if flush_rem < bram_cnt then
+                fifo_wdata <= bram_rdata_f;
+                fifo_wr <= '1';
+                sample_remaining <= sample_remaining - 1;
+              end if;
+              if flush_raddr = BRAM_SIZE-1 then flush_raddr := 0;
+              else flush_raddr := flush_raddr + 1; end if;
+              flush_rem := flush_rem - 1;
+            end if;
+          else
+            state := 2;
+          end if;
+
+        -- State 2: Live capture — push samples to async FIFO
+        else
+          if cnt = 0 then
+            cnt := rate_div_m1_f;
+            wbuf(((step_r + 1) * Channels) - 1 downto step_r * Channels) := Inputs_r;
+            if step_r = sub_steps - 1 then
+              if fifo_wrfull = '0' and sample_remaining /= 0 then
+                fifo_wdata <= wbuf(15 downto 0);
+                fifo_wr <= '1';
+                sample_remaining <= sample_remaining - 1;
+              end if;
+              if fifo_wrfull = '1' or sample_remaining <= 1 then
+                fifo_overflow_f <= '1';
+              end if;
+              step_r := 0;
+            else
+              step_r := step_r + 1;
+            end if;
+          else
+            cnt := cnt - 1;
+          end if;
         end if;
       end if;
     end if;
@@ -503,53 +526,11 @@ begin
     end if;
   end process;
 
-  -- Snapshot toggle CDC: FAST_CLK -> CLK (on cfg_valid_edge)
+  -- BRAM read port (FAST_CLK domain): used during flush-to-FIFO
   process(FAST_CLK)
   begin
     if rising_edge(FAST_CLK) then
-      if cfg_valid_edge = '1' then
-        snap_toggle <= not snap_toggle;
-      end if;
-    end if;
-  end process;
-
-  process(pclk)
-  begin
-    if rising_edge(pclk) then
-      snap_t_s1 <= snap_toggle;
-      snap_t_s2 <= snap_t_s1;
-      snap_t_s3 <= snap_t_s2;
-      snap_valid_clk <= snap_t_s2 xor snap_t_s3;
-    end if;
-  end process;
-
-  -- BRAM read port (CLK domain)
-  process(pclk)
-  begin
-    if rising_edge(pclk) then
-      bram_rdata <= bram(bram_raddr);
-    end if;
-  end process;
-
-  -- BRAM snapshot data CDC: FAST_CLK -> CLK (2FF per signal + latch on snap_valid)
-  -- bram_wp_f and bram_cnt_f are stable after cfg_valid_edge in FAST_CLK domain.
-  process(FAST_CLK)
-  begin
-    if rising_edge(FAST_CLK) then
-      bram_wp_cdc_s1  <= bram_wp_f;
-      bram_wp_cdc_s2  <= bram_wp_cdc_s1;
-      bram_cnt_cdc_s1 <= bram_cnt_f;
-      bram_cnt_cdc_s2 <= bram_cnt_cdc_s1;
-    end if;
-  end process;
-
-  process(pclk)
-  begin
-    if rising_edge(pclk) then
-      if snap_valid_clk = '1' then
-        bram_wp_snap  <= bram_wp_cdc_s2;
-        bram_cnt_snap <= bram_cnt_cdc_s2;
-      end if;
+      bram_rdata_f <= bram(bram_raddr_f);
     end if;
   end process;
 
@@ -622,6 +603,7 @@ begin
       -- Overflow from fast domain
       if overflow_clk = '1' then
         run_stop_overflow <= '1';
+        status_overflow <= '1';
       end if;
 
       -- Buffer ack handling (evaluated every cycle)
@@ -681,25 +663,7 @@ begin
         full_i <= '0';
         full_pending <= '0'; full_clr_pending <= '0';
         run_stop_overflow <= '0';
-        snap_flush_done <= '0';
-        if snap_valid_clk = '1' and run_stop_r = '0' then
-          -- Start BRAM flush: pre-trigger data written to SDRAM
-          flush_in_progress <= '1';
-          flush_remaining <= bram_cnt_snap;
-          if bram_cnt_snap < BRAM_SIZE and bram_cnt_snap > 0 then
-            if bram_wp_snap >= bram_cnt_snap then
-              flush_addr <= bram_wp_snap - bram_cnt_snap;
-            else
-              flush_addr <= BRAM_SIZE - bram_cnt_snap + bram_wp_snap;
-            end if;
-          else
-            flush_addr <= 0;
-          end if;
-        else
-          flush_in_progress <= '0';
-          flush_remaining <= 0;
-          flush_addr <= 0;
-        end if;
+        status_overflow <= '0';
         if run_stop_r = '1' then
           rd_mode := true;
         else
@@ -733,31 +697,15 @@ begin
         end if;
 
       else
-        -- CAPTURE: SDRAM write pump with two sources:
-        --   1) BRAM flush (pre-trigger data, first)
-        --   2) async FIFO drain (post-trigger live data, second)
+        -- CAPTURE: SDRAM write pump — drains async FIFO (live + flushed
+        -- pre-trigger samples arrive via a single FIFO stream).
 
-        -- Write pump: three mutually-exclusive write sources.
         if wr_pend then
           s_addr  <= wr_pend_addr;
           s_wdata <= wr_pend_data;
           s_wr    <= '1';
           wip     := true;
           wr_pend := false;
-
-        elsif flush_in_progress = '1' and not wip and sdram_busy = '0' then
-          -- BRAM flush source: read pre-trigger data at flush_addr
-          bram_raddr <= flush_addr;
-          flush_addr <= flush_addr + 1;
-          flush_remaining <= flush_remaining - 1;
-          if flush_remaining = 1 then
-            flush_in_progress <= '0';
-            snap_flush_done <= '1';
-          end if;
-          wr_pend_addr := std_logic_vector(to_unsigned(waddr_0, 22));
-          wr_pend_data := bram_rdata;
-          wr_pend      := true;
-          waddr_0 := waddr_0 + 1;
 
         elsif fifo_rdempty = '0' and not wip and sdram_busy = '0' then
           -- async FIFO source: live post-trigger data
@@ -846,8 +794,6 @@ begin
              and fifo_rdempty = '1'
              and not wip
              and not wr_pend
-             and snap_flush_done = '1'
-             and flush_in_progress = '0'
           then
             full_i <= '1';
             rd_mode := true;
@@ -861,7 +807,7 @@ begin
       if wip then Status(1) <= '1'; else Status(1) <= '0'; end if;
       Status(2) <= s_rd;
       Status(3) <= full_i;
-      Status(4) <= fifo_overflow_f;
+      Status(4) <= status_overflow;
       Status(5) <= run_stop_overflow;
       Status(7 downto 6) <= (others => '0');
     end if;

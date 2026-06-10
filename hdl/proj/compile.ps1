@@ -198,11 +198,11 @@ $qsfLines = @(
     'set_global_assignment -name VHDL_FILE ../rtl/SDRAM_PLL.vhd',
     'set_global_assignment -name VHDL_FILE OLS_Logic_Analyzer_wrapper.vhd',
     '',
+    '# Clock constraints',
+    'set_global_assignment -name SDC_FILE OLS_Logic_Analyzer.sdc',
+    '',
     '# Altera Modular ADC II IP',
     'set_global_assignment -name QIP_FILE ../ip/MAX10_ADC/synthesis/MAX10_ADC.qip',
-    '',
-    '# Timing constraints (clock definitions, CDC false paths, multicycle)',
-    'set_global_assignment -name SDC_FILE OLS_Logic_Analyzer.sdc',
     '',
     '# Weak pull-ups on all GPIO and I2C/SPI pins',
     'set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to GPIO[0]',
@@ -228,24 +228,8 @@ if (-not (Test-Path $QUARTUS)) {
     exit 1
 }
 
-# Step-by-step compile with standard fitter effort
-Write-Host "  Analysis & Synthesis..."
-& "$QUARTUS_DIR\quartus_map" --read_settings_files=on --write_settings_files=off $PROJECT -c $PROJECT 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) { Write-Host "FAILED"; exit 1 }
-
-Write-Host "  Fitter (standard effort)..."
-& "$QUARTUS_DIR\quartus_fit" --read_settings_files=on --write_settings_files=off $PROJECT -c $PROJECT 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) { Write-Host "FAILED"; exit 1 }
-
-Write-Host "  Assembler..."
-& "$QUARTUS_DIR\quartus_asm" --read_settings_files=on --write_settings_files=off $PROJECT -c $PROJECT 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) { Write-Host "FAILED"; exit 1 }
-
-Write-Host "  Timing Analysis..."
-& "$QUARTUS_DIR\quartus_sta" $PROJECT -c $PROJECT 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) { Write-Host "FAILED"; exit 1 }
-
-$compileOk = $true
+$output = & $QUARTUS --flow compile $PROJECT 2>&1
+$compileOk = $LASTEXITCODE -eq 0
 
 if ($compileOk) {
     Write-Host "Compilation: SUCCESS"

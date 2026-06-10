@@ -80,6 +80,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   -- Pin map registers: each LA channel i reads pin_pool(pin_map(i))
   type pin_map_t is array(0 to LA_CHANNELS-1) of natural range 0 to PIN_POOL_SIZE-1;
   signal pin_map      : pin_map_t := (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15);
+  signal pin_map_wr_toggle : std_logic := '0';
 
   signal core_status   : std_logic_vector(7 downto 0) := (others => '0');
   signal test_div      : std_logic_vector(9 downto 0) := (others => '0');
@@ -130,6 +131,35 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal pin_map_channel  : natural range 0 to LA_CHANNELS-1 := 0;
   signal pin_map_pin      : natural range 0 to 31 := 0;
 
+  -- FAST_CLK domain: capture mux + CDC synchronizers
+  signal capture_data_fast : std_logic_vector(LA_CHANNELS-1 downto 0) := (others => '0');
+  signal pin_pool_f1  : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
+  signal pin_pool_f2  : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
+  signal gen_tx_f1    : std_logic := '0';
+  signal gen_tx_f2    : std_logic := '0';
+  signal gen_scl_f1   : std_logic := '0';
+  signal gen_scl_f2   : std_logic := '0';
+  signal registered_ch0_f1 : std_logic := '0';
+  signal registered_ch0_f2 : std_logic := '0';
+  signal gen_capture_active_f1 : std_logic := '0';
+  signal gen_capture_active_f2 : std_logic := '0';
+  signal gen_i2c_test_f1 : std_logic := '0';
+  signal gen_i2c_test_f2 : std_logic := '0';
+  signal debug_ch0_enable_f1 : std_logic := '0';
+  signal debug_ch0_enable_f2 : std_logic := '0';
+  signal gen_tx_pin_f1 : natural range 0 to 31 := 0;
+  signal gen_tx_pin_f2 : natural range 0 to 31 := 0;
+  signal gen_scl_pin_f1 : natural range 0 to 31 := 0;
+  signal gen_scl_pin_f2 : natural range 0 to 31 := 0;
+  signal pin_map_fast : pin_map_t := (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15);
+  signal pin_map_wr_t_s1 : std_logic := '0';
+  signal pin_map_wr_t_s2 : std_logic := '0';
+  signal pin_map_wr_edge : std_logic := '0';
+  signal pin_map_ch_f1 : natural range 0 to LA_CHANNELS-1 := 0;
+  signal pin_map_ch_f2 : natural range 0 to LA_CHANNELS-1 := 0;
+  signal pin_map_pin_f1 : natural range 0 to 31 := 0;
+  signal pin_map_pin_f2 : natural range 0 to 31 := 0;
+
   -- PWM engine (shared by LED controller)
   signal pwm_cnt       : integer range 0 to 256 := 0;
   signal fade_cnt      : integer range 0 to 511 := 0;
@@ -149,7 +179,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   PORT (
     CLK : IN STD_LOGIC;
     FAST_CLK : IN STD_LOGIC := '0';
-    Inputs   : IN  STD_LOGIC_VECTOR(Channels-1 downto 0);
+    Inputs_Sys   : IN  STD_LOGIC_VECTOR(Channels-1 downto 0);
+    Inputs_Fast  : IN  STD_LOGIC_VECTOR(Channels-1 downto 0);
     SPI_CS   : IN  STD_LOGIC := '1';
     SPI_SCK  : IN  STD_LOGIC := '0';
     SPI_MOSI : IN  STD_LOGIC := '0';
@@ -359,6 +390,7 @@ BEGIN
       -- Pin map write from host command
       if pin_map_write = '1' then
         pin_map(pin_map_channel) <= pin_map_pin;
+        pin_map_wr_toggle <= not pin_map_wr_toggle;
       end if;
     end if;
   end process;
@@ -418,6 +450,61 @@ BEGIN
     end if;
   end process;
   pin_pool_clean <= schmitt_stable;
+
+  -- ============================================================
+  -- FAST_CLK domain: capture input mux + pin/loopback CDC
+  -- ============================================================
+  -- 2FF synchronizers bring external pins and sys_clk-domain loopback
+  -- signals into FAST_CLK.  Pin map copied via toggle synchronizer on
+  -- pin_map_write.  This eliminates all CLK->FAST_CLK register crossings
+  -- from internal_data_r (previously the sole Inputs source).
+  process(fast_clk)
+  begin
+    if rising_edge(fast_clk) then
+      pin_pool_f1 <= pin_pool;
+      pin_pool_f2 <= pin_pool_f1;
+      gen_tx_f1 <= gen_tx;
+      gen_tx_f2 <= gen_tx_f1;
+      gen_scl_f1 <= gen_scl;
+      gen_scl_f2 <= gen_scl_f1;
+      registered_ch0_f1 <= registered_ch0;
+      registered_ch0_f2 <= registered_ch0_f1;
+      gen_capture_active_f1 <= gen_capture_active;
+      gen_capture_active_f2 <= gen_capture_active_f1;
+      gen_i2c_test_f1 <= gen_i2c_test;
+      gen_i2c_test_f2 <= gen_i2c_test_f1;
+      debug_ch0_enable_f1 <= debug_ch0_enable;
+      debug_ch0_enable_f2 <= debug_ch0_enable_f1;
+      gen_tx_pin_f1 <= gen_tx_pin;
+      gen_tx_pin_f2 <= gen_tx_pin_f1;
+      gen_scl_pin_f1 <= gen_scl_pin;
+      gen_scl_pin_f2 <= gen_scl_pin_f1;
+
+      pin_map_wr_t_s1 <= pin_map_wr_toggle;
+      pin_map_wr_t_s2 <= pin_map_wr_t_s1;
+      pin_map_wr_edge <= pin_map_wr_t_s1 xor pin_map_wr_t_s2;
+      pin_map_ch_f1 <= pin_map_channel;
+      pin_map_ch_f2 <= pin_map_ch_f1;
+      pin_map_pin_f1 <= pin_map_pin;
+      pin_map_pin_f2 <= pin_map_pin_f1;
+
+      if pin_map_wr_edge = '1' then
+        pin_map_fast(pin_map_ch_f2) <= pin_map_pin_f2;
+      end if;
+
+      for i in 0 to LA_CHANNELS-1 loop
+        if gen_capture_active_f2 = '1' and gen_tx_pin_f2 = pin_map_fast(i) then
+          capture_data_fast(i) <= gen_tx_f2;
+        elsif gen_capture_active_f2 = '1' and gen_i2c_test_f2 = '1' and gen_scl_pin_f2 = pin_map_fast(i) then
+          capture_data_fast(i) <= gen_scl_f2;
+        elsif i = 0 and debug_ch0_enable_f2 = '1' then
+          capture_data_fast(i) <= registered_ch0_f2;
+        else
+          capture_data_fast(i) <= pin_pool_f2(pin_map_fast(i));
+        end if;
+      end loop;
+    end if;
+  end process;
 
   process(sys_clk)
   begin
@@ -513,7 +600,8 @@ BEGIN
   PORT MAP (
     CLK => sys_clk,
     FAST_CLK => fast_clk,
-    Inputs   => internal_data_r,
+    Inputs_Sys   => internal_data_r,
+    Inputs_Fast  => capture_data_fast,
     SPI_CS   => SPI_CS,
     SPI_SCK  => SPI_SCK,
     SPI_MOSI => SPI_MOSI,

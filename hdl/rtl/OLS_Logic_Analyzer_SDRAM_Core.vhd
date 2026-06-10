@@ -15,7 +15,8 @@ ENTITY OLS_Logic_Analyzer IS
 PORT (
   CLK : IN STD_LOGIC;
   FAST_CLK : IN STD_LOGIC := '0';
-  Inputs             : IN  STD_LOGIC_VECTOR(Channels-1 downto 0);
+  Inputs_Sys         : IN  STD_LOGIC_VECTOR(Channels-1 downto 0);
+  Inputs_Fast        : IN  STD_LOGIC_VECTOR(Channels-1 downto 0);
   SPI_CS             : IN  STD_LOGIC := '1';
   SPI_SCK            : IN  STD_LOGIC := '0';
   SPI_MOSI           : IN  STD_LOGIC := '0';
@@ -215,7 +216,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   
 BEGIN
 
-  OLS_Interface_Inputs(Channels-1 downto 0) <= Inputs;
+  OLS_Interface_Inputs(Channels-1 downto 0) <= Inputs_Sys;
 
   OLS_Interface_Outputs(Channels-1 downto 0) <= LA_Out(((OLS_Interface_Address mod sub_steps + 1)*Channels)-1 downto (OLS_Interface_Address mod sub_steps)*Channels);
   LA_Address <= OLS_Interface_Address/sub_steps;
@@ -282,7 +283,7 @@ BEGIN
       Max_Samples  => Max_Samples,Channels     => Channels,Sim          => Sim
   ) PORT MAP (
     CLK => CLK,
-    CLK_150      => Fast_Logic_Analyzer_SDRAM_CLK_150,Rate_Div     => OLS_Interface_Rate_Div,Samples      => OLS_Interface_Samples,Start_Offset => OLS_Interface_Start_Offset,Run          => OLS_Interface_Run,Full         => OLS_Interface_Full,Inputs       => Inputs,Address      => LA_Address,Outputs      => LA_Out,sdram_addr   => sdram_addr,sdram_ba     => sdram_ba,sdram_cas_n  => sdram_cas_n,sdram_dq     => sdram_dq,sdram_dqm    => sdram_dqm,sdram_ras_n  => sdram_ras_n,sdram_we_n   => sdram_we_n,    sdram_cke    => sdram_cke,sdram_cs_n   => sdram_cs_n,sdram_clk    => sdram_clk,
+    CLK_150      => Fast_Logic_Analyzer_SDRAM_CLK_150,Rate_Div     => OLS_Interface_Rate_Div,Samples      => OLS_Interface_Samples,Start_Offset => OLS_Interface_Start_Offset,Run          => OLS_Interface_Run,Full         => OLS_Interface_Full,Inputs       => Inputs_Fast,Address      => LA_Address,Outputs      => LA_Out,sdram_addr   => sdram_addr,sdram_ba     => sdram_ba,sdram_cas_n  => sdram_cas_n,sdram_dq     => sdram_dq,sdram_dqm    => sdram_dqm,sdram_ras_n  => sdram_ras_n,sdram_we_n   => sdram_we_n,    sdram_cke    => sdram_cke,sdram_cs_n   => sdram_cs_n,sdram_clk    => sdram_clk,
     Status       => fla_status,
     Armed        => armed_i,
     Fast_Mode    => fast_mode_i,
