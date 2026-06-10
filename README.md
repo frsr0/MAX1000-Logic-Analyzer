@@ -6,22 +6,34 @@ Open-source multi-channel logic analyzer for the Arrow MAX1000 board (Intel MAX1
 
 - **16 simultaneous digital channels**, arbitrarily mappable to any of 23 physical pins (15 MKR + 8 PMOD)
 - **8 analog channels** (AIN0–AIN7), 12-bit, built-in MAX10 ADC
-- **Sample rate**: up to **120 MHz** digital (16 channels), **101 ksps per analog channel** (all 8 channels)
-- **Deep capture**: up to 1,000,000 samples via SDRAM (16-bit bus, burst mode)
+- **Sample rate**: up to **200 MHz** digital (16 channels, speed mode), **120 MHz** (normal mode)
+- **Deep capture**: up to 1,000,000 samples via SDRAM (16-bit bus, burst mode, triple-buffered)
 - **Pre-trigger capture**: 1,024 samples via BRAM (M9K, circular buffer, flushed to SDRAM after trigger)
 - **Continuous/rolling capture**: repeated single-shot with configurable triple-buffer
 - **Edge trigger**: rising/falling on any combination of channels
 - **Protocol trigger**: UART byte match at configurable baud
 - **Signal generator**: UART / I2C / SPI output on any GPIO pin, with **atomic hardware capture** (CMD_GEN_CAPTURE)
 - **Schmitt trigger**: per-pin digital hysteresis filter (1–7 sample threshold), tunable live
-- **Debug CH0**: optional ~47 kHz square wave on CH0 pin for scope verification
+- **Debug CH0**: programmable PWM (1 Hz–50 MHz, 0–100% duty) on CH0 pin for scope verification
 - **Packet protocol**: CRC-16-IBM framed SPI transactions (SYNC + header + payload + CRC)
-- **Register-based configuration**: 18 writable/readable registers
+- **Register-based configuration**: 20 read/write registers
 - **Accelerometer control**: LIS3DH register read/write via I2C
 - **Protocol decode**: UART, I2C, Modbus with waveform annotation
 - **Voltage display**: 3.3V/1.65V/0V scale on analog traces
 
 ## Clock Architecture
+
+### Speed mode (FAST_SPEED=true, current build)
+
+| Output | Multiply | Frequency | Domain |
+|--------|----------|-----------|--------|
+| c0 | ×8.33 | 100 MHz | SDRAM write pump, buffer mgmt, readout, OLS protocol, LED PWM |
+| c1 | ×16.67 | 200 MHz | **Sample capture** (FAST_CLK), SPI slave |
+| c2 | ×8.33 | 100 MHz, −90° | SDRAM clock (phase-shifted for data centering) |
+
+All PLL outputs from 12 MHz input, VCO = 480 MHz. Timing closure: **+0.238 ns** slack at 200 MHz (Slow 85C worst corner), Fmax = 204 MHz.
+
+### Normal mode (FAST_SPEED=false)
 
 | Output | Multiply | Frequency | Domain |
 |--------|----------|-----------|--------|
@@ -29,14 +41,14 @@ Open-source multi-channel logic analyzer for the Arrow MAX1000 board (Intel MAX1
 | c1 | ×10 | 120 MHz | **Sample capture** (FAST_CLK), SPI slave |
 | c2 | ×8 | 96 MHz, −90° | SDRAM clock (phase-shifted for data centering) |
 
-All PLL outputs from 12 MHz input, VCO = 480 MHz.
+Set `FAST_SPEED => false` in `hdl/proj/OLS_Logic_Analyzer_wrapper.vhd` for normal mode. The PLL megafunction must be regenerated for different multiply/divide values.
 
 ## Architecture
 
-### Two-Clock Domain Split
+### Two-Clock Domain Split (speed mode)
 
 ```
-FAST_CLK (120 MHz, c1)                   CLK (96 MHz, c0)
+FAST_CLK (200 MHz, c1)                   CLK (100 MHz, c0)
 ┌────────────────────────────┐          ┌───────────────────────────┐
 │ sample divider (28-bit)    │          │ async FIFO read (dcfifo)  │
 │ input packer (16→16-bit)   │──4096──▶│ SDRAM address assignment  │
@@ -48,79 +60,70 @@ FAST_CLK (120 MHz, c1)                   CLK (96 MHz, c0)
                                          └───────────────────────────┘
 ```
 
-Config handshake (valid/ack toggle CDC) ensures Rate_Div and Samples are stable in FAST_CLK before capture starts. ADC runs independently on sys_clk (96 MHz).
+Speed mode (200 MHz): 4-stage pipeline — sample pins → control decode → rate divider → BRAM/FIFO write.
+Normal mode (120 MHz): single-cycle capture FSM with variable packing.
+
+Config handshake (valid/ack toggle CDC) ensures Rate_Div and Samples are stable in FAST_CLK before capture starts. ADC runs independently on sys_clk.
 
 ## Memory Architecture
 
 | Memory | Size | Width | Usage |
 |--------|------|-------|-------|
 | BRAM (M9K) | 1,024 words | 16 bits | Pre-trigger circular buffer (fast capture: no SDRAM needed). |
-| Async FIFO (dcfifo) | 4,096 words | 16 bits | CDC buffer between 120 MHz capture and 96 MHz SDRAM write. |
+| Async FIFO (dcfifo) | 4,096 words | 16 bits | CDC buffer between FAST_CLK capture and CLK SDRAM write. |
 | SDRAM | 64 Mbit | 16 bits | Deep capture storage (up to 1M samples). Burst writes, page-mode. |
 | Block read buffer | 256 entries | 32 bits | Readout buffer for CMD_READ_CAPTURE (1 block = 1,024 bytes). |
 | Generator FIFO | 256 entries | 8 bits | UART/I2C/SPI transmit data. |
 
 ## Capture Modes
 
-Simplified: **analog_mode(0) = 1** enables mixed digital+analog capture.
-
 | analog_mode(0) | Frame size | Content | Max digital rate |
 |----------------|-----------|---------|------------------|
-| 0 (Digital) | 2 bytes | `[D15:D0]` | 120 MHz |
-| 1 (Mixed 16 Dig + 8 ADC) | 14 bytes | `[D15:D0, A0..A7]` | 120 MHz* |
+| 0 (Digital) | 2 bytes | `[D15:D0]` | 200 MHz (speed) / 120 MHz (normal) |
+| 1 (Mixed 16 Dig + 8 ADC) | 14 bytes | `[D15:D0, A0..A7]` | 200 MHz* |
 
-*Analog values updated at ~101 kHz (all 8 channels). Digital capture continues at 120 MHz regardless. Analog reference: 3.3V internal, 12-bit = 0.806 mV/count.
+*Analog values updated at ~101 kHz (all 8 channels). Digital capture continues at full rate regardless. Analog reference: 3.3V internal, 12-bit = 0.806 mV/count.
 
 ## Sample Rate Formula
 
 ```
-div = 120e6 / (rate_hz × 2) − 1
-actual_rate = 120e6 / ((div + 1) × 2)
+div = SAMPLE_CLK_HZ / (rate_hz × 2) − 1
+actual_rate = SAMPLE_CLK_HZ / ((div + 1) × 2)
 ```
 
-Sample clock runs on FAST_CLK (120 MHz). Minimum div = 0 → 60 MHz. Maximum div = 16,777,215 → ~3.6 Hz.
+For speed mode: SAMPLE_CLK_HZ = 200 MHz. Minimum div = 0 → 100 MHz max sample rate.
+For normal mode: SAMPLE_CLK_HZ = 120 MHz. Minimum div = 0 → 60 MHz max sample rate.
+Maximum div = 16,777,215 → ~6 Hz minimum.
 
-## Rate Limits Per Mode
+## Rate Limits
 
-The system clock is 96 MHz for normal operation. Fast mode uses a dedicated 120 MHz PLL
-(hard-limited to 1024 samples, BRAM only). The 24-bit sample rate divider supports any
-integer division from 96 MHz down to ~5.7 Hz.
+The system clock is 100 MHz for speed mode, 96 MHz for normal. Fast mode (BRAM-only) is hard-limited to 1024 samples. The 24-bit sample rate divider supports any integer division from sysclk down to ~6 Hz.
 
 ### Rolling (continuous) readback limit
 
-Capture data is read back over SPI at ~30 MB/s effective throughput. This limits
-**rolling (continuous)** capture but does **not** affect **single-shot** capture
-(which fills SDRAM at full speed, then reads back after capture completes).
+Capture data is read back over SPI at ~30 MB/s effective throughput. This limits **rolling (continuous)** capture but does **not** affect **single-shot** capture.
 
-| Capture Mode | Frame stride | Sysclk limit | Rolling max* | Rolling max (MB/s) |
-|---|---|---|---|---|
-| 16 Digital | 2 B | 96 MHz | 15 MHz | 30 |
-| 16 Dig + 1 Ana | 4 B | 96 MHz | 7.5 MHz | 30 |
-| 16 Dig + 2 Ana | 5 B | 96 MHz | 6 MHz | 30 |
-| 16 Dig + 4 Ana | 8 B | 96 MHz | 3.75 MHz | 30 |
-| **16 Dig + 8 Ana** | **14 B** | **96 MHz** | **2.14 MHz** | **30** |
-| 16 Dig + 2 Ana (alt) | 6 B | 96 MHz | 5 MHz | 30 |
-| 1 Analog | 2 B | 96 MHz | 15 MHz | 30 |
-| 2 Analog | 3 B | 96 MHz | 10 MHz | 30 |
-| 4 Analog | 6 B | 96 MHz | 5 MHz | 30 |
+| Capture Mode | Frame stride | Rolling max* |
+|---|---|---|
+| 16 Digital | 2 B | 15 MHz |
+| 16 Dig + 8 Ana | 14 B | 2.14 MHz |
+| 8 Analog | 14 B | 2.14 MHz |
 
-*Rolling max = 30 MB/s ÷ stride in bytes. The GUI automatically clamps the
-selected rate to the rolling limit when in rolling mode. Single-shot mode
-allows the full sysclk rate (96 MHz) for all modes.
+*Rolling max = 30 MB/s ÷ stride in bytes. Single-shot allows full sysclk rate.
 
-### Fast mode (120 MHz)
+## Debug CH0 (Programmable PWM)
 
-Fast mode bypasses SDRAM entirely, capturing to a 1024-sample BRAM circular
-buffer at the dedicated 120 MHz PLL rate. Available in all modes. The GUI
-provides a "Fast 120MHz" rate preset that enables fast mode and limits
-samples to 1024.
+Replaces the old fixed ~47 kHz square wave with a fully programmable PWM generator controlled via registers `0x43` and `0x44`:
 
-### Rate selection in GUI
+```python
+dev.set_debug_ch0(True, freq_hz=100000, duty_pct=50)  # 100 kHz, 50%
+dev.set_debug_ch0(True)                                  # default 100 kHz, 50%
+dev.set_debug_ch0(False)                                 # disable
+```
 
-The rate combobox is free-entry (type any value) with commonly-used presets.
-Entered values are clamped to the hardware limits for the current mode and
-capture type. A data-rate bandwidth indicator shows the resulting MB/s and
-warns if the rate exceeds the rolling readback limit.
+The PWM runs on sys_clk (100 MHz speed mode, 96 MHz normal). Period range: 2–2³² sys_clk cycles (50 MHz–0.023 Hz). Duty range: 1–(period−1). Default: 1024 period, 512 duty (97.7 kHz at 100 MHz sys_clk).
+
+When enabled, the PWM signal is driven onto the CH0 GPIO pin and also routed through the capture mux (bypassing the physical pin), allowing self-test of the capture path.
 
 ## SPI Packet Protocol
 
@@ -147,7 +150,7 @@ FPGA → Host:  0xAA 0x55  STATUS  SEQ  LEN_L  LEN_H  [PAYLOAD...]  CRC_L  CRC_H
 |--------|------|-------------|
 | `0x01` | CMD_PING | Connectivity check |
 | `0x02` | CMD_GET_STATUS | Capture/FIFO/gen status |
-| `0x03` | CMD_GET_METADATA | Protocol version, channel count, flags |
+| `0x03` | CMD_GET_METADATA | Protocol version, channel count, SAMPLE_CLK_HZ |
 | `0x10` | CMD_ARM_CAPTURE | Arm the capture engine |
 | `0x11` | CMD_ABORT_CAPTURE | Abort capture |
 | `0x12` | CMD_READ_CAPTURE | Read 1,024-byte block from SDRAM |
@@ -159,7 +162,7 @@ FPGA → Host:  0xAA 0x55  STATUS  SEQ  LEN_L  LEN_H  [PAYLOAD...]  CRC_L  CRC_H
 
 | Addr | Name | Bits | Description |
 |------|------|------|-------------|
-| `0x00` | REG_DIVIDER | 23:0 | Sample rate divider. Actual rate = `120e6 / ((div+1) × 2)`. |
+| `0x00` | REG_DIVIDER | 23:0 | Sample rate divider. Rate = `SAMPLE_CLK_HZ / ((div+1) × 2)`. |
 | `0x01` | REG_SAMPLE_COUNT | 29:0 | Samples to capture (1–1,000,000). |
 | `0x02` | REG_DELAY_COUNT | 29:0 | Trigger delay count. |
 | `0x10` | REG_TRIGGER_MASK | 31:0 | Bit n enables trigger on channel n. |
@@ -168,10 +171,12 @@ FPGA → Host:  0xAA 0x55  STATUS  SEQ  LEN_L  LEN_H  [PAYLOAD...]  CRC_L  CRC_H
 | `0x21` | REG_FAST_MODE | 0 | Fast mode (BRAM only, no SDRAM). |
 | `0x22` | REG_CONT_MODE | 0 | Continuous capture (triple-buffer). |
 | `0x30`–`0x33` | Generator regs | Proto, baud, pins, data |
-| `0x40` | REG_DEBUG_CH0_ENABLE | 0 | ~47 kHz square wave on CH0. |
-| `0x41` | REG_SCHMITT_ENABLE | 0 | Enable per-pin hysteresis filter. |
-| `0x42` | REG_SCHMITT_THRESHOLD | 2:0 | Threshold (1–7). |
-| `0xF0` | REG_IFACE_MODE | 0 | Interface mode (always 1 for SPI). |
+| `0x40` | REG_DEBUG_CH0_ENABLE | 0 | Debug CH0 PWM enable |
+| `0x41` | REG_SCHMITT_ENABLE | 0 | Enable per-pin hysteresis filter |
+| `0x42` | REG_SCHMITT_THRESHOLD | 2:0 | Threshold (1–7) |
+| `0x43` | REG_DEBUG_CH0_PERIOD | 31:0 | PWM period in sys_clk cycles (default 1024) |
+| `0x44` | REG_DEBUG_CH0_DUTY | 31:0 | PWM high time in sys_clk cycles (default 512) |
+| `0xF0` | REG_IFACE_MODE | 0 | Interface mode (always 1 for SPI) |
 
 ## SPI Preamble Byte
 
@@ -185,19 +190,19 @@ First MISO byte of every SPI transaction:
 | 4 | interface_mode | 1 = SPI, 0 = UART. |
 | 3 | continuous_mode | Continuous capture enabled. |
 | 2 | fast_mode | Fast mode (BRAM) enabled. |
-| 1 | debug_ch0_enable | Debug CH0 square wave enabled. |
+| 1 | debug_ch0_enable | Debug CH0 PWM enabled. |
 | 0 | Gen_Busy | Generator active. |
 
 ## Generator Architecture
 
-Signal generator (UART/I2C/SPI) runs on sys_clk (96 MHz) with 256-byte FIFO.
+Signal generator (UART/I2C/SPI) runs on sys_clk with 256-byte FIFO. Supports atomic hardware capture via CMD_GEN_CAPTURE FSM:
 
-### CMD_GEN_CAPTURE FSM
-
-Atomic arm + guard + gen_start: `GENCAP_IDLE→GENCAP_GUARD(16 cycles)→GENCAP_WAIT_BUSY→GENCAP_RUNNING→GENCAP_DONE`
+```
+GENCAP_IDLE → GENCAP_GUARD(16 cycles) → GENCAP_WAIT_BUSY → GENCAP_RUNNING → GENCAP_DONE
+```
 
 - `disp_arm` arms the capture engine (same as CMD_ARM_CAPTURE)
-- Guard counter waits 16 sys_clk cycles (~167 ns)
+- Guard counter waits 16 sys_clk cycles (~160 ns at 100 MHz)
 - `Gen_Start` pulses, starting Signal_Gen transmission
 - `gen_capture_active` routes the generator TX to the capture mux
 - When Gen_Busy falls, gen_capture_done is asserted
@@ -207,9 +212,9 @@ Atomic arm + guard + gen_start: `GENCAP_IDLE→GENCAP_GUARD(16 cycles)→GENCAP_
 ```bash
 pip install ftd2xx
 cd host
-python -m app.OLS_Console  # GUI
+python -m app.OLS_Console              # GUI
 python -m app.OLS_Console --cli capture --rate 1000000 --samples 5000  # CLI
-python -m app.hw_validation  # hardware tests
+python -m app.hw_validation            # hardware tests (534 tests)
 ```
 
 ### Python API
@@ -220,8 +225,12 @@ dev = OLSDeviceSPI()
 dev.open()
 
 data = dev.capture(rate_hz=1000000, nsamples=5000)
-dev.set_debug_ch0(True)
+
+# Programmable PWM on CH0 (replaces old fixed square wave)
+dev.set_debug_ch0(True, freq_hz=100000, duty_pct=50)
 data = dev.capture(rate_hz=1000000, nsamples=5000)
+
+# Schmitt trigger (digital hysteresis)
 dev.set_schmitt(True, threshold=3)
 
 # Atomic generator capture
@@ -231,9 +240,6 @@ data = dev.capture_with_gen(rate_hz=1000000, nsamples=2000)
 # Analog capture (all 8 channels)
 dev.set_analog_enable(True)
 raw, frames = dev.capture_analog(rate_hz=100000, frames=4096)
-
-# Pin map: remap CH0 to physical pin 22 (PMOD7)
-dev.set_pin_map(0, 22)
 ```
 
 ## Build
@@ -249,38 +255,53 @@ cd hdl\proj
 .\compile.ps1 -Flash
 ```
 
-## Resource Usage
+Set `FAST_SPEED => true` (speed mode, 100/200 MHz) or `false` (normal, 96/120 MHz) in `OLS_Logic_Analyzer_wrapper.vhd`.
+
+### Build modes
+
+| Mode | FAST_SPEED | Sys_clk | FAST_CLK | Timing slack |
+|------|-----------|---------|----------|-------------|
+| Speed | `true` | 100 MHz | 200 MHz | **+0.238 ns** (Slow 85C) |
+| Normal | `false` | 96 MHz | 120 MHz | +0.099 ns* |
+
+*Normal mode timing verified on earlier build; PLL multiply/divide must match.
+
+## Resource Usage (speed mode build)
 
 | Resource | Used | Available | % |
 |----------|------|-----------|---|
-| Logic elements | 5,364 | 8,064 | 67% |
-| Registers | 2,773 | 8,064 | 34% |
+| Logic elements | 6,530 | 8,064 | 81% |
+| Combinational functions | 5,424 | 8,064 | 67% |
+| Registers | 2,598 | 8,064 | 32% |
+| Memory bits | 75,845 | 387,072 | 20% |
 | PLLs | 1 | 1 | 100% |
 
 ## Tests
 
 ```bash
 cd host
-python -m pytest tests/ driver/tests/ -v   # 267 unit tests
-python -m app.hw_validation                # hardware validation
+python -m pytest tests/ driver/tests/ -v   # 287 unit tests
+python -m app.hw_validation                # 534 hardware validation tests
 ```
+
+Hardware validation covers: SPI protocol, single/fast/continuous/max-speed capture, edge triggers (rising + falling), UART/I2C/SPI generator, divider accuracy, analog 8-channel, rolling capture, protocol trigger, noise floor, schmitt trigger, abort capture, crosstalk characterisation, and 60-second stress test.
 
 ## Project Structure
 
 ```
 OLS_Logic_Analyzer_Clean/
 ├── hdl/
-│   ├── rtl/            # VHDL sources
+│   ├── rtl/            # VHDL sources (17 files)
 │   ├── tb/             # Testbenches + simulation
-│   ├── proj/           # Quartus project + compile.ps1
+│   ├── proj/           # Quartus project + compile.ps1 + constraints
 │   ├── ip/MAX10_ADC/   # Altera Modular ADC II IP
-│   └── hw_test/        # Hardware diagnostic scripts
+│   └── hw_test/        # HW validation results
 ├── host/
-│   ├── app/            # GUI + CLI + hw_validation
+│   ├── app/            # GUI (split: OLS_Console + gui_decoders + gui_waveform)
 │   ├── driver/         # SPI protocol + device API
-│   ├── tests/          # App tests (123)
+│   ├── tests/          # App tests
 │   ├── debug/          # Diagnostic scripts
-│   └── driver/tests/   # Driver tests (144)
+│   └── driver/tests/   # Driver tests
 └── README.md
 ```
 
