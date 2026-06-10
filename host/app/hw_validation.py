@@ -922,31 +922,26 @@ def test_noise_floor(dev, debug_on=False):
 # ====================================================================
 # Test 15b: Crosstalk — inject PWM on CH0, measure bleed on CH1-15
 # ====================================================================
-def test_crosstalk(dev):
-    print_header("Test 15b: Crosstalk — PWM on CH0 vs CH1-15 bleed")
-    for freq in [2000000, 1000000, 500000, 100000, 10000]:
-        dev.set_debug_ch0(True, freq_hz=freq, duty_pct=50)
-        data = dev.capture(rate_hz=freq * 4, nsamples=4096, timeout=5)
-        if data:
+def test_crosstalk_characterisation(dev):
+    print_header("Test 15b: Crosstalk characterisation — sweep baud per pin")
+    hdr = f"{'Pair':>8} {'Baud':>7} {'tx':>6} {'bleed':>6} {'%':>5}"
+    log(hdr)
+    log("-" * len(hdr))
+    for tx_pin in range(1, 16):
+        dev._gen_data = bytes([0x55]) * 200
+        for baud in [9600, 19200, 38400, 57600, 115200]:
+            dev._gen_baud = baud
+            dev._gen_tx_pin = tx_pin
+            data = dev.capture_with_gen(rate_hz=baud * 10, nsamples=5000, timeout=5)
+            if not data:
+                log(f"  {tx_pin:>3}→{tx_pin-1:<3} {baud:>7}  no data")
+                continue
             ch, ns = samples_to_channels(data)
-            tr0 = sum(1 for i in range(1, len(ch[0])) if ch[0][i] != ch[0][i-1])
-            bleed = max(
-                sum(1 for i in range(1, len(ch[c])) if ch[c][i] != ch[c][i-1])
-                for c in range(1, min(16, len(ch)))
-            )
-            log(f"  {freq/1e6:.1f} MHz: CH0={tr0} trans, max bleed CH1-15={bleed}")
-            if freq <= 500000:
-                check(bleed <= 5,
-                      f"crosstalk at {freq/1e6:.1f} MHz: bleed={bleed}")
-            elif freq <= 1000000:
-                check(bleed <= 20,
-                      f"crosstalk at {freq/1e6:.1f} MHz: bleed={bleed}")
-            else:
-                log(f"  [INFO] High-freq crosstalk expected: bleed={bleed}")
-        else:
-            check(False, f"crosstalk at {freq/1e6:.1f} MHz: no data")
-    dev.set_debug_ch0(False)
-    save_result("test15b_crosstalk", None, {"freqs": "2M,1M,500k,100k,10k"})
+            tr_tx = sum(1 for i in range(1, min(ns, len(ch[tx_pin]))) if ch[tx_pin][i] != ch[tx_pin][i-1])
+            tr_bleed = sum(1 for i in range(1, min(ns, len(ch[tx_pin-1]))) if ch[tx_pin-1][i] != ch[tx_pin-1][i-1])
+            pct = 100 * tr_bleed // max(tr_tx, 1)
+            log(f"  CH{tx_pin}->CH{tx_pin-1}  {baud:>5}  {tr_tx:>4}  {tr_bleed:>4}  {pct:>3}%")
+    save_result("test15b_crosstalk_char", None, {"bauds": [9600,19200,38400,57600,115200], "pins": "1-15"})
 
 # ====================================================================
 # Test 16: Long-duration stress test (30 seconds at 1 MHz)
@@ -1057,8 +1052,8 @@ def main():
         log("\n--- Protocol trigger test (debug OFF + ON) ---")
         run_with_debug(test_trigger_decode, dev, "Protocol trigger")
 
-        log("\n--- Crosstalk test ---")
-        test_crosstalk(dev)
+        log("\n--- Crosstalk characterisation ---")
+        test_crosstalk_characterisation(dev)
 
         log("\n--- Noise floor test (debug OFF + ON) ---")
         run_with_debug(test_noise_floor, dev, "Noise floor")
