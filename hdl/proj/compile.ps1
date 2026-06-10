@@ -2,8 +2,9 @@ param(
     [switch]$Flash
 )
 
-$QUARTUS = "C:\intelFPGA_lite\18.1\quartus\bin64\quartus_sh.exe"
-$PROGRAMMER = "C:\intelFPGA_lite\18.1\quartus\bin64\quartus_pgm.exe"
+$QUARTUS_DIR = "C:\intelFPGA_lite\18.1\quartus\bin64"
+$QUARTUS = "$QUARTUS_DIR\quartus_sh.exe"
+$PROGRAMMER = "$QUARTUS_DIR\quartus_pgm.exe"
 $CSV = "pin_assignments.csv"
 $WRAPPER = "OLS_Logic_Analyzer_wrapper.vhd"
 $QSF = "OLS_Logic_Analyzer.qsf"
@@ -176,6 +177,8 @@ $qsfLines = @(
     'set_global_assignment -name TOP_LEVEL_ENTITY OLS_Logic_Analyzer_wrapper',
     'set_global_assignment -name NUM_PARALLEL_PROCESSORS 16',
     'set_global_assignment -name INTERNAL_FLASH_UPDATE_MODE "SINGLE IMAGE WITH ERAM"',
+    'set_global_assignment -name FITTER_EFFORT "STANDARD FIT"',
+    'set_global_assignment -name OPTIMIZE_MULTI_CORNER_TIMING ON',
     '',
     'set_global_assignment -name VHDL_FILE ../rtl/OLS_SDRAM_Top.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/LED_Controller.vhd',
@@ -197,6 +200,9 @@ $qsfLines = @(
     '',
     '# Altera Modular ADC II IP',
     'set_global_assignment -name QIP_FILE ../ip/MAX10_ADC/synthesis/MAX10_ADC.qip',
+    '',
+    '# Timing constraints (clock definitions, CDC false paths, multicycle)',
+    'set_global_assignment -name SDC_FILE OLS_Logic_Analyzer.sdc',
     '',
     '# Weak pull-ups on all GPIO and I2C/SPI pins',
     'set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to GPIO[0]',
@@ -222,8 +228,24 @@ if (-not (Test-Path $QUARTUS)) {
     exit 1
 }
 
-$output = & $QUARTUS --flow compile $PROJECT 2>&1
-$compileOk = $LASTEXITCODE -eq 0
+# Step-by-step compile with standard fitter effort
+Write-Host "  Analysis & Synthesis..."
+& "$QUARTUS_DIR\quartus_map" --read_settings_files=on --write_settings_files=off $PROJECT -c $PROJECT 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "FAILED"; exit 1 }
+
+Write-Host "  Fitter (standard effort)..."
+& "$QUARTUS_DIR\quartus_fit" --read_settings_files=on --write_settings_files=off $PROJECT -c $PROJECT 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "FAILED"; exit 1 }
+
+Write-Host "  Assembler..."
+& "$QUARTUS_DIR\quartus_asm" --read_settings_files=on --write_settings_files=off $PROJECT -c $PROJECT 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "FAILED"; exit 1 }
+
+Write-Host "  Timing Analysis..."
+& "$QUARTUS_DIR\quartus_sta" $PROJECT -c $PROJECT 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "FAILED"; exit 1 }
+
+$compileOk = $true
 
 if ($compileOk) {
     Write-Host "Compilation: SUCCESS"

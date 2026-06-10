@@ -133,12 +133,14 @@ class TestOLSDeviceSPI:
 
     def test_set_analog_config(self, device_spi):
         device_spi.pkt = MagicMock()
-        device_spi.set_analog_config(ANALOG_MODE_MIXED2, 3, 7)
+        device_spi.set_analog_config(ANALOG_MODE_MIXED2)
         assert device_spi.analog_mode == ANALOG_MODE_MIXED2
-        assert device_spi.analog_ch0 == 3
-        assert device_spi.analog_ch1 == 7
-        expected_payload = 2 | (3 << 4) | (7 << 8)
-        device_spi.pkt.write_register.assert_called_once_with(0x20, expected_payload)
+        device_spi.pkt.write_register.assert_called_once_with(0x20, ANALOG_MODE_MIXED2)
+
+    def test_set_analog_enable(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.set_analog_enable(True)
+        device_spi.pkt.write_register.assert_called_once_with(0x20, 0x08)
 
     def test_set_pin_map(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -351,9 +353,30 @@ class TestOLSDeviceSPICapture:
         device_spi.pkt.arm_capture.return_value = ST_OK
         device_spi.pkt.get_status.return_value = {
             'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
-        device_spi.pkt.read_capture_block.return_value = b'\x00\x00\x00\x00\x01\x02\x03\x04'
+        device_spi.pkt.read_capture_block.return_value = b'\x00\x00\x01\x02'
         result = device_spi.capture(rate_hz=1000000, nsamples=2, timeout=0.5)
-        assert result == b'\x01\x02\x03\x04'
+        assert result == b'\x01\x02'
+
+    def test_capture_analog_roundtrip(self, device_spi):
+        from driver.ols_spi_device import ANALOG_ENABLE_BIT, decode_analog_frames
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
+        # One 14-byte analog frame
+        frame = bytes([0xBB, 0xAA, 0x23, 0x61, 0x45, 0x89, 0xC7, 0xAB,
+                       0xEF, 0x2D, 0x01, 0x45, 0x83, 0x67])
+        # capture_analog(frames=1) requests 7 SDRAM words = 14 bytes
+        # Block read must return at least 14 bytes
+        device_spi.pkt.read_capture_block.return_value = frame[:1024]
+        result, decoded = device_spi.capture_analog(
+            rate_hz=100000, frames=1, mode=ANALOG_ENABLE_BIT)
+        assert len(result) == 14, f"expected 14 bytes, got {len(result)}"
+        assert result == frame, f"frame mismatch: {result.hex()}"
+        assert len(decoded) == 1
+        assert decoded[0]["digital"] == 0xAABB
+        assert decoded[0]["adc"] == [0x123, 0x456, 0x789, 0xABC, 0xDEF, 0x012, 0x345, 0x678]
 
 
 class TestOLSDeviceSPICaptureWithGen:

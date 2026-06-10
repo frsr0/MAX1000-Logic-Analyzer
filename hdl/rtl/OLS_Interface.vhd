@@ -313,6 +313,7 @@ BEGIN
           fast_mode_i <= disp_reg_wdata(0);
           continuous_mode_i <= disp_reg_wdata(1);
           ch_mode <= disp_reg_wdata(2);
+          analog_mode_i(0) <= disp_reg_wdata(3);
         WHEN REG_FAST_MODE =>
           fast_mode_i <= disp_reg_wdata(0);
         WHEN REG_CONT_MODE =>
@@ -991,6 +992,7 @@ BEGIN
                     reg_val := Trigger_Values;
                   when REG_FLAGS | REG_FAST_MODE =>
                     reg_val(0) := fast_mode_i;
+                    reg_val(3) := analog_mode_i(0);
                   when REG_CONT_MODE =>
                     reg_val(0) := continuous_mode_i;
                   when REG_GEN_PROTO =>

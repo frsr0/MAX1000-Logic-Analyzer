@@ -207,7 +207,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
      Buffer_Full     : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
      Buffer_Ack      : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
      Analog_Frame_Data : IN STD_LOGIC_VECTOR(127 downto 0) := (others => '0');
-     Analog_Frame_Len  : IN NATURAL range 1 to 8 := 1;
+      Analog_Frame_Len  : IN NATURAL range 1 to 14 := 1;
      Analog_Stream_Mode : IN STD_LOGIC := '0'
 
    );

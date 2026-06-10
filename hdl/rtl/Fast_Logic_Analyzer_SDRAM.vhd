@@ -142,7 +142,8 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal rate_div_m1_f : natural range 0 to 150000000 := 11;
 
   signal run_f_s1  : std_logic := '0';
-  signal run_f_s2  : std_logic := '0';
+  signal run_f_s2   : std_logic := '0';
+  signal Inputs_r   : std_logic_vector(Channels-1 downto 0) := (others => '0');
   signal run_f_edge : std_logic := '0';
   signal run_f_start : std_logic := '0';
   signal run_f_level : std_logic := '0';
@@ -152,7 +153,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal overflow_t_s2    : std_logic := '0';
   signal overflow_t_s3    : std_logic := '0';
   signal overflow_clk     : std_logic := '0';
-  signal fast_sample_cnt  : natural range 0 to 1048576 := 0;
+  signal sample_remaining : natural range 0 to 3000000 := 0;
   signal run_stop_overflow : std_logic := '0';
 
   constant AFIFO_DEPTH : natural := 4096;
@@ -433,6 +434,7 @@ begin
     variable bram_cnt : natural range 0 to BRAM_SIZE := 0;
   begin
     if rising_edge(FAST_CLK) then
+      Inputs_r <= Inputs;
       fifo_wr <= '0';
       bram_wren <= '0';
 
@@ -440,7 +442,7 @@ begin
       if Armed = '1' and run_f_level = '0' and cfg_valid_edge = '0' and fifo_overflow_f = '0' then
         if cnt = 0 then
           cnt := rate_div_m1_f;
-          wbuf(((step_r + 1) * Channels) - 1 downto step_r * Channels) := Inputs;
+          wbuf(((step_r + 1) * Channels) - 1 downto step_r * Channels) := Inputs_r;
           if step_r = sub_steps - 1 then
             bram_waddr <= bram_wp;
             bram_wdata <= wbuf(15 downto 0);
@@ -463,21 +465,21 @@ begin
         cnt := 0;
         step_r := 0;
         wbuf := (others => '0');
-        fast_sample_cnt <= 0;
+        sample_remaining <= cfg_samples_f;
         fifo_overflow_f <= '0';
 
       -- Post-trigger: push live samples to async FIFO
       elsif fifo_overflow_f = '0' then
         if cnt = 0 then
           cnt := rate_div_m1_f;
-          wbuf(((step_r + 1) * Channels) - 1 downto step_r * Channels) := Inputs;
+          wbuf(((step_r + 1) * Channels) - 1 downto step_r * Channels) := Inputs_r;
           if step_r = sub_steps - 1 then
-            if fifo_wrfull = '0' and fast_sample_cnt < cfg_samples_f then
+            if fifo_wrfull = '0' and sample_remaining /= 0 then
               fifo_wdata <= wbuf(15 downto 0);
               fifo_wr <= '1';
-              fast_sample_cnt <= fast_sample_cnt + 1;
+              sample_remaining <= sample_remaining - 1;
             end if;
-            if fifo_wrfull = '1' or fast_sample_cnt >= cfg_samples_f - 1 then
+            if fifo_wrfull = '1' or sample_remaining <= 1 then
               fifo_overflow_f <= '1';
             end if;
             step_r := 0;

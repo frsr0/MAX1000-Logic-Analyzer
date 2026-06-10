@@ -80,6 +80,48 @@ actual_rate = 120e6 / ((div + 1) × 2)
 
 Sample clock runs on FAST_CLK (120 MHz). Minimum div = 0 → 60 MHz. Maximum div = 16,777,215 → ~3.6 Hz.
 
+## Rate Limits Per Mode
+
+The system clock is 96 MHz for normal operation. Fast mode uses a dedicated 120 MHz PLL
+(hard-limited to 1024 samples, BRAM only). The 24-bit sample rate divider supports any
+integer division from 96 MHz down to ~5.7 Hz.
+
+### Rolling (continuous) readback limit
+
+Capture data is read back over SPI at ~30 MB/s effective throughput. This limits
+**rolling (continuous)** capture but does **not** affect **single-shot** capture
+(which fills SDRAM at full speed, then reads back after capture completes).
+
+| Capture Mode | Frame stride | Sysclk limit | Rolling max* | Rolling max (MB/s) |
+|---|---|---|---|---|
+| 16 Digital | 2 B | 96 MHz | 15 MHz | 30 |
+| 16 Dig + 1 Ana | 4 B | 96 MHz | 7.5 MHz | 30 |
+| 16 Dig + 2 Ana | 5 B | 96 MHz | 6 MHz | 30 |
+| 16 Dig + 4 Ana | 8 B | 96 MHz | 3.75 MHz | 30 |
+| **16 Dig + 8 Ana** | **14 B** | **96 MHz** | **2.14 MHz** | **30** |
+| 16 Dig + 2 Ana (alt) | 6 B | 96 MHz | 5 MHz | 30 |
+| 1 Analog | 2 B | 96 MHz | 15 MHz | 30 |
+| 2 Analog | 3 B | 96 MHz | 10 MHz | 30 |
+| 4 Analog | 6 B | 96 MHz | 5 MHz | 30 |
+
+*Rolling max = 30 MB/s ÷ stride in bytes. The GUI automatically clamps the
+selected rate to the rolling limit when in rolling mode. Single-shot mode
+allows the full sysclk rate (96 MHz) for all modes.
+
+### Fast mode (120 MHz)
+
+Fast mode bypasses SDRAM entirely, capturing to a 1024-sample BRAM circular
+buffer at the dedicated 120 MHz PLL rate. Available in all modes. The GUI
+provides a "Fast 120MHz" rate preset that enables fast mode and limits
+samples to 1024.
+
+### Rate selection in GUI
+
+The rate combobox is free-entry (type any value) with commonly-used presets.
+Entered values are clamped to the hardware limits for the current mode and
+capture type. A data-rate bandwidth indicator shows the resulting MB/s and
+warns if the rate exceeds the rolling readback limit.
+
 ## SPI Packet Protocol
 
 All host↔FPGA communication uses a framed packet protocol over SPI (CPOL=0, CPHA=0, MSB first).

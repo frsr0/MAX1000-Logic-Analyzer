@@ -35,11 +35,14 @@ ANALOG_MODE_ANALOG2 = 4
 ANALOG_MODE_ANALOG4 = 5
 ANALOG_MODE_MIXED2_4 = 6
 ANALOG_MODE_MIXED_DUAL = 7
+ANALOG_ENABLE_BIT = 0x08  # simplified: bit 3 of REG_FLAGS (avoids clash with mode 0-7)
 
 NUM_CHANNELS = 16
 
 
 def analog_frame_stride(mode):
+    if mode & ANALOG_ENABLE_BIT:
+        return 14  # 16 digital + 8 ADC × 12-bit = 14 bytes
     if mode == ANALOG_MODE_MIXED1:
         return 4
     if mode == ANALOG_MODE_MIXED2:
@@ -63,8 +66,25 @@ def decode_analog_frames(data, mode):
     for i in range(0, len(data) // stride):
         frame = data[i * stride:(i + 1) * stride]
         row = {"digital": None, "adc": []}
-        if mode == ANALOG_MODE_DIGITAL8:
+        if mode & ANALOG_ENABLE_BIT:
+            # Version 1.3 simplified: 16 digital + 8 ADC × 12-bit, 14 bytes.
+            # Each 12-bit ADC spans 1.5 bytes (shared byte between adjacent pair).
+            #   A0: frame[2] + (frame[3] & 0x0F) << 8
+            #   A1: (frame[3] >> 4) + frame[4] << 4
+            #   A2: frame[5] + (frame[6] & 0x0F) << 8
+            #   A3: (frame[6] >> 4) + frame[7] << 4
+            #   A4: frame[8] + (frame[9] & 0x0F) << 8
+            #   A5: (frame[9] >> 4) + frame[10] << 4
+            #   A6: frame[11] + (frame[12] & 0x0F) << 8
+            #   A7: (frame[12] >> 4) + frame[13] << 4
             row["digital"] = frame[0] | (frame[1] << 8)
+            for ch in range(4):
+                lo = frame[2 + ch * 3]
+                hi = (frame[3 + ch * 3] & 0x0F) << 8
+                row["adc"].append(lo | hi)
+                lo = (frame[3 + ch * 3] >> 4)
+                hi = frame[4 + ch * 3] << 4
+                row["adc"].append(lo | hi)
         elif mode == ANALOG_MODE_MIXED1:
             row["digital"] = frame[0] | (frame[1] << 8)
             row["adc"].append(frame[2] | ((frame[3] & 0x0F) << 8))
@@ -181,11 +201,15 @@ class OLSDeviceSPI:
         # _stride is used by the GUI to pick stride=1 for raw display.
 
     def set_analog_config(self, mode, ch0=0, ch1=0, ch2=2, ch3=3):
-        self.analog_mode = mode & 0x7
-        self.analog_ch0 = ch0 & 0xF
-        self.analog_ch1 = ch1 & 0xF
-        payload = self.analog_mode | (self.analog_ch0 << 4) | (self.analog_ch1 << 8)
+        self.analog_mode = mode  # preserve all bits including ANALOG_ENABLE_BIT
+        # Pass the full mode word (including analog_enable bit 3) to REG_FLAGS.
+        # Bit 3 is decoded by OLS_Interface as analog_mode_i(0).
+        payload = mode
         self.pkt.write_register(REG_FLAGS, payload)
+
+    def set_analog_enable(self, enable=True):
+        """Simplified analog mode: enables 16 digital + 8 ADC capture."""
+        self.set_analog_config(ANALOG_ENABLE_BIT if enable else 0)
 
     def set_pin_map(self, channel, pin_index):
         payload = channel | (pin_index << 8)
@@ -207,6 +231,22 @@ class OLSDeviceSPI:
     def set_debug_ch0(self, enable=True):
         self.debug_ch0_enabled = bool(enable)
         self.pkt.write_register(REG_DEBUG_CH0_ENABLE, 1 if enable else 0)
+
+    def trigger_decode(self, match_byte=0x57, channel=0, baud=115200, enable=True):
+        """Configure protocol trigger for UART byte match.
+        
+        Sets trigger mask/value so the capture engine fires on a rising edge
+        on the selected channel at the approximate bit timing of the baud rate.
+        When disabled, clears all trigger settings.
+        """
+        if not enable or match_byte is None:
+            self.pkt.write_register(REG_TRIGGER_MASK, 0)
+            self.pkt.write_register(REG_TRIGGER_VALUE, 0)
+            return
+        mask = (1 << 30) | (1 << channel)  # rising edge on channel
+        value = match_byte
+        self.pkt.write_register(REG_TRIGGER_MASK, mask)
+        self.pkt.write_register(REG_TRIGGER_VALUE, value)
 
     def read_preamble(self):
         """Read debug status register. Bit1 = debug_ch0_enable, bit0 = gen_busy."""
@@ -371,7 +411,7 @@ class OLSDeviceSPI:
                 return b''
             time.sleep(0.001)
 
-        need = rc * self._stride
+        need = rc * 2
         accumulated = bytearray()
         for block_addr in range(0, need, 1024):
             block = self.pkt.read_capture_block(block_addr)
@@ -380,14 +420,13 @@ class OLSDeviceSPI:
         samples = bytes(accumulated[:need])
 
         if samples:
-            s = self._stride
-            for i in range(0, len(samples), s):
-                if samples[i:i+s] != b'\x00' * s:
+            for i in range(0, len(samples), 2):
+                if samples[i:i+2] != b'\x00' * 2:
                     samples = samples[i:]
                     break
 
         if progress_cb and samples:
-            progress_cb(samples, len(samples) // self._stride, rc)
+            progress_cb(samples, len(samples) // 2, rc)
 
         return samples
 
@@ -453,7 +492,7 @@ class OLSDeviceSPI:
                 return b''
             time.sleep(0.001)
 
-        need = rc * self._stride
+        need = rc * 2
         accumulated = bytearray()
         for block_addr in range(0, need, 1024):
             block = self.pkt.read_capture_block(block_addr)
@@ -462,26 +501,24 @@ class OLSDeviceSPI:
         samples = bytes(accumulated[:need])
 
         if samples:
-            s = self._stride
-            for i in range(0, len(samples), s):
-                if samples[i:i+s] != b'\x00' * s:
+            for i in range(0, len(samples), 2):
+                if samples[i:i+2] != b'\x00' * 2:
                     samples = samples[i:]
                     break
 
         if progress_cb and samples:
-            ns = len(samples)
-            progress_cb(samples, ns, rc)
+            progress_cb(samples, len(samples) // 2, rc)
 
         return samples
 
     def capture_analog(self, rate_hz=100000, frames=4096, mode=ANALOG_MODE_MIXED2,
                        ch0=0, ch1=1, timeout=6, progress_cb=None, stop_evt=None):
         stride = analog_frame_stride(mode)
-        self.raw_mode(True)
         self.set_analog_config(mode, ch0, ch1)
+        sdram_words = frames * (stride // 2)  # e.g. 14/2 = 7 words per frame
         data = self.capture(
-            rate_hz=rate_hz * stride,
-            nsamples=frames * stride,
+            rate_hz=rate_hz * (stride // 2),
+            nsamples=sdram_words,
             timeout=timeout,
             trigger=None,
             progress_cb=progress_cb,
@@ -540,7 +577,7 @@ class OLSDeviceSPI:
         if wait > 0:
             time.sleep(wait)
 
-        need = rc * self._stride
+        need = rc * 2
         accumulated = bytearray()
         for block_addr in range(0, need, 1024):
             block = self.pkt.read_capture_block(block_addr)
@@ -555,8 +592,7 @@ class OLSDeviceSPI:
                              dev_addr=0x18, reg_addr=0x0F, read_len=1,
                              tx_pin=2, scl_pin=1, full_out=None, use_continuous=True):
         self._ensure_open()
-        stride = self._stride
-        max_bytes = buffer_nsamp * stride
+        max_bytes = buffer_nsamp * 2
 
         div = max(0, int(self.sys_clk / rate_hz) - 1)
         rc = max(1, buffer_nsamp)
@@ -600,7 +636,7 @@ class OLSDeviceSPI:
                     return
                 time.sleep(0.0005)
 
-            need = chunk_nsamp * stride
+            need = chunk_nsamp * 2
             data = bytearray()
             for addr in range(0, need, 1024):
                 block = self.pkt.read_capture_block(addr)
@@ -617,7 +653,7 @@ class OLSDeviceSPI:
             buf += data
             if len(buf) > max_bytes:
                 buf = buf[-max_bytes:]
-            seq += len(data) // stride
+            seq += len(data) // 2
             if progress_cb:
                 progress_cb(buf, seq, buffer_nsamp)
             yield buf, seq, buffer_nsamp
@@ -627,7 +663,7 @@ class OLSDeviceSPI:
                         gen_tx_pin=3, full_out=None, use_continuous=True, stride=None):
         self._ensure_open()
         if stride is None:
-            stride = self._stride
+            stride = 2  # default: 2 bytes per SDRAM word
         max_bytes = buffer_nsamp * stride
 
         div = max(0, int(self.sys_clk / rate_hz) - 1)
