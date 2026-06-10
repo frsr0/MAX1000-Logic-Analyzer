@@ -339,6 +339,59 @@ def test_fast_capture(dev, debug_on=False):
     save_result(f"test5_fast_capture_debug_{debug_on}", data if data else b"", {"mode": "fast", "nsamples": rc})
 
 # ====================================================================
+# Test 5b: 200 MHz speed capture (FAST_SPEED build only)
+# ====================================================================
+def test_max_speed_capture(dev):
+    print_header("Test 5b: 200 MHz max-speed capture (BRAM, div=0)")
+    dev.reset()
+    dev.spi.flush()
+    rc = 1024
+    div = 0  # Rate_Div = 0 → reload = 0 → tick every FAST_CLK cycle
+
+    dev.pkt.write_register(REG_DIVIDER, div)
+    dev.pkt.write_register(REG_SAMPLE_COUNT, rc)
+    dev.pkt.write_register(REG_DELAY_COUNT, rc)
+    dev.pkt.write_register(REG_TRIGGER_MASK, 0)
+    dev.pkt.write_register(REG_TRIGGER_VALUE, 0)
+    dev.pkt.write_register(REG_FAST_MODE, 1)
+
+    dev.spi.flush()
+    dev.pkt.arm_capture()
+    dev.spi.flush()
+    time.sleep(rc / 1_000_000 + 0.02)
+
+    need = rc * dev._stride
+    data = bytearray()
+    for block_addr in range(0, need, 1024):
+        block = dev.pkt.read_capture_block(block_addr)
+        if block:
+            data.extend(block)
+    data = bytes(data[:need])
+
+    if data:
+        ch, ns = samples_to_channels(data)
+        log(f"captured {len(data)} bytes, {ns} samples (expected {rc})")
+        tr_counts = []
+        for c in range(min(NUM_CHANNELS, 16)):
+            tr = sum(1 for i in range(1, len(ch[c])) if ch[c][i] != ch[c][i - 1])
+            tr_counts.append(tr)
+        max_tr = max(tr_counts)
+        log(f"  max transitions across all channels: {max_tr}")
+        log(f"  CH0 transitions: {tr_counts[0]}")
+        check(ns == rc, f"max-speed sample count: {ns} vs expected {rc}")
+        check_channels_clean(ch, ns, except_ch=[], label="max_speed")
+        check(True, f"max-speed capture OK ({len(data)} bytes, {max_tr} max trans)")
+    else:
+        check(False, "max-speed capture returned no data")
+
+    dev.pkt.write_register(REG_FAST_MODE, 0)
+    dev.spi.flush()
+    save_result("test5b_max_speed_capture", data if data else b"",
+               {"mode": "fast_max", "div": 0, "rate_hz": "max", "nsamples": rc})
+
+# ====================================================================
+# Test 6: Continuous capture
+# ====================================================================
 # Test 6: Continuous capture (triple buffer)
 # ====================================================================
 def test_continuous_capture(dev, debug_on=False):
@@ -952,6 +1005,9 @@ def main():
         run_with_debug(test_fast_capture, dev, "Fast mode capture")
         run_with_debug(test_continuous_capture, dev, "Continuous capture")
         run_with_debug(test_trigger_edge, dev, "Rising edge trigger")
+
+        log("\n--- Max-speed test (200 MHz) ---")
+        test_max_speed_capture(dev)
 
         log("\n--- Generator tests (debug OFF + ON) ---")
         run_with_debug(test_gen_uart, dev, "UART generator")
