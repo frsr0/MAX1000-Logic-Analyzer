@@ -1,0 +1,1621 @@
+============================================================
+  OLS Logic Analyzer — Hardware Validation Suite
+============================================================
+  Started: 2026-06-10 10:48:19
+  Results: C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results
+
+  SPI device opened, sys_clk=96 MHz
+
+============================================================
+  Test 2: SPI handoff and CMD_GET_METADATA
+============================================================
+  reset + interface mode set
+  sending CMD_GET_METADATA...
+  metadata response: status=0x00, payload=10 10 00 f0 01
+    >>> PASS: GET_METADATA returned ST_OK (0x00)
+    >>> PASS: metadata payload length == 5 (5)
+
+============================================================
+  Test 3: All packet protocol commands
+============================================================
+  [1/12] 8% DIVIDER    >>> PASS: WRITE_REG DIVIDER (0x00 = 0x00000064)
+  [2/12] 17% SAMPLE_COUNT    >>> PASS: WRITE_REG SAMPLE_COUNT (0x01 = 0x00001388)
+  [3/12] 25% DELAY_COUNT    >>> PASS: WRITE_REG DELAY_COUNT (0x02 = 0x00001388)
+  [4/12] 33% TRIGGER_MASK    >>> PASS: WRITE_REG TRIGGER_MASK (0x10 = 0x000000FF)
+  [5/12] 42% TRIGGER_VALUE    >>> PASS: WRITE_REG TRIGGER_VALUE (0x11 = 0x00000055)
+  [6/12] 50% GEN_PROTO    >>> PASS: WRITE_REG GEN_PROTO (0x30 = 0x00000000)
+  [7/12] 58% GEN_BAUD    >>> PASS: WRITE_REG GEN_BAUD (0x31 = 0x000000D0)
+  [8/12] 67% GEN_PINS    >>> PASS: WRITE_REG GEN_PINS (0x32 = 0x00000300)
+  [9/12] 75% FAST_MODE    >>> PASS: WRITE_REG FAST_MODE (0x21 = 0x00000001)
+  [10/12] 83% CONT_MODE on    >>> PASS: WRITE_REG CONT_MODE on (0x22 = 0x00000001)
+  [11/12] 92% CONT_MODE off    >>> PASS: WRITE_REG CONT_MODE off (0x22 = 0x00000000)
+  [12/12] 100% IFACE_MODE
+    >>> PASS: WRITE_REG IFACE_MODE (0xF0 = 0x00000001)
+  
+  sending PING...
+    >>> PASS: PING returned ST_OK (0x00)
+  sending GET_STATUS...
+    >>> PASS: GET_STATUS returned capture_status=0x10
+  
+--- Capture tests (debug OFF + ON) ---
+
+  -- Single capture [CH0 debug OFF] --
+
+============================================================
+  Test 4: Single capture (256 samples, 1 MHz)
+============================================================
+  test counter frequency: 93750 Hz (sys_clk=96 MHz)
+  debug CH0 = False
+  captured 512 bytes, 128 samples
+  first 32 raw bytes: fe ff 00 00 fe ff 00 00 fe ff 00 00 fe ff 00 00 fe ff 00 00 fe ff 00 00 fe ff 00 00 fe ff 00 00
+  unique byte values: [0, 254, 255]
+    CH0: 0 transitions, 0/128 ones
+    CH1: 0 transitions, 128/128 ones
+    CH2: 0 transitions, 128/128 ones
+    CH3: 0 transitions, 128/128 ones
+    CH4: 0 transitions, 128/128 ones
+    CH5: 0 transitions, 128/128 ones
+    CH6: 0 transitions, 128/128 ones
+    CH7: 0 transitions, 128/128 ones
+    CH8: 0 transitions, 128/128 ones
+    CH9: 0 transitions, 128/128 ones
+    CH10: 0 transitions, 128/128 ones
+    CH11: 0 transitions, 128/128 ones
+    CH12: 0 transitions, 128/128 ones
+    CH13: 0 transitions, 128/128 ones
+    CH14: 0 transitions, 128/128 ones
+    CH15: 0 transitions, 128/128 ones
+    >>> PASS: CH0 debug OFF: quiet (0 transitions, max 5)
+    single CH0: 0 transitions (max 5)
+    >>> PASS: single CH0 clean: 0 transitions (max 5)
+    single CH1: 0 transitions (max 5)
+    >>> PASS: single CH1 clean: 0 transitions (max 5)
+    single CH2: 0 transitions (max 5)
+    >>> PASS: single CH2 clean: 0 transitions (max 5)
+    single CH3: 0 transitions (max 5)
+    >>> PASS: single CH3 clean: 0 transitions (max 5)
+    single CH4: 0 transitions (max 5)
+    >>> PASS: single CH4 clean: 0 transitions (max 5)
+    single CH5: 0 transitions (max 5)
+    >>> PASS: single CH5 clean: 0 transitions (max 5)
+    single CH6: 0 transitions (max 5)
+    >>> PASS: single CH6 clean: 0 transitions (max 5)
+    single CH7: 0 transitions (max 5)
+    >>> PASS: single CH7 clean: 0 transitions (max 5)
+    single CH8: 0 transitions (max 5)
+    >>> PASS: single CH8 clean: 0 transitions (max 5)
+    single CH9: 0 transitions (max 5)
+    >>> PASS: single CH9 clean: 0 transitions (max 5)
+    single CH10: 0 transitions (max 5)
+    >>> PASS: single CH10 clean: 0 transitions (max 5)
+    single CH11: 0 transitions (max 5)
+    >>> PASS: single CH11 clean: 0 transitions (max 5)
+    single CH12: 0 transitions (max 5)
+    >>> PASS: single CH12 clean: 0 transitions (max 5)
+    single CH13: 0 transitions (max 5)
+    >>> PASS: single CH13 clean: 0 transitions (max 5)
+    single CH14: 0 transitions (max 5)
+    >>> PASS: single CH14 clean: 0 transitions (max 5)
+    single CH15: 0 transitions (max 5)
+    >>> PASS: single CH15 clean: 0 transitions (max 5)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test4_single_capture_debug_False.bin (512 bytes) + .json
+
+  -- Single capture [CH0 debug ON] --
+
+============================================================
+  Test 4: Single capture (256 samples, 1 MHz)
+============================================================
+  test counter frequency: 93750 Hz (sys_clk=96 MHz)
+  debug CH0 = True
+  captured 512 bytes, 128 samples
+  first 32 raw bytes: fe ff 00 00 fe ff 00 00 fe ff 00 00 fe ff 00 00 fe ff 00 00 fe ff 00 00 fe ff 00 00 fe ff 00 00
+  unique byte values: [0, 254, 255]
+    CH0: 0 transitions, 0/128 ones
+    CH1: 0 transitions, 128/128 ones
+    CH2: 0 transitions, 128/128 ones
+    CH3: 0 transitions, 128/128 ones
+    CH4: 0 transitions, 128/128 ones
+    CH5: 0 transitions, 128/128 ones
+    CH6: 0 transitions, 128/128 ones
+    CH7: 0 transitions, 128/128 ones
+    CH8: 0 transitions, 128/128 ones
+    CH9: 0 transitions, 128/128 ones
+    CH10: 0 transitions, 128/128 ones
+    CH11: 0 transitions, 128/128 ones
+    CH12: 0 transitions, 128/128 ones
+    CH13: 0 transitions, 128/128 ones
+    CH14: 0 transitions, 128/128 ones
+    CH15: 0 transitions, 128/128 ones
+    [INFO] CH0 has 0 transitions (debug ON, expected ~24) — test counter may need HW debug
+    single CH1: 0 transitions (max 5)
+    >>> PASS: single CH1 clean: 0 transitions (max 5)
+    single CH2: 0 transitions (max 5)
+    >>> PASS: single CH2 clean: 0 transitions (max 5)
+    single CH3: 0 transitions (max 5)
+    >>> PASS: single CH3 clean: 0 transitions (max 5)
+    single CH4: 0 transitions (max 5)
+    >>> PASS: single CH4 clean: 0 transitions (max 5)
+    single CH5: 0 transitions (max 5)
+    >>> PASS: single CH5 clean: 0 transitions (max 5)
+    single CH6: 0 transitions (max 5)
+    >>> PASS: single CH6 clean: 0 transitions (max 5)
+    single CH7: 0 transitions (max 5)
+    >>> PASS: single CH7 clean: 0 transitions (max 5)
+    single CH8: 0 transitions (max 5)
+    >>> PASS: single CH8 clean: 0 transitions (max 5)
+    single CH9: 0 transitions (max 5)
+    >>> PASS: single CH9 clean: 0 transitions (max 5)
+    single CH10: 0 transitions (max 5)
+    >>> PASS: single CH10 clean: 0 transitions (max 5)
+    single CH11: 0 transitions (max 5)
+    >>> PASS: single CH11 clean: 0 transitions (max 5)
+    single CH12: 0 transitions (max 5)
+    >>> PASS: single CH12 clean: 0 transitions (max 5)
+    single CH13: 0 transitions (max 5)
+    >>> PASS: single CH13 clean: 0 transitions (max 5)
+    single CH14: 0 transitions (max 5)
+    >>> PASS: single CH14 clean: 0 transitions (max 5)
+    single CH15: 0 transitions (max 5)
+    >>> PASS: single CH15 clean: 0 transitions (max 5)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test4_single_capture_debug_True.bin (512 bytes) + .json
+
+  -- Fast mode capture [CH0 debug OFF] --
+
+============================================================
+  Test 5: Fast mode (BRAM) capture
+============================================================
+  debug CH0 = False
+  captured 4096 bytes, 1024 samples
+    CH0: 0 transitions
+    CH1: 0 transitions
+    CH2: 0 transitions
+    CH3: 0 transitions
+    CH4: 0 transitions
+    CH5: 0 transitions
+    CH6: 0 transitions
+    CH7: 0 transitions
+    CH8: 0 transitions
+    CH9: 0 transitions
+    CH10: 0 transitions
+    CH11: 0 transitions
+    CH12: 0 transitions
+    CH13: 0 transitions
+    CH14: 0 transitions
+    CH15: 0 transitions
+    >>> PASS: fast mode CH0 debug OFF: quiet (0 transitions)
+    fast CH0: 0 transitions (max 5)
+    >>> PASS: fast CH0 clean: 0 transitions (max 5)
+    fast CH1: 0 transitions (max 5)
+    >>> PASS: fast CH1 clean: 0 transitions (max 5)
+    fast CH2: 0 transitions (max 5)
+    >>> PASS: fast CH2 clean: 0 transitions (max 5)
+    fast CH3: 0 transitions (max 5)
+    >>> PASS: fast CH3 clean: 0 transitions (max 5)
+    fast CH4: 0 transitions (max 5)
+    >>> PASS: fast CH4 clean: 0 transitions (max 5)
+    fast CH5: 0 transitions (max 5)
+    >>> PASS: fast CH5 clean: 0 transitions (max 5)
+    fast CH6: 0 transitions (max 5)
+    >>> PASS: fast CH6 clean: 0 transitions (max 5)
+    fast CH7: 0 transitions (max 5)
+    >>> PASS: fast CH7 clean: 0 transitions (max 5)
+    fast CH8: 0 transitions (max 5)
+    >>> PASS: fast CH8 clean: 0 transitions (max 5)
+    fast CH9: 0 transitions (max 5)
+    >>> PASS: fast CH9 clean: 0 transitions (max 5)
+    fast CH10: 0 transitions (max 5)
+    >>> PASS: fast CH10 clean: 0 transitions (max 5)
+    fast CH11: 0 transitions (max 5)
+    >>> PASS: fast CH11 clean: 0 transitions (max 5)
+    fast CH12: 0 transitions (max 5)
+    >>> PASS: fast CH12 clean: 0 transitions (max 5)
+    fast CH13: 0 transitions (max 5)
+    >>> PASS: fast CH13 clean: 0 transitions (max 5)
+    fast CH14: 0 transitions (max 5)
+    >>> PASS: fast CH14 clean: 0 transitions (max 5)
+    fast CH15: 0 transitions (max 5)
+    >>> PASS: fast CH15 clean: 0 transitions (max 5)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test5_fast_capture_debug_False.bin (4096 bytes) + .json
+
+  -- Fast mode capture [CH0 debug ON] --
+
+============================================================
+  Test 5: Fast mode (BRAM) capture
+============================================================
+  debug CH0 = True
+  captured 4096 bytes, 1024 samples
+    CH0: 0 transitions
+    CH1: 0 transitions
+    CH2: 0 transitions
+    CH3: 0 transitions
+    CH4: 0 transitions
+    CH5: 0 transitions
+    CH6: 0 transitions
+    CH7: 0 transitions
+    CH8: 0 transitions
+    CH9: 0 transitions
+    CH10: 0 transitions
+    CH11: 0 transitions
+    CH12: 0 transitions
+    CH13: 0 transitions
+    CH14: 0 transitions
+    CH15: 0 transitions
+    [INFO] fast CH0 has 0 transitions (expected ~192)
+    fast CH1: 0 transitions (max 5)
+    >>> PASS: fast CH1 clean: 0 transitions (max 5)
+    fast CH2: 0 transitions (max 5)
+    >>> PASS: fast CH2 clean: 0 transitions (max 5)
+    fast CH3: 0 transitions (max 5)
+    >>> PASS: fast CH3 clean: 0 transitions (max 5)
+    fast CH4: 0 transitions (max 5)
+    >>> PASS: fast CH4 clean: 0 transitions (max 5)
+    fast CH5: 0 transitions (max 5)
+    >>> PASS: fast CH5 clean: 0 transitions (max 5)
+    fast CH6: 0 transitions (max 5)
+    >>> PASS: fast CH6 clean: 0 transitions (max 5)
+    fast CH7: 0 transitions (max 5)
+    >>> PASS: fast CH7 clean: 0 transitions (max 5)
+    fast CH8: 0 transitions (max 5)
+    >>> PASS: fast CH8 clean: 0 transitions (max 5)
+    fast CH9: 0 transitions (max 5)
+    >>> PASS: fast CH9 clean: 0 transitions (max 5)
+    fast CH10: 0 transitions (max 5)
+    >>> PASS: fast CH10 clean: 0 transitions (max 5)
+    fast CH11: 0 transitions (max 5)
+    >>> PASS: fast CH11 clean: 0 transitions (max 5)
+    fast CH12: 0 transitions (max 5)
+    >>> PASS: fast CH12 clean: 0 transitions (max 5)
+    fast CH13: 0 transitions (max 5)
+    >>> PASS: fast CH13 clean: 0 transitions (max 5)
+    fast CH14: 0 transitions (max 5)
+    >>> PASS: fast CH14 clean: 0 transitions (max 5)
+    fast CH15: 0 transitions (max 5)
+    >>> PASS: fast CH15 clean: 0 transitions (max 5)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test5_fast_capture_debug_True.bin (4096 bytes) + .json
+
+  -- Continuous capture [CH0 debug OFF] --
+
+============================================================
+  Test 6: Continuous capture (triple buffer)
+============================================================
+  debug CH0 = False
+  captured 1024 bytes, 256 samples
+    >>> PASS: continuous CH0 debug OFF: quiet (0 transitions)
+    cont CH0: 0 transitions (max 5)
+    >>> PASS: cont CH0 clean: 0 transitions (max 5)
+    cont CH1: 0 transitions (max 5)
+    >>> PASS: cont CH1 clean: 0 transitions (max 5)
+    cont CH2: 0 transitions (max 5)
+    >>> PASS: cont CH2 clean: 0 transitions (max 5)
+    cont CH3: 0 transitions (max 5)
+    >>> PASS: cont CH3 clean: 0 transitions (max 5)
+    cont CH4: 0 transitions (max 5)
+    >>> PASS: cont CH4 clean: 0 transitions (max 5)
+    cont CH5: 0 transitions (max 5)
+    >>> PASS: cont CH5 clean: 0 transitions (max 5)
+    cont CH6: 0 transitions (max 5)
+    >>> PASS: cont CH6 clean: 0 transitions (max 5)
+    cont CH7: 0 transitions (max 5)
+    >>> PASS: cont CH7 clean: 0 transitions (max 5)
+    cont CH8: 0 transitions (max 5)
+    >>> PASS: cont CH8 clean: 0 transitions (max 5)
+    cont CH9: 0 transitions (max 5)
+    >>> PASS: cont CH9 clean: 0 transitions (max 5)
+    cont CH10: 0 transitions (max 5)
+    >>> PASS: cont CH10 clean: 0 transitions (max 5)
+    cont CH11: 0 transitions (max 5)
+    >>> PASS: cont CH11 clean: 0 transitions (max 5)
+    cont CH12: 0 transitions (max 5)
+    >>> PASS: cont CH12 clean: 0 transitions (max 5)
+    cont CH13: 0 transitions (max 5)
+    >>> PASS: cont CH13 clean: 0 transitions (max 5)
+    cont CH14: 0 transitions (max 5)
+    >>> PASS: cont CH14 clean: 0 transitions (max 5)
+    cont CH15: 0 transitions (max 5)
+    >>> PASS: cont CH15 clean: 0 transitions (max 5)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test6_continuous_debug_False.bin (0 bytes) + .json
+
+  -- Continuous capture [CH0 debug ON] --
+
+============================================================
+  Test 6: Continuous capture (triple buffer)
+============================================================
+  debug CH0 = True
+  captured 1024 bytes, 256 samples
+    [INFO] continuous CH0 has 0 transitions (expected ~48)
+    cont CH1: 0 transitions (max 5)
+    >>> PASS: cont CH1 clean: 0 transitions (max 5)
+    cont CH2: 0 transitions (max 5)
+    >>> PASS: cont CH2 clean: 0 transitions (max 5)
+    cont CH3: 0 transitions (max 5)
+    >>> PASS: cont CH3 clean: 0 transitions (max 5)
+    cont CH4: 0 transitions (max 5)
+    >>> PASS: cont CH4 clean: 0 transitions (max 5)
+    cont CH5: 0 transitions (max 5)
+    >>> PASS: cont CH5 clean: 0 transitions (max 5)
+    cont CH6: 0 transitions (max 5)
+    >>> PASS: cont CH6 clean: 0 transitions (max 5)
+    cont CH7: 0 transitions (max 5)
+    >>> PASS: cont CH7 clean: 0 transitions (max 5)
+    cont CH8: 0 transitions (max 5)
+    >>> PASS: cont CH8 clean: 0 transitions (max 5)
+    cont CH9: 0 transitions (max 5)
+    >>> PASS: cont CH9 clean: 0 transitions (max 5)
+    cont CH10: 0 transitions (max 5)
+    >>> PASS: cont CH10 clean: 0 transitions (max 5)
+    cont CH11: 0 transitions (max 5)
+    >>> PASS: cont CH11 clean: 0 transitions (max 5)
+    cont CH12: 0 transitions (max 5)
+    >>> PASS: cont CH12 clean: 0 transitions (max 5)
+    cont CH13: 0 transitions (max 5)
+    >>> PASS: cont CH13 clean: 0 transitions (max 5)
+    cont CH14: 0 transitions (max 5)
+    >>> PASS: cont CH14 clean: 0 transitions (max 5)
+    cont CH15: 0 transitions (max 5)
+    >>> PASS: cont CH15 clean: 0 transitions (max 5)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test6_continuous_debug_True.bin (0 bytes) + .json
+
+  -- Rising edge trigger [CH0 debug OFF] --
+
+============================================================
+  Test 7: Rising edge trigger on CH0
+============================================================
+  debug CH0 = False
+  captured 1024 bytes, 256 samples
+    CH0: 0 transitions, 0/256 ones
+    >>> PASS: trigger CH0 debug OFF: quiet (0 transitions)
+    trig CH0: 0 transitions (max 5)
+    >>> PASS: trig CH0 clean: 0 transitions (max 5)
+    trig CH1: 0 transitions (max 5)
+    >>> PASS: trig CH1 clean: 0 transitions (max 5)
+    trig CH2: 0 transitions (max 5)
+    >>> PASS: trig CH2 clean: 0 transitions (max 5)
+    trig CH3: 0 transitions (max 5)
+    >>> PASS: trig CH3 clean: 0 transitions (max 5)
+    trig CH4: 0 transitions (max 5)
+    >>> PASS: trig CH4 clean: 0 transitions (max 5)
+    trig CH5: 0 transitions (max 5)
+    >>> PASS: trig CH5 clean: 0 transitions (max 5)
+    trig CH6: 0 transitions (max 5)
+    >>> PASS: trig CH6 clean: 0 transitions (max 5)
+    trig CH7: 0 transitions (max 5)
+    >>> PASS: trig CH7 clean: 0 transitions (max 5)
+    trig CH8: 0 transitions (max 5)
+    >>> PASS: trig CH8 clean: 0 transitions (max 5)
+    trig CH9: 0 transitions (max 5)
+    >>> PASS: trig CH9 clean: 0 transitions (max 5)
+    trig CH10: 0 transitions (max 5)
+    >>> PASS: trig CH10 clean: 0 transitions (max 5)
+    trig CH11: 0 transitions (max 5)
+    >>> PASS: trig CH11 clean: 0 transitions (max 5)
+    trig CH12: 0 transitions (max 5)
+    >>> PASS: trig CH12 clean: 0 transitions (max 5)
+    trig CH13: 0 transitions (max 5)
+    >>> PASS: trig CH13 clean: 0 transitions (max 5)
+    trig CH14: 0 transitions (max 5)
+    >>> PASS: trig CH14 clean: 0 transitions (max 5)
+    trig CH15: 0 transitions (max 5)
+    >>> PASS: trig CH15 clean: 0 transitions (max 5)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test7_trigger_edge_debug_False.bin (1024 bytes) + .json
+
+  -- Rising edge trigger [CH0 debug ON] --
+
+============================================================
+  Test 7: Rising edge trigger on CH0
+============================================================
+  debug CH0 = True
+  captured 1024 bytes, 256 samples
+    CH0: 0 transitions, 0/256 ones
+    [INFO] No rising edge detected (CH0 test_div may not be active)
+    trig CH1: 0 transitions (max 5)
+    >>> PASS: trig CH1 clean: 0 transitions (max 5)
+    trig CH2: 0 transitions (max 5)
+    >>> PASS: trig CH2 clean: 0 transitions (max 5)
+    trig CH3: 0 transitions (max 5)
+    >>> PASS: trig CH3 clean: 0 transitions (max 5)
+    trig CH4: 0 transitions (max 5)
+    >>> PASS: trig CH4 clean: 0 transitions (max 5)
+    trig CH5: 0 transitions (max 5)
+    >>> PASS: trig CH5 clean: 0 transitions (max 5)
+    trig CH6: 0 transitions (max 5)
+    >>> PASS: trig CH6 clean: 0 transitions (max 5)
+    trig CH7: 0 transitions (max 5)
+    >>> PASS: trig CH7 clean: 0 transitions (max 5)
+    trig CH8: 0 transitions (max 5)
+    >>> PASS: trig CH8 clean: 0 transitions (max 5)
+    trig CH9: 0 transitions (max 5)
+    >>> PASS: trig CH9 clean: 0 transitions (max 5)
+    trig CH10: 0 transitions (max 5)
+    >>> PASS: trig CH10 clean: 0 transitions (max 5)
+    trig CH11: 0 transitions (max 5)
+    >>> PASS: trig CH11 clean: 0 transitions (max 5)
+    trig CH12: 0 transitions (max 5)
+    >>> PASS: trig CH12 clean: 0 transitions (max 5)
+    trig CH13: 0 transitions (max 5)
+    >>> PASS: trig CH13 clean: 0 transitions (max 5)
+    trig CH14: 0 transitions (max 5)
+    >>> PASS: trig CH14 clean: 0 transitions (max 5)
+    trig CH15: 0 transitions (max 5)
+    >>> PASS: trig CH15 clean: 0 transitions (max 5)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test7_trigger_edge_debug_True.bin (1024 bytes) + .json
+  
+--- Generator tests (debug OFF + ON) ---
+
+  -- UART generator [CH0 debug OFF] --
+
+============================================================
+  Test 8: Generator UART functional
+============================================================
+  debug CH0 = False
+  loading UART generator data and checking gen FSM...
+    >>> PASS: Generator FIFO loaded with data
+    >>> PASS: CMD_GEN_CAPTURE accepted
+    >>> PASS: Generator asserted Gen_Busy
+    [INFO] CH0 has 0 gen transitions
+    gen_uart CH1: 0 transitions (max 20)
+    >>> PASS: gen_uart CH1 clean: 0 transitions (max 20)
+    gen_uart CH2: 0 transitions (max 20)
+    >>> PASS: gen_uart CH2 clean: 0 transitions (max 20)
+    gen_uart CH3: 0 transitions (max 20)
+    >>> PASS: gen_uart CH3 clean: 0 transitions (max 20)
+    gen_uart CH4: 0 transitions (max 20)
+    >>> PASS: gen_uart CH4 clean: 0 transitions (max 20)
+    gen_uart CH5: 0 transitions (max 20)
+    >>> PASS: gen_uart CH5 clean: 0 transitions (max 20)
+    gen_uart CH6: 0 transitions (max 20)
+    >>> PASS: gen_uart CH6 clean: 0 transitions (max 20)
+    gen_uart CH7: 0 transitions (max 20)
+    >>> PASS: gen_uart CH7 clean: 0 transitions (max 20)
+    gen_uart CH8: 0 transitions (max 20)
+    >>> PASS: gen_uart CH8 clean: 0 transitions (max 20)
+    gen_uart CH9: 0 transitions (max 20)
+    >>> PASS: gen_uart CH9 clean: 0 transitions (max 20)
+    gen_uart CH10: 0 transitions (max 20)
+    >>> PASS: gen_uart CH10 clean: 0 transitions (max 20)
+    gen_uart CH11: 0 transitions (max 20)
+    >>> PASS: gen_uart CH11 clean: 0 transitions (max 20)
+    gen_uart CH12: 0 transitions (max 20)
+    >>> PASS: gen_uart CH12 clean: 0 transitions (max 20)
+    gen_uart CH13: 0 transitions (max 20)
+    >>> PASS: gen_uart CH13 clean: 0 transitions (max 20)
+    gen_uart CH14: 0 transitions (max 20)
+    >>> PASS: gen_uart CH14 clean: 0 transitions (max 20)
+    gen_uart CH15: 0 transitions (max 20)
+    >>> PASS: gen_uart CH15 clean: 0 transitions (max 20)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test8_gen_uart_debug_False.bin (0 bytes) + .json
+  testing UART gen on all gen_tx_pin values...
+    CH0: 0 transitions
+    [INFO] CH0 gen has 0 transitions (expected >3)
+    gen_sweep_CH0 CH1: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH0 CH1 clean: 0 transitions (max 10)
+    gen_sweep_CH0 CH2: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH0 CH2 clean: 0 transitions (max 10)
+    gen_sweep_CH0 CH3: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH0 CH3 clean: 0 transitions (max 10)
+    gen_sweep_CH0 CH4: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH0 CH4 clean: 0 transitions (max 10)
+    gen_sweep_CH0 CH5: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH0 CH5 clean: 0 transitions (max 10)
+    gen_sweep_CH0 CH6: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH0 CH6 clean: 0 transitions (max 10)
+    gen_sweep_CH0 CH7: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH0 CH7 clean: 0 transitions (max 10)
+    gen_sweep_CH0 CH8: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH0 CH8 clean: 0 transitions (max 10)
+    gen_sweep_CH0 CH9: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH0 CH9 clean: 0 transitions (max 10)
+    gen_sweep_CH0 CH10: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH0 CH10 clean: 0 transitions (max 10)
+    gen_sweep_CH0 CH11: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH0 CH11 clean: 0 transitions (max 10)
+    gen_sweep_CH0 CH12: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH0 CH12 clean: 0 transitions (max 10)
+    gen_sweep_CH0 CH13: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH0 CH13 clean: 0 transitions (max 10)
+    gen_sweep_CH0 CH14: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH0 CH14 clean: 0 transitions (max 10)
+    gen_sweep_CH0 CH15: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH0 CH15 clean: 0 transitions (max 10)
+    CH1: 0 transitions
+    [INFO] CH1 gen has 0 transitions (expected >3)
+    gen_sweep_CH1 CH0: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH1 CH0 clean: 0 transitions (max 10)
+    gen_sweep_CH1 CH2: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH1 CH2 clean: 0 transitions (max 10)
+    gen_sweep_CH1 CH3: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH1 CH3 clean: 0 transitions (max 10)
+    gen_sweep_CH1 CH4: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH1 CH4 clean: 0 transitions (max 10)
+    gen_sweep_CH1 CH5: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH1 CH5 clean: 0 transitions (max 10)
+    gen_sweep_CH1 CH6: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH1 CH6 clean: 0 transitions (max 10)
+    gen_sweep_CH1 CH7: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH1 CH7 clean: 0 transitions (max 10)
+    gen_sweep_CH1 CH8: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH1 CH8 clean: 0 transitions (max 10)
+    gen_sweep_CH1 CH9: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH1 CH9 clean: 0 transitions (max 10)
+    gen_sweep_CH1 CH10: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH1 CH10 clean: 0 transitions (max 10)
+    gen_sweep_CH1 CH11: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH1 CH11 clean: 0 transitions (max 10)
+    gen_sweep_CH1 CH12: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH1 CH12 clean: 0 transitions (max 10)
+    gen_sweep_CH1 CH13: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH1 CH13 clean: 0 transitions (max 10)
+    gen_sweep_CH1 CH14: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH1 CH14 clean: 0 transitions (max 10)
+    gen_sweep_CH1 CH15: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH1 CH15 clean: 0 transitions (max 10)
+    CH2: 0 transitions
+    [INFO] CH2 gen has 0 transitions (expected >3)
+    gen_sweep_CH2 CH0: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH2 CH0 clean: 0 transitions (max 10)
+    gen_sweep_CH2 CH1: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH2 CH1 clean: 0 transitions (max 10)
+    gen_sweep_CH2 CH3: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH2 CH3 clean: 0 transitions (max 10)
+    gen_sweep_CH2 CH4: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH2 CH4 clean: 0 transitions (max 10)
+    gen_sweep_CH2 CH5: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH2 CH5 clean: 0 transitions (max 10)
+    gen_sweep_CH2 CH6: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH2 CH6 clean: 0 transitions (max 10)
+    gen_sweep_CH2 CH7: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH2 CH7 clean: 0 transitions (max 10)
+    gen_sweep_CH2 CH8: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH2 CH8 clean: 0 transitions (max 10)
+    gen_sweep_CH2 CH9: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH2 CH9 clean: 0 transitions (max 10)
+    gen_sweep_CH2 CH10: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH2 CH10 clean: 0 transitions (max 10)
+    gen_sweep_CH2 CH11: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH2 CH11 clean: 0 transitions (max 10)
+    gen_sweep_CH2 CH12: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH2 CH12 clean: 0 transitions (max 10)
+    gen_sweep_CH2 CH13: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH2 CH13 clean: 0 transitions (max 10)
+    gen_sweep_CH2 CH14: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH2 CH14 clean: 0 transitions (max 10)
+    gen_sweep_CH2 CH15: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH2 CH15 clean: 0 transitions (max 10)
+    CH3: 0 transitions
+    [INFO] CH3 gen has 0 transitions (expected >3)
+    gen_sweep_CH3 CH0: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH3 CH0 clean: 0 transitions (max 10)
+    gen_sweep_CH3 CH1: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH3 CH1 clean: 0 transitions (max 10)
+    gen_sweep_CH3 CH2: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH3 CH2 clean: 0 transitions (max 10)
+    gen_sweep_CH3 CH4: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH3 CH4 clean: 0 transitions (max 10)
+    gen_sweep_CH3 CH5: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH3 CH5 clean: 0 transitions (max 10)
+    gen_sweep_CH3 CH6: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH3 CH6 clean: 0 transitions (max 10)
+    gen_sweep_CH3 CH7: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH3 CH7 clean: 0 transitions (max 10)
+    gen_sweep_CH3 CH8: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH3 CH8 clean: 0 transitions (max 10)
+    gen_sweep_CH3 CH9: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH3 CH9 clean: 0 transitions (max 10)
+    gen_sweep_CH3 CH10: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH3 CH10 clean: 0 transitions (max 10)
+    gen_sweep_CH3 CH11: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH3 CH11 clean: 0 transitions (max 10)
+    gen_sweep_CH3 CH12: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH3 CH12 clean: 0 transitions (max 10)
+    gen_sweep_CH3 CH13: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH3 CH13 clean: 0 transitions (max 10)
+    gen_sweep_CH3 CH14: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH3 CH14 clean: 0 transitions (max 10)
+    gen_sweep_CH3 CH15: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH3 CH15 clean: 0 transitions (max 10)
+    CH4: 0 transitions
+    [INFO] CH4 gen has 0 transitions (expected >3)
+    gen_sweep_CH4 CH0: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH4 CH0 clean: 0 transitions (max 10)
+    gen_sweep_CH4 CH1: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH4 CH1 clean: 0 transitions (max 10)
+    gen_sweep_CH4 CH2: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH4 CH2 clean: 0 transitions (max 10)
+    gen_sweep_CH4 CH3: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH4 CH3 clean: 0 transitions (max 10)
+    gen_sweep_CH4 CH5: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH4 CH5 clean: 0 transitions (max 10)
+    gen_sweep_CH4 CH6: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH4 CH6 clean: 0 transitions (max 10)
+    gen_sweep_CH4 CH7: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH4 CH7 clean: 0 transitions (max 10)
+    gen_sweep_CH4 CH8: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH4 CH8 clean: 0 transitions (max 10)
+    gen_sweep_CH4 CH9: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH4 CH9 clean: 0 transitions (max 10)
+    gen_sweep_CH4 CH10: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH4 CH10 clean: 0 transitions (max 10)
+    gen_sweep_CH4 CH11: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH4 CH11 clean: 0 transitions (max 10)
+    gen_sweep_CH4 CH12: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH4 CH12 clean: 0 transitions (max 10)
+    gen_sweep_CH4 CH13: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH4 CH13 clean: 0 transitions (max 10)
+    gen_sweep_CH4 CH14: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH4 CH14 clean: 0 transitions (max 10)
+    gen_sweep_CH4 CH15: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH4 CH15 clean: 0 transitions (max 10)
+    CH5: 0 transitions
+    [INFO] CH5 gen has 0 transitions (expected >3)
+    gen_sweep_CH5 CH0: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH5 CH0 clean: 0 transitions (max 10)
+    gen_sweep_CH5 CH1: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH5 CH1 clean: 0 transitions (max 10)
+    gen_sweep_CH5 CH2: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH5 CH2 clean: 0 transitions (max 10)
+    gen_sweep_CH5 CH3: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH5 CH3 clean: 0 transitions (max 10)
+    gen_sweep_CH5 CH4: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH5 CH4 clean: 0 transitions (max 10)
+    gen_sweep_CH5 CH6: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH5 CH6 clean: 0 transitions (max 10)
+    gen_sweep_CH5 CH7: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH5 CH7 clean: 0 transitions (max 10)
+    gen_sweep_CH5 CH8: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH5 CH8 clean: 0 transitions (max 10)
+    gen_sweep_CH5 CH9: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH5 CH9 clean: 0 transitions (max 10)
+    gen_sweep_CH5 CH10: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH5 CH10 clean: 0 transitions (max 10)
+    gen_sweep_CH5 CH11: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH5 CH11 clean: 0 transitions (max 10)
+    gen_sweep_CH5 CH12: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH5 CH12 clean: 0 transitions (max 10)
+    gen_sweep_CH5 CH13: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH5 CH13 clean: 0 transitions (max 10)
+    gen_sweep_CH5 CH14: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH5 CH14 clean: 0 transitions (max 10)
+    gen_sweep_CH5 CH15: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH5 CH15 clean: 0 transitions (max 10)
+    CH6: 0 transitions
+    [INFO] CH6 gen has 0 transitions (expected >3)
+    gen_sweep_CH6 CH0: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH6 CH0 clean: 0 transitions (max 10)
+    gen_sweep_CH6 CH1: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH6 CH1 clean: 0 transitions (max 10)
+    gen_sweep_CH6 CH2: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH6 CH2 clean: 0 transitions (max 10)
+    gen_sweep_CH6 CH3: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH6 CH3 clean: 0 transitions (max 10)
+    gen_sweep_CH6 CH4: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH6 CH4 clean: 0 transitions (max 10)
+    gen_sweep_CH6 CH5: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH6 CH5 clean: 0 transitions (max 10)
+    gen_sweep_CH6 CH7: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH6 CH7 clean: 0 transitions (max 10)
+    gen_sweep_CH6 CH8: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH6 CH8 clean: 0 transitions (max 10)
+    gen_sweep_CH6 CH9: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH6 CH9 clean: 0 transitions (max 10)
+    gen_sweep_CH6 CH10: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH6 CH10 clean: 0 transitions (max 10)
+    gen_sweep_CH6 CH11: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH6 CH11 clean: 0 transitions (max 10)
+    gen_sweep_CH6 CH12: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH6 CH12 clean: 0 transitions (max 10)
+    gen_sweep_CH6 CH13: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH6 CH13 clean: 0 transitions (max 10)
+    gen_sweep_CH6 CH14: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH6 CH14 clean: 0 transitions (max 10)
+    gen_sweep_CH6 CH15: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH6 CH15 clean: 0 transitions (max 10)
+    CH7: 0 transitions
+    [INFO] CH7 gen has 0 transitions (expected >3)
+    gen_sweep_CH7 CH0: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH7 CH0 clean: 0 transitions (max 10)
+    gen_sweep_CH7 CH1: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH7 CH1 clean: 0 transitions (max 10)
+    gen_sweep_CH7 CH2: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH7 CH2 clean: 0 transitions (max 10)
+    gen_sweep_CH7 CH3: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH7 CH3 clean: 0 transitions (max 10)
+    gen_sweep_CH7 CH4: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH7 CH4 clean: 0 transitions (max 10)
+    gen_sweep_CH7 CH5: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH7 CH5 clean: 0 transitions (max 10)
+    gen_sweep_CH7 CH6: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH7 CH6 clean: 0 transitions (max 10)
+    gen_sweep_CH7 CH8: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH7 CH8 clean: 0 transitions (max 10)
+    gen_sweep_CH7 CH9: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH7 CH9 clean: 0 transitions (max 10)
+    gen_sweep_CH7 CH10: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH7 CH10 clean: 0 transitions (max 10)
+    gen_sweep_CH7 CH11: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH7 CH11 clean: 0 transitions (max 10)
+    gen_sweep_CH7 CH12: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH7 CH12 clean: 0 transitions (max 10)
+    gen_sweep_CH7 CH13: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH7 CH13 clean: 0 transitions (max 10)
+    gen_sweep_CH7 CH14: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH7 CH14 clean: 0 transitions (max 10)
+    gen_sweep_CH7 CH15: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH7 CH15 clean: 0 transitions (max 10)
+    CH8: 0 transitions
+    [INFO] CH8 gen has 0 transitions (expected >3)
+    gen_sweep_CH8 CH0: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH8 CH0 clean: 0 transitions (max 10)
+    gen_sweep_CH8 CH1: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH8 CH1 clean: 0 transitions (max 10)
+    gen_sweep_CH8 CH2: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH8 CH2 clean: 0 transitions (max 10)
+    gen_sweep_CH8 CH3: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH8 CH3 clean: 0 transitions (max 10)
+    gen_sweep_CH8 CH4: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH8 CH4 clean: 0 transitions (max 10)
+    gen_sweep_CH8 CH5: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH8 CH5 clean: 0 transitions (max 10)
+    gen_sweep_CH8 CH6: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH8 CH6 clean: 0 transitions (max 10)
+    gen_sweep_CH8 CH7: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH8 CH7 clean: 0 transitions (max 10)
+    gen_sweep_CH8 CH9: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH8 CH9 clean: 0 transitions (max 10)
+    gen_sweep_CH8 CH10: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH8 CH10 clean: 0 transitions (max 10)
+    gen_sweep_CH8 CH11: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH8 CH11 clean: 0 transitions (max 10)
+    gen_sweep_CH8 CH12: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH8 CH12 clean: 0 transitions (max 10)
+    gen_sweep_CH8 CH13: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH8 CH13 clean: 0 transitions (max 10)
+    gen_sweep_CH8 CH14: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH8 CH14 clean: 0 transitions (max 10)
+    gen_sweep_CH8 CH15: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH8 CH15 clean: 0 transitions (max 10)
+    CH9: 0 transitions
+    [INFO] CH9 gen has 0 transitions (expected >3)
+    gen_sweep_CH9 CH0: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH9 CH0 clean: 0 transitions (max 10)
+    gen_sweep_CH9 CH1: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH9 CH1 clean: 0 transitions (max 10)
+    gen_sweep_CH9 CH2: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH9 CH2 clean: 0 transitions (max 10)
+    gen_sweep_CH9 CH3: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH9 CH3 clean: 0 transitions (max 10)
+    gen_sweep_CH9 CH4: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH9 CH4 clean: 0 transitions (max 10)
+    gen_sweep_CH9 CH5: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH9 CH5 clean: 0 transitions (max 10)
+    gen_sweep_CH9 CH6: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH9 CH6 clean: 0 transitions (max 10)
+    gen_sweep_CH9 CH7: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH9 CH7 clean: 0 transitions (max 10)
+    gen_sweep_CH9 CH8: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH9 CH8 clean: 0 transitions (max 10)
+    gen_sweep_CH9 CH10: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH9 CH10 clean: 0 transitions (max 10)
+    gen_sweep_CH9 CH11: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH9 CH11 clean: 0 transitions (max 10)
+    gen_sweep_CH9 CH12: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH9 CH12 clean: 0 transitions (max 10)
+    gen_sweep_CH9 CH13: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH9 CH13 clean: 0 transitions (max 10)
+    gen_sweep_CH9 CH14: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH9 CH14 clean: 0 transitions (max 10)
+    gen_sweep_CH9 CH15: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH9 CH15 clean: 0 transitions (max 10)
+    CH10: 0 transitions
+    [INFO] CH10 gen has 0 transitions (expected >3)
+    gen_sweep_CH10 CH0: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH10 CH0 clean: 0 transitions (max 10)
+    gen_sweep_CH10 CH1: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH10 CH1 clean: 0 transitions (max 10)
+    gen_sweep_CH10 CH2: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH10 CH2 clean: 0 transitions (max 10)
+    gen_sweep_CH10 CH3: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH10 CH3 clean: 0 transitions (max 10)
+    gen_sweep_CH10 CH4: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH10 CH4 clean: 0 transitions (max 10)
+    gen_sweep_CH10 CH5: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH10 CH5 clean: 0 transitions (max 10)
+    gen_sweep_CH10 CH6: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH10 CH6 clean: 0 transitions (max 10)
+    gen_sweep_CH10 CH7: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH10 CH7 clean: 0 transitions (max 10)
+    gen_sweep_CH10 CH8: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH10 CH8 clean: 0 transitions (max 10)
+    gen_sweep_CH10 CH9: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH10 CH9 clean: 0 transitions (max 10)
+    gen_sweep_CH10 CH11: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH10 CH11 clean: 0 transitions (max 10)
+    gen_sweep_CH10 CH12: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH10 CH12 clean: 0 transitions (max 10)
+    gen_sweep_CH10 CH13: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH10 CH13 clean: 0 transitions (max 10)
+    gen_sweep_CH10 CH14: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH10 CH14 clean: 0 transitions (max 10)
+    gen_sweep_CH10 CH15: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH10 CH15 clean: 0 transitions (max 10)
+    CH11: 0 transitions
+    [INFO] CH11 gen has 0 transitions (expected >3)
+    gen_sweep_CH11 CH0: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH11 CH0 clean: 0 transitions (max 10)
+    gen_sweep_CH11 CH1: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH11 CH1 clean: 0 transitions (max 10)
+    gen_sweep_CH11 CH2: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH11 CH2 clean: 0 transitions (max 10)
+    gen_sweep_CH11 CH3: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH11 CH3 clean: 0 transitions (max 10)
+    gen_sweep_CH11 CH4: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH11 CH4 clean: 0 transitions (max 10)
+    gen_sweep_CH11 CH5: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH11 CH5 clean: 0 transitions (max 10)
+    gen_sweep_CH11 CH6: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH11 CH6 clean: 0 transitions (max 10)
+    gen_sweep_CH11 CH7: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH11 CH7 clean: 0 transitions (max 10)
+    gen_sweep_CH11 CH8: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH11 CH8 clean: 0 transitions (max 10)
+    gen_sweep_CH11 CH9: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH11 CH9 clean: 0 transitions (max 10)
+    gen_sweep_CH11 CH10: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH11 CH10 clean: 0 transitions (max 10)
+    gen_sweep_CH11 CH12: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH11 CH12 clean: 0 transitions (max 10)
+    gen_sweep_CH11 CH13: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH11 CH13 clean: 0 transitions (max 10)
+    gen_sweep_CH11 CH14: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH11 CH14 clean: 0 transitions (max 10)
+    gen_sweep_CH11 CH15: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH11 CH15 clean: 0 transitions (max 10)
+    CH12: 0 transitions
+    [INFO] CH12 gen has 0 transitions (expected >3)
+    gen_sweep_CH12 CH0: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH12 CH0 clean: 0 transitions (max 10)
+    gen_sweep_CH12 CH1: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH12 CH1 clean: 0 transitions (max 10)
+    gen_sweep_CH12 CH2: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH12 CH2 clean: 0 transitions (max 10)
+    gen_sweep_CH12 CH3: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH12 CH3 clean: 0 transitions (max 10)
+    gen_sweep_CH12 CH4: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH12 CH4 clean: 0 transitions (max 10)
+    gen_sweep_CH12 CH5: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH12 CH5 clean: 0 transitions (max 10)
+    gen_sweep_CH12 CH6: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH12 CH6 clean: 0 transitions (max 10)
+    gen_sweep_CH12 CH7: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH12 CH7 clean: 0 transitions (max 10)
+    gen_sweep_CH12 CH8: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH12 CH8 clean: 0 transitions (max 10)
+    gen_sweep_CH12 CH9: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH12 CH9 clean: 0 transitions (max 10)
+    gen_sweep_CH12 CH10: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH12 CH10 clean: 0 transitions (max 10)
+    gen_sweep_CH12 CH11: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH12 CH11 clean: 0 transitions (max 10)
+    gen_sweep_CH12 CH13: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH12 CH13 clean: 0 transitions (max 10)
+    gen_sweep_CH12 CH14: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH12 CH14 clean: 0 transitions (max 10)
+    gen_sweep_CH12 CH15: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH12 CH15 clean: 0 transitions (max 10)
+    CH13: 0 transitions
+    [INFO] CH13 gen has 0 transitions (expected >3)
+    gen_sweep_CH13 CH0: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH13 CH0 clean: 0 transitions (max 10)
+    gen_sweep_CH13 CH1: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH13 CH1 clean: 0 transitions (max 10)
+    gen_sweep_CH13 CH2: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH13 CH2 clean: 0 transitions (max 10)
+    gen_sweep_CH13 CH3: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH13 CH3 clean: 0 transitions (max 10)
+    gen_sweep_CH13 CH4: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH13 CH4 clean: 0 transitions (max 10)
+    gen_sweep_CH13 CH5: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH13 CH5 clean: 0 transitions (max 10)
+    gen_sweep_CH13 CH6: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH13 CH6 clean: 0 transitions (max 10)
+    gen_sweep_CH13 CH7: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH13 CH7 clean: 0 transitions (max 10)
+    gen_sweep_CH13 CH8: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH13 CH8 clean: 0 transitions (max 10)
+    gen_sweep_CH13 CH9: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH13 CH9 clean: 0 transitions (max 10)
+    gen_sweep_CH13 CH10: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH13 CH10 clean: 0 transitions (max 10)
+    gen_sweep_CH13 CH11: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH13 CH11 clean: 0 transitions (max 10)
+    gen_sweep_CH13 CH12: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH13 CH12 clean: 0 transitions (max 10)
+    gen_sweep_CH13 CH14: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH13 CH14 clean: 0 transitions (max 10)
+    gen_sweep_CH13 CH15: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH13 CH15 clean: 0 transitions (max 10)
+    CH14: 0 transitions
+    [INFO] CH14 gen has 0 transitions (expected >3)
+    gen_sweep_CH14 CH0: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH14 CH0 clean: 0 transitions (max 10)
+    gen_sweep_CH14 CH1: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH14 CH1 clean: 0 transitions (max 10)
+    gen_sweep_CH14 CH2: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH14 CH2 clean: 0 transitions (max 10)
+    gen_sweep_CH14 CH3: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH14 CH3 clean: 0 transitions (max 10)
+    gen_sweep_CH14 CH4: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH14 CH4 clean: 0 transitions (max 10)
+    gen_sweep_CH14 CH5: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH14 CH5 clean: 0 transitions (max 10)
+    gen_sweep_CH14 CH6: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH14 CH6 clean: 0 transitions (max 10)
+    gen_sweep_CH14 CH7: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH14 CH7 clean: 0 transitions (max 10)
+    gen_sweep_CH14 CH8: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH14 CH8 clean: 0 transitions (max 10)
+    gen_sweep_CH14 CH9: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH14 CH9 clean: 0 transitions (max 10)
+    gen_sweep_CH14 CH10: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH14 CH10 clean: 0 transitions (max 10)
+    gen_sweep_CH14 CH11: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH14 CH11 clean: 0 transitions (max 10)
+    gen_sweep_CH14 CH12: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH14 CH12 clean: 0 transitions (max 10)
+    gen_sweep_CH14 CH13: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH14 CH13 clean: 0 transitions (max 10)
+    gen_sweep_CH14 CH15: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH14 CH15 clean: 0 transitions (max 10)
+    CH15: 0 transitions
+    [INFO] CH15 gen has 0 transitions (expected >3)
+    gen_sweep_CH15 CH0: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH15 CH0 clean: 0 transitions (max 10)
+    gen_sweep_CH15 CH1: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH15 CH1 clean: 0 transitions (max 10)
+    gen_sweep_CH15 CH2: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH15 CH2 clean: 0 transitions (max 10)
+    gen_sweep_CH15 CH3: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH15 CH3 clean: 0 transitions (max 10)
+    gen_sweep_CH15 CH4: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH15 CH4 clean: 0 transitions (max 10)
+    gen_sweep_CH15 CH5: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH15 CH5 clean: 0 transitions (max 10)
+    gen_sweep_CH15 CH6: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH15 CH6 clean: 0 transitions (max 10)
+    gen_sweep_CH15 CH7: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH15 CH7 clean: 0 transitions (max 10)
+    gen_sweep_CH15 CH8: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH15 CH8 clean: 0 transitions (max 10)
+    gen_sweep_CH15 CH9: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH15 CH9 clean: 0 transitions (max 10)
+    gen_sweep_CH15 CH10: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH15 CH10 clean: 0 transitions (max 10)
+    gen_sweep_CH15 CH11: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH15 CH11 clean: 0 transitions (max 10)
+    gen_sweep_CH15 CH12: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH15 CH12 clean: 0 transitions (max 10)
+    gen_sweep_CH15 CH13: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH15 CH13 clean: 0 transitions (max 10)
+    gen_sweep_CH15 CH14: 0 transitions (max 10)
+    >>> PASS: gen_sweep_CH15 CH14 clean: 0 transitions (max 10)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test8_gen_uart_sweep_debug_False.bin (0 bytes) + .json
+
+  -- UART generator [CH0 debug ON] --
+
+============================================================
+  Test 8: Generator UART functional
+============================================================
+  debug CH0 = True
+  loading UART generator data and checking gen FSM...
+    >>> PASS: Generator FIFO loaded with data
+    >>> PASS: CMD_GEN_CAPTURE accepted
+    >>> PASS: Generator asserted Gen_Busy
+    [INFO] CH0 has 0 gen transitions (expected >100)
+    gen_uart CH1: 0 transitions (max 20)
+    >>> PASS: gen_uart CH1 clean: 0 transitions (max 20)
+    gen_uart CH2: 0 transitions (max 20)
+    >>> PASS: gen_uart CH2 clean: 0 transitions (max 20)
+    gen_uart CH3: 0 transitions (max 20)
+    >>> PASS: gen_uart CH3 clean: 0 transitions (max 20)
+    gen_uart CH4: 0 transitions (max 20)
+    >>> PASS: gen_uart CH4 clean: 0 transitions (max 20)
+    gen_uart CH5: 0 transitions (max 20)
+    >>> PASS: gen_uart CH5 clean: 0 transitions (max 20)
+    gen_uart CH6: 0 transitions (max 20)
+    >>> PASS: gen_uart CH6 clean: 0 transitions (max 20)
+    gen_uart CH7: 0 transitions (max 20)
+    >>> PASS: gen_uart CH7 clean: 0 transitions (max 20)
+    gen_uart CH8: 0 transitions (max 20)
+    >>> PASS: gen_uart CH8 clean: 0 transitions (max 20)
+    gen_uart CH9: 0 transitions (max 20)
+    >>> PASS: gen_uart CH9 clean: 0 transitions (max 20)
+    gen_uart CH10: 0 transitions (max 20)
+    >>> PASS: gen_uart CH10 clean: 0 transitions (max 20)
+    gen_uart CH11: 0 transitions (max 20)
+    >>> PASS: gen_uart CH11 clean: 0 transitions (max 20)
+    gen_uart CH12: 0 transitions (max 20)
+    >>> PASS: gen_uart CH12 clean: 0 transitions (max 20)
+    gen_uart CH13: 0 transitions (max 20)
+    >>> PASS: gen_uart CH13 clean: 0 transitions (max 20)
+    gen_uart CH14: 0 transitions (max 20)
+    >>> PASS: gen_uart CH14 clean: 0 transitions (max 20)
+    gen_uart CH15: 0 transitions (max 20)
+    >>> PASS: gen_uart CH15 clean: 0 transitions (max 20)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test8_gen_uart_debug_True.bin (0 bytes) + .json
+  skipping full sweep for debug ON (already tested in debug OFF run)
+    CH0: 0 transitions (debug ON smoke test)
+    >>> PASS: Gen sweep smoke test completed
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test8_gen_uart_sweep_debug_True.bin (0 bytes) + .json
+
+============================================================
+  Test 9: I2C accelerometer WHO_AM_I
+============================================================
+  probing LIS3DH at 0x18 on CH2(SDA)/CH1(SCL)...
+    0x18: SCL 0 trans, SDA 0 trans, 0 data bytes
+  probing LIS3DH at 0x19 on CH2(SDA)/CH1(SCL)...
+    0x19: SCL 0 trans, SDA 0 trans, 0 data bytes
+    [SKIP] LIS3DH not detected — may not be populated on this board
+    >>> PASS: I2C accel test skipped (no LIS3DH detected)
+
+============================================================
+  Test 10: Generator SPI capture decode
+============================================================
+  configuring SPI generator test mode...
+    CH0: 0 transitions
+    [INFO] SPI gen CH0 has 0 transitions (expected >3)
+    CH3: 0 transitions
+    [INFO] SPI gen CH3 has 0 transitions (expected >3)
+    CH7: 0 transitions
+    [INFO] SPI gen CH7 has 0 transitions (expected >3)
+    CH15: 0 transitions
+    [INFO] SPI gen CH15 has 0 transitions (expected >3)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test10_spi_accel.bin (0 bytes) + .json
+  
+--- Divider test (debug OFF + ON) ---
+
+  -- Divider accuracy [CH0 debug OFF] --
+
+============================================================
+  Test 11: Divider accuracy
+============================================================
+  sys_clk=96 MHz, test counter=93750 Hz, debug CH0 = False
+  CH0: 0 transitions (debug OFF)
+    >>> PASS: divider CH0 debug OFF: quiet (0 transitions)
+    divider CH0: 0 transitions (max 5)
+    >>> PASS: divider CH0 clean: 0 transitions (max 5)
+    divider CH1: 0 transitions (max 5)
+    >>> PASS: divider CH1 clean: 0 transitions (max 5)
+    divider CH2: 0 transitions (max 5)
+    >>> PASS: divider CH2 clean: 0 transitions (max 5)
+    divider CH3: 0 transitions (max 5)
+    >>> PASS: divider CH3 clean: 0 transitions (max 5)
+    divider CH4: 0 transitions (max 5)
+    >>> PASS: divider CH4 clean: 0 transitions (max 5)
+    divider CH5: 0 transitions (max 5)
+    >>> PASS: divider CH5 clean: 0 transitions (max 5)
+    divider CH6: 0 transitions (max 5)
+    >>> PASS: divider CH6 clean: 0 transitions (max 5)
+    divider CH7: 0 transitions (max 5)
+    >>> PASS: divider CH7 clean: 0 transitions (max 5)
+    divider CH8: 0 transitions (max 5)
+    >>> PASS: divider CH8 clean: 0 transitions (max 5)
+    divider CH9: 0 transitions (max 5)
+    >>> PASS: divider CH9 clean: 0 transitions (max 5)
+    divider CH10: 0 transitions (max 5)
+    >>> PASS: divider CH10 clean: 0 transitions (max 5)
+    divider CH11: 0 transitions (max 5)
+    >>> PASS: divider CH11 clean: 0 transitions (max 5)
+    divider CH12: 0 transitions (max 5)
+    >>> PASS: divider CH12 clean: 0 transitions (max 5)
+    divider CH13: 0 transitions (max 5)
+    >>> PASS: divider CH13 clean: 0 transitions (max 5)
+    divider CH14: 0 transitions (max 5)
+    >>> PASS: divider CH14 clean: 0 transitions (max 5)
+    divider CH15: 0 transitions (max 5)
+    >>> PASS: divider CH15 clean: 0 transitions (max 5)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test11_divider_debug_False.bin (2048 bytes) + .json
+
+  -- Divider accuracy [CH0 debug ON] --
+
+============================================================
+  Test 11: Divider accuracy
+============================================================
+  sys_clk=96 MHz, test counter=93750 Hz, debug CH0 = True
+  CH0 toggles: 0 edges in 512 samples (expected ~96)
+    [INFO] CH0 has 0 edges (expected ~96)
+    divider CH1: 0 transitions (max 5)
+    >>> PASS: divider CH1 clean: 0 transitions (max 5)
+    divider CH2: 0 transitions (max 5)
+    >>> PASS: divider CH2 clean: 0 transitions (max 5)
+    divider CH3: 0 transitions (max 5)
+    >>> PASS: divider CH3 clean: 0 transitions (max 5)
+    divider CH4: 0 transitions (max 5)
+    >>> PASS: divider CH4 clean: 0 transitions (max 5)
+    divider CH5: 0 transitions (max 5)
+    >>> PASS: divider CH5 clean: 0 transitions (max 5)
+    divider CH6: 0 transitions (max 5)
+    >>> PASS: divider CH6 clean: 0 transitions (max 5)
+    divider CH7: 0 transitions (max 5)
+    >>> PASS: divider CH7 clean: 0 transitions (max 5)
+    divider CH8: 0 transitions (max 5)
+    >>> PASS: divider CH8 clean: 0 transitions (max 5)
+    divider CH9: 0 transitions (max 5)
+    >>> PASS: divider CH9 clean: 0 transitions (max 5)
+    divider CH10: 0 transitions (max 5)
+    >>> PASS: divider CH10 clean: 0 transitions (max 5)
+    divider CH11: 0 transitions (max 5)
+    >>> PASS: divider CH11 clean: 0 transitions (max 5)
+    divider CH12: 0 transitions (max 5)
+    >>> PASS: divider CH12 clean: 0 transitions (max 5)
+    divider CH13: 0 transitions (max 5)
+    >>> PASS: divider CH13 clean: 0 transitions (max 5)
+    divider CH14: 0 transitions (max 5)
+    >>> PASS: divider CH14 clean: 0 transitions (max 5)
+    divider CH15: 0 transitions (max 5)
+    >>> PASS: divider CH15 clean: 0 transitions (max 5)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test11_divider_debug_True.bin (2048 bytes) + .json
+  
+--- 23-channel + Analog8 tests ---
+
+============================================================
+  Test 12b: 23-channel digital capture
+============================================================
+    >>> PASS: NUM_CHANNELS should be 16, got 16
+  Captured 256 samples across 23 channels
+  CH0 ones: 0, CH22 ones: 0
+    >>> PASS: Some channels show activity
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test12b_23ch.bin (1024 bytes) + .json
+  Test 12b: PASS
+
+  -- Analog 8-channel mode [CH0 debug OFF] --
+
+============================================================
+  Test 12c: Analog 8-channel mode
+============================================================
+  debug CH0 = False
+  Analog8: 18 frames, 256 bytes, stride=14
+  decoded 18 frames
+  frame 0: digital=0xFFFE, ADC values=[0, 4064, 255, 0, 4094, 15, 3584, 4095]
+    >>> PASS: frame has 8 analog channels (8)
+    >>> PASS: A0 value 0 in 12-bit range
+    >>> PASS: A1 value 4064 in 12-bit range
+    >>> PASS: A2 value 255 in 12-bit range
+    >>> PASS: A3 value 0 in 12-bit range
+    >>> PASS: A4 value 4094 in 12-bit range
+    >>> PASS: A5 value 15 in 12-bit range
+    >>> PASS: A6 value 3584 in 12-bit range
+    >>> PASS: A7 value 4095 in 12-bit range
+    >>> PASS: Some ADC channels show non-zero values
+    >>> PASS: Received 18 analog frames (need > 0)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test12c_analog8_debug_False.bin (256 bytes) + .json
+
+  -- Analog 8-channel mode [CH0 debug ON] --
+
+============================================================
+  Test 12c: Analog 8-channel mode
+============================================================
+  debug CH0 = True
+  Analog8: 18 frames, 256 bytes, stride=14
+  decoded 18 frames
+  frame 0: digital=0xFFFE, ADC values=[0, 4064, 255, 0, 4094, 15, 3584, 4095]
+    >>> PASS: frame has 8 analog channels (8)
+    >>> PASS: A0 value 0 in 12-bit range
+    >>> PASS: A1 value 4064 in 12-bit range
+    >>> PASS: A2 value 255 in 12-bit range
+    >>> PASS: A3 value 0 in 12-bit range
+    >>> PASS: A4 value 4094 in 12-bit range
+    >>> PASS: A5 value 15 in 12-bit range
+    >>> PASS: A6 value 3584 in 12-bit range
+    >>> PASS: A7 value 4095 in 12-bit range
+    >>> PASS: Some ADC channels show non-zero values
+    >>> PASS: Received 18 analog frames (need > 0)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test12c_analog8_debug_True.bin (256 bytes) + .json
+  
+--- Rolling + generator test (debug OFF + ON) ---
+
+  -- Rolling gen UART [CH0 debug OFF] --
+
+============================================================
+  Test 13: Rolling capture with UART generator
+============================================================
+  debug CH0 = False
+  rolling gen: 3 chunks, 3072 total bytes
+    gen CH3 (TX pin): 0 transitions in 768 samples
+    [INFO] rolling gen: CH3 has 0 transitions — gen may need re-start in rolling loop
+    >>> PASS: rolling gen completed (3 chunks)
+    rolling_gen CH0: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH0 clean: 0 transitions (max 20)
+    rolling_gen CH1: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH1 clean: 0 transitions (max 20)
+    rolling_gen CH2: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH2 clean: 0 transitions (max 20)
+    rolling_gen CH4: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH4 clean: 0 transitions (max 20)
+    rolling_gen CH5: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH5 clean: 0 transitions (max 20)
+    rolling_gen CH6: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH6 clean: 0 transitions (max 20)
+    rolling_gen CH7: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH7 clean: 0 transitions (max 20)
+    rolling_gen CH8: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH8 clean: 0 transitions (max 20)
+    rolling_gen CH9: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH9 clean: 0 transitions (max 20)
+    rolling_gen CH10: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH10 clean: 0 transitions (max 20)
+    rolling_gen CH11: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH11 clean: 0 transitions (max 20)
+    rolling_gen CH12: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH12 clean: 0 transitions (max 20)
+    rolling_gen CH13: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH13 clean: 0 transitions (max 20)
+    rolling_gen CH14: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH14 clean: 0 transitions (max 20)
+    rolling_gen CH15: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH15 clean: 0 transitions (max 20)
+    UART decoded: 0 bytes
+    [INFO] No UART decoded — gen may not have fired in rolling mode
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test13_rolling_gen_uart_debug_False.bin (3072 bytes) + .json
+
+  -- Rolling gen UART [CH0 debug ON] --
+
+============================================================
+  Test 13: Rolling capture with UART generator
+============================================================
+  debug CH0 = True
+  rolling gen: 3 chunks, 3072 total bytes
+    gen CH3 (TX pin): 0 transitions in 768 samples
+    [INFO] rolling gen: CH3 has 0 transitions — gen may need re-start in rolling loop
+    >>> PASS: rolling gen completed (3 chunks)
+    rolling_gen CH1: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH1 clean: 0 transitions (max 20)
+    rolling_gen CH2: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH2 clean: 0 transitions (max 20)
+    rolling_gen CH4: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH4 clean: 0 transitions (max 20)
+    rolling_gen CH5: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH5 clean: 0 transitions (max 20)
+    rolling_gen CH6: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH6 clean: 0 transitions (max 20)
+    rolling_gen CH7: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH7 clean: 0 transitions (max 20)
+    rolling_gen CH8: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH8 clean: 0 transitions (max 20)
+    rolling_gen CH9: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH9 clean: 0 transitions (max 20)
+    rolling_gen CH10: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH10 clean: 0 transitions (max 20)
+    rolling_gen CH11: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH11 clean: 0 transitions (max 20)
+    rolling_gen CH12: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH12 clean: 0 transitions (max 20)
+    rolling_gen CH13: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH13 clean: 0 transitions (max 20)
+    rolling_gen CH14: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH14 clean: 0 transitions (max 20)
+    rolling_gen CH15: 0 transitions (max 20)
+    >>> PASS: rolling_gen CH15 clean: 0 transitions (max 20)
+    UART decoded: 0 bytes
+    [INFO] No UART decoded — gen may not have fired in rolling mode
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test13_rolling_gen_uart_debug_True.bin (3072 bytes) + .json
+  
+--- Protocol trigger test (debug OFF + ON) ---
+
+  -- Protocol trigger [CH0 debug OFF] --
+
+============================================================
+  Test 14: Protocol trigger (UART byte match)
+============================================================
+  debug CH0 = False
+  configuring UART byte match trigger for 'H' (0x48) on CH3 at 115200 baud...
+  trigger decode capture: 10000 bytes, 2500 samples, CH3 0 transitions
+    trig_decode CH0: 0 transitions (max 20)
+    >>> PASS: trig_decode CH0 clean: 0 transitions (max 20)
+    trig_decode CH1: 0 transitions (max 20)
+    >>> PASS: trig_decode CH1 clean: 0 transitions (max 20)
+    trig_decode CH2: 0 transitions (max 20)
+    >>> PASS: trig_decode CH2 clean: 0 transitions (max 20)
+    trig_decode CH4: 0 transitions (max 20)
+    >>> PASS: trig_decode CH4 clean: 0 transitions (max 20)
+    trig_decode CH5: 0 transitions (max 20)
+    >>> PASS: trig_decode CH5 clean: 0 transitions (max 20)
+    trig_decode CH6: 0 transitions (max 20)
+    >>> PASS: trig_decode CH6 clean: 0 transitions (max 20)
+    trig_decode CH7: 0 transitions (max 20)
+    >>> PASS: trig_decode CH7 clean: 0 transitions (max 20)
+    trig_decode CH8: 0 transitions (max 20)
+    >>> PASS: trig_decode CH8 clean: 0 transitions (max 20)
+    trig_decode CH9: 0 transitions (max 20)
+    >>> PASS: trig_decode CH9 clean: 0 transitions (max 20)
+    trig_decode CH10: 0 transitions (max 20)
+    >>> PASS: trig_decode CH10 clean: 0 transitions (max 20)
+    trig_decode CH11: 0 transitions (max 20)
+    >>> PASS: trig_decode CH11 clean: 0 transitions (max 20)
+    trig_decode CH12: 0 transitions (max 20)
+    >>> PASS: trig_decode CH12 clean: 0 transitions (max 20)
+    trig_decode CH13: 0 transitions (max 20)
+    >>> PASS: trig_decode CH13 clean: 0 transitions (max 20)
+    trig_decode CH14: 0 transitions (max 20)
+    >>> PASS: trig_decode CH14 clean: 0 transitions (max 20)
+    trig_decode CH15: 0 transitions (max 20)
+    >>> PASS: trig_decode CH15 clean: 0 transitions (max 20)
+    UART decoded: 0 bytes
+    [INFO] No UART decoded — gen+trigger combo may need hardware debug
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test14_trigger_decode_debug_False.bin (10000 bytes) + .json
+
+  -- Protocol trigger [CH0 debug ON] --
+
+============================================================
+  Test 14: Protocol trigger (UART byte match)
+============================================================
+  debug CH0 = True
+  configuring UART byte match trigger for 'H' (0x48) on CH3 at 115200 baud...
+  trigger decode capture: 10000 bytes, 2500 samples, CH3 0 transitions
+    trig_decode CH1: 0 transitions (max 20)
+    >>> PASS: trig_decode CH1 clean: 0 transitions (max 20)
+    trig_decode CH2: 0 transitions (max 20)
+    >>> PASS: trig_decode CH2 clean: 0 transitions (max 20)
+    trig_decode CH4: 0 transitions (max 20)
+    >>> PASS: trig_decode CH4 clean: 0 transitions (max 20)
+    trig_decode CH5: 0 transitions (max 20)
+    >>> PASS: trig_decode CH5 clean: 0 transitions (max 20)
+    trig_decode CH6: 0 transitions (max 20)
+    >>> PASS: trig_decode CH6 clean: 0 transitions (max 20)
+    trig_decode CH7: 0 transitions (max 20)
+    >>> PASS: trig_decode CH7 clean: 0 transitions (max 20)
+    trig_decode CH8: 0 transitions (max 20)
+    >>> PASS: trig_decode CH8 clean: 0 transitions (max 20)
+    trig_decode CH9: 0 transitions (max 20)
+    >>> PASS: trig_decode CH9 clean: 0 transitions (max 20)
+    trig_decode CH10: 0 transitions (max 20)
+    >>> PASS: trig_decode CH10 clean: 0 transitions (max 20)
+    trig_decode CH11: 0 transitions (max 20)
+    >>> PASS: trig_decode CH11 clean: 0 transitions (max 20)
+    trig_decode CH12: 0 transitions (max 20)
+    >>> PASS: trig_decode CH12 clean: 0 transitions (max 20)
+    trig_decode CH13: 0 transitions (max 20)
+    >>> PASS: trig_decode CH13 clean: 0 transitions (max 20)
+    trig_decode CH14: 0 transitions (max 20)
+    >>> PASS: trig_decode CH14 clean: 0 transitions (max 20)
+    trig_decode CH15: 0 transitions (max 20)
+    >>> PASS: trig_decode CH15 clean: 0 transitions (max 20)
+    UART decoded: 0 bytes
+    [INFO] No UART decoded — gen+trigger combo may need hardware debug
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test14_trigger_decode_debug_True.bin (10000 bytes) + .json
+  
+--- Noise floor test (debug OFF + ON) ---
+
+  -- Noise floor [CH0 debug OFF] --
+
+============================================================
+  Test 15: Noise floor (all channels clean)
+============================================================
+  debug CH0 = False
+  capturing 1024 samples at 1 MHz with no generator, no trigger...
+  captured 2048 bytes, 512 samples
+    CH0: 0 transitions
+    CH1: 0 transitions
+    CH2: 0 transitions
+    CH3: 0 transitions
+    CH4: 0 transitions
+    CH5: 0 transitions
+    CH6: 0 transitions
+    CH7: 0 transitions
+    CH8: 0 transitions
+    CH9: 0 transitions
+    CH10: 0 transitions
+    CH11: 0 transitions
+    CH12: 0 transitions
+    CH13: 0 transitions
+    CH14: 0 transitions
+    CH15: 0 transitions
+    >>> PASS: Noise floor debug OFF: all channels clean (0 total, max 80)
+    noise CH0: 0 transitions (max 5)
+    >>> PASS: noise CH0 clean: 0 transitions (max 5)
+    noise CH1: 0 transitions (max 5)
+    >>> PASS: noise CH1 clean: 0 transitions (max 5)
+    noise CH2: 0 transitions (max 5)
+    >>> PASS: noise CH2 clean: 0 transitions (max 5)
+    noise CH3: 0 transitions (max 5)
+    >>> PASS: noise CH3 clean: 0 transitions (max 5)
+    noise CH4: 0 transitions (max 5)
+    >>> PASS: noise CH4 clean: 0 transitions (max 5)
+    noise CH5: 0 transitions (max 5)
+    >>> PASS: noise CH5 clean: 0 transitions (max 5)
+    noise CH6: 0 transitions (max 5)
+    >>> PASS: noise CH6 clean: 0 transitions (max 5)
+    noise CH7: 0 transitions (max 5)
+    >>> PASS: noise CH7 clean: 0 transitions (max 5)
+    noise CH8: 0 transitions (max 5)
+    >>> PASS: noise CH8 clean: 0 transitions (max 5)
+    noise CH9: 0 transitions (max 5)
+    >>> PASS: noise CH9 clean: 0 transitions (max 5)
+    noise CH10: 0 transitions (max 5)
+    >>> PASS: noise CH10 clean: 0 transitions (max 5)
+    noise CH11: 0 transitions (max 5)
+    >>> PASS: noise CH11 clean: 0 transitions (max 5)
+    noise CH12: 0 transitions (max 5)
+    >>> PASS: noise CH12 clean: 0 transitions (max 5)
+    noise CH13: 0 transitions (max 5)
+    >>> PASS: noise CH13 clean: 0 transitions (max 5)
+    noise CH14: 0 transitions (max 5)
+    >>> PASS: noise CH14 clean: 0 transitions (max 5)
+    noise CH15: 0 transitions (max 5)
+    >>> PASS: noise CH15 clean: 0 transitions (max 5)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test15_noise_floor_debug_False.bin (2048 bytes) + .json
+
+  -- Noise floor [CH0 debug ON] --
+
+============================================================
+  Test 15: Noise floor (all channels clean)
+============================================================
+  debug CH0 = True
+  capturing 1024 samples at 1 MHz with no generator, no trigger...
+  captured 2048 bytes, 512 samples
+    CH0: 0 transitions
+    CH1: 0 transitions
+    CH2: 0 transitions
+    CH3: 0 transitions
+    CH4: 0 transitions
+    CH5: 0 transitions
+    CH6: 0 transitions
+    CH7: 0 transitions
+    CH8: 0 transitions
+    CH9: 0 transitions
+    CH10: 0 transitions
+    CH11: 0 transitions
+    CH12: 0 transitions
+    CH13: 0 transitions
+    CH14: 0 transitions
+    CH15: 0 transitions
+    [INFO] Noise floor debug ON: 0 total transitions
+    noise CH1: 0 transitions (max 5)
+    >>> PASS: noise CH1 clean: 0 transitions (max 5)
+    noise CH2: 0 transitions (max 5)
+    >>> PASS: noise CH2 clean: 0 transitions (max 5)
+    noise CH3: 0 transitions (max 5)
+    >>> PASS: noise CH3 clean: 0 transitions (max 5)
+    noise CH4: 0 transitions (max 5)
+    >>> PASS: noise CH4 clean: 0 transitions (max 5)
+    noise CH5: 0 transitions (max 5)
+    >>> PASS: noise CH5 clean: 0 transitions (max 5)
+    noise CH6: 0 transitions (max 5)
+    >>> PASS: noise CH6 clean: 0 transitions (max 5)
+    noise CH7: 0 transitions (max 5)
+    >>> PASS: noise CH7 clean: 0 transitions (max 5)
+    noise CH8: 0 transitions (max 5)
+    >>> PASS: noise CH8 clean: 0 transitions (max 5)
+    noise CH9: 0 transitions (max 5)
+    >>> PASS: noise CH9 clean: 0 transitions (max 5)
+    noise CH10: 0 transitions (max 5)
+    >>> PASS: noise CH10 clean: 0 transitions (max 5)
+    noise CH11: 0 transitions (max 5)
+    >>> PASS: noise CH11 clean: 0 transitions (max 5)
+    noise CH12: 0 transitions (max 5)
+    >>> PASS: noise CH12 clean: 0 transitions (max 5)
+    noise CH13: 0 transitions (max 5)
+    >>> PASS: noise CH13 clean: 0 transitions (max 5)
+    noise CH14: 0 transitions (max 5)
+    >>> PASS: noise CH14 clean: 0 transitions (max 5)
+    noise CH15: 0 transitions (max 5)
+    >>> PASS: noise CH15 clean: 0 transitions (max 5)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test15_noise_floor_debug_True.bin (2048 bytes) + .json
+  
+--- Long stress test (debug OFF + ON, ~120s total) ---
+
+  -- Long stress [CH0 debug OFF] --
+
+============================================================
+  Test 16: Long-duration stress (60 sec, rolling)
+============================================================
+  debug CH0 = False
+  running rolling capture for 60 seconds at 1 MHz, 100 ms buffer...
+    22 chunks, 45056 bytes, 5s elapsed
+    44 chunks, 90112 bytes, 10s elapsed
+    65 chunks, 133120 bytes, 15s elapsed
+    87 chunks, 178176 bytes, 20s elapsed
+    109 chunks, 223232 bytes, 25s elapsed
+    131 chunks, 268288 bytes, 30s elapsed
+    152 chunks, 311296 bytes, 35s elapsed
+    174 chunks, 356352 bytes, 40s elapsed
+    196 chunks, 401408 bytes, 45s elapsed
+    218 chunks, 446464 bytes, 50s elapsed
+    240 chunks, 491520 bytes, 55s elapsed
+    261 chunks, 534528 bytes, 60s elapsed
+  stress test: 261 chunks, 534528 total bytes, elapsed: 60.1s
+    >>> PASS: Stress test got >20 chunks (261)
+    >>> PASS: No exceptions during stress test (got: None)
+    >>> PASS: Stress test captured >2000 samples (133632)
+    stress CH0: 0 transitions (max 50)
+    >>> PASS: stress CH0 clean: 0 transitions (max 50)
+    stress CH1: 0 transitions (max 50)
+    >>> PASS: stress CH1 clean: 0 transitions (max 50)
+    stress CH2: 0 transitions (max 50)
+    >>> PASS: stress CH2 clean: 0 transitions (max 50)
+    stress CH3: 0 transitions (max 50)
+    >>> PASS: stress CH3 clean: 0 transitions (max 50)
+    stress CH4: 0 transitions (max 50)
+    >>> PASS: stress CH4 clean: 0 transitions (max 50)
+    stress CH5: 0 transitions (max 50)
+    >>> PASS: stress CH5 clean: 0 transitions (max 50)
+    stress CH6: 0 transitions (max 50)
+    >>> PASS: stress CH6 clean: 0 transitions (max 50)
+    stress CH7: 0 transitions (max 50)
+    >>> PASS: stress CH7 clean: 0 transitions (max 50)
+    stress CH8: 0 transitions (max 50)
+    >>> PASS: stress CH8 clean: 0 transitions (max 50)
+    stress CH9: 0 transitions (max 50)
+    >>> PASS: stress CH9 clean: 0 transitions (max 50)
+    stress CH10: 0 transitions (max 50)
+    >>> PASS: stress CH10 clean: 0 transitions (max 50)
+    stress CH11: 0 transitions (max 50)
+    >>> PASS: stress CH11 clean: 0 transitions (max 50)
+    stress CH12: 0 transitions (max 50)
+    >>> PASS: stress CH12 clean: 0 transitions (max 50)
+    stress CH13: 0 transitions (max 50)
+    >>> PASS: stress CH13 clean: 0 transitions (max 50)
+    stress CH14: 0 transitions (max 50)
+    >>> PASS: stress CH14 clean: 0 transitions (max 50)
+    stress CH15: 0 transitions (max 50)
+    >>> PASS: stress CH15 clean: 0 transitions (max 50)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test16_long_stress_debug_False.bin (534528 bytes) + .json
+
+  -- Long stress [CH0 debug ON] --
+
+============================================================
+  Test 16: Long-duration stress (60 sec, rolling)
+============================================================
+  debug CH0 = True
+  running rolling capture for 60 seconds at 1 MHz, 100 ms buffer...
+    22 chunks, 45056 bytes, 5s elapsed
+    44 chunks, 90112 bytes, 10s elapsed
+    66 chunks, 135168 bytes, 15s elapsed
+    88 chunks, 180224 bytes, 20s elapsed
+    109 chunks, 223232 bytes, 25s elapsed
+    131 chunks, 268288 bytes, 30s elapsed
+    153 chunks, 313344 bytes, 35s elapsed
+    175 chunks, 358400 bytes, 40s elapsed
+    196 chunks, 401408 bytes, 45s elapsed
+    218 chunks, 446464 bytes, 50s elapsed
+    240 chunks, 491520 bytes, 55s elapsed
+    262 chunks, 536576 bytes, 60s elapsed
+  stress test: 262 chunks, 536576 total bytes, elapsed: 60.2s
+    >>> PASS: Stress test got >20 chunks (262)
+    >>> PASS: No exceptions during stress test (got: None)
+    >>> PASS: Stress test captured >2000 samples (134144)
+    [INFO] Stress test CH0 debug ON: 0 transitions
+    stress CH1: 0 transitions (max 50)
+    >>> PASS: stress CH1 clean: 0 transitions (max 50)
+    stress CH2: 0 transitions (max 50)
+    >>> PASS: stress CH2 clean: 0 transitions (max 50)
+    stress CH3: 0 transitions (max 50)
+    >>> PASS: stress CH3 clean: 0 transitions (max 50)
+    stress CH4: 0 transitions (max 50)
+    >>> PASS: stress CH4 clean: 0 transitions (max 50)
+    stress CH5: 0 transitions (max 50)
+    >>> PASS: stress CH5 clean: 0 transitions (max 50)
+    stress CH6: 0 transitions (max 50)
+    >>> PASS: stress CH6 clean: 0 transitions (max 50)
+    stress CH7: 0 transitions (max 50)
+    >>> PASS: stress CH7 clean: 0 transitions (max 50)
+    stress CH8: 0 transitions (max 50)
+    >>> PASS: stress CH8 clean: 0 transitions (max 50)
+    stress CH9: 0 transitions (max 50)
+    >>> PASS: stress CH9 clean: 0 transitions (max 50)
+    stress CH10: 0 transitions (max 50)
+    >>> PASS: stress CH10 clean: 0 transitions (max 50)
+    stress CH11: 0 transitions (max 50)
+    >>> PASS: stress CH11 clean: 0 transitions (max 50)
+    stress CH12: 0 transitions (max 50)
+    >>> PASS: stress CH12 clean: 0 transitions (max 50)
+    stress CH13: 0 transitions (max 50)
+    >>> PASS: stress CH13 clean: 0 transitions (max 50)
+    stress CH14: 0 transitions (max 50)
+    >>> PASS: stress CH14 clean: 0 transitions (max 50)
+    stress CH15: 0 transitions (max 50)
+    >>> PASS: stress CH15 clean: 0 transitions (max 50)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test16_long_stress_debug_True.bin (536576 bytes) + .json
+  SPI device closed
+
+============================================================
+  RESULTS: 607/607 passed, 0 failed
+============================================================
+  ALL TESTS PASSED

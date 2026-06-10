@@ -36,6 +36,9 @@ set_global_assignment -name VHDL_FILE ../rtl/SPI_Slave.vhd
 set_global_assignment -name VHDL_FILE ../rtl/ADC_Controller.vhd
 set_global_assignment -name VHDL_FILE ../rtl/Protocol_Trigger.vhd
 set_global_assignment -name VHDL_FILE ../rtl/Signal_Gen.vhd
+# Clock constraints
+set_global_assignment -name SDC_FILE OLS_Logic_Analyzer.sdc
+
 set_global_assignment -name VHDL_FILE ../rtl/SDRAM_PLL.vhd
 set_global_assignment -name VHDL_FILE OLS_Logic_Analyzer_wrapper.vhd
 

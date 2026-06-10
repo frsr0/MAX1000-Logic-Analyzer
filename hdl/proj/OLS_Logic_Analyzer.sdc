@@ -20,3 +20,11 @@ set_clock_groups -asynchronous \
   -group { *|clk[0] } \
   -group { *|clk[1] } \
   -group { *|clk[2] }
+
+# Async FIFO internal gray-code synchronizer paths
+# The dcfifo megafunction generates these internally; they are intentional
+# CDC synchronization paths and cannot be timed at the fastest edge rate.
+set_false_path -from [get_registers *auto_generated|delayed_wrptr_g*] \
+               -to   [get_registers *auto_generated|rdemp_eq_comp*]
+set_false_path -from [get_registers *auto_generated|rdptr_g*] \
+               -to   [get_registers *auto_generated|wrfull_eq_comp*]
