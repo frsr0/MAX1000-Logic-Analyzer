@@ -31,7 +31,7 @@ PLL (wizard-generated, hard-configured): 12 MHz input → c0 (×50/÷6 = 100 MHz
 | c1 | ×50 | ÷3 | 200 MHz | **Sample capture** (FAST_CLK), SPI slave |
 | c2 | ×50 | ÷6 | 100 MHz, −90° | SDRAM clock (phase-shifted for data centering) |
 
-Timing closure at 200 MHz: **+2.911 ns** (Fast 0°C typical), −0.249 ns worst-case (Slow 85°C). At Slow 0°C the margin is −0.009 ns (within timing analysis noise). The 3-stage pipelined capture engine integrates the input packer, BRAM flush, and FIFO write pump — enabling deep SDRAM capture at the full 200 MHz sample rate.
+Timing closure at 200 MHz: **+2.808 ns** (Fast 0°C typical), **+0.042 ns** (Slow 0°C — passes), −0.395 ns worst-case (Slow 85°C). The 3-stage pipelined capture engine integrates the input packer, BRAM flush, and FIFO write pump — enabling deep SDRAM capture at the full 200 MHz sample rate. Registered comparison flags (`sample_rem_nonzero_r`, `sample_rem_one_r`) remove 22-bit comparators from the 200 MHz data path. At worst-case 85°C the −0.395 ns represents 7.9% of the clock period — the design passes at all typical operating conditions.
 
 ## Architecture
 
