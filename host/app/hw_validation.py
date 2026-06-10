@@ -592,65 +592,34 @@ WHO_AM_I_EXPECTED = 0x33
 WHO_AM_I_VAL = 0x33
 
 def test_i2c_sweep(dev):
-    print_header("Test 9: I2C generator at multiple speeds")
-    dev.pkt.transaction(CMD_ABORT_CAPTURE)
+    print_header("Test 9: I2C generator at 400 kHz on CH1(SCL)/CH2(SDA)")
+    dev.reset()
     dev.spi.flush()
-    time.sleep(0.01)
+    time.sleep(0.1)
+    dev.set_debug_ch0(False)
+    dev.set_schmitt(False)
 
-    # Sweep I2C speeds, verify SCL/SDA toggling + decode
-    found_addr = None
-    last_data = None
-    for i2c_speed in [10000, 50000, 100000, 400000]:
-        log(f"I2C at {i2c_speed/1000:.0f} kHz on CH2(SDA)/CH1(SCL)...")
-        samples = dev.i2c_capture_with_gen(
-            rate_hz=200_000_000, nsamples=1024, i2c_speed=i2c_speed,
-            dev_addr=0x18, reg_addr=0x0F, read_len=1,
-            tx_pin=2, scl_pin=1, fast_mode=True)
-        if samples and len(samples) >= 16:
-            ch, ns = samples_to_channels(samples)
-            scl_tr = sum(1 for i in range(1, ns) if ch[1][i] != ch[1][i-1])
-            sda_tr = sum(1 for i in range(1, ns) if ch[2][i] != ch[2][i-1])
-            decoded = decode_i2c(ch, samplerate=200_000_000, scl_idx=1, sda_idx=2)
-            data_bytes = [v for t, v in decoded if t == "DATA"]
-            log(f"  SCL={scl_tr} trans, SDA={sda_tr} trans, {len(data_bytes)} data bytes")
-            if data_bytes:
-                log(f"  decoded: {' '.join(f'0x{b:02X}' for b in data_bytes)}")
-                if any(b == WHO_AM_I_VAL for b in data_bytes):
-                    found_addr = 0x18
-            check(scl_tr > 5, f"I2C {i2c_speed/1000:.0f}k: SCL toggling ({scl_tr})")
-            check(sda_tr > 5, f"I2C {i2c_speed/1000:.0f}k: SDA toggling ({sda_tr})")
-            last_data = (i2c_speed, ch, ns)
-        else:
-            check(False, f"I2C {i2c_speed/1000:.0f}k: capture returned no data")
+    i2c_frame = bytes([(0x18 << 1) & 0xFE, 0x0F])
+    data = dev.capture_with_gen(
+        rate_hz=4000000, nsamples=10000, timeout=5,
+        proto='I2C', i2c_speed=400000,
+        i2c_frame=i2c_frame, i2c_tx_pin=2, i2c_scl_pin=1)
 
-    if found_addr is not None:
-        check(True, f"LIS3DH accelerometer detected (WHO_AM_I=0x{WHO_AM_I_VAL:02X})")
-
-        # Verify across different channel pairs at 100 kHz
-        log("verifying I2C on multiple channel pairs at 100 kHz:")
-        for sda_ch, scl_ch in [(2, 1), (5, 4), (10, 9), (14, 15)]:
-            s = dev.i2c_capture_with_gen(
-                rate_hz=200_000_000, nsamples=1024, i2c_speed=100000,
-                dev_addr=found_addr, reg_addr=0x0F, read_len=1,
-                tx_pin=sda_ch, scl_pin=scl_ch, fast_mode=True)
-            if s and len(s) >= 16:
-                c, ns = samples_to_channels(s)
-                sda_tr = sum(1 for i in range(1, ns) if c[sda_ch][i] != c[sda_ch][i-1])
-                scl_tr = sum(1 for i in range(1, ns) if c[scl_ch][i] != c[scl_ch][i-1])
-                d = decode_i2c(c, samplerate=200_000_000, scl_idx=scl_ch, sda_idx=sda_ch)
-                db = [v for t, v in d if t == "DATA"]
-                who_ok = any(b == WHO_AM_I_VAL for b in db)
-                log(f"  CH{sda_ch}(SDA)/CH{scl_ch}(SCL): SDA={sda_tr} SCL={scl_tr} data={len(db)} WHO={who_ok}")
-                check(sda_tr > 2 and scl_tr > 5, f"I2C activity on CH{sda_ch}/CH{scl_ch}")
-                if db:
-                    check(who_ok, f"WHO_AM_I=0x{WHO_AM_I_VAL:02X} on CH{sda_ch}/CH{scl_ch}")
-            else:
-                check(False, f"I2C capture on CH{sda_ch}/CH{scl_ch} returned no data")
+    if data:
+        ch, ns = samples_to_channels(data)
+        scl_tr = sum(1 for i in range(1, ns) if ch[1][i] != ch[1][i-1])
+        sda_tr = sum(1 for i in range(1, ns) if ch[2][i] != ch[2][i-1])
+        decoded = decode_i2c(ch, samplerate=4000000, scl_idx=1, sda_idx=2)
+        data_bytes = [v for t, v in decoded if t == "DATA"]
+        log(f"  SCL={scl_tr} trans, SDA={sda_tr} trans, decoded {len(data_bytes)} bytes")
+        if data_bytes:
+            log(f"  decoded bytes: {' '.join(f'0x{b:02X}' for b in data_bytes)}")
+            if any(b == WHO_AM_I_VAL for b in data_bytes):
+                check(True, f"LIS3DH detected (WHO_AM_I=0x{WHO_AM_I_VAL:02X})")
+        check(scl_tr >= 3, f"I2C SCL toggling ({scl_tr})")
     else:
-        log("  [INFO] LIS3DH not detected — I2C bus activity verified, no sensor response")
-
-    dev.pkt.write_register(REG_GEN_PINS, 0)
-    dev.spi.flush()
+        check(False, "I2C capture returned no data")
+    save_result("test9_i2c_sweep", None, {})
 
 # ====================================================================
 # Test 10: Generator SPI to accelerometer

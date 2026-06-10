@@ -558,53 +558,13 @@ class OLSDeviceSPI:
     def i2c_capture_with_gen(self, rate_hz=400000, nsamples=2000, timeout=6,
                               i2c_speed=100000, dev_addr=0x18, reg_addr=0x0F,
                               read_len=1, tx_pin=2, scl_pin=1, fast_mode=True):
-        self._ensure_open()
-
-        self.reset()
-        time.sleep(0.02)
-        self.spi.flush()
-
-        div = max(0, int(self.sys_clk / rate_hz) - 1)
-        rc = max(1, nsamples)
-        self.pkt.write_register(REG_DIVIDER, div & 0xFFFFFF)
-        self.pkt.write_register(REG_SAMPLE_COUNT, rc)
-        self.pkt.write_register(REG_DELAY_COUNT, rc)
-        self.pkt.write_register(REG_TRIGGER_MASK, 0)
-        self.pkt.write_register(REG_TRIGGER_VALUE, 0)
-        self.pkt.write_register(REG_FLAGS, self._raw_flags)
-        self.spi.flush()
-
-        self.pkt.write_register(REG_FAST_MODE, 1 if fast_mode else 0)
-        self.spi.flush()
-
-        dev_w = (dev_addr << 1) & 0xFE
-        dev_r = (dev_addr << 1) | 0x01
-        self._pins(tx_pin=tx_pin, scl_pin=scl_pin)
-        time.sleep(0.01)
-        self.pkt.write_register(REG_GEN_PROTO, 1)
-        i2c_div = max(1, self.sys_clk // i2c_speed // 2)
-        self.pkt.write_register(REG_GEN_BAUD, i2c_div & 0xFFFF)
-        self.pkt.load_gen_data(bytes([dev_w, reg_addr]))
-        flags = (1) | (read_len << 8) | (dev_r << 16)
-        self.pkt.write_register(REG_GEN_DATA, flags)
-        self.spi.flush()
-        time.sleep(0.01)
-
-        status = self.pkt.arm_capture()
-        if status < 0:
-            return b''
-        self.spi.flush()
-        self.pkt.load_gen_data(bytes([dev_w, reg_addr]))
-        self.pkt.transaction(CMD_GEN_START)
-        self.spi.flush()
-
-        cap_time = rc / rate_hz
-        wait = min(cap_time + 0.02, max(0.0, timeout - 0.1))
-        if wait > 0:
-            time.sleep(wait)
-
-        need = rc * 2
-        accumulated = bytearray()
+        # Delegate to capture_with_gen with proto='I2C' which uses CMD_GEN_CAPTURE
+        # and properly routes gen_capture_active to the capture mux.
+        i2c_frame = bytes([(dev_addr << 1) & 0xFE, reg_addr])
+        return self.capture_with_gen(
+            rate_hz=rate_hz, nsamples=nsamples, timeout=timeout,
+            proto='I2C', i2c_speed=i2c_speed,
+            i2c_frame=i2c_frame, i2c_tx_pin=tx_pin, i2c_scl_pin=scl_pin)
         for block_addr in range(0, need, 1024):
             block = self.pkt.read_capture_block(block_addr)
             if block:
