@@ -197,6 +197,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal packed_valid_r  : std_logic := '0';
   signal flush_raddr_r   : natural range 0 to BRAM_SIZE-1 := 0;
   signal flush_rem_r     : natural range 0 to BRAM_SIZE := 0;
+  signal fifo_wrfull_r   : std_logic := '0';
 
   component SDRAM_Interface is
   generic (
@@ -525,6 +526,15 @@ begin
       end if;
     end process;
 
+    -- Pipeline: register dcfifo wrfull before stage 3 FSM
+    -- Breaks long path from dcfifo internal comparator to sample_remaining enable
+    process(FAST_CLK)
+    begin
+      if rising_edge(FAST_CLK) then
+        fifo_wrfull_r <= fifo_wrfull;
+      end if;
+    end process;
+
     -- Stage 3: write FSM (drives all BRAM and FIFO writes from packed_word_r)
     -- Uses packed_valid_r handshake from stage 2.
     -- State 0 BRAM write pointer is tracked via stage 2's bram_wp_r/bram_cnt_r.
@@ -569,7 +579,7 @@ begin
           -- State 1: Flush BRAM to async FIFO
           elsif state_r = 1 then
             if flush_rem_r > 0 then
-              if fifo_wrfull = '0' then
+              if fifo_wrfull_r = '0' then
                 bram_raddr_f <= flush_raddr_r;
                 if flush_rem_r < bram_cnt_r then
                   fifo_wdata <= bram_rdata_f;
@@ -586,12 +596,12 @@ begin
 
           -- State 2: Live capture — push samples to async FIFO
           elsif state_r = 2 then
-            if fifo_wrfull = '0' and sample_remaining /= 0 then
+            if fifo_wrfull_r = '0' and sample_remaining /= 0 then
               fifo_wdata <= packed_word_r;
               fifo_wr <= '1';
               sample_remaining <= sample_remaining - 1;
             end if;
-            if fifo_wrfull = '1' or sample_remaining <= 1 then
+            if fifo_wrfull_r = '1' or sample_remaining <= 1 then
               fifo_overflow_f <= '1';
             end if;
           end if;
