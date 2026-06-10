@@ -99,6 +99,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL gen_i2c_dev_r_i     : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL gen_i2c_test_i      : STD_LOGIC := '0';
   SIGNAL gen_spi_test_i      : STD_LOGIC := '0';
+  attribute preserve : boolean;
+  attribute preserve of gen_i2c_test_i : signal is true;
+  attribute preserve of gen_spi_test_i : signal is true;
   SIGNAL armed_i             : STD_LOGIC := '0';
   SIGNAL fast_mode_i         : STD_LOGIC := '0';
   SIGNAL continuous_mode_i   : STD_LOGIC := '0';

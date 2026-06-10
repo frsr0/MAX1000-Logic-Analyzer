@@ -372,12 +372,11 @@ BEGIN
     PMOD(i) <= pin_out(15+i) when pin_dir(15+i) = '1' else 'Z';
   end generate;
 
+  -- SEN_CS is output-only (always driven, never high-Z)
   SEN_CS <= '0' when gen_spi_test = '1' and gen_busy = '1' else '1';
-
-  SEN_SDI <= gen_tx when gen_spi_test = '1' and gen_busy = '1' else
-             '0' when gen_i2c_test = '1' and gen_busy = '1' and gen_tx = '0' else 'Z';
-  SEN_SPC <= gen_scl when gen_spi_test = '1' and gen_busy = '1' else
-             '0' when gen_i2c_test = '1' and gen_busy = '1' and gen_scl = '0' else 'Z';
+  -- SEN_SDI/SEN_SPC: bidirectional (registered via pin_out/pin_dir like MKR_D/PMOD)
+  SEN_SDI <= pin_out(24) when pin_dir(24) = '1' else 'Z';
+  SEN_SPC <= pin_out(25) when pin_dir(25) = '1' else 'Z';
 
   -- Registered capture mux: uses gen_tx_d2 (2-cycle loopback pipeline) and
   -- gen_capture_active.  Combining mux + register eliminates the combinational
@@ -467,6 +466,24 @@ BEGIN
           if gen_scl_pin < PIN_POOL_SIZE then
             pin_out(gen_scl_pin) <= gen_scl;
             pin_dir(gen_scl_pin) <= '1';
+          end if;
+        end if;
+        -- Drive physical SEN_SDI(24)/SEN_SPC(25) in generator test mode
+        if gen_spi_test = '1' then
+          pin_out(24) <= gen_tx;
+          pin_dir(24) <= '1';
+          pin_out(25) <= gen_scl;
+          pin_dir(25) <= '1';
+        elsif gen_i2c_test = '1' then
+          -- Open-drain SDA: drive low only, release for high (external pull-up)
+          if gen_tx = '0' then
+            pin_out(24) <= '0';
+            pin_dir(24) <= '1';
+          end if;
+          -- Open-drain SCL: drive low only, release for high
+          if gen_scl = '0' then
+            pin_out(25) <= '0';
+            pin_dir(25) <= '1';
           end if;
         end if;
       end if;

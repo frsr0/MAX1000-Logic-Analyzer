@@ -70,6 +70,8 @@ architecture bench of tb_top is
   signal gen_start_probe   : std_logic;
   signal gen_active_probe  : std_logic;
   signal gen_fifo_count_probe : std_logic_vector(7 downto 0);
+  signal gen_i2c_test_probe  : std_logic;
+  signal gen_spi_test_probe  : std_logic;
 
   -- Flatten first N bytes of a byte_array into a std_logic_vector (LSB-first byte order)
   function flatten(b : byte_array; n : natural) return std_logic_vector is
@@ -251,6 +253,8 @@ begin
   gen_start_probe   <= << signal .tb_top.DUT.gen_start : std_logic >>;
   gen_active_probe  <= << signal .tb_top.DUT.gen_active : std_logic >>;
   gen_fifo_count_probe <= << signal .tb_top.DUT.gen_fifo_count : std_logic_vector(7 downto 0) >>;
+  gen_i2c_test_probe  <= << signal .tb_top.DUT.gen_i2c_test : std_logic >>;
+  gen_spi_test_probe  <= << signal .tb_top.DUT.gen_spi_test : std_logic >>;
 
   -- Pull-ups on I2C bus
   sen_sdi <= sen_sdi_pu;
@@ -443,6 +447,73 @@ begin
     end loop;
 
     report "Test 2: PASS (UART loopback verified on all pins 0-15)";
+
+    ------------------------------------------------------------------
+    -- Test 3: I2C generator drives SEN_SDI/SEN_SPC via pin_out/pin_dir
+    ------------------------------------------------------------------
+    report "Test 3: I2C generator drive on SEN_SDI/SEN_SPC";
+
+    -- Clear flags
+    spi_write_reg(spi_cs, sck, spi_mosi, spi_miso, SPI_HALF,
+                  REG_GEN_DATA, x"00000000", st);
+    check(st = ST_OK, "FAIL: clear gen flags");
+
+    -- Set Proto=1 (I2C)
+    spi_write_reg8(spi_cs, sck, spi_mosi, spi_miso, SPI_HALF,
+                   REG_GEN_PROTO, x"01", st);
+    check(st = ST_OK, "FAIL: set I2C proto");
+
+    -- Set baud for ~400kHz I2C
+    spi_write_reg(spi_cs, sck, spi_mosi, spi_miso, SPI_HALF,
+                  REG_GEN_BAUD, std_logic_vector(to_unsigned(SYS_CLK_FREQ / 400000 / 2, 32)), st);
+    check(st = ST_OK, "FAIL: set I2C baud");
+
+    -- Load data byte 0x30 into FIFO (bits 31:8 = 0 → FIFO load, not mode write)
+    spi_write_reg(spi_cs, sck, spi_mosi, spi_miso, SPI_HALF,
+                  REG_GEN_DATA, x"00000030", st);
+    check(st = ST_OK, "FAIL: load byte 0x30");
+
+    -- Set I2C test mode: i2c_rd_len=1, gen_i2c_test=1
+    -- Value 0x00000101: bits 15:8 = 1 (i2c_rd_len), bit 0 = 1 (i2c_test)
+    spi_write_reg(spi_cs, sck, spi_mosi, spi_miso, SPI_HALF,
+                  REG_GEN_DATA, x"00000101", st);
+    check(st = ST_OK, "FAIL: set I2C test mode");
+
+    -- Verify gen_i2c_test propagated through hierarchy
+    wait_cycles(sys_clk_probe, 4);
+    check(gen_i2c_test_probe = '1', "FAIL: gen_i2c_test not set after REG_GEN_DATA write");
+
+    -- Start I2C generator capture
+    spi_pkt_send(spi_cs, sck, spi_mosi, spi_miso, SPI_HALF,
+                 CMD_GEN_CAPTURE, byte_array'(0 => x"00"), 1);
+
+    -- Wait for gen_busy to assert
+    wait until gen_busy_probe = '1' for 50 us;
+    check(gen_busy_probe = '1', "FAIL: gen_busy not asserted in I2C mode");
+
+    -- Verify physical pins are driven
+    wait_cycles(sys_clk_probe, 20);
+    check(sen_sdi = '0' or sen_sdi = 'L',
+          "FAIL: SEN_SDI not driven low during I2C test");
+    check(sen_spc = '0' or sen_spc = 'L',
+          "FAIL: SEN_SPC not driven low during I2C test");
+
+    -- Wait for transaction to complete
+    wait until gen_busy_probe = '0' for 10 ms;
+    check(gen_busy_probe = '0', "FAIL: gen_busy not deasserted after I2C");
+
+    -- Verify pins released (pin_dir=0 → 'Z', pulled to 'H' by sen_sdi_pu/sen_spc_pu)
+    wait_cycles(sys_clk_probe, 4);
+    check(sen_sdi = 'H' or sen_sdi = '1',
+          "FAIL: SEN_SDI not released after I2C");
+    check(sen_spc = 'H' or sen_spc = '1',
+          "FAIL: SEN_SPC not released after I2C");
+
+    -- Verify gen_i2c_test still set after transaction
+    check(gen_i2c_test_probe = '1',
+          "FAIL: gen_i2c_test cleared after I2C transaction");
+
+    report "Test 3: PASS (I2C generator drive verified on SEN_SDI/SEN_SPC)";
 
     report "======================================================";
     report "  ALL TOP-LEVEL TESTS PASSED";

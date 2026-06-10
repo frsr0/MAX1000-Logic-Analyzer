@@ -21,6 +21,10 @@ Main application. Two modes:
 
 **CLI mode** (`--cli`): argparse-driven headless capture, decode, and send commands.
 
+### `app/gui_decoders.py`
+
+Protocol decoders: UART, I2C (midpoint SDA sampling, all 11 capture rates), SPI, Modbus. I2C decoder samples SDA at midpoint of SCL high phase and decodes consecutive bytes without needing repeated START markers.
+
 ### `app/hw_validation.py`
 
 Hardware validation suite — 12 tests: SPI handshake, all commands, single/fast/continuous capture, edge trigger, UART/I2C/SPI generator, divider accuracy, 23-channel capture, Analog4 mode, debug CH0 toggle. Results saved as JSON.
@@ -56,16 +60,16 @@ EEPROM backup, FT_Prog config, driver recovery, `recover.ps1`.
 
 ## Tests
 
-### `tests/` (4 files, 123 tests)
+### `tests/` (4 files, 182 tests)
 
 | File | Tests | Coverage |
 |------|-------|----------|
 | `test_ols_console_gui.py` | 57 | GUI, zoom/pan, analog, decoders, export |
-| `test_decoders.py` | 50 | glitch_filter, decode_uart/i2c/spi/modbus |
-| `test_analog_decode.py` | 4 | decode_analog_frames stride/unpack |
+| `test_decoders.py` | 56 | glitch_filter, decode_uart/i2c/spi/modbus |
+| `test_analog_decode.py` | 7 | decode_analog_frames stride/unpack |
 | `test_hw_validation_helpers.py` | 12 | log/check formatting |
 
-### `driver/tests/` (4 files, 144 tests)
+### `driver/tests/` (4 files, 146 tests)
 
 | File | Tests | Coverage |
 |------|-------|----------|
@@ -74,9 +78,9 @@ EEPROM backup, FT_Prog config, driver recovery, `recover.ps1`.
 | `test_ols_spi_mpsse.py` | 12 | Init, spi_transfer |
 | `test_ols_spi_pyftdi.py` | 15 | Port, controller, frequency→delay |
 
-**Total: 267 tests.**
+**Total: 328 tests.**
 
-Run: `python -m pytest host/tests/ host/driver/tests/ -v`
+Run: `python -m pytest tests/ driver/tests/ -v`
 
 ---
 

@@ -288,12 +288,125 @@ class TestDecodeI2C:
         ch = [scl, sda]
         decode_i2c(ch, 1000000, scl_idx=0, sda_idx=1, filter_threshold=3)
 
-    def test_with_sda_offset(self):
-        scl, sda = make_i2c_signal(b'\x30')
+    def test_with_sda_offset_changes_result(self):
+        scl, sda = make_i2c_signal_at_rate(b'\x30\x0F', spb=20)
         ch = [scl, sda]
-        result = decode_i2c(ch, 1000000, scl_idx=0, sda_idx=1, sda_offset=1)
+        result_base = decode_i2c(ch, 1000000, scl_idx=0, sda_idx=1)
+        result_offset = decode_i2c(ch, 1000000, scl_idx=0, sda_idx=1, sda_offset=-5)
+        data_base = [r for r in result_base if r[0] == "DATA"]
+        data_offset = [r for r in result_offset if r[0] == "DATA"]
+        assert data_base == data_offset, "sda_offset should not change result with ideal signal"
+
+    def test_midpoint_sampling_with_late_sda(self):
+        scl, sda = make_i2c_signal_at_rate(b'\x30\x0F', spb=20, transition_late=2)
+        ch = [scl, sda]
+        result = decode_i2c(ch, 1000000, scl_idx=0, sda_idx=1)
+        data_items = [r for r in result if r[0] == "DATA"]
+        assert len(data_items) >= 2
+        assert data_items[0][1] == 0x30, f"Expected 0x30, got 0x{data_items[0][1]:02X}"
+        assert data_items[1][1] == 0x0F, f"Expected 0x0F, got 0x{data_items[1][1]:02X}"
+
+    def test_midpoint_sampling_with_edge_sda(self):
+        scl, sda = make_i2c_signal_at_rate(b'\x3C', spb=10, transition_late=4)
+        ch = [scl, sda]
+        result = decode_i2c(ch, 1000000, scl_idx=0, sda_idx=1)
         data_items = [r for r in result if r[0] == "DATA"]
         assert len(data_items) >= 1
+        assert data_items[0][1] == 0x3C, f"Expected 0x3C, got 0x{data_items[0][1]:02X}"
+
+
+def make_i2c_signal_at_rate(data_bytes, spb=SPB, transition_late=0):
+    """
+    Generate I2C SCL/SDA signals with configurable samples-per-bit.
+    The START condition places SCL 0→1 and SDA 1→0 at the same sample,
+    giving the decoder a clean edge to detect.
+    transition_late>0 delays SDA past the rising edge (tests midpoint sampling).
+    """
+    scl, sda = [], []
+    # Idle: both high
+    scl += [1] * spb
+    sda += [1] * spb
+    # START: SCL 0→1 + SDA 1→0 at the same sample
+    scl += [0, 1] + [1] * max(0, spb - 2)
+    sda += [1, 0] + [0] * max(0, spb - 2)
+    for byte in data_bytes:
+        for b in range(8):
+            bit = (byte >> (7 - b)) & 1
+            scl += [0] * spb
+            sda += [bit] * spb
+            if transition_late > 0:
+                prev_bit = (byte >> (7 - b + 1)) & 1 if b > 0 else bit
+                late = min(transition_late, spb)
+                scl += [1] * spb
+                sda += [prev_bit] * late + [bit] * (spb - late)
+            else:
+                scl += [1] * spb
+                sda += [bit] * spb
+        scl += [0] * spb
+        sda += [0] * spb
+        scl += [1] * spb
+        sda += [0] * spb
+    # STOP: SDA 0→1 at the SCL rising edge boundary
+    scl += [0] * spb
+    sda += [0] * spb
+    # SCL high: SDA=1 from the first sample (transition at the rising edge)
+    scl += [1] * spb
+    sda += [1] * spb
+    return [scl, sda]
+
+
+class TestDecodeI2CAtRates:
+    CAP_RATES = [500000, 1000000, 2000000, 4000000, 8000000, 16000000,
+                 32000000, 48000000, 80000000, 100000000, 200000000]
+    I2C_SPEED = 400000
+
+    def _spb(self, cap_rate):
+        return max(2, round(cap_rate / self.I2C_SPEED))
+
+    def test_decode_at_all_rates(self):
+        for cap_rate in self.CAP_RATES:
+            spb = self._spb(cap_rate)
+            scl, sda = make_i2c_signal_at_rate(b'\x30\x0F', spb=spb)
+            ch = [scl, sda]
+            result = decode_i2c(ch, cap_rate, scl_idx=0, sda_idx=1)
+            data_items = [r for r in result if r[0] == "DATA"]
+            assert len(data_items) >= 2, \
+                f"Rate {cap_rate/1e6:.3g} MHz (spb={spb}): expected >=2 bytes, got {len(data_items)}"
+            assert data_items[0][1] == 0x30, \
+                f"Rate {cap_rate/1e6:.3g} MHz: expected 0x30, got 0x{data_items[0][1]:02X}"
+            assert data_items[1][1] == 0x0F, \
+                f"Rate {cap_rate/1e6:.3g} MHz: expected 0x0F, got 0x{data_items[1][1]:02X}"
+
+    def test_midpoint_with_late_transition(self):
+        for cap_rate in [2000000, 4000000, 8000000, 16000000]:
+            spb = round(cap_rate / self.I2C_SPEED)
+            late = spb // 4
+            scl, sda = make_i2c_signal_at_rate(b'\x3C', spb=spb, transition_late=late)
+            ch = [scl, sda]
+            result = decode_i2c(ch, cap_rate, scl_idx=0, sda_idx=1)
+            data_items = [r for r in result if r[0] == "DATA"]
+            assert len(data_items) >= 1, \
+                f"Rate {cap_rate/1e6:.3g} MHz (spb={spb}, late={late}): no data"
+            assert data_items[0][1] == 0x3C, \
+                f"Rate {cap_rate/1e6:.3g} MHz: expected 0x3C, got 0x{data_items[0][1]:02X}"
+
+    def test_start_detected_at_all_rates(self):
+        for cap_rate in self.CAP_RATES:
+            spb = self._spb(cap_rate)
+            scl, sda = make_i2c_signal_at_rate(b'\x30', spb=spb)
+            ch = [scl, sda]
+            result = decode_i2c(ch, cap_rate, scl_idx=0, sda_idx=1)
+            starts = sum(1 for t, v in result if t == "START")
+            assert starts >= 1, f"Rate {cap_rate/1e6:.3g} MHz: no START detected"
+
+    def test_stop_detected_at_all_rates(self):
+        for cap_rate in self.CAP_RATES:
+            spb = self._spb(cap_rate)
+            scl, sda = make_i2c_signal_at_rate(b'\x30', spb=spb)
+            ch = [scl, sda]
+            result = decode_i2c(ch, cap_rate, scl_idx=0, sda_idx=1)
+            stops = sum(1 for t, v in result if t == "STOP")
+            assert stops >= 1, f"Rate {cap_rate/1e6:.3g} MHz: no STOP detected"
 
 
 class TestDecodeSPI:

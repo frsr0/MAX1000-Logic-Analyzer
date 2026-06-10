@@ -2,7 +2,19 @@
 
 ## Architecture Overview
 
-Target: Intel MAX10 10M08SAU169C8G on Arrow MAX1000 board. PLL multiplies 12 MHz input to three clock domains:
+Target: Intel MAX10 10M08SAU169C8G on Arrow MAX1000 board. PLL multiplies 12 MHz input to three clock domains. The FPGA has two build modes selected by `FAST_SPEED` generic in the wrapper:
+
+### Speed mode (FAST_SPEED=true, current build)
+
+| Output | Multiply | Divide | Frequency | Domain |
+|--------|----------|--------|-----------|--------|
+| c0 | ×50 | ÷6 | 100 MHz | SDRAM write pump, buffer mgmt, readout, OLS protocol |
+| c1 | ×50 | ÷3 | 200 MHz | **Sample capture** (FAST_CLK), SPI slave |
+| c2 | ×50 | ÷6 | 100 MHz, −90° | SDRAM clock (phase-shifted for data centering) |
+
+VCO = 600 MHz. Timing closure: +0.097 ns at 200 MHz (Slow 85°C worst corner).
+
+### Normal mode (FAST_SPEED=false)
 
 | Output | Multiply | Frequency | Domain |
 |--------|----------|-----------|--------|
@@ -10,12 +22,12 @@ Target: Intel MAX10 10M08SAU169C8G on Arrow MAX1000 board. PLL multiplies 12 MHz
 | c1 | ×10 | 120 MHz | **Sample capture** (FAST_CLK), SPI slave |
 | c2 | ×8 | 96 MHz, −90° | SDRAM clock (phase-shifted for data centering) |
 
-VCO = 480 MHz. System frequency: `12_000_000 * PLL_MULT / PLL_DIV` (defaults 8/1 → 96 MHz).
+Set `FAST_SPEED => false` in `OLS_Logic_Analyzer_wrapper.vhd` for normal mode. The PLL megafunction must be regenerated for different multiply/divide values.
 
 ### Two-Clock Domain Split
 
 ```
-FAST_CLK (120 MHz, c1)                   CLK (96 MHz, c0)
+FAST_CLK (200 / 120 MHz, c1)             CLK (100 / 96 MHz, c0)
 ┌────────────────────────────┐          ┌───────────────────────────┐
 │ sample divider (28-bit)    │          │ async FIFO read (dcfifo)  │
 │ input packer (16→16-bit)   │──4096──▶│ SDRAM address assignment  │
@@ -29,6 +41,9 @@ FAST_CLK (120 MHz, c1)                   CLK (96 MHz, c0)
 ```
 
 CDC: async FIFO (dcfifo) for sample data, 2FF + toggle synchronizers for config/control. ADC runs independently on sys_clk.
+
+Speed mode (200 MHz): 4-stage pipeline — sample pins → control decode → rate divider → BRAM/FIFO write.
+Normal mode (120 MHz): single-cycle capture FSM with variable packing.
 
 ### Top-down hierarchy
 
@@ -57,7 +72,7 @@ OLS_Logic_Analyzer_wrapper      — pin assignment wrapper (auto-generated from 
 
 Capture engine with two-clock domain split.
 
-**FAST_CLK (120 MHz) processes:**
+**FAST_CLK (200 / 120 MHz) processes:**
 - **Config handshake**: Detects `cfg_valid_edge` (toggled by CLK domain on run start), latches `cfg_rate_div_f` and `cfg_samples_f`, acks via `cfg_ack_toggle`
 - **Sample divider**: 28-bit down-counter, fires every `cfg_rate_div_f` cycles
 - **Input packer**: Shifts 16 channel bits into 32-bit buffer, assembles 16-bit words
@@ -65,7 +80,7 @@ Capture engine with two-clock domain split.
 - **Async FIFO push**: Post-trigger, pushes 16-bit words to dcfifo (4,096 depth). Sets overflow on FIFO full or sample count reached
 - **Snapshot CDC**: Toggle synchronizer for BRAM snapshot → CLK domain
 
-**CLK (96 MHz) processes:**
+**CLK (100 / 96 MHz) processes:**
 - **BRAM read port**: Synchronous read on pclk
 - **BRAM snapshot latch**: On `snap_valid_clk`, latches `bram_wp_snap`/`bram_cnt_snap` (2FF CDC)
 - **BRAM flush**: After run_edge, reads pre-trigger data from BRAM using frozen snapshot, writes to SDRAM
@@ -74,29 +89,29 @@ Capture engine with two-clock domain split.
 - **Readout**: Address-driven SDRAM reads → `Outputs`
 - **Full detection**: Asserts `full_i` when buffer exhausted + FIFO empty + flush complete
 
-### `rtl/OLS_SDRAM_Top.vhd` (~670 lines)
+### `rtl/OLS_SDRAM_Top.vhd` (~870 lines)
 
 **Entity:** `OLS_SDRAM_Top`
 
-System integration. Instantiates `SDRAM_PLL`, distributes clocks. 23-pin pool (MKR_D[14:0] + PMOD[7:0]) mapped to 16 LA channels via programmable `pin_map`. Capture mux with generator loopback priority. ADC interface with 8 channels, 128-bit analog frame. Simplified capture mode: `analog_mode(0)` toggles mixed digital+analog.
+System integration. Instantiates `SDRAM_PLL`, distributes clocks. 26-pin pool (MKR_D[14:0] + PMOD[7:0] + SEN_SDI/SPC/SDO/CS). SEN_SDI and SEN_SPC use registered `pin_out`/`pin_dir` open-drain drive. 16 LA channels via programmable `pin_map`. Capture mux with generator loopback priority. ADC interface with 8 channels, 128-bit analog frame.
 
-### `rtl/OLS_Logic_Analyzer_SDRAM_Core.vhd` (298 lines)
+### `rtl/OLS_Logic_Analyzer_SDRAM_Core.vhd` (314 lines)
 
 **Entity:** `OLS_Logic_Analyzer`
 
 Core wrapper. Instantiates `OLS_Interface`, `Fast_Logic_Analyzer_SDRAM`, `Signal_Gen`, `Protocol_Trigger`, `SPI_Slave2`. Routes triple-buffer handshake signals.
 
-### `rtl/OLS_Interface.vhd` (~1,172 lines)
+### `rtl/OLS_Interface.vhd` (~1,200 lines)
 
 **Entity:** `OLS_Interface`
 
-Command/control interface. 28 opcodes covering register access, capture control, generator, diagnostics. Thread38/Thread44/Thread23 FSMs. `ID = 0x31414c53` ("SLA1").
+Command/control interface. 28 opcodes covering register access, capture control, generator, diagnostics. Thread38/Thread44/Thread23 FSMs. `ID = 0x31414c53` ("SLA1"). Synthesis `preserve` attributes on generator start chain and I2C/SPI test mode signals prevent optimization.
 
 ### `rtl/SPI_Slave2.vhd` (165 lines)
 
 **Entity:** `SPI_Slave2`
 
-Full-duplex SPI slave on `fast_clk` (120 MHz). CDC: 2FF for config (96→120 MHz), 3FF for RX valid (120→96 MHz). Preamble byte loaded at CS falling edge — first MISO byte is status with zero protocol waste.
+Full-duplex SPI slave on `fast_clk` (200 / 120 MHz). CDC: 2FF for config (sys→fast), 3FF for RX valid (fast→sys). Preamble byte loaded at CS falling edge — first MISO byte is status with zero protocol waste.
 
 ### `rtl/SDRAM_Interface.vhd` (191 lines)
 
@@ -114,13 +129,13 @@ Custom SDRAM controller: power-on init, read, write, burst (4-word), auto-refres
 
 **Entity:** `SDRAM_PLL`
 
-Altera ALTPLL. 12 MHz input → c0 (×8, 96 MHz), c1 (×10, 120 MHz), c2 (×8, 96 MHz, −90°). Auto bandwidth.
+Altera ALTPLL (wizard-generated). 12 MHz input → c0 (×50/÷6 = 100 MHz), c1 (×50/÷3 = 200 MHz), c2 (×50/÷6, −90° for SDRAM). For normal mode the PLL must be regenerated with ×8/×10 ratios. Auto bandwidth, VCO = 600 MHz.
 
 ### `rtl/ADC_Controller.vhd` (283 lines)
 
 **Entity:** `ADC_Controller`
 
-MAX10 internal ADC controller, **8 channels** (ch0–ch7). State machine: INIT→IDLE→SEND_CMD→WAIT_RSP→DONE. Sequentially scans requested channels. ADC clock: 6.9 MHz (divider=13 from 96 MHz sys_clk).
+MAX10 internal ADC controller, **8 channels** (ch0–ch7). State machine: INIT→IDLE→SEND_CMD→WAIT_RSP→DONE. Sequentially scans requested channels. ADC clock: ~6.9 MHz (divider=13 from 100 MHz sys_clk in speed mode, 96 MHz in normal mode → 7.15–7.38 MHz actual).
 
 ### `rtl/LED_Controller.vhd` (~400 lines)
 
@@ -128,11 +143,11 @@ MAX10 internal ADC controller, **8 channels** (ch0–ch7). State machine: INIT�
 
 8-LED animation engine with input pipeline registers and `r_speed` pipeline (breaks multiply/divide chain in rolling animation). States: idle (breathing), host confirm, armed (rapid pulse), single capture (flash), continuous (rolling with FIFO activity).
 
-### `rtl/Signal_Gen.vhd` (441 lines)
+### `rtl/Signal_Gen.vhd` (479 lines)
 
 **Entity:** `Signal_Gen`
 
-Configurable generator (UART/I2C/SPI) with 256-byte FIFO. CRC-16 append option.
+Configurable generator (UART/I2C/SPI) with 256-byte FIFO and CRC-16 append option. I2C master FSM handles write and read phases with open-drain SDA/SCL drive.
 
 ### `rtl/Protocol_Trigger.vhd` (87 lines)
 
@@ -155,7 +170,7 @@ Build automation:
 
 ### `proj/OLS_Logic_Analyzer.sdc`
 
-Timing constraints: 12 MHz input clock, `derive_pll_clocks`, CDC false paths between c0 and c1, LED controller multicycle path (1M cycles). No other multicycle constraints on the capture path.
+Timing constraints: 12 MHz input clock, `derive_pll_clocks`, `derive_clock_uncertainty`. CDC false paths between all three PLL outputs via `set_clock_groups -asynchronous`. Async FIFO gray-code CDC false paths for the dcfifo megafunction. No multicycle constraints on the capture path.
 
 ---
 
@@ -172,6 +187,8 @@ ghdl -r --std=08 <testbench> --assert-level=failure
 
 | Testbench | Lines | Coverage |
 |-----------|-------|----------|
+| `tb_top` | 458 | **Full end-to-end**: PLL lock, clock path, packet protocol, debug CH0, UART loopback on all pins 0–15, **I2C generator drive on SEN_SDI/SEN_SPC** |
+| `tb_core` | — | Core integration with signal generator |
 | `tb_ols_interface` | 467 | All opcodes, trigger, gen control, readout |
 | `tb_capture_path` | 227 | sample_en timing, BRAM write, Full, CH0 |
 | `tb_continuous` | 92 | Buffer fill/ack/refill |

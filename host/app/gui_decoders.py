@@ -111,41 +111,54 @@ def decode_i2c(ch, samplerate, scl_idx=2, sda_idx=3, filter_threshold=0, sda_off
     if filter_threshold > 0:
         scl = glitch_filter(scl, filter_threshold)
         sda = glitch_filter(sda, filter_threshold)
-    # Find all SCL rising edges once — clean separation from data sampling
+    # Find SCL rising edges and falling edges
     rising_edges = [i for i in range(1, len(scl)) if scl[i - 1] == 0 and scl[i] == 1]
+    falling_edges = [i for i in range(1, len(scl)) if scl[i - 1] == 1 and scl[i] == 0]
+    # Build midpoint map: for each rising edge, find midpoint of SCL high
+    scl_mid = {}
+    fe = 0
+    for ri in rising_edges:
+        while fe < len(falling_edges) and falling_edges[fe] <= ri:
+            fe += 1
+        if fe < len(falling_edges):
+            scl_mid[ri] = (ri + falling_edges[fe]) // 2 + sda_offset
+        else:
+            scl_mid[ri] = ri + sda_offset
+    def sda_at(ri):
+        pos = scl_mid.get(ri, ri + sda_offset)
+        return sda[max(0, min(pos, len(sda) - 1))]
     result = []
     ei = 0
     while ei < len(rising_edges):
         ri = rising_edges[ei]
-        # Check for START: SDA falling while SCL is high.
-        # SDA↓ must happen within this SCL high phase (before next rising edge).
+        # Check for START: SDA falling while SCL high
         if ri > 0 and sda[ri] == 0 and sda[ri - 1] == 1:
             if not result or result[-1][0] != "START":
                 result.append(("START", None))
-        # Byte decode: read 8 SDA values at consecutive SCL rising edges
-        if result and result[-1][0] == "START":
-            byte = 0
-            bit_ok = True
-            for b in range(8):
-                if ei >= len(rising_edges):
-                    bit_ok = False
-                    break
-                byte = (byte << 1) | (1 if sda[rising_edges[ei]] else 0)
-                ei += 1
-            # After 8 bits, check for ACK at the 9th SCL edge
-            if bit_ok:
-                if ei < len(rising_edges):
-                    ei += 1  # skip ACK edge
+            ei += 1  # skip START edge, next edge is first data bit
+            continue
+        # Decode a byte (8 data + 1 ACK) when ready
+        if result and result[-1][0] in ("START", "DATA"):
+            if ei + 9 <= len(rising_edges):
+                byte = 0
+                for b in range(8):
+                    byte = (byte << 1) | (1 if sda_at(rising_edges[ei + b]) else 0)
+                ack_ri = rising_edges[ei + 8]
+                is_stop = ack_ri > 0 and sda[ack_ri] == 1 and sda[ack_ri - 1] == 0
+                is_rstart = ack_ri > 0 and sda[ack_ri] == 0 and sda[ack_ri - 1] == 1
+                ei += 9
                 result.append(("DATA", byte))
-        elif result and result[-1][0] == "DATA":
-            # Check for STOP: SDA rising while SCL is high.
-            # SDA↑ detected at current SCL high phase.
-            if ri > 0 and sda[ri] == 1 and sda[ri - 1] == 0:
-                result.append(("STOP", None))
-            # Check for repeated START: SDA falling while SCL high
-            elif ri > 0 and sda[ri] == 0 and sda[ri - 1] == 1:
-                result.append(("START", None))
-                continue  # don't advance ei — start bit already at this edge
+                if is_stop:
+                    result.append(("STOP", None))
+                elif is_rstart:
+                    result.append(("START", None))
+                continue
+            # Not enough edges for another byte — fall through to STOP check
+        # Check for STOP
+        if ri > 0 and sda[ri] == 1 and sda[ri - 1] == 0:
+            result.append(("STOP", None))
+            ei += 1
+            continue
         ei += 1
     return result
 

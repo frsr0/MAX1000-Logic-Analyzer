@@ -150,6 +150,10 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   attribute preserve of gen_start_cnt : signal is true;
   attribute preserve of gen_load_cnt : signal is true;
   attribute preserve of gen_start_req : signal is true;
+  attribute preserve of gen_i2c_test_int : signal is true;
+  attribute preserve of gen_spi_test_int : signal is true;
+  attribute preserve of gen_tx_pin_int : signal is true;
+  attribute preserve of gen_scl_pin_int : signal is true;
 
   -- SPI packet protocol signals (streaming architecture — no wide payload buses)
   SIGNAL spi_cs_rise      : STD_LOGIC := '0';

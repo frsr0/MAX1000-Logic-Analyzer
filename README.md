@@ -25,21 +25,21 @@ Open-source multi-channel logic analyzer for the Arrow MAX1000 board (Intel MAX1
 
 ### Speed mode (FAST_SPEED=true, current build)
 
-| Output | Multiply | Frequency | Domain |
-|--------|----------|-----------|--------|
-| c0 | ×8.33 | 100 MHz | SDRAM write pump, buffer mgmt, readout, OLS protocol, LED PWM |
-| c1 | ×16.67 | 200 MHz | **Sample capture** (FAST_CLK), SPI slave |
-| c2 | ×8.33 | 100 MHz, −90° | SDRAM clock (phase-shifted for data centering) |
+| Output | Multiply | Divide | Frequency | Domain |
+|--------|----------|--------|-----------|--------|
+| c0 | ×50 | ÷6 | 100 MHz | SDRAM write pump, buffer mgmt, readout, OLS protocol, LED PWM |
+| c1 | ×50 | ÷3 | 200 MHz | **Sample capture** (FAST_CLK), SPI slave |
+| c2 | ×50 | ÷6 | 100 MHz, −90° | SDRAM clock (phase-shifted for data centering) |
 
-All PLL outputs from 12 MHz input, VCO = 480 MHz. Timing closure: **+0.238 ns** slack at 200 MHz (Slow 85C worst corner), Fmax = 204 MHz.
+All PLL outputs from 12 MHz input, VCO = 600 MHz. Timing closure: **+0.097 ns** slack at 200 MHz (Slow 85°C worst corner), Fmax = 204 MHz. All hold, recovery, removal, and minimum pulse width margins positive.
 
 ### Normal mode (FAST_SPEED=false)
 
-| Output | Multiply | Frequency | Domain |
-|--------|----------|-----------|--------|
-| c0 | ×8 | 96 MHz | SDRAM write pump, buffer mgmt, readout, OLS protocol |
-| c1 | ×10 | 120 MHz | **Sample capture** (FAST_CLK), SPI slave |
-| c2 | ×8 | 96 MHz, −90° | SDRAM clock (phase-shifted for data centering) |
+| Output | Multiply | Divide | Frequency | Domain |
+|--------|----------|--------|-----------|--------|
+| c0 | ×8 | ÷1 | 96 MHz | SDRAM write pump, buffer mgmt, readout, OLS protocol |
+| c1 | ×10 | ÷1 | 120 MHz | **Sample capture** (FAST_CLK), SPI slave |
+| c2 | ×8 | ÷1 | 96 MHz, −90° | SDRAM clock (phase-shifted for data centering) |
 
 Set `FAST_SPEED => false` in `hdl/proj/OLS_Logic_Analyzer_wrapper.vhd` for normal mode. The PLL megafunction must be regenerated for different multiply/divide values.
 
@@ -259,20 +259,20 @@ Set `FAST_SPEED => true` (speed mode, 100/200 MHz) or `false` (normal, 96/120 MH
 
 ### Build modes
 
-| Mode | FAST_SPEED | Sys_clk | FAST_CLK | Timing slack |
-|------|-----------|---------|----------|-------------|
-| Speed | `true` | 100 MHz | 200 MHz | **+0.238 ns** (Slow 85C) |
-| Normal | `false` | 96 MHz | 120 MHz | +0.099 ns* |
+| Mode | FAST_SPEED | Sys_clk | FAST_CLK | Timing slack | Fmax |
+|------|-----------|---------|----------|-------------|------|
+| Speed | `true` | 100 MHz | 200 MHz | **+0.097 ns** (Slow 85°C) | 204 MHz |
+| Normal | `false` | 96 MHz | 120 MHz | +0.447 ns (Slow 0°C)* | — |
 
-*Normal mode timing verified on earlier build; PLL multiply/divide must match.
+*Normal mode verified on build with default PLL; `FAST_SPEED=false` regenerates PLL for different multiply/divide.
 
 ## Resource Usage (speed mode build)
 
 | Resource | Used | Available | % |
 |----------|------|-----------|---|
-| Logic elements | 6,530 | 8,064 | 81% |
-| Combinational functions | 5,424 | 8,064 | 67% |
-| Registers | 2,598 | 8,064 | 32% |
+| Logic elements | 6,112 | 8,064 | 76% |
+| Combinational functions | 5,472 | 8,064 | 68% |
+| Registers | 2,756 | 8,064 | 34% |
 | Memory bits | 75,845 | 387,072 | 20% |
 | PLLs | 1 | 1 | 100% |
 
@@ -280,7 +280,7 @@ Set `FAST_SPEED => true` (speed mode, 100/200 MHz) or `false` (normal, 96/120 MH
 
 ```bash
 cd host
-python -m pytest tests/ driver/tests/ -v   # 287 unit tests
+python -m pytest tests/ driver/tests/ -v   # 328 unit tests
 python -m app.hw_validation                # 534 hardware validation tests
 ```
 
@@ -292,16 +292,16 @@ Hardware validation covers: SPI protocol, single/fast/continuous/max-speed captu
 OLS_Logic_Analyzer_Clean/
 ├── hdl/
 │   ├── rtl/            # VHDL sources (17 files)
-│   ├── tb/             # Testbenches + simulation
+│   ├── tb/             # Testbenches + simulation support
 │   ├── proj/           # Quartus project + compile.ps1 + constraints
 │   ├── ip/MAX10_ADC/   # Altera Modular ADC II IP
 │   └── hw_test/        # HW validation results
 ├── host/
-│   ├── app/            # GUI (split: OLS_Console + gui_decoders + gui_waveform)
+│   ├── app/            # GUI + protocol decoders + waveform
 │   ├── driver/         # SPI protocol + device API
-│   ├── tests/          # App tests
+│   ├── tests/          # App tests (182)
 │   ├── debug/          # Diagnostic scripts
-│   └── driver/tests/   # Driver tests
+│   └── driver/tests/   # Driver tests (146)
 └── README.md
 ```
 
