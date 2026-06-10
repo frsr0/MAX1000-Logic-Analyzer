@@ -37,7 +37,7 @@ try:
         REG_TRIGGER_MASK, REG_TRIGGER_VALUE,
         REG_FLAGS, REG_FAST_MODE, REG_CONT_MODE,
         REG_GEN_PROTO, REG_GEN_BAUD, REG_GEN_PINS, REG_GEN_DATA,
-        REG_IFACE_MODE,
+        REG_IFACE_MODE, REG_DEBUG_CH0_PERIOD, REG_DEBUG_CH0_DUTY,
         GEN_FLAG_I2C_TEST, GEN_FLAG_SPI_TEST,
         ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_BUSY, ST_CAPTURE_DONE,
     )
@@ -920,6 +920,35 @@ def test_noise_floor(dev, debug_on=False):
     save_result(f"test15_noise_floor_debug_{debug_on}", data, {"nsamples": 1024})
 
 # ====================================================================
+# Test 15b: Crosstalk — inject PWM on CH0, measure bleed on CH1-15
+# ====================================================================
+def test_crosstalk(dev):
+    print_header("Test 15b: Crosstalk — PWM on CH0 vs CH1-15 bleed")
+    for freq in [2000000, 1000000, 500000, 100000, 10000]:
+        dev.set_debug_ch0(True, freq_hz=freq, duty_pct=50)
+        data = dev.capture(rate_hz=freq * 4, nsamples=4096, timeout=5)
+        if data:
+            ch, ns = samples_to_channels(data)
+            tr0 = sum(1 for i in range(1, len(ch[0])) if ch[0][i] != ch[0][i-1])
+            bleed = max(
+                sum(1 for i in range(1, len(ch[c])) if ch[c][i] != ch[c][i-1])
+                for c in range(1, min(16, len(ch)))
+            )
+            log(f"  {freq/1e6:.1f} MHz: CH0={tr0} trans, max bleed CH1-15={bleed}")
+            if freq <= 500000:
+                check(bleed <= 5,
+                      f"crosstalk at {freq/1e6:.1f} MHz: bleed={bleed}")
+            elif freq <= 1000000:
+                check(bleed <= 20,
+                      f"crosstalk at {freq/1e6:.1f} MHz: bleed={bleed}")
+            else:
+                log(f"  [INFO] High-freq crosstalk expected: bleed={bleed}")
+        else:
+            check(False, f"crosstalk at {freq/1e6:.1f} MHz: no data")
+    dev.set_debug_ch0(False)
+    save_result("test15b_crosstalk", None, {"freqs": "2M,1M,500k,100k,10k"})
+
+# ====================================================================
 # Test 16: Long-duration stress test (30 seconds at 1 MHz)
 # ====================================================================
 def test_long_stress(dev, debug_on=False):
@@ -1027,6 +1056,9 @@ def main():
 
         log("\n--- Protocol trigger test (debug OFF + ON) ---")
         run_with_debug(test_trigger_decode, dev, "Protocol trigger")
+
+        log("\n--- Crosstalk test ---")
+        test_crosstalk(dev)
 
         log("\n--- Noise floor test (debug OFF + ON) ---")
         run_with_debug(test_noise_floor, dev, "Noise floor")

@@ -53,6 +53,8 @@ PORT (
         Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
         Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
         Debug_Ch0_Enable : OUT STD_LOGIC := '0';
+        Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
+        Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
         Schmitt_Enable   : OUT STD_LOGIC := '0';
         Schmitt_Threshold : OUT NATURAL range 0 to 7 := 3;
          Gen_Capture_Active : OUT STD_LOGIC := '0';
@@ -124,6 +126,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
 
   SIGNAL ch_mode             : STD_LOGIC := '0';  -- 0=8ch/500k, 1=4ch/4M
   SIGNAL debug_ch0_enable_i  : STD_LOGIC := '0';
+  SIGNAL debug_ch0_period_i  : STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
+  SIGNAL debug_ch0_duty_i    : STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
   SIGNAL schmitt_enable_i    : STD_LOGIC := '0';
   SIGNAL schmitt_threshold_i : NATURAL range 0 to 7 := 3;
   SIGNAL gen_capture_active_i  : STD_LOGIC := '0';
@@ -352,6 +356,10 @@ BEGIN
 
         WHEN REG_DEBUG_CH0_ENABLE =>
           debug_ch0_enable_i <= disp_reg_wdata(0);
+        WHEN REG_DEBUG_CH0_PERIOD =>
+          debug_ch0_period_i <= disp_reg_wdata;
+        WHEN REG_DEBUG_CH0_DUTY =>
+          debug_ch0_duty_i <= disp_reg_wdata;
         WHEN REG_SCHMITT_ENABLE =>
           schmitt_enable_i <= disp_reg_wdata(0);
         WHEN REG_SCHMITT_THRESHOLD =>
@@ -769,6 +777,8 @@ BEGIN
   Buffer_Ack      <= buffer_ack_i;
   Armed          <= Run_OLS;
   Debug_Ch0_Enable <= debug_ch0_enable_i;
+  Debug_Ch0_Period <= debug_ch0_period_i;
+  Debug_Ch0_Duty   <= debug_ch0_duty_i;
   Schmitt_Enable   <= schmitt_enable_i;
   Schmitt_Threshold <= schmitt_threshold_i;
   Gen_Capture_Active <= gen_capture_active_i;
@@ -1015,6 +1025,10 @@ BEGIN
                     reg_val(23 downto 16) := gen_i2c_dev_r_int;
                   when REG_DEBUG_CH0_ENABLE =>
                     reg_val(0) := debug_ch0_enable_i;
+                  when REG_DEBUG_CH0_PERIOD =>
+                    reg_val := debug_ch0_period_i;
+                  when REG_DEBUG_CH0_DUTY =>
+                    reg_val := debug_ch0_duty_i;
                   when REG_SCHMITT_ENABLE =>
                     reg_val(0) := schmitt_enable_i;
                   when REG_SCHMITT_THRESHOLD =>

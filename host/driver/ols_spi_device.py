@@ -13,7 +13,7 @@ from driver.spi_protocol import (
     REG_TRIGGER_MASK, REG_TRIGGER_VALUE, REG_FLAGS,
     REG_FAST_MODE, REG_CONT_MODE,
     REG_GEN_PROTO, REG_GEN_BAUD, REG_GEN_PINS, REG_GEN_DATA,
-    REG_IFACE_MODE, REG_DEBUG_CH0_ENABLE,
+    REG_IFACE_MODE, REG_DEBUG_CH0_ENABLE, REG_DEBUG_CH0_PERIOD, REG_DEBUG_CH0_DUTY,
     REG_SCHMITT_ENABLE, REG_SCHMITT_THRESHOLD,
     ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_DONE,
 )
@@ -249,7 +249,12 @@ class OLSDeviceSPI:
         self.pkt.write_register(REG_SCHMITT_ENABLE, 1 if enable else 0)
         self.pkt.write_register(REG_SCHMITT_THRESHOLD, max(0, min(7, threshold)))
 
-    def set_debug_ch0(self, enable=True):
+    def set_debug_ch0(self, enable=True, freq_hz=None, duty_pct=50):
+        if freq_hz is not None:
+            period = max(2, int(self.sys_clk / freq_hz))
+            duty = max(1, min(period - 1, int(period * duty_pct / 100)))
+            self.pkt.write_register(REG_DEBUG_CH0_PERIOD, period & 0xFFFFFFFF)
+            self.pkt.write_register(REG_DEBUG_CH0_DUTY, duty & 0xFFFFFFFF)
         self.debug_ch0_enabled = bool(enable)
         self.pkt.write_register(REG_DEBUG_CH0_ENABLE, 1 if enable else 0)
 
