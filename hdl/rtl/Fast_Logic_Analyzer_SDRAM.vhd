@@ -200,6 +200,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal fifo_wrfull_r   : std_logic := '0';
   signal sample_rem_nonzero_r : std_logic := '0';
   signal sample_rem_one_r : std_logic := '0';
+  signal bram_cnt_f       : natural range 0 to BRAM_SIZE := 0;
 
   component SDRAM_Interface is
   generic (
@@ -470,7 +471,6 @@ begin
     end process;
 
     -- Stage 1a: tick generator (separate process for timing at 200 MHz)
-    -- Only drives cnt_s and sample_tick_r.  Reads state_r from main FSM.
     process(FAST_CLK)
     begin
       if rising_edge(FAST_CLK) then
@@ -554,6 +554,14 @@ begin
       end if;
     end process;
 
+    -- Pipeline: register bram_cnt_r for flush comparator (breaks carry chain path)
+    process(FAST_CLK)
+    begin
+      if rising_edge(FAST_CLK) then
+        bram_cnt_f <= bram_cnt_r;
+      end if;
+    end process;
+
     -- Stage 3: write FSM (drives all BRAM and FIFO writes from packed_word_r)
     -- Uses packed_valid_r handshake from stage 2.
     -- State 0 BRAM write pointer is tracked via stage 2's bram_wp_r/bram_cnt_r.
@@ -600,7 +608,7 @@ begin
             if flush_rem_r > 0 then
               if fifo_wrfull_r = '0' then
                 bram_raddr_f <= flush_raddr_r;
-                if flush_rem_r < bram_cnt_r then
+                if flush_rem_r < bram_cnt_f then
                   fifo_wdata <= bram_rdata_f;
                   fifo_wr <= '1';
                   sample_remaining <= sample_remaining - 1;
