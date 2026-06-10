@@ -468,7 +468,7 @@ class TestOLSDeviceSPII2CCapture:
     def test_i2c_capture_with_gen(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi.pkt.write_register.return_value = True
-        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.transaction.return_value = (0, 0, b'')
         device_spi.pkt.get_status.return_value = {
             'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
         device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024

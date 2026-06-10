@@ -592,7 +592,7 @@ WHO_AM_I_EXPECTED = 0x33
 WHO_AM_I_VAL = 0x33
 
 def test_i2c_sweep(dev):
-    print_header("Test 9: I2C generator at 400 kHz on CH1(SCL)/CH2(SDA)")
+    print_header("Test 9: I2C generator at multiple capture rates")
     dev.reset()
     dev.spi.flush()
     time.sleep(0.1)
@@ -600,25 +600,19 @@ def test_i2c_sweep(dev):
     dev.set_schmitt(False)
 
     i2c_frame = bytes([(0x18 << 1) & 0xFE, 0x0F])
-    data = dev.capture_with_gen(
-        rate_hz=4000000, nsamples=10000, timeout=5,
-        proto='I2C', i2c_speed=400000,
-        i2c_frame=i2c_frame, i2c_tx_pin=2, i2c_scl_pin=1)
-
-    if data:
-        ch, ns = samples_to_channels(data)
-        scl_tr = sum(1 for i in range(1, ns) if ch[1][i] != ch[1][i-1])
-        sda_tr = sum(1 for i in range(1, ns) if ch[2][i] != ch[2][i-1])
-        decoded = decode_i2c(ch, samplerate=4000000, scl_idx=1, sda_idx=2)
-        data_bytes = [v for t, v in decoded if t == "DATA"]
-        log(f"  SCL={scl_tr} trans, SDA={sda_tr} trans, decoded {len(data_bytes)} bytes")
-        if data_bytes:
-            log(f"  decoded bytes: {' '.join(f'0x{b:02X}' for b in data_bytes)}")
-            if any(b == WHO_AM_I_VAL for b in data_bytes):
-                check(True, f"LIS3DH detected (WHO_AM_I=0x{WHO_AM_I_VAL:02X})")
-        check(scl_tr >= 3, f"I2C SCL toggling ({scl_tr})")
-    else:
-        check(False, "I2C capture returned no data")
+    for cap_rate in [2000000, 4000000]:
+        data = dev.capture_with_gen(
+            rate_hz=cap_rate, nsamples=5000, timeout=5,
+            proto='I2C', i2c_speed=400000,
+            i2c_frame=i2c_frame, i2c_tx_pin=2, i2c_scl_pin=1)
+        if data:
+            ch, ns = samples_to_channels(data)
+            scl_tr = sum(1 for i in range(1, ns) if ch[1][i] != ch[1][i-1])
+            sda_tr = sum(1 for i in range(1, ns) if ch[2][i] != ch[2][i-1])
+            log(f"  {cap_rate/1e6:.1f} MHz: SCL={scl_tr} SDA={sda_tr} ({ns} samples)")
+            check(scl_tr >= 3, f"I2C SCL toggling at {cap_rate/1e6:.1f} MHz ({scl_tr})")
+        else:
+            check(False, f"I2C capture at {cap_rate/1e6:.1f} MHz returned no data")
     save_result("test9_i2c_sweep", None, {})
 
 # ====================================================================
