@@ -36,12 +36,12 @@ begin
   pll : PLL_Model
     generic map (
       INPUT_FREQ  => 12.0e6,
-      MULTIPLY_BY => 8,
-      DIVIDE_BY   => 1,
-      FAST_MULT   => 10,
-      FAST_DIV    => 1,
-      SDRAM_MULT  => 8,
-      SDRAM_DIV   => 1
+      MULTIPLY_BY => 50,
+      DIVIDE_BY   => 6,
+      FAST_MULT   => 50,
+      FAST_DIV    => 3,
+      SDRAM_MULT  => 50,
+      SDRAM_DIV   => 6
     )
     port map (
       inclk0 => inclk0,

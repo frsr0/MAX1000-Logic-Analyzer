@@ -193,7 +193,7 @@ def test_spi_handoff(dev):
         st, seq, pl = result
         log(f"metadata response: status=0x{st:02X}, payload={' '.join(f'{b:02x}' for b in pl)}")
         check(st == ST_OK, f"GET_METADATA returned ST_OK (0x{st:02X})")
-        check(len(pl) == 5, f"metadata payload length == 5 ({len(pl)})")
+        check(len(pl) >= 9, f"metadata payload length >= 9 ({len(pl)})")
     else:
         check(False, "GET_METADATA returned no response")
 

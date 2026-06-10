@@ -21,6 +21,13 @@ set_global_assignment -name INTERNAL_FLASH_UPDATE_MODE "SINGLE IMAGE WITH ERAM"
 set_global_assignment -name FITTER_EFFORT "STANDARD FIT"
 set_global_assignment -name OPTIMIZE_MULTI_CORNER_TIMING ON
 
+# Speed-mode fitter settings (active for 200 MHz FAST_SPEED build):
+set_global_assignment -name FITTER_EFFORT "AUTO FIT"
+set_global_assignment -name OPTIMIZATION_MODE "AGGRESSIVE PERFORMANCE"
+set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC ON
+set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION ON
+set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING ON
+
 set_global_assignment -name VHDL_FILE ../rtl/OLS_SDRAM_Top.vhd
 set_global_assignment -name VHDL_FILE ../rtl/LED_Controller.vhd
 set_global_assignment -name VHDL_FILE ../rtl/OLS_Logic_Analyzer_SDRAM_Core.vhd
@@ -36,11 +43,11 @@ set_global_assignment -name VHDL_FILE ../rtl/SPI_Slave.vhd
 set_global_assignment -name VHDL_FILE ../rtl/ADC_Controller.vhd
 set_global_assignment -name VHDL_FILE ../rtl/Protocol_Trigger.vhd
 set_global_assignment -name VHDL_FILE ../rtl/Signal_Gen.vhd
-# Clock constraints
-set_global_assignment -name SDC_FILE OLS_Logic_Analyzer.sdc
-
 set_global_assignment -name VHDL_FILE ../rtl/SDRAM_PLL.vhd
 set_global_assignment -name VHDL_FILE OLS_Logic_Analyzer_wrapper.vhd
+
+# Clock constraints
+set_global_assignment -name SDC_FILE OLS_Logic_Analyzer.sdc
 
 # Altera Modular ADC II IP
 set_global_assignment -name QIP_FILE ../ip/MAX10_ADC/synthesis/MAX10_ADC.qip

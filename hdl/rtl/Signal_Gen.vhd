@@ -32,8 +32,8 @@ architecture rtl of Signal_Gen is
   type fifo_t is array (0 to FIFO_DEPTH-1) of std_logic_vector(7 downto 0);
   constant FIXED_BAUD_DIV : std_logic_vector(15 downto 0) := x"01E0";  -- 480 = 100 kHz I2C @ 96 MHz
   signal fifo  : fifo_t := (others => (others => '0'));
-  signal head  : natural range 0 to FIFO_DEPTH-1 := 0;
-  signal tail  : natural range 0 to FIFO_DEPTH-1 := 0;
+  signal head  : unsigned(7 downto 0) := (others => '0');
+  signal tail  : unsigned(7 downto 0) := (others => '0');
   signal count : natural range 0 to FIFO_DEPTH := 0;
   signal tx_active   : std_logic := '0';
   signal start_d     : std_logic := '0';
@@ -42,6 +42,11 @@ architecture rtl of Signal_Gen is
   -- Registered byte-load stage for SPI/I2C (breaks FIFO read → Tx_Out path)
   signal byte_buf    : std_logic_vector(7 downto 0) := (others => '0');
   signal byte_ready  : std_logic := '0';
+
+  -- Registered baud tick for SPI/I2C (breaks comparator → FSM → BRAM addr path)
+  signal baud_cnt_s   : natural range 0 to 65535 := 0;
+  signal baud_limit_s : natural range 0 to 65535 := 0;
+  signal baud_tick_r  : std_logic := '0';
 
   -- UART explicit registered FSM
   type uart_state_t is (
@@ -92,11 +97,33 @@ begin
   Fifo_Count <= std_logic_vector(to_unsigned(count, 8));
   Done_Pulse <= done_pulse_i;
 
+  -- Registered baud tick generator for SPI/I2C only.
+  -- FSM sees baud_tick_r from the previous cycle, so the comparator
+  -- is not in the same timing path as the SPI/I2C state update.
+  process(CLK)
+  begin
+    if rising_edge(CLK) then
+      if tx_active = '0' then
+        baud_cnt_s  <= 0;
+        baud_tick_r <= '0';
+      elsif SPI_Mode = '1' or Proto = '1' then
+        if baud_cnt_s >= baud_limit_s then
+          baud_cnt_s  <= 0;
+          baud_tick_r <= '1';
+        else
+          baud_cnt_s  <= baud_cnt_s + 1;
+          baud_tick_r <= '0';
+        end if;
+      else
+        baud_tick_r <= '0';
+      end if;
+    end if;
+  end process;
+
   process(CLK)
     variable start_rise : std_logic := '0';
     variable start_accept_v : std_logic := '0';
     variable baud_limit_v : natural range 0 to 65535 := 0;
-    variable baud_cnt   : natural range 0 to 65535 := 0;
     variable bit_cnt  : natural range 0 to 15 := 0;
     variable data_buf : std_logic_vector(7 downto 0) := (others => '0');
     variable byte_active : boolean := false;
@@ -120,8 +147,8 @@ begin
 
       -- FIFO write (common to both protocols)
       if Load_We = '1' and count < FIFO_DEPTH then
-        fifo(head) <= Load_Byte;
-        head <= (head + 1) mod FIFO_DEPTH;
+        fifo(to_integer(head)) <= Load_Byte;
+        head <= head + 1;
         count <= count + 1;
       end if;
 
@@ -137,6 +164,7 @@ begin
         if Baud_Div = x"0000" then
           baud_limit_v := to_integer(unsigned(FIXED_BAUD_DIV)) - 1;
         end if;
+        baud_limit_s <= baud_limit_v;
 
         if SPI_Mode = '1' and count > 0 then
           -- SPI start — queue first byte in byte_buf (registered), let FSM handle it
@@ -146,9 +174,9 @@ begin
           uart_state <= UART_IDLE;
           uart_baud_cnt <= 0;
           uart_baud_limit <= baud_limit_v;
-          byte_buf <= fifo(tail);
+          byte_buf <= fifo(to_integer(tail));
           byte_ready <= '1';
-          tail <= (tail + 1) mod FIFO_DEPTH;
+          tail <= tail + 1;
           count <= count - 1;
           spi_bit := 0;
           spi_state := 3;  -- CS setup, not state 0 (prevents double-load)
@@ -162,11 +190,11 @@ begin
           tx_active <= '1';
           uart_baud_limit <= baud_limit_v;
           uart_baud_cnt <= 0;
-          uart_shift <= fifo(tail);
-          tail <= (tail + 1) mod FIFO_DEPTH;
+          uart_shift <= fifo(to_integer(tail));
+          tail <= tail + 1;
           count <= count - 1;
           if CRC_En = '1' then
-            uart_crc <= crc16_update(x"FFFF", fifo(tail), CRC_Poly);
+            uart_crc <= crc16_update(x"FFFF", fifo(to_integer(tail)), CRC_Poly);
             uart_crc_run <= '1';
           else
             uart_crc <= (others => '0');
@@ -216,16 +244,13 @@ begin
         ----------------------------------------------------
         -- SPI Master (registered byte-load stage)
         ----------------------------------------------------
-        if baud_cnt < baud_limit_v then
-          baud_cnt := baud_cnt + 1;
-        else
-          baud_cnt := 0;
+        if baud_tick_r = '1' then
           case spi_state is
             when 0 =>  -- Idle / load byte
               if count > 0 then
-                byte_buf <= fifo(tail);
+                byte_buf <= fifo(to_integer(tail));
                 byte_ready <= '1';
-                tail <= (tail + 1) mod FIFO_DEPTH;
+                tail <= tail + 1;
                 count <= count - 1;
                 spi_bit := 0;
                 spi_state := 3;
@@ -248,9 +273,9 @@ begin
               spi_bit := spi_bit + 1;
               if spi_bit >= 8 then
                 if count > 0 then
-                  byte_buf <= fifo(tail);
+                  byte_buf <= fifo(to_integer(tail));
                   byte_ready <= '1';
-                  tail <= (tail + 1) mod FIFO_DEPTH;
+                  tail <= tail + 1;
                   count <= count - 1;
                   spi_bit := 0;
                   spi_state := 3;
@@ -293,11 +318,11 @@ begin
               Tx_Out <= '1';
 
               if count > 0 then
-                uart_shift <= fifo(tail);
-                tail <= (tail + 1) mod FIFO_DEPTH;
+                uart_shift <= fifo(to_integer(tail));
+                tail <= tail + 1;
                 count <= count - 1;
                 if uart_crc_run = '1' then
-                  uart_crc <= crc16_update(uart_crc, fifo(tail), CRC_Poly);
+                  uart_crc <= crc16_update(uart_crc, fifo(to_integer(tail)), CRC_Poly);
                 end if;
                 uart_bit_idx <= 0;
                 uart_state <= UART_START_BIT;
@@ -334,10 +359,7 @@ begin
         ----------------------------------------------------
         -- I2C Master (registered byte-load stage)
         ----------------------------------------------------
-        if baud_cnt < baud_limit_v then
-          baud_cnt := baud_cnt + 1;
-        else
-          baud_cnt := 0;
+        if baud_tick_r = '1' then
           case i2c_state is
             when 0 =>  -- START
               Scl_Out <= '1'; Tx_Out <= '0';
@@ -348,9 +370,9 @@ begin
               if byte_active = false then
                 if count > 0 then
                   Scl_Out <= '0';
-                  byte_buf <= fifo(tail);
+                  byte_buf <= fifo(to_integer(tail));
                   byte_ready <= '1';
-                  tail <= (tail + 1) mod FIFO_DEPTH;
+                  tail <= tail + 1;
                   count <= count - 1;
                   i2c_bit := 0; byte_active := true;
                 elsif rd_remain > 0 and not read_active then

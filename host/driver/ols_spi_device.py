@@ -121,8 +121,10 @@ def decode_analog_frames(data, mode):
 class OLSDeviceSPI:
     """SPI backend using packet protocol — replaces old UART-style byte commands."""
 
-    def __init__(self, sys_clk_hz=96000000):
+    def __init__(self, sys_clk_hz=100000000):
         self.sys_clk = sys_clk_hz
+        self.sample_clk = sys_clk_hz  # updated by _detect_sample_clk
+        self.fast_mode_enabled = True
         self._stride = 4
         self._raw_flags = 0
         self._pending_gen = None
@@ -157,6 +159,7 @@ class OLSDeviceSPI:
                 self.spi = OLS_SPI(speed_hz=30000000)
                 self.spi.open()
                 self._pkt = SPIDevice(self.spi)
+                self._detect_sample_clk()
                 return
             except Exception as e:
                 self.spi = None
@@ -193,6 +196,24 @@ class OLSDeviceSPI:
         if result and len(result[2]) >= 2:
             return result[2]
         return b''
+
+    def _detect_sample_clk(self):
+        meta = self.get_metadata()
+        if len(meta) >= 9:
+            khz = meta[5] | (meta[6] << 8) | (meta[7] << 16) | (meta[8] << 24)
+            if khz > 0:
+                self.sample_clk = khz * 1000
+                self.sys_clk = khz * 1000
+                return
+        # Retry: SPI may not be ready at open() time
+        time.sleep(0.1)
+        meta = self.get_metadata()
+        if len(meta) >= 9:
+            khz = meta[5] | (meta[6] << 8) | (meta[7] << 16) | (meta[8] << 24)
+            if khz > 0:
+                self.sample_clk = khz * 1000
+                self.sys_clk = khz * 1000
+        # fallback: leave as default
 
     def raw_mode(self, enable=True):
         self._stride = 1 if enable else 4
@@ -450,7 +471,7 @@ class OLSDeviceSPI:
             self._pending_schmitt_threshold = None
         self.set_debug_ch0(self.debug_ch0_enabled)
 
-        div = max(0, int(self.sys_clk / rate_hz) - 1)
+        div = max(0, round(self.sample_clk / rate_hz) - 1)
         rc = max(1, nsamples)
         self.pkt.write_register(REG_DIVIDER, div & 0xFFFFFF)
         self.pkt.write_register(REG_SAMPLE_COUNT, rc)
@@ -475,7 +496,7 @@ class OLSDeviceSPI:
         self.pkt.write_register(REG_TRIGGER_VALUE, value)
         self.set_analog_config(self.analog_mode, self.analog_ch0, self.analog_ch1)
         self.pkt.write_register(REG_FLAGS, self._raw_flags)
-        self.pkt.write_register(REG_FAST_MODE, 1)
+        self.pkt.write_register(REG_FAST_MODE, 1 if self.fast_mode_enabled else 0)
 
         self.spi.flush()
 

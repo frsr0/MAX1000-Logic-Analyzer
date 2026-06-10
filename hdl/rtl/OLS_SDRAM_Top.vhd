@@ -8,7 +8,8 @@ ENTITY OLS_SDRAM_Top IS
     TX_PIN      : natural range 0 to 31 := 3;
     PLL_MULT    : positive := 8;
     PLL_DIV     : positive := 1;
-    Sim         : boolean := false
+    Sim         : boolean := false;
+    FAST_SPEED  : boolean := false
   );
 PORT (
   CLK     : IN STD_LOGIC;
@@ -39,7 +40,25 @@ END OLS_SDRAM_Top;
 
 ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
 
-  constant System_CLK_Frequency : natural := 12000000 * PLL_MULT / PLL_DIV;
+  function get_sys_clk_freq return natural is
+  begin
+    if FAST_SPEED then
+      return 100_000_000;
+    else
+      return 12000000 * PLL_MULT / PLL_DIV;
+    end if;
+  end function;
+  function get_sample_clk_freq return natural is
+  begin
+    if FAST_SPEED then
+      return 200_000_000;
+    else
+      return 12000000 * PLL_MULT / PLL_DIV;
+    end if;
+  end function;
+  constant System_CLK_Frequency : natural := get_sys_clk_freq;
+  constant SAMPLE_CLK_HZ : natural := get_sample_clk_freq;
+  constant ENABLE_RUNTIME_INPUT_MUX : boolean := true;
   constant LA_CHANNELS : natural := 16;
   constant PIN_POOL_SIZE : natural := 23;
 
@@ -84,9 +103,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
 
   signal core_status   : std_logic_vector(7 downto 0) := (others => '0');
   signal test_div      : std_logic_vector(9 downto 0) := (others => '0');
+  signal test_out      : std_logic := '0';
   attribute preserve : boolean;
   attribute preserve of test_div : signal is true;
-  signal test_out      : std_logic := '0';
   attribute preserve of test_out : signal is true;
   signal registered_ch0 : std_logic := '0';
   attribute preserve of registered_ch0 : signal is true;
@@ -119,6 +138,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal analog_ch1    : natural range 0 to 15 := 1;
   signal analog_stream_mode : std_logic := '0';
   signal debug_ch0_enable : std_logic := '0';
+  signal fast_mode_i : std_logic := '0';
   signal analog_frame_data  : std_logic_vector(127 downto 0) := (others => '0');
   signal analog_frame_len   : natural range 1 to 14 := 1;
   signal adc0_result, adc1_result, adc2_result, adc3_result : std_logic_vector(11 downto 0) := (others => '0');
@@ -133,6 +153,11 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
 
   -- FAST_CLK domain: capture mux + CDC synchronizers
   signal capture_data_fast : std_logic_vector(LA_CHANNELS-1 downto 0) := (others => '0');
+  signal capture_data_fast_speed_r : std_logic_vector(LA_CHANNELS-1 downto 0) := (others => '0');
+  signal capture_data_fast_normal_r : std_logic_vector(LA_CHANNELS-1 downto 0) := (others => '0');
+  signal fast_mode_f1 : std_logic := '0';
+  signal fast_mode_f2 : std_logic := '0';
+  signal pin_pool_fast_r   : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
   signal pin_pool_f1  : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
   signal pin_pool_f2  : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
   signal gen_tx_f1    : std_logic := '0';
@@ -147,6 +172,10 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_i2c_test_f2 : std_logic := '0';
   signal debug_ch0_enable_f1 : std_logic := '0';
   signal debug_ch0_enable_f2 : std_logic := '0';
+  attribute preserve of debug_ch0_enable_f1 : signal is true;
+  attribute preserve of debug_ch0_enable_f2 : signal is true;
+  signal pin_dir_f1 : std_logic := '0';
+  signal pin_dir_f2 : std_logic := '0';
   signal gen_tx_pin_f1 : natural range 0 to 31 := 0;
   signal gen_tx_pin_f2 : natural range 0 to 31 := 0;
   signal gen_scl_pin_f1 : natural range 0 to 31 := 0;
@@ -172,9 +201,11 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   COMPONENT OLS_Logic_Analyzer IS
   GENERIC (
       CLK_Frequency : INTEGER := 12000000;
+      SAMPLE_CLK_HZ : INTEGER := 200_000_000;
     Max_Samples : NATURAL := 1000000;
     Channels    : NATURAL := LA_CHANNELS;
-    Sim         : boolean := false
+    Sim         : boolean := false;
+    FAST_SPEED  : boolean := false
   );
   PORT (
     CLK : IN STD_LOGIC;
@@ -454,55 +485,102 @@ BEGIN
   -- ============================================================
   -- FAST_CLK domain: capture input mux + pin/loopback CDC
   -- ============================================================
-  -- 2FF synchronizers bring external pins and sys_clk-domain loopback
-  -- signals into FAST_CLK.  Pin map copied via toggle synchronizer on
-  -- pin_map_write.  This eliminates all CLK->FAST_CLK register crossings
-  -- from internal_data_r (previously the sole Inputs source).
+  -- Shared CDC: bring sys_clk-domain signals into fast_clk
+  -- independent of which input path is active.
   process(fast_clk)
   begin
     if rising_edge(fast_clk) then
-      pin_pool_f1 <= pin_pool;
-      pin_pool_f2 <= pin_pool_f1;
-      gen_tx_f1 <= gen_tx;
-      gen_tx_f2 <= gen_tx_f1;
-      gen_scl_f1 <= gen_scl;
-      gen_scl_f2 <= gen_scl_f1;
-      registered_ch0_f1 <= registered_ch0;
-      registered_ch0_f2 <= registered_ch0_f1;
-      gen_capture_active_f1 <= gen_capture_active;
-      gen_capture_active_f2 <= gen_capture_active_f1;
-      gen_i2c_test_f1 <= gen_i2c_test;
-      gen_i2c_test_f2 <= gen_i2c_test_f1;
+      registered_ch0_f1   <= registered_ch0;
+      registered_ch0_f2   <= registered_ch0_f1;
       debug_ch0_enable_f1 <= debug_ch0_enable;
       debug_ch0_enable_f2 <= debug_ch0_enable_f1;
-      gen_tx_pin_f1 <= gen_tx_pin;
-      gen_tx_pin_f2 <= gen_tx_pin_f1;
-      gen_scl_pin_f1 <= gen_scl_pin;
-      gen_scl_pin_f2 <= gen_scl_pin_f1;
+      fast_mode_f1        <= fast_mode_i;
+      fast_mode_f2        <= fast_mode_f1;
+    end if;
+  end process;
 
-      pin_map_wr_t_s1 <= pin_map_wr_toggle;
-      pin_map_wr_t_s2 <= pin_map_wr_t_s1;
-      pin_map_wr_edge <= pin_map_wr_t_s1 xor pin_map_wr_t_s2;
-      pin_map_ch_f1 <= pin_map_channel;
-      pin_map_ch_f2 <= pin_map_ch_f1;
-      pin_map_pin_f1 <= pin_map_pin;
-      pin_map_pin_f2 <= pin_map_pin_f1;
-
-      if pin_map_wr_edge = '1' then
-        pin_map_fast(pin_map_ch_f2) <= pin_map_pin_f2;
+  -- Speed input path: direct pin capture with CDC override for CH0
+  -- Uses pin_dir(0) as proxy for debug_enable to control the override,
+  -- avoiding the Quartus optimisation that eliminates debug_ch0_enable_f2.
+  -- When pin_dir(0) = '1' (output enabled, debug active): CH0 reads test counter
+  -- via CDC. When pin_dir(0) = '0': CH0 reads the physical pin.
+  process(fast_clk)
+  begin
+    if rising_edge(fast_clk) then
+      pin_dir_f1 <= pin_dir(0);
+      pin_dir_f2 <= pin_dir_f1;
+      pin_pool_fast_r <= pin_pool;
+      if pin_dir_f2 = '1' then
+        for i in 0 to LA_CHANNELS-1 loop
+          if i = 0 then
+            capture_data_fast_speed_r(i) <= registered_ch0_f2;
+          else
+            capture_data_fast_speed_r(i) <= pin_pool_fast_r(i);
+          end if;
+        end loop;
+      else
+        capture_data_fast_speed_r <= pin_pool_fast_r(LA_CHANNELS-1 downto 0);
       end if;
+    end if;
+  end process;
 
-      for i in 0 to LA_CHANNELS-1 loop
-        if gen_capture_active_f2 = '1' and gen_tx_pin_f2 = pin_map_fast(i) then
-          capture_data_fast(i) <= gen_tx_f2;
-        elsif gen_capture_active_f2 = '1' and gen_i2c_test_f2 = '1' and gen_scl_pin_f2 = pin_map_fast(i) then
-          capture_data_fast(i) <= gen_scl_f2;
-        elsif i = 0 and debug_ch0_enable_f2 = '1' then
-          capture_data_fast(i) <= registered_ch0_f2;
-        else
-          capture_data_fast(i) <= pin_pool_f2(pin_map_fast(i));
+  -- Mapped/loopback input path: pin-map mux with CDC synchronisers
+  gen_mapped_path : if ENABLE_RUNTIME_INPUT_MUX generate
+  begin
+    process(fast_clk)
+    begin
+      if rising_edge(fast_clk) then
+        pin_pool_f1 <= pin_pool;
+        pin_pool_f2 <= pin_pool_f1;
+        gen_tx_f1 <= gen_tx;
+        gen_tx_f2 <= gen_tx_f1;
+        gen_scl_f1 <= gen_scl;
+        gen_scl_f2 <= gen_scl_f1;
+        gen_capture_active_f1 <= gen_capture_active;
+        gen_capture_active_f2 <= gen_capture_active_f1;
+        gen_i2c_test_f1 <= gen_i2c_test;
+        gen_i2c_test_f2 <= gen_i2c_test_f1;
+        gen_tx_pin_f1 <= gen_tx_pin;
+        gen_tx_pin_f2 <= gen_tx_pin_f1;
+        gen_scl_pin_f1 <= gen_scl_pin;
+        gen_scl_pin_f2 <= gen_scl_pin_f1;
+
+        pin_map_wr_t_s1 <= pin_map_wr_toggle;
+        pin_map_wr_t_s2 <= pin_map_wr_t_s1;
+        pin_map_wr_edge <= pin_map_wr_t_s1 xor pin_map_wr_t_s2;
+        pin_map_ch_f1 <= pin_map_channel;
+        pin_map_ch_f2 <= pin_map_ch_f1;
+        pin_map_pin_f1 <= pin_map_pin;
+        pin_map_pin_f2 <= pin_map_pin_f1;
+
+        if pin_map_wr_edge = '1' then
+          pin_map_fast(pin_map_ch_f2) <= pin_map_pin_f2;
         end if;
-      end loop;
+
+        for i in 0 to LA_CHANNELS-1 loop
+          if i = 0 and debug_ch0_enable_f2 = '1' then
+            capture_data_fast_normal_r(i) <= registered_ch0_f2;
+          elsif gen_capture_active_f2 = '1' and gen_tx_pin_f2 = pin_map_fast(i) then
+            capture_data_fast_normal_r(i) <= gen_tx_f2;
+          elsif gen_capture_active_f2 = '1' and gen_i2c_test_f2 = '1' and gen_scl_pin_f2 = pin_map_fast(i) then
+            capture_data_fast_normal_r(i) <= gen_scl_f2;
+          else
+            capture_data_fast_normal_r(i) <= pin_pool_f2(pin_map_fast(i));
+          end if;
+        end loop;
+      end if;
+    end process;
+  end generate;
+
+  -- Registered mux: select input source based on runtime Fast_Mode
+  process(fast_clk)
+  begin
+    if rising_edge(fast_clk) then
+      if ENABLE_RUNTIME_INPUT_MUX and fast_mode_f2 = '1' then
+        capture_data_fast <= capture_data_fast_speed_r;
+      else
+        capture_data_fast <= capture_data_fast_normal_r;
+      end if;
     end if;
   end process;
 
@@ -591,11 +669,13 @@ BEGIN
     );
 
   SDRAM_Analyzer : OLS_Logic_Analyzer
-  GENERIC MAP (
+   GENERIC MAP (
     CLK_Frequency => System_CLK_Frequency,
+    SAMPLE_CLK_HZ => SAMPLE_CLK_HZ,
     Max_Samples  => 1048576,
     Channels     => LA_CHANNELS,
-    Sim          => Sim
+    Sim          => Sim,
+    FAST_SPEED   => FAST_SPEED
   )
   PORT MAP (
     CLK => sys_clk,
@@ -631,7 +711,7 @@ BEGIN
     Gen_I2C_Test   => gen_i2c_test,
     Gen_SPI_Test   => gen_spi_test,
     Armed          => armed_i,
-    Fast_Mode      => open,
+    Fast_Mode      => fast_mode_i,
     Analog_Mode    => analog_mode,
     Analog_Ch0     => analog_ch0,
     Analog_Ch1     => analog_ch1,

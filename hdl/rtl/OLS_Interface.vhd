@@ -8,6 +8,7 @@ use work.spi_protocol_pkg.all;
 ENTITY OLS_Interface IS
   GENERIC (
       CLK_Frequency   :   INTEGER     := 12000000;    
+      SAMPLE_CLK_HZ  :   INTEGER     := 200_000_000;
     Max_Samples     :   NATURAL     := 25000       
 
   );
@@ -20,7 +21,7 @@ PORT (
   SPI_MISO     : OUT STD_LOGIC := 'Z';
   Interface_Mode : OUT STD_LOGIC := '1';
   Inputs       : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');  
-  Rate_Div     : BUFFER NATURAL range 1 to 150000000 := 12; 
+  Rate_Div     : BUFFER NATURAL range 1 to 500000000 := 12; 
   Samples      : BUFFER NATURAL range 1 to Max_Samples   := Max_Samples;  
   Start_Offset : BUFFER NATURAL range 0 to Max_Samples   := 0;  
   Run          : BUFFER STD_LOGIC := '0'; 
@@ -359,10 +360,10 @@ BEGIN
       END CASE;
     END IF;
 
-    IF (Divider < CLK_Frequency) THEN
+    IF (Divider < SAMPLE_CLK_HZ) THEN
       Rate_Div <= Divider + 1;
     ELSE
-      Rate_Div <= CLK_Frequency;
+      Rate_Div <= SAMPLE_CLK_HZ;
     END IF;
     IF (Read_Count < Max_Samples) THEN
       IF (Read_Count > 1) THEN
@@ -866,10 +867,10 @@ BEGIN
     variable rsp_stat_v : std_logic_vector(7 downto 0) := ST_OK;
     variable rsp_len_v : natural range 0 to MAX_TX_PAYLOAD_BYTES := 0;
     -- Small response buffer (8 bytes covers all non-block-read responses)
-    type rspbuf_t is array(0 to 7) of std_logic_vector(7 downto 0);
+    type rspbuf_t is array(0 to 15) of std_logic_vector(7 downto 0);
     variable rsp_buf : rspbuf_t;
-    variable rsp_buf_len : natural range 0 to 8 := 0;
-    variable rsp_buf_idx : natural range 0 to 8 := 0;
+    variable rsp_buf_len : natural range 0 to 15 := 0;
+    variable rsp_buf_idx : natural range 0 to 15 := 0;
     variable reg_val : std_logic_vector(31 downto 0) := (others => '0');
     -- Block-read streaming state
     variable blk_wc : natural range 0 to 255 := 0;  -- word counter
@@ -936,8 +937,13 @@ BEGIN
               rsp_buf(2) := x"00";
               rsp_buf(3) := x"F0";
               rsp_buf(4) := x"01";
-              rsp_buf_len := 5;
-              rsp_len_v := 5;
+              -- bytes 5-8: SAMPLE_CLK_HZ in kHz, little-endian uint32
+              rsp_buf(5) := std_logic_vector(to_unsigned(SAMPLE_CLK_HZ / 1000, 32))(7 downto 0);
+              rsp_buf(6) := std_logic_vector(to_unsigned(SAMPLE_CLK_HZ / 1000, 32))(15 downto 8);
+              rsp_buf(7) := std_logic_vector(to_unsigned(SAMPLE_CLK_HZ / 1000, 32))(23 downto 16);
+              rsp_buf(8) := std_logic_vector(to_unsigned(SAMPLE_CLK_HZ / 1000, 32))(31 downto 24);
+              rsp_buf_len := 9;
+              rsp_len_v := 9;
               st := BUILD_RSP;
 
             when CMD_ARM_CAPTURE =>

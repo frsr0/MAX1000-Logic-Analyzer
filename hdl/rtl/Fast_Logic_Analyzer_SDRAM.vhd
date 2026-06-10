@@ -9,6 +9,9 @@ entity Fast_Logic_Analyzer_SDRAM is
     Max_Samples : natural := 3000000;
     Channels    : natural range 1 to 16 := 16;
     Sim         : boolean := false;
+    FAST_SPEED  : boolean := false;
+    CLK_Frequency : natural := 100_000_000;
+    SAMPLE_CLK_HZ : natural := 200_000_000;
     Write_Latency : natural := 10;
     Read_Latency  : natural := 3;
     Page_Latency  : natural := 3
@@ -16,7 +19,7 @@ entity Fast_Logic_Analyzer_SDRAM is
 port (
   CLK          : in  std_logic;
   CLK_150      : out std_logic;
-  Rate_Div     : in  natural range 1 to 150000000 := 12;
+  Rate_Div     : in  natural range 1 to 500000000 := 12;
   Samples      : in  natural range 1 to Max_Samples := Max_Samples;
   Start_Offset : in  natural range 0 to Max_Samples := 0;
   Run          : in  std_logic := '0';
@@ -114,14 +117,16 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   -- Down-counter uses cnt = 0 (fast NOR gate) instead of cnt >= threshold
   -- (slow 28-bit comparator). Rate_Div changes only when the user sets
   -- the sample rate (before capture starts), so 1-cycle latency is harmless.
-  signal rate_div_r    : natural range 1 to 150000000 := 12;
-  signal rate_div_m1_r : natural range 0 to 150000000 := 11;
+  signal rate_div_r    : natural range 1 to 500000000 := 12;
+  signal rate_div_m1_r : natural range 0 to 500000000 := 11;
 
   -- FAST_CLK domain signals (2FF CDC + async FIFO)
   signal sdram_busy : std_logic := '0';
 
+  constant MAX_RATE_DIV : natural := 500_000_000;
+
   -- Config handshake: CLK -> FAST_CLK
-  signal cfg_rate_div  : natural range 1 to 150000000 := 12;
+  signal cfg_rate_div  : natural range 1 to MAX_RATE_DIV := 12;
   signal cfg_samples   : natural range 1 to 3000000 := 3000000;
   signal cfg_valid_toggle : std_logic := '0';
   signal cfg_ack_s1    : std_logic := '0';
@@ -129,14 +134,22 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal cfg_ack_edge  : std_logic := '0';
 
   -- Config handshake: FAST_CLK domain
-  signal cfg_rate_div_f  : natural range 1 to 150000000 := 12;
+  signal cfg_rate_div_f  : natural range 1 to MAX_RATE_DIV := 12;
+  signal cfg_rate_reload_f : natural range 0 to MAX_RATE_DIV := 11;
   signal cfg_samples_f   : natural range 1 to 3000000 := 3000000;
   signal cfg_valid_s1    : std_logic := '0';
   signal cfg_valid_s2    : std_logic := '0';
   signal cfg_valid_edge  : std_logic := '0';
   signal cfg_ack_toggle  : std_logic := '0';
 
-  signal rate_div_m1_f : natural range 0 to 150000000 := 11;
+  signal rate_div_m1_f : natural range 0 to MAX_RATE_DIV := 11;
+
+  -- Registered sample counter and tick (replaces variable cnt).
+  -- cnt_s is a registered signal; sample_tick_r is asserted for one cycle
+  -- when the counter reaches zero, breaking the cnt=0 -> packing -> BRAM/FIFO
+  -- path into (cnt -> zero -> tick) on cycle N and (tick -> pack) on cycle N+1.
+  signal cnt_s         : natural range 0 to MAX_RATE_DIV := 0;
+  signal sample_tick_r : std_logic := '0';
 
   signal run_f_s1  : std_logic := '0';
   signal run_f_s2   : std_logic := '0';
@@ -180,6 +193,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   component SDRAM_Interface is
   generic (
     Sim : boolean := false;
+    CLK_Frequency : natural := 96000000;
     Write_Latency : natural := 10;
     Read_Latency  : natural := 3;
     Page_Latency  : natural := 3
@@ -356,8 +370,10 @@ begin
   end process;
 
   -- ============================================================
-  -- FAST_CLK domain (120 MHz): sample divider + input packer + async FIFO push
+  -- FAST_CLK domain (200 MHz speed / 120 MHz normal)
   -- ============================================================
+
+  -- Shared processes (both speed and normal mode):
 
   -- Config handshake: FAST_CLK domain detects cfg_valid_toggle edge,
   -- latches config, acks back via cfg_ack_toggle.
@@ -370,19 +386,12 @@ begin
       if cfg_valid_edge = '1' then
         cfg_rate_div_f  <= cfg_rate_div;
         cfg_samples_f   <= cfg_samples;
+        if cfg_rate_div > 1 then
+          cfg_rate_reload_f <= cfg_rate_div - 1;
+        else
+          cfg_rate_reload_f <= 0;
+        end if;
         cfg_ack_toggle <= not cfg_ack_toggle;
-      end if;
-    end if;
-  end process;
-
-  -- Pre-compute rate_div - 1 for the fast down-counter
-  process(FAST_CLK)
-  begin
-    if rising_edge(FAST_CLK) then
-      if cfg_rate_div_f > 1 then
-        rate_div_m1_f <= cfg_rate_div_f - 1;
-      else
-        rate_div_m1_f <= 0;
       end if;
     end if;
   end process;
@@ -406,131 +415,13 @@ begin
     end if;
   end process;
 
-  -- Fast capture process: runs at 120 MHz on FAST_CLK
-  -- Samples Inputs, packs into 16-bit words.
-  -- When Armed and pre-trigger: writes to circular BRAM.
-  -- On cfg_valid_edge (trigger/starts): flushes BRAM to async FIFO,
-  --   then pushes live samples until cfg_samples_f reached.
-  process(FAST_CLK)
-    variable cnt       : natural range 0 to 150000000 := 0;
-    variable step_r    : natural range 0 to sub_steps := 0;
-    variable wbuf      : std_logic_vector(31 downto 0) := (others => '0');
-    variable bram_wp   : natural range 0 to BRAM_SIZE-1 := 0;
-    variable bram_cnt  : natural range 0 to BRAM_SIZE := 0;
-    -- State: 0=pre-trigger, 1=flush BRAM to FIFO, 2=live capture
-    variable state     : natural range 0 to 2 := 0;
-    variable flush_raddr : natural range 0 to BRAM_SIZE-1 := 0;
-    variable flush_rem   : natural range 0 to BRAM_SIZE := 0;
-  begin
-    if rising_edge(FAST_CLK) then
-      Inputs_r <= Inputs;
-      fifo_wr <= '0';
-      bram_wren <= '0';
-
-      -- Config handshake edge: transition from pre-trigger to flush/capture
-      if cfg_valid_edge = '1' then
-        cnt := 0;
-        step_r := 0;
-        wbuf := (others => '0');
-        sample_remaining <= cfg_samples_f;
-        fifo_overflow_f <= '0';
-        if bram_cnt > 0 then
-          if bram_wp >= bram_cnt then
-            flush_raddr := bram_wp - bram_cnt;
-          else
-            flush_raddr := BRAM_SIZE - bram_cnt + bram_wp;
-          end if;
-          flush_rem := bram_cnt;
-          state := 1;
-        else
-          state := 2;
-        end if;
-
-      -- State machine (only runs when not in overflow)
-      elsif fifo_overflow_f = '0' then
-
-        -- State 0: Pre-trigger — circular BRAM write
-        if state = 0 then
-          if Armed_f = '1' and run_f_level = '0' then
-            if cnt = 0 then
-              cnt := rate_div_m1_f;
-              wbuf(((step_r + 1) * Channels) - 1 downto step_r * Channels) := Inputs_r;
-              if step_r = sub_steps - 1 then
-                bram_waddr <= bram_wp;
-                bram_wdata <= wbuf(15 downto 0);
-                bram_wren <= '1';
-                if bram_wp = BRAM_SIZE-1 then bram_wp := 0;
-                else bram_wp := bram_wp + 1; end if;
-                if bram_cnt < BRAM_SIZE then bram_cnt := bram_cnt + 1; end if;
-                step_r := 0;
-              else
-                step_r := step_r + 1;
-              end if;
-            else
-              cnt := cnt - 1;
-            end if;
-          end if;
-
-        -- State 1: Flush BRAM to async FIFO (pre-trigger samples first)
-        elsif state = 1 then
-          if flush_rem > 0 then
-            if fifo_wrfull = '0' then
-              bram_raddr_f <= flush_raddr;
-              -- Skip write on first cycle (BRAM read is registered)
-              if flush_rem < bram_cnt then
-                fifo_wdata <= bram_rdata_f;
-                fifo_wr <= '1';
-                sample_remaining <= sample_remaining - 1;
-              end if;
-              if flush_raddr = BRAM_SIZE-1 then flush_raddr := 0;
-              else flush_raddr := flush_raddr + 1; end if;
-              flush_rem := flush_rem - 1;
-            end if;
-          else
-            state := 2;
-          end if;
-
-        -- State 2: Live capture — push samples to async FIFO
-        else
-          if cnt = 0 then
-            cnt := rate_div_m1_f;
-            wbuf(((step_r + 1) * Channels) - 1 downto step_r * Channels) := Inputs_r;
-            if step_r = sub_steps - 1 then
-              if fifo_wrfull = '0' and sample_remaining /= 0 then
-                fifo_wdata <= wbuf(15 downto 0);
-                fifo_wr <= '1';
-                sample_remaining <= sample_remaining - 1;
-              end if;
-              if fifo_wrfull = '1' or sample_remaining <= 1 then
-                fifo_overflow_f <= '1';
-              end if;
-              step_r := 0;
-            else
-              step_r := step_r + 1;
-            end if;
-          else
-            cnt := cnt - 1;
-          end if;
-        end if;
-      end if;
-    end if;
-  end process;
-
-  -- BRAM write port (FAST_CLK domain)
+  -- BRAM write port (shared)
   process(FAST_CLK)
   begin
     if rising_edge(FAST_CLK) then
       if bram_wren = '1' then
         bram(bram_waddr) <= bram_wdata;
       end if;
-    end if;
-  end process;
-
-  -- BRAM read port (FAST_CLK domain): used during flush-to-FIFO
-  process(FAST_CLK)
-  begin
-    if rising_edge(FAST_CLK) then
-      bram_rdata_f <= bram(bram_raddr_f);
     end if;
   end process;
 
@@ -543,6 +434,268 @@ begin
       end if;
     end if;
   end process;
+
+  -- ============================================================
+  -- Speed mode (200 MHz): 3-stage pipeline, no divider, no flush
+  -- ============================================================
+  gen_fast_speed : if FAST_SPEED generate
+    signal sample_word_r  : std_logic_vector(Channels-1 downto 0) := (others => '0');
+    signal capture_en_r   : std_logic := '0';
+    signal pretrig_en_r   : std_logic := '0';
+    signal bram_wp_r      : natural range 0 to BRAM_SIZE-1 := 0;
+    signal bram_cnt_r     : natural range 0 to BRAM_SIZE := 0;
+    signal sample_div_cnt_r : natural range 0 to MAX_RATE_DIV := 0;
+    signal sample_tick_r  : std_logic := '0';
+    signal sample_rem_nonzero_r : std_logic := '0';
+  begin
+    -- Stage 0: sample pins
+    process(FAST_CLK)
+    begin
+      if rising_edge(FAST_CLK) then
+        sample_word_r <= Inputs;
+      end if;
+    end process;
+
+    -- Stage 1: control decode
+    process(FAST_CLK)
+    begin
+      if rising_edge(FAST_CLK) then
+        capture_en_r <= run_f_level;
+        pretrig_en_r <= Armed_f and not run_f_level;
+      end if;
+    end process;
+
+    -- Stage 2a: rate divider counter (free-running when capture active)
+    process(FAST_CLK)
+    begin
+      if rising_edge(FAST_CLK) then
+        if cfg_valid_edge = '1' then
+          sample_div_cnt_r <= 0;
+        elsif capture_en_r = '1' and sample_rem_nonzero_r = '1' then
+          if sample_div_cnt_r = 0 then
+            sample_div_cnt_r <= cfg_rate_reload_f;
+          else
+            sample_div_cnt_r <= sample_div_cnt_r - 1;
+          end if;
+        end if;
+      end if;
+    end process;
+
+    -- Stage 2b: sample tick (pipelined one cycle after divider reaches zero)
+    process(FAST_CLK)
+    begin
+      if rising_edge(FAST_CLK) then
+        sample_tick_r <= '0';
+        if capture_en_r = '1' and sample_rem_nonzero_r = '1' and sample_div_cnt_r = 0 then
+          sample_tick_r <= '1';
+        end if;
+      end if;
+    end process;
+
+    -- Stage 2c: sample-remaining non-zero flag (pipelined, avoids 22-bit >0 in write path)
+    process(FAST_CLK)
+    begin
+      if rising_edge(FAST_CLK) then
+        if cfg_valid_edge = '1' then
+          sample_rem_nonzero_r <= '1';
+        elsif fifo_wr = '1' and sample_remaining <= 2 then
+          sample_rem_nonzero_r <= '0';
+        end if;
+      end if;
+    end process;
+
+    -- Stage 2d: BRAM/FIFO write (uses pipelined flags, only 1-bit compares)
+    process(FAST_CLK)
+    begin
+      if rising_edge(FAST_CLK) then
+        fifo_wr <= '0';
+        bram_wren <= '0';
+
+        if cfg_valid_edge = '1' then
+          sample_remaining <= cfg_samples_f;
+          fifo_overflow_f <= '0';
+          bram_wp_r <= 0;
+          bram_cnt_r <= 0;
+        end if;
+
+        if fifo_overflow_f = '0' then
+          if pretrig_en_r = '1' then
+            bram_waddr <= bram_wp_r;
+            bram_wdata <= sample_word_r;
+            bram_wren  <= '1';
+            if bram_wp_r = BRAM_SIZE-1 then
+              bram_wp_r <= 0;
+            else
+              bram_wp_r <= bram_wp_r + 1;
+            end if;
+            if bram_cnt_r < BRAM_SIZE then
+              bram_cnt_r <= bram_cnt_r + 1;
+            end if;
+
+          elsif capture_en_r = '1' and sample_tick_r = '1' then
+            if fifo_wrfull = '0' then
+              fifo_wdata <= sample_word_r;
+              fifo_wr <= '1';
+              sample_remaining <= sample_remaining - 1;
+            end if;
+            if fifo_wrfull = '1' then
+              fifo_overflow_f <= '1';
+            end if;
+          end if;
+        end if;
+      end if;
+    end process;
+  end generate;
+
+  -- ============================================================
+  -- Normal mode (120 MHz): sample divider + input packer + flush FSM
+  -- ============================================================
+  gen_fast_normal : if not FAST_SPEED generate
+  begin
+    -- Pre-compute rate_div - 1 for the fast down-counter
+    process(FAST_CLK)
+    begin
+      if rising_edge(FAST_CLK) then
+        if cfg_rate_div_f > 1 then
+          rate_div_m1_f <= cfg_rate_div_f - 1;
+        else
+          rate_div_m1_f <= 0;
+        end if;
+      end if;
+    end process;
+
+    -- Fast capture process: runs at 120 MHz on FAST_CLK
+    -- Samples Inputs, packs into 16-bit words.
+    -- When Armed and pre-trigger: writes to circular BRAM.
+    -- On cfg_valid_edge (trigger/starts): flushes BRAM to async FIFO,
+    --   then pushes live samples until cfg_samples_f reached.
+    process(FAST_CLK)
+      variable step_r    : natural range 0 to sub_steps := 0;
+      variable wbuf      : std_logic_vector(31 downto 0) := (others => '0');
+      variable bram_wp   : natural range 0 to BRAM_SIZE-1 := 0;
+      variable bram_cnt  : natural range 0 to BRAM_SIZE := 0;
+      -- State: 0=pre-trigger, 1=flush BRAM to FIFO, 2=live capture
+      variable state     : natural range 0 to 2 := 0;
+      variable flush_raddr : natural range 0 to BRAM_SIZE-1 := 0;
+      variable flush_rem   : natural range 0 to BRAM_SIZE := 0;
+      variable sample_en_v : boolean := false;
+    begin
+      if rising_edge(FAST_CLK) then
+        Inputs_r <= Inputs;
+        fifo_wr <= '0';
+        bram_wren <= '0';
+        sample_tick_r <= '0';
+
+        -- Registered sample tick generator (replaces variable cnt).
+        -- Only advances in states that actually sample: pre-trigger (state 0
+        -- when Armed) or live capture (state 2). Holds count during flush.
+        sample_en_v := false;
+        if fifo_overflow_f = '0' then
+          if (state = 0 and Armed_f = '1' and run_f_level = '0') or state = 2 then
+            sample_en_v := true;
+          end if;
+        end if;
+        if cfg_valid_edge = '1' then
+          cnt_s <= 0;
+        elsif sample_en_v then
+          if cnt_s = 0 then
+            cnt_s <= rate_div_m1_f;
+            sample_tick_r <= '1';
+          else
+            cnt_s <= cnt_s - 1;
+          end if;
+        end if;
+
+        -- Config handshake edge: transition from pre-trigger to flush/capture
+        if cfg_valid_edge = '1' then
+          step_r := 0;
+          wbuf := (others => '0');
+          sample_remaining <= cfg_samples_f;
+          fifo_overflow_f <= '0';
+          if bram_cnt > 0 then
+            if bram_wp >= bram_cnt then
+              flush_raddr := bram_wp - bram_cnt;
+            else
+              flush_raddr := BRAM_SIZE - bram_cnt + bram_wp;
+            end if;
+            flush_rem := bram_cnt;
+            state := 1;
+          else
+            state := 2;
+          end if;
+
+        -- State machine (only runs when not in overflow)
+        elsif fifo_overflow_f = '0' then
+
+          -- State 0: Pre-trigger — circular BRAM write
+          if state = 0 then
+            if Armed_f = '1' and run_f_level = '0' then
+              if sample_tick_r = '1' then
+                wbuf(((step_r + 1) * Channels) - 1 downto step_r * Channels) := Inputs_r;
+                if step_r = sub_steps - 1 then
+                  bram_waddr <= bram_wp;
+                  bram_wdata <= wbuf(15 downto 0);
+                  bram_wren <= '1';
+                  if bram_wp = BRAM_SIZE-1 then bram_wp := 0;
+                  else bram_wp := bram_wp + 1; end if;
+                  if bram_cnt < BRAM_SIZE then bram_cnt := bram_cnt + 1; end if;
+                  step_r := 0;
+                else
+                  step_r := step_r + 1;
+                end if;
+              end if;
+            end if;
+
+          -- State 1: Flush BRAM to async FIFO (pre-trigger samples first)
+          elsif state = 1 then
+            if flush_rem > 0 then
+              if fifo_wrfull = '0' then
+                bram_raddr_f <= flush_raddr;
+                -- Skip write on first cycle (BRAM read is registered)
+                if flush_rem < bram_cnt then
+                  fifo_wdata <= bram_rdata_f;
+                  fifo_wr <= '1';
+                  sample_remaining <= sample_remaining - 1;
+                end if;
+                if flush_raddr = BRAM_SIZE-1 then flush_raddr := 0;
+                else flush_raddr := flush_raddr + 1; end if;
+                flush_rem := flush_rem - 1;
+              end if;
+            else
+              state := 2;
+            end if;
+
+          -- State 2: Live capture — push samples to async FIFO
+          else
+            if sample_tick_r = '1' then
+              wbuf(((step_r + 1) * Channels) - 1 downto step_r * Channels) := Inputs_r;
+              if step_r = sub_steps - 1 then
+                if fifo_wrfull = '0' and sample_remaining /= 0 then
+                  fifo_wdata <= wbuf(15 downto 0);
+                  fifo_wr <= '1';
+                  sample_remaining <= sample_remaining - 1;
+                end if;
+                if fifo_wrfull = '1' or sample_remaining <= 1 then
+                  fifo_overflow_f <= '1';
+                end if;
+                step_r := 0;
+              else
+                step_r := step_r + 1;
+              end if;
+            end if;
+          end if;
+        end if;
+      end if;
+    end process;
+
+    -- BRAM read port (FAST_CLK domain): used during flush-to-FIFO
+    process(FAST_CLK)
+    begin
+      if rising_edge(FAST_CLK) then
+        bram_rdata_f <= bram(bram_raddr_f);
+      end if;
+    end process;
+  end generate;
 
   process(pclk)
   begin
@@ -820,7 +973,7 @@ begin
   Buffer_Full(1) <= buf_full(1);
 
   SDRAM_Interface1 : SDRAM_Interface
-  generic map (Sim => Sim, Write_Latency => Write_Latency, Read_Latency => Read_Latency, Page_Latency => Page_Latency)
+  generic map (Sim => Sim, CLK_Frequency => CLK_Frequency, Write_Latency => Write_Latency, Read_Latency => Read_Latency, Page_Latency => Page_Latency)
   port map (
     CLK          => CLK,
     Reset        => '0',

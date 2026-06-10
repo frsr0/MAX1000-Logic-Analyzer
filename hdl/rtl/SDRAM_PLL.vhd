@@ -156,18 +156,18 @@ BEGIN
 	altpll_component : altpll
 	GENERIC MAP (
 		bandwidth_type => "AUTO",
-		clk0_divide_by => 1,
+		clk0_divide_by => 6,
 		clk0_duty_cycle => 50,
-		clk0_multiply_by => 8,
+		clk0_multiply_by => 50,
 		clk0_phase_shift => "0",
-		clk1_divide_by => 1,
+		clk1_divide_by => 3,
 		clk1_duty_cycle => 50,
-		clk1_multiply_by => 10,
+		clk1_multiply_by => 50,
 		clk1_phase_shift => "0",
-		clk2_divide_by => 1,
+		clk2_divide_by => 6,
 		clk2_duty_cycle => 50,
-		clk2_multiply_by => 8,
-		clk2_phase_shift => "-2604",
+		clk2_multiply_by => 50,
+		clk2_phase_shift => "-2500",
 		compensate_clock => "CLK0",
 		inclk0_input_frequency => 83333,
 		intended_device_family => "MAX 10",
@@ -249,12 +249,12 @@ END SYN;
 -- Retrieval info: PRIVATE: CUR_DEDICATED_CLK STRING "c0"
 -- Retrieval info: PRIVATE: CUR_FBIN_CLK STRING "c0"
 -- Retrieval info: PRIVATE: DEVICE_SPEED_GRADE STRING "Any"
--- Retrieval info: PRIVATE: DIV_FACTOR0 NUMERIC "10"
--- Retrieval info: PRIVATE: DIV_FACTOR1 NUMERIC "4"
+-- Retrieval info: PRIVATE: DIV_FACTOR0 NUMERIC "3"
+-- Retrieval info: PRIVATE: DIV_FACTOR1 NUMERIC "3"
 -- Retrieval info: PRIVATE: DUTY_CYCLE0 STRING "50.00000000"
 -- Retrieval info: PRIVATE: DUTY_CYCLE1 STRING "50.00000000"
--- Retrieval info: PRIVATE: EFF_OUTPUT_FREQ_VALUE0 STRING "48.000000"
--- Retrieval info: PRIVATE: EFF_OUTPUT_FREQ_VALUE1 STRING "120.000000"
+-- Retrieval info: PRIVATE: EFF_OUTPUT_FREQ_VALUE0 STRING "100.000000"
+-- Retrieval info: PRIVATE: EFF_OUTPUT_FREQ_VALUE1 STRING "200.000000"
 -- Retrieval info: PRIVATE: EXPLICIT_SWITCHOVER_COUNTER STRING "0"
 -- Retrieval info: PRIVATE: EXT_FEEDBACK_RADIO STRING "0"
 -- Retrieval info: PRIVATE: GLOCKED_COUNTER_EDIT_CHANGED STRING "1"
@@ -279,11 +279,11 @@ END SYN;
 -- Retrieval info: PRIVATE: MIG_DEVICE_SPEED_GRADE STRING "Any"
 -- Retrieval info: PRIVATE: MIRROR_CLK0 STRING "0"
 -- Retrieval info: PRIVATE: MIRROR_CLK1 STRING "0"
--- Retrieval info: PRIVATE: MULT_FACTOR0 NUMERIC "40"
--- Retrieval info: PRIVATE: MULT_FACTOR1 NUMERIC "40"
+-- Retrieval info: PRIVATE: MULT_FACTOR0 NUMERIC "50"
+-- Retrieval info: PRIVATE: MULT_FACTOR1 NUMERIC "50"
 -- Retrieval info: PRIVATE: NORMAL_MODE_RADIO STRING "1"
--- Retrieval info: PRIVATE: OUTPUT_FREQ0 STRING "100.00000000"
--- Retrieval info: PRIVATE: OUTPUT_FREQ1 STRING "100.00000000"
+-- Retrieval info: PRIVATE: OUTPUT_FREQ0 STRING "200.00000000"
+-- Retrieval info: PRIVATE: OUTPUT_FREQ1 STRING "200.00000000"
 -- Retrieval info: PRIVATE: OUTPUT_FREQ_MODE0 STRING "0"
 -- Retrieval info: PRIVATE: OUTPUT_FREQ_MODE1 STRING "0"
 -- Retrieval info: PRIVATE: OUTPUT_FREQ_UNIT0 STRING "MHz"

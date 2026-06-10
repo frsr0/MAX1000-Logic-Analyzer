@@ -7,10 +7,11 @@ use IEEE.numeric_std.all;
 ENTITY OLS_Logic_Analyzer IS
   GENERIC (
       CLK_Frequency   : INTEGER := 12000000;     
+      SAMPLE_CLK_HZ  : INTEGER := 200_000_000;
     Max_Samples     : NATURAL := 1000000;      
     Channels        : NATURAL := 4;
-    Sim             : boolean := false
-
+    Sim             : boolean := false;
+    FAST_SPEED      : boolean := false
   );
 PORT (
   CLK : IN STD_LOGIC;
@@ -73,7 +74,7 @@ END OLS_Logic_Analyzer;
 ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
 
   CONSTANT sub_steps    : NATURAL := 16 / Channels;
-  SIGNAL OLS_Interface_Rate_Div      : NATURAL          range 1 to 150000000 := 12;
+  SIGNAL OLS_Interface_Rate_Div      : NATURAL          range 1 to 500000000 := 12;
   SIGNAL OLS_Interface_Samples       : NATURAL          range 1 to Max_Samples := Max_Samples;
   SIGNAL OLS_Interface_Start_Offset  : NATURAL          range 0 to Max_Samples := 0;
   SIGNAL OLS_Interface_Run           : STD_LOGIC := '0';
@@ -118,6 +119,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   COMPONENT OLS_Interface IS
   GENERIC (
       CLK_Frequency   :   INTEGER     := 12000000;    
+      SAMPLE_CLK_HZ  :   INTEGER     := 200_000_000;
     Max_Samples     :   NATURAL     := 25000       
   );
   PORT (
@@ -129,7 +131,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
     SPI_MISO     : OUT STD_LOGIC := 'Z';
     Interface_Mode : OUT STD_LOGIC := '1';
     Inputs       : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');  
-    Rate_Div     : BUFFER NATURAL range 1 to 150000000 := 12; 
+    Rate_Div     : BUFFER NATURAL range 1 to 500000000 := 12; 
     Samples      : BUFFER NATURAL range 1 to Max_Samples   := Max_Samples;  
     Start_Offset : BUFFER NATURAL range 0 to Max_Samples   := 0;  
     Run          : BUFFER STD_LOGIC := '0'; 
@@ -174,6 +176,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
       Max_Samples    : NATURAL := 3000000;
     Channels       : NATURAL range 1 to 16 := 16;
     Sim            : boolean := false;
+    FAST_SPEED     : boolean := false;
+    CLK_Frequency  : NATURAL := 100_000_000;
+    SAMPLE_CLK_HZ  : NATURAL := 200_000_000;
     Write_Latency  : natural := 10;
     Read_Latency   : natural := 3;
     Page_Latency   : natural := 3
@@ -181,7 +186,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   PORT (
     CLK : IN STD_LOGIC;
     CLK_150     : OUT STD_LOGIC;
-    Rate_Div     : IN  NATURAL range 1 to 150000000 := 12; 
+    Rate_Div     : IN  NATURAL range 1 to 500000000 := 12; 
     Samples      : IN  NATURAL range 1 to Max_Samples   := Max_Samples;  
     Start_Offset : IN  NATURAL range 0 to Max_Samples   := 0;  
     Run         : IN  STD_LOGIC := '0'; 
@@ -249,7 +254,7 @@ BEGIN
   Gen_Capture_Active <= gen_capture_active_i;
   OLS_Interface1 : OLS_Interface
   GENERIC MAP (
-      CLK_Frequency => CLK_Frequency,Max_Samples   => Max_Samples
+      CLK_Frequency => CLK_Frequency,SAMPLE_CLK_HZ => SAMPLE_CLK_HZ,Max_Samples   => Max_Samples
   ) PORT MAP (
     CLK           => CLK,
     FAST_CLK      => FAST_CLK,
@@ -279,8 +284,8 @@ BEGIN
     
   );
   Fast_Logic_Analyzer_SDRAM1 : Fast_Logic_Analyzer_SDRAM
-  GENERIC MAP (
-      Max_Samples  => Max_Samples,Channels     => Channels,Sim          => Sim
+   GENERIC MAP (
+      Max_Samples  => Max_Samples,Channels     => Channels,Sim          => Sim,FAST_SPEED   => FAST_SPEED,CLK_Frequency => CLK_Frequency,SAMPLE_CLK_HZ => SAMPLE_CLK_HZ
   ) PORT MAP (
     CLK => CLK,
     CLK_150      => Fast_Logic_Analyzer_SDRAM_CLK_150,Rate_Div     => OLS_Interface_Rate_Div,Samples      => OLS_Interface_Samples,Start_Offset => OLS_Interface_Start_Offset,Run          => OLS_Interface_Run,Full         => OLS_Interface_Full,Inputs       => Inputs_Fast,Address      => LA_Address,Outputs      => LA_Out,sdram_addr   => sdram_addr,sdram_ba     => sdram_ba,sdram_cas_n  => sdram_cas_n,sdram_dq     => sdram_dq,sdram_dqm    => sdram_dqm,sdram_ras_n  => sdram_ras_n,sdram_we_n   => sdram_we_n,    sdram_cke    => sdram_cke,sdram_cs_n   => sdram_cs_n,sdram_clk    => sdram_clk,

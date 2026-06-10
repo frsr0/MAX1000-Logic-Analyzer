@@ -1,6 +1,9 @@
 # OLS Logic Analyzer clock constraints
-# PLL: 12 MHz in, c0=96 MHz (sys_clk), c1=120 MHz (fast_clk), c2=96 MHz shifted (sdram_clk)
-# After CDC architecture fix (2026-06-10):
+# PLL: 12 MHz in, c0=100 MHz (sys_clk), c1=200 MHz (fast_clk), c2=100 MHz shifted (sdram_clk)
+# Speed mode (FAST_SPEED=true):
+#   FAST_CLK (200 MHz, c1): 3-stage pipeline: sample -> control -> BRAM/FIFO write
+#   sys_clk  (100 MHz, c0): async FIFO read, SDRAM write pump, buffer mgmt, readout, OLS interface
+# Normal mode (FAST_SPEED=false):
 #   FAST_CLK (120 MHz, c1): capture mux, sample divider, input packer, BRAM, async FIFO push
 #   sys_clk  (96 MHz, c0):  async FIFO read, SDRAM write pump, buffer mgmt, readout, OLS interface
 # All cross-clock paths go through proper 2FF synchronizers, toggle synchronizers, or
@@ -17,9 +20,9 @@ derive_clock_uncertainty
 
 # Asynchronous clock groups: all cross-domain CDC paths properly synchronized.
 set_clock_groups -asynchronous \
-  -group { *|clk[0] } \
-  -group { *|clk[1] } \
-  -group { *|clk[2] }
+  -group [get_clocks {*|clk[0]}] \
+  -group [get_clocks {*|clk[1]}] \
+  -group [get_clocks {*|clk[2]}]
 
 # Async FIFO internal gray-code synchronizer paths
 # The dcfifo megafunction generates these internally; they are intentional

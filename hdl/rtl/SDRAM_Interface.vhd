@@ -7,6 +7,7 @@ use IEEE.numeric_std.all;
 ENTITY SDRAM_Interface IS
   GENERIC (
       Sim : BOOLEAN := false;
+      CLK_Frequency : natural := 96000000;
       Write_Latency : natural := 10;
       Read_Latency  : natural := 3;
       Page_Latency  : natural := 3
@@ -105,7 +106,7 @@ BEGIN
   process(CLK)
   begin
     if rising_edge(CLK) then
-      if reset_cnt < 480000 then  -- 480000 cycles @ 96 MHz = 5 ms (100 us min needed)
+      if reset_cnt < CLK_Frequency / 200 then  -- 5 ms reset hold
         reset_cnt <= reset_cnt + 1;
         sdram_reset_n <= '0';
       else
@@ -120,7 +121,8 @@ BEGIN
   sdram_clk <= CLK;
   sdram_s_byteenable_n <= (others => '0');
   sdram_s_chipselect <= '1';
-   u0 : component SDRAM_Controller
+    u0 : component SDRAM_Controller
+  generic map (CLK_Frequency => CLK_Frequency)
   port map (
   sdram_addr            => sdram_addr,            
   sdram_ba              => sdram_ba,              
