@@ -8,8 +8,7 @@ ENTITY OLS_SDRAM_Top IS
     TX_PIN      : natural range 0 to 31 := 3;
     PLL_MULT    : positive := 8;
     PLL_DIV     : positive := 1;
-    Sim         : boolean := false;
-    FAST_SPEED  : boolean := false
+    Sim         : boolean := false
   );
 PORT (
   CLK     : IN STD_LOGIC;
@@ -40,24 +39,8 @@ END OLS_SDRAM_Top;
 
 ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
 
-  function get_sys_clk_freq return natural is
-  begin
-    if FAST_SPEED then
-      return 100_000_000;
-    else
-      return 12000000 * PLL_MULT / PLL_DIV;
-    end if;
-  end function;
-  function get_sample_clk_freq return natural is
-  begin
-    if FAST_SPEED then
-      return 200_000_000;
-    else
-      return 12000000 * PLL_MULT / PLL_DIV;
-    end if;
-  end function;
-  constant System_CLK_Frequency : natural := get_sys_clk_freq;
-  constant SAMPLE_CLK_HZ : natural := get_sample_clk_freq;
+  constant System_CLK_Frequency : natural := 100_000_000;
+  constant SAMPLE_CLK_HZ : natural := 200_000_000;
   constant ENABLE_RUNTIME_INPUT_MUX : boolean := true;
   constant LA_CHANNELS : natural := 16;
   constant PIN_POOL_SIZE : natural := 26;
@@ -204,8 +187,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
       SAMPLE_CLK_HZ : INTEGER := 200_000_000;
     Max_Samples : NATURAL := 1000000;
     Channels    : NATURAL := LA_CHANNELS;
-    Sim         : boolean := false;
-    FAST_SPEED  : boolean := false
+    Sim         : boolean := false
   );
   PORT (
     CLK : IN STD_LOGIC;
@@ -708,8 +690,7 @@ BEGIN
     SAMPLE_CLK_HZ => SAMPLE_CLK_HZ,
     Max_Samples  => 1048576,
     Channels     => LA_CHANNELS,
-    Sim          => Sim,
-    FAST_SPEED   => FAST_SPEED
+    Sim          => Sim
   )
   PORT MAP (
     CLK => sys_clk,

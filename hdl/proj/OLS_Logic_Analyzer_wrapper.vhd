@@ -29,8 +29,6 @@ port (
 end OLS_Logic_Analyzer_wrapper;
 
 architecture rtl of OLS_Logic_Analyzer_wrapper is
-    -- Set FAST_SPEED=true for 200 MHz capture mode build
-    constant FAST_SPEED : boolean := true;
     -- Quartus pin assignments
     attribute chip_pin : string;
     attribute chip_pin of CLK : signal is "H6";
@@ -58,7 +56,6 @@ architecture rtl of OLS_Logic_Analyzer_wrapper is
     -- IO standard for LED
 begin
     core : entity work.OLS_SDRAM_Top
-    generic map (FAST_SPEED => FAST_SPEED)
     port map (
         CLK => CLK,
         SPI_CS => SPI_CS, SPI_SCK => SPI_SCK, SPI_MOSI => SPI_MOSI, SPI_MISO => SPI_MISO,

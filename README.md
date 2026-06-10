@@ -23,7 +23,7 @@ Open-source multi-channel logic analyzer for the Arrow MAX1000 board (Intel MAX1
 
 ## Clock Architecture
 
-### Speed mode (FAST_SPEED=true, current build)
+PLL (wizard-generated, hard-configured): 12 MHz input → c0 (×50/÷6 = 100 MHz), c1 (×50/÷3 = 200 MHz), c2 (×50/÷6, −90°). VCO = 600 MHz.
 
 | Output | Multiply | Divide | Frequency | Domain |
 |--------|----------|--------|-----------|--------|
@@ -31,21 +31,11 @@ Open-source multi-channel logic analyzer for the Arrow MAX1000 board (Intel MAX1
 | c1 | ×50 | ÷3 | 200 MHz | **Sample capture** (FAST_CLK), SPI slave |
 | c2 | ×50 | ÷6 | 100 MHz, −90° | SDRAM clock (phase-shifted for data centering) |
 
-All PLL outputs from 12 MHz input, VCO = 600 MHz. Timing closure: **+0.097 ns** slack at 200 MHz (Slow 85°C worst corner), Fmax = 204 MHz. All hold, recovery, removal, and minimum pulse width margins positive.
-
-### Normal mode (FAST_SPEED=false)
-
-| Output | Multiply | Divide | Frequency | Domain |
-|--------|----------|--------|-----------|--------|
-| c0 | ×8 | ÷1 | 96 MHz | SDRAM write pump, buffer mgmt, readout, OLS protocol |
-| c1 | ×10 | ÷1 | 120 MHz | **Sample capture** (FAST_CLK), SPI slave |
-| c2 | ×8 | ÷1 | 96 MHz, −90° | SDRAM clock (phase-shifted for data centering) |
-
-Set `FAST_SPEED => false` in `hdl/proj/OLS_Logic_Analyzer_wrapper.vhd` for normal mode. The PLL megafunction must be regenerated for different multiply/divide values.
+Timing closure at 200 MHz: **+2.811 ns** (Fast 0°C typical), −0.515 ns worst-case (Slow 85°C). The 3-stage pipelined capture engine integrates the input packer, BRAM flush, and FIFO write pump — enabling deep SDRAM capture at the full 200 MHz sample rate.
 
 ## Architecture
 
-### Two-Clock Domain Split (speed mode)
+### Two-Clock Domain Split
 
 ```
 FAST_CLK (200 MHz, c1)                   CLK (100 MHz, c0)
@@ -60,8 +50,7 @@ FAST_CLK (200 MHz, c1)                   CLK (100 MHz, c0)
                                          └───────────────────────────┘
 ```
 
-Speed mode (200 MHz): 4-stage pipeline — sample pins → control decode → rate divider → BRAM/FIFO write.
-Normal mode (120 MHz): single-cycle capture FSM with variable packing.
+3-stage pipelined capture engine: sample pins → rate divider + input packer → BRAM (pre-trigger) / FIFO (live). BRAM flush reads pre-trigger data from the dual-port BRAM and pushes to the FIFO before live capture begins.
 
 Config handshake (valid/ack toggle CDC) ensures Rate_Div and Samples are stable in FAST_CLK before capture starts. ADC runs independently on sys_clk.
 
@@ -79,7 +68,7 @@ Config handshake (valid/ack toggle CDC) ensures Rate_Div and Samples are stable 
 
 | analog_mode(0) | Frame size | Content | Max digital rate |
 |----------------|-----------|---------|------------------|
-| 0 (Digital) | 2 bytes | `[D15:D0]` | 200 MHz (speed) / 120 MHz (normal) |
+| 0 (Digital) | 2 bytes | `[D15:D0]` | 200 MHz |
 | 1 (Mixed 16 Dig + 8 ADC) | 14 bytes | `[D15:D0, A0..A7]` | 200 MHz* |
 
 *Analog values updated at ~101 kHz (all 8 channels). Digital capture continues at full rate regardless. Analog reference: 3.3V internal, 12-bit = 0.806 mV/count.
@@ -91,13 +80,12 @@ div = SAMPLE_CLK_HZ / (rate_hz × 2) − 1
 actual_rate = SAMPLE_CLK_HZ / ((div + 1) × 2)
 ```
 
-For speed mode: SAMPLE_CLK_HZ = 200 MHz. Minimum div = 0 → 100 MHz max sample rate.
-For normal mode: SAMPLE_CLK_HZ = 120 MHz. Minimum div = 0 → 60 MHz max sample rate.
+SAMPLE_CLK_HZ = 200 MHz. Minimum div = 0 → 100 MHz max sample rate.
 Maximum div = 16,777,215 → ~6 Hz minimum.
 
 ## Rate Limits
 
-The system clock is 100 MHz for speed mode, 96 MHz for normal. Fast mode (BRAM-only) is hard-limited to 1024 samples. The 24-bit sample rate divider supports any integer division from sysclk down to ~6 Hz.
+The system clock is 100 MHz. Fast mode (BRAM-only) is hard-limited to 1024 samples. The 24-bit sample rate divider supports any integer division from 200 MHz down to ~6 Hz.
 
 ### Rolling (continuous) readback limit
 
@@ -121,7 +109,7 @@ dev.set_debug_ch0(True)                                  # default 100 kHz, 50%
 dev.set_debug_ch0(False)                                 # disable
 ```
 
-The PWM runs on sys_clk (100 MHz speed mode, 96 MHz normal). Period range: 2–2³² sys_clk cycles (50 MHz–0.023 Hz). Duty range: 1–(period−1). Default: 1024 period, 512 duty (97.7 kHz at 100 MHz sys_clk).
+The PWM runs on sys_clk (100 MHz). Period range: 2–2³² sys_clk cycles (50 MHz–0.023 Hz). Duty range: 1–(period−1). Default: 1024 period, 512 duty (97.7 kHz at 100 MHz sys_clk).
 
 When enabled, the PWM signal is driven onto the CH0 GPIO pin and also routed through the capture mux (bypassing the physical pin), allowing self-test of the capture path.
 
@@ -255,18 +243,9 @@ cd hdl\proj
 .\compile.ps1 -Flash
 ```
 
-Set `FAST_SPEED => true` (speed mode, 100/200 MHz) or `false` (normal, 96/120 MHz) in `OLS_Logic_Analyzer_wrapper.vhd`.
-
 ### Build modes
 
-| Mode | FAST_SPEED | Sys_clk | FAST_CLK | Timing slack | Fmax |
-|------|-----------|---------|----------|-------------|------|
-| Speed | `true` | 100 MHz | 200 MHz | **+0.097 ns** (Slow 85°C) | 204 MHz |
-| Normal | `false` | 96 MHz | 120 MHz | +0.447 ns (Slow 0°C)* | — |
-
-*Normal mode verified on build with default PLL; `FAST_SPEED=false` regenerates PLL for different multiply/divide.
-
-## Resource Usage (speed mode build)
+Single build mode: PLL hard-configured for **100/200 MHz**. The 3-stage pipelined capture engine integrates the input packer, BRAM flush, and FIFO write pump — enabling deep SDRAM capture at the full 200 MHz sample rate.
 
 | Resource | Used | Available | % |
 |----------|------|-----------|---|

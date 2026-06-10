@@ -9,7 +9,6 @@ entity Fast_Logic_Analyzer_SDRAM is
     Max_Samples : natural := 3000000;
     Channels    : natural range 1 to 16 := 16;
     Sim         : boolean := false;
-    FAST_SPEED  : boolean := false;
     CLK_Frequency : natural := 100_000_000;
     SAMPLE_CLK_HZ : natural := 200_000_000;
     Write_Latency : natural := 10;
@@ -189,6 +188,15 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   -- BRAM read port (FAST_CLK domain): used during flush-to-FIFO
   signal bram_raddr_f  : natural range 0 to BRAM_SIZE-1 := 0;
   signal bram_rdata_f  : std_logic_vector(15 downto 0) := (others => '0');
+
+  -- Unified capture engine pipeline registers
+  signal state_r         : natural range 0 to 2 := 0;
+  signal bram_wp_r       : natural range 0 to BRAM_SIZE-1 := 0;
+  signal bram_cnt_r      : natural range 0 to BRAM_SIZE := 0;
+  signal packed_word_r   : std_logic_vector(15 downto 0) := (others => '0');
+  signal packed_valid_r  : std_logic := '0';
+  signal flush_raddr_r   : natural range 0 to BRAM_SIZE-1 := 0;
+  signal flush_rem_r     : natural range 0 to BRAM_SIZE := 0;
 
   component SDRAM_Interface is
   generic (
@@ -436,142 +444,9 @@ begin
   end process;
 
   -- ============================================================
-  -- Speed mode (200 MHz): 3-stage pipeline, no divider, no flush
+  -- Capture engine (200 MHz): pipelined with input packer + flush FSM
   -- ============================================================
-  gen_fast_speed : if FAST_SPEED generate
-    signal sample_word_r  : std_logic_vector(Channels-1 downto 0) := (others => '0');
-    signal capture_en_r   : std_logic := '0';
-    signal pretrig_en_r   : std_logic := '0';
-    signal bram_wp_r      : natural range 0 to BRAM_SIZE-1 := 0;
-    signal bram_cnt_r     : natural range 0 to BRAM_SIZE := 0;
-    signal sample_div_cnt_r : natural range 0 to MAX_RATE_DIV := 0;
-    signal sample_tick_r  : std_logic := '0';
-    signal sample_rem_nonzero_r : std_logic := '0';
-    -- Pipeline register: pre-compute sample_remaining - 1 to break 22-bit carry chain
-    signal sample_rem_dec_r    : natural range 0 to 3000000 := 0;
-    -- Pre-trigger counter: limits BRAM pre-trigger to 8 ticks, then switches to FIFO.
-    -- Without this, the CDC settling window for run_f_level (Armed→Run) can cause up to
-    -- 1024 pre-trigger BRAM writes before switching to FIFO, delaying gen capture data.
-    signal pretrig_tick_cnt : natural range 0 to 15 := 0;
-  begin
-    -- Stage 0: sample pins
-    process(FAST_CLK)
-    begin
-      if rising_edge(FAST_CLK) then
-        sample_word_r <= Inputs;
-      end if;
-    end process;
-
-    -- Stage 1: control decode
-    process(FAST_CLK)
-    begin
-      if rising_edge(FAST_CLK) then
-        capture_en_r <= run_f_level;
-        pretrig_en_r <= Armed_f and not run_f_level;
-      end if;
-    end process;
-
-    -- Stage 2a: rate divider counter (free-running when capture active)
-    process(FAST_CLK)
-    begin
-      if rising_edge(FAST_CLK) then
-        if cfg_valid_edge = '1' then
-          sample_div_cnt_r <= 0;
-        elsif capture_en_r = '1' and sample_rem_nonzero_r = '1' then
-          if sample_div_cnt_r = 0 then
-            sample_div_cnt_r <= cfg_rate_reload_f;
-          else
-            sample_div_cnt_r <= sample_div_cnt_r - 1;
-          end if;
-        end if;
-      end if;
-    end process;
-
-    -- Stage 2b: sample tick (pipelined one cycle after divider reaches zero)
-    process(FAST_CLK)
-    begin
-      if rising_edge(FAST_CLK) then
-        sample_tick_r <= '0';
-        if capture_en_r = '1' and sample_rem_nonzero_r = '1' and sample_div_cnt_r = 0 then
-          sample_tick_r <= '1';
-        end if;
-      end if;
-    end process;
-
-    -- Stage 2c: sample-remaining non-zero flag (pipelined, avoids 22-bit >0 in write path)
-    process(FAST_CLK)
-    begin
-      if rising_edge(FAST_CLK) then
-        if cfg_valid_edge = '1' then
-          sample_rem_nonzero_r <= '1';
-        elsif fifo_wr = '1' and sample_remaining <= 2 then
-          sample_rem_nonzero_r <= '0';
-        end if;
-      end if;
-    end process;
-
-    -- Pre-trigger tick counter: limits BRAM pre-trigger to 8 ticks, then switches to FIFO.
-    -- Prevents CDC settling window from causing 1024 pre-trigger writes that delay gen data.
-    process(FAST_CLK)
-    begin
-      if rising_edge(FAST_CLK) then
-        if cfg_valid_edge = '1' then
-          pretrig_tick_cnt <= 0;
-        elsif pretrig_en_r = '1' and sample_tick_r = '1' and pretrig_tick_cnt < 15 then
-          pretrig_tick_cnt <= pretrig_tick_cnt + 1;
-        end if;
-      end if;
-    end process;
-
-    -- Stage 2d: BRAM/FIFO write (uses pipelined flags, only 1-bit compares)
-    process(FAST_CLK)
-    begin
-      if rising_edge(FAST_CLK) then
-        fifo_wr <= '0';
-        bram_wren <= '0';
-
-        if cfg_valid_edge = '1' then
-          sample_remaining <= cfg_samples_f;
-          fifo_overflow_f <= '0';
-          bram_wp_r <= 0;
-          bram_cnt_r <= 0;
-        end if;
-
-        if fifo_overflow_f = '0' then
-          if pretrig_en_r = '1' and pretrig_tick_cnt < 8 then
-            bram_waddr <= bram_wp_r;
-            bram_wdata <= sample_word_r;
-            bram_wren  <= '1';
-            if bram_wp_r = BRAM_SIZE-1 then
-              bram_wp_r <= 0;
-            else
-              bram_wp_r <= bram_wp_r + 1;
-            end if;
-            if bram_cnt_r < BRAM_SIZE then
-              bram_cnt_r <= bram_cnt_r + 1;
-            end if;
-
-          elsif capture_en_r = '1' and sample_tick_r = '1' then
-            if fifo_wrfull = '0' then
-              fifo_wdata <= sample_word_r;
-              fifo_wr <= '1';
-              sample_remaining <= sample_remaining - 1;
-            end if;
-            if fifo_wrfull = '1' then
-              fifo_overflow_f <= '1';
-            end if;
-          end if;
-        end if;
-      end if;
-    end process;
-  end generate;
-
-  -- ============================================================
-  -- Normal mode (120 MHz): sample divider + input packer + flush FSM
-  -- ============================================================
-  gen_fast_normal : if not FAST_SPEED generate
-  begin
-    -- Pre-compute rate_div - 1 for the fast down-counter
+  -- Pre-compute rate_div - 1 for the fast down-counter
     process(FAST_CLK)
     begin
       if rising_edge(FAST_CLK) then
@@ -583,127 +458,145 @@ begin
       end if;
     end process;
 
-    -- Fast capture process: runs at 120 MHz on FAST_CLK
-    -- Samples Inputs, packs into 16-bit words.
-    -- When Armed and pre-trigger: writes to circular BRAM.
-    -- On cfg_valid_edge (trigger/starts): flushes BRAM to async FIFO,
-    --   then pushes live samples until cfg_samples_f reached.
+    -- Stage 0: registered sample input
     process(FAST_CLK)
-      variable step_r    : natural range 0 to sub_steps := 0;
-      variable wbuf      : std_logic_vector(31 downto 0) := (others => '0');
-      variable bram_wp   : natural range 0 to BRAM_SIZE-1 := 0;
-      variable bram_cnt  : natural range 0 to BRAM_SIZE := 0;
-      -- State: 0=pre-trigger, 1=flush BRAM to FIFO, 2=live capture
-      variable state     : natural range 0 to 2 := 0;
-      variable flush_raddr : natural range 0 to BRAM_SIZE-1 := 0;
-      variable flush_rem   : natural range 0 to BRAM_SIZE := 0;
-      variable sample_en_v : boolean := false;
     begin
       if rising_edge(FAST_CLK) then
         Inputs_r <= Inputs;
-        fifo_wr <= '0';
-        bram_wren <= '0';
-        sample_tick_r <= '0';
+      end if;
+    end process;
 
-        -- Registered sample tick generator (replaces variable cnt).
-        -- Only advances in states that actually sample: pre-trigger (state 0
-        -- when Armed) or live capture (state 2). Holds count during flush.
-        sample_en_v := false;
-        if fifo_overflow_f = '0' then
-          if (state = 0 and Armed_f = '1' and run_f_level = '0') or state = 2 then
-            sample_en_v := true;
-          end if;
-        end if;
+    -- Stage 1a: tick generator (separate process for timing at 200 MHz)
+    -- Only drives cnt_s and sample_tick_r.  Reads state_r from main FSM.
+    process(FAST_CLK)
+    begin
+      if rising_edge(FAST_CLK) then
+        sample_tick_r <= '0';
         if cfg_valid_edge = '1' then
           cnt_s <= 0;
-        elsif sample_en_v then
-          if cnt_s = 0 then
-            cnt_s <= rate_div_m1_f;
-            sample_tick_r <= '1';
-          else
-            cnt_s <= cnt_s - 1;
+        elsif fifo_overflow_f = '0' then
+          if (state_r = 0 and Armed_f = '1' and run_f_level = '0') or state_r = 2 then
+            if cnt_s = 0 then
+              cnt_s <= rate_div_m1_f;
+              sample_tick_r <= '1';
+            else
+              cnt_s <= cnt_s - 1;
+            end if;
+          end if;
+        end if;
+      end if;
+    end process;
+
+    -- Stage 2: input packer (no BRAM/FIFO writes — purely packing pipeline)
+    -- Drives packed_word_r/packed_valid_r for stage 3.
+    process(FAST_CLK)
+      variable step_v     : natural range 0 to sub_steps := 0;
+      variable wbuf_v     : std_logic_vector(31 downto 0) := (others => '0');
+      variable bram_wp_v  : natural range 0 to BRAM_SIZE-1 := 0;
+      variable bram_cnt_v : natural range 0 to BRAM_SIZE := 0;
+    begin
+      if rising_edge(FAST_CLK) then
+        packed_valid_r <= '0';
+
+        if cfg_valid_edge = '1' then
+          step_v := 0; wbuf_v := (others => '0');
+          bram_wp_v := 0; bram_cnt_v := 0;
+        end if;
+
+        if fifo_overflow_f = '0' and sample_tick_r = '1' then
+          if state_r /= 1 then  -- not during flush
+            wbuf_v(((step_v + 1) * Channels) - 1 downto step_v * Channels) := Inputs_r;
+            if step_v = sub_steps - 1 then
+              packed_word_r <= wbuf_v(15 downto 0);
+              packed_valid_r <= '1';
+              step_v := 0;
+              if state_r = 0 then
+                bram_wp_v := bram_wp_v + 1;
+                if bram_cnt_v < BRAM_SIZE then bram_cnt_v := bram_cnt_v + 1; end if;
+              end if;
+            else
+              step_v := step_v + 1;
+            end if;
           end if;
         end if;
 
-        -- Config handshake edge: transition from pre-trigger to flush/capture
+        bram_wp_r  <= bram_wp_v;
+        bram_cnt_r <= bram_cnt_v;
+      end if;
+    end process;
+
+    -- Stage 3: write FSM (drives all BRAM and FIFO writes from packed_word_r)
+    -- Uses packed_valid_r handshake from stage 2.
+    -- State 0 BRAM write pointer is tracked via stage 2's bram_wp_r/bram_cnt_r.
+    -- State 1/2 use local variables for flush state only.
+    process(FAST_CLK)
+      variable bram_wp_v  : natural range 0 to BRAM_SIZE-1 := 0;
+      variable bram_cnt_v : natural range 0 to BRAM_SIZE := 0;
+    begin
+      if rising_edge(FAST_CLK) then
+        fifo_wr <= '0';
+        bram_wren <= '0';
+
         if cfg_valid_edge = '1' then
-          step_r := 0;
-          wbuf := (others => '0');
+          bram_wp_v := 0; bram_cnt_v := 0;
           sample_remaining <= cfg_samples_f;
           fifo_overflow_f <= '0';
-          if bram_cnt > 0 then
-            if bram_wp >= bram_cnt then
-              flush_raddr := bram_wp - bram_cnt;
+          if bram_cnt_r > 0 then
+            if bram_wp_r >= bram_cnt_r then
+              flush_raddr_r <= bram_wp_r - bram_cnt_r;
             else
-              flush_raddr := BRAM_SIZE - bram_cnt + bram_wp;
+              flush_raddr_r <= BRAM_SIZE - bram_cnt_r + bram_wp_r;
             end if;
-            flush_rem := bram_cnt;
-            state := 1;
+            flush_rem_r <= bram_cnt_r;
+            state_r <= 1;
           else
-            state := 2;
+            state_r <= 2;
           end if;
 
-        -- State machine (only runs when not in overflow)
-        elsif fifo_overflow_f = '0' then
+        elsif fifo_overflow_f = '0' and packed_valid_r = '1' then
 
-          -- State 0: Pre-trigger — circular BRAM write
-          if state = 0 then
+          -- State 0: Pre-trigger — BRAM write (use local bram_wp_v/bram_cnt_v)
+          if state_r = 0 then
             if Armed_f = '1' and run_f_level = '0' then
-              if sample_tick_r = '1' then
-                wbuf(((step_r + 1) * Channels) - 1 downto step_r * Channels) := Inputs_r;
-                if step_r = sub_steps - 1 then
-                  bram_waddr <= bram_wp;
-                  bram_wdata <= wbuf(15 downto 0);
-                  bram_wren <= '1';
-                  if bram_wp = BRAM_SIZE-1 then bram_wp := 0;
-                  else bram_wp := bram_wp + 1; end if;
-                  if bram_cnt < BRAM_SIZE then bram_cnt := bram_cnt + 1; end if;
-                  step_r := 0;
-                else
-                  step_r := step_r + 1;
-                end if;
-              end if;
+              bram_waddr <= bram_wp_v;
+              bram_wdata <= packed_word_r;
+              bram_wren <= '1';
+              if bram_wp_v = BRAM_SIZE-1 then bram_wp_v := 0;
+              else bram_wp_v := bram_wp_v + 1; end if;
+              if bram_cnt_v < BRAM_SIZE then bram_cnt_v := bram_cnt_v + 1; end if;
             end if;
 
-          -- State 1: Flush BRAM to async FIFO (pre-trigger samples first)
-          elsif state = 1 then
-            if flush_rem > 0 then
+          -- State 1: Flush BRAM to async FIFO
+          elsif state_r = 1 then
+            if flush_rem_r > 0 then
               if fifo_wrfull = '0' then
-                bram_raddr_f <= flush_raddr;
-                -- Skip write on first cycle (BRAM read is registered)
-                if flush_rem < bram_cnt then
+                bram_raddr_f <= flush_raddr_r;
+                if flush_rem_r < bram_cnt_r then
                   fifo_wdata <= bram_rdata_f;
                   fifo_wr <= '1';
                   sample_remaining <= sample_remaining - 1;
                 end if;
-                if flush_raddr = BRAM_SIZE-1 then flush_raddr := 0;
-                else flush_raddr := flush_raddr + 1; end if;
-                flush_rem := flush_rem - 1;
+                if flush_raddr_r = BRAM_SIZE-1 then flush_raddr_r <= 0;
+                else flush_raddr_r <= flush_raddr_r + 1; end if;
+                flush_rem_r <= flush_rem_r - 1;
               end if;
             else
-              state := 2;
+              state_r <= 2;
             end if;
 
           -- State 2: Live capture — push samples to async FIFO
-          else
-            if sample_tick_r = '1' then
-              wbuf(((step_r + 1) * Channels) - 1 downto step_r * Channels) := Inputs_r;
-              if step_r = sub_steps - 1 then
-                if fifo_wrfull = '0' and sample_remaining /= 0 then
-                  fifo_wdata <= wbuf(15 downto 0);
-                  fifo_wr <= '1';
-                  sample_remaining <= sample_remaining - 1;
-                end if;
-                if fifo_wrfull = '1' or sample_remaining <= 1 then
-                  fifo_overflow_f <= '1';
-                end if;
-                step_r := 0;
-              else
-                step_r := step_r + 1;
-              end if;
+          elsif state_r = 2 then
+            if fifo_wrfull = '0' and sample_remaining /= 0 then
+              fifo_wdata <= packed_word_r;
+              fifo_wr <= '1';
+              sample_remaining <= sample_remaining - 1;
+            end if;
+            if fifo_wrfull = '1' or sample_remaining <= 1 then
+              fifo_overflow_f <= '1';
             end if;
           end if;
         end if;
+
       end if;
     end process;
 
@@ -714,7 +607,6 @@ begin
         bram_rdata_f <= bram(bram_raddr_f);
       end if;
     end process;
-  end generate;
 
   process(pclk)
   begin
