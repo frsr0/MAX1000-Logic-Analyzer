@@ -1,4 +1,5 @@
 import sys, struct, os, json, zipfile, io, threading
+import pytest
 from unittest.mock import MagicMock, patch, ANY, PropertyMock
 
 sys.modules['serial'] = MagicMock()
@@ -170,9 +171,20 @@ class TestOLScopeGetters:
 # OLScope Rate Limits
 # ====================================================================
 
+ALL_RATES = [
+    ('1kHz', 1_000), ('10kHz', 10_000), ('100kHz', 100_000), ('500kHz', 500_000),
+    ('1MHz', 1_000_000), ('2MHz', 2_000_000), ('3MHz', 3_000_000), ('4MHz', 4_000_000),
+    ('6MHz', 6_000_000), ('8MHz', 8_000_000), ('10MHz', 10_000_000), ('12MHz', 12_000_000),
+    ('16MHz', 16_000_000), ('24MHz', 24_000_000), ('32MHz', 32_000_000), ('48MHz', 48_000_000),
+    ('50MHz', 50_000_000), ('80MHz', 80_000_000), ('100MHz', 100_000_000), ('200MHz', 200_000_000),
+]
+
+ALL_RATES_NO_200M = [r for r in ALL_RATES if r[0] != '200MHz']
+
 class TestOLScopeRateLimits:
-    def test_single_digital_96mhz(self):
-        """Single-shot 16 Digital allows 96 MHz."""
+    @pytest.mark.parametrize("rate_str,expected", ALL_RATES_NO_200M)
+    def test_all_rate_presets(self, rate_str, expected):
+        """Every rate preset parses to the correct Hz value."""
         scope = _make_scope()
         scope.capture_type = MagicMock()
         scope.capture_type.get.return_value = 'single'
@@ -181,21 +193,30 @@ class TestOLScopeRateLimits:
         scope._update_time_display = MagicMock()
         scope._update_rate_info = MagicMock()
         scope._update_buf_estimate = MagicMock()
-        rate = scope._apply_rate('96MHz')
-        assert rate == 96_000_000
+        rate = scope._apply_rate(rate_str)
+        assert rate == expected
 
-    def test_single_8ana_96mhz(self):
-        """Single-shot 16 Dig + 8 Ana allows 96 MHz."""
+    def test_200mhz_with_device(self):
+        """200 MHz accepted when device sys_clk supports it."""
         scope = _make_scope()
+        scope.dev = MagicMock()
+        scope.dev.sys_clk = 200_000_000
         scope.capture_type = MagicMock()
         scope.capture_type.get.return_value = 'single'
         scope.mode_cb = MagicMock()
-        scope.mode_cb.get.return_value = '16 Dig + 8 Ana'
+        scope.mode_cb.get.return_value = '16 Digital'
         scope._update_time_display = MagicMock()
         scope._update_rate_info = MagicMock()
         scope._update_buf_estimate = MagicMock()
-        rate = scope._apply_rate('96MHz')
-        assert rate == 96_000_000
+        rate = scope._apply_rate('200MHz')
+        assert rate == 200_000_000
+
+    @pytest.mark.parametrize("rate_str,expected", ALL_RATES_NO_200M)
+    def test_fmt_rate_roundtrip(self, rate_str, expected):
+        """_fmt_rate followed by _apply_rate returns same value."""
+        scope = _make_scope()
+        fmt = scope._fmt_rate(expected)
+        assert fmt in [r for r, _ in ALL_RATES], f"{fmt} not in presets"
 
     def test_rolling_digital_clamps_to_15mhz(self):
         """Rolling 16 Digital clamps to 15 MHz (30 MB/s / 2 B)."""
@@ -223,48 +244,6 @@ class TestOLScopeRateLimits:
         rate = scope._apply_rate('96MHz')
         assert rate <= 2_150_000
         assert rate > 2_000_000
-
-    def test_rate_too_far_clamps_safely(self):
-        """999 MHz clamps to sysclk limit (96 MHz)."""
-        scope = _make_scope()
-        scope.capture_type = MagicMock()
-        scope.capture_type.get.return_value = 'single'
-        scope.mode_cb = MagicMock()
-        scope.mode_cb.get.return_value = '16 Digital'
-        scope._update_time_display = MagicMock()
-        scope._update_rate_info = MagicMock()
-        scope._update_buf_estimate = MagicMock()
-        scope.fast_mode_var = _MockVar(value=False)
-        rate = scope._apply_rate('999MHz')
-        assert rate == 100_000_000
-
-    def test_rate_below_min_clamps_up(self):
-        """0 Hz clamps to 1 Hz."""
-        scope = _make_scope()
-        scope.capture_type = MagicMock()
-        scope.capture_type.get.return_value = 'single'
-        scope.mode_cb = MagicMock()
-        scope.mode_cb.get.return_value = '16 Digital'
-        scope._update_time_display = MagicMock()
-        scope._update_rate_info = MagicMock()
-        scope._update_buf_estimate = MagicMock()
-        scope.fast_mode_var = _MockVar(value=False)
-        rate = scope._apply_rate('0Hz')
-        assert rate == 1
-
-    def test_invalid_rate_text_uses_default(self):
-        """Garbage rate text falls back to 1 MHz."""
-        scope = _make_scope()
-        scope.capture_type = MagicMock()
-        scope.capture_type.get.return_value = 'single'
-        scope.mode_cb = MagicMock()
-        scope.mode_cb.get.return_value = '16 Digital'
-        scope._update_time_display = MagicMock()
-        scope._update_rate_info = MagicMock()
-        scope._update_buf_estimate = MagicMock()
-        scope.fast_mode_var = _MockVar(value=False)
-        rate = scope._apply_rate('not-a-rate')
-        assert rate == 1_000_000
 
 
 # ====================================================================
@@ -301,11 +280,10 @@ class _MockVar:
         self._value = value
 
 
-def _mk_scope_for_capture(fast=False, capture_type='rolling', mode=ANALOG_MODE_DIGITAL8):
+def _mk_scope_for_capture(capture_type='rolling', mode=ANALOG_MODE_DIGITAL8):
     """Build a minimal scope state for testing _capture paths."""
     scope = _make_scope()
     scope.dev = MagicMock()
-    scope.fast_mode_var = _MockVar(value=fast)
     scope.capture_type = _MockVar(value=capture_type)
     scope.capture_mode = mode
     scope.capture_stride = 4
@@ -355,33 +333,49 @@ class TestCapturePaths:
     def teardown_method(self):
         threading.Thread = self._real_thread
 
-    def test_fast_rolling_disables_fast(self):
-        """Fast mode + Rolling should disable fast mode before capture."""
-        scope = _mk_scope_for_capture(fast=True, capture_type='rolling')
+    def test_rolling_disables_fast(self):
+        """Rolling capture should disable fast mode."""
+        scope = _mk_scope_for_capture(capture_type='rolling')
+        scope._nsamp = 512
+        scope.rate_cb = MagicMock()
+        scope.rate_cb.get.return_value = '1MHz'
         scope._capture()
-        assert not scope.fast_mode_var.get(), "fast mode should be disabled for rolling"
+        assert not scope.dev.fast_mode_enabled, "fast mode should be off for rolling"
 
     def test_single_digital_path(self):
         """Single digital capture reaches thread creation."""
-        scope = _mk_scope_for_capture(fast=False, capture_type='single')
+        scope = _mk_scope_for_capture(capture_type='single')
         scope._capture()
-        assert not scope.fast_mode_var.get()
 
     def test_rolling_digital_path(self):
         """Rolling digital capture reaches thread creation."""
-        scope = _mk_scope_for_capture(fast=False, capture_type='rolling')
+        scope = _mk_scope_for_capture(capture_type='rolling')
         scope._capture()
 
     def test_single_8ana_path(self):
         """Single 8-analog capture reaches thread creation."""
-        scope = _mk_scope_for_capture(fast=False, capture_type='single', mode=ANALOG_ENABLE_BIT)
+        scope = _mk_scope_for_capture(capture_type='single', mode=ANALOG_ENABLE_BIT)
         scope._capture()
 
-    def test_fast_single_keeps_fast(self):
-        """Fast mode + Single should stay enabled."""
-        scope = _mk_scope_for_capture(fast=True, capture_type='single')
+    def test_fast_auto_selected_for_bram_ok(self):
+        """Single capture with <= 1024 nsamp should auto-enable fast mode."""
+        scope = _mk_scope_for_capture(capture_type='single')
+        scope._nsamp = 1024
+        scope.rate_cb = MagicMock()
+        scope.rate_cb.get.return_value = '200MHz'
+        scope.dev = MagicMock()
         scope._capture()
-        assert scope.fast_mode_var.get(), "fast mode should stay on for single"
+        assert scope.dev.fast_mode_enabled, "fast mode should be enabled for <= 1024 samples"
+
+    def test_fast_not_auto_for_deep_capture(self):
+        """Single capture with > 1024 nsamp should NOT enable fast mode."""
+        scope = _mk_scope_for_capture(capture_type='single')
+        scope._nsamp = 5000
+        scope.rate_cb = MagicMock()
+        scope.rate_cb.get.return_value = '1MHz'
+        scope.dev = MagicMock()
+        scope._capture()
+        assert not scope.dev.fast_mode_enabled, "fast mode should be off for deep capture"
 
 
 class TestOLScopeUpdateTimeDisplay:

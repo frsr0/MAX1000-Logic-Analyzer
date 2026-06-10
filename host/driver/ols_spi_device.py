@@ -559,8 +559,6 @@ class OLSDeviceSPI:
                               i2c_speed=100000, dev_addr=0x18, reg_addr=0x0F,
                               read_len=1, tx_pin=2, scl_pin=1, fast_mode=True):
         self._ensure_open()
-        # I2C must stay active long enough to overlap post-ARM SPI load+start.
-        i2c_speed = min(i2c_speed, 8_000)
 
         self.reset()
         time.sleep(0.02)

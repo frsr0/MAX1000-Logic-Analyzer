@@ -136,8 +136,8 @@ class OLScope:
 
         ttk.Label(tb, text="Rate:").pack(side='left')
         self.rate_cb = ttk.Combobox(tb,
-            values=['1kHz','10kHz','100kHz','500kHz','1MHz','2MHz','3MHz','4MHz','6MHz','8MHz','10MHz','12MHz','16MHz','24MHz','32MHz','48MHz','50MHz','80MHz','100MHz','200MHz','Fast 200MHz'],
-            width=10, state='normal')
+            values=['1kHz','10kHz','100kHz','500kHz','1MHz','2MHz','3MHz','4MHz','6MHz','8MHz','10MHz','12MHz','16MHz','24MHz','32MHz','48MHz','50MHz','80MHz','100MHz','200MHz'],
+            width=10, state='readonly')
         self.rate_cb.set('1MHz'); self.rate_cb.pack(side='left', padx=2)
         self.rate_cb.bind('<<ComboboxSelected>>', self._on_rate_changed)
         self.rate_cb.bind('<KeyRelease>', self._on_rate_changed)
@@ -501,11 +501,6 @@ class OLScope:
         ttk.Separator(self.trig_frame, orient='horizontal').grid(
             row=tr, column=0, columnspan=4, sticky='ew', pady=2)
         tr += 1
-        self.fast_mode_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(self.trig_frame, text="Fast mode (BRAM, 1024 samples max)",
-                        variable=self.fast_mode_var).grid(
-            row=tr, column=0, columnspan=4, sticky='w', pady=1)
-        tr += 1
         self.debug_ch0_var = tk.BooleanVar(value=False)
         self.debug_ch0_freq_var = tk.StringVar(value='100000')
         self.debug_ch0_duty_var = tk.StringVar(value='50')
@@ -638,26 +633,16 @@ class OLScope:
         self._update_buf_presets()
 
     def _apply_rate(self, raw):
-        """Parse, clamp, and apply rate. Returns rate in Hz."""
+        """Parse preset rate string, clamp to max. Returns rate in Hz."""
         max_rate = self._get_max_rate()
         try:
-            if raw.lower() in ('fast 200mhz', 'fast 120mhz'):
-                rate = 200_000_000 if raw.lower() == 'fast 200mhz' else 120_000_000
-                self.fast_mode_var.set(True)
-                self._nsamp = 1024
-                self.rate_cb.set('Fast 200MHz' if raw.lower() == 'fast 200mhz' else 'Fast 120MHz')
+            s = raw.replace(',', '').strip().lower()
+            if s.endswith('mhz'):
+                rate = int(float(s.replace('mhz', '')) * 1_000_000)
+            elif s.endswith('khz'):
+                rate = int(float(s.replace('khz', '')) * 1_000)
             else:
-                if self.fast_mode_var.get():
-                    self.fast_mode_var.set(False)
-                raw = raw.replace(',', '').strip()
-                if raw.lower().endswith('mhz'):
-                    rate = int(float(raw.lower().replace('mhz', '')) * 1_000_000)
-                elif raw.lower().endswith('khz'):
-                    rate = int(float(raw.lower().replace('khz', '')) * 1_000)
-                elif raw.lower().endswith('hz'):
-                    rate = int(float(raw.lower().replace('hz', '')))
-                else:
-                    rate = int(float(raw)) if raw else 1_000_000
+                rate = 1_000_000
         except (ValueError, AttributeError):
             rate = 1_000_000
         rate = max(1, min(rate, max_rate))
@@ -689,8 +674,6 @@ class OLScope:
                     max_rate = int(clk)
             except (AttributeError, TypeError):
                 pass
-        if self.fast_mode_var.get():
-            max_rate = max_rate * 2
         if self.capture_type.get() == 'rolling':
             stride = analog_frame_stride(mode)
             rolling_limit = int(self.ROLLING_READBACK_MB_PER_S * 1_000_000 / stride)
@@ -1053,16 +1036,15 @@ class OLScope:
             self.dev.reset()
         rate = self._get_rate()
         nsamp = self._get_samples()
-        fast = self.fast_mode_var.get()
         rolling = self.capture_type.get() == 'rolling'
-        if fast and rolling:
-            self.status['text'] = "Fast mode incompatible with rolling — disabling fast mode"
-            fast = False
-            self.fast_mode_var.set(False)
+        # Auto fast mode: BRAM for single captures with <= 1024 samples
+        fast = not rolling and nsamp <= 1024
         if fast:
-            max_fast = self._get_max_rate()
-            rate = min(rate, max_fast)
+            rate = min(rate, self._get_max_rate())
             nsamp = min(nsamp, 1024)
+        if hasattr(self, 'dev') and self.dev is not None:
+            try: self.dev.fast_mode_enabled = fast
+            except: pass
         # Build trigger mask from UI
         trig_mode_val = self.trig_mode.get()
         if trig_mode_val == 'Off':
