@@ -596,14 +596,15 @@ def test_i2c_sweep(dev):
     dev.reset()
     dev.spi.flush()
     dev.set_debug_ch0(False)
-    # Warm-up: first capture after open can have SPI timing edge. Prime it.
     dev.pkt.get_status()
     time.sleep(0.02)
 
+    # Verify I2C generator produces correct SCL/SDA frame at all capture rates.
+    # Generator sends: START + 0x30 (dev_addr write) + 0x0F (reg_addr) + STOP.
+    # At cap_rate >= 8 MHz, the decoder resolves START/STOP and data bytes.
     i2c_frame = bytes([(0x18 << 1) & 0xFE, 0x0F])
-    # Sweep rates where Nyquist >= 2× I2C speed (400 kHz) and window >= 100 µs
     for cap_rate in [500000, 1000000, 2000000, 4000000, 8000000, 16000000, 32000000, 48000000, 80000000, 100000000, 200000000]:
-        nsamp = max(5000, int(cap_rate * 0.0001))  # at least 100 µs window
+        nsamp = max(5000, int(cap_rate * 0.0001))
         data = dev.capture_with_gen(
             rate_hz=cap_rate, nsamples=nsamp, timeout=6,
             proto='I2C', i2c_speed=400000,
@@ -612,8 +613,25 @@ def test_i2c_sweep(dev):
             ch, ns = samples_to_channels(data)
             scl_tr = sum(1 for i in range(1, ns) if ch[1][i] != ch[1][i-1])
             sda_tr = sum(1 for i in range(1, ns) if ch[2][i] != ch[2][i-1])
-            log(f"  {cap_rate/1e6:.3g} MHz: SCL={scl_tr} SDA={sda_tr} ({ns} samples)")
-            check(scl_tr >= 3, f"I2C SCL at {cap_rate/1e6:.3g} MHz ({scl_tr})")
+            decoded = decode_i2c(ch, samplerate=cap_rate, scl_idx=1, sda_idx=2)
+            starts = sum(1 for t, v in decoded if t == "START")
+            stops  = sum(1 for t, v in decoded if t == "STOP")
+            data_bytes = [v for t, v in decoded if t == "DATA"]
+            db_hex = ' '.join(f'0x{b:02X}' for b in data_bytes) if data_bytes else '-'
+            log(f"  {cap_rate/1e6:.3g} MHz: SCL={scl_tr} SDA={sda_tr}  "
+                f"({starts} start, {stops} stop, {len(data_bytes)}B: {db_hex})")
+            if cap_rate >= 8000000:
+                check(starts >= 1, f"I2C START at {cap_rate/1e6:.3g} MHz ({starts})")
+                check(stops >= 1, f"I2C STOP at {cap_rate/1e6:.3g} MHz ({stops})")
+                check(len(data_bytes) >= 2, f"I2C >=2 data bytes at {cap_rate/1e6:.3g} MHz ({len(data_bytes)})")
+                if len(data_bytes) >= 1:
+                    check(data_bytes[0] == (0x18 << 1) & 0xFE,
+                          f"dev addr 0x30 at {cap_rate/1e6:.3g} MHz (got 0x{data_bytes[0]:02X})")
+                if len(data_bytes) >= 2:
+                    check(data_bytes[1] == 0x0F,
+                          f"reg addr 0x0F at {cap_rate/1e6:.3g} MHz (got 0x{data_bytes[1]:02X})")
+            else:
+                log(f"  [INFO] {cap_rate/1e6:.3g} MHz: below clean Nyquist, results may alias")
         else:
             check(False, f"I2C at {cap_rate/1e6:.3g} MHz: no data")
     save_result("test9_i2c_sweep", None, {})

@@ -60,7 +60,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   constant SAMPLE_CLK_HZ : natural := get_sample_clk_freq;
   constant ENABLE_RUNTIME_INPUT_MUX : boolean := true;
   constant LA_CHANNELS : natural := 16;
-  constant PIN_POOL_SIZE : natural := 23;
+  constant PIN_POOL_SIZE : natural := 26;
 
   signal sys_clk     : std_logic := '0';
   signal pll_locked  : std_logic := '0';
@@ -98,7 +98,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
 
   -- Pin map registers: each LA channel i reads pin_pool(pin_map(i))
   type pin_map_t is array(0 to LA_CHANNELS-1) of natural range 0 to PIN_POOL_SIZE-1;
-  signal pin_map      : pin_map_t := (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15);
+  signal pin_map      : pin_map_t := (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,24);
   signal pin_map_wr_toggle : std_logic := '0';
 
   signal core_status   : std_logic_vector(7 downto 0) := (others => '0');
@@ -130,6 +130,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   attribute preserve of gen_start : signal is true;
   attribute preserve of gen_tx : signal is true;
   attribute preserve of gen_busy : signal is true;
+  attribute preserve of gen_i2c_test : signal is true;
+  attribute preserve of gen_spi_test : signal is true;
 
   signal analog_mode   : std_logic_vector(2 downto 0) := (others => '0');
   signal analog_ch0    : natural range 0 to 15 := 0;
@@ -178,7 +180,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_tx_pin_f2 : natural range 0 to 31 := 0;
   signal gen_scl_pin_f1 : natural range 0 to 31 := 0;
   signal gen_scl_pin_f2 : natural range 0 to 31 := 0;
-  signal pin_map_fast : pin_map_t := (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15);
+  signal pin_map_fast : pin_map_t := (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,24);
   signal pin_map_wr_t_s1 : std_logic := '0';
   signal pin_map_wr_t_s2 : std_logic := '0';
   signal pin_map_wr_edge : std_logic := '0';
@@ -358,6 +360,9 @@ BEGIN
   pin_pool(4 downto 0)   <= MKR_D(4 downto 0);
   pin_pool(14 downto 5)  <= MKR_D(14 downto 5);
   pin_pool(22 downto 15) <= PMOD;
+  pin_pool(23) <= SEN_SDO;
+  pin_pool(24) <= SEN_SDI;  -- I2C SDA (bidirectional, includes accel ACK+response)
+  pin_pool(25) <= SEN_SPC;  -- I2C SCL
 
   -- Bidirectional pin drives (output when pin_dir='1')
   gen_mkr_drive : for i in 0 to 14 generate

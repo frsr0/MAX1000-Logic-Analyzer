@@ -558,18 +558,17 @@ class OLSDeviceSPI:
     def i2c_capture_with_gen(self, rate_hz=400000, nsamples=2000, timeout=6,
                               i2c_speed=100000, dev_addr=0x18, reg_addr=0x0F,
                               read_len=1, tx_pin=2, scl_pin=1, fast_mode=True):
-        # Delegate to capture_with_gen with proto='I2C' which uses CMD_GEN_CAPTURE
-        # and properly routes gen_capture_active to the capture mux.
-        i2c_frame = bytes([(dev_addr << 1) & 0xFE, reg_addr])
+        # Configure I2C read mode before delegating to capture_with_gen
+        dev_w = (dev_addr << 1) & 0xFE
+        dev_r = (dev_addr << 1) | 0x01
+        flags = 1 | (read_len << 8) | (dev_r << 16)
+        self.pkt.write_register(REG_GEN_DATA, flags)
+        self.spi.flush()
+        i2c_frame = bytes([dev_w, reg_addr])
         return self.capture_with_gen(
             rate_hz=rate_hz, nsamples=nsamples, timeout=timeout,
             proto='I2C', i2c_speed=i2c_speed,
             i2c_frame=i2c_frame, i2c_tx_pin=tx_pin, i2c_scl_pin=scl_pin)
-        for block_addr in range(0, need, 1024):
-            block = self.pkt.read_capture_block(block_addr)
-            if block:
-                accumulated.extend(block)
-        self.pkt.transaction(CMD_ABORT_CAPTURE)
         self.spi.flush()
         return bytes(accumulated[:need])
 
