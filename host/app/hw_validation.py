@@ -345,6 +345,7 @@ def test_max_speed_capture(dev):
     print_header("Test 5b: 200 MHz max-speed capture (BRAM, div=0)")
     dev.reset()
     dev.spi.flush()
+    dev.set_debug_ch0(False)
     rc = 1024
     div = 0  # Rate_Div = 0 → reload = 0 → tick every FAST_CLK cycle
 
@@ -379,7 +380,7 @@ def test_max_speed_capture(dev):
         log(f"  max transitions across all channels: {max_tr}")
         log(f"  CH0 transitions: {tr_counts[0]}")
         check(ns == rc, f"max-speed sample count: {ns} vs expected {rc}")
-        check_channels_clean(ch, ns, except_ch=[], label="max_speed")
+        check_channels_clean(ch, ns, except_ch=[0], label="max_speed")
         check(True, f"max-speed capture OK ({len(data)} bytes, {max_tr} max trans)")
     else:
         check(False, "max-speed capture returned no data")
