@@ -592,27 +592,28 @@ WHO_AM_I_EXPECTED = 0x33
 WHO_AM_I_VAL = 0x33
 
 def test_i2c_sweep(dev):
-    print_header("Test 9: I2C generator at multiple capture rates")
+    print_header("Test 9: I2C generator at all capture rates")
     dev.reset()
     dev.spi.flush()
     time.sleep(0.1)
     dev.set_debug_ch0(False)
-    dev.set_schmitt(False)
 
     i2c_frame = bytes([(0x18 << 1) & 0xFE, 0x0F])
-    for cap_rate in [2000000, 4000000]:
+    # Sweep rates where Nyquist >= 2× I2C speed (400 kHz) and window >= 100 µs
+    for cap_rate in [2000000, 4000000, 8000000, 16000000, 32000000, 48000000, 80000000, 100000000, 200000000]:
+        nsamp = max(5000, int(cap_rate * 0.0001))  # at least 100 µs window
         data = dev.capture_with_gen(
-            rate_hz=cap_rate, nsamples=5000, timeout=5,
+            rate_hz=cap_rate, nsamples=nsamp, timeout=6,
             proto='I2C', i2c_speed=400000,
             i2c_frame=i2c_frame, i2c_tx_pin=2, i2c_scl_pin=1)
         if data:
             ch, ns = samples_to_channels(data)
             scl_tr = sum(1 for i in range(1, ns) if ch[1][i] != ch[1][i-1])
             sda_tr = sum(1 for i in range(1, ns) if ch[2][i] != ch[2][i-1])
-            log(f"  {cap_rate/1e6:.1f} MHz: SCL={scl_tr} SDA={sda_tr} ({ns} samples)")
-            check(scl_tr >= 3, f"I2C SCL toggling at {cap_rate/1e6:.1f} MHz ({scl_tr})")
+            log(f"  {cap_rate/1e6:.3g} MHz: SCL={scl_tr} SDA={sda_tr} ({ns} samples)")
+            check(scl_tr >= 3, f"I2C SCL at {cap_rate/1e6:.3g} MHz ({scl_tr})")
         else:
-            check(False, f"I2C capture at {cap_rate/1e6:.1f} MHz returned no data")
+            check(False, f"I2C at {cap_rate/1e6:.3g} MHz: no data")
     save_result("test9_i2c_sweep", None, {})
 
 # ====================================================================
