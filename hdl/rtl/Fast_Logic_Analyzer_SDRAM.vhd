@@ -447,6 +447,12 @@ begin
     signal sample_div_cnt_r : natural range 0 to MAX_RATE_DIV := 0;
     signal sample_tick_r  : std_logic := '0';
     signal sample_rem_nonzero_r : std_logic := '0';
+    -- Pipeline register: pre-compute sample_remaining - 1 to break 22-bit carry chain
+    signal sample_rem_dec_r    : natural range 0 to 3000000 := 0;
+    -- Pre-trigger counter: limits BRAM pre-trigger to 8 ticks, then switches to FIFO.
+    -- Without this, the CDC settling window for run_f_level (Armed→Run) can cause up to
+    -- 1024 pre-trigger BRAM writes before switching to FIFO, delaying gen capture data.
+    signal pretrig_tick_cnt : natural range 0 to 15 := 0;
   begin
     -- Stage 0: sample pins
     process(FAST_CLK)
@@ -504,6 +510,19 @@ begin
       end if;
     end process;
 
+    -- Pre-trigger tick counter: limits BRAM pre-trigger to 8 ticks, then switches to FIFO.
+    -- Prevents CDC settling window from causing 1024 pre-trigger writes that delay gen data.
+    process(FAST_CLK)
+    begin
+      if rising_edge(FAST_CLK) then
+        if cfg_valid_edge = '1' then
+          pretrig_tick_cnt <= 0;
+        elsif pretrig_en_r = '1' and sample_tick_r = '1' and pretrig_tick_cnt < 15 then
+          pretrig_tick_cnt <= pretrig_tick_cnt + 1;
+        end if;
+      end if;
+    end process;
+
     -- Stage 2d: BRAM/FIFO write (uses pipelined flags, only 1-bit compares)
     process(FAST_CLK)
     begin
@@ -519,7 +538,7 @@ begin
         end if;
 
         if fifo_overflow_f = '0' then
-          if pretrig_en_r = '1' then
+          if pretrig_en_r = '1' and pretrig_tick_cnt < 8 then
             bram_waddr <= bram_wp_r;
             bram_wdata <= sample_word_r;
             bram_wren  <= '1';

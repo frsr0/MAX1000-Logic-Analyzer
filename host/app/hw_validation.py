@@ -595,12 +595,14 @@ def test_i2c_sweep(dev):
     print_header("Test 9: I2C generator at all capture rates")
     dev.reset()
     dev.spi.flush()
-    time.sleep(0.1)
     dev.set_debug_ch0(False)
+    # Warm-up: first capture after open can have SPI timing edge. Prime it.
+    dev.pkt.get_status()
+    time.sleep(0.02)
 
     i2c_frame = bytes([(0x18 << 1) & 0xFE, 0x0F])
     # Sweep rates where Nyquist >= 2× I2C speed (400 kHz) and window >= 100 µs
-    for cap_rate in [2000000, 4000000, 8000000, 16000000, 32000000, 48000000, 80000000, 100000000, 200000000]:
+    for cap_rate in [500000, 1000000, 2000000, 4000000, 8000000, 16000000, 32000000, 48000000, 80000000, 100000000, 200000000]:
         nsamp = max(5000, int(cap_rate * 0.0001))  # at least 100 µs window
         data = dev.capture_with_gen(
             rate_hz=cap_rate, nsamples=nsamp, timeout=6,
