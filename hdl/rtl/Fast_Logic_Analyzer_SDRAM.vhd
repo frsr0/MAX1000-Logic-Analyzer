@@ -207,6 +207,9 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal flush_raddr_start_r : natural range 0 to BRAM_SIZE-1 := 0;
   signal flush_rem_start_r   : natural range 0 to BRAM_SIZE := 0;
   signal start_state_r    : natural range 1 to 2 := 2;
+  signal flush_raddr_next_r : natural range 0 to BRAM_SIZE-1 := 0;
+  signal flush_rem_dec_r    : natural range 0 to BRAM_SIZE := 0;
+  signal flush_rem_nonzero_r : std_logic := '0';
 
   component SDRAM_Interface is
   generic (
@@ -591,6 +594,25 @@ begin
       end if;
     end process;
 
+    -- Pipeline: pre-compute flush address increment and rem decrement
+    -- Removes 10-bit adder and subtractor from the flush FSM path.
+    process(FAST_CLK)
+    begin
+      if rising_edge(FAST_CLK) then
+        if flush_raddr_r = BRAM_SIZE-1 then
+          flush_raddr_next_r <= 0;
+        else
+          flush_raddr_next_r <= flush_raddr_r + 1;
+        end if;
+        flush_rem_dec_r <= flush_rem_r - 1;
+        if flush_rem_r > 0 then
+          flush_rem_nonzero_r <= '1';
+        else
+          flush_rem_nonzero_r <= '0';
+        end if;
+      end if;
+    end process;
+
     -- Stage 3: write FSM (drives all BRAM and FIFO writes from packed_word_r)
     -- Uses packed_valid_r handshake from stage 2.
     -- State 0 BRAM write pointer is tracked via stage 2's bram_wp_r/bram_cnt_r.
@@ -626,16 +648,15 @@ begin
 
           -- State 1: Flush BRAM to async FIFO
           elsif state_r = 1 then
-            if flush_rem_r > 0 then
+            if flush_rem_nonzero_r = '1' then
               if fifo_wrfull_r = '0' then
                 bram_raddr_f <= flush_raddr_r;
                 if flush_rem_r < bram_cnt_f then
                   fifo_wdata <= bram_rdata_f;
                   fifo_wr <= '1';
                 end if;
-                if flush_raddr_r = BRAM_SIZE-1 then flush_raddr_r <= 0;
-                else flush_raddr_r <= flush_raddr_r + 1; end if;
-                flush_rem_r <= flush_rem_r - 1;
+                flush_raddr_r <= flush_raddr_next_r;
+                flush_rem_r <= flush_rem_dec_r;
               end if;
             else
               state_r <= 2;
