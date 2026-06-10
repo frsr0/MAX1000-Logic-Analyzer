@@ -201,6 +201,12 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal sample_rem_nonzero_r : std_logic := '0';
   signal sample_rem_one_r : std_logic := '0';
   signal bram_cnt_f       : natural range 0 to BRAM_SIZE := 0;
+  signal fifo_wr_f        : std_logic := '0';
+  signal fifo_wdata_f     : std_logic_vector(AFIFO_WIDTH-1 downto 0) := (others => '0');
+  signal cfg_samples_p1   : natural range 0 to 3000000 := 0;
+  signal flush_raddr_start_r : natural range 0 to BRAM_SIZE-1 := 0;
+  signal flush_rem_start_r   : natural range 0 to BRAM_SIZE := 0;
+  signal start_state_r    : natural range 1 to 2 := 2;
 
   component SDRAM_Interface is
   generic (
@@ -562,6 +568,29 @@ begin
       end if;
     end process;
 
+    -- Pipeline: pre-compute all cfg_valid_edge results (breaks all bram/bram→subtractor paths)
+    -- Registered one cycle early so stage 3 just loads register values.
+    process(FAST_CLK)
+    begin
+      if rising_edge(FAST_CLK) then
+        if cfg_valid_edge = '1' then
+          if bram_cnt_r > 0 then
+            if bram_wp_r >= bram_cnt_r then
+              flush_raddr_start_r <= bram_wp_r - bram_cnt_r;
+            else
+              flush_raddr_start_r <= BRAM_SIZE - bram_cnt_r + bram_wp_r;
+            end if;
+            flush_rem_start_r <= bram_cnt_r;
+            cfg_samples_p1 <= cfg_samples_f - bram_cnt_r;
+            start_state_r <= 1;
+          else
+            cfg_samples_p1 <= cfg_samples_f;
+            start_state_r <= 2;
+          end if;
+        end if;
+      end if;
+    end process;
+
     -- Stage 3: write FSM (drives all BRAM and FIFO writes from packed_word_r)
     -- Uses packed_valid_r handshake from stage 2.
     -- State 0 BRAM write pointer is tracked via stage 2's bram_wp_r/bram_cnt_r.
@@ -576,19 +605,11 @@ begin
 
         if cfg_valid_edge = '1' then
           bram_wp_v := 0; bram_cnt_v := 0;
-          sample_remaining <= cfg_samples_f;
           fifo_overflow_f <= '0';
-          if bram_cnt_r > 0 then
-            if bram_wp_r >= bram_cnt_r then
-              flush_raddr_r <= bram_wp_r - bram_cnt_r;
-            else
-              flush_raddr_r <= BRAM_SIZE - bram_cnt_r + bram_wp_r;
-            end if;
-            flush_rem_r <= bram_cnt_r;
-            state_r <= 1;
-          else
-            state_r <= 2;
-          end if;
+          flush_raddr_r <= flush_raddr_start_r;
+          flush_rem_r <= flush_rem_start_r;
+          sample_remaining <= cfg_samples_p1;
+          state_r <= start_state_r;
 
         elsif fifo_overflow_f = '0' and packed_valid_r = '1' then
 
@@ -611,7 +632,6 @@ begin
                 if flush_rem_r < bram_cnt_f then
                   fifo_wdata <= bram_rdata_f;
                   fifo_wr <= '1';
-                  sample_remaining <= sample_remaining - 1;
                 end if;
                 if flush_raddr_r = BRAM_SIZE-1 then flush_raddr_r <= 0;
                 else flush_raddr_r <= flush_raddr_r + 1; end if;
@@ -655,6 +675,15 @@ begin
     end if;
   end process;
 
+  -- Pipeline: register fifo_wr and fifo_wdata before dcfifo (breaks state_r→fifo_wdata path)
+  process(FAST_CLK)
+  begin
+    if rising_edge(FAST_CLK) then
+      fifo_wr_f <= fifo_wr;
+      fifo_wdata_f <= fifo_wdata;
+    end if;
+  end process;
+
   -- Async FIFO: dcfifo bridges FAST_CLK (write) and pclk (read)
   afifo : dcfifo
     generic map (
@@ -668,8 +697,8 @@ begin
       intended_device_family => "MAX 10"
     )
     port map (
-      data     => fifo_wdata,
-      wrreq    => fifo_wr,
+      data     => fifo_wdata_f,
+      wrreq    => fifo_wr_f,
       wrclk    => FAST_CLK,
       rdreq    => fifo_rd,
       rdclk    => pclk,
