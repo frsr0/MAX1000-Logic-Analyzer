@@ -31,7 +31,7 @@ Open-source multi-channel logic analyzer for the Arrow MAX1000 board (Intel MAX1
 | c1 | ×16.67 | 200 MHz | **Sample capture** (FAST_CLK), SPI slave |
 | c2 | ×8.33 | 100 MHz, −90° | SDRAM clock (phase-shifted for data centering) |
 
-All PLL outputs from 12 MHz input, VCO = 480 MHz. Timing closure: **+0.238 ns** slack at 200 MHz (Slow 85C worst corner), Fmax = 204 MHz.
+All PLL outputs from 12 MHz input, VCO = 480 MHz. Timing closure (Slow 1200 mV 85C): **+0.16 ns** setup, **+0.10 ns** min-pulse-width. The min-pulse-width is the binding constraint — the device clock network restricts the 200 MHz clock to Fmax = 204 MHz, so margin at 200 MHz is device-limited, not logic-limited.
 
 ### Normal mode (FAST_SPEED=false)
 
@@ -77,10 +77,14 @@ Config handshake (valid/ack toggle CDC) ensures Rate_Div and Samples are stable 
 
 ## Capture Modes
 
-| analog_mode(0) | Frame size | Content | Max digital rate |
-|----------------|-----------|---------|------------------|
+Mode is selected by `analog_enable` (REG_FLAGS bit 3):
+
+| analog_enable | Frame size | Content | Max digital rate |
+|---------------|-----------|---------|------------------|
 | 0 (Digital) | 2 bytes | `[D15:D0]` | 200 MHz (speed) / 120 MHz (normal) |
 | 1 (Mixed 16 Dig + 8 ADC) | 14 bytes | `[D15:D0, A0..A7]` | 200 MHz* |
+
+Over the SPI readout every word is 32-bit (payload in the low 16 bits, high 16 zero), so the host reads digital at stride 4 and de-interleaves mixed frames (28 wire bytes → 14 payload bytes).
 
 *Analog values updated at ~101 kHz (all 8 channels). Digital capture continues at full rate regardless. Analog reference: 3.3V internal, 12-bit = 0.806 mV/count.
 
@@ -167,7 +171,7 @@ FPGA → Host:  0xAA 0x55  STATUS  SEQ  LEN_L  LEN_H  [PAYLOAD...]  CRC_L  CRC_H
 | `0x02` | REG_DELAY_COUNT | 29:0 | Trigger delay count. |
 | `0x10` | REG_TRIGGER_MASK | 31:0 | Bit n enables trigger on channel n. |
 | `0x11` | REG_TRIGGER_VALUE | 31:0 | Level trigger value. |
-| `0x20` | REG_FLAGS | 2:0 | bit0=fast_mode, bit1=continuous, bit2=analog_enable |
+| `0x20` | REG_FLAGS | 3:0 | bit0=fast_mode, bit1=continuous, bit2=ch_mode, bit3=analog_enable |
 | `0x21` | REG_FAST_MODE | 0 | Fast mode (BRAM only, no SDRAM). |
 | `0x22` | REG_CONT_MODE | 0 | Continuous capture (triple-buffer). |
 | `0x30`–`0x33` | Generator regs | Proto, baud, pins, data |
@@ -214,7 +218,7 @@ pip install ftd2xx
 cd host
 python -m app.OLS_Console              # GUI
 python -m app.OLS_Console --cli capture --rate 1000000 --samples 5000  # CLI
-python -m app.hw_validation            # hardware tests (534 tests)
+python -m app.hw_validation            # hardware tests (553 checks)
 ```
 
 ### Python API
@@ -261,7 +265,7 @@ Set `FAST_SPEED => true` (speed mode, 100/200 MHz) or `false` (normal, 96/120 MH
 
 | Mode | FAST_SPEED | Sys_clk | FAST_CLK | Timing slack |
 |------|-----------|---------|----------|-------------|
-| Speed | `true` | 100 MHz | 200 MHz | **+0.238 ns** (Slow 85C) |
+| Speed | `true` | 100 MHz | 200 MHz | **+0.16 ns** setup / +0.10 ns mpw (Slow 85C) |
 | Normal | `false` | 96 MHz | 120 MHz | +0.099 ns* |
 
 *Normal mode timing verified on earlier build; PLL multiply/divide must match.
@@ -270,9 +274,9 @@ Set `FAST_SPEED => true` (speed mode, 100/200 MHz) or `false` (normal, 96/120 MH
 
 | Resource | Used | Available | % |
 |----------|------|-----------|---|
-| Logic elements | 6,530 | 8,064 | 81% |
-| Combinational functions | 5,424 | 8,064 | 67% |
-| Registers | 2,598 | 8,064 | 32% |
+| Logic elements | 7,138 | 8,064 | 89% |
+| Combinational functions | 6,409 | 8,064 | 79% |
+| Registers | 3,065 | 8,064 | 38% |
 | Memory bits | 75,845 | 387,072 | 20% |
 | PLLs | 1 | 1 | 100% |
 
@@ -280,11 +284,11 @@ Set `FAST_SPEED => true` (speed mode, 100/200 MHz) or `false` (normal, 96/120 MH
 
 ```bash
 cd host
-python -m pytest tests/ driver/tests/ -v   # 287 unit tests
-python -m app.hw_validation                # 534 hardware validation tests
+python -m pytest tests/ driver/tests/ -v   # 310 unit tests
+python -m app.hw_validation                # 553 hardware validation checks
 ```
 
-Hardware validation covers: SPI protocol, single/fast/continuous/max-speed capture, edge triggers (rising + falling), UART/I2C/SPI generator, divider accuracy, analog 8-channel, rolling capture, protocol trigger, noise floor, schmitt trigger, abort capture, crosstalk characterisation, and 60-second stress test.
+Hardware validation covers: SPI protocol, single/fast/continuous/max-speed capture, edge triggers (rising + falling), UART/I2C/SPI generators, I2C LIS3DH addressing round-trip, divider accuracy, mixed 16-digital + 8-ADC mode and frame-alignment integrity, pre-trigger, full-depth SDRAM, back-to-back and capture-during-readout stress, rolling capture, protocol trigger, noise floor, schmitt trigger, abort capture, crosstalk characterisation, and a long stress run.
 
 ## Project Structure
 

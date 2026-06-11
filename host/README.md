@@ -23,7 +23,7 @@ Main application. Two modes:
 
 ### `app/hw_validation.py`
 
-Hardware validation suite — 12 tests: SPI handshake, all commands, single/fast/continuous capture, edge trigger, UART/I2C/SPI generator, divider accuracy, 23-channel capture, Analog4 mode, debug CH0 toggle. Results saved as JSON.
+Hardware validation suite (553 checks): SPI handshake, all commands, single/fast/continuous capture, rising/falling edge triggers, 200 MHz max-speed capture, UART/I2C/SPI generators, I2C LIS3DH addressing round-trip, divider accuracy, 23-channel capture, mixed 16-digital + 8-ADC mode and frame-alignment integrity, pre-trigger, full-depth SDRAM, back-to-back and capture-during-readout stress, Schmitt trigger, crosstalk characterisation, debug CH0 PWM, and a long stress run. Results saved as JSON.
 
 ### `app/program_eeprom.py`
 
