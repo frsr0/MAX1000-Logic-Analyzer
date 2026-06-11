@@ -16,24 +16,17 @@ __version__ = "1.0.0"
 try:
     from driver.ols_spi_device import (
         OLSDeviceSPI, find_spi_device,
-        ANALOG_MODE_DIGITAL8, ANALOG_MODE_MIXED1, ANALOG_MODE_MIXED2,
-        ANALOG_MODE_ANALOG1, ANALOG_MODE_ANALOG2,
-        ANALOG_MODE_ANALOG4, ANALOG_MODE_MIXED2_4, ANALOG_MODE_MIXED_DUAL,
-        ANALOG_ENABLE_BIT,
+        MODE_DIGITAL, MODE_MIXED,
         decode_analog_frames, analog_frame_stride,
+        wire_to_payload,
     )
     HAS_SPI = True
 except ImportError:
     HAS_SPI = False
-    ANALOG_MODE_DIGITAL8 = 0
-    ANALOG_MODE_MIXED1 = 1
-    ANALOG_MODE_MIXED2 = 2
-    ANALOG_MODE_ANALOG1 = 3
-    ANALOG_MODE_ANALOG2 = 4
-    ANALOG_MODE_ANALOG4 = 5
-    ANALOG_MODE_MIXED2_4 = 6
-    ANALOG_MODE_MIXED_DUAL = 7
-    ANALOG_ENABLE_BIT = 0x08
+    MODE_DIGITAL = 0
+    MODE_MIXED = 0x08
+    def wire_to_payload(data):
+        return b''.join(data[i:i + 2] for i in range(0, len(data) - 1, 4))
 
 try:
     import serial, serial.tools.list_ports
@@ -73,15 +66,7 @@ class OLScope:
         self.win = root  # may be None for CLI
         self.ch_data = []
         self.ch_names = [f"CH{i}" for i in range(NUM_CHANNELS)]
-        self.capture_mode = ANALOG_ENABLE_BIT  # 16 Dig + 8 Ana
-        self.analog_ch0_sel = 0
-        self.analog_ch1_sel = 1
-        self.analog_ch2_sel = 2
-        self.analog_ch3_sel = 3
-        self.analog_ch4_sel = 4
-        self.analog_ch5_sel = 5
-        self.analog_ch6_sel = 6
-        self.analog_ch7_sel = 7
+        self.capture_mode = MODE_MIXED  # 16 Dig + 8 Ana
         self.last_analog_frames = []
         self.samplerate = 1_000_000
         self.captured_bytes = b''
@@ -398,9 +383,7 @@ class OLScope:
     # ─── Capture Tab ─────────────────────────────────────────────
 
     MODE_OPTIONS = [
-        '16 Digital', '16 Dig + 1 Ana', '16 Dig + 2 Ana',
-        '1 Analog', '2 Analog', '4 Analog',
-        '16 Dig + 4 Ana', '16 Dig + 8 Ana', '16 Dig + 2 Ana (alt)',
+        '16 Digital', '16 Dig + 8 Ana',
     ]
 
     ROLLING_READBACK_MB_PER_S = 30
@@ -423,23 +406,9 @@ class OLScope:
         self.mode_cb.bind('<<ComboboxSelected>>', self._mode_changed)
         row += 1
 
-        # Analog channel selectors (A0-A7)
-        ttk.Label(cap_f, text="Analog inputs:").grid(row=row, column=0, sticky='w')
-        af = ttk.Frame(cap_f)
-        af.grid(row=row, column=1, columnspan=3, sticky='w')
-        self._analog_labels = {}
-        self._analog_combos = {}
-        for ai in range(8):
-            lbl = ttk.Label(af, text=f"A{ai}:")
-            cb = ttk.Combobox(af, values=list(range(NUM_CHANNELS)), width=3, state='readonly')
-            cb.set(str(ai))
-            self._analog_labels[ai] = lbl
-            self._analog_combos[ai] = cb
-            # Pack A0-A1 visible by default; rest managed by _mode_changed
-            if ai < 2:
-                lbl.pack(side='left'); cb.pack(side='left', padx=1)
-            else:
-                lbl.pack_forget(); cb.pack_forget()
+        # Mixed mode always captures all 8 ADC channels (A0-A7, fixed map)
+        self._analog_info = ttk.Label(cap_f, text="Analog: A0-A7 (all 8 ADC channels)")
+        self._analog_info.grid(row=row, column=1, columnspan=3, sticky='w')
         row += 1
 
         # Rate info line
@@ -822,24 +791,12 @@ class OLScope:
                 self.port_sep.pack(side='left', fill='y', padx=5)
 
     def _mode_changed(self, event=None):
-        """Show/hide analog channel selectors based on current mode."""
+        """Show/hide the analog channel note based on current mode."""
         mode = self._get_capture_mode()
-        ana_count = 0
-        if mode & ANALOG_ENABLE_BIT:
-            ana_count = 8
-        elif mode in (ANALOG_MODE_MIXED1, ANALOG_MODE_ANALOG1):
-            ana_count = 1
-        elif mode in (ANALOG_MODE_MIXED2, ANALOG_MODE_ANALOG2, ANALOG_MODE_MIXED_DUAL):
-            ana_count = 2
-        elif mode in (ANALOG_MODE_ANALOG4, ANALOG_MODE_MIXED2_4):
-            ana_count = 4
-        for ai in range(8):
-            if ai < ana_count:
-                self._analog_labels[ai].pack(side='left')
-                self._analog_combos[ai].pack(side='left', padx=1)
-            else:
-                self._analog_labels[ai].pack_forget()
-                self._analog_combos[ai].pack_forget()
+        if mode & MODE_MIXED:
+            self._analog_info.grid()
+        else:
+            self._analog_info.grid_remove()
         self._update_rate_info()
         self._update_buf_presets()
 
@@ -938,17 +895,10 @@ class OLScope:
 
     def _get_capture_mode(self):
         mode_map = {
-            '16 Digital': ANALOG_MODE_DIGITAL8,
-            '16 Dig + 1 Ana': ANALOG_MODE_MIXED1,
-            '16 Dig + 2 Ana': ANALOG_MODE_MIXED2,
-            '1 Analog': ANALOG_MODE_ANALOG1,
-            '2 Analog': ANALOG_MODE_ANALOG2,
-            '4 Analog': ANALOG_MODE_ANALOG4,
-            '16 Dig + 4 Ana': ANALOG_MODE_MIXED2_4,
-            '16 Dig + 8 Ana': ANALOG_ENABLE_BIT,
-            '16 Dig + 2 Ana (alt)': ANALOG_MODE_MIXED_DUAL,
+            '16 Digital': MODE_DIGITAL,
+            '16 Dig + 8 Ana': MODE_MIXED,
         }
-        return mode_map.get(self.mode_cb.get(), ANALOG_MODE_DIGITAL8)
+        return mode_map.get(self.mode_cb.get(), MODE_DIGITAL)
 
     def _update_time_display(self, event=None):
         rate = self._get_rate()
@@ -1061,15 +1011,7 @@ class OLScope:
         self.wave._drawn_to = 0
         self.wave.delete('all')
         self.capture_mode = self._get_capture_mode()
-        self.analog_ch0_sel = int(self._analog_combos[0].get())
-        self.analog_ch1_sel = int(self._analog_combos[1].get())
-        self.analog_ch2_sel = int(self._analog_combos[2].get())
-        self.analog_ch3_sel = int(self._analog_combos[3].get())
-        self.analog_ch4_sel = int(self._analog_combos[4].get())
-        self.analog_ch5_sel = int(self._analog_combos[5].get())
-        self.analog_ch6_sel = int(self._analog_combos[6].get())
-        self.analog_ch7_sel = int(self._analog_combos[7].get())
-        if self.capture_mode != ANALOG_MODE_DIGITAL8:
+        if self.capture_mode != MODE_DIGITAL:
             self.capture_stride = analog_frame_stride(self.capture_mode)
         else:
             self.capture_stride = 4  # FPGA always sends 4-byte samples
@@ -1120,11 +1062,15 @@ class OLScope:
                 if rolling:
                     buf_nsamp = self.capture_window
                     self.captured_bytes = bytearray()
-                    ana = self.capture_mode != ANALOG_MODE_DIGITAL8
+                    ana = bool(self.capture_mode & MODE_MIXED)
+                    pay_stride = None
                     if ana:
-                        self.dev.set_analog_config(self.capture_mode,
-                            self.analog_ch0_sel, self.analog_ch1_sel)
+                        self.dev.set_analog_config(self.capture_mode)
+                        # Read sizing is unchanged; payload_stride only enables
+                        # the 32-bit-word -> dense-payload de-interleave so the
+                        # frames decode correctly.
                         as_ = analog_frame_stride(self.capture_mode)
+                        pay_stride = analog_frame_stride(self.capture_mode)
                     else:
                         as_ = self.dev._stride
                     # Pass any pending generator data into rolling capture
@@ -1141,41 +1087,36 @@ class OLScope:
                         rate_hz=rate, chunk_nsamp=1024, buffer_nsamp=buf_nsamp,
                         stop_evt=self.stop_evt, progress_cb=None,
                         full_out=self.captured_bytes, stride=as_,
+                        payload_stride=pay_stride,
                         **gen_kwargs
                     )
                     for buf, got, total in gen:
+                        # buf is dense payload for mixed (de-interleaved by
+                        # rolling_capture), raw wire for digital.
                         self.capture_partial = buf
                         self.capture_progress = (got, total)
                         if ana:
                             frames = decode_analog_frames(buf, self.capture_mode)
-                            self.capture_result = (buf, rate, got, as_, frames, self.capture_mode)
+                            self.capture_result = (buf, rate, got, pay_stride, frames, self.capture_mode)
                         else:
                             stride = self.dev._stride
                             self.capture_result = (buf, rate, got, stride)
                 else:
-                    use_capture_analog = (self.capture_mode != ANALOG_MODE_DIGITAL8
-                                          and not (self.capture_mode & ANALOG_ENABLE_BIT)
-                                          and hasattr(self.dev, 'capture_analog'))
-                    if use_capture_analog:
-                        data, frames = self.dev.capture_analog(
-                            rate_hz=rate, frames=nsamp, mode=self.capture_mode,
-                            ch0=self.analog_ch0_sel, ch1=self.analog_ch1_sel,
-                            timeout=max(3, nsamp // 10000 + 2),
-                            stop_evt=self.stop_evt
-                        )
-                        self.capture_result = (data, rate, nsamp, self.capture_stride, frames, self.capture_mode)
-                    elif self.capture_mode & ANALOG_ENABLE_BIT:
-                        stride = analog_frame_stride(self.capture_mode)
-                        self.dev.set_analog_config(self.capture_mode,
-                            self.analog_ch0_sel, self.analog_ch1_sel)
-                        sdram_words = nsamp * (stride // 2)
-                        data = self.dev.capture(
-                            rate_hz=rate * (stride // 2), nsamples=sdram_words,
+                    if self.capture_mode & MODE_MIXED:
+                        stride = analog_frame_stride(self.capture_mode)  # 14
+                        words_per_frame = stride // 2                    # 7
+                        self.dev.set_analog_config(self.capture_mode)
+                        sdram_words = nsamp * words_per_frame
+                        # capture() reads 2 wire bytes per 'sample' but each
+                        # stored word is 4 wire bytes — request 2× to read whole
+                        # frames, then de-interleave to dense payload.
+                        wire = self.dev.capture(
+                            rate_hz=rate * words_per_frame, nsamples=sdram_words * 2,
                             timeout=max(3, sdram_words // 10000 + 2),
                             progress_cb=self._capture_progress,
                             trigger=trigger, stop_evt=self.stop_evt
                         )
-                        trimmed = data[:nsamp * stride]
+                        trimmed = wire_to_payload(wire)[:nsamp * stride]
                         frames = decode_analog_frames(trimmed, self.capture_mode)
                         self.capture_result = (trimmed, rate, nsamp, stride, frames, self.capture_mode)
                     else:
@@ -1195,8 +1136,13 @@ class OLScope:
             except Exception as e:
                 self.capture_result = e
             finally:
+                # All device I/O stays on this worker thread (see _stop_capture).
                 if fast:
                     try: self.dev.fast_mode(False)
+                    except: pass
+                if self.stop_evt.is_set():
+                    # User aborted: reset the FPGA from the owning thread.
+                    try: self.dev.reset()
                     except: pass
                 self.capture_running = False
 
@@ -1221,13 +1167,14 @@ class OLScope:
         """Abort the running capture and return partial data."""
         if not self.capture_running:
             return
+        # Only signal the worker; do NOT touch self.dev here. The capture
+        # worker thread owns the FTDI device, and issuing an SPI reset from
+        # the Tk main thread while the worker is mid-read causes concurrent
+        # USB access and a hard crash. The worker resets in its finally block.
         self.stop_evt.set()
-        if self.dev:
-            try: self.dev.reset()
-            except: pass
         self.capture_nsamp = 0  # Fit will use actual received count
         self.stop_btn.configure(state='disabled')
-        self.status['text'] = "Capture stopped by user"
+        self.status['text'] = "Stopping capture..."
 
     def _poll_capture(self):
         self._update_gen_buttons()
@@ -1278,7 +1225,7 @@ class OLScope:
         partial = getattr(self, 'capture_partial', None)
         if partial is None or len(partial) < 4:
             return
-        ana = self.capture_mode != ANALOG_MODE_DIGITAL8
+        ana = bool(self.capture_mode & MODE_MIXED)
         if ana:
             frames = decode_analog_frames(partial, self.capture_mode)
             ns = len(frames)
@@ -1381,16 +1328,7 @@ class OLScope:
         self.last_analog_frames = rows
         digital = [[] for _ in range(NUM_CHANNELS)]
         analog_series = []
-        analog_count = 0
-        if mode & ANALOG_ENABLE_BIT:
-            analog_count = 8
-        elif mode in (ANALOG_MODE_MIXED1, ANALOG_MODE_MIXED2, ANALOG_MODE_ANALOG1, ANALOG_MODE_ANALOG2,
-                      ANALOG_MODE_ANALOG4, ANALOG_MODE_MIXED2_4, ANALOG_MODE_MIXED_DUAL):
-            analog_count = 1 if mode in (ANALOG_MODE_MIXED1, ANALOG_MODE_ANALOG1) else 2
-            if mode in (ANALOG_MODE_ANALOG4, ANALOG_MODE_MIXED2_4):
-                analog_count = 4
-            elif mode == ANALOG_MODE_MIXED_DUAL:
-                analog_count = 2
+        analog_count = 8 if mode & MODE_MIXED else 0
         if analog_count > 0:
             analog_series = [[] for _ in range(analog_count)]
         for row in rows:
@@ -1404,21 +1342,11 @@ class OLScope:
             for i, val in enumerate(row.get('adc', [])):
                 if i < analog_count:
                     analog_series[i].append(val)
-        names = []
-        ch_data = []
-        # Digital channels
-        has_digital = any(not (mode & 0x7) in (ANALOG_MODE_ANALOG1, ANALOG_MODE_ANALOG2, ANALOG_MODE_ANALOG4)
-                         for _ in [1]) or (mode & ANALOG_ENABLE_BIT)
-        pure_analog_only = mode in (ANALOG_MODE_ANALOG1, ANALOG_MODE_ANALOG2, ANALOG_MODE_ANALOG4)
-        if not pure_analog_only or mode & ANALOG_ENABLE_BIT:
-            ch_data.extend(digital)
-            names.extend([f"CH{i}" for i in range(NUM_CHANNELS)])
+        names = [f"CH{i}" for i in range(NUM_CHANNELS)]
+        ch_data = list(digital)
         for i in range(analog_count):
             ch_data.append(analog_series[i])
             names.append(f"A{i}")
-        if pure_analog_only and not analog_series:
-            ch_data = digital
-            names = [f"CH{i}" for i in range(NUM_CHANNELS)]
         self.ch_data = ch_data
         self.ch_names = names
         self.samplerate = rate
@@ -1736,13 +1664,17 @@ class OLScope:
             scl_pin = int(self.acc_scl_pin.get())
             rate = 4_000_000
             nsamp = max(50000, read_len * 200)
+            self.dev.set_pin_map(scl_pin, 25)  # SEN_SPC: physical LIS3DH SCL
+            self.dev.set_pin_map(sda_pin, 24)  # SEN_SDI: physical LIS3DH SDA/response
+            self.dev.spi.flush()
+            time.sleep(0.01)
             self.status['text'] = f"Reading accel reg 0x{reg_addr:02X}..."
             self.win.update()
             data = self.dev.i2c_capture_with_gen(
                 rate_hz=rate, nsamples=nsamp, i2c_speed=speed,
                 dev_addr=addr, reg_addr=reg_addr,
                 read_len=read_len,
-                tx_pin=sda_pin, scl_pin=scl_pin, fast_mode=False)
+                tx_pin=31, scl_pin=31, fast_mode=False)
             if not data:
                 self._show_accel_result("No data returned")
                 return
@@ -1756,7 +1688,8 @@ class OLScope:
             self._process_decoders()
             self.wave.redraw()
             # Parse I2C decoded bytes
-            decoded = decode_i2c(ch, rate, scl_idx=scl_pin, sda_idx=sda_pin)
+            decoded = decode_i2c(ch, rate, scl_idx=scl_pin, sda_idx=sda_pin,
+                                 filter_threshold=max(3, int(rate // 1000000)))
             data_bytes = [v for t, v in decoded if t == "DATA"]
             if reg_addr in (0x28, 0x2A, 0x2C) and read_len >= 2 and len(data_bytes) >= 2:
                 raw = (data_bytes[-2] | (data_bytes[-1] << 8))
@@ -1793,8 +1726,7 @@ class OLScope:
         if not fname: return
         rate = self.samplerate
         mode = self.capture_mode
-        has_analog = mode != ANALOG_MODE_DIGITAL8
-        is_analog8 = bool(mode & ANALOG_ENABLE_BIT)
+        has_analog = bool(mode & MODE_MIXED)
         stride = self.capture_stride
 
         with open(fname, 'w') as f:
@@ -1804,7 +1736,7 @@ class OLScope:
             if has_analog:
                 # Decode analog frames
                 frames = decode_analog_frames(self.captured_bytes, mode)
-                ana_count = 8 if is_analog8 else analog_frame_stride(mode) - 2
+                ana_count = 8
                 f.write(f';Analog: {ana_count}\n')
                 for i, fr in enumerate(frames):
                     d = fr.get('digital', 0)
@@ -1831,7 +1763,7 @@ class OLScope:
         if not fname: return
         rate = self.samplerate
         mode = self.capture_mode
-        has_analog = mode != ANALOG_MODE_DIGITAL8
+        has_analog = bool(mode & MODE_MIXED)
         stride = self.capture_stride
 
         if has_analog:
@@ -1901,7 +1833,7 @@ unitsize=1
         if not self.captured_bytes:
             return
         mode = self.capture_mode
-        has_analog = mode != ANALOG_MODE_DIGITAL8
+        has_analog = bool(mode & MODE_MIXED)
         lines = []
         if has_analog:
             frames = decode_analog_frames(self.captured_bytes, mode)

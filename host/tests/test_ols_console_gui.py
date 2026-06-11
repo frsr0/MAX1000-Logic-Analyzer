@@ -7,9 +7,7 @@ sys.modules['serial.tools'] = MagicMock()
 sys.modules['serial.tools.list_ports'] = MagicMock()
 
 from app.OLS_Console import OLScope, WaveformDisplay, NUM_CHANNELS, samples_to_channels
-from app.OLS_Console import ANALOG_MODE_DIGITAL8, ANALOG_MODE_MIXED1, ANALOG_MODE_MIXED2
-from app.OLS_Console import ANALOG_MODE_ANALOG1, ANALOG_MODE_ANALOG2, ANALOG_MODE_ANALOG4
-from app.OLS_Console import ANALOG_MODE_MIXED2_4, ANALOG_MODE_MIXED_DUAL, ANALOG_ENABLE_BIT
+from app.OLS_Console import MODE_DIGITAL, MODE_MIXED
 
 
 def _make_scope(backend='UART'):
@@ -127,44 +125,20 @@ class TestOLScopeGetters:
         scope = _make_scope()
         scope.mode_cb = MagicMock()
         scope.mode_cb.get.return_value = '16 Digital'
-        assert scope._get_capture_mode() == ANALOG_MODE_DIGITAL8
-
-    def test_get_capture_mode_mixed1(self):
-        scope = _make_scope()
-        scope.mode_cb = MagicMock()
-        scope.mode_cb.get.return_value = '16 Dig + 1 Ana'
-        assert scope._get_capture_mode() == ANALOG_MODE_MIXED1
-
-    def test_get_capture_mode_mixed2(self):
-        scope = _make_scope()
-        scope.mode_cb = MagicMock()
-        scope.mode_cb.get.return_value = '16 Dig + 2 Ana'
-        assert scope._get_capture_mode() == ANALOG_MODE_MIXED2
-
-    def test_get_capture_mode_analog1(self):
-        scope = _make_scope()
-        scope.mode_cb = MagicMock()
-        scope.mode_cb.get.return_value = '1 Analog'
-        assert scope._get_capture_mode() == ANALOG_MODE_ANALOG1
-
-    def test_get_capture_mode_analog2(self):
-        scope = _make_scope()
-        scope.mode_cb = MagicMock()
-        scope.mode_cb.get.return_value = '2 Analog'
-        assert scope._get_capture_mode() == ANALOG_MODE_ANALOG2
+        assert scope._get_capture_mode() == MODE_DIGITAL
 
     def test_get_capture_mode_unknown_defaults_to_digital(self):
         scope = _make_scope()
         scope.mode_cb = MagicMock()
         scope.mode_cb.get.return_value = 'Foobar'
-        assert scope._get_capture_mode() == ANALOG_MODE_DIGITAL8
+        assert scope._get_capture_mode() == MODE_DIGITAL
 
-    def test_get_capture_mode_all(self):
-        """'16 Dig + 8 Ana' maps to ANALOG_ENABLE_BIT."""
+    def test_get_capture_mode_mixed(self):
+        """'16 Dig + 8 Ana' maps to MODE_MIXED."""
         scope = _make_scope()
         scope.mode_cb = MagicMock()
         scope.mode_cb.get.return_value = '16 Dig + 8 Ana'
-        assert scope._get_capture_mode() == ANALOG_ENABLE_BIT
+        assert scope._get_capture_mode() == MODE_MIXED
 
 
 # ====================================================================
@@ -280,7 +254,7 @@ class _MockVar:
         self._value = value
 
 
-def _mk_scope_for_capture(capture_type='rolling', mode=ANALOG_MODE_DIGITAL8):
+def _mk_scope_for_capture(capture_type='rolling', mode=MODE_DIGITAL):
     """Build a minimal scope state for testing _capture paths."""
     scope = _make_scope()
     scope.dev = MagicMock()
@@ -293,9 +267,7 @@ def _mk_scope_for_capture(capture_type='rolling', mode=ANALOG_MODE_DIGITAL8):
     scope.wave.ch_data = []
     scope.wave.num_samples = 0
     scope.wave._drawn_to = 0
-    scope._analog_combos = [MagicMock() for _ in range(8)]
-    for cb in scope._analog_combos:
-        cb.get.return_value = '0'
+    scope._analog_info = MagicMock()
     scope.rate_cb = MagicMock()
     scope.rate_cb.get.return_value = '1MHz'
     scope._nsamp = 5000
@@ -354,7 +326,7 @@ class TestCapturePaths:
 
     def test_single_8ana_path(self):
         """Single 8-analog capture reaches thread creation."""
-        scope = _mk_scope_for_capture(capture_type='single', mode=ANALOG_ENABLE_BIT)
+        scope = _mk_scope_for_capture(capture_type='single', mode=MODE_MIXED)
         scope._capture()
 
     def test_fast_auto_selected_for_bram_ok(self):

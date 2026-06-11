@@ -27,37 +27,41 @@ CMD_TVALUE        = 0xC1
 # GPIO/MPSSE constants re-exported for hw_validation.py
 from driver.ols_spi import GPIO_CS_LO, GPIO_CS_HI, PIN_DIR
 
-ANALOG_MODE_DIGITAL8 = 0
-ANALOG_MODE_MIXED1 = 1
-ANALOG_MODE_MIXED2 = 2
-ANALOG_MODE_ANALOG1 = 3
-ANALOG_MODE_ANALOG2 = 4
-ANALOG_MODE_ANALOG4 = 5
-ANALOG_MODE_MIXED2_4 = 6
-ANALOG_MODE_MIXED_DUAL = 7
-ANALOG_ENABLE_BIT = 0x08  # simplified: bit 3 of REG_FLAGS (avoids clash with mode 0-7)
+# Two capture modes (hardware analog_enable = bit 3 of REG_FLAGS):
+#   MODE_DIGITAL (0):  16 digital channels, 2-byte frame
+#   MODE_MIXED (0x08): 16 digital + all 8 ADC channels, 14-byte frame
+MODE_DIGITAL = 0
+MODE_MIXED = 0x08
+# Back-compat aliases
+ANALOG_MODE_DIGITAL8 = MODE_DIGITAL
+ANALOG_ENABLE_BIT = MODE_MIXED
 
 NUM_CHANNELS = 16
 
 
+# SPI readout wire format: the capture datapath is 32-bit per word (built for
+# up to 32 channels). With 16 channels every word is [data_lo, data_hi, 0, 0] —
+# the 16-bit payload sits in the low half, the high half is always zero. So the
+# wire delivers 2× the payload bytes. Digital reads this at stride 4 and takes
+# the low 2 bytes; mixed frames are the low halves of N consecutive words.
+WIRE_WORD_BYTES = 4
+
+
 def analog_frame_stride(mode):
-    if mode & ANALOG_ENABLE_BIT:
-        return 14  # 16 digital + 8 ADC × 12-bit = 14 bytes
-    if mode == ANALOG_MODE_MIXED1:
-        return 4
-    if mode == ANALOG_MODE_MIXED2:
-        return 5
-    if mode == ANALOG_MODE_ANALOG1:
-        return 2
-    if mode == ANALOG_MODE_ANALOG2:
-        return 3
-    if mode == ANALOG_MODE_ANALOG4:
-        return 6
-    if mode == ANALOG_MODE_MIXED2_4:
-        return 8
-    if mode == ANALOG_MODE_MIXED_DUAL:
-        return 6
-    return 2  # Digital16
+    # Payload (dense) bytes per frame: 16 digital + 8 ADC × 12-bit = 14 bytes;
+    # digital-only = 2 bytes.
+    return 14 if mode & MODE_MIXED else 2
+
+
+def analog_wire_stride(mode):
+    # Bytes per frame as delivered over SPI (32-bit words, payload in low 16).
+    return analog_frame_stride(mode) * 2
+
+
+def wire_to_payload(data):
+    """Collapse the 32-bit wire format to dense payload bytes by taking the low
+    2 bytes (payload half) of each 4-byte word and dropping the zero high half."""
+    return b''.join(data[i:i + 2] for i in range(0, len(data) - 1, WIRE_WORD_BYTES))
 
 
 def decode_analog_frames(data, mode):
@@ -65,19 +69,11 @@ def decode_analog_frames(data, mode):
     frames = []
     for i in range(0, len(data) // stride):
         frame = data[i * stride:(i + 1) * stride]
-        row = {"digital": None, "adc": []}
-        if mode & ANALOG_ENABLE_BIT:
-            # Version 1.3 simplified: 16 digital + 8 ADC × 12-bit, 14 bytes.
-            # Each 12-bit ADC spans 1.5 bytes (shared byte between adjacent pair).
-            #   A0: frame[2] + (frame[3] & 0x0F) << 8
-            #   A1: (frame[3] >> 4) + frame[4] << 4
-            #   A2: frame[5] + (frame[6] & 0x0F) << 8
-            #   A3: (frame[6] >> 4) + frame[7] << 4
-            #   A4: frame[8] + (frame[9] & 0x0F) << 8
-            #   A5: (frame[9] >> 4) + frame[10] << 4
-            #   A6: frame[11] + (frame[12] & 0x0F) << 8
-            #   A7: (frame[12] >> 4) + frame[13] << 4
-            row["digital"] = frame[0] | (frame[1] << 8)
+        row = {"digital": frame[0] | (frame[1] << 8), "adc": []}
+        if mode & MODE_MIXED:
+            # 8 ADC × 12-bit packed in 12 bytes; each adjacent pair shares
+            # a middle byte (lo: byte n + low nibble of n+1; hi: high nibble
+            # of n+1 + byte n+2).
             for ch in range(4):
                 lo = frame[2 + ch * 3]
                 hi = (frame[3 + ch * 3] & 0x0F) << 8
@@ -85,35 +81,6 @@ def decode_analog_frames(data, mode):
                 lo = (frame[3 + ch * 3] >> 4)
                 hi = frame[4 + ch * 3] << 4
                 row["adc"].append(lo | hi)
-        elif mode == ANALOG_MODE_MIXED1:
-            row["digital"] = frame[0] | (frame[1] << 8)
-            row["adc"].append(frame[2] | ((frame[3] & 0x0F) << 8))
-        elif mode == ANALOG_MODE_MIXED2:
-            row["digital"] = frame[0] | (frame[1] << 8)
-            row["adc"].append(frame[2] | ((frame[3] & 0x0F) << 8))
-            row["adc"].append(((frame[3] >> 4) & 0x0F) | (frame[4] << 4))
-        elif mode == ANALOG_MODE_ANALOG1:
-            row["adc"].append(frame[0] | ((frame[1] & 0x0F) << 8))
-        elif mode == ANALOG_MODE_ANALOG2:
-            row["adc"].append(frame[0] | ((frame[1] & 0x0F) << 8))
-            row["adc"].append(((frame[1] >> 4) & 0x0F) | (frame[2] << 4))
-        elif mode == ANALOG_MODE_ANALOG4:
-            row["adc"].append(frame[0] | ((frame[1] & 0x0F) << 8))
-            row["adc"].append(((frame[1] >> 4) & 0x0F) | (frame[2] << 4))
-            row["adc"].append(frame[3] | ((frame[4] & 0x0F) << 8))
-            row["adc"].append(((frame[4] >> 4) & 0x0F) | (frame[5] << 4))
-        elif mode == ANALOG_MODE_MIXED2_4:
-            row["digital"] = frame[0] | (frame[1] << 8)
-            row["adc"].append(frame[2] | ((frame[3] & 0x0F) << 8))
-            row["adc"].append(((frame[3] >> 4) & 0x0F) | (frame[4] << 4))
-            row["adc"].append(frame[5] | ((frame[6] & 0x0F) << 8))
-            row["adc"].append(((frame[6] >> 4) & 0x0F) | (frame[7] << 4))
-        elif mode == ANALOG_MODE_MIXED_DUAL:
-            row["digital"] = frame[0] | (frame[1] << 8)
-            row["adc"].append(frame[2] | ((frame[3] & 0x0F) << 8))
-            row["adc"].append(((frame[3] >> 4) & 0x0F) | (frame[4] << 4))
-        else:
-            row["digital"] = frame[0] | (frame[1] << 8)
         frames.append(row)
     return frames
 
@@ -134,9 +101,7 @@ class OLSDeviceSPI:
         self._gen_tx_pin = 3
         self.spi = None
         self._pkt = None
-        self.analog_mode = ANALOG_MODE_DIGITAL8
-        self.analog_ch0 = 0
-        self.analog_ch1 = 1
+        self.analog_mode = MODE_DIGITAL
         self.debug_ch0_enabled = False
         # Pending flag for live toggling during rolling capture
         self._pending_debug_enable = None
@@ -223,19 +188,17 @@ class OLSDeviceSPI:
         # SPI backend: raw mode is display-only. FPGA always sends 4 bytes/sample.
         # _stride is used by the GUI to pick stride=1 for raw display.
 
-    def set_analog_config(self, mode, ch0=0, ch1=0, ch2=2, ch3=3):
-        self.analog_mode = mode  # preserve all bits including ANALOG_ENABLE_BIT
-        # Pass the full mode word (including analog_enable bit 3) to REG_FLAGS.
-        # Bit 3 is decoded by OLS_Interface as analog_mode_i(0).
-        payload = mode
-        self.pkt.write_register(REG_FLAGS, payload)
+    def set_analog_config(self, mode, *_compat_args):
+        """Set capture mode: MODE_DIGITAL or MODE_MIXED (bit 3 of REG_FLAGS)."""
+        self.analog_mode = MODE_MIXED if mode & MODE_MIXED else MODE_DIGITAL
+        self.pkt.write_register(REG_FLAGS, self.analog_mode)
 
     def set_analog_enable(self, enable=True):
-        """Simplified analog mode: enables 16 digital + 8 ADC capture."""
-        self.set_analog_config(ANALOG_ENABLE_BIT if enable else 0)
+        """Enable mixed capture: 16 digital + all 8 ADC channels."""
+        self.set_analog_config(MODE_MIXED if enable else MODE_DIGITAL)
 
     def set_pin_map(self, channel, pin_index):
-        payload = channel | (pin_index << 8)
+        payload = 0x80000000 | (channel & 0x0F) | ((pin_index & 0x1F) << 8)
         self.pkt.write_register(REG_GEN_PINS, payload)
 
     def decode_analog_frames(self, data, mode=None):
@@ -350,7 +313,8 @@ class OLSDeviceSPI:
                          stop_evt=None,
                          proto=None, i2c_speed=100000,
                          i2c_frame=None, i2c_tx_pin=3, i2c_scl_pin=1,
-                         gen_first=False):
+                         i2c_read_len=0, i2c_dev_r=None,
+                         gen_first=False, fast_mode=True):
         """Atomic generator capture using CMD_GEN_CAPTURE.
         
         The FPGA arms capture, waits a guard period, then starts the generator
@@ -399,7 +363,7 @@ class OLSDeviceSPI:
         self.pkt.write_register(REG_TRIGGER_MASK, mask)
         self.pkt.write_register(REG_TRIGGER_VALUE, value)
         self.pkt.write_register(REG_FLAGS, self._raw_flags)
-        self.set_analog_config(self.analog_mode, self.analog_ch0, self.analog_ch1)
+        self.set_analog_config(self.analog_mode)
 
         # Configure generator
         if proto == 'I2C':
@@ -409,6 +373,9 @@ class OLSDeviceSPI:
             self.pkt.write_register(REG_GEN_BAUD, i2c_div & 0xFFFF)
             if i2c_frame:
                 self.pkt.load_gen_data(i2c_frame)
+            dev_r = 1 if i2c_dev_r is None else i2c_dev_r & 0xFF
+            flags = 1 | ((i2c_read_len & 0xFF) << 8) | (dev_r << 16)
+            self.pkt.write_register(REG_GEN_DATA, flags)
         elif self._gen_data is not None:
             self.pkt.write_register(REG_GEN_PROTO, 0)
             div_b = max(1, self.sys_clk // self._gen_baud)
@@ -417,7 +384,7 @@ class OLSDeviceSPI:
             self.pkt.load_gen_data(self._gen_data)
         self.spi.flush()
 
-        self.pkt.write_register(REG_FAST_MODE, 1)
+        self.pkt.write_register(REG_FAST_MODE, 1 if fast_mode else 0)
 
         has_gen = (proto == 'I2C' and i2c_frame) or self._gen_data is not None
         if not has_gen:
@@ -460,7 +427,7 @@ class OLSDeviceSPI:
 
     def capture(self, rate_hz=1000000, nsamples=5000, timeout=6,
                 trigger=None, capture_time=None, progress_cb=None,
-                stop_evt=None):
+                stop_evt=None, pre_trigger=0):
         self._ensure_open()
         if capture_time is not None:
             nsamples = int(capture_time * rate_hz)
@@ -482,7 +449,10 @@ class OLSDeviceSPI:
         rc = max(1, nsamples)
         self.pkt.write_register(REG_DIVIDER, div & 0xFFFFFF)
         self.pkt.write_register(REG_SAMPLE_COUNT, rc)
-        self.pkt.write_register(REG_DELAY_COUNT, rc)
+        # DELAY_COUNT = post-trigger samples; FPGA derives pre-trigger depth
+        # as Start_Offset = SAMPLE_COUNT - DELAY_COUNT.
+        pre = max(0, min(pre_trigger, rc - 1))
+        self.pkt.write_register(REG_DELAY_COUNT, rc - pre)
 
         if trigger is None:
             mask = 0
@@ -501,7 +471,7 @@ class OLSDeviceSPI:
             value = 0
         self.pkt.write_register(REG_TRIGGER_MASK, mask)
         self.pkt.write_register(REG_TRIGGER_VALUE, value)
-        self.set_analog_config(self.analog_mode, self.analog_ch0, self.analog_ch1)
+        self.set_analog_config(self.analog_mode)
         self.pkt.write_register(REG_FLAGS, self._raw_flags)
         self.pkt.write_register(REG_FAST_MODE, 1 if self.fast_mode_enabled else 0)
 
@@ -539,24 +509,28 @@ class OLSDeviceSPI:
 
         return samples
 
-    def capture_analog(self, rate_hz=100000, frames=4096, mode=ANALOG_MODE_MIXED2,
-                       ch0=0, ch1=1, timeout=6, progress_cb=None, stop_evt=None):
-        stride = analog_frame_stride(mode)
-        self.set_analog_config(mode, ch0, ch1)
-        sdram_words = frames * (stride // 2)  # e.g. 14/2 = 7 words per frame
-        data = self.capture(
-            rate_hz=rate_hz * (stride // 2),
-            nsamples=sdram_words,
+    def capture_analog(self, rate_hz=100000, frames=4096, mode=MODE_MIXED,
+                       timeout=6, progress_cb=None, stop_evt=None):
+        payload_stride = analog_frame_stride(mode)       # 14 dense bytes/frame
+        words_per_frame = payload_stride // 2            # 7 SDRAM words/frame
+        self.set_analog_config(mode)
+        # capture() reads 2 wire bytes per requested 'sample', but each stored
+        # word is 4 wire bytes (32-bit), so request 2× the word count to read
+        # whole frames off the wire, then de-interleave to dense payload.
+        sdram_words = frames * words_per_frame
+        wire = self.capture(
+            rate_hz=rate_hz * words_per_frame,
+            nsamples=sdram_words * 2,
             timeout=timeout,
             trigger=None,
             progress_cb=progress_cb,
             stop_evt=stop_evt,
         )
-        trimmed = data[:frames * stride]
-        return trimmed, decode_analog_frames(trimmed, mode)
+        payload = wire_to_payload(wire)[:frames * payload_stride]
+        return payload, decode_analog_frames(payload, mode)
 
     def i2c_capture_with_gen(self, rate_hz=400000, nsamples=2000, timeout=6,
-                              i2c_speed=100000, dev_addr=0x18, reg_addr=0x0F,
+                              i2c_speed=100000, dev_addr=0x19, reg_addr=0x0F,
                               read_len=1, tx_pin=2, scl_pin=1, fast_mode=True):
         # Configure I2C read mode before delegating to capture_with_gen
         dev_w = (dev_addr << 1) & 0xFE
@@ -568,13 +542,15 @@ class OLSDeviceSPI:
         return self.capture_with_gen(
             rate_hz=rate_hz, nsamples=nsamples, timeout=timeout,
             proto='I2C', i2c_speed=i2c_speed,
-            i2c_frame=i2c_frame, i2c_tx_pin=tx_pin, i2c_scl_pin=scl_pin)
+            i2c_frame=i2c_frame, i2c_tx_pin=tx_pin, i2c_scl_pin=scl_pin,
+            i2c_read_len=read_len, i2c_dev_r=dev_r,
+            fast_mode=fast_mode)
         self.spi.flush()
         return bytes(accumulated[:need])
 
     def i2c_rolling_capture(self, rate_hz, chunk_nsamp, buffer_nsamp,
                              stop_evt, progress_cb=None, i2c_speed=100000,
-                             dev_addr=0x18, reg_addr=0x0F, read_len=1,
+                             dev_addr=0x19, reg_addr=0x0F, read_len=1,
                              tx_pin=2, scl_pin=1, full_out=None, use_continuous=True):
         self._ensure_open()
         max_bytes = buffer_nsamp * 2
@@ -645,11 +621,16 @@ class OLSDeviceSPI:
 
     def rolling_capture(self, rate_hz, chunk_nsamp, buffer_nsamp,
                         stop_evt, progress_cb=None, gen_data=None, gen_baud=115200,
-                        gen_tx_pin=3, full_out=None, use_continuous=True, stride=None):
+                        gen_tx_pin=3, full_out=None, use_continuous=True, stride=None,
+                        payload_stride=None):
+        # stride: wire bytes per frame (read sizing). payload_stride: when set,
+        # each chunk is de-interleaved from the 32-bit wire format to dense
+        # payload bytes before being buffered/yielded (used for mixed-analog).
         self._ensure_open()
         if stride is None:
             stride = 2  # default: 2 bytes per SDRAM word
-        max_bytes = buffer_nsamp * stride
+        out_stride = payload_stride if payload_stride else stride
+        max_bytes = buffer_nsamp * out_stride
 
         div = max(0, int(self.sys_clk / rate_hz) - 1)
         rc = max(1, buffer_nsamp)
@@ -661,8 +642,8 @@ class OLSDeviceSPI:
         self.pkt.write_register(REG_FLAGS, self._raw_flags)
         self.pkt.write_register(REG_FAST_MODE, 1)
         self.set_debug_ch0(self.debug_ch0_enabled)
-        if self.analog_mode != ANALOG_MODE_DIGITAL8:
-            self.set_analog_config(self.analog_mode, self.analog_ch0, self.analog_ch1)
+        if self.analog_mode != MODE_DIGITAL:
+            self.set_analog_config(self.analog_mode)
 
         if gen_data:
             self.pkt.write_register(REG_GEN_PROTO, 0)
@@ -724,12 +705,16 @@ class OLSDeviceSPI:
                 time.sleep(0.001)
                 continue
 
+            if payload_stride:
+                # Collapse 32-bit wire words to dense payload before buffering.
+                data = wire_to_payload(data)
+
             if full_out is not None:
                 full_out.extend(data)
             buf += data
             if len(buf) > max_bytes:
                 buf = buf[-max_bytes:]
-            seq += len(data) // stride
+            seq += len(data) // out_stride
             if progress_cb:
                 progress_cb(buf, seq, buffer_nsamp)
             yield buf, seq, buffer_nsamp
