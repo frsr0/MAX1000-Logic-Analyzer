@@ -8,6 +8,7 @@ entity Signal_Gen is
     CLK       : in  std_logic;
     Load_Byte : in  std_logic_vector(7 downto 0);
     Load_We   : in  std_logic;
+    Clear     : in  std_logic := '0';
     Start     : in  std_logic;
     Start_Ack : out std_logic := '0';
     Start_Reject : out std_logic := '0';
@@ -132,7 +133,7 @@ begin
     variable crc_rem  : natural range 0 to 3 := 0;
     variable crc_done : boolean := false;
     variable crc_idx  : natural range 0 to 2 := 0;
-    variable i2c_state : natural range 0 to 15 := 0;
+    variable i2c_state : natural range 0 to 17 := 0;
     variable i2c_bit  : natural range 0 to 8 := 0;
     variable rd_remain : natural range 0 to 255 := 0;
     variable read_active : boolean := false;
@@ -386,16 +387,19 @@ begin
                   i2c_state := 8;
                 else
                   Scl_Out <= '0';
-                  i2c_state := 5;
+                  i2c_state := 16;
                 end if;
               else
                 Scl_Out <= '0';
               end if;
               if byte_active then
                 if i2c_state = 1 and byte_ready = '1' then
+                  -- MSB goes out here; state 3 continues from bit 6.
+                  -- (i2c_bit := 0 made state 3 resend the MSB, shifting the
+                  -- whole byte right and clocking 9 data bits on the wire.)
                   Tx_Out <= byte_buf(7);
                   byte_ready <= '0';
-                  i2c_bit := 0;
+                  i2c_bit := 1;
                   i2c_state := 2;
                 end if;
               end if;
@@ -469,10 +473,31 @@ begin
             when 11 =>
               Scl_Out <= '1';
               byte_active := false;
+              i2c_state := 16;
+            -- STOP setup: SDA must be low while SCL is low, then SCL rises,
+            -- then SDA rises (state 5) — SDA↑ under SCL-high is the STOP.
+            -- Entering state 5 directly with SDA already high puts no STOP
+            -- edge on the wire.
+            when 16 =>
+              Scl_Out <= '0'; Tx_Out <= '0';
+              i2c_state := 17;
+            when 17 =>
+              Scl_Out <= '1';
               i2c_state := 5;
             when others => i2c_state := 0;
           end case;
         end if;
+      end if;
+
+      -- Abort/flush: stop any transmission and empty the FIFO so stale
+      -- bytes from a failed or never-started run can't leak into the next
+      -- transaction.  Placed last so it overrides same-cycle loads.
+      if Clear = '1' then
+        head <= (others => '0');
+        tail <= (others => '0');
+        count <= 0;
+        byte_ready <= '0';
+        tx_active <= '0';
       end if;
     end if;
   end process;

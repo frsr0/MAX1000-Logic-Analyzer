@@ -133,9 +133,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   attribute preserve of gen_i2c_test : signal is true;
   attribute preserve of gen_spi_test : signal is true;
 
-  signal analog_mode   : std_logic_vector(2 downto 0) := (others => '0');
-  signal analog_ch0    : natural range 0 to 15 := 0;
-  signal analog_ch1    : natural range 0 to 15 := 1;
+  signal analog_enable : std_logic := '0';
+  signal gen_clear     : std_logic := '0';
   signal analog_stream_mode : std_logic := '0';
   signal debug_ch0_enable : std_logic := '0';
   signal fast_mode_i : std_logic := '0';
@@ -236,15 +235,14 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Gen_Proto     : OUT STD_LOGIC := '0';
     Gen_TX_Pin    : OUT NATURAL range 0 to 31 := 0;
     Gen_SCL_Pin   : OUT NATURAL range 0 to 31 := 0;
+    Gen_Clear      : OUT STD_LOGIC := '0';
     Gen_I2C_Rd_Len : OUT NATURAL range 0 to 255 := 0;
     Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Gen_I2C_Test   : OUT STD_LOGIC := '0';
     Gen_SPI_Test   : OUT STD_LOGIC := '0';
      Armed          : OUT STD_LOGIC := '0';
     Fast_Mode      : OUT STD_LOGIC := '0';
-    Analog_Mode    : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-    Analog_Ch0     : OUT NATURAL range 0 to 15 := 0;
-    Analog_Ch1     : OUT NATURAL range 0 to 15 := 1;
+    Analog_Enable  : OUT STD_LOGIC := '0';
     Status        : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Continuous_Mode : OUT STD_LOGIC := '0';
     Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
@@ -321,6 +319,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     CLK       : in  std_logic;
     Load_Byte : in  std_logic_vector(7 downto 0);
     Load_We   : in  std_logic;
+    Clear     : in  std_logic := '0';
     Start     : in  std_logic;
     Start_Ack : out std_logic := '0';
     Start_Reject : out std_logic := '0';
@@ -473,7 +472,7 @@ BEGIN
     end if;
   end process;
 
-  analog_stream_mode <= '1' when analog_mode(0) = '1' else '0';
+  analog_stream_mode <= analog_enable;
 
   -- Digital hysteresis filter (Schmitt trigger): requires N consecutive equal
   -- samples before accepting a transition, rejecting glitches below threshold.
@@ -615,10 +614,9 @@ BEGIN
       -- Default: all analog_frame_data bytes zero
       analog_frame_data <= (others => '0');
 
-      -- Simplified capture modes:
-      --   analog_mode(0) = analog_enable (1 = include ADC in frame)
-      --   Higher bits reserved for future ch_count
-      if analog_mode(0) = '0' then
+      -- Two capture modes: digital-only (2-byte frame) or
+      -- digital + all 8 ADC channels (14-byte frame)
+      if analog_enable = '0' then
         -- Digital only: 16 digital (2 bytes)
         analog_frame_data(15 downto 0) <= internal_data_r;
         analog_frame_len <= 2;
@@ -643,12 +641,12 @@ BEGIN
       sys_clk => sys_clk,
       sys_clk_locked => pll_locked,
       reset => '0',
-      ch0_sel => analog_ch0,
+      ch0_sel => 0,
       ch0_start => adc_start,
       ch0_busy => open,
       ch0_result => adc0_result,
       ch0_valid => open,
-      ch1_sel => analog_ch1,
+      ch1_sel => 1,
       ch1_start => adc_start,
       ch1_busy => open,
       ch1_result => adc1_result,
@@ -723,15 +721,14 @@ BEGIN
     Gen_Proto     => gen_proto,
     Gen_TX_Pin    => gen_tx_pin,
     Gen_SCL_Pin   => gen_scl_pin,
+    Gen_Clear      => gen_clear,
     Gen_I2C_Rd_Len => gen_i2c_rd_len,
     Gen_I2C_Dev_R  => gen_i2c_dev_r,
     Gen_I2C_Test   => gen_i2c_test,
     Gen_SPI_Test   => gen_spi_test,
     Armed          => armed_i,
     Fast_Mode      => fast_mode_i,
-    Analog_Mode    => analog_mode,
-    Analog_Ch0     => analog_ch0,
-    Analog_Ch1     => analog_ch1,
+    Analog_Enable  => analog_enable,
     Status        => core_status,
     Continuous_Mode => continuous_mode,
     Buffer_Full     => "000",
@@ -834,6 +831,7 @@ BEGIN
     CLK => sys_clk,
     Load_Byte => gen_load_byte,
     Load_We   => gen_load_we,
+    Clear     => gen_clear,
     Start     => gen_start,
     Start_Ack => gen_start_ack_i,
     Start_Reject => gen_start_reject_i,

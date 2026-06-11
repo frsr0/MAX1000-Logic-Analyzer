@@ -49,9 +49,7 @@ architecture bench of tb_ols_interface is
   signal gen_load_we_cap : std_logic := '0';
   signal gen_load_we_clr : std_logic := '0';
   signal continuous_mode : std_logic;
-  signal analog_mode : std_logic_vector(2 downto 0);
-  signal analog_ch0  : natural range 0 to 15;
-  signal analog_ch1  : natural range 0 to 15;
+  signal analog_enable : std_logic;
   signal buffer_full  : std_logic_vector(2 downto 0) := (others => '0');
   signal buffer_ack   : std_logic_vector(2 downto 0);
   signal debug_ch0_enable : std_logic;
@@ -141,9 +139,7 @@ begin
       Armed        => armed,
       Fast_Mode    => fast_mode,
       Continuous_Mode => continuous_mode,
-      Analog_Mode  => analog_mode,
-      Analog_Ch0   => analog_ch0,
-      Analog_Ch1   => analog_ch1,
+      Analog_Enable => analog_enable,
       Buffer_Full     => buffer_full,
       Buffer_Ack      => buffer_ack,
       Debug_Ch0_Enable => debug_ch0_enable
@@ -505,17 +501,6 @@ begin
     spi_cmd(spi_cs, spi_sck, spi_mosi, spi_miso, x"AE", x"00000001");
     wait_cycles(clk, 10);
     report "Test 22: PASS";
-
-    ------------------------------------------------------------------
-    -- Test 22b: CMD_ANALOG_CFG (0xB0)
-    ------------------------------------------------------------------
-    report "Test 22b: CMD_ANALOG_CFG mode=2 ch0=3 ch1=5";
-    spi_cmd(spi_cs, spi_sck, spi_mosi, spi_miso, x"B0", x"00000532");
-    wait_cycles(clk, 10);
-    check(analog_mode = "010", "Analog mode should be MIXED2");
-    check(analog_ch0 = 3, "Analog CH0 should be 3");
-    check(analog_ch1 = 5, "Analog CH1 should be 5");
-    report "Test 22b: PASS";
 
     ------------------------------------------------------------------
     -- Test 23: CMD_IFACE_MODE (0xAC) - switch to UART

@@ -37,6 +37,7 @@ PORT (
   Gen_Proto     : OUT STD_LOGIC;
     Gen_TX_Pin    : OUT NATURAL range 0 to 31 := 0;
     Gen_SCL_Pin   : OUT NATURAL range 0 to 31 := 0;
+   Gen_Clear      : OUT STD_LOGIC := '0';
    Gen_I2C_Rd_Len : OUT NATURAL range 0 to 255 := 0;
    Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Gen_I2C_Test   : OUT STD_LOGIC := '0';
@@ -44,9 +45,7 @@ PORT (
      Armed          : OUT STD_LOGIC := '0';
       Fast_Mode      : OUT STD_LOGIC := '0';
       Continuous_Mode : OUT STD_LOGIC := '0';
-      Analog_Mode     : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-       Analog_Ch0      : OUT NATURAL range 0 to 15 := 0;
-       Analog_Ch1      : OUT NATURAL range 0 to 15 := 1;
+      Analog_Enable   : OUT STD_LOGIC := '0';
        Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
        Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
        Pin_Map_Write   : OUT STD_LOGIC := '0';
@@ -76,9 +75,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL Read_Count  : NATURAL := 0;
   SIGNAL Delay_Count : NATURAL := 0;
   SIGNAL Channel_Groups : STD_LOGIC_VECTOR(3 downto 0) := "0000";
-  SIGNAL analog_ch0_i     : NATURAL range 0 to 15 := 0;
-  SIGNAL analog_ch1_i     : NATURAL range 0 to 15 := 1;
-  SIGNAL analog_mode_i    : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
+  SIGNAL analog_enable_i  : STD_LOGIC := '0';
   SIGNAL SPI_RX_Valid     : STD_LOGIC := '0';
   SIGNAL SPI_RX_Data      : STD_LOGIC_VECTOR (8-1 DOWNTO 0) := (others => '0');
   -- SPI mode only: directly use SPI signals (no UART muxing)
@@ -318,7 +315,7 @@ BEGIN
           fast_mode_i <= disp_reg_wdata(0);
           continuous_mode_i <= disp_reg_wdata(1);
           ch_mode <= disp_reg_wdata(2);
-          analog_mode_i(0) <= disp_reg_wdata(3);
+          analog_enable_i <= disp_reg_wdata(3);
         WHEN REG_FAST_MODE =>
           fast_mode_i <= disp_reg_wdata(0);
         WHEN REG_CONT_MODE =>
@@ -339,8 +336,14 @@ BEGIN
         WHEN REG_GEN_BAUD =>
           gen_baud_div_int <= disp_reg_wdata(15 downto 0);
         WHEN REG_GEN_PINS =>
-          gen_tx_pin_int <= TO_INTEGER(UNSIGNED(disp_reg_wdata(4 downto 0)));
-          gen_scl_pin_int <= TO_INTEGER(UNSIGNED(disp_reg_wdata(12 downto 8)));
+          IF disp_reg_wdata(31) = '1' THEN
+            Pin_Map_Channel <= TO_INTEGER(UNSIGNED(disp_reg_wdata(3 downto 0)));
+            Pin_Map_Pin <= TO_INTEGER(UNSIGNED(disp_reg_wdata(12 downto 8)));
+            Pin_Map_Write <= '1';
+          ELSE
+            gen_tx_pin_int <= TO_INTEGER(UNSIGNED(disp_reg_wdata(4 downto 0)));
+            gen_scl_pin_int <= TO_INTEGER(UNSIGNED(disp_reg_wdata(12 downto 8)));
+          END IF;
         WHEN REG_GEN_DATA =>
           -- Legacy CMD_I2C_TEST (0xA7) layout when upper bytes are set.
           -- Low-byte-only writes load the gen FIFO without touching mode flags.
@@ -619,6 +622,7 @@ BEGIN
     IF RISING_EDGE(CLK) THEN
       Gen_Load_We <= '0';
       Gen_Start <= '0';
+      Gen_Clear <= disp_abort;  -- abort stops the generator and flushes its FIFO
 
       IF (disp_gen_load = '1' AND disp_gen_load_d = '0')
          OR (gen_reg_load_req = '1' AND gen_reg_load_req_d = '0') THEN
@@ -771,9 +775,7 @@ BEGIN
   Gen_SPI_Test   <= gen_spi_test_int;
   Fast_Mode      <= fast_mode_i;
   Continuous_Mode <= continuous_mode_i;
-  Analog_Mode <= analog_mode_i;
-  Analog_Ch0 <= analog_ch0_i;
-  Analog_Ch1 <= analog_ch1_i;
+  Analog_Enable <= analog_enable_i;
   Buffer_Ack      <= buffer_ack_i;
   Armed          <= Run_OLS;
   Debug_Ch0_Enable <= debug_ch0_enable_i;
@@ -1008,7 +1010,7 @@ BEGIN
                     reg_val := Trigger_Values;
                   when REG_FLAGS | REG_FAST_MODE =>
                     reg_val(0) := fast_mode_i;
-                    reg_val(3) := analog_mode_i(0);
+                    reg_val(3) := analog_enable_i;
                   when REG_CONT_MODE =>
                     reg_val(0) := continuous_mode_i;
                   when REG_GEN_PROTO =>

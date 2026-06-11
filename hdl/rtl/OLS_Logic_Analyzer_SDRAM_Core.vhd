@@ -42,15 +42,14 @@ PORT (
   Gen_Proto     : OUT STD_LOGIC;
     Gen_TX_Pin    : OUT NATURAL range 0 to 31 := 0;
     Gen_SCL_Pin   : OUT NATURAL range 0 to 31 := 0;
+    Gen_Clear      : OUT STD_LOGIC := '0';
     Gen_I2C_Rd_Len : OUT NATURAL range 0 to 255 := 0;
     Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Gen_I2C_Test   : OUT STD_LOGIC := '0';
     Gen_SPI_Test   : OUT STD_LOGIC := '0';
     Armed          : OUT STD_LOGIC := '0';
     Fast_Mode      : OUT STD_LOGIC := '0';
-    Analog_Mode    : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-    Analog_Ch0     : OUT NATURAL range 0 to 15 := 0;
-    Analog_Ch1     : OUT NATURAL range 0 to 15 := 1;
+    Analog_Enable  : OUT STD_LOGIC := '0';
     Status        : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Continuous_Mode : OUT STD_LOGIC := '0';
     Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
@@ -105,9 +104,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL buffer_full_i       : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
   SIGNAL buffer_ack_i        : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
   SIGNAL fla_status          : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
-  SIGNAL analog_mode_i       : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-  SIGNAL analog_ch0_i        : NATURAL range 0 to 15 := 0;
-  SIGNAL analog_ch1_i        : NATURAL range 0 to 15 := 1;
+  SIGNAL analog_enable_i     : STD_LOGIC := '0';
+  SIGNAL gen_clear_i         : STD_LOGIC := '0';
   SIGNAL pin_map_write_i     : STD_LOGIC := '0';
   SIGNAL pin_map_channel_i   : NATURAL range 0 to 15 := 0;
   SIGNAL pin_map_pin_i       : NATURAL range 0 to 31 := 0;
@@ -152,15 +150,14 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
     Gen_TX_Pin    : OUT NATURAL range 0 to 31 := 0;
     Gen_SCL_Pin   : OUT NATURAL range 0 to 31 := 0;
     Gen_I2C_Rd_Len : OUT NATURAL range 0 to 255 := 0;
+   Gen_Clear      : OUT STD_LOGIC := '0';
    Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
      Gen_I2C_Test   : OUT STD_LOGIC := '0';
      Gen_SPI_Test   : OUT STD_LOGIC := '0';
       Armed          : OUT STD_LOGIC := '0';
       Fast_Mode      : OUT STD_LOGIC := '0';
       Continuous_Mode : OUT STD_LOGIC := '0';
-      Analog_Mode     : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-      Analog_Ch0      : OUT NATURAL range 0 to 15 := 0;
-      Analog_Ch1      : OUT NATURAL range 0 to 15 := 1;
+      Analog_Enable   : OUT STD_LOGIC := '0';
       Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
       Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
       Pin_Map_Write   : OUT STD_LOGIC := '0';
@@ -239,15 +236,14 @@ BEGIN
   Gen_Proto <= Gen_Proto_i;
   Gen_TX_Pin  <= Gen_TX_Pin_i;
   Gen_SCL_Pin <= Gen_SCL_Pin_i;
+  Gen_Clear      <= gen_clear_i;
   Gen_I2C_Rd_Len <= gen_i2c_rd_len_i;
   Gen_I2C_Dev_R  <= gen_i2c_dev_r_i;
   Gen_I2C_Test   <= gen_i2c_test_i;
   Gen_SPI_Test   <= gen_spi_test_i;
   Armed          <= armed_i;
   Fast_Mode      <= fast_mode_i;
-  Analog_Mode <= analog_mode_i;
-  Analog_Ch0 <= analog_ch0_i;
-  Analog_Ch1 <= analog_ch1_i;
+  Analog_Enable <= analog_enable_i;
   Status <= fla_status;
   Continuous_Mode <= continuous_mode_i;
   Buffer_Ack <= buffer_ack_i;
@@ -269,13 +265,12 @@ BEGIN
     SPI_CS        => SPI_CS,SPI_SCK       => SPI_SCK,SPI_MOSI      => SPI_MOSI,SPI_MISO      => SPI_MISO,Interface_Mode=> Interface_Mode,Inputs        => OLS_Interface_Inputs,Rate_Div      => OLS_Interface_Rate_Div,Samples       => OLS_Interface_Samples,Start_Offset  => OLS_Interface_Start_Offset,Run           => OLS_Interface_Run,Full          => OLS_Interface_Full,Address       => OLS_Interface_Address,Outputs       => OLS_Interface_Outputs,
     Gen_Load_Byte => Gen_Load_Byte_i,Gen_Load_We   => Gen_Load_We_i,Gen_Start     => Gen_Start_i,Gen_Baud_Div  => Gen_Baud_Div_i,Gen_Busy      => Gen_Busy_i,Gen_Fifo_Count => Gen_Fifo_Count,Gen_Proto     => Gen_Proto_i,
     Gen_TX_Pin    => Gen_TX_Pin_i,Gen_SCL_Pin   => Gen_SCL_Pin_i,
+    Gen_Clear      => gen_clear_i,
     Gen_I2C_Rd_Len => gen_i2c_rd_len_i,Gen_I2C_Dev_R  => gen_i2c_dev_r_i,    Gen_I2C_Test   => gen_i2c_test_i,
     Gen_SPI_Test   => gen_spi_test_i,
     Armed          => armed_i,
     Fast_Mode      => fast_mode_i,
-    Analog_Mode    => analog_mode_i,
-    Analog_Ch0     => analog_ch0_i,
-    Analog_Ch1     => analog_ch1_i,
+    Analog_Enable  => analog_enable_i,
     Continuous_Mode => continuous_mode_i,
     Buffer_Full     => buffer_full_i,
     Buffer_Ack      => buffer_ack_i,
