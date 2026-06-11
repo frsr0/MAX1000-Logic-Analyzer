@@ -8,7 +8,6 @@ NUM_CHANNELS = 16
 DecodedByte = namedtuple('DecodedByte', ['pos', 'value', 'time_ns'])
 DecodedModbusFrame = namedtuple('DecodedModbusFrame', ['addr', 'func', 'data', 'crc', 'crc_ok'])
 
-
 def samples_to_channels(data, num_ch=NUM_CHANNELS, stride=4):
     if stride < 2:
         need_bytes = 1
@@ -106,47 +105,65 @@ def decode_uart(ch, samplerate, ch_idx=0, baud=115200, filter_threshold=0):
 
 
 def decode_i2c(ch, samplerate, scl_idx=2, sda_idx=3, filter_threshold=0, sda_offset=0):
+    """Decode I2C from SCL/SDA logic channels.
+
+    Robust against sub-bit SDA glitches (e.g. SCL->SDA crosstalk) and SDA
+    transitions near clock edges:
+      * the glitch filter is auto-sized from the measured SCL period so short
+        glitches are removed without eating real bits;
+      * each data/ACK bit is sampled at the MIDDLE of its SCL-high plateau
+        rather than at the edge;
+      * START/STOP are detected anywhere SCL is high, so a repeated-START that
+        shares an SCL-high plateau with the previous clock is still seen.
+    """
     scl = ch[scl_idx]
     sda = ch[sda_idx]
-    if filter_threshold > 0:
-        scl = glitch_filter(scl, filter_threshold)
-        sda = glitch_filter(sda, filter_threshold)
-    # Find all SCL rising edges once — clean separation from data sampling
-    rising_edges = [i for i in range(1, len(scl)) if scl[i - 1] == 0 and scl[i] == 1]
+    n = min(len(scl), len(sda))
+    if n < 2:
+        return []
+    # Auto-size the glitch filter from the measured SCL period (~1/8 bit).
+    rises = [i for i in range(1, n) if scl[i - 1] == 0 and scl[i] == 1]
+    if len(rises) >= 3:
+        periods = sorted(rises[k + 1] - rises[k] for k in range(len(rises) - 1))
+        med = periods[len(periods) // 2]
+        ft = max(filter_threshold, max(2, med // 8))
+    else:
+        ft = max(filter_threshold, 2)
+    if ft > 0:
+        scl = glitch_filter(scl, ft)
+        sda = glitch_filter(sda, ft)
+
     result = []
-    ei = 0
-    while ei < len(rising_edges):
-        ri = rising_edges[ei]
-        # Check for START: SDA falling while SCL is high.
-        # SDA↓ must happen within this SCL high phase (before next rising edge).
-        if ri > 0 and sda[ri] == 0 and sda[ri - 1] == 1:
-            if not result or result[-1][0] != "START":
+    in_txn = False
+    bits = []
+    for i in range(1, n):
+        if scl[i] == 1:
+            # START: SDA falls while SCL high. STOP: SDA rises while SCL high.
+            if sda[i - 1] == 1 and sda[i] == 0:
                 result.append(("START", None))
-        # Byte decode: read 8 SDA values at consecutive SCL rising edges
-        if result and result[-1][0] == "START":
-            byte = 0
-            bit_ok = True
-            for b in range(8):
-                if ei >= len(rising_edges):
-                    bit_ok = False
-                    break
-                byte = (byte << 1) | (1 if sda[rising_edges[ei]] else 0)
-                ei += 1
-            # After 8 bits, check for ACK at the 9th SCL edge
-            if bit_ok:
-                if ei < len(rising_edges):
-                    ei += 1  # skip ACK edge
-                result.append(("DATA", byte))
-        elif result and result[-1][0] == "DATA":
-            # Check for STOP: SDA rising while SCL is high.
-            # SDA↑ detected at current SCL high phase.
-            if ri > 0 and sda[ri] == 1 and sda[ri - 1] == 0:
-                result.append(("STOP", None))
-            # Check for repeated START: SDA falling while SCL high
-            elif ri > 0 and sda[ri] == 0 and sda[ri - 1] == 1:
-                result.append(("START", None))
-                continue  # don't advance ei — start bit already at this edge
-        ei += 1
+                in_txn = True
+                bits = []
+                continue
+            if sda[i - 1] == 0 and sda[i] == 1:
+                if in_txn:
+                    result.append(("STOP", None))
+                in_txn = False
+                bits = []
+                continue
+        # Data/ACK bit sampled at each SCL rising edge, read at mid-high.
+        if in_txn and scl[i] == 1 and scl[i - 1] == 0:
+            j = i
+            while j < n and scl[j] == 1:
+                j += 1
+            mid = max(0, min((i + j) // 2 + sda_offset, n - 1))
+            bits.append(1 if sda[mid] else 0)
+            if len(bits) == 9:
+                val = 0
+                for b in bits[:8]:
+                    val = (val << 1) | b
+                result.append(("DATA", val))
+                result.append(("ACK" if bits[8] == 0 else "NACK", None))
+                bits = []
     return result
 
 

@@ -1,7 +1,7 @@
 """HW test: read LSM9DS1 accelerometer WHO_AM_I via I2C generator."""
-import sys
-sys.path.insert(0, '.')
-from ols_spi_device import OLSDeviceSPI
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from driver.ols_spi_device import OLSDeviceSPI
 
 PASS = 0
 FAIL = 0
@@ -18,7 +18,7 @@ def check(cond, msg):
 dev = OLSDeviceSPI()
 dev.open()
 
-ACCEL_ADDR = 0x18
+ACCEL_ADDR = 0x19  # SA0 high
 WHO_AM_I = 0x0F
 tx_pin = 2
 scl_pin = 1
