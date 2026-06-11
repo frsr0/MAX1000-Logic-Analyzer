@@ -4,12 +4,12 @@ use IEEE.STD_LOGIC_1164.ALL;
 entity PLL_Model is
   generic (
     INPUT_FREQ   : real    := 12.0e6;  -- 12 MHz input
-    MULTIPLY_BY  : natural := 8;       -- c0 = 96 MHz
-    DIVIDE_BY    : natural := 1;
-    FAST_MULT    : natural := 10;      -- c1 = 120 MHz
-    FAST_DIV     : natural := 1;
-    SDRAM_MULT   : natural := 8;       -- c2 = 96 MHz @ -90 degrees
-    SDRAM_DIV    : natural := 1;
+    MULTIPLY_BY  : natural := 50;      -- c0 = 100 MHz
+    DIVIDE_BY    : natural := 6;
+    FAST_MULT    : natural := 50;      -- c1 = 200 MHz
+    FAST_DIV     : natural := 3;
+    SDRAM_MULT   : natural := 50;      -- c2 = 100 MHz @ -90 degrees
+    SDRAM_DIV    : natural := 6;
     LOCK_CYCLES  : natural := 100
   );
   port (

@@ -43,9 +43,7 @@ architecture bench of tb_gen_full is
   signal armed        : std_logic;
   signal fast_mode    : std_logic;
   signal cont_mode    : std_logic;
-  signal analog_mode  : std_logic_vector(2 downto 0);
-  signal analog_ch0   : natural range 0 to 15;
-  signal analog_ch1   : natural range 0 to 15;
+  signal analog_enable : std_logic;
   signal buffer_full  : std_logic_vector(2 downto 0) := (others => '0');
   signal buffer_ack   : std_logic_vector(2 downto 0);
   signal pin_map_write : std_logic;
@@ -105,9 +103,7 @@ begin
       Armed        => armed,
       Fast_Mode    => fast_mode,
       Continuous_Mode => cont_mode,
-      Analog_Mode  => analog_mode,
-      Analog_Ch0   => analog_ch0,
-      Analog_Ch1   => analog_ch1,
+      Analog_Enable => analog_enable,
       Buffer_Full     => buffer_full,
       Buffer_Ack      => buffer_ack,
       Pin_Map_Write  => pin_map_write,

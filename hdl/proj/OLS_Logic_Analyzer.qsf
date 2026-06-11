@@ -18,6 +18,15 @@ set_global_assignment -name DEVICE 10M08SAU169C8G
 set_global_assignment -name TOP_LEVEL_ENTITY OLS_Logic_Analyzer_wrapper
 set_global_assignment -name NUM_PARALLEL_PROCESSORS 16
 set_global_assignment -name INTERNAL_FLASH_UPDATE_MODE "SINGLE IMAGE WITH ERAM"
+set_global_assignment -name OPTIMIZE_MULTI_CORNER_TIMING ON
+set_global_assignment -name SEED 10
+
+# Speed-mode fitter settings (active for 200 MHz FAST_SPEED build):
+set_global_assignment -name FITTER_EFFORT "AUTO FIT"
+set_global_assignment -name OPTIMIZATION_MODE "AGGRESSIVE PERFORMANCE"
+set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC ON
+set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION ON
+set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING ON
 
 set_global_assignment -name VHDL_FILE ../rtl/OLS_SDRAM_Top.vhd
 set_global_assignment -name VHDL_FILE ../rtl/LED_Controller.vhd
@@ -27,7 +36,7 @@ set_global_assignment -name VHDL_FILE ../rtl/spi_protocol_pkg.vhd
 set_global_assignment -name VHDL_FILE ../rtl/spi_packet_rx.vhd
 set_global_assignment -name VHDL_FILE ../rtl/spi_packet_tx.vhd
 set_global_assignment -name VHDL_FILE ../rtl/OLS_Interface.vhd
-set_global_assignment -name VHDL_FILE ../rtl/UART_Interface.vhd
+#set_global_assignment -name VHDL_FILE ../rtl/UART_Interface.vhd
 set_global_assignment -name VHDL_FILE ../rtl/SDRAM_Interface.vhd
 set_global_assignment -name VHDL_FILE ../rtl/SDRAM_Controller_Custom.vhd
 set_global_assignment -name VHDL_FILE ../rtl/SPI_Slave.vhd
@@ -37,6 +46,7 @@ set_global_assignment -name VHDL_FILE ../rtl/Signal_Gen.vhd
 set_global_assignment -name VHDL_FILE ../rtl/SDRAM_PLL.vhd
 set_global_assignment -name VHDL_FILE OLS_Logic_Analyzer_wrapper.vhd
 
+# Clock constraints
 set_global_assignment -name SDC_FILE OLS_Logic_Analyzer.sdc
 
 # Altera Modular ADC II IP

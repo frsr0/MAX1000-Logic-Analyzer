@@ -2,8 +2,9 @@ param(
     [switch]$Flash
 )
 
-$QUARTUS = "C:\intelFPGA_lite\18.1\quartus\bin64\quartus_sh.exe"
-$PROGRAMMER = "C:\intelFPGA_lite\18.1\quartus\bin64\quartus_pgm.exe"
+$QUARTUS_DIR = "C:\intelFPGA_lite\18.1\quartus\bin64"
+$QUARTUS = "$QUARTUS_DIR\quartus_sh.exe"
+$PROGRAMMER = "$QUARTUS_DIR\quartus_pgm.exe"
 $CSV = "pin_assignments.csv"
 $WRAPPER = "OLS_Logic_Analyzer_wrapper.vhd"
 $QSF = "OLS_Logic_Analyzer.qsf"
@@ -176,6 +177,8 @@ $qsfLines = @(
     'set_global_assignment -name TOP_LEVEL_ENTITY OLS_Logic_Analyzer_wrapper',
     'set_global_assignment -name NUM_PARALLEL_PROCESSORS 16',
     'set_global_assignment -name INTERNAL_FLASH_UPDATE_MODE "SINGLE IMAGE WITH ERAM"',
+    'set_global_assignment -name FITTER_EFFORT "STANDARD FIT"',
+    'set_global_assignment -name OPTIMIZE_MULTI_CORNER_TIMING ON',
     '',
     'set_global_assignment -name VHDL_FILE ../rtl/OLS_SDRAM_Top.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/LED_Controller.vhd',
@@ -194,6 +197,9 @@ $qsfLines = @(
     'set_global_assignment -name VHDL_FILE ../rtl/Signal_Gen.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/SDRAM_PLL.vhd',
     'set_global_assignment -name VHDL_FILE OLS_Logic_Analyzer_wrapper.vhd',
+    '',
+    '# Clock constraints',
+    'set_global_assignment -name SDC_FILE OLS_Logic_Analyzer.sdc',
     '',
     '# Altera Modular ADC II IP',
     'set_global_assignment -name QIP_FILE ../ip/MAX10_ADC/synthesis/MAX10_ADC.qip',

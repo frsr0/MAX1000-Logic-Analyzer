@@ -14,36 +14,8 @@ use work.led_controller_pkg.all;
 
 entity LED_Controller is
     generic (
-        PWM_CARRIER_MAX : natural := 256;
-        FADE_STEPS_MAX  : natural := 511;
-
-        BREATH_IDLE_OFF  : natural := 5;
-        BREATH_IDLE_RISE : natural := 255;
-        BREATH_IDLE_ON   : natural := 100;
-        BREATH_IDLE_FALL : natural := 255;
-
-        CONFIRM_SPEED     : natural := 2;
-        CONFIRM_OFF       : natural := 3;
-        CONFIRM_RISE      : natural := 127;
-        CONFIRM_ON        : natural := 50;
-        CONFIRM_FALL      : natural := 127;
-        CONFIRM_CYCLES    : natural := 3;
-
-        ARMED_SPEED       : natural := 3;
-        ARMED_OFF         : natural := 2;
-        ARMED_RISE        : natural := 85;
-        ARMED_ON          : natural := 33;
-        ARMED_FALL        : natural := 85;
-
-        FLASH_TICKS_ON    : natural := 18;
-        FLASH_TICKS_OFF   : natural := 18;
-        FLASH_STEP        : natural := 16;
-
-        ROLL_TICK_DIV     : natural := 2;
-        ROLL_PHASE_STEP   : natural := 85;
-        ROLL_SPEED_MIN    : natural := 1;
-        ROLL_SPEED_MAX    : natural := 8;
-        ROLL_ACT_AVG      : natural := 8
+        BLINK_FAST_TOP : natural := 2500000;
+        BLINK_SLOW_TOP : natural := 12500000
     );
     port (
         clk             : in  std_logic;
@@ -66,309 +38,98 @@ entity LED_Controller is
 end LED_Controller;
 
 architecture rtl of LED_Controller is
-
-    type led_state_t is (
-        ST_IDLE,
-        ST_HOST_CONFIRM,
-        ST_TRIGGER_ARMED,
-        ST_SINGLE_CAPTURE,
-        ST_ROLLING_CAPTURE
-    );
-
-    type breath_state_t is (BR_OFF, BR_RISE, BR_ON, BR_FALL);
-
-    function triangle(phase : natural range 0 to 255) return integer is
-    begin
-        if phase < 128 then
-            return phase * 2;
-        else
-            return (255 - phase) * 2;
-        end if;
-    end function;
-
+    signal blink_fast_cnt : natural range 0 to BLINK_FAST_TOP := 0;
+    signal blink_slow_cnt : natural range 0 to BLINK_SLOW_TOP := 0;
+    signal blink_fast : std_logic := '0';
+    signal blink_slow : std_logic := '0';
+    signal roll_phase : natural range 0 to 3 := 0;
+    signal roll_tick  : natural range 0 to 5000000 := 0;
 begin
 
     process(clk)
-        variable state     : led_state_t := ST_IDLE;
-        variable next_s    : led_state_t := ST_IDLE;
-
-        variable hc_d1     : std_logic := '0';
-
-        variable b_state   : breath_state_t := BR_OFF;
-        variable b_timer   : natural range 0 to 255 := 0;
-        variable b_cycle   : natural range 0 to 7 := 0;
-        variable b_delta   : natural range 1 to 8 := 1;
-        variable b_off_t   : natural range 0 to 255 := 5;
-        variable b_rise_t  : natural range 0 to 255 := 255;
-        variable b_on_t    : natural range 0 to 255 := 100;
-        variable b_fall_t  : natural range 0 to 255 := 255;
-
-        variable fl_on     : boolean := true;
-        variable fl_timer  : natural range 0 to 255 := 0;
-
-        variable r_phase   : natural range 0 to 255 := 0;
-        variable r_div     : natural range 0 to 15 := 0;
-        variable r_speed   : natural range 1 to 8 := 1;
-        variable r_act_sum : natural range 0 to 255 := 0;
-        variable r_act_cnt : natural range 0 to 255 := 0;
-
-        variable p, q      : natural range 0 to 1023;
-        variable activity  : natural range 0 to 4;
     begin
         if rising_edge(clk) then
             if rst = '1' then
-                state     := ST_IDLE;
-                b_state   := BR_OFF;
-                b_timer   := 0;
-                b_cycle   := 0;
-                fl_on     := true;
-                fl_timer  := 0;
-                r_phase   := 0;
-                r_div     := 0;
-                r_speed   := ROLL_SPEED_MIN;
-                r_act_sum := 0;
-                r_act_cnt := 0;
-                hc_d1     := '0';
+                blink_fast_cnt <= 0;
+                blink_slow_cnt <= 0;
+                blink_fast <= '0';
+                blink_slow <= '0';
+                roll_phase <= 0;
+                roll_tick <= 0;
                 led_target <= (others => 0);
-                fade_step  <= (others => 1);
+                fade_step <= (others => 1);
             else
-                -- State transitions (hc_d1 is from previous cycle — updated at end)
-                case state is
-                    when ST_IDLE =>
-                        if host_connected = '1' and hc_d1 = '0' then
-                            next_s := ST_HOST_CONFIRM;
-                        elsif armed = '1' and capture_run = '0' then
-                            next_s := ST_TRIGGER_ARMED;
-                        else
-                            next_s := ST_IDLE;
-                        end if;
-
-                    when ST_HOST_CONFIRM =>
-                        if b_cycle >= CONFIRM_CYCLES
-                           and b_state = BR_OFF and b_timer = 0 then
-                            if armed = '1' and capture_run = '0' then
-                                next_s := ST_TRIGGER_ARMED;
-                            else
-                                next_s := ST_IDLE;
-                            end if;
-                        else
-                            next_s := ST_HOST_CONFIRM;
-                        end if;
-
-                    when ST_TRIGGER_ARMED =>
-                        if capture_run = '1' then
-                            if continuous_mode = '1' then
-                                next_s := ST_ROLLING_CAPTURE;
-                            else
-                                next_s := ST_SINGLE_CAPTURE;
-                            end if;
-                        else
-                            next_s := ST_TRIGGER_ARMED;
-                        end if;
-
-                    when ST_SINGLE_CAPTURE =>
-                        if capture_full = '1' or capture_run = '0' then
-                            if armed = '1' then
-                                next_s := ST_TRIGGER_ARMED;
-                            else
-                                next_s := ST_IDLE;
-                            end if;
-                        else
-                            next_s := ST_SINGLE_CAPTURE;
-                        end if;
-
-                    when ST_ROLLING_CAPTURE =>
-                        if capture_full = '1' or capture_run = '0' then
-                            next_s := ST_IDLE;
-                        else
-                            next_s := ST_ROLLING_CAPTURE;
-                        end if;
-                end case;
-
-                if state /= next_s and next_s = ST_HOST_CONFIRM then
-                    b_state := BR_OFF;
-                    b_timer := 0;
-                    b_cycle := 0;
+                -- Blink counters (independent fast/slow)
+                if blink_fast_cnt >= BLINK_FAST_TOP - 1 then
+                    blink_fast_cnt <= 0;
+                    blink_fast <= not blink_fast;
+                else
+                    blink_fast_cnt <= blink_fast_cnt + 1;
+                end if;
+                if blink_slow_cnt >= BLINK_SLOW_TOP - 1 then
+                    blink_slow_cnt <= 0;
+                    blink_slow <= not blink_slow;
+                else
+                    blink_slow_cnt <= blink_slow_cnt + 1;
                 end if;
 
-                if fade_tick = '1' then
-                    case state is
-                        when ST_IDLE =>
-                            b_delta  := 1;
-                            b_off_t  := BREATH_IDLE_OFF;
-                            b_rise_t := BREATH_IDLE_RISE;
-                            b_on_t   := BREATH_IDLE_ON;
-                            b_fall_t := BREATH_IDLE_FALL;
-
-                            case b_state is
-                                when BR_OFF =>
-                                    if b_timer >= b_off_t then
-                                        b_state := BR_RISE; b_timer := 0;
-                                    else b_timer := b_timer + 1; end if;
-                                when BR_RISE =>
-                                    if b_timer >= b_rise_t then
-                                        b_state := BR_ON; b_timer := 0;
-                                    else b_timer := b_timer + 1; end if;
-                                when BR_ON =>
-                                    if b_timer >= b_on_t then
-                                        b_state := BR_FALL; b_timer := 0;
-                                    else b_timer := b_timer + 1; end if;
-                                when BR_FALL =>
-                                    if b_timer >= b_fall_t then
-                                        b_state := BR_OFF; b_timer := 0;
-                                    else b_timer := b_timer + 1; end if;
-                            end case;
-
-                            if b_state = BR_RISE or b_state = BR_ON then
-                                led_target(0) <= 255;
-                            else
-                                led_target(0) <= 0;
-                            end if;
-                            for i in 1 to 7 loop
-                                led_target(i) <= 0;
-                            end loop;
-                            fade_step <= (others => b_delta);
-
-                        when ST_HOST_CONFIRM =>
-                            b_delta  := CONFIRM_SPEED;
-                            b_off_t  := CONFIRM_OFF;
-                            b_rise_t := CONFIRM_RISE;
-                            b_on_t   := CONFIRM_ON;
-                            b_fall_t := CONFIRM_FALL;
-
-                            case b_state is
-                                when BR_OFF =>
-                                    if b_timer >= b_off_t then
-                                        b_state := BR_RISE; b_timer := 0;
-                                    else b_timer := b_timer + 1; end if;
-                                when BR_RISE =>
-                                    if b_timer >= b_rise_t then
-                                        b_state := BR_ON; b_timer := 0;
-                                    else b_timer := b_timer + 1; end if;
-                                when BR_ON =>
-                                    if b_timer >= b_on_t then
-                                        b_state := BR_FALL; b_timer := 0;
-                                    else b_timer := b_timer + 1; end if;
-                                when BR_FALL =>
-                                    if b_timer >= b_fall_t then
-                                        b_state := BR_OFF; b_timer := 0;
-                                        b_cycle := b_cycle + 1;
-                                    else b_timer := b_timer + 1; end if;
-                            end case;
-
-                            for i in 0 to 7 loop
-                                if b_state = BR_RISE or b_state = BR_ON then
-                                    led_target(i) <= 255;
-                                else
-                                    led_target(i) <= 0;
-                                end if;
-                                fade_step(i) <= b_delta;
-                            end loop;
-
-                        when ST_TRIGGER_ARMED =>
-                            b_delta  := ARMED_SPEED;
-                            b_off_t  := ARMED_OFF;
-                            b_rise_t := ARMED_RISE;
-                            b_on_t   := ARMED_ON;
-                            b_fall_t := ARMED_FALL;
-
-                            case b_state is
-                                when BR_OFF =>
-                                    if b_timer >= b_off_t then
-                                        b_state := BR_RISE; b_timer := 0;
-                                    else b_timer := b_timer + 1; end if;
-                                when BR_RISE =>
-                                    if b_timer >= b_rise_t then
-                                        b_state := BR_ON; b_timer := 0;
-                                    else b_timer := b_timer + 1; end if;
-                                when BR_ON =>
-                                    if b_timer >= b_on_t then
-                                        b_state := BR_FALL; b_timer := 0;
-                                    else b_timer := b_timer + 1; end if;
-                                when BR_FALL =>
-                                    if b_timer >= b_fall_t then
-                                        b_state := BR_OFF; b_timer := 0;
-                                    else b_timer := b_timer + 1; end if;
-                            end case;
-
-                            for i in 0 to 7 loop
-                                if b_state = BR_RISE or b_state = BR_ON then
-                                    led_target(i) <= 255;
-                                else
-                                    led_target(i) <= 0;
-                                end if;
-                                fade_step(i) <= b_delta;
-                            end loop;
-
-                        when ST_SINGLE_CAPTURE =>
-                            if fl_on then
-                                if fl_timer >= FLASH_TICKS_ON then
-                                    fl_on := false; fl_timer := 0;
-                                else fl_timer := fl_timer + 1; end if;
-                            else
-                                if fl_timer >= FLASH_TICKS_OFF then
-                                    fl_on := true; fl_timer := 0;
-                                else fl_timer := fl_timer + 1; end if;
-                            end if;
-
-                            for i in 0 to 7 loop
-                                if fl_on then
-                                    led_target(i) <= 255;
-                                else
-                                    led_target(i) <= 0;
-                                end if;
-                                fade_step(i) <= FLASH_STEP;
-                            end loop;
-
-                        when ST_ROLLING_CAPTURE =>
-                            activity := 0;
-                            if fifo_activity(0) = '1' then activity := activity + 1; end if;
-                            if fifo_activity(1) = '1' then activity := activity + 1; end if;
-                            if fifo_activity(2) = '1' then activity := activity + 1; end if;
-                            if fifo_activity(3) = '1' then activity := activity + 1; end if;
-
-                            r_act_sum := r_act_sum + activity;
-                            r_act_cnt := r_act_cnt + 1;
-                            if r_act_cnt >= ROLL_ACT_AVG then
-                                r_act_cnt := 0;
-                                r_speed := ROLL_SPEED_MIN
-                                    + (r_act_sum * (ROLL_SPEED_MAX - ROLL_SPEED_MIN))
-                                    / (ROLL_ACT_AVG * 4);
-                                if r_speed < ROLL_SPEED_MIN then
-                                    r_speed := ROLL_SPEED_MIN;
-                                end if;
-                                if r_speed > ROLL_SPEED_MAX then
-                                    r_speed := ROLL_SPEED_MAX;
-                                end if;
-                                r_act_sum := 0;
-                            end if;
-
-                            if r_div >= r_speed - 1 then
-                                r_div := 0;
-                                if r_phase = 255 then
-                                    r_phase := 0;
-                                else
-                                    r_phase := r_phase + 1;
-                                end if;
-                            else
-                                r_div := r_div + 1;
-                            end if;
-
-                            for i in 0 to 7 loop
-                                if ch_4_mode = '1' and i > 3 then
-                                    led_target(i) <= 0;
-                                else
-                                    p := r_phase + i * ROLL_PHASE_STEP;
-                                    q := p mod 256;
-                                    led_target(i) <= triangle(q);
-                                end if;
-                                fade_step(i) <= 1;
-                            end loop;
-                    end case;
+                -- Rolling activity phase
+                if capture_run = '1' and continuous_mode = '1' then
+                    if roll_tick >= 5000000 - 1 then
+                        roll_tick <= 0;
+                        if fifo_activity /= "0000" then
+                            roll_phase <= roll_phase + 1;
+                        end if;
+                    else
+                        roll_tick <= roll_tick + 1;
+                    end if;
+                else
+                    roll_phase <= 0;
+                    roll_tick <= 0;
                 end if;
 
-                hc_d1 := host_connected;
-                state := next_s;
+                -- LED target assignment
+                if host_connected = '1' then
+                    led_target(0) <= 255;
+                else
+                    led_target(0) <= 0;
+                end if;
+
+                if armed = '1' and capture_run = '0' then
+                    if blink_slow = '1' then
+                        led_target(1) <= 0;
+                    else
+                        led_target(1) <= 255;
+                    end if;
+                else
+                    led_target(1) <= 0;
+                end if;
+
+                if capture_run = '1' then
+                    led_target(2) <= 255;
+                else
+                    led_target(2) <= 0;
+                end if;
+
+                if capture_full = '1' then
+                    if blink_slow = '0' then
+                        led_target(3) <= 255;
+                    else
+                        led_target(3) <= 0;
+                    end if;
+                else
+                    led_target(3) <= 0;
+                end if;
+
+                for i in 4 to 7 loop
+                    if capture_run = '1' and roll_phase = i - 4 then
+                        led_target(i) <= 255;
+                    else
+                        led_target(i) <= 0;
+                    end if;
+                end loop;
+
+                fade_step <= (others => 16);
             end if;
         end if;
     end process;

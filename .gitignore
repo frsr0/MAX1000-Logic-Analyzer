@@ -42,3 +42,4 @@ vhdl_ls.toml
 
 # Test outputs
 hdl/hw_test/hw_results/
+*.log

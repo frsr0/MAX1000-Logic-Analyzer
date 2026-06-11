@@ -10,28 +10,23 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-__version__ = "1.0.0"
+__version__ = "1.4.0"
 
 # SPI device backend (30 MHz fast mode)
 try:
     from driver.ols_spi_device import (
         OLSDeviceSPI, find_spi_device,
-        ANALOG_MODE_DIGITAL8, ANALOG_MODE_MIXED1, ANALOG_MODE_MIXED2,
-        ANALOG_MODE_ANALOG1, ANALOG_MODE_ANALOG2,
-        ANALOG_MODE_ANALOG4, ANALOG_MODE_MIXED2_4, ANALOG_MODE_MIXED_DUAL,
+        MODE_DIGITAL, MODE_MIXED,
         decode_analog_frames, analog_frame_stride,
+        wire_to_payload,
     )
     HAS_SPI = True
 except ImportError:
     HAS_SPI = False
-    ANALOG_MODE_DIGITAL8 = 0
-    ANALOG_MODE_MIXED1 = 1
-    ANALOG_MODE_MIXED2 = 2
-    ANALOG_MODE_ANALOG1 = 3
-    ANALOG_MODE_ANALOG2 = 4
-    ANALOG_MODE_ANALOG4 = 5
-    ANALOG_MODE_MIXED2_4 = 6
-    ANALOG_MODE_MIXED_DUAL = 7
+    MODE_DIGITAL = 0
+    MODE_MIXED = 0x08
+    def wire_to_payload(data):
+        return b''.join(data[i:i + 2] for i in range(0, len(data) - 1, 4))
 
 try:
     import serial, serial.tools.list_ports
@@ -50,562 +45,15 @@ except:
 
 NUM_CHANNELS = 16
 
-# ─── Sample processing ──────────────────────────────────────────
+# Re-export decoder functions from gui_decoders
+from app.gui_decoders import (
+    samples_to_channels, modbus_crc16, glitch_filter,
+    decode_uart, decode_i2c, decode_spi, decode_modbus,
+    DecodedByte, DecodedModbusFrame,
+)
 
-def samples_to_channels(data, num_ch=NUM_CHANNELS, stride=4):
-    """Convert raw capture bytes to per-channel lists.
-    data: bytes
-    stride: bytes per sample from SPI readback
-    num_ch <= 8: uses 1 byte per sample
-    num_ch > 8: uses 2 bytes per sample (requires stride >= 2 or fallback to 1 byte)
-    Returns: list of per-channel lists, each with sample values 0/1
-    """
-    if stride < 2:
-        need_bytes = 1
-        num_ch = min(num_ch, 8)
-    else:
-        need_bytes = 2 if num_ch > 8 else 1
-    if stride < need_bytes:
-        stride = need_bytes
-    data = data[:len(data) - (len(data) % stride)]
-    if len(data) < stride:
-        return [[] for _ in range(num_ch)], 0
-    samples = len(data) // stride
-    ch = [[] for _ in range(num_ch)]
-    for i in range(samples):
-        off = i * stride
-        if num_ch <= 8:
-            word = data[off]
-        elif num_ch <= 16:
-            word = data[off] | (data[off + 1] << 8)
-        else:
-            word = data[off] | (data[off + 1] << 8) | (data[off + 2] << 16) | (data[off + 3] << 24)
-        for c in range(num_ch):
-            ch[c].append((word >> c) & 1)
-    return ch, samples
-
-def modbus_crc16(data):
-    """Compute Modbus RTU CRC-16."""
-    crc = 0xFFFF
-    for b in data:
-        crc ^= b
-        for _ in range(8):
-            if crc & 1:
-                crc = (crc >> 1) ^ 0xA001
-            else:
-                crc >>= 1
-    return crc
-
-# ─── Glitch Filter ──────────────────────────────────────────────
-
-def glitch_filter(signal, threshold=3):
-    """Digital glitch rejection: require `threshold` consecutive equal samples 
-    before switching output state.
-
-    Rejects single/double-sample noise spikes while preserving logic levels 
-    and edge timing.  A single-sample glitch (e.g. 0 1 0) is suppressed; 
-    a genuine edge (e.g. 0 1 1 1) passes after `threshold` samples.
-
-    Behaves like the hardware glitch filters built into FPGA and MCU 
-    I²C/UART/SPI peripherals — suitable for cleaning captured waveforms 
-    before protocol decoding.
-
-    Parameters
-    ----------
-    signal : list[int]
-        Binary waveform (0 or 1 per sample).
-    threshold : int
-        Number of consecutive equal samples required to accept a transition.
-        Default 3 (rejects single/double glitches at any sample rate).
-
-    Returns
-    -------
-    list[int] — filtered copy of `signal` (original unmodified).
-    """
-    if not signal:
-        return []
-    out = list(signal)
-    stable = signal[0]
-    cnt = 0
-    for i in range(len(signal)):
-        if signal[i] == stable:
-            cnt = 0
-            out[i] = stable
-        else:
-            cnt += 1
-            if cnt >= threshold:
-                stable = signal[i]
-                cnt = 0
-            out[i] = stable
-    return out
-
-# ─── Protocol Decoders ───────────────────────────────────────────
-
-DecodedByte = namedtuple('DecodedByte', ['pos', 'value', 'time_ns'])
-
-def decode_uart(ch, samplerate, ch_idx=0, baud=115200, filter_threshold=0):
-    """Decode UART from a channel. Returns list of DecodedByte."""
-    spb = samplerate / baud
-    sig = ch[ch_idx]
-    if filter_threshold > 0:
-        sig = glitch_filter(sig, filter_threshold)
-    result = []
-    i = 0
-    min_need = int(spb * 10)
-    last_stop = -int(spb * 10)  # prevent re-decoding same edge
-    while i < len(sig) - min_need:
-        if i - last_stop < int(spb * 8):
-            i += 1; continue  # too close to previous frame
-        # Look for falling edge (start bit)
-        if sig[i] == 1 and i + 1 < len(sig) and sig[i + 1] == 0:
-            centre = i + 1 + spb / 2
-            byte = 0
-            valid = True
-            for b in range(8):
-                centre += spb
-                bit_pos = int(round(centre))
-                if bit_pos >= len(sig):
-                    valid = False; break
-                byte |= (sig[bit_pos] << b)
-            centre += spb
-            stop_pos = int(round(centre))
-            stop_ok = False
-            for d in (-1, 0, 1):
-                p = stop_pos + d
-                if 0 <= p < len(sig) and sig[p] == 1:
-                    stop_ok = True
-                    break
-            if valid and stop_ok:
-                result.append(DecodedByte(pos=i, value=byte, time_ns=i * 1e9 / samplerate))
-                last_stop = stop_pos
-                i = stop_pos
-                continue
-        i += 1
-    return result
-
-def decode_i2c(ch, samplerate, scl_idx=2, sda_idx=3, filter_threshold=0, sda_offset=0):
-    """Simple I2C decoder. Returns list of (type, value) strings."""
-    scl = ch[scl_idx]
-    sda = ch[sda_idx]
-    if filter_threshold > 0:
-        scl = glitch_filter(scl, filter_threshold)
-        sda = glitch_filter(sda, filter_threshold)
-    result = []
-    i = 0
-    while i < len(scl) - 20:
-        # Find SCL rising edge then look for SDA↓ nearby
-        if scl[i] == 0 and scl[i + 1] == 1:
-            # Check if SDA goes low within the next 3 samples (START detection with pipeline delay)
-            for k in range(i, min(i + 4, len(scl))):
-                if k > i and sda[k] == 0 and sda[k - 1] == 1:
-                    # Accept first START (idle bus check relaxed — capture starts near gen fire)
-                    if not result:
-                        result.append(("START", None))
-                        i = k
-                    break
-            if result and result[-1][0] == "START":
-                pass  # continue to byte decode
-            elif not result:
-                i += 1
-                continue
-            else:
-                i += 1
-                continue
-            # Read bytes until STOP
-            for _ in range(20):
-                byte = 0
-                for b in range(8):
-                    while i < len(scl) - 2 and not (scl[i] == 0 and scl[i + 1] == 1):
-                        i += 1
-                    # Find the midpoint of SCL high by counting high samples
-                    hi_start = i + 1  # first sample after rising edge
-                    hi_count = 0
-                    while hi_start + hi_count < len(scl) and scl[hi_start + hi_count] == 1:
-                        hi_count += 1
-                    mid = hi_start + hi_count // 2  # midpoint of SCL high
-                    sample_pos = max(0, min(len(sda) - 1, mid + sda_offset))
-                    if mid >= len(scl):
-                        break
-                    byte = (byte << 1) | sda[sample_pos]
-                    i = mid
-                while i < len(scl) - 2 and not (scl[i] == 0 and scl[i + 1] == 1):
-                    i += 1
-                result.append(("DATA", byte))
-                # STOP: SDA↑ while SCL↑ (allow 2-sample window for pipeline)
-                if (i > 0 and i + 2 < len(scl) and scl[i] == 1 and sda[i - 1] == 0 and
-                    any(sda[j] == 1 for j in range(i, min(i + 3, len(scl))))):
-                    result.append(("STOP", None))
-                    break
-            break
-        i += 1
-    return result
-
-def decode_spi(ch, samplerate, miso_idx=3, sclk_idx=1, filter_threshold=0):
-    """Simple SPI decoder (mode 0: sample on SCLK rising edge).
-    
-    Returns list of (byte_value,).  The caller groups bytes into transactions
-    using CS or packet boundaries.
-    """
-    miso = ch[miso_idx]
-    sclk = ch[sclk_idx]
-    if filter_threshold > 0:
-        miso = glitch_filter(miso, filter_threshold)
-        sclk = glitch_filter(sclk, filter_threshold)
-
-    result = []
-    i = 1
-    while i < len(sclk) - 8:
-        # Find SCLK rising edge
-        if sclk[i - 1] == 0 and sclk[i] == 1:
-            byte_val = 0
-            for bit in range(8):
-                # Sample MISO at this SCLK rising edge
-                if i < len(miso):
-                    byte_val = (byte_val << 1) | (1 if miso[i] else 0)
-                # Advance to next SCLK rising edge (skip falling + rising)
-                i += 1
-                while i < len(sclk) - 1 and not (sclk[i - 1] == 0 and sclk[i] == 1):
-                    i += 1
-            result.append(byte_val)
-            i -= 1
-        i += 1
-    return result
-
-DecodedModbusFrame = namedtuple('DecodedModbusFrame', ['addr', 'func', 'data', 'crc', 'crc_ok'])
-
-def decode_modbus(ch, samplerate, ch_idx=0, baud=115200):
-    """Decode Modbus RTU frames from a UART channel.
-    Returns list of DecodedModbusFrame.
-    """
-    uart = decode_uart(ch, samplerate, ch_idx, baud)
-    frames = []
-    i = 0
-    while i < len(uart):
-        if i + 3 >= len(uart):
-            break
-        addr = uart[i].value
-        func = uart[i+1].value
-        # Data bytes per function code (request data, not including addr/func/CRC)
-        fc_data_len = {1: 4, 2: 4, 3: 4, 4: 4, 5: 4, 6: 4,
-                       15: 6, 16: 6}.get(func, len(uart) - i - 4)
-        total_len = 2 + fc_data_len + 2  # addr+func + data + CRC
-        frame_end = min(i + total_len, len(uart))
-        raw = bytes(b.value for b in uart[i:frame_end])
-        if len(raw) < 4:
-            i += 1; continue
-        crc_recv = raw[-2] | (raw[-1] << 8)
-        crc_calc = modbus_crc16(raw[:-2])
-        crc_ok = crc_recv == crc_calc
-        frames.append(DecodedModbusFrame(
-            addr=addr, func=func, data=raw[2:-2],
-            crc=crc_recv, crc_ok=crc_ok))
-        i = frame_end
-    return frames
-
-# ─── Waveform Display (tkinter Canvas) ──────────────────────────
-
-class WaveformDisplay(tk.Canvas):
-    """Scrollable/zoomable digital waveform viewer with markers and measurement."""
-
-    CH_HEIGHT = 30         # pixels per channel
-    CH_GAP = 4
-    LABEL_WIDTH = 40
-    MIN_PX_PER_SAMPLE = 0.5
-    MAX_PX_PER_SAMPLE = 50
-
-    def __init__(self, parent, app=None, **kw):
-        super().__init__(parent, bg='white', **kw)
-        self.app = app
-        self.ch_data = []
-        self.ch_names = []
-        self.samplerate = 1_000_000
-        self.num_samples = 0
-        self.px_scale = 2.0   # pixels per sample
-        self.scroll_x = 0
-        self.marker1 = None   # sample index
-        self.marker2 = None
-        self.dragging = None
-        self._drawn_to = 0    # last sample index drawn (for incremental updates)
-        self._bind_events()
-
-    def _bind_events(self):
-        self.bind('<MouseWheel>', self._on_wheel)
-        self.bind('<ButtonPress-1>', self._on_click)
-        self.bind('<B1-Motion>', self._on_drag)
-        self.bind('<ButtonRelease-1>', self._on_release)
-        self.bind('<Configure>', lambda e: self.redraw())
-
-    def load(self, ch_data, ch_names, samplerate):
-        self.ch_data = ch_data
-        self.ch_names = ch_names
-        self.samplerate = samplerate
-        self.num_samples = len(ch_data[0]) if ch_data else 0
-        self.marker1 = None
-        self.marker2 = None
-        self.scroll_x = 0
-        self._drawn_to = 0
-        self.redraw()
-
-    def draw_incremental(self, upto):
-        """Draw samples from _drawn_to to upto without clearing canvas."""
-        if upto <= self._drawn_to or not self.ch_data:
-            return
-        self.delete('live')  # remove old incremental segments
-        w = self.winfo_width()
-        nch = len(self.ch_data)
-        ruler_h = 20
-        start = max(0, self._drawn_to)
-        end = min(self.num_samples, upto)
-        # Draw each channel's new segments
-        for ci in range(nch):
-            y0 = ruler_h + ci * (self.CH_HEIGHT + self.CH_GAP)
-            samples = self.ch_data[ci]
-            is_analog = samples and max(samples) > 1
-            points = []
-            prev = samples[start] if start > 0 else samples[0]
-            for si in range(start, end):
-                v = samples[si]
-                px = self.LABEL_WIDTH + (si - self.scroll_x) * self.px_scale
-                if is_analog:
-                    py = y0 + self.CH_HEIGHT - (float(v) / 4095.0) * self.CH_HEIGHT
-                else:
-                    py = y0 + (0 if v else self.CH_HEIGHT)
-                if si > start and v != prev:
-                    lpx = self.LABEL_WIDTH + (si - 1 - self.scroll_x) * self.px_scale
-                    points.extend([lpx, py, px, py])
-                points.extend([px, py])
-                prev = v
-            if points:
-                self.create_line(points, fill='#0066cc', width=1.3, tags='live')
-        self._drawn_to = upto
-
-    def set_scale(self, px_scale):
-        old = self.px_scale
-        self.px_scale = max(self.MIN_PX_PER_SAMPLE, min(self.MAX_PX_PER_SAMPLE, px_scale))
-        # Adjust scroll to keep center
-        w = self.winfo_width()
-        center = self.scroll_x + w / 2 / old if old else 0
-        self.scroll_x = max(0, center - w / 2 / self.px_scale)
-        self.redraw()
-
-    def _on_wheel(self, e):
-        delta = 1.2 if e.delta > 0 else 0.8
-        self.set_scale(self.px_scale * delta)
-        return "break"
-
-    def _on_click(self, e):
-        if e.x < self.LABEL_WIDTH:
-            return
-        sx = self.scroll_x + (e.x - self.LABEL_WIDTH) / self.px_scale
-        if 0 <= sx < self.num_samples:
-            si = int(sx)
-            if self.marker1 is None:
-                self.marker1 = si
-            elif self.marker2 is None:
-                self.marker2 = si
-                if self.marker1 > self.marker2:
-                    self.marker1, self.marker2 = self.marker2, self.marker1
-            else:
-                self.marker1 = si
-                self.marker2 = None
-            self.dragging = 'marker2' if self.marker2 is not None else 'marker1'
-            self.redraw()
-
-    def _on_drag(self, e):
-        if self.dragging and e.x >= self.LABEL_WIDTH:
-            sx = self.scroll_x + (e.x - self.LABEL_WIDTH) / self.px_scale
-            si = max(0, min(self.num_samples - 1, int(sx)))
-            if self.dragging == 'marker1':
-                self.marker1 = si
-            else:
-                self.marker2 = si
-            if self.marker1 is not None and self.marker2 is not None:
-                if self.marker1 > self.marker2:
-                    self.marker1, self.marker2 = self.marker2, self.marker1
-                    self.dragging = 'marker1' if self.dragging == 'marker2' else 'marker2'
-            self.redraw()
-
-    def _on_release(self, e):
-        self.dragging = None
-
-    def highlight_channel(self, ch_idx):
-        """Highlight a channel label in the waveform so the user can find it."""
-        self.redraw()
-        y0 = 20 + ch_idx * (self.CH_HEIGHT + self.CH_GAP)
-        cw = self.winfo_width()
-        self.create_rectangle(self.LABEL_WIDTH - 4, y0 - 1, cw, y0 + self.CH_HEIGHT + 1,
-                              outline='#ff0', fill='', width=2, tags='highlight')
-    def redraw(self):
-        self.delete('all')
-        w = self.winfo_width()
-
-    def total_height(self):
-        n = len(self.ch_data)
-        return n * (self.CH_HEIGHT + self.CH_GAP) + 20 + 40  # channels + ruler + decode
-
-    def redraw(self):
-        self.delete('all')
-        w = self.winfo_width()
-        if w < 10: return
-        nch = len(self.ch_data)
-        if nch == 0 or self.num_samples == 0: return
-
-        # Draw time ruler
-        ruler_y = 0
-        ruler_h = 20
-        self.create_rectangle(0, ruler_y, w, ruler_h, fill='#eee', outline='')
-        # Time ticks
-        px_per_div = 100  # pixels between tick marks
-        if self.px_scale > 0 and self.samplerate > 0:
-            samples_per_div = px_per_div / self.px_scale
-            time_per_div = samples_per_div / self.samplerate
-            # Find a nice round time per div
-            for step_ns in [1, 2, 5, 10, 20, 50, 100, 200, 500,
-                            1000, 2000, 5000, 10000, 20000, 50000,
-                            100000, 200000, 500000, 1000000]:
-                step_samp = step_ns * self.samplerate / 1e9
-                if step_samp * self.px_scale >= 50:
-                    break
-            start_samp = int(self.scroll_x / step_samp) * step_samp
-            t = start_samp
-            while True:
-                px = self.LABEL_WIDTH + (t - self.scroll_x) * self.px_scale
-                if px > w: break
-                if px >= self.LABEL_WIDTH:
-                    self.create_line(px, ruler_y, px, ruler_y + 4, fill='#666')
-                    if step_ns < 1000:
-                        label = f"{t * 1e9 / self.samplerate:.0f} ns"
-                    elif step_ns < 1000000:
-                        label = f"{t * 1e9 / self.samplerate / 1000:.1f} µs"
-                    else:
-                        label = f"{t / self.samplerate * 1000:.1f} ms"
-                    self.create_text(px + 2, ruler_y + 10, text=label, anchor='w',
-                                    font=('Consolas', 7), fill='#333')
-                t += step_samp
-
-        # Draw channels
-        for ci in range(nch):
-            y0 = ruler_h + ci * (self.CH_HEIGHT + self.CH_GAP)
-            name = self.ch_names[ci] if ci < len(self.ch_names) else f"D{ci}"
-            is_dec = any(name.endswith(f'_{p}') for p in ['UART','I2C','SPI'])
-            is_filt = name.endswith('_f')
-
-            # Label
-            clr = '#2a7' if is_dec else '#069' if is_filt else '#000'
-            self.create_text(2, y0 + self.CH_HEIGHT/2, text=name, anchor='w',
-                            font=('Consolas', 9), fill=clr)
-
-            samples = self.ch_data[ci]
-            is_analog = samples and max(samples) > 1
-            start = max(0, int(self.scroll_x))
-            end = min(len(samples), int(self.scroll_x + w / self.px_scale) + 1)
-
-            if is_dec:
-                # Decoder annotation row: thin baseline + coloured text boxes
-                mid_y = y0 + self.CH_HEIGHT / 2
-                self.create_line(self.LABEL_WIDTH, mid_y, w, mid_y, fill='#ccc', width=0.5)
-                spb_samp = 0  # samples-per-bit for UART, used for frame width
-                if '_UART' in name:
-                    # Find the decoder slot for this channel
-                    for si, slot in enumerate(getattr(self.app, 'decoder_slots', [])):
-                        if not slot.get('enabled'): continue
-                        dname = f"{slot['src_str']}_UART"
-                        if dname == name:
-                            spb_samp = self.samplerate / slot.get('baud', 115200)
-                            for f in slot.get('frames', []):
-                                if f['type'] != 'byte': continue
-                                px = self.LABEL_WIDTH + (f['pos'] - self.scroll_x) * self.px_scale
-                                fw = 10 * spb_samp * self.px_scale
-                                if px + fw < self.LABEL_WIDTH or px > w: continue
-                                self.create_rectangle(px, y0, px+fw, y0+self.CH_HEIGHT,
-                                                     outline='#2a7', width=0.5, fill='#e8ffe8')
-                                txt = chr(f['val']) if 32 <= f['val'] < 127 else f'[{f["val"]:02X}]'
-                                self.create_text(px+2, y0+2, text=txt, anchor='nw',
-                                                font=('Consolas', 6), fill='#2a7')
-                elif '_SPI' in name:
-                    for si, slot in enumerate(getattr(self.app, 'decoder_slots', [])):
-                        if not slot.get('enabled'): continue
-                        dname = f"{slot['src_str']}_SPI"
-                        if dname == name:
-                            for f in slot.get('frames', []):
-                                if f['type'] != 'byte': continue
-                                # approximate position — no pos from decode_spi
-                                pass
-                elif '_I2C' in name:
-                    for si, slot in enumerate(getattr(self.app, 'decoder_slots', [])):
-                        if not slot.get('enabled'): continue
-                        dname = f"{slot['src_str']}_I2C"
-                        if dname == name:
-                            for f in slot.get('frames', []):
-                                if f['type'] == 'START':
-                                    self.create_text(self.LABEL_WIDTH+4, mid_y, text='S',
-                                                    font=('Consolas', 8), fill='#a72')
-                                elif f['type'] == 'STOP':
-                                    self.create_rectangle(px-10, y0, px+4, y0+self.CH_HEIGHT,
-                                                         outline='#a72', width=0.5)
-                                    self.create_text(px-8, y0+2, text='P',
-                                                    font=('Consolas', 8), fill='#a72')
-            else:
-                # Normal / filtered waveform line
-                if start >= end: continue
-                points = []
-                prev = None
-                for si in range(start, end):
-                    v = samples[si]
-                    px = self.LABEL_WIDTH + (si - self.scroll_x) * self.px_scale
-                    if is_analog:
-                        py = y0 + self.CH_HEIGHT - (float(v) / 4095.0) * self.CH_HEIGHT
-                    else:
-                        py = y0 + (0 if v else self.CH_HEIGHT)
-                    if prev is not None and (v != prev):
-                        lpx = self.LABEL_WIDTH + (si - 1 - self.scroll_x) * self.px_scale
-                        points.extend([lpx, py, px, py])
-                    points.extend([px, py])
-                    prev = v
-                if points:
-                    wf_clr = '#b05a00' if is_analog else '#2a7' if is_filt else '#0066cc'
-                    self.create_line(points, fill=wf_clr, width=1.3)
-                    if is_analog:
-                        self.create_text(w - 4, y0 + 2, text=f"{max(samples[start:end]):04d}",
-                                         anchor='ne', font=('Consolas', 7), fill='#b05a00')
-                        # Voltage scale (3.3V ref, 12-bit ADC: 0-4095)
-                        for v_label, frac in [('3.3V', 1.0), ('1.65V', 0.5), ('0V', 0.0)]:
-                            vy = y0 + self.CH_HEIGHT - frac * self.CH_HEIGHT
-                            self.create_text(1, vy, text=v_label, anchor='w',
-                                             font=('Consolas', 6), fill='#b05a00')
-
-            # Channel separator
-            self.create_line(0, y0 + self.CH_HEIGHT + self.CH_GAP/2,
-                           w, y0 + self.CH_HEIGHT + self.CH_GAP/2,
-                           fill='#ddd')
-
-        # Markers
-        measurements = []
-        for m, marker in [(self.marker1, 1), (self.marker2, 2)]:
-            if m is None: continue
-            px = self.LABEL_WIDTH + (m - self.scroll_x) * self.px_scale
-            self.create_line(px, ruler_h, px, self.total_height(),
-                           fill='red', dash=(4, 2))
-            self.create_text(px + 4, ruler_h + 4, text=f"M{marker}",
-                           anchor='w', fill='red', font=('Consolas', 8))
-            time_ns = m * 1e9 / self.samplerate
-            measurements.append((marker, m, time_ns))
-
-        if len(measurements) == 2:
-            m1_idx, m1_samp, m1_time = measurements[0]
-            m2_idx, m2_samp, m2_time = measurements[1]
-            if None in (m1_samp, m2_samp, m1_time, m2_time):
-                return
-            dt_ns = abs(m2_time - m1_time)
-            dsamp = abs(m2_samp - m1_samp)
-            freq = 1e9 / dt_ns if dt_ns > 0 else 0
-            msr_y = self.total_height() - 20
-            txt = f"Δt = {dt_ns/1000:.1f} µs  ({dsamp} samples)  f = {freq/1000:.1f} kHz"
-            self.create_text(self.LABEL_WIDTH + 4, msr_y, text=txt, anchor='w',
-                           fill='#c00', font=('Consolas', 9))
-
-    def get_decode_y(self):
-        return self.total_height()
+# Re-export waveform display from gui_waveform
+from app.gui_waveform import WaveformDisplay
 
 # ─── Main Application ───────────────────────────────────────────
 
@@ -618,11 +66,7 @@ class OLScope:
         self.win = root  # may be None for CLI
         self.ch_data = []
         self.ch_names = [f"CH{i}" for i in range(NUM_CHANNELS)]
-        self.capture_mode = ANALOG_MODE_DIGITAL8
-        self.analog_ch0_sel = 0
-        self.analog_ch1_sel = 1
-        self.analog_ch2_sel = 2
-        self.analog_ch3_sel = 3
+        self.capture_mode = MODE_MIXED  # 16 Dig + 8 Ana
         self.last_analog_frames = []
         self.samplerate = 1_000_000
         self.captured_bytes = b''
@@ -637,6 +81,7 @@ class OLScope:
         self.capture_nsamp = 0
         self.capture_stride = 4
         self.capture_window = 50000
+        self.capture_type = 'rolling'              # 'single' or 'rolling'
         self._last_live_redraw = 0
         self.stop_evt = threading.Event()
         self._pending_restart = False
@@ -655,90 +100,65 @@ class OLScope:
     def _build_ui(self):
         title = "OLS MaxScope — " + ("SPI @ 30 MHz" if self._backend == 'SPI' else "UART")
         self.win.title(title)
-        self.win.geometry("1000x700")
-        self.win.minsize(700, 500)
+        self.win.geometry("1100x700")
+        self.win.minsize(800, 500)
 
         # ── Toolbar ──
         tb = ttk.Frame(self.win, padding=3)
         tb.pack(fill='x')
 
-        ttk.Label(tb, text="Port:").pack(side='left')
-        self.port_cb = ttk.Combobox(tb, width=14, state='readonly')
+        # Port connection group — hidden when connected
+        self.port_frame = ttk.Frame(tb)
+        self.port_frame.pack(side='left')
+        ttk.Label(self.port_frame, text="Port:").pack(side='left')
+        self.port_cb = ttk.Combobox(self.port_frame, width=14, state='readonly')
         self.port_cb.pack(side='left', padx=2)
-        ttk.Button(tb, text="Scan", command=self._scan_ports, width=6).pack(side='left', padx=2)
-        ttk.Button(tb, text="Connect", command=self._connect, width=8).pack(side='left', padx=2)
-        ttk.Button(tb, text="Disconnect", command=self._disconnect, width=9).pack(side='left', padx=2)
-        ttk.Separator(tb, orient='vertical').pack(side='left', fill='y', padx=5)
+        ttk.Button(self.port_frame, text="Scan", command=self._scan_ports, width=6).pack(side='left', padx=2)
+        ttk.Button(self.port_frame, text="Connect", command=self._connect, width=8).pack(side='left', padx=2)
+        ttk.Button(self.port_frame, text="Disconnect", command=self._disconnect, width=9).pack(side='left', padx=2)
+        self.port_sep = ttk.Separator(tb, orient='vertical')
+        self.port_sep.pack(side='left', fill='y', padx=5)
 
         ttk.Label(tb, text="Rate:").pack(side='left')
-        self.rate_cb = ttk.Combobox(tb, values=['100kHz', '500kHz', '1MHz', '2MHz', '4MHz', '6MHz', '8MHz', '12MHz', '16MHz', '24MHz'],
-                                    width=8, state='readonly')
+        self.rate_cb = ttk.Combobox(tb,
+            values=['1kHz','10kHz','100kHz','500kHz','1MHz','2MHz','3MHz','4MHz','6MHz','8MHz','10MHz','12MHz','16MHz','24MHz','32MHz','48MHz','50MHz','80MHz','100MHz','200MHz'],
+            width=10, state='readonly')
         self.rate_cb.set('1MHz'); self.rate_cb.pack(side='left', padx=2)
-
-        ttk.Label(tb, text="Samples:").pack(side='left')
-        self.samp_cb = ttk.Combobox(tb, values=['500', '1000', '5000', '10000', '50000', '100000', '200000', '500000'],
-                                     width=8, state='readonly')
-        self.samp_cb.set('5000'); self.samp_cb.pack(side='left', padx=2)
-
-        ttk.Label(tb, text="Mode:").pack(side='left')
-        self.mode_cb = ttk.Combobox(
-            tb,
-            values=['16 Digital', '16 Dig + 1 Ana', '16 Dig + 2 Ana', '1 Analog', '2 Analog', '4 Analog', '16 Dig + 4 Ana', '16 Dig + 2 Ana (alt)'],
-            width=16, state='readonly'
-        )
-        self.mode_cb.set('16 Digital')
-        self.mode_cb.pack(side='left', padx=2)
-        self.mode_cb.bind('<<ComboboxSelected>>', self._mode_changed)
-        self._analog_labels = {}
-        self._analog_combos = {}
-        for ai in range(4):
-            lbl = ttk.Label(tb, text=f"A{ai}:")
-            cb = ttk.Combobox(tb, values=list(range(NUM_CHANNELS)), width=3, state='readonly')
-            cb.set(str(ai))
-            self._analog_labels[ai] = lbl
-            self._analog_combos[ai] = cb
-        # Pack A0, A1 by default; A2, A3 hidden until needed
-        self._analog_labels[0].pack(side='left'); self._analog_combos[0].pack(side='left', padx=1)
-        self._analog_labels[1].pack(side='left'); self._analog_combos[1].pack(side='left', padx=1)
-        self._analog_labels[2].pack_forget(); self._analog_combos[2].pack_forget()
-        self._analog_labels[3].pack_forget(); self._analog_combos[3].pack_forget()
+        self.rate_cb.bind('<<ComboboxSelected>>', self._on_rate_changed)
+        self.rate_cb.bind('<KeyRelease>', self._on_rate_changed)
+        self.rate_cb.bind('<Return>', self._on_rate_changed)
 
         ttk.Label(tb, text="Time:").pack(side='left')
         self.time_var = tk.StringVar(value='5.000 ms')
         self.time_entry = ttk.Entry(tb, textvariable=self.time_var, width=10)
         self.time_entry.pack(side='left', padx=2)
 
-        ttk.Button(tb, text="Capture", command=self._capture, width=8).pack(side='left', padx=2)
-        self.stop_btn =         ttk.Button(tb, text="Stop", command=self._stop_capture, width=6, state='disabled')
-        self.stop_btn.pack(side='left', padx=2)
-        self.rolling_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(tb, text="Rolling", variable=self.rolling_var).pack(side='left', padx=2)
-        ttk.Label(tb, text="Buffer:").pack(side='left')
-        self.rolling_buf_var = tk.StringVar(value='50000')
+        ttk.Label(tb, text="Buf:").pack(side='left')
+        self.rolling_buf_var = tk.StringVar(value='100 ms')
         self.rolling_buf = ttk.Combobox(tb, textvariable=self.rolling_buf_var,
-                                        values=['1000','5000','10000','50000','100000','500000','Custom'],
-                                        width=7, state='normal')
-        self.rolling_buf.bind('<<ComboboxSelected>>', self._on_rolling_buf_change)
-        self.rolling_buf.bind('<KeyRelease>', self._update_buf_estimate)
-        self.rolling_buf.bind('<Return>', self._on_rolling_buf_change)
+                                        values=[], width=14, state='normal')
         self.rolling_buf.pack(side='left', padx=2)
+        self.rolling_buf.bind('<<ComboboxSelected>>', self._on_rolling_buf_change)
+        self.rolling_buf.bind('<KeyRelease>', self._on_rolling_buf_change)
+        self.rolling_buf.bind('<Return>', self._on_rolling_buf_change)
         self.buf_estimate_lbl = ttk.Label(tb, text="", font=('Consolas', 7))
         self.buf_estimate_lbl.pack(side='left')
-        self.live_bar = ttk.Progressbar(tb, length=50, mode='determinate', value=0)
-        self.live_bar.pack(side='left', padx=2)
+
+        ttk.Button(tb, text="Capture", command=self._capture, width=8).pack(side='left', padx=2)
+        self.stop_btn = ttk.Button(tb, text="Stop", command=self._stop_capture, width=6, state='disabled')
+        self.stop_btn.pack(side='left', padx=2)
 
         # Bind rate/samples changes to update time display
         self.rate_cb.bind('<<ComboboxSelected>>', self._update_time_display)
-        self.samp_cb.bind('<<ComboboxSelected>>', self._update_time_display)
         self.time_entry.bind('<Return>', self._time_changed)
 
         # ── Main area — waveform + side panel ──
-        main = ttk.PanedWindow(self.win, orient='horizontal')
+        main = ttk.Frame(self.win)
         main.pack(fill='both', expand=True, padx=3)
 
-        # Waveform frame
+        # Waveform frame (takes remaining space)
         wf_frame = ttk.Frame(main)
-        main.add(wf_frame, weight=3)
+        wf_frame.pack(side='left', fill='both', expand=True)
         self.wave = WaveformDisplay(wf_frame, app=self)
         self.wave.pack(fill='both', expand=True)
 
@@ -756,9 +176,10 @@ class OLScope:
                   width=8).pack(side='left', padx=2)
         ttk.Button(zf, text="Fit", command=self._fit_view, width=6).pack(side='left', padx=2)
 
-        # Side panel
-        side = ttk.Frame(main, width=300)
-        main.add(side, weight=1)
+        # Side panel (fixed 320px)
+        side = ttk.Frame(main, width=320)
+        side.pack(side='right', fill='y')
+        side.pack_propagate(False)
         self._build_side_panel(side)
 
         # ── Status bar ──
@@ -766,6 +187,7 @@ class OLScope:
         self.status.pack(fill='x')
 
         self._scan_ports()
+        self._update_buf_presets()
 
     def _build_side_panel(self, parent):
         nb = ttk.Notebook(parent)
@@ -862,63 +284,8 @@ class OLScope:
         r += 1
         self.acc_result = tk.Text(acc_f, height=6, width=38, state='disabled')
         self.acc_result.grid(row=r, column=0, columnspan=4, pady=2)
-        trg_f = ttk.Frame(nb, padding=5)
-        nb.add(trg_f, text="Trigger")
-        ttk.Label(trg_f, text="Mode:").grid(row=0, column=0, sticky='w', pady=2)
-        self.trig_mode = ttk.Combobox(trg_f, values=['Off', 'Rising', 'Falling'],
-                                      state='readonly', width=12)
-        self.trig_mode.set('Off')
-        self.trig_mode.grid(row=0, column=1, sticky='w', pady=2)
-        self.trig_mode.bind('<<ComboboxSelected>>', self._trig_mode_changed)
-        ttk.Separator(trg_f, orient='horizontal').grid(row=1, column=0, columnspan=2, sticky='ew', pady=4)
-        ttk.Label(trg_f, text="Enable on channel:").grid(row=2, column=0, columnspan=2, sticky='w')
-        self.trig_ch_vars = []
-        for i in range(NUM_CHANNELS):
-            r = 3 + i // 2
-            c = (i % 2) * 2
-            var = tk.BooleanVar(value=False)
-            self.trig_ch_vars.append(var)
-            cb = ttk.Checkbutton(trg_f, text=f'CH{i}', variable=var, state='disabled')
-            cb.grid(row=r, column=c, sticky='w', padx=4, pady=1)
-        # Fast mode checkbox
-        ttk.Separator(trg_f, orient='horizontal').grid(row=7, column=0, columnspan=2, sticky='ew', pady=4)
-        self.fast_mode_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(trg_f, text="Fast mode (120 MHz, 1024 samples max)",
-                        variable=self.fast_mode_var).grid(row=8, column=0, columnspan=2, sticky='w', pady=2)
-        self.debug_ch0_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(trg_f, text="Drive CH0 debug square wave",
-                        variable=self.debug_ch0_var,
-                        command=self._debug_ch0_changed).grid(row=9, column=0, columnspan=2, sticky='w', pady=2)
-        ttk.Label(trg_f,
-            text="WARNING: CH0 becomes FPGA output when enabled.\nDo not connect to driven signal. Scope use only.",
-            foreground='red', font=('Consolas', 7)).grid(row=10, column=0, columnspan=2, sticky='w')
-        self.raw_mode_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(trg_f, text="Raw mode — 8 ch only (higher throughput)",
-                        variable=self.raw_mode_var).grid(row=11, column=0, columnspan=2, sticky='w', pady=2)
-        self.schmitt_var = tk.BooleanVar(value=False)
-        self.schmitt_thresh_var = tk.StringVar(value='3')
-        ttk.Checkbutton(trg_f, text="Schmitt trigger (glitch filter)",
-                        variable=self.schmitt_var,
-                        command=self._apply_schmitt).grid(row=12, column=0, columnspan=2, sticky='w', pady=2)
-        ttk.Label(trg_f, text="Thresh:").grid(row=12, column=1, sticky='e')
-        ttk.Spinbox(trg_f, from_=1, to=7, width=3, textvariable=self.schmitt_thresh_var,
-                    command=self._apply_schmitt).grid(row=12, column=1, sticky='e', padx=(0,50))
-        ttk.Separator(trg_f, orient='horizontal').grid(row=14, column=0, columnspan=2, sticky='ew', pady=4)
-        ttk.Label(trg_f, text="Protocol Trigger:").grid(row=14, column=0, columnspan=2, sticky='w', pady=2)
-        self.proto_trig_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(trg_f, text="Enable", variable=self.proto_trig_var).grid(row=11, column=0, sticky='w', pady=1)
-        ttk.Label(trg_f, text="Match (hex):").grid(row=11, column=1, sticky='w')
-        self.proto_match = ttk.Entry(trg_f, width=6)
-        self.proto_match.insert(0, '0x57')
-        self.proto_match.grid(row=11, column=1, sticky='e', padx=(50,0))
-        ttk.Label(trg_f, text="UART Ch:").grid(row=12, column=0, sticky='w')
-        self.proto_ch = ttk.Combobox(trg_f, values=list(range(NUM_CHANNELS)), state='readonly', width=4)
-        self.proto_ch.set('0'); self.proto_ch.grid(row=12, column=0, sticky='w', padx=(60,0))
-        ttk.Label(trg_f, text="Baud:").grid(row=12, column=1, sticky='w')
-        self.proto_baud = ttk.Entry(trg_f, width=10)
-        self.proto_baud.insert(0, '115200')
-        self.proto_baud.grid(row=12, column=1, sticky='e')
-        self.trig_frame = trg_f
+        # Capture tab (replaces old Trigger tab)
+        self._build_capture_tab(nb)
 
         # Decoder tab — filter + decoder configuration
         dec_f = ttk.Frame(nb, padding=5)
@@ -974,7 +341,7 @@ class OLScope:
         nb.add(log_f, text="Data Logger")
         row = 0
         ttk.Label(log_f, text="Rate:").grid(row=row, column=0, sticky='w')
-        self.log_rate = ttk.Combobox(log_f, values=['100kHz','500kHz','1MHz','2MHz','4MHz'],
+        self.log_rate = ttk.Combobox(log_f, values=['100kHz','500kHz','1MHz','2MHz','4MHz','8MHz','16MHz','32MHz','50MHz','100MHz'],
                                      width=8, state='readonly')
         self.log_rate.set('1MHz'); self.log_rate.grid(row=row, column=1, sticky='w')
         ttk.Label(log_f, text="Samples:").grid(row=row, column=2, sticky='w')
@@ -1012,6 +379,314 @@ class OLScope:
         self.log_out = tk.Text(log_f, height=6, width=32, font=('Consolas', 7))
         self.log_out.grid(row=row, column=0, columnspan=4, sticky='nsew')
         log_f.columnconfigure(1, weight=1)
+
+    # ─── Capture Tab ─────────────────────────────────────────────
+
+    MODE_OPTIONS = [
+        '16 Digital', '16 Dig + 8 Ana',
+    ]
+
+    ROLLING_READBACK_MB_PER_S = 30
+
+    def _build_capture_tab(self, nb):
+        cap_f = ttk.Frame(nb, padding=5)
+        nb.add(cap_f, text="Capture")
+        self.cap_frame = cap_f
+        row = 0
+
+        # ── Step 1: Mode ──
+        ttk.Label(cap_f, text="Step 1: Mode", font=('', 9, 'bold')).grid(
+            row=row, column=0, columnspan=4, sticky='w', pady=(0, 2))
+        row += 1
+        ttk.Label(cap_f, text="Mode:").grid(row=row, column=0, sticky='w')
+        self.mode_cb = ttk.Combobox(cap_f, values=self.MODE_OPTIONS,
+                                    width=16, state='readonly')
+        self.mode_cb.set('16 Dig + 8 Ana')
+        self.mode_cb.grid(row=row, column=1, columnspan=3, sticky='w', padx=2)
+        self.mode_cb.bind('<<ComboboxSelected>>', self._mode_changed)
+        row += 1
+
+        # Mixed mode always captures all 8 ADC channels (A0-A7, fixed map)
+        self._analog_info = ttk.Label(cap_f, text="Analog: A0-A7 (all 8 ADC channels)")
+        self._analog_info.grid(row=row, column=1, columnspan=3, sticky='w')
+        row += 1
+
+        # Rate info line
+        self.rate_info_var = tk.StringVar(value='')
+        self.rate_info_lbl = ttk.Label(cap_f, textvariable=self.rate_info_var,
+                                       font=('Consolas', 7), foreground='#555')
+        self.rate_info_lbl.grid(row=row, column=0, columnspan=4, sticky='w', pady=(2, 4))
+        row += 1
+        ttk.Separator(cap_f, orient='horizontal').grid(
+            row=row, column=0, columnspan=4, sticky='ew', pady=4)
+        row += 1
+
+        # ── Step 2: Capture Type ──
+        ttk.Label(cap_f, text="Step 2: Capture Type", font=('', 9, 'bold')).grid(
+            row=row, column=0, columnspan=4, sticky='w', pady=(0, 2))
+        row += 1
+        self.capture_type = tk.StringVar(value='rolling')
+        self.rolling_var = tk.BooleanVar(value=True)
+        ttk.Radiobutton(cap_f, text="Rolling (continuous, free-run)",
+                        variable=self.capture_type, value='rolling',
+                        command=self._capture_type_changed).grid(
+            row=row, column=0, columnspan=4, sticky='w', padx=8)
+        row += 1
+        ttk.Radiobutton(cap_f, text="Single (triggered capture)",
+                        variable=self.capture_type, value='single',
+                        command=self._capture_type_changed).grid(
+            row=row, column=0, columnspan=4, sticky='w', padx=8)
+        row += 1
+        ttk.Separator(cap_f, orient='horizontal').grid(
+            row=row, column=0, columnspan=4, sticky='ew', pady=4)
+        row += 1
+
+        # ── Step 3: Trigger Section (shown only for Single) ──
+        self.trig_frame = ttk.LabelFrame(cap_f, text="Step 3: Trigger Setup", padding=3)
+        self.trig_frame.grid(row=row, column=0, columnspan=4, sticky='ew', pady=2)
+        tr = 0
+        ttk.Label(self.trig_frame, text="Mode:").grid(row=tr, column=0, sticky='w', pady=1)
+        self.trig_mode = ttk.Combobox(self.trig_frame, values=['Off', 'Rising', 'Falling'],
+                                      state='readonly', width=12)
+        self.trig_mode.set('Off')
+        self.trig_mode.grid(row=tr, column=1, sticky='w', pady=1)
+        self.trig_mode.bind('<<ComboboxSelected>>', self._trig_mode_changed)
+        tr += 1
+        ttk.Separator(self.trig_frame, orient='horizontal').grid(
+            row=tr, column=0, columnspan=4, sticky='ew', pady=2)
+        tr += 1
+        ttk.Label(self.trig_frame, text="Enable on channel:").grid(
+            row=tr, column=0, columnspan=4, sticky='w')
+        tr += 1
+        self.trig_ch_vars = []
+        tfc = ttk.Frame(self.trig_frame)
+        tfc.grid(row=tr, column=0, columnspan=4, sticky='w')
+        for i in range(NUM_CHANNELS):
+            var = tk.BooleanVar(value=False)
+            self.trig_ch_vars.append(var)
+            cb = ttk.Checkbutton(tfc, text=f'CH{i}', variable=var, state='disabled')
+            cb.pack(side='left', padx=1)
+        tr += 1
+        ttk.Separator(self.trig_frame, orient='horizontal').grid(
+            row=tr, column=0, columnspan=4, sticky='ew', pady=2)
+        tr += 1
+        self.debug_ch0_var = tk.BooleanVar(value=False)
+        self.debug_ch0_freq_var = tk.StringVar(value='100000')
+        self.debug_ch0_duty_var = tk.StringVar(value='50')
+        df = ttk.Frame(self.trig_frame)
+        df.grid(row=tr, column=0, columnspan=4, sticky='w', pady=1)
+        ttk.Checkbutton(df, text="CH0 debug PWM",
+                        variable=self.debug_ch0_var,
+                        command=self._debug_ch0_changed).pack(side='left')
+        ttk.Label(df, text="Freq(Hz):").pack(side='left', padx=(8, 2))
+        ttk.Spinbox(df, from_=1, to=50000000, width=10,
+                    textvariable=self.debug_ch0_freq_var,
+                    command=self._debug_ch0_changed).pack(side='left')
+        ttk.Label(df, text="Duty(%):").pack(side='left', padx=(4, 2))
+        ttk.Spinbox(df, from_=1, to=99, width=4,
+                    textvariable=self.debug_ch0_duty_var,
+                    command=self._debug_ch0_changed).pack(side='left')
+        tr += 1
+        self.raw_mode_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(self.trig_frame, text="Raw mode (8 ch, higher throughput)",
+                        variable=self.raw_mode_var).grid(
+            row=tr, column=0, columnspan=4, sticky='w', pady=1)
+        tr += 1
+        self.schmitt_var = tk.BooleanVar(value=False)
+        self.schmitt_thresh_var = tk.StringVar(value='3')
+        sf = ttk.Frame(self.trig_frame)
+        sf.grid(row=tr, column=0, columnspan=4, sticky='w', pady=1)
+        ttk.Checkbutton(sf, text="Schmitt trigger (glitch filter)",
+                        variable=self.schmitt_var,
+                        command=self._apply_schmitt).pack(side='left')
+        ttk.Label(sf, text="Thresh:").pack(side='left', padx=(8, 2))
+        ttk.Spinbox(sf, from_=1, to=7, width=3, textvariable=self.schmitt_thresh_var,
+                    command=self._apply_schmitt).pack(side='left')
+        tr += 1
+        ttk.Separator(self.trig_frame, orient='horizontal').grid(
+            row=tr, column=0, columnspan=4, sticky='ew', pady=2)
+        tr += 1
+        ttk.Label(self.trig_frame, text="Protocol Trigger:").grid(
+            row=tr, column=0, columnspan=4, sticky='w')
+        tr += 1
+        pf = ttk.Frame(self.trig_frame)
+        pf.grid(row=tr, column=0, columnspan=4, sticky='w')
+        self.proto_trig_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(pf, text="Enable", variable=self.proto_trig_var).pack(side='left')
+        ttk.Label(pf, text="Match (hex):").pack(side='left', padx=(8, 2))
+        self.proto_match = ttk.Entry(pf, width=6)
+        self.proto_match.insert(0, '0x57')
+        self.proto_match.pack(side='left')
+        pf2 = ttk.Frame(self.trig_frame)
+        pf2.grid(row=tr+1, column=0, columnspan=4, sticky='w')
+        ttk.Label(pf2, text="UART Ch:").pack(side='left')
+        self.proto_ch = ttk.Combobox(pf2, values=list(range(NUM_CHANNELS)), state='readonly', width=4)
+        self.proto_ch.set('0')
+        self.proto_ch.pack(side='left', padx=2)
+        ttk.Label(pf2, text="Baud:").pack(side='left')
+        self.proto_baud = ttk.Entry(pf2, width=10)
+        self.proto_baud.insert(0, '115200')
+        self.proto_baud.pack(side='left', padx=2)
+        tr += 2
+
+        # Hide trigger section initially (default is rolling)
+        self.trig_frame.grid_remove()
+        row += 1
+
+        # ── Channel Visibility ──
+        ttk.Separator(cap_f, orient='horizontal').grid(
+            row=row, column=0, columnspan=4, sticky='ew', pady=4)
+        row += 1
+        ttk.Label(cap_f, text="Channels", font=('', 9, 'bold')).grid(
+            row=row, column=0, columnspan=4, sticky='w')
+        row += 1
+        self.ch_vis_frame = ttk.LabelFrame(cap_f, text="Toggle channel visibility", padding=3)
+        self.ch_vis_frame.grid(row=row, column=0, columnspan=4, sticky='ew', pady=2)
+        vis_row = 0
+        self.ch_vis_vars = []
+        # Digital channels
+        for i in range(0, NUM_CHANNELS, 8):
+            vf = ttk.Frame(self.ch_vis_frame)
+            vf.pack(fill='x')
+            for j in range(i, min(i + 8, NUM_CHANNELS)):
+                var = tk.BooleanVar(value=True)
+                self.ch_vis_vars.append(var)
+                cb = ttk.Checkbutton(vf, text=f"CH{j}", variable=var,
+                                     command=lambda ci=j: self._toggle_ch_vis(ci))
+                cb.pack(side='left', padx=1)
+        # Analog channels
+        af2 = ttk.Frame(self.ch_vis_frame)
+        af2.pack(fill='x')
+        self.ana_vis_vars = []
+        for ai in range(8):
+            var = tk.BooleanVar(value=True)
+            self.ana_vis_vars.append(var)
+            cb = ttk.Checkbutton(af2, text=f"A{ai}", variable=var,
+                                 command=lambda ai=ai: self._toggle_ana_vis(ai))
+            cb.pack(side='left', padx=1)
+        row += 1
+
+        # ── Progress bar ──
+        ttk.Separator(cap_f, orient='horizontal').grid(
+            row=row, column=0, columnspan=4, sticky='ew', pady=4)
+        row += 1
+        self.live_bar = ttk.Progressbar(cap_f, length=280, mode='determinate', value=0)
+        self.live_bar.grid(row=row, column=0, columnspan=4, sticky='ew', pady=4)
+        row += 1
+
+        cap_f.columnconfigure(1, weight=1)
+
+    def _capture_type_changed(self):
+        is_rolling = self.capture_type.get() == 'rolling'
+        self.rolling_var.set(is_rolling)
+        if is_rolling:
+            self.trig_frame.grid_remove()
+        else:
+            self.trig_frame.grid()
+        self._update_rate_info()
+
+    def _toggle_ch_vis(self, idx):
+        if hasattr(self, 'wave') and idx < len(self.wave.channel_visible):
+            self.wave.channel_visible[idx] = self.ch_vis_vars[idx].get()
+            self.wave.redraw()
+
+    def _toggle_ana_vis(self, idx):
+        ana_offset = NUM_CHANNELS + idx  # analog channels after digital
+        if hasattr(self, 'wave') and ana_offset < len(self.wave.channel_visible):
+            self.wave.channel_visible[ana_offset] = self.ana_vis_vars[idx].get()
+            self.wave.redraw()
+
+    def _on_rate_changed(self, event=None):
+        raw = self.rate_cb.get()
+        self._apply_rate(raw)
+        self._update_buf_presets()
+
+    def _apply_rate(self, raw):
+        """Parse preset rate string, clamp to max. Returns rate in Hz."""
+        max_rate = self._get_max_rate()
+        try:
+            s = raw.replace(',', '').strip().lower()
+            if s.endswith('mhz'):
+                rate = int(float(s.replace('mhz', '')) * 1_000_000)
+            elif s.endswith('khz'):
+                rate = int(float(s.replace('khz', '')) * 1_000)
+            else:
+                rate = 1_000_000
+        except (ValueError, AttributeError):
+            rate = 1_000_000
+        rate = max(1, min(rate, max_rate))
+        self.rate_cb.set(self._fmt_rate(rate))
+        self._update_time_display()
+        self._update_rate_info()
+        self._update_buf_estimate()
+        return rate
+
+    def _fmt_rate(self, rate_hz):
+        if rate_hz >= 200_000_000:
+            return '200MHz'
+        if rate_hz >= 120_000_000:
+            return '120MHz'
+        if rate_hz >= 1_000_000:
+            return f'{rate_hz / 1_000_000:.3g}MHz'.replace('.0', '')
+        if rate_hz >= 1_000:
+            return f'{rate_hz / 1_000:.3g}kHz'.replace('.0', '')
+        return f'{rate_hz}Hz'
+
+    def _get_max_rate(self):
+        """Return the maximum allowed rate based on mode and capture type."""
+        mode = self._get_capture_mode()
+        max_rate = 100_000_000
+        if self.dev is not None:
+            try:
+                clk = self.dev.sys_clk
+                if isinstance(clk, (int, float)):
+                    max_rate = int(clk)
+            except (AttributeError, TypeError):
+                pass
+        if self.capture_type.get() == 'rolling':
+            stride = analog_frame_stride(mode)
+            rolling_limit = int(self.ROLLING_READBACK_MB_PER_S * 1_000_000 / stride)
+            max_rate = min(max_rate, rolling_limit)
+        return max_rate
+
+    def _update_rate_info(self):
+        rate = self._get_rate()
+        mode = self._get_capture_mode()
+        stride = analog_frame_stride(mode)
+        mb_per_s = rate * stride / 1_000_000
+        max_rate = self._get_max_rate()
+        if self.capture_type.get() == 'rolling':
+            rolling_max = int(self.ROLLING_READBACK_MB_PER_S * 1_000_000 / stride)
+            if rate > rolling_max:
+                self.rate_info_var.set(
+                    f"{self._fmt_rate(rate)} → {mb_per_s:.1f} MB/s  "
+                    f"⚠ Rolling limited to {self._fmt_rate(rolling_max)} — use Single"
+                )
+                self.rate_info_lbl.configure(foreground='#c00')
+            else:
+                self.rate_info_var.set(
+                    f"{self._fmt_rate(rate)} → {mb_per_s:.1f} MB/s  |  OK for rolling"
+                )
+                self.rate_info_lbl.configure(foreground='#555')
+        else:
+            self.rate_info_var.set(
+                f"{self._fmt_rate(rate)} → {mb_per_s:.1f} MB/s  |  Single-shot OK"
+            )
+            self.rate_info_lbl.configure(foreground='#555')
+
+    def _update_buf_presets(self, event=None):
+        """Regenerate buffer combobox values with MB sizes based on current rate+mode."""
+        rate = self._get_rate()
+        stride = analog_frame_stride(self._get_capture_mode())
+        presets_ms = [1, 10, 50, 100, 500, 1000]
+        labels = []
+        for ms in presets_ms:
+            nsamp = int(ms / 1000 * rate)
+            mb = nsamp * stride / (1024 * 1024)
+            labels.append(f'{ms} ms ({mb:.1f} MB)')
+        labels.append('Custom')
+        self.rolling_buf['values'] = labels
+        self._update_buf_estimate()
 
     # ─── UI Actions ────────────────────────────────────────────
 
@@ -1061,13 +736,22 @@ class OLScope:
         enable = self.debug_ch0_var.get()
         if not self.dev:
             return
+        try:
+            freq = int(self.debug_ch0_freq_var.get())
+            duty = int(self.debug_ch0_duty_var.get())
+            duty = max(1, min(99, duty))
+        except ValueError:
+            freq = 100000
+            duty = 50
         is_live = getattr(self, 'capture_running', False) and hasattr(self.dev, '_pending_debug_enable')
         if is_live:
             self.dev.debug_ch0_enabled = enable
             self.dev._pending_debug_enable = enable
+            self.dev._pending_debug_freq = freq
+            self.dev._pending_debug_duty = duty
         elif hasattr(self.dev, 'set_debug_ch0'):
             try:
-                self.dev.set_debug_ch0(enable)
+                self.dev.set_debug_ch0(enable, freq_hz=freq, duty_pct=duty)
             except Exception as e:
                 self.status['text'] = f"CH0 debug update failed: {e}"
 
@@ -1098,25 +782,23 @@ class OLScope:
         self.status['text'] = "Disconnected"
 
     def _update_ui_state(self, connected=True):
-        pass
+        if hasattr(self, 'port_frame') and hasattr(self, 'port_sep'):
+            if connected:
+                self.port_frame.pack_forget()
+                self.port_sep.pack_forget()
+            else:
+                self.port_frame.pack(side='left')
+                self.port_sep.pack(side='left', fill='y', padx=5)
 
     def _mode_changed(self, event=None):
-        """Show/hide analog channel selectors based on current mode."""
+        """Show/hide the analog channel note based on current mode."""
         mode = self._get_capture_mode()
-        ana_count = 0
-        if mode in (ANALOG_MODE_MIXED1, ANALOG_MODE_ANALOG1):
-            ana_count = 1
-        elif mode in (ANALOG_MODE_MIXED2, ANALOG_MODE_ANALOG2, ANALOG_MODE_MIXED_DUAL):
-            ana_count = 2
-        elif mode in (ANALOG_MODE_ANALOG4, ANALOG_MODE_MIXED2_4):
-            ana_count = 4
-        for ai in range(4):
-            if ai < ana_count:
-                self._analog_labels[ai].pack(side='left')
-                self._analog_combos[ai].pack(side='left', padx=1)
-            else:
-                self._analog_labels[ai].pack_forget()
-                self._analog_combos[ai].pack_forget()
+        if mode & MODE_MIXED:
+            self._analog_info.grid()
+        else:
+            self._analog_info.grid_remove()
+        self._update_rate_info()
+        self._update_buf_presets()
 
     def _add_decoder_ui(self, di):
         """Create a decoder slot UI in the decoder_frame."""
@@ -1209,20 +891,14 @@ class OLScope:
             return 1_000_000
 
     def _get_samples(self):
-        return int(self.samp_cb.get())
+        return getattr(self, '_nsamp', 5000)
 
     def _get_capture_mode(self):
         mode_map = {
-            '16 Digital': ANALOG_MODE_DIGITAL8,
-            '16 Dig + 1 Ana': ANALOG_MODE_MIXED1,
-            '16 Dig + 2 Ana': ANALOG_MODE_MIXED2,
-            '1 Analog': ANALOG_MODE_ANALOG1,
-            '2 Analog': ANALOG_MODE_ANALOG2,
-            '4 Analog': ANALOG_MODE_ANALOG4,
-            '16 Dig + 4 Ana': ANALOG_MODE_MIXED2_4,
-            '16 Dig + 2 Ana (alt)': ANALOG_MODE_MIXED_DUAL,
+            '16 Digital': MODE_DIGITAL,
+            '16 Dig + 8 Ana': MODE_MIXED,
         }
-        return mode_map.get(self.mode_cb.get(), ANALOG_MODE_DIGITAL8)
+        return mode_map.get(self.mode_cb.get(), MODE_DIGITAL)
 
     def _update_time_display(self, event=None):
         rate = self._get_rate()
@@ -1236,48 +912,41 @@ class OLScope:
             text = f"{t_sec:.3f} s"
         self.time_var.set(text)
 
-    def _update_buf_estimate(self, event=None):
+    def _parse_buf_ms(self, raw):
+        """Extract ms value from e.g. '100 ms (1.7 MB)' or '100'."""
+        raw = raw.strip()
+        if 'ms' in raw:
+            raw = raw.split('ms')[0].strip()
         try:
-            ns = int(self.rolling_buf_var.get())
-            if ns <= 0: raise ValueError
-        except:
-            ns = 0
-        if ns > 0:
+            return float(raw)
+        except ValueError:
+            return 100.0
+
+    def _update_buf_estimate(self, event=None):
+        raw = self.rolling_buf_var.get()
+        ms = self._parse_buf_ms(raw)
+        if ms > 0:
             rate = self._get_rate()
-            t = ns / rate if rate > 0 else 0
-            raw_mb = ns * 1.0 / (1024 * 1024)  # ~1 byte per sample in raw mode
-            if t < 0.001:
-                time_str = f"{t*1e6:.0f}us"
-            elif t < 1:
-                time_str = f"{t*1e3:.1f}ms"
-            else:
-                time_str = f"{t:.1f}s"
-            self.buf_estimate_lbl['text'] = f"~{time_str} @ 1MHz, ~{raw_mb:.1f}MB"
+            nsamp = int(ms / 1000 * rate)
+            stride = analog_frame_stride(self._get_capture_mode())
+            mem_mb = nsamp * stride / (1024 * 1024)
+            self.buf_estimate_lbl['text'] = (
+                f"~{ms:.0f} ms @ {self._fmt_rate(rate)}, ~{mem_mb:.1f} MB"
+            )
         else:
             self.buf_estimate_lbl['text'] = ""
 
     def _on_rolling_buf_change(self, event=None):
-        if self.capture_running and self.rolling_var.get():
-            try:
-                new_ns = int(self.rolling_buf_var.get())
-            except:
-                return
-            if new_ns < 1000 or new_ns == self.capture_window:
-                return
-            self._pending_restart = True
-            self._stop_capture()
-
-    def _on_rolling_buf_change(self, event=None):
         """When buffer size changes during active rolling, restart capture with new size."""
-        if self.capture_running and self.rolling_var.get():
-            try:
-                new_ns = int(self.rolling_buf_var.get())
-            except:
+        if self.capture_running and self.capture_type.get() == 'rolling':
+            raw = self.rolling_buf_var.get()
+            new_ms = self._parse_buf_ms(raw)
+            if new_ms < 1:
                 return
-            if new_ns < 1000:
-                return
+            rate = self._get_rate()
+            new_ns = int(new_ms / 1000 * rate)
             old_ns = self.capture_window
-            if new_ns == old_ns:
+            if new_ns == old_ns or new_ns < 100:
                 return
             self._stop_capture()
             self.win.after(300, self._capture)
@@ -1298,9 +967,7 @@ class OLScope:
             ns = int(t_sec * rate)
             samp_vals = [int(v) for v in ['500','1000','5000','10000','50000','100000','200000','500000']]
             # find closest
-            ns = max(2, min(ns, 500000))
-            closest = min(samp_vals, key=lambda x: abs(x - ns))
-            self.samp_cb.set(str(closest))
+            self._nsamp = max(2, min(ns, 500000))
             self._update_time_display()
         except:
             self._update_time_display()  # revert to computed time
@@ -1319,16 +986,21 @@ class OLScope:
             self.dev.reset()
         rate = self._get_rate()
         nsamp = self._get_samples()
-        fast = self.fast_mode_var.get()
+        rolling = self.capture_type.get() == 'rolling'
+        # Auto fast mode: BRAM for single captures with <= 1024 samples
+        fast = not rolling and nsamp <= 1024
         if fast:
-            rate = min(rate, 120_000_000)
+            rate = min(rate, self._get_max_rate())
             nsamp = min(nsamp, 1024)
+        if hasattr(self, 'dev') and self.dev is not None:
+            try: self.dev.fast_mode_enabled = fast
+            except: pass
         # Build trigger mask from UI
-        mode = self.trig_mode.get()
-        if mode == 'Off':
+        trig_mode_val = self.trig_mode.get()
+        if trig_mode_val == 'Off':
             trigger = None
         else:
-            mode_bits = {'Rising': 1, 'Falling': 2}[mode] << 30
+            mode_bits = {'Rising': 1, 'Falling': 2}[trig_mode_val] << 30
             ch_mask = sum((1 << i) for i, v in enumerate(self.trig_ch_vars) if v.get())
             if ch_mask == 0:
                 ch_mask = 1  # default to CH0 if none selected
@@ -1338,19 +1010,18 @@ class OLScope:
         self.wave.num_samples = 0
         self.wave._drawn_to = 0
         self.wave.delete('all')
-        rolling = self.rolling_var.get()
         self.capture_mode = self._get_capture_mode()
-        self.analog_ch0_sel = int(self._analog_combos[0].get())
-        self.analog_ch1_sel = int(self._analog_combos[1].get())
-        self.analog_ch2_sel = int(self._analog_combos[2].get())
-        self.analog_ch3_sel = int(self._analog_combos[3].get())
-        if self.capture_mode != ANALOG_MODE_DIGITAL8:
+        if self.capture_mode != MODE_DIGITAL:
             self.capture_stride = analog_frame_stride(self.capture_mode)
         else:
             self.capture_stride = 4  # FPGA always sends 4-byte samples
         self.capture_nsamp = nsamp
         if rolling:
-            self.capture_window = int(self.rolling_buf_var.get())
+            try:
+                buf_ms = self._parse_buf_ms(self.rolling_buf_var.get())
+            except:
+                buf_ms = 100.0
+            self.capture_window = max(100, int(buf_ms / 1000 * rate))
         w = max(100, self.wave.winfo_width() - self.wave.LABEL_WIDTH)
         self.wave.px_scale = w / max(1, nsamp)
         self.wave.scroll_x = 0
@@ -1381,54 +1052,73 @@ class OLScope:
                     self.dev.fast_mode(True)
                 raw = self.raw_mode_var.get()
                 if hasattr(self.dev, 'raw_mode') and not hasattr(self.dev, 'pkt'):
-                    # UART backend: raw mode is real (1 byte/sample)
                     self.dev.raw_mode(raw)
                 else:
-                    # SPI backend: raw mode is display-only, always 4 bytes
                     self.dev._stride = 1 if raw else 4
-                    self.dev._raw_flags = 0  # always send all bytes
+                    self.dev._raw_flags = 0
                 self._apply_schmitt()
                 if proto_enable:
                     self.dev.trigger_decode(match_byte=match_byte, channel=proto_ch, baud=proto_baud, enable=True)
                 if rolling:
-                    try:
-                        buf_nsamp = int(self.rolling_buf_var.get())
-                    except:
-                        buf_nsamp = 50000
-                    buf_nsamp = max(1000, min(buf_nsamp, 500000))
+                    buf_nsamp = self.capture_window
                     self.captured_bytes = bytearray()
-                    ana = self.capture_mode != ANALOG_MODE_DIGITAL8
+                    ana = bool(self.capture_mode & MODE_MIXED)
+                    pay_stride = None
                     if ana:
-                        self.dev.set_analog_config(self.capture_mode,
-                            self.analog_ch0_sel, self.analog_ch1_sel)
+                        self.dev.set_analog_config(self.capture_mode)
+                        # Read sizing is unchanged; payload_stride only enables
+                        # the 32-bit-word -> dense-payload de-interleave so the
+                        # frames decode correctly.
                         as_ = analog_frame_stride(self.capture_mode)
+                        pay_stride = analog_frame_stride(self.capture_mode)
                     else:
                         as_ = self.dev._stride
+                    # Pass any pending generator data into rolling capture
+                    pending = getattr(self.dev, '_pending_gen', None)
+                    gen_kwargs = {}
+                    if pending and isinstance(pending, dict):
+                        gen_kwargs = {
+                            'gen_data': pending.get('data', b''),
+                            'gen_baud': pending.get('baud', 115200),
+                            'gen_tx_pin': pending.get('tx_pin', 3),
+                        }
+                        self.dev._pending_gen = None
                     gen = self.dev.rolling_capture(
                         rate_hz=rate, chunk_nsamp=1024, buffer_nsamp=buf_nsamp,
                         stop_evt=self.stop_evt, progress_cb=None,
-                        full_out=self.captured_bytes, stride=as_
+                        full_out=self.captured_bytes, stride=as_,
+                        payload_stride=pay_stride,
+                        **gen_kwargs
                     )
-                    # Rolling: iterate generator, update capture_result per chunk
                     for buf, got, total in gen:
+                        # buf is dense payload for mixed (de-interleaved by
+                        # rolling_capture), raw wire for digital.
                         self.capture_partial = buf
                         self.capture_progress = (got, total)
                         if ana:
                             frames = decode_analog_frames(buf, self.capture_mode)
-                            self.capture_result = (buf, rate, got, as_, frames, self.capture_mode)
+                            self.capture_result = (buf, rate, got, pay_stride, frames, self.capture_mode)
                         else:
                             stride = self.dev._stride
                             self.capture_result = (buf, rate, got, stride)
                 else:
-                    if self.capture_mode != ANALOG_MODE_DIGITAL8 and hasattr(self.dev, 'capture_analog'):
-                        data, frames = self.dev.capture_analog(
-                            rate_hz=rate, frames=nsamp, mode=self.capture_mode,
-                            ch0=self.analog_ch0_sel, ch1=self.analog_ch1_sel,
-                            ch2=self.analog_ch2_sel, ch3=self.analog_ch3_sel,
-                            timeout=max(3, nsamp // 10000 + 2),
-                            stop_evt=self.stop_evt
+                    if self.capture_mode & MODE_MIXED:
+                        stride = analog_frame_stride(self.capture_mode)  # 14
+                        words_per_frame = stride // 2                    # 7
+                        self.dev.set_analog_config(self.capture_mode)
+                        sdram_words = nsamp * words_per_frame
+                        # capture() reads 2 wire bytes per 'sample' but each
+                        # stored word is 4 wire bytes — request 2× to read whole
+                        # frames, then de-interleave to dense payload.
+                        wire = self.dev.capture(
+                            rate_hz=rate * words_per_frame, nsamples=sdram_words * 2,
+                            timeout=max(3, sdram_words // 10000 + 2),
+                            progress_cb=self._capture_progress,
+                            trigger=trigger, stop_evt=self.stop_evt
                         )
-                        self.capture_result = (data, rate, nsamp, self.capture_stride, frames, self.capture_mode)
+                        trimmed = wire_to_payload(wire)[:nsamp * stride]
+                        frames = decode_analog_frames(trimmed, self.capture_mode)
+                        self.capture_result = (trimmed, rate, nsamp, stride, frames, self.capture_mode)
                     else:
                         need_bytes = nsamp * getattr(self.dev, '_stride', 4)
                         print(f"[DBG] capture rate={rate} nsamp={nsamp} expect_bytes={need_bytes} trigger={trigger}")
@@ -1446,8 +1136,13 @@ class OLScope:
             except Exception as e:
                 self.capture_result = e
             finally:
+                # All device I/O stays on this worker thread (see _stop_capture).
                 if fast:
                     try: self.dev.fast_mode(False)
+                    except: pass
+                if self.stop_evt.is_set():
+                    # User aborted: reset the FPGA from the owning thread.
+                    try: self.dev.reset()
                     except: pass
                 self.capture_running = False
 
@@ -1461,7 +1156,7 @@ class OLScope:
 
     def _update_gen_buttons(self):
         """Grey out Send+Capture during rolling; update Send label."""
-        if self.capture_running and self.rolling_var.get():
+        if self.capture_running and self.capture_type.get() == 'rolling':
             self.gen_send_cap_btn.configure(state='disabled')
             self.gen_send_btn.configure(text='Send → rolling')
         else:
@@ -1472,20 +1167,21 @@ class OLScope:
         """Abort the running capture and return partial data."""
         if not self.capture_running:
             return
+        # Only signal the worker; do NOT touch self.dev here. The capture
+        # worker thread owns the FTDI device, and issuing an SPI reset from
+        # the Tk main thread while the worker is mid-read causes concurrent
+        # USB access and a hard crash. The worker resets in its finally block.
         self.stop_evt.set()
-        if self.dev:
-            try: self.dev.reset()
-            except: pass
         self.capture_nsamp = 0  # Fit will use actual received count
         self.stop_btn.configure(state='disabled')
-        self.status['text'] = "Capture stopped by user"
+        self.status['text'] = "Stopping capture..."
 
     def _poll_capture(self):
         self._update_gen_buttons()
         if self.capture_running:
             got, total = self.capture_progress
             if total > 0:
-                if self.rolling_var.get():
+                if self.capture_type.get() == 'rolling':
                     buf_pct = min(got, total) / total * 100
                     total_got = int(got)
                     mem_bytes = len(getattr(self, 'captured_bytes', b''))
@@ -1529,7 +1225,7 @@ class OLScope:
         partial = getattr(self, 'capture_partial', None)
         if partial is None or len(partial) < 4:
             return
-        ana = self.capture_mode != ANALOG_MODE_DIGITAL8
+        ana = bool(self.capture_mode & MODE_MIXED)
         if ana:
             frames = decode_analog_frames(partial, self.capture_mode)
             ns = len(frames)
@@ -1555,7 +1251,7 @@ class OLScope:
             ch_partial, ns = samples_to_channels(partial, stride=stride)
         if ns < 2:
             return
-        if ns == self.wave.num_samples and not (self.capture_running and self.rolling_var.get()):
+        if ns == self.wave.num_samples and not (self.capture_running and self.capture_type.get() == 'rolling'):
             return
 
         # Always update the data model
@@ -1563,7 +1259,7 @@ class OLScope:
         self.wave.num_samples = ns
 
         # Rolling auto-scroll and memory guard (update regardless of redraw)
-        if self.capture_running and self.rolling_var.get():
+        if self.capture_running and self.capture_type.get() == 'rolling':
             ww = self.wave.winfo_width()
             vis = ww / self.wave.px_scale if self.wave.px_scale > 0 else self.wave.num_samples
             self.wave.scroll_x = max(0, ns - vis)
@@ -1632,14 +1328,8 @@ class OLScope:
         self.last_analog_frames = rows
         digital = [[] for _ in range(NUM_CHANNELS)]
         analog_series = []
-        analog_count = 0
-        if mode in (ANALOG_MODE_MIXED1, ANALOG_MODE_MIXED2, ANALOG_MODE_ANALOG1, ANALOG_MODE_ANALOG2,
-                    ANALOG_MODE_ANALOG4, ANALOG_MODE_MIXED2_4, ANALOG_MODE_MIXED_DUAL):
-            analog_count = 1 if mode in (ANALOG_MODE_MIXED1, ANALOG_MODE_ANALOG1) else 2
-            if mode in (ANALOG_MODE_ANALOG4, ANALOG_MODE_MIXED2_4):
-                analog_count = 4
-            elif mode == ANALOG_MODE_MIXED_DUAL:
-                analog_count = 2
+        analog_count = 8 if mode & MODE_MIXED else 0
+        if analog_count > 0:
             analog_series = [[] for _ in range(analog_count)]
         for row in rows:
             d = row.get('digital')
@@ -1650,18 +1340,13 @@ class OLScope:
                 for c in range(NUM_CHANNELS):
                     digital[c].append((d >> c) & 1)
             for i, val in enumerate(row.get('adc', [])):
-                analog_series[i].append(val)
-        names = []
-        ch_data = []
-        if mode in (ANALOG_MODE_MIXED1, ANALOG_MODE_MIXED2):
-            ch_data.extend(digital)
-            names.extend([f"CH{i}" for i in range(NUM_CHANNELS)])
+                if i < analog_count:
+                    analog_series[i].append(val)
+        names = [f"CH{i}" for i in range(NUM_CHANNELS)]
+        ch_data = list(digital)
         for i in range(analog_count):
             ch_data.append(analog_series[i])
             names.append(f"A{i}")
-        if mode in (ANALOG_MODE_ANALOG1, ANALOG_MODE_ANALOG2) and not analog_series:
-            ch_data = digital
-            names = [f"CH{i}" for i in range(NUM_CHANNELS)]
         self.ch_data = ch_data
         self.ch_names = names
         self.samplerate = rate
@@ -1672,7 +1357,7 @@ class OLScope:
 
     def _fit_view(self):
         w = self.wave.winfo_width()
-        if self.rolling_var.get() and self.capture_window > 0:
+        if self.capture_type.get() == 'rolling' and self.capture_window > 0:
             total = self.capture_window
         else:
             total = self.capture_nsamp if self.capture_nsamp > 0 else self.wave.num_samples
@@ -1692,9 +1377,24 @@ class OLScope:
         state = 'normal' if mode != 'Off' else 'disabled'
         for var in self.trig_ch_vars:
             var.set(False)
+        # Find all channel checkbuttons in trig_frame's sub-frames and set state
         for child in self.trig_frame.winfo_children():
-            if isinstance(child, ttk.Checkbutton):
-                child.configure(state=state)
+            if isinstance(child, ttk.Frame):
+                for sub in child.winfo_children():
+                    if isinstance(sub, ttk.Checkbutton):
+                        sub.configure(state=state)
+
+    def _sync_ch_vis_ui(self):
+        """Sync checkbox state in channel visibility section to wave state."""
+        if not hasattr(self, 'ch_vis_vars') or not hasattr(self, 'ana_vis_vars'):
+            return
+        for i, var in enumerate(self.ch_vis_vars):
+            if hasattr(self, 'wave') and i < len(self.wave.channel_visible):
+                var.set(self.wave.channel_visible[i])
+        for ai, var in enumerate(self.ana_vis_vars):
+            idx = NUM_CHANNELS + ai
+            if hasattr(self, 'wave') and idx < len(self.wave.channel_visible):
+                var.set(self.wave.channel_visible[idx])
 
     def _gen_show_proto_fields(self, event=None):
         """Show/hide protocol-specific fields in the Generator tab."""
@@ -1715,110 +1415,121 @@ class OLScope:
         self.gen_tx_lbl.configure(text='TX Pin (SDA):' if is_i2c else 'TX Pin:')
 
     def _process_decoders(self):
-        """Build filtered + decoded channels, append to ch_data/ch_names.
+        """Build filtered + decoded channels, arranged under source channels.
         
-        Reads self.decoder_slots and self.filter config, appends new rows to
-        self.ch_data and self.ch_names.  Each decoded row carries a visualisation
-        signal (pulses at frame positions) plus the frame list in the slot dict.
+        Order: CH0, CH0_f (if filtered), CH0_decodes (if any), CH1, CH1_f, ...
+        Decoder rows appear right below their source channel.
+        Decoder functions always receive the full 16-channel base data.
         """
         ns = len(self.ch_data[0]) if self.ch_data else 0
         if ns == 0:
             return
 
         th = self.filter_threshold if hasattr(self, 'filter_threshold') else 3
-        filt = self.filter_enabled if hasattr(self, 'filter_enabled') else [False]*NUM_CHANNELS
-        base_n = NUM_CHANNELS
+        filt = self.filter_enabled if hasattr(self, 'filter_enabled') else [False] * NUM_CHANNELS
+        slots = getattr(self, 'decoder_slots', [])
+        base_data = self.ch_data[:NUM_CHANNELS]  # full 16-ch for decoder callbacks
 
-        # Start from base channel list, append new rows
-        new_data = list(self.ch_data[:base_n])
-        new_names = list(self.ch_names[:base_n])
+        new_data = []
+        new_names = []
+        dec_text_lines = []
 
-        # Filtered channels
         for ci in range(NUM_CHANNELS):
+            new_data.append(self.ch_data[ci])
+            new_names.append(f"CH{ci}")
+
             if ci < len(filt) and filt[ci] and ci < len(self.ch_data):
                 f = glitch_filter(self.ch_data[ci], th)
                 new_data.append(f)
-                new_names.append(f"{self.ch_names[ci]}_f")
+                new_names.append(f"CH{ci}_f")
 
-        # Decoder channels
-        slots = getattr(self, 'decoder_slots', [])
-        dec_text_lines = []
-        for si, slot in enumerate(slots):
-            if not slot.get('enabled', False):
-                continue
-            src = slot['src_str']
-            src_idx = slot['src_idx']
-            # Find which row in new_data corresponds to the source
-            src_row = None
-            for ri in range(len(new_data)):
-                if (src.isdigit() and ri == src_idx) or \
-                   (not src.isdigit() and new_names[ri] == src):
-                    src_row = ri
-                    break
-            if src_row is None:
-                continue
+            for slot in slots:
+                if not slot.get('enabled', False):
+                    continue
+                src = slot['src_str']
+                src_idx = slot['src_idx']
+                src_matches = (src.isdigit() and src_idx == ci)
+                if not src_matches and not src.isdigit():
+                    src_matches = (new_names[-1] == src)
+                if not src_matches:
+                    continue
 
-            sig_arr = [0] * ns  # visualisation pulse train
-            frames = []
-            th_slot = slot.get('thresh', 0)
-            proto = slot.get('proto', 'UART')
-            chan_data = [new_data[src_row]]  # wrap single channel for decoder API
+                sig_arr = [0] * ns
+                frames = []
+                th_slot = slot.get('thresh', 0)
+                proto = slot.get('proto', 'UART')
 
-            if proto == 'UART':
-                from_baud = slot.get('baud', 115200)
-                dec = decode_uart(chan_data, self.samplerate, 0, from_baud,
-                                  filter_threshold=th_slot if th_slot > 0 else 0)
-                for r in dec:
-                    frames.append({'type': 'byte', 'pos': r.pos, 'val': r.value,
-                                   'end': r.pos + int(10 * self.samplerate / from_baud)})
-                    for j in range(r.pos, min(r.pos + int(10 * self.samplerate / from_baud), ns)):
-                        if j < len(sig_arr): sig_arr[j] = 1
-            elif proto == 'I2C':
-                sda_src = slot.get('sda_idx', 3)
-                scl_src = slot.get('scl_idx', 1)
-                dec = decode_i2c(new_data, self.samplerate, scl_src, sda_src,
-                                 filter_threshold=th_slot if th_slot > 0 else 0)
-                for item in dec:
-                    t, v = item
-                    frames.append({'type': t, 'val': v})
-                    # Short pulse for each event
-                    pos = 0  # approximate position — not available from decode_i2c
-                    if pos < ns: sig_arr[pos] = 1
-            elif proto == 'SPI':
-                spi_miso = slot.get('sda_idx', 3)
-                spi_sclk = slot.get('scl_idx', 1)
-                dec = decode_spi(new_data, self.samplerate, spi_miso, spi_sclk,
-                                 filter_threshold=th_slot if th_slot > 0 else 0)
-                for bv in dec:
-                    frames.append({'type': 'byte', 'val': bv})
+                src_row = None
+                for ri in range(len(new_data)):
+                    if (src.isdigit() and ri == src_idx) or \
+                       (not src.isdigit() and new_names[ri] == src):
+                        src_row = ri
+                        break
+                if src_row is None:
+                    continue
+                chan_data = [new_data[src_row]]
 
-            slot['frames'] = frames
-            slot['sig'] = sig_arr
-            new_data.append(sig_arr)
-            new_names.append(f"{src}_{proto}")
+                if proto == 'UART':
+                    from_baud = slot.get('baud', 115200)
+                    dec = decode_uart(chan_data, self.samplerate, 0, from_baud,
+                                      filter_threshold=th_slot if th_slot > 0 else 0)
+                    for r in dec:
+                        frames.append({'type': 'byte', 'pos': r.pos, 'val': r.value,
+                                       'end': r.pos + int(10 * self.samplerate / from_baud)})
+                        for j in range(r.pos, min(r.pos + int(10 * self.samplerate / from_baud), ns)):
+                            if j < len(sig_arr):
+                                sig_arr[j] = 1
+                elif proto == 'I2C':
+                    sda_src = slot.get('sda_idx', 3)
+                    scl_src = slot.get('scl_idx', 1)
+                    dec = decode_i2c(base_data, self.samplerate, scl_src, sda_src,
+                                     filter_threshold=th_slot if th_slot > 0 else 0)
+                    for item in dec:
+                        t, v = item
+                        frames.append({'type': t, 'val': v})
+                        if 0 < ns:
+                            sig_arr[0] = 1
+                elif proto == 'SPI':
+                    spi_miso = slot.get('sda_idx', 3)
+                    spi_sclk = slot.get('scl_idx', 1)
+                    dec = decode_spi(base_data, self.samplerate, spi_miso, spi_sclk,
+                                     filter_threshold=th_slot if th_slot > 0 else 0)
+                    for bv in dec:
+                        frames.append({'type': 'byte', 'val': bv})
 
-            # Build text for the decode output pane
-            line = f"#{si+1} {src} {proto}: "
-            if proto == 'UART':
-                text = ''.join(chr(f['val']) if 32 <= f['val'] < 127 else f'[{f["val"]:02X}]'
-                              for f in frames[:50])
-                if len(frames) > 50: text += '...'
-                line += f'"{text}"  ({len(frames)} bytes)'
-            elif proto == 'I2C':
-                parts = []
-                for f in frames[:30]:
-                    if f['type'] == 'START': parts.append('S')
-                    elif f['type'] == 'STOP': parts.append('P')
-                    elif f['val'] is not None: parts.append(f"0x{f['val']:02X}")
-                line += ' '.join(parts)
-            elif proto == 'SPI':
-                line += ' '.join(f"0x{f['val']:02X}" for f in frames[:30])
-            dec_text_lines.append(line)
+                slot['frames'] = frames
+                slot['sig'] = sig_arr
+                new_data.append(sig_arr)
+                new_names.append(f"{src}_{proto}")
+
+                line = f"#{list(slots).index(slot)+1} {src} {proto}: "
+                if proto == 'UART':
+                    text = ''.join(chr(f['val']) if 32 <= f['val'] < 127 else f'[{f["val"]:02X}]'
+                                  for f in frames[:50])
+                    if len(frames) > 50:
+                        text += '...'
+                    line += f'"{text}"  ({len(frames)} bytes)'
+                elif proto == 'I2C':
+                    parts = []
+                    for f in frames[:30]:
+                        if f['type'] == 'START':
+                            parts.append('S')
+                        elif f['type'] == 'STOP':
+                            parts.append('P')
+                        elif f['val'] is not None:
+                            parts.append(f"0x{f['val']:02X}")
+                    line += ' '.join(parts)
+                elif proto == 'SPI':
+                    line += ' '.join(f"0x{f['val']:02X}" for f in frames[:30])
+                dec_text_lines.append(line)
 
         self.ch_data = new_data
         self.ch_names = new_names
 
-        # Update the decode text output
+        if hasattr(self, 'wave') and hasattr(self.wave, 'channel_visible'):
+            while len(self.wave.channel_visible) < len(new_data):
+                self.wave.channel_visible.append(True)
+
         if hasattr(self, 'dec_out'):
             self.dec_out.delete('1.0', 'end')
             self.dec_out.insert('1.0', '\n'.join(dec_text_lines) if dec_text_lines else "No decoders active")
@@ -1828,8 +1539,9 @@ class OLScope:
         proto = self.gen_proto.get()
         data_s = self.gen_data.get('1.0', 'end-1c')
         if not data_s: return
-        # If rolling checkbox is on, queue gen params — rolling thread loads + starts gen (no serial access)
-        if self.rolling_var.get():
+        is_rolling = self.capture_type.get() == 'rolling'
+        # If rolling, queue gen params — rolling thread loads + starts gen (no serial access)
+        if is_rolling:
             try:
                 tx_pin = int(self.gen_tx_pin.get())
             except: tx_pin = 3
@@ -1857,8 +1569,8 @@ class OLScope:
                 frame = bytes([(addr << 1) & 0xFF]) + data_s.encode()
                 self.dev._load_block(frame)
                 self.dev.start_gen()
-            # If rolling checkbox is on, queue gen params — rolling thread loads + starts gen
-            if self.rolling_var.get():
+            # If rolling, queue gen params — rolling thread loads + starts gen
+            if is_rolling:
                 self.dev._pending_gen = {
                     'data': data_s.encode(),
                     'baud': int(self.gen_baud.get()),
@@ -1875,7 +1587,7 @@ class OLScope:
         proto = self.gen_proto.get()
         data_s = self.gen_data.get('1.0', 'end-1c')
         if not data_s: return
-        if self.rolling_var.get():
+        if self.capture_type.get() == 'rolling':
             try:
                 tx_pin = int(self.gen_tx_pin.get())
             except: tx_pin = 3
@@ -1890,7 +1602,7 @@ class OLScope:
 
         rate_str = self.rate_cb.get()
         rate = int(rate_str.replace('kHz','000').replace('MHz','000000'))
-        nsamp = int(self.samp_cb.get())
+        nsamp = self._get_samples()
         self.status['text'] = f"Capturing with generator {nsamp} @ {rate/1e6:.1f} MHz..."
         print(f"[DBG] gen_capture rate={rate} nsamp={nsamp}")
         self.win.update()
@@ -1952,13 +1664,17 @@ class OLScope:
             scl_pin = int(self.acc_scl_pin.get())
             rate = 4_000_000
             nsamp = max(50000, read_len * 200)
+            self.dev.set_pin_map(scl_pin, 25)  # SEN_SPC: physical LIS3DH SCL
+            self.dev.set_pin_map(sda_pin, 24)  # SEN_SDI: physical LIS3DH SDA/response
+            self.dev.spi.flush()
+            time.sleep(0.01)
             self.status['text'] = f"Reading accel reg 0x{reg_addr:02X}..."
             self.win.update()
             data = self.dev.i2c_capture_with_gen(
                 rate_hz=rate, nsamples=nsamp, i2c_speed=speed,
                 dev_addr=addr, reg_addr=reg_addr,
                 read_len=read_len,
-                tx_pin=sda_pin, scl_pin=scl_pin, fast_mode=False)
+                tx_pin=31, scl_pin=31, fast_mode=False)
             if not data:
                 self._show_accel_result("No data returned")
                 return
@@ -1972,7 +1688,8 @@ class OLScope:
             self._process_decoders()
             self.wave.redraw()
             # Parse I2C decoded bytes
-            decoded = decode_i2c(ch, rate, scl_idx=scl_pin, sda_idx=sda_pin)
+            decoded = decode_i2c(ch, rate, scl_idx=scl_pin, sda_idx=sda_pin,
+                                 filter_threshold=max(3, int(rate // 1000000)))
             data_bytes = [v for t, v in decoded if t == "DATA"]
             if reg_addr in (0x28, 0x2A, 0x2C) and read_len >= 2 and len(data_bytes) >= 2:
                 raw = (data_bytes[-2] | (data_bytes[-1] << 8))
@@ -2007,19 +1724,34 @@ class OLScope:
         fname = filedialog.asksaveasfilename(defaultextension='.ols',
                                               filetypes=[('OLS files', '*.ols'), ('All', '*.*')])
         if not fname: return
-        stride = getattr(self, 'capture_stride', 4)
-        ch_data, ns = samples_to_channels(self.captured_bytes, stride=stride)
         rate = self.samplerate
+        mode = self.capture_mode
+        has_analog = bool(mode & MODE_MIXED)
+        stride = self.capture_stride
+
         with open(fname, 'w') as f:
             f.write(f';Rate: {rate}\n')
             f.write(';Channels: 16\n')
             f.write(';EnabledChannels: -1\n')
-            for i in range(ns):
-                byte = 0
-                for c in range(NUM_CHANNELS):
-                    if c < len(ch_data) and i < len(ch_data[c]):
-                        byte |= (ch_data[c][i] << c)
-                f.write(f'{byte:04x}@{i}\n')
+            if has_analog:
+                # Decode analog frames
+                frames = decode_analog_frames(self.captured_bytes, mode)
+                ana_count = 8
+                f.write(f';Analog: {ana_count}\n')
+                for i, fr in enumerate(frames):
+                    d = fr.get('digital', 0)
+                    f.write(f'{d:04x}@{i}\n')
+                    for ai, av in enumerate(fr.get('adc', [])):
+                        f.write(f';A{ai}: {av}@{i}\n')
+            else:
+                stride = getattr(self, 'capture_stride', 4)
+                ch_data, ns = samples_to_channels(self.captured_bytes, stride=stride)
+                for i in range(ns):
+                    byte = 0
+                    for c in range(NUM_CHANNELS):
+                        if c < len(ch_data) and i < len(ch_data[c]):
+                            byte |= (ch_data[c][i] << c)
+                    f.write(f'{byte:04x}@{i}\n')
         self.status['text'] = f"Saved {fname}"
 
     def _export_sr(self):
@@ -2029,13 +1761,57 @@ class OLScope:
         fname = filedialog.asksaveasfilename(defaultextension='.sr',
                                               filetypes=[('Sigrok', '*.sr'), ('All', '*.*')])
         if not fname: return
-        meta = f"""[global]
+        rate = self.samplerate
+        mode = self.capture_mode
+        has_analog = bool(mode & MODE_MIXED)
+        stride = self.capture_stride
+
+        if has_analog:
+            frames = decode_analog_frames(self.captured_bytes, mode)
+            ana_count = len(frames[0].get('adc', [])) if frames else 0
+            meta = f"""[global]
 sigrok version=OLSMScope 1.0
 
 [device 1]
 capturefile=logic
 total probes=16
-samplerate={self.samplerate} Hz
+samplerate={rate} Hz
+total analog={ana_count}
+probe1=0
+probe2=1
+probe3=2
+probe4=3
+probe5=4
+probe6=5
+probe7=6
+probe8=7
+unitsize=1
+"""
+            with zipfile.ZipFile(fname, 'w', zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr('metadata', meta)
+                # Digital logic data (first 2 bytes per frame)
+                logic = b''
+                for fr in frames:
+                    d = fr.get('digital', 0)
+                    logic += bytes([d & 0xFF, (d >> 8) & 0xFF])
+                zf.writestr('logic-1', logic)
+                # Analog probe files (32-bit float LE)
+                for ai in range(ana_count):
+                    import struct
+                    a_bytes = b''
+                    for fr in frames:
+                        vals = fr.get('adc', [])
+                        v = vals[ai] / 4095.0 * 3.3 if ai < len(vals) else 0.0
+                        a_bytes += struct.pack('<f', v)
+                    zf.writestr(f'analog-{ai+1}', a_bytes)
+        else:
+            meta = f"""[global]
+sigrok version=OLSMScope 1.0
+
+[device 1]
+capturefile=logic
+total probes=16
+samplerate={rate} Hz
 total analog=0
 probe1=0
 probe2=1
@@ -2047,26 +1823,39 @@ probe7=6
 probe8=7
 unitsize=1
 """
-        with zipfile.ZipFile(fname, 'w', zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr('metadata', meta)
-            # Extract first byte (group0) of each sample
-            stride = getattr(self, 'capture_stride', 4)
-            logic = bytes([self.captured_bytes[i * stride] for i in range(len(self.captured_bytes)//stride)])
-            zf.writestr('logic-1', logic)
+            with zipfile.ZipFile(fname, 'w', zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr('metadata', meta)
+                logic = bytes([self.captured_bytes[i * stride] for i in range(len(self.captured_bytes)//stride)])
+                zf.writestr('logic-1', logic)
         self.status['text'] = f"Saved {fname}"
 
     def _export_clip(self):
         if not self.captured_bytes:
             return
-        stride = getattr(self, 'capture_stride', 4)
-        ch_data, ns = samples_to_channels(self.captured_bytes, stride=stride)
-        lines = [f"Samplerate: {self.samplerate} Hz, Samples: {ns}"]
-        ch0 = ''.join(str(ch_data[0][i]) for i in range(min(200, ns)))
-        lines.append(f"CH0[0:{min(200,ns)}]: {ch0}")
-        if self.decoded_uart:
-            lines.append(f"\nUART ({len(self.decoded_uart)} bytes):")
-            lines.extend(f"  0x{r.value:02X} '{chr(r.value) if 32<=r.value<127 else '.'}'"
-                        for r in self.decoded_uart[:30])
+        mode = self.capture_mode
+        has_analog = bool(mode & MODE_MIXED)
+        lines = []
+        if has_analog:
+            frames = decode_analog_frames(self.captured_bytes, mode)
+            lines.append(f"Samplerate: {self.samplerate} Hz, Frames: {len(frames)}")
+            if frames:
+                d0 = frames[0].get('digital', 0)
+                lines.append(f"First digital word: 0x{d0:04X}")
+                ana_count = len(frames[0].get('adc', []))
+                for ai in range(min(ana_count, 8)):
+                    vals = [fr.get('adc', [0])[ai] for fr in frames[:100]]
+                    if vals:
+                        lines.append(f"A{ai}: min={min(vals)} max={max(vals)} avg={sum(vals)//len(vals)}")
+        else:
+            stride = getattr(self, 'capture_stride', 4)
+            ch_data, ns = samples_to_channels(self.captured_bytes, stride=stride)
+            lines.append(f"Samplerate: {self.samplerate} Hz, Samples: {ns}")
+            ch0 = ''.join(str(ch_data[0][i]) for i in range(min(200, ns)))
+            lines.append(f"CH0[0:{min(200,ns)}]: {ch0}")
+            if self.decoded_uart:
+                lines.append(f"\nUART ({len(self.decoded_uart)} bytes):")
+                lines.extend(f"  0x{r.value:02X} '{chr(r.value) if 32<=r.value<127 else '.'}'"
+                            for r in self.decoded_uart[:30])
         self.win.clipboard_clear()
         self.win.clipboard_append('\n'.join(lines))
         self.status['text'] = "Copied to clipboard"
@@ -2112,7 +1901,8 @@ unitsize=1
         """Update the export tab's captured data size estimate."""
         cb = self.captured_bytes
         if cb:
-            ns = len(cb) // 4  # approximate (stride may vary)
+            stride = max(1, getattr(self, 'capture_stride', 4))
+            ns = len(cb) // stride
             mb = len(cb) / (1024 * 1024)
             self.export_size_lbl['text'] = f"Captured: {ns} samples ({mb:.1f} MB)"
         else:

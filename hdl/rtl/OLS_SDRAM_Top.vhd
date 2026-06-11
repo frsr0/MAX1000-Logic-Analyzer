@@ -8,7 +8,8 @@ ENTITY OLS_SDRAM_Top IS
     TX_PIN      : natural range 0 to 31 := 3;
     PLL_MULT    : positive := 8;
     PLL_DIV     : positive := 1;
-    Sim         : boolean := false
+    Sim         : boolean := false;
+    FAST_SPEED  : boolean := false
   );
 PORT (
   CLK     : IN STD_LOGIC;
@@ -39,9 +40,27 @@ END OLS_SDRAM_Top;
 
 ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
 
-  constant System_CLK_Frequency : natural := 12000000 * PLL_MULT / PLL_DIV;
+  function get_sys_clk_freq return natural is
+  begin
+    if FAST_SPEED then
+      return 100_000_000;
+    else
+      return 12000000 * PLL_MULT / PLL_DIV;
+    end if;
+  end function;
+  function get_sample_clk_freq return natural is
+  begin
+    if FAST_SPEED then
+      return 200_000_000;
+    else
+      return 12000000 * PLL_MULT / PLL_DIV;
+    end if;
+  end function;
+  constant System_CLK_Frequency : natural := get_sys_clk_freq;
+  constant SAMPLE_CLK_HZ : natural := get_sample_clk_freq;
+  constant ENABLE_RUNTIME_INPUT_MUX : boolean := true;
   constant LA_CHANNELS : natural := 16;
-  constant PIN_POOL_SIZE : natural := 23;
+  constant PIN_POOL_SIZE : natural := 26;
 
   signal sys_clk     : std_logic := '0';
   signal pll_locked  : std_logic := '0';
@@ -79,16 +98,14 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
 
   -- Pin map registers: each LA channel i reads pin_pool(pin_map(i))
   type pin_map_t is array(0 to LA_CHANNELS-1) of natural range 0 to PIN_POOL_SIZE-1;
-  signal pin_map      : pin_map_t := (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15);
+  signal pin_map      : pin_map_t := (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,24);
+  signal pin_map_wr_toggle : std_logic := '0';
 
   signal core_status   : std_logic_vector(7 downto 0) := (others => '0');
-  signal test_div      : std_logic_vector(9 downto 0) := (others => '0');
-  attribute preserve : boolean;
-  attribute preserve of test_div : signal is true;
-  signal test_out      : std_logic := '0';
-  attribute preserve of test_out : signal is true;
+  signal debug_ch0_cnt    : std_logic_vector(31 downto 0) := (others => '0');
   signal registered_ch0 : std_logic := '0';
-  attribute preserve of registered_ch0 : signal is true;
+  signal debug_ch0_period : std_logic_vector(31 downto 0) := x"00000400";
+  signal debug_ch0_duty   : std_logic_vector(31 downto 0) := x"00000200";
   signal sen_sdi_meta : std_logic := '1';
   signal sen_sdi_sync : std_logic := '1';
   signal gen_scl_d1   : std_logic := '0';
@@ -109,18 +126,22 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   type schmitt_cnt_t is array(0 to PIN_POOL_SIZE-1) of natural range 0 to 7;
   signal schmitt_cnt   : schmitt_cnt_t := (others => 0);
   signal schmitt_stable : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
+  attribute preserve : boolean;
   attribute preserve of gen_start : signal is true;
   attribute preserve of gen_tx : signal is true;
   attribute preserve of gen_busy : signal is true;
+  attribute preserve of gen_i2c_test : signal is true;
+  attribute preserve of gen_spi_test : signal is true;
 
-  signal analog_mode   : std_logic_vector(2 downto 0) := (others => '0');
-  signal analog_ch0    : natural range 0 to 15 := 0;
-  signal analog_ch1    : natural range 0 to 15 := 1;
+  signal analog_enable : std_logic := '0';
+  signal gen_clear     : std_logic := '0';
   signal analog_stream_mode : std_logic := '0';
   signal debug_ch0_enable : std_logic := '0';
-  signal analog_frame_data  : std_logic_vector(63 downto 0) := (others => '0');
-  signal analog_frame_len   : natural range 1 to 8 := 1;
+  signal fast_mode_i : std_logic := '0';
+  signal analog_frame_data  : std_logic_vector(127 downto 0) := (others => '0');
+  signal analog_frame_len   : natural range 1 to 14 := 1;
   signal adc0_result, adc1_result, adc2_result, adc3_result : std_logic_vector(11 downto 0) := (others => '0');
+  signal adc4_result, adc5_result, adc6_result, adc7_result : std_logic_vector(11 downto 0) := (others => '0');
   signal adc_start : std_logic := '0';
   signal adc_div   : natural range 0 to 255 := 0;
 
@@ -128,6 +149,44 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal pin_map_write    : std_logic := '0';
   signal pin_map_channel  : natural range 0 to LA_CHANNELS-1 := 0;
   signal pin_map_pin      : natural range 0 to 31 := 0;
+
+  -- FAST_CLK domain: capture mux + CDC synchronizers
+  signal capture_data_fast : std_logic_vector(LA_CHANNELS-1 downto 0) := (others => '0');
+  signal capture_data_fast_speed_r : std_logic_vector(LA_CHANNELS-1 downto 0) := (others => '0');
+  signal capture_data_fast_normal_r : std_logic_vector(LA_CHANNELS-1 downto 0) := (others => '0');
+  signal fast_mode_f1 : std_logic := '0';
+  signal fast_mode_f2 : std_logic := '0';
+  signal pin_pool_fast_r   : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
+  signal pin_pool_f1  : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
+  signal pin_pool_f2  : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
+  signal gen_tx_f1    : std_logic := '0';
+  signal gen_tx_f2    : std_logic := '0';
+  signal gen_scl_f1   : std_logic := '0';
+  signal gen_scl_f2   : std_logic := '0';
+  signal registered_ch0_f1 : std_logic := '0';
+  signal registered_ch0_f2 : std_logic := '0';
+  signal gen_capture_active_f1 : std_logic := '0';
+  signal gen_capture_active_f2 : std_logic := '0';
+  signal gen_i2c_test_f1 : std_logic := '0';
+  signal gen_i2c_test_f2 : std_logic := '0';
+  signal debug_ch0_enable_f1 : std_logic := '0';
+  signal debug_ch0_enable_f2 : std_logic := '0';
+  attribute preserve of debug_ch0_enable_f1 : signal is true;
+  attribute preserve of debug_ch0_enable_f2 : signal is true;
+  signal pin_dir_f1 : std_logic := '0';
+  signal pin_dir_f2 : std_logic := '0';
+  signal gen_tx_pin_f1 : natural range 0 to 31 := 0;
+  signal gen_tx_pin_f2 : natural range 0 to 31 := 0;
+  signal gen_scl_pin_f1 : natural range 0 to 31 := 0;
+  signal gen_scl_pin_f2 : natural range 0 to 31 := 0;
+  signal pin_map_fast : pin_map_t := (0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,24);
+  signal pin_map_wr_t_s1 : std_logic := '0';
+  signal pin_map_wr_t_s2 : std_logic := '0';
+  signal pin_map_wr_edge : std_logic := '0';
+  signal pin_map_ch_f1 : natural range 0 to LA_CHANNELS-1 := 0;
+  signal pin_map_ch_f2 : natural range 0 to LA_CHANNELS-1 := 0;
+  signal pin_map_pin_f1 : natural range 0 to 31 := 0;
+  signal pin_map_pin_f2 : natural range 0 to 31 := 0;
 
   -- PWM engine (shared by LED controller)
   signal pwm_cnt       : integer range 0 to 256 := 0;
@@ -141,14 +200,17 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   COMPONENT OLS_Logic_Analyzer IS
   GENERIC (
       CLK_Frequency : INTEGER := 12000000;
+      SAMPLE_CLK_HZ : INTEGER := 200_000_000;
     Max_Samples : NATURAL := 1000000;
     Channels    : NATURAL := LA_CHANNELS;
-    Sim         : boolean := false
+    Sim         : boolean := false;
+    FAST_SPEED  : boolean := false
   );
   PORT (
     CLK : IN STD_LOGIC;
     FAST_CLK : IN STD_LOGIC := '0';
-    Inputs   : IN  STD_LOGIC_VECTOR(Channels-1 downto 0);
+    Inputs_Sys   : IN  STD_LOGIC_VECTOR(Channels-1 downto 0);
+    Inputs_Fast  : IN  STD_LOGIC_VECTOR(Channels-1 downto 0);
     SPI_CS   : IN  STD_LOGIC := '1';
     SPI_SCK  : IN  STD_LOGIC := '0';
     SPI_MOSI : IN  STD_LOGIC := '0';
@@ -173,26 +235,27 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Gen_Proto     : OUT STD_LOGIC := '0';
     Gen_TX_Pin    : OUT NATURAL range 0 to 31 := 0;
     Gen_SCL_Pin   : OUT NATURAL range 0 to 31 := 0;
+    Gen_Clear      : OUT STD_LOGIC := '0';
     Gen_I2C_Rd_Len : OUT NATURAL range 0 to 255 := 0;
     Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Gen_I2C_Test   : OUT STD_LOGIC := '0';
     Gen_SPI_Test   : OUT STD_LOGIC := '0';
      Armed          : OUT STD_LOGIC := '0';
     Fast_Mode      : OUT STD_LOGIC := '0';
-    Analog_Mode    : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-    Analog_Ch0     : OUT NATURAL range 0 to 15 := 0;
-    Analog_Ch1     : OUT NATURAL range 0 to 15 := 1;
+    Analog_Enable  : OUT STD_LOGIC := '0';
     Status        : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Continuous_Mode : OUT STD_LOGIC := '0';
     Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
     Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-    Analog_Frame_Data : IN STD_LOGIC_VECTOR(63 downto 0) := (others => '0');
-    Analog_Frame_Len  : IN NATURAL range 1 to 8 := 1;
+    Analog_Frame_Data : IN STD_LOGIC_VECTOR(127 downto 0) := (others => '0');
+    Analog_Frame_Len  : IN NATURAL range 1 to 14 := 1;
     Analog_Stream_Mode : IN STD_LOGIC := '0';
     Pin_Map_Write  : OUT STD_LOGIC := '0';
     Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
     Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
     Debug_Ch0_Enable : OUT STD_LOGIC := '0';
+    Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
+    Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
     Schmitt_Enable   : OUT STD_LOGIC := '0';
     Schmitt_Threshold : OUT NATURAL range 0 to 7 := 3;
     Gen_Start_Ack    : IN  STD_LOGIC := '0';
@@ -226,7 +289,27 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     ch3_start      : in  std_logic := '0';
     ch3_busy       : out std_logic := '1';
     ch3_result     : out std_logic_vector(11 downto 0) := (others => '0');
-    ch3_valid      : out std_logic := '0'
+    ch3_valid      : out std_logic := '0';
+    ch4_sel        : in  natural range 0 to 15 := 4;
+    ch4_start      : in  std_logic := '0';
+    ch4_busy       : out std_logic := '1';
+    ch4_result     : out std_logic_vector(11 downto 0) := (others => '0');
+    ch4_valid      : out std_logic := '0';
+    ch5_sel        : in  natural range 0 to 15 := 5;
+    ch5_start      : in  std_logic := '0';
+    ch5_busy       : out std_logic := '1';
+    ch5_result     : out std_logic_vector(11 downto 0) := (others => '0');
+    ch5_valid      : out std_logic := '0';
+    ch6_sel        : in  natural range 0 to 15 := 6;
+    ch6_start      : in  std_logic := '0';
+    ch6_busy       : out std_logic := '1';
+    ch6_result     : out std_logic_vector(11 downto 0) := (others => '0');
+    ch6_valid      : out std_logic := '0';
+    ch7_sel        : in  natural range 0 to 15 := 7;
+    ch7_start      : in  std_logic := '0';
+    ch7_busy       : out std_logic := '1';
+    ch7_result     : out std_logic_vector(11 downto 0) := (others => '0');
+    ch7_valid      : out std_logic := '0'
   );
   END COMPONENT;
 
@@ -236,6 +319,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     CLK       : in  std_logic;
     Load_Byte : in  std_logic_vector(7 downto 0);
     Load_We   : in  std_logic;
+    Clear     : in  std_logic := '0';
     Start     : in  std_logic;
     Start_Ack : out std_logic := '0';
     Start_Reject : out std_logic := '0';
@@ -275,6 +359,9 @@ BEGIN
   pin_pool(4 downto 0)   <= MKR_D(4 downto 0);
   pin_pool(14 downto 5)  <= MKR_D(14 downto 5);
   pin_pool(22 downto 15) <= PMOD;
+  pin_pool(23) <= SEN_SDO;
+  pin_pool(24) <= SEN_SDI;  -- I2C SDA (bidirectional, includes accel ACK+response)
+  pin_pool(25) <= SEN_SPC;  -- I2C SCL
 
   -- Bidirectional pin drives (output when pin_dir='1')
   gen_mkr_drive : for i in 0 to 14 generate
@@ -315,9 +402,21 @@ BEGIN
   process(sys_clk)
   begin
     if rising_edge(sys_clk) then
-      test_div <= std_logic_vector(unsigned(test_div) + 1);
-      test_out <= test_div(9);
-      registered_ch0 <= test_div(9);
+      if debug_ch0_enable = '1' then
+        if unsigned(debug_ch0_cnt) >= unsigned(debug_ch0_period) - 1 then
+          debug_ch0_cnt <= (others => '0');
+        else
+          debug_ch0_cnt <= std_logic_vector(unsigned(debug_ch0_cnt) + 1);
+        end if;
+        if unsigned(debug_ch0_cnt) < unsigned(debug_ch0_duty) then
+          registered_ch0 <= '1';
+        else
+          registered_ch0 <= '0';
+        end if;
+      else
+        registered_ch0 <= '0';
+        debug_ch0_cnt <= (others => '0');
+      end if;
     end if;
   end process;
 
@@ -338,6 +437,7 @@ BEGIN
       -- Pin map write from host command
       if pin_map_write = '1' then
         pin_map(pin_map_channel) <= pin_map_pin;
+        pin_map_wr_toggle <= not pin_map_wr_toggle;
       end if;
     end if;
   end process;
@@ -372,7 +472,7 @@ BEGIN
     end if;
   end process;
 
-  analog_stream_mode <= '1' when analog_mode /= "000" else '0';
+  analog_stream_mode <= analog_enable;
 
   -- Digital hysteresis filter (Schmitt trigger): requires N consecutive equal
   -- samples before accepting a transition, rejecting glitches below threshold.
@@ -398,10 +498,112 @@ BEGIN
   end process;
   pin_pool_clean <= schmitt_stable;
 
+  -- ============================================================
+  -- FAST_CLK domain: capture input mux + pin/loopback CDC
+  -- ============================================================
+  -- Shared CDC: bring sys_clk-domain signals into fast_clk
+  -- independent of which input path is active.
+  process(fast_clk)
+  begin
+    if rising_edge(fast_clk) then
+      registered_ch0_f1   <= registered_ch0;
+      registered_ch0_f2   <= registered_ch0_f1;
+      debug_ch0_enable_f1 <= debug_ch0_enable;
+      debug_ch0_enable_f2 <= debug_ch0_enable_f1;
+      fast_mode_f1        <= fast_mode_i;
+      fast_mode_f2        <= fast_mode_f1;
+    end if;
+  end process;
+
+  -- Speed input path: direct pin capture with CDC override for CH0
+  -- Uses pin_dir(0) as proxy for debug_enable to control the override,
+  -- avoiding the Quartus optimisation that eliminates debug_ch0_enable_f2.
+  -- When pin_dir(0) = '1' (output enabled, debug active): CH0 reads test counter
+  -- via CDC. When pin_dir(0) = '0': CH0 reads the physical pin.
+  process(fast_clk)
+  begin
+    if rising_edge(fast_clk) then
+      pin_dir_f1 <= pin_dir(0);
+      pin_dir_f2 <= pin_dir_f1;
+      pin_pool_fast_r <= pin_pool;
+      if pin_dir_f2 = '1' then
+        for i in 0 to LA_CHANNELS-1 loop
+          if i = 0 then
+            capture_data_fast_speed_r(i) <= registered_ch0_f2;
+          else
+            capture_data_fast_speed_r(i) <= pin_pool_fast_r(i);
+          end if;
+        end loop;
+      else
+        capture_data_fast_speed_r <= pin_pool_fast_r(LA_CHANNELS-1 downto 0);
+      end if;
+    end if;
+  end process;
+
+  -- Mapped/loopback input path: pin-map mux with CDC synchronisers
+  gen_mapped_path : if ENABLE_RUNTIME_INPUT_MUX generate
+  begin
+    process(fast_clk)
+    begin
+      if rising_edge(fast_clk) then
+        pin_pool_f1 <= pin_pool;
+        pin_pool_f2 <= pin_pool_f1;
+        gen_tx_f1 <= gen_tx;
+        gen_tx_f2 <= gen_tx_f1;
+        gen_scl_f1 <= gen_scl;
+        gen_scl_f2 <= gen_scl_f1;
+        gen_capture_active_f1 <= gen_capture_active;
+        gen_capture_active_f2 <= gen_capture_active_f1;
+        gen_i2c_test_f1 <= gen_i2c_test;
+        gen_i2c_test_f2 <= gen_i2c_test_f1;
+        gen_tx_pin_f1 <= gen_tx_pin;
+        gen_tx_pin_f2 <= gen_tx_pin_f1;
+        gen_scl_pin_f1 <= gen_scl_pin;
+        gen_scl_pin_f2 <= gen_scl_pin_f1;
+
+        pin_map_wr_t_s1 <= pin_map_wr_toggle;
+        pin_map_wr_t_s2 <= pin_map_wr_t_s1;
+        pin_map_wr_edge <= pin_map_wr_t_s1 xor pin_map_wr_t_s2;
+        pin_map_ch_f1 <= pin_map_channel;
+        pin_map_ch_f2 <= pin_map_ch_f1;
+        pin_map_pin_f1 <= pin_map_pin;
+        pin_map_pin_f2 <= pin_map_pin_f1;
+
+        if pin_map_wr_edge = '1' then
+          pin_map_fast(pin_map_ch_f2) <= pin_map_pin_f2;
+        end if;
+
+        for i in 0 to LA_CHANNELS-1 loop
+          if i = 0 and debug_ch0_enable_f2 = '1' then
+            capture_data_fast_normal_r(i) <= registered_ch0_f2;
+          elsif gen_capture_active_f2 = '1' and gen_tx_pin_f2 = pin_map_fast(i) then
+            capture_data_fast_normal_r(i) <= gen_tx_f2;
+          elsif gen_capture_active_f2 = '1' and gen_i2c_test_f2 = '1' and gen_scl_pin_f2 = pin_map_fast(i) then
+            capture_data_fast_normal_r(i) <= gen_scl_f2;
+          else
+            capture_data_fast_normal_r(i) <= pin_pool_f2(pin_map_fast(i));
+          end if;
+        end loop;
+      end if;
+    end process;
+  end generate;
+
+  -- Registered mux: select input source based on runtime Fast_Mode
+  process(fast_clk)
+  begin
+    if rising_edge(fast_clk) then
+      if ENABLE_RUNTIME_INPUT_MUX and fast_mode_f2 = '1' then
+        capture_data_fast <= capture_data_fast_speed_r;
+      else
+        capture_data_fast <= capture_data_fast_normal_r;
+      end if;
+    end if;
+  end process;
+
   process(sys_clk)
   begin
     if rising_edge(sys_clk) then
-      if adc_div = 47 then
+      if adc_div = 13 then
         adc_div <= 0;
         adc_start <= '1';
       else
@@ -412,53 +614,25 @@ BEGIN
       -- Default: all analog_frame_data bytes zero
       analog_frame_data <= (others => '0');
 
-      case analog_mode is
-        when "001" =>
-          -- Mixed1: 16 digital + 1 ADC (4 bytes)
-          analog_frame_data(15 downto 0) <= internal_data_r(15 downto 0);
-          analog_frame_data(27 downto 16) <= adc0_result;
-          analog_frame_len <= 4;
-        when "010" =>
-          -- Mixed2: 16 digital + 2 ADC (5 bytes)
-          analog_frame_data(15 downto 0) <= internal_data_r(15 downto 0);
-          analog_frame_data(27 downto 16) <= adc0_result;
-          analog_frame_data(39 downto 28) <= adc1_result;
-          analog_frame_len <= 5;
-        when "011" =>
-          -- Analog1: 1 ADC (2 bytes)
-          analog_frame_data(11 downto 0) <= adc0_result;
-          analog_frame_len <= 2;
-        when "100" =>
-          -- Analog2: 2 ADC (3 bytes)
-          analog_frame_data(11 downto 0) <= adc0_result;
-          analog_frame_data(23 downto 12) <= adc1_result;
-          analog_frame_len <= 3;
-        when "101" =>
-          -- Analog4: 4 ADC (6 bytes)
-          analog_frame_data(11 downto 0) <= adc0_result;
-          analog_frame_data(23 downto 12) <= adc1_result;
-          analog_frame_data(35 downto 24) <= adc2_result;
-          analog_frame_data(47 downto 36) <= adc3_result;
-          analog_frame_len <= 6;
-        when "110" =>
-          -- Mixed2-4: 16 digital + 4 ADC (8 bytes, fills 64-bit frame)
-          analog_frame_data(15 downto 0) <= internal_data_r(15 downto 0);
-          analog_frame_data(27 downto 16) <= adc0_result;
-          analog_frame_data(39 downto 28) <= adc1_result;
-          analog_frame_data(51 downto 40) <= adc2_result;
-          analog_frame_data(63 downto 52) <= adc3_result;
-          analog_frame_len <= 8;
-        when "111" =>
-          -- MixedDual: 16 digital + 2 ADC (6 bytes)
-          analog_frame_data(15 downto 0) <= internal_data_r;
-          analog_frame_data(31 downto 20) <= adc0_result;
-          analog_frame_data(43 downto 32) <= adc1_result;
-          analog_frame_len <= 6;
-        when others =>
-          -- Digital16: 16 digital (2 bytes)
-          analog_frame_data(15 downto 0) <= internal_data_r;
-          analog_frame_len <= 2;
-      end case;
+      -- Two capture modes: digital-only (2-byte frame) or
+      -- digital + all 8 ADC channels (14-byte frame)
+      if analog_enable = '0' then
+        -- Digital only: 16 digital (2 bytes)
+        analog_frame_data(15 downto 0) <= internal_data_r;
+        analog_frame_len <= 2;
+      else
+        -- Mixed: 16 digital + 8 ADC (14 bytes = 2 + 12 bytes for 8 × 12-bit)
+        analog_frame_data(15 downto 0) <= internal_data_r(15 downto 0);
+        analog_frame_data(27 downto 16) <= adc0_result;
+        analog_frame_data(39 downto 28) <= adc1_result;
+        analog_frame_data(51 downto 40) <= adc2_result;
+        analog_frame_data(63 downto 52) <= adc3_result;
+        analog_frame_data(75 downto 64) <= adc4_result;
+        analog_frame_data(87 downto 76) <= adc5_result;
+        analog_frame_data(99 downto 88) <= adc6_result;
+        analog_frame_data(111 downto 100) <= adc7_result;
+        analog_frame_len <= 14;
+      end if;
     end if;
   end process;
 
@@ -467,12 +641,12 @@ BEGIN
       sys_clk => sys_clk,
       sys_clk_locked => pll_locked,
       reset => '0',
-      ch0_sel => analog_ch0,
+      ch0_sel => 0,
       ch0_start => adc_start,
       ch0_busy => open,
       ch0_result => adc0_result,
       ch0_valid => open,
-      ch1_sel => analog_ch1,
+      ch1_sel => 1,
       ch1_start => adc_start,
       ch1_busy => open,
       ch1_result => adc1_result,
@@ -486,20 +660,43 @@ BEGIN
       ch3_start => adc_start,
       ch3_busy => open,
       ch3_result => adc3_result,
-      ch3_valid => open
+      ch3_valid => open,
+      ch4_sel => 4,
+      ch4_start => adc_start,
+      ch4_busy => open,
+      ch4_result => adc4_result,
+      ch4_valid => open,
+      ch5_sel => 5,
+      ch5_start => adc_start,
+      ch5_busy => open,
+      ch5_result => adc5_result,
+      ch5_valid => open,
+      ch6_sel => 6,
+      ch6_start => adc_start,
+      ch6_busy => open,
+      ch6_result => adc6_result,
+      ch6_valid => open,
+      ch7_sel => 7,
+      ch7_start => adc_start,
+      ch7_busy => open,
+      ch7_result => adc7_result,
+      ch7_valid => open
     );
 
   SDRAM_Analyzer : OLS_Logic_Analyzer
-  GENERIC MAP (
+   GENERIC MAP (
     CLK_Frequency => System_CLK_Frequency,
+    SAMPLE_CLK_HZ => SAMPLE_CLK_HZ,
     Max_Samples  => 1048576,
     Channels     => LA_CHANNELS,
-    Sim          => Sim
+    Sim          => Sim,
+    FAST_SPEED   => FAST_SPEED
   )
   PORT MAP (
     CLK => sys_clk,
     FAST_CLK => fast_clk,
-    Inputs   => internal_data_r,
+    Inputs_Sys   => internal_data_r,
+    Inputs_Fast  => capture_data_fast,
     SPI_CS   => SPI_CS,
     SPI_SCK  => SPI_SCK,
     SPI_MOSI => SPI_MOSI,
@@ -524,15 +721,14 @@ BEGIN
     Gen_Proto     => gen_proto,
     Gen_TX_Pin    => gen_tx_pin,
     Gen_SCL_Pin   => gen_scl_pin,
+    Gen_Clear      => gen_clear,
     Gen_I2C_Rd_Len => gen_i2c_rd_len,
     Gen_I2C_Dev_R  => gen_i2c_dev_r,
     Gen_I2C_Test   => gen_i2c_test,
     Gen_SPI_Test   => gen_spi_test,
     Armed          => armed_i,
-    Fast_Mode      => open,
-    Analog_Mode    => analog_mode,
-    Analog_Ch0     => analog_ch0,
-    Analog_Ch1     => analog_ch1,
+    Fast_Mode      => fast_mode_i,
+    Analog_Enable  => analog_enable,
     Status        => core_status,
     Continuous_Mode => continuous_mode,
     Buffer_Full     => "000",
@@ -544,6 +740,8 @@ BEGIN
     Pin_Map_Channel => pin_map_channel,
     Pin_Map_Pin     => pin_map_pin,
     Debug_Ch0_Enable => debug_ch0_enable,
+    Debug_Ch0_Period => debug_ch0_period,
+    Debug_Ch0_Duty   => debug_ch0_duty,
     Schmitt_Enable   => schmitt_enable,
     Schmitt_Threshold => schmitt_threshold,
     Gen_Start_Ack    => gen_start_ack_i,
@@ -633,6 +831,7 @@ BEGIN
     CLK => sys_clk,
     Load_Byte => gen_load_byte,
     Load_We   => gen_load_we,
+    Clear     => gen_clear,
     Start     => gen_start,
     Start_Ack => gen_start_ack_i,
     Start_Reject => gen_start_reject_i,

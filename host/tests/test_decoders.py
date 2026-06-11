@@ -253,7 +253,15 @@ class TestDecodeI2C:
         scl, sda = make_i2c_signal(b'\x30\x0F')
         ch = [scl, sda]
         result = decode_i2c(ch, 1000000, scl_idx=0, sda_idx=1)
-        assert len(result) >= 2
+        data_items = [r[1] for r in result if r[0] == "DATA"]
+        assert data_items[:2] == [0x30, 0x0F]
+
+    def test_ack_bits_are_not_decoded_as_data(self):
+        scl, sda = make_i2c_signal(b'\x30\x0F')
+        ch = [scl, sda]
+        result = decode_i2c(ch, 1000000, scl_idx=0, sda_idx=1)
+        assert [r[0] for r in result].count("ACK") == 2
+        assert [r[1] for r in result if r[0] == "DATA"] == [0x30, 0x0F]
 
     def test_data_values(self):
         scl, sda = make_i2c_signal(b'\x30')

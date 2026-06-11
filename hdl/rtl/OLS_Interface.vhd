@@ -8,6 +8,7 @@ use work.spi_protocol_pkg.all;
 ENTITY OLS_Interface IS
   GENERIC (
       CLK_Frequency   :   INTEGER     := 12000000;    
+      SAMPLE_CLK_HZ  :   INTEGER     := 200_000_000;
     Max_Samples     :   NATURAL     := 25000       
 
   );
@@ -20,7 +21,7 @@ PORT (
   SPI_MISO     : OUT STD_LOGIC := 'Z';
   Interface_Mode : OUT STD_LOGIC := '1';
   Inputs       : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');  
-  Rate_Div     : BUFFER NATURAL range 1 to 150000000 := 12; 
+  Rate_Div     : BUFFER NATURAL range 1 to 500000000 := 12; 
   Samples      : BUFFER NATURAL range 1 to Max_Samples   := Max_Samples;  
   Start_Offset : BUFFER NATURAL range 0 to Max_Samples   := 0;  
   Run          : BUFFER STD_LOGIC := '0'; 
@@ -36,6 +37,7 @@ PORT (
   Gen_Proto     : OUT STD_LOGIC;
     Gen_TX_Pin    : OUT NATURAL range 0 to 31 := 0;
     Gen_SCL_Pin   : OUT NATURAL range 0 to 31 := 0;
+   Gen_Clear      : OUT STD_LOGIC := '0';
    Gen_I2C_Rd_Len : OUT NATURAL range 0 to 255 := 0;
    Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Gen_I2C_Test   : OUT STD_LOGIC := '0';
@@ -43,15 +45,15 @@ PORT (
      Armed          : OUT STD_LOGIC := '0';
       Fast_Mode      : OUT STD_LOGIC := '0';
       Continuous_Mode : OUT STD_LOGIC := '0';
-      Analog_Mode     : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-       Analog_Ch0      : OUT NATURAL range 0 to 15 := 0;
-       Analog_Ch1      : OUT NATURAL range 0 to 15 := 1;
+      Analog_Enable   : OUT STD_LOGIC := '0';
        Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
        Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
        Pin_Map_Write   : OUT STD_LOGIC := '0';
         Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
         Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
         Debug_Ch0_Enable : OUT STD_LOGIC := '0';
+        Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
+        Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
         Schmitt_Enable   : OUT STD_LOGIC := '0';
         Schmitt_Threshold : OUT NATURAL range 0 to 7 := 3;
          Gen_Capture_Active : OUT STD_LOGIC := '0';
@@ -73,9 +75,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL Read_Count  : NATURAL := 0;
   SIGNAL Delay_Count : NATURAL := 0;
   SIGNAL Channel_Groups : STD_LOGIC_VECTOR(3 downto 0) := "0000";
-  SIGNAL analog_ch0_i     : NATURAL range 0 to 15 := 0;
-  SIGNAL analog_ch1_i     : NATURAL range 0 to 15 := 1;
-  SIGNAL analog_mode_i    : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
+  SIGNAL analog_enable_i  : STD_LOGIC := '0';
   SIGNAL SPI_RX_Valid     : STD_LOGIC := '0';
   SIGNAL SPI_RX_Data      : STD_LOGIC_VECTOR (8-1 DOWNTO 0) := (others => '0');
   -- SPI mode only: directly use SPI signals (no UART muxing)
@@ -123,6 +123,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
 
   SIGNAL ch_mode             : STD_LOGIC := '0';  -- 0=8ch/500k, 1=4ch/4M
   SIGNAL debug_ch0_enable_i  : STD_LOGIC := '0';
+  SIGNAL debug_ch0_period_i  : STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
+  SIGNAL debug_ch0_duty_i    : STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
   SIGNAL schmitt_enable_i    : STD_LOGIC := '0';
   SIGNAL schmitt_threshold_i : NATURAL range 0 to 7 := 3;
   SIGNAL gen_capture_active_i  : STD_LOGIC := '0';
@@ -313,6 +315,7 @@ BEGIN
           fast_mode_i <= disp_reg_wdata(0);
           continuous_mode_i <= disp_reg_wdata(1);
           ch_mode <= disp_reg_wdata(2);
+          analog_enable_i <= disp_reg_wdata(3);
         WHEN REG_FAST_MODE =>
           fast_mode_i <= disp_reg_wdata(0);
         WHEN REG_CONT_MODE =>
@@ -333,8 +336,14 @@ BEGIN
         WHEN REG_GEN_BAUD =>
           gen_baud_div_int <= disp_reg_wdata(15 downto 0);
         WHEN REG_GEN_PINS =>
-          gen_tx_pin_int <= TO_INTEGER(UNSIGNED(disp_reg_wdata(4 downto 0)));
-          gen_scl_pin_int <= TO_INTEGER(UNSIGNED(disp_reg_wdata(12 downto 8)));
+          IF disp_reg_wdata(31) = '1' THEN
+            Pin_Map_Channel <= TO_INTEGER(UNSIGNED(disp_reg_wdata(3 downto 0)));
+            Pin_Map_Pin <= TO_INTEGER(UNSIGNED(disp_reg_wdata(12 downto 8)));
+            Pin_Map_Write <= '1';
+          ELSE
+            gen_tx_pin_int <= TO_INTEGER(UNSIGNED(disp_reg_wdata(4 downto 0)));
+            gen_scl_pin_int <= TO_INTEGER(UNSIGNED(disp_reg_wdata(12 downto 8)));
+          END IF;
         WHEN REG_GEN_DATA =>
           -- Legacy CMD_I2C_TEST (0xA7) layout when upper bytes are set.
           -- Low-byte-only writes load the gen FIFO without touching mode flags.
@@ -350,6 +359,10 @@ BEGIN
 
         WHEN REG_DEBUG_CH0_ENABLE =>
           debug_ch0_enable_i <= disp_reg_wdata(0);
+        WHEN REG_DEBUG_CH0_PERIOD =>
+          debug_ch0_period_i <= disp_reg_wdata;
+        WHEN REG_DEBUG_CH0_DUTY =>
+          debug_ch0_duty_i <= disp_reg_wdata;
         WHEN REG_SCHMITT_ENABLE =>
           schmitt_enable_i <= disp_reg_wdata(0);
         WHEN REG_SCHMITT_THRESHOLD =>
@@ -358,10 +371,10 @@ BEGIN
       END CASE;
     END IF;
 
-    IF (Divider < CLK_Frequency) THEN
+    IF (Divider < SAMPLE_CLK_HZ) THEN
       Rate_Div <= Divider + 1;
     ELSE
-      Rate_Div <= CLK_Frequency;
+      Rate_Div <= SAMPLE_CLK_HZ;
     END IF;
     IF (Read_Count < Max_Samples) THEN
       IF (Read_Count > 1) THEN
@@ -609,6 +622,7 @@ BEGIN
     IF RISING_EDGE(CLK) THEN
       Gen_Load_We <= '0';
       Gen_Start <= '0';
+      Gen_Clear <= disp_abort;  -- abort stops the generator and flushes its FIFO
 
       IF (disp_gen_load = '1' AND disp_gen_load_d = '0')
          OR (gen_reg_load_req = '1' AND gen_reg_load_req_d = '0') THEN
@@ -761,12 +775,12 @@ BEGIN
   Gen_SPI_Test   <= gen_spi_test_int;
   Fast_Mode      <= fast_mode_i;
   Continuous_Mode <= continuous_mode_i;
-  Analog_Mode <= analog_mode_i;
-  Analog_Ch0 <= analog_ch0_i;
-  Analog_Ch1 <= analog_ch1_i;
+  Analog_Enable <= analog_enable_i;
   Buffer_Ack      <= buffer_ack_i;
   Armed          <= Run_OLS;
   Debug_Ch0_Enable <= debug_ch0_enable_i;
+  Debug_Ch0_Period <= debug_ch0_period_i;
+  Debug_Ch0_Duty   <= debug_ch0_duty_i;
   Schmitt_Enable   <= schmitt_enable_i;
   Schmitt_Threshold <= schmitt_threshold_i;
   Gen_Capture_Active <= gen_capture_active_i;
@@ -865,10 +879,10 @@ BEGIN
     variable rsp_stat_v : std_logic_vector(7 downto 0) := ST_OK;
     variable rsp_len_v : natural range 0 to MAX_TX_PAYLOAD_BYTES := 0;
     -- Small response buffer (8 bytes covers all non-block-read responses)
-    type rspbuf_t is array(0 to 7) of std_logic_vector(7 downto 0);
+    type rspbuf_t is array(0 to 15) of std_logic_vector(7 downto 0);
     variable rsp_buf : rspbuf_t;
-    variable rsp_buf_len : natural range 0 to 8 := 0;
-    variable rsp_buf_idx : natural range 0 to 8 := 0;
+    variable rsp_buf_len : natural range 0 to 15 := 0;
+    variable rsp_buf_idx : natural range 0 to 15 := 0;
     variable reg_val : std_logic_vector(31 downto 0) := (others => '0');
     -- Block-read streaming state
     variable blk_wc : natural range 0 to 255 := 0;  -- word counter
@@ -935,8 +949,13 @@ BEGIN
               rsp_buf(2) := x"00";
               rsp_buf(3) := x"F0";
               rsp_buf(4) := x"01";
-              rsp_buf_len := 5;
-              rsp_len_v := 5;
+              -- bytes 5-8: SAMPLE_CLK_HZ in kHz, little-endian uint32
+              rsp_buf(5) := std_logic_vector(to_unsigned(SAMPLE_CLK_HZ / 1000, 32))(7 downto 0);
+              rsp_buf(6) := std_logic_vector(to_unsigned(SAMPLE_CLK_HZ / 1000, 32))(15 downto 8);
+              rsp_buf(7) := std_logic_vector(to_unsigned(SAMPLE_CLK_HZ / 1000, 32))(23 downto 16);
+              rsp_buf(8) := std_logic_vector(to_unsigned(SAMPLE_CLK_HZ / 1000, 32))(31 downto 24);
+              rsp_buf_len := 9;
+              rsp_len_v := 9;
               st := BUILD_RSP;
 
             when CMD_ARM_CAPTURE =>
@@ -991,6 +1010,7 @@ BEGIN
                     reg_val := Trigger_Values;
                   when REG_FLAGS | REG_FAST_MODE =>
                     reg_val(0) := fast_mode_i;
+                    reg_val(3) := analog_enable_i;
                   when REG_CONT_MODE =>
                     reg_val(0) := continuous_mode_i;
                   when REG_GEN_PROTO =>
@@ -1007,6 +1027,10 @@ BEGIN
                     reg_val(23 downto 16) := gen_i2c_dev_r_int;
                   when REG_DEBUG_CH0_ENABLE =>
                     reg_val(0) := debug_ch0_enable_i;
+                  when REG_DEBUG_CH0_PERIOD =>
+                    reg_val := debug_ch0_period_i;
+                  when REG_DEBUG_CH0_DUTY =>
+                    reg_val := debug_ch0_duty_i;
                   when REG_SCHMITT_ENABLE =>
                     reg_val(0) := schmitt_enable_i;
                   when REG_SCHMITT_THRESHOLD =>

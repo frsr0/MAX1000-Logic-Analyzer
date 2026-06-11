@@ -1,13 +1,10 @@
 import struct
 from unittest.mock import MagicMock, patch, call, ANY
 
-from driver.spi_protocol import ST_OK, ST_CAPTURE_DONE
+from driver.spi_protocol import REG_GEN_DATA, ST_OK, ST_CAPTURE_DONE
 from driver.ols_spi_device import (
-    ANALOG_MODE_DIGITAL8,
-    ANALOG_MODE_MIXED1,
-    ANALOG_MODE_MIXED2,
-    ANALOG_MODE_ANALOG1,
-    ANALOG_MODE_ANALOG2,
+    MODE_DIGITAL,
+    MODE_MIXED,
     analog_frame_stride,
     decode_analog_frames,
     OLSDeviceSPI,
@@ -16,92 +13,59 @@ from driver.ols_spi_device import (
 
 
 class TestAnalogFrameStride:
-    def test_digital8(self):
-        assert analog_frame_stride(ANALOG_MODE_DIGITAL8) == 2
+    def test_digital(self):
+        assert analog_frame_stride(MODE_DIGITAL) == 2
 
-    def test_mixed1(self):
-        assert analog_frame_stride(ANALOG_MODE_MIXED1) == 4
+    def test_mixed(self):
+        assert analog_frame_stride(MODE_MIXED) == 14
 
-    def test_mixed2(self):
-        assert analog_frame_stride(ANALOG_MODE_MIXED2) == 5
-
-    def test_analog1(self):
-        assert analog_frame_stride(ANALOG_MODE_ANALOG1) == 2
-
-    def test_analog2(self):
-        assert analog_frame_stride(ANALOG_MODE_ANALOG2) == 3
-
-    def test_unknown_mode_defaults_to_2(self):
-        assert analog_frame_stride(99) == 2
+    def test_mode_without_mixed_bit_defaults_to_2(self):
+        assert analog_frame_stride(0x03) == 2
 
 
 class TestDecodeAnalogFrames:
     def test_digital8_single(self):
-        rows = decode_analog_frames(bytes([0xA5, 0x03]), ANALOG_MODE_DIGITAL8)
+        rows = decode_analog_frames(bytes([0xA5, 0x03]), MODE_DIGITAL)
         assert len(rows) == 1
         assert rows[0]["digital"] == 0x03A5
 
     def test_digital8_multi(self):
         data = bytes([0x01, 0x00, 0x02, 0x00, 0x04, 0x00])
-        rows = decode_analog_frames(data, ANALOG_MODE_DIGITAL8)
+        rows = decode_analog_frames(data, MODE_DIGITAL)
         assert len(rows) == 3
         assert rows[0]["digital"] == 0x0001
         assert rows[1]["digital"] == 0x0002
         assert rows[2]["digital"] == 0x0004
 
-    def test_mixed1(self):
-        rows = decode_analog_frames(bytes([0xA5, 0x03, 0x00, 0x08]), ANALOG_MODE_MIXED1)
-        assert rows[0]["digital"] == 0x03A5
-        assert rows[0]["adc"] == [0x800]
-
-    def test_mixed1_adc_12bit(self):
-        rows = decode_analog_frames(bytes([0xFF, 0x0F, 0xFF, 0x0F]), ANALOG_MODE_MIXED1)
-        assert rows[0]["digital"] == 0x0FFF
-        assert rows[0]["adc"] == [0xFFF]
-
-    def test_mixed2(self):
-        rows = decode_analog_frames(bytes([0x3C, 0x00, 0xFF, 0x0F, 0x80]), ANALOG_MODE_MIXED2)
-        assert rows[0]["digital"] == 0x003C
-        assert rows[0]["adc"] == [0xFFF, 0x800]
-
-    def test_mixed2_adc_values(self):
-        data = bytes([0x00, 0x00, 0xAB, 0x0C, 0xD0])
-        rows = decode_analog_frames(data, ANALOG_MODE_MIXED2)
-        assert rows[0]["adc"][0] == 0xCAB
-        assert rows[0]["adc"][1] == 0xD00
-
-    def test_analog1(self):
-        rows = decode_analog_frames(bytes([0x00, 0x00]), ANALOG_MODE_ANALOG1)
-        assert rows[0]["adc"] == [0x000]
-
-    def test_analog1_value(self):
-        rows = decode_analog_frames(bytes([0xAB, 0x0C]), ANALOG_MODE_ANALOG1)
-        assert rows[0]["adc"] == [0xCAB]
-
-    def test_analog2(self):
-        rows = decode_analog_frames(bytes([0x00, 0xF0, 0xFF]), ANALOG_MODE_ANALOG2)
-        assert rows[0]["adc"] == [0x000, 0xFFF]
-
-    def test_analog2_values(self):
-        rows = decode_analog_frames(bytes([0x34, 0x1C, 0xA0]), ANALOG_MODE_ANALOG2)
-        assert rows[0]["adc"] == [0xC34, 0xA01]
+    def test_mixed_all8(self):
+        frame = bytes([
+            0xBB, 0xAA,
+            0x23, 0x61, 0x45,
+            0x89, 0xC7, 0xAB,
+            0xEF, 0x2D, 0x01,
+            0x45, 0x83, 0x67,
+        ])
+        rows = decode_analog_frames(frame, MODE_MIXED)
+        assert rows[0]["digital"] == 0xAABB
+        assert rows[0]["adc"] == [0x123, 0x456, 0x789, 0xABC,
+                                  0xDEF, 0x012, 0x345, 0x678]
 
     def test_empty_data(self):
-        rows = decode_analog_frames(b'', ANALOG_MODE_DIGITAL8)
+        rows = decode_analog_frames(b'', MODE_DIGITAL)
         assert rows == []
 
     def test_partial_frame_skipped(self):
-        rows = decode_analog_frames(bytes([0x01, 0x00, 0x02]), ANALOG_MODE_DIGITAL8)
+        rows = decode_analog_frames(bytes([0x01, 0x00, 0x02]), MODE_DIGITAL)
         assert len(rows) == 1
         assert rows[0]["digital"] == 0x0001
 
 
 class TestOLSDeviceSPI:
     def test_init(self, device_spi):
-        assert device_spi.sys_clk == 96000000
+        assert device_spi.sys_clk == 100000000
         assert device_spi._stride == 4
         assert device_spi.gen_pins == {'tx': 3, 'scl': 1}
-        assert device_spi.analog_mode == ANALOG_MODE_DIGITAL8
+        assert device_spi.analog_mode == MODE_DIGITAL
 
     def test_close_none_spi(self):
         inst = OLSDeviceSPI()
@@ -133,18 +97,20 @@ class TestOLSDeviceSPI:
 
     def test_set_analog_config(self, device_spi):
         device_spi.pkt = MagicMock()
-        device_spi.set_analog_config(ANALOG_MODE_MIXED2, 3, 7)
-        assert device_spi.analog_mode == ANALOG_MODE_MIXED2
-        assert device_spi.analog_ch0 == 3
-        assert device_spi.analog_ch1 == 7
-        expected_payload = 2 | (3 << 4) | (7 << 8)
-        device_spi.pkt.write_register.assert_called_once_with(0x20, expected_payload)
+        device_spi.set_analog_config(MODE_MIXED)
+        assert device_spi.analog_mode == MODE_MIXED
+        device_spi.pkt.write_register.assert_called_once_with(0x20, MODE_MIXED)
+
+    def test_set_analog_enable(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.set_analog_enable(True)
+        device_spi.pkt.write_register.assert_called_once_with(0x20, 0x08)
 
     def test_set_pin_map(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi.set_pin_map(2, 15)
         device_spi.pkt.write_register.assert_called_once_with(
-            0x32, 2 | (15 << 8))
+            0x32, 0x80000000 | 2 | (15 << 8))
 
     def test_fast_mode_enable(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -157,14 +123,14 @@ class TestOLSDeviceSPI:
         device_spi.pkt.write_register.assert_called_once_with(0x21, 0)
 
     def test_decode_analog_frames_wrapper(self, device_spi):
-        device_spi.analog_mode = ANALOG_MODE_MIXED1
-        result = device_spi.decode_analog_frames(bytes([0xA5, 0x03, 0x00, 0x08]))
+        device_spi.analog_mode = MODE_DIGITAL
+        result = device_spi.decode_analog_frames(bytes([0xA5, 0x03]))
         assert result[0]["digital"] == 0x03A5
 
     def test_decode_analog_frames_explicit_mode(self, device_spi):
         result = device_spi.decode_analog_frames(
-            bytes([0x3C, 0x00, 0xFF, 0x0F, 0x80]),
-            mode=ANALOG_MODE_MIXED2,
+            bytes([0x3C, 0x00]) + bytes(12),
+            mode=MODE_MIXED,
         )
         assert result[0]["digital"] == 0x003C
 
@@ -351,9 +317,31 @@ class TestOLSDeviceSPICapture:
         device_spi.pkt.arm_capture.return_value = ST_OK
         device_spi.pkt.get_status.return_value = {
             'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
-        device_spi.pkt.read_capture_block.return_value = b'\x00\x00\x00\x00\x01\x02\x03\x04'
+        device_spi.pkt.read_capture_block.return_value = b'\x00\x00\x01\x02'
         result = device_spi.capture(rate_hz=1000000, nsamples=2, timeout=0.5)
-        assert result == b'\x01\x02\x03\x04'
+        assert result == b'\x01\x02'
+
+    def test_capture_analog_roundtrip(self, device_spi):
+        from driver.ols_spi_device import decode_analog_frames
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
+        # One 14-byte payload frame, delivered over the wire as 32-bit words
+        # (payload in the low 2 bytes of each 4-byte word, high 2 bytes zero).
+        frame = bytes([0xBB, 0xAA, 0x23, 0x61, 0x45, 0x89, 0xC7, 0xAB,
+                       0xEF, 0x2D, 0x01, 0x45, 0x83, 0x67])
+        wire = b''.join(frame[i:i + 2] + b'\x00\x00' for i in range(0, len(frame), 2))
+        assert len(wire) == 28
+        device_spi.pkt.read_capture_block.return_value = wire[:1024]
+        result, decoded = device_spi.capture_analog(
+            rate_hz=100000, frames=1, mode=MODE_MIXED)
+        assert len(result) == 14, f"expected 14 bytes, got {len(result)}"
+        assert result == frame, f"frame mismatch: {result.hex()}"
+        assert len(decoded) == 1
+        assert decoded[0]["digital"] == 0xAABB
+        assert decoded[0]["adc"] == [0x123, 0x456, 0x789, 0xABC, 0xDEF, 0x012, 0x345, 0x678]
 
 
 class TestOLSDeviceSPICaptureWithGen:
@@ -381,6 +369,22 @@ class TestOLSDeviceSPICaptureWithGen:
             rate_hz=1000000, nsamples=100, timeout=0.5,
             proto='I2C', i2c_speed=100000, i2c_frame=b'\x01',
         )
+        device_spi.pkt.write_register.assert_any_call(REG_GEN_DATA, 0x00010001)
+
+    def test_i2c_proto_preserves_read_config(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.transaction.return_value = (0, 0, b'')
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
+        device_spi.pkt.read_capture_block.return_value = b''
+        device_spi.pkt.load_gen_data.return_value = True
+        device_spi.capture_with_gen(
+            rate_hz=1000000, nsamples=100, timeout=0.5,
+            proto='I2C', i2c_speed=100000, i2c_frame=b'\x30\x0F',
+            i2c_read_len=1, i2c_dev_r=0x31,
+        )
+        device_spi.pkt.write_register.assert_any_call(REG_GEN_DATA, 0x00310101)
 
     def test_with_progress_cb(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -445,7 +449,7 @@ class TestOLSDeviceSPII2CCapture:
     def test_i2c_capture_with_gen(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi.pkt.write_register.return_value = True
-        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.transaction.return_value = (0, 0, b'')
         device_spi.pkt.get_status.return_value = {
             'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
         device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024
@@ -455,6 +459,7 @@ class TestOLSDeviceSPII2CCapture:
             i2c_speed=100000, dev_addr=0x18, reg_addr=0x0F,
         )
         assert len(result) > 0
+        device_spi.pkt.write_register.assert_any_call(REG_GEN_DATA, 0x00310101)
 
 
 class TestOLSDeviceSPIRolling:
