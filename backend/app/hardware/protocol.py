@@ -17,8 +17,22 @@ if str(HOST_DIR) not in sys.path:
 
 def import_host_driver():
     """Import the existing driver modules lazily — ftd2xx is only required
-    when real hardware is actually used."""
-    from driver import ols_spi_device, spi_protocol  # noqa: import from host/
+    when real hardware is actually used. Import failures (missing package OR
+    missing libftd2xx shared library, which raises OSError) are reported as a
+    clean HardwareError instead of crashing the request."""
+    from .base import HardwareError
+    try:
+        from driver import ols_spi_device, spi_protocol  # noqa: import from host/
+    except ImportError as e:
+        raise HardwareError(
+            "FTDI driver package not available: install it with "
+            "'pip install ftd2xx' (real hardware only). "
+            f"Underlying error: {e}") from e
+    except OSError as e:
+        raise HardwareError(
+            "FTDI D2XX shared library not found (libftd2xx). Install the FTDI "
+            "D2XX driver from ftdichip.com on the machine the FPGA is plugged "
+            f"into. Underlying error: {e}") from e
     return ols_spi_device, spi_protocol
 
 
