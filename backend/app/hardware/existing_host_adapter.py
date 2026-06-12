@@ -335,14 +335,12 @@ class ExistingHostAdapter(HardwareDevice):
             data = bytes.fromhex(cfg.data_hex) if cfg.data_hex else b"\x55"
             rate = float(settings.sample_rate)
             nsamp = int(settings.num_samples)
-            # CMD_GEN_CAPTURE only reliably stores the first 1024 words (the
-            # BRAM window) — data beyond that reads back stale (measured on
-            # FAST_SPEED firmware). 2048 sample-units = 1024 parsed words.
-            # At the recommended 1 MHz loopback rate that is a ~1 ms window:
-            # generator start latency (~220 us) + a 6-byte 115200 Bd burst
-            # (~520 us) fit with margin.
-            if nsamp > 2048:
-                nsamp = 2048
+            # CMD_GEN_CAPTURE silently captures a stale/overwritten buffer
+            # beyond ~31k sample-units or ~8 ms (measured on FAST_SPEED
+            # firmware). Clamp to a safe envelope — loopback bursts are short.
+            max_units = min(30_000, int(0.007 * rate) * 2)
+            if nsamp > max_units:
+                nsamp = max_units
             self._log(f"gen_capture {cfg.protocol} nsamp={nsamp}")
             # Generator loopback is digital-only; a previous mixed-analog
             # capture leaves the device in MODE_MIXED, which would make the
@@ -354,13 +352,15 @@ class ExistingHostAdapter(HardwareDevice):
                 if progress:
                     progress(int(got), int(total), "capturing")
 
-            # Firmware quirk (measured): a generated capture only produces
-            # data when a plain ARM capture ran immediately before it — prime
-            # the engine each attempt. Retry while TX shows no activity.
+            # Firmware quirk (measured): a generated capture comes back flat
+            # unless a plain capture ran earlier in the same connection. A
+            # 4096-sample throwaway capture before each attempt makes the gen
+            # capture reliable (5/5 full bursts vs flat without it). Retry
+            # while the TX channel shows no activity.
             digital = None
             for attempt in range(3):
                 try:
-                    dev.capture(rate_hz=1_000_000, nsamples=1024, timeout=3)
+                    dev.capture(rate_hz=1_000_000, nsamples=4096, timeout=4)
                 except Exception:
                     pass
                 if cfg.protocol == "i2c":
