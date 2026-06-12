@@ -76,8 +76,9 @@ export function ChannelPanel() {
               onChange={(e) => patchChannels([{ id: ch.id, enabled: e.target.checked }])} />
             <input type="color" value={ch.color ?? PALETTE[idx % PALETTE.length]}
               onChange={(e) => patchChannels([{ id: ch.id, color: e.target.value }])} />
-            <input className="ch-name" value={ch.name}
-              onChange={(e) => patchChannels([{ id: ch.id, name: e.target.value }])} />
+            <input className="ch-name" defaultValue={ch.name} key={`${ch.id}:${ch.name}`}
+              onBlur={(e) => e.target.value !== ch.name
+                && patchChannels([{ id: ch.id, name: e.target.value }])} />
             <span className="ch-type">{ch.type === 'analog' ? '∿' : ch.type === 'derived' ? 'ƒ' : '⎍'}</span>
             <button title="solo" onClick={() => solo(ch.id)}>S</button>
             <button title="move up" onClick={() => move(idx, -1)}>↑</button>
