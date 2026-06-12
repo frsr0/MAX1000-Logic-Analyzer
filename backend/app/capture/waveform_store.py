@@ -40,10 +40,14 @@ def _encode(header: dict, arrays: List[tuple]) -> bytes:
     header["arrays"] = [{"name": name, "dtype": dt, "count": int(len(arr))}
                         for name, dt, arr in arrays]
     hjson = json.dumps(header).encode("utf-8")
+    # pad header to a 4-byte boundary so TypedArray views stay aligned
+    pad = (-(8 + len(hjson))) % 4
+    hjson += b" " * pad
     parts = [MAGIC, struct.pack("<I", len(hjson)), hjson]
     for name, dt, arr in arrays:
-        parts.append(np.ascontiguousarray(arr.astype(_DTYPES[dt],
-                                                     copy=False)).tobytes())
+        raw = np.ascontiguousarray(arr.astype(_DTYPES[dt], copy=False)).tobytes()
+        parts.append(raw)
+        parts.append(b"\x00" * ((-len(raw)) % 4))   # keep next array aligned
     return b"".join(parts)
 
 

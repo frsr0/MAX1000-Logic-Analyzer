@@ -95,17 +95,25 @@ def _lan_urls():
 
 @router.get("/api/qr")
 def qr_code():
-    """PNG QR code pointing at the LAN URL — scan from a phone/tablet."""
+    """QR code pointing at the LAN URL — scan from a phone/tablet.
+    PNG when Pillow is available, SVG otherwise."""
     urls = _lan_urls()
     url = urls[-1]
     try:
         import qrcode
+    except ImportError:
+        raise HTTPException(501, "qrcode package not installed")
+    try:
         img = qrcode.make(url)
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         return Response(content=buf.getvalue(), media_type="image/png")
-    except ImportError:
-        raise HTTPException(501, "qrcode package not installed")
+    except Exception:
+        from qrcode.image.svg import SvgPathImage
+        img = qrcode.make(url, image_factory=SvgPathImage)
+        buf = io.BytesIO()
+        img.save(buf)
+        return Response(content=buf.getvalue(), media_type="image/svg+xml")
 
 
 @router.get("/connect")

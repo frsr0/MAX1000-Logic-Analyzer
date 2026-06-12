@@ -149,6 +149,31 @@ def compare_sessions(session_id: str, other_session_id: str):
     }
 
 
+# ── bus channels ─────────────────────────────────────────────────────
+
+class BusCreate(BaseModel):
+    name: str
+    members: List[str]            # digital channel ids, bit 0 first
+    display_base: str = "hex"
+
+
+@router.post("/api/sessions/{session_id}/buses")
+def add_bus(session_id: str, req: BusCreate):
+    from ..capture.session import ChannelInfo
+    session = get_session_or_404(session_id)
+    valid = {c.id for c in session.channels if c.type in ("digital", "derived")}
+    bad = [m for m in req.members if m not in valid]
+    if bad:
+        raise HTTPException(400, f"Unknown bus member channels: {bad}")
+    ch = ChannelInfo(id=f"bus_{new_id('b')[2:]}", name=req.name, type="bus",
+                     members=req.members,
+                     display_base=req.display_base,  # type: ignore[arg-type]
+                     color="#aed581")
+    session.channels.append(ch)
+    store.save(session)
+    return ch.model_dump()
+
+
 # ── markers ──────────────────────────────────────────────────────────
 
 class MarkerCreate(BaseModel):

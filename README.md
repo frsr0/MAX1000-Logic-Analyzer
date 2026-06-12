@@ -2,6 +2,13 @@
 
 Open-source multi-channel logic analyzer for the Arrow MAX1000 board (Intel MAX10 10M08SAU169C8G + 64 Mbit SDRAM + built-in ADC + LIS3DH accelerometer). Host interface: **SPI (FTDI MPSSE Channel B @ 12–30 MHz)**.
 
+> **New: web-based host app (v2).** A FastAPI backend + React frontend now
+> provides LAN access from any browser (phone/tablet/laptop), a fast
+> canvas waveform viewer, session storage, protocol decoders, measurements,
+> generator control, exports and a full mock-device mode — while reusing the
+> proven `host/driver` hardware path unchanged. See **[WEBAPP.md](WEBAPP.md)**.
+> The original tkinter GUI (`python -m app.OLS_Console`) remains available.
+
 ## Features
 
 - **16 simultaneous digital channels**, arbitrarily mappable to any of 23 physical pins (15 MKR + 8 PMOD)
