@@ -228,6 +228,19 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
 ## Known limitations / TODO (hardware-blocked or planned)
 
 **Blocked by current FPGA firmware/hardware:**
+- The capture storage path corrupts a handful of words around every 256-word
+  boundary (measured: deterministic per capture, survives re-reads — it is in
+  the stored data, not the SPI link). Decoders mitigate it (the UART decoder
+  majority-votes three points per bit) but single-bit decode errors can still
+  occur. A proper fix needs FPGA work in the SDRAM/BRAM write pump.
+- `CMD_GEN_CAPTURE` (generator loopback) only reliably stores the first 1024
+  words, behaves as a ring with arbitrary phase, and needs a plain 1024-sample
+  capture immediately before it. The adapter handles all of this (primer,
+  ring rotation, retries, per-byte majority across attempts) and the loopback
+  self-test passes when the hardware is healthy, but it remains best-effort:
+  after long hot sessions the loopback degrades until a power cycle.
+- Generator loopback messages must fit ~1 ms at the 1 MHz loopback rate
+  (~10 bytes at 115200 Bd); low-baud loopbacks exceed the BRAM window.
 - Hardware triggers limited to rising/falling edge (any channel mask) and the
   UART-byte protocol trigger. All other trigger types are clearly labelled
   *post-capture* and run as software searches.

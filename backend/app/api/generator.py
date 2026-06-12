@@ -94,12 +94,17 @@ def generator_send(req: GeneratorSendRequest,
 def generator_self_test(client_id: str = Depends(client_id_header)):
     """Built-in UART loopback self-test."""
     require_control(client_id)
+    try:
+        is_mock = capture_manager.require_device().get_metadata().mock
+    except HardwareError as e:
+        raise HTTPException(409, str(e))
+    # Mock loops TX back on pin 0; real hardware uses CH3 (CH0 is debug PWM).
     cfg = GeneratorConfig(protocol="uart", data_hex="48656c6c6f21",
-                          baud=115200, tx_pin=0)
+                          baud=115200, tx_pin=0 if is_mock else 3)
     try:
         result = loopback_self_test(capture_manager, cfg,
-                                    capture_rate=2_000_000,
-                                    capture_samples=40_000)
+                                    capture_rate=1_000_000,
+                                    capture_samples=2_048)
     except HardwareError as e:
         raise HTTPException(502, str(e))
     return result.model_dump()

@@ -1,6 +1,7 @@
 """
 SPI-based OLS device backend using packet protocol.
 """
+import os
 import time
 import struct
 import threading
@@ -164,13 +165,22 @@ class OLSDeviceSPI:
             return result[2]
         return b''
 
+    def _set_clocks(self, sample_clk_hz):
+        """Set sample_clk from metadata and derive sys_clk.
+
+        FAST_SPEED firmware (OLS_SDRAM_Top.vhd) samples on a 200 MHz clock
+        but runs the generator / debug-CH0 / interface logic on a 100 MHz
+        sys_clk. All other firmware builds use one PLL clock for both.
+        """
+        self.sample_clk = sample_clk_hz
+        self.sys_clk = 100000000 if sample_clk_hz == 200000000 else sample_clk_hz
+
     def _detect_sample_clk(self):
         meta = self.get_metadata()
         if len(meta) >= 9:
             khz = meta[5] | (meta[6] << 8) | (meta[7] << 16) | (meta[8] << 24)
             if khz > 0:
-                self.sample_clk = khz * 1000
-                self.sys_clk = khz * 1000
+                self._set_clocks(khz * 1000)
                 return
         # Retry: SPI may not be ready at open() time
         time.sleep(0.1)
@@ -178,8 +188,7 @@ class OLSDeviceSPI:
         if len(meta) >= 9:
             khz = meta[5] | (meta[6] << 8) | (meta[7] << 16) | (meta[8] << 24)
             if khz > 0:
-                self.sample_clk = khz * 1000
-                self.sys_clk = khz * 1000
+                self._set_clocks(khz * 1000)
         # fallback: leave as default
 
     def raw_mode(self, enable=True):
@@ -338,7 +347,9 @@ class OLSDeviceSPI:
             self._pending_schmitt_threshold = None
         self.set_debug_ch0(self.debug_ch0_enabled)
 
-        div = max(0, int(self.sys_clk / rate_hz) - 1)
+        # Capture rate divider counts on the sample clock (FAST_CLK domain),
+        # not sys_clk — they differ on FAST_SPEED firmware (200 vs 100 MHz).
+        div = max(0, int(self.sample_clk / rate_hz) - 1)
         rc = max(1, nsamples)
 
         self.pkt.write_register(REG_DIVIDER, div & 0xFFFFFF)
@@ -391,20 +402,32 @@ class OLSDeviceSPI:
             return b''
 
         # Atomic generated capture via hardware FSM
+        _trace = os.environ.get("OLS_GEN_TRACE")
         r = self.pkt.transaction(CMD_GEN_CAPTURE, timeout=1.0)
+        if _trace:
+            with open(_trace, "a") as f:
+                f.write(f"gen_capture: cmd resp={r!r}\n")
         if r is None or r[0] not in (0, ST_CAPTURE_ARMED):
             return b''
 
         deadline = time.time() + timeout
         capture_active_seen = False
+        t0 = time.time()
+        seen = []
         while time.time() < deadline:
             st = self.pkt.get_status()
             cs = st.get('capture_status', -1)
+            if not seen or seen[-1][1] != cs:
+                seen.append((round(time.time() - t0, 4), cs))
             if cs == ST_CAPTURE_DONE:
                 break
             if stop_evt and stop_evt.is_set():
                 return b''
             time.sleep(0.001)
+        if _trace:
+            with open(_trace, "a") as f:
+                f.write(f"gen_capture: status transitions={seen} "
+                        f"timed_out={time.time() >= deadline}\n")
 
         need = rc * 2
         accumulated = bytearray()
@@ -555,7 +578,7 @@ class OLSDeviceSPI:
         self._ensure_open()
         max_bytes = buffer_nsamp * 2
 
-        div = max(0, int(self.sys_clk / rate_hz) - 1)
+        div = max(0, int(self.sample_clk / rate_hz) - 1)
         rc = max(1, buffer_nsamp)
         self.pkt.write_register(REG_DIVIDER, div & 0xFFFFFF)
         self.pkt.write_register(REG_SAMPLE_COUNT, rc)
@@ -632,7 +655,7 @@ class OLSDeviceSPI:
         out_stride = payload_stride if payload_stride else stride
         max_bytes = buffer_nsamp * out_stride
 
-        div = max(0, int(self.sys_clk / rate_hz) - 1)
+        div = max(0, int(self.sample_clk / rate_hz) - 1)
         rc = max(1, buffer_nsamp)
         self.pkt.write_register(REG_DIVIDER, div & 0xFFFFFF)
         self.pkt.write_register(REG_SAMPLE_COUNT, rc)

@@ -203,7 +203,11 @@ begin
           end if;
           uart_crc_phase <= 0;
           uart_bit_idx <= 0;
-          uart_state <= UART_START_BIT;
+          -- Tx_Out drives the start bit from this cycle until the first baud
+          -- tick, so go straight to DATA_BITS: the start bit is exactly one
+          -- bit period. (Passing through UART_START_BIT here stretched the
+          -- start bit to two periods.)
+          uart_state <= UART_DATA_BITS;
           Tx_Out <= '0';
           Scl_Out <= '1';
 
@@ -316,6 +320,9 @@ begin
               end if;
 
             when UART_STOP_BIT =>
+              -- Hold the stop bit high for a full bit period; UART_START_BIT
+              -- then drives the next start bit for one period. (Forcing
+              -- Tx_Out low here erased the inter-byte stop bit entirely.)
               Tx_Out <= '1';
 
               if count > 0 then
@@ -327,7 +334,6 @@ begin
                 end if;
                 uart_bit_idx <= 0;
                 uart_state <= UART_START_BIT;
-                Tx_Out <= '0';
 
               elsif uart_crc_run = '1' and uart_crc_phase < 2 then
                 if uart_crc_phase = 0 then
@@ -339,7 +345,6 @@ begin
                 end if;
                 uart_bit_idx <= 0;
                 uart_state <= UART_START_BIT;
-                Tx_Out <= '0';
 
               else
                 uart_crc_run <= '0';

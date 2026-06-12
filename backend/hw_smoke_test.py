@@ -150,8 +150,8 @@ def main():
     def loopback():
         cfg = GeneratorConfig(protocol="uart", data_hex="48656c6c6f21",
                               baud=115200, tx_pin=0 if args.mock else 3)
-        r = loopback_self_test(mgr, cfg, capture_rate=2_000_000,
-                               capture_samples=20_000)
+        r = loopback_self_test(mgr, cfg, capture_rate=1_000_000,
+                               capture_samples=2_048)
         if not r.passed:
             raise HardwareError(r.detail)
         return f"{r.detail} -> session {r.session_id}"

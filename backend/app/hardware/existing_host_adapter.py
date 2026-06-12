@@ -31,6 +31,34 @@ from .device_models import (DebugInfo, DeviceCapabilities, GeneratorConfig,
 from .protocol import import_host_driver
 
 
+def _rotate_idle_to_end(digital: np.ndarray, tx_ch: int) -> np.ndarray:
+    """Rotate a circular capture so the longest idle (TX=1) run ends at the
+    last sample, making a wrapped generator burst contiguous. Short glitches
+    inside the idle gap are bridged so storage corruption can't split it."""
+    bits = ((digital >> tx_ch) & 1).astype(np.int8)
+    n = len(bits)
+    if n < 16:
+        return digital
+    # bridge sub-5-sample dips so corrupted words don't break the idle run
+    smooth = bits.copy()
+    edges = np.flatnonzero(np.diff(smooth)) + 1
+    bounds = np.concatenate(([0], edges, [n]))
+    for a, b in zip(bounds[:-1], bounds[1:]):
+        if b - a < 5 and a > 0:
+            smooth[a:b] = smooth[a - 1]
+    # longest run of idle (1) treating the array as circular: double it
+    doubled = np.concatenate([smooth, smooth])
+    best_len, best_end, run = 0, 0, 0
+    for i, v in enumerate(doubled):
+        run = run + 1 if v == 1 else 0
+        if run > best_len:
+            best_len, best_end = run, i + 1
+        if run >= n:        # fully idle
+            return digital
+    split = best_end % n    # first sample after the idle gap
+    return np.concatenate([digital[split:], digital[:split]])
+
+
 def hardware_available() -> bool:
     try:
         ols_spi_device, _ = import_host_driver()
@@ -148,7 +176,8 @@ class ExistingHostAdapter(HardwareDevice):
             warnings: List[str] = []
 
             dev.reset()
-            # Auto fast mode: BRAM for small single captures (as the GUI does)
+            # REG_FAST_MODE selects BRAM (1024-word) vs SDRAM capture storage.
+            # Only small single captures fit BRAM — same heuristic as the GUI.
             fast = settings.mode == "single" and nsamp <= 512
             dev.fast_mode_enabled = fast
 
@@ -184,6 +213,12 @@ class ExistingHostAdapter(HardwareDevice):
                                        dtype=np.uint16)
                         for ch in range(adc.shape[1]):
                             analog[f"a{ch}"] = adc_to_volts(adc[:, ch])
+                    # A mixed capture leaves the capture engine wedged: the
+                    # next capture returns a flat line unless analog mode is
+                    # disabled and the core reset again (verified on HW).
+                    dev.set_analog_config(0)
+                    dev.reset()
+                    time.sleep(0.05)
                 else:
                     dev.set_analog_config(0)
                     pre = settings.trigger.pre_trigger_samples
@@ -300,32 +335,62 @@ class ExistingHostAdapter(HardwareDevice):
             data = bytes.fromhex(cfg.data_hex) if cfg.data_hex else b"\x55"
             rate = float(settings.sample_rate)
             nsamp = int(settings.num_samples)
-            self._log(f"gen_capture {cfg.protocol}")
+            # CMD_GEN_CAPTURE only reliably stores the first 1024 words (the
+            # BRAM window) — data beyond that reads back stale (measured on
+            # FAST_SPEED firmware). 2048 sample-units = 1024 parsed words.
+            # At the recommended 1 MHz loopback rate that is a ~1 ms window:
+            # generator start latency (~220 us) + a 6-byte 115200 Bd burst
+            # (~520 us) fit with margin.
+            if nsamp > 2048:
+                nsamp = 2048
+            self._log(f"gen_capture {cfg.protocol} nsamp={nsamp}")
+            # Generator loopback is digital-only; a previous mixed-analog
+            # capture leaves the device in MODE_MIXED, which would make the
+            # FPGA stream 14-byte analog frames that stride-4 parsing turns
+            # into garbage. Force digital mode first.
+            dev.set_analog_config(0)
 
             def cb(partial, got, total):
                 if progress:
                     progress(int(got), int(total), "capturing")
 
-            if cfg.protocol == "i2c":
-                raw = dev.i2c_capture_with_gen(
-                    rate_hz=rate, nsamples=nsamp, i2c_speed=cfg.baud,
-                    dev_addr=cfg.i2c_address, reg_addr=cfg.i2c_register,
-                    read_len=cfg.i2c_read_len, tx_pin=cfg.tx_pin,
-                    scl_pin=cfg.scl_pin)
-            elif cfg.protocol == "uart":
-                dev._gen_data = data
-                dev._gen_baud = cfg.baud
-                dev._gen_tx_pin = cfg.tx_pin
-                raw = dev.capture_with_gen(rate_hz=rate, nsamples=nsamp,
-                                           stop_evt=stop_evt, progress_cb=cb)
-            else:
-                raise HardwareError(
-                    f"Loopback capture not supported for '{cfg.protocol}' on hardware")
-            if not raw:
-                raise HardwareError("Generator capture returned no data")
-            n4 = len(raw) - (len(raw) % 4)
-            words = np.frombuffer(raw[:n4], dtype="<u4")
-            digital = (words & 0xFFFF).astype(np.uint16)
+            # Firmware quirk (measured): a generated capture only produces
+            # data when a plain ARM capture ran immediately before it — prime
+            # the engine each attempt. Retry while TX shows no activity.
+            digital = None
+            for attempt in range(3):
+                try:
+                    dev.capture(rate_hz=1_000_000, nsamples=1024, timeout=3)
+                except Exception:
+                    pass
+                if cfg.protocol == "i2c":
+                    raw = dev.i2c_capture_with_gen(
+                        rate_hz=rate, nsamples=nsamp, i2c_speed=cfg.baud,
+                        dev_addr=cfg.i2c_address, reg_addr=cfg.i2c_register,
+                        read_len=cfg.i2c_read_len, tx_pin=cfg.tx_pin,
+                        scl_pin=cfg.scl_pin)
+                elif cfg.protocol == "uart":
+                    dev._gen_data = data
+                    dev._gen_baud = cfg.baud
+                    dev._gen_tx_pin = cfg.tx_pin
+                    raw = dev.capture_with_gen(rate_hz=rate, nsamples=nsamp,
+                                               stop_evt=stop_evt, progress_cb=cb)
+                else:
+                    raise HardwareError(
+                        f"Loopback capture not supported for '{cfg.protocol}' on hardware")
+                if not raw:
+                    raise HardwareError("Generator capture returned no data")
+                n4 = len(raw) - (len(raw) % 4)
+                words = np.frombuffer(raw[:n4], dtype="<u4")
+                digital = (words & 0xFFFF).astype(np.uint16)
+                tx_bits = (digital >> (cfg.tx_pin & 0xF)) & 1
+                if np.count_nonzero(np.diff(tx_bits)) > 0:
+                    # The BRAM gen-capture window is a ring with arbitrary
+                    # start phase, so the burst can wrap around the readback.
+                    # Rotate so the longest idle (TX high) stretch sits at the
+                    # end, making the burst contiguous for the decoders.
+                    digital = _rotate_idle_to_end(digital, cfg.tx_pin & 0xF)
+                    break
             return CaptureResult(sample_rate=rate, digital=digital)
 
     # ── diagnostics ──────────────────────────────────────────────────
@@ -364,13 +429,20 @@ class ExistingHostAdapter(HardwareDevice):
             except Exception as e:
                 checks.append({"name": "status", "passed": False, "detail": str(e)})
             try:
-                # Debug CH0 loopback: enable PWM, tiny capture, expect edges on CH0
+                # Debug CH0 loopback: enable PWM, tiny capture, expect edges on
+                # CH0. The first capture after (re)enabling the PWM sometimes
+                # races the enable and comes back flat, so retry once.
                 self._dev.set_debug_ch0(True, freq_hz=100000, duty_pct=50)
-                raw = self._dev.capture(rate_hz=1_000_000, nsamples=1024, timeout=4)
+                edges = 0
+                for _ in range(2):
+                    raw = self._dev.capture(rate_hz=1_000_000, nsamples=1024,
+                                            timeout=4)
+                    n4 = len(raw) - (len(raw) % 4)
+                    words = np.frombuffer(raw[:n4], dtype="<u4") & 1
+                    edges = int(np.count_nonzero(np.diff(words)))
+                    if edges > 2:
+                        break
                 self._dev.set_debug_ch0(False)
-                n4 = len(raw) - (len(raw) % 4)
-                words = np.frombuffer(raw[:n4], dtype="<u4") & 1
-                edges = int(np.count_nonzero(np.diff(words)))
                 checks.append({"name": "ch0_loopback", "passed": edges > 2,
                                "detail": f"{edges} CH0 edges with debug PWM on"})
             except Exception as e:

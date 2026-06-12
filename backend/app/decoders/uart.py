@@ -26,6 +26,25 @@ def autobaud_estimate(bits: np.ndarray, sample_rate: float) -> float:
     return sample_rate / bit_samples if bit_samples > 0 else 0.0
 
 
+def _bit_at(sig: np.ndarray, centre: float, spb: float) -> int:
+    """Sample one bit by majority vote over three points around the bit
+    centre (centre and ±spb/4). Outvotes narrow glitches — e.g. the runt
+    pulses the hardware readout can inject at SDRAM block boundaries."""
+    n = len(sig)
+    if spb >= 4:
+        votes = 0
+        cnt = 0
+        for off in (-spb / 4, 0.0, spb / 4):
+            p = int(round(centre + off))
+            if 0 <= p < n:
+                votes += int(sig[p])
+                cnt += 1
+        if cnt:
+            return 1 if votes * 2 > cnt else 0
+    p = min(n - 1, max(0, int(round(centre))))
+    return int(sig[p])
+
+
 class UartDecoder(Decoder):
     id = "uart"
     name = "UART"
@@ -91,7 +110,7 @@ class UartDecoder(Decoder):
                 continue
             # verify start bit at mid-point
             mid_start = int(round(st + spb / 2))
-            if mid_start >= n or sig[mid_start] != 0:
+            if mid_start >= n or _bit_at(sig, st + spb / 2, spb) != 0:
                 continue
             centre = st + spb / 2
             value = 0
@@ -99,11 +118,10 @@ class UartDecoder(Decoder):
             ok = True
             for b in range(data_bits):
                 centre += spb
-                p = int(round(centre))
-                if p >= n:
+                if int(round(centre)) >= n:
                     ok = False
                     break
-                bit = int(sig[p])
+                bit = _bit_at(sig, centre, spb)
                 ones += bit
                 if msb_first:
                     value = (value << 1) | bit
@@ -117,7 +135,7 @@ class UartDecoder(Decoder):
                 p = int(round(centre))
                 if p >= n:
                     break
-                pbit = int(sig[p])
+                pbit = _bit_at(sig, centre, spb)
                 expect = (ones & 1) if parity == "even" else ((ones & 1) ^ 1)
                 parity_err = (pbit != expect)
             # stop bit(s): tolerate +-1 sample, as the legacy decoder does
