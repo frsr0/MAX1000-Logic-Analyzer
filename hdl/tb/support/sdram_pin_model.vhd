@@ -41,42 +41,43 @@ begin
     variable bank : natural;
     variable col  : natural;
     variable widx : natural;
-    -- read pipeline (CL stages)
-    type rd_pipe_t is array (0 to CL-1) of std_logic_vector(15 downto 0);
-    type rd_val_t  is array (0 to CL-1) of boolean;
-    variable rp  : rd_pipe_t := (others => (others => '0'));
-    variable rpv : rd_val_t := (others => false);
+    -- Read data is driven onto DQ for a short window aligned to when the
+    -- controller samples. SDRAM_Controller_Custom asserts CAS in ST_RD, waits
+    -- one ST_CL_WAIT cycle, then samples sdram_dq in ST_RD_DATA (CAS latency
+    -- 2). The model observes the registered CAS one delta-cycle late, so it
+    -- drives starting the cycle after it sees the READ and holds two cycles
+    -- to robustly cover the sample.
+    variable rd_data  : std_logic_vector(15 downto 0) := (others => '0');
+    variable rd_drive : natural range 0 to 2 := 0;
   begin
     if rising_edge(clk) then
-      -- shift the read pipeline and drive/tristate DQ
-      if rpv(CL-1) then
-        dq <= rp(CL-1);
+      -- drive DQ during the read window, tristate otherwise
+      if rd_drive > 0 then
+        dq <= rd_data;
+        rd_drive := rd_drive - 1;
       else
         dq <= (others => 'Z');
       end if;
-      for i in CL-1 downto 1 loop
-        rp(i) := rp(i-1);
-        rpv(i) := rpv(i-1);
-      end loop;
-      rpv(0) := false;
 
       if cke = '1' and cs_n = '0' then
         cmd := ras_n & cas_n & we_n;
         bank := to_integer(unsigned(ba));
+        -- JEDEC SDR command truth table for cmd = RAS & CAS & WE (CS=0):
+        --   "011" ACTIVATE, "100" WRITE, "101" READ, "010" PRECHARGE
         case cmd is
           when "011" =>  -- ACTIVATE
             open_row(bank) := to_integer(unsigned(addr(ROW_WIDTH-1 downto 0)));
-          when "101" =>  -- WRITE
+          when "100" =>  -- WRITE
             col := to_integer(unsigned(addr(COL_WIDTH-1 downto 0)));
             widx := (bank * (2**ROW_WIDTH) + open_row(bank)) * (2**COL_WIDTH) + col;
             if dqm = "00" then
               mem(widx) := dq;
             end if;
-          when "100" =>  -- READ (data after CL)
+          when "101" =>  -- READ: schedule the DQ drive window
             col := to_integer(unsigned(addr(COL_WIDTH-1 downto 0)));
             widx := (bank * (2**ROW_WIDTH) + open_row(bank)) * (2**COL_WIDTH) + col;
-            rp(0) := mem(widx);
-            rpv(0) := true;
+            rd_data  := mem(widx);
+            rd_drive := 2;  -- drive the next two cycles
           when others =>  -- LOAD MODE / REFRESH / PRECHARGE / NOP: ignore
             null;
         end case;
