@@ -43,34 +43,12 @@ def loopback_self_test(mgr: CaptureManager, cfg: GeneratorConfig,
 
     settings = CaptureSettings(sample_rate=capture_rate,
                                num_samples=capture_samples)
-    # The hardware capture path can corrupt a few words around every 256-word
-    # block (see existing_host_adapter), randomly flipping the odd bit of the
-    # decode. Capture up to three times: pass on any exact match, otherwise
-    # take a per-byte majority across the attempts so independent single-bit
-    # flips cancel out.
-    outcomes = []
-    for _ in range(3):
+    # One retry covers an occasional generator/capture arming race; the
+    # capture data itself is reliable since the firmware CDC fixes.
+    outcome = _loopback_attempt(mgr, dev, cfg, settings, expected)
+    if not outcome.passed:
         outcome = _loopback_attempt(mgr, dev, cfg, settings, expected)
-        if outcome.passed:
-            return outcome
-        outcomes.append(outcome)
-    decodes = [bytes.fromhex(o.decoded_hex) for o in outcomes]
-    decodes = [d for d in decodes if len(d) == len(expected)]
-    if len(decodes) >= 2:
-        voted = bytes(
-            max(set(col), key=col.count)
-            for col in (tuple(d[i] for d in decodes) for i in range(len(expected))))
-        if voted == expected:
-            final = outcomes[-1]
-            final.passed = True
-            final.decoded_hex = voted.hex()
-            final.mismatches = []
-            final.detail = (f"PASS — per-byte majority of {len(decodes)} "
-                            f"captures matches sent pattern (individual "
-                            f"captures had isolated bit flips)")
-            log.info("Generator self-test %s: %s", cfg.protocol, final.detail)
-            return final
-    return outcomes[-1]
+    return outcome
 
 
 def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,

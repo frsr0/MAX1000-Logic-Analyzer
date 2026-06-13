@@ -233,15 +233,13 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
   the stored data, not the SPI link). Decoders mitigate it (the UART decoder
   majority-votes three points per bit) but single-bit decode errors can still
   occur. A proper fix needs FPGA work in the SDRAM/BRAM write pump.
-- `CMD_GEN_CAPTURE` (generator loopback) is state-dependent: it captures a
-  flat line unless a plain capture ran earlier in the same connection (the
-  adapter primes with a 4096-sample throwaway capture before each attempt,
-  retries, and per-byte majority-votes across attempts), it hangs past ~31k
-  sample-units / ~8 ms (adapter clamps), and it can still enter a mode where
-  decodes come back corrupted until the engine is exercised again. Treat the
-  loopback self-test as best-effort: a failure warrants a re-run before
-  suspecting a real regression. Root cause needs FPGA-side debugging
-  (SignalTap) in the capture/readout core.
+- `CMD_GEN_CAPTURE` (generator loopback) is reliable at capture rates ≥2 MHz
+  and ≤8000 sample-units (the adapter clamps the count). The recipe used by
+  the self-test is 2 MHz / 4000 units. At ≤1 MHz the capture can come back
+  flat (a generator/capture start-up race that only bites when the sample
+  divider is large) — not currently used by any default path. The earlier
+  "flat capture" bug (any size, any rate) was a FPGA clock-domain-crossing
+  defect, now fixed (see `hdl/tb/tb_gen_loopback.vhd`).
 - Hardware triggers limited to rising/falling edge (any channel mask) and the
   UART-byte protocol trigger. All other trigger types are clearly labelled
   *post-capture* and run as software searches.

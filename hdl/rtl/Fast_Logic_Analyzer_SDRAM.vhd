@@ -27,6 +27,11 @@ port (
   Inputs       : in  std_logic_vector(Channels-1 downto 0) := (others => '0');
   Address      : in  natural range 0 to Max_Samples := 0;
   Outputs      : out std_logic_vector(15 downto 0);
+  -- '1' when Outputs holds the data for the current Address: drops when a
+  -- new address is requested and rises when the SDRAM read completes.
+  -- Readers MUST handshake on this — SDRAM latency varies with refresh and
+  -- the readout cannot keep up with a fixed-cadence address walker.
+  Out_Valid    : out std_logic := '1';
   sdram_addr   : out std_logic_vector(11 downto 0);
   sdram_ba     : out std_logic_vector(1 downto 0);
   sdram_cas_n  : out std_logic;
@@ -362,10 +367,12 @@ begin
   process(pclk)
   begin
     if rising_edge(pclk) then
-      brem0_dec <= buf_rem_0 - 1;
-      brem1_dec <= buf_rem_1 - 1;
-      brem2_dec <= buf_rem_2 - 1;
-      brem_single_dec <= buf_rem_single - 1;
+      -- The decremented value is only consumed while the counter is > 0;
+      -- guard the natural subtraction so simulation doesn't trap at 0.
+      if buf_rem_0 > 0 then brem0_dec <= buf_rem_0 - 1; else brem0_dec <= 0; end if;
+      if buf_rem_1 > 0 then brem1_dec <= buf_rem_1 - 1; else brem1_dec <= 0; end if;
+      if buf_rem_2 > 0 then brem2_dec <= buf_rem_2 - 1; else brem2_dec <= 0; end if;
+      if buf_rem_single > 0 then brem_single_dec <= buf_rem_single - 1; else brem_single_dec <= 0; end if;
     end if;
   end process;
 
@@ -504,7 +511,12 @@ begin
       if rising_edge(FAST_CLK) then
         if cfg_valid_edge = '1' then
           sample_rem_nonzero_r <= '1';
-        elsif fifo_wr = '1' and sample_remaining <= 2 then
+        elsif fifo_wr = '1' and sample_remaining = 0 then
+          -- fifo_wr and sample_remaining are both registered, so this process
+          -- observes the POST-decrement count: remaining=0 here means the
+          -- last word was just pushed. The previous <=2 threshold stopped two
+          -- words short, so the write pump (which counts the full sample
+          -- count) never saw Full and the capture never reported DONE.
           sample_rem_nonzero_r <= '0';
         end if;
       end if;
@@ -531,7 +543,13 @@ begin
         bram_wren <= '0';
 
         if cfg_valid_edge = '1' then
-          sample_remaining <= cfg_samples_f;
+          -- Load from cfg_samples (CLK-domain value, quasi-static while the
+          -- toggle handshake is in flight), NOT cfg_samples_f: that register
+          -- is updated by another process on this same edge, so reading it
+          -- here returned the PREVIOUS capture's sample count — captures ran
+          -- with stale lengths (e.g. the host reset()'s SAMPLE_COUNT=2),
+          -- completed instantly and read back as full-length flat data.
+          sample_remaining <= cfg_samples;
           fifo_overflow_f <= '0';
           bram_wp_r <= 0;
           bram_cnt_r <= 0;
@@ -555,7 +573,11 @@ begin
             if fifo_wrfull = '0' then
               fifo_wdata <= sample_word_r;
               fifo_wr <= '1';
-              sample_remaining <= sample_remaining - 1;
+              -- guard: at full rate one in-flight tick can push a word after
+              -- the nonzero flag clears; don't underflow the natural
+              if sample_remaining > 0 then
+                sample_remaining <= sample_remaining - 1;
+              end if;
             end if;
             if fifo_wrfull = '1' then
               fifo_overflow_f <= '1';
@@ -629,7 +651,10 @@ begin
         if cfg_valid_edge = '1' then
           step_r := 0;
           wbuf := (others => '0');
-          sample_remaining <= cfg_samples_f;
+          -- cfg_samples, not cfg_samples_f: the registered copy is written on
+          -- this same edge by the handshake process and reads stale here
+          -- (previous capture's count). Same fix as the FAST_SPEED branch.
+          sample_remaining <= cfg_samples;
           fifo_overflow_f <= '0';
           if bram_cnt > 0 then
             if bram_wp >= bram_cnt then
@@ -855,6 +880,7 @@ begin
             s_addr <= std_logic_vector(to_unsigned(read_addr, 22));
             s_rd <= '1';
             rd_pend := '1';
+            Out_Valid <= '0';
           else
             s_rd <= '0';
             rd_pend := '0';
@@ -862,10 +888,12 @@ begin
         end if;
         if s_rvalid = '1' and rd_pend = '1' then
           Outputs <= s_rdata;
+          Out_Valid <= '1';
           s_rd <= '0';
           rd_pend := '0';
         elsif read_addr >= samples_div_p then
           Outputs <= (others => '0');
+          Out_Valid <= '1';
         end if;
 
       else

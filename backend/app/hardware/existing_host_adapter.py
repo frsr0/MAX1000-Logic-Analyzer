@@ -31,34 +31,6 @@ from .device_models import (DebugInfo, DeviceCapabilities, GeneratorConfig,
 from .protocol import import_host_driver
 
 
-def _rotate_idle_to_end(digital: np.ndarray, tx_ch: int) -> np.ndarray:
-    """Rotate a circular capture so the longest idle (TX=1) run ends at the
-    last sample, making a wrapped generator burst contiguous. Short glitches
-    inside the idle gap are bridged so storage corruption can't split it."""
-    bits = ((digital >> tx_ch) & 1).astype(np.int8)
-    n = len(bits)
-    if n < 16:
-        return digital
-    # bridge sub-5-sample dips so corrupted words don't break the idle run
-    smooth = bits.copy()
-    edges = np.flatnonzero(np.diff(smooth)) + 1
-    bounds = np.concatenate(([0], edges, [n]))
-    for a, b in zip(bounds[:-1], bounds[1:]):
-        if b - a < 5 and a > 0:
-            smooth[a:b] = smooth[a - 1]
-    # longest run of idle (1) treating the array as circular: double it
-    doubled = np.concatenate([smooth, smooth])
-    best_len, best_end, run = 0, 0, 0
-    for i, v in enumerate(doubled):
-        run = run + 1 if v == 1 else 0
-        if run > best_len:
-            best_len, best_end = run, i + 1
-        if run >= n:        # fully idle
-            return digital
-    split = best_end % n    # first sample after the idle gap
-    return np.concatenate([digital[split:], digital[:split]])
-
-
 def hardware_available() -> bool:
     try:
         ols_spi_device, _ = import_host_driver()
@@ -335,12 +307,12 @@ class ExistingHostAdapter(HardwareDevice):
             data = bytes.fromhex(cfg.data_hex) if cfg.data_hex else b"\x55"
             rate = float(settings.sample_rate)
             nsamp = int(settings.num_samples)
-            # CMD_GEN_CAPTURE silently captures a stale/overwritten buffer
-            # beyond ~31k sample-units or ~8 ms (measured on FAST_SPEED
-            # firmware). Clamp to a safe envelope — loopback bursts are short.
-            max_units = min(30_000, int(0.007 * rate) * 2)
-            if nsamp > max_units:
-                nsamp = max_units
+            # CMD_GEN_CAPTURE reliably stores up to ~8000 sample-units on the
+            # FAST_SPEED firmware; beyond that the capture's sample-count
+            # config doesn't settle in time and the readback wraps. Loopback
+            # bursts are short, so clamp to a safe envelope.
+            if nsamp > 8000:
+                nsamp = 8000
             self._log(f"gen_capture {cfg.protocol} nsamp={nsamp}")
             # Generator loopback is digital-only; a previous mixed-analog
             # capture leaves the device in MODE_MIXED, which would make the
@@ -352,45 +324,26 @@ class ExistingHostAdapter(HardwareDevice):
                 if progress:
                     progress(int(got), int(total), "capturing")
 
-            # Firmware quirk (measured): a generated capture comes back flat
-            # unless a plain capture ran earlier in the same connection. A
-            # 4096-sample throwaway capture before each attempt makes the gen
-            # capture reliable (5/5 full bursts vs flat without it). Retry
-            # while the TX channel shows no activity.
-            digital = None
-            for attempt in range(3):
-                try:
-                    dev.capture(rate_hz=1_000_000, nsamples=4096, timeout=4)
-                except Exception:
-                    pass
-                if cfg.protocol == "i2c":
-                    raw = dev.i2c_capture_with_gen(
-                        rate_hz=rate, nsamples=nsamp, i2c_speed=cfg.baud,
-                        dev_addr=cfg.i2c_address, reg_addr=cfg.i2c_register,
-                        read_len=cfg.i2c_read_len, tx_pin=cfg.tx_pin,
-                        scl_pin=cfg.scl_pin)
-                elif cfg.protocol == "uart":
-                    dev._gen_data = data
-                    dev._gen_baud = cfg.baud
-                    dev._gen_tx_pin = cfg.tx_pin
-                    raw = dev.capture_with_gen(rate_hz=rate, nsamples=nsamp,
-                                               stop_evt=stop_evt, progress_cb=cb)
-                else:
-                    raise HardwareError(
-                        f"Loopback capture not supported for '{cfg.protocol}' on hardware")
-                if not raw:
-                    raise HardwareError("Generator capture returned no data")
-                n4 = len(raw) - (len(raw) % 4)
-                words = np.frombuffer(raw[:n4], dtype="<u4")
-                digital = (words & 0xFFFF).astype(np.uint16)
-                tx_bits = (digital >> (cfg.tx_pin & 0xF)) & 1
-                if np.count_nonzero(np.diff(tx_bits)) > 0:
-                    # The BRAM gen-capture window is a ring with arbitrary
-                    # start phase, so the burst can wrap around the readback.
-                    # Rotate so the longest idle (TX high) stretch sits at the
-                    # end, making the burst contiguous for the decoders.
-                    digital = _rotate_idle_to_end(digital, cfg.tx_pin & 0xF)
-                    break
+            if cfg.protocol == "i2c":
+                raw = dev.i2c_capture_with_gen(
+                    rate_hz=rate, nsamples=nsamp, i2c_speed=cfg.baud,
+                    dev_addr=cfg.i2c_address, reg_addr=cfg.i2c_register,
+                    read_len=cfg.i2c_read_len, tx_pin=cfg.tx_pin,
+                    scl_pin=cfg.scl_pin)
+            elif cfg.protocol == "uart":
+                dev._gen_data = data
+                dev._gen_baud = cfg.baud
+                dev._gen_tx_pin = cfg.tx_pin
+                raw = dev.capture_with_gen(rate_hz=rate, nsamples=nsamp,
+                                           stop_evt=stop_evt, progress_cb=cb)
+            else:
+                raise HardwareError(
+                    f"Loopback capture not supported for '{cfg.protocol}' on hardware")
+            if not raw:
+                raise HardwareError("Generator capture returned no data")
+            n4 = len(raw) - (len(raw) % 4)
+            words = np.frombuffer(raw[:n4], dtype="<u4")
+            digital = (words & 0xFFFF).astype(np.uint16)
             return CaptureResult(sample_rate=rate, digital=digital)
 
     # ── diagnostics ──────────────────────────────────────────────────

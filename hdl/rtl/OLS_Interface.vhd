@@ -26,8 +26,11 @@ PORT (
   Start_Offset : BUFFER NATURAL range 0 to Max_Samples   := 0;  
   Run          : BUFFER STD_LOGIC := '0'; 
   Full         : IN  STD_LOGIC := '0'; 
-  Address      : BUFFER NATURAL range 0 to Max_Samples-1 := 0;   
+  Address      : BUFFER NATURAL range 0 to Max_Samples-1 := 0;
   Outputs      : IN STD_LOGIC_VECTOR(31 downto 0);
+  -- Data-valid handshake from the SDRAM readout; '1' when Outputs matches
+  -- the current Address. Defaults '1' for configurations without it.
+  Outputs_Valid : IN STD_LOGIC := '1';
   Gen_Load_Byte : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   Gen_Load_We   : OUT STD_LOGIC := '0';
   Gen_Start     : OUT STD_LOGIC := '0';
@@ -192,6 +195,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL block_rd_addr        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL block_rd_state       : NATURAL range 0 to 6 := 0;
   SIGNAL block_rd_wc          : NATURAL range 0 to 256 := 0;
+  SIGNAL block_rd_wait        : NATURAL range 0 to 255 := 0;
+  CONSTANT SAMPLE_CLK_KHZ_SLV : STD_LOGIC_VECTOR(31 downto 0) :=
+    STD_LOGIC_VECTOR(TO_UNSIGNED(SAMPLE_CLK_HZ / 1000, 32));
   SIGNAL block_addr_reg       : NATURAL range 0 to 1048575 := 0;
   SIGNAL sig_rd_pend_d1       : STD_LOGIC := '0';
   TYPE block_buf_t IS ARRAY(0 TO 255) OF STD_LOGIC_VECTOR(31 DOWNTO 0);
@@ -588,11 +594,22 @@ BEGIN
     CASE block_rd_state IS
       WHEN 1 =>
         Address <= block_addr_reg + block_rd_wc;
+        block_rd_wait <= 0;
         block_rd_state <= 2;
       WHEN 2 =>
+        -- dead cycle: let the readout see the new Address and drop
+        -- Outputs_Valid before we poll it
         block_rd_state <= 3;
       WHEN 3 =>
-        block_rd_state <= 4;
+        -- Wait for the SDRAM readout handshake instead of assuming a fixed
+        -- latency: SDRAM access time varies (refresh/activate) and a fixed
+        -- cadence used to latch stale data, shifting whole blocks of the
+        -- readback. The timeout keeps the FSM alive if the readout stalls.
+        IF Outputs_Valid = '1' OR block_rd_wait = 255 THEN
+          block_rd_state <= 4;
+        ELSE
+          block_rd_wait <= block_rd_wait + 1;
+        END IF;
       WHEN 4 =>
         block_buf(block_rd_wc) <= Outputs;
         IF block_rd_wc < 255 THEN
@@ -950,10 +967,12 @@ BEGIN
               rsp_buf(3) := x"F0";
               rsp_buf(4) := x"01";
               -- bytes 5-8: SAMPLE_CLK_HZ in kHz, little-endian uint32
-              rsp_buf(5) := std_logic_vector(to_unsigned(SAMPLE_CLK_HZ / 1000, 32))(7 downto 0);
-              rsp_buf(6) := std_logic_vector(to_unsigned(SAMPLE_CLK_HZ / 1000, 32))(15 downto 8);
-              rsp_buf(7) := std_logic_vector(to_unsigned(SAMPLE_CLK_HZ / 1000, 32))(23 downto 16);
-              rsp_buf(8) := std_logic_vector(to_unsigned(SAMPLE_CLK_HZ / 1000, 32))(31 downto 24);
+              -- (constant declared near the top; sliced type conversions are
+              -- not portable to GHDL)
+              rsp_buf(5) := SAMPLE_CLK_KHZ_SLV(7 downto 0);
+              rsp_buf(6) := SAMPLE_CLK_KHZ_SLV(15 downto 8);
+              rsp_buf(7) := SAMPLE_CLK_KHZ_SLV(23 downto 16);
+              rsp_buf(8) := SAMPLE_CLK_KHZ_SLV(31 downto 24);
               rsp_buf_len := 9;
               rsp_len_v := 9;
               st := BUILD_RSP;
