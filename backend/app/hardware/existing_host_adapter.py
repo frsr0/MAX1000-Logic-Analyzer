@@ -307,12 +307,6 @@ class ExistingHostAdapter(HardwareDevice):
             data = bytes.fromhex(cfg.data_hex) if cfg.data_hex else b"\x55"
             rate = float(settings.sample_rate)
             nsamp = int(settings.num_samples)
-            # CMD_GEN_CAPTURE reliably stores up to ~8000 sample-units on the
-            # FAST_SPEED firmware; beyond that the capture's sample-count
-            # config doesn't settle in time and the readback wraps. Loopback
-            # bursts are short, so clamp to a safe envelope.
-            if nsamp > 8000:
-                nsamp = 8000
             self._log(f"gen_capture {cfg.protocol} nsamp={nsamp}")
             # Generator loopback is digital-only; a previous mixed-analog
             # capture leaves the device in MODE_MIXED, which would make the

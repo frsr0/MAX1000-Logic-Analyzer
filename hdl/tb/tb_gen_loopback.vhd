@@ -52,7 +52,6 @@ architecture bench of tb_gen_loopback is
   signal sen_sdo : std_logic := '0';
   signal led : std_logic_vector(7 downto 0);
 
-  signal fail_count : natural := 0;
 
   function flatten(b : byte_array; n : natural) return std_logic_vector is
     variable r : std_logic_vector(n*8-1 downto 0);
@@ -179,6 +178,9 @@ begin
     variable word : std_logic_vector(15 downto 0);
     variable prev_bit : std_logic;
     variable edges : natural;
+    -- a process variable (not the architecture signal) so increments inside
+    -- the nested check procedure are visible immediately to the final report
+    variable fails : natural := 0;
 
     -- Run the host gen-capture sequence (1000 sample-units @ 2 MHz) and count
     -- TX-channel transitions in the first read-back block. A correct capture
@@ -218,9 +220,17 @@ begin
         deadline := deadline + 1;
         wait for 20 us;
       end loop;
-      assert st = ST_CAPTURE_DONE
-        report label_s & ": capture did not reach DONE (status=" &
-               to_hstring(st) & ")" severity warning;
+      -- A correct capture asserts Full and reaches DONE. BOTH the cfg_samples
+      -- stale-read bug and the sample_rem off-by-one bug stop the write pump
+      -- short of the configured count, so buf_rem_single never reaches 0 and
+      -- Full never asserts — the capture stays BUSY/IDLE. So a hard DONE check
+      -- catches either regression (scenario B forces a small prior count to
+      -- make the stale read truncate hard).
+      if st /= ST_CAPTURE_DONE then
+        report label_s & ": FAIL - capture never reached DONE (status=" &
+               to_hstring(st) & "); write pump stopped short" severity error;
+        fails := fails + 1;
+      end if;
 
       -- read block 0 and count TX-channel edges
       addr_pld := (x"00", x"00", x"00", x"00");
@@ -241,7 +251,7 @@ begin
         report label_s & ": PASS (generator burst present)" severity note;
       else
         report label_s & ": FAIL (flat capture)" severity error;
-        fail_count <= fail_count + 1;
+        fails := fails + 1;
       end if;
     end procedure;
 
@@ -251,11 +261,15 @@ begin
     report "=== Scenario A: cold gen capture ===";
     gen_capture_and_check("A-cold");
 
-    report "=== Scenario B: plain ARM capture, then gen capture ===";
+    -- Prior capture uses a deliberately SMALL count (64). With the cfg_samples
+    -- stale-read bug the following 1000-sample gen capture loads sample_remaining
+    -- from this stale 64, truncates, and never asserts Full — so the DONE check
+    -- below fails. With the fix it loads the correct 1000 and completes.
+    report "=== Scenario B: small prior capture, then gen capture ===";
     pkt_cmd(spi_cs, sck, spi_mosi, spi_miso, CMD_ABORT_CAPTURE, empty, 0, st);
     wreg(spi_cs, sck, spi_mosi, spi_miso, REG_DIVIDER, 99);
-    wreg(spi_cs, sck, spi_mosi, spi_miso, REG_SAMPLE_COUNT, 500);
-    wreg(spi_cs, sck, spi_mosi, spi_miso, REG_DELAY_COUNT, 500);
+    wreg(spi_cs, sck, spi_mosi, spi_miso, REG_SAMPLE_COUNT, 64);
+    wreg(spi_cs, sck, spi_mosi, spi_miso, REG_DELAY_COUNT, 64);
     wreg(spi_cs, sck, spi_mosi, spi_miso, REG_FLAGS, 0);
     wreg(spi_cs, sck, spi_mosi, spi_miso, REG_FAST_MODE, 1);
     pkt_cmd(spi_cs, sck, spi_mosi, spi_miso, CMD_ARM_CAPTURE, empty, 0, st);
@@ -267,10 +281,10 @@ begin
     gen_capture_and_check("B-after-plain");
 
     report "======================================================";
-    if fail_count = 0 then
+    if fails = 0 then
       report "  tb_gen_loopback: ALL SCENARIOS PASSED";
     else
-      report "  tb_gen_loopback: " & integer'image(fail_count) & " FAILURE(S)"
+      report "  tb_gen_loopback: " & integer'image(fails) & " FAILURE(S)"
         severity failure;
     end if;
     report "======================================================";

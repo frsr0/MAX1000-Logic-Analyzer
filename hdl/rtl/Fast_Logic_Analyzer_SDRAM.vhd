@@ -27,11 +27,6 @@ port (
   Inputs       : in  std_logic_vector(Channels-1 downto 0) := (others => '0');
   Address      : in  natural range 0 to Max_Samples := 0;
   Outputs      : out std_logic_vector(15 downto 0);
-  -- '1' when Outputs holds the data for the current Address: drops when a
-  -- new address is requested and rises when the SDRAM read completes.
-  -- Readers MUST handshake on this — SDRAM latency varies with refresh and
-  -- the readout cannot keep up with a fixed-cadence address walker.
-  Out_Valid    : out std_logic := '1';
   sdram_addr   : out std_logic_vector(11 downto 0);
   sdram_ba     : out std_logic_vector(1 downto 0);
   sdram_cas_n  : out std_logic;
@@ -880,7 +875,6 @@ begin
             s_addr <= std_logic_vector(to_unsigned(read_addr, 22));
             s_rd <= '1';
             rd_pend := '1';
-            Out_Valid <= '0';
           else
             s_rd <= '0';
             rd_pend := '0';
@@ -888,12 +882,10 @@ begin
         end if;
         if s_rvalid = '1' and rd_pend = '1' then
           Outputs <= s_rdata;
-          Out_Valid <= '1';
           s_rd <= '0';
           rd_pend := '0';
         elsif read_addr >= samples_div_p then
           Outputs <= (others => '0');
-          Out_Valid <= '1';
         end if;
 
       else

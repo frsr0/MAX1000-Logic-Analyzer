@@ -28,9 +28,6 @@ PORT (
   Full         : IN  STD_LOGIC := '0'; 
   Address      : BUFFER NATURAL range 0 to Max_Samples-1 := 0;
   Outputs      : IN STD_LOGIC_VECTOR(31 downto 0);
-  -- Data-valid handshake from the SDRAM readout; '1' when Outputs matches
-  -- the current Address. Defaults '1' for configurations without it.
-  Outputs_Valid : IN STD_LOGIC := '1';
   Gen_Load_Byte : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   Gen_Load_We   : OUT STD_LOGIC := '0';
   Gen_Start     : OUT STD_LOGIC := '0';
@@ -195,7 +192,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL block_rd_addr        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL block_rd_state       : NATURAL range 0 to 6 := 0;
   SIGNAL block_rd_wc          : NATURAL range 0 to 256 := 0;
-  SIGNAL block_rd_wait        : NATURAL range 0 to 255 := 0;
   CONSTANT SAMPLE_CLK_KHZ_SLV : STD_LOGIC_VECTOR(31 downto 0) :=
     STD_LOGIC_VECTOR(TO_UNSIGNED(SAMPLE_CLK_HZ / 1000, 32));
   SIGNAL block_addr_reg       : NATURAL range 0 to 1048575 := 0;
@@ -490,7 +486,17 @@ BEGIN
           WHEN (1+1) =>
             CASE (Thread26) IS
       WHEN 0 =>
-        IF block_rd_state = 0 THEN
+        -- The legacy streaming readout walks `addr` across the whole capture
+        -- and drives Address from it. In single-shot SPI mode readout is done
+        -- exclusively via CMD_READ_CAPTURE block reads, so this free-running
+        -- walk only issues spurious SDRAM reads. For a large capture it is
+        -- still walking when the host's first block read arrives (SPI command
+        -- latency), and the two readers collide on the SDRAM — the block read
+        -- returns garbage/undriven data. (Small captures finish the walk
+        -- first, which is why the corruption only appeared above ~10k samples.)
+        -- Only drive Address from the walk in continuous mode, where the
+        -- prefetch streaming path genuinely needs it.
+        IF block_rd_state = 0 AND continuous_mode_i = '1' THEN
           Address <= addr;
         END IF;
         Thread26 := 1;
@@ -594,22 +600,11 @@ BEGIN
     CASE block_rd_state IS
       WHEN 1 =>
         Address <= block_addr_reg + block_rd_wc;
-        block_rd_wait <= 0;
         block_rd_state <= 2;
       WHEN 2 =>
-        -- dead cycle: let the readout see the new Address and drop
-        -- Outputs_Valid before we poll it
         block_rd_state <= 3;
       WHEN 3 =>
-        -- Wait for the SDRAM readout handshake instead of assuming a fixed
-        -- latency: SDRAM access time varies (refresh/activate) and a fixed
-        -- cadence used to latch stale data, shifting whole blocks of the
-        -- readback. The timeout keeps the FSM alive if the readout stalls.
-        IF Outputs_Valid = '1' OR block_rd_wait = 255 THEN
-          block_rd_state <= 4;
-        ELSE
-          block_rd_wait <= block_rd_wait + 1;
-        END IF;
+        block_rd_state <= 4;
       WHEN 4 =>
         block_buf(block_rd_wc) <= Outputs;
         IF block_rd_wc < 255 THEN

@@ -234,12 +234,21 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
   majority-votes three points per bit) but single-bit decode errors can still
   occur. A proper fix needs FPGA work in the SDRAM/BRAM write pump.
 - `CMD_GEN_CAPTURE` (generator loopback) is reliable at capture rates ≥2 MHz
-  and ≤8000 sample-units (the adapter clamps the count). The recipe used by
-  the self-test is 2 MHz / 4000 units. At ≤1 MHz the capture can come back
-  flat (a generator/capture start-up race that only bites when the sample
-  divider is large) — not currently used by any default path. The earlier
-  "flat capture" bug (any size, any rate) was a FPGA clock-domain-crossing
-  defect, now fixed (see `hdl/tb/tb_gen_loopback.vhd`).
+  at any size (verified 4k–40k sample-units on hardware). The self-test recipe
+  is 2 MHz / 4000 units. At ≤1 MHz the capture can come back flat (a
+  generator/capture start-up race that only bites when the sample divider is
+  large) — not used by any default path. Two FPGA defects behind the original
+  "flat capture" and the ≥10k-sample readback corruption are fixed (CDC
+  sample-count bug + the legacy streaming-readout colliding with block reads);
+  see `hdl/tb/tb_gen_loopback.vhd`.
+- **Plain captures of fast continuous signals have residual block-boundary
+  glitches**: ~3–4 corrupted words around every 256-word (1 KiB) read block.
+  The block-read FSM latches on a fixed cycle latency that matches the SDRAM
+  readout pipeline in steady state but not across the per-block restart. It
+  does not affect generator loopback (the burst fits in the first block) or
+  slow/sparse signals, but fast signals decoded near a boundary can drop a
+  bit. The proper fix is a readout data-valid handshake (drafted, reverted as
+  too risky without on-hardware CDC validation) — tracked as follow-up work.
 - Hardware triggers limited to rising/falling edge (any channel mask) and the
   UART-byte protocol trigger. All other trigger types are clearly labelled
   *post-capture* and run as software searches.
