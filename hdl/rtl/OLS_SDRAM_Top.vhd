@@ -144,6 +144,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal adc4_result, adc5_result, adc6_result, adc7_result : std_logic_vector(11 downto 0) := (others => '0');
   signal adc_start : std_logic := '0';
   signal adc_div   : natural range 0 to 255 := 0;
+  signal adc_conv_clk   : std_logic := '0';  -- 10 MHz ADC conversion clock (SDRAM_PLL c3)
 
   -- Pin map write from host command
   signal pin_map_write    : std_logic := '0';
@@ -269,6 +270,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   port (
     sys_clk        : in  std_logic;
     sys_clk_locked : in  std_logic := '1';
+    adc_clk        : in  std_logic;
+    adc_clk_locked : in  std_logic := '1';
     reset          : in  std_logic := '0';
     ch0_sel        : in  natural range 0 to 15 := 0;
     ch0_start      : in  std_logic := '0';
@@ -342,13 +345,20 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
 
 BEGIN
 
+  -- SDRAM_PLL c3 is a dedicated 10 MHz output for the MAX10 ADC hard IP.
+  -- The adcblock requires a clean PLL clock at its rated conversion frequency;
+  -- the 100 MHz sys_clk (c0) violates the adcblock minimum-pulse-width spec.
+  -- The device (10M08SAU169) only has one PLL, so this output is added to the
+  -- existing SDRAM_PLL rather than a separate ADC PLL.
   gen_use_pll : if PLL_MULT /= 1 or PLL_DIV /= 1 generate
     pll_inst : entity work.SDRAM_PLL
-      port map (inclk0 => CLK, c0 => sys_clk, c1 => fast_clk, c2 => sdram_clk_pll, locked => pll_locked);
+      port map (inclk0 => CLK, c0 => sys_clk, c1 => fast_clk, c2 => sdram_clk_pll,
+                c3 => adc_conv_clk, locked => pll_locked);
   end generate;
   gen_no_pll : if PLL_MULT = 1 and PLL_DIV = 1 generate
     sys_clk <= CLK;
     fast_clk <= CLK;
+    adc_conv_clk <= CLK;
     pll_locked <= '1';
   end generate;
 
@@ -640,6 +650,8 @@ BEGIN
     port map (
       sys_clk => sys_clk,
       sys_clk_locked => pll_locked,
+      adc_clk => adc_conv_clk,
+      adc_clk_locked => pll_locked,
       reset => '0',
       ch0_sel => 0,
       ch0_start => adc_start,

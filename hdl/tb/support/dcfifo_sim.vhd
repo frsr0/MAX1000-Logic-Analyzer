@@ -49,15 +49,34 @@ begin
     end if;
   end process;
 
-  rd_side : process(rdclk)
-  begin
-    if rising_edge(rdclk) then
-      if rdreq = '1' and rptr < wptr then
-        q <= mem(rptr mod lpm_numwords);
-        rptr <= rptr + 1;
+  -- showahead = "OFF": q is registered and updates on the rdclk edge that
+  -- samples rdreq='1' (the popped word appears one read later).
+  gen_sa_off : if lpm_showahead = "OFF" generate
+    rd_side : process(rdclk)
+    begin
+      if rising_edge(rdclk) then
+        if rdreq = '1' and rptr < wptr then
+          q <= mem(rptr mod lpm_numwords);
+          rptr <= rptr + 1;
+        end if;
       end if;
-    end if;
-  end process;
+    end process;
+  end generate;
+
+  -- showahead = "ON" (first-word-fall-through): q always presents the current
+  -- head word while the FIFO is non-empty; rdreq merely advances to the next.
+  gen_sa_on : if lpm_showahead /= "OFF" generate
+    rd_ptr : process(rdclk)
+    begin
+      if rising_edge(rdclk) then
+        if rdreq = '1' and rptr < wptr then
+          rptr <= rptr + 1;
+        end if;
+      end if;
+    end process;
+    q <= mem(rptr mod lpm_numwords) when rptr < wptr
+         else (others => '0');
+  end generate;
 
   -- Flags: ideal (no synchroniser latency). Real dcfifo flags lag by the
   -- delaypipe stages; the design tolerates later flag updates because they

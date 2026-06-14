@@ -261,6 +261,26 @@ begin
     report "=== Scenario A: cold gen capture ===";
     gen_capture_and_check("A-cold");
 
+    -- Readout-FIFO regression: read a SECOND block (byte addr 1024 = sample 512),
+    -- which exercises the Blk_Rd_Base CDC and a re-armed stream request — neither
+    -- touched by the block-0 read above. A bug in the base-address crossing or
+    -- the request-toggle re-arm would deadlock or short the payload here while
+    -- block 0 still looked fine (this is exactly the block-boundary path the
+    -- response FIFO replaced the fixed-latency latch on).
+    report "=== Readout: second block (non-zero base) ===";
+    addr_pld := (x"00", x"04", x"00", x"00");  -- byte addr 0x0400 (LE)
+    pkt_send(spi_cs, sck, spi_mosi, spi_miso, CMD_READ_CAPTURE, addr_pld, 4);
+    wait for 30 us;
+    pkt_read_rsp(spi_cs, sck, spi_mosi, spi_miso, 1100, st, pay, pl);
+    report "block1 payload bytes = " & integer'image(pl);
+    if pl >= 1024 then
+      report "block1 readout PASS (full 1024-byte block returned)" severity note;
+    else
+      report "block1 readout FAIL (short payload "
+             & integer'image(pl) & ")" severity error;
+      fails := fails + 1;
+    end if;
+
     -- Prior capture uses a deliberately SMALL count (64). With the cfg_samples
     -- stale-read bug the following 1000-sample gen capture loads sample_remaining
     -- from this stale 64, truncates, and never asserts Full — so the DONE check

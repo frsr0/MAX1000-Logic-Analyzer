@@ -86,6 +86,13 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL LA_Out : STD_LOGIC_VECTOR(15 downto 0);
   SIGNAL Fast_Logic_Analyzer_SDRAM_CLK_150      : STD_LOGIC;
   SIGNAL LA_Address       : NATURAL          range 0 to Max_Samples := 0;
+  -- Block-readout response-FIFO interface (OLS_Interface <-> FLA)
+  SIGNAL blk_rd_req_tog_i : STD_LOGIC := '0';
+  SIGNAL blk_rd_base_i    : NATURAL range 0 to Max_Samples := 0;
+  SIGNAL blk_rd_count_i   : NATURAL range 0 to Max_Samples := 0;
+  SIGNAL rd_fifo_q_i      : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  SIGNAL rd_fifo_empty_i  : STD_LOGIC := '1';
+  SIGNAL rd_fifo_rdreq_i  : STD_LOGIC := '0';
   SIGNAL Gen_Load_Byte_i    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL Gen_Load_We_i      : STD_LOGIC := '0';
   SIGNAL Gen_Start_i        : STD_LOGIC := '0';
@@ -171,7 +178,13 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
        Gen_Capture_Active : OUT STD_LOGIC := '0';
        Gen_Start_Ack      : IN  STD_LOGIC := '0';
        Gen_Start_Reject   : IN  STD_LOGIC := '0';
-       Gen_Done_Pulse     : IN  STD_LOGIC := '0'
+       Gen_Done_Pulse     : IN  STD_LOGIC := '0';
+       Blk_Rd_Req_Tog : OUT STD_LOGIC := '0';
+       Blk_Rd_Base    : OUT NATURAL range 0 to Max_Samples := 0;
+       Blk_Rd_Count   : OUT NATURAL range 0 to Max_Samples := 0;
+       Rd_Fifo_Q      : IN  STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+       Rd_Fifo_Empty  : IN  STD_LOGIC := '1';
+       Rd_Fifo_RdReq  : OUT STD_LOGIC := '0'
       );
       END COMPONENT;
     COMPONENT Fast_Logic_Analyzer_SDRAM IS
@@ -217,7 +230,13 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
      Buffer_Ack      : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
      Analog_Frame_Data : IN STD_LOGIC_VECTOR(127 downto 0) := (others => '0');
       Analog_Frame_Len  : IN NATURAL range 1 to 14 := 1;
-     Analog_Stream_Mode : IN STD_LOGIC := '0'
+     Analog_Stream_Mode : IN STD_LOGIC := '0';
+     Blk_Rd_Req_Tog : IN  STD_LOGIC := '0';
+     Blk_Rd_Base    : IN  NATURAL range 0 to Max_Samples := 0;
+     Blk_Rd_Count   : IN  NATURAL range 0 to Max_Samples := 0;
+     Rd_Fifo_Q      : OUT STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+     Rd_Fifo_Empty  : OUT STD_LOGIC := '1';
+     Rd_Fifo_RdReq  : IN  STD_LOGIC := '0'
 
    );
    END COMPONENT;
@@ -285,8 +304,14 @@ BEGIN
     Gen_Capture_Active => gen_capture_active_i,
     Gen_Start_Ack      => gen_start_ack_i,
     Gen_Start_Reject   => gen_start_reject_i,
-    Gen_Done_Pulse     => gen_done_pulse_i
-    
+    Gen_Done_Pulse     => gen_done_pulse_i,
+    Blk_Rd_Req_Tog     => blk_rd_req_tog_i,
+    Blk_Rd_Base        => blk_rd_base_i,
+    Blk_Rd_Count       => blk_rd_count_i,
+    Rd_Fifo_Q          => rd_fifo_q_i,
+    Rd_Fifo_Empty      => rd_fifo_empty_i,
+    Rd_Fifo_RdReq      => rd_fifo_rdreq_i
+
   );
   Fast_Logic_Analyzer_SDRAM1 : Fast_Logic_Analyzer_SDRAM
    GENERIC MAP (
@@ -303,7 +328,13 @@ BEGIN
     Buffer_Ack      => buffer_ack_i,
     Analog_Frame_Data => Analog_Frame_Data,
     Analog_Frame_Len  => Analog_Frame_Len,
-    Analog_Stream_Mode => Analog_Stream_Mode
+    Analog_Stream_Mode => Analog_Stream_Mode,
+    Blk_Rd_Req_Tog    => blk_rd_req_tog_i,
+    Blk_Rd_Base       => blk_rd_base_i,
+    Blk_Rd_Count      => blk_rd_count_i,
+    Rd_Fifo_Q         => rd_fifo_q_i,
+    Rd_Fifo_Empty     => rd_fifo_empty_i,
+    Rd_Fifo_RdReq     => rd_fifo_rdreq_i
   );
   
 END BEHAVIORAL;

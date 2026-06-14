@@ -8,6 +8,7 @@ entity SDRAM_PLL is
     c0      : out std_logic;
     c1      : out std_logic;
     c2      : out std_logic;
+    c3      : out std_logic;
     locked  : out std_logic
   );
 end SDRAM_PLL;
@@ -49,5 +50,25 @@ begin
       c1     => c1,
       c2     => c2,
       locked => locked
+    );
+
+  -- c3 = 10 MHz ADC conversion clock (12 MHz * 5/6). Modeled by a second
+  -- PLL_Model whose c0 output is the 10 MHz clock.
+  adc_pll : PLL_Model
+    generic map (
+      INPUT_FREQ  => 12.0e6,
+      MULTIPLY_BY => 5,
+      DIVIDE_BY   => 6,
+      FAST_MULT   => 5,
+      FAST_DIV    => 6,
+      SDRAM_MULT  => 5,
+      SDRAM_DIV   => 6
+    )
+    port map (
+      inclk0 => inclk0,
+      c0     => c3,
+      c1     => open,
+      c2     => open,
+      locked => open
     );
 end sim;

@@ -48,7 +48,18 @@ port (
     Buffer_Ack      : in std_logic_vector(2 downto 0) := (others => '0');
     Analog_Frame_Data : in std_logic_vector(127 downto 0) := (others => '0');
     Analog_Frame_Len  : in natural range 1 to 14 := 1;
-    Analog_Stream_Mode : in std_logic := '0'
+    Analog_Stream_Mode : in std_logic := '0';
+    -- Single-shot block readout via a response FIFO. The OLS side (CLK domain)
+    -- requests a stream and drains the FIFO; the FLA walks the addresses on pclk
+    -- and pushes each valid sample in. The dcfifo is a proper CDC between the
+    -- pclk readout domain and the CLK domain, replacing the old fixed-latency
+    -- Address/Outputs latch that corrupted the first sample(s) of each block.
+    Blk_Rd_Req_Tog : in  std_logic := '0';   -- toggle edge starts a stream
+    Blk_Rd_Base    : in  natural range 0 to Max_Samples := 0;  -- base sample idx
+    Blk_Rd_Count   : in  natural range 0 to Max_Samples := 0;  -- samples to stream
+    Rd_Fifo_Q      : out std_logic_vector(15 downto 0) := (others => '0');
+    Rd_Fifo_Empty  : out std_logic := '1';
+    Rd_Fifo_RdReq  : in  std_logic := '0'
   );
 end Fast_Logic_Analyzer_SDRAM;
 
@@ -176,6 +187,17 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal fifo_rdata : std_logic_vector(AFIFO_WIDTH-1 downto 0) := (others => '0');
   signal fifo_rd    : std_logic := '0';
   signal fifo_rdempty : std_logic := '0';
+
+  -- Readout response FIFO: pclk write (FLA streams samples) / CLK read (OLS
+  -- drains). Depth >= one block so a whole block streams without backpressure.
+  constant RDFIFO_DEPTH  : natural := 1024;
+  constant RDFIFO_WIDTHU : natural := 10;
+  signal rdfifo_wdata  : std_logic_vector(15 downto 0) := (others => '0');
+  signal rdfifo_wr     : std_logic := '0';
+  signal rdfifo_wrfull : std_logic := '0';
+  -- 2FF synchroniser for the block-read request toggle (CLK -> pclk)
+  signal blk_req_s1    : std_logic := '0';
+  signal blk_req_s2    : std_logic := '0';
 
   -- Pre-trigger BRAM (dual-port M9K, FAST_CLK write / CLK read)
   constant BRAM_SIZE : natural := 1024;
@@ -787,13 +809,21 @@ begin
     end if;
   end process;
 
-  -- Async FIFO: dcfifo bridges FAST_CLK (write) and pclk (read)
+  -- Async FIFO: dcfifo bridges FAST_CLK (write) and pclk (read).
+  -- show-ahead ("ON"): q always presents the head word while not empty, so the
+  -- write pump's read-at-pop (wr_pend_data := fifo_rdata) latches the CORRECT
+  -- word. With "OFF" q only updated one read later, so the first pop returned
+  -- the stale initial q and every write stored the previous pop's word — that
+  -- left a junk word at SDRAM[0] and shifted the stream by one, which the host
+  -- saw as the mixed-frame 2-sample preamble. read-at-pop timing is unchanged,
+  -- so this does not perturb the (phase-sensitive) SDRAM readout the way an
+  -- extra pump pipeline stage did.
   afifo : dcfifo
     generic map (
       lpm_width       => AFIFO_WIDTH,
       lpm_widthu      => AFIFO_WIDTHU,
       lpm_numwords    => AFIFO_DEPTH,
-      lpm_showahead   => "OFF",
+      lpm_showahead   => "ON",
       lpm_type        => "dcfifo",
       rdsync_delaypipe => 3,
       wrsync_delaypipe => 3,
@@ -808,6 +838,31 @@ begin
       q        => fifo_rdata,
       rdempty  => fifo_rdempty,
       wrfull   => fifo_wrfull
+    );
+
+  -- Readout response FIFO: bridges the pclk readout domain to the CLK (OLS)
+  -- domain for single-shot block reads. This is the CDC that removes the old
+  -- fixed-3-cycle latch and its prime/drain workaround.
+  rdfifo : dcfifo
+    generic map (
+      lpm_width       => 16,
+      lpm_widthu      => RDFIFO_WIDTHU,
+      lpm_numwords    => RDFIFO_DEPTH,
+      lpm_showahead   => "OFF",
+      lpm_type        => "dcfifo",
+      rdsync_delaypipe => 3,
+      wrsync_delaypipe => 3,
+      intended_device_family => "MAX 10"
+    )
+    port map (
+      data     => rdfifo_wdata,
+      wrreq    => rdfifo_wr,
+      wrclk    => pclk,
+      rdreq    => Rd_Fifo_RdReq,
+      rdclk    => CLK,
+      q        => Rd_Fifo_Q,
+      rdempty  => Rd_Fifo_Empty,
+      wrfull   => rdfifo_wrfull
     );
 
   -- Main: SDRAM write pump + buffer management + readout
@@ -827,11 +882,24 @@ begin
     variable wr_pend_data : std_logic_vector(15 downto 0) := (others => '0');
     variable rd_pend : std_logic := '0';
     variable write_addr : std_logic_vector(21 downto 0) := (others => '0');
+    -- Streaming block-readout state (single-shot CMD_READ_CAPTURE path)
+    variable stream_active : boolean := false;
+    variable stream_base   : natural range 0 to Max_Samples := 0;
+    variable stream_cnt    : natural range 0 to Max_Samples := 0;
+    variable stream_i      : natural range 0 to Max_Samples := 0;
+    variable rd_pend2      : std_logic := '0';
   begin
     if rising_edge(pclk) then
       fifo_rd <= '0';
       s_wr <= '0';
       s_burst_i <= '0';
+      rdfifo_wr <= '0';
+      -- Synchronise the block-read request toggle into pclk (runs every cycle so
+      -- no edge is missed). Blk_Rd_Base/Count are quasi-static: they are set on
+      -- the OLS side before the toggle flips and held for the whole stream, so
+      -- by the time this 2FF sees the edge they have long settled.
+      blk_req_s1 <= Blk_Rd_Req_Tog;
+      blk_req_s2 <= blk_req_s1;
 
       -- Overflow from fast domain
       if overflow_clk = '1' then
@@ -903,30 +971,69 @@ begin
           rd_mode := false;
         end if;
         s_wr <= '0'; s_rd <= '0';
+        stream_active := false; rd_pend2 := '0';
 
       else
       -- Normal capture/readout/write-pump logic (skipped on run-edge cycle)
 
       if rd_mode then
-        -- READOUT (SDRAM only)
-        read_addr := Address + Start_Offset;
-        if read_addr /= a_reg then
-          a_reg := read_addr;
-          if read_addr < samples_div_p then
-            s_addr <= std_logic_vector(to_unsigned(read_addr, 22));
-            s_rd <= '1';
-            rd_pend := '1';
-          else
+        -- A request-toggle edge starts a single-shot block stream. Base/Count
+        -- are stable by now (held since before the toggle on the OLS side).
+        if (blk_req_s1 xor blk_req_s2) = '1' then
+          stream_base   := Blk_Rd_Base;
+          stream_cnt    := Blk_Rd_Count;
+          stream_i      := 0;
+          rd_pend2      := '0';
+          stream_active := true;
+          s_rd          <= '0';
+        end if;
+
+        if stream_active then
+          -- STREAMING READOUT: walk the block addresses, latch on the SDRAM
+          -- valid strobe, push each sample into the response FIFO. Self-timed,
+          -- so it is immune to the CLK/pclk phase relationship that broke the
+          -- old fixed-latency latch at block boundaries.
+          if rd_pend2 = '0' then
+            if rdfifo_wrfull = '0' then
+              s_addr <= std_logic_vector(
+                          to_unsigned(stream_base + stream_i + Start_Offset, 22));
+              s_rd     <= '1';
+              rd_pend2 := '1';
+            end if;
+          elsif s_rvalid = '1' then
+            rdfifo_wdata <= s_rdata;
+            rdfifo_wr    <= '1';
+            s_rd         <= '0';
+            rd_pend2     := '0';
+            if stream_i = stream_cnt - 1 then
+              stream_active := false;
+            else
+              stream_i := stream_i + 1;
+            end if;
+          end if;
+
+        else
+          -- LEGACY Address-driven readout -> Outputs (continuous mode and the
+          -- FLA-direct testbenches, which never assert the stream request).
+          read_addr := Address + Start_Offset;
+          if read_addr /= a_reg then
+            a_reg := read_addr;
+            if read_addr < samples_div_p then
+              s_addr <= std_logic_vector(to_unsigned(read_addr, 22));
+              s_rd <= '1';
+              rd_pend := '1';
+            else
+              s_rd <= '0';
+              rd_pend := '0';
+            end if;
+          end if;
+          if s_rvalid = '1' and rd_pend = '1' then
+            Outputs <= s_rdata;
             s_rd <= '0';
             rd_pend := '0';
+          elsif read_addr >= samples_div_p then
+            Outputs <= (others => '0');
           end if;
-        end if;
-        if s_rvalid = '1' and rd_pend = '1' then
-          Outputs <= s_rdata;
-          s_rd <= '0';
-          rd_pend := '0';
-        elsif read_addr >= samples_div_p then
-          Outputs <= (others => '0');
         end if;
 
       else

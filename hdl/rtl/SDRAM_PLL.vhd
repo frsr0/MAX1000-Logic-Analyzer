@@ -47,7 +47,8 @@ ENTITY SDRAM_PLL IS
 		c0		: OUT STD_LOGIC ;
 		c1		: OUT STD_LOGIC ;
 		c2		: OUT STD_LOGIC ;
-		locked		: OUT STD_LOGIC 
+		c3		: OUT STD_LOGIC ;
+		locked		: OUT STD_LOGIC
 	);
 END SDRAM_PLL;
 
@@ -63,6 +64,7 @@ ARCHITECTURE SYN OF sdram_pll IS
 	SIGNAL sub_wire5	: STD_LOGIC ;
 	SIGNAL sub_wire6	: STD_LOGIC ;
 	SIGNAL sub_wire7	: STD_LOGIC ;
+	SIGNAL sub_wire8	: STD_LOGIC ;
 
 
 
@@ -81,6 +83,10 @@ ARCHITECTURE SYN OF sdram_pll IS
 		clk2_duty_cycle		: NATURAL;
 		clk2_multiply_by		: NATURAL;
 		clk2_phase_shift		: STRING;
+		clk3_divide_by		: NATURAL;
+		clk3_duty_cycle		: NATURAL;
+		clk3_multiply_by		: NATURAL;
+		clk3_phase_shift		: STRING;
 		compensate_clock		: STRING;
 		inclk0_input_frequency		: NATURAL;
 		intended_device_family		: STRING;
@@ -148,9 +154,11 @@ BEGIN
 	sub_wire5    <= sub_wire3(1);
 	sub_wire4    <= sub_wire3(0);
 	sub_wire7    <= sub_wire3(2);
+	sub_wire8    <= sub_wire3(3);
 	c0    <= sub_wire4;
 	c1    <= sub_wire5;
 	c2    <= sub_wire7;
+	c3    <= sub_wire8;
 	locked    <= sub_wire6;
 
 	altpll_component : altpll
@@ -168,6 +176,10 @@ BEGIN
 		clk2_duty_cycle => 50,
 		clk2_multiply_by => 50,
 		clk2_phase_shift => "-2500",
+		clk3_divide_by => 60,
+		clk3_duty_cycle => 50,
+		clk3_multiply_by => 50,
+		clk3_phase_shift => "0",
 		compensate_clock => "CLK0",
 		inclk0_input_frequency => 83333,
 		intended_device_family => "MAX 10",
@@ -203,7 +215,7 @@ BEGIN
 		port_clk0 => "PORT_USED",
 		port_clk1 => "PORT_USED",
 		port_clk2 => "PORT_USED",
-		port_clk3 => "PORT_UNUSED",
+		port_clk3 => "PORT_USED",
 		port_clk4 => "PORT_UNUSED",
 		port_clk5 => "PORT_UNUSED",
 		port_clkena0 => "PORT_UNUSED",

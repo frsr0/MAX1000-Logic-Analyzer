@@ -59,7 +59,15 @@ PORT (
          Gen_Capture_Active : OUT STD_LOGIC := '0';
          Gen_Start_Ack      : IN  STD_LOGIC := '0';
          Gen_Start_Reject   : IN  STD_LOGIC := '0';
-         Gen_Done_Pulse     : IN  STD_LOGIC := '0'
+         Gen_Done_Pulse     : IN  STD_LOGIC := '0';
+         -- Block readout (CMD_READ_CAPTURE) via the FLA response FIFO. Replaces
+         -- the fixed-latency Address/Outputs latch and its prime/drain hack.
+         Blk_Rd_Req_Tog : OUT STD_LOGIC := '0';
+         Blk_Rd_Base    : OUT NATURAL range 0 to Max_Samples := 0;
+         Blk_Rd_Count   : OUT NATURAL range 0 to Max_Samples := 0;
+         Rd_Fifo_Q      : IN  STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+         Rd_Fifo_Empty  : IN  STD_LOGIC := '1';
+         Rd_Fifo_RdReq  : OUT STD_LOGIC := '0'
 
 );
 END OLS_Interface;
@@ -195,21 +203,18 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   -- (even sample in bits 15:0, odd in 31:16), so one block carries 512 samples
   -- on the wire as contiguous 16-bit little-endian words (no wasted high half).
   CONSTANT BLOCK_SAMPLES      : INTEGER := 512;
-  -- Prime/drain padding: non-latched read-ahead/read-behind samples issued
-  -- around each block so the first wanted sample is read with the SDRAM row
-  -- warmed (the throwaway reads absorb the cold first-read after the inter-block
-  -- SPI gap). NOTE: a residual ~first-read-after-gap error remains in the SDRAM
-  -- controller read path (needs SignalTap on the SDRAM bus); prime/drain
-  -- minimises it but does not fully eliminate it.
-  CONSTANT BLOCK_PRIME        : INTEGER := 8;
-  SIGNAL block_rd_j           : INTEGER range -BLOCK_PRIME to BLOCK_SAMPLES - 1 + BLOCK_PRIME := 0;
+  -- Block readout now streams the 512 samples through the FLA response FIFO
+  -- (a true CLK<->pclk CDC), so there is no fixed-latency latch to warm and the
+  -- old prime/drain read-ahead/read-behind padding has been removed.
+  SIGNAL block_rd_j           : INTEGER range 0 to BLOCK_SAMPLES - 1 := 0;
   -- Holds the even sample so the odd cycle can write the full 32-bit block_buf
   -- entry in one go (partial-width writes don't infer correctly on the RAM).
   SIGNAL block_pack_lo        : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   CONSTANT SAMPLE_CLK_KHZ_SLV : STD_LOGIC_VECTOR(31 downto 0) :=
     STD_LOGIC_VECTOR(TO_UNSIGNED(SAMPLE_CLK_HZ / 1000, 32));
-  SIGNAL block_addr_reg       : NATURAL range 0 to 1048575 := 0;
   SIGNAL sig_rd_pend_d1       : STD_LOGIC := '0';
+  -- Drives the OUT request toggle so the FSM can read/flip it (port is OUT).
+  SIGNAL blk_req_tog_i        : STD_LOGIC := '0';
   TYPE block_buf_t IS ARRAY(0 TO 255) OF STD_LOGIC_VECTOR(31 DOWNTO 0);
   SIGNAL block_buf            : block_buf_t := (others => (others => '0'));
 
@@ -605,45 +610,49 @@ BEGIN
         END CASE;
       END IF;
     -- ── Block read state machine (for CMD_READ_CAPTURE) ──────────────
+    -- Request a BLOCK_SAMPLES-long stream from the FLA and drain it through the
+    -- response FIFO. The FIFO is a true CDC across the FLA's pclk readout domain
+    -- and this CLK domain, so there is no fixed-latency latch to mis-time at a
+    -- block boundary (that was the block-boundary corruption) and no prime/drain.
     sig_rd_pend_d1 <= block_rd_pending;
+    Rd_Fifo_RdReq <= '0';
     IF block_rd_pending = '1' AND sig_rd_pend_d1 = '0' THEN
       -- block_rd_addr is a BYTE address; the wire is 2 bytes/sample, so the
       -- base sample index = byte_addr / 2 (one 1024-byte block = 512 samples).
-      block_addr_reg <= TO_INTEGER(UNSIGNED(block_rd_addr(31 downto 1)));
-      block_rd_j <= -BLOCK_PRIME;
+      Blk_Rd_Base  <= TO_INTEGER(UNSIGNED(block_rd_addr(31 downto 1)));
+      Blk_Rd_Count <= BLOCK_SAMPLES;
+      block_rd_j <= 0;
       block_rd_state <= 1;
     END IF;
     CASE block_rd_state IS
       WHEN 1 =>
-        -- Present the (clamped) walk address; block_addr_reg + j can be negative
-        -- during read-behind priming, so clamp to 0.
-        IF block_addr_reg + block_rd_j < 0 THEN
-          Address <= 0;
-        ELSE
-          Address <= block_addr_reg + block_rd_j;
-        END IF;
+        -- Base/Count have been stable since the pending edge; fire the request
+        -- toggle (single-bit CDC) to start the stream on the FLA side.
+        blk_req_tog_i <= NOT blk_req_tog_i;
         block_rd_state <= 2;
       WHEN 2 =>
-        block_rd_state <= 3;
+        -- Drain one sample: pop when the FIFO has data (rdreq asserted next
+        -- cycle, q valid the cycle after that — showahead OFF).
+        IF Rd_Fifo_Empty = '0' THEN
+          Rd_Fifo_RdReq <= '1';
+          block_rd_state <= 3;
+        END IF;
       WHEN 3 =>
         block_rd_state <= 4;
       WHEN 4 =>
-        -- Latch only the BLOCK_SAMPLES wanted samples; prime (j<0) and drain
-        -- (j>=BLOCK_SAMPLES) iterations keep the SDRAM row warm but are
-        -- discarded. Pack 2 samples per 32-bit entry as one full-word write on
-        -- the odd index: even -> bits 15:0, odd -> 31:16 (contiguous 16-bit LE).
-        IF block_rd_j >= 0 AND block_rd_j < BLOCK_SAMPLES THEN
-          IF (block_rd_j MOD 2) = 0 THEN
-            block_pack_lo <= Outputs(15 downto 0);
-          ELSE
-            block_buf(block_rd_j / 2) <= Outputs(15 downto 0) & block_pack_lo;
-          END IF;
-        END IF;
-        IF block_rd_j < BLOCK_SAMPLES - 1 + BLOCK_PRIME THEN
-          block_rd_j <= block_rd_j + 1;
-          block_rd_state <= 1;
+        -- q now holds the popped sample. Pack 2 samples per 32-bit entry as one
+        -- full-word write on the odd index: even -> bits 15:0, odd -> 31:16
+        -- (contiguous 16-bit LE).
+        IF (block_rd_j MOD 2) = 0 THEN
+          block_pack_lo <= Rd_Fifo_Q;
         ELSE
+          block_buf(block_rd_j / 2) <= Rd_Fifo_Q & block_pack_lo;
+        END IF;
+        IF block_rd_j = BLOCK_SAMPLES - 1 THEN
           block_rd_state <= 5;
+        ELSE
+          block_rd_j <= block_rd_j + 1;
+          block_rd_state <= 2;
         END IF;
       WHEN 5 =>
         block_rd_ack <= '1';
@@ -818,6 +827,7 @@ BEGIN
   Gen_I2C_Test   <= gen_i2c_test_int;
   Gen_SPI_Test   <= gen_spi_test_int;
   Fast_Mode      <= fast_mode_i;
+  Blk_Rd_Req_Tog <= blk_req_tog_i;
   Continuous_Mode <= continuous_mode_i;
   Analog_Enable <= analog_enable_i;
   Buffer_Ack      <= buffer_ack_i;

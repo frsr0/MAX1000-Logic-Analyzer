@@ -23,7 +23,7 @@ architecture bench of tb_gen_start is
   signal spi_miso  : std_logic;
   signal iface_mode : std_logic;
   signal inputs    : std_logic_vector(31 downto 0) := (others => '0');
-  signal rate_div  : natural range 1 to 150000000;
+  signal rate_div  : natural range 1 to 500000000;
   signal samples   : natural range 1 to 25000;
   signal start_off : natural range 0 to 25000;
   signal run       : std_logic;

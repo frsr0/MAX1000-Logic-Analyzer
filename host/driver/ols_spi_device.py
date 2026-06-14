@@ -68,23 +68,33 @@ def wire_to_payload(data):
     return data
 
 
+def _decode_adc(frame):
+    """8 ADC × 12-bit packed in 12 bytes (frame[2:14]); each adjacent pair
+    shares a middle byte (lo: byte n + low nibble of n+1; hi: high nibble of
+    n+1 + byte n+2)."""
+    adc = []
+    for ch in range(4):
+        lo = frame[2 + ch * 3]
+        hi = (frame[3 + ch * 3] & 0x0F) << 8
+        adc.append(lo | hi)
+        lo = (frame[3 + ch * 3] >> 4)
+        hi = frame[4 + ch * 3] << 4
+        adc.append(lo | hi)
+    return adc
+
+
 def decode_analog_frames(data, mode):
+    # Frames are aligned at the source: word 0 of the stream is frame word 0.
+    # (An earlier host-side phase-recovery workaround was removed once the FPGA
+    # preamble was fixed — afifo show-ahead for the write side and the corrected
+    # SDRAM CAS-latency mode register for the read side.)
     stride = analog_frame_stride(mode)
     frames = []
     for i in range(0, len(data) // stride):
         frame = data[i * stride:(i + 1) * stride]
         row = {"digital": frame[0] | (frame[1] << 8), "adc": []}
         if mode & MODE_MIXED:
-            # 8 ADC × 12-bit packed in 12 bytes; each adjacent pair shares
-            # a middle byte (lo: byte n + low nibble of n+1; hi: high nibble
-            # of n+1 + byte n+2).
-            for ch in range(4):
-                lo = frame[2 + ch * 3]
-                hi = (frame[3 + ch * 3] & 0x0F) << 8
-                row["adc"].append(lo | hi)
-                lo = (frame[3 + ch * 3] >> 4)
-                hi = frame[4 + ch * 3] << 4
-                row["adc"].append(lo | hi)
+            row["adc"] = _decode_adc(frame)
         frames.append(row)
     return frames
 
