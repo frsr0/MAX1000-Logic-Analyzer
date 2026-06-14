@@ -191,7 +191,21 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL block_rd_ack         : STD_LOGIC := '0';
   SIGNAL block_rd_addr        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL block_rd_state       : NATURAL range 0 to 6 := 0;
-  SIGNAL block_rd_wc          : NATURAL range 0 to 256 := 0;
+  -- Each 1024-byte read block packs 2 samples per 32-bit block_buf entry
+  -- (even sample in bits 15:0, odd in 31:16), so one block carries 512 samples
+  -- on the wire as contiguous 16-bit little-endian words (no wasted high half).
+  CONSTANT BLOCK_SAMPLES      : INTEGER := 512;
+  -- Prime/drain padding: non-latched read-ahead/read-behind samples issued
+  -- around each block so the first wanted sample is read with the SDRAM row
+  -- warmed (the throwaway reads absorb the cold first-read after the inter-block
+  -- SPI gap). NOTE: a residual ~first-read-after-gap error remains in the SDRAM
+  -- controller read path (needs SignalTap on the SDRAM bus); prime/drain
+  -- minimises it but does not fully eliminate it.
+  CONSTANT BLOCK_PRIME        : INTEGER := 8;
+  SIGNAL block_rd_j           : INTEGER range -BLOCK_PRIME to BLOCK_SAMPLES - 1 + BLOCK_PRIME := 0;
+  -- Holds the even sample so the odd cycle can write the full 32-bit block_buf
+  -- entry in one go (partial-width writes don't infer correctly on the RAM).
+  SIGNAL block_pack_lo        : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   CONSTANT SAMPLE_CLK_KHZ_SLV : STD_LOGIC_VECTOR(31 downto 0) :=
     STD_LOGIC_VECTOR(TO_UNSIGNED(SAMPLE_CLK_HZ / 1000, 32));
   SIGNAL block_addr_reg       : NATURAL range 0 to 1048575 := 0;
@@ -593,22 +607,40 @@ BEGIN
     -- ── Block read state machine (for CMD_READ_CAPTURE) ──────────────
     sig_rd_pend_d1 <= block_rd_pending;
     IF block_rd_pending = '1' AND sig_rd_pend_d1 = '0' THEN
-      block_addr_reg <= TO_INTEGER(UNSIGNED(block_rd_addr(31 downto 2)));
-      block_rd_wc <= 0;
+      -- block_rd_addr is a BYTE address; the wire is 2 bytes/sample, so the
+      -- base sample index = byte_addr / 2 (one 1024-byte block = 512 samples).
+      block_addr_reg <= TO_INTEGER(UNSIGNED(block_rd_addr(31 downto 1)));
+      block_rd_j <= -BLOCK_PRIME;
       block_rd_state <= 1;
     END IF;
     CASE block_rd_state IS
       WHEN 1 =>
-        Address <= block_addr_reg + block_rd_wc;
+        -- Present the (clamped) walk address; block_addr_reg + j can be negative
+        -- during read-behind priming, so clamp to 0.
+        IF block_addr_reg + block_rd_j < 0 THEN
+          Address <= 0;
+        ELSE
+          Address <= block_addr_reg + block_rd_j;
+        END IF;
         block_rd_state <= 2;
       WHEN 2 =>
         block_rd_state <= 3;
       WHEN 3 =>
         block_rd_state <= 4;
       WHEN 4 =>
-        block_buf(block_rd_wc) <= Outputs;
-        IF block_rd_wc < 255 THEN
-          block_rd_wc <= block_rd_wc + 1;
+        -- Latch only the BLOCK_SAMPLES wanted samples; prime (j<0) and drain
+        -- (j>=BLOCK_SAMPLES) iterations keep the SDRAM row warm but are
+        -- discarded. Pack 2 samples per 32-bit entry as one full-word write on
+        -- the odd index: even -> bits 15:0, odd -> 31:16 (contiguous 16-bit LE).
+        IF block_rd_j >= 0 AND block_rd_j < BLOCK_SAMPLES THEN
+          IF (block_rd_j MOD 2) = 0 THEN
+            block_pack_lo <= Outputs(15 downto 0);
+          ELSE
+            block_buf(block_rd_j / 2) <= Outputs(15 downto 0) & block_pack_lo;
+          END IF;
+        END IF;
+        IF block_rd_j < BLOCK_SAMPLES - 1 + BLOCK_PRIME THEN
+          block_rd_j <= block_rd_j + 1;
           block_rd_state <= 1;
         ELSE
           block_rd_state <= 5;

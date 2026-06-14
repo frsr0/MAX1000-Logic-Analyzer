@@ -60,9 +60,12 @@ def analog_wire_stride(mode):
 
 
 def wire_to_payload(data):
-    """Collapse the 32-bit wire format to dense payload bytes by taking the low
-    2 bytes (payload half) of each 4-byte word and dropping the zero high half."""
-    return b''.join(data[i:i + 2] for i in range(0, len(data) - 1, WIRE_WORD_BYTES))
+    """Identity: the readout now packs 2 samples per 32-bit block entry, so the
+    wire is already dense 16-bit little-endian words. The 32-bit->16-bit
+    collapse that this used to do is now done in the FPGA (block read packs
+    even/odd samples into the low/high halves). Kept as a pass-through so analog
+    call sites need no change."""
+    return data
 
 
 def decode_analog_frames(data, mode):
@@ -429,6 +432,7 @@ class OLSDeviceSPI:
                 f.write(f"gen_capture: status transitions={seen} "
                         f"timed_out={time.time() >= deadline}\n")
 
+        # See capture(): packed wire is 2 bytes/sample (stride 2).
         need = rc * 2
         accumulated = bytearray()
         for block_addr in range(0, need, 1024):
@@ -494,8 +498,13 @@ class OLSDeviceSPI:
             value = 0
         self.pkt.write_register(REG_TRIGGER_MASK, mask)
         self.pkt.write_register(REG_TRIGGER_VALUE, value)
+        # REG_FLAGS carries the analog-enable bit (bit 3 = MODE_MIXED). Fold it
+        # into the single REG_FLAGS write so it isn't clobbered: a prior
+        # set_analog_config() write was immediately overwritten by _raw_flags,
+        # which left analog_enable_i=0 and made every "analog" capture record the
+        # digital pins instead of ADC frames.
         self.set_analog_config(self.analog_mode)
-        self.pkt.write_register(REG_FLAGS, self._raw_flags)
+        self.pkt.write_register(REG_FLAGS, self._raw_flags | self.analog_mode)
         self.pkt.write_register(REG_FAST_MODE, 1 if self.fast_mode_enabled else 0)
 
         self.spi.flush()
@@ -513,6 +522,9 @@ class OLSDeviceSPI:
                 return b''
             time.sleep(0.001)
 
+        # The FPGA now packs 2 samples per 32-bit read-block entry, so the wire
+        # is contiguous 16-bit little-endian samples: rc samples = rc*2 bytes,
+        # decoded at stride 2. (One 1024-byte block carries 512 samples.)
         need = rc * 2
         accumulated = bytearray()
         for block_addr in range(0, need, 1024):
@@ -537,13 +549,12 @@ class OLSDeviceSPI:
         payload_stride = analog_frame_stride(mode)       # 14 dense bytes/frame
         words_per_frame = payload_stride // 2            # 7 SDRAM words/frame
         self.set_analog_config(mode)
-        # capture() reads 2 wire bytes per requested 'sample', but each stored
-        # word is 4 wire bytes (32-bit), so request 2× the word count to read
-        # whole frames off the wire, then de-interleave to dense payload.
+        # capture(nsamples=N) returns N dense 16-bit words (2 bytes each); one
+        # word per analog SDRAM word. wire_to_payload is now identity.
         sdram_words = frames * words_per_frame
         wire = self.capture(
             rate_hz=rate_hz * words_per_frame,
-            nsamples=sdram_words * 2,
+            nsamples=sdram_words,
             timeout=timeout,
             trigger=None,
             progress_cb=progress_cb,

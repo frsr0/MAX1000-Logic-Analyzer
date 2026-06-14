@@ -172,7 +172,7 @@ class ExistingHostAdapter(HardwareDevice):
                     sdram_words = nsamp * words_per_frame
                     wire = dev.capture(
                         rate_hz=rate * words_per_frame,
-                        nsamples=sdram_words * 2,
+                        nsamples=sdram_words,
                         timeout=max(3, sdram_words // 10000 + 2),
                         trigger=trigger, stop_evt=stop_evt, progress_cb=cb)
                     payload = wire_to_payload(wire)[: nsamp * stride]
@@ -202,10 +202,9 @@ class ExistingHostAdapter(HardwareDevice):
                     if not data:
                         raise HardwareError(
                             "Capture returned 0 bytes — FPGA not responding")
-                    # GUI-equivalent stride-4 parse: 32-bit words, low 16 = payload
-                    n4 = len(data) - (len(data) % 4)
-                    words = np.frombuffer(data[:n4], dtype="<u4")
-                    digital = (words & 0xFFFF).astype(np.uint16)
+                    # Packed wire: contiguous 16-bit little-endian samples.
+                    n2 = len(data) - (len(data) % 2)
+                    digital = np.frombuffer(data[:n2], dtype="<u2").astype(np.uint16)
                     analog = {}
                     if len(digital) < nsamp:
                         warnings.append(
@@ -335,9 +334,8 @@ class ExistingHostAdapter(HardwareDevice):
                     f"Loopback capture not supported for '{cfg.protocol}' on hardware")
             if not raw:
                 raise HardwareError("Generator capture returned no data")
-            n4 = len(raw) - (len(raw) % 4)
-            words = np.frombuffer(raw[:n4], dtype="<u4")
-            digital = (words & 0xFFFF).astype(np.uint16)
+            n2 = len(raw) - (len(raw) % 2)
+            digital = np.frombuffer(raw[:n2], dtype="<u2").astype(np.uint16)
             return CaptureResult(sample_rate=rate, digital=digital)
 
     # ── diagnostics ──────────────────────────────────────────────────

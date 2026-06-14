@@ -455,12 +455,36 @@ begin
     -- Without this, the CDC settling window for run_f_level (Armed→Run) can cause up to
     -- 1024 pre-trigger BRAM writes before switching to FIFO, delaying gen capture data.
     signal pretrig_tick_cnt : natural range 0 to 15 := 0;
+    -- Analog stream capture: when Analog_Stream_Mode is set, push the ADC frame
+    -- (Analog_Frame_Data, already packed by the top level as 7x16-bit = the
+    -- 14-byte host frame: 16-bit digital + 8x12-bit ADC) one 16-bit word per
+    -- sample tick instead of the digital Inputs word. The host captures at 7x
+    -- the frame rate and reads frames*7 words, so all existing FIFO/write-pump/
+    -- Full machinery is reused unchanged. A shift register emits the 7 words so
+    -- no wide mux lands in the 200 MHz path.
+    signal aframe_f     : std_logic_vector(127 downto 0) := (others => '0');
+    signal astream_s    : std_logic := '0';
+    signal astream_f    : std_logic := '0';
+    signal aframe_shift : std_logic_vector(127 downto 0) := (others => '0');
+    signal aword_idx    : natural range 0 to 6 := 0;
   begin
     -- Stage 0: sample pins
     process(FAST_CLK)
     begin
       if rising_edge(FAST_CLK) then
         sample_word_r <= Inputs;
+      end if;
+    end process;
+
+    -- CDC: register the slowly-changing analog frame + mode into FAST_CLK.
+    -- The frame is snapshotted at word 0 of each group, so a rare multi-bit
+    -- tear only perturbs a single frame of a slow analog signal.
+    process(FAST_CLK)
+    begin
+      if rising_edge(FAST_CLK) then
+        aframe_f  <= Analog_Frame_Data;
+        astream_s <= Analog_Stream_Mode;
+        astream_f <= astream_s;
       end if;
     end process;
 
@@ -548,10 +572,14 @@ begin
           fifo_overflow_f <= '0';
           bram_wp_r <= 0;
           bram_cnt_r <= 0;
+          aframe_shift <= aframe_f;   -- preload first analog frame snapshot
+          aword_idx <= 0;
         end if;
 
         if fifo_overflow_f = '0' then
-          if pretrig_en_r = '1' and pretrig_tick_cnt < 8 then
+          -- Pre-trigger BRAM is digital-only; skip it entirely in analog stream
+          -- mode so only ADC frame words enter the FIFO.
+          if pretrig_en_r = '1' and pretrig_tick_cnt < 8 and astream_f = '0' then
             bram_waddr <= bram_wp_r;
             bram_wdata <= sample_word_r;
             bram_wren  <= '1';
@@ -566,7 +594,20 @@ begin
 
           elsif capture_en_r = '1' and sample_tick_r = '1' then
             if fifo_wrfull = '0' then
-              fifo_wdata <= sample_word_r;
+              if astream_f = '1' then
+                -- Emit one 16-bit word of the analog frame per tick; reload the
+                -- snapshot after the 7th word so each frame is coherent.
+                fifo_wdata <= aframe_shift(15 downto 0);
+                if aword_idx = 6 then
+                  aframe_shift <= aframe_f;
+                  aword_idx <= 0;
+                else
+                  aframe_shift <= x"0000" & aframe_shift(127 downto 16);
+                  aword_idx <= aword_idx + 1;
+                end if;
+              else
+                fifo_wdata <= sample_word_r;
+              end if;
               fifo_wr <= '1';
               -- guard: at full rate one in-flight tick can push a word after
               -- the nonzero flag clears; don't underflow the natural

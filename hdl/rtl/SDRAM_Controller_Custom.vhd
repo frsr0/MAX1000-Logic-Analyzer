@@ -83,7 +83,12 @@ architecture rtl of SDRAM_Controller is
         end if;
     end function;
 
-    -- SDRAM timing parameters (nanoseconds)
+    -- SDRAM timing parameters (nanoseconds). These are the proven values: the
+    -- prime/drain block readout uses a FIXED 3-cycle latch tuned to the
+    -- resulting controller read latency, so changing tRCD/tRP/tRFC misaligns it
+    -- and corrupts reads everywhere (verified: padding them broke the readout).
+    -- (Padding was tried to fix the boundary residual and made no difference to
+    -- it, confirming that residual is elsewhere in the controller read path.)
     constant T_RCD  : real := 20.0;
     constant T_WR   : real := 15.0;
     constant T_RP   : real := 15.0;
