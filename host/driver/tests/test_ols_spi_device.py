@@ -328,13 +328,12 @@ class TestOLSDeviceSPICapture:
         device_spi.pkt.arm_capture.return_value = ST_OK
         device_spi.pkt.get_status.return_value = {
             'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
-        # One 14-byte payload frame, delivered over the wire as 32-bit words
-        # (payload in the low 2 bytes of each 4-byte word, high 2 bytes zero).
+        # One 14-byte mixed frame, carried densely on the wire: the FPGA packs
+        # 2 samples per 32-bit block entry, so the wire is already contiguous
+        # 16-bit little-endian words (wire_to_payload is identity).
         frame = bytes([0xBB, 0xAA, 0x23, 0x61, 0x45, 0x89, 0xC7, 0xAB,
                        0xEF, 0x2D, 0x01, 0x45, 0x83, 0x67])
-        wire = b''.join(frame[i:i + 2] + b'\x00\x00' for i in range(0, len(frame), 2))
-        assert len(wire) == 28
-        device_spi.pkt.read_capture_block.return_value = wire[:1024]
+        device_spi.pkt.read_capture_block.return_value = frame
         result, decoded = device_spi.capture_analog(
             rate_hz=100000, frames=1, mode=MODE_MIXED)
         assert len(result) == 14, f"expected 14 bytes, got {len(result)}"

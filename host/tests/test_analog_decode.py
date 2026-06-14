@@ -23,20 +23,20 @@ def test_wire_stride_is_double_payload():
     assert analog_wire_stride(MODE_MIXED) == 28
 
 
-def test_wire_to_payload_drops_zero_high_half():
-    # Each 4-byte word -> low 2 bytes kept, high 2 (zero) dropped.
-    wire = bytes([0x34, 0x12, 0x00, 0x00,   # word 0 -> 0x1234
-                  0xCD, 0xAB, 0x00, 0x00])  # word 1 -> 0xABCD
-    assert wire_to_payload(wire) == bytes([0x34, 0x12, 0xCD, 0xAB])
+def test_wire_to_payload_is_identity():
+    # The FPGA now packs 2 samples per 32-bit block entry, so the SPI wire is
+    # already contiguous 16-bit little-endian words. The old 32->16 collapse is
+    # done in hardware, so wire_to_payload is a pass-through.
+    data = bytes([0x34, 0x12, 0xCD, 0xAB, 0x01, 0x02])
+    assert wire_to_payload(data) == data
 
 
-def test_wire_to_payload_then_decode_mixed():
-    # A 14-byte payload frame delivered as 28 wire bytes round-trips cleanly.
+def test_decode_mixed_frame_from_dense_wire():
+    # A 14-byte mixed frame is carried densely on the wire (no zero padding);
+    # wire_to_payload is identity, so decoding it yields exactly one frame.
     frame = bytes([0xBB, 0xAA, 0x23, 0x61, 0x45, 0x89, 0xC7, 0xAB,
                    0xEF, 0x2D, 0x01, 0x45, 0x83, 0x67])
-    wire = b''.join(frame[i:i + 2] + b'\x00\x00' for i in range(0, len(frame), 2))
-    assert len(wire) == 28
-    rows = decode_analog_frames(wire_to_payload(wire), MODE_MIXED)
+    rows = decode_analog_frames(wire_to_payload(frame), MODE_MIXED)
     assert len(rows) == 1
     assert rows[0]["digital"] == 0xAABB
     assert rows[0]["adc"] == [0x123, 0x456, 0x789, 0xABC,
