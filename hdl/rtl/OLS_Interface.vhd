@@ -199,6 +199,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL block_rd_ack         : STD_LOGIC := '0';
   SIGNAL block_rd_addr        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL block_rd_state       : NATURAL range 0 to 6 := 0;
+  -- Watchdog kill: forces the block-read FSM back to idle when the dispatch
+  -- gives up on a stalled block read (e.g. a read issued during continuous
+  -- capture, where rd_mode is false so the FLA never streams and the response
+  -- FIFO never fills). Without this the dispatch hangs in WAIT_BLOCK forever
+  -- and every later command is ignored (the unrecoverable continuous wedge).
+  SIGNAL block_rd_kill        : STD_LOGIC := '0';
   -- Each 1024-byte read block packs 2 samples per 32-bit block_buf entry
   -- (even sample in bits 15:0, odd in 31:16), so one block carries 512 samples
   -- on the wire as contiguous 16-bit little-endian words (no wasted high half).
@@ -351,6 +357,11 @@ BEGIN
               cont_rem <= Read_Count / 4;
             END IF;
             Run_OLS <= '1';
+          ELSE
+            -- Stop driving the continuous run. The capture engine's Run is owned
+            -- by the arm/abort logic; the WAIT_BLOCK watchdog (not a Run clear
+            -- here) is what recovers a block read stalled during continuous mode.
+            Run_OLS <= '0';
           END IF;
         WHEN REG_GEN_PROTO =>
           gen_proto_int <= disp_reg_wdata(0);
@@ -616,7 +627,12 @@ BEGIN
     -- block boundary (that was the block-boundary corruption) and no prime/drain.
     sig_rd_pend_d1 <= block_rd_pending;
     Rd_Fifo_RdReq <= '0';
-    IF block_rd_pending = '1' AND sig_rd_pend_d1 = '0' THEN
+    IF block_rd_kill = '1' THEN
+      -- Dispatch watchdog gave up on a stalled stream; unwind the FSM so the
+      -- next block read starts clean instead of resuming a half-finished one.
+      block_rd_state <= 0;
+      block_rd_ack   <= '0';
+    ELSIF block_rd_pending = '1' AND sig_rd_pend_d1 = '0' THEN
       -- block_rd_addr is a BYTE address; the wire is 2 bytes/sample, so the
       -- base sample index = byte_addr / 2 (one 1024-byte block = 512 samples).
       Blk_Rd_Base  <= TO_INTEGER(UNSIGNED(block_rd_addr(31 downto 1)));
@@ -945,6 +961,14 @@ BEGIN
     variable feeding_block : boolean := false;
     variable feed_wait_ready_low : boolean := false;
     variable block_last_v : boolean := false;
+    -- Watchdog for WAIT_BLOCK. A healthy block read completes in a few thousand
+    -- CLK cycles; if block_rd_ack has not arrived well past that the stream has
+    -- stalled (read issued during continuous capture), so give up and recover
+    -- rather than hang the whole command dispatcher forever.
+    variable block_wd : natural range 0 to 2097151 := 0;
+    -- A normal 512-sample block read completes in ~5000 CLK cycles (~50 us at
+    -- 100 MHz); 50000 gives ~10x margin before the watchdog declares a stall.
+    constant BLOCK_WD_MAX : natural := 50000;
   begin
     if rising_edge(CLK) then
       -- Defaults
@@ -955,6 +979,7 @@ BEGIN
       disp_reg_write <= '0';
       disp_gen_start <= '0';
       disp_tx_payload_vld <= '0';
+      block_rd_kill <= '0';
 
       case st is
         when IDLE =>
@@ -1031,6 +1056,7 @@ BEGIN
                 block_rd_addr(23 downto 16) <= rx_payload_header(2);
                 block_rd_addr(31 downto 24) <= rx_payload_header(3);
                 block_rd_pending <= '1';
+                block_wd := 0;
                 st := WAIT_BLOCK;
               else
                 rsp_stat_v := ST_BAD_LEN;
@@ -1152,6 +1178,18 @@ BEGIN
             blk_bc := 0;
             feeding_block := true;
             st := BUILD_RSP;
+          elsif block_wd >= BLOCK_WD_MAX then
+            -- Stream stalled (e.g. block read during continuous capture). Kill
+            -- the block-read FSM, drop the pending request, and return an empty
+            -- error response so the dispatcher frees up for the next command
+            -- instead of wedging the device until it is reconfigured.
+            block_rd_kill <= '1';
+            block_rd_pending <= '0';
+            rsp_stat_v := ST_CAPTURE_IDLE;
+            rsp_len_v := 0;
+            st := BUILD_RSP;
+          else
+            block_wd := block_wd + 1;
           end if;
 
         when BUILD_RSP =>
