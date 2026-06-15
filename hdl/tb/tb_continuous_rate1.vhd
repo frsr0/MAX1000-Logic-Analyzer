@@ -9,9 +9,9 @@ end tb_continuous_rate1;
 
 architecture bench of tb_continuous_rate1 is
   constant CHANNELS    : natural := 8;
-  -- Samples=96 -> buf_limit_r = 96/6 = 16 words per buffer
-  constant TEST_WORDS  : natural := 96;
-  constant BUF_WORDS   : natural := TEST_WORDS / 6;
+  -- Continuous buffers are fixed 512 samples each; budget all three (3*512).
+  constant TEST_WORDS  : natural := 1536;
+  constant BUF_WORDS   : natural := 512;
 
   signal clk       : std_logic := '0';
   signal rate_div  : natural range 1 to 500000000 := 2;

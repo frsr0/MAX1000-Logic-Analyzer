@@ -145,7 +145,8 @@ begin
     -- Test 2: Continuous triple-buffer mode
     ------------------------------------------------------------------
     report "Test 2: Continuous triple-buffer mode";
-    samples_s <= 96;
+
+    samples_s <= 1536;  -- continuous buffers are 512 each; fill all three
     continuous_mode <= '1';
     fast_mode <= '0';
 
@@ -177,6 +178,7 @@ begin
     continuous_mode <= '0';
     pat_enable <= false;
     wait_cycles(clk, 50);
+
     report "Test 2: PASS";
 
     ------------------------------------------------------------------

@@ -9,7 +9,9 @@ end tb_continuous;
 
 architecture bench of tb_continuous is
   constant CHANNELS   : natural := 8;
-  constant TEST_WORDS : natural := 8;
+  -- Continuous buffers are fixed 512 samples each; budget several buffer fills
+  -- so Test 3 can refill a buffer after it is acked.
+  constant TEST_WORDS : natural := 4096;
 
   signal clk       : std_logic := '0';
   signal rate_div  : natural range 1 to 500000000 := 4;

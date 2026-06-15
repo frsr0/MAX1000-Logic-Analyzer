@@ -402,9 +402,11 @@ def test_continuous_capture(dev, debug_on=False):
     dev.spi.flush()
     time.sleep(0.02)
 
+    # Continuous mode uses fixed 512-sample (1024-byte) triple buffers; budget
+    # several buffer fills so a completed buffer is available to read.
     dev.pkt.write_register(REG_DIVIDER, dev.sys_clk // 1_000_000 - 1)
-    dev.pkt.write_register(REG_SAMPLE_COUNT, 256)
-    dev.pkt.write_register(REG_DELAY_COUNT, 256)
+    dev.pkt.write_register(REG_SAMPLE_COUNT, 2048)
+    dev.pkt.write_register(REG_DELAY_COUNT, 2048)
     dev.pkt.write_register(REG_TRIGGER_MASK, 0)
     dev.pkt.write_register(REG_TRIGGER_VALUE, 0)
     dev.pkt.write_register(REG_FAST_MODE, 1)
@@ -412,12 +414,16 @@ def test_continuous_capture(dev, debug_on=False):
     dev.spi.flush()
     time.sleep(0.02)
 
-    time.sleep(0.02)
+    # A completed buffer becomes readable once it fills (~512 samples). Poll a
+    # few times: an early read (before a buffer is ready) returns empty and the
+    # device self-recovers via the WAIT_BLOCK watchdog, so retrying is safe.
     data = bytearray()
-    for block_addr in range(0, 1024, 1024):
-        block = dev.pkt.read_capture_block(block_addr)
+    for _ in range(10):
+        block = dev.pkt.read_capture_block(0)
         if block:
             data.extend(block)
+            break
+        time.sleep(0.02)
     if data:
         ch, ns = samples_to_channels(bytes(data))
         log(f"captured {len(data)} bytes, {ns} samples")
@@ -438,7 +444,7 @@ def test_continuous_capture(dev, debug_on=False):
 
     dev.pkt.write_register(REG_CONT_MODE, 0)
     dev.spi.flush()
-    save_result(f"test6_continuous_debug_{debug_on}", b"", {"mode": "continuous", "nsamples": 256})
+    save_result(f"test6_continuous_debug_{debug_on}", b"", {"mode": "continuous", "nsamples": 2048})
 
 # ====================================================================
 # Test 7: Trigger edge

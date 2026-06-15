@@ -96,6 +96,10 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal buf_base0_r   : natural range 0 to Max_Samples := 0;
   signal buf_base1_r   : natural range 0 to Max_Samples := 0;
   signal buf_base2_r   : natural range 0 to Max_Samples := 0;
+  -- In continuous mode each triple buffer is exactly one host read block
+  -- (512 samples / 1024 bytes) so the standard CMD_READ_CAPTURE block protocol
+  -- streams a completed buffer verbatim. Single-shot still uses samples/6.
+  constant CONT_BUF    : natural := 512;
 
   -- Triple-buffer state
   signal buf_sel    : std_logic_vector(1 downto 0) := "00";
@@ -365,15 +369,24 @@ begin
     if rising_edge(pclk) then
       samples_div_p  <= samples_div;
       samples_div6_p <= samples_div6;
-      buf_limit_r    <= samples_div6;
-      if samples_div6 > 0 then
-        buf_last_r <= samples_div6 - 1;
+      if Continuous_Mode = '1' then
+        -- One 512-sample block per buffer, laid out 0 / 512 / 1024.
+        buf_limit_r <= CONT_BUF;
+        buf_last_r  <= CONT_BUF - 1;
+        buf_base0_r <= 0;
+        buf_base1_r <= CONT_BUF;
+        buf_base2_r <= CONT_BUF + CONT_BUF;
       else
-        buf_last_r <= 0;
+        buf_limit_r    <= samples_div6;
+        if samples_div6 > 0 then
+          buf_last_r <= samples_div6 - 1;
+        else
+          buf_last_r <= 0;
+        end if;
+        buf_base0_r    <= 0;
+        buf_base1_r    <= samples_div6;
+        buf_base2_r    <= samples_div6 + samples_div6;
       end if;
-      buf_base0_r    <= 0;
-      buf_base1_r    <= samples_div6;
-      buf_base2_r    <= samples_div6 + samples_div6;
     end if;
   end process;
 
@@ -888,6 +901,13 @@ begin
     variable stream_cnt    : natural range 0 to Max_Samples := 0;
     variable stream_i      : natural range 0 to Max_Samples := 0;
     variable rd_pend2      : std_logic := '0';
+    -- Continuous-mode readout: a host block read temporarily enters rd_mode to
+    -- stream one completed buffer, then frees it and returns to capture. The
+    -- read pointer walks the buffers in fill order so the host gets sequential
+    -- frames. cur_full backpressures the write pump off a full buffer.
+    variable cont_readout  : boolean := false;
+    variable cont_rd_sel   : natural range 0 to 2 := 0;
+    variable cur_full      : boolean := false;
   begin
     if rising_edge(pclk) then
       fifo_rd <= '0';
@@ -932,7 +952,11 @@ begin
           waddr_2 := 0;
         end if;
       end if;
-      -- Continuous mode backpressure handling
+      -- Continuous mode status/backpressure flag.
+      -- full_i just reports "all three buffers full" (host can read). rd_mode is
+      -- owned by the host-read path below, NOT here: the old code flipped it on
+      -- a quiet-pipeline window the async host read never coincided with, so a
+      -- completed buffer was never streamed and continuous readout returned 0.
       if Continuous_Mode = '1' then
         if full_i = '1' and (Buffer_Ack(0) = '1' or Buffer_Ack(1) = '1' or Buffer_Ack(2) = '1') then
           full_clr_pending <= '1';
@@ -940,14 +964,12 @@ begin
         if full_clr_pending = '1' then
           full_i <= '0';
           full_pending <= '0';
-          rd_mode := false;
           full_clr_pending <= '0';
         end if;
         if full_pending = '1' and fifo_rdempty = '1'
            and not wip and not wr_pend then
           full_i <= '1';
           full_pending <= '0';
-          rd_mode := true;  -- enter readout so OLS can read completed buffer
         end if;
       end if;
 
@@ -972,21 +994,40 @@ begin
         end if;
         s_wr <= '0'; s_rd <= '0';
         stream_active := false; rd_pend2 := '0';
+        cont_readout := false; cont_rd_sel := 0; cur_full := false;
 
       else
       -- Normal capture/readout/write-pump logic (skipped on run-edge cycle)
 
-      if rd_mode then
-        -- A request-toggle edge starts a single-shot block stream. Base/Count
-        -- are stable by now (held since before the toggle on the OLS side).
-        if (blk_req_s1 xor blk_req_s2) = '1' then
+      -- Block-read toggle edge -> start a stream. Base/Count are stable by now
+      -- (set on the OLS side before the toggle flipped and held for the stream).
+      if (blk_req_s1 xor blk_req_s2) = '1' then
+        if rd_mode then
+          -- Single-shot: read exactly the host-requested block.
           stream_base   := Blk_Rd_Base;
           stream_cnt    := Blk_Rd_Count;
           stream_i      := 0;
           rd_pend2      := '0';
           stream_active := true;
           s_rd          <= '0';
+        elsif Continuous_Mode = '1' and buf_full(cont_rd_sel) = '1' then
+          -- Continuous: the next completed buffer (fill order) is ready. Enter
+          -- readout to stream it; the write pump (rd_mode='false' branch) pauses
+          -- meanwhile, so samples accumulate in the afifo / are dropped under
+          -- backpressure and resume when we return to capture after the stream.
+          -- Continuous buffer bases are 0/512/1024 = cont_rd_sel * CONT_BUF.
+          stream_base   := cont_rd_sel * CONT_BUF;
+          stream_cnt    := Blk_Rd_Count;
+          stream_i      := 0;
+          rd_pend2      := '0';
+          stream_active := true;
+          cont_readout  := true;
+          rd_mode       := true;
+          s_rd          <= '0';
         end if;
+      end if;
+
+      if rd_mode then
 
         if stream_active then
           -- STREAMING READOUT: walk the block addresses, latch on the SDRAM
@@ -1007,6 +1048,16 @@ begin
             rd_pend2     := '0';
             if stream_i = stream_cnt - 1 then
               stream_active := false;
+              if cont_readout then
+                -- Free the buffer just streamed so the write pump can refill it
+                -- (its waddr/buf_rem are rewound when the pump re-selects it, via
+                -- the fill-switch or the cur_full repoint); advance the read
+                -- pointer and hand the SDRAM bus back to the write pump.
+                buf_full(cont_rd_sel) <= '0';
+                cont_rd_sel  := (cont_rd_sel + 1) mod 3;
+                cont_readout := false;
+                rd_mode      := false;
+              end if;
             else
               stream_i := stream_i + 1;
             end if;
@@ -1040,6 +1091,27 @@ begin
         -- CAPTURE: SDRAM write pump — drains async FIFO (live + flushed
         -- pre-trigger samples arrive via a single FIFO stream).
 
+        -- Continuous backpressure: never write into a buffer that is already
+        -- full. If buf_sel points at a full buffer (it stayed there because all
+        -- three were full), repoint to a freed one; while it still points at a
+        -- full buffer inhibit the pop so the afifo backpressures the capture
+        -- instead of corrupting the full buffer.
+        cur_full := false;
+        if Continuous_Mode = '1' then
+          if (buf_sel = "00" and buf_full(0) = '1')
+             or (buf_sel = "01" and buf_full(1) = '1')
+             or (buf_sel = "10" and buf_full(2) = '1') then
+            cur_full := true;
+            if buf_full(0) = '0' then
+              buf_sel <= "00"; waddr_0 := 0; buf_rem_0 <= buf_limit_r;
+            elsif buf_full(1) = '0' then
+              buf_sel <= "01"; waddr_1 := 0; buf_rem_1 <= buf_limit_r;
+            elsif buf_full(2) = '0' then
+              buf_sel <= "10"; waddr_2 := 0; buf_rem_2 <= buf_limit_r;
+            end if;
+          end if;
+        end if;
+
         if wr_pend then
           s_addr  <= wr_pend_addr;
           s_wdata <= wr_pend_data;
@@ -1047,7 +1119,7 @@ begin
           wip     := true;
           wr_pend := false;
 
-        elsif fifo_rdempty = '0' and not wip and sdram_busy = '0' then
+        elsif fifo_rdempty = '0' and not wip and sdram_busy = '0' and not cur_full then
           -- async FIFO source: live post-trigger data
           fifo_rd <= '1';
 

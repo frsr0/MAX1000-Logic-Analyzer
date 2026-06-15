@@ -152,7 +152,7 @@ begin
       pkt_cmd(spi_cs, sck, spi_mosi, spi_miso, CMD_ARM_CAPTURE, empty, 0, st);
       loop
         pkt_cmd(spi_cs, sck, spi_mosi, spi_miso, CMD_GET_STATUS, empty, 0, st);
-        exit when st = ST_CAPTURE_DONE or deadline > 200;
+        exit when st = ST_CAPTURE_DONE or deadline > 25;
         deadline := deadline + 1; wait for 10 us;
       end loop;
       addr_pld := (x"00", x"00", x"00", x"00");
@@ -177,26 +177,33 @@ begin
     report "=== A: single-shot capture (baseline) ===";
     single_capture("A-baseline");
 
-    report "=== B: continuous capture then stop ===";
+    report "=== B: continuous capture - readout delivers data, no wedge ===";
     pkt_cmd(spi_cs, sck, spi_mosi, spi_miso, CMD_ABORT_CAPTURE, empty, 0, st);
     wreg(spi_cs, sck, spi_mosi, spi_miso, REG_DIVIDER, 9);
-    wreg(spi_cs, sck, spi_mosi, spi_miso, REG_SAMPLE_COUNT, 256);
-    wreg(spi_cs, sck, spi_mosi, spi_miso, REG_DELAY_COUNT, 256);
+    wreg(spi_cs, sck, spi_mosi, spi_miso, REG_SAMPLE_COUNT, 2048);
+    wreg(spi_cs, sck, spi_mosi, spi_miso, REG_DELAY_COUNT, 2048);
     wreg(spi_cs, sck, spi_mosi, spi_miso, REG_FAST_MODE, 1);
     wreg(spi_cs, sck, spi_mosi, spi_miso, REG_CONT_MODE, 1);  -- start continuous
-    wait for 40 us;
-    -- Read a block DURING continuous capture. rd_mode is false while capturing,
-    -- so the FLA never streams and this read stalls the block-read FSM -- the
-    -- exact operation that used to wedge the dispatcher permanently.
+    -- Poll-read: continuous readout hands back a completed 512-sample buffer
+    -- once one has filled. An early read (before any buffer is ready) stalls the
+    -- block-read FSM and is recovered by the WAIT_BLOCK watchdog (the wedge fix),
+    -- so this both proves data delivery AND that early reads never wedge.
     addr_pld := (x"00", x"00", x"00", x"00");
-    pkt_send(spi_cs, sck, spi_mosi, spi_miso, CMD_READ_CAPTURE, addr_pld, 4);
-    wait for 30 us;
-    pkt_read_rsp(spi_cs, sck, spi_mosi, spi_miso, 1100, st, pay, pl);
-    report "continuous block bytes=" & integer'image(pl);
-    -- The dispatcher is now stuck in WAIT_BLOCK. Wait past the watchdog timeout
-    -- (BLOCK_WD_MAX cycles) so it self-recovers before the next command, then
-    -- stop continuous and prove a normal single-shot capture still works.
-    wait for 1500 us;
+    pl := 0;
+    for attempt in 0 to 12 loop
+      wait for 60 us;
+      pkt_send(spi_cs, sck, spi_mosi, spi_miso, CMD_READ_CAPTURE, addr_pld, 4);
+      wait for 30 us;
+      pkt_read_rsp(spi_cs, sck, spi_mosi, spi_miso, 1100, st, pay, pl);
+      exit when pl >= 1024;
+    end loop;
+    report "B continuous data bytes=" & integer'image(pl) & " (expect 1024)";
+    if pl >= 1024 then
+      report "B-continuous: PASS (readout delivered a full buffer)" severity note;
+    else
+      report "B-continuous: FAIL (" & integer'image(pl) & " bytes)" severity error;
+      fails := fails + 1;
+    end if;
     wreg(spi_cs, sck, spi_mosi, spi_miso, REG_CONT_MODE, 0);  -- stop continuous
     wait for 20 us;
 
