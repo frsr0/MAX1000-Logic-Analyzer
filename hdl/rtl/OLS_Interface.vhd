@@ -82,7 +82,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL Divider : NATURAL range 0 to 16777215 := 0;
   SIGNAL Read_Count  : NATURAL := 0;
   SIGNAL Delay_Count : NATURAL := 0;
-  SIGNAL Channel_Groups : STD_LOGIC_VECTOR(3 downto 0) := "0000";
   SIGNAL analog_enable_i  : STD_LOGIC := '0';
   SIGNAL SPI_RX_Valid     : STD_LOGIC := '0';
   SIGNAL SPI_RX_Data      : STD_LOGIC_VECTOR (8-1 DOWNTO 0) := (others => '0');
@@ -93,8 +92,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   -- Generator FIFO depth (matches Signal_Gen.vhd generic)
   constant GEN_FIFO_DEPTH : natural := 256;
 
-  SIGNAL addr : NATURAL := 0;
-  SIGNAL wr_ctr : NATURAL range 0 to 18 := 0;
 
   SIGNAL gen_start_cnt : NATURAL range 0 to 63 := 0;
   SIGNAL gen_start_req : STD_LOGIC := '0';
@@ -115,12 +112,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
    SIGNAL gen_baud_div_int   : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   SIGNAL fast_mode_i        : STD_LOGIC := '0';
   SIGNAL continuous_mode_i   : STD_LOGIC := '0';
-  SIGNAL cont_buf_sel        : NATURAL range 0 to 2 := 0;
-  SIGNAL cont_rem            : NATURAL range 0 to 1048576 := 0;
-  SIGNAL cont_base_addr      : NATURAL range 0 to 1048576 := 0;
-  SIGNAL cont_prefetch       : STD_LOGIC := '0';
-  SIGNAL prev_buf_sel        : NATURAL range 0 to 2 := 0;
-  SIGNAL buffer_ack_i        : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
   SIGNAL spi_preamble        : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL spi_preamble_r      : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL spi_tx_ready_i      : STD_LOGIC := '0';
@@ -307,11 +298,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
 
 BEGIN
   PROCESS (CLK)  
-    VARIABLE Thread23 : NATURAL range 0 to 6 := 0;
-    VARIABLE Thread26 : NATURAL range 0 to 34 := 0;
-    VARIABLE Thread30 : NATURAL range 0 to 3 := 0;
-    VARIABLE Thread31 : NATURAL range 0 to 4 := 0;
-    VARIABLE next_sel : NATURAL range 0 to 2 := 0;
   BEGIN
   IF RISING_EDGE(CLK) THEN
     div3_pending <= '0';
@@ -319,7 +305,7 @@ BEGIN
     gen_reg_load_req <= '0';
     IF disp_arm = '1' THEN
       Run_OLS <= '1';
-      Thread23 := 0;
+      Run <= '0';  -- force a clean 0->1 Run edge so the FLA starts a new capture
     END IF;
     IF disp_abort = '1' THEN
       Run_OLS <= '0';
@@ -348,19 +334,12 @@ BEGIN
         WHEN REG_CONT_MODE =>
           continuous_mode_i <= disp_reg_wdata(0);
           IF disp_reg_wdata(0) = '1' THEN
-            cont_buf_sel <= 0;
-            cont_base_addr <= 0;
-            cont_prefetch <= '0';
-            IF div3_busy = '0' THEN
-              cont_rem <= samples_div3;
-            ELSE
-              cont_rem <= Read_Count / 4;
-            END IF;
             Run_OLS <= '1';
           ELSE
-            -- Stop driving the continuous run. The capture engine's Run is owned
-            -- by the arm/abort logic; the WAIT_BLOCK watchdog (not a Run clear
-            -- here) is what recovers a block read stalled during continuous mode.
+            -- Stop continuous. Only clear Run_OLS here; the capture-engine Run is
+            -- owned by the arm/abort logic (disp_arm forces a clean 0->1 edge and
+            -- abort clears it). Driving Run from this register handler too breaks
+            -- ARM (it would also fire on stray reg writes and stick Run at 0).
             Run_OLS <= '0';
           END IF;
         WHEN REG_GEN_PROTO =>
@@ -463,163 +442,6 @@ BEGIN
           inputs_prev <= Inputs;
         END IF;
     END IF;
-      IF (Full = '1' OR Run = '1') THEN
-        CASE (Thread23) IS
-          WHEN 0 =>
-            IF continuous_mode_i = '1' THEN
-              addr <= cont_base_addr;
-            ELSE
-              addr <= 0;
-            END IF;
-            cont_prefetch <= '0';
-            Thread23 := 1;
-          WHEN 1 =>
-            IF continuous_mode_i = '1' THEN
-              IF fast_mode_i = '1' THEN
-                -- Fast mode continuous: single buffer, no prefetch
-                IF cont_rem > 0 THEN
-                  Thread23 := 2;
-                ELSE
-                  Thread23 := 4;
-                END IF;
-              ELSIF cont_prefetch = '1' THEN
-                -- Prefetch was primed in previous cycle: ack completed buffer, read next
-                buffer_ack_i <= (others => '0');
-                buffer_ack_i(prev_buf_sel) <= '1';
-                cont_prefetch <= '0';
-                Thread26 := 0;
-                Thread23 := 2;
-              ELSIF cont_rem > 1 THEN
-                Thread23 := 2;  -- normal read (more than 1 addr left)
-              ELSIF cont_rem = 1 THEN
-                -- Last address: try to prefetch next buffer
-                next_sel := (cont_buf_sel + 1) mod 3;
-                IF Buffer_Full(next_sel) = '1' THEN
-                  prev_buf_sel <= cont_buf_sel;
-                  cont_prefetch <= '1';
-                  cont_buf_sel <= next_sel;
-                  CASE next_sel IS
-                    WHEN 0 => cont_base_addr <= 0;
-                    WHEN 1 => cont_base_addr <= samples_div3;
-                    WHEN 2 => cont_base_addr <= samples_2div3;
-                  END CASE;
-                END IF;
-                Thread23 := 2;
-              ELSE
-                Thread23 := 4;  -- buffer done, no prefetch
-              END IF;
-            ELSIF ( addr < Samples) THEN 
-              Thread23 := Thread23 + 1;
-            ELSE
-              Thread23 := Thread23 + 2;
-            END IF;
-          WHEN (1+1) =>
-            CASE (Thread26) IS
-      WHEN 0 =>
-        -- The legacy streaming readout walks `addr` across the whole capture
-        -- and drives Address from it. In single-shot SPI mode readout is done
-        -- exclusively via CMD_READ_CAPTURE block reads, so this free-running
-        -- walk only issues spurious SDRAM reads. For a large capture it is
-        -- still walking when the host's first block read arrives (SPI command
-        -- latency), and the two readers collide on the SDRAM — the block read
-        -- returns garbage/undriven data. (Small captures finish the walk
-        -- first, which is why the corruption only appeared above ~10k samples.)
-        -- Only drive Address from the walk in continuous mode, where the
-        -- prefetch streaming path genuinely needs it.
-        IF block_rd_state = 0 AND continuous_mode_i = '1' THEN
-          Address <= addr;
-        END IF;
-        Thread26 := 1;
-      WHEN 1 to 29 =>
-        Thread26 := Thread26 + 1;
-      WHEN 30 =>
-        wr_ctr <= 0;
-        Thread26 := 31;
-      WHEN 31 =>
-        IF ( wr_ctr < 4) THEN 
-          Thread26 := Thread26 + 1;
-        ELSE
-          Thread26 := Thread26 + 2;
-        END IF;
-      WHEN 32 =>
-        CASE (Thread30) IS
-                  WHEN 0 =>
-                    IF (Channel_Groups(wr_ctr) = '0') THEN 
-                      Thread30 := Thread30 + 1;
-                    ELSE
-                      Thread30 := Thread30 + 2;
-                    END IF;
-                        WHEN (0+1) =>
-                    CASE (Thread31) IS
-                      WHEN 0 =>
-                        -- SPI mode: wait for SPI to be ready
-                        IF spi_tx_ready_i = '1' THEN
-                          Thread31 := 0;
-                          Thread30 := 2;
-                        END IF;
-                      WHEN others => Thread31 := 0;
-                    END CASE;
-        WHEN 2 =>
-          wr_ctr <= wr_ctr + 1;
-          Thread30 := 0;
-          Thread26 := 31;
-          -- Prefetch: change Address to next buffer's base after last byte sent
-          IF cont_prefetch = '1' AND wr_ctr = 0 AND block_rd_state = 0 THEN
-            Address <= cont_base_addr;
-          END IF;
-        WHEN others => Thread30 := 0;
-      END CASE;
-    WHEN 33 =>
-      addr <= addr + 1;
-      IF continuous_mode_i = '1' AND cont_rem > 0 THEN
-        cont_rem <= cont_rem - 1;
-      END IF;
-      Thread26 := 0;
-      Thread23 := 1;
-              WHEN others => Thread26 := 0;
-            END CASE;
-          WHEN 3 =>
-            IF continuous_mode_i = '1' THEN
-              Thread23 := 4;  -- continuous: ack and continue
-            ELSE
-              Run_OLS <= '0';
-              Run <= '0';
-              Thread23 := 6;  -- non-continuous: idle (was 0, looped into second all-zero readout)
-            END IF;
-          WHEN 6 =>
-            null;  -- idle after non-continuous single-shot readout
-          WHEN 4 =>
-            -- Buffer read complete: ack the buffer we just finished
-            buffer_ack_i <= (others => '0');
-            buffer_ack_i(cont_buf_sel) <= '1';
-            IF fast_mode_i = '1' THEN
-              -- Fast mode: single BRAM buffer, stay on 0, reload 1024 words
-              cont_base_addr <= 0;
-              cont_buf_sel <= 0;
-              cont_rem <= 1024;
-            ELSE
-              -- SDRAM: cycle to next buffer (0→1→2→0)
-              CASE cont_buf_sel IS
-                WHEN 0 => cont_base_addr <= samples_div3;  cont_buf_sel <= 1;
-                WHEN 1 => cont_base_addr <= samples_2div3;  cont_buf_sel <= 2;
-                WHEN 2 => cont_base_addr <= 0;  cont_buf_sel <= 0;
-              END CASE;
-              cont_rem <= samples_div3;
-            END IF;
-            Thread23 := 5;
-          WHEN 5 =>
-            buffer_ack_i <= (others => '0');
-            -- Check if next buffer is already full
-            IF (cont_buf_sel = 0 AND Buffer_Full(0) = '1') OR
-               (cont_buf_sel = 1 AND Buffer_Full(1) = '1') OR
-               (cont_buf_sel = 2 AND Buffer_Full(2) = '1') THEN
-              addr <= cont_base_addr;
-              Thread26 := 0;
-              Thread23 := 2;
-            END IF;
-          WHEN others => Thread23 := 0;
-        END CASE;
-      END IF;
     -- ── Block read state machine (for CMD_READ_CAPTURE) ──────────────
     -- Request a BLOCK_SAMPLES-long stream from the FLA and drain it through the
     -- response FIFO. The FIFO is a true CDC across the FLA's pclk readout domain
@@ -846,7 +668,7 @@ BEGIN
   Blk_Rd_Req_Tog <= blk_req_tog_i;
   Continuous_Mode <= continuous_mode_i;
   Analog_Enable <= analog_enable_i;
-  Buffer_Ack      <= buffer_ack_i;
+  Buffer_Ack      <= (others => '0');  -- FLA frees its own continuous buffers
   Armed          <= Run_OLS;
   Debug_Ch0_Enable <= debug_ch0_enable_i;
   Debug_Ch0_Period <= debug_ch0_period_i;
