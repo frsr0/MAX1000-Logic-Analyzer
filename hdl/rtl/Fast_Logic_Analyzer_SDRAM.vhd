@@ -1063,9 +1063,15 @@ begin
             end if;
           end if;
 
-        else
-          -- LEGACY Address-driven readout -> Outputs (continuous mode and the
-          -- FLA-direct testbenches, which never assert the stream request).
+        elsif Sim then
+          -- LEGACY Address-driven readout -> Outputs. Used ONLY by the FLA-direct
+          -- testbenches (which read Outputs directly). On real hardware the host
+          -- reads exclusively via the response-FIFO block-read path and nothing
+          -- consumes Outputs (OLS_Interface's Outputs input is unconnected), so
+          -- this walk is dead silicon -- gate it out behind Sim to free LABs (the
+          -- device is 100% full). NB the OLS-side Thread23 address walk that feeds
+          -- this can NOT also be removed: it still does Run<='0' to terminate a
+          -- single-shot capture (OLS_Interface.vhd), so it stays.
           read_addr := Address + Start_Offset;
           if read_addr /= a_reg then
             a_reg := read_addr;
