@@ -26,6 +26,9 @@ import sys, time, os, json, threading
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 NUM_CHANNELS = 23
+UART_TRIGGER_BAUD = 115200
+UART_TRIGGER_RATE = 2_000_000
+UART_MIN_SPB = 8
 
 try:
     from driver.ols_spi_device import OLSDeviceSPI, NUM_CHANNELS as SPI_NUM_CH
@@ -125,6 +128,19 @@ def decode_i2c_best(ch, samplerate, scl_idx=1, sda_idx=2, filter_threshold=0,
             best_offset = offset
             best_score = score
     return best_decoded, best_offset
+
+
+def decode_uart_safe(ch, samplerate, ch_idx=0, baud=115200,
+                     filter_threshold=0, min_spb=UART_MIN_SPB):
+    spb = samplerate / baud
+    log(f"  UART sampling margin: {spb:.2f} samples/bit "
+        f"(min {min_spb})")
+    if spb < min_spb:
+        check(False, f"UART decode sample rate too low: {spb:.2f} "
+              f"samples/bit (need >= {min_spb})")
+        return []
+    return decode_uart(ch, samplerate, ch_idx=ch_idx, baud=baud,
+                       filter_threshold=filter_threshold)
 
 
 def run_with_debug(test_fn, dev, label, *args, **kwargs):
@@ -327,10 +343,12 @@ def test_fast_capture(dev, debug_on=False):
                 check(True, f"fast CH0 transitions ({tr0} vs ~{exp_tr0})")
             else:
                 log(f"  [INFO] fast CH0 has {tr0} transitions (expected ~{exp_tr0})")
-            check_channels_clean(ch, ns, except_ch=[0], label="fast")
+            check_channels_clean(ch, ns, except_ch=[0], max_trans=10,
+                                 label="fast")
         else:
             check(tr0 <= 100, f"fast mode CH0 debug OFF: quiet ({tr0} transitions)")
-            check_channels_clean(ch, ns, except_ch=[0], label="fast")
+            check_channels_clean(ch, ns, except_ch=[0], max_trans=10,
+                                 label="fast")
     else:
         check(False, "fast mode capture returned data")
 
@@ -456,10 +474,12 @@ def test_trigger_edge(dev, debug_on=False):
     dev.spi.flush()
     time.sleep(0.02)
 
-    data = dev.capture(rate_hz=1_000_000, nsamples=512, trigger="rising", timeout=10)
+    pre = 256
+    data = dev.capture(rate_hz=1_000_000, nsamples=512, trigger="rising",
+                       timeout=10, pre_trigger=pre)
     if data:
-        ch, ns = samples_to_channels(data)
-        log(f"captured {len(data)} bytes, {ns} samples")
+        ch, ns = samples_to_channels(data, stride=2)
+        log(f"captured {len(data)} bytes, {ns} samples (pre_trigger={pre})")
         tr = sum(1 for i in range(1, len(ch[0])) if ch[0][i] != ch[0][i - 1])
         log(f"  CH0: {tr} transitions, {sum(ch[0])}/{ns} ones")
         if debug_on:
@@ -478,7 +498,8 @@ def test_trigger_edge(dev, debug_on=False):
             check_channels_clean(ch, ns, except_ch=[0], label="trig")
     else:
         check(False, "trigger capture returned data")
-    save_result(f"test7_trigger_edge_debug_{debug_on}", data, {"trigger": "rising"})
+    save_result(f"test7_trigger_edge_debug_{debug_on}", data,
+                {"trigger": "rising", "pre_trigger": pre})
 
 # ====================================================================
 # Test 8: Generator UART
@@ -899,36 +920,51 @@ def test_trigger_decode(dev, debug_on=False):
     dev.reset()
     time.sleep(0.02)
 
-    # Configure protocol trigger: match 'H' (0x48) on CH3 at 115200 baud
-    log("configuring UART byte match trigger for 'H' (0x48) on CH3 at 115200 baud...")
-    dev.trigger_decode(match_byte=0x48, channel=3, baud=115200, enable=True)
+    # Configure protocol trigger: match 'H' (0x48) on CH3.
+    log("configuring UART byte match trigger for 'H' (0x48) "
+        f"on CH3 at {UART_TRIGGER_BAUD} baud...")
+    dev.trigger_decode(match_byte=0x48, channel=3,
+                       baud=UART_TRIGGER_BAUD, enable=True)
 
     # Send 'Hello' from generator on CH3 and capture
     dev._gen_data = b'Hello'
-    dev._gen_baud = 115200
+    dev._gen_baud = UART_TRIGGER_BAUD
     dev._gen_tx_pin = 3
-    data = dev.capture_with_gen(rate_hz=500_000, nsamples=5000, timeout=10)
+    data = dev.capture_with_gen(rate_hz=UART_TRIGGER_RATE,
+                                nsamples=5000, timeout=10)
     if data:
-        ch, ns = samples_to_channels(data)
+        ch, ns = samples_to_channels(data, stride=2)
         gen_ch = ch[3] if len(ch) > 3 else ch[0]
         tr = sum(1 for i in range(1, len(gen_ch)) if gen_ch[i] != gen_ch[i - 1])
         log(f"trigger decode capture: {len(data)} bytes, {ns} samples, CH3 {tr} transitions")
         clean_except = [0, 3]
         check_channels_clean(ch, ns, except_ch=clean_except, max_trans=30, label="trig_decode")
-        decoded = decode_uart(ch, 500_000, ch_idx=3, baud=115200)
+        decoded = decode_uart_safe(ch, UART_TRIGGER_RATE, ch_idx=3,
+                                   baud=UART_TRIGGER_BAUD)
         log(f"  UART decoded: {len(decoded)} bytes")
+        text = ''.join(chr(b.value) if 32 <= b.value < 127 else '.'
+                       for b in decoded[:10])
         if decoded:
-            text = ''.join(chr(b.value) if 32 <= b.value < 127 else '.' for b in decoded[:10])
             log(f"  decoded text: {text}")
-            check(len(decoded) >= 3, f"Trigger decode got >=3 bytes ({len(decoded)})")
+            spb = UART_TRIGGER_RATE / UART_TRIGGER_BAUD
+            check(len(decoded) >= 3,
+                  f"Trigger decode got >=3 bytes ({len(decoded)}, "
+                  f"text='{text}', {spb:.2f} samples/bit)")
         else:
-            log(f"  [INFO] No UART decoded â€” gen+trigger combo may need hardware debug")
+            spb = UART_TRIGGER_RATE / UART_TRIGGER_BAUD
+            log(f"  [INFO] No UART decoded at {spb:.2f} samples/bit "
+                "- gen+trigger combo may need hardware debug")
     else:
         check(False, "trigger decode capture returned no data")
 
     # Disable trigger
     dev.trigger_decode(enable=False)
-    save_result(f"test14_trigger_decode_debug_{debug_on}", data if data else b"", {"trigger": "uart_byte_match"})
+    save_result(f"test14_trigger_decode_debug_{debug_on}",
+                data if data else b"",
+                {"trigger": "uart_byte_match",
+                 "rate_hz": UART_TRIGGER_RATE,
+                 "baud": UART_TRIGGER_BAUD,
+                 "samples_per_bit": UART_TRIGGER_RATE / UART_TRIGGER_BAUD})
 
 # ====================================================================
 # Test 15: Noise floor â€” all channels should be clean with no signal source

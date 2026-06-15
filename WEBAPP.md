@@ -262,6 +262,23 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
 - Rolling capture on real hardware is bounded by SPI readback (~30 MB/s); the
   adapter currently exposes single/repeat capture and reuses the driver's
   rolling generator for future streaming UI.
+- Current continuous mode is bounded, not an infinite rolling capture. Planned
+  fix: expose an FPGA ring-buffer contract with producer index,
+  completed-buffer index, overrun flag and host ACK, while keeping the current
+  bounded API until HDL sim and HW validation both pass.
+- Capture DONE status is treated as advisory because the status bit can race
+  fast readback. Planned fix: latch DONE until host ACK/read-reset or expose a
+  monotonic capture sequence ID, then have host validation assert fresh data by
+  sequence rather than by transient status.
+- Mixed/analog mode can wedge a following capture unless the host clears analog
+  config and resets. Planned fix: make each capture setup write the full mode
+  state and add digital -> mixed -> digital back-to-back HW validation.
+- Continuous `Rate_Div=1` has a start-up race. Planned fix: gate continuous
+  start until the divider/sample-clock domain has one initialized tick, then add
+  HDL and HW tests for max-rate continuous capture.
+- FPGA utilization is high (~96% LAB on the current image). Planned fix: after
+  functional fixes, trim duplicate debug/test mux logic guided by synthesis
+  reports; do not block feature fixes on LAB cleanup unless compile fails.
 
 **Planned (software):**
 - FFT/spectrum view exists as an API endpoint (`/spectrum`) — dedicated UI
