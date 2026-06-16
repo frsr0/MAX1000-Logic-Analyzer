@@ -6,16 +6,16 @@ Target: Intel MAX10 10M08SAU169C8G on Arrow MAX1000 board. PLL multiplies 12 MHz
 
 | Output | Multiply | Frequency | Domain |
 |--------|----------|-----------|--------|
-| c0 | ×8 | 96 MHz | SDRAM write pump, buffer mgmt, readout, OLS protocol |
-| c1 | ×10 | 120 MHz | **Sample capture** (FAST_CLK), SPI slave |
-| c2 | ×8 | 96 MHz, −90° | SDRAM clock (phase-shifted for data centering) |
+| c0 | ×8.33 | 100 MHz | SDRAM write pump, buffer mgmt, readout, OLS protocol |
+| c1 | ×16.67 | 200 MHz | **Sample capture** (FAST_CLK), SPI slave |
+| c2 | ×8.33 | 100 MHz, −90° | SDRAM clock (phase-shifted for data centering) |
 
-VCO = 480 MHz. System frequency: `12_000_000 * PLL_MULT / PLL_DIV` (defaults 8/1 → 96 MHz).
+VCO = 480 MHz. Current generated wrapper uses `FAST_SPEED => true` for a 100 MHz system clock and 200 MHz sample clock. Normal mode remains available through the top-level generics but requires changing `proj/compile.ps1`; the generated wrapper is overwritten on each build.
 
 ### Two-Clock Domain Split
 
 ```
-FAST_CLK (120 MHz, c1)                   CLK (96 MHz, c0)
+FAST_CLK (200 MHz, c1)                   CLK (100 MHz, c0)
 ┌────────────────────────────┐          ┌───────────────────────────┐
 │ sample divider (28-bit)    │          │ async FIFO read (dcfifo)  │
 │ input packer (16→16-bit)   │──4096──▶│ SDRAM address assignment  │
@@ -57,9 +57,9 @@ OLS_Logic_Analyzer_wrapper      — pin assignment wrapper (auto-generated from 
 
 Capture engine with two-clock domain split.
 
-**FAST_CLK (120 MHz) processes:**
+**FAST_CLK (200 MHz) processes:**
 - **Config handshake**: Detects `cfg_valid_edge` (toggled by CLK domain on run start), latches `cfg_rate_div_f` and `cfg_samples_f`, acks via `cfg_ack_toggle`
-- **Sample divider**: 28-bit down-counter, fires every `cfg_rate_div_f` cycles
+- **Sample divider**: 28-bit down-counter, fires every `cfg_rate_div_f + 1` cycles; a start gate waits for config ACK/divider reload before sampling, including `Rate_Div=1`
 - **Input packer**: Shifts 16 channel bits into 32-bit buffer, assembles 16-bit words
 - **Pre-trigger BRAM**: When armed, writes samples to circular 1,024×16 M9K. On trigger (`cfg_valid_edge`), snapshots write pointer via `bram_wp_f`/`bram_cnt_f`
 - **Async FIFO push**: Post-trigger, pushes 16-bit words to dcfifo (4,096 depth). Sets overflow on FIFO full or sample count reached
@@ -70,8 +70,8 @@ Capture engine with two-clock domain split.
 - **BRAM snapshot latch**: On `snap_valid_clk`, latches `bram_wp_snap`/`bram_cnt_snap` (2FF CDC)
 - **BRAM flush**: After run_edge, reads pre-trigger data from BRAM using frozen snapshot, writes to SDRAM
 - **SDRAM write pump**: Reads from dcfifo, assigns SDRAM addresses (22-bit), writes single words
-- **Continuous mode**: Triple-buffer with `Buffer_Full[2:0]`/`Buffer_Ack[2:0]` handshake
-- **Readout**: Address-driven SDRAM reads → `Outputs`
+- **Continuous mode**: SDRAM ring buffer with monotonic `producer_index`, retained `oldest_index`/`newest_index`, and `overrun_count`; legacy buffer flags remain as readiness markers
+- **Readout**: Address-driven SDRAM reads → `Outputs`; continuous readout maps absolute sample indexes into the ring
 - **Full detection**: Asserts `full_i` when buffer exhausted + FIFO empty + flush complete
 
 ### `rtl/OLS_SDRAM_Top.vhd` (~670 lines)
@@ -84,19 +84,19 @@ System integration. Instantiates `SDRAM_PLL`, distributes clocks. 23-pin pool (M
 
 **Entity:** `OLS_Logic_Analyzer`
 
-Core wrapper. Instantiates `OLS_Interface`, `Fast_Logic_Analyzer_SDRAM`, `Signal_Gen`, `Protocol_Trigger`, `SPI_Slave2`. Routes triple-buffer handshake signals.
+Core wrapper. Instantiates `OLS_Interface`, `Fast_Logic_Analyzer_SDRAM`, `Signal_Gen`, `Protocol_Trigger`, `SPI_Slave2`. Routes capture control, generator control, buffer handshakes, and continuous ring metadata.
 
 ### `rtl/OLS_Interface.vhd` (~1,172 lines)
 
 **Entity:** `OLS_Interface`
 
-Command/control interface. 28 opcodes covering register access, capture control, generator, diagnostics. Thread38/Thread44/Thread23 FSMs. `ID = 0x31414c53` ("SLA1").
+Command/control interface. Packet opcodes cover register access, capture control, generator, diagnostics, sticky DONE ACK, and metadata readback. DONE latches until ACK, abort, or the next arm; `capture_seq` increments on every arm so the host can prove readback freshness. `ID = 0x31414c53` ("SLA1").
 
 ### `rtl/SPI_Slave2.vhd` (165 lines)
 
 **Entity:** `SPI_Slave2`
 
-Full-duplex SPI slave on `fast_clk` (120 MHz). CDC: 2FF for config (96→120 MHz), 3FF for RX valid (120→96 MHz). Preamble byte loaded at CS falling edge — first MISO byte is status with zero protocol waste.
+Full-duplex SPI slave on `fast_clk` (200 MHz in speed build). CDC: 2FF for config/control crossings and 3FF for RX valid. Preamble byte loaded at CS falling edge — first MISO byte is status with zero protocol waste.
 
 ### `rtl/SDRAM_Interface.vhd` (191 lines)
 
@@ -114,7 +114,7 @@ Custom SDRAM controller: power-on init, read, write, burst (4-word), auto-refres
 
 **Entity:** `SDRAM_PLL`
 
-Altera ALTPLL. 12 MHz input → c0 (×8, 96 MHz), c1 (×10, 120 MHz), c2 (×8, 96 MHz, −90°). Auto bandwidth.
+Altera ALTPLL. 12 MHz input → c0 (100 MHz), c1 (200 MHz), c2 (100 MHz, −90°) in the current speed build. Auto bandwidth.
 
 ### `rtl/ADC_Controller.vhd` (283 lines)
 
@@ -173,8 +173,10 @@ ghdl -r --std=08 <testbench> --assert-level=failure
 | Testbench | Lines | Coverage |
 |-----------|-------|----------|
 | `tb_ols_interface` | 467 | All opcodes, trigger, gen control, readout |
+| `tb_ols_capture_contract` | 220 | Sticky DONE/ACK/abort, capture_seq, mixed→digital→mixed mode reset |
 | `tb_capture_path` | 227 | sample_en timing, BRAM write, Full, CH0 |
 | `tb_continuous` | 92 | Buffer fill/ack/refill |
+| `tb_continuous_rate1` | 94 | Continuous auto-rotation at max-rate `Rate_Div=1` |
 | `tb_fast_analyzer` | 206 | FLA with SDRAM model, pattern gen |
 | `tb_sdram_interface` | 156 | SDRAM read/write |
 | `tb_sdram_controller` | 175 | Avalon-MM SDRAM transactions |

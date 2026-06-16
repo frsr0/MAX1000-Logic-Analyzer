@@ -853,6 +853,94 @@ def test_mixed_frame_alignment(dev):
     dev.set_debug_ch0(False)
     dev.set_analog_enable(False)
 
+
+def test_mixed_digital_mixed_back_to_back(dev):
+    print_header("Test 12e: Mixed -> digital -> mixed back-to-back")
+    dev.reset()
+    dev.spi.flush()
+    dev.set_debug_ch0(True, freq_hz=100_000)
+
+    mixed1_data, mixed1 = dev.capture_analog(
+        rate_hz=200_000, frames=128, mode=MODE_MIXED, timeout=5)
+    check(len(mixed1) > 0, f"first mixed capture returned frames ({len(mixed1)})")
+    if mixed1:
+        check(len(mixed1[0].get('adc', [])) == 8,
+              f"first mixed frame has 8 ADC channels ({len(mixed1[0].get('adc', []))})")
+
+    digital = dev.capture(rate_hz=1_000_000, nsamples=1024, timeout=5)
+    ch, ns = samples_to_channels(digital, stride=2) if digital else ([], 0)
+    check(ns > 0, f"digital capture after mixed returned samples ({ns})")
+    if ns:
+        tr0 = sum(1 for i in range(1, ns) if ch[0][i] != ch[0][i - 1])
+        check(tr0 > 10, f"digital capture after mixed has CH0 activity ({tr0} transitions)")
+
+    mixed2_data, mixed2 = dev.capture_analog(
+        rate_hz=200_000, frames=128, mode=MODE_MIXED, timeout=5)
+    check(len(mixed2) > 0, f"second mixed capture returned frames ({len(mixed2)})")
+    if mixed2:
+        check(len(mixed2[0].get('adc', [])) == 8,
+              f"second mixed frame has 8 ADC channels ({len(mixed2[0].get('adc', []))})")
+        dig_values = {fr.get('digital', 0) for fr in mixed2[:32]}
+        check(len(dig_values) <= 8,
+              f"second mixed digital phase is clean ({len(dig_values)} distinct values)")
+
+    dev.set_debug_ch0(False)
+    dev.set_analog_enable(False)
+    save_result("test12e_mixed_digital_mixed", mixed1_data[:256] + digital[:256] + mixed2_data[:256],
+                {"mixed1_frames": len(mixed1), "digital_samples": ns,
+                 "mixed2_frames": len(mixed2)})
+
+
+def test_continuous_max_rate_overrun(dev):
+    print_header("Test 5c: Max-rate continuous ring overrun")
+    dev.reset()
+    dev.spi.flush()
+    dev.set_debug_ch0(True, freq_hz=1_000_000)
+
+    # div=0 is the fastest internal producer path. The host intentionally waits
+    # long enough to fall behind the 1M-sample SDRAM ring, then verifies the
+    # producer and overrun metadata instead of trying to drain 200 MS/s over SPI.
+    dev.pkt.write_register(REG_DIVIDER, 0)
+    dev.pkt.write_register(REG_SAMPLE_COUNT, 1_048_576)
+    dev.pkt.write_register(REG_DELAY_COUNT, 1_048_576)
+    dev.pkt.write_register(REG_TRIGGER_MASK, 0)
+    dev.pkt.write_register(REG_TRIGGER_VALUE, 0)
+    dev.pkt.write_register(REG_FLAGS, 0)
+    dev.pkt.write_register(REG_FAST_MODE, 1)
+    dev.pkt.write_register(REG_CONT_MODE, 1)
+    dev.spi.flush()
+    dev.pkt.arm_capture()
+
+    deadline = time.time() + 0.5
+    st = {}
+    while time.time() < deadline:
+        st = dev.pkt.get_status()
+        if st.get('producer_index', 0) > 1_048_576 and st.get('overrun_count', 0) > 0:
+            break
+        time.sleep(0.02)
+
+    producer = st.get('producer_index', 0)
+    oldest = st.get('oldest_index', 0)
+    newest = st.get('newest_index', 0)
+    overruns = st.get('overrun_count', 0)
+    log(f"producer={producer} oldest={oldest} newest={newest} overruns={overruns}")
+    check(producer > 0, f"continuous producer advanced ({producer})")
+    check(overruns > 0, f"overrun counter incremented at max rate ({overruns})")
+    check(oldest <= newest <= producer, "ring indexes are ordered")
+
+    start = max(oldest, newest - 511)
+    data = dev.read_capture_range(start, 512)
+    check(len(data) >= 512, f"indexed ring read returned data ({len(data)} bytes)")
+
+    dev.pkt.transaction(CMD_ABORT_CAPTURE, timeout=1.0)
+    dev.pkt.write_register(REG_CONT_MODE, 0)
+    dev.set_debug_ch0(False)
+    dev.reset()
+    dev.spi.flush()
+    save_result("test5c_continuous_max_rate_overrun", data[:1024],
+                {"producer": producer, "oldest": oldest,
+                 "newest": newest, "overrun_count": overruns})
+
 # ====================================================================
 # Test 13: Rolling capture with UART generator
 # ====================================================================
@@ -1445,6 +1533,7 @@ def main():
 
         log("\n--- Max-speed test (200 MHz) ---")
         test_max_speed_capture(dev)
+        test_continuous_max_rate_overrun(dev)
 
         log("\n--- Generator tests (debug OFF + ON) ---")
         run_with_debug(test_gen_uart, dev, "UART generator")
@@ -1458,6 +1547,7 @@ def main():
         test_23ch_capture(dev)
         run_with_debug(test_analog4_mode, dev, "Analog 8-channel mode")
         test_mixed_frame_alignment(dev)
+        test_mixed_digital_mixed_back_to_back(dev)
 
         log("\n--- Rolling + generator test (debug OFF + ON) ---")
         run_with_debug(test_rolling_gen_uart, dev, "Rolling gen UART")
@@ -1529,6 +1619,8 @@ def main_new_only():
         log(f"SPI device opened, sys_clk={dev.sys_clk / 1e6:.0f} MHz")
         dev.reset()
         time.sleep(0.5)
+        test_continuous_max_rate_overrun(dev)
+        test_mixed_digital_mixed_back_to_back(dev)
         test_pre_trigger(dev)
         test_full_depth_capture(dev)
         test_back_to_back_capture(dev)

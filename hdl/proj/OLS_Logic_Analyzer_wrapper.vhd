@@ -29,7 +29,7 @@ port (
 end OLS_Logic_Analyzer_wrapper;
 
 architecture rtl of OLS_Logic_Analyzer_wrapper is
-    -- Set FAST_SPEED=true for 200 MHz capture mode build
+    -- Fast build: 100 MHz system clock, 200 MHz SDRAM/sample clock.
     constant FAST_SPEED : boolean := true;
     -- Quartus pin assignments
     attribute chip_pin : string;

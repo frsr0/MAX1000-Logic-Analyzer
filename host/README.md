@@ -23,7 +23,7 @@ Main application. Two modes:
 
 ### `app/hw_validation.py`
 
-Hardware validation suite (553 checks): SPI handshake, all commands, single/fast/continuous capture, rising/falling edge triggers, 200 MHz max-speed capture, UART/I2C/SPI generators, I2C LIS3DH addressing round-trip, divider accuracy, 23-channel capture, mixed 16-digital + 8-ADC mode and frame-alignment integrity, pre-trigger, full-depth SDRAM, back-to-back and capture-during-readout stress, Schmitt trigger, crosstalk characterisation, debug CH0 PWM, and a long stress run. Results saved as JSON.
+Hardware validation suite (580 checks): SPI handshake, all commands, single/fast/continuous capture, rising/falling edge triggers, 200 MHz max-speed capture, max-rate continuous ring overrun, UART/I2C/SPI generators, I2C LIS3DH addressing round-trip, divider accuracy, 23-channel capture, mixed 16-digital + 8-ADC mode and frame-alignment integrity, mixed→digital→mixed reset, pre-trigger, full-depth SDRAM, back-to-back and capture-during-readout stress, Schmitt trigger, crosstalk characterisation, debug CH0 PWM, sticky DONE/abort behavior, rolling capture, and a long stress run. Results saved as JSON.
 
 ### `app/program_eeprom.py`
 
@@ -41,10 +41,10 @@ EEPROM backup, FT_Prog config, driver recovery, `recover.ps1`.
 **Class `OLS`** — Core MPSSE SPI driver. Batched transactions via `0x11` + length + `0x87` (send immediate).
 
 ### `driver/spi_protocol.py`
-**Class `SPIDevice`** — Packet-protocol client. SYNC(0x55AA) + CMD + SEQ + LEN + payload + CRC16. 18 registers.
+**Class `SPIDevice`** — Packet-protocol client. SYNC(0x55AA) + CMD + SEQ + LEN + payload + CRC16. Parses capture metadata (`capture_seq`, producer/oldest/newest indexes, overrun count, sticky DONE) and exposes `ack_capture_done()`.
 
 ### `driver/ols_spi_device.py`
-**Class `OLSDeviceSPI`** — High-level API: `capture()`, `capture_continuous()`, `capture_with_gen()`, analog frame decode, pin map, Schmitt config, debug CH0.
+**Class `OLSDeviceSPI`** — High-level API: `capture()`, `capture_continuous()`, `capture_with_gen()`, indexed `read_capture_range()`, `ack_capture_done()`, analog frame decode, pin map, Schmitt config, debug CH0. Each arm writes complete mode state and validates fresh `capture_seq` before trusting readback when firmware metadata is available.
 
 ### `driver/ols_spi_mpsse.py`
 **Class `OLS_SPI_MPSSE`** — Minimal MPSSE driver (no batching).
@@ -70,11 +70,11 @@ EEPROM backup, FT_Prog config, driver recovery, `recover.ps1`.
 | File | Tests | Coverage |
 |------|-------|----------|
 | `test_ols_spi.py` | 47 | OLS init, commands, xfer batching |
-| `test_ols_spi_device.py` | 70 | OLSDeviceSPI, capture, gen, analog config |
+| `test_ols_spi_device.py` | 70 | OLSDeviceSPI, capture, gen, analog config, capture metadata |
 | `test_ols_spi_mpsse.py` | 12 | Init, spi_transfer |
 | `test_ols_spi_pyftdi.py` | 15 | Port, controller, frequency→delay |
 
-**Total: 267 tests.**
+**Total: 319 tests.**
 
 Run: `python -m pytest host/tests/ host/driver/tests/ -v`
 

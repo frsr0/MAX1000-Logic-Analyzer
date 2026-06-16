@@ -1,7 +1,15 @@
 import struct
 from unittest.mock import MagicMock, patch, call, ANY
 
-from driver.spi_protocol import REG_GEN_DATA, ST_OK, ST_CAPTURE_DONE
+from driver.spi_protocol import (
+    CMD_ACK_CAPTURE_DONE,
+    CMD_ABORT_CAPTURE,
+    REG_GEN_DATA,
+    REG_CONT_MODE,
+    SPIDevice,
+    ST_OK,
+    ST_CAPTURE_DONE,
+)
 from driver.ols_spi_device import (
     MODE_DIGITAL,
     MODE_MIXED,
@@ -141,6 +149,24 @@ class TestOLSDeviceSPI:
         assert result[:2] == b'\x10\x17'
         assert len(result) == 5
 
+    def test_read_capture_range_uses_absolute_sample_index(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.read_capture_block.side_effect = [
+            bytes(range(256)) * 4,
+            bytes([0xAA]) * 1024,
+        ]
+        data = device_spi.read_capture_range(start_sample=7, sample_count=600)
+        device_spi.pkt.read_capture_block.assert_has_calls([
+            call(14),
+            call(1038),
+        ])
+        assert len(data) == 1200
+
+    def test_ack_capture_done_delegates_seq(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.ack_capture_done(123)
+        device_spi.pkt.ack_capture_done.assert_called_once_with(123)
+
     def test_read_preamble(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi.pkt.read_register.return_value = 2  # bit1=1 (debug ON)
@@ -168,6 +194,48 @@ class TestOLSDeviceSPI:
 
     def test_set_debug_ch0_default(self, device_spi):
         assert device_spi.debug_ch0_enabled is False
+
+
+class TestSPIDeviceStatusMetadata:
+    def test_legacy_short_status_still_parses(self):
+        pkt = SPIDevice(MagicMock())
+        pkt.transaction = MagicMock(return_value=(ST_CAPTURE_DONE, 0, bytes([4, 0, 9])))
+
+        status = pkt.get_status()
+
+        assert status['capture_status'] == ST_CAPTURE_DONE
+        assert status['fifo_level'] == 4
+        assert status['gen_busy'] is False
+        assert status['gen_load_events'] == 9
+        assert 'capture_seq' not in status
+        assert 'producer_index' not in status
+
+    def test_status_metadata_parse(self):
+        pkt = SPIDevice(MagicMock())
+        payload = (
+            bytes([4, 0b00000011, 9])
+            + struct.pack('<IIIII', 7, 1536, 24, 1535, 2)
+            + bytes([1])
+        )
+        pkt.transaction = MagicMock(return_value=(ST_CAPTURE_DONE, 0, payload))
+
+        status = pkt.get_status()
+
+        assert status['capture_status'] == ST_CAPTURE_DONE
+        assert status['capture_seq'] == 7
+        assert status['producer_index'] == 1536
+        assert status['oldest_index'] == 24
+        assert status['newest_index'] == 1535
+        assert status['overrun_count'] == 2
+        assert status['done_latched'] is True
+
+    def test_ack_capture_done_packet(self):
+        pkt = SPIDevice(MagicMock())
+        pkt.transaction = MagicMock(return_value=(ST_OK, 0, b''))
+
+        assert pkt.ack_capture_done(9) is True
+        pkt.transaction.assert_called_once_with(
+            CMD_ACK_CAPTURE_DONE, struct.pack('<I', 9))
 
 
 class TestOLSDeviceSPIGenerator:
@@ -462,6 +530,52 @@ class TestOLSDeviceSPII2CCapture:
 
 
 class TestOLSDeviceSPIRolling:
+    def test_continuous_ring_capture_arms_once_and_reads_by_producer_index(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.side_effect = [
+            {'capture_status': 0x11, 'producer_index': 0, 'oldest_index': 0,
+             'newest_index': 0, 'overrun_count': 0},
+            {'capture_status': 0x11, 'producer_index': 256, 'oldest_index': 0,
+             'newest_index': 255, 'overrun_count': 0},
+        ]
+        device_spi.read_capture_range = MagicMock(return_value=b'\x34\x12' * 128)
+        device_spi.spi.flush = MagicMock()
+
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False, False, True]
+        gen = device_spi.continuous_ring_capture(
+            1_000_000, 128, 512, stop_evt, fast_mode=True)
+        results = list(gen)
+
+        assert len(results) == 1
+        assert results[0][1:] == (128, 512)
+        device_spi.pkt.arm_capture.assert_called_once()
+        device_spi.read_capture_range.assert_called_once_with(0, 128)
+        device_spi.pkt.write_register.assert_any_call(REG_CONT_MODE, 1)
+        device_spi.pkt.transaction.assert_called_with(CMD_ABORT_CAPTURE, timeout=0.5)
+
+    def test_continuous_ring_capture_skips_to_oldest_after_overrun(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': 0x11, 'producer_index': 300, 'oldest_index': 128,
+            'newest_index': 299, 'overrun_count': 3,
+        }
+        device_spi.read_capture_range = MagicMock(return_value=b'\x01\x00' * 64)
+        device_spi.spi.flush = MagicMock()
+
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False, True]
+        results = list(device_spi.continuous_ring_capture(
+            1_000_000, 64, 256, stop_evt))
+
+        assert len(results) == 1
+        device_spi.read_capture_range.assert_called_once_with(128, 64)
+        assert device_spi.last_ring_status['overrun_count'] == 3
+
     def test_rolling_capture_no_gen(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi.pkt.write_register.return_value = True

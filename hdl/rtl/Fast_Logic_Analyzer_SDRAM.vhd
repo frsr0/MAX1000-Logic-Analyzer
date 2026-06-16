@@ -59,7 +59,11 @@ port (
     Blk_Rd_Count   : in  natural range 0 to Max_Samples := 0;  -- samples to stream
     Rd_Fifo_Q      : out std_logic_vector(15 downto 0) := (others => '0');
     Rd_Fifo_Empty  : out std_logic := '1';
-    Rd_Fifo_RdReq  : in  std_logic := '0'
+    Rd_Fifo_RdReq  : in  std_logic := '0';
+    Producer_Index : out std_logic_vector(31 downto 0) := (others => '0');
+    Oldest_Index   : out std_logic_vector(31 downto 0) := (others => '0');
+    Newest_Index   : out std_logic_vector(31 downto 0) := (others => '0');
+    Overrun_Count  : out std_logic_vector(31 downto 0) := (others => '0')
   );
 end Fast_Logic_Analyzer_SDRAM;
 
@@ -100,6 +104,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   -- (512 samples / 1024 bytes) so the standard CMD_READ_CAPTURE block protocol
   -- streams a completed buffer verbatim. Single-shot still uses samples/6.
   constant CONT_BUF    : natural := 512;
+  constant CONT_RING_WORDS : natural := Max_Samples;
 
   -- Triple-buffer state
   signal buf_sel    : std_logic_vector(1 downto 0) := "00";
@@ -168,6 +173,8 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
 
   signal run_f_s1  : std_logic := '0';
   signal run_f_s2   : std_logic := '0';
+  signal continuous_f_s1 : std_logic := '0';
+  signal continuous_f    : std_logic := '0';
   signal Inputs_r   : std_logic_vector(Channels-1 downto 0) := (others => '0');
   signal Armed_s1   : std_logic := '0';
   signal Armed_f    : std_logic := '0';
@@ -181,6 +188,11 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal sample_remaining : natural range 0 to 3000000 := 0;
   signal run_stop_overflow : std_logic := '0';
   signal status_overflow   : std_logic := '0';
+  signal producer_index_u  : unsigned(31 downto 0) := (others => '0');
+  signal oldest_index_u    : unsigned(31 downto 0) := (others => '0');
+  signal newest_index_u    : unsigned(31 downto 0) := (others => '0');
+  signal overrun_count_u   : unsigned(31 downto 0) := (others => '0');
+  signal ring_used         : natural range 0 to CONT_RING_WORDS := 0;
 
   constant AFIFO_DEPTH : natural := 4096;
   constant AFIFO_WIDTH : natural := 16;
@@ -440,6 +452,8 @@ begin
       run_f_s1 <= run_sync2;
       run_f_s2 <= run_f_s1;
       run_f_level <= run_f_s2;
+      continuous_f_s1 <= Continuous_Mode;
+      continuous_f <= continuous_f_s1;
     end if;
   end process;
 
@@ -502,6 +516,7 @@ begin
     signal astream_f    : std_logic := '0';
     signal aframe_shift : std_logic_vector(127 downto 0) := (others => '0');
     signal aword_idx    : natural range 0 to 6 := 0;
+    signal start_gate_r  : natural range 0 to 3 := 0;
   begin
     -- Stage 0: sample pins
     process(FAST_CLK)
@@ -553,7 +568,13 @@ begin
     begin
       if rising_edge(FAST_CLK) then
         sample_tick_r <= '0';
-        if capture_en_r = '1' and sample_rem_nonzero_r = '1' and sample_div_cnt_r = 0 then
+        if cfg_valid_edge = '1' then
+          start_gate_r <= 2;
+        elsif capture_en_r = '1' and start_gate_r > 0 then
+          start_gate_r <= start_gate_r - 1;
+        end if;
+        if capture_en_r = '1' and sample_rem_nonzero_r = '1'
+           and sample_div_cnt_r = 0 and start_gate_r = 0 then
           sample_tick_r <= '1';
         end if;
       end if;
@@ -650,7 +671,7 @@ begin
                 sample_remaining <= sample_remaining - 1;
               end if;
             end if;
-            if fifo_wrfull = '1' then
+            if fifo_wrfull = '1' and continuous_f = '0' then
               fifo_overflow_f <= '1';
             end if;
           end if;
@@ -663,6 +684,7 @@ begin
   -- Normal mode (120 MHz): sample divider + input packer + flush FSM
   -- ============================================================
   gen_fast_normal : if not FAST_SPEED generate
+    signal start_gate_r : natural range 0 to 3 := 0;
   begin
     -- Pre-compute rate_div - 1 for the fast down-counter
     process(FAST_CLK)
@@ -709,8 +731,11 @@ begin
         end if;
         if cfg_valid_edge = '1' then
           cnt_s <= 0;
+          start_gate_r <= 2;
         elsif sample_en_v then
-          if cnt_s = 0 then
+          if start_gate_r > 0 then
+            start_gate_r <= start_gate_r - 1;
+          elsif cnt_s = 0 then
             cnt_s <= rate_div_m1_f;
             sample_tick_r <= '1';
           else
@@ -790,7 +815,7 @@ begin
                   fifo_wr <= '1';
                   sample_remaining <= sample_remaining - 1;
                 end if;
-                if fifo_wrfull = '1' or sample_remaining <= 1 then
+                if continuous_f = '0' and (fifo_wrfull = '1' or sample_remaining <= 1) then
                   fifo_overflow_f <= '1';
                 end if;
                 step_r := 0;
@@ -908,12 +933,16 @@ begin
     variable cont_readout  : boolean := false;
     variable cont_rd_sel   : natural range 0 to 2 := 0;
     variable cur_full      : boolean := false;
+    variable cont_word_written : boolean := false;
+    variable cont_base_v   : natural range 0 to Max_Samples - 1 := 0;
+    variable ring_waddr    : natural range 0 to Max_Samples - 1 := 0;
   begin
     if rising_edge(pclk) then
       fifo_rd <= '0';
       s_wr <= '0';
       s_burst_i <= '0';
       rdfifo_wr <= '0';
+      cont_word_written := false;
       -- Synchronise the block-read request toggle into pclk (runs every cycle so
       -- no edge is missed). Blk_Rd_Base/Count are quasi-static: they are set on
       -- the OLS side before the toggle flips and held for the whole stream, so
@@ -987,6 +1016,14 @@ begin
         full_pending <= '0'; full_clr_pending <= '0';
         run_stop_overflow <= '0';
         status_overflow <= '0';
+        if run_start_r = '1' then
+          producer_index_u <= (others => '0');
+          oldest_index_u <= (others => '0');
+          newest_index_u <= (others => '0');
+          overrun_count_u <= (others => '0');
+          ring_used <= 0;
+          ring_waddr := 0;
+        end if;
         if run_stop_r = '1' then
           rd_mode := true;
         else
@@ -1010,18 +1047,16 @@ begin
           rd_pend2      := '0';
           stream_active := true;
           s_rd          <= '0';
-        elsif Continuous_Mode = '1' and buf_full(cont_rd_sel) = '1' then
-          -- Continuous: the next completed buffer (fill order) is ready. Enter
-          -- readout to stream it; the write pump (rd_mode='false' branch) pauses
-          -- meanwhile, so samples accumulate in the afifo / are dropped under
-          -- backpressure and resume when we return to capture after the stream.
-          -- Continuous buffer bases are 0/512/1024 = cont_rd_sel * CONT_BUF.
-          stream_base   := cont_rd_sel * CONT_BUF;
+        elsif Continuous_Mode = '1' then
+          -- Continuous indexed read: host byte address names an absolute sample
+          -- index; physical storage is the full SDRAM rolling window.
+          cont_base_v := Blk_Rd_Base mod CONT_RING_WORDS;
+          stream_base   := cont_base_v;
           stream_cnt    := Blk_Rd_Count;
           stream_i      := 0;
           rd_pend2      := '0';
           stream_active := true;
-          cont_readout  := true;
+          cont_readout  := false;
           rd_mode       := true;
           s_rd          <= '0';
         end if;
@@ -1036,8 +1071,13 @@ begin
           -- old fixed-latency latch at block boundaries.
           if rd_pend2 = '0' then
             if rdfifo_wrfull = '0' then
-              s_addr <= std_logic_vector(
-                          to_unsigned(stream_base + stream_i + Start_Offset, 22));
+              if Continuous_Mode = '1' then
+                s_addr <= std_logic_vector(
+                            to_unsigned((stream_base + stream_i) mod CONT_RING_WORDS, 22));
+              else
+                s_addr <= std_logic_vector(
+                            to_unsigned(stream_base + stream_i + Start_Offset, 22));
+              end if;
               s_rd     <= '1';
               rd_pend2 := '1';
             end if;
@@ -1056,6 +1096,8 @@ begin
                 buf_full(cont_rd_sel) <= '0';
                 cont_rd_sel  := (cont_rd_sel + 1) mod 3;
                 cont_readout := false;
+                rd_mode      := false;
+              elsif Continuous_Mode = '1' then
                 rd_mode      := false;
               end if;
             else
@@ -1114,6 +1156,17 @@ begin
               buf_sel <= "01"; waddr_1 := 0; buf_rem_1 <= buf_limit_r;
             elsif buf_full(2) = '0' then
               buf_sel <= "10"; waddr_2 := 0; buf_rem_2 <= buf_limit_r;
+            else
+              -- All buffers full: rolling mode overwrites the current buffer.
+              cur_full := false;
+              overrun_count_u <= overrun_count_u + 1;
+              if buf_sel = "00" then
+                buf_full(0) <= '0'; waddr_0 := 0; buf_rem_0 <= buf_limit_r;
+              elsif buf_sel = "01" then
+                buf_full(1) <= '0'; waddr_1 := 0; buf_rem_1 <= buf_limit_r;
+              else
+                buf_full(2) <= '0'; waddr_2 := 0; buf_rem_2 <= buf_limit_r;
+              end if;
             end if;
           end if;
         end if;
@@ -1131,13 +1184,7 @@ begin
 
           -- Compute SDRAM address
           if Continuous_Mode = '1' then
-            if buf_sel = "00" then
-              write_addr := std_logic_vector(to_unsigned(waddr_0, 22));
-            elsif buf_sel = "01" then
-              write_addr := std_logic_vector(to_unsigned(buf_base1_r + waddr_1, 22));
-            else
-              write_addr := std_logic_vector(to_unsigned(buf_base2_r + waddr_2, 22));
-            end if;
+            write_addr := std_logic_vector(to_unsigned(ring_waddr, 22));
           else
             write_addr := std_logic_vector(to_unsigned(waddr_0, 22));
           end if;
@@ -1148,6 +1195,7 @@ begin
 
           -- Update buffer counters
           if Continuous_Mode = '1' then
+            cont_word_written := true;
             if buf_sel = "00" then
               if buf_rem_0 = 1 then
                 buf_full(0) <= '1';  buf_rem_0 <= 0;
@@ -1197,6 +1245,21 @@ begin
           end if;
         end if;
 
+        if cont_word_written then
+          newest_index_u <= producer_index_u;
+          producer_index_u <= producer_index_u + 1;
+          if ring_waddr = Max_Samples - 1 then
+            ring_waddr := 0;
+          else
+            ring_waddr := ring_waddr + 1;
+          end if;
+          if ring_used < CONT_RING_WORDS then
+            ring_used <= ring_used + 1;
+          else
+            oldest_index_u <= oldest_index_u + 1;
+          end if;
+        end if;
+
         -- Track SDRAM write completion
         if wip then
           if wr_cnt < 2 then
@@ -1236,6 +1299,10 @@ begin
   Buffer_Full(0) <= buf_full(0);
   Buffer_Full(2) <= buf_full(2);
   Buffer_Full(1) <= buf_full(1);
+  Producer_Index <= std_logic_vector(producer_index_u);
+  Oldest_Index <= std_logic_vector(oldest_index_u);
+  Newest_Index <= std_logic_vector(newest_index_u);
+  Overrun_Count <= std_logic_vector(overrun_count_u);
 
   SDRAM_Interface1 : SDRAM_Interface
   generic map (Sim => Sim, CLK_Frequency => CLK_Frequency, Write_Latency => Write_Latency, Read_Latency => Read_Latency, Page_Latency => Page_Latency)

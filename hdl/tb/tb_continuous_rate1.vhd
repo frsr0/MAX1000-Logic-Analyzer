@@ -14,7 +14,7 @@ architecture bench of tb_continuous_rate1 is
   constant BUF_WORDS   : natural := 512;
 
   signal clk       : std_logic := '0';
-  signal rate_div  : natural range 1 to 500000000 := 2;
+  signal rate_div  : natural range 1 to 500000000 := 1;
   signal samples_in : natural range 1 to 3000000 := TEST_WORDS;
   signal start_offset : natural range 0 to 3000000 := 0;
   signal run       : std_logic := '0';
@@ -66,12 +66,12 @@ begin
     ------------------------------------------------------------------
     -- Test 1: Continuous triple-buffer auto-rotation, no intermediate acks.
     -- Verifies the write pump rotates A -> B -> C on its own (each earlier
-    -- buffer stays full as the next fills). Rate_Div=2 is the lowest reliably
-    -- supported rate; Rate_Div=1 (max rate) trips a documented start-up race
-    -- that resets the capture. The ack/resume + Full-after-budget behaviour is
-    -- covered by tb_continuous; this TB focuses on unforced rotation.
+    -- buffer stays full as the next fills). Rate_Div=1 is the max-rate path
+    -- that used to trip a documented start-up race. The ack/resume +
+    -- Full-after-budget behaviour is covered by tb_continuous; this TB focuses
+    -- on unforced rotation at the fastest divider.
     ------------------------------------------------------------------
-    report "Test 1: Continuous triple-buffer auto-rotation at Rate_Div=2";
+    report "Test 1: Continuous triple-buffer auto-rotation at Rate_Div=1";
     armed <= '1'; run <= '1';
 
     wait_until(clk, buffer_full(0), '1', 5 ms, "Buffer A should fill");

@@ -8,7 +8,7 @@ import threading
 from driver.ols_spi import OLS as OLS_SPI
 from driver.spi_protocol import (
     SPIDevice,
-    CMD_ABORT_CAPTURE,     CMD_GEN_START, CMD_GEN_LOAD, CMD_GEN_CAPTURE, CMD_GEN_STATUS,
+    CMD_ABORT_CAPTURE, CMD_ACK_CAPTURE_DONE, CMD_GEN_START, CMD_GEN_LOAD, CMD_GEN_CAPTURE, CMD_GEN_STATUS,
     CMD_GET_METADATA,
     REG_DIVIDER, REG_SAMPLE_COUNT, REG_DELAY_COUNT,
     REG_TRIGGER_MASK, REG_TRIGGER_VALUE, REG_FLAGS,
@@ -266,6 +266,126 @@ class OLSDeviceSPI:
         v = self.pkt.read_register(REG_DEBUG_CH0_ENABLE)
         return v if v >= 0 else 0
 
+    def _write_capture_config(self, *, div, samples, delay_count, mask=0, value=0,
+                              flags=0, fast_mode=None, continuous=False):
+        """Write the full capture mode state before every arm."""
+        mode_flags = (flags | self.analog_mode) & 0xFFFFFFFF
+        if continuous:
+            mode_flags |= 0x02
+        else:
+            mode_flags &= ~0x02
+        self.pkt.write_register(REG_DIVIDER, div & 0xFFFFFF)
+        self.pkt.write_register(REG_SAMPLE_COUNT, max(1, int(samples)))
+        self.pkt.write_register(REG_DELAY_COUNT, max(0, int(delay_count)))
+        self.pkt.write_register(REG_TRIGGER_MASK, mask & 0xFFFFFFFF)
+        self.pkt.write_register(REG_TRIGGER_VALUE, value & 0xFFFFFFFF)
+        self.pkt.write_register(REG_FLAGS, mode_flags)
+        self.pkt.write_register(REG_CONT_MODE, 1 if continuous else 0)
+        if fast_mode is not None:
+            self.pkt.write_register(REG_FAST_MODE, 1 if fast_mode else 0)
+
+    def _wait_capture_done(self, timeout, stop_evt=None, expected_seq=None):
+        deadline = time.time() + timeout
+        last_status = {}
+        while time.time() < deadline:
+            st = self.pkt.get_status()
+            last_status = st
+            cs = st.get('capture_status', -1)
+            seq_ok = expected_seq is None or st.get('capture_seq') in (None, expected_seq)
+            if cs == ST_CAPTURE_DONE and seq_ok:
+                return st
+            if stop_evt and stop_evt.is_set():
+                return st
+            time.sleep(0.001)
+        return last_status
+
+    def read_capture_range(self, start_sample=0, sample_count=512):
+        """Read a dense 16-bit sample range by absolute sample index."""
+        start_sample = max(0, int(start_sample))
+        remaining = max(0, int(sample_count))
+        out = bytearray()
+        sample = start_sample
+        while remaining > 0:
+            block = self.pkt.read_capture_block(sample * 2)
+            if not block:
+                break
+            take = min(remaining, len(block) // 2)
+            out.extend(block[:take * 2])
+            sample += take
+            remaining -= take
+        return bytes(out)
+
+    def ack_capture_done(self, seq=None):
+        return self.pkt.ack_capture_done(seq)
+
+    def continuous_ring_capture(self, rate_hz, chunk_nsamp, buffer_nsamp,
+                                stop_evt, progress_cb=None, full_out=None,
+                                fast_mode=True):
+        """Yield chunks from the FPGA continuous SDRAM ring by absolute index.
+
+        This arms continuous mode once, then follows producer/oldest/newest
+        metadata. If the host falls behind, unread samples are skipped to
+        ``oldest_index`` and ``last_ring_status['overrun_count']`` exposes the
+        firmware-reported loss.
+        """
+        self._ensure_open()
+        chunk_nsamp = max(1, int(chunk_nsamp))
+        buffer_nsamp = max(chunk_nsamp, int(buffer_nsamp))
+        div = max(0, int(self.sample_clk / rate_hz) - 1)
+        self._write_capture_config(
+            div=div, samples=buffer_nsamp, delay_count=buffer_nsamp,
+            mask=0, value=0, flags=self._raw_flags,
+            fast_mode=fast_mode, continuous=True)
+        self.set_debug_ch0(self.debug_ch0_enabled)
+        self.spi.flush()
+        status = self.pkt.arm_capture()
+        if status < 0:
+            return
+
+        buf = b''
+        next_sample = None
+        total = 0
+        self.last_ring_status = {}
+
+        try:
+            while not stop_evt.is_set():
+                st = self.pkt.get_status()
+                self.last_ring_status = st
+                producer = st.get('producer_index')
+                oldest = st.get('oldest_index')
+                if producer is None or oldest is None:
+                    raise RuntimeError("continuous ring metadata not available")
+
+                if next_sample is None:
+                    next_sample = oldest
+                elif next_sample < oldest:
+                    next_sample = oldest
+
+                available = producer - next_sample
+                if available < chunk_nsamp:
+                    time.sleep(0.001)
+                    continue
+
+                data = self.read_capture_range(next_sample, chunk_nsamp)
+                data = data[:chunk_nsamp * 2]
+                if not data:
+                    time.sleep(0.001)
+                    continue
+
+                next_sample += len(data) // 2
+                total += len(data) // 2
+                if full_out is not None:
+                    full_out.extend(data)
+                buf += data
+                max_bytes = buffer_nsamp * 2
+                if len(buf) > max_bytes:
+                    buf = buf[-max_bytes:]
+                if progress_cb:
+                    progress_cb(buf, total, buffer_nsamp)
+                yield buf, total, buffer_nsamp
+        finally:
+            self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+
     def fast_mode(self, enable=True):
         self.pkt.write_register(REG_FAST_MODE, 1 if enable else 0)
 
@@ -365,10 +485,6 @@ class OLSDeviceSPI:
         div = max(0, int(self.sample_clk / rate_hz) - 1)
         rc = max(1, nsamples)
 
-        self.pkt.write_register(REG_DIVIDER, div & 0xFFFFFF)
-        self.pkt.write_register(REG_SAMPLE_COUNT, rc)
-        self.pkt.write_register(REG_DELAY_COUNT, rc)
-
         if trigger is None:
             mask = 0
             value = 0
@@ -384,10 +500,9 @@ class OLSDeviceSPI:
         else:
             mask = 0
             value = 0
-        self.pkt.write_register(REG_TRIGGER_MASK, mask)
-        self.pkt.write_register(REG_TRIGGER_VALUE, value)
-        self.pkt.write_register(REG_FLAGS, self._raw_flags)
-        self.set_analog_config(self.analog_mode)
+        self._write_capture_config(
+            div=div, samples=rc, delay_count=rc, mask=mask, value=value,
+            flags=self._raw_flags, fast_mode=fast_mode, continuous=False)
 
         # Configure generator
         if proto == 'I2C':
@@ -422,6 +537,8 @@ class OLSDeviceSPI:
                 f.write(f"gen_capture: cmd resp={r!r}\n")
         if r is None or r[0] not in (0, ST_CAPTURE_ARMED):
             return b''
+        arm_status = self.pkt.get_status()
+        expected_seq = arm_status.get('capture_seq')
 
         deadline = time.time() + timeout
         capture_active_seen = False
@@ -432,7 +549,8 @@ class OLSDeviceSPI:
             cs = st.get('capture_status', -1)
             if not seen or seen[-1][1] != cs:
                 seen.append((round(time.time() - t0, 4), cs))
-            if cs == ST_CAPTURE_DONE:
+            seq_ok = expected_seq is None or st.get('capture_seq') in (None, expected_seq)
+            if cs == ST_CAPTURE_DONE and seq_ok:
                 break
             if stop_evt and stop_evt.is_set():
                 return b''
@@ -444,12 +562,9 @@ class OLSDeviceSPI:
 
         # See capture(): packed wire is 2 bytes/sample (stride 2).
         need = rc * 2
-        accumulated = bytearray()
-        for block_addr in range(0, need, 1024):
-            block = self.pkt.read_capture_block(block_addr)
-            if block:
-                accumulated.extend(block)
-        samples = bytes(accumulated[:need])
+        samples = self.read_capture_range(0, rc)[:need]
+        if expected_seq is not None:
+            self.ack_capture_done(expected_seq)
 
         if samples:
             for i in range(0, len(samples), 2):
@@ -484,12 +599,9 @@ class OLSDeviceSPI:
 
         div = max(0, round(self.sample_clk / rate_hz) - 1)
         rc = max(1, nsamples)
-        self.pkt.write_register(REG_DIVIDER, div & 0xFFFFFF)
-        self.pkt.write_register(REG_SAMPLE_COUNT, rc)
         # DELAY_COUNT = post-trigger samples; FPGA derives pre-trigger depth
         # as Start_Offset = SAMPLE_COUNT - DELAY_COUNT.
         pre = max(0, min(pre_trigger, rc - 1))
-        self.pkt.write_register(REG_DELAY_COUNT, rc - pre)
 
         if trigger is None:
             mask = 0
@@ -506,42 +618,29 @@ class OLSDeviceSPI:
         else:
             mask = 0
             value = 0
-        self.pkt.write_register(REG_TRIGGER_MASK, mask)
-        self.pkt.write_register(REG_TRIGGER_VALUE, value)
-        # REG_FLAGS carries the analog-enable bit (bit 3 = MODE_MIXED). Fold it
-        # into the single REG_FLAGS write so it isn't clobbered: a prior
-        # set_analog_config() write was immediately overwritten by _raw_flags,
-        # which left analog_enable_i=0 and made every "analog" capture record the
-        # digital pins instead of ADC frames.
-        self.set_analog_config(self.analog_mode)
-        self.pkt.write_register(REG_FLAGS, self._raw_flags | self.analog_mode)
-        self.pkt.write_register(REG_FAST_MODE, 1 if self.fast_mode_enabled else 0)
+        self._write_capture_config(
+            div=div, samples=rc, delay_count=rc - pre, mask=mask, value=value,
+            flags=self._raw_flags, fast_mode=self.fast_mode_enabled, continuous=False)
 
         self.spi.flush()
 
         status = self.pkt.arm_capture()
         if status < 0:
             return b''
+        arm_status = self.pkt.get_status()
+        expected_seq = arm_status.get('capture_seq')
 
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            st = self.pkt.get_status()
-            if st.get('capture_status', 0) == ST_CAPTURE_DONE:
-                break
-            if stop_evt and stop_evt.is_set():
-                return b''
-            time.sleep(0.001)
+        st = self._wait_capture_done(timeout, stop_evt=stop_evt, expected_seq=expected_seq)
+        if stop_evt and stop_evt.is_set():
+            return b''
 
         # The FPGA now packs 2 samples per 32-bit read-block entry, so the wire
         # is contiguous 16-bit little-endian samples: rc samples = rc*2 bytes,
         # decoded at stride 2. (One 1024-byte block carries 512 samples.)
         need = rc * 2
-        accumulated = bytearray()
-        for block_addr in range(0, need, 1024):
-            block = self.pkt.read_capture_block(block_addr)
-            if block:
-                accumulated.extend(block)
-        samples = bytes(accumulated[:need])
+        samples = self.read_capture_range(0, rc)[:need]
+        if expected_seq is not None and st.get('capture_seq') == expected_seq:
+            self.ack_capture_done(expected_seq)
 
         if samples:
             for i in range(0, len(samples), 2):
@@ -601,13 +700,9 @@ class OLSDeviceSPI:
 
         div = max(0, int(self.sample_clk / rate_hz) - 1)
         rc = max(1, buffer_nsamp)
-        self.pkt.write_register(REG_DIVIDER, div & 0xFFFFFF)
-        self.pkt.write_register(REG_SAMPLE_COUNT, rc)
-        self.pkt.write_register(REG_DELAY_COUNT, rc)
-        self.pkt.write_register(REG_TRIGGER_MASK, 0)
-        self.pkt.write_register(REG_TRIGGER_VALUE, 0)
-        self.pkt.write_register(REG_FLAGS, 0)
-        self.pkt.write_register(REG_FAST_MODE, 1)
+        self._write_capture_config(
+            div=div, samples=rc, delay_count=rc, mask=0, value=0,
+            flags=0, fast_mode=True, continuous=False)
 
         dev_w = (dev_addr << 1) & 0xFE
         dev_r = (dev_addr << 1) | 0x01
@@ -642,12 +737,7 @@ class OLSDeviceSPI:
                 time.sleep(0.0005)
 
             need = chunk_nsamp * 2
-            data = bytearray()
-            for addr in range(0, need, 1024):
-                block = self.pkt.read_capture_block(addr)
-                if block:
-                    data.extend(block)
-            data = bytes(data[:need])
+            data = self.read_capture_range(0, chunk_nsamp)[:need]
 
             if not data:
                 time.sleep(0.001)
@@ -678,13 +768,9 @@ class OLSDeviceSPI:
 
         div = max(0, int(self.sample_clk / rate_hz) - 1)
         rc = max(1, buffer_nsamp)
-        self.pkt.write_register(REG_DIVIDER, div & 0xFFFFFF)
-        self.pkt.write_register(REG_SAMPLE_COUNT, rc)
-        self.pkt.write_register(REG_DELAY_COUNT, rc)
-        self.pkt.write_register(REG_TRIGGER_MASK, 0)
-        self.pkt.write_register(REG_TRIGGER_VALUE, 0)
-        self.pkt.write_register(REG_FLAGS, self._raw_flags)
-        self.pkt.write_register(REG_FAST_MODE, 1)
+        self._write_capture_config(
+            div=div, samples=rc, delay_count=rc, mask=0, value=0,
+            flags=self._raw_flags, fast_mode=True, continuous=False)
         self.set_debug_ch0(self.debug_ch0_enabled)
         if self.analog_mode != MODE_DIGITAL:
             self.set_analog_config(self.analog_mode)
@@ -738,12 +824,7 @@ class OLSDeviceSPI:
                 time.sleep(0.0005)
 
             need = chunk_nsamp * stride
-            data = bytearray()
-            for addr in range(0, need, 1024):
-                block = self.pkt.read_capture_block(addr)
-                if block:
-                    data.extend(block)
-            data = bytes(data[:need])
+            data = self.read_capture_range(0, (need + 1) // 2)[:need]
 
             if not data:
                 time.sleep(0.001)

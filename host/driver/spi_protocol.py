@@ -33,6 +33,7 @@ CMD_ABORT_CAPTURE     = 0x11
 CMD_READ_CAPTURE      = 0x12
 CMD_START_STREAM      = 0x13
 CMD_READ_STREAM_BLOCK = 0x14
+CMD_ACK_CAPTURE_DONE  = 0x15
 CMD_WRITE_REG         = 0x20
 CMD_READ_REG          = 0x21
 CMD_GEN_CONFIG        = 0x30
@@ -60,6 +61,12 @@ REG_DEBUG_CH0_PERIOD = 0x43
 REG_DEBUG_CH0_DUTY   = 0x44
 REG_SCHMITT_ENABLE    = 0x41
 REG_SCHMITT_THRESHOLD = 0x42
+REG_CAPTURE_SEQ       = 0x50
+REG_PRODUCER_INDEX    = 0x51
+REG_OLDEST_INDEX      = 0x52
+REG_NEWEST_INDEX      = 0x53
+REG_OVERRUN_COUNT     = 0x54
+REG_DONE_LATCHED      = 0x55
 REG_IFACE_MODE    = 0xF0
 
 # REG_GEN_DATA flag bits (written with upper byte non-zero to enter mode-config branch)
@@ -258,17 +265,28 @@ class SPIDevice:
             return result[0]
         return -1
 
+    def ack_capture_done(self, seq: int = None) -> bool:
+        payload = b'' if seq is None else struct.pack('<I', seq & 0xFFFFFFFF)
+        result = self.transaction(CMD_ACK_CAPTURE_DONE, payload)
+        return result is not None and result[0] == ST_OK
+
     def get_status(self) -> dict:
         result = self.transaction(CMD_GET_STATUS)
         if result:
             st, _, pl = result
-            return {
+            info = {
                 'capture_status': st,
                 'fifo_level': pl[0] if len(pl) > 0 else 0,
                 'gen_busy': bool(pl[1] & 1) if len(pl) > 1 else False,
                 'gen_start_req': bool(pl[1] & 2) if len(pl) > 1 else False,
                 'gen_load_events': pl[2] if len(pl) > 2 else 0,
             }
+            if len(pl) >= 24:
+                (info['capture_seq'], info['producer_index'],
+                 info['oldest_index'], info['newest_index'],
+                 info['overrun_count'], done_latched) = struct.unpack('<IIIIIB', pl[3:24])
+                info['done_latched'] = bool(done_latched)
+            return info
         return {}
 
     def write_register(self, addr: int, value: int) -> bool:

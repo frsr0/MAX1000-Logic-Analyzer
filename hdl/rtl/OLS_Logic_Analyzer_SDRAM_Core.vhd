@@ -93,6 +93,10 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL rd_fifo_q_i      : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   SIGNAL rd_fifo_empty_i  : STD_LOGIC := '1';
   SIGNAL rd_fifo_rdreq_i  : STD_LOGIC := '0';
+  SIGNAL producer_index_i : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL oldest_index_i   : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL newest_index_i   : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL overrun_count_i  : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL Gen_Load_Byte_i    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL Gen_Load_We_i      : STD_LOGIC := '0';
   SIGNAL Gen_Start_i        : STD_LOGIC := '0';
@@ -184,7 +188,11 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
        Blk_Rd_Count   : OUT NATURAL range 0 to Max_Samples := 0;
        Rd_Fifo_Q      : IN  STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
        Rd_Fifo_Empty  : IN  STD_LOGIC := '1';
-       Rd_Fifo_RdReq  : OUT STD_LOGIC := '0'
+       Rd_Fifo_RdReq  : OUT STD_LOGIC := '0';
+       Producer_Index : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+       Oldest_Index   : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+       Newest_Index   : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+       Overrun_Count  : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0')
       );
       END COMPONENT;
     COMPONENT Fast_Logic_Analyzer_SDRAM IS
@@ -236,7 +244,11 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
      Blk_Rd_Count   : IN  NATURAL range 0 to Max_Samples := 0;
      Rd_Fifo_Q      : OUT STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
      Rd_Fifo_Empty  : OUT STD_LOGIC := '1';
-     Rd_Fifo_RdReq  : IN  STD_LOGIC := '0'
+     Rd_Fifo_RdReq  : IN  STD_LOGIC := '0';
+     Producer_Index : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+     Oldest_Index   : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+     Newest_Index   : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+     Overrun_Count  : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0')
 
    );
    END COMPONENT;
@@ -310,7 +322,11 @@ BEGIN
     Blk_Rd_Count       => blk_rd_count_i,
     Rd_Fifo_Q          => rd_fifo_q_i,
     Rd_Fifo_Empty      => rd_fifo_empty_i,
-    Rd_Fifo_RdReq      => rd_fifo_rdreq_i
+    Rd_Fifo_RdReq      => rd_fifo_rdreq_i,
+    Producer_Index     => producer_index_i,
+    Oldest_Index       => oldest_index_i,
+    Newest_Index       => newest_index_i,
+    Overrun_Count      => overrun_count_i
 
   );
   Fast_Logic_Analyzer_SDRAM1 : Fast_Logic_Analyzer_SDRAM
@@ -334,7 +350,11 @@ BEGIN
     Blk_Rd_Count      => blk_rd_count_i,
     Rd_Fifo_Q         => rd_fifo_q_i,
     Rd_Fifo_Empty     => rd_fifo_empty_i,
-    Rd_Fifo_RdReq     => rd_fifo_rdreq_i
+    Rd_Fifo_RdReq     => rd_fifo_rdreq_i,
+    Producer_Index    => producer_index_i,
+    Oldest_Index      => oldest_index_i,
+    Newest_Index      => newest_index_i,
+    Overrun_Count     => overrun_count_i
   );
   
 END BEHAVIORAL;

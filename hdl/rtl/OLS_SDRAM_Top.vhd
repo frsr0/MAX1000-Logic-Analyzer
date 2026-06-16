@@ -467,11 +467,14 @@ BEGIN
         pin_dir(0) <= '1';
       end if;
 
-      if gen_busy = '1' then
+      if gen_busy = '1' or (gen_capture_active = '1' and gen_proto = '0') then
         if gen_tx_pin < PIN_POOL_SIZE then
           pin_out(gen_tx_pin) <= gen_tx;
           pin_dir(gen_tx_pin) <= '1';
         end if;
+      end if;
+
+      if gen_busy = '1' then
         if gen_proto = '1' then
           if gen_scl_pin < PIN_POOL_SIZE then
             pin_out(gen_scl_pin) <= gen_scl;

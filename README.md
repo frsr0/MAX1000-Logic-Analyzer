@@ -16,14 +16,14 @@ Open-source multi-channel logic analyzer for the Arrow MAX1000 board (Intel MAX1
 - **Sample rate**: up to **200 MHz** digital (16 channels, speed mode), **120 MHz** (normal mode)
 - **Deep capture**: up to 1,000,000 samples via SDRAM (16-bit bus, burst mode, triple-buffered)
 - **Pre-trigger capture**: 1,024 samples via BRAM (M9K, circular buffer, flushed to SDRAM after trigger)
-- **Continuous/rolling capture**: repeated single-shot with configurable triple-buffer
+- **Continuous/rolling capture**: SDRAM-backed ring buffer with monotonic producer index, oldest/newest indexes, and overrun reporting
 - **Edge trigger**: rising/falling on any combination of channels
 - **Protocol trigger**: UART byte match at configurable baud
 - **Signal generator**: UART / I2C / SPI output on any GPIO pin, with **atomic hardware capture** (CMD_GEN_CAPTURE)
 - **Schmitt trigger**: per-pin digital hysteresis filter (1–7 sample threshold), tunable live
 - **Debug CH0**: programmable PWM (1 Hz–50 MHz, 0–100% duty) on CH0 pin for scope verification
-- **Packet protocol**: CRC-16-IBM framed SPI transactions (SYNC + header + payload + CRC)
-- **Register-based configuration**: 20 read/write registers
+- **Packet protocol**: CRC-16-IBM framed SPI transactions (SYNC + header + payload + CRC), with sticky capture completion and explicit DONE ACK
+- **Register-based configuration**: capture/generator/mode registers plus capture metadata registers
 - **Accelerometer control**: LIS3DH register read/write via I2C
 - **Protocol decode**: UART, I2C, Modbus with waveform annotation
 - **Voltage display**: 3.3V/1.65V/0V scale on analog traces
@@ -78,7 +78,7 @@ Config handshake (valid/ack toggle CDC) ensures Rate_Div and Samples are stable 
 |--------|------|-------|-------|
 | BRAM (M9K) | 1,024 words | 16 bits | Pre-trigger circular buffer (fast capture: no SDRAM needed). |
 | Async FIFO (dcfifo) | 4,096 words | 16 bits | CDC buffer between FAST_CLK capture and CLK SDRAM write. |
-| SDRAM | 64 Mbit | 16 bits | Deep capture storage (up to 1M samples). Burst writes, page-mode. |
+| SDRAM | 64 Mbit | 16 bits | Deep capture storage and continuous ring buffer (up to 1M samples). Burst writes, page-mode. |
 | Block read buffer | 256 entries | 32 bits | Readout buffer for CMD_READ_CAPTURE (1 block = 1,024 bytes). |
 | Generator FIFO | 256 entries | 8 bits | UART/I2C/SPI transmit data. |
 
@@ -98,12 +98,12 @@ Over the SPI readout every word is 32-bit (payload in the low 16 bits, high 16 z
 ## Sample Rate Formula
 
 ```
-div = SAMPLE_CLK_HZ / (rate_hz × 2) − 1
-actual_rate = SAMPLE_CLK_HZ / ((div + 1) × 2)
+div = SAMPLE_CLK_HZ / rate_hz - 1
+actual_rate = SAMPLE_CLK_HZ / (div + 1)
 ```
 
-For speed mode: SAMPLE_CLK_HZ = 200 MHz. Minimum div = 0 → 100 MHz max sample rate.
-For normal mode: SAMPLE_CLK_HZ = 120 MHz. Minimum div = 0 → 60 MHz max sample rate.
+For speed mode: SAMPLE_CLK_HZ = 200 MHz. Minimum div = 0 for 200 MS/s internal capture; host UI/API capability may clamp exposed rates by mode.
+For normal mode: SAMPLE_CLK_HZ = 120 MHz. Minimum div = 0 for 120 MS/s internal capture.
 Maximum div = 16,777,215 → ~6 Hz minimum.
 
 ## Rate Limits
@@ -112,7 +112,9 @@ The system clock is 100 MHz for speed mode, 96 MHz for normal. Fast mode (BRAM-o
 
 ### Rolling (continuous) readback limit
 
-Capture data is read back over SPI at ~30 MB/s effective throughput. This limits **rolling (continuous)** capture but does **not** affect **single-shot** capture.
+Continuous capture writes into a bounded SDRAM ring. The FPGA reports `producer_index`, `oldest_index`, `newest_index`, and `overrun_count`; data is read by absolute sample index. Capture can continue beyond host readback throughput, but unread samples are overwritten and counted as overruns.
+
+SPI readback is still limited to ~30 MB/s effective throughput. This limits lossless live readback but does **not** affect single-shot retention inside SDRAM.
 
 | Capture Mode | Frame stride | Rolling max* |
 |---|---|---|
@@ -120,7 +122,7 @@ Capture data is read back over SPI at ~30 MB/s effective throughput. This limits
 | 16 Dig + 8 Ana | 14 B | 2.14 MHz |
 | 8 Analog | 14 B | 2.14 MHz |
 
-*Rolling max = 30 MB/s ÷ stride in bytes. Single-shot allows full sysclk rate.
+*Lossless live readback max = 30 MB/s ÷ stride in bytes. Above that, the ring remains live and `overrun_count` reports overwritten data.
 
 ## Debug CH0 (Programmable PWM)
 
@@ -155,6 +157,12 @@ FPGA → Host:  0xAA 0x55  STATUS  SEQ  LEN_L  LEN_H  [PAYLOAD...]  CRC_L  CRC_H
 | PAYLOAD | N bytes | Command-specific payload (max 256 for RX, 1,024 for TX) |
 | CRC16 | 2 bytes | CRC-16-IBM (poly 0x8005, init 0xFFFF) over CMD..PAYLOAD |
 
+`CMD_GET_STATUS` returns the legacy status bytes plus capture metadata:
+`capture_seq`, `producer_index`, `oldest_index`, `newest_index`,
+`overrun_count`, and `done_latched`. DONE is sticky and remains asserted until
+`CMD_ACK_CAPTURE_DONE`, abort, or the next arm. Host code should compare
+`capture_seq` before trusting readback from a new capture.
+
 ## Command Reference
 
 | Opcode | Name | Description |
@@ -165,6 +173,7 @@ FPGA → Host:  0xAA 0x55  STATUS  SEQ  LEN_L  LEN_H  [PAYLOAD...]  CRC_L  CRC_H
 | `0x10` | CMD_ARM_CAPTURE | Arm the capture engine |
 | `0x11` | CMD_ABORT_CAPTURE | Abort capture |
 | `0x12` | CMD_READ_CAPTURE | Read 1,024-byte block from SDRAM |
+| `0x15` | CMD_ACK_CAPTURE_DONE | Clear sticky DONE for the supplied `capture_seq` (or zero wildcard) |
 | `0x20` | CMD_WRITE_REG | Write 32-bit register |
 | `0x21` | CMD_READ_REG | Read 32-bit register |
 | `0x30`–`0x35` | Generator commands | Config, start/stop, load, atomic capture, status |
@@ -173,20 +182,26 @@ FPGA → Host:  0xAA 0x55  STATUS  SEQ  LEN_L  LEN_H  [PAYLOAD...]  CRC_L  CRC_H
 
 | Addr | Name | Bits | Description |
 |------|------|------|-------------|
-| `0x00` | REG_DIVIDER | 23:0 | Sample rate divider. Rate = `SAMPLE_CLK_HZ / ((div+1) × 2)`. |
+| `0x00` | REG_DIVIDER | 23:0 | Sample rate divider. Rate = `SAMPLE_CLK_HZ / (div+1)`. |
 | `0x01` | REG_SAMPLE_COUNT | 29:0 | Samples to capture (1–1,000,000). |
 | `0x02` | REG_DELAY_COUNT | 29:0 | Trigger delay count. |
 | `0x10` | REG_TRIGGER_MASK | 31:0 | Bit n enables trigger on channel n. |
 | `0x11` | REG_TRIGGER_VALUE | 31:0 | Level trigger value. |
 | `0x20` | REG_FLAGS | 3:0 | bit0=fast_mode, bit1=continuous, bit2=ch_mode, bit3=analog_enable |
 | `0x21` | REG_FAST_MODE | 0 | Fast mode (BRAM only, no SDRAM). |
-| `0x22` | REG_CONT_MODE | 0 | Continuous capture (triple-buffer). |
+| `0x22` | REG_CONT_MODE | 0 | Continuous capture ring mode. |
 | `0x30`–`0x33` | Generator regs | Proto, baud, pins, data |
 | `0x40` | REG_DEBUG_CH0_ENABLE | 0 | Debug CH0 PWM enable |
 | `0x41` | REG_SCHMITT_ENABLE | 0 | Enable per-pin hysteresis filter |
 | `0x42` | REG_SCHMITT_THRESHOLD | 2:0 | Threshold (1–7) |
 | `0x43` | REG_DEBUG_CH0_PERIOD | 31:0 | PWM period in sys_clk cycles (default 1024) |
 | `0x44` | REG_DEBUG_CH0_DUTY | 31:0 | PWM high time in sys_clk cycles (default 512) |
+| `0x50` | REG_CAPTURE_SEQ | 31:0 | Monotonic capture sequence, incremented on arm |
+| `0x51` | REG_PRODUCER_INDEX | 31:0 | Next absolute sample index written by continuous producer |
+| `0x52` | REG_OLDEST_INDEX | 31:0 | Oldest retained absolute sample index in ring |
+| `0x53` | REG_NEWEST_INDEX | 31:0 | Newest retained absolute sample index in ring |
+| `0x54` | REG_OVERRUN_COUNT | 31:0 | Count of overwritten samples/ring wraps |
+| `0x55` | REG_DONE_LATCHED | 0 | Sticky completion latch exposed to host |
 | `0xF0` | REG_IFACE_MODE | 0 | Interface mode (always 1 for SPI) |
 
 ## SPI Preamble Byte
@@ -209,11 +224,11 @@ First MISO byte of every SPI transaction:
 Signal generator (UART/I2C/SPI) runs on sys_clk with 256-byte FIFO. Supports atomic hardware capture via CMD_GEN_CAPTURE FSM:
 
 ```
-GENCAP_IDLE → GENCAP_GUARD(16 cycles) → GENCAP_WAIT_BUSY → GENCAP_RUNNING → GENCAP_DONE
+GENCAP_IDLE → GENCAP_GUARD(512 cycles) → GENCAP_WAIT_BUSY → GENCAP_RUNNING → GENCAP_DONE
 ```
 
 - `disp_arm` arms the capture engine (same as CMD_ARM_CAPTURE)
-- Guard counter waits 16 sys_clk cycles (~160 ns at 100 MHz)
+- Guard counter waits 512 sys_clk cycles (~5.12 us at 100 MHz) so UART captures include an idle-high lead-in before the start bit
 - `Gen_Start` pulses, starting Signal_Gen transmission
 - `gen_capture_active` routes the generator TX to the capture mux
 - When Gen_Busy falls, gen_capture_done is asserted
@@ -248,6 +263,10 @@ dev.set_schmitt(True, threshold=3)
 dev._gen_data = b'Hello!'
 data = dev.capture_with_gen(rate_hz=1000000, nsamples=2000)
 
+# Indexed SDRAM/ring readback
+data = dev.read_capture_range(start_sample=0, sample_count=1024)
+dev.ack_capture_done()
+
 # Analog capture (all 8 channels)
 dev.set_analog_enable(True)
 raw, frames = dev.capture_analog(rate_hz=100000, frames=4096)
@@ -266,7 +285,7 @@ cd hdl\proj
 .\compile.ps1 -Flash
 ```
 
-Set `FAST_SPEED => true` (speed mode, 100/200 MHz) or `false` (normal, 96/120 MHz) in `OLS_Logic_Analyzer_wrapper.vhd`.
+`compile.ps1` generates `OLS_Logic_Analyzer_wrapper.vhd` with `FAST_SPEED => true` for the current speed build (100/200 MHz). Change `hdl/proj/compile.ps1` if a normal 96/120 MHz wrapper is required; editing the generated wrapper alone will be overwritten by the next compile.
 
 ### Build modes
 
@@ -291,11 +310,11 @@ Set `FAST_SPEED => true` (speed mode, 100/200 MHz) or `false` (normal, 96/120 MH
 
 ```bash
 cd host
-python -m pytest tests/ driver/tests/ -v   # 310 unit tests
-python -m app.hw_validation                # 553 hardware validation checks
+python -m pytest tests/ driver/tests/ -v   # 319 unit tests
+python -m app.hw_validation                # 580 hardware validation checks
 ```
 
-Hardware validation covers: SPI protocol, single/fast/continuous/max-speed capture, edge triggers (rising + falling), UART/I2C/SPI generators, I2C LIS3DH addressing round-trip, divider accuracy, mixed 16-digital + 8-ADC mode and frame-alignment integrity, pre-trigger, full-depth SDRAM, back-to-back and capture-during-readout stress, rolling capture, protocol trigger, noise floor, schmitt trigger, abort capture, crosstalk characterisation, and a long stress run.
+Hardware validation covers: SPI protocol, single/fast/continuous/max-speed capture, max-rate continuous ring overrun, edge triggers (rising + falling), UART/I2C/SPI generators, I2C LIS3DH addressing round-trip, divider accuracy, mixed 16-digital + 8-ADC mode and frame-alignment integrity, mixed→digital→mixed reset, pre-trigger, full-depth SDRAM, back-to-back and capture-during-readout stress, rolling capture, protocol trigger, noise floor, schmitt trigger, abort capture, crosstalk characterisation, and a long stress run.
 
 ## Project Structure
 

@@ -67,7 +67,11 @@ PORT (
          Blk_Rd_Count   : OUT NATURAL range 0 to Max_Samples := 0;
          Rd_Fifo_Q      : IN  STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
          Rd_Fifo_Empty  : IN  STD_LOGIC := '1';
-         Rd_Fifo_RdReq  : OUT STD_LOGIC := '0'
+         Rd_Fifo_RdReq  : OUT STD_LOGIC := '0';
+         Producer_Index : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+         Oldest_Index   : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+         Newest_Index   : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+         Overrun_Count  : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0')
 
 );
 END OLS_Interface;
@@ -207,6 +211,11 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   -- Holds the even sample so the odd cycle can write the full 32-bit block_buf
   -- entry in one go (partial-width writes don't infer correctly on the RAM).
   SIGNAL block_pack_lo        : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  SIGNAL capture_seq          : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL done_latched         : STD_LOGIC := '0';
+  SIGNAL done_suppressed      : STD_LOGIC := '0';
+  SIGNAL disp_ack_done        : STD_LOGIC := '0';
+  SIGNAL disp_ack_seq         : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   CONSTANT SAMPLE_CLK_KHZ_SLV : STD_LOGIC_VECTOR(31 downto 0) :=
     STD_LOGIC_VECTOR(TO_UNSIGNED(SAMPLE_CLK_HZ / 1000, 32));
   SIGNAL sig_rd_pend_d1       : STD_LOGIC := '0';
@@ -306,10 +315,20 @@ BEGIN
     IF disp_arm = '1' THEN
       Run_OLS <= '1';
       Run <= '0';  -- force a clean 0->1 Run edge so the FLA starts a new capture
-    END IF;
-    IF disp_abort = '1' THEN
+      done_latched <= '0';
+      done_suppressed <= '0';
+      capture_seq <= std_logic_vector(unsigned(capture_seq) + 1);
+    ELSIF disp_abort = '1' THEN
       Run_OLS <= '0';
       Run <= '0';
+      done_latched <= '0';
+      done_suppressed <= '1';
+    ELSIF disp_ack_done = '1' THEN
+      IF disp_ack_seq = x"00000000" OR disp_ack_seq = capture_seq THEN
+        done_latched <= '0';
+      END IF;
+    ELSIF Full = '1' AND done_suppressed = '0' THEN
+      done_latched <= '1';
     END IF;
     IF disp_reg_write = '1' THEN
       CASE disp_reg_addr IS
@@ -552,7 +571,7 @@ BEGIN
   -- Full (capture buffer full), ensuring the loopback mux stays active
   -- until the capture completes — not tied to gen_busy duration alone.
   gen_capture_fsm: PROCESS (CLK)
-    VARIABLE guard_var : NATURAL range 0 to 255 := 0;
+    VARIABLE guard_var : NATURAL range 0 to 1023 := 0;
     VARIABLE disp_gen_arm_d : STD_LOGIC := '0';
   BEGIN
     IF RISING_EDGE(CLK) THEN
@@ -566,7 +585,10 @@ BEGIN
         CASE gen_cap_state IS
           WHEN GENCAP_IDLE =>
             IF disp_gen_arm = '1' AND disp_gen_arm_d = '0' THEN
-              guard_var := 48;
+              gen_capture_active_i <= '1';
+              gen_capture_done_i <= '0';
+              gen_capture_error_i <= '0';
+              guard_var := 512;
               gen_cap_state <= GENCAP_GUARD;
             END IF;
           WHEN GENCAP_GUARD =>
@@ -578,7 +600,6 @@ BEGIN
             END IF;
           WHEN GENCAP_WAIT_BUSY =>
             IF Gen_Busy = '1' OR Gen_Start_Ack = '1' THEN
-              gen_capture_active_i <= '1';
               gen_cap_state <= GENCAP_RUNNING;
             END IF;
           WHEN GENCAP_RUNNING =>
@@ -770,11 +791,11 @@ BEGIN
     variable rsp_seq_v : std_logic_vector(7 downto 0) := (others => '0');
     variable rsp_stat_v : std_logic_vector(7 downto 0) := ST_OK;
     variable rsp_len_v : natural range 0 to MAX_TX_PAYLOAD_BYTES := 0;
-    -- Small response buffer (8 bytes covers all non-block-read responses)
-    type rspbuf_t is array(0 to 15) of std_logic_vector(7 downto 0);
+    -- Small response buffer (24 bytes covers status metadata responses)
+    type rspbuf_t is array(0 to 31) of std_logic_vector(7 downto 0);
     variable rsp_buf : rspbuf_t;
-    variable rsp_buf_len : natural range 0 to 15 := 0;
-    variable rsp_buf_idx : natural range 0 to 15 := 0;
+    variable rsp_buf_len : natural range 0 to 31 := 0;
+    variable rsp_buf_idx : natural range 0 to 31 := 0;
     variable reg_val : std_logic_vector(31 downto 0) := (others => '0');
     -- Block-read streaming state
     variable blk_wc : natural range 0 to 255 := 0;  -- word counter
@@ -802,6 +823,7 @@ BEGIN
       disp_gen_start <= '0';
       disp_tx_payload_vld <= '0';
       block_rd_kill <= '0';
+      disp_ack_done <= '0';
 
       case st is
         when IDLE =>
@@ -830,7 +852,7 @@ BEGIN
                 rsp_stat_v := ST_CAPTURE_ARMED;
               elsif Run = '1' and Full = '0' then
                 rsp_stat_v := ST_CAPTURE_BUSY;
-              elsif Full = '1' then
+              elsif done_latched = '1' then
                 rsp_stat_v := ST_CAPTURE_DONE;
               else
                 rsp_stat_v := ST_CAPTURE_IDLE;
@@ -840,8 +862,30 @@ BEGIN
               rsp_buf(1)(0) := Gen_Busy;
               rsp_buf(1)(1) := gen_start_req;
               rsp_buf(1)(7 downto 2) := (others => '0');
-              rsp_buf_len := 3;
-              rsp_len_v := 3;
+              rsp_buf(3) := capture_seq(7 downto 0);
+              rsp_buf(4) := capture_seq(15 downto 8);
+              rsp_buf(5) := capture_seq(23 downto 16);
+              rsp_buf(6) := capture_seq(31 downto 24);
+              rsp_buf(7) := Producer_Index(7 downto 0);
+              rsp_buf(8) := Producer_Index(15 downto 8);
+              rsp_buf(9) := Producer_Index(23 downto 16);
+              rsp_buf(10) := Producer_Index(31 downto 24);
+              rsp_buf(11) := Oldest_Index(7 downto 0);
+              rsp_buf(12) := Oldest_Index(15 downto 8);
+              rsp_buf(13) := Oldest_Index(23 downto 16);
+              rsp_buf(14) := Oldest_Index(31 downto 24);
+              rsp_buf(15) := Newest_Index(7 downto 0);
+              rsp_buf(16) := Newest_Index(15 downto 8);
+              rsp_buf(17) := Newest_Index(23 downto 16);
+              rsp_buf(18) := Newest_Index(31 downto 24);
+              rsp_buf(19) := Overrun_Count(7 downto 0);
+              rsp_buf(20) := Overrun_Count(15 downto 8);
+              rsp_buf(21) := Overrun_Count(23 downto 16);
+              rsp_buf(22) := Overrun_Count(31 downto 24);
+              rsp_buf(23)(0) := done_latched;
+              rsp_buf(23)(7 downto 1) := (others => '0');
+              rsp_buf_len := 24;
+              rsp_len_v := 24;
               st := BUILD_RSP;
 
             when CMD_GET_METADATA =>
@@ -869,6 +913,17 @@ BEGIN
             when CMD_ABORT_CAPTURE =>
               disp_abort <= '1';
               rsp_stat_v := ST_CAPTURE_IDLE;
+              st := BUILD_RSP;
+
+            when CMD_ACK_CAPTURE_DONE =>
+              disp_ack_seq <= (others => '0');
+              if rx_header_len >= 4 then
+                disp_ack_seq(7 downto 0)   <= rx_payload_header(0);
+                disp_ack_seq(15 downto 8)  <= rx_payload_header(1);
+                disp_ack_seq(23 downto 16) <= rx_payload_header(2);
+                disp_ack_seq(31 downto 24) <= rx_payload_header(3);
+              end if;
+              disp_ack_done <= '1';
               st := BUILD_RSP;
 
             when CMD_READ_CAPTURE =>
@@ -939,6 +994,18 @@ BEGIN
                     reg_val(0) := schmitt_enable_i;
                   when REG_SCHMITT_THRESHOLD =>
                     reg_val(2 downto 0) := std_logic_vector(to_unsigned(schmitt_threshold_i, 3));
+                  when REG_CAPTURE_SEQ =>
+                    reg_val := capture_seq;
+                  when REG_PRODUCER_INDEX =>
+                    reg_val := Producer_Index;
+                  when REG_OLDEST_INDEX =>
+                    reg_val := Oldest_Index;
+                  when REG_NEWEST_INDEX =>
+                    reg_val := Newest_Index;
+                  when REG_OVERRUN_COUNT =>
+                    reg_val := Overrun_Count;
+                  when REG_DONE_LATCHED =>
+                    reg_val(0) := done_latched;
                   when others => null;
                 end case;
                 rsp_buf(0) := reg_val(7 downto 0);

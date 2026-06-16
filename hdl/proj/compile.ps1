@@ -126,10 +126,13 @@ port (
 end OLS_Logic_Analyzer_wrapper;
 
 architecture rtl of OLS_Logic_Analyzer_wrapper is
+    -- Fast build: 100 MHz system clock, 200 MHz SDRAM/sample clock.
+    constant FAST_SPEED : boolean := true;
 $($attrLines -join "`n")
 $($ioLines -join "`n")
 begin
     core : entity work.OLS_SDRAM_Top
+    generic map (FAST_SPEED => FAST_SPEED)
     port map (
 $($portMapLines -join "`n")
     );
@@ -177,8 +180,15 @@ $qsfLines = @(
     'set_global_assignment -name TOP_LEVEL_ENTITY OLS_Logic_Analyzer_wrapper',
     'set_global_assignment -name NUM_PARALLEL_PROCESSORS 16',
     'set_global_assignment -name INTERNAL_FLASH_UPDATE_MODE "SINGLE IMAGE WITH ERAM"',
-    'set_global_assignment -name FITTER_EFFORT "STANDARD FIT"',
     'set_global_assignment -name OPTIMIZE_MULTI_CORNER_TIMING ON',
+    'set_global_assignment -name SEED 3',
+    '',
+    '# Speed-mode fitter settings (active for 200 MHz FAST_SPEED build):',
+    'set_global_assignment -name FITTER_EFFORT "AUTO FIT"',
+    'set_global_assignment -name OPTIMIZATION_MODE "AGGRESSIVE PERFORMANCE"',
+    'set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC ON',
+    'set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION ON',
+    'set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING ON',
     '',
     'set_global_assignment -name VHDL_FILE ../rtl/OLS_SDRAM_Top.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/LED_Controller.vhd',
