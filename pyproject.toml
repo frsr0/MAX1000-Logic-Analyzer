@@ -4,7 +4,7 @@ build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
 name = "ols-maxscope"
-version = "1.0.0"
+version = "2.0.0"
 description = "OLS Logic Analyzer — Protocol Analyzer & Generator for MAX1000"
 requires-python = ">=3.10"
 dependencies = [

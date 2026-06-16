@@ -19,10 +19,14 @@ derive_pll_clocks
 derive_clock_uncertainty
 
 # Asynchronous clock groups: all cross-domain CDC paths properly synchronized.
+# SDRAM_PLL (pll_inst): clk[0]=sys, clk[1]=fast, clk[2]=sdram,
+# clk[3]=10 MHz ADC conversion clock. The ADC clock is async to everything
+# else (ADC hard-IP boundary crossings are false-pathed in the IP's own SDC).
 set_clock_groups -asynchronous \
-  -group [get_clocks {*|clk[0]}] \
-  -group [get_clocks {*|clk[1]}] \
-  -group [get_clocks {*|clk[2]}]
+  -group [get_clocks {*pll_inst|*clk[0]}] \
+  -group [get_clocks {*pll_inst|*clk[1]}] \
+  -group [get_clocks {*pll_inst|*clk[2]}] \
+  -group [get_clocks {*pll_inst|*clk[3]}]
 
 # Async FIFO internal gray-code synchronizer paths
 # The dcfifo megafunction generates these internally; they are intentional

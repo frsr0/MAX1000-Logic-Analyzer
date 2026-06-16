@@ -26,7 +26,7 @@ PORT (
   Start_Offset : BUFFER NATURAL range 0 to Max_Samples   := 0;  
   Run          : BUFFER STD_LOGIC := '0'; 
   Full         : IN  STD_LOGIC := '0'; 
-  Address      : BUFFER NATURAL range 0 to Max_Samples-1 := 0;   
+  Address      : BUFFER NATURAL range 0 to Max_Samples-1 := 0;
   Outputs      : IN STD_LOGIC_VECTOR(31 downto 0);
   Gen_Load_Byte : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   Gen_Load_We   : OUT STD_LOGIC := '0';
@@ -59,7 +59,19 @@ PORT (
          Gen_Capture_Active : OUT STD_LOGIC := '0';
          Gen_Start_Ack      : IN  STD_LOGIC := '0';
          Gen_Start_Reject   : IN  STD_LOGIC := '0';
-         Gen_Done_Pulse     : IN  STD_LOGIC := '0'
+         Gen_Done_Pulse     : IN  STD_LOGIC := '0';
+         -- Block readout (CMD_READ_CAPTURE) via the FLA response FIFO. Replaces
+         -- the fixed-latency Address/Outputs latch and its prime/drain hack.
+         Blk_Rd_Req_Tog : OUT STD_LOGIC := '0';
+         Blk_Rd_Base    : OUT NATURAL range 0 to Max_Samples := 0;
+         Blk_Rd_Count   : OUT NATURAL range 0 to Max_Samples := 0;
+         Rd_Fifo_Q      : IN  STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+         Rd_Fifo_Empty  : IN  STD_LOGIC := '1';
+         Rd_Fifo_RdReq  : OUT STD_LOGIC := '0';
+         Producer_Index : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+         Oldest_Index   : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+         Newest_Index   : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+         Overrun_Count  : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0')
 
 );
 END OLS_Interface;
@@ -74,7 +86,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL Divider : NATURAL range 0 to 16777215 := 0;
   SIGNAL Read_Count  : NATURAL := 0;
   SIGNAL Delay_Count : NATURAL := 0;
-  SIGNAL Channel_Groups : STD_LOGIC_VECTOR(3 downto 0) := "0000";
   SIGNAL analog_enable_i  : STD_LOGIC := '0';
   SIGNAL SPI_RX_Valid     : STD_LOGIC := '0';
   SIGNAL SPI_RX_Data      : STD_LOGIC_VECTOR (8-1 DOWNTO 0) := (others => '0');
@@ -85,8 +96,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   -- Generator FIFO depth (matches Signal_Gen.vhd generic)
   constant GEN_FIFO_DEPTH : natural := 256;
 
-  SIGNAL addr : NATURAL := 0;
-  SIGNAL wr_ctr : NATURAL range 0 to 18 := 0;
 
   SIGNAL gen_start_cnt : NATURAL range 0 to 63 := 0;
   SIGNAL gen_start_req : STD_LOGIC := '0';
@@ -107,12 +116,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
    SIGNAL gen_baud_div_int   : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   SIGNAL fast_mode_i        : STD_LOGIC := '0';
   SIGNAL continuous_mode_i   : STD_LOGIC := '0';
-  SIGNAL cont_buf_sel        : NATURAL range 0 to 2 := 0;
-  SIGNAL cont_rem            : NATURAL range 0 to 1048576 := 0;
-  SIGNAL cont_base_addr      : NATURAL range 0 to 1048576 := 0;
-  SIGNAL cont_prefetch       : STD_LOGIC := '0';
-  SIGNAL prev_buf_sel        : NATURAL range 0 to 2 := 0;
-  SIGNAL buffer_ack_i        : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
   SIGNAL spi_preamble        : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL spi_preamble_r      : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL spi_tx_ready_i      : STD_LOGIC := '0';
@@ -191,9 +194,33 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL block_rd_ack         : STD_LOGIC := '0';
   SIGNAL block_rd_addr        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL block_rd_state       : NATURAL range 0 to 6 := 0;
-  SIGNAL block_rd_wc          : NATURAL range 0 to 256 := 0;
-  SIGNAL block_addr_reg       : NATURAL range 0 to 1048575 := 0;
+  -- Watchdog kill: forces the block-read FSM back to idle when the dispatch
+  -- gives up on a stalled block read (e.g. a read issued during continuous
+  -- capture, where rd_mode is false so the FLA never streams and the response
+  -- FIFO never fills). Without this the dispatch hangs in WAIT_BLOCK forever
+  -- and every later command is ignored (the unrecoverable continuous wedge).
+  SIGNAL block_rd_kill        : STD_LOGIC := '0';
+  -- Each 1024-byte read block packs 2 samples per 32-bit block_buf entry
+  -- (even sample in bits 15:0, odd in 31:16), so one block carries 512 samples
+  -- on the wire as contiguous 16-bit little-endian words (no wasted high half).
+  CONSTANT BLOCK_SAMPLES      : INTEGER := 512;
+  -- Block readout now streams the 512 samples through the FLA response FIFO
+  -- (a true CLK<->pclk CDC), so there is no fixed-latency latch to warm and the
+  -- old prime/drain read-ahead/read-behind padding has been removed.
+  SIGNAL block_rd_j           : INTEGER range 0 to BLOCK_SAMPLES - 1 := 0;
+  -- Holds the even sample so the odd cycle can write the full 32-bit block_buf
+  -- entry in one go (partial-width writes don't infer correctly on the RAM).
+  SIGNAL block_pack_lo        : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  SIGNAL capture_seq          : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL done_latched         : STD_LOGIC := '0';
+  SIGNAL done_suppressed      : STD_LOGIC := '0';
+  SIGNAL disp_ack_done        : STD_LOGIC := '0';
+  SIGNAL disp_ack_seq         : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  CONSTANT SAMPLE_CLK_KHZ_SLV : STD_LOGIC_VECTOR(31 downto 0) :=
+    STD_LOGIC_VECTOR(TO_UNSIGNED(SAMPLE_CLK_HZ / 1000, 32));
   SIGNAL sig_rd_pend_d1       : STD_LOGIC := '0';
+  -- Drives the OUT request toggle so the FSM can read/flip it (port is OUT).
+  SIGNAL blk_req_tog_i        : STD_LOGIC := '0';
   TYPE block_buf_t IS ARRAY(0 TO 255) OF STD_LOGIC_VECTOR(31 DOWNTO 0);
   SIGNAL block_buf            : block_buf_t := (others => (others => '0'));
 
@@ -280,11 +307,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
 
 BEGIN
   PROCESS (CLK)  
-    VARIABLE Thread23 : NATURAL range 0 to 6 := 0;
-    VARIABLE Thread26 : NATURAL range 0 to 34 := 0;
-    VARIABLE Thread30 : NATURAL range 0 to 3 := 0;
-    VARIABLE Thread31 : NATURAL range 0 to 4 := 0;
-    VARIABLE next_sel : NATURAL range 0 to 2 := 0;
   BEGIN
   IF RISING_EDGE(CLK) THEN
     div3_pending <= '0';
@@ -292,11 +314,21 @@ BEGIN
     gen_reg_load_req <= '0';
     IF disp_arm = '1' THEN
       Run_OLS <= '1';
-      Thread23 := 0;
-    END IF;
-    IF disp_abort = '1' THEN
+      Run <= '0';  -- force a clean 0->1 Run edge so the FLA starts a new capture
+      done_latched <= '0';
+      done_suppressed <= '0';
+      capture_seq <= std_logic_vector(unsigned(capture_seq) + 1);
+    ELSIF disp_abort = '1' THEN
       Run_OLS <= '0';
       Run <= '0';
+      done_latched <= '0';
+      done_suppressed <= '1';
+    ELSIF disp_ack_done = '1' THEN
+      IF disp_ack_seq = x"00000000" OR disp_ack_seq = capture_seq THEN
+        done_latched <= '0';
+      END IF;
+    ELSIF Full = '1' AND done_suppressed = '0' THEN
+      done_latched <= '1';
     END IF;
     IF disp_reg_write = '1' THEN
       CASE disp_reg_addr IS
@@ -321,15 +353,13 @@ BEGIN
         WHEN REG_CONT_MODE =>
           continuous_mode_i <= disp_reg_wdata(0);
           IF disp_reg_wdata(0) = '1' THEN
-            cont_buf_sel <= 0;
-            cont_base_addr <= 0;
-            cont_prefetch <= '0';
-            IF div3_busy = '0' THEN
-              cont_rem <= samples_div3;
-            ELSE
-              cont_rem <= Read_Count / 4;
-            END IF;
             Run_OLS <= '1';
+          ELSE
+            -- Stop continuous. Only clear Run_OLS here; the capture-engine Run is
+            -- owned by the arm/abort logic (disp_arm forces a clean 0->1 edge and
+            -- abort clears it). Driving Run from this register handler too breaks
+            -- ARM (it would also fire on stray reg writes and stick Run at 0).
+            Run_OLS <= '0';
           END IF;
         WHEN REG_GEN_PROTO =>
           gen_proto_int <= disp_reg_wdata(0);
@@ -431,175 +461,55 @@ BEGIN
           inputs_prev <= Inputs;
         END IF;
     END IF;
-      IF (Full = '1' OR Run = '1') THEN
-        CASE (Thread23) IS
-          WHEN 0 =>
-            IF continuous_mode_i = '1' THEN
-              addr <= cont_base_addr;
-            ELSE
-              addr <= 0;
-            END IF;
-            cont_prefetch <= '0';
-            Thread23 := 1;
-          WHEN 1 =>
-            IF continuous_mode_i = '1' THEN
-              IF fast_mode_i = '1' THEN
-                -- Fast mode continuous: single buffer, no prefetch
-                IF cont_rem > 0 THEN
-                  Thread23 := 2;
-                ELSE
-                  Thread23 := 4;
-                END IF;
-              ELSIF cont_prefetch = '1' THEN
-                -- Prefetch was primed in previous cycle: ack completed buffer, read next
-                buffer_ack_i <= (others => '0');
-                buffer_ack_i(prev_buf_sel) <= '1';
-                cont_prefetch <= '0';
-                Thread26 := 0;
-                Thread23 := 2;
-              ELSIF cont_rem > 1 THEN
-                Thread23 := 2;  -- normal read (more than 1 addr left)
-              ELSIF cont_rem = 1 THEN
-                -- Last address: try to prefetch next buffer
-                next_sel := (cont_buf_sel + 1) mod 3;
-                IF Buffer_Full(next_sel) = '1' THEN
-                  prev_buf_sel <= cont_buf_sel;
-                  cont_prefetch <= '1';
-                  cont_buf_sel <= next_sel;
-                  CASE next_sel IS
-                    WHEN 0 => cont_base_addr <= 0;
-                    WHEN 1 => cont_base_addr <= samples_div3;
-                    WHEN 2 => cont_base_addr <= samples_2div3;
-                  END CASE;
-                END IF;
-                Thread23 := 2;
-              ELSE
-                Thread23 := 4;  -- buffer done, no prefetch
-              END IF;
-            ELSIF ( addr < Samples) THEN 
-              Thread23 := Thread23 + 1;
-            ELSE
-              Thread23 := Thread23 + 2;
-            END IF;
-          WHEN (1+1) =>
-            CASE (Thread26) IS
-      WHEN 0 =>
-        IF block_rd_state = 0 THEN
-          Address <= addr;
-        END IF;
-        Thread26 := 1;
-      WHEN 1 to 29 =>
-        Thread26 := Thread26 + 1;
-      WHEN 30 =>
-        wr_ctr <= 0;
-        Thread26 := 31;
-      WHEN 31 =>
-        IF ( wr_ctr < 4) THEN 
-          Thread26 := Thread26 + 1;
-        ELSE
-          Thread26 := Thread26 + 2;
-        END IF;
-      WHEN 32 =>
-        CASE (Thread30) IS
-                  WHEN 0 =>
-                    IF (Channel_Groups(wr_ctr) = '0') THEN 
-                      Thread30 := Thread30 + 1;
-                    ELSE
-                      Thread30 := Thread30 + 2;
-                    END IF;
-                        WHEN (0+1) =>
-                    CASE (Thread31) IS
-                      WHEN 0 =>
-                        -- SPI mode: wait for SPI to be ready
-                        IF spi_tx_ready_i = '1' THEN
-                          Thread31 := 0;
-                          Thread30 := 2;
-                        END IF;
-                      WHEN others => Thread31 := 0;
-                    END CASE;
-        WHEN 2 =>
-          wr_ctr <= wr_ctr + 1;
-          Thread30 := 0;
-          Thread26 := 31;
-          -- Prefetch: change Address to next buffer's base after last byte sent
-          IF cont_prefetch = '1' AND wr_ctr = 0 AND block_rd_state = 0 THEN
-            Address <= cont_base_addr;
-          END IF;
-        WHEN others => Thread30 := 0;
-      END CASE;
-    WHEN 33 =>
-      addr <= addr + 1;
-      IF continuous_mode_i = '1' AND cont_rem > 0 THEN
-        cont_rem <= cont_rem - 1;
-      END IF;
-      Thread26 := 0;
-      Thread23 := 1;
-              WHEN others => Thread26 := 0;
-            END CASE;
-          WHEN 3 =>
-            IF continuous_mode_i = '1' THEN
-              Thread23 := 4;  -- continuous: ack and continue
-            ELSE
-              Run_OLS <= '0';
-              Run <= '0';
-              Thread23 := 6;  -- non-continuous: idle (was 0, looped into second all-zero readout)
-            END IF;
-          WHEN 6 =>
-            null;  -- idle after non-continuous single-shot readout
-          WHEN 4 =>
-            -- Buffer read complete: ack the buffer we just finished
-            buffer_ack_i <= (others => '0');
-            buffer_ack_i(cont_buf_sel) <= '1';
-            IF fast_mode_i = '1' THEN
-              -- Fast mode: single BRAM buffer, stay on 0, reload 1024 words
-              cont_base_addr <= 0;
-              cont_buf_sel <= 0;
-              cont_rem <= 1024;
-            ELSE
-              -- SDRAM: cycle to next buffer (0→1→2→0)
-              CASE cont_buf_sel IS
-                WHEN 0 => cont_base_addr <= samples_div3;  cont_buf_sel <= 1;
-                WHEN 1 => cont_base_addr <= samples_2div3;  cont_buf_sel <= 2;
-                WHEN 2 => cont_base_addr <= 0;  cont_buf_sel <= 0;
-              END CASE;
-              cont_rem <= samples_div3;
-            END IF;
-            Thread23 := 5;
-          WHEN 5 =>
-            buffer_ack_i <= (others => '0');
-            -- Check if next buffer is already full
-            IF (cont_buf_sel = 0 AND Buffer_Full(0) = '1') OR
-               (cont_buf_sel = 1 AND Buffer_Full(1) = '1') OR
-               (cont_buf_sel = 2 AND Buffer_Full(2) = '1') THEN
-              addr <= cont_base_addr;
-              Thread26 := 0;
-              Thread23 := 2;
-            END IF;
-          WHEN others => Thread23 := 0;
-        END CASE;
-      END IF;
     -- ── Block read state machine (for CMD_READ_CAPTURE) ──────────────
+    -- Request a BLOCK_SAMPLES-long stream from the FLA and drain it through the
+    -- response FIFO. The FIFO is a true CDC across the FLA's pclk readout domain
+    -- and this CLK domain, so there is no fixed-latency latch to mis-time at a
+    -- block boundary (that was the block-boundary corruption) and no prime/drain.
     sig_rd_pend_d1 <= block_rd_pending;
-    IF block_rd_pending = '1' AND sig_rd_pend_d1 = '0' THEN
-      block_addr_reg <= TO_INTEGER(UNSIGNED(block_rd_addr(31 downto 2)));
-      block_rd_wc <= 0;
+    Rd_Fifo_RdReq <= '0';
+    IF block_rd_kill = '1' THEN
+      -- Dispatch watchdog gave up on a stalled stream; unwind the FSM so the
+      -- next block read starts clean instead of resuming a half-finished one.
+      block_rd_state <= 0;
+      block_rd_ack   <= '0';
+    ELSIF block_rd_pending = '1' AND sig_rd_pend_d1 = '0' THEN
+      -- block_rd_addr is a BYTE address; the wire is 2 bytes/sample, so the
+      -- base sample index = byte_addr / 2 (one 1024-byte block = 512 samples).
+      Blk_Rd_Base  <= TO_INTEGER(UNSIGNED(block_rd_addr(31 downto 1)));
+      Blk_Rd_Count <= BLOCK_SAMPLES;
+      block_rd_j <= 0;
       block_rd_state <= 1;
     END IF;
     CASE block_rd_state IS
       WHEN 1 =>
-        Address <= block_addr_reg + block_rd_wc;
+        -- Base/Count have been stable since the pending edge; fire the request
+        -- toggle (single-bit CDC) to start the stream on the FLA side.
+        blk_req_tog_i <= NOT blk_req_tog_i;
         block_rd_state <= 2;
       WHEN 2 =>
-        block_rd_state <= 3;
+        -- Drain one sample: pop when the FIFO has data (rdreq asserted next
+        -- cycle, q valid the cycle after that — showahead OFF).
+        IF Rd_Fifo_Empty = '0' THEN
+          Rd_Fifo_RdReq <= '1';
+          block_rd_state <= 3;
+        END IF;
       WHEN 3 =>
         block_rd_state <= 4;
       WHEN 4 =>
-        block_buf(block_rd_wc) <= Outputs;
-        IF block_rd_wc < 255 THEN
-          block_rd_wc <= block_rd_wc + 1;
-          block_rd_state <= 1;
+        -- q now holds the popped sample. Pack 2 samples per 32-bit entry as one
+        -- full-word write on the odd index: even -> bits 15:0, odd -> 31:16
+        -- (contiguous 16-bit LE).
+        IF (block_rd_j MOD 2) = 0 THEN
+          block_pack_lo <= Rd_Fifo_Q;
         ELSE
+          block_buf(block_rd_j / 2) <= Rd_Fifo_Q & block_pack_lo;
+        END IF;
+        IF block_rd_j = BLOCK_SAMPLES - 1 THEN
           block_rd_state <= 5;
+        ELSE
+          block_rd_j <= block_rd_j + 1;
+          block_rd_state <= 2;
         END IF;
       WHEN 5 =>
         block_rd_ack <= '1';
@@ -661,7 +571,7 @@ BEGIN
   -- Full (capture buffer full), ensuring the loopback mux stays active
   -- until the capture completes — not tied to gen_busy duration alone.
   gen_capture_fsm: PROCESS (CLK)
-    VARIABLE guard_var : NATURAL range 0 to 255 := 0;
+    VARIABLE guard_var : NATURAL range 0 to 1023 := 0;
     VARIABLE disp_gen_arm_d : STD_LOGIC := '0';
   BEGIN
     IF RISING_EDGE(CLK) THEN
@@ -675,7 +585,10 @@ BEGIN
         CASE gen_cap_state IS
           WHEN GENCAP_IDLE =>
             IF disp_gen_arm = '1' AND disp_gen_arm_d = '0' THEN
-              guard_var := 48;
+              gen_capture_active_i <= '1';
+              gen_capture_done_i <= '0';
+              gen_capture_error_i <= '0';
+              guard_var := 512;
               gen_cap_state <= GENCAP_GUARD;
             END IF;
           WHEN GENCAP_GUARD =>
@@ -687,7 +600,6 @@ BEGIN
             END IF;
           WHEN GENCAP_WAIT_BUSY =>
             IF Gen_Busy = '1' OR Gen_Start_Ack = '1' THEN
-              gen_capture_active_i <= '1';
               gen_cap_state <= GENCAP_RUNNING;
             END IF;
           WHEN GENCAP_RUNNING =>
@@ -774,9 +686,10 @@ BEGIN
   Gen_I2C_Test   <= gen_i2c_test_int;
   Gen_SPI_Test   <= gen_spi_test_int;
   Fast_Mode      <= fast_mode_i;
+  Blk_Rd_Req_Tog <= blk_req_tog_i;
   Continuous_Mode <= continuous_mode_i;
   Analog_Enable <= analog_enable_i;
-  Buffer_Ack      <= buffer_ack_i;
+  Buffer_Ack      <= (others => '0');  -- FLA frees its own continuous buffers
   Armed          <= Run_OLS;
   Debug_Ch0_Enable <= debug_ch0_enable_i;
   Debug_Ch0_Period <= debug_ch0_period_i;
@@ -878,11 +791,11 @@ BEGIN
     variable rsp_seq_v : std_logic_vector(7 downto 0) := (others => '0');
     variable rsp_stat_v : std_logic_vector(7 downto 0) := ST_OK;
     variable rsp_len_v : natural range 0 to MAX_TX_PAYLOAD_BYTES := 0;
-    -- Small response buffer (8 bytes covers all non-block-read responses)
-    type rspbuf_t is array(0 to 15) of std_logic_vector(7 downto 0);
+    -- Small response buffer (24 bytes covers status metadata responses)
+    type rspbuf_t is array(0 to 31) of std_logic_vector(7 downto 0);
     variable rsp_buf : rspbuf_t;
-    variable rsp_buf_len : natural range 0 to 15 := 0;
-    variable rsp_buf_idx : natural range 0 to 15 := 0;
+    variable rsp_buf_len : natural range 0 to 31 := 0;
+    variable rsp_buf_idx : natural range 0 to 31 := 0;
     variable reg_val : std_logic_vector(31 downto 0) := (others => '0');
     -- Block-read streaming state
     variable blk_wc : natural range 0 to 255 := 0;  -- word counter
@@ -891,6 +804,14 @@ BEGIN
     variable feeding_block : boolean := false;
     variable feed_wait_ready_low : boolean := false;
     variable block_last_v : boolean := false;
+    -- Watchdog for WAIT_BLOCK. A healthy block read completes in a few thousand
+    -- CLK cycles; if block_rd_ack has not arrived well past that the stream has
+    -- stalled (read issued during continuous capture), so give up and recover
+    -- rather than hang the whole command dispatcher forever.
+    variable block_wd : natural range 0 to 2097151 := 0;
+    -- A normal 512-sample block read completes in ~5000 CLK cycles (~50 us at
+    -- 100 MHz); 50000 gives ~10x margin before the watchdog declares a stall.
+    constant BLOCK_WD_MAX : natural := 50000;
   begin
     if rising_edge(CLK) then
       -- Defaults
@@ -901,6 +822,8 @@ BEGIN
       disp_reg_write <= '0';
       disp_gen_start <= '0';
       disp_tx_payload_vld <= '0';
+      block_rd_kill <= '0';
+      disp_ack_done <= '0';
 
       case st is
         when IDLE =>
@@ -929,7 +852,7 @@ BEGIN
                 rsp_stat_v := ST_CAPTURE_ARMED;
               elsif Run = '1' and Full = '0' then
                 rsp_stat_v := ST_CAPTURE_BUSY;
-              elsif Full = '1' then
+              elsif done_latched = '1' then
                 rsp_stat_v := ST_CAPTURE_DONE;
               else
                 rsp_stat_v := ST_CAPTURE_IDLE;
@@ -939,8 +862,30 @@ BEGIN
               rsp_buf(1)(0) := Gen_Busy;
               rsp_buf(1)(1) := gen_start_req;
               rsp_buf(1)(7 downto 2) := (others => '0');
-              rsp_buf_len := 3;
-              rsp_len_v := 3;
+              rsp_buf(3) := capture_seq(7 downto 0);
+              rsp_buf(4) := capture_seq(15 downto 8);
+              rsp_buf(5) := capture_seq(23 downto 16);
+              rsp_buf(6) := capture_seq(31 downto 24);
+              rsp_buf(7) := Producer_Index(7 downto 0);
+              rsp_buf(8) := Producer_Index(15 downto 8);
+              rsp_buf(9) := Producer_Index(23 downto 16);
+              rsp_buf(10) := Producer_Index(31 downto 24);
+              rsp_buf(11) := Oldest_Index(7 downto 0);
+              rsp_buf(12) := Oldest_Index(15 downto 8);
+              rsp_buf(13) := Oldest_Index(23 downto 16);
+              rsp_buf(14) := Oldest_Index(31 downto 24);
+              rsp_buf(15) := Newest_Index(7 downto 0);
+              rsp_buf(16) := Newest_Index(15 downto 8);
+              rsp_buf(17) := Newest_Index(23 downto 16);
+              rsp_buf(18) := Newest_Index(31 downto 24);
+              rsp_buf(19) := Overrun_Count(7 downto 0);
+              rsp_buf(20) := Overrun_Count(15 downto 8);
+              rsp_buf(21) := Overrun_Count(23 downto 16);
+              rsp_buf(22) := Overrun_Count(31 downto 24);
+              rsp_buf(23)(0) := done_latched;
+              rsp_buf(23)(7 downto 1) := (others => '0');
+              rsp_buf_len := 24;
+              rsp_len_v := 24;
               st := BUILD_RSP;
 
             when CMD_GET_METADATA =>
@@ -950,10 +895,12 @@ BEGIN
               rsp_buf(3) := x"F0";
               rsp_buf(4) := x"01";
               -- bytes 5-8: SAMPLE_CLK_HZ in kHz, little-endian uint32
-              rsp_buf(5) := std_logic_vector(to_unsigned(SAMPLE_CLK_HZ / 1000, 32))(7 downto 0);
-              rsp_buf(6) := std_logic_vector(to_unsigned(SAMPLE_CLK_HZ / 1000, 32))(15 downto 8);
-              rsp_buf(7) := std_logic_vector(to_unsigned(SAMPLE_CLK_HZ / 1000, 32))(23 downto 16);
-              rsp_buf(8) := std_logic_vector(to_unsigned(SAMPLE_CLK_HZ / 1000, 32))(31 downto 24);
+              -- (constant declared near the top; sliced type conversions are
+              -- not portable to GHDL)
+              rsp_buf(5) := SAMPLE_CLK_KHZ_SLV(7 downto 0);
+              rsp_buf(6) := SAMPLE_CLK_KHZ_SLV(15 downto 8);
+              rsp_buf(7) := SAMPLE_CLK_KHZ_SLV(23 downto 16);
+              rsp_buf(8) := SAMPLE_CLK_KHZ_SLV(31 downto 24);
               rsp_buf_len := 9;
               rsp_len_v := 9;
               st := BUILD_RSP;
@@ -968,6 +915,17 @@ BEGIN
               rsp_stat_v := ST_CAPTURE_IDLE;
               st := BUILD_RSP;
 
+            when CMD_ACK_CAPTURE_DONE =>
+              disp_ack_seq <= (others => '0');
+              if rx_header_len >= 4 then
+                disp_ack_seq(7 downto 0)   <= rx_payload_header(0);
+                disp_ack_seq(15 downto 8)  <= rx_payload_header(1);
+                disp_ack_seq(23 downto 16) <= rx_payload_header(2);
+                disp_ack_seq(31 downto 24) <= rx_payload_header(3);
+              end if;
+              disp_ack_done <= '1';
+              st := BUILD_RSP;
+
             when CMD_READ_CAPTURE =>
               if rx_header_len >= 4 then
                 block_rd_addr(7 downto 0)   <= rx_payload_header(0);
@@ -975,6 +933,7 @@ BEGIN
                 block_rd_addr(23 downto 16) <= rx_payload_header(2);
                 block_rd_addr(31 downto 24) <= rx_payload_header(3);
                 block_rd_pending <= '1';
+                block_wd := 0;
                 st := WAIT_BLOCK;
               else
                 rsp_stat_v := ST_BAD_LEN;
@@ -1035,6 +994,18 @@ BEGIN
                     reg_val(0) := schmitt_enable_i;
                   when REG_SCHMITT_THRESHOLD =>
                     reg_val(2 downto 0) := std_logic_vector(to_unsigned(schmitt_threshold_i, 3));
+                  when REG_CAPTURE_SEQ =>
+                    reg_val := capture_seq;
+                  when REG_PRODUCER_INDEX =>
+                    reg_val := Producer_Index;
+                  when REG_OLDEST_INDEX =>
+                    reg_val := Oldest_Index;
+                  when REG_NEWEST_INDEX =>
+                    reg_val := Newest_Index;
+                  when REG_OVERRUN_COUNT =>
+                    reg_val := Overrun_Count;
+                  when REG_DONE_LATCHED =>
+                    reg_val(0) := done_latched;
                   when others => null;
                 end case;
                 rsp_buf(0) := reg_val(7 downto 0);
@@ -1096,6 +1067,18 @@ BEGIN
             blk_bc := 0;
             feeding_block := true;
             st := BUILD_RSP;
+          elsif block_wd >= BLOCK_WD_MAX then
+            -- Stream stalled (e.g. block read during continuous capture). Kill
+            -- the block-read FSM, drop the pending request, and return an empty
+            -- error response so the dispatcher frees up for the next command
+            -- instead of wedging the device until it is reconfigured.
+            block_rd_kill <= '1';
+            block_rd_pending <= '0';
+            rsp_stat_v := ST_CAPTURE_IDLE;
+            rsp_len_v := 0;
+            st := BUILD_RSP;
+          else
+            block_wd := block_wd + 1;
           end if;
 
         when BUILD_RSP =>

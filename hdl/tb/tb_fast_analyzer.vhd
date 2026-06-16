@@ -14,10 +14,15 @@ end tb_fast_analyzer;
 
 architecture bench of tb_fast_analyzer is
   constant CLK_PERIOD : time := 1 sec / real(CLK_FREQ);
+  -- The FLA capture pump + config handshake live in the FAST_CLK domain, so it
+  -- must be clocked (a distinct rate from CLK exercises the CDC). The readout/
+  -- write-pump run on pclk = CLK in Sim (SDRAM_Interface: CLK_150_Out <= CLK).
+  constant FAST_PERIOD : time := 1 sec / 120000000;
 
   signal clk : std_logic := '0';
+  signal fast_clk : std_logic := '0';
   signal clk_150 : std_logic;
-  signal rate_div : natural range 1 to 150000000 := SAMPLE_RATE;
+  signal rate_div : natural range 1 to 500000000 := SAMPLE_RATE;
   signal samples_s : natural range 1 to MAX_SAMPLES := 1024;
   signal start_offset : natural range 0 to MAX_SAMPLES := 0;
   signal run : std_logic := '0';
@@ -49,6 +54,7 @@ architecture bench of tb_fast_analyzer is
 begin
 
   gen_clk(clk, CLK_PERIOD / 2);
+  gen_clk(fast_clk, FAST_PERIOD / 2);
 
   -- Pattern generator for CH0 (concurrent process)
   process(clk)
@@ -95,7 +101,7 @@ begin
       s_burst      => s_burst,
       Armed        => armed,
       Fast_Mode    => fast_mode,
-      FAST_CLK     => '0',
+      FAST_CLK     => fast_clk,
       Continuous_Mode => continuous_mode,
       Buffer_Full     => buffer_full_s,
       Buffer_Ack      => buffer_ack_s
@@ -139,7 +145,8 @@ begin
     -- Test 2: Continuous triple-buffer mode
     ------------------------------------------------------------------
     report "Test 2: Continuous triple-buffer mode";
-    samples_s <= 96;
+
+    samples_s <= 1536;  -- continuous buffers are 512 each; fill all three
     continuous_mode <= '1';
     fast_mode <= '0';
 
@@ -171,6 +178,7 @@ begin
     continuous_mode <= '0';
     pat_enable <= false;
     wait_cycles(clk, 50);
+
     report "Test 2: PASS";
 
     ------------------------------------------------------------------

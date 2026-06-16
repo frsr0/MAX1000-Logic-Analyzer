@@ -15,7 +15,7 @@ architecture bench of tb_capture_path is
   constant TEST_SAMPLES : natural := 16;
 
   signal clk      : std_logic := '0';
-  signal rate_div : natural range 1 to 150000000 := 4;
+  signal rate_div : natural range 1 to 500000000 := 4;
   signal samples_in : natural range 1 to 3000000 := TEST_SAMPLES;
   signal start_offset : natural range 0 to 3000000 := 0;
   signal run      : std_logic := '0';
@@ -45,7 +45,7 @@ architecture bench of tb_capture_path is
   signal bram_waddr  : natural range 0 to 1023;
   signal bram_wren   : std_logic;
   signal sample_en   : std_logic;
-  signal fifo_cnt    : natural range 0 to 16;
+  signal fifo_cnt    : natural range 0 to 64;
   signal tb_counter  : std_logic_vector(7 downto 0) := (others => '0');
 
 begin
@@ -70,8 +70,11 @@ begin
   -- Probe internal signals
   bram_waddr <= << signal .tb_capture_path.dut.bram_waddr : natural range 0 to 1023 >>;
   bram_wren  <= << signal .tb_capture_path.dut.bram_wren : std_logic >>;
-  sample_en  <= << signal .tb_capture_path.dut.sample_en : std_logic >>;
-  fifo_cnt   <= << signal .tb_capture_path.dut.fifo_cnt : natural range 0 to 16 >>;
+  -- sample_en was a free-running divider tick; the FLA now uses sample_tick_r,
+  -- which is gated by capture_en (only pulses during an active capture). Test 1
+  -- below measures its period inside a running capture instead of idle.
+  sample_en  <= << signal .tb_capture_path.dut.sample_tick_r : std_logic >>;
+  fifo_cnt   <= << signal .tb_capture_path.dut.fifo_cnt : natural range 0 to 64 >>;
 
   DUT : entity work.Fast_Logic_Analyzer_SDRAM
     generic map (
@@ -120,16 +123,25 @@ begin
     -- Test 1: Sample rate divider
     ------------------------------------------------------------------
     report "Test 1: sample_en period = Rate_Div cycles";
+    -- Start a long fast-mode capture so the (capture-gated) sample tick streams
+    -- continuously; a large sample count keeps Full from firing mid-measurement.
     rate_div <= 4;
-    wait_cycles(clk, 10);
+    samples_in <= 1000;
+    fast_mode <= '1';
+    armed <= '1';
+    run <= '1';
 
-    -- Count cycles between sample_en rising edges
-    -- sample_en is synchronous to pclk (= clk), pulses for 1 cycle every Rate_Div cycles
+    -- Config (Rate_Div) is latched on the run-start edge and crosses into the
+    -- FAST_CLK domain over a few cycles; the divider runs at its default until
+    -- then. Let it settle before measuring so we time the configured rate.
+    wait_cycles(clk, 60);
+
+    -- Count cycles between sample tick rising edges (fast_clk = clk here, so the
+    -- divider period in clk cycles equals Rate_Div).
     wait until rising_edge(sample_en);
-    wait until rising_edge(clk);  -- wait one cycle (sample_en just went high)
-    wait until rising_edge(sample_en);  -- next sample_en rising
+    wait until rising_edge(clk);  -- wait one cycle (sample tick just went high)
+    wait until rising_edge(sample_en);  -- next sample tick rising
     wait until rising_edge(clk);
-    -- Now count until next sample_en
     for i in 1 to 20 loop
       wait until rising_edge(clk);
       if sample_en = '1' then
@@ -138,6 +150,11 @@ begin
         exit;
       end if;
     end loop;
+    -- Tear down the measurement capture before the functional tests below.
+    run <= '0';
+    armed <= '0';
+    fast_mode <= '0';
+    wait_cycles(clk, 20);
     report "Test 1: PASS";
 
     ------------------------------------------------------------------

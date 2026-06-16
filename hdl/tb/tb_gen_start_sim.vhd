@@ -23,7 +23,7 @@ architecture bench of tb_gen_start_sim is
   signal spi_miso  : std_logic;
   signal iface_mode : std_logic;
   signal inputs    : std_logic_vector(31 downto 0) := (others => '0');
-  signal rate_div  : natural range 1 to 150000000;
+  signal rate_div  : natural range 1 to 500000000;
   signal samples   : natural range 1 to 25000;
   signal start_off : natural range 0 to 25000;
   signal run       : std_logic;
@@ -46,9 +46,6 @@ architecture bench of tb_gen_start_sim is
   signal armed        : std_logic;
   signal fast_mode    : std_logic;
   signal cont_mode    : std_logic;
-  signal analog_mode  : std_logic_vector(2 downto 0);
-  signal analog_ch0   : natural range 0 to 15;
-  signal analog_ch1   : natural range 0 to 15;
   signal buffer_full  : std_logic_vector(2 downto 0) := (others => '0');
   signal buffer_ack   : std_logic_vector(2 downto 0);
   signal pin_map_write : std_logic;
@@ -167,9 +164,6 @@ begin
       Armed        => armed,
       Fast_Mode    => fast_mode,
       Continuous_Mode => cont_mode,
-      Analog_Mode  => analog_mode,
-      Analog_Ch0   => analog_ch0,
-      Analog_Ch1   => analog_ch1,
       Buffer_Full     => buffer_full,
       Buffer_Ack      => buffer_ack,
       Pin_Map_Write  => pin_map_write,

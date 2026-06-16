@@ -29,6 +29,7 @@ package spi_protocol_pkg is
   constant CMD_READ_CAPTURE     : cmd_t := x"12";
   constant CMD_START_STREAM     : cmd_t := x"13";
   constant CMD_READ_STREAM_BLOCK : cmd_t := x"14";
+  constant CMD_ACK_CAPTURE_DONE : cmd_t := x"15";
   constant CMD_WRITE_REG        : cmd_t := x"20";
   constant CMD_READ_REG         : cmd_t := x"21";
   constant CMD_GEN_CONFIG       : cmd_t := x"30";
@@ -76,6 +77,12 @@ package spi_protocol_pkg is
   constant REG_DEBUG_CH0_DUTY   : reg_addr_t := x"44";
   constant REG_SCHMITT_ENABLE    : reg_addr_t := x"41";
   constant REG_SCHMITT_THRESHOLD : reg_addr_t := x"42";
+  constant REG_CAPTURE_SEQ       : reg_addr_t := x"50";
+  constant REG_PRODUCER_INDEX    : reg_addr_t := x"51";
+  constant REG_OLDEST_INDEX      : reg_addr_t := x"52";
+  constant REG_NEWEST_INDEX      : reg_addr_t := x"53";
+  constant REG_OVERRUN_COUNT     : reg_addr_t := x"54";
+  constant REG_DONE_LATCHED      : reg_addr_t := x"55";
 
   -- ── Helper: CRC-16-IBM ──────────────────────────────────────────
   function crc16(data : std_logic_vector; init : std_logic_vector(15 downto 0) := x"FFFF")

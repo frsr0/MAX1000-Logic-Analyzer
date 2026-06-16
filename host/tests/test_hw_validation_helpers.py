@@ -112,3 +112,33 @@ class TestDecodeI2CBest:
         )
         assert isinstance(result, list)
         assert isinstance(offset, int)
+
+
+class TestDecodeUARTSafe:
+    def setup_method(self):
+        hv.PASS = 0
+        hv.FAIL = 0
+        hv.TOTAL = 0
+
+    def test_rejects_low_sampling_margin(self):
+        result = hv.decode_uart_safe([[1] * 100], samplerate=500000,
+                                     ch_idx=0, baud=115200)
+
+        assert result == []
+        assert hv.FAIL == 1
+
+    def test_decodes_when_sampling_margin_is_high_enough(self):
+        ch = [[1] * 10]
+        bit_samples = 20
+        for byte in b"H":
+            ch[0].extend([0] * bit_samples)
+            for bit in range(8):
+                ch[0].extend([byte >> bit & 1] * bit_samples)
+            ch[0].extend([1] * bit_samples)
+            ch[0].extend([1] * bit_samples)
+
+        result = hv.decode_uart_safe(ch, samplerate=2_000_000,
+                                     ch_idx=0, baud=100_000)
+
+        assert [b.value for b in result] == [0x48]
+        assert hv.FAIL == 0

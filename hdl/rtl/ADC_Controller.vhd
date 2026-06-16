@@ -6,6 +6,11 @@ entity ADC_Controller is
   port (
     sys_clk        : in  std_logic;
     sys_clk_locked : in  std_logic := '1';
+    -- Dedicated ADC conversion clock (10 MHz from ADC_PLL c0). The MAX10 ADC
+    -- hard IP requires a clean PLL clock here at its rated frequency; the
+    -- 100 MHz sys_clk violates the adcblock minimum-pulse-width spec.
+    adc_clk        : in  std_logic := '0';
+    adc_clk_locked : in  std_logic := '1';
     reset          : in  std_logic := '0';
     ch0_sel        : in  natural range 0 to 15 := 0;
     ch0_start      : in  std_logic := '0';
@@ -144,8 +149,8 @@ begin
       rsp_data          => rsp_data,
       rsp_sop           => open,
       rsp_eop           => open,
-      clk_in_pll_c0     => sys_clk,
-      clk_in_pll_locked => sys_clk_locked,
+      clk_in_pll_c0     => adc_clk,
+      clk_in_pll_locked => adc_clk_locked,
       sync_valid        => open,
       sync_ready        => '0'
     );

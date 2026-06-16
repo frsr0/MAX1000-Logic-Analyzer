@@ -83,7 +83,12 @@ architecture rtl of SDRAM_Controller is
         end if;
     end function;
 
-    -- SDRAM timing parameters (nanoseconds)
+    -- SDRAM timing parameters (nanoseconds). These are the proven values: the
+    -- prime/drain block readout uses a FIXED 3-cycle latch tuned to the
+    -- resulting controller read latency, so changing tRCD/tRP/tRFC misaligns it
+    -- and corrupts reads everywhere (verified: padding them broke the readout).
+    -- (Padding was tried to fix the boundary residual and made no difference to
+    -- it, confirming that residual is elsewhere in the controller read path.)
     constant T_RCD  : real := 20.0;
     constant T_WR   : real := 15.0;
     constant T_RP   : real := 15.0;
@@ -161,7 +166,14 @@ architecture rtl of SDRAM_Controller is
     signal active_bank : std_logic_vector(1 downto 0) := (others => '0');
     signal row_open    : std_logic := '0';
 
-    constant MR : std_logic_vector(11 downto 0) := "000001000000";
+    -- Mode register: A2:0 burst length 1, A3 sequential, A6:4 CAS latency,
+    -- A9:7 standard operating mode. CAS latency MUST be "010" (CL2) to match the
+    -- read FSM (ST_RD -> ST_CL_WAIT -> ST_RD_DATA samples DQ 2 cycles after CAS).
+    -- The previous value "000001000000" put the bit at A6, giving A6:4 = "100",
+    -- a RESERVED/invalid CAS code — the chip then ran a non-spec read latency
+    -- whose DQ valid window was marginal for the worst-case first read after the
+    -- bus idled across the inter-block gap (the block-boundary corruption).
+    constant MR : std_logic_vector(11 downto 0) := "000000100000";
 
     function is_same_row(addr : std_logic_vector(21 downto 0);
                          row  : std_logic_vector(11 downto 0);

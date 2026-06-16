@@ -9,10 +9,12 @@ end tb_continuous;
 
 architecture bench of tb_continuous is
   constant CHANNELS   : natural := 8;
-  constant TEST_WORDS : natural := 8;
+  -- Continuous buffers are fixed 512 samples each; budget several buffer fills
+  -- so Test 3 can refill a buffer after it is acked.
+  constant TEST_WORDS : natural := 4096;
 
   signal clk       : std_logic := '0';
-  signal rate_div  : natural range 1 to 150000000 := 4;
+  signal rate_div  : natural range 1 to 500000000 := 4;
   signal samples_in : natural range 1 to 3000000 := TEST_WORDS;
   signal start_offset : natural range 0 to 3000000 := 0;
   signal run       : std_logic := '0';
@@ -28,7 +30,6 @@ architecture bench of tb_continuous is
   signal sdram_dq  : std_logic_vector(15 downto 0);
   signal status    : std_logic_vector(7 downto 0);
   signal fast_clk  : std_logic := '0';
-  signal sample_en : std_logic;
   signal bram_waddr : natural range 0 to 1023;
   signal bram_wren  : std_logic;
 
@@ -37,7 +38,6 @@ begin
   fast_clk <= clk;
   inputs <= x"A0";
 
-  sample_en  <= << signal .tb_continuous.dut.sample_en : std_logic >>;
   bram_wren  <= << signal .tb_continuous.dut.bram_wren : std_logic >>;
   bram_waddr <= << signal .tb_continuous.dut.bram_waddr : natural range 0 to 1023 >>;
 
