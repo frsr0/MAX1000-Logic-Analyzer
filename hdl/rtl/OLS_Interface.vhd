@@ -46,6 +46,7 @@ PORT (
       Fast_Mode      : OUT STD_LOGIC := '0';
       Continuous_Mode : OUT STD_LOGIC := '0';
       Analog_Enable   : OUT STD_LOGIC := '0';
+      Analog_Only     : OUT STD_LOGIC := '0';
        Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
        Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
        Pin_Map_Write   : OUT STD_LOGIC := '0';
@@ -87,6 +88,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL Read_Count  : NATURAL := 0;
   SIGNAL Delay_Count : NATURAL := 0;
   SIGNAL analog_enable_i  : STD_LOGIC := '0';
+  SIGNAL analog_only_i    : STD_LOGIC := '0';
   SIGNAL SPI_RX_Valid     : STD_LOGIC := '0';
   SIGNAL SPI_RX_Data      : STD_LOGIC_VECTOR (8-1 DOWNTO 0) := (others => '0');
   -- SPI mode only: directly use SPI signals (no UART muxing)
@@ -348,6 +350,7 @@ BEGIN
           continuous_mode_i <= disp_reg_wdata(1);
           ch_mode <= disp_reg_wdata(2);
           analog_enable_i <= disp_reg_wdata(3);
+          analog_only_i <= disp_reg_wdata(4);
         WHEN REG_FAST_MODE =>
           fast_mode_i <= disp_reg_wdata(0);
         WHEN REG_CONT_MODE =>
@@ -689,6 +692,7 @@ BEGIN
   Blk_Rd_Req_Tog <= blk_req_tog_i;
   Continuous_Mode <= continuous_mode_i;
   Analog_Enable <= analog_enable_i;
+  Analog_Only <= analog_only_i;
   Buffer_Ack      <= (others => '0');  -- FLA frees its own continuous buffers
   Armed          <= Run_OLS;
   Debug_Ch0_Enable <= debug_ch0_enable_i;
@@ -969,7 +973,10 @@ BEGIN
                     reg_val := Trigger_Values;
                   when REG_FLAGS | REG_FAST_MODE =>
                     reg_val(0) := fast_mode_i;
+                    reg_val(1) := continuous_mode_i;
+                    reg_val(2) := ch_mode;
                     reg_val(3) := analog_enable_i;
+                    reg_val(4) := analog_only_i;
                   when REG_CONT_MODE =>
                     reg_val(0) := continuous_mode_i;
                   when REG_GEN_PROTO =>

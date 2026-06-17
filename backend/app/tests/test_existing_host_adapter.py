@@ -1,4 +1,4 @@
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import numpy as np
 
@@ -35,7 +35,10 @@ class FakeHostDevice:
         self.capture = Mock(return_value=b"\x01\x00" * 2048)
         self.reset = Mock()
         self.set_analog_config = Mock()
+        self.open = Mock()
+        self.close = Mock()
         self.set_debug_ch0 = Mock()
+        self.set_schmitt = Mock()
         self._write_capture_config = Mock()
         samples = np.full(2048, 0x1234, dtype="<u2")
         samples[256] ^= 0x0001
@@ -176,7 +179,7 @@ def test_200mhz_small_digital_capture_is_allowed_and_uses_divider_zero():
     assert result.divider == 0
 
 
-def test_high_rate_mixed_capture_is_rejected_by_validation():
+def test_mixed_capture_validation_reports_packed_frame_contract():
     adapter = ExistingHostAdapter()
     adapter._dev = FakeHostDevice()
 
@@ -184,25 +187,116 @@ def test_high_rate_mixed_capture_is_rejected_by_validation():
         sample_rate=50_000_000,
         num_samples=1024,
         analog_enabled=True,
+        mode="mixed",
         enabled_digital=list(range(16)),
     ))
 
-    errors = [f for f in findings if f["level"] == "error"]
-    assert any("too fast for the FPGA frame packer" in f["message"]
-               for f in errors)
+    assert not [f for f in findings if f["level"] == "error"]
+    assert any(f["level"] == "info"
+               and "single time-correlated packed frame" in f["message"]
+               for f in findings)
 
 
-def test_mixed_capture_uses_sdram_when_expanded_words_exceed_bram():
+def test_analog_only_capture_validation_reports_adc_only_stream():
     adapter = ExistingHostAdapter()
     adapter._dev = FakeHostDevice()
 
-    adapter.capture(CaptureSettings(
-        sample_rate=1_000_000,
+    findings = adapter.validate_settings(CaptureSettings(
+        sample_rate=33_000_000,
         num_samples=1024,
+        analog_enabled=True,
+        mode="analog",
+        enabled_digital=[],
+    ))
+
+    assert not [f for f in findings if f["level"] == "error"]
+    assert any(f["level"] == "info" and "ADC-only hardware stream" in f["message"]
+               for f in findings)
+
+
+def test_analog_only_capture_uses_adc_only_hardware_stream():
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+
+    result = adapter.capture(CaptureSettings(
+        sample_rate=100_000,
+        num_samples=128,
+        analog_enabled=True,
+        mode="analog",
+        enabled_digital=[],
+    ))
+
+    dev = adapter._dev
+    dev.capture.assert_called_once()
+    # Analog-only reuses the 7-word MODE_MIXED frame and drops digital.
+    assert dev.capture.call_args.kwargs["nsamples"] == 128 * 7
+    dev.set_analog_config.assert_any_call(0x08)   # MODE_MIXED
+    dev.set_analog_config.assert_any_call(0)
+    assert result.digital is None
+    assert sorted(result.analog) == [f"a{i}" for i in range(8)]
+    assert result.sample_rate == 100_000
+
+
+def test_mixed_capture_uses_single_packed_pass():
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+
+    result = adapter.capture(CaptureSettings(
+        sample_rate=100_000,
+        num_samples=128,
+        mode="mixed",
         analog_enabled=True,
         enabled_digital=list(range(16)),
     ))
 
     dev = adapter._dev
+    # One pass: the 14-byte packed frame carries digital + ADC together.
     dev.capture.assert_called_once()
-    assert dev.fast_mode_enabled is False
+    assert dev.capture.call_args.kwargs["nsamples"] == 128 * 7
+    dev.set_analog_config.assert_any_call(0x08)   # MODE_MIXED
+    dev.set_analog_config.assert_any_call(0)      # recovery
+    assert len(result.digital) == 128
+    assert sorted(result.analog) == [f"a{i}" for i in range(8)]
+    assert result.sample_rate == 100_000
+
+
+def test_mixed_continuous_packs_and_skips_recovery_reset():
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+
+    result = adapter.capture(CaptureSettings(
+        sample_rate=100_000, num_samples=128,
+        mode="mixed_continuous", analog_enabled=True,
+        enabled_digital=list(range(16)),
+    ))
+
+    dev = adapter._dev
+    # Same single packed pass as mixed...
+    dev.capture.assert_called_once()
+    assert dev.capture.call_args.kwargs["nsamples"] == 128 * 7
+    dev.set_analog_config.assert_any_call(0x08)
+    assert len(result.digital) == 128
+    assert sorted(result.analog) == [f"a{i}" for i in range(8)]
+    # ...but the per-capture anti-wedge recovery (disable analog + reopen) is
+    # skipped so the continuous loop streams without a reset gap.
+    dev.close.assert_not_called()
+    assert call(0) not in dev.set_analog_config.call_args_list
+
+
+def test_analog_continuous_streams_adc_only_no_recovery():
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+
+    result = adapter.capture(CaptureSettings(
+        sample_rate=100_000, num_samples=128,
+        mode="analog_continuous", analog_enabled=True,
+        enabled_digital=[],
+    ))
+
+    dev = adapter._dev
+    dev.capture.assert_called_once()
+    assert dev.capture.call_args.kwargs["nsamples"] == 128 * 7
+    dev.set_analog_config.assert_any_call(0x08)   # MODE_MIXED (analog-only drops digital)
+    assert result.digital is None
+    assert sorted(result.analog) == [f"a{i}" for i in range(8)]
+    dev.close.assert_not_called()

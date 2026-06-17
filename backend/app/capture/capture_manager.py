@@ -190,8 +190,9 @@ class CaptureManager:
 
     def _capture_worker(self, settings: CaptureSettings, name: str) -> None:
         dev = self.device
-        repeat = max(1, settings.repeat_count) if settings.mode == "single" else \
-            (10**9 if settings.mode in ("continuous", "rolling") else 1)
+        repeat = max(1, settings.repeat_count) if settings.mode in ("single", "analog", "mixed") else \
+            (10**9 if settings.mode in ("continuous", "rolling",
+                                        "analog_continuous", "mixed_continuous") else 1)
         run = 0
         try:
             while run < repeat and not self._stop_evt.is_set():
@@ -223,9 +224,9 @@ class CaptureManager:
                 manager.publish_threadsafe(f"session:{session.id}",
                                            "waveform_ready",
                                            {"session_id": session.id})
-                if settings.mode == "single" and run >= repeat:
+                if settings.mode in ("single", "analog", "mixed") and run >= repeat:
                     break
-                if not settings.auto_rearm and settings.mode == "single":
+                if not settings.auto_rearm and settings.mode in ("single", "analog", "mixed"):
                     break
             self.capture_state = "cancelled" if self._stop_evt.is_set() else "done"
         except HardwareError as e:
@@ -259,9 +260,14 @@ class CaptureManager:
             num_samples=wf.num_samples,
             trigger_sample=result.trigger_sample,
         )
-        session.channels = default_digital_channels(16)
-        for i, ch in enumerate(session.channels):
-            ch.enabled = i in settings.enabled_digital
+        session.channels = []
+        if result.digital is not None:
+            enabled_digital = settings.enabled_digital
+            if settings.mode in ("mixed", "mixed_continuous") and not enabled_digital:
+                enabled_digital = list(range(16))
+            session.channels = default_digital_channels(16)
+            for i, ch in enumerate(session.channels):
+                ch.enabled = i in enabled_digital
         if result.analog:
             ana = default_analog_channels(len(result.analog))
             for ch, key in zip(ana, sorted(result.analog.keys())):

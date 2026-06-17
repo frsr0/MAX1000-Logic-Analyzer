@@ -1,5 +1,6 @@
 from driver.ols_spi_device import (
     MODE_DIGITAL,
+    MODE_ANALOG,
     MODE_MIXED,
     analog_frame_stride,
     analog_wire_stride,
@@ -12,6 +13,10 @@ def test_stride_mixed():
     assert analog_frame_stride(MODE_MIXED) == 14
 
 
+def test_stride_analog_only():
+    assert analog_frame_stride(MODE_ANALOG) == 12
+
+
 def test_stride_digital():
     assert analog_frame_stride(MODE_DIGITAL) == 2
 
@@ -21,6 +26,7 @@ def test_wire_stride_is_double_payload():
     # wire carries twice the payload bytes per frame.
     assert analog_wire_stride(MODE_DIGITAL) == 4
     assert analog_wire_stride(MODE_MIXED) == 28
+    assert analog_wire_stride(MODE_ANALOG) == 24
 
 
 def test_wire_to_payload_is_identity():
@@ -39,6 +45,16 @@ def test_decode_mixed_frame_from_dense_wire():
     rows = decode_analog_frames(wire_to_payload(frame), MODE_MIXED)
     assert len(rows) == 1
     assert rows[0]["digital"] == 0xAABB
+    assert rows[0]["adc"] == [0x123, 0x456, 0x789, 0xABC,
+                              0xDEF, 0x012, 0x345, 0x678]
+
+
+def test_decode_analog_only_frame_from_dense_wire():
+    frame = bytes([0x23, 0x61, 0x45, 0x89, 0xC7, 0xAB,
+                   0xEF, 0x2D, 0x01, 0x45, 0x83, 0x67])
+    rows = decode_analog_frames(wire_to_payload(frame), MODE_ANALOG)
+    assert len(rows) == 1
+    assert rows[0]["digital"] is None
     assert rows[0]["adc"] == [0x123, 0x456, 0x789, 0xABC,
                               0xDEF, 0x012, 0x345, 0x678]
 

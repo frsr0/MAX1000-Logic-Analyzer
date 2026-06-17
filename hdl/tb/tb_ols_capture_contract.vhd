@@ -51,6 +51,7 @@ architecture bench of tb_ols_capture_contract is
   signal fast_mode    : std_logic;
   signal continuous_mode : std_logic;
   signal analog_enable : std_logic;
+  signal analog_only   : std_logic;
   signal buffer_full  : std_logic_vector(2 downto 0) := (others => '0');
   signal buffer_ack   : std_logic_vector(2 downto 0);
   signal debug_ch0_enable : std_logic;
@@ -125,7 +126,8 @@ begin
       Gen_I2C_Rd_Len => gen_i2c_rd_len, Gen_I2C_Dev_R => gen_i2c_dev_r,
       Gen_I2C_Test => gen_i2c_test, Gen_SPI_Test => gen_spi_test,
       Armed => armed, Fast_Mode => fast_mode, Continuous_Mode => continuous_mode,
-      Analog_Enable => analog_enable, Buffer_Full => buffer_full, Buffer_Ack => buffer_ack,
+      Analog_Enable => analog_enable, Analog_Only => analog_only,
+      Buffer_Full => buffer_full, Buffer_Ack => buffer_ack,
       Debug_Ch0_Enable => debug_ch0_enable
     );
 
@@ -205,6 +207,13 @@ begin
     pkt_send(spi_cs, spi_sck, spi_mosi, spi_miso, CMD_ARM_CAPTURE, empty, 0);
     wait_cycles(clk, 40);
     check(analog_enable = '1', "second mixed arm restores analog_enable");
+
+    report "Test 7: analog-only mode sets both analog flags";
+    wreg(spi_cs, spi_sck, spi_mosi, spi_miso, REG_FLAGS, 16#18#);
+    pkt_send(spi_cs, spi_sck, spi_mosi, spi_miso, CMD_ARM_CAPTURE, empty, 0);
+    wait_cycles(clk, 40);
+    check(analog_enable = '1', "analog-only arm sets analog_enable");
+    check(analog_only = '1', "analog-only arm sets analog_only");
 
     report "=== ALL OLS CAPTURE CONTRACT TESTS PASSED ===";
     stop;

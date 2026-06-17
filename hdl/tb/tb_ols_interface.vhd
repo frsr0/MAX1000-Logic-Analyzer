@@ -130,7 +130,8 @@ begin
       Gen_I2C_Rd_Len => gen_i2c_rd_len, Gen_I2C_Dev_R => gen_i2c_dev_r,
       Gen_I2C_Test => gen_i2c_test, Gen_SPI_Test => gen_spi_test,
       Armed => armed, Fast_Mode => fast_mode, Continuous_Mode => continuous_mode,
-      Analog_Enable => analog_enable, Buffer_Full => buffer_full, Buffer_Ack => buffer_ack,
+      Analog_Enable => analog_enable, Analog_Only => open,
+      Buffer_Full => buffer_full, Buffer_Ack => buffer_ack,
       Debug_Ch0_Enable => debug_ch0_enable
     );
 

@@ -35,6 +35,16 @@ export function GeneratorPage() {
 
   const set = (p: Partial<GeneratorConfig>) => setCfg({ ...cfg, ...p });
 
+  const setProtocol = (protocol: string) => {
+    if (protocol === 'i2c') {
+      setCfg({ ...cfg, protocol, tx_pin: 2, scl_pin: 1, baud: 400000 });
+    } else if (protocol === 'uart') {
+      setCfg({ ...cfg, protocol, tx_pin: status?.device_kind === 'mock' ? 0 : 3, baud: 115200 });
+    } else {
+      setCfg({ ...cfg, protocol });
+    }
+  };
+
   const setTextData = (t: string) => {
     setText(t);
     set({ data_hex: Array.from(new TextEncoder().encode(t))
@@ -81,7 +91,7 @@ export function GeneratorPage() {
         <div className="card">
           <label className="field">
             <span>Protocol</span>
-            <select value={cfg.protocol} onChange={(e) => set({ protocol: e.target.value })}>
+            <select value={cfg.protocol} onChange={(e) => setProtocol(e.target.value)}>
               {protocols.map((p) => <option key={p} value={p}>{p.toUpperCase()}</option>)}
             </select>
           </label>
@@ -117,7 +127,7 @@ export function GeneratorPage() {
               <label className="field"><span>Register (hex)</span>
                 <input className="mono" value={cfg.i2c_register.toString(16)}
                   onChange={(e) => set({ i2c_register: parseInt(e.target.value, 16) || 0 })} /></label>
-              <label className="field"><span>SDA pin / SCL pin</span>
+              <label className="field"><span>SDA channel / SCL channel</span>
                 <span className="button-row">
                   <input type="number" min={0} max={15} value={cfg.tx_pin}
                     onChange={(e) => set({ tx_pin: Number(e.target.value) })} />

@@ -114,6 +114,8 @@ The system clock is 100 MHz for speed mode, 96 MHz for normal. Fast mode (BRAM-o
 
 Continuous capture writes into a bounded SDRAM ring. The FPGA reports `producer_index`, `oldest_index`, `newest_index`, and `overrun_count`; data is read by absolute sample index. Capture can continue beyond host readback throughput, but unread samples are overwritten and counted as overruns.
 
+This is not an arbitrary-length lossless capture path at 200 MHz. The SDRAM writer has finite burst bandwidth and FIFO cushion; once the producer outruns retained SDRAM capacity, host readback, or the write pump's burst slack, the ring keeps the newest retained samples and reports the loss through `overrun_count`.
+
 SPI readback is still limited to ~30 MB/s effective throughput. This limits lossless live readback but does **not** affect single-shot retention inside SDRAM.
 
 | Capture Mode | Frame stride | Rolling max* |
@@ -122,7 +124,7 @@ SPI readback is still limited to ~30 MB/s effective throughput. This limits loss
 | 16 Dig + 8 Ana | 14 B | 2.14 MHz |
 | 8 Analog | 14 B | 2.14 MHz |
 
-*Lossless live readback max = 30 MB/s ÷ stride in bytes. Above that, the ring remains live and `overrun_count` reports overwritten data.
+*Lossless live readback max = 30 MB/s ÷ stride in bytes. Above that, the ring remains live and `overrun_count` reports overwritten data. At 200 MHz digital capture, SDRAM write bandwidth is also part of the bound; the honest contract is rolling retention plus overrun reporting, not infinite lossless storage.
 
 ## Debug CH0 (Programmable PWM)
 

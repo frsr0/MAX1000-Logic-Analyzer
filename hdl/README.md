@@ -78,7 +78,7 @@ Capture engine with two-clock domain split.
 
 **Entity:** `OLS_SDRAM_Top`
 
-System integration. Instantiates `SDRAM_PLL`, distributes clocks. 23-pin pool (MKR_D[14:0] + PMOD[7:0]) mapped to 16 LA channels via programmable `pin_map`. Capture mux with generator loopback priority. ADC interface with 8 channels, 128-bit analog frame. Two capture modes via 1-bit `analog_enable` (REG_FLAGS bit 3): digital-only (2-byte frame) or 16 digital + all 8 ADC channels (14-byte frame).
+System integration. Instantiates `SDRAM_PLL`, distributes clocks. 23-pin pool (MKR_D[14:0] + PMOD[7:0]) mapped to 16 LA channels via programmable `pin_map`. Capture mux with generator loopback priority. ADC interface with 8 channels, 128-bit analog frame. Analog stream formats are selected by `REG_FLAGS`: digital-only (2-byte frame), mixed 16 digital + all 8 ADC channels (`bit3`, 14-byte frame), or analog-only all 8 ADC channels (`bit3|bit4`, 12-byte frame).
 
 ### `rtl/OLS_Logic_Analyzer_SDRAM_Core.vhd` (298 lines)
 

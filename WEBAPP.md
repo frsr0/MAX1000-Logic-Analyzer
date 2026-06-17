@@ -259,13 +259,14 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
   PRBS generators exist in mock only until firmware support lands.
 - Segmented/burst capture modes and hardware sequence triggers are not in the
   current core; the capture-mode model has fields reserved for them.
-- Rolling capture on real hardware is bounded by SPI readback (~30 MB/s); the
-  adapter currently exposes single/repeat capture and reuses the driver's
-  rolling generator for future streaming UI.
-- Current continuous mode is bounded, not an infinite rolling capture. Planned
-  fix: expose an FPGA ring-buffer contract with producer index,
-  completed-buffer index, overrun flag and host ACK, while keeping the current
-  bounded API until HDL sim and HW validation both pass.
+- Rolling capture on real hardware is bounded by SDRAM write bandwidth, FIFO
+  burst cushion, retained ring depth, and SPI readback (~30 MB/s). At high
+  rates, especially 200 MHz digital capture, the contract is newest-retained
+  samples plus explicit overrun reporting, not arbitrary-length lossless
+  storage.
+- Current continuous mode exposes the FPGA ring-buffer contract with producer
+  index, retained oldest/newest indexes, overrun count and host ACK, while
+  keeping the API bounded.
 - Capture DONE status is treated as advisory because the status bit can race
   fast readback. Planned fix: latch DONE until host ACK/read-reset or expose a
   monotonic capture sequence ID, then have host validation assert fresh data by

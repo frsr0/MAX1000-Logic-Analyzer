@@ -50,6 +50,7 @@ PORT (
     Armed          : OUT STD_LOGIC := '0';
     Fast_Mode      : OUT STD_LOGIC := '0';
     Analog_Enable  : OUT STD_LOGIC := '0';
+    Analog_Only    : OUT STD_LOGIC := '0';
     Status        : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Continuous_Mode : OUT STD_LOGIC := '0';
     Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
@@ -57,6 +58,7 @@ PORT (
     Analog_Frame_Data : IN STD_LOGIC_VECTOR(127 downto 0) := (others => '0');
     Analog_Frame_Len  : IN NATURAL range 1 to 14 := 1;
     Analog_Stream_Mode : IN STD_LOGIC := '0';
+    Analog_Frame_Toggle : IN STD_LOGIC := '0';
     Pin_Map_Write  : OUT STD_LOGIC := '0';
     Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
     Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
@@ -116,6 +118,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL buffer_ack_i        : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
   SIGNAL fla_status          : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL analog_enable_i     : STD_LOGIC := '0';
+  SIGNAL analog_only_i       : STD_LOGIC := '0';
   SIGNAL gen_clear_i         : STD_LOGIC := '0';
   SIGNAL pin_map_write_i     : STD_LOGIC := '0';
   SIGNAL pin_map_channel_i   : NATURAL range 0 to 15 := 0;
@@ -169,6 +172,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
       Fast_Mode      : OUT STD_LOGIC := '0';
       Continuous_Mode : OUT STD_LOGIC := '0';
       Analog_Enable   : OUT STD_LOGIC := '0';
+      Analog_Only     : OUT STD_LOGIC := '0';
       Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
       Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
       Pin_Map_Write   : OUT STD_LOGIC := '0';
@@ -236,9 +240,10 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
      Continuous_Mode : IN  std_logic := '0';
      Buffer_Full     : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
      Buffer_Ack      : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-     Analog_Frame_Data : IN STD_LOGIC_VECTOR(127 downto 0) := (others => '0');
-      Analog_Frame_Len  : IN NATURAL range 1 to 14 := 1;
-     Analog_Stream_Mode : IN STD_LOGIC := '0';
+    Analog_Frame_Data : IN STD_LOGIC_VECTOR(127 downto 0) := (others => '0');
+    Analog_Frame_Len  : IN NATURAL range 1 to 14 := 1;
+    Analog_Stream_Mode : IN STD_LOGIC := '0';
+    Analog_Frame_Toggle : IN STD_LOGIC := '0';
      Blk_Rd_Req_Tog : IN  STD_LOGIC := '0';
      Blk_Rd_Base    : IN  NATURAL range 0 to Max_Samples := 0;
      Blk_Rd_Count   : IN  NATURAL range 0 to Max_Samples := 0;
@@ -275,6 +280,7 @@ BEGIN
   Armed          <= armed_i;
   Fast_Mode      <= fast_mode_i;
   Analog_Enable <= analog_enable_i;
+  Analog_Only <= analog_only_i;
   Status <= fla_status;
   Continuous_Mode <= continuous_mode_i;
   Buffer_Ack <= buffer_ack_i;
@@ -302,6 +308,7 @@ BEGIN
     Armed          => armed_i,
     Fast_Mode      => fast_mode_i,
     Analog_Enable  => analog_enable_i,
+    Analog_Only    => analog_only_i,
     Continuous_Mode => continuous_mode_i,
     Buffer_Full     => buffer_full_i,
     Buffer_Ack      => buffer_ack_i,
@@ -345,6 +352,7 @@ BEGIN
     Analog_Frame_Data => Analog_Frame_Data,
     Analog_Frame_Len  => Analog_Frame_Len,
     Analog_Stream_Mode => Analog_Stream_Mode,
+    Analog_Frame_Toggle => Analog_Frame_Toggle,
     Blk_Rd_Req_Tog    => blk_rd_req_tog_i,
     Blk_Rd_Base       => blk_rd_base_i,
     Blk_Rd_Count      => blk_rd_count_i,

@@ -136,6 +136,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   attribute preserve of gen_spi_test : signal is true;
 
   signal analog_enable : std_logic := '0';
+  signal analog_only   : std_logic := '0';
   signal gen_clear     : std_logic := '0';
   signal analog_stream_mode : std_logic := '0';
   signal debug_ch0_enable : std_logic := '0';
@@ -145,6 +146,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal adc0_result, adc1_result, adc2_result, adc3_result : std_logic_vector(11 downto 0) := (others => '0');
   signal adc4_result, adc5_result, adc6_result, adc7_result : std_logic_vector(11 downto 0) := (others => '0');
   signal adc_start : std_logic := '0';
+  signal adc7_valid : std_logic := '0';
+  signal adc_frame_toggle : std_logic := '0';
   signal adc_div   : natural range 0 to 255 := 0;
   signal adc_conv_clk   : std_logic := '0';  -- 10 MHz ADC conversion clock (SDRAM_PLL c3)
 
@@ -246,6 +249,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
      Armed          : OUT STD_LOGIC := '0';
     Fast_Mode      : OUT STD_LOGIC := '0';
     Analog_Enable  : OUT STD_LOGIC := '0';
+    Analog_Only    : OUT STD_LOGIC := '0';
     Status        : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Continuous_Mode : OUT STD_LOGIC := '0';
     Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
@@ -253,6 +257,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Analog_Frame_Data : IN STD_LOGIC_VECTOR(127 downto 0) := (others => '0');
     Analog_Frame_Len  : IN NATURAL range 1 to 14 := 1;
     Analog_Stream_Mode : IN STD_LOGIC := '0';
+    Analog_Frame_Toggle : IN STD_LOGIC := '0';
     Pin_Map_Write  : OUT STD_LOGIC := '0';
     Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
     Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
@@ -633,6 +638,9 @@ BEGIN
         adc_div <= adc_div + 1;
         adc_start <= '0';
       end if;
+      if adc7_valid = '1' then
+        adc_frame_toggle <= not adc_frame_toggle;
+      end if;
 
       -- Default: all analog_frame_data bytes zero
       analog_frame_data <= (others => '0');
@@ -643,6 +651,16 @@ BEGIN
         -- Digital only: 16 digital (2 bytes)
         analog_frame_data(15 downto 0) <= internal_data_r;
         analog_frame_len <= 2;
+      elsif analog_only = '1' then
+        analog_frame_data(11 downto 0) <= adc0_result;
+        analog_frame_data(23 downto 12) <= adc1_result;
+        analog_frame_data(35 downto 24) <= adc2_result;
+        analog_frame_data(47 downto 36) <= adc3_result;
+        analog_frame_data(59 downto 48) <= adc4_result;
+        analog_frame_data(71 downto 60) <= adc5_result;
+        analog_frame_data(83 downto 72) <= adc6_result;
+        analog_frame_data(95 downto 84) <= adc7_result;
+        analog_frame_len <= 12;
       else
         -- Mixed: 16 digital + 8 ADC (14 bytes = 2 + 12 bytes for 8 × 12-bit)
         analog_frame_data(15 downto 0) <= internal_data_r(15 downto 0);
@@ -705,7 +723,7 @@ BEGIN
       ch7_start => adc_start,
       ch7_busy => open,
       ch7_result => adc7_result,
-      ch7_valid => open
+      ch7_valid => adc7_valid
     );
 
   SDRAM_Analyzer : OLS_Logic_Analyzer
@@ -754,6 +772,7 @@ BEGIN
     Armed          => armed_i,
     Fast_Mode      => fast_mode_i,
     Analog_Enable  => analog_enable,
+    Analog_Only    => analog_only,
     Status        => core_status,
     Continuous_Mode => continuous_mode,
     Buffer_Full     => "000",
@@ -761,6 +780,7 @@ BEGIN
     Analog_Frame_Data => analog_frame_data,
     Analog_Frame_Len  => analog_frame_len,
     Analog_Stream_Mode => analog_stream_mode,
+    Analog_Frame_Toggle => adc_frame_toggle,
     Pin_Map_Write  => pin_map_write,
     Pin_Map_Channel => pin_map_channel,
     Pin_Map_Pin     => pin_map_pin,

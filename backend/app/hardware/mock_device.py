@@ -104,8 +104,13 @@ class MockDevice(HardwareDevice):
         rate = float(settings.sample_rate)
         scenario = settings.mock_scenario or "demo_mixed"
 
-        digital, analog = self._build_scenario(scenario, n, rate,
-                                               settings.analog_enabled)
+        analog_req = settings.analog_enabled or settings.mode in (
+            "analog", "mixed", "analog_continuous", "mixed_continuous")
+        digital, analog = self._build_scenario(scenario, n, rate, analog_req)
+        # Analog-only modes carry no digital; mixed (incl. continuous) keeps it.
+        if settings.mode not in ("mixed", "mixed_continuous") and (
+                settings.analog_enabled or settings.mode in ("analog", "analog_continuous")):
+            digital = None
         # simulate capture time (bounded so tests stay fast)
         total_time = min(n / rate, 1.5)
         steps = 10
@@ -119,7 +124,7 @@ class MockDevice(HardwareDevice):
 
         trigger_sample = None
         trig = settings.trigger
-        if trig.type in ("rising", "falling", "any_edge") and trig.channels:
+        if digital is not None and trig.type in ("rising", "falling", "any_edge") and trig.channels:
             ch = trig.channels[0]
             bits = ((digital >> ch) & 1).astype(np.int8)
             d = np.diff(bits)
@@ -201,6 +206,12 @@ class MockDevice(HardwareDevice):
             analog["a2"] = ms.ramp_wave(n, rate, rate / 500)
             analog["a3"] = ms.sine_wave(n, rate, rate / 180, amplitude=0.4,
                                         offset=1.0, noise=0.15, seed=7)
+            analog["a4"] = ms.sine_wave(n, rate, rate / 320, amplitude=0.25,
+                                        offset=0.7, noise=0.02, seed=11)
+            analog["a5"] = ms.ramp_wave(n, rate, rate / 720)
+            analog["a6"] = ms.analog_square(n, rate, rate / 420)
+            analog["a7"] = ms.sine_wave(n, rate, rate / 150, amplitude=0.2,
+                                        offset=2.2, noise=0.03, seed=13)
             if scenario == "analog_demo":
                 put(0, ms.square(n, rate, rate / 240))     # aligned with a0
                 put(1, (analog["a0"] > 1.65).astype(np.uint8))

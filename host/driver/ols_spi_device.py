@@ -34,6 +34,8 @@ from driver.ols_spi import GPIO_CS_LO, GPIO_CS_HI, PIN_DIR
 #   MODE_MIXED (0x08): 16 digital + all 8 ADC channels, 14-byte frame
 MODE_DIGITAL = 0
 MODE_MIXED = 0x08
+MODE_ANALOG_ONLY = 0x10
+MODE_ANALOG = MODE_MIXED | MODE_ANALOG_ONLY
 # Back-compat aliases
 ANALOG_MODE_DIGITAL8 = MODE_DIGITAL
 ANALOG_ENABLE_BIT = MODE_MIXED
@@ -52,6 +54,8 @@ WIRE_WORD_BYTES = 4
 def analog_frame_stride(mode):
     # Payload (dense) bytes per frame: 16 digital + 8 ADC × 12-bit = 14 bytes;
     # digital-only = 2 bytes.
+    if mode & MODE_ANALOG_ONLY:
+        return 12
     return 14 if mode & MODE_MIXED else 2
 
 
@@ -69,17 +73,17 @@ def wire_to_payload(data):
     return data
 
 
-def _decode_adc(frame):
+def _decode_adc(frame, offset=2):
     """8 ADC × 12-bit packed in 12 bytes (frame[2:14]); each adjacent pair
     shares a middle byte (lo: byte n + low nibble of n+1; hi: high nibble of
     n+1 + byte n+2)."""
     adc = []
     for ch in range(4):
-        lo = frame[2 + ch * 3]
-        hi = (frame[3 + ch * 3] & 0x0F) << 8
+        lo = frame[offset + ch * 3]
+        hi = (frame[offset + 1 + ch * 3] & 0x0F) << 8
         adc.append(lo | hi)
-        lo = (frame[3 + ch * 3] >> 4)
-        hi = frame[4 + ch * 3] << 4
+        lo = (frame[offset + 1 + ch * 3] >> 4)
+        hi = frame[offset + 2 + ch * 3] << 4
         adc.append(lo | hi)
     return adc
 
@@ -93,9 +97,12 @@ def decode_analog_frames(data, mode):
     frames = []
     for i in range(0, len(data) // stride):
         frame = data[i * stride:(i + 1) * stride]
-        row = {"digital": frame[0] | (frame[1] << 8), "adc": []}
-        if mode & MODE_MIXED:
-            row["adc"] = _decode_adc(frame)
+        if mode & MODE_ANALOG_ONLY:
+            row = {"digital": None, "adc": _decode_adc(frame, 0)}
+        else:
+            row = {"digital": frame[0] | (frame[1] << 8), "adc": []}
+            if mode & MODE_MIXED:
+                row["adc"] = _decode_adc(frame)
         frames.append(row)
     return frames
 
@@ -214,8 +221,13 @@ class OLSDeviceSPI:
         # _stride is used by the GUI to pick stride=1 for raw display.
 
     def set_analog_config(self, mode, *_compat_args):
-        """Set capture mode: MODE_DIGITAL or MODE_MIXED (bit 3 of REG_FLAGS)."""
-        self.analog_mode = MODE_MIXED if mode & MODE_MIXED else MODE_DIGITAL
+        """Set capture mode: MODE_DIGITAL, MODE_MIXED, or MODE_ANALOG."""
+        if mode & MODE_ANALOG_ONLY:
+            self.analog_mode = MODE_ANALOG
+        elif mode & MODE_MIXED:
+            self.analog_mode = MODE_MIXED
+        else:
+            self.analog_mode = MODE_DIGITAL
         self.pkt.write_register(REG_FLAGS, self.analog_mode)
 
     def set_analog_enable(self, enable=True):

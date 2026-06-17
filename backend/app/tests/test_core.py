@@ -137,9 +137,10 @@ def test_mock_device_trigger_and_analog():
     dev.connect()
     res = dev.capture(CaptureSettings(
         sample_rate=RATE, num_samples=10_000, analog_enabled=True,
-        mock_scenario="analog_demo",
+        mode="mixed", mock_scenario="analog_demo",
         trigger=TriggerConfig(type="rising", channels=[0])))
     assert res.analog and "a0" in res.analog
+    # Mixed mode carries digital alongside analog, so the edge trigger resolves.
     assert res.trigger_sample is not None
 
 

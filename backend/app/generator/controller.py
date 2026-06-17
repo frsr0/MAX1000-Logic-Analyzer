@@ -93,18 +93,30 @@ def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
     mgr.store.save_decoder_events(session.id, inst.id, dec_result.events)
 
     if cfg.protocol == "uart":
+        nacked = []
         decoded = bytes(e["fields"]["byte"] for e in dec_result.events
                         if e["type"] == "uart_byte")
     elif cfg.protocol == "i2c":
+        i2c_events = [
+            e for e in dec_result.events
+            if e["type"] in ("i2c_address", "i2c_byte")
+        ]
+        nacked = [
+            e for e in i2c_events
+            if not e["fields"].get("ack", False)
+            and (e["type"] == "i2c_address" or e["fields"].get("rw") != "read")
+        ]
         decoded = bytes(e["fields"]["byte"] for e in dec_result.events
                         if e["type"] == "i2c_byte")
         # mock loopback prepends the register byte; tolerate prefix match
         if cfg.i2c_register is not None and decoded[:1] == bytes([cfg.i2c_register]):
             decoded = decoded[1:]
     elif cfg.protocol == "spi":
+        nacked = []
         decoded = bytes(e["fields"]["mosi"] & 0xFF for e in dec_result.events
                         if e["type"] == "spi_word" and e["fields"]["mosi"] is not None)
     else:
+        nacked = []
         decoded = b""
 
     mismatches = [i for i, (a, b) in enumerate(zip(expected, decoded)) if a != b]
@@ -115,6 +127,12 @@ def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
     detail = ("PASS — decoded output matches sent pattern" if passed else
               f"FAIL — {len(mismatches)} byte mismatch(es); "
               f"expected {expected.hex()} got {decoded.hex()}")
+    if cfg.protocol == "i2c" and nacked:
+        passed = False
+        nack_labels = ", ".join(e.get("label", e["type"]) for e in nacked[:4])
+        detail = ("FAIL - I2C slave did not ACK the transaction "
+                  f"({len(nacked)} NACK event(s): {nack_labels}); "
+                  f"expected {expected.hex()} got {decoded.hex()}")
     log.info("Generator self-test %s: %s", cfg.protocol, detail)
     return GeneratorSelfTestResult(
         passed=passed, sent_hex=expected.hex(), decoded_hex=decoded.hex(),

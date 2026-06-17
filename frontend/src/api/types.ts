@@ -63,7 +63,8 @@ export interface TriggerConfig {
 export interface CaptureSettings {
   sample_rate: number;
   num_samples: number;
-  mode: 'single' | 'continuous' | 'rolling' | 'triggered';
+  mode: 'single' | 'continuous' | 'rolling' | 'triggered' | 'analog' | 'mixed'
+    | 'analog_continuous' | 'mixed_continuous';
   analog_enabled: boolean;
   enabled_digital: number[];
   trigger: TriggerConfig;

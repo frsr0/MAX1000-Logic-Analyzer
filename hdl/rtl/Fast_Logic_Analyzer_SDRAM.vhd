@@ -49,6 +49,7 @@ port (
     Analog_Frame_Data : in std_logic_vector(127 downto 0) := (others => '0');
     Analog_Frame_Len  : in natural range 1 to 14 := 1;
     Analog_Stream_Mode : in std_logic := '0';
+    Analog_Frame_Toggle : in std_logic := '0';
     -- Single-shot block readout via a response FIFO. The OLS side (CLK domain)
     -- requests a stream and drains the FIFO; the FLA walks the addresses on pclk
     -- and pushes each valid sample in. The dcfifo is a proper CDC between the
@@ -529,18 +530,29 @@ begin
     -- Without this, the CDC settling window for run_f_level (Armed→Run) can cause up to
     -- 1024 pre-trigger BRAM writes before switching to FIFO, delaying gen capture data.
     signal pretrig_tick_cnt : natural range 0 to 15 := 0;
-    -- Analog stream capture: when Analog_Stream_Mode is set, push the ADC frame
-    -- (Analog_Frame_Data, already packed by the top level as 7x16-bit = the
-    -- 14-byte host frame: 16-bit digital + 8x12-bit ADC) one 16-bit word per
-    -- sample tick instead of the digital Inputs word. The host captures at 7x
-    -- the frame rate and reads frames*7 words, so all existing FIFO/write-pump/
-    -- Full machinery is reused unchanged. A shift register emits the 7 words so
-    -- no wide mux lands in the 200 MHz path.
-    signal aframe_f     : std_logic_vector(127 downto 0) := (others => '0');
+    -- Analog stream capture: when Analog_Stream_Mode is set, the ADC controller
+    -- owns frame cadence. Each completed 8-channel ADC scan toggles
+    -- Analog_Frame_Toggle; this writer snapshots that coherent frame and bursts
+    -- its 6 or 7 16-bit words into SDRAM.
+    signal aframe_pending : std_logic_vector(127 downto 0) := (others => '0');
     signal astream_s    : std_logic := '0';
     signal astream_f    : std_logic := '0';
     signal aframe_shift : std_logic_vector(127 downto 0) := (others => '0');
+    signal aframe_toggle_s1 : std_logic := '0';
+    signal aframe_toggle_s2 : std_logic := '0';
+    signal aframe_toggle_last : std_logic := '0';
+    signal aframe_ready_r : std_logic := '0';
+    signal aword_count_pending : natural range 1 to 7 := 7;
+    signal aword_count_f : natural range 1 to 7 := 7;
     signal aword_idx    : natural range 0 to 6 := 0;
+    signal analog_burst_active : std_logic := '0';
+    -- Registered copy of fifo_wralmost_full for the analog burst gate. The flag
+    -- is a wide wrusedw>=(DEPTH-256) compare off the afifo status reg; feeding it
+    -- straight into the burst next-state logic is the 200 MHz critical path.
+    -- The 256-word cushion plus the fact that analog bursts are 7 words every
+    -- ~10 us (FIFO drains continuously) mean this flag never asserts in analog
+    -- mode, so reacting a cycle late is harmless and keeps the compare off path.
+    signal afull_r       : std_logic := '0';
     signal start_gate_r  : natural range 0 to 3 := 0;
   begin
     -- Stage 0: sample pins
@@ -551,13 +563,25 @@ begin
       end if;
     end process;
 
-    -- CDC: register the slowly-changing analog frame + mode into FAST_CLK.
-    -- The frame is snapshotted at word 0 of each group, so a rare multi-bit
-    -- tear only perturbs a single frame of a slow analog signal.
+    -- CDC: detect the slow ADC-frame toggle in FAST_CLK and snapshot the frame
+    -- after it has settled. sys_clk toggles only after all 8 ADC result
+    -- registers have been updated.
     process(FAST_CLK)
     begin
       if rising_edge(FAST_CLK) then
-        aframe_f  <= Analog_Frame_Data;
+        aframe_toggle_s1 <= Analog_Frame_Toggle;
+        aframe_toggle_s2 <= aframe_toggle_s1;
+        aframe_ready_r <= '0';
+        if aframe_toggle_s2 /= aframe_toggle_last then
+          aframe_toggle_last <= aframe_toggle_s2;
+          aframe_pending <= Analog_Frame_Data;
+          if Analog_Frame_Len <= 2 then
+            aword_count_pending <= 1;
+          else
+            aword_count_pending <= (Analog_Frame_Len + 1) / 2;
+          end if;
+          aframe_ready_r <= '1';
+        end if;
         astream_s <= Analog_Stream_Mode;
         astream_f <= astream_s;
       end if;
@@ -641,6 +665,7 @@ begin
       if rising_edge(FAST_CLK) then
         fifo_wr <= '0';
         bram_wren <= '0';
+        afull_r <= fifo_wralmost_full;
 
         if cfg_valid_edge = '1' then
           -- Load from cfg_samples (CLK-domain value, quasi-static while the
@@ -653,8 +678,9 @@ begin
           fifo_overflow_f <= '0';
           bram_wp_r <= 0;
           bram_cnt_r <= 0;
-          aframe_shift <= aframe_f;   -- preload first analog frame snapshot
+          aframe_shift <= (others => '0');
           aword_idx <= 0;
+          analog_burst_active <= '0';
         end if;
 
         if fifo_overflow_f = '0' then
@@ -673,22 +699,69 @@ begin
               bram_cnt_r <= bram_cnt_r + 1;
             end if;
 
-          elsif capture_en_r = '1' and sample_tick_r = '1' then
-            if fifo_wralmost_full = '0' then
-              if astream_f = '1' then
-                -- Emit one 16-bit word of the analog frame per tick; reload the
-                -- snapshot after the 7th word so each frame is coherent.
-                fifo_wdata <= aframe_shift(15 downto 0);
-                if aword_idx = 6 then
-                  aframe_shift <= aframe_f;
-                  aword_idx <= 0;
-                else
-                  aframe_shift <= x"0000" & aframe_shift(127 downto 16);
-                  aword_idx <= aword_idx + 1;
-                end if;
+          elsif capture_en_r = '1' and astream_f = '1' then
+            -- Only start a new frame burst while the word budget is unspent.
+            -- Without this the writer keeps bursting a frame every ADC scan
+            -- after sample_remaining hits 0, so the FIFO never settles empty
+            -- and single-shot Full only asserts by luck in an inter-frame gap.
+            -- sample_rem_nonzero_r is the 1-bit budget flag the digital path
+            -- already gates on (a wide >0 compare would not close at 200 MHz);
+            -- a frame in flight always finishes (the burst loop below is not
+            -- gated), and cfg_samples is a whole number of frames, so capture
+            -- stops cleanly on a frame boundary.
+            if aframe_ready_r = '1' and analog_burst_active = '0'
+               and sample_rem_nonzero_r = '1' then
+              -- Snapshot the coherent frame once; it is NOT shifted (see below).
+              aframe_shift <= aframe_pending;
+              aword_count_f <= aword_count_pending;
+              aword_idx <= 0;
+              analog_burst_active <= '1';
+            end if;
+
+            -- Emit word[aword_idx] via a 16-bit 8:1 mux instead of shifting the
+            -- whole 128-bit frame each cycle. The old `x"0000" & shift(127..16)`
+            -- put a 128-bit-wide mux on the FAST_CLK (200 MHz) path, gated by the
+            -- late-arriving afifo almost-full flag, and would not close timing
+            -- (every seed -0.64..-1.12 ns). fifo_wdata is selected purely from
+            -- aword_idx (NOT gated by almost_full — it only matters when fifo_wr
+            -- is asserted), so the wide datapath and the almost-full fanout are
+            -- off the critical path; only the 1-bit write strobe and the 3-bit
+            -- index counter remain gated.
+            if analog_burst_active = '1' then
+              case aword_idx is
+                when 0      => fifo_wdata <= aframe_shift(15 downto 0);
+                when 1      => fifo_wdata <= aframe_shift(31 downto 16);
+                when 2      => fifo_wdata <= aframe_shift(47 downto 32);
+                when 3      => fifo_wdata <= aframe_shift(63 downto 48);
+                when 4      => fifo_wdata <= aframe_shift(79 downto 64);
+                when 5      => fifo_wdata <= aframe_shift(95 downto 80);
+                when others => fifo_wdata <= aframe_shift(111 downto 96);
+              end case;
+            end if;
+
+            if analog_burst_active = '1' and afull_r = '0' then
+              fifo_wr <= '1';
+              if aword_idx + 1 >= aword_count_f then
+                analog_burst_active <= '0';
+                aword_idx <= 0;
               else
-                fifo_wdata <= sample_word_r;
+                aword_idx <= aword_idx + 1;
               end if;
+              if sample_remaining > 0 then
+                sample_remaining <= sample_remaining - 1;
+              end if;
+            end if;
+            if afull_r = '1' and continuous_f = '0' then
+              fifo_overflow_f <= '1';
+            end if;
+
+          elsif capture_en_r = '1' and sample_tick_r = '1' then
+            -- Data is registered unconditionally; it is only consumed when
+            -- fifo_wr is asserted, so keeping the almost-full compare off the
+            -- 16-bit fifo_wdata mux (it now only gates the 1-bit write strobe)
+            -- shortens the 200 MHz path that the analog frame mux shares.
+            fifo_wdata <= sample_word_r;
+            if afull_r = '0' then
               fifo_wr <= '1';
               -- guard: at full rate one in-flight tick can push a word after
               -- the nonzero flag clears; don't underflow the natural
@@ -696,7 +769,7 @@ begin
                 sample_remaining <= sample_remaining - 1;
               end if;
             end if;
-            if fifo_wralmost_full = '1' and continuous_f = '0' then
+            if afull_r = '1' and continuous_f = '0' then
               fifo_overflow_f <= '1';
             end if;
           end if;

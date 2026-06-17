@@ -197,6 +197,36 @@ def test_analog_capture_and_measurements(client):
     assert r.status_code == 200
 
 
+def test_analog_only_capture_has_no_digital_channels(client):
+    client.post("/api/capture/start", json={
+        "settings": {"sample_rate": 500_000, "num_samples": 10_000,
+                     "mode": "analog", "analog_enabled": True,
+                     "enabled_digital": [],
+                     "mock_scenario": "analog_demo"}}, headers=HDR)
+    st = wait_capture_done(client)
+    sid = st["last_session_id"]
+    meta = client.get(f"/api/sessions/{sid}/metadata").json()
+    channel_types = {ch["type"] for ch in meta["session"]["channels"]}
+    assert channel_types == {"analog"}
+    assert len(meta["analog_channels"]) == 8
+
+
+def test_mixed_capture_reenables_digital_channels(client):
+    client.post("/api/capture/start", json={
+        "settings": {"sample_rate": 100_000, "num_samples": 1024,
+                     "mode": "mixed", "analog_enabled": True,
+                     "enabled_digital": [],
+                     "mock_scenario": "analog_demo"}}, headers=HDR)
+    st = wait_capture_done(client)
+    sid = st["last_session_id"]
+    meta = client.get(f"/api/sessions/{sid}/metadata").json()
+    channels = meta["session"]["channels"]
+    digital = [ch for ch in channels if ch["type"] == "digital"]
+    assert len(digital) == 16
+    assert all(ch["enabled"] for ch in digital)
+    assert len(meta["analog_channels"]) == 8
+
+
 def test_generator_loopback_self_test(client):
     r = client.post("/api/generator/send", json={
         "config": {"protocol": "uart", "data_hex": "414243",

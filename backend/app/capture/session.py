@@ -58,7 +58,8 @@ class TriggerConfig(BaseModel):
 class CaptureSettings(BaseModel):
     sample_rate: float = 1_000_000.0
     num_samples: int = 10_000
-    mode: Literal["single", "continuous", "rolling", "triggered"] = "single"
+    mode: Literal["single", "continuous", "rolling", "triggered", "analog", "mixed",
+                  "analog_continuous", "mixed_continuous"] = "single"
     analog_enabled: bool = False
     enabled_digital: List[int] = Field(default_factory=lambda: list(range(16)))
     trigger: TriggerConfig = Field(default_factory=TriggerConfig)

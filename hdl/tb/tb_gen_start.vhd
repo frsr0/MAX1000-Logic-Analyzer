@@ -98,6 +98,7 @@ begin
       Fast_Mode    => fast_mode,
       Continuous_Mode => cont_mode,
       Analog_Enable => analog_enable,
+      Analog_Only => open,
       Buffer_Full     => buffer_full,
       Buffer_Ack      => buffer_ack,
       Pin_Map_Write  => pin_map_write,
