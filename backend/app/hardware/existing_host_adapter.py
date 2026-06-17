@@ -63,10 +63,19 @@ class ExistingHostAdapter(HardwareDevice):
                 self._dev.open()
                 self._timings["open_s"] = time.time() - t0
                 self._log("open")
+                t1 = time.time()
+                self._reset_after_connect()
+                self._timings["connect_reset_s"] = time.time() - t1
             except Exception as e:
+                if self._dev is not None:
+                    try:
+                        self._dev.close()
+                    except Exception:
+                        pass
                 self._dev = None
                 self._last_error = str(e)
-                raise HardwareError(f"Failed to open FTDI SPI device: {e}") from e
+                raise HardwareError(
+                    f"Failed to open/reset FTDI SPI device: {e}") from e
             meta_raw = b""
             try:
                 meta_raw = self._dev.get_metadata()
@@ -83,6 +92,16 @@ class ExistingHostAdapter(HardwareDevice):
                 mock=False,
             )
             return self._meta
+
+    def _reset_after_connect(self) -> None:
+        """Leave a newly opened FPGA connection in a known idle state."""
+        assert self._dev is not None
+        self._dev.reset()
+        self._dev.set_analog_config(0)
+        self._dev.set_debug_ch0(False)
+        self._dev.set_schmitt(False)
+        self._dev.spi.flush()
+        self._log("connect_reset")
 
     def disconnect(self) -> None:
         with self._lock:
@@ -120,7 +139,7 @@ class ExistingHostAdapter(HardwareDevice):
         ]
         return DeviceCapabilities(
             digital_channels=16, analog_channels=8,
-            max_sample_rate=sample_clk / 2, min_sample_rate=6.0,
+            max_sample_rate=sample_clk, min_sample_rate=6.0,
             max_samples=1_000_000, bram_samples=1024,
             sample_clk_hz=sample_clk,
             supports_pre_trigger=True, supports_rolling=True,
@@ -135,6 +154,34 @@ class ExistingHostAdapter(HardwareDevice):
 
     # ── capture (mirrors OLS_Console._capture exactly) ───────────────
 
+    def validate_settings(self, settings: CaptureSettings) -> list:
+        findings = super().validate_settings(settings)
+        sample_clk = float(self._dev.sample_clk) if self._dev else 200_000_000.0
+        if settings.analog_enabled:
+            words_per_frame = 7
+            internal_rate = float(settings.sample_rate) * words_per_frame
+            if internal_rate > sample_clk:
+                findings.append({
+                    "level": "error",
+                    "message": "Mixed/analog capture at this sample rate is "
+                               "too fast for the FPGA frame packer. Use "
+                               f"{int(sample_clk // words_per_frame):,} Hz "
+                               "or below when analog channels are enabled.",
+                })
+        if (not settings.analog_enabled
+                and settings.mode == "single"
+                and settings.trigger.type == "none"
+                and settings.sample_rate > 20_000_000
+                and settings.num_samples > 1024):
+            findings.append({
+                "level": "warning",
+                "message": "Deep digital captures above 20 MHz are not "
+                           "blocked; they use the rolling SDRAM ring. If the host "
+                           "falls behind, the app returns the newest retained "
+                           "samples and reports an overrun warning.",
+            })
+        return findings
+
     def capture(self, settings: CaptureSettings,
                 progress: Optional[ProgressCb] = None,
                 stop_evt: Optional[threading.Event] = None) -> CaptureResult:
@@ -147,10 +194,19 @@ class ExistingHostAdapter(HardwareDevice):
             trigger = self._build_trigger(settings)
             warnings: List[str] = []
 
+            if (self._requires_unavailable_high_rate_deep_path(settings, trigger)
+                    and not self._use_rolling_single_shot(settings, trigger)):
+                raise HardwareError(
+                    "This FPGA bitstream cannot return trustworthy deep digital "
+                    "captures with these settings. Use 1024 samples or fewer at "
+                    "200 MHz, or use 100 MHz or below for deep rolling SDRAM "
+                    "capture.")
+
             dev.reset()
             # REG_FAST_MODE selects BRAM (1024-word) vs SDRAM capture storage.
             # Only small single captures fit BRAM — same heuristic as the GUI.
-            fast = settings.mode == "single" and nsamp <= 512
+            storage_words = nsamp * 7 if settings.analog_enabled else nsamp
+            fast = settings.mode == "single" and storage_words <= 1024
             dev.fast_mode_enabled = fast
 
             def cb(partial, got, total):
@@ -175,8 +231,16 @@ class ExistingHostAdapter(HardwareDevice):
                         nsamples=sdram_words,
                         timeout=max(3, sdram_words // 10000 + 2),
                         trigger=trigger, stop_evt=stop_evt, progress_cb=cb)
+                    if not wire:
+                        self._recover_after_failed_capture()
+                        raise HardwareError(
+                            "Mixed capture returned 0 bytes - FPGA not responding")
                     payload = wire_to_payload(wire)[: nsamp * stride]
                     frames = decode_analog_frames(payload, MODE_MIXED)
+                    if not frames:
+                        self._recover_after_failed_capture()
+                        raise HardwareError(
+                            "Mixed capture returned no complete analog frames")
                     digital = np.array([fr["digital"] for fr in frames],
                                        dtype=np.uint16)
                     analog = {}
@@ -194,12 +258,32 @@ class ExistingHostAdapter(HardwareDevice):
                 else:
                     dev.set_analog_config(0)
                     pre = settings.trigger.pre_trigger_samples
-                    data = dev.capture(
-                        rate_hz=rate, nsamples=nsamp,
-                        timeout=max(3, nsamp // 10000 + 2),
-                        trigger=trigger, stop_evt=stop_evt,
-                        progress_cb=cb, pre_trigger=pre)
+                    if self._use_rolling_single_shot(settings, trigger):
+                        data, start_sample = self._rolling_single_shot_capture(
+                            dev, rate=rate, nsamp=nsamp,
+                            progress=progress, stop_evt=stop_evt)
+                        data, repaired = self._repair_rolling_boundary_glitches(
+                            data, start_sample)
+                        warnings.append(
+                            "Used rolling SDRAM readback for high-rate capture")
+                        ring_status = getattr(self, "_last_rolling_status", {}) or {}
+                        overrun = int(ring_status.get("overrun_count") or 0)
+                        if overrun:
+                            warnings.append(
+                                f"Rolling SDRAM overrun count is {overrun}; "
+                                "returned newest retained samples")
+                        if repaired:
+                            warnings.append(
+                                f"Repaired {repaired} single-sample rolling "
+                                "boundary glitches")
+                    else:
+                        data = dev.capture(
+                            rate_hz=rate, nsamples=nsamp,
+                            timeout=max(3, nsamp // 10000 + 2),
+                            trigger=trigger, stop_evt=stop_evt,
+                            progress_cb=cb, pre_trigger=pre)
                     if not data:
+                        self._recover_after_failed_capture()
                         raise HardwareError(
                             "Capture returned 0 bytes — FPGA not responding")
                     # Packed wire: contiguous 16-bit little-endian samples.
@@ -211,9 +295,11 @@ class ExistingHostAdapter(HardwareDevice):
                             f"Device returned {len(digital)} effective samples "
                             f"for {nsamp} requested (existing host wire format)")
             except HardwareError:
+                self._recover_after_failed_capture()
                 raise
             except Exception as e:
                 self._last_error = str(e)
+                self._recover_after_failed_capture()
                 raise HardwareError(f"Capture failed: {e}") from e
             self._timings["last_capture_s"] = time.time() - t0
 
@@ -226,6 +312,120 @@ class ExistingHostAdapter(HardwareDevice):
                 trigger_sample=trigger_sample,
                 divider=max(0, round(dev.sample_clk / rate) - 1),
                 warnings=warnings)
+
+    def _use_rolling_single_shot(self, settings: CaptureSettings, trigger) -> bool:
+        """Choose the ring path for high-rate deep digital captures."""
+        return (
+            not settings.analog_enabled
+            and settings.mode == "single"
+            and trigger is None
+            and settings.trigger.pre_trigger_samples == 0
+            and settings.sample_rate > 20_000_000
+            and settings.num_samples > 1024
+            and self._dev is not None
+            and hasattr(self._dev, "read_capture_range")
+            and hasattr(self._dev, "pkt")
+        )
+
+    def _requires_unavailable_high_rate_deep_path(
+            self, settings: CaptureSettings, trigger) -> bool:
+        if settings.analog_enabled:
+            return False
+        if settings.mode != "single":
+            return False
+        if trigger is not None or settings.trigger.pre_trigger_samples:
+            return False
+        return settings.sample_rate > 20_000_000 and settings.num_samples > 1024
+
+    def _rolling_single_shot_capture(self, dev, *, rate: float, nsamp: int,
+                                     progress: Optional[ProgressCb],
+                                     stop_evt: Optional[threading.Event]) -> tuple[bytes, int]:
+        from driver.spi_protocol import CMD_ABORT_CAPTURE
+
+        div = max(0, round(dev.sample_clk / rate) - 1)
+        dev.reset()
+        time.sleep(0.02)
+        dev.spi.flush()
+        dev._write_capture_config(
+            div=div, samples=nsamp, delay_count=nsamp,
+            mask=0, value=0, flags=dev._raw_flags,
+            fast_mode=True, continuous=True)
+        dev.set_debug_ch0(dev.debug_ch0_enabled)
+        dev.spi.flush()
+        status = dev.pkt.arm_capture()
+        if status < 0:
+            return b"", 0
+
+        self._last_rolling_status = {}
+        expected_seq = None
+        start_sample = 0
+        deadline = time.time() + max(3, nsamp // 10000 + 2)
+        last_status = {}
+        try:
+            while time.time() < deadline:
+                if stop_evt and stop_evt.is_set():
+                    return b"", 0
+                st = dev.pkt.get_status()
+                last_status = st
+                self._last_rolling_status = dict(st)
+                expected_seq = st.get("capture_seq", expected_seq)
+                producer = st.get("producer_index")
+                oldest = st.get("oldest_index")
+                if producer is not None and oldest is not None:
+                    available = int(producer) - int(oldest)
+                    if progress:
+                        progress(min(available, nsamp), nsamp, "capturing")
+                    if available >= nsamp:
+                        start_sample = max(int(oldest), int(producer) - nsamp)
+                        break
+                time.sleep(0.002)
+            else:
+                raise HardwareError(
+                    "High-rate rolling capture timed out waiting for producer index")
+
+            data = dev.read_capture_range(start_sample, nsamp)[: nsamp * 2]
+            if len(data) < nsamp * 2:
+                raise HardwareError(
+                    f"High-rate rolling capture returned {len(data) // 2} "
+                    f"samples for {nsamp} requested")
+            if expected_seq is not None:
+                dev.ack_capture_done(expected_seq)
+            if progress and data:
+                progress(len(data) // 2, nsamp, "capturing")
+            return data, start_sample
+        finally:
+            try:
+                dev.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+            except Exception:
+                pass
+            overrun = last_status.get("overrun_count")
+            if overrun:
+                self._log(f"rolling_overrun count={overrun}")
+
+    def _repair_rolling_boundary_glitches(
+            self, data: bytes, start_sample: int = 0) -> tuple[bytes, int]:
+        if len(data) < 6:
+            return data, 0
+        samples = np.frombuffer(data[:len(data) - (len(data) % 2)],
+                                dtype="<u2").copy()
+        repaired = 0
+        for idx in range(1, len(samples) - 1):
+            if ((start_sample + idx) & 0xFF) != 0:
+                continue
+            prev = int(samples[idx - 1])
+            cur = int(samples[idx])
+            nxt = int(samples[idx + 1])
+            same_neighbors = ~(prev ^ nxt) & 0xFFFF
+            glitch_bits = (cur ^ prev) & same_neighbors
+            if glitch_bits:
+                samples[idx] = (cur & ~glitch_bits) | (prev & glitch_bits)
+                repaired += int(glitch_bits.bit_count())
+        if repaired == 0:
+            return data, 0
+        fixed = samples.astype("<u2").tobytes()
+        if len(data) % 2:
+            fixed += data[-1:]
+        return fixed, repaired
 
     def _build_trigger(self, settings: CaptureSettings):
         trig = settings.trigger
@@ -244,6 +444,17 @@ class ExistingHostAdapter(HardwareDevice):
             return None
         return None
 
+    def _recover_after_failed_capture(self) -> None:
+        if self._dev is None:
+            return
+        try:
+            self._dev.reset()
+            self._dev.set_analog_config(0)
+            self._dev.spi.flush()
+            self._log("capture_recovery_reset")
+        except Exception as e:
+            self._last_error = str(e)
+
     # ── generator ────────────────────────────────────────────────────
 
     def generator_status(self) -> GeneratorStatus:
@@ -256,6 +467,7 @@ class ExistingHostAdapter(HardwareDevice):
                 pass
         return GeneratorStatus(busy=busy, running=busy,
                                protocol=self._gen_cfg.protocol if self._gen_cfg else None,
+                               config=self._gen_cfg.model_dump() if self._gen_cfg else None,
                                supported=True,
                                detail="UART/I2C generator + debug CH0 PWM (FPGA)")
 

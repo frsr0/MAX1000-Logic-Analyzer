@@ -5,6 +5,7 @@ import os
 import time
 import struct
 import threading
+from array import array
 from driver.ols_spi import OLS as OLS_SPI
 from driver.spi_protocol import (
     SPIDevice,
@@ -117,6 +118,8 @@ class OLSDeviceSPI:
         self._pkt = None
         self.analog_mode = MODE_DIGITAL
         self.debug_ch0_enabled = False
+        self._debug_ch0_period = None
+        self._debug_ch0_duty = None
         # Pending flag for live toggling during rolling capture
         self._pending_debug_enable = None
         self._pending_debug_freq = None
@@ -240,8 +243,11 @@ class OLSDeviceSPI:
         if freq_hz is not None:
             period = max(2, int(self.sys_clk / freq_hz))
             duty = max(1, min(period - 1, int(period * duty_pct / 100)))
-            self.pkt.write_register(REG_DEBUG_CH0_PERIOD, period & 0xFFFFFFFF)
-            self.pkt.write_register(REG_DEBUG_CH0_DUTY, duty & 0xFFFFFFFF)
+            self._debug_ch0_period = period
+            self._debug_ch0_duty = duty
+        if self._debug_ch0_period is not None and self._debug_ch0_duty is not None:
+            self.pkt.write_register(REG_DEBUG_CH0_PERIOD, self._debug_ch0_period & 0xFFFFFFFF)
+            self.pkt.write_register(REG_DEBUG_CH0_DUTY, self._debug_ch0_duty & 0xFFFFFFFF)
         self.debug_ch0_enabled = bool(enable)
         self.pkt.write_register(REG_DEBUG_CH0_ENABLE, 1 if enable else 0)
 
@@ -315,6 +321,30 @@ class OLSDeviceSPI:
             remaining -= take
         return bytes(out)
 
+    def _repair_boundary_glitches(self, data: bytes, start_sample: int = 0) -> bytes:
+        """Repair the known single-sample readout inversion at 256-sample boundaries."""
+        if len(data) < 6:
+            return data
+        samples = array('H')
+        samples.frombytes(data[:len(data) - (len(data) % 2)])
+        if struct.pack('<H', 1) != array('H', [1]).tobytes():
+            samples.byteswap()
+        changed = False
+        for idx in range(1, len(samples) - 1):
+            if ((start_sample + idx) & 0xFF) != 0:
+                continue
+            prev = samples[idx - 1]
+            cur = samples[idx]
+            nxt = samples[idx + 1]
+            same_neighbors = ~(prev ^ nxt) & 0xFFFF
+            glitch_bits = (cur ^ prev) & same_neighbors
+            if glitch_bits:
+                samples[idx] = (cur & ~glitch_bits) | (prev & glitch_bits)
+                changed = True
+        if not changed:
+            return data
+        return samples.tobytes() + data[len(samples) * 2:]
+
     def ack_capture_done(self, seq=None):
         return self.pkt.ack_capture_done(seq)
 
@@ -371,6 +401,8 @@ class OLSDeviceSPI:
                 if not data:
                     time.sleep(0.001)
                     continue
+                if not (self.analog_mode & MODE_MIXED):
+                    data = self._repair_boundary_glitches(data, next_sample)
 
                 next_sample += len(data) // 2
                 total += len(data) // 2
@@ -639,6 +671,8 @@ class OLSDeviceSPI:
         # decoded at stride 2. (One 1024-byte block carries 512 samples.)
         need = rc * 2
         samples = self.read_capture_range(0, rc)[:need]
+        if not (self.analog_mode & MODE_MIXED):
+            samples = self._repair_boundary_glitches(samples, 0)
         if expected_seq is not None and st.get('capture_seq') == expected_seq:
             self.ack_capture_done(expected_seq)
 

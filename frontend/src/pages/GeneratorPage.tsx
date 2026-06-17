@@ -60,6 +60,7 @@ export function GeneratorPage() {
 
   const needsData = ['uart', 'spi', 'pattern', 'i2c'].includes(cfg.protocol);
   const isPwm = ['pwm', 'square'].includes(cfg.protocol);
+  const canLoopbackCapture = ['uart', 'i2c'].includes(cfg.protocol) || status?.device_kind === 'mock';
 
   if (!connected) {
     return <div className="page"><h2>Signal generator</h2>
@@ -148,7 +149,8 @@ export function GeneratorPage() {
           </label>
           <div className="button-row">
             <button className="primary" disabled={busy || !controlMode} onClick={() => send(false)}>Send</button>
-            <button className="primary" disabled={busy || !controlMode} onClick={() => send(true)}>
+            <button className="primary" disabled={busy || !controlMode || !canLoopbackCapture} onClick={() => send(true)}
+              title={canLoopbackCapture ? '' : 'PWM is a continuous CH0 output on real hardware; start it, then run a normal capture.'}>
               Send + capture (loopback)
             </button>
             <button disabled={!controlMode} onClick={() => api.generatorStop().catch(() => {})}>Stop</button>

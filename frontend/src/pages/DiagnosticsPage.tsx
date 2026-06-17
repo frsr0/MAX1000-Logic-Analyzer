@@ -64,6 +64,7 @@ export function DiagnosticsPage() {
             <button disabled={!controlMode} onClick={() => mockCap('uart')}>UART</button>
             <button disabled={!controlMode} onClick={() => mockCap('i2c')}>I2C</button>
             <button disabled={!controlMode} onClick={() => mockCap('spi')}>SPI</button>
+            <button disabled={!controlMode} onClick={() => mockCap('pwm')}>PWM</button>
             <button disabled={!controlMode} onClick={() => mockCap('glitchy')}>Glitchy</button>
             <button disabled={!controlMode} onClick={() => mockCap('analog_demo', true)}>Analog demo</button>
             <button disabled={!controlMode} onClick={() => mockCap('long_stress')}>Stress test</button>

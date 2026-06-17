@@ -19,6 +19,7 @@ export function DecoderPanel() {
   const channelOptions = activeSession.channels
     .filter((c) => c.type === 'digital' || c.type === 'derived')
     .map((c) => ({ id: c.id, label: `${c.id} (${c.name})` }));
+  const effectiveChannels = defaultSingleInputChannel(desc, channels, channelOptions[0]?.id);
 
   const selection = waveformView.selectionStart !== null && waveformView.selectionEnd !== null
     ? [Math.floor(Math.min(waveformView.selectionStart, waveformView.selectionEnd)),
@@ -27,14 +28,14 @@ export function DecoderPanel() {
 
   const add = async (region?: number[]) => {
     if (!desc) return;
-    const missing = desc.channels.filter((c) => c.required && !channels[c.role]);
+    const missing = desc.channels.filter((c) => c.required && !effectiveChannels[c.role]);
     if (missing.length && !desc.consumes) {
       toast('warning', `Assign channels: ${missing.map((m) => m.name).join(', ')}`);
       return;
     }
     try {
       await api.addDecoder(activeSession.id, {
-        decoder_id: typeId, channels, settings, region,
+        decoder_id: typeId, channels: effectiveChannels, settings, region,
       });
       await refreshActiveSession();
       setAdding(false);
@@ -131,7 +132,7 @@ export function DecoderPanel() {
           {desc?.channels.filter((c) => !c.role.startsWith('bit') || parseInt(c.role.slice(3)) < 8).map((c) => (
             <label key={c.role} className="field">
               <span>{c.name}{c.required ? ' *' : ''}</span>
-              <select value={channels[c.role] ?? ''}
+              <select value={effectiveChannels[c.role] ?? ''}
                 onChange={(e) => setChannels({ ...channels, [c.role]: e.target.value })}>
                 <option value="">—</option>
                 {channelOptions.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
@@ -173,4 +174,15 @@ export function DecoderPanel() {
 function parseEnum(value: string, options?: any[] | null) {
   const match = options?.find((o) => String(o) === value);
   return match !== undefined ? match : value;
+}
+
+function defaultSingleInputChannel(
+  desc: DecoderDescription | undefined,
+  channels: Record<string, string>,
+  fallback?: string,
+) {
+  if (!desc || desc.consumes || !fallback) return channels;
+  const required = desc.channels.filter((c) => c.required);
+  if (required.length !== 1 || channels[required[0].role]) return channels;
+  return { ...channels, [required[0].role]: fallback };
 }

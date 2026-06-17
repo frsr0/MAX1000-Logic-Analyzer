@@ -106,6 +106,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal registered_ch0 : std_logic := '0';
   signal debug_ch0_period : std_logic_vector(31 downto 0) := x"00000400";
   signal debug_ch0_duty   : std_logic_vector(31 downto 0) := x"00000200";
+  signal debug_ch0_period_active : std_logic_vector(31 downto 0) := x"00000400";
+  signal debug_ch0_duty_active   : std_logic_vector(31 downto 0) := x"00000200";
   signal sen_sdi_meta : std_logic := '1';
   signal sen_sdi_sync : std_logic := '1';
   signal gen_scl_d1   : std_logic := '0';
@@ -413,12 +415,18 @@ BEGIN
   begin
     if rising_edge(sys_clk) then
       if debug_ch0_enable = '1' then
-        if unsigned(debug_ch0_cnt) >= unsigned(debug_ch0_period) - 1 then
+        if unsigned(debug_ch0_period_active) <= 1 then
+          debug_ch0_period_active <= x"00000002";
+          debug_ch0_duty_active <= x"00000001";
           debug_ch0_cnt <= (others => '0');
+        elsif unsigned(debug_ch0_cnt) >= unsigned(debug_ch0_period_active) - 1 then
+          debug_ch0_cnt <= (others => '0');
+          debug_ch0_period_active <= debug_ch0_period;
+          debug_ch0_duty_active <= debug_ch0_duty;
         else
           debug_ch0_cnt <= std_logic_vector(unsigned(debug_ch0_cnt) + 1);
         end if;
-        if unsigned(debug_ch0_cnt) < unsigned(debug_ch0_duty) then
+        if unsigned(debug_ch0_cnt) < unsigned(debug_ch0_duty_active) then
           registered_ch0 <= '1';
         else
           registered_ch0 <= '0';
@@ -426,6 +434,8 @@ BEGIN
       else
         registered_ch0 <= '0';
         debug_ch0_cnt <= (others => '0');
+        debug_ch0_period_active <= debug_ch0_period;
+        debug_ch0_duty_active <= debug_ch0_duty;
       end if;
     end if;
   end process;

@@ -67,6 +67,7 @@ class GeneratorStatus(BaseModel):
     busy: bool = False
     running: bool = False
     protocol: Optional[str] = None
+    config: Optional[Dict[str, Any]] = None
     last_error: Optional[str] = None
     supported: bool = True
     detail: str = ""

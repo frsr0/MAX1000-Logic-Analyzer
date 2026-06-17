@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { useApp } from '../state/appStore';
 
-const RATES = [10e3, 100e3, 500e3, 1e6, 2e6, 5e6, 10e6, 20e6, 50e6, 100e6];
+const RATES = [10e3, 100e3, 500e3, 1e6, 2e6, 5e6, 10e6, 20e6, 50e6, 100e6, 200e6];
 const DEPTHS = [1024, 10_000, 50_000, 100_000, 250_000, 500_000, 1_000_000];
 
 export function CaptureControls() {
@@ -14,6 +14,7 @@ export function CaptureControls() {
   const connected = status?.device_connected ?? false;
   const capturing = status?.capture_state === 'capturing' || status?.capture_state === 'armed';
   const isMock = status?.device_kind === 'mock';
+  const hasErrors = findings.some((f) => f.level === 'error');
 
   useEffect(() => {
     if (isMock) api.mockScenarios().then((r) => setScenarios(r.scenarios)).catch(() => {});
@@ -56,6 +57,11 @@ export function CaptureControls() {
           {RATES.map((r) => (
             <option key={r} value={r}>{r >= 1e6 ? `${r / 1e6} MHz` : `${r / 1e3} kHz`}</option>
           ))}
+          {!RATES.includes(captureSettings.sample_rate) && (
+            <option value={captureSettings.sample_rate}>
+              {(captureSettings.sample_rate / 1e6).toFixed(3)} MHz
+            </option>
+          )}
         </select>
       </label>
       <label className="field">
@@ -101,7 +107,7 @@ export function CaptureControls() {
       ))}
       <div className="button-row">
         {!capturing ? (
-          <button className="primary big" disabled={!connected || !controlMode} onClick={start}>
+          <button className="primary big" disabled={!connected || !controlMode || hasErrors} onClick={start}>
             ▶ Capture
           </button>
         ) : (

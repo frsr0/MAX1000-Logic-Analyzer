@@ -162,6 +162,18 @@ class TestOLSDeviceSPI:
         ])
         assert len(data) == 1200
 
+    def test_repair_boundary_glitches_only_at_256_sample_boundaries(self, device_spi):
+        words = [0x0001] * 520
+        words[256] = 0x0000
+        words[300] = 0x0000
+        data = b''.join(struct.pack('<H', w) for w in words)
+
+        fixed = device_spi._repair_boundary_glitches(data, 0)
+        fixed_words = list(struct.unpack('<' + 'H' * 520, fixed))
+
+        assert fixed_words[256] == 0x0001
+        assert fixed_words[300] == 0x0000
+
     def test_ack_capture_done_delegates_seq(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi.ack_capture_done(123)
@@ -185,6 +197,19 @@ class TestOLSDeviceSPI:
         device_spi.set_debug_ch0(True)
         assert device_spi.debug_ch0_enabled is True
         device_spi.pkt.write_register.assert_called_once_with(0x40, 1)
+
+    def test_set_debug_ch0_replays_period_after_reset(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.set_debug_ch0(True, freq_hz=100_000, duty_pct=50)
+        device_spi.pkt.reset_mock()
+
+        device_spi.set_debug_ch0(True)
+
+        device_spi.pkt.write_register.assert_has_calls([
+            call(0x43, 1000),
+            call(0x44, 500),
+            call(0x40, 1),
+        ])
 
     def test_set_debug_ch0_disable(self, device_spi):
         device_spi.pkt = MagicMock()

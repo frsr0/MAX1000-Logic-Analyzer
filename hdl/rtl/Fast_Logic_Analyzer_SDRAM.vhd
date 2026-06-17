@@ -194,12 +194,14 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal overrun_count_u   : unsigned(31 downto 0) := (others => '0');
   signal ring_used         : natural range 0 to CONT_RING_WORDS := 0;
 
-  constant AFIFO_DEPTH : natural := 4096;
+  constant AFIFO_DEPTH : natural := 16384;
   constant AFIFO_WIDTH : natural := 16;
-  constant AFIFO_WIDTHU : natural := 12;
+  constant AFIFO_WIDTHU : natural := 14;
   signal fifo_wdata : std_logic_vector(AFIFO_WIDTH-1 downto 0) := (others => '0');
   signal fifo_wr    : std_logic := '0';
   signal fifo_wrfull : std_logic := '0';
+  signal fifo_wrusedw : std_logic_vector(AFIFO_WIDTHU-1 downto 0) := (others => '0');
+  signal fifo_wralmost_full : std_logic := '0';
   signal fifo_rdata : std_logic_vector(AFIFO_WIDTH-1 downto 0) := (others => '0');
   signal fifo_rd    : std_logic := '0';
   signal fifo_rdempty : std_logic := '0';
@@ -289,34 +291,57 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
 
 begin
 
-  -- 4-stage pipelined divide-by-3 (replaces combinatorial /3 with 38 LUT levels)
-  u_div6 : lpm_divide
-    generic map (
-      LPM_WIDTHN => 22,
-      LPM_WIDTHD => 2,
-      LPM_NREPRESENTATION => "UNSIGNED",
-      LPM_DREPRESENTATION => "UNSIGNED",
-      LPM_PIPELINE => 4
-    )
-    port map (
-      clock    => CLK,
-      numer    => lpm_numer,
-      denom    => "11",
-      quotient => lpm_quot,
-      remain   => open
-    );
+  gen_fast_div : if FAST_SPEED generate
+  begin
+    -- FAST_SPEED captures store one 16-bit word per requested sample. The
+    -- /3 divider only exists for the non-fast packer and must not be
+    -- elaborated here, otherwise Quartus rejects the now-unused LPM output.
+    process(CLK) begin
+      if rising_edge(CLK) then
+        samples_d1   <= Samples;
+        samples_div  <= Samples;
+        samples_div6 <= 0;
+      end if;
+    end process;
+  end generate;
 
-  -- Pipeline: register input, LPM divides over 4 cycles, register output
-  process(CLK) begin
-    if rising_edge(CLK) then
-      samples_d1   <= Samples;
-      lpm_numer    <= std_logic_vector(to_unsigned(samples_d1, 22));
-      samples_div  <= samples_d1;
-      samples_div6 <= to_integer(unsigned(lpm_quot));
-    end if;
-  end process;
+  gen_normal_div : if not FAST_SPEED generate
+  begin
+    -- 4-stage pipelined divide-by-3 (replaces combinatorial /3 with 38 LUT levels)
+    u_div6 : lpm_divide
+      generic map (
+        LPM_WIDTHN => 22,
+        LPM_WIDTHD => 2,
+        LPM_NREPRESENTATION => "UNSIGNED",
+        LPM_DREPRESENTATION => "UNSIGNED",
+        LPM_PIPELINE => 4
+      )
+      port map (
+        clock    => CLK,
+        numer    => lpm_numer,
+        denom    => "11",
+        quotient => lpm_quot,
+        remain   => open
+      );
+
+    -- Pipeline: register input, LPM divides over 4 cycles, register output
+    process(CLK) begin
+      if rising_edge(CLK) then
+        samples_d1   <= Samples;
+        lpm_numer    <= std_logic_vector(to_unsigned(samples_d1, 22));
+        samples_div  <= samples_d1;
+        samples_div6 <= to_integer(unsigned(lpm_quot));
+      end if;
+    end process;
+  end generate;
 
   CLK_150 <= pclk;
+  -- wrfull can arrive too late for the 200 MHz write clock. Stop early using
+  -- write-domain fill level so Rate_Div=1 captures backpressure cleanly
+  -- instead of silently losing FIFO writes and wedging producer progress.
+  fifo_wralmost_full <= '1'
+    when unsigned(fifo_wrusedw) >= to_unsigned(AFIFO_DEPTH - 256, AFIFO_WIDTHU)
+    else '0';
 
   -- 2FF synchronizer: Run from CLK domain into pclk domain
   process(pclk)
@@ -649,7 +674,7 @@ begin
             end if;
 
           elsif capture_en_r = '1' and sample_tick_r = '1' then
-            if fifo_wrfull = '0' then
+            if fifo_wralmost_full = '0' then
               if astream_f = '1' then
                 -- Emit one 16-bit word of the analog frame per tick; reload the
                 -- snapshot after the 7th word so each frame is coherent.
@@ -671,7 +696,7 @@ begin
                 sample_remaining <= sample_remaining - 1;
               end if;
             end if;
-            if fifo_wrfull = '1' and continuous_f = '0' then
+            if fifo_wralmost_full = '1' and continuous_f = '0' then
               fifo_overflow_f <= '1';
             end if;
           end if;
@@ -789,7 +814,7 @@ begin
           -- State 1: Flush BRAM to async FIFO (pre-trigger samples first)
           elsif state = 1 then
             if flush_rem > 0 then
-              if fifo_wrfull = '0' then
+              if fifo_wralmost_full = '0' then
                 bram_raddr_f <= flush_raddr;
                 -- Skip write on first cycle (BRAM read is registered)
                 if flush_rem < bram_cnt then
@@ -810,12 +835,12 @@ begin
             if sample_tick_r = '1' then
               wbuf(((step_r + 1) * Channels) - 1 downto step_r * Channels) := Inputs_r;
               if step_r = sub_steps - 1 then
-                if fifo_wrfull = '0' and sample_remaining /= 0 then
+                if fifo_wralmost_full = '0' and sample_remaining /= 0 then
                   fifo_wdata <= wbuf(15 downto 0);
                   fifo_wr <= '1';
                   sample_remaining <= sample_remaining - 1;
                 end if;
-                if continuous_f = '0' and (fifo_wrfull = '1' or sample_remaining <= 1) then
+                if continuous_f = '0' and (fifo_wralmost_full = '1' or sample_remaining <= 1) then
                   fifo_overflow_f <= '1';
                 end if;
                 step_r := 0;
@@ -875,7 +900,9 @@ begin
       rdclk    => pclk,
       q        => fifo_rdata,
       rdempty  => fifo_rdempty,
-      wrfull   => fifo_wrfull
+      wrfull   => fifo_wrfull,
+      wrusedw  => fifo_wrusedw,
+      rdusedw  => open
     );
 
   -- Readout response FIFO: bridges the pclk readout domain to the CLK (OLS)
@@ -900,7 +927,9 @@ begin
       rdclk    => CLK,
       q        => Rd_Fifo_Q,
       rdempty  => Rd_Fifo_Empty,
-      wrfull   => rdfifo_wrfull
+      wrfull   => rdfifo_wrfull,
+      wrusedw  => open,
+      rdusedw  => open
     );
 
   -- Main: SDRAM write pump + buffer management + readout
@@ -933,7 +962,8 @@ begin
     variable cont_readout  : boolean := false;
     variable cont_rd_sel   : natural range 0 to 2 := 0;
     variable cur_full      : boolean := false;
-    variable cont_word_written : boolean := false;
+    variable wr_pend_cont : boolean := false;
+    variable wip_cont     : boolean := false;
     variable cont_base_v   : natural range 0 to Max_Samples - 1 := 0;
     variable ring_waddr    : natural range 0 to Max_Samples - 1 := 0;
   begin
@@ -942,7 +972,6 @@ begin
       s_wr <= '0';
       s_burst_i <= '0';
       rdfifo_wr <= '0';
-      cont_word_written := false;
       -- Synchronise the block-read request toggle into pclk (runs every cycle so
       -- no edge is missed). Blk_Rd_Base/Count are quasi-static: they are set on
       -- the OLS side before the toggle flips and held for the whole stream, so
@@ -1010,6 +1039,8 @@ begin
         buf_rem_single <= samples_div_p;
         rd_pend := '0';
         wr_pend := false; wip := false; wr_cnt := 0;
+        wr_pend_cont := false;
+        wip_cont := false;
         buf_sel <= "00";
         buf_full(0) <= '0'; buf_full(1) <= '0'; buf_full(2) <= '0';
         full_i <= '0';
@@ -1139,13 +1170,12 @@ begin
         -- CAPTURE: SDRAM write pump — drains async FIFO (live + flushed
         -- pre-trigger samples arrive via a single FIFO stream).
 
-        -- Continuous backpressure: never write into a buffer that is already
-        -- full. If buf_sel points at a full buffer (it stayed there because all
-        -- three were full), repoint to a freed one; while it still points at a
-        -- full buffer inhibit the pop so the afifo backpressures the capture
-        -- instead of corrupting the full buffer.
+        -- Single-shot uses the old buffer fullness bookkeeping. Continuous
+        -- mode is a true SDRAM ring: never backpressure on the legacy 3x512
+        -- buffer flags, because indexed reads use producer/oldest/newest
+        -- metadata and the whole SDRAM window is the retention boundary.
         cur_full := false;
-        if Continuous_Mode = '1' then
+        if Continuous_Mode = '0' then
           if (buf_sel = "00" and buf_full(0) = '1')
              or (buf_sel = "01" and buf_full(1) = '1')
              or (buf_sel = "10" and buf_full(2) = '1') then
@@ -1156,17 +1186,6 @@ begin
               buf_sel <= "01"; waddr_1 := 0; buf_rem_1 <= buf_limit_r;
             elsif buf_full(2) = '0' then
               buf_sel <= "10"; waddr_2 := 0; buf_rem_2 <= buf_limit_r;
-            else
-              -- All buffers full: rolling mode overwrites the current buffer.
-              cur_full := false;
-              overrun_count_u <= overrun_count_u + 1;
-              if buf_sel = "00" then
-                buf_full(0) <= '0'; waddr_0 := 0; buf_rem_0 <= buf_limit_r;
-              elsif buf_sel = "01" then
-                buf_full(1) <= '0'; waddr_1 := 0; buf_rem_1 <= buf_limit_r;
-              else
-                buf_full(2) <= '0'; waddr_2 := 0; buf_rem_2 <= buf_limit_r;
-              end if;
             end if;
           end if;
         end if;
@@ -1176,7 +1195,9 @@ begin
           s_wdata <= wr_pend_data;
           s_wr    <= '1';
           wip     := true;
+          wip_cont := wr_pend_cont;
           wr_pend := false;
+          wr_pend_cont := false;
 
         elsif fifo_rdempty = '0' and not wip and sdram_busy = '0' and not cur_full then
           -- async FIFO source: live post-trigger data
@@ -1192,50 +1213,11 @@ begin
           wr_pend      := true;
           wr_pend_addr := write_addr;
           wr_pend_data := fifo_rdata;
+          wr_pend_cont := false;
 
           -- Update buffer counters
           if Continuous_Mode = '1' then
-            cont_word_written := true;
-            if buf_sel = "00" then
-              if buf_rem_0 = 1 then
-                buf_full(0) <= '1';  buf_rem_0 <= 0;
-                if buf_full(1) = '1' and buf_full(2) = '1' then
-                  full_pending <= '1';
-                else
-                  if buf_full(1) = '0' then buf_sel <= "01"; waddr_1 := 0; buf_rem_1 <= buf_limit_r;
-                  else                     buf_sel <= "10"; waddr_2 := 0; buf_rem_2 <= buf_limit_r; end if;
-                end if;
-              else
-                buf_rem_0 <= brem0_dec;
-              end if;
-              waddr_0 := waddr_0 + 1;
-            elsif buf_sel = "01" then
-              if buf_rem_1 = 1 then
-                buf_full(1) <= '1';  buf_rem_1 <= 0;
-                if buf_full(0) = '1' and buf_full(2) = '1' then
-                  full_pending <= '1';
-                else
-                  if buf_full(2) = '0' then buf_sel <= "10"; waddr_2 := 0; buf_rem_2 <= buf_limit_r;
-                  else                     buf_sel <= "00"; waddr_0 := 0; buf_rem_0 <= buf_limit_r; end if;
-                end if;
-              else
-                buf_rem_1 <= brem1_dec;
-              end if;
-              waddr_1 := waddr_1 + 1;
-            else
-              if buf_rem_2 = 1 then
-                buf_full(2) <= '1';  buf_rem_2 <= 0;
-                if buf_full(0) = '1' and buf_full(1) = '1' then
-                  full_pending <= '1';
-                else
-                  if buf_full(0) = '0' then buf_sel <= "00"; waddr_0 := 0; buf_rem_0 <= buf_limit_r;
-                  else                     buf_sel <= "01"; waddr_1 := 0; buf_rem_1 <= buf_limit_r; end if;
-                end if;
-              else
-                buf_rem_2 <= brem2_dec;
-              end if;
-              waddr_2 := waddr_2 + 1;
-            end if;
+            wr_pend_cont := true;
           else
             -- Single-buffer mode: buf_rem_single accounts for ALL samples
             if buf_rem_single > 0 then
@@ -1245,26 +1227,27 @@ begin
           end if;
         end if;
 
-        if cont_word_written then
-          newest_index_u <= producer_index_u;
-          producer_index_u <= producer_index_u + 1;
-          if ring_waddr = Max_Samples - 1 then
-            ring_waddr := 0;
-          else
-            ring_waddr := ring_waddr + 1;
-          end if;
-          if ring_used < CONT_RING_WORDS then
-            ring_used <= ring_used + 1;
-          else
-            oldest_index_u <= oldest_index_u + 1;
-          end if;
-        end if;
-
         -- Track SDRAM write completion
         if wip then
           if wr_cnt < 2 then
             wr_cnt := wr_cnt + 1;
           else
+            if wip_cont then
+              newest_index_u <= producer_index_u;
+              producer_index_u <= producer_index_u + 1;
+              if ring_waddr = Max_Samples - 1 then
+                ring_waddr := 0;
+              else
+                ring_waddr := ring_waddr + 1;
+              end if;
+              if ring_used < CONT_RING_WORDS then
+                ring_used <= ring_used + 1;
+              else
+                oldest_index_u <= oldest_index_u + 1;
+                overrun_count_u <= overrun_count_u + 1;
+              end if;
+              wip_cont := false;
+            end if;
             wip := false; wr_cnt := 0;
           end if;
         end if;
