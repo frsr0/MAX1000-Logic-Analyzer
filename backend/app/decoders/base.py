@@ -34,7 +34,7 @@ class ChannelRole:
     role: str                 # e.g. 'rx', 'scl', 'sda'
     name: str
     required: bool = True
-    types: List[str] = field(default_factory=lambda: ["digital", "derived"])
+    types: List[str] = field(default_factory=lambda: ["digital", "derived", "analog"])
 
 
 @dataclass

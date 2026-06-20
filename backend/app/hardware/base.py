@@ -72,7 +72,9 @@ class HardwareDevice(ABC):
             findings.append({"level": "error",
                              "message": f"{settings.num_samples} samples exceeds capture "
                                         f"depth {caps.max_samples}"})
-        if (settings.analog_enabled or settings.mode in ("analog", "mixed")) and not caps.supports_analog:
+        if (settings.analog_enabled or settings.mode in (
+                "analog", "analog_fast", "analog_all", "analog_continuous",
+                "analog_all_continuous", "mixed", "mixed_continuous")) and not caps.supports_analog:
             findings.append({"level": "error",
                              "message": "Analog capture is not available on this device"})
         trig = settings.trigger

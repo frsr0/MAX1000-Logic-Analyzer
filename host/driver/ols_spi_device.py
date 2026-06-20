@@ -6,6 +6,7 @@ import time
 import struct
 import threading
 from array import array
+import numpy as np
 from driver.ols_spi import OLS as OLS_SPI
 from driver.spi_protocol import (
     SPIDevice,
@@ -29,13 +30,20 @@ CMD_TVALUE        = 0xC1
 # GPIO/MPSSE constants re-exported for hw_validation.py
 from driver.ols_spi import GPIO_CS_LO, GPIO_CS_HI, PIN_DIR
 
-# Two capture modes (hardware analog_enable = bit 3 of REG_FLAGS):
-#   MODE_DIGITAL (0):  16 digital channels, 2-byte frame
-#   MODE_MIXED (0x08): 16 digital + all 8 ADC channels, 14-byte frame
+# Capture mode bits in REG_FLAGS:
+#   bit 3: analog stream enable
+#   bit 4: analog-only profile
+#   bit 5: maximum physical-analog profile when bit 4 is set
+#   bits 8..12: selected ADC mux channel for high-speed analog
+#   bit 13: narrow packed digital stream enable
+#   bits 14..17: selected digital channel for narrow packed mode
 MODE_DIGITAL = 0
 MODE_MIXED = 0x08
 MODE_ANALOG_ONLY = 0x10
-MODE_ANALOG = MODE_MIXED | MODE_ANALOG_ONLY
+MODE_ANALOG_FAST = MODE_MIXED | MODE_ANALOG_ONLY
+MODE_ANALOG_ALL = MODE_ANALOG_FAST | 0x20
+MODE_ANALOG = MODE_ANALOG_FAST
+MODE_NARROW_DIGITAL = 0x2000
 # Back-compat aliases
 ANALOG_MODE_DIGITAL8 = MODE_DIGITAL
 ANALOG_ENABLE_BIT = MODE_MIXED
@@ -55,7 +63,7 @@ def analog_frame_stride(mode):
     # Payload (dense) bytes per frame: 16 digital + 8 ADC × 12-bit = 14 bytes;
     # digital-only = 2 bytes.
     if mode & MODE_ANALOG_ONLY:
-        return 12
+        return 12 if mode & 0x20 else 2
     return 14 if mode & MODE_MIXED else 2
 
 
@@ -71,6 +79,33 @@ def wire_to_payload(data):
     even/odd samples into the low/high halves). Kept as a pass-through so analog
     call sites need no change."""
     return data
+
+
+def narrow_digital_flags(channel):
+    ch = max(0, min(15, int(channel)))
+    return MODE_NARROW_DIGITAL | (ch << 14)
+
+
+def unpack_narrow_digital_words(data, channel=0, sample_count=None):
+    """Expand packed 1-bit high-speed digital words to normal 16-bit samples.
+
+    Each FPGA word contains 16 consecutive samples for one selected channel;
+    bit 0 is earliest. The returned array uses the app's normal 16-bit digital
+    sample format with only ``channel`` populated.
+    """
+    words = np.frombuffer(data[:len(data) - (len(data) % 2)], dtype="<u2")
+    total = len(words) * 16 if sample_count is None else int(sample_count)
+    out = np.zeros(total, dtype=np.uint16)
+    mask = np.uint16(1 << max(0, min(15, int(channel))))
+    idx = 0
+    for word in words:
+        for bit in range(16):
+            if idx >= total:
+                return out
+            if int(word) & (1 << bit):
+                out[idx] = mask
+            idx += 1
+    return out
 
 
 def _decode_adc(frame, offset=2):
@@ -98,7 +133,11 @@ def decode_analog_frames(data, mode):
     for i in range(0, len(data) // stride):
         frame = data[i * stride:(i + 1) * stride]
         if mode & MODE_ANALOG_ONLY:
-            row = {"digital": None, "adc": _decode_adc(frame, 0)}
+            if mode & 0x20:
+                row = {"digital": None, "adc": _decode_adc(frame, 0)}
+            else:
+                row = {"digital": None,
+                       "adc": [frame[0] | ((frame[1] & 0x0F) << 8)]}
         else:
             row = {"digital": frame[0] | (frame[1] << 8), "adc": []}
             if mode & MODE_MIXED:
@@ -124,6 +163,7 @@ class OLSDeviceSPI:
         self.spi = None
         self._pkt = None
         self.analog_mode = MODE_DIGITAL
+        self.analog_channel = 1
         self.debug_ch0_enabled = False
         self._debug_ch0_period = None
         self._debug_ch0_duty = None
@@ -220,15 +260,20 @@ class OLSDeviceSPI:
         # SPI backend: raw mode is display-only. FPGA always sends 4 bytes/sample.
         # _stride is used by the GUI to pick stride=1 for raw display.
 
-    def set_analog_config(self, mode, *_compat_args):
-        """Set capture mode: MODE_DIGITAL, MODE_MIXED, or MODE_ANALOG."""
+    def set_analog_config(self, mode, adc_channel=None, *_compat_args):
+        """Set capture mode and optional high-speed ADC mux channel."""
+        if adc_channel is not None:
+            self.analog_channel = max(0, min(31, int(adc_channel)))
         if mode & MODE_ANALOG_ONLY:
-            self.analog_mode = MODE_ANALOG
+            self.analog_mode = mode
         elif mode & MODE_MIXED:
             self.analog_mode = MODE_MIXED
         else:
             self.analog_mode = MODE_DIGITAL
-        self.pkt.write_register(REG_FLAGS, self.analog_mode)
+        mode_flags = self.analog_mode
+        if mode_flags & MODE_ANALOG_ONLY:
+            mode_flags |= (self.analog_channel & 0x1F) << 8
+        self.pkt.write_register(REG_FLAGS, mode_flags)
 
     def set_analog_enable(self, enable=True):
         """Enable mixed capture: 16 digital + all 8 ADC channels."""
@@ -288,6 +333,8 @@ class OLSDeviceSPI:
                               flags=0, fast_mode=None, continuous=False):
         """Write the full capture mode state before every arm."""
         mode_flags = (flags | self.analog_mode) & 0xFFFFFFFF
+        if mode_flags & MODE_ANALOG_ONLY:
+            mode_flags |= (self.analog_channel & 0x1F) << 8
         if continuous:
             mode_flags |= 0x02
         else:
@@ -362,7 +409,7 @@ class OLSDeviceSPI:
 
     def continuous_ring_capture(self, rate_hz, chunk_nsamp, buffer_nsamp,
                                 stop_evt, progress_cb=None, full_out=None,
-                                fast_mode=True):
+                                fast_mode=True, yield_full_buffer=True):
         """Yield chunks from the FPGA continuous SDRAM ring by absolute index.
 
         This arms continuous mode once, then follows producer/oldest/newest
@@ -424,9 +471,10 @@ class OLSDeviceSPI:
                 max_bytes = buffer_nsamp * 2
                 if len(buf) > max_bytes:
                     buf = buf[-max_bytes:]
+                out = buf if yield_full_buffer else data
                 if progress_cb:
-                    progress_cb(buf, total, buffer_nsamp)
-                yield buf, total, buffer_nsamp
+                    progress_cb(out, total, buffer_nsamp)
+                yield out, total, buffer_nsamp
         finally:
             self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
 
@@ -701,8 +749,8 @@ class OLSDeviceSPI:
 
     def capture_analog(self, rate_hz=100000, frames=4096, mode=MODE_MIXED,
                        timeout=6, progress_cb=None, stop_evt=None):
-        payload_stride = analog_frame_stride(mode)       # 14 dense bytes/frame
-        words_per_frame = payload_stride // 2            # 7 SDRAM words/frame
+        payload_stride = analog_frame_stride(mode)
+        words_per_frame = max(1, payload_stride // 2)
         self.set_analog_config(mode)
         # capture(nsamples=N) returns N dense 16-bit words (2 bytes each); one
         # word per analog SDRAM word. wire_to_payload is now identity.

@@ -49,8 +49,12 @@ PORT (
     Gen_SPI_Test   : OUT STD_LOGIC := '0';
     Armed          : OUT STD_LOGIC := '0';
     Fast_Mode      : OUT STD_LOGIC := '0';
+    Narrow_Enable  : OUT STD_LOGIC := '0';
+    Narrow_Channel : OUT NATURAL range 0 to 15 := 0;
     Analog_Enable  : OUT STD_LOGIC := '0';
     Analog_Only    : OUT STD_LOGIC := '0';
+    Analog_Profile : OUT STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
+    Analog_Channel : OUT NATURAL range 0 to 31 := 1;
     Status        : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Continuous_Mode : OUT STD_LOGIC := '0';
     Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
@@ -113,12 +117,16 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL gen_spi_test_i      : STD_LOGIC := '0';
   SIGNAL armed_i             : STD_LOGIC := '0';
   SIGNAL fast_mode_i         : STD_LOGIC := '0';
+  SIGNAL narrow_enable_i     : STD_LOGIC := '0';
+  SIGNAL narrow_channel_i    : NATURAL range 0 to 15 := 0;
   SIGNAL continuous_mode_i   : STD_LOGIC := '0';
   SIGNAL buffer_full_i       : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
   SIGNAL buffer_ack_i        : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
   SIGNAL fla_status          : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL analog_enable_i     : STD_LOGIC := '0';
   SIGNAL analog_only_i       : STD_LOGIC := '0';
+  SIGNAL analog_profile_i    : STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
+  SIGNAL analog_channel_i    : NATURAL range 0 to 31 := 1;
   SIGNAL gen_clear_i         : STD_LOGIC := '0';
   SIGNAL pin_map_write_i     : STD_LOGIC := '0';
   SIGNAL pin_map_channel_i   : NATURAL range 0 to 15 := 0;
@@ -170,9 +178,13 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
      Gen_SPI_Test   : OUT STD_LOGIC := '0';
       Armed          : OUT STD_LOGIC := '0';
       Fast_Mode      : OUT STD_LOGIC := '0';
+      Narrow_Enable   : OUT STD_LOGIC := '0';
+      Narrow_Channel  : OUT NATURAL range 0 to 15 := 0;
       Continuous_Mode : OUT STD_LOGIC := '0';
       Analog_Enable   : OUT STD_LOGIC := '0';
       Analog_Only     : OUT STD_LOGIC := '0';
+      Analog_Profile  : OUT STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
+      Analog_Channel  : OUT NATURAL range 0 to 31 := 1;
       Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
       Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
       Pin_Map_Write   : OUT STD_LOGIC := '0';
@@ -236,6 +248,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
     s_burst     : OUT std_logic := '0';
     Armed       : IN  std_logic := '0';
     Fast_Mode   : IN  std_logic := '0';
+    Narrow_Enable : IN std_logic := '0';
+    Narrow_Channel : IN natural range 0 to 15 := 0;
      FAST_CLK    : IN  std_logic := '0';
      Continuous_Mode : IN  std_logic := '0';
      Buffer_Full     : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
@@ -279,8 +293,12 @@ BEGIN
   Gen_SPI_Test   <= gen_spi_test_i;
   Armed          <= armed_i;
   Fast_Mode      <= fast_mode_i;
+  Narrow_Enable  <= narrow_enable_i;
+  Narrow_Channel <= narrow_channel_i;
   Analog_Enable <= analog_enable_i;
   Analog_Only <= analog_only_i;
+  Analog_Profile <= analog_profile_i;
+  Analog_Channel <= analog_channel_i;
   Status <= fla_status;
   Continuous_Mode <= continuous_mode_i;
   Buffer_Ack <= buffer_ack_i;
@@ -307,8 +325,12 @@ BEGIN
     Gen_SPI_Test   => gen_spi_test_i,
     Armed          => armed_i,
     Fast_Mode      => fast_mode_i,
+    Narrow_Enable  => narrow_enable_i,
+    Narrow_Channel => narrow_channel_i,
     Analog_Enable  => analog_enable_i,
     Analog_Only    => analog_only_i,
+    Analog_Profile => analog_profile_i,
+    Analog_Channel => analog_channel_i,
     Continuous_Mode => continuous_mode_i,
     Buffer_Full     => buffer_full_i,
     Buffer_Ack      => buffer_ack_i,
@@ -345,6 +367,8 @@ BEGIN
     Status       => fla_status,
     Armed        => armed_i,
     Fast_Mode    => fast_mode_i,
+    Narrow_Enable => narrow_enable_i,
+    Narrow_Channel => narrow_channel_i,
     FAST_CLK     => FAST_CLK,
     Continuous_Mode => continuous_mode_i,
     Buffer_Full     => buffer_full_i,

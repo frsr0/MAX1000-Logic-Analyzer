@@ -84,7 +84,7 @@ class MockDevice(HardwareDevice):
             sample_clk_hz=self.SAMPLE_CLK,
             supports_pre_trigger=True, supports_rolling=True,
             supports_continuous=True, supports_analog=True,
-            analog_rate_note="Mock analog channels (real hardware: ~101 kHz ADC update)",
+            analog_rate_note="Mock analog channels (real hardware: 1 MSPS single-channel or 125 kframes/s scan)",
             generator_protocols=["uart", "i2c", "spi", "pwm", "square",
                                  "pattern", "counter", "prbs"],
             triggers=[TriggerCapability(type=t, execution=e) for t, e in hw],
@@ -105,11 +105,14 @@ class MockDevice(HardwareDevice):
         scenario = settings.mock_scenario or "demo_mixed"
 
         analog_req = settings.analog_enabled or settings.mode in (
-            "analog", "mixed", "analog_continuous", "mixed_continuous")
+            "analog", "analog_fast", "analog_all", "mixed",
+            "analog_continuous", "analog_all_continuous", "mixed_continuous")
         digital, analog = self._build_scenario(scenario, n, rate, analog_req)
         # Analog-only modes carry no digital; mixed (incl. continuous) keeps it.
         if settings.mode not in ("mixed", "mixed_continuous") and (
-                settings.analog_enabled or settings.mode in ("analog", "analog_continuous")):
+                settings.analog_enabled or settings.mode in (
+                    "analog", "analog_fast", "analog_all",
+                    "analog_continuous", "analog_all_continuous")):
             digital = None
         # simulate capture time (bounded so tests stay fast)
         total_time = min(n / rate, 1.5)

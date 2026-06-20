@@ -98,27 +98,47 @@ check("digital capture 40k@2MHz with PWM", digital_capture)
 def analog_capture():
     prev = req("GET", "/api/status")["last_session_id"]
     req("POST", "/api/capture/start",
-        {"settings": {"mode": "analog", "sample_rate": 100_000,
+        {"settings": {"mode": "analog_fast", "sample_rate": 1_000_000,
                       "num_samples": 5000, "analog_enabled": True,
                       "enabled_digital": []}})
     sid["a"] = wait_capture(prev, timeout=180)
     meta = req("GET", f"/api/sessions/{sid['a']}/metadata")
     digital_ch, analog_ch = channel_counts(meta)
     if digital_ch:
-        raise RuntimeError("analog-only capture unexpectedly has digital channels")
-    if analog_ch != 8:
-        raise RuntimeError(f"expected 8 analog channels, got {analog_ch}")
+        raise RuntimeError("high-speed analog capture unexpectedly has digital channels")
+    if analog_ch != 1:
+        raise RuntimeError(f"expected 1 analog channel, got {analog_ch}")
     return (f"session {sid['a']} n={meta['num_samples']} "
             f"analog_ch={len(meta['analog_channels'])}")
 
 
-check("analog-only capture 5k@100kHz", analog_capture)
+check("high-speed analog capture 5k", analog_capture)
+
+
+def maximum_analog_capture():
+    prev = req("GET", "/api/status")["last_session_id"]
+    req("POST", "/api/capture/start",
+        {"settings": {"mode": "analog_all", "sample_rate": 125_000,
+                      "num_samples": 5000, "analog_enabled": True,
+                      "enabled_digital": []}})
+    sid["aa"] = wait_capture(prev, timeout=180)
+    meta = req("GET", f"/api/sessions/{sid['aa']}/metadata")
+    digital_ch, analog_ch = channel_counts(meta)
+    if digital_ch:
+        raise RuntimeError("maximum analog capture unexpectedly has digital channels")
+    if analog_ch != 8:
+        raise RuntimeError(f"expected 8 analog channels, got {analog_ch}")
+    return (f"session {sid['aa']} n={meta['num_samples']} "
+            f"analog_ch={len(meta['analog_channels'])}")
+
+
+check("maximum analog capture 5k@125kHz", maximum_analog_capture)
 
 
 def mixed_capture():
     prev = req("GET", "/api/status")["last_session_id"]
     req("POST", "/api/capture/start",
-        {"settings": {"mode": "mixed", "sample_rate": 100_000,
+        {"settings": {"mode": "mixed", "sample_rate": 125_000,
                       "num_samples": 5000, "analog_enabled": True,
                       "enabled_digital": list(range(16))}})
     sid["m"] = wait_capture(prev, timeout=180)
@@ -132,7 +152,7 @@ def mixed_capture():
             f"digital_ch={digital_ch} analog_ch={analog_ch}")
 
 
-check("mixed capture 5k@100kHz", mixed_capture)
+check("mixed capture 5k@125kHz", mixed_capture)
 
 
 def digital_after_mixed_capture():
@@ -159,7 +179,7 @@ check("GET overview", lambda: f"{len(req('GET', f'/api/sessions/{sid['d']}/overv
 check("GET edges d0", lambda: f"{len(req('GET', f'/api/sessions/{sid['d']}/edges?channel=d0&start=0&limit=100')['edges'])} edges")
 check("GET value-at", lambda: str(req("GET", f"/api/sessions/{sid['d']}/value-at?sample=1000&channels=d0,d3")["values"]))
 check("GET sanity", lambda: f"{len(req('GET', f'/api/sessions/{sid['d']}/sanity'))} findings")
-check("GET spectrum (analog)", lambda: f"{len(req('GET', f'/api/sessions/{sid['a']}/spectrum?channel=a0')['freqs'])} bins")
+check("GET spectrum (analog)", lambda: f"{len(req('GET', f'/api/sessions/{sid['a']}/spectrum?channel=a1')['freqs'])} bins")
 
 # ── generator loopbacks via API ──
 

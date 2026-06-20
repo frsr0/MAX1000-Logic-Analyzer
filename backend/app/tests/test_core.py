@@ -50,6 +50,13 @@ def test_find_edges():
     assert find_edges(bits, "any").tolist() == [2, 4, 5]
 
 
+def test_analog_channel_bits_thresholds_to_digital():
+    wf = make_wf(analog={
+        "a1": np.array([0.1, 1.64, 1.65, 2.2, 3.0], dtype=np.float32)
+    })
+    assert wf.channel_bits("a1").tolist() == [0, 0, 1, 1, 1]
+
+
 # ── LOD / chunking ───────────────────────────────────────────────────
 
 def test_lod_pyramid_digital():
@@ -158,6 +165,19 @@ def test_uart_decoder():
                 if e["type"] == "uart_byte")
     assert got == msg
     assert all(not e["fields"]["framing_error"] for e in result.events)
+
+
+def test_uart_decoder_accepts_thresholded_analog_input():
+    n = 80_000
+    msg = b"ANA"
+    sig = ms.uart_signal(n, RATE, 9600, msg, start_sample=500)
+    wf = make_wf(analog={"a1": sig.astype(np.float32) * 3.3})
+    dec = registry.get("uart")
+    ctx = DecodeContext(wf, {"rx": "a1"})
+    result = dec.decode(ctx, {**dec.defaults(), "baud": 9600})
+    got = bytes(e["fields"]["byte"] for e in result.events
+                if e["type"] == "uart_byte")
+    assert got == msg
 
 
 def test_uart_decoder_autobaud():

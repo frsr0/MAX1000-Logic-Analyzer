@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch, call, ANY
 from driver.spi_protocol import (
     CMD_ACK_CAPTURE_DONE,
     CMD_ABORT_CAPTURE,
+    REG_GEN_BAUD,
     REG_GEN_DATA,
     REG_CONT_MODE,
     SPIDevice,
@@ -12,12 +13,17 @@ from driver.spi_protocol import (
 )
 from driver.ols_spi_device import (
     MODE_ANALOG,
+    MODE_ANALOG_ALL,
+    MODE_ANALOG_FAST,
     MODE_DIGITAL,
     MODE_MIXED,
+    MODE_NARROW_DIGITAL,
     analog_frame_stride,
     decode_analog_frames,
+    narrow_digital_flags,
     OLSDeviceSPI,
     find_spi_device,
+    unpack_narrow_digital_words,
 )
 
 
@@ -29,10 +35,24 @@ class TestAnalogFrameStride:
         assert analog_frame_stride(MODE_MIXED) == 14
 
     def test_analog_only(self):
-        assert analog_frame_stride(MODE_ANALOG) == 12
+        assert analog_frame_stride(MODE_ANALOG_FAST) == 2
+        assert analog_frame_stride(MODE_ANALOG_ALL) == 12
 
     def test_mode_without_mixed_bit_defaults_to_2(self):
         assert analog_frame_stride(0x03) == 2
+
+
+class TestNarrowDigitalPacking:
+    def test_flags_encode_channel(self):
+        assert narrow_digital_flags(3) == MODE_NARROW_DIGITAL | (3 << 14)
+
+    def test_unpack_expands_selected_channel(self):
+        samples = unpack_narrow_digital_words(
+            b"\x05\x80", channel=2, sample_count=16)
+        asserted = [i for i, value in enumerate(samples.tolist()) if value]
+
+        assert asserted == [0, 2, 15]
+        assert set(samples[asserted].tolist()) == {1 << 2}
 
 
 class TestDecodeAnalogFrames:
@@ -62,14 +82,19 @@ class TestDecodeAnalogFrames:
         assert rows[0]["adc"] == [0x123, 0x456, 0x789, 0xABC,
                                   0xDEF, 0x012, 0x345, 0x678]
 
-    def test_analog_only_all8(self):
+    def test_fast_analog_one_channel(self):
+        rows = decode_analog_frames(bytes([0x23, 0x01]), MODE_ANALOG_FAST)
+        assert rows[0]["digital"] is None
+        assert rows[0]["adc"] == [0x123]
+
+    def test_maximum_analog_all8(self):
         frame = bytes([
             0x23, 0x61, 0x45,
             0x89, 0xC7, 0xAB,
             0xEF, 0x2D, 0x01,
             0x45, 0x83, 0x67,
         ])
-        rows = decode_analog_frames(frame, MODE_ANALOG)
+        rows = decode_analog_frames(frame, MODE_ANALOG_ALL)
         assert rows[0]["digital"] is None
         assert rows[0]["adc"] == [0x123, 0x456, 0x789, 0xABC,
                                   0xDEF, 0x012, 0x345, 0x678]
@@ -127,9 +152,9 @@ class TestOLSDeviceSPI:
 
     def test_set_analog_only_config(self, device_spi):
         device_spi.pkt = MagicMock()
-        device_spi.set_analog_config(MODE_ANALOG)
-        assert device_spi.analog_mode == MODE_ANALOG
-        device_spi.pkt.write_register.assert_called_once_with(0x20, MODE_ANALOG)
+        device_spi.set_analog_config(MODE_ANALOG_FAST, adc_channel=2)
+        assert device_spi.analog_mode == MODE_ANALOG_FAST
+        device_spi.pkt.write_register.assert_called_once_with(0x20, MODE_ANALOG_FAST | (2 << 8))
 
     def test_set_analog_enable(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -327,6 +352,27 @@ class TestOLSDeviceSPIGenerator:
         device_spi.send_uart(b'Hello', baud=115200, tx_pin=3)
         assert device_spi._gen_data == b'Hello'
         assert device_spi._gen_baud == 115200
+        device_spi.pkt.write_register.assert_any_call(
+            REG_GEN_BAUD, (device_spi.sys_clk // 115200) & 0xFFFF)
+
+    def test_capture_with_gen_uart_programs_divider(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.spi.flush = MagicMock()
+        device_spi.reset = MagicMock()
+        device_spi._gen_data = b'Hello'
+        device_spi._gen_baud = 115200
+        device_spi._gen_tx_pin = 3
+        device_spi.read_capture_range = MagicMock(return_value=b"\x01\x00" * 32)
+        device_spi.pkt.transaction = MagicMock(return_value=(0x10, 0, b""))
+        device_spi.pkt.get_status = MagicMock(
+            side_effect=[{"capture_seq": 7}, {"capture_status": 0x12, "capture_seq": 7}])
+        device_spi.ack_capture_done = MagicMock()
+
+        data = device_spi.capture_with_gen(rate_hz=2_000_000, nsamples=32)
+
+        assert data
+        device_spi.pkt.write_register.assert_any_call(
+            REG_GEN_BAUD, (device_spi.sys_clk // 115200) & 0xFFFF)
 
 
 class TestOLSDeviceSPIModbus:
@@ -463,16 +509,14 @@ class TestOLSDeviceSPICapture:
         device_spi.pkt.arm_capture.return_value = ST_OK
         device_spi.pkt.get_status.return_value = {
             'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
-        frame = bytes([0x23, 0x61, 0x45, 0x89, 0xC7, 0xAB,
-                       0xEF, 0x2D, 0x01, 0x45, 0x83, 0x67])
+        frame = bytes([0x23, 0x01])
         device_spi.pkt.read_capture_block.return_value = frame
         result, decoded = device_spi.capture_analog(
-            rate_hz=100000, frames=1, mode=MODE_ANALOG)
-        assert len(result) == 12
+            rate_hz=100000, frames=1, mode=MODE_ANALOG_FAST)
+        assert len(result) == 2
         assert result == frame
         assert decoded[0]["digital"] is None
-        assert decoded[0]["adc"] == [0x123, 0x456, 0x789, 0xABC,
-                                     0xDEF, 0x012, 0x345, 0x678]
+        assert decoded[0]["adc"] == [0x123]
 
 
 class TestOLSDeviceSPICaptureWithGen:

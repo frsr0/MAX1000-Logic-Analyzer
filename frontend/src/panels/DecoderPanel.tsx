@@ -16,10 +16,15 @@ export function DecoderPanel() {
   if (!activeSession) return <div className="panel-body hint">No session open.</div>;
 
   const desc: DecoderDescription | undefined = decoderTypes.find((d) => d.id === typeId);
-  const channelOptions = activeSession.channels
-    .filter((c) => c.type === 'digital' || c.type === 'derived')
-    .map((c) => ({ id: c.id, label: `${c.id} (${c.name})` }));
-  const effectiveChannels = defaultSingleInputChannel(desc, channels, channelOptions[0]?.id);
+  const optionsForRole = (types: string[]) => activeSession.channels
+    .filter((c) => types.includes(c.type))
+    .map((c) => ({
+      id: c.id,
+      label: `${c.id} (${c.name}${c.type === 'analog' ? ', threshold' : ''})`,
+    }));
+  const firstRequired = desc?.channels.find((c) => c.required);
+  const fallback = firstRequired ? optionsForRole(firstRequired.types)[0]?.id : undefined;
+  const effectiveChannels = defaultSingleInputChannel(desc, channels, fallback);
 
   const selection = waveformView.selectionStart !== null && waveformView.selectionEnd !== null
     ? [Math.floor(Math.min(waveformView.selectionStart, waveformView.selectionEnd)),
@@ -135,7 +140,9 @@ export function DecoderPanel() {
               <select value={effectiveChannels[c.role] ?? ''}
                 onChange={(e) => setChannels({ ...channels, [c.role]: e.target.value })}>
                 <option value="">—</option>
-                {channelOptions.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+                {optionsForRole(c.types).map((o) => (
+                  <option key={o.id} value={o.id}>{o.label}</option>
+                ))}
               </select>
             </label>
           ))}

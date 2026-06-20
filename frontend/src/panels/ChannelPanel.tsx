@@ -89,6 +89,11 @@ export function ChannelPanel() {
                 {[0.1, 0.2, 0.5, 1, 2].map((v) => <option key={v} value={v}>{v} V/div</option>)}
               </select>
             )}
+            {(ch.header || ch.fpga_pin) && (
+              <span className="hint mono">
+                {[ch.header, ch.fpga_pin].filter(Boolean).join(' · ')}
+              </span>
+            )}
           </div>
         ))}
       </div>

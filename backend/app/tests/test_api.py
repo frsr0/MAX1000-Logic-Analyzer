@@ -71,6 +71,13 @@ def test_validate_settings(client):
     assert any(f["level"] == "error" for f in findings)
 
 
+def test_decoder_channel_roles_include_analog(client):
+    decoders = client.get("/api/decoders").json()["decoders"]
+    uart = next(d for d in decoders if d["id"] == "uart")
+    rx = next(c for c in uart["channels"] if c["role"] == "rx")
+    assert "analog" in rx["types"]
+
+
 def test_capture_flow_uart(client):
     r = client.post("/api/capture/start", json={
         "settings": {"sample_rate": 1_000_000, "num_samples": 60_000,
@@ -237,6 +244,17 @@ def test_generator_loopback_self_test(client):
     body = r.json()
     assert body["passed"] is True, body
     assert body["decoded_hex"] == "414243"
+
+
+def test_generator_rejects_payload_larger_than_fpga_fifo(client):
+    r = client.post("/api/generator/send", json={
+        "config": {"protocol": "uart", "data_hex": "55" * 257,
+                   "baud": 115200, "tx_pin": 0},
+        "capture": True, "capture_rate": 2_000_000,
+        "capture_samples": 30_000}, headers=HDR)
+
+    assert r.status_code == 400
+    assert "FIFO holds 256 bytes" in r.json()["detail"]
 
 
 def test_generator_i2c_loopback(client):

@@ -101,9 +101,18 @@ export default function App() {
       }
     });
     const sesWs = new ReconnectingSocket(`/ws/session/${activeId}`);
-    const unsubSes = sesWs.subscribe((msg) => {
+    const unsubSes = sesWs.subscribe(async (msg) => {
       if (msg.type === 'measurement_updated') {
         useApp.getState().refreshActiveSession();
+      } else if (msg.type === 'waveform_ready') {
+        await useApp.getState().refreshActiveSession();
+        const s = useApp.getState().activeSession;
+        if (s?.id === activeId) {
+          await waveformView.updateLive(
+            s.num_samples, s.sample_rate, s.trigger_sample ?? null,
+            Boolean(msg.data?.rolling),
+          );
+        }
       }
     });
     return () => { unsub(); ws.close(); unsubSes(); sesWs.close(); };

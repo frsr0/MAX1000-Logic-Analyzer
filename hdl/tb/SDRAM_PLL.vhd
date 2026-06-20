@@ -52,17 +52,17 @@ begin
       locked => locked
     );
 
-  -- c3 = 10 MHz ADC conversion clock (12 MHz * 5/6). Modeled by a second
-  -- PLL_Model whose c0 output is the 10 MHz clock.
+  -- c3 = 12 MHz ADC conversion clock. Modeled by a second PLL_Model whose c0
+  -- output is the ADC clock.
   adc_pll : PLL_Model
     generic map (
       INPUT_FREQ  => 12.0e6,
-      MULTIPLY_BY => 5,
-      DIVIDE_BY   => 6,
-      FAST_MULT   => 5,
-      FAST_DIV    => 6,
-      SDRAM_MULT  => 5,
-      SDRAM_DIV   => 6
+      MULTIPLY_BY => 1,
+      DIVIDE_BY   => 1,
+      FAST_MULT   => 1,
+      FAST_DIV    => 1,
+      SDRAM_MULT  => 1,
+      SDRAM_DIV   => 1
     )
     port map (
       inclk0 => inclk0,

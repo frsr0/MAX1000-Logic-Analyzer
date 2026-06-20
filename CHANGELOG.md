@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+- Added MAX1000 physical pin metadata for the full RTL pin pool: MKR D0-D14,
+  PMOD PIO_01-PIO_08, and LIS3DH `SEN_*` pins.
+- Added board-guide analogue input mapping and exposed it through device
+  capabilities/session channel metadata. The docs now distinguish board
+  analogue pins from the mixed ADC0-ADC7 stream and the maximum-analog
+  physical profile. MKR `AIN0` (ADC8) and dedicated `AIN` (ADC16) are captured
+  by maximum analog mode.
+- Updated READMEs to stop advertising a simple `AIN0..AIN7` user-facing analog
+  channel set and to document the non-linear MAX1000 ADC mux mapping.
+- Added `docs/ANALOG_MODE_PLAN.md` to define the intended four capture modes
+  and the RTL work needed for high-speed single-analog and maximum
+  physical-analog capture.
+- Implemented RTL ADC profiles for high-speed single-channel analog and maximum
+  physical-analog capture. `REG_FLAGS` now carries analog profile/channel bits,
+  the ADC mux range covers ADC8 and ADC16, and host decoding handles 2-byte,
+  12-byte, and 14-byte analog frame layouts.
+- Raised the MAX10 ADC hard-IP path to a 12 MHz conversion clock with
+  `clkdiv=1`; hardware timing now supports the 1 MSPS high-speed analog profile
+  and a 125 kframes/s mixed/maximum analog scan profile.
+- Added 200 MHz narrow packed digital mode: one selected digital channel is
+  sampled at full rate and packed as 16 time samples per 16-bit word for
+  high-speed rolling capture with much lower storage pressure than full-width
+  digital.
+- Validated the current hardware image with smoke, API sweep, and full host
+  hardware validation. Latest full host validation on the programmed image is
+  564/564, including narrow packed digital finite/continuous checks.
+
 ## 2.0.0 - 2026-06-16
 
 ### Release Summary
@@ -13,7 +42,7 @@ FPGA/host capture contract.
 
 The original host driver and tkinter console remain available.
 
-This release has been validated on the current flashed MAX1000 image:
+This release was validated on the then-current MAX1000 image:
 
 - Full hardware validation: 580 / 580 passed.
 - Targeted new hardware validation: 25 / 25 passed.

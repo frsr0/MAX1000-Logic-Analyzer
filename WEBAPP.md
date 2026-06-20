@@ -92,7 +92,7 @@ sample-clock detect → capabilities → device self-test (debug CH0 PWM loopbac
 capture) → 4096-sample digital capture + sanity checks → UART generator
 loopback (`CMD_GEN_CAPTURE`) decoded and byte-compared. Exit code 0 = good;
 the captures it takes are saved as sessions and can be inspected in the web
-UI afterwards. If anything fails, the deeper 553-check suite is
+UI afterwards. If anything fails, the deeper 564-check suite is
 `cd host && python -m app.hw_validation`.
 
 The adapter (`backend/app/hardware/existing_host_adapter.py`) mirrors the
@@ -135,6 +135,12 @@ decoders, measurements, markers, notes, tags, export history, diagnostics),
 **Raw data is never modified.** Software filters (majority vote, debounce,
 min-pulse, glitch suppression) and analog thresholds create *derived
 channels* stored separately.
+
+**Physical pin metadata is explicit.** Real-hardware capabilities expose the
+MAX1000 board map for the RTL pin pool (MKR D0-D14, PMOD PIO_01-PIO_08, and
+the LIS3DH bus pins) plus the board-guide analogue inputs. Captured sessions
+carry header/FPGA-pin metadata on channels, and the Device page shows the full
+digital and analogue pin maps.
 
 ### Waveform performance
 
@@ -212,8 +218,8 @@ ZIP with status, logs, device debug info and recent session metadata.
 ## Tests
 
 ```bash
-cd backend && python -m pytest app/tests        # 38 tests: decoders, LOD, exports, API E2E
-cd host && python -m pytest tests driver/tests  # 310 legacy tests (untouched)
+cd backend && python -m pytest app/tests        # 67 tests: API, decoders, LOD, exports, hardware adapter
+cd host && python -m pytest tests driver/tests  # 333 host/driver tests
 cd frontend && npm run typecheck && npm run build
 ```
 
@@ -227,20 +233,15 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
 
 ## Known limitations / TODO (hardware-blocked or planned)
 
-**Blocked by current FPGA firmware/hardware:**
+**Current FPGA/hardware boundaries:**
 - The capture storage path corrupts a handful of words around every 256-word
   boundary (measured: deterministic per capture, survives re-reads — it is in
   the stored data, not the SPI link). Decoders mitigate it (the UART decoder
   majority-votes three points per bit) but single-bit decode errors can still
   occur. A proper fix needs FPGA work in the SDRAM/BRAM write pump.
-- `CMD_GEN_CAPTURE` (generator loopback) is reliable at capture rates ≥2 MHz
-  at any size (verified 4k–40k sample-units on hardware). The self-test recipe
-  is 2 MHz / 4000 units. At ≤1 MHz the capture can come back flat (a
-  generator/capture start-up race that only bites when the sample divider is
-  large) — not used by any default path. Two FPGA defects behind the original
-  "flat capture" and the ≥10k-sample readback corruption are fixed (CDC
-  sample-count bug + the legacy streaming-readout colliding with block reads);
-  see `hdl/tb/tb_gen_loopback.vhd`.
+- `CMD_GEN_CAPTURE` generator loopback is covered by hardware smoke/API tests
+  and the full host validation suite. The UART loopback path is decoded through
+  the same backend decoder path used by user captures.
 - **Plain captures of fast continuous signals have residual block-boundary
   glitches**: ~3–4 corrupted words around every 256-word (1 KiB) read block.
   The block-read FSM latches on a fixed cycle latency that matches the SDRAM
@@ -252,9 +253,20 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
 - Hardware triggers limited to rising/falling edge (any channel mask) and the
   UART-byte protocol trigger. All other trigger types are clearly labelled
   *post-capture* and run as software searches.
-- No analogue front-end beyond the MAX10 ADC (8 ch, ~101 kHz update, 3.3 V
-  internal reference). AC coupling, probe relays, per-channel gain are
-  **marked unavailable** — never faked. Mock analog exists only in mock mode.
+- No analogue front-end beyond the MAX10 ADC (1 MSPS single-channel,
+  125 kframes/s 8-input scan, 3.3 V internal reference). Mixed mode scans
+  ADC0-ADC7 and still shows ADC0/ADC6 as unmapped mux slots. High-speed analog
+  uses one selected ADC mux channel; maximum analog scans the physical profile
+  ADC1,2,3,4,5,7,8,16. AC coupling,
+  probe relays, per-channel gain
+  are **marked unavailable** — never faked. Mock analog exists only in mock mode.
+- The four capture modes are full digital, mixed, high-speed single-analog,
+  and maximum physical-analog; see `docs/ANALOG_MODE_PLAN.md` for the RTL
+  profile bits and validation status.
+- The extra 200 MHz narrow rolling option is digital-only: it packs one
+  selected digital channel into 16-sample words so the FPGA can produce a
+  200 MHz rolling stream with much lower memory/readback pressure than
+  16-channel full-width digital.
 - Generator protocols on hardware: UART, I2C, PWM (debug CH0). SPI/pattern/
   PRBS generators exist in mock only until firmware support lands.
 - Segmented/burst capture modes and hardware sequence triggers are not in the
@@ -267,16 +279,12 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
 - Current continuous mode exposes the FPGA ring-buffer contract with producer
   index, retained oldest/newest indexes, overrun count and host ACK, while
   keeping the API bounded.
-- Capture DONE status is treated as advisory because the status bit can race
-  fast readback. Planned fix: latch DONE until host ACK/read-reset or expose a
-  monotonic capture sequence ID, then have host validation assert fresh data by
-  sequence rather than by transient status.
-- Mixed/analog mode can wedge a following capture unless the host clears analog
-  config and resets. Planned fix: make each capture setup write the full mode
-  state and add digital -> mixed -> digital back-to-back HW validation.
-- Continuous `Rate_Div=1` has a start-up race. Planned fix: gate continuous
-  start until the divider/sample-clock domain has one initialized tick, then add
-  HDL and HW tests for max-rate continuous capture.
+- Capture DONE is latched until ACK/abort/next arm and each capture carries a
+  monotonic sequence ID. Host validation asserts fresh readback by sequence
+  when firmware metadata is available.
+- Mixed/analog/digital recovery is validated by back-to-back hardware tests;
+  each capture setup writes the complete mode state.
+- Continuous `Rate_Div=1` startup is covered by HDL and hardware validation.
 - FPGA utilization is high (~96% LAB on the current image). Planned fix: after
   functional fixes, trim duplicate debug/test mux logic guided by synthesis
   reports; do not block feature fixes on LAB cleanup unless compile fails.

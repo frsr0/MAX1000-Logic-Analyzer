@@ -42,6 +42,8 @@ port (
     Armed        : in  std_logic := '0';
     Fast_Mode    : in  std_logic := '0';
     FAST_CLK     : in  std_logic := '0';
+    Narrow_Enable : in std_logic := '0';
+    Narrow_Channel : in natural range 0 to 15 := 0;
     -- Double-buffer control
     Continuous_Mode : in std_logic := '0';
     Buffer_Full     : out std_logic_vector(2 downto 0) := (others => '0');
@@ -148,7 +150,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
 
   -- Config handshake: CLK -> FAST_CLK
   signal cfg_rate_div  : natural range 1 to MAX_RATE_DIV := 12;
-  signal cfg_samples   : natural range 1 to 3000000 := 3000000;
+  signal cfg_samples   : natural range 1 to Max_Samples := Max_Samples;
   signal cfg_valid_toggle : std_logic := '0';
   signal cfg_ack_s1    : std_logic := '0';
   signal cfg_ack_s2    : std_logic := '0';
@@ -157,7 +159,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   -- Config handshake: FAST_CLK domain
   signal cfg_rate_div_f  : natural range 1 to MAX_RATE_DIV := 12;
   signal cfg_rate_reload_f : natural range 0 to MAX_RATE_DIV := 11;
-  signal cfg_samples_f   : natural range 1 to 3000000 := 3000000;
+  signal cfg_samples_f   : natural range 1 to Max_Samples := Max_Samples;
   signal cfg_valid_s1    : std_logic := '0';
   signal cfg_valid_s2    : std_logic := '0';
   signal cfg_valid_edge  : std_logic := '0';
@@ -186,7 +188,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal overflow_t_s2    : std_logic := '0';
   signal overflow_t_s3    : std_logic := '0';
   signal overflow_clk     : std_logic := '0';
-  signal sample_remaining : natural range 0 to 3000000 := 0;
+  signal sample_remaining : natural range 0 to Max_Samples := 0;
   signal run_stop_overflow : std_logic := '0';
   signal status_overflow   : std_logic := '0';
   signal producer_index_u  : unsigned(31 downto 0) := (others => '0');
@@ -516,16 +518,18 @@ begin
   -- Speed mode (200 MHz): 3-stage pipeline, no divider, no flush
   -- ============================================================
   gen_fast_speed : if FAST_SPEED generate
+    constant FAST_MAX_RATE_DIV : natural := 65535;
     signal sample_word_r  : std_logic_vector(Channels-1 downto 0) := (others => '0');
     signal capture_en_r   : std_logic := '0';
     signal pretrig_en_r   : std_logic := '0';
     signal bram_wp_r      : natural range 0 to BRAM_SIZE-1 := 0;
     signal bram_cnt_r     : natural range 0 to BRAM_SIZE := 0;
-    signal sample_div_cnt_r : natural range 0 to MAX_RATE_DIV := 0;
+    signal sample_div_cnt_r : natural range 0 to FAST_MAX_RATE_DIV := 0;
+    signal fast_rate_reload_r : natural range 0 to FAST_MAX_RATE_DIV := 0;
     signal sample_tick_r  : std_logic := '0';
     signal sample_rem_nonzero_r : std_logic := '0';
     -- Pipeline register: pre-compute sample_remaining - 1 to break 22-bit carry chain
-    signal sample_rem_dec_r    : natural range 0 to 3000000 := 0;
+    signal sample_rem_dec_r    : natural range 0 to Max_Samples := 0;
     -- Pre-trigger counter: limits BRAM pre-trigger to 8 ticks, then switches to FIFO.
     -- Without this, the CDC settling window for run_f_level (Armed→Run) can cause up to
     -- 1024 pre-trigger BRAM writes before switching to FIFO, delaying gen capture data.
@@ -554,6 +558,12 @@ begin
     -- mode, so reacting a cycle late is harmless and keeps the compare off path.
     signal afull_r       : std_logic := '0';
     signal start_gate_r  : natural range 0 to 3 := 0;
+    signal narrow_enable_s1 : std_logic := '0';
+    signal narrow_enable_f  : std_logic := '0';
+    signal narrow_channel_s1 : natural range 0 to 15 := 0;
+    signal narrow_channel_f  : natural range 0 to 15 := 0;
+    signal narrow_shift_r : std_logic_vector(15 downto 0) := (others => '0');
+    signal narrow_bit_count_r : natural range 0 to 15 := 0;
   begin
     -- Stage 0: sample pins
     process(FAST_CLK)
@@ -584,6 +594,10 @@ begin
         end if;
         astream_s <= Analog_Stream_Mode;
         astream_f <= astream_s;
+        narrow_enable_s1 <= Narrow_Enable;
+        narrow_enable_f <= narrow_enable_s1;
+        narrow_channel_s1 <= Narrow_Channel;
+        narrow_channel_f <= narrow_channel_s1;
       end if;
     end process;
 
@@ -602,9 +616,16 @@ begin
       if rising_edge(FAST_CLK) then
         if cfg_valid_edge = '1' then
           sample_div_cnt_r <= 0;
+          if cfg_rate_div > FAST_MAX_RATE_DIV then
+            fast_rate_reload_r <= FAST_MAX_RATE_DIV;
+          elsif cfg_rate_div > 1 then
+            fast_rate_reload_r <= cfg_rate_div - 1;
+          else
+            fast_rate_reload_r <= 0;
+          end if;
         elsif capture_en_r = '1' and sample_rem_nonzero_r = '1' then
           if sample_div_cnt_r = 0 then
-            sample_div_cnt_r <= cfg_rate_reload_f;
+            sample_div_cnt_r <= fast_rate_reload_r;
           else
             sample_div_cnt_r <= sample_div_cnt_r - 1;
           end if;
@@ -633,6 +654,12 @@ begin
     process(FAST_CLK)
     begin
       if rising_edge(FAST_CLK) then
+        if sample_remaining > 0 then
+          sample_rem_dec_r <= sample_remaining - 1;
+        else
+          sample_rem_dec_r <= 0;
+        end if;
+
         if cfg_valid_edge = '1' then
           sample_rem_nonzero_r <= '1';
         elsif fifo_wr = '1' and sample_remaining = 0 then
@@ -681,6 +708,8 @@ begin
           aframe_shift <= (others => '0');
           aword_idx <= 0;
           analog_burst_active <= '0';
+          narrow_shift_r <= (others => '0');
+          narrow_bit_count_r <= 0;
         end if;
 
         if fifo_overflow_f = '0' then
@@ -745,12 +774,44 @@ begin
                 analog_burst_active <= '0';
                 aword_idx <= 0;
               else
-                aword_idx <= aword_idx + 1;
+              aword_idx <= aword_idx + 1;
               end if;
-              if sample_remaining > 0 then
-                sample_remaining <= sample_remaining - 1;
+              if sample_rem_nonzero_r = '1' then
+                sample_remaining <= sample_rem_dec_r;
               end if;
             end if;
+            if afull_r = '1' and continuous_f = '0' then
+              fifo_overflow_f <= '1';
+            end if;
+
+          elsif capture_en_r = '1' and sample_tick_r = '1' and narrow_enable_f = '1' then
+            -- Narrow high-speed rolling packs 16 consecutive samples of one
+            -- selected digital channel into one SDRAM word. Bit 0 is earliest.
+            if narrow_channel_f < Channels then
+              narrow_shift_r(narrow_bit_count_r) <= sample_word_r(narrow_channel_f);
+            else
+              narrow_shift_r(narrow_bit_count_r) <= '0';
+            end if;
+
+            if narrow_bit_count_r = 15 then
+              if afull_r = '0' then
+                fifo_wdata(14 downto 0) <= narrow_shift_r(14 downto 0);
+                if narrow_channel_f < Channels then
+                  fifo_wdata(15) <= sample_word_r(narrow_channel_f);
+                else
+                  fifo_wdata(15) <= '0';
+                end if;
+                fifo_wr <= '1';
+                if sample_rem_nonzero_r = '1' then
+                  sample_remaining <= sample_rem_dec_r;
+                end if;
+              end if;
+              narrow_shift_r <= (others => '0');
+              narrow_bit_count_r <= 0;
+            else
+              narrow_bit_count_r <= narrow_bit_count_r + 1;
+            end if;
+
             if afull_r = '1' and continuous_f = '0' then
               fifo_overflow_f <= '1';
             end if;
@@ -765,8 +826,8 @@ begin
               fifo_wr <= '1';
               -- guard: at full rate one in-flight tick can push a word after
               -- the nonzero flag clears; don't underflow the natural
-              if sample_remaining > 0 then
-                sample_remaining <= sample_remaining - 1;
+              if sample_rem_nonzero_r = '1' then
+                sample_remaining <= sample_rem_dec_r;
               end if;
             end if;
             if afull_r = '1' and continuous_f = '0' then

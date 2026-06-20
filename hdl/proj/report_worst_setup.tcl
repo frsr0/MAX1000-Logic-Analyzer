@@ -1,0 +1,6 @@
+project_open OLS_Logic_Analyzer
+create_timing_netlist
+read_sdc
+update_timing_netlist
+report_timing -setup -npaths 10 -detail full_path
+project_close

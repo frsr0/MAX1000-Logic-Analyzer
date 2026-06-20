@@ -23,6 +23,7 @@ import time
 
 SYNC_REQ = bytes([0x55, 0xAA])
 SYNC_RSP = bytes([0xAA, 0x55])
+GEN_FIFO_DEPTH = 256
 
 # Commands
 CMD_PING              = 0x01
@@ -222,6 +223,10 @@ class SPIDevice:
         """Load generator data via CMD_GEN_LOAD."""
         if not data:
             return True
+        if len(data) > GEN_FIFO_DEPTH:
+            raise ValueError(
+                f"Generator payload is {len(data)} bytes; FPGA FIFO holds "
+                f"{GEN_FIFO_DEPTH} bytes")
         result = self.transaction(CMD_GEN_LOAD, data, timeout)
         if result is not None and result[0] == ST_OK:
             return True
