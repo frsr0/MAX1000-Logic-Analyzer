@@ -9,6 +9,10 @@ begin
   process
     variable c : std_logic_vector(15 downto 0);
     variable v : std_logic_vector(7 downto 0) := x"01";
+    -- Manual step-by-step CRC (VHDL has no Ada-style 'declare' block inside a
+    -- process body, so these live in the process declarative region).
+    variable mcrc : std_logic_vector(15 downto 0);
+    variable mbit : std_logic;
   begin
     report "x'01' ascending=" & boolean'image(v'ascending) &
            " left=" & integer'image(v'left) &
@@ -21,22 +25,18 @@ begin
       report "  idx = right + b = " & integer'image(v'right) & " + b";
     end if;
     -- Manually compute CRC step by step to debug
-    declare
-      variable mcrc : std_logic_vector(15 downto 0) := x"FFFF";
-      variable mbit : std_logic;
-    begin
-      for b in 0 to 7 loop
-        mbit := x"01"(b) xor mcrc(0);
-        if mbit = '1' then
-          mcrc := '0' & mcrc(15 downto 1);
-          mcrc := mcrc xor x"A001";
-        else
-          mcrc := '0' & mcrc(15 downto 1);
-        end if;
-        report "  manual b=" & integer'image(b) & " crc=" & integer'image(to_integer(unsigned(mcrc)));
-      end loop;
-      report "Manual CRC after 0x01: " & integer'image(to_integer(unsigned(mcrc)));
-    end;
+    mcrc := x"FFFF";
+    for b in 0 to 7 loop
+      mbit := v(b) xor mcrc(0);
+      if mbit = '1' then
+        mcrc := '0' & mcrc(15 downto 1);
+        mcrc := mcrc xor x"A001";
+      else
+        mcrc := '0' & mcrc(15 downto 1);
+      end if;
+      report "  manual b=" & integer'image(b) & " crc=" & integer'image(to_integer(unsigned(mcrc)));
+    end loop;
+    report "Manual CRC after 0x01: " & integer'image(to_integer(unsigned(mcrc)));
     c := crc16(x"01", x"FFFF");
     report "Function CRC after 0x01: " & integer'image(to_integer(unsigned(c)));
     c := crc16(x"42", c);

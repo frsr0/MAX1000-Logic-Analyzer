@@ -45,7 +45,6 @@ begin
       TX_Data    => tx_data,
       SPI_Preamble => x"00",
       TX_Ready   => tx_ready,
-      PipeDepth  => 8,
       RX_Data    => rx_data,
       RX_Valid   => rx_valid
     );
