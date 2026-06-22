@@ -163,7 +163,7 @@ class ExistingHostAdapter(HardwareDevice):
             triggers=[TriggerCapability(type=t, execution=e, description=d)
                       for t, e, d in trig],
             notes=[
-                "Schmitt input filter and debug CH0 PWM available via driver",
+                "Host-side digital glitch filter (a.k.a. Schmitt) and debug CH0 PWM available via driver",
                 "Maximum analog scans ADC1,2,3,4,5,7,8,16 at 125 kframes/s. "
                 "Mixed mode still exposes ADC0/ADC6 as unmapped mux slots.",
             ],

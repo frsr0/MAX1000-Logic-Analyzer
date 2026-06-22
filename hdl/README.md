@@ -52,7 +52,7 @@ OLS_Logic_Analyzer_wrapper      — pin assignment wrapper (auto-generated from 
 
 ## RTL Modules
 
-### `rtl/Fast_Logic_Analyzer_SDRAM.vhd` (~700 lines)
+### `rtl/Fast_Logic_Analyzer_SDRAM.vhd` (~1,440 lines)
 
 **Entity:** `Fast_Logic_Analyzer_SDRAM`
 
@@ -76,25 +76,25 @@ Capture engine with two-clock domain split.
 - **Readout**: Address-driven SDRAM reads → `Outputs`; continuous readout maps absolute sample indexes into the ring
 - **Full detection**: Asserts `full_i` when buffer exhausted + FIFO empty + flush complete
 
-### `rtl/OLS_SDRAM_Top.vhd` (~670 lines)
+### `rtl/OLS_SDRAM_Top.vhd` (~940 lines)
 
 **Entity:** `OLS_SDRAM_Top`
 
 System integration. Instantiates `SDRAM_PLL`, distributes clocks. The RTL pin pool has 26 entries: MKR_D[14:0], PMOD[7:0], and the LIS3DH `SEN_SDO`/`SEN_SDI`/`SEN_SPC` pins. Sixteen LA channels select from that pool via programmable `pin_map` (default: MKR D0-D14 plus `SEN_SDI`). Capture mux has generator loopback priority. ADC profile selection is controlled by `REG_FLAGS`: digital-only (2-byte frame), narrow packed digital (`bit13`, one selected channel from bits17:14, 2-byte word per 16 time samples), mixed 16 digital + ADC0-ADC7 (`bit3`, 14-byte frame), high-speed analog (`bit3|bit4`, profile `00`, 2-byte frame), or maximum analog (`bit3|bit4`, profile `01`, 12-byte frame for ADC1,2,3,4,5,7,8,16). See [`docs/ANALOG_MODE_PLAN.md`](../docs/ANALOG_MODE_PLAN.md).
 
-### `rtl/OLS_Logic_Analyzer_SDRAM_Core.vhd` (298 lines)
+### `rtl/OLS_Logic_Analyzer_SDRAM_Core.vhd` (~380 lines)
 
 **Entity:** `OLS_Logic_Analyzer`
 
-Core wrapper. Instantiates `OLS_Interface`, `Fast_Logic_Analyzer_SDRAM`, `Signal_Gen`, `Protocol_Trigger`, `SPI_Slave2`. Routes capture control, generator control, buffer handshakes, and continuous ring metadata.
+Core wrapper. Instantiates `OLS_Interface`, `Fast_Logic_Analyzer_SDRAM`, `Signal_Gen`, `Protocol_Trigger`, `SPI_Slave2`. Routes capture control, generator control, and continuous ring metadata. (The FLA↔OLS_Interface buffer-full handshake is internal; the vestigial top-level Buffer_Full/Buffer_Ack core ports were removed.)
 
-### `rtl/OLS_Interface.vhd` (~1,172 lines)
+### `rtl/OLS_Interface.vhd` (~1,200 lines)
 
 **Entity:** `OLS_Interface`
 
 Command/control interface. Packet opcodes cover register access, capture control, generator, diagnostics, sticky DONE ACK, and metadata readback. DONE latches until ACK, abort, or the next arm; `capture_seq` increments on every arm so the host can prove readback freshness. `REG_FLAGS` includes analog profile/channel bits plus narrow digital enable/channel bits. `ID = 0x31414c53` ("SLA1").
 
-### `rtl/SPI_Slave2.vhd` (165 lines)
+### `rtl/SPI_Slave2.vhd` (~188 lines)
 
 **Entity:** `SPI_Slave2`
 
@@ -106,7 +106,7 @@ Full-duplex SPI slave on `fast_clk` (200 MHz in speed build). CDC: 2FF for confi
 
 Wrapper around `SDRAM_Controller`. Reset: 480,000 cycles (5 ms @ 96 MHz). Avalon-MM signal mapping. Simulation mode uses local RAM.
 
-### `rtl/SDRAM_Controller_Custom.vhd` (591 lines)
+### `rtl/SDRAM_Controller_Custom.vhd` (~620 lines)
 
 **Entity:** `SDRAM_Controller`
 
@@ -132,11 +132,11 @@ bits 17:14 select the digital channel for that mode. Frame completion uses
 `adc0_valid` for the one-slot high-speed profile and `adc7_valid` for 8-slot
 mixed/maximum profiles.
 
-### `rtl/LED_Controller.vhd` (~400 lines)
+### `rtl/LED_Controller.vhd` (~220 lines)
 
 **Entity:** `LED_Controller`
 
-8-LED animation engine with input pipeline registers and `r_speed` pipeline (breaks multiply/divide chain in rolling animation). States: idle (breathing), host confirm, armed (rapid pulse), single capture (flash), continuous (rolling with FIFO activity).
+8-LED animation engine driving per-LED fade targets and slew rates. States: idle, host-connect confirm pulse, armed (slow blink), single capture (flash), continuous (rolling with FIFO activity). LEDs 4-7 are suppressed in 4-channel mode.
 
 ### `rtl/Signal_Gen.vhd` (441 lines)
 
@@ -144,11 +144,11 @@ mixed/maximum profiles.
 
 Configurable generator (UART/I2C/SPI) with 256-byte FIFO. CRC-16 append option.
 
-### `rtl/Protocol_Trigger.vhd` (87 lines)
+### `rtl/Protocol_Trigger.vhd` (~91 lines)
 
 **Entity:** `Protocol_Trigger`
 
-UART byte-level trigger. State: `IDLE→START→BITS→STOP→CHECK`.
+UART byte-level trigger. State: `IDLE→START→BITS→STOP→CHECK`. Guards the degenerate `Baud_Div<2` case so the FSM can't strand on a sub-2 divider.
 
 ---
 
@@ -182,12 +182,13 @@ ghdl -r --std=08 <testbench> --assert-level=failure
 
 | Testbench | Lines | Coverage |
 |-----------|-------|----------|
-| `tb_ols_interface` | 467 | All opcodes, trigger, gen control, readout |
-| `tb_ols_capture_contract` | 220 | Sticky DONE/ACK/abort, capture_seq, mixed→digital→mixed mode reset |
+| `tb_ols_interface` | 301 | All opcodes, trigger, gen control, readout |
+| `tb_ols_capture_contract` | 222 | Sticky DONE/ACK/abort, capture_seq, mixed→digital→mixed mode reset |
 | `tb_capture_path` | 227 | sample_en timing, BRAM write, Full, CH0 |
-| `tb_continuous` | 92 | Buffer fill/ack/refill |
+| `tb_continuous` | 92 | Continuous SDRAM-ring fill/readback |
 | `tb_continuous_rate1` | 94 | Continuous auto-rotation at max-rate `Rate_Div=1` |
-| `tb_fast_analyzer` | 206 | FLA with SDRAM model, pattern gen |
+| `tb_fast_analyzer` | 218 | FLA single-shot, continuous SDRAM ring (producer index), fast/BRAM |
+| `tb_gen_loopback` | — | Authoritative full-system: SPI → capture → readout |
 | `tb_sdram_interface` | 156 | SDRAM read/write |
 | `tb_sdram_controller` | 175 | Avalon-MM SDRAM transactions |
 | `tb_spi_slave` | 107 | Full-duplex at 10 MHz |

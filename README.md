@@ -22,7 +22,7 @@ Open-source multi-channel logic analyzer for the Arrow MAX1000 board (Intel MAX1
 - **Edge trigger**: rising/falling on any combination of channels
 - **Protocol trigger**: UART byte match at configurable baud
 - **Signal generator**: UART / I2C / SPI output on any GPIO pin, with **atomic hardware capture** (CMD_GEN_CAPTURE)
-- **Schmitt trigger**: per-pin digital hysteresis filter (1–7 sample threshold), tunable live
+- **Digital glitch filter** (a.k.a. Schmitt): hysteresis filter (1–7 sample threshold) applied in **host software** to captured digital samples — non-destructive and re-tunable without re-capturing. (Formerly an FPGA filter; moved to the host so it works in every capture mode at no fabric cost.)
 - **Debug CH0**: programmable PWM (1 Hz–50 MHz, 0–100% duty) on CH0 pin for scope verification
 - **Packet protocol**: CRC-16-IBM framed SPI transactions (SYNC + header + payload + CRC), with sticky capture completion and explicit DONE ACK
 - **Register-based configuration**: capture/generator/mode registers plus capture metadata registers
@@ -243,8 +243,7 @@ FPGA → Host:  0xAA 0x55  STATUS  SEQ  LEN_L  LEN_H  [PAYLOAD...]  CRC_L  CRC_H
 | `0x22` | REG_CONT_MODE | 0 | Continuous capture ring mode. |
 | `0x30`–`0x33` | Generator regs | Proto, baud, pins, data |
 | `0x40` | REG_DEBUG_CH0_ENABLE | 0 | Debug CH0 PWM enable |
-| `0x41` | REG_SCHMITT_ENABLE | 0 | Enable per-pin hysteresis filter |
-| `0x42` | REG_SCHMITT_THRESHOLD | 2:0 | Threshold (1–7) |
+| `0x41`–`0x42` | _(reserved)_ | — | Formerly REG_SCHMITT_ENABLE/THRESHOLD; the digital glitch filter now runs in host software, so these addresses are retired |
 | `0x43` | REG_DEBUG_CH0_PERIOD | 31:0 | PWM period in sys_clk cycles (default 1024) |
 | `0x44` | REG_DEBUG_CH0_DUTY | 31:0 | PWM high time in sys_clk cycles (default 512) |
 | `0x50` | REG_CAPTURE_SEQ | 31:0 | Monotonic capture sequence, incremented on arm |
@@ -307,7 +306,7 @@ data = dev.capture(rate_hz=1000000, nsamples=5000)
 dev.set_debug_ch0(True, freq_hz=100000, duty_pct=50)
 data = dev.capture(rate_hz=1000000, nsamples=5000)
 
-# Schmitt trigger (digital hysteresis)
+# Digital glitch filter (host-side hysteresis, applied to captured samples)
 dev.set_schmitt(True, threshold=3)
 
 # Atomic generator capture
@@ -365,14 +364,14 @@ python -m pytest tests/ driver/tests/ -v   # 333 host/driver tests
 python -m app.hw_validation                # 564 hardware validation checks on current image
 ```
 
-Hardware validation covers: SPI protocol, single/fast/continuous/max-speed capture, 200 MHz narrow packed digital finite and continuous capture, max-rate continuous ring overrun, edge triggers (rising + falling), UART/I2C/SPI generators, I2C LIS3DH addressing round-trip, divider accuracy, full digital, mixed 16-digital + ADC0-ADC7 mode, high-speed analog, maximum analog physical profile, frame-alignment integrity, mixed→digital→mixed reset, pre-trigger, full-depth SDRAM, back-to-back and capture-during-readout stress, rolling capture, protocol trigger, noise floor, schmitt trigger, abort capture, crosstalk characterisation, and a long stress run.
+Hardware validation covers: SPI protocol, single/fast/continuous/max-speed capture, 200 MHz narrow packed digital finite and continuous capture, max-rate continuous ring overrun, edge triggers (rising + falling), UART/I2C/SPI generators, I2C LIS3DH addressing round-trip, divider accuracy, full digital, mixed 16-digital + ADC0-ADC7 mode, high-speed analog, maximum analog physical profile, frame-alignment integrity, mixed→digital→mixed reset, pre-trigger, full-depth SDRAM, back-to-back and capture-during-readout stress, rolling capture, protocol trigger, noise floor, the host-side digital glitch filter, abort capture, crosstalk characterisation, and a long stress run.
 
 ## Project Structure
 
 ```
 OLS_Logic_Analyzer_Clean/
 ├── hdl/
-│   ├── rtl/            # VHDL sources (17 files)
+│   ├── rtl/            # VHDL sources (16 files)
 │   ├── tb/             # Testbenches + simulation
 │   ├── proj/           # Quartus project + compile.ps1 + constraints
 │   ├── ip/MAX10_ADC/   # Altera Modular ADC II IP

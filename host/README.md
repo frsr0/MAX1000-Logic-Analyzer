@@ -17,13 +17,13 @@ GUI application, CLI capture, protocol decoders, hardware validation, and SPI dr
 
 Main application. Two modes:
 
-**GUI mode** (default): tkinter multi-tab interface with waveform canvas (zoom/pan/RLE rendering, analog overlay, edge triggers, filter overlays), protocol decoders (UART/I2C/SPI/Modbus), generator controls, accelerometer tab, Schmitt trigger per-pin controls, debug CH0 toggle, session export (CSV/JSON/Saleae Logic .sal).
+**GUI mode** (default): tkinter multi-tab interface with waveform canvas (zoom/pan/RLE rendering, analog overlay, edge triggers, filter overlays), protocol decoders (UART/I2C/SPI/Modbus), generator controls, accelerometer tab, digital glitch-filter controls (host-side hysteresis, a.k.a. Schmitt), debug CH0 toggle, session export (CSV/JSON/Saleae Logic .sal).
 
 **CLI mode** (`--cli`): argparse-driven headless capture, decode, and send commands.
 
 ### `app/hw_validation.py`
 
-Hardware validation suite (564 checks on the current bitstream): SPI handshake, all commands, single/fast/continuous capture, rising/falling edge triggers, 200 MHz max-speed capture, 200 MHz narrow packed digital finite/continuous capture, max-rate continuous ring overrun, UART/I2C/SPI generators, I2C LIS3DH addressing round-trip, divider accuracy, pin-pool capture, mixed 16-digital + ADC0-ADC7 mode and frame-alignment integrity, high-speed analog, maximum analog physical profile, mixed→digital→mixed reset, pre-trigger, full-depth SDRAM, back-to-back and capture-during-readout stress, Schmitt trigger, crosstalk characterisation, debug CH0 PWM, sticky DONE/abort behavior, rolling capture, and a long stress run. Results saved as JSON.
+Hardware validation suite (564 checks on the current bitstream): SPI handshake, all commands, single/fast/continuous capture, rising/falling edge triggers, 200 MHz max-speed capture, 200 MHz narrow packed digital finite/continuous capture, max-rate continuous ring overrun, UART/I2C/SPI generators, I2C LIS3DH addressing round-trip, divider accuracy, pin-pool capture, mixed 16-digital + ADC0-ADC7 mode and frame-alignment integrity, high-speed analog, maximum analog physical profile, mixed→digital→mixed reset, pre-trigger, full-depth SDRAM, back-to-back and capture-during-readout stress, the host-side digital glitch filter, crosstalk characterisation, debug CH0 PWM, sticky DONE/abort behavior, rolling capture, and a long stress run. Results saved as JSON.
 
 The current hardware analog validation covers the ADC0-ADC7 scan plus the
 analog-focused RTL profiles. The contract is in `docs/ANALOG_MODE_PLAN.md`:
@@ -49,7 +49,7 @@ EEPROM backup, FT_Prog config, driver recovery, `recover.ps1`.
 **Class `SPIDevice`** — Packet-protocol client. SYNC(0x55AA) + CMD + SEQ + LEN + payload + CRC16. Parses capture metadata (`capture_seq`, producer/oldest/newest indexes, overrun count, sticky DONE) and exposes `ack_capture_done()`.
 
 ### `driver/ols_spi_device.py`
-**Class `OLSDeviceSPI`** — High-level API: `capture()`, `capture_continuous()`, `continuous_ring_capture()`, `capture_with_gen()`, indexed `read_capture_range()`, `ack_capture_done()`, analog frame decode, narrow digital packing/unpack helpers, programmable pin map, Schmitt config, debug CH0. The web/backend layer adds board-aware MAX1000 physical pin metadata on top of the driver's logical pin indexes. Each arm writes complete mode state and validates fresh `capture_seq` before trusting readback when firmware metadata is available.
+**Class `OLSDeviceSPI`** — High-level API: `capture()`, `capture_continuous()`, `continuous_ring_capture()`, `capture_with_gen()`, indexed `read_capture_range()`, `ack_capture_done()`, analog frame decode, narrow digital packing/unpack helpers, programmable pin map, software glitch-filter config (`set_schmitt` → `apply_glitch_filter`), debug CH0. The web/backend layer adds board-aware MAX1000 physical pin metadata on top of the driver's logical pin indexes. Each arm writes complete mode state and validates fresh `capture_seq` before trusting readback when firmware metadata is available.
 
 ### `driver/ols_spi_mpsse.py`
 **Class `OLS_SPI_MPSSE`** — Minimal MPSSE driver (no batching).
