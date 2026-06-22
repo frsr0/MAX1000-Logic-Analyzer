@@ -1090,11 +1090,8 @@ begin
     variable stream_i      : natural range 0 to Max_Samples := 0;
     variable rd_pend2      : std_logic := '0';
     -- Continuous-mode readout: a host block read temporarily enters rd_mode to
-    -- stream one completed buffer, then frees it and returns to capture. The
-    -- read pointer walks the buffers in fill order so the host gets sequential
-    -- frames. cur_full backpressures the write pump off a full buffer.
-    variable cont_readout  : boolean := false;
-    variable cont_rd_sel   : natural range 0 to 2 := 0;
+    -- stream the rolling SDRAM window, then returns to capture.
+    -- cur_full backpressures the write pump off a full buffer.
     variable cur_full      : boolean := false;
     variable wr_pend_cont : boolean := false;
     variable wip_cont     : boolean := false;
@@ -1196,7 +1193,7 @@ begin
         end if;
         s_wr <= '0'; s_rd <= '0';
         stream_active := false; rd_pend2 := '0';
-        cont_readout := false; cont_rd_sel := 0; cur_full := false;
+        cur_full := false;
 
       else
       -- Normal capture/readout/write-pump logic (skipped on run-edge cycle)
@@ -1221,7 +1218,6 @@ begin
           stream_i      := 0;
           rd_pend2      := '0';
           stream_active := true;
-          cont_readout  := false;
           rd_mode       := true;
           s_rd          <= '0';
         end if;
@@ -1253,16 +1249,9 @@ begin
             rd_pend2     := '0';
             if stream_i = stream_cnt - 1 then
               stream_active := false;
-              if cont_readout then
-                -- Free the buffer just streamed so the write pump can refill it
-                -- (its waddr/buf_rem are rewound when the pump re-selects it, via
-                -- the fill-switch or the cur_full repoint); advance the read
-                -- pointer and hand the SDRAM bus back to the write pump.
-                buf_full(cont_rd_sel) <= '0';
-                cont_rd_sel  := (cont_rd_sel + 1) mod 3;
-                cont_readout := false;
-                rd_mode      := false;
-              elsif Continuous_Mode = '1' then
+              -- Continuous mode: hand the SDRAM bus back to the write pump
+              -- after the host has streamed its requested block.
+              if Continuous_Mode = '1' then
                 rd_mode      := false;
               end if;
             else

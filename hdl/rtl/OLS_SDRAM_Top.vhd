@@ -82,6 +82,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_spi_test   : std_logic := '0';
   signal gen_fifo_count : std_logic_vector(7 downto 0) := (others => '0');
   signal gen_busy_latch : std_logic := '0';
+  -- LED7 gen-activity stretch: ~0.25 s at 100 MHz so a brief pulse stays seen.
+  constant GEN_LED_STRETCH_TOP : natural := 25000000;
+  signal gen_led_stretch : natural range 0 to 25000000 := 0;
   signal fast_clk       : std_logic := '0';
   signal continuous_mode : std_logic := '0';
   signal armed_i        : std_logic := '0';
@@ -265,8 +268,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Analog_Channel : OUT NATURAL range 0 to 31 := 1;
     Status        : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Continuous_Mode : OUT STD_LOGIC := '0';
-    Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-    Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
     Analog_Frame_Data : IN STD_LOGIC_VECTOR(127 downto 0) := (others => '0');
     Analog_Frame_Len  : IN NATURAL range 1 to 14 := 1;
     Analog_Stream_Mode : IN STD_LOGIC := '0';
@@ -835,8 +836,6 @@ BEGIN
     Analog_Channel => analog_channel,
     Status        => core_status,
     Continuous_Mode => continuous_mode,
-    Buffer_Full     => "000",
-    Buffer_Ack      => open,
     Analog_Frame_Data => analog_frame_data,
     Analog_Frame_Len  => analog_frame_len,
     Analog_Stream_Mode => analog_stream_mode,
@@ -903,13 +902,25 @@ BEGIN
   led_out: for i in 0 to 6 generate
     LED(i) <= '1' when pwm_cnt < led_bright(i) else '0';
   end generate;
-  -- LED7: latched gen start indicator (OR of all gen status signals)
+  -- LED7: generator-activity indicator. A brief gen_start pulse is stretched so
+  -- it stays visible, but the indicator clears once the generator goes idle
+  -- (previously it latched on the first gen activity and never cleared).
   process(sys_clk)
   begin
     if rising_edge(sys_clk) then
-      if gen_busy = '1' then gen_busy_latch <= '1'; end if;
-      if gen_active = '1' then gen_busy_latch <= '1'; end if;
-      if gen_start = '1' then gen_busy_latch <= '1'; end if;
+      if gen_busy = '1' or gen_active = '1' then
+        -- Active: hold lit and reload the stretch so post-activity it lingers.
+        gen_busy_latch <= '1';
+        gen_led_stretch <= GEN_LED_STRETCH_TOP;
+      elsif gen_start = '1' then
+        -- Catch a start pulse even if busy/active haven't asserted yet.
+        gen_busy_latch <= '1';
+        gen_led_stretch <= GEN_LED_STRETCH_TOP;
+      elsif gen_led_stretch /= 0 then
+        gen_led_stretch <= gen_led_stretch - 1;
+      else
+        gen_busy_latch <= '0';
+      end if;
     end if;
   end process;
   LED(7) <= gen_busy_latch;

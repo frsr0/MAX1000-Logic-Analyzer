@@ -57,8 +57,6 @@ PORT (
     Analog_Channel : OUT NATURAL range 0 to 31 := 1;
     Status        : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Continuous_Mode : OUT STD_LOGIC := '0';
-    Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-    Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
     Analog_Frame_Data : IN STD_LOGIC_VECTOR(127 downto 0) := (others => '0');
     Analog_Frame_Len  : IN NATURAL range 1 to 14 := 1;
     Analog_Stream_Mode : IN STD_LOGIC := '0';
@@ -304,7 +302,6 @@ BEGIN
   Analog_Channel <= analog_channel_i;
   Status <= fla_status;
   Continuous_Mode <= continuous_mode_i;
-  Buffer_Ack <= buffer_ack_i;
   Pin_Map_Write <= pin_map_write_i;
   Pin_Map_Channel <= pin_map_channel_i;
   Pin_Map_Pin <= pin_map_pin_i;
