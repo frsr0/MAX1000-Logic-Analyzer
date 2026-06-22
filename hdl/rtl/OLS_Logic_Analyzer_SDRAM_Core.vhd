@@ -283,6 +283,9 @@ BEGIN
   Gen_Start     <= Gen_Start_i;
   Gen_Baud_Div  <= Gen_Baud_Div_i;
   Gen_Busy_i    <= Gen_Busy;
+  gen_start_ack_i    <= Gen_Start_Ack;
+  gen_start_reject_i <= Gen_Start_Reject;
+  gen_done_pulse_i   <= Gen_Done_Pulse;
   Gen_Proto <= Gen_Proto_i;
   Gen_TX_Pin  <= Gen_TX_Pin_i;
   Gen_SCL_Pin <= Gen_SCL_Pin_i;

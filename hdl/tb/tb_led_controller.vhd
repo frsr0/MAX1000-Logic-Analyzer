@@ -110,7 +110,7 @@ begin
         procedure check(cond : boolean; msg : string) is
         begin
             if not cond then
-                report "FAIL: " & msg severity warning;
+                report "FAIL: " & msg severity failure;
                 all_ok := false;
             end if;
         end procedure;
@@ -197,7 +197,7 @@ begin
         if all_ok then
             report "=== ALL TESTS PASSED ===";
         else
-            report "=== SOME TESTS FAILED ===" severity warning;
+            report "=== SOME TESTS FAILED ===" severity failure;
         end if;
         wait;
     end process;
