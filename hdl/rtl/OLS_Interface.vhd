@@ -59,8 +59,6 @@ PORT (
         Debug_Ch0_Enable : OUT STD_LOGIC := '0';
         Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
         Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
-        Schmitt_Enable   : OUT STD_LOGIC := '0';
-        Schmitt_Threshold : OUT NATURAL range 0 to 7 := 3;
          Gen_Capture_Active : OUT STD_LOGIC := '0';
          Gen_Start_Ack      : IN  STD_LOGIC := '0';
          Gen_Start_Reject   : IN  STD_LOGIC := '0';
@@ -138,8 +136,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL debug_ch0_enable_i  : STD_LOGIC := '0';
   SIGNAL debug_ch0_period_i  : STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
   SIGNAL debug_ch0_duty_i    : STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
-  SIGNAL schmitt_enable_i    : STD_LOGIC := '0';
-  SIGNAL schmitt_threshold_i : NATURAL range 0 to 7 := 3;
   SIGNAL gen_capture_active_i  : STD_LOGIC := '0';
   SIGNAL gen_capture_done_i    : STD_LOGIC := '0';
   SIGNAL gen_capture_error_i   : STD_LOGIC := '0';
@@ -408,10 +404,6 @@ BEGIN
           debug_ch0_period_i <= disp_reg_wdata;
         WHEN REG_DEBUG_CH0_DUTY =>
           debug_ch0_duty_i <= disp_reg_wdata;
-        WHEN REG_SCHMITT_ENABLE =>
-          schmitt_enable_i <= disp_reg_wdata(0);
-        WHEN REG_SCHMITT_THRESHOLD =>
-          schmitt_threshold_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(2 downto 0)));
         WHEN others => null;
       END CASE;
     END IF;
@@ -714,8 +706,6 @@ BEGIN
   Debug_Ch0_Enable <= debug_ch0_enable_i;
   Debug_Ch0_Period <= debug_ch0_period_i;
   Debug_Ch0_Duty   <= debug_ch0_duty_i;
-  Schmitt_Enable   <= schmitt_enable_i;
-  Schmitt_Threshold <= schmitt_threshold_i;
   Gen_Capture_Active <= gen_capture_active_i;
   -- Pin_Map_Write is driven from the main process (default low, pulsed in CMD_PIN_MAP handler)
 
@@ -1017,10 +1007,6 @@ BEGIN
                     reg_val := debug_ch0_period_i;
                   when REG_DEBUG_CH0_DUTY =>
                     reg_val := debug_ch0_duty_i;
-                  when REG_SCHMITT_ENABLE =>
-                    reg_val(0) := schmitt_enable_i;
-                  when REG_SCHMITT_THRESHOLD =>
-                    reg_val(2 downto 0) := std_logic_vector(to_unsigned(schmitt_threshold_i, 3));
                   when REG_CAPTURE_SEQ =>
                     reg_val := capture_seq;
                   when REG_PRODUCER_INDEX =>

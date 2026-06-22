@@ -60,8 +60,9 @@ REG_GEN_DATA      = 0x33
 REG_DEBUG_CH0_ENABLE = 0x40
 REG_DEBUG_CH0_PERIOD = 0x43
 REG_DEBUG_CH0_DUTY   = 0x44
-REG_SCHMITT_ENABLE    = 0x41
-REG_SCHMITT_THRESHOLD = 0x42
+# 0x41, 0x42 formerly REG_SCHMITT_ENABLE/THRESHOLD — the digital glitch filter
+# now runs in host software (see ols_spi_device.apply_glitch_filter); these
+# register addresses are retired/reserved.
 REG_CAPTURE_SEQ       = 0x50
 REG_PRODUCER_INDEX    = 0x51
 REG_OLDEST_INDEX      = 0x52

@@ -17,7 +17,6 @@ from driver.spi_protocol import (
     REG_FAST_MODE, REG_CONT_MODE,
     REG_GEN_PROTO, REG_GEN_BAUD, REG_GEN_PINS, REG_GEN_DATA,
     REG_IFACE_MODE, REG_DEBUG_CH0_ENABLE, REG_DEBUG_CH0_PERIOD, REG_DEBUG_CH0_DUTY,
-    REG_SCHMITT_ENABLE, REG_SCHMITT_THRESHOLD,
     ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_DONE,
 )
 
@@ -108,6 +107,44 @@ def unpack_narrow_digital_words(data, channel=0, sample_count=None):
     return out
 
 
+def apply_glitch_filter(data, threshold, num_channels=NUM_CHANNELS):
+    """Digital hysteresis / glitch filter over a captured digital sample stream.
+
+    ``data`` is contiguous little-endian uint16 words, one per sample, each bit
+    a channel. Mirrors the former on-FPGA filter: a channel transition is
+    accepted only after the new level has held for ``threshold`` consecutive
+    samples, so shorter glitches are rejected. ``threshold`` 0 disables it
+    (pass-through). Returns filtered bytes the same length as ``data``.
+
+    Done in software (the FPGA captures raw pins), so it is non-destructive and
+    can be re-applied with a different threshold without re-capturing.
+    """
+    threshold = max(0, min(7, int(threshold)))
+    if threshold <= 0 or not data:
+        return data
+    n = len(data) // 2
+    if n == 0:
+        return data
+    words = np.frombuffer(data[:n * 2], dtype="<u2")
+    out = np.empty(n, dtype="<u2")
+    stable = int(words[0])          # seed from the first sample
+    cnt = [0] * num_channels
+    for i in range(n):
+        raw = int(words[i])
+        diff = raw ^ stable         # bits that disagree with the held value
+        for ch in range(num_channels):
+            m = 1 << ch
+            if not (diff & m):
+                cnt[ch] = 0
+            elif cnt[ch] < threshold:
+                cnt[ch] += 1
+            else:
+                stable ^= m         # accept: flip held bit to the raw level
+                cnt[ch] = 0
+        out[i] = stable
+    return out.tobytes() + data[n * 2:]
+
+
 def _decode_adc(frame, offset=2):
     """8 ADC × 12-bit packed in 12 bytes (frame[2:14]); each adjacent pair
     shares a middle byte (lo: byte n + low nibble of n+1; hi: high nibble of
@@ -171,8 +208,10 @@ class OLSDeviceSPI:
         self._pending_debug_enable = None
         self._pending_debug_freq = None
         self._pending_debug_duty = None
-        self._pending_schmitt_enable = None
-        self._pending_schmitt_threshold = None
+        # Software digital glitch / hysteresis filter (applied to captured
+        # digital samples on the host; the FPGA captures raw pins).
+        self.glitch_enable = False
+        self.glitch_threshold = 3
 
     @property
     def pkt(self):
@@ -287,14 +326,24 @@ class OLSDeviceSPI:
         return decode_analog_frames(data, self.analog_mode if mode is None else mode)
 
     def set_schmitt(self, enable=True, threshold=3):
-        """Enable/disable digital hysteresis filter (Schmitt trigger).
-        
-        When enabled, each input pin requires `threshold` consecutive equal
-        samples before accepting a transition.  This rejects glitches.
-        threshold: 0-7 clock cycles at sys_clk rate (~21ns per cycle).
+        """Configure the software digital hysteresis / glitch filter.
+
+        When enabled, each channel requires `threshold` consecutive equal
+        samples before a transition is accepted, rejecting shorter glitches.
+        This is applied on the host to captured digital samples (the FPGA
+        captures raw pins), so it takes effect immediately and is
+        non-destructive. threshold: 0-7 samples (0 = filter off).
         """
-        self.pkt.write_register(REG_SCHMITT_ENABLE, 1 if enable else 0)
-        self.pkt.write_register(REG_SCHMITT_THRESHOLD, max(0, min(7, threshold)))
+        self.glitch_enable = bool(enable)
+        self.glitch_threshold = max(0, min(7, int(threshold)))
+
+    def _filter_digital(self, samples):
+        """Apply the software glitch filter to a digital sample byte stream,
+        but only for pure-digital captures (never analog/mixed/narrow)."""
+        if (self.glitch_enable and self.glitch_threshold > 0
+                and self.analog_mode == MODE_DIGITAL and samples):
+            return apply_glitch_filter(samples, self.glitch_threshold)
+        return samples
 
     def set_debug_ch0(self, enable=True, freq_hz=None, duty_pct=50):
         if freq_hz is not None:
@@ -462,6 +511,7 @@ class OLSDeviceSPI:
                     continue
                 if not (self.analog_mode & MODE_MIXED):
                     data = self._repair_boundary_glitches(data, next_sample)
+                data = self._filter_digital(data)
 
                 next_sample += len(data) // 2
                 total += len(data) // 2
@@ -566,10 +616,6 @@ class OLSDeviceSPI:
         if self._pending_debug_enable is not None:
             self.debug_ch0_enabled = self._pending_debug_enable
             self._pending_debug_enable = None
-        if self._pending_schmitt_enable is not None:
-            self._pending_schmitt_enable = None
-        if self._pending_schmitt_threshold is not None:
-            self._pending_schmitt_threshold = None
         self.set_debug_ch0(self.debug_ch0_enabled)
 
         # Capture rate divider counts on the sample clock (FAST_CLK domain),
@@ -664,6 +710,8 @@ class OLSDeviceSPI:
                     samples = samples[i:]
                     break
 
+        samples = self._filter_digital(samples)
+
         if progress_cb and samples:
             progress_cb(samples, len(samples) // 2, rc)
 
@@ -683,10 +731,6 @@ class OLSDeviceSPI:
         if self._pending_debug_enable is not None:
             self.debug_ch0_enabled = self._pending_debug_enable
             self._pending_debug_enable = None
-        if self._pending_schmitt_enable is not None:
-            self._pending_schmitt_enable = None
-        if self._pending_schmitt_threshold is not None:
-            self._pending_schmitt_threshold = None
         self.set_debug_ch0(self.debug_ch0_enabled)
 
         div = max(0, round(self.sample_clk / rate_hz) - 1)
@@ -741,6 +785,8 @@ class OLSDeviceSPI:
                 if samples[i:i+2] != b'\x00' * 2:
                     samples = samples[i:]
                     break
+
+        samples = self._filter_digital(samples)
 
         if progress_cb and samples:
             progress_cb(samples, len(samples) // 2, rc)
@@ -836,6 +882,7 @@ class OLSDeviceSPI:
             if not data:
                 time.sleep(0.001)
                 continue
+            data = self._filter_digital(data)
 
             if full_out is not None:
                 full_out.extend(data)
@@ -895,12 +942,6 @@ class OLSDeviceSPI:
                 self.pkt.write_register(REG_DEBUG_CH0_ENABLE, 1 if self._pending_debug_enable else 0)
                 self.debug_ch0_enabled = self._pending_debug_enable
                 self._pending_debug_enable = None
-            if self._pending_schmitt_enable is not None:
-                self.pkt.write_register(REG_SCHMITT_ENABLE, 1 if self._pending_schmitt_enable else 0)
-                self._pending_schmitt_enable = None
-            if self._pending_schmitt_threshold is not None:
-                self.pkt.write_register(REG_SCHMITT_THRESHOLD, self._pending_schmitt_threshold)
-                self._pending_schmitt_threshold = None
             self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
             self.pkt.arm_capture()
 
@@ -927,6 +968,7 @@ class OLSDeviceSPI:
             if payload_stride:
                 # Collapse 32-bit wire words to dense payload before buffering.
                 data = wire_to_payload(data)
+            data = self._filter_digital(data)
 
             if full_out is not None:
                 full_out.extend(data)

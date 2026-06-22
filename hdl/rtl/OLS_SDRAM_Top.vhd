@@ -120,17 +120,10 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal registered_ch0_d1 : std_logic := '0';
   signal registered_ch0_d2 : std_logic := '0';
 
-  -- Schmitt trigger / digital hysteresis filter
-  signal schmitt_enable    : std_logic := '0';
-  signal schmitt_threshold : natural range 0 to 7 := 3;
   signal gen_capture_active : std_logic := '0';
   signal gen_start_ack_i    : std_logic;
   signal gen_start_reject_i : std_logic;
   signal gen_done_pulse_i   : std_logic;
-  signal pin_pool_clean    : std_logic_vector(PIN_POOL_SIZE-1 downto 0);
-  type schmitt_cnt_t is array(0 to PIN_POOL_SIZE-1) of natural range 0 to 7;
-  signal schmitt_cnt   : schmitt_cnt_t := (others => 0);
-  signal schmitt_stable : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
   attribute preserve : boolean;
   attribute preserve of gen_start : signal is true;
   attribute preserve of gen_tx : signal is true;
@@ -278,8 +271,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Debug_Ch0_Enable : OUT STD_LOGIC := '0';
     Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
     Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
-    Schmitt_Enable   : OUT STD_LOGIC := '0';
-    Schmitt_Threshold : OUT NATURAL range 0 to 7 := 3;
     Gen_Start_Ack    : IN  STD_LOGIC := '0';
     Gen_Start_Reject : IN  STD_LOGIC := '0';
     Gen_Done_Pulse   : IN  STD_LOGIC := '0';
@@ -424,7 +415,7 @@ BEGIN
         elsif i = 0 and debug_ch0_enable = '1' then
           internal_data_r(i) <= registered_ch0_d1;
         else
-          internal_data_r(i) <= pin_pool_clean(pin_map(i));
+          internal_data_r(i) <= pin_pool(pin_map(i));
         end if;
       end loop;
     end if;
@@ -516,29 +507,8 @@ BEGIN
 
   analog_stream_mode <= analog_enable;
 
-  -- Digital hysteresis filter (Schmitt trigger): requires N consecutive equal
-  -- samples before accepting a transition, rejecting glitches below threshold.
-  process(sys_clk)
-  begin
-    if rising_edge(sys_clk) then
-      for i in 0 to PIN_POOL_SIZE-1 loop
-        if schmitt_enable = '1' then
-          if pin_pool(i) = schmitt_stable(i) then
-            schmitt_cnt(i) <= 0;
-          elsif schmitt_cnt(i) < schmitt_threshold then
-            schmitt_cnt(i) <= schmitt_cnt(i) + 1;
-          else
-            schmitt_stable(i) <= pin_pool(i);
-            schmitt_cnt(i) <= 0;
-          end if;
-        else
-          schmitt_stable(i) <= pin_pool(i);
-          schmitt_cnt(i) <= 0;
-        end if;
-      end loop;
-    end if;
-  end process;
-  pin_pool_clean <= schmitt_stable;
+  -- (Digital glitch/hysteresis filtering is done in the host software on the
+  -- captured sample stream; the FPGA captures raw pin_pool.)
 
   -- ============================================================
   -- FAST_CLK domain: capture input mux + pin/loopback CDC
@@ -846,8 +816,6 @@ BEGIN
     Debug_Ch0_Enable => debug_ch0_enable,
     Debug_Ch0_Period => debug_ch0_period,
     Debug_Ch0_Duty   => debug_ch0_duty,
-    Schmitt_Enable   => schmitt_enable,
-    Schmitt_Threshold => schmitt_threshold,
     Gen_Start_Ack    => gen_start_ack_i,
     Gen_Start_Reject => gen_start_reject_i,
     Gen_Done_Pulse   => gen_done_pulse_i,

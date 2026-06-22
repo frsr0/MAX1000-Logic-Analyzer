@@ -1342,7 +1342,10 @@ def test_abort_capture(dev):
 # Test 14d: Schmitt trigger / digital hysteresis
 # ====================================================================
 def test_schmitt_trigger(dev):
-    print_header("Test 14d: Schmitt trigger (digital hysteresis)")
+    # The digital hysteresis filter now runs in host software (set_schmitt
+    # configures it; capture() applies it to the returned samples). This test
+    # exercises that path end-to-end.
+    print_header("Test 14d: digital glitch filter (software hysteresis)")
     dev.reset(); dev.spi.flush()
     # Use debug CH0 PWM as a known signal source (internal mux, not gen)
     dev.set_debug_ch0(True, freq_hz=100000, duty_pct=50)
