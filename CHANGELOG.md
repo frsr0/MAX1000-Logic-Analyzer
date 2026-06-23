@@ -28,6 +28,35 @@
 - Validated the current hardware image with smoke, API sweep, and full host
   hardware validation. Latest full host validation on the programmed image is
   564/564, including narrow packed digital finite/continuous checks.
+- Fixed several RTL bugs found in a full audit: the generator status signals
+  (`Start_Ack`/`Start_Reject`/`Done_Pulse`) are now forwarded through the core
+  so `CMD_GEN_STATUS` reports correctly; the SPI packet receiver resets on a
+  mid-packet CS deassert so a truncated frame can no longer strand the FSM and
+  corrupt the next packet; `Protocol_Trigger` is guarded against `Baud_Div < 2`
+  (which previously stranded its state machine so the trigger never fired); and
+  the LED7 generator-activity indicator now clears when the generator goes idle
+  instead of latching on permanently after the first use.
+- Moved the digital glitch / hysteresis filter ("Schmitt") from the FPGA to
+  host software. On the FPGA it ran only in the `sys_clk` domain and silently
+  did nothing in fast-capture mode; it now runs on the captured sample stream in
+  the host, so it works in every capture mode, is non-destructive, and is
+  re-tunable without re-capturing. Registers `0x41`/`0x42` are retired;
+  `dev.set_schmitt()` keeps the same API.
+- Removed dead/vestigial RTL: the unreachable `cont_readout` continuous-readout
+  branch, the vestigial top-level `Buffer_Full`/`Buffer_Ack` core ports, and the
+  unused `spi_command_dispatch` module.
+- Fixed and triaged the GHDL testbenches: rewrote `tb_fast_analyzer`'s
+  continuous test against the current SDRAM-ring model, dropped a stale generic
+  in `tb_spi_slave`, fixed invalid VHDL in `tb_crc`, and retired the obsolete
+  `tb_core` (superseded by `tb_gen_loopback`). The full maintained GHDL suite
+  and 333 host tests pass.
+- Refreshed the READMEs for the software glitch filter and corrected stale
+  module line counts and the RTL source-file count (now 16 files).
+- Rebuilt the FPGA image (SEED 3) with the above changes; logic usage dropped
+  to 7,537 LE (93%). Timing still closes at 200 MHz (clk[1] setup +0.20 ns), and
+  a seed sweep confirmed Restricted Fmax is pinned at 204 MHz by the device
+  minimum-pulse-width (`tmin`) limit — seed- and logic-invariant, i.e. the
+  200 MHz capture clock is at the part's ceiling.
 
 ## 2.0.0 - 2026-06-16
 
@@ -42,7 +71,8 @@ FPGA/host capture contract.
 
 The original host driver and tkinter console remain available.
 
-This release was validated on the then-current MAX1000 image:
+These results were measured against the MAX1000 FPGA bitstream shipped with
+2.0.0 (later images report different counts as the validation suite grows):
 
 - Full hardware validation: 580 / 580 passed.
 - Targeted new hardware validation: 25 / 25 passed.
