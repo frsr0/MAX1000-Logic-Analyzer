@@ -101,7 +101,7 @@ export const useApp = create<AppState>((set, getState) => ({
     const s = await api.session(id);
     set({ activeSession: s });
     await waveformView.load(s.id, s.num_samples, s.sample_rate,
-      s.trigger_sample ?? null);
+      s.trigger_sample ?? null, s.channels);
     waveformView.markers = s.markers;
     const a = s.markers.find((m) => m.kind === 'cursor_a');
     const b = s.markers.find((m) => m.kind === 'cursor_b');

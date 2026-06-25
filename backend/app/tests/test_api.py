@@ -295,6 +295,25 @@ def test_session_import_export_roundtrip(client):
     assert meta["has_waveform"] is True
 
 
+def test_channel_height_scale_persists(client):
+    sid = client.get("/api/sessions").json()["sessions"][0]["id"]
+    chans = client.get(f"/api/sessions/{sid}").json()["channels"]
+    cid = chans[0]["id"]
+    # default is 1.0 for an untouched channel
+    assert chans[0].get("display_height_scale", 1.0) == 1.0
+
+    r = client.patch(f"/api/sessions/{sid}",
+                     json={"channels": [{"id": cid, "display_height_scale": 2.5}]},
+                     headers=HDR)
+    assert r.status_code == 200, r.text
+    patched = next(c for c in r.json()["channels"] if c["id"] == cid)
+    assert patched["display_height_scale"] == 2.5
+
+    # survives a fresh GET (i.e. round-trips through the store)
+    reread = client.get(f"/api/sessions/{sid}").json()["channels"]
+    assert next(c for c in reread if c["id"] == cid)["display_height_scale"] == 2.5
+
+
 def test_diagnostics_endpoints(client):
     assert client.get("/api/logs").status_code == 200
     d = client.get("/api/diagnostics").json()

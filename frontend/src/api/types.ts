@@ -104,6 +104,7 @@ export interface ChannelInfo {
   coupling: string;
   members: string[];
   display_base: 'bin' | 'hex' | 'dec' | 'ascii';
+  display_height_scale?: number;
   source?: string | null;
   derive?: Record<string, unknown> | null;
   board_label?: string | null;

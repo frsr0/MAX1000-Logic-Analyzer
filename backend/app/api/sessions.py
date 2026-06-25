@@ -75,7 +75,7 @@ def patch_session(session_id: str, patch: SessionPatch):
                 continue
             for key in ("name", "enabled", "color", "volts_per_div", "offset",
                         "probe_attenuation", "units", "cal_gain", "cal_offset",
-                        "threshold", "display_base", "members"):
+                        "threshold", "display_base", "members", "display_height_scale"):
                 if key in upd:
                     setattr(ch, key, upd[key])
         # channel reorder: list order of provided ids wins

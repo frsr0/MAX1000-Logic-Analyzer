@@ -4,7 +4,7 @@
 
 import { api } from '../api/client';
 import type { WaveformPayload } from '../api/binary';
-import type { DecoderEvent, Marker } from '../api/types';
+import type { ChannelInfo, DecoderEvent, Marker } from '../api/types';
 
 export type ViewListener = () => void;
 
@@ -26,6 +26,11 @@ export class WaveformView {
   hoverY = 0;
   selectionStart: number | null = null;
   selectionEnd: number | null = null;
+
+  // per-channel vertical height multiplier (1 = default row height)
+  heightScale = new Map<string, number>();
+  // channel ids selected in the label gutter for group height edits
+  selectedRows = new Set<string>();
 
   payload: WaveformPayload | null = null;
   overview: WaveformPayload | null = null;
@@ -52,7 +57,7 @@ export class WaveformView {
   }
 
   async load(sessionId: string, numSamples: number, sampleRate: number,
-             trigSample: number | null) {
+             trigSample: number | null, channels?: ChannelInfo[]) {
     this.sessionId = sessionId;
     this.numSamples = numSamples;
     this.sampleRate = sampleRate;
@@ -64,6 +69,12 @@ export class WaveformView {
     this.annotations = [];
     this.cursorA = this.cursorB = null;
     this.selectionStart = this.selectionEnd = null;
+    this.heightScale.clear();
+    this.selectedRows.clear();
+    for (const ch of channels ?? []) {
+      const sc = ch.display_height_scale ?? 1;
+      if (sc !== 1) this.heightScale.set(ch.id, sc);
+    }
     this.error = null;
     this.notify();
     if (!sessionId || !numSamples) return;
@@ -149,6 +160,79 @@ export class WaveformView {
   jumpTo(sample: number) {
     const span = this.span();
     this.setView(sample - span / 2, sample + span / 2);
+  }
+
+  // ── row height / selection ───────────────────────────────────────
+
+  static MIN_SCALE = 0.5;
+  static MAX_SCALE = 8;
+
+  rowScale(id: string): number {
+    return this.heightScale.get(id) ?? 1;
+  }
+
+  private clampScale(s: number): number {
+    return Math.max(WaveformView.MIN_SCALE, Math.min(WaveformView.MAX_SCALE, s));
+  }
+
+  // set an explicit scale for one or more rows
+  setRowScales(ids: Iterable<string>, scale: number) {
+    const s = this.clampScale(scale);
+    for (const id of ids) this.heightScale.set(id, s);
+    this.notify();
+  }
+
+  // multiply the current scale of each row by a factor (proportional stretch)
+  scaleRowsBy(ids: Iterable<string>, factor: number) {
+    for (const id of ids) {
+      this.heightScale.set(id, this.clampScale(this.rowScale(id) * factor));
+    }
+    this.notify();
+  }
+
+  // snap every visible row to a preset scale (1 = default, 2 = 2×, …)
+  setAllScales(scale: number) {
+    const s = this.clampScale(scale);
+    this.heightScale.clear();
+    if (s !== 1) {
+      // record the preset against currently-known rows so it persists; an
+      // empty map already means "all default", so only populate when needed
+      for (const id of this.knownRowIds) this.heightScale.set(id, s);
+    }
+    this.notify();
+  }
+
+  // ids the renderer last laid out — lets presets address all rows
+  knownRowIds: string[] = [];
+
+  selectRow(id: string, additive: boolean) {
+    if (additive) {
+      if (this.selectedRows.has(id)) this.selectedRows.delete(id);
+      else this.selectedRows.add(id);
+    } else {
+      const only = this.selectedRows.size === 1 && this.selectedRows.has(id);
+      this.selectedRows.clear();
+      if (!only) this.selectedRows.add(id);
+    }
+    this.notify();
+  }
+
+  clearRowSelection() {
+    if (!this.selectedRows.size) return;
+    this.selectedRows.clear();
+    this.notify();
+  }
+
+  // persist current row heights to the session record (best-effort)
+  async commitRowHeights(ids: Iterable<string>) {
+    if (!this.sessionId) return;
+    const channels = [...ids].map((id) => ({
+      id, display_height_scale: this.rowScale(id),
+    }));
+    if (!channels.length) return;
+    try {
+      await api.patchSession(this.sessionId, { channels });
+    } catch { /* display preference, best-effort */ }
   }
 
   // ── data fetching ────────────────────────────────────────────────
