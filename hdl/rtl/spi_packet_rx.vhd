@@ -70,7 +70,11 @@ begin
         err_bad_crc <= '0'; err_bad_sync <= '0'; err_oversize <= '0';
         last_int <= '0';
 
-        if rx_valid = '1' then
+        if cs_rise = '1' then
+          -- CS deasserted mid-packet: abort and resync on the next frame so a
+          -- truncated packet can't strand the FSM and corrupt the next packet.
+          state <= WAIT_SYNC0;
+        elsif rx_valid = '1' then
           case state is
             when WAIT_SYNC0 =>
               sync_low := rx_byte;

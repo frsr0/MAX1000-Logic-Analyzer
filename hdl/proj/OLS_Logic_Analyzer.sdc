@@ -20,7 +20,7 @@ derive_clock_uncertainty
 
 # Asynchronous clock groups: all cross-domain CDC paths properly synchronized.
 # SDRAM_PLL (pll_inst): clk[0]=sys, clk[1]=fast, clk[2]=sdram,
-# clk[3]=10 MHz ADC conversion clock. The ADC clock is async to everything
+# clk[3]=12 MHz ADC conversion clock. The ADC clock is async to everything
 # else (ADC hard-IP boundary crossings are false-pathed in the IP's own SDC).
 set_clock_groups -asynchronous \
   -group [get_clocks {*pll_inst|*clk[0]}] \
@@ -35,3 +35,9 @@ set_false_path -from [get_registers *auto_generated|delayed_wrptr_g*] \
                -to   [get_registers *auto_generated|rdemp_eq_comp*]
 set_false_path -from [get_registers *auto_generated|rdptr_g*] \
                -to   [get_registers *auto_generated|wrfull_eq_comp*]
+
+# Runtime pin-map registers are configuration selects, written before capture
+# and held stable while sampling. Do not time the rare pin-map register update
+# through the high-speed input mux as if it were per-sample data.
+set_false_path -from [get_registers *pin_map_fast*] \
+               -to   [get_registers *capture_data_fast_normal_r*]

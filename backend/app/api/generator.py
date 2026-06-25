@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..generator.controller import loopback_self_test
+from ..generator.controller import (loopback_self_test,
+                                    validate_generator_payload)
 from ..generator.model import GeneratorSendRequest
 from ..hardware.base import HardwareError
 from ..hardware.device_models import GeneratorConfig
@@ -79,6 +80,7 @@ def generator_send(req: GeneratorSendRequest,
         raise HTTPException(400, "Generator not configured")
     try:
         dev = capture_manager.require_device()
+        validate_generator_payload(cfg)
         if not req.capture:
             dev.generator_configure(cfg)
             dev.generator_start()
@@ -86,6 +88,8 @@ def generator_send(req: GeneratorSendRequest,
         result = loopback_self_test(capture_manager, cfg, req.capture_rate,
                                     req.capture_samples, req.expected_hex)
         return {"sent": True, "captured": True, **result.model_dump()}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     except HardwareError as e:
         raise HTTPException(502, str(e))
 

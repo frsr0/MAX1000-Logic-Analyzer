@@ -45,7 +45,12 @@ PORT (
      Armed          : OUT STD_LOGIC := '0';
       Fast_Mode      : OUT STD_LOGIC := '0';
       Continuous_Mode : OUT STD_LOGIC := '0';
+      Narrow_Enable   : OUT STD_LOGIC := '0';
+      Narrow_Channel  : OUT NATURAL range 0 to 15 := 0;
       Analog_Enable   : OUT STD_LOGIC := '0';
+      Analog_Only     : OUT STD_LOGIC := '0';
+      Analog_Profile  : OUT STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
+      Analog_Channel  : OUT NATURAL range 0 to 31 := 1;
        Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
        Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
        Pin_Map_Write   : OUT STD_LOGIC := '0';
@@ -54,8 +59,6 @@ PORT (
         Debug_Ch0_Enable : OUT STD_LOGIC := '0';
         Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
         Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
-        Schmitt_Enable   : OUT STD_LOGIC := '0';
-        Schmitt_Threshold : OUT NATURAL range 0 to 7 := 3;
          Gen_Capture_Active : OUT STD_LOGIC := '0';
          Gen_Start_Ack      : IN  STD_LOGIC := '0';
          Gen_Start_Reject   : IN  STD_LOGIC := '0';
@@ -87,6 +90,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL Read_Count  : NATURAL := 0;
   SIGNAL Delay_Count : NATURAL := 0;
   SIGNAL analog_enable_i  : STD_LOGIC := '0';
+  SIGNAL analog_only_i    : STD_LOGIC := '0';
+  SIGNAL analog_profile_i : STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
+  SIGNAL analog_channel_i : NATURAL range 0 to 31 := 1;
   SIGNAL SPI_RX_Valid     : STD_LOGIC := '0';
   SIGNAL SPI_RX_Data      : STD_LOGIC_VECTOR (8-1 DOWNTO 0) := (others => '0');
   -- SPI mode only: directly use SPI signals (no UART muxing)
@@ -116,6 +122,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
    SIGNAL gen_baud_div_int   : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   SIGNAL fast_mode_i        : STD_LOGIC := '0';
   SIGNAL continuous_mode_i   : STD_LOGIC := '0';
+  SIGNAL narrow_enable_i     : STD_LOGIC := '0';
+  SIGNAL narrow_channel_i    : NATURAL range 0 to 15 := 0;
   SIGNAL spi_preamble        : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL spi_preamble_r      : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL spi_tx_ready_i      : STD_LOGIC := '0';
@@ -128,8 +136,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL debug_ch0_enable_i  : STD_LOGIC := '0';
   SIGNAL debug_ch0_period_i  : STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
   SIGNAL debug_ch0_duty_i    : STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
-  SIGNAL schmitt_enable_i    : STD_LOGIC := '0';
-  SIGNAL schmitt_threshold_i : NATURAL range 0 to 7 := 3;
   SIGNAL gen_capture_active_i  : STD_LOGIC := '0';
   SIGNAL gen_capture_done_i    : STD_LOGIC := '0';
   SIGNAL gen_capture_error_i   : STD_LOGIC := '0';
@@ -348,6 +354,11 @@ BEGIN
           continuous_mode_i <= disp_reg_wdata(1);
           ch_mode <= disp_reg_wdata(2);
           analog_enable_i <= disp_reg_wdata(3);
+          analog_only_i <= disp_reg_wdata(4);
+          analog_profile_i <= disp_reg_wdata(6 downto 5);
+          analog_channel_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(12 downto 8)));
+          narrow_enable_i <= disp_reg_wdata(13);
+          narrow_channel_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(17 downto 14)));
         WHEN REG_FAST_MODE =>
           fast_mode_i <= disp_reg_wdata(0);
         WHEN REG_CONT_MODE =>
@@ -393,10 +404,6 @@ BEGIN
           debug_ch0_period_i <= disp_reg_wdata;
         WHEN REG_DEBUG_CH0_DUTY =>
           debug_ch0_duty_i <= disp_reg_wdata;
-        WHEN REG_SCHMITT_ENABLE =>
-          schmitt_enable_i <= disp_reg_wdata(0);
-        WHEN REG_SCHMITT_THRESHOLD =>
-          schmitt_threshold_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(2 downto 0)));
         WHEN others => null;
       END CASE;
     END IF;
@@ -688,14 +695,17 @@ BEGIN
   Fast_Mode      <= fast_mode_i;
   Blk_Rd_Req_Tog <= blk_req_tog_i;
   Continuous_Mode <= continuous_mode_i;
+  Narrow_Enable <= narrow_enable_i;
+  Narrow_Channel <= narrow_channel_i;
   Analog_Enable <= analog_enable_i;
+  Analog_Only <= analog_only_i;
+  Analog_Profile <= analog_profile_i;
+  Analog_Channel <= analog_channel_i;
   Buffer_Ack      <= (others => '0');  -- FLA frees its own continuous buffers
   Armed          <= Run_OLS;
   Debug_Ch0_Enable <= debug_ch0_enable_i;
   Debug_Ch0_Period <= debug_ch0_period_i;
   Debug_Ch0_Duty   <= debug_ch0_duty_i;
-  Schmitt_Enable   <= schmitt_enable_i;
-  Schmitt_Threshold <= schmitt_threshold_i;
   Gen_Capture_Active <= gen_capture_active_i;
   -- Pin_Map_Write is driven from the main process (default low, pulsed in CMD_PIN_MAP handler)
 
@@ -969,7 +979,14 @@ BEGIN
                     reg_val := Trigger_Values;
                   when REG_FLAGS | REG_FAST_MODE =>
                     reg_val(0) := fast_mode_i;
+                    reg_val(1) := continuous_mode_i;
+                    reg_val(2) := ch_mode;
                     reg_val(3) := analog_enable_i;
+                    reg_val(4) := analog_only_i;
+                    reg_val(6 downto 5) := analog_profile_i;
+                    reg_val(12 downto 8) := std_logic_vector(to_unsigned(analog_channel_i, 5));
+                    reg_val(13) := narrow_enable_i;
+                    reg_val(17 downto 14) := std_logic_vector(to_unsigned(narrow_channel_i, 4));
                   when REG_CONT_MODE =>
                     reg_val(0) := continuous_mode_i;
                   when REG_GEN_PROTO =>
@@ -990,10 +1007,6 @@ BEGIN
                     reg_val := debug_ch0_period_i;
                   when REG_DEBUG_CH0_DUTY =>
                     reg_val := debug_ch0_duty_i;
-                  when REG_SCHMITT_ENABLE =>
-                    reg_val(0) := schmitt_enable_i;
-                  when REG_SCHMITT_THRESHOLD =>
-                    reg_val(2 downto 0) := std_logic_vector(to_unsigned(schmitt_threshold_i, 3));
                   when REG_CAPTURE_SEQ =>
                     reg_val := capture_seq;
                   when REG_PRODUCER_INDEX =>

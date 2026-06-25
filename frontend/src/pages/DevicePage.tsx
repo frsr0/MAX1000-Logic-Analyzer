@@ -107,6 +107,39 @@ export function DevicePage() {
               </span>
             ))}
           </div>
+          <h3>Analog pin map</h3>
+          <table className="data-table">
+            <thead>
+              <tr><th>ADC / role</th><th>Board input</th><th>Header</th><th>FPGA pin</th><th>Status</th></tr>
+            </thead>
+            <tbody>
+              {capabilities.analog_pin_map.map((p, idx) => (
+                <tr key={`analog-${p.board_label}-${idx}`} title={p.note || ''}>
+                  <td className="mono">{p.adc_channel !== undefined ? `ADC${p.adc_channel}` : '—'}</td>
+                  <td>{p.board_label}</td>
+                  <td>{p.header || '—'}</td>
+                  <td className="mono">{p.fpga_pin || '—'}</td>
+                  <td>{p.current_rtl_stream ? 'captured' : p.available ? 'board pin' : 'not input'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <h3>Default digital pin map</h3>
+          <table className="data-table">
+            <thead>
+              <tr><th>Pin index</th><th>Board input</th><th>Header</th><th>FPGA pin</th></tr>
+            </thead>
+            <tbody>
+              {capabilities.digital_pin_map.map((p) => (
+                <tr key={`pin-${p.pin_index}`}>
+                  <td className="mono">{p.pin_index}</td>
+                  <td>{p.board_label}</td>
+                  <td>{p.header || '—'}</td>
+                  <td className="mono">{p.fpga_pin || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </>
       )}
 

@@ -82,6 +82,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_spi_test   : std_logic := '0';
   signal gen_fifo_count : std_logic_vector(7 downto 0) := (others => '0');
   signal gen_busy_latch : std_logic := '0';
+  -- LED7 gen-activity stretch: ~0.25 s at 100 MHz so a brief pulse stays seen.
+  constant GEN_LED_STRETCH_TOP : natural := 25000000;
+  signal gen_led_stretch : natural range 0 to 25000000 := 0;
   signal fast_clk       : std_logic := '0';
   signal continuous_mode : std_logic := '0';
   signal armed_i        : std_logic := '0';
@@ -106,6 +109,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal registered_ch0 : std_logic := '0';
   signal debug_ch0_period : std_logic_vector(31 downto 0) := x"00000400";
   signal debug_ch0_duty   : std_logic_vector(31 downto 0) := x"00000200";
+  signal debug_ch0_period_active : std_logic_vector(31 downto 0) := x"00000400";
+  signal debug_ch0_duty_active   : std_logic_vector(31 downto 0) := x"00000200";
   signal sen_sdi_meta : std_logic := '1';
   signal sen_sdi_sync : std_logic := '1';
   signal gen_scl_d1   : std_logic := '0';
@@ -115,17 +120,10 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal registered_ch0_d1 : std_logic := '0';
   signal registered_ch0_d2 : std_logic := '0';
 
-  -- Schmitt trigger / digital hysteresis filter
-  signal schmitt_enable    : std_logic := '0';
-  signal schmitt_threshold : natural range 0 to 7 := 3;
   signal gen_capture_active : std_logic := '0';
   signal gen_start_ack_i    : std_logic;
   signal gen_start_reject_i : std_logic;
   signal gen_done_pulse_i   : std_logic;
-  signal pin_pool_clean    : std_logic_vector(PIN_POOL_SIZE-1 downto 0);
-  type schmitt_cnt_t is array(0 to PIN_POOL_SIZE-1) of natural range 0 to 7;
-  signal schmitt_cnt   : schmitt_cnt_t := (others => 0);
-  signal schmitt_stable : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
   attribute preserve : boolean;
   attribute preserve of gen_start : signal is true;
   attribute preserve of gen_tx : signal is true;
@@ -134,6 +132,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   attribute preserve of gen_spi_test : signal is true;
 
   signal analog_enable : std_logic := '0';
+  signal analog_only   : std_logic := '0';
+  signal analog_profile : std_logic_vector(1 downto 0) := (others => '0');
+  signal analog_channel : natural range 0 to 31 := 1;
   signal gen_clear     : std_logic := '0';
   signal analog_stream_mode : std_logic := '0';
   signal debug_ch0_enable : std_logic := '0';
@@ -143,8 +144,16 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal adc0_result, adc1_result, adc2_result, adc3_result : std_logic_vector(11 downto 0) := (others => '0');
   signal adc4_result, adc5_result, adc6_result, adc7_result : std_logic_vector(11 downto 0) := (others => '0');
   signal adc_start : std_logic := '0';
+  signal adc0_valid, adc1_valid, adc2_valid, adc3_valid : std_logic := '0';
+  signal adc4_valid, adc5_valid, adc6_valid, adc7_valid : std_logic := '0';
+  signal adc_frame_valid : std_logic := '0';
+  signal adc0_start, adc1_start, adc2_start, adc3_start : std_logic := '0';
+  signal adc4_start, adc5_start, adc6_start, adc7_start : std_logic := '0';
+  signal adc0_sel, adc1_sel, adc2_sel, adc3_sel : natural range 0 to 31 := 0;
+  signal adc4_sel, adc5_sel, adc6_sel, adc7_sel : natural range 0 to 31 := 0;
+  signal adc_frame_toggle : std_logic := '0';
   signal adc_div   : natural range 0 to 255 := 0;
-  signal adc_conv_clk   : std_logic := '0';  -- 10 MHz ADC conversion clock (SDRAM_PLL c3)
+  signal adc_conv_clk   : std_logic := '0';  -- 12 MHz ADC conversion clock (SDRAM_PLL c3)
 
   -- Pin map write from host command
   signal pin_map_write    : std_logic := '0';
@@ -154,6 +163,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   -- FAST_CLK domain: capture mux + CDC synchronizers
   signal capture_data_fast : std_logic_vector(LA_CHANNELS-1 downto 0) := (others => '0');
   signal capture_data_fast_speed_r : std_logic_vector(LA_CHANNELS-1 downto 0) := (others => '0');
+  signal capture_data_fast_mapped_r : std_logic_vector(LA_CHANNELS-1 downto 0) := (others => '0');
   signal capture_data_fast_normal_r : std_logic_vector(LA_CHANNELS-1 downto 0) := (others => '0');
   signal fast_mode_f1 : std_logic := '0';
   signal fast_mode_f2 : std_logic := '0';
@@ -241,24 +251,26 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Gen_I2C_Test   : OUT STD_LOGIC := '0';
     Gen_SPI_Test   : OUT STD_LOGIC := '0';
-     Armed          : OUT STD_LOGIC := '0';
+    Armed          : OUT STD_LOGIC := '0';
     Fast_Mode      : OUT STD_LOGIC := '0';
+    Narrow_Enable  : OUT STD_LOGIC := '0';
+    Narrow_Channel : OUT NATURAL range 0 to 15 := 0;
     Analog_Enable  : OUT STD_LOGIC := '0';
+    Analog_Only    : OUT STD_LOGIC := '0';
+    Analog_Profile : OUT STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
+    Analog_Channel : OUT NATURAL range 0 to 31 := 1;
     Status        : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Continuous_Mode : OUT STD_LOGIC := '0';
-    Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-    Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
     Analog_Frame_Data : IN STD_LOGIC_VECTOR(127 downto 0) := (others => '0');
     Analog_Frame_Len  : IN NATURAL range 1 to 14 := 1;
     Analog_Stream_Mode : IN STD_LOGIC := '0';
+    Analog_Frame_Toggle : IN STD_LOGIC := '0';
     Pin_Map_Write  : OUT STD_LOGIC := '0';
     Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
     Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
     Debug_Ch0_Enable : OUT STD_LOGIC := '0';
     Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
     Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
-    Schmitt_Enable   : OUT STD_LOGIC := '0';
-    Schmitt_Threshold : OUT NATURAL range 0 to 7 := 3;
     Gen_Start_Ack    : IN  STD_LOGIC := '0';
     Gen_Start_Reject : IN  STD_LOGIC := '0';
     Gen_Done_Pulse   : IN  STD_LOGIC := '0';
@@ -273,42 +285,42 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     adc_clk        : in  std_logic;
     adc_clk_locked : in  std_logic := '1';
     reset          : in  std_logic := '0';
-    ch0_sel        : in  natural range 0 to 15 := 0;
+    ch0_sel        : in  natural range 0 to 31 := 0;
     ch0_start      : in  std_logic := '0';
     ch0_busy       : out std_logic := '0';
     ch0_result     : out std_logic_vector(11 downto 0) := (others => '0');
     ch0_valid      : out std_logic := '0';
-    ch1_sel        : in  natural range 0 to 15 := 1;
+    ch1_sel        : in  natural range 0 to 31 := 1;
     ch1_start      : in  std_logic := '0';
     ch1_busy       : out std_logic := '1';
     ch1_result     : out std_logic_vector(11 downto 0) := (others => '0');
     ch1_valid      : out std_logic := '0';
-    ch2_sel        : in  natural range 0 to 15 := 2;
+    ch2_sel        : in  natural range 0 to 31 := 2;
     ch2_start      : in  std_logic := '0';
     ch2_busy       : out std_logic := '1';
     ch2_result     : out std_logic_vector(11 downto 0) := (others => '0');
     ch2_valid      : out std_logic := '0';
-    ch3_sel        : in  natural range 0 to 15 := 3;
+    ch3_sel        : in  natural range 0 to 31 := 3;
     ch3_start      : in  std_logic := '0';
     ch3_busy       : out std_logic := '1';
     ch3_result     : out std_logic_vector(11 downto 0) := (others => '0');
     ch3_valid      : out std_logic := '0';
-    ch4_sel        : in  natural range 0 to 15 := 4;
+    ch4_sel        : in  natural range 0 to 31 := 4;
     ch4_start      : in  std_logic := '0';
     ch4_busy       : out std_logic := '1';
     ch4_result     : out std_logic_vector(11 downto 0) := (others => '0');
     ch4_valid      : out std_logic := '0';
-    ch5_sel        : in  natural range 0 to 15 := 5;
+    ch5_sel        : in  natural range 0 to 31 := 5;
     ch5_start      : in  std_logic := '0';
     ch5_busy       : out std_logic := '1';
     ch5_result     : out std_logic_vector(11 downto 0) := (others => '0');
     ch5_valid      : out std_logic := '0';
-    ch6_sel        : in  natural range 0 to 15 := 6;
+    ch6_sel        : in  natural range 0 to 31 := 6;
     ch6_start      : in  std_logic := '0';
     ch6_busy       : out std_logic := '1';
     ch6_result     : out std_logic_vector(11 downto 0) := (others => '0');
     ch6_valid      : out std_logic := '0';
-    ch7_sel        : in  natural range 0 to 15 := 7;
+    ch7_sel        : in  natural range 0 to 31 := 7;
     ch7_start      : in  std_logic := '0';
     ch7_busy       : out std_logic := '1';
     ch7_result     : out std_logic_vector(11 downto 0) := (others => '0');
@@ -345,7 +357,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
 
 BEGIN
 
-  -- SDRAM_PLL c3 is a dedicated 10 MHz output for the MAX10 ADC hard IP.
+  -- SDRAM_PLL c3 is a dedicated 12 MHz output for the MAX10 ADC hard IP.
   -- The adcblock requires a clean PLL clock at its rated conversion frequency;
   -- the 100 MHz sys_clk (c0) violates the adcblock minimum-pulse-width spec.
   -- The device (10M08SAU169) only has one PLL, so this output is added to the
@@ -403,7 +415,7 @@ BEGIN
         elsif i = 0 and debug_ch0_enable = '1' then
           internal_data_r(i) <= registered_ch0_d1;
         else
-          internal_data_r(i) <= pin_pool_clean(pin_map(i));
+          internal_data_r(i) <= pin_pool(pin_map(i));
         end if;
       end loop;
     end if;
@@ -413,12 +425,18 @@ BEGIN
   begin
     if rising_edge(sys_clk) then
       if debug_ch0_enable = '1' then
-        if unsigned(debug_ch0_cnt) >= unsigned(debug_ch0_period) - 1 then
+        if unsigned(debug_ch0_period_active) <= 1 then
+          debug_ch0_period_active <= x"00000002";
+          debug_ch0_duty_active <= x"00000001";
           debug_ch0_cnt <= (others => '0');
+        elsif unsigned(debug_ch0_cnt) >= unsigned(debug_ch0_period_active) - 1 then
+          debug_ch0_cnt <= (others => '0');
+          debug_ch0_period_active <= debug_ch0_period;
+          debug_ch0_duty_active <= debug_ch0_duty;
         else
           debug_ch0_cnt <= std_logic_vector(unsigned(debug_ch0_cnt) + 1);
         end if;
-        if unsigned(debug_ch0_cnt) < unsigned(debug_ch0_duty) then
+        if unsigned(debug_ch0_cnt) < unsigned(debug_ch0_duty_active) then
           registered_ch0 <= '1';
         else
           registered_ch0 <= '0';
@@ -426,6 +444,8 @@ BEGIN
       else
         registered_ch0 <= '0';
         debug_ch0_cnt <= (others => '0');
+        debug_ch0_period_active <= debug_ch0_period;
+        debug_ch0_duty_active <= debug_ch0_duty;
       end if;
     end if;
   end process;
@@ -487,29 +507,8 @@ BEGIN
 
   analog_stream_mode <= analog_enable;
 
-  -- Digital hysteresis filter (Schmitt trigger): requires N consecutive equal
-  -- samples before accepting a transition, rejecting glitches below threshold.
-  process(sys_clk)
-  begin
-    if rising_edge(sys_clk) then
-      for i in 0 to PIN_POOL_SIZE-1 loop
-        if schmitt_enable = '1' then
-          if pin_pool(i) = schmitt_stable(i) then
-            schmitt_cnt(i) <= 0;
-          elsif schmitt_cnt(i) < schmitt_threshold then
-            schmitt_cnt(i) <= schmitt_cnt(i) + 1;
-          else
-            schmitt_stable(i) <= pin_pool(i);
-            schmitt_cnt(i) <= 0;
-          end if;
-        else
-          schmitt_stable(i) <= pin_pool(i);
-          schmitt_cnt(i) <= 0;
-        end if;
-      end loop;
-    end if;
-  end process;
-  pin_pool_clean <= schmitt_stable;
+  -- (Digital glitch/hysteresis filtering is done in the host software on the
+  -- captured sample stream; the FPGA captures raw pin_pool.)
 
   -- ============================================================
   -- FAST_CLK domain: capture input mux + pin/loopback CDC
@@ -587,6 +586,8 @@ BEGIN
         end if;
 
         for i in 0 to LA_CHANNELS-1 loop
+          capture_data_fast_mapped_r(i) <= pin_pool_f2(pin_map_fast(i));
+
           if i = 0 and debug_ch0_enable_f2 = '1' then
             capture_data_fast_normal_r(i) <= registered_ch0_f2;
           elsif gen_capture_active_f2 = '1' and gen_tx_pin_f2 = pin_map_fast(i) then
@@ -594,7 +595,7 @@ BEGIN
           elsif gen_capture_active_f2 = '1' and gen_i2c_test_f2 = '1' and gen_scl_pin_f2 = pin_map_fast(i) then
             capture_data_fast_normal_r(i) <= gen_scl_f2;
           else
-            capture_data_fast_normal_r(i) <= pin_pool_f2(pin_map_fast(i));
+            capture_data_fast_normal_r(i) <= capture_data_fast_mapped_r(i);
           end if;
         end loop;
       end if;
@@ -613,6 +614,42 @@ BEGIN
     end if;
   end process;
 
+  -- ADC profiles selected by REG_FLAGS:
+  -- mixed/current scan: ADC0-ADC7, high-speed analog: one selected mux
+  -- channel, maximum analog: AIN3,AIN1,AIN4,AIN6,AIN2,AIN5,AIN0,AIN.
+  process(analog_enable, analog_only, analog_profile, analog_channel, adc_start)
+  begin
+    adc0_sel <= 0;  adc1_sel <= 1;  adc2_sel <= 2;  adc3_sel <= 3;
+    adc4_sel <= 4;  adc5_sel <= 5;  adc6_sel <= 6;  adc7_sel <= 7;
+    adc0_start <= adc_start; adc1_start <= adc_start;
+    adc2_start <= adc_start; adc3_start <= adc_start;
+    adc4_start <= adc_start; adc5_start <= adc_start;
+    adc6_start <= adc_start; adc7_start <= adc_start;
+
+    if analog_enable = '1' and analog_only = '1' then
+      if analog_profile = "01" then
+        adc0_sel <= 1;
+        adc1_sel <= 2;
+        adc2_sel <= 3;
+        adc3_sel <= 4;
+        adc4_sel <= 5;
+        adc5_sel <= 7;
+        adc6_sel <= 8;
+        adc7_sel <= 16;
+      else
+        adc0_sel <= analog_channel;
+        adc1_start <= '0'; adc2_start <= '0'; adc3_start <= '0';
+        adc4_start <= '0'; adc5_start <= '0'; adc6_start <= '0';
+        adc7_start <= '0';
+      end if;
+    end if;
+  end process;
+
+  adc_frame_valid <= adc0_valid when analog_enable = '1'
+                                  and analog_only = '1'
+                                  and analog_profile /= "01"
+                     else adc7_valid;
+
   process(sys_clk)
   begin
     if rising_edge(sys_clk) then
@@ -622,6 +659,9 @@ BEGIN
       else
         adc_div <= adc_div + 1;
         adc_start <= '0';
+      end if;
+      if adc_frame_valid = '1' then
+        adc_frame_toggle <= not adc_frame_toggle;
       end if;
 
       -- Default: all analog_frame_data bytes zero
@@ -633,6 +673,21 @@ BEGIN
         -- Digital only: 16 digital (2 bytes)
         analog_frame_data(15 downto 0) <= internal_data_r;
         analog_frame_len <= 2;
+      elsif analog_only = '1' then
+        if analog_profile = "01" then
+          analog_frame_data(11 downto 0) <= adc0_result;
+          analog_frame_data(23 downto 12) <= adc1_result;
+          analog_frame_data(35 downto 24) <= adc2_result;
+          analog_frame_data(47 downto 36) <= adc3_result;
+          analog_frame_data(59 downto 48) <= adc4_result;
+          analog_frame_data(71 downto 60) <= adc5_result;
+          analog_frame_data(83 downto 72) <= adc6_result;
+          analog_frame_data(95 downto 84) <= adc7_result;
+          analog_frame_len <= 12;
+        else
+          analog_frame_data(11 downto 0) <= adc0_result;
+          analog_frame_len <= 2;
+        end if;
       else
         -- Mixed: 16 digital + 8 ADC (14 bytes = 2 + 12 bytes for 8 × 12-bit)
         analog_frame_data(15 downto 0) <= internal_data_r(15 downto 0);
@@ -656,46 +711,46 @@ BEGIN
       adc_clk => adc_conv_clk,
       adc_clk_locked => pll_locked,
       reset => '0',
-      ch0_sel => 0,
-      ch0_start => adc_start,
+      ch0_sel => adc0_sel,
+      ch0_start => adc0_start,
       ch0_busy => open,
       ch0_result => adc0_result,
-      ch0_valid => open,
-      ch1_sel => 1,
-      ch1_start => adc_start,
+      ch0_valid => adc0_valid,
+      ch1_sel => adc1_sel,
+      ch1_start => adc1_start,
       ch1_busy => open,
       ch1_result => adc1_result,
-      ch1_valid => open,
-      ch2_sel => 2,
-      ch2_start => adc_start,
+      ch1_valid => adc1_valid,
+      ch2_sel => adc2_sel,
+      ch2_start => adc2_start,
       ch2_busy => open,
       ch2_result => adc2_result,
-      ch2_valid => open,
-      ch3_sel => 3,
-      ch3_start => adc_start,
+      ch2_valid => adc2_valid,
+      ch3_sel => adc3_sel,
+      ch3_start => adc3_start,
       ch3_busy => open,
       ch3_result => adc3_result,
-      ch3_valid => open,
-      ch4_sel => 4,
-      ch4_start => adc_start,
+      ch3_valid => adc3_valid,
+      ch4_sel => adc4_sel,
+      ch4_start => adc4_start,
       ch4_busy => open,
       ch4_result => adc4_result,
-      ch4_valid => open,
-      ch5_sel => 5,
-      ch5_start => adc_start,
+      ch4_valid => adc4_valid,
+      ch5_sel => adc5_sel,
+      ch5_start => adc5_start,
       ch5_busy => open,
       ch5_result => adc5_result,
-      ch5_valid => open,
-      ch6_sel => 6,
-      ch6_start => adc_start,
+      ch5_valid => adc5_valid,
+      ch6_sel => adc6_sel,
+      ch6_start => adc6_start,
       ch6_busy => open,
       ch6_result => adc6_result,
-      ch6_valid => open,
-      ch7_sel => 7,
-      ch7_start => adc_start,
+      ch6_valid => adc6_valid,
+      ch7_sel => adc7_sel,
+      ch7_start => adc7_start,
       ch7_busy => open,
       ch7_result => adc7_result,
-      ch7_valid => open
+      ch7_valid => adc7_valid
     );
 
   SDRAM_Analyzer : OLS_Logic_Analyzer
@@ -743,22 +798,24 @@ BEGIN
     Gen_SPI_Test   => gen_spi_test,
     Armed          => armed_i,
     Fast_Mode      => fast_mode_i,
+    Narrow_Enable  => open,
+    Narrow_Channel => open,
     Analog_Enable  => analog_enable,
+    Analog_Only    => analog_only,
+    Analog_Profile => analog_profile,
+    Analog_Channel => analog_channel,
     Status        => core_status,
     Continuous_Mode => continuous_mode,
-    Buffer_Full     => "000",
-    Buffer_Ack      => open,
     Analog_Frame_Data => analog_frame_data,
     Analog_Frame_Len  => analog_frame_len,
     Analog_Stream_Mode => analog_stream_mode,
+    Analog_Frame_Toggle => adc_frame_toggle,
     Pin_Map_Write  => pin_map_write,
     Pin_Map_Channel => pin_map_channel,
     Pin_Map_Pin     => pin_map_pin,
     Debug_Ch0_Enable => debug_ch0_enable,
     Debug_Ch0_Period => debug_ch0_period,
     Debug_Ch0_Duty   => debug_ch0_duty,
-    Schmitt_Enable   => schmitt_enable,
-    Schmitt_Threshold => schmitt_threshold,
     Gen_Start_Ack    => gen_start_ack_i,
     Gen_Start_Reject => gen_start_reject_i,
     Gen_Done_Pulse   => gen_done_pulse_i,
@@ -813,13 +870,25 @@ BEGIN
   led_out: for i in 0 to 6 generate
     LED(i) <= '1' when pwm_cnt < led_bright(i) else '0';
   end generate;
-  -- LED7: latched gen start indicator (OR of all gen status signals)
+  -- LED7: generator-activity indicator. A brief gen_start pulse is stretched so
+  -- it stays visible, but the indicator clears once the generator goes idle
+  -- (previously it latched on the first gen activity and never cleared).
   process(sys_clk)
   begin
     if rising_edge(sys_clk) then
-      if gen_busy = '1' then gen_busy_latch <= '1'; end if;
-      if gen_active = '1' then gen_busy_latch <= '1'; end if;
-      if gen_start = '1' then gen_busy_latch <= '1'; end if;
+      if gen_busy = '1' or gen_active = '1' then
+        -- Active: hold lit and reload the stretch so post-activity it lingers.
+        gen_busy_latch <= '1';
+        gen_led_stretch <= GEN_LED_STRETCH_TOP;
+      elsif gen_start = '1' then
+        -- Catch a start pulse even if busy/active haven't asserted yet.
+        gen_busy_latch <= '1';
+        gen_led_stretch <= GEN_LED_STRETCH_TOP;
+      elsif gen_led_stretch /= 0 then
+        gen_led_stretch <= gen_led_stretch - 1;
+      else
+        gen_busy_latch <= '0';
+      end if;
     end if;
   end process;
   LED(7) <= gen_busy_latch;

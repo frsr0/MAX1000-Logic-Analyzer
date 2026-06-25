@@ -28,7 +28,17 @@ from ..capture.sample_format import adc_to_volts
 from .base import CaptureResult, HardwareDevice, HardwareError, ProgressCb
 from .device_models import (DebugInfo, DeviceCapabilities, GeneratorConfig,
                             GeneratorStatus, TriggerCapability)
+from .max1000_board import (
+    BOARD_ANALOG_INPUTS,
+    DIGITAL_PIN_MAP,
+    exposed_analog_count_for_current_rtl,
+)
 from .protocol import import_host_driver
+
+ADC_SCAN_FRAME_RATE_HZ = 125_000.0
+ADC_FAST_FRAME_RATE_HZ = 1_000_000.0
+DIGITAL_DEEP_SAMPLE_RATE_HZ = 14_000_000.0
+DIGITAL_FAST_BRAM_SAMPLES = 1024
 
 
 def hardware_available() -> bool:
@@ -63,10 +73,19 @@ class ExistingHostAdapter(HardwareDevice):
                 self._dev.open()
                 self._timings["open_s"] = time.time() - t0
                 self._log("open")
+                t1 = time.time()
+                self._reset_after_connect()
+                self._timings["connect_reset_s"] = time.time() - t1
             except Exception as e:
+                if self._dev is not None:
+                    try:
+                        self._dev.close()
+                    except Exception:
+                        pass
                 self._dev = None
                 self._last_error = str(e)
-                raise HardwareError(f"Failed to open FTDI SPI device: {e}") from e
+                raise HardwareError(
+                    f"Failed to open/reset FTDI SPI device: {e}") from e
             meta_raw = b""
             try:
                 meta_raw = self._dev.get_metadata()
@@ -83,6 +102,16 @@ class ExistingHostAdapter(HardwareDevice):
                 mock=False,
             )
             return self._meta
+
+    def _reset_after_connect(self) -> None:
+        """Leave a newly opened FPGA connection in a known idle state."""
+        assert self._dev is not None
+        self._dev.reset()
+        self._dev.set_analog_config(0)
+        self._dev.set_debug_ch0(False)
+        self._dev.set_schmitt(False)
+        self._dev.spi.flush()
+        self._log("connect_reset")
 
     def disconnect(self) -> None:
         with self._lock:
@@ -119,21 +148,66 @@ class ExistingHostAdapter(HardwareDevice):
             ("decoder_error", "post_capture", ""),
         ]
         return DeviceCapabilities(
-            digital_channels=16, analog_channels=8,
-            max_sample_rate=sample_clk / 2, min_sample_rate=6.0,
+            digital_channels=16,
+            analog_channels=exposed_analog_count_for_current_rtl(),
+            max_sample_rate=sample_clk, min_sample_rate=6.0,
             max_samples=1_000_000, bram_samples=1024,
             sample_clk_hz=sample_clk,
             supports_pre_trigger=True, supports_rolling=True,
             supports_continuous=True, supports_analog=True,
-            analog_rate_note="MAX10 ADC updates all 8 channels at ~101 kHz; "
-                             "digital continues at full rate",
+            analog_rate_note="MAX10 ADC supports 1 MSPS single-channel "
+                             "analog and 125 kframes/s 8-input physical "
+                             "analog scans. Mixed mode scans ADC0..ADC7 at "
+                             "the same scan frame rate.",
             generator_protocols=["uart", "i2c", "pwm"],
             triggers=[TriggerCapability(type=t, execution=e, description=d)
                       for t, e, d in trig],
-            notes=["Schmitt input filter and debug CH0 PWM available via driver"],
+            notes=[
+                "Host-side digital glitch filter (a.k.a. Schmitt) and debug CH0 PWM available via driver",
+                "Maximum analog scans ADC1,2,3,4,5,7,8,16 at 125 kframes/s. "
+                "Mixed mode still exposes ADC0/ADC6 as unmapped mux slots.",
+            ],
+            digital_pin_map=DIGITAL_PIN_MAP,
+            analog_pin_map=BOARD_ANALOG_INPUTS,
         )
 
     # ── capture (mirrors OLS_Console._capture exactly) ───────────────
+
+    def validate_settings(self, settings: CaptureSettings) -> list:
+        findings = super().validate_settings(settings)
+        sample_clk = float(self._dev.sample_clk) if self._dev else 200_000_000.0
+        if settings.mode in ("mixed", "mixed_continuous"):
+            findings.append({
+                "level": "info",
+                "message": "Mixed mode captures 16 digital bits plus the current "
+                           "ADC0..ADC7 mux scan as a single time-correlated "
+                           "packed frame at up to "
+                           f"{int(ADC_SCAN_FRAME_RATE_HZ):,} Hz. Digital is "
+                           "sampled once per ADC frame; use digital-only mode "
+                           "for higher digital sample rates.",
+            })
+        elif settings.analog_enabled or settings.mode in (
+                "analog", "analog_fast", "analog_all", "analog_continuous",
+                "analog_all_continuous"):
+            findings.append({
+                "level": "info",
+                "message": "Analog mode uses RTL analog-only frames. "
+                           "High-speed analog captures one selected ADC mux "
+                           "channel; maximum analog captures the documented "
+                           "physical analog profile.",
+            })
+        if self._requires_unavailable_high_rate_deep_path(
+                settings, self._build_trigger(settings)):
+            findings.append({
+                "level": "error",
+                "message": "Full-speed digital can run up to 200 MHz for "
+                           f"{DIGITAL_FAST_BRAM_SAMPLES} samples. Deeper "
+                           "full-width digital captures use the finite SDRAM "
+                           "path, measured trustworthy up to "
+                           f"{DIGITAL_DEEP_SAMPLE_RATE_HZ / 1_000_000:.0f} MHz "
+                           "on this bitstream.",
+            })
+        return findings
 
     def capture(self, settings: CaptureSettings,
                 progress: Optional[ProgressCb] = None,
@@ -146,11 +220,48 @@ class ExistingHostAdapter(HardwareDevice):
             nsamp = int(settings.num_samples)
             trigger = self._build_trigger(settings)
             warnings: List[str] = []
+            analog_requested = settings.analog_enabled or settings.mode in (
+                "analog", "analog_fast", "analog_all", "mixed",
+                "analog_continuous", "analog_all_continuous",
+                "mixed_continuous")
+            narrow_requested = settings.mode == "digital_narrow"
+            mixed_requested = settings.mode in ("mixed", "mixed_continuous")
+            analog_all_requested = settings.mode in (
+                "analog_all", "analog_all_continuous")
+            # Continuous analog/mixed loops bounded captures (capture_manager
+            # re-arms ~forever). The legacy per-capture anti-wedge reset+reopen
+            # is skipped in that loop — verified on HW that back-to-back analog
+            # captures stay clean after the packed-mixed rework — so buffers
+            # stream without a reset gap between them.
+            continuous = settings.mode in (
+                "continuous", "rolling", "analog_continuous",
+                "analog_all_continuous", "mixed_continuous")
+
+            if (self._requires_unavailable_high_rate_deep_path(settings, trigger)
+                    and not self._use_rolling_single_shot(settings, trigger)):
+                raise HardwareError(
+                    "This FPGA bitstream cannot return trustworthy deep digital "
+                    "captures with these settings. Use 1024 samples or fewer at "
+                    "high speed, or use 14 MHz or below for deeper full-width "
+                    "digital captures.")
 
             dev.reset()
             # REG_FAST_MODE selects BRAM (1024-word) vs SDRAM capture storage.
             # Only small single captures fit BRAM — same heuristic as the GUI.
-            fast = settings.mode == "single" and nsamp <= 512
+            # Both mixed and analog-only stream the 7-word MODE_MIXED frame
+            # (analog-only just drops the digital word — the dedicated 12-byte
+            # analog_only HW path streams flat data, so it is not used).
+            if mixed_requested:
+                storage_words = nsamp * 7
+            elif narrow_requested:
+                storage_words = max(1, (nsamp + 15) // 16)
+            elif analog_all_requested:
+                storage_words = nsamp * 6
+            elif analog_requested:
+                storage_words = nsamp
+            else:
+                storage_words = nsamp
+            fast = settings.mode == "single" and storage_words <= 1024
             dev.fast_mode_enabled = fast
 
             def cb(partial, got, total):
@@ -159,47 +270,207 @@ class ExistingHostAdapter(HardwareDevice):
 
             t0 = time.time()
             self._log(f"capture rate={rate:.0f} nsamp={nsamp} trigger={trigger}")
+            capture_divider: Optional[int] = None
             try:
-                if settings.analog_enabled:
-                    # Mixed 16-digital + 8-ADC mode — same maths as the GUI.
+                if mixed_requested:
+                    # Single packed mixed pass. The FPGA streams one coherent
+                    # 14-byte frame (16 digital + 8x12-bit ADC) per ADC scan, so
+                    # digital and analog are sampled at the same instant and stay
+                    # time-correlated. Digital is therefore limited to the ADC
+                    # frame rate (one word per frame); higher digital rates need
+                    # digital-only or analog-only mode.
                     from driver.ols_spi_device import (MODE_MIXED,
                                                        analog_frame_stride,
                                                        decode_analog_frames,
                                                        wire_to_payload)
+                    dev.set_analog_config(MODE_MIXED)
                     stride = analog_frame_stride(MODE_MIXED)      # 14
                     words_per_frame = stride // 2                 # 7
-                    dev.set_analog_config(MODE_MIXED)
                     sdram_words = nsamp * words_per_frame
+                    request_rate_hz = ADC_SCAN_FRAME_RATE_HZ * words_per_frame
+                    capture_divider, actual_wire_rate = (
+                        self._actual_sample_rate(dev, request_rate_hz))
                     wire = dev.capture(
-                        rate_hz=rate * words_per_frame,
+                        rate_hz=request_rate_hz,
                         nsamples=sdram_words,
                         timeout=max(3, sdram_words // 10000 + 2),
                         trigger=trigger, stop_evt=stop_evt, progress_cb=cb)
+                    if not wire:
+                        self._recover_after_failed_capture()
+                        dev.set_analog_config(MODE_MIXED)
+                        wire = dev.capture(
+                            rate_hz=request_rate_hz,
+                            nsamples=sdram_words,
+                            timeout=max(3, sdram_words // 10000 + 2),
+                            trigger=trigger, stop_evt=stop_evt, progress_cb=cb)
+                    if not wire:
+                        raise HardwareError(
+                            "Mixed capture returned 0 bytes - FPGA not responding")
                     payload = wire_to_payload(wire)[: nsamp * stride]
                     frames = decode_analog_frames(payload, MODE_MIXED)
+                    if not frames:
+                        self._recover_after_failed_capture()
+                        raise HardwareError(
+                            "Mixed capture returned no complete frames")
                     digital = np.array([fr["digital"] for fr in frames],
                                        dtype=np.uint16)
                     analog = {}
-                    if frames:
-                        adc = np.array([fr["adc"] for fr in frames],
-                                       dtype=np.uint16)
-                        for ch in range(adc.shape[1]):
-                            analog[f"a{ch}"] = adc_to_volts(adc[:, ch])
-                    # A mixed capture leaves the capture engine wedged: the
-                    # next capture returns a flat line unless analog mode is
-                    # disabled and the core reset again (verified on HW).
+                    adc = np.array([fr["adc"] for fr in frames], dtype=np.uint16)
+                    for ch in range(adc.shape[1]):
+                        analog[f"a{ch}"] = adc_to_volts(adc[:, ch])
+                    rate = actual_wire_rate / words_per_frame
+                    # Single mixed capture recovers the engine afterwards; the
+                    # continuous loop skips it (no wedge after the rework) so
+                    # buffers stream without a reset gap.
+                    if not continuous:
+                        self._recover_after_failed_capture()
+
+                elif analog_requested:
+                    from driver.ols_spi_device import (MODE_ANALOG_ALL,
+                                                       MODE_ANALOG_FAST,
+                                                       analog_frame_stride,
+                                                       decode_analog_frames,
+                                                       wire_to_payload)
+                    hw_mode = (MODE_ANALOG_ALL if analog_all_requested
+                               else MODE_ANALOG_FAST)
+                    stride = analog_frame_stride(hw_mode)
+                    words_per_frame = max(1, stride // 2)
+                    dev.set_analog_config(hw_mode, adc_channel=1)
+                    sdram_words = nsamp * words_per_frame
+                    request_rate_hz = (ADC_SCAN_FRAME_RATE_HZ * words_per_frame
+                                       if analog_all_requested
+                                       else ADC_FAST_FRAME_RATE_HZ)
+                    capture_divider, actual_wire_rate = (
+                        self._actual_sample_rate(dev, request_rate_hz))
+                    wire = dev.capture(
+                        rate_hz=request_rate_hz,
+                        nsamples=sdram_words,
+                        timeout=max(3, sdram_words // 10000 + 2),
+                        trigger=trigger, stop_evt=stop_evt, progress_cb=cb)
+                    if not wire:
+                        self._recover_after_failed_capture()
+                        dev.set_analog_config(hw_mode, adc_channel=1)
+                        wire = dev.capture(
+                            rate_hz=request_rate_hz,
+                            nsamples=sdram_words,
+                            timeout=max(3, sdram_words // 10000 + 2),
+                            trigger=trigger, stop_evt=stop_evt, progress_cb=cb)
+                    if not wire:
+                        raise HardwareError(
+                            "Analog capture returned 0 bytes - FPGA not responding")
+                    payload = wire_to_payload(wire)[: nsamp * stride]
+                    frames = decode_analog_frames(payload, hw_mode)
+                    if not frames:
+                        self._recover_after_failed_capture()
+                        raise HardwareError(
+                            "Analog capture returned no complete frames")
+                    digital = None   # analog-only: drop the digital word
+                    analog = {}
+                    adc = np.array([fr["adc"] for fr in frames], dtype=np.uint16)
+                    adc_channels = ([1, 2, 3, 4, 5, 7, 8, 16]
+                                    if analog_all_requested else [1])
+                    for idx, adc_channel in enumerate(adc_channels[:adc.shape[1]]):
+                        analog[f"a{adc_channel}"] = adc_to_volts(adc[:, idx])
+                    rate = (actual_wire_rate / words_per_frame
+                            if analog_all_requested else actual_wire_rate)
+                    # Single analog capture recovers the engine afterwards; the
+                    # continuous loop skips it (no wedge after the rework) so
+                    # buffers stream without a reset gap.
+                    if not continuous:
+                        self._recover_after_failed_capture()
+                elif narrow_requested:
+                    from driver.ols_spi_device import (
+                        narrow_digital_flags,
+                        unpack_narrow_digital_words,
+                    )
+                    channel = (settings.enabled_digital[0]
+                               if settings.enabled_digital else 0)
+                    word_count = max(1, (nsamp + 15) // 16)
+                    capture_divider, rate = self._actual_sample_rate(
+                        dev, rate)
                     dev.set_analog_config(0)
-                    dev.reset()
-                    time.sleep(0.05)
+                    old_flags = getattr(dev, "_raw_flags", 0)
+                    dev._raw_flags = (old_flags & ~0x3E000) | narrow_digital_flags(channel)
+                    try:
+                        data = dev.capture(
+                            rate_hz=float(settings.sample_rate),
+                            nsamples=word_count,
+                            timeout=max(3, word_count // 10000 + 2),
+                            trigger=trigger, stop_evt=stop_evt,
+                            progress_cb=cb, pre_trigger=0,
+                        )
+                        if not data:
+                            if stop_evt and stop_evt.is_set():
+                                raise HardwareError("Capture cancelled")
+                            self._recover_after_failed_capture()
+                            dev.set_analog_config(0)
+                            data = dev.capture(
+                                rate_hz=float(settings.sample_rate),
+                                nsamples=word_count,
+                                timeout=max(3, word_count // 10000 + 2),
+                                trigger=trigger, stop_evt=stop_evt,
+                                progress_cb=cb, pre_trigger=0,
+                            )
+                        if not data:
+                            if stop_evt and stop_evt.is_set():
+                                raise HardwareError("Capture cancelled")
+                            self._recover_after_failed_capture()
+                            raise HardwareError(
+                                "Narrow capture returned 0 bytes - FPGA not responding")
+                    finally:
+                        dev._raw_flags = old_flags
+                    digital = unpack_narrow_digital_words(
+                        data, channel=channel, sample_count=nsamp)
+                    analog = {}
+                    warnings.append(
+                        f"Packed 1-channel narrow digital mode on d{channel}")
                 else:
                     dev.set_analog_config(0)
                     pre = settings.trigger.pre_trigger_samples
-                    data = dev.capture(
-                        rate_hz=rate, nsamples=nsamp,
-                        timeout=max(3, nsamp // 10000 + 2),
-                        trigger=trigger, stop_evt=stop_evt,
-                        progress_cb=cb, pre_trigger=pre)
+                    dev._raw_flags &= ~0x3E000
+                    if self._use_rolling_single_shot(settings, trigger):
+                        data, start_sample = self._rolling_single_shot_capture(
+                            dev, rate=rate, nsamp=nsamp,
+                            progress=progress, stop_evt=stop_evt)
+                        data, repaired = self._repair_rolling_boundary_glitches(
+                            data, start_sample)
+                        warnings.append(
+                            "Used bounded rolling SDRAM readback for high-rate "
+                            "capture; this path keeps the newest retained "
+                            "samples and reports overruns rather than promising "
+                            "arbitrary-length lossless storage")
+                        ring_status = getattr(self, "_last_rolling_status", {}) or {}
+                        overrun = int(ring_status.get("overrun_count") or 0)
+                        if overrun:
+                            warnings.append(
+                                f"Rolling SDRAM overrun count is {overrun}; "
+                                "returned newest retained samples")
+                        if repaired:
+                            warnings.append(
+                                f"Repaired {repaired} single-sample rolling "
+                                "boundary glitches")
+                    else:
+                        capture_divider, rate = self._actual_sample_rate(
+                            dev, rate)
+                        data = dev.capture(
+                            rate_hz=float(settings.sample_rate), nsamples=nsamp,
+                            timeout=max(3, nsamp // 10000 + 2),
+                            trigger=trigger, stop_evt=stop_evt,
+                            progress_cb=cb, pre_trigger=pre)
                     if not data:
+                        if stop_evt and stop_evt.is_set():
+                            raise HardwareError("Capture cancelled")
+                        self._recover_after_failed_capture()
+                        dev.set_analog_config(0)
+                        data = dev.capture(
+                            rate_hz=float(settings.sample_rate), nsamples=nsamp,
+                            timeout=max(3, nsamp // 10000 + 2),
+                            trigger=trigger, stop_evt=stop_evt,
+                            progress_cb=cb, pre_trigger=pre)
+                    if not data:
+                        if stop_evt and stop_evt.is_set():
+                            raise HardwareError("Capture cancelled")
+                        self._recover_after_failed_capture()
                         raise HardwareError(
                             "Capture returned 0 bytes — FPGA not responding")
                     # Packed wire: contiguous 16-bit little-endian samples.
@@ -211,21 +482,214 @@ class ExistingHostAdapter(HardwareDevice):
                             f"Device returned {len(digital)} effective samples "
                             f"for {nsamp} requested (existing host wire format)")
             except HardwareError:
+                self._recover_after_failed_capture()
                 raise
             except Exception as e:
                 self._last_error = str(e)
+                self._recover_after_failed_capture()
                 raise HardwareError(f"Capture failed: {e}") from e
             self._timings["last_capture_s"] = time.time() - t0
 
             trigger_sample = None
             if trigger is not None and settings.trigger.pre_trigger_samples:
                 trigger_sample = min(settings.trigger.pre_trigger_samples,
-                                     len(digital))
+                                     len(digital) if digital is not None
+                                     else nsamp)
             return CaptureResult(
                 sample_rate=rate, digital=digital, analog=analog,
                 trigger_sample=trigger_sample,
-                divider=max(0, round(dev.sample_clk / rate) - 1),
+                divider=(capture_divider if capture_divider is not None
+                         else max(0, round(dev.sample_clk / rate) - 1)),
                 warnings=warnings)
+
+    def stream_capture(self, settings: CaptureSettings,
+                       progress: Optional[ProgressCb] = None,
+                       stop_evt: Optional[threading.Event] = None):
+        if settings.mode != "digital_narrow":
+            raise HardwareError("stream_capture is only implemented for digital_narrow")
+        with self._lock:
+            if self._dev is None:
+                raise HardwareError("Device not connected")
+            dev = self._dev
+            from driver.ols_spi_device import (
+                narrow_digital_flags,
+                unpack_narrow_digital_words,
+            )
+            channel = settings.enabled_digital[0] if settings.enabled_digital else 0
+            divider, actual_rate = self._actual_sample_rate(
+                dev, float(settings.sample_rate))
+            window_samples = max(1, int(settings.num_samples))
+            chunk_samples = min(window_samples, max(1024, int(actual_rate * 0.0005)))
+            if window_samples >= 10:
+                chunk_samples = min(chunk_samples, max(1, window_samples // 10))
+            chunk_words = max(1, (chunk_samples + 15) // 16)
+            window_words = max(chunk_words, (window_samples + 15) // 16)
+            old_flags = getattr(dev, "_raw_flags", 0)
+            dev._raw_flags = (old_flags & ~0x3E000) | narrow_digital_flags(channel)
+            dev.set_analog_config(0)
+            try:
+                for data, _total, _total_words in dev.continuous_ring_capture(
+                        rate_hz=float(settings.sample_rate),
+                        chunk_nsamp=chunk_words,
+                        buffer_nsamp=window_words,
+                        stop_evt=stop_evt or threading.Event(),
+                        progress_cb=progress,
+                        fast_mode=True,
+                        yield_full_buffer=False):
+                    sample_count = min(len(data) // 2 * 16, chunk_words * 16)
+                    digital = unpack_narrow_digital_words(
+                        data, channel=channel, sample_count=sample_count)
+                    warnings = [f"Packed 1-channel narrow digital mode on d{channel}"]
+                    ring_status = getattr(dev, "last_ring_status", {}) or {}
+                    overrun = int(ring_status.get("overrun_count") or 0)
+                    if overrun:
+                        warnings.append(
+                            f"Continuous narrow ring overrun count is {overrun}")
+                    yield CaptureResult(
+                        sample_rate=actual_rate,
+                        digital=digital[:chunk_samples],
+                        analog={},
+                        divider=divider,
+                        warnings=warnings)
+            finally:
+                dev._raw_flags = old_flags
+
+    @staticmethod
+    def _actual_sample_rate(dev, requested_rate: float) -> tuple[int, float]:
+        divider = max(0, round(dev.sample_clk / requested_rate) - 1)
+        return divider, float(dev.sample_clk) / float(divider + 1)
+
+    def _use_rolling_single_shot(self, settings: CaptureSettings, trigger) -> bool:
+        """Single-shot deep digital must not use the continuous ring path.
+
+        Hardware testing showed the ring is a retention window, not a lossless
+        high-rate acquisition path: once the async FIFO drains at SDRAM commit
+        cadence, a 100 kHz debug PWM captured at 200 MHz becomes an apparent
+        ~1.6 MHz waveform after about 17k samples. Keep the helper for direct
+        diagnostics/tests, but never select it for user captures.
+        """
+        return False
+
+    def _requires_unavailable_high_rate_deep_path(
+            self, settings: CaptureSettings, trigger) -> bool:
+        if settings.analog_enabled:
+            return False
+        if settings.mode in ("analog", "analog_fast", "analog_all"):
+            return False
+        if settings.mode == "digital_narrow":
+            return False
+        if settings.mode not in ("single", "continuous", "rolling"):
+            return False
+        if trigger is not None or settings.trigger.pre_trigger_samples:
+            return False
+        if settings.mode in ("continuous", "rolling"):
+            return settings.sample_rate > DIGITAL_DEEP_SAMPLE_RATE_HZ
+        return (settings.sample_rate > DIGITAL_DEEP_SAMPLE_RATE_HZ
+                and settings.num_samples > DIGITAL_FAST_BRAM_SAMPLES)
+
+    def _rolling_single_shot_capture(self, dev, *, rate: float, nsamp: int,
+                                     progress: Optional[ProgressCb],
+                                     stop_evt: Optional[threading.Event]) -> tuple[bytes, int]:
+        from driver.spi_protocol import CMD_ABORT_CAPTURE
+
+        div = max(0, round(dev.sample_clk / rate) - 1)
+        dev.reset()
+        time.sleep(0.02)
+        dev.spi.flush()
+        dev._write_capture_config(
+            div=div, samples=nsamp, delay_count=nsamp,
+            mask=0, value=0, flags=dev._raw_flags,
+            fast_mode=True, continuous=True)
+        dev.set_debug_ch0(dev.debug_ch0_enabled)
+        dev.spi.flush()
+        status = dev.pkt.arm_capture()
+        if status < 0:
+            return b"", 0
+
+        self._last_rolling_status = {}
+        expected_seq = None
+        start_sample = 0
+        deadline = time.time() + max(3, nsamp // 10000 + 2)
+        last_status = {}
+        data = b""
+        frozen = False
+        try:
+            while time.time() < deadline:
+                if stop_evt and stop_evt.is_set():
+                    return b"", 0
+                st = dev.pkt.get_status()
+                last_status = st
+                self._last_rolling_status = dict(st)
+                expected_seq = st.get("capture_seq", expected_seq)
+                producer = st.get("producer_index")
+                oldest = st.get("oldest_index")
+                if producer is not None and oldest is not None:
+                    available = int(producer) - int(oldest)
+                    if progress:
+                        progress(min(available, nsamp), nsamp, "capturing")
+                    if available >= nsamp:
+                        start_sample = max(int(oldest), int(producer) - nsamp)
+                        break
+                time.sleep(0.002)
+            else:
+                raise HardwareError(
+                    "High-rate rolling capture timed out waiting for producer index")
+
+            # Freeze the continuous writer before indexed readback. Reading the
+            # SDRAM ring while the FPGA is still writing can splice live/old
+            # regions into one waveform; the symptom is a clean CH0 PWM that
+            # turns into a second apparent frequency mid-capture.
+            try:
+                dev.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+                frozen = True
+            except Exception:
+                pass
+            time.sleep(0.005)
+
+            data = dev.read_capture_range(start_sample, nsamp)[: nsamp * 2]
+            if len(data) < nsamp * 2:
+                raise HardwareError(
+                    f"High-rate rolling capture returned {len(data) // 2} "
+                    f"samples for {nsamp} requested")
+            if expected_seq is not None:
+                dev.ack_capture_done(expected_seq)
+            if progress and data:
+                progress(len(data) // 2, nsamp, "capturing")
+            return data, start_sample
+        finally:
+            if not frozen:
+                try:
+                    dev.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+                except Exception:
+                    pass
+            overrun = last_status.get("overrun_count")
+            if overrun:
+                self._log(f"rolling_overrun count={overrun}")
+
+    def _repair_rolling_boundary_glitches(
+            self, data: bytes, start_sample: int = 0) -> tuple[bytes, int]:
+        if len(data) < 6:
+            return data, 0
+        samples = np.frombuffer(data[:len(data) - (len(data) % 2)],
+                                dtype="<u2").copy()
+        repaired = 0
+        for idx in range(1, len(samples) - 1):
+            if ((start_sample + idx) & 0xFF) != 0:
+                continue
+            prev = int(samples[idx - 1])
+            cur = int(samples[idx])
+            nxt = int(samples[idx + 1])
+            same_neighbors = ~(prev ^ nxt) & 0xFFFF
+            glitch_bits = (cur ^ prev) & same_neighbors
+            if glitch_bits:
+                samples[idx] = (cur & ~glitch_bits) | (prev & glitch_bits)
+                repaired += int(glitch_bits.bit_count())
+        if repaired == 0:
+            return data, 0
+        fixed = samples.astype("<u2").tobytes()
+        if len(data) % 2:
+            fixed += data[-1:]
+        return fixed, repaired
 
     def _build_trigger(self, settings: CaptureSettings):
         trig = settings.trigger
@@ -244,6 +708,28 @@ class ExistingHostAdapter(HardwareDevice):
             return None
         return None
 
+    def _recover_after_failed_capture(self) -> None:
+        if self._dev is None:
+            return
+        try:
+            self._dev.set_analog_config(0)
+            self._dev.reset()
+            self._dev.spi.flush()
+            self._log("capture_recovery_reset")
+        except Exception as e:
+            self._last_error = str(e)
+        try:
+            close = getattr(self._dev, "close", None)
+            open_ = getattr(self._dev, "open", None)
+            if callable(close) and callable(open_):
+                close()
+                time.sleep(0.05)
+                open_()
+                self._reset_after_connect()
+                self._log("capture_recovery_reopen")
+        except Exception as e:
+            self._last_error = str(e)
+
     # ── generator ────────────────────────────────────────────────────
 
     def generator_status(self) -> GeneratorStatus:
@@ -256,6 +742,7 @@ class ExistingHostAdapter(HardwareDevice):
                 pass
         return GeneratorStatus(busy=busy, running=busy,
                                protocol=self._gen_cfg.protocol if self._gen_cfg else None,
+                               config=self._gen_cfg.model_dump() if self._gen_cfg else None,
                                supported=True,
                                detail="UART/I2C generator + debug CH0 PWM (FPGA)")
 
@@ -318,17 +805,45 @@ class ExistingHostAdapter(HardwareDevice):
                     progress(int(got), int(total), "capturing")
 
             if cfg.protocol == "i2c":
-                raw = dev.i2c_capture_with_gen(
-                    rate_hz=rate, nsamples=nsamp, i2c_speed=cfg.baud,
-                    dev_addr=cfg.i2c_address, reg_addr=cfg.i2c_register,
-                    read_len=cfg.i2c_read_len, tx_pin=cfg.tx_pin,
-                    scl_pin=cfg.scl_pin)
+                # On the MAX1000 board, the useful I2C loopback is the real
+                # LIS3DH bus: map capture channels onto the sensor pins and
+                # let the generator drive that physical bus. Capturing the
+                # internal generator echo only proves SCL/SDA toggled; it will
+                # always NACK because no slave is on that synthetic bus.
+                sda_ch = int(cfg.tx_pin)
+                scl_ch = int(cfg.scl_pin)
+                sda_pin = int(cfg.extra.get("sda_physical_pin", 24))
+                scl_pin = int(cfg.extra.get("scl_physical_pin", 25))
+                gen_pin = int(cfg.extra.get("i2c_generator_pin", 31))
+                dev.set_pin_map(scl_ch, scl_pin)
+                dev.set_pin_map(sda_ch, sda_pin)
+                dev.spi.flush()
+                time.sleep(0.005)
+                dev_w = (int(cfg.i2c_address) << 1) & 0xFE
+                dev_r = ((int(cfg.i2c_address) << 1) | 0x01) & 0xFF
+                try:
+                    raw = dev.capture_with_gen(
+                        rate_hz=rate, nsamples=nsamp, timeout=6,
+                        proto='I2C', i2c_speed=int(cfg.baud),
+                        i2c_frame=bytes([dev_w, int(cfg.i2c_register) & 0xFF]),
+                        i2c_tx_pin=gen_pin, i2c_scl_pin=gen_pin,
+                        i2c_read_len=int(cfg.i2c_read_len),
+                        i2c_dev_r=dev_r, fast_mode=False)
+                finally:
+                    dev.set_pin_map(scl_ch, scl_ch)
+                    dev.set_pin_map(sda_ch, sda_ch)
+                    dev.spi.flush()
             elif cfg.protocol == "uart":
                 dev._gen_data = data
                 dev._gen_baud = cfg.baud
                 dev._gen_tx_pin = cfg.tx_pin
+                # UART loopback is an internal generator-to-capture check. Use
+                # the mapped capture path so d{tx_pin} sees the generated bit
+                # stream directly; the raw fast path samples physical pins and
+                # can decode shifted bytes after earlier pin-map exercises.
                 raw = dev.capture_with_gen(rate_hz=rate, nsamples=nsamp,
-                                           stop_evt=stop_evt, progress_cb=cb)
+                                           stop_evt=stop_evt, progress_cb=cb,
+                                           fast_mode=False)
             else:
                 raise HardwareError(
                     f"Loopback capture not supported for '{cfg.protocol}' on hardware")

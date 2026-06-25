@@ -46,6 +46,19 @@ export interface DeviceCapabilities {
   triggers: TriggerCapability[];
   trigger_matrix: TriggerCapability[];
   notes: string[];
+  digital_pin_map: PinMapInfo[];
+  analog_pin_map: PinMapInfo[];
+}
+
+export interface PinMapInfo {
+  pin_index?: number;
+  board_label: string;
+  fpga_pin?: string;
+  header?: string;
+  adc_channel?: number;
+  available?: boolean;
+  current_rtl_stream?: boolean;
+  note?: string;
 }
 
 export interface TriggerConfig {
@@ -63,7 +76,9 @@ export interface TriggerConfig {
 export interface CaptureSettings {
   sample_rate: number;
   num_samples: number;
-  mode: 'single' | 'continuous' | 'rolling' | 'triggered';
+  mode: 'single' | 'continuous' | 'rolling' | 'digital_narrow' | 'triggered' | 'analog' | 'mixed'
+    | 'analog_fast' | 'analog_all' | 'analog_continuous'
+    | 'analog_all_continuous' | 'mixed_continuous';
   analog_enabled: boolean;
   enabled_digital: number[];
   trigger: TriggerConfig;
@@ -91,6 +106,12 @@ export interface ChannelInfo {
   display_base: 'bin' | 'hex' | 'dec' | 'ascii';
   source?: string | null;
   derive?: Record<string, unknown> | null;
+  board_label?: string | null;
+  fpga_pin?: string | null;
+  header?: string | null;
+  pin_index?: number | null;
+  adc_channel?: number | null;
+  physical_available?: boolean | null;
 }
 
 export interface DecoderInstance {

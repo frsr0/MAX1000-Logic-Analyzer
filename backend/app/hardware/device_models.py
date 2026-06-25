@@ -38,6 +38,8 @@ class DeviceCapabilities(BaseModel):
     generator_protocols: List[str] = Field(default_factory=list)
     triggers: List[TriggerCapability] = Field(default_factory=list)
     notes: List[str] = Field(default_factory=list)
+    digital_pin_map: List[Dict[str, Any]] = Field(default_factory=list)
+    analog_pin_map: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class CaptureProgress(BaseModel):
@@ -67,6 +69,7 @@ class GeneratorStatus(BaseModel):
     busy: bool = False
     running: bool = False
     protocol: Optional[str] = None
+    config: Optional[Dict[str, Any]] = None
     last_error: Optional[str] = None
     supported: bool = True
     detail: str = ""

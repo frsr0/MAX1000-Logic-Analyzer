@@ -9,6 +9,21 @@ const DEFAULT_CFG: GeneratorConfig = {
   scl_pin: 1, i2c_address: 0x19, i2c_register: 0x0f, i2c_read_len: 1,
   freq_hz: 100000, duty_pct: 50, repeat: 1, continuous: false,
 };
+const MAX_GENERATOR_PAYLOAD_BYTES = 256;
+const UART_BITS_PER_BYTE = 10;
+const UART_CAPTURE_GUARD_SAMPLES = 2000;
+const UART_CAPTURE_MARGIN = 1.2;
+
+function byteLen(hex: string): number {
+  return Math.floor(hex.length / 2);
+}
+
+function uartCaptureSamples(cfg: GeneratorConfig, captureRate: number): number {
+  if (cfg.protocol !== 'uart') return 60_000;
+  const baud = Math.max(1, cfg.baud || 1);
+  const samples = byteLen(cfg.data_hex) * UART_BITS_PER_BYTE * captureRate / baud;
+  return Math.max(4_000, Math.ceil(samples * UART_CAPTURE_MARGIN) + UART_CAPTURE_GUARD_SAMPLES);
+}
 
 export function GeneratorPage() {
   const { status, toast, controlMode, openSession, setPage } = useApp();
@@ -35,6 +50,16 @@ export function GeneratorPage() {
 
   const set = (p: Partial<GeneratorConfig>) => setCfg({ ...cfg, ...p });
 
+  const setProtocol = (protocol: string) => {
+    if (protocol === 'i2c') {
+      setCfg({ ...cfg, protocol, tx_pin: 2, scl_pin: 1, baud: 400000 });
+    } else if (protocol === 'uart') {
+      setCfg({ ...cfg, protocol, tx_pin: status?.device_kind === 'mock' ? 0 : 3, baud: 115200 });
+    } else {
+      setCfg({ ...cfg, protocol });
+    }
+  };
+
   const setTextData = (t: string) => {
     setText(t);
     set({ data_hex: Array.from(new TextEncoder().encode(t))
@@ -45,9 +70,13 @@ export function GeneratorPage() {
     setBusy(true);
     setResult(null);
     try {
+      if (byteLen(cfg.data_hex) > MAX_GENERATOR_PAYLOAD_BYTES) {
+        throw new Error(`Generator FIFO holds ${MAX_GENERATOR_PAYLOAD_BYTES} bytes; this payload is ${byteLen(cfg.data_hex)} bytes.`);
+      }
+      const captureRate = 2_000_000;
       const r = await api.generatorSend({
         config: cfg, capture,
-        capture_rate: 2_000_000, capture_samples: 60_000,
+        capture_rate: captureRate, capture_samples: uartCaptureSamples(cfg, captureRate),
         expected_hex: expected || undefined,
       });
       setResult(r);
@@ -60,6 +89,7 @@ export function GeneratorPage() {
 
   const needsData = ['uart', 'spi', 'pattern', 'i2c'].includes(cfg.protocol);
   const isPwm = ['pwm', 'square'].includes(cfg.protocol);
+  const canLoopbackCapture = ['uart', 'i2c'].includes(cfg.protocol) || status?.device_kind === 'mock';
 
   if (!connected) {
     return <div className="page"><h2>Signal generator</h2>
@@ -80,14 +110,14 @@ export function GeneratorPage() {
         <div className="card">
           <label className="field">
             <span>Protocol</span>
-            <select value={cfg.protocol} onChange={(e) => set({ protocol: e.target.value })}>
+            <select value={cfg.protocol} onChange={(e) => setProtocol(e.target.value)}>
               {protocols.map((p) => <option key={p} value={p}>{p.toUpperCase()}</option>)}
             </select>
           </label>
           {needsData && (
             <>
               <label className="field">
-                <span>Data (text)</span>
+                <span>Data (text) · {byteLen(cfg.data_hex)}/{MAX_GENERATOR_PAYLOAD_BYTES} bytes</span>
                 <input value={text} onChange={(e) => setTextData(e.target.value)} />
               </label>
               <label className="field">
@@ -116,7 +146,7 @@ export function GeneratorPage() {
               <label className="field"><span>Register (hex)</span>
                 <input className="mono" value={cfg.i2c_register.toString(16)}
                   onChange={(e) => set({ i2c_register: parseInt(e.target.value, 16) || 0 })} /></label>
-              <label className="field"><span>SDA pin / SCL pin</span>
+              <label className="field"><span>SDA channel / SCL channel</span>
                 <span className="button-row">
                   <input type="number" min={0} max={15} value={cfg.tx_pin}
                     onChange={(e) => set({ tx_pin: Number(e.target.value) })} />
@@ -148,7 +178,8 @@ export function GeneratorPage() {
           </label>
           <div className="button-row">
             <button className="primary" disabled={busy || !controlMode} onClick={() => send(false)}>Send</button>
-            <button className="primary" disabled={busy || !controlMode} onClick={() => send(true)}>
+            <button className="primary" disabled={busy || !controlMode || !canLoopbackCapture} onClick={() => send(true)}
+              title={canLoopbackCapture ? '' : 'PWM is a continuous CH0 output on real hardware; start it, then run a normal capture.'}>
               Send + capture (loopback)
             </button>
             <button disabled={!controlMode} onClick={() => api.generatorStop().catch(() => {})}>Stop</button>

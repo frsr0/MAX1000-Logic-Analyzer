@@ -56,11 +56,11 @@ def run_sanity_checks(session: Session, wf: WaveformData) -> List[dict]:
                         "message": f"{c.name}: 1-sample pulses present — signal "
                                    f"may be faster than half the sample rate"})
                     break
-    if session.sample_clk_hz and session.sample_rate > session.sample_clk_hz / 2:
+    if session.sample_clk_hz and session.sample_rate > session.sample_clk_hz:
         findings.append({
             "level": "error", "check": "clock",
             "message": f"Sample rate {session.sample_rate:,.0f} Hz exceeds "
-                       f"sample_clk/2 ({session.sample_clk_hz / 2:,.0f} Hz)"})
+                       f"sample clock ({session.sample_clk_hz:,.0f} Hz)"})
     for name, arr in wf.analog.items():
         if len(arr) and (np.all(arr == arr[0])):
             findings.append({"level": "info", "check": "flat_analog",

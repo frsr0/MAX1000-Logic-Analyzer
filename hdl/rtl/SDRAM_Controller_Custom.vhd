@@ -510,7 +510,21 @@ begin
                 -- DONE: service next pending request, or go idle
                 when ST_DEASSERT =>
                     sdram_s_waitrequest <= '0';
-                    if pend_wn = '1' then
+                    if pend_wn = '1' and row_open = '1'
+                       and not is_same_row(buf_a, active_row, active_bank) then
+                        -- Cross-row write: close the open page-mode row BEFORE
+                        -- activating the new one (the pend_rn read path below
+                        -- already does this). Every same-row page-mode write
+                        -- reuses the row activated in ST_ACT and only updates the
+                        -- column; a write whose address crossed a 256-column page
+                        -- boundary would otherwise activate the new row WITHOUT
+                        -- precharging the old, so the sample lands in the stale
+                        -- row -> the deterministic 256-sample-boundary readback
+                        -- glitch. pend_wn stays set; ST_PRE2 -> ST_TRP2 ->
+                        -- ST_DEASSERT re-runs this write with row_open=0 -> ST_ACT.
+                        sdram_s_waitrequest <= '1';
+                        state <= ST_PRE2;
+                    elsif pend_wn = '1' then
                         pend_wn <= '0';
                         is_read <= '0';
                         dq_oe <= '1';
@@ -529,6 +543,11 @@ begin
                         else
                             state <= ST_ACT;
                         end if;
+                    elsif pend_wn_next = '1' and row_open = '1'
+                          and not is_same_row(buf_a_next, active_row, active_bank) then
+                        -- Same cross-row precharge for the pipelined next write.
+                        sdram_s_waitrequest <= '1';
+                        state <= ST_PRE2;
                     elsif pend_wn_next = '1' then
                         bank_r <= buf_a_next(21 downto 20); row_r <= buf_a_next(19 downto 8); col_r <= buf_a_next(7 downto 0);
                         buf_a <= buf_a_next;

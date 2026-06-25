@@ -49,11 +49,15 @@ export function SettingsPage() {
         <div className="card">
           <h3>Hardware control</h3>
           <p className="hint">Client id: <span className="mono">{clientId()}</span></p>
+          <p className="hint">Control only grants permission to send commands. Connect mock or hardware on the Device page before capture or generator actions.</p>
           <p>
             Lock: {lock?.held
               ? <>held by <strong>{lock.holder_name}</strong>{iAmHolder ? ' (you)' : ''}</>
               : 'free'}
           </p>
+          {iAmHolder && !status?.device_connected && (
+            <div className="finding warning">Control is yours, but no device is connected.</div>
+          )}
           <label className="field checkbox">
             <input type="checkbox" checked={controlMode}
               onChange={(e) => setControlMode(e.target.checked)} />
@@ -68,7 +72,7 @@ export function SettingsPage() {
             }}>Acquire control</button>
             <button className="warning" onClick={async () => {
               await api.acquireControl('me', true);
-              toast('success', 'Control taken (forced)');
+              toast('success', 'Control taken. Connect a device on the Device page.');
               refreshStatus();
             }}>Force take</button>
             <button onClick={async () => {

@@ -2,15 +2,16 @@
 
 ## Architecture Overview
 
-Target: Intel MAX10 10M08SAU169C8G on Arrow MAX1000 board. PLL multiplies 12 MHz input to three clock domains:
+Target: Intel MAX10 10M08SAU169C8G on Arrow MAX1000 board. PLL derives four active outputs from the 12 MHz input:
 
 | Output | Multiply | Frequency | Domain |
 |--------|----------|-----------|--------|
 | c0 | ×8.33 | 100 MHz | SDRAM write pump, buffer mgmt, readout, OLS protocol |
 | c1 | ×16.67 | 200 MHz | **Sample capture** (FAST_CLK), SPI slave |
 | c2 | ×8.33 | 100 MHz, −90° | SDRAM clock (phase-shifted for data centering) |
+| c3 | ×4.17 | 50 MHz VCO tap / 12 MHz output | MAX10 ADC hard-IP input (`clkdiv=1` inside ADC IP) |
 
-VCO = 480 MHz. Current generated wrapper uses `FAST_SPEED => true` for a 100 MHz system clock and 200 MHz sample clock. Normal mode remains available through the top-level generics but requires changing `proj/compile.ps1`; the generated wrapper is overwritten on each build.
+Current generated wrapper uses `FAST_SPEED => true` for a 100 MHz system clock and 200 MHz sample clock. The same PLL instance also feeds the ADC hard-IP from `c3`, which is why the analogue path can run at the validated 1 MSPS single-channel / 125 kframes/s 8-slot rates. Normal mode remains available through the top-level generics but requires changing `proj/compile.ps1`; the generated wrapper is overwritten on each build.
 
 ### Two-Clock Domain Split
 
@@ -35,7 +36,7 @@ CDC: async FIFO (dcfifo) for sample data, 2FF + toggle synchronizers for config/
 ```
 OLS_Logic_Analyzer_wrapper      — pin assignment wrapper (auto-generated from CSV)
 └── OLS_SDRAM_Top               — system integration, I/O pin pool, capture mux
-    ├── SDRAM_PLL               — PLL (3-output clock generation)
+    ├── SDRAM_PLL               — PLL (4-output clock generation, including ADC c3)
     ├── OLS_Logic_Analyzer      — core (command/control + capture + generator)
     │   ├── OLS_Interface       — SPI command decoder & readout FSM
     │   ├── Fast_Logic_Analyzer_SDRAM — dual-clock capture engine, async FIFO
@@ -51,7 +52,7 @@ OLS_Logic_Analyzer_wrapper      — pin assignment wrapper (auto-generated from 
 
 ## RTL Modules
 
-### `rtl/Fast_Logic_Analyzer_SDRAM.vhd` (~700 lines)
+### `rtl/Fast_Logic_Analyzer_SDRAM.vhd` (~1,440 lines)
 
 **Entity:** `Fast_Logic_Analyzer_SDRAM`
 
@@ -61,11 +62,12 @@ Capture engine with two-clock domain split.
 - **Config handshake**: Detects `cfg_valid_edge` (toggled by CLK domain on run start), latches `cfg_rate_div_f` and `cfg_samples_f`, acks via `cfg_ack_toggle`
 - **Sample divider**: 28-bit down-counter, fires every `cfg_rate_div_f + 1` cycles; a start gate waits for config ACK/divider reload before sampling, including `Rate_Div=1`
 - **Input packer**: Shifts 16 channel bits into 32-bit buffer, assembles 16-bit words
+- **Narrow digital packer**: When `Narrow_Enable` is set, samples one selected digital channel at FAST_CLK rate and packs 16 consecutive time samples into one 16-bit FIFO word, bit 0 earliest
 - **Pre-trigger BRAM**: When armed, writes samples to circular 1,024×16 M9K. On trigger (`cfg_valid_edge`), snapshots write pointer via `bram_wp_f`/`bram_cnt_f`
 - **Async FIFO push**: Post-trigger, pushes 16-bit words to dcfifo (4,096 depth). Sets overflow on FIFO full or sample count reached
 - **Snapshot CDC**: Toggle synchronizer for BRAM snapshot → CLK domain
 
-**CLK (96 MHz) processes:**
+**CLK (100 MHz in the current speed build) processes:**
 - **BRAM read port**: Synchronous read on pclk
 - **BRAM snapshot latch**: On `snap_valid_clk`, latches `bram_wp_snap`/`bram_cnt_snap` (2FF CDC)
 - **BRAM flush**: After run_edge, reads pre-trigger data from BRAM using frozen snapshot, writes to SDRAM
@@ -74,25 +76,25 @@ Capture engine with two-clock domain split.
 - **Readout**: Address-driven SDRAM reads → `Outputs`; continuous readout maps absolute sample indexes into the ring
 - **Full detection**: Asserts `full_i` when buffer exhausted + FIFO empty + flush complete
 
-### `rtl/OLS_SDRAM_Top.vhd` (~670 lines)
+### `rtl/OLS_SDRAM_Top.vhd` (~940 lines)
 
 **Entity:** `OLS_SDRAM_Top`
 
-System integration. Instantiates `SDRAM_PLL`, distributes clocks. 23-pin pool (MKR_D[14:0] + PMOD[7:0]) mapped to 16 LA channels via programmable `pin_map`. Capture mux with generator loopback priority. ADC interface with 8 channels, 128-bit analog frame. Two capture modes via 1-bit `analog_enable` (REG_FLAGS bit 3): digital-only (2-byte frame) or 16 digital + all 8 ADC channels (14-byte frame).
+System integration. Instantiates `SDRAM_PLL`, distributes clocks. The RTL pin pool has 26 entries: MKR_D[14:0], PMOD[7:0], and the LIS3DH `SEN_SDO`/`SEN_SDI`/`SEN_SPC` pins. Sixteen LA channels select from that pool via programmable `pin_map` (default: MKR D0-D14 plus `SEN_SDI`). Capture mux has generator loopback priority. ADC profile selection is controlled by `REG_FLAGS`: digital-only (2-byte frame), narrow packed digital (`bit13`, one selected channel from bits17:14, 2-byte word per 16 time samples), mixed 16 digital + ADC0-ADC7 (`bit3`, 14-byte frame), high-speed analog (`bit3|bit4`, profile `00`, 2-byte frame), or maximum analog (`bit3|bit4`, profile `01`, 12-byte frame for ADC1,2,3,4,5,7,8,16). See [`docs/ANALOG_MODE_PLAN.md`](../docs/ANALOG_MODE_PLAN.md).
 
-### `rtl/OLS_Logic_Analyzer_SDRAM_Core.vhd` (298 lines)
+### `rtl/OLS_Logic_Analyzer_SDRAM_Core.vhd` (~380 lines)
 
 **Entity:** `OLS_Logic_Analyzer`
 
-Core wrapper. Instantiates `OLS_Interface`, `Fast_Logic_Analyzer_SDRAM`, `Signal_Gen`, `Protocol_Trigger`, `SPI_Slave2`. Routes capture control, generator control, buffer handshakes, and continuous ring metadata.
+Core wrapper. Instantiates `OLS_Interface`, `Fast_Logic_Analyzer_SDRAM`, `Signal_Gen`, `Protocol_Trigger`, `SPI_Slave2`. Routes capture control, generator control, and continuous ring metadata. (The FLA↔OLS_Interface buffer-full handshake is internal; the vestigial top-level Buffer_Full/Buffer_Ack core ports were removed.)
 
-### `rtl/OLS_Interface.vhd` (~1,172 lines)
+### `rtl/OLS_Interface.vhd` (~1,200 lines)
 
 **Entity:** `OLS_Interface`
 
-Command/control interface. Packet opcodes cover register access, capture control, generator, diagnostics, sticky DONE ACK, and metadata readback. DONE latches until ACK, abort, or the next arm; `capture_seq` increments on every arm so the host can prove readback freshness. `ID = 0x31414c53` ("SLA1").
+Command/control interface. Packet opcodes cover register access, capture control, generator, diagnostics, sticky DONE ACK, and metadata readback. DONE latches until ACK, abort, or the next arm; `capture_seq` increments on every arm so the host can prove readback freshness. `REG_FLAGS` includes analog profile/channel bits plus narrow digital enable/channel bits. `ID = 0x31414c53` ("SLA1").
 
-### `rtl/SPI_Slave2.vhd` (165 lines)
+### `rtl/SPI_Slave2.vhd` (~188 lines)
 
 **Entity:** `SPI_Slave2`
 
@@ -104,7 +106,7 @@ Full-duplex SPI slave on `fast_clk` (200 MHz in speed build). CDC: 2FF for confi
 
 Wrapper around `SDRAM_Controller`. Reset: 480,000 cycles (5 ms @ 96 MHz). Avalon-MM signal mapping. Simulation mode uses local RAM.
 
-### `rtl/SDRAM_Controller_Custom.vhd` (591 lines)
+### `rtl/SDRAM_Controller_Custom.vhd` (~620 lines)
 
 **Entity:** `SDRAM_Controller`
 
@@ -114,19 +116,27 @@ Custom SDRAM controller: power-on init, read, write, burst (4-word), auto-refres
 
 **Entity:** `SDRAM_PLL`
 
-Altera ALTPLL. 12 MHz input → c0 (100 MHz), c1 (200 MHz), c2 (100 MHz, −90°) in the current speed build. Auto bandwidth.
+Altera ALTPLL. 12 MHz input → c0 (100 MHz), c1 (200 MHz), c2 (100 MHz, −90°), and c3 feeding the MAX10 ADC hard-IP at 12 MHz in the current speed build. Auto bandwidth.
 
 ### `rtl/ADC_Controller.vhd` (283 lines)
 
 **Entity:** `ADC_Controller`
 
-MAX10 internal ADC controller, **8 channels** (ch0–ch7). State machine: INIT→IDLE→SEND_CMD→WAIT_RSP→DONE. Sequentially scans requested channels. ADC clock: 6.9 MHz (divider=13 from 96 MHz sys_clk).
+MAX10 internal ADC controller, **8 mux slots** (ch0-ch7). State machine: INIT→IDLE→SEND_CMD→WAIT_RSP→DONE. Sequentially scans requested slots; each slot can select ADC mux channel 0-31. ADC hard-IP clock is SDRAM_PLL c3 at 12 MHz with `clkdiv=1`; measured direct hardware timing is about 1 MSPS for the one-slot high-speed analog profile and about 125 kframes/s for the 8-slot mixed/maximum profiles.
 
-### `rtl/LED_Controller.vhd` (~400 lines)
+MAX1000 board-guide analogue mapping is non-linear: MKR `AIN1`=ADC2, `AIN2`=ADC5, `AIN3`=ADC1, `AIN4`=ADC3, `AIN5`=ADC7, `AIN6`=ADC4, and `AIN0`=ADC8. Mixed mode scans ADC0-ADC7, so ADC0 and ADC6 remain unmapped mux slots. Maximum analog scans the physical profile ADC1,2,3,4,5,7,8,16, adding MKR `AIN0` and the dedicated `AIN` pin.
+
+`REG_FLAGS` bits 6:5 select the analog profile and bits 12:8 select the
+high-speed analog ADC mux channel. Bit 13 enables narrow packed digital and
+bits 17:14 select the digital channel for that mode. Frame completion uses
+`adc0_valid` for the one-slot high-speed profile and `adc7_valid` for 8-slot
+mixed/maximum profiles.
+
+### `rtl/LED_Controller.vhd` (~220 lines)
 
 **Entity:** `LED_Controller`
 
-8-LED animation engine with input pipeline registers and `r_speed` pipeline (breaks multiply/divide chain in rolling animation). States: idle (breathing), host confirm, armed (rapid pulse), single capture (flash), continuous (rolling with FIFO activity).
+8-LED animation engine driving per-LED fade targets and slew rates. States: idle, host-connect confirm pulse, armed (slow blink), single capture (flash), continuous (rolling with FIFO activity). LEDs 4-7 are suppressed in 4-channel mode.
 
 ### `rtl/Signal_Gen.vhd` (441 lines)
 
@@ -134,11 +144,11 @@ MAX10 internal ADC controller, **8 channels** (ch0–ch7). State machine: INIT�
 
 Configurable generator (UART/I2C/SPI) with 256-byte FIFO. CRC-16 append option.
 
-### `rtl/Protocol_Trigger.vhd` (87 lines)
+### `rtl/Protocol_Trigger.vhd` (~91 lines)
 
 **Entity:** `Protocol_Trigger`
 
-UART byte-level trigger. State: `IDLE→START→BITS→STOP→CHECK`.
+UART byte-level trigger. State: `IDLE→START→BITS→STOP→CHECK`. Guards the degenerate `Baud_Div<2` case so the FSM can't strand on a sub-2 divider.
 
 ---
 
@@ -155,7 +165,7 @@ Build automation:
 
 ### `proj/OLS_Logic_Analyzer.sdc`
 
-Timing constraints: 12 MHz input clock, `derive_pll_clocks`, CDC false paths between c0 and c1, LED controller multicycle path (1M cycles). No other multicycle constraints on the capture path.
+Timing constraints: 12 MHz input clock, `derive_pll_clocks`, CDC false paths between c0 and c1, LED controller multicycle path (1M cycles), and a false path from the slow-domain pin-map registers into the pipelined fast capture input map. No multicycle constraints are applied to the capture datapath.
 
 ---
 
@@ -172,12 +182,13 @@ ghdl -r --std=08 <testbench> --assert-level=failure
 
 | Testbench | Lines | Coverage |
 |-----------|-------|----------|
-| `tb_ols_interface` | 467 | All opcodes, trigger, gen control, readout |
-| `tb_ols_capture_contract` | 220 | Sticky DONE/ACK/abort, capture_seq, mixed→digital→mixed mode reset |
+| `tb_ols_interface` | 301 | All opcodes, trigger, gen control, readout |
+| `tb_ols_capture_contract` | 222 | Sticky DONE/ACK/abort, capture_seq, mixed→digital→mixed mode reset |
 | `tb_capture_path` | 227 | sample_en timing, BRAM write, Full, CH0 |
-| `tb_continuous` | 92 | Buffer fill/ack/refill |
+| `tb_continuous` | 92 | Continuous SDRAM-ring fill/readback |
 | `tb_continuous_rate1` | 94 | Continuous auto-rotation at max-rate `Rate_Div=1` |
-| `tb_fast_analyzer` | 206 | FLA with SDRAM model, pattern gen |
+| `tb_fast_analyzer` | 218 | FLA single-shot, continuous SDRAM ring (producer index), fast/BRAM |
+| `tb_gen_loopback` | — | Authoritative full-system: SPI → capture → readout |
 | `tb_sdram_interface` | 156 | SDRAM read/write |
 | `tb_sdram_controller` | 175 | Avalon-MM SDRAM transactions |
 | `tb_spi_slave` | 107 | Full-duplex at 10 MHz |
@@ -204,4 +215,4 @@ Support packages: `sim_pkg.vhd`, `adxl345_model.vhd`, `sdram_model.vhd`, `pll_mo
 ## IP Cores
 
 ### `ip/MAX10_ADC/`
-Altera Modular ADC II for MAX10. All 8 analog channels enabled. Avalon-ST command/response interface.
+Altera Modular ADC II for MAX10. The IP mask enables ADC0-ADC8 plus the dedicated analogue input ADC16. Avalon-ST command/response interface.

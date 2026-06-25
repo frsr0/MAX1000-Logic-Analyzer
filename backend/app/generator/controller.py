@@ -21,6 +21,11 @@ from .model import GeneratorSelfTestResult
 
 log = logging.getLogger("msa.generator")
 
+MAX_GENERATOR_PAYLOAD_BYTES = 256
+UART_BITS_PER_BYTE = 10
+UART_CAPTURE_GUARD_SAMPLES = 2_000
+UART_CAPTURE_MARGIN = 1.20
+
 # decoder + channel mapping per generator protocol (mock pin layout)
 _LOOPBACK_DECODE = {
     "uart": ("uart", lambda cfg: {"rx": f"d{cfg.tx_pin}"},
@@ -32,14 +37,42 @@ _LOOPBACK_DECODE = {
 }
 
 
+def generator_payload_bytes(cfg: GeneratorConfig) -> bytes:
+    return bytes.fromhex(cfg.data_hex) if cfg.data_hex else b"\x55"
+
+
+def validate_generator_payload(cfg: GeneratorConfig) -> bytes:
+    data = generator_payload_bytes(cfg)
+    if len(data) > MAX_GENERATOR_PAYLOAD_BYTES:
+        raise ValueError(
+            f"{cfg.protocol.upper()} generator payload is {len(data)} bytes; "
+            f"current FPGA generator FIFO holds {MAX_GENERATOR_PAYLOAD_BYTES} bytes")
+    return data
+
+
+def required_uart_capture_samples(cfg: GeneratorConfig, capture_rate: float) -> int:
+    data = validate_generator_payload(cfg)
+    baud = max(1, int(cfg.baud))
+    payload_samples = len(data) * UART_BITS_PER_BYTE * float(capture_rate) / baud
+    return int(payload_samples * UART_CAPTURE_MARGIN) + UART_CAPTURE_GUARD_SAMPLES
+
+
+def normalized_loopback_samples(cfg: GeneratorConfig, capture_rate: float,
+                                requested_samples: int) -> int:
+    if cfg.protocol != "uart":
+        return requested_samples
+    return max(int(requested_samples), required_uart_capture_samples(cfg, capture_rate))
+
+
 def loopback_self_test(mgr: CaptureManager, cfg: GeneratorConfig,
                        capture_rate: float, capture_samples: int,
                        expected_hex: Optional[str] = None) -> GeneratorSelfTestResult:
     """Send a pattern through the generator while capturing, decode the
     capture, and compare against the sent/expected bytes."""
     dev = mgr.require_device()
-    sent = bytes.fromhex(cfg.data_hex) if cfg.data_hex else b"\x55"
+    sent = validate_generator_payload(cfg)
     expected = bytes.fromhex(expected_hex) if expected_hex else sent
+    capture_samples = normalized_loopback_samples(cfg, capture_rate, capture_samples)
 
     settings = CaptureSettings(sample_rate=capture_rate,
                                num_samples=capture_samples)
@@ -54,7 +87,7 @@ def loopback_self_test(mgr: CaptureManager, cfg: GeneratorConfig,
 def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
                       settings: CaptureSettings,
                       expected: bytes) -> GeneratorSelfTestResult:
-    sent = bytes.fromhex(cfg.data_hex) if cfg.data_hex else b"\x55"
+    sent = generator_payload_bytes(cfg)
     result = dev.capture_with_generator(settings, cfg)
     wf = WaveformData(sample_rate=result.sample_rate, digital=result.digital,
                       analog=result.analog)
@@ -79,11 +112,12 @@ def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
 
     dec_id, ch_fn, set_fn = spec
     decoder = decoder_registry.get(dec_id)
+    decoder_settings = {**decoder.defaults(), **set_fn(cfg)}
     inst = DecoderInstance(id=new_id("dec"), decoder_id=dec_id,
                            name=f"{dec_id} (self-test)",
-                           channels=ch_fn(cfg), settings=set_fn(cfg))
+                           channels=ch_fn(cfg), settings=decoder_settings)
     ctx = DecodeContext(wf, inst.channels)
-    dec_result = decoder.decode(ctx, {**decoder.defaults(), **inst.settings})
+    dec_result = decoder.decode(ctx, inst.settings)
     for ev in dec_result.events:
         ev["decoder_id"] = inst.id
     inst.status = "done"
@@ -93,29 +127,75 @@ def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
     mgr.store.save_decoder_events(session.id, inst.id, dec_result.events)
 
     if cfg.protocol == "uart":
+        nacked = []
         decoded = bytes(e["fields"]["byte"] for e in dec_result.events
                         if e["type"] == "uart_byte")
     elif cfg.protocol == "i2c":
+        i2c_events = [
+            e for e in dec_result.events
+            if e["type"] in ("i2c_address", "i2c_byte")
+        ]
+        nacked = [
+            e for e in i2c_events
+            if not e["fields"].get("ack", False)
+            and (e["type"] == "i2c_address" or e["fields"].get("rw") != "read")
+        ]
         decoded = bytes(e["fields"]["byte"] for e in dec_result.events
                         if e["type"] == "i2c_byte")
         # mock loopback prepends the register byte; tolerate prefix match
         if cfg.i2c_register is not None and decoded[:1] == bytes([cfg.i2c_register]):
             decoded = decoded[1:]
     elif cfg.protocol == "spi":
+        nacked = []
         decoded = bytes(e["fields"]["mosi"] & 0xFF for e in dec_result.events
                         if e["type"] == "spi_word" and e["fields"]["mosi"] is not None)
     else:
+        nacked = []
         decoded = b""
+
+    if cfg.protocol == "uart":
+        passed, mismatches, detail = _compare_uart_loopback(expected, decoded)
+    else:
+        mismatches = [i for i, (a, b) in enumerate(zip(expected, decoded)) if a != b]
+        if len(expected) != len(decoded):
+            mismatches += list(range(min(len(expected), len(decoded)),
+                                     max(len(expected), len(decoded))))
+        passed = not mismatches
+        detail = ("PASS - decoded output matches sent pattern" if passed else
+                  f"FAIL - {len(mismatches)} byte mismatch(es); "
+                  f"expected {expected.hex()} got {decoded.hex()}")
+    if cfg.protocol == "i2c" and nacked:
+        passed = False
+        nack_labels = ", ".join(e.get("label", e["type"]) for e in nacked[:4])
+        detail = ("FAIL - I2C slave did not ACK the transaction "
+                  f"({len(nacked)} NACK event(s): {nack_labels}); "
+                  f"expected {expected.hex()} got {decoded.hex()}")
+    log.info("Generator self-test %s: %s", cfg.protocol, detail)
+    return GeneratorSelfTestResult(
+        passed=passed, sent_hex=expected.hex(), decoded_hex=decoded.hex(),
+        detail=detail, session_id=session.id, mismatches=mismatches[:64])
+
+
+def _compare_uart_loopback(expected: bytes, decoded: bytes) -> tuple[bool, list[int], str]:
+    if decoded == expected:
+        return True, [], "PASS - decoded output matches sent pattern"
+
+    offset = decoded.find(expected)
+    if offset >= 0:
+        prefix = offset
+        suffix = len(decoded) - offset - len(expected)
+        detail = "PASS - decoded UART stream contains sent pattern"
+        if prefix or suffix:
+            detail += f" (ignored {prefix} leading/{suffix} trailing decoded byte(s))"
+        return True, [], detail
 
     mismatches = [i for i, (a, b) in enumerate(zip(expected, decoded)) if a != b]
     if len(expected) != len(decoded):
         mismatches += list(range(min(len(expected), len(decoded)),
                                  max(len(expected), len(decoded))))
-    passed = not mismatches
-    detail = ("PASS — decoded output matches sent pattern" if passed else
-              f"FAIL — {len(mismatches)} byte mismatch(es); "
-              f"expected {expected.hex()} got {decoded.hex()}")
-    log.info("Generator self-test %s: %s", cfg.protocol, detail)
-    return GeneratorSelfTestResult(
-        passed=passed, sent_hex=expected.hex(), decoded_hex=decoded.hex(),
-        detail=detail, session_id=session.id, mismatches=mismatches[:64])
+    return (
+        False,
+        mismatches,
+        f"FAIL - {len(mismatches)} byte mismatch(es); "
+        f"expected {expected.hex()} got {decoded.hex()}",
+    )

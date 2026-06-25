@@ -6,48 +6,48 @@ entity ADC_Controller is
   port (
     sys_clk        : in  std_logic;
     sys_clk_locked : in  std_logic := '1';
-    -- Dedicated ADC conversion clock (10 MHz from ADC_PLL c0). The MAX10 ADC
+    -- Dedicated ADC conversion clock (12 MHz from SDRAM_PLL c3). The MAX10 ADC
     -- hard IP requires a clean PLL clock here at its rated frequency; the
     -- 100 MHz sys_clk violates the adcblock minimum-pulse-width spec.
     adc_clk        : in  std_logic := '0';
     adc_clk_locked : in  std_logic := '1';
     reset          : in  std_logic := '0';
-    ch0_sel        : in  natural range 0 to 15 := 0;
+    ch0_sel        : in  natural range 0 to 31 := 0;
     ch0_start      : in  std_logic := '0';
     ch0_busy       : out std_logic := '0';
     ch0_result     : out std_logic_vector(11 downto 0) := (others => '0');
     ch0_valid      : out std_logic := '0';
-    ch1_sel        : in  natural range 0 to 15 := 1;
+    ch1_sel        : in  natural range 0 to 31 := 1;
     ch1_start      : in  std_logic := '0';
     ch1_busy       : out std_logic := '1';
     ch1_result     : out std_logic_vector(11 downto 0) := (others => '0');
     ch1_valid      : out std_logic := '0';
-    ch2_sel        : in  natural range 0 to 15 := 2;
+    ch2_sel        : in  natural range 0 to 31 := 2;
     ch2_start      : in  std_logic := '0';
     ch2_busy       : out std_logic := '1';
     ch2_result     : out std_logic_vector(11 downto 0) := (others => '0');
     ch2_valid      : out std_logic := '0';
-    ch3_sel        : in  natural range 0 to 15 := 3;
+    ch3_sel        : in  natural range 0 to 31 := 3;
     ch3_start      : in  std_logic := '0';
     ch3_busy       : out std_logic := '1';
     ch3_result     : out std_logic_vector(11 downto 0) := (others => '0');
     ch3_valid      : out std_logic := '0';
-    ch4_sel        : in  natural range 0 to 15 := 4;
+    ch4_sel        : in  natural range 0 to 31 := 4;
     ch4_start      : in  std_logic := '0';
     ch4_busy       : out std_logic := '1';
     ch4_result     : out std_logic_vector(11 downto 0) := (others => '0');
     ch4_valid      : out std_logic := '0';
-    ch5_sel        : in  natural range 0 to 15 := 5;
+    ch5_sel        : in  natural range 0 to 31 := 5;
     ch5_start      : in  std_logic := '0';
     ch5_busy       : out std_logic := '1';
     ch5_result     : out std_logic_vector(11 downto 0) := (others => '0');
     ch5_valid      : out std_logic := '0';
-    ch6_sel        : in  natural range 0 to 15 := 6;
+    ch6_sel        : in  natural range 0 to 31 := 6;
     ch6_start      : in  std_logic := '0';
     ch6_busy       : out std_logic := '1';
     ch6_result     : out std_logic_vector(11 downto 0) := (others => '0');
     ch6_valid      : out std_logic := '0';
-    ch7_sel        : in  natural range 0 to 15 := 7;
+    ch7_sel        : in  natural range 0 to 31 := 7;
     ch7_start      : in  std_logic := '0';
     ch7_busy       : out std_logic := '1';
     ch7_result     : out std_logic_vector(11 downto 0) := (others => '0');
@@ -123,7 +123,7 @@ begin
 
   adc_control : altera_modular_adc_control
     generic map (
-      clkdiv                          => 4,
+      clkdiv                          => 1,
       tsclkdiv                        => 1,
       tsclksel                        => 1,
       hard_pwd                        => 0,
@@ -131,7 +131,7 @@ begin
       refsel                          => 1,
       device_partname_fivechar_prefix => "10M08",
       is_this_first_or_second_adc     => 1,
-      analog_input_pin_mask           => 65791,
+      analog_input_pin_mask           => 66047,
       dual_adc_mode                   => 0,
       enable_usr_sim                  => 0,
       reference_voltage_sim           => 65536

@@ -75,8 +75,8 @@ package spi_protocol_pkg is
   constant REG_DEBUG_CH0_ENABLE : reg_addr_t := x"40";
   constant REG_DEBUG_CH0_PERIOD : reg_addr_t := x"43";
   constant REG_DEBUG_CH0_DUTY   : reg_addr_t := x"44";
-  constant REG_SCHMITT_ENABLE    : reg_addr_t := x"41";
-  constant REG_SCHMITT_THRESHOLD : reg_addr_t := x"42";
+  -- 0x41, 0x42 formerly REG_SCHMITT_ENABLE/THRESHOLD (digital glitch filter
+  -- moved to host software); addresses left unused/reserved.
   constant REG_CAPTURE_SEQ       : reg_addr_t := x"50";
   constant REG_PRODUCER_INDEX    : reg_addr_t := x"51";
   constant REG_OLDEST_INDEX      : reg_addr_t := x"52";

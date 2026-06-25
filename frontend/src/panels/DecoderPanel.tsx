@@ -16,9 +16,15 @@ export function DecoderPanel() {
   if (!activeSession) return <div className="panel-body hint">No session open.</div>;
 
   const desc: DecoderDescription | undefined = decoderTypes.find((d) => d.id === typeId);
-  const channelOptions = activeSession.channels
-    .filter((c) => c.type === 'digital' || c.type === 'derived')
-    .map((c) => ({ id: c.id, label: `${c.id} (${c.name})` }));
+  const optionsForRole = (types: string[]) => activeSession.channels
+    .filter((c) => types.includes(c.type))
+    .map((c) => ({
+      id: c.id,
+      label: `${c.id} (${c.name}${c.type === 'analog' ? ', threshold' : ''})`,
+    }));
+  const firstRequired = desc?.channels.find((c) => c.required);
+  const fallback = firstRequired ? optionsForRole(firstRequired.types)[0]?.id : undefined;
+  const effectiveChannels = defaultSingleInputChannel(desc, channels, fallback);
 
   const selection = waveformView.selectionStart !== null && waveformView.selectionEnd !== null
     ? [Math.floor(Math.min(waveformView.selectionStart, waveformView.selectionEnd)),
@@ -27,14 +33,14 @@ export function DecoderPanel() {
 
   const add = async (region?: number[]) => {
     if (!desc) return;
-    const missing = desc.channels.filter((c) => c.required && !channels[c.role]);
+    const missing = desc.channels.filter((c) => c.required && !effectiveChannels[c.role]);
     if (missing.length && !desc.consumes) {
       toast('warning', `Assign channels: ${missing.map((m) => m.name).join(', ')}`);
       return;
     }
     try {
       await api.addDecoder(activeSession.id, {
-        decoder_id: typeId, channels, settings, region,
+        decoder_id: typeId, channels: effectiveChannels, settings, region,
       });
       await refreshActiveSession();
       setAdding(false);
@@ -131,10 +137,12 @@ export function DecoderPanel() {
           {desc?.channels.filter((c) => !c.role.startsWith('bit') || parseInt(c.role.slice(3)) < 8).map((c) => (
             <label key={c.role} className="field">
               <span>{c.name}{c.required ? ' *' : ''}</span>
-              <select value={channels[c.role] ?? ''}
+              <select value={effectiveChannels[c.role] ?? ''}
                 onChange={(e) => setChannels({ ...channels, [c.role]: e.target.value })}>
                 <option value="">—</option>
-                {channelOptions.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+                {optionsForRole(c.types).map((o) => (
+                  <option key={o.id} value={o.id}>{o.label}</option>
+                ))}
               </select>
             </label>
           ))}
@@ -173,4 +181,15 @@ export function DecoderPanel() {
 function parseEnum(value: string, options?: any[] | null) {
   const match = options?.find((o) => String(o) === value);
   return match !== undefined ? match : value;
+}
+
+function defaultSingleInputChannel(
+  desc: DecoderDescription | undefined,
+  channels: Record<string, string>,
+  fallback?: string,
+) {
+  if (!desc || desc.consumes || !fallback) return channels;
+  const required = desc.channels.filter((c) => c.required);
+  if (required.length !== 1 || channels[required[0].role]) return channels;
+  return { ...channels, [required[0].role]: fallback };
 }

@@ -35,6 +35,13 @@ class ChannelInfo(BaseModel):
     # derived channels
     source: Optional[str] = None     # source channel id
     derive: Optional[Dict[str, Any]] = None  # e.g. {"kind":"threshold","level":1.6}
+    # physical board mapping, when known
+    board_label: Optional[str] = None
+    fpga_pin: Optional[str] = None
+    header: Optional[str] = None
+    pin_index: Optional[int] = None
+    adc_channel: Optional[int] = None
+    physical_available: Optional[bool] = None
 
 
 class TriggerConfig(BaseModel):
@@ -58,7 +65,9 @@ class TriggerConfig(BaseModel):
 class CaptureSettings(BaseModel):
     sample_rate: float = 1_000_000.0
     num_samples: int = 10_000
-    mode: Literal["single", "continuous", "rolling", "triggered"] = "single"
+    mode: Literal["single", "continuous", "rolling", "triggered", "digital_narrow", "analog", "mixed",
+                  "analog_fast", "analog_all", "analog_continuous",
+                  "analog_all_continuous", "mixed_continuous"] = "single"
     analog_enabled: bool = False
     enabled_digital: List[int] = Field(default_factory=lambda: list(range(16)))
     trigger: TriggerConfig = Field(default_factory=TriggerConfig)
@@ -174,22 +183,47 @@ class Session(BaseModel):
 
 
 def default_digital_channels(count: int = 16) -> List[ChannelInfo]:
+    from ..hardware.max1000_board import default_digital_channel_pin_info
+
     palette = ["#4fc3f7", "#81c784", "#ffb74d", "#e57373", "#ba68c8",
                "#4db6ac", "#fff176", "#a1887f", "#90a4ae", "#f06292",
                "#7986cb", "#aed581", "#ff8a65", "#9575cd", "#4dd0e1", "#dce775"]
-    return [
-        ChannelInfo(id=f"d{i}", name=f"CH{i}", type="digital",
-                    color=palette[i % len(palette)])
-        for i in range(count)
-    ]
+    channels = []
+    for i in range(count):
+        pin = default_digital_channel_pin_info(i)
+        label = pin.get("board_label", f"PIN{pin.get('pin_index', i)}")
+        channels.append(
+            ChannelInfo(id=f"d{i}", name=f"CH{i} {label}", type="digital",
+                        color=palette[i % len(palette)],
+                        board_label=label,
+                        fpga_pin=pin.get("fpga_pin"),
+                        header=pin.get("header"),
+                        pin_index=pin.get("pin_index"),
+                        physical_available=True)
+        )
+    return channels
 
 
-def default_analog_channels(count: int = 8) -> List[ChannelInfo]:
+def default_analog_channels(count: int = 8,
+                            adc_channels: Optional[List[int]] = None) -> List[ChannelInfo]:
+    from ..hardware.max1000_board import analog_channel_info
+
     palette = ["#ffd54f", "#4fc3f7", "#81c784", "#e57373",
                "#ba68c8", "#4db6ac", "#ff8a65", "#90a4ae"]
-    return [
-        ChannelInfo(id=f"a{i}", name=f"AIN{i}", type="analog",
-                    color=palette[i % len(palette)], coupling="dc",
-                    volts_per_div=0.5, threshold=1.65)
-        for i in range(count)
-    ]
+    channels = []
+    for i in range(count):
+        adc_channel = adc_channels[i] if adc_channels and i < len(adc_channels) else i
+        pin = analog_channel_info(adc_channel)
+        label = pin["board_label"]
+        suffix = f" {pin['header']}" if pin.get("available") else " unmapped"
+        channels.append(
+            ChannelInfo(id=f"a{adc_channel}", name=f"{label}{suffix}", type="analog",
+                        color=palette[i % len(palette)], coupling="dc",
+                        volts_per_div=0.5, threshold=1.65,
+                        board_label=label,
+                        fpga_pin=pin.get("fpga_pin"),
+                        header=pin.get("header"),
+                        adc_channel=pin.get("adc_channel"),
+                        physical_available=bool(pin.get("available")))
+        )
+    return channels

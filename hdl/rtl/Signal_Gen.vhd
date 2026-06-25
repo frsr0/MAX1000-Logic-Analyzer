@@ -203,12 +203,13 @@ begin
           end if;
           uart_crc_phase <= 0;
           uart_bit_idx <= 0;
-          -- Tx_Out drives the start bit from this cycle until the first baud
-          -- tick, so go straight to DATA_BITS: the start bit is exactly one
-          -- bit period. (Passing through UART_START_BIT here stretched the
-          -- start bit to two periods.)
-          uart_state <= UART_DATA_BITS;
-          Tx_Out <= '0';
+          -- Enter UART_START_BIT and keep TX idle-high until the first baud
+          -- tick. That first tick then asserts the start bit for exactly one
+          -- bit period before advancing into DATA_BITS. Driving TX low here
+          -- skips most of the first start bit on hardware, which shifts the
+          -- whole first byte and makes loopback decode fail.
+          uart_state <= UART_START_BIT;
+          Tx_Out <= '1';
           Scl_Out <= '1';
 
         elsif Proto = '1' and (count > 0 or I2C_Rd_Len > 0) then

@@ -77,6 +77,34 @@ export class WaveformView {
     this.notify();
   }
 
+  async updateLive(numSamples: number, sampleRate: number,
+                   trigSample: number | null, followEnd = true) {
+    const oldSpan = this.span();
+    const oldEnd = this.end;
+    const oldSamples = this.numSamples;
+    this.numSamples = numSamples;
+    this.sampleRate = sampleRate;
+    this.trigSample = trigSample;
+    this.overview = null;
+    this.payload = null;
+    this.error = null;
+    if (followEnd || oldEnd >= Math.max(0, oldSamples - oldSpan * 0.05)) {
+      const span = Math.min(Math.max(oldSpan, 8), Math.max(8, numSamples));
+      this.start = Math.max(0, numSamples - span);
+      this.end = Math.max(1, numSamples);
+    } else {
+      this.clampView();
+    }
+    try {
+      this.overview = await api.overview(this.sessionId);
+    } catch (e: any) {
+      this.error = String(e.message ?? e);
+    }
+    this.requestFetch(0);
+    this.requestAnnotations();
+    this.notify();
+  }
+
   setChannelFilter(channels: string[] | undefined) {
     this.channelFilter = channels;
     this.requestFetch(0);

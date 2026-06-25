@@ -49,12 +49,21 @@ architecture bench of tb_fast_analyzer is
   signal buffer_full_s : std_logic_vector(2 downto 0) := (others => '0');
   signal buffer_ack_s : std_logic_vector(2 downto 0) := (others => '0');
 
+  -- Continuous mode is now a true SDRAM ring tracked by producer/oldest/newest
+  -- sample indices (the legacy 3x512 Buffer_Full/Ack handshake is no longer
+  -- driven in continuous mode), so Test 2 watches the producer index advance.
+  signal producer_index_s : std_logic_vector(31 downto 0) := (others => '0');
+  constant CONT_SAMPLES : natural := 1536;  -- 3 x 512-sample ring buffers
+  signal prod_done : std_logic := '0';
+
   signal pat_toggle : std_logic := '0';
   signal pat_enable : boolean := false;
 begin
 
   gen_clk(clk, CLK_PERIOD / 2);
   gen_clk(fast_clk, FAST_PERIOD / 2);
+
+  prod_done <= '1' when unsigned(producer_index_s) >= CONT_SAMPLES else '0';
 
   -- Pattern generator for CH0 (concurrent process)
   process(clk)
@@ -104,7 +113,8 @@ begin
       FAST_CLK     => fast_clk,
       Continuous_Mode => continuous_mode,
       Buffer_Full     => buffer_full_s,
-      Buffer_Ack      => buffer_ack_s
+      Buffer_Ack      => buffer_ack_s,
+      Producer_Index  => producer_index_s
     );
 
   process
@@ -142,11 +152,15 @@ begin
     report "Test 1: PASS";
 
     ------------------------------------------------------------------
-    -- Test 2: Continuous triple-buffer mode
+    -- Test 2: Continuous SDRAM-ring mode
+    --   Continuous capture is a bounded SDRAM ring (CONT_SAMPLES samples over
+    --   three 512-sample buffers); progress is reported by the producer index
+    --   advancing, not the old per-buffer full/ack handshake (which the FLA no
+    --   longer drives in continuous mode).
     ------------------------------------------------------------------
-    report "Test 2: Continuous triple-buffer mode";
+    report "Test 2: Continuous SDRAM-ring mode";
 
-    samples_s <= 1536;  -- continuous buffers are 512 each; fill all three
+    samples_s <= CONT_SAMPLES;
     continuous_mode <= '1';
     fast_mode <= '0';
 
@@ -155,23 +169,13 @@ begin
     pat_enable <= true;
     run <= '1';
 
-    wait_until(clk, buffer_full_s(0), '1', 10 ms, "Buffer 0 should fill");
-    report "Buffer 0 full";
-    buffer_ack_s(0) <= '1';
-    wait_cycles(clk, 2);
-    buffer_ack_s(0) <= '0';
-
-    wait_until(clk, buffer_full_s(1), '1', 10 ms, "Buffer 1 should fill");
-    report "Buffer 1 full";
-    buffer_ack_s(1) <= '1';
-    wait_cycles(clk, 2);
-    buffer_ack_s(1) <= '0';
-
-    wait_until(clk, buffer_full_s(2), '1', 10 ms, "Buffer 2 should fill");
-    report "Buffer 2 full";
-    buffer_ack_s(2) <= '1';
-    wait_cycles(clk, 2);
-    buffer_ack_s(2) <= '0';
+    -- Ring must capture all requested samples; producer index walks 0..CONT_SAMPLES.
+    wait_until(clk, prod_done, '1', 10 ms,
+               "Continuous ring should capture all requested samples");
+    check(unsigned(producer_index_s) >= to_unsigned(CONT_SAMPLES, 32),
+          "Producer index reached the requested sample count");
+    report "Continuous ring captured " &
+           integer'image(to_integer(unsigned(producer_index_s))) & " samples";
 
     run <= '0';
     armed <= '0';

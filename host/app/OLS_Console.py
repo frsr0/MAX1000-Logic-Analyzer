@@ -761,14 +761,11 @@ class OLScope:
         try:
             enable = self.schmitt_var.get()
             thresh = int(self.schmitt_thresh_var.get())
-            is_live = getattr(self, 'capture_running', False) and hasattr(self.dev, '_pending_schmitt_enable')
-            if is_live:
-                self.dev._pending_schmitt_enable = enable
-                self.dev._pending_schmitt_threshold = thresh
-            else:
-                self.dev.set_schmitt(enable, thresh)
+            # Software glitch filter: takes effect immediately (it's applied to
+            # captured samples on the host), so it works live with no deferral.
+            self.dev.set_schmitt(enable, thresh)
         except Exception as e:
-            self.status['text'] = f"Schmitt trigger update failed: {e}"
+            self.status['text'] = f"Glitch filter update failed: {e}"
 
     def _apply_debug_ch0_setting(self):
         if self.dev and hasattr(self, 'debug_ch0_var') and hasattr(self.dev, 'debug_ch0_enabled'):

@@ -42,6 +42,8 @@ port (
     Armed        : in  std_logic := '0';
     Fast_Mode    : in  std_logic := '0';
     FAST_CLK     : in  std_logic := '0';
+    Narrow_Enable : in std_logic := '0';
+    Narrow_Channel : in natural range 0 to 15 := 0;
     -- Double-buffer control
     Continuous_Mode : in std_logic := '0';
     Buffer_Full     : out std_logic_vector(2 downto 0) := (others => '0');
@@ -49,6 +51,7 @@ port (
     Analog_Frame_Data : in std_logic_vector(127 downto 0) := (others => '0');
     Analog_Frame_Len  : in natural range 1 to 14 := 1;
     Analog_Stream_Mode : in std_logic := '0';
+    Analog_Frame_Toggle : in std_logic := '0';
     -- Single-shot block readout via a response FIFO. The OLS side (CLK domain)
     -- requests a stream and drains the FIFO; the FLA walks the addresses on pclk
     -- and pushes each valid sample in. The dcfifo is a proper CDC between the
@@ -147,7 +150,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
 
   -- Config handshake: CLK -> FAST_CLK
   signal cfg_rate_div  : natural range 1 to MAX_RATE_DIV := 12;
-  signal cfg_samples   : natural range 1 to 3000000 := 3000000;
+  signal cfg_samples   : natural range 1 to Max_Samples := Max_Samples;
   signal cfg_valid_toggle : std_logic := '0';
   signal cfg_ack_s1    : std_logic := '0';
   signal cfg_ack_s2    : std_logic := '0';
@@ -156,7 +159,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   -- Config handshake: FAST_CLK domain
   signal cfg_rate_div_f  : natural range 1 to MAX_RATE_DIV := 12;
   signal cfg_rate_reload_f : natural range 0 to MAX_RATE_DIV := 11;
-  signal cfg_samples_f   : natural range 1 to 3000000 := 3000000;
+  signal cfg_samples_f   : natural range 1 to Max_Samples := Max_Samples;
   signal cfg_valid_s1    : std_logic := '0';
   signal cfg_valid_s2    : std_logic := '0';
   signal cfg_valid_edge  : std_logic := '0';
@@ -185,7 +188,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal overflow_t_s2    : std_logic := '0';
   signal overflow_t_s3    : std_logic := '0';
   signal overflow_clk     : std_logic := '0';
-  signal sample_remaining : natural range 0 to 3000000 := 0;
+  signal sample_remaining : natural range 0 to Max_Samples := 0;
   signal run_stop_overflow : std_logic := '0';
   signal status_overflow   : std_logic := '0';
   signal producer_index_u  : unsigned(31 downto 0) := (others => '0');
@@ -194,12 +197,14 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal overrun_count_u   : unsigned(31 downto 0) := (others => '0');
   signal ring_used         : natural range 0 to CONT_RING_WORDS := 0;
 
-  constant AFIFO_DEPTH : natural := 4096;
+  constant AFIFO_DEPTH : natural := 16384;
   constant AFIFO_WIDTH : natural := 16;
-  constant AFIFO_WIDTHU : natural := 12;
+  constant AFIFO_WIDTHU : natural := 14;
   signal fifo_wdata : std_logic_vector(AFIFO_WIDTH-1 downto 0) := (others => '0');
   signal fifo_wr    : std_logic := '0';
   signal fifo_wrfull : std_logic := '0';
+  signal fifo_wrusedw : std_logic_vector(AFIFO_WIDTHU-1 downto 0) := (others => '0');
+  signal fifo_wralmost_full : std_logic := '0';
   signal fifo_rdata : std_logic_vector(AFIFO_WIDTH-1 downto 0) := (others => '0');
   signal fifo_rd    : std_logic := '0';
   signal fifo_rdempty : std_logic := '0';
@@ -289,34 +294,57 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
 
 begin
 
-  -- 4-stage pipelined divide-by-3 (replaces combinatorial /3 with 38 LUT levels)
-  u_div6 : lpm_divide
-    generic map (
-      LPM_WIDTHN => 22,
-      LPM_WIDTHD => 2,
-      LPM_NREPRESENTATION => "UNSIGNED",
-      LPM_DREPRESENTATION => "UNSIGNED",
-      LPM_PIPELINE => 4
-    )
-    port map (
-      clock    => CLK,
-      numer    => lpm_numer,
-      denom    => "11",
-      quotient => lpm_quot,
-      remain   => open
-    );
+  gen_fast_div : if FAST_SPEED generate
+  begin
+    -- FAST_SPEED captures store one 16-bit word per requested sample. The
+    -- /3 divider only exists for the non-fast packer and must not be
+    -- elaborated here, otherwise Quartus rejects the now-unused LPM output.
+    process(CLK) begin
+      if rising_edge(CLK) then
+        samples_d1   <= Samples;
+        samples_div  <= Samples;
+        samples_div6 <= 0;
+      end if;
+    end process;
+  end generate;
 
-  -- Pipeline: register input, LPM divides over 4 cycles, register output
-  process(CLK) begin
-    if rising_edge(CLK) then
-      samples_d1   <= Samples;
-      lpm_numer    <= std_logic_vector(to_unsigned(samples_d1, 22));
-      samples_div  <= samples_d1;
-      samples_div6 <= to_integer(unsigned(lpm_quot));
-    end if;
-  end process;
+  gen_normal_div : if not FAST_SPEED generate
+  begin
+    -- 4-stage pipelined divide-by-3 (replaces combinatorial /3 with 38 LUT levels)
+    u_div6 : lpm_divide
+      generic map (
+        LPM_WIDTHN => 22,
+        LPM_WIDTHD => 2,
+        LPM_NREPRESENTATION => "UNSIGNED",
+        LPM_DREPRESENTATION => "UNSIGNED",
+        LPM_PIPELINE => 4
+      )
+      port map (
+        clock    => CLK,
+        numer    => lpm_numer,
+        denom    => "11",
+        quotient => lpm_quot,
+        remain   => open
+      );
+
+    -- Pipeline: register input, LPM divides over 4 cycles, register output
+    process(CLK) begin
+      if rising_edge(CLK) then
+        samples_d1   <= Samples;
+        lpm_numer    <= std_logic_vector(to_unsigned(samples_d1, 22));
+        samples_div  <= samples_d1;
+        samples_div6 <= to_integer(unsigned(lpm_quot));
+      end if;
+    end process;
+  end generate;
 
   CLK_150 <= pclk;
+  -- wrfull can arrive too late for the 200 MHz write clock. Stop early using
+  -- write-domain fill level so Rate_Div=1 captures backpressure cleanly
+  -- instead of silently losing FIFO writes and wedging producer progress.
+  fifo_wralmost_full <= '1'
+    when unsigned(fifo_wrusedw) >= to_unsigned(AFIFO_DEPTH - 256, AFIFO_WIDTHU)
+    else '0';
 
   -- 2FF synchronizer: Run from CLK domain into pclk domain
   process(pclk)
@@ -490,33 +518,52 @@ begin
   -- Speed mode (200 MHz): 3-stage pipeline, no divider, no flush
   -- ============================================================
   gen_fast_speed : if FAST_SPEED generate
+    constant FAST_MAX_RATE_DIV : natural := 65535;
     signal sample_word_r  : std_logic_vector(Channels-1 downto 0) := (others => '0');
     signal capture_en_r   : std_logic := '0';
     signal pretrig_en_r   : std_logic := '0';
     signal bram_wp_r      : natural range 0 to BRAM_SIZE-1 := 0;
     signal bram_cnt_r     : natural range 0 to BRAM_SIZE := 0;
-    signal sample_div_cnt_r : natural range 0 to MAX_RATE_DIV := 0;
+    signal sample_div_cnt_r : natural range 0 to FAST_MAX_RATE_DIV := 0;
+    signal fast_rate_reload_r : natural range 0 to FAST_MAX_RATE_DIV := 0;
     signal sample_tick_r  : std_logic := '0';
     signal sample_rem_nonzero_r : std_logic := '0';
     -- Pipeline register: pre-compute sample_remaining - 1 to break 22-bit carry chain
-    signal sample_rem_dec_r    : natural range 0 to 3000000 := 0;
+    signal sample_rem_dec_r    : natural range 0 to Max_Samples := 0;
     -- Pre-trigger counter: limits BRAM pre-trigger to 8 ticks, then switches to FIFO.
     -- Without this, the CDC settling window for run_f_level (Armed→Run) can cause up to
     -- 1024 pre-trigger BRAM writes before switching to FIFO, delaying gen capture data.
     signal pretrig_tick_cnt : natural range 0 to 15 := 0;
-    -- Analog stream capture: when Analog_Stream_Mode is set, push the ADC frame
-    -- (Analog_Frame_Data, already packed by the top level as 7x16-bit = the
-    -- 14-byte host frame: 16-bit digital + 8x12-bit ADC) one 16-bit word per
-    -- sample tick instead of the digital Inputs word. The host captures at 7x
-    -- the frame rate and reads frames*7 words, so all existing FIFO/write-pump/
-    -- Full machinery is reused unchanged. A shift register emits the 7 words so
-    -- no wide mux lands in the 200 MHz path.
-    signal aframe_f     : std_logic_vector(127 downto 0) := (others => '0');
+    -- Analog stream capture: when Analog_Stream_Mode is set, the ADC controller
+    -- owns frame cadence. Each completed 8-channel ADC scan toggles
+    -- Analog_Frame_Toggle; this writer snapshots that coherent frame and bursts
+    -- its 6 or 7 16-bit words into SDRAM.
+    signal aframe_pending : std_logic_vector(127 downto 0) := (others => '0');
     signal astream_s    : std_logic := '0';
     signal astream_f    : std_logic := '0';
     signal aframe_shift : std_logic_vector(127 downto 0) := (others => '0');
+    signal aframe_toggle_s1 : std_logic := '0';
+    signal aframe_toggle_s2 : std_logic := '0';
+    signal aframe_toggle_last : std_logic := '0';
+    signal aframe_ready_r : std_logic := '0';
+    signal aword_count_pending : natural range 1 to 7 := 7;
+    signal aword_count_f : natural range 1 to 7 := 7;
     signal aword_idx    : natural range 0 to 6 := 0;
+    signal analog_burst_active : std_logic := '0';
+    -- Registered copy of fifo_wralmost_full for the analog burst gate. The flag
+    -- is a wide wrusedw>=(DEPTH-256) compare off the afifo status reg; feeding it
+    -- straight into the burst next-state logic is the 200 MHz critical path.
+    -- The 256-word cushion plus the fact that analog bursts are 7 words every
+    -- ~10 us (FIFO drains continuously) mean this flag never asserts in analog
+    -- mode, so reacting a cycle late is harmless and keeps the compare off path.
+    signal afull_r       : std_logic := '0';
     signal start_gate_r  : natural range 0 to 3 := 0;
+    signal narrow_enable_s1 : std_logic := '0';
+    signal narrow_enable_f  : std_logic := '0';
+    signal narrow_channel_s1 : natural range 0 to 15 := 0;
+    signal narrow_channel_f  : natural range 0 to 15 := 0;
+    signal narrow_shift_r : std_logic_vector(15 downto 0) := (others => '0');
+    signal narrow_bit_count_r : natural range 0 to 15 := 0;
   begin
     -- Stage 0: sample pins
     process(FAST_CLK)
@@ -526,15 +573,31 @@ begin
       end if;
     end process;
 
-    -- CDC: register the slowly-changing analog frame + mode into FAST_CLK.
-    -- The frame is snapshotted at word 0 of each group, so a rare multi-bit
-    -- tear only perturbs a single frame of a slow analog signal.
+    -- CDC: detect the slow ADC-frame toggle in FAST_CLK and snapshot the frame
+    -- after it has settled. sys_clk toggles only after all 8 ADC result
+    -- registers have been updated.
     process(FAST_CLK)
     begin
       if rising_edge(FAST_CLK) then
-        aframe_f  <= Analog_Frame_Data;
+        aframe_toggle_s1 <= Analog_Frame_Toggle;
+        aframe_toggle_s2 <= aframe_toggle_s1;
+        aframe_ready_r <= '0';
+        if aframe_toggle_s2 /= aframe_toggle_last then
+          aframe_toggle_last <= aframe_toggle_s2;
+          aframe_pending <= Analog_Frame_Data;
+          if Analog_Frame_Len <= 2 then
+            aword_count_pending <= 1;
+          else
+            aword_count_pending <= (Analog_Frame_Len + 1) / 2;
+          end if;
+          aframe_ready_r <= '1';
+        end if;
         astream_s <= Analog_Stream_Mode;
         astream_f <= astream_s;
+        narrow_enable_s1 <= Narrow_Enable;
+        narrow_enable_f <= narrow_enable_s1;
+        narrow_channel_s1 <= Narrow_Channel;
+        narrow_channel_f <= narrow_channel_s1;
       end if;
     end process;
 
@@ -553,9 +616,16 @@ begin
       if rising_edge(FAST_CLK) then
         if cfg_valid_edge = '1' then
           sample_div_cnt_r <= 0;
+          if cfg_rate_div > FAST_MAX_RATE_DIV then
+            fast_rate_reload_r <= FAST_MAX_RATE_DIV;
+          elsif cfg_rate_div > 1 then
+            fast_rate_reload_r <= cfg_rate_div - 1;
+          else
+            fast_rate_reload_r <= 0;
+          end if;
         elsif capture_en_r = '1' and sample_rem_nonzero_r = '1' then
           if sample_div_cnt_r = 0 then
-            sample_div_cnt_r <= cfg_rate_reload_f;
+            sample_div_cnt_r <= fast_rate_reload_r;
           else
             sample_div_cnt_r <= sample_div_cnt_r - 1;
           end if;
@@ -584,6 +654,12 @@ begin
     process(FAST_CLK)
     begin
       if rising_edge(FAST_CLK) then
+        if sample_remaining > 0 then
+          sample_rem_dec_r <= sample_remaining - 1;
+        else
+          sample_rem_dec_r <= 0;
+        end if;
+
         if cfg_valid_edge = '1' then
           sample_rem_nonzero_r <= '1';
         elsif fifo_wr = '1' and sample_remaining = 0 then
@@ -616,6 +692,7 @@ begin
       if rising_edge(FAST_CLK) then
         fifo_wr <= '0';
         bram_wren <= '0';
+        afull_r <= fifo_wralmost_full;
 
         if cfg_valid_edge = '1' then
           -- Load from cfg_samples (CLK-domain value, quasi-static while the
@@ -628,8 +705,11 @@ begin
           fifo_overflow_f <= '0';
           bram_wp_r <= 0;
           bram_cnt_r <= 0;
-          aframe_shift <= aframe_f;   -- preload first analog frame snapshot
+          aframe_shift <= (others => '0');
           aword_idx <= 0;
+          analog_burst_active <= '0';
+          narrow_shift_r <= (others => '0');
+          narrow_bit_count_r <= 0;
         end if;
 
         if fifo_overflow_f = '0' then
@@ -648,30 +728,109 @@ begin
               bram_cnt_r <= bram_cnt_r + 1;
             end if;
 
-          elsif capture_en_r = '1' and sample_tick_r = '1' then
-            if fifo_wrfull = '0' then
-              if astream_f = '1' then
-                -- Emit one 16-bit word of the analog frame per tick; reload the
-                -- snapshot after the 7th word so each frame is coherent.
-                fifo_wdata <= aframe_shift(15 downto 0);
-                if aword_idx = 6 then
-                  aframe_shift <= aframe_f;
-                  aword_idx <= 0;
-                else
-                  aframe_shift <= x"0000" & aframe_shift(127 downto 16);
-                  aword_idx <= aword_idx + 1;
-                end if;
+          elsif capture_en_r = '1' and astream_f = '1' then
+            -- Only start a new frame burst while the word budget is unspent.
+            -- Without this the writer keeps bursting a frame every ADC scan
+            -- after sample_remaining hits 0, so the FIFO never settles empty
+            -- and single-shot Full only asserts by luck in an inter-frame gap.
+            -- sample_rem_nonzero_r is the 1-bit budget flag the digital path
+            -- already gates on (a wide >0 compare would not close at 200 MHz);
+            -- a frame in flight always finishes (the burst loop below is not
+            -- gated), and cfg_samples is a whole number of frames, so capture
+            -- stops cleanly on a frame boundary.
+            if aframe_ready_r = '1' and analog_burst_active = '0'
+               and sample_rem_nonzero_r = '1' then
+              -- Snapshot the coherent frame once; it is NOT shifted (see below).
+              aframe_shift <= aframe_pending;
+              aword_count_f <= aword_count_pending;
+              aword_idx <= 0;
+              analog_burst_active <= '1';
+            end if;
+
+            -- Emit word[aword_idx] via a 16-bit 8:1 mux instead of shifting the
+            -- whole 128-bit frame each cycle. The old `x"0000" & shift(127..16)`
+            -- put a 128-bit-wide mux on the FAST_CLK (200 MHz) path, gated by the
+            -- late-arriving afifo almost-full flag, and would not close timing
+            -- (every seed -0.64..-1.12 ns). fifo_wdata is selected purely from
+            -- aword_idx (NOT gated by almost_full — it only matters when fifo_wr
+            -- is asserted), so the wide datapath and the almost-full fanout are
+            -- off the critical path; only the 1-bit write strobe and the 3-bit
+            -- index counter remain gated.
+            if analog_burst_active = '1' then
+              case aword_idx is
+                when 0      => fifo_wdata <= aframe_shift(15 downto 0);
+                when 1      => fifo_wdata <= aframe_shift(31 downto 16);
+                when 2      => fifo_wdata <= aframe_shift(47 downto 32);
+                when 3      => fifo_wdata <= aframe_shift(63 downto 48);
+                when 4      => fifo_wdata <= aframe_shift(79 downto 64);
+                when 5      => fifo_wdata <= aframe_shift(95 downto 80);
+                when others => fifo_wdata <= aframe_shift(111 downto 96);
+              end case;
+            end if;
+
+            if analog_burst_active = '1' and afull_r = '0' then
+              fifo_wr <= '1';
+              if aword_idx + 1 >= aword_count_f then
+                analog_burst_active <= '0';
+                aword_idx <= 0;
               else
-                fifo_wdata <= sample_word_r;
+              aword_idx <= aword_idx + 1;
               end if;
+              if sample_rem_nonzero_r = '1' then
+                sample_remaining <= sample_rem_dec_r;
+              end if;
+            end if;
+            if afull_r = '1' and continuous_f = '0' then
+              fifo_overflow_f <= '1';
+            end if;
+
+          elsif capture_en_r = '1' and sample_tick_r = '1' and narrow_enable_f = '1' then
+            -- Narrow high-speed rolling packs 16 consecutive samples of one
+            -- selected digital channel into one SDRAM word. Bit 0 is earliest.
+            if narrow_channel_f < Channels then
+              narrow_shift_r(narrow_bit_count_r) <= sample_word_r(narrow_channel_f);
+            else
+              narrow_shift_r(narrow_bit_count_r) <= '0';
+            end if;
+
+            if narrow_bit_count_r = 15 then
+              if afull_r = '0' then
+                fifo_wdata(14 downto 0) <= narrow_shift_r(14 downto 0);
+                if narrow_channel_f < Channels then
+                  fifo_wdata(15) <= sample_word_r(narrow_channel_f);
+                else
+                  fifo_wdata(15) <= '0';
+                end if;
+                fifo_wr <= '1';
+                if sample_rem_nonzero_r = '1' then
+                  sample_remaining <= sample_rem_dec_r;
+                end if;
+              end if;
+              narrow_shift_r <= (others => '0');
+              narrow_bit_count_r <= 0;
+            else
+              narrow_bit_count_r <= narrow_bit_count_r + 1;
+            end if;
+
+            if afull_r = '1' and continuous_f = '0' then
+              fifo_overflow_f <= '1';
+            end if;
+
+          elsif capture_en_r = '1' and sample_tick_r = '1' then
+            -- Data is registered unconditionally; it is only consumed when
+            -- fifo_wr is asserted, so keeping the almost-full compare off the
+            -- 16-bit fifo_wdata mux (it now only gates the 1-bit write strobe)
+            -- shortens the 200 MHz path that the analog frame mux shares.
+            fifo_wdata <= sample_word_r;
+            if afull_r = '0' then
               fifo_wr <= '1';
               -- guard: at full rate one in-flight tick can push a word after
               -- the nonzero flag clears; don't underflow the natural
-              if sample_remaining > 0 then
-                sample_remaining <= sample_remaining - 1;
+              if sample_rem_nonzero_r = '1' then
+                sample_remaining <= sample_rem_dec_r;
               end if;
             end if;
-            if fifo_wrfull = '1' and continuous_f = '0' then
+            if afull_r = '1' and continuous_f = '0' then
               fifo_overflow_f <= '1';
             end if;
           end if;
@@ -789,7 +948,7 @@ begin
           -- State 1: Flush BRAM to async FIFO (pre-trigger samples first)
           elsif state = 1 then
             if flush_rem > 0 then
-              if fifo_wrfull = '0' then
+              if fifo_wralmost_full = '0' then
                 bram_raddr_f <= flush_raddr;
                 -- Skip write on first cycle (BRAM read is registered)
                 if flush_rem < bram_cnt then
@@ -810,12 +969,12 @@ begin
             if sample_tick_r = '1' then
               wbuf(((step_r + 1) * Channels) - 1 downto step_r * Channels) := Inputs_r;
               if step_r = sub_steps - 1 then
-                if fifo_wrfull = '0' and sample_remaining /= 0 then
+                if fifo_wralmost_full = '0' and sample_remaining /= 0 then
                   fifo_wdata <= wbuf(15 downto 0);
                   fifo_wr <= '1';
                   sample_remaining <= sample_remaining - 1;
                 end if;
-                if continuous_f = '0' and (fifo_wrfull = '1' or sample_remaining <= 1) then
+                if continuous_f = '0' and (fifo_wralmost_full = '1' or sample_remaining <= 1) then
                   fifo_overflow_f <= '1';
                 end if;
                 step_r := 0;
@@ -875,7 +1034,9 @@ begin
       rdclk    => pclk,
       q        => fifo_rdata,
       rdempty  => fifo_rdempty,
-      wrfull   => fifo_wrfull
+      wrfull   => fifo_wrfull,
+      wrusedw  => fifo_wrusedw,
+      rdusedw  => open
     );
 
   -- Readout response FIFO: bridges the pclk readout domain to the CLK (OLS)
@@ -900,7 +1061,9 @@ begin
       rdclk    => CLK,
       q        => Rd_Fifo_Q,
       rdempty  => Rd_Fifo_Empty,
-      wrfull   => rdfifo_wrfull
+      wrfull   => rdfifo_wrfull,
+      wrusedw  => open,
+      rdusedw  => open
     );
 
   -- Main: SDRAM write pump + buffer management + readout
@@ -927,13 +1090,11 @@ begin
     variable stream_i      : natural range 0 to Max_Samples := 0;
     variable rd_pend2      : std_logic := '0';
     -- Continuous-mode readout: a host block read temporarily enters rd_mode to
-    -- stream one completed buffer, then frees it and returns to capture. The
-    -- read pointer walks the buffers in fill order so the host gets sequential
-    -- frames. cur_full backpressures the write pump off a full buffer.
-    variable cont_readout  : boolean := false;
-    variable cont_rd_sel   : natural range 0 to 2 := 0;
+    -- stream the rolling SDRAM window, then returns to capture.
+    -- cur_full backpressures the write pump off a full buffer.
     variable cur_full      : boolean := false;
-    variable cont_word_written : boolean := false;
+    variable wr_pend_cont : boolean := false;
+    variable wip_cont     : boolean := false;
     variable cont_base_v   : natural range 0 to Max_Samples - 1 := 0;
     variable ring_waddr    : natural range 0 to Max_Samples - 1 := 0;
   begin
@@ -942,7 +1103,6 @@ begin
       s_wr <= '0';
       s_burst_i <= '0';
       rdfifo_wr <= '0';
-      cont_word_written := false;
       -- Synchronise the block-read request toggle into pclk (runs every cycle so
       -- no edge is missed). Blk_Rd_Base/Count are quasi-static: they are set on
       -- the OLS side before the toggle flips and held for the whole stream, so
@@ -1010,6 +1170,8 @@ begin
         buf_rem_single <= samples_div_p;
         rd_pend := '0';
         wr_pend := false; wip := false; wr_cnt := 0;
+        wr_pend_cont := false;
+        wip_cont := false;
         buf_sel <= "00";
         buf_full(0) <= '0'; buf_full(1) <= '0'; buf_full(2) <= '0';
         full_i <= '0';
@@ -1031,7 +1193,7 @@ begin
         end if;
         s_wr <= '0'; s_rd <= '0';
         stream_active := false; rd_pend2 := '0';
-        cont_readout := false; cont_rd_sel := 0; cur_full := false;
+        cur_full := false;
 
       else
       -- Normal capture/readout/write-pump logic (skipped on run-edge cycle)
@@ -1056,7 +1218,6 @@ begin
           stream_i      := 0;
           rd_pend2      := '0';
           stream_active := true;
-          cont_readout  := false;
           rd_mode       := true;
           s_rd          <= '0';
         end if;
@@ -1088,16 +1249,9 @@ begin
             rd_pend2     := '0';
             if stream_i = stream_cnt - 1 then
               stream_active := false;
-              if cont_readout then
-                -- Free the buffer just streamed so the write pump can refill it
-                -- (its waddr/buf_rem are rewound when the pump re-selects it, via
-                -- the fill-switch or the cur_full repoint); advance the read
-                -- pointer and hand the SDRAM bus back to the write pump.
-                buf_full(cont_rd_sel) <= '0';
-                cont_rd_sel  := (cont_rd_sel + 1) mod 3;
-                cont_readout := false;
-                rd_mode      := false;
-              elsif Continuous_Mode = '1' then
+              -- Continuous mode: hand the SDRAM bus back to the write pump
+              -- after the host has streamed its requested block.
+              if Continuous_Mode = '1' then
                 rd_mode      := false;
               end if;
             else
@@ -1139,13 +1293,12 @@ begin
         -- CAPTURE: SDRAM write pump — drains async FIFO (live + flushed
         -- pre-trigger samples arrive via a single FIFO stream).
 
-        -- Continuous backpressure: never write into a buffer that is already
-        -- full. If buf_sel points at a full buffer (it stayed there because all
-        -- three were full), repoint to a freed one; while it still points at a
-        -- full buffer inhibit the pop so the afifo backpressures the capture
-        -- instead of corrupting the full buffer.
+        -- Single-shot uses the old buffer fullness bookkeeping. Continuous
+        -- mode is a true SDRAM ring: never backpressure on the legacy 3x512
+        -- buffer flags, because indexed reads use producer/oldest/newest
+        -- metadata and the whole SDRAM window is the retention boundary.
         cur_full := false;
-        if Continuous_Mode = '1' then
+        if Continuous_Mode = '0' then
           if (buf_sel = "00" and buf_full(0) = '1')
              or (buf_sel = "01" and buf_full(1) = '1')
              or (buf_sel = "10" and buf_full(2) = '1') then
@@ -1156,17 +1309,6 @@ begin
               buf_sel <= "01"; waddr_1 := 0; buf_rem_1 <= buf_limit_r;
             elsif buf_full(2) = '0' then
               buf_sel <= "10"; waddr_2 := 0; buf_rem_2 <= buf_limit_r;
-            else
-              -- All buffers full: rolling mode overwrites the current buffer.
-              cur_full := false;
-              overrun_count_u <= overrun_count_u + 1;
-              if buf_sel = "00" then
-                buf_full(0) <= '0'; waddr_0 := 0; buf_rem_0 <= buf_limit_r;
-              elsif buf_sel = "01" then
-                buf_full(1) <= '0'; waddr_1 := 0; buf_rem_1 <= buf_limit_r;
-              else
-                buf_full(2) <= '0'; waddr_2 := 0; buf_rem_2 <= buf_limit_r;
-              end if;
             end if;
           end if;
         end if;
@@ -1176,7 +1318,9 @@ begin
           s_wdata <= wr_pend_data;
           s_wr    <= '1';
           wip     := true;
+          wip_cont := wr_pend_cont;
           wr_pend := false;
+          wr_pend_cont := false;
 
         elsif fifo_rdempty = '0' and not wip and sdram_busy = '0' and not cur_full then
           -- async FIFO source: live post-trigger data
@@ -1192,50 +1336,11 @@ begin
           wr_pend      := true;
           wr_pend_addr := write_addr;
           wr_pend_data := fifo_rdata;
+          wr_pend_cont := false;
 
           -- Update buffer counters
           if Continuous_Mode = '1' then
-            cont_word_written := true;
-            if buf_sel = "00" then
-              if buf_rem_0 = 1 then
-                buf_full(0) <= '1';  buf_rem_0 <= 0;
-                if buf_full(1) = '1' and buf_full(2) = '1' then
-                  full_pending <= '1';
-                else
-                  if buf_full(1) = '0' then buf_sel <= "01"; waddr_1 := 0; buf_rem_1 <= buf_limit_r;
-                  else                     buf_sel <= "10"; waddr_2 := 0; buf_rem_2 <= buf_limit_r; end if;
-                end if;
-              else
-                buf_rem_0 <= brem0_dec;
-              end if;
-              waddr_0 := waddr_0 + 1;
-            elsif buf_sel = "01" then
-              if buf_rem_1 = 1 then
-                buf_full(1) <= '1';  buf_rem_1 <= 0;
-                if buf_full(0) = '1' and buf_full(2) = '1' then
-                  full_pending <= '1';
-                else
-                  if buf_full(2) = '0' then buf_sel <= "10"; waddr_2 := 0; buf_rem_2 <= buf_limit_r;
-                  else                     buf_sel <= "00"; waddr_0 := 0; buf_rem_0 <= buf_limit_r; end if;
-                end if;
-              else
-                buf_rem_1 <= brem1_dec;
-              end if;
-              waddr_1 := waddr_1 + 1;
-            else
-              if buf_rem_2 = 1 then
-                buf_full(2) <= '1';  buf_rem_2 <= 0;
-                if buf_full(0) = '1' and buf_full(1) = '1' then
-                  full_pending <= '1';
-                else
-                  if buf_full(0) = '0' then buf_sel <= "00"; waddr_0 := 0; buf_rem_0 <= buf_limit_r;
-                  else                     buf_sel <= "01"; waddr_1 := 0; buf_rem_1 <= buf_limit_r; end if;
-                end if;
-              else
-                buf_rem_2 <= brem2_dec;
-              end if;
-              waddr_2 := waddr_2 + 1;
-            end if;
+            wr_pend_cont := true;
           else
             -- Single-buffer mode: buf_rem_single accounts for ALL samples
             if buf_rem_single > 0 then
@@ -1245,26 +1350,27 @@ begin
           end if;
         end if;
 
-        if cont_word_written then
-          newest_index_u <= producer_index_u;
-          producer_index_u <= producer_index_u + 1;
-          if ring_waddr = Max_Samples - 1 then
-            ring_waddr := 0;
-          else
-            ring_waddr := ring_waddr + 1;
-          end if;
-          if ring_used < CONT_RING_WORDS then
-            ring_used <= ring_used + 1;
-          else
-            oldest_index_u <= oldest_index_u + 1;
-          end if;
-        end if;
-
         -- Track SDRAM write completion
         if wip then
           if wr_cnt < 2 then
             wr_cnt := wr_cnt + 1;
           else
+            if wip_cont then
+              newest_index_u <= producer_index_u;
+              producer_index_u <= producer_index_u + 1;
+              if ring_waddr = Max_Samples - 1 then
+                ring_waddr := 0;
+              else
+                ring_waddr := ring_waddr + 1;
+              end if;
+              if ring_used < CONT_RING_WORDS then
+                ring_used <= ring_used + 1;
+              else
+                oldest_index_u <= oldest_index_u + 1;
+                overrun_count_u <= overrun_count_u + 1;
+              end if;
+              wip_cont := false;
+            end if;
             wip := false; wr_cnt := 0;
           end if;
         end if;

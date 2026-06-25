@@ -49,12 +49,14 @@ class WaveformData:
             raise ValueError("session has no digital data")
         return ((self.digital >> index) & 1).astype(np.uint8)
 
-    def channel_bits(self, ref: str) -> np.ndarray:
-        """Resolve a channel reference ('d0'..'d15' or 'x<name>' derived) to bits."""
+    def channel_bits(self, ref: str, threshold: float = ADC_VREF / 2) -> np.ndarray:
+        """Resolve a digital, derived, or thresholded analog channel to bits."""
         if ref.startswith("d") and ref[1:].isdigit():
             return self.digital_channel(int(ref[1:]))
         if ref in self.derived_digital:
             return self.derived_digital[ref]
+        if ref in self.analog:
+            return (self.analog[ref] >= threshold).astype(np.uint8)
         raise KeyError(f"unknown digital channel reference: {ref}")
 
 

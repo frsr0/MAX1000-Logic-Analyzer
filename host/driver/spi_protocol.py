@@ -23,6 +23,7 @@ import time
 
 SYNC_REQ = bytes([0x55, 0xAA])
 SYNC_RSP = bytes([0xAA, 0x55])
+GEN_FIFO_DEPTH = 256
 
 # Commands
 CMD_PING              = 0x01
@@ -59,8 +60,9 @@ REG_GEN_DATA      = 0x33
 REG_DEBUG_CH0_ENABLE = 0x40
 REG_DEBUG_CH0_PERIOD = 0x43
 REG_DEBUG_CH0_DUTY   = 0x44
-REG_SCHMITT_ENABLE    = 0x41
-REG_SCHMITT_THRESHOLD = 0x42
+# 0x41, 0x42 formerly REG_SCHMITT_ENABLE/THRESHOLD — the digital glitch filter
+# now runs in host software (see ols_spi_device.apply_glitch_filter); these
+# register addresses are retired/reserved.
 REG_CAPTURE_SEQ       = 0x50
 REG_PRODUCER_INDEX    = 0x51
 REG_OLDEST_INDEX      = 0x52
@@ -222,6 +224,10 @@ class SPIDevice:
         """Load generator data via CMD_GEN_LOAD."""
         if not data:
             return True
+        if len(data) > GEN_FIFO_DEPTH:
+            raise ValueError(
+                f"Generator payload is {len(data)} bytes; FPGA FIFO holds "
+                f"{GEN_FIFO_DEPTH} bytes")
         result = self.transaction(CMD_GEN_LOAD, data, timeout)
         if result is not None and result[0] == ST_OK:
             return True

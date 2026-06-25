@@ -11,16 +11,18 @@ Open-source multi-channel logic analyzer for the Arrow MAX1000 board (Intel MAX1
 
 ## Features
 
-- **16 simultaneous digital channels**, arbitrarily mappable to any of 23 physical pins (15 MKR + 8 PMOD)
-- **8 analog channels** (AIN0–AIN7), 12-bit, built-in MAX10 ADC
-- **Sample rate**: up to **200 MHz** digital (16 channels, speed mode), **120 MHz** (normal mode)
+- **16 simultaneous digital channels**, arbitrarily mappable to the 26-entry RTL pin pool (15 MKR + 8 PMOD + 3 accelerometer pins)
+- **MAX10 ADC capture**, 12-bit, built-in ADC. Mixed mode scans ADC0-ADC7; high-speed analog scans one selected ADC mux channel; maximum analog scans the documented physical profile ADC1,2,3,4,5,7,8,16.
+- **Four main capture modes**: full digital, mixed, high-speed single-analog, and maximum physical-analog. The current bitstream also has a specialist **200 MHz narrow digital rolling** path for one selected digital channel packed at 16 samples per word.
+- **Sample rate**: up to **200 MHz** digital in speed mode. Full-width 16-channel BRAM captures run at 200 MHz for 1,024 samples; deeper full-width digital captures are exposed conservatively at 14 MHz. Narrow digital rolling keeps a single selected channel at 200 MHz.
+- **Analog rate**: **1 MSPS** high-speed single-channel or **125 kframes/s** for mixed/maximum 8-input scans
 - **Deep capture**: up to 1,000,000 samples via SDRAM (16-bit bus, burst mode, triple-buffered)
-- **Pre-trigger capture**: 1,024 samples via BRAM (M9K, circular buffer, flushed to SDRAM after trigger)
+- **Pre-trigger capture**: small BRAM guard window in speed mode, flushed into the post-trigger SDRAM/FIFO stream after trigger
 - **Continuous/rolling capture**: SDRAM-backed ring buffer with monotonic producer index, oldest/newest indexes, and overrun reporting
 - **Edge trigger**: rising/falling on any combination of channels
 - **Protocol trigger**: UART byte match at configurable baud
 - **Signal generator**: UART / I2C / SPI output on any GPIO pin, with **atomic hardware capture** (CMD_GEN_CAPTURE)
-- **Schmitt trigger**: per-pin digital hysteresis filter (1–7 sample threshold), tunable live
+- **Digital glitch filter** (a.k.a. Schmitt): hysteresis filter (1–7 sample threshold) applied in **host software** to captured digital samples — non-destructive and re-tunable without re-capturing. (Formerly an FPGA filter; moved to the host so it works in every capture mode at no fabric cost.)
 - **Debug CH0**: programmable PWM (1 Hz–50 MHz, 0–100% duty) on CH0 pin for scope verification
 - **Packet protocol**: CRC-16-IBM framed SPI transactions (SYNC + header + payload + CRC), with sticky capture completion and explicit DONE ACK
 - **Register-based configuration**: capture/generator/mode registers plus capture metadata registers
@@ -37,8 +39,9 @@ Open-source multi-channel logic analyzer for the Arrow MAX1000 board (Intel MAX1
 | c0 | ×8.33 | 100 MHz | SDRAM write pump, buffer mgmt, readout, OLS protocol, LED PWM |
 | c1 | ×16.67 | 200 MHz | **Sample capture** (FAST_CLK), SPI slave |
 | c2 | ×8.33 | 100 MHz, −90° | SDRAM clock (phase-shifted for data centering) |
+| c3 | ×4.17 | 50 MHz VCO tap / 12 MHz output | MAX10 ADC hard-IP input (`clkdiv=1` inside ADC IP) |
 
-All PLL outputs from 12 MHz input, VCO = 480 MHz. Timing closure (Slow 1200 mV 85C): **+0.16 ns** setup, **+0.10 ns** min-pulse-width. The min-pulse-width is the binding constraint — the device clock network restricts the 200 MHz clock to Fmax = 204 MHz, so margin at 200 MHz is device-limited, not logic-limited.
+All PLL outputs derive from the 12 MHz input. The current speed build closes timing at **+0.220 ns** worst setup slack, **+0.279 ns** hold slack, and **+0.098 ns** min-pulse-width slack in the Slow 1200 mV 85C model. The analog path uses the dedicated MAX10 ADC hard-IP clock input at 12 MHz with `clkdiv=1`, which is how the measured 1.0 MSPS single-channel rate is achieved.
 
 ### Normal mode (FAST_SPEED=false)
 
@@ -84,16 +87,60 @@ Config handshake (valid/ack toggle CDC) ensures Rate_Div and Samples are stable 
 
 ## Capture Modes
 
-Mode is selected by `analog_enable` (REG_FLAGS bit 3):
+Mode is selected by `REG_FLAGS`:
 
-| analog_enable | Frame size | Content | Max digital rate |
-|---------------|-----------|---------|------------------|
-| 0 (Digital) | 2 bytes | `[D15:D0]` | 200 MHz (speed) / 120 MHz (normal) |
-| 1 (Mixed 16 Dig + 8 ADC) | 14 bytes | `[D15:D0, A0..A7]` | 200 MHz* |
+| Mode | REG_FLAGS bits | Frame size | Content |
+|---|---|---:|---|
+| Digital | bit3=0 | 2 bytes | `[D15:D0]` |
+| Narrow digital | bit13=1, bits17:14=channel | 2 bytes per 16 time samples | one selected digital channel packed; bit 0 is earliest |
+| Mixed | bit3=1, bit4=0 | 14 bytes | `[D15:D0, ADC0..ADC7]` |
+| High-speed analog | bit3=1, bit4=1, profile `00` | 2 bytes | selected 12-bit ADC mux result |
+| Maximum analog | bit3=1, bit4=1, profile `01` | 12 bytes | `ADC1,2,3,4,5,7,8,16` |
 
 Over the SPI readout every word is 32-bit (payload in the low 16 bits, high 16 zero), so the host reads digital at stride 4 and de-interleaves mixed frames (28 wire bytes → 14 payload bytes).
 
-*Analog values updated at ~101 kHz (all 8 channels). Digital capture continues at full rate regardless. Analog reference: 3.3V internal, 12-bit = 0.806 mV/count.
+Digital-only capture reaches the full digital sample rate for BRAM-depth
+captures. Narrow digital rolling reaches 200 MHz for one selected channel by
+packing 16 time samples into each 16-bit word. Mixed capture
+samples digital once per ADC frame at 125 kframes/s. High-speed analog captures
+one ADC mux channel at 1 MSPS. Analog reference: 3.3V internal, 12-bit =
+0.806 mV/count.
+
+The bitstream has explicit ADC profiles for mixed, high-speed analog, and
+maximum analog. High-speed analog currently uses ADC1 (`AIN3`) from the host
+adapter. See [docs/ANALOG_MODE_PLAN.md](docs/ANALOG_MODE_PLAN.md) for the
+profile details.
+
+## MAX1000 Physical Input Map
+
+The app carries board pin metadata with captures and reports it on the Device page. The RTL logical pin pool is:
+
+| Pin indexes | Board inputs | Header / role |
+|---|---|---|
+| 0-14 | `D0`-`D14` | MKR `J1 / 9` through `J2 / 9` |
+| 15-22 | `PIO_01`-`PIO_08` | PMOD pins 1-8 |
+| 23-25 | `SEN_SDO`, `SEN_SDI`, `SEN_SPC` | LIS3DH accelerometer bus pins |
+
+Default digital channels map `CH0..CH14` to pin indexes `0..14`; `CH15` defaults to pin index `24` (`SEN_SDI`) to keep the legacy 16-channel default.
+
+MAX1000 analogue inputs in the bundled board guide:
+
+| Board input | FPGA pin | Header | ADC channel | Mixed ADC0-ADC7 | Maximum analog |
+|---|---|---|---|---|---|
+| `AIN` | `PIN_D2` | User I/O | ADC16 | No | Yes |
+| `AIN7` | `PIN_B1` | User I/O | needs verification | No | No |
+| `AREF` | `PIN_D3` | `J1 / 1` | reference | No | No |
+| `AIN0` | `PIN_E1` | `J1 / 2` | ADC8 | No | Yes |
+| `AIN1` | `PIN_C2` | `J1 / 3` | ADC2 | Yes | Yes |
+| `AIN2` | `PIN_C1` | `J1 / 4` | ADC5 | Yes | Yes |
+| `AIN3` | `PIN_D1` | `J1 / 5` | ADC1 | Yes | Yes |
+| `AIN4` | `PIN_E3` | `J1 / 6` | ADC3 | Yes | Yes |
+| `AIN5` | `PIN_F1` | `J1 / 7` | ADC7 | Yes | Yes |
+| `AIN6` | `PIN_E4` | `J1 / 8` | ADC4 | Yes | Yes |
+
+Captured analog arrays are labelled by ADC mux selection, not by a simple
+`AIN0..AIN7` sequence. Mixed mode still exposes `ADC0` and `ADC6` as unmapped
+mux slots; maximum analog uses only documented physical inputs.
 
 ## Sample Rate Formula
 
@@ -114,15 +161,19 @@ The system clock is 100 MHz for speed mode, 96 MHz for normal. Fast mode (BRAM-o
 
 Continuous capture writes into a bounded SDRAM ring. The FPGA reports `producer_index`, `oldest_index`, `newest_index`, and `overrun_count`; data is read by absolute sample index. Capture can continue beyond host readback throughput, but unread samples are overwritten and counted as overruns.
 
+This is not an arbitrary-length lossless capture path at 200 MHz. The SDRAM writer has finite burst bandwidth and FIFO cushion; once the producer outruns retained SDRAM capacity, host readback, or the write pump's burst slack, the ring keeps the newest retained samples and reports the loss through `overrun_count`.
+
 SPI readback is still limited to ~30 MB/s effective throughput. This limits lossless live readback but does **not** affect single-shot retention inside SDRAM.
 
 | Capture Mode | Frame stride | Rolling max* |
 |---|---|---|
 | 16 Digital | 2 B | 15 MHz |
-| 16 Dig + 8 Ana | 14 B | 2.14 MHz |
-| 8 Analog | 14 B | 2.14 MHz |
+| Narrow digital, one selected channel | 2 B per 16 samples | 200 MHz producer; lossless host readback depends on window/chunk size |
+| 16 Dig + ADC0-ADC7 mixed | 14 B | ADC-limited to 125 kframes/s |
+| High-speed analog, one ADC mux input | 2 B | ADC-limited to 1 MSPS |
+| Maximum analog, physical ADC1,2,3,4,5,7,8,16 profile | 12 B | ADC-limited to 125 kframes/s |
 
-*Lossless live readback max = 30 MB/s ÷ stride in bytes. Above that, the ring remains live and `overrun_count` reports overwritten data.
+*Lossless live readback max = 30 MB/s ÷ stride in bytes. Above that, the ring remains live and `overrun_count` reports overwritten data. At 200 MHz digital capture, SDRAM write bandwidth is also part of the bound; the honest contract is rolling retention plus overrun reporting, not infinite lossless storage.
 
 ## Debug CH0 (Programmable PWM)
 
@@ -187,13 +238,12 @@ FPGA → Host:  0xAA 0x55  STATUS  SEQ  LEN_L  LEN_H  [PAYLOAD...]  CRC_L  CRC_H
 | `0x02` | REG_DELAY_COUNT | 29:0 | Trigger delay count. |
 | `0x10` | REG_TRIGGER_MASK | 31:0 | Bit n enables trigger on channel n. |
 | `0x11` | REG_TRIGGER_VALUE | 31:0 | Level trigger value. |
-| `0x20` | REG_FLAGS | 3:0 | bit0=fast_mode, bit1=continuous, bit2=ch_mode, bit3=analog_enable |
+| `0x20` | REG_FLAGS | 17:0 | bit0=fast_mode, bit1=continuous, bit2=ch_mode, bit3=analog_enable, bit4=analog_only, bits6:5=analog_profile, bits12:8=high-speed ADC channel, bit13=narrow digital enable, bits17:14=narrow digital channel |
 | `0x21` | REG_FAST_MODE | 0 | Fast mode (BRAM only, no SDRAM). |
 | `0x22` | REG_CONT_MODE | 0 | Continuous capture ring mode. |
 | `0x30`–`0x33` | Generator regs | Proto, baud, pins, data |
 | `0x40` | REG_DEBUG_CH0_ENABLE | 0 | Debug CH0 PWM enable |
-| `0x41` | REG_SCHMITT_ENABLE | 0 | Enable per-pin hysteresis filter |
-| `0x42` | REG_SCHMITT_THRESHOLD | 2:0 | Threshold (1–7) |
+| `0x41`–`0x42` | _(reserved)_ | — | Formerly REG_SCHMITT_ENABLE/THRESHOLD; the digital glitch filter now runs in host software, so these addresses are retired |
 | `0x43` | REG_DEBUG_CH0_PERIOD | 31:0 | PWM period in sys_clk cycles (default 1024) |
 | `0x44` | REG_DEBUG_CH0_DUTY | 31:0 | PWM high time in sys_clk cycles (default 512) |
 | `0x50` | REG_CAPTURE_SEQ | 31:0 | Monotonic capture sequence, incremented on arm |
@@ -240,7 +290,7 @@ pip install ftd2xx
 cd host
 python -m app.OLS_Console              # GUI
 python -m app.OLS_Console --cli capture --rate 1000000 --samples 5000  # CLI
-python -m app.hw_validation            # hardware tests (553 checks)
+python -m app.hw_validation            # hardware tests (564 checks on the current image)
 ```
 
 ### Python API
@@ -256,7 +306,7 @@ data = dev.capture(rate_hz=1000000, nsamples=5000)
 dev.set_debug_ch0(True, freq_hz=100000, duty_pct=50)
 data = dev.capture(rate_hz=1000000, nsamples=5000)
 
-# Schmitt trigger (digital hysteresis)
+# Digital glitch filter (host-side hysteresis, applied to captured samples)
 dev.set_schmitt(True, threshold=3)
 
 # Atomic generator capture
@@ -267,7 +317,7 @@ data = dev.capture_with_gen(rate_hz=1000000, nsamples=2000)
 data = dev.read_capture_range(start_sample=0, sample_count=1024)
 dev.ack_capture_done()
 
-# Analog capture (all 8 channels)
+# Analog capture (ADC0..ADC7 mux stream; see physical map above)
 dev.set_analog_enable(True)
 raw, frames = dev.capture_analog(rate_hz=100000, frames=4096)
 ```
@@ -291,7 +341,7 @@ cd hdl\proj
 
 | Mode | FAST_SPEED | Sys_clk | FAST_CLK | Timing slack |
 |------|-----------|---------|----------|-------------|
-| Speed | `true` | 100 MHz | 200 MHz | **+0.16 ns** setup / +0.10 ns mpw (Slow 85C) |
+| Speed | `true` | 100 MHz | 200 MHz | **+0.220 ns** setup / +0.098 ns mpw (Slow 85C) |
 | Normal | `false` | 96 MHz | 120 MHz | +0.099 ns* |
 
 *Normal mode timing verified on earlier build; PLL multiply/divide must match.
@@ -300,28 +350,28 @@ cd hdl\proj
 
 | Resource | Used | Available | % |
 |----------|------|-----------|---|
-| Logic elements | 7,138 | 8,064 | 89% |
-| Combinational functions | 6,409 | 8,064 | 79% |
-| Registers | 3,065 | 8,064 | 38% |
-| Memory bits | 75,845 | 387,072 | 20% |
+| Logic elements | 7,588 | 8,064 | 94% |
+| Combinational functions | 6,789 | 8,064 | 84% |
+| Registers | 3,814 | 8,064 | 47% |
+| Memory bits | 289,536 | 387,072 | 75% |
 | PLLs | 1 | 1 | 100% |
 
 ## Tests
 
 ```bash
 cd host
-python -m pytest tests/ driver/tests/ -v   # 319 unit tests
-python -m app.hw_validation                # 580 hardware validation checks
+python -m pytest tests/ driver/tests/ -v   # 333 host/driver tests
+python -m app.hw_validation                # 564 hardware validation checks on current image
 ```
 
-Hardware validation covers: SPI protocol, single/fast/continuous/max-speed capture, max-rate continuous ring overrun, edge triggers (rising + falling), UART/I2C/SPI generators, I2C LIS3DH addressing round-trip, divider accuracy, mixed 16-digital + 8-ADC mode and frame-alignment integrity, mixed→digital→mixed reset, pre-trigger, full-depth SDRAM, back-to-back and capture-during-readout stress, rolling capture, protocol trigger, noise floor, schmitt trigger, abort capture, crosstalk characterisation, and a long stress run.
+Hardware validation covers: SPI protocol, single/fast/continuous/max-speed capture, 200 MHz narrow packed digital finite and continuous capture, max-rate continuous ring overrun, edge triggers (rising + falling), UART/I2C/SPI generators, I2C LIS3DH addressing round-trip, divider accuracy, full digital, mixed 16-digital + ADC0-ADC7 mode, high-speed analog, maximum analog physical profile, frame-alignment integrity, mixed→digital→mixed reset, pre-trigger, full-depth SDRAM, back-to-back and capture-during-readout stress, rolling capture, protocol trigger, noise floor, the host-side digital glitch filter, abort capture, crosstalk characterisation, and a long stress run.
 
 ## Project Structure
 
 ```
 OLS_Logic_Analyzer_Clean/
 ├── hdl/
-│   ├── rtl/            # VHDL sources (17 files)
+│   ├── rtl/            # VHDL sources (16 files)
 │   ├── tb/             # Testbenches + simulation
 │   ├── proj/           # Quartus project + compile.ps1 + constraints
 │   ├── ip/MAX10_ADC/   # Altera Modular ADC II IP

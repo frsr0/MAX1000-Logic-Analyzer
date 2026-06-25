@@ -43,7 +43,11 @@ begin
             end if;
 
           when START =>
-            if baud_timer = (Baud_Div / 2) - 1 then
+            -- Wait half a bit period to align sampling to mid-bit. Guard the
+            -- degenerate Baud_Div<2 case: Baud_Div/2 = 0 makes the original
+            -- target (Baud_Div/2)-1 = -1, which baud_timer (natural) can never
+            -- equal, stranding the FSM so the trigger never fires.
+            if Baud_Div < 2 or baud_timer = (Baud_Div / 2) - 1 then
               baud_timer := 0;
               bit_cnt := 0;
               state := BITS;

@@ -65,6 +65,26 @@ class TestCheck:
         assert hv.FAIL == 1
         assert hv.TOTAL == 4
 
+class TestFloatingChannelActivity:
+    def setup_method(self):
+        hv.PASS = 0
+        hv.FAIL = 0
+        hv.TOTAL = 0
+
+    def test_logs_without_recording_failure(self, capsys):
+        ch = [
+            [0, 1, 0, 1],
+            [1, 1, 1, 1],
+        ]
+
+        hv.log_floating_channel_activity(ch, ns=4, label="fast")
+
+        captured = capsys.readouterr()
+        assert "fast CH0: 3 transitions" in captured.out
+        assert hv.PASS == 0
+        assert hv.FAIL == 0
+        assert hv.TOTAL == 0
+
 class TestPrintHeader:
     def test_print_header_format(self, capsys):
         hv.print_header("My Test")

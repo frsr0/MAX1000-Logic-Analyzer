@@ -49,22 +49,24 @@ PORT (
     Gen_SPI_Test   : OUT STD_LOGIC := '0';
     Armed          : OUT STD_LOGIC := '0';
     Fast_Mode      : OUT STD_LOGIC := '0';
+    Narrow_Enable  : OUT STD_LOGIC := '0';
+    Narrow_Channel : OUT NATURAL range 0 to 15 := 0;
     Analog_Enable  : OUT STD_LOGIC := '0';
+    Analog_Only    : OUT STD_LOGIC := '0';
+    Analog_Profile : OUT STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
+    Analog_Channel : OUT NATURAL range 0 to 31 := 1;
     Status        : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Continuous_Mode : OUT STD_LOGIC := '0';
-    Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-    Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
     Analog_Frame_Data : IN STD_LOGIC_VECTOR(127 downto 0) := (others => '0');
     Analog_Frame_Len  : IN NATURAL range 1 to 14 := 1;
     Analog_Stream_Mode : IN STD_LOGIC := '0';
+    Analog_Frame_Toggle : IN STD_LOGIC := '0';
     Pin_Map_Write  : OUT STD_LOGIC := '0';
     Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
     Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
     Debug_Ch0_Enable : OUT STD_LOGIC := '0';
     Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
     Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
-    Schmitt_Enable   : OUT STD_LOGIC := '0';
-    Schmitt_Threshold : OUT NATURAL range 0 to 7 := 3;
     Gen_Start_Ack    : IN  STD_LOGIC := '0';
     Gen_Start_Reject : IN  STD_LOGIC := '0';
     Gen_Done_Pulse   : IN  STD_LOGIC := '0';
@@ -111,11 +113,16 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL gen_spi_test_i      : STD_LOGIC := '0';
   SIGNAL armed_i             : STD_LOGIC := '0';
   SIGNAL fast_mode_i         : STD_LOGIC := '0';
+  SIGNAL narrow_enable_i     : STD_LOGIC := '0';
+  SIGNAL narrow_channel_i    : NATURAL range 0 to 15 := 0;
   SIGNAL continuous_mode_i   : STD_LOGIC := '0';
   SIGNAL buffer_full_i       : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
   SIGNAL buffer_ack_i        : STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
   SIGNAL fla_status          : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL analog_enable_i     : STD_LOGIC := '0';
+  SIGNAL analog_only_i       : STD_LOGIC := '0';
+  SIGNAL analog_profile_i    : STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
+  SIGNAL analog_channel_i    : NATURAL range 0 to 31 := 1;
   SIGNAL gen_clear_i         : STD_LOGIC := '0';
   SIGNAL pin_map_write_i     : STD_LOGIC := '0';
   SIGNAL pin_map_channel_i   : NATURAL range 0 to 15 := 0;
@@ -123,8 +130,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL debug_ch0_enable_i  : STD_LOGIC := '0';
   SIGNAL debug_ch0_period_i  : STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
   SIGNAL debug_ch0_duty_i    : STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
-  SIGNAL schmitt_enable_i    : STD_LOGIC := '0';
-  SIGNAL schmitt_threshold_i : NATURAL range 0 to 7 := 3;
   SIGNAL gen_capture_active_i : STD_LOGIC := '0';
   SIGNAL gen_start_ack_i      : STD_LOGIC := '0';
   SIGNAL gen_start_reject_i   : STD_LOGIC := '0';
@@ -167,8 +172,13 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
      Gen_SPI_Test   : OUT STD_LOGIC := '0';
       Armed          : OUT STD_LOGIC := '0';
       Fast_Mode      : OUT STD_LOGIC := '0';
+      Narrow_Enable   : OUT STD_LOGIC := '0';
+      Narrow_Channel  : OUT NATURAL range 0 to 15 := 0;
       Continuous_Mode : OUT STD_LOGIC := '0';
       Analog_Enable   : OUT STD_LOGIC := '0';
+      Analog_Only     : OUT STD_LOGIC := '0';
+      Analog_Profile  : OUT STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
+      Analog_Channel  : OUT NATURAL range 0 to 31 := 1;
       Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
       Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
       Pin_Map_Write   : OUT STD_LOGIC := '0';
@@ -177,9 +187,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
        Debug_Ch0_Enable : OUT STD_LOGIC := '0';
        Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
        Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
-       Schmitt_Enable   : OUT STD_LOGIC := '0';
-      Schmitt_Threshold : OUT NATURAL range 0 to 7 := 3;
-       Gen_Capture_Active : OUT STD_LOGIC := '0';
+        Gen_Capture_Active : OUT STD_LOGIC := '0';
        Gen_Start_Ack      : IN  STD_LOGIC := '0';
        Gen_Start_Reject   : IN  STD_LOGIC := '0';
        Gen_Done_Pulse     : IN  STD_LOGIC := '0';
@@ -232,13 +240,16 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
     s_burst     : OUT std_logic := '0';
     Armed       : IN  std_logic := '0';
     Fast_Mode   : IN  std_logic := '0';
+    Narrow_Enable : IN std_logic := '0';
+    Narrow_Channel : IN natural range 0 to 15 := 0;
      FAST_CLK    : IN  std_logic := '0';
      Continuous_Mode : IN  std_logic := '0';
      Buffer_Full     : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
      Buffer_Ack      : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-     Analog_Frame_Data : IN STD_LOGIC_VECTOR(127 downto 0) := (others => '0');
-      Analog_Frame_Len  : IN NATURAL range 1 to 14 := 1;
-     Analog_Stream_Mode : IN STD_LOGIC := '0';
+    Analog_Frame_Data : IN STD_LOGIC_VECTOR(127 downto 0) := (others => '0');
+    Analog_Frame_Len  : IN NATURAL range 1 to 14 := 1;
+    Analog_Stream_Mode : IN STD_LOGIC := '0';
+    Analog_Frame_Toggle : IN STD_LOGIC := '0';
      Blk_Rd_Req_Tog : IN  STD_LOGIC := '0';
      Blk_Rd_Base    : IN  NATURAL range 0 to Max_Samples := 0;
      Blk_Rd_Count   : IN  NATURAL range 0 to Max_Samples := 0;
@@ -264,6 +275,9 @@ BEGIN
   Gen_Start     <= Gen_Start_i;
   Gen_Baud_Div  <= Gen_Baud_Div_i;
   Gen_Busy_i    <= Gen_Busy;
+  gen_start_ack_i    <= Gen_Start_Ack;
+  gen_start_reject_i <= Gen_Start_Reject;
+  gen_done_pulse_i   <= Gen_Done_Pulse;
   Gen_Proto <= Gen_Proto_i;
   Gen_TX_Pin  <= Gen_TX_Pin_i;
   Gen_SCL_Pin <= Gen_SCL_Pin_i;
@@ -274,18 +288,20 @@ BEGIN
   Gen_SPI_Test   <= gen_spi_test_i;
   Armed          <= armed_i;
   Fast_Mode      <= fast_mode_i;
+  Narrow_Enable  <= narrow_enable_i;
+  Narrow_Channel <= narrow_channel_i;
   Analog_Enable <= analog_enable_i;
+  Analog_Only <= analog_only_i;
+  Analog_Profile <= analog_profile_i;
+  Analog_Channel <= analog_channel_i;
   Status <= fla_status;
   Continuous_Mode <= continuous_mode_i;
-  Buffer_Ack <= buffer_ack_i;
   Pin_Map_Write <= pin_map_write_i;
   Pin_Map_Channel <= pin_map_channel_i;
   Pin_Map_Pin <= pin_map_pin_i;
   Debug_Ch0_Enable <= debug_ch0_enable_i;
   Debug_Ch0_Period <= debug_ch0_period_i;
   Debug_Ch0_Duty   <= debug_ch0_duty_i;
-  Schmitt_Enable   <= schmitt_enable_i;
-  Schmitt_Threshold <= schmitt_threshold_i;
   Gen_Capture_Active <= gen_capture_active_i;
   OLS_Interface1 : OLS_Interface
   GENERIC MAP (
@@ -301,7 +317,12 @@ BEGIN
     Gen_SPI_Test   => gen_spi_test_i,
     Armed          => armed_i,
     Fast_Mode      => fast_mode_i,
+    Narrow_Enable  => narrow_enable_i,
+    Narrow_Channel => narrow_channel_i,
     Analog_Enable  => analog_enable_i,
+    Analog_Only    => analog_only_i,
+    Analog_Profile => analog_profile_i,
+    Analog_Channel => analog_channel_i,
     Continuous_Mode => continuous_mode_i,
     Buffer_Full     => buffer_full_i,
     Buffer_Ack      => buffer_ack_i,
@@ -311,8 +332,6 @@ BEGIN
     Debug_Ch0_Enable => debug_ch0_enable_i,
     Debug_Ch0_Period => debug_ch0_period_i,
     Debug_Ch0_Duty   => debug_ch0_duty_i,
-    Schmitt_Enable   => schmitt_enable_i,
-    Schmitt_Threshold => schmitt_threshold_i,
     Gen_Capture_Active => gen_capture_active_i,
     Gen_Start_Ack      => gen_start_ack_i,
     Gen_Start_Reject   => gen_start_reject_i,
@@ -338,6 +357,8 @@ BEGIN
     Status       => fla_status,
     Armed        => armed_i,
     Fast_Mode    => fast_mode_i,
+    Narrow_Enable => narrow_enable_i,
+    Narrow_Channel => narrow_channel_i,
     FAST_CLK     => FAST_CLK,
     Continuous_Mode => continuous_mode_i,
     Buffer_Full     => buffer_full_i,
@@ -345,6 +366,7 @@ BEGIN
     Analog_Frame_Data => Analog_Frame_Data,
     Analog_Frame_Len  => Analog_Frame_Len,
     Analog_Stream_Mode => Analog_Stream_Mode,
+    Analog_Frame_Toggle => Analog_Frame_Toggle,
     Blk_Rd_Req_Tog    => blk_rd_req_tog_i,
     Blk_Rd_Base       => blk_rd_base_i,
     Blk_Rd_Count      => blk_rd_count_i,

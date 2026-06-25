@@ -5,6 +5,8 @@ import os
 import time
 import struct
 import threading
+from array import array
+import numpy as np
 from driver.ols_spi import OLS as OLS_SPI
 from driver.spi_protocol import (
     SPIDevice,
@@ -15,7 +17,6 @@ from driver.spi_protocol import (
     REG_FAST_MODE, REG_CONT_MODE,
     REG_GEN_PROTO, REG_GEN_BAUD, REG_GEN_PINS, REG_GEN_DATA,
     REG_IFACE_MODE, REG_DEBUG_CH0_ENABLE, REG_DEBUG_CH0_PERIOD, REG_DEBUG_CH0_DUTY,
-    REG_SCHMITT_ENABLE, REG_SCHMITT_THRESHOLD,
     ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_DONE,
 )
 
@@ -28,11 +29,20 @@ CMD_TVALUE        = 0xC1
 # GPIO/MPSSE constants re-exported for hw_validation.py
 from driver.ols_spi import GPIO_CS_LO, GPIO_CS_HI, PIN_DIR
 
-# Two capture modes (hardware analog_enable = bit 3 of REG_FLAGS):
-#   MODE_DIGITAL (0):  16 digital channels, 2-byte frame
-#   MODE_MIXED (0x08): 16 digital + all 8 ADC channels, 14-byte frame
+# Capture mode bits in REG_FLAGS:
+#   bit 3: analog stream enable
+#   bit 4: analog-only profile
+#   bit 5: maximum physical-analog profile when bit 4 is set
+#   bits 8..12: selected ADC mux channel for high-speed analog
+#   bit 13: narrow packed digital stream enable
+#   bits 14..17: selected digital channel for narrow packed mode
 MODE_DIGITAL = 0
 MODE_MIXED = 0x08
+MODE_ANALOG_ONLY = 0x10
+MODE_ANALOG_FAST = MODE_MIXED | MODE_ANALOG_ONLY
+MODE_ANALOG_ALL = MODE_ANALOG_FAST | 0x20
+MODE_ANALOG = MODE_ANALOG_FAST
+MODE_NARROW_DIGITAL = 0x2000
 # Back-compat aliases
 ANALOG_MODE_DIGITAL8 = MODE_DIGITAL
 ANALOG_ENABLE_BIT = MODE_MIXED
@@ -51,6 +61,8 @@ WIRE_WORD_BYTES = 4
 def analog_frame_stride(mode):
     # Payload (dense) bytes per frame: 16 digital + 8 ADC × 12-bit = 14 bytes;
     # digital-only = 2 bytes.
+    if mode & MODE_ANALOG_ONLY:
+        return 12 if mode & 0x20 else 2
     return 14 if mode & MODE_MIXED else 2
 
 
@@ -68,17 +80,82 @@ def wire_to_payload(data):
     return data
 
 
-def _decode_adc(frame):
+def narrow_digital_flags(channel):
+    ch = max(0, min(15, int(channel)))
+    return MODE_NARROW_DIGITAL | (ch << 14)
+
+
+def unpack_narrow_digital_words(data, channel=0, sample_count=None):
+    """Expand packed 1-bit high-speed digital words to normal 16-bit samples.
+
+    Each FPGA word contains 16 consecutive samples for one selected channel;
+    bit 0 is earliest. The returned array uses the app's normal 16-bit digital
+    sample format with only ``channel`` populated.
+    """
+    words = np.frombuffer(data[:len(data) - (len(data) % 2)], dtype="<u2")
+    total = len(words) * 16 if sample_count is None else int(sample_count)
+    out = np.zeros(total, dtype=np.uint16)
+    mask = np.uint16(1 << max(0, min(15, int(channel))))
+    idx = 0
+    for word in words:
+        for bit in range(16):
+            if idx >= total:
+                return out
+            if int(word) & (1 << bit):
+                out[idx] = mask
+            idx += 1
+    return out
+
+
+def apply_glitch_filter(data, threshold, num_channels=NUM_CHANNELS):
+    """Digital hysteresis / glitch filter over a captured digital sample stream.
+
+    ``data`` is contiguous little-endian uint16 words, one per sample, each bit
+    a channel. Mirrors the former on-FPGA filter: a channel transition is
+    accepted only after the new level has held for ``threshold`` consecutive
+    samples, so shorter glitches are rejected. ``threshold`` 0 disables it
+    (pass-through). Returns filtered bytes the same length as ``data``.
+
+    Done in software (the FPGA captures raw pins), so it is non-destructive and
+    can be re-applied with a different threshold without re-capturing.
+    """
+    threshold = max(0, min(7, int(threshold)))
+    if threshold <= 0 or not data:
+        return data
+    n = len(data) // 2
+    if n == 0:
+        return data
+    words = np.frombuffer(data[:n * 2], dtype="<u2")
+    out = np.empty(n, dtype="<u2")
+    stable = int(words[0])          # seed from the first sample
+    cnt = [0] * num_channels
+    for i in range(n):
+        raw = int(words[i])
+        diff = raw ^ stable         # bits that disagree with the held value
+        for ch in range(num_channels):
+            m = 1 << ch
+            if not (diff & m):
+                cnt[ch] = 0
+            elif cnt[ch] < threshold:
+                cnt[ch] += 1
+            else:
+                stable ^= m         # accept: flip held bit to the raw level
+                cnt[ch] = 0
+        out[i] = stable
+    return out.tobytes() + data[n * 2:]
+
+
+def _decode_adc(frame, offset=2):
     """8 ADC × 12-bit packed in 12 bytes (frame[2:14]); each adjacent pair
     shares a middle byte (lo: byte n + low nibble of n+1; hi: high nibble of
     n+1 + byte n+2)."""
     adc = []
     for ch in range(4):
-        lo = frame[2 + ch * 3]
-        hi = (frame[3 + ch * 3] & 0x0F) << 8
+        lo = frame[offset + ch * 3]
+        hi = (frame[offset + 1 + ch * 3] & 0x0F) << 8
         adc.append(lo | hi)
-        lo = (frame[3 + ch * 3] >> 4)
-        hi = frame[4 + ch * 3] << 4
+        lo = (frame[offset + 1 + ch * 3] >> 4)
+        hi = frame[offset + 2 + ch * 3] << 4
         adc.append(lo | hi)
     return adc
 
@@ -92,9 +169,16 @@ def decode_analog_frames(data, mode):
     frames = []
     for i in range(0, len(data) // stride):
         frame = data[i * stride:(i + 1) * stride]
-        row = {"digital": frame[0] | (frame[1] << 8), "adc": []}
-        if mode & MODE_MIXED:
-            row["adc"] = _decode_adc(frame)
+        if mode & MODE_ANALOG_ONLY:
+            if mode & 0x20:
+                row = {"digital": None, "adc": _decode_adc(frame, 0)}
+            else:
+                row = {"digital": None,
+                       "adc": [frame[0] | ((frame[1] & 0x0F) << 8)]}
+        else:
+            row = {"digital": frame[0] | (frame[1] << 8), "adc": []}
+            if mode & MODE_MIXED:
+                row["adc"] = _decode_adc(frame)
         frames.append(row)
     return frames
 
@@ -116,13 +200,18 @@ class OLSDeviceSPI:
         self.spi = None
         self._pkt = None
         self.analog_mode = MODE_DIGITAL
+        self.analog_channel = 1
         self.debug_ch0_enabled = False
+        self._debug_ch0_period = None
+        self._debug_ch0_duty = None
         # Pending flag for live toggling during rolling capture
         self._pending_debug_enable = None
         self._pending_debug_freq = None
         self._pending_debug_duty = None
-        self._pending_schmitt_enable = None
-        self._pending_schmitt_threshold = None
+        # Software digital glitch / hysteresis filter (applied to captured
+        # digital samples on the host; the FPGA captures raw pins).
+        self.glitch_enable = False
+        self.glitch_threshold = 3
 
     @property
     def pkt(self):
@@ -210,10 +299,20 @@ class OLSDeviceSPI:
         # SPI backend: raw mode is display-only. FPGA always sends 4 bytes/sample.
         # _stride is used by the GUI to pick stride=1 for raw display.
 
-    def set_analog_config(self, mode, *_compat_args):
-        """Set capture mode: MODE_DIGITAL or MODE_MIXED (bit 3 of REG_FLAGS)."""
-        self.analog_mode = MODE_MIXED if mode & MODE_MIXED else MODE_DIGITAL
-        self.pkt.write_register(REG_FLAGS, self.analog_mode)
+    def set_analog_config(self, mode, adc_channel=None, *_compat_args):
+        """Set capture mode and optional high-speed ADC mux channel."""
+        if adc_channel is not None:
+            self.analog_channel = max(0, min(31, int(adc_channel)))
+        if mode & MODE_ANALOG_ONLY:
+            self.analog_mode = mode
+        elif mode & MODE_MIXED:
+            self.analog_mode = MODE_MIXED
+        else:
+            self.analog_mode = MODE_DIGITAL
+        mode_flags = self.analog_mode
+        if mode_flags & MODE_ANALOG_ONLY:
+            mode_flags |= (self.analog_channel & 0x1F) << 8
+        self.pkt.write_register(REG_FLAGS, mode_flags)
 
     def set_analog_enable(self, enable=True):
         """Enable mixed capture: 16 digital + all 8 ADC channels."""
@@ -227,21 +326,34 @@ class OLSDeviceSPI:
         return decode_analog_frames(data, self.analog_mode if mode is None else mode)
 
     def set_schmitt(self, enable=True, threshold=3):
-        """Enable/disable digital hysteresis filter (Schmitt trigger).
-        
-        When enabled, each input pin requires `threshold` consecutive equal
-        samples before accepting a transition.  This rejects glitches.
-        threshold: 0-7 clock cycles at sys_clk rate (~21ns per cycle).
+        """Configure the software digital hysteresis / glitch filter.
+
+        When enabled, each channel requires `threshold` consecutive equal
+        samples before a transition is accepted, rejecting shorter glitches.
+        This is applied on the host to captured digital samples (the FPGA
+        captures raw pins), so it takes effect immediately and is
+        non-destructive. threshold: 0-7 samples (0 = filter off).
         """
-        self.pkt.write_register(REG_SCHMITT_ENABLE, 1 if enable else 0)
-        self.pkt.write_register(REG_SCHMITT_THRESHOLD, max(0, min(7, threshold)))
+        self.glitch_enable = bool(enable)
+        self.glitch_threshold = max(0, min(7, int(threshold)))
+
+    def _filter_digital(self, samples):
+        """Apply the software glitch filter to a digital sample byte stream,
+        but only for pure-digital captures (never analog/mixed/narrow)."""
+        if (self.glitch_enable and self.glitch_threshold > 0
+                and self.analog_mode == MODE_DIGITAL and samples):
+            return apply_glitch_filter(samples, self.glitch_threshold)
+        return samples
 
     def set_debug_ch0(self, enable=True, freq_hz=None, duty_pct=50):
         if freq_hz is not None:
             period = max(2, int(self.sys_clk / freq_hz))
             duty = max(1, min(period - 1, int(period * duty_pct / 100)))
-            self.pkt.write_register(REG_DEBUG_CH0_PERIOD, period & 0xFFFFFFFF)
-            self.pkt.write_register(REG_DEBUG_CH0_DUTY, duty & 0xFFFFFFFF)
+            self._debug_ch0_period = period
+            self._debug_ch0_duty = duty
+        if self._debug_ch0_period is not None and self._debug_ch0_duty is not None:
+            self.pkt.write_register(REG_DEBUG_CH0_PERIOD, self._debug_ch0_period & 0xFFFFFFFF)
+            self.pkt.write_register(REG_DEBUG_CH0_DUTY, self._debug_ch0_duty & 0xFFFFFFFF)
         self.debug_ch0_enabled = bool(enable)
         self.pkt.write_register(REG_DEBUG_CH0_ENABLE, 1 if enable else 0)
 
@@ -270,6 +382,8 @@ class OLSDeviceSPI:
                               flags=0, fast_mode=None, continuous=False):
         """Write the full capture mode state before every arm."""
         mode_flags = (flags | self.analog_mode) & 0xFFFFFFFF
+        if mode_flags & MODE_ANALOG_ONLY:
+            mode_flags |= (self.analog_channel & 0x1F) << 8
         if continuous:
             mode_flags |= 0x02
         else:
@@ -315,12 +429,36 @@ class OLSDeviceSPI:
             remaining -= take
         return bytes(out)
 
+    def _repair_boundary_glitches(self, data: bytes, start_sample: int = 0) -> bytes:
+        """Repair the known single-sample readout inversion at 256-sample boundaries."""
+        if len(data) < 6:
+            return data
+        samples = array('H')
+        samples.frombytes(data[:len(data) - (len(data) % 2)])
+        if struct.pack('<H', 1) != array('H', [1]).tobytes():
+            samples.byteswap()
+        changed = False
+        for idx in range(1, len(samples) - 1):
+            if ((start_sample + idx) & 0xFF) != 0:
+                continue
+            prev = samples[idx - 1]
+            cur = samples[idx]
+            nxt = samples[idx + 1]
+            same_neighbors = ~(prev ^ nxt) & 0xFFFF
+            glitch_bits = (cur ^ prev) & same_neighbors
+            if glitch_bits:
+                samples[idx] = (cur & ~glitch_bits) | (prev & glitch_bits)
+                changed = True
+        if not changed:
+            return data
+        return samples.tobytes() + data[len(samples) * 2:]
+
     def ack_capture_done(self, seq=None):
         return self.pkt.ack_capture_done(seq)
 
     def continuous_ring_capture(self, rate_hz, chunk_nsamp, buffer_nsamp,
                                 stop_evt, progress_cb=None, full_out=None,
-                                fast_mode=True):
+                                fast_mode=True, yield_full_buffer=True):
         """Yield chunks from the FPGA continuous SDRAM ring by absolute index.
 
         This arms continuous mode once, then follows producer/oldest/newest
@@ -371,6 +509,9 @@ class OLSDeviceSPI:
                 if not data:
                     time.sleep(0.001)
                     continue
+                if not (self.analog_mode & MODE_MIXED):
+                    data = self._repair_boundary_glitches(data, next_sample)
+                data = self._filter_digital(data)
 
                 next_sample += len(data) // 2
                 total += len(data) // 2
@@ -380,9 +521,10 @@ class OLSDeviceSPI:
                 max_bytes = buffer_nsamp * 2
                 if len(buf) > max_bytes:
                     buf = buf[-max_bytes:]
+                out = buf if yield_full_buffer else data
                 if progress_cb:
-                    progress_cb(buf, total, buffer_nsamp)
-                yield buf, total, buffer_nsamp
+                    progress_cb(out, total, buffer_nsamp)
+                yield out, total, buffer_nsamp
         finally:
             self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
 
@@ -474,10 +616,6 @@ class OLSDeviceSPI:
         if self._pending_debug_enable is not None:
             self.debug_ch0_enabled = self._pending_debug_enable
             self._pending_debug_enable = None
-        if self._pending_schmitt_enable is not None:
-            self._pending_schmitt_enable = None
-        if self._pending_schmitt_threshold is not None:
-            self._pending_schmitt_threshold = None
         self.set_debug_ch0(self.debug_ch0_enabled)
 
         # Capture rate divider counts on the sample clock (FAST_CLK domain),
@@ -572,6 +710,8 @@ class OLSDeviceSPI:
                     samples = samples[i:]
                     break
 
+        samples = self._filter_digital(samples)
+
         if progress_cb and samples:
             progress_cb(samples, len(samples) // 2, rc)
 
@@ -591,10 +731,6 @@ class OLSDeviceSPI:
         if self._pending_debug_enable is not None:
             self.debug_ch0_enabled = self._pending_debug_enable
             self._pending_debug_enable = None
-        if self._pending_schmitt_enable is not None:
-            self._pending_schmitt_enable = None
-        if self._pending_schmitt_threshold is not None:
-            self._pending_schmitt_threshold = None
         self.set_debug_ch0(self.debug_ch0_enabled)
 
         div = max(0, round(self.sample_clk / rate_hz) - 1)
@@ -639,6 +775,8 @@ class OLSDeviceSPI:
         # decoded at stride 2. (One 1024-byte block carries 512 samples.)
         need = rc * 2
         samples = self.read_capture_range(0, rc)[:need]
+        if not (self.analog_mode & MODE_MIXED):
+            samples = self._repair_boundary_glitches(samples, 0)
         if expected_seq is not None and st.get('capture_seq') == expected_seq:
             self.ack_capture_done(expected_seq)
 
@@ -648,6 +786,8 @@ class OLSDeviceSPI:
                     samples = samples[i:]
                     break
 
+        samples = self._filter_digital(samples)
+
         if progress_cb and samples:
             progress_cb(samples, len(samples) // 2, rc)
 
@@ -655,8 +795,8 @@ class OLSDeviceSPI:
 
     def capture_analog(self, rate_hz=100000, frames=4096, mode=MODE_MIXED,
                        timeout=6, progress_cb=None, stop_evt=None):
-        payload_stride = analog_frame_stride(mode)       # 14 dense bytes/frame
-        words_per_frame = payload_stride // 2            # 7 SDRAM words/frame
+        payload_stride = analog_frame_stride(mode)
+        words_per_frame = max(1, payload_stride // 2)
         self.set_analog_config(mode)
         # capture(nsamples=N) returns N dense 16-bit words (2 bytes each); one
         # word per analog SDRAM word. wire_to_payload is now identity.
@@ -742,6 +882,7 @@ class OLSDeviceSPI:
             if not data:
                 time.sleep(0.001)
                 continue
+            data = self._filter_digital(data)
 
             if full_out is not None:
                 full_out.extend(data)
@@ -801,12 +942,6 @@ class OLSDeviceSPI:
                 self.pkt.write_register(REG_DEBUG_CH0_ENABLE, 1 if self._pending_debug_enable else 0)
                 self.debug_ch0_enabled = self._pending_debug_enable
                 self._pending_debug_enable = None
-            if self._pending_schmitt_enable is not None:
-                self.pkt.write_register(REG_SCHMITT_ENABLE, 1 if self._pending_schmitt_enable else 0)
-                self._pending_schmitt_enable = None
-            if self._pending_schmitt_threshold is not None:
-                self.pkt.write_register(REG_SCHMITT_THRESHOLD, self._pending_schmitt_threshold)
-                self._pending_schmitt_threshold = None
             self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
             self.pkt.arm_capture()
 
@@ -833,6 +968,7 @@ class OLSDeviceSPI:
             if payload_stride:
                 # Collapse 32-bit wire words to dense payload before buffering.
                 data = wire_to_payload(data)
+            data = self._filter_digital(data)
 
             if full_out is not None:
                 full_out.extend(data)

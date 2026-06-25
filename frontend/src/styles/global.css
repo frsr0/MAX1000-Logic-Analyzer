@@ -131,6 +131,28 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .field > span { font-size: 11px; color: var(--text-dim); }
 .field.checkbox { flex-direction: row; align-items: center; gap: 7px; }
 .field.checkbox > span { font-size: 12px; color: var(--text); }
+.mode-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+}
+.mode-tile {
+  min-height: 74px; padding: 7px; text-align: left;
+  display: flex; flex-direction: column; gap: 3px;
+  border-color: var(--border); background: var(--bg);
+}
+.mode-tile.active {
+  border-color: var(--accent); background: #132331;
+}
+.mode-title { font-weight: 650; font-size: 12px; color: var(--text); }
+.mode-detail { font-size: 10px; color: var(--text-dim); line-height: 1.25; }
+.mode-channels { margin-top: auto; color: var(--accent); overflow-wrap: anywhere; }
+.capture-summary {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 4px;
+  color: var(--text-dim); font-size: 11px;
+}
+.capture-summary span {
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 4px; padding: 3px 6px; min-width: 0;
+}
 .button-row { display: flex; gap: 6px; align-items: center; }
 .button-row.wrap { flex-wrap: wrap; }
 .progress { position: relative; background: var(--bg3); border-radius: 4px; height: 22px; overflow: hidden; }

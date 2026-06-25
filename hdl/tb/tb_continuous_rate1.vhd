@@ -9,9 +9,9 @@ end tb_continuous_rate1;
 
 architecture bench of tb_continuous_rate1 is
   constant CHANNELS    : natural := 8;
-  -- Continuous buffers are fixed 512 samples each; budget all three (3*512).
+  -- Exercise more than the old 3x512 buffer bookkeeping. Continuous mode
+  -- should now be governed by the full SDRAM ring metadata, not A/B/C flags.
   constant TEST_WORDS  : natural := 1536;
-  constant BUF_WORDS   : natural := 512;
 
   signal clk       : std_logic := '0';
   signal rate_div  : natural range 1 to 500000000 := 1;
@@ -29,6 +29,10 @@ architecture bench of tb_continuous_rate1 is
   signal buffer_ack  : std_logic_vector(2 downto 0) := (others => '0');
   signal sdram_dq  : std_logic_vector(15 downto 0);
   signal status    : std_logic_vector(7 downto 0);
+  signal producer_index : std_logic_vector(31 downto 0);
+  signal oldest_index   : std_logic_vector(31 downto 0);
+  signal newest_index   : std_logic_vector(31 downto 0);
+  signal overrun_count  : std_logic_vector(31 downto 0);
   signal fast_clk  : std_logic := '0';
   signal fifo_cnt  : natural range 0 to 64;
   signal buf_sel   : std_logic_vector(1 downto 0);
@@ -54,6 +58,10 @@ begin
       Armed => armed, Fast_Mode => fast_mode,
       FAST_CLK => fast_clk, Continuous_Mode => continuous_mode,
       Buffer_Full => buffer_full, Buffer_Ack => buffer_ack,
+      Producer_Index => producer_index,
+      Oldest_Index => oldest_index,
+      Newest_Index => newest_index,
+      Overrun_Count => overrun_count,
       sdram_addr => open, sdram_ba => open, sdram_cas_n => open,
       sdram_cke => open, sdram_cs_n => open, sdram_dqm => open,
       sdram_ras_n => open, sdram_we_n => open, sdram_clk => open
@@ -64,28 +72,26 @@ begin
     wait_cycles(clk, 30);
 
     ------------------------------------------------------------------
-    -- Test 1: Continuous triple-buffer auto-rotation, no intermediate acks.
-    -- Verifies the write pump rotates A -> B -> C on its own (each earlier
-    -- buffer stays full as the next fills). Rate_Div=1 is the max-rate path
-    -- that used to trip a documented start-up race. The ack/resume +
-    -- Full-after-budget behaviour is covered by tb_continuous; this TB focuses
-    -- on unforced rotation at the fastest divider.
+    -- Test 1: Continuous ring progress, no intermediate acks.
+    -- Rate_Div=1 is the max-rate path. The ring should keep committing samples
+    -- without depending on legacy 3x512 buffer-full flags, and should not
+    -- report overrun before the full SDRAM ring wraps.
     ------------------------------------------------------------------
-    report "Test 1: Continuous triple-buffer auto-rotation at Rate_Div=1";
+    report "Test 1: Continuous SDRAM ring progress at Rate_Div=1";
     armed <= '1'; run <= '1';
 
-    wait_until(clk, buffer_full(0), '1', 5 ms, "Buffer A should fill");
-    report "Buffer A full";
-
-    wait_until(clk, buffer_full(1), '1', 10 ms, "Buffer B should fill after A");
-    report "Buffer B full";
-    check(buffer_full(0) = '1', "Buffer A should still be full when B fills");
-
-    wait_until(clk, buffer_full(2), '1', 15 ms, "Buffer C should fill after B");
-    report "Buffer C full";
-    check(buffer_full(0) = '1', "Buffer A still full when C fills");
-    check(buffer_full(1) = '1', "Buffer B still full when C fills");
-    report "Test 1: PASS (A->B->C auto-rotation, no acks)";
+    wait until to_integer(unsigned(producer_index)) >= TEST_WORDS for 500 us;
+    check(to_integer(unsigned(producer_index)) >= TEST_WORDS,
+          "Producer index should reach requested continuous capture length");
+    check(to_integer(unsigned(oldest_index)) = 0,
+          "Oldest index should stay at zero before ring wrap");
+    check(to_integer(unsigned(overrun_count)) = 0,
+          "Overrun counter should stay zero before ring wrap");
+    check(to_integer(unsigned(newest_index)) + 1 = to_integer(unsigned(producer_index)),
+          "Newest index should track the last committed sample");
+    check(buffer_full = "000",
+          "Legacy A/B/C buffer flags should not gate continuous ring writes");
+    report "Test 1: PASS (continuous ring progress, no false overrun)";
 
     run <= '0';
     wait_cycles(clk, 20);

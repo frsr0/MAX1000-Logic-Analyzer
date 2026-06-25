@@ -4,11 +4,13 @@ import time
 import urllib.request
 
 BASE = "http://localhost:8000"
+CLIENT_ID = "hw-api-sweep"
 results = []
 
 
 def req(method, path, body=None, raw=False):
     r = urllib.request.Request(BASE + path, method=method)
+    r.add_header("X-Client-ID", CLIENT_ID)
     data = None
     if body is not None:
         r.add_header("Content-Type", "application/json")
@@ -41,7 +43,17 @@ def wait_capture(prev_sid, timeout=90):
     raise RuntimeError(f"capture timeout (state={st['capture_state']})")
 
 
+def channel_counts(meta):
+    channels = meta.get("session", {}).get("channels", [])
+    digital = sum(1 for ch in channels if ch.get("type") == "digital")
+    analog = len(meta.get("analog_channels", []))
+    return digital, analog
+
+
 # ── connection ──
+check("POST /api/control/acquire", lambda: req(
+    "POST", "/api/control/acquire",
+    {"name": "hardware API sweep", "force": True})["holder_name"])
 check("GET /api/devices", lambda: ", ".join(
     f"{d['id']}:{d['available']}" for d in req("GET", "/api/devices")["devices"]))
 check("POST /api/connect hardware", lambda: req(
@@ -74,6 +86,9 @@ def digital_capture():
     sid["d"] = wait_capture(prev)
     req("POST", "/api/generator/stop")
     meta = req("GET", f"/api/sessions/{sid['d']}/metadata")
+    digital_ch, _ = channel_counts(meta)
+    if digital_ch != 16:
+        raise RuntimeError(f"expected 16 digital channels, got {digital_ch}")
     return f"session {sid['d']} n={meta['num_samples']}"
 
 
@@ -83,15 +98,80 @@ check("digital capture 40k@2MHz with PWM", digital_capture)
 def analog_capture():
     prev = req("GET", "/api/status")["last_session_id"]
     req("POST", "/api/capture/start",
-        {"settings": {"sample_rate": 50_000, "num_samples": 5000,
-                      "analog_enabled": True}})
+        {"settings": {"mode": "analog_fast", "sample_rate": 1_000_000,
+                      "num_samples": 5000, "analog_enabled": True,
+                      "enabled_digital": []}})
     sid["a"] = wait_capture(prev, timeout=180)
     meta = req("GET", f"/api/sessions/{sid['a']}/metadata")
+    digital_ch, analog_ch = channel_counts(meta)
+    if digital_ch:
+        raise RuntimeError("high-speed analog capture unexpectedly has digital channels")
+    if analog_ch != 1:
+        raise RuntimeError(f"expected 1 analog channel, got {analog_ch}")
     return (f"session {sid['a']} n={meta['num_samples']} "
             f"analog_ch={len(meta['analog_channels'])}")
 
 
-check("mixed analog capture 5k@50kHz", analog_capture)
+check("high-speed analog capture 5k", analog_capture)
+
+
+def maximum_analog_capture():
+    prev = req("GET", "/api/status")["last_session_id"]
+    req("POST", "/api/capture/start",
+        {"settings": {"mode": "analog_all", "sample_rate": 125_000,
+                      "num_samples": 5000, "analog_enabled": True,
+                      "enabled_digital": []}})
+    sid["aa"] = wait_capture(prev, timeout=180)
+    meta = req("GET", f"/api/sessions/{sid['aa']}/metadata")
+    digital_ch, analog_ch = channel_counts(meta)
+    if digital_ch:
+        raise RuntimeError("maximum analog capture unexpectedly has digital channels")
+    if analog_ch != 8:
+        raise RuntimeError(f"expected 8 analog channels, got {analog_ch}")
+    return (f"session {sid['aa']} n={meta['num_samples']} "
+            f"analog_ch={len(meta['analog_channels'])}")
+
+
+check("maximum analog capture 5k@125kHz", maximum_analog_capture)
+
+
+def mixed_capture():
+    prev = req("GET", "/api/status")["last_session_id"]
+    req("POST", "/api/capture/start",
+        {"settings": {"mode": "mixed", "sample_rate": 125_000,
+                      "num_samples": 5000, "analog_enabled": True,
+                      "enabled_digital": list(range(16))}})
+    sid["m"] = wait_capture(prev, timeout=180)
+    meta = req("GET", f"/api/sessions/{sid['m']}/metadata")
+    digital_ch, analog_ch = channel_counts(meta)
+    if digital_ch != 16:
+        raise RuntimeError(f"expected 16 digital channels, got {digital_ch}")
+    if analog_ch != 8:
+        raise RuntimeError(f"expected 8 analog channels, got {analog_ch}")
+    return (f"session {sid['m']} n={meta['num_samples']} "
+            f"digital_ch={digital_ch} analog_ch={analog_ch}")
+
+
+check("mixed capture 5k@125kHz", mixed_capture)
+
+
+def digital_after_mixed_capture():
+    prev = req("GET", "/api/status")["last_session_id"]
+    req("POST", "/api/capture/start",
+        {"settings": {"mode": "single", "sample_rate": 1_000_000,
+                      "num_samples": 5000, "analog_enabled": False,
+                      "enabled_digital": list(range(16))}})
+    sid["dm"] = wait_capture(prev)
+    meta = req("GET", f"/api/sessions/{sid['dm']}/metadata")
+    digital_ch, analog_ch = channel_counts(meta)
+    if digital_ch != 16:
+        raise RuntimeError("digital capture after mixed lost digital channels")
+    if analog_ch:
+        raise RuntimeError("digital capture after mixed still has analog channels")
+    return f"session {sid['dm']} n={meta['num_samples']}"
+
+
+check("digital capture after mixed recovery", digital_after_mixed_capture)
 
 # ── waveform endpoints ──
 check("GET waveform binary", lambda: f"{len(req('GET', f'/api/sessions/{sid['d']}/waveform?start=0&end=20000&max_points=2000', raw=True))} bytes")
@@ -99,7 +179,7 @@ check("GET overview", lambda: f"{len(req('GET', f'/api/sessions/{sid['d']}/overv
 check("GET edges d0", lambda: f"{len(req('GET', f'/api/sessions/{sid['d']}/edges?channel=d0&start=0&limit=100')['edges'])} edges")
 check("GET value-at", lambda: str(req("GET", f"/api/sessions/{sid['d']}/value-at?sample=1000&channels=d0,d3")["values"]))
 check("GET sanity", lambda: f"{len(req('GET', f'/api/sessions/{sid['d']}/sanity'))} findings")
-check("GET spectrum (analog)", lambda: f"{len(req('GET', f'/api/sessions/{sid['a']}/spectrum?channel=a0')['freqs'])} bins")
+check("GET spectrum (analog)", lambda: f"{len(req('GET', f'/api/sessions/{sid['a']}/spectrum?channel=a1')['freqs'])} bins")
 
 # ── generator loopbacks via API ──
 
@@ -131,19 +211,19 @@ check("POST /api/generator/send UART 57600 loopback", uart_send_capture)
 
 def i2c_send_capture():
     r = req("POST", "/api/generator/send",
-            {"config": {"protocol": "i2c", "baud": 100000, "tx_pin": 2,
+            {"config": {"protocol": "i2c", "baud": 400000, "tx_pin": 2,
                         "scl_pin": 1, "i2c_address": 0x19,
                         "i2c_register": 0x0F, "i2c_read_len": 1},
-             "capture": True, "capture_rate": 1_000_000,
-             "capture_samples": 30000})
+             "capture": True, "capture_rate": 8_000_000,
+             "capture_samples": 8000, "expected_hex": "33"})
+    if not r.get("passed"):
+        raise RuntimeError(r.get("detail", "I2C generator compare failed"))
     sid["i"] = r.get("session_id")
-    # No physical I2C slave attached: decoded data bytes will NACK/0xFF.
-    # The decode still proves SCL/SDA generation + capture; require events.
     meta = req("GET", f"/api/sessions/{sid['i']}/metadata")
     dec = meta["session"]["decoders"][0]
     if dec["event_count"] < 3:
         raise RuntimeError(f"only {dec['event_count']} i2c events")
-    return f"{dec['event_count']} I2C events decoded (no slave attached)"
+    return f"{dec['event_count']} I2C events decoded; WHO_AM_I=0x33"
 
 
 check("POST /api/generator/send I2C loopback", i2c_send_capture)
@@ -186,7 +266,7 @@ def measurements():
     req("POST", f"/api/sessions/{sid['d']}/measurements",
         {"type": "dig_frequency", "channels": ["d0"]})
     res = req("GET", f"/api/sessions/{sid['d']}/measurements/results")
-    rl = res["results"] if isinstance(res, dict) else res
+    rl = res.get("measurements", res) if isinstance(res, dict) else res
     return f"{n_types} types; first result: {rl[0].get('display', rl[0])}"
 
 
