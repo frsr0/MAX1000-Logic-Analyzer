@@ -1225,9 +1225,13 @@ def test_trigger_decode(dev, debug_on=False):
         if decoded:
             log(f"  decoded text: {text}")
             spb = UART_TRIGGER_RATE / UART_TRIGGER_BAUD
-            check(len(decoded) >= 3,
-                  f"Trigger decode got >=3 bytes ({len(decoded)}, "
-                  f"text='{text}', {spb:.2f} samples/bit)")
+            # Content check: the trigger fires on 'H', so the capture can clip
+            # the leading byte — assert the robust middle substring 'ell' rather
+            # than just a byte count.
+            dec_bytes = bytes(b.value for b in decoded)
+            check(b"ell" in dec_bytes,
+                  f"Trigger decode recovered 'Hello' content "
+                  f"(text='{text}', {spb:.2f} samples/bit)")
         else:
             spb = UART_TRIGGER_RATE / UART_TRIGGER_BAUD
             log(f"  [INFO] No UART decoded at {spb:.2f} samples/bit "
@@ -1700,6 +1704,141 @@ def test_capture_during_readout(dev):
     dev.spi.flush()
 
 
+# ====================================================================
+# Test 30: Jumper-pair discovery + UART loopback across the wire
+# ====================================================================
+# Fixture: two digital input pins physically wired together (a single jumper).
+# This is the only test that exercises a *cross-channel* path: a known signal
+# driven onto one pin and read back on a second, independent input. It finds
+# the pair automatically (the connected pins are not known in advance), then
+# proves the wire carries data both as raw samples and as a decoded UART frame.
+JUMPER_BAUD = 115200
+JUMPER_RATE = 2_000_000        # ~17.4 samples/bit, well above UART_MIN_SPB
+
+
+def _channel_transitions(ch, ns):
+    return [sum(1 for i in range(1, min(ns, len(ch[c]))) if ch[c][i] != ch[c][i - 1])
+            for c in range(min(len(ch), 16))]
+
+
+def test_jumper_loopback(dev):
+    print_header("Test 30: Jumper-pair discovery + UART loopback")
+    dev.reset(); dev.spi.flush(); dev.set_debug_ch0(False)
+    time.sleep(0.02)
+
+    # --- Phase 1: discover which two pins are wired together ----------
+    # Drive a 0x55 burst (alternating bits = many edges) out of each pin in
+    # turn. The driven channel always shows activity (the generator routes onto
+    # its own pin). A *second* channel carrying a comparable number of edges is
+    # the pin the jumper connects to. Requiring the partner to carry >=40% of
+    # the driven transitions (and an absolute floor) rejects floating-input
+    # noise, which is sparse and uncorrelated.
+    log("sweeping generator across all 16 pins to find the wired pair...")
+    pattern = bytes([0x55]) * 40       # ~3.5 ms at 115200 baud -> fits 4 ms window
+    pair = None
+    for tx in range(16):
+        dev._gen_data = pattern
+        dev._gen_baud = JUMPER_BAUD
+        dev._gen_tx_pin = tx
+        # Generator-capture can misfire (known board quirk); retry until the
+        # driven pin actually shows the burst before judging its neighbours.
+        ch, ns, tr = None, 0, []
+        for _ in range(3):
+            data = dev.capture_with_gen(rate_hz=JUMPER_RATE, nsamples=8000, timeout=5)
+            if not data:
+                continue
+            ch, ns = samples_to_channels(data, stride=2)
+            tr = _channel_transitions(ch, ns)
+            if tr[tx] >= 100:
+                break
+        if not tr:
+            log(f"  gen CH{tx}: no data")
+            continue
+        others = [(c, tr[c]) for c in range(min(len(tr), 16)) if c != tx]
+        cand, cand_tr = max(others, key=lambda x: x[1]) if others else (None, 0)
+        log(f"  gen CH{tx}: tx_trans={tr[tx]} best_other=CH{cand}({cand_tr})")
+        if tr[tx] >= 100 and cand_tr >= 60 and cand_tr >= 0.4 * tr[tx]:
+            pair = (tx, cand)
+            break
+    check(pair is not None, "discovered a wired channel pair via generator sweep")
+    if pair is None:
+        log("  [INFO] no pair found — verify the jumper is seated and that the "
+            "generator routes to these pins")
+        save_result("test30_jumper_loopback", b"", {"pair": None})
+        return
+    tx, rx = pair
+    log(f"  >>> wired pair: generator drives CH{tx}, received on CH{rx}")
+
+    # --- Phase 2: cross-channel identity (skew-aligned) ---------------
+    # Both channels observe the same electrical node, so their sample streams
+    # must match up to a small propagation skew. Find the best alignment and
+    # report the match fraction: a direct check on per-channel pin mapping and
+    # the 16-bit sample packing (a swapped/dropped bit makes them diverge).
+    a, b = ch[tx], ch[rx]
+    n = min(len(a), len(b))
+    best_shift, best_match = 0, -1.0
+    for s in range(-3, 4):
+        same = sum(1 for i in range(n) if 0 <= i + s < n and a[i] == b[i + s])
+        frac = same / max(1, n)
+        if frac > best_match:
+            best_match, best_shift = frac, s
+    log(f"  cross-channel identity: {best_match * 100:.2f}% match "
+        f"at skew {best_shift} sample(s)")
+    check(best_match >= 0.97,
+          f"CH{tx}/CH{rx} track the same node "
+          f"({best_match * 100:.1f}% identical, skew {best_shift})")
+
+    # --- Phase 3: UART transmit on tx, decode on the rx pin -----------
+    # Drive a UART frame on tx and require the *exact* payload to decode on the
+    # rx pin across the jumper — full payload fidelity, not just "frame present".
+    payload = b"MAX1000 jumper"
+    dev._gen_data = payload
+    dev._gen_baud = JUMPER_BAUD
+    dev._gen_tx_pin = tx
+    data = dev.capture_with_gen(rate_hz=JUMPER_RATE, nsamples=20000, timeout=8)
+    if data:
+        ch, ns = samples_to_channels(data, stride=2)
+        dec_rx = decode_uart_safe(ch, JUMPER_RATE, ch_idx=rx, baud=JUMPER_BAUD)
+        rx_bytes = bytes(d.value for d in dec_rx)
+        text = ''.join(chr(c) if 32 <= c < 127 else '.' for c in rx_bytes)
+        log(f"  decoded on CH{rx}: {len(rx_bytes)} bytes '{text}'")
+        check(payload in rx_bytes,
+              f"exact UART payload received across jumper on CH{rx} (got '{text}')")
+    else:
+        check(False, "UART loopback capture returned no data")
+
+    # --- Phase 4: start-bit (falling-edge) trigger on the rx pin ------
+    # Build a falling-edge trigger on the receive channel: (2<<30) selects
+    # falling-edge mode, bit rx selects the channel. A UART line idles high, so
+    # the start bit is the first falling edge — the capture should land on it,
+    # proving the trigger matrix fires on a signal arriving over the jumper.
+    trig = (2 << 30) | (1 << rx)
+    dev._gen_data = payload
+    dev._gen_baud = JUMPER_BAUD
+    dev._gen_tx_pin = tx
+    data = dev.capture_with_gen(rate_hz=JUMPER_RATE, nsamples=20000, timeout=8,
+                                trigger=trig)
+    if data:
+        ch, ns = samples_to_channels(data, stride=2)
+        sig = ch[rx]
+        falling = [i for i in range(1, ns) if sig[i - 1] == 1 and sig[i] == 0]
+        first = falling[0] if falling else -1
+        dec = decode_uart_safe(ch, JUMPER_RATE, ch_idx=rx, baud=JUMPER_BAUD)
+        log(f"  triggered RX capture: first falling edge at sample {first}, "
+            f"{len(dec)} bytes decoded")
+        check(first != -1 and first <= ns * 0.5,
+              f"start-bit trigger on CH{rx} fired in first half (sample {first})")
+        check(len(dec) >= 3,
+              f"triggered capture still decodes UART on CH{rx} ({len(dec)} bytes)")
+    else:
+        check(False, "triggered UART loopback capture returned no data")
+
+    save_result("test30_jumper_loopback", data if data else b"",
+                {"pair": [tx, rx], "skew": best_shift,
+                 "match": round(best_match, 4),
+                 "baud": JUMPER_BAUD, "rate_hz": JUMPER_RATE})
+
+
 def main():
     global PASS, FAIL, TOTAL
     print("=" * 60)
@@ -1777,6 +1916,9 @@ def main():
         log("\n--- Crosstalk characterisation ---")
         test_crosstalk_characterisation(dev)
 
+        log("\n--- Jumper-pair loopback (requires two pins wired together) ---")
+        test_jumper_loopback(dev)
+
         log("\n--- Noise floor test (debug OFF + ON) ---")
         run_with_debug(test_noise_floor, dev, "Noise floor")
 
@@ -1844,7 +1986,36 @@ def main_new_only():
     return 0 if FAIL == 0 else 1
 
 
+def main_jumper_only():
+    """Run only the jumper-pair loopback test (argv: 'jumper').
+
+    Use this on the bench while iterating on the two-pins-wired-together
+    fixture, without sitting through the full suite.
+    """
+    global PASS, FAIL, TOTAL
+    dev = OLSDeviceSPI()
+    try:
+        dev.open()
+        log(f"SPI device opened, sys_clk={dev.sys_clk / 1e6:.0f} MHz")
+        dev.reset()
+        time.sleep(0.5)
+        test_jumper_loopback(dev)
+    except Exception as e:
+        log(f"\nERROR: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        try:
+            dev.close()
+        except:
+            pass
+    print(f"\n  RESULTS: {PASS}/{TOTAL} passed, {FAIL} failed")
+    return 0 if FAIL == 0 else 1
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == 'new':
         sys.exit(main_new_only())
+    if len(sys.argv) > 1 and sys.argv[1] == 'jumper':
+        sys.exit(main_jumper_only())
     sys.exit(main())

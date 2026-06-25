@@ -701,6 +701,11 @@ class OLSDeviceSPI:
         # See capture(): packed wire is 2 bytes/sample (stride 2).
         need = rc * 2
         samples = self.read_capture_range(0, rc)[:need]
+        # Same 256-sample-boundary readout-inversion repair as capture(); the
+        # gen-capture path was missing it, which corrupted ~1 sample every 256
+        # (≈1.5 UART bytes here) and garbled multi-byte loopback decodes.
+        if not (self.analog_mode & MODE_MIXED):
+            samples = self._repair_boundary_glitches(samples, 0)
         if expected_seq is not None:
             self.ack_capture_done(expected_seq)
 

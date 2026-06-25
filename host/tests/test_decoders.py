@@ -202,6 +202,23 @@ class TestDecodeUART:
         assert len(result) == 5
         assert bytes(r.value for r in result) == b'Hello'
 
+    def test_decode_back_to_back_no_idle_gap(self):
+        # Bytes transmitted with only the 1-bit stop between them (what real
+        # UART hardware emits), not the wide inter-byte idle the other helpers
+        # use. A previous spb*8 debounce in decode_uart skipped ~8 bits after
+        # each byte and dropped/misframed every following byte here.
+        spb = SPB
+        sig = [1] * spb
+        payload = b'MAX1000 jumper'
+        for byte in payload:
+            sig += [0] * spb                          # start
+            for b in range(8):
+                sig += [(byte >> b) & 1] * spb        # data LSB-first
+            sig += [1] * spb                          # single stop bit only
+        sig += [1] * (spb * 10)
+        result = decode_uart([sig], 1000000, ch_idx=0, baud=100000)
+        assert bytes(r.value for r in result) == payload
+
     def test_positions_increasing(self):
         sig = make_uart_signal(b'\x55\xAA')
         ch = [sig]
@@ -355,6 +372,28 @@ class TestDecodeSPI:
         ch = [miso, sclk]
         result = decode_spi(ch, 1000000, miso_idx=0, sclk_idx=1)
         assert len(result) == 0
+
+    def test_data_glitch_at_clock_edge(self):
+        # Hardware-realistic: at the SCLK rising edge the data line can still be
+        # settling, so the sample *at* the edge shows the previous bit; it's
+        # stable by mid-plateau. Sampling mid-plateau must read the intended
+        # bit; naive edge-sampling would read the stale value and corrupt bytes.
+        spb = 8
+        edge = spb // 2
+        data = b'\x4C\xA5'
+        miso, sclk = [], []
+        prev = 0
+        for byte in data:
+            for b in range(8):
+                bit = (byte >> (7 - b)) & 1
+                sclk += [0] * edge + [1] * (spb - edge)
+                # bit value across the window, except one stale sample exactly
+                # at the rising-edge index
+                win = [bit] * edge + [prev] + [bit] * (spb - edge - 1)
+                miso += win
+                prev = bit
+        result = decode_spi([miso, sclk], 1000000, miso_idx=0, sclk_idx=1)
+        assert result == [0x4C, 0xA5]
 
     def test_with_glitch_filter(self):
         miso, sclk = make_spi_signal(b'\x4C')

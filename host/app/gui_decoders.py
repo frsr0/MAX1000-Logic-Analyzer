@@ -73,10 +73,7 @@ def decode_uart(ch, samplerate, ch_idx=0, baud=115200, filter_threshold=0):
     result = []
     i = 0
     min_need = int(spb * 10)
-    last_stop = -int(spb * 10)
     while i < len(sig) - min_need:
-        if i - last_stop < int(spb * 8):
-            i += 1; continue
         if sig[i] == 1 and i + 1 < len(sig) and sig[i + 1] == 0:
             centre = i + 1 + spb / 2
             byte = 0
@@ -97,7 +94,9 @@ def decode_uart(ch, samplerate, ch_idx=0, baud=115200, filter_threshold=0):
                     break
             if valid and stop_ok:
                 result.append(DecodedByte(pos=i, value=byte, time_ns=i * 1e9 / samplerate))
-                last_stop = stop_pos
+                # Resume scanning at the stop bit; the next 1->0 edge is the
+                # following byte's start. (A previous spb*8 debounce here skipped
+                # ~8 bits past the stop, missing back-to-back bytes.)
                 i = stop_pos
                 continue
         i += 1
@@ -168,25 +167,38 @@ def decode_i2c(ch, samplerate, scl_idx=2, sda_idx=3, filter_threshold=0, sda_off
 
 
 def decode_spi(ch, samplerate, miso_idx=3, sclk_idx=1, filter_threshold=0):
+    """Decode SPI (CPOL=0/CPHA=0) from a data line and SCLK.
+
+    Each bit is sampled at the MIDDLE of the SCLK-high plateau, not at the
+    rising edge — on real hardware the data line can still be settling at the
+    edge, so edge sampling occasionally read the wrong bit. (Same mid-plateau
+    approach as decode_i2c.) Bits are shifted MSB-first.
+    """
     miso = ch[miso_idx]
     sclk = ch[sclk_idx]
     if filter_threshold > 0:
         miso = glitch_filter(miso, filter_threshold)
         sclk = glitch_filter(sclk, filter_threshold)
+    n = min(len(miso), len(sclk))
     result = []
+    byte_val = 0
+    nbits = 0
     i = 1
-    while i < len(sclk) - 8:
-        if sclk[i - 1] == 0 and sclk[i] == 1:
-            byte_val = 0
-            for bit in range(8):
-                if i < len(miso):
-                    byte_val = (byte_val << 1) | (1 if miso[i] else 0)
-                i += 1
-                while i < len(sclk) - 1 and not (sclk[i - 1] == 0 and sclk[i] == 1):
-                    i += 1
-            result.append(byte_val)
-            i -= 1
-        i += 1
+    while i < n:
+        if sclk[i - 1] == 0 and sclk[i] == 1:      # SCLK rising edge
+            j = i
+            while j < n and sclk[j] == 1:          # extent of the high plateau
+                j += 1
+            mid = min((i + j) // 2, n - 1)
+            byte_val = ((byte_val << 1) | (1 if miso[mid] else 0)) & 0xFF
+            nbits += 1
+            if nbits == 8:
+                result.append(byte_val)
+                byte_val = 0
+                nbits = 0
+            i = j                                  # skip past this plateau
+        else:
+            i += 1
     return result
 
 
