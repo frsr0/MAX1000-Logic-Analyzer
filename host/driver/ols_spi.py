@@ -2,8 +2,21 @@
 OLS Logic Analyzer - SPI Host Library
 Fixed MPSSE driver: batched writes, 0x87, correct init, drain.
 """
-import ftd2xx as ft
 import time
+
+# ftd2xx wraps the native FTDI D2XX library and is only needed to talk to real
+# hardware. Import it lazily so the module (and the pure helpers that pull it in
+# transitively) can be imported in CI / on machines without the driver.
+ft = None
+
+
+def _require_ftd2xx():
+    """Import ftd2xx on first hardware use; raise a clear error if missing."""
+    global ft
+    if ft is None:
+        import ftd2xx as _ft
+        ft = _ft
+    return ft
 
 CMD_RESET           = 0x00
 CMD_ARM             = 0x01
@@ -91,6 +104,7 @@ class OLS:
 
     def open(self):
         """Open FTDI Channel B, enter MPSSE mode, configure SPI."""
+        ft = _require_ftd2xx()
         n = ft.createDeviceInfoList()
         idx = self.channel
         for i in range(n):
