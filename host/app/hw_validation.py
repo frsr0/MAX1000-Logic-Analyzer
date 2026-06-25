@@ -1849,6 +1849,113 @@ def test_jumper_loopback(dev):
                  "baud": JUMPER_BAUD, "rate_hz": JUMPER_RATE})
 
 
+# ====================================================================
+# Test 31: Generator matrix over the jumper — every protocol, decoded
+# across sample rates and capture modes (BRAM fast path vs SDRAM).
+# ====================================================================
+def _discover_jumper_pair(dev):
+    """Sweep the UART generator to find the two wired-together pins."""
+    pattern = bytes([0x55]) * 40
+    for tx in range(16):
+        dev._gen_data = pattern
+        dev._gen_baud = JUMPER_BAUD
+        dev._gen_tx_pin = tx
+        ch, ns, tr = None, 0, []
+        for _ in range(3):
+            data = dev.capture_with_gen(rate_hz=JUMPER_RATE, nsamples=8000, timeout=5)
+            if not data:
+                continue
+            ch, ns = samples_to_channels(data, stride=2)
+            tr = _channel_transitions(ch, ns)
+            if tr[tx] >= 100:
+                break
+        if not tr:
+            continue
+        others = [(c, tr[c]) for c in range(min(len(tr), 16)) if c != tx]
+        cand, cand_tr = max(others, key=lambda x: x[1]) if others else (None, 0)
+        if tr[tx] >= 100 and cand_tr >= 60 and cand_tr >= 0.4 * tr[tx]:
+            return (tx, cand)
+    return None
+
+
+def test_jumper_generator_matrix(dev):
+    # Drive each generator protocol through the wired pin pair and decode it
+    # back across several sample rates and both capture data paths (BRAM fast
+    # path = fast_mode True, SDRAM = fast_mode False). UART rides the single
+    # jumper wire directly; SPI/I2C put their DATA line on the jumpered pin
+    # (gen TX -> partner) and their CLOCK on a separate internal channel.
+    print_header("Test 31: Generator matrix over jumper (type x rate x mode)")
+    dev.reset(); dev.spi.flush(); dev.set_debug_ch0(False)
+    pair = _discover_jumper_pair(dev)
+    if pair is None:
+        check(False, "matrix: discovered a wired channel pair")
+        return
+    tx, rx = pair
+    # Internal clock channel for SPI/SCL — any captured channel not in the pair.
+    sclk = next(c for c in (1, 2, 4, 5) if c not in (tx, rx))
+    for c in (tx, rx, sclk):
+        dev.set_pin_map(c, c)
+    dev.spi.flush(); time.sleep(0.005)
+    log(f"  jumper pair: gen on CH{tx} -> CH{rx}; SPI/I2C clock on CH{sclk}")
+
+    def mode(fm):
+        return "BRAM " if fm else "SDRAM"
+
+    # ── UART: TX(CHtx) -> RX(CHrx), fixed 115200 baud, rate sweep × mode ──
+    payload = b"Gen!42"
+    log("--- UART (single-wire jumper loopback) ---")
+    for fm, rate in [(True, 1_000_000), (True, 2_000_000), (True, 4_000_000),
+                     (False, 8_000_000), (False, 16_000_000)]:
+        dev._gen_data = payload
+        dev._gen_baud = JUMPER_BAUD
+        dev._gen_tx_pin = tx
+        ns_req = int(0.0009 * rate) + 1500
+        data = dev.capture_with_gen(rate_hz=rate, nsamples=ns_req, timeout=8, fast_mode=fm)
+        ch, ns = samples_to_channels(data, stride=2) if data else ([], 0)
+        dec = bytes(d.value for d in decode_uart_safe(ch, rate, ch_idx=rx, baud=JUMPER_BAUD)) if ns else b""
+        txt = dec.decode('latin1', 'replace')
+        log(f"  {mode(fm)} @{rate//1000:>5}kS/s: {dec!r}")
+        check(payload in dec,
+              f"UART {mode(fm).strip()} @{rate//1000}kS/s decoded payload (got '{txt}')")
+
+    # ── SPI: MOSI via jumper(CHtx->CHrx), SCLK internal(CHsclk) ──
+    log("--- SPI (MOSI over jumper, SCLK internal) ---")
+    spi_payload = bytes([0xA5, 0x3C, 0xDE, 0xAD])
+    for fm, rate in [(True, 4_000_000), (True, 8_000_000), (False, 16_000_000)]:
+        dev._gen_data = spi_payload
+        data = dev.capture_with_gen(
+            rate_hz=rate, nsamples=16000, timeout=8, proto='SPI',
+            spi_mosi_pin=tx, spi_sclk_pin=sclk, spi_clk_div=100, fast_mode=fm)
+        ch, ns = samples_to_channels(data, stride=2) if data else ([], 0)
+        dec = bytes(decode_spi(ch, rate, miso_idx=rx, sclk_idx=sclk))[:len(spi_payload)] if ns else b""
+        log(f"  {mode(fm)} @{rate//1000:>5}kS/s: {dec.hex()}")
+        check(dec == spi_payload,
+              f"SPI {mode(fm).strip()} @{rate//1000}kS/s decoded payload "
+              f"(sent {spi_payload.hex()}, got {dec.hex()})")
+
+    # ── I2C: SDA via jumper(CHtx->CHrx), SCL internal(CHsclk), open-loop ──
+    # No slave on the jumper, so bytes NACK — but the master-driven address +
+    # register + data still decode; assert those DATA bytes round-trip.
+    log("--- I2C (SDA over jumper, SCL internal, open-loop) ---")
+    i2c_frame = bytes([0xA6, 0x2D, 0x08])
+    for fm, rate, speed in [(True, 8_000_000, 100_000), (True, 16_000_000, 400_000),
+                            (False, 8_000_000, 100_000)]:
+        ns_req = int(0.0006 * rate) + 4000
+        data = dev.capture_with_gen(
+            rate_hz=rate, nsamples=ns_req, timeout=8, proto='I2C', i2c_speed=speed,
+            i2c_frame=i2c_frame, i2c_tx_pin=tx, i2c_scl_pin=sclk, fast_mode=fm)
+        ch, ns = samples_to_channels(data, stride=2) if data else ([], 0)
+        dec = decode_i2c(ch, rate, scl_idx=sclk, sda_idx=rx) if ns else []
+        databytes = bytes(v for t, v in dec if t == "DATA")
+        log(f"  {mode(fm)} @{rate//1000:>5}kS/s {speed//1000}kHz: data={databytes.hex()}")
+        check(i2c_frame == databytes[:len(i2c_frame)],
+              f"I2C {mode(fm).strip()} @{rate//1000}kS/s {speed//1000}kHz decoded "
+              f"frame (sent {i2c_frame.hex()}, got {databytes.hex()})")
+
+    save_result("test31_generator_matrix", b"",
+                {"pair": [tx, rx], "sclk_ch": sclk})
+
+
 def main():
     global PASS, FAIL, TOTAL
     print("=" * 60)
@@ -1928,6 +2035,7 @@ def main():
 
         log("\n--- Jumper-pair loopback (requires two pins wired together) ---")
         test_jumper_loopback(dev)
+        test_jumper_generator_matrix(dev)
 
         log("\n--- Noise floor test (debug OFF + ON) ---")
         run_with_debug(test_noise_floor, dev, "Noise floor")
@@ -2010,6 +2118,7 @@ def main_jumper_only():
         dev.reset()
         time.sleep(0.5)
         test_jumper_loopback(dev)
+        test_jumper_generator_matrix(dev)
     except Exception as e:
         log(f"\nERROR: {e}")
         import traceback
