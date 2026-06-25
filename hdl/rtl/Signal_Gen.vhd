@@ -137,7 +137,7 @@ begin
     variable i2c_bit  : natural range 0 to 8 := 0;
     variable rd_remain : natural range 0 to 255 := 0;
     variable read_active : boolean := false;
-    variable spi_state : natural range 0 to 4 := 0;
+    variable spi_state : natural range 0 to 5 := 0;
     variable spi_bit  : natural range 0 to 8 := 0;
   begin
     if rising_edge(CLK) then
@@ -263,8 +263,12 @@ begin
               else
                 tx_active <= '0'; done_pulse_i <= '1';
               end if;
-            when 3 =>  -- CS setup (wait for byte_ready)
-              Scl_Out <= '1';
+            when 3 =>  -- byte load: hold SCLK LOW while byte_buf settles.
+              -- (Was '1', which merged the previous byte's final clock-high
+              -- with this byte's setup into one double-width high plateau, so a
+              -- mid-plateau sampler read the next byte's MSB instead of the
+              -- previous byte's LSB. Driving low gives one clean high per bit.)
+              Scl_Out <= '0';
               if byte_ready = '1' then
                 Tx_Out <= byte_buf(7);
                 byte_ready <= '0';
@@ -286,12 +290,24 @@ begin
                   spi_bit := 0;
                   spi_state := 3;
                 else
-                  tx_active <= '0'; done_pulse_i <= '1';
-                  spi_state := 0;
+                  -- Hold the final SCLK high for one more baud period before
+                  -- dropping Busy. Deasserting tx_active on the same cycle as
+                  -- the 8th rising edge stops the pin drive after ~1 sys_clk,
+                  -- too short to be sampled, so the last bit's clock was lost.
+                  spi_state := 4;
                 end if;
               else
                 spi_state := 1;
               end if;
+            when 4 =>  -- trailing 1: drive SCLK low while STILL busy, so the
+              -- pin (gated on gen_busy) actually drives the falling edge that
+              -- ends the last bit's high. Releasing in the same cycle let the
+              -- pin float high and merge the final high into the idle.
+              Scl_Out <= '0';
+              spi_state := 5;
+            when 5 =>  -- trailing 2: low has been driven a full bit, now finish
+              tx_active <= '0'; done_pulse_i <= '1';
+              spi_state := 0;
             when others =>
               spi_state := 0;
           end case;

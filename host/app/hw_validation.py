@@ -51,7 +51,7 @@ try:
         ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_BUSY, ST_CAPTURE_DONE, ST_CAPTURE_IDLE,
     )
     from driver.ols_spi import OLS as OLS_SPI
-    from app.OLS_Console import samples_to_channels, decode_uart, decode_i2c
+    from app.OLS_Console import samples_to_channels, decode_uart, decode_i2c, decode_spi
 except ImportError as e:
     print(f"ERROR: {e}")
     print("Make sure you're running from the repo root or host/ directory")
@@ -732,31 +732,41 @@ def test_i2c_sweep(dev):
 # ====================================================================
 # Test 10: Generator SPI to accelerometer
 # ====================================================================
+SPI_MOSI_CH, SPI_SCLK_CH = 3, 1
+
+
 def test_gen_spi_accel(dev):
-    print_header("Test 10: Generator SPI capture decode")
-    log("configuring SPI generator test mode...")
-    reg_data = GEN_FLAG_SPI_TEST | (2 << 8)
-    dev.pkt.write_register(REG_GEN_DATA, reg_data)
-    dev.pkt.write_register(REG_GEN_BAUD, 100)
-    dev.spi.flush()
-    dev.pkt.load_gen_data(bytes([0x0F]))
-    time.sleep(0.01)
-    dev.spi.flush()
-    # Test on multiple channels to verify gen_tx routing works for all.
-    for tx_pin in [0, 3, 7, 15]:
-        dev._gen_data = bytes([0x0F])
-        dev._gen_baud = 100
-        dev._gen_tx_pin = tx_pin
-        data = dev.capture_with_gen(rate_hz=1_000_000, nsamples=5000, timeout=10)
-        if data:
-            ch, ns = samples_to_channels(data)
-            ch_tx = ch[tx_pin] if tx_pin < len(ch) else ch[0]
-            tr = sum(1 for i in range(1, len(ch_tx)) if ch_tx[i] != ch_tx[i - 1])
-            log(f"  CH{tx_pin}: {tr} transitions")
-            if tr > 3:
-                check(True, f"SPI gen on CH{tx_pin}: {tr} transitions")
-            else:
-                log(f"  [INFO] SPI gen CH{tx_pin} has {tr} transitions (expected >3)")
+    # SPI analog of the UART loopback (Test 30): drive a known multi-byte
+    # payload out of the SPI generator and decode it back. The generator clocks
+    # MOSI (gen_tx) and SCLK (gen_scl) onto their physical pins; we map capture
+    # channels SPI_MOSI_CH/SPI_SCLK_CH onto those pins and decode_spi the MOSI
+    # data clocked by SCLK. Exercises the full SPI gen FSM + capture + decoder.
+    print_header("Test 10: SPI generator loopback decode")
+    dev.reset(); dev.spi.flush(); dev.set_debug_ch0(False)
+    # Restore identity mapping on the two channels (prior I2C test remaps them).
+    dev.set_pin_map(SPI_SCLK_CH, SPI_SCLK_CH)
+    dev.set_pin_map(SPI_MOSI_CH, SPI_MOSI_CH)
+    dev.spi.flush(); time.sleep(0.005)
+
+    payload = bytes([0xA5, 0x3C, 0xDE, 0xAD])
+    dev._gen_data = payload
+    data = dev.capture_with_gen(
+        rate_hz=8_000_000, nsamples=16000, timeout=10, proto='SPI',
+        spi_mosi_pin=SPI_MOSI_CH, spi_sclk_pin=SPI_SCLK_CH, spi_clk_div=100)
+    if not data:
+        check(False, "SPI gen capture returned no data")
+        save_result("test10_spi_accel", b"", {"sent": payload.hex()})
+        return
+    ch, ns = samples_to_channels(data, stride=2)
+    scl_tr = sum(1 for i in range(1, ns) if ch[SPI_SCLK_CH][i] != ch[SPI_SCLK_CH][i - 1])
+    dec = bytes(decode_spi(ch, 8_000_000,
+                           miso_idx=SPI_MOSI_CH, sclk_idx=SPI_SCLK_CH))[:len(payload)]
+    log(f"  SCLK transitions={scl_tr}, decoded MOSI={dec.hex()} (sent {payload.hex()})")
+    check(dec == payload,
+          f"SPI generator payload decoded across loopback "
+          f"(sent {payload.hex()}, got {dec.hex()})")
+    save_result("test10_spi_accel", data,
+                {"sent": payload.hex(), "decoded": dec.hex(), "scl_transitions": scl_tr})
     save_result("test10_spi_accel", None, {"mode": "spi_test"})
 
 # ====================================================================

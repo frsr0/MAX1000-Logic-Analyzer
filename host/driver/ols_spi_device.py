@@ -18,6 +18,7 @@ from driver.spi_protocol import (
     REG_GEN_PROTO, REG_GEN_BAUD, REG_GEN_PINS, REG_GEN_DATA,
     REG_IFACE_MODE, REG_DEBUG_CH0_ENABLE, REG_DEBUG_CH0_PERIOD, REG_DEBUG_CH0_DUTY,
     ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_DONE,
+    GEN_FLAG_SPI_TEST,
 )
 
 # Legacy opcodes for hw_validation.py compat
@@ -598,6 +599,7 @@ class OLSDeviceSPI:
                          proto=None, i2c_speed=100000,
                          i2c_frame=None, i2c_tx_pin=3, i2c_scl_pin=1,
                          i2c_read_len=0, i2c_dev_r=None,
+                         spi_mosi_pin=3, spi_sclk_pin=1, spi_clk_div=100,
                          gen_first=False, fast_mode=True):
         """Atomic generator capture using CMD_GEN_CAPTURE.
         
@@ -653,7 +655,27 @@ class OLSDeviceSPI:
             dev_r = 1 if i2c_dev_r is None else i2c_dev_r & 0xFF
             flags = 1 | ((i2c_read_len & 0xFF) << 8) | (dev_r << 16)
             self.pkt.write_register(REG_GEN_DATA, flags)
+        elif proto == 'SPI':
+            # SPI generator test mode. MOSI (gen_tx) and SCLK (gen_scl) are
+            # looped into the capture stream on the channels mapped to
+            # spi_mosi_pin / spi_sclk_pin. The SPI-test bit must be set HERE
+            # (after the reset() above clears it) and only latches when
+            # REG_GEN_DATA bits 31:8 are non-zero, so bit 8 is set as well.
+            self._pins(tx_pin=spi_mosi_pin, scl_pin=spi_sclk_pin)
+            self.pkt.write_register(REG_GEN_PROTO, 0)
+            # SPI baud register is a raw SCLK half-period divider (in sys_clk
+            # cycles), not a UART-style frequency. SCLK ~= sys_clk/(2*div).
+            self.pkt.write_register(REG_GEN_BAUD, max(1, spi_clk_div) & 0xFFFF)
+            self.pkt.write_register(REG_GEN_DATA, GEN_FLAG_SPI_TEST | (1 << 8))
+            if self._gen_data:
+                self.pkt.load_gen_data(self._gen_data)
         elif self._gen_data is not None:
+            # Clear any leftover I2C/SPI test-mode flags (bit0/bit1) from a prior
+            # capture — they are not cleared on reset, and a stale SPI-test bit
+            # would drive SCLK onto a pin and corrupt this UART capture. Upper
+            # byte non-zero so the write hits the mode-flag branch, not a FIFO
+            # load.
+            self.pkt.write_register(REG_GEN_DATA, 1 << 8)
             self.pkt.write_register(REG_GEN_PROTO, 0)
             div_b = max(1, self.sys_clk // self._gen_baud)
             self.pkt.write_register(REG_GEN_BAUD, div_b & 0xFFFF)
