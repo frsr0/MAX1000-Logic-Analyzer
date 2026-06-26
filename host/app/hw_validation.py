@@ -1901,59 +1901,107 @@ def test_jumper_generator_matrix(dev):
     def mode(fm):
         return "BRAM " if fm else "SDRAM"
 
-    # ── UART: TX(CHtx) -> RX(CHrx), fixed 115200 baud, rate sweep × mode ──
+    sysclk = dev.sys_clk
+    guard = lambda rate: int(600 * rate / sysclk)  # gen-start guard in samples
+
+    # Rate ladder from 1 MS/s up to the hardware maximum (sample_clk, div=0),
+    # mixing the BRAM fast path and SDRAM. Protocol clocks scale WITH the rate
+    # so each burst stays ~constant in samples and fits the buffer even at the
+    # top rate; decode uses the divider-rounded actual clock.
+    maxr = int(dev.sample_clk)
+    rate_modes = [(1_000_000, True), (2_000_000, False), (8_000_000, True),
+                  (16_000_000, False), (50_000_000, True), (100_000_000, True),
+                  (maxr, True)]
+
+    # ── UART: TX(CHtx) -> RX(CHrx). baud ~= rate/24 (≈24 samples/bit). ──
     payload = b"Gen!42"
     log("--- UART (single-wire jumper loopback) ---")
-    for fm, rate in [(True, 1_000_000), (True, 2_000_000), (True, 4_000_000),
-                     (False, 8_000_000), (False, 16_000_000)]:
-        dev._gen_data = payload
-        dev._gen_baud = JUMPER_BAUD
-        dev._gen_tx_pin = tx
-        ns_req = int(0.0009 * rate) + 1500
+    for rate, fm in rate_modes:
+        div_b = max(1, sysclk // max(1, rate // 24))
+        baud = sysclk // div_b                       # actual generator baud
+        spb = rate / baud
+        ns_req = int((len(payload) + 3) * 10 * spb) + guard(rate) + 500
+        dev._gen_data = payload; dev._gen_baud = baud; dev._gen_tx_pin = tx
         data = dev.capture_with_gen(rate_hz=rate, nsamples=ns_req, timeout=8, fast_mode=fm)
         ch, ns = samples_to_channels(data, stride=2) if data else ([], 0)
-        dec = bytes(d.value for d in decode_uart_safe(ch, rate, ch_idx=rx, baud=JUMPER_BAUD)) if ns else b""
-        txt = dec.decode('latin1', 'replace')
-        log(f"  {mode(fm)} @{rate//1000:>5}kS/s: {dec!r}")
+        dec = bytes(d.value for d in decode_uart_safe(ch, rate, ch_idx=rx, baud=baud)) if ns else b""
+        log(f"  {mode(fm)} @{rate//1000:>6}kS/s baud={baud:>8}: {dec!r}")
         check(payload in dec,
-              f"UART {mode(fm).strip()} @{rate//1000}kS/s decoded payload (got '{txt}')")
+              f"UART {mode(fm).strip()} @{rate//1000}kS/s decoded payload "
+              f"(baud {baud}, got '{dec.decode('latin1','replace')}')")
 
-    # ── SPI: MOSI via jumper(CHtx->CHrx), SCLK internal(CHsclk) ──
+    # ── SPI: MOSI via jumper, SCLK internal. SCLK ~= rate/16. ──
     log("--- SPI (MOSI over jumper, SCLK internal) ---")
     spi_payload = bytes([0xA5, 0x3C, 0xDE, 0xAD])
-    for fm, rate in [(True, 4_000_000), (True, 8_000_000), (False, 16_000_000)]:
+    for rate, fm in rate_modes:
+        sdiv = max(2, round(sysclk / (2 * max(1, rate // 16))))
+        ns_req = int(len(spi_payload) * 8 * 2 * sdiv * rate / sysclk) + guard(rate) + 800
         dev._gen_data = spi_payload
         data = dev.capture_with_gen(
-            rate_hz=rate, nsamples=16000, timeout=8, proto='SPI',
-            spi_mosi_pin=tx, spi_sclk_pin=sclk, spi_clk_div=100, fast_mode=fm)
+            rate_hz=rate, nsamples=ns_req, timeout=8, proto='SPI',
+            spi_mosi_pin=tx, spi_sclk_pin=sclk, spi_clk_div=sdiv, fast_mode=fm)
         ch, ns = samples_to_channels(data, stride=2) if data else ([], 0)
         dec = bytes(decode_spi(ch, rate, miso_idx=rx, sclk_idx=sclk))[:len(spi_payload)] if ns else b""
-        log(f"  {mode(fm)} @{rate//1000:>5}kS/s: {dec.hex()}")
+        log(f"  {mode(fm)} @{rate//1000:>6}kS/s SCLK={sysclk//(2*sdiv)//1000}kHz: {dec.hex()}")
         check(dec == spi_payload,
               f"SPI {mode(fm).strip()} @{rate//1000}kS/s decoded payload "
               f"(sent {spi_payload.hex()}, got {dec.hex()})")
 
-    # ── I2C: SDA via jumper(CHtx->CHrx), SCL internal(CHsclk), open-loop ──
+    # ── I2C: SDA via jumper, SCL internal, open-loop. speed ~= rate/16. ──
     # No slave on the jumper, so bytes NACK — but the master-driven address +
     # register + data still decode; assert those DATA bytes round-trip.
     log("--- I2C (SDA over jumper, SCL internal, open-loop) ---")
     i2c_frame = bytes([0xA6, 0x2D, 0x08])
-    for fm, rate, speed in [(True, 8_000_000, 100_000), (True, 16_000_000, 400_000),
-                            (False, 8_000_000, 100_000)]:
-        ns_req = int(0.0006 * rate) + 4000
+    for rate, fm in rate_modes:
+        speed = max(50_000, min(rate // 16, 4_000_000))
+        idiv = max(1, sysclk // speed // 2)
+        ns_req = int(len(i2c_frame) * 10 * 2 * idiv * rate / sysclk) + guard(rate) + 1000
         data = dev.capture_with_gen(
             rate_hz=rate, nsamples=ns_req, timeout=8, proto='I2C', i2c_speed=speed,
             i2c_frame=i2c_frame, i2c_tx_pin=tx, i2c_scl_pin=sclk, fast_mode=fm)
         ch, ns = samples_to_channels(data, stride=2) if data else ([], 0)
         dec = decode_i2c(ch, rate, scl_idx=sclk, sda_idx=rx) if ns else []
         databytes = bytes(v for t, v in dec if t == "DATA")
-        log(f"  {mode(fm)} @{rate//1000:>5}kS/s {speed//1000}kHz: data={databytes.hex()}")
+        log(f"  {mode(fm)} @{rate//1000:>6}kS/s {speed//1000}kHz: data={databytes.hex()}")
         check(i2c_frame == databytes[:len(i2c_frame)],
               f"I2C {mode(fm).strip()} @{rate//1000}kS/s {speed//1000}kHz decoded "
               f"frame (sent {i2c_frame.hex()}, got {databytes.hex()})")
 
     save_result("test31_generator_matrix", b"",
-                {"pair": [tx, rx], "sclk_ch": sclk})
+                {"pair": [tx, rx], "sclk_ch": sclk, "max_rate": maxr})
+
+
+def test_live_generator_decode(dev):
+    # The generator is one-shot, so "live" continuous operation = repeatedly
+    # firing the atomic gen-capture (the only path that reliably overlaps the
+    # generator burst with the capture window) and decoding each frame, exactly
+    # as a single capture does. Proves the generator stays decodable when driven
+    # continuously, like the app's live view.
+    print_header("Test 32: Generator decodable in live (continuous) operation")
+    dev.reset(); dev.spi.flush(); dev.set_debug_ch0(False)
+    pair = _discover_jumper_pair(dev)
+    if pair is None:
+        check(False, "live: discovered a wired channel pair")
+        return
+    tx, rx = pair
+    for c in (tx, rx):
+        dev.set_pin_map(c, c)
+    dev.spi.flush(); time.sleep(0.005)
+    rate = 4_000_000
+    frames = [b"live-0", b"live-1", b"live-2", b"live-3", b"live-4", b"live-5"]
+    good = 0
+    for i, payload in enumerate(frames):
+        dev._gen_data = payload; dev._gen_baud = JUMPER_BAUD; dev._gen_tx_pin = tx
+        data = dev.capture_with_gen(rate_hz=rate, nsamples=int(0.0009 * rate) + 1500,
+                                    timeout=6, fast_mode=True)
+        ch, ns = samples_to_channels(data, stride=2) if data else ([], 0)
+        dec = bytes(d.value for d in decode_uart_safe(ch, rate, ch_idx=rx, baud=JUMPER_BAUD)) if ns else b""
+        ok = payload in dec
+        good += ok
+        log(f"  live frame {i}: sent {payload!r} decoded {dec!r} {'OK' if ok else 'MISS'}")
+    check(good == len(frames),
+          f"generator decodable on every live frame ({good}/{len(frames)})")
+    save_result("test32_live_generator", b"", {"frames": len(frames), "decoded": good})
 
 
 def main():
@@ -2036,6 +2084,7 @@ def main():
         log("\n--- Jumper-pair loopback (requires two pins wired together) ---")
         test_jumper_loopback(dev)
         test_jumper_generator_matrix(dev)
+        test_live_generator_decode(dev)
 
         log("\n--- Noise floor test (debug OFF + ON) ---")
         run_with_debug(test_noise_floor, dev, "Noise floor")
@@ -2119,6 +2168,7 @@ def main_jumper_only():
         time.sleep(0.5)
         test_jumper_loopback(dev)
         test_jumper_generator_matrix(dev)
+        test_live_generator_decode(dev)
     except Exception as e:
         log(f"\nERROR: {e}")
         import traceback
