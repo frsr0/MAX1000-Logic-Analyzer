@@ -16,6 +16,7 @@ entity Signal_Gen is
     Baud_Div  : in  std_logic_vector(15 downto 0);
     Proto     : in  std_logic := '0';  -- 0=UART, 1=I2C
     SPI_Mode  : in  std_logic := '0';  -- 1=SPI (overrides Proto)
+    Repeat    : in  std_logic := '0';  -- replay loaded UART FIFO forever
     Tx_Out    : out std_logic := '1';
     Scl_Out   : out std_logic := '1';
     Busy      : out std_logic := '0';
@@ -39,6 +40,9 @@ architecture rtl of Signal_Gen is
   signal tx_active   : std_logic := '0';
   signal start_d     : std_logic := '0';
   signal done_pulse_i : std_logic := '0';
+  signal repeat_active : std_logic := '0';
+  signal repeat_start  : unsigned(7 downto 0) := (others => '0');
+  signal repeat_left   : natural range 0 to FIFO_DEPTH := 0;
 
   -- Registered byte-load stage for SPI/I2C (breaks FIFO read → Tx_Out path)
   signal byte_buf    : std_logic_vector(7 downto 0) := (others => '0');
@@ -137,7 +141,7 @@ begin
     variable i2c_bit  : natural range 0 to 8 := 0;
     variable rd_remain : natural range 0 to 255 := 0;
     variable read_active : boolean := false;
-    variable spi_state : natural range 0 to 4 := 0;
+    variable spi_state : natural range 0 to 5 := 0;
     variable spi_bit  : natural range 0 to 8 := 0;
   begin
     if rising_edge(CLK) then
@@ -193,7 +197,15 @@ begin
           uart_baud_cnt <= 0;
           uart_shift <= fifo(to_integer(tail));
           tail <= tail + 1;
-          count <= count - 1;
+          repeat_active <= Repeat;
+          if Repeat = '1' then
+            -- Keep FIFO intact. repeat_left counts bytes still to send in
+            -- this pass after the byte loaded above.
+            repeat_start <= tail;
+            repeat_left <= count - 1;
+          else
+            count <= count - 1;
+          end if;
           if CRC_En = '1' then
             uart_crc <= crc16_update(x"FFFF", fifo(to_integer(tail)), CRC_Poly);
             uart_crc_run <= '1';
@@ -263,8 +275,12 @@ begin
               else
                 tx_active <= '0'; done_pulse_i <= '1';
               end if;
-            when 3 =>  -- CS setup (wait for byte_ready)
-              Scl_Out <= '1';
+            when 3 =>  -- byte load: hold SCLK LOW while byte_buf settles.
+              -- (Was '1', which merged the previous byte's final clock-high
+              -- with this byte's setup into one double-width high plateau, so a
+              -- mid-plateau sampler read the next byte's MSB instead of the
+              -- previous byte's LSB. Driving low gives one clean high per bit.)
+              Scl_Out <= '0';
               if byte_ready = '1' then
                 Tx_Out <= byte_buf(7);
                 byte_ready <= '0';
@@ -286,12 +302,24 @@ begin
                   spi_bit := 0;
                   spi_state := 3;
                 else
-                  tx_active <= '0'; done_pulse_i <= '1';
-                  spi_state := 0;
+                  -- Hold the final SCLK high for one more baud period before
+                  -- dropping Busy. Deasserting tx_active on the same cycle as
+                  -- the 8th rising edge stops the pin drive after ~1 sys_clk,
+                  -- too short to be sampled, so the last bit's clock was lost.
+                  spi_state := 4;
                 end if;
               else
                 spi_state := 1;
               end if;
+            when 4 =>  -- trailing 1: drive SCLK low while STILL busy, so the
+              -- pin (gated on gen_busy) actually drives the falling edge that
+              -- ends the last bit's high. Releasing in the same cycle let the
+              -- pin float high and merge the final high into the idle.
+              Scl_Out <= '0';
+              spi_state := 5;
+            when 5 =>  -- trailing 2: low has been driven a full bit, now finish
+              tx_active <= '0'; done_pulse_i <= '1';
+              spi_state := 0;
             when others =>
               spi_state := 0;
           end case;
@@ -326,7 +354,20 @@ begin
               -- Tx_Out low here erased the inter-byte stop bit entirely.)
               Tx_Out <= '1';
 
-              if count > 0 then
+              if repeat_active = '1' then
+                if repeat_left > 0 then
+                  uart_shift <= fifo(to_integer(tail));
+                  tail <= tail + 1;
+                  repeat_left <= repeat_left - 1;
+                else
+                  uart_shift <= fifo(to_integer(repeat_start));
+                  tail <= repeat_start + 1;
+                  repeat_left <= count - 1;
+                end if;
+                uart_bit_idx <= 0;
+                uart_state <= UART_START_BIT;
+
+              elsif count > 0 then
                 uart_shift <= fifo(to_integer(tail));
                 tail <= tail + 1;
                 count <= count - 1;
@@ -350,6 +391,8 @@ begin
               else
                 uart_crc_run <= '0';
                 uart_crc_phase <= 0;
+                repeat_active <= '0';
+                repeat_left <= 0;
                 tx_active <= '0';
                 done_pulse_i <= '1';
                 uart_state <= UART_IDLE;
@@ -504,6 +547,8 @@ begin
         count <= 0;
         byte_ready <= '0';
         tx_active <= '0';
+        repeat_active <= '0';
+        repeat_left <= 0;
       end if;
     end if;
   end process;

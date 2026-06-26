@@ -41,6 +41,11 @@ const DIGITAL_ROW = 30;
 const ANALOG_ROW = 96;
 const ANNOT_ROW = 22;
 
+// Height a row would have at scale 1×, before any user adjustment.
+export function baseRowHeight(ch: ChannelInfo): number {
+  return ch.type === 'analog' ? ANALOG_ROW : DIGITAL_ROW;
+}
+
 export function buildLayout(channels: ChannelInfo[], view: WaveformView,
                             labelWidth: number): RenderLayout {
   const axisHeight = 24;
@@ -48,12 +53,15 @@ export function buildLayout(channels: ChannelInfo[], view: WaveformView,
   const annotHeight = annotRows.length * ANNOT_ROW;
   let y = axisHeight + annotHeight + 4;
   const rows: RowLayout[] = [];
+  const ids: string[] = [];
   for (const ch of channels) {
     if (!ch.enabled) continue;
-    const height = ch.type === 'analog' ? ANALOG_ROW : DIGITAL_ROW;
+    const height = Math.round(baseRowHeight(ch) * view.rowScale(ch.id));
     rows.push({ channel: ch, y, height });
+    ids.push(ch.id);
     y += height + 4;
   }
+  view.knownRowIds = ids;
   return { axisHeight, annotRows, annotHeight, rows, totalHeight: y + 8, labelWidth };
 }
 
@@ -434,6 +442,13 @@ function drawLabels(ctx: CanvasRenderingContext2D, view: WaveformView,
   ctx.font = '11px system-ui';
   for (const row of layout.rows) {
     const ch = row.channel;
+    const selected = view.selectedRows.has(ch.id);
+    if (selected) {
+      ctx.fillStyle = COLORS.selection;
+      ctx.fillRect(0, row.y, layout.labelWidth, row.height);
+      ctx.strokeStyle = COLORS.cursorB;
+      ctx.strokeRect(0.5, row.y + 0.5, layout.labelWidth - 1, row.height - 1);
+    }
     ctx.fillStyle = ch.color ?? COLORS.label;
     const icon = ch.type === 'analog' ? '∿' : ch.type === 'derived' ? 'ƒ'
       : ch.type === 'bus' ? '⛁' : '⎍';
@@ -444,6 +459,22 @@ function drawLabels(ctx: CanvasRenderingContext2D, view: WaveformView,
       ctx.fillText(`${ch.volts_per_div} V/div`, 8, row.y + 27);
       ctx.font = '11px system-ui';
     }
+    const scale = view.rowScale(ch.id);
+    if (scale !== 1) {
+      ctx.fillStyle = 'rgba(170,180,200,0.55)';
+      ctx.font = '9px system-ui';
+      ctx.fillText(`${scale.toFixed(scale % 1 ? 1 : 0)}×`,
+        layout.labelWidth - 22, row.y + 12);
+      ctx.font = '11px system-ui';
+    }
+    // resize-handle grip at the bottom edge of the label cell
+    ctx.strokeStyle = 'rgba(150,165,190,0.35)';
+    ctx.lineWidth = 1;
+    const gy = row.y + row.height - 3;
+    ctx.beginPath();
+    ctx.moveTo(layout.labelWidth * 0.32, gy);
+    ctx.lineTo(layout.labelWidth * 0.68, gy);
+    ctx.stroke();
   }
   // decoder row labels
   ctx.font = '10px system-ui';

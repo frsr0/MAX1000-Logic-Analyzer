@@ -48,3 +48,4 @@ hdl/hw_test/hw_results/
 data/
 frontend/node_modules/
 frontend/dist/
+.claude/launch.json

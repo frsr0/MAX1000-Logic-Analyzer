@@ -47,6 +47,7 @@ PORT (
     Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Gen_I2C_Test   : OUT STD_LOGIC := '0';
     Gen_SPI_Test   : OUT STD_LOGIC := '0';
+    Gen_Repeat     : OUT STD_LOGIC := '0';
     Armed          : OUT STD_LOGIC := '0';
     Fast_Mode      : OUT STD_LOGIC := '0';
     Narrow_Enable  : OUT STD_LOGIC := '0';
@@ -111,6 +112,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL gen_i2c_dev_r_i     : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL gen_i2c_test_i      : STD_LOGIC := '0';
   SIGNAL gen_spi_test_i      : STD_LOGIC := '0';
+  SIGNAL gen_repeat_i        : STD_LOGIC := '0';
   SIGNAL armed_i             : STD_LOGIC := '0';
   SIGNAL fast_mode_i         : STD_LOGIC := '0';
   SIGNAL narrow_enable_i     : STD_LOGIC := '0';
@@ -170,6 +172,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
    Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
      Gen_I2C_Test   : OUT STD_LOGIC := '0';
      Gen_SPI_Test   : OUT STD_LOGIC := '0';
+     Gen_Repeat     : OUT STD_LOGIC := '0';
       Armed          : OUT STD_LOGIC := '0';
       Fast_Mode      : OUT STD_LOGIC := '0';
       Narrow_Enable   : OUT STD_LOGIC := '0';
@@ -286,6 +289,7 @@ BEGIN
   Gen_I2C_Dev_R  <= gen_i2c_dev_r_i;
   Gen_I2C_Test   <= gen_i2c_test_i;
   Gen_SPI_Test   <= gen_spi_test_i;
+  Gen_Repeat     <= gen_repeat_i;
   Armed          <= armed_i;
   Fast_Mode      <= fast_mode_i;
   Narrow_Enable  <= narrow_enable_i;
@@ -315,6 +319,7 @@ BEGIN
     Gen_Clear      => gen_clear_i,
     Gen_I2C_Rd_Len => gen_i2c_rd_len_i,Gen_I2C_Dev_R  => gen_i2c_dev_r_i,    Gen_I2C_Test   => gen_i2c_test_i,
     Gen_SPI_Test   => gen_spi_test_i,
+    Gen_Repeat     => gen_repeat_i,
     Armed          => armed_i,
     Fast_Mode      => fast_mode_i,
     Narrow_Enable  => narrow_enable_i,

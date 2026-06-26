@@ -80,6 +80,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_i2c_dev_r  : std_logic_vector(7 downto 0) := (others => '0');
   signal gen_i2c_test   : std_logic := '0';
   signal gen_spi_test   : std_logic := '0';
+  signal gen_repeat     : std_logic := '0';
   signal gen_fifo_count : std_logic_vector(7 downto 0) := (others => '0');
   signal gen_busy_latch : std_logic := '0';
   -- LED7 gen-activity stretch: ~0.25 s at 100 MHz so a brief pulse stays seen.
@@ -180,6 +181,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_capture_active_f2 : std_logic := '0';
   signal gen_i2c_test_f1 : std_logic := '0';
   signal gen_i2c_test_f2 : std_logic := '0';
+  signal gen_spi_test_f1 : std_logic := '0';
+  signal gen_spi_test_f2 : std_logic := '0';
   signal debug_ch0_enable_f1 : std_logic := '0';
   signal debug_ch0_enable_f2 : std_logic := '0';
   attribute preserve of debug_ch0_enable_f1 : signal is true;
@@ -251,6 +254,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Gen_I2C_Test   : OUT STD_LOGIC := '0';
     Gen_SPI_Test   : OUT STD_LOGIC := '0';
+    Gen_Repeat     : OUT STD_LOGIC := '0';
     Armed          : OUT STD_LOGIC := '0';
     Fast_Mode      : OUT STD_LOGIC := '0';
     Narrow_Enable  : OUT STD_LOGIC := '0';
@@ -350,6 +354,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     I2C_Dev_R  : in std_logic_vector(7 downto 0) := (others => '0');
     Sda_In     : in std_logic := '1';
     SPI_Mode  : in std_logic := '0';
+    Repeat    : in std_logic := '0';
     CRC_En    : in std_logic := '0';
     CRC_Poly  : in std_logic_vector(15 downto 0) := x"A001"
   );
@@ -410,7 +415,7 @@ BEGIN
       for i in 0 to LA_CHANNELS-1 loop
         if gen_capture_active = '1' and gen_tx_pin = pin_map(i) then
           internal_data_r(i) <= gen_tx_d2;
-        elsif gen_capture_active = '1' and gen_i2c_test = '1' and gen_scl_pin = pin_map(i) then
+        elsif gen_capture_active = '1' and (gen_i2c_test = '1' or gen_spi_test = '1') and gen_scl_pin = pin_map(i) then
           internal_data_r(i) <= gen_scl_d2;
         elsif i = 0 and debug_ch0_enable = '1' then
           internal_data_r(i) <= registered_ch0_d1;
@@ -495,7 +500,10 @@ BEGIN
       end if;
 
       if gen_busy = '1' then
-        if gen_proto = '1' then
+        -- Drive SCLK on its physical pin for both I2C and SPI test modes so it
+        -- is captured like MOSI (gen_tx above). Previously only I2C drove it,
+        -- so SPI-generated SCLK never reached the capture stream.
+        if gen_proto = '1' or gen_spi_test = '1' then
           if gen_scl_pin < PIN_POOL_SIZE then
             pin_out(gen_scl_pin) <= gen_scl;
             pin_dir(gen_scl_pin) <= '1';
@@ -568,6 +576,8 @@ BEGIN
         gen_capture_active_f2 <= gen_capture_active_f1;
         gen_i2c_test_f1 <= gen_i2c_test;
         gen_i2c_test_f2 <= gen_i2c_test_f1;
+        gen_spi_test_f1 <= gen_spi_test;
+        gen_spi_test_f2 <= gen_spi_test_f1;
         gen_tx_pin_f1 <= gen_tx_pin;
         gen_tx_pin_f2 <= gen_tx_pin_f1;
         gen_scl_pin_f1 <= gen_scl_pin;
@@ -592,7 +602,7 @@ BEGIN
             capture_data_fast_normal_r(i) <= registered_ch0_f2;
           elsif gen_capture_active_f2 = '1' and gen_tx_pin_f2 = pin_map_fast(i) then
             capture_data_fast_normal_r(i) <= gen_tx_f2;
-          elsif gen_capture_active_f2 = '1' and gen_i2c_test_f2 = '1' and gen_scl_pin_f2 = pin_map_fast(i) then
+          elsif gen_capture_active_f2 = '1' and (gen_i2c_test_f2 = '1' or gen_spi_test_f2 = '1') and gen_scl_pin_f2 = pin_map_fast(i) then
             capture_data_fast_normal_r(i) <= gen_scl_f2;
           else
             capture_data_fast_normal_r(i) <= capture_data_fast_mapped_r(i);
@@ -796,6 +806,7 @@ BEGIN
     Gen_I2C_Dev_R  => gen_i2c_dev_r,
     Gen_I2C_Test   => gen_i2c_test,
     Gen_SPI_Test   => gen_spi_test,
+    Gen_Repeat     => gen_repeat,
     Armed          => armed_i,
     Fast_Mode      => fast_mode_i,
     Narrow_Enable  => open,
@@ -931,6 +942,7 @@ BEGIN
     I2C_Dev_R  => gen_i2c_dev_r,
     Sda_In     => sen_sdi_sync,
     SPI_Mode   => gen_spi_test,
+    Repeat     => gen_repeat,
     CRC_En     => '0',
     CRC_Poly   => x"A001"
   );

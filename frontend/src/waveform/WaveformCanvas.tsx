@@ -5,9 +5,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
 import type { ChannelInfo } from '../api/types';
 import { useApp } from '../state/appStore';
-import { waveformView } from '../state/waveformStore';
+import { waveformView, WaveformView } from '../state/waveformStore';
 import { Minimap } from './minimap';
-import { buildLayout, fmtFreq, fmtTime, render, RenderLayout, sampleToX, xToSample } from './renderer';
+import { buildLayout, fmtFreq, fmtTime, render, RenderLayout, RowLayout, sampleToX, xToSample } from './renderer';
 
 interface Props {
   channels: ChannelInfo[];
@@ -20,6 +20,7 @@ export function WaveformCanvas({ channels, onSelectRegion }: Props) {
   const layoutRef = useRef<RenderLayout | null>(null);
   const [, setTick] = useState(0);
   const [hoverInfo, setHoverInfo] = useState<string>('');
+  const [viewMenu, setViewMenu] = useState(false);
   const activeSession = useApp((s) => s.activeSession);
   const toast = useApp((s) => s.toast);
 
@@ -63,11 +64,37 @@ export function WaveformCanvas({ channels, onSelectRegion }: Props) {
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const drag = useRef<{ startX: number; viewStart: number; mode: 'pan' | 'select' } | null>(null);
   const pinch = useRef<{ dist: number; center: number } | null>(null);
+  // height-resize / row-select drag started in the label gutter
+  const labelDrag = useRef<{
+    rowId: string; startY: number; startHeight: number;
+    affected: string[]; startScales: Map<string, number>;
+    ctrl: boolean; moved: boolean;
+  } | null>(null);
 
   const widthOf = () => canvasRef.current?.clientWidth ?? 1;
 
+  const rowAt = (y: number): RowLayout | undefined =>
+    layoutRef.current?.rows.find((r) => y >= r.y && y < r.y + r.height);
+
   const onPointerDown = (e: React.PointerEvent) => {
     (e.target as Element).setPointerCapture(e.pointerId);
+    // Label gutter: click to (multi-)select a row, drag to resize its height.
+    if (e.nativeEvent.offsetX < (layoutRef.current?.labelWidth ?? labelWidth)) {
+      const row = rowAt(e.nativeEvent.offsetY);
+      if (row) {
+        const v = waveformView;
+        const ctrl = e.ctrlKey || e.metaKey;
+        const inGroup = ctrl ? false
+          : v.selectedRows.has(row.channel.id) && v.selectedRows.size > 1;
+        const affected = inGroup ? [...v.selectedRows] : [row.channel.id];
+        const startScales = new Map(affected.map((id) => [id, v.rowScale(id)]));
+        labelDrag.current = {
+          rowId: row.channel.id, startY: e.nativeEvent.offsetY,
+          startHeight: row.height, affected, startScales, ctrl, moved: false,
+        };
+      }
+      return;
+    }
     pointers.current.set(e.pointerId, { x: e.nativeEvent.offsetX, y: e.nativeEvent.offsetY });
     if (pointers.current.size === 2) {
       const [p1, p2] = [...pointers.current.values()];
@@ -96,6 +123,24 @@ export function WaveformCanvas({ channels, onSelectRegion }: Props) {
     const layout = layoutRef.current;
     if (!layout) return;
     const x = e.nativeEvent.offsetX;
+    if (labelDrag.current) {
+      const ld = labelDrag.current;
+      const dy = e.nativeEvent.offsetY - ld.startY;
+      if (Math.abs(dy) > 4) ld.moved = true;
+      if (ld.moved) {
+        const ratio = (ld.startHeight + dy) / ld.startHeight;
+        for (const id of ld.affected) {
+          const s = (ld.startScales.get(id) ?? 1) * ratio;
+          waveformView.heightScale.set(id,
+            Math.max(WaveformView.MIN_SCALE, Math.min(WaveformView.MAX_SCALE, s)));
+        }
+        waveformView.notify();
+      }
+      return;
+    }
+    if (canvasRef.current) {
+      canvasRef.current.style.cursor = x < layout.labelWidth ? 'ns-resize' : 'crosshair';
+    }
     if (pointers.current.has(e.pointerId)) {
       pointers.current.set(e.pointerId, { x, y: e.nativeEvent.offsetY });
     }
@@ -125,6 +170,13 @@ export function WaveformCanvas({ channels, onSelectRegion }: Props) {
   };
 
   const onPointerUp = (e: React.PointerEvent) => {
+    if (labelDrag.current) {
+      const ld = labelDrag.current;
+      labelDrag.current = null;
+      if (!ld.moved) waveformView.selectRow(ld.rowId, ld.ctrl);
+      else waveformView.commitRowHeights(ld.affected);
+      return;
+    }
     pointers.current.delete(e.pointerId);
     if (pointers.current.size < 2) pinch.current = null;
     if (drag.current?.mode === 'select' && waveformView.selectionStart !== null
@@ -154,6 +206,7 @@ export function WaveformCanvas({ channels, onSelectRegion }: Props) {
     // double-click: place cursor A (with alt: B), snapped to the nearest edge
     const layout = layoutRef.current;
     if (!layout || !activeSession) return;
+    if (e.nativeEvent.offsetX < layout.labelWidth) return; // label gutter
     let sample = Math.round(xToSample(waveformView, layout, widthOf(), e.nativeEvent.offsetX));
     sample = Math.max(0, Math.min(waveformView.numSamples - 1, sample));
     sample = await snapToEdge(sample);
@@ -279,6 +332,51 @@ export function WaveformCanvas({ channels, onSelectRegion }: Props) {
         )}
         <button onClick={() => jumpAnnotation(-1)} title="Previous event (p)">⟨ ev</button>
         <button onClick={() => jumpAnnotation(1)} title="Next event (n)">ev ⟩</button>
+        <div className="view-menu">
+          <button
+            onClick={() => setViewMenu((o) => !o)}
+            title="Row height presets"
+            className={viewMenu ? 'active' : ''}
+          >
+            ↕ View ▾
+          </button>
+          {viewMenu && (
+            <div className="view-menu-pop" onPointerLeave={() => setViewMenu(false)}>
+              <div className="menu-title">Snap all rows</div>
+              {[1, 2, 3, 4].map((m) => (
+                <button key={m} className="slim"
+                  onClick={() => {
+                    waveformView.setAllScales(m);
+                    waveformView.commitRowHeights(waveformView.knownRowIds);
+                    setViewMenu(false);
+                  }}>
+                  {m === 1 ? 'Default (1×)' : `${m}×`}
+                </button>
+              ))}
+              {waveformView.selectedRows.size > 0 && (
+                <>
+                  <div className="menu-title">
+                    Selected ({waveformView.selectedRows.size})
+                  </div>
+                  {[1, 2, 3].map((m) => (
+                    <button key={m} className="slim"
+                      onClick={() => {
+                        const ids = [...waveformView.selectedRows];
+                        waveformView.setRowScales(ids, m);
+                        waveformView.commitRowHeights(ids);
+                        setViewMenu(false);
+                      }}>
+                      {m === 1 ? 'Reset' : `${m}×`}
+                    </button>
+                  ))}
+                </>
+              )}
+              <div className="menu-hint">
+                Drag a row label to resize · Ctrl/⌘-click to multi-select
+              </div>
+            </div>
+          )}
+        </div>
         <span className="hover-info">{hoverInfo}</span>
         {cursorReadout()}
         {waveformView.error && <span className="wave-error">{waveformView.error}</span>}

@@ -32,6 +32,8 @@ class ChannelInfo(BaseModel):
     # bus channels
     members: List[str] = Field(default_factory=list)   # member digital channel ids
     display_base: Literal["bin", "hex", "dec", "ascii"] = "hex"
+    # waveform row height multiplier (1.0 = default); UI display preference
+    display_height_scale: float = 1.0
     # derived channels
     source: Optional[str] = None     # source channel id
     derive: Optional[Dict[str, Any]] = None  # e.g. {"kind":"threshold","level":1.6}

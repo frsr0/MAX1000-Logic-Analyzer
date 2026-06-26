@@ -74,6 +74,7 @@ REG_IFACE_MODE    = 0xF0
 # REG_GEN_DATA flag bits (written with upper byte non-zero to enter mode-config branch)
 GEN_FLAG_I2C_TEST  = 0x01  # bit 0
 GEN_FLAG_SPI_TEST  = 0x02  # bit 1
+GEN_FLAG_REPEAT    = 0x04  # bit 2: replay loaded UART FIFO forever
 
 # Status codes
 ST_OK            = 0x00
