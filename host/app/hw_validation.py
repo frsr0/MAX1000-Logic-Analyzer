@@ -2004,6 +2004,63 @@ def test_live_generator_decode(dev):
     save_result("test32_live_generator", b"", {"frames": len(frames), "decoded": good})
 
 
+# ====================================================================
+# Test 33: Hardware-repeat UART through continuous SDRAM ring capture.
+# ====================================================================
+def test_repeating_uart_continuous_ring(dev):
+    print_header("Test 33: Repeating UART decodes in continuous SDRAM ring")
+    dev.reset(); dev.spi.flush(); dev.set_debug_ch0(False)
+    pair = _discover_jumper_pair(dev)
+    if pair is None:
+        check(False, "repeat ring: discovered a wired channel pair")
+        return
+    tx, rx = pair
+    for c in (tx, rx):
+        dev.set_pin_map(c, c)
+    dev.spi.flush(); time.sleep(0.005)
+
+    # 4 MS/s gives ~35 samples/bit at 115200 baud. Each 4096-sample chunk
+    # contains multiple complete repeats, even if its first byte starts mid-frame.
+    rate = 4_000_000
+    payload = b"R33!"
+    chunks_needed = 12
+    stop = threading.Event()
+    good = 0
+    consecutive = 0
+    max_consecutive = 0
+    try:
+        stream = dev.continuous_ring_capture_with_repeating_uart(
+            rate_hz=rate, chunk_nsamp=4096,
+            buffer_nsamp=chunks_needed * 4096, stop_evt=stop,
+            data_bytes=payload, baud=JUMPER_BAUD, tx_pin=tx, fast_mode=True,
+            yield_full_buffer=False)
+        for chunk_idx, (chunk, total, _) in enumerate(stream, 1):
+            ch, ns = samples_to_channels(chunk, stride=2) if chunk else ([], 0)
+            dec = bytes(d.value for d in decode_uart_safe(
+                ch, rate, ch_idx=rx, baud=JUMPER_BAUD)) if ns else b""
+            ok = payload in dec
+            good += ok
+            consecutive = consecutive + 1 if ok else 0
+            max_consecutive = max(max_consecutive, consecutive)
+            log(f"  ring chunk {chunk_idx:02d}: decoded {dec!r} "
+                f"{'OK' if ok else 'MISS'}")
+            if chunk_idx >= chunks_needed:
+                break
+    finally:
+        stop.set()
+        try:
+            stream.close()
+        except (UnboundLocalError, AttributeError):
+            pass
+    check(good == chunks_needed and max_consecutive == chunks_needed,
+          f"repeating payload decoded on {chunks_needed} consecutive SDRAM-ring chunks "
+          f"({good}/{chunks_needed}, longest run {max_consecutive})")
+    save_result("test33_repeating_uart_ring", b"", {
+        "pair": [tx, rx], "payload": payload.decode(), "chunks": chunks_needed,
+        "decoded": good, "max_consecutive": max_consecutive,
+    })
+
+
 def main():
     global PASS, FAIL, TOTAL
     print("=" * 60)
@@ -2085,6 +2142,7 @@ def main():
         test_jumper_loopback(dev)
         test_jumper_generator_matrix(dev)
         test_live_generator_decode(dev)
+        test_repeating_uart_continuous_ring(dev)
 
         log("\n--- Noise floor test (debug OFF + ON) ---")
         run_with_debug(test_noise_floor, dev, "Noise floor")
@@ -2169,6 +2227,7 @@ def main_jumper_only():
         test_jumper_loopback(dev)
         test_jumper_generator_matrix(dev)
         test_live_generator_decode(dev)
+        test_repeating_uart_continuous_ring(dev)
     except Exception as e:
         log(f"\nERROR: {e}")
         import traceback

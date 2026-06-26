@@ -80,6 +80,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_i2c_dev_r  : std_logic_vector(7 downto 0) := (others => '0');
   signal gen_i2c_test   : std_logic := '0';
   signal gen_spi_test   : std_logic := '0';
+  signal gen_repeat     : std_logic := '0';
   signal gen_fifo_count : std_logic_vector(7 downto 0) := (others => '0');
   signal gen_busy_latch : std_logic := '0';
   -- LED7 gen-activity stretch: ~0.25 s at 100 MHz so a brief pulse stays seen.
@@ -253,6 +254,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Gen_I2C_Test   : OUT STD_LOGIC := '0';
     Gen_SPI_Test   : OUT STD_LOGIC := '0';
+    Gen_Repeat     : OUT STD_LOGIC := '0';
     Armed          : OUT STD_LOGIC := '0';
     Fast_Mode      : OUT STD_LOGIC := '0';
     Narrow_Enable  : OUT STD_LOGIC := '0';
@@ -352,6 +354,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     I2C_Dev_R  : in std_logic_vector(7 downto 0) := (others => '0');
     Sda_In     : in std_logic := '1';
     SPI_Mode  : in std_logic := '0';
+    Repeat    : in std_logic := '0';
     CRC_En    : in std_logic := '0';
     CRC_Poly  : in std_logic_vector(15 downto 0) := x"A001"
   );
@@ -803,6 +806,7 @@ BEGIN
     Gen_I2C_Dev_R  => gen_i2c_dev_r,
     Gen_I2C_Test   => gen_i2c_test,
     Gen_SPI_Test   => gen_spi_test,
+    Gen_Repeat     => gen_repeat,
     Armed          => armed_i,
     Fast_Mode      => fast_mode_i,
     Narrow_Enable  => open,
@@ -938,6 +942,7 @@ BEGIN
     I2C_Dev_R  => gen_i2c_dev_r,
     Sda_In     => sen_sdi_sync,
     SPI_Mode   => gen_spi_test,
+    Repeat     => gen_repeat,
     CRC_En     => '0',
     CRC_Poly   => x"A001"
   );

@@ -16,6 +16,7 @@ entity Signal_Gen is
     Baud_Div  : in  std_logic_vector(15 downto 0);
     Proto     : in  std_logic := '0';  -- 0=UART, 1=I2C
     SPI_Mode  : in  std_logic := '0';  -- 1=SPI (overrides Proto)
+    Repeat    : in  std_logic := '0';  -- replay loaded UART FIFO forever
     Tx_Out    : out std_logic := '1';
     Scl_Out   : out std_logic := '1';
     Busy      : out std_logic := '0';
@@ -39,6 +40,9 @@ architecture rtl of Signal_Gen is
   signal tx_active   : std_logic := '0';
   signal start_d     : std_logic := '0';
   signal done_pulse_i : std_logic := '0';
+  signal repeat_active : std_logic := '0';
+  signal repeat_start  : unsigned(7 downto 0) := (others => '0');
+  signal repeat_left   : natural range 0 to FIFO_DEPTH := 0;
 
   -- Registered byte-load stage for SPI/I2C (breaks FIFO read → Tx_Out path)
   signal byte_buf    : std_logic_vector(7 downto 0) := (others => '0');
@@ -193,7 +197,15 @@ begin
           uart_baud_cnt <= 0;
           uart_shift <= fifo(to_integer(tail));
           tail <= tail + 1;
-          count <= count - 1;
+          repeat_active <= Repeat;
+          if Repeat = '1' then
+            -- Keep FIFO intact. repeat_left counts bytes still to send in
+            -- this pass after the byte loaded above.
+            repeat_start <= tail;
+            repeat_left <= count - 1;
+          else
+            count <= count - 1;
+          end if;
           if CRC_En = '1' then
             uart_crc <= crc16_update(x"FFFF", fifo(to_integer(tail)), CRC_Poly);
             uart_crc_run <= '1';
@@ -342,7 +354,20 @@ begin
               -- Tx_Out low here erased the inter-byte stop bit entirely.)
               Tx_Out <= '1';
 
-              if count > 0 then
+              if repeat_active = '1' then
+                if repeat_left > 0 then
+                  uart_shift <= fifo(to_integer(tail));
+                  tail <= tail + 1;
+                  repeat_left <= repeat_left - 1;
+                else
+                  uart_shift <= fifo(to_integer(repeat_start));
+                  tail <= repeat_start + 1;
+                  repeat_left <= count - 1;
+                end if;
+                uart_bit_idx <= 0;
+                uart_state <= UART_START_BIT;
+
+              elsif count > 0 then
                 uart_shift <= fifo(to_integer(tail));
                 tail <= tail + 1;
                 count <= count - 1;
@@ -366,6 +391,8 @@ begin
               else
                 uart_crc_run <= '0';
                 uart_crc_phase <= 0;
+                repeat_active <= '0';
+                repeat_left <= 0;
                 tx_active <= '0';
                 done_pulse_i <= '1';
                 uart_state <= UART_IDLE;
@@ -520,6 +547,8 @@ begin
         count <= 0;
         byte_ready <= '0';
         tx_active <= '0';
+        repeat_active <= '0';
+        repeat_left <= 0;
       end if;
     end if;
   end process;
