@@ -39,6 +39,10 @@ export class WaveformView {
 
   loading = false;
   error: string | null = null;
+  liveFollow = true;
+  liveRolling = false;
+  liveChunkSamples = 0;
+  liveUpdatedAt = 0;
 
   private listeners = new Set<ViewListener>();
   private fetchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -67,6 +71,9 @@ export class WaveformView {
     this.payload = null;
     this.overview = null;
     this.annotations = [];
+    this.liveRolling = false;
+    this.liveChunkSamples = 0;
+    this.liveUpdatedAt = 0;
     this.cursorA = this.cursorB = null;
     this.selectionStart = this.selectionEnd = null;
     this.heightScale.clear();
@@ -89,15 +96,19 @@ export class WaveformView {
   }
 
   async updateLive(numSamples: number, sampleRate: number,
-                   trigSample: number | null, followEnd = true) {
+                   trigSample: number | null, followEnd = true,
+                   chunkSamples = 0) {
     const oldSpan = this.span();
     const oldEnd = this.end;
     const oldSamples = this.numSamples;
     this.numSamples = numSamples;
     this.sampleRate = sampleRate;
     this.trigSample = trigSample;
+    this.liveRolling = followEnd;
+    this.liveChunkSamples = Math.max(0, Math.min(numSamples, chunkSamples));
+    this.liveUpdatedAt = performance.now();
     this.overview = null;
-    this.payload = null;
+    if (!followEnd) this.payload = null;
     this.error = null;
     if (followEnd || oldEnd >= Math.max(0, oldSamples - oldSpan * 0.05)) {
       const span = Math.min(Math.max(oldSpan, 8), Math.max(8, numSamples));
@@ -114,6 +125,29 @@ export class WaveformView {
     this.requestFetch(0);
     this.requestAnnotations();
     this.notify();
+  }
+
+  setLiveFollow(enabled: boolean) {
+    this.liveFollow = enabled;
+    this.notify();
+  }
+
+  liveShiftSamples(now = performance.now()): number {
+    if (!this.liveRolling || !this.liveFollow || !this.liveChunkSamples) return 0;
+    const elapsedSamples = ((now - this.liveUpdatedAt) / 1000) * this.sampleRate;
+    return Math.max(0, Math.min(this.liveChunkSamples, elapsedSamples));
+  }
+
+  displayStart(): number {
+    return this.start + this.liveShiftSamples();
+  }
+
+  displayEnd(): number {
+    return this.end + this.liveShiftSamples();
+  }
+
+  liveAnimating(): boolean {
+    return this.liveRolling && this.liveFollow && this.liveShiftSamples() < this.liveChunkSamples;
   }
 
   setChannelFilter(channels: string[] | undefined) {
@@ -260,6 +294,9 @@ export class WaveformView {
       if (!ctl.signal.aborted) {
         this.payload = p;
         this.error = null;
+        if (this.liveRolling && this.liveFollow) {
+          this.liveUpdatedAt = performance.now();
+        }
       }
     } catch (e: any) {
       if (e.name !== 'AbortError' && !ctl.signal.aborted) {

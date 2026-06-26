@@ -76,6 +76,18 @@ def test_decoder_channel_roles_include_analog(client):
     uart = next(d for d in decoders if d["id"] == "uart")
     rx = next(c for c in uart["channels"] if c["role"] == "rx")
     assert "analog" in rx["types"]
+    i2c = next(d for d in decoders if d["id"] == "i2c")
+    for role in ("scl", "sda"):
+        ch = next(c for c in i2c["channels"] if c["role"] == role)
+        assert "analog" in ch["types"]
+    spi = next(d for d in decoders if d["id"] == "spi")
+    for role in ("sclk", "mosi", "miso", "cs"):
+        ch = next(c for c in spi["channels"] if c["role"] == role)
+        assert "analog" in ch["types"]
+    rs485 = next(d for d in decoders if d["id"] == "rs485")
+    roles = {c["role"]: c for c in rs485["channels"]}
+    assert roles["a"]["types"] == ["analog"]
+    assert roles["b"]["types"] == ["analog"]
 
 
 def test_capture_flow_uart(client):
@@ -244,6 +256,21 @@ def test_generator_loopback_self_test(client):
     body = r.json()
     assert body["passed"] is True, body
     assert body["decoded_hex"] == "414243"
+
+
+def test_generator_rs485_loopback(client):
+    caps = client.get("/api/generator/capabilities").json()
+    assert "rs485" in caps["protocols"]
+
+    r = client.post("/api/generator/send", json={
+        "config": {"protocol": "rs485", "data_hex": "343835",
+                   "baud": 115200, "tx_pin": 0},
+        "capture": True, "capture_rate": 2_000_000,
+        "capture_samples": 30_000}, headers=HDR)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["passed"] is True, body
+    assert body["decoded_hex"] == "343835"
 
 
 def test_generator_rejects_payload_larger_than_fpga_fifo(client):

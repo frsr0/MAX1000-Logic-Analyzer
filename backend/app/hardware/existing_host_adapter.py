@@ -159,7 +159,7 @@ class ExistingHostAdapter(HardwareDevice):
                              "analog and 125 kframes/s 8-input physical "
                              "analog scans. Mixed mode scans ADC0..ADC7 at "
                              "the same scan frame rate.",
-            generator_protocols=["uart", "i2c", "pwm"],
+            generator_protocols=["uart", "rs485", "i2c", "pwm"],
             triggers=[TriggerCapability(type=t, execution=e, description=d)
                       for t, e, d in trig],
             notes=[
@@ -744,13 +744,13 @@ class ExistingHostAdapter(HardwareDevice):
                                protocol=self._gen_cfg.protocol if self._gen_cfg else None,
                                config=self._gen_cfg.model_dump() if self._gen_cfg else None,
                                supported=True,
-                               detail="UART/I2C generator + debug CH0 PWM (FPGA)")
+                               detail="UART/RS-485/I2C generator + debug CH0 PWM (FPGA)")
 
     def generator_configure(self, cfg: GeneratorConfig) -> None:
-        if cfg.protocol not in ("uart", "i2c", "pwm"):
+        if cfg.protocol not in ("uart", "rs485", "i2c", "pwm"):
             raise HardwareError(
                 f"Generator protocol '{cfg.protocol}' is not supported by the "
-                "current FPGA firmware (supported: uart, i2c, pwm)")
+                "current FPGA firmware (supported: uart, rs485, i2c, pwm)")
         self._gen_cfg = cfg
 
     def generator_start(self) -> None:
@@ -764,6 +764,10 @@ class ExistingHostAdapter(HardwareDevice):
             self._log(f"gen_start {cfg.protocol}")
             if cfg.protocol == "uart":
                 self._dev.send_uart(data, baud=cfg.baud, tx_pin=cfg.tx_pin)
+            elif cfg.protocol == "rs485":
+                self._dev.send_rs485(data, baud=cfg.baud,
+                                     b_pin=cfg.tx_pin, a_pin=cfg.scl_pin,
+                                     repeat=cfg.continuous or cfg.repeat != 1)
             elif cfg.protocol == "i2c":
                 self._dev.i2c_read_setup(cfg.i2c_address, cfg.i2c_register,
                                          read_len=cfg.i2c_read_len,
@@ -843,6 +847,16 @@ class ExistingHostAdapter(HardwareDevice):
                 # can decode shifted bytes after earlier pin-map exercises.
                 raw = dev.capture_with_gen(rate_hz=rate, nsamples=nsamp,
                                            stop_evt=stop_evt, progress_cb=cb,
+                                           fast_mode=False)
+            elif cfg.protocol == "rs485":
+                dev._gen_data = data
+                dev._gen_baud = cfg.baud
+                dev._gen_tx_pin = cfg.tx_pin
+                raw = dev.capture_with_gen(rate_hz=rate, nsamples=nsamp,
+                                           stop_evt=stop_evt, progress_cb=cb,
+                                           proto='RS485',
+                                           rs485_b_pin=cfg.tx_pin,
+                                           rs485_a_pin=cfg.scl_pin,
                                            fast_mode=False)
             else:
                 raise HardwareError(

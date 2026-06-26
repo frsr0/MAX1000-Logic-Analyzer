@@ -11,6 +11,7 @@ from .modbus import ModbusDecoder
 from .onewire import OneWireDecoder
 from .parallel import ParallelDecoder
 from .pwm import PwmDecoder
+from .rs485 import Rs485Decoder
 from .spi import SpiDecoder
 from .uart import UartDecoder
 
@@ -30,5 +31,6 @@ def list_decoders() -> List[dict]:
 
 
 for _d in (UartDecoder(), I2cDecoder(), SpiDecoder(), PwmDecoder(),
-           ParallelDecoder(), OneWireDecoder(), ModbusDecoder()):
+           ParallelDecoder(), OneWireDecoder(), ModbusDecoder(),
+           Rs485Decoder()):
     register(_d)

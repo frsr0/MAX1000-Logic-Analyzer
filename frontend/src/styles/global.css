@@ -169,6 +169,11 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .hover-info { font-family: ui-monospace, monospace; font-size: 11px; color: var(--text-dim); margin-left: 8px; }
 .cursor-readout { font-family: ui-monospace, monospace; font-size: 11px; color: #ffd54f; }
 .wave-error { color: var(--err); font-size: 11px; }
+.waveform-toolbar button.active.live-follow {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+  background: #123246;
+}
 .view-menu { position: relative; display: inline-block; }
 .view-menu > button.active { border-color: var(--accent-dim); }
 .view-menu-pop {

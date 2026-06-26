@@ -19,7 +19,7 @@ function byteLen(hex: string): number {
 }
 
 function uartCaptureSamples(cfg: GeneratorConfig, captureRate: number): number {
-  if (cfg.protocol !== 'uart') return 60_000;
+  if (!['uart', 'rs485'].includes(cfg.protocol)) return 60_000;
   const baud = Math.max(1, cfg.baud || 1);
   const samples = byteLen(cfg.data_hex) * UART_BITS_PER_BYTE * captureRate / baud;
   return Math.max(4_000, Math.ceil(samples * UART_CAPTURE_MARGIN) + UART_CAPTURE_GUARD_SAMPLES);
@@ -53,6 +53,8 @@ export function GeneratorPage() {
   const setProtocol = (protocol: string) => {
     if (protocol === 'i2c') {
       setCfg({ ...cfg, protocol, tx_pin: 2, scl_pin: 1, baud: 400000 });
+    } else if (protocol === 'rs485') {
+      setCfg({ ...cfg, protocol, tx_pin: status?.device_kind === 'mock' ? 0 : 3, scl_pin: 1, baud: 115200 });
     } else if (protocol === 'uart') {
       setCfg({ ...cfg, protocol, tx_pin: status?.device_kind === 'mock' ? 0 : 3, baud: 115200 });
     } else {
@@ -87,9 +89,9 @@ export function GeneratorPage() {
     } finally { setBusy(false); }
   };
 
-  const needsData = ['uart', 'spi', 'pattern', 'i2c'].includes(cfg.protocol);
+  const needsData = ['uart', 'rs485', 'spi', 'pattern', 'i2c'].includes(cfg.protocol);
   const isPwm = ['pwm', 'square'].includes(cfg.protocol);
-  const canLoopbackCapture = ['uart', 'i2c'].includes(cfg.protocol) || status?.device_kind === 'mock';
+  const canLoopbackCapture = ['uart', 'rs485', 'i2c'].includes(cfg.protocol) || status?.device_kind === 'mock';
 
   if (!connected) {
     return <div className="page"><h2>Signal generator</h2>
@@ -127,13 +129,25 @@ export function GeneratorPage() {
               </label>
             </>
           )}
-          {cfg.protocol === 'uart' && (
+          {['uart', 'rs485'].includes(cfg.protocol) && (
             <>
               <label className="field"><span>Baud</span>
                 <input type="number" value={cfg.baud} onChange={(e) => set({ baud: Number(e.target.value) })} /></label>
-              <label className="field"><span>TX pin (channel)</span>
-                <input type="number" min={0} max={15} value={cfg.tx_pin}
-                  onChange={(e) => set({ tx_pin: Number(e.target.value) })} /></label>
+              {cfg.protocol === 'rs485' ? (
+                <>
+                  <label className="field"><span>B / + pin</span>
+                    <input type="number" min={0} max={15} value={cfg.tx_pin}
+                      onChange={(e) => set({ tx_pin: Number(e.target.value) })} /></label>
+                  <label className="field"><span>A / - pin</span>
+                    <input type="number" min={0} max={15} value={cfg.scl_pin}
+                      onChange={(e) => set({ scl_pin: Number(e.target.value) })} /></label>
+                  <div className="hint">B carries UART logic; A carries the inverted complement.</div>
+                </>
+              ) : (
+                <label className="field"><span>TX pin (channel)</span>
+                  <input type="number" min={0} max={15} value={cfg.tx_pin}
+                    onChange={(e) => set({ tx_pin: Number(e.target.value) })} /></label>
+              )}
             </>
           )}
           {cfg.protocol === 'i2c' && (

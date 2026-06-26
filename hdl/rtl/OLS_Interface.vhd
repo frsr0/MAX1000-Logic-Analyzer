@@ -43,6 +43,7 @@ PORT (
     Gen_I2C_Test   : OUT STD_LOGIC := '0';
     Gen_SPI_Test   : OUT STD_LOGIC := '0';
     Gen_Repeat     : OUT STD_LOGIC := '0';
+    Gen_RS485_Pair : OUT STD_LOGIC := '0';
      Armed          : OUT STD_LOGIC := '0';
       Fast_Mode      : OUT STD_LOGIC := '0';
       Continuous_Mode : OUT STD_LOGIC := '0';
@@ -120,6 +121,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
    SIGNAL gen_i2c_test_int   : STD_LOGIC := '0';
    SIGNAL gen_spi_test_int   : STD_LOGIC := '0';
    SIGNAL gen_repeat_int     : STD_LOGIC := '0';
+   SIGNAL gen_rs485_pair_int : STD_LOGIC := '0';
    SIGNAL gen_proto_int      : STD_LOGIC := '0';
    SIGNAL gen_baud_div_int   : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   SIGNAL fast_mode_i        : STD_LOGIC := '0';
@@ -397,6 +399,7 @@ BEGIN
             gen_i2c_test_int <= disp_reg_wdata(0);
             gen_spi_test_int <= disp_reg_wdata(1);
             gen_repeat_int <= disp_reg_wdata(2);
+            gen_rs485_pair_int <= disp_reg_wdata(3);
             gen_i2c_rd_len_int <= TO_INTEGER(UNSIGNED(disp_reg_wdata(15 downto 8)));
             gen_i2c_dev_r_int <= disp_reg_wdata(23 downto 16);
           END IF;
@@ -696,6 +699,7 @@ BEGIN
   Gen_I2C_Test   <= gen_i2c_test_int;
   Gen_SPI_Test   <= gen_spi_test_int;
   Gen_Repeat     <= gen_repeat_int;
+  Gen_RS485_Pair <= gen_rs485_pair_int;
   Fast_Mode      <= fast_mode_i;
   Blk_Rd_Req_Tog <= blk_req_tog_i;
   Continuous_Mode <= continuous_mode_i;
@@ -1004,6 +1008,7 @@ BEGIN
                     reg_val(0) := gen_i2c_test_int;
                     reg_val(1) := gen_spi_test_int;
                     reg_val(2) := gen_repeat_int;
+                    reg_val(3) := gen_rs485_pair_int;
                     reg_val(15 downto 8) := std_logic_vector(to_unsigned(gen_i2c_rd_len_int, 8));
                     reg_val(23 downto 16) := gen_i2c_dev_r_int;
                   when REG_DEBUG_CH0_ENABLE =>

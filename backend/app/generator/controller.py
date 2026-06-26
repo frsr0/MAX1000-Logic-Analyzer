@@ -30,6 +30,8 @@ UART_CAPTURE_MARGIN = 1.20
 _LOOPBACK_DECODE = {
     "uart": ("uart", lambda cfg: {"rx": f"d{cfg.tx_pin}"},
              lambda cfg: {"baud": cfg.baud}),
+    "rs485": ("uart", lambda cfg: {"rx": f"d{cfg.tx_pin}"},
+              lambda cfg: {"baud": cfg.baud}),
     "i2c": ("i2c", lambda cfg: {"scl": f"d{cfg.scl_pin}", "sda": f"d{cfg.tx_pin}"},
             lambda cfg: {}),
     "spi": ("spi", lambda cfg: {"sclk": "d4", "mosi": "d5", "miso": "d6", "cs": "d7"},
@@ -47,6 +49,8 @@ def validate_generator_payload(cfg: GeneratorConfig) -> bytes:
         raise ValueError(
             f"{cfg.protocol.upper()} generator payload is {len(data)} bytes; "
             f"current FPGA generator FIFO holds {MAX_GENERATOR_PAYLOAD_BYTES} bytes")
+    if cfg.protocol == "rs485" and int(cfg.tx_pin) == int(cfg.scl_pin):
+        raise ValueError("RS-485 generator A and B pins must be different")
     return data
 
 
@@ -59,7 +63,7 @@ def required_uart_capture_samples(cfg: GeneratorConfig, capture_rate: float) -> 
 
 def normalized_loopback_samples(cfg: GeneratorConfig, capture_rate: float,
                                 requested_samples: int) -> int:
-    if cfg.protocol != "uart":
+    if cfg.protocol not in ("uart", "rs485"):
         return requested_samples
     return max(int(requested_samples), required_uart_capture_samples(cfg, capture_rate))
 
@@ -126,7 +130,7 @@ def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
     mgr.store.save(session)
     mgr.store.save_decoder_events(session.id, inst.id, dec_result.events)
 
-    if cfg.protocol == "uart":
+    if cfg.protocol in ("uart", "rs485"):
         nacked = []
         decoded = bytes(e["fields"]["byte"] for e in dec_result.events
                         if e["type"] == "uart_byte")
@@ -153,7 +157,7 @@ def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
         nacked = []
         decoded = b""
 
-    if cfg.protocol == "uart":
+    if cfg.protocol in ("uart", "rs485"):
         passed, mismatches, detail = _compare_uart_loopback(expected, decoded)
     else:
         mismatches = [i for i, (a, b) in enumerate(zip(expected, decoded)) if a != b]

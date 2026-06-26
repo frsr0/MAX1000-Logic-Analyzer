@@ -221,6 +221,8 @@ class CaptureManager:
                                                "waveform_ready",
                                                {"session_id": session.id,
                                                 "num_samples": session.num_samples,
+                                                "chunk_samples": self._result_num_samples(result),
+                                                "sample_rate": result.sample_rate,
                                                 "repeat": run,
                                                 "rolling": True})
                 self.capture_state = "cancelled" if self._stop_evt.is_set() else "done"
@@ -267,6 +269,8 @@ class CaptureManager:
                                            "waveform_ready",
                                            {"session_id": session.id,
                                             "num_samples": session.num_samples,
+                                            "chunk_samples": self._result_num_samples(result),
+                                            "sample_rate": result.sample_rate,
                                             "repeat": run,
                                             "rolling": settings.mode in continuous_modes})
                 if settings.mode in single_modes and run >= repeat:
@@ -302,6 +306,13 @@ class CaptureManager:
         if window >= 10:
             target = min(target, max(1, window // 10))
         return max(1, min(window, target))
+
+    def _result_num_samples(self, result: CaptureResult) -> int:
+        if result.digital is not None:
+            return int(len(result.digital))
+        if result.analog:
+            return int(len(next(iter(result.analog.values()))))
+        return 0
 
     def _append_waveform(self, current: Optional[WaveformData],
                          result: CaptureResult, max_samples: int) -> WaveformData:

@@ -85,7 +85,7 @@ class MockDevice(HardwareDevice):
             supports_pre_trigger=True, supports_rolling=True,
             supports_continuous=True, supports_analog=True,
             analog_rate_note="Mock analog channels (real hardware: 1 MSPS single-channel or 125 kframes/s scan)",
-            generator_protocols=["uart", "i2c", "spi", "pwm", "square",
+            generator_protocols=["uart", "rs485", "i2c", "spi", "pwm", "square",
                                  "pattern", "counter", "prbs"],
             triggers=[TriggerCapability(type=t, execution=e) for t, e in hw],
             notes=["Mock device — all data is synthetic"],
@@ -266,6 +266,10 @@ class MockDevice(HardwareDevice):
         start = n // 10
         if cfg.protocol == "uart":
             put(cfg.tx_pin, ms.uart_signal(n, rate, cfg.baud, data, start))
+        elif cfg.protocol == "rs485":
+            b_line = ms.uart_signal(n, rate, cfg.baud, data, start)
+            put(cfg.tx_pin, b_line)
+            put(cfg.scl_pin, 1 - b_line)
         elif cfg.protocol == "i2c":
             scl, sda = ms.i2c_signal(n, rate, cfg.baud, cfg.i2c_address, True,
                                      bytes([cfg.i2c_register]) + data, start)

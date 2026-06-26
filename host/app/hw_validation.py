@@ -1743,33 +1743,8 @@ def test_jumper_loopback(dev):
     # the pin the jumper connects to. Requiring the partner to carry >=40% of
     # the driven transitions (and an absolute floor) rejects floating-input
     # noise, which is sparse and uncorrelated.
-    log("sweeping generator across all 16 pins to find the wired pair...")
-    pattern = bytes([0x55]) * 40       # ~3.5 ms at 115200 baud -> fits 4 ms window
-    pair = None
-    for tx in range(16):
-        dev._gen_data = pattern
-        dev._gen_baud = JUMPER_BAUD
-        dev._gen_tx_pin = tx
-        # Generator-capture can misfire (known board quirk); retry until the
-        # driven pin actually shows the burst before judging its neighbours.
-        ch, ns, tr = None, 0, []
-        for _ in range(3):
-            data = dev.capture_with_gen(rate_hz=JUMPER_RATE, nsamples=8000, timeout=5)
-            if not data:
-                continue
-            ch, ns = samples_to_channels(data, stride=2)
-            tr = _channel_transitions(ch, ns)
-            if tr[tx] >= 100:
-                break
-        if not tr:
-            log(f"  gen CH{tx}: no data")
-            continue
-        others = [(c, tr[c]) for c in range(min(len(tr), 16)) if c != tx]
-        cand, cand_tr = max(others, key=lambda x: x[1]) if others else (None, 0)
-        log(f"  gen CH{tx}: tx_trans={tr[tx]} best_other=CH{cand}({cand_tr})")
-        if tr[tx] >= 100 and cand_tr >= 60 and cand_tr >= 0.4 * tr[tx]:
-            pair = (tx, cand)
-            break
+    log("sweeping fast-direct + mapped MKR/PMOD pins for wired pair...")
+    pair = _discover_jumper_pair(dev)
     check(pair is not None, "discovered a wired channel pair via generator sweep")
     if pair is None:
         log("  [INFO] no pair found — verify the jumper is seated and that the "
@@ -1777,14 +1752,24 @@ def test_jumper_loopback(dev):
         save_result("test30_jumper_loopback", b"", {"pair": None})
         return
     tx, rx = pair
-    log(f"  >>> wired pair: generator drives CH{tx}, received on CH{rx}")
+    # Use mapped path for all subsequent checks. This works on every digital
+    # pin-pool entry (MKR 0..14 and PMOD 15..22), unlike fast direct capture.
+    dev.set_pin_map(0, tx); dev.set_pin_map(1, rx)
+    dev.spi.flush(); time.sleep(0.005)
+    dev._gen_data = bytes([0x55]) * 40
+    dev._gen_baud = JUMPER_BAUD
+    dev._gen_tx_pin = tx
+    data = dev.capture_with_gen(rate_hz=JUMPER_RATE, nsamples=8000,
+                                timeout=5, fast_mode=False)
+    ch, ns = samples_to_channels(data, stride=2) if data else ([], 0)
+    log(f"  >>> wired pair: pin {tx} -> pin {rx} (mapped CH0 -> CH1)")
 
     # --- Phase 2: cross-channel identity (skew-aligned) ---------------
     # Both channels observe the same electrical node, so their sample streams
     # must match up to a small propagation skew. Find the best alignment and
     # report the match fraction: a direct check on per-channel pin mapping and
     # the 16-bit sample packing (a swapped/dropped bit makes them diverge).
-    a, b = ch[tx], ch[rx]
+    a, b = ch[0], ch[1]
     n = min(len(a), len(b))
     best_shift, best_match = 0, -1.0
     for s in range(-3, 4):
@@ -1795,7 +1780,7 @@ def test_jumper_loopback(dev):
     log(f"  cross-channel identity: {best_match * 100:.2f}% match "
         f"at skew {best_shift} sample(s)")
     check(best_match >= 0.97,
-          f"CH{tx}/CH{rx} track the same node "
+          f"mapped CH0/CH1 (pins {tx}/{rx}) track the same node "
           f"({best_match * 100:.1f}% identical, skew {best_shift})")
 
     # --- Phase 3: UART transmit on tx, decode on the rx pin -----------
@@ -1805,15 +1790,16 @@ def test_jumper_loopback(dev):
     dev._gen_data = payload
     dev._gen_baud = JUMPER_BAUD
     dev._gen_tx_pin = tx
-    data = dev.capture_with_gen(rate_hz=JUMPER_RATE, nsamples=20000, timeout=8)
+    data = dev.capture_with_gen(rate_hz=JUMPER_RATE, nsamples=20000, timeout=8,
+                                fast_mode=False)
     if data:
         ch, ns = samples_to_channels(data, stride=2)
-        dec_rx = decode_uart_safe(ch, JUMPER_RATE, ch_idx=rx, baud=JUMPER_BAUD)
+        dec_rx = decode_uart_safe(ch, JUMPER_RATE, ch_idx=1, baud=JUMPER_BAUD)
         rx_bytes = bytes(d.value for d in dec_rx)
         text = ''.join(chr(c) if 32 <= c < 127 else '.' for c in rx_bytes)
-        log(f"  decoded on CH{rx}: {len(rx_bytes)} bytes '{text}'")
+        log(f"  decoded on mapped CH1: {len(rx_bytes)} bytes '{text}'")
         check(payload in rx_bytes,
-              f"exact UART payload received across jumper on CH{rx} (got '{text}')")
+              f"exact UART payload received across jumper on mapped CH1 (got '{text}')")
     else:
         check(False, "UART loopback capture returned no data")
 
@@ -1822,24 +1808,24 @@ def test_jumper_loopback(dev):
     # falling-edge mode, bit rx selects the channel. A UART line idles high, so
     # the start bit is the first falling edge — the capture should land on it,
     # proving the trigger matrix fires on a signal arriving over the jumper.
-    trig = (2 << 30) | (1 << rx)
+    trig = (2 << 30) | (1 << 1)
     dev._gen_data = payload
     dev._gen_baud = JUMPER_BAUD
     dev._gen_tx_pin = tx
     data = dev.capture_with_gen(rate_hz=JUMPER_RATE, nsamples=20000, timeout=8,
-                                trigger=trig)
+                                trigger=trig, fast_mode=False)
     if data:
         ch, ns = samples_to_channels(data, stride=2)
-        sig = ch[rx]
+        sig = ch[1]
         falling = [i for i in range(1, ns) if sig[i - 1] == 1 and sig[i] == 0]
         first = falling[0] if falling else -1
-        dec = decode_uart_safe(ch, JUMPER_RATE, ch_idx=rx, baud=JUMPER_BAUD)
+        dec = decode_uart_safe(ch, JUMPER_RATE, ch_idx=1, baud=JUMPER_BAUD)
         log(f"  triggered RX capture: first falling edge at sample {first}, "
             f"{len(dec)} bytes decoded")
         check(first != -1 and first <= ns * 0.5,
-              f"start-bit trigger on CH{rx} fired in first half (sample {first})")
+              f"start-bit trigger on mapped CH1 fired in first half (sample {first})")
         check(len(dec) >= 3,
-              f"triggered capture still decodes UART on CH{rx} ({len(dec)} bytes)")
+              f"triggered capture still decodes UART on mapped CH1 ({len(dec)} bytes)")
     else:
         check(False, "triggered UART loopback capture returned no data")
 
@@ -1854,8 +1840,9 @@ def test_jumper_loopback(dev):
 # across sample rates and capture modes (BRAM fast path vs SDRAM).
 # ====================================================================
 def _discover_jumper_pair(dev):
-    """Sweep the UART generator to find the two wired-together pins."""
+    """Find a jumper across fast-direct and all mapped MKR/PMOD pins."""
     pattern = bytes([0x55]) * 40
+    # Fast path is physically direct: it exposes only pin-pool 0..15.
     for tx in range(16):
         dev._gen_data = pattern
         dev._gen_baud = JUMPER_BAUD
@@ -1875,6 +1862,32 @@ def _discover_jumper_pair(dev):
         cand, cand_tr = max(others, key=lambda x: x[1]) if others else (None, 0)
         if tr[tx] >= 100 and cand_tr >= 60 and cand_tr >= 0.4 * tr[tx]:
             return (tx, cand)
+
+    # Mapped path reaches the full 23-pin digital pool. Map CH0 to the driven
+    # pin and the remaining channels to one page of candidate receive pins.
+    pins = list(range(23))
+    for tx in pins:
+        candidates = [pin for pin in pins if pin != tx]
+        for offset in range(0, len(candidates), 15):
+            page = candidates[offset:offset + 15]
+            dev.set_pin_map(0, tx)
+            for ch_idx, pin in enumerate(page, 1):
+                dev.set_pin_map(ch_idx, pin)
+            dev.spi.flush(); time.sleep(0.005)
+            dev._gen_data = pattern
+            dev._gen_baud = JUMPER_BAUD
+            dev._gen_tx_pin = tx
+            data = dev.capture_with_gen(rate_hz=JUMPER_RATE, nsamples=8000,
+                                        timeout=5, fast_mode=False)
+            if not data:
+                continue
+            ch, ns = samples_to_channels(data, stride=2)
+            tr = _channel_transitions(ch, ns)
+            if tr[0] < 100:
+                continue
+            for ch_idx, pin in enumerate(page, 1):
+                if tr[ch_idx] >= 60 and tr[ch_idx] >= 0.4 * tr[0]:
+                    return (tx, pin)
     return None
 
 
@@ -1891,12 +1904,12 @@ def test_jumper_generator_matrix(dev):
         check(False, "matrix: discovered a wired channel pair")
         return
     tx, rx = pair
-    # Internal clock channel for SPI/SCL — any captured channel not in the pair.
-    sclk = next(c for c in (1, 2, 4, 5) if c not in (tx, rx))
-    for c in (tx, rx, sclk):
-        dev.set_pin_map(c, c)
+    # Physical jumper pins map to fixed capture channels. SCLK stays on a free
+    # low-numbered pin, leaving direct fast capture usable for MKR jumpers.
+    sclk = next(pin for pin in range(15) if pin not in (tx, rx))
+    dev.set_pin_map(0, tx); dev.set_pin_map(1, rx); dev.set_pin_map(2, sclk)
     dev.spi.flush(); time.sleep(0.005)
-    log(f"  jumper pair: gen on CH{tx} -> CH{rx}; SPI/I2C clock on CH{sclk}")
+    log(f"  jumper pins: {tx} -> {rx}; mapped CH0 -> CH1, clock pin {sclk} on CH2")
 
     def mode(fm):
         return "BRAM " if fm else "SDRAM"
@@ -1909,9 +1922,10 @@ def test_jumper_generator_matrix(dev):
     # so each burst stays ~constant in samples and fits the buffer even at the
     # top rate; decode uses the divider-rounded actual clock.
     maxr = int(dev.sample_clk)
-    rate_modes = [(1_000_000, True), (2_000_000, False), (8_000_000, True),
-                  (16_000_000, False), (50_000_000, True), (100_000_000, True),
-                  (maxr, True)]
+    fast_ok = max(tx, rx, sclk) <= 15
+    rate_modes = [(1_000_000, fast_ok), (2_000_000, False), (8_000_000, fast_ok),
+                  (16_000_000, False), (50_000_000, fast_ok),
+                  (100_000_000, fast_ok), (maxr, fast_ok)]
 
     # ── UART: TX(CHtx) -> RX(CHrx). baud ~= rate/24 (≈24 samples/bit). ──
     payload = b"Gen!42"
@@ -1924,7 +1938,7 @@ def test_jumper_generator_matrix(dev):
         dev._gen_data = payload; dev._gen_baud = baud; dev._gen_tx_pin = tx
         data = dev.capture_with_gen(rate_hz=rate, nsamples=ns_req, timeout=8, fast_mode=fm)
         ch, ns = samples_to_channels(data, stride=2) if data else ([], 0)
-        dec = bytes(d.value for d in decode_uart_safe(ch, rate, ch_idx=rx, baud=baud)) if ns else b""
+        dec = bytes(d.value for d in decode_uart_safe(ch, rate, ch_idx=1, baud=baud)) if ns else b""
         log(f"  {mode(fm)} @{rate//1000:>6}kS/s baud={baud:>8}: {dec!r}")
         check(payload in dec,
               f"UART {mode(fm).strip()} @{rate//1000}kS/s decoded payload "
@@ -1941,7 +1955,7 @@ def test_jumper_generator_matrix(dev):
             rate_hz=rate, nsamples=ns_req, timeout=8, proto='SPI',
             spi_mosi_pin=tx, spi_sclk_pin=sclk, spi_clk_div=sdiv, fast_mode=fm)
         ch, ns = samples_to_channels(data, stride=2) if data else ([], 0)
-        dec = bytes(decode_spi(ch, rate, miso_idx=rx, sclk_idx=sclk))[:len(spi_payload)] if ns else b""
+        dec = bytes(decode_spi(ch, rate, miso_idx=1, sclk_idx=2))[:len(spi_payload)] if ns else b""
         log(f"  {mode(fm)} @{rate//1000:>6}kS/s SCLK={sysclk//(2*sdiv)//1000}kHz: {dec.hex()}")
         check(dec == spi_payload,
               f"SPI {mode(fm).strip()} @{rate//1000}kS/s decoded payload "
@@ -1960,7 +1974,7 @@ def test_jumper_generator_matrix(dev):
             rate_hz=rate, nsamples=ns_req, timeout=8, proto='I2C', i2c_speed=speed,
             i2c_frame=i2c_frame, i2c_tx_pin=tx, i2c_scl_pin=sclk, fast_mode=fm)
         ch, ns = samples_to_channels(data, stride=2) if data else ([], 0)
-        dec = decode_i2c(ch, rate, scl_idx=sclk, sda_idx=rx) if ns else []
+        dec = decode_i2c(ch, rate, scl_idx=2, sda_idx=1) if ns else []
         databytes = bytes(v for t, v in dec if t == "DATA")
         log(f"  {mode(fm)} @{rate//1000:>6}kS/s {speed//1000}kHz: data={databytes.hex()}")
         check(i2c_frame == databytes[:len(i2c_frame)],
@@ -1968,7 +1982,8 @@ def test_jumper_generator_matrix(dev):
               f"frame (sent {i2c_frame.hex()}, got {databytes.hex()})")
 
     save_result("test31_generator_matrix", b"",
-                {"pair": [tx, rx], "sclk_ch": sclk, "max_rate": maxr})
+                {"pair_pins": [tx, rx], "sclk_pin": sclk, "max_rate": maxr,
+                 "fast_path_covered": fast_ok})
 
 
 def test_live_generator_decode(dev):
@@ -1984,8 +1999,7 @@ def test_live_generator_decode(dev):
         check(False, "live: discovered a wired channel pair")
         return
     tx, rx = pair
-    for c in (tx, rx):
-        dev.set_pin_map(c, c)
+    dev.set_pin_map(0, tx); dev.set_pin_map(1, rx)
     dev.spi.flush(); time.sleep(0.005)
     rate = 4_000_000
     frames = [b"live-0", b"live-1", b"live-2", b"live-3", b"live-4", b"live-5"]
@@ -1993,9 +2007,9 @@ def test_live_generator_decode(dev):
     for i, payload in enumerate(frames):
         dev._gen_data = payload; dev._gen_baud = JUMPER_BAUD; dev._gen_tx_pin = tx
         data = dev.capture_with_gen(rate_hz=rate, nsamples=int(0.0009 * rate) + 1500,
-                                    timeout=6, fast_mode=True)
+                                    timeout=6, fast_mode=False)
         ch, ns = samples_to_channels(data, stride=2) if data else ([], 0)
-        dec = bytes(d.value for d in decode_uart_safe(ch, rate, ch_idx=rx, baud=JUMPER_BAUD)) if ns else b""
+        dec = bytes(d.value for d in decode_uart_safe(ch, rate, ch_idx=1, baud=JUMPER_BAUD)) if ns else b""
         ok = payload in dec
         good += ok
         log(f"  live frame {i}: sent {payload!r} decoded {dec!r} {'OK' if ok else 'MISS'}")
@@ -2015,8 +2029,7 @@ def test_repeating_uart_continuous_ring(dev):
         check(False, "repeat ring: discovered a wired channel pair")
         return
     tx, rx = pair
-    for c in (tx, rx):
-        dev.set_pin_map(c, c)
+    dev.set_pin_map(0, tx); dev.set_pin_map(1, rx)
     dev.spi.flush(); time.sleep(0.005)
 
     # 4 MS/s gives ~35 samples/bit at 115200 baud. Each 4096-sample chunk
@@ -2025,19 +2038,22 @@ def test_repeating_uart_continuous_ring(dev):
     payload = b"R33!"
     chunks_needed = 12
     stop = threading.Event()
+    # Prevent a mapped-path ring regression from hanging the bench suite.
+    watchdog = threading.Timer(15.0, stop.set)
     good = 0
     consecutive = 0
     max_consecutive = 0
     try:
+        watchdog.start()
         stream = dev.continuous_ring_capture_with_repeating_uart(
             rate_hz=rate, chunk_nsamp=4096,
             buffer_nsamp=chunks_needed * 4096, stop_evt=stop,
-            data_bytes=payload, baud=JUMPER_BAUD, tx_pin=tx, fast_mode=True,
+            data_bytes=payload, baud=JUMPER_BAUD, tx_pin=tx, fast_mode=False,
             yield_full_buffer=False)
         for chunk_idx, (chunk, total, _) in enumerate(stream, 1):
             ch, ns = samples_to_channels(chunk, stride=2) if chunk else ([], 0)
             dec = bytes(d.value for d in decode_uart_safe(
-                ch, rate, ch_idx=rx, baud=JUMPER_BAUD)) if ns else b""
+                ch, rate, ch_idx=1, baud=JUMPER_BAUD)) if ns else b""
             ok = payload in dec
             good += ok
             consecutive = consecutive + 1 if ok else 0
@@ -2048,6 +2064,7 @@ def test_repeating_uart_continuous_ring(dev):
                 break
     finally:
         stop.set()
+        watchdog.cancel()
         try:
             stream.close()
         except (UnboundLocalError, AttributeError):

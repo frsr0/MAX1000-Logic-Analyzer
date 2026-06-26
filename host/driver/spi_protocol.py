@@ -75,6 +75,7 @@ REG_IFACE_MODE    = 0xF0
 GEN_FLAG_I2C_TEST  = 0x01  # bit 0
 GEN_FLAG_SPI_TEST  = 0x02  # bit 1
 GEN_FLAG_REPEAT    = 0x04  # bit 2: replay loaded UART FIFO forever
+GEN_FLAG_RS485_PAIR = 0x08  # bit 3: UART TX on B, inverted TX on A/SCL pin
 
 # Status codes
 ST_OK            = 0x00
