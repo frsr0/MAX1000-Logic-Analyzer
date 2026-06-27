@@ -298,8 +298,10 @@ def test_generator_i2c_loopback(client):
 
 def test_machine_in_loop_emulator(client):
     presets = client.get("/api/mil/presets").json()["presets"]
-    assert any(p["id"] == "modbus-rtu-demo" for p in presets)
-    assert any(p["source"] == "file" for p in presets)
+    by_id = {p["id"]: p for p in presets}
+    assert by_id["modbus-rtu-demo"]["source"] == "builtin"
+    assert by_id["uart-register-demo"]["source"] == "builtin"
+    assert by_id["rs485-modbus-demo"]["source"] == "builtin"
 
     r = client.post("/api/mil/load", json={"preset_id": "modbus-rtu-demo"},
                     headers=HDR)
