@@ -21,6 +21,7 @@ export function WaveformCanvas({ channels, onSelectRegion }: Props) {
   const [, setTick] = useState(0);
   const [hoverInfo, setHoverInfo] = useState<string>('');
   const [viewMenu, setViewMenu] = useState(false);
+  const [liveFollow, setLiveFollow] = useState(waveformView.liveFollow);
   const activeSession = useApp((s) => s.activeSession);
   const toast = useApp((s) => s.toast);
 
@@ -58,6 +59,24 @@ export function WaveformCanvas({ channels, onSelectRegion }: Props) {
     if (wrapRef.current) ro.observe(wrapRef.current);
     schedule();
     return () => { unsub(); ro.disconnect(); cancelAnimationFrame(raf); };
+  }, [draw]);
+
+  useEffect(() => {
+    let raf = 0;
+    let lastTick = 0;
+    const loop = () => {
+      if (waveformView.liveAnimating()) {
+        draw();
+        const now = performance.now();
+        if (now - lastTick > 250) {
+          lastTick = now;
+          setTick((t) => t + 1);
+        }
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
   }, [draw]);
 
   // ── pointer interaction ────────────────────────────────────────────
@@ -332,6 +351,17 @@ export function WaveformCanvas({ channels, onSelectRegion }: Props) {
         )}
         <button onClick={() => jumpAnnotation(-1)} title="Previous event (p)">⟨ ev</button>
         <button onClick={() => jumpAnnotation(1)} title="Next event (n)">ev ⟩</button>
+        <button
+          className={liveFollow && waveformView.liveRolling ? 'active live-follow' : 'live-follow'}
+          onClick={() => {
+            const next = !waveformView.liveFollow;
+            waveformView.setLiveFollow(next);
+            setLiveFollow(next);
+          }}
+          title="Follow rolling live captures"
+        >
+          Live
+        </button>
         <div className="view-menu">
           <button
             onClick={() => setViewMenu((o) => !o)}

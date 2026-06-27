@@ -24,6 +24,30 @@ def make_uart_signal(data_bytes, spb=SPB, idle_before=SPB):
     return signal
 
 
+def make_fractional_uart_signal(data_bytes, samplerate, baud, idle_bits=3):
+    spb = samplerate / baud
+    total_bits = idle_bits + len(data_bytes) * 10 + idle_bits
+    nsamples = int(total_bits * spb) + 4
+    signal = []
+    for n in range(nsamples):
+        bit_time = n / spb
+        if bit_time < idle_bits:
+            signal.append(1)
+            continue
+        frame_bit = bit_time - idle_bits
+        byte_idx = int(frame_bit // 10)
+        bit_idx = int(frame_bit % 10)
+        if byte_idx >= len(data_bytes):
+            signal.append(1)
+        elif bit_idx == 0:
+            signal.append(0)
+        elif 1 <= bit_idx <= 8:
+            signal.append((data_bytes[byte_idx] >> (bit_idx - 1)) & 1)
+        else:
+            signal.append(1)
+    return signal
+
+
 def make_i2c_signal(data_bytes, spb=SPB):
     scl, sda = [], []
     scl += [1] * spb
@@ -217,6 +241,12 @@ class TestDecodeUART:
             sig += [1] * spb                          # single stop bit only
         sig += [1] * (spb * 10)
         result = decode_uart([sig], 1000000, ch_idx=0, baud=100000)
+        assert bytes(r.value for r in result) == payload
+
+    def test_decode_fractional_low_samples_per_bit(self):
+        payload = b'FPGA Loopback OK!'
+        sig = make_fractional_uart_signal(payload, 1000000, 460800)
+        result = decode_uart([sig], 1000000, ch_idx=0, baud=460800)
         assert bytes(r.value for r in result) == payload
 
     def test_positions_increasing(self):

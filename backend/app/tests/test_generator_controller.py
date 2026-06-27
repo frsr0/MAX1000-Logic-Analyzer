@@ -42,3 +42,19 @@ def test_uart_loopback_samples_are_sized_for_payload_length():
                                           requested_samples=4_000)
 
     assert samples > 20_000
+
+
+def test_rs485_loopback_samples_use_uart_timing():
+    cfg = GeneratorConfig(protocol="rs485", data_hex=("55" * 120), baud=115200)
+
+    samples = normalized_loopback_samples(cfg, capture_rate=2_000_000,
+                                          requested_samples=4_000)
+
+    assert samples > 20_000
+
+
+def test_rs485_generator_rejects_same_a_b_pin():
+    cfg = GeneratorConfig(protocol="rs485", data_hex="55", tx_pin=2, scl_pin=2)
+
+    with pytest.raises(ValueError, match="A and B pins must be different"):
+        validate_generator_payload(cfg)

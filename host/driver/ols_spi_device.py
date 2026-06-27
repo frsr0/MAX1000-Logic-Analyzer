@@ -18,7 +18,7 @@ from driver.spi_protocol import (
     REG_GEN_PROTO, REG_GEN_BAUD, REG_GEN_PINS, REG_GEN_DATA,
     REG_IFACE_MODE, REG_DEBUG_CH0_ENABLE, REG_DEBUG_CH0_PERIOD, REG_DEBUG_CH0_DUTY,
     ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_DONE,
-    GEN_FLAG_SPI_TEST, GEN_FLAG_REPEAT,
+    GEN_FLAG_SPI_TEST, GEN_FLAG_REPEAT, GEN_FLAG_RS485_PAIR,
 )
 
 # Legacy opcodes for hw_validation.py compat
@@ -571,10 +571,29 @@ class OLSDeviceSPI:
         self._gen_data = data_bytes
         self._gen_baud = baud
         self._gen_tx_pin = tx_pin if tx_pin is not None else 3
+        self.pkt.write_register(REG_GEN_DATA, 1 << 8)
         self.pkt.write_register(REG_GEN_PROTO, 0)
         div = max(1, self.sys_clk // baud)
         self.pkt.write_register(REG_GEN_BAUD, div & 0xFFFF)
         self._pins(tx_pin=self._gen_tx_pin)
+        self.spi.flush()
+        time.sleep(0.005)
+        self.pkt.load_gen_data(data_bytes)
+        self.spi.flush()
+        time.sleep(0.005)
+        self.start_gen()
+
+    def send_rs485(self, data_bytes, baud=115200, b_pin=3, a_pin=1,
+                   repeat=False):
+        self._gen_data = data_bytes
+        self._gen_baud = baud
+        self._gen_tx_pin = b_pin
+        self.pkt.write_register(REG_GEN_PROTO, 0)
+        div = max(1, self.sys_clk // baud)
+        self.pkt.write_register(REG_GEN_BAUD, div & 0xFFFF)
+        self._pins(tx_pin=b_pin, scl_pin=a_pin)
+        flags = GEN_FLAG_RS485_PAIR | (GEN_FLAG_REPEAT if repeat else 0)
+        self.pkt.write_register(REG_GEN_DATA, (1 << 8) | flags)
         self.spi.flush()
         time.sleep(0.005)
         self.pkt.load_gen_data(data_bytes)
@@ -627,6 +646,7 @@ class OLSDeviceSPI:
                          i2c_frame=None, i2c_tx_pin=3, i2c_scl_pin=1,
                          i2c_read_len=0, i2c_dev_r=None,
                          spi_mosi_pin=3, spi_sclk_pin=1, spi_clk_div=100,
+                         rs485_b_pin=3, rs485_a_pin=1,
                          gen_first=False, fast_mode=True):
         """Atomic generator capture using CMD_GEN_CAPTURE.
         
@@ -649,8 +669,10 @@ class OLSDeviceSPI:
 
         # Capture rate divider counts on the sample clock (FAST_CLK domain),
         # not sys_clk — they differ on FAST_SPEED firmware (200 vs 100 MHz).
-        div = max(0, int(self.sample_clk / rate_hz) - 1)
-        rc = max(1, nsamples)
+        payload_stride = analog_frame_stride(self.analog_mode)
+        words_per_frame = max(1, payload_stride // 2)
+        div = max(0, int(self.sample_clk / (rate_hz * words_per_frame)) - 1)
+        rc = max(1, nsamples * words_per_frame)
 
         if trigger is None:
             mask = 0
@@ -672,7 +694,16 @@ class OLSDeviceSPI:
             flags=self._raw_flags, fast_mode=fast_mode, continuous=False)
 
         # Configure generator
-        if proto == 'I2C':
+        if proto == 'RS485':
+            self.pkt.write_register(REG_GEN_DATA, 1 << 8)
+            self.pkt.write_register(REG_GEN_PROTO, 0)
+            div_b = max(1, self.sys_clk // self._gen_baud)
+            self.pkt.write_register(REG_GEN_BAUD, div_b & 0xFFFF)
+            self._pins(tx_pin=rs485_b_pin, scl_pin=rs485_a_pin)
+            self.pkt.write_register(REG_GEN_DATA, (1 << 8) | GEN_FLAG_RS485_PAIR)
+            if self._gen_data:
+                self.pkt.load_gen_data(self._gen_data)
+        elif proto == 'I2C':
             self._pins(tx_pin=i2c_tx_pin, scl_pin=i2c_scl_pin)
             self.pkt.write_register(REG_GEN_PROTO, 1)
             i2c_div = max(1, self.sys_clk // i2c_speed // 2)
@@ -759,8 +790,9 @@ class OLSDeviceSPI:
             self.ack_capture_done(expected_seq)
 
         if samples:
-            for i in range(0, len(samples), 2):
-                if samples[i:i+2] != b'\x00' * 2:
+            stride = analog_frame_stride(self.analog_mode)
+            for i in range(0, len(samples), stride):
+                if samples[i:i+stride] != b'\x00' * stride:
                     samples = samples[i:]
                     break
 
@@ -835,8 +867,9 @@ class OLSDeviceSPI:
             self.ack_capture_done(expected_seq)
 
         if samples:
-            for i in range(0, len(samples), 2):
-                if samples[i:i+2] != b'\x00' * 2:
+            stride = analog_frame_stride(self.analog_mode)
+            for i in range(0, len(samples), stride):
+                if samples[i:i+stride] != b'\x00' * stride:
                     samples = samples[i:]
                     break
 

@@ -16,7 +16,7 @@ Open-source multi-channel logic analyzer for the Arrow MAX1000 board (Intel MAX1
 - **Four main capture modes**: full digital, mixed, high-speed single-analog, and maximum physical-analog. The current bitstream also has a specialist **200 MHz narrow digital rolling** path for one selected digital channel packed at 16 samples per word.
 - **Sample rate**: up to **200 MHz** digital in speed mode. Full-width 16-channel BRAM captures run at 200 MHz for 1,024 samples; deeper full-width digital captures are exposed conservatively at 14 MHz. Narrow digital rolling keeps a single selected channel at 200 MHz.
 - **Analog rate**: **1 MSPS** high-speed single-channel or **125 kframes/s** for mixed/maximum 8-input scans
-- **Deep capture**: up to 1,000,000 samples via SDRAM (16-bit bus, burst mode, triple-buffered)
+- **Deep capture**: up to 1,048,576 full-width samples via SDRAM (16-bit bus, burst mode, triple-buffered); packed narrow mode stores up to 16,777,216 one-channel logical samples.
 - **Pre-trigger capture**: small BRAM guard window in speed mode, flushed into the post-trigger SDRAM/FIFO stream after trigger
 - **Continuous/rolling capture**: SDRAM-backed ring buffer with monotonic producer index, oldest/newest indexes, and overrun reporting
 - **Edge trigger**: rising/falling on any combination of channels
@@ -81,7 +81,7 @@ Config handshake (valid/ack toggle CDC) ensures Rate_Div and Samples are stable 
 |--------|------|-------|-------|
 | BRAM (M9K) | 1,024 words | 16 bits | Pre-trigger circular buffer (fast capture: no SDRAM needed). |
 | Async FIFO (dcfifo) | 4,096 words | 16 bits | CDC buffer between FAST_CLK capture and CLK SDRAM write. |
-| SDRAM | 64 Mbit | 16 bits | Deep capture storage and continuous ring buffer (up to 1M samples). Burst writes, page-mode. |
+| SDRAM | 64 Mbit | 16 bits | Deep capture storage and continuous ring buffer (1,048,576 full-width samples exposed by the current bitstream). Burst writes, page-mode. |
 | Block read buffer | 256 entries | 32 bits | Readout buffer for CMD_READ_CAPTURE (1 block = 1,024 bytes). |
 | Generator FIFO | 256 entries | 8 bits | UART/I2C/SPI transmit data. |
 
@@ -234,7 +234,7 @@ FPGA → Host:  0xAA 0x55  STATUS  SEQ  LEN_L  LEN_H  [PAYLOAD...]  CRC_L  CRC_H
 | Addr | Name | Bits | Description |
 |------|------|------|-------------|
 | `0x00` | REG_DIVIDER | 23:0 | Sample rate divider. Rate = `SAMPLE_CLK_HZ / (div+1)`. |
-| `0x01` | REG_SAMPLE_COUNT | 29:0 | Samples to capture (1–1,000,000). |
+| `0x01` | REG_SAMPLE_COUNT | 29:0 | Samples to capture (1-1,048,576 full-width words in the current bitstream). |
 | `0x02` | REG_DELAY_COUNT | 29:0 | Trigger delay count. |
 | `0x10` | REG_TRIGGER_MASK | 31:0 | Bit n enables trigger on channel n. |
 | `0x11` | REG_TRIGGER_VALUE | 31:0 | Level trigger value. |

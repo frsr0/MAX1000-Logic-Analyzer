@@ -69,13 +69,13 @@ export function sampleToX(view: WaveformView, layout: RenderLayout,
                           width: number, sample: number): number {
   const span = view.span() || 1;
   return layout.labelWidth +
-    ((sample - view.start) / span) * (width - layout.labelWidth);
+    ((sample - view.displayStart()) / span) * (width - layout.labelWidth);
 }
 
 export function xToSample(view: WaveformView, layout: RenderLayout,
                           width: number, x: number): number {
   const span = view.span() || 1;
-  return view.start +
+  return view.displayStart() +
     ((x - layout.labelWidth) / Math.max(1, width - layout.labelWidth)) * span;
 }
 
@@ -121,7 +121,7 @@ function drawTimeAxis(ctx: CanvasRenderingContext2D, view: WaveformView,
   const mag = Math.pow(10, Math.floor(Math.log10(rawStep || 1e-9)));
   const norm = rawStep / mag;
   const step = (norm < 1.5 ? 1 : norm < 3.5 ? 2 : norm < 7.5 ? 5 : 10) * mag;
-  const t0 = view.start / view.sampleRate;
+  const t0 = view.displayStart() / view.sampleRate;
   const first = Math.ceil(t0 / step) * step;
   ctx.font = '10px system-ui';
   ctx.strokeStyle = COLORS.grid;

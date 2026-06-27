@@ -301,4 +301,4 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
   command palette.
 - Session storage uses NPZ per session; a chunked store for >10M-sample
   captures is architected (`chunk_store.py`) but not yet needed at current
-  hardware depths (1M samples).
+  full-width hardware depths (1,048,576 samples).

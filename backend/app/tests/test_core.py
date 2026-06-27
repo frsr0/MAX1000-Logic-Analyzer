@@ -15,6 +15,7 @@ from app.decoders.base import DecodeContext
 from app.exports.csv_export import decoder_csv, samples_csv
 from app.exports.json_export import session_from_json, session_to_json
 from app.exports.vcd_export import vcd_export
+from app.hardware.device_models import GeneratorConfig
 from app.hardware import mock_signals as ms
 from app.hardware.mock_device import MockDevice
 from app.measurements import digital  # noqa: F401  (registers types)
@@ -139,6 +140,22 @@ def test_mock_device_capture():
     assert int(res.digital[0] & 1) == 1
 
 
+def test_mock_rs485_generator_outputs_complementary_a_b():
+    dev = MockDevice()
+    dev.connect()
+    res = dev.capture_with_generator(
+        CaptureSettings(sample_rate=RATE, num_samples=20_000),
+        GeneratorConfig(protocol="rs485", data_hex="343835",
+                        baud=9600, tx_pin=0, scl_pin=1))
+    b_line = ((res.digital >> 0) & 1).astype(np.uint8)
+    a_line = ((res.digital >> 1) & 1).astype(np.uint8)
+    active = np.nonzero(np.diff(b_line.astype(np.int8)) != 0)[0]
+    assert len(active) > 0
+    lo = max(0, int(active[0]) - 10)
+    hi = min(len(b_line), int(active[-1]) + 10)
+    assert np.all(a_line[lo:hi] == (1 - b_line[lo:hi]))
+
+
 def test_mock_device_trigger_and_analog():
     dev = MockDevice()
     dev.connect()
@@ -191,6 +208,24 @@ def test_uart_decoder_autobaud():
     assert got == b"AB"
 
 
+def test_rs485_decoder_from_two_analog_channels():
+    n = 80_000
+    msg = b"485"
+    bits = ms.uart_signal(n, RATE, 9600, msg, start_sample=500)
+    # Standard polarity for this decoder: logic 1 when B is above A.
+    a = np.where(bits > 0, 1.0, 2.4).astype(np.float32)
+    b = np.where(bits > 0, 2.4, 1.0).astype(np.float32)
+    wf = make_wf(analog={"a0": a, "a1": b})
+    dec = registry.get("rs485")
+    assert dec is not None
+    result = dec.decode(DecodeContext(wf, {"a": "a0", "b": "a1"}),
+                        {**dec.defaults(), "baud": 9600})
+    got = bytes(e["fields"]["byte"] for e in result.events
+                if e["type"] == "rs485_byte")
+    assert got == msg
+    assert all(e["fields"]["polarity"] == "B>A is 1" for e in result.events)
+
+
 def test_i2c_decoder():
     n = 200_000
     scl, sda = ms.i2c_signal(n, RATE, 5000, 0x3C, True, b"\x10\xA5",
@@ -214,6 +249,25 @@ def test_i2c_decoder():
     assert last["fields"]["ack"] is False
 
 
+def test_i2c_decoder_accepts_thresholded_analog_inputs():
+    n = 200_000
+    scl, sda = ms.i2c_signal(n, RATE, 5000, 0x3C, True, b"\x10\xA5",
+                             start_sample=100,
+                             ack_per_byte=[True, True, False])
+    wf = make_wf(analog={
+        "a3": scl.astype(np.float32) * 3.3,
+        "a7": sda.astype(np.float32) * 3.3,
+    })
+    dec = registry.get("i2c")
+    result = dec.decode(DecodeContext(wf, {"scl": "a3", "sda": "a7"}),
+                        dec.defaults())
+    addr_ev = next(e for e in result.events if e["type"] == "i2c_address")
+    assert addr_ev["fields"]["address"] == 0x3C
+    data = [e["fields"]["byte"] for e in result.events
+            if e["type"] == "i2c_byte"]
+    assert data == [0x10, 0xA5]
+
+
 def test_spi_decoder():
     n = 120_000
     sclk, mosi, miso, cs = ms.spi_signal(n, RATE, 10_000, b"\xDE\xAD",
@@ -224,6 +278,25 @@ def test_spi_decoder():
     dec = registry.get("spi")
     result = dec.decode(DecodeContext(
         wf, {"sclk": "d4", "mosi": "d5", "miso": "d6", "cs": "d7"}),
+        dec.defaults())
+    words = [e["fields"] for e in result.events if e["type"] == "spi_word"]
+    assert [w["mosi"] for w in words] == [0xDE, 0xAD]
+    assert [w["miso"] for w in words] == [0x12, 0x34]
+
+
+def test_spi_decoder_accepts_thresholded_analog_inputs():
+    n = 120_000
+    sclk, mosi, miso, cs = ms.spi_signal(n, RATE, 10_000, b"\xDE\xAD",
+                                         b"\x12\x34", start_sample=200)
+    wf = make_wf(analog={
+        "a3": sclk.astype(np.float32) * 3.3,
+        "a7": mosi.astype(np.float32) * 3.3,
+        "a8": miso.astype(np.float32) * 3.3,
+        "a16": cs.astype(np.float32) * 3.3,
+    })
+    dec = registry.get("spi")
+    result = dec.decode(DecodeContext(
+        wf, {"sclk": "a3", "mosi": "a7", "miso": "a8", "cs": "a16"}),
         dec.defaults())
     words = [e["fields"] for e in result.events if e["type"] == "spi_word"]
     assert [w["mosi"] for w in words] == [0xDE, 0xAD]

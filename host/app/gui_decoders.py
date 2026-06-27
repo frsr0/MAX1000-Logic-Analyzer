@@ -73,26 +73,49 @@ def decode_uart(ch, samplerate, ch_idx=0, baud=115200, filter_threshold=0):
     result = []
     i = 0
     min_need = int(spb * 10)
-    while i < len(sig) - min_need:
-        if sig[i] == 1 and i + 1 < len(sig) and sig[i + 1] == 0:
-            centre = i + 1 + spb / 2
+
+    def try_frame(edge_i):
+        # The actual 1->0 transition happened somewhere between edge_i and
+        # edge_i + 1. At low/fractional samples-per-bit (for example 1 MS/s
+        # sampling 460800 baud), choosing only edge_i + 1 can shift every bit
+        # centre by almost half a sample. Try a few sub-sample phases and keep
+        # the candidate with a valid stop bit furthest from its edges.
+        phases = (0.0, 0.25, 0.5, 0.75, 1.0) if spb < 4 else (0.5,)
+        best = None
+        for phase in phases:
+            start = edge_i + phase
             byte = 0
             valid = True
             for b in range(8):
-                centre += spb
-                bit_pos = int(round(centre))
+                bit_pos = int(round(start + (1.5 + b) * spb))
                 if bit_pos >= len(sig):
-                    valid = False; break
+                    valid = False
+                    break
                 byte |= (sig[bit_pos] << b)
-            centre += spb
-            stop_pos = int(round(centre))
-            stop_ok = False
+            if not valid:
+                continue
+            stop_centre = start + 9.5 * spb
+            stop_pos = int(round(stop_centre))
+            stop_samples = []
             for d in (-1, 0, 1):
                 p = stop_pos + d
-                if 0 <= p < len(sig) and sig[p] == 1:
-                    stop_ok = True
-                    break
-            if valid and stop_ok:
+                if 0 <= p < len(sig):
+                    stop_samples.append(sig[p])
+            if 1 not in stop_samples:
+                continue
+            # Prefer the phase whose rounded stop sample lands closest to the
+            # mathematical stop centre. This is deterministic and avoids
+            # choosing an edge-adjacent phase only because +/-1 happened high.
+            score = -abs(stop_pos - stop_centre)
+            if best is None or score > best[0]:
+                best = (score, byte, stop_pos)
+        return best
+
+    while i < len(sig) - min_need:
+        if sig[i] == 1 and i + 1 < len(sig) and sig[i + 1] == 0:
+            frame = try_frame(i)
+            if frame is not None:
+                _, byte, stop_pos = frame
                 result.append(DecodedByte(pos=i, value=byte, time_ns=i * 1e9 / samplerate))
                 # Resume scanning at the stop bit; the next 1->0 edge is the
                 # following byte's start. (A previous spb*8 debounce here skipped

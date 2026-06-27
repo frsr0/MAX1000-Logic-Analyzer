@@ -4,7 +4,8 @@ import type {
   BackendStatus, CaptureSettings, ChannelInfo, DecoderDescription,
   DecoderEvent, DecoderInstance, DeviceCapabilities, DeviceDescriptor,
   DeviceMetadata, GeneratorConfig, LogEntry, Marker, MeasurementInstance,
-  MeasurementType, Session, SessionSummary,
+  MeasurementType, MilConfig, MilPresetSummary, MilRuntimeStatus,
+  MilTransactionResponse, Session, SessionSummary,
 } from './types';
 import { parseWaveformPayload, WaveformPayload } from './binary';
 
@@ -167,6 +168,16 @@ export const api = {
   generatorSend: (body: { config: GeneratorConfig; capture: boolean; capture_rate?: number; capture_samples?: number; expected_hex?: string }) =>
     post<any>('/api/generator/send', body),
   generatorSelfTest: () => post<any>('/api/generator/self-test'),
+
+  // machine-in-loop emulator
+  milPresets: () => get<{ presets: MilPresetSummary[] }>('/api/mil/presets'),
+  milStatus: () => get<MilRuntimeStatus>('/api/mil/status'),
+  milLoad: (body: { preset_id?: string; path?: string; config?: MilConfig }) =>
+    post<MilRuntimeStatus>('/api/mil/load', body),
+  milStart: () => post<MilRuntimeStatus>('/api/mil/start'),
+  milStop: () => post<MilRuntimeStatus>('/api/mil/stop'),
+  milTransaction: (body: { request_hex: string; protocol?: string; capture_evidence?: boolean }) =>
+    post<MilTransactionResponse>('/api/mil/transaction', body),
 
   // diagnostics
   logs: (limit = 500) => get<{ logs: LogEntry[] }>(`/api/logs?limit=${limit}`),

@@ -4,7 +4,11 @@ import numpy as np
 
 from app.capture.session import CaptureSettings
 from app.hardware.base import HardwareError
-from app.hardware.existing_host_adapter import ExistingHostAdapter
+from app.hardware.existing_host_adapter import (
+    DIGITAL_NARROW_LOGICAL_SAMPLES,
+    DIGITAL_SDRAM_WORDS,
+    ExistingHostAdapter,
+)
 
 
 class FakeSpi:
@@ -177,6 +181,30 @@ def test_real_hardware_capabilities_advertise_200mhz_digital_sampling():
 
     assert caps.max_sample_rate == 200_000_000
     assert caps.sample_clk_hz == 200_000_000
+    assert caps.max_samples == DIGITAL_SDRAM_WORDS
+    assert any("64 Mbit SDRAM" in note for note in caps.notes)
+
+
+def test_narrow_digital_validation_uses_packed_logical_depth():
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+
+    ok = adapter.validate_settings(CaptureSettings(
+        mode="digital_narrow",
+        sample_rate=200_000_000,
+        num_samples=DIGITAL_NARROW_LOGICAL_SAMPLES,
+        enabled_digital=[0],
+    ))
+    too_deep = adapter.validate_settings(CaptureSettings(
+        mode="digital_narrow",
+        sample_rate=200_000_000,
+        num_samples=DIGITAL_NARROW_LOGICAL_SAMPLES + 1,
+        enabled_digital=[0],
+    ))
+
+    assert not [f for f in ok if f["level"] == "error"]
+    assert any(f["level"] == "error" and "packed capture depth" in f["message"]
+               for f in too_deep)
 
 
 def test_200mhz_small_digital_capture_is_allowed_and_uses_divider_zero():

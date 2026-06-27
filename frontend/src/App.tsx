@@ -111,6 +111,7 @@ export default function App() {
           await waveformView.updateLive(
             s.num_samples, s.sample_rate, s.trigger_sample ?? null,
             Boolean(msg.data?.rolling),
+            Number(msg.data?.chunk_samples ?? 0),
           );
         }
       }

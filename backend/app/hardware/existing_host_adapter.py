@@ -39,6 +39,8 @@ ADC_SCAN_FRAME_RATE_HZ = 125_000.0
 ADC_FAST_FRAME_RATE_HZ = 1_000_000.0
 DIGITAL_DEEP_SAMPLE_RATE_HZ = 14_000_000.0
 DIGITAL_FAST_BRAM_SAMPLES = 1024
+DIGITAL_SDRAM_WORDS = 1_048_576
+DIGITAL_NARROW_LOGICAL_SAMPLES = DIGITAL_SDRAM_WORDS * 16
 
 
 def hardware_available() -> bool:
@@ -151,7 +153,7 @@ class ExistingHostAdapter(HardwareDevice):
             digital_channels=16,
             analog_channels=exposed_analog_count_for_current_rtl(),
             max_sample_rate=sample_clk, min_sample_rate=6.0,
-            max_samples=1_000_000, bram_samples=1024,
+            max_samples=DIGITAL_SDRAM_WORDS, bram_samples=1024,
             sample_clk_hz=sample_clk,
             supports_pre_trigger=True, supports_rolling=True,
             supports_continuous=True, supports_analog=True,
@@ -159,11 +161,15 @@ class ExistingHostAdapter(HardwareDevice):
                              "analog and 125 kframes/s 8-input physical "
                              "analog scans. Mixed mode scans ADC0..ADC7 at "
                              "the same scan frame rate.",
-            generator_protocols=["uart", "i2c", "pwm"],
+            generator_protocols=["uart", "rs485", "i2c", "pwm"],
             triggers=[TriggerCapability(type=t, execution=e, description=d)
                       for t, e, d in trig],
             notes=[
                 "Host-side digital glitch filter (a.k.a. Schmitt) and debug CH0 PWM available via driver",
+                "The MAX1000 has 64 Mbit SDRAM. This bitstream exposes a "
+                f"{DIGITAL_SDRAM_WORDS:,}-word 16-bit SDRAM capture ring "
+                f"({DIGITAL_NARROW_LOGICAL_SAMPLES:,} logical samples in "
+                "packed one-channel narrow mode).",
                 "Maximum analog scans ADC1,2,3,4,5,7,8,16 at 125 kframes/s. "
                 "Mixed mode still exposes ADC0/ADC6 as unmapped mux slots.",
             ],
@@ -175,6 +181,18 @@ class ExistingHostAdapter(HardwareDevice):
 
     def validate_settings(self, settings: CaptureSettings) -> list:
         findings = super().validate_settings(settings)
+        if settings.mode == "digital_narrow":
+            findings = [
+                f for f in findings
+                if "exceeds capture depth" not in f.get("message", "")
+            ]
+            if settings.num_samples > DIGITAL_NARROW_LOGICAL_SAMPLES:
+                findings.append({
+                    "level": "error",
+                    "message": f"{settings.num_samples} narrow samples exceeds "
+                               f"packed capture depth "
+                               f"{DIGITAL_NARROW_LOGICAL_SAMPLES}",
+                })
         sample_clk = float(self._dev.sample_clk) if self._dev else 200_000_000.0
         if settings.mode in ("mixed", "mixed_continuous"):
             findings.append({
@@ -744,13 +762,13 @@ class ExistingHostAdapter(HardwareDevice):
                                protocol=self._gen_cfg.protocol if self._gen_cfg else None,
                                config=self._gen_cfg.model_dump() if self._gen_cfg else None,
                                supported=True,
-                               detail="UART/I2C generator + debug CH0 PWM (FPGA)")
+                               detail="UART/RS-485/I2C generator + debug CH0 PWM (FPGA)")
 
     def generator_configure(self, cfg: GeneratorConfig) -> None:
-        if cfg.protocol not in ("uart", "i2c", "pwm"):
+        if cfg.protocol not in ("uart", "rs485", "i2c", "pwm"):
             raise HardwareError(
                 f"Generator protocol '{cfg.protocol}' is not supported by the "
-                "current FPGA firmware (supported: uart, i2c, pwm)")
+                "current FPGA firmware (supported: uart, rs485, i2c, pwm)")
         self._gen_cfg = cfg
 
     def generator_start(self) -> None:
@@ -764,6 +782,10 @@ class ExistingHostAdapter(HardwareDevice):
             self._log(f"gen_start {cfg.protocol}")
             if cfg.protocol == "uart":
                 self._dev.send_uart(data, baud=cfg.baud, tx_pin=cfg.tx_pin)
+            elif cfg.protocol == "rs485":
+                self._dev.send_rs485(data, baud=cfg.baud,
+                                     b_pin=cfg.tx_pin, a_pin=cfg.scl_pin,
+                                     repeat=cfg.continuous or cfg.repeat != 1)
             elif cfg.protocol == "i2c":
                 self._dev.i2c_read_setup(cfg.i2c_address, cfg.i2c_register,
                                          read_len=cfg.i2c_read_len,
@@ -843,6 +865,16 @@ class ExistingHostAdapter(HardwareDevice):
                 # can decode shifted bytes after earlier pin-map exercises.
                 raw = dev.capture_with_gen(rate_hz=rate, nsamples=nsamp,
                                            stop_evt=stop_evt, progress_cb=cb,
+                                           fast_mode=False)
+            elif cfg.protocol == "rs485":
+                dev._gen_data = data
+                dev._gen_baud = cfg.baud
+                dev._gen_tx_pin = cfg.tx_pin
+                raw = dev.capture_with_gen(rate_hz=rate, nsamples=nsamp,
+                                           stop_evt=stop_evt, progress_cb=cb,
+                                           proto='RS485',
+                                           rs485_b_pin=cfg.tx_pin,
+                                           rs485_a_pin=cfg.scl_pin,
                                            fast_mode=False)
             else:
                 raise HardwareError(

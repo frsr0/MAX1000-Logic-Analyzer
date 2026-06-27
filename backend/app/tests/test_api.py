@@ -76,6 +76,18 @@ def test_decoder_channel_roles_include_analog(client):
     uart = next(d for d in decoders if d["id"] == "uart")
     rx = next(c for c in uart["channels"] if c["role"] == "rx")
     assert "analog" in rx["types"]
+    i2c = next(d for d in decoders if d["id"] == "i2c")
+    for role in ("scl", "sda"):
+        ch = next(c for c in i2c["channels"] if c["role"] == role)
+        assert "analog" in ch["types"]
+    spi = next(d for d in decoders if d["id"] == "spi")
+    for role in ("sclk", "mosi", "miso", "cs"):
+        ch = next(c for c in spi["channels"] if c["role"] == role)
+        assert "analog" in ch["types"]
+    rs485 = next(d for d in decoders if d["id"] == "rs485")
+    roles = {c["role"]: c for c in rs485["channels"]}
+    assert roles["a"]["types"] == ["analog"]
+    assert roles["b"]["types"] == ["analog"]
 
 
 def test_capture_flow_uart(client):
@@ -246,6 +258,21 @@ def test_generator_loopback_self_test(client):
     assert body["decoded_hex"] == "414243"
 
 
+def test_generator_rs485_loopback(client):
+    caps = client.get("/api/generator/capabilities").json()
+    assert "rs485" in caps["protocols"]
+
+    r = client.post("/api/generator/send", json={
+        "config": {"protocol": "rs485", "data_hex": "343835",
+                   "baud": 115200, "tx_pin": 0},
+        "capture": True, "capture_rate": 2_000_000,
+        "capture_samples": 30_000}, headers=HDR)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["passed"] is True, body
+    assert body["decoded_hex"] == "343835"
+
+
 def test_generator_rejects_payload_larger_than_fpga_fifo(client):
     r = client.post("/api/generator/send", json={
         "config": {"protocol": "uart", "data_hex": "55" * 257,
@@ -267,6 +294,87 @@ def test_generator_i2c_loopback(client):
     body = r.json()
     assert r.status_code == 200, body
     assert body["passed"] is True, body
+
+
+def test_machine_in_loop_emulator(client):
+    presets = client.get("/api/mil/presets").json()["presets"]
+    by_id = {p["id"]: p for p in presets}
+    assert by_id["modbus-rtu-demo"]["source"] == "builtin"
+    assert by_id["uart-register-demo"]["source"] == "builtin"
+    assert by_id["rs485-modbus-demo"]["source"] == "builtin"
+
+    r = client.post("/api/mil/load", json={"preset_id": "modbus-rtu-demo"},
+                    headers=HDR)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["loaded"] is True
+    assert body["config"]["protocol"] == "modbus_uart"
+
+    assert client.post("/api/mil/start", headers=HDR).json()["running"] is True
+    # Unit 1, function 3, start 0, count 2, CRC c40b.
+    r = client.post("/api/mil/transaction",
+                    json={"request_hex": "010300000002c40b"},
+                    headers=HDR)
+    assert r.status_code == 200, r.text
+    response = r.json()
+    assert response["action"] == "read"
+    assert response["response_hex"].startswith("01030400eb0000")
+    events = client.get("/api/mil/status").json()["events"]
+    txrx = events[-1]
+    assert txrx["kind"] == "transaction"
+    assert txrx["request_hex"] == "010300000002c40b"
+    assert txrx["response_hex"].startswith("01030400eb0000")
+    assert txrx["protocol"] == "modbus_uart"
+    assert txrx["rx_pin"] == 0
+    assert txrx["tx_pin"] == 1
+    assert txrx["response_delay_us"] == 1000.0
+    assert txrx["inter_byte_gap_us"] == 0.0
+    assert response["session_id"]
+    meta = client.get(f"/api/sessions/{response['session_id']}/metadata").json()
+    assert meta["has_waveform"] is True
+    assert meta["session"]["tags"][:2] == ["mil", "modbus_uart"]
+    w = client.get(
+        f"/api/sessions/{response['session_id']}/waveform?start=0&end=512")
+    h = parse_binary(w.content)
+    assert h["mode"] == "raw"
+
+    r = client.post("/api/mil/load", json={"preset_id": "uart-register-demo"},
+                    headers=HDR)
+    assert r.status_code == 200, r.text
+    client.post("/api/mil/start", headers=HDR)
+    r = client.post("/api/mil/transaction", json={"request_hex": "030001"},
+                    headers=HDR)
+    assert r.status_code == 200, r.text
+    assert r.json()["response_hex"] == "030142"
+
+    r = client.post("/api/mil/load", json={"preset_id": "rs485-modbus-demo"},
+                    headers=HDR)
+    assert r.status_code == 200, r.text
+    client.post("/api/mil/start", headers=HDR)
+    r = client.post("/api/mil/transaction",
+                    json={"request_hex": "110301000002c767"},
+                    headers=HDR)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["action"] == "read"
+    assert body["response_hex"].startswith("11030404000000")
+
+    inline = r.json()
+    cfg = client.get("/api/mil/status").json()["config"]
+    cfg["timing"]["response_delay_us"] = 2500
+    cfg["timing"]["inter_byte_gap_us"] = 100
+    r = client.post("/api/mil/load", json={"config": cfg}, headers=HDR)
+    assert r.status_code == 200, r.text
+    client.post("/api/mil/start", headers=HDR)
+    r = client.post("/api/mil/transaction",
+                    json={"request_hex": "110301000002c767"},
+                    headers=HDR)
+    assert r.status_code == 200, r.text
+    event = client.get("/api/mil/status").json()["events"][-1]
+    assert event["response_delay_us"] == 2500
+    assert event["inter_byte_gap_us"] == 100
+
+    assert client.post("/api/mil/stop", headers=HDR).json()["running"] is False
 
 
 def test_control_lock(client):
