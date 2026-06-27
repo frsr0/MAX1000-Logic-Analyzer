@@ -1,12 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import { useApp } from '../state/appStore';
 
 const DIGITAL_DEEP_MAX_RATE = 14e6;
 const DIGITAL_FAST_DEPTH = 1024;
+const DIGITAL_SDRAM_DEPTH = 1_048_576;
+const DIGITAL_NARROW_MAX_SAMPLES = DIGITAL_SDRAM_DEPTH * 16;
 const DIGITAL_RATES = [10e3, 100e3, 500e3, 1e6, 2e6, 5e6, 10e6, 12.5e6, 14e6, 20e6, 50e6, 100e6, 200e6];
 const DIGITAL_DEEP_RATES = DIGITAL_RATES.filter((rate) => rate <= DIGITAL_DEEP_MAX_RATE);
-const DIGITAL_DEPTHS = [1024, 10_000, 50_000, 100_000, 250_000, 500_000, 1_000_000];
+const DIGITAL_DEPTHS = [1024, 10_000, 50_000, 100_000, 250_000, 500_000, DIGITAL_SDRAM_DEPTH];
 const DIGITAL_FAST_DEPTHS = [DIGITAL_FAST_DEPTH];
 const MIXED_RATES = [125e3];
 const ANALOG_FAST_RATES = [100e3, 200e3, 500e3, 1e6];
@@ -45,7 +47,7 @@ const MODE_OPTIONS: {
   {
     mode: 'single',
     label: 'Full-speed digital',
-    detail: '200 MHz at 1k depth, 14 MHz deep',
+    detail: '200 MHz at 1k depth, 14 MHz full-width deep',
     channels: 'd0-d15',
   },
   {
@@ -91,11 +93,27 @@ function samplesForWindow(sampleRate: number, seconds: number) {
   return Math.max(1, Math.round(sampleRate * seconds));
 }
 
-function nearestWindowSeconds(samples: number, sampleRate: number) {
-  const current = samples / Math.max(1, sampleRate);
-  return ROLLING_WINDOW_SECONDS.reduce((best, value) => (
-    Math.abs(value - current) < Math.abs(best - current) ? value : best
-  ), ROLLING_WINDOW_SECONDS[0]);
+function maxWindowSamplesForMode(mode: CaptureMode) {
+  if (mode === 'digital_narrow') return DIGITAL_NARROW_MAX_SAMPLES;
+  return DIGITAL_SDRAM_DEPTH;
+}
+
+function windowOptionsForMode(mode: CaptureMode, sampleRate: number) {
+  const maxSamples = maxWindowSamplesForMode(mode);
+  return ROLLING_WINDOW_SECONDS.filter(
+    (seconds) => samplesForWindow(sampleRate, seconds) <= maxSamples,
+  );
+}
+
+function nearestWindowSeconds(samples: number, sampleRate: number, mode: CaptureMode) {
+  return nearestWindowSecondsForDuration(samples / Math.max(1, sampleRate), sampleRate, mode);
+}
+
+function nearestWindowSecondsForDuration(durationSeconds: number, sampleRate: number, mode: CaptureMode) {
+  const options = windowOptionsForMode(mode, sampleRate);
+  return options.reduce((best, value) => (
+    Math.abs(value - durationSeconds) < Math.abs(best - durationSeconds) ? value : best
+  ), options[0] ?? ROLLING_WINDOW_SECONDS[0]);
 }
 
 function rateOptionsForMode(mode: CaptureMode, numSamples = DIGITAL_FAST_DEPTH) {
@@ -163,6 +181,13 @@ export function CaptureControls() {
     captureSettings.mode as CaptureMode,
     captureSettings.sample_rate,
   );
+  const windowOptions = useMemo(
+    () => windowOptionsForMode(
+      captureSettings.mode as CaptureMode,
+      captureSettings.sample_rate,
+    ),
+    [captureSettings.mode, captureSettings.sample_rate],
+  );
   const activeModeLabel = labelForMode(captureSettings.mode as CaptureMode);
   const activeWindowSeconds = captureSettings.num_samples / Math.max(1, captureSettings.sample_rate);
 
@@ -185,7 +210,8 @@ export function CaptureControls() {
     const digitalSelectionOk = !analogOnlyMode
       || captureSettings.enabled_digital.length === 0;
     const sampleWindowOk = rollingMode
-      || depthOptions.includes(captureSettings.num_samples);
+      ? captureSettings.num_samples <= maxWindowSamplesForMode(captureSettings.mode as CaptureMode)
+      : depthOptions.includes(captureSettings.num_samples);
     if (rateOptions.includes(captureSettings.sample_rate)
         && sampleWindowOk
         && captureSettings.analog_enabled === analogMode
@@ -199,7 +225,16 @@ export function CaptureControls() {
         : rateOptions[rateOptions.length - 1],
       num_samples: sampleWindowOk
         ? captureSettings.num_samples
-        : depthOptions[Math.min(depthOptions.length - 1, 1)],
+        : rollingMode
+          ? samplesForWindow(
+            captureSettings.sample_rate,
+            nearestWindowSeconds(
+              captureSettings.num_samples,
+              captureSettings.sample_rate,
+              captureSettings.mode as CaptureMode,
+            ),
+          )
+          : depthOptions[Math.min(depthOptions.length - 1, 1)],
       enabled_digital: analogOnlyMode
         ? NO_DIGITAL
         : captureSettings.enabled_digital?.length
@@ -218,6 +253,7 @@ export function CaptureControls() {
     rateOptions,
     rollingMode,
     setCaptureSettings,
+    windowOptions,
   ]);
 
   const setMode = (mode: CaptureMode) => {
@@ -228,8 +264,13 @@ export function CaptureControls() {
     const nextRates = rateOptionsForMode(mode, captureSettings.num_samples);
     const maxRate = nextRates[nextRates.length - 1];
     const nextDepths = depthOptionsForMode(mode, maxRate);
+    const nearestWindow = nearestWindowSecondsForDuration(
+      activeWindowSeconds,
+      maxRate,
+      mode,
+    );
     const numSamples = isRolling
-      ? samplesForWindow(maxRate, nearestWindowSeconds(captureSettings.num_samples, captureSettings.sample_rate))
+      ? samplesForWindow(maxRate, nearestWindow)
       : nextDepths.includes(captureSettings.num_samples)
         ? captureSettings.num_samples
         : nextDepths[nextDepths.length - 1];
@@ -300,7 +341,12 @@ export function CaptureControls() {
             const sample_rate = Number(e.target.value);
             const patch: Partial<typeof captureSettings> = { sample_rate };
             if (rollingMode) {
-              patch.num_samples = samplesForWindow(sample_rate, activeWindowSeconds);
+              const seconds = nearestWindowSecondsForDuration(
+                activeWindowSeconds,
+                sample_rate,
+                captureSettings.mode as CaptureMode,
+              );
+              patch.num_samples = samplesForWindow(sample_rate, seconds);
             }
             setCaptureSettings(patch);
           }}>
@@ -315,16 +361,20 @@ export function CaptureControls() {
       {rollingMode ? (
         <label className="field">
           <span>Screen window</span>
-          <select value={nearestWindowSeconds(captureSettings.num_samples, captureSettings.sample_rate)}
+          <select value={nearestWindowSeconds(
+            captureSettings.num_samples,
+            captureSettings.sample_rate,
+            captureSettings.mode as CaptureMode,
+          )}
             onChange={(e) => setCaptureSettings({
               num_samples: samplesForWindow(captureSettings.sample_rate, Number(e.target.value)),
             })}>
-            {ROLLING_WINDOW_SECONDS.map((seconds) => (
+            {windowOptions.map((seconds) => (
               <option key={seconds} value={seconds}>
                 {formatWindow(seconds)} ({samplesForWindow(captureSettings.sample_rate, seconds).toLocaleString()} samples)
               </option>
             ))}
-            {!ROLLING_WINDOW_SECONDS.includes(activeWindowSeconds) && (
+            {!windowOptions.includes(activeWindowSeconds) && (
               <option value={activeWindowSeconds}>
                 {formatWindow(activeWindowSeconds)} ({captureSettings.num_samples.toLocaleString()} samples)
               </option>

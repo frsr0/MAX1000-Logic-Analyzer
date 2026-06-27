@@ -9,7 +9,7 @@ import type {
 import { defaultCaptureSettings } from '../api/types';
 import { waveformView } from './waveformStore';
 
-export type Page = 'capture' | 'sessions' | 'device' | 'generator'
+export type Page = 'capture' | 'sessions' | 'device' | 'generator' | 'mil'
   | 'diagnostics' | 'settings';
 
 export interface Toast {

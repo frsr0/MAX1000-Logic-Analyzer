@@ -39,6 +39,8 @@ ADC_SCAN_FRAME_RATE_HZ = 125_000.0
 ADC_FAST_FRAME_RATE_HZ = 1_000_000.0
 DIGITAL_DEEP_SAMPLE_RATE_HZ = 14_000_000.0
 DIGITAL_FAST_BRAM_SAMPLES = 1024
+DIGITAL_SDRAM_WORDS = 1_048_576
+DIGITAL_NARROW_LOGICAL_SAMPLES = DIGITAL_SDRAM_WORDS * 16
 
 
 def hardware_available() -> bool:
@@ -151,7 +153,7 @@ class ExistingHostAdapter(HardwareDevice):
             digital_channels=16,
             analog_channels=exposed_analog_count_for_current_rtl(),
             max_sample_rate=sample_clk, min_sample_rate=6.0,
-            max_samples=1_000_000, bram_samples=1024,
+            max_samples=DIGITAL_SDRAM_WORDS, bram_samples=1024,
             sample_clk_hz=sample_clk,
             supports_pre_trigger=True, supports_rolling=True,
             supports_continuous=True, supports_analog=True,
@@ -164,6 +166,10 @@ class ExistingHostAdapter(HardwareDevice):
                       for t, e, d in trig],
             notes=[
                 "Host-side digital glitch filter (a.k.a. Schmitt) and debug CH0 PWM available via driver",
+                "The MAX1000 has 64 Mbit SDRAM. This bitstream exposes a "
+                f"{DIGITAL_SDRAM_WORDS:,}-word 16-bit SDRAM capture ring "
+                f"({DIGITAL_NARROW_LOGICAL_SAMPLES:,} logical samples in "
+                "packed one-channel narrow mode).",
                 "Maximum analog scans ADC1,2,3,4,5,7,8,16 at 125 kframes/s. "
                 "Mixed mode still exposes ADC0/ADC6 as unmapped mux slots.",
             ],
@@ -175,6 +181,18 @@ class ExistingHostAdapter(HardwareDevice):
 
     def validate_settings(self, settings: CaptureSettings) -> list:
         findings = super().validate_settings(settings)
+        if settings.mode == "digital_narrow":
+            findings = [
+                f for f in findings
+                if "exceeds capture depth" not in f.get("message", "")
+            ]
+            if settings.num_samples > DIGITAL_NARROW_LOGICAL_SAMPLES:
+                findings.append({
+                    "level": "error",
+                    "message": f"{settings.num_samples} narrow samples exceeds "
+                               f"packed capture depth "
+                               f"{DIGITAL_NARROW_LOGICAL_SAMPLES}",
+                })
         sample_clk = float(self._dev.sample_clk) if self._dev else 200_000_000.0
         if settings.mode in ("mixed", "mixed_continuous"):
             findings.append({

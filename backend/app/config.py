@@ -20,8 +20,8 @@ MAX_RAW_POINTS = 8192
 LOD_BASE = 16
 LOD_FACTOR = 4
 
-# Default capture limits (mirrors existing hardware: 1M samples SDRAM, 1024 BRAM)
-MAX_SAMPLES = 1_000_000
+# Default capture limits (current bitstream exposes 1 Mi 16-bit SDRAM words, 1024 BRAM)
+MAX_SAMPLES = 1_048_576
 BRAM_SAMPLES = 1024
 
 SESSION_DIR.mkdir(parents=True, exist_ok=True)

@@ -249,7 +249,7 @@ input[type="checkbox"] { accent-color: var(--accent); }
 /* pages */
 .page { padding: 14px 18px; flex: 1; min-width: 0; }
 .page-head { display: flex; align-items: center; gap: 12px; }
-.card-grid, .gen-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 12px; }
+.card-grid, .gen-grid, .mil-layout { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 12px; }
 .card {
   background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
   padding: 12px; display: flex; flex-direction: column; gap: 6px;
@@ -265,6 +265,46 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .export-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .sessions-table .ch-name { width: 100%; background: transparent; border-color: transparent; }
 .sessions-table .ch-name:hover { border-color: var(--border); }
+.mil-layout { margin-bottom: 12px; }
+.mil-summary {
+  display: grid; grid-template-columns: 92px 1fr; gap: 4px 10px;
+  font-size: 12px; padding: 8px; background: var(--bg);
+  border: 1px solid var(--border); border-radius: 4px;
+}
+.mil-summary span { color: var(--text-dim); }
+.mil-summary strong { font-weight: 600; overflow-wrap: anywhere; }
+.mil-registers { margin-bottom: 12px; }
+.mil-transaction {
+  border: 1px solid var(--border); border-radius: 5px;
+  background: var(--bg); padding: 8px; margin-top: 8px;
+}
+.mil-wave-label { display: flex; flex-direction: column; color: var(--text-dim); font-size: 11px; }
+.mil-wave-label strong { color: var(--accent); font-size: 12px; }
+.mil-wave {
+  width: 100%; display: block; border: 1px solid var(--border);
+  border-radius: 4px; background: #0b0f14;
+}
+.mil-timeline {
+  display: grid; grid-template-columns: 54px minmax(220px, 1fr) 54px;
+  gap: 8px; align-items: center; margin-top: 8px;
+}
+.mil-wave-shared { height: 118px; }
+.mil-wave .grid { stroke: #1d2633; stroke-width: 1; }
+.mil-wave .marker { stroke: #5e6878; stroke-width: 1; stroke-dasharray: 4 4; }
+.mil-wave .marker.response { stroke: var(--warn); }
+.mil-wave path { stroke-width: 2; fill: none; vector-effect: non-scaling-stroke; }
+.mil-wave path.rx { stroke: var(--accent); }
+.mil-wave path.tx { stroke: var(--err); }
+.mil-timeline-meta {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  color: var(--text-dim); font-size: 11px; overflow-wrap: anywhere;
+  margin: 6px 0 0 62px;
+}
+.mil-timeline-meta span { min-width: 0; }
+.mil-extra-group {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  margin: 8px 0 0 62px; color: var(--text-dim); font-size: 11px;
+}
 
 /* logs */
 .log-card { min-height: 300px; }

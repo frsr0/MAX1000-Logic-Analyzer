@@ -269,6 +269,83 @@ export interface GeneratorConfig {
   continuous: boolean;
 }
 
+export type MilProtocol = 'uart' | 'modbus_uart' | 'rs485_modbus';
+
+export interface MilRegister {
+  address: number;
+  name: string;
+  width: number;
+  access: 'ro' | 'rw' | 'wo';
+  value: number;
+  response_hex?: string | null;
+  description: string;
+}
+
+export interface MilTrigger {
+  mode: 'uart_start_bit' | 'modbus_frame';
+  rx_pin: number;
+  tx_pin: number;
+  baud: number;
+  data_bits: number;
+  parity: 'none' | 'even' | 'odd';
+  stop_bits: number;
+  rs485_de_pin?: number | null;
+  frame_gap_chars: number;
+}
+
+export interface MilTiming {
+  response_delay_us: number;
+  inter_byte_gap_us: number;
+  jitter_us: number;
+}
+
+export interface MilCaptureConfig {
+  mode: 'auto' | 'manual';
+  sample_rate: number;
+  max_response_bytes: number;
+  manual_post_packet_us: number;
+  extra_digital_channels: number[];
+}
+
+export interface MilConfig {
+  name: string;
+  protocol: MilProtocol;
+  description: string;
+  trigger: MilTrigger;
+  timing: MilTiming;
+  capture: MilCaptureConfig;
+  unit_id: number;
+  registers: MilRegister[];
+  default_response_hex: string;
+  notes: string[];
+}
+
+export interface MilPresetSummary {
+  id: string;
+  name: string;
+  protocol: MilProtocol;
+  description: string;
+  source: string;
+}
+
+export interface MilRuntimeStatus {
+  loaded: boolean;
+  running: boolean;
+  config?: MilConfig | null;
+  preset_id?: string | null;
+  last_error?: string | null;
+  events: Record<string, any>[];
+}
+
+export interface MilTransactionResponse {
+  request_hex: string;
+  response_hex: string;
+  detail: string;
+  register_address?: number | null;
+  action: string;
+  session_id?: string | null;
+}
+
 export const defaultTrigger = (): TriggerConfig => ({
   type: 'none', channels: [], pre_trigger_samples: 0, position_pct: 0,
   execution: 'hardware',

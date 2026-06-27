@@ -6,6 +6,7 @@ import { CapturePage } from '../pages/CapturePage';
 import { DevicePage } from '../pages/DevicePage';
 import { DiagnosticsPage } from '../pages/DiagnosticsPage';
 import { GeneratorPage } from '../pages/GeneratorPage';
+import { MachineInLoopPage } from '../pages/MachineInLoopPage';
 import { SessionsPage } from '../pages/SessionsPage';
 import { SettingsPage } from '../pages/SettingsPage';
 
@@ -14,6 +15,7 @@ const NAV: { id: Page; icon: string; label: string }[] = [
   { id: 'sessions', icon: '▤', label: 'Sessions' },
   { id: 'device', icon: '⚙', label: 'Device' },
   { id: 'generator', icon: '⌁', label: 'Generator' },
+  { id: 'mil', icon: 'MIL', label: 'MIL' },
   { id: 'diagnostics', icon: '☲', label: 'Diagnostics' },
   { id: 'settings', icon: '⋯', label: 'Settings' },
 ];
@@ -88,6 +90,7 @@ export function AppShell() {
           {page === 'sessions' && <SessionsPage />}
           {page === 'device' && <DevicePage />}
           {page === 'generator' && <GeneratorPage />}
+          {page === 'mil' && <MachineInLoopPage />}
           {page === 'diagnostics' && <DiagnosticsPage />}
           {page === 'settings' && <SettingsPage />}
         </main>
