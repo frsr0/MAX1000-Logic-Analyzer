@@ -6,11 +6,12 @@ use lpm.lpm_components.all;
 
 entity Fast_Logic_Analyzer_SDRAM is
   generic (
-    Max_Samples : natural := 3000000;
+    Max_Samples : natural := 4194304;
     Channels    : natural range 1 to 16 := 16;
     Sim         : boolean := false;
     FAST_SPEED  : boolean := false;
     CLK_Frequency : natural := 100_000_000;
+    SDRAM_CLK_HZ : natural := 166_666_667;
     SAMPLE_CLK_HZ : natural := 200_000_000;
     Write_Latency : natural := 10;
     Read_Latency  : natural := 3;
@@ -18,6 +19,7 @@ entity Fast_Logic_Analyzer_SDRAM is
   );
 port (
   CLK          : in  std_logic;
+  SDRAM_CLK_IN : in  std_logic := '0';
   CLK_150      : out std_logic;
   Rate_Div     : in  natural range 1 to 500000000 := 12;
   Samples      : in  natural range 1 to Max_Samples := Max_Samples;
@@ -232,6 +234,10 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   -- BRAM read port (FAST_CLK domain): used during flush-to-FIFO
   signal bram_raddr_f  : natural range 0 to BRAM_SIZE-1 := 0;
   signal bram_rdata_f  : std_logic_vector(15 downto 0) := (others => '0');
+  signal cap_stream_valid : std_logic := '0';
+  signal cap_stream_ready : std_logic := '0';
+  signal cap_stream_addr  : std_logic_vector(21 downto 0) := (others => '0');
+  signal cap_stream_data  : std_logic_vector(15 downto 0) := (others => '0');
 
   component SDRAM_Interface is
   generic (
@@ -249,6 +255,10 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
     Write_Enable : in  std_logic := '0';
     Write_Data   : in  std_logic_vector(15 downto 0) := (others => '0');
     Burst        : in  std_logic := '0';
+    Capture_Stream_Valid : in  std_logic := '0';
+    Capture_Stream_Ready : out std_logic := '0';
+    Capture_Stream_Address : in std_logic_vector(21 downto 0) := (others => '0');
+    Capture_Stream_Data  : in  std_logic_vector(15 downto 0) := (others => '0');
     Read_Enable  : in  std_logic := '0';
     Read_Data    : out std_logic_vector(15 downto 0) := (others => '0');
     Read_Valid   : out std_logic := '0';
@@ -293,6 +303,8 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   end component;
 
 begin
+
+  pclk <= CLK when Sim else SDRAM_CLK_IN;
 
   gen_fast_div : if FAST_SPEED generate
   begin
@@ -1085,10 +1097,20 @@ begin
     variable write_addr : std_logic_vector(21 downto 0) := (others => '0');
     -- Streaming block-readout state (single-shot CMD_READ_CAPTURE path)
     variable stream_active : boolean := false;
-    variable stream_base   : natural range 0 to Max_Samples := 0;
-    variable stream_cnt    : natural range 0 to Max_Samples := 0;
-    variable stream_i      : natural range 0 to Max_Samples := 0;
+    variable stream_addr_u : unsigned(21 downto 0) := (others => '0');
+    variable stream_rem    : natural range 0 to Max_Samples := 0;
     variable rd_pend2      : std_logic := '0';
+    -- Prime read: the FIRST SDRAM read of each block stream comes back garbage
+    -- (un-driven DQ reads as 0xFFFF) because the controller is coming out of an
+    -- idle/refresh window and the first read's data is not yet valid when it is
+    -- latched. The legacy readout absorbed this with prime/drain padding that the
+    -- streaming refactor removed, reintroducing a stale first sample at the start
+    -- of every CMD_READ_CAPTURE block. Re-add throwaway reads of the base address
+    -- whose results are discarded; the real stream then starts clean. Two prime
+    -- reads (not one) are needed because the cold/refresh transition occasionally
+    -- leaves the SECOND read unsettled too.
+    constant STREAM_PRIME_N : natural := 2;
+    variable stream_prime  : natural range 0 to STREAM_PRIME_N := 0;
     -- Continuous-mode readout: a host block read temporarily enters rd_mode to
     -- stream the rolling SDRAM window, then returns to capture.
     -- cur_full backpressures the write pump off a full buffer.
@@ -1102,6 +1124,7 @@ begin
       fifo_rd <= '0';
       s_wr <= '0';
       s_burst_i <= '0';
+      cap_stream_valid <= '0';
       rdfifo_wr <= '0';
       -- Synchronise the block-read request toggle into pclk (runs every cycle so
       -- no edge is missed). Blk_Rd_Base/Count are quasi-static: they are set on
@@ -1109,7 +1132,6 @@ begin
       -- by the time this 2FF sees the edge they have long settled.
       blk_req_s1 <= Blk_Rd_Req_Tog;
       blk_req_s2 <= blk_req_s1;
-
       -- Overflow from fast domain
       if overflow_clk = '1' then
         run_stop_overflow <= '1';
@@ -1156,7 +1178,7 @@ begin
           full_clr_pending <= '0';
         end if;
         if full_pending = '1' and fifo_rdempty = '1'
-           and not wip and not wr_pend then
+           and cap_stream_valid = '0' then
           full_i <= '1';
           full_pending <= '0';
         end if;
@@ -1192,6 +1214,7 @@ begin
           rd_mode := false;
         end if;
         s_wr <= '0'; s_rd <= '0';
+        cap_stream_valid <= '0';
         stream_active := false; rd_pend2 := '0';
         cur_full := false;
 
@@ -1203,21 +1226,21 @@ begin
       if (blk_req_s1 xor blk_req_s2) = '1' then
         if rd_mode then
           -- Single-shot: read exactly the host-requested block.
-          stream_base   := Blk_Rd_Base;
-          stream_cnt    := Blk_Rd_Count;
-          stream_i      := 0;
+          stream_addr_u := to_unsigned(Blk_Rd_Base + Start_Offset, 22);
+          stream_rem    := Blk_Rd_Count;
           rd_pend2      := '0';
-          stream_active := true;
+          stream_prime  := STREAM_PRIME_N;
+          stream_active := (Blk_Rd_Count /= 0);
           s_rd          <= '0';
         elsif Continuous_Mode = '1' then
           -- Continuous indexed read: host byte address names an absolute sample
           -- index; physical storage is the full SDRAM rolling window.
           cont_base_v := Blk_Rd_Base mod CONT_RING_WORDS;
-          stream_base   := cont_base_v;
-          stream_cnt    := Blk_Rd_Count;
-          stream_i      := 0;
+          stream_addr_u := to_unsigned(cont_base_v, 22);
+          stream_rem    := Blk_Rd_Count;
           rd_pend2      := '0';
-          stream_active := true;
+          stream_prime  := STREAM_PRIME_N;
+          stream_active := (Blk_Rd_Count /= 0);
           rd_mode       := true;
           s_rd          <= '0';
         end if;
@@ -1232,30 +1255,39 @@ begin
           -- old fixed-latency latch at block boundaries.
           if rd_pend2 = '0' then
             if rdfifo_wrfull = '0' then
-              if Continuous_Mode = '1' then
-                s_addr <= std_logic_vector(
-                            to_unsigned((stream_base + stream_i) mod CONT_RING_WORDS, 22));
-              else
-                s_addr <= std_logic_vector(
-                            to_unsigned(stream_base + stream_i + Start_Offset, 22));
-              end if;
+              s_addr <= std_logic_vector(stream_addr_u);
               s_rd     <= '1';
               rd_pend2 := '1';
+              -- Do not advance the address on the prime read: the next (real)
+              -- read re-fetches the same base address.
+              if stream_prime = 0 and stream_rem > 1 then
+                if Continuous_Mode = '1' and stream_addr_u = to_unsigned(CONT_RING_WORDS - 1, 22) then
+                  stream_addr_u := (others => '0');
+                else
+                  stream_addr_u := stream_addr_u + 1;
+                end if;
+              end if;
             end if;
           elsif s_rvalid = '1' then
-            rdfifo_wdata <= s_rdata;
-            rdfifo_wr    <= '1';
             s_rd         <= '0';
             rd_pend2     := '0';
-            if stream_i = stream_cnt - 1 then
-              stream_active := false;
-              -- Continuous mode: hand the SDRAM bus back to the write pump
-              -- after the host has streamed its requested block.
-              if Continuous_Mode = '1' then
-                rd_mode      := false;
-              end if;
+            if stream_prime /= 0 then
+              -- Discard the throwaway prime read(s); the real stream starts next.
+              stream_prime := stream_prime - 1;
             else
-              stream_i := stream_i + 1;
+              rdfifo_wdata <= s_rdata;
+              rdfifo_wr    <= '1';
+              if stream_rem <= 1 then
+                stream_active := false;
+                stream_rem    := 0;
+                -- Continuous mode: hand the SDRAM bus back to the write pump
+                -- after the host has streamed its requested block.
+                if Continuous_Mode = '1' then
+                  rd_mode      := false;
+                end if;
+              else
+                stream_rem := stream_rem - 1;
+              end if;
             end if;
           end if;
 
@@ -1313,49 +1345,21 @@ begin
           end if;
         end if;
 
-        if wr_pend then
-          s_addr  <= wr_pend_addr;
-          s_wdata <= wr_pend_data;
-          s_wr    <= '1';
-          wip     := true;
-          wip_cont := wr_pend_cont;
-          wr_pend := false;
-          wr_pend_cont := false;
-
-        elsif fifo_rdempty = '0' and not wip and sdram_busy = '0' and not cur_full then
-          -- async FIFO source: live post-trigger data
-          fifo_rd <= '1';
-
-          -- Compute SDRAM address
+        cap_stream_valid <= '0';
+        if fifo_rdempty = '0' and not cur_full then
           if Continuous_Mode = '1' then
             write_addr := std_logic_vector(to_unsigned(ring_waddr, 22));
           else
             write_addr := std_logic_vector(to_unsigned(waddr_0, 22));
           end if;
 
-          wr_pend      := true;
-          wr_pend_addr := write_addr;
-          wr_pend_data := fifo_rdata;
-          wr_pend_cont := false;
+          cap_stream_addr <= write_addr;
+          cap_stream_data <= fifo_rdata;
+          cap_stream_valid <= '1';
 
-          -- Update buffer counters
-          if Continuous_Mode = '1' then
-            wr_pend_cont := true;
-          else
-            -- Single-buffer mode: buf_rem_single accounts for ALL samples
-            if buf_rem_single > 0 then
-              buf_rem_single <= brem_single_dec;
-              waddr_0 := waddr_0 + 1;
-            end if;
-          end if;
-        end if;
-
-        -- Track SDRAM write completion
-        if wip then
-          if wr_cnt < 2 then
-            wr_cnt := wr_cnt + 1;
-          else
-            if wip_cont then
+          if cap_stream_ready = '1' then
+            fifo_rd <= '1';
+            if Continuous_Mode = '1' then
               newest_index_u <= producer_index_u;
               producer_index_u <= producer_index_u + 1;
               if ring_waddr = Max_Samples - 1 then
@@ -1369,9 +1373,12 @@ begin
                 oldest_index_u <= oldest_index_u + 1;
                 overrun_count_u <= overrun_count_u + 1;
               end if;
-              wip_cont := false;
+            else
+              if buf_rem_single > 0 then
+                buf_rem_single <= brem_single_dec;
+                waddr_0 := waddr_0 + 1;
+              end if;
             end if;
-            wip := false; wr_cnt := 0;
           end if;
         end if;
 
@@ -1379,8 +1386,7 @@ begin
         if not rd_mode and full_i = '0' and Continuous_Mode = '0' then
           if buf_rem_single = 0
              and fifo_rdempty = '1'
-             and not wip
-             and not wr_pend
+             and cap_stream_valid = '0'
           then
             full_i <= '1';
             rd_mode := true;
@@ -1391,7 +1397,7 @@ begin
 
       -- Status
       Status(0) <= run_level_r;
-      if wip then Status(1) <= '1'; else Status(1) <= '0'; end if;
+      Status(1) <= cap_stream_valid and not cap_stream_ready;
       Status(2) <= s_rd;
       Status(3) <= full_i;
       Status(4) <= status_overflow;
@@ -1411,15 +1417,19 @@ begin
   Overrun_Count <= std_logic_vector(overrun_count_u);
 
   SDRAM_Interface1 : SDRAM_Interface
-  generic map (Sim => Sim, CLK_Frequency => CLK_Frequency, Write_Latency => Write_Latency, Read_Latency => Read_Latency, Page_Latency => Page_Latency)
+  generic map (Sim => Sim, CLK_Frequency => SDRAM_CLK_HZ, Write_Latency => Write_Latency, Read_Latency => Read_Latency, Page_Latency => Page_Latency)
   port map (
-    CLK          => CLK,
+    CLK          => pclk,
     Reset        => '0',
-    CLK_150_Out  => pclk,
+    CLK_150_Out  => open,
     Address      => s_addr,
     Write_Enable => s_wr,
     Write_Data   => s_wdata,
     Burst        => s_burst_i,
+    Capture_Stream_Valid => cap_stream_valid,
+    Capture_Stream_Ready => cap_stream_ready,
+    Capture_Stream_Address => cap_stream_addr,
+    Capture_Stream_Data => cap_stream_data,
     Read_Enable  => s_rd,
     Read_Data    => s_rdata,
     Read_Valid   => s_rvalid,

@@ -28,6 +28,10 @@ port (
     sdram_s_readdatavalid : out std_logic;
     sdram_s_waitrequest   : out std_logic;
     sdram_s_idle          : out std_logic;
+    capture_stream_valid  : in std_logic := '0';
+    capture_stream_ready  : out std_logic;
+    capture_stream_addr   : in std_logic_vector(21 downto 0) := (others => '0');
+    capture_stream_data   : in std_logic_vector(15 downto 0) := (others => '0');
 
     reset_reset_n         : in std_logic;
     clk_in_clk            : in std_logic
@@ -113,6 +117,7 @@ architecture rtl of SDRAM_Controller is
         ST_ACT, ST_TRCD,
         ST_RD, ST_CL_WAIT, ST_RD_DATA,
         ST_WR, ST_TWR,
+        ST_STREAM_WR,
         ST_PRE2, ST_TRP2,
         ST_RFSH_PRE, ST_RFSH, ST_TRFC,
         ST_DEASSERT
@@ -165,15 +170,17 @@ architecture rtl of SDRAM_Controller is
     signal active_row  : std_logic_vector(11 downto 0) := (others => '0');
     signal active_bank : std_logic_vector(1 downto 0) := (others => '0');
     signal row_open    : std_logic := '0';
+    signal last_op_was_stream : std_logic := '0';
+    signal capture_stream_ready_r : std_logic := '0';
 
     -- Mode register: A2:0 burst length 1, A3 sequential, A6:4 CAS latency,
-    -- A9:7 standard operating mode. CAS latency MUST be "010" (CL2) to match the
-    -- read FSM (ST_RD -> ST_CL_WAIT -> ST_RD_DATA samples DQ 2 cycles after CAS).
-    -- The previous value "000001000000" put the bit at A6, giving A6:4 = "100",
-    -- a RESERVED/invalid CAS code — the chip then ran a non-spec read latency
-    -- whose DQ valid window was marginal for the worst-case first read after the
-    -- bus idled across the inter-block gap (the block-boundary corruption).
-    constant MR : std_logic_vector(11 downto 0) := "000000100000";
+    -- A9:7 standard operating mode. CAS latency is "011" (CL3): at 167 MHz (6 ns)
+    -- CL2's DQ-valid window is too tight for the worst-case first read after the
+    -- bus idled across the inter-block gap, which read back 0xFFFF (un-driven DQ)
+    -- -> the deterministic block-boundary readback corruption. CL3 gives the chip
+    -- an extra cycle to drive DQ. The read FSM matches it: ST_RD -> ST_CL_WAIT (2)
+    -- -> ST_RD_DATA samples DQ 3 cycles after CAS.
+    constant MR : std_logic_vector(11 downto 0) := "000000110000";
 
     function is_same_row(addr : std_logic_vector(21 downto 0);
                          row  : std_logic_vector(11 downto 0);
@@ -194,8 +201,11 @@ begin
     sdram_addr  <= s_addr;
     sdram_ba    <= s_ba;
 
-    sdram_dq <= buf_wd when dq_oe = '1' else (others => 'Z');
+    sdram_dq <= capture_stream_data when dq_oe = '1' and last_op_was_stream = '1' else
+                buf_wd when dq_oe = '1' else
+                (others => 'Z');
     sdram_s_idle <= '1' when state = ST_IDLE else '0';
+    capture_stream_ready <= capture_stream_ready_r;
 
     -- synthesis translate_off
     process(max_write_depth)
@@ -227,8 +237,11 @@ begin
             prev_buf_a <= (others => '0');
             row_open <= '0'; active_row <= (others => '0'); active_bank <= (others => '0');
             burst_fifo_cnt <= 0; burst_active <= '0'; burst_cnt <= 0;
+            last_op_was_stream <= '0';
+            capture_stream_ready_r <= '0';
 
         elsif rising_edge(clk_in_clk) then
+            capture_stream_ready_r <= '0';
 
             last_rn <= sdram_s_read_n;
             last_wn <= sdram_s_write_n;
@@ -390,10 +403,26 @@ begin
                         else
                             state <= ST_ACT;
                         end if;
+                    elsif capture_stream_valid = '1' then
+                        is_read <= '0';
+                        dq_oe <= '1';
+                        last_op_was_stream <= '1';
+                        bank_r <= capture_stream_addr(21 downto 20);
+                        row_r <= capture_stream_addr(19 downto 8);
+                        col_r <= capture_stream_addr(7 downto 0);
+                        sdram_s_waitrequest <= '1';
+                        if row_open = '1' and is_same_row(capture_stream_addr, active_row, active_bank) then
+                            state <= ST_STREAM_WR;
+                        elsif row_open = '1' then
+                            state <= ST_PRE2;
+                        else
+                            state <= ST_ACT;
+                        end if;
                     elsif burst_fifo_cnt >= 4 then
                         -- Start burst write: pop first entry from FIFO
                         burst_active <= '1';
                         dq_oe <= '1';
+                        last_op_was_stream <= '0';
                         buf_a <= burst_fifo(burst_fifo_tail)(37 downto 16);
                         buf_wd <= burst_fifo(burst_fifo_tail)(15 downto 0);
                         bank_r <= burst_fifo(burst_fifo_tail)(37 downto 36);
@@ -421,8 +450,12 @@ begin
                 when ST_TRCD =>
                     if cnt < TRCD_CYCLES - 1 then cnt <= cnt + 1;
                     else cnt <= 0;
-                        if is_read = '1' then state <= ST_RD;
-                        else state <= ST_WR;
+                        if is_read = '1' then
+                            state <= ST_RD;
+                        elsif last_op_was_stream = '1' then
+                            state <= ST_STREAM_WR;
+                        else
+                            state <= ST_WR;
                         end if;
                     end if;
 
@@ -433,7 +466,9 @@ begin
                     state <= ST_CL_WAIT;
 
                 when ST_CL_WAIT =>
-                    if cnt < 1 then cnt <= cnt + 1;
+                    -- CL3: wait two cycles after CAS so DQ is sampled 3 cycles
+                    -- after the read command (matches MR CAS latency "011").
+                    if cnt < 2 then cnt <= cnt + 1;
                     else cnt <= 0; state <= ST_RD_DATA;
                     end if;
 
@@ -446,6 +481,7 @@ begin
                     s_cas <= '0'; s_we <= '0';
                     s_addr <= "0000" & col_r;
                     s_ba <= bank_r;
+                    last_op_was_stream <= '0';
                     if burst_active = '1' and burst_cnt < 3 then
                         -- Stay for next burst beat: drain FIFO entry
                         burst_cnt <= burst_cnt + 1;
@@ -464,14 +500,29 @@ begin
                         state <= ST_TWR;
                     end if;
 
+                when ST_STREAM_WR =>
+                    s_cas <= '0'; s_we <= '0';
+                    s_addr <= "0000" & capture_stream_addr(7 downto 0);
+                    s_ba <= capture_stream_addr(21 downto 20);
+                    last_op_was_stream <= '1';
+                    capture_stream_ready_r <= '1';
+                    if ref_req = '1' or pend_rn = '1'
+                    or capture_stream_valid = '0'
+                    or not is_same_row(capture_stream_addr, active_row, active_bank) then
+                        state <= ST_TWR;
+                    else
+                        state <= ST_STREAM_WR;
+                    end if;
+
                 when ST_TWR =>
                     dq_oe <= '0';
                     burst_active <= '0';
                     burst_cnt <= 0;
                     -- For page-mode writes (same row pending), skip TWR delay.
                     -- tWR is only needed before precharge, not between same-row writes.
-                    if (pend_wn = '1' and is_same_row(buf_a, active_row, active_bank))
-                    or (pend_wn_next = '1' and is_same_row(buf_a_next, active_row, active_bank)) then
+                    if last_op_was_stream = '0'
+                    and ((pend_wn = '1' and is_same_row(buf_a, active_row, active_bank))
+                    or (pend_wn_next = '1' and is_same_row(buf_a_next, active_row, active_bank))) then
                         cnt <= 0; state <= ST_DEASSERT;
                     elsif cnt < TWR_CYCLES - 1 then cnt <= cnt + 1;
                     else cnt <= 0; state <= ST_DEASSERT;
@@ -480,7 +531,7 @@ begin
                 when ST_PRE2 =>
                     sdram_s_readdatavalid <= '0';
                     s_ras <= '0'; s_we <= '0';
-                    s_addr(10) <= '1'; s_ba <= bank_r;
+                    s_addr(10) <= '1'; s_ba <= active_bank;
                     row_open <= '0';
                     state <= ST_TRP2;
 
@@ -510,7 +561,15 @@ begin
                 -- DONE: service next pending request, or go idle
                 when ST_DEASSERT =>
                     sdram_s_waitrequest <= '0';
-                    if pend_wn = '1' and row_open = '1'
+                    if ref_req = '1' and pend_rn = '0' and pend_wn = '0' and pend_wn_next = '0' then
+                        ref_req <= '0';
+                        sdram_s_waitrequest <= '1';
+                        if row_open = '1' then
+                            state <= ST_PRE2;
+                        else
+                            state <= ST_RFSH;
+                        end if;
+                    elsif pend_wn = '1' and row_open = '1'
                        and not is_same_row(buf_a, active_row, active_bank) then
                         -- Cross-row write: close the open page-mode row BEFORE
                         -- activating the new one (the pend_rn read path below
@@ -563,10 +622,29 @@ begin
                         else
                             state <= ST_ACT;
                         end if;
+                    elsif capture_stream_valid = '1' and row_open = '1'
+                          and not is_same_row(capture_stream_addr, active_row, active_bank) then
+                        last_op_was_stream <= '1';
+                        sdram_s_waitrequest <= '1';
+                        state <= ST_PRE2;
+                    elsif capture_stream_valid = '1' then
+                        is_read <= '0';
+                        dq_oe <= '1';
+                        last_op_was_stream <= '1';
+                        bank_r <= capture_stream_addr(21 downto 20);
+                        row_r <= capture_stream_addr(19 downto 8);
+                        col_r <= capture_stream_addr(7 downto 0);
+                        sdram_s_waitrequest <= '1';
+                        if row_open = '1' then
+                            state <= ST_STREAM_WR;
+                        else
+                            state <= ST_ACT;
+                        end if;
                 elsif burst_fifo_cnt >= 4 then
                     -- Next burst waiting: start immediately
                     burst_active <= '1';
                     dq_oe <= '1';
+                    last_op_was_stream <= '0';
                     buf_a <= burst_fifo(burst_fifo_tail)(37 downto 16);
                     buf_wd <= burst_fifo(burst_fifo_tail)(15 downto 0);
                     bank_r <= burst_fifo(burst_fifo_tail)(37 downto 36);

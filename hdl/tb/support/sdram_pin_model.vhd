@@ -48,7 +48,7 @@ begin
     -- drives starting the cycle after it sees the READ and holds two cycles
     -- to robustly cover the sample.
     variable rd_data  : std_logic_vector(15 downto 0) := (others => '0');
-    variable rd_drive : natural range 0 to 2 := 0;
+    variable rd_drive : natural range 0 to CL + 1 := 0;
   begin
     if rising_edge(clk) then
       -- drive DQ during the read window, tristate otherwise
@@ -77,7 +77,7 @@ begin
             col := to_integer(unsigned(addr(COL_WIDTH-1 downto 0)));
             widx := (bank * (2**ROW_WIDTH) + open_row(bank)) * (2**COL_WIDTH) + col;
             rd_data  := mem(widx);
-            rd_drive := 2;  -- drive the next two cycles
+            rd_drive := CL + 1;  -- drive a window that covers the CL-cycle sample
           when others =>  -- LOAD MODE / REFRESH / PRECHARGE / NOP: ignore
             null;
         end case;

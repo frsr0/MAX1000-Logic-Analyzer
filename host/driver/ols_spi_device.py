@@ -271,12 +271,17 @@ class OLSDeviceSPI:
     def _set_clocks(self, sample_clk_hz):
         """Set sample_clk from metadata and derive sys_clk.
 
-        FAST_SPEED firmware (OLS_SDRAM_Top.vhd) samples on a 200 MHz clock
-        but runs the generator / debug-CH0 / interface logic on a 100 MHz
-        sys_clk. All other firmware builds use one PLL clock for both.
+        FAST_SPEED firmware samples at roughly 200 MHz but runs the generator /
+        debug-CH0 / interface logic at roughly half that rate on sys_clk.
+        The exact legal MAX 10 PLL solution can be slightly off-nominal
+        (e.g. 200.4 / 100.2 MHz), so use a range check instead of an exact
+        equality test.
         """
         self.sample_clk = sample_clk_hz
-        self.sys_clk = 100000000 if sample_clk_hz == 200000000 else sample_clk_hz
+        if 190_000_000 <= sample_clk_hz <= 210_000_000:
+            self.sys_clk = int(round(sample_clk_hz / 2.0))
+        else:
+            self.sys_clk = sample_clk_hz
 
     def _detect_sample_clk(self):
         meta = self.get_metadata()
@@ -415,16 +420,34 @@ class OLSDeviceSPI:
         return last_status
 
     def read_capture_range(self, start_sample=0, sample_count=512):
-        """Read a dense 16-bit sample range by absolute sample index."""
+        """Read a dense 16-bit sample range by absolute sample index.
+
+        The FPGA block readout's FIRST sample (offset 0 of each CMD_READ_CAPTURE
+        block) is the one exposed to the cold/inter-block stale-read glitch (it
+        reads back 0xFFFF when the SDRAM bus has idled across the block gap). The
+        FPGA-side prime read fixes the systematic case, but a rare intermittent
+        residual remains. Mirror the legacy prime/drain: request one sample early
+        and discard that offset-0 sample so a glitched first read is never
+        consumed. At absolute index 0 there is nothing earlier to drop, so the
+        FPGA prime read alone covers it.
+        """
         start_sample = max(0, int(start_sample))
         remaining = max(0, int(sample_count))
         out = bytearray()
         sample = start_sample
         while remaining > 0:
-            block = self.pkt.read_capture_block(sample * 2)
-            if not block:
-                break
+            if sample > 0:
+                block = self.pkt.read_capture_block((sample - 1) * 2)
+                if not block:
+                    break
+                block = block[2:]   # drop the suspect offset-0 sample
+            else:
+                block = self.pkt.read_capture_block(0)
+                if not block:
+                    break
             take = min(remaining, len(block) // 2)
+            if take <= 0:
+                break
             out.extend(block[:take * 2])
             sample += take
             remaining -= take
@@ -432,6 +455,12 @@ class OLSDeviceSPI:
 
     def _repair_boundary_glitches(self, data: bytes, start_sample: int = 0) -> bytes:
         """Repair the known single-sample readout inversion at 256-sample boundaries."""
+        # The new dense 16-bit SDRAM streaming path does not use the legacy
+        # block-boundary readback that needed this heuristic repair. Applying
+        # it to the new path can itself corrupt valid samples near 256-sample
+        # boundaries, so bypass it for FAST_SPEED-class captures.
+        if self.sample_clk >= 190_000_000:
+            return data
         if len(data) < 6:
             return data
         samples = array('H')
