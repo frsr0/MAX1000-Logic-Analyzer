@@ -875,11 +875,27 @@ class OLSDeviceSPI:
 
         self.spi.flush()
 
+        # Read the capture sequence BEFORE arming. SPI traffic WHILE the FPGA is
+        # streaming samples into SDRAM disturbs the write pump and drops samples
+        # (deterministic, ~periodic at the poll interval -> stale cells). So we
+        # must not poll status during the active capture: capture_seq increments
+        # by one on the arm, so we can predict expected_seq here and then wait the
+        # capture out silently before the first (post-capture) status poll.
+        prev = self.pkt.get_status().get('capture_seq')
         status = self.pkt.arm_capture()
         if status < 0:
             return b''
-        arm_status = self.pkt.get_status()
-        expected_seq = arm_status.get('capture_seq')
+        expected_seq = ((prev + 1) & 0xFFFFFFFF) if prev is not None else None
+
+        # Known fixed-duration single-shot capture: sleep through the write phase
+        # with zero SPI traffic, leaving margin, before polling for DONE.
+        if trigger is None and rate_hz > 0:
+            quiet = min(timeout, rc / float(rate_hz) + 0.05)
+            t_end = time.time() + quiet
+            while time.time() < t_end:
+                if stop_evt and stop_evt.is_set():
+                    return b''
+                time.sleep(min(0.02, max(0.0, t_end - time.time())))
 
         st = self._wait_capture_done(timeout, stop_evt=stop_evt, expected_seq=expected_seq)
         if stop_evt and stop_evt.is_set():
