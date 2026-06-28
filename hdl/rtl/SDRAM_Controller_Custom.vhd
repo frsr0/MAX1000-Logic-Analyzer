@@ -150,6 +150,8 @@ architecture rtl of SDRAM_Controller is
     signal burst_cnt       : natural range 0 to 3 := 0;
 
     signal dq_oe : std_logic := '0';
+    -- Registered streaming write data (see DQ mux comment).
+    signal s_wd_stream : std_logic_vector(15 downto 0) := (others => '0');
 
     signal bank_r : std_logic_vector(1 downto 0) := "00";
     signal row_r  : std_logic_vector(11 downto 0) := (others => '0');
@@ -201,7 +203,14 @@ begin
     sdram_addr  <= s_addr;
     sdram_ba    <= s_ba;
 
-    sdram_dq <= capture_stream_data when dq_oe = '1' and last_op_was_stream = '1' else
+    -- Streaming writes drive DQ from a REGISTERED copy of capture_stream_data
+    -- (s_wd_stream), not combinationally. The write command/address are
+    -- registered, so a combinational DQ had a longer, unbalanced path to the pin
+    -- and a marginal setup window at the SDRAM, causing rare intermittent
+    -- single-bit write errors at 167 MHz. s_wd_stream is latched in ST_STREAM_WR
+    -- alongside the command; the producer holds its data stable across that
+    -- cycle, so the registered value matches the sample being addressed.
+    sdram_dq <= s_wd_stream when dq_oe = '1' and last_op_was_stream = '1' else
                 buf_wd when dq_oe = '1' else
                 (others => 'Z');
     sdram_s_idle <= '1' when state = ST_IDLE else '0';
@@ -501,16 +510,37 @@ begin
                     end if;
 
                 when ST_STREAM_WR =>
-                    s_cas <= '0'; s_we <= '0';
-                    s_addr <= "0000" & capture_stream_addr(7 downto 0);
-                    s_ba <= capture_stream_addr(21 downto 20);
                     last_op_was_stream <= '1';
-                    capture_stream_ready_r <= '1';
                     if ref_req = '1' or pend_rn = '1'
                     or capture_stream_valid = '0'
                     or not is_same_row(capture_stream_addr, active_row, active_bank) then
+                        -- DEFER (page boundary, pending refresh/read, or producer
+                        -- idle). capture_stream_ready_r is a REGISTERED pulse, so the
+                        -- ready asserted for the previous same-row write lingers into
+                        -- this cycle and the producer (FLA) advances its FIFO/write
+                        -- pointer on it -- the deferred sample would be lost, leaving
+                        -- a stale SDRAM cell (rare intermittent single-sample drops at
+                        -- row boundaries and refresh collisions). Latch the sample
+                        -- into the normal pending-write path so it survives the
+                        -- over-advance: ST_DEASSERT's pend_wn handling precharges/
+                        -- activates as needed (cross-row) or writes it in place
+                        -- (same-row), then refresh/read proceed. Do NOT ack here.
+                        if capture_stream_valid = '1' then
+                            buf_a   <= capture_stream_addr;
+                            buf_wd  <= capture_stream_data;
+                            pend_wn <= '1';
+                            last_op_was_stream <= '0';
+                            -- Balance the write-depth counter that the pend_wn
+                            -- handler decrements when it services this write.
+                            v_depth := v_depth + 1;
+                        end if;
                         state <= ST_TWR;
                     else
+                        s_cas <= '0'; s_we <= '0';
+                        s_addr <= "0000" & capture_stream_addr(7 downto 0);
+                        s_ba <= capture_stream_addr(21 downto 20);
+                        s_wd_stream <= capture_stream_data;  -- register DQ with command
+                        capture_stream_ready_r <= '1';
                         state <= ST_STREAM_WR;
                     end if;
 
