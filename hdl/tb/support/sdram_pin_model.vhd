@@ -10,7 +10,14 @@ entity sdram_pin_model is
   generic (
     ROW_WIDTH : natural := 12;
     COL_WIDTH : natural := 8;
-    CL        : natural := 2
+    CL        : natural := 2;
+    -- STRICT: enforce JEDEC bank-active semantics. A bank must be ACTIVATED and
+    -- not since PRECHARGEd / AUTO-REFRESHed for a WRITE or READ to commit. A
+    -- command to a closed bank is IGNORED (write lost / read returns idle DQ) and
+    -- REPORTED -- this reproduces the real-silicon "never written = 0xFFFF" drop
+    -- that the lax model (PRECHARGE/REFRESH ignored, write always commits to the
+    -- last-activated row) hides. Default false keeps existing testbenches intact.
+    STRICT    : boolean := false
   );
   port (
     clk   : in    std_logic;
@@ -37,6 +44,8 @@ begin
   main : process(clk)
     variable mem : mem_t(0 to MEM_WORDS-1) := (others => x"DEAD");
     variable open_row : row_arr := (others => 0);
+    variable active   : boolean_vector(0 to 3) := (others => false);
+    variable tact     : row_arr := (others => 0);  -- cycles since ACTIVATE (tRCD)
     variable cmd : std_logic_vector(2 downto 0);
     variable bank : natural;
     variable col  : natural;
@@ -67,18 +76,42 @@ begin
         case cmd is
           when "011" =>  -- ACTIVATE
             open_row(bank) := to_integer(unsigned(addr(ROW_WIDTH-1 downto 0)));
+            active(bank) := true;
+            tact(bank) := 0;
           when "100" =>  -- WRITE
             col := to_integer(unsigned(addr(COL_WIDTH-1 downto 0)));
             widx := (bank * (2**ROW_WIDTH) + open_row(bank)) * (2**COL_WIDTH) + col;
-            if dqm = "00" then
+            if STRICT and not active(bank) then
+              report "SDRAM STRICT: WRITE to CLOSED bank " & integer'image(bank) &
+                     " col " & integer'image(col) & " DROPPED (cell stays idle)"
+                     severity warning;
+            elsif dqm = "00" then
               mem(widx) := dq;
             end if;
           when "101" =>  -- READ: schedule the DQ drive window
             col := to_integer(unsigned(addr(COL_WIDTH-1 downto 0)));
             widx := (bank * (2**ROW_WIDTH) + open_row(bank)) * (2**COL_WIDTH) + col;
-            rd_data  := mem(widx);
+            if STRICT and not active(bank) then
+              report "SDRAM STRICT: READ from CLOSED bank " & integer'image(bank) &
+                     " col " & integer'image(col) severity warning;
+              rd_data := (others => '1');  -- idle/undriven bus reads as 0xFFFF
+            else
+              rd_data := mem(widx);
+            end if;
             rd_drive := CL + 1;  -- drive a window that covers the CL-cycle sample
-          when others =>  -- LOAD MODE / REFRESH / PRECHARGE / NOP: ignore
+          when "010" =>  -- PRECHARGE: close the addressed bank (A10=1 -> all)
+            if addr(10) = '1' then
+              active := (others => false);
+            else
+              active(bank) := false;
+            end if;
+          when "001" =>  -- AUTO REFRESH: all banks must be precharged; closes all
+            if STRICT and (active(0) or active(1) or active(2) or active(3)) then
+              report "SDRAM STRICT: AUTO-REFRESH with an OPEN bank (illegal)"
+                     severity warning;
+            end if;
+            active := (others => false);
+          when others =>  -- LOAD MODE / NOP: ignore
             null;
         end case;
       end if;

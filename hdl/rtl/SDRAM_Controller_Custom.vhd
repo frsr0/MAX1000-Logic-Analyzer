@@ -151,7 +151,11 @@ architecture rtl of SDRAM_Controller is
 
     signal dq_oe : std_logic := '0';
     -- Registered streaming write data (see DQ mux comment).
-    signal s_wd_stream : std_logic_vector(15 downto 0) := (others => '0');
+    -- Single registered DQ output. Drives the sdram_dq pin directly (no
+    -- combinational mux), so it packs into the I/O cell and the write data has a
+    -- clean, glitch-free register->pin path. Loaded at every write-command cycle
+    -- (ST_STREAM_WR streaming write, ST_WR burst/avalon write).
+    signal dq_out : std_logic_vector(15 downto 0) := (others => '0');
 
     signal bank_r : std_logic_vector(1 downto 0) := "00";
     signal row_r  : std_logic_vector(11 downto 0) := (others => '0');
@@ -203,16 +207,16 @@ begin
     sdram_addr  <= s_addr;
     sdram_ba    <= s_ba;
 
-    -- Streaming writes drive DQ from a REGISTERED copy of capture_stream_data
-    -- (s_wd_stream), not combinationally. The write command/address are
-    -- registered, so a combinational DQ had a longer, unbalanced path to the pin
-    -- and a marginal setup window at the SDRAM, causing rare intermittent
-    -- single-bit write errors at 167 MHz. s_wd_stream is latched in ST_STREAM_WR
-    -- alongside the command; the producer holds its data stable across that
-    -- cycle, so the registered value matches the sample being addressed.
-    sdram_dq <= s_wd_stream when dq_oe = '1' and last_op_was_stream = '1' else
-                buf_wd when dq_oe = '1' else
-                (others => 'Z');
+    -- DQ pin driven by a SINGLE registered value (dq_out) gated by a registered
+    -- output-enable (dq_oe). Previously the pin was driven by a COMBINATIONAL mux
+    -- (s_wd_stream/buf_wd selected by last_op_was_stream) sitting between the
+    -- registers and the pin: it could not pack into the I/O cell and the OE/select
+    -- resolved combinationally right at the pad, so a momentary wrong-OE could
+    -- float DQ during a write -> the SDRAM latched the idle bus (0xFFFF / "never
+    -- written"), a PHASE-INSENSITIVE rare single-sample write drop. dq_out is
+    -- loaded at each write-command cycle (ST_STREAM_WR / ST_WR), so this is a
+    -- clean register->IOE path with a registered OE.
+    sdram_dq <= dq_out when dq_oe = '1' else (others => 'Z');
     sdram_s_idle <= '1' when state = ST_IDLE else '0';
     capture_stream_ready <= capture_stream_ready_r;
 
@@ -238,6 +242,7 @@ begin
             last_rn <= '1'; last_wn <= '1';
             pend_rn <= '0'; pend_wn <= '0'; pend_wn_next <= '0';
             buf_a <= (others => '0'); buf_wd <= (others => '0');
+            dq_out <= (others => '0');
             buf_a_next <= (others => '0'); buf_wd_next <= (others => '0');
             is_read <= '0';
             s_cs <= '1'; s_ras <= '1'; s_cas <= '1'; s_we <= '1';
@@ -491,6 +496,10 @@ begin
                     s_addr <= "0000" & col_r;
                     s_ba <= bank_r;
                     last_op_was_stream <= '0';
+                    -- Drive DQ from the single registered output, aligned with the
+                    -- write command (uses the CURRENT buf_wd; the burst branch below
+                    -- loads the NEXT beat into buf_wd in the same cycle).
+                    dq_out <= buf_wd;
                     if burst_active = '1' and burst_cnt < 3 then
                         -- Stay for next burst beat: drain FIFO entry
                         burst_cnt <= burst_cnt + 1;
@@ -511,6 +520,24 @@ begin
 
                 when ST_STREAM_WR =>
                     last_op_was_stream <= '1';
+                    -- TIMING CLOSURE (clk[2]=167 MHz, -0.161 ns setup): pre-load
+                    -- buf_a/buf_wd from the incoming sample whenever it is valid,
+                    -- BEFORE (and independent of) the defer decision. Previously
+                    -- these registers loaded only inside the defer branch, so their
+                    -- data-load mux select carried the full defer condition --
+                    -- including is_same_row(capture_stream_addr,...). That put a
+                    -- 14-bit row/bank compare in series with the buf_a address mux
+                    -- (cap_stream_addr -> is_same_row -> Selectors -> buf_a), the
+                    -- worst intra-167MHz path. Decoupling the load to a single
+                    -- capture_stream_valid gate removes is_same_row from buf_a's
+                    -- select. buf_a is unused in the write-now branch (that branch
+                    -- drives s_addr directly from capture_stream_addr), and when the
+                    -- defer branch sets pend_wn buf_a still holds this same address,
+                    -- so the pending-write path is unchanged.
+                    if capture_stream_valid = '1' then
+                        buf_a  <= capture_stream_addr;
+                        buf_wd <= capture_stream_data;
+                    end if;
                     if ref_req = '1' or pend_rn = '1'
                     or capture_stream_valid = '0'
                     or not is_same_row(capture_stream_addr, active_row, active_bank) then
@@ -526,8 +553,7 @@ begin
                         -- activates as needed (cross-row) or writes it in place
                         -- (same-row), then refresh/read proceed. Do NOT ack here.
                         if capture_stream_valid = '1' then
-                            buf_a   <= capture_stream_addr;
-                            buf_wd  <= capture_stream_data;
+                            -- buf_a/buf_wd already loaded above (valid-gated).
                             pend_wn <= '1';
                             last_op_was_stream <= '0';
                             -- Balance the write-depth counter that the pend_wn
@@ -539,7 +565,7 @@ begin
                         s_cas <= '0'; s_we <= '0';
                         s_addr <= "0000" & capture_stream_addr(7 downto 0);
                         s_ba <= capture_stream_addr(21 downto 20);
-                        s_wd_stream <= capture_stream_data;  -- register DQ with command
+                        dq_out <= capture_stream_data;  -- single registered DQ, with command
                         capture_stream_ready_r <= '1';
                         state <= ST_STREAM_WR;
                     end if;
