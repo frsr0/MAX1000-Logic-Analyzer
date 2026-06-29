@@ -124,7 +124,12 @@ architecture rtl of SDRAM_Controller is
     );
     signal state : state_type := ST_INIT;
 
-    signal cnt   : integer range 0 to 65535 := 0;
+    -- Runtime wait counter: only ever counts to small values (tRCD/tWR/tRFC/tRP/
+    -- CL, all < 16), so a narrow range keeps its carry chain short at 167 MHz.
+    -- The one-time ~100 us power-up wait uses init_cnt instead, so the wide 19999
+    -- compare/increment is off this (per-operation, timing-critical) counter.
+    signal cnt   : integer range 0 to 63 := 0;
+    signal init_cnt : integer range 0 to 32767 := 0;  -- ST_INIT power-up wait only
     signal timer : integer range 0 to 65535 := 0;
     signal ref_req : std_logic := '0';
 
@@ -246,7 +251,7 @@ begin
     begin
         if reset_reset_n = '0' then
             state <= ST_INIT;
-            cnt <= 0; timer <= 0; ref_req <= '0';
+            cnt <= 0; init_cnt <= 0; timer <= 0; ref_req <= '0';
             dq_oe <= '0';
             sdram_s_waitrequest <= '1'; sdram_s_readdatavalid <= '0';
             sdram_s_readdata <= (others => '0');
@@ -323,8 +328,8 @@ begin
                 -- INITIALIZATION
                 when ST_INIT =>
                     s_cs <= '1';
-                    if cnt < 19999 then cnt <= cnt + 1;
-                    else cnt <= 0; state <= ST_INIT_NOP;
+                    if init_cnt < 19999 then init_cnt <= init_cnt + 1;
+                    else init_cnt <= 0; state <= ST_INIT_NOP;
                     end if;
 
                 when ST_INIT_NOP =>
