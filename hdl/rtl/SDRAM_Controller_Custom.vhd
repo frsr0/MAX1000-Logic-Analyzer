@@ -177,7 +177,7 @@ architecture rtl of SDRAM_Controller is
     signal active_bank : std_logic_vector(1 downto 0) := (others => '0');
     signal row_open    : std_logic := '0';
     signal last_op_was_stream : std_logic := '0';
-    signal capture_stream_ready_r : std_logic := '0';
+    signal capture_stream_ready_now : std_logic := '0';
 
     -- Mode register: A2:0 burst length 1, A3 sequential, A6:4 CAS latency,
     -- A9:7 standard operating mode. CAS latency is "011" (CL3): at 167 MHz (6 ns)
@@ -218,7 +218,18 @@ begin
     -- clean register->IOE path with a registered OE.
     sdram_dq <= dq_out when dq_oe = '1' else (others => 'Z');
     sdram_s_idle <= '1' when state = ST_IDLE else '0';
-    capture_stream_ready <= capture_stream_ready_r;
+    -- Producer and controller share clk_in_clk, so READY must describe the
+    -- current cycle's accept decision. A registered READY lingers high for one
+    -- extra cycle and can make the producer pop/increment into a cycle where
+    -- the controller is actually deferring the sample.
+    capture_stream_ready_now <= '1'
+        when state = ST_STREAM_WR
+         and capture_stream_valid = '1'
+         and ref_req = '0'
+         and pend_rn = '0'
+         and is_same_row(capture_stream_addr, active_row, active_bank)
+        else '0';
+    capture_stream_ready <= capture_stream_ready_now;
 
     -- synthesis translate_off
     process(max_write_depth)
@@ -252,11 +263,8 @@ begin
             row_open <= '0'; active_row <= (others => '0'); active_bank <= (others => '0');
             burst_fifo_cnt <= 0; burst_active <= '0'; burst_cnt <= 0;
             last_op_was_stream <= '0';
-            capture_stream_ready_r <= '0';
 
         elsif rising_edge(clk_in_clk) then
-            capture_stream_ready_r <= '0';
-
             last_rn <= sdram_s_read_n;
             last_wn <= sdram_s_write_n;
 
@@ -542,16 +550,11 @@ begin
                     or capture_stream_valid = '0'
                     or not is_same_row(capture_stream_addr, active_row, active_bank) then
                         -- DEFER (page boundary, pending refresh/read, or producer
-                        -- idle). capture_stream_ready_r is a REGISTERED pulse, so the
-                        -- ready asserted for the previous same-row write lingers into
-                        -- this cycle and the producer (FLA) advances its FIFO/write
-                        -- pointer on it -- the deferred sample would be lost, leaving
-                        -- a stale SDRAM cell (rare intermittent single-sample drops at
-                        -- row boundaries and refresh collisions). Latch the sample
-                        -- into the normal pending-write path so it survives the
-                        -- over-advance: ST_DEASSERT's pend_wn handling precharges/
-                        -- activates as needed (cross-row) or writes it in place
-                        -- (same-row), then refresh/read proceed. Do NOT ack here.
+                        -- idle). READY is combinational in this clock domain now,
+                        -- so the producer no longer over-advances into a deferred
+                        -- cycle. Keep routing the deferred sample through the
+                        -- normal pending-write path so row/refresh/read conflicts
+                        -- preserve ordering. Do NOT ack here.
                         if capture_stream_valid = '1' then
                             -- buf_a/buf_wd already loaded above (valid-gated).
                             pend_wn <= '1';
@@ -566,7 +569,6 @@ begin
                         s_addr <= "0000" & capture_stream_addr(7 downto 0);
                         s_ba <= capture_stream_addr(21 downto 20);
                         dq_out <= capture_stream_data;  -- single registered DQ, with command
-                        capture_stream_ready_r <= '1';
                         state <= ST_STREAM_WR;
                     end if;
 
