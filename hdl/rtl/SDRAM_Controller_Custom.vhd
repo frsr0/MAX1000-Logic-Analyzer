@@ -735,19 +735,15 @@ begin
                             state <= ST_ACT;
                         end if;
                     else
-                        -- No pending: go idle, close row if open
-                        if row_open = '1' then
-                            state <= ST_PRE2;
-                        else
-                            -- Check if refresh was requested while we were busy
-                            if ref_req = '1' then
-                                ref_req <= '0';
-                                sdram_s_waitrequest <= '1';
-                                state <= ST_RFSH;
-                            else
-                                state <= ST_IDLE;
-                            end if;
-                        end if;
+                        -- No pending work: OPEN-PAGE policy. Keep the row OPEN and
+                        -- go idle, so the next (typically same-row) streaming write
+                        -- enters ST_STREAM_WR directly without a re-ACTIVATE.
+                        -- Closing here forced ACT+write+PRE for EVERY sample at
+                        -- sparse capture rates (page-mode only survived back-to-back
+                        -- writes) -- the deep-capture throughput ceiling. ST_IDLE
+                        -- still precharges before refresh, and cross-row writes/reads
+                        -- still precharge as needed, so correctness is unchanged.
+                        state <= ST_IDLE;
                     end if;
 
             end case;
