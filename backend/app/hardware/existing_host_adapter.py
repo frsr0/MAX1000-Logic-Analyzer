@@ -39,7 +39,10 @@ ADC_SCAN_FRAME_RATE_HZ = 125_000.0
 ADC_FAST_FRAME_RATE_HZ = 1_000_000.0
 DIGITAL_DEEP_SAMPLE_RATE_HZ = 14_000_000.0
 DIGITAL_FAST_BRAM_SAMPLES = 1024
-DIGITAL_SDRAM_WORDS = 1_048_576
+# Full 64 Mbit x16 SDRAM = 4,194,304 words. Raised from 1M after the deep-capture
+# write-path fix: hardware-validated end-to-end (1M/2M/4M captures all return 100%
+# of samples with 0 drops). 1M was the conservative pre-fix ceiling.
+DIGITAL_SDRAM_WORDS = 4_194_304
 DIGITAL_NARROW_LOGICAL_SAMPLES = DIGITAL_SDRAM_WORDS * 16
 
 
