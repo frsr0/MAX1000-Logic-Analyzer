@@ -7,14 +7,16 @@ use IEEE.numeric_std.all;
 ENTITY OLS_Logic_Analyzer IS
   GENERIC (
       CLK_Frequency   : INTEGER := 12000000;     
+      SDRAM_CLK_HZ   : INTEGER := 166_666_667;
       SAMPLE_CLK_HZ  : INTEGER := 200_000_000;
-    Max_Samples     : NATURAL := 1000000;      
+    Max_Samples     : NATURAL := 4194304;      
     Channels        : NATURAL := 4;
     Sim             : boolean := false;
     FAST_SPEED      : boolean := false
   );
 PORT (
   CLK : IN STD_LOGIC;
+  SDRAM_CLK_IN : IN STD_LOGIC := '0';
   FAST_CLK : IN STD_LOGIC := '0';
   Inputs_Sys         : IN  STD_LOGIC_VECTOR(Channels-1 downto 0);
   Inputs_Fast        : IN  STD_LOGIC_VECTOR(Channels-1 downto 0);
@@ -211,11 +213,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
       END COMPONENT;
     COMPONENT Fast_Logic_Analyzer_SDRAM IS
   GENERIC (
-      Max_Samples    : NATURAL := 3000000;
+      Max_Samples    : NATURAL := 4194304;
     Channels       : NATURAL range 1 to 16 := 16;
     Sim            : boolean := false;
     FAST_SPEED     : boolean := false;
     CLK_Frequency  : NATURAL := 100_000_000;
+    SDRAM_CLK_HZ   : NATURAL := 166_666_667;
     SAMPLE_CLK_HZ  : NATURAL := 200_000_000;
     Write_Latency  : natural := 10;
     Read_Latency   : natural := 3;
@@ -223,6 +226,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   );
   PORT (
     CLK : IN STD_LOGIC;
+    SDRAM_CLK_IN  : IN STD_LOGIC := '0';
     CLK_150     : OUT STD_LOGIC;
     Rate_Div     : IN  NATURAL range 1 to 500000000 := 12; 
     Samples      : IN  NATURAL range 1 to Max_Samples   := Max_Samples;  
@@ -360,9 +364,10 @@ BEGIN
   );
   Fast_Logic_Analyzer_SDRAM1 : Fast_Logic_Analyzer_SDRAM
    GENERIC MAP (
-      Max_Samples  => Max_Samples,Channels     => Channels,Sim          => Sim,FAST_SPEED   => FAST_SPEED,CLK_Frequency => CLK_Frequency,SAMPLE_CLK_HZ => SAMPLE_CLK_HZ
+      Max_Samples  => Max_Samples,Channels     => Channels,Sim          => Sim,FAST_SPEED   => FAST_SPEED,CLK_Frequency => CLK_Frequency,SDRAM_CLK_HZ => SDRAM_CLK_HZ,SAMPLE_CLK_HZ => SAMPLE_CLK_HZ
   ) PORT MAP (
     CLK => CLK,
+    SDRAM_CLK_IN => SDRAM_CLK_IN,
     CLK_150      => Fast_Logic_Analyzer_SDRAM_CLK_150,Rate_Div     => OLS_Interface_Rate_Div,Samples      => OLS_Interface_Samples,Start_Offset => OLS_Interface_Start_Offset,Run          => OLS_Interface_Run,Full         => OLS_Interface_Full,Inputs       => Inputs_Fast,Address      => LA_Address,Outputs      => LA_Out,sdram_addr   => sdram_addr,sdram_ba     => sdram_ba,sdram_cas_n  => sdram_cas_n,sdram_dq     => sdram_dq,sdram_dqm    => sdram_dqm,sdram_ras_n  => sdram_ras_n,sdram_we_n   => sdram_we_n,    sdram_cke    => sdram_cke,sdram_cs_n   => sdram_cs_n,sdram_clk    => sdram_clk,
     Status       => fla_status,
     Armed        => armed_i,

@@ -233,16 +233,15 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL blk_req_tog_i        : STD_LOGIC := '0';
   TYPE block_buf_t IS ARRAY(0 TO 255) OF STD_LOGIC_VECTOR(31 DOWNTO 0);
   SIGNAL block_buf            : block_buf_t := (others => (others => '0'));
-
   -- 21-cycle bit-serial divider for /3 (replaces 58-level lpm_divide)
   SIGNAL div3_shift   : STD_LOGIC_VECTOR(20 downto 0) := (others => '0');
   SIGNAL div3_acc     : NATURAL range 0 to 7 := 0;
-  SIGNAL div3_result  : NATURAL range 0 to 1048576 := 0;
+  SIGNAL div3_result  : NATURAL range 0 to Max_Samples := 0;
   SIGNAL div3_count   : NATURAL range 0 to 31 := 0;
   SIGNAL div3_busy    : STD_LOGIC := '0';
   SIGNAL div3_pending : STD_LOGIC := '0';
-  SIGNAL samples_div3  : NATURAL range 0 to 1048576 := 0;
-  SIGNAL samples_2div3 : NATURAL range 0 to 1048576 := 0;
+  SIGNAL samples_div3  : NATURAL range 0 to Max_Samples := 0;
+  SIGNAL samples_2div3 : NATURAL range 0 to Max_Samples := 0;
   COMPONENT Protocol_Trigger IS
   port (
     CLK          : in  std_logic;
@@ -502,7 +501,7 @@ BEGIN
         block_rd_state <= 2;
       WHEN 2 =>
         -- Drain one sample: pop when the FIFO has data (rdreq asserted next
-        -- cycle, q valid the cycle after that — showahead OFF).
+        -- cycle, q valid the cycle after that -- showahead OFF).
         IF Rd_Fifo_Empty = '0' THEN
           Rd_Fifo_RdReq <= '1';
           block_rd_state <= 3;

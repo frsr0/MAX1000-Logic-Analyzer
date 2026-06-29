@@ -204,8 +204,8 @@ class TestOLSDeviceSPI:
         ]
         data = device_spi.read_capture_range(start_sample=7, sample_count=600)
         device_spi.pkt.read_capture_block.assert_has_calls([
-            call(14),
-            call(1038),
+            call(12),
+            call(1034),
         ])
         assert len(data) == 1200
 

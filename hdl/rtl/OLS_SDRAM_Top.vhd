@@ -43,7 +43,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   function get_sys_clk_freq return natural is
   begin
     if FAST_SPEED then
-      return 100_000_000;
+      return 100_200_000;
     else
       return 12000000 * PLL_MULT / PLL_DIV;
     end if;
@@ -51,12 +51,21 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   function get_sample_clk_freq return natural is
   begin
     if FAST_SPEED then
-      return 200_000_000;
+      return 200_400_000;
+    else
+      return 12000000 * PLL_MULT / PLL_DIV;
+    end if;
+  end function;
+  function get_sdram_clk_freq return natural is
+  begin
+    if FAST_SPEED then
+      return 167_000_000;
     else
       return 12000000 * PLL_MULT / PLL_DIV;
     end if;
   end function;
   constant System_CLK_Frequency : natural := get_sys_clk_freq;
+  constant SDRAM_CLK_HZ : natural := get_sdram_clk_freq;
   constant SAMPLE_CLK_HZ : natural := get_sample_clk_freq;
   constant ENABLE_RUNTIME_INPUT_MUX : boolean := true;
   constant LA_CHANNELS : natural := 16;
@@ -217,14 +226,16 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   COMPONENT OLS_Logic_Analyzer IS
   GENERIC (
       CLK_Frequency : INTEGER := 12000000;
+      SDRAM_CLK_HZ : INTEGER := 166_666_667;
       SAMPLE_CLK_HZ : INTEGER := 200_000_000;
-    Max_Samples : NATURAL := 1000000;
+    Max_Samples : NATURAL := 4194304;
     Channels    : NATURAL := LA_CHANNELS;
     Sim         : boolean := false;
     FAST_SPEED  : boolean := false
   );
   PORT (
     CLK : IN STD_LOGIC;
+    SDRAM_CLK_IN : IN STD_LOGIC := '0';
     FAST_CLK : IN STD_LOGIC := '0';
     Inputs_Sys   : IN  STD_LOGIC_VECTOR(Channels-1 downto 0);
     Inputs_Fast  : IN  STD_LOGIC_VECTOR(Channels-1 downto 0);
@@ -366,12 +377,18 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
 
 BEGIN
 
-  -- SDRAM_PLL c3 is a dedicated 12 MHz output for the MAX10 ADC hard IP.
-  -- The adcblock requires a clean PLL clock at its rated conversion frequency;
-  -- the 100 MHz sys_clk (c0) violates the adcblock minimum-pulse-width spec.
-  -- The device (10M08SAU169) only has one PLL, so this output is added to the
-  -- existing SDRAM_PLL rather than a separate ADC PLL.
-  gen_use_pll : if PLL_MULT /= 1 or PLL_DIV /= 1 generate
+  -- FAST_SPEED is a dedicated digital-only build profile. On this MAX 10 /
+  -- 12 MHz reference combination the legal high-speed PLL solution is
+  -- approximately 100.2 MHz sys, 200.4 MHz sample, and 167.0 MHz SDRAM.
+  gen_use_pll_fast : if (PLL_MULT /= 1 or PLL_DIV /= 1) and FAST_SPEED generate
+    pll_inst : entity work.SDRAM_PLL
+      generic map (FAST_SPEED_MODE => true)
+      port map (inclk0 => CLK, c0 => sys_clk, c1 => fast_clk, c2 => sdram_clk_pll,
+                c3 => open, locked => pll_locked);
+    adc_conv_clk <= '0';
+  end generate;
+  -- Normal mode retains the legacy ADC clock requirement on c3.
+  gen_use_pll_normal : if (PLL_MULT /= 1 or PLL_DIV /= 1) and not FAST_SPEED generate
     pll_inst : entity work.SDRAM_PLL
       port map (inclk0 => CLK, c0 => sys_clk, c1 => fast_clk, c2 => sdram_clk_pll,
                 c3 => adc_conv_clk, locked => pll_locked);
@@ -379,6 +396,7 @@ BEGIN
   gen_no_pll : if PLL_MULT = 1 and PLL_DIV = 1 generate
     sys_clk <= CLK;
     fast_clk <= CLK;
+    sdram_clk_pll <= CLK;
     adc_conv_clk <= CLK;
     pll_locked <= '1';
   end generate;
@@ -729,66 +747,91 @@ BEGIN
     end if;
   end process;
 
-  ADC : ADC_Controller
-    port map (
-      sys_clk => sys_clk,
-      sys_clk_locked => pll_locked,
-      adc_clk => adc_conv_clk,
-      adc_clk_locked => pll_locked,
-      reset => '0',
-      ch0_sel => adc0_sel,
-      ch0_start => adc0_start,
-      ch0_busy => open,
-      ch0_result => adc0_result,
-      ch0_valid => adc0_valid,
-      ch1_sel => adc1_sel,
-      ch1_start => adc1_start,
-      ch1_busy => open,
-      ch1_result => adc1_result,
-      ch1_valid => adc1_valid,
-      ch2_sel => adc2_sel,
-      ch2_start => adc2_start,
-      ch2_busy => open,
-      ch2_result => adc2_result,
-      ch2_valid => adc2_valid,
-      ch3_sel => adc3_sel,
-      ch3_start => adc3_start,
-      ch3_busy => open,
-      ch3_result => adc3_result,
-      ch3_valid => adc3_valid,
-      ch4_sel => adc4_sel,
-      ch4_start => adc4_start,
-      ch4_busy => open,
-      ch4_result => adc4_result,
-      ch4_valid => adc4_valid,
-      ch5_sel => adc5_sel,
-      ch5_start => adc5_start,
-      ch5_busy => open,
-      ch5_result => adc5_result,
-      ch5_valid => adc5_valid,
-      ch6_sel => adc6_sel,
-      ch6_start => adc6_start,
-      ch6_busy => open,
-      ch6_result => adc6_result,
-      ch6_valid => adc6_valid,
-      ch7_sel => adc7_sel,
-      ch7_start => adc7_start,
-      ch7_busy => open,
-      ch7_result => adc7_result,
-      ch7_valid => adc7_valid
-    );
+  gen_adc_fast_off : if FAST_SPEED generate
+  begin
+    adc0_result <= (others => '0');
+    adc1_result <= (others => '0');
+    adc2_result <= (others => '0');
+    adc3_result <= (others => '0');
+    adc4_result <= (others => '0');
+    adc5_result <= (others => '0');
+    adc6_result <= (others => '0');
+    adc7_result <= (others => '0');
+    adc0_valid <= '0';
+    adc1_valid <= '0';
+    adc2_valid <= '0';
+    adc3_valid <= '0';
+    adc4_valid <= '0';
+    adc5_valid <= '0';
+    adc6_valid <= '0';
+    adc7_valid <= '0';
+  end generate;
+
+  gen_adc_normal : if not FAST_SPEED generate
+  begin
+    ADC : ADC_Controller
+      port map (
+        sys_clk => sys_clk,
+        sys_clk_locked => pll_locked,
+        adc_clk => adc_conv_clk,
+        adc_clk_locked => pll_locked,
+        reset => '0',
+        ch0_sel => adc0_sel,
+        ch0_start => adc0_start,
+        ch0_busy => open,
+        ch0_result => adc0_result,
+        ch0_valid => adc0_valid,
+        ch1_sel => adc1_sel,
+        ch1_start => adc1_start,
+        ch1_busy => open,
+        ch1_result => adc1_result,
+        ch1_valid => adc1_valid,
+        ch2_sel => adc2_sel,
+        ch2_start => adc2_start,
+        ch2_busy => open,
+        ch2_result => adc2_result,
+        ch2_valid => adc2_valid,
+        ch3_sel => adc3_sel,
+        ch3_start => adc3_start,
+        ch3_busy => open,
+        ch3_result => adc3_result,
+        ch3_valid => adc3_valid,
+        ch4_sel => adc4_sel,
+        ch4_start => adc4_start,
+        ch4_busy => open,
+        ch4_result => adc4_result,
+        ch4_valid => adc4_valid,
+        ch5_sel => adc5_sel,
+        ch5_start => adc5_start,
+        ch5_busy => open,
+        ch5_result => adc5_result,
+        ch5_valid => adc5_valid,
+        ch6_sel => adc6_sel,
+        ch6_start => adc6_start,
+        ch6_busy => open,
+        ch6_result => adc6_result,
+        ch6_valid => adc6_valid,
+        ch7_sel => adc7_sel,
+        ch7_start => adc7_start,
+        ch7_busy => open,
+        ch7_result => adc7_result,
+        ch7_valid => adc7_valid
+      );
+  end generate;
 
   SDRAM_Analyzer : OLS_Logic_Analyzer
    GENERIC MAP (
     CLK_Frequency => System_CLK_Frequency,
+    SDRAM_CLK_HZ => SDRAM_CLK_HZ,
     SAMPLE_CLK_HZ => SAMPLE_CLK_HZ,
-    Max_Samples  => 1048576,
+    Max_Samples  => 4194304,
     Channels     => LA_CHANNELS,
     Sim          => Sim,
     FAST_SPEED   => FAST_SPEED
   )
   PORT MAP (
     CLK => sys_clk,
+    SDRAM_CLK_IN => sdram_clk_pll,
     FAST_CLK => fast_clk,
     Inputs_Sys   => internal_data_r,
     Inputs_Fast  => capture_data_fast,

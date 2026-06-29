@@ -40,6 +40,10 @@ LIBRARY altera_mf;
 USE altera_mf.all;
 
 ENTITY SDRAM_PLL IS
+	GENERIC
+	(
+		FAST_SPEED_MODE : BOOLEAN := FALSE
+	);
 	PORT
 	(
 		areset		: IN STD_LOGIC  := '0';
@@ -158,85 +162,171 @@ BEGIN
 	c0    <= sub_wire4;
 	c1    <= sub_wire5;
 	c2    <= sub_wire7;
-	c3    <= sub_wire8;
 	locked    <= sub_wire6;
 
-	altpll_component : altpll
-	GENERIC MAP (
-		bandwidth_type => "AUTO",
-		clk0_divide_by => 6,
-		clk0_duty_cycle => 50,
-		clk0_multiply_by => 50,
-		clk0_phase_shift => "0",
-		clk1_divide_by => 3,
-		clk1_duty_cycle => 50,
-		clk1_multiply_by => 50,
-		clk1_phase_shift => "0",
-		clk2_divide_by => 6,
-		clk2_duty_cycle => 50,
-		clk2_multiply_by => 50,
-		clk2_phase_shift => "-2500",
-		clk3_divide_by => 50,
-		clk3_duty_cycle => 50,
-		clk3_multiply_by => 50,
-		clk3_phase_shift => "0",
-		compensate_clock => "CLK0",
-		inclk0_input_frequency => 83333,
-		intended_device_family => "MAX 10",
-		lpm_hint => "CBX_MODULE_PREFIX=SDRAM_PLL",
-		lpm_type => "altpll",
-		operation_mode => "NORMAL",
-		pll_type => "AUTO",
-		port_activeclock => "PORT_UNUSED",
-		port_areset => "PORT_USED",
-		port_clkbad0 => "PORT_UNUSED",
-		port_clkbad1 => "PORT_UNUSED",
-		port_clkloss => "PORT_UNUSED",
-		port_clkswitch => "PORT_UNUSED",
-		port_configupdate => "PORT_UNUSED",
-		port_fbin => "PORT_UNUSED",
-		port_inclk0 => "PORT_USED",
-		port_inclk1 => "PORT_UNUSED",
-		port_locked => "PORT_USED",
-		port_pfdena => "PORT_UNUSED",
-		port_phasecounterselect => "PORT_UNUSED",
-		port_phasedone => "PORT_UNUSED",
-		port_phasestep => "PORT_UNUSED",
-		port_phaseupdown => "PORT_UNUSED",
-		port_pllena => "PORT_UNUSED",
-		port_scanaclr => "PORT_UNUSED",
-		port_scanclk => "PORT_UNUSED",
-		port_scanclkena => "PORT_UNUSED",
-		port_scandata => "PORT_UNUSED",
-		port_scandataout => "PORT_UNUSED",
-		port_scandone => "PORT_UNUSED",
-		port_scanread => "PORT_UNUSED",
-		port_scanwrite => "PORT_UNUSED",
-		port_clk0 => "PORT_USED",
-		port_clk1 => "PORT_USED",
-		port_clk2 => "PORT_USED",
-		port_clk3 => "PORT_USED",
-		port_clk4 => "PORT_UNUSED",
-		port_clk5 => "PORT_UNUSED",
-		port_clkena0 => "PORT_UNUSED",
-		port_clkena1 => "PORT_UNUSED",
-		port_clkena2 => "PORT_UNUSED",
-		port_clkena3 => "PORT_UNUSED",
-		port_clkena4 => "PORT_UNUSED",
-		port_clkena5 => "PORT_UNUSED",
-		port_extclk0 => "PORT_UNUSED",
-		port_extclk1 => "PORT_UNUSED",
-		port_extclk2 => "PORT_UNUSED",
-		port_extclk3 => "PORT_UNUSED",
-		self_reset_on_loss_lock => "OFF",
-		width_clock => 5
-	)
-	PORT MAP (
-		areset => areset,
-		inclk => sub_wire1,
-		clk => sub_wire3,
-		locked => sub_wire6
-	);
+	gen_fast_speed : if FAST_SPEED_MODE generate
+	begin
+		c3 <= '0';
+
+		altpll_component : altpll
+		GENERIC MAP (
+			bandwidth_type => "AUTO",
+			clk0_divide_by => 20,
+			clk0_duty_cycle => 50,
+			clk0_multiply_by => 167,
+			clk0_phase_shift => "0",
+			clk1_divide_by => 10,
+			clk1_duty_cycle => 50,
+			clk1_multiply_by => 167,
+			clk1_phase_shift => "0",
+			clk2_divide_by => 12,
+			clk2_duty_cycle => 50,
+			clk2_multiply_by => 167,
+			clk2_phase_shift => "-1500",
+			clk3_divide_by => 1,
+			clk3_duty_cycle => 50,
+			clk3_multiply_by => 1,
+			clk3_phase_shift => "0",
+			compensate_clock => "CLK0",
+			inclk0_input_frequency => 83333,
+			intended_device_family => "MAX 10",
+			lpm_hint => "CBX_MODULE_PREFIX=SDRAM_PLL",
+			lpm_type => "altpll",
+			operation_mode => "NORMAL",
+			pll_type => "AUTO",
+			port_activeclock => "PORT_UNUSED",
+			port_areset => "PORT_USED",
+			port_clkbad0 => "PORT_UNUSED",
+			port_clkbad1 => "PORT_UNUSED",
+			port_clkloss => "PORT_UNUSED",
+			port_clkswitch => "PORT_UNUSED",
+			port_configupdate => "PORT_UNUSED",
+			port_fbin => "PORT_UNUSED",
+			port_inclk0 => "PORT_USED",
+			port_inclk1 => "PORT_UNUSED",
+			port_locked => "PORT_USED",
+			port_pfdena => "PORT_UNUSED",
+			port_phasecounterselect => "PORT_UNUSED",
+			port_phasedone => "PORT_UNUSED",
+			port_phasestep => "PORT_UNUSED",
+			port_phaseupdown => "PORT_UNUSED",
+			port_pllena => "PORT_UNUSED",
+			port_scanaclr => "PORT_UNUSED",
+			port_scanclk => "PORT_UNUSED",
+			port_scanclkena => "PORT_UNUSED",
+			port_scandata => "PORT_UNUSED",
+			port_scandataout => "PORT_UNUSED",
+			port_scandone => "PORT_UNUSED",
+			port_scanread => "PORT_UNUSED",
+			port_scanwrite => "PORT_UNUSED",
+			port_clk0 => "PORT_USED",
+			port_clk1 => "PORT_USED",
+			port_clk2 => "PORT_USED",
+			port_clk3 => "PORT_UNUSED",
+			port_clk4 => "PORT_UNUSED",
+			port_clk5 => "PORT_UNUSED",
+			port_clkena0 => "PORT_UNUSED",
+			port_clkena1 => "PORT_UNUSED",
+			port_clkena2 => "PORT_UNUSED",
+			port_clkena3 => "PORT_UNUSED",
+			port_clkena4 => "PORT_UNUSED",
+			port_clkena5 => "PORT_UNUSED",
+			port_extclk0 => "PORT_UNUSED",
+			port_extclk1 => "PORT_UNUSED",
+			port_extclk2 => "PORT_UNUSED",
+			port_extclk3 => "PORT_UNUSED",
+			self_reset_on_loss_lock => "OFF",
+			width_clock => 5
+		)
+		PORT MAP (
+			areset => areset,
+			inclk => sub_wire1,
+			clk => sub_wire3,
+			locked => sub_wire6
+		);
+	end generate;
+
+	gen_default : if not FAST_SPEED_MODE generate
+	begin
+		c3 <= sub_wire8;
+
+		altpll_component : altpll
+		GENERIC MAP (
+			bandwidth_type => "AUTO",
+			clk0_divide_by => 30,
+			clk0_duty_cycle => 50,
+			clk0_multiply_by => 250,
+			clk0_phase_shift => "0",
+			clk1_divide_by => 15,
+			clk1_duty_cycle => 50,
+			clk1_multiply_by => 250,
+			clk1_phase_shift => "0",
+			clk2_divide_by => 18,
+			clk2_duty_cycle => 50,
+			clk2_multiply_by => 250,
+			clk2_phase_shift => "-1500",
+			clk3_divide_by => 250,
+			clk3_duty_cycle => 50,
+			clk3_multiply_by => 250,
+			clk3_phase_shift => "0",
+			compensate_clock => "CLK0",
+			inclk0_input_frequency => 83333,
+			intended_device_family => "MAX 10",
+			lpm_hint => "CBX_MODULE_PREFIX=SDRAM_PLL",
+			lpm_type => "altpll",
+			operation_mode => "NORMAL",
+			pll_type => "AUTO",
+			port_activeclock => "PORT_UNUSED",
+			port_areset => "PORT_USED",
+			port_clkbad0 => "PORT_UNUSED",
+			port_clkbad1 => "PORT_UNUSED",
+			port_clkloss => "PORT_UNUSED",
+			port_clkswitch => "PORT_UNUSED",
+			port_configupdate => "PORT_UNUSED",
+			port_fbin => "PORT_UNUSED",
+			port_inclk0 => "PORT_USED",
+			port_inclk1 => "PORT_UNUSED",
+			port_locked => "PORT_USED",
+			port_pfdena => "PORT_UNUSED",
+			port_phasecounterselect => "PORT_UNUSED",
+			port_phasedone => "PORT_UNUSED",
+			port_phasestep => "PORT_UNUSED",
+			port_phaseupdown => "PORT_UNUSED",
+			port_pllena => "PORT_UNUSED",
+			port_scanaclr => "PORT_UNUSED",
+			port_scanclk => "PORT_UNUSED",
+			port_scanclkena => "PORT_UNUSED",
+			port_scandata => "PORT_UNUSED",
+			port_scandataout => "PORT_UNUSED",
+			port_scandone => "PORT_UNUSED",
+			port_scanread => "PORT_UNUSED",
+			port_scanwrite => "PORT_UNUSED",
+			port_clk0 => "PORT_USED",
+			port_clk1 => "PORT_USED",
+			port_clk2 => "PORT_USED",
+			port_clk3 => "PORT_USED",
+			port_clk4 => "PORT_UNUSED",
+			port_clk5 => "PORT_UNUSED",
+			port_clkena0 => "PORT_UNUSED",
+			port_clkena1 => "PORT_UNUSED",
+			port_clkena2 => "PORT_UNUSED",
+			port_clkena3 => "PORT_UNUSED",
+			port_clkena4 => "PORT_UNUSED",
+			port_clkena5 => "PORT_UNUSED",
+			port_extclk0 => "PORT_UNUSED",
+			port_extclk1 => "PORT_UNUSED",
+			port_extclk2 => "PORT_UNUSED",
+			port_extclk3 => "PORT_UNUSED",
+			self_reset_on_loss_lock => "OFF",
+			width_clock => 5
+		)
+		PORT MAP (
+			areset => areset,
+			inclk => sub_wire1,
+			clk => sub_wire3,
+			locked => sub_wire6
+		);
+	end generate;
 
 
 

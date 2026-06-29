@@ -26,6 +26,7 @@ entity dcfifo is
     intended_device_family : string := "MAX 10"
   );
   port (
+    aclr     : in  std_logic := '0';
     data     : in  std_logic_vector(lpm_width-1 downto 0);
     wrreq    : in  std_logic;
     wrclk    : in  std_logic;
@@ -59,9 +60,12 @@ begin
   rptr_seen_by_wr <= rptr_to_wr(wrsync_delaypipe);
 
   -- Write domain: write data, advance wptr; synchronise rptr in from read side.
-  wr_side : process(wrclk)
+  wr_side : process(wrclk, aclr)
   begin
-    if rising_edge(wrclk) then
+    if aclr = '1' then
+      wptr <= 0;
+      rptr_to_wr <= (others => 0);
+    elsif rising_edge(wrclk) then
       if wrreq = '1' and (wptr - rptr_seen_by_wr) < lpm_numwords then
         mem(wptr mod lpm_numwords) <= data;
         wptr <= wptr + 1;
@@ -77,9 +81,13 @@ begin
     -- showahead OFF: q registered, updates on the rdclk edge that samples
     -- rdreq='1'. Only pop data the read side is allowed to see (synchronised
     -- write pointer), so a read never outruns the synchroniser.
-    rd_side : process(rdclk)
+    rd_side : process(rdclk, aclr)
     begin
-      if rising_edge(rdclk) then
+      if aclr = '1' then
+        rptr <= 0;
+        q <= (others => '0');
+        wptr_to_rd <= (others => 0);
+      elsif rising_edge(rdclk) then
         if rdreq = '1' and rptr < wptr_seen_by_rd then
           q <= mem(rptr mod lpm_numwords);
           rptr <= rptr + 1;
@@ -93,9 +101,12 @@ begin
   end generate;
 
   gen_sa_on : if lpm_showahead /= "OFF" generate
-    rd_ptr : process(rdclk)
+    rd_ptr : process(rdclk, aclr)
     begin
-      if rising_edge(rdclk) then
+      if aclr = '1' then
+        rptr <= 0;
+        wptr_to_rd <= (others => 0);
+      elsif rising_edge(rdclk) then
         if rdreq = '1' and rptr < wptr_seen_by_rd then
           rptr <= rptr + 1;
         end if;

@@ -207,6 +207,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal fifo_wrfull : std_logic := '0';
   signal fifo_wrusedw : std_logic_vector(AFIFO_WIDTHU-1 downto 0) := (others => '0');
   signal fifo_wralmost_full : std_logic := '0';
+  signal fifo_aclr  : std_logic := '0';
   signal fifo_rdata : std_logic_vector(AFIFO_WIDTH-1 downto 0) := (others => '0');
   signal fifo_rd    : std_logic := '0';
   signal fifo_rdempty : std_logic := '0';
@@ -218,6 +219,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal rdfifo_wdata  : std_logic_vector(15 downto 0) := (others => '0');
   signal rdfifo_wr     : std_logic := '0';
   signal rdfifo_wrfull : std_logic := '0';
+  signal rdfifo_aclr   : std_logic := '0';
   -- 2FF synchroniser for the block-read request toggle (CLK -> pclk)
   signal blk_req_s1    : std_logic := '0';
   signal blk_req_s2    : std_logic := '0';
@@ -289,6 +291,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
     intended_device_family : string
   );
   port (
+    aclr     : in  std_logic;
     data     : in  std_logic_vector(lpm_width-1 downto 0);
     wrreq    : in  std_logic;
     wrclk    : in  std_logic;
@@ -303,6 +306,13 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   end component;
 
 begin
+
+  -- Clear both CDC FIFOs whenever a capture run starts/stops or the writer
+  -- aborts on overflow. Without this, stale capture words can survive between
+  -- runs and get written into SDRAM starting at address 0 on the next capture,
+  -- which matches the rare large bad-prefix burst seen on hardware.
+  fifo_aclr <= run_edge_r or run_stop_overflow;
+  rdfifo_aclr <= run_edge_r or run_stop_overflow;
 
   pclk <= CLK when Sim else SDRAM_CLK_IN;
 
@@ -1039,6 +1049,7 @@ begin
       intended_device_family => "MAX 10"
     )
     port map (
+      aclr     => fifo_aclr,
       data     => fifo_wdata,
       wrreq    => fifo_wr,
       wrclk    => FAST_CLK,
@@ -1066,6 +1077,7 @@ begin
       intended_device_family => "MAX 10"
     )
     port map (
+      aclr     => rdfifo_aclr,
       data     => rdfifo_wdata,
       wrreq    => rdfifo_wr,
       wrclk    => pclk,
