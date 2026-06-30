@@ -2,15 +2,19 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import { useApp } from '../state/appStore';
 
-const DIGITAL_DEEP_MAX_RATE = 14e6;
 const DIGITAL_FAST_DEPTH = 1024;
 // Full 64 Mbit x16 SDRAM = 4,194,304 words (hardware-validated deep capture).
 const DIGITAL_SDRAM_DEPTH = 4_194_304;
 const DIGITAL_NARROW_MAX_SAMPLES = DIGITAL_SDRAM_DEPTH * 16;
 const DIGITAL_RATES = [10e3, 100e3, 500e3, 1e6, 2e6, 5e6, 10e6, 12.5e6, 14e6, 20e6, 50e6, 100e6, 200e6];
-const DIGITAL_DEEP_RATES = DIGITAL_RATES.filter((rate) => rate <= DIGITAL_DEEP_MAX_RATE);
+// Single-shot deep SDRAM capture is validated clean at every rate up to the full
+// 200 MHz sample clock (open-page write path + producer-done completion), so deep
+// captures use the full rate list.
+// Rolling/continuous is still bounded by lossless SPI readback (~30 MB/s / 2 B =
+// ~15 MHz); above that the ring keeps the newest samples and reports overruns.
+const DIGITAL_ROLLING_MAX_RATE = 15e6;
+const DIGITAL_ROLLING_RATES = DIGITAL_RATES.filter((rate) => rate <= DIGITAL_ROLLING_MAX_RATE);
 const DIGITAL_DEPTHS = [1024, 10_000, 50_000, 100_000, 250_000, 500_000, 1_048_576, 2_097_152, DIGITAL_SDRAM_DEPTH];
-const DIGITAL_FAST_DEPTHS = [DIGITAL_FAST_DEPTH];
 const MIXED_RATES = [125e3];
 const ANALOG_FAST_RATES = [100e3, 200e3, 500e3, 1e6];
 const ANALOG_ALL_RATES = [125e3];
@@ -48,7 +52,7 @@ const MODE_OPTIONS: {
   {
     mode: 'single',
     label: 'Full-speed digital',
-    detail: '200 MHz at 1k depth, 14 MHz full-width deep',
+    detail: '200 MHz full-width, up to 4M-sample deep capture',
     channels: 'd0-d15',
   },
   {
@@ -117,7 +121,7 @@ function nearestWindowSecondsForDuration(durationSeconds: number, sampleRate: nu
   ), options[0] ?? ROLLING_WINDOW_SECONDS[0]);
 }
 
-function rateOptionsForMode(mode: CaptureMode, numSamples = DIGITAL_FAST_DEPTH) {
+function rateOptionsForMode(mode: CaptureMode, _numSamples = DIGITAL_FAST_DEPTH) {
   if (mode === 'analog_fast' || mode === 'analog' || mode === 'analog_continuous') {
     return ANALOG_FAST_RATES;
   }
@@ -131,21 +135,21 @@ function rateOptionsForMode(mode: CaptureMode, numSamples = DIGITAL_FAST_DEPTH) 
     return [200e6];
   }
   if (ROLLING_MODES.includes(mode)) {
-    return DIGITAL_DEEP_RATES;
+    // Rolling/continuous lossless readback is bounded; above the cap the ring
+    // overruns. Single-shot deep capture (below) is not bounded this way.
+    return DIGITAL_ROLLING_RATES;
   }
-  if (numSamples > DIGITAL_FAST_DEPTH) {
-    return DIGITAL_DEEP_RATES;
-  }
+  // Single-shot, any depth (BRAM 1k or deep SDRAM up to 4M): full rate range to
+  // the 200 MHz sample clock -- deep SDRAM capture is validated clean throughout.
   return DIGITAL_RATES;
 }
 
-function depthOptionsForMode(mode: CaptureMode, sampleRate: number) {
+function depthOptionsForMode(mode: CaptureMode, _sampleRate: number) {
   if (ANALOG_MODES.includes(mode)) {
     return ANALOG_DEPTHS;
   }
-  if (sampleRate > DIGITAL_DEEP_MAX_RATE) {
-    return DIGITAL_FAST_DEPTHS;
-  }
+  // Deep SDRAM depths are available at every digital rate (incl. 200 MHz) now
+  // that deep capture completes and reads back clean across the full rate range.
   return DIGITAL_DEPTHS;
 }
 

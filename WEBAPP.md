@@ -234,22 +234,22 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
 ## Known limitations / TODO (hardware-blocked or planned)
 
 **Current FPGA/hardware boundaries:**
-- The capture storage path corrupts a handful of words around every 256-word
-  boundary (measured: deterministic per capture, survives re-reads — it is in
-  the stored data, not the SPI link). Decoders mitigate it (the UART decoder
-  majority-votes three points per bit) but single-bit decode errors can still
-  occur. A proper fix needs FPGA work in the SDRAM/BRAM write pump.
+- **Block-boundary readback corruption — FIXED.** The old "handful of corrupted
+  words around every 256-word read block" (first read of each block came back
+  stale `0xFFFF` because the bus idled across the inter-block gap) is resolved by
+  a layered fix: FPGA-side prime reads, CL2→CL3 at the 167 MHz SDRAM clock, and a
+  host-side offset-0 discard in `read_capture_range`. Two-alignment XOR = 0
+  across trials.
+- **Deep-capture write path — FIXED.** Deep SDRAM capture previously had a
+  throughput ceiling (~5.5 MHz, close-page ACT-per-sample) and could hang above
+  ~12–18 MHz (completion waited on an exact write-count the producer never quite
+  reached). Open-page policy + producer-done completion fix both: single-shot
+  deep capture now completes and reads back clean at every rate up to the full
+  200 MHz sample clock (validated 36/36 captures, 0 isolated dropped samples,
+  18–200 MHz, full 4,194,304-word depth).
 - `CMD_GEN_CAPTURE` generator loopback is covered by hardware smoke/API tests
   and the full host validation suite. The UART loopback path is decoded through
   the same backend decoder path used by user captures.
-- **Plain captures of fast continuous signals have residual block-boundary
-  glitches**: ~3–4 corrupted words around every 256-word (1 KiB) read block.
-  The block-read FSM latches on a fixed cycle latency that matches the SDRAM
-  readout pipeline in steady state but not across the per-block restart. It
-  does not affect generator loopback (the burst fits in the first block) or
-  slow/sparse signals, but fast signals decoded near a boundary can drop a
-  bit. The proper fix is a readout data-valid handshake (drafted, reverted as
-  too risky without on-hardware CDC validation) — tracked as follow-up work.
 - Hardware triggers limited to rising/falling edge (any channel mask) and the
   UART-byte protocol trigger. All other trigger types are clearly labelled
   *post-capture* and run as software searches.
@@ -285,9 +285,10 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
 - Mixed/analog/digital recovery is validated by back-to-back hardware tests;
   each capture setup writes the complete mode state.
 - Continuous `Rate_Div=1` startup is covered by HDL and hardware validation.
-- FPGA utilization is high (~96% LAB on the current image). Planned fix: after
-  functional fixes, trim duplicate debug/test mux logic guided by synthesis
-  reports; do not block feature fixes on LAB cleanup unless compile fails.
+- FPGA utilization on the current image is ~87% logic elements / 79%
+  combinational / 41% registers / 75% memory bits. Planned: trim duplicate
+  debug/test mux logic guided by synthesis reports; do not block feature fixes
+  on logic cleanup unless compile fails.
 
 **Planned (software):**
 - FFT/spectrum view exists as an API endpoint (`/spectrum`) — dedicated UI
@@ -301,4 +302,4 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
   command palette.
 - Session storage uses NPZ per session; a chunked store for >10M-sample
   captures is architected (`chunk_store.py`) but not yet needed at current
-  full-width hardware depths (1,048,576 samples).
+  full-width hardware depths (4,194,304 samples).

@@ -14,9 +14,9 @@ Open-source multi-channel logic analyzer for the Arrow MAX1000 board (Intel MAX1
 - **16 simultaneous digital channels**, arbitrarily mappable to the 26-entry RTL pin pool (15 MKR + 8 PMOD + 3 accelerometer pins)
 - **MAX10 ADC capture**, 12-bit, built-in ADC. Mixed mode scans ADC0-ADC7; high-speed analog scans one selected ADC mux channel; maximum analog scans the documented physical profile ADC1,2,3,4,5,7,8,16.
 - **Four main capture modes**: full digital, mixed, high-speed single-analog, and maximum physical-analog. The current bitstream also has a specialist **200 MHz narrow digital rolling** path for one selected digital channel packed at 16 samples per word.
-- **Sample rate**: up to **200 MHz** digital in speed mode. Full-width 16-channel BRAM captures run at 200 MHz for 1,024 samples; deeper full-width digital captures are exposed conservatively at 14 MHz. Narrow digital rolling keeps a single selected channel at 200 MHz.
+- **Sample rate**: up to **200 MHz** digital in speed mode. Full-width 16-channel capture runs at the full 200 MHz sample clock for **both** the 1,024-sample BRAM path **and deep SDRAM capture** — the open-page write path + producer-done completion (see *SDRAM streaming write path* below) make deep capture clean and reliable at every rate up to 200 MHz (validated 0 dropped samples, 18–200 MHz). Narrow digital rolling keeps a single selected channel at 200 MHz.
 - **Analog rate**: **1 MSPS** high-speed single-channel or **125 kframes/s** for mixed/maximum 8-input scans
-- **Deep capture**: up to 1,048,576 full-width samples via SDRAM (16-bit bus, burst mode, triple-buffered); packed narrow mode stores up to 16,777,216 one-channel logical samples.
+- **Deep capture**: up to **4,194,304** full-width samples via SDRAM — the entire 64 Mbit array (16-bit bus, page-mode streaming writes); packed narrow mode stores up to **67,108,864** one-channel logical samples.
 - **Pre-trigger capture**: small BRAM guard window in speed mode, flushed into the post-trigger SDRAM/FIFO stream after trigger
 - **Continuous/rolling capture**: SDRAM-backed ring buffer with monotonic producer index, oldest/newest indexes, and overrun reporting
 - **Edge trigger**: rising/falling on any combination of channels
@@ -34,54 +34,92 @@ Open-source multi-channel logic analyzer for the Arrow MAX1000 board (Intel MAX1
 
 ### Speed mode (FAST_SPEED=true, current build)
 
-| Output | Multiply | Frequency | Domain |
-|--------|----------|-----------|--------|
-| c0 | ×8.33 | 100 MHz | SDRAM write pump, buffer mgmt, readout, OLS protocol, LED PWM |
-| c1 | ×16.67 | 200 MHz | **Sample capture** (FAST_CLK), SPI slave |
-| c2 | ×8.33 | 100 MHz, −90° | SDRAM clock (phase-shifted for data centering) |
-| c3 | ×4.17 | 50 MHz VCO tap / 12 MHz output | MAX10 ADC hard-IP input (`clkdiv=1` inside ADC IP) |
+A single PLL (12 MHz input) drives a three-clock-domain design plus a dedicated
+phase-shifted SDRAM device clock:
 
-All PLL outputs derive from the 12 MHz input. The current speed build closes timing at **+0.220 ns** worst setup slack, **+0.279 ns** hold slack, and **+0.098 ns** min-pulse-width slack in the Slow 1200 mV 85C model. The analog path uses the dedicated MAX10 ADC hard-IP clock input at 12 MHz with `clkdiv=1`, which is how the measured 1.0 MSPS single-channel rate is achieved.
+| Output | Frequency | Phase | Domain |
+|--------|-----------|-------|--------|
+| c0 → `sys_clk` | 100.2 MHz | 0 | OLS/SPI packet protocol, signal generator, debug-CH0 PWM, LED |
+| c1 → `fast_clk` | 200.4 MHz | 0 | **Sample capture** (FAST_CLK), input packer, pre-trigger BRAM |
+| c2 → `sdram_core_clk` | 167 MHz | 0 | **SDRAM controller + write pump + buffer mgmt + readout** (`pclk`) — the streaming-write launch clock |
+| c4 → `sdram_chip_clk` | 167 MHz | −1.5 ns | SDRAM device clock **pin** — delayed off c2 so the device latches write data mid-eye |
+| c3 → `adc_conv_clk` | (ADC build only) | — | MAX10 ADC hard-IP input |
+
+The SDRAM path was moved from the old 100 MHz −90° single-clock scheme to a
+**167 MHz c2 launch + c4 (−1.5 ns) device-clock split**: launch and forwarded
+clock are deliberately skewed so the SDRAM samples write data in the centre of
+the eye instead of on the launching edge. `set_output_delay`/`set_input_delay`
+on the SDRAM pins constrain this interface (see `hdl/proj/OLS_Logic_Analyzer.sdc`).
+
+Current build closes timing in the Slow 1200 mV 85C model at: **clk[2] (167 MHz
+SDRAM) setup −0.065 ns** (hold +0.342, MPW +0.089; **+0.303 ns at the 0C
+corner**, room-temp clean), clk[1] (200 MHz) +0.416 ns, clk[0] (100 MHz)
++1.275 ns. The 167 MHz SDRAM domain sits at this logic's restricted Fmax, so the
+hot-corner setup runs marginally negative while every operating corner is
+positive — and the producer-done completion makes a rare marginal write
+non-fatal (see below). The analog path uses the MAX10 ADC hard-IP clock input,
+which is how the 1.0 MSPS single-channel rate is achieved.
 
 ### Normal mode (FAST_SPEED=false)
 
-| Output | Multiply | Frequency | Domain |
-|--------|----------|-----------|--------|
-| c0 | ×8 | 96 MHz | SDRAM write pump, buffer mgmt, readout, OLS protocol |
-| c1 | ×10 | 120 MHz | **Sample capture** (FAST_CLK), SPI slave |
-| c2 | ×8 | 96 MHz, −90° | SDRAM clock (phase-shifted for data centering) |
+A legacy lower-clock profile (no 167 MHz SDRAM split) selected by
+`FAST_SPEED => false`. It is not the maintained/validated build; the speed build
+above is what ships. The PLL megafunction must be regenerated for different
+multiply/divide values.
 
-Set `FAST_SPEED => false` in `hdl/proj/OLS_Logic_Analyzer_wrapper.vhd` for normal mode. The PLL megafunction must be regenerated for different multiply/divide values.
+### SDRAM streaming write path (deep capture)
+
+Deep capture streams every sample into SDRAM through a dedicated handshake
+(`capture_stream_*`) rather than the Avalon burst path. Two fixes make it clean
+at the full 200 MHz sample rate:
+
+- **Open-page policy** — the controller keeps the active row OPEN between writes
+  instead of precharging when idle. At realistic (sparse) capture rates the old
+  close-page policy paid a full ACTIVATE+WRITE+PRECHARGE per sample (~30
+  cycles/sample, the old ~5.5 MHz deep ceiling); open-page holds the row so
+  consecutive same-row writes cost ~1 cycle each (~3× throughput).
+- **Producer-done completion** — single-shot capture completes when the *sample
+  producer* (FAST domain) signals it emitted the last word **and** the write
+  FIFO has drained, not when an exact SDRAM write-count is reached. The packed
+  producer can fall a few words short of the requested count at some dividers;
+  the old exact-count completion then never asserted `Full` and the host hung.
+  Keying completion off the reliable producer means a rare marginal write
+  degrades to one un-written cell instead of an infinite `BUSY`.
+
+The pump exposes performance counters over SPI (regs `0x60`–`0x65`, see Register
+Map) for measuring accept/stall/overflow behaviour on hardware.
 
 ## Architecture
 
-### Two-Clock Domain Split (speed mode)
+### Clock-Domain Split (speed mode)
 
 ```
-FAST_CLK (200 MHz, c1)                   CLK (100 MHz, c0)
-┌────────────────────────────┐          ┌───────────────────────────┐
-│ sample divider (28-bit)    │          │ async FIFO read (dcfifo)  │
-│ input packer (16→16-bit)   │──4096──▶│ SDRAM address assignment  │
-│ pre-trigger BRAM (circular)│  dcfifo  │ single-word SDRAM writes  │
-│ async FIFO push            │          │ triple-buffer management  │
-│ overflow/sample-stop detect│          │ full detection + status   │
-└────────────────────────────┘          │ readout                   │
-                                         │ OLS protocol / SPI       │
-                                         └───────────────────────────┘
+FAST_CLK (200 MHz, c1)            sdram_core_clk (167 MHz, c2)        sys_clk (100 MHz, c0)
+┌────────────────────────────┐   ┌────────────────────────────┐    ┌──────────────────────┐
+│ sample divider (28-bit)    │   │ async FIFO read (dcfifo)   │    │ OLS/SPI packet proto │
+│ input packer (16→16-bit)   │──▶│ SDRAM address assignment   │    │ signal generator     │
+│ pre-trigger BRAM (circular)│ dc│ streaming page-mode writes │    │ debug-CH0 PWM, LED   │
+│ async FIFO push            │fifo│ open-page SDRAM controller│    └──────────────────────┘
+│ overflow/sample-stop detect│   │ producer-done completion   │     c4 (167 MHz, −1.5 ns)
+│ producer-done toggle       │   │ buffer mgmt + readout      │──▶  SDRAM device clock pin
+└────────────────────────────┘   └────────────────────────────┘
 ```
 
-Speed mode (200 MHz): 4-stage pipeline — sample pins → control decode → rate divider → BRAM/FIFO write.
-Normal mode (120 MHz): single-cycle capture FSM with variable packing.
-
-Config handshake (valid/ack toggle CDC) ensures Rate_Div and Samples are stable in FAST_CLK before capture starts. ADC runs independently on sys_clk.
+The async FIFO (dcfifo) bridges the 200 MHz capture domain to the 167 MHz SDRAM
+domain; the write pump and controller share `sdram_core_clk` so the streaming
+handshake's `ready` can be combinational. `sys_clk` (100 MHz) runs the SPI/OLS
+protocol, generator and debug PWM independently. A config handshake (valid/ack
+toggle CDC) ensures `Rate_Div`/`Samples` are stable in FAST_CLK before capture
+starts; the producer-done bit is similarly toggle-synced FAST_CLK→sdram_core_clk.
+ADC runs on its own hard-IP clock.
 
 ## Memory Architecture
 
 | Memory | Size | Width | Usage |
 |--------|------|-------|-------|
 | BRAM (M9K) | 1,024 words | 16 bits | Pre-trigger circular buffer (fast capture: no SDRAM needed). |
-| Async FIFO (dcfifo) | 4,096 words | 16 bits | CDC buffer between FAST_CLK capture and CLK SDRAM write. |
-| SDRAM | 64 Mbit | 16 bits | Deep capture storage and continuous ring buffer (1,048,576 full-width samples exposed by the current bitstream). Burst writes, page-mode. |
+| Async FIFO (dcfifo) | 4,096 words | 16 bits | CDC buffer between the 200 MHz FAST_CLK capture and the 167 MHz SDRAM write domain. |
+| SDRAM | 64 Mbit | 16 bits | Deep capture storage and continuous ring buffer — full **4,194,304** 16-bit words exposed by the current bitstream. Page-mode streaming writes (open-page policy). |
 | Block read buffer | 256 entries | 32 bits | Readout buffer for CMD_READ_CAPTURE (1 block = 1,024 bytes). |
 | Generator FIFO | 256 entries | 8 bits | UART/I2C/SPI transmit data. |
 
@@ -149,13 +187,25 @@ div = SAMPLE_CLK_HZ / rate_hz - 1
 actual_rate = SAMPLE_CLK_HZ / (div + 1)
 ```
 
-For speed mode: SAMPLE_CLK_HZ = 200 MHz. Minimum div = 0 for 200 MS/s internal capture; host UI/API capability may clamp exposed rates by mode.
-For normal mode: SAMPLE_CLK_HZ = 120 MHz. Minimum div = 0 for 120 MS/s internal capture.
+For speed mode: SAMPLE_CLK_HZ = 200.4 MHz. Minimum div = 0 for full-rate
+internal capture. Because the divider is integer, the steps near the top are
+coarse: div 0/1/2/3 → 200.4 / 100.2 / 66.8 / 50.1 MHz (no intermediate 150/133).
 Maximum div = 16,777,215 → ~6 Hz minimum.
 
 ## Rate Limits
 
-The system clock is 100 MHz for speed mode, 96 MHz for normal. Fast mode (BRAM-only) is hard-limited to 1024 samples. The 24-bit sample rate divider supports any integer division from sysclk down to ~6 Hz.
+The SDRAM/control clock is **167 MHz** (speed mode) and the sample clock is
+200.4 MHz. Fast mode (BRAM-only) is hard-limited to 1024 samples. The sample
+rate divider supports any integer division from the sample clock down to ~6 Hz.
+
+### Single-shot deep capture (SDRAM)
+
+Single-shot deep capture into SDRAM now runs clean at **every rate up to the full
+200 MHz sample clock** — the open-page write path keeps up and the producer-done
+completion guarantees the capture finishes and is read back. Validated 0 dropped
+samples across 18–200 MHz, up to the full 4,194,304-word depth. This is a true
+one-shot retention path: all samples land in SDRAM, then the host reads them back
+over SPI at its own pace (readback throughput does not limit the capture rate).
 
 ### Rolling (continuous) readback limit
 
@@ -234,7 +284,7 @@ FPGA → Host:  0xAA 0x55  STATUS  SEQ  LEN_L  LEN_H  [PAYLOAD...]  CRC_L  CRC_H
 | Addr | Name | Bits | Description |
 |------|------|------|-------------|
 | `0x00` | REG_DIVIDER | 23:0 | Sample rate divider. Rate = `SAMPLE_CLK_HZ / (div+1)`. |
-| `0x01` | REG_SAMPLE_COUNT | 29:0 | Samples to capture (1-1,048,576 full-width words in the current bitstream). |
+| `0x01` | REG_SAMPLE_COUNT | 29:0 | Samples to capture (1–4,194,304 full-width words in the current bitstream). |
 | `0x02` | REG_DELAY_COUNT | 29:0 | Trigger delay count. |
 | `0x10` | REG_TRIGGER_MASK | 31:0 | Bit n enables trigger on channel n. |
 | `0x11` | REG_TRIGGER_VALUE | 31:0 | Level trigger value. |
@@ -252,7 +302,17 @@ FPGA → Host:  0xAA 0x55  STATUS  SEQ  LEN_L  LEN_H  [PAYLOAD...]  CRC_L  CRC_H
 | `0x53` | REG_NEWEST_INDEX | 31:0 | Newest retained absolute sample index in ring |
 | `0x54` | REG_OVERRUN_COUNT | 31:0 | Count of overwritten samples/ring wraps |
 | `0x55` | REG_DONE_LATCHED | 0 | Sticky completion latch exposed to host |
+| `0x60` | REG_PUMP_VALID_CYCLES | 31:0 | SDRAM write-pump diag: cycles a stream sample was presented |
+| `0x61` | REG_PUMP_READY_CYCLES | 31:0 | Cycles the controller accepted (ready high) |
+| `0x62` | REG_PUMP_ACCEPT_CYCLES | 31:0 | Accepted-write cycles (valid & ready) |
+| `0x63` | REG_PUMP_STALL_CYCLES | 31:0 | Stall cycles (valid & not ready) |
+| `0x64` | REG_PUMP_NODATA_CYCLES | 31:0 | Cycles the pump had no FIFO data |
+| `0x65` | REG_PUMP_OVERFLOW_COUNT | 31:0 | Producer-overflow events (FIFO outran the pump) |
 | `0xF0` | REG_IFACE_MODE | 0 | Interface mode (always 1 for SPI) |
+
+Regs `0x60`–`0x65` are free-running write-pump performance counters (reset on
+arm) for characterising deep-capture throughput/drops on hardware — see the
+*SDRAM streaming write path* section.
 
 ## SPI Preamble Byte
 
@@ -335,32 +395,36 @@ cd hdl\proj
 .\compile.ps1 -Flash
 ```
 
-`compile.ps1` generates `OLS_Logic_Analyzer_wrapper.vhd` with `FAST_SPEED => true` for the current speed build (100/200 MHz). Change `hdl/proj/compile.ps1` if a normal 96/120 MHz wrapper is required; editing the generated wrapper alone will be overwritten by the next compile.
+`compile.ps1` generates `OLS_Logic_Analyzer_wrapper.vhd` with `FAST_SPEED => true` for the current speed build (sys 100 MHz / sample 200 MHz / SDRAM 167 MHz). Editing the generated wrapper alone is futile — it is overwritten on every compile; change `hdl/proj/compile.ps1` instead.
 
 ### Build modes
 
-| Mode | FAST_SPEED | Sys_clk | FAST_CLK | Timing slack |
-|------|-----------|---------|----------|-------------|
-| Speed | `true` | 100 MHz | 200 MHz | **+0.220 ns** setup / +0.098 ns mpw (Slow 85C) |
-| Normal | `false` | 96 MHz | 120 MHz | +0.099 ns* |
+| Mode | FAST_SPEED | sys_clk | FAST_CLK | SDRAM clk | Worst setup slack (Slow 85C) |
+|------|-----------|---------|----------|-----------|------------------------------|
+| Speed | `true` | 100.2 MHz | 200.4 MHz | 167 MHz | **clk[2] −0.065 ns** (+0.303 @0C); clk[1] +0.416; clk[0] +1.275 |
+| Normal | `false` | (legacy) | (legacy) | — | not the maintained build |
 
-*Normal mode timing verified on earlier build; PLL multiply/divide must match.
+The 167 MHz SDRAM domain is at this logic's restricted Fmax: hot-corner (85C)
+setup is marginally negative while every operating corner is positive and
+room-temp hardware is clean. The producer-done completion (above) ensures a rare
+marginal write can never hang a capture.
 
 ## Resource Usage (speed mode build)
 
 | Resource | Used | Available | % |
 |----------|------|-----------|---|
-| Logic elements | 7,588 | 8,064 | 94% |
-| Combinational functions | 6,789 | 8,064 | 84% |
-| Registers | 3,814 | 8,064 | 47% |
-| Memory bits | 289,536 | 387,072 | 75% |
+| Logic elements | 6,983 | 8,064 | 87% |
+| Combinational functions | 6,390 | 8,064 | 79% |
+| Registers | 3,321 | 8,064 | 41% |
+| Memory bits | 290,816 | 387,072 | 75% |
+| Pins | 78 | 130 | 60% |
 | PLLs | 1 | 1 | 100% |
 
 ## Tests
 
 ```bash
 cd host
-python -m pytest tests/ driver/tests/ -v   # 333 host/driver tests
+python -m pytest tests/ driver/tests/ -v   # 338 host/driver tests
 python -m app.hw_validation                # 564 hardware validation checks on current image
 ```
 

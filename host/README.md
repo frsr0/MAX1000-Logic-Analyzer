@@ -46,10 +46,10 @@ EEPROM backup, FT_Prog config, driver recovery, `recover.ps1`.
 **Class `OLS`** — Core MPSSE SPI driver. Batched transactions via `0x11` + length + `0x87` (send immediate).
 
 ### `driver/spi_protocol.py`
-**Class `SPIDevice`** — Packet-protocol client. SYNC(0x55AA) + CMD + SEQ + LEN + payload + CRC16. Parses capture metadata (`capture_seq`, producer/oldest/newest indexes, overrun count, sticky DONE) and exposes `ack_capture_done()`.
+**Class `SPIDevice`** — Packet-protocol client. SYNC(0x55AA) + CMD + SEQ + LEN + payload + CRC16. Parses capture metadata (`capture_seq`, producer/oldest/newest indexes, overrun count, sticky DONE) and exposes `ack_capture_done()`. Register constants include the SDRAM write-pump performance counters `REG_PUMP_VALID/READY/ACCEPT/STALL/NODATA_CYCLES` and `REG_PUMP_OVERFLOW_COUNT` (`0x60`–`0x65`) for deep-capture throughput diagnostics.
 
 ### `driver/ols_spi_device.py`
-**Class `OLSDeviceSPI`** — High-level API: `capture()`, `capture_continuous()`, `continuous_ring_capture()`, `capture_with_gen()`, indexed `read_capture_range()`, `ack_capture_done()`, analog frame decode, narrow digital packing/unpack helpers, programmable pin map, software glitch-filter config (`set_schmitt` → `apply_glitch_filter`), debug CH0. The web/backend layer adds board-aware MAX1000 physical pin metadata on top of the driver's logical pin indexes. Each arm writes complete mode state and validates fresh `capture_seq` before trusting readback when firmware metadata is available.
+**Class `OLSDeviceSPI`** — High-level API: `capture()`, `capture_continuous()`, `continuous_ring_capture()`, `capture_with_gen()`, indexed `read_capture_range()`, `ack_capture_done()`, analog frame decode, narrow digital packing/unpack helpers, programmable pin map, software glitch-filter config (`set_schmitt` → `apply_glitch_filter`), debug CH0. The web/backend layer adds board-aware MAX1000 physical pin metadata on top of the driver's logical pin indexes. Each arm writes complete mode state and validates fresh `capture_seq` before trusting readback when firmware metadata is available. Single-shot deep capture into SDRAM is supported up to the full **4,194,304**-word depth at any rate up to the 200 MHz sample clock; `_wait_capture_done` polls `capture_status` for the sticky DONE the firmware now raises reliably via producer-done completion.
 
 ### `driver/ols_spi_mpsse.py`
 **Class `OLS_SPI_MPSSE`** — Minimal MPSSE driver (no batching).
@@ -63,7 +63,7 @@ EEPROM backup, FT_Prog config, driver recovery, `recover.ps1`.
 
 ### `tests/` and `driver/tests/`
 
-Current collection: **333 tests** across GUI helpers, decoders, analog frame
+Current collection: **338 tests** across GUI helpers, decoders, analog frame
 decode, hardware-validation helpers, packet SPI, `OLSDeviceSPI`, MPSSE, and
 pyftdi compatibility. Coverage includes mixed/high-speed/max analog framing,
 narrow digital packing, rolling ring readback, capture metadata, generator

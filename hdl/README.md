@@ -2,34 +2,34 @@
 
 ## Architecture Overview
 
-Target: Intel MAX10 10M08SAU169C8G on Arrow MAX1000 board. PLL derives four active outputs from the 12 MHz input:
+Target: Intel MAX10 10M08SAU169C8G on Arrow MAX1000 board. A single PLL derives the speed-build clocks from the 12 MHz input:
 
-| Output | Multiply | Frequency | Domain |
-|--------|----------|-----------|--------|
-| c0 | ×8.33 | 100 MHz | SDRAM write pump, buffer mgmt, readout, OLS protocol |
-| c1 | ×16.67 | 200 MHz | **Sample capture** (FAST_CLK), SPI slave |
-| c2 | ×8.33 | 100 MHz, −90° | SDRAM clock (phase-shifted for data centering) |
-| c3 | ×4.17 | 50 MHz VCO tap / 12 MHz output | MAX10 ADC hard-IP input (`clkdiv=1` inside ADC IP) |
+| Output | Frequency | Phase | Domain |
+|--------|-----------|-------|--------|
+| c0 → `sys_clk` | 100.2 MHz | 0 | OLS/SPI packet protocol, signal generator, debug-CH0 PWM, LED |
+| c1 → `fast_clk` | 200.4 MHz | 0 | **Sample capture** (FAST_CLK), input packer, pre-trigger BRAM, SPI slave |
+| c2 → `sdram_core_clk` | 167 MHz | 0 | **SDRAM controller + write pump + buffer mgmt + readout** (`pclk`) |
+| c4 → `sdram_chip_clk` | 167 MHz | −1.5 ns | SDRAM device clock **pin** (write-data eye centering) |
+| c3 → `adc_conv_clk` | 12 MHz (ADC build) | — | MAX10 ADC hard-IP input (`clkdiv=1`) |
 
-Current generated wrapper uses `FAST_SPEED => true` for a 100 MHz system clock and 200 MHz sample clock. The same PLL instance also feeds the ADC hard-IP from `c3`, which is why the analogue path can run at the validated 1 MSPS single-channel / 125 kframes/s 8-slot rates. Normal mode remains available through the top-level generics but requires changing `proj/compile.ps1`; the generated wrapper is overwritten on each build.
+`FAST_SPEED => true` is the current/maintained build. On hardware `pclk <= SDRAM_CLK_IN` (= c2), so the SDRAM controller and FLA write pump share the 167 MHz domain — that lets the `capture_stream` handshake's `ready` be combinational. The old single-clock 100 MHz −90° SDRAM scheme was replaced by the c2 launch / c4 (−1.5 ns) device-clock split. Normal mode remains via top-level generics but is not the validated build.
 
-### Two-Clock Domain Split
+### Clock-Domain Split
 
 ```
-FAST_CLK (200 MHz, c1)                   CLK (100 MHz, c0)
-┌────────────────────────────┐          ┌───────────────────────────┐
-│ sample divider (28-bit)    │          │ async FIFO read (dcfifo)  │
-│ input packer (16→16-bit)   │──4096──▶│ SDRAM address assignment  │
-│ pre-trigger BRAM (circular)│  dcfifo  │ single-word SDRAM writes  │
-│ async FIFO push            │          │ triple-buffer management  │
-│ overflow/sample-stop detect│          │ full detection + status   │
-│                            │          │ readout                   │
-│ Config handshake detect    │          │ OLS protocol / SPI        │
-│ (cfg_valid_edge → latch)   │────────▶│ Config latch + toggle     │
-└────────────────────────────┘          └───────────────────────────┘
+FAST_CLK (200 MHz, c1)            sdram_core_clk (167 MHz, c2)        sys_clk (100 MHz, c0)
+┌────────────────────────────┐   ┌────────────────────────────┐    ┌──────────────────────┐
+│ sample divider (28-bit)    │   │ async FIFO read (dcfifo)   │    │ OLS/SPI packet proto │
+│ input packer (16→16-bit)   │──▶│ SDRAM address assignment   │    │ signal generator     │
+│ pre-trigger BRAM (circular)│ dc│ open-page streaming writes │    │ debug-CH0 PWM, LED   │
+│ async FIFO push            │fifo│ buffer mgmt + readout     │    └──────────────────────┘
+│ overflow/sample-stop detect│   │ producer-done completion   │     c4 (167 MHz, −1.5 ns)
+│ producer-done toggle       │   │ full detection + status    │──▶  SDRAM device clock pin
+│ config-handshake detect    │──▶│ config latch + toggle      │
+└────────────────────────────┘   └────────────────────────────┘
 ```
 
-CDC: async FIFO (dcfifo) for sample data, 2FF + toggle synchronizers for config/control. ADC runs independently on sys_clk.
+CDC: async FIFO (dcfifo) bridges 200 MHz capture → 167 MHz SDRAM; 2FF + toggle synchronizers for config/control and the producer-done bit. `sys_clk` (100 MHz) runs the protocol/generator/PWM. ADC runs on its own hard-IP clock.
 
 ### Top-down hierarchy
 
@@ -67,14 +67,14 @@ Capture engine with two-clock domain split.
 - **Async FIFO push**: Post-trigger, pushes 16-bit words to dcfifo (4,096 depth). Sets overflow on FIFO full or sample count reached
 - **Snapshot CDC**: Toggle synchronizer for BRAM snapshot → CLK domain
 
-**CLK (100 MHz in the current speed build) processes:**
+**pclk (167 MHz `sdram_core_clk` in the speed build) processes:**
 - **BRAM read port**: Synchronous read on pclk
 - **BRAM snapshot latch**: On `snap_valid_clk`, latches `bram_wp_snap`/`bram_cnt_snap` (2FF CDC)
 - **BRAM flush**: After run_edge, reads pre-trigger data from BRAM using frozen snapshot, writes to SDRAM
-- **SDRAM write pump**: Reads from dcfifo, assigns SDRAM addresses (22-bit), writes single words
+- **SDRAM write pump**: Reads from dcfifo, assigns SDRAM addresses (22-bit), streams single words through the `capture_stream` handshake (combinational `ready`)
 - **Continuous mode**: SDRAM ring buffer with monotonic `producer_index`, retained `oldest_index`/`newest_index`, and `overrun_count`; legacy buffer flags remain as readiness markers
 - **Readout**: Address-driven SDRAM reads → `Outputs`; continuous readout maps absolute sample indexes into the ring
-- **Full detection**: Asserts `full_i` when buffer exhausted + FIFO empty + flush complete
+- **Producer-done completion**: single-shot `full_i` asserts when the FAST-domain producer-done bit (`cap_done_toggle_f`, synced to `producer_done_q`) is seen **and** the write FIFO has been continuously empty for a drain window — not on an exact SDRAM write-count. This makes completion robust to the packed producer falling a few words short or a rare marginal write (which would otherwise hang the host on `BUSY`). Pump performance counters (valid/ready/accept/stall/nodata/overflow) are exposed via SPI regs `0x60`–`0x65`.
 
 ### `rtl/OLS_SDRAM_Top.vhd` (~940 lines)
 
@@ -104,19 +104,19 @@ Full-duplex SPI slave on `fast_clk` (200 MHz in speed build). CDC: 2FF for confi
 
 **Entity:** `SDRAM_Interface`
 
-Wrapper around `SDRAM_Controller`. Reset: 480,000 cycles (5 ms @ 96 MHz). Avalon-MM signal mapping. Simulation mode uses local RAM.
+Wrapper around `SDRAM_Controller`. Avalon-MM signal mapping plus the `capture_stream` streaming-write handshake used by the deep-capture pump. Simulation mode uses local RAM. **Note:** in sim the FLA instantiates the controller *through* this wrapper — testbenches that exercise the write path (e.g. `tb_fla_drop`, `tb_pump_tput`) must compile `SDRAM_Interface.vhd`, or the controller is left unbound and accepts nothing.
 
 ### `rtl/SDRAM_Controller_Custom.vhd` (~620 lines)
 
 **Entity:** `SDRAM_Controller`
 
-Custom SDRAM controller: power-on init, read, write, burst (4-word), auto-refresh. Page-mode (keeps row open). Burst FIFO (8-entry). Avalon-MM with `waitrequest`. Timing: RCD=2, RP=2, RFC=7, CL=2 at 96 MHz. Compatible with 64 Mbit SDRAM (12 row / 8 column / 2 bank).
+Custom SDRAM controller: power-on init, read, write, burst (4-word), auto-refresh, and the `capture_stream` streaming-write path for deep capture. **Open-page policy** — the active row is kept OPEN when idle (ST_IDLE still precharges before refresh / cross-row), so consecutive same-row streaming writes cost ~1 cycle each instead of ACTIVATE+WRITE+PRECHARGE per sample (the old ~5.5 MHz deep ceiling). Burst FIFO (8-entry). Avalon-MM with `waitrequest`. Timing at **167 MHz**: CL=3 (CL2 was marginal/out-of-spec at this clock), RCD/RP/RFC enforced per JEDEC. The `sdram_pin_model` simulation model enforces inter-command timing (tRCD/tRP/tRAS/tRC/tWR/tRFC) and exposes ACT/WRITE/PRE counters under STRICT mode so a page-mode regression fails loudly. Compatible with 64 Mbit SDRAM (12 row / 8 column / 2 bank).
 
 ### `rtl/SDRAM_PLL.vhd` (412 lines)
 
 **Entity:** `SDRAM_PLL`
 
-Altera ALTPLL. 12 MHz input → c0 (100 MHz), c1 (200 MHz), c2 (100 MHz, −90°), and c3 feeding the MAX10 ADC hard-IP at 12 MHz in the current speed build. Auto bandwidth.
+Altera ALTPLL. 12 MHz input → c0 (100.2 MHz `sys_clk`), c1 (200.4 MHz `fast_clk`), c2 (167 MHz `sdram_core_clk`, phase 0), c4 (167 MHz, −1.5 ns — the forwarded SDRAM device clock), and c3 feeding the MAX10 ADC hard-IP at 12 MHz. Auto bandwidth.
 
 ### `rtl/ADC_Controller.vhd` (283 lines)
 
@@ -165,7 +165,7 @@ Build automation:
 
 ### `proj/OLS_Logic_Analyzer.sdc`
 
-Timing constraints: 12 MHz input clock, `derive_pll_clocks`, CDC false paths between c0 and c1, LED controller multicycle path (1M cycles), and a false path from the slow-domain pin-map registers into the pipelined fast capture input map. No multicycle constraints are applied to the capture datapath.
+Timing constraints: 12 MHz input clock, `derive_pll_clocks`, a `SDRAM_CHIP_CLK_OUT` generated clock on the `sdram_clk` pin sourced from c4, `set_output_delay`/`set_input_delay` constraining the FPGA↔SDRAM interface, CDC false paths between the sample/SDRAM/sys clock domains, LED controller multicycle path (1M cycles), and a false path from the slow-domain pin-map registers into the pipelined fast capture input map. No multicycle constraints are applied to the capture datapath. (Getting the generated-clock match right requires `get_pins -compatibility_mode` for the bracketed `clk[*]` PLL output names.)
 
 ---
 
@@ -191,13 +191,16 @@ ghdl -r --std=08 <testbench> --assert-level=failure
 | `tb_gen_loopback` | — | Authoritative full-system: SPI → capture → readout |
 | `tb_sdram_interface` | 156 | SDRAM read/write |
 | `tb_sdram_controller` | 175 | Avalon-MM SDRAM transactions |
+| `tb_fla_drop` | — | Deep-capture write path with split FAST_CLK(200)/pclk(167); faithful dcfifo; counts handshake address-gaps (drops) and verifies single-shot completion (`Full`). Compile `SDRAM_Interface.vhd`. |
+| `tb_stream_tput` | — | Controller-only saturated streaming-write throughput (cycles/write, STRICT inter-command timing) |
+| `tb_pump_tput` | — | Full-path FLA write-pump throughput via the SPI pump counters |
 | `tb_spi_slave` | 107 | Full-duplex at 10 MHz |
 | `tb_signal_gen` | 221 | FIFO load, UART 0x55 at 115200 |
 | `tb_led_controller` | 205 | PWM, fade, all animation states |
 | `tb_adc_controller` | 102 | ADC single conv, multi-channel scan |
 | `tb_protocol_trigger` | 94 | Matches 0xA5, rejects 0x5A |
 
-Support packages: `sim_pkg.vhd`, `adxl345_model.vhd`, `sdram_model.vhd`, `pll_model.vhd`.
+Support models (`tb/support/`): `sim_pkg.vhd`, `adxl345_model.vhd`, `sdram_model.vhd`, `sdram_pin_model.vhd` (pin-level model with STRICT JEDEC inter-command timing + ACT/WRITE/PRE counters), `dcfifo_sim.vhd` (faithful dcfifo with pointer-sync latency), `lpm_components_sim.vhd`/`lpm_divide_sim.vhd` (lpm library), `pll_model.vhd`.
 
 ---
 
