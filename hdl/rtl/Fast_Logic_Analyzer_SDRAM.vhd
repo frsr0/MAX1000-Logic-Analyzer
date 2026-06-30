@@ -255,6 +255,23 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal rdfifo_wr     : std_logic := '0';
   signal rdfifo_wrfull : std_logic := '0';
   signal rdfifo_aclr   : std_logic := '0';
+
+  -- Delta compressor for readback data compression (2.67x)
+  component capture_compressor is
+    port (
+      clk               : in  std_logic;
+      rst               : in  std_logic;
+      sample_in         : in  std_logic_vector(15 downto 0);
+      sample_valid      : in  std_logic;
+      compression_enable : in  std_logic;
+      comp_data         : out std_logic_vector(15 downto 0);
+      comp_valid        : out std_logic
+    );
+  end component;
+
+  signal comp_rdata : std_logic_vector(15 downto 0) := (others => '0');
+  signal comp_feed   : std_logic := '0';
+  signal comp_valid : std_logic := '0';
   -- 2FF synchroniser for the block-read request toggle (CLK -> pclk)
   signal blk_req_s1    : std_logic := '0';
   signal blk_req_s2    : std_logic := '0';
@@ -1152,8 +1169,8 @@ begin
     )
     port map (
       aclr     => rdfifo_aclr,
-      data     => rdfifo_wdata,
-      wrreq    => rdfifo_wr,
+      data     => comp_rdata,
+      wrreq    => comp_valid,
       wrclk    => pclk,
       rdreq    => Rd_Fifo_RdReq,
       rdclk    => CLK,
@@ -1162,6 +1179,18 @@ begin
       wrfull   => rdfifo_wrfull,
       wrusedw  => open,
       rdusedw  => open
+    );
+
+  -- Delta compressor: readback data compression (2.67x)
+  rd_compressor: capture_compressor
+    port map (
+      clk               => pclk,
+      rst               => rdfifo_aclr,
+      sample_in         => s_rdata,
+      sample_valid      => comp_feed,
+      compression_enable => Compress_Enable,
+      comp_data         => comp_rdata,
+      comp_valid        => comp_valid
     );
 
   -- Main: SDRAM write pump + buffer management + readout
@@ -1217,6 +1246,7 @@ begin
       s_burst_i <= '0';
       cap_stream_valid <= '0';
       rdfifo_wr <= '0';
+      comp_feed <= '0';
       if single_count_load_q = '1' then
         buf_rem_single <= cfg_samples;
       end if;
@@ -1383,11 +1413,7 @@ begin
               -- Discard the throwaway prime read(s); the real stream starts next.
               stream_prime := stream_prime - 1;
             else
-              rdfifo_wdata <= s_rdata;
-              rdfifo_wr    <= '1';   -- push the read sample into the response
-                                     -- FIFO (dropped in the Auto_Renew refactor;
-                                     -- its absence stalled every block read ->
-                                     -- ST_CAPTURE_IDLE / empty readback)
+              comp_feed <= '1';
               if stream_rem <= 1 then
                 if Auto_Renew = '1' then
                   -- Auto-renew: reload and keep streaming
