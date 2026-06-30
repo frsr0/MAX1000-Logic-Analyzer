@@ -39,7 +39,10 @@ ADC_SCAN_FRAME_RATE_HZ = 125_000.0
 ADC_FAST_FRAME_RATE_HZ = 1_000_000.0
 DIGITAL_DEEP_SAMPLE_RATE_HZ = 14_000_000.0
 DIGITAL_FAST_BRAM_SAMPLES = 1024
-DIGITAL_SDRAM_WORDS = 1_048_576
+# Full 64 Mbit x16 SDRAM = 4,194,304 words. Raised from 1M after the deep-capture
+# write-path fix: hardware-validated end-to-end (1M/2M/4M captures all return 100%
+# of samples with 0 drops). 1M was the conservative pre-fix ceiling.
+DIGITAL_SDRAM_WORDS = 4_194_304
 DIGITAL_NARROW_LOGICAL_SAMPLES = DIGITAL_SDRAM_WORDS * 16
 
 
@@ -217,13 +220,14 @@ class ExistingHostAdapter(HardwareDevice):
         if self._requires_unavailable_high_rate_deep_path(
                 settings, self._build_trigger(settings)):
             findings.append({
-                "level": "error",
-                "message": "Full-speed digital can run up to 200 MHz for "
-                           f"{DIGITAL_FAST_BRAM_SAMPLES} samples. Deeper "
-                           "full-width digital captures use the finite SDRAM "
-                           "path, measured trustworthy up to "
-                           f"{DIGITAL_DEEP_SAMPLE_RATE_HZ / 1_000_000:.0f} MHz "
-                           "on this bitstream.",
+                "level": "warning",
+                "message": "Single-shot deep digital capture is clean up to the "
+                           "full 200 MHz sample clock. Rolling/continuous capture "
+                           "is a retention ring bounded by lossless readback "
+                           f"(~{DIGITAL_DEEP_SAMPLE_RATE_HZ / 1_000_000:.0f} MHz); "
+                           "above that the newest samples are kept and overruns "
+                           "are reported. Use single-shot for trustworthy "
+                           "high-rate deep capture.",
             })
         return findings
 
@@ -258,10 +262,10 @@ class ExistingHostAdapter(HardwareDevice):
             if (self._requires_unavailable_high_rate_deep_path(settings, trigger)
                     and not self._use_rolling_single_shot(settings, trigger)):
                 raise HardwareError(
-                    "This FPGA bitstream cannot return trustworthy deep digital "
-                    "captures with these settings. Use 1024 samples or fewer at "
-                    "high speed, or use 14 MHz or below for deeper full-width "
-                    "digital captures.")
+                    "Rolling/continuous capture above ~15 MHz overruns the "
+                    "retention ring on this bitstream. Use single-shot for "
+                    "trustworthy deep capture at any rate up to the full "
+                    "200 MHz sample clock, or lower the rolling rate.")
 
             dev.reset()
             # REG_FAST_MODE selects BRAM (1024-word) vs SDRAM capture storage.
@@ -524,7 +528,8 @@ class ExistingHostAdapter(HardwareDevice):
                        progress: Optional[ProgressCb] = None,
                        stop_evt: Optional[threading.Event] = None):
         if settings.mode != "digital_narrow":
-            raise HardwareError("stream_capture is only implemented for digital_narrow")
+            raise HardwareError(
+                "stream_capture is only implemented for digital_narrow")
         with self._lock:
             if self._dev is None:
                 raise HardwareError("Device not connected")
@@ -537,35 +542,28 @@ class ExistingHostAdapter(HardwareDevice):
             divider, actual_rate = self._actual_sample_rate(
                 dev, float(settings.sample_rate))
             window_samples = max(1, int(settings.num_samples))
-            chunk_samples = min(window_samples, max(1024, int(actual_rate * 0.0005)))
-            if window_samples >= 10:
-                chunk_samples = min(chunk_samples, max(1, window_samples // 10))
-            chunk_words = max(1, (chunk_samples + 15) // 16)
-            window_words = max(chunk_words, (window_samples + 15) // 16)
             old_flags = getattr(dev, "_raw_flags", 0)
             dev._raw_flags = (old_flags & ~0x3E000) | narrow_digital_flags(channel)
             dev.set_analog_config(0)
             try:
-                for data, _total, _total_words in dev.continuous_ring_capture(
+                for data, total, window_samp, overrun in dev.stream_ring_capture(
                         rate_hz=float(settings.sample_rate),
-                        chunk_nsamp=chunk_words,
-                        buffer_nsamp=window_words,
+                        window_samples=window_samples,
                         stop_evt=stop_evt or threading.Event(),
-                        progress_cb=progress,
-                        fast_mode=True,
-                        yield_full_buffer=False):
-                    sample_count = min(len(data) // 2 * 16, chunk_words * 16)
+                        progress_cb=progress):
+                    sample_count = min(
+                        len(data) // 2 * 16, window_samp * 16)
                     digital = unpack_narrow_digital_words(
-                        data, channel=channel, sample_count=sample_count)
-                    warnings = [f"Packed 1-channel narrow digital mode on d{channel}"]
-                    ring_status = getattr(dev, "last_ring_status", {}) or {}
-                    overrun = int(ring_status.get("overrun_count") or 0)
+                        data, channel=channel,
+                        sample_count=sample_count)
+                    warnings = [
+                        f"Packed 1-channel narrow digital mode on d{channel}"]
                     if overrun:
                         warnings.append(
-                            f"Continuous narrow ring overrun count is {overrun}")
+                            f"Streaming ring overrun count is {overrun}")
                     yield CaptureResult(
                         sample_rate=actual_rate,
-                        digital=digital[:chunk_samples],
+                        digital=digital[:window_samples],
                         analog={},
                         divider=divider,
                         warnings=warnings)
@@ -601,9 +599,13 @@ class ExistingHostAdapter(HardwareDevice):
         if trigger is not None or settings.trigger.pre_trigger_samples:
             return False
         if settings.mode in ("continuous", "rolling"):
+            # Rolling/continuous is a retention ring bounded by lossless SPI
+            # readback (~15 MHz); above that it aliases/overruns the ring badly.
             return settings.sample_rate > DIGITAL_DEEP_SAMPLE_RATE_HZ
-        return (settings.sample_rate > DIGITAL_DEEP_SAMPLE_RATE_HZ
-                and settings.num_samples > DIGITAL_FAST_BRAM_SAMPLES)
+        # Single-shot deep SDRAM capture is validated clean at every rate up to
+        # the full sample clock (open-page write path + producer-done completion),
+        # so it is no longer rate-limited.
+        return False
 
     def _rolling_single_shot_capture(self, dev, *, rate: float, nsamp: int,
                                      progress: Optional[ProgressCb],

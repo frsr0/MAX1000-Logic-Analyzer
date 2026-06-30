@@ -28,6 +28,10 @@ port (
     sdram_s_readdatavalid : out std_logic;
     sdram_s_waitrequest   : out std_logic;
     sdram_s_idle          : out std_logic;
+    capture_stream_valid  : in std_logic := '0';
+    capture_stream_ready  : out std_logic;
+    capture_stream_addr   : in std_logic_vector(21 downto 0) := (others => '0');
+    capture_stream_data   : in std_logic_vector(15 downto 0) := (others => '0');
 
     reset_reset_n         : in std_logic;
     clk_in_clk            : in std_logic
@@ -113,13 +117,19 @@ architecture rtl of SDRAM_Controller is
         ST_ACT, ST_TRCD,
         ST_RD, ST_CL_WAIT, ST_RD_DATA,
         ST_WR, ST_TWR,
+        ST_STREAM_WR,
         ST_PRE2, ST_TRP2,
         ST_RFSH_PRE, ST_RFSH, ST_TRFC,
         ST_DEASSERT
     );
     signal state : state_type := ST_INIT;
 
-    signal cnt   : integer range 0 to 65535 := 0;
+    -- Runtime wait counter: only ever counts to small values (tRCD/tWR/tRFC/tRP/
+    -- CL, all < 16), so a narrow range keeps its carry chain short at 167 MHz.
+    -- The one-time ~100 us power-up wait uses init_cnt instead, so the wide 19999
+    -- compare/increment is off this (per-operation, timing-critical) counter.
+    signal cnt   : integer range 0 to 63 := 0;
+    signal init_cnt : integer range 0 to 32767 := 0;  -- ST_INIT power-up wait only
     signal timer : integer range 0 to 65535 := 0;
     signal ref_req : std_logic := '0';
 
@@ -134,6 +144,8 @@ architecture rtl of SDRAM_Controller is
     signal pend_rn : std_logic := '0';
     signal pend_wn : std_logic := '0';
     signal pend_wn_next : std_logic := '0';
+    signal pend_wn_same_row : std_logic := '0';
+    signal pend_wn_next_same_row : std_logic := '0';
 
     -- Burst FIFO: stores up to 8 addr+data pairs during burst load
     type burst_fifo_array is array(0 to 7) of std_logic_vector(37 downto 0);
@@ -145,6 +157,12 @@ architecture rtl of SDRAM_Controller is
     signal burst_cnt       : natural range 0 to 3 := 0;
 
     signal dq_oe : std_logic := '0';
+    -- Registered streaming write data (see DQ mux comment).
+    -- Single registered DQ output. Drives the sdram_dq pin directly (no
+    -- combinational mux), so it packs into the I/O cell and the write data has a
+    -- clean, glitch-free register->pin path. Loaded at every write-command cycle
+    -- (ST_STREAM_WR streaming write, ST_WR burst/avalon write).
+    signal dq_out : std_logic_vector(15 downto 0) := (others => '0');
 
     signal bank_r : std_logic_vector(1 downto 0) := "00";
     signal row_r  : std_logic_vector(11 downto 0) := (others => '0');
@@ -165,15 +183,17 @@ architecture rtl of SDRAM_Controller is
     signal active_row  : std_logic_vector(11 downto 0) := (others => '0');
     signal active_bank : std_logic_vector(1 downto 0) := (others => '0');
     signal row_open    : std_logic := '0';
+    signal last_op_was_stream : std_logic := '0';
+    signal capture_stream_ready_now : std_logic := '0';
 
     -- Mode register: A2:0 burst length 1, A3 sequential, A6:4 CAS latency,
-    -- A9:7 standard operating mode. CAS latency MUST be "010" (CL2) to match the
-    -- read FSM (ST_RD -> ST_CL_WAIT -> ST_RD_DATA samples DQ 2 cycles after CAS).
-    -- The previous value "000001000000" put the bit at A6, giving A6:4 = "100",
-    -- a RESERVED/invalid CAS code — the chip then ran a non-spec read latency
-    -- whose DQ valid window was marginal for the worst-case first read after the
-    -- bus idled across the inter-block gap (the block-boundary corruption).
-    constant MR : std_logic_vector(11 downto 0) := "000000100000";
+    -- A9:7 standard operating mode. CAS latency is "011" (CL3): at 167 MHz (6 ns)
+    -- CL2's DQ-valid window is too tight for the worst-case first read after the
+    -- bus idled across the inter-block gap, which read back 0xFFFF (un-driven DQ)
+    -- -> the deterministic block-boundary readback corruption. CL3 gives the chip
+    -- an extra cycle to drive DQ. The read FSM matches it: ST_RD -> ST_CL_WAIT (2)
+    -- -> ST_RD_DATA samples DQ 3 cycles after CAS.
+    constant MR : std_logic_vector(11 downto 0) := "000000110000";
 
     function is_same_row(addr : std_logic_vector(21 downto 0);
                          row  : std_logic_vector(11 downto 0);
@@ -194,8 +214,29 @@ begin
     sdram_addr  <= s_addr;
     sdram_ba    <= s_ba;
 
-    sdram_dq <= buf_wd when dq_oe = '1' else (others => 'Z');
+    -- DQ pin driven by a SINGLE registered value (dq_out) gated by a registered
+    -- output-enable (dq_oe). Previously the pin was driven by a COMBINATIONAL mux
+    -- (s_wd_stream/buf_wd selected by last_op_was_stream) sitting between the
+    -- registers and the pin: it could not pack into the I/O cell and the OE/select
+    -- resolved combinationally right at the pad, so a momentary wrong-OE could
+    -- float DQ during a write -> the SDRAM latched the idle bus (0xFFFF / "never
+    -- written"), a PHASE-INSENSITIVE rare single-sample write drop. dq_out is
+    -- loaded at each write-command cycle (ST_STREAM_WR / ST_WR), so this is a
+    -- clean register->IOE path with a registered OE.
+    sdram_dq <= dq_out when dq_oe = '1' else (others => 'Z');
     sdram_s_idle <= '1' when state = ST_IDLE else '0';
+    -- Producer and controller share clk_in_clk, so READY must describe the
+    -- current cycle's accept decision. A registered READY lingers high for one
+    -- extra cycle and can make the producer pop/increment into a cycle where
+    -- the controller is actually deferring the sample.
+    capture_stream_ready_now <= '1'
+        when state = ST_STREAM_WR
+         and capture_stream_valid = '1'
+         and ref_req = '0'
+         and pend_rn = '0'
+         and is_same_row(capture_stream_addr, active_row, active_bank)
+        else '0';
+    capture_stream_ready <= capture_stream_ready_now;
 
     -- synthesis translate_off
     process(max_write_depth)
@@ -212,13 +253,15 @@ begin
     begin
         if reset_reset_n = '0' then
             state <= ST_INIT;
-            cnt <= 0; timer <= 0; ref_req <= '0';
+            cnt <= 0; init_cnt <= 0; timer <= 0; ref_req <= '0';
             dq_oe <= '0';
             sdram_s_waitrequest <= '1'; sdram_s_readdatavalid <= '0';
             sdram_s_readdata <= (others => '0');
             last_rn <= '1'; last_wn <= '1';
             pend_rn <= '0'; pend_wn <= '0'; pend_wn_next <= '0';
+            pend_wn_same_row <= '0'; pend_wn_next_same_row <= '0';
             buf_a <= (others => '0'); buf_wd <= (others => '0');
+            dq_out <= (others => '0');
             buf_a_next <= (others => '0'); buf_wd_next <= (others => '0');
             is_read <= '0';
             s_cs <= '1'; s_ras <= '1'; s_cas <= '1'; s_we <= '1';
@@ -227,9 +270,9 @@ begin
             prev_buf_a <= (others => '0');
             row_open <= '0'; active_row <= (others => '0'); active_bank <= (others => '0');
             burst_fifo_cnt <= 0; burst_active <= '0'; burst_cnt <= 0;
+            last_op_was_stream <= '0';
 
         elsif rising_edge(clk_in_clk) then
-
             last_rn <= sdram_s_read_n;
             last_wn <= sdram_s_write_n;
 
@@ -256,25 +299,18 @@ begin
                 pend_rn <= '1';
                 pend_wn <= '0';
             elsif last_wn = '1' and sdram_s_write_n = '0' then
-                if sdram_s_burst = '1' then
-                    -- Burst load: push addr+data into internal FIFO
-                    if burst_fifo_cnt < 8 then
-                        burst_fifo(burst_fifo_head) <= sdram_s_address & sdram_s_writedata;
-                        if burst_fifo_head = 7 then burst_fifo_head <= 0;
-                        else burst_fifo_head <= burst_fifo_head + 1; end if;
-                        burst_fifo_cnt <= burst_fifo_cnt + 1;
-                    end if;
+                -- Capture uses capture_stream_* exclusively. Keep the simple
+                -- single-write Avalon path for legacy/sim access, but remove the
+                -- unused burst FIFO service path from the 167 MHz timing cone.
+                v_depth := v_depth + 1;
+                if pend_wn = '0' then
+                    buf_a <= sdram_s_address;
+                    buf_wd <= sdram_s_writedata;
+                    pend_wn <= '1';
                 else
-                    v_depth := v_depth + 1;
-                    if pend_wn = '0' then
-                        buf_a <= sdram_s_address;
-                        buf_wd <= sdram_s_writedata;
-                        pend_wn <= '1';
-                    else
-                        buf_a_next <= sdram_s_address;
-                        buf_wd_next <= sdram_s_writedata;
-                        pend_wn_next <= '1';
-                    end if;
+                    buf_a_next <= sdram_s_address;
+                    buf_wd_next <= sdram_s_writedata;
+                    pend_wn_next <= '1';
                 end if;
                 pend_rn <= '0';
             end if;
@@ -288,8 +324,8 @@ begin
                 -- INITIALIZATION
                 when ST_INIT =>
                     s_cs <= '1';
-                    if cnt < 19999 then cnt <= cnt + 1;
-                    else cnt <= 0; state <= ST_INIT_NOP;
+                    if init_cnt < 19999 then init_cnt <= init_cnt + 1;
+                    else init_cnt <= 0; state <= ST_INIT_NOP;
                     end if;
 
                 when ST_INIT_NOP =>
@@ -371,8 +407,10 @@ begin
                         end if;
                         -- Page-mode: if same row is open, skip activate
                         if row_open = '1' and is_same_row(buf_a, active_row, active_bank) then
+                            pend_wn_same_row <= '1';
                             state <= ST_WR;
                         else
+                            pend_wn_same_row <= '0';
                             state <= ST_ACT;
                         end if;
                     elsif pend_wn_next = '1' then
@@ -386,29 +424,32 @@ begin
                         sdram_s_waitrequest <= '1';
                         v_depth := v_depth - 1;
                         if row_open = '1' and is_same_row(buf_a_next, active_row, active_bank) then
+                            pend_wn_same_row <= '1';
                             state <= ST_WR;
                         else
+                            pend_wn_same_row <= '0';
                             state <= ST_ACT;
                         end if;
-                    elsif burst_fifo_cnt >= 4 then
-                        -- Start burst write: pop first entry from FIFO
-                        burst_active <= '1';
+                    elsif capture_stream_valid = '1' and row_open = '1'
+                          and is_same_row(capture_stream_addr, active_row, active_bank) then
+                        is_read <= '0';
                         dq_oe <= '1';
-                        buf_a <= burst_fifo(burst_fifo_tail)(37 downto 16);
-                        buf_wd <= burst_fifo(burst_fifo_tail)(15 downto 0);
-                        bank_r <= burst_fifo(burst_fifo_tail)(37 downto 36);
-                        row_r  <= burst_fifo(burst_fifo_tail)(35 downto 24);
-                        col_r  <= burst_fifo(burst_fifo_tail)(23 downto 16);
-                        if burst_fifo_tail = 7 then burst_fifo_tail <= 0;
-                        else burst_fifo_tail <= burst_fifo_tail + 1; end if;
-                        burst_fifo_cnt <= burst_fifo_cnt - 1;
+                        last_op_was_stream <= '1';
                         sdram_s_waitrequest <= '1';
-                        v_depth := v_depth - 1;
-                        if row_open = '1' and is_same_row(burst_fifo(burst_fifo_tail)(37 downto 16), active_row, active_bank) then
-                            state <= ST_WR;
-                        else
-                            state <= ST_ACT;
-                        end if;
+                        state <= ST_STREAM_WR;
+                    elsif capture_stream_valid = '1' and row_open = '1' then
+                        last_op_was_stream <= '1';
+                        sdram_s_waitrequest <= '1';
+                        state <= ST_PRE2;
+                    elsif capture_stream_valid = '1' then
+                        is_read <= '0';
+                        dq_oe <= '1';
+                        last_op_was_stream <= '1';
+                        bank_r <= capture_stream_addr(21 downto 20);
+                        row_r <= capture_stream_addr(19 downto 8);
+                        col_r <= capture_stream_addr(7 downto 0);
+                        sdram_s_waitrequest <= '1';
+                        state <= ST_ACT;
                     end if;
 
                 -- READ/WRITE SEQUENCE
@@ -421,8 +462,12 @@ begin
                 when ST_TRCD =>
                     if cnt < TRCD_CYCLES - 1 then cnt <= cnt + 1;
                     else cnt <= 0;
-                        if is_read = '1' then state <= ST_RD;
-                        else state <= ST_WR;
+                        if is_read = '1' then
+                            state <= ST_RD;
+                        elsif last_op_was_stream = '1' then
+                            state <= ST_STREAM_WR;
+                        else
+                            state <= ST_WR;
                         end if;
                     end if;
 
@@ -433,7 +478,9 @@ begin
                     state <= ST_CL_WAIT;
 
                 when ST_CL_WAIT =>
-                    if cnt < 1 then cnt <= cnt + 1;
+                    -- CL3: wait two cycles after CAS so DQ is sampled 3 cycles
+                    -- after the read command (matches MR CAS latency "011").
+                    if cnt < 2 then cnt <= cnt + 1;
                     else cnt <= 0; state <= ST_RD_DATA;
                     end if;
 
@@ -446,6 +493,11 @@ begin
                     s_cas <= '0'; s_we <= '0';
                     s_addr <= "0000" & col_r;
                     s_ba <= bank_r;
+                    last_op_was_stream <= '0';
+                    -- Drive DQ from the single registered output, aligned with the
+                    -- write command (uses the CURRENT buf_wd; the burst branch below
+                    -- loads the NEXT beat into buf_wd in the same cycle).
+                    dq_out <= buf_wd;
                     if burst_active = '1' and burst_cnt < 3 then
                         -- Stay for next burst beat: drain FIFO entry
                         burst_cnt <= burst_cnt + 1;
@@ -464,14 +516,66 @@ begin
                         state <= ST_TWR;
                     end if;
 
+                when ST_STREAM_WR =>
+                    last_op_was_stream <= '1';
+                    -- TIMING CLOSURE (clk[2]=167 MHz, -0.161 ns setup): pre-load
+                    -- buf_a/buf_wd from the incoming sample whenever it is valid,
+                    -- BEFORE (and independent of) the defer decision. Previously
+                    -- these registers loaded only inside the defer branch, so their
+                    -- data-load mux select carried the full defer condition --
+                    -- including is_same_row(capture_stream_addr,...). That put a
+                    -- 14-bit row/bank compare in series with the buf_a address mux
+                    -- (cap_stream_addr -> is_same_row -> Selectors -> buf_a), the
+                    -- worst intra-167MHz path. Decoupling the load to a single
+                    -- capture_stream_valid gate removes is_same_row from buf_a's
+                    -- select. buf_a is unused in the write-now branch (that branch
+                    -- drives s_addr directly from capture_stream_addr), and when the
+                    -- defer branch sets pend_wn buf_a still holds this same address,
+                    -- so the pending-write path is unchanged.
+                    if capture_stream_valid = '1' then
+                        buf_a  <= capture_stream_addr;
+                        buf_wd <= capture_stream_data;
+                    end if;
+                    if ref_req = '1' or pend_rn = '1'
+                    or capture_stream_valid = '0'
+                    or not is_same_row(capture_stream_addr, active_row, active_bank) then
+                        -- DEFER (page boundary, pending refresh/read, or producer
+                        -- idle). READY is combinational in this clock domain now,
+                        -- so the producer no longer over-advances into a deferred
+                        -- cycle. Keep routing the deferred sample through the
+                        -- normal pending-write path so row/refresh/read conflicts
+                        -- preserve ordering. Do NOT ack here.
+                        if capture_stream_valid = '1' then
+                            -- buf_a/buf_wd already loaded above (valid-gated).
+                            pend_wn <= '1';
+                            if is_same_row(capture_stream_addr, active_row, active_bank) then
+                                pend_wn_same_row <= '1';
+                            else
+                                pend_wn_same_row <= '0';
+                            end if;
+                            last_op_was_stream <= '0';
+                            -- Balance the write-depth counter that the pend_wn
+                            -- handler decrements when it services this write.
+                            v_depth := v_depth + 1;
+                        end if;
+                        state <= ST_TWR;
+                    else
+                        s_cas <= '0'; s_we <= '0';
+                        s_addr <= "0000" & capture_stream_addr(7 downto 0);
+                        s_ba <= capture_stream_addr(21 downto 20);
+                        dq_out <= capture_stream_data;  -- single registered DQ, with command
+                        state <= ST_STREAM_WR;
+                    end if;
+
                 when ST_TWR =>
                     dq_oe <= '0';
                     burst_active <= '0';
                     burst_cnt <= 0;
                     -- For page-mode writes (same row pending), skip TWR delay.
                     -- tWR is only needed before precharge, not between same-row writes.
-                    if (pend_wn = '1' and is_same_row(buf_a, active_row, active_bank))
-                    or (pend_wn_next = '1' and is_same_row(buf_a_next, active_row, active_bank)) then
+                    if last_op_was_stream = '0'
+                    and ((pend_wn = '1' and pend_wn_same_row = '1')
+                    or (pend_wn_next = '1' and pend_wn_next_same_row = '1')) then
                         cnt <= 0; state <= ST_DEASSERT;
                     elsif cnt < TWR_CYCLES - 1 then cnt <= cnt + 1;
                     else cnt <= 0; state <= ST_DEASSERT;
@@ -480,7 +584,7 @@ begin
                 when ST_PRE2 =>
                     sdram_s_readdatavalid <= '0';
                     s_ras <= '0'; s_we <= '0';
-                    s_addr(10) <= '1'; s_ba <= bank_r;
+                    s_addr(10) <= '1'; s_ba <= active_bank;
                     row_open <= '0';
                     state <= ST_TRP2;
 
@@ -510,8 +614,16 @@ begin
                 -- DONE: service next pending request, or go idle
                 when ST_DEASSERT =>
                     sdram_s_waitrequest <= '0';
-                    if pend_wn = '1' and row_open = '1'
-                       and not is_same_row(buf_a, active_row, active_bank) then
+                    if ref_req = '1' and pend_rn = '0' and pend_wn = '0' and pend_wn_next = '0' then
+                        ref_req <= '0';
+                        sdram_s_waitrequest <= '1';
+                        if row_open = '1' then
+                            state <= ST_PRE2;
+                        else
+                            state <= ST_RFSH;
+                        end if;
+                    elsif pend_wn = '1' and row_open = '1'
+                       and pend_wn_same_row = '0' then
                         -- Cross-row write: close the open page-mode row BEFORE
                         -- activating the new one (the pend_rn read path below
                         -- already does this). Every same-row page-mode write
@@ -536,15 +648,17 @@ begin
                             buf_wd <= buf_wd_next;
                             pend_wn <= '1';
                             pend_wn_next <= '0';
+                            pend_wn_same_row <= pend_wn_next_same_row;
+                            pend_wn_next_same_row <= '0';
                         end if;
                         -- Page-mode: skip activate if same row
-                        if row_open = '1' and is_same_row(buf_a, active_row, active_bank) then
+                        if row_open = '1' and pend_wn_same_row = '1' then
                             state <= ST_WR;
                         else
                             state <= ST_ACT;
                         end if;
                     elsif pend_wn_next = '1' and row_open = '1'
-                          and not is_same_row(buf_a_next, active_row, active_bank) then
+                          and pend_wn_next_same_row = '0' then
                         -- Same cross-row precharge for the pipelined next write.
                         sdram_s_waitrequest <= '1';
                         state <= ST_PRE2;
@@ -554,34 +668,37 @@ begin
                         buf_wd <= buf_wd_next;
                         pend_wn <= '1';
                         pend_wn_next <= '0';
+                        pend_wn_same_row <= pend_wn_next_same_row;
+                        pend_wn_next_same_row <= '0';
                         is_read <= '0';
                         dq_oe <= '1';
                         sdram_s_waitrequest <= '1';
                         v_depth := v_depth - 1;
-                        if row_open = '1' and is_same_row(buf_a_next, active_row, active_bank) then
+                        if row_open = '1' and pend_wn_next_same_row = '1' then
                             state <= ST_WR;
                         else
                             state <= ST_ACT;
                         end if;
-                elsif burst_fifo_cnt >= 4 then
-                    -- Next burst waiting: start immediately
-                    burst_active <= '1';
-                    dq_oe <= '1';
-                    buf_a <= burst_fifo(burst_fifo_tail)(37 downto 16);
-                    buf_wd <= burst_fifo(burst_fifo_tail)(15 downto 0);
-                    bank_r <= burst_fifo(burst_fifo_tail)(37 downto 36);
-                    row_r  <= burst_fifo(burst_fifo_tail)(35 downto 24);
-                    col_r  <= burst_fifo(burst_fifo_tail)(23 downto 16);
-                    if burst_fifo_tail = 7 then burst_fifo_tail <= 0;
-                    else burst_fifo_tail <= burst_fifo_tail + 1; end if;
-                    burst_fifo_cnt <= burst_fifo_cnt - 1;
-                    sdram_s_waitrequest <= '1';
-                    v_depth := v_depth - 1;
-                    if row_open = '1' and is_same_row(burst_fifo(burst_fifo_tail)(37 downto 16), active_row, active_bank) then
-                        state <= ST_WR;
-                    else
+                    elsif capture_stream_valid = '1' and row_open = '1'
+                          and not is_same_row(capture_stream_addr, active_row, active_bank) then
+                        last_op_was_stream <= '1';
+                        sdram_s_waitrequest <= '1';
+                        state <= ST_PRE2;
+                    elsif capture_stream_valid = '1' and row_open = '1' then
+                        is_read <= '0';
+                        dq_oe <= '1';
+                        last_op_was_stream <= '1';
+                        sdram_s_waitrequest <= '1';
+                        state <= ST_STREAM_WR;
+                    elsif capture_stream_valid = '1' then
+                        is_read <= '0';
+                        dq_oe <= '1';
+                        last_op_was_stream <= '1';
+                        bank_r <= capture_stream_addr(21 downto 20);
+                        row_r <= capture_stream_addr(19 downto 8);
+                        col_r <= capture_stream_addr(7 downto 0);
+                        sdram_s_waitrequest <= '1';
                         state <= ST_ACT;
-                    end if;
                 elsif pend_rn = '1' then
                         pend_rn <= '0';
                         is_read <= '1';
@@ -594,19 +711,15 @@ begin
                             state <= ST_ACT;
                         end if;
                     else
-                        -- No pending: go idle, close row if open
-                        if row_open = '1' then
-                            state <= ST_PRE2;
-                        else
-                            -- Check if refresh was requested while we were busy
-                            if ref_req = '1' then
-                                ref_req <= '0';
-                                sdram_s_waitrequest <= '1';
-                                state <= ST_RFSH;
-                            else
-                                state <= ST_IDLE;
-                            end if;
-                        end if;
+                        -- No pending work: OPEN-PAGE policy. Keep the row OPEN and
+                        -- go idle, so the next (typically same-row) streaming write
+                        -- enters ST_STREAM_WR directly without a re-ACTIVATE.
+                        -- Closing here forced ACT+write+PRE for EVERY sample at
+                        -- sparse capture rates (page-mode only survived back-to-back
+                        -- writes) -- the deep-capture throughput ceiling. ST_IDLE
+                        -- still precharges before refresh, and cross-row writes/reads
+                        -- still precharge as needed, so correctness is unchanged.
+                        state <= ST_IDLE;
                     end if;
 
             end case;

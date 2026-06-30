@@ -67,18 +67,23 @@ def test_measured_safe_deep_digital_capture_uses_finite_sdram_path():
     assert len(result.digital) == 2048
 
 
-def test_high_rate_deep_digital_validation_blocks_corrupt_ring_path():
+def test_high_rate_single_shot_deep_digital_is_allowed():
+    # Single-shot deep SDRAM capture is validated clean to the full sample clock
+    # (open-page write path + producer-done completion), so a 100 MHz / 2048-word
+    # capture is no longer blocked and produces no error-level finding.
     adapter = ExistingHostAdapter()
     adapter._dev = FakeHostDevice()
-
-    findings = adapter.validate_settings(CaptureSettings(
+    settings = CaptureSettings(
         sample_rate=100_000_000,
         num_samples=2048,
         enabled_digital=list(range(16)),
-    ))
+    )
 
-    assert any(f["level"] == "error" and "finite SDRAM" in f["message"]
-               for f in findings)
+    findings = adapter.validate_settings(settings)
+    assert not any(f["level"] == "error" for f in findings)
+
+    adapter.capture(settings)
+    adapter._dev.capture.assert_called_once()
 
 
 def test_rolling_boundary_repair_reports_ring_overrun_warning_when_called_directly():
@@ -100,7 +105,9 @@ def test_rolling_boundary_repair_reports_ring_overrun_warning_when_called_direct
     assert adapter._last_rolling_status["overrun_count"] == 3
 
 
-def test_200mhz_deep_digital_capture_is_rejected_instead_of_using_ring():
+def test_200mhz_single_shot_deep_digital_capture_uses_finite_sdram_path():
+    # 200 MHz single-shot deep capture is now allowed: it streams through the
+    # finite SDRAM path (dev.capture), not the rolling ring read-back.
     adapter = ExistingHostAdapter()
     adapter._dev = FakeHostDevice()
     settings = CaptureSettings(
@@ -110,17 +117,12 @@ def test_200mhz_deep_digital_capture_is_rejected_instead_of_using_ring():
     )
 
     findings = adapter.validate_settings(settings)
-    try:
-        adapter.capture(settings)
-    except HardwareError as exc:
-        assert "14 MHz or below" in str(exc)
-    else:
-        raise AssertionError("200 MHz deep capture should be rejected")
+    assert not any(f["level"] == "error" for f in findings)
 
-    assert any(f["level"] == "error" and "finite SDRAM" in f["message"]
-               for f in findings)
-    adapter._dev.capture.assert_not_called()
+    result = adapter.capture(settings)
+    adapter._dev.capture.assert_called_once()
     adapter._dev.read_capture_range.assert_not_called()
+    assert len(result.digital) == 2048
 
 
 def test_rolling_digital_rejects_untrustworthy_high_rate_path():
@@ -137,11 +139,11 @@ def test_rolling_digital_rejects_untrustworthy_high_rate_path():
     try:
         adapter.capture(settings)
     except HardwareError as exc:
-        assert "14 MHz or below" in str(exc)
+        assert "overruns the retention ring" in str(exc)
     else:
         raise AssertionError("200 MHz rolling capture should be rejected")
 
-    assert any(f["level"] == "error" and "finite SDRAM" in f["message"]
+    assert any(f["level"] == "warning" and "retention ring" in f["message"]
                for f in findings)
     adapter._dev.capture.assert_not_called()
 

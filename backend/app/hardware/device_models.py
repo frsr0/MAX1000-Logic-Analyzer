@@ -27,7 +27,7 @@ class DeviceCapabilities(BaseModel):
     analog_channels: int = 0
     max_sample_rate: float = 100e6
     min_sample_rate: float = 10.0
-    max_samples: int = 1_000_000
+    max_samples: int = 4_194_304
     bram_samples: int = 1024
     sample_clk_hz: float = 200e6
     supports_pre_trigger: bool = True

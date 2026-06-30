@@ -20,6 +20,10 @@ PORT (
   Write_Enable          : IN    std_logic                     := '0';             
   Write_Data            : IN    std_logic_vector(15 downto 0) := (others => '0'); 
   Burst                 : IN    std_logic                     := '0';
+  Capture_Stream_Valid  : IN    std_logic                     := '0';
+  Capture_Stream_Ready  : OUT   std_logic                     := '0';
+  Capture_Stream_Address : IN   std_logic_vector(21 downto 0) := (others => '0');
+  Capture_Stream_Data   : IN    std_logic_vector(15 downto 0) := (others => '0');
   Read_Enable           : IN    std_logic                     := '0';             
   Read_Data             : OUT   std_logic_vector(15 downto 0) := (others => '0'); 
    Read_Valid            : OUT   std_logic                     := '0';             
@@ -63,9 +67,13 @@ ARCHITECTURE BEHAVIORAL OF SDRAM_Interface IS
    sdram_s_write_n       : in    std_logic                     := 'X';
    sdram_s_burst         : in    std_logic                     := 'X';
   sdram_s_readdata      : out   std_logic_vector(15 downto 0);                    
-  sdram_s_readdatavalid : out   std_logic;                                        
+   sdram_s_readdatavalid : out   std_logic;                                        
    sdram_s_waitrequest   : out   std_logic;                                        
    sdram_s_idle          : out   std_logic;                                        
+   capture_stream_valid  : in    std_logic                     := '0';
+   capture_stream_ready  : out   std_logic;
+   capture_stream_addr   : in    std_logic_vector(21 downto 0) := (others => '0');
+   capture_stream_data   : in    std_logic_vector(15 downto 0) := (others => '0');
    reset_reset_n         : in    std_logic                     := 'X';             
   clk_in_clk            : in    std_logic                     := 'X'              
   );
@@ -144,6 +152,10 @@ BEGIN
    sdram_s_readdatavalid => sdram_s_readdatavalid, 
    sdram_s_waitrequest   => sdram_s_waitrequest,   
    sdram_s_idle          => sdram_s_idle,
+   capture_stream_valid  => Capture_Stream_Valid,
+   capture_stream_ready  => Capture_Stream_Ready,
+   capture_stream_addr   => Capture_Stream_Address,
+   capture_stream_data   => Capture_Stream_Data,
    reset_reset_n         => reset_reset_n,
   clk_in_clk            => CLK
   );
@@ -157,6 +169,7 @@ BEGIN
      BEGIN
        IF (rising_edge(CLK)) THEN
          sdram_s_idle <= '0';
+         Capture_Stream_Ready <= '0';
          IF (sdram_s_read_n = '0') THEN
            IF (not wait_r) THEN
              IF (sdram_s_waitrequest = '0') THEN
@@ -180,6 +193,10 @@ BEGIN
                wait_r := true;
              END IF;
            END IF;
+         ELSIF (Capture_Stream_Valid = '1') THEN
+           sdram_s_waitrequest <= '0';
+           sdram_ram(TO_INTEGER(UNSIGNED(Capture_Stream_Address)) mod 4096) <= Capture_Stream_Data;
+           Capture_Stream_Ready <= '1';
          ELSE
            sdram_s_readdatavalid <= '0';
            sdram_s_waitrequest <= '0';

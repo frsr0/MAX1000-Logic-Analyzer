@@ -74,12 +74,15 @@ class OLS:
             if not isinstance(q, int):
                 break
             if q > 0:
-                chunk = self.dev.read(q)
-                if not isinstance(chunk, (bytes, bytearray)):
-                    break
-                raw += chunk
+                try:
+                    chunk = self.dev.read(min(q, n - len(raw)))
+                except Exception:
+                    return raw
+                if isinstance(chunk, (bytes, bytearray)):
+                    raw += bytes(chunk)
+                    continue
             elif not raw:
-                time.sleep(0.001)
+                time.sleep(0.0003)
         return raw
 
     def _read_all(self, timeout=0.5):
@@ -144,7 +147,7 @@ class OLS:
         d.write(bytes([
             0x4B, 0x01,                           # 4-pin mode
             0x85,                                 # disable loopback
-            0x94, 0x00,                           # disable clock /5
+            0x8A,                                 # disable clock /5 (60 MHz base)
             0x86, div & 0xFF, (div >> 8) & 0xFF,  # clock divisor
             0x80, GPIO_CS_HI, PIN_DIR,            # GPIO init (CS high)
         ]))
@@ -381,3 +384,57 @@ class OLS:
         self.set_fast_mode(True)
         self.set_continuous(True)
         return self.chained_read(nsamples * 4)
+
+    def stream_read(self, n_bytes, stop_evt=None):
+        """Read n_bytes of raw SPI data with CS held low.
+
+        Single MPSSE batch: CS low → 0x31 read commands → CS high.
+        Uses _read_n (getQueueStatus-based) to drain the response.
+        Multiple 0x31 commands are used when n_bytes > 65536
+        (max per MPSSE read command).
+        """
+        if n_bytes == 0:
+            return b''
+        self._drain()
+        if stop_evt is not None and stop_evt.is_set():
+            return b''
+        MAX_PER_CMD = 65536
+        buf = bytes([0x80, GPIO_CS_LO, PIN_DIR])
+        remaining = n_bytes
+        while remaining > 0:
+            n = min(MAX_PER_CMD, remaining)
+            buf += bytes([0x31, (n - 1) & 0xFF, ((n - 1) >> 8) & 0xFF])
+            buf += bytes([0x11] * n)
+            remaining -= n
+        buf += bytes([0x87, 0x80, GPIO_CS_HI, PIN_DIR, 0x87])
+        self.dev.write(buf)
+        return self._read_n(n_bytes)
+
+    def stream_command(self, request, n_bytes, ack_pad=96, stop_evt=None):
+        """Send a stream-start packet and read raw stream bytes under one CS.
+
+        The FPGA enters raw streaming immediately after the packet ack is
+        shifted out. Keeping CS low for the request, ack clocks, and sample
+        clocks avoids aborting STREAM_TX with host-side ack polling.
+        """
+        if n_bytes == 0:
+            return b''
+        if stop_evt is not None and stop_evt.is_set():
+            return b''
+        request = bytes(request)
+        self._drain()
+        read_len = len(request) + int(ack_pad) + n_bytes
+        buf = bytes([0x80, GPIO_CS_LO, PIN_DIR])
+        payload = request + bytes([0xFF] * int(ack_pad)) + bytes([0x11] * n_bytes)
+        remaining = len(payload)
+        pos = 0
+        MAX_PER_CMD = 65536
+        while remaining > 0:
+            n = min(MAX_PER_CMD, remaining)
+            buf += bytes([0x31, (n - 1) & 0xFF, ((n - 1) >> 8) & 0xFF])
+            buf += payload[pos:pos + n]
+            pos += n
+            remaining -= n
+        buf += bytes([0x87, 0x80, GPIO_CS_HI, PIN_DIR, 0x87])
+        self.dev.write(buf)
+        return self._read_n(read_len, timeout=max(0.5, n_bytes / max(self.speed_hz / 8, 1) + 0.5))

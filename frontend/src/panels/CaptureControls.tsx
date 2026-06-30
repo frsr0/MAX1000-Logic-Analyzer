@@ -2,14 +2,19 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import { useApp } from '../state/appStore';
 
-const DIGITAL_DEEP_MAX_RATE = 14e6;
 const DIGITAL_FAST_DEPTH = 1024;
-const DIGITAL_SDRAM_DEPTH = 1_048_576;
+// Full 64 Mbit x16 SDRAM = 4,194,304 words (hardware-validated deep capture).
+const DIGITAL_SDRAM_DEPTH = 4_194_304;
 const DIGITAL_NARROW_MAX_SAMPLES = DIGITAL_SDRAM_DEPTH * 16;
 const DIGITAL_RATES = [10e3, 100e3, 500e3, 1e6, 2e6, 5e6, 10e6, 12.5e6, 14e6, 20e6, 50e6, 100e6, 200e6];
-const DIGITAL_DEEP_RATES = DIGITAL_RATES.filter((rate) => rate <= DIGITAL_DEEP_MAX_RATE);
-const DIGITAL_DEPTHS = [1024, 10_000, 50_000, 100_000, 250_000, 500_000, DIGITAL_SDRAM_DEPTH];
-const DIGITAL_FAST_DEPTHS = [DIGITAL_FAST_DEPTH];
+// Single-shot deep SDRAM capture is validated clean at every rate up to the full
+// 200 MHz sample clock (open-page write path + producer-done completion), so deep
+// captures use the full rate list.
+// Rolling/continuous is still bounded by lossless SPI readback (~30 MB/s / 2 B =
+// ~15 MHz); above that the ring keeps the newest samples and reports overruns.
+const DIGITAL_ROLLING_MAX_RATE = 15e6;
+const DIGITAL_ROLLING_RATES = DIGITAL_RATES.filter((rate) => rate <= DIGITAL_ROLLING_MAX_RATE);
+const DIGITAL_DEPTHS = [1024, 10_000, 50_000, 100_000, 250_000, 500_000, 1_048_576, 2_097_152, DIGITAL_SDRAM_DEPTH];
 const MIXED_RATES = [125e3];
 const ANALOG_FAST_RATES = [100e3, 200e3, 500e3, 1e6];
 const ANALOG_ALL_RATES = [125e3];
@@ -38,43 +43,74 @@ const ROLLING_MODES: CaptureMode[] = [
   'analog_all_continuous', 'mixed_continuous',
 ];
 
-const MODE_OPTIONS: {
-  mode: CaptureMode;
+// Capture is two independent axes: a signal SOURCE and an ACQUISITION (single
+// shot vs continuous/live). The UI presents those two axes; each (source,
+// acquisition) pair maps to one of the underlying backend mode strings below.
+type CaptureSource = 'digital' | 'mixed' | 'digital_narrow' | 'analog_fast' | 'analog_all';
+type Acquisition = 'single' | 'live';
+
+const SOURCES: {
+  source: CaptureSource;
   label: string;
   detail: string;
   channels: string;
+  liveOnly?: boolean;
 }[] = [
   {
-    mode: 'single',
-    label: 'Full-speed digital',
-    detail: '200 MHz at 1k depth, 14 MHz full-width deep',
+    source: 'digital',
+    label: 'Digital',
+    detail: '16 channels, up to 200 MHz / 4M-sample deep',
     channels: 'd0-d15',
   },
   {
-    mode: 'mixed',
+    source: 'mixed',
     label: 'Mixed',
     detail: '16 digital + 8 ADC scan channels',
     channels: 'd0-d15 + ADC0-ADC7',
   },
   {
-    mode: 'digital_narrow',
-    label: '200 MHz narrow rolling',
-    detail: '1 digital channel packed for long gapless rolling',
+    source: 'digital_narrow',
+    label: 'Digital narrow',
+    detail: '1 channel packed @200 MHz for long gapless live capture',
     channels: 'one digital channel',
+    liveOnly: true,
   },
   {
-    mode: 'analog_fast',
+    source: 'analog_fast',
     label: 'High-speed analog',
     detail: '1 physical analog input at best ADC rate',
     channels: 'a1',
   },
   {
-    mode: 'analog_all',
+    source: 'analog_all',
     label: 'Maximum analog',
     detail: 'All physical analog inputs at best detail',
     channels: 'a1, a2, a3, a4, a5, a7, a8, a16',
   },
 ];
+
+// (source, acquisition) -> backend mode string.
+function modeForSource(source: CaptureSource, acq: Acquisition): CaptureMode {
+  switch (source) {
+    case 'digital': return acq === 'live' ? 'rolling' : 'single';
+    case 'digital_narrow': return 'digital_narrow';
+    case 'mixed': return acq === 'live' ? 'mixed_continuous' : 'mixed';
+    case 'analog_fast': return acq === 'live' ? 'analog_continuous' : 'analog_fast';
+    case 'analog_all': return acq === 'live' ? 'analog_all_continuous' : 'analog_all';
+  }
+}
+
+function sourceForMode(mode: CaptureMode): CaptureSource {
+  if (mode === 'digital_narrow') return 'digital_narrow';
+  if (mode === 'mixed' || mode === 'mixed_continuous') return 'mixed';
+  if (mode === 'analog_fast' || mode === 'analog' || mode === 'analog_continuous') return 'analog_fast';
+  if (mode === 'analog_all' || mode === 'analog_all_continuous') return 'analog_all';
+  return 'digital'; // single / continuous / rolling / triggered
+}
+
+function acquisitionForMode(mode: CaptureMode): Acquisition {
+  return ROLLING_MODES.includes(mode) ? 'live' : 'single';
+}
 
 function formatRate(rate: number) {
   return rate >= 1e6 ? `${rate / 1e6} MHz` : `${rate / 1e3} kHz`;
@@ -116,7 +152,7 @@ function nearestWindowSecondsForDuration(durationSeconds: number, sampleRate: nu
   ), options[0] ?? ROLLING_WINDOW_SECONDS[0]);
 }
 
-function rateOptionsForMode(mode: CaptureMode, numSamples = DIGITAL_FAST_DEPTH) {
+function rateOptionsForMode(mode: CaptureMode, _numSamples = DIGITAL_FAST_DEPTH) {
   if (mode === 'analog_fast' || mode === 'analog' || mode === 'analog_continuous') {
     return ANALOG_FAST_RATES;
   }
@@ -130,34 +166,29 @@ function rateOptionsForMode(mode: CaptureMode, numSamples = DIGITAL_FAST_DEPTH) 
     return [200e6];
   }
   if (ROLLING_MODES.includes(mode)) {
-    return DIGITAL_DEEP_RATES;
+    // Rolling/continuous lossless readback is bounded; above the cap the ring
+    // overruns. Single-shot deep capture (below) is not bounded this way.
+    return DIGITAL_ROLLING_RATES;
   }
-  if (numSamples > DIGITAL_FAST_DEPTH) {
-    return DIGITAL_DEEP_RATES;
-  }
+  // Single-shot, any depth (BRAM 1k or deep SDRAM up to 4M): full rate range to
+  // the 200 MHz sample clock -- deep SDRAM capture is validated clean throughout.
   return DIGITAL_RATES;
 }
 
-function depthOptionsForMode(mode: CaptureMode, sampleRate: number) {
+function depthOptionsForMode(mode: CaptureMode, _sampleRate: number) {
   if (ANALOG_MODES.includes(mode)) {
     return ANALOG_DEPTHS;
   }
-  if (sampleRate > DIGITAL_DEEP_MAX_RATE) {
-    return DIGITAL_FAST_DEPTHS;
-  }
+  // Deep SDRAM depths are available at every digital rate (incl. 200 MHz) now
+  // that deep capture completes and reads back clean across the full rate range.
   return DIGITAL_DEPTHS;
 }
 
 function labelForMode(mode: CaptureMode) {
-  const opt = MODE_OPTIONS.find((o) => o.mode === mode);
-  if (opt) return opt.label;
-  if (mode === 'continuous') return 'Digital continuous';
-  if (mode === 'rolling') return 'Digital rolling';
-  if (mode === 'digital_narrow') return '200 MHz narrow rolling';
-  if (mode === 'mixed_continuous') return 'Mixed continuous';
-  if (mode === 'analog_continuous') return 'High-speed analog continuous';
-  if (mode === 'analog_all_continuous') return 'Maximum analog continuous';
-  return mode;
+  const src = SOURCES.find((s) => s.source === sourceForMode(mode));
+  if (!src) return mode;
+  if (src.liveOnly) return src.label;
+  return acquisitionForMode(mode) === 'live' ? `${src.label} (live)` : src.label;
 }
 
 export function CaptureControls() {
@@ -283,6 +314,19 @@ export function CaptureControls() {
     });
   };
 
+  const currentSource = sourceForMode(captureSettings.mode as CaptureMode);
+  const currentAcq = acquisitionForMode(captureSettings.mode as CaptureMode);
+  const currentSourceLiveOnly = !!SOURCES.find((s) => s.source === currentSource)?.liveOnly;
+
+  const selectSource = (source: CaptureSource) => {
+    const liveOnly = !!SOURCES.find((s) => s.source === source)?.liveOnly;
+    setMode(modeForSource(source, liveOnly ? 'live' : currentAcq));
+  };
+  const selectAcquisition = (acq: Acquisition) => {
+    if (currentSourceLiveOnly) return;
+    setMode(modeForSource(currentSource, acq));
+  };
+
   const start = async () => {
     try {
       await api.startCapture(captureSettings, name);
@@ -303,14 +347,14 @@ export function CaptureControls() {
         <input value={name} placeholder="(auto)" onChange={(e) => setName(e.target.value)} />
       </label>
       <div className="field">
-        <span>Mode</span>
+        <span>Source</span>
         <div className="mode-grid">
-          {MODE_OPTIONS.map((opt) => (
+          {SOURCES.map((opt) => (
             <button
-              key={opt.mode}
+              key={opt.source}
               type="button"
-              className={`mode-tile ${captureSettings.mode === opt.mode ? 'active' : ''}`}
-              onClick={() => setMode(opt.mode)}
+              className={`mode-tile ${currentSource === opt.source ? 'active' : ''}`}
+              onClick={() => selectSource(opt.source)}
               title={opt.detail}
             >
               <span className="mode-title">{opt.label}</span>
@@ -319,20 +363,31 @@ export function CaptureControls() {
             </button>
           ))}
         </div>
-        <select value={captureSettings.mode}
-          title={`Current mode: ${activeModeLabel}`}
-          onChange={(e) => setMode(e.target.value as CaptureMode)}>
-          <option value="single">Full-speed digital</option>
-          <option value="continuous">Digital continuous</option>
-          <option value="rolling">Digital rolling</option>
-          <option value="digital_narrow">200 MHz narrow rolling</option>
-          <option value="mixed">Mixed digital + analog</option>
-          <option value="analog_fast">High-speed analog</option>
-          <option value="analog_all">Maximum analog</option>
-          <option value="analog_continuous">High-speed analog continuous</option>
-          <option value="analog_all_continuous">Maximum analog continuous</option>
-          <option value="mixed_continuous">Mixed continuous</option>
-        </select>
+      </div>
+      <div className="field">
+        <span>Acquisition</span>
+        <div className="seg-toggle" role="group" aria-label="Acquisition">
+          <button
+            type="button"
+            className={`seg ${currentAcq === 'single' ? 'active' : ''}`}
+            onClick={() => selectAcquisition('single')}
+            disabled={currentSourceLiveOnly}
+            title="Capture a fixed number of samples once, then read back"
+          >
+            Single-shot
+          </button>
+          <button
+            type="button"
+            className={`seg ${currentAcq === 'live' ? 'active' : ''}`}
+            onClick={() => selectAcquisition('live')}
+            title="Continuously capture into the SDRAM ring for a live rolling view"
+          >
+            Live
+          </button>
+        </div>
+        {currentSourceLiveOnly && (
+          <span className="mode-detail">Digital narrow is live-only.</span>
+        )}
       </div>
       <label className="field">
         <span>Sample rate</span>

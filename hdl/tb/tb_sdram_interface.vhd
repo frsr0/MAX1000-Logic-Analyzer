@@ -55,6 +55,10 @@ begin
       Write_Enable => wr_en,
       Write_Data   => wr_data,
       Burst        => burst,
+      Capture_Stream_Valid => '0',
+      Capture_Stream_Ready => open,
+      Capture_Stream_Address => (others => '0'),
+      Capture_Stream_Data => (others => '0'),
       Read_Enable  => rd_en,
       Read_Data    => rd_data,
       Read_Valid   => rd_valid,
@@ -140,16 +144,17 @@ begin
 
     -- Test 5: busy/idle signaling
     report "Test 5: Busy/idle signaling";
-    check(idle = '1' or busy = '1', "SDRAM should be either idle or busy");
     addr <= std_logic_vector(to_unsigned(32, 22));
     wr_data <= x"1234";
     wr_en <= '1';
     wait_cycles(clk, 1);
     wr_en <= '0';
     wait_until(clk, busy, '0', 10 us, "Busy should clear");
+    wait_until(clk, idle, '1', 10 us, "Idle should reassert after write");
     report "Test 5: PASS";
 
     report "=== ALL SDRAM INTERFACE TESTS PASSED ===";
+    std.env.finish;
     wait;
   end process;
 

@@ -1,6 +1,9 @@
 import struct
 
-from driver.spi_protocol import ST_OK, SYNC_RSP, crc16, parse_response
+from driver.spi_protocol import (
+    CMD_START_STREAM, ST_OK, ST_STREAM_ACTIVE, SYNC_REQ, SYNC_RSP,
+    SPIDevice, crc16, parse_response,
+)
 
 
 class TestOLSInit:
@@ -42,6 +45,7 @@ class TestOLSLowLevel:
 
     def test_read_n_timeout(self, ols, mock_dev):
         mock_dev.getQueueStatus.side_effect = lambda: 0
+        mock_dev.read.side_effect = lambda q: b''  # new _read_n tries dev.read first
         result = ols._read_n(10, timeout=0.01)
         assert result == b''
 
@@ -118,6 +122,19 @@ class TestOLSXfer:
     def test_xfer_read_only_chunked(self, ols, mock_dev):
         result = ols._xfer_read_only(32768)
         assert len(result) >= 32768
+
+    def test_stream_command_holds_cs_across_request_and_stream(self, ols, mock_dev):
+        mock_dev.getQueueStatus.side_effect = [0, 120, 0]
+        mock_dev.read.side_effect = [b'\x00' * 120]
+        result = ols.stream_command(b'\x55\xaa\x13\x00', 16, ack_pad=100)
+        assert len(result) == 120
+        buf = mock_dev.write.call_args[0][0]
+        assert buf[:3] == bytes([0x80, 0x00, 0x0B])
+        assert buf[-5:] == bytes([0x87, 0x80, 0x08, 0x0B, 0x87])
+        assert buf.count(bytes([0x80, 0x00, 0x0B])) == 1
+        assert buf.count(bytes([0x80, 0x08, 0x0B])) == 1
+        payload_start = buf.index(0x31) + 3
+        assert buf[payload_start:payload_start + 4] == b'\x55\xaa\x13\x00'
 
 
 class TestOLSPublicAPI:
@@ -246,3 +263,58 @@ class TestSPIPacketProtocol:
         parsed1 = parse_response(buf)
         assert parsed1 == (0x00, 0x01, b'xy')
         assert parse_response(buf[len(resp1):]) == (ST_OK, 0x02, b'')
+
+    def test_start_stream_read_parses_ack_and_returns_stream_data(self):
+        class FakeSPI:
+            def __init__(self):
+                self.request = None
+                self.tx_read_calls = 0
+                self.n_bytes = 0
+
+            def stream_command(self, request, n_bytes, ack_pad=96, stop_evt=None):
+                self.request = request
+                self.n_bytes = n_bytes
+                seq = request[3]
+                payload = struct.pack('<II', 0x12345678, 0x00000100)
+                resp = (SYNC_RSP + bytes([ST_STREAM_ACTIVE, seq])
+                        + struct.pack('<H', len(payload)) + payload)
+                resp += struct.pack('<H', crc16(resp[2:]))
+                guard = bytearray(b'\xff' * (len(request) + ack_pad))
+                guard[2:2 + len(resp)] = resp
+                stream = bytearray(range(n_bytes))
+                stream[0::2], stream[1::2] = stream[1::2], stream[0::2]
+                return bytes(guard) + bytes(stream)
+
+            def tx_read(self, n):
+                self.tx_read_calls += 1
+                return b''
+
+        fake = FakeSPI()
+        pkt = SPIDevice(fake)
+        producer, oldest, data = pkt.start_stream_read(0x80, 16)
+        assert producer == 0x12345678
+        assert oldest == 0x100
+        assert data == bytes(range(16))
+        assert fake.n_bytes == 18
+        assert fake.request.startswith(SYNC_REQ + bytes([CMD_START_STREAM]))
+        assert fake.tx_read_calls == 0
+
+    def test_start_stream_read_keeps_sample_boundary_after_shifted_ack(self):
+        class FakeSPI:
+            def stream_command(self, request, n_bytes, ack_pad=96, stop_evt=None):
+                seq = request[3]
+                payload = struct.pack('<II', 0x12345678, 0x00000100)
+                resp = (SYNC_RSP + bytes([ST_STREAM_ACTIVE, seq])
+                        + struct.pack('<H', len(payload)) + payload)
+                resp += struct.pack('<H', crc16(resp[2:]))
+                guard = bytearray(b'\xff' * (len(request) + ack_pad))
+                guard[3:3 + len(resp)] = resp
+                stream = bytearray(range(n_bytes))
+                stream[0::2], stream[1::2] = stream[1::2], stream[0::2]
+                return bytes(guard) + b'\xee' + bytes(stream)
+
+        pkt = SPIDevice(FakeSPI())
+        producer, oldest, data = pkt.start_stream_read(0x80, 16)
+        assert producer == 0x12345678
+        assert oldest == 0x100
+        assert data == bytes(range(16))

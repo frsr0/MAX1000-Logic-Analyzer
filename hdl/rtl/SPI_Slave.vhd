@@ -16,12 +16,11 @@ entity SPI_Slave2 is
     TX_Ready   : out std_logic := '0';
     RX_Data    : out std_logic_vector(7 downto 0) := (others => '0');
     RX_Valid   : out std_logic := '0';
-    CS_Rise    : out std_logic := '0'  -- pulse on CS rise (mid-packet abort)
+    CS_Rise    : out std_logic := '0'
   );
 end SPI_Slave2;
 
 architecture rtl of SPI_Slave2 is
-  -- fast_clk domain: full SPI engine (120 MHz, plenty for 30 MHz SCK)
   signal sck_meta    : std_logic := '0';
   signal sck_sync    : std_logic := '0';
   signal cs_meta     : std_logic := '1';
@@ -42,13 +41,22 @@ architecture rtl of SPI_Slave2 is
   signal rx_valid_cnt : natural range 0 to 127 := 0;
   signal reload_pending : std_logic := '0';
 
-  -- TX_Data CDC (sys_clk -> fast_clk): 2-stage, TX_Data stable for full byte
+  -- Pipeline MOSI one fast_clk cycle so sck_rise (~17 ns after real SCK
+  -- edge) reads the value driven on the rising edge, before the SCK
+  -- falling edge changes MOSI.  Fixes sampling at 30 MHz SCK.
+  signal mosi_d : std_logic := '0';
+
+  -- Source-synchronous MISO shifter: clocked by real SCK falling edge so
+  -- MISO changes with zero synchronizer latency.  Byte loads from tx_data_f
+  -- at byte boundaries (sck_tx_cnt = "111").  Required for 30 MHz SCK.
+  signal sck_tx_shift : std_logic_vector(7 downto 0) := (others => '0');
+  signal sck_tx_cnt   : unsigned(2 downto 0) := (others => '0');
+
   signal tx_data_s1  : std_logic_vector(7 downto 0) := (others => '0');
   signal tx_data_f   : std_logic_vector(7 downto 0) := (others => '0');
   signal preamble_s1 : std_logic_vector(7 downto 0) := (others => '0');
   signal preamble_f  : std_logic_vector(7 downto 0) := (others => '0');
 
-  -- CDC outputs (fast_clk -> sys_clk)
   signal rx_byte_q   : std_logic_vector(7 downto 0) := (others => '0');
   signal tx_ready_q  : std_logic := '0';
   signal rx_valid_s1 : std_logic := '0';
@@ -72,6 +80,23 @@ begin
     end if;
   end process;
 
+  -- Source-synchronous MISO shifter: real SCK falling edge, zero latency.
+  miso_sck: process(SCK, CS_n)
+  begin
+    if CS_n = '1' then
+      sck_tx_shift <= preamble_f;
+      sck_tx_cnt   <= (others => '0');
+    elsif falling_edge(SCK) then
+      if sck_tx_cnt = "111" then
+        sck_tx_shift <= tx_data_f;
+        sck_tx_cnt   <= (others => '0');
+      else
+        sck_tx_shift <= sck_tx_shift(6 downto 0) & '0';
+        sck_tx_cnt   <= sck_tx_cnt + 1;
+      end if;
+    end if;
+  end process;
+
   -- Full SPI engine on fast_clk (120 MHz)
   fast_proc: process(fast_clk)
   begin
@@ -83,26 +108,24 @@ begin
 
       if sck_sync = '1' and sck_prev = '0' then sck_rise <= '1';
       else sck_rise <= '0'; end if;
-
       if sck_sync = '0' and sck_prev = '1' then sck_fall <= '1';
       else sck_fall <= '0'; end if;
-
       if cs_sync = '0' and cs_prev = '1' then cs_fall <= '1';
       else cs_fall <= '0'; end if;
-
       if cs_sync = '1' and cs_prev = '0' then cs_rise_int <= '1';
       else cs_rise_int <= '0'; end if;
-
       if cs_sync = '0' then cs_active <= '1';
       else cs_active <= '0'; end if;
 
-      -- Stretch rx_valid_f to ~50 ns (>1 sys_clk cycle) for reliable CDC
       if rx_valid_cnt > 0 then
         rx_valid_cnt <= rx_valid_cnt - 1;
         rx_valid_f <= '1';
       else
         rx_valid_f <= '0';
       end if;
+
+      -- Pipeline MOSI so sck_rise samples the correct rising-edge value
+      mosi_d <= MOSI;
 
       if reset = '1' then
         bit_cnt <= 0;
@@ -111,30 +134,26 @@ begin
         rx_valid_cnt <= 0;
         rx_valid_f <= '0';
         reload_pending <= '0';
-
       elsif cs_fall = '1' then
         bit_cnt <= 0;
         tx_shift <= preamble_f;
         rx_valid_cnt <= 0;
         reload_pending <= '0';
-
       elsif cs_rise_int = '1' then
         bit_cnt <= 0;
         reload_pending <= '0';
-
       elsif cs_active = '1' then
         if sck_rise = '1' then
-          rx_shift <= rx_shift(6 downto 0) & MOSI;
+          rx_shift <= rx_shift(6 downto 0) & mosi_d;
           if bit_cnt = 7 then
-            rx_byte_f  <= rx_shift(6 downto 0) & MOSI;
-            rx_valid_cnt <= 24;  -- hold for ~200 ns at 120 MHz
+            rx_byte_f  <= rx_shift(6 downto 0) & mosi_d;
+            rx_valid_cnt <= 24;
             bit_cnt    <= 0;
             reload_pending <= '1';
           else
             bit_cnt <= bit_cnt + 1;
           end if;
         end if;
-
         if sck_fall = '1' then
           if reload_pending = '1' then
             tx_shift       <= tx_data_f;
@@ -147,10 +166,9 @@ begin
     end if;
   end process;
 
-  MISO <= tx_shift(7) when cs_active = '1' else 'Z';
+  -- Source-synchronous MISO output: zero synchronizer latency on SCK falling edge
+  MISO <= sck_tx_shift(7) when cs_active = '1' else 'Z';
 
-  -- CDC: rx_byte + rx_valid (fast_clk -> sys_clk)
-  -- 3-stage synchronizer on valid, data sampled on rising edge
   rx_cdc: process(sys_clk)
   begin
     if rising_edge(sys_clk) then
@@ -162,7 +180,6 @@ begin
       cs_rise_s3  <= cs_rise_s2;
       rx_valid_q <= rx_valid_pending;
       rx_valid_pending <= '0';
-
       if rx_valid_s2 = '1' and rx_valid_s3 = '0' then
         rx_byte_q <= rx_byte_f;
         rx_valid_pending <= '1';
@@ -171,12 +188,9 @@ begin
   end process;
 
   RX_Data  <= rx_byte_q;
-  RX_Valid <= rx_valid_q;  -- pulse after RX_Data is stable in sys_clk domain
-  CS_Rise  <= cs_rise_s2 and not cs_rise_s3;    -- single-cycle pulse on CS deassert
+  RX_Valid <= rx_valid_q;
+  CS_Rise  <= cs_rise_s2 and not cs_rise_s3;
 
-  -- TX_Ready: pulse after each received byte to match TX to SPI byte rate.
-  -- The SPI slave reloads tx_shift with TX_Data after each byte is received.
-  -- TX should advance one state per byte so response bytes align with SPI reads.
   tx_ready_delay: process(sys_clk)
   begin
     if rising_edge(sys_clk) then

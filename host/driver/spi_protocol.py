@@ -69,6 +69,12 @@ REG_OLDEST_INDEX      = 0x52
 REG_NEWEST_INDEX      = 0x53
 REG_OVERRUN_COUNT     = 0x54
 REG_DONE_LATCHED      = 0x55
+REG_PUMP_VALID_CYCLES    = 0x60
+REG_PUMP_READY_CYCLES    = 0x61
+REG_PUMP_ACCEPT_CYCLES   = 0x62
+REG_PUMP_STALL_CYCLES    = 0x63
+REG_PUMP_NODATA_CYCLES   = 0x64
+REG_PUMP_OVERFLOW_COUNT  = 0x65
 REG_IFACE_MODE    = 0xF0
 
 # REG_GEN_DATA flag bits (written with upper byte non-zero to enter mode-config branch)
@@ -197,7 +203,7 @@ class SPIDevice:
         # Phase 2: Wait a bit, then read response (separate CS transaction)
         deadline = time.time() + timeout
         for attempt in range(8):
-            time.sleep(0.002)
+            time.sleep(0.0005)
             # Read response bytes: preamble + SYNC_RSP + status + seq + len + payload + crc
             # Start with 132 bytes (more than enough for typical responses)
             r = self.spi.tx_read(132)
@@ -254,7 +260,7 @@ class SPIDevice:
         deadline = time.time() + timeout
         read_n = max(132, read_extra + 8)
         while time.time() < deadline:
-            time.sleep(0.002)
+            time.sleep(0.0005)
             r = self.spi.tx_read(read_n)
             if not r:
                 continue
@@ -308,3 +314,92 @@ class SPIDevice:
         if result and result[0] == ST_OK:
             return struct.unpack('<I', result[2][:4])[0]
         return -1
+
+    def start_stream(self, start_sample: int) -> tuple:
+        """Start streaming from absolute sample index.
+
+        Legacy two-step helper. Prefer start_stream_read(), which holds CS
+        across command, ack, and stream data.
+        """
+        payload = struct.pack('<I', start_sample * 2)
+        seq = self._next_seq()
+        req = build_packet(CMD_START_STREAM, seq, payload)
+        # Send request
+        self.spi.tx_bytes(req)
+        # Poll for response with manual SYNC_RSP search
+        for _ in range(8):
+            time.sleep(0.0005)
+            r = self.spi.tx_read(32)
+            if r and len(r) > 1:
+                self._rx_buf += r[1:]
+            # Search for SYNC_RSP = 0xAA55
+            sync_at = self._rx_buf.find(SYNC_RSP)
+            if sync_at < 0:
+                continue
+            chunk = self._rx_buf[sync_at:]
+            if len(chunk) < 10:
+                continue
+            plen = struct.unpack('<H', chunk[4:6])[0]
+            total = 8 + plen
+            if len(chunk) >= total and chunk[2] == ST_STREAM_ACTIVE and plen >= 8:
+                pl = chunk[6:6+plen]
+                pi, oi = struct.unpack('<II', pl[:8])
+                self._rx_buf = self._rx_buf[sync_at + total:]
+                return pi, oi
+        raise RuntimeError("start_stream failed")
+
+    def start_stream_read(self, start_sample: int, n_bytes: int,
+                          stop_evt=None) -> tuple:
+        """Start streaming and read raw bytes in one CS-held transaction.
+
+        Returns (producer_index, oldest_index, data). The returned data begins
+        after the fixed ack guard clocks; any preamble or command-phase filler
+        before SYNC_RSP is discarded.
+        """
+        if not hasattr(self.spi, "stream_command"):
+            producer, oldest = self.start_stream(start_sample)
+            return producer, oldest, self.read_stream(n_bytes, stop_evt)
+
+        payload = struct.pack('<I', start_sample * 2)
+        seq = self._next_seq()
+        req = build_packet(CMD_START_STREAM, seq, payload)
+        ack_pad = 96
+        raw = self.spi.stream_command(req, n_bytes + 2, ack_pad=ack_pad,
+                                      stop_evt=stop_evt)
+        sync_at = raw.find(SYNC_RSP)
+        while sync_at >= 0:
+            if len(raw) < sync_at + 8:
+                break
+            plen = struct.unpack('<H', raw[sync_at + 4:sync_at + 6])[0]
+            total = 8 + plen
+            end = sync_at + total
+            if len(raw) < end:
+                break
+            parsed = parse_response(raw[sync_at:end])
+            if parsed:
+                status, rsp_seq, rsp_payload = parsed
+                if (status == ST_STREAM_ACTIVE and rsp_seq == seq
+                        and len(rsp_payload) >= 8):
+                    producer, oldest = struct.unpack('<II', rsp_payload[:8])
+                    data_start = max(end, len(req) + ack_pad)
+                    # Raw stream bytes are 16-bit samples. The FPGA starts the
+                    # stream immediately after the ack frame, while ack_pad is
+                    # only host-side guard clocks. Preserve the ack-end parity
+                    # so slicing cannot swap sample bytes when the ack appears
+                    # one byte earlier/later at different SCK divisors.
+                    if (data_start - end) & 1:
+                        data_start += 1
+                    data = raw[data_start:data_start + n_bytes]
+                    if len(data) >= 2:
+                        even_len = len(data) & ~1
+                        swapped = bytearray(even_len)
+                        swapped[0::2] = data[1:even_len:2]
+                        swapped[1::2] = data[0:even_len:2]
+                        data = bytes(swapped) + data[even_len:]
+                    return producer, oldest, data
+            sync_at = raw.find(SYNC_RSP, sync_at + 1)
+        raise RuntimeError("start_stream_read failed")
+
+    def read_stream(self, n_bytes: int, stop_evt=None) -> bytes:
+        """Read n_bytes of raw streaming data via CS-held SPI."""
+        return self.spi.stream_read(n_bytes, stop_evt)

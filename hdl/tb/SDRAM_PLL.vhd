@@ -2,6 +2,9 @@ library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 
 entity SDRAM_PLL is
+  generic (
+    FAST_SPEED_MODE : boolean := false
+  );
   port (
     areset  : in  std_logic := '0';
     inclk0  : in  std_logic := '0';
@@ -9,6 +12,7 @@ entity SDRAM_PLL is
     c1      : out std_logic;
     c2      : out std_logic;
     c3      : out std_logic;
+    c4      : out std_logic;
     locked  : out std_logic
   );
 end SDRAM_PLL;
@@ -52,23 +56,32 @@ begin
       locked => locked
     );
 
-  -- c3 = 12 MHz ADC conversion clock. Modeled by a second PLL_Model whose c0
-  -- output is the ADC clock.
-  adc_pll : PLL_Model
-    generic map (
-      INPUT_FREQ  => 12.0e6,
-      MULTIPLY_BY => 1,
-      DIVIDE_BY   => 1,
-      FAST_MULT   => 1,
-      FAST_DIV    => 1,
-      SDRAM_MULT  => 1,
-      SDRAM_DIV   => 1
-    )
-    port map (
-      inclk0 => inclk0,
-      c0     => c3,
-      c1     => open,
-      c2     => open,
-      locked => open
-    );
+  c4 <= transport c2 after 1.5 ns;
+
+  gen_fast_speed : if FAST_SPEED_MODE generate
+  begin
+    c3 <= '0';
+  end generate;
+
+  gen_default : if not FAST_SPEED_MODE generate
+    -- c3 = 12 MHz ADC conversion clock. Modeled by a second PLL_Model whose c0
+    -- output is the ADC clock.
+    adc_pll : PLL_Model
+      generic map (
+        INPUT_FREQ  => 12.0e6,
+        MULTIPLY_BY => 1,
+        DIVIDE_BY   => 1,
+        FAST_MULT   => 1,
+        FAST_DIV    => 1,
+        SDRAM_MULT  => 1,
+        SDRAM_DIV   => 1
+      )
+      port map (
+        inclk0 => inclk0,
+        c0     => c3,
+        c1     => open,
+        c2     => open,
+        locked => open
+      );
+  end generate;
 end sim;

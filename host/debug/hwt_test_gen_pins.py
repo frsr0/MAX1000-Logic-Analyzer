@@ -1,7 +1,14 @@
 """HW test: sweep gen_tx_pin across all LA channels via capture_with_gen()."""
-import sys, time
-sys.path.insert(0, '.')
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "driver"))
+sys.path.insert(0, str(ROOT / "app"))
+
 from ols_spi_device import OLSDeviceSPI
+from gui_decoders import samples_to_channels
 
 PASS = 0
 FAIL = 0
@@ -26,11 +33,15 @@ for tx_pin in range(LA_CHANNELS):
     dev._gen_baud = 115200
     dev._gen_tx_pin = tx_pin
 
-    samples = dev.capture_with_gen(rate_hz=4000000, nsamples=256, gen_first=True)
-    samples = samples[:256]
+    wire = dev.capture_with_gen(rate_hz=4000000, nsamples=256, gen_first=True)
+    ch_data, ns = samples_to_channels(wire, num_ch=16, stride=2)
+    if not ch_data:
+        print(f"pin {tx_pin}: no capture data")
+        check(False, f"gen_tx_pin={tx_pin} returned capture data")
+        continue
 
     ch_tx = tx_pin
-    prev_bits = [((samples[s] >> ch_tx) & 1) for s in range(len(samples))]
+    prev_bits = ch_data[ch_tx][:ns]
     transitions = sum(1 for i in range(1, len(prev_bits)) if prev_bits[i] != prev_bits[i-1])
 
     print(f"pin {tx_pin}: {transitions} transitions on CH{ch_tx} over {len(prev_bits)} samples")

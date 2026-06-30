@@ -70,13 +70,21 @@ PORT (
          Blk_Rd_Req_Tog : OUT STD_LOGIC := '0';
          Blk_Rd_Base    : OUT NATURAL range 0 to Max_Samples := 0;
          Blk_Rd_Count   : OUT NATURAL range 0 to Max_Samples := 0;
+         -- Auto-renew block read (pass-through to FLA, controlled by dispatch)
+         Auto_Renew     : OUT STD_LOGIC := '0';
          Rd_Fifo_Q      : IN  STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
          Rd_Fifo_Empty  : IN  STD_LOGIC := '1';
          Rd_Fifo_RdReq  : OUT STD_LOGIC := '0';
          Producer_Index : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
          Oldest_Index   : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
          Newest_Index   : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
-         Overrun_Count  : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0')
+         Overrun_Count  : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+         Pump_Valid_Cycles   : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+         Pump_Ready_Cycles   : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+         Pump_Accept_Cycles  : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+         Pump_Stall_Cycles   : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+         Pump_NoData_Cycles  : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+         Pump_Overflow_Count : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0')
 
 );
 END OLS_Interface;
@@ -233,16 +241,15 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL blk_req_tog_i        : STD_LOGIC := '0';
   TYPE block_buf_t IS ARRAY(0 TO 255) OF STD_LOGIC_VECTOR(31 DOWNTO 0);
   SIGNAL block_buf            : block_buf_t := (others => (others => '0'));
-
   -- 21-cycle bit-serial divider for /3 (replaces 58-level lpm_divide)
   SIGNAL div3_shift   : STD_LOGIC_VECTOR(20 downto 0) := (others => '0');
   SIGNAL div3_acc     : NATURAL range 0 to 7 := 0;
-  SIGNAL div3_result  : NATURAL range 0 to 1048576 := 0;
+  SIGNAL div3_result  : NATURAL range 0 to Max_Samples := 0;
   SIGNAL div3_count   : NATURAL range 0 to 31 := 0;
   SIGNAL div3_busy    : STD_LOGIC := '0';
   SIGNAL div3_pending : STD_LOGIC := '0';
-  SIGNAL samples_div3  : NATURAL range 0 to 1048576 := 0;
-  SIGNAL samples_2div3 : NATURAL range 0 to 1048576 := 0;
+  SIGNAL samples_div3  : NATURAL range 0 to Max_Samples := 0;
+  SIGNAL samples_2div3 : NATURAL range 0 to Max_Samples := 0;
   COMPONENT Protocol_Trigger IS
   port (
     CLK          : in  std_logic;
@@ -502,7 +509,7 @@ BEGIN
         block_rd_state <= 2;
       WHEN 2 =>
         -- Drain one sample: pop when the FIFO has data (rdreq asserted next
-        -- cycle, q valid the cycle after that — showahead OFF).
+        -- cycle, q valid the cycle after that -- showahead OFF).
         IF Rd_Fifo_Empty = '0' THEN
           Rd_Fifo_RdReq <= '1';
           block_rd_state <= 3;
@@ -1029,6 +1036,18 @@ BEGIN
                     reg_val := Overrun_Count;
                   when REG_DONE_LATCHED =>
                     reg_val(0) := done_latched;
+                  when REG_PUMP_VALID_CYCLES =>
+                    reg_val := Pump_Valid_Cycles;
+                  when REG_PUMP_READY_CYCLES =>
+                    reg_val := Pump_Ready_Cycles;
+                  when REG_PUMP_ACCEPT_CYCLES =>
+                    reg_val := Pump_Accept_Cycles;
+                  when REG_PUMP_STALL_CYCLES =>
+                    reg_val := Pump_Stall_Cycles;
+                  when REG_PUMP_NODATA_CYCLES =>
+                    reg_val := Pump_NoData_Cycles;
+                  when REG_PUMP_OVERFLOW_COUNT =>
+                    reg_val := Pump_Overflow_Count;
                   when others => null;
                 end case;
                 rsp_buf(0) := reg_val(7 downto 0);
@@ -1206,5 +1225,8 @@ BEGIN
       end if;
     end if;
   end process;
+
+  -- Auto_Renew: drives FLA block-read auto-renew.  Default '0' (single-shot).
+  Auto_Renew <= '0';
 
 END BEHAVIORAL;
