@@ -74,7 +74,13 @@ PORT (
     Gen_Start_Ack    : IN  STD_LOGIC := '0';
     Gen_Start_Reject : IN  STD_LOGIC := '0';
     Gen_Done_Pulse   : IN  STD_LOGIC := '0';
-    Gen_Capture_Active : OUT STD_LOGIC := '0'
+    Gen_Capture_Active : OUT STD_LOGIC := '0';
+    Pump_Valid_Cycles   : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+    Pump_Ready_Cycles   : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+    Pump_Accept_Cycles  : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+    Pump_Stall_Cycles   : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+    Pump_NoData_Cycles  : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+    Pump_Overflow_Count : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0')
 );
 END OLS_Logic_Analyzer;
 
@@ -103,6 +109,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL oldest_index_i   : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL newest_index_i   : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL overrun_count_i  : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL pump_valid_cycles_i   : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL pump_ready_cycles_i   : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL pump_accept_cycles_i  : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL pump_stall_cycles_i   : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL pump_nodata_cycles_i  : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL pump_overflow_count_i : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL Gen_Load_Byte_i    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL Gen_Load_We_i      : STD_LOGIC := '0';
   SIGNAL Gen_Start_i        : STD_LOGIC := '0';
@@ -208,7 +220,13 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
        Producer_Index : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
        Oldest_Index   : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
        Newest_Index   : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
-       Overrun_Count  : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0')
+       Overrun_Count  : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+       Pump_Valid_Cycles   : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+       Pump_Ready_Cycles   : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+       Pump_Accept_Cycles  : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+       Pump_Stall_Cycles   : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+       Pump_NoData_Cycles  : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+       Pump_Overflow_Count : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0')
       );
       END COMPONENT;
     COMPONENT Fast_Logic_Analyzer_SDRAM IS
@@ -269,7 +287,13 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
      Producer_Index : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
      Oldest_Index   : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
      Newest_Index   : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
-     Overrun_Count  : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0')
+     Overrun_Count  : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+     Pump_Valid_Cycles   : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+     Pump_Ready_Cycles   : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+     Pump_Accept_Cycles  : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+     Pump_Stall_Cycles   : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+     Pump_NoData_Cycles  : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+     Pump_Overflow_Count : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0')
 
    );
    END COMPONENT;
@@ -315,6 +339,12 @@ BEGIN
   Debug_Ch0_Period <= debug_ch0_period_i;
   Debug_Ch0_Duty   <= debug_ch0_duty_i;
   Gen_Capture_Active <= gen_capture_active_i;
+  Pump_Valid_Cycles <= pump_valid_cycles_i;
+  Pump_Ready_Cycles <= pump_ready_cycles_i;
+  Pump_Accept_Cycles <= pump_accept_cycles_i;
+  Pump_Stall_Cycles <= pump_stall_cycles_i;
+  Pump_NoData_Cycles <= pump_nodata_cycles_i;
+  Pump_Overflow_Count <= pump_overflow_count_i;
   OLS_Interface1 : OLS_Interface
   GENERIC MAP (
       CLK_Frequency => CLK_Frequency,SAMPLE_CLK_HZ => SAMPLE_CLK_HZ,Max_Samples   => Max_Samples
@@ -359,7 +389,13 @@ BEGIN
     Producer_Index     => producer_index_i,
     Oldest_Index       => oldest_index_i,
     Newest_Index       => newest_index_i,
-    Overrun_Count      => overrun_count_i
+    Overrun_Count      => overrun_count_i,
+    Pump_Valid_Cycles   => pump_valid_cycles_i,
+    Pump_Ready_Cycles   => pump_ready_cycles_i,
+    Pump_Accept_Cycles  => pump_accept_cycles_i,
+    Pump_Stall_Cycles   => pump_stall_cycles_i,
+    Pump_NoData_Cycles  => pump_nodata_cycles_i,
+    Pump_Overflow_Count => pump_overflow_count_i
 
   );
   Fast_Logic_Analyzer_SDRAM1 : Fast_Logic_Analyzer_SDRAM
@@ -391,7 +427,13 @@ BEGIN
     Producer_Index    => producer_index_i,
     Oldest_Index      => oldest_index_i,
     Newest_Index      => newest_index_i,
-    Overrun_Count     => overrun_count_i
+    Overrun_Count     => overrun_count_i,
+    Pump_Valid_Cycles   => pump_valid_cycles_i,
+    Pump_Ready_Cycles   => pump_ready_cycles_i,
+    Pump_Accept_Cycles  => pump_accept_cycles_i,
+    Pump_Stall_Cycles   => pump_stall_cycles_i,
+    Pump_NoData_Cycles  => pump_nodata_cycles_i,
+    Pump_Overflow_Count => pump_overflow_count_i
   );
   
 END BEHAVIORAL;

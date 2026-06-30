@@ -76,7 +76,13 @@ PORT (
          Producer_Index : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
          Oldest_Index   : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
          Newest_Index   : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
-         Overrun_Count  : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0')
+         Overrun_Count  : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+         Pump_Valid_Cycles   : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+         Pump_Ready_Cycles   : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+         Pump_Accept_Cycles  : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+         Pump_Stall_Cycles   : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+         Pump_NoData_Cycles  : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+         Pump_Overflow_Count : IN  STD_LOGIC_VECTOR(31 downto 0) := (others => '0')
 
 );
 END OLS_Interface;
@@ -1028,6 +1034,18 @@ BEGIN
                     reg_val := Overrun_Count;
                   when REG_DONE_LATCHED =>
                     reg_val(0) := done_latched;
+                  when REG_PUMP_VALID_CYCLES =>
+                    reg_val := Pump_Valid_Cycles;
+                  when REG_PUMP_READY_CYCLES =>
+                    reg_val := Pump_Ready_Cycles;
+                  when REG_PUMP_ACCEPT_CYCLES =>
+                    reg_val := Pump_Accept_Cycles;
+                  when REG_PUMP_STALL_CYCLES =>
+                    reg_val := Pump_Stall_Cycles;
+                  when REG_PUMP_NODATA_CYCLES =>
+                    reg_val := Pump_NoData_Cycles;
+                  when REG_PUMP_OVERFLOW_COUNT =>
+                    reg_val := Pump_Overflow_Count;
                   when others => null;
                 end case;
                 rsp_buf(0) := reg_val(7 downto 0);

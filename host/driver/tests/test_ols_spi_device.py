@@ -10,6 +10,7 @@ from driver.spi_protocol import (
     SPIDevice,
     ST_OK,
     ST_CAPTURE_DONE,
+    ST_CAPTURE_BUSY,
 )
 from driver.ols_spi_device import (
     MODE_ANALOG,
@@ -353,7 +354,7 @@ class TestOLSDeviceSPIGenerator:
         assert device_spi._gen_data == b'Hello'
         assert device_spi._gen_baud == 115200
         device_spi.pkt.write_register.assert_any_call(
-            REG_GEN_BAUD, (device_spi.sys_clk // 115200) & 0xFFFF)
+            REG_GEN_BAUD, device_spi._uart_baud_div(115200) & 0xFFFF)
 
     def test_capture_with_gen_uart_programs_divider(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -372,7 +373,7 @@ class TestOLSDeviceSPIGenerator:
 
         assert data
         device_spi.pkt.write_register.assert_any_call(
-            REG_GEN_BAUD, (device_spi.sys_clk // 115200) & 0xFFFF)
+            REG_GEN_BAUD, device_spi._uart_baud_div(115200) & 0xFFFF)
 
 
 class TestOLSDeviceSPIModbus:
@@ -481,6 +482,26 @@ class TestOLSDeviceSPICapture:
         device_spi.pkt.read_capture_block.return_value = b'\x00\x00\x01\x02'
         result = device_spi.capture(rate_hz=1000000, nsamples=2, timeout=0.5)
         assert result == b'\x01\x02'
+
+    def test_capture_preserves_all_zero_capture(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
+        device_spi.pkt.read_capture_block.return_value = b'\x00\x00' * 4
+        result = device_spi.capture(rate_hz=1000000, nsamples=4, timeout=0.5)
+        assert result == b'\x00\x00' * 4
+
+    def test_capture_aborts_when_not_done(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_BUSY, 'fifo_level': 0, 'gen_busy': False}
+        result = device_spi.capture(rate_hz=1000000, nsamples=4, timeout=0.01)
+        assert result == b''
+        device_spi.pkt.transaction.assert_any_call(CMD_ABORT_CAPTURE, timeout=0.5)
 
     def test_capture_analog_roundtrip(self, device_spi):
         from driver.ols_spi_device import decode_analog_frames

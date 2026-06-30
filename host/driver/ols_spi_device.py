@@ -351,6 +351,15 @@ class OLSDeviceSPI:
             return apply_glitch_filter(samples, self.glitch_threshold)
         return samples
 
+    def _uart_baud_div(self, baud):
+        """Return the generator UART divider for the current firmware.
+
+        The Signal_Gen UART state machine advances on every other effective
+        bit tick in this build, so the programmed divider must be half the
+        nominal sys_clk/baud value for the wire baud to match the request.
+        """
+        return max(1, self.sys_clk // max(1, int(baud)) // 2)
+
     def set_debug_ch0(self, enable=True, freq_hz=None, duty_pct=50):
         if freq_hz is not None:
             period = max(2, int(self.sys_clk / freq_hz))
@@ -569,7 +578,7 @@ class OLSDeviceSPI:
         self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
         self.pkt.write_register(REG_GEN_DATA, 1 << 8)  # clear stale I2C/SPI/repeat flags
         self.pkt.write_register(REG_GEN_PROTO, 0)
-        self.pkt.write_register(REG_GEN_BAUD, max(1, self.sys_clk // baud) & 0xFFFF)
+        self.pkt.write_register(REG_GEN_BAUD, self._uart_baud_div(baud) & 0xFFFF)
         self._pins(tx_pin=tx_pin)
         self.pkt.load_gen_data(data_bytes)
         # Mode flags latch only when bits 31:8 are non-zero.
@@ -602,7 +611,7 @@ class OLSDeviceSPI:
         self._gen_tx_pin = tx_pin if tx_pin is not None else 3
         self.pkt.write_register(REG_GEN_DATA, 1 << 8)
         self.pkt.write_register(REG_GEN_PROTO, 0)
-        div = max(1, self.sys_clk // baud)
+        div = self._uart_baud_div(baud)
         self.pkt.write_register(REG_GEN_BAUD, div & 0xFFFF)
         self._pins(tx_pin=self._gen_tx_pin)
         self.spi.flush()
@@ -618,7 +627,7 @@ class OLSDeviceSPI:
         self._gen_baud = baud
         self._gen_tx_pin = b_pin
         self.pkt.write_register(REG_GEN_PROTO, 0)
-        div = max(1, self.sys_clk // baud)
+        div = self._uart_baud_div(baud)
         self.pkt.write_register(REG_GEN_BAUD, div & 0xFFFF)
         self._pins(tx_pin=b_pin, scl_pin=a_pin)
         flags = GEN_FLAG_RS485_PAIR | (GEN_FLAG_REPEAT if repeat else 0)
@@ -726,7 +735,7 @@ class OLSDeviceSPI:
         if proto == 'RS485':
             self.pkt.write_register(REG_GEN_DATA, 1 << 8)
             self.pkt.write_register(REG_GEN_PROTO, 0)
-            div_b = max(1, self.sys_clk // self._gen_baud)
+            div_b = self._uart_baud_div(self._gen_baud)
             self.pkt.write_register(REG_GEN_BAUD, div_b & 0xFFFF)
             self._pins(tx_pin=rs485_b_pin, scl_pin=rs485_a_pin)
             self.pkt.write_register(REG_GEN_DATA, (1 << 8) | GEN_FLAG_RS485_PAIR)
@@ -764,7 +773,7 @@ class OLSDeviceSPI:
             # load.
             self.pkt.write_register(REG_GEN_DATA, 1 << 8)
             self.pkt.write_register(REG_GEN_PROTO, 0)
-            div_b = max(1, self.sys_clk // self._gen_baud)
+            div_b = self._uart_baud_div(self._gen_baud)
             self.pkt.write_register(REG_GEN_BAUD, div_b & 0xFFFF)
             self._pins(tx_pin=self._gen_tx_pin)
             self.pkt.load_gen_data(self._gen_data)
@@ -818,8 +827,9 @@ class OLSDeviceSPI:
         if expected_seq is not None:
             self.ack_capture_done(expected_seq)
 
-        if samples:
-            stride = analog_frame_stride(self.analog_mode)
+        stride = analog_frame_stride(self.analog_mode)
+        if samples and any(samples[i:i+stride] != b'\x00' * stride
+                           for i in range(0, len(samples), stride)):
             for i in range(0, len(samples), stride):
                 if samples[i:i+stride] != b'\x00' * stride:
                     samples = samples[i:]
@@ -900,6 +910,9 @@ class OLSDeviceSPI:
         st = self._wait_capture_done(timeout, stop_evt=stop_evt, expected_seq=expected_seq)
         if stop_evt and stop_evt.is_set():
             return b''
+        if st.get('capture_status') != ST_CAPTURE_DONE:
+            self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+            return b''
 
         # The FPGA now packs 2 samples per 32-bit read-block entry, so the wire
         # is contiguous 16-bit little-endian samples: rc samples = rc*2 bytes,
@@ -911,8 +924,9 @@ class OLSDeviceSPI:
         if expected_seq is not None and st.get('capture_seq') == expected_seq:
             self.ack_capture_done(expected_seq)
 
-        if samples:
-            stride = analog_frame_stride(self.analog_mode)
+        stride = analog_frame_stride(self.analog_mode)
+        if samples and any(samples[i:i+stride] != b'\x00' * stride
+                           for i in range(0, len(samples), stride)):
             for i in range(0, len(samples), stride):
                 if samples[i:i+stride] != b'\x00' * stride:
                     samples = samples[i:]
@@ -1050,7 +1064,7 @@ class OLSDeviceSPI:
 
         if gen_data:
             self.pkt.write_register(REG_GEN_PROTO, 0)
-            div_b = max(1, self.sys_clk // gen_baud)
+            div_b = self._uart_baud_div(gen_baud)
             self.pkt.write_register(REG_GEN_BAUD, div_b & 0xFFFF)
             self._pins(tx_pin=gen_tx_pin)
             self.pkt.load_gen_data(gen_data)

@@ -99,7 +99,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal fast_clk       : std_logic := '0';
   signal continuous_mode : std_logic := '0';
   signal armed_i        : std_logic := '0';
-  signal sdram_clk_pll  : std_logic := '0';
+  signal sdram_core_clk      : std_logic := '0';
+  signal sdram_chip_clk_out  : std_logic := '0';
+  signal sdram_ctrl_clk_obs  : std_logic := '0';
 
   -- Expanded output drive (covers all bidirectional pins)
   signal pin_out      : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
@@ -122,6 +124,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal debug_ch0_duty   : std_logic_vector(31 downto 0) := x"00000200";
   signal debug_ch0_period_active : std_logic_vector(31 downto 0) := x"00000400";
   signal debug_ch0_duty_active   : std_logic_vector(31 downto 0) := x"00000200";
+  signal pump_valid_cycles   : std_logic_vector(31 downto 0) := (others => '0');
+  signal pump_ready_cycles   : std_logic_vector(31 downto 0) := (others => '0');
+  signal pump_accept_cycles  : std_logic_vector(31 downto 0) := (others => '0');
+  signal pump_stall_cycles   : std_logic_vector(31 downto 0) := (others => '0');
+  signal pump_nodata_cycles  : std_logic_vector(31 downto 0) := (others => '0');
+  signal pump_overflow_count : std_logic_vector(31 downto 0) := (others => '0');
   signal sen_sdi_meta : std_logic := '1';
   signal sen_sdi_sync : std_logic := '1';
   signal gen_scl_d1   : std_logic := '0';
@@ -293,7 +301,13 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Gen_Start_Ack    : IN  STD_LOGIC := '0';
     Gen_Start_Reject : IN  STD_LOGIC := '0';
     Gen_Done_Pulse   : IN  STD_LOGIC := '0';
-    Gen_Capture_Active : OUT STD_LOGIC := '0'
+    Gen_Capture_Active : OUT STD_LOGIC := '0';
+    Pump_Valid_Cycles   : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+    Pump_Ready_Cycles   : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+    Pump_Accept_Cycles  : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+    Pump_Stall_Cycles   : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+    Pump_NoData_Cycles  : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+    Pump_Overflow_Count : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0')
   );
   END COMPONENT;
 
@@ -383,25 +397,26 @@ BEGIN
   gen_use_pll_fast : if (PLL_MULT /= 1 or PLL_DIV /= 1) and FAST_SPEED generate
     pll_inst : entity work.SDRAM_PLL
       generic map (FAST_SPEED_MODE => true)
-      port map (inclk0 => CLK, c0 => sys_clk, c1 => fast_clk, c2 => sdram_clk_pll,
-                c3 => open, locked => pll_locked);
+      port map (inclk0 => CLK, c0 => sys_clk, c1 => fast_clk, c2 => sdram_core_clk,
+                c3 => open, c4 => sdram_chip_clk_out, locked => pll_locked);
     adc_conv_clk <= '0';
   end generate;
   -- Normal mode retains the legacy ADC clock requirement on c3.
   gen_use_pll_normal : if (PLL_MULT /= 1 or PLL_DIV /= 1) and not FAST_SPEED generate
     pll_inst : entity work.SDRAM_PLL
-      port map (inclk0 => CLK, c0 => sys_clk, c1 => fast_clk, c2 => sdram_clk_pll,
-                c3 => adc_conv_clk, locked => pll_locked);
+      port map (inclk0 => CLK, c0 => sys_clk, c1 => fast_clk, c2 => sdram_core_clk,
+                c3 => adc_conv_clk, c4 => sdram_chip_clk_out, locked => pll_locked);
   end generate;
   gen_no_pll : if PLL_MULT = 1 and PLL_DIV = 1 generate
     sys_clk <= CLK;
     fast_clk <= CLK;
-    sdram_clk_pll <= CLK;
+    sdram_core_clk <= CLK;
+    sdram_chip_clk_out <= CLK;
     adc_conv_clk <= CLK;
     pll_locked <= '1';
   end generate;
 
-  sdram_clk <= sdram_clk_pll;
+  sdram_clk <= sdram_chip_clk_out;
 
   -- Pin pool: gather all physical digital-capable inputs into one vector.
   -- AIN0-AIN7 are reserved by the ADC IP block (bank 1A).
@@ -831,7 +846,7 @@ BEGIN
   )
   PORT MAP (
     CLK => sys_clk,
-    SDRAM_CLK_IN => sdram_clk_pll,
+    SDRAM_CLK_IN => sdram_core_clk,
     FAST_CLK => fast_clk,
     Inputs_Sys   => internal_data_r,
     Inputs_Fast  => capture_data_fast,
@@ -849,7 +864,7 @@ BEGIN
     sdram_dqm   => sdram_dqm,
     sdram_ras_n => sdram_ras_n,
     sdram_we_n  => sdram_we_n,
-    sdram_clk    => open,
+    sdram_clk    => sdram_ctrl_clk_obs,
     Gen_Load_Byte => gen_load_byte,
     Gen_Load_We   => gen_load_we,
     Gen_Start     => gen_start,
@@ -889,7 +904,13 @@ BEGIN
     Gen_Start_Ack    => gen_start_ack_i,
     Gen_Start_Reject => gen_start_reject_i,
     Gen_Done_Pulse   => gen_done_pulse_i,
-    Gen_Capture_Active => gen_capture_active
+    Gen_Capture_Active => gen_capture_active,
+    Pump_Valid_Cycles   => pump_valid_cycles,
+    Pump_Ready_Cycles   => pump_ready_cycles,
+    Pump_Accept_Cycles  => pump_accept_cycles,
+    Pump_Stall_Cycles   => pump_stall_cycles,
+    Pump_NoData_Cycles  => pump_nodata_cycles,
+    Pump_Overflow_Count => pump_overflow_count
   );
   
   -- PWM carrier counter
