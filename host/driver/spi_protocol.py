@@ -53,6 +53,7 @@ REG_TRIGGER_VALUE = 0x11
 REG_FLAGS         = 0x20
 REG_FAST_MODE     = 0x21
 REG_CONT_MODE     = 0x22
+REG_FLAGS_COMPRESS = 0x40000  # REG_FLAGS bit 18: enable delta-packed readback
 REG_GEN_PROTO     = 0x30
 REG_GEN_BAUD      = 0x31
 REG_GEN_PINS      = 0x32

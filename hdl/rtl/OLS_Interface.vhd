@@ -72,6 +72,8 @@ PORT (
          Blk_Rd_Count   : OUT NATURAL range 0 to Max_Samples := 0;
          -- Auto-renew block read (pass-through to FLA, controlled by dispatch)
          Auto_Renew     : OUT STD_LOGIC := '0';
+         -- Readback compression enable
+         Compress_Enable : OUT STD_LOGIC := '0';
          Rd_Fifo_Q      : IN  STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
          Rd_Fifo_Empty  : IN  STD_LOGIC := '1';
          Rd_Fifo_RdReq  : OUT STD_LOGIC := '0';
@@ -130,6 +132,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
    SIGNAL gen_spi_test_int   : STD_LOGIC := '0';
    SIGNAL gen_repeat_int     : STD_LOGIC := '0';
    SIGNAL gen_rs485_pair_int : STD_LOGIC := '0';
+  SIGNAL compress_enable_i  : STD_LOGIC := '0';
    SIGNAL gen_proto_int      : STD_LOGIC := '0';
    SIGNAL gen_baud_div_int   : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   SIGNAL fast_mode_i        : STD_LOGIC := '0';
@@ -370,6 +373,7 @@ BEGIN
           analog_channel_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(12 downto 8)));
           narrow_enable_i <= disp_reg_wdata(13);
           narrow_channel_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(17 downto 14)));
+          compress_enable_i <= disp_reg_wdata(18);
         WHEN REG_FAST_MODE =>
           fast_mode_i <= disp_reg_wdata(0);
         WHEN REG_CONT_MODE =>
@@ -1002,6 +1006,7 @@ BEGIN
                     reg_val(12 downto 8) := std_logic_vector(to_unsigned(analog_channel_i, 5));
                     reg_val(13) := narrow_enable_i;
                     reg_val(17 downto 14) := std_logic_vector(to_unsigned(narrow_channel_i, 4));
+                    reg_val(18) := compress_enable_i;
                   when REG_CONT_MODE =>
                     reg_val(0) := continuous_mode_i;
                   when REG_GEN_PROTO =>
@@ -1228,5 +1233,7 @@ BEGIN
 
   -- Auto_Renew: drives FLA block-read auto-renew.  Default '0' (single-shot).
   Auto_Renew <= '0';
+
+  Compress_Enable <= compress_enable_i;
 
 END BEHAVIORAL;

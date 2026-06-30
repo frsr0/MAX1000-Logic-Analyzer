@@ -184,6 +184,30 @@ def decode_analog_frames(data, mode):
     return frames
 
 
+
+def decompress_delta_block(data: bytes) -> bytes:
+    """Decompress a delta-packed block (6 words → 16 samples)."""
+    import struct
+    words = struct.unpack('<6H', data)
+    out = bytearray(32)
+    prev = words[0]
+    struct.pack_into('<H', out, 0, prev)
+    wi, si = 1, 1
+    for _ in range(5):
+        w = words[wi]; wi += 1
+        if w & 0x8000:
+            prev = w & 0x7FFF
+            struct.pack_into('<H', out, si * 2, prev)
+            si += 1
+            continue
+        for off in (0, 5, 10):
+            d = (w >> off) & 0x1F
+            if d & 0x10: d |= 0xFFE0
+            prev = (prev + d) & 0xFFFF
+            struct.pack_into('<H', out, si * 2, prev)
+            si += 1
+    return bytes(out)
+
 class OLSDeviceSPI:
     """SPI backend using packet protocol — replaces old UART-style byte commands."""
 

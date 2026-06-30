@@ -102,6 +102,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL blk_rd_req_tog_i : STD_LOGIC := '0';
   SIGNAL blk_rd_base_i    : NATURAL range 0 to Max_Samples := 0;
   SIGNAL blk_rd_count_i   : NATURAL range 0 to Max_Samples := 0;
+  SIGNAL compress_enable_i   : STD_LOGIC := '0';
   SIGNAL auto_renew_i     : STD_LOGIC := '0';
   SIGNAL rd_fifo_q_i      : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   SIGNAL rd_fifo_empty_i  : STD_LOGIC := '1';
@@ -215,6 +216,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
        Blk_Rd_Req_Tog : OUT STD_LOGIC := '0';
        Blk_Rd_Base    : OUT NATURAL range 0 to Max_Samples := 0;
        Blk_Rd_Count   : OUT NATURAL range 0 to Max_Samples := 0;
+         Compress_Enable     : OUT STD_LOGIC := '0';
        Auto_Renew     : OUT STD_LOGIC := '0';
        Rd_Fifo_Q      : IN  STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
        Rd_Fifo_Empty  : IN  STD_LOGIC := '1';
@@ -282,6 +284,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
     Analog_Frame_Toggle : IN STD_LOGIC := '0';
      Blk_Rd_Req_Tog : IN  STD_LOGIC := '0';
      Blk_Rd_Base    : IN  NATURAL range 0 to Max_Samples := 0;
+     Compress_Enable : IN  STD_LOGIC := '0';
      Blk_Rd_Count   : IN  NATURAL range 0 to Max_Samples := 0;
      Auto_Renew     : IN  STD_LOGIC := '0';
      Rd_Fifo_Q      : OUT STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
@@ -387,6 +390,7 @@ BEGIN
     Blk_Rd_Base        => blk_rd_base_i,
     Blk_Rd_Count       => blk_rd_count_i,
     Auto_Renew         => auto_renew_i,
+    Compress_Enable      => compress_enable_i,
     Rd_Fifo_Q          => rd_fifo_q_i,
     Rd_Fifo_Empty      => rd_fifo_empty_i,
     Rd_Fifo_RdReq      => rd_fifo_rdreq_i,
@@ -425,6 +429,7 @@ BEGIN
     Blk_Rd_Req_Tog    => blk_rd_req_tog_i,
     Blk_Rd_Base       => blk_rd_base_i,
     Blk_Rd_Count      => blk_rd_count_i,
+    Compress_Enable     => compress_enable_i,
     Auto_Renew        => auto_renew_i,
     Rd_Fifo_Q         => rd_fifo_q_i,
     Rd_Fifo_Empty     => rd_fifo_empty_i,

@@ -63,6 +63,7 @@ port (
     Blk_Rd_Base    : in  natural range 0 to Max_Samples := 0;  -- base sample idx
     Blk_Rd_Count   : in  natural range 0 to Max_Samples := 0;  -- samples to stream
     Auto_Renew     : in  std_logic := '0';  -- auto-renew stream (no deassert on block end)
+    Compress_Enable : in  std_logic := '0';  -- enable delta-packed readback
     Rd_Fifo_Q      : out std_logic_vector(15 downto 0) := (others => '0');
     Rd_Fifo_Empty  : out std_logic := '1';
     Rd_Fifo_RdReq  : in  std_logic := '0';
