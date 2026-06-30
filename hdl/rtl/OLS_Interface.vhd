@@ -70,6 +70,8 @@ PORT (
          Blk_Rd_Req_Tog : OUT STD_LOGIC := '0';
          Blk_Rd_Base    : OUT NATURAL range 0 to Max_Samples := 0;
          Blk_Rd_Count   : OUT NATURAL range 0 to Max_Samples := 0;
+         -- Auto-renew block read (pass-through to FLA, controlled by dispatch)
+         Auto_Renew     : OUT STD_LOGIC := '0';
          Rd_Fifo_Q      : IN  STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
          Rd_Fifo_Empty  : IN  STD_LOGIC := '1';
          Rd_Fifo_RdReq  : OUT STD_LOGIC := '0';
@@ -1223,5 +1225,8 @@ BEGIN
       end if;
     end if;
   end process;
+
+  -- Auto_Renew: drives FLA block-read auto-renew.  Default '0' (single-shot).
+  Auto_Renew <= '0';
 
 END BEHAVIORAL;

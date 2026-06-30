@@ -19,7 +19,7 @@ use work.sim_pkg.all;
 use work.spi_protocol_pkg.all;
 
 entity tb_gen_loopback is
-  generic (SPI_HALF : time := 100 ns);
+  generic (SPI_HALF : time := 500 ns);
 end tb_gen_loopback;
 
 architecture bench of tb_gen_loopback is

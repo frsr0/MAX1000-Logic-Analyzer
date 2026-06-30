@@ -394,7 +394,7 @@ BEGIN
   -- FAST_SPEED is a dedicated digital-only build profile. On this MAX 10 /
   -- 12 MHz reference combination the legal high-speed PLL solution is
   -- approximately 100.2 MHz sys, 200.4 MHz sample, and 167.0 MHz SDRAM.
-  gen_use_pll_fast : if (PLL_MULT /= 1 or PLL_DIV /= 1) and FAST_SPEED generate
+  gen_use_pll_fast : if (PLL_MULT /= 1 or PLL_DIV /= 1) and FAST_SPEED and not Sim generate
     pll_inst : entity work.SDRAM_PLL
       generic map (FAST_SPEED_MODE => true)
       port map (inclk0 => CLK, c0 => sys_clk, c1 => fast_clk, c2 => sdram_core_clk,
@@ -402,12 +402,12 @@ BEGIN
     adc_conv_clk <= '0';
   end generate;
   -- Normal mode retains the legacy ADC clock requirement on c3.
-  gen_use_pll_normal : if (PLL_MULT /= 1 or PLL_DIV /= 1) and not FAST_SPEED generate
+  gen_use_pll_normal : if (PLL_MULT /= 1 or PLL_DIV /= 1) and not FAST_SPEED and not Sim generate
     pll_inst : entity work.SDRAM_PLL
       port map (inclk0 => CLK, c0 => sys_clk, c1 => fast_clk, c2 => sdram_core_clk,
                 c3 => adc_conv_clk, c4 => sdram_chip_clk_out, locked => pll_locked);
   end generate;
-  gen_no_pll : if PLL_MULT = 1 and PLL_DIV = 1 generate
+  gen_no_pll : if (PLL_MULT = 1 and PLL_DIV = 1) or Sim generate
     sys_clk <= CLK;
     fast_clk <= CLK;
     sdram_core_clk <= CLK;

@@ -94,11 +94,25 @@ Core wrapper. Instantiates `OLS_Interface`, `Fast_Logic_Analyzer_SDRAM`, `Signal
 
 Command/control interface. Packet opcodes cover register access, capture control, generator, diagnostics, sticky DONE ACK, and metadata readback. DONE latches until ACK, abort, or the next arm; `capture_seq` increments on every arm so the host can prove readback freshness. `REG_FLAGS` includes analog profile/channel bits plus narrow digital enable/channel bits. `ID = 0x31414c53` ("SLA1").
 
-### `rtl/SPI_Slave2.vhd` (~188 lines)
+### `rtl/SPI_Slave2.vhd` (~190 lines)
 
 **Entity:** `SPI_Slave2`
 
-Full-duplex SPI slave on `fast_clk` (200 MHz in speed build). CDC: 2FF for config/control crossings and 3FF for RX valid. Preamble byte loaded at CS falling edge — first MISO byte is status with zero protocol waste.
+Full-duplex SPI slave at 30 MHz SCK (FT2232H MPSSE ceiling). Three clock domains:
+
+- **`fast_clk` (200 MHz)**: MOSI sampling, RX byte assembly, TX byte CDC
+  (`tx_data_f` 2FF from `sys_clk` domain `TX_Data`), and reload-pending
+  bookkeeping.  MOSI is pipelined by one `fast_clk` cycle (`mosi_d`) so the
+  delayed `sck_rise` (~17 ns after the real SCK edge due to 2FF synchroniser)
+  reads the correct rising-edge value before the SCK falling edge changes it.
+- **`SCK` (real pin)**: Source-synchronous MISO shifter (`sck_tx_shift`)
+  clocked on the real SCK falling edge — zero synchroniser latency on MISO
+  output, byte loads from `tx_data_f` at byte boundaries.
+- **`sys_clk` (100 MHz)**: `RX_Data`/`RX_Valid`/`TX_Ready` outputs via 3FF
+  synchronisers.
+
+The preamble byte (SPI_Preamble, a quasi-static status byte) is preloaded
+from a 2FF CDC (`preamble_f`) when CS_n is idle.
 
 ### `rtl/SDRAM_Interface.vhd` (191 lines)
 

@@ -528,7 +528,8 @@ class ExistingHostAdapter(HardwareDevice):
                        progress: Optional[ProgressCb] = None,
                        stop_evt: Optional[threading.Event] = None):
         if settings.mode != "digital_narrow":
-            raise HardwareError("stream_capture is only implemented for digital_narrow")
+            raise HardwareError(
+                "stream_capture is only implemented for digital_narrow")
         with self._lock:
             if self._dev is None:
                 raise HardwareError("Device not connected")
@@ -541,35 +542,28 @@ class ExistingHostAdapter(HardwareDevice):
             divider, actual_rate = self._actual_sample_rate(
                 dev, float(settings.sample_rate))
             window_samples = max(1, int(settings.num_samples))
-            chunk_samples = min(window_samples, max(1024, int(actual_rate * 0.0005)))
-            if window_samples >= 10:
-                chunk_samples = min(chunk_samples, max(1, window_samples // 10))
-            chunk_words = max(1, (chunk_samples + 15) // 16)
-            window_words = max(chunk_words, (window_samples + 15) // 16)
             old_flags = getattr(dev, "_raw_flags", 0)
             dev._raw_flags = (old_flags & ~0x3E000) | narrow_digital_flags(channel)
             dev.set_analog_config(0)
             try:
-                for data, _total, _total_words in dev.continuous_ring_capture(
+                for data, total, window_samp, overrun in dev.stream_ring_capture(
                         rate_hz=float(settings.sample_rate),
-                        chunk_nsamp=chunk_words,
-                        buffer_nsamp=window_words,
+                        window_samples=window_samples,
                         stop_evt=stop_evt or threading.Event(),
-                        progress_cb=progress,
-                        fast_mode=True,
-                        yield_full_buffer=False):
-                    sample_count = min(len(data) // 2 * 16, chunk_words * 16)
+                        progress_cb=progress):
+                    sample_count = min(
+                        len(data) // 2 * 16, window_samp * 16)
                     digital = unpack_narrow_digital_words(
-                        data, channel=channel, sample_count=sample_count)
-                    warnings = [f"Packed 1-channel narrow digital mode on d{channel}"]
-                    ring_status = getattr(dev, "last_ring_status", {}) or {}
-                    overrun = int(ring_status.get("overrun_count") or 0)
+                        data, channel=channel,
+                        sample_count=sample_count)
+                    warnings = [
+                        f"Packed 1-channel narrow digital mode on d{channel}"]
                     if overrun:
                         warnings.append(
-                            f"Continuous narrow ring overrun count is {overrun}")
+                            f"Streaming ring overrun count is {overrun}")
                     yield CaptureResult(
                         sample_rate=actual_rate,
-                        digital=digital[:chunk_samples],
+                        digital=digital[:window_samples],
                         analog={},
                         divider=divider,
                         warnings=warnings)

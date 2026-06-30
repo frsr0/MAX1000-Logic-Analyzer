@@ -62,6 +62,7 @@ port (
     Blk_Rd_Req_Tog : in  std_logic := '0';   -- toggle edge starts a stream
     Blk_Rd_Base    : in  natural range 0 to Max_Samples := 0;  -- base sample idx
     Blk_Rd_Count   : in  natural range 0 to Max_Samples := 0;  -- samples to stream
+    Auto_Renew     : in  std_logic := '0';  -- auto-renew stream (no deassert on block end)
     Rd_Fifo_Q      : out std_logic_vector(15 downto 0) := (others => '0');
     Rd_Fifo_Empty  : out std_logic := '1';
     Rd_Fifo_RdReq  : in  std_logic := '0';
@@ -1382,20 +1383,31 @@ begin
               stream_prime := stream_prime - 1;
             else
               rdfifo_wdata <= s_rdata;
-              rdfifo_wr    <= '1';
+              rdfifo_wr    <= '1';   -- push the read sample into the response
+                                     -- FIFO (dropped in the Auto_Renew refactor;
+                                     -- its absence stalled every block read ->
+                                     -- ST_CAPTURE_IDLE / empty readback)
               if stream_rem <= 1 then
-                stream_active := false;
-                stream_rem    := 0;
-                -- Continuous mode: hand the SDRAM bus back to the write pump
-                -- after the host has streamed its requested block.
-                if Continuous_Mode = '1' then
-                  rd_mode      := false;
+                if Auto_Renew = '1' then
+                  -- Auto-renew: reload and keep streaming
+                  stream_rem := Blk_Rd_Count;
+                  -- stream_addr_u is already advanced; no wrap needed here
+                  -- (the address advance at line 1374 already handles
+                  -- CONT_RING_WORDS wrapping per-sample).
+                else
+                  stream_active := false;
+                  stream_rem    := 0;
+                  -- Continuous mode: hand the SDRAM bus back to the write pump
+                  -- after the host has streamed its requested block.
+                  if Continuous_Mode = '1' then
+                    rd_mode      := false;
+                  end if;
                 end if;
               else
                 stream_rem := stream_rem - 1;
               end if;
-            end if;
-          end if;
+            end if;  -- closes stream_prime if/else
+          end if;    -- closes if rd_pend2 / elsif s_rvalid
 
         elsif Sim then
           -- LEGACY Address-driven readout -> Outputs. Used ONLY by the FLA-direct
@@ -1472,37 +1484,38 @@ begin
             else
               pump_stall_v := true;
             end if;
-
-            if cap_stream_ready = '1' then
-              fifo_rd <= '1';
-              if Continuous_Mode = '1' then
-                cont_accept_v := true;
-                if ring_waddr = Max_Samples - 1 then
-                  ring_waddr := 0;
-                else
-                  ring_waddr := ring_waddr + 1;
-                end if;
-              else
-                -- Single-shot: just advance the write address/countdown. Completion
-                -- is NOT gated on a wide buf_rem_single compare here (that put a
-                -- 22-bit comparator in the hot 167 MHz accept branch and broke clk[2]
-                -- timing). Instead it is driven by the producer-done bit + FIFO-drain
-                -- check in the elsif below.
-                buf_rem_single <= brem_single_dec;
-                waddr_0 := waddr_0 + 1;
-              end if;
-            end if;
           end if;
+
+          if cap_stream_ready = '1' then
+            -- Normal SDRAM-write path: pop FIFO and update bookkeeping
+            fifo_rd <= '1';
+            if Continuous_Mode = '1' then
+              cont_accept_v := true;
+              if ring_waddr = Max_Samples - 1 then
+                ring_waddr := 0;
+              else
+                ring_waddr := ring_waddr + 1;
+              end if;
+            else
+              buf_rem_single <= brem_single_dec;
+              waddr_0 := waddr_0 + 1;
+            end if;
+          elsif producer_done_q = '1' and buf_rem_single <= 0 then
+            -- Drain mode: producer finished and all samples written to SDRAM.
+            -- Pop remaining FIFO entries (discard) so the drain-completion
+            -- logic (elsif below) can count the empty-FIFO window and assert
+            -- full_i. Without this, cur_full blocks SDRAM writes and cap_
+            -- stream_ready never fires, so the pump stops draining.
+            fifo_rd <= '1';
+          end if;
+
+        elsif producer_done_q = '1' and fifo_rdempty = '0' then
+          -- Fallback flush: when the main path was blocked by cur_full but the
+          -- FIFO still has items. Pop and discard.
+          fifo_rd <= '1';
+          single_drain_cnt <= 0;
         elsif Continuous_Mode = '0' and run_level_r = '1' and not rd_mode
               and producer_done_q = '1' then
-          -- Producer has emitted the last requested sample (FAST-domain done bit,
-          -- synced to pclk). Complete the single-shot capture once the pump FIFO
-          -- has been CONTINUOUSLY empty for the drain window -- i.e. the pump has
-          -- flushed everything (incl. any in-flight controller write) to SDRAM.
-          -- This is the real pipeline completion condition; it does not require the
-          -- exact SDRAM write count to equal the requested sample count (the packed
-          -- producer can fall a few words short at some dividers), and it keeps the
-          -- wide write-count compare out of the hot 167 MHz accept branch.
           if fifo_rdempty = '1' then
             if single_drain_cnt = 2047 then
               full_i <= '1';

@@ -3,6 +3,10 @@ use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.numeric_std.all;
 use work.sim_pkg.all;
 use work.spi_protocol_pkg.all;
+-- NOTE: The streaming opcode path (CMD_START_STREAM / STREAM_TX) bypasses
+-- this packet framer entirely — raw bytes flow directly from the FLA
+-- response FIFO to the SPI slave via the stream_tx_pump process. This
+-- testbench covers only the framed-packet TX path (CMD_READ_CAPTURE etc.).
 
 entity tb_spi_packet_tx is
 end tb_spi_packet_tx;

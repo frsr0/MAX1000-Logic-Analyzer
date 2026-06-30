@@ -227,8 +227,20 @@ class OLSDeviceSPI:
     def open(self):
         for attempt in range(3):
             try:
-                self.spi = OLS_SPI(speed_hz=30000000)
+                # 30 MHz SCK default: MOSI pipeline + source-sync MISO in
+                # SPI_Slave2 fix the timing.  Override with OLS_SPEED_HZ for
+                # test sweeps.  AVOID 7.5 MHz (div=3): isolated CDC
+                # metastability beat.
+                _spd = int(os.environ.get("OLS_SPEED_HZ", "30000000"))
+                self.spi = OLS_SPI(speed_hz=_spd)
                 self.spi.open()
+                # Verify FTDI latency timer — 16 ms default kills streaming throughput.
+                try:
+                    lt = self.spi.dev.getLatencyTimer()
+                    if lt > 2:
+                        self.spi.dev.setLatencyTimer(1)
+                except Exception:
+                    pass
                 self._pkt = SPIDevice(self.spi)
                 self._detect_sample_clk()
                 return
@@ -495,6 +507,27 @@ class OLSDeviceSPI:
     def ack_capture_done(self, seq=None):
         return self.pkt.ack_capture_done(seq)
 
+    def _stream_readback(self, start_sample: int, nsamples: int) -> bytes:
+        """Read nsamples from a completed single-shot SDRAM buffer via streaming.
+
+        Uses CMD_START_STREAM (CS-held) for near-wire-rate readback of a static
+        buffer. Only valid after a completed single-shot capture (the FLA is in
+        rd_mode with the data at addresses 0..captured_count).
+        """
+        if nsamples <= 0:
+            return b''
+        _producer, _oldest, data = self.pkt.start_stream_read(
+            start_sample, nsamples * 2)
+        if len(data) > nsamples * 2:
+            data = data[:nsamples * 2]
+        # Tidy up: the FPGA exits STREAM_TX on CS rise but may leave the
+        # stream state machine armed. A NOP/abort ensures clean state.
+        try:
+            self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.2)
+        except Exception:
+            pass
+        return data
+
     def continuous_ring_capture(self, rate_hz, chunk_nsamp, buffer_nsamp,
                                 stop_evt, progress_cb=None, full_out=None,
                                 fast_mode=True, yield_full_buffer=True):
@@ -540,13 +573,13 @@ class OLSDeviceSPI:
 
                 available = producer - next_sample
                 if available < chunk_nsamp:
-                    time.sleep(0.001)
+                    time.sleep(0.0003)
                     continue
 
                 data = self.read_capture_range(next_sample, chunk_nsamp)
                 data = data[:chunk_nsamp * 2]
                 if not data:
-                    time.sleep(0.001)
+                    time.sleep(0.0003)
                     continue
                 if not (self.analog_mode & MODE_MIXED):
                     data = self._repair_boundary_glitches(data, next_sample)
@@ -566,6 +599,92 @@ class OLSDeviceSPI:
                 yield out, total, buffer_nsamp
         finally:
             self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+
+    def stream_ring_capture(self, rate_hz, window_samples, stop_evt,
+                            progress_cb=None):
+        """Yield raw data chunks via CS-held streaming (caller must
+        configure flags/analog before calling, restore after).
+
+        Arms the SDRAM ring for continuous capture, then uses the FPGA
+        streaming opcode (CMD_START_STREAM + auto-renew) to read window-
+        sized chunks with minimal per-chunk SPI overhead. Yields
+        (raw_bytes, valid_count, window_samples, overrun_count) per
+        iteration.
+        """
+        self._ensure_open()
+        window_samples = max(1, int(window_samples))
+        div = max(0, int(self.sample_clk / rate_hz) - 1)
+        flags = self._raw_flags
+        self._write_capture_config(
+            div=div, samples=4194304, delay_count=4194304,
+            mask=0, value=0, flags=flags,
+            fast_mode=True, continuous=True)
+        self.set_debug_ch0(self.debug_ch0_enabled)
+        self.spi.flush()
+        status = self.pkt.arm_capture()
+        if status < 0:
+            return
+
+        total = 0
+        next_sample = None  # None = uninitialized, need one get_status to seed
+        overrun_total = 0
+        window_idx = 0
+        try:
+            while not stop_evt.is_set():
+                # Seed position on first iteration or after overrun recovery.
+                if next_sample is None:
+                    st = self.pkt.get_status()
+                    oldest0 = st.get('oldest_index', 0)
+                    if oldest0 is None:
+                        raise RuntimeError(
+                            "stream ring metadata not available")
+                    next_sample = oldest0
+
+                # Stream one window under CS.
+                producer_ack, oldest_ack, data = self.pkt.start_stream_read(
+                    next_sample, window_samples * 2, stop_evt)
+                if not data:
+                    break
+
+                # Post-stream reconciliation — must poll producer1 because the
+                # stream-start ack's producer_index is stale (producer advances
+                # during the stream read).
+                st2 = self.pkt.get_status()
+                producer1 = st2.get('producer_index', 0)
+                overrun = int(
+                    st2.get('overrun_count', 0) or 0)
+                if overrun > overrun_total:
+                    overrun_total = overrun
+
+                valid_samples = int(producer1) - int(oldest_ack)
+                n_read = len(data) // 2
+                if valid_samples > n_read:
+                    valid_samples = n_read
+                if valid_samples > window_samples:
+                    valid_samples = window_samples
+                if valid_samples <= 0:
+                    valid_samples = n_read
+                    if valid_samples > window_samples:
+                        valid_samples = window_samples
+
+                # Advance position for next window.
+                next_sample = oldest_ack + valid_samples
+
+                if overrun > 0:
+                    # Overrun: keep the newest samples, force re-sync.
+                    data = data[-valid_samples * 2:] if valid_samples > 0 else data
+                    next_sample = None
+
+                window_idx += 1
+                total += valid_samples
+                if progress_cb:
+                    progress_cb(data, total, window_samples)
+                yield data, total, window_samples, overrun_total
+        finally:
+            try:
+                self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+            except Exception:
+                pass
 
     def continuous_ring_capture_with_repeating_uart(
             self, rate_hz, chunk_nsamp, buffer_nsamp, stop_evt, data_bytes,
@@ -815,10 +934,8 @@ class OLSDeviceSPI:
             with open(_trace, "a") as f:
                 f.write(f"gen_capture: status transitions={seen} "
                         f"timed_out={time.time() >= deadline}\n")
-
-        # See capture(): packed wire is 2 bytes/sample (stride 2).
         need = rc * 2
-        samples = self.read_capture_range(0, rc)[:need]
+        samples = self._stream_readback(0, rc)[:need]
         # Same 256-sample-boundary readout-inversion repair as capture(); the
         # gen-capture path was missing it, which corrupted ~1 sample every 256
         # (≈1.5 UART bytes here) and garbled multi-byte loopback decodes.
@@ -918,7 +1035,7 @@ class OLSDeviceSPI:
         # is contiguous 16-bit little-endian samples: rc samples = rc*2 bytes,
         # decoded at stride 2. (One 1024-byte block carries 512 samples.)
         need = rc * 2
-        samples = self.read_capture_range(0, rc)[:need]
+        samples = self._stream_readback(0, rc)[:need]
         if not (self.analog_mode & MODE_MIXED):
             samples = self._repair_boundary_glitches(samples, 0)
         if expected_seq is not None and st.get('capture_seq') == expected_seq:

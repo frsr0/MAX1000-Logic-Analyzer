@@ -1,6 +1,6 @@
 # OLS Logic Analyzer — MAX1000
 
-Open-source multi-channel logic analyzer for the Arrow MAX1000 board (Intel MAX10 10M08SAU169C8G + 64 Mbit SDRAM + built-in ADC + LIS3DH accelerometer). Host interface: **SPI (FTDI MPSSE Channel B @ 12–30 MHz)**.
+Host interface: **SPI (FTDI MPSSE Channel B @ 30 MHz)** — source-synchronous MISO/MOSI.
 
 > **New: web-based host app (v2).** A FastAPI backend + React frontend now
 > provides LAN access from any browser (phone/tablet/laptop), a fast
@@ -213,7 +213,7 @@ Continuous capture writes into a bounded SDRAM ring. The FPGA reports `producer_
 
 This is not an arbitrary-length lossless capture path at 200 MHz. The SDRAM writer has finite burst bandwidth and FIFO cushion; once the producer outruns retained SDRAM capacity, host readback, or the write pump's burst slack, the ring keeps the newest retained samples and reports the loss through `overrun_count`.
 
-SPI readback is still limited to ~30 MB/s effective throughput. This limits lossless live readback but does **not** affect single-shot retention inside SDRAM.
+SPI readback at 30 MHz is the primary bottleneck for lossless live readback. This limits lossless live readback but does **not** affect single-shot retention inside SDRAM.
 
 | Capture Mode | Frame stride | Rolling max* |
 |---|---|---|
@@ -223,7 +223,7 @@ SPI readback is still limited to ~30 MB/s effective throughput. This limits loss
 | High-speed analog, one ADC mux input | 2 B | ADC-limited to 1 MSPS |
 | Maximum analog, physical ADC1,2,3,4,5,7,8,16 profile | 12 B | ADC-limited to 125 kframes/s |
 
-*Lossless live readback max = 30 MB/s ÷ stride in bytes. Above that, the ring remains live and `overrun_count` reports overwritten data. At 200 MHz digital capture, SDRAM write bandwidth is also part of the bound; the honest contract is rolling retention plus overrun reporting, not infinite lossless storage.
+*Lossless live readback max ≈ 30 Mbps (raw SCK) ÷ (8 × packet overhead) ÷ stride in bytes. Practical limit is ~2–3 MB/s payload. Above that, the ring remains live and `overrun_count` reports overwritten data. At 200 MHz digital capture, SDRAM write bandwidth is also part of the bound.
 
 ## Debug CH0 (Programmable PWM)
 

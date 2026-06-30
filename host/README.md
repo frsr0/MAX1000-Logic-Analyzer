@@ -2,7 +2,7 @@
 
 ## Overview
 
-GUI application, CLI capture, protocol decoders, hardware validation, and SPI driver stack for communicating with the FPGA over FTDI FT2232H (Channel B, MPSSE mode at 12–30 MHz).
+GUI application, CLI capture, protocol decoders, hardware validation, and SPI driver stack for communicating with the FPGA over FTDI FT2232H (Channel B, MPSSE mode at **30 MHz** — source-synchronous MISO/MOSI, default speed).
 
 **Entry points**:
 - `cd host && python -m app.OLS_Console` — GUI mode
