@@ -1,0 +1,89 @@
+ACK Pad Sweep Test
+================
+SPI Clock: 30.0 MHz
+Range: 96 -> 32 bytes, step 8
+
+Connecting to device... [OK]
+
+Testing ack_pad values (3 trials each)...
+------------------------------------------------------------
+
+  Testing ack_pad = 96 bytes...
+    Trial 1/3... [PASS] 0.46 MB/s
+    Trial 2/3... [PASS] 0.46 MB/s
+    Trial 3/3... [PASS] 0.45 MB/s
+    0.45 MB/s [PASS] (3/3 passed, 0 corrupted)
+
+  Testing ack_pad = 88 bytes...
+    Trial 1/3... [FAIL] Failed
+    Trial 2/3... [FAIL] Failed
+    Trial 3/3... [FAIL] Failed
+    0.00 MB/s [FAIL] (All trials failed)
+
+  Testing ack_pad = 80 bytes...
+    Trial 1/3... [FAIL] Failed
+    Trial 2/3... [FAIL] Failed
+    Trial 3/3... [FAIL] Failed
+    0.00 MB/s [FAIL] (All trials failed)
+
+  Testing ack_pad = 72 bytes...
+    Trial 1/3... [FAIL] Failed
+    Trial 2/3... [FAIL] Failed
+    Trial 3/3... [FAIL] Failed
+    0.00 MB/s [FAIL] (All trials failed)
+
+  Testing ack_pad = 64 bytes...
+    Trial 1/3... [FAIL] Failed
+    Trial 2/3... [FAIL] Failed
+    Trial 3/3... [FAIL] Failed
+    0.00 MB/s [FAIL] (All trials failed)
+
+  Testing ack_pad = 56 bytes...
+    Trial 1/3... [FAIL] Failed
+    Trial 2/3... [FAIL] Failed
+    Trial 3/3... [FAIL] Failed
+    0.00 MB/s [FAIL] (All trials failed)
+
+  Testing ack_pad = 48 bytes...
+    Trial 1/3... [FAIL] Failed
+    Trial 2/3... [FAIL] Failed
+    Trial 3/3... [FAIL] Failed
+    0.00 MB/s [FAIL] (All trials failed)
+
+  Testing ack_pad = 40 bytes...
+    Trial 1/3... [FAIL] Failed
+    Trial 2/3... [FAIL] Failed
+    Trial 3/3... [FAIL] Failed
+    0.00 MB/s [FAIL] (All trials failed)
+
+  Testing ack_pad = 32 bytes...
+    Trial 1/3... [FAIL] Failed
+    Trial 2/3... [FAIL] Failed
+    Trial 3/3... [FAIL] Failed
+    0.00 MB/s [FAIL] (All trials failed)
+
+============================================================
+RESULTS
+============================================================
+
+Best result: ack_pad=96 -> 0.45 MB/s [PASS]
+
+------------------------------------------------------------
+Summary:
+  ack_pad= 96 bytes:    0.45 MB/s  [PASS]
+  ack_pad= 88 bytes:    0.00 MB/s  [FAIL]
+  ack_pad= 80 bytes:    0.00 MB/s  [FAIL]
+  ack_pad= 72 bytes:    0.00 MB/s  [FAIL]
+  ack_pad= 64 bytes:    0.00 MB/s  [FAIL]
+  ack_pad= 56 bytes:    0.00 MB/s  [FAIL]
+  ack_pad= 48 bytes:    0.00 MB/s  [FAIL]
+  ack_pad= 40 bytes:    0.00 MB/s  [FAIL]
+  ack_pad= 32 bytes:    0.00 MB/s  [FAIL]
+
+------------------------------------------------------------
+
+RECOMMENDATION:
+  Breaking point: ack_pad=88
+  Safe minimum:   ack_pad=93 (+5 byte margin)
+  Gain vs 96:     3% reduction
+  Throughput +    ~19 kB/s

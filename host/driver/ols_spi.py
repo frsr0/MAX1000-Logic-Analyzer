@@ -438,3 +438,25 @@ class OLS:
         buf += bytes([0x87, 0x80, GPIO_CS_HI, PIN_DIR, 0x87])
         self.dev.write(buf)
         return self._read_n(read_len, timeout=max(0.5, n_bytes / max(self.speed_hz / 8, 1) + 0.5))
+
+    def stream_payload(self, payload, stop_evt=None):
+        """Clock an arbitrary payload under one CS-held transaction."""
+        payload = bytes(payload)
+        if not payload:
+            return b""
+        if stop_evt is not None and stop_evt.is_set():
+            return b""
+        self._drain()
+        buf = bytes([0x80, GPIO_CS_LO, PIN_DIR])
+        remaining = len(payload)
+        pos = 0
+        MAX_PER_CMD = 65536
+        while remaining > 0:
+            n = min(MAX_PER_CMD, remaining)
+            buf += bytes([0x31, (n - 1) & 0xFF, ((n - 1) >> 8) & 0xFF])
+            buf += payload[pos:pos + n]
+            pos += n
+            remaining -= n
+        buf += bytes([0x87, 0x80, GPIO_CS_HI, PIN_DIR, 0x87])
+        self.dev.write(buf)
+        return self._read_n(len(payload), timeout=max(0.5, len(payload) / max(self.speed_hz / 8, 1) + 0.5))

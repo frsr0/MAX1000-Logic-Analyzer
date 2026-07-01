@@ -71,3 +71,24 @@ set_output_delay -clock [get_clocks SDRAM_CHIP_CLK_OUT] -min -0.8 \
 # arrival for hold analysis.
 set_input_delay -clock [get_clocks SDRAM_CHIP_CLK_OUT] -max 5.4 [get_ports {sdram_dq[*]}]
 set_input_delay -clock [get_clocks SDRAM_CHIP_CLK_OUT] -min 0.0 [get_ports {sdram_dq[*]}]
+
+# The SDRAM controller only samples read data in ST_RD_DATA, after the explicit
+# CAS-latency wait. Do not time DQ as if the controller captured the first
+# internal core-clock edge after every forwarded SDRAM clock edge.
+set_multicycle_path -setup 3 \
+  -from [get_ports {sdram_dq[*]}] \
+  -to   [get_registers {*sdram_s_readdata[*]}]
+set_multicycle_path -hold 2 \
+  -from [get_ports {sdram_dq[*]}] \
+  -to   [get_registers {*sdram_s_readdata[*]}]
+
+# The readback compressor is fed by the SDRAM read-valid cadence, not by a
+# continuous 167 MHz sample stream. One read is requested, the controller waits
+# through CAS/read-data latency, then the next request is issued, so delta
+# accumulation has at least two clk[2] cycles between meaningful updates.
+set_multicycle_path -setup 2 \
+  -from [get_registers {*rd_compressor|prev[*] *rd_compressor|sample_pipe[*]}] \
+  -to   [get_registers {*rd_compressor|deltas[*][*]}]
+set_multicycle_path -hold 1 \
+  -from [get_registers {*rd_compressor|prev[*] *rd_compressor|sample_pipe[*]}] \
+  -to   [get_registers {*rd_compressor|deltas[*][*]}]

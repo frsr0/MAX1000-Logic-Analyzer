@@ -190,8 +190,8 @@ architecture rtl of SDRAM_Controller is
     signal last_op_was_stream : std_logic := '0';
     signal capture_stream_ready_now : std_logic := '0';
     signal stream_ready_r        : std_logic := '0';
-    -- Registered is_same_row comparator outputs to decouple 14-bit address
-    -- comparisons from the ST_IDLE decision chain and stream-write logic.
+    -- Registered is_same_row comparator outputs decouple 14-bit address
+    -- comparisons from command/address output timing.
     signal same_row_buf_a      : std_logic := '0';
     signal same_row_buf_next   : std_logic := '0';
     signal same_row_cap_stream : std_logic := '0';
@@ -225,26 +225,14 @@ begin
     sdram_ba    <= s_ba;
 
     -- DQ pin driven by a SINGLE registered value (dq_out) gated by a registered
-    -- output-enable (dq_oe). Previously the pin was driven by a COMBINATIONAL mux
-    -- (s_wd_stream/buf_wd selected by last_op_was_stream) sitting between the
-    -- registers and the pin: it could not pack into the I/O cell and the OE/select
-    -- resolved combinationally right at the pad, so a momentary wrong-OE could
-    -- float DQ during a write -> the SDRAM latched the idle bus (0xFFFF / "never
-    -- written"), a PHASE-INSENSITIVE rare single-sample write drop. dq_out is
-    -- loaded at each write-command cycle (ST_STREAM_WR / ST_WR), so this is a
-    -- clean register->IOE path with a registered OE.
+    -- output-enable (dq_oe). OE is asserted only in the actual write-command
+    -- states, keeping row/page-hit decisions out of the IO OE timing path.
     sdram_dq <= dq_out when dq_oe = '1' else (others => 'Z');
     -- Registered comparator outputs (concurrent assignments resolve one delta
     -- after timer updates, effectively pipelining the wide comparisons away from
     -- the state machine decision cone and ref_req driver.)
     timer_ge_ref <= '1' when timer >= REF_CYCLES - 1 else '0';
     timer_eq_zero <= '1' when timer = 0 else '0';
-
-    -- Registered is_same_row comparator outputs (decouple 14-bit comparators from
-    -- the ST_IDLE decision chain and stream-write logic)
-    same_row_buf_a      <= '1' when is_same_row(buf_a,      active_row, active_bank) else '0';
-    same_row_buf_next   <= '1' when is_same_row(buf_a_next, active_row, active_bank) else '0';
-    same_row_cap_stream <= '1' when is_same_row(capture_stream_addr, active_row, active_bank) else '0';
 
     sdram_s_idle <= '1' when state = ST_IDLE else '0';
     -- capture_stream_ready_now is combinational (state + registered same_row signal).
@@ -290,6 +278,7 @@ begin
             write_depth <= 0; max_write_depth <= 0;
             prev_buf_a <= (others => '0');
             row_open <= '0'; active_row <= (others => '0'); active_bank <= (others => '0');
+            same_row_buf_a <= '0'; same_row_buf_next <= '0'; same_row_cap_stream <= '0';
 
             burst_fifo_cnt <= 0; burst_active <= '0'; burst_cnt <= 0;
             last_op_was_stream <= '0';
@@ -298,6 +287,21 @@ begin
 
             last_rn <= sdram_s_read_n;
             last_wn <= sdram_s_write_n;
+            if is_same_row(buf_a, active_row, active_bank) then
+                same_row_buf_a <= '1';
+            else
+                same_row_buf_a <= '0';
+            end if;
+            if is_same_row(buf_a_next, active_row, active_bank) then
+                same_row_buf_next <= '1';
+            else
+                same_row_buf_next <= '0';
+            end if;
+            if is_same_row(capture_stream_addr, active_row, active_bank) then
+                same_row_cap_stream <= '1';
+            else
+                same_row_cap_stream <= '0';
+            end if;
 
             if buf_a /= prev_buf_a then
                 report "BUF_A: 0x" & to_hex(buf_a) & " (prev was 0x" & to_hex(prev_buf_a) & ")" severity note;
@@ -347,6 +351,8 @@ begin
             v_peak := v_depth;
 
             s_cs <= '0'; s_ras <= '1'; s_cas <= '1'; s_we <= '1';
+            s_addr <= "0000" & col_r;
+            s_ba <= active_bank;
 
             case state is
 
@@ -424,7 +430,6 @@ begin
                     elsif pend_wn = '1' then
                         pend_wn <= '0';
                         is_read <= '0';
-                        dq_oe <= '1';
                         bank_r <= buf_a(21 downto 20); row_r <= buf_a(19 downto 8); col_r <= buf_a(7 downto 0);
                         sdram_s_waitrequest <= '1';
                         v_depth := v_depth - 1;
@@ -449,7 +454,6 @@ begin
                         pend_wn <= '1';
                         pend_wn_next <= '0';
                         is_read <= '0';
-                        dq_oe <= '1';
                         sdram_s_waitrequest <= '1';
                         v_depth := v_depth - 1;
                         if row_open = '1' and same_row_buf_next = '1' then
@@ -462,7 +466,6 @@ begin
                     elsif capture_stream_valid = '1' and row_open = '1'
                           and same_row_cap_stream = '1' then
                         is_read <= '0';
-                        dq_oe <= '1';
                         last_op_was_stream <= '1';
                         sdram_s_waitrequest <= '1';
                         state <= ST_STREAM_WR;
@@ -472,7 +475,6 @@ begin
                         state <= ST_PRE2;
                     elsif capture_stream_valid = '1' then
                         is_read <= '0';
-                        dq_oe <= '1';
                         last_op_was_stream <= '1';
                         bank_r <= capture_stream_addr(21 downto 20);
                         row_r <= capture_stream_addr(19 downto 8);
@@ -502,8 +504,6 @@ begin
 
                 when ST_RD =>
                     s_cas <= '0';
-                    s_addr <= "0000" & col_r;
-                    s_ba <= bank_r;
                     state <= ST_CL_WAIT;
 
                 when ST_CL_WAIT =>
@@ -520,8 +520,7 @@ begin
 
                 when ST_WR =>
                     s_cas <= '0'; s_we <= '0';
-                    s_addr <= "0000" & col_r;
-                    s_ba <= bank_r;
+                    dq_oe <= '1';
                     last_op_was_stream <= '0';
                     -- Drive DQ from the single registered output, aligned with the
                     -- write command (uses the CURRENT buf_wd; the burst branch below
@@ -564,6 +563,9 @@ begin
                     if capture_stream_valid = '1' then
                         buf_a  <= capture_stream_addr;
                         buf_wd <= capture_stream_data;
+                        s_addr <= "0000" & capture_stream_addr(7 downto 0);
+                        s_ba   <= capture_stream_addr(21 downto 20);
+                        dq_out <= capture_stream_data;
                     end if;
                     if ref_req = '1' or pend_rn = '1'
                     or capture_stream_valid = '0'
@@ -589,10 +591,8 @@ begin
                         end if;
                         state <= ST_TWR;
                     else
+                        dq_oe <= '1';
                         s_cas <= '0'; s_we <= '0';
-                        s_addr <= "0000" & capture_stream_addr(7 downto 0);
-                        s_ba <= capture_stream_addr(21 downto 20);
-                        dq_out <= capture_stream_data;  -- single registered DQ, with command
                         state <= ST_STREAM_WR;
                     end if;
 
@@ -668,7 +668,6 @@ begin
                     elsif pend_wn = '1' then
                         pend_wn <= '0';
                         is_read <= '0';
-                        dq_oe <= '1';
                         bank_r <= buf_a(21 downto 20); row_r <= buf_a(19 downto 8); col_r <= buf_a(7 downto 0);
                         sdram_s_waitrequest <= '1';
                         v_depth := v_depth - 1;
@@ -700,7 +699,6 @@ begin
                         pend_wn_same_row <= pend_wn_next_same_row;
                         pend_wn_next_same_row <= '0';
                         is_read <= '0';
-                        dq_oe <= '1';
                         sdram_s_waitrequest <= '1';
                         v_depth := v_depth - 1;
                         if row_open = '1' and pend_wn_next_same_row = '1' then
@@ -715,13 +713,11 @@ begin
                         state <= ST_PRE2;
                     elsif capture_stream_valid = '1' and row_open = '1' then
                         is_read <= '0';
-                        dq_oe <= '1';
                         last_op_was_stream <= '1';
                         sdram_s_waitrequest <= '1';
                         state <= ST_STREAM_WR;
                     elsif capture_stream_valid = '1' then
                         is_read <= '0';
-                        dq_oe <= '1';
                         last_op_was_stream <= '1';
                         bank_r <= capture_stream_addr(21 downto 20);
                         row_r <= capture_stream_addr(19 downto 8);

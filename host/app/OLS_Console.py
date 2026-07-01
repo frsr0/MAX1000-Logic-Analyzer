@@ -18,7 +18,7 @@ try:
         OLSDeviceSPI, find_spi_device,
         MODE_DIGITAL, MODE_MIXED,
         decode_analog_frames, analog_frame_stride,
-        wire_to_payload, decompress_delta_block,
+        wire_to_payload, decompress_delta_block, decompress_delta_stream,
     )
     HAS_SPI = True
 except ImportError:
@@ -1070,15 +1070,12 @@ class OLScope:
                 self._apply_schmitt()
                 if proto_enable:
                     self.dev.trigger_decode(match_byte=match_byte, channel=proto_ch, baud=proto_baud, enable=True)
-                # Set compression flag if enabled
-                if self.compress_var.get():
-                    from driver.spi_protocol import REG_FLAGS, CMD_WRITE_REG
-                    import struct
-                    flags = self.dev.pkt.transaction(CMD_READ_REG, bytes([REG_FLAGS, 0, 0, 0]))
-                    if flags and len(flags) == 3:
-                        cur = int.from_bytes(flags[2], 'little', signed=False)
-                        cur |= 0x40000
-                        self.dev.pkt.transaction(CMD_WRITE_REG, bytes([REG_FLAGS]) + struct.pack('<I', cur))
+                # Live/rolling delta-compressed readback is still gated behind
+                # an experimental transport path; the stable production path is
+                # single-capture decompression only for now.
+                use_compress = bool(
+                    self.compress_var.get() and self.capture_mode == MODE_DIGITAL and not rolling)
+                self.dev.set_compression_enabled(use_compress)
                 if rolling:
                     buf_nsamp = self.capture_window
                     self.captured_bytes = bytearray()
@@ -1091,8 +1088,10 @@ class OLScope:
                         # frames decode correctly.
                         as_ = analog_frame_stride(self.capture_mode)
                         pay_stride = analog_frame_stride(self.capture_mode)
+                        ring_chunk = 1024
                     else:
                         as_ = self.dev._stride
+                        ring_chunk = min(buf_nsamp, 65536)
                     # Pass any pending generator data into rolling capture
                     pending = getattr(self.dev, '_pending_gen', None)
                     gen_kwargs = {}
@@ -1104,7 +1103,7 @@ class OLScope:
                         }
                         self.dev._pending_gen = None
                     gen = self.dev.rolling_capture(
-                        rate_hz=rate, chunk_nsamp=1024, buffer_nsamp=buf_nsamp,
+                        rate_hz=rate, chunk_nsamp=ring_chunk, buffer_nsamp=buf_nsamp,
                         stop_evt=self.stop_evt, progress_cb=None,
                         full_out=self.captured_bytes, stride=as_,
                         payload_stride=pay_stride,
@@ -1154,7 +1153,7 @@ class OLScope:
                             print(f"[DBG] first 8 bytes hex: {data[:8].hex()}")
                         # Decompress if compression was enabled
                         if self.compress_var.get() and self.capture_mode == MODE_DIGITAL:
-                            data = decompress_delta_block(data)
+                            data = decompress_delta_stream(data)
                             nsamp = len(data) // 2
                         self.capture_result = (data, rate, nsamp)
             except Exception as e:

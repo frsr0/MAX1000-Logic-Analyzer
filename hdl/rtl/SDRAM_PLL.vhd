@@ -174,7 +174,7 @@ BEGIN
 	gen_fast_speed : if FAST_SPEED_MODE generate
 	begin
 		c3 <= '0';
-		sub_wire9 <= sub_wire3(3);
+		sub_wire9 <= sub_wire3(4);
 
 		altpll_component : altpll
 		GENERIC MAP (

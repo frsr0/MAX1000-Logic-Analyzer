@@ -1,6 +1,7 @@
 param(
+    [switch]$NoFlash,
     [switch]$Flash,
-    [int]$Seed = 29
+    [int]$Seed = 21
 )
 
 

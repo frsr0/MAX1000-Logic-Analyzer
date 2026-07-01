@@ -259,6 +259,21 @@ class SPIDevice:
         """Like transaction() but for large read responses."""
         seq = self._next_seq()
         req = build_packet(cmd, seq, payload)
+        if hasattr(self.spi, "stream_command"):
+            # Packet responses can begin noticeably after the nominal
+            # request+ack guard window, so over-read enough clocks to
+            # include the full response frame and trailing CRC.
+            raw = self.spi.stream_command(
+                req,
+                max(132, read_extra + 128),
+                ack_pad=96,
+            )
+            if raw:
+                self._rx_buf += raw
+                parsed = self._pop_response(seq)
+                if parsed:
+                    return parsed
+
         first = self.spi.tx_bytes(req)
         if first:
             self._rx_buf += first[1:] if len(first) > 1 else first
@@ -408,6 +423,64 @@ class SPIDevice:
                     return producer, oldest, data
             sync_at = raw.find(SYNC_RSP, sync_at + 1)
         raise RuntimeError("start_stream_read failed")
+
+    def start_stream_read_compressed(self, start_sample: int, n_bytes: int,
+                                     stop_evt=None, ack_pad: int = 96) -> tuple:
+        """Read a streamed window using packetized READ_STREAM_BLOCK commands.
+
+        Keeps CS low across CMD_START_STREAM plus a sequence of
+        CMD_READ_STREAM_BLOCK requests so the FPGA's streaming state survives
+        and compressed block packets can be returned in one transaction.
+        Returns (producer_index, oldest_index, raw_payload_bytes).
+        """
+        if not hasattr(self.spi, "stream_payload"):
+            raise RuntimeError("compressed stream path requires stream_payload")
+
+        start_seq = self._next_seq()
+        start_req = build_packet(
+            CMD_START_STREAM, start_seq, struct.pack('<I', start_sample * 2))
+
+        blocks = max(1, (int(n_bytes) + BLOCK_SIZE - 1) // BLOCK_SIZE)
+        block_seqs = []
+        payload = bytearray(start_req)
+        payload.extend(b"\xff" * int(ack_pad))
+        for _ in range(blocks):
+            seq = self._next_seq()
+            block_seqs.append(seq)
+            payload.extend(build_packet(CMD_READ_STREAM_BLOCK, seq, b''))
+            # One compressed stream-block response is 392 bytes total; keep a
+            # couple of extra clocks for the response start offset.
+            payload.extend(b"\xff" * 400)
+
+        raw = self.spi.stream_payload(bytes(payload), stop_evt=stop_evt)
+
+        producer = None
+        oldest = None
+        blocks_out = {}
+        sync_at = raw.find(SYNC_RSP)
+        while sync_at >= 0:
+            if len(raw) < sync_at + 8:
+                break
+            plen = struct.unpack('<H', raw[sync_at + 4:sync_at + 6])[0]
+            total = 8 + plen
+            end = sync_at + total
+            if len(raw) < end:
+                break
+            parsed = parse_response(raw[sync_at:end])
+            if parsed:
+                status, rsp_seq, rsp_payload = parsed
+                if (status == ST_STREAM_ACTIVE and rsp_seq == start_seq
+                        and len(rsp_payload) >= 8):
+                    producer, oldest = struct.unpack('<II', rsp_payload[:8])
+                elif status == ST_OK and rsp_seq in block_seqs:
+                    blocks_out[rsp_seq] = rsp_payload
+            sync_at = raw.find(SYNC_RSP, sync_at + 1)
+
+        if producer is None or oldest is None:
+            raise RuntimeError("start_stream_read_compressed failed")
+
+        data = b"".join(blocks_out.get(seq, b"") for seq in block_seqs)
+        return producer, oldest, data
 
     def read_stream(self, n_bytes: int, stop_evt=None) -> bytes:
         """Read n_bytes of raw streaming data via CS-held SPI."""
