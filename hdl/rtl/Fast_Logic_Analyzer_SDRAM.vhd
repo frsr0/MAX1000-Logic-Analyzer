@@ -209,9 +209,11 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal overflow_t_s2    : std_logic := '0';
   signal overflow_t_s3    : std_logic := '0';
   signal overflow_clk     : std_logic := '0';
+  signal overflow_count_en_q : std_logic := '0';
   signal sample_remaining : natural range 0 to Max_Samples := 0;
   signal run_stop_overflow : std_logic := '0';
   signal status_overflow   : std_logic := '0';
+  signal overflow_readout_q : std_logic := '0';
   signal producer_index_u  : unsigned(31 downto 0) := (others => '0');
   signal oldest_index_u    : unsigned(31 downto 0) := (others => '0');
   signal newest_index_u    : unsigned(31 downto 0) := (others => '0');
@@ -1215,6 +1217,7 @@ begin
     -- Streaming block-readout state (single-shot CMD_READ_CAPTURE path)
     variable stream_active : boolean := false;
     variable stream_addr_u : unsigned(21 downto 0) := (others => '0');
+    variable stream_addr_inc_pending : boolean := false;
     variable stream_rem    : natural range 0 to Max_Samples := 0;
     variable rd_pend2      : std_logic := '0';
     -- Prime read: the FIRST SDRAM read of each block stream comes back garbage
@@ -1254,6 +1257,18 @@ begin
       cap_stream_valid <= '0';
       rdfifo_wr <= '0';
       comp_feed <= '0';
+      overflow_count_en_q <= overflow_clk;
+      if overflow_count_en_q = '1' then
+        pump_overflow_count_u <= pump_overflow_count_u + 1;
+      end if;
+      if stream_addr_inc_pending then
+        if Continuous_Mode = '1' and stream_addr_u = to_unsigned(CONT_RING_WORDS - 1, 22) then
+          stream_addr_u := (others => '0');
+        else
+          stream_addr_u := stream_addr_u + 1;
+        end if;
+        stream_addr_inc_pending := false;
+      end if;
       if single_count_load_q = '1' then
         buf_rem_single <= cfg_samples;
       end if;
@@ -1268,7 +1283,6 @@ begin
       if overflow_clk = '1' then
         run_stop_overflow <= '1';
         status_overflow <= '1';
-        pump_overflow_count_u <= pump_overflow_count_u + 1;
         if Continuous_Mode = '0' and full_i = '0' then
           -- End the single-shot capture on producer overflow. Re-entering the
           -- run-edge reset path here clears the write/read bookkeeping and
@@ -1276,10 +1290,12 @@ begin
           -- readout access to whatever was captured and makes the failure visible
           -- through the overflow/status counters.
           full_i <= '1';
-          rd_mode := true;
-          cap_stream_valid <= '0';
-          stream_active := false;
+          overflow_readout_q <= '1';
         end if;
+      end if;
+      if overflow_readout_q = '1' then
+        rd_mode := true;
+        overflow_readout_q <= '0';
       end if;
 
       -- Buffer ack handling (evaluated every cycle)
@@ -1344,6 +1360,7 @@ begin
         full_pending <= '0'; full_clr_pending <= '0';
         run_stop_overflow <= '0';
         status_overflow <= '0';
+        overflow_readout_q <= '0';
         if run_start_r = '1' then
           pump_valid_cycles_u <= (others => '0');
           pump_ready_cycles_u <= (others => '0');
@@ -1351,6 +1368,7 @@ begin
           pump_stall_cycles_u <= (others => '0');
           pump_nodata_cycles_u <= (others => '0');
           pump_overflow_count_u <= (others => '0');
+          overflow_count_en_q <= '0';
           ring_waddr := 0;
         end if;
         if run_stop_r = '1' then
@@ -1361,6 +1379,7 @@ begin
         s_wr <= '0'; s_rd <= '0';
         cap_stream_valid <= '0';
         stream_active := false; rd_pend2 := '0';
+        stream_addr_inc_pending := false;
         cur_full := false;
 
       else
@@ -1373,6 +1392,7 @@ begin
           -- Single-shot: read exactly the host-requested block.
           stream_addr_u := to_unsigned(Blk_Rd_Base + Start_Offset, 22);
           stream_rem    := Blk_Rd_Count;
+          stream_addr_inc_pending := false;
           rd_pend2      := '0';
           stream_prime  := STREAM_PRIME_N;
           stream_active := (Blk_Rd_Count /= 0);
@@ -1383,6 +1403,7 @@ begin
           cont_base_v := Blk_Rd_Base mod CONT_RING_WORDS;
           stream_addr_u := to_unsigned(cont_base_v, 22);
           stream_rem    := Blk_Rd_Count;
+          stream_addr_inc_pending := false;
           rd_pend2      := '0';
           stream_prime  := STREAM_PRIME_N;
           stream_active := (Blk_Rd_Count /= 0);
@@ -1407,11 +1428,7 @@ begin
               -- Do not advance the address on the prime read: the next (real)
               -- read re-fetches the same base address.
               if stream_prime = 0 then
-                if Continuous_Mode = '1' and stream_addr_u = to_unsigned(CONT_RING_WORDS - 1, 22) then
-                  stream_addr_u := (others => '0');
-                else
-                  stream_addr_u := stream_addr_u + 1;
-                end if;
+                stream_addr_inc_pending := true;
               end if;
             end if;
           elsif s_rvalid = '1' then

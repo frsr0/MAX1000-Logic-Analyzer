@@ -35,6 +35,8 @@ architecture rtl of capture_compressor is
   signal sample_cnt : natural range 0 to 15 := 0;
   signal prev : signed(15 downto 0) := (others => '0');
   signal overflow_flag : std_logic := '0';
+  signal sample_pipe : std_logic_vector(15 downto 0) := (others => '0');
+  signal sample_pipe_valid : std_logic := '0';
 
   -- FLUSH output counter: which packed word (0..4) we are emitting
   signal out_idx : natural range 0 to 5 := 0;
@@ -48,12 +50,14 @@ begin
       if rst = '1' then
         state <= PASSTHROUGH;
         comp_valid <= '0';
+        sample_pipe_valid <= '0';
       else
         comp_valid <= '0';  -- default
 
         case state is
 
           when PASSTHROUGH =>
+            sample_pipe_valid <= '0';
             if compression_enable = '1' then
               state <= ANCHOR;
               sample_cnt <= 0;
@@ -72,19 +76,27 @@ begin
               sample_cnt <= 1;
               delta_cnt <= 0;
               overflow_flag <= '0';
+              sample_pipe_valid <= '0';
               state <= ACCUM;
             end if;
 
           -- ACCUM: collect samples 1..15, compute deltas, store in array
           when ACCUM =>
             if sample_valid = '1' then
-              delta_v := signed(sample_in) - prev;
+              sample_pipe <= sample_in;
+              sample_pipe_valid <= '1';
+            elsif sample_pipe_valid = '1' then
+              sample_pipe_valid <= '0';
+            end if;
+
+            if sample_pipe_valid = '1' then
+              delta_v := signed(sample_pipe) - prev;
               if delta_v < -15 then sat5 := "10001";
               elsif delta_v > 15 then sat5 := "01111";
               else sat5 := std_logic_vector(delta_v(4 downto 0));
               end if;
               deltas(delta_cnt) <= sat5;
-              prev <= signed(sample_in);
+              prev <= signed(sample_pipe);
 
               if delta_v < -15 or delta_v > 15 then
                 overflow_flag <= '1';
@@ -99,12 +111,13 @@ begin
               elsif overflow_flag = '1' then
                 -- Delta overflow: emit verbatim-reset, then flush accumulated deltas
                 -- First, emit the overflow reset word...
-                comp_data <= '1' & sample_in(14 downto 0);  -- bit 15 = 1
+                comp_data <= '1' & sample_pipe(14 downto 0);  -- bit 15 = 1
                 comp_valid <= '1';
-                prev <= signed(sample_in);
+                prev <= signed(sample_pipe);
                 sample_cnt <= 0;
                 delta_cnt <= 0;
                 overflow_flag <= '0';
+                sample_pipe_valid <= '0';
                 -- Then flush accumulated deltas (delta_cnt entries)
                 state <= FLUSH;
                 out_idx <= 0;
@@ -120,7 +133,7 @@ begin
           when FLUSH =>
             -- Pack deltas[out_idx*3], deltas[out_idx*3+1], deltas[out_idx*3+2]
             -- into one 16-bit word (if they exist).
-            if out_idx < (delta_cnt + 2) / 3 then
+            if out_idx * 3 < delta_cnt then
               comp_data(4 downto 0) <= deltas(out_idx * 3);
               if out_idx * 3 + 1 < delta_cnt then
                 comp_data(9 downto 5) <= deltas(out_idx * 3 + 1);
@@ -141,6 +154,7 @@ begin
               sample_cnt <= 0;
               delta_cnt <= 0;
               overflow_flag <= '0';
+              sample_pipe_valid <= '0';
             end if;
 
         end case;

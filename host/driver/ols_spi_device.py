@@ -10,8 +10,10 @@ import numpy as np
 from driver.ols_spi import OLS as OLS_SPI
 from driver.spi_protocol import (
     SPIDevice,
-    CMD_ABORT_CAPTURE, CMD_ACK_CAPTURE_DONE, CMD_GEN_START, CMD_GEN_LOAD, CMD_GEN_CAPTURE, CMD_GEN_STATUS,
+    CMD_ABORT_CAPTURE, CMD_ACK_CAPTURE_DONE, CMD_START_STREAM,
+    CMD_GEN_START, CMD_GEN_LOAD, CMD_GEN_CAPTURE, CMD_GEN_STATUS,
     CMD_GET_METADATA,
+    REG_FLAGS_COMPRESS,
     REG_DIVIDER, REG_SAMPLE_COUNT, REG_DELAY_COUNT,
     REG_TRIGGER_MASK, REG_TRIGGER_VALUE, REG_FLAGS,
     REG_FAST_MODE, REG_CONT_MODE,
@@ -208,6 +210,17 @@ def decompress_delta_block(data: bytes) -> bytes:
             si += 1
     return bytes(out)
 
+
+def decompress_delta_stream(data: bytes) -> bytes:
+    """Decompress a stream of packed 12-byte delta blocks."""
+    if not data:
+        return b""
+    out = bytearray()
+    end = len(data) - (len(data) % 12)
+    for i in range(0, end, 12):
+        out.extend(decompress_delta_block(data[i:i + 12]))
+    return bytes(out)
+
 class OLSDeviceSPI:
     """SPI backend using packet protocol — replaces old UART-style byte commands."""
 
@@ -233,10 +246,22 @@ class OLSDeviceSPI:
         self._pending_debug_enable = None
         self._pending_debug_freq = None
         self._pending_debug_duty = None
+        self.compress_readback_enabled = False
         # Software digital glitch / hysteresis filter (applied to captured
         # digital samples on the host; the FPGA captures raw pins).
         self.glitch_enable = False
         self.glitch_threshold = 3
+
+    def set_compression_enabled(self, enable: bool):
+        self.compress_readback_enabled = bool(enable)
+        cur = self.pkt.read_register(REG_FLAGS)
+        if cur < 0:
+            return False
+        if enable:
+            cur |= REG_FLAGS_COMPRESS
+        else:
+            cur &= ~REG_FLAGS_COMPRESS
+        return self.pkt.write_register(REG_FLAGS, cur)
 
     @property
     def pkt(self):
@@ -433,6 +458,8 @@ class OLSDeviceSPI:
                               flags=0, fast_mode=None, continuous=False):
         """Write the full capture mode state before every arm."""
         mode_flags = (flags | self.analog_mode) & 0xFFFFFFFF
+        if self.compress_readback_enabled:
+            mode_flags |= REG_FLAGS_COMPRESS
         if mode_flags & MODE_ANALOG_ONLY:
             mode_flags |= (self.analog_channel & 0x1F) << 8
         if continuous:
@@ -534,33 +561,32 @@ class OLSDeviceSPI:
     def _stream_readback(self, start_sample: int, nsamples: int) -> bytes:
         """Read nsamples from a completed single-shot SDRAM buffer via streaming.
 
-        Uses CMD_START_STREAM + repeated CMD_READ_STREAM_BLOCK for block-by-block
-        readback. Supports compression: each block is 1024 B uncompressed or
-        384 B compressed.
+        Uses CS-held CMD_START_STREAM reads so readout runs close to the SPI
+        wire rate instead of paying a packet round-trip per 1 KB block.
         """
         if nsamples <= 0:
             return b''
-        # Start the stream
-        payload = struct.pack('<I', start_sample * 2)
-        result = self.pkt.transaction(CMD_START_STREAM, payload, timeout=2.0)
-        if result is None or result[0] != 0x20:  # ST_STREAM_ACTIVE
-            raise RuntimeError("start_stream failed")
-        # Read blocks
-        data = b''
         need = nsamples * 2
+        data = bytearray()
+        sample = int(start_sample)
+        chunk_samples = 65536
         while len(data) < need:
-            block = self.pkt.read_stream_block()
-            if not block:
-                raise RuntimeError("read_stream_block failed")
-            data += block
-        # Tidy up: abort the stream
-        try:
-            self.pkt.transaction(0x11, timeout=0.2)  # CMD_ABORT_CAPTURE
-        except Exception:
-            pass
-        if len(data) > need:
-            data = data[:need]
-        return data
+            n = min(chunk_samples, nsamples - (sample - start_sample))
+            if n <= 0:
+                break
+            _producer, _oldest, chunk = self.pkt.start_stream_read(sample, n * 2)
+            if not chunk:
+                raise RuntimeError("start_stream_read failed")
+            chunk = chunk[:n * 2]
+            data.extend(chunk)
+            sample += len(chunk) // 2
+            if len(chunk) < n * 2:
+                break
+            try:
+                self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.2)
+            except Exception:
+                pass
+        return bytes(data[:need])
 
     def continuous_ring_capture(self, rate_hz, chunk_nsamp, buffer_nsamp,
                                 stop_evt, progress_cb=None, full_out=None,
@@ -659,6 +685,8 @@ class OLSDeviceSPI:
         if status < 0:
             return
 
+        status_interval = max(
+            1, int(os.environ.get("OLS_STREAM_STATUS_INTERVAL", "8")))
         total = 0
         next_sample = None  # None = uninitialized, need one get_status to seed
         overrun_total = 0
@@ -675,36 +703,42 @@ class OLSDeviceSPI:
                     next_sample = oldest0
 
                 # Stream one window under CS.
-                producer_ack, oldest_ack, data = self.pkt.start_stream_read(
-                    next_sample, window_samples * 2, stop_evt)
+                if (self.compress_readback_enabled
+                        and os.environ.get("OLS_EXPERIMENTAL_COMPRESSED_LIVE") == "1"):
+                    producer_ack, oldest_ack, comp = self.pkt.start_stream_read_compressed(
+                        next_sample, window_samples * 2, stop_evt)
+                    data = decompress_delta_stream(comp)
+                else:
+                    producer_ack, oldest_ack, data = self.pkt.start_stream_read(
+                        next_sample, window_samples * 2, stop_evt)
                 if not data:
                     break
 
-                # Post-stream reconciliation — must poll producer1 because the
-                # stream-start ack's producer_index is stale (producer advances
-                # during the stream read).
-                st2 = self.pkt.get_status()
-                producer1 = st2.get('producer_index', 0)
-                overrun = int(
-                    st2.get('overrun_count', 0) or 0)
-                if overrun > overrun_total:
-                    overrun_total = overrun
-
-                valid_samples = int(producer1) - int(oldest_ack)
                 n_read = len(data) // 2
-                if valid_samples > n_read:
-                    valid_samples = n_read
-                if valid_samples > window_samples:
-                    valid_samples = window_samples
-                if valid_samples <= 0:
-                    valid_samples = n_read
+                valid_samples = min(n_read, window_samples)
+                poll_status = (window_idx % status_interval) == 0
+                overrun = overrun_total
+
+                if poll_status:
+                    # Reconcile against the live producer periodically; doing
+                    # this every window costs a full control round-trip.
+                    st2 = self.pkt.get_status()
+                    producer1 = st2.get('producer_index', 0)
+                    overrun = int(st2.get('overrun_count', 0) or 0)
+                    if overrun > overrun_total:
+                        overrun_total = overrun
+
+                    valid_samples = int(producer1) - int(oldest_ack)
+                    if valid_samples > n_read:
+                        valid_samples = n_read
                     if valid_samples > window_samples:
                         valid_samples = window_samples
+                    if valid_samples <= 0:
+                        valid_samples = min(n_read, window_samples)
 
-                # Advance position for next window.
                 next_sample = oldest_ack + valid_samples
 
-                if overrun > 0:
+                if poll_status and overrun > 0:
                     # Overrun: keep the newest samples, force re-sync.
                     data = data[-valid_samples * 2:] if valid_samples > 0 else data
                     next_sample = None
@@ -1203,6 +1237,26 @@ class OLSDeviceSPI:
             stride = 2  # default: 2 bytes per SDRAM word
         out_stride = payload_stride if payload_stride else stride
         max_bytes = buffer_nsamp * out_stride
+
+        if (use_continuous and not payload_stride and not gen_data
+                and stride == 2 and self.analog_mode == MODE_DIGITAL):
+            buf = bytearray()
+            for data, total, _window, _overrun in self.stream_ring_capture(
+                    rate_hz=rate_hz,
+                    window_samples=chunk_nsamp,
+                    stop_evt=stop_evt,
+                    progress_cb=None):
+                data = self._filter_digital(data)
+                if full_out is not None:
+                    full_out.extend(data)
+                buf.extend(data)
+                if len(buf) > max_bytes:
+                    del buf[:-max_bytes]
+                snapshot = bytes(buf)
+                if progress_cb:
+                    progress_cb(snapshot, total, buffer_nsamp)
+                yield snapshot, total, buffer_nsamp
+            return
 
         div = max(0, int(self.sample_clk / rate_hz) - 1)
         rc = max(1, buffer_nsamp)

@@ -214,8 +214,15 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL block_rd_pending     : STD_LOGIC := '0';
   SIGNAL block_rd_ack         : STD_LOGIC := '0';
   SIGNAL block_rd_addr        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL block_rd_issue_req   : STD_LOGIC := '0';
+  SIGNAL block_rd_issue_addr  : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL block_rd_release     : STD_LOGIC := '0';
 SIGNAL stream_addr         : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
 SIGNAL streaming_active    : STD_LOGIC := '0';
+  SIGNAL prefetch_arm_pending : STD_LOGIC := '0';
+  SIGNAL prefetch_inflight    : STD_LOGIC := '0';
+  SIGNAL prefetch_valid       : STD_LOGIC := '0';
+  SIGNAL prefetch_addr        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL block_rd_state       : NATURAL range 0 to 6 := 0;
   -- Watchdog kill: forces the block-read FSM back to idle when the dispatch
   -- gives up on a stalled block read (e.g. a read issued during continuous
@@ -245,7 +252,8 @@ SIGNAL streaming_active    : STD_LOGIC := '0';
   -- Drives the OUT request toggle so the FSM can read/flip it (port is OUT).
   SIGNAL blk_req_tog_i        : STD_LOGIC := '0';
 -- Max entries per block read: 512 uncompressed, 192 when compression is active in streaming mode
-SIGNAL blk_rd_max : INTEGER range 0 to 512 := BLOCK_SAMPLES;
+SIGNAL blk_rd_samples : INTEGER range 0 to 512 := BLOCK_SAMPLES;
+SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
   TYPE block_buf_t IS ARRAY(0 TO 255) OF STD_LOGIC_VECTOR(31 DOWNTO 0);
   SIGNAL block_buf            : block_buf_t := (others => (others => '0'));
   -- 21-cycle bit-serial divider for /3 (replaces 58-level lpm_divide)
@@ -496,16 +504,23 @@ BEGIN
     -- block boundary (that was the block-boundary corruption) and no prime/drain.
     sig_rd_pend_d1 <= block_rd_pending;
     Rd_Fifo_RdReq <= '0';
+    IF block_rd_release = '1' THEN
+      block_rd_pending <= '0';
+    END IF;
     IF block_rd_kill = '1' THEN
       -- Dispatch watchdog gave up on a stalled stream; unwind the FSM so the
       -- next block read starts clean instead of resuming a half-finished one.
       block_rd_state <= 0;
       block_rd_ack   <= '0';
+      block_rd_pending <= '0';
+    ELSIF block_rd_issue_req = '1' AND block_rd_pending = '0' THEN
+      block_rd_addr <= block_rd_issue_addr;
+      block_rd_pending <= '1';
     ELSIF block_rd_pending = '1' AND sig_rd_pend_d1 = '0' THEN
       -- block_rd_addr is a BYTE address; the wire is 2 bytes/sample, so the
       -- base sample index = byte_addr / 2 (one 1024-byte block = 512 samples).
       Blk_Rd_Base  <= TO_INTEGER(UNSIGNED(block_rd_addr(31 downto 1)));
-      Blk_Rd_Count <= blk_rd_max;
+      Blk_Rd_Count <= blk_rd_samples;
       block_rd_j <= 0;
       block_rd_state <= 1;
     END IF;
@@ -533,7 +548,7 @@ BEGIN
         ELSE
           block_buf(block_rd_j / 2) <= Rd_Fifo_Q & block_pack_lo;
         END IF;
-        IF block_rd_j >= blk_rd_max - 1 THEN
+        IF block_rd_j >= blk_rsp_words - 1 THEN
           block_rd_state <= 5;
         ELSE
           block_rd_j <= block_rd_j + 1;
@@ -856,7 +871,29 @@ BEGIN
       disp_gen_start <= '0';
       disp_tx_payload_vld <= '0';
       block_rd_kill <= '0';
+      block_rd_issue_req <= '0';
+      block_rd_release <= '0';
       disp_ack_done <= '0';
+
+      if disp_arm = '1' then
+        streaming_active <= '0';
+        prefetch_inflight <= '0';
+        prefetch_valid <= '0';
+        prefetch_addr <= (others => '0');
+        if continuous_mode_i = '1' then
+          prefetch_arm_pending <= '1';
+        else
+          prefetch_arm_pending <= '0';
+        end if;
+      elsif disp_abort = '1' then
+        streaming_active <= '0';
+        prefetch_arm_pending <= '0';
+        prefetch_inflight <= '0';
+        prefetch_valid <= '0';
+      elsif prefetch_inflight = '1' and block_rd_ack = '1' then
+        prefetch_inflight <= '0';
+        prefetch_valid <= '1';
+      end if;
 
       -- Clear streaming mode on CS rise (host drops SPI chip select)
       if spi_cs_rise = '1' then
@@ -865,6 +902,25 @@ BEGIN
 
       case st is
         when IDLE =>
+          if continuous_mode_i = '1' and streaming_active = '0' then
+            if prefetch_valid = '1'
+               and prefetch_addr /= (Oldest_Index(30 downto 0) & '0') then
+              prefetch_valid <= '0';
+              prefetch_arm_pending <= '1';
+            elsif prefetch_arm_pending = '1'
+              and prefetch_inflight = '0'
+              and block_rd_pending = '0'
+              and block_rd_state = 0
+              and compress_enable_i = '0'
+              and unsigned(Producer_Index) >= unsigned(Oldest_Index) +
+                  to_unsigned(BLOCK_SAMPLES, Producer_Index'length) then
+              block_rd_issue_addr <= Oldest_Index(30 downto 0) & '0';
+              prefetch_addr <= Oldest_Index(30 downto 0) & '0';
+              block_rd_issue_req <= '1';
+              prefetch_inflight <= '1';
+              prefetch_arm_pending <= '0';
+            end if;
+          end if;
           if pkt_ok = '1' then
             rsp_seq_v := pkt_seq;
             rsp_stat_v := ST_OK;
@@ -960,6 +1016,14 @@ BEGIN
                 stream_addr(23 downto 16) <= rx_payload_header(2);
                 stream_addr(31 downto 24) <= rx_payload_header(3);
                 streaming_active <= '1';
+                if (prefetch_valid = '1' or prefetch_inflight = '1')
+                   and prefetch_addr /=
+                       (rx_payload_header(3) & rx_payload_header(2) &
+                        rx_payload_header(1) & rx_payload_header(0)) then
+                  prefetch_valid <= '0';
+                  prefetch_inflight <= '0';
+                  block_rd_kill <= '1';
+                end if;
                 rsp_buf(0) := Producer_Index(7 downto 0);
                 rsp_buf(1) := Producer_Index(15 downto 8);
                 rsp_buf(2) := Producer_Index(23 downto 16);
@@ -978,10 +1042,22 @@ BEGIN
 
             when CMD_READ_STREAM_BLOCK =>
               if streaming_active = '1' then
-                block_rd_addr <= stream_addr;
-                block_rd_pending <= '1';
-                block_wd := 0;
-                st := WAIT_BLOCK;
+                if prefetch_valid = '1' and prefetch_addr = stream_addr then
+                  -- Prefetch works for both compressed and uncompressed.
+                  -- Compression is applied in TX path after prefetch.
+                  rsp_len_v := blk_rsp_words * 2;
+                  blk_wc := 0;
+                  blk_bc := 0;
+                  feeding_block := true;
+                  prefetch_valid <= '0';
+                  stream_addr <= std_logic_vector(unsigned(stream_addr) + 1024);
+                  st := BUILD_RSP;
+                else
+                  block_rd_issue_addr <= stream_addr;
+                  block_rd_issue_req <= '1';
+                  block_wd := 0;
+                  st := WAIT_BLOCK;
+                end if;
               else
                 rsp_stat_v := ST_CAPTURE_IDLE;
                 st := BUILD_RSP;
@@ -1001,11 +1077,11 @@ BEGIN
 
             when CMD_READ_CAPTURE =>
               if rx_header_len >= 4 then
-                block_rd_addr(7 downto 0)   <= rx_payload_header(0);
-                block_rd_addr(15 downto 8)  <= rx_payload_header(1);
-                block_rd_addr(23 downto 16) <= rx_payload_header(2);
-                block_rd_addr(31 downto 24) <= rx_payload_header(3);
-                block_rd_pending <= '1';
+                block_rd_issue_addr(7 downto 0)   <= rx_payload_header(0);
+                block_rd_issue_addr(15 downto 8)  <= rx_payload_header(1);
+                block_rd_issue_addr(23 downto 16) <= rx_payload_header(2);
+                block_rd_issue_addr(31 downto 24) <= rx_payload_header(3);
+                block_rd_issue_req <= '1';
                 block_wd := 0;
                 st := WAIT_BLOCK;
               else
@@ -1152,8 +1228,8 @@ BEGIN
 
         when WAIT_BLOCK =>
           if block_rd_ack = '1' then
-            rsp_len_v := blk_rd_max * 2;
-            block_rd_pending <= '0';
+            rsp_len_v := blk_rsp_words * 2;
+            block_rd_release <= '1';
             blk_wc := 0;
             blk_bc := 0;
             feeding_block := true;
@@ -1168,7 +1244,8 @@ BEGIN
             -- error response so the dispatcher frees up for the next command
             -- instead of wedging the device until it is reconfigured.
             block_rd_kill <= '1';
-            block_rd_pending <= '0';
+            prefetch_inflight <= '0';
+            prefetch_valid <= '0';
             rsp_stat_v := ST_CAPTURE_IDLE;
             rsp_len_v := 0;
             st := BUILD_RSP;
@@ -1201,7 +1278,7 @@ BEGIN
               disp_tx_payload_in <= block_buf(blk_wc)(blk_bc * 8 + 7 downto blk_bc * 8);
               disp_tx_payload_vld <= '1';
               feed_wait_ready_low := true;
-              if blk_rd_max = 192 then
+              if blk_rsp_words = 192 then
                 block_last_v := (blk_wc = 95 and blk_bc = 3);
               else
                 block_last_v := (blk_wc = 255 and blk_bc = 3);
@@ -1213,7 +1290,7 @@ BEGIN
                   blk_bc := blk_bc + 1;
                 else
                   blk_bc := 0;
-                  if (blk_rd_max = 192 and blk_wc < 95) or (blk_rd_max = 512 and blk_wc < 255) then
+                  if (blk_rsp_words = 192 and blk_wc < 95) or (blk_rsp_words = 512 and blk_wc < 255) then
                     blk_wc := blk_wc + 1;
                   end if;
                 end if;
@@ -1290,7 +1367,8 @@ BEGIN
   -- Block-read in progress → force compressor OFF so CMD_READ_CAPTURE returns
   -- raw uncompressed data (the block FSM expects fixed-size blocks).
   -- Compression is active during streaming block reads (CMD_READ_STREAM_BLOCK).
-  blk_rd_max <= BLOCK_SAMPLES when compress_enable_i = '0' or streaming_active = '0' else 192;
+  blk_rd_samples <= BLOCK_SAMPLES;
+  blk_rsp_words <= BLOCK_SAMPLES when compress_enable_i = '0' or streaming_active = '0' else 192;
   Compress_Enable <= '1' when compress_enable_i = '1' and block_rd_pending = '0' and block_rd_ack = '0' else
                      '1' when compress_enable_i = '1' and streaming_active = '1' else '0';
 
