@@ -911,7 +911,6 @@ BEGIN
               and prefetch_inflight = '0'
               and block_rd_pending = '0'
               and block_rd_state = 0
-              and compress_enable_i = '0'
               and unsigned(Producer_Index) >= unsigned(Oldest_Index) +
                   to_unsigned(BLOCK_SAMPLES, Producer_Index'length) then
               block_rd_issue_addr <= Oldest_Index(30 downto 0) & '0';
