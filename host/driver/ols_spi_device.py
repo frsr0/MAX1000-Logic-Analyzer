@@ -534,22 +534,32 @@ class OLSDeviceSPI:
     def _stream_readback(self, start_sample: int, nsamples: int) -> bytes:
         """Read nsamples from a completed single-shot SDRAM buffer via streaming.
 
-        Uses CMD_START_STREAM (CS-held) for near-wire-rate readback of a static
-        buffer. Only valid after a completed single-shot capture (the FLA is in
-        rd_mode with the data at addresses 0..captured_count).
+        Uses CMD_START_STREAM + repeated CMD_READ_STREAM_BLOCK for block-by-block
+        readback. Supports compression: each block is 1024 B uncompressed or
+        384 B compressed.
         """
         if nsamples <= 0:
             return b''
-        _producer, _oldest, data = self.pkt.start_stream_read(
-            start_sample, nsamples * 2)
-        if len(data) > nsamples * 2:
-            data = data[:nsamples * 2]
-        # Tidy up: the FPGA exits STREAM_TX on CS rise but may leave the
-        # stream state machine armed. A NOP/abort ensures clean state.
+        # Start the stream
+        payload = struct.pack('<I', start_sample * 2)
+        result = self.pkt.transaction(CMD_START_STREAM, payload, timeout=2.0)
+        if result is None or result[0] != 0x20:  # ST_STREAM_ACTIVE
+            raise RuntimeError("start_stream failed")
+        # Read blocks
+        data = b''
+        need = nsamples * 2
+        while len(data) < need:
+            block = self.pkt.read_stream_block()
+            if not block:
+                raise RuntimeError("read_stream_block failed")
+            data += block
+        # Tidy up: abort the stream
         try:
-            self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.2)
+            self.pkt.transaction(0x11, timeout=0.2)  # CMD_ABORT_CAPTURE
         except Exception:
             pass
+        if len(data) > need:
+            data = data[:need]
         return data
 
     def continuous_ring_capture(self, rate_hz, chunk_nsamp, buffer_nsamp,

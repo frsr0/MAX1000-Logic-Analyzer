@@ -1,6 +1,8 @@
 param(
-    [switch]$Flash
+    [switch]$Flash,
+    [int]$Seed = 29
 )
+
 
 $QUARTUS_DIR = "C:\intelFPGA_lite\18.1\quartus\bin64"
 $QUARTUS = "$QUARTUS_DIR\quartus_sh.exe"
@@ -178,10 +180,9 @@ $qsfLines = @(
     'set_global_assignment -name FAMILY "MAX 10"',
     'set_global_assignment -name DEVICE 10M08SAU169C8G',
     'set_global_assignment -name TOP_LEVEL_ENTITY OLS_Logic_Analyzer_wrapper',
-    'set_global_assignment -name NUM_PARALLEL_PROCESSORS 16',
+    "set_global_assignment -name SEED $Seed",
     'set_global_assignment -name INTERNAL_FLASH_UPDATE_MODE "SINGLE IMAGE WITH ERAM"',
     'set_global_assignment -name OPTIMIZE_MULTI_CORNER_TIMING ON',
-    'set_global_assignment -name SEED 29',
     '',
     '# Speed-mode fitter settings (active for 200 MHz FAST_SPEED build):',
     'set_global_assignment -name FITTER_EFFORT "AUTO FIT"',

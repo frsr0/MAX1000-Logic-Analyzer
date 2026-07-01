@@ -29,6 +29,13 @@ set_clock_groups -asynchronous \
   -group [get_clocks {*pll_inst|*clk[1]}] \
   -group [get_clocks {*pll_inst|*clk[2]}]
 
+# Source-synchronous SPI pins (not system clocks).  SPI_SCK clocks the MISO
+# shifter registers; SPI_CS enables a latch.  These are asynchronous to all
+# PLL-derived clocks and are handled by the SPI protocol timing.
+set_false_path -from [get_ports {SPI_SCK SPI_CS}]
+set_false_path -to   [get_ports {SPI_SCK SPI_CS}]
+set_false_path -from [get_ports {SPI_MOSI}]  -to [all_registers]
+
 # Async FIFO internal gray-code synchronizer paths
 # The dcfifo megafunction generates these internally; they are intentional
 # CDC synchronization paths and cannot be timed at the fastest edge rate.

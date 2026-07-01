@@ -131,6 +131,10 @@ architecture rtl of SDRAM_Controller is
     signal cnt   : integer range 0 to 63 := 0;
     signal init_cnt : integer range 0 to 32767 := 0;  -- ST_INIT power-up wait only
     signal timer : integer range 0 to 65535 := 0;
+    -- Registered versions of wide comparator outputs to reduce combinational depth
+    signal timer_ge_ref   : std_logic := '0';  -- timer >= REF_CYCLES - 1
+    signal timer_eq_zero  : std_logic := '0';  -- timer = 0
+
     signal ref_req : std_logic := '0';
 
     signal buf_a : std_logic_vector(21 downto 0) := (others => '0');
@@ -185,6 +189,12 @@ architecture rtl of SDRAM_Controller is
     signal row_open    : std_logic := '0';
     signal last_op_was_stream : std_logic := '0';
     signal capture_stream_ready_now : std_logic := '0';
+    signal stream_ready_r        : std_logic := '0';
+    -- Registered is_same_row comparator outputs to decouple 14-bit address
+    -- comparisons from the ST_IDLE decision chain and stream-write logic.
+    signal same_row_buf_a      : std_logic := '0';
+    signal same_row_buf_next   : std_logic := '0';
+    signal same_row_cap_stream : std_logic := '0';
 
     -- Mode register: A2:0 burst length 1, A3 sequential, A6:4 CAS latency,
     -- A9:7 standard operating mode. CAS latency is "011" (CL3): at 167 MHz (6 ns)
@@ -224,19 +234,30 @@ begin
     -- loaded at each write-command cycle (ST_STREAM_WR / ST_WR), so this is a
     -- clean register->IOE path with a registered OE.
     sdram_dq <= dq_out when dq_oe = '1' else (others => 'Z');
+    -- Registered comparator outputs (concurrent assignments resolve one delta
+    -- after timer updates, effectively pipelining the wide comparisons away from
+    -- the state machine decision cone and ref_req driver.)
+    timer_ge_ref <= '1' when timer >= REF_CYCLES - 1 else '0';
+    timer_eq_zero <= '1' when timer = 0 else '0';
+
+    -- Registered is_same_row comparator outputs (decouple 14-bit comparators from
+    -- the ST_IDLE decision chain and stream-write logic)
+    same_row_buf_a      <= '1' when is_same_row(buf_a,      active_row, active_bank) else '0';
+    same_row_buf_next   <= '1' when is_same_row(buf_a_next, active_row, active_bank) else '0';
+    same_row_cap_stream <= '1' when is_same_row(capture_stream_addr, active_row, active_bank) else '0';
+
     sdram_s_idle <= '1' when state = ST_IDLE else '0';
-    -- Producer and controller share clk_in_clk, so READY must describe the
-    -- current cycle's accept decision. A registered READY lingers high for one
-    -- extra cycle and can make the producer pop/increment into a cycle where
-    -- the controller is actually deferring the sample.
+    -- capture_stream_ready_now is combinational (state + registered same_row signal).
+    -- stream_ready_r registers it for timing closure; the one-cycle latency is
+    -- absorbed by the write pump's buf_a/buf_wd double-buffer.
     capture_stream_ready_now <= '1'
         when state = ST_STREAM_WR
          and capture_stream_valid = '1'
          and ref_req = '0'
          and pend_rn = '0'
-         and is_same_row(capture_stream_addr, active_row, active_bank)
+         and same_row_cap_stream = '1'
         else '0';
-    capture_stream_ready <= capture_stream_ready_now;
+    capture_stream_ready <= stream_ready_r;
 
     -- synthesis translate_off
     process(max_write_depth)
@@ -269,10 +290,12 @@ begin
             write_depth <= 0; max_write_depth <= 0;
             prev_buf_a <= (others => '0');
             row_open <= '0'; active_row <= (others => '0'); active_bank <= (others => '0');
+
             burst_fifo_cnt <= 0; burst_active <= '0'; burst_cnt <= 0;
             last_op_was_stream <= '0';
 
         elsif rising_edge(clk_in_clk) then
+
             last_rn <= sdram_s_read_n;
             last_wn <= sdram_s_write_n;
 
@@ -282,12 +305,18 @@ begin
             prev_buf_a <= buf_a;
 
             -- Refresh timer
-            if timer >= REF_CYCLES - 1 then
+            -- Refresh timer: use registered timer_ge_ref (computed concurrently)
+            -- instead of the raw 16-bit comparator to decouple it from the
+            -- state machine decision MUX.
+            if timer_ge_ref = '1' then
                 ref_req <= '1';
                 timer <= 0;
             else
                 timer <= timer + 1;
             end if;
+
+            -- Register stream ready (one cycle latency absorbed by write pump double-buffer)
+            stream_ready_r <= capture_stream_ready_now;
 
             v_depth := write_depth;
 
@@ -406,7 +435,7 @@ begin
                             pend_wn_next <= '0';
                         end if;
                         -- Page-mode: if same row is open, skip activate
-                        if row_open = '1' and is_same_row(buf_a, active_row, active_bank) then
+                        if row_open = '1' and same_row_buf_a = '1' then
                             pend_wn_same_row <= '1';
                             state <= ST_WR;
                         else
@@ -423,7 +452,7 @@ begin
                         dq_oe <= '1';
                         sdram_s_waitrequest <= '1';
                         v_depth := v_depth - 1;
-                        if row_open = '1' and is_same_row(buf_a_next, active_row, active_bank) then
+                        if row_open = '1' and same_row_buf_next = '1' then
                             pend_wn_same_row <= '1';
                             state <= ST_WR;
                         else
@@ -431,7 +460,7 @@ begin
                             state <= ST_ACT;
                         end if;
                     elsif capture_stream_valid = '1' and row_open = '1'
-                          and is_same_row(capture_stream_addr, active_row, active_bank) then
+                          and same_row_cap_stream = '1' then
                         is_read <= '0';
                         dq_oe <= '1';
                         last_op_was_stream <= '1';
@@ -538,7 +567,7 @@ begin
                     end if;
                     if ref_req = '1' or pend_rn = '1'
                     or capture_stream_valid = '0'
-                    or not is_same_row(capture_stream_addr, active_row, active_bank) then
+                    or same_row_cap_stream = '0' then
                         -- DEFER (page boundary, pending refresh/read, or producer
                         -- idle). READY is combinational in this clock domain now,
                         -- so the producer no longer over-advances into a deferred
@@ -548,7 +577,7 @@ begin
                         if capture_stream_valid = '1' then
                             -- buf_a/buf_wd already loaded above (valid-gated).
                             pend_wn <= '1';
-                            if is_same_row(capture_stream_addr, active_row, active_bank) then
+                            if same_row_cap_stream = '1' then
                                 pend_wn_same_row <= '1';
                             else
                                 pend_wn_same_row <= '0';
@@ -595,7 +624,7 @@ begin
 
                 -- REFRESH
                 when ST_RFSH_PRE =>
-                    if timer = 0 then
+                    if timer_eq_zero = '1' then
                         state <= ST_RFSH;
                     else
                         timer <= timer - 1;
@@ -680,7 +709,7 @@ begin
                             state <= ST_ACT;
                         end if;
                     elsif capture_stream_valid = '1' and row_open = '1'
-                          and not is_same_row(capture_stream_addr, active_row, active_bank) then
+                          and same_row_cap_stream = '0' then
                         last_op_was_stream <= '1';
                         sdram_s_waitrequest <= '1';
                         state <= ST_PRE2;

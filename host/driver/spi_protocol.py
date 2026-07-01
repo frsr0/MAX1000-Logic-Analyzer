@@ -53,7 +53,7 @@ REG_TRIGGER_VALUE = 0x11
 REG_FLAGS         = 0x20
 REG_FAST_MODE     = 0x21
 REG_CONT_MODE     = 0x22
-REG_FLAGS_COMPRESS = 0x40000  # REG_FLAGS bit 18: enable delta-packed readback
+REG_FLAGS_COMPRESS = 0x40000  # REG_FLAGS bit 18: delta-packed readback (streaming only, future)
 REG_GEN_PROTO     = 0x30
 REG_GEN_BAUD      = 0x31
 REG_GEN_PINS      = 0x32
@@ -225,6 +225,14 @@ class SPIDevice:
         payload = struct.pack('<I', addr)
         need = 8 + BLOCK_SIZE + 32  # sync(2) + header(4) + crc(2) + padding
         result = self._transaction_raw(CMD_READ_CAPTURE, payload, need, timeout)
+        if result and result[0] == ST_OK:
+            return result[2]
+        return b''
+
+    def read_stream_block(self, timeout: float = 5.0) -> bytes:
+        """Read one streaming block (1024 bytes uncompressed, 384 compressed)."""
+        need = 8 + 1024 + 32  # sync + header + max payload + crc + padding
+        result = self._transaction_raw(CMD_READ_STREAM_BLOCK, b'', need, timeout)
         if result and result[0] == ST_OK:
             return result[2]
         return b''

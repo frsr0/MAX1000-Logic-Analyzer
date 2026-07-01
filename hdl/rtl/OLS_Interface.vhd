@@ -214,6 +214,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL block_rd_pending     : STD_LOGIC := '0';
   SIGNAL block_rd_ack         : STD_LOGIC := '0';
   SIGNAL block_rd_addr        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+SIGNAL stream_addr         : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+SIGNAL streaming_active    : STD_LOGIC := '0';
   SIGNAL block_rd_state       : NATURAL range 0 to 6 := 0;
   -- Watchdog kill: forces the block-read FSM back to idle when the dispatch
   -- gives up on a stalled block read (e.g. a read issued during continuous
@@ -242,6 +244,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL sig_rd_pend_d1       : STD_LOGIC := '0';
   -- Drives the OUT request toggle so the FSM can read/flip it (port is OUT).
   SIGNAL blk_req_tog_i        : STD_LOGIC := '0';
+-- Max entries per block read: 512 uncompressed, 192 when compression is active in streaming mode
+SIGNAL blk_rd_max : INTEGER range 0 to 512 := BLOCK_SAMPLES;
   TYPE block_buf_t IS ARRAY(0 TO 255) OF STD_LOGIC_VECTOR(31 DOWNTO 0);
   SIGNAL block_buf            : block_buf_t := (others => (others => '0'));
   -- 21-cycle bit-serial divider for /3 (replaces 58-level lpm_divide)
@@ -501,7 +505,7 @@ BEGIN
       -- block_rd_addr is a BYTE address; the wire is 2 bytes/sample, so the
       -- base sample index = byte_addr / 2 (one 1024-byte block = 512 samples).
       Blk_Rd_Base  <= TO_INTEGER(UNSIGNED(block_rd_addr(31 downto 1)));
-      Blk_Rd_Count <= BLOCK_SAMPLES;
+      Blk_Rd_Count <= blk_rd_max;
       block_rd_j <= 0;
       block_rd_state <= 1;
     END IF;
@@ -529,7 +533,7 @@ BEGIN
         ELSE
           block_buf(block_rd_j / 2) <= Rd_Fifo_Q & block_pack_lo;
         END IF;
-        IF block_rd_j = BLOCK_SAMPLES - 1 THEN
+        IF block_rd_j >= blk_rd_max - 1 THEN
           block_rd_state <= 5;
         ELSE
           block_rd_j <= block_rd_j + 1;
@@ -854,6 +858,11 @@ BEGIN
       block_rd_kill <= '0';
       disp_ack_done <= '0';
 
+      -- Clear streaming mode on CS rise (host drops SPI chip select)
+      if spi_cs_rise = '1' then
+        streaming_active <= '0';
+      end if;
+
       case st is
         when IDLE =>
           if pkt_ok = '1' then
@@ -941,8 +950,43 @@ BEGIN
 
             when CMD_ABORT_CAPTURE =>
               disp_abort <= '1';
+              streaming_active <= '0';
               rsp_stat_v := ST_CAPTURE_IDLE;
               st := BUILD_RSP;
+            when CMD_START_STREAM =>
+              if rx_header_len >= 4 then
+                stream_addr(7 downto 0)   <= rx_payload_header(0);
+                stream_addr(15 downto 8)  <= rx_payload_header(1);
+                stream_addr(23 downto 16) <= rx_payload_header(2);
+                stream_addr(31 downto 24) <= rx_payload_header(3);
+                streaming_active <= '1';
+                rsp_buf(0) := Producer_Index(7 downto 0);
+                rsp_buf(1) := Producer_Index(15 downto 8);
+                rsp_buf(2) := Producer_Index(23 downto 16);
+                rsp_buf(3) := Producer_Index(31 downto 24);
+                rsp_buf(4) := Oldest_Index(7 downto 0);
+                rsp_buf(5) := Oldest_Index(15 downto 8);
+                rsp_buf(6) := Oldest_Index(23 downto 16);
+                rsp_buf(7) := Oldest_Index(31 downto 24);
+                rsp_buf_len := 8;
+                rsp_len_v := 8;
+                rsp_stat_v := ST_STREAM_ACTIVE;
+              else
+                rsp_stat_v := ST_BAD_LEN;
+              end if;
+              st := BUILD_RSP;
+
+            when CMD_READ_STREAM_BLOCK =>
+              if streaming_active = '1' then
+                block_rd_addr <= stream_addr;
+                block_rd_pending <= '1';
+                block_wd := 0;
+                st := WAIT_BLOCK;
+              else
+                rsp_stat_v := ST_CAPTURE_IDLE;
+                st := BUILD_RSP;
+              end if;
+
 
             when CMD_ACK_CAPTURE_DONE =>
               disp_ack_seq <= (others => '0');
@@ -1108,12 +1152,16 @@ BEGIN
 
         when WAIT_BLOCK =>
           if block_rd_ack = '1' then
-            rsp_len_v := 1024;
+            rsp_len_v := blk_rd_max * 2;
             block_rd_pending <= '0';
             blk_wc := 0;
             blk_bc := 0;
             feeding_block := true;
             st := BUILD_RSP;
+            -- Advance stream address in streaming mode (always 1024 bytes per block)
+            if streaming_active = '1' then
+              stream_addr <= std_logic_vector(unsigned(stream_addr) + 1024);
+            end if;
           elsif block_wd >= BLOCK_WD_MAX then
             -- Stream stalled (e.g. block read during continuous capture). Kill
             -- the block-read FSM, drop the pending request, and return an empty
@@ -1148,11 +1196,16 @@ BEGIN
             end if;
           elsif pkt_tx_payload_ready = '1' then
             if feeding_block then
-              -- Stream from block_buf (256 x 32-bit = 1024 bytes)
+              -- Stream from block_buf (varies: 256 x 32-bit = 1024 B uncompressed,
+              -- 96 x 32-bit = 384 B compressed)
               disp_tx_payload_in <= block_buf(blk_wc)(blk_bc * 8 + 7 downto blk_bc * 8);
               disp_tx_payload_vld <= '1';
               feed_wait_ready_low := true;
-              block_last_v := (blk_wc = 255 and blk_bc = 3);
+              if blk_rd_max = 192 then
+                block_last_v := (blk_wc = 95 and blk_bc = 3);
+              else
+                block_last_v := (blk_wc = 255 and blk_bc = 3);
+              end if;
               if block_last_v then
                 st := WAIT_TX;
               else
@@ -1160,7 +1213,7 @@ BEGIN
                   blk_bc := blk_bc + 1;
                 else
                   blk_bc := 0;
-                  if blk_wc < 255 then
+                  if (blk_rd_max = 192 and blk_wc < 95) or (blk_rd_max = 512 and blk_wc < 255) then
                     blk_wc := blk_wc + 1;
                   end if;
                 end if;
@@ -1234,6 +1287,11 @@ BEGIN
   -- Auto_Renew: drives FLA block-read auto-renew.  Default '0' (single-shot).
   Auto_Renew <= '0';
 
-  Compress_Enable <= compress_enable_i;
+  -- Block-read in progress → force compressor OFF so CMD_READ_CAPTURE returns
+  -- raw uncompressed data (the block FSM expects fixed-size blocks).
+  -- Compression is active during streaming block reads (CMD_READ_STREAM_BLOCK).
+  blk_rd_max <= BLOCK_SAMPLES when compress_enable_i = '0' or streaming_active = '0' else 192;
+  Compress_Enable <= '1' when compress_enable_i = '1' and block_rd_pending = '0' and block_rd_ack = '0' else
+                     '1' when compress_enable_i = '1' and streaming_active = '1' else '0';
 
 END BEHAVIORAL;

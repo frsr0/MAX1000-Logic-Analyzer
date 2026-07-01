@@ -89,9 +89,11 @@ begin
               if delta_v < -15 or delta_v > 15 then
                 overflow_flag <= '1';
               end if;
-
               if sample_cnt = 15 then
-                -- Block full: flush deltas
+                -- Block full: flush deltas. delta_cnt was NOT incremented for
+                -- this sample (15th delta at index 14, delta_cnt still 14).
+                -- Add one so FLUSH boundary checks include all 15 deltas.
+                delta_cnt <= delta_cnt + 1;
                 state <= FLUSH;
                 out_idx <= 0;
               elsif overflow_flag = '1' then

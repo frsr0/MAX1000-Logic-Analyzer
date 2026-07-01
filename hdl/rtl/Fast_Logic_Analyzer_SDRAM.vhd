@@ -194,6 +194,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal cnt_s         : natural range 0 to MAX_RATE_DIV := 0;
   signal sample_tick_r : std_logic := '0';
 
+  signal cnt_eq_zero   : std_logic := '0';
   signal run_f_s1  : std_logic := '0';
   signal run_f_s2   : std_logic := '0';
   signal continuous_f_s1 : std_logic := '0';
@@ -255,6 +256,9 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal rdfifo_wr     : std_logic := '0';
   signal rdfifo_wrfull : std_logic := '0';
   signal rdfifo_aclr   : std_logic := '0';
+  -- Pipeline registers for readout address (breaks 22-bit comparator + conversion path)
+  signal addr_is_wrap  : std_logic := '0';
+  signal stream_addr_r : std_logic_vector(21 downto 0) := (others => '0');
 
   -- Delta compressor for readback data compression (2.67x)
   component capture_compressor is
@@ -997,10 +1001,13 @@ begin
             start_gate_r <= start_gate_r - 1;
           elsif cnt_s = 0 then
             cnt_s <= rate_div_m1_f;
-            sample_tick_r <= '1';
+            -- sample_tick_r now set from cnt_eq_zero below
           else
             cnt_s <= cnt_s - 1;
           end if;
+        if cnt_s = 0 then cnt_eq_zero <= '1'; else cnt_eq_zero <= '0'; end if;
+        sample_tick_r <= cnt_eq_zero;
+
         end if;
 
         -- Config handshake edge: transition from pre-trigger to flush/capture
@@ -1384,6 +1391,7 @@ begin
         end if;
       end if;
 
+      stream_addr_r <= std_logic_vector(stream_addr_u);
       if rd_mode then
 
         if stream_active then
@@ -1393,7 +1401,7 @@ begin
           -- old fixed-latency latch at block boundaries.
           if rd_pend2 = '0' then
             if rdfifo_wrfull = '0' then
-              s_addr <= std_logic_vector(stream_addr_u);
+              s_addr <= stream_addr_r;
               s_rd     <= '1';
               rd_pend2 := '1';
               -- Do not advance the address on the prime read: the next (real)
