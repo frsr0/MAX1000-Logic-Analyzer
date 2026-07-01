@@ -18,7 +18,7 @@ try:
         OLSDeviceSPI, find_spi_device,
         MODE_DIGITAL, MODE_MIXED,
         decode_analog_frames, analog_frame_stride,
-        wire_to_payload,
+        wire_to_payload, decompress_delta_block, decompress_delta_stream,
     )
     HAS_SPI = True
 except ImportError:
@@ -386,7 +386,8 @@ class OLScope:
         '16 Digital', '16 Dig + 8 Ana',
     ]
 
-    ROLLING_READBACK_MB_PER_S = 30
+    ROLLING_READBACK_MB_PER_S = 80  # 30 MB/s x 2.67x compression
+    ROLLING_READBACK_MB_PER_S_COMPRESSED = 80
 
     def _build_capture_tab(self, nb):
         cap_f = ttk.Frame(nb, padding=5)
@@ -416,6 +417,12 @@ class OLScope:
         self.rate_info_lbl = ttk.Label(cap_f, textvariable=self.rate_info_var,
                                        font=('Consolas', 7), foreground='#555')
         self.rate_info_lbl.grid(row=row, column=0, columnspan=4, sticky='w', pady=(2, 4))
+        row += 1
+        # Compression checkbox
+        self.compress_cb = ttk.Checkbutton(
+            cap_f, text='Compressed readback (2.67x more SPI throughput)',
+            variable=self.compress_var)
+        self.compress_cb.grid(row=row, column=0, columnspan=4, sticky='w', padx=8)
         row += 1
         ttk.Separator(cap_f, orient='horizontal').grid(
             row=row, column=0, columnspan=4, sticky='ew', pady=4)
@@ -645,18 +652,25 @@ class OLScope:
                 pass
         if self.capture_type.get() == 'rolling':
             stride = analog_frame_stride(mode)
-            rolling_limit = int(self.ROLLING_READBACK_MB_PER_S * 1_000_000 / stride)
+            compress = self.compress_var.get()
+            mb_effective = self.ROLLING_READBACK_MB_PER_S_COMPRESSED if compress else self.ROLLING_READBACK_MB_PER_S
+            rolling_limit = int(mb_effective * 1_000_000 / stride)
             max_rate = min(max_rate, rolling_limit)
         return max_rate
 
     def _update_rate_info(self):
+        compress = self.compress_var.get()
+        if compress:
+            mb_effective = self.ROLLING_READBACK_MB_PER_S_COMPRESSED
+        else:
+            mb_effective = self.ROLLING_READBACK_MB_PER_S
         rate = self._get_rate()
         mode = self._get_capture_mode()
         stride = analog_frame_stride(mode)
         mb_per_s = rate * stride / 1_000_000
         max_rate = self._get_max_rate()
         if self.capture_type.get() == 'rolling':
-            rolling_max = int(self.ROLLING_READBACK_MB_PER_S * 1_000_000 / stride)
+            rolling_max = int(mb_effective * 1_000_000 / stride)
             if rate > rolling_max:
                 self.rate_info_var.set(
                     f"{self._fmt_rate(rate)} → {mb_per_s:.1f} MB/s  "
@@ -1056,6 +1070,12 @@ class OLScope:
                 self._apply_schmitt()
                 if proto_enable:
                     self.dev.trigger_decode(match_byte=match_byte, channel=proto_ch, baud=proto_baud, enable=True)
+                # Live/rolling delta-compressed readback is still gated behind
+                # an experimental transport path; the stable production path is
+                # single-capture decompression only for now.
+                use_compress = bool(
+                    self.compress_var.get() and self.capture_mode == MODE_DIGITAL and not rolling)
+                self.dev.set_compression_enabled(use_compress)
                 if rolling:
                     buf_nsamp = self.capture_window
                     self.captured_bytes = bytearray()
@@ -1068,8 +1088,10 @@ class OLScope:
                         # frames decode correctly.
                         as_ = analog_frame_stride(self.capture_mode)
                         pay_stride = analog_frame_stride(self.capture_mode)
+                        ring_chunk = 1024
                     else:
                         as_ = self.dev._stride
+                        ring_chunk = min(buf_nsamp, 65536)
                     # Pass any pending generator data into rolling capture
                     pending = getattr(self.dev, '_pending_gen', None)
                     gen_kwargs = {}
@@ -1081,7 +1103,7 @@ class OLScope:
                         }
                         self.dev._pending_gen = None
                     gen = self.dev.rolling_capture(
-                        rate_hz=rate, chunk_nsamp=1024, buffer_nsamp=buf_nsamp,
+                        rate_hz=rate, chunk_nsamp=ring_chunk, buffer_nsamp=buf_nsamp,
                         stop_evt=self.stop_evt, progress_cb=None,
                         full_out=self.captured_bytes, stride=as_,
                         payload_stride=pay_stride,
@@ -1129,6 +1151,10 @@ class OLScope:
                         print(f"[DBG] capture returned {len(data)} bytes")
                         if len(data) >= 8:
                             print(f"[DBG] first 8 bytes hex: {data[:8].hex()}")
+                        # Decompress if compression was enabled
+                        if self.compress_var.get() and self.capture_mode == MODE_DIGITAL:
+                            data = decompress_delta_stream(data)
+                            nsamp = len(data) // 2
                         self.capture_result = (data, rate, nsamp)
             except Exception as e:
                 self.capture_result = e

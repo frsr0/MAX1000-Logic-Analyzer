@@ -1,3 +1,4 @@
+import os
 import struct
 from unittest.mock import MagicMock, patch, call, ANY
 
@@ -23,6 +24,7 @@ from driver.ols_spi_device import (
     decode_analog_frames,
     narrow_digital_flags,
     OLSDeviceSPI,
+    decompress_delta_stream,
     find_spi_device,
     unpack_narrow_digital_words,
 )
@@ -54,6 +56,14 @@ class TestNarrowDigitalPacking:
 
         assert asserted == [0, 2, 15]
         assert set(samples[asserted].tolist()) == {1 << 2}
+
+
+class TestCompressionHelpers:
+    def test_decompress_delta_stream_expands_multiple_blocks(self):
+        raw = b"\x34\x12\x00\x00\x00\x00\x00\x00\x34\x12\x00\x00" * 2
+        out = decompress_delta_stream(raw)
+        assert len(out) == 64
+        assert out[:2] == b"\x34\x12"
 
 
 class TestDecodeAnalogFrames:
@@ -697,6 +707,38 @@ class TestOLSDeviceSPII2CCapture:
 
 
 class TestOLSDeviceSPIRolling:
+    def test_stream_ring_capture_polls_status_periodically(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.side_effect = [
+            {'oldest_index': 0},
+            {'producer_index': 4, 'overrun_count': 0},
+        ]
+        device_spi.pkt.start_stream_read.side_effect = [
+            (4, 0, b'\x01\x00' * 4),
+            (8, 4, b'\x02\x00' * 4),
+            (12, 8, b'\x03\x00' * 4),
+            (16, 12, b'\x04\x00' * 4),
+            (20, 16, b''),
+        ]
+        device_spi.spi.flush = MagicMock()
+
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False] * 8
+        with patch.dict(os.environ, {"OLS_STREAM_STATUS_INTERVAL": "4"}):
+            results = list(device_spi.stream_ring_capture(
+                1_000_000, 4, stop_evt))
+
+        assert [item[1] for item in results] == [4, 8, 12, 16]
+        assert device_spi.pkt.get_status.call_count == 2
+        device_spi.pkt.start_stream_read.assert_has_calls([
+            call(0, 8, stop_evt),
+            call(4, 8, stop_evt),
+            call(8, 8, stop_evt),
+            call(12, 8, stop_evt),
+        ])
+
     def test_continuous_ring_capture_arms_once_and_reads_by_producer_index(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi._stream_readback = MagicMock(return_value=b'\x01\x00' * 100)
@@ -757,9 +799,52 @@ class TestOLSDeviceSPIRolling:
 
         stop_evt = MagicMock()
         stop_evt.is_set.side_effect = [False, True]
-        gen = device_spi.rolling_capture(1000000, 1024, 4096, stop_evt)
+        gen = device_spi.rolling_capture(1000000, 1024, 4096, stop_evt, use_continuous=False)
         results = list(gen)
         assert len(results) > 0
+
+    def test_rolling_capture_uses_stream_ring_for_plain_digital_continuous(self, device_spi):
+        device_spi.stream_ring_capture = MagicMock(return_value=iter([
+            (b'\x01\x00' * 4, 4, 4, 0),
+            (b'\x02\x00' * 4, 8, 4, 0),
+        ]))
+        device_spi._filter_digital = MagicMock(side_effect=lambda data: data)
+        device_spi.analog_mode = MODE_DIGITAL
+
+        stop_evt = MagicMock()
+        full_out = bytearray()
+        results = list(device_spi.rolling_capture(
+            1_000_000, 4, 6, stop_evt, full_out=full_out, use_continuous=True, stride=2))
+
+        assert [item[1:] for item in results] == [(4, 6), (8, 6)]
+        assert results[0][0] == b'\x01\x00' * 4
+        assert results[1][0] == (b'\x01\x00' * 2) + (b'\x02\x00' * 4)
+        assert bytes(full_out) == (b'\x01\x00' * 4) + (b'\x02\x00' * 4)
+        device_spi.stream_ring_capture.assert_called_once_with(
+            rate_hz=1_000_000,
+            window_samples=4,
+            stop_evt=stop_evt,
+            progress_cb=None)
+
+    def test_rolling_capture_keeps_legacy_path_for_generator(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
+        device_spi.read_capture_range = MagicMock(return_value=b'\x01\x00' * 8)
+        device_spi.spi.flush = MagicMock()
+        device_spi.stream_ring_capture = MagicMock()
+        device_spi.analog_mode = MODE_DIGITAL
+
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False, True]
+        results = list(device_spi.rolling_capture(
+            1_000_000, 8, 32, stop_evt, gen_data=b'abc', use_continuous=True, stride=2))
+
+        assert len(results) == 1
+        device_spi.stream_ring_capture.assert_not_called()
+        device_spi.read_capture_range.assert_called_once()
 
     def test_rolling_capture_with_gen(self, device_spi):
         device_spi.pkt = MagicMock()

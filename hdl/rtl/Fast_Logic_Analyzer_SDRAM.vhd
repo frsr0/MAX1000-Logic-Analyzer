@@ -63,6 +63,7 @@ port (
     Blk_Rd_Base    : in  natural range 0 to Max_Samples := 0;  -- base sample idx
     Blk_Rd_Count   : in  natural range 0 to Max_Samples := 0;  -- samples to stream
     Auto_Renew     : in  std_logic := '0';  -- auto-renew stream (no deassert on block end)
+    Compress_Enable : in  std_logic := '0';  -- enable delta-packed readback
     Rd_Fifo_Q      : out std_logic_vector(15 downto 0) := (others => '0');
     Rd_Fifo_Empty  : out std_logic := '1';
     Rd_Fifo_RdReq  : in  std_logic := '0';
@@ -193,6 +194,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal cnt_s         : natural range 0 to MAX_RATE_DIV := 0;
   signal sample_tick_r : std_logic := '0';
 
+  signal cnt_eq_zero   : std_logic := '0';
   signal run_f_s1  : std_logic := '0';
   signal run_f_s2   : std_logic := '0';
   signal continuous_f_s1 : std_logic := '0';
@@ -207,9 +209,11 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal overflow_t_s2    : std_logic := '0';
   signal overflow_t_s3    : std_logic := '0';
   signal overflow_clk     : std_logic := '0';
+  signal overflow_count_en_q : std_logic := '0';
   signal sample_remaining : natural range 0 to Max_Samples := 0;
   signal run_stop_overflow : std_logic := '0';
   signal status_overflow   : std_logic := '0';
+  signal overflow_readout_q : std_logic := '0';
   signal producer_index_u  : unsigned(31 downto 0) := (others => '0');
   signal oldest_index_u    : unsigned(31 downto 0) := (others => '0');
   signal newest_index_u    : unsigned(31 downto 0) := (others => '0');
@@ -254,6 +258,26 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal rdfifo_wr     : std_logic := '0';
   signal rdfifo_wrfull : std_logic := '0';
   signal rdfifo_aclr   : std_logic := '0';
+  -- Pipeline registers for readout address (breaks 22-bit comparator + conversion path)
+  signal addr_is_wrap  : std_logic := '0';
+  signal stream_addr_r : std_logic_vector(21 downto 0) := (others => '0');
+
+  -- Delta compressor for readback data compression (2.67x)
+  component capture_compressor is
+    port (
+      clk               : in  std_logic;
+      rst               : in  std_logic;
+      sample_in         : in  std_logic_vector(15 downto 0);
+      sample_valid      : in  std_logic;
+      compression_enable : in  std_logic;
+      comp_data         : out std_logic_vector(15 downto 0);
+      comp_valid        : out std_logic
+    );
+  end component;
+
+  signal comp_rdata : std_logic_vector(15 downto 0) := (others => '0');
+  signal comp_feed   : std_logic := '0';
+  signal comp_valid : std_logic := '0';
   -- 2FF synchroniser for the block-read request toggle (CLK -> pclk)
   signal blk_req_s1    : std_logic := '0';
   signal blk_req_s2    : std_logic := '0';
@@ -979,10 +1003,13 @@ begin
             start_gate_r <= start_gate_r - 1;
           elsif cnt_s = 0 then
             cnt_s <= rate_div_m1_f;
-            sample_tick_r <= '1';
+            -- sample_tick_r now set from cnt_eq_zero below
           else
             cnt_s <= cnt_s - 1;
           end if;
+        if cnt_s = 0 then cnt_eq_zero <= '1'; else cnt_eq_zero <= '0'; end if;
+        sample_tick_r <= cnt_eq_zero;
+
         end if;
 
         -- Config handshake edge: transition from pre-trigger to flush/capture
@@ -1151,8 +1178,8 @@ begin
     )
     port map (
       aclr     => rdfifo_aclr,
-      data     => rdfifo_wdata,
-      wrreq    => rdfifo_wr,
+      data     => comp_rdata,
+      wrreq    => comp_valid,
       wrclk    => pclk,
       rdreq    => Rd_Fifo_RdReq,
       rdclk    => CLK,
@@ -1161,6 +1188,18 @@ begin
       wrfull   => rdfifo_wrfull,
       wrusedw  => open,
       rdusedw  => open
+    );
+
+  -- Delta compressor: readback data compression (2.67x)
+  rd_compressor: capture_compressor
+    port map (
+      clk               => pclk,
+      rst               => rdfifo_aclr,
+      sample_in         => s_rdata,
+      sample_valid      => comp_feed,
+      compression_enable => Compress_Enable,
+      comp_data         => comp_rdata,
+      comp_valid        => comp_valid
     );
 
   -- Main: SDRAM write pump + buffer management + readout
@@ -1178,6 +1217,7 @@ begin
     -- Streaming block-readout state (single-shot CMD_READ_CAPTURE path)
     variable stream_active : boolean := false;
     variable stream_addr_u : unsigned(21 downto 0) := (others => '0');
+    variable stream_addr_inc_pending : boolean := false;
     variable stream_rem    : natural range 0 to Max_Samples := 0;
     variable rd_pend2      : std_logic := '0';
     -- Prime read: the FIRST SDRAM read of each block stream comes back garbage
@@ -1216,6 +1256,19 @@ begin
       s_burst_i <= '0';
       cap_stream_valid <= '0';
       rdfifo_wr <= '0';
+      comp_feed <= '0';
+      overflow_count_en_q <= overflow_clk;
+      if overflow_count_en_q = '1' then
+        pump_overflow_count_u <= pump_overflow_count_u + 1;
+      end if;
+      if stream_addr_inc_pending then
+        if Continuous_Mode = '1' and stream_addr_u = to_unsigned(CONT_RING_WORDS - 1, 22) then
+          stream_addr_u := (others => '0');
+        else
+          stream_addr_u := stream_addr_u + 1;
+        end if;
+        stream_addr_inc_pending := false;
+      end if;
       if single_count_load_q = '1' then
         buf_rem_single <= cfg_samples;
       end if;
@@ -1230,7 +1283,6 @@ begin
       if overflow_clk = '1' then
         run_stop_overflow <= '1';
         status_overflow <= '1';
-        pump_overflow_count_u <= pump_overflow_count_u + 1;
         if Continuous_Mode = '0' and full_i = '0' then
           -- End the single-shot capture on producer overflow. Re-entering the
           -- run-edge reset path here clears the write/read bookkeeping and
@@ -1238,10 +1290,12 @@ begin
           -- readout access to whatever was captured and makes the failure visible
           -- through the overflow/status counters.
           full_i <= '1';
-          rd_mode := true;
-          cap_stream_valid <= '0';
-          stream_active := false;
+          overflow_readout_q <= '1';
         end if;
+      end if;
+      if overflow_readout_q = '1' then
+        rd_mode := true;
+        overflow_readout_q <= '0';
       end if;
 
       -- Buffer ack handling (evaluated every cycle)
@@ -1306,6 +1360,7 @@ begin
         full_pending <= '0'; full_clr_pending <= '0';
         run_stop_overflow <= '0';
         status_overflow <= '0';
+        overflow_readout_q <= '0';
         if run_start_r = '1' then
           pump_valid_cycles_u <= (others => '0');
           pump_ready_cycles_u <= (others => '0');
@@ -1313,6 +1368,7 @@ begin
           pump_stall_cycles_u <= (others => '0');
           pump_nodata_cycles_u <= (others => '0');
           pump_overflow_count_u <= (others => '0');
+          overflow_count_en_q <= '0';
           ring_waddr := 0;
         end if;
         if run_stop_r = '1' then
@@ -1323,6 +1379,7 @@ begin
         s_wr <= '0'; s_rd <= '0';
         cap_stream_valid <= '0';
         stream_active := false; rd_pend2 := '0';
+        stream_addr_inc_pending := false;
         cur_full := false;
 
       else
@@ -1335,6 +1392,7 @@ begin
           -- Single-shot: read exactly the host-requested block.
           stream_addr_u := to_unsigned(Blk_Rd_Base + Start_Offset, 22);
           stream_rem    := Blk_Rd_Count;
+          stream_addr_inc_pending := false;
           rd_pend2      := '0';
           stream_prime  := STREAM_PRIME_N;
           stream_active := (Blk_Rd_Count /= 0);
@@ -1345,6 +1403,7 @@ begin
           cont_base_v := Blk_Rd_Base mod CONT_RING_WORDS;
           stream_addr_u := to_unsigned(cont_base_v, 22);
           stream_rem    := Blk_Rd_Count;
+          stream_addr_inc_pending := false;
           rd_pend2      := '0';
           stream_prime  := STREAM_PRIME_N;
           stream_active := (Blk_Rd_Count /= 0);
@@ -1353,6 +1412,7 @@ begin
         end if;
       end if;
 
+      stream_addr_r <= std_logic_vector(stream_addr_u);
       if rd_mode then
 
         if stream_active then
@@ -1362,17 +1422,13 @@ begin
           -- old fixed-latency latch at block boundaries.
           if rd_pend2 = '0' then
             if rdfifo_wrfull = '0' then
-              s_addr <= std_logic_vector(stream_addr_u);
+              s_addr <= stream_addr_r;
               s_rd     <= '1';
               rd_pend2 := '1';
               -- Do not advance the address on the prime read: the next (real)
               -- read re-fetches the same base address.
               if stream_prime = 0 then
-                if Continuous_Mode = '1' and stream_addr_u = to_unsigned(CONT_RING_WORDS - 1, 22) then
-                  stream_addr_u := (others => '0');
-                else
-                  stream_addr_u := stream_addr_u + 1;
-                end if;
+                stream_addr_inc_pending := true;
               end if;
             end if;
           elsif s_rvalid = '1' then
@@ -1382,11 +1438,7 @@ begin
               -- Discard the throwaway prime read(s); the real stream starts next.
               stream_prime := stream_prime - 1;
             else
-              rdfifo_wdata <= s_rdata;
-              rdfifo_wr    <= '1';   -- push the read sample into the response
-                                     -- FIFO (dropped in the Auto_Renew refactor;
-                                     -- its absence stalled every block read ->
-                                     -- ST_CAPTURE_IDLE / empty readback)
+              comp_feed <= '1';
               if stream_rem <= 1 then
                 if Auto_Renew = '1' then
                   -- Auto-renew: reload and keep streaming

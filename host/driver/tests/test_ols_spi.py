@@ -318,3 +318,94 @@ class TestSPIPacketProtocol:
         assert producer == 0x12345678
         assert oldest == 0x100
         assert data == bytes(range(16))
+
+    def test_transaction_raw_uses_stream_command_when_available(self):
+        class FakeSPI:
+            def __init__(self):
+                self.request = None
+                self.read_n = None
+                self.ack_pad = None
+                self.tx_bytes_called = False
+                self.tx_read_called = False
+
+            def stream_command(self, request, n_bytes, ack_pad=96, stop_evt=None):
+                self.request = request
+                self.read_n = n_bytes
+                self.ack_pad = ack_pad
+                seq = request[3]
+                payload = bytes(range(16))
+                resp = (SYNC_RSP + bytes([ST_OK, seq])
+                        + struct.pack('<H', len(payload)) + payload)
+                resp += struct.pack('<H', crc16(resp[2:]))
+                return (b'\xff' * (len(request) + ack_pad)) + resp + (b'\xff' * 8)
+
+            def tx_bytes(self, _):
+                self.tx_bytes_called = True
+                return b''
+
+            def tx_read(self, _):
+                self.tx_read_called = True
+                return b''
+
+        fake = FakeSPI()
+        pkt = SPIDevice(fake)
+        result = pkt._transaction_raw(0x12, b'\x01\x02\x03\x04', read_extra=40)
+        assert result == (ST_OK, 0x00, bytes(range(16)))
+        assert fake.request.startswith(SYNC_REQ + b'\x12')
+        assert fake.read_n == 168
+        assert fake.ack_pad == 96
+        assert fake.tx_bytes_called is False
+        assert fake.tx_read_called is False
+
+    def test_transaction_raw_falls_back_to_polled_read_path(self):
+        class FakeSPI:
+            def __init__(self):
+                self.tx_read_calls = 0
+
+            def tx_bytes(self, request):
+                seq = request[3]
+                payload = b'xyz'
+                resp = (SYNC_RSP + bytes([ST_OK, seq])
+                        + struct.pack('<H', len(payload)) + payload)
+                resp += struct.pack('<H', crc16(resp[2:]))
+                self.response = b'\xff' + resp
+                return b''
+
+            def tx_read(self, _):
+                self.tx_read_calls += 1
+                return self.response if self.tx_read_calls == 1 else b''
+
+        pkt = SPIDevice(FakeSPI())
+        result = pkt._transaction_raw(0x12, b'', read_extra=8, timeout=0.01)
+        assert result == (ST_OK, 0x00, b'xyz')
+
+    def test_start_stream_read_compressed_parses_block_packets(self):
+        class FakeSPI:
+            def __init__(self):
+                self.request = None
+                self.tx_bytes_called = False
+
+            def stream_payload(self, payload, stop_evt=None):
+                self.request = payload
+
+                start_seq = payload[3]
+                block_seq = payload[111]
+
+                ack_payload = struct.pack('<II', 0x12345678, 0x00000100)
+                ack = (SYNC_RSP + bytes([ST_STREAM_ACTIVE, start_seq])
+                       + struct.pack('<H', len(ack_payload)) + ack_payload)
+                ack += struct.pack('<H', crc16(ack[2:]))
+
+                block_payload = bytes(range(24))
+                block = (SYNC_RSP + bytes([ST_OK, block_seq])
+                         + struct.pack('<H', len(block_payload)) + block_payload)
+                block += struct.pack('<H', crc16(block[2:]))
+
+                guard = b'\xff' * 96
+                return payload[:12] + guard + ack + payload[108:116] + block + (b'\xff' * 8)
+
+        pkt = SPIDevice(FakeSPI())
+        producer, oldest, data = pkt.start_stream_read_compressed(0x80, 1024)
+        assert producer == 0x12345678
+        assert oldest == 0x100
+        assert data == bytes(range(24))

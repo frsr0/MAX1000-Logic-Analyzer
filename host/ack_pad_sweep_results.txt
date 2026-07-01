@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\driver\test_ack_pad_sweep.py", line 24, in <module>
+    from ols_spi_device import OLSDeviceSPI
+  File "C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\driver\ols_spi_device.py", line 10, in <module>
+    from driver.ols_spi import OLS as OLS_SPI
+ModuleNotFoundError: No module named 'driver'
