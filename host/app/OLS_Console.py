@@ -1116,7 +1116,9 @@ class OLScope:
                         # dense payload stride after de-interleave.
                         as_ = analog_wire_stride(self.capture_mode)
                         pay_stride = analog_frame_stride(self.capture_mode)
-                        ring_chunk = 1024
+                        # Keep the live mixed chunk small so the rolling reader
+                        # can drain the ring without long per-transaction stalls.
+                        ring_chunk = 128
                     else:
                         as_ = self.dev._stride
                         ring_chunk = min(buf_nsamp, 65536)
