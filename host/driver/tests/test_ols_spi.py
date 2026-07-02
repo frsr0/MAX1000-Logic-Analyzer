@@ -409,3 +409,76 @@ class TestSPIPacketProtocol:
         assert producer == 0x12345678
         assert oldest == 0x100
         assert data == bytes(range(24))
+
+    def test_read_capture_blocks_batches_requests_under_one_transaction(self):
+        class FakeSPI:
+            def __init__(self):
+                self.payloads = []
+                self.single_reads = []
+
+            def stream_payload(self, payload, stop_evt=None):
+                self.payloads.append(bytes(payload))
+                out = bytearray()
+                # Answer each embedded CMD_READ_CAPTURE request with a
+                # 1024-byte block derived from the request address.
+                idx = payload.find(SYNC_REQ)
+                while idx >= 0:
+                    seq = payload[idx + 3]
+                    addr = struct.unpack('<I', payload[idx + 6:idx + 10])[0]
+                    block = bytes([(addr // 1024) & 0xFF]) * 1024
+                    resp = (SYNC_RSP + bytes([ST_OK, seq])
+                            + struct.pack('<H', 1024) + block)
+                    resp += struct.pack('<H', crc16(resp[2:]))
+                    out += b'\xff' * 166 + resp
+                    idx = payload.find(SYNC_REQ, idx + 12)
+                return bytes(out)
+
+        fake = FakeSPI()
+        pkt = SPIDevice(fake)
+        addrs = [0, 1024, 2048, 3072]
+        blocks = pkt.read_capture_blocks(addrs)
+
+        assert len(fake.payloads) == 1          # one CS-held transaction
+        assert len(blocks) == 4
+        for i, blk in enumerate(blocks):
+            assert len(blk) == 1024
+            assert blk == bytes([i]) * 1024
+
+    def test_read_capture_blocks_retries_missing_block_individually(self):
+        class FakeSPI:
+            def __init__(self):
+                self.stream_command_calls = 0
+
+            def stream_payload(self, payload, stop_evt=None):
+                out = bytearray()
+                first = True
+                idx = payload.find(SYNC_REQ)
+                while idx >= 0:
+                    seq = payload[idx + 3]
+                    if first:
+                        # Drop the first block's response (simulated CRC hit).
+                        first = False
+                    else:
+                        resp = (SYNC_RSP + bytes([ST_OK, seq])
+                                + struct.pack('<H', 1024) + b'\x22' * 1024)
+                        resp += struct.pack('<H', crc16(resp[2:]))
+                        out += b'\xff' * 166 + resp
+                    idx = payload.find(SYNC_REQ, idx + 12)
+                return bytes(out)
+
+            def stream_command(self, request, n_bytes, ack_pad=96, stop_evt=None):
+                # Single-block retry path (read_capture_block).
+                self.stream_command_calls += 1
+                seq = request[3]
+                resp = (SYNC_RSP + bytes([ST_OK, seq])
+                        + struct.pack('<H', 1024) + b'\x11' * 1024)
+                resp += struct.pack('<H', crc16(resp[2:]))
+                return b'\xff' * len(request) + resp + b'\xff' * 32
+
+        fake = FakeSPI()
+        pkt = SPIDevice(fake)
+        blocks = pkt.read_capture_blocks([0, 1024])
+
+        assert fake.stream_command_calls == 1
+        assert blocks[0] == b'\x11' * 1024      # recovered via retry
+        assert blocks[1] == b'\x22' * 1024

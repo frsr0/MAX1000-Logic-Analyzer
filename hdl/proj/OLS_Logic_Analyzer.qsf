@@ -51,6 +51,7 @@ set_global_assignment -name SDC_FILE OLS_Logic_Analyzer.sdc
 
 # Altera Modular ADC II IP
 set_global_assignment -name QIP_FILE ../ip/MAX10_ADC/synthesis/MAX10_ADC.qip
+set_global_assignment -name SDC_FILE ../ip/MAX10_ADC/synthesis/submodules/altera_modular_adc_control.sdc
 
 # Weak pull-ups on all GPIO and I2C/SPI pins
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to GPIO[0]

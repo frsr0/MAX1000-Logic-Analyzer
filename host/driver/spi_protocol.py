@@ -102,16 +102,33 @@ MAX_PAYLOAD = 4096
 BLOCK_SIZE  = 1024
 
 
+# 256-entry lookup table for the reflected 0xA001 polynomial. The old
+# bit-by-bit loop capped packet parsing at ~1 MB/s, which throttled batched
+# block readback; the table is ~10x faster and crcmod's C extension (used
+# when available) is faster still.
+_CRC16_TABLE = []
+for _b in range(256):
+    _crc = _b
+    for _ in range(8):
+        _crc = (_crc >> 1) ^ 0xA001 if _crc & 1 else _crc >> 1
+    _CRC16_TABLE.append(_crc)
+
+try:
+    import crcmod as _crcmod
+    # Same algorithm: reflected poly 0xA001 (0x18005), xorOut 0.
+    _crc16_fast = _crcmod.mkCrcFun(0x18005, initCrc=0xFFFF, rev=True, xorOut=0)
+except Exception:
+    _crc16_fast = None
+
+
 def crc16(data: bytes, init: int = 0xFFFF) -> int:
-    """CRC-16-IBM (CRC-16/ARC)"""
+    """CRC-16-IBM, reflected poly 0xA001 (init 0xFFFF = CRC-16/MODBUS)."""
+    if _crc16_fast is not None and init == 0xFFFF:
+        return _crc16_fast(bytes(data))
     crc = init
+    tab = _CRC16_TABLE
     for b in data:
-        crc ^= b
-        for _ in range(8):
-            if crc & 1:
-                crc = (crc >> 1) ^ 0xA001
-            else:
-                crc >>= 1
+        crc = (crc >> 8) ^ tab[(crc ^ b) & 0xFF]
     return crc & 0xFFFF
 
 
@@ -228,6 +245,69 @@ class SPIDevice:
         if result and result[0] == ST_OK:
             return result[2]
         return b''
+
+    # Batched block-read slot sizing (bytes on the SPI wire per block):
+    # request 12 + FPGA fetch latency (measured deterministic 166 bytes at
+    # 30 MHz = 44 us WAIT_BLOCK) + response 1032 (sync 2 + header 4 +
+    # payload 1024 + crc 2) + margin. The next request must not start
+    # before the previous response has fully shifted out, because the
+    # dispatcher drops packets that arrive while it is still feeding TX.
+    BATCH_GAP_PAD = 208
+    BATCH_RSP_PAD = 1056
+
+    def read_capture_blocks(self, byte_addrs, stop_evt=None):
+        """Read multiple 1024-byte capture blocks in ONE CS-held transaction.
+
+        Batches CMD_READ_CAPTURE requests with fixed response slots so the
+        whole exchange is a single MPSSE write/read (no per-block USB round
+        trip). Any block that fails to parse (rare CRC hit) is retried once
+        via the packetized single-block path. Returns a list of payloads
+        aligned with byte_addrs; failed blocks are b''.
+        """
+        byte_addrs = list(byte_addrs)
+        if not byte_addrs:
+            return []
+        if not hasattr(self.spi, "stream_payload"):
+            return [self.read_capture_block(a) for a in byte_addrs]
+
+        payload = bytearray()
+        seqs = []
+        for addr in byte_addrs:
+            seq = self._next_seq()
+            seqs.append(seq)
+            payload.extend(build_packet(CMD_READ_CAPTURE, seq,
+                                        struct.pack('<I', addr)))
+            payload.extend(b"\xff" * (self.BATCH_GAP_PAD + self.BATCH_RSP_PAD))
+        raw = self.spi.stream_payload(bytes(payload), stop_evt=stop_evt)
+
+        blocks = {}
+        idx = raw.find(SYNC_RSP)
+        while idx >= 0:
+            if len(raw) < idx + 8:
+                break
+            plen = struct.unpack('<H', raw[idx + 4:idx + 6])[0]
+            end = idx + 8 + plen
+            if plen > MAX_PAYLOAD:
+                idx = raw.find(SYNC_RSP, idx + 1)
+                continue
+            if len(raw) < end:
+                break
+            parsed = parse_response(raw[idx:end])
+            if parsed:
+                status, rsp_seq, rsp_payload = parsed
+                if status == ST_OK:
+                    blocks.setdefault(rsp_seq, rsp_payload)
+                idx = raw.find(SYNC_RSP, end)
+            else:
+                idx = raw.find(SYNC_RSP, idx + 1)
+
+        result = []
+        for addr, seq in zip(byte_addrs, seqs):
+            pl = blocks.get(seq)
+            if pl is None and (stop_evt is None or not stop_evt.is_set()):
+                pl = self.read_capture_block(addr)
+            result.append(pl or b'')
+        return result
 
     def read_stream_block(self, timeout: float = 5.0) -> bytes:
         """Read one streaming block (1024 bytes uncompressed, 384 compressed)."""

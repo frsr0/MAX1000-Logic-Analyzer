@@ -81,13 +81,13 @@ begin
   end process;
 
   -- Source-synchronous MISO shifter: real SCK falling edge, zero latency.
-  miso_sck: process(SCK, CS_n)
+  miso_sck: process(SCK)
   begin
-    if CS_n = '1' then
-      sck_tx_shift <= preamble_f;
-      sck_tx_cnt   <= (others => '0');
-    elsif falling_edge(SCK) then
-      if sck_tx_cnt = "111" then
+    if falling_edge(SCK) then
+      if cs_active = '0' then
+        sck_tx_shift <= preamble_f;
+        sck_tx_cnt   <= (others => '0');
+      elsif sck_tx_cnt = "111" then
         sck_tx_shift <= tx_data_f;
         sck_tx_cnt   <= (others => '0');
       else

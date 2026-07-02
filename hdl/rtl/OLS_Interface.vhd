@@ -142,7 +142,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL spi_preamble        : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL spi_preamble_r      : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL spi_tx_ready_i      : STD_LOGIC := '0';
-  SIGNAL proto_trig_enable   : STD_LOGIC := '0';
   SIGNAL dbg_pkt_ok_seen     : STD_LOGIC := '0';
   SIGNAL dbg_bad_crc_seen    : STD_LOGIC := '0';
   SIGNAL dbg_bad_frame_seen  : STD_LOGIC := '0';
@@ -160,11 +159,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   type gen_cap_state_t is (GENCAP_IDLE, GENCAP_LOOPBACK_ON, GENCAP_ARM, GENCAP_GUARD, GENCAP_WAIT_BUSY, GENCAP_RUNNING, GENCAP_WAIT_FULL, GENCAP_DONE, GENCAP_ERROR);
   SIGNAL gen_cap_state : gen_cap_state_t := GENCAP_IDLE;
   SIGNAL pipe_depth          : NATURAL range 2 to 8 := 8;
-  SIGNAL proto_trig_protocol : STD_LOGIC_VECTOR(1 downto 0) := "00";
-  SIGNAL proto_trig_match    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
-  SIGNAL proto_trig_bauddiv  : NATURAL range 1 to 65535 := 416;
-  SIGNAL proto_trig_channel  : NATURAL range 0 to 7 := 0;
-  SIGNAL proto_trig_pulse    : STD_LOGIC := '0';
 
   -- Synthesis preserve: prevent Quartus from optimizing away gen start chain
   attribute preserve : boolean;
@@ -265,18 +259,6 @@ SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
   SIGNAL div3_pending : STD_LOGIC := '0';
   SIGNAL samples_div3  : NATURAL range 0 to Max_Samples := 0;
   SIGNAL samples_2div3 : NATURAL range 0 to Max_Samples := 0;
-  COMPONENT Protocol_Trigger IS
-  port (
-    CLK          : in  std_logic;
-    Inputs       : in  std_logic_vector(7 downto 0);
-    Enable       : in  std_logic;
-    Protocol     : in  std_logic_vector(1 downto 0);
-    Match_Value  : in  std_logic_vector(7 downto 0);
-    Baud_Div     : in  natural range 1 to 65535;
-    UART_Channel : in  natural range 0 to 7;
-    Trigger      : out std_logic
-  );
-  END COMPONENT;
   COMPONENT spi_packet_rx IS
   PORT (
     clk         : IN  STD_LOGIC;
@@ -470,7 +452,7 @@ BEGIN
     END IF;
     IF (Run = '0') THEN
       IF (Run_OLS = '1') THEN
-        IF (UNSIGNED(Trigger_Mask(29 downto 0)) = 0 AND proto_trig_enable = '0') THEN
+        IF (UNSIGNED(Trigger_Mask(29 downto 0)) = 0) THEN
           Run <= '1';
         ELSIF (Trigger_Mask(31 downto 30) = "00") THEN
           -- Level trigger: fire when inputs match Trigger_Values on masked bits
@@ -487,10 +469,6 @@ BEGIN
             IF (UNSIGNED(inputs_prev AND NOT Inputs AND Trigger_Mask(29 downto 0)) /= 0) THEN
               Run <= '1';
             END IF;
-          END IF;
-          -- Protocol decode trigger (independent of mask bits)
-          IF proto_trig_enable = '1' AND proto_trig_pulse = '1' THEN
-            Run <= '1';
           END IF;
         END IF;
         IF Run_OLS = '1' THEN
@@ -746,18 +724,6 @@ BEGIN
   Debug_Ch0_Duty   <= debug_ch0_duty_i;
   Gen_Capture_Active <= gen_capture_active_i;
   -- Pin_Map_Write is driven from the main process (default low, pulsed in CMD_PIN_MAP handler)
-
-  Proto_Trigger1 : Protocol_Trigger
-  PORT MAP (
-    CLK          => CLK,
-    Inputs       => Inputs(7 downto 0),
-    Enable       => proto_trig_enable,
-    Protocol     => proto_trig_protocol,
-    Match_Value  => proto_trig_match,
-    Baud_Div     => proto_trig_bauddiv,
-    UART_Channel => proto_trig_channel,
-    Trigger      => proto_trig_pulse
-  );
 
   Interface_Mode <= '1';
 

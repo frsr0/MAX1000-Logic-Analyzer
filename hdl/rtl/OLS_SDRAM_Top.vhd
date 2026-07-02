@@ -159,20 +159,16 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal debug_ch0_enable : std_logic := '0';
   signal fast_mode_i : std_logic := '0';
   signal analog_frame_data  : std_logic_vector(127 downto 0) := (others => '0');
-  signal analog_frame_len   : natural range 1 to 14 := 1;
-  signal adc0_result, adc1_result, adc2_result, adc3_result : std_logic_vector(11 downto 0) := (others => '0');
-  signal adc4_result, adc5_result, adc6_result, adc7_result : std_logic_vector(11 downto 0) := (others => '0');
+  signal analog_frame_len   : natural range 1 to 5 := 1;
+  signal adc0_result, adc1_result : std_logic_vector(11 downto 0) := (others => '0');
   signal adc_start : std_logic := '0';
-  signal adc0_valid, adc1_valid, adc2_valid, adc3_valid : std_logic := '0';
-  signal adc4_valid, adc5_valid, adc6_valid, adc7_valid : std_logic := '0';
+  signal adc0_valid, adc1_valid : std_logic := '0';
   signal adc_frame_valid : std_logic := '0';
-  signal adc0_start, adc1_start, adc2_start, adc3_start : std_logic := '0';
-  signal adc4_start, adc5_start, adc6_start, adc7_start : std_logic := '0';
-  signal adc0_sel, adc1_sel, adc2_sel, adc3_sel : natural range 0 to 31 := 0;
-  signal adc4_sel, adc5_sel, adc6_sel, adc7_sel : natural range 0 to 31 := 0;
+  signal adc0_start, adc1_start : std_logic := '0';
+  signal adc0_sel, adc1_sel : natural range 0 to 31 := 0;
   signal adc_frame_toggle : std_logic := '0';
   signal adc_div   : natural range 0 to 255 := 0;
-  signal adc_conv_clk   : std_logic := '0';  -- 12 MHz ADC conversion clock (SDRAM_PLL c3)
+  signal adc_conv_clk   : std_logic := '0';  -- ADC control clock input (FAST_SPEED uses sys_clk, controller clkdiv slows it)
 
   -- Pin map write from host command
   signal pin_map_write    : std_logic := '0';
@@ -320,44 +316,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     reset          : in  std_logic := '0';
     ch0_sel        : in  natural range 0 to 31 := 0;
     ch0_start      : in  std_logic := '0';
-    ch0_busy       : out std_logic := '0';
     ch0_result     : out std_logic_vector(11 downto 0) := (others => '0');
     ch0_valid      : out std_logic := '0';
     ch1_sel        : in  natural range 0 to 31 := 1;
     ch1_start      : in  std_logic := '0';
-    ch1_busy       : out std_logic := '1';
     ch1_result     : out std_logic_vector(11 downto 0) := (others => '0');
-    ch1_valid      : out std_logic := '0';
-    ch2_sel        : in  natural range 0 to 31 := 2;
-    ch2_start      : in  std_logic := '0';
-    ch2_busy       : out std_logic := '1';
-    ch2_result     : out std_logic_vector(11 downto 0) := (others => '0');
-    ch2_valid      : out std_logic := '0';
-    ch3_sel        : in  natural range 0 to 31 := 3;
-    ch3_start      : in  std_logic := '0';
-    ch3_busy       : out std_logic := '1';
-    ch3_result     : out std_logic_vector(11 downto 0) := (others => '0');
-    ch3_valid      : out std_logic := '0';
-    ch4_sel        : in  natural range 0 to 31 := 4;
-    ch4_start      : in  std_logic := '0';
-    ch4_busy       : out std_logic := '1';
-    ch4_result     : out std_logic_vector(11 downto 0) := (others => '0');
-    ch4_valid      : out std_logic := '0';
-    ch5_sel        : in  natural range 0 to 31 := 5;
-    ch5_start      : in  std_logic := '0';
-    ch5_busy       : out std_logic := '1';
-    ch5_result     : out std_logic_vector(11 downto 0) := (others => '0');
-    ch5_valid      : out std_logic := '0';
-    ch6_sel        : in  natural range 0 to 31 := 6;
-    ch6_start      : in  std_logic := '0';
-    ch6_busy       : out std_logic := '1';
-    ch6_result     : out std_logic_vector(11 downto 0) := (others => '0');
-    ch6_valid      : out std_logic := '0';
-    ch7_sel        : in  natural range 0 to 31 := 7;
-    ch7_start      : in  std_logic := '0';
-    ch7_busy       : out std_logic := '1';
-    ch7_result     : out std_logic_vector(11 downto 0) := (others => '0');
-    ch7_valid      : out std_logic := '0'
+    ch1_valid      : out std_logic := '0'
   );
   END COMPONENT;
 
@@ -399,7 +363,7 @@ BEGIN
       generic map (FAST_SPEED_MODE => true)
       port map (inclk0 => CLK, c0 => sys_clk, c1 => fast_clk, c2 => sdram_core_clk,
                 c3 => open, c4 => sdram_chip_clk_out, locked => pll_locked);
-    adc_conv_clk <= '0';
+    adc_conv_clk <= sys_clk;
   end generate;
   -- Normal mode retains the legacy ADC clock requirement on c3.
   gen_use_pll_normal : if (PLL_MULT /= 1 or PLL_DIV /= 1) and not FAST_SPEED and not Sim generate
@@ -673,40 +637,27 @@ BEGIN
   end process;
 
   -- ADC profiles selected by REG_FLAGS:
-  -- mixed/current scan: ADC0-ADC7, high-speed analog: one selected mux
-  -- channel, maximum analog: AIN3,AIN1,AIN4,AIN6,AIN2,AIN5,AIN0,AIN.
+  -- mixed mode: 16 digital + 2 ADC channels, high-speed analog: one selected
+  -- mux channel, dual analog-only: AIN3,AIN1.
   process(analog_enable, analog_only, analog_profile, analog_channel, adc_start)
   begin
-    adc0_sel <= 0;  adc1_sel <= 1;  adc2_sel <= 2;  adc3_sel <= 3;
-    adc4_sel <= 4;  adc5_sel <= 5;  adc6_sel <= 6;  adc7_sel <= 7;
+    adc0_sel <= 1;  adc1_sel <= 2;
     adc0_start <= adc_start; adc1_start <= adc_start;
-    adc2_start <= adc_start; adc3_start <= adc_start;
-    adc4_start <= adc_start; adc5_start <= adc_start;
-    adc6_start <= adc_start; adc7_start <= adc_start;
 
-    if analog_enable = '1' and analog_only = '1' then
-      if analog_profile = "01" then
+    if analog_enable = '1' then
+      if analog_only = '1' and analog_profile /= "01" then
+        adc0_sel <= analog_channel;
+        adc1_start <= '0';
+      else
         adc0_sel <= 1;
         adc1_sel <= 2;
-        adc2_sel <= 3;
-        adc3_sel <= 4;
-        adc4_sel <= 5;
-        adc5_sel <= 7;
-        adc6_sel <= 8;
-        adc7_sel <= 16;
-      else
-        adc0_sel <= analog_channel;
-        adc1_start <= '0'; adc2_start <= '0'; adc3_start <= '0';
-        adc4_start <= '0'; adc5_start <= '0'; adc6_start <= '0';
-        adc7_start <= '0';
       end if;
     end if;
   end process;
 
-  adc_frame_valid <= adc0_valid when analog_enable = '1'
-                                  and analog_only = '1'
-                                  and analog_profile /= "01"
-                     else adc7_valid;
+  adc_frame_valid <= adc1_valid when analog_enable = '1'
+                                  and (analog_only = '0' or analog_profile = "01")
+                     else adc0_valid;
 
   process(sys_clk)
   begin
@@ -725,114 +676,46 @@ BEGIN
       -- Default: all analog_frame_data bytes zero
       analog_frame_data <= (others => '0');
 
-      -- Two capture modes: digital-only (2-byte frame) or
-      -- digital + all 8 ADC channels (14-byte frame)
+      -- Capture modes:
+      -- digital-only (2-byte frame), mixed dual analog (5-byte frame),
+      -- high-speed single analog (2-byte frame), dual analog-only (3 bytes)
       if analog_enable = '0' then
         -- Digital only: 16 digital (2 bytes)
         analog_frame_data(15 downto 0) <= internal_data_r;
         analog_frame_len <= 2;
+      elsif analog_only = '1' and analog_profile = "01" then
+        analog_frame_data(11 downto 0) <= adc0_result;
+        analog_frame_data(23 downto 12) <= adc1_result;
+        analog_frame_len <= 3;
       elsif analog_only = '1' then
-        if analog_profile = "01" then
-          analog_frame_data(11 downto 0) <= adc0_result;
-          analog_frame_data(23 downto 12) <= adc1_result;
-          analog_frame_data(35 downto 24) <= adc2_result;
-          analog_frame_data(47 downto 36) <= adc3_result;
-          analog_frame_data(59 downto 48) <= adc4_result;
-          analog_frame_data(71 downto 60) <= adc5_result;
-          analog_frame_data(83 downto 72) <= adc6_result;
-          analog_frame_data(95 downto 84) <= adc7_result;
-          analog_frame_len <= 12;
-        else
-          analog_frame_data(11 downto 0) <= adc0_result;
-          analog_frame_len <= 2;
-        end if;
+        analog_frame_data(11 downto 0) <= adc0_result;
+        analog_frame_len <= 2;
       else
-        -- Mixed: 16 digital + 8 ADC (14 bytes = 2 + 12 bytes for 8 × 12-bit)
+        -- Mixed: 16 digital + 2 ADC (5 bytes = 2 + 3 bytes for 2 x 12-bit)
         analog_frame_data(15 downto 0) <= internal_data_r(15 downto 0);
         analog_frame_data(27 downto 16) <= adc0_result;
         analog_frame_data(39 downto 28) <= adc1_result;
-        analog_frame_data(51 downto 40) <= adc2_result;
-        analog_frame_data(63 downto 52) <= adc3_result;
-        analog_frame_data(75 downto 64) <= adc4_result;
-        analog_frame_data(87 downto 76) <= adc5_result;
-        analog_frame_data(99 downto 88) <= adc6_result;
-        analog_frame_data(111 downto 100) <= adc7_result;
-        analog_frame_len <= 14;
+        analog_frame_len <= 5;
       end if;
     end if;
   end process;
 
-  gen_adc_fast_off : if FAST_SPEED generate
-  begin
-    adc0_result <= (others => '0');
-    adc1_result <= (others => '0');
-    adc2_result <= (others => '0');
-    adc3_result <= (others => '0');
-    adc4_result <= (others => '0');
-    adc5_result <= (others => '0');
-    adc6_result <= (others => '0');
-    adc7_result <= (others => '0');
-    adc0_valid <= '0';
-    adc1_valid <= '0';
-    adc2_valid <= '0';
-    adc3_valid <= '0';
-    adc4_valid <= '0';
-    adc5_valid <= '0';
-    adc6_valid <= '0';
-    adc7_valid <= '0';
-  end generate;
-
-  gen_adc_normal : if not FAST_SPEED generate
-  begin
-    ADC : ADC_Controller
-      port map (
-        sys_clk => sys_clk,
-        sys_clk_locked => pll_locked,
-        adc_clk => adc_conv_clk,
-        adc_clk_locked => pll_locked,
-        reset => '0',
-        ch0_sel => adc0_sel,
-        ch0_start => adc0_start,
-        ch0_busy => open,
-        ch0_result => adc0_result,
-        ch0_valid => adc0_valid,
-        ch1_sel => adc1_sel,
-        ch1_start => adc1_start,
-        ch1_busy => open,
-        ch1_result => adc1_result,
-        ch1_valid => adc1_valid,
-        ch2_sel => adc2_sel,
-        ch2_start => adc2_start,
-        ch2_busy => open,
-        ch2_result => adc2_result,
-        ch2_valid => adc2_valid,
-        ch3_sel => adc3_sel,
-        ch3_start => adc3_start,
-        ch3_busy => open,
-        ch3_result => adc3_result,
-        ch3_valid => adc3_valid,
-        ch4_sel => adc4_sel,
-        ch4_start => adc4_start,
-        ch4_busy => open,
-        ch4_result => adc4_result,
-        ch4_valid => adc4_valid,
-        ch5_sel => adc5_sel,
-        ch5_start => adc5_start,
-        ch5_busy => open,
-        ch5_result => adc5_result,
-        ch5_valid => adc5_valid,
-        ch6_sel => adc6_sel,
-        ch6_start => adc6_start,
-        ch6_busy => open,
-        ch6_result => adc6_result,
-        ch6_valid => adc6_valid,
-        ch7_sel => adc7_sel,
-        ch7_start => adc7_start,
-        ch7_busy => open,
-        ch7_result => adc7_result,
-        ch7_valid => adc7_valid
-      );
-  end generate;
+  ADC : ADC_Controller
+    port map (
+      sys_clk => sys_clk,
+      sys_clk_locked => pll_locked,
+      adc_clk => adc_conv_clk,
+      adc_clk_locked => pll_locked,
+      reset => '0',
+      ch0_sel => adc0_sel,
+      ch0_start => adc0_start,
+      ch0_result => adc0_result,
+      ch0_valid => adc0_valid,
+      ch1_sel => adc1_sel,
+      ch1_start => adc1_start,
+      ch1_result => adc1_result,
+      ch1_valid => adc1_valid
+    );
 
   SDRAM_Analyzer : OLS_Logic_Analyzer
    GENERIC MAP (
@@ -1027,3 +910,4 @@ BEGIN
     CRC_Poly   => x"A001"
   );
 END BEHAVIORAL;
+

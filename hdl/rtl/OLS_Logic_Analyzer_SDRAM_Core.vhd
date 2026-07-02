@@ -429,7 +429,7 @@ BEGIN
     Blk_Rd_Req_Tog    => blk_rd_req_tog_i,
     Blk_Rd_Base       => blk_rd_base_i,
     Blk_Rd_Count      => blk_rd_count_i,
-    Compress_Enable     => compress_enable_i,
+    Compress_Enable     => '0',
     Auto_Renew        => auto_renew_i,
     Rd_Fifo_Q         => rd_fifo_q_i,
     Rd_Fifo_Empty     => rd_fifo_empty_i,

@@ -35,11 +35,11 @@ class TestAnalogFrameStride:
         assert analog_frame_stride(MODE_DIGITAL) == 2
 
     def test_mixed(self):
-        assert analog_frame_stride(MODE_MIXED) == 14
+        assert analog_frame_stride(MODE_MIXED) == 5
 
     def test_analog_only(self):
         assert analog_frame_stride(MODE_ANALOG_FAST) == 2
-        assert analog_frame_stride(MODE_ANALOG_ALL) == 12
+        assert analog_frame_stride(MODE_ANALOG_ALL) == 3
 
     def test_mode_without_mixed_bit_defaults_to_2(self):
         assert analog_frame_stride(0x03) == 2
@@ -80,35 +80,27 @@ class TestDecodeAnalogFrames:
         assert rows[1]["digital"] == 0x0002
         assert rows[2]["digital"] == 0x0004
 
-    def test_mixed_all8(self):
+    def test_mixed_all2(self):
         frame = bytes([
             0xBB, 0xAA,
             0x23, 0x61, 0x45,
-            0x89, 0xC7, 0xAB,
-            0xEF, 0x2D, 0x01,
-            0x45, 0x83, 0x67,
         ])
         rows = decode_analog_frames(frame, MODE_MIXED)
         assert rows[0]["digital"] == 0xAABB
-        assert rows[0]["adc"] == [0x123, 0x456, 0x789, 0xABC,
-                                  0xDEF, 0x012, 0x345, 0x678]
+        assert rows[0]["adc"] == [0x123, 0x456]
 
     def test_fast_analog_one_channel(self):
         rows = decode_analog_frames(bytes([0x23, 0x01]), MODE_ANALOG_FAST)
         assert rows[0]["digital"] is None
         assert rows[0]["adc"] == [0x123]
 
-    def test_maximum_analog_all8(self):
+    def test_maximum_analog_all2(self):
         frame = bytes([
             0x23, 0x61, 0x45,
-            0x89, 0xC7, 0xAB,
-            0xEF, 0x2D, 0x01,
-            0x45, 0x83, 0x67,
         ])
         rows = decode_analog_frames(frame, MODE_ANALOG_ALL)
         assert rows[0]["digital"] is None
-        assert rows[0]["adc"] == [0x123, 0x456, 0x789, 0xABC,
-                                  0xDEF, 0x012, 0x345, 0x678]
+        assert rows[0]["adc"] == [0x123, 0x456]
 
     def test_empty_data(self):
         rows = decode_analog_frames(b'', MODE_DIGITAL)
@@ -201,7 +193,7 @@ class TestOLSDeviceSPI:
 
     def test_decode_analog_frames_explicit_mode(self, device_spi):
         result = device_spi.decode_analog_frames(
-            bytes([0x3C, 0x00]) + bytes(12),
+            bytes([0x3C, 0x00]) + bytes(6),
             mode=MODE_MIXED,
         )
         assert result[0]["digital"] == 0x003C
@@ -550,19 +542,18 @@ class TestOLSDeviceSPICapture:
         device_spi.pkt.arm_capture.return_value = ST_OK
         device_spi.pkt.get_status.return_value = {
             'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
-        # One 14-byte mixed frame, carried densely on the wire: the FPGA packs
+        # One 5-byte mixed frame, carried densely on the wire: the FPGA packs
         # 2 samples per 32-bit block entry, so the wire is already contiguous
         # 16-bit little-endian words (wire_to_payload is identity).
-        frame = bytes([0xBB, 0xAA, 0x23, 0x61, 0x45, 0x89, 0xC7, 0xAB,
-                       0xEF, 0x2D, 0x01, 0x45, 0x83, 0x67])
+        frame = bytes([0xBB, 0xAA, 0x23, 0x61, 0x45])
         device_spi._stream_readback = MagicMock(return_value=frame)
         result, decoded = device_spi.capture_analog(
             rate_hz=100000, frames=1, mode=MODE_MIXED)
-        assert len(result) == 14, f"expected 14 bytes, got {len(result)}"
+        assert len(result) == 5, f"expected 5 bytes, got {len(result)}"
         assert result == frame, f"frame mismatch: {result.hex()}"
         assert len(decoded) == 1
         assert decoded[0]["digital"] == 0xAABB
-        assert decoded[0]["adc"] == [0x123, 0x456, 0x789, 0xABC, 0xDEF, 0x012, 0x345, 0x678]
+        assert decoded[0]["adc"] == [0x123, 0x456]
 
     def test_capture_analog_only_roundtrip(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -707,37 +698,56 @@ class TestOLSDeviceSPII2CCapture:
 
 
 class TestOLSDeviceSPIRolling:
-    def test_stream_ring_capture_polls_status_periodically(self, device_spi):
+    def test_stream_ring_capture_reads_ring_via_block_reads(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi.pkt.write_register.return_value = True
         device_spi.pkt.arm_capture.return_value = ST_OK
         device_spi.pkt.get_status.side_effect = [
-            {'oldest_index': 0},
-            {'producer_index': 4, 'overrun_count': 0},
+            {'producer_index': 4, 'oldest_index': 0, 'overrun_count': 0},
+            {'producer_index': 8, 'oldest_index': 0, 'overrun_count': 0},
+            {'producer_index': 12, 'oldest_index': 0, 'overrun_count': 0},
         ]
-        device_spi.pkt.start_stream_read.side_effect = [
-            (4, 0, b'\x01\x00' * 4),
-            (8, 4, b'\x02\x00' * 4),
-            (12, 8, b'\x03\x00' * 4),
-            (16, 12, b'\x04\x00' * 4),
-            (20, 16, b''),
-        ]
+        device_spi.read_capture_range = MagicMock(side_effect=[
+            b'\x01\x00' * 4,
+            b'\x02\x00' * 4,
+            b'\x03\x00' * 4,
+        ])
         device_spi.spi.flush = MagicMock()
 
         stop_evt = MagicMock()
-        stop_evt.is_set.side_effect = [False] * 8
-        with patch.dict(os.environ, {"OLS_STREAM_STATUS_INTERVAL": "4"}):
-            results = list(device_spi.stream_ring_capture(
-                1_000_000, 4, stop_evt))
+        stop_evt.is_set.side_effect = [False, False, False, True]
+        stop_evt.wait.return_value = False
+        results = list(device_spi.stream_ring_capture(1_000_000, 4, stop_evt))
 
-        assert [item[1] for item in results] == [4, 8, 12, 16]
-        assert device_spi.pkt.get_status.call_count == 2
-        device_spi.pkt.start_stream_read.assert_has_calls([
-            call(0, 8, stop_evt),
-            call(4, 8, stop_evt),
-            call(8, 8, stop_evt),
-            call(12, 8, stop_evt),
+        assert [item[1] for item in results] == [4, 8, 12]
+        device_spi.read_capture_range.assert_has_calls([
+            call(0, 4), call(4, 4), call(8, 4)])
+        device_spi.pkt.transaction.assert_called_with(
+            CMD_ABORT_CAPTURE, timeout=0.5)
+
+    def test_stream_ring_capture_resyncs_to_oldest_after_overrun(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.side_effect = [
+            {'producer_index': 4, 'oldest_index': 0, 'overrun_count': 0},
+            # Writer lapped the reader: overrun count bumps, oldest advances.
+            {'producer_index': 300, 'oldest_index': 128, 'overrun_count': 2},
+        ]
+        device_spi.read_capture_range = MagicMock(side_effect=[
+            b'\x01\x00' * 4,
+            b'\x02\x00' * 4,
         ])
+        device_spi.spi.flush = MagicMock()
+
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False, False, True]
+        stop_evt.wait.return_value = False
+        results = list(device_spi.stream_ring_capture(1_000_000, 4, stop_evt))
+
+        assert [item[3] for item in results] == [0, 2]
+        device_spi.read_capture_range.assert_has_calls([
+            call(0, 4), call(128, 4)])
 
     def test_continuous_ring_capture_arms_once_and_reads_by_producer_index(self, device_spi):
         device_spi.pkt = MagicMock()

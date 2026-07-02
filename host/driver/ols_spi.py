@@ -2,6 +2,7 @@
 OLS Logic Analyzer - SPI Host Library
 Fixed MPSSE driver: batched writes, 0x87, correct init, drain.
 """
+import threading
 import time
 
 # ftd2xx wraps the native FTDI D2XX library and is only needed to talk to real
@@ -440,7 +441,13 @@ class OLS:
         return self._read_n(read_len, timeout=max(0.5, n_bytes / max(self.speed_hz / 8, 1) + 0.5))
 
     def stream_payload(self, payload, stop_evt=None):
-        """Clock an arbitrary payload under one CS-held transaction."""
+        """Clock an arbitrary payload under one CS-held transaction.
+
+        The response is drained by a reader thread concurrently with the
+        write: for payloads larger than the FTDI RX buffering (~64 KB) a
+        write-then-read sequence stalls the MPSSE mid-transaction once the
+        RX side backs up, which crippled batched block readback.
+        """
         payload = bytes(payload)
         if not payload:
             return b""
@@ -458,5 +465,12 @@ class OLS:
             pos += n
             remaining -= n
         buf += bytes([0x87, 0x80, GPIO_CS_HI, PIN_DIR, 0x87])
+        timeout = max(0.5, len(payload) / max(self.speed_hz / 8, 1) + 0.5)
+        result = []
+        reader = threading.Thread(
+            target=lambda: result.append(self._read_n(len(payload), timeout=timeout)),
+            daemon=True)
+        reader.start()
         self.dev.write(buf)
-        return self._read_n(len(payload), timeout=max(0.5, len(payload) / max(self.speed_hz / 8, 1) + 0.5))
+        reader.join(timeout + 1.0)
+        return result[0] if result else b''

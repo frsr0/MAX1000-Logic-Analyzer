@@ -29,12 +29,29 @@ set_clock_groups -asynchronous \
   -group [get_clocks {*pll_inst|*clk[1]}] \
   -group [get_clocks {*pll_inst|*clk[2]}]
 
-# Source-synchronous SPI pins (not system clocks).  SPI_SCK clocks the MISO
-# shifter registers; SPI_CS enables a latch.  These are asynchronous to all
-# PLL-derived clocks and are handled by the SPI protocol timing.
+# External SPI timing:
+# - SPI_SCK is the FTDI-generated clock that times the slave interface.
+# - MOSI is captured relative to that clock.
+# - MISO is launched relative to that same clock.
+# The hardware validation suite treats 15 MHz as the validated ceiling.
+create_clock -name SPI_SCK_EXT -period 66.667 [get_ports SPI_SCK]
+create_clock -name SPI_CS_QUAL -period 1000.000 [get_ports SPI_CS]
+set_input_delay -clock [get_clocks SPI_SCK_EXT] -max 12.0 [get_ports SPI_MOSI]
+set_input_delay -clock [get_clocks SPI_SCK_EXT] -min 0.0 [get_ports SPI_MOSI]
+set_output_delay -clock [get_clocks SPI_SCK_EXT] -max 12.0 [get_ports SPI_MISO]
+set_output_delay -clock [get_clocks SPI_SCK_EXT] -min -2.0 [get_ports SPI_MISO]
+
+# The SPI chip-select is used as an asynchronous qualifier/reset, not a clock.
+# Keep it out of the timed datapaths.
 set_false_path -from [get_ports {SPI_SCK SPI_CS}]
 set_false_path -to   [get_ports {SPI_SCK SPI_CS}]
 set_false_path -from [get_ports {SPI_MOSI}]  -to [all_registers]
+set_clock_groups -asynchronous \
+  -group [get_clocks SPI_SCK_EXT] \
+  -group [get_clocks SPI_CS_QUAL] \
+  -group [get_clocks {*pll_inst|*clk[0]}] \
+  -group [get_clocks {*pll_inst|*clk[1]}] \
+  -group [get_clocks {*pll_inst|*clk[2]}]
 
 # Async FIFO internal gray-code synchronizer paths
 # The dcfifo megafunction generates these internally; they are intentional

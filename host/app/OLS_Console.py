@@ -66,7 +66,7 @@ class OLScope:
         self.win = root  # may be None for CLI
         self.ch_data = []
         self.ch_names = [f"CH{i}" for i in range(NUM_CHANNELS)]
-        self.capture_mode = MODE_MIXED  # 16 Dig + 8 Ana
+        self.capture_mode = MODE_MIXED  # 16 Dig + 2 Ana
         self.last_analog_frames = []
         self.samplerate = 1_000_000
         self.captured_bytes = b''
@@ -82,6 +82,8 @@ class OLScope:
         self.capture_stride = 4
         self.capture_window = 50000
         self.capture_type = 'rolling'              # 'single' or 'rolling'
+        self.compress_enabled = False
+        self.compress_var = None
         self._last_live_redraw = 0
         self.stop_evt = threading.Event()
         self._pending_restart = False
@@ -383,10 +385,10 @@ class OLScope:
     # ─── Capture Tab ─────────────────────────────────────────────
 
     MODE_OPTIONS = [
-        '16 Digital', '16 Dig + 8 Ana',
+        '16 Digital', '16 Dig + 2 Ana',
     ]
 
-    ROLLING_READBACK_MB_PER_S = 80  # 30 MB/s x 2.67x compression
+    ROLLING_READBACK_MB_PER_S = 30  # raw rolling throughput before compression
     ROLLING_READBACK_MB_PER_S_COMPRESSED = 80
 
     def _build_capture_tab(self, nb):
@@ -402,13 +404,13 @@ class OLScope:
         ttk.Label(cap_f, text="Mode:").grid(row=row, column=0, sticky='w')
         self.mode_cb = ttk.Combobox(cap_f, values=self.MODE_OPTIONS,
                                     width=16, state='readonly')
-        self.mode_cb.set('16 Dig + 8 Ana')
+        self.mode_cb.set('16 Dig + 2 Ana')
         self.mode_cb.grid(row=row, column=1, columnspan=3, sticky='w', padx=2)
         self.mode_cb.bind('<<ComboboxSelected>>', self._mode_changed)
         row += 1
 
-        # Mixed mode always captures all 8 ADC channels (A0-A7, fixed map)
-        self._analog_info = ttk.Label(cap_f, text="Analog: A0-A7 (all 8 ADC channels)")
+        # Mixed mode now captures 2 ADC channels on the reduced analogue path.
+        self._analog_info = ttk.Label(cap_f, text="Analog: A0-A1 (2 ADC channels)")
         self._analog_info.grid(row=row, column=1, columnspan=3, sticky='w')
         row += 1
 
@@ -419,9 +421,16 @@ class OLScope:
         self.rate_info_lbl.grid(row=row, column=0, columnspan=4, sticky='w', pady=(2, 4))
         row += 1
         # Compression checkbox
+        try:
+            self.compress_var = tk.BooleanVar(master=self.win, value=False)
+        except Exception:
+            # Tests run with a mocked root; keep the logic on a plain boolean.
+            self.compress_var = None
         self.compress_cb = ttk.Checkbutton(
             cap_f, text='Compressed readback (2.67x more SPI throughput)',
-            variable=self.compress_var)
+            command=self._on_compress_changed)
+        if self.compress_var is not None:
+            self.compress_cb.configure(variable=self.compress_var)
         self.compress_cb.grid(row=row, column=0, columnspan=4, sticky='w', padx=8)
         row += 1
         ttk.Separator(cap_f, orient='horizontal').grid(
@@ -652,14 +661,14 @@ class OLScope:
                 pass
         if self.capture_type.get() == 'rolling':
             stride = analog_frame_stride(mode)
-            compress = self.compress_var.get()
+            compress = self.compress_enabled
             mb_effective = self.ROLLING_READBACK_MB_PER_S_COMPRESSED if compress else self.ROLLING_READBACK_MB_PER_S
             rolling_limit = int(mb_effective * 1_000_000 / stride)
             max_rate = min(max_rate, rolling_limit)
         return max_rate
 
     def _update_rate_info(self):
-        compress = self.compress_var.get()
+        compress = self.compress_enabled
         if compress:
             mb_effective = self.ROLLING_READBACK_MB_PER_S_COMPRESSED
         else:
@@ -668,25 +677,32 @@ class OLScope:
         mode = self._get_capture_mode()
         stride = analog_frame_stride(mode)
         mb_per_s = rate * stride / 1_000_000
-        max_rate = self._get_max_rate()
         if self.capture_type.get() == 'rolling':
             rolling_max = int(mb_effective * 1_000_000 / stride)
             if rate > rolling_max:
                 self.rate_info_var.set(
-                    f"{self._fmt_rate(rate)} → {mb_per_s:.1f} MB/s  "
-                    f"⚠ Rolling limited to {self._fmt_rate(rolling_max)} — use Single"
+                    f"{self._fmt_rate(rate)} -> {mb_per_s:.1f} MB/s  |  Rolling limited to {self._fmt_rate(rolling_max)} - use Single"
                 )
                 self.rate_info_lbl.configure(foreground='#c00')
             else:
                 self.rate_info_var.set(
-                    f"{self._fmt_rate(rate)} → {mb_per_s:.1f} MB/s  |  OK for rolling"
+                    f"{self._fmt_rate(rate)} -> {mb_per_s:.1f} MB/s  |  OK for rolling"
                 )
                 self.rate_info_lbl.configure(foreground='#555')
         else:
             self.rate_info_var.set(
-                f"{self._fmt_rate(rate)} → {mb_per_s:.1f} MB/s  |  Single-shot OK"
+                f"{self._fmt_rate(rate)} -> {mb_per_s:.1f} MB/s  |  Single-shot OK"
             )
             self.rate_info_lbl.configure(foreground='#555')
+
+    def _on_compress_changed(self):
+        if self.compress_var is not None and hasattr(self.compress_var, 'get'):
+            try:
+                self.compress_enabled = bool(self.compress_var.get())
+                return
+            except Exception:
+                pass
+        self.compress_enabled = bool(getattr(self, 'compress_enabled', False))
 
     def _update_buf_presets(self, event=None):
         """Regenerate buffer combobox values with MB sizes based on current rate+mode."""
@@ -907,7 +923,7 @@ class OLScope:
     def _get_capture_mode(self):
         mode_map = {
             '16 Digital': MODE_DIGITAL,
-            '16 Dig + 8 Ana': MODE_MIXED,
+            '16 Dig + 2 Ana': MODE_MIXED,
         }
         return mode_map.get(self.mode_cb.get(), MODE_DIGITAL)
 
@@ -1070,11 +1086,13 @@ class OLScope:
                 self._apply_schmitt()
                 if proto_enable:
                     self.dev.trigger_decode(match_byte=match_byte, channel=proto_ch, baud=proto_baud, enable=True)
-                # Live/rolling delta-compressed readback is still gated behind
-                # an experimental transport path; the stable production path is
-                # single-capture decompression only for now.
-                use_compress = bool(
-                    self.compress_var.get() and self.capture_mode == MODE_DIGITAL and not rolling)
+                # Delta-compressed readback is disabled: the current bitstream
+                # has the readout compressor hardwired off (LE budget), and the
+                # fixed-192-word compressed block protocol cannot round-trip
+                # arbitrary digital data (the compressor is variable-rate).
+                # Readback always returns raw samples; decompressing them
+                # would corrupt the capture.
+                use_compress = False
                 self.dev.set_compression_enabled(use_compress)
                 if rolling:
                     buf_nsamp = self.capture_window
@@ -1112,6 +1130,12 @@ class OLScope:
                     for buf, got, total in gen:
                         # buf is dense payload for mixed (de-interleaved by
                         # rolling_capture), raw wire for digital.
+                        if proto_enable and not ana:
+                            try:
+                                buf, _ = self.dev.apply_protocol_trigger(
+                                    buf, rate, stride=as_)
+                            except Exception:
+                                pass
                         self.capture_partial = buf
                         self.capture_progress = (got, total)
                         if ana:
@@ -1151,10 +1175,14 @@ class OLScope:
                         print(f"[DBG] capture returned {len(data)} bytes")
                         if len(data) >= 8:
                             print(f"[DBG] first 8 bytes hex: {data[:8].hex()}")
-                        # Decompress if compression was enabled
-                        if self.compress_var.get() and self.capture_mode == MODE_DIGITAL:
-                            data = decompress_delta_stream(data)
-                            nsamp = len(data) // 2
+                        # Compressed readback is disabled (see use_compress
+                        # above): data is always raw 16-bit samples.
+                        if proto_enable and self.capture_mode == MODE_DIGITAL:
+                            try:
+                                data, _ = self.dev.apply_protocol_trigger(
+                                    data, rate, stride=getattr(self.dev, '_stride', 4))
+                            except Exception:
+                                pass
                         self.capture_result = (data, rate, nsamp)
             except Exception as e:
                 self.capture_result = e
@@ -1175,6 +1203,18 @@ class OLScope:
 
     def _capture_progress(self, partial_data, got, total):
         self.capture_progress = (got, total)
+        if partial_data and self.capture_mode == MODE_DIGITAL and self.dev:
+            try:
+                cfg = self.dev.protocol_trigger()
+            except Exception:
+                cfg = None
+            if cfg:
+                try:
+                    partial_data, _ = self.dev.apply_protocol_trigger(
+                        partial_data, getattr(self, 'samplerate', 0),
+                        stride=getattr(self.dev, '_stride', 4))
+                except Exception:
+                    pass
         self.capture_partial = partial_data
 
     def _update_gen_buttons(self):
@@ -1351,7 +1391,9 @@ class OLScope:
         self.last_analog_frames = rows
         digital = [[] for _ in range(NUM_CHANNELS)]
         analog_series = []
-        analog_count = 8 if mode & MODE_MIXED else 0
+        analog_count = len(rows[0].get('adc', [])) if rows else 0
+        if analog_count == 0 and (mode & MODE_MIXED):
+            analog_count = 4
         if analog_count > 0:
             analog_series = [[] for _ in range(analog_count)]
         for row in rows:
@@ -2220,3 +2262,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

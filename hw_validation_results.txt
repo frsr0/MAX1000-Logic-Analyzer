@@ -1,0 +1,17 @@
+OLS MAX1000 — batched block-read data path validation (2026-07-02)
+SPI SCK 30 MHz (validated) | sample clock 200 MHz
+
+[1] deep capture 4,194,304 samples @ 2 MS/s ...
+    capture status: 18 (18=DONE)
+    readback: 8,388,608 bytes in 3.71 s = 2.26 MB/s (1.13 MS/s equivalent)
+    integrity (first 1M samples): dominant ch0 interval=20 purity=86.5% single-sample glitches=1826 (glitches are capture-side; see [2])
+[2] readback determinism: repeat-read mismatches=0/100000, phase-shifted-read mismatches=0/100000
+    -> readback is bit-exact; residual ch0 glitches are already in SDRAM (pre-existing write-side drops)
+[3] windowed live (arm -> capture -> batched read -> re-arm):
+    @2 MS/s window 256K: effective 0.68 MS/s, coverage 34%, interval purity 87.5%
+    @5 MS/s window 256K: effective 0.84 MS/s, coverage 17%, interval purity 65.6%
+
+Continuous (gapless) live streaming remains blocked by an FPGA-side
+read/write arbitration wedge during active capture (block reads stall
+after ~5k samples of concurrent capture; spurious ST_CAPTURE_IDLE
+responses ~444 us after each read). Needs RTL work + refit.

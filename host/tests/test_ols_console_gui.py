@@ -134,10 +134,10 @@ class TestOLScopeGetters:
         assert scope._get_capture_mode() == MODE_DIGITAL
 
     def test_get_capture_mode_mixed(self):
-        """'16 Dig + 8 Ana' maps to MODE_MIXED."""
+        """'16 Dig + 2 Ana' maps to MODE_MIXED."""
         scope = _make_scope()
         scope.mode_cb = MagicMock()
-        scope.mode_cb.get.return_value = '16 Dig + 8 Ana'
+        scope.mode_cb.get.return_value = '16 Dig + 2 Ana'
         assert scope._get_capture_mode() == MODE_MIXED
 
 
@@ -205,19 +205,19 @@ class TestOLScopeRateLimits:
         rate = scope._apply_rate('96MHz')
         assert rate <= 15_000_000
 
-    def test_rolling_8ana_clamps(self):
-        """Rolling 8-ana clamps to ~2.14 MHz (30 MB/s / 14 B)."""
+    def test_rolling_2ana_clamps(self):
+        """Rolling 2-ana clamps to ~6 MHz (30 MB/s / 5 B)."""
         scope = _make_scope()
         scope.capture_type = MagicMock()
         scope.capture_type.get.return_value = 'rolling'
         scope.mode_cb = MagicMock()
-        scope.mode_cb.get.return_value = '16 Dig + 8 Ana'
+        scope.mode_cb.get.return_value = '16 Dig + 2 Ana'
         scope._update_time_display = MagicMock()
         scope._update_rate_info = MagicMock()
         scope._update_buf_estimate = MagicMock()
         rate = scope._apply_rate('96MHz')
-        assert rate <= 2_150_000
-        assert rate > 2_000_000
+        assert rate <= 6_000_000
+        assert rate > 5_500_000
 
 
 # ====================================================================
@@ -324,8 +324,8 @@ class TestCapturePaths:
         scope = _mk_scope_for_capture(capture_type='rolling')
         scope._capture()
 
-    def test_single_8ana_path(self):
-        """Single 8-analog capture reaches thread creation."""
+    def test_single_2ana_path(self):
+        """Single 2-analog capture reaches thread creation."""
         scope = _mk_scope_for_capture(capture_type='single', mode=MODE_MIXED)
         scope._capture()
 
