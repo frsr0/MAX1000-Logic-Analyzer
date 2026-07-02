@@ -76,6 +76,23 @@ Capture engine with two-clock domain split.
 - **Readout**: Address-driven SDRAM reads → `Outputs`; continuous readout maps absolute sample indexes into the ring
 - **Producer-done completion**: single-shot `full_i` asserts when the FAST-domain producer-done bit (`cap_done_toggle_f`, synced to `producer_done_q`) is seen **and** the write FIFO has been continuously empty for a drain window — not on an exact SDRAM write-count. This makes completion robust to the packed producer falling a few words short or a rare marginal write (which would otherwise hang the host on `BUSY`). Pump performance counters (valid/ready/accept/stall/nodata/overflow) are exposed via SPI regs `0x60`–`0x65`.
 
+**2026-07-02 datapath fixes (HW-validated):**
+- **Write-pump pop bubble**: `fifo_rd` is a registered pop against the
+  show-ahead capture FIFO, so the head word only advances two cycles after an
+  SDRAM accept. Sustained `cap_stream_ready` therefore wrote every sample to
+  SDRAM **twice** — producer counted 2× real samples, the wire carried each
+  sample as an identical word pair (the legacy "4 wire bytes per sample"
+  stride), and every displayed frequency was half of reality. One valid-low
+  bubble cycle after each accept fixes it; samples are now dense 16-bit words
+  (host `_stride = 2`).
+- **Streaming-readout watchdog + retry**: an SDRAM read issued concurrently
+  with capture writes occasionally went unanswered (stochastic arbitration
+  loss), wedging the readout in `rd_pend2` forever and starving the write
+  pump. The address now advances on completion (not issue), and a ~12 µs
+  watchdog drops and reissues the same address. Regression:
+  `tb_repeated_blockreads` (FLA level), `tb_core_batched_reads` (full core,
+  30 MHz SCK, production slot spacing).
+
 ### `rtl/OLS_SDRAM_Top.vhd` (~940 lines)
 
 **Entity:** `OLS_SDRAM_Top`
@@ -94,7 +111,19 @@ Core wrapper. Instantiates `OLS_Interface`, `Fast_Logic_Analyzer_SDRAM`, `Signal
 
 Command/control interface. Packet opcodes cover register access, capture control, generator, diagnostics, sticky DONE ACK, and metadata readback. DONE latches until ACK, abort, or the next arm; `capture_seq` increments on every arm so the host can prove readback freshness. `REG_FLAGS` includes analog profile/channel bits plus narrow digital enable/channel bits. `ID = 0x31414c53` ("SLA1").
 
-### `rtl/SPI_Slave2.vhd` (~190 lines)
+All block reads (CMD_READ_CAPTURE and CMD_READ_STREAM_BLOCK) are raw
+512-sample / 1024-byte responses served through the block-read FSM +
+`WAIT_BLOCK`. The idle-loop SDRAM *prefetch* was removed (2026-07-02): a
+prefetched block was never released, so its stuck ack made the next host
+request serve the wrong address's data while that request's own issue was
+silently dropped, and during continuous capture the prefetch reissued
+endlessly, stealing the SDRAM bus from the write pump (the "during-capture
+read wedge"). Delta-compressed readback is retired with it —
+`Compress_Enable` is constant '0' and `blk_rsp_words` is always
+BLOCK_SAMPLES (the variable-rate compressor could not honour the fixed
+192-word protocol). Regression: `tb_batched_reads`.
+
+### `rtl/SPI_Slave2.vhd` (~200 lines)
 
 **Entity:** `SPI_Slave2`
 
@@ -109,10 +138,21 @@ Full-duplex SPI slave at 30 MHz SCK (FT2232H MPSSE ceiling). Three clock domains
   clocked on the real SCK falling edge — zero synchroniser latency on MISO
   output, byte loads from `tx_data_f` at byte boundaries.
 - **`sys_clk` (100 MHz)**: `RX_Data`/`RX_Valid`/`TX_Ready` outputs via 3FF
-  synchronisers.
+  synchronisers. `CS_Rise` crosses via a **toggle CDC** — it was previously a
+  single 5 ns fast-clock pulse sampled by 100 MHz flops, so consumers (packet
+  parser resync, dispatcher `streaming_active` clear) caught or missed CS
+  boundaries at random.
 
 The preamble byte (SPI_Preamble, a quasi-static status byte) is preloaded
 from a 2FF CDC (`preamble_f`) when CS_n is idle.
+
+**Known timing quirk (harmless since the parser self-heal):** a
+transaction's final byte is delivered to `sys_clk` consumers shortly *after*
+the CS_Rise event, because the RX-byte CDC is longer than the CS one. The
+packet parser used to lose sync-hunt parity over this and silently swallow
+the next frame; `spi_packet_rx` now treats any hunted 0x55 as a potential
+sync start, so a stray odd byte can no longer desynchronise it
+(regression: `tb_batched_reads`).
 
 ### `rtl/SDRAM_Interface.vhd` (191 lines)
 
@@ -209,6 +249,7 @@ ghdl -r --std=08 <testbench> --assert-level=failure
 | `tb_stream_tput` | — | Controller-only saturated streaming-write throughput (cycles/write, STRICT inter-command timing) |
 | `tb_pump_tput` | — | Full-path FLA write-pump throughput via the SPI pump counters |
 | `tb_spi_slave` | 107 | Full-duplex at 10 MHz |
+| `tb_batched_reads` | ~380 | CS-held batched CMD_READ_CAPTURE during continuous capture at 30 MHz SCK + production slot spacing: one correct-address response per request, no stale prefetch data, no duplicates; also covers the parser sync self-heal against the late final byte |
 | `tb_signal_gen` | 221 | FIFO load, UART 0x55 at 115200 |
 | `tb_led_controller` | 205 | PWM, fade, all animation states |
 | `tb_adc_controller` | 102 | ADC single conv, multi-channel scan |

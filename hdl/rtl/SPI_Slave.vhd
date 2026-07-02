@@ -64,9 +64,14 @@ architecture rtl of SPI_Slave2 is
   signal rx_valid_s3 : std_logic := '0';
   signal rx_valid_pending : std_logic := '0';
   signal rx_valid_q  : std_logic := '0';
-  signal cs_rise_s1  : std_logic := '0';
-  signal cs_rise_s2  : std_logic := '0';
-  signal cs_rise_s3  : std_logic := '0';
+  -- CS rise crossing: toggle CDC. The old scheme synchronized a single
+  -- fast_clk-wide (5 ns) cs_rise pulse into the 100 MHz domain with plain
+  -- FF sampling — the pulse was caught or missed at random, so consumers
+  -- (packet parser resync, dispatcher streaming_active clear) raced.
+  signal cs_rise_tog : std_logic := '0';
+  signal cs_rise_t1  : std_logic := '0';
+  signal cs_rise_t2  : std_logic := '0';
+  signal cs_rise_t3  : std_logic := '0';
 begin
 
   -- TX_Data CDC: sys_clk -> fast_clk
@@ -113,6 +118,7 @@ begin
       if cs_sync = '0' and cs_prev = '1' then cs_fall <= '1';
       else cs_fall <= '0'; end if;
       if cs_sync = '1' and cs_prev = '0' then cs_rise_int <= '1';
+                                              cs_rise_tog <= not cs_rise_tog;
       else cs_rise_int <= '0'; end if;
       if cs_sync = '0' then cs_active <= '1';
       else cs_active <= '0'; end if;
@@ -175,9 +181,9 @@ begin
       rx_valid_s1 <= rx_valid_f;
       rx_valid_s2 <= rx_valid_s1;
       rx_valid_s3 <= rx_valid_s2;
-      cs_rise_s1  <= cs_rise_int;
-      cs_rise_s2  <= cs_rise_s1;
-      cs_rise_s3  <= cs_rise_s2;
+      cs_rise_t1  <= cs_rise_tog;
+      cs_rise_t2  <= cs_rise_t1;
+      cs_rise_t3  <= cs_rise_t2;
       rx_valid_q <= rx_valid_pending;
       rx_valid_pending <= '0';
       if rx_valid_s2 = '1' and rx_valid_s3 = '0' then
@@ -189,7 +195,7 @@ begin
 
   RX_Data  <= rx_byte_q;
   RX_Valid <= rx_valid_q;
-  CS_Rise  <= cs_rise_s2 and not cs_rise_s3;
+  CS_Rise  <= cs_rise_t2 xor cs_rise_t3;
 
   tx_ready_delay: process(sys_clk)
   begin

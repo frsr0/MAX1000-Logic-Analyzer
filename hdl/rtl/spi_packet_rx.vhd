@@ -84,6 +84,14 @@ begin
               if rx_byte & sync_low = SYNC_REQ then
                 state <= GET_CMD;
                 crc_int := 65535;
+              elsif rx_byte = SYNC_REQ(7 downto 0) then
+                -- Self-healing hunt: this byte can start a new sync pair.
+                -- Without this, a single odd byte in the idle stream (e.g.
+                -- the SPI slave delivering a transaction's final byte after
+                -- the CS_Rise resync) flips the hunt parity and every
+                -- following frame is consumed silently.
+                sync_low := rx_byte;
+                err_bad_sync <= '1';
               else
                 state <= WAIT_SYNC0;
                 err_bad_sync <= '1';

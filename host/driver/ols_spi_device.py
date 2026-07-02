@@ -71,8 +71,10 @@ def analog_frame_stride(mode):
 
 
 def analog_wire_stride(mode):
-    # Bytes per frame as delivered over SPI (32-bit words, payload in low 16).
-    return analog_frame_stride(mode) * 2
+    # Bytes per frame as delivered over SPI: the frame is carried as dense
+    # 16-bit words, so odd frame strides round up to a whole word. (Before the
+    # 2026-07-02 pump fix every word was duplicated, making this frame*2.)
+    return 2 * ((analog_frame_stride(mode) + 1) // 2)
 
 
 def wire_to_payload(data):
@@ -234,7 +236,11 @@ class OLSDeviceSPI:
         self.sys_clk = sys_clk_hz
         self.sample_clk = sys_clk_hz  # updated by _detect_sample_clk
         self.fast_mode_enabled = True
-        self._stride = 4
+        # Wire bytes per digital sample. The FPGA write pump used to store
+        # every sample twice (registered pop vs show-ahead FIFO), so the wire
+        # carried 4 bytes per real sample; since the 2026-07-02 pump fix each
+        # sample is one dense 16-bit word.
+        self._stride = 2
         self._raw_flags = 0
         self._pending_gen = None
         self.gen_pins = {'tx': 3, 'scl': 1}
@@ -368,10 +374,11 @@ class OLSDeviceSPI:
         # fallback: leave as default
 
     def raw_mode(self, enable=True):
-        self._stride = 1 if enable else 4
+        self._stride = 1 if enable else 2
         self._raw_flags = 0
-        # SPI backend: raw mode is display-only. FPGA always sends 4 bytes/sample.
-        # _stride is used by the GUI to pick stride=1 for raw display.
+        # SPI backend: raw mode is display-only. The FPGA sends one dense
+        # 16-bit word (2 bytes) per sample; _stride is used by the GUI to
+        # pick stride=1 for raw display.
 
     def set_analog_config(self, mode, adc_channel=None, *_compat_args):
         """Set capture mode and optional high-speed ADC mux channel."""
@@ -420,13 +427,16 @@ class OLSDeviceSPI:
         return samples
 
     def _uart_baud_div(self, baud):
-        """Return the generator UART divider for the current firmware.
+        """Return the generator UART divider (full bit period in sys_clk ticks).
 
-        The Signal_Gen UART state machine advances on every other effective
-        bit tick in this build, so the programmed divider must be half the
-        nominal sys_clk/baud value for the wire baud to match the request.
+        The old //2 "half divider" made the generator transmit at TWICE the
+        requested baud on the wire; it only decoded correctly because the
+        capture path duplicated every sample (write-pump bug, fixed
+        2026-07-02), which stretched the observed bit widths back to nominal.
+        With dense samples the round trip proves sys_clk/baud is the correct
+        divider (115200 request decodes at 115200).
         """
-        return max(1, self.sys_clk // max(1, int(baud)) // 2)
+        return max(1, self.sys_clk // max(1, int(baud)))
 
     def set_debug_ch0(self, enable=True, freq_hz=None, duty_pct=50):
         if freq_hz is not None:
@@ -459,7 +469,7 @@ class OLSDeviceSPI:
     def protocol_trigger(self):
         return self._protocol_trigger
 
-    def protocol_trigger_match_pos(self, data, rate_hz, stride=4):
+    def protocol_trigger_match_pos(self, data, rate_hz, stride=2):
         """Return the sample position of the first frontend protocol match.
 
         The current frontend trigger is UART byte-based because the decoder
@@ -481,7 +491,7 @@ class OLSDeviceSPI:
                 return item.pos
         return None
 
-    def apply_protocol_trigger(self, data, rate_hz, stride=4):
+    def apply_protocol_trigger(self, data, rate_hz, stride=2):
         """Trim a capture to the first frontend protocol-trigger match."""
         pos = self.protocol_trigger_match_pos(data, rate_hz, stride=stride)
         if pos is None:

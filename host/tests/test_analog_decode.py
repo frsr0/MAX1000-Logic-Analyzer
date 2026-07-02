@@ -29,13 +29,13 @@ def test_stride_digital():
     assert analog_frame_stride(MODE_DIGITAL) == 2
 
 
-def test_wire_stride_is_double_payload():
-    # The SPI readout is 32-bit words (payload in the low 16 bits), so the
-    # wire carries twice the payload bytes per frame.
-    assert analog_wire_stride(MODE_DIGITAL) == 4
-    assert analog_wire_stride(MODE_MIXED) == 10
-    assert analog_wire_stride(MODE_ANALOG_FAST) == 4
-    assert analog_wire_stride(MODE_ANALOG_ALL) == 6
+def test_wire_stride_rounds_frames_to_words():
+    # Frames travel as dense 16-bit words since the write-pump duplication
+    # fix, so the wire stride is the frame stride rounded up to whole words.
+    assert analog_wire_stride(MODE_DIGITAL) == 2
+    assert analog_wire_stride(MODE_MIXED) == 6
+    assert analog_wire_stride(MODE_ANALOG_FAST) == 2
+    assert analog_wire_stride(MODE_ANALOG_ALL) == 4
 
 
 def test_wire_to_payload_is_identity():

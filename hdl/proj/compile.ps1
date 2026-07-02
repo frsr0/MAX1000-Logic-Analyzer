@@ -1,7 +1,12 @@
 param(
     [switch]$NoFlash,
     [switch]$Flash,
-    [int]$Seed = 21
+    # Seed 2 closes all corners at 98% LE utilization after the 2026-07-02
+    # prefetch removal + FLA read-retry + write-pump pop-bubble fixes
+    # (sweep: 14/-0.22, 27/-0.07, 42/-0.001, 5/-0.07, 11/-0.06, 19/-0.15,
+    # 2/+0.081). Placement is seed-sensitive at this density — re-sweep after
+    # any RTL change.
+    [int]$Seed = 2
 )
 
 

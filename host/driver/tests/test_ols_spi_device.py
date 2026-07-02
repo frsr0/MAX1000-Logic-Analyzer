@@ -115,7 +115,7 @@ class TestDecodeAnalogFrames:
 class TestOLSDeviceSPI:
     def test_init(self, device_spi):
         assert device_spi.sys_clk == 100000000
-        assert device_spi._stride == 4
+        assert device_spi._stride == 2
         assert device_spi.gen_pins == {'tx': 3, 'scl': 1}
         assert device_spi.analog_mode == MODE_DIGITAL
 
@@ -145,7 +145,7 @@ class TestOLSDeviceSPI:
 
     def test_raw_mode_disable(self, device_spi):
         device_spi.raw_mode(False)
-        assert device_spi._stride == 4
+        assert device_spi._stride == 2
 
     def test_set_analog_config(self, device_spi):
         device_spi.pkt = MagicMock()

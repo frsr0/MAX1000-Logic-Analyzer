@@ -1636,7 +1636,7 @@ def test_back_to_back_capture(dev):
             if block:
                 data.extend(block)
         data = bytes(data[:need])
-        ch, ns = samples_to_channels(data, stride=4)
+        ch, ns = samples_to_channels(data, stride=2)
         tr0 = sum(1 for i in range(1, ns) if ch[0][i] != ch[0][i - 1]) if ns else 0
         log(f"capture #{n + 1}: {len(data)} bytes, {ns} samples, CH0 {tr0} trans")
         if len(data) == need and tr0 > 10:

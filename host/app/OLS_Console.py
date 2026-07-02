@@ -1,6 +1,6 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
-OLS MaxScope — Protocol Analyzer & Generator for MAX1000
+OLS MaxScope â€” Protocol Analyzer & Generator for MAX1000
 A self-contained GUI for signal capture, protocol decode, and generation.
 Supports CLI mode for automated testing.
 """
@@ -41,7 +41,7 @@ try:
 except:
     HAS_TK = False
 
-# SPI backend only — all constants from driver.spi_protocol
+# SPI backend only â€” all constants from driver.spi_protocol
 
 NUM_CHANNELS = 16
 
@@ -55,7 +55,7 @@ from app.gui_decoders import (
 # Re-export waveform display from gui_waveform
 from app.gui_waveform import WaveformDisplay
 
-# ─── Main Application ───────────────────────────────────────────
+# â”€â”€â”€ Main Application â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class OLScope:
     """Main application: combines device control, waveform view, and protocol tools."""
@@ -100,16 +100,16 @@ class OLScope:
         self._build_ui()
 
     def _build_ui(self):
-        title = "OLS MaxScope — " + ("SPI @ 30 MHz" if self._backend == 'SPI' else "UART")
+        title = "OLS MaxScope â€” " + ("SPI @ 30 MHz" if self._backend == 'SPI' else "UART")
         self.win.title(title)
         self.win.geometry("1100x700")
         self.win.minsize(800, 500)
 
-        # ── Toolbar ──
+        # â”€â”€ Toolbar â”€â”€
         tb = ttk.Frame(self.win, padding=3)
         tb.pack(fill='x')
 
-        # Port connection group — hidden when connected
+        # Port connection group â€” hidden when connected
         self.port_frame = ttk.Frame(tb)
         self.port_frame.pack(side='left')
         ttk.Label(self.port_frame, text="Port:").pack(side='left')
@@ -154,7 +154,7 @@ class OLScope:
         self.rate_cb.bind('<<ComboboxSelected>>', self._update_time_display)
         self.time_entry.bind('<Return>', self._time_changed)
 
-        # ── Main area — waveform + side panel ──
+        # â”€â”€ Main area â€” waveform + side panel â”€â”€
         main = ttk.Frame(self.win)
         main.pack(fill='both', expand=True, padx=3)
 
@@ -184,7 +184,7 @@ class OLScope:
         side.pack_propagate(False)
         self._build_side_panel(side)
 
-        # ── Status bar ──
+        # â”€â”€ Status bar â”€â”€
         self.status = ttk.Label(self.win, text="Disconnected", relief='sunken', anchor='w')
         self.status.pack(fill='x')
 
@@ -289,7 +289,7 @@ class OLScope:
         # Capture tab (replaces old Trigger tab)
         self._build_capture_tab(nb)
 
-        # Decoder tab — filter + decoder configuration
+        # Decoder tab â€” filter + decoder configuration
         dec_f = ttk.Frame(nb, padding=5)
         nb.add(dec_f, text="Decode")
         row = 0
@@ -382,7 +382,7 @@ class OLScope:
         self.log_out.grid(row=row, column=0, columnspan=4, sticky='nsew')
         log_f.columnconfigure(1, weight=1)
 
-    # ─── Capture Tab ─────────────────────────────────────────────
+    # â”€â”€â”€ Capture Tab â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     MODE_OPTIONS = [
         '16 Digital', '16 Dig + 2 Ana',
@@ -397,7 +397,7 @@ class OLScope:
         self.cap_frame = cap_f
         row = 0
 
-        # ── Step 1: Mode ──
+        # â”€â”€ Step 1: Mode â”€â”€
         ttk.Label(cap_f, text="Step 1: Mode", font=('', 9, 'bold')).grid(
             row=row, column=0, columnspan=4, sticky='w', pady=(0, 2))
         row += 1
@@ -437,7 +437,7 @@ class OLScope:
             row=row, column=0, columnspan=4, sticky='ew', pady=4)
         row += 1
 
-        # ── Step 2: Capture Type ──
+        # â”€â”€ Step 2: Capture Type â”€â”€
         ttk.Label(cap_f, text="Step 2: Capture Type", font=('', 9, 'bold')).grid(
             row=row, column=0, columnspan=4, sticky='w', pady=(0, 2))
         row += 1
@@ -457,7 +457,7 @@ class OLScope:
             row=row, column=0, columnspan=4, sticky='ew', pady=4)
         row += 1
 
-        # ── Step 3: Trigger Section (shown only for Single) ──
+        # â”€â”€ Step 3: Trigger Section (shown only for Single) â”€â”€
         self.trig_frame = ttk.LabelFrame(cap_f, text="Step 3: Trigger Setup", padding=3)
         self.trig_frame.grid(row=row, column=0, columnspan=4, sticky='ew', pady=2)
         tr = 0
@@ -549,7 +549,7 @@ class OLScope:
         self.trig_frame.grid_remove()
         row += 1
 
-        # ── Channel Visibility ──
+        # â”€â”€ Channel Visibility â”€â”€
         ttk.Separator(cap_f, orient='horizontal').grid(
             row=row, column=0, columnspan=4, sticky='ew', pady=4)
         row += 1
@@ -582,7 +582,7 @@ class OLScope:
             cb.pack(side='left', padx=1)
         row += 1
 
-        # ── Progress bar ──
+        # â”€â”€ Progress bar â”€â”€
         ttk.Separator(cap_f, orient='horizontal').grid(
             row=row, column=0, columnspan=4, sticky='ew', pady=4)
         row += 1
@@ -718,7 +718,7 @@ class OLScope:
         self.rolling_buf['values'] = labels
         self._update_buf_estimate()
 
-    # ─── UI Actions ────────────────────────────────────────────
+    # â”€â”€â”€ UI Actions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _scan_ports(self):
         ports = [p.device for p in serial.tools.list_ports.comports()]
@@ -732,7 +732,7 @@ class OLScope:
         if find_spi_device():
             self._connect()
             return
-        self.status['text'] = "No SPI device found — connect manually"
+        self.status['text'] = "No SPI device found â€” connect manually"
         self._update_ui_state(connected=False)
 
     def _connect(self):
@@ -755,7 +755,7 @@ class OLScope:
             if len(meta) == 0:
                 self.dev.close()
                 self.dev = None
-                raise RuntimeError("FPGA not responding — need spi-focus firmware. Program the MAX1000 with the bitstream from this branch (hdl/proj/).")
+                raise RuntimeError("FPGA not responding â€” need spi-focus firmware. Program the MAX1000 with the bitstream from this branch (hdl/proj/).")
             self.status['text'] = f"Connected via {label} (meta: {len(meta)}B)"
             self._update_ui_state(connected=True)
         except Exception as e:
@@ -867,7 +867,7 @@ class OLScope:
         var_scl.set('1')
         vars_d['sda'] = var_sda; vars_d['scl'] = var_scl
         vars_d['sda_lbl'] = var_sda_lbl; vars_d['scl_lbl'] = var_scl_lbl
-        # Proto change → show/hide I2C fields
+        # Proto change â†’ show/hide I2C fields
         def _on_proto_change(*_):
             p = var_proto.get()
             if p == 'I2C':
@@ -1041,7 +1041,7 @@ class OLScope:
         if self.capture_mode != MODE_DIGITAL:
             self.capture_stride = analog_frame_stride(self.capture_mode)
         else:
-            self.capture_stride = 4  # FPGA always sends 4-byte samples
+            self.capture_stride = 2  # dense 16-bit samples since the pump fix
         self.capture_nsamp = nsamp
         if rolling:
             try:
@@ -1081,7 +1081,7 @@ class OLScope:
                 if hasattr(self.dev, 'raw_mode') and not hasattr(self.dev, 'pkt'):
                     self.dev.raw_mode(raw)
                 else:
-                    self.dev._stride = 1 if raw else 4
+                    self.dev._stride = 1 if raw else 2
                     self.dev._raw_flags = 0
                 self._apply_schmitt()
                 if proto_enable:
@@ -1146,15 +1146,20 @@ class OLScope:
                             self.capture_result = (buf, rate, got, stride)
                 else:
                     if self.capture_mode & MODE_MIXED:
-                        stride = analog_frame_stride(self.capture_mode)  # 14
-                        words_per_frame = stride // 2                    # 7
+                        # TODO(analog revalidation): the 2-ADC re-scope made the
+                        # mixed frame 5 bytes (odd), so a frame occupies 3 words
+                        # with a padding byte on the wire; the dense trim below
+                        # assumes stride-aligned frames and needs a proper
+                        # word->payload de-interleave once analog is exercised
+                        # on hardware again.
+                        stride = analog_frame_stride(self.capture_mode)
+                        words_per_frame = (stride + 1) // 2
                         self.dev.set_analog_config(self.capture_mode)
                         sdram_words = nsamp * words_per_frame
-                        # capture() reads 2 wire bytes per 'sample' but each
-                        # stored word is 4 wire bytes — request 2× to read whole
-                        # frames, then de-interleave to dense payload.
+                        # capture() reads one dense 16-bit word per 'sample'
+                        # (2 wire bytes) since the pump fix.
                         wire = self.dev.capture(
-                            rate_hz=rate * words_per_frame, nsamples=sdram_words * 2,
+                            rate_hz=rate * words_per_frame, nsamples=sdram_words,
                             timeout=max(3, sdram_words // 10000 + 2),
                             progress_cb=self._capture_progress,
                             trigger=trigger, stop_evt=self.stop_evt
@@ -1163,7 +1168,7 @@ class OLScope:
                         frames = decode_analog_frames(trimmed, self.capture_mode)
                         self.capture_result = (trimmed, rate, nsamp, stride, frames, self.capture_mode)
                     else:
-                        need_bytes = nsamp * getattr(self.dev, '_stride', 4)
+                        need_bytes = nsamp * getattr(self.dev, '_stride', 2)
                         print(f"[DBG] capture rate={rate} nsamp={nsamp} expect_bytes={need_bytes} trigger={trigger}")
                         data = self.dev.capture(
                             rate_hz=rate, nsamples=nsamp,
@@ -1180,7 +1185,7 @@ class OLScope:
                         if proto_enable and self.capture_mode == MODE_DIGITAL:
                             try:
                                 data, _ = self.dev.apply_protocol_trigger(
-                                    data, rate, stride=getattr(self.dev, '_stride', 4))
+                                    data, rate, stride=getattr(self.dev, '_stride', 2))
                             except Exception:
                                 pass
                         self.capture_result = (data, rate, nsamp)
@@ -1212,7 +1217,7 @@ class OLScope:
                 try:
                     partial_data, _ = self.dev.apply_protocol_trigger(
                         partial_data, getattr(self, 'samplerate', 0),
-                        stride=getattr(self.dev, '_stride', 4))
+                        stride=getattr(self.dev, '_stride', 2))
                 except Exception:
                     pass
         self.capture_partial = partial_data
@@ -1221,7 +1226,7 @@ class OLScope:
         """Grey out Send+Capture during rolling; update Send label."""
         if self.capture_running and self.capture_type.get() == 'rolling':
             self.gen_send_cap_btn.configure(state='disabled')
-            self.gen_send_btn.configure(text='Send → rolling')
+            self.gen_send_btn.configure(text='Send â†’ rolling')
         else:
             self.gen_send_cap_btn.configure(state='normal')
             self.gen_send_btn.configure(text='Send')
@@ -1249,7 +1254,7 @@ class OLScope:
                     total_got = int(got)
                     mem_bytes = len(getattr(self, 'captured_bytes', b''))
                     mem_mb = mem_bytes / (1024 * 1024)
-                    self.status['text'] = f"Rolling: {buf_pct:.0f}% buffer — {total_got:,} samples ({mem_mb:.1f} MB)"
+                    self.status['text'] = f"Rolling: {buf_pct:.0f}% buffer â€” {total_got:,} samples ({mem_mb:.1f} MB)"
                     self._update_export_size_label()
                 else:
                     pct = got / total * 100
@@ -1273,7 +1278,7 @@ class OLScope:
                 self._load_analog_capture(data, rate, frames, mode, stride)
             else:
                 data, rate, nsamp = res  # normal mode
-                stride = getattr(self.dev, '_stride', 4) if self.dev else 4
+                stride = getattr(self.dev, '_stride', 2) if self.dev else 4
                 self._load_capture(data, rate, stride)
             self._update_export_size_label()
             self.capture_running = False
@@ -1284,7 +1289,7 @@ class OLScope:
                 self._capture()
 
     def _live_waveform(self, samples_so_far):
-        """Render partial waveform — throttled to ~5fps, with visual loading bar."""
+        """Render partial waveform â€” throttled to ~5fps, with visual loading bar."""
         partial = getattr(self, 'capture_partial', None)
         if partial is None or len(partial) < 4:
             return
@@ -1305,7 +1310,7 @@ class OLScope:
                 for ai in range(len(frames[0]['adc'])):
                     ch_partial.append([fr['adc'][ai] for fr in frames])
         else:
-            stride = getattr(self, 'capture_stride', 4)
+            stride = getattr(self, 'capture_stride', 2)
             raw = getattr(self, 'raw_mode_var', None) and self.raw_mode_var.get()
             if raw and stride == 4:
                 trimmed = len(partial) - (len(partial) % 4)
@@ -1353,11 +1358,11 @@ class OLScope:
             # Visual feedback: progress bar fills across the 200ms window
             self.live_bar['value'] = min(99, dt / 0.2 * 100)
 
-    def _load_capture(self, data, rate, stride=4):
+    def _load_capture(self, data, rate, stride=2):
         """Load captured data into the waveform view."""
         if not data:
             print("[DBG] _load_capture: data is empty")
-            self.status['text'] = "Capture returned 0 bytes — FPGA not responding"
+            self.status['text'] = "Capture returned 0 bytes â€” FPGA not responding"
             return
         # Raw mode: display-only, extract first byte of each 4-byte word
         raw = getattr(self, 'raw_mode_var', None) and self.raw_mode_var.get()
@@ -1605,7 +1610,7 @@ class OLScope:
         data_s = self.gen_data.get('1.0', 'end-1c')
         if not data_s: return
         is_rolling = self.capture_type.get() == 'rolling'
-        # If rolling, queue gen params — rolling thread loads + starts gen (no serial access)
+        # If rolling, queue gen params â€” rolling thread loads + starts gen (no serial access)
         if is_rolling:
             try:
                 tx_pin = int(self.gen_tx_pin.get())
@@ -1616,7 +1621,7 @@ class OLScope:
                 'tx_pin': tx_pin,
                 'proto': proto
             }
-            self.status['text'] = "Generator queued — appears in rolling window"
+            self.status['text'] = "Generator queued â€” appears in rolling window"
             return
         self.status['text'] = f"Sending {len(data_s)} bytes..."
         try:
@@ -1634,7 +1639,7 @@ class OLScope:
                 frame = bytes([(addr << 1) & 0xFF]) + data_s.encode()
                 self.dev._load_block(frame)
                 self.dev.start_gen()
-            # If rolling, queue gen params — rolling thread loads + starts gen
+            # If rolling, queue gen params â€” rolling thread loads + starts gen
             if is_rolling:
                 self.dev._pending_gen = {
                     'data': data_s.encode(),
@@ -1662,7 +1667,7 @@ class OLScope:
                 'tx_pin': tx_pin,
                 'proto': proto
             }
-            self.status['text'] = "Generator queued — appears in rolling window"
+            self.status['text'] = "Generator queued â€” appears in rolling window"
             return
 
         rate_str = self.rate_cb.get()
@@ -1764,7 +1769,7 @@ class OLScope:
                 self._show_accel_result(f"{label} axis: {raw:04X} ({val: d}) = {mg} mg")
             elif reg_addr == 0x0F and data_bytes:
                 who = data_bytes[-1]
-                ok = "✓ LIS3DH" if who == 0x33 else f"✗ 0x{who:02X} (expected 0x33)"
+                ok = "âœ“ LIS3DH" if who == 0x33 else f"âœ— 0x{who:02X} (expected 0x33)"
                 self._show_accel_result(f"WHO_AM_I = 0x{who:02X}  {ok}")
             elif data_bytes:
                 pairs = [f"0x{v:02X}" for v in data_bytes[-read_len:]]
@@ -1809,7 +1814,7 @@ class OLScope:
                     for ai, av in enumerate(fr.get('adc', [])):
                         f.write(f';A{ai}: {av}@{i}\n')
             else:
-                stride = getattr(self, 'capture_stride', 4)
+                stride = getattr(self, 'capture_stride', 2)
                 ch_data, ns = samples_to_channels(self.captured_bytes, stride=stride)
                 for i in range(ns):
                     byte = 0
@@ -1912,7 +1917,7 @@ unitsize=1
                     if vals:
                         lines.append(f"A{ai}: min={min(vals)} max={max(vals)} avg={sum(vals)//len(vals)}")
         else:
-            stride = getattr(self, 'capture_stride', 4)
+            stride = getattr(self, 'capture_stride', 2)
             ch_data, ns = samples_to_channels(self.captured_bytes, stride=stride)
             lines.append(f"Samplerate: {self.samplerate} Hz, Samples: {ns}")
             ch0 = ''.join(str(ch_data[0][i]) for i in range(min(200, ns)))
@@ -1938,7 +1943,7 @@ unitsize=1
         if not cb:
             messagebox.showinfo("Export Range", "No captured data to export")
             return
-        stride = getattr(self, 'capture_stride', 4)
+        stride = getattr(self, 'capture_stride', 2)
         start_b = m1 * stride
         end_b = min((m2 + 1) * stride, len(cb))
         trimmed = cb[start_b:end_b]
@@ -1966,7 +1971,7 @@ unitsize=1
         """Update the export tab's captured data size estimate."""
         cb = self.captured_bytes
         if cb:
-            stride = max(1, getattr(self, 'capture_stride', 4))
+            stride = max(1, getattr(self, 'capture_stride', 2))
             ns = len(cb) // stride
             mb = len(cb) / (1024 * 1024)
             self.export_size_lbl['text'] = f"Captured: {ns} samples ({mb:.1f} MB)"
@@ -2079,7 +2084,7 @@ unitsize=1
         if HAS_TK:
             self.win.mainloop()
 
-# ─── CLI Mode ──────────────────────────────────────────────────
+# â”€â”€â”€ CLI Mode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def cli_mode(args):
     """Command-line interface for automated capture and testing (SPI only)."""
@@ -2252,7 +2257,7 @@ def main():
         backend = splash_choose()
         if backend is None:
             backend = 'UART'
-            print("No OLS device detected — opening in disconnected state")
+            print("No OLS device detected â€” opening in disconnected state")
         root = tk.Tk()
         root.withdraw()
         app = OLScope(backend=backend, root=root)

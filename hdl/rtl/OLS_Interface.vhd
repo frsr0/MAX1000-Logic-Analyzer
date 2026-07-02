@@ -213,10 +213,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL block_rd_release     : STD_LOGIC := '0';
 SIGNAL stream_addr         : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
 SIGNAL streaming_active    : STD_LOGIC := '0';
-  SIGNAL prefetch_arm_pending : STD_LOGIC := '0';
-  SIGNAL prefetch_inflight    : STD_LOGIC := '0';
-  SIGNAL prefetch_valid       : STD_LOGIC := '0';
-  SIGNAL prefetch_addr        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL block_rd_state       : NATURAL range 0 to 6 := 0;
   -- Watchdog kill: forces the block-read FSM back to idle when the dispatch
   -- gives up on a stalled block read (e.g. a read issued during continuous
@@ -841,24 +837,18 @@ BEGIN
       block_rd_release <= '0';
       disp_ack_done <= '0';
 
+      -- (The idle-loop SDRAM prefetch that used to live here was removed:
+      -- a prefetch block read was never released by anyone — its ack/pending
+      -- stuck high until the next host WAIT_BLOCK consumed the stale ack and
+      -- served the WRONG address's data while the host request's own issue
+      -- was silently swallowed. During continuous capture it also reissued
+      -- endlessly as Oldest advanced, stealing the SDRAM bus from the write
+      -- pump. It only existed to feed the abandoned compressed-streaming
+      -- path. See tb_batched_reads.)
       if disp_arm = '1' then
         streaming_active <= '0';
-        prefetch_inflight <= '0';
-        prefetch_valid <= '0';
-        prefetch_addr <= (others => '0');
-        if continuous_mode_i = '1' then
-          prefetch_arm_pending <= '1';
-        else
-          prefetch_arm_pending <= '0';
-        end if;
       elsif disp_abort = '1' then
         streaming_active <= '0';
-        prefetch_arm_pending <= '0';
-        prefetch_inflight <= '0';
-        prefetch_valid <= '0';
-      elsif prefetch_inflight = '1' and block_rd_ack = '1' then
-        prefetch_inflight <= '0';
-        prefetch_valid <= '1';
       end if;
 
       -- Clear streaming mode on CS rise (host drops SPI chip select)
@@ -868,24 +858,6 @@ BEGIN
 
       case st is
         when IDLE =>
-          if continuous_mode_i = '1' and streaming_active = '0' then
-            if prefetch_valid = '1'
-               and prefetch_addr /= (Oldest_Index(30 downto 0) & '0') then
-              prefetch_valid <= '0';
-              prefetch_arm_pending <= '1';
-            elsif prefetch_arm_pending = '1'
-              and prefetch_inflight = '0'
-              and block_rd_pending = '0'
-              and block_rd_state = 0
-              and unsigned(Producer_Index) >= unsigned(Oldest_Index) +
-                  to_unsigned(BLOCK_SAMPLES, Producer_Index'length) then
-              block_rd_issue_addr <= Oldest_Index(30 downto 0) & '0';
-              prefetch_addr <= Oldest_Index(30 downto 0) & '0';
-              block_rd_issue_req <= '1';
-              prefetch_inflight <= '1';
-              prefetch_arm_pending <= '0';
-            end if;
-          end if;
           if pkt_ok = '1' then
             rsp_seq_v := pkt_seq;
             rsp_stat_v := ST_OK;
@@ -981,14 +953,6 @@ BEGIN
                 stream_addr(23 downto 16) <= rx_payload_header(2);
                 stream_addr(31 downto 24) <= rx_payload_header(3);
                 streaming_active <= '1';
-                if (prefetch_valid = '1' or prefetch_inflight = '1')
-                   and prefetch_addr /=
-                       (rx_payload_header(3) & rx_payload_header(2) &
-                        rx_payload_header(1) & rx_payload_header(0)) then
-                  prefetch_valid <= '0';
-                  prefetch_inflight <= '0';
-                  block_rd_kill <= '1';
-                end if;
                 rsp_buf(0) := Producer_Index(7 downto 0);
                 rsp_buf(1) := Producer_Index(15 downto 8);
                 rsp_buf(2) := Producer_Index(23 downto 16);
@@ -1007,22 +971,10 @@ BEGIN
 
             when CMD_READ_STREAM_BLOCK =>
               if streaming_active = '1' then
-                if prefetch_valid = '1' and prefetch_addr = stream_addr then
-                  -- Prefetch works for both compressed and uncompressed.
-                  -- Compression is applied in TX path after prefetch.
-                  rsp_len_v := blk_rsp_words * 2;
-                  blk_wc := 0;
-                  blk_bc := 0;
-                  feeding_block := true;
-                  prefetch_valid <= '0';
-                  stream_addr <= std_logic_vector(unsigned(stream_addr) + 1024);
-                  st := BUILD_RSP;
-                else
-                  block_rd_issue_addr <= stream_addr;
-                  block_rd_issue_req <= '1';
-                  block_wd := 0;
-                  st := WAIT_BLOCK;
-                end if;
+                block_rd_issue_addr <= stream_addr;
+                block_rd_issue_req <= '1';
+                block_wd := 0;
+                st := WAIT_BLOCK;
               else
                 rsp_stat_v := ST_CAPTURE_IDLE;
                 st := BUILD_RSP;
@@ -1209,8 +1161,6 @@ BEGIN
             -- error response so the dispatcher frees up for the next command
             -- instead of wedging the device until it is reconfigured.
             block_rd_kill <= '1';
-            prefetch_inflight <= '0';
-            prefetch_valid <= '0';
             rsp_stat_v := ST_CAPTURE_IDLE;
             rsp_len_v := 0;
             st := BUILD_RSP;
@@ -1329,12 +1279,13 @@ BEGIN
   -- Auto_Renew: drives FLA block-read auto-renew.  Default '0' (single-shot).
   Auto_Renew <= '0';
 
-  -- Block-read in progress → force compressor OFF so CMD_READ_CAPTURE returns
-  -- raw uncompressed data (the block FSM expects fixed-size blocks).
-  -- Compression is active during streaming block reads (CMD_READ_STREAM_BLOCK).
+  -- Delta-compressed readback is retired: the variable-rate compressor cannot
+  -- honour the fixed-192-word block protocol for arbitrary digital data (and
+  -- the LE budget went to capture features). All block reads are raw
+  -- 512-sample / 1024-byte responses. compress_enable_i (REG_FLAGS bit 18)
+  -- remains readable for host compatibility but has no datapath effect.
   blk_rd_samples <= BLOCK_SAMPLES;
-  blk_rsp_words <= BLOCK_SAMPLES when compress_enable_i = '0' or streaming_active = '0' else 192;
-  Compress_Enable <= '1' when compress_enable_i = '1' and block_rd_pending = '0' and block_rd_ack = '0' else
-                     '1' when compress_enable_i = '1' and streaming_active = '1' else '0';
+  blk_rsp_words <= BLOCK_SAMPLES;
+  Compress_Enable <= '0';
 
 END BEHAVIORAL;

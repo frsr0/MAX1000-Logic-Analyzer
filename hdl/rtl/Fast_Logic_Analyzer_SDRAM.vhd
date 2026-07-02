@@ -1231,6 +1231,32 @@ begin
     -- leaves the SECOND read unsettled too.
     constant STREAM_PRIME_N : natural := 2;
     variable stream_prime  : natural range 0 to STREAM_PRIME_N := 0;
+    -- Read watchdog: an SDRAM read issued concurrently with capture-stream
+    -- writes occasionally goes unanswered on hardware (stochastic arbitration
+    -- loss; s_rvalid never comes). Without a timeout the readout waits
+    -- forever, holding rd_mode and starving the write pump — the host sees a
+    -- wedged block read. Time out and reissue the SAME address (the address
+    -- now only advances on completion, so a retry is transparent; a late
+    -- s_rvalid from the dropped attempt just completes the identical retry).
+    -- Generous vs any legitimate latency (pump burst + refresh < ~1 us) so a
+    -- merely-slow read cannot be retried into a duplicate sample; still ~40x
+    -- faster than the OLS-side 500 us block watchdog.
+    constant STREAM_RD_WD : natural := 2047;  -- ~12 us at 167 MHz
+    variable rd_wd_cnt     : natural range 0 to STREAM_RD_WD := 0;
+    -- One idle cycle after each completed read: stream_addr_r (the registered
+    -- copy of stream_addr_u that feeds s_addr) lags the completion-time
+    -- address advance by one pclk, so an immediate reissue would re-read the
+    -- same address and duplicate a sample.
+    variable rd_gap        : std_logic := '0';
+    -- Write-pump pop bubble: fifo_rd is a registered pop against a show-ahead
+    -- FIFO, so the head word only advances two cycles after an SDRAM accept.
+    -- Without this gap, sustained cap_stream_ready wrote EVERY capture word
+    -- to SDRAM twice (producer counted 2x, every sample appeared as an
+    -- identical word pair on the wire, and all displayed frequencies were
+    -- halved — masked historically by the 32-bit wire format that dropped
+    -- every other word). The bubble condition is fifo_rd itself (its
+    -- registered value = "popped last cycle") to keep new logic out of the
+    -- timing-critical 167 MHz accept cone.
     -- Continuous-mode readout: a host block read temporarily enters rd_mode to
     -- stream the rolling SDRAM window, then returns to capture.
     -- cur_full backpressures the write pump off a full buffer.
@@ -1421,31 +1447,30 @@ begin
           -- so it is immune to the CLK/pclk phase relationship that broke the
           -- old fixed-latency latch at block boundaries.
           if rd_pend2 = '0' then
-            if rdfifo_wrfull = '0' then
+            if rd_gap = '1' then
+              rd_gap := '0';   -- let stream_addr_r catch up post-completion
+            elsif rdfifo_wrfull = '0' then
               s_addr <= stream_addr_r;
               s_rd     <= '1';
               rd_pend2 := '1';
-              -- Do not advance the address on the prime read: the next (real)
-              -- read re-fetches the same base address.
-              if stream_prime = 0 then
-                stream_addr_inc_pending := true;
-              end if;
+              rd_wd_cnt := 0;
             end if;
           elsif s_rvalid = '1' then
             s_rd         <= '0';
             rd_pend2     := '0';
+            rd_gap       := '1';
             if stream_prime /= 0 then
               -- Discard the throwaway prime read(s); the real stream starts next.
               stream_prime := stream_prime - 1;
             else
               comp_feed <= '1';
+              -- Advance the address on COMPLETION (not issue) so a timed-out
+              -- read can be reissued at the same address without skipping.
+              stream_addr_inc_pending := true;
               if stream_rem <= 1 then
                 if Auto_Renew = '1' then
                   -- Auto-renew: reload and keep streaming
                   stream_rem := Blk_Rd_Count;
-                  -- stream_addr_u is already advanced; no wrap needed here
-                  -- (the address advance at line 1374 already handles
-                  -- CONT_RING_WORDS wrapping per-sample).
                 else
                   stream_active := false;
                   stream_rem    := 0;
@@ -1459,7 +1484,14 @@ begin
                 stream_rem := stream_rem - 1;
               end if;
             end if;  -- closes stream_prime if/else
-          end if;    -- closes if rd_pend2 / elsif s_rvalid
+          elsif rd_wd_cnt = STREAM_RD_WD then
+            -- Unanswered read: drop the request; the next cycle reissues the
+            -- same address (see the watchdog comment at the declarations).
+            s_rd     <= '0';
+            rd_pend2 := '0';
+          else
+            rd_wd_cnt := rd_wd_cnt + 1;
+          end if;    -- closes if rd_pend2 / elsif s_rvalid / watchdog
 
         elsif Sim then
           -- LEGACY Address-driven readout -> Outputs. Used ONLY by the FLA-direct
@@ -1516,7 +1548,12 @@ begin
         end if;
 
         cap_stream_valid <= '0';
-        if fifo_rdempty = '0' and not cur_full then
+        if fifo_rd = '1' then
+          -- Pop bubble: the show-ahead FIFO head advances one cycle after the
+          -- registered fifo_rd pop, so keep valid low for one cycle after an
+          -- accept or the same word is written to SDRAM twice.
+          null;
+        elsif fifo_rdempty = '0' and not cur_full then
           single_drain_cnt <= 0;
           if Continuous_Mode = '1' then
             write_addr := std_logic_vector(to_unsigned(ring_waddr, 22));

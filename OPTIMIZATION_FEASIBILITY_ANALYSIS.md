@@ -1,4 +1,4 @@
-# Data-Rate Status & Optimization Analysis (rewritten 2026-07-02)
+# Data-Rate Status & Optimization Analysis (rewritten 2026-07-02, evening update)
 
 > The previous version of this document analyzed optimizations on top of
 > "2.8 MB/s compressed streaming". That baseline was invalid: the
@@ -9,17 +9,39 @@
 
 ## What is validated today (hw_validation_results.txt)
 
+All numbers are REAL samples (the write-pump duplication is fixed — see the
+evening-update section; historic numbers counted every sample twice).
+
 - **SPI link:** 30 MHz SCK, FT232H MPSSE, source-synchronous MISO. Stable.
 - **Readback (post-capture):** batched CS-held `CMD_READ_CAPTURE` block reads —
-  **2.26 MB/s (1.13 MS/s of 16-bit samples)**, bit-exact (0 mismatches on
-  repeat and phase-shifted reads of 100k samples), 4M-sample deep capture
-  read in 3.7 s.
-- **Windowed live** (arm → capture → read → re-arm): 0.68 MS/s effective at
-  2 MS/s capture (34% coverage), 0.84 MS/s at 5 MS/s (17% coverage).
-- **Capture-side data quality** (pre-existing, independent of readback):
-  ch0 interval purity 87% @ 2 MS/s, 65% @ 5 MS/s, degrading to heavy
-  corruption at 20 MS/s — SDRAM write-pump drops, see
-  sdram-deep-capture-boundary notes.
+  **2.1–2.3 MB/s = ~1.1 M real samples/s**, bit-exact (0 mismatches on repeat
+  and phase-shifted reads), 4M-real-sample deep capture read in ~4 s.
+- **Continuous live streaming (gapless):** lossless at 0.5 MS/s (zero
+  overruns), reader ceiling ~0.9–1.0 MS/s (wire-limited); interval-exact
+  waveform data at every rate tested.
+- **During-capture batched reads:** 32/32 blocks at 1/2/5 MS/s, no watchdogs,
+  no stale data (was: total wedge).
+- **UART generator round-trip:** 115200 request decodes at 115200 (the old
+  //2 divider fudge made the generator physically transmit at 2× baud).
+- **Deep-capture integrity:** 98% interval purity @ 2 MS/s (was 87% — most of
+  the old "glitches" were duplication artifacts, not write drops).
+
+## Evening update — the three RTL fixes that got here
+
+1. **Idle-prefetch removal (OLS_Interface):** a prefetched block read was
+   never released; its stuck ack made the next host request serve the wrong
+   address's data while that request's own issue was swallowed, and the
+   prefetch reissued endlessly during capture, stealing the SDRAM bus.
+2. **Packet-parser self-heal + CS_Rise toggle CDC (spi_packet_rx/SPI_Slave2):**
+   the SPI slave delivers each transaction's final byte after CS rise; when
+   the racy 5 ns CS_Rise pulse was caught, the parser lost sync-hunt parity
+   and silently swallowed the next frame (lost ARMs, lost read requests).
+3. **FLA read watchdog+retry and write-pump pop bubble
+   (Fast_Logic_Analyzer_SDRAM):** see hdl/README.md. The pop bubble is the
+   big one — every sample was stored twice, so half of all SDRAM/wire
+   bandwidth was waste and every timebase was displayed at half frequency.
+
+Bitstream: seed 2, all corners closed (+0.081 ns slow-85C setup), 98% LE.
 
 ## How the host path works now
 

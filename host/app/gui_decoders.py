@@ -1,5 +1,5 @@
-"""
-Protocol decoders for OLS MaxScope — pure functions, no tkinter dependency.
+﻿"""
+Protocol decoders for OLS MaxScope â€” pure functions, no tkinter dependency.
 """
 from collections import namedtuple
 
@@ -8,7 +8,7 @@ NUM_CHANNELS = 16
 DecodedByte = namedtuple('DecodedByte', ['pos', 'value', 'time_ns'])
 DecodedModbusFrame = namedtuple('DecodedModbusFrame', ['addr', 'func', 'data', 'crc', 'crc_ok'])
 
-def samples_to_channels(data, num_ch=NUM_CHANNELS, stride=4):
+def samples_to_channels(data, num_ch=NUM_CHANNELS, stride=2):
     if stride < 2:
         need_bytes = 1
         num_ch = min(num_ch, 8)
@@ -193,7 +193,7 @@ def decode_spi(ch, samplerate, miso_idx=3, sclk_idx=1, filter_threshold=0):
     """Decode SPI (CPOL=0/CPHA=0) from a data line and SCLK.
 
     Each bit is sampled at the MIDDLE of the SCLK-high plateau, not at the
-    rising edge — on real hardware the data line can still be settling at the
+    rising edge â€” on real hardware the data line can still be settling at the
     edge, so edge sampling occasionally read the wrong bit. (Same mid-plateau
     approach as decode_i2c.) Bits are shifted MSB-first.
     """
