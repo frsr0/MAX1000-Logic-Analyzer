@@ -72,9 +72,6 @@ PORT (
          Blk_Rd_Count   : OUT NATURAL range 0 to Max_Samples := 0;
          -- Auto-renew block read (pass-through to FLA, controlled by dispatch)
          Auto_Renew     : OUT STD_LOGIC := '0';
-         -- Readback compression enable
-         Compress_Enable : OUT STD_LOGIC := '0';
-         Blk_Rd_Done_Tog : IN  STD_LOGIC := '0';
          Rd_Fifo_Q      : IN  STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
          Rd_Fifo_Empty  : IN  STD_LOGIC := '1';
          Rd_Fifo_RdReq  : OUT STD_LOGIC := '0';
@@ -245,11 +242,31 @@ SIGNAL streaming_active    : STD_LOGIC := '0';
 -- Max entries per block read: 512 uncompressed, 192 when compression is active in streaming mode
 SIGNAL blk_rd_samples : INTEGER range 0 to 512 := BLOCK_SAMPLES;
 SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
-SIGNAL blk_done_s1 : STD_LOGIC := '0';
-SIGNAL blk_done_s2 : STD_LOGIC := '0';
-SIGNAL blk_done_last : STD_LOGIC := '0';
-SIGNAL blk_done_edge : STD_LOGIC := '0';
-SIGNAL blk_done_seen : STD_LOGIC := '0';
+  -- Local readback compressor (CLK domain — deliberately NOT in the FLA's
+  -- 167 MHz cone). Passthrough when compression is disabled, so all block
+  -- reads share one drain/store path.
+  SIGNAL drain_in_cnt  : INTEGER range 0 to 512 := 0;
+  SIGNAL comp_wait_cnt : INTEGER range 0 to 63 := 0;
+  SIGNAL pad_req       : STD_LOGIC := '0';
+  SIGNAL comp_rst_i    : STD_LOGIC := '0';
+  SIGNAL comp_feed_i   : STD_LOGIC := '0';
+  SIGNAL comp_out_data  : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  SIGNAL comp_out_valid : STD_LOGIC := '0';
+  SIGNAL comp_busy_i    : STD_LOGIC := '0';
+  SIGNAL comp_in_ready_i : STD_LOGIC := '1';
+  COMPONENT capture_compressor IS
+    PORT (
+      clk               : IN  STD_LOGIC;
+      rst               : IN  STD_LOGIC;
+      sample_in         : IN  STD_LOGIC_VECTOR(15 downto 0);
+      sample_valid      : IN  STD_LOGIC;
+      compression_enable : IN  STD_LOGIC;
+      comp_data         : OUT STD_LOGIC_VECTOR(15 downto 0);
+      comp_valid        : OUT STD_LOGIC;
+      busy              : OUT STD_LOGIC;
+      in_ready          : OUT STD_LOGIC
+    );
+  END COMPONENT;
   TYPE block_buf_t IS ARRAY(0 TO 255) OF STD_LOGIC_VECTOR(31 DOWNTO 0);
   SIGNAL block_buf            : block_buf_t := (others => (others => '0'));
   -- 21-cycle bit-serial divider for /3 (replaces 58-level lpm_divide)
@@ -479,19 +496,45 @@ BEGIN
         END IF;
     END IF;
     -- ── Block read state machine (for CMD_READ_CAPTURE) ──────────────
-    -- Request a BLOCK_SAMPLES-long stream from the FLA and drain it through the
-    -- response FIFO. The FIFO is a true CDC across the FLA's pclk readout domain
-    -- and this CLK domain, so there is no fixed-latency latch to mis-time at a
-    -- block boundary (that was the block-boundary corruption) and no prime/drain.
+    -- Request a BLOCK_SAMPLES-long raw stream from the FLA and drain it
+    -- through the response FIFO (a true pclk->CLK CDC), feeding every popped
+    -- word through the local capture_compressor. With compression disabled
+    -- the compressor is a 1:1 passthrough, so one unified store path packs
+    -- the (raw or compressed) output words into block_buf and blk_rsp_words
+    -- carries the exact response word count. The compressor lives HERE in
+    -- the 100 MHz domain on purpose: its ~320 LCs cost timing closure in
+    -- the congested 167 MHz SDRAM cone.
     sig_rd_pend_d1 <= block_rd_pending;
-    blk_done_s1 <= Blk_Rd_Done_Tog;
-    blk_done_s2 <= blk_done_s1;
-    blk_done_edge <= blk_done_s2 xor blk_done_last;
-    blk_done_last <= blk_done_s2;
-    if blk_done_edge = '1' then
-      blk_done_seen <= '1';
-    end if;
     Rd_Fifo_RdReq <= '0';
+    comp_feed_i <= '0';
+    comp_rst_i <= '0';
+
+    -- Store path: pack compressor output words (raw passthrough or delta
+    -- stream) 2-per-32-bit block_buf entry. Clamped at BLOCK_SAMPLES words:
+    -- incompressible content can emit MORE words than went in (overflow
+    -- keyframes); a truncated payload decompresses short and the host
+    -- retries that block uncompressed.
+    -- NB: this if/elsif is the ONLY block_buf write site — a second write
+    -- elsewhere in the process makes the writes non-exclusive, block_buf
+    -- stops inferring as an M9K altsyncram, and 8 kbit of RAM explodes into
+    -- ~15k logic cells of registers and muxes.
+    IF comp_out_valid = '1' THEN
+      IF block_rd_j < BLOCK_SAMPLES THEN
+        IF (block_rd_j MOD 2) = 0 THEN
+          block_pack_lo <= comp_out_data;
+        ELSE
+          block_buf(block_rd_j / 2) <= comp_out_data & block_pack_lo;
+        END IF;
+        block_rd_j <= block_rd_j + 1;
+      END IF;
+    ELSIF pad_req = '1' THEN
+      -- Odd word count: zero-pad the high half of the final entry.
+      IF (block_rd_j MOD 2) = 1 THEN
+        block_buf(block_rd_j / 2) <= x"0000" & block_pack_lo;
+      END IF;
+      pad_req <= '0';
+    END IF;
+
     IF block_rd_release = '1' THEN
       block_rd_pending <= '0';
     END IF;
@@ -510,8 +553,11 @@ BEGIN
       Blk_Rd_Base  <= TO_INTEGER(UNSIGNED(block_rd_addr(31 downto 1)));
       Blk_Rd_Count <= blk_rd_samples;
       block_rd_j <= 0;
+      drain_in_cnt <= 0;
       blk_rsp_words <= 0;
-      blk_done_seen <= '0';
+      pad_req <= '0';
+      comp_rst_i <= '1';   -- fresh anchor per block: each response payload
+                           -- must be independently decodable by the host
       block_rd_state <= 1;
     END IF;
     CASE block_rd_state IS
@@ -522,35 +568,44 @@ BEGIN
         block_rd_state <= 2;
       WHEN 2 =>
         -- Drain one sample: pop when the FIFO has data (rdreq asserted next
-        -- cycle, q valid the cycle after that -- showahead OFF).
-        IF Rd_Fifo_Empty = '0' THEN
+        -- cycle, q valid the cycle after that -- showahead OFF). The pop is
+        -- also gated on comp_in_ready: the compressor drops inputs while it
+        -- flushes a packed group.
+        IF drain_in_cnt = blk_rd_samples THEN
+          comp_wait_cnt <= 0;
+          block_rd_state <= 6;
+        ELSIF Rd_Fifo_Empty = '0' AND comp_in_ready_i = '1' THEN
           Rd_Fifo_RdReq <= '1';
           block_rd_state <= 3;
-        ELSIF blk_done_seen = '1' AND block_rd_j > 0 THEN
-          block_rd_state <= 5;
         END IF;
       WHEN 3 =>
         block_rd_state <= 4;
       WHEN 4 =>
-        -- q now holds the popped sample. Pack 2 samples per 32-bit entry as one
-        -- full-word write on the odd index: even -> bits 15:0, odd -> 31:16
-        -- (contiguous 16-bit LE).
-        IF (block_rd_j MOD 2) = 0 THEN
-          block_pack_lo <= Rd_Fifo_Q;
-        ELSE
-          block_buf(block_rd_j / 2) <= Rd_Fifo_Q & block_pack_lo;
-        END IF;
-        block_rd_j <= block_rd_j + 1;
+        -- q now holds the popped sample; hand it to the compressor (the
+        -- store path above collects the output side).
+        comp_feed_i <= '1';
+        drain_in_cnt <= drain_in_cnt + 1;
         block_rd_state <= 2;
-      WHEN 5 =>
-        IF (block_rd_j MOD 2) = 1 THEN
-          block_buf(block_rd_j / 2) <= x"0000" & block_pack_lo;
+      WHEN 6 =>
+        -- All input words fed; wait for the compressor to finish flushing
+        -- the final packed group. If overflow keyframes left a partial tail
+        -- group (busy never clears without more input), time out — the
+        -- short payload is caught by the host's uncompressed retry.
+        IF (comp_busy_i = '0' AND comp_out_valid = '0')
+           OR comp_wait_cnt = 63 THEN
+          pad_req <= '1';   -- executed by the single block_buf write site
+          block_rd_state <= 5;
+        ELSE
+          comp_wait_cnt <= comp_wait_cnt + 1;
         END IF;
-        blk_rsp_words <= block_rd_j;
-        block_rd_ack <= '1';
-        IF block_rd_pending = '0' THEN
-          block_rd_ack <= '0';
-          block_rd_state <= 0;
+      WHEN 5 =>
+        IF pad_req = '0' THEN
+          blk_rsp_words <= block_rd_j;
+          block_rd_ack <= '1';
+          IF block_rd_pending = '0' THEN
+            block_rd_ack <= '0';
+            block_rd_state <= 0;
+          END IF;
         END IF;
       WHEN OTHERS =>
         null;
@@ -1294,6 +1349,21 @@ BEGIN
   Auto_Renew <= '0';
 
   blk_rd_samples <= BLOCK_SAMPLES;
-  Compress_Enable <= compress_enable_i;
+
+  -- Readback delta compressor (passthrough when compress_enable_i = '0').
+  -- Runs at 100 MHz between the response FIFO drain and block_buf; see the
+  -- block-read FSM comments for the pacing/clamp contract.
+  rd_compressor : capture_compressor
+    PORT MAP (
+      clk                => CLK,
+      rst                => comp_rst_i,
+      sample_in          => Rd_Fifo_Q,
+      sample_valid       => comp_feed_i,
+      compression_enable => compress_enable_i,
+      comp_data          => comp_out_data,
+      comp_valid         => comp_out_valid,
+      busy               => comp_busy_i,
+      in_ready           => comp_in_ready_i
+    );
 
 END BEHAVIORAL;

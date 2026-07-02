@@ -18,7 +18,9 @@ use work.spi_protocol_pkg.all;
 entity tb_core_batched_reads is
   generic (
     SPI_HALF  : time := 16.67 ns;   -- 30 MHz SCK like hardware
-    RATE_DIV  : natural := 20;      -- 200 MHz / 20 = 10 MHz sample rate
+    -- 200 MHz / 10 = 20 MHz sample rate; the ramp step of 10 also fits a
+    -- 5-bit delta so phase 2 exercises the compressed read path.
+    RATE_DIV  : natural := 10;
     N_BLOCKS  : natural := 6;
     SLOT_PAD  : natural := 1264     -- 12-byte request + 208 gap + 1056 rsp pad
   );
@@ -261,6 +263,43 @@ begin
     check(n_ok = N_BLOCKS, "all during-capture block reads return clean ramp data");
     check(n_bad = 0, "no watchdog/error responses");
     check(n_dup = 0, "no duplicate responses");
+
+    -- ── Phase 2: compressed block read ─────────────────────────────
+    -- Only meaningful when the ramp step fits a 5-bit delta (RATE_DIV <= 15):
+    -- 512 samples then compress to exactly 32 x 6 words = 384 payload bytes,
+    -- word0 = anchor, words 1..5 of each group = three deltas of RATE_DIV.
+    if RATE_DIV <= 15 then
+      report "phase 2: compressed block read (expect 384-byte payload)";
+      wreg(x"20", 16#40002#);   -- REG_FLAGS: continuous + bit18 compress
+      tx := (others => x"FF");
+      pl(0) := std_logic_vector(to_unsigned((1024 * 2) mod 256, 8));
+      pl(1) := std_logic_vector(to_unsigned(((1024 * 2) / 256) mod 256, 8));
+      pl(2) := x"00"; pl(3) := x"00";
+      build_req(tx, 0, x"12", 40, pl, 4);
+      spi_xfer(spi_cs, sck, spi_mosi, spi_miso, SPI_HALF,
+               tx(0 to SLOT_PAD + 40), rx(0 to SLOT_PAD + 40));
+      n_ok := 0;
+      for i in 0 to SLOT_PAD loop
+        if rx(i) = x"AA" and rx(i+1) = x"55"
+           and to_integer(unsigned(rx(i+3))) = 40 then
+          plen_v := to_integer(unsigned(rx(i+5))) * 256
+                    + to_integer(unsigned(rx(i+4)));
+          report "  compressed rsp: status=0x" & to_hstring(rx(i+2))
+                 & " len=" & integer'image(plen_v);
+          check(rx(i+2) = x"00", "compressed read returns ST_OK");
+          check(plen_v = 384, "compressed 512-sample block is 384 bytes");
+          -- delta word check: word1 packs three deltas of RATE_DIV
+          w_cur := to_integer(unsigned(rx(i + 9))) * 256
+                   + to_integer(unsigned(rx(i + 8)));
+          check(w_cur = RATE_DIV + RATE_DIV*32 + RATE_DIV*1024,
+                "first delta word packs three RATE_DIV deltas");
+          n_ok := 1;
+        end if;
+        exit when n_ok = 1;
+      end loop;
+      check(n_ok = 1, "compressed response found");
+    end if;
+
     report "=== TB PASSED ===";
     finish;
   end process;

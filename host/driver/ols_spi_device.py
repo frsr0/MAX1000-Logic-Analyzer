@@ -274,11 +274,34 @@ def decompress_delta_block(data: bytes) -> bytes:
 
 
 def decompress_delta_stream(data: bytes) -> bytes:
-    """Decompress a stream of packed 12-byte delta blocks."""
+    """Decompress a stream of packed 12-byte delta blocks.
+
+    Vectorized with numpy for the common keyframe-free case (the pure-Python
+    per-word loop capped readback at ~0.5 MB/s); groups containing keyframe
+    words fall back to the reference decoder.
+    """
     if not data:
         return b""
-    out = bytearray()
     end = len(data) - (len(data) % 12)
+    if end >= 12:
+        try:
+            import numpy as np
+            words = np.frombuffer(data[:end], dtype='<u2').reshape(-1, 6)
+            if not (words[:, 1:] & 0x8000).any():
+                d = words[:, 1:].astype(np.int32)
+                deltas = np.empty((d.shape[0], 15), dtype=np.int32)
+                deltas[:, 0::3] = d & 0x1F
+                deltas[:, 1::3] = (d >> 5) & 0x1F
+                deltas[:, 2::3] = (d >> 10) & 0x1F
+                deltas -= (deltas & 0x10) << 1   # sign-extend 5-bit
+                samples = np.empty((d.shape[0], 16), dtype=np.int64)
+                samples[:, 0] = words[:, 0]
+                samples[:, 1:] = (words[:, 0].astype(np.int64)[:, None]
+                                  + np.cumsum(deltas, axis=1))
+                return (samples & 0xFFFF).astype('<u2').tobytes()
+        except ImportError:
+            pass
+    out = bytearray()
     for i in range(0, end, 12):
         out.extend(decompress_delta_block(data[i:i + 12]))
     return bytes(out)
@@ -773,12 +796,22 @@ class OLSDeviceSPI:
                 blocks = [self.pkt.read_capture_block(a, compressed=use_compress)
                           for a in addrs]
             stop = False
-            for block, drop in zip(blocks, drops):
+            for i, (block, drop) in enumerate(zip(blocks, drops)):
                 if not block:
                     stop = True
                     break
                 if use_compress:
                     block = decompress_delta_stream(block)
+                    if len(block) != 1024:
+                        # Overflow keyframes broke the fixed 12-byte group
+                        # framing (incompressible content), or the FPGA
+                        # clamped an oversized compressed block. The delta
+                        # format cannot represent such blocks losslessly —
+                        # re-read this block raw.
+                        raw_block = self.pkt.read_capture_block(
+                            addrs[i], compressed=False)
+                        if raw_block:
+                            block = raw_block
                 block = block[drop * 2:]
                 take = min(remaining, len(block) // 2)
                 if take <= 0:

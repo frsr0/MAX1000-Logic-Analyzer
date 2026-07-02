@@ -194,6 +194,9 @@ begin
           -- than the 100 MHz drain, so fill rate is not the constraint)
           level := level + 1;
           remain_v := remain_v - 1;
+          if remain_v = 0 then
+            pending := false;
+          end if;
         end if;
       end if;
 

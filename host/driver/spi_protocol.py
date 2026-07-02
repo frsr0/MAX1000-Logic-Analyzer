@@ -255,6 +255,12 @@ class SPIDevice:
     # dispatcher drops packets that arrive while it is still feeding TX.
     BATCH_GAP_PAD = 208
     BATCH_RSP_PAD = 1056
+    # Compressed responses for compressible content are 8 + 384 + 2 = 394
+    # bytes (2.67x), so compressed batches use compact slots for the wire
+    # gain. A block whose (incompressible) response overruns its slot is
+    # simply missing from the scan and gets the per-block raw retry below —
+    # correctness never depends on the slot guess.
+    BATCH_RSP_PAD_COMPRESSED = 430
 
     def read_capture_blocks(self, byte_addrs, stop_evt=None, compressed=False):
         """Read multiple 1024-byte capture blocks in ONE CS-held transaction.
@@ -272,6 +278,8 @@ class SPIDevice:
             return [self.read_capture_block(a, compressed=compressed)
                     for a in byte_addrs]
 
+        rsp_pad = (self.BATCH_RSP_PAD_COMPRESSED if compressed
+                   else self.BATCH_RSP_PAD)
         payload = bytearray()
         seqs = []
         for addr in byte_addrs:
@@ -279,7 +287,7 @@ class SPIDevice:
             seqs.append(seq)
             payload.extend(build_packet(CMD_READ_CAPTURE, seq,
                                         struct.pack('<I', addr)))
-            payload.extend(b"\xff" * (self.BATCH_GAP_PAD + self.BATCH_RSP_PAD))
+            payload.extend(b"\xff" * (self.BATCH_GAP_PAD + rsp_pad))
         raw = self.spi.stream_payload(bytes(payload), stop_evt=stop_evt)
 
         blocks = {}
