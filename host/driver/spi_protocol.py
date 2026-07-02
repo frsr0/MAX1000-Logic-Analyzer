@@ -237,7 +237,8 @@ class SPIDevice:
                 break
         return None
 
-    def read_capture_block(self, addr: int, timeout: float = 5.0) -> bytes:
+    def read_capture_block(self, addr: int, timeout: float = 5.0,
+                           compressed: bool = False) -> bytes:
         """Read one 1024-byte capture block at given address."""
         payload = struct.pack('<I', addr)
         need = 8 + BLOCK_SIZE + 32  # sync(2) + header(4) + crc(2) + padding
@@ -255,7 +256,7 @@ class SPIDevice:
     BATCH_GAP_PAD = 208
     BATCH_RSP_PAD = 1056
 
-    def read_capture_blocks(self, byte_addrs, stop_evt=None):
+    def read_capture_blocks(self, byte_addrs, stop_evt=None, compressed=False):
         """Read multiple 1024-byte capture blocks in ONE CS-held transaction.
 
         Batches CMD_READ_CAPTURE requests with fixed response slots so the
@@ -268,7 +269,8 @@ class SPIDevice:
         if not byte_addrs:
             return []
         if not hasattr(self.spi, "stream_payload"):
-            return [self.read_capture_block(a) for a in byte_addrs]
+            return [self.read_capture_block(a, compressed=compressed)
+                    for a in byte_addrs]
 
         payload = bytearray()
         seqs = []
@@ -305,7 +307,7 @@ class SPIDevice:
         for addr, seq in zip(byte_addrs, seqs):
             pl = blocks.get(seq)
             if pl is None and (stop_evt is None or not stop_evt.is_set()):
-                pl = self.read_capture_block(addr)
+                pl = self.read_capture_block(addr, compressed=compressed)
             result.append(pl or b'')
         return result
 

@@ -16,6 +16,7 @@ architecture bench of tb_capture_compressor is
   signal comp_enable  : std_logic := '0';
   signal comp_data    : std_logic_vector(15 downto 0);
   signal comp_valid   : std_logic;
+  signal comp_busy    : std_logic;
 
   type word_array is array(natural range <>) of std_logic_vector(15 downto 0);
   type word6 is array(0 to 5) of std_logic_vector(15 downto 0);
@@ -140,7 +141,8 @@ begin
       sample_valid      => sample_valid,
       compression_enable => comp_enable,
       comp_data          => comp_data,
-      comp_valid         => comp_valid
+      comp_valid         => comp_valid,
+      busy               => comp_busy
     );
 
   process

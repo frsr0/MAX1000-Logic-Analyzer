@@ -64,6 +64,7 @@ port (
     Blk_Rd_Count   : in  natural range 0 to Max_Samples := 0;  -- samples to stream
     Auto_Renew     : in  std_logic := '0';  -- auto-renew stream (no deassert on block end)
     Compress_Enable : in  std_logic := '0';  -- enable delta-packed readback
+    Blk_Rd_Done_Tog : out std_logic := '0';
     Rd_Fifo_Q      : out std_logic_vector(15 downto 0) := (others => '0');
     Rd_Fifo_Empty  : out std_logic := '1';
     Rd_Fifo_RdReq  : in  std_logic := '0';
@@ -271,13 +272,17 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
       sample_valid      : in  std_logic;
       compression_enable : in  std_logic;
       comp_data         : out std_logic_vector(15 downto 0);
-      comp_valid        : out std_logic
+      comp_valid        : out std_logic;
+      busy              : out std_logic
     );
   end component;
 
   signal comp_rdata : std_logic_vector(15 downto 0) := (others => '0');
   signal comp_feed   : std_logic := '0';
   signal comp_valid : std_logic := '0';
+  signal comp_busy  : std_logic := '0';
+  signal blk_rd_done_tog_r : std_logic := '0';
+  signal blk_rd_done_pending : std_logic := '0';
   -- 2FF synchroniser for the block-read request toggle (CLK -> pclk)
   signal blk_req_s1    : std_logic := '0';
   signal blk_req_s2    : std_logic := '0';
@@ -365,6 +370,8 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   end component;
 
 begin
+
+  Blk_Rd_Done_Tog <= blk_rd_done_tog_r;
 
   -- Clear both CDC FIFOs whenever a capture run starts/stops or the writer
   -- aborts on overflow. Without this, stale capture words can survive between
@@ -1199,7 +1206,8 @@ begin
       sample_valid      => comp_feed,
       compression_enable => Compress_Enable,
       comp_data         => comp_rdata,
-      comp_valid        => comp_valid
+      comp_valid        => comp_valid,
+      busy              => comp_busy
     );
 
   -- Main: SDRAM write pump + buffer management + readout
@@ -1297,6 +1305,14 @@ begin
       end if;
       if single_count_load_q = '1' then
         buf_rem_single <= cfg_samples;
+      end if;
+      if blk_rd_done_pending = '1'
+         and stream_active = false
+         and rd_pend2 = '0'
+         and comp_busy = '0'
+         and comp_feed = '0' then
+        blk_rd_done_tog_r <= not blk_rd_done_tog_r;
+        blk_rd_done_pending <= '0';
       end if;
       -- Synchronise the block-read request toggle into pclk (runs every cycle so
       -- no edge is missed). Blk_Rd_Base/Count are quasi-static: they are set on
@@ -1406,6 +1422,7 @@ begin
         cap_stream_valid <= '0';
         stream_active := false; rd_pend2 := '0';
         stream_addr_inc_pending := false;
+        blk_rd_done_pending <= '0';
         cur_full := false;
 
       else
@@ -1414,6 +1431,7 @@ begin
       -- Block-read toggle edge -> start a stream. Base/Count are stable by now
       -- (set on the OLS side before the toggle flipped and held for the stream).
       if blk_req_edge_r = '1' then
+        blk_rd_done_pending <= '0';
         if rd_mode then
           -- Single-shot: read exactly the host-requested block.
           stream_addr_u := to_unsigned(Blk_Rd_Base + Start_Offset, 22);
@@ -1474,6 +1492,7 @@ begin
                 else
                   stream_active := false;
                   stream_rem    := 0;
+                  blk_rd_done_pending <= '1';
                   -- Continuous mode: hand the SDRAM bus back to the write pump
                   -- after the host has streamed its requested block.
                   if Continuous_Mode = '1' then

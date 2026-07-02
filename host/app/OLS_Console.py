@@ -661,14 +661,18 @@ class OLScope:
                 pass
         if self.capture_type.get() == 'rolling':
             stride = analog_frame_stride(mode)
-            compress = self.compress_enabled
+            compress = self._should_enable_compression_for_capture(
+                rolling=True, raw=self.raw_mode_var.get(), mode=mode)
             mb_effective = self.ROLLING_READBACK_MB_PER_S_COMPRESSED if compress else self.ROLLING_READBACK_MB_PER_S
             rolling_limit = int(mb_effective * 1_000_000 / stride)
             max_rate = min(max_rate, rolling_limit)
         return max_rate
 
     def _update_rate_info(self):
-        compress = self.compress_enabled
+        compress = self._should_enable_compression_for_capture(
+            rolling=self.capture_type.get() == 'rolling',
+            raw=self.raw_mode_var.get(),
+            mode=self._get_capture_mode())
         if compress:
             mb_effective = self.ROLLING_READBACK_MB_PER_S_COMPRESSED
         else:
@@ -703,6 +707,15 @@ class OLScope:
             except Exception:
                 pass
         self.compress_enabled = bool(getattr(self, 'compress_enabled', False))
+
+    def _should_enable_compression_for_capture(self, rolling, raw=False, mode=None):
+        mode = self._get_capture_mode() if mode is None else mode
+        return bool(
+            rolling
+            and not raw
+            and mode == MODE_DIGITAL
+            and getattr(self, 'compress_enabled', False)
+        )
 
     def _update_buf_presets(self, event=None):
         """Regenerate buffer combobox values with MB sizes based on current rate+mode."""
@@ -1086,13 +1099,8 @@ class OLScope:
                 self._apply_schmitt()
                 if proto_enable:
                     self.dev.trigger_decode(match_byte=match_byte, channel=proto_ch, baud=proto_baud, enable=True)
-                # Delta-compressed readback is disabled: the current bitstream
-                # has the readout compressor hardwired off (LE budget), and the
-                # fixed-192-word compressed block protocol cannot round-trip
-                # arbitrary digital data (the compressor is variable-rate).
-                # Readback always returns raw samples; decompressing them
-                # would corrupt the capture.
-                use_compress = False
+                use_compress = self._should_enable_compression_for_capture(
+                    rolling=rolling, raw=raw, mode=self.capture_mode)
                 self.dev.set_compression_enabled(use_compress)
                 if rolling:
                     buf_nsamp = self.capture_window

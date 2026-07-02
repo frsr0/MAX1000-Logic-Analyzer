@@ -140,6 +140,24 @@ class TestOLScopeGetters:
         scope.mode_cb.get.return_value = '16 Dig + 2 Ana'
         assert scope._get_capture_mode() == MODE_MIXED
 
+    def test_should_enable_compression_for_plain_digital_rolling(self):
+        scope = _make_scope()
+        scope.compress_enabled = True
+        assert scope._should_enable_compression_for_capture(
+            rolling=True, raw=False, mode=MODE_DIGITAL) is True
+
+    def test_should_not_enable_compression_for_mixed_mode(self):
+        scope = _make_scope()
+        scope.compress_enabled = True
+        assert scope._should_enable_compression_for_capture(
+            rolling=True, raw=False, mode=MODE_MIXED) is False
+
+    def test_should_not_enable_compression_for_raw_mode(self):
+        scope = _make_scope()
+        scope.compress_enabled = True
+        assert scope._should_enable_compression_for_capture(
+            rolling=True, raw=True, mode=MODE_DIGITAL) is False
+
 
 # ====================================================================
 # OLScope Rate Limits

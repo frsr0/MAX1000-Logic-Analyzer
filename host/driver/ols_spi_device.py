@@ -276,6 +276,19 @@ class OLSDeviceSPI:
             cur &= ~REG_FLAGS_COMPRESS
         return self.pkt.write_register(REG_FLAGS, cur)
 
+    def _can_compress_readback(self):
+        return self.compress_readback_enabled and self.analog_mode == MODE_DIGITAL
+
+    def _use_compressed_live_readback(self, *, use_continuous, payload_stride,
+                                      gen_data, stride):
+        return bool(
+            use_continuous
+            and payload_stride is None
+            and not gen_data
+            and stride == 2
+            and self._can_compress_readback()
+        )
+
     @property
     def pkt(self):
         if self._pkt is None and self.spi is not None:
@@ -574,6 +587,7 @@ class OLSDeviceSPI:
         out = bytearray()
         sample = start_sample
         batch_blocks = 64   # 64 blocks ~ 82 KB wire per CS-held transaction
+        use_compress = self._can_compress_readback()
         while remaining > 0:
             # Plan a batch of overlapping block addresses (each non-zero block
             # requests one sample early and nets 511 samples after the drop).
@@ -595,16 +609,19 @@ class OLSDeviceSPI:
             blocks = None
             read_blocks = getattr(self.pkt, 'read_capture_blocks', None)
             if callable(read_blocks):
-                blocks = read_blocks(addrs)
+                blocks = read_blocks(addrs, compressed=use_compress)
             if not isinstance(blocks, list):
                 # Transport without batching support (or test double):
                 # per-block packetized reads.
-                blocks = [self.pkt.read_capture_block(a) for a in addrs]
+                blocks = [self.pkt.read_capture_block(a, compressed=use_compress)
+                          for a in addrs]
             stop = False
             for block, drop in zip(blocks, drops):
                 if not block:
                     stop = True
                     break
+                if use_compress:
+                    block = decompress_delta_stream(block)
                 block = block[drop * 2:]
                 take = min(remaining, len(block) // 2)
                 if take <= 0:
@@ -1296,7 +1313,12 @@ class OLSDeviceSPI:
         out_stride = payload_stride if payload_stride else stride
         max_bytes = buffer_nsamp * out_stride
 
-        if (use_continuous and not payload_stride and not gen_data
+        if self._use_compressed_live_readback(
+                use_continuous=use_continuous,
+                payload_stride=payload_stride,
+                gen_data=gen_data,
+                stride=stride) or (
+                use_continuous and not payload_stride and not gen_data
                 and stride == 2 and self.analog_mode == MODE_DIGITAL):
             buf = bytearray()
             for data, total, _window, _overrun in self.stream_ring_capture(

@@ -74,6 +74,7 @@ PORT (
          Auto_Renew     : OUT STD_LOGIC := '0';
          -- Readback compression enable
          Compress_Enable : OUT STD_LOGIC := '0';
+         Blk_Rd_Done_Tog : IN  STD_LOGIC := '0';
          Rd_Fifo_Q      : IN  STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
          Rd_Fifo_Empty  : IN  STD_LOGIC := '1';
          Rd_Fifo_RdReq  : OUT STD_LOGIC := '0';
@@ -227,7 +228,7 @@ SIGNAL streaming_active    : STD_LOGIC := '0';
   -- Block readout now streams the 512 samples through the FLA response FIFO
   -- (a true CLK<->pclk CDC), so there is no fixed-latency latch to warm and the
   -- old prime/drain read-ahead/read-behind padding has been removed.
-  SIGNAL block_rd_j           : INTEGER range 0 to BLOCK_SAMPLES - 1 := 0;
+  SIGNAL block_rd_j           : INTEGER range 0 to BLOCK_SAMPLES := 0;
   -- Holds the even sample so the odd cycle can write the full 32-bit block_buf
   -- entry in one go (partial-width writes don't infer correctly on the RAM).
   SIGNAL block_pack_lo        : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
@@ -244,6 +245,11 @@ SIGNAL streaming_active    : STD_LOGIC := '0';
 -- Max entries per block read: 512 uncompressed, 192 when compression is active in streaming mode
 SIGNAL blk_rd_samples : INTEGER range 0 to 512 := BLOCK_SAMPLES;
 SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
+SIGNAL blk_done_s1 : STD_LOGIC := '0';
+SIGNAL blk_done_s2 : STD_LOGIC := '0';
+SIGNAL blk_done_last : STD_LOGIC := '0';
+SIGNAL blk_done_edge : STD_LOGIC := '0';
+SIGNAL blk_done_seen : STD_LOGIC := '0';
   TYPE block_buf_t IS ARRAY(0 TO 255) OF STD_LOGIC_VECTOR(31 DOWNTO 0);
   SIGNAL block_buf            : block_buf_t := (others => (others => '0'));
   -- 21-cycle bit-serial divider for /3 (replaces 58-level lpm_divide)
@@ -477,6 +483,13 @@ BEGIN
     -- and this CLK domain, so there is no fixed-latency latch to mis-time at a
     -- block boundary (that was the block-boundary corruption) and no prime/drain.
     sig_rd_pend_d1 <= block_rd_pending;
+    blk_done_s1 <= Blk_Rd_Done_Tog;
+    blk_done_s2 <= blk_done_s1;
+    blk_done_edge <= blk_done_s2 xor blk_done_last;
+    blk_done_last <= blk_done_s2;
+    if blk_done_edge = '1' then
+      blk_done_seen <= '1';
+    end if;
     Rd_Fifo_RdReq <= '0';
     IF block_rd_release = '1' THEN
       block_rd_pending <= '0';
@@ -496,6 +509,8 @@ BEGIN
       Blk_Rd_Base  <= TO_INTEGER(UNSIGNED(block_rd_addr(31 downto 1)));
       Blk_Rd_Count <= blk_rd_samples;
       block_rd_j <= 0;
+      blk_rsp_words <= 0;
+      blk_done_seen <= '0';
       block_rd_state <= 1;
     END IF;
     CASE block_rd_state IS
@@ -510,6 +525,8 @@ BEGIN
         IF Rd_Fifo_Empty = '0' THEN
           Rd_Fifo_RdReq <= '1';
           block_rd_state <= 3;
+        ELSIF blk_done_seen = '1' AND block_rd_j > 0 THEN
+          block_rd_state <= 5;
         END IF;
       WHEN 3 =>
         block_rd_state <= 4;
@@ -522,13 +539,13 @@ BEGIN
         ELSE
           block_buf(block_rd_j / 2) <= Rd_Fifo_Q & block_pack_lo;
         END IF;
-        IF block_rd_j >= blk_rsp_words - 1 THEN
-          block_rd_state <= 5;
-        ELSE
-          block_rd_j <= block_rd_j + 1;
-          block_rd_state <= 2;
-        END IF;
+        block_rd_j <= block_rd_j + 1;
+        block_rd_state <= 2;
       WHEN 5 =>
+        IF (block_rd_j MOD 2) = 1 THEN
+          block_buf(block_rd_j / 2) <= x"0000" & block_pack_lo;
+        END IF;
+        blk_rsp_words <= block_rd_j;
         block_rd_ack <= '1';
         block_rd_state <= 6;
       WHEN 6 =>
@@ -810,6 +827,7 @@ BEGIN
     -- Block-read streaming state
     variable blk_wc : natural range 0 to 255 := 0;  -- word counter
     variable blk_bc : natural range 0 to 3 := 0;    -- byte-within-word counter
+    variable blk_bytes_sent : natural range 0 to MAX_TX_PAYLOAD_BYTES := 0;
     -- Flag: true when payload comes from block_buf, not rsp_buf
     variable feeding_block : boolean := false;
     variable feed_wait_ready_low : boolean := false;
@@ -1149,6 +1167,7 @@ BEGIN
             block_rd_release <= '1';
             blk_wc := 0;
             blk_bc := 0;
+            blk_bytes_sent := 0;
             feeding_block := true;
             st := BUILD_RSP;
             -- Advance stream address in streaming mode (always 1024 bytes per block)
@@ -1188,24 +1207,20 @@ BEGIN
             end if;
           elsif pkt_tx_payload_ready = '1' then
             if feeding_block then
-              -- Stream from block_buf (varies: 256 x 32-bit = 1024 B uncompressed,
-              -- 96 x 32-bit = 384 B compressed)
+              -- Stream from block_buf; rsp_len_v carries the exact byte count.
               disp_tx_payload_in <= block_buf(blk_wc)(blk_bc * 8 + 7 downto blk_bc * 8);
               disp_tx_payload_vld <= '1';
               feed_wait_ready_low := true;
-              if blk_rsp_words = 192 then
-                block_last_v := (blk_wc = 95 and blk_bc = 3);
-              else
-                block_last_v := (blk_wc = 255 and blk_bc = 3);
-              end if;
+              block_last_v := (blk_bytes_sent + 1 >= rsp_len_v);
               if block_last_v then
                 st := WAIT_TX;
               else
+                blk_bytes_sent := blk_bytes_sent + 1;
                 if blk_bc < 3 then
                   blk_bc := blk_bc + 1;
                 else
                   blk_bc := 0;
-                  if (blk_rsp_words = 192 and blk_wc < 95) or (blk_rsp_words = 512 and blk_wc < 255) then
+                  if blk_wc < 255 then
                     blk_wc := blk_wc + 1;
                   end if;
                 end if;
@@ -1279,13 +1294,7 @@ BEGIN
   -- Auto_Renew: drives FLA block-read auto-renew.  Default '0' (single-shot).
   Auto_Renew <= '0';
 
-  -- Delta-compressed readback is retired: the variable-rate compressor cannot
-  -- honour the fixed-192-word block protocol for arbitrary digital data (and
-  -- the LE budget went to capture features). All block reads are raw
-  -- 512-sample / 1024-byte responses. compress_enable_i (REG_FLAGS bit 18)
-  -- remains readable for host compatibility but has no datapath effect.
   blk_rd_samples <= BLOCK_SAMPLES;
-  blk_rsp_words <= BLOCK_SAMPLES;
-  Compress_Enable <= '0';
+  Compress_Enable <= compress_enable_i;
 
 END BEHAVIORAL;

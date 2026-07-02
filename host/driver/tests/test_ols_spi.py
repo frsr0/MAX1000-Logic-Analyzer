@@ -444,6 +444,34 @@ class TestSPIPacketProtocol:
             assert len(blk) == 1024
             assert blk == bytes([i]) * 1024
 
+    def test_read_capture_blocks_batches_variable_length_compressed_packets(self):
+        class FakeSPI:
+            def __init__(self):
+                self.payloads = []
+
+            def stream_payload(self, payload, stop_evt=None):
+                self.payloads.append(bytes(payload))
+                out = bytearray()
+                idx = payload.find(SYNC_REQ)
+                block_num = 0
+                while idx >= 0:
+                    seq = payload[idx + 3]
+                    pl = bytes([0x40 + block_num]) * (12 + block_num * 4)
+                    resp = (SYNC_RSP + bytes([ST_OK, seq])
+                            + struct.pack('<H', len(pl)) + pl)
+                    resp += struct.pack('<H', crc16(resp[2:]))
+                    out += b'\xff' * 166 + resp
+                    idx = payload.find(SYNC_REQ, idx + 12)
+                    block_num += 1
+                return bytes(out)
+
+        fake = FakeSPI()
+        pkt = SPIDevice(fake)
+        blocks = pkt.read_capture_blocks([0, 1024], compressed=True)
+
+        assert len(fake.payloads) == 1
+        assert blocks == [bytes([0x40]) * 12, bytes([0x41]) * 16]
+
     def test_read_capture_blocks_retries_missing_block_individually(self):
         class FakeSPI:
             def __init__(self):

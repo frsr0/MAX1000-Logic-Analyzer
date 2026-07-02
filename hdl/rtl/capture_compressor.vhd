@@ -20,7 +20,8 @@ entity capture_compressor is
     sample_valid      : in  std_logic;
     compression_enable : in  std_logic;
     comp_data         : out std_logic_vector(15 downto 0) := (others => '0');
-    comp_valid        : out std_logic := '0'
+    comp_valid        : out std_logic := '0';
+    busy              : out std_logic := '0'
   );
 end capture_compressor;
 
@@ -41,6 +42,8 @@ architecture rtl of capture_compressor is
   -- FLUSH output counter: which packed word (0..4) we are emitting
   signal out_idx : natural range 0 to 5 := 0;
 begin
+  busy <= '1' when state = ACCUM or state = FLUSH or sample_pipe_valid = '1'
+          else '0';
 
   process(clk)
     variable delta_v : signed(15 downto 0);

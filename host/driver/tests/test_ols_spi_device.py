@@ -215,10 +215,27 @@ class TestOLSDeviceSPI:
         ]
         data = device_spi.read_capture_range(start_sample=7, sample_count=600)
         device_spi.pkt.read_capture_block.assert_has_calls([
-            call(12),
-            call(1034),
+            call(12, compressed=False),
+            call(1034, compressed=False),
         ])
         assert len(data) == 1200
+
+    def test_read_capture_range_decompresses_compressed_blocks(self, device_spi):
+        block0 = struct.pack('<6H', 0x1234, 0, 0, 0, 0, 0) * 32
+        block1 = struct.pack('<6H', 0x5678, 0, 0, 0, 0, 0) * 32
+        device_spi.pkt = MagicMock()
+        device_spi.compress_readback_enabled = True
+        device_spi.pkt.read_capture_blocks.return_value = [block0, block1]
+
+        data = device_spi.read_capture_range(start_sample=0, sample_count=520)
+
+        assert len(data) == 1040
+        words = struct.unpack('<520H', data)
+        assert words[:16] == (0x1234,) * 16
+        assert words[16:512] == (0x1234,) * 496
+        assert words[512:] == (0x5678,) * 8
+        device_spi.pkt.read_capture_blocks.assert_called_once_with(
+            [0, 1022], compressed=True)
 
     def test_repair_boundary_glitches_only_at_256_sample_boundaries(self, device_spi):
         words = [0x0001] * 520
@@ -835,6 +852,19 @@ class TestOLSDeviceSPIRolling:
             window_samples=4,
             stop_evt=stop_evt,
             progress_cb=None)
+
+    def test_rolling_capture_prefers_compression_only_for_plain_digital(self, device_spi):
+        device_spi.analog_mode = MODE_DIGITAL
+        device_spi.compress_readback_enabled = True
+
+        assert device_spi._use_compressed_live_readback(
+            use_continuous=True, payload_stride=None, gen_data=None, stride=2) is True
+        assert device_spi._use_compressed_live_readback(
+            use_continuous=True, payload_stride=5, gen_data=None, stride=2) is False
+        assert device_spi._use_compressed_live_readback(
+            use_continuous=True, payload_stride=None, gen_data=b'abc', stride=2) is False
+        assert device_spi._use_compressed_live_readback(
+            use_continuous=False, payload_stride=None, gen_data=None, stride=2) is False
 
     def test_rolling_capture_keeps_legacy_path_for_generator(self, device_spi):
         device_spi.pkt = MagicMock()
