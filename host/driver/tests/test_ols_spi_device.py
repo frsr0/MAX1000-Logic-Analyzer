@@ -21,11 +21,13 @@ from driver.ols_spi_device import (
     MODE_MIXED,
     MODE_NARROW_DIGITAL,
     analog_frame_stride,
+    analog_wire_stride,
     decode_analog_frames,
     narrow_digital_flags,
     OLSDeviceSPI,
     decompress_delta_stream,
     find_spi_device,
+    wire_to_payload,
     unpack_narrow_digital_words,
 )
 
@@ -559,11 +561,11 @@ class TestOLSDeviceSPICapture:
         device_spi.pkt.arm_capture.return_value = ST_OK
         device_spi.pkt.get_status.return_value = {
             'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
-        # One 5-byte mixed frame, carried densely on the wire: the FPGA packs
-        # 2 samples per 32-bit block entry, so the wire is already contiguous
-        # 16-bit little-endian words (wire_to_payload is identity).
-        frame = bytes([0xBB, 0xAA, 0x23, 0x61, 0x45])
-        device_spi._stream_readback = MagicMock(return_value=frame)
+        # One 5-byte mixed frame occupies 3 words on the wire, with one pad byte
+        # in the high half of the final word.
+        wire = bytes([0xBB, 0xAA, 0x23, 0x61, 0x45, 0x00])
+        frame = wire_to_payload(wire, MODE_MIXED)
+        device_spi._stream_readback = MagicMock(return_value=wire)
         result, decoded = device_spi.capture_analog(
             rate_hz=100000, frames=1, mode=MODE_MIXED)
         assert len(result) == 5, f"expected 5 bytes, got {len(result)}"
@@ -814,6 +816,30 @@ class TestOLSDeviceSPIRolling:
         device_spi.read_capture_range.assert_called_once_with(128, 64)
         assert device_spi.last_ring_status['overrun_count'] == 3
 
+    def test_continuous_ring_capture_deinterleaves_mixed_frames(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.side_effect = [
+            {'capture_status': 0x11, 'producer_index': 0, 'oldest_index': 0,
+             'newest_index': 0, 'overrun_count': 0},
+            {'capture_status': 0x11, 'producer_index': 6, 'oldest_index': 0,
+             'newest_index': 5, 'overrun_count': 0},
+        ]
+        device_spi.analog_mode = MODE_MIXED
+        wire = bytes([0xBB, 0xAA, 0x23, 0x61, 0x45, 0x00])
+        device_spi.read_capture_range = MagicMock(return_value=wire)
+        device_spi.spi.flush = MagicMock()
+
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False, False, True]
+        results = list(device_spi.continuous_ring_capture(
+            125_000, 1, 4, stop_evt, fast_mode=False, yield_full_buffer=False))
+
+        assert len(results) == 1
+        assert results[0][0] == bytes([0xBB, 0xAA, 0x23, 0x61, 0x45])
+        device_spi.read_capture_range.assert_called_once_with(0, 3)
+
     def test_rolling_capture_no_gen(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi._stream_readback = MagicMock(return_value=b'\x01\x00' * 100)
@@ -865,6 +891,55 @@ class TestOLSDeviceSPIRolling:
             use_continuous=True, payload_stride=None, gen_data=b'abc', stride=2) is False
         assert device_spi._use_compressed_live_readback(
             use_continuous=False, payload_stride=None, gen_data=None, stride=2) is False
+
+    def test_rolling_capture_uses_continuous_ring_for_mixed(self, device_spi):
+        device_spi.analog_mode = MODE_MIXED
+        device_spi.continuous_ring_capture = MagicMock(return_value=iter([
+            (bytes([1, 2, 3, 4, 5]), 1, 4),
+            (bytes([6, 7, 8, 9, 10]), 2, 4),
+        ]))
+
+        stop_evt = MagicMock()
+        full_out = bytearray()
+        results = list(device_spi.rolling_capture(
+            125_000, 1, 4, stop_evt, full_out=full_out, use_continuous=True,
+            stride=analog_wire_stride(MODE_MIXED), payload_stride=analog_frame_stride(MODE_MIXED)))
+
+        assert [item[1:] for item in results] == [(1, 4), (2, 4)]
+        assert results[0][0] == bytes([1, 2, 3, 4, 5])
+        assert results[1][0] == bytes([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+        device_spi.continuous_ring_capture.assert_called_once_with(
+            rate_hz=125_000,
+            chunk_nsamp=1,
+            buffer_nsamp=4,
+            stop_evt=stop_evt,
+            progress_cb=None,
+            full_out=full_out,
+            fast_mode=False,
+            yield_full_buffer=False)
+
+    def test_rolling_capture_legacy_mixed_strips_wire_padding(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
+        device_spi.read_capture_range = MagicMock(return_value=bytes([
+            0xBB, 0xAA, 0x23, 0x61, 0x45, 0x00,
+        ]))
+        device_spi.spi.flush = MagicMock()
+        device_spi.analog_mode = MODE_MIXED
+
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False, True]
+        results = list(device_spi.rolling_capture(
+            125_000, 1, 4, stop_evt, use_continuous=False,
+            stride=analog_wire_stride(MODE_MIXED),
+            payload_stride=analog_frame_stride(MODE_MIXED)))
+
+        assert len(results) == 1
+        assert results[0][0] == bytes([0xBB, 0xAA, 0x23, 0x61, 0x45])
+        device_spi.read_capture_range.assert_called_once_with(0, 3)
 
     def test_rolling_capture_keeps_legacy_path_for_generator(self, device_spi):
         device_spi.pkt = MagicMock()

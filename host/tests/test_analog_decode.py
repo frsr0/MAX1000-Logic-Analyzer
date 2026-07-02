@@ -38,19 +38,32 @@ def test_wire_stride_rounds_frames_to_words():
     assert analog_wire_stride(MODE_ANALOG_ALL) == 4
 
 
-def test_wire_to_payload_is_identity():
-    # The FPGA now packs 2 samples per 32-bit block entry, so the SPI wire is
-    # already contiguous 16-bit little-endian words. The old 32->16 collapse is
-    # done in hardware, so wire_to_payload is a pass-through.
+def test_wire_to_payload_is_identity_for_even_stride_frames():
     data = bytes([0x34, 0x12, 0xCD, 0xAB, 0x01, 0x02])
-    assert wire_to_payload(data) == data
+    assert wire_to_payload(data, MODE_DIGITAL) == data
+
+
+def test_wire_to_payload_strips_mixed_frame_padding():
+    # Mixed 5-byte payloads travel as 6 wire bytes (3 packed words), with the
+    # final high byte padded to zero.
+    wire = bytes([
+        0xBB, 0xAA, 0x23, 0x61, 0x45, 0x00,
+        0x34, 0x12, 0x67, 0x45, 0x89, 0x00,
+    ])
+    assert wire_to_payload(wire, MODE_MIXED) == bytes([
+        0xBB, 0xAA, 0x23, 0x61, 0x45,
+        0x34, 0x12, 0x67, 0x45, 0x89,
+    ])
+
+
+def test_wire_to_payload_strips_dual_analog_padding():
+    wire = bytes([0x23, 0x61, 0x45, 0x00])
+    assert wire_to_payload(wire, MODE_ANALOG_ALL) == bytes([0x23, 0x61, 0x45])
 
 
 def test_decode_mixed_frame_from_dense_wire():
-    # A 5-byte mixed frame is carried densely on the wire (no zero padding);
-    # wire_to_payload is identity, so decoding it yields exactly one frame.
-    frame = bytes([0xBB, 0xAA, 0x23, 0x61, 0x45])
-    rows = decode_analog_frames(wire_to_payload(frame), MODE_MIXED)
+    frame = bytes([0xBB, 0xAA, 0x23, 0x61, 0x45, 0x00])
+    rows = decode_analog_frames(wire_to_payload(frame, MODE_MIXED), MODE_MIXED)
     assert len(rows) == 1
     assert rows[0]["digital"] == 0xAABB
     assert rows[0]["adc"] == [0x123, 0x456]
@@ -58,15 +71,15 @@ def test_decode_mixed_frame_from_dense_wire():
 
 def test_decode_fast_analog_frame_from_dense_wire():
     frame = bytes([0x23, 0x01])
-    rows = decode_analog_frames(wire_to_payload(frame), MODE_ANALOG_FAST)
+    rows = decode_analog_frames(wire_to_payload(frame, MODE_ANALOG_FAST), MODE_ANALOG_FAST)
     assert len(rows) == 1
     assert rows[0]["digital"] is None
     assert rows[0]["adc"] == [0x123]
 
 
 def test_decode_maximum_analog_frame_from_dense_wire():
-    frame = bytes([0x23, 0x61, 0x45])
-    rows = decode_analog_frames(wire_to_payload(frame), MODE_ANALOG_ALL)
+    frame = bytes([0x23, 0x61, 0x45, 0x00])
+    rows = decode_analog_frames(wire_to_payload(frame, MODE_ANALOG_ALL), MODE_ANALOG_ALL)
     assert len(rows) == 1
     assert rows[0]["digital"] is None
     assert rows[0]["adc"] == [0x123, 0x456]

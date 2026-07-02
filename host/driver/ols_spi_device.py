@@ -77,13 +77,24 @@ def analog_wire_stride(mode):
     return 2 * ((analog_frame_stride(mode) + 1) // 2)
 
 
-def wire_to_payload(data):
-    """Identity: the readout now packs 2 samples per 32-bit block entry, so the
-    wire is already dense 16-bit little-endian words. The 32-bit->16-bit
-    collapse that this used to do is now done in the FPGA (block read packs
-    even/odd samples into the low/high halves). Kept as a pass-through so analog
-    call sites need no change."""
-    return data
+def wire_to_payload(data, mode=MODE_DIGITAL):
+    """Convert wire bytes to dense payload bytes for the selected capture mode.
+
+    The digital path now arrives as dense 16-bit words already. Analog and mixed
+    modes also arrive as dense 16-bit words, but odd-sized frames are padded to
+    a whole word on the wire, so the host must strip that per-frame padding.
+    """
+    payload_stride = analog_frame_stride(mode)
+    wire_stride = analog_wire_stride(mode)
+    if payload_stride == wire_stride or not data:
+        return data
+    frames = len(data) // wire_stride
+    out = bytearray(frames * payload_stride)
+    for i in range(frames):
+        src = i * wire_stride
+        dst = i * payload_stride
+        out[dst:dst + payload_stride] = data[src:src + payload_stride]
+    return bytes(out)
 
 
 def narrow_digital_flags(channel):
@@ -692,6 +703,8 @@ class OLSDeviceSPI:
         self._ensure_open()
         chunk_nsamp = max(1, int(chunk_nsamp))
         buffer_nsamp = max(chunk_nsamp, int(buffer_nsamp))
+        wire_stride = analog_wire_stride(self.analog_mode)
+        payload_stride = analog_frame_stride(self.analog_mode)
         div = max(0, int(self.sample_clk / rate_hz) - 1)
         self._write_capture_config(
             div=div, samples=buffer_nsamp, delay_count=buffer_nsamp,
@@ -727,21 +740,24 @@ class OLSDeviceSPI:
                     time.sleep(0.0003)
                     continue
 
-                data = self.read_capture_range(next_sample, chunk_nsamp)
-                data = data[:chunk_nsamp * 2]
+                wire_words = ((chunk_nsamp * wire_stride) + 1) // 2
+                data = self.read_capture_range(next_sample, wire_words)
+                data = data[:chunk_nsamp * wire_stride]
                 if not data:
                     time.sleep(0.0003)
                     continue
-                if not (self.analog_mode & MODE_MIXED):
+                data = wire_to_payload(data, self.analog_mode)
+                data = data[:chunk_nsamp * payload_stride]
+                if self.analog_mode == MODE_DIGITAL:
                     data = self._repair_boundary_glitches(data, next_sample)
                 data = self._filter_digital(data)
 
-                next_sample += len(data) // 2
-                total += len(data) // 2
+                next_sample += wire_words
+                total += len(data) // payload_stride
                 if full_out is not None:
                     full_out.extend(data)
                 buf += data
-                max_bytes = buffer_nsamp * 2
+                max_bytes = buffer_nsamp * payload_stride
                 if len(buf) > max_bytes:
                     buf = buf[-max_bytes:]
                 out = buf if yield_full_buffer else data
@@ -1203,7 +1219,7 @@ class OLSDeviceSPI:
         self.fast_mode_enabled = False
         try:
             # capture(nsamples=N) returns N dense 16-bit words (2 bytes each);
-            # one word per analog SDRAM word. wire_to_payload is now identity.
+            # odd-sized analog frames are rounded up to whole words on the wire.
             sdram_words = frames * words_per_frame
             wire = self.capture(
                 rate_hz=rate_hz * words_per_frame,
@@ -1213,7 +1229,7 @@ class OLSDeviceSPI:
                 progress_cb=progress_cb,
                 stop_evt=stop_evt,
             )
-            payload = wire_to_payload(wire)[:frames * payload_stride]
+            payload = wire_to_payload(wire, mode)[:frames * payload_stride]
             return payload, decode_analog_frames(payload, mode)
         finally:
             self.fast_mode_enabled = prev_fast_mode
@@ -1337,6 +1353,26 @@ class OLSDeviceSPI:
                     progress_cb(snapshot, total, buffer_nsamp)
                 yield snapshot, total, buffer_nsamp
             return
+        if (use_continuous and payload_stride and not gen_data
+                and self.analog_mode != MODE_DIGITAL):
+            buf = bytearray()
+            for data, total, _window in self.continuous_ring_capture(
+                    rate_hz=rate_hz,
+                    chunk_nsamp=chunk_nsamp,
+                    buffer_nsamp=buffer_nsamp,
+                    stop_evt=stop_evt,
+                    progress_cb=None,
+                    full_out=full_out,
+                    fast_mode=False,
+                    yield_full_buffer=False):
+                buf.extend(data)
+                if len(buf) > max_bytes:
+                    del buf[:-max_bytes]
+                snapshot = bytes(buf)
+                if progress_cb:
+                    progress_cb(snapshot, total, buffer_nsamp)
+                yield snapshot, total, buffer_nsamp
+            return
 
         div = max(0, int(self.sample_clk / rate_hz) - 1)
         rc = max(1, buffer_nsamp)
@@ -1402,8 +1438,8 @@ class OLSDeviceSPI:
                     continue
 
                 if payload_stride:
-                    # Collapse 32-bit wire words to dense payload before buffering.
-                    data = wire_to_payload(data)
+                    # Strip per-frame wire padding before buffering.
+                    data = wire_to_payload(data, self.analog_mode)
                 data = self._filter_digital(data)
 
                 if full_out is not None:

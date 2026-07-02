@@ -17,7 +17,7 @@ try:
     from driver.ols_spi_device import (
         OLSDeviceSPI, find_spi_device,
         MODE_DIGITAL, MODE_MIXED,
-        decode_analog_frames, analog_frame_stride,
+        decode_analog_frames, analog_frame_stride, analog_wire_stride,
         wire_to_payload, decompress_delta_block, decompress_delta_stream,
     )
     HAS_SPI = True
@@ -25,6 +25,8 @@ except ImportError:
     HAS_SPI = False
     MODE_DIGITAL = 0
     MODE_MIXED = 0x08
+    def analog_wire_stride(_mode):
+        return 2
     def wire_to_payload(data):
         return b''.join(data[i:i + 2] for i in range(0, len(data) - 1, 4))
 
@@ -660,7 +662,7 @@ class OLScope:
             except (AttributeError, TypeError):
                 pass
         if self.capture_type.get() == 'rolling':
-            stride = analog_frame_stride(mode)
+            stride = analog_wire_stride(mode)
             compress = self._should_enable_compression_for_capture(
                 rolling=True, raw=self.raw_mode_var.get(), mode=mode)
             mb_effective = self.ROLLING_READBACK_MB_PER_S_COMPRESSED if compress else self.ROLLING_READBACK_MB_PER_S
@@ -679,7 +681,7 @@ class OLScope:
             mb_effective = self.ROLLING_READBACK_MB_PER_S
         rate = self._get_rate()
         mode = self._get_capture_mode()
-        stride = analog_frame_stride(mode)
+        stride = analog_wire_stride(mode) if self.capture_type.get() == 'rolling' else analog_frame_stride(mode)
         mb_per_s = rate * stride / 1_000_000
         if self.capture_type.get() == 'rolling':
             rolling_max = int(mb_effective * 1_000_000 / stride)
@@ -1109,10 +1111,10 @@ class OLScope:
                     pay_stride = None
                     if ana:
                         self.dev.set_analog_config(self.capture_mode)
-                        # Read sizing is unchanged; payload_stride only enables
-                        # the 32-bit-word -> dense-payload de-interleave so the
-                        # frames decode correctly.
-                        as_ = analog_frame_stride(self.capture_mode)
+                        # Mixed frames occupy whole 16-bit words on the wire, so
+                        # read sizing uses wire stride while buffering/display uses
+                        # dense payload stride after de-interleave.
+                        as_ = analog_wire_stride(self.capture_mode)
                         pay_stride = analog_frame_stride(self.capture_mode)
                         ring_chunk = 1024
                     else:
@@ -1154,14 +1156,8 @@ class OLScope:
                             self.capture_result = (buf, rate, got, stride)
                 else:
                     if self.capture_mode & MODE_MIXED:
-                        # TODO(analog revalidation): the 2-ADC re-scope made the
-                        # mixed frame 5 bytes (odd), so a frame occupies 3 words
-                        # with a padding byte on the wire; the dense trim below
-                        # assumes stride-aligned frames and needs a proper
-                        # word->payload de-interleave once analog is exercised
-                        # on hardware again.
-                        stride = analog_frame_stride(self.capture_mode)
-                        words_per_frame = (stride + 1) // 2
+                        payload_stride = analog_frame_stride(self.capture_mode)
+                        words_per_frame = analog_wire_stride(self.capture_mode) // 2
                         self.dev.set_analog_config(self.capture_mode)
                         sdram_words = nsamp * words_per_frame
                         # capture() reads one dense 16-bit word per 'sample'
@@ -1172,9 +1168,9 @@ class OLScope:
                             progress_cb=self._capture_progress,
                             trigger=trigger, stop_evt=self.stop_evt
                         )
-                        trimmed = wire_to_payload(wire)[:nsamp * stride]
-                        frames = decode_analog_frames(trimmed, self.capture_mode)
-                        self.capture_result = (trimmed, rate, nsamp, stride, frames, self.capture_mode)
+                        payload = wire_to_payload(wire, self.capture_mode)[:nsamp * payload_stride]
+                        frames = decode_analog_frames(payload, self.capture_mode)
+                        self.capture_result = (payload, rate, nsamp, payload_stride, frames, self.capture_mode)
                     else:
                         need_bytes = nsamp * getattr(self.dev, '_stride', 2)
                         print(f"[DBG] capture rate={rate} nsamp={nsamp} expect_bytes={need_bytes} trigger={trigger}")
