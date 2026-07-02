@@ -432,7 +432,7 @@ class OLSDeviceSPI:
         return self.pkt.write_register(REG_FLAGS, cur)
 
     def _can_compress_readback(self):
-        return self.compress_readback_enabled and self.analog_mode == MODE_DIGITAL
+        return self.compress_readback_enabled and self.analog_mode in (MODE_DIGITAL, MODE_MIXED)
 
     def _use_compressed_live_readback(self, *, use_continuous, payload_stride,
                                       gen_data, stride):

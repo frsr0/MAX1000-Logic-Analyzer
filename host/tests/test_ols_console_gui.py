@@ -150,7 +150,7 @@ class TestOLScopeGetters:
         scope = _make_scope()
         scope.compress_enabled = True
         assert scope._should_enable_compression_for_capture(
-            rolling=True, raw=False, mode=MODE_MIXED) is False
+            rolling=True, raw=False, mode=MODE_MIXED) is True
 
     def test_should_not_enable_compression_for_raw_mode(self):
         scope = _make_scope()
@@ -237,7 +237,7 @@ class TestOLScopeRateLimits:
         assert rate <= 5_000_000
         assert rate >= 4_500_000
 
-    def test_rolling_2ana_compressed_stays_clamped(self):
+    def test_rolling_2ana_compressed_clamps_higher(self):
         scope = _make_scope()
         scope.capture_type = MagicMock()
         scope.capture_type.get.return_value = 'rolling'
@@ -250,8 +250,8 @@ class TestOLScopeRateLimits:
         scope._update_rate_info = MagicMock()
         scope._update_buf_estimate = MagicMock()
         rate = scope._apply_rate('96MHz')
-        assert rate <= 5_000_000
-        assert rate >= 4_500_000
+        assert rate <= 13_500_000
+        assert rate >= 13_000_000
 
 
 # ====================================================================

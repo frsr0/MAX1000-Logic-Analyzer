@@ -715,7 +715,7 @@ class OLScope:
         return bool(
             rolling
             and not raw
-            and mode == MODE_DIGITAL
+            and mode in (MODE_DIGITAL, MODE_MIXED)
             and getattr(self, 'compress_enabled', False)
         )
 
