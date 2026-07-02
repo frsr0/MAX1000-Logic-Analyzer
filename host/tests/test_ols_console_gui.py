@@ -146,7 +146,7 @@ class TestOLScopeGetters:
         assert scope._should_enable_compression_for_capture(
             rolling=True, raw=False, mode=MODE_DIGITAL) is True
 
-    def test_should_not_enable_compression_for_mixed_mode(self):
+    def test_should_enable_compression_for_mixed_mode_rolling(self):
         scope = _make_scope()
         scope.compress_enabled = True
         assert scope._should_enable_compression_for_capture(
@@ -230,6 +230,22 @@ class TestOLScopeRateLimits:
         scope.capture_type.get.return_value = 'rolling'
         scope.mode_cb = MagicMock()
         scope.mode_cb.get.return_value = '16 Dig + 2 Ana'
+        scope._update_time_display = MagicMock()
+        scope._update_rate_info = MagicMock()
+        scope._update_buf_estimate = MagicMock()
+        rate = scope._apply_rate('96MHz')
+        assert rate <= 5_000_000
+        assert rate >= 4_500_000
+
+    def test_rolling_2ana_compressed_stays_clamped(self):
+        scope = _make_scope()
+        scope.capture_type = MagicMock()
+        scope.capture_type.get.return_value = 'rolling'
+        scope.mode_cb = MagicMock()
+        scope.mode_cb.get.return_value = '16 Dig + 2 Ana'
+        scope.raw_mode_var = MagicMock()
+        scope.raw_mode_var.get.return_value = False
+        scope.compress_enabled = True
         scope._update_time_display = MagicMock()
         scope._update_rate_info = MagicMock()
         scope._update_buf_estimate = MagicMock()

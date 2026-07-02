@@ -261,6 +261,7 @@ SIGNAL blk_done_seen : STD_LOGIC := '0';
   SIGNAL div3_pending : STD_LOGIC := '0';
   SIGNAL samples_div3  : NATURAL range 0 to Max_Samples := 0;
   SIGNAL samples_2div3 : NATURAL range 0 to Max_Samples := 0;
+
   COMPONENT spi_packet_rx IS
   PORT (
     clk         : IN  STD_LOGIC;
@@ -322,7 +323,7 @@ SIGNAL blk_done_seen : STD_LOGIC := '0';
   END COMPONENT;
 
 BEGIN
-  PROCESS (CLK)  
+  PROCESS (CLK)
   BEGIN
   IF RISING_EDGE(CLK) THEN
     div3_pending <= '0';
@@ -547,8 +548,6 @@ BEGIN
         END IF;
         blk_rsp_words <= block_rd_j;
         block_rd_ack <= '1';
-        block_rd_state <= 6;
-      WHEN 6 =>
         IF block_rd_pending = '0' THEN
           block_rd_ack <= '0';
           block_rd_state <= 0;

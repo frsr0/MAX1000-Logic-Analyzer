@@ -75,6 +75,7 @@ PORT (
     Gen_Start_Reject : IN  STD_LOGIC := '0';
     Gen_Done_Pulse   : IN  STD_LOGIC := '0';
     Gen_Capture_Active : OUT STD_LOGIC := '0';
+    Blk_Rd_Done_Tog  : OUT STD_LOGIC := '0';
     Pump_Valid_Cycles   : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
     Pump_Ready_Cycles   : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
     Pump_Accept_Cycles  : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
@@ -390,12 +391,12 @@ BEGIN
     Gen_Start_Ack      => gen_start_ack_i,
     Gen_Start_Reject   => gen_start_reject_i,
     Gen_Done_Pulse     => gen_done_pulse_i,
+    Blk_Rd_Done_Tog    => blk_rd_done_tog_i,
     Blk_Rd_Req_Tog     => blk_rd_req_tog_i,
     Blk_Rd_Base        => blk_rd_base_i,
     Blk_Rd_Count       => blk_rd_count_i,
     Auto_Renew         => auto_renew_i,
     Compress_Enable    => compress_enable_i,
-    Blk_Rd_Done_Tog    => blk_rd_done_tog_i,
     Rd_Fifo_Q          => rd_fifo_q_i,
     Rd_Fifo_Empty      => rd_fifo_empty_i,
     Rd_Fifo_RdReq      => rd_fifo_rdreq_i,

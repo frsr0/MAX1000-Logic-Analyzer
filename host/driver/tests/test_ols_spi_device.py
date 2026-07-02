@@ -14,6 +14,7 @@ from driver.spi_protocol import (
     ST_CAPTURE_BUSY,
 )
 from driver.ols_spi_device import (
+    MIXED_COMPRESSED_BLOCK_WORDS,
     MODE_ANALOG,
     MODE_ANALOG_ALL,
     MODE_ANALOG_FAST,
@@ -22,11 +23,16 @@ from driver.ols_spi_device import (
     MODE_NARROW_DIGITAL,
     analog_frame_stride,
     analog_wire_stride,
+    compress_mixed_group,
+    compress_mixed_stream,
+    decompress_mixed_group,
+    decompress_mixed_stream,
     decode_analog_frames,
     narrow_digital_flags,
     OLSDeviceSPI,
     decompress_delta_stream,
     find_spi_device,
+    payload_to_wire,
     wire_to_payload,
     unpack_narrow_digital_words,
 )
@@ -66,6 +72,40 @@ class TestCompressionHelpers:
         out = decompress_delta_stream(raw)
         assert len(out) == 64
         assert out[:2] == b"\x34\x12"
+
+    def test_mixed_compression_round_trips_delta_lanes(self):
+        payload = bytearray()
+        for i in range(16):
+            payload.extend(struct.pack('<H', 0x1000 + i))
+            adc0 = 0x120 + i
+            adc1 = 0x240 - i
+            payload.extend(bytes([
+                adc0 & 0xFF,
+                ((adc0 >> 8) & 0x0F) | ((adc1 & 0x0F) << 4),
+                (adc1 >> 4) & 0xFF,
+            ]))
+        group = compress_mixed_group(bytes(payload))
+        out, used = decompress_mixed_group(group)
+        assert used == len(group)
+        assert out == bytes(payload)
+        assert len(group) == 67
+
+    def test_mixed_compression_falls_back_to_raw_lane_losslessly(self):
+        payload = bytearray()
+        for i in range(16):
+            payload.extend(struct.pack('<H', 0x2000 + i))
+            adc0 = 200 if i % 2 == 0 else 3800
+            adc1 = 1000 + i
+            payload.extend(bytes([
+                adc0 & 0xFF,
+                ((adc0 >> 8) & 0x0F) | ((adc1 & 0x0F) << 4),
+                (adc1 >> 4) & 0xFF,
+            ]))
+        group = compress_mixed_group(bytes(payload))
+        out, used = decompress_mixed_group(group)
+        assert used == len(group)
+        assert out == bytes(payload)
+        assert len(group) == 74
 
 
 class TestDecodeAnalogFrames:
@@ -238,6 +278,55 @@ class TestOLSDeviceSPI:
         assert words[512:] == (0x5678,) * 8
         device_spi.pkt.read_capture_blocks.assert_called_once_with(
             [0, 1022], compressed=True)
+
+    def test_read_capture_range_decompresses_mixed_compressed_blocks(self, device_spi):
+        payload = bytearray()
+        for i in range(160):
+            payload.extend(struct.pack('<H', 0x3000 + i))
+            adc0 = 0x180 + (i % 16)
+            adc1 = 0x280 + (i % 16)
+            payload.extend(bytes([
+                adc0 & 0xFF,
+                ((adc0 >> 8) & 0x0F) | ((adc1 & 0x0F) << 4),
+                (adc1 >> 4) & 0xFF,
+            ]))
+        block = compress_mixed_stream(bytes(payload))
+        device_spi.pkt = MagicMock()
+        device_spi.analog_mode = MODE_MIXED
+        device_spi.compress_readback_enabled = True
+        device_spi.pkt.read_capture_blocks.return_value = [block]
+
+        data = device_spi._read_capture_range_mixed_compressed(
+            start_sample=0, sample_count=MIXED_COMPRESSED_BLOCK_WORDS)
+
+        assert len(data) == MIXED_COMPRESSED_BLOCK_WORDS * 2
+        assert wire_to_payload(data, MODE_MIXED) == bytes(payload)
+        device_spi.pkt.read_capture_blocks.assert_called_once_with(
+            [0], compressed=True)
+
+    def test_read_capture_range_decompresses_mixed_compressed_blocks_with_frame_drop(self, device_spi):
+        payload = bytearray()
+        for i in range(160):
+            payload.extend(struct.pack('<H', 0x4000 + i))
+            adc0 = 0x200 + (i % 8)
+            adc1 = 0x300 + (i % 8)
+            payload.extend(bytes([
+                adc0 & 0xFF,
+                ((adc0 >> 8) & 0x0F) | ((adc1 & 0x0F) << 4),
+                (adc1 >> 4) & 0xFF,
+            ]))
+        block = compress_mixed_stream(bytes(payload))
+        device_spi.pkt = MagicMock()
+        device_spi.analog_mode = MODE_MIXED
+        device_spi.compress_readback_enabled = True
+        device_spi.pkt.read_capture_blocks.return_value = [block]
+
+        data = device_spi._read_capture_range_mixed_compressed(
+            start_sample=3, sample_count=MIXED_COMPRESSED_BLOCK_WORDS - 3)
+
+        assert wire_to_payload(data, MODE_MIXED) == bytes(payload[5:])
+        device_spi.pkt.read_capture_blocks.assert_called_once_with(
+            [0], compressed=True)
 
     def test_repair_boundary_glitches_only_at_256_sample_boundaries(self, device_spi):
         words = [0x0001] * 520
@@ -891,6 +980,12 @@ class TestOLSDeviceSPIRolling:
             use_continuous=True, payload_stride=None, gen_data=b'abc', stride=2) is False
         assert device_spi._use_compressed_live_readback(
             use_continuous=False, payload_stride=None, gen_data=None, stride=2) is False
+        device_spi.analog_mode = MODE_MIXED
+        assert device_spi._use_compressed_live_readback(
+            use_continuous=True,
+            payload_stride=analog_frame_stride(MODE_MIXED),
+            gen_data=None,
+            stride=analog_wire_stride(MODE_MIXED)) is False
 
     def test_rolling_capture_uses_continuous_ring_for_mixed(self, device_spi):
         device_spi.analog_mode = MODE_MIXED

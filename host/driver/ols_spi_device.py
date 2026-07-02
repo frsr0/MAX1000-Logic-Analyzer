@@ -51,6 +51,11 @@ ANALOG_MODE_DIGITAL8 = MODE_DIGITAL
 ANALOG_ENABLE_BIT = MODE_MIXED
 
 NUM_CHANNELS = 16
+MIXED_COMPRESSED_GROUP_FRAMES = 16
+MIXED_COMPRESSED_BLOCK_FRAMES = 160
+MIXED_COMPRESSED_BLOCK_WORDS = MIXED_COMPRESSED_BLOCK_FRAMES * 3
+MIXED_ADC_LANE_DELTA8 = 0
+MIXED_ADC_LANE_RAW12 = 1
 
 
 # SPI readout wire format: the capture datapath is 32-bit per word (built for
@@ -75,6 +80,21 @@ def analog_wire_stride(mode):
     # 16-bit words, so odd frame strides round up to a whole word. (Before the
     # 2026-07-02 pump fix every word was duplicated, making this frame*2.)
     return 2 * ((analog_frame_stride(mode) + 1) // 2)
+
+
+def payload_to_wire(data, mode=MODE_DIGITAL):
+    """Convert dense payload bytes back to the padded wire representation."""
+    payload_stride = analog_frame_stride(mode)
+    wire_stride = analog_wire_stride(mode)
+    if payload_stride == wire_stride or not data:
+        return data
+    frames = len(data) // payload_stride
+    out = bytearray(frames * wire_stride)
+    for i in range(frames):
+        src = i * payload_stride
+        dst = i * wire_stride
+        out[dst:dst + payload_stride] = data[src:src + payload_stride]
+    return bytes(out)
 
 
 def wire_to_payload(data, mode=MODE_DIGITAL):
@@ -182,6 +202,29 @@ def _decode_adc(frame, offset=2):
     return adc
 
 
+def _pack_adc_pair(adc0, adc1):
+    adc0 = int(adc0) & 0x0FFF
+    adc1 = int(adc1) & 0x0FFF
+    return bytes((
+        adc0 & 0xFF,
+        ((adc0 >> 8) & 0x0F) | ((adc1 & 0x0F) << 4),
+        (adc1 >> 4) & 0xFF,
+    ))
+
+
+def _pack_adc_lane_raw12(samples):
+    out = bytearray()
+    for i in range(0, len(samples), 2):
+        out.extend(_pack_adc_pair(samples[i], samples[i + 1]))
+    return bytes(out)
+
+
+def _unpack_adc_lane_raw12(data):
+    if len(data) != 24:
+        raise ValueError(f"expected 24 raw ADC bytes, got {len(data)}")
+    return _decode_adc(data, 0)
+
+
 def decode_analog_frames(data, mode):
     # Frames are aligned at the source: word 0 of the stream is frame word 0.
     # (An earlier host-side phase-recovery workaround was removed once the FPGA
@@ -240,6 +283,107 @@ def decompress_delta_stream(data: bytes) -> bytes:
         out.extend(decompress_delta_block(data[i:i + 12]))
     return bytes(out)
 
+
+def compress_mixed_group(data: bytes) -> bytes:
+    """Compress 16 mixed frames losslessly into one variable-length group."""
+    frame_stride = analog_frame_stride(MODE_MIXED)
+    if len(data) != MIXED_COMPRESSED_GROUP_FRAMES * frame_stride:
+        raise ValueError(
+            f"expected {MIXED_COMPRESSED_GROUP_FRAMES * frame_stride} payload bytes, got {len(data)}")
+    digital = bytearray()
+    lane0 = []
+    lane1 = []
+    for i in range(MIXED_COMPRESSED_GROUP_FRAMES):
+        frame = data[i * frame_stride:(i + 1) * frame_stride]
+        digital.extend(frame[:2])
+        adc0, adc1 = _decode_adc(frame)
+        lane0.append(adc0)
+        lane1.append(adc1)
+
+    out = bytearray()
+    header = 0
+    lane_payloads = []
+    for shift, samples in ((0, lane0), (2, lane1)):
+        deltas = [samples[i] - samples[i - 1] for i in range(1, len(samples))]
+        if all(-127 <= d <= 127 for d in deltas):
+            lane_payloads.append(struct.pack('<H15b', samples[0], *deltas))
+            header |= MIXED_ADC_LANE_DELTA8 << shift
+        else:
+            lane_payloads.append(_pack_adc_lane_raw12(samples))
+            header |= MIXED_ADC_LANE_RAW12 << shift
+    out.append(header)
+    out.extend(digital)
+    for payload in lane_payloads:
+        out.extend(payload)
+    return bytes(out)
+
+
+def compress_mixed_stream(data: bytes) -> bytes:
+    """Compress a stream of mixed payload frames in 16-frame groups."""
+    frame_stride = analog_frame_stride(MODE_MIXED)
+    group_bytes = MIXED_COMPRESSED_GROUP_FRAMES * frame_stride
+    out = bytearray()
+    end = len(data) - (len(data) % group_bytes)
+    for i in range(0, end, group_bytes):
+        out.extend(compress_mixed_group(data[i:i + group_bytes]))
+    return bytes(out)
+
+
+def decompress_mixed_group(data: bytes, offset: int = 0):
+    """Decompress one mixed compression group.
+
+    Returns ``(payload_bytes, bytes_consumed)``.
+    """
+    if len(data) < offset + 33:
+        raise ValueError("truncated mixed group header")
+    header = data[offset]
+    digital = data[offset + 1:offset + 33]
+    pos = offset + 33
+    lanes = []
+    for shift in (0, 2):
+        mode = (header >> shift) & 0x03
+        if mode == MIXED_ADC_LANE_DELTA8:
+            if len(data) < pos + 17:
+                raise ValueError("truncated mixed delta lane")
+            anchor, *deltas = struct.unpack_from('<H15b', data, pos)
+            cur = anchor & 0x0FFF
+            samples = [cur]
+            for delta in deltas:
+                cur += delta
+                if not 0 <= cur < 4096:
+                    raise ValueError(f"mixed delta lane escaped 12-bit range: {cur}")
+                samples.append(cur)
+            pos += 17
+        elif mode == MIXED_ADC_LANE_RAW12:
+            if len(data) < pos + 24:
+                raise ValueError("truncated mixed raw lane")
+            samples = _unpack_adc_lane_raw12(data[pos:pos + 24])
+            pos += 24
+        else:
+            raise ValueError(f"unknown mixed lane mode {mode}")
+        lanes.append(samples)
+
+    frame_stride = analog_frame_stride(MODE_MIXED)
+    out = bytearray(MIXED_COMPRESSED_GROUP_FRAMES * frame_stride)
+    for i in range(MIXED_COMPRESSED_GROUP_FRAMES):
+        dst = i * frame_stride
+        out[dst:dst + 2] = digital[i * 2:i * 2 + 2]
+        out[dst + 2:dst + 5] = _pack_adc_pair(lanes[0][i], lanes[1][i])
+    return bytes(out), pos - offset
+
+
+def decompress_mixed_stream(data: bytes) -> bytes:
+    """Decompress a stream of variable-length mixed groups."""
+    if not data:
+        return b""
+    out = bytearray()
+    pos = 0
+    while pos < len(data):
+        group, used = decompress_mixed_group(data, pos)
+        out.extend(group)
+        pos += used
+    return bytes(out)
+
 class OLSDeviceSPI:
     """SPI backend using packet protocol — replaces old UART-style byte commands."""
 
@@ -294,8 +438,10 @@ class OLSDeviceSPI:
                                       gen_data, stride):
         return bool(
             use_continuous
-            and payload_stride is None
             and not gen_data
+            and not (self._raw_flags & MODE_NARROW_DIGITAL)
+            and self.analog_mode == MODE_DIGITAL
+            and payload_stride is None
             and stride == 2
             and self._can_compress_readback()
         )
@@ -641,6 +787,66 @@ class OLSDeviceSPI:
                 out.extend(block[:take * 2])
                 sample += take
                 remaining -= take
+            if stop:
+                break
+        return bytes(out)
+
+    def _read_capture_range_mixed_compressed(self, start_sample, sample_count):
+        """Read a mixed-mode SDRAM word range via the lossless mixed codec."""
+        frame_words = analog_wire_stride(MODE_MIXED) // 2
+        start_sample = max(0, int(start_sample))
+        remaining = max(0, int(sample_count))
+        out = bytearray()
+        sample = start_sample
+        batch_blocks = 64
+        while remaining > 0:
+            addrs = []
+            drops = []
+            takes = []
+            s = sample
+            rem = remaining
+            while rem > 0 and len(addrs) < batch_blocks:
+                if s >= frame_words:
+                    addrs.append((s - frame_words) * 2)
+                    drops.append(1)
+                    take = min(rem, MIXED_COMPRESSED_BLOCK_WORDS - frame_words)
+                else:
+                    addrs.append(0)
+                    drops.append(0)
+                    take = min(rem, MIXED_COMPRESSED_BLOCK_WORDS)
+                take -= take % frame_words
+                if take <= 0:
+                    break
+                takes.append(take)
+                s += take
+                rem -= take
+            if not addrs:
+                break
+
+            blocks = None
+            read_blocks = getattr(self.pkt, 'read_capture_blocks', None)
+            if callable(read_blocks):
+                blocks = read_blocks(addrs, compressed=True)
+            if not isinstance(blocks, list):
+                blocks = [self.pkt.read_capture_block(a, compressed=True)
+                          for a in addrs]
+
+            stop = False
+            for block, drop, take_words in zip(blocks, drops, takes):
+                if not block:
+                    stop = True
+                    break
+                payload = decompress_mixed_stream(block)
+                if drop:
+                    payload = payload[analog_frame_stride(MODE_MIXED):]
+                take_frames = take_words // frame_words
+                need = take_frames * analog_frame_stride(MODE_MIXED)
+                if len(payload) < need:
+                    stop = True
+                    break
+                out.extend(payload_to_wire(payload[:need], MODE_MIXED))
+                sample += take_words
+                remaining -= take_words
             if stop:
                 break
         return bytes(out)

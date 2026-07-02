@@ -429,7 +429,7 @@ class OLScope:
             # Tests run with a mocked root; keep the logic on a plain boolean.
             self.compress_var = None
         self.compress_cb = ttk.Checkbutton(
-            cap_f, text='Compressed readback (2.67x more SPI throughput)',
+            cap_f, text='Compressed readback (higher SPI throughput)',
             command=self._on_compress_changed)
         if self.compress_var is not None:
             self.compress_cb.configure(variable=self.compress_var)
