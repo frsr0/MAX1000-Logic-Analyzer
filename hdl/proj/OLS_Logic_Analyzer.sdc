@@ -22,12 +22,14 @@ derive_pll_clocks
 derive_clock_uncertainty
 
 # Asynchronous clock groups: all cross-domain CDC paths properly synchronized.
-# FAST_SPEED build uses only clk[0]=sys, clk[1]=fast, clk[2]=sdram.
-# The ADC clock domain is compiled out of this profile.
+# FAST_SPEED build: clk[0]=sys, clk[1]=fast, clk[2]=sdram, clk[3]=12 MHz ADC
+# conversion clock (the modular ADC control core handles the clk<->adcblock
+# crossing internally; result handoff to sys_clk is via rsp_valid handshake).
 set_clock_groups -asynchronous \
   -group [get_clocks {*pll_inst|*clk[0]}] \
   -group [get_clocks {*pll_inst|*clk[1]}] \
-  -group [get_clocks {*pll_inst|*clk[2]}]
+  -group [get_clocks {*pll_inst|*clk[2]}] \
+  -group [get_clocks {*pll_inst|*clk[3]}]
 
 # External SPI timing:
 # - SPI_SCK is the FTDI-generated clock that times the slave interface.
@@ -51,7 +53,8 @@ set_clock_groups -asynchronous \
   -group [get_clocks SPI_CS_QUAL] \
   -group [get_clocks {*pll_inst|*clk[0]}] \
   -group [get_clocks {*pll_inst|*clk[1]}] \
-  -group [get_clocks {*pll_inst|*clk[2]}]
+  -group [get_clocks {*pll_inst|*clk[2]}] \
+  -group [get_clocks {*pll_inst|*clk[3]}]
 
 # Async FIFO internal gray-code synchronizer paths
 # The dcfifo megafunction generates these internally; they are intentional

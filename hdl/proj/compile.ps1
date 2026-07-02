@@ -1,12 +1,17 @@
 param(
     [switch]$NoFlash,
     [switch]$Flash,
-    # Seed 2 closes all corners at 98% LE utilization after the 2026-07-02
-    # prefetch removal + FLA read-retry + write-pump pop-bubble fixes
-    # (sweep: 14/-0.22, 27/-0.07, 42/-0.001, 5/-0.07, 11/-0.06, 19/-0.15,
-    # 2/+0.081). Placement is seed-sensitive at this density — re-sweep after
-    # any RTL change.
-    [int]$Seed = 2
+    # Seed 23 closes all corners (+0.217 multicorner worst) at 98% LE and
+    # passes hw_validation 51/51 (incl. all analog modes) after the
+    # 2026-07-03 fixes: dedicated 11.93 MHz ADC PLL clock (c3),
+    # stream-address pre-increment (carry chain off the clk[2] critical
+    # path), pump debug counters compiled out, 4x placement effort.
+    # (this-netlist sweep: 2/-0.221, 3/-0.430, 7/+0.097*, 11/-0.014,
+    # 13/-0.111, 17/-0.022, 19/-0.015, 23/+0.217; *seed 7 failed the analog
+    # suite despite met timing). Placement is seed-sensitive at this density
+    # - re-sweep after any RTL change and re-run hw_validation on every new
+    # bitstream before trusting it (see memory max1000-hw-quirks).
+    [int]$Seed = 23
 )
 
 
@@ -196,6 +201,10 @@ $qsfLines = @(
     'set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC ON',
     'set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION ON',
     'set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING ON',
+    '# Extra placement effort: at 99% LE the last ~20 ps of clk[2] slack is',
+    '# placement noise; a 4x placement budget reliably buys it back.',
+    'set_global_assignment -name PLACEMENT_EFFORT_MULTIPLIER 4',
+    'set_global_assignment -name ROUTER_EFFORT_MULTIPLIER 2',
     '',
     'set_global_assignment -name VHDL_FILE ../rtl/OLS_SDRAM_Top.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/LED_Controller.vhd',

@@ -173,7 +173,12 @@ BEGIN
 
 	gen_fast_speed : if FAST_SPEED_MODE generate
 	begin
-		c3 <= '0';
+		-- c3 is the dedicated 12 MHz ADC conversion clock (same as the
+		-- normal-mode profile). The MAX10 ADC hard block must NOT be run
+		-- from the 100 MHz sys_clk: it violates the adcblock minimum
+		-- pulse width (tch) and whether conversions still complete then
+		-- depends on placement luck of the clock tree.
+		c3 <= sub_wire8;
 		sub_wire9 <= sub_wire3(4);
 
 		altpll_component : altpll
@@ -191,7 +196,10 @@ BEGIN
 			clk2_duty_cycle => 50,
 			clk2_multiply_by => 167,
 			clk2_phase_shift => "0",
-			clk3_divide_by => 12,
+			-- 11.93 MHz ADC conversion clock: closest counter-realisable
+			-- frequency to the normal profile's 12 MHz from the shared
+			-- 1002 MHz VCO (1002/84; exactly 12 MHz would need counter 83.5).
+			clk3_divide_by => 168,
 			clk3_duty_cycle => 50,
 			clk3_multiply_by => 167,
 			clk3_phase_shift => "0",

@@ -219,6 +219,14 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal oldest_index_u    : unsigned(31 downto 0) := (others => '0');
   signal newest_index_u    : unsigned(31 downto 0) := (others => '0');
   signal overrun_count_u   : unsigned(31 downto 0) := (others => '0');
+  -- Write-pump utilisation counters (host regs 0x60..0x64). Diagnostic only
+  -- (read by host/debug/_deep_rate_sweep.py); compiled out by default to
+  -- reclaim five 32-bit counters (~200 LEs) from the congested 167 MHz cone
+  -- — at 99% device utilisation they cost timing closure and can push the
+  -- fitter past device capacity. The register map is unchanged: reads
+  -- return zero. Pump_Overflow_Count (0x65) stays — it counts real capture
+  -- overflow aborts.
+  constant PUMP_METRICS : boolean := false;
   signal pump_valid_cycles_u   : unsigned(31 downto 0) := (others => '0');
   signal pump_ready_cycles_u   : unsigned(31 downto 0) := (others => '0');
   signal pump_accept_cycles_u  : unsigned(31 downto 0) := (others => '0');
@@ -262,6 +270,18 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   -- Pipeline registers for readout address (breaks 22-bit comparator + conversion path)
   signal addr_is_wrap  : std_logic := '0';
   signal stream_addr_r : std_logic_vector(21 downto 0) := (others => '0');
+  -- Pre-computed increment + ring-wrap compare for the stream address. Both
+  -- used to sit combinationally inside the address-update mux and made
+  -- stream_addr_u's 22-bit carry chain the worst clk[2] setup path. They are
+  -- computed off stream_addr_r (the REGISTERED mirror — not the process
+  -- variable, whose reads chain the current cycle's update logic into the
+  -- path), so each is a shallow reg->logic->reg path with a full cycle
+  -- budget, valid two cycles after any stream_addr_u write. Consumers only
+  -- fire on read COMPLETIONS, which are spaced by at least CAS latency plus
+  -- the rd_gap bubble (and a stream start loads the address several cycles
+  -- before the first completion), so the lag can never be consumed stale.
+  signal stream_at_ring_end : std_logic := '0';
+  signal stream_addr_nxt_r  : unsigned(21 downto 0) := (others => '0');
 
   -- 2FF synchroniser for the block-read request toggle (CLK -> pclk)
   signal blk_req_s1    : std_logic := '0';
@@ -1266,10 +1286,11 @@ begin
         pump_overflow_count_u <= pump_overflow_count_u + 1;
       end if;
       if stream_addr_inc_pending then
-        if Continuous_Mode = '1' and stream_addr_u = to_unsigned(CONT_RING_WORDS - 1, 22) then
+        if Continuous_Mode = '1' and stream_at_ring_end = '1' then
           stream_addr_u := (others => '0');
         else
-          stream_addr_u := stream_addr_u + 1;
+          -- Registered pre-increment: no adder in this mux (see declaration)
+          stream_addr_u := stream_addr_nxt_r;
         end if;
         stream_addr_inc_pending := false;
       end if;
@@ -1630,11 +1651,13 @@ begin
         pump_stall_q  <= false;
         pump_nodata_q <= false;
       end if;
-      if pump_valid_q  then pump_valid_cycles_u  <= pump_valid_cycles_u  + 1; end if;
-      if pump_ready_q  then pump_ready_cycles_u  <= pump_ready_cycles_u  + 1; end if;
-      if pump_accept_q then pump_accept_cycles_u <= pump_accept_cycles_u + 1; end if;
-      if pump_stall_q  then pump_stall_cycles_u  <= pump_stall_cycles_u  + 1; end if;
-      if pump_nodata_q then pump_nodata_cycles_u <= pump_nodata_cycles_u + 1; end if;
+      if PUMP_METRICS then
+        if pump_valid_q  then pump_valid_cycles_u  <= pump_valid_cycles_u  + 1; end if;
+        if pump_ready_q  then pump_ready_cycles_u  <= pump_ready_cycles_u  + 1; end if;
+        if pump_accept_q then pump_accept_cycles_u <= pump_accept_cycles_u + 1; end if;
+        if pump_stall_q  then pump_stall_cycles_u  <= pump_stall_cycles_u  + 1; end if;
+        if pump_nodata_q then pump_nodata_cycles_u <= pump_nodata_cycles_u + 1; end if;
+      end if;
 
       if cont_meta_reset_q = '1' then
         producer_index_u <= (others => '0');
@@ -1653,6 +1676,14 @@ begin
         end if;
       end if;
       cont_accept_q <= cont_accept_v;
+      -- Off the REGISTERED address mirror on purpose — see the declaration
+      -- comment for the two-cycle-lag validity argument.
+      stream_addr_nxt_r <= unsigned(stream_addr_r) + 1;
+      if unsigned(stream_addr_r) = to_unsigned(CONT_RING_WORDS - 1, 22) then
+        stream_at_ring_end <= '1';
+      else
+        stream_at_ring_end <= '0';
+      end if;
     end if;
   end process;
 

@@ -168,7 +168,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal adc0_sel, adc1_sel : natural range 0 to 31 := 0;
   signal adc_frame_toggle : std_logic := '0';
   signal adc_div   : natural range 0 to 255 := 0;
-  signal adc_conv_clk   : std_logic := '0';  -- ADC control clock input (FAST_SPEED uses sys_clk, controller clkdiv slows it)
+  signal adc_conv_clk   : std_logic := '0';  -- dedicated 12 MHz ADC conversion clock (PLL c3 in both profiles)
 
   -- Pin map write from host command
   signal pin_map_write    : std_logic := '0';
@@ -362,8 +362,7 @@ BEGIN
     pll_inst : entity work.SDRAM_PLL
       generic map (FAST_SPEED_MODE => true)
       port map (inclk0 => CLK, c0 => sys_clk, c1 => fast_clk, c2 => sdram_core_clk,
-                c3 => open, c4 => sdram_chip_clk_out, locked => pll_locked);
-    adc_conv_clk <= sys_clk;
+                c3 => adc_conv_clk, c4 => sdram_chip_clk_out, locked => pll_locked);
   end generate;
   -- Normal mode retains the legacy ADC clock requirement on c3.
   gen_use_pll_normal : if (PLL_MULT /= 1 or PLL_DIV /= 1) and not FAST_SPEED and not Sim generate
