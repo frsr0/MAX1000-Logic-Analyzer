@@ -941,12 +941,12 @@ class OLSDeviceSPI:
                 elif next_sample < oldest:
                     next_sample = oldest
 
+                wire_words = ((chunk_nsamp * wire_stride) + 1) // 2
                 available = producer - next_sample
-                if available < chunk_nsamp:
+                if available < wire_words:
                     time.sleep(0.0003)
                     continue
 
-                wire_words = ((chunk_nsamp * wire_stride) + 1) // 2
                 data = self.read_capture_range(next_sample, wire_words)
                 data = data[:chunk_nsamp * wire_stride]
                 if not data:
