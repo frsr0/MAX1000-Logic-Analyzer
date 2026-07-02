@@ -1005,8 +1005,18 @@ def test_mixed_compressed_rolling(dev):
     dev.set_compression_enabled(True)
 
     try:
-        last, frames = dev.capture_analog(
-            rate_hz=1_000_000, frames=1024, mode=MODE_MIXED, timeout=5)
+        stop_evt = threading.Event()
+        last = b""
+        total = 0
+        gen = dev.rolling_capture(
+            rate_hz=500_000, chunk_nsamp=128, buffer_nsamp=1024,
+            stop_evt=stop_evt, payload_stride=analog_frame_stride(MODE_MIXED))
+        for i, (buf, total, _window) in enumerate(gen):
+            last = bytes(buf)
+            if i >= 2:
+                stop_evt.set()
+                break
+        frames = decode_analog_frames(last, MODE_MIXED)
     finally:
         dev.set_compression_enabled(False)
         dev.set_debug_ch0(False)
