@@ -926,9 +926,40 @@ class OLSDeviceSPI:
         next_sample = None
         total = 0
         self.last_ring_status = {}
+        pending = b''
+        pending_samples = 0
+        pending_prefetch = chunk_nsamp
+        if self.analog_mode == MODE_MIXED:
+            pending_prefetch = min(buffer_nsamp, max(chunk_nsamp, chunk_nsamp * 8))
+        chunk_bytes = chunk_nsamp * payload_stride
+
+        def emit_pending(sample_start: int):
+            nonlocal buf, total, pending, pending_samples, next_sample
+            data = pending[:chunk_bytes]
+            pending = pending[chunk_bytes:]
+            pending_samples -= chunk_nsamp
+            next_sample = sample_start + chunk_nsamp
+            if self.analog_mode == MODE_DIGITAL:
+                data = self._repair_boundary_glitches(data, sample_start)
+            data = self._filter_digital(data)
+            total += len(data) // payload_stride
+            if full_out is not None:
+                full_out.extend(data)
+            buf += data
+            max_bytes = buffer_nsamp * payload_stride
+            if len(buf) > max_bytes:
+                buf = buf[-max_bytes:]
+            out = buf if yield_full_buffer else data
+            if progress_cb:
+                progress_cb(out, total, buffer_nsamp)
+            return out, total, buffer_nsamp
 
         try:
             while not stop_evt.is_set():
+                if pending_samples >= chunk_nsamp:
+                    yield emit_pending(next_sample)
+                    continue
+
                 st = self._get_ring_status()
                 self.last_ring_status = st
                 producer = st.get('producer_index')
@@ -941,35 +972,28 @@ class OLSDeviceSPI:
                 elif next_sample < oldest:
                     next_sample = oldest
 
-                wire_words = ((chunk_nsamp * wire_stride) + 1) // 2
                 available = producer - next_sample
-                if available < wire_words:
+                fetch_nsamp = min(available, pending_prefetch)
+                if fetch_nsamp < chunk_nsamp:
                     time.sleep(0.0003)
                     continue
 
+                wire_words = ((fetch_nsamp * wire_stride) + 1) // 2
+                available = producer - next_sample
+
                 data = self.read_capture_range(next_sample, wire_words)
-                data = data[:chunk_nsamp * wire_stride]
+                data = data[:fetch_nsamp * wire_stride]
                 if not data:
                     time.sleep(0.0003)
                     continue
                 data = wire_to_payload(data, self.analog_mode)
-                data = data[:chunk_nsamp * payload_stride]
+                data = data[:fetch_nsamp * payload_stride]
                 if self.analog_mode == MODE_DIGITAL:
                     data = self._repair_boundary_glitches(data, next_sample)
-                data = self._filter_digital(data)
-
-                next_sample += wire_words
-                total += len(data) // payload_stride
-                if full_out is not None:
-                    full_out.extend(data)
-                buf += data
-                max_bytes = buffer_nsamp * payload_stride
-                if len(buf) > max_bytes:
-                    buf = buf[-max_bytes:]
-                out = buf if yield_full_buffer else data
-                if progress_cb:
-                    progress_cb(out, total, buffer_nsamp)
-                yield out, total, buffer_nsamp
+                pending = self._filter_digital(data)
+                pending_samples = len(pending) // payload_stride
+                if pending_samples >= chunk_nsamp:
+                    yield emit_pending(next_sample)
         finally:
             self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
 

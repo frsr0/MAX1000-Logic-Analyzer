@@ -927,7 +927,7 @@ class TestOLSDeviceSPIRolling:
 
         assert len(results) == 1
         assert results[0][0] == bytes([0xBB, 0xAA, 0x23, 0x61, 0x45])
-        device_spi.read_capture_range.assert_called_once_with(0, 3)
+        device_spi.read_capture_range.assert_called_once_with(0, 12)
 
     def test_rolling_capture_no_gen(self, device_spi):
         device_spi.pkt = MagicMock()
