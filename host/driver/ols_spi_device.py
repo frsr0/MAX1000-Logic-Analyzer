@@ -789,7 +789,11 @@ class OLSDeviceSPI:
         remaining = max(0, int(sample_count))
         out = bytearray()
         sample = start_sample
-        batch_blocks = 64   # 64 blocks ~ 82 KB wire per CS-held transaction
+        # 128 blocks/CS transaction: amortises the per-batch stream_payload
+        # thread setup over more wire. Measured ~4% over 64 (2026-07-03); the
+        # curve knees here (256 is no faster). ~83 KB compressed / 163 KB raw
+        # per transaction, well within the threaded RX drain's headroom.
+        batch_blocks = 128
         use_compress = self._can_compress_readback()
         while remaining > 0:
             # Plan a batch of overlapping block addresses (each non-zero block
@@ -888,7 +892,7 @@ class OLSDeviceSPI:
         remaining = max(0, int(sample_count))
         out = bytearray()
         sample = start_sample
-        batch_blocks = 64
+        batch_blocks = 128
         while remaining > 0:
             addrs = []
             drops = []
