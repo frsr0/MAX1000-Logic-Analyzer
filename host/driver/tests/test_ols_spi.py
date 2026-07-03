@@ -349,6 +349,145 @@ class TestSPIPacketProtocol:
         assert fake.n_bytes == 16
         assert fake.request.startswith(SYNC_REQ + bytes([CMD_START_RAW_STREAM]))
 
+    class FakeChunkSPI:
+        """Fake transport implementing the chunked RLE stream primitive.
+
+        Mirrors the hardware wire layout: a few leading guard bytes, the packet
+        ack, then the RLE stream data IMMEDIATELY after the ack (``pre_data`` can
+        inject guard/idle words between the ack and the first run to exercise the
+        decoder's leading-skip). The whole byte sequence is yielded as a first
+        ``len(request)+ack_pad`` prefix (so data straddles the prefix boundary,
+        as it does on real hardware) then ``chunk_size`` slices, followed by
+        0x0000 idle filler (what the FPGA sends while starved / after it stops).
+        """
+
+        def __init__(self, stream_bytes, chunk_size=4, idle_after=True,
+                     pre_data=b''):
+            self.speed_hz = 30_000_000
+            self.stream_bytes = bytes(stream_bytes)
+            self.chunk_size = chunk_size
+            self.idle_after = idle_after
+            self.pre_data = bytes(pre_data)
+            self.request = None
+            self.data_chunks = 0
+            self.closed = False
+
+        def stream_command_chunks(self, request, ack_pad=96, chunk_bytes=4096,
+                                  stop_evt=None):
+            self.request = bytes(request)
+            seq = request[3]
+            payload = struct.pack('<II', 0x12345678, 0x00000100)
+            resp = (SYNC_RSP + bytes([ST_STREAM_ACTIVE, seq])
+                    + struct.pack('<H', len(payload)) + payload)
+            resp += struct.pack('<H', crc16(resp[2:]))
+            # Contiguous body: 2 leading guard bytes, ack, optional pre-data,
+            # then the RLE stream. Idle 0x0000 filler pads the tail.
+            body = (b'\xff\xff' + resp + self.pre_data + self.stream_bytes)
+            prefix_len = len(request) + ack_pad
+            tail = (b'\x00\x00' * 2048) if self.idle_after else b''
+            full = body + tail
+            if len(full) < prefix_len:
+                full = full + b'\x00\x00' * ((prefix_len - len(full) + 1) // 2)
+            try:
+                yield full[:prefix_len]
+                pos = prefix_len
+                while pos < len(full):
+                    if stop_evt is not None and stop_evt.is_set():
+                        return
+                    self.data_chunks += 1
+                    yield full[pos:pos + self.chunk_size]
+                    pos += self.chunk_size
+            finally:
+                self.closed = True
+
+    def test_start_rle_stream_read_parses_ack_and_decodes_samples(self):
+        fake = self.FakeChunkSPI(struct.pack('<4H', 3, 0x1234, 5, 0x5678),
+                                 chunk_size=4)
+        pkt = SPIDevice(fake)
+        producer, oldest, data = pkt.start_rle_stream_read(0x80, 8)
+        assert producer == 0x12345678
+        assert oldest == 0x100
+        assert data == (b'\x34\x12' * 3) + (b'\x78\x56' * 5)
+        assert fake.request.startswith(SYNC_REQ + bytes([CMD_START_RAW_STREAM]))
+        # Data may already straddle the prefix buffer, so the decoder can stop
+        # without needing all post-prefix chunks; it must still close the
+        # transaction before draining the idle filler tail.
+        assert fake.data_chunks <= 2
+        assert fake.closed is True
+
+    def test_start_rle_stream_read_handles_pairs_split_across_chunks(self):
+        # 3-byte chunks split every (count, value) pair across a boundary.
+        fake = self.FakeChunkSPI(struct.pack('<4H', 3, 0x1234, 5, 0x5678),
+                                 chunk_size=3)
+        pkt = SPIDevice(fake)
+        producer, oldest, data = pkt.start_rle_stream_read(0x80, 8)
+        assert data == (b'\x34\x12' * 3) + (b'\x78\x56' * 5)
+        assert fake.closed is True
+
+    def test_start_rle_stream_read_skips_idle_filler_words(self):
+        # 0x0000 idle-filler words (inserted by the FPGA when it starves the
+        # wire between runs) appear before and between real pairs and must be
+        # skipped. Use a 2-byte chunk so idles also straddle chunk boundaries.
+        stream = (struct.pack('<H', 0)          # leading idle
+                  + struct.pack('<2H', 3, 0x1234)
+                  + struct.pack('<H', 0) * 2    # two idles between pairs
+                  + struct.pack('<2H', 5, 0x5678))
+        fake = self.FakeChunkSPI(stream, chunk_size=2)
+        pkt = SPIDevice(fake)
+        producer, oldest, data = pkt.start_rle_stream_read(0x80, 8)
+        assert data == (b'\x34\x12' * 3) + (b'\x78\x56' * 5)
+        assert fake.closed is True
+
+    def test_start_rle_stream_read_rejects_decode_overrun(self):
+        # Leading impossible counts (> sample_count) are treated as boundary
+        # guard noise, so use a valid first run followed by an oversized second
+        # run to exercise a real decode overrun.
+        fake = self.FakeChunkSPI(
+            struct.pack('<4H', 3, 0x1234, 6, 0x5678),
+            chunk_size=4,
+        )
+        pkt = SPIDevice(fake)
+        with pytest.raises(RuntimeError, match="decoded past requested sample count"):
+            pkt.start_rle_stream_read(0x80, 8)
+
+    def test_start_rle_stream_read_raises_on_truncated_stream(self):
+        # Stream ends (no idle tail) before the requested 8 samples decode.
+        fake = self.FakeChunkSPI(struct.pack('<2H', 3, 0x1234), chunk_size=4,
+                                 idle_after=False)
+        pkt = SPIDevice(fake)
+        with pytest.raises(RuntimeError, match="truncated"):
+            pkt.start_rle_stream_read(0x80, 8)
+
+    def test_start_rle_stream_read_fixed_fallback_without_chunks(self):
+        class FakeSPI:
+            def __init__(self):
+                self.speed_hz = 30_000_000
+                self.request = None
+                self.n_bytes = 0
+
+            def stream_command(self, request, n_bytes, ack_pad=96, stop_evt=None):
+                self.request = request
+                self.n_bytes = n_bytes
+                seq = request[3]
+                payload = struct.pack('<II', 0x12345678, 0x00000100)
+                resp = (SYNC_RSP + bytes([ST_STREAM_ACTIVE, seq])
+                        + struct.pack('<H', len(payload)) + payload)
+                resp += struct.pack('<H', crc16(resp[2:]))
+                guard = bytearray(b'\xff' * (len(request) + ack_pad))
+                guard[2:2 + len(resp)] = resp
+                rle_words = struct.pack('<4H', 3, 0x1234, 5, 0x5678)
+                return bytes(guard) + rle_words
+
+        fake = FakeSPI()
+        pkt = SPIDevice(fake)
+        producer, oldest, data = pkt.start_rle_stream_read(0x80, 8)
+        assert producer == 0x12345678
+        assert oldest == 0x100
+        assert data == (b'\x34\x12' * 3) + (b'\x78\x56' * 5)
+        # Fixed path budgets worst-case 4 bytes/sample plus ack/guard margin.
+        assert fake.n_bytes >= 8 * 4
+        assert fake.request.startswith(SYNC_REQ + bytes([CMD_START_RAW_STREAM]))
+
     def test_transaction_raw_uses_stream_command_when_available(self):
         class FakeSPI:
             def __init__(self):

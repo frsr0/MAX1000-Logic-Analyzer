@@ -440,6 +440,63 @@ class OLS:
         self.dev.write(buf)
         return self._read_n(read_len, timeout=max(0.5, n_bytes / max(self.speed_hz / 8, 1) + 0.5))
 
+    @staticmethod
+    def _mpsse_clock_out(payload):
+        """Wrap a byte payload in 0x31 (clock-out-and-in) MPSSE commands."""
+        out = bytearray()
+        remaining = len(payload)
+        pos = 0
+        MAX_PER_CMD = 65536
+        while remaining > 0:
+            n = min(MAX_PER_CMD, remaining)
+            out += bytes([0x31, (n - 1) & 0xFF, ((n - 1) >> 8) & 0xFF])
+            out += payload[pos:pos + n]
+            pos += n
+            remaining -= n
+        return bytes(out)
+
+    def stream_command_chunks(self, request, ack_pad=96, chunk_bytes=4096,
+                              stop_evt=None):
+        """Yield stream bytes from one CS-held request+stream transaction.
+
+        Unlike :meth:`stream_command`, which clocks a fixed ``n_bytes``, this
+        holds CS low and keeps clocking fresh ``0x11`` chunks until the caller
+        stops iterating (breaks the loop / calls ``close()``) or ``stop_evt``
+        fires, then raises CS. This lets a variable-length compressed stream be
+        read only until the caller has decoded enough samples, without
+        over-clocking incompressible-or-not data to a fixed worst-case budget.
+
+        The first yielded item is the ``request + ack_pad`` region (which
+        carries the packet ack); every later item is a ``chunk_bytes`` read of
+        stream data. CS is raised in a ``finally`` so an early ``break`` still
+        closes the transaction cleanly.
+        """
+        request = bytes(request)
+        ack_pad = int(ack_pad)
+        chunk_bytes = max(1, int(chunk_bytes))
+        if stop_evt is not None and stop_evt.is_set():
+            return
+        self._drain()
+        prefix = request + bytes([0xFF] * ack_pad)
+        opened = False
+        try:
+            self.dev.write(bytes([0x80, GPIO_CS_LO, PIN_DIR])
+                           + self._mpsse_clock_out(prefix))
+            opened = True
+            yield self._read_n(
+                len(prefix),
+                timeout=max(0.5, len(prefix) / max(self.speed_hz / 8, 1) + 0.5))
+            while True:
+                if stop_evt is not None and stop_evt.is_set():
+                    break
+                self.dev.write(self._mpsse_clock_out(bytes([0x11] * chunk_bytes)))
+                yield self._read_n(
+                    chunk_bytes,
+                    timeout=max(0.5, chunk_bytes / max(self.speed_hz / 8, 1) + 0.5))
+        finally:
+            if opened:
+                self.dev.write(bytes([0x87, 0x80, GPIO_CS_HI, PIN_DIR, 0x87]))
+
     def stream_payload(self, payload, stop_evt=None):
         """Clock an arbitrary payload under one CS-held transaction.
 

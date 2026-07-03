@@ -105,6 +105,7 @@ ST_GEN_BUSY      = 0x30
 MAX_PAYLOAD = 4096
 BLOCK_SIZE  = 1024
 MAX_RAW_STREAM_SAMPLES = 16383
+MAX_RLE_STREAM_BYTES_PER_SAMPLE = 4
 
 
 # 256-entry lookup table for the reflected 0xA001 polynomial. The old
@@ -198,6 +199,40 @@ class SPIDevice:
         s = self._seq
         self._seq = (self._seq + 1) & 0xFF
         return s
+
+    @staticmethod
+    def _decode_rle_stream_bytes(data: bytes, sample_count: int) -> bytes:
+        """Decode little-endian (count, value) uint16 pairs to raw samples,
+        skipping 0x0000 idle-filler words (see _decode_rle_into)."""
+        sample_count = max(0, int(sample_count))
+        if sample_count == 0:
+            return b""
+        out = bytearray()
+        pos = 0
+        total = 0
+        limit = len(data)
+        while total < sample_count:
+            # Skip 0x0000 idle fillers, plus (before the first run only) any
+            # leading guard words that cannot be a valid count (> sample_count,
+            # e.g. 0xFFFF), so decoding aligns to the first real (count, value).
+            while pos + 2 <= limit:
+                w = data[pos] | (data[pos + 1] << 8)
+                if w == 0 or (total == 0 and w > sample_count):
+                    pos += 2
+                else:
+                    break
+            if pos + 4 > limit:
+                break
+            count = struct.unpack('<H', data[pos:pos + 2])[0]
+            value = data[pos + 2:pos + 4]
+            pos += 4
+            total += count
+            if total > sample_count:
+                raise RuntimeError("RLE stream decode failed: decoded past requested sample count")
+            out.extend(value * count)
+        if total != sample_count:
+            raise RuntimeError("RLE stream decode failed: truncated before requested sample count")
+        return bytes(out)
 
     def _pop_response(self, seq: int):
         """Return matching response from buffered SPI bytes, if complete."""
@@ -550,6 +585,166 @@ class SPIDevice:
                     return producer, oldest, data
             sync_at = raw.find(SYNC_RSP, sync_at + 1)
         raise RuntimeError("start_raw_stream_read failed")
+
+    def _find_stream_ack(self, buf, seq):
+        """Locate a ST_STREAM_ACTIVE ack in ``buf``; return (producer, oldest,
+        end_offset) or None if not yet fully present."""
+        sync_at = buf.find(SYNC_RSP)
+        while sync_at >= 0:
+            if len(buf) < sync_at + 8:
+                return None
+            plen = struct.unpack('<H', buf[sync_at + 4:sync_at + 6])[0]
+            end = sync_at + 8 + plen
+            if len(buf) < end:
+                return None
+            parsed = parse_response(bytes(buf[sync_at:end]))
+            if parsed:
+                status, rsp_seq, rsp_payload = parsed
+                if (status == ST_STREAM_ACTIVE and rsp_seq == seq
+                        and len(rsp_payload) >= 8):
+                    producer, oldest = struct.unpack('<II', rsp_payload[:8])
+                    return producer, oldest, end
+            sync_at = buf.find(SYNC_RSP, sync_at + 1)
+        return None
+
+    def start_rle_stream_read(self, start_sample: int, sample_count: int,
+                              stop_evt=None, ack_pad: int | None = None) -> tuple:
+        """Start an RLE-compressed stream and return decoded raw sample bytes.
+
+        The FPGA encodes exactly ``sample_count`` source samples and streams the
+        resulting ``(count, value)`` pairs. The wire length of that stream is
+        content-dependent, so the host reads until it has *decoded* the
+        requested sample count rather than clocking a fixed byte budget: the
+        chunked transport stops early on compressible data (the win) and keeps
+        reading on incompressible data (no truncation).
+        """
+        sample_count = max(0, int(sample_count))
+        if sample_count == 0:
+            return 0, 0, b''
+        if sample_count > MAX_RAW_STREAM_SAMPLES:
+            producer = oldest = None
+            data = bytearray()
+            done = 0
+            while done < sample_count:
+                take = min(MAX_RAW_STREAM_SAMPLES, sample_count - done)
+                pi, oi, chunk = self.start_rle_stream_read(
+                    start_sample + done, take, stop_evt=stop_evt, ack_pad=ack_pad)
+                producer, oldest = pi, oi
+                data.extend(chunk)
+                done += take
+            return producer or 0, oldest or 0, bytes(data)
+        payload = struct.pack('<II', start_sample * 2, sample_count)
+        seq = self._next_seq()
+        req = build_packet(CMD_START_RAW_STREAM, seq, payload)
+        pad = ack_pad if ack_pad is not None else self._default_ack_pad()
+        if hasattr(self.spi, "stream_command_chunks"):
+            return self._rle_stream_via_chunks(req, seq, sample_count, pad, stop_evt)
+        if hasattr(self.spi, "stream_command"):
+            return self._rle_stream_via_fixed(req, seq, sample_count, pad, stop_evt)
+        raise RuntimeError("RLE stream path requires stream_command(_chunks)")
+
+    def _rle_stream_via_chunks(self, req, seq, sample_count, pad, stop_evt):
+        """Preferred path: read variable-length stream until ``sample_count``
+        samples decode, then break (which raises CS)."""
+        gen = self.spi.stream_command_chunks(req, ack_pad=pad, stop_evt=stop_evt)
+        acc = bytearray()
+        producer = oldest = None
+        out = bytearray()
+        pending = bytearray()   # undecoded stream bytes (partial pair carry-over)
+        total = 0
+        skip_remaining = 0      # wire bytes still to drop before stream data
+        try:
+            for chunk in gen:
+                if producer is None:
+                    acc.extend(chunk)
+                    found = self._find_stream_ack(acc, seq)
+                    if found is None:
+                        continue
+                    producer, oldest, end = found
+                    # The compressed stream begins immediately after the ack
+                    # packet (unlike the raw path, whose SDRAM fetch latency
+                    # pushes data out to the ack_pad boundary). Any guard/idle
+                    # words before the first run are dropped by the decoder's
+                    # leading-skip, so just start at ack_end.
+                    data_start = end
+                    if data_start <= len(acc):
+                        pending.extend(acc[data_start:])
+                    else:
+                        skip_remaining = data_start - len(acc)
+                else:
+                    if skip_remaining:
+                        if len(chunk) <= skip_remaining:
+                            skip_remaining -= len(chunk)
+                            continue
+                        chunk = chunk[skip_remaining:]
+                        skip_remaining = 0
+                    pending.extend(chunk)
+                total = self._decode_rle_into(pending, out, total, sample_count)
+                if total >= sample_count:
+                    break
+                if stop_evt is not None and stop_evt.is_set():
+                    break
+        finally:
+            gen.close()
+        if producer is None:
+            raise RuntimeError("start_rle_stream_read failed: no stream ack")
+        if total != sample_count:
+            raise RuntimeError(
+                "RLE stream decode failed: truncated before requested sample count")
+        return producer, oldest, bytes(out)
+
+    def _rle_stream_via_fixed(self, req, seq, sample_count, pad, stop_evt):
+        """Fallback for backends without stream_command_chunks: clock a fixed
+        worst-case-plus-margin budget in one transaction, then decode."""
+        max_wire_bytes = (sample_count * MAX_RLE_STREAM_BYTES_PER_SAMPLE
+                          + len(req) + pad + 64)
+        raw = self.spi.stream_command(
+            req, max_wire_bytes, ack_pad=pad, stop_evt=stop_evt)
+        found = self._find_stream_ack(bytearray(raw), seq)
+        if found is None:
+            raise RuntimeError("start_rle_stream_read failed")
+        producer, oldest, end = found
+        # RLE data begins right after the ack packet (see _rle_stream_via_chunks).
+        decoded = self._decode_rle_stream_bytes(raw[end:], sample_count)
+        return producer, oldest, decoded
+
+    @staticmethod
+    def _decode_rle_into(pending: bytearray, out: bytearray,
+                         total: int, sample_count: int) -> int:
+        """Decode as many complete (count, value) pairs as ``pending`` holds,
+        appending expanded samples to ``out`` and consuming decoded bytes.
+        Returns the running decoded-sample total. Safe across chunk boundaries:
+        a trailing partial pair (<4 bytes) is left in ``pending``.
+
+        The FPGA inserts 0x0000 filler WORDS whenever it starves the wire while
+        it reads/compresses the next run (a count word is never 0x0000, since
+        count >= 1, so this is unambiguous). Idle words only ever land on a pair
+        boundary, so skipping them there keeps the stream word-aligned."""
+        pos = 0
+        n = len(pending)
+        while total < sample_count:
+            # Skip idle-filler words at this pair boundary; before the first run
+            # (total == 0) also skip leading guard words that cannot be a valid
+            # count (> sample_count, e.g. 0xFFFF) so we align to the first pair.
+            while pos + 2 <= n:
+                w = pending[pos] | (pending[pos + 1] << 8)
+                if w == 0 or (total == 0 and w > sample_count):
+                    pos += 2
+                else:
+                    break
+            if pos + 4 > n:
+                break
+            count = pending[pos] | (pending[pos + 1] << 8)
+            value = bytes(pending[pos + 2:pos + 4])
+            pos += 4
+            # count cannot be 0 here (idle words were skipped above).
+            total += count
+            if total > sample_count:
+                raise RuntimeError(
+                    "RLE stream decode failed: decoded past requested sample count")
+            out.extend(value * count)
+        del pending[:pos]
+        return total
 
     def start_stream_read_compressed(self, start_sample: int, n_bytes: int,
                                      stop_evt=None, ack_pad: int = 96) -> tuple:
