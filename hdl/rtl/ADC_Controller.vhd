@@ -19,7 +19,20 @@ entity ADC_Controller is
     ch1_sel        : in  natural range 0 to 31 := 1;
     ch1_start      : in  std_logic := '0';
     ch1_result     : out std_logic_vector(11 downto 0) := (others => '0');
-    ch1_valid      : out std_logic := '0'
+    ch1_valid      : out std_logic := '0';
+    -- Channels 2 and 3 extend the round-robin to 4 analog inputs for the
+    -- bit-packing capture pipeline. They default off/unconnected so existing
+    -- 2-channel instantiations are unaffected. NOTE: ch2_sel/ch3_sel must name
+    -- analog pins that are enabled in analog_input_pin_mask below, and those
+    -- board pins must be wired -- otherwise these channels return no valid ADC.
+    ch2_sel        : in  natural range 0 to 31 := 2;
+    ch2_start      : in  std_logic := '0';
+    ch2_result     : out std_logic_vector(11 downto 0) := (others => '0');
+    ch2_valid      : out std_logic := '0';
+    ch3_sel        : in  natural range 0 to 31 := 3;
+    ch3_start      : in  std_logic := '0';
+    ch3_result     : out std_logic_vector(11 downto 0) := (others => '0');
+    ch3_valid      : out std_logic := '0'
   );
 end ADC_Controller;
 
@@ -37,10 +50,16 @@ architecture rtl of ADC_Controller is
   type state_t is (INIT, IDLE, SEND_CMD, WAIT_RSP);
   signal state : state_t := INIT;
   signal init_cnt : natural range 0 to 4095 := 0;
-  signal ch_req    : std_logic_vector(1 downto 0) := "00";
-  signal ch_index  : natural range 0 to 1 := 0;
-  signal ch0_r     : std_logic_vector(11 downto 0) := (others => '0');
-  signal ch1_r     : std_logic_vector(11 downto 0) := (others => '0');
+  signal ch_req    : std_logic_vector(3 downto 0) := "0000";
+  signal ch_index  : natural range 0 to 3 := 0;
+
+  -- Per-channel state as 4-wide arrays so the round-robin is index-driven.
+  type   result_arr is array(0 to 3) of std_logic_vector(11 downto 0);
+  type   sel_arr_t  is array(0 to 3) of natural range 0 to 31;
+  signal ch_r      : result_arr := (others => (others => '0'));
+  signal ch_valid_i : std_logic_vector(3 downto 0) := (others => '0');
+  signal sel_arr   : sel_arr_t;
+  signal start_v   : std_logic_vector(3 downto 0);
 
   component altera_modular_adc_control is
     generic (
@@ -113,6 +132,10 @@ begin
       sync_ready        => '0'
     );
 
+  -- Pack the per-channel select/start inputs into index-addressable vectors.
+  sel_arr <= (0 => ch0_sel, 1 => ch1_sel, 2 => ch2_sel, 3 => ch3_sel);
+  start_v <= ch3_start & ch2_start & ch1_start & ch0_start;
+
   process(sys_clk)
   begin
     if rising_edge(sys_clk) then
@@ -123,14 +146,12 @@ begin
         cmd_sop <= '0';
         cmd_eop <= '0';
         ch_req <= (others => '0');
-        ch0_r <= (others => '0');
-        ch1_r <= (others => '0');
+        ch_r <= (others => (others => '0'));
       else
         cmd_valid <= '0';
         cmd_sop <= '0';
         cmd_eop <= '0';
-        ch0_valid <= '0';
-        ch1_valid <= '0';
+        ch_valid_i <= (others => '0');
 
         case state is
 
@@ -142,19 +163,18 @@ begin
             end if;
 
           when IDLE =>
-            if ch0_start = '1' or ch1_start = '1' then
-              ch_req <= ch1_start & ch0_start;
+            -- Latch which channels were requested; sweep them low index first.
+            if start_v /= "0000" then
+              ch_req   <= start_v;
               ch_index <= 0;
               state <= SEND_CMD;
             end if;
 
           when SEND_CMD =>
-            -- Select next requested channel
+            -- Issue a single-sample command for the current channel if it was
+            -- requested; otherwise skip to the next, ending the sweep after 3.
             if ch_req(ch_index) = '1' then
-              case ch_index is
-                when 0 => cmd_channel <= std_logic_vector(to_unsigned(ch0_sel, 5));
-                when others => cmd_channel <= std_logic_vector(to_unsigned(ch1_sel, 5));
-              end case;
+              cmd_channel <= std_logic_vector(to_unsigned(sel_arr(ch_index), 5));
               cmd_valid <= '1';
               cmd_sop <= '1';
               cmd_eop <= '1';
@@ -162,7 +182,7 @@ begin
                 state <= WAIT_RSP;
               end if;
             else
-              if ch_index < 1 then
+              if ch_index < 3 then
                 ch_index <= ch_index + 1;
               else
                 state <= IDLE;
@@ -171,16 +191,9 @@ begin
 
           when WAIT_RSP =>
             if rsp_valid = '1' then
-              case ch_index is
-                when 0 => ch0_r <= rsp_data;
-                when others => ch1_r <= rsp_data;
-              end case;
-              if ch_index = 0 then
-                ch0_valid <= '1';
-              else
-                ch1_valid <= '1';
-              end if;
-              if ch_index < 1 then
+              ch_r(ch_index)      <= rsp_data;
+              ch_valid_i(ch_index) <= '1';
+              if ch_index < 3 then
                 ch_index <= ch_index + 1;
                 state <= SEND_CMD;
               else
@@ -193,7 +206,9 @@ begin
     end if;
   end process;
 
-  ch0_result <= ch0_r;
-  ch1_result <= ch1_r;
+  ch0_result <= ch_r(0);  ch0_valid <= ch_valid_i(0);
+  ch1_result <= ch_r(1);  ch1_valid <= ch_valid_i(1);
+  ch2_result <= ch_r(2);  ch2_valid <= ch_valid_i(2);
+  ch3_result <= ch_r(3);  ch3_valid <= ch_valid_i(3);
 
 end rtl;
