@@ -554,37 +554,57 @@ class SPIDevice:
                 data.extend(chunk)
                 done += take
             return producer or 0, oldest or 0, bytes(data)
-        if not hasattr(self.spi, "stream_command"):
-            raise RuntimeError("raw stream path requires stream_command")
-        n_bytes = sample_count * 2
         payload = struct.pack('<II', start_sample * 2, sample_count)
         seq = self._next_seq()
         req = build_packet(CMD_START_RAW_STREAM, seq, payload)
+        if (hasattr(self.spi, "stream_command_begin")
+                and hasattr(self.spi, "stream_command_clock")
+                and hasattr(self.spi, "stream_command_end")):
+            return self._raw_stream_via_precise_clocking(req, seq, sample_count, stop_evt)
+        if not hasattr(self.spi, "stream_command"):
+            raise RuntimeError("raw stream path requires stream_command")
+        n_bytes = sample_count * 2
         pad = ack_pad if ack_pad is not None else self._default_ack_pad()
         raw = self.spi.stream_command(
             req, n_bytes, ack_pad=pad, stop_evt=stop_evt)
-        sync_at = raw.find(SYNC_RSP)
-        while sync_at >= 0:
-            if len(raw) < sync_at + 8:
-                break
-            plen = struct.unpack('<H', raw[sync_at + 4:sync_at + 6])[0]
-            total = 8 + plen
-            end = sync_at + total
-            if len(raw) < end:
-                break
-            parsed = parse_response(raw[sync_at:end])
-            if parsed:
-                status, rsp_seq, rsp_payload = parsed
-                if (status == ST_STREAM_ACTIVE and rsp_seq == seq
-                        and len(rsp_payload) >= 8):
-                    producer, oldest = struct.unpack('<II', rsp_payload[:8])
-                    data_start = max(end, len(req) + pad)
-                    if (data_start - end) & 1:
-                        data_start += 1
-                    data = raw[data_start:data_start + n_bytes]
-                    return producer, oldest, data
-            sync_at = raw.find(SYNC_RSP, sync_at + 1)
+        found = self._find_stream_ack(bytearray(raw), seq)
+        if found is not None:
+            producer, oldest, end = found
+            data = raw[end:end + n_bytes]
+            if len(data) == n_bytes:
+                return producer, oldest, data
         raise RuntimeError("start_raw_stream_read failed")
+
+    def _raw_stream_via_precise_clocking(self, req, seq, sample_count, stop_evt):
+        """Clock only the bytes needed for a raw stream: enough to parse the
+        ack, then exactly ``sample_count * 2`` sample bytes after the ack."""
+        n_bytes = sample_count * 2
+        acc = bytearray(self.spi.stream_command_begin(req, stop_evt=stop_evt))
+        producer = oldest = None
+        data = bytearray()
+        try:
+            while producer is None:
+                found = self._find_stream_ack(acc, seq)
+                if found is not None:
+                    producer, oldest, end = found
+                    data.extend(acc[end:])
+                    break
+                if stop_evt is not None and stop_evt.is_set():
+                    break
+                acc.extend(self.spi.stream_command_clock(16, stop_evt=stop_evt))
+
+            while producer is not None and len(data) < n_bytes:
+                if stop_evt is not None and stop_evt.is_set():
+                    break
+                need = min(4096, n_bytes - len(data))
+                data.extend(self.spi.stream_command_clock(need, stop_evt=stop_evt))
+        finally:
+            self.spi.stream_command_end()
+        if producer is None:
+            raise RuntimeError("start_raw_stream_read failed: no stream ack")
+        if len(data) < n_bytes:
+            raise RuntimeError("start_raw_stream_read failed: truncated raw stream")
+        return producer, oldest, bytes(data[:n_bytes])
 
     def _find_stream_ack(self, buf, seq):
         """Locate a ST_STREAM_ACTIVE ack in ``buf``; return (producer, oldest,

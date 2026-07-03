@@ -281,10 +281,9 @@ class TestSPIPacketProtocol:
                 resp = (SYNC_RSP + bytes([ST_STREAM_ACTIVE, seq])
                         + struct.pack('<H', len(payload)) + payload)
                 resp += struct.pack('<H', crc16(resp[2:]))
-                guard = bytearray(b'\xff' * (len(request) + ack_pad))
-                guard[2:2 + len(resp)] = resp
+                guard = bytearray(b'\xff' * 2)
                 stream = bytearray(range(n_bytes))
-                return bytes(guard) + bytes(stream)
+                return bytes(guard) + resp + bytes(stream)
 
             def tx_read(self, n):
                 self.tx_read_calls += 1
@@ -309,10 +308,9 @@ class TestSPIPacketProtocol:
                 resp = (SYNC_RSP + bytes([ST_STREAM_ACTIVE, seq])
                         + struct.pack('<H', len(payload)) + payload)
                 resp += struct.pack('<H', crc16(resp[2:]))
-                guard = bytearray(b'\xff' * (len(request) + ack_pad))
-                guard[3:3 + len(resp)] = resp
+                guard = bytearray(b'\xff' * 3)
                 stream = bytearray(range(n_bytes))
-                return bytes(guard) + b'\xee' + bytes(stream)
+                return bytes(guard) + resp + bytes(stream)
 
         pkt = SPIDevice(FakeSPI())
         producer, oldest, data = pkt.start_stream_read(0x80, 16)
@@ -335,10 +333,9 @@ class TestSPIPacketProtocol:
                 resp = (SYNC_RSP + bytes([ST_STREAM_ACTIVE, seq])
                         + struct.pack('<H', len(payload)) + payload)
                 resp += struct.pack('<H', crc16(resp[2:]))
-                guard = bytearray(b'\xff' * (len(request) + ack_pad))
-                guard[2:2 + len(resp)] = resp
+                guard = bytearray(b'\xff' * 2)
                 stream = bytearray(range(n_bytes))
-                return bytes(guard) + bytes(stream)
+                return bytes(guard) + resp + bytes(stream)
 
         fake = FakeSPI()
         pkt = SPIDevice(fake)
@@ -348,6 +345,53 @@ class TestSPIPacketProtocol:
         assert data == bytes(range(16))
         assert fake.n_bytes == 16
         assert fake.request.startswith(SYNC_REQ + bytes([CMD_START_RAW_STREAM]))
+
+    def test_start_raw_stream_read_precise_path_starts_data_at_ack_end(self):
+        class FakeSPI:
+            def __init__(self):
+                self.speed_hz = 30_000_000
+                self.request = None
+                self.pos = 0
+                self.closed = False
+                self.clock_calls = []
+                self.body = None
+
+            def stream_command_begin(self, request, stop_evt=None):
+                self.request = bytes(request)
+                seq = request[3]
+                payload = struct.pack('<II', 0x12345678, 0x00000100)
+                resp = (SYNC_RSP + bytes([ST_STREAM_ACTIVE, seq])
+                        + struct.pack('<H', len(payload)) + payload)
+                resp += struct.pack('<H', crc16(resp[2:]))
+                # Stream bytes start immediately after the ack, not at any
+                # fixed request+ack_pad boundary.
+                self.body = b'\xff\xff' + resp + bytes(range(16))
+                out = self.body[:len(request)]
+                self.pos = len(request)
+                return out
+
+            def stream_command_clock(self, n_bytes, stop_evt=None):
+                self.clock_calls.append(n_bytes)
+                out = self.body[self.pos:self.pos + n_bytes]
+                self.pos += len(out)
+                if len(out) < n_bytes:
+                    out += b'\x00' * (n_bytes - len(out))
+                    self.pos += n_bytes - len(out)
+                return out
+
+            def stream_command_end(self):
+                self.closed = True
+
+        fake = FakeSPI()
+        pkt = SPIDevice(fake)
+        producer, oldest, data = pkt.start_raw_stream_read(0x80, 8)
+        assert producer == 0x12345678
+        assert oldest == 0x100
+        assert data == bytes(range(16))
+        assert fake.request.startswith(SYNC_REQ + bytes([CMD_START_RAW_STREAM]))
+        assert fake.closed is True
+        # Ack hunt uses one small probe chunk; the remainder is clocked exactly.
+        assert fake.clock_calls == [16, 2]
 
     class FakeChunkSPI:
         """Fake transport implementing the chunked RLE stream primitive.

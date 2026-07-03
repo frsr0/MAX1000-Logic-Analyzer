@@ -1163,7 +1163,11 @@ class OLSDeviceSPI:
         overrun_total = 0
         producer_hint = None
         oldest_hint = None
-        use_raw_stream = self._readback_codec() in ('raw', 'rle')
+        # True held-CS streaming is production-safe only for the new RLE path.
+        # The legacy raw stream still leaves the shared readback state dirty on
+        # hardware after teardown, so raw mode stays on the stable block-read
+        # path until that FPGA-side unwind bug is fixed.
+        use_raw_stream = self._readback_codec() == 'rle'
         try:
             while not stop_evt.is_set():
                 if (producer_hint is None or oldest_hint is None
@@ -1188,12 +1192,7 @@ class OLSDeviceSPI:
                     continue
 
                 if use_raw_stream:
-                    stream_read = (
-                        self.pkt.start_rle_stream_read
-                        if self._readback_codec() == 'rle'
-                        else self.pkt.start_raw_stream_read
-                    )
-                    producer_hint, oldest_hint, data = stream_read(
+                    producer_hint, oldest_hint, data = self.pkt.start_rle_stream_read(
                         next_sample, window_samples, stop_evt=stop_evt)
                     if next_sample < int(oldest_hint):
                         next_sample = int(oldest_hint)

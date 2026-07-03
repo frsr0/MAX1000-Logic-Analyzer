@@ -887,16 +887,16 @@ class TestOLSDeviceSPIRolling:
         device_spi.read_capture_range.assert_has_calls([
             call(0, 4), call(128, 4)])
 
-    def test_stream_ring_capture_uses_true_raw_stream_in_raw_mode(self, device_spi):
+    def test_stream_ring_capture_uses_block_reads_in_raw_mode(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi.readback_compression_mode = 'raw'
         device_spi.compress_readback_enabled = False
         device_spi.pkt.write_register.return_value = True
         device_spi.pkt.arm_capture.return_value = ST_OK
-        device_spi.pkt.start_raw_stream_read.side_effect = [
-            (8, 0, b'\x34\x12' * 4),
-            (12, 0, b'\x78\x56' * 4),
-        ]
+        device_spi.read_capture_range = MagicMock(side_effect=[
+            b'\x34\x12' * 4,
+            b'\x78\x56' * 4,
+        ])
         device_spi.pkt.get_status.side_effect = [
             {'producer_index': 4, 'oldest_index': 0, 'overrun_count': 0},
             {'producer_index': 8, 'oldest_index': 0, 'overrun_count': 0},
@@ -909,9 +909,9 @@ class TestOLSDeviceSPIRolling:
         results = list(device_spi.stream_ring_capture(1_000_000, 4, stop_evt))
 
         assert [item[1] for item in results] == [4, 8]
-        device_spi.pkt.start_raw_stream_read.assert_has_calls([
-            call(0, 4, stop_evt=stop_evt),
-            call(4, 4, stop_evt=stop_evt),
+        device_spi.read_capture_range.assert_has_calls([
+            call(0, 4),
+            call(4, 4),
         ])
 
     def test_stream_ring_capture_uses_true_rle_stream_in_rle_mode(self, device_spi):

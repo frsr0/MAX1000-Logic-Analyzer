@@ -57,6 +57,7 @@ class OLS:
         self.channel = channel
         self.speed_hz = speed_hz
         self.dev = None
+        self._stream_open = False
 
     # ── Low-level helpers ────────────────────────────────────────────
 
@@ -167,6 +168,7 @@ class OLS:
     def close(self):
         if self.dev:
             try:
+                self._stream_open = False
                 self.dev.setBitMode(0xFF, 0)
                 self.dev.close()
             except:
@@ -455,6 +457,45 @@ class OLS:
             remaining -= n
         return bytes(out)
 
+    def stream_command_begin(self, request, stop_evt=None):
+        """Open a held-CS stream transaction and clock the request bytes."""
+        if stop_evt is not None and stop_evt.is_set():
+            return b""
+        request = bytes(request)
+        self._drain()
+        self.dev.write(
+            bytes([0x80, GPIO_CS_LO, PIN_DIR])
+            + self._mpsse_clock_out(request)
+            + bytes([0x87])
+        )
+        self._stream_open = True
+        return self._read_n(
+            len(request),
+            timeout=max(0.5, len(request) / max(self.speed_hz / 8, 1) + 0.5),
+        )
+
+    def stream_command_clock(self, n_bytes, stop_evt=None):
+        """Clock exactly ``n_bytes`` dummy bytes under an open held-CS stream."""
+        if n_bytes <= 0:
+            return b""
+        if stop_evt is not None and stop_evt.is_set():
+            return b""
+        self.dev.write(
+            self._mpsse_clock_out(bytes([0x11] * n_bytes))
+            + bytes([0x87])
+        )
+        return self._read_n(
+            n_bytes,
+            timeout=max(0.5, n_bytes / max(self.speed_hz / 8, 1) + 0.5),
+        )
+
+    def stream_command_end(self):
+        """Raise CS for a previously opened held-CS stream transaction."""
+        if not self._stream_open:
+            return
+        self.dev.write(bytes([0x87, 0x80, GPIO_CS_HI, PIN_DIR, 0x87]))
+        self._stream_open = False
+
     def stream_command_chunks(self, request, ack_pad=96, chunk_bytes=4096,
                               stop_evt=None):
         """Yield stream bytes from one CS-held request+stream transaction.
@@ -481,21 +522,24 @@ class OLS:
         opened = False
         try:
             self.dev.write(bytes([0x80, GPIO_CS_LO, PIN_DIR])
-                           + self._mpsse_clock_out(prefix))
+                           + self._mpsse_clock_out(prefix)
+                           + bytes([0x87]))
             opened = True
+            self._stream_open = True
             yield self._read_n(
                 len(prefix),
                 timeout=max(0.5, len(prefix) / max(self.speed_hz / 8, 1) + 0.5))
             while True:
                 if stop_evt is not None and stop_evt.is_set():
                     break
-                self.dev.write(self._mpsse_clock_out(bytes([0x11] * chunk_bytes)))
+                self.dev.write(self._mpsse_clock_out(bytes([0x11] * chunk_bytes))
+                               + bytes([0x87]))
                 yield self._read_n(
                     chunk_bytes,
                     timeout=max(0.5, chunk_bytes / max(self.speed_hz / 8, 1) + 0.5))
         finally:
             if opened:
-                self.dev.write(bytes([0x87, 0x80, GPIO_CS_HI, PIN_DIR, 0x87]))
+                self.stream_command_end()
 
     def stream_payload(self, payload, stop_evt=None):
         """Clock an arbitrary payload under one CS-held transaction.
