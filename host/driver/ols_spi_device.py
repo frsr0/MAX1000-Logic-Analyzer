@@ -277,30 +277,53 @@ def decompress_delta_stream(data: bytes) -> bytes:
     """Decompress a stream of packed 12-byte delta blocks.
 
     Vectorized with numpy for the common keyframe-free case (the pure-Python
-    per-word loop capped readback at ~0.5 MB/s); groups containing keyframe
-    words fall back to the reference decoder.
+    per-word loop capped readback at ~0.5 MB/s).
+
+    Overflow-reset ("keyframe") words set bit 15 as a marker and carry only the
+    low 15 bits of the sample, so a group that contains one CANNOT be
+    reconstructed losslessly — the real channel-15 / bit-15 of every sample in
+    that reset is destroyed (and the post-reset delta chain is misaligned).
+    Such a group is returned as an empty result so the caller re-reads the
+    block raw: keyframes only occur on incompressible/hostile content, which is
+    exactly the data that should be read uncompressed anyway. (The anchor,
+    word 0 of each group, is verbatim and keeps its full 16 bits, so ch15 data
+    that fits in ±15 deltas still round-trips losslessly on the fast path.)
     """
     if not data:
         return b""
-    end = len(data) - (len(data) % 12)
-    if end >= 12:
-        try:
-            import numpy as np
-            words = np.frombuffer(data[:end], dtype='<u2').reshape(-1, 6)
-            if not (words[:, 1:] & 0x8000).any():
-                d = words[:, 1:].astype(np.int32)
-                deltas = np.empty((d.shape[0], 15), dtype=np.int32)
-                deltas[:, 0::3] = d & 0x1F
-                deltas[:, 1::3] = (d >> 5) & 0x1F
-                deltas[:, 2::3] = (d >> 10) & 0x1F
-                deltas -= (deltas & 0x10) << 1   # sign-extend 5-bit
-                samples = np.empty((d.shape[0], 16), dtype=np.int64)
-                samples[:, 0] = words[:, 0]
-                samples[:, 1:] = (words[:, 0].astype(np.int64)[:, None]
-                                  + np.cumsum(deltas, axis=1))
-                return (samples & 0xFFFF).astype('<u2').tobytes()
-        except ImportError:
-            pass
+    # A clean keyframe-free block is always a whole number of 6-word (12-byte)
+    # groups. Overflow blocks emit or drop words and come back a NON-multiple
+    # of 12 (measured 382 / 392 vs the clean 384); truncating to a multiple of
+    # 12 and decoding the fragment produced 1024 wrong-but-right-length bytes
+    # that slipped past the caller's length-check fallback. Reject any partial
+    # group outright so those blocks are re-read raw.
+    if len(data) % 12 != 0:
+        return b""
+    end = len(data)
+    try:
+        import numpy as np
+        words = np.frombuffer(data[:end], dtype='<u2').reshape(-1, 6)
+        if (words[:, 1:] & 0x8000).any():
+            return b""   # keyframe present -> not losslessly decodable
+        d = words[:, 1:].astype(np.int32)
+        deltas = np.empty((d.shape[0], 15), dtype=np.int32)
+        deltas[:, 0::3] = d & 0x1F
+        deltas[:, 1::3] = (d >> 5) & 0x1F
+        deltas[:, 2::3] = (d >> 10) & 0x1F
+        deltas -= (deltas & 0x10) << 1   # sign-extend 5-bit
+        samples = np.empty((d.shape[0], 16), dtype=np.int64)
+        samples[:, 0] = words[:, 0]
+        samples[:, 1:] = (words[:, 0].astype(np.int64)[:, None]
+                          + np.cumsum(deltas, axis=1))
+        return (samples & 0xFFFF).astype('<u2').tobytes()
+    except ImportError:
+        pass
+    # numpy unavailable: scan for keyframes (same lossless-safety gate), then
+    # decode the keyframe-free groups with the reference decoder.
+    import struct
+    for i in range(0, end, 12):
+        if any(w & 0x8000 for w in struct.unpack('<6H', data[i:i + 12])[1:]):
+            return b""
     out = bytearray()
     for i in range(0, end, 12):
         out.extend(decompress_delta_block(data[i:i + 12]))
@@ -795,23 +818,30 @@ class OLSDeviceSPI:
                 # per-block packetized reads.
                 blocks = [self.pkt.read_capture_block(a, compressed=use_compress)
                           for a in addrs]
+            if use_compress:
+                # Decompress each block; collect the ones the delta format
+                # can't represent losslessly (overflow keyframes -> a
+                # non-multiple-of-12 payload -> decompress returns empty) and
+                # re-read exactly those raw in ONE flag-cleared batch. The
+                # raw re-read MUST clear REG_FLAGS_COMPRESS: compression is a
+                # global FPGA register, so a per-block "raw" read while the
+                # flag is set silently returns a COMPRESSED payload that then
+                # gets mis-parsed as raw (the old fallback did this and
+                # corrupted every keyframe block).
+                decoded = [decompress_delta_stream(b) if b else b'' for b in blocks]
+                need_raw = [j for j, d in enumerate(decoded) if len(d) != 1024]
+                if need_raw:
+                    raw_blocks = self._read_blocks_uncompressed(
+                        [addrs[j] for j in need_raw])
+                    for j, rb in zip(need_raw, raw_blocks):
+                        if rb:
+                            decoded[j] = rb
+                blocks = decoded
             stop = False
             for i, (block, drop) in enumerate(zip(blocks, drops)):
                 if not block:
                     stop = True
                     break
-                if use_compress:
-                    block = decompress_delta_stream(block)
-                    if len(block) != 1024:
-                        # Overflow keyframes broke the fixed 12-byte group
-                        # framing (incompressible content), or the FPGA
-                        # clamped an oversized compressed block. The delta
-                        # format cannot represent such blocks losslessly —
-                        # re-read this block raw.
-                        raw_block = self.pkt.read_capture_block(
-                            addrs[i], compressed=False)
-                        if raw_block:
-                            block = raw_block
                 block = block[drop * 2:]
                 take = min(remaining, len(block) // 2)
                 if take <= 0:
@@ -823,6 +853,33 @@ class OLSDeviceSPI:
             if stop:
                 break
         return bytes(out)
+
+    def _read_blocks_uncompressed(self, byte_addrs):
+        """Read raw (uncompressed) capture blocks while readback compression is
+        globally enabled, by clearing REG_FLAGS_COMPRESS for the duration.
+
+        Compression is a persistent FPGA flag, not a per-request option, so a
+        raw re-read must toggle the flag off or it just gets compressed data
+        back. Used for the keyframe/overflow fallback in read_capture_range.
+        """
+        byte_addrs = list(byte_addrs)
+        if not byte_addrs:
+            return []
+        cur = self.pkt.read_register(REG_FLAGS)
+        restore = cur >= 0 and (cur & REG_FLAGS_COMPRESS)
+        if restore:
+            self.pkt.write_register(REG_FLAGS, cur & ~REG_FLAGS_COMPRESS)
+        try:
+            read_blocks = getattr(self.pkt, 'read_capture_blocks', None)
+            if callable(read_blocks):
+                out = read_blocks(byte_addrs, compressed=False)
+                if isinstance(out, list):
+                    return out
+            return [self.pkt.read_capture_block(a, compressed=False)
+                    for a in byte_addrs]
+        finally:
+            if restore:
+                self.pkt.write_register(REG_FLAGS, cur)
 
     def _read_capture_range_mixed_compressed(self, start_sample, sample_count):
         """Read a mixed-mode SDRAM word range via the lossless mixed codec."""

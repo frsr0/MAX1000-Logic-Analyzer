@@ -253,7 +253,11 @@ class SPIDevice:
     # payload 1024 + crc 2) + margin. The next request must not start
     # before the previous response has fully shifted out, because the
     # dispatcher drops packets that arrive while it is still feeding TX.
-    BATCH_GAP_PAD = 208
+    # 160 measured (2026-07-03) as the throughput sweet spot: 208->160 gains
+    # ~5% wire with byte-identical results, and stays well clear of the
+    # ~96-byte cliff below which throughput collapses. Kept at 160 (not lower)
+    # for reliability margin over USB/scheduling jitter.
+    BATCH_GAP_PAD = 160
     BATCH_RSP_PAD = 1056
     # Compressed responses for compressible content are 8 + 384 + 2 = 394
     # bytes (2.67x), so compressed batches use compact slots for the wire
