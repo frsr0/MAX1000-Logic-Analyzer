@@ -332,21 +332,22 @@ def decompress_delta_stream(data: bytes) -> bytes:
 
 
 def decompress_rle_stream(data: bytes) -> bytes:
-    """Decompress a stream of (count, value) uint16 pairs."""
-    if not data:
-        return b""
-    if len(data) % 4 != 0:
+    """Decompress a stream of (count, value) uint16 pairs.
+
+    Vectorized with numpy's run-length expansion (np.repeat). Returns empty on
+    any malformed stream (odd word count, zero count, or an expansion that
+    overruns one 512-sample block) so the caller re-reads the block raw.
+    """
+    if not data or len(data) % 4 != 0:
         return b""
     words = np.frombuffer(data, dtype="<u2")
-    out = bytearray()
-    for i in range(0, len(words), 2):
-        count = int(words[i])
-        if count <= 0:
-            return b""
-        out.extend(struct.pack("<H", int(words[i + 1])) * count)
-        if len(out) > 1024:
-            return b""
-    return bytes(out)
+    counts = words[0::2].astype(np.int64)
+    values = words[1::2]
+    if counts.size == 0 or (counts <= 0).any():
+        return b""
+    if int(counts.sum()) > 512:
+        return b""   # overflow guard; a full block expands to exactly 512
+    return np.repeat(values, counts).astype("<u2").tobytes()
 
 
 def compress_mixed_group(data: bytes) -> bytes:
@@ -485,6 +486,8 @@ class OLSDeviceSPI:
         # digital samples on the host; the FPGA captures raw pins).
         self.glitch_enable = False
         self.glitch_threshold = 3
+        # Ring metadata seeding for fast re-poll after first successful read
+        self._ring_seeded = False
 
     def set_compression_enabled(self, enable: bool):
         return self.set_readback_compression('delta' if enable else 'raw')
@@ -554,6 +557,7 @@ class OLSDeviceSPI:
                     pass
                 self._pkt = SPIDevice(self.spi)
                 self._detect_sample_clk()
+                self._ring_seeded = False
                 return
             except Exception as e:
                 self.spi = None
@@ -582,6 +586,7 @@ class OLSDeviceSPI:
         self.pkt.write_register(REG_FLAGS, 0)
         self.pkt.write_register(REG_IFACE_MODE, 1)
         self.spi.flush()
+        self._ring_seeded = False
         time.sleep(0.02)
 
     def get_metadata(self):
@@ -783,13 +788,18 @@ class OLSDeviceSPI:
 
         The first status poll right after arming occasionally returns a short
         payload without the ring indices; a few retries ride that out instead
-        of aborting the capture loop.
+        of aborting the capture loop. After the first successful poll the
+        retry budget is relaxed (fewer retries, shorter delay).
         """
+        if self._ring_seeded:
+            retries = 5
+            delay = 0.001
         st = {}
         for _ in range(max(1, retries)):
             st = self.pkt.get_status()
             if (st.get('producer_index') is not None
                     and st.get('oldest_index') is not None):
+                self._ring_seeded = True
                 return st
             time.sleep(delay)
         return st
@@ -1781,7 +1791,7 @@ class OLSDeviceSPI:
                 self.pkt.arm_capture()
 
                 cap_time = chunk_nsamp / rate_hz
-                time.sleep(max(cap_time * 0.8, 0.002))
+                time.sleep(max(cap_time * 0.5, 0.001))
 
                 deadline = time.time() + max(cap_time + 0.2, 0.05)
                 while time.time() < deadline:
@@ -1791,7 +1801,7 @@ class OLSDeviceSPI:
                         break
                     if stop_evt.is_set():
                         return
-                    time.sleep(0.0005)
+                    time.sleep(0.0002)
 
                 need = chunk_nsamp * stride
                 data = self.read_capture_range(0, (need + 1) // 2)[:need]

@@ -83,38 +83,61 @@ def main() -> int:
     ap.add_argument("--pwm-duty", type=float, default=50.0, help="debug CH0 PWM duty percent when --signal pwm")
     ap.add_argument("--modes", nargs="+", choices=("raw", "delta", "rle"),
                     default=("raw", "delta", "rle"), help="compression modes to test")
+    ap.add_argument("--rate-sweep", type=str, default=None,
+                    help="comma-separated list of rates to sweep (e.g. 1000000,4000000,10000000)")
+    ap.add_argument("--chunk-sweep", type=str, default=None,
+                    help="comma-separated list of chunk sizes to sweep (e.g. 1024,4096,16384,65536)")
     args = ap.parse_args()
 
     if not find_spi_device():
         print("No SPI hardware detected. Flash the bitstream and connect the board, then rerun.")
         return 1
 
+    # Determine rate(s) and chunk(s) to test
+    if args.rate_sweep:
+        rates = [int(r.strip()) for r in args.rate_sweep.split(",") if r.strip()]
+    else:
+        rates = [int(args.rate)]
+
+    if args.chunk_sweep:
+        chunks = [int(c.strip()) for c in args.chunk_sweep.split(",") if c.strip()]
+    else:
+        chunks = [int(args.chunk)]
+
     print(
-        f"== Digital compression probe @ {args.rate/1e6:.1f} MHz for {args.duration:.1f}s "
-        f"signal={args.signal} =="
+        f"== Digital compression probe =="
+        f"  rates={rates}  chunks={chunks}  signal={args.signal}"
     )
+    print(f"{'mode':5s} {'signal':6s} {'chunk':>7s} {'rate_hz':>10s}  {'S/s':>12s}")
+    print("-" * 50)
+
     results = {}
-    for mode in args.modes:
-        results[mode] = run_case(
-            mode=mode,
-            signal_name=args.signal,
-            rate_hz=args.rate,
-            duration_s=args.duration,
-            chunk_nsamp=args.chunk,
-            buffer_nsamp=args.buffer,
-            pwm_freq=args.pwm_freq,
-            pwm_duty=args.pwm_duty,
-        )
-        time.sleep(1.0)
+    for rate_hz in rates:
+        for chunk_nsamp in chunks:
+            for mode in args.modes:
+                sps = run_case(
+                    mode=mode,
+                    signal_name=args.signal,
+                    rate_hz=float(rate_hz),
+                    duration_s=args.duration,
+                    chunk_nsamp=chunk_nsamp,
+                    buffer_nsamp=args.buffer,
+                    pwm_freq=args.pwm_freq,
+                    pwm_duty=args.pwm_duty,
+                )
+                results[(mode, rate_hz, chunk_nsamp)] = sps
+                time.sleep(0.5)
 
-    base = results.get("raw", 0.0)
-    if base > 0:
-        print("")
-        for mode in args.modes:
-            if mode != "raw":
-                print(f"{mode:5s} gain vs raw: {results[mode] / base:0.2f}x")
+    # Summary
+    print()
+    print("=== Summary (S/s) ===")
+    print(f"{'mode':5s} {'rate_hz':>10s} {'chunk':>7s}  {'S/s':>12s}  {'vs_raw':>8s}")
+    print("-" * 55)
+    for rate_hz in rates:
+        for chunk_nsamp in chunks:
+            raw_sps = results.get(('raw', rate_hz, chunk_nsamp), 0.0)
+            for mode in args.modes:
+                sps = results.get((mode, rate_hz, chunk_nsamp), 0.0)
+                vs_raw = f"{sps / raw_sps:.2f}x" if raw_sps > 0 and mode != 'raw' else "-"
+                print(f"{mode:5s} {rate_hz:>10d} {chunk_nsamp:>7d}  {sps:>12.1f}  {vs_raw:>8s}")
     return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

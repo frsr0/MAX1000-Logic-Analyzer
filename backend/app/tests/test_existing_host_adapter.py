@@ -43,11 +43,10 @@ class FakeHostDevice:
         self.open = Mock()
         self.close = Mock()
         self.set_debug_ch0 = Mock()
+        self.set_readback_compression = Mock()
         self.set_schmitt = Mock()
         self._write_capture_config = Mock()
-        samples = np.full(2048, 0x1234, dtype="<u2")
-        samples[256] ^= 0x0001
-        self.read_capture_range = Mock(return_value=samples.tobytes())
+        self.read_capture_range = Mock(return_value=b"\x01\x00" * 2048)
         self.ack_capture_done = self.pkt.ack_capture_done
 
 

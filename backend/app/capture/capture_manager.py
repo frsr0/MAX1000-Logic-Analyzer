@@ -244,10 +244,13 @@ class CaptureManager:
 
                 capture_settings = settings
                 if settings.mode in continuous_modes:
+                    is_streaming = (
+                        settings.mode not in ("analog_continuous", "mixed_continuous")
+                        and settings.readback_compression == "raw"
+                    )
                     capture_settings = settings.model_copy(update={
-                        "num_samples": self._rolling_chunk_samples(settings)
+                        "num_samples": self._rolling_chunk_samples(settings, streaming=is_streaming)
                     })
-
                 result = dev.capture(capture_settings, progress=progress,
                                      stop_evt=self._stop_evt)
                 if settings.mode in continuous_modes:
@@ -297,12 +300,18 @@ class CaptureManager:
             manager.publish_threadsafe("capture", "capture_error",
                                        {"message": str(e)})
 
-    def _rolling_chunk_samples(self, settings: CaptureSettings) -> int:
+    def _rolling_chunk_samples(self, settings: CaptureSettings, *, streaming=False) -> int:
         """Small-ish chunks make rolling mode feel alive while the configured
-        num_samples remains the on-screen retention window."""
+        num_samples remains the on-screen retention window. When streaming=True
+        (the CS-held raw-stream path), larger chunks amortize the request overhead.
+        The raw-stream sweet spot (16384-65536 samples) is empirically determined."""
         window = max(1, int(settings.num_samples))
-        target = int(max(1024, settings.sample_rate * 0.02))
-        target = min(target, 100_000)
+        if streaming:
+            target = int(max(16384, settings.sample_rate * 0.005))
+            target = min(target, 65536)
+        else:
+            target = int(max(1024, settings.sample_rate * 0.02))
+            target = min(target, 100_000)
         if window >= 10:
             target = min(target, max(1, window // 10))
         return max(1, min(window, target))

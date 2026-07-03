@@ -176,6 +176,24 @@ class SPIDevice:
         self._seq = 0
         self._rx_buf = b''
 
+    def _default_ack_pad(self) -> int:
+        """Safe ack_pad in SPI bytes for the current SPI clock rate.
+
+        FPGA pipeline from ACK end to first sample ≈ 46 bytes at 30 MHz
+        (= 12 µs). Scale bytes with SPI speed to preserve the same absolute
+        guard time across clock rates.
+
+          < 10 MHz:  32 bytes  (~10 µs guard)
+          10–20 MHz: 48 bytes  (~5 µs guard)
+          > 20 MHz:  64 bytes  (~2 µs guard)
+        """
+        speed = getattr(self.spi, 'speed_hz', 30_000_000)
+        if speed <= 10_000_000:
+            return 32
+        elif speed <= 20_000_000:
+            return 48
+        return 64
+
     def _next_seq(self):
         s = self._seq
         self._seq = (self._seq + 1) & 0xFF
@@ -365,7 +383,7 @@ class SPIDevice:
             raw = self.spi.stream_command(
                 req,
                 max(132, read_extra + 128),
-                ack_pad=96,
+                ack_pad=self._default_ack_pad(),
             )
             if raw:
                 self._rx_buf += raw
@@ -480,7 +498,7 @@ class SPIDevice:
             start_sample, n_bytes // 2, stop_evt=stop_evt)
 
     def start_raw_stream_read(self, start_sample: int, sample_count: int,
-                              stop_evt=None, ack_pad: int = 96) -> tuple:
+                              stop_evt=None, ack_pad: int | None = None) -> tuple:
         """Start a true raw sample stream and read it under one CS-held transaction.
 
         Returns (producer_index, oldest_index, data_bytes), where ``data_bytes``
@@ -503,13 +521,13 @@ class SPIDevice:
             return producer or 0, oldest or 0, bytes(data)
         if not hasattr(self.spi, "stream_command"):
             raise RuntimeError("raw stream path requires stream_command")
-
         n_bytes = sample_count * 2
         payload = struct.pack('<II', start_sample * 2, sample_count)
         seq = self._next_seq()
         req = build_packet(CMD_START_RAW_STREAM, seq, payload)
+        pad = ack_pad if ack_pad is not None else self._default_ack_pad()
         raw = self.spi.stream_command(
-            req, n_bytes + 2, ack_pad=ack_pad, stop_evt=stop_evt)
+            req, n_bytes, ack_pad=pad, stop_evt=stop_evt)
         sync_at = raw.find(SYNC_RSP)
         while sync_at >= 0:
             if len(raw) < sync_at + 8:
@@ -525,16 +543,10 @@ class SPIDevice:
                 if (status == ST_STREAM_ACTIVE and rsp_seq == seq
                         and len(rsp_payload) >= 8):
                     producer, oldest = struct.unpack('<II', rsp_payload[:8])
-                    data_start = max(end, len(req) + ack_pad)
+                    data_start = max(end, len(req) + pad)
                     if (data_start - end) & 1:
                         data_start += 1
                     data = raw[data_start:data_start + n_bytes]
-                    if len(data) >= 2:
-                        even_len = len(data) & ~1
-                        swapped = bytearray(even_len)
-                        swapped[0::2] = data[1:even_len:2]
-                        swapped[1::2] = data[0:even_len:2]
-                        data = bytes(swapped) + data[even_len:]
                     return producer, oldest, data
             sync_at = raw.find(SYNC_RSP, sync_at + 1)
         raise RuntimeError("start_raw_stream_read failed")

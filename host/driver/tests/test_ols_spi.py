@@ -268,6 +268,7 @@ class TestSPIPacketProtocol:
     def test_start_stream_read_parses_ack_and_returns_stream_data(self):
         class FakeSPI:
             def __init__(self):
+                self.speed_hz = 30_000_000
                 self.request = None
                 self.tx_read_calls = 0
                 self.n_bytes = 0
@@ -283,7 +284,6 @@ class TestSPIPacketProtocol:
                 guard = bytearray(b'\xff' * (len(request) + ack_pad))
                 guard[2:2 + len(resp)] = resp
                 stream = bytearray(range(n_bytes))
-                stream[0::2], stream[1::2] = stream[1::2], stream[0::2]
                 return bytes(guard) + bytes(stream)
 
             def tx_read(self, n):
@@ -296,12 +296,13 @@ class TestSPIPacketProtocol:
         assert producer == 0x12345678
         assert oldest == 0x100
         assert data == bytes(range(16))
-        assert fake.n_bytes == 18
+        assert fake.n_bytes == 16
         assert fake.request.startswith(SYNC_REQ + bytes([CMD_START_RAW_STREAM]))
         assert fake.tx_read_calls == 0
 
     def test_start_stream_read_keeps_sample_boundary_after_shifted_ack(self):
         class FakeSPI:
+            speed_hz = 30_000_000
             def stream_command(self, request, n_bytes, ack_pad=96, stop_evt=None):
                 seq = request[3]
                 payload = struct.pack('<II', 0x12345678, 0x00000100)
@@ -311,7 +312,6 @@ class TestSPIPacketProtocol:
                 guard = bytearray(b'\xff' * (len(request) + ack_pad))
                 guard[3:3 + len(resp)] = resp
                 stream = bytearray(range(n_bytes))
-                stream[0::2], stream[1::2] = stream[1::2], stream[0::2]
                 return bytes(guard) + b'\xee' + bytes(stream)
 
         pkt = SPIDevice(FakeSPI())
@@ -323,6 +323,7 @@ class TestSPIPacketProtocol:
     def test_start_raw_stream_read_parses_ack_and_returns_samples(self):
         class FakeSPI:
             def __init__(self):
+                self.speed_hz = 30_000_000
                 self.request = None
                 self.n_bytes = 0
 
@@ -337,7 +338,6 @@ class TestSPIPacketProtocol:
                 guard = bytearray(b'\xff' * (len(request) + ack_pad))
                 guard[2:2 + len(resp)] = resp
                 stream = bytearray(range(n_bytes))
-                stream[0::2], stream[1::2] = stream[1::2], stream[0::2]
                 return bytes(guard) + bytes(stream)
 
         fake = FakeSPI()
@@ -346,12 +346,13 @@ class TestSPIPacketProtocol:
         assert producer == 0x12345678
         assert oldest == 0x100
         assert data == bytes(range(16))
-        assert fake.n_bytes == 18
+        assert fake.n_bytes == 16
         assert fake.request.startswith(SYNC_REQ + bytes([CMD_START_RAW_STREAM]))
 
     def test_transaction_raw_uses_stream_command_when_available(self):
         class FakeSPI:
             def __init__(self):
+                self.speed_hz = 30_000_000
                 self.request = None
                 self.read_n = None
                 self.ack_pad = None
@@ -383,7 +384,7 @@ class TestSPIPacketProtocol:
         assert result == (ST_OK, 0x00, bytes(range(16)))
         assert fake.request.startswith(SYNC_REQ + b'\x12')
         assert fake.read_n == 168
-        assert fake.ack_pad == 96
+        assert fake.ack_pad == 64
         assert fake.tx_bytes_called is False
         assert fake.tx_read_called is False
 

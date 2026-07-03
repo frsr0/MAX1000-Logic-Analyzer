@@ -295,9 +295,7 @@ SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
       comp_data          : OUT STD_LOGIC_VECTOR(15 downto 0);
       comp_valid         : OUT STD_LOGIC;
       busy               : OUT STD_LOGIC;
-      in_ready           : OUT STD_LOGIC;
-      dbg_cnt            : OUT STD_LOGIC_VECTOR(15 downto 0);
-      dbg_have           : OUT STD_LOGIC
+      in_ready           : OUT STD_LOGIC
     );
   END COMPONENT;
   TYPE block_buf_t IS ARRAY(0 TO 255) OF STD_LOGIC_VECTOR(31 DOWNTO 0);
@@ -1463,22 +1461,18 @@ BEGIN
   delta_enable_i <= '1' when compress_mode_i = "01" else '0';
   rle_enable_i <= '1' when compress_mode_i = "10" else '0';
 
-  -- Readback compressor(s) run at 100 MHz between the response FIFO drain and
-  -- block_buf. Delta remains the default compact codec; RLE is selectable for
-  -- long repeated digital runs. Raw mode uses the delta block in passthrough.
-  rd_delta_compressor : capture_compressor
-    PORT MAP (
-      clk                => CLK,
-      rst                => comp_rst_i,
-      sample_in          => Rd_Fifo_Q,
-      sample_valid       => comp_feed_i,
-      compression_enable => delta_enable_i,
-      comp_data          => delta_out_data,
-      comp_valid         => delta_out_valid,
-      busy               => delta_busy_i,
-      in_ready           => delta_in_ready_i
-    );
-
+  -- Readback compressor runs at 100 MHz between the response FIFO drain and
+  -- block_buf. RLE is the sole digital codec: it does raw passthrough when
+  -- compression is disabled (mode "00") and run-length compression when
+  -- enabled (mode "10"). It supersedes the old delta codec for digital
+  -- readback (idle/slow data compresses far more, and it is lossless with no
+  -- keyframe ambiguity). The delta compressor (capture_compressor) was
+  -- dropped from the build: keeping BOTH could not close 167 MHz timing at
+  -- 99% LE (the extra ~320 LC perturbed the SDRAM readout placement). Mode
+  -- "01" (legacy "delta") now takes the RLE passthrough path and reads back
+  -- raw — lossless, just uncompressed — via the host's raw fallback. To
+  -- restore a selectable delta codec, free ~320 LE elsewhere and reinstate
+  -- capture_compressor + the mode mux (see git history / capture_compressor.vhd).
   rd_rle_compressor : rle_compressor
     PORT MAP (
       clk                => CLK,
@@ -1490,14 +1484,12 @@ BEGIN
       comp_data          => rle_out_data,
       comp_valid         => rle_out_valid,
       busy               => rle_busy_i,
-      in_ready           => rle_in_ready_i,
-      dbg_cnt            => open,
-      dbg_have           => open
+      in_ready           => rle_in_ready_i
     );
 
-  comp_out_data <= rle_out_data when compress_mode_i = "10" else delta_out_data;
-  comp_out_valid <= rle_out_valid when compress_mode_i = "10" else delta_out_valid;
-  comp_busy_i <= rle_busy_i when compress_mode_i = "10" else delta_busy_i;
-  comp_in_ready_i <= rle_in_ready_i when compress_mode_i = "10" else delta_in_ready_i;
+  comp_out_data   <= rle_out_data;
+  comp_out_valid  <= rle_out_valid;
+  comp_busy_i     <= rle_busy_i;
+  comp_in_ready_i <= rle_in_ready_i;
 
 END BEHAVIORAL;

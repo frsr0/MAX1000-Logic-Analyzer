@@ -102,13 +102,28 @@ set_multicycle_path -hold 2 \
   -from [get_ports {sdram_dq[*]}] \
   -to   [get_registers {*sdram_s_readdata[*]}]
 
-# The readback compressor is fed by the SDRAM read-valid cadence, not by a
-# continuous 167 MHz sample stream. One read is requested, the controller waits
-# through CAS/read-data latency, then the next request is issued, so delta
-# accumulation has at least two clk[2] cycles between meaningful updates.
+# Capture write-pump: cap_stream_data latches the afifo show-ahead head, but the
+# pump inserts a mandatory pop-bubble (one dead cycle after every registered
+# fifo_rd) before it can present the next word to the SDRAM controller. So a NEW
+# head produced by a pop is never captured into cap_stream_data until two clk[2]
+# cycles after the afifo read address advanced — the M9K read has two cycles, not
+# one. Timing it as single-cycle was a false critical path (the read-address ->
+# cap_stream_data cone through the show-ahead mux). Verified on HW by the
+# odd-interval debug-wave capture test, which catches any sample duplication/loss
+# a wrong multicycle would introduce.
 set_multicycle_path -setup 2 \
-  -from [get_registers {*rd_compressor|prev[*] *rd_compressor|sample_pipe[*]}] \
-  -to   [get_registers {*rd_compressor|deltas[*][*]}]
+  -from [get_registers {*afifo*portb_address_reg*}] \
+  -to   [get_registers {*cap_stream_data[*]}]
 set_multicycle_path -hold 1 \
-  -from [get_registers {*rd_compressor|prev[*] *rd_compressor|sample_pipe[*]}] \
-  -to   [get_registers {*rd_compressor|deltas[*][*]}]
+  -from [get_registers {*afifo*portb_address_reg*}] \
+  -to   [get_registers {*cap_stream_data[*]}]
+
+# stream_rem is the readout remaining-count. It is loaded once at block-read
+# start (blk_req_edge / rd_mode) and then decremented only on s_rvalid — one
+# SDRAM read completion. Completions are spaced by CAS latency plus the read
+# cadence (>= 2 clk[2] cycles; cf. the sdram_dq -> sdram_s_readdata multicycle
+# above), and the load precedes the first completion by several cycles, so every
+# path into stream_rem has at least two clk[2] cycles. Timing them single-cycle
+# is a false critical path.
+set_multicycle_path -setup 2 -to [get_registers {*Fast_Logic_Analyzer_SDRAM*stream_rem[*]}]
+set_multicycle_path -hold 1  -to [get_registers {*Fast_Logic_Analyzer_SDRAM*stream_rem[*]}]

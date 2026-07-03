@@ -1,0 +1,468 @@
+----------------
+; Command Info ;
+----------------
+Report Timing: Found 4 setup paths (4 violated).  Worst case slack is -0.611 
+
+Tcl Command:
+    report_timing -setup -file worst_paths.txt -npaths 4 -detail full_path
+
+Options:
+    -setup 
+    -npaths 4 
+    -detail full_path 
+    -file {worst_paths.txt} 
+
+Delay Model:
+    Slow 1200mV 85C Model
+
++--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+; Summary of Paths                                                                                                                                                                                                                                                                                                                                                                                                                                                                           ;
++--------+-------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------------------+---------------------------------------------------------------------------------------------+---------------------------------------------------------------------------------------------+--------------+------------+------------+
+; Slack  ; From Node                                                                                                         ; To Node                                                                                                                  ; Launch Clock                                                                                ; Latch Clock                                                                                 ; Relationship ; Clock Skew ; Data Delay ;
++--------+-------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------------------+---------------------------------------------------------------------------------------------+---------------------------------------------------------------------------------------------+--------------+------------+------------+
+; -0.611 ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|rd_mode ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|stream_rem[13] ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[2] ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[2] ; 5.988        ; -0.034     ; 6.509      ;
+; -0.593 ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|rd_mode ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|stream_rem[13] ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[2] ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[2] ; 5.988        ; -0.034     ; 6.491      ;
+; -0.547 ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|rd_mode ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|stream_rem[8]  ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[2] ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[2] ; 5.988        ; -0.070     ; 6.409      ;
+; -0.547 ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|rd_mode ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|stream_rem[11] ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[2] ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[2] ; 5.988        ; -0.070     ; 6.409      ;
++--------+-------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------------------+---------------------------------------------------------------------------------------------+---------------------------------------------------------------------------------------------+--------------+------------+------------+
+
+Path #1: Setup slack is -0.611 (VIOLATED)
+===============================================================================
++-----------------------------------------------------------------------------------------------------------------------------------------------+
+; Path Summary                                                                                                                                  ;
++--------------------+--------------------------------------------------------------------------------------------------------------------------+
+; Property           ; Value                                                                                                                    ;
++--------------------+--------------------------------------------------------------------------------------------------------------------------+
+; From Node          ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|rd_mode        ;
+; To Node            ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|stream_rem[13] ;
+; Launch Clock       ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[2]                              ;
+; Latch Clock        ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[2]                              ;
+; Data Arrival Time  ; 7.048                                                                                                                    ;
+; Data Required Time ; 6.437                                                                                                                    ;
+; Slack              ; -0.611 (VIOLATED)                                                                                                        ;
++--------------------+--------------------------------------------------------------------------------------------------------------------------+
+
++--------------------------------------------------------------------------------------+
+; Statistics                                                                           ;
++------------------------+--------+-------+-------------+------------+--------+--------+
+; Property               ; Value  ; Count ; Total Delay ; % of Total ; Min    ; Max    ;
++------------------------+--------+-------+-------------+------------+--------+--------+
+; Setup Relationship     ; 5.988  ;       ;             ;            ;        ;        ;
+; Clock Skew             ; -0.034 ;       ;             ;            ;        ;        ;
+; Data Delay             ; 6.509  ;       ;             ;            ;        ;        ;
+; Number of Logic Levels ;        ; 4     ;             ;            ;        ;        ;
+; Physical Delays        ;        ;       ;             ;            ;        ;        ;
+;  Arrival Path          ;        ;       ;             ;            ;        ;        ;
+;   Clock                ;        ;       ;             ;            ;        ;        ;
+;    IC                  ;        ; 4     ; 6.538       ; 82         ; 0.000  ; 2.838  ;
+;    Cell                ;        ; 4     ; 1.400       ; 18         ; 0.000  ; 0.867  ;
+;    PLL Compensation    ;        ; 1     ; -7.399      ; 0          ; -7.399 ; -7.399 ;
+;   Data                 ;        ;       ;             ;            ;        ;        ;
+;    IC                  ;        ; 11    ; 3.230       ; 50         ; 0.000  ; 0.915  ;
+;    Cell                ;        ; 12    ; 3.060       ; 47         ; 0.000  ; 0.673  ;
+;    uTco                ;        ; 1     ; 0.219       ; 3          ; 0.219  ; 0.219  ;
+;  Required Path         ;        ;       ;             ;            ;        ;        ;
+;   Clock                ;        ;       ;             ;            ;        ;        ;
+;    IC                  ;        ; 4     ; 6.317       ; 82         ; 0.000  ; 2.724  ;
+;    Cell                ;        ; 4     ; 1.363       ; 18         ; 0.000  ; 0.867  ;
+;    PLL Compensation    ;        ; 1     ; -7.606      ; 0          ; -7.606 ; -7.606 ;
++------------------------+--------+-------+-------------+------------+--------+--------+
+Note: Negative delays are omitted from totals when calculating percentages
+
++------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+; Data Arrival Path                                                                                                                                                                        ;
++----------+----------+----+------+--------+--------------------+--------------------------------------------------------------------------------------------------------------------------+
+; Total    ; Incr     ; RF ; Type ; Fanout ; Location           ; Element                                                                                                                  ;
++----------+----------+----+------+--------+--------------------+--------------------------------------------------------------------------------------------------------------------------+
+; 0.000    ; 0.000    ;    ;      ;        ;                    ; launch edge time                                                                                                         ;
+; 0.539    ; 0.539    ;    ;      ;        ;                    ; clock path                                                                                                               ;
+;   0.000  ;   0.000  ;    ;      ;        ;                    ; source latency                                                                                                           ;
+;   0.000  ;   0.000  ;    ;      ; 1      ; PIN_H6             ; CLK                                                                                                                      ;
+;   0.000  ;   0.000  ; RR ; IC   ; 1      ; IOIBUF_X0_Y7_N22   ; CLK~input|i                                                                                                              ;
+;   0.867  ;   0.867  ; RR ; CELL ; 1      ; IOIBUF_X0_Y7_N22   ; CLK~input|o                                                                                                              ;
+;   3.705  ;   2.838  ; RR ; IC   ; 1      ; PLL_1              ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|inclk[0]                            ;
+;   -3.694 ;   -7.399 ; RR ; COMP ; 5      ; PLL_1              ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|observablevcoout                    ;
+;   -3.694 ;   0.000  ; RR ; CELL ; 1      ; PLL_1              ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[2]                              ;
+;   -0.952 ;   2.742  ; RR ; IC   ; 1      ; CLKCTRL_G2         ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|wire_pll1_clk[2]~clkctrl|inclk[0]        ;
+;   -0.952 ;   0.000  ; RR ; CELL ; 862    ; CLKCTRL_G2         ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|wire_pll1_clk[2]~clkctrl|outclk          ;
+;   0.006  ;   0.958  ; RR ; IC   ; 1      ; FF_X28_Y9_N3       ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|rd_mode|clk                                                               ;
+;   0.539  ;   0.533  ; RR ; CELL ; 1      ; FF_X28_Y9_N3       ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|rd_mode        ;
+; 7.048    ; 6.509    ;    ;      ;        ;                    ; data path                                                                                                                ;
+;   0.758  ;   0.219  ;    ; uTco ; 1      ; FF_X28_Y9_N3       ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|rd_mode        ;
+;   0.758  ;   0.000  ; FF ; CELL ; 26     ; FF_X28_Y9_N3       ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|rd_mode|q                                                                 ;
+;   1.159  ;   0.401  ; FF ; IC   ; 1      ; LCCOMB_X28_Y9_N6   ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|rd_pend2~4|datab                                                          ;
+;   1.623  ;   0.464  ; FR ; CELL ; 40     ; LCCOMB_X28_Y9_N6   ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|rd_pend2~4|combout                                                        ;
+;   2.538  ;   0.915  ; RR ; IC   ; 1      ; LCCOMB_X28_Y13_N24 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|stream_rem[7]~6|datad                                                     ;
+;   2.735  ;   0.197  ; RR ; CELL ; 3      ; LCCOMB_X28_Y13_N24 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|stream_rem[7]~6|combout                                                   ;
+;   3.586  ;   0.851  ; RR ; IC   ; 2      ; LCCOMB_X27_Y13_N24 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~14|datab                                                            ;
+;   4.193  ;   0.607  ; RF ; CELL ; 1      ; LCCOMB_X27_Y13_N24 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~14|cout                                                             ;
+;   4.193  ;   0.000  ; FF ; IC   ; 2      ; LCCOMB_X27_Y13_N26 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~16|cin                                                              ;
+;   4.254  ;   0.061  ; FR ; CELL ; 1      ; LCCOMB_X27_Y13_N26 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~16|cout                                                             ;
+;   4.254  ;   0.000  ; RR ; IC   ; 2      ; LCCOMB_X27_Y13_N28 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~18|cin                                                              ;
+;   4.315  ;   0.061  ; RF ; CELL ; 1      ; LCCOMB_X27_Y13_N28 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~18|cout                                                             ;
+;   4.315  ;   0.000  ; FF ; IC   ; 2      ; LCCOMB_X27_Y13_N30 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~20|cin                                                              ;
+;   4.376  ;   0.061  ; FR ; CELL ; 1      ; LCCOMB_X27_Y13_N30 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~20|cout                                                             ;
+;   4.376  ;   0.000  ; RR ; IC   ; 2      ; LCCOMB_X27_Y12_N0  ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~22|cin                                                              ;
+;   4.437  ;   0.061  ; RF ; CELL ; 1      ; LCCOMB_X27_Y12_N0  ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~22|cout                                                             ;
+;   4.437  ;   0.000  ; FF ; IC   ; 2      ; LCCOMB_X27_Y12_N2  ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~24|cin                                                              ;
+;   4.498  ;   0.061  ; FR ; CELL ; 1      ; LCCOMB_X27_Y12_N2  ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~24|cout                                                             ;
+;   4.498  ;   0.000  ; RR ; IC   ; 2      ; LCCOMB_X27_Y12_N4  ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~26|cin                                                              ;
+;   5.171  ;   0.673  ; RR ; CELL ; 1      ; LCCOMB_X27_Y12_N4  ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~26|combout                                                          ;
+;   6.013  ;   0.842  ; RR ; IC   ; 1      ; LCCOMB_X27_Y10_N26 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|stream_rem~38|datac                                                       ;
+;   6.373  ;   0.360  ; RR ; CELL ; 1      ; LCCOMB_X27_Y10_N26 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|stream_rem~38|combout                                                     ;
+;   6.594  ;   0.221  ; RR ; IC   ; 1      ; FF_X27_Y10_N31     ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|stream_rem[13]|asdata                                                     ;
+;   7.048  ;   0.454  ; RR ; CELL ; 1      ; FF_X27_Y10_N31     ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|stream_rem[13] ;
++----------+----------+----+------+--------+--------------------+--------------------------------------------------------------------------------------------------------------------------+
+
++---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+; Data Required Path                                                                                                                                                                    ;
++---------+----------+----+------+--------+------------------+--------------------------------------------------------------------------------------------------------------------------+
+; Total   ; Incr     ; RF ; Type ; Fanout ; Location         ; Element                                                                                                                  ;
++---------+----------+----+------+--------+------------------+--------------------------------------------------------------------------------------------------------------------------+
+; 5.988   ; 5.988    ;    ;      ;        ;                  ; latch edge time                                                                                                          ;
+; 6.493   ; 0.505    ;    ;      ;        ;                  ; clock path                                                                                                               ;
+;   5.988 ;   0.000  ;    ;      ;        ;                  ; source latency                                                                                                           ;
+;   5.988 ;   0.000  ;    ;      ; 1      ; PIN_H6           ; CLK                                                                                                                      ;
+;   5.988 ;   0.000  ; RR ; IC   ; 1      ; IOIBUF_X0_Y7_N22 ; CLK~input|i                                                                                                              ;
+;   6.855 ;   0.867  ; RR ; CELL ; 1      ; IOIBUF_X0_Y7_N22 ; CLK~input|o                                                                                                              ;
+;   9.579 ;   2.724  ; RR ; IC   ; 1      ; PLL_1            ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|inclk[0]                            ;
+;   1.973 ;   -7.606 ; RR ; COMP ; 5      ; PLL_1            ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|observablevcoout                    ;
+;   1.973 ;   0.000  ; RR ; CELL ; 1      ; PLL_1            ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[2]                              ;
+;   4.605 ;   2.632  ; RR ; IC   ; 1      ; CLKCTRL_G2       ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|wire_pll1_clk[2]~clkctrl|inclk[0]        ;
+;   4.605 ;   0.000  ; RR ; CELL ; 862    ; CLKCTRL_G2       ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|wire_pll1_clk[2]~clkctrl|outclk          ;
+;   5.566 ;   0.961  ; RR ; IC   ; 1      ; FF_X27_Y10_N31   ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|stream_rem[13]|clk                                                        ;
+;   6.062 ;   0.496  ; RR ; CELL ; 1      ; FF_X27_Y10_N31   ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|stream_rem[13] ;
+;   6.493 ;   0.431  ;    ;      ;        ;                  ; clock pessimism removed                                                                                                  ;
+; 6.423   ; -0.070   ;    ;      ;        ;                  ; clock uncertainty                                                                                                        ;
+; 6.437   ; 0.014    ;    ; uTsu ; 1      ; FF_X27_Y10_N31   ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|stream_rem[13] ;
++---------+----------+----+------+--------+------------------+--------------------------------------------------------------------------------------------------------------------------+
+
+
+Path #2: Setup slack is -0.593 (VIOLATED)
+===============================================================================
++-----------------------------------------------------------------------------------------------------------------------------------------------+
+; Path Summary                                                                                                                                  ;
++--------------------+--------------------------------------------------------------------------------------------------------------------------+
+; Property           ; Value                                                                                                                    ;
++--------------------+--------------------------------------------------------------------------------------------------------------------------+
+; From Node          ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|rd_mode        ;
+; To Node            ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|stream_rem[13] ;
+; Launch Clock       ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[2]                              ;
+; Latch Clock        ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[2]                              ;
+; Data Arrival Time  ; 7.030                                                                                                                    ;
+; Data Required Time ; 6.437                                                                                                                    ;
+; Slack              ; -0.593 (VIOLATED)                                                                                                        ;
++--------------------+--------------------------------------------------------------------------------------------------------------------------+
+
++--------------------------------------------------------------------------------------+
+; Statistics                                                                           ;
++------------------------+--------+-------+-------------+------------+--------+--------+
+; Property               ; Value  ; Count ; Total Delay ; % of Total ; Min    ; Max    ;
++------------------------+--------+-------+-------------+------------+--------+--------+
+; Setup Relationship     ; 5.988  ;       ;             ;            ;        ;        ;
+; Clock Skew             ; -0.034 ;       ;             ;            ;        ;        ;
+; Data Delay             ; 6.491  ;       ;             ;            ;        ;        ;
+; Number of Logic Levels ;        ; 4     ;             ;            ;        ;        ;
+; Physical Delays        ;        ;       ;             ;            ;        ;        ;
+;  Arrival Path          ;        ;       ;             ;            ;        ;        ;
+;   Clock                ;        ;       ;             ;            ;        ;        ;
+;    IC                  ;        ; 4     ; 6.538       ; 82         ; 0.000  ; 2.838  ;
+;    Cell                ;        ; 4     ; 1.400       ; 18         ; 0.000  ; 0.867  ;
+;    PLL Compensation    ;        ; 1     ; -7.399      ; 0          ; -7.399 ; -7.399 ;
+;   Data                 ;        ;       ;             ;            ;        ;        ;
+;    IC                  ;        ; 17    ; 2.868       ; 44         ; 0.000  ; 0.910  ;
+;    Cell                ;        ; 18    ; 3.404       ; 52         ; 0.000  ; 0.673  ;
+;    uTco                ;        ; 1     ; 0.219       ; 3          ; 0.219  ; 0.219  ;
+;  Required Path         ;        ;       ;             ;            ;        ;        ;
+;   Clock                ;        ;       ;             ;            ;        ;        ;
+;    IC                  ;        ; 4     ; 6.317       ; 82         ; 0.000  ; 2.724  ;
+;    Cell                ;        ; 4     ; 1.363       ; 18         ; 0.000  ; 0.867  ;
+;    PLL Compensation    ;        ; 1     ; -7.606      ; 0          ; -7.606 ; -7.606 ;
++------------------------+--------+-------+-------------+------------+--------+--------+
+Note: Negative delays are omitted from totals when calculating percentages
+
++------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+; Data Arrival Path                                                                                                                                                                        ;
++----------+----------+----+------+--------+--------------------+--------------------------------------------------------------------------------------------------------------------------+
+; Total    ; Incr     ; RF ; Type ; Fanout ; Location           ; Element                                                                                                                  ;
++----------+----------+----+------+--------+--------------------+--------------------------------------------------------------------------------------------------------------------------+
+; 0.000    ; 0.000    ;    ;      ;        ;                    ; launch edge time                                                                                                         ;
+; 0.539    ; 0.539    ;    ;      ;        ;                    ; clock path                                                                                                               ;
+;   0.000  ;   0.000  ;    ;      ;        ;                    ; source latency                                                                                                           ;
+;   0.000  ;   0.000  ;    ;      ; 1      ; PIN_H6             ; CLK                                                                                                                      ;
+;   0.000  ;   0.000  ; RR ; IC   ; 1      ; IOIBUF_X0_Y7_N22   ; CLK~input|i                                                                                                              ;
+;   0.867  ;   0.867  ; RR ; CELL ; 1      ; IOIBUF_X0_Y7_N22   ; CLK~input|o                                                                                                              ;
+;   3.705  ;   2.838  ; RR ; IC   ; 1      ; PLL_1              ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|inclk[0]                            ;
+;   -3.694 ;   -7.399 ; RR ; COMP ; 5      ; PLL_1              ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|observablevcoout                    ;
+;   -3.694 ;   0.000  ; RR ; CELL ; 1      ; PLL_1              ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[2]                              ;
+;   -0.952 ;   2.742  ; RR ; IC   ; 1      ; CLKCTRL_G2         ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|wire_pll1_clk[2]~clkctrl|inclk[0]        ;
+;   -0.952 ;   0.000  ; RR ; CELL ; 862    ; CLKCTRL_G2         ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|wire_pll1_clk[2]~clkctrl|outclk          ;
+;   0.006  ;   0.958  ; RR ; IC   ; 1      ; FF_X28_Y9_N3       ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|rd_mode|clk                                                               ;
+;   0.539  ;   0.533  ; RR ; CELL ; 1      ; FF_X28_Y9_N3       ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|rd_mode        ;
+; 7.030    ; 6.491    ;    ;      ;        ;                    ; data path                                                                                                                ;
+;   0.758  ;   0.219  ;    ; uTco ; 1      ; FF_X28_Y9_N3       ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|rd_mode        ;
+;   0.758  ;   0.000  ; FF ; CELL ; 26     ; FF_X28_Y9_N3       ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|rd_mode|q                                                                 ;
+;   1.159  ;   0.401  ; FF ; IC   ; 1      ; LCCOMB_X28_Y9_N6   ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|rd_pend2~4|datab                                                          ;
+;   1.623  ;   0.464  ; FR ; CELL ; 40     ; LCCOMB_X28_Y9_N6   ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|rd_pend2~4|combout                                                        ;
+;   2.533  ;   0.910  ; RR ; IC   ; 1      ; LCCOMB_X28_Y13_N6  ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|stream_rem[1]~12|datad                                                    ;
+;   2.730  ;   0.197  ; RR ; CELL ; 3      ; LCCOMB_X28_Y13_N6  ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|stream_rem[1]~12|combout                                                  ;
+;   3.224  ;   0.494  ; RR ; IC   ; 2      ; LCCOMB_X27_Y13_N12 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~2|dataa                                                             ;
+;   3.809  ;   0.585  ; RF ; CELL ; 1      ; LCCOMB_X27_Y13_N12 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~2|cout                                                              ;
+;   3.809  ;   0.000  ; FF ; IC   ; 2      ; LCCOMB_X27_Y13_N14 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~4|cin                                                               ;
+;   3.870  ;   0.061  ; FR ; CELL ; 1      ; LCCOMB_X27_Y13_N14 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~4|cout                                                              ;
+;   3.870  ;   0.000  ; RR ; IC   ; 2      ; LCCOMB_X27_Y13_N16 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~6|cin                                                               ;
+;   3.931  ;   0.061  ; RF ; CELL ; 1      ; LCCOMB_X27_Y13_N16 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~6|cout                                                              ;
+;   3.931  ;   0.000  ; FF ; IC   ; 2      ; LCCOMB_X27_Y13_N18 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~8|cin                                                               ;
+;   3.992  ;   0.061  ; FR ; CELL ; 1      ; LCCOMB_X27_Y13_N18 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~8|cout                                                              ;
+;   3.992  ;   0.000  ; RR ; IC   ; 2      ; LCCOMB_X27_Y13_N20 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~10|cin                                                              ;
+;   4.053  ;   0.061  ; RF ; CELL ; 1      ; LCCOMB_X27_Y13_N20 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~10|cout                                                             ;
+;   4.053  ;   0.000  ; FF ; IC   ; 2      ; LCCOMB_X27_Y13_N22 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~12|cin                                                              ;
+;   4.114  ;   0.061  ; FR ; CELL ; 1      ; LCCOMB_X27_Y13_N22 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~12|cout                                                             ;
+;   4.114  ;   0.000  ; RR ; IC   ; 2      ; LCCOMB_X27_Y13_N24 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~14|cin                                                              ;
+;   4.175  ;   0.061  ; RF ; CELL ; 1      ; LCCOMB_X27_Y13_N24 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~14|cout                                                             ;
+;   4.175  ;   0.000  ; FF ; IC   ; 2      ; LCCOMB_X27_Y13_N26 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~16|cin                                                              ;
+;   4.236  ;   0.061  ; FR ; CELL ; 1      ; LCCOMB_X27_Y13_N26 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~16|cout                                                             ;
+;   4.236  ;   0.000  ; RR ; IC   ; 2      ; LCCOMB_X27_Y13_N28 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~18|cin                                                              ;
+;   4.297  ;   0.061  ; RF ; CELL ; 1      ; LCCOMB_X27_Y13_N28 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~18|cout                                                             ;
+;   4.297  ;   0.000  ; FF ; IC   ; 2      ; LCCOMB_X27_Y13_N30 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~20|cin                                                              ;
+;   4.358  ;   0.061  ; FR ; CELL ; 1      ; LCCOMB_X27_Y13_N30 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~20|cout                                                             ;
+;   4.358  ;   0.000  ; RR ; IC   ; 2      ; LCCOMB_X27_Y12_N0  ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~22|cin                                                              ;
+;   4.419  ;   0.061  ; RF ; CELL ; 1      ; LCCOMB_X27_Y12_N0  ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~22|cout                                                             ;
+;   4.419  ;   0.000  ; FF ; IC   ; 2      ; LCCOMB_X27_Y12_N2  ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~24|cin                                                              ;
+;   4.480  ;   0.061  ; FR ; CELL ; 1      ; LCCOMB_X27_Y12_N2  ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~24|cout                                                             ;
+;   4.480  ;   0.000  ; RR ; IC   ; 2      ; LCCOMB_X27_Y12_N4  ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~26|cin                                                              ;
+;   5.153  ;   0.673  ; RR ; CELL ; 1      ; LCCOMB_X27_Y12_N4  ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|Add12~26|combout                                                          ;
+;   5.995  ;   0.842  ; RR ; IC   ; 1      ; LCCOMB_X27_Y10_N26 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|stream_rem~38|datac                                                       ;
+;   6.355  ;   0.360  ; RR ; CELL ; 1      ; LCCOMB_X27_Y10_N26 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|stream_rem~38|combout                                                     ;
+;   6.576  ;   0.221  ; RR ; IC   ; 1      ; FF_X27_Y10_N31     ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|stream_rem[13]|asdata                                                     ;
+;   7.030  ;   0.454  ; RR ; CELL ; 1      ; FF_X27_Y10_N31     ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|stream_rem[13] ;
++----------+----------+----+------+--------+--------------------+--------------------------------------------------------------------------------------------------------------------------+
+
++---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+; Data Required Path                                                                                                                                                                    ;
++---------+----------+----+------+--------+------------------+--------------------------------------------------------------------------------------------------------------------------+
+; Total   ; Incr     ; RF ; Type ; Fanout ; Location         ; Element                                                                                                                  ;
++---------+----------+----+------+--------+------------------+--------------------------------------------------------------------------------------------------------------------------+
+; 5.988   ; 5.988    ;    ;      ;        ;                  ; latch edge time                                                                                                          ;
+; 6.493   ; 0.505    ;    ;      ;        ;                  ; clock path                                                                                                               ;
+;   5.988 ;   0.000  ;    ;      ;        ;                  ; source latency                                                                                                           ;
+;   5.988 ;   0.000  ;    ;      ; 1      ; PIN_H6           ; CLK                                                                                                                      ;
+;   5.988 ;   0.000  ; RR ; IC   ; 1      ; IOIBUF_X0_Y7_N22 ; CLK~input|i                                                                                                              ;
+;   6.855 ;   0.867  ; RR ; CELL ; 1      ; IOIBUF_X0_Y7_N22 ; CLK~input|o                                                                                                              ;
+;   9.579 ;   2.724  ; RR ; IC   ; 1      ; PLL_1            ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|inclk[0]                            ;
+;   1.973 ;   -7.606 ; RR ; COMP ; 5      ; PLL_1            ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|observablevcoout                    ;
+;   1.973 ;   0.000  ; RR ; CELL ; 1      ; PLL_1            ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[2]                              ;
+;   4.605 ;   2.632  ; RR ; IC   ; 1      ; CLKCTRL_G2       ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|wire_pll1_clk[2]~clkctrl|inclk[0]        ;
+;   4.605 ;   0.000  ; RR ; CELL ; 862    ; CLKCTRL_G2       ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|wire_pll1_clk[2]~clkctrl|outclk          ;
+;   5.566 ;   0.961  ; RR ; IC   ; 1      ; FF_X27_Y10_N31   ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|stream_rem[13]|clk                                                        ;
+;   6.062 ;   0.496  ; RR ; CELL ; 1      ; FF_X27_Y10_N31   ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|stream_rem[13] ;
+;   6.493 ;   0.431  ;    ;      ;        ;                  ; clock pessimism removed                                                                                                  ;
+; 6.423   ; -0.070   ;    ;      ;        ;                  ; clock uncertainty                                                                                                        ;
+; 6.437   ; 0.014    ;    ; uTsu ; 1      ; FF_X27_Y10_N31   ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|stream_rem[13] ;
++---------+----------+----+------+--------+------------------+--------------------------------------------------------------------------------------------------------------------------+
+
+
+Path #3: Setup slack is -0.547 (VIOLATED)
+===============================================================================
++----------------------------------------------------------------------------------------------------------------------------------------------+
+; Path Summary                                                                                                                                 ;
++--------------------+-------------------------------------------------------------------------------------------------------------------------+
+; Property           ; Value                                                                                                                   ;
++--------------------+-------------------------------------------------------------------------------------------------------------------------+
+; From Node          ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|rd_mode       ;
+; To Node            ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|stream_rem[8] ;
+; Launch Clock       ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[2]                             ;
+; Latch Clock        ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[2]                             ;
+; Data Arrival Time  ; 6.948                                                                                                                   ;
+; Data Required Time ; 6.401                                                                                                                   ;
+; Slack              ; -0.547 (VIOLATED)                                                                                                       ;
++--------------------+-------------------------------------------------------------------------------------------------------------------------+
+
++--------------------------------------------------------------------------------------+
+; Statistics                                                                           ;
++------------------------+--------+-------+-------------+------------+--------+--------+
+; Property               ; Value  ; Count ; Total Delay ; % of Total ; Min    ; Max    ;
++------------------------+--------+-------+-------------+------------+--------+--------+
+; Setup Relationship     ; 5.988  ;       ;             ;            ;        ;        ;
+; Clock Skew             ; -0.070 ;       ;             ;            ;        ;        ;
+; Data Delay             ; 6.409  ;       ;             ;            ;        ;        ;
+; Number of Logic Levels ;        ; 5     ;             ;            ;        ;        ;
+; Physical Delays        ;        ;       ;             ;            ;        ;        ;
+;  Arrival Path          ;        ;       ;             ;            ;        ;        ;
+;   Clock                ;        ;       ;             ;            ;        ;        ;
+;    IC                  ;        ; 4     ; 6.538       ; 82         ; 0.000  ; 2.838  ;
+;    Cell                ;        ; 4     ; 1.400       ; 18         ; 0.000  ; 0.867  ;
+;    PLL Compensation    ;        ; 1     ; -7.399      ; 0          ; -7.399 ; -7.399 ;
+;   Data                 ;        ;       ;             ;            ;        ;        ;
+;    IC                  ;        ; 6     ; 4.248       ; 66         ; 0.221  ; 0.972  ;
+;    Cell                ;        ; 7     ; 1.942       ; 30         ; 0.000  ; 0.464  ;
+;    uTco                ;        ; 1     ; 0.219       ; 3          ; 0.219  ; 0.219  ;
+;  Required Path         ;        ;       ;             ;            ;        ;        ;
+;   Clock                ;        ;       ;             ;            ;        ;        ;
+;    IC                  ;        ; 4     ; 6.275       ; 82         ; 0.000  ; 2.724  ;
+;    Cell                ;        ; 4     ; 1.363       ; 18         ; 0.000  ; 0.867  ;
+;    PLL Compensation    ;        ; 1     ; -7.606      ; 0          ; -7.606 ; -7.606 ;
++------------------------+--------+-------+-------------+------------+--------+--------+
+Note: Negative delays are omitted from totals when calculating percentages
+
++-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+; Data Arrival Path                                                                                                                                                                       ;
++----------+----------+----+------+--------+--------------------+-------------------------------------------------------------------------------------------------------------------------+
+; Total    ; Incr     ; RF ; Type ; Fanout ; Location           ; Element                                                                                                                 ;
++----------+----------+----+------+--------+--------------------+-------------------------------------------------------------------------------------------------------------------------+
+; 0.000    ; 0.000    ;    ;      ;        ;                    ; launch edge time                                                                                                        ;
+; 0.539    ; 0.539    ;    ;      ;        ;                    ; clock path                                                                                                              ;
+;   0.000  ;   0.000  ;    ;      ;        ;                    ; source latency                                                                                                          ;
+;   0.000  ;   0.000  ;    ;      ; 1      ; PIN_H6             ; CLK                                                                                                                     ;
+;   0.000  ;   0.000  ; RR ; IC   ; 1      ; IOIBUF_X0_Y7_N22   ; CLK~input|i                                                                                                             ;
+;   0.867  ;   0.867  ; RR ; CELL ; 1      ; IOIBUF_X0_Y7_N22   ; CLK~input|o                                                                                                             ;
+;   3.705  ;   2.838  ; RR ; IC   ; 1      ; PLL_1              ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|inclk[0]                           ;
+;   -3.694 ;   -7.399 ; RR ; COMP ; 5      ; PLL_1              ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|observablevcoout                   ;
+;   -3.694 ;   0.000  ; RR ; CELL ; 1      ; PLL_1              ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[2]                             ;
+;   -0.952 ;   2.742  ; RR ; IC   ; 1      ; CLKCTRL_G2         ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|wire_pll1_clk[2]~clkctrl|inclk[0]       ;
+;   -0.952 ;   0.000  ; RR ; CELL ; 862    ; CLKCTRL_G2         ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|wire_pll1_clk[2]~clkctrl|outclk         ;
+;   0.006  ;   0.958  ; RR ; IC   ; 1      ; FF_X28_Y9_N3       ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|rd_mode|clk                                                              ;
+;   0.539  ;   0.533  ; RR ; CELL ; 1      ; FF_X28_Y9_N3       ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|rd_mode       ;
+; 6.948    ; 6.409    ;    ;      ;        ;                    ; data path                                                                                                               ;
+;   0.758  ;   0.219  ;    ; uTco ; 1      ; FF_X28_Y9_N3       ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|rd_mode       ;
+;   0.758  ;   0.000  ; FF ; CELL ; 26     ; FF_X28_Y9_N3       ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|rd_mode|q                                                                ;
+;   1.159  ;   0.401  ; FF ; IC   ; 1      ; LCCOMB_X28_Y9_N6   ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|rd_pend2~4|datab                                                         ;
+;   1.623  ;   0.464  ; FR ; CELL ; 40     ; LCCOMB_X28_Y9_N6   ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|rd_pend2~4|combout                                                       ;
+;   2.538  ;   0.915  ; RR ; IC   ; 1      ; LCCOMB_X28_Y13_N24 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|stream_rem[7]~6|datad                                                    ;
+;   2.735  ;   0.197  ; RR ; CELL ; 3      ; LCCOMB_X28_Y13_N24 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|stream_rem[7]~6|combout                                                  ;
+;   3.585  ;   0.850  ; RR ; IC   ; 1      ; LCCOMB_X28_Y9_N16  ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|LessThan10~7_RESYN290|datad                                              ;
+;   3.782  ;   0.197  ; RR ; CELL ; 6      ; LCCOMB_X28_Y9_N16  ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|LessThan10~7_RESYN290|combout                                            ;
+;   4.671  ;   0.889  ; RR ; IC   ; 1      ; LCCOMB_X28_Y13_N18 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|LessThan10~7|datad                                                       ;
+;   4.868  ;   0.197  ; RR ; CELL ; 14     ; LCCOMB_X28_Y13_N18 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|LessThan10~7|combout                                                     ;
+;   5.840  ;   0.972  ; RR ; IC   ; 1      ; LCCOMB_X28_Y9_N8   ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|stream_rem~34|datab                                                      ;
+;   6.273  ;   0.433  ; RR ; CELL ; 1      ; LCCOMB_X28_Y9_N8   ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|stream_rem~34|combout                                                    ;
+;   6.494  ;   0.221  ; RR ; IC   ; 1      ; FF_X28_Y9_N11      ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|stream_rem[8]|asdata                                                     ;
+;   6.948  ;   0.454  ; RR ; CELL ; 1      ; FF_X28_Y9_N11      ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|stream_rem[8] ;
++----------+----------+----+------+--------+--------------------+-------------------------------------------------------------------------------------------------------------------------+
+
++--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+; Data Required Path                                                                                                                                                                   ;
++---------+----------+----+------+--------+------------------+-------------------------------------------------------------------------------------------------------------------------+
+; Total   ; Incr     ; RF ; Type ; Fanout ; Location         ; Element                                                                                                                 ;
++---------+----------+----+------+--------+------------------+-------------------------------------------------------------------------------------------------------------------------+
+; 5.988   ; 5.988    ;    ;      ;        ;                  ; latch edge time                                                                                                         ;
+; 6.457   ; 0.469    ;    ;      ;        ;                  ; clock path                                                                                                              ;
+;   5.988 ;   0.000  ;    ;      ;        ;                  ; source latency                                                                                                          ;
+;   5.988 ;   0.000  ;    ;      ; 1      ; PIN_H6           ; CLK                                                                                                                     ;
+;   5.988 ;   0.000  ; RR ; IC   ; 1      ; IOIBUF_X0_Y7_N22 ; CLK~input|i                                                                                                             ;
+;   6.855 ;   0.867  ; RR ; CELL ; 1      ; IOIBUF_X0_Y7_N22 ; CLK~input|o                                                                                                             ;
+;   9.579 ;   2.724  ; RR ; IC   ; 1      ; PLL_1            ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|inclk[0]                           ;
+;   1.973 ;   -7.606 ; RR ; COMP ; 5      ; PLL_1            ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|observablevcoout                   ;
+;   1.973 ;   0.000  ; RR ; CELL ; 1      ; PLL_1            ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[2]                             ;
+;   4.605 ;   2.632  ; RR ; IC   ; 1      ; CLKCTRL_G2       ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|wire_pll1_clk[2]~clkctrl|inclk[0]       ;
+;   4.605 ;   0.000  ; RR ; CELL ; 862    ; CLKCTRL_G2       ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|wire_pll1_clk[2]~clkctrl|outclk         ;
+;   5.524 ;   0.919  ; RR ; IC   ; 1      ; FF_X28_Y9_N11    ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|stream_rem[8]|clk                                                        ;
+;   6.020 ;   0.496  ; RR ; CELL ; 1      ; FF_X28_Y9_N11    ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|stream_rem[8] ;
+;   6.457 ;   0.437  ;    ;      ;        ;                  ; clock pessimism removed                                                                                                 ;
+; 6.387   ; -0.070   ;    ;      ;        ;                  ; clock uncertainty                                                                                                       ;
+; 6.401   ; 0.014    ;    ; uTsu ; 1      ; FF_X28_Y9_N11    ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|stream_rem[8] ;
++---------+----------+----+------+--------+------------------+-------------------------------------------------------------------------------------------------------------------------+
+
+
+Path #4: Setup slack is -0.547 (VIOLATED)
+===============================================================================
++-----------------------------------------------------------------------------------------------------------------------------------------------+
+; Path Summary                                                                                                                                  ;
++--------------------+--------------------------------------------------------------------------------------------------------------------------+
+; Property           ; Value                                                                                                                    ;
++--------------------+--------------------------------------------------------------------------------------------------------------------------+
+; From Node          ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|rd_mode        ;
+; To Node            ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|stream_rem[11] ;
+; Launch Clock       ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[2]                              ;
+; Latch Clock        ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[2]                              ;
+; Data Arrival Time  ; 6.948                                                                                                                    ;
+; Data Required Time ; 6.401                                                                                                                    ;
+; Slack              ; -0.547 (VIOLATED)                                                                                                        ;
++--------------------+--------------------------------------------------------------------------------------------------------------------------+
+
++--------------------------------------------------------------------------------------+
+; Statistics                                                                           ;
++------------------------+--------+-------+-------------+------------+--------+--------+
+; Property               ; Value  ; Count ; Total Delay ; % of Total ; Min    ; Max    ;
++------------------------+--------+-------+-------------+------------+--------+--------+
+; Setup Relationship     ; 5.988  ;       ;             ;            ;        ;        ;
+; Clock Skew             ; -0.070 ;       ;             ;            ;        ;        ;
+; Data Delay             ; 6.409  ;       ;             ;            ;        ;        ;
+; Number of Logic Levels ;        ; 5     ;             ;            ;        ;        ;
+; Physical Delays        ;        ;       ;             ;            ;        ;        ;
+;  Arrival Path          ;        ;       ;             ;            ;        ;        ;
+;   Clock                ;        ;       ;             ;            ;        ;        ;
+;    IC                  ;        ; 4     ; 6.538       ; 82         ; 0.000  ; 2.838  ;
+;    Cell                ;        ; 4     ; 1.400       ; 18         ; 0.000  ; 0.867  ;
+;    PLL Compensation    ;        ; 1     ; -7.399      ; 0          ; -7.399 ; -7.399 ;
+;   Data                 ;        ;       ;             ;            ;        ;        ;
+;    IC                  ;        ; 6     ; 4.248       ; 66         ; 0.223  ; 0.970  ;
+;    Cell                ;        ; 7     ; 1.942       ; 30         ; 0.000  ; 0.464  ;
+;    uTco                ;        ; 1     ; 0.219       ; 3          ; 0.219  ; 0.219  ;
+;  Required Path         ;        ;       ;             ;            ;        ;        ;
+;   Clock                ;        ;       ;             ;            ;        ;        ;
+;    IC                  ;        ; 4     ; 6.275       ; 82         ; 0.000  ; 2.724  ;
+;    Cell                ;        ; 4     ; 1.363       ; 18         ; 0.000  ; 0.867  ;
+;    PLL Compensation    ;        ; 1     ; -7.606      ; 0          ; -7.606 ; -7.606 ;
++------------------------+--------+-------+-------------+------------+--------+--------+
+Note: Negative delays are omitted from totals when calculating percentages
+
++------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+; Data Arrival Path                                                                                                                                                                        ;
++----------+----------+----+------+--------+--------------------+--------------------------------------------------------------------------------------------------------------------------+
+; Total    ; Incr     ; RF ; Type ; Fanout ; Location           ; Element                                                                                                                  ;
++----------+----------+----+------+--------+--------------------+--------------------------------------------------------------------------------------------------------------------------+
+; 0.000    ; 0.000    ;    ;      ;        ;                    ; launch edge time                                                                                                         ;
+; 0.539    ; 0.539    ;    ;      ;        ;                    ; clock path                                                                                                               ;
+;   0.000  ;   0.000  ;    ;      ;        ;                    ; source latency                                                                                                           ;
+;   0.000  ;   0.000  ;    ;      ; 1      ; PIN_H6             ; CLK                                                                                                                      ;
+;   0.000  ;   0.000  ; RR ; IC   ; 1      ; IOIBUF_X0_Y7_N22   ; CLK~input|i                                                                                                              ;
+;   0.867  ;   0.867  ; RR ; CELL ; 1      ; IOIBUF_X0_Y7_N22   ; CLK~input|o                                                                                                              ;
+;   3.705  ;   2.838  ; RR ; IC   ; 1      ; PLL_1              ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|inclk[0]                            ;
+;   -3.694 ;   -7.399 ; RR ; COMP ; 5      ; PLL_1              ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|observablevcoout                    ;
+;   -3.694 ;   0.000  ; RR ; CELL ; 1      ; PLL_1              ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[2]                              ;
+;   -0.952 ;   2.742  ; RR ; IC   ; 1      ; CLKCTRL_G2         ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|wire_pll1_clk[2]~clkctrl|inclk[0]        ;
+;   -0.952 ;   0.000  ; RR ; CELL ; 862    ; CLKCTRL_G2         ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|wire_pll1_clk[2]~clkctrl|outclk          ;
+;   0.006  ;   0.958  ; RR ; IC   ; 1      ; FF_X28_Y9_N3       ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|rd_mode|clk                                                               ;
+;   0.539  ;   0.533  ; RR ; CELL ; 1      ; FF_X28_Y9_N3       ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|rd_mode        ;
+; 6.948    ; 6.409    ;    ;      ;        ;                    ; data path                                                                                                                ;
+;   0.758  ;   0.219  ;    ; uTco ; 1      ; FF_X28_Y9_N3       ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|rd_mode        ;
+;   0.758  ;   0.000  ; FF ; CELL ; 26     ; FF_X28_Y9_N3       ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|rd_mode|q                                                                 ;
+;   1.159  ;   0.401  ; FF ; IC   ; 1      ; LCCOMB_X28_Y9_N6   ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|rd_pend2~4|datab                                                          ;
+;   1.623  ;   0.464  ; FR ; CELL ; 40     ; LCCOMB_X28_Y9_N6   ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|rd_pend2~4|combout                                                        ;
+;   2.538  ;   0.915  ; RR ; IC   ; 1      ; LCCOMB_X28_Y13_N24 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|stream_rem[7]~6|datad                                                     ;
+;   2.735  ;   0.197  ; RR ; CELL ; 3      ; LCCOMB_X28_Y13_N24 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|stream_rem[7]~6|combout                                                   ;
+;   3.585  ;   0.850  ; RR ; IC   ; 1      ; LCCOMB_X28_Y9_N16  ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|LessThan10~7_RESYN290|datad                                               ;
+;   3.782  ;   0.197  ; RR ; CELL ; 6      ; LCCOMB_X28_Y9_N16  ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|LessThan10~7_RESYN290|combout                                             ;
+;   4.671  ;   0.889  ; RR ; IC   ; 1      ; LCCOMB_X28_Y13_N18 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|LessThan10~7|datad                                                        ;
+;   4.868  ;   0.197  ; RR ; CELL ; 14     ; LCCOMB_X28_Y13_N18 ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|LessThan10~7|combout                                                      ;
+;   5.838  ;   0.970  ; RR ; IC   ; 1      ; LCCOMB_X28_Y9_N30  ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|stream_rem~40|datab                                                       ;
+;   6.271  ;   0.433  ; RR ; CELL ; 1      ; LCCOMB_X28_Y9_N30  ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|stream_rem~40|combout                                                     ;
+;   6.494  ;   0.223  ; RR ; IC   ; 1      ; FF_X28_Y9_N13      ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|stream_rem[11]|asdata                                                     ;
+;   6.948  ;   0.454  ; RR ; CELL ; 1      ; FF_X28_Y9_N13      ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|stream_rem[11] ;
++----------+----------+----+------+--------+--------------------+--------------------------------------------------------------------------------------------------------------------------+
+
++---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+; Data Required Path                                                                                                                                                                    ;
++---------+----------+----+------+--------+------------------+--------------------------------------------------------------------------------------------------------------------------+
+; Total   ; Incr     ; RF ; Type ; Fanout ; Location         ; Element                                                                                                                  ;
++---------+----------+----+------+--------+------------------+--------------------------------------------------------------------------------------------------------------------------+
+; 5.988   ; 5.988    ;    ;      ;        ;                  ; latch edge time                                                                                                          ;
+; 6.457   ; 0.469    ;    ;      ;        ;                  ; clock path                                                                                                               ;
+;   5.988 ;   0.000  ;    ;      ;        ;                  ; source latency                                                                                                           ;
+;   5.988 ;   0.000  ;    ;      ; 1      ; PIN_H6           ; CLK                                                                                                                      ;
+;   5.988 ;   0.000  ; RR ; IC   ; 1      ; IOIBUF_X0_Y7_N22 ; CLK~input|i                                                                                                              ;
+;   6.855 ;   0.867  ; RR ; CELL ; 1      ; IOIBUF_X0_Y7_N22 ; CLK~input|o                                                                                                              ;
+;   9.579 ;   2.724  ; RR ; IC   ; 1      ; PLL_1            ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|inclk[0]                            ;
+;   1.973 ;   -7.606 ; RR ; COMP ; 5      ; PLL_1            ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|observablevcoout                    ;
+;   1.973 ;   0.000  ; RR ; CELL ; 1      ; PLL_1            ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[2]                              ;
+;   4.605 ;   2.632  ; RR ; IC   ; 1      ; CLKCTRL_G2       ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|wire_pll1_clk[2]~clkctrl|inclk[0]        ;
+;   4.605 ;   0.000  ; RR ; CELL ; 862    ; CLKCTRL_G2       ; core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|wire_pll1_clk[2]~clkctrl|outclk          ;
+;   5.524 ;   0.919  ; RR ; IC   ; 1      ; FF_X28_Y9_N13    ; core|SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM1|stream_rem[11]|clk                                                        ;
+;   6.020 ;   0.496  ; RR ; CELL ; 1      ; FF_X28_Y9_N13    ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|stream_rem[11] ;
+;   6.457 ;   0.437  ;    ;      ;        ;                  ; clock pessimism removed                                                                                                  ;
+; 6.387   ; -0.070   ;    ;      ;        ;                  ; clock uncertainty                                                                                                        ;
+; 6.401   ; 0.014    ;    ; uTsu ; 1      ; FF_X28_Y9_N13    ; OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1|stream_rem[11] ;
++---------+----------+----+------+--------+------------------+--------------------------------------------------------------------------------------------------------------------------+
+
+
