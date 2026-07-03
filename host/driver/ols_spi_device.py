@@ -842,7 +842,7 @@ class OLSDeviceSPI:
         batch_blocks = 128
         codec = self._readback_codec()
         use_compress = codec != 'raw'
-        batched_compressed = codec == 'delta'
+        batched_compressed = codec in ('delta', 'rle')
         while remaining > 0:
             # Plan a batch of overlapping block addresses (each non-zero block
             # requests one sample early and nets 511 samples after the drop).
