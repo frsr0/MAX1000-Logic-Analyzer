@@ -54,6 +54,14 @@ port (
     Analog_Frame_Len  : in natural range 1 to 14 := 1;
     Analog_Stream_Mode : in std_logic := '0';
     Analog_Frame_Toggle : in std_logic := '0';
+    -- Parallel bit-packing capture path. When Packed_Mode is set, the packed
+    -- 16-bit valid/ready stream (from mso_capture in the top, already in the
+    -- FAST_CLK domain) drives the write FIFO instead of the Analog_Frame/sample
+    -- writer. Packed_Ready backpressures the producer (FIFO not full).
+    Packed_Mode  : in  std_logic := '0';
+    Packed_Data  : in  std_logic_vector(15 downto 0) := (others => '0');
+    Packed_Valid : in  std_logic := '0';
+    Packed_Ready : out std_logic := '0';
     -- Single-shot block readout via a response FIFO. The OLS side (CLK domain)
     -- requests a stream and drains the FIFO; the FLA walks the addresses on pclk
     -- and pushes each valid sample in. The dcfifo is a proper CDC between the
@@ -252,6 +260,14 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal fifo_wdata : std_logic_vector(AFIFO_WIDTH-1 downto 0) := (others => '0');
   signal fifo_wr    : std_logic := '0';
   signal fifo_wrfull : std_logic := '0';
+  -- Parallel packed-mode write mux: the afifo is fed from afifo_wdata/afifo_wr,
+  -- which select the packed stream when packed_mode_f is set, else the native
+  -- sample/analog writer's fifo_wdata/fifo_wr (so packed_mode='0' is bit-for-bit
+  -- the original behaviour). packed_mode_f is Packed_Mode 2FF-synced to FAST_CLK.
+  signal afifo_wdata : std_logic_vector(AFIFO_WIDTH-1 downto 0) := (others => '0');
+  signal afifo_wr    : std_logic := '0';
+  signal packed_mode_meta : std_logic := '0';
+  signal packed_mode_f    : std_logic := '0';
   signal fifo_wrusedw : std_logic_vector(AFIFO_WIDTHU-1 downto 0) := (others => '0');
   signal fifo_wralmost_full : std_logic := '0';
   signal fifo_aclr  : std_logic := '0';
@@ -1142,6 +1158,24 @@ begin
   -- saw as the mixed-frame 2-sample preamble. read-at-pop timing is unchanged,
   -- so this does not perturb the (phase-sensitive) SDRAM readout the way an
   -- extra pump pipeline stage did.
+  -- 2-FF synchronise the (CLK-domain) mode select into FAST_CLK.
+  process(FAST_CLK)
+  begin
+    if rising_edge(FAST_CLK) then
+      packed_mode_meta <= Packed_Mode;
+      packed_mode_f    <= packed_mode_meta;
+    end if;
+  end process;
+
+  -- Write-port source mux. In packed mode the packed producer writes only while
+  -- capture is running and the FIFO can accept; Packed_Ready mirrors that so the
+  -- producer never drops a word. packed_mode_f='0' passes the native writer
+  -- through unchanged.
+  afifo_wdata  <= Packed_Data when packed_mode_f = '1' else fifo_wdata;
+  afifo_wr     <= (Packed_Valid and run_f_level and not fifo_wrfull)
+                  when packed_mode_f = '1' else fifo_wr;
+  Packed_Ready <= (not fifo_wrfull) and packed_mode_f and run_f_level;
+
   afifo : dcfifo
     generic map (
       lpm_width       => AFIFO_WIDTH,
@@ -1155,8 +1189,8 @@ begin
     )
     port map (
       aclr     => fifo_aclr,
-      data     => fifo_wdata,
-      wrreq    => fifo_wr,
+      data     => afifo_wdata,
+      wrreq    => afifo_wr,
       wrclk    => FAST_CLK,
       rdreq    => fifo_rd,
       rdclk    => pclk,

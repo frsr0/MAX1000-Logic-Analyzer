@@ -53,6 +53,10 @@ PORT (
       Analog_Only     : OUT STD_LOGIC := '0';
       Analog_Profile  : OUT STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
       Analog_Channel  : OUT NATURAL range 0 to 31 := 1;
+      -- Parallel bit-packing capture mode select (REG_FLAGS bit 20). When set,
+      -- the mso_capture front end drives the SDRAM write FIFO instead of the
+      -- 128-bit Analog_Frame path.
+      Packed_Mode     : OUT STD_LOGIC := '0';
        Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
        Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
        Pin_Map_Write   : OUT STD_LOGIC := '0';
@@ -103,6 +107,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL analog_only_i    : STD_LOGIC := '0';
   SIGNAL analog_profile_i : STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
   SIGNAL analog_channel_i : NATURAL range 0 to 31 := 1;
+  SIGNAL packed_mode_i    : STD_LOGIC := '0';
   SIGNAL SPI_RX_Valid     : STD_LOGIC := '0';
   SIGNAL SPI_RX_Data      : STD_LOGIC_VECTOR (8-1 DOWNTO 0) := (others => '0');
   -- SPI mode only: directly use SPI signals (no UART muxing)
@@ -241,6 +246,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL raw_blk_req_fire     : STD_LOGIC := '0';
   SIGNAL block_fifo_rdreq     : STD_LOGIC := '0';
   SIGNAL raw_fifo_rdreq       : STD_LOGIC := '0';
+  SIGNAL raw_fifo_drain_active : STD_LOGIC := '0';
   SIGNAL raw_comp_fifo_rdreq  : STD_LOGIC := '0';
   SIGNAL raw_comp_state       : NATURAL range 0 to 6 := 0;
   SIGNAL raw_comp_samples_read : NATURAL range 0 to 16383 := 0;
@@ -465,6 +471,7 @@ BEGIN
           narrow_enable_i <= disp_reg_wdata(13);
           narrow_channel_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(17 downto 14)));
           compress_mode_i <= disp_reg_wdata(19 downto 18);
+          packed_mode_i <= disp_reg_wdata(20);
         WHEN REG_FAST_MODE =>
           fast_mode_i <= disp_reg_wdata(0);
         WHEN REG_CONT_MODE =>
@@ -980,6 +987,7 @@ BEGIN
   Analog_Only <= analog_only_i;
   Analog_Profile <= analog_profile_i;
   Analog_Channel <= analog_channel_i;
+  Packed_Mode <= packed_mode_i;
   Buffer_Ack      <= (others => '0');  -- FLA frees its own continuous buffers
   Armed          <= Run_OLS;
   Debug_Ch0_Enable <= debug_ch0_enable_i;
@@ -1144,8 +1152,9 @@ BEGIN
         raw_start_pending := false;
         raw_words_rem := 0;
       end if;
-
-      -- Clear streaming mode on CS rise (host drops SPI chip select)
+      -- Clear streaming mode on CS rise (host drops SPI chip select).
+      -- Also flag the residual Rd_Fifo entries so the drain logic below
+      -- flushes them before the next command reuses the FIFO read path.
       if spi_cs_rise = '1' then
         raw_stream_tx_sel <= '0';
         raw_stream_req_active <= '0';
@@ -1155,6 +1164,7 @@ BEGIN
         if st = RAW_STREAM then
           st := IDLE;
         end if;
+        raw_fifo_drain_active <= '1';
       end if;
 
       if (raw_start_pending or st = RAW_STREAM) and raw_stream_comp_mode = '0' then
@@ -1178,6 +1188,20 @@ BEGIN
         raw_have_word := false;
         if raw_stream_comp_mode = '0' then
           raw_byte_hi_next := false;
+        end if;
+      end if;
+
+      -- Drain residual Rd_Fifo entries left from a raw-stream session.
+      -- The raw stream ends on CS rise (handled above); by that time the FLA
+      -- has finished streaming every requested sample into the dcfifo, but
+      -- straggler words that were enqueued but never read by the raw-stream
+      -- byte shifter remain.  Without this drain, the next CMD_READ_CAPTURE
+      -- reads stale FIFO data first, corrupting the block payload.
+      if raw_fifo_drain_active = '1' then
+        if Rd_Fifo_Empty = '0' then
+          raw_fifo_rdreq <= '1';
+        else
+          raw_fifo_drain_active <= '0';
         end if;
       end if;
 

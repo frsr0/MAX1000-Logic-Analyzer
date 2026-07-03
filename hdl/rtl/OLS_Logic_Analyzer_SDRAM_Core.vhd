@@ -65,6 +65,13 @@ PORT (
     Analog_Frame_Len  : IN NATURAL range 1 to 14 := 1;
     Analog_Stream_Mode : IN STD_LOGIC := '0';
     Analog_Frame_Toggle : IN STD_LOGIC := '0';
+    -- Parallel bit-packing capture: Packed_Mode out (host REG_FLAGS bit 20, for
+    -- ADC channel enable in the top), the packed 16-bit stream in from the
+    -- top's mso_capture, and Packed_Ready backpressure out.
+    Packed_Mode   : OUT STD_LOGIC := '0';
+    Packed_Data   : IN  STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+    Packed_Valid  : IN  STD_LOGIC := '0';
+    Packed_Ready  : OUT STD_LOGIC := '0';
     Pin_Map_Write  : OUT STD_LOGIC := '0';
     Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
     Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
@@ -140,6 +147,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL fla_status          : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL analog_enable_i     : STD_LOGIC := '0';
   SIGNAL analog_only_i       : STD_LOGIC := '0';
+  SIGNAL packed_mode_i       : STD_LOGIC := '0';
   SIGNAL analog_profile_i    : STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
   SIGNAL analog_channel_i    : NATURAL range 0 to 31 := 1;
   SIGNAL gen_clear_i         : STD_LOGIC := '0';
@@ -200,6 +208,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
       Analog_Only     : OUT STD_LOGIC := '0';
       Analog_Profile  : OUT STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
       Analog_Channel  : OUT NATURAL range 0 to 31 := 1;
+      Packed_Mode     : OUT STD_LOGIC := '0';
       Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
       Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
       Pin_Map_Write   : OUT STD_LOGIC := '0';
@@ -280,6 +289,10 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
     Analog_Frame_Len  : IN NATURAL range 1 to 14 := 1;
     Analog_Stream_Mode : IN STD_LOGIC := '0';
     Analog_Frame_Toggle : IN STD_LOGIC := '0';
+     Packed_Mode  : IN  STD_LOGIC := '0';
+     Packed_Data  : IN  STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+     Packed_Valid : IN  STD_LOGIC := '0';
+     Packed_Ready : OUT STD_LOGIC := '0';
      Blk_Rd_Req_Tog : IN  STD_LOGIC := '0';
      Blk_Rd_Base    : IN  NATURAL range 0 to Max_Samples := 0;
      Blk_Rd_Count   : IN  NATURAL range 0 to Max_Samples := 0;
@@ -330,6 +343,7 @@ BEGIN
   Narrow_Enable  <= narrow_enable_i;
   Narrow_Channel <= narrow_channel_i;
   Analog_Enable <= analog_enable_i;
+  Packed_Mode <= packed_mode_i;
   Analog_Only <= analog_only_i;
   Analog_Profile <= analog_profile_i;
   Analog_Channel <= analog_channel_i;
@@ -370,6 +384,7 @@ BEGIN
     Analog_Only    => analog_only_i,
     Analog_Profile => analog_profile_i,
     Analog_Channel => analog_channel_i,
+    Packed_Mode    => packed_mode_i,
     Continuous_Mode => continuous_mode_i,
     Buffer_Full     => buffer_full_i,
     Buffer_Ack      => buffer_ack_i,
@@ -422,6 +437,10 @@ BEGIN
     Analog_Frame_Len  => Analog_Frame_Len,
     Analog_Stream_Mode => Analog_Stream_Mode,
     Analog_Frame_Toggle => Analog_Frame_Toggle,
+    Packed_Mode  => packed_mode_i,
+    Packed_Data  => Packed_Data,
+    Packed_Valid => Packed_Valid,
+    Packed_Ready => Packed_Ready,
     Blk_Rd_Req_Tog    => blk_rd_req_tog_i,
     Blk_Rd_Base       => blk_rd_base_i,
     Blk_Rd_Count      => blk_rd_count_i,

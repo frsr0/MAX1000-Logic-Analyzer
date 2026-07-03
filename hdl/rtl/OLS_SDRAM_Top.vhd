@@ -161,11 +161,20 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal analog_frame_data  : std_logic_vector(127 downto 0) := (others => '0');
   signal analog_frame_len   : natural range 1 to 5 := 1;
   signal adc0_result, adc1_result : std_logic_vector(11 downto 0) := (others => '0');
+  signal adc2_result, adc3_result : std_logic_vector(11 downto 0) := (others => '0');
   signal adc_start : std_logic := '0';
   signal adc0_valid, adc1_valid : std_logic := '0';
+  signal adc2_valid, adc3_valid : std_logic := '0';
   signal adc_frame_valid : std_logic := '0';
   signal adc0_start, adc1_start : std_logic := '0';
+  signal adc2_start, adc3_start : std_logic := '0';
   signal adc0_sel, adc1_sel : natural range 0 to 31 := 0;
+  signal adc2_sel, adc3_sel : natural range 0 to 31 := 0;
+  -- Parallel bit-packing capture (mso_capture) interconnect
+  signal packed_mode  : std_logic := '0';
+  signal packed_data  : std_logic_vector(15 downto 0) := (others => '0');
+  signal packed_valid : std_logic := '0';
+  signal packed_ready : std_logic := '0';
   signal adc_frame_toggle : std_logic := '0';
   signal adc_div   : natural range 0 to 255 := 0;
   signal adc_conv_clk   : std_logic := '0';  -- dedicated 12 MHz ADC conversion clock (PLL c3 in both profiles)
@@ -288,6 +297,10 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Analog_Frame_Len  : IN NATURAL range 1 to 14 := 1;
     Analog_Stream_Mode : IN STD_LOGIC := '0';
     Analog_Frame_Toggle : IN STD_LOGIC := '0';
+    Packed_Mode   : OUT STD_LOGIC := '0';
+    Packed_Data   : IN  STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+    Packed_Valid  : IN  STD_LOGIC := '0';
+    Packed_Ready  : OUT STD_LOGIC := '0';
     Pin_Map_Write  : OUT STD_LOGIC := '0';
     Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
     Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
@@ -321,7 +334,15 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     ch1_sel        : in  natural range 0 to 31 := 1;
     ch1_start      : in  std_logic := '0';
     ch1_result     : out std_logic_vector(11 downto 0) := (others => '0');
-    ch1_valid      : out std_logic := '0'
+    ch1_valid      : out std_logic := '0';
+    ch2_sel        : in  natural range 0 to 31 := 2;
+    ch2_start      : in  std_logic := '0';
+    ch2_result     : out std_logic_vector(11 downto 0) := (others => '0');
+    ch2_valid      : out std_logic := '0';
+    ch3_sel        : in  natural range 0 to 31 := 3;
+    ch3_start      : in  std_logic := '0';
+    ch3_result     : out std_logic_vector(11 downto 0) := (others => '0');
+    ch3_valid      : out std_logic := '0'
   );
   END COMPONENT;
 
@@ -638,12 +659,18 @@ BEGIN
   -- ADC profiles selected by REG_FLAGS:
   -- mixed mode: 16 digital + 2 ADC channels, high-speed analog: one selected
   -- mux channel, dual analog-only: AIN3,AIN1.
-  process(analog_enable, analog_only, analog_profile, analog_channel, adc_start)
+  process(analog_enable, analog_only, analog_profile, analog_channel, adc_start, packed_mode)
   begin
-    adc0_sel <= 1;  adc1_sel <= 2;
+    adc0_sel <= 1;  adc1_sel <= 2;  adc2_sel <= 3;  adc3_sel <= 4;
     adc0_start <= adc_start; adc1_start <= adc_start;
+    -- Channels 2/3 only convert in packed mode (they extend the round-robin to
+    -- the 4 analog inputs mso_capture packs). Left off otherwise so the legacy
+    -- analog path is unchanged.
+    adc2_start <= '0'; adc3_start <= '0';
 
-    if analog_enable = '1' then
+    if packed_mode = '1' then
+      adc2_start <= adc_start; adc3_start <= adc_start;
+    elsif analog_enable = '1' then
       if analog_only = '1' and analog_profile /= "01" then
         adc0_sel <= analog_channel;
         adc1_start <= '0';
@@ -713,7 +740,34 @@ BEGIN
       ch1_sel => adc1_sel,
       ch1_start => adc1_start,
       ch1_result => adc1_result,
-      ch1_valid => adc1_valid
+      ch1_valid => adc1_valid,
+      ch2_sel => adc2_sel,
+      ch2_start => adc2_start,
+      ch2_result => adc2_result,
+      ch2_valid => adc2_valid,
+      ch3_sel => adc3_sel,
+      ch3_start => adc3_start,
+      ch3_result => adc3_result,
+      ch3_valid => adc3_valid
+    );
+
+  -- Parallel bit-packing capture front end. Runs whenever a capture is armed;
+  -- its 16-bit stream drives the SDRAM write FIFO only when Packed_Mode is set
+  -- (selected inside the core). Digital source is the fast-sampled channels.
+  MSO_CAP : entity work.mso_capture
+    port map (
+      fast_clk      => fast_clk,
+      adc_clk       => adc_conv_clk,
+      rst           => not armed_i,
+      adc_ch0       => adc0_result, adc_ch0_valid => adc0_valid,
+      adc_ch1       => adc1_result, adc_ch1_valid => adc1_valid,
+      adc_ch2       => adc2_result, adc_ch2_valid => adc2_valid,
+      adc_ch3       => adc3_result, adc_ch3_valid => adc3_valid,
+      digital_in    => capture_data_fast,
+      out_data      => packed_data,
+      out_valid     => packed_valid,
+      out_ready     => packed_ready,
+      dig_overflow  => open
     );
 
   SDRAM_Analyzer : OLS_Logic_Analyzer
@@ -777,6 +831,10 @@ BEGIN
     Analog_Frame_Len  => analog_frame_len,
     Analog_Stream_Mode => analog_stream_mode,
     Analog_Frame_Toggle => adc_frame_toggle,
+    Packed_Mode   => packed_mode,
+    Packed_Data   => packed_data,
+    Packed_Valid  => packed_valid,
+    Packed_Ready  => packed_ready,
     Pin_Map_Write  => pin_map_write,
     Pin_Map_Channel => pin_map_channel,
     Pin_Map_Pin     => pin_map_pin,
