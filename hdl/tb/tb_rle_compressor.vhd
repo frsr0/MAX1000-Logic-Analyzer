@@ -25,8 +25,6 @@ architecture sim of tb_rle_compressor is
   signal comp_valid : std_logic;
   signal busy : std_logic;
   signal in_ready : std_logic;
-  signal dbg_cnt : std_logic_vector(15 downto 0);
-  signal dbg_have : std_logic;
 
   signal col_rst : std_logic := '0';
   signal col_mem : out_arr_t := (others => (others => '0'));
@@ -38,8 +36,7 @@ begin
     port map (clk => clk, rst => rst, sample_in => sample_in,
               sample_valid => sample_valid, compression_enable => compression_enable,
               flush => flush, comp_data => comp_data, comp_valid => comp_valid,
-              busy => busy, in_ready => in_ready, dbg_cnt => dbg_cnt,
-              dbg_have => dbg_have);
+              busy => busy, in_ready => in_ready);
 
   clk_proc : process
   begin
@@ -107,8 +104,7 @@ begin
                  " sv=" & std_logic'image(sample_valid) &
                  " ready=" & std_logic'image(in_ready) &
                  " flush=" & std_logic'image(flush) &
-                 " have=" & std_logic'image(dbg_have) &
-                 " cnt=" & integer'image(to_integer(unsigned(dbg_cnt))) &
+                 " busy=" & std_logic'image(busy) &
                  " cvalid=" & std_logic'image(comp_valid) &
                  " cdata=" & integer'image(to_integer(unsigned(comp_data)));
         end if;

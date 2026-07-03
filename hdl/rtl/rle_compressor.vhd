@@ -38,9 +38,7 @@ entity rle_compressor is
     comp_data          : out std_logic_vector(15 downto 0) := (others => '0');
     comp_valid         : out std_logic := '0';
     busy               : out std_logic := '0';
-    in_ready           : out std_logic := '1';
-    dbg_cnt            : out std_logic_vector(15 downto 0) := (others => '0');
-    dbg_have           : out std_logic := '0'
+    in_ready           : out std_logic := '1'
   );
 end rle_compressor;
 
@@ -61,8 +59,6 @@ begin
           else '0';
   -- Cannot accept input during the two emit cycles.
   in_ready <= '0' when state = EMIT_CNT or state = EMIT_VAL else '1';
-  dbg_cnt <= std_logic_vector(cnt);
-  dbg_have <= have;
 
   process(clk)
   begin
