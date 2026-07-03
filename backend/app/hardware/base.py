@@ -77,6 +77,13 @@ class HardwareDevice(ABC):
                 "analog_all_continuous", "mixed", "mixed_continuous")) and not caps.supports_analog:
             findings.append({"level": "error",
                              "message": "Analog capture is not available on this device"})
+        if settings.mode in (
+                "mixed", "mixed_continuous", "analog", "analog_fast",
+                "analog_all", "analog_continuous", "analog_all_continuous"
+        ) and settings.readback_compression != "raw":
+            findings.append({"level": "info",
+                             "message": "Delta/RLE readback compression is digital-only; "
+                                        "mixed and analog captures use raw readback"})
         trig = settings.trigger
         cap_map = {t.type: t.execution for t in caps.triggers}
         if trig.type != "none":

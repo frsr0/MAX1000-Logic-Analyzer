@@ -219,6 +219,7 @@ $qsfLines = @(
     'set_global_assignment -name VHDL_FILE ../rtl/SDRAM_Controller_Custom.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/SPI_Slave.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/capture_compressor.vhd',
+    'set_global_assignment -name VHDL_FILE ../rtl/rle_compressor.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/ADC_Controller.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/Protocol_Trigger.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/Signal_Gen.vhd',

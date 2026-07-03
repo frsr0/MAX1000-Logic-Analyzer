@@ -30,6 +30,7 @@ package spi_protocol_pkg is
   constant CMD_START_STREAM     : cmd_t := x"13";
   constant CMD_READ_STREAM_BLOCK : cmd_t := x"14";
   constant CMD_ACK_CAPTURE_DONE : cmd_t := x"15";
+  constant CMD_START_RAW_STREAM : cmd_t := x"16";
   constant CMD_WRITE_REG        : cmd_t := x"20";
   constant CMD_READ_REG         : cmd_t := x"21";
   constant CMD_GEN_CONFIG       : cmd_t := x"30";

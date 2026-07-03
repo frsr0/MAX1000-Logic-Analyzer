@@ -29,6 +29,7 @@ const NO_DIGITAL: number[] = [];
 type CaptureMode = 'single' | 'continuous' | 'rolling' | 'digital_narrow' | 'triggered' | 'analog'
   | 'analog_fast' | 'analog_all' | 'mixed' | 'analog_continuous'
   | 'analog_all_continuous' | 'mixed_continuous';
+type ReadbackCompression = 'raw' | 'delta' | 'rle';
 
 const ANALOG_MODES: CaptureMode[] = [
   'analog', 'analog_fast', 'analog_all', 'mixed',
@@ -221,6 +222,9 @@ export function CaptureControls() {
   );
   const activeModeLabel = labelForMode(captureSettings.mode as CaptureMode);
   const activeWindowSeconds = captureSettings.num_samples / Math.max(1, captureSettings.sample_rate);
+  const digitalCompressionMode = !analogMode
+    && captureSettings.mode !== 'mixed'
+    && captureSettings.mode !== 'mixed_continuous';
 
   useEffect(() => {
     if (isMock) api.mockScenarios().then((r) => setScenarios(r.scenarios)).catch(() => {});
@@ -271,6 +275,11 @@ export function CaptureControls() {
         : captureSettings.enabled_digital?.length
           ? captureSettings.enabled_digital
           : ALL_DIGITAL,
+      readback_compression: (!analogMode
+        && captureSettings.mode !== 'mixed'
+        && captureSettings.mode !== 'mixed_continuous')
+        ? captureSettings.readback_compression
+        : 'raw',
     });
   }, [
     analogMode,
@@ -279,6 +288,7 @@ export function CaptureControls() {
     captureSettings.enabled_digital,
     captureSettings.mode,
     captureSettings.num_samples,
+    captureSettings.readback_compression,
     captureSettings.sample_rate,
     depthOptions,
     rateOptions,
@@ -311,6 +321,9 @@ export function CaptureControls() {
       enabled_digital: isAnalogOnly ? NO_DIGITAL : isNarrow ? [0] : ALL_DIGITAL,
       sample_rate: maxRate,
       num_samples: numSamples,
+      readback_compression: sourceForMode(mode) === 'digital' || mode === 'digital_narrow'
+        ? captureSettings.readback_compression
+        : 'raw',
     });
   };
 
@@ -445,6 +458,33 @@ export function CaptureControls() {
           </select>
         </label>
       )}
+      <div className="field">
+        <span>Digital readback</span>
+        {digitalCompressionMode ? (
+          <div className="seg-toggle" role="group" aria-label="Digital readback compression">
+            {(['raw', 'delta', 'rle'] as ReadbackCompression[]).map((codec) => (
+              <button
+                key={codec}
+                type="button"
+                className={`seg ${captureSettings.readback_compression === codec ? 'active' : ''}`}
+                onClick={() => setCaptureSettings({ readback_compression: codec })}
+                disabled={!controlMode}
+                title={
+                  codec === 'raw'
+                    ? 'No compression'
+                    : codec === 'delta'
+                      ? 'Best for small sample-to-sample changes'
+                      : 'Best for long repeated values'
+                }
+              >
+                {codec.toUpperCase()}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <span className="mode-detail">Mixed and analog captures use raw readback.</span>
+        )}
+      </div>
       <div className="capture-summary">
         <span>{activeModeLabel}</span>
         <span>{formatRate(captureSettings.sample_rate)}</span>

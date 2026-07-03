@@ -231,6 +231,11 @@ class ExistingHostAdapter(HardwareDevice):
             })
         return findings
 
+    def _digital_readback_compression(self, settings: CaptureSettings) -> str:
+        if settings.mode in ("single", "continuous", "rolling", "digital_narrow", "triggered"):
+            return settings.readback_compression
+        return "raw"
+
     def capture(self, settings: CaptureSettings,
                 progress: Optional[ProgressCb] = None,
                 stop_evt: Optional[threading.Event] = None) -> CaptureResult:
@@ -238,6 +243,8 @@ class ExistingHostAdapter(HardwareDevice):
             if self._dev is None:
                 raise HardwareError("Device not connected")
             dev = self._dev
+            dev.set_readback_compression(
+                self._digital_readback_compression(settings))
             rate = float(settings.sample_rate)
             nsamp = int(settings.num_samples)
             trigger = self._build_trigger(settings)

@@ -13,7 +13,8 @@ from driver.spi_protocol import (
     CMD_ABORT_CAPTURE, CMD_ACK_CAPTURE_DONE, CMD_START_STREAM,
     CMD_GEN_START, CMD_GEN_LOAD, CMD_GEN_CAPTURE, CMD_GEN_STATUS,
     CMD_GET_METADATA,
-    REG_FLAGS_COMPRESS,
+    REG_FLAGS_COMPRESS, REG_FLAGS_COMPRESS_DELTA,
+    REG_FLAGS_COMPRESS_MASK, REG_FLAGS_COMPRESS_RLE,
     REG_DIVIDER, REG_SAMPLE_COUNT, REG_DELAY_COUNT,
     REG_TRIGGER_MASK, REG_TRIGGER_VALUE, REG_FLAGS,
     REG_FAST_MODE, REG_CONT_MODE,
@@ -330,6 +331,24 @@ def decompress_delta_stream(data: bytes) -> bytes:
     return bytes(out)
 
 
+def decompress_rle_stream(data: bytes) -> bytes:
+    """Decompress a stream of (count, value) uint16 pairs."""
+    if not data:
+        return b""
+    if len(data) % 4 != 0:
+        return b""
+    words = np.frombuffer(data, dtype="<u2")
+    out = bytearray()
+    for i in range(0, len(words), 2):
+        count = int(words[i])
+        if count <= 0:
+            return b""
+        out.extend(struct.pack("<H", int(words[i + 1])) * count)
+        if len(out) > 1024:
+            return b""
+    return bytes(out)
+
+
 def compress_mixed_group(data: bytes) -> bytes:
     """Compress 16 mixed frames losslessly into one variable-length group."""
     frame_stride = analog_frame_stride(MODE_MIXED)
@@ -461,24 +480,38 @@ class OLSDeviceSPI:
         self._pending_debug_freq = None
         self._pending_debug_duty = None
         self.compress_readback_enabled = False
+        self.readback_compression_mode = 'raw'
         # Software digital glitch / hysteresis filter (applied to captured
         # digital samples on the host; the FPGA captures raw pins).
         self.glitch_enable = False
         self.glitch_threshold = 3
 
     def set_compression_enabled(self, enable: bool):
-        self.compress_readback_enabled = bool(enable)
+        return self.set_readback_compression('delta' if enable else 'raw')
+
+    def set_readback_compression(self, mode: str):
+        mode = str(mode or 'raw').lower()
+        if mode not in ('raw', 'delta', 'rle'):
+            raise ValueError(f"unsupported readback compression mode: {mode}")
+        self.readback_compression_mode = mode
+        self.compress_readback_enabled = mode != 'raw'
         cur = self.pkt.read_register(REG_FLAGS)
         if cur < 0:
             return False
-        if enable:
-            cur |= REG_FLAGS_COMPRESS
-        else:
-            cur &= ~REG_FLAGS_COMPRESS
+        cur &= ~REG_FLAGS_COMPRESS_MASK
+        if mode == 'delta':
+            cur |= REG_FLAGS_COMPRESS_DELTA
+        elif mode == 'rle':
+            cur |= REG_FLAGS_COMPRESS_RLE
         return self.pkt.write_register(REG_FLAGS, cur)
 
     def _can_compress_readback(self):
         return self.compress_readback_enabled and self.analog_mode in (MODE_DIGITAL, MODE_MIXED)
+
+    def _readback_codec(self):
+        if not self._can_compress_readback():
+            return 'raw'
+        return self.readback_compression_mode
 
     def _use_compressed_live_readback(self, *, use_continuous, payload_stride,
                                       gen_data, stride):
@@ -489,7 +522,7 @@ class OLSDeviceSPI:
             and self.analog_mode == MODE_DIGITAL
             and payload_stride is None
             and stride == 2
-            and self._can_compress_readback()
+            and self._readback_codec() != 'raw'
         )
 
     @property
@@ -724,8 +757,11 @@ class OLSDeviceSPI:
                               flags=0, fast_mode=None, continuous=False):
         """Write the full capture mode state before every arm."""
         mode_flags = (flags | self.analog_mode) & 0xFFFFFFFF
-        if self.compress_readback_enabled:
-            mode_flags |= REG_FLAGS_COMPRESS
+        mode_flags &= ~REG_FLAGS_COMPRESS_MASK
+        if self.readback_compression_mode == 'delta':
+            mode_flags |= REG_FLAGS_COMPRESS_DELTA
+        elif self.readback_compression_mode == 'rle':
+            mode_flags |= REG_FLAGS_COMPRESS_RLE
         if mode_flags & MODE_ANALOG_ONLY:
             mode_flags |= (self.analog_channel & 0x1F) << 8
         if continuous:
@@ -794,7 +830,9 @@ class OLSDeviceSPI:
         # curve knees here (256 is no faster). ~83 KB compressed / 163 KB raw
         # per transaction, well within the threaded RX drain's headroom.
         batch_blocks = 128
-        use_compress = self._can_compress_readback()
+        codec = self._readback_codec()
+        use_compress = codec != 'raw'
+        batched_compressed = codec == 'delta'
         while remaining > 0:
             # Plan a batch of overlapping block addresses (each non-zero block
             # requests one sample early and nets 511 samples after the drop).
@@ -816,23 +854,20 @@ class OLSDeviceSPI:
             blocks = None
             read_blocks = getattr(self.pkt, 'read_capture_blocks', None)
             if callable(read_blocks):
-                blocks = read_blocks(addrs, compressed=use_compress)
+                blocks = read_blocks(addrs, compressed=batched_compressed)
             if not isinstance(blocks, list):
                 # Transport without batching support (or test double):
                 # per-block packetized reads.
-                blocks = [self.pkt.read_capture_block(a, compressed=use_compress)
+                blocks = [self.pkt.read_capture_block(a, compressed=batched_compressed)
                           for a in addrs]
             if use_compress:
-                # Decompress each block; collect the ones the delta format
-                # can't represent losslessly (overflow keyframes -> a
-                # non-multiple-of-12 payload -> decompress returns empty) and
-                # re-read exactly those raw in ONE flag-cleared batch. The
-                # raw re-read MUST clear REG_FLAGS_COMPRESS: compression is a
-                # global FPGA register, so a per-block "raw" read while the
-                # flag is set silently returns a COMPRESSED payload that then
-                # gets mis-parsed as raw (the old fallback did this and
-                # corrupted every keyframe block).
-                decoded = [decompress_delta_stream(b) if b else b'' for b in blocks]
+                decode_block = (
+                    decompress_delta_stream if codec == 'delta'
+                    else decompress_rle_stream
+                )
+                # Decompress each block; any short/invalid decode is re-read
+                # raw with the FPGA compression flags cleared.
+                decoded = [decode_block(b) if b else b'' for b in blocks]
                 need_raw = [j for j, d in enumerate(decoded) if len(d) != 1024]
                 if need_raw:
                     raw_blocks = self._read_blocks_uncompressed(
@@ -864,15 +899,15 @@ class OLSDeviceSPI:
 
         Compression is a persistent FPGA flag, not a per-request option, so a
         raw re-read must toggle the flag off or it just gets compressed data
-        back. Used for the keyframe/overflow fallback in read_capture_range.
+        back. Used for the invalid/short decode fallback in read_capture_range.
         """
         byte_addrs = list(byte_addrs)
         if not byte_addrs:
             return []
         cur = self.pkt.read_register(REG_FLAGS)
-        restore = cur >= 0 and (cur & REG_FLAGS_COMPRESS)
+        restore = cur >= 0 and (cur & REG_FLAGS_COMPRESS_MASK)
         if restore:
-            self.pkt.write_register(REG_FLAGS, cur & ~REG_FLAGS_COMPRESS)
+            self.pkt.write_register(REG_FLAGS, cur & ~REG_FLAGS_COMPRESS_MASK)
         try:
             read_blocks = getattr(self.pkt, 'read_capture_blocks', None)
             if callable(read_blocks):
@@ -982,9 +1017,7 @@ class OLSDeviceSPI:
         """Read nsamples from a completed single-shot SDRAM buffer.
 
         Uses batched CS-held CMD_READ_CAPTURE block reads (single MPSSE
-        write/read per ~64 blocks). The former CMD_START_STREAM raw path was
-        removed: the FPGA never had a raw byte streamer behind it, so it
-        returned repeated idle bytes instead of capture data.
+        write/read per ~64 blocks).
         """
         if nsamples <= 0:
             return b''
@@ -1096,16 +1129,10 @@ class OLSDeviceSPI:
         """Yield raw data chunks from the continuous SDRAM ring (caller must
         configure flags/analog before calling, restore after).
 
-        Arms the SDRAM ring for continuous capture, then reads window-sized
-        chunks with batched CS-held CMD_READ_CAPTURE block reads (one MPSSE
-        transaction per ~64 blocks). Yields (raw_bytes, valid_count,
+        Arms the SDRAM ring for continuous capture. Raw digital mode uses the
+        true sequential SPI stream path; compressed modes keep the batched
+        CMD_READ_CAPTURE block-read path. Yields (raw_bytes, valid_count,
         window_samples, overrun_count) per iteration.
-
-        The former CMD_START_STREAM raw/compressed wire paths were removed:
-        the FPGA has no raw byte streamer behind that opcode (it returned
-        repeated idle bytes), and the fixed-192-word compressed protocol
-        cannot round-trip arbitrary digital data (the delta compressor is
-        variable-rate).
         """
         self._ensure_open()
         window_samples = max(1, int(window_samples))
@@ -1124,28 +1151,40 @@ class OLSDeviceSPI:
         total = 0
         next_sample = None  # None = uninitialized/resync via get_status
         overrun_total = 0
+        producer_hint = None
+        oldest_hint = None
+        use_raw_stream = self._readback_codec() == 'raw'
         try:
             while not stop_evt.is_set():
-                st = self._get_ring_status()
-                producer = st.get('producer_index')
-                oldest = st.get('oldest_index')
-                if producer is None or oldest is None:
-                    raise RuntimeError("stream ring metadata not available")
-                overrun = int(st.get('overrun_count', 0) or 0)
-                if overrun > overrun_total:
-                    overrun_total = overrun
-                    next_sample = None  # writer lapped us: resync to oldest
+                if (producer_hint is None or oldest_hint is None
+                        or int(producer_hint) - int(next_sample or 0) < window_samples):
+                    st = self._get_ring_status()
+                    producer_hint = st.get('producer_index')
+                    oldest_hint = st.get('oldest_index')
+                    if producer_hint is None or oldest_hint is None:
+                        raise RuntimeError("stream ring metadata not available")
+                    overrun = int(st.get('overrun_count', 0) or 0)
+                    if overrun > overrun_total:
+                        overrun_total = overrun
+                        next_sample = None  # writer lapped us: resync to oldest
 
-                if next_sample is None or next_sample < oldest:
-                    next_sample = oldest
+                if next_sample is None or next_sample < int(oldest_hint):
+                    next_sample = int(oldest_hint)
 
-                available = int(producer) - int(next_sample)
+                available = int(producer_hint) - int(next_sample)
                 if available < window_samples:
                     if stop_evt.wait(0.0005):
                         break
                     continue
 
-                data = self.read_capture_range(next_sample, window_samples)
+                if use_raw_stream:
+                    producer_hint, oldest_hint, data = self.pkt.start_raw_stream_read(
+                        next_sample, window_samples, stop_evt=stop_evt)
+                    if next_sample < int(oldest_hint):
+                        next_sample = int(oldest_hint)
+                        continue
+                else:
+                    data = self.read_capture_range(next_sample, window_samples)
                 if not data:
                     break
                 valid_samples = len(data) // 2

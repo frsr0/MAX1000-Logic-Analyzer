@@ -35,6 +35,7 @@ CMD_READ_CAPTURE      = 0x12
 CMD_START_STREAM      = 0x13
 CMD_READ_STREAM_BLOCK = 0x14
 CMD_ACK_CAPTURE_DONE  = 0x15
+CMD_START_RAW_STREAM  = 0x16
 CMD_WRITE_REG         = 0x20
 CMD_READ_REG          = 0x21
 CMD_GEN_CONFIG        = 0x30
@@ -53,7 +54,10 @@ REG_TRIGGER_VALUE = 0x11
 REG_FLAGS         = 0x20
 REG_FAST_MODE     = 0x21
 REG_CONT_MODE     = 0x22
-REG_FLAGS_COMPRESS = 0x40000  # REG_FLAGS bit 18: delta-packed readback (streaming only, future)
+REG_FLAGS_COMPRESS_MASK = 0xC0000
+REG_FLAGS_COMPRESS_DELTA = 0x40000
+REG_FLAGS_COMPRESS_RLE = 0x80000
+REG_FLAGS_COMPRESS = REG_FLAGS_COMPRESS_DELTA  # back-compat alias
 REG_GEN_PROTO     = 0x30
 REG_GEN_BAUD      = 0x31
 REG_GEN_PINS      = 0x32
@@ -100,6 +104,7 @@ ST_GEN_BUSY      = 0x30
 
 MAX_PAYLOAD = 4096
 BLOCK_SIZE  = 1024
+MAX_RAW_STREAM_SAMPLES = 16383
 
 
 # 256-entry lookup table for the reflected 0xA001 polynomial. The old
@@ -468,22 +473,43 @@ class SPIDevice:
 
     def start_stream_read(self, start_sample: int, n_bytes: int,
                           stop_evt=None) -> tuple:
-        """Start streaming and read raw bytes in one CS-held transaction.
+        """Compatibility wrapper for raw sample streaming."""
+        if n_bytes & 1:
+            raise ValueError("start_stream_read requires an even byte count")
+        return self.start_raw_stream_read(
+            start_sample, n_bytes // 2, stop_evt=stop_evt)
 
-        Returns (producer_index, oldest_index, data). The returned data begins
-        after the fixed ack guard clocks; any preamble or command-phase filler
-        before SYNC_RSP is discarded.
+    def start_raw_stream_read(self, start_sample: int, sample_count: int,
+                              stop_evt=None, ack_pad: int = 96) -> tuple:
+        """Start a true raw sample stream and read it under one CS-held transaction.
+
+        Returns (producer_index, oldest_index, data_bytes), where ``data_bytes``
+        contains ``sample_count`` 16-bit little-endian samples.
         """
+        sample_count = max(0, int(sample_count))
+        if sample_count == 0:
+            return 0, 0, b''
+        if sample_count > MAX_RAW_STREAM_SAMPLES:
+            producer = oldest = None
+            data = bytearray()
+            done = 0
+            while done < sample_count:
+                take = min(MAX_RAW_STREAM_SAMPLES, sample_count - done)
+                pi, oi, chunk = self.start_raw_stream_read(
+                    start_sample + done, take, stop_evt=stop_evt, ack_pad=ack_pad)
+                producer, oldest = pi, oi
+                data.extend(chunk)
+                done += take
+            return producer or 0, oldest or 0, bytes(data)
         if not hasattr(self.spi, "stream_command"):
-            producer, oldest = self.start_stream(start_sample)
-            return producer, oldest, self.read_stream(n_bytes, stop_evt)
+            raise RuntimeError("raw stream path requires stream_command")
 
-        payload = struct.pack('<I', start_sample * 2)
+        n_bytes = sample_count * 2
+        payload = struct.pack('<II', start_sample * 2, sample_count)
         seq = self._next_seq()
-        req = build_packet(CMD_START_STREAM, seq, payload)
-        ack_pad = 96
-        raw = self.spi.stream_command(req, n_bytes + 2, ack_pad=ack_pad,
-                                      stop_evt=stop_evt)
+        req = build_packet(CMD_START_RAW_STREAM, seq, payload)
+        raw = self.spi.stream_command(
+            req, n_bytes + 2, ack_pad=ack_pad, stop_evt=stop_evt)
         sync_at = raw.find(SYNC_RSP)
         while sync_at >= 0:
             if len(raw) < sync_at + 8:
@@ -500,11 +526,6 @@ class SPIDevice:
                         and len(rsp_payload) >= 8):
                     producer, oldest = struct.unpack('<II', rsp_payload[:8])
                     data_start = max(end, len(req) + ack_pad)
-                    # Raw stream bytes are 16-bit samples. The FPGA starts the
-                    # stream immediately after the ack frame, while ack_pad is
-                    # only host-side guard clocks. Preserve the ack-end parity
-                    # so slicing cannot swap sample bytes when the ack appears
-                    # one byte earlier/later at different SCK divisors.
                     if (data_start - end) & 1:
                         data_start += 1
                     data = raw[data_start:data_start + n_bytes]
@@ -516,65 +537,11 @@ class SPIDevice:
                         data = bytes(swapped) + data[even_len:]
                     return producer, oldest, data
             sync_at = raw.find(SYNC_RSP, sync_at + 1)
-        raise RuntimeError("start_stream_read failed")
+        raise RuntimeError("start_raw_stream_read failed")
 
     def start_stream_read_compressed(self, start_sample: int, n_bytes: int,
                                      stop_evt=None, ack_pad: int = 96) -> tuple:
-        """Read a streamed window using packetized READ_STREAM_BLOCK commands.
-
-        Keeps CS low across CMD_START_STREAM plus a sequence of
-        CMD_READ_STREAM_BLOCK requests so the FPGA's streaming state survives
-        and compressed block packets can be returned in one transaction.
-        Returns (producer_index, oldest_index, raw_payload_bytes).
-        """
-        if not hasattr(self.spi, "stream_payload"):
-            raise RuntimeError("compressed stream path requires stream_payload")
-
-        start_seq = self._next_seq()
-        start_req = build_packet(
-            CMD_START_STREAM, start_seq, struct.pack('<I', start_sample * 2))
-
-        blocks = max(1, (int(n_bytes) + BLOCK_SIZE - 1) // BLOCK_SIZE)
-        block_seqs = []
-        payload = bytearray(start_req)
-        payload.extend(b"\xff" * int(ack_pad))
-        for _ in range(blocks):
-            seq = self._next_seq()
-            block_seqs.append(seq)
-            payload.extend(build_packet(CMD_READ_STREAM_BLOCK, seq, b''))
-            # One compressed stream-block response is 392 bytes total; keep a
-            # couple of extra clocks for the response start offset.
-            payload.extend(b"\xff" * 400)
-
-        raw = self.spi.stream_payload(bytes(payload), stop_evt=stop_evt)
-
-        producer = None
-        oldest = None
-        blocks_out = {}
-        sync_at = raw.find(SYNC_RSP)
-        while sync_at >= 0:
-            if len(raw) < sync_at + 8:
-                break
-            plen = struct.unpack('<H', raw[sync_at + 4:sync_at + 6])[0]
-            total = 8 + plen
-            end = sync_at + total
-            if len(raw) < end:
-                break
-            parsed = parse_response(raw[sync_at:end])
-            if parsed:
-                status, rsp_seq, rsp_payload = parsed
-                if (status == ST_STREAM_ACTIVE and rsp_seq == start_seq
-                        and len(rsp_payload) >= 8):
-                    producer, oldest = struct.unpack('<II', rsp_payload[:8])
-                elif status == ST_OK and rsp_seq in block_seqs:
-                    blocks_out[rsp_seq] = rsp_payload
-            sync_at = raw.find(SYNC_RSP, sync_at + 1)
-
-        if producer is None or oldest is None:
-            raise RuntimeError("start_stream_read_compressed failed")
-
-        data = b"".join(blocks_out.get(seq, b"") for seq in block_seqs)
-        return producer, oldest, data
+        raise RuntimeError("compressed stream blocks are no longer supported")
 
     def read_stream(self, n_bytes: int, stop_evt=None) -> bytes:
         """Read n_bytes of raw streaming data via CS-held SPI."""

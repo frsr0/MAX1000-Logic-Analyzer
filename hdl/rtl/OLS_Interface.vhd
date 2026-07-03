@@ -130,7 +130,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
    SIGNAL gen_spi_test_int   : STD_LOGIC := '0';
    SIGNAL gen_repeat_int     : STD_LOGIC := '0';
    SIGNAL gen_rs485_pair_int : STD_LOGIC := '0';
-  SIGNAL compress_enable_i  : STD_LOGIC := '0';
+  SIGNAL compress_mode_i    : STD_LOGIC_VECTOR(1 downto 0) := "00";
    SIGNAL gen_proto_int      : STD_LOGIC := '0';
    SIGNAL gen_baud_div_int   : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   SIGNAL fast_mode_i        : STD_LOGIC := '0';
@@ -188,6 +188,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL pkt_tx_done          : STD_LOGIC := '0';
   SIGNAL pkt_tx_payload_ready : STD_LOGIC := '0';
   SIGNAL pkt_idle_byte        : STD_LOGIC := '0';
+  SIGNAL raw_stream_tx_byte   : STD_LOGIC_VECTOR(7 downto 0) := x"FF";
+  SIGNAL raw_stream_tx_sel    : STD_LOGIC := '0';
   SIGNAL disp_tx_build        : STD_LOGIC := '0';
   SIGNAL disp_tx_status       : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL disp_tx_len          : NATURAL range 0 to MAX_TX_PAYLOAD_BYTES := 0;
@@ -209,8 +211,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL block_rd_issue_req   : STD_LOGIC := '0';
   SIGNAL block_rd_issue_addr  : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL block_rd_release     : STD_LOGIC := '0';
-SIGNAL stream_addr         : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
-SIGNAL streaming_active    : STD_LOGIC := '0';
   SIGNAL block_rd_state       : NATURAL range 0 to 6 := 0;
   -- Watchdog kill: forces the block-read FSM back to idle when the dispatch
   -- gives up on a stalled block read (e.g. a read issued during continuous
@@ -234,6 +234,12 @@ SIGNAL streaming_active    : STD_LOGIC := '0';
   SIGNAL done_suppressed      : STD_LOGIC := '0';
   SIGNAL disp_ack_done        : STD_LOGIC := '0';
   SIGNAL disp_ack_seq         : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL raw_blk_rd_base_cfg  : NATURAL range 0 to Max_Samples := 0;
+  SIGNAL raw_blk_rd_count_cfg : NATURAL range 0 to 16383 := 0;
+  SIGNAL raw_stream_req_active : STD_LOGIC := '0';
+  SIGNAL raw_blk_req_fire     : STD_LOGIC := '0';
+  SIGNAL block_fifo_rdreq     : STD_LOGIC := '0';
+  SIGNAL raw_fifo_rdreq       : STD_LOGIC := '0';
   CONSTANT SAMPLE_CLK_KHZ_SLV : STD_LOGIC_VECTOR(31 downto 0) :=
     STD_LOGIC_VECTOR(TO_UNSIGNED(SAMPLE_CLK_HZ / 1000, 32));
   SIGNAL sig_rd_pend_d1       : STD_LOGIC := '0';
@@ -250,10 +256,21 @@ SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
   SIGNAL pad_req       : STD_LOGIC := '0';
   SIGNAL comp_rst_i    : STD_LOGIC := '0';
   SIGNAL comp_feed_i   : STD_LOGIC := '0';
-  SIGNAL comp_out_data  : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
-  SIGNAL comp_out_valid : STD_LOGIC := '0';
-  SIGNAL comp_busy_i    : STD_LOGIC := '0';
+  SIGNAL comp_flush_i  : STD_LOGIC := '0';
+  SIGNAL comp_out_data   : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  SIGNAL comp_out_valid  : STD_LOGIC := '0';
+  SIGNAL comp_busy_i     : STD_LOGIC := '0';
   SIGNAL comp_in_ready_i : STD_LOGIC := '1';
+  SIGNAL delta_out_data   : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  SIGNAL delta_out_valid  : STD_LOGIC := '0';
+  SIGNAL delta_busy_i     : STD_LOGIC := '0';
+  SIGNAL delta_in_ready_i : STD_LOGIC := '1';
+  SIGNAL delta_enable_i   : STD_LOGIC := '0';
+  SIGNAL rle_out_data   : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  SIGNAL rle_out_valid  : STD_LOGIC := '0';
+  SIGNAL rle_busy_i     : STD_LOGIC := '0';
+  SIGNAL rle_in_ready_i : STD_LOGIC := '1';
+  SIGNAL rle_enable_i   : STD_LOGIC := '0';
   COMPONENT capture_compressor IS
     PORT (
       clk               : IN  STD_LOGIC;
@@ -265,6 +282,22 @@ SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
       comp_valid        : OUT STD_LOGIC;
       busy              : OUT STD_LOGIC;
       in_ready          : OUT STD_LOGIC
+    );
+  END COMPONENT;
+  COMPONENT rle_compressor IS
+    PORT (
+      clk                : IN  STD_LOGIC;
+      rst                : IN  STD_LOGIC;
+      sample_in          : IN  STD_LOGIC_VECTOR(15 downto 0);
+      sample_valid       : IN  STD_LOGIC;
+      compression_enable : IN  STD_LOGIC;
+      flush              : IN  STD_LOGIC;
+      comp_data          : OUT STD_LOGIC_VECTOR(15 downto 0);
+      comp_valid         : OUT STD_LOGIC;
+      busy               : OUT STD_LOGIC;
+      in_ready           : OUT STD_LOGIC;
+      dbg_cnt            : OUT STD_LOGIC_VECTOR(15 downto 0);
+      dbg_have           : OUT STD_LOGIC
     );
   END COMPONENT;
   TYPE block_buf_t IS ARRAY(0 TO 255) OF STD_LOGIC_VECTOR(31 DOWNTO 0);
@@ -346,8 +379,11 @@ BEGIN
     div3_pending <= '0';
     Pin_Map_Write <= '0';
     gen_reg_load_req <= '0';
-    IF disp_arm = '1' THEN
-      Run_OLS <= '1';
+    if raw_blk_req_fire = '1' then
+      blk_req_tog_i <= NOT blk_req_tog_i;
+    end if;
+      IF disp_arm = '1' THEN
+        Run_OLS <= '1';
       Run <= '0';  -- force a clean 0->1 Run edge so the FLA starts a new capture
       done_latched <= '0';
       done_suppressed <= '0';
@@ -387,7 +423,7 @@ BEGIN
           analog_channel_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(12 downto 8)));
           narrow_enable_i <= disp_reg_wdata(13);
           narrow_channel_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(17 downto 14)));
-          compress_enable_i <= disp_reg_wdata(18);
+          compress_mode_i <= disp_reg_wdata(19 downto 18);
         WHEN REG_FAST_MODE =>
           fast_mode_i <= disp_reg_wdata(0);
         WHEN REG_CONT_MODE =>
@@ -505,9 +541,10 @@ BEGIN
     -- the 100 MHz domain on purpose: its ~320 LCs cost timing closure in
     -- the congested 167 MHz SDRAM cone.
     sig_rd_pend_d1 <= block_rd_pending;
-    Rd_Fifo_RdReq <= '0';
+    block_fifo_rdreq <= '0';
     comp_feed_i <= '0';
     comp_rst_i <= '0';
+    comp_flush_i <= '0';
 
     -- Store path: pack compressor output words (raw passthrough or delta
     -- stream) 2-per-32-bit block_buf entry. Clamped at BLOCK_SAMPLES words:
@@ -550,8 +587,6 @@ BEGIN
     ELSIF block_rd_pending = '1' AND sig_rd_pend_d1 = '0' THEN
       -- block_rd_addr is a BYTE address; the wire is 2 bytes/sample, so the
       -- base sample index = byte_addr / 2 (one 1024-byte block = 512 samples).
-      Blk_Rd_Base  <= TO_INTEGER(UNSIGNED(block_rd_addr(31 downto 1)));
-      Blk_Rd_Count <= blk_rd_samples;
       block_rd_j <= 0;
       drain_in_cnt <= 0;
       blk_rsp_words <= 0;
@@ -575,7 +610,7 @@ BEGIN
           comp_wait_cnt <= 0;
           block_rd_state <= 6;
         ELSIF Rd_Fifo_Empty = '0' AND comp_in_ready_i = '1' THEN
-          Rd_Fifo_RdReq <= '1';
+          block_fifo_rdreq <= '1';
           block_rd_state <= 3;
         END IF;
       WHEN 3 =>
@@ -587,6 +622,7 @@ BEGIN
         drain_in_cnt <= drain_in_cnt + 1;
         block_rd_state <= 2;
       WHEN 6 =>
+        comp_flush_i <= '1';
         -- All input words fed; wait for the compressor to finish flushing
         -- the final packed group. If overflow keyframes left a partial tail
         -- group (busy never clears without more input), time out — the
@@ -777,6 +813,10 @@ BEGIN
   Gen_RS485_Pair <= gen_rs485_pair_int;
   Fast_Mode      <= fast_mode_i;
   Blk_Rd_Req_Tog <= blk_req_tog_i;
+  Blk_Rd_Base    <= raw_blk_rd_base_cfg when raw_stream_req_active = '1'
+                    else TO_INTEGER(UNSIGNED(block_rd_addr(31 downto 1)));
+  Blk_Rd_Count   <= raw_blk_rd_count_cfg when raw_stream_req_active = '1'
+                    else blk_rd_samples;
   Continuous_Mode <= continuous_mode_i;
   Narrow_Enable <= narrow_enable_i;
   Narrow_Channel <= narrow_channel_i;
@@ -795,10 +835,12 @@ BEGIN
   Interface_Mode <= '1';
 
   -- Mux TX_Data between UART path (UART mode) and packet protocol (SPI mode)
+  Rd_Fifo_RdReq <= '1' when block_fifo_rdreq = '1' or raw_fifo_rdreq = '1' else '0';
+
   spi_tx_mux : block
     signal spi_tx_tdata : std_logic_vector(7 downto 0) := x"FF";
   begin
-    spi_tx_tdata <= pkt_tx_byte;
+    spi_tx_tdata <= raw_stream_tx_byte when raw_stream_tx_sel = '1' else pkt_tx_byte;
     SPI_Slave1 : SPI_Slave2
     PORT MAP (
       sys_clk    => CLK,
@@ -867,7 +909,7 @@ BEGIN
   -- All control registers are small (no wide payload buses).
   -- Block read data is streamed directly from block_buf to the TX.
   spi_pkt_dispatch: process(CLK)
-    type state_t is (IDLE, EXEC, WAIT_BLOCK, BUILD_RSP, FEED_TX, WAIT_TX);
+    type state_t is (IDLE, EXEC, WAIT_BLOCK, BUILD_RSP, FEED_TX, WAIT_TX, RAW_STREAM);
     variable st : state_t := IDLE;
     variable rsp_seq_v : std_logic_vector(7 downto 0) := (others => '0');
     variable rsp_stat_v : std_logic_vector(7 downto 0) := ST_OK;
@@ -894,6 +936,12 @@ BEGIN
     -- A normal 512-sample block read completes in ~5000 CLK cycles (~50 us at
     -- 100 MHz); 50000 gives ~10x margin before the watchdog declares a stall.
     constant BLOCK_WD_MAX : natural := 50000;
+    variable raw_start_pending : boolean := false;
+    variable raw_words_rem : natural range 0 to 16383 := 0;
+    variable raw_fetch_state : natural range 0 to 2 := 0;
+    variable raw_word : std_logic_vector(15 downto 0) := (others => '0');
+    variable raw_have_word : boolean := false;
+    variable raw_byte_hi_next : boolean := false;
   begin
     if rising_edge(CLK) then
       -- Defaults
@@ -908,6 +956,8 @@ BEGIN
       block_rd_issue_req <= '0';
       block_rd_release <= '0';
       disp_ack_done <= '0';
+      raw_blk_req_fire <= '0';
+      raw_fifo_rdreq <= '0';
 
       -- (The idle-loop SDRAM prefetch that used to live here was removed:
       -- a prefetch block read was never released by anyone — its ack/pending
@@ -918,14 +968,48 @@ BEGIN
       -- pump. It only existed to feed the abandoned compressed-streaming
       -- path. See tb_batched_reads.)
       if disp_arm = '1' then
-        streaming_active <= '0';
+        raw_stream_tx_sel <= '0';
+        raw_stream_req_active <= '0';
+        raw_start_pending := false;
+        raw_words_rem := 0;
       elsif disp_abort = '1' then
-        streaming_active <= '0';
+        raw_stream_tx_sel <= '0';
+        raw_stream_req_active <= '0';
+        raw_start_pending := false;
+        raw_words_rem := 0;
       end if;
 
       -- Clear streaming mode on CS rise (host drops SPI chip select)
       if spi_cs_rise = '1' then
-        streaming_active <= '0';
+        raw_stream_tx_sel <= '0';
+        raw_stream_req_active <= '0';
+        raw_start_pending := false;
+        raw_words_rem := 0;
+        if st = RAW_STREAM then
+          st := IDLE;
+        end if;
+      end if;
+
+      if raw_start_pending or st = RAW_STREAM then
+        if (not raw_have_word) and raw_words_rem > 0 then
+          case raw_fetch_state is
+            when 0 =>
+              if Rd_Fifo_Empty = '0' then
+                raw_fifo_rdreq <= '1';
+                raw_fetch_state := 1;
+              end if;
+            when 1 =>
+              raw_fetch_state := 2;
+            when others =>
+              raw_word := Rd_Fifo_Q;
+              raw_have_word := true;
+              raw_fetch_state := 0;
+          end case;
+        end if;
+      else
+        raw_fetch_state := 0;
+        raw_have_word := false;
+        raw_byte_hi_next := false;
       end if;
 
       case st is
@@ -1015,16 +1099,28 @@ BEGIN
 
             when CMD_ABORT_CAPTURE =>
               disp_abort <= '1';
-              streaming_active <= '0';
               rsp_stat_v := ST_CAPTURE_IDLE;
               st := BUILD_RSP;
-            when CMD_START_STREAM =>
-              if rx_header_len >= 4 then
-                stream_addr(7 downto 0)   <= rx_payload_header(0);
-                stream_addr(15 downto 8)  <= rx_payload_header(1);
-                stream_addr(23 downto 16) <= rx_payload_header(2);
-                stream_addr(31 downto 24) <= rx_payload_header(3);
-                streaming_active <= '1';
+
+            when CMD_START_RAW_STREAM =>
+              if rx_header_len >= 8 then
+                reg_val(7 downto 0) := rx_payload_header(0);
+                reg_val(15 downto 8) := rx_payload_header(1);
+                reg_val(23 downto 16) := rx_payload_header(2);
+                reg_val(31 downto 24) := rx_payload_header(3);
+                raw_blk_rd_base_cfg <= TO_INTEGER(UNSIGNED(reg_val(31 downto 1)));
+                reg_val(7 downto 0) := rx_payload_header(4);
+                reg_val(15 downto 8) := rx_payload_header(5);
+                reg_val(23 downto 16) := rx_payload_header(6);
+                reg_val(31 downto 24) := rx_payload_header(7);
+                raw_blk_rd_count_cfg <= TO_INTEGER(UNSIGNED(reg_val));
+                raw_stream_req_active <= '1';
+                raw_blk_req_fire <= '1';
+                raw_words_rem := TO_INTEGER(UNSIGNED(reg_val));
+                raw_start_pending := (raw_words_rem /= 0);
+                raw_have_word := false;
+                raw_fetch_state := 0;
+                raw_byte_hi_next := false;
                 rsp_buf(0) := Producer_Index(7 downto 0);
                 rsp_buf(1) := Producer_Index(15 downto 8);
                 rsp_buf(2) := Producer_Index(23 downto 16);
@@ -1038,20 +1134,10 @@ BEGIN
                 rsp_stat_v := ST_STREAM_ACTIVE;
               else
                 rsp_stat_v := ST_BAD_LEN;
+                raw_start_pending := false;
+                raw_words_rem := 0;
               end if;
               st := BUILD_RSP;
-
-            when CMD_READ_STREAM_BLOCK =>
-              if streaming_active = '1' then
-                block_rd_issue_addr <= stream_addr;
-                block_rd_issue_req <= '1';
-                block_wd := 0;
-                st := WAIT_BLOCK;
-              else
-                rsp_stat_v := ST_CAPTURE_IDLE;
-                st := BUILD_RSP;
-              end if;
-
 
             when CMD_ACK_CAPTURE_DONE =>
               disp_ack_seq <= (others => '0');
@@ -1115,7 +1201,7 @@ BEGIN
                     reg_val(12 downto 8) := std_logic_vector(to_unsigned(analog_channel_i, 5));
                     reg_val(13) := narrow_enable_i;
                     reg_val(17 downto 14) := std_logic_vector(to_unsigned(narrow_channel_i, 4));
-                    reg_val(18) := compress_enable_i;
+                    reg_val(19 downto 18) := compress_mode_i;
                   when REG_CONT_MODE =>
                     reg_val(0) := continuous_mode_i;
                   when REG_GEN_PROTO =>
@@ -1224,10 +1310,6 @@ BEGIN
             blk_bytes_sent := 0;
             feeding_block := true;
             st := BUILD_RSP;
-            -- Advance stream address in streaming mode (always 1024 bytes per block)
-            if streaming_active = '1' then
-              stream_addr <= std_logic_vector(unsigned(stream_addr) + 1024);
-            end if;
           elsif block_wd >= BLOCK_WD_MAX then
             -- Stream stalled (e.g. block read during continuous capture). Kill
             -- the block-read FSM, drop the pending request, and return an empty
@@ -1295,7 +1377,36 @@ BEGIN
 
         when WAIT_TX =>
           if pkt_tx_done = '1' then
-            st := IDLE;
+            if raw_start_pending then
+              raw_stream_tx_sel <= '0';
+              raw_byte_hi_next := false;
+              st := RAW_STREAM;
+            else
+              st := IDLE;
+            end if;
+          end if;
+
+        when RAW_STREAM =>
+          if spi_tx_ready_i = '1' and raw_have_word then
+            if raw_stream_tx_sel = '0' then
+              raw_stream_tx_sel <= '1';
+              raw_stream_tx_byte <= raw_word(7 downto 0);
+              raw_byte_hi_next := true;
+            elsif raw_byte_hi_next then
+              raw_stream_tx_byte <= raw_word(15 downto 8);
+              raw_byte_hi_next := false;
+              raw_have_word := false;
+              if raw_words_rem > 0 then
+                raw_words_rem := raw_words_rem - 1;
+              end if;
+              if raw_words_rem <= 1 then
+                raw_start_pending := false;
+                st := IDLE;
+              end if;
+            else
+              raw_stream_tx_byte <= raw_word(7 downto 0);
+              raw_byte_hi_next := true;
+            end if;
           end if;
       end case;
     end if;
@@ -1349,21 +1460,44 @@ BEGIN
   Auto_Renew <= '0';
 
   blk_rd_samples <= BLOCK_SAMPLES;
+  delta_enable_i <= '1' when compress_mode_i = "01" else '0';
+  rle_enable_i <= '1' when compress_mode_i = "10" else '0';
 
-  -- Readback delta compressor (passthrough when compress_enable_i = '0').
-  -- Runs at 100 MHz between the response FIFO drain and block_buf; see the
-  -- block-read FSM comments for the pacing/clamp contract.
-  rd_compressor : capture_compressor
+  -- Readback compressor(s) run at 100 MHz between the response FIFO drain and
+  -- block_buf. Delta remains the default compact codec; RLE is selectable for
+  -- long repeated digital runs. Raw mode uses the delta block in passthrough.
+  rd_delta_compressor : capture_compressor
     PORT MAP (
       clk                => CLK,
       rst                => comp_rst_i,
       sample_in          => Rd_Fifo_Q,
       sample_valid       => comp_feed_i,
-      compression_enable => compress_enable_i,
-      comp_data          => comp_out_data,
-      comp_valid         => comp_out_valid,
-      busy               => comp_busy_i,
-      in_ready           => comp_in_ready_i
+      compression_enable => delta_enable_i,
+      comp_data          => delta_out_data,
+      comp_valid         => delta_out_valid,
+      busy               => delta_busy_i,
+      in_ready           => delta_in_ready_i
     );
+
+  rd_rle_compressor : rle_compressor
+    PORT MAP (
+      clk                => CLK,
+      rst                => comp_rst_i,
+      sample_in          => Rd_Fifo_Q,
+      sample_valid       => comp_feed_i,
+      compression_enable => rle_enable_i,
+      flush              => comp_flush_i,
+      comp_data          => rle_out_data,
+      comp_valid         => rle_out_valid,
+      busy               => rle_busy_i,
+      in_ready           => rle_in_ready_i,
+      dbg_cnt            => open,
+      dbg_have           => open
+    );
+
+  comp_out_data <= rle_out_data when compress_mode_i = "10" else delta_out_data;
+  comp_out_valid <= rle_out_valid when compress_mode_i = "10" else delta_out_valid;
+  comp_busy_i <= rle_busy_i when compress_mode_i = "10" else delta_busy_i;
+  comp_in_ready_i <= rle_in_ready_i when compress_mode_i = "10" else delta_in_ready_i;
 
 END BEHAVIORAL;

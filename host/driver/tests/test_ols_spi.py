@@ -1,7 +1,8 @@
 import struct
+import pytest
 
 from driver.spi_protocol import (
-    CMD_START_STREAM, ST_OK, ST_STREAM_ACTIVE, SYNC_REQ, SYNC_RSP,
+    CMD_START_RAW_STREAM, ST_OK, ST_STREAM_ACTIVE, SYNC_REQ, SYNC_RSP,
     SPIDevice, crc16, parse_response,
 )
 
@@ -296,7 +297,7 @@ class TestSPIPacketProtocol:
         assert oldest == 0x100
         assert data == bytes(range(16))
         assert fake.n_bytes == 18
-        assert fake.request.startswith(SYNC_REQ + bytes([CMD_START_STREAM]))
+        assert fake.request.startswith(SYNC_REQ + bytes([CMD_START_RAW_STREAM]))
         assert fake.tx_read_calls == 0
 
     def test_start_stream_read_keeps_sample_boundary_after_shifted_ack(self):
@@ -318,6 +319,35 @@ class TestSPIPacketProtocol:
         assert producer == 0x12345678
         assert oldest == 0x100
         assert data == bytes(range(16))
+
+    def test_start_raw_stream_read_parses_ack_and_returns_samples(self):
+        class FakeSPI:
+            def __init__(self):
+                self.request = None
+                self.n_bytes = 0
+
+            def stream_command(self, request, n_bytes, ack_pad=96, stop_evt=None):
+                self.request = request
+                self.n_bytes = n_bytes
+                seq = request[3]
+                payload = struct.pack('<II', 0x12345678, 0x00000100)
+                resp = (SYNC_RSP + bytes([ST_STREAM_ACTIVE, seq])
+                        + struct.pack('<H', len(payload)) + payload)
+                resp += struct.pack('<H', crc16(resp[2:]))
+                guard = bytearray(b'\xff' * (len(request) + ack_pad))
+                guard[2:2 + len(resp)] = resp
+                stream = bytearray(range(n_bytes))
+                stream[0::2], stream[1::2] = stream[1::2], stream[0::2]
+                return bytes(guard) + bytes(stream)
+
+        fake = FakeSPI()
+        pkt = SPIDevice(fake)
+        producer, oldest, data = pkt.start_raw_stream_read(0x80, 8)
+        assert producer == 0x12345678
+        assert oldest == 0x100
+        assert data == bytes(range(16))
+        assert fake.n_bytes == 18
+        assert fake.request.startswith(SYNC_REQ + bytes([CMD_START_RAW_STREAM]))
 
     def test_transaction_raw_uses_stream_command_when_available(self):
         class FakeSPI:
@@ -379,36 +409,10 @@ class TestSPIPacketProtocol:
         result = pkt._transaction_raw(0x12, b'', read_extra=8, timeout=0.01)
         assert result == (ST_OK, 0x00, b'xyz')
 
-    def test_start_stream_read_compressed_parses_block_packets(self):
-        class FakeSPI:
-            def __init__(self):
-                self.request = None
-                self.tx_bytes_called = False
-
-            def stream_payload(self, payload, stop_evt=None):
-                self.request = payload
-
-                start_seq = payload[3]
-                block_seq = payload[111]
-
-                ack_payload = struct.pack('<II', 0x12345678, 0x00000100)
-                ack = (SYNC_RSP + bytes([ST_STREAM_ACTIVE, start_seq])
-                       + struct.pack('<H', len(ack_payload)) + ack_payload)
-                ack += struct.pack('<H', crc16(ack[2:]))
-
-                block_payload = bytes(range(24))
-                block = (SYNC_RSP + bytes([ST_OK, block_seq])
-                         + struct.pack('<H', len(block_payload)) + block_payload)
-                block += struct.pack('<H', crc16(block[2:]))
-
-                guard = b'\xff' * 96
-                return payload[:12] + guard + ack + payload[108:116] + block + (b'\xff' * 8)
-
-        pkt = SPIDevice(FakeSPI())
-        producer, oldest, data = pkt.start_stream_read_compressed(0x80, 1024)
-        assert producer == 0x12345678
-        assert oldest == 0x100
-        assert data == bytes(range(24))
+    def test_start_stream_read_compressed_raises(self):
+        pkt = SPIDevice(object())
+        with pytest.raises(RuntimeError, match="no longer supported"):
+            pkt.start_stream_read_compressed(0x80, 1024)
 
     def test_read_capture_blocks_batches_requests_under_one_transaction(self):
         class FakeSPI:
