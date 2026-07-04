@@ -64,11 +64,7 @@ set_false_path -from [get_registers *auto_generated|delayed_wrptr_g*] \
 set_false_path -from [get_registers *auto_generated|rdptr_g*] \
                -to   [get_registers *auto_generated|wrfull_eq_comp*]
 
-# Runtime pin-map registers are configuration selects, written before capture
-# and held stable while sampling. Do not time the rare pin-map register update
-# through the high-speed input mux as if it were per-sample data.
-set_false_path -from [get_registers *pin_map_fast*] \
-               -to   [get_registers *capture_data_fast_normal_r*]
+
 
 # Make the forwarded SDRAM chip clock explicit so I/O delays are referenced to
 # the same delayed edge the external SDRAM sees, not the internal controller

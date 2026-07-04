@@ -262,10 +262,16 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal packed_stage_valid : std_logic := '0';
   signal packed_stage_pop   : std_logic := '0';
   signal packed_stage_push  : std_logic := '0';
+  signal packed_fifo_wdata_r : std_logic_vector(15 downto 0) := (others => '0');
+  signal packed_fifo_wr_r    : std_logic := '0';
   signal packed_mode_meta : std_logic := '0';
   signal packed_mode_f    : std_logic := '0';
   signal fifo_wrusedw : std_logic_vector(AFIFO_WIDTHU-1 downto 0) := (others => '0');
   signal fifo_wralmost_full : std_logic := '0';
+  -- Registered almost-full for packed-mode backpressure. Same 256-word cushion
+  -- as afull_r in the digital writer; keeps the wrusedw compare off the path
+  -- from producer -> Packed_Ready -> mso_capture -> analog_packer.
+  signal packed_afull_r : std_logic := '0';
   signal fifo_aclr  : std_logic := '0';
   signal fifo_rdata : std_logic_vector(AFIFO_WIDTH-1 downto 0) := (others => '0');
   signal fifo_rd    : std_logic := '0';
@@ -1160,17 +1166,34 @@ begin
     if rising_edge(FAST_CLK) then
       packed_mode_meta <= Packed_Mode;
       packed_mode_f    <= packed_mode_meta;
+      packed_afull_r   <= fifo_wralmost_full;
     end if;
   end process;
 
   -- Write-port source mux. In packed mode a 1-word staging register breaks the
   -- producer -> FIFO RAM input path in the 200 MHz domain while preserving
-  -- one-word-per-cycle throughput when the FIFO is draining.
-  packed_stage_pop  <= '1' when packed_stage_valid = '1' and fifo_wrfull = '0' else '0';
+  -- one-word-per-cycle throughput when the FIFO is draining. A second register
+  -- stage on wrreq/data breaks packed_afull_r -> dcfifo wrptr (same-cycle pop
+  -- was the -0.61 ns path after registering almost-full).
+  packed_stage_pop  <= '1' when packed_stage_valid = '1' and packed_afull_r = '0' else '0';
   packed_stage_push <= '1' when Packed_Valid = '1' and packed_mode_f = '1'
                                and run_f_level = '1'
-                               and (packed_stage_valid = '0' or fifo_wrfull = '0')
+                               and (packed_stage_valid = '0' or packed_afull_r = '0')
                        else '0';
+
+  process(FAST_CLK)
+  begin
+    if rising_edge(FAST_CLK) then
+      if fifo_aclr = '1' then
+        packed_fifo_wr_r <= '0';
+      else
+        packed_fifo_wr_r <= packed_stage_pop;
+      end if;
+      if packed_stage_pop = '1' then
+        packed_fifo_wdata_r <= packed_stage_data;
+      end if;
+    end if;
+  end process;
 
   process(FAST_CLK)
   begin
@@ -1191,11 +1214,11 @@ begin
     end if;
   end process;
 
-  afifo_wdata  <= packed_stage_data when packed_mode_f = '1' else fifo_wdata;
-  afifo_wr     <= packed_stage_pop when packed_mode_f = '1' else fifo_wr;
+  afifo_wdata  <= packed_fifo_wdata_r when packed_mode_f = '1' else fifo_wdata;
+  afifo_wr     <= packed_fifo_wr_r    when packed_mode_f = '1' else fifo_wr;
   Packed_Ready <= '1' when packed_mode_f = '1'
                            and run_f_level = '1'
-                           and (packed_stage_valid = '0' or fifo_wrfull = '0')
+                           and (packed_stage_valid = '0' or packed_afull_r = '0')
                   else '0';
 
   afifo : dcfifo
