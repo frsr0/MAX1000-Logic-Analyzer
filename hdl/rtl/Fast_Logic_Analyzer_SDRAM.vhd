@@ -266,6 +266,10 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   -- the original behaviour). packed_mode_f is Packed_Mode 2FF-synced to FAST_CLK.
   signal afifo_wdata : std_logic_vector(AFIFO_WIDTH-1 downto 0) := (others => '0');
   signal afifo_wr    : std_logic := '0';
+  signal packed_stage_data  : std_logic_vector(15 downto 0) := (others => '0');
+  signal packed_stage_valid : std_logic := '0';
+  signal packed_stage_pop   : std_logic := '0';
+  signal packed_stage_push  : std_logic := '0';
   signal packed_mode_meta : std_logic := '0';
   signal packed_mode_f    : std_logic := '0';
   signal fifo_wrusedw : std_logic_vector(AFIFO_WIDTHU-1 downto 0) := (others => '0');
@@ -679,12 +683,14 @@ begin
     -- mode, so reacting a cycle late is harmless and keeps the compare off path.
     signal afull_r       : std_logic := '0';
     signal start_gate_r  : natural range 0 to 3 := 0;
-    signal narrow_enable_s1 : std_logic := '0';
-    signal narrow_enable_f  : std_logic := '0';
-    signal narrow_channel_s1 : natural range 0 to 15 := 0;
-    signal narrow_channel_f  : natural range 0 to 15 := 0;
-    signal narrow_shift_r : std_logic_vector(15 downto 0) := (others => '0');
-    signal narrow_bit_count_r : natural range 0 to 15 := 0;
+     signal narrow_enable_s1 : std_logic := '0';
+     signal narrow_enable_f  : std_logic := '0';
+     signal narrow_channel_s1 : natural range 0 to 15 := 0;
+     signal narrow_channel_f  : natural range 0 to 15 := 0;
+     signal narrow_shift_r : std_logic_vector(15 downto 0) := (others => '0');
+     signal narrow_bit_count_r : natural range 0 to 15 := 0;
+     signal narrow_word_pending_r : std_logic := '0';
+     signal narrow_word_data_r : std_logic_vector(15 downto 0) := (others => '0');
   begin
     -- Stage 0: sample pins
     process(FAST_CLK)
@@ -838,9 +844,19 @@ begin
           analog_burst_active <= '0';
           narrow_shift_r <= (others => '0');
           narrow_bit_count_r <= 0;
+          narrow_word_pending_r <= '0';
         end if;
 
         if fifo_overflow_f = '0' then
+          if narrow_word_pending_r = '1' and afull_r = '0' then
+            fifo_wdata <= narrow_word_data_r;
+            fifo_wr <= '1';
+            narrow_word_pending_r <= '0';
+            if sample_rem_nonzero_r = '1' then
+              sample_remaining <= sample_rem_dec_r;
+            end if;
+          end if;
+
           -- Pre-trigger BRAM is digital-only; skip it entirely in analog stream
           -- mode so only ADC frame words enter the FIFO.
           if pretrig_en_r = '1' and pretrig_tick_cnt < 8 and astream_f = '0' then
@@ -922,18 +938,13 @@ begin
             end if;
 
             if narrow_bit_count_r = 15 then
-              if afull_r = '0' then
-                fifo_wdata(14 downto 0) <= narrow_shift_r(14 downto 0);
-                if narrow_channel_f < Channels then
-                  fifo_wdata(15) <= sample_word_r(narrow_channel_f);
-                else
-                  fifo_wdata(15) <= '0';
-                end if;
-                fifo_wr <= '1';
-                if sample_rem_nonzero_r = '1' then
-                  sample_remaining <= sample_rem_dec_r;
-                end if;
+              narrow_word_data_r(14 downto 0) <= narrow_shift_r(14 downto 0);
+              if narrow_channel_f < Channels then
+                narrow_word_data_r(15) <= sample_word_r(narrow_channel_f);
+              else
+                narrow_word_data_r(15) <= '0';
               end if;
+              narrow_word_pending_r <= '1';
               narrow_shift_r <= (others => '0');
               narrow_bit_count_r <= 0;
             else
@@ -1167,14 +1178,40 @@ begin
     end if;
   end process;
 
-  -- Write-port source mux. In packed mode the packed producer writes only while
-  -- capture is running and the FIFO can accept; Packed_Ready mirrors that so the
-  -- producer never drops a word. packed_mode_f='0' passes the native writer
-  -- through unchanged.
-  afifo_wdata  <= Packed_Data when packed_mode_f = '1' else fifo_wdata;
-  afifo_wr     <= (Packed_Valid and run_f_level and not fifo_wrfull)
-                  when packed_mode_f = '1' else fifo_wr;
-  Packed_Ready <= (not fifo_wrfull) and packed_mode_f and run_f_level;
+  -- Write-port source mux. In packed mode a 1-word staging register breaks the
+  -- producer -> FIFO RAM input path in the 200 MHz domain while preserving
+  -- one-word-per-cycle throughput when the FIFO is draining.
+  packed_stage_pop  <= '1' when packed_stage_valid = '1' and fifo_wrfull = '0' else '0';
+  packed_stage_push <= '1' when Packed_Valid = '1' and packed_mode_f = '1'
+                               and run_f_level = '1'
+                               and (packed_stage_valid = '0' or fifo_wrfull = '0')
+                       else '0';
+
+  process(FAST_CLK)
+  begin
+    if rising_edge(FAST_CLK) then
+      if fifo_aclr = '1' or packed_mode_f = '0' or run_f_level = '0' then
+        packed_stage_valid <= '0';
+      else
+        if packed_stage_push = '1' then
+          packed_stage_data <= Packed_Data;
+        end if;
+
+        if packed_stage_push = '1' then
+          packed_stage_valid <= '1';
+        elsif packed_stage_pop = '1' then
+          packed_stage_valid <= '0';
+        end if;
+      end if;
+    end if;
+  end process;
+
+  afifo_wdata  <= packed_stage_data when packed_mode_f = '1' else fifo_wdata;
+  afifo_wr     <= packed_stage_pop when packed_mode_f = '1' else fifo_wr;
+  Packed_Ready <= '1' when packed_mode_f = '1'
+                           and run_f_level = '1'
+                           and (packed_stage_valid = '0' or fifo_wrfull = '0')
+                  else '0';
 
   afifo : dcfifo
     generic map (

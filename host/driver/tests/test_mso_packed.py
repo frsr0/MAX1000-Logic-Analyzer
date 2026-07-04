@@ -30,6 +30,29 @@ def test_analog_frame_matches_fpga_sim():
     assert res['digital'] == []  # no digital words in this frame
 
 
+def test_anchored_block_round_trips_absolute_start_values():
+    # v2 block: header W=3 plus anchor flag, 4 anchors, then 12 deltas of +3.
+    words = [
+        0x1C00,
+        0x0010, 0x0020, 0x0030, 0x0040,
+        0x36DB, 0x36DB, 0x001B,
+    ]
+    analog = decode_analog_words(words)
+    assert analog[0] == [0x0010, 0x0013, 0x0016, 0x0019]
+    assert analog[1] == [0x0020, 0x0023, 0x0026, 0x0029]
+    assert analog[2] == [0x0030, 0x0033, 0x0036, 0x0039]
+    assert analog[3] == [0x0040, 0x0043, 0x0046, 0x0049]
+
+
+def test_anchored_flat_block_keeps_anchor_values():
+    words = [0x0400, 0x0123, 0x0234, 0x0345, 0x0456]
+    analog = decode_analog_words(words)
+    assert analog[0] == [0x0123, 0x0123, 0x0123, 0x0123]
+    assert analog[1] == [0x0234, 0x0234, 0x0234, 0x0234]
+    assert analog[2] == [0x0345, 0x0345, 0x0345, 0x0345]
+    assert analog[3] == [0x0456, 0x0456, 0x0456, 0x0456]
+
+
 def test_header_width_field():
     # W is bits[14:11]; check a couple of widths decode the right payload count.
     # W=1: 16 deltas * 1 bit = 16 bits -> ceil(16/15) = 2 payload words.

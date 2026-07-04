@@ -2,32 +2,33 @@ library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.numeric_std.all;
 
--- analog_packer : barrel-shift bit-packer for the analog delta stream
+-- analog_packer : anchor+delta bit-packer for the analog stream
 -- ---------------------------------------------------------------------------
 -- Back end of the analog compression pipeline. It buffers one block of
--- BLOCK_SAMPLES (16) signed 11-bit deltas from delta_calc, then serialises
--- them into the fixed 16-bit output word stream using the "Analog Packed Block
--- Frame" format (bit 15 = '0' on every word):
+-- BLOCK_SAMPLES (12) signed 11-bit deltas plus 4 verbatim channel anchors
+-- from delta_calc, then serialises them into the fixed 16-bit output word
+-- stream using the "Analog Packed Block Frame" format (bit 15 = '0' on every
+-- word):
 --
---   Word 0  (Header) : bit15='0', bits[14:11] = 4-bit width index W
---                       (bits per packed sample, 0..11),
---                       bits[10:0] = reserved (0).
---   Word 1..N (Payload): bit15='0', bits[14:0] = deltas packed W bits each,
---                       laid down contiguously (LSB-first) into consecutive
---                       15-bit slots.
+--   Word 0   (Header) : bit15='0', bits[14:11] = 4-bit width index W
+--                        (bits per packed delta, 0..11),
+--                        bit10 = 1 => 4 inline verbatim anchors follow,
+--                        bits[9:0] = reserved (0).
+--   Word 1..4 (Anchor): bit15='0', bits[11:0] = channel 0..3 first sample.
+--   Word 5..N (Payload): bit15='0', bits[14:0] = 12 signed W-bit deltas
+--                        packed contiguously LSB-first into 15-bit slots.
 --
 -- The 4-bit width index spans the full 1..11-bit range delta_calc can request,
--- so every delta round-trips bit-exact (no clamp, no saturation). W = 0 (a
--- perfectly flat block) emits the header alone.
+-- so every emitted delta round-trips bit-exact. W = 0 (a perfectly flat tail
+-- after the anchors) emits header + anchors only.
 --
 -- Structure (tuned for the 200.4 MHz FAST_CLK domain)
 -- ---------------------------------------------------
 -- A silicon-accurate fit on the 10M08 (C8) showed the single-cycle pack path
 -- overran ~8 ns. Two things caused it and both are removed here:
---   * the sample buffer is an explicit 16-deep SHIFT REGISTER read at a fixed
---     tap (buf(TOP)) -- a plain register, not an indexed mux and not an
---     inferred synchronous-read M9K (which would also have mismatched the
---     zero-latency simulation read), and
+--   * the sample buffer is captured linearly during FILL and replayed by index
+--     during packing, avoiding both a large per-cycle shift network and any
+--     synchronous-read RAM latency, and
 --   * the per-sample mask (2^W - 1) is precomputed once per block, so only ONE
 --     barrel shift (the chunk placement) is ever on a datapath.
 -- Packing is a 2-stage micro-sequence per sample:
@@ -44,7 +45,7 @@ use IEEE.numeric_std.all;
 -- clock enable, registered outputs, no combinational loops.
 entity analog_packer is
   generic (
-    BLOCK_SAMPLES : positive := 16;  -- deltas per block (matches delta_calc)
+    BLOCK_SAMPLES : positive := 12;  -- deltas per block (matches delta_calc)
     MAX_WIDTH     : positive := 11   -- >= 11 for lossless (4-bit header holds 0..15)
   );
   port (
@@ -55,6 +56,11 @@ entity analog_packer is
     -- Delta input (from delta_calc)
     delta_in    : in  std_logic_vector(10 downto 0); -- signed 11-bit
     delta_valid : in  std_logic;                     -- delta_in valid
+    anchor_ch0  : in  std_logic_vector(11 downto 0);
+    anchor_ch1  : in  std_logic_vector(11 downto 0);
+    anchor_ch2  : in  std_logic_vector(11 downto 0);
+    anchor_ch3  : in  std_logic_vector(11 downto 0);
+    anchor_valid : in std_logic;                     -- anchors valid with block_done
     block_width : in  std_logic_vector(3 downto 0);  -- max bits/sample for the block
     block_done  : in  std_logic;                     -- pulses with the block's last delta
 
@@ -72,33 +78,35 @@ architecture rtl of analog_packer is
 
   -- Accumulator holds up to 14 residual bits + one MAX_WIDTH chunk before emit.
   constant ACC_W : positive := 15 + MAX_WIDTH;
-  constant TOP   : natural  := BLOCK_SAMPLES - 1;  -- fixed shift-register read tap
 
-  type state_t is (FILL, EMIT_HEADER, PACK_LOAD, PACK_ACC, DRAIN);
+  type state_t is (FILL, EMIT_HEADER, EMIT_ANCHOR, PACK_LOAD, PACK_ACC, DRAIN);
   signal state : state_t := FILL;
 
-  -- Sample buffer as a shift register (async read at the fixed TOP tap).
   type buf_array is array(0 to BLOCK_SAMPLES-1) of std_logic_vector(10 downto 0);
   signal buf   : buf_array := (others => (others => '0'));
+  type anchor_array is array(0 to 3) of std_logic_vector(11 downto 0);
 
   signal w_lat    : unsigned(3 downto 0) := (others => '0');           -- latched block width
   signal mask_lat : unsigned(MAX_WIDTH-1 downto 0) := (others => '0'); -- precomputed 2^W-1
+  signal anc_lat  : anchor_array := (others => (others => '0'));
   signal acc      : unsigned(ACC_W-1 downto 0) := (others => '0');
   signal held     : natural range 0 to 14 := 0;                        -- bits queued in acc
-  signal pcount   : natural range 0 to BLOCK_SAMPLES := 0;             -- samples packed
+  signal pcount   : natural range 0 to BLOCK_SAMPLES := 0;             -- reused across phases
 
   -- LOAD -> ACC pipeline registers
   signal chunk_r  : unsigned(MAX_WIDTH-1 downto 0) := (others => '0'); -- masked delta
   signal hs_r     : natural range 0 to 14 := 0;                       -- shift amount for it
   signal emit_r   : std_logic := '0';                                 -- this sample fills a word
 
+  signal out_valid_r : std_logic := '0';
   signal slot_free : std_logic;
 
 begin
 
   busy      <= '0' when state = FILL else '1';
   in_ready  <= '1' when state = FILL else '0';
-  slot_free <= '1' when (out_valid = '0' or out_ready = '1') else '0';
+  out_valid <= out_valid_r;
+  slot_free <= '1' when (out_valid_r = '0' or out_ready = '1') else '0';
 
   process(clk)
     variable m12  : unsigned(11 downto 0);
@@ -111,33 +119,39 @@ begin
         held      <= 0;
         pcount    <= 0;
         acc       <= (others => '0');
-        out_valid <= '0';
+        out_valid_r <= '0';
       elsif clk_en = '1' then
 
         -- Clear an accepted output word (unless a state below re-loads it).
-        if out_valid = '1' and out_ready = '1' then
-          out_valid <= '0';
+        if out_valid_r = '1' and out_ready = '1' then
+          out_valid_r <= '0';
         end if;
 
         case state is
 
           -- FILL: shift each delta into the buffer. block_done arrives with the
-          -- last (BLOCK_SAMPLES-th) delta, leaving buf(TOP) = sample 0.
+          -- last (BLOCK_SAMPLES-th) delta, which is buffered at pcount.
           when FILL =>
             if delta_valid = '1' then
-              buf(0) <= delta_in;
-              for i in 1 to BLOCK_SAMPLES-1 loop
-                buf(i) <= buf(i-1);
-              end loop;
-              if block_done = '1' then
+              buf(pcount) <= delta_in;
+              if block_done = '1' and anchor_valid = '1' then
                 assert unsigned(block_width) <= MAX_WIDTH
                   report "analog_packer: block_width exceeds MAX_WIDTH"
                   severity error;
+                assert pcount = BLOCK_SAMPLES - 1
+                  report "analog_packer: block_done before BLOCK_SAMPLES buffered"
+                  severity error;
                 w_lat  <= unsigned(block_width);
+                anc_lat(0) <= anchor_ch0;
+                anc_lat(1) <= anchor_ch1;
+                anc_lat(2) <= anchor_ch2;
+                anc_lat(3) <= anchor_ch3;
                 held   <= 0;
                 pcount <= 0;
                 acc    <= (others => '0');
                 state  <= EMIT_HEADER;
+              elsif pcount < BLOCK_SAMPLES - 1 then
+                pcount <= pcount + 1;
               end if;
             end if;
 
@@ -145,22 +159,34 @@ begin
           -- (2^W - 1) once, off the per-sample datapath.
           when EMIT_HEADER =>
             if slot_free = '1' then
-              out_data  <= '0' & std_logic_vector(w_lat) & "00000000000";
-              out_valid <= '1';
+              out_data  <= '0' & std_logic_vector(w_lat) & '1' & "0000000000";
+              out_valid_r <= '1';
               m12 := shift_left(to_unsigned(1, 12), to_integer(w_lat)) - 1;
               mask_lat <= m12(MAX_WIDTH-1 downto 0);
-              if w_lat = 0 then
-                state <= FILL;             -- flat block: header only
+              state <= EMIT_ANCHOR;
+            end if;
+
+          when EMIT_ANCHOR =>
+            if slot_free = '1' then
+              out_data  <= "0000" & anc_lat(pcount);
+              out_valid_r <= '1';
+              if pcount = 3 then
+                pcount <= 0;
+                if w_lat = 0 then
+                  state <= FILL;             -- flat block: anchors only after header
+                else
+                  state <= PACK_LOAD;
+                end if;
               else
-                state <= PACK_LOAD;
+                pcount <= pcount + 1;
               end if;
             end if;
 
           -- PACK_LOAD: read the TOP sample, mask to W bits, register the chunk
-          -- and its target shift; advance the fill count and the buffer.
+          -- and its target shift.
           when PACK_LOAD =>
             wi      := to_integer(w_lat);
-            chunk_r <= unsigned(buf(TOP)) and mask_lat;
+            chunk_r <= unsigned(buf(pcount)) and mask_lat;
             hs_r    <= held;
             if held + wi >= 15 then
               emit_r <= '1';
@@ -169,10 +195,6 @@ begin
               emit_r <= '0';
               held   <= held + wi;
             end if;
-            -- Shift buffer up so the next sample appears at buf(TOP).
-            for i in BLOCK_SAMPLES-1 downto 1 loop
-              buf(i) <= buf(i-1);
-            end loop;
             state <= PACK_ACC;
 
           -- PACK_ACC: single barrel shift into the accumulator; emit a payload
@@ -182,7 +204,7 @@ begin
               nacc := acc or shift_left(resize(chunk_r, ACC_W), hs_r);
               if emit_r = '1' then
                 out_data  <= '0' & std_logic_vector(nacc(14 downto 0));
-                out_valid <= '1';
+                out_valid_r <= '1';
                 acc       <= resize(nacc(ACC_W-1 downto 15), ACC_W);
               else
                 acc <= nacc;
@@ -200,7 +222,7 @@ begin
             if slot_free = '1' then
               if held > 0 then
                 out_data  <= '0' & std_logic_vector(acc(14 downto 0));
-                out_valid <= '1';
+                out_valid_r <= '1';
                 held      <= 0;
               end if;
               state <= FILL;

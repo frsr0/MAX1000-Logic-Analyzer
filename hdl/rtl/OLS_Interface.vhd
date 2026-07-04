@@ -59,10 +59,11 @@ PORT (
       Packed_Mode     : OUT STD_LOGIC := '0';
        Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
        Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-       Pin_Map_Write   : OUT STD_LOGIC := '0';
+        Pin_Map_Write   : OUT STD_LOGIC := '0';
         Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
         Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
         Debug_Ch0_Enable : OUT STD_LOGIC := '0';
+        Debug_Ch0_Channel : OUT NATURAL range 0 to 15 := 0;
         Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
         Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
          Gen_Capture_Active : OUT STD_LOGIC := '0';
@@ -151,6 +152,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
 
   SIGNAL ch_mode             : STD_LOGIC := '0';  -- 0=8ch/500k, 1=4ch/4M
   SIGNAL debug_ch0_enable_i  : STD_LOGIC := '0';
+  SIGNAL debug_ch0_channel_i : NATURAL range 0 to 15 := 0;
   SIGNAL debug_ch0_period_i  : STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
   SIGNAL debug_ch0_duty_i    : STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
   SIGNAL gen_capture_active_i  : STD_LOGIC := '0';
@@ -515,6 +517,8 @@ BEGIN
 
         WHEN REG_DEBUG_CH0_ENABLE =>
           debug_ch0_enable_i <= disp_reg_wdata(0);
+        WHEN REG_DEBUG_CH0_ROUTE =>
+          debug_ch0_channel_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(3 downto 0)));
         WHEN REG_DEBUG_CH0_PERIOD =>
           debug_ch0_period_i <= disp_reg_wdata;
         WHEN REG_DEBUG_CH0_DUTY =>
@@ -991,6 +995,7 @@ BEGIN
   Buffer_Ack      <= (others => '0');  -- FLA frees its own continuous buffers
   Armed          <= Run_OLS;
   Debug_Ch0_Enable <= debug_ch0_enable_i;
+  Debug_Ch0_Channel <= debug_ch0_channel_i;
   Debug_Ch0_Period <= debug_ch0_period_i;
   Debug_Ch0_Duty   <= debug_ch0_duty_i;
   Gen_Capture_Active <= gen_capture_active_i;
@@ -1420,6 +1425,8 @@ BEGIN
                     reg_val(23 downto 16) := gen_i2c_dev_r_int;
                   when REG_DEBUG_CH0_ENABLE =>
                     reg_val(0) := debug_ch0_enable_i;
+                  when REG_DEBUG_CH0_ROUTE =>
+                    reg_val(3 downto 0) := std_logic_vector(to_unsigned(debug_ch0_channel_i, 4));
                   when REG_DEBUG_CH0_PERIOD =>
                     reg_val := debug_ch0_period_i;
                   when REG_DEBUG_CH0_DUTY =>

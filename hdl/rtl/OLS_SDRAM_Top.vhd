@@ -68,6 +68,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   constant SDRAM_CLK_HZ : natural := get_sdram_clk_freq;
   constant SAMPLE_CLK_HZ : natural := get_sample_clk_freq;
   constant ENABLE_RUNTIME_INPUT_MUX : boolean := true;
+  constant ENABLE_SIGNAL_GEN : boolean := true;
+  constant ENABLE_DEBUG_CH0 : boolean := true;
   constant LA_CHANNELS : natural := 16;
   constant PIN_POOL_SIZE : natural := 26;
 
@@ -157,9 +159,11 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_clear     : std_logic := '0';
   signal analog_stream_mode : std_logic := '0';
   signal debug_ch0_enable : std_logic := '0';
+  signal debug_ch0_enable_eff : std_logic := '0';
+  signal debug_ch0_channel : natural range 0 to LA_CHANNELS-1 := 0;
   signal fast_mode_i : std_logic := '0';
   signal analog_frame_data  : std_logic_vector(127 downto 0) := (others => '0');
-  signal analog_frame_len   : natural range 1 to 5 := 1;
+  signal analog_frame_len   : natural range 1 to 14 := 1;
   signal adc0_result, adc1_result : std_logic_vector(11 downto 0) := (others => '0');
   signal adc2_result, adc3_result : std_logic_vector(11 downto 0) := (others => '0');
   signal adc_start : std_logic := '0';
@@ -212,8 +216,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal debug_ch0_enable_f2 : std_logic := '0';
   attribute preserve of debug_ch0_enable_f1 : signal is true;
   attribute preserve of debug_ch0_enable_f2 : signal is true;
-  signal pin_dir_f1 : std_logic := '0';
-  signal pin_dir_f2 : std_logic := '0';
+  signal debug_ch0_channel_f1 : natural range 0 to LA_CHANNELS-1 := 0;
+  signal debug_ch0_channel_f2 : natural range 0 to LA_CHANNELS-1 := 0;
   signal gen_tx_pin_f1 : natural range 0 to 31 := 0;
   signal gen_tx_pin_f2 : natural range 0 to 31 := 0;
   signal gen_scl_pin_f1 : natural range 0 to 31 := 0;
@@ -305,6 +309,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
     Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
     Debug_Ch0_Enable : OUT STD_LOGIC := '0';
+    Debug_Ch0_Channel : OUT NATURAL range 0 to 15 := 0;
     Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
     Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
     Gen_Start_Ack    : IN  STD_LOGIC := '0';
@@ -375,6 +380,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   END COMPONENT;
 
 BEGIN
+  debug_ch0_enable_eff <= debug_ch0_enable when ENABLE_DEBUG_CH0 else '0';
+
 
   -- FAST_SPEED is a dedicated digital-only build profile. On this MAX 10 /
   -- 12 MHz reference combination the legal high-speed PLL solution is
@@ -426,33 +433,56 @@ BEGIN
   SEN_SPC <= gen_scl when gen_spi_test = '1' and gen_busy = '1' else
              '0' when gen_i2c_test = '1' and gen_busy = '1' and gen_scl = '0' else 'Z';
 
+  gen_sys_capture_fast : if FAST_SPEED generate
+  begin
+    process(sys_clk)
+    begin
+      if rising_edge(sys_clk) then
+        for i in 0 to LA_CHANNELS-1 loop
+          if gen_capture_active = '1' and gen_tx_pin = pin_map(i) then
+            internal_data_r(i) <= gen_tx_d2;
+          elsif gen_capture_active = '1' and gen_rs485_pair = '1' and gen_scl_pin = pin_map(i) then
+            internal_data_r(i) <= not gen_tx_d2;
+          elsif gen_capture_active = '1' and (gen_i2c_test = '1' or gen_spi_test = '1') and gen_scl_pin = pin_map(i) then
+            internal_data_r(i) <= gen_scl_d2;
+          else
+            internal_data_r(i) <= pin_pool(pin_map(i));
+          end if;
+        end loop;
+      end if;
+    end process;
+  end generate;
+
   -- Registered capture mux: uses gen_tx_d2 (2-cycle loopback pipeline) and
   -- gen_capture_active.  Combining mux + register eliminates the combinational
   -- select timing hazard where gen_capture_active (deep hierarchy path) could
   -- arrive too late relative to generator data.
-  process(sys_clk)
+  gen_sys_capture_normal : if not FAST_SPEED generate
   begin
-    if rising_edge(sys_clk) then
-      for i in 0 to LA_CHANNELS-1 loop
-        if gen_capture_active = '1' and gen_tx_pin = pin_map(i) then
-          internal_data_r(i) <= gen_tx_d2;
-        elsif gen_capture_active = '1' and gen_rs485_pair = '1' and gen_scl_pin = pin_map(i) then
-          internal_data_r(i) <= not gen_tx_d2;
-        elsif gen_capture_active = '1' and (gen_i2c_test = '1' or gen_spi_test = '1') and gen_scl_pin = pin_map(i) then
-          internal_data_r(i) <= gen_scl_d2;
-        elsif i = 0 and debug_ch0_enable = '1' then
-          internal_data_r(i) <= registered_ch0_d1;
-        else
-          internal_data_r(i) <= pin_pool(pin_map(i));
-        end if;
-      end loop;
-    end if;
-  end process;
+    process(sys_clk)
+    begin
+      if rising_edge(sys_clk) then
+        for i in 0 to LA_CHANNELS-1 loop
+          if gen_capture_active = '1' and gen_tx_pin = pin_map(i) then
+            internal_data_r(i) <= gen_tx_d2;
+          elsif gen_capture_active = '1' and gen_rs485_pair = '1' and gen_scl_pin = pin_map(i) then
+            internal_data_r(i) <= not gen_tx_d2;
+          elsif gen_capture_active = '1' and (gen_i2c_test = '1' or gen_spi_test = '1') and gen_scl_pin = pin_map(i) then
+            internal_data_r(i) <= gen_scl_d2;
+          elsif i = debug_ch0_channel and debug_ch0_enable_eff = '1' then
+            internal_data_r(i) <= registered_ch0_d1;
+          else
+            internal_data_r(i) <= pin_pool(pin_map(i));
+          end if;
+        end loop;
+      end if;
+    end process;
+  end generate;
 
   process(sys_clk)
   begin
     if rising_edge(sys_clk) then
-      if debug_ch0_enable = '1' then
+      if debug_ch0_enable_eff = '1' then
         if unsigned(debug_ch0_period_active) <= 1 then
           debug_ch0_period_active <= x"00000002";
           debug_ch0_duty_active <= x"00000001";
@@ -510,9 +540,9 @@ BEGIN
       pin_out <= (others => '0');
       pin_dir <= (others => '0');
 
-      if debug_ch0_enable = '1' then
-        pin_out(0) <= registered_ch0;
-        pin_dir(0) <= '1';
+      if debug_ch0_enable_eff = '1' then
+        pin_out(pin_map(debug_ch0_channel)) <= registered_ch0;
+        pin_dir(pin_map(debug_ch0_channel)) <= '1';
       end if;
 
       if gen_busy = '1' or (gen_capture_active = '1' and gen_proto = '0') then
@@ -556,40 +586,33 @@ BEGIN
     if rising_edge(fast_clk) then
       registered_ch0_f1   <= registered_ch0;
       registered_ch0_f2   <= registered_ch0_f1;
-      debug_ch0_enable_f1 <= debug_ch0_enable;
+      debug_ch0_enable_f1 <= debug_ch0_enable_eff;
       debug_ch0_enable_f2 <= debug_ch0_enable_f1;
+      debug_ch0_channel_f1 <= debug_ch0_channel;
+      debug_ch0_channel_f2 <= debug_ch0_channel_f1;
       fast_mode_f1        <= fast_mode_i;
       fast_mode_f2        <= fast_mode_f1;
     end if;
   end process;
 
-  -- Speed input path: direct pin capture with CDC override for CH0
-  -- Uses pin_dir(0) as proxy for debug_enable to control the override,
-  -- avoiding the Quartus optimisation that eliminates debug_ch0_enable_f2.
-  -- When pin_dir(0) = '1' (output enabled, debug active): CH0 reads test counter
-  -- via CDC. When pin_dir(0) = '0': CH0 reads the physical pin.
+  -- Speed input path: direct pin capture with CDC override for the selected
+  -- logical debug channel.
   process(fast_clk)
   begin
     if rising_edge(fast_clk) then
-      pin_dir_f1 <= pin_dir(0);
-      pin_dir_f2 <= pin_dir_f1;
       pin_pool_fast_r <= pin_pool;
-      if pin_dir_f2 = '1' then
-        for i in 0 to LA_CHANNELS-1 loop
-          if i = 0 then
-            capture_data_fast_speed_r(i) <= registered_ch0_f2;
-          else
-            capture_data_fast_speed_r(i) <= pin_pool_fast_r(i);
-          end if;
-        end loop;
-      else
-        capture_data_fast_speed_r <= pin_pool_fast_r(LA_CHANNELS-1 downto 0);
-      end if;
+      for i in 0 to LA_CHANNELS-1 loop
+        if i = debug_ch0_channel_f2 and debug_ch0_enable_f2 = '1' then
+          capture_data_fast_speed_r(i) <= registered_ch0_f2;
+        else
+          capture_data_fast_speed_r(i) <= pin_pool_fast_r(i);
+        end if;
+      end loop;
     end if;
   end process;
 
   -- Mapped/loopback input path: pin-map mux with CDC synchronisers
-  gen_mapped_path : if ENABLE_RUNTIME_INPUT_MUX generate
+  gen_mapped_path : if ENABLE_RUNTIME_INPUT_MUX and not FAST_SPEED generate
   begin
     process(fast_clk)
     begin
@@ -628,7 +651,7 @@ BEGIN
         for i in 0 to LA_CHANNELS-1 loop
           capture_data_fast_mapped_r(i) <= pin_pool_f2(pin_map_fast(i));
 
-          if i = 0 and debug_ch0_enable_f2 = '1' then
+          if i = debug_ch0_channel_f2 and debug_ch0_enable_f2 = '1' then
             capture_data_fast_normal_r(i) <= registered_ch0_f2;
           elsif gen_capture_active_f2 = '1' and gen_tx_pin_f2 = pin_map_fast(i) then
             capture_data_fast_normal_r(i) <= gen_tx_f2;
@@ -644,17 +667,30 @@ BEGIN
     end process;
   end generate;
 
-  -- Registered mux: select input source based on runtime Fast_Mode
-  process(fast_clk)
+  gen_fast_capture_mux_fast : if FAST_SPEED generate
   begin
-    if rising_edge(fast_clk) then
-      if ENABLE_RUNTIME_INPUT_MUX and fast_mode_f2 = '1' then
+    process(fast_clk)
+    begin
+      if rising_edge(fast_clk) then
         capture_data_fast <= capture_data_fast_speed_r;
-      else
-        capture_data_fast <= capture_data_fast_normal_r;
       end if;
-    end if;
-  end process;
+    end process;
+  end generate;
+
+  -- Registered mux: select input source based on runtime Fast_Mode
+  gen_fast_capture_mux_normal : if not FAST_SPEED generate
+  begin
+    process(fast_clk)
+    begin
+      if rising_edge(fast_clk) then
+        if ENABLE_RUNTIME_INPUT_MUX and fast_mode_f2 = '1' then
+          capture_data_fast <= capture_data_fast_speed_r;
+        else
+          capture_data_fast <= capture_data_fast_normal_r;
+        end if;
+      end if;
+    end process;
+  end generate;
 
   -- ADC profiles selected by REG_FLAGS:
   -- mixed mode: 16 digital + 2 ADC channels, high-speed analog: one selected
@@ -839,6 +875,7 @@ BEGIN
     Pin_Map_Channel => pin_map_channel,
     Pin_Map_Pin     => pin_map_pin,
     Debug_Ch0_Enable => debug_ch0_enable,
+    Debug_Ch0_Channel => debug_ch0_channel,
     Debug_Ch0_Period => debug_ch0_period,
     Debug_Ch0_Duty   => debug_ch0_duty,
     Gen_Start_Ack    => gen_start_ack_i,
@@ -940,31 +977,46 @@ BEGIN
       fade_step       => led_fade_step
     );
 
-  GEN : Signal_Gen
-  generic map (FIFO_DEPTH => 256)
-  port map (
-    CLK => sys_clk,
-    Load_Byte => gen_load_byte,
-    Load_We   => gen_load_we,
-    Clear     => gen_clear,
-    Start     => gen_start,
-    Start_Ack => gen_start_ack_i,
-    Start_Reject => gen_start_reject_i,
-    Done_Pulse   => gen_done_pulse_i,
-    Baud_Div  => gen_baud_div_s,
-    Proto     => gen_proto,
-    Tx_Out    => gen_tx,
-    Scl_Out   => gen_scl,
-    Busy      => gen_busy,
-    Active    => gen_active,
-    Fifo_Count => gen_fifo_count,
-    I2C_Rd_Len => gen_i2c_rd_len,
-    I2C_Dev_R  => gen_i2c_dev_r,
-    Sda_In     => sen_sdi_sync,
-    SPI_Mode   => gen_spi_test,
-    Repeat     => gen_repeat,
-    CRC_En     => '0',
-    CRC_Poly   => x"A001"
-  );
+  gen_signal_gen_on : if ENABLE_SIGNAL_GEN generate
+  begin
+    GEN : Signal_Gen
+    generic map (FIFO_DEPTH => 256)
+    port map (
+      CLK => sys_clk,
+      Load_Byte => gen_load_byte,
+      Load_We   => gen_load_we,
+      Clear     => gen_clear,
+      Start     => gen_start,
+      Start_Ack => gen_start_ack_i,
+      Start_Reject => gen_start_reject_i,
+      Done_Pulse   => gen_done_pulse_i,
+      Baud_Div  => gen_baud_div_s,
+      Proto     => gen_proto,
+      Tx_Out    => gen_tx,
+      Scl_Out   => gen_scl,
+      Busy      => gen_busy,
+      Active    => gen_active,
+      Fifo_Count => gen_fifo_count,
+      I2C_Rd_Len => gen_i2c_rd_len,
+      I2C_Dev_R  => gen_i2c_dev_r,
+      Sda_In     => sen_sdi_sync,
+      SPI_Mode   => gen_spi_test,
+      Repeat     => gen_repeat,
+      CRC_En     => '0',
+      CRC_Poly   => x"A001"
+    );
+  end generate;
+
+  gen_signal_gen_off : if not ENABLE_SIGNAL_GEN generate
+  begin
+    gen_tx <= '0';
+    gen_scl <= '0';
+    gen_busy <= '0';
+    gen_active <= '0';
+    gen_fifo_count <= (others => '0');
+    gen_start_ack_i <= '0';
+    gen_start_reject_i <= gen_start;
+    gen_done_pulse_i <= '0';
+  end generate;
 END BEHAVIORAL;
 

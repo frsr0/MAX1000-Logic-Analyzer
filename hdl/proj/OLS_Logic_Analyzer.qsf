@@ -16,16 +16,17 @@ set_global_assignment -name LAST_QUARTUS_VERSION "18.1.0 Lite Edition"
 set_global_assignment -name FAMILY "MAX 10"
 set_global_assignment -name DEVICE 10M08SAU169C8G
 set_global_assignment -name TOP_LEVEL_ENTITY OLS_Logic_Analyzer_wrapper
-set_global_assignment -name SEED 23
+set_global_assignment -name SEED 21
 set_global_assignment -name INTERNAL_FLASH_UPDATE_MODE "SINGLE IMAGE WITH ERAM"
 set_global_assignment -name OPTIMIZE_MULTI_CORNER_TIMING ON
 
 # Speed-mode fitter settings (active for 200 MHz FAST_SPEED build):
 set_global_assignment -name FITTER_EFFORT "AUTO FIT"
-set_global_assignment -name OPTIMIZATION_MODE "AGGRESSIVE PERFORMANCE"
-set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC ON
-set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION ON
-set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING ON
+set_global_assignment -name OPTIMIZATION_MODE "BALANCED"
+set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC OFF
+set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION OFF
+set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING OFF
+set_global_assignment -name NUM_PARALLEL_PROCESSORS 10
 # Extra placement effort: at 99% LE the last ~20 ps of clk[2] slack is
 # placement noise; a 4x placement budget reliably buys it back.
 set_global_assignment -name PLACEMENT_EFFORT_MULTIPLIER 4
@@ -35,6 +36,11 @@ set_global_assignment -name VHDL_FILE ../rtl/OLS_SDRAM_Top.vhd
 set_global_assignment -name VHDL_FILE ../rtl/LED_Controller.vhd
 set_global_assignment -name VHDL_FILE ../rtl/OLS_Logic_Analyzer_SDRAM_Core.vhd
 set_global_assignment -name VHDL_FILE ../rtl/Fast_Logic_Analyzer_SDRAM.vhd
+set_global_assignment -name VHDL_FILE ../rtl/delta_calc.vhd
+set_global_assignment -name VHDL_FILE ../rtl/analog_packer.vhd
+set_global_assignment -name VHDL_FILE ../rtl/digital_rle.vhd
+set_global_assignment -name VHDL_FILE ../rtl/mso_stream_mux.vhd
+set_global_assignment -name VHDL_FILE ../rtl/mso_capture.vhd
 set_global_assignment -name VHDL_FILE ../rtl/spi_protocol_pkg.vhd
 set_global_assignment -name VHDL_FILE ../rtl/spi_packet_rx.vhd
 set_global_assignment -name VHDL_FILE ../rtl/spi_packet_tx.vhd

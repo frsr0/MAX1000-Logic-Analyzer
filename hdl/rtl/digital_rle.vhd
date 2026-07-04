@@ -71,10 +71,12 @@ architecture rtl of digital_rle is
   signal cap_val : slice_val_arr := (others => (others => '0'));  -- queued value per pending slice
   signal pend    : std_logic_vector(3 downto 0) := (others => '0');
   signal rr      : unsigned(1 downto 0) := (others => '0');       -- round-robin drain pointer
+  signal packet_valid_r : std_logic := '0';
 
   -- Combinational per-slice change flags (fed to the tracking process).
   signal changed : std_logic_vector(3 downto 0);
 begin
+  packet_valid <= packet_valid_r;
 
   gen_changed : for i in 0 to 3 generate
     changed(i) <= '1' when digital_in(i*4+3 downto i*4) /= prev(i) else '0';
@@ -97,7 +99,7 @@ begin
         cap_val      <= (others => (others => '0'));
         pend         <= (others => '0');
         rr           <= (others => '0');
-        packet_valid <= '0';
+        packet_valid_r <= '0';
         packet_out   <= (others => '0');
         overflow     <= '0';
       elsif clk_en = '1' then
@@ -144,7 +146,7 @@ begin
         -- separated by a register -- each is a short slice instead of one long
         -- combinational chain. A slice captured this cycle becomes eligible next
         -- cycle (a one-cycle drain latency, immaterial here).
-        if packet_valid = '1' and packet_ready = '0' then
+        if packet_valid_r = '1' and packet_ready = '0' then
           null;                                -- hold: consumer not ready
         else
           -- Output slot free (idle or accepted this cycle): pick next pending
@@ -165,11 +167,11 @@ begin
                           & std_logic_vector(to_unsigned(sel, 2))  -- slice ID
                           & cap_val(sel)                           -- value
                           & std_logic_vector(cap_dur(sel));        -- dwell
-            packet_valid <= '1';
+            packet_valid_r <= '1';
             pend_v(sel)  := '0';
             rr           <= to_unsigned((sel + 1) mod 4, 2);
           else
-            packet_valid <= '0';
+            packet_valid_r <= '0';
           end if;
         end if;
 

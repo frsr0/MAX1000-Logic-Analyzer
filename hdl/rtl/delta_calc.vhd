@@ -2,20 +2,24 @@ library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.numeric_std.all;
 
--- delta_calc : per-channel signed delta + block bit-width analyser (pipelined)
+-- delta_calc : per-channel anchor capture + signed delta width analyser
 -- ---------------------------------------------------------------------------
 -- Front end of the analog bit-packing pipeline. Samples arrive one at a time,
 -- tagged with the source ADC channel (0..3), in the natural interleaved order
 -- produced by the ADC_Controller round-robin. For each sample this block:
 --
---   1. subtracts the previous sample *of that same channel* to form a signed
---      delta (adjacent-sample difference), saturated to signed 11 bits, and
---   2. tracks the maximum signed bit-width required by any delta over a window
---      of BLOCK_SAMPLES (16) samples, so the downstream packer knows how many
---      bits per sample it must reserve for the whole block.
+--   1. captures the FIRST sample of each channel in the 16-sample interleaved
+--      frame as a verbatim per-channel anchor,
+--   2. subtracts the previous sample *of that same channel* for the remaining
+--      samples in the frame to form a signed delta (adjacent-sample
+--      difference), saturated to signed 11 bits, and
+--   3. tracks the maximum signed bit-width required by those emitted deltas so
+--      the downstream packer knows how many bits per sample it must reserve.
 --
--- The per-channel "previous sample" registers persist across block boundaries,
--- so the delta stream is continuous (no per-block anchor word).
+-- Each packed analog frame therefore represents 16 interleaved ADC samples as
+-- 4 verbatim anchors (one per channel) plus 12 deltas (3 more samples per
+-- channel). This avoids the v1 "first sample from zero" offset problem while
+-- keeping the stream self-contained.
 --
 -- Pipelining (3 stages) for the 200.4 MHz FAST_CLK domain
 -- -------------------------------------------------------
@@ -31,13 +35,9 @@ use IEEE.numeric_std.all;
 -- only the input->output latency grows (by 2 cycles), which is immaterial at
 -- ADC sample rates. Synchronous reset, single clock enable, no comb loops.
 --
--- Delta range note: two 12-bit samples differ by at most +/-4095 (13 signed
--- bits); the format defines an 11-bit signed delta, so large transients
--- saturate to [-1024, 1023] (width 11). Adjacent ADC samples move slowly, so
--- this only bounds worst-case amplitude error.
 entity delta_calc is
   generic (
-    BLOCK_SAMPLES : positive := 16   -- samples per packed block (4 ch x 4)
+    BLOCK_SAMPLES : positive := 12   -- emitted deltas per packed block (4 ch x 3)
   );
   port (
     clk          : in  std_logic;
@@ -47,6 +47,12 @@ entity delta_calc is
     sample_ch    : in  std_logic_vector(1 downto 0);    -- source channel 0..3
     sample_valid : in  std_logic;                       -- strobe: sample_in valid
 
+    anchor_ch0   : out std_logic_vector(11 downto 0) := (others => '0');
+    anchor_ch1   : out std_logic_vector(11 downto 0) := (others => '0');
+    anchor_ch2   : out std_logic_vector(11 downto 0) := (others => '0');
+    anchor_ch3   : out std_logic_vector(11 downto 0) := (others => '0');
+    anchor_valid : out std_logic := '0';                -- pulses with block_done
+
     delta_out    : out std_logic_vector(10 downto 0) := (others => '0'); -- signed 11-bit
     delta_valid  : out std_logic := '0';                -- delta_out valid this cycle
     block_width  : out std_logic_vector(3 downto 0) := (others => '0');  -- max bits/sample 1..11
@@ -55,12 +61,13 @@ entity delta_calc is
 end delta_calc;
 
 architecture rtl of delta_calc is
+  constant CHANNELS      : natural := 4;
+  constant FRAME_SAMPLES : natural := BLOCK_SAMPLES + CHANNELS;
 
   -- One "previous sample" register per ADC channel.
   type prev_array is array(0 to 3) of unsigned(11 downto 0);
   signal prev : prev_array := (others => (others => '0'));
-
-  signal count   : natural range 0 to BLOCK_SAMPLES-1 := 0;  -- samples into current block
+  signal count   : natural range 0 to FRAME_SAMPLES-1 := 0;  -- samples into current frame
   signal run_max : unsigned(3 downto 0) := (others => '0');  -- running max width (S3)
 
   -- S1 -> S2 pipeline registers
@@ -109,22 +116,39 @@ begin
         count       <= 0;
         run_max     <= (others => '0');
         v1 <= '0'; v2 <= '0';
+        anchor_valid <= '0';
         delta_valid <= '0';
         block_done  <= '0';
         delta_out   <= (others => '0');
         block_width <= (others => '0');
+        anchor_ch0  <= (others => '0');
+        anchor_ch1  <= (others => '0');
+        anchor_ch2  <= (others => '0');
+        anchor_ch3  <= (others => '0');
       elsif clk_en = '1' then
 
         -- ---------------- Stage 1: channel-relative subtract ----------------
         if sample_valid = '1' then
           ch    := to_integer(unsigned(sample_ch));
+          if count < CHANNELS then
+            case ch is
+              when 0 => anchor_ch0 <= sample_in;
+              when 1 => anchor_ch1 <= sample_in;
+              when 2 => anchor_ch2 <= sample_in;
+              when others => anchor_ch3 <= sample_in;
+            end case;
+          end if;
           diff1 <= signed(resize(unsigned(sample_in), 13))
                    - signed(resize(prev(ch), 13));
           prev(ch) <= unsigned(sample_in);
-          v1    <= '1';
-          if count = 0 then first1 <= '1'; else first1 <= '0'; end if;
-          if count = BLOCK_SAMPLES - 1 then last1 <= '1'; else last1 <= '0'; end if;
-          if count = BLOCK_SAMPLES - 1 then count <= 0; else count <= count + 1; end if;
+          if count < CHANNELS then
+            v1 <= '0';                        -- anchors replace the first 4 deltas
+          else
+            v1 <= '1';
+          end if;
+          if count = CHANNELS then first1 <= '1'; else first1 <= '0'; end if;
+          if count = FRAME_SAMPLES - 1 then last1 <= '1'; else last1 <= '0'; end if;
+          if count = FRAME_SAMPLES - 1 then count <= 0; else count <= count + 1; end if;
         else
           v1 <= '0';
         end if;
@@ -147,6 +171,7 @@ begin
         end if;
 
         -- ---------------- Stage 3: fold block max, emit ---------------------
+        anchor_valid <= '0';
         if v2 = '1' then
           delta_out   <= dsat2;
           delta_valid <= '1';
@@ -160,6 +185,7 @@ begin
           end if;
 
           if last2 = '1' then
+            anchor_valid <= '1';
             block_width <= std_logic_vector(wmax);
             block_done  <= '1';
             run_max     <= (others => '0');

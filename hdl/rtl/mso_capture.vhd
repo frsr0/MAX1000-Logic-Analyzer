@@ -10,7 +10,8 @@ use IEEE.numeric_std.all;
 -- existing 128-bit Analog_Frame datapath.
 --
 --   4x ADC results (adc_clk / sys_clk domain, one valid pulse per conversion)
---        -> CDC into fast_clk -> delta_calc -> analog_packer  (bit15=0 words)
+--        -> CDC into fast_clk -> delta_calc -> analog_packer  (bit15=0 words:
+--           4 verbatim anchors + 12 packed deltas per analog frame)
 --   16 raw digital pins -> 2-FF sync (fast_clk) -> digital_rle (bit15=1 words)
 --        -> mso_stream_mux -> out_data / out_valid  (fast_clk)
 --
@@ -75,6 +76,8 @@ architecture rtl of mso_capture is
   -- pipeline interconnect
   signal d_out  : std_logic_vector(10 downto 0);
   signal d_v    : std_logic;
+  signal a0, a1, a2, a3 : std_logic_vector(11 downto 0);
+  signal a_v    : std_logic;
   signal b_w    : std_logic_vector(3 downto 0);
   signal b_d    : std_logic;
   signal a_data : std_logic_vector(15 downto 0);
@@ -140,12 +143,16 @@ begin
   u_delta : entity work.delta_calc
     port map(clk => fast_clk, rst => rst, clk_en => '1',
              sample_in => smp_data, sample_ch => smp_ch, sample_valid => smp_valid,
+             anchor_ch0 => a0, anchor_ch1 => a1, anchor_ch2 => a2, anchor_ch3 => a3,
+             anchor_valid => a_v,
              delta_out => d_out, delta_valid => d_v,
              block_width => b_w, block_done => b_d);
 
   u_pack : entity work.analog_packer
     port map(clk => fast_clk, rst => rst, clk_en => '1',
              delta_in => d_out, delta_valid => d_v,
+             anchor_ch0 => a0, anchor_ch1 => a1, anchor_ch2 => a2, anchor_ch3 => a3,
+             anchor_valid => a_v,
              block_width => b_w, block_done => b_d,
              out_data => a_data, out_valid => a_valid, out_ready => a_ready,
              busy => open, in_ready => open);

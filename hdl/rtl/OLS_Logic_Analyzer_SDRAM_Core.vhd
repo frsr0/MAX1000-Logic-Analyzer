@@ -76,6 +76,7 @@ PORT (
     Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
     Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
     Debug_Ch0_Enable : OUT STD_LOGIC := '0';
+    Debug_Ch0_Channel : OUT NATURAL range 0 to 15 := 0;
     Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
     Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
     Gen_Start_Ack    : IN  STD_LOGIC := '0';
@@ -155,6 +156,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL pin_map_channel_i   : NATURAL range 0 to 15 := 0;
   SIGNAL pin_map_pin_i       : NATURAL range 0 to 31 := 0;
   SIGNAL debug_ch0_enable_i  : STD_LOGIC := '0';
+  SIGNAL debug_ch0_channel_i : NATURAL range 0 to 15 := 0;
   SIGNAL debug_ch0_period_i  : STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
   SIGNAL debug_ch0_duty_i    : STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
   SIGNAL gen_capture_active_i : STD_LOGIC := '0';
@@ -215,6 +217,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
       Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
       Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
        Debug_Ch0_Enable : OUT STD_LOGIC := '0';
+       Debug_Ch0_Channel : OUT NATURAL range 0 to 15 := 0;
        Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
        Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
         Gen_Capture_Active : OUT STD_LOGIC := '0';
@@ -353,6 +356,7 @@ BEGIN
   Pin_Map_Channel <= pin_map_channel_i;
   Pin_Map_Pin <= pin_map_pin_i;
   Debug_Ch0_Enable <= debug_ch0_enable_i;
+  Debug_Ch0_Channel <= debug_ch0_channel_i;
   Debug_Ch0_Period <= debug_ch0_period_i;
   Debug_Ch0_Duty   <= debug_ch0_duty_i;
   Gen_Capture_Active <= gen_capture_active_i;
@@ -392,6 +396,7 @@ BEGIN
     Pin_Map_Channel => pin_map_channel_i,
     Pin_Map_Pin     => pin_map_pin_i,
     Debug_Ch0_Enable => debug_ch0_enable_i,
+    Debug_Ch0_Channel => debug_ch0_channel_i,
     Debug_Ch0_Period => debug_ch0_period_i,
     Debug_Ch0_Duty   => debug_ch0_duty_i,
     Gen_Capture_Active => gen_capture_active_i,
