@@ -49,6 +49,9 @@ PORT (
     Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Gen_I2C_Test   : OUT STD_LOGIC := '0';
     Gen_SPI_Test   : OUT STD_LOGIC := '0';
+    Gen_RX_Data      : IN  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+    Gen_RX_Used      : IN  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+    Gen_RX_Re        : OUT STD_LOGIC := '0';
     Gen_Repeat     : OUT STD_LOGIC := '0';
     Gen_RS485_Pair : OUT STD_LOGIC := '0';
     Armed          : OUT STD_LOGIC := '0';
@@ -132,6 +135,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL Gen_Busy_i         : STD_LOGIC := '0';
   SIGNAL Gen_TX_Pin_i       : NATURAL range 0 to 31 := 0;
   SIGNAL Gen_SCL_Pin_i      : NATURAL range 0 to 31 := 0;
+  SIGNAL Gen_RX_Data_i    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+  SIGNAL Gen_RX_Used_i    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+  SIGNAL Gen_RX_Re_i      : STD_LOGIC := '0';
   SIGNAL gen_i2c_rd_len_i    : NATURAL range 0 to 255 := 0;
   SIGNAL gen_i2c_dev_r_i     : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL gen_i2c_test_i      : STD_LOGIC := '0';
@@ -224,6 +230,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
        Gen_Start_Ack      : IN  STD_LOGIC := '0';
        Gen_Start_Reject   : IN  STD_LOGIC := '0';
        Gen_Done_Pulse     : IN  STD_LOGIC := '0';
+       Gen_RX_Data      : IN  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+       Gen_RX_Used      : IN  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+       Gen_RX_Re        : OUT STD_LOGIC := '0';
        Blk_Rd_Req_Tog : OUT STD_LOGIC := '0';
        Blk_Rd_Base    : OUT NATURAL range 0 to Max_Samples := 0;
        Blk_Rd_Count   : OUT NATURAL range 0 to Max_Samples := 0;
@@ -324,6 +333,9 @@ BEGIN
   OLS_Interface_Outputs(Channels-1 downto 0) <= LA_Out(((OLS_Interface_Address mod sub_steps + 1)*Channels)-1 downto (OLS_Interface_Address mod sub_steps)*Channels);
   LA_Address <= OLS_Interface_Address/sub_steps;
   Gen_Load_Byte <= Gen_Load_Byte_i;
+  Gen_RX_Data_i   <= Gen_RX_Data;
+  Gen_RX_Used_i   <= Gen_RX_Used;
+  Gen_RX_Re       <= Gen_RX_Re_i;
   Gen_Load_We   <= Gen_Load_We_i;
   Gen_Start     <= Gen_Start_i;
   Gen_Baud_Div  <= Gen_Baud_Div_i;
@@ -403,6 +415,9 @@ BEGIN
     Gen_Start_Ack      => gen_start_ack_i,
     Gen_Start_Reject   => gen_start_reject_i,
     Gen_Done_Pulse     => gen_done_pulse_i,
+    Gen_RX_Data      => Gen_RX_Data_i,
+    Gen_RX_Used      => Gen_RX_Used_i,
+    Gen_RX_Re        => Gen_RX_Re_i,
     Blk_Rd_Req_Tog     => blk_rd_req_tog_i,
     Blk_Rd_Base        => blk_rd_base_i,
     Blk_Rd_Count       => blk_rd_count_i,

@@ -94,6 +94,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_repeat     : std_logic := '0';
   signal gen_rs485_pair : std_logic := '0';
   signal gen_fifo_count : std_logic_vector(7 downto 0) := (others => '0');
+  signal gen_rx_data   : std_logic_vector(7 downto 0) := (others => '0');
+  signal gen_rx_used   : std_logic_vector(7 downto 0) := (others => '0');
+  signal gen_rx_re     : std_logic := '0';
   signal gen_busy_latch : std_logic := '0';
   -- LED7 gen-activity stretch: ~0.25 s at 100 MHz so a brief pulse stays seen.
   constant GEN_LED_STRETCH_TOP : natural := 25000000;
@@ -304,6 +307,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Gen_Start_Ack    : IN  STD_LOGIC := '0';
     Gen_Start_Reject : IN  STD_LOGIC := '0';
     Gen_Done_Pulse   : IN  STD_LOGIC := '0';
+    Gen_RX_Data    : IN  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+    Gen_RX_Used    : IN  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+    Gen_RX_Re      : OUT STD_LOGIC := '0';
     Gen_Capture_Active : OUT STD_LOGIC := '0';
     Pump_Valid_Cycles   : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
     Pump_Ready_Cycles   : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
@@ -340,31 +346,29 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   );
   END COMPONENT;
 
-  COMPONENT Signal_Gen IS
+  COMPONENT Bit_Engine IS
   generic (FIFO_DEPTH : natural := 256);
   port (
-    CLK       : in  std_logic;
-    Load_Byte : in  std_logic_vector(7 downto 0);
-    Load_We   : in  std_logic;
-    Clear     : in  std_logic := '0';
-    Start     : in  std_logic;
-    Start_Ack : out std_logic := '0';
-    Start_Reject : out std_logic := '0';
-    Done_Pulse   : out std_logic := '0';
-    Baud_Div  : in  std_logic_vector(15 downto 0);
-    Proto     : in  std_logic := '0';
-    Tx_Out    : out std_logic := '1';
-    Scl_Out   : out std_logic := '1';
-    Busy      : out std_logic := '0';
-    Active    : out std_logic := '0';
-    Fifo_Count : out std_logic_vector(7 downto 0) := (others => '0');
-    I2C_Rd_Len : in natural range 0 to 255 := 0;
-    I2C_Dev_R  : in std_logic_vector(7 downto 0) := (others => '0');
-    Sda_In     : in std_logic := '1';
-    SPI_Mode  : in std_logic := '0';
-    Repeat    : in std_logic := '0';
-    CRC_En    : in std_logic := '0';
-    CRC_Poly  : in std_logic_vector(15 downto 0) := x"A001"
+    CLK         : in  std_logic;
+    TX_Data     : in  std_logic_vector(7 downto 0);
+    TX_We       : in  std_logic;
+    TX_Used     : out std_logic_vector(7 downto 0);
+    RX_Data     : out std_logic_vector(7 downto 0);
+    RX_Re       : in  std_logic;
+    RX_Used     : out std_logic_vector(7 downto 0);
+    RX_Overflow : out std_logic;
+    Bit_Div     : in  std_logic_vector(15 downto 0);
+    Num_Syms    : in  std_logic_vector(15 downto 0);
+    Over_Sample : in  std_logic_vector(1 downto 0);
+    RX_Enable   : in  std_logic;
+    Clk_Toggle  : in  std_logic;
+    Start       : in  std_logic;
+    Busy        : out std_logic;
+    Done        : out std_logic;
+    Clear       : in  std_logic;
+    Out_0       : out std_logic;
+    Out_1       : out std_logic;
+    In_0        : in  std_logic
   );
   END COMPONENT;
 
@@ -415,12 +419,9 @@ BEGIN
     PMOD(i) <= pin_out(15+i) when pin_dir(15+i) = '1' else 'Z';
   end generate;
 
-  SEN_CS <= '0' when gen_spi_test = '1' and gen_busy = '1' else '1';
-
-  SEN_SDI <= gen_tx when gen_spi_test = '1' and gen_busy = '1' else
-             '0' when gen_i2c_test = '1' and gen_busy = '1' and gen_tx = '0' else 'Z';
-  SEN_SPC <= gen_scl when gen_spi_test = '1' and gen_busy = '1' else
-             '0' when gen_i2c_test = '1' and gen_busy = '1' and gen_scl = '0' else 'Z';
+  SEN_CS <= '0' when gen_busy = '1' else '1';
+  SEN_SDI <= gen_tx when gen_busy = '1' else 'Z';
+  SEN_SPC <= gen_scl when gen_busy = '1' else 'Z';
 
   gen_sys_capture_fast : if FAST_SPEED generate
   begin
@@ -432,7 +433,7 @@ BEGIN
             internal_data_r(i) <= gen_tx_d2;
           elsif gen_capture_active = '1' and gen_rs485_pair = '1' and gen_scl_pin = pin_map(i) then
             internal_data_r(i) <= not gen_tx_d2;
-          elsif gen_capture_active = '1' and (gen_i2c_test = '1' or gen_spi_test = '1') and gen_scl_pin = pin_map(i) then
+          elsif gen_capture_active = '1' and gen_scl_pin = pin_map(i) then
             internal_data_r(i) <= gen_scl_d2;
           else
             internal_data_r(i) <= pin_pool(pin_map(i));
@@ -456,7 +457,7 @@ BEGIN
             internal_data_r(i) <= gen_tx_d2;
           elsif gen_capture_active = '1' and gen_rs485_pair = '1' and gen_scl_pin = pin_map(i) then
             internal_data_r(i) <= not gen_tx_d2;
-          elsif gen_capture_active = '1' and (gen_i2c_test = '1' or gen_spi_test = '1') and gen_scl_pin = pin_map(i) then
+          elsif gen_capture_active = '1' and gen_scl_pin = pin_map(i) then
             internal_data_r(i) <= gen_scl_d2;
           elsif i = debug_ch0_channel and debug_ch0_enable_eff = '1' then
             internal_data_r(i) <= registered_ch0;
@@ -530,10 +531,24 @@ BEGIN
         pin_dir(pin_map(debug_ch0_channel)) <= '1';
       end if;
 
-      if gen_busy = '1' or (gen_capture_active = '1' and gen_proto = '0') then
+      if gen_busy = '1' then
         if gen_tx_pin < PIN_POOL_SIZE then
           pin_out(gen_tx_pin) <= gen_tx;
           pin_dir(gen_tx_pin) <= '1';
+        end if;
+      end if;
+      
+      if gen_busy = '1' then
+        if gen_rs485_pair = '1' then
+          if gen_scl_pin < PIN_POOL_SIZE then
+            pin_out(gen_scl_pin) <= not gen_tx;
+            pin_dir(gen_scl_pin) <= '1';
+          end if;
+        else
+          if gen_scl_pin < PIN_POOL_SIZE then
+            pin_out(gen_scl_pin) <= gen_scl;
+            pin_dir(gen_scl_pin) <= '1';
+          end if;
         end if;
       end if;
 
@@ -883,6 +898,9 @@ BEGIN
     Gen_Start_Ack    => gen_start_ack_i,
     Gen_Start_Reject => gen_start_reject_i,
     Gen_Done_Pulse   => gen_done_pulse_i,
+    Gen_RX_Data    => gen_rx_data,
+    Gen_RX_Used    => gen_rx_used,
+    Gen_RX_Re      => gen_rx_re,
     Gen_Capture_Active => gen_capture_active,
     Pump_Valid_Cycles   => open,
     Pump_Ready_Cycles   => open,
@@ -981,33 +999,33 @@ BEGIN
 
   gen_signal_gen_on : if ENABLE_SIGNAL_GEN generate
   begin
-    GEN : Signal_Gen
-    generic map (FIFO_DEPTH => 256)
-    port map (
-      CLK => sys_clk,
-      Load_Byte => gen_load_byte,
-      Load_We   => gen_load_we,
-      Clear     => gen_clear,
-      Start     => gen_start,
-      Start_Ack => gen_start_ack_i,
-      Start_Reject => gen_start_reject_i,
-      Done_Pulse   => gen_done_pulse_i,
-      Baud_Div  => gen_baud_div_s,
-      Proto     => gen_proto,
-      Tx_Out    => gen_tx,
-      Scl_Out   => gen_scl,
-      Busy      => gen_busy,
-      Active    => gen_active,
-      Fifo_Count => gen_fifo_count,
-      I2C_Rd_Len => gen_i2c_rd_len,
-      I2C_Dev_R  => gen_i2c_dev_r,
-      Sda_In     => sen_sdi_sync,
-      SPI_Mode   => gen_spi_test,
-      Repeat     => gen_repeat,
-      CRC_En     => '0',
-      CRC_Poly   => x"A001"
-    );
+      GEN : Bit_Engine
+      generic map (FIFO_DEPTH => 256)
+      port map (
+        CLK         => sys_clk,
+        TX_Data     => gen_load_byte,
+        TX_We       => gen_load_we,
+        TX_Used     => gen_fifo_count,
+        RX_Data     => gen_rx_data,
+        RX_Re       => gen_rx_re,
+        RX_Used     => gen_rx_used,
+        RX_Overflow => open,
+        Bit_Div     => gen_baud_div_s,
+        Num_Syms    => x"0010",
+        Over_Sample => "00",
+        RX_Enable   => '0',
+        Clk_Toggle  => '0',
+        Start       => gen_start,
+        Busy        => gen_busy,
+        Done        => gen_done_pulse_i,
+        Clear       => gen_clear,
+        Out_0       => gen_tx,
+        Out_1       => gen_scl,
+        In_0        => sen_sdi_sync
+      );
   end generate;
+  gen_start_ack_i <= gen_start and not gen_busy;
+  gen_active <= gen_busy;
 
   gen_signal_gen_off : if not ENABLE_SIGNAL_GEN generate
   begin

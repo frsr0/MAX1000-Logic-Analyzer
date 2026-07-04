@@ -70,6 +70,9 @@ PORT (
          Gen_Start_Ack      : IN  STD_LOGIC := '0';
          Gen_Start_Reject   : IN  STD_LOGIC := '0';
          Gen_Done_Pulse     : IN  STD_LOGIC := '0';
+         Gen_RX_Data      : IN  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+         Gen_RX_Used      : IN  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+         Gen_RX_Re        : OUT STD_LOGIC := '0';
          -- Block readout (CMD_READ_CAPTURE) via the FLA response FIFO. Replaces
          -- the fixed-latency Address/Outputs latch and its prime/drain hack.
          Blk_Rd_Req_Tog : OUT STD_LOGIC := '0';
@@ -1129,6 +1132,7 @@ BEGIN
       disp_gen_start <= '0';
       disp_tx_payload_vld <= '0';
       block_rd_kill <= '0';
+      Gen_RX_Re <= '0';
       block_rd_issue_req <= '0';
       block_rd_release <= '0';
       disp_ack_done <= '0';
@@ -1423,6 +1427,9 @@ BEGIN
                     reg_val(3) := gen_rs485_pair_int;
                     reg_val(15 downto 8) := std_logic_vector(to_unsigned(gen_i2c_rd_len_int, 8));
                     reg_val(23 downto 16) := gen_i2c_dev_r_int;
+                  when REG_GEN_RX_DATA =>
+                    reg_val(7 downto 0)  := Gen_RX_Data;
+                    reg_val(15 downto 8) := Gen_RX_Used;
                   when REG_DEBUG_CH0_ENABLE =>
                     reg_val(0) := debug_ch0_enable_i;
                   when REG_DEBUG_CH0_ROUTE =>
@@ -1462,6 +1469,9 @@ BEGIN
                 rsp_buf(2) := reg_val(23 downto 16);
                 rsp_buf(3) := reg_val(31 downto 24);
                 rsp_buf_len := 4;
+                if disp_reg_addr = REG_GEN_RX_DATA then
+                  Gen_RX_Re <= '1';
+                end if;
                 rsp_len_v := 4;
               else
                 rsp_stat_v := ST_BAD_LEN;

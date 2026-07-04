@@ -72,6 +72,7 @@ package spi_protocol_pkg is
   constant REG_GEN_BAUD     : reg_addr_t := x"31";
   constant REG_GEN_PINS     : reg_addr_t := x"32";
   constant REG_GEN_DATA     : reg_addr_t := x"33";
+  constant REG_GEN_RX_DATA  : reg_addr_t := x"34";
   constant REG_IFACE_MODE   : reg_addr_t := x"F0";
   constant REG_DEBUG_CH0_ENABLE : reg_addr_t := x"40";
   constant REG_DEBUG_CH0_ROUTE  : reg_addr_t := x"41";
