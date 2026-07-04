@@ -93,6 +93,8 @@ package spi_protocol_pkg is
   constant REG_PUMP_STALL_CYCLES    : reg_addr_t := x"63";
   constant REG_PUMP_NODATA_CYCLES   : reg_addr_t := x"64";
   constant REG_PUMP_OVERFLOW_COUNT  : reg_addr_t := x"65";
+  constant REG_STREAM_DEBUG0        : reg_addr_t := x"66";
+  constant REG_STREAM_DEBUG1        : reg_addr_t := x"67";
 
   -- ── Helper: CRC-16-IBM ──────────────────────────────────────────
   function crc16(data : std_logic_vector; init : std_logic_vector(15 downto 0) := x"FFFF")

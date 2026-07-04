@@ -80,6 +80,8 @@ REG_PUMP_ACCEPT_CYCLES   = 0x62
 REG_PUMP_STALL_CYCLES    = 0x63
 REG_PUMP_NODATA_CYCLES   = 0x64
 REG_PUMP_OVERFLOW_COUNT  = 0x65
+REG_STREAM_DEBUG0        = 0x66
+REG_STREAM_DEBUG1        = 0x67
 REG_IFACE_MODE    = 0xF0
 
 # REG_GEN_DATA flag bits (written with upper byte non-zero to enter mode-config branch)

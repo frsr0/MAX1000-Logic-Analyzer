@@ -285,6 +285,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   -- is never 0x0000, so the host skips them) so the continuously-clocked wire is
   -- never starved into carrying ambiguous data between runs.
   SIGNAL raw_comp_pop         : STD_LOGIC := '0';
+  SIGNAL stream_debug0        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL stream_debug1        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   CONSTANT SAMPLE_CLK_KHZ_SLV : STD_LOGIC_VECTOR(31 downto 0) :=
     STD_LOGIC_VECTOR(TO_UNSIGNED(SAMPLE_CLK_HZ / 1000, 32));
   SIGNAL sig_rd_pend_d1       : STD_LOGIC := '0';
@@ -1165,6 +1167,39 @@ BEGIN
       -- Also flag the residual Rd_Fifo entries so the drain logic below
       -- flushes them before the next command reuses the FIFO read path.
       if spi_cs_rise = '1' then
+        if raw_stream_req_active = '1' then
+          stream_debug0 <= (others => '0');
+          stream_debug1 <= (others => '0');
+          case st is
+            when IDLE      => stream_debug0(3 downto 0) <= x"0";
+            when EXEC      => stream_debug0(3 downto 0) <= x"1";
+            when WAIT_BLOCK => stream_debug0(3 downto 0) <= x"2";
+            when BUILD_RSP => stream_debug0(3 downto 0) <= x"3";
+            when FEED_TX   => stream_debug0(3 downto 0) <= x"4";
+            when WAIT_TX   => stream_debug0(3 downto 0) <= x"5";
+            when RAW_STREAM => stream_debug0(3 downto 0) <= x"6";
+          end case;
+          stream_debug0(4) <= raw_stream_tx_sel;
+          stream_debug0(5) <= raw_stream_comp_mode;
+          stream_debug0(6) <= raw_stream_req_active;
+          stream_debug0(7) <= raw_comp_done;
+          stream_debug0(10 downto 8) <= std_logic_vector(to_unsigned(raw_comp_state, 3));
+          stream_debug0(11) <= pkt_tx_done;
+          stream_debug0(12) <= pkt_tx_payload_ready;
+          stream_debug0(13) <= spi_tx_ready_i;
+          stream_debug0(21 downto 14) <= std_logic_vector(to_unsigned(raw_comp_fifo_count, 8));
+          stream_debug0(29 downto 22) <= std_logic_vector(to_unsigned(raw_comp_samples_read mod 256, 8));
+          stream_debug1(7 downto 0) <= std_logic_vector(to_unsigned(raw_comp_samples_fed mod 256, 8));
+          stream_debug1(15 downto 8) <= raw_stream_tx_byte;
+          stream_debug1(16) <= comp_busy_i;
+          stream_debug1(17) <= comp_in_ready_i;
+          stream_debug1(18) <= comp_out_valid;
+          stream_debug1(19) <= raw_comp_pop;
+          stream_debug1(20) <= raw_blk_req_fire;
+          stream_debug1(21) <= raw_fifo_rdreq;
+          stream_debug1(22) <= raw_comp_fifo_rdreq;
+          stream_debug1(23) <= Rd_Fifo_Empty;
+        end if;
         raw_stream_tx_sel <= '0';
         raw_stream_req_active <= '0';
         raw_stream_comp_mode <= '0';
@@ -1462,6 +1497,10 @@ BEGIN
                     reg_val := Pump_NoData_Cycles;
                   when REG_PUMP_OVERFLOW_COUNT =>
                     reg_val := Pump_Overflow_Count;
+                  when REG_STREAM_DEBUG0 =>
+                    reg_val := stream_debug0;
+                  when REG_STREAM_DEBUG1 =>
+                    reg_val := stream_debug1;
                   when others => null;
                 end case;
                 rsp_buf(0) := reg_val(7 downto 0);
@@ -1651,7 +1690,12 @@ BEGIN
               if raw_words_rem > 0 then
                 raw_words_rem := raw_words_rem - 1;
               end if;
-              if raw_words_rem <= 1 then
+              -- raw_words_rem is a variable, so this reads the POST-decrement
+              -- count: 0 means the high byte just queued completes the LAST
+              -- requested word. The old "<= 1" exit here left one word unsent
+              -- on every stream segment (host saw 0xFFFF idle in the final
+              -- word slot; hw-verified 2026-07-04).
+              if raw_words_rem = 0 then
                 raw_start_pending := false;
                 st := IDLE;
               end if;
