@@ -31,46 +31,100 @@ entity Signal_Gen is
 end Signal_Gen;
 
 architecture rtl of Signal_Gen is
-  type fifo_t is array (0 to FIFO_DEPTH-1) of std_logic_vector(7 downto 0);
+  constant PTR_WIDTH : natural := 8;
   constant FIXED_BAUD_DIV : std_logic_vector(15 downto 0) := x"01E0";  -- 480 = 100 kHz I2C @ 96 MHz
-  signal fifo  : fifo_t := (others => (others => '0'));
-  signal head  : unsigned(7 downto 0) := (others => '0');
-  signal tail  : unsigned(7 downto 0) := (others => '0');
-  signal count : natural range 0 to FIFO_DEPTH := 0;
-  signal tx_active   : std_logic := '0';
-  signal start_d     : std_logic := '0';
-  signal done_pulse_i : std_logic := '0';
-  signal repeat_active : std_logic := '0';
-  signal repeat_start  : unsigned(7 downto 0) := (others => '0');
-  signal repeat_left   : natural range 0 to FIFO_DEPTH := 0;
 
-  -- Registered byte-load stage for SPI/I2C (breaks FIFO read → Tx_Out path)
-  signal byte_buf    : std_logic_vector(7 downto 0) := (others => '0');
-  signal byte_ready  : std_logic := '0';
+  subtype ptr_t is unsigned(PTR_WIDTH-1 downto 0);
 
-  -- Registered baud tick for SPI/I2C (breaks comparator → FSM → BRAM addr path)
-  signal baud_cnt_s   : natural range 0 to 65535 := 0;
-  signal baud_limit_s : natural range 0 to 65535 := 0;
-  signal baud_tick_r  : std_logic := '0';
+  type ram_t is array (0 to FIFO_DEPTH-1) of std_logic_vector(7 downto 0);
+  signal fifo_ram : ram_t := (others => (others => '0'));
+  attribute ramstyle : string;
+  attribute ramstyle of fifo_ram : signal is "M9K";
 
-  -- UART explicit registered FSM
+  type mode_t is (MODE_NONE, MODE_UART, MODE_SPI, MODE_I2C);
+  type read_src_t is (READ_NONE, READ_PLAYBACK, READ_I2C_DEV);
   type uart_state_t is (
     UART_IDLE,
+    UART_FETCH,
     UART_START_BIT,
     UART_DATA_BITS,
-    UART_STOP_BIT,
-    UART_DONE
+    UART_STOP_BIT
   );
+  type spi_state_t is (
+    SPI_IDLE,
+    SPI_FETCH,
+    SPI_LOAD,
+    SPI_SCLK_LOW,
+    SPI_SCLK_HIGH,
+    SPI_TRAIL_LOW
+  );
+  type i2c_state_t is (
+    I2C_IDLE,
+    I2C_START,
+    I2C_NEXT_BYTE,
+    I2C_FETCH_BYTE,
+    I2C_BIT_HIGH,
+    I2C_SHIFT_LOW,
+    I2C_ACK_HIGH,
+    I2C_RESTART_LOW,
+    I2C_RESTART_HIGH,
+    I2C_RESTART_START,
+    I2C_READ_LOW,
+    I2C_READ_HIGH1,
+    I2C_READ_HIGH2,
+    I2C_READ_ACK_LOW,
+    I2C_READ_ACK_HIGH,
+    I2C_STOP_LOW,
+    I2C_STOP_HIGH,
+    I2C_STOP_DONE
+  );
+
+  signal wr_ptr         : ptr_t := (others => '0');
+  signal rd_ptr         : ptr_t := (others => '0');
+  signal used_count     : natural range 0 to FIFO_DEPTH := 0;
+
+  signal tx_active      : std_logic := '0';
+  signal active_mode    : mode_t := MODE_NONE;
+  signal start_d        : std_logic := '0';
+  signal done_pulse_i   : std_logic := '0';
+
+  signal tx_out_r       : std_logic := '1';
+  signal scl_out_r      : std_logic := '1';
+
+  signal repeat_active  : std_logic := '0';
+  signal repeat_base    : ptr_t := (others => '0');
+  signal repeat_ptr     : ptr_t := (others => '0');
+  signal repeat_count   : natural range 0 to FIFO_DEPTH := 0;
+  signal repeat_left    : natural range 0 to FIFO_DEPTH := 0;
+
+  signal read_issue_q   : std_logic := '0';
+  signal read_src_q     : read_src_t := READ_NONE;
+  signal read_addr_q    : ptr_t := (others => '0');
+  signal read_valid_q   : std_logic := '0';
+  signal read_data_q    : std_logic_vector(7 downto 0) := (others => '0');
+
+  signal byte_buf       : std_logic_vector(7 downto 0) := (others => '0');
+
+  signal baud_cnt_s     : natural range 0 to 65535 := 0;
+  signal baud_limit_s   : natural range 0 to 65535 := 0;
+  signal baud_tick_r    : std_logic := '0';
+
   signal uart_state      : uart_state_t := UART_IDLE;
   signal uart_baud_cnt   : natural range 0 to 65535 := 0;
   signal uart_baud_limit : natural range 0 to 65535 := 239;
   signal uart_bit_idx    : natural range 0 to 7 := 0;
   signal uart_shift      : std_logic_vector(7 downto 0) := (others => '0');
+  signal uart_crc        : std_logic_vector(15 downto 0) := (others => '0');
+  signal uart_crc_run    : std_logic := '0';
+  signal uart_crc_phase  : natural range 0 to 2 := 0;
 
-  -- CRC state for UART
-  signal uart_crc       : std_logic_vector(15 downto 0) := (others => '0');
-  signal uart_crc_run   : std_logic := '0';
-  signal uart_crc_phase : natural range 0 to 2 := 0;
+  signal spi_state       : spi_state_t := SPI_IDLE;
+  signal spi_bit_idx     : natural range 0 to 7 := 0;
+
+  signal i2c_state       : i2c_state_t := I2C_IDLE;
+  signal i2c_bit_idx     : natural range 0 to 7 := 0;
+  signal i2c_rd_remain   : natural range 0 to 255 := 0;
+  signal i2c_read_phase  : std_logic := '0';
 
   function crc16_update(
     crc_in : std_logic_vector(15 downto 0);
@@ -91,27 +145,31 @@ architecture rtl of Signal_Gen is
     return c;
   end function;
 
-  attribute preserve : boolean;
-  attribute preserve of tx_active : signal is true;
-  attribute preserve of count : signal is true;
-  attribute preserve of byte_buf : signal is true;
-  attribute preserve of byte_ready : signal is true;
+  function inc_ptr(p : ptr_t) return ptr_t is
+  begin
+    if to_integer(p) = FIFO_DEPTH - 1 then
+      return (others => '0');
+    end if;
+    return p + 1;
+  end function;
 begin
   Active <= tx_active;
   Busy   <= tx_active;
-  Fifo_Count <= std_logic_vector(to_unsigned(count, 8));
+  Tx_Out <= tx_out_r;
+  Scl_Out <= scl_out_r;
+  Fifo_Count <= std_logic_vector(to_unsigned(used_count, 8));
   Done_Pulse <= done_pulse_i;
 
-  -- Registered baud tick generator for SPI/I2C only.
-  -- FSM sees baud_tick_r from the previous cycle, so the comparator
-  -- is not in the same timing path as the SPI/I2C state update.
+  -- Shared baud tick for SPI/I2C. The tick is registered one cycle before the
+  -- protocol engines consume it so the comparator does not sit in the control
+  -- cone that also drives the playback RAM read addresses.
   process(CLK)
   begin
     if rising_edge(CLK) then
       if tx_active = '0' then
         baud_cnt_s  <= 0;
         baud_tick_r <= '0';
-      elsif SPI_Mode = '1' or Proto = '1' then
+      elsif active_mode = MODE_SPI or active_mode = MODE_I2C then
         if baud_cnt_s >= baud_limit_s then
           baud_cnt_s  <= 0;
           baud_tick_r <= '1';
@@ -126,429 +184,458 @@ begin
   end process;
 
   process(CLK)
-    variable start_rise : std_logic := '0';
-    variable start_accept_v : std_logic := '0';
-    variable baud_limit_v : natural range 0 to 65535 := 0;
-    variable bit_cnt  : natural range 0 to 15 := 0;
-    variable data_buf : std_logic_vector(7 downto 0) := (others => '0');
-    variable byte_active : boolean := false;
-    variable crc      : std_logic_vector(15 downto 0) := (others => '0');
-    variable crc_run  : boolean := false;
-    variable crc_rem  : natural range 0 to 3 := 0;
-    variable crc_done : boolean := false;
-    variable crc_idx  : natural range 0 to 2 := 0;
-    variable i2c_state : natural range 0 to 17 := 0;
-    variable i2c_bit  : natural range 0 to 8 := 0;
-    variable rd_remain : natural range 0 to 255 := 0;
-    variable read_active : boolean := false;
-    variable spi_state : natural range 0 to 5 := 0;
-    variable spi_bit  : natural range 0 to 8 := 0;
+    variable start_rise    : std_logic;
+    variable start_accept  : std_logic;
+    variable baud_limit_v  : natural range 0 to 65535;
+    variable issue_read_v  : std_logic;
+    variable issue_src_v   : read_src_t;
+    variable issue_addr_v  : ptr_t;
   begin
     if rising_edge(CLK) then
       Start_Ack <= '0';
       Start_Reject <= '0';
       done_pulse_i <= '0';
-      start_accept_v := '0';
 
-      -- FIFO write (common to both protocols)
-      if Load_We = '1' and count < FIFO_DEPTH then
-        fifo(to_integer(head)) <= Load_Byte;
-        head <= head + 1;
-        count <= count + 1;
+      start_accept := '0';
+      issue_read_v := '0';
+      issue_src_v := READ_NONE;
+      issue_addr_v := read_addr_q;
+
+      -- Retire the previous read request through a single shared playback path.
+      read_valid_q <= read_issue_q;
+      case read_src_q is
+        when READ_PLAYBACK =>
+          if read_issue_q = '1' then
+            read_data_q <= fifo_ram(to_integer(read_addr_q));
+          end if;
+        when READ_I2C_DEV =>
+          if read_issue_q = '1' then
+            read_data_q <= I2C_Dev_R;
+          end if;
+        when others =>
+          null;
+      end case;
+
+      if Load_We = '1' and used_count < FIFO_DEPTH then
+        fifo_ram(to_integer(wr_ptr)) <= Load_Byte;
+        wr_ptr <= inc_ptr(wr_ptr);
+        used_count <= used_count + 1;
       end if;
 
-      -- Edge-detect Start
       start_rise := Start and not start_d;
       start_d <= Start;
 
-      -- Start trigger: accept only on rising edge when idle.
-      -- Compute baud_limit before setting tx_active to avoid the
-      -- signal-order trap where tx_active='0' reset runs on same cycle.
       if start_rise = '1' and tx_active = '0' then
         baud_limit_v := to_integer(unsigned(Baud_Div)) - 1;
         if Baud_Div = x"0000" then
           baud_limit_v := to_integer(unsigned(FIXED_BAUD_DIV)) - 1;
         end if;
+
         baud_limit_s <= baud_limit_v;
+        uart_baud_limit <= baud_limit_v;
+        uart_baud_cnt <= 0;
 
-        if SPI_Mode = '1' and count > 0 then
-          -- SPI start — queue first byte in byte_buf (registered), let FSM handle it
-          start_accept_v := '1';
+        if SPI_Mode = '1' and used_count > 0 then
+          start_accept := '1';
           Start_Ack <= '1';
           tx_active <= '1';
+          active_mode <= MODE_SPI;
+          spi_state <= SPI_FETCH;
+          spi_bit_idx <= 0;
           uart_state <= UART_IDLE;
-          uart_baud_cnt <= 0;
-          uart_baud_limit <= baud_limit_v;
-          byte_buf <= fifo(to_integer(tail));
-          byte_ready <= '1';
-          tail <= tail + 1;
-          count <= count - 1;
-          spi_bit := 0;
-          spi_state := 3;  -- CS setup, not state 0 (prevents double-load)
-          Tx_Out <= '1';  -- Will be updated on next cycle when byte_buf is ready
-          Scl_Out <= '1';
+          i2c_state <= I2C_IDLE;
+          tx_out_r <= '1';
+          scl_out_r <= '1';
 
-        elsif SPI_Mode = '0' and Proto = '0' and count > 0 then
-          -- UART start
-          start_accept_v := '1';
+          issue_read_v := '1';
+          issue_src_v := READ_PLAYBACK;
+          issue_addr_v := rd_ptr;
+          rd_ptr <= inc_ptr(rd_ptr);
+          used_count <= used_count - 1;
+
+        elsif SPI_Mode = '0' and Proto = '0' and used_count > 0 then
+          start_accept := '1';
           Start_Ack <= '1';
           tx_active <= '1';
-          uart_baud_limit <= baud_limit_v;
-          uart_baud_cnt <= 0;
-          uart_shift <= fifo(to_integer(tail));
-          tail <= tail + 1;
-          repeat_active <= Repeat;
-          if Repeat = '1' then
-            -- Keep FIFO intact. repeat_left counts bytes still to send in
-            -- this pass after the byte loaded above.
-            repeat_start <= tail;
-            repeat_left <= count - 1;
-          else
-            count <= count - 1;
-          end if;
-          if CRC_En = '1' then
-            uart_crc <= crc16_update(x"FFFF", fifo(to_integer(tail)), CRC_Poly);
-            uart_crc_run <= '1';
-          else
-            uart_crc <= (others => '0');
-            uart_crc_run <= '0';
-          end if;
-          uart_crc_phase <= 0;
+          active_mode <= MODE_UART;
+          uart_state <= UART_FETCH;
           uart_bit_idx <= 0;
-          -- Enter UART_START_BIT and keep TX idle-high until the first baud
-          -- tick. That first tick then asserts the start bit for exactly one
-          -- bit period before advancing into DATA_BITS. Driving TX low here
-          -- skips most of the first start bit on hardware, which shifts the
-          -- whole first byte and makes loopback decode fail.
-          uart_state <= UART_START_BIT;
-          Tx_Out <= '1';
-          Scl_Out <= '1';
+          uart_crc_phase <= 0;
+          spi_state <= SPI_IDLE;
+          i2c_state <= I2C_IDLE;
+          tx_out_r <= '1';
+          scl_out_r <= '1';
 
-        elsif Proto = '1' and (count > 0 or I2C_Rd_Len > 0) then
-          -- I2C start
-          start_accept_v := '1';
+          if Repeat = '1' then
+            repeat_active <= '1';
+            repeat_base <= rd_ptr;
+            repeat_ptr <= inc_ptr(rd_ptr);
+            repeat_count <= used_count;
+            if used_count > 1 then
+              repeat_left <= used_count - 1;
+            else
+              repeat_left <= used_count;
+            end if;
+            uart_crc_run <= '0';
+            issue_read_v := '1';
+            issue_src_v := READ_PLAYBACK;
+            issue_addr_v := rd_ptr;
+          else
+            repeat_active <= '0';
+            repeat_count <= 0;
+            repeat_left <= 0;
+            uart_crc_run <= '0';
+            issue_read_v := '1';
+            issue_src_v := READ_PLAYBACK;
+            issue_addr_v := rd_ptr;
+            rd_ptr <= inc_ptr(rd_ptr);
+            used_count <= used_count - 1;
+          end if;
+
+        elsif Proto = '1' and (used_count > 0 or I2C_Rd_Len > 0) then
+          start_accept := '1';
           Start_Ack <= '1';
           tx_active <= '1';
+          active_mode <= MODE_I2C;
+          i2c_state <= I2C_START;
+          i2c_bit_idx <= 0;
+          i2c_rd_remain <= I2C_Rd_Len;
+          i2c_read_phase <= '0';
           uart_state <= UART_IDLE;
-          uart_baud_cnt <= 0;
-          i2c_state := 0;
-          Tx_Out <= '1';
-          Scl_Out <= '1';
-
+          spi_state <= SPI_IDLE;
+          tx_out_r <= '1';
+          scl_out_r <= '1';
+          repeat_active <= '0';
+          repeat_count <= 0;
+          repeat_left <= 0;
+          uart_crc_run <= '0';
+          uart_crc_phase <= 0;
         else
           Start_Reject <= '1';
         end if;
       end if;
 
-      if start_accept_v = '1' then
-        -- State already initialized this cycle; skip idle reset.
-        -- SPI/UART/I2C engines run from their respective branches.
-        null;
-      elsif tx_active = '0' then
-        -- Idle: reset everything
+      if start_accept = '0' then
+        if tx_active = '0' then
+          active_mode <= MODE_NONE;
+          uart_state <= UART_IDLE;
+          spi_state <= SPI_IDLE;
+          i2c_state <= I2C_IDLE;
+          tx_out_r <= '1';
+          scl_out_r <= '1';
+          uart_baud_cnt <= 0;
+          uart_bit_idx <= 0;
+          uart_crc_run <= '0';
+          uart_crc_phase <= 0;
+          repeat_active <= '0';
+          repeat_count <= 0;
+          repeat_left <= 0;
+
+        elsif active_mode = MODE_UART then
+          if uart_baud_cnt < uart_baud_limit then
+            uart_baud_cnt <= uart_baud_cnt + 1;
+          else
+            uart_baud_cnt <= 0;
+
+            case uart_state is
+              when UART_FETCH =>
+                if read_valid_q = '1' then
+                  uart_shift <= read_data_q;
+                  if repeat_active = '0' and CRC_En = '1' then
+                    if uart_crc_run = '0' then
+                      uart_crc <= crc16_update(x"FFFF", read_data_q, CRC_Poly);
+                    else
+                      uart_crc <= crc16_update(uart_crc, read_data_q, CRC_Poly);
+                    end if;
+                    uart_crc_run <= '1';
+                  end if;
+                  uart_bit_idx <= 0;
+                  uart_state <= UART_START_BIT;
+                end if;
+
+              when UART_START_BIT =>
+                tx_out_r <= '0';
+                uart_bit_idx <= 0;
+                uart_state <= UART_DATA_BITS;
+
+              when UART_DATA_BITS =>
+                tx_out_r <= uart_shift(uart_bit_idx);
+                if uart_bit_idx = 7 then
+                  uart_state <= UART_STOP_BIT;
+                else
+                  uart_bit_idx <= uart_bit_idx + 1;
+                end if;
+
+              when UART_STOP_BIT =>
+                tx_out_r <= '1';
+
+                if repeat_active = '1' then
+                  issue_read_v := '1';
+                  issue_src_v := READ_PLAYBACK;
+                  issue_addr_v := repeat_ptr;
+                  if repeat_count <= 1 then
+                    repeat_ptr <= repeat_base;
+                    repeat_left <= repeat_count;
+                  elsif repeat_left <= 1 then
+                    repeat_ptr <= repeat_base;
+                    repeat_left <= repeat_count;
+                  else
+                    repeat_ptr <= inc_ptr(repeat_ptr);
+                    repeat_left <= repeat_left - 1;
+                  end if;
+                  uart_state <= UART_FETCH;
+
+                elsif used_count > 0 then
+                  issue_read_v := '1';
+                  issue_src_v := READ_PLAYBACK;
+                  issue_addr_v := rd_ptr;
+                  rd_ptr <= inc_ptr(rd_ptr);
+                  used_count <= used_count - 1;
+                  uart_state <= UART_FETCH;
+
+                elsif uart_crc_run = '1' and uart_crc_phase < 2 then
+                  if uart_crc_phase = 0 then
+                    uart_shift <= uart_crc(7 downto 0);
+                    uart_crc_phase <= 1;
+                  else
+                    uart_shift <= uart_crc(15 downto 8);
+                    uart_crc_phase <= 2;
+                  end if;
+                  uart_bit_idx <= 0;
+                  uart_state <= UART_START_BIT;
+
+                else
+                  tx_active <= '0';
+                  active_mode <= MODE_NONE;
+                  uart_state <= UART_IDLE;
+                  uart_crc_run <= '0';
+                  uart_crc_phase <= 0;
+                  repeat_active <= '0';
+                  repeat_count <= 0;
+                  repeat_left <= 0;
+                  done_pulse_i <= '1';
+                  tx_out_r <= '1';
+                end if;
+
+              when others =>
+                uart_state <= UART_IDLE;
+                tx_out_r <= '1';
+            end case;
+          end if;
+
+        elsif active_mode = MODE_SPI then
+          if baud_tick_r = '1' then
+            case spi_state is
+              when SPI_FETCH =>
+                if read_valid_q = '1' then
+                  byte_buf <= read_data_q;
+                  spi_bit_idx <= 0;
+                  spi_state <= SPI_LOAD;
+                end if;
+
+              when SPI_LOAD =>
+                scl_out_r <= '0';
+                tx_out_r <= byte_buf(7);
+                spi_state <= SPI_SCLK_LOW;
+
+              when SPI_SCLK_LOW =>
+                scl_out_r <= '0';
+                tx_out_r <= byte_buf(7 - spi_bit_idx);
+                spi_state <= SPI_SCLK_HIGH;
+
+              when SPI_SCLK_HIGH =>
+                scl_out_r <= '1';
+                if spi_bit_idx = 7 then
+                  if used_count > 0 then
+                    issue_read_v := '1';
+                    issue_src_v := READ_PLAYBACK;
+                    issue_addr_v := rd_ptr;
+                    rd_ptr <= inc_ptr(rd_ptr);
+                    used_count <= used_count - 1;
+                    spi_state <= SPI_FETCH;
+                  else
+                    spi_state <= SPI_TRAIL_LOW;
+                  end if;
+                else
+                  spi_bit_idx <= spi_bit_idx + 1;
+                  spi_state <= SPI_SCLK_LOW;
+                end if;
+
+              when SPI_TRAIL_LOW =>
+                scl_out_r <= '0';
+                tx_active <= '0';
+                active_mode <= MODE_NONE;
+                spi_state <= SPI_IDLE;
+                done_pulse_i <= '1';
+
+              when others =>
+                spi_state <= SPI_IDLE;
+            end case;
+          end if;
+
+        elsif active_mode = MODE_I2C then
+          if baud_tick_r = '1' then
+            case i2c_state is
+              when I2C_START =>
+                scl_out_r <= '1';
+                tx_out_r <= '0';
+                i2c_state <= I2C_NEXT_BYTE;
+
+              when I2C_NEXT_BYTE =>
+                if used_count > 0 then
+                  issue_read_v := '1';
+                  issue_src_v := READ_PLAYBACK;
+                  issue_addr_v := rd_ptr;
+                  rd_ptr <= inc_ptr(rd_ptr);
+                  used_count <= used_count - 1;
+                  i2c_state <= I2C_FETCH_BYTE;
+                elsif i2c_rd_remain > 0 and i2c_read_phase = '0' then
+                  i2c_state <= I2C_RESTART_LOW;
+                elsif i2c_rd_remain > 0 then
+                  i2c_bit_idx <= 0;
+                  i2c_rd_remain <= i2c_rd_remain - 1;
+                  i2c_state <= I2C_READ_LOW;
+                else
+                  i2c_state <= I2C_STOP_LOW;
+                end if;
+
+              when I2C_FETCH_BYTE =>
+                scl_out_r <= '0';
+                if read_valid_q = '1' then
+                  byte_buf <= read_data_q;
+                  tx_out_r <= read_data_q(7);
+                  i2c_bit_idx <= 1;
+                  i2c_state <= I2C_BIT_HIGH;
+                end if;
+
+              when I2C_BIT_HIGH =>
+                scl_out_r <= '1';
+                i2c_state <= I2C_SHIFT_LOW;
+
+              when I2C_SHIFT_LOW =>
+                scl_out_r <= '0';
+                if i2c_bit_idx < 8 then
+                  tx_out_r <= byte_buf(7 - i2c_bit_idx);
+                  i2c_bit_idx <= i2c_bit_idx + 1;
+                  i2c_state <= I2C_BIT_HIGH;
+                else
+                  tx_out_r <= '1';
+                  i2c_state <= I2C_ACK_HIGH;
+                end if;
+
+              when I2C_ACK_HIGH =>
+                scl_out_r <= '1';
+                i2c_state <= I2C_NEXT_BYTE;
+
+              when I2C_RESTART_LOW =>
+                scl_out_r <= '0';
+                tx_out_r <= '1';
+                i2c_state <= I2C_RESTART_HIGH;
+
+              when I2C_RESTART_HIGH =>
+                scl_out_r <= '1';
+                tx_out_r <= '1';
+                i2c_state <= I2C_RESTART_START;
+
+              when I2C_RESTART_START =>
+                scl_out_r <= '1';
+                tx_out_r <= '0';
+                i2c_read_phase <= '1';
+                issue_read_v := '1';
+                issue_src_v := READ_I2C_DEV;
+                issue_addr_v := (others => '0');
+                i2c_state <= I2C_FETCH_BYTE;
+
+              when I2C_READ_LOW =>
+                scl_out_r <= '0';
+                tx_out_r <= '1';
+                i2c_state <= I2C_READ_HIGH1;
+
+              when I2C_READ_HIGH1 =>
+                scl_out_r <= '1';
+                i2c_state <= I2C_READ_HIGH2;
+
+              when I2C_READ_HIGH2 =>
+                scl_out_r <= '1';
+                if i2c_bit_idx = 7 then
+                  i2c_state <= I2C_READ_ACK_LOW;
+                else
+                  i2c_bit_idx <= i2c_bit_idx + 1;
+                  i2c_state <= I2C_READ_LOW;
+                end if;
+
+              when I2C_READ_ACK_LOW =>
+                scl_out_r <= '0';
+                if i2c_rd_remain = 0 then
+                  tx_out_r <= '1';
+                else
+                  tx_out_r <= '0';
+                end if;
+                i2c_state <= I2C_READ_ACK_HIGH;
+
+              when I2C_READ_ACK_HIGH =>
+                scl_out_r <= '1';
+                if i2c_rd_remain = 0 then
+                  i2c_state <= I2C_STOP_LOW;
+                else
+                  i2c_bit_idx <= 0;
+                  i2c_state <= I2C_READ_LOW;
+                end if;
+
+              when I2C_STOP_LOW =>
+                scl_out_r <= '0';
+                tx_out_r <= '0';
+                i2c_state <= I2C_STOP_HIGH;
+
+              when I2C_STOP_HIGH =>
+                scl_out_r <= '1';
+                i2c_state <= I2C_STOP_DONE;
+
+              when I2C_STOP_DONE =>
+                scl_out_r <= '1';
+                tx_out_r <= '1';
+                tx_active <= '0';
+                active_mode <= MODE_NONE;
+                i2c_state <= I2C_IDLE;
+                done_pulse_i <= '1';
+
+              when others =>
+                i2c_state <= I2C_IDLE;
+            end case;
+          end if;
+        end if;
+      end if;
+
+      read_issue_q <= issue_read_v;
+      read_src_q <= issue_src_v;
+      read_addr_q <= issue_addr_v;
+
+      -- Abort/flush takes precedence over same-cycle loads and start requests.
+      if Clear = '1' then
+        wr_ptr <= (others => '0');
+        rd_ptr <= (others => '0');
+        used_count <= 0;
+        tx_active <= '0';
+        active_mode <= MODE_NONE;
+        start_d <= Start;
+        read_issue_q <= '0';
+        read_src_q <= READ_NONE;
+        read_valid_q <= '0';
+        tx_out_r <= '1';
+        scl_out_r <= '1';
         uart_state <= UART_IDLE;
+        spi_state <= SPI_IDLE;
+        i2c_state <= I2C_IDLE;
         uart_baud_cnt <= 0;
         uart_bit_idx <= 0;
         uart_crc_run <= '0';
         uart_crc_phase <= 0;
-        i2c_state := 0; i2c_bit := 0; rd_remain := 0; read_active := false;
-        spi_state := 0; spi_bit := 0;
-        byte_active := false; bit_cnt := 0;
-        byte_ready <= '0';
-        crc := (others => '0'); crc_run := false; crc_rem := 0; crc_done := false;
-        Tx_Out <= '1'; Scl_Out <= '1';
-
-      elsif SPI_Mode = '1' then
-        ----------------------------------------------------
-        -- SPI Master (registered byte-load stage)
-        ----------------------------------------------------
-        if baud_tick_r = '1' then
-          case spi_state is
-            when 0 =>  -- Idle / load byte
-              if count > 0 then
-                byte_buf <= fifo(to_integer(tail));
-                byte_ready <= '1';
-                tail <= tail + 1;
-                count <= count - 1;
-                spi_bit := 0;
-                spi_state := 3;
-              else
-                tx_active <= '0'; done_pulse_i <= '1';
-              end if;
-            when 3 =>  -- byte load: hold SCLK LOW while byte_buf settles.
-              -- (Was '1', which merged the previous byte's final clock-high
-              -- with this byte's setup into one double-width high plateau, so a
-              -- mid-plateau sampler read the next byte's MSB instead of the
-              -- previous byte's LSB. Driving low gives one clean high per bit.)
-              Scl_Out <= '0';
-              if byte_ready = '1' then
-                Tx_Out <= byte_buf(7);
-                byte_ready <= '0';
-                spi_state := 1;
-              end if;
-            when 1 =>  -- SCLK low, output bit
-              Scl_Out <= '0';
-              Tx_Out <= byte_buf(7 - spi_bit);
-              spi_state := 2;
-            when 2 =>  -- SCLK high
-              Scl_Out <= '1';
-              spi_bit := spi_bit + 1;
-              if spi_bit >= 8 then
-                if count > 0 then
-                  byte_buf <= fifo(to_integer(tail));
-                  byte_ready <= '1';
-                  tail <= tail + 1;
-                  count <= count - 1;
-                  spi_bit := 0;
-                  spi_state := 3;
-                else
-                  -- Hold the final SCLK high for one more baud period before
-                  -- dropping Busy. Deasserting tx_active on the same cycle as
-                  -- the 8th rising edge stops the pin drive after ~1 sys_clk,
-                  -- too short to be sampled, so the last bit's clock was lost.
-                  spi_state := 4;
-                end if;
-              else
-                spi_state := 1;
-              end if;
-            when 4 =>  -- trailing 1: drive SCLK low while STILL busy, so the
-              -- pin (gated on gen_busy) actually drives the falling edge that
-              -- ends the last bit's high. Releasing in the same cycle let the
-              -- pin float high and merge the final high into the idle.
-              Scl_Out <= '0';
-              spi_state := 5;
-            when 5 =>  -- trailing 2: low has been driven a full bit, now finish
-              tx_active <= '0'; done_pulse_i <= '1';
-              spi_state := 0;
-            when others =>
-              spi_state := 0;
-          end case;
-        end if;
-
-      elsif Proto = '0' then
-        ----------------------------------------------------
-        -- UART TX — explicit registered FSM
-        ----------------------------------------------------
-        if uart_baud_cnt < uart_baud_limit then
-          uart_baud_cnt <= uart_baud_cnt + 1;
-        else
-          uart_baud_cnt <= 0;
-
-          case uart_state is
-            when UART_START_BIT =>
-              Tx_Out <= '0';
-              uart_bit_idx <= 0;
-              uart_state <= UART_DATA_BITS;
-
-            when UART_DATA_BITS =>
-              Tx_Out <= uart_shift(uart_bit_idx);
-              if uart_bit_idx = 7 then
-                uart_state <= UART_STOP_BIT;
-              else
-                uart_bit_idx <= uart_bit_idx + 1;
-              end if;
-
-            when UART_STOP_BIT =>
-              -- Hold the stop bit high for a full bit period; UART_START_BIT
-              -- then drives the next start bit for one period. (Forcing
-              -- Tx_Out low here erased the inter-byte stop bit entirely.)
-              Tx_Out <= '1';
-
-              if repeat_active = '1' then
-                if repeat_left > 0 then
-                  uart_shift <= fifo(to_integer(tail));
-                  tail <= tail + 1;
-                  repeat_left <= repeat_left - 1;
-                else
-                  uart_shift <= fifo(to_integer(repeat_start));
-                  tail <= repeat_start + 1;
-                  repeat_left <= count - 1;
-                end if;
-                uart_bit_idx <= 0;
-                uart_state <= UART_START_BIT;
-
-              elsif count > 0 then
-                uart_shift <= fifo(to_integer(tail));
-                tail <= tail + 1;
-                count <= count - 1;
-                if uart_crc_run = '1' then
-                  uart_crc <= crc16_update(uart_crc, fifo(to_integer(tail)), CRC_Poly);
-                end if;
-                uart_bit_idx <= 0;
-                uart_state <= UART_START_BIT;
-
-              elsif uart_crc_run = '1' and uart_crc_phase < 2 then
-                if uart_crc_phase = 0 then
-                  uart_shift <= uart_crc(7 downto 0);
-                  uart_crc_phase <= 1;
-                else
-                  uart_shift <= uart_crc(15 downto 8);
-                  uart_crc_phase <= 2;
-                end if;
-                uart_bit_idx <= 0;
-                uart_state <= UART_START_BIT;
-
-              else
-                uart_crc_run <= '0';
-                uart_crc_phase <= 0;
-                repeat_active <= '0';
-                repeat_left <= 0;
-                tx_active <= '0';
-                done_pulse_i <= '1';
-                uart_state <= UART_IDLE;
-                Tx_Out <= '1';
-              end if;
-
-            when others =>
-              uart_state <= UART_IDLE;
-              Tx_Out <= '1';
-          end case;
-        end if;
-
-      elsif Proto = '1' then
-        ----------------------------------------------------
-        -- I2C Master (registered byte-load stage)
-        ----------------------------------------------------
-        if baud_tick_r = '1' then
-          case i2c_state is
-            when 0 =>  -- START
-              Scl_Out <= '1'; Tx_Out <= '0';
-              rd_remain := I2C_Rd_Len;
-              read_active := false;
-              i2c_state := 1;
-            when 1 =>
-              if byte_active = false then
-                if count > 0 then
-                  Scl_Out <= '0';
-                  byte_buf <= fifo(to_integer(tail));
-                  byte_ready <= '1';
-                  tail <= tail + 1;
-                  count <= count - 1;
-                  i2c_bit := 0; byte_active := true;
-                elsif rd_remain > 0 and not read_active then
-                  read_active := true;
-                  Scl_Out <= '0';
-                  i2c_state := 13;
-                elsif rd_remain > 0 and read_active then
-                  Scl_Out <= '0';
-                  rd_remain := rd_remain - 1;
-                  i2c_bit := 0;
-                  i2c_state := 8;
-                else
-                  Scl_Out <= '0';
-                  i2c_state := 16;
-                end if;
-              else
-                Scl_Out <= '0';
-              end if;
-              if byte_active then
-                if i2c_state = 1 and byte_ready = '1' then
-                  -- MSB goes out here; state 3 continues from bit 6.
-                  -- (i2c_bit := 0 made state 3 resend the MSB, shifting the
-                  -- whole byte right and clocking 9 data bits on the wire.)
-                  Tx_Out <= byte_buf(7);
-                  byte_ready <= '0';
-                  i2c_bit := 1;
-                  i2c_state := 2;
-                end if;
-              end if;
-            when 2 =>
-              Scl_Out <= '1';
-              i2c_state := 3;
-            when 3 =>
-              Scl_Out <= '0';
-              if i2c_bit < 8 then
-                Tx_Out <= byte_buf(7 - i2c_bit);
-                i2c_bit := i2c_bit + 1;
-                i2c_state := 2;
-              else
-                Tx_Out <= '1';
-                i2c_state := 4;
-              end if;
-            when 4 =>
-              Scl_Out <= '1';
-              byte_active := false;
-              if i2c_state = 4 then
-                i2c_state := 1;
-              end if;
-            when 5 =>
-              Scl_Out <= '1'; Tx_Out <= '1';
-              tx_active <= '0'; done_pulse_i <= '1';
-              i2c_state := 0;
-            when 13 =>
-              Scl_Out <= '0'; Tx_Out <= '1';
-              i2c_state := 6;
-            when 6 =>
-              Scl_Out <= '1'; Tx_Out <= '1';
-              i2c_state := 7;
-            when 7 =>
-              Scl_Out <= '1'; Tx_Out <= '0';
-              byte_buf <= I2C_Dev_R;
-              byte_ready <= '1';
-              byte_active := true;
-              i2c_bit := 0;
-              i2c_state := 1;
-            when 8 =>
-              Scl_Out <= '0'; Tx_Out <= '1';
-              i2c_state := 9;
-            when 9 =>
-              Scl_Out <= '1';
-              i2c_state := 10;
-            when 10 =>
-              Scl_Out <= '1';
-              i2c_state := 12;
-            when 12 =>
-              Scl_Out <= '1';
-              i2c_bit := i2c_bit + 1;
-              if i2c_bit < 8 then
-                i2c_state := 8;
-              else
-                i2c_state := 14;
-              end if;
-            when 14 =>
-              Scl_Out <= '0';
-              if rd_remain = 0 then
-                Tx_Out <= '1';
-                i2c_state := 11;
-              else
-                Tx_Out <= '0';
-                i2c_state := 15;
-              end if;
-            when 15 =>
-              Scl_Out <= '1';
-              rd_remain := rd_remain - 1;
-              i2c_bit := 0;
-              i2c_state := 8;
-            when 11 =>
-              Scl_Out <= '1';
-              byte_active := false;
-              i2c_state := 16;
-            -- STOP setup: SDA must be low while SCL is low, then SCL rises,
-            -- then SDA rises (state 5) — SDA↑ under SCL-high is the STOP.
-            -- Entering state 5 directly with SDA already high puts no STOP
-            -- edge on the wire.
-            when 16 =>
-              Scl_Out <= '0'; Tx_Out <= '0';
-              i2c_state := 17;
-            when 17 =>
-              Scl_Out <= '1';
-              i2c_state := 5;
-            when others => i2c_state := 0;
-          end case;
-        end if;
-      end if;
-
-      -- Abort/flush: stop any transmission and empty the FIFO so stale
-      -- bytes from a failed or never-started run can't leak into the next
-      -- transaction.  Placed last so it overrides same-cycle loads.
-      if Clear = '1' then
-        head <= (others => '0');
-        tail <= (others => '0');
-        count <= 0;
-        byte_ready <= '0';
-        tx_active <= '0';
         repeat_active <= '0';
+        repeat_count <= 0;
         repeat_left <= 0;
+        i2c_bit_idx <= 0;
+        i2c_rd_remain <= 0;
+        i2c_read_phase <= '0';
       end if;
     end if;
   end process;
