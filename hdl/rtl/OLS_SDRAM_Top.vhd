@@ -111,8 +111,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
 
   -- Physical pin pool (all digital-capable inputs)
   signal pin_pool     : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
-  signal pin_pool_d1  : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
-  signal pin_pool_d2  : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
 
   -- Pin map registers: each LA channel i reads pin_pool(pin_map(i))
   type pin_map_t is array(0 to LA_CHANNELS-1) of natural range 0 to PIN_POOL_SIZE-1;
@@ -126,20 +124,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal debug_ch0_duty   : std_logic_vector(31 downto 0) := x"00000200";
   signal debug_ch0_period_active : std_logic_vector(31 downto 0) := x"00000400";
   signal debug_ch0_duty_active   : std_logic_vector(31 downto 0) := x"00000200";
-  signal pump_valid_cycles   : std_logic_vector(31 downto 0) := (others => '0');
-  signal pump_ready_cycles   : std_logic_vector(31 downto 0) := (others => '0');
-  signal pump_accept_cycles  : std_logic_vector(31 downto 0) := (others => '0');
-  signal pump_stall_cycles   : std_logic_vector(31 downto 0) := (others => '0');
-  signal pump_nodata_cycles  : std_logic_vector(31 downto 0) := (others => '0');
-  signal pump_overflow_count : std_logic_vector(31 downto 0) := (others => '0');
   signal sen_sdi_meta : std_logic := '1';
   signal sen_sdi_sync : std_logic := '1';
   signal gen_scl_d1   : std_logic := '0';
   signal gen_scl_d2   : std_logic := '0';
   signal gen_tx_d1    : std_logic := '0';
   signal gen_tx_d2    : std_logic := '0';
-  signal registered_ch0_d1 : std_logic := '0';
-  signal registered_ch0_d2 : std_logic := '0';
 
   signal gen_capture_active : std_logic := '0';
   signal gen_start_ack_i    : std_logic;
@@ -194,7 +184,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal capture_data_fast_mapped_r : std_logic_vector(LA_CHANNELS-1 downto 0) := (others => '0');
   signal capture_data_fast_normal_r : std_logic_vector(LA_CHANNELS-1 downto 0) := (others => '0');
   signal fast_mode_f1 : std_logic := '0';
-  signal fast_mode_f2 : std_logic := '0';
   signal pin_pool_fast_r   : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
   signal pin_pool_f1  : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
   signal pin_pool_f2  : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
@@ -470,7 +459,7 @@ BEGIN
           elsif gen_capture_active = '1' and (gen_i2c_test = '1' or gen_spi_test = '1') and gen_scl_pin = pin_map(i) then
             internal_data_r(i) <= gen_scl_d2;
           elsif i = debug_ch0_channel and debug_ch0_enable_eff = '1' then
-            internal_data_r(i) <= registered_ch0_d1;
+            internal_data_r(i) <= registered_ch0;
           else
             internal_data_r(i) <= pin_pool(pin_map(i));
           end if;
@@ -511,16 +500,12 @@ BEGIN
   -- Input synchroniser + pin map write
   process(sys_clk) begin
     if rising_edge(sys_clk) then
-      pin_pool_d1 <= pin_pool;
-      pin_pool_d2 <= pin_pool_d1;
       sen_sdi_meta <= SEN_SDI;
       sen_sdi_sync <= sen_sdi_meta;
       gen_scl_d1 <= gen_scl;
       gen_scl_d2 <= gen_scl_d1;
       gen_tx_d1 <= gen_tx;
       gen_tx_d2 <= gen_tx_d1;
-      registered_ch0_d1 <= registered_ch0;
-      registered_ch0_d2 <= registered_ch0_d1;
 
       -- Pin map write from host command
       if pin_map_write = '1' then
@@ -581,19 +566,36 @@ BEGIN
   -- ============================================================
   -- Shared CDC: bring sys_clk-domain signals into fast_clk
   -- independent of which input path is active.
-  process(fast_clk)
+  gen_fast_cdc_fast : if FAST_SPEED generate
   begin
-    if rising_edge(fast_clk) then
-      registered_ch0_f1   <= registered_ch0;
-      registered_ch0_f2   <= registered_ch0_f1;
-      debug_ch0_enable_f1 <= debug_ch0_enable_eff;
-      debug_ch0_enable_f2 <= debug_ch0_enable_f1;
-      debug_ch0_channel_f1 <= debug_ch0_channel;
-      debug_ch0_channel_f2 <= debug_ch0_channel_f1;
-      fast_mode_f1        <= fast_mode_i;
-      fast_mode_f2        <= fast_mode_f1;
-    end if;
-  end process;
+    process(fast_clk)
+    begin
+      if rising_edge(fast_clk) then
+        registered_ch0_f1   <= registered_ch0;
+        registered_ch0_f2   <= registered_ch0_f1;
+        debug_ch0_enable_f1 <= debug_ch0_enable_eff;
+        debug_ch0_enable_f2 <= debug_ch0_enable_f1;
+        debug_ch0_channel_f1 <= debug_ch0_channel;
+        debug_ch0_channel_f2 <= debug_ch0_channel_f1;
+      end if;
+    end process;
+  end generate;
+
+  gen_fast_cdc_normal : if not FAST_SPEED generate
+  begin
+    process(fast_clk)
+    begin
+      if rising_edge(fast_clk) then
+        registered_ch0_f1   <= registered_ch0;
+        registered_ch0_f2   <= registered_ch0_f1;
+        debug_ch0_enable_f1 <= debug_ch0_enable_eff;
+        debug_ch0_enable_f2 <= debug_ch0_enable_f1;
+        debug_ch0_channel_f1 <= debug_ch0_channel;
+        debug_ch0_channel_f2 <= debug_ch0_channel_f1;
+        fast_mode_f1        <= fast_mode_i;
+      end if;
+    end process;
+  end generate;
 
   -- Speed input path: direct pin capture with CDC override for the selected
   -- logical debug channel.
@@ -683,7 +685,7 @@ BEGIN
     process(fast_clk)
     begin
       if rising_edge(fast_clk) then
-        if ENABLE_RUNTIME_INPUT_MUX and fast_mode_f2 = '1' then
+        if ENABLE_RUNTIME_INPUT_MUX and fast_mode_f1 = '1' then
           capture_data_fast <= capture_data_fast_speed_r;
         else
           capture_data_fast <= capture_data_fast_normal_r;
@@ -882,12 +884,12 @@ BEGIN
     Gen_Start_Reject => gen_start_reject_i,
     Gen_Done_Pulse   => gen_done_pulse_i,
     Gen_Capture_Active => gen_capture_active,
-    Pump_Valid_Cycles   => pump_valid_cycles,
-    Pump_Ready_Cycles   => pump_ready_cycles,
-    Pump_Accept_Cycles  => pump_accept_cycles,
-    Pump_Stall_Cycles   => pump_stall_cycles,
-    Pump_NoData_Cycles  => pump_nodata_cycles,
-    Pump_Overflow_Count => pump_overflow_count
+    Pump_Valid_Cycles   => open,
+    Pump_Ready_Cycles   => open,
+    Pump_Accept_Cycles  => open,
+    Pump_Stall_Cycles   => open,
+    Pump_NoData_Cycles  => open,
+    Pump_Overflow_Count => open
   );
   
   -- PWM carrier counter

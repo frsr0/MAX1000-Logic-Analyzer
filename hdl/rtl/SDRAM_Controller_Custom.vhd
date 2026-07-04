@@ -190,6 +190,7 @@ architecture rtl of SDRAM_Controller is
     signal last_op_was_stream : std_logic := '0';
     signal capture_stream_ready_now : std_logic := '0';
     signal stream_ready_r        : std_logic := '0';
+    signal r_pipe_stream_ready : std_logic := '0';
     -- Registered is_same_row comparator outputs decouple 14-bit address
     -- comparisons from command/address output timing.
     signal same_row_buf_a      : std_logic := '0';
@@ -245,7 +246,7 @@ begin
          and pend_rn = '0'
          and same_row_cap_stream = '1'
         else '0';
-    capture_stream_ready <= stream_ready_r;
+    capture_stream_ready <= r_pipe_stream_ready;
 
     -- synthesis translate_off
     process(max_write_depth)
@@ -279,6 +280,7 @@ begin
             prev_buf_a <= (others => '0');
             row_open <= '0'; active_row <= (others => '0'); active_bank <= (others => '0');
             same_row_buf_a <= '0'; same_row_buf_next <= '0'; same_row_cap_stream <= '0';
+            r_pipe_stream_ready <= '0';
 
             burst_fifo_cnt <= 0; burst_active <= '0'; burst_cnt <= 0;
             last_op_was_stream <= '0';
@@ -321,6 +323,7 @@ begin
 
             -- Register stream ready (one cycle latency absorbed by write pump double-buffer)
             stream_ready_r <= capture_stream_ready_now;
+            r_pipe_stream_ready <= stream_ready_r;
 
             v_depth := write_depth;
 

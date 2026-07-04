@@ -257,6 +257,7 @@ if (-not (Test-Path $QUARTUS)) {
     exit 1
 }
 
+# Compile using QSF assignments (physical synthesis enabled in QSF)
 $output = & $QUARTUS --flow compile $PROJECT 2>&1
 $compileOk = $LASTEXITCODE -eq 0
 
@@ -268,7 +269,6 @@ if ($compileOk) {
     exit 1
 }
 
-# Flash (optional)
 if ($Flash) {
     Write-Host ""
     Write-Host "=== Flashing ==="

@@ -106,7 +106,6 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal run_sync1   : std_logic := '0';
   signal run_sync2   : std_logic := '0';
   signal samples_div_p  : natural range 0 to Max_Samples := 0;
-  signal samples_div6_p : natural range 0 to Max_Samples := 0;
   signal samples_d1   : natural range 0 to Max_Samples := 0;
   signal samples_div  : natural range 0 to Max_Samples := 0;
   signal samples_div6 : natural range 0 to Max_Samples := 0;
@@ -118,10 +117,6 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   -- Old FIFO replaced by dcfifo. Keep fifo_cnt for external visibility.
   signal fifo_cnt      : natural range 0 to 64 := 0;
   signal buf_limit_r   : natural range 0 to Max_Samples := 0;
-  signal buf_last_r    : natural range 0 to Max_Samples := 0;
-  signal buf_base0_r   : natural range 0 to Max_Samples := 0;
-  signal buf_base1_r   : natural range 0 to Max_Samples := 0;
-  signal buf_base2_r   : natural range 0 to Max_Samples := 0;
   -- In continuous mode each triple buffer is exactly one host read block
   -- (512 samples / 1024 bytes) so the standard CMD_READ_CAPTURE block protocol
   -- streams a completed buffer verbatim. Single-shot still uses samples/6.
@@ -146,9 +141,6 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal single_drain_cnt : natural range 0 to 2047 := 0;
 
   -- Pipeline registers: pre-compute buf_rem decrements
-  signal brem0_dec : natural range 0 to Max_Samples := 0;
-  signal brem1_dec : natural range 0 to Max_Samples := 0;
-  signal brem2_dec : natural range 0 to Max_Samples := 0;
   signal brem_single_dec : natural range 0 to Max_Samples := 0;
 
   -- Registered run-edge event detection: breaks run_r → process_5~0 → burst_rem →
@@ -533,24 +525,11 @@ begin
   begin
     if rising_edge(pclk) then
       samples_div_p  <= samples_div;
-      samples_div6_p <= samples_div6;
       if Continuous_Mode = '1' then
         -- One 512-sample block per buffer, laid out 0 / 512 / 1024.
         buf_limit_r <= CONT_BUF;
-        buf_last_r  <= CONT_BUF - 1;
-        buf_base0_r <= 0;
-        buf_base1_r <= CONT_BUF;
-        buf_base2_r <= CONT_BUF + CONT_BUF;
       else
         buf_limit_r    <= samples_div6;
-        if samples_div6 > 0 then
-          buf_last_r <= samples_div6 - 1;
-        else
-          buf_last_r <= 0;
-        end if;
-        buf_base0_r    <= 0;
-        buf_base1_r    <= samples_div6;
-        buf_base2_r    <= samples_div6 + samples_div6;
       end if;
     end if;
   end process;
@@ -564,9 +543,6 @@ begin
     if rising_edge(pclk) then
       -- The decremented value is only consumed while the counter is > 0;
       -- guard the natural subtraction so simulation doesn't trap at 0.
-      if buf_rem_0 > 0 then brem0_dec <= buf_rem_0 - 1; else brem0_dec <= 0; end if;
-      if buf_rem_1 > 0 then brem1_dec <= buf_rem_1 - 1; else brem1_dec <= 0; end if;
-      if buf_rem_2 > 0 then brem2_dec <= buf_rem_2 - 1; else brem2_dec <= 0; end if;
       if buf_rem_single > 0 then brem_single_dec <= buf_rem_single - 1; else brem_single_dec <= 0; end if;
     end if;
   end process;
@@ -828,6 +804,33 @@ begin
         bram_wren <= '0';
         afull_r <= fifo_wralmost_full;
 
+        -- fifo_wdata datapath mux (DECOUPLED from capture_en_r).
+        -- The 16-bit data source is chosen purely from the quasi-static mode
+        -- flags (narrow_word_pending_r / astream_f) and the burst index
+        -- aword_idx; capture_en_r / sample_tick_r / afull_r only gate the 1-bit
+        -- write STROBE (fifo_wr) in the control cascade below. Previously the
+        -- data mux sat at the bottom of a 5-deep capture_en_r priority cascade,
+        -- so the 200 MHz hot path was capture_en_r -> cascade -> fifo_wdata[15].
+        -- Loading fifo_wdata every cycle is harmless: the async FIFO only
+        -- consumes it when fifo_wr is asserted, which the control logic still
+        -- gates exactly as before. narrow/analog/digital modes are mutually
+        -- exclusive, so priority order here only resolves impossible overlaps.
+        if narrow_word_pending_r = '1' then
+          fifo_wdata <= narrow_word_data_r;
+        elsif astream_f = '1' then
+          case aword_idx is
+            when 0      => fifo_wdata <= aframe_shift(15 downto 0);
+            when 1      => fifo_wdata <= aframe_shift(31 downto 16);
+            when 2      => fifo_wdata <= aframe_shift(47 downto 32);
+            when 3      => fifo_wdata <= aframe_shift(63 downto 48);
+            when 4      => fifo_wdata <= aframe_shift(79 downto 64);
+            when 5      => fifo_wdata <= aframe_shift(95 downto 80);
+            when others => fifo_wdata <= aframe_shift(111 downto 96);
+          end case;
+        else
+          fifo_wdata <= sample_word_r;
+        end if;
+
         if cfg_valid_edge = '1' then
           -- Load from cfg_samples (CLK-domain value, quasi-static while the
           -- toggle handshake is in flight), NOT cfg_samples_f: that register
@@ -849,17 +852,16 @@ begin
 
         if fifo_overflow_f = '0' then
           if narrow_word_pending_r = '1' and afull_r = '0' then
-            fifo_wdata <= narrow_word_data_r;
+            -- fifo_wdata (= narrow_word_data_r) is driven by the decoupled data
+            -- mux above; here we only assert the write strobe and clear pending.
             fifo_wr <= '1';
             narrow_word_pending_r <= '0';
             if sample_rem_nonzero_r = '1' then
               sample_remaining <= sample_rem_dec_r;
             end if;
-          end if;
-
           -- Pre-trigger BRAM is digital-only; skip it entirely in analog stream
           -- mode so only ADC frame words enter the FIFO.
-          if pretrig_en_r = '1' and pretrig_tick_cnt < 8 and astream_f = '0' then
+          elsif pretrig_en_r = '1' and pretrig_tick_cnt < 8 and astream_f = '0' then
             bram_waddr <= bram_wp_r;
             bram_wdata <= sample_word_r;
             bram_wren  <= '1';
@@ -891,27 +893,12 @@ begin
               analog_burst_active <= '1';
             end if;
 
-            -- Emit word[aword_idx] via a 16-bit 8:1 mux instead of shifting the
-            -- whole 128-bit frame each cycle. The old `x"0000" & shift(127..16)`
-            -- put a 128-bit-wide mux on the FAST_CLK (200 MHz) path, gated by the
-            -- late-arriving afifo almost-full flag, and would not close timing
-            -- (every seed -0.64..-1.12 ns). fifo_wdata is selected purely from
-            -- aword_idx (NOT gated by almost_full — it only matters when fifo_wr
-            -- is asserted), so the wide datapath and the almost-full fanout are
-            -- off the critical path; only the 1-bit write strobe and the 3-bit
-            -- index counter remain gated.
-            if analog_burst_active = '1' then
-              case aword_idx is
-                when 0      => fifo_wdata <= aframe_shift(15 downto 0);
-                when 1      => fifo_wdata <= aframe_shift(31 downto 16);
-                when 2      => fifo_wdata <= aframe_shift(47 downto 32);
-                when 3      => fifo_wdata <= aframe_shift(63 downto 48);
-                when 4      => fifo_wdata <= aframe_shift(79 downto 64);
-                when 5      => fifo_wdata <= aframe_shift(95 downto 80);
-                when others => fifo_wdata <= aframe_shift(111 downto 96);
-              end case;
-            end if;
-
+            -- Emit word[aword_idx] via the 16-bit 8:1 mux in the decoupled data
+            -- block above (aframe_shift selected purely from aword_idx). Shifting
+            -- the whole 128-bit frame each cycle, or gating that wide mux with the
+            -- late-arriving afifo almost-full flag, would not close timing (every
+            -- seed -0.64..-1.12 ns). Here only the 1-bit write strobe and the
+            -- 3-bit burst index remain gated by capture/almost-full.
             if analog_burst_active = '1' and afull_r = '0' then
               fifo_wr <= '1';
               if aword_idx + 1 >= aword_count_f then
@@ -956,11 +943,9 @@ begin
             end if;
 
           elsif capture_en_r = '1' and sample_tick_r = '1' then
-            -- Data is registered unconditionally; it is only consumed when
-            -- fifo_wr is asserted, so keeping the almost-full compare off the
-            -- 16-bit fifo_wdata mux (it now only gates the 1-bit write strobe)
-            -- shortens the 200 MHz path that the analog frame mux shares.
-            fifo_wdata <= sample_word_r;
+            -- fifo_wdata (= sample_word_r) is driven by the decoupled data mux
+            -- above; this branch only asserts the write strobe and decrements
+            -- the sample budget, keeping capture_en_r off the fifo_wdata cone.
             if afull_r = '0' then
               fifo_wr <= '1';
               -- guard: at full rate one in-flight tick can push a word after

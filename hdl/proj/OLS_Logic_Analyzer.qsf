@@ -19,10 +19,22 @@ set_global_assignment -name TOP_LEVEL_ENTITY OLS_Logic_Analyzer_wrapper
 set_global_assignment -name SEED 21
 set_global_assignment -name INTERNAL_FLASH_UPDATE_MODE "SINGLE IMAGE WITH ERAM"
 set_global_assignment -name OPTIMIZE_MULTI_CORNER_TIMING ON
+# At 97% LE, Auto Shift Register Replacement offloaded ~17 one-bit CDC/delay
+# chains (run_f, Armed, continuous, narrow_*) into a single depth-3 x17 M9K
+# (altshift_taps run_f_s1_rtl_0). That RAM read-port drives the whole MSO
+# pipeline's critical registers -> its slow clock-to-out set the worst-case
+# path (-0.528). It is the only altshift_taps in the design, so turning
+# recognition off just forces those bits back to logic FFs (fast, placeable,
+# and correct for CDC synchronizers, which must not live in RAM).
+set_global_assignment -name AUTO_SHIFT_REGISTER_RECOGNITION OFF
 
 # Speed-mode fitter settings (active for 200 MHz FAST_SPEED build):
 set_global_assignment -name FITTER_EFFORT "AUTO FIT"
 set_global_assignment -name OPTIMIZATION_MODE "BALANCED"
+# Physical synthesis stays fully OFF: at ~98% LE it perturbs placement and
+# makes worst-case slack WORSE (measured: dup+retiming -0.460 vs -0.304 with
+# these off; combo resynthesis previously failed to fit entirely). The light
+# fitter profile is the best on this design.
 set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC OFF
 set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION OFF
 set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING OFF
@@ -75,3 +87,4 @@ set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to GPIO[6]
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to GPIO[7]
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to SEN_SDI
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to SEN_SPC
+
