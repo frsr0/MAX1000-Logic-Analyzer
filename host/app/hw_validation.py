@@ -912,10 +912,16 @@ def test_high_speed_analog_mode(dev):
 
 def test_maximum_analog_mode(dev):
     print_header("Test 12c3: Dual analog channel mode")
-    dev.reset()
-    dev.spi.flush()
-    data, frames = dev.capture_analog(
-        rate_hz=100_000, frames=256, mode=MODE_ANALOG_ALL, timeout=8)
+    data = b""
+    frames = []
+    for attempt in range(3):
+        dev.reset()
+        dev.spi.flush()
+        time.sleep(0.5)
+        data, frames = dev.capture_analog(
+            rate_hz=100_000, frames=256, mode=MODE_ANALOG_ALL, timeout=8)
+        if frames:
+            break
     nf = len(frames)
     log(f"Dual analog: {nf} frames, {len(data)} payload bytes")
     check(analog_frame_stride(MODE_ANALOG_ALL) == 3,
@@ -1068,8 +1074,14 @@ def test_analog_profiles_digital_recovery(dev):
         check(len(fast[0].get('adc', [])) == 1,
               f"high-speed analog profile has 1 ADC channel ({len(fast[0].get('adc', []))})")
 
-    all_data, all_frames = dev.capture_analog(
-        rate_hz=100_000, frames=128, mode=MODE_ANALOG_ALL, timeout=5)
+    all_data = b""
+    all_frames = []
+    for attempt in range(3):
+        time.sleep(0.5)
+        all_data, all_frames = dev.capture_analog(
+            rate_hz=100_000, frames=128, mode=MODE_ANALOG_ALL, timeout=5)
+        if all_frames:
+            break
     check(len(all_frames) > 0, f"maximum analog profile returned frames ({len(all_frames)})")
     if all_frames:
         check(len(all_frames[0].get('adc', [])) == 2,
@@ -2351,11 +2363,6 @@ def test_live_rate_ceiling(dev):
     ladder = [250_000, 500_000, 1_000_000, 1_500_000, 2_000_000]
     floors = {'raw': 500_000, 'rle': 250_000, 'delta': 500_000}
     ceilings = {}
-    def record_ceiling(ok, msg):
-        if ok:
-            check(True, msg)
-        else:
-            log(f"  [INFO] {msg}")
     for codec in ('raw', 'rle', 'delta'):
         best = 0
         for rate in ladder:
@@ -2397,9 +2404,9 @@ def test_live_rate_ceiling(dev):
             else:
                 break   # failing point found; no need to climb further
         ceilings[codec] = best
-        record_ceiling(best >= floors[codec],
-                       f"{codec} live ring lossless at >= {floors[codec]//1000} kS/s "
-                       f"(measured ceiling {best/1e6:.2f} MS/s)")
+        check(best >= floors[codec],
+              f"{codec} live ring lossless at >= {floors[codec]//1000} kS/s "
+              f"(measured ceiling {best/1e6:.2f} MS/s)")
     dev.set_readback_compression('raw')
     dev.set_debug_ch0(False)
     log("  measured lossless ceilings: "

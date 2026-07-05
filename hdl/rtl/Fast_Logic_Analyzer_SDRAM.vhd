@@ -912,15 +912,15 @@ begin
           -- here returned the PREVIOUS capture's sample count — captures ran
           -- with stale lengths (e.g. the host reset()'s SAMPLE_COUNT=2),
           -- completed instantly and read back as full-length flat data.
-          sample_remaining <= cfg_samples;
-          fifo_overflow_f <= '0';
-          bram_wp_r <= 0;
-          bram_cnt_r <= 0;
-          aframe_shift <= (others => '0');
-          aword_idx <= 0;
-          analog_burst_active <= '0';
-          narrow_shift_r <= (others => '0');
-          narrow_bit_count_r <= 0;
+        sample_remaining <= cfg_samples;
+        fifo_overflow_f <= '0';
+        bram_wp_r <= 0;
+        bram_cnt_r <= 0;
+        aframe_shift <= (others => '0');
+        aword_idx <= 0;
+        analog_burst_active <= '0';
+        narrow_shift_r <= (others => '0');
+        narrow_bit_count_r <= 0;
           narrow_word_pending_r <= '0';
         end if;
 

@@ -1691,7 +1691,11 @@ class OLSDeviceSPI:
                        timeout=6, progress_cb=None, stop_evt=None):
         payload_stride = analog_frame_stride(mode)
         words_per_frame = max(1, (payload_stride + 1) // 2)
-        self.set_analog_config(mode)
+        # Keep the mode on the host side until the capture arm writes the full
+        # register set. Poking REG_FLAGS early can disturb the ADC sequencer on
+        # this netlist and intermittently drop the first analog frame after a
+        # mode change.
+        self.analog_mode = mode
         prev_fast_mode = self.fast_mode_enabled
         # Mixed and analog-only profiles stream through the SDRAM path; forcing
         # BRAM here leaves the capture stuck in BUSY on the current bitstream.
