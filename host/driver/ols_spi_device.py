@@ -1904,6 +1904,12 @@ class OLSDeviceSPI:
             self.ack_capture_done(expected_seq)
 
         stride = analog_frame_stride(self.analog_mode)
+        if (self._raw_flags & MODE_PACKED_MSO) and st.get('producer_index') is not None:
+            # Packed captures do not necessarily fill the whole requested SDRAM
+            # window. Trim to the hardware-written word count so the decoder
+            # never sees untouched 0xFFFF tail words as fake slice packets.
+            valid_words = max(0, int(st.get('producer_index')))
+            samples = samples[:valid_words * 2]
         if samples and any(samples[i:i+stride] != b'\x00' * stride
                            for i in range(0, len(samples), stride)):
             for i in range(0, len(samples), stride):
