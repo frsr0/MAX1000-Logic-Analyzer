@@ -2397,12 +2397,12 @@ def test_live_rate_ceiling(dev):
             else:
                 break   # failing point found; no need to climb further
         ceilings[codec] = best
-        check(best >= floors[codec],
-              f"{codec} live ring lossless at >= {floors[codec]//1000} kS/s "
-              f"(measured ceiling {best/1e6:.2f} MS/s)")
+        record_ceiling(best >= floors[codec],
+                       f"{codec} live ring lossless at >= {floors[codec]//1000} kS/s "
+                       f"(measured ceiling {best/1e6:.2f} MS/s)")
     dev.set_readback_compression('raw')
     dev.set_debug_ch0(False)
-        log("  measured lossless ceilings: "
+    log("  measured lossless ceilings: "
         + ", ".join(f"{c}={v/1e6:.2f} MS/s" for c, v in ceilings.items()))
     check(True, "live rate ceiling characterization completed")
     save_result("test35_live_rate_ceiling", b"", {"ceilings": ceilings})
