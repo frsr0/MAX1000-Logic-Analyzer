@@ -1,6 +1,6 @@
   # OLS Logic Analyzer clock constraints
   # PLL: 12 MHz in, c0=100.2 MHz (sys_clk), c1=200.4 MHz (fast_clk),
-  # c2=167.0 MHz core SDRAM clock, c4=167.0 MHz SDRAM chip clock delayed ~1.5 ns
+  # c2=167.0 MHz core SDRAM clock, c4=167.0 MHz SDRAM chip clock delayed ~1.1 ns
   # Speed mode (FAST_SPEED=true):
   #   FAST_CLK (~200.4 MHz, c1): 3-stage pipeline: sample -> control -> BRAM/FIFO write
   #     -> registered skid buffer -> DCFIFO (sync depth 4)
@@ -21,7 +21,7 @@
  # 12 MHz input clock
  create_clock -name CLK -period 83.333 [get_ports CLK]
  
- # Derive PLL output clocks (FAST_SPEED: c0~100.2MHz, c1~200.4MHz, c2~167.0MHz core, c4~167.0MHz delayed)
+  # Derive PLL output clocks (FAST_SPEED: c0~100.2MHz, c1~200.4MHz, c2~167.0MHz core, c4~167.0MHz delayed)
  derive_pll_clocks
  
  # Realistic clock uncertainty for timing signoff
@@ -70,7 +70,7 @@
  set_false_path -from [get_registers *auto_generated|rdptr_g*] \
                 -to   [get_registers *auto_generated|wrfull_eq_comp*]
  
- # Make the forwarded SDRAM chip clock explicit so I/O delays are referenced to
+  # Make the forwarded SDRAM chip clock explicit so I/O delays are referenced to
  # the same delayed edge the external SDRAM sees, not the internal controller
  # clock that launches the commands/data.
  create_generated_clock -name SDRAM_CHIP_CLK_OUT \

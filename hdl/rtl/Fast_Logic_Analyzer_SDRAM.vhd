@@ -307,6 +307,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal fifo_rdata : std_logic_vector(AFIFO_WIDTH-1 downto 0) := (others => '0');
   signal fifo_rd    : std_logic := '0';
   signal fifo_rdempty : std_logic := '0';
+  signal fifo_rdempty_r : std_logic := '0';
   -- Drain mode: instead of asynchronously clearing the DCFIFO on every run
   -- start (which created unsafe CDC paths), we drain stale data on the pclk
   -- side. drain_pending_r is set on run_edge_r or overflow_clk; the write
@@ -719,7 +720,6 @@ begin
     signal aframe_shift : std_logic_vector(127 downto 0) := (others => '0');
     signal aframe_toggle_s1 : std_logic := '0';
     signal aframe_toggle_s2 : std_logic := '0';
-    signal aframe_toggle_last : std_logic := '0';
     signal aframe_ready_r : std_logic := '0';
     signal aword_count_pending : natural range 1 to 7 := 7;
     signal aword_count_f : natural range 1 to 7 := 7;
@@ -754,13 +754,14 @@ begin
     -- after it has settled. sys_clk toggles only after all 8 ADC result
     -- registers have been updated.
     process(FAST_CLK)
+      variable aframe_toggle_last_v : std_logic := '0';
     begin
       if rising_edge(FAST_CLK) then
         aframe_toggle_s1 <= Analog_Frame_Toggle;
         aframe_toggle_s2 <= aframe_toggle_s1;
         aframe_ready_r <= '0';
-        if aframe_toggle_s2 /= aframe_toggle_last then
-          aframe_toggle_last <= aframe_toggle_s2;
+        if aframe_toggle_s2 /= aframe_toggle_last_v then
+          aframe_toggle_last_v := aframe_toggle_s2;
           aframe_pending <= Analog_Frame_Data;
           if Analog_Frame_Len <= 2 then
             aword_count_pending <= 1;
@@ -1475,6 +1476,7 @@ begin
       s_burst_i <= '0';
       cap_stream_valid <= '0';
       rdfifo_wr <= '0';
+      fifo_rdempty_r <= fifo_rdempty;
       -- Loader settling trackers (see skid-buffer comment above the process).
       fifo_rd_q <= fifo_rd;
       rdempty_q <= fifo_rdempty;
@@ -1483,7 +1485,7 @@ begin
       -- consecutive cycles (q can lag empty by one cycle on silicon); previous
       -- pop fully settled (fifo_rd and fifo_rd_q low). run_edge_r reset below
       -- overrides prefetch_valid_r for the run-start cycle.
-      if prefetch_valid_r = '0' and fifo_rdempty = '0' and rdempty_q = '0'
+      if prefetch_valid_r = '0' and fifo_rdempty_r = '0' and rdempty_q = '0'
          and fifo_rd = '0' and fifo_rd_q = '0' then
         prefetch_data_r  <= fifo_rdata;
         prefetch_valid_r <= '1';
@@ -1520,7 +1522,7 @@ begin
         -- Snapshot as at run start. Overflow only latches in single-shot
         -- mode, where the producer has already stopped, so the fill can only
         -- shrink and a re-snapshot on repeated overflow pulses stays correct.
-        if fifo_rdempty = '0' and unsigned(fifo_rdusedw) = 0 then
+        if fifo_rdempty_r = '0' and unsigned(fifo_rdusedw) = 0 then
           drain_rem <= AFIFO_DEPTH;
         else
           drain_rem <= to_integer(unsigned(fifo_rdusedw));
@@ -1575,7 +1577,7 @@ begin
           full_clr_pending <= '0';
         end if;
         if full_pending = '1' and prefetch_valid_r = '0'
-           and fifo_rdempty = '1' and rdempty_q = '1'
+           and fifo_rdempty_r = '1' and rdempty_q = '1'
            and cap_stream_valid = '0' then
           full_i <= '1';
           full_pending <= '0';
@@ -1589,7 +1591,7 @@ begin
         -- Snapshot the stale-word count. usedw is fill mod DEPTH: a full FIFO
         -- reads 0, so substitute the full depth when non-empty (the empty-
         -- pipeline drain exit absorbs any overestimate).
-        if fifo_rdempty = '0' and unsigned(fifo_rdusedw) = 0 then
+        if fifo_rdempty_r = '0' and unsigned(fifo_rdusedw) = 0 then
           drain_rem <= AFIFO_DEPTH;
         else
           drain_rem <= to_integer(unsigned(fifo_rdusedw));
@@ -1650,7 +1652,7 @@ begin
         elsif prefetch_valid_r = '1' then
           prefetch_valid_r <= '0';  -- discard one stale word
           drain_rem <= drain_rem - 1;
-        elsif fifo_rdempty = '1' and rdempty_q = '1'
+        elsif fifo_rdempty_r = '1' and rdempty_q = '1'
               and fifo_rd = '0' and fifo_rd_q = '0' then
           drain_pending_r <= '0';  -- FIFO ran dry before target: stale gone
           drain_rem <= 0;
