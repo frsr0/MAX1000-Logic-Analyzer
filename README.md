@@ -375,7 +375,7 @@ data = dev.capture_with_gen(rate_hz=1000000, nsamples=2000)
 
 # Indexed SDRAM/ring readback
 data = dev.read_capture_range(start_sample=0, sample_count=1024)
-dev.ack_capture_done()
+dev.ack_capture_done(capture_seq)
 
 # Analog capture (ADC0..ADC7 mux stream; see physical map above)
 dev.set_analog_enable(True)

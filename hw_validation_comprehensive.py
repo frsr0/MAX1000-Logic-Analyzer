@@ -7,6 +7,7 @@ Tests all modes up to maximum limits with pin-to-pin loopback
 import sys
 import os
 import time
+import argparse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / 'host'))
@@ -116,30 +117,35 @@ def test_compressed_streaming(dev, results):
     print("\n[5] COMPRESSED STREAMING")
 
     os.environ['OLS_EXPERIMENTAL_COMPRESSED_LIVE'] = '1'
+    dev.pkt.transaction(0x04, timeout=0.5)  # CMD_ABORT_CAPTURE
+    dev.set_analog_config(0)
+    dev.set_schmitt(False)
+    dev.set_readback_compression("delta")
 
     rates_hz = [2_000_000, 4_000_000, 8_000_000]
-    for rate_hz in rates_hz:
-        try:
-            dev.arm_capture(1_000_000)
+    try:
+        for rate_hz in rates_hz:
+            try:
+                start = time.time()
+                total_samples = 0
 
-            start = time.time()
-            total_samples = 0
+                for chunk, total, buf_sz, overrun in dev.stream_ring_capture(
+                    rate_hz=rate_hz,
+                    window_samples=8192,
+                    stop_after_secs=0.5
+                ):
+                    total_samples = total
 
-            for chunk, total, buf_sz, overrun in dev.stream_ring_capture(
-                rate_hz=rate_hz,
-                window_samples=8192,
-                stop_after_secs=0.5
-            ):
-                total_samples = total
+                elapsed = time.time() - start
+                throughput_mbs = (total_samples * 2) / (elapsed * 1e6)
 
-            elapsed = time.time() - start
-            throughput_mbs = (total_samples * 2) / (elapsed * 1e6)
-
-            # With 2.67x compression, expect ~1/3 throughput for same sample rate
-            detail = f"{rate_hz/1e6:.1f} MS/s, {throughput_mbs:.2f} MB/s (compressed)"
-            results.record(f"Compressed {rate_hz/1e6:.0f}MS/s", True, detail)
-        except Exception as e:
-            results.record(f"Compressed {rate_hz/1e6:.0f}MS/s", False, str(e))
+                detail = f"{rate_hz/1e6:.1f} MS/s, {throughput_mbs:.2f} MB/s (compressed, filter off)"
+                results.record(f"Compressed {rate_hz/1e6:.0f}MS/s", True, detail)
+            except Exception as e:
+                results.record(f"Compressed {rate_hz/1e6:.0f}MS/s", False, str(e))
+    finally:
+        dev.set_readback_compression("raw")
+        dev.pkt.transaction(0x04, timeout=0.5)  # CMD_ABORT_CAPTURE
 
 def test_generator_loopback(dev, results):
     """Test 6: SPI Generator test mode (pin-to-pin loopback)"""
@@ -276,6 +282,14 @@ def test_spi_clock_variation(dev, results):
         results.record("SPI clock sweep", False, str(e))
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--include-compressed",
+        action="store_true",
+        help="run compressed streaming in this suite; otherwise isolate it with test_compressed_streaming.py",
+    )
+    args = parser.parse_args()
+
     print("="*70)
     print("OLS LOGIC ANALYZER - COMPREHENSIVE HARDWARE VALIDATION")
     print("="*70)
@@ -304,7 +318,11 @@ def main():
 
         test_single_shot(dev, results)
         test_streaming(dev, results)
-        test_compressed_streaming(dev, results)
+        if args.include_compressed:
+            test_compressed_streaming(dev, results)
+        else:
+            print("\n[5] COMPRESSED STREAMING - SKIPPED")
+            print("  Run test_compressed_streaming.py separately after pure digital/analog validation.")
         test_generator_loopback(dev, results)
         test_back_to_back_captures(dev, results)
         test_maximum_depth(dev, results)

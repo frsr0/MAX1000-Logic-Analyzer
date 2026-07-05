@@ -1088,7 +1088,9 @@ class OLSDeviceSPI:
             return data
         return samples.tobytes() + data[len(samples) * 2:]
 
-    def ack_capture_done(self, seq=None):
+    def ack_capture_done(self, seq):
+        if seq is None:
+            raise ValueError("capture_seq is required for CMD_ACK_CAPTURE_DONE")
         return self.pkt.ack_capture_done(seq)
 
     def _stream_readback(self, start_sample: int, nsamples: int) -> bytes:
@@ -1422,6 +1424,14 @@ class OLSDeviceSPI:
             self.reset()
             time.sleep(0.02)
         self.spi.flush()
+        # A previous gen-capture can leave the engine in a state where the
+        # next CMD_GEN_CAPTURE silently yields no data; abort FIRST (it also
+        # flushes the generator FIFO via Gen_Clear, so it must precede the
+        # pattern load below).
+        try:
+            self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+        except Exception:
+            pass
         # Apply pending GUI changes
         if self._pending_debug_enable is not None:
             self.debug_ch0_enabled = self._pending_debug_enable

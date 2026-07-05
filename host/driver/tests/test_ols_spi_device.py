@@ -460,6 +460,18 @@ class TestSPIDeviceStatusMetadata:
         pkt.transaction.assert_called_once_with(
             CMD_ACK_CAPTURE_DONE, struct.pack('<I', 9))
 
+    def test_ack_capture_done_rejects_wildcard(self):
+        pkt = SPIDevice(MagicMock())
+        pkt.transaction = MagicMock()
+
+        try:
+            pkt.ack_capture_done(None)
+        except ValueError as exc:
+            assert "capture_seq is required" in str(exc)
+        else:
+            raise AssertionError("wildcard capture-done ack was accepted")
+        pkt.transaction.assert_not_called()
+
 
 class TestOLSDeviceSPIGenerator:
     def test_pins_defaults(self, device_spi):
@@ -923,11 +935,14 @@ class TestOLSDeviceSPIRolling:
         device_spi.pkt.arm_capture.return_value = ST_OK
         device_spi.pkt.start_rle_stream_read.side_effect = [
             (8, 0, b'\x34\x12' * 4),
-            (12, 0, b'\x78\x56' * 4),
+            (16, 0, b'\x78\x56' * 4),
         ]
+        # The RLE stream path requires 2x window headroom before each read
+        # (required_available = window_samples * 2), so the producer must be
+        # at least 8 ahead for a 4-sample window.
         device_spi.pkt.get_status.side_effect = [
-            {'producer_index': 4, 'oldest_index': 0, 'overrun_count': 0},
             {'producer_index': 8, 'oldest_index': 0, 'overrun_count': 0},
+            {'producer_index': 16, 'oldest_index': 0, 'overrun_count': 0},
         ]
         device_spi.spi.flush = MagicMock()
 
@@ -1030,10 +1045,13 @@ class TestOLSDeviceSPIRolling:
         results = list(gen)
         assert len(results) > 0
 
-    def test_rolling_capture_uses_stream_ring_for_plain_digital_continuous(self, device_spi):
-        device_spi.stream_ring_capture = MagicMock(return_value=iter([
-            (b'\x01\x00' * 4, 4, 4, 0),
-            (b'\x02\x00' * 4, 8, 4, 0),
+    def test_rolling_capture_uses_continuous_ring_for_plain_digital_continuous(self, device_spi):
+        # Plain-digital continuous rolling deliberately uses the batched
+        # block-read ring path (continuous_ring_capture) — the exact stream
+        # path is kept for the low-level handoff probe only.
+        device_spi.continuous_ring_capture = MagicMock(return_value=iter([
+            (b'\x01\x00' * 4, 4, 4),
+            (b'\x02\x00' * 4, 8, 4),
         ]))
         device_spi._filter_digital = MagicMock(side_effect=lambda data: data)
         device_spi.analog_mode = MODE_DIGITAL
@@ -1045,13 +1063,13 @@ class TestOLSDeviceSPIRolling:
 
         assert [item[1:] for item in results] == [(4, 6), (8, 6)]
         assert results[0][0] == b'\x01\x00' * 4
-        assert results[1][0] == (b'\x01\x00' * 2) + (b'\x02\x00' * 4)
-        assert bytes(full_out) == (b'\x01\x00' * 4) + (b'\x02\x00' * 4)
-        device_spi.stream_ring_capture.assert_called_once_with(
-            rate_hz=1_000_000,
-            window_samples=4,
-            stop_evt=stop_evt,
-            progress_cb=None)
+        # Rolling buffer trims to buffer_nsamp * stride = 12 bytes.
+        assert results[1][0] == (b'\x01\x00' * 4 + b'\x02\x00' * 4)[-12:]
+        kwargs = device_spi.continuous_ring_capture.call_args.kwargs
+        assert kwargs['chunk_nsamp'] == 4
+        assert kwargs['buffer_nsamp'] == 6
+        # full_out is delegated to continuous_ring_capture (mocked here).
+        assert kwargs['full_out'] is full_out
 
     def test_rolling_capture_prefers_compression_only_for_plain_digital(self, device_spi):
         device_spi.analog_mode = MODE_DIGITAL

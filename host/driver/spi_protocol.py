@@ -457,8 +457,10 @@ class SPIDevice:
             return result[0]
         return -1
 
-    def ack_capture_done(self, seq: int = None) -> bool:
-        payload = b'' if seq is None else struct.pack('<I', seq & 0xFFFFFFFF)
+    def ack_capture_done(self, seq: int) -> bool:
+        if seq is None:
+            raise ValueError("capture_seq is required for CMD_ACK_CAPTURE_DONE")
+        payload = struct.pack('<I', seq & 0xFFFFFFFF)
         result = self.transaction(CMD_ACK_CAPTURE_DONE, payload)
         return result is not None and result[0] == ST_OK
 

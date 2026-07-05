@@ -14,7 +14,7 @@ os.environ['OLS_EXPERIMENTAL_COMPRESSED_LIVE'] = '1'
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'host'))
 
-from driver.ols_spi_device import OLSDeviceSPI
+from driver.ols_spi_device import MODE_DIGITAL, OLSDeviceSPI
 
 def test_compressed_streaming():
     """Test live compressed streaming (continuous ring capture)."""
@@ -32,6 +32,10 @@ def test_compressed_streaming():
         print()
 
         print("[2/5] Configuring for live streaming...")
+        dev.pkt.transaction(0x04, timeout=0.5)  # CMD_ABORT_CAPTURE: clear stale state
+        dev.set_analog_config(MODE_DIGITAL)
+        dev.set_schmitt(False)
+        dev.set_readback_compression("delta")
         rate_hz = 8_000_000  # 8 MS/s (high rate to stress test)
         chunk_samples = 8192
         buffer_samples = 32768
@@ -39,6 +43,7 @@ def test_compressed_streaming():
         print(f"      Sample rate: {rate_hz/1e6:.1f} MS/s")
         print(f"      Chunk size: {chunk_samples} samples")
         print(f"      Buffer: {buffer_samples} samples")
+        print("      Mode: pure digital, delta compression, Schmitt filter OFF")
         print()
 
         print("[3/5] Running continuous live capture with compression...")
@@ -111,6 +116,8 @@ def test_compressed_streaming():
         return False
     finally:
         try:
+            dev.set_readback_compression("raw")
+            dev.pkt.transaction(0x04, timeout=0.5)  # CMD_ABORT_CAPTURE
             dev.close()
         except:
             pass
