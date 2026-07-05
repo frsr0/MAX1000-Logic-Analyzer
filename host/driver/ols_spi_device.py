@@ -1643,8 +1643,11 @@ class OLSDeviceSPI:
         expected_seq = ((prev + 1) & 0xFFFFFFFF) if prev is not None else None
 
         # Known fixed-duration single-shot capture: sleep through the write phase
-        # with zero SPI traffic, leaving margin, before polling for DONE.
-        if trigger is None and rate_hz > 0:
+        # with zero SPI traffic, leaving margin, before polling for DONE. When
+        # a pre-trigger window is requested we also silence polling for the same
+        # reason: the capture still has a deterministic fixed duration, and the
+        # pre-trigger path is the one most sensitive to poll-induced pump stalls.
+        if rate_hz > 0 and (trigger is None or pre > 0):
             quiet = min(timeout, rc / float(rate_hz) + 0.05)
             t_end = time.time() + quiet
             while time.time() < t_end:

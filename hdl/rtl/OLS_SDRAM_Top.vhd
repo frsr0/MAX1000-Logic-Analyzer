@@ -764,7 +764,11 @@ BEGIN
       elsif adc_lock_settle < 4095 then
         adc_lock_settle <= adc_lock_settle + 1;
         adc_ready <= '0';
-        adc_reset <= '0';
+        -- Keep the ADC path in reset until the settle window has elapsed.
+        -- The shared PLL lock comes up before the ADC clock path is fully
+        -- stable on some boots; releasing reset early let dual-analog startup
+        -- race the first conversion frame.
+        adc_reset <= '1';
         adc_div <= 0;
         adc_start <= '0';
       else
