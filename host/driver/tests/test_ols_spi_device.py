@@ -8,6 +8,7 @@ from driver.spi_protocol import (
     REG_GEN_BAUD,
     REG_GEN_DATA,
     REG_CONT_MODE,
+    REG_FLAGS_COMPRESS_RLE,
     SPIDevice,
     ST_OK,
     ST_CAPTURE_DONE,
@@ -216,6 +217,28 @@ class TestOLSDeviceSPI:
         device_spi._stream_readback = MagicMock(return_value=b'\x01\x00' * 100)
         device_spi.set_analog_enable(True)
         device_spi.pkt.write_register.assert_called_once_with(0x20, 0x08)
+
+    def test_set_compression_enabled_selects_rle(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.read_register.return_value = 0x12340000
+
+        assert device_spi.set_compression_enabled(True) is not False
+
+        assert device_spi.readback_compression_mode == 'rle'
+        assert device_spi.compress_readback_enabled is True
+        device_spi.pkt.write_register.assert_called_once_with(
+            0x20, (0x12340000 & ~0xC0000) | REG_FLAGS_COMPRESS_RLE)
+
+    def test_set_readback_delta_aliases_to_raw(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.read_register.return_value = 0x12340000 | REG_FLAGS_COMPRESS_RLE
+
+        assert device_spi.set_readback_compression('delta') is not False
+
+        assert device_spi.readback_compression_mode == 'raw'
+        assert device_spi.compress_readback_enabled is False
+        device_spi.pkt.write_register.assert_called_once_with(
+            0x20, 0x12340000 & ~0xC0000)
 
     def test_set_pin_map(self, device_spi):
         device_spi.pkt = MagicMock()

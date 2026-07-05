@@ -13,7 +13,6 @@ from driver.spi_protocol import (
     CMD_ABORT_CAPTURE, CMD_ACK_CAPTURE_DONE, CMD_START_STREAM,
     CMD_GEN_START, CMD_GEN_LOAD, CMD_GEN_CAPTURE, CMD_GEN_STATUS,
     CMD_GET_METADATA,
-    REG_FLAGS_COMPRESS, REG_FLAGS_COMPRESS_DELTA,
     REG_FLAGS_COMPRESS_MASK, REG_FLAGS_COMPRESS_RLE,
     REG_DIVIDER, REG_SAMPLE_COUNT, REG_DELAY_COUNT,
     REG_TRIGGER_MASK, REG_TRIGGER_VALUE, REG_FLAGS,
@@ -497,21 +496,24 @@ class OLSDeviceSPI:
         self._ring_seeded = False
 
     def set_compression_enabled(self, enable: bool):
-        return self.set_readback_compression('delta' if enable else 'raw')
+        return self.set_readback_compression('rle' if enable else 'raw')
 
     def set_readback_compression(self, mode: str):
         mode = str(mode or 'raw').lower()
         if mode not in ('raw', 'delta', 'rle'):
             raise ValueError(f"unsupported readback compression mode: {mode}")
-        self.readback_compression_mode = mode
-        self.compress_readback_enabled = mode != 'raw'
+        # The current FAST_RAW_BUILD bitstream only implements hardware RLE.
+        # Keep accepting the historical "delta" spelling, but serve it as raw
+        # passthrough so readback does not burn time failing delta decode and
+        # retrying every block uncompressed.
+        effective_mode = 'raw' if mode == 'delta' else mode
+        self.readback_compression_mode = effective_mode
+        self.compress_readback_enabled = effective_mode != 'raw'
         cur = self.pkt.read_register(REG_FLAGS)
         if cur < 0:
             return False
         cur &= ~REG_FLAGS_COMPRESS_MASK
-        if mode == 'delta':
-            cur |= REG_FLAGS_COMPRESS_DELTA
-        elif mode == 'rle':
+        if effective_mode == 'rle':
             cur |= REG_FLAGS_COMPRESS_RLE
         return self.pkt.write_register(REG_FLAGS, cur)
 
@@ -831,9 +833,7 @@ class OLSDeviceSPI:
         """Write the full capture mode state before every arm."""
         mode_flags = (flags | self.analog_mode) & 0xFFFFFFFF
         mode_flags &= ~REG_FLAGS_COMPRESS_MASK
-        if self.readback_compression_mode == 'delta':
-            mode_flags |= REG_FLAGS_COMPRESS_DELTA
-        elif self.readback_compression_mode == 'rle':
+        if self.readback_compression_mode == 'rle':
             mode_flags |= REG_FLAGS_COMPRESS_RLE
         if mode_flags & MODE_ANALOG_ONLY:
             mode_flags |= (self.analog_channel & 0x1F) << 8

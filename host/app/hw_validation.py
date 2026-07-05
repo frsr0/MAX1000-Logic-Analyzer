@@ -16,13 +16,16 @@ does not drive the input.
 Usage:
     python host/hw_validation.py
 
+Set HW_VALIDATION_TIMEOUT=<seconds> to override the outer watchdog. Set it to
+0 to disable the watchdog while debugging.
+
 Requires:
     - MAX1000 board connected via USB (FTDI FT2232H)
     - FPGA programmed with OLS_Logic_Analyzer bitstream
     - Python packages: ftd2xx, pyserial
 """
 
-import sys, time, os, json, threading
+import sys, time, os, json, threading, subprocess
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -65,6 +68,50 @@ PASS = 0
 FAIL = 0
 TOTAL = 0
 SKIPPED = 0
+
+WATCHDOG_CHILD_ENV = "HW_VALIDATION_CHILD"
+WATCHDOG_TIMEOUT_ENV = "HW_VALIDATION_TIMEOUT"
+WATCHDOG_DEFAULTS = {
+    "full": 2400,
+    "new": 900,
+    "jumper": 600,
+    "codec": 600,
+}
+
+def _suite_mode(argv):
+    if len(argv) > 1 and argv[1] in ("new", "jumper", "codec"):
+        return argv[1]
+    return "full"
+
+def _watchdog_timeout(mode):
+    raw = os.environ.get(WATCHDOG_TIMEOUT_ENV)
+    if raw is not None:
+        try:
+            return max(0, int(float(raw)))
+        except ValueError:
+            print(f"ERROR: {WATCHDOG_TIMEOUT_ENV} must be seconds, got {raw!r}")
+            return WATCHDOG_DEFAULTS[mode]
+    return WATCHDOG_DEFAULTS[mode]
+
+def _run_under_watchdog():
+    if os.environ.get(WATCHDOG_CHILD_ENV) == "1":
+        return None
+    mode = _suite_mode(sys.argv)
+    timeout_s = _watchdog_timeout(mode)
+    if timeout_s <= 0:
+        return None
+    env = os.environ.copy()
+    env[WATCHDOG_CHILD_ENV] = "1"
+    cmd = [sys.executable, os.path.abspath(__file__), *sys.argv[1:]]
+    print(f"hw_validation watchdog: mode={mode}, timeout={timeout_s}s")
+    sys.stdout.flush()
+    try:
+        return subprocess.run(cmd, cwd=os.getcwd(), env=env,
+                              timeout=timeout_s).returncode
+    except subprocess.TimeoutExpired:
+        print(f"\nERROR: hw_validation {mode} timed out after {timeout_s}s")
+        print("The child process was terminated; reset/reflash the board before rerunning.")
+        return 124
 
 def log(msg):
     print(f"  {msg}")
@@ -2198,10 +2245,9 @@ def test_codec_readback_matrix(dev):
     # One SDRAM capture per rate, read back three times (raw / RLE / delta)
     # and compared byte-for-byte. This is the first suite coverage of the
     # readback codecs: raw is the reference, RLE is the real FPGA codec on
-    # this build, delta falls back to raw passthrough (RLE is the sole
-    # hardware codec — see memory delta-branch note) and must still be
-    # bit-exact via the raw-retry path.
-    print_header("Test 34: Codec readback matrix (raw/RLE/delta x rates)")
+    # this build, and the historical "delta" mode is accepted by the host as a
+    # raw alias because the delta compressor is not present in this netlist.
+    print_header("Test 34: Codec readback matrix (raw/RLE/delta-as-raw x rates)")
     nsamp = 262_144
     rates = [1_000_000, 10_000_000, 50_000_000, 100_000_000, int(dev.sample_clk)]
     for rate in rates:
@@ -2245,7 +2291,8 @@ def test_codec_readback_matrix(dev):
             same = got == ref
             mism = next((i for i, (a, b) in enumerate(zip(ref, got)) if a != b), -1) \
                 if not same else -1
-            log(f"  {codec:5s} @{rate//1000:>6}kS/s: {len(got)} bytes in {dt:.2f}s "
+            label = "delta(raw)" if codec == 'delta' else codec
+            log(f"  {label:10s} @{rate//1000:>6}kS/s: {len(got)} bytes in {dt:.2f}s "
                 f"({len(got)/max(dt,1e-6)/1e6:.2f} MB/s)"
                 + ("" if same else f", first mismatch at byte {mism}"))
             check(same, f"{codec} readback bit-exact vs raw @{rate//1000}kS/s "
@@ -2265,7 +2312,7 @@ def test_live_rate_ceiling(dev):
     # 250 kS/s; higher rungs are characterisation that reports the ceiling.
     print_header("Test 35: Live ring rate ceiling per codec")
     ladder = [250_000, 500_000, 1_000_000, 1_500_000, 2_000_000]
-    floors = {'raw': 500_000, 'rle': 250_000, 'delta': 250_000}
+    floors = {'raw': 500_000, 'rle': 250_000, 'delta': 500_000}
     ceilings = {}
     for codec in ('raw', 'rle', 'delta'):
         best = 0
@@ -2276,6 +2323,11 @@ def test_live_rate_ceiling(dev):
             dev.set_debug_ch0(True, freq_hz=10_000)
             dev.set_readback_compression(codec)
             stop = threading.Event()
+            # Hard watchdog: a stalled stream read blocks inside the driver
+            # where this loop can't set stop (the RLE live-stream stall hung
+            # one rung for ~53 minutes without it).
+            watchdog = threading.Timer(6.0, stop.set)
+            watchdog.start()
             got = 0
             over = 0
             failed = None
@@ -2289,6 +2341,8 @@ def test_live_rate_ceiling(dev):
                         stop.set()
             except Exception as exc:
                 failed = exc
+            finally:
+                watchdog.cancel()
             wall = max(time.time() - t0, 1e-6)
             thr = got / wall
             lossless = failed is None and over == 0 and thr >= rate * 0.90
@@ -2526,6 +2580,9 @@ def main_jumper_only():
 
 
 if __name__ == "__main__":
+    watchdog_rc = _run_under_watchdog()
+    if watchdog_rc is not None:
+        sys.exit(watchdog_rc)
     if len(sys.argv) > 1 and sys.argv[1] == 'new':
         sys.exit(main_new_only())
     if len(sys.argv) > 1 and sys.argv[1] == 'jumper':

@@ -169,6 +169,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal adc2_start, adc3_start : std_logic := '0';
   signal adc0_sel, adc1_sel : natural range 0 to 31 := 0;
   signal adc2_sel, adc3_sel : natural range 0 to 31 := 0;
+  signal adc_reset : std_logic := '1';
+  signal adc_lock_settle : natural range 0 to 4095 := 0;
+  signal adc_ready : std_logic := '0';
   -- Parallel bit-packing capture (mso_capture) interconnect
   signal packed_mode  : std_logic := '0';
   signal packed_data  : std_logic_vector(15 downto 0) := (others => '0');
@@ -542,20 +545,6 @@ BEGIN
       end if;
       
       if gen_busy = '1' then
-        if gen_rs485_pair = '1' then
-          if gen_scl_pin < PIN_POOL_SIZE then
-            pin_out(gen_scl_pin) <= not gen_tx;
-            pin_dir(gen_scl_pin) <= '1';
-          end if;
-        else
-          if gen_scl_pin < PIN_POOL_SIZE then
-            pin_out(gen_scl_pin) <= gen_scl;
-            pin_dir(gen_scl_pin) <= '1';
-          end if;
-        end if;
-      end if;
-
-      if gen_busy = '1' then
         -- Drive SCLK on its physical pin for both I2C and SPI test modes so it
         -- is captured like MOSI (gen_tx above). Previously only I2C drove it,
         -- so SPI-generated SCLK never reached the capture stream.
@@ -715,17 +704,19 @@ BEGIN
   -- ADC profiles selected by REG_FLAGS:
   -- mixed mode: 16 digital + 2 ADC channels, high-speed analog: one selected
   -- mux channel, dual analog-only: AIN3,AIN1.
-  process(analog_enable, analog_only, analog_profile, analog_channel, adc_start, packed_mode)
+  process(analog_enable, analog_only, analog_profile, analog_channel, adc_start, adc_ready, packed_mode)
   begin
     adc0_sel <= 1;  adc1_sel <= 2;  adc2_sel <= 3;  adc3_sel <= 4;
-    adc0_start <= adc_start; adc1_start <= adc_start;
+    adc0_start <= adc_start and adc_ready;
+    adc1_start <= adc_start and adc_ready;
     -- Channels 2/3 only convert in packed mode (they extend the round-robin to
     -- the 4 analog inputs mso_capture packs). Left off otherwise so the legacy
     -- analog path is unchanged.
     adc2_start <= '0'; adc3_start <= '0';
 
     if packed_mode = '1' then
-      adc2_start <= adc_start; adc3_start <= adc_start;
+      adc2_start <= adc_start and adc_ready;
+      adc3_start <= adc_start and adc_ready;
     elsif analog_enable = '1' then
       if analog_only = '1' and analog_profile /= "01" then
         adc0_sel <= analog_channel;
@@ -744,15 +735,33 @@ BEGIN
   process(sys_clk)
   begin
     if rising_edge(sys_clk) then
-      if adc_div = 13 then
+      if pll_locked = '0' or armed_i = '0' then
+        adc_lock_settle <= 0;
+        adc_ready <= '0';
+        adc_reset <= '1';
         adc_div <= 0;
-        adc_start <= '1';
-      else
-        adc_div <= adc_div + 1;
         adc_start <= '0';
-      end if;
-      if adc_frame_valid = '1' then
-        adc_frame_toggle <= not adc_frame_toggle;
+        adc_frame_toggle <= '0';
+      elsif adc_lock_settle < 4095 then
+        adc_lock_settle <= adc_lock_settle + 1;
+        adc_ready <= '0';
+        adc_reset <= '1';
+        adc_div <= 0;
+        adc_start <= '0';
+      else
+        adc_ready <= '1';
+        adc_reset <= '0';
+
+        if adc_div = 13 then
+          adc_div <= 0;
+          adc_start <= '1';
+        else
+          adc_div <= adc_div + 1;
+          adc_start <= '0';
+        end if;
+        if adc_frame_valid = '1' then
+          adc_frame_toggle <= not adc_frame_toggle;
+        end if;
       end if;
 
       -- Default: all analog_frame_data bytes zero
@@ -788,7 +797,7 @@ BEGIN
       sys_clk_locked => pll_locked,
       adc_clk => adc_conv_clk,
       adc_clk_locked => pll_locked,
-      reset => '0',
+      reset => adc_reset,
       ch0_sel => adc0_sel,
       ch0_start => adc0_start,
       ch0_result => adc0_result,
