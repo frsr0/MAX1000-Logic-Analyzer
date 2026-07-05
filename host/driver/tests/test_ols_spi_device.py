@@ -13,6 +13,7 @@ from driver.spi_protocol import (
     ST_OK,
     ST_CAPTURE_DONE,
     ST_CAPTURE_BUSY,
+    ST_CAPTURE_IDLE,
 )
 from driver.ols_spi_device import (
     MIXED_COMPRESSED_BLOCK_WORDS,
@@ -38,6 +39,8 @@ from driver.ols_spi_device import (
     wire_to_payload,
     unpack_narrow_digital_words,
 )
+from driver.bit_bang import i2c_read_symbols, max_i2c_read_bytes, pack_symbols
+from app.gui_decoders import parse_i2c_read_payload
 
 
 class TestAnalogFrameStride:
@@ -559,7 +562,11 @@ class TestOLSDeviceSPIGenerator:
         device_spi._stream_readback = MagicMock(return_value=b"\x01\x00" * 32)
         device_spi.pkt.transaction = MagicMock(return_value=(0x10, 0, b""))
         device_spi.pkt.get_status = MagicMock(
-            side_effect=[{"capture_seq": 7}, {"capture_status": 0x12, "capture_seq": 7}])
+            side_effect=[
+                {"capture_status": ST_CAPTURE_IDLE, "capture_seq": 7},
+                {"capture_seq": 7},
+                {"capture_status": ST_CAPTURE_DONE, "capture_seq": 7},
+            ])
         device_spi.ack_capture_done = MagicMock()
 
         data = device_spi.capture_with_gen(rate_hz=2_000_000, nsamples=32)
@@ -1262,3 +1269,244 @@ class TestFindSPIDevice:
         with patch.dict('sys.modules', {'ftd2xx': mock_ft}):
             result = find_spi_device()
         assert result is False
+
+
+class TestI2CReadSymbols:
+    """Tests for bit_bang.i2c_read_symbols and max_i2c_read_bytes."""
+
+    def test_max_i2c_read_bytes_basic(self):
+        # With 2-byte write frame, should allow ~25 read bytes
+        n = max_i2c_read_bytes(2)
+        assert 20 <= n <= 30, f"expected ~25 read bytes, got {n}"
+
+    def test_max_i2c_read_bytes_zero_write(self):
+        n = max_i2c_read_bytes(0)
+        assert 20 <= n <= 30, f"expected ~27 read bytes, got {n}"
+
+    def test_max_i2c_read_bytes_max_write(self):
+        # With many write bytes, read capacity shrinks
+        n = max_i2c_read_bytes(10)
+        assert n >= 0, "must never go negative"
+
+    def test_i2c_read_symbols_has_two_starts(self):
+        """A read transaction should produce two START events
+        (initial + repeated) when decoded."""
+        write_frame = bytes([0x30, 0x0F])  # dev_w=0x30, reg=0x0F
+        dev_r = 0x31                       # (0x18<<1)|1
+        syms = i2c_read_symbols(write_frame, 1, dev_r)
+        # Pack and examine — we can reconstruct SCL/SDA from symbols
+        # Count rising SCL edges where SDA transitions 1→0
+        starts = 0
+        prev_sda = 1  # idle high
+        for sym in syms:
+            scl = (sym >> 1) & 1
+            sda = sym & 1
+            if scl == 1 and prev_sda == 1 and sda == 0:
+                starts += 1
+            prev_sda = sda
+        assert starts >= 2, f"expected >=2 START edges, got {starts}"
+
+    def test_i2c_read_symbols_nacks_final_byte(self):
+        """The last byte's ACK slot should have SDA released (high)."""
+        write_frame = bytes([0x30, 0x0F])
+        syms = i2c_read_symbols(write_frame, 1, 0x31)
+        # The LAST ACK/NACK slot before STOP: when SCL=1 and SDA=1
+        # after the read data byte = NACK (released). Find it:
+        # Walk backwards to find the STOP sequence (SDA rises while SCL high)
+        # The symbol before STOP has SCL=1, SDA=1 (the SDA rise)
+        # The one before that has SCL=1, SDA=0
+        # The one before that has SCL=0, SDA=0
+        # The one before that has SCL=0, SDA=NACK value
+        # Actually, let's verify by checking the last byte's ACK/NACK slot:
+        # After the read data bits, the next 4 symbols are the ACK/NACK.
+        # The symbol before the STOP start (0b00 after SCL fall) tells us.
+        stop_sda_rise = None
+        for i in range(len(syms) - 4, len(syms)):
+            scl = (syms[i] >> 1) & 1
+            sda = syms[i] & 1
+            if stop_sda_rise is None and scl == 1 and sda == 1:
+                # Found the STOP SDA-rising edge symbol
+                # The ACK/NACK state is the 4th symbol before this one
+                if i >= 4:
+                    ack_sym = syms[i - 4]
+                    ack_scl = (ack_sym >> 1) & 1
+                    ack_sda = ack_sym & 1
+                    # The 4th symbol before STOP should be SCL=0, SDA=NACK(1)
+                    # Actually it's the 3rd symbol of the ACK/NACK (SCL high)
+                    # Let's just check the NACK symbol: the 2nd of 4 ACK symbols
+                    nack_sym = syms[i - 3]
+                    # NACK = SDA=1 while SCL=0 = 0b01
+                    assert nack_sym == 0b01 or nack_sym == 0b11, \
+                        f"expected NACK (SDA=1) in read data ACK, got {nack_sym:02b}"
+                break
+
+    def test_i2c_read_symbols_reads_n_bytes(self):
+        """Symbol count should scale with read_len."""
+        write_frame = bytes([0x30, 0x0F])
+        syms_1 = i2c_read_symbols(write_frame, 1, 0x31)
+        syms_6 = i2c_read_symbols(write_frame, 6, 0x31)
+        # Each additional read byte adds 36 symbols
+        # Allow small margin for encoding variations
+        diff = len(syms_6) - len(syms_1)
+        assert 170 <= diff <= 190, \
+            f"5 extra bytes should add ~180 symbols, got {diff}"
+
+    def test_i2c_read_symbols_read_len_zero(self):
+        """read_len=0 should produce same symbols as write-only."""
+        write_frame = bytes([0xA6, 0x2D])
+        # Build a "write only" symbol sequence using i2c_symbols
+        from driver.bit_bang import i2c_symbols
+        write_only = i2c_symbols(write_frame)
+        read_zero = i2c_read_symbols(write_frame, 0, 0x31)
+        # read_len=0: same write bytes, no repeated START, no read phase
+        # The dev_r parameter is ignored when read_len=0
+        # Symbol counts should match (within 2 for encoding variance)
+        assert abs(len(read_zero) - len(write_only)) <= 4, \
+            f"read_len=0 should match write-only: {len(read_zero)} vs {len(write_only)}"
+
+    def test_i2c_read_symbols_fifo_clamp(self):
+        """Very large read_len should clamp without error."""
+        write_frame = bytes([0x30, 0x0F])
+        syms = i2c_read_symbols(write_frame, 999, 0x31)
+        assert len(syms) <= 1024, \
+            f"clamped symbols should fit FIFO, got {len(syms)}"
+
+    def test_i2c_read_symbols_empty_frame(self):
+        """Empty write frame should not crash (defensive)."""
+        syms = i2c_read_symbols(b'', 1, 0x31)
+        assert len(syms) > 10, "should still produce START+dev_r+STOP"
+
+
+class TestParseI2CReadPayload:
+    """Tests for gui_decoders.parse_i2c_read_payload."""
+
+    def test_empty_decoded(self):
+        assert parse_i2c_read_payload([]) == []
+
+    def test_write_only_no_second_start(self):
+        """Write-only transaction (no repeated START) returns all DATA bytes."""
+        decoded = [
+            ("START", None), ("DATA", 0x30), ("ACK", None),
+            ("DATA", 0x0F), ("ACK", None), ("STOP", None),
+        ]
+        result = parse_i2c_read_payload(decoded)
+        assert result == [0x30, 0x0F]
+
+    def test_full_read_transaction(self):
+        """Full read: skip dev_r byte, return remaining data."""
+        decoded = [
+            ("START", None), ("DATA", 0x30), ("ACK", None),
+            ("DATA", 0x0F), ("ACK", None),
+            ("START", None), ("DATA", 0x31), ("ACK", None),
+            ("DATA", 0x33), ("NACK", None), ("STOP", None),
+        ]
+        result = parse_i2c_read_payload(decoded)
+        assert result == [0x33], f"expected [0x33], got {result}"
+
+    def test_multi_byte_read(self):
+        """2-byte read returns both bytes after dev_r."""
+        decoded = [
+            ("START", None), ("DATA", 0x30), ("ACK", None),
+            ("DATA", 0x28), ("ACK", None),
+            ("START", None), ("DATA", 0x31), ("ACK", None),
+            ("DATA", 0xAB), ("ACK", None),
+            ("DATA", 0xCD), ("NACK", None), ("STOP", None),
+        ]
+        result = parse_i2c_read_payload(decoded)
+        assert result == [0xAB, 0xCD], f"expected [0xAB, 0xCD], got {result}"
+
+    def test_read_with_stop_before_repeated_start(self):
+        """Slave-ACK case: STOP appears before repeated START."""
+        decoded = [
+            ("START", None), ("DATA", 0x30), ("ACK", None),
+            ("DATA", 0x0F), ("ACK", None),
+            ("STOP", None),
+            ("START", None), ("DATA", 0x31), ("ACK", None),
+            ("DATA", 0x33), ("NACK", None), ("STOP", None),
+        ]
+        result = parse_i2c_read_payload(decoded)
+        assert result == [0x33], f"expected [0x33], got {result}"
+
+
+def _swd_waveform(syms, oversample=2):
+    """Expand 2-bit symbols into SWCLK/SWDIO sample streams.
+
+    Adds the Bit_Engine's forced-high idle before and after the burst so
+    tests also cover the burst-boundary edge behaviour.
+    """
+    swclk, swdio = [], []
+    for sym in [0b11] * 2 + list(syms) + [0b11] * 4:
+        for _ in range(oversample):
+            swclk.append((sym >> 1) & 1)
+            swdio.append(sym & 1)
+    return {1: swclk, 3: swdio}
+
+
+class TestSwdSymbols:
+    """Tests for the bit_bang SWD encoders and gui_decoders.decode_swd."""
+
+    def test_request_byte_known_values(self):
+        from driver.bit_bang import swd_request_byte
+        assert swd_request_byte(0, 1, 0x0) == 0xA5   # DP read IDCODE
+        assert swd_request_byte(0, 0, 0x0) == 0x81   # DP write ABORT
+        assert swd_request_byte(0, 0, 0x4) == 0xA9   # DP write CTRL/STAT
+        assert swd_request_byte(1, 1, 0x0) == 0x87   # AP read 0x0
+        assert swd_request_byte(0, 1, 0xC) == 0xBD   # DP read RDBUFF
+
+    def test_sequence_fits_fifo(self):
+        from driver.bit_bang import swd_sequence_symbols, max_swd_ops
+        n = max_swd_ops(connect=True)
+        assert n >= 5, f"expected >=5 ops per burst after connect, got {n}"
+        ops = [('r', 0, 0x0)] * n
+        packed = pack_symbols(swd_sequence_symbols(ops, connect=True))
+        assert len(packed) <= 256
+
+    def test_sequence_overflow_raises(self):
+        from driver.bit_bang import swd_sequence_symbols, max_swd_ops
+        ops = [('r', 0, 0x0)] * (max_swd_ops(connect=True) + 1)
+        try:
+            swd_sequence_symbols(ops, connect=True)
+            assert False, "expected ValueError for oversize sequence"
+        except ValueError:
+            pass
+
+    def test_connect_write_read_roundtrip(self):
+        """Full connect + write + read burst decodes back correctly."""
+        from driver.bit_bang import swd_sequence_symbols
+        from app.gui_decoders import decode_swd
+        ops = [('w', 0, 0x4, 0x12345678), ('r', 0, 0x0)]
+        syms = swd_sequence_symbols(ops, connect=True)
+        events = decode_swd(_swd_waveform(syms), 1_000_000)
+        types = [e['type'] for e in events]
+        assert types == ['linereset', 'jtag2swd', 'linereset',
+                         'xfer', 'xfer'], f"got {types}"
+        wr, rd = events[3], events[4]
+        assert (wr['apndp'], wr['rnw'], wr['addr']) == (0, 0, 0x4)
+        assert wr['data'] == 0x12345678
+        assert wr['parity_ok'] is True
+        # No target on the bench: released lines read back high
+        assert wr['ack'] == 7 and rd['ack'] == 7
+        assert (rd['apndp'], rd['rnw'], rd['addr']) == (0, 1, 0x0)
+        assert rd['data'] == 0xFFFFFFFF
+        # 32 ones = even popcount, but released parity bit reads 1
+        assert rd['parity_ok'] is False
+
+    def test_no_spurious_start_bit_at_burst_end(self):
+        """The forced-high engine idle must not clock in a stray start bit."""
+        from driver.bit_bang import swd_sequence_symbols
+        from app.gui_decoders import decode_swd
+        syms = swd_sequence_symbols([('w', 0, 0x0, 0)], connect=False)
+        events = decode_swd(_swd_waveform(syms), 1_000_000)
+        xfers = [e for e in events if e['type'] == 'xfer']
+        assert len(xfers) == 1, f"expected exactly 1 xfer, got {events}"
+
+    def test_write_data_parity_odd(self):
+        """A value with odd popcount carries parity bit 1."""
+        from driver.bit_bang import swd_sequence_symbols
+        from app.gui_decoders import decode_swd
+        syms = swd_sequence_symbols([('w', 1, 0xC, 0x7)], connect=False)
+        events = decode_swd(_swd_waveform(syms), 1_000_000)
+        wr = [e for e in events if e['type'] == 'xfer'][0]
+        assert (wr['apndp'], wr['addr']) == (1, 0xC)
+        assert wr['data'] == 0x7
+        assert wr['parity_ok'] is True

@@ -227,6 +227,106 @@ def decode_spi(ch, samplerate, miso_idx=3, sclk_idx=1, filter_threshold=0):
     return result
 
 
+def _swd_sample_bits(swclk, swdio):
+    """Sample SWDIO at the middle of every SWCLK-high plateau.
+
+    Returns (bits, positions) where positions are the sample indices of the
+    rising edges (mid-plateau sampling for the same settling reasons as
+    decode_spi/decode_i2c).
+    """
+    n = min(len(swclk), len(swdio))
+    bits, pos = [], []
+    i = 1
+    while i < n:
+        if swclk[i - 1] == 0 and swclk[i] == 1:    # SWCLK rising edge
+            j = i
+            while j < n and swclk[j] == 1:
+                j += 1
+            mid = min((i + j) // 2, n - 1)
+            bits.append(1 if swdio[mid] else 0)
+            pos.append(i)
+            i = j
+        else:
+            i += 1
+    return bits, pos
+
+
+def decode_swd(ch, samplerate, swclk_idx=1, swdio_idx=3, filter_threshold=0):
+    """Decode ARM SWD from captured SWCLK/SWDIO channels.
+
+    Returns a list of event dicts:
+      {'type': 'linereset', 'pos': i}
+      {'type': 'jtag2swd',  'pos': i}
+      {'type': 'xfer', 'pos': i, 'apndp': 0/1, 'rnw': 0/1, 'addr': 0x0..0xC,
+       'ack': 3-bit value (1=OK 2=WAIT 4=FAULT 7=no target),
+       'data': 32-bit value or None if truncated, 'parity_ok': bool/None}
+
+    The generator always clocks the full data phase even on WAIT/FAULT
+    (open-loop), so the data field of a failed transfer is whatever was on
+    the wire.  With no target attached (loopback bench) reads return
+    ack=7, data=0xFFFFFFFF.
+    """
+    swclk = ch[swclk_idx]
+    swdio = ch[swdio_idx]
+    if filter_threshold > 0:
+        swclk = glitch_filter(swclk, filter_threshold)
+        swdio = glitch_filter(swdio, filter_threshold)
+    bits, pos = _swd_sample_bits(swclk, swdio)
+
+    events = []
+    n = len(bits)
+    i = 0
+    while i < n:
+        if bits[i] == 1:
+            run = 0
+            while i + run < n and bits[i + run] == 1:
+                run += 1
+            if run >= 50:                          # line reset
+                events.append({'type': 'linereset', 'pos': pos[i]})
+                i += run
+                # JTAG-to-SWD select sequence sits between two resets
+                if i + 16 <= n:
+                    val = 0
+                    for k in range(16):
+                        val |= bits[i + k] << k
+                    if val == 0xE79E:
+                        events.append({'type': 'jtag2swd', 'pos': pos[i]})
+                        i += 16
+                continue
+        if bits[i] == 0:                           # idle
+            i += 1
+            continue
+        # Start bit: try to parse a request header
+        if i + 12 > n:                             # header + Trn + ACK
+            break
+        hdr = bits[i:i + 8]
+        apndp, rnw, a2, a3 = hdr[1], hdr[2], hdr[3], hdr[4]
+        req_ok = (hdr[6] == 0 and hdr[7] == 1 and
+                  ((apndp ^ rnw ^ a2 ^ a3) & 1) == hdr[5])
+        if not req_ok:
+            i += 1
+            continue
+        ack = bits[i + 9] | (bits[i + 10] << 1) | (bits[i + 11] << 2)
+        j = i + 12
+        if not rnw:
+            j += 1                                 # Trn back to host
+        data = None
+        parity_ok = None
+        if j + 33 <= n:
+            data = 0
+            for k in range(32):
+                data |= bits[j + k] << k
+            parity_ok = (bin(data).count('1') & 1) == bits[j + 32]
+            j += 33
+            if rnw:
+                j += 1                             # Trn back to host
+        events.append({'type': 'xfer', 'pos': pos[i], 'apndp': apndp,
+                       'rnw': rnw, 'addr': (a3 << 3) | (a2 << 2),
+                       'ack': ack, 'data': data, 'parity_ok': parity_ok})
+        i = j
+    return events
+
+
 def decode_modbus(ch, samplerate, ch_idx=0, baud=115200):
     uart = decode_uart(ch, samplerate, ch_idx, baud)
     frames = []
@@ -251,3 +351,43 @@ def decode_modbus(ch, samplerate, ch_idx=0, baud=115200):
             crc=crc_recv, crc_ok=crc_ok))
         i = frame_end
     return frames
+
+def parse_i2c_read_payload(decoded):
+    """Extract the read-phase payload bytes from a decoded I2C transaction.
+
+    A full I2C read has the form:
+        START, DATA(dev_w), ACK, DATA(reg), ACK,
+        [STOP if slave ACK'd], START, DATA(dev_r), ACK,
+        DATA(byte0), ACK, ..., DATA(byteN), NACK, STOP
+
+    The read-phase DATA bytes follow the last START and exclude the
+    leading dev_r byte.  When there is no repeated START (write-only or
+    no-slave bench where SDA was already high) the function falls back
+    to returning all DATA bytes (caller must slice).
+
+    Returns: list of int (payload bytes from the read phase).
+    """
+    start_indices = [i for i, (t, v) in enumerate(decoded) if t == "START"]
+    if len(start_indices) >= 2:
+        # Read phase starts after the last START
+        read_events = decoded[start_indices[-1]:]
+        read_bytes = [v for t, v in read_events if t == "DATA"]
+        # First data byte in the read phase is dev_r — skip it
+        return read_bytes[1:] if len(read_bytes) > 1 else []
+    # No repeated START detected — return all data bytes (caller slices)
+    return [v for t, v in decoded if t == "DATA"]
+
+
+def parse_spi_read_payload(decoded, dummy_bytes=1):
+    """Extract the payload bytes from a decoded SPI read transaction.
+
+    The sensor usually shifts out one dummy byte while the read command is
+    clocked in, then returns register data on the following byte(s).
+    """
+    if not decoded:
+        return []
+    if dummy_bytes <= 0:
+        return list(decoded)
+    if len(decoded) <= dummy_bytes:
+        return []
+    return list(decoded[dummy_bytes:])

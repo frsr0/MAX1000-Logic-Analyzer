@@ -50,7 +50,7 @@ NUM_CHANNELS = 16
 # Re-export decoder functions from gui_decoders
 from app.gui_decoders import (
     samples_to_channels, modbus_crc16, glitch_filter,
-    decode_uart, decode_i2c, decode_spi, decode_modbus,
+    decode_uart, decode_i2c, decode_spi, decode_modbus, parse_i2c_read_payload,
     DecodedByte, DecodedModbusFrame,
 )
 
@@ -1750,7 +1750,7 @@ class OLScope:
                 rate_hz=rate, nsamples=nsamp, i2c_speed=speed,
                 dev_addr=addr, reg_addr=reg_addr,
                 read_len=read_len,
-                tx_pin=31, scl_pin=31, fast_mode=False)
+                tx_pin=sda_pin, scl_pin=scl_pin, fast_mode=False)
             if not data:
                 self._show_accel_result("No data returned")
                 return
@@ -1763,25 +1763,28 @@ class OLScope:
             self.wave.load(ch, self.ch_names, self.samplerate)
             self._process_decoders()
             self.wave.redraw()
-            # Parse I2C decoded bytes
+            # Parse I2C decoded events and extract read-phase payload
             decoded = decode_i2c(ch, rate, scl_idx=scl_pin, sda_idx=sda_pin,
                                  filter_threshold=max(3, int(rate // 1000000)))
-            data_bytes = [v for t, v in decoded if t == "DATA"]
-            if reg_addr in (0x28, 0x2A, 0x2C) and read_len >= 2 and len(data_bytes) >= 2:
-                raw = (data_bytes[-2] | (data_bytes[-1] << 8))
+            payload = parse_i2c_read_payload(decoded)
+
+            if not decoded:
+                self._show_accel_result("No I2C data decoded")
+            elif reg_addr == 0x0F and payload:
+                who = payload[0]
+                ok = "✓ LIS3DH" if who == 0x33 else f"✗ 0x{who:02X} (expected 0x33)"
+                self._show_accel_result(f"WHO_AM_I = 0x{who:02X}  {ok}")
+            elif reg_addr in (0x28, 0x2A, 0x2C) and read_len >= 2 and len(payload) >= 2:
+                raw = (payload[0] | (payload[1] << 8))
                 val = raw - 65536 if raw >= 32768 else raw
                 mg = val * 1000 // 16384
                 label = {0x28: "X", 0x2A: "Y", 0x2C: "Z"}.get(reg_addr, "?")
                 self._show_accel_result(f"{label} axis: {raw:04X} ({val: d}) = {mg} mg")
-            elif reg_addr == 0x0F and data_bytes:
-                who = data_bytes[-1]
-                ok = "âœ“ LIS3DH" if who == 0x33 else f"âœ— 0x{who:02X} (expected 0x33)"
-                self._show_accel_result(f"WHO_AM_I = 0x{who:02X}  {ok}")
-            elif data_bytes:
-                pairs = [f"0x{v:02X}" for v in data_bytes[-read_len:]]
+            elif payload:
+                pairs = [f"0x{v:02X}" for v in payload[:read_len]]
                 self._show_accel_result(f"Data: {' '.join(pairs)}")
             else:
-                self._show_accel_result("No I2C data decoded")
+                self._show_accel_result("No read data in I2C decode")
             if ns > 0:
                 self.status['text'] = f"Accel: {ns} samples"
         except Exception as e:

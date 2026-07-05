@@ -95,6 +95,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_spi_test   : std_logic := '0';
   signal gen_repeat     : std_logic := '0';
   signal gen_rs485_pair : std_logic := '0';
+  signal gen_accel_attach : std_logic := '0';
+  -- Fast-domain syncs for the accel-bus capture mirror (attach toggle)
+  signal accel_attach_f1, accel_attach_f2 : std_logic := '0';
+  signal sen_sdi_fast_f1, sen_sdi_fast_f2 : std_logic := '1';
+  signal sen_spc_fast_f1, sen_spc_fast_f2 : std_logic := '1';
+  signal sen_sdo_fast_f1, sen_sdo_fast_f2 : std_logic := '1';
   signal gen_fifo_count : std_logic_vector(7 downto 0) := (others => '0');
   signal gen_rx_data   : std_logic_vector(7 downto 0) := (others => '0');
   signal gen_rx_used   : std_logic_vector(7 downto 0) := (others => '0');
@@ -131,6 +137,11 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal debug_ch0_duty_active   : std_logic_vector(31 downto 0) := x"00000200";
   signal sen_sdi_meta : std_logic := '1';
   signal sen_sdi_sync : std_logic := '1';
+  signal sen_sdo_meta : std_logic := '1';
+  signal sen_sdo_sync : std_logic := '1';
+  -- Bit_Engine RX source: SDO (SPI MISO) during SPI-test bursts, otherwise
+  -- SDI (the I2C SDA line, where the slave drives ACK/read bits).
+  signal gen_rx_in    : std_logic := '1';
   signal gen_scl_d1   : std_logic := '0';
   signal gen_scl_d2   : std_logic := '0';
   signal gen_tx_d1    : std_logic := '0';
@@ -287,6 +298,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Gen_SPI_Test   : OUT STD_LOGIC := '0';
     Gen_Repeat     : OUT STD_LOGIC := '0';
     Gen_RS485_Pair : OUT STD_LOGIC := '0';
+    Gen_Accel_Attach : OUT STD_LOGIC := '0';
     Armed          : OUT STD_LOGIC := '0';
     Fast_Mode      : OUT STD_LOGIC := '0';
     Narrow_Enable  : OUT STD_LOGIC := '0';
@@ -427,8 +439,15 @@ BEGIN
     PMOD(i) <= pin_out(15+i) when pin_dir(15+i) = '1' else 'Z';
   end generate;
 
-  SEN_CS <= '0' when gen_busy = '1' else '1';
-  SEN_SDI <= gen_tx when gen_busy = '1' else 'Z';
+  -- Accelerometer (LIS3DH) bus. CS selects the protocol on the chip itself:
+  -- CS low = SPI, CS high = I2C — so CS must only drop for SPI-test bursts,
+  -- otherwise an I2C dialogue is silently ignored by the sensor.
+  SEN_CS <= '0' when (gen_busy = '1' and gen_spi_test = '1') else '1';
+  -- SDI doubles as I2C SDA (bidirectional: the slave drives ACK/read bits),
+  -- so drive it OPEN-DRAIN for non-SPI bursts (the QSF weak pull-up supplies
+  -- the high level); SPI MOSI stays push-pull.
+  SEN_SDI <= gen_tx when (gen_busy = '1' and gen_spi_test = '1') else
+             '0'    when (gen_busy = '1' and gen_tx = '0') else 'Z';
   SEN_SPC <= gen_scl when gen_busy = '1' else 'Z';
 
   gen_sys_capture_fast : if FAST_SPEED generate
@@ -511,6 +530,8 @@ BEGIN
     if rising_edge(sys_clk) then
       sen_sdi_meta <= SEN_SDI;
       sen_sdi_sync <= sen_sdi_meta;
+      sen_sdo_meta <= SEN_SDO;
+      sen_sdo_sync <= sen_sdo_meta;
       gen_scl_d1 <= gen_scl;
       gen_scl_d2 <= gen_scl_d1;
       gen_tx_d1 <= gen_tx;
@@ -607,14 +628,28 @@ BEGIN
   end generate;
 
   -- Speed input path: direct pin capture with CDC override for the selected
-  -- logical debug channel.
+  -- logical debug channel, plus the accelerometer-bus mirror: when the
+  -- attach toggle (REG_GEN_DATA bit 4) is set, channels 13/14/15 carry
+  -- SEN_SDI (SDA/MOSI) / SEN_SPC (SCL/SCLK) / SEN_SDO (MISO), so a normal
+  -- capture records the Bit_Engine <-> LIS3DH dialogue.
   process(fast_clk)
   begin
     if rising_edge(fast_clk) then
       pin_pool_fast_r <= pin_pool;
+      accel_attach_f1 <= gen_accel_attach;
+      accel_attach_f2 <= accel_attach_f1;
+      sen_sdi_fast_f1 <= SEN_SDI;  sen_sdi_fast_f2 <= sen_sdi_fast_f1;
+      sen_spc_fast_f1 <= SEN_SPC;  sen_spc_fast_f2 <= sen_spc_fast_f1;
+      sen_sdo_fast_f1 <= SEN_SDO;  sen_sdo_fast_f2 <= sen_sdo_fast_f1;
       for i in 0 to LA_CHANNELS-1 loop
         if i = debug_ch0_channel_f2 and debug_ch0_enable_f2 = '1' then
           capture_data_fast_speed_r(i) <= registered_ch0_f2;
+        elsif accel_attach_f2 = '1' and i = 13 then
+          capture_data_fast_speed_r(i) <= sen_sdi_fast_f2;
+        elsif accel_attach_f2 = '1' and i = 14 then
+          capture_data_fast_speed_r(i) <= sen_spc_fast_f2;
+        elsif accel_attach_f2 = '1' and i = 15 then
+          capture_data_fast_speed_r(i) <= sen_sdo_fast_f2;
         else
           capture_data_fast_speed_r(i) <= pin_pool_fast_r(i);
         end if;
@@ -910,6 +945,7 @@ BEGIN
     Gen_SPI_Test   => gen_spi_test,
     Gen_Repeat     => gen_repeat,
     Gen_RS485_Pair => gen_rs485_pair,
+    Gen_Accel_Attach => gen_accel_attach,
     Armed          => armed_i,
     Fast_Mode      => fast_mode_i,
     Narrow_Enable  => open,
@@ -1057,7 +1093,7 @@ BEGIN
         -- a 16-symbol cap here silently truncated multi-byte host patterns.
         Num_Syms    => x"FFFF",
         Over_Sample => "00",
-        RX_Enable   => '0',
+        RX_Enable   => '1',
         Clk_Toggle  => '0',
         Start       => gen_start,
         Busy        => gen_busy,
@@ -1065,9 +1101,10 @@ BEGIN
         Clear       => gen_clear,
         Out_0       => gen_tx,
         Out_1       => gen_scl,
-        In_0        => sen_sdi_sync
+        In_0        => gen_rx_in
       );
   end generate;
+  gen_rx_in <= sen_sdo_sync when gen_spi_test = '1' else sen_sdi_sync;
   gen_start_ack_i <= gen_start and not gen_busy;
   gen_active <= gen_busy;
 

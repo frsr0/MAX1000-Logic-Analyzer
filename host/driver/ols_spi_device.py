@@ -18,9 +18,11 @@ from driver.spi_protocol import (
     REG_TRIGGER_MASK, REG_TRIGGER_VALUE, REG_FLAGS,
     REG_FAST_MODE, REG_CONT_MODE,
     REG_GEN_PROTO, REG_GEN_BAUD, REG_GEN_PINS, REG_GEN_DATA,
+    REG_GEN_RX_DATA,
     REG_IFACE_MODE, REG_DEBUG_CH0_ENABLE, REG_DEBUG_CH0_PERIOD, REG_DEBUG_CH0_DUTY,
     ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_DONE,
     GEN_FLAG_SPI_TEST, GEN_FLAG_REPEAT, GEN_FLAG_RS485_PAIR,
+    GEN_FLAG_ACCEL_ATTACH,
 )
 from driver import bit_bang
 
@@ -749,6 +751,213 @@ class OLSDeviceSPI:
                 bit_bang.pack_symbols(bit_bang.i2c_symbols(frame)))
         return frame
 
+    def _gen_load_i2c_read(self, write_frame, i2c_speed, read_len, dev_r):
+        """Load I2C write-then-read symbols into the generator FIFO."""
+        frame = bytes(write_frame or b'')
+        rdev = dev_r & 0xFF
+        max_read = bit_bang.max_i2c_read_bytes(len(frame))
+        if read_len > max_read:
+            read_len = max_read
+        div = max(1, self.sys_clk // (4 * max(1, int(i2c_speed))))
+        self.pkt.write_register(REG_GEN_BAUD, div & 0xFFFF)
+        syms = bit_bang.i2c_read_symbols(frame, read_len, rdev)
+        if syms:
+            self.pkt.load_gen_data(bit_bang.pack_symbols(syms))
+        return frame
+
+    def _gen_load_swd(self, ops, swd_clk_hz, connect=True, idle_clocks=8):
+        """Load SWD transaction symbols into the generator FIFO.
+
+        ops -- list of ('w', apndp, addr, value) / ('r', apndp, addr)
+               tuples (driver/bit_bang.swd_sequence_symbols), clamped to
+               FIFO capacity.  Returns True when a pattern was loaded.
+        """
+        ops = list(ops or [])
+        limit = bit_bang.max_swd_ops(connect=connect, idle_clocks=idle_clocks)
+        if len(ops) > limit:
+            ops = ops[:limit]
+        # 2 symbols per SWCLK period: SWCLK = sys_clk / (2 * (Bit_Div + 1.25))
+        div = max(1, int(round(
+            self.sys_clk / (2 * max(1, int(swd_clk_hz))) - 1.25)))
+        self.pkt.write_register(REG_GEN_BAUD, div & 0xFFFF)
+        syms = bit_bang.swd_sequence_symbols(
+            ops, connect=connect, idle_clocks=idle_clocks)
+        if not syms:
+            return False
+        self.pkt.load_gen_data(bit_bang.pack_symbols(syms))
+        return True
+
+    # ── On-board accelerometer (LIS3DH on the SEN_* pins) ──────────
+    # The Bit_Engine drives SEN_SDI/SEN_SPC/SEN_CS directly and samples the
+    # response line into its RX FIFO, one bit per generator symbol (In_0 is
+    # SEN_SDI for I2C dialogues, SEN_SDO when GEN_FLAG_SPI_TEST is set).
+    # No capture window is involved: run a burst, then drain REG_GEN_RX_DATA.
+
+    def gen_rx_read(self, max_bytes=256):
+        """Drain the Bit_Engine RX FIFO. Returns packed line samples
+        (8 per byte, LSB-first = chronological)."""
+        out = bytearray()
+        for _ in range(max_bytes):
+            v = self.pkt.read_register(REG_GEN_RX_DATA)
+            if v < 0:
+                break
+            used = (v >> 8) & 0xFF
+            if used == 0:
+                break
+            out.append(v & 0xFF)
+            if used == 1:
+                break
+        return bytes(out)
+
+    @staticmethod
+    def _rx_bits(rx_bytes):
+        bits = []
+        for b in rx_bytes:
+            for i in range(8):
+                bits.append((b >> i) & 1)
+        return bits
+
+    def accel_capture_dialogue(self, syms, bit_div, spi_test=False,
+                               rate_hz=2_000_000, nsamples=4096, timeout=6):
+        """Run an accel-bus burst with the ATTACH mirror on and capture it.
+
+        The attach toggle (REG_GEN_DATA bit 4) copies SEN_SDI/SEN_SPC/SEN_SDO
+        onto capture channels 13/14/15, so the returned samples show the
+        Bit_Engine <-> LIS3DH dialogue in a normal capture (decode with
+        sda/mosi=CH13, scl/sclk=CH14, miso=CH15)."""
+        self._ensure_open()
+        self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)  # flush FIFOs
+        flags = (1 << 8) | GEN_FLAG_ACCEL_ATTACH | \
+            (GEN_FLAG_SPI_TEST if spi_test else 0)
+        self.pkt.write_register(REG_GEN_DATA, flags)
+        self.pkt.write_register(REG_GEN_PROTO, 0)
+        self._pins(tx_pin=24, scl_pin=GEN_SCL_PARK)
+        self.pkt.write_register(REG_GEN_BAUD, bit_div & 0xFFFF)
+        self.pkt.load_gen_data(bit_bang.pack_symbols(syms))
+        div = max(0, int(self.sample_clk / rate_hz) - 1)
+        self._write_capture_config(
+            div=div, samples=nsamples, delay_count=nsamples, mask=0, value=0,
+            flags=0, fast_mode=True, continuous=False)
+        self.spi.flush()
+        r = self.pkt.transaction(CMD_GEN_CAPTURE, timeout=1.0)
+        if r is None or r[0] not in (0, ST_CAPTURE_ARMED):
+            return b''
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            st = self.pkt.get_status()
+            if st.get('capture_status', -1) == ST_CAPTURE_DONE:
+                break
+            time.sleep(0.002)
+        data = self._stream_readback(0, nsamples)[:nsamples * 2]
+        self.pkt.write_register(REG_GEN_DATA, 1 << 8)  # drop attach flag
+        return data
+
+    def _gen_run_and_rx(self, syms, bit_div, spi_test=False, timeout=2.0):
+        """Run one Bit_Engine burst on the accelerometer bus and return the
+        RX line samples (one bit per symbol, trailing partial byte lost)."""
+        self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)  # flush FIFOs
+        flags = (1 << 8) | (GEN_FLAG_SPI_TEST if spi_test else 0)
+        self.pkt.write_register(REG_GEN_DATA, flags)
+        self.pkt.write_register(REG_GEN_PROTO, 0)
+        # Park both routing pins on unmapped pool entries so the burst does
+        # not toggle any MKR/PMOD pad (SEN_* are driven unconditionally).
+        self._pins(tx_pin=24, scl_pin=GEN_SCL_PARK)
+        self.pkt.write_register(REG_GEN_BAUD, bit_div & 0xFFFF)
+        self.pkt.load_gen_data(bit_bang.pack_symbols(syms))
+        self.spi.flush()
+        if self.pkt.transaction(CMD_GEN_START, timeout=1.0) is None:
+            return []
+        self._wait_gen_idle(timeout=timeout)
+        return self._rx_bits(self.gen_rx_read())
+
+    @staticmethod
+    def _i2c_rx_decode(syms, rx, expect_echo):
+        """Extract I2C frame bits from RX samples using the known generated
+        SCL pattern: sample SDA one symbol into each SCL-high plateau.
+        Aligns RX<->symbol offset by matching the open-drain echo of the
+        host-driven bytes. Returns (data_bytes, ack_bits) or (None, None)."""
+        scl = [(s >> 1) & 1 for s in syms]
+        sda_tx = [s & 1 for s in syms]
+        n_sym = len(syms)
+
+        def is_data_clock(k):
+            # A rise whose high plateau carries a master-driven SDA
+            # transition is a START/STOP condition, not a data clock —
+            # the slave's bit counter resets there and so must ours.
+            e = k
+            while e < n_sym and scl[e]:
+                e += 1
+            return all(sda_tx[j] == sda_tx[k] for j in range(k, e))
+
+        rises = [k for k in range(1, len(scl))
+                 if scl[k] and not scl[k - 1] and is_data_clock(k)]
+        nbits = len(rises)
+        for off in range(-3, 4):
+            bits = []
+            for k in rises:
+                p = k + 1 + off
+                bits.append(rx[p] if 0 <= p < len(rx) else 1)
+            if len(bits) < nbits:
+                continue
+            data, acks = [], []
+            for i in range(nbits // 9):
+                chunk = bits[i * 9:(i + 1) * 9]
+                data.append(int(''.join(map(str, chunk[:8])), 2))
+                acks.append(chunk[8])
+            if data[:len(expect_echo)] == list(expect_echo):
+                return data, acks
+        return None, None
+
+    def accel_read_i2c(self, reg, dev_addr=0x19, speed=100_000):
+        """Read one LIS3DH register over I2C. Returns the byte or None.
+
+        Requires the RX-enabled bitstream (Bit_Engine In_0/RX wired,
+        SEN_CS held high for non-SPI bursts, SEN_SDI open-drain)."""
+        dev_w = (dev_addr << 1) & 0xFE
+        dev_r = dev_w | 1
+        syms = bit_bang.i2c_read_symbols(bytes([dev_w, reg & 0xFF]), 1, dev_r)
+        div = max(1, int(round(self.sys_clk / (4 * max(1, int(speed))) - 1.25)))
+        rx = self._gen_run_and_rx(syms, div, spi_test=False)
+        if not rx:
+            return None
+        data, acks = self._i2c_rx_decode(
+            syms, rx, expect_echo=[dev_w, reg & 0xFF, dev_r])
+        # Frame layout: dev_w, reg, dev_r, value; slave must ACK (0) the
+        # three addressed bytes or nothing real answered.
+        if not data or len(data) < 4 or acks[:3] != [0, 0, 0]:
+            return None
+        return data[3]
+
+    def accel_read_spi(self, reg, sclk_hz=1_000_000):
+        """Read one LIS3DH register over SPI mode 3. Returns byte or None."""
+        cmd = 0x80 | (reg & 0x3F)          # read, no auto-increment
+        syms = bit_bang.spi3_read_symbols(bytes([cmd]), 1)
+        positions = bit_bang.spi3_read_bit_positions(1, 1)
+        div = max(1, int(round(
+            self.sys_clk / (2 * max(1, int(sclk_hz))) - 1.25)))
+        rx = self._gen_run_and_rx(syms, div, spi_test=True)
+        if not rx:
+            return None
+        candidates = {}
+        for off in range(-2, 3):
+            bits = []
+            for p in positions:
+                q = p + off
+                bits.append(rx[q] if 0 <= q < len(rx) else 1)
+            candidates[off] = int(''.join(map(str, bits)), 2)
+        # No host-driven echo exists on SDO, so alignment cannot be inferred
+        # from the frame itself; return the offset-0 value plus alternatives
+        # for callers that verify against a known register.
+        return candidates
+
+    def accel_whoami_i2c(self, **kw):
+        """LIS3DH WHO_AM_I (expect 0x33) via I2C."""
+        return self.accel_read_i2c(0x0F, **kw)
+
+    def accel_whoami_spi(self, **kw):
+        """LIS3DH WHO_AM_I via SPI mode 3: True offset-candidate dict."""
+        return self.accel_read_spi(0x0F, **kw)
+
     def _gen_kick(self, packed_symbols):
         """Restart the one-shot Bit_Engine if idle: reload + start.
 
@@ -1426,6 +1635,8 @@ class OLSDeviceSPI:
                          i2c_read_len=0, i2c_dev_r=None,
                          spi_mosi_pin=3, spi_sclk_pin=1, spi_clk_div=100,
                          rs485_b_pin=3, rs485_a_pin=1,
+                         swd_ops=None, swd_clk_hz=1000000,
+                         swd_swdio_pin=3, swd_swclk_pin=1, swd_connect=True,
                          gen_first=False, fast_mode=True,
                          reset_board=True):
         """Atomic generator capture using CMD_GEN_CAPTURE.
@@ -1489,6 +1700,7 @@ class OLSDeviceSPI:
         # I2C-test / SPI-test register bits no longer select an FPGA protocol
         # FSM — they only control pin routing and the capture loopback mux
         # for the clock line (Out_1).
+        swd_loaded = False
         if proto == 'RS485':
             self.pkt.write_register(REG_GEN_DATA, 1 << 8)
             self.pkt.write_register(REG_GEN_PROTO, 0)
@@ -1498,12 +1710,16 @@ class OLSDeviceSPI:
         elif proto == 'I2C':
             self._pins(tx_pin=i2c_tx_pin, scl_pin=i2c_scl_pin)
             self.pkt.write_register(REG_GEN_PROTO, 1)
-            # I2C-test bit routes/captures the SCL line; read_len and dev_r
-            # are inert with the host-side encoder (open-loop write only).
             dev_r = 1 if i2c_dev_r is None else i2c_dev_r & 0xFF
             flags = 1 | ((i2c_read_len & 0xFF) << 8) | (dev_r << 16)
             self.pkt.write_register(REG_GEN_DATA, flags)
-            i2c_frame = self._gen_load_i2c(i2c_frame, i2c_speed)
+            if i2c_read_len > 0 and i2c_dev_r is not None:
+                # Full write-then-read transaction
+                i2c_frame = self._gen_load_i2c_read(
+                    i2c_frame, i2c_speed, i2c_read_len, i2c_dev_r)
+            else:
+                # Write-only (legacy loopback path)
+                i2c_frame = self._gen_load_i2c(i2c_frame, i2c_speed)
         elif proto == 'SPI':
             # MOSI (Out_0) and SCLK (Out_1) are looped into the capture
             # stream on the channels mapped to spi_mosi_pin / spi_sclk_pin.
@@ -1514,6 +1730,15 @@ class OLSDeviceSPI:
             self.pkt.write_register(REG_GEN_PROTO, 0)
             self.pkt.write_register(REG_GEN_DATA, GEN_FLAG_SPI_TEST | (1 << 8))
             self._gen_load_spi(self._gen_data, spi_clk_div)
+        elif proto == 'SWD':
+            # SWDIO (Out_0) and SWCLK (Out_1) loop into the capture stream
+            # like SPI — the SPI-test routing flag drives Out_1 onto the
+            # clock pin (same REG_GEN_DATA latch caveat as the SPI branch).
+            self._pins(tx_pin=swd_swdio_pin, scl_pin=swd_swclk_pin)
+            self.pkt.write_register(REG_GEN_PROTO, 0)
+            self.pkt.write_register(REG_GEN_DATA, GEN_FLAG_SPI_TEST | (1 << 8))
+            swd_loaded = self._gen_load_swd(
+                swd_ops, swd_clk_hz, connect=swd_connect)
         elif self._gen_data is not None:
             # Clear any leftover I2C/SPI test-mode flags (bit0/bit1) from a prior
             # capture — they are not cleared on reset, and a stale SPI-test bit
@@ -1528,7 +1753,8 @@ class OLSDeviceSPI:
 
         self.pkt.write_register(REG_FAST_MODE, 1 if fast_mode else 0)
 
-        has_gen = (proto == 'I2C' and i2c_frame) or self._gen_data is not None
+        has_gen = ((proto == 'I2C' and i2c_frame) or swd_loaded
+                   or self._gen_data is not None)
         if not has_gen:
             return b''
 
@@ -1719,22 +1945,25 @@ class OLSDeviceSPI:
 
     def i2c_capture_with_gen(self, rate_hz=400000, nsamples=2000, timeout=6,
                               i2c_speed=100000, dev_addr=0x19, reg_addr=0x0F,
-                              read_len=1, tx_pin=2, scl_pin=1, fast_mode=True):
+                              read_len=1, tx_pin=2, scl_pin=1, fast_mode=True,
+                              auto_inc=True):
         # Configure I2C read mode before delegating to capture_with_gen
         dev_w = (dev_addr << 1) & 0xFE
         dev_r = (dev_addr << 1) | 0x01
         flags = 1 | (read_len << 8) | (dev_r << 16)
         self.pkt.write_register(REG_GEN_DATA, flags)
         self.spi.flush()
-        i2c_frame = bytes([dev_w, reg_addr])
+        # Auto-increment bit (MSB of reg_addr) for multi-byte LIS3DH reads
+        addr_byte = reg_addr
+        if auto_inc and read_len > 1:
+            addr_byte = reg_addr | 0x80
+        i2c_frame = bytes([dev_w, addr_byte])
         return self.capture_with_gen(
             rate_hz=rate_hz, nsamples=nsamples, timeout=timeout,
             proto='I2C', i2c_speed=i2c_speed,
             i2c_frame=i2c_frame, i2c_tx_pin=tx_pin, i2c_scl_pin=scl_pin,
             i2c_read_len=read_len, i2c_dev_r=dev_r,
             fast_mode=fast_mode)
-        self.spi.flush()
-        return bytes(accumulated[:need])
 
     def i2c_rolling_capture(self, rate_hz, chunk_nsamp, buffer_nsamp,
                              stop_evt, progress_cb=None, i2c_speed=100000,
