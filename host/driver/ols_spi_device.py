@@ -756,11 +756,19 @@ class OLSDeviceSPI:
         removed hardware repeat flag from the caller's own thread (the SPI
         link is not thread-safe, so kicks are interleaved with reads).
         """
-        st = self.pkt.transaction(CMD_GEN_STATUS, timeout=0.5)
-        if st is not None and st[2] and (st[2][0] & 1):
-            return False  # still transmitting
+        if not self._wait_gen_idle(timeout=0.25):
+            return False
         self.pkt.load_gen_data(packed_symbols)
         return self.pkt.transaction(CMD_GEN_START, timeout=0.5) is not None
+
+    def _wait_gen_idle(self, timeout=0.25, poll=0.001):
+        deadline = time.time() + max(0.0, float(timeout))
+        while time.time() < deadline:
+            st = self.pkt.get_status()
+            if not st.get('gen_busy'):
+                return True
+            time.sleep(max(0.0, float(poll)))
+        return False
 
     def set_debug_ch0(self, enable=True, freq_hz=None, duty_pct=50):
         if freq_hz is not None:
@@ -1292,6 +1300,7 @@ class OLSDeviceSPI:
         if not data_bytes:
             raise ValueError("repeating UART payload must not be empty")
         self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+        self._wait_gen_idle(timeout=0.25)
         self.pkt.write_register(REG_GEN_DATA, 1 << 8)  # clear stale I2C/SPI flags
         self.pkt.write_register(REG_GEN_PROTO, 0)
         self.pkt.write_register(REG_GEN_BAUD, self._uart_baud_div(baud) & 0xFFFF)
@@ -1306,18 +1315,27 @@ class OLSDeviceSPI:
             bit_bang.uart_symbols(bytes(data_bytes) * reps))
         self.spi.flush()
         self.pkt.load_gen_data(packed)
-        if self.pkt.transaction(CMD_GEN_START, timeout=1.0) is None:
+        time.sleep(0.005)
+        started = self.pkt.transaction(CMD_GEN_START, timeout=1.0)
+        if started is None:
+            time.sleep(0.01)
+            self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+            self._wait_gen_idle(timeout=0.5)
+            self.pkt.load_gen_data(packed)
+            time.sleep(0.005)
+            started = self.pkt.transaction(CMD_GEN_START, timeout=1.0)
+        if started is None:
             raise RuntimeError("could not start repeating UART generator")
         try:
             for item in self.continuous_ring_capture(
                     rate_hz, chunk_nsamp, buffer_nsamp, stop_evt,
                     progress_cb=progress_cb, full_out=full_out,
                     fast_mode=fast_mode, yield_full_buffer=yield_full_buffer):
-                yield item
                 try:
                     self._gen_kick(packed)
                 except Exception:
                     pass  # keep the ring stream alive even if a kick misses
+                yield item
         finally:
             self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
 
@@ -1432,6 +1450,7 @@ class OLSDeviceSPI:
             self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
         except Exception:
             pass
+        self._wait_gen_idle(timeout=0.25)
         # Apply pending GUI changes
         if self._pending_debug_enable is not None:
             self.debug_ch0_enabled = self._pending_debug_enable

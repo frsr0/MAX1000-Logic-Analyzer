@@ -171,6 +171,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal adc2_sel, adc3_sel : natural range 0 to 31 := 0;
   signal adc_reset : std_logic := '1';
   signal adc_lock_settle : natural range 0 to 4095 := 0;
+  signal adc_reset_hold : natural range 0 to 31 := 0;
+  signal adc_armed_seen : std_logic := '0';
   signal adc_ready : std_logic := '0';
   -- Parallel bit-packing capture (mso_capture) interconnect
   signal packed_mode  : std_logic := '0';
@@ -736,16 +738,33 @@ BEGIN
   begin
     if rising_edge(sys_clk) then
       if pll_locked = '0' or armed_i = '0' then
+        adc_armed_seen <= '0';
+        adc_reset_hold <= 0;
         adc_lock_settle <= 0;
         adc_ready <= '0';
         adc_reset <= '1';
         adc_div <= 0;
         adc_start <= '0';
         adc_frame_toggle <= '0';
+      elsif adc_armed_seen = '0' then
+        adc_armed_seen <= '1';
+        adc_reset_hold <= 8;
+        adc_lock_settle <= 0;
+        adc_ready <= '0';
+        adc_reset <= '1';
+        adc_div <= 0;
+        adc_start <= '0';
+        adc_frame_toggle <= '0';
+      elsif adc_reset_hold > 0 then
+        adc_reset_hold <= adc_reset_hold - 1;
+        adc_ready <= '0';
+        adc_reset <= '1';
+        adc_div <= 0;
+        adc_start <= '0';
       elsif adc_lock_settle < 4095 then
         adc_lock_settle <= adc_lock_settle + 1;
         adc_ready <= '0';
-        adc_reset <= '1';
+        adc_reset <= '0';
         adc_div <= 0;
         adc_start <= '0';
       else
