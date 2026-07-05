@@ -3,7 +3,7 @@ Diagnostic probe for CMD_START_RAW_STREAM — validates the raw-stream path end 
 
 Tests:
   1. Data-integrity match: compare raw-stream read vs block-read of same window
-  2. Boundary handling: reads at/above/below MAX_RAW_STREAM_SAMPLES (16383)
+  2. Boundary handling: reads at/above/below MAX_RAW_STREAM_SAMPLES (16384)
   3. Back-to-back stress: 100 sequential calls, verify monotonic producer index
   4. Byte alignment: verify data offset aligns to 2-byte sample boundary
 
@@ -38,11 +38,11 @@ class CheckFailed(Exception):
 
 def check(label, condition, detail=""):
     if condition:
-        print(f"  ✓ {label}")
+        print(f"  [OK] {label}")
         return True
-    msg = f"  ✗ {label}"
+    msg = f"  [FAIL] {label}"
     if detail:
-        msg += f" — {detail}"
+        msg += f" - {detail}"
     print(msg)
     return False
 

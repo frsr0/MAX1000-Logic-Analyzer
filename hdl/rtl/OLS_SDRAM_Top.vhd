@@ -9,7 +9,9 @@ ENTITY OLS_SDRAM_Top IS
     PLL_MULT    : positive := 8;
     PLL_DIV     : positive := 1;
     Sim         : boolean := false;
-    FAST_SPEED  : boolean := false
+    FAST_SPEED  : boolean := false;
+    -- FAST_RAW_BUILD: when true, exclude MSO compression at elaboration time.
+    FAST_RAW_BUILD : boolean := true
   );
 PORT (
   CLK     : IN STD_LOGIC;
@@ -240,7 +242,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Max_Samples : NATURAL := 4194304;
     Channels    : NATURAL := LA_CHANNELS;
     Sim         : boolean := false;
-    FAST_SPEED  : boolean := false
+    FAST_SPEED  : boolean := false;
+    FAST_RAW_BUILD : boolean := true
   );
   PORT (
     CLK : IN STD_LOGIC;
@@ -807,21 +810,25 @@ BEGIN
   -- Parallel bit-packing capture front end. Runs whenever a capture is armed;
   -- its 16-bit stream drives the SDRAM write FIFO only when Packed_Mode is set
   -- (selected inside the core). Digital source is the fast-sampled channels.
-  MSO_CAP : entity work.mso_capture
-    port map (
-      fast_clk      => fast_clk,
-      adc_clk       => adc_conv_clk,
-      rst           => not armed_i,
-      adc_ch0       => adc0_result, adc_ch0_valid => adc0_valid,
-      adc_ch1       => adc1_result, adc_ch1_valid => adc1_valid,
-      adc_ch2       => adc2_result, adc_ch2_valid => adc2_valid,
-      adc_ch3       => adc3_result, adc_ch3_valid => adc3_valid,
-      digital_in    => capture_data_fast,
-      out_data      => packed_data,
-      out_valid     => packed_valid,
-      out_ready     => packed_ready,
-      dig_overflow  => open
-    );
+  -- Elided entirely in FAST_RAW_BUILD to free logic for max-speed timing closure.
+  gen_mso_cap : if not FAST_RAW_BUILD generate
+  begin
+    MSO_CAP : entity work.mso_capture
+      port map (
+        fast_clk      => fast_clk,
+        adc_clk       => adc_conv_clk,
+        rst           => not armed_i,
+        adc_ch0       => adc0_result, adc_ch0_valid => adc0_valid,
+        adc_ch1       => adc1_result, adc_ch1_valid => adc1_valid,
+        adc_ch2       => adc2_result, adc_ch2_valid => adc2_valid,
+        adc_ch3       => adc3_result, adc_ch3_valid => adc3_valid,
+        digital_in    => capture_data_fast,
+        out_data      => packed_data,
+        out_valid     => packed_valid,
+        out_ready     => packed_ready,
+        dig_overflow  => open
+      );
+  end generate;
 
   SDRAM_Analyzer : OLS_Logic_Analyzer
    GENERIC MAP (
@@ -831,7 +838,8 @@ BEGIN
     Max_Samples  => 4194304,
     Channels     => LA_CHANNELS,
     Sim          => Sim,
-    FAST_SPEED   => FAST_SPEED
+    FAST_SPEED   => FAST_SPEED,
+    FAST_RAW_BUILD => FAST_RAW_BUILD
   )
   PORT MAP (
     CLK => sys_clk,
@@ -1011,7 +1019,11 @@ BEGIN
         RX_Used     => gen_rx_used,
         RX_Overflow => open,
         Bit_Div     => gen_baud_div_s,
-        Num_Syms    => x"0010",
+        -- Burst length is governed by FIFO content (LOAD with an empty FIFO
+        -- terminates the burst); Num_Syms is only a safety cap. x"FFFF"
+        -- (> 4*FIFO_DEPTH symbols) lets one Start drain the whole pattern —
+        -- a 16-symbol cap here silently truncated multi-byte host patterns.
+        Num_Syms    => x"FFFF",
         Over_Sample => "00",
         RX_Enable   => '0',
         Clk_Toggle  => '0',

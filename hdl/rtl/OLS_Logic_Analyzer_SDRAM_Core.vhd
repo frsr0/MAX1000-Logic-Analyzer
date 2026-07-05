@@ -6,13 +6,14 @@ use IEEE.numeric_std.all;
 
 ENTITY OLS_Logic_Analyzer IS
   GENERIC (
-      CLK_Frequency   : INTEGER := 12000000;     
+      CLK_Frequency   : INTEGER := 12000000;
       SDRAM_CLK_HZ   : INTEGER := 166_666_667;
       SAMPLE_CLK_HZ  : INTEGER := 200_000_000;
-    Max_Samples     : NATURAL := 4194304;      
+    Max_Samples     : NATURAL := 4194304;
     Channels        : NATURAL := 4;
     Sim             : boolean := false;
-    FAST_SPEED      : boolean := false
+    FAST_SPEED      : boolean := false;
+    FAST_RAW_BUILD  : boolean := true
   );
 PORT (
   CLK : IN STD_LOGIC;
@@ -258,6 +259,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
     Channels       : NATURAL range 1 to 16 := 16;
     Sim            : boolean := false;
     FAST_SPEED     : boolean := false;
+    FAST_RAW_BUILD : boolean := true;
     CLK_Frequency  : NATURAL := 100_000_000;
     SDRAM_CLK_HZ   : NATURAL := 166_666_667;
     SAMPLE_CLK_HZ  : NATURAL := 200_000_000;
@@ -439,7 +441,7 @@ BEGIN
   );
   Fast_Logic_Analyzer_SDRAM1 : Fast_Logic_Analyzer_SDRAM
    GENERIC MAP (
-      Max_Samples  => Max_Samples,Channels     => Channels,Sim          => Sim,FAST_SPEED   => FAST_SPEED,CLK_Frequency => CLK_Frequency,SDRAM_CLK_HZ => SDRAM_CLK_HZ,SAMPLE_CLK_HZ => SAMPLE_CLK_HZ
+      Max_Samples  => Max_Samples,Channels     => Channels,Sim          => Sim,FAST_SPEED   => FAST_SPEED,FAST_RAW_BUILD => FAST_RAW_BUILD,CLK_Frequency => CLK_Frequency,SDRAM_CLK_HZ => SDRAM_CLK_HZ,SAMPLE_CLK_HZ => SAMPLE_CLK_HZ
   ) PORT MAP (
     CLK => CLK,
     SDRAM_CLK_IN => SDRAM_CLK_IN,

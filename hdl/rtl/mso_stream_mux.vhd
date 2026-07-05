@@ -24,6 +24,12 @@ use IEEE.STD_LOGIC_1164.ALL;
 -- shallow combinational path comfortably inside the fast_clk period. At the top
 -- of the 400 MHz range, register the FIFO write side behind a 1-deep skid
 -- buffer if timing closure needs it.
+--
+-- NOTE: the outputs are intentionally combinatorial. The downstream packed
+-- pipeline (packed_stage -> packed_fifo_wr_r in Fast_Logic_Analyzer_SDRAM)
+-- provides 2 register stages before the DCFIFO write port, so adding another
+-- register here would only add unnecessary bubble cycles without improving
+-- the CDC boundary.
 entity mso_stream_mux is
   port (
     clk           : in  std_logic;   -- fast_clk

@@ -1,15 +1,18 @@
 -- Behavioral simulation model of the Altera dcfifo megafunction covering the
--- subset used by Fast_Logic_Analyzer_SDRAM (normal mode, lpm_showahead = "OFF").
+-- subset used by Fast_Logic_Analyzer_SDRAM (normal mode and showahead ON).
 --
 -- Unlike a naive model, this one models the CROSS-DOMAIN POINTER SYNCHRONISER
 -- LATENCY: the read side sees the write pointer only after rdsync_delaypipe
--- rdclk edges, and the write side sees the read pointer only after
--- wrsync_delaypipe wrclk edges. That latency is exactly what makes rdempty
--- deassert LATE on real hardware; an idealised (zero-latency) model lets the
--- write-pump producer present a fresh address before the popped data has
--- propagated, duplicating data into consecutive SDRAM addresses in simulation
--- only. Flags are therefore conservative (empty deasserts late, full asserts
--- early), matching silicon.
+-- rdclk edges (default 4), and the write side sees the read pointer only after
+-- wrsync_delaypipe wrclk edges (default 4). That latency is exactly what makes
+-- rdempty deassert LATE on real hardware; an idealised (zero-latency) model
+-- lets the write-pump producer present a fresh address before the popped data
+-- has propagated, duplicating data into consecutive SDRAM addresses in
+-- simulation only. Flags are therefore conservative (empty deasserts late, full
+-- asserts early), matching silicon.
+--
+-- Supports both lpm_showahead = "OFF" (registered q, updates on pop) and
+-- lpm_showahead = "ON" (combinational q, presents head word continuously).
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.numeric_std.all;
@@ -21,8 +24,8 @@ entity dcfifo is
     lpm_numwords     : natural;
     lpm_showahead    : string := "OFF";
     lpm_type         : string := "dcfifo";
-    rdsync_delaypipe : natural := 3;
-    wrsync_delaypipe : natural := 3;
+    rdsync_delaypipe : natural := 4;
+    wrsync_delaypipe : natural := 4;
     intended_device_family : string := "MAX 10"
   );
   port (

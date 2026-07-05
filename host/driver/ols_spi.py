@@ -111,23 +111,23 @@ class OLS:
         """Open FTDI Channel B, enter MPSSE mode, configure SPI."""
         ft = _require_ftd2xx()
         n = ft.createDeviceInfoList()
-        idx = self.channel
-        for i in range(n):
-            try:
-                t = ft.open(i)
-                info = t.getDeviceInfo()
-                t.close()
-                desc = info.get('description', b'').decode().strip()
-                # Match descriptions ending with 'B', '2', or containing 'SPI'
-                if desc.endswith('B') or desc.endswith('2') or 'SPI' in desc:
-                    idx = i
+        candidates = [self.channel] + [i for i in range(n) if i != self.channel]
+        last_exc = None
+        d = None
+        for idx in candidates:
+            for attempt in range(3):
+                try:
+                    d = ft.open(idx)
                     break
-                if i == 1:
-                    idx = i
-            except:
-                pass
+                except Exception as exc:
+                    last_exc = exc
+                    d = None
+                    time.sleep(0.05)
+            if d is not None:
+                break
+        if d is None:
+            raise last_exc or RuntimeError("no FTDI interface could be opened")
 
-        d = ft.open(idx)
         d.setBitMode(0xFF, 0); time.sleep(0.05)
         d.setBitMode(0xFF, 2); time.sleep(0.1)
         try:

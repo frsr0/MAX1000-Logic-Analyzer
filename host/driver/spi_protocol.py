@@ -106,7 +106,7 @@ ST_GEN_BUSY      = 0x30
 
 MAX_PAYLOAD = 4096
 BLOCK_SIZE  = 1024
-MAX_RAW_STREAM_SAMPLES = 16383
+MAX_RAW_STREAM_SAMPLES = 16384
 MAX_RLE_STREAM_BYTES_PER_SAMPLE = 4
 
 
@@ -658,7 +658,11 @@ class SPIDevice:
         payload = struct.pack('<II', start_sample * 2, sample_count)
         seq = self._next_seq()
         req = build_packet(CMD_START_RAW_STREAM, seq, payload)
-        pad = ack_pad if ack_pad is not None else self._default_ack_pad()
+        # RLE streaming needs a longer post-request guard than the raw path
+        # because the stream begins immediately after the ack packet.  Keep
+        # the explicit override for probes, but make the default safe enough
+        # for the rolling live-readback harness.
+        pad = ack_pad if ack_pad is not None else max(self._default_ack_pad(), 96)
         if hasattr(self.spi, "stream_command_chunks"):
             return self._rle_stream_via_chunks(req, seq, sample_count, pad, stop_evt)
         if hasattr(self.spi, "stream_command"):

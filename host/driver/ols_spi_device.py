@@ -23,6 +23,7 @@ from driver.spi_protocol import (
     ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_DONE,
     GEN_FLAG_SPI_TEST, GEN_FLAG_REPEAT, GEN_FLAG_RS485_PAIR,
 )
+from driver import bit_bang
 
 # Legacy opcodes for hw_validation.py compat
 CMD_DIVIDER       = 0x80
@@ -52,6 +53,12 @@ ANALOG_MODE_DIGITAL8 = MODE_DIGITAL
 ANALOG_ENABLE_BIT = MODE_MIXED
 
 NUM_CHANNELS = 16
+# Pool index for the generator SCL/SCLK routing register when a protocol has
+# no clock line (UART).  The FPGA pin_drive process drives pin_out(gen_scl_pin)
+# with Out_1 whenever the generator is busy — parking it on pool index 25
+# (SEN_SPC, driven separately) keeps it off the MKR/PMOD capture pins, where
+# it would otherwise override the TX data (Out_1 idles high during UART).
+GEN_SCL_PARK = 25
 MIXED_COMPRESSED_GROUP_FRAMES = 16
 MIXED_COMPRESSED_BLOCK_FRAMES = 160
 MIXED_COMPRESSED_BLOCK_WORDS = MIXED_COMPRESSED_BLOCK_FRAMES * 3
@@ -681,16 +688,77 @@ class OLSDeviceSPI:
         return samples
 
     def _uart_baud_div(self, baud):
-        """Return the generator UART divider (full bit period in sys_clk ticks).
+        """Return the Bit_Engine bit divider for a target UART baud.
 
-        The old //2 "half divider" made the generator transmit at TWICE the
-        requested baud on the wire; it only decoded correctly because the
-        capture path duplicated every sample (write-pump bug, fixed
-        2026-07-02), which stretched the observed bit widths back to nominal.
-        With dense samples the round trip proves sys_clk/baud is the correct
-        divider (115200 request decodes at 115200).
+        The Bit_Engine emits one symbol per (Bit_Div + 1) sys_clk cycles and
+        stalls one extra cycle every 4 symbols (its LOAD state), so the mean
+        symbol period is (Bit_Div + 1.25) cycles.  Solve for that; at low
+        bauds this converges to the classic sys_clk/baud value.
         """
-        return max(1, self.sys_clk // max(1, int(baud)))
+        return max(1, int(round(self.sys_clk / max(1, int(baud)) - 1.25)))
+
+    def gen_actual_baud(self, baud):
+        """Exact on-wire baud the Bit_Engine produces for a requested baud.
+
+        Decoders must use this at high bauds where the divider is small and
+        the +1.25-cycle quantisation is a few percent of the bit period.
+        """
+        return self.sys_clk / (self._uart_baud_div(baud) + 1.25)
+
+    # ── Bit_Engine pattern loaders ─────────────────────────────────
+    # The FPGA generator is a generic 2-bit symbol shifter (Bit_Engine);
+    # these helpers encode protocol payloads into symbols (driver/bit_bang)
+    # and load them into the generator FIFO.  Payloads are clamped to the
+    # FIFO capacity (256 bytes = 1024 symbols).
+
+    def _gen_load_uart(self, data, baud):
+        data = bytes(data or b'')
+        limit = bit_bang.max_uart_bytes()
+        if len(data) > limit:
+            data = data[:limit]
+        self.pkt.write_register(REG_GEN_BAUD, self._uart_baud_div(baud) & 0xFFFF)
+        if data:
+            self.pkt.load_gen_data(
+                bit_bang.pack_symbols(bit_bang.uart_symbols(data)))
+        return data
+
+    def _gen_load_spi(self, data, spi_clk_div):
+        data = bytes(data or b'')
+        limit = bit_bang.max_spi_bytes()
+        if len(data) > limit:
+            data = data[:limit]
+        # 2 symbols per SCLK period: SCLK = sys_clk / (2 * (Bit_Div + 1.25))
+        self.pkt.write_register(REG_GEN_BAUD, max(1, int(spi_clk_div) - 1) & 0xFFFF)
+        if data:
+            self.pkt.load_gen_data(
+                bit_bang.pack_symbols(bit_bang.spi_symbols(data)))
+        return data
+
+    def _gen_load_i2c(self, frame, i2c_speed):
+        frame = bytes(frame or b'')
+        limit = bit_bang.max_i2c_bytes()
+        if len(frame) > limit:
+            frame = frame[:limit]
+        # 4 symbols per SCL period: SCL = sys_clk / (4 * (Bit_Div + 1.25))
+        div = max(1, self.sys_clk // (4 * max(1, int(i2c_speed))))
+        self.pkt.write_register(REG_GEN_BAUD, div & 0xFFFF)
+        if frame:
+            self.pkt.load_gen_data(
+                bit_bang.pack_symbols(bit_bang.i2c_symbols(frame)))
+        return frame
+
+    def _gen_kick(self, packed_symbols):
+        """Restart the one-shot Bit_Engine if idle: reload + start.
+
+        Returns True when a new burst was started.  Used to emulate the
+        removed hardware repeat flag from the caller's own thread (the SPI
+        link is not thread-safe, so kicks are interleaved with reads).
+        """
+        st = self.pkt.transaction(CMD_GEN_STATUS, timeout=0.5)
+        if st is not None and st[2] and (st[2][0] & 1):
+            return False  # still transmitting
+        self.pkt.load_gen_data(packed_symbols)
+        return self.pkt.transaction(CMD_GEN_START, timeout=0.5) is not None
 
     def set_debug_ch0(self, enable=True, freq_hz=None, duty_pct=50):
         if freq_hz is not None:
@@ -1069,7 +1137,6 @@ class OLSDeviceSPI:
         if self.analog_mode == MODE_MIXED:
             pending_prefetch = min(buffer_nsamp, max(chunk_nsamp, chunk_nsamp * 8))
         chunk_bytes = chunk_nsamp * payload_stride
-
         def emit_pending(sample_start: int):
             nonlocal buf, total, pending, pending_samples, next_sample
             data = pending[:chunk_bytes]
@@ -1168,10 +1235,11 @@ class OLSDeviceSPI:
         # hardware after teardown, so raw mode stays on the stable block-read
         # path until that FPGA-side unwind bug is fixed.
         use_raw_stream = self._readback_codec() == 'rle'
+        required_available = window_samples * (2 if use_raw_stream else 1)
         try:
             while not stop_evt.is_set():
                 if (producer_hint is None or oldest_hint is None
-                        or int(producer_hint) - int(next_sample or 0) < window_samples):
+                        or int(producer_hint) - int(next_sample or 0) < required_available):
                     st = self._get_ring_status()
                     producer_hint = st.get('producer_index')
                     oldest_hint = st.get('oldest_index')
@@ -1186,7 +1254,7 @@ class OLSDeviceSPI:
                     next_sample = int(oldest_hint)
 
                 available = int(producer_hint) - int(next_sample)
-                if available < window_samples:
+                if available < required_available:
                     if stop_evt.wait(0.0005):
                         break
                     continue
@@ -1222,21 +1290,32 @@ class OLSDeviceSPI:
         if not data_bytes:
             raise ValueError("repeating UART payload must not be empty")
         self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
-        self.pkt.write_register(REG_GEN_DATA, 1 << 8)  # clear stale I2C/SPI/repeat flags
+        self.pkt.write_register(REG_GEN_DATA, 1 << 8)  # clear stale I2C/SPI flags
         self.pkt.write_register(REG_GEN_PROTO, 0)
         self.pkt.write_register(REG_GEN_BAUD, self._uart_baud_div(baud) & 0xFFFF)
-        self._pins(tx_pin=tx_pin)
-        self.pkt.load_gen_data(data_bytes)
-        # Mode flags latch only when bits 31:8 are non-zero.
-        self.pkt.write_register(REG_GEN_DATA, (1 << 8) | GEN_FLAG_REPEAT)
+        self._pins(tx_pin=tx_pin, scl_pin=GEN_SCL_PARK)
+        # The Bit_Engine is one-shot (no hardware repeat), so build one burst
+        # that fills the generator FIFO with as many payload repeats as fit
+        # and re-kick it between chunk reads (same thread — the SPI link is
+        # not thread-safe).  A full 1024-symbol burst lasts ~1024/baud s per
+        # kick, so the reload gap is a small fraction of the airtime.
+        reps = max(1, bit_bang.max_uart_bytes() // len(data_bytes))
+        packed = bit_bang.pack_symbols(
+            bit_bang.uart_symbols(bytes(data_bytes) * reps))
         self.spi.flush()
+        self.pkt.load_gen_data(packed)
         if self.pkt.transaction(CMD_GEN_START, timeout=1.0) is None:
             raise RuntimeError("could not start repeating UART generator")
         try:
-            yield from self.continuous_ring_capture(
-                rate_hz, chunk_nsamp, buffer_nsamp, stop_evt,
-                progress_cb=progress_cb, full_out=full_out, fast_mode=fast_mode,
-                yield_full_buffer=yield_full_buffer)
+            for item in self.continuous_ring_capture(
+                    rate_hz, chunk_nsamp, buffer_nsamp, stop_evt,
+                    progress_cb=progress_cb, full_out=full_out,
+                    fast_mode=fast_mode, yield_full_buffer=yield_full_buffer):
+                yield item
+                try:
+                    self._gen_kick(packed)
+                except Exception:
+                    pass  # keep the ring stream alive even if a kick misses
         finally:
             self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
 
@@ -1257,12 +1336,10 @@ class OLSDeviceSPI:
         self._gen_tx_pin = tx_pin if tx_pin is not None else 3
         self.pkt.write_register(REG_GEN_DATA, 1 << 8)
         self.pkt.write_register(REG_GEN_PROTO, 0)
-        div = self._uart_baud_div(baud)
-        self.pkt.write_register(REG_GEN_BAUD, div & 0xFFFF)
-        self._pins(tx_pin=self._gen_tx_pin)
+        self._pins(tx_pin=self._gen_tx_pin, scl_pin=GEN_SCL_PARK)
         self.spi.flush()
         time.sleep(0.005)
-        self.pkt.load_gen_data(data_bytes)
+        self._gen_load_uart(data_bytes, baud)
         self.spi.flush()
         time.sleep(0.005)
         self.start_gen()
@@ -1273,14 +1350,14 @@ class OLSDeviceSPI:
         self._gen_baud = baud
         self._gen_tx_pin = b_pin
         self.pkt.write_register(REG_GEN_PROTO, 0)
-        div = self._uart_baud_div(baud)
-        self.pkt.write_register(REG_GEN_BAUD, div & 0xFFFF)
         self._pins(tx_pin=b_pin, scl_pin=a_pin)
+        # NOTE: hardware repeat no longer exists (Bit_Engine is one-shot);
+        # callers that need repetition must re-issue send_rs485.
         flags = GEN_FLAG_RS485_PAIR | (GEN_FLAG_REPEAT if repeat else 0)
         self.pkt.write_register(REG_GEN_DATA, (1 << 8) | flags)
         self.spi.flush()
         time.sleep(0.005)
-        self.pkt.load_gen_data(data_bytes)
+        self._gen_load_uart(data_bytes, baud)
         self.spi.flush()
         time.sleep(0.005)
         self.start_gen()
@@ -1316,11 +1393,9 @@ class OLSDeviceSPI:
         self._pins(tx_pin=tx_pin, scl_pin=scl_pin)
         time.sleep(0.01)
         self.pkt.write_register(REG_GEN_PROTO, 1)
-        div = max(1, self.sys_clk // speed // 2)
-        self.pkt.write_register(REG_GEN_BAUD, div & 0xFFFF)
-        self.pkt.load_gen_data(bytes([dev_w, reg_addr]))
         flags = (1 if test_mode else 0) | (read_len << 8) | (dev_r << 16)
         self.pkt.write_register(REG_GEN_DATA, flags)
+        self._gen_load_i2c(bytes([dev_w, reg_addr]), speed)
         time.sleep(0.01)
 
     def capture_with_gen(self, rate_hz=1000000, nsamples=5000, timeout=6,
@@ -1379,40 +1454,37 @@ class OLSDeviceSPI:
             div=div, samples=rc, delay_count=rc, mask=mask, value=value,
             flags=self._raw_flags, fast_mode=fast_mode, continuous=False)
 
-        # Configure generator
+        # Configure generator.  The FPGA generator is a Bit_Engine (generic
+        # symbol shifter): protocol waveforms are encoded HOST-SIDE
+        # (driver/bit_bang) and loaded as 2-bit symbols.  The GEN_PROTO /
+        # I2C-test / SPI-test register bits no longer select an FPGA protocol
+        # FSM — they only control pin routing and the capture loopback mux
+        # for the clock line (Out_1).
         if proto == 'RS485':
             self.pkt.write_register(REG_GEN_DATA, 1 << 8)
             self.pkt.write_register(REG_GEN_PROTO, 0)
-            div_b = self._uart_baud_div(self._gen_baud)
-            self.pkt.write_register(REG_GEN_BAUD, div_b & 0xFFFF)
             self._pins(tx_pin=rs485_b_pin, scl_pin=rs485_a_pin)
             self.pkt.write_register(REG_GEN_DATA, (1 << 8) | GEN_FLAG_RS485_PAIR)
-            if self._gen_data:
-                self.pkt.load_gen_data(self._gen_data)
+            self._gen_load_uart(self._gen_data, self._gen_baud)
         elif proto == 'I2C':
             self._pins(tx_pin=i2c_tx_pin, scl_pin=i2c_scl_pin)
             self.pkt.write_register(REG_GEN_PROTO, 1)
-            i2c_div = max(1, self.sys_clk // i2c_speed // 2)
-            self.pkt.write_register(REG_GEN_BAUD, i2c_div & 0xFFFF)
-            if i2c_frame:
-                self.pkt.load_gen_data(i2c_frame)
+            # I2C-test bit routes/captures the SCL line; read_len and dev_r
+            # are inert with the host-side encoder (open-loop write only).
             dev_r = 1 if i2c_dev_r is None else i2c_dev_r & 0xFF
             flags = 1 | ((i2c_read_len & 0xFF) << 8) | (dev_r << 16)
             self.pkt.write_register(REG_GEN_DATA, flags)
+            i2c_frame = self._gen_load_i2c(i2c_frame, i2c_speed)
         elif proto == 'SPI':
-            # SPI generator test mode. MOSI (gen_tx) and SCLK (gen_scl) are
-            # looped into the capture stream on the channels mapped to
-            # spi_mosi_pin / spi_sclk_pin. The SPI-test bit must be set HERE
-            # (after the reset() above clears it) and only latches when
-            # REG_GEN_DATA bits 31:8 are non-zero, so bit 8 is set as well.
+            # MOSI (Out_0) and SCLK (Out_1) are looped into the capture
+            # stream on the channels mapped to spi_mosi_pin / spi_sclk_pin.
+            # The SPI-test bit must be set HERE (after the reset() above
+            # clears it) and only latches when REG_GEN_DATA bits 31:8 are
+            # non-zero, so bit 8 is set as well.
             self._pins(tx_pin=spi_mosi_pin, scl_pin=spi_sclk_pin)
             self.pkt.write_register(REG_GEN_PROTO, 0)
-            # SPI baud register is a raw SCLK half-period divider (in sys_clk
-            # cycles), not a UART-style frequency. SCLK ~= sys_clk/(2*div).
-            self.pkt.write_register(REG_GEN_BAUD, max(1, spi_clk_div) & 0xFFFF)
             self.pkt.write_register(REG_GEN_DATA, GEN_FLAG_SPI_TEST | (1 << 8))
-            if self._gen_data:
-                self.pkt.load_gen_data(self._gen_data)
+            self._gen_load_spi(self._gen_data, spi_clk_div)
         elif self._gen_data is not None:
             # Clear any leftover I2C/SPI test-mode flags (bit0/bit1) from a prior
             # capture — they are not cleared on reset, and a stale SPI-test bit
@@ -1421,10 +1493,8 @@ class OLSDeviceSPI:
             # load.
             self.pkt.write_register(REG_GEN_DATA, 1 << 8)
             self.pkt.write_register(REG_GEN_PROTO, 0)
-            div_b = self._uart_baud_div(self._gen_baud)
-            self.pkt.write_register(REG_GEN_BAUD, div_b & 0xFFFF)
-            self._pins(tx_pin=self._gen_tx_pin)
-            self.pkt.load_gen_data(self._gen_data)
+            self._pins(tx_pin=self._gen_tx_pin, scl_pin=GEN_SCL_PARK)
+            self._gen_load_uart(self._gen_data, self._gen_baud)
         self.spi.flush()
 
         self.pkt.write_register(REG_FAST_MODE, 1 if fast_mode else 0)
@@ -1647,20 +1717,25 @@ class OLSDeviceSPI:
         dev_r = (dev_addr << 1) | 0x01
         self._pins(tx_pin=tx_pin, scl_pin=scl_pin)
         self.pkt.write_register(REG_GEN_PROTO, 1)
-        i2c_div = max(1, self.sys_clk // i2c_speed // 2)
-        self.pkt.write_register(REG_GEN_BAUD, i2c_div & 0xFFFF)
-        self.pkt.load_gen_data(bytes([dev_w, reg_addr]))
         flags = (1) | (read_len << 8) | (dev_r << 16)
         self.pkt.write_register(REG_GEN_DATA, flags)
+        i2c_packed = bit_bang.pack_symbols(
+            bit_bang.i2c_symbols(bytes([dev_w, reg_addr])))
+        self.pkt.write_register(
+            REG_GEN_BAUD, max(1, self.sys_clk // (4 * i2c_speed)) & 0xFFFF)
+        self.pkt.load_gen_data(i2c_packed)
         self.spi.flush()
 
         buf = b''
         seq = 0
 
         while not stop_evt.is_set():
-            self.pkt.arm_capture()
+            # One-shot Bit_Engine: reload the encoded frame each cycle and use
+            # the atomic gen-capture FSM (host arm + CMD_GEN_START loses the
+            # race against the capture window).
+            self.pkt.load_gen_data(i2c_packed)
             self.spi.flush()
-            self.pkt.transaction(CMD_GEN_START, timeout=1.0)
+            self.pkt.transaction(CMD_GEN_CAPTURE, timeout=1.0)
 
             cap_time = chunk_nsamp / rate_hz
             time.sleep(max(cap_time * 0.8, 0.002))
@@ -1713,15 +1788,21 @@ class OLSDeviceSPI:
                 stride=stride) or (
                 use_continuous and not payload_stride and not gen_data
                 and stride == 2 and self.analog_mode == MODE_DIGITAL):
+            # Compressed live readback is more stable on the block-read ring
+            # path than on the live stream path; keep the exact stream probe
+            # for the low-level handoff test, but use the safe rolling reader
+            # for long-running throughput tests.
             buf = bytearray()
-            for data, total, _window, _overrun in self.stream_ring_capture(
+            for data, total, _window in self.continuous_ring_capture(
                     rate_hz=rate_hz,
-                    window_samples=chunk_nsamp,
+                    chunk_nsamp=chunk_nsamp,
+                    buffer_nsamp=buffer_nsamp,
                     stop_evt=stop_evt,
-                    progress_cb=None):
+                    progress_cb=None,
+                    full_out=full_out,
+                    fast_mode=False,
+                    yield_full_buffer=False):
                 data = self._filter_digital(data)
-                if full_out is not None:
-                    full_out.extend(data)
                 buf.extend(data)
                 if len(buf) > max_bytes:
                     del buf[:-max_bytes]
@@ -1764,14 +1845,15 @@ class OLSDeviceSPI:
         if self.analog_mode != MODE_DIGITAL:
             self.set_analog_config(self.analog_mode)
 
+        gen_packed = None
         if gen_data:
+            self.pkt.write_register(REG_GEN_DATA, 1 << 8)  # clear stale flags
             self.pkt.write_register(REG_GEN_PROTO, 0)
-            div_b = self._uart_baud_div(gen_baud)
-            self.pkt.write_register(REG_GEN_BAUD, div_b & 0xFFFF)
-            self._pins(tx_pin=gen_tx_pin)
-            self.pkt.load_gen_data(gen_data)
-            self.spi.flush()
-            self.pkt.transaction(CMD_GEN_START, timeout=1.0)
+            self.pkt.write_register(
+                REG_GEN_BAUD, self._uart_baud_div(gen_baud) & 0xFFFF)
+            self._pins(tx_pin=gen_tx_pin, scl_pin=GEN_SCL_PARK)
+            gen_packed = bit_bang.pack_symbols(bit_bang.uart_symbols(
+                bytes(gen_data)[:bit_bang.max_uart_bytes()]))
 
         self.spi.flush()
         buf = b''
@@ -1792,7 +1874,16 @@ class OLSDeviceSPI:
                     self.debug_ch0_enabled = self._pending_debug_enable
                     self._pending_debug_enable = None
                 self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
-                self.pkt.arm_capture()
+                if gen_packed is not None:
+                    # One-shot Bit_Engine: reload the pattern (abort flushed
+                    # the FIFO) and use the atomic gen-capture FSM so the
+                    # hardware overlaps the burst with the capture window.
+                    # Plain arm + host-issued CMD_GEN_START loses the race:
+                    # the window expires during the SPI round trips.
+                    self.pkt.load_gen_data(gen_packed)
+                    self.pkt.transaction(CMD_GEN_CAPTURE, timeout=1.0)
+                else:
+                    self.pkt.arm_capture()
 
                 cap_time = chunk_nsamp / rate_hz
                 time.sleep(max(cap_time * 0.5, 0.001))

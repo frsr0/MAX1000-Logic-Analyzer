@@ -245,7 +245,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL disp_ack_done        : STD_LOGIC := '0';
   SIGNAL disp_ack_seq         : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL raw_blk_rd_base_cfg  : NATURAL range 0 to Max_Samples := 0;
-  SIGNAL raw_blk_rd_count_cfg : NATURAL range 0 to 16383 := 0;
+  SIGNAL raw_blk_rd_count_cfg : NATURAL range 0 to 16384 := 0;
   SIGNAL raw_stream_req_active : STD_LOGIC := '0';
   SIGNAL raw_stream_comp_mode : STD_LOGIC := '0';
   SIGNAL raw_blk_req_fire     : STD_LOGIC := '0';
@@ -254,8 +254,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL raw_fifo_drain_active : STD_LOGIC := '0';
   SIGNAL raw_comp_fifo_rdreq  : STD_LOGIC := '0';
   SIGNAL raw_comp_state       : NATURAL range 0 to 6 := 0;
-  SIGNAL raw_comp_samples_read : NATURAL range 0 to 16383 := 0;
-  SIGNAL raw_comp_samples_fed : NATURAL range 0 to 16383 := 0;
+  SIGNAL raw_comp_samples_read : NATURAL range 0 to 16384 := 0;
+  SIGNAL raw_comp_samples_fed : NATURAL range 0 to 16384 := 0;
   SIGNAL raw_comp_flush_issued : STD_LOGIC := '0';
   SIGNAL raw_comp_done        : STD_LOGIC := '0';
   SIGNAL comp_sample_in        : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
@@ -1017,10 +1017,10 @@ BEGIN
     signal spi_tx_tdata : std_logic_vector(7 downto 0) := x"FF";
   begin
     spi_tx_tdata <= raw_stream_tx_byte when raw_stream_tx_sel = '1' else pkt_tx_byte;
-    SPI_Slave1 : SPI_Slave2
-    PORT MAP (
-      sys_clk    => CLK,
-      fast_clk   => FAST_CLK,
+      SPI_Slave1 : SPI_Slave2
+      PORT MAP (
+        sys_clk    => CLK,
+        fast_clk   => FAST_CLK,
       reset      => '0',
       SCK        => SPI_SCK,
       MOSI       => SPI_MOSI,
@@ -1028,11 +1028,11 @@ BEGIN
       CS_n       => SPI_CS,
       TX_Data    => spi_tx_tdata,
       SPI_Preamble   => spi_preamble_r,
-      TX_Ready   => spi_tx_ready_i,
-      RX_Data    => SPI_RX_Data,
-      RX_Valid   => SPI_RX_Valid,
-      CS_Rise    => spi_cs_rise
-    );
+        TX_Ready   => spi_tx_ready_i,
+        RX_Data    => SPI_RX_Data,
+        RX_Valid   => SPI_RX_Valid,
+        CS_Rise    => spi_cs_rise
+      );
   end block;
 
   -- ── SPI Packet Protocol (parallel path, SPI mode only) ───────────
@@ -1113,7 +1113,7 @@ BEGIN
     -- 100 MHz); 50000 gives ~10x margin before the watchdog declares a stall.
     constant BLOCK_WD_MAX : natural := 50000;
     variable raw_start_pending : boolean := false;
-    variable raw_words_rem : natural range 0 to 16383 := 0;
+    variable raw_words_rem : natural range 0 to 16384 := 0;
     variable raw_fetch_state : natural range 0 to 2 := 0;
     variable raw_word : std_logic_vector(15 downto 0) := (others => '0');
     variable raw_have_word : boolean := false;
@@ -1163,11 +1163,11 @@ BEGIN
         raw_start_pending := false;
         raw_words_rem := 0;
       end if;
-      -- Clear streaming mode on CS rise (host drops SPI chip select).
-      -- Also flag the residual Rd_Fifo entries so the drain logic below
-      -- flushes them before the next command reuses the FIFO read path.
-      if spi_cs_rise = '1' then
-        if raw_stream_req_active = '1' then
+        -- Clear streaming mode on CS rise (host drops SPI chip select).
+        -- Also flag the residual Rd_Fifo entries so the drain logic below
+        -- flushes them before the next command reuses the FIFO read path.
+        if spi_cs_rise = '1' then
+          if raw_stream_req_active = '1' then
           stream_debug0 <= (others => '0');
           stream_debug1 <= (others => '0');
           case st is
@@ -1199,10 +1199,10 @@ BEGIN
           stream_debug1(21) <= raw_fifo_rdreq;
           stream_debug1(22) <= raw_comp_fifo_rdreq;
           stream_debug1(23) <= Rd_Fifo_Empty;
-        end if;
-        raw_stream_tx_sel <= '0';
-        raw_stream_req_active <= '0';
-        raw_stream_comp_mode <= '0';
+          end if;
+          raw_stream_tx_sel <= '0';
+          raw_stream_req_active <= '0';
+          raw_stream_comp_mode <= '0';
         raw_start_pending := false;
         raw_words_rem := 0;
         if st = RAW_STREAM then
@@ -1634,8 +1634,24 @@ BEGIN
         when WAIT_TX =>
           if pkt_tx_done = '1' then
             if raw_start_pending then
-              raw_stream_tx_sel <= '0';
-              raw_byte_hi_next := false;
+              if raw_stream_comp_mode = '1' then
+                -- Seed an explicit 0x0000 filler word at the handoff. Without
+                -- this, one stale packet-side byte can leak ahead of the RAW
+                -- stream and misalign every later filler/real word boundary.
+                raw_stream_tx_sel <= '1';
+                raw_stream_tx_byte <= x"00";
+                raw_comp_bhi := '1';
+                raw_comp_word_idle := true;
+              else
+                if raw_have_word then
+                  raw_stream_tx_sel <= '1';
+                  raw_stream_tx_byte <= raw_word(7 downto 0);
+                  raw_byte_hi_next := true;
+                else
+                  raw_stream_tx_sel <= '0';
+                  raw_byte_hi_next := false;
+                end if;
+              end if;
               st := RAW_STREAM;
             else
               st := IDLE;

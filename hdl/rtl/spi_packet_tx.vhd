@@ -158,9 +158,16 @@ begin
             end if;
 
           when SEND_DONE =>
-            tx_done <= '1';
-            busy <= '0';
-            state <= IDLE;
+            -- SPI_Slave2 reloads TX_Data on the *next* byte boundary after the
+            -- producer presents a byte. Hold the final CRC byte until one more
+            -- tx_ready pulse confirms that boundary has passed; otherwise the
+            -- upper layer can hand off to RAW_STREAM one byte too early and the
+            -- slave reuses CRC_L/CRC_H as the first stream byte(s).
+            if tx_ready = '1' then
+              tx_done <= '1';
+              busy <= '0';
+              state <= IDLE;
+            end if;
         end case;
       end if;
     end if;

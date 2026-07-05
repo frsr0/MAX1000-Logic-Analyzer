@@ -13,7 +13,7 @@ def samples_to_channels(data, num_ch=NUM_CHANNELS, stride=2):
         need_bytes = 1
         num_ch = min(num_ch, 8)
     else:
-        need_bytes = 2 if num_ch > 8 else 1
+        need_bytes = 4 if num_ch > 16 else 2 if num_ch > 8 else 1
     if stride < need_bytes:
         stride = need_bytes
     data = data[:len(data) - (len(data) % stride)]
@@ -28,7 +28,9 @@ def samples_to_channels(data, num_ch=NUM_CHANNELS, stride=2):
         elif num_ch <= 16:
             word = data[off] | (data[off + 1] << 8)
         else:
-            word = data[off] | (data[off + 1] << 8) | (data[off + 2] << 16) | (data[off + 3] << 24)
+            word = 0
+            for b in range(min(4, len(data) - off)):
+                word |= data[off + b] << (8 * b)
         for c in range(num_ch):
             ch[c].append((word >> c) & 1)
     return ch, samples
