@@ -537,9 +537,17 @@ BEGIN
       gen_tx_d1 <= gen_tx;
       gen_tx_d2 <= gen_tx_d1;
 
-      -- Pin map write from host command
+      -- Pin map write from host command. On FAST_SPEED builds set_pin_map is
+      -- documented as a NO-OP (the fast capture path reads the pin pool
+      -- directly), so freeze the map at its default there: a constant map
+      -- lets synthesis fold the 16x 26:1 slow-path muxes (and the pin_drive
+      -- index decoders) into wires — several hundred LEs the full
+      -- mixed-signal build needs. The ack toggle still fires so a host that
+      -- calls set_pin_map is not left waiting.
       if pin_map_write = '1' then
-        pin_map(pin_map_channel) <= pin_map_pin;
+        if not FAST_SPEED then
+          pin_map(pin_map_channel) <= pin_map_pin;
+        end if;
         pin_map_wr_toggle <= not pin_map_wr_toggle;
       end if;
     end if;
@@ -1059,18 +1067,15 @@ BEGIN
 
   LED_CTRL: entity work.LED_Controller
     port map (
-      clk             => sys_clk,
-      rst             => '0',
-      armed           => armed_i,
-      capture_run     => core_status(0),
-      capture_full    => core_status(3),
-      continuous_mode => continuous_mode,
-      host_connected  => '1',
-      ch_4_mode       => '0',
-      fifo_activity   => core_status(7 downto 4),
-      fade_tick       => fade_tick,
-      led_target      => led_target,
-      fade_step       => led_fade_step
+      clk            => sys_clk,
+      rst            => '0',
+      armed          => armed_i,
+      capture_run    => core_status(0),
+      capture_full   => core_status(3),
+      host_connected => '1',
+      fade_tick      => fade_tick,
+      led_target     => led_target,
+      fade_step      => led_fade_step
     );
 
   gen_signal_gen_on : if ENABLE_SIGNAL_GEN generate

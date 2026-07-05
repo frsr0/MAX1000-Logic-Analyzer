@@ -101,7 +101,6 @@ END OLS_Interface;
 ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
 
   SIGNAL Run_OLS  : STD_LOGIC := '0';
-  SIGNAL dbg_rx_valid_seen : STD_LOGIC := '0';
   SIGNAL Trigger_Mask   : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL Trigger_Values : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL inputs_prev    : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
@@ -151,9 +150,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL spi_preamble        : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL spi_preamble_r      : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL spi_tx_ready_i      : STD_LOGIC := '0';
-  SIGNAL dbg_pkt_ok_seen     : STD_LOGIC := '0';
-  SIGNAL dbg_bad_crc_seen    : STD_LOGIC := '0';
-  SIGNAL dbg_bad_frame_seen  : STD_LOGIC := '0';
 
   SIGNAL ch_mode             : STD_LOGIC := '0';  -- 0=8ch/500k, 1=4ch/4M
   SIGNAL debug_ch0_enable_i  : STD_LOGIC := '0';
@@ -287,8 +283,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   -- is never 0x0000, so the host skips them) so the continuously-clocked wire is
   -- never starved into carrying ambiguous data between runs.
   SIGNAL raw_comp_pop         : STD_LOGIC := '0';
-  SIGNAL stream_debug0        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
-  SIGNAL stream_debug1        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   CONSTANT SAMPLE_CLK_KHZ_SLV : STD_LOGIC_VECTOR(31 downto 0) :=
     STD_LOGIC_VECTOR(TO_UNSIGNED(SAMPLE_CLK_HZ / 1000, 32));
   SIGNAL sig_rd_pend_d1       : STD_LOGIC := '0';
@@ -311,29 +305,11 @@ SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
   SIGNAL comp_out_valid  : STD_LOGIC := '0';
   SIGNAL comp_busy_i     : STD_LOGIC := '0';
   SIGNAL comp_in_ready_i : STD_LOGIC := '1';
-  SIGNAL delta_out_data   : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
-  SIGNAL delta_out_valid  : STD_LOGIC := '0';
-  SIGNAL delta_busy_i     : STD_LOGIC := '0';
-  SIGNAL delta_in_ready_i : STD_LOGIC := '1';
-  SIGNAL delta_enable_i   : STD_LOGIC := '0';
   SIGNAL rle_out_data   : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   SIGNAL rle_out_valid  : STD_LOGIC := '0';
   SIGNAL rle_busy_i     : STD_LOGIC := '0';
   SIGNAL rle_in_ready_i : STD_LOGIC := '1';
   SIGNAL rle_enable_i   : STD_LOGIC := '0';
-  COMPONENT capture_compressor IS
-    PORT (
-      clk               : IN  STD_LOGIC;
-      rst               : IN  STD_LOGIC;
-      sample_in         : IN  STD_LOGIC_VECTOR(15 downto 0);
-      sample_valid      : IN  STD_LOGIC;
-      compression_enable : IN  STD_LOGIC;
-      comp_data         : OUT STD_LOGIC_VECTOR(15 downto 0);
-      comp_valid        : OUT STD_LOGIC;
-      busy              : OUT STD_LOGIC;
-      in_ready          : OUT STD_LOGIC
-    );
-  END COMPONENT;
   COMPONENT rle_compressor IS
     PORT (
       clk                : IN  STD_LOGIC;
@@ -969,9 +945,7 @@ BEGIN
 
   -- Bring-up/status preamble: run flags plus sticky SPI packet diagnostics.
   -- Registered on sys_clk before crossing to fast_clk SPI slave domain.
-  spi_preamble <= Run & Run_OLS & Full & '1' &
-                  dbg_rx_valid_seen & dbg_pkt_ok_seen &
-                  dbg_bad_crc_seen & dbg_bad_frame_seen;
+  spi_preamble <= Run & Run_OLS & Full & '1' & "0000";
   process(CLK)
   begin
     if rising_edge(CLK) then
@@ -1098,10 +1072,10 @@ BEGIN
     variable rsp_stat_v : std_logic_vector(7 downto 0) := ST_OK;
     variable rsp_len_v : natural range 0 to MAX_TX_PAYLOAD_BYTES := 0;
     -- Small response buffer (24 bytes covers status metadata responses)
-    type rspbuf_t is array(0 to 31) of std_logic_vector(7 downto 0);
+    type rspbuf_t is array(0 to 23) of std_logic_vector(7 downto 0);
     variable rsp_buf : rspbuf_t;
-    variable rsp_buf_len : natural range 0 to 31 := 0;
-    variable rsp_buf_idx : natural range 0 to 31 := 0;
+    variable rsp_buf_len : natural range 0 to 24 := 0;
+    variable rsp_buf_idx : natural range 0 to 24 := 0;
     variable reg_val : std_logic_vector(31 downto 0) := (others => '0');
     -- Block-read streaming state
     variable blk_wc : natural range 0 to 255 := 0;  -- word counter
@@ -1111,14 +1085,14 @@ BEGIN
     variable feeding_block : boolean := false;
     variable feed_wait_ready_low : boolean := false;
     variable block_last_v : boolean := false;
+    -- A normal 512-sample block read completes in ~5000 CLK cycles (~50 us at
+    -- 100 MHz); 50000 gives ~10x margin before the watchdog declares a stall.
+    constant BLOCK_WD_MAX : natural := 50000;
     -- Watchdog for WAIT_BLOCK. A healthy block read completes in a few thousand
     -- CLK cycles; if block_rd_ack has not arrived well past that the stream has
     -- stalled (read issued during continuous capture), so give up and recover
     -- rather than hang the whole command dispatcher forever.
-    variable block_wd : natural range 0 to 2097151 := 0;
-    -- A normal 512-sample block read completes in ~5000 CLK cycles (~50 us at
-    -- 100 MHz); 50000 gives ~10x margin before the watchdog declares a stall.
-    constant BLOCK_WD_MAX : natural := 50000;
+    variable block_wd : natural range 0 to BLOCK_WD_MAX := 0;
     variable raw_start_pending : boolean := false;
     variable raw_words_rem : natural range 0 to 16384 := 0;
     variable raw_fetch_state : natural range 0 to 2 := 0;
@@ -1174,39 +1148,6 @@ BEGIN
         -- Also flag the residual Rd_Fifo entries so the drain logic below
         -- flushes them before the next command reuses the FIFO read path.
         if spi_cs_rise = '1' then
-          if raw_stream_req_active = '1' then
-          stream_debug0 <= (others => '0');
-          stream_debug1 <= (others => '0');
-          case st is
-            when IDLE      => stream_debug0(3 downto 0) <= x"0";
-            when EXEC      => stream_debug0(3 downto 0) <= x"1";
-            when WAIT_BLOCK => stream_debug0(3 downto 0) <= x"2";
-            when BUILD_RSP => stream_debug0(3 downto 0) <= x"3";
-            when FEED_TX   => stream_debug0(3 downto 0) <= x"4";
-            when WAIT_TX   => stream_debug0(3 downto 0) <= x"5";
-            when RAW_STREAM => stream_debug0(3 downto 0) <= x"6";
-          end case;
-          stream_debug0(4) <= raw_stream_tx_sel;
-          stream_debug0(5) <= raw_stream_comp_mode;
-          stream_debug0(6) <= raw_stream_req_active;
-          stream_debug0(7) <= raw_comp_done;
-          stream_debug0(10 downto 8) <= std_logic_vector(to_unsigned(raw_comp_state, 3));
-          stream_debug0(11) <= pkt_tx_done;
-          stream_debug0(12) <= pkt_tx_payload_ready;
-          stream_debug0(13) <= spi_tx_ready_i;
-          stream_debug0(21 downto 14) <= std_logic_vector(to_unsigned(raw_comp_fifo_count, 8));
-          stream_debug0(29 downto 22) <= std_logic_vector(to_unsigned(raw_comp_samples_read mod 256, 8));
-          stream_debug1(7 downto 0) <= std_logic_vector(to_unsigned(raw_comp_samples_fed mod 256, 8));
-          stream_debug1(15 downto 8) <= raw_stream_tx_byte;
-          stream_debug1(16) <= comp_busy_i;
-          stream_debug1(17) <= comp_in_ready_i;
-          stream_debug1(18) <= comp_out_valid;
-          stream_debug1(19) <= raw_comp_pop;
-          stream_debug1(20) <= raw_blk_req_fire;
-          stream_debug1(21) <= raw_fifo_rdreq;
-          stream_debug1(22) <= raw_comp_fifo_rdreq;
-          stream_debug1(23) <= Rd_Fifo_Empty;
-          end if;
           raw_stream_tx_sel <= '0';
           raw_stream_req_active <= '0';
           raw_stream_comp_mode <= '0';
@@ -1505,10 +1446,8 @@ BEGIN
                     reg_val := Pump_NoData_Cycles;
                   when REG_PUMP_OVERFLOW_COUNT =>
                     reg_val := Pump_Overflow_Count;
-                  when REG_STREAM_DEBUG0 =>
-                    reg_val := stream_debug0;
-                  when REG_STREAM_DEBUG1 =>
-                    reg_val := stream_debug1;
+                  when REG_STREAM_DEBUG0 | REG_STREAM_DEBUG1 =>
+                    reg_val := (others => '0');
                   when others => null;
                 end case;
                 rsp_buf(0) := reg_val(7 downto 0);
@@ -1757,33 +1696,10 @@ BEGIN
 
 
   -- Debug: rising-edge detect on SPI_RX_Valid (sys_clk domain)
-  rx_valid_edge: process(CLK)
-    variable rv_s1 : std_logic := '0';
-    variable rv_s2 : std_logic := '0';
-  begin
-    if rising_edge(CLK) then
-      rv_s2 := rv_s1;
-      rv_s1 := SPI_RX_Valid;
-      if rv_s1 = '1' and rv_s2 = '0' then
-        dbg_rx_valid_seen <= '1';
-      end if;
-      if pkt_ok = '1' then
-        dbg_pkt_ok_seen <= '1';
-      end if;
-      if pkt_err_bad_crc = '1' then
-        dbg_bad_crc_seen <= '1';
-      end if;
-      if pkt_err_bad_sync = '1' or pkt_err_oversize = '1' then
-        dbg_bad_frame_seen <= '1';
-      end if;
-    end if;
-  end process;
-
   -- Auto_Renew: drives FLA block-read auto-renew.  Default '0' (single-shot).
   Auto_Renew <= '0';
 
   blk_rd_samples <= BLOCK_SAMPLES;
-  delta_enable_i <= '1' when compress_mode_i = "01" else '0';
   rle_enable_i <= '1' when compress_mode_i = "10" else '0';
 
   -- Readback compressor runs at 100 MHz between the response FIFO drain and

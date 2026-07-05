@@ -31,12 +31,13 @@ use IEEE.numeric_std.all;
 --     synchronous-read RAM latency, and
 --   * the per-sample mask (2^W - 1) is precomputed once per block, so only ONE
 --     barrel shift (the chunk placement) is ever on a datapath.
--- Packing is a 2-stage micro-sequence per sample:
---   LOAD: chunk = buf(TOP) AND mask   (register it; shift the buffer on)
---   ACC : acc  = acc OR (chunk << held);  emit low 15 bits when >= 15 queued
--- so each cycle carries either a mask-AND or a single barrel-shift+accumulate,
--- never both. Two cycles/sample is immaterial: blocks are spaced far apart at
--- ADC sample rates, and in_ready holds the (slow) feeder off during a pack.
+-- Packing is a 3-stage micro-sequence per sample:
+--   LOAD : chunk = buf(TOP) AND mask
+--   SHIFT: chunk_shift = chunk << held
+--   ACC  : acc = acc OR chunk_shift; emit low 15 bits when >= 15 queued
+-- so each cycle carries only one heavy transform. Three cycles/sample is still
+-- immaterial: blocks are spaced far apart at ADC sample rates, and in_ready
+-- holds the (slow) feeder off during a pack.
 --
 -- Output handshake: standard valid/ready. out_valid holds a stable out_data
 -- until out_ready; the engine only advances when the slot is free
@@ -79,7 +80,7 @@ architecture rtl of analog_packer is
   -- Accumulator holds up to 14 residual bits + one MAX_WIDTH chunk before emit.
   constant ACC_W : positive := 15 + MAX_WIDTH;
 
-  type state_t is (FILL, EMIT_HEADER, EMIT_ANCHOR, PACK_LOAD, PACK_ACC, DRAIN);
+  type state_t is (FILL, EMIT_HEADER, EMIT_ANCHOR, PACK_LOAD, PACK_SHIFT, PACK_ACC, DRAIN);
   signal state : state_t := FILL;
 
   type buf_array is array(0 to BLOCK_SAMPLES-1) of std_logic_vector(10 downto 0);
@@ -93,20 +94,20 @@ architecture rtl of analog_packer is
   signal held     : natural range 0 to 14 := 0;                        -- bits queued in acc
   signal pcount   : natural range 0 to BLOCK_SAMPLES := 0;             -- reused across phases
 
-  -- LOAD -> ACC pipeline registers
+  -- LOAD -> SHIFT -> ACC pipeline registers
   signal chunk_r  : unsigned(MAX_WIDTH-1 downto 0) := (others => '0'); -- masked delta
   signal hs_r     : natural range 0 to 14 := 0;                       -- shift amount for it
   signal emit_r   : std_logic := '0';                                 -- this sample fills a word
+  signal chunk_shift_r : unsigned(ACC_W-1 downto 0) := (others => '0');
 
   signal out_valid_r : std_logic := '0';
-  signal slot_free : std_logic;
+  signal slot_free_r : std_logic := '1';
 
 begin
 
   busy      <= '0' when state = FILL else '1';
   in_ready  <= '1' when state = FILL else '0';
   out_valid <= out_valid_r;
-  slot_free <= '1' when (out_valid_r = '0' or out_ready = '1') else '0';
 
   process(clk)
     variable m12  : unsigned(11 downto 0);
@@ -120,7 +121,15 @@ begin
         pcount    <= 0;
         acc       <= (others => '0');
         out_valid_r <= '0';
+        slot_free_r <= '1';
       elsif clk_en = '1' then
+        -- Registered downstream-ready view: trading one analog-packer cycle
+        -- for a shorter FIFO-ready -> packer state/address timing cone.
+        if out_valid_r = '0' or out_ready = '1' then
+          slot_free_r <= '1';
+        else
+          slot_free_r <= '0';
+        end if;
 
         -- Clear an accepted output word (unless a state below re-loads it).
         if out_valid_r = '1' and out_ready = '1' then
@@ -158,7 +167,7 @@ begin
           -- EMIT_HEADER: present the header and precompute the block mask
           -- (2^W - 1) once, off the per-sample datapath.
           when EMIT_HEADER =>
-            if slot_free = '1' then
+            if slot_free_r = '1' then
               out_data  <= '0' & std_logic_vector(w_lat) & '1' & "0000000000";
               out_valid_r <= '1';
               m12 := shift_left(to_unsigned(1, 12), to_integer(w_lat)) - 1;
@@ -167,7 +176,7 @@ begin
             end if;
 
           when EMIT_ANCHOR =>
-            if slot_free = '1' then
+            if slot_free_r = '1' then
               out_data  <= "0000" & anc_lat(pcount);
               out_valid_r <= '1';
               if pcount = 3 then
@@ -183,7 +192,7 @@ begin
             end if;
 
           -- PACK_LOAD: read the TOP sample, mask to W bits, register the chunk
-          -- and its target shift.
+          -- and its target shift / emit bookkeeping.
           when PACK_LOAD =>
             wi      := to_integer(w_lat);
             chunk_r <= unsigned(buf(pcount)) and mask_lat;
@@ -195,13 +204,19 @@ begin
               emit_r <= '0';
               held   <= held + wi;
             end if;
+            state <= PACK_SHIFT;
+
+          -- PACK_SHIFT: perform the variable shift into a staging register so
+          -- PACK_ACC only sees an accumulator OR + emit decision.
+          when PACK_SHIFT =>
+            chunk_shift_r <= shift_left(resize(chunk_r, ACC_W), hs_r);
             state <= PACK_ACC;
 
-          -- PACK_ACC: single barrel shift into the accumulator; emit a payload
-          -- word when this sample completed 15 queued bits.
+          -- PACK_ACC: merge the pre-shifted chunk into the accumulator; emit a
+          -- payload word when this sample completed 15 queued bits.
           when PACK_ACC =>
-            if slot_free = '1' then
-              nacc := acc or shift_left(resize(chunk_r, ACC_W), hs_r);
+            if slot_free_r = '1' then
+              nacc := acc or chunk_shift_r;
               if emit_r = '1' then
                 out_data  <= '0' & std_logic_vector(nacc(14 downto 0));
                 out_valid_r <= '1';
@@ -219,7 +234,7 @@ begin
 
           -- DRAIN: flush any residual partial payload word (< 15 bits held).
           when DRAIN =>
-            if slot_free = '1' then
+            if slot_free_r = '1' then
               if held > 0 then
                 out_data  <= '0' & std_logic_vector(acc(14 downto 0));
                 out_valid_r <= '1';

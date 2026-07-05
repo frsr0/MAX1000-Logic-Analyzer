@@ -49,6 +49,9 @@ MODE_ANALOG_FAST = MODE_MIXED | MODE_ANALOG_ONLY
 MODE_ANALOG_ALL = MODE_ANALOG_FAST | 0x20
 MODE_ANALOG = MODE_ANALOG_FAST
 MODE_NARROW_DIGITAL = 0x2000
+# REG_FLAGS bit 20: parallel bit-packing capture (mso_capture front end).
+# Readback is a 16-bit word stream decoded by driver/mso_packed.py.
+MODE_PACKED_MSO = 0x100000
 # Back-compat aliases
 ANALOG_MODE_DIGITAL8 = MODE_DIGITAL
 ANALOG_ENABLE_BIT = MODE_MIXED
@@ -687,7 +690,8 @@ class OLSDeviceSPI:
         """Apply the software glitch filter to a digital sample byte stream,
         but only for pure-digital captures (never analog/mixed/narrow)."""
         if (self.glitch_enable and self.glitch_threshold > 0
-                and self.analog_mode == MODE_DIGITAL and samples):
+                and self.analog_mode == MODE_DIGITAL and samples
+                and not (self._raw_flags & MODE_PACKED_MSO)):
             return apply_glitch_filter(samples, self.glitch_threshold)
         return samples
 
@@ -1893,7 +1897,8 @@ class OLSDeviceSPI:
         # decoded at stride 2. (One 1024-byte block carries 512 samples.)
         need = rc * 2
         samples = self._stream_readback(0, rc)[:need]
-        if not (self.analog_mode & MODE_MIXED):
+        if not (self.analog_mode & MODE_MIXED) \
+                and not (self._raw_flags & MODE_PACKED_MSO):
             samples = self._repair_boundary_glitches(samples, 0)
         if expected_seq is not None and st.get('capture_seq') == expected_seq:
             self.ack_capture_done(expected_seq)

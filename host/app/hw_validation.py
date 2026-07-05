@@ -46,7 +46,9 @@ try:
         analog_frame_stride, analog_wire_stride, decode_analog_frames,
         compress_mixed_stream, decompress_mixed_stream,
         narrow_digital_flags, unpack_narrow_digital_words,
+        MODE_PACKED_MSO,
     )
+    from driver.mso_packed import decode_packed_stream
     from driver.spi_protocol import (
         SPIDevice,
         CMD_GEN_CAPTURE, CMD_GEN_STATUS, CMD_GEN_START, CMD_GEN_LOAD,
@@ -78,10 +80,14 @@ SKIPPED = 0
 WATCHDOG_CHILD_ENV = "HW_VALIDATION_CHILD"
 WATCHDOG_TIMEOUT_ENV = "HW_VALIDATION_TIMEOUT"
 WATCHDOG_DEFAULTS = {
-    "full": 2400,
+    # The full suite grew past 2400s with the codec matrix (15 x 512 KB
+    # readbacks), rate-ceiling ladders and accel tests; a clean run is
+    # ~45 min. 2400s killed run5 mid-stress at 542/542 passing.
+    "full": 3900,
     "new": 900,
     "jumper": 600,
     "codec": 600,
+    "accel": 300,
 }
 
 def _suite_mode(argv):
@@ -1304,6 +1310,106 @@ def test_narrow_digital_200m(dev):
     save_result("test5d_narrow_digital_200m", raw[:1024],
                 {"chunks": chunks, "rate_hz": 200_000_000})
 
+
+def test_mso_packed_capture(dev):
+    """MSO bit-pack compression capture (REG_FLAGS bit 20, mso_capture).
+
+    Arms a packed capture with the debug CH0 PWM providing digital activity
+    and the 4-channel ADC round-robin feeding the analog packer, then decodes
+    the word stream with driver/mso_packed and sanity-checks both sub-streams.
+    """
+    print_header("Test 5e: MSO bit-packed capture (compression pipeline)")
+    dev.reset()
+    dev.spi.flush()
+    dev.set_analog_config(0)
+    dev.set_debug_ch0(True, freq_hz=1_000_000, duty_pct=50)
+    old_flags = dev._raw_flags
+    dev._raw_flags = old_flags | MODE_PACKED_MSO
+    raw = b""
+    meta = {}
+    try:
+        # The capture window is nsamples ticks at rate_hz (~5 ms here); the
+        # packed producer emits far fewer words (RLE + packed analog), so the
+        # readback tail is untouched SDRAM (0xFFFF). producer_index reads 0
+        # after a single-shot, so trim the trailing 0xFFFF run instead. That
+        # also drops legitimate slice-3 saturation markers (pins 12..15 idle
+        # high read 0xF, whose marker word is exactly 0xFFFF) — fine here,
+        # the checks below only rely on slices 0..2 and the analog stream.
+        word_count = 500_000
+        raw = dev.capture(rate_hz=100_000_000, nsamples=word_count, timeout=8)
+        log(f"packed capture: {len(raw)} bytes read")
+        while len(raw) >= 2 and raw[-2:] == b'\xff\xff':
+            raw = raw[:-2]
+        n_words = len(raw) // 2
+        log(f"after stale trim: {n_words} words")
+        check(n_words > 500,
+              f"packed capture produced a word stream ({n_words} words)")
+        if not raw:
+            return
+
+        # The capture stops on the tick budget, which can land mid-block:
+        # drop trailing words until the analog stream decodes cleanly.
+        dec = None
+        words_trimmed = 0
+        while dec is None and words_trimmed <= 64 and len(raw) >= 200:
+            try:
+                dec = decode_packed_stream(raw)
+            except ValueError:
+                raw = raw[:-2]
+                words_trimmed += 1
+        check(dec is not None,
+              f"packed stream decoded (trimmed {words_trimmed} tail words)")
+        if dec is None:
+            return
+        analog = dec['analog']
+        runs = dec['digital_runs']
+        counts = [len(ch) for ch in analog]
+        run_counts = [len(r) for r in runs]
+        log(f"analog samples/ch: {counts}, digital runs/slice: {run_counts}")
+        meta = {"analog_counts": counts, "digital_run_counts": run_counts}
+
+        # Analog sub-stream: all 4 round-robin channels reconstructed with a
+        # meaningful sample count, codes in 12-bit range and NOT all zero
+        # (garbage or a dead ADC path decodes as flat zeros; the board floats
+        # its analog inputs at a few hundred to a few thousand codes).
+        check(all(n > 50 for n in counts),
+              f"all 4 packed analog channels produced samples ({counts})")
+        flat = [v for ch in analog for v in ch]
+        check(all(0 <= v <= 0xFFF for v in flat),
+              "packed analog codes within 12-bit range")
+        nonzero_frac = sum(1 for v in flat if v) / max(1, len(flat))
+        check(nonzero_frac > 0.1,
+              f"packed analog stream carries real ADC codes "
+              f"({nonzero_frac:.0%} nonzero)")
+        check(max(counts) - min(counts) <= 16,
+              f"analog round-robin balanced across channels ({counts})")
+
+        # Digital sub-stream: slices 0..2 must emit packets (idle slices still
+        # emit a saturation marker every 512 cycles; slice 3's marker is
+        # 0xFFFF and was trimmed above). Slice 0 (pins 0..3) must show the
+        # 1 MHz CH0 PWM toggling.
+        check(all(n > 0 for n in run_counts[:3]),
+              f"digital RLE slices 0-2 emitted packets ({run_counts})")
+        s0_vals = sorted({v for v, _l in runs[0]})
+        check(len(s0_vals) >= 2,
+              f"slice 0 saw CH0 PWM toggling (values {s0_vals})")
+        # 1 MHz 50% PWM sampled at the fast clock: half-period runs of
+        # ~sample_clk/2MHz cycles. Accept a generous window (PWM is in the
+        # sys_clk domain, so edges land within +/- a couple of fast cycles).
+        expect = dev.sample_clk / 2_000_000
+        ch0_runs = [l for v, l in runs[0] if 4 <= l <= 511]
+        near = [l for l in ch0_runs if 0.5 * expect <= l <= 2.0 * expect]
+        check(len(near) >= 4,
+              f"slice 0 dwell times consistent with 1 MHz PWM "
+              f"({len(near)} runs near {expect:.0f} cycles)")
+    finally:
+        dev._raw_flags = old_flags
+        dev.set_debug_ch0(False)
+        dev.set_analog_config(0)
+        dev.reset()
+        dev.spi.flush()
+    save_result("test5e_mso_packed_capture", raw[:4096], meta)
+
 # ====================================================================
 # Test 13: Rolling capture with UART generator
 # ====================================================================
@@ -2521,6 +2627,7 @@ def main():
         test_max_speed_capture(dev)
         test_continuous_max_rate_overrun(dev)
         test_narrow_digital_200m(dev)
+        test_mso_packed_capture(dev)
 
         log("\n--- Generator tests (debug OFF + ON) ---")
         run_with_debug(test_gen_uart, dev, "UART generator")
@@ -2628,6 +2735,7 @@ def main_new_only():
         time.sleep(0.5)
         test_continuous_max_rate_overrun(dev)
         test_narrow_digital_200m(dev)
+        test_mso_packed_capture(dev)
         test_high_speed_analog_mode(dev)
         test_maximum_analog_mode(dev)
         test_mixed_digital_mixed_back_to_back(dev)

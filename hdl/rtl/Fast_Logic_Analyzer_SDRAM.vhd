@@ -95,6 +95,7 @@ port (
 end Fast_Logic_Analyzer_SDRAM;
 
 architecture rtl of Fast_Logic_Analyzer_SDRAM is
+  attribute altera_attribute : string;
 
   constant sub_steps : natural := 16 / Channels;
 
@@ -251,10 +252,18 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal cont_accept_q : boolean := false;
   signal cont_meta_reset_q : std_logic := '0';
   signal ring_used         : natural range 0 to CONT_RING_WORDS := 0;
+  attribute altera_attribute of run_f_s1 : signal is "-name AUTO_SHIFT_REGISTER_RECOGNITION OFF";
+  attribute altera_attribute of run_f_s2 : signal is "-name AUTO_SHIFT_REGISTER_RECOGNITION OFF";
+  attribute altera_attribute of run_f_level : signal is "-name AUTO_SHIFT_REGISTER_RECOGNITION OFF";
 
-  constant AFIFO_DEPTH : natural := 4096;
+  -- 1024 (was 2048, originally 4096): trims one afifo pointer bit and the
+  -- associated empty/used-word compare logic from the 167 MHz read-side cone.
+  -- Functionally the FIFO only has to ride out SDRAM drain stalls (refresh +
+  -- page turnaround, ~120 words at 200 MW/s); the DEPTH-320 almost-full
+  -- cushion still leaves ~700 words of normal fill headroom.
+  constant AFIFO_DEPTH : natural := 1024;
   constant AFIFO_WIDTH : natural := 16;
-  constant AFIFO_WIDTHU : natural := 12;
+  constant AFIFO_WIDTHU : natural := 10;
   signal fifo_wdata : std_logic_vector(AFIFO_WIDTH-1 downto 0) := (others => '0');
   signal fifo_wr    : std_logic := '0';
   signal fifo_wrfull : std_logic := '0';
@@ -288,6 +297,23 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   -- as afull_r in the digital writer; keeps the wrusedw compare off the path
   -- from producer -> Packed_Ready -> mso_capture -> analog_packer.
   signal packed_afull_r : std_logic := '0';
+  -- FAST_CLK level: '1' once the capture's tick budget is exhausted (driven
+  -- from sample_rem_nonzero_r inside gen_fast_speed). Stops the packed
+  -- producer at capture end; otherwise its continuous trickle (digital RLE
+  -- saturation markers arrive every <= 2.56 us) keeps the FIFO non-empty and
+  -- the single-shot drain-completion window (2047 empty pclk cycles) never
+  -- elapses, so Full never rises. Left at '0' in non-FAST_SPEED builds
+  -- (packed capture is a FAST_SPEED feature).
+  signal packed_stop_f : std_logic := '0';
+  -- Run-start gate for the packed producer. The pclk side discards a snapshot
+  -- of stale FIFO words on the run edge; the FAST side sees Run a few cycles
+  -- earlier than pclk, so packed words pushed immediately at run start can
+  -- land inside that snapshot and be discarded — losing the leading analog
+  -- block header and mis-framing the whole analog sub-stream. Hold the
+  -- producer off until the pclk drain has completed (2FF-synced level).
+  signal pump_live_p  : std_logic := '0';
+  signal pump_live_s1 : std_logic := '0';
+  signal pump_live_f  : std_logic := '0';
   signal fifo_aclr  : std_logic := '0';
   -- FAST_CLK synchronous reset for packed-mode registers (derived from
   -- cfg_valid_edge, already 2FF-synchronized to FAST_CLK). Replaces the old
@@ -862,6 +888,9 @@ begin
       end if;
     end process;
 
+    -- Packed producer halt: budget exhausted (registered level, same domain).
+    packed_stop_f <= not sample_rem_nonzero_r;
+
     -- Pre-trigger tick counter: limits BRAM pre-trigger to 8 ticks, then switches to FIFO.
     -- Prevents CDC settling window from causing 1024 pre-trigger writes that delay gen data.
     process(FAST_CLK)
@@ -1234,12 +1263,17 @@ begin
   -- so this does not perturb the (phase-sensitive) SDRAM readout the way an
   -- extra pump pipeline stage did.
   -- 2-FF synchronise the (CLK-domain) mode select into FAST_CLK.
+  -- pclk-domain level: run active and the run-start stale drain finished.
+  pump_live_p <= run_level_r and not drain_pending_r;
+
   process(FAST_CLK)
   begin
     if rising_edge(FAST_CLK) then
       packed_mode_meta <= Packed_Mode;
       packed_mode_f    <= packed_mode_meta;
       packed_afull_r   <= fifo_wralmost_full;
+      pump_live_s1     <= pump_live_p;
+      pump_live_f      <= pump_live_s1;
     end if;
   end process;
 
@@ -1264,9 +1298,19 @@ begin
   -- was the -0.61 ns path after registering almost-full).
   packed_stage_pop  <= '1' when packed_stage_valid = '1' and packed_afull_r = '0' else '0';
   packed_stage_push <= '1' when Packed_Valid = '1' and packed_mode_f = '1'
-                               and run_f_level = '1'
+                               and run_f_level = '1' and packed_stop_f = '0'
+                               and pump_live_f = '1'
                                and (packed_stage_valid = '0' or packed_afull_r = '0')
                        else '0';
+
+  -- Producer-side ready: mirrors the packed_stage_push acceptance exactly
+  -- (minus Packed_Valid, which the producer ANDs in), so a word the mux
+  -- writes on ready is always the word the stage pushes the same cycle.
+  -- All terms are FAST_CLK-registered.
+  Packed_Ready <= '1' when packed_mode_f = '1' and run_f_level = '1'
+                       and packed_stop_f = '0' and pump_live_f = '1'
+                       and (packed_stage_valid = '0' or packed_afull_r = '0')
+                  else '0';
 
   process(FAST_CLK)
   begin

@@ -32,6 +32,13 @@ architecture bench of tb_fifo_bridge is
   signal rate_div    : natural range 1 to 500000000 := 1;
   signal samples_cfg : natural range 1 to 3000000 := 8192;
 
+  -- Packed-mode (mso_capture) producer port
+  signal packed_mode  : std_logic := '0';
+  signal packed_data  : std_logic_vector(15 downto 0) := (others => '0');
+  signal packed_valid : std_logic := '0';
+  signal packed_ready : std_logic;
+  signal packed_accepted : integer := 0;
+
   signal s_burst    : std_logic;
   signal sdram_addr : std_logic_vector(11 downto 0);
   signal sdram_ba   : std_logic_vector(1 downto 0);
@@ -114,8 +121,39 @@ begin
       Armed        => armed,
       Fast_Mode    => fast_mode,
       FAST_CLK     => fast_clk,
-      Continuous_Mode => '0'
+      Continuous_Mode => '0',
+      Packed_Mode  => packed_mode,
+      Packed_Data  => packed_data,
+      Packed_Valid => packed_valid,
+      Packed_Ready => packed_ready
     );
+
+  -- Packed-mode producer: offers an incrementing word stream (throttled to one
+  -- word per 4 cycles, well under the pump drain rate, like the real
+  -- mso_capture trickle) and advances only on the valid/ready handshake.
+  process(fast_clk)
+    variable next_word : unsigned(15 downto 0) := x"0001";
+    variable throttle  : integer range 0 to 3 := 0;
+  begin
+    if rising_edge(fast_clk) then
+      if packed_mode = '1' then
+        if packed_valid = '1' and packed_ready = '1' then
+          packed_accepted <= packed_accepted + 1;
+          next_word := next_word + 1;
+          packed_valid <= '0';
+        elsif throttle = 0 then
+          packed_valid <= '1';
+        end if;
+        throttle := (throttle + 1) mod 4;
+        packed_data <= std_logic_vector(next_word);
+      else
+        packed_valid <= '0';
+        next_word := x"0001";
+        throttle := 0;
+        packed_accepted <= 0;
+      end if;
+    end if;
+  end process;
 
   -- SDRAM pin model
   sdram_model : entity work.sdram_pin_model
@@ -265,6 +303,57 @@ begin
     -- deadlocking (bounded target) and without eating the new capture.
     report "TEST 3: Divided-rate capture after overflow (drain regression)";
     divided_capture(20, 256, "TEST 3");
+
+    -- ======== TEST 4: Packed-mode write path (Packed_Ready regression) ========
+    -- The packed producer only emits on the valid/ready handshake. This test
+    -- fails (zero accepted words) if Packed_Ready is not driven from the
+    -- stage-accept condition — the bug that made hardware packed captures
+    -- read back an untouched SDRAM.
+    report "TEST 4: Packed-mode capture (Packed_Ready handshake)";
+    -- Window must exceed the worst-case run-start stale drain (a full
+    -- 2048-word FIFO drains in ~75 us; the packed producer is held off until
+    -- it completes so the analog stream starts on a block header).
+    packed_mode <= '1';
+    rate_div <= 8;
+    samples_cfg <= 4096;
+    wait for 100 ns;
+    cap_base := cap_cnt;
+    run <= '1';
+    wait until rising_edge(full) for 1 ms;
+    got := cap_cnt - cap_base;
+    report "TEST 4 debug: full=" & std_logic'image(full)
+           & " accepted=" & integer'image(packed_accepted)
+           & " committed=" & integer'image(got);
+    assert full = '1'
+      report "FAIL(TEST 4): packed capture never completed" severity failure;
+    run <= '0';
+    wait for 500 ns;
+    got := cap_cnt - cap_base;
+    report "Packed: producer accepted " & integer'image(packed_accepted)
+           & " words, committed " & integer'image(got);
+    assert packed_accepted > 100
+      report "FAIL(TEST 4): Packed_Ready never accepted producer words ("
+             & integer'image(packed_accepted) & ")" severity failure;
+    assert got > 100
+      report "FAIL(TEST 4): too few packed words committed ("
+             & integer'image(got) & ")" severity failure;
+    -- Committed packed words must be the exact ascending producer sequence
+    -- (contiguous, no duplicates or losses). The stream starts at 1.
+    for i in cap_base + 1 to cap_cnt - 1 loop
+      prev := to_integer(unsigned(captured(i - 1)));
+      curr := to_integer(unsigned(captured(i)));
+      step := (curr - prev) mod 65536;
+      assert step = 1
+        report "FAIL(TEST 4): packed step at idx " & integer'image(i - cap_base)
+               & " is " & integer'image(step) & " (prev=" & integer'image(prev)
+               & " curr=" & integer'image(curr) & ")" severity failure;
+    end loop;
+    assert to_integer(unsigned(captured(cap_base))) = 1
+      report "FAIL(TEST 4): packed stream does not start at word 1 (got "
+             & integer'image(to_integer(unsigned(captured(cap_base)))) & ")"
+      severity failure;
+    packed_mode <= '0';
+    report "TEST 4 PASS: packed handshake, contiguous committed stream";
 
     report "=== FIFO bridge tests complete: ALL PASS ===";
     std.env.finish;
