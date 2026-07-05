@@ -1,9 +1,10 @@
 param(
     [switch]$NoFlash,
     [switch]$Flash,
-    # Seed 3 best current timing sweep on this netlist. Re-sweep after RTL
-    # or pin changes; bitstream remains seed-sensitive at this density.
-    [int]$Seed = 3
+    # Seed 1 best current timing sweep on this netlist after the readout-state
+    # timing cuts. Re-sweep after RTL or pin changes; bitstream remains
+    # seed-sensitive at this density.
+    [int]$Seed = 1
 )
 
 

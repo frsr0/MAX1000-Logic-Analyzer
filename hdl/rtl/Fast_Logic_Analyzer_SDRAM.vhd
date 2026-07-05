@@ -346,6 +346,10 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   -- before the first completion), so the lag can never be consumed stale.
   signal stream_at_ring_end : std_logic := '0';
   signal stream_addr_nxt_r  : unsigned(21 downto 0) := (others => '0');
+  -- Registered pre-decrement of stream_rem. Read completions are spaced by at
+  -- least CAS latency plus the rd_gap bubble, so this 1-cycle look-ahead is
+  -- always settled before any consumer needs it.
+  signal stream_rem_dec_r   : natural range 0 to Max_Samples := 0;
 
   -- 2FF synchroniser for the block-read request toggle (CLK -> pclk)
   signal blk_req_s1    : std_logic := '0';
@@ -1457,6 +1461,13 @@ begin
     variable cur_full      : boolean := false;
     variable cont_base_v   : natural range 0 to Max_Samples - 1 := 0;
     variable ring_waddr    : natural range 0 to Max_Samples - 1 := 0;
+    -- Snapshot the persistent readout state at the start of each pclk tick so
+    -- current-cycle updates do not feed back into the same cycle's mux tree.
+    variable rd_mode_cur       : boolean := false;
+    variable stream_rem_cur    : natural range 0 to Max_Samples := 0;
+    variable stream_active_cur : boolean := false;
+    variable rd_pend2_cur      : std_logic := '0';
+    variable rd_gap_cur        : std_logic := '0';
     variable pump_valid_v  : boolean := false;
     variable pump_ready_v  : boolean := false;
     variable pump_accept_v : boolean := false;
@@ -1465,6 +1476,11 @@ begin
     variable cont_accept_v : boolean := false;
   begin
     if rising_edge(pclk) then
+      rd_mode_cur := rd_mode;
+      stream_rem_cur := stream_rem;
+      stream_active_cur := stream_active;
+      rd_pend2_cur := rd_pend2;
+      rd_gap_cur := rd_gap;
       pump_valid_v := false;
       pump_ready_v := false;
       pump_accept_v := false;
@@ -1503,6 +1519,11 @@ begin
           stream_addr_u := stream_addr_nxt_r;
         end if;
         stream_addr_inc_pending := false;
+      end if;
+      if stream_rem_cur /= 0 then
+        stream_rem_dec_r <= stream_rem_cur - 1;
+      else
+        stream_rem_dec_r <= 0;
       end if;
       if single_count_load_q = '1' then
         buf_rem_single <= cfg_samples;
@@ -1661,7 +1682,7 @@ begin
       -- Block-read toggle edge -> start a stream. Base/Count are stable by now
       -- (set on the OLS side before the toggle flipped and held for the stream).
       if blk_req_edge_r = '1' then
-        if rd_mode then
+        if rd_mode_cur then
           -- Single-shot: read exactly the host-requested block.
           stream_addr_u := to_unsigned(Blk_Rd_Base + Start_Offset, 22);
           stream_rem    := Blk_Rd_Count;
@@ -1686,15 +1707,15 @@ begin
       end if;
 
       stream_addr_r <= std_logic_vector(stream_addr_u);
-      if rd_mode then
+      if rd_mode_cur then
 
-        if stream_active then
+        if stream_active_cur then
           -- STREAMING READOUT: walk the block addresses, latch on the SDRAM
           -- valid strobe, push each sample into the response FIFO. Self-timed,
           -- so it is immune to the CLK/pclk phase relationship that broke the
           -- old fixed-latency latch at block boundaries.
-          if rd_pend2 = '0' then
-            if rd_gap = '1' then
+          if rd_pend2_cur = '0' then
+            if rd_gap_cur = '1' then
               rd_gap := '0';   -- let stream_addr_r catch up post-completion
             elsif rdfifo_wrfull = '0' then
               s_addr <= stream_addr_r;
@@ -1715,7 +1736,7 @@ begin
               -- Advance the address on COMPLETION (not issue) so a timed-out
               -- read can be reissued at the same address without skipping.
               stream_addr_inc_pending := true;
-              if stream_rem <= 1 then
+              if stream_rem_cur <= 1 then
                 if Auto_Renew = '1' then
                   -- Auto-renew: reload and keep streaming
                   stream_rem := Blk_Rd_Count;
@@ -1729,7 +1750,7 @@ begin
                   end if;
                 end if;
               else
-                stream_rem := stream_rem - 1;
+                stream_rem := stream_rem_dec_r;
               end if;
             end if;  -- closes stream_prime if/else
           elsif rd_wd_cnt = STREAM_RD_WD then
