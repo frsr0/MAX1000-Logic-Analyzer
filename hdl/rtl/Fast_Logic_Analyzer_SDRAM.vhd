@@ -322,6 +322,12 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal drain_pending_r : std_logic := '0';
   signal drain_rem       : natural range 0 to AFIFO_DEPTH := 0;
   signal fifo_rdusedw    : std_logic_vector(AFIFO_WIDTHU-1 downto 0) := (others => '0');
+  -- Registered fill snapshot for drain start. The async FIFO's rdusedw / rdptr
+  -- compare chain is too deep to drive the drain counter load directly on the
+  -- same pclk edge, so we snapshot it here and let the drain state machine pick
+  -- it up on the next cycle.
+  signal drain_snapshot_pending_r : std_logic := '0';
+  signal fifo_rdusedw_r           : natural range 0 to AFIFO_DEPTH := 0;
 
   -- Readout response FIFO: pclk write (FLA streams samples) / CLK read (OLS
   -- drains). Depth >= one block so a whole block streams without backpressure.
@@ -1511,6 +1517,11 @@ begin
       -- Loader settling trackers (see skid-buffer comment above the process).
       fifo_rd_q <= fifo_rd;
       rdempty_q <= fifo_rdempty;
+      if fifo_rdempty = '0' and unsigned(fifo_rdusedw) = 0 then
+        fifo_rdusedw_r <= AFIFO_DEPTH;
+      else
+        fifo_rdusedw_r <= to_integer(unsigned(fifo_rdusedw));
+      end if;
       -- Prefetch loader: capture the show-ahead head word into the skid buffer
       -- and pop it, in the same cycle. Guards: skid empty; rdempty low for two
       -- consecutive cycles (q can lag empty by one cycle on silicon); previous
@@ -1555,14 +1566,10 @@ begin
         run_stop_overflow <= '1';
         status_overflow <= '1';
         drain_pending_r <= '1';
+        drain_snapshot_pending_r <= '1';
         -- Snapshot as at run start. Overflow only latches in single-shot
         -- mode, where the producer has already stopped, so the fill can only
         -- shrink and a re-snapshot on repeated overflow pulses stays correct.
-        if fifo_rdempty_r = '0' and unsigned(fifo_rdusedw) = 0 then
-          drain_rem <= AFIFO_DEPTH;
-        else
-          drain_rem <= to_integer(unsigned(fifo_rdusedw));
-        end if;
         if Continuous_Mode = '0' and full_i = '0' then
           full_i <= '1';
           overflow_readout_q <= '1';
@@ -1620,14 +1627,10 @@ begin
       if run_edge_r = '1' then
         waddr_0 := 0; waddr_1 := 0; waddr_2 := 0;
         drain_pending_r <= '1';
+        drain_snapshot_pending_r <= '1';
         -- Snapshot the stale-word count. usedw is fill mod DEPTH: a full FIFO
         -- reads 0, so substitute the full depth when non-empty (the empty-
         -- pipeline drain exit absorbs any overestimate).
-        if fifo_rdempty_r = '0' and unsigned(fifo_rdusedw) = 0 then
-          drain_rem <= AFIFO_DEPTH;
-        else
-          drain_rem <= to_integer(unsigned(fifo_rdusedw));
-        end if;
         -- Invalidate any word still sitting in the skid buffer from the
         -- previous run (overrides a same-cycle loader load).
         prefetch_valid_r <= '0';
@@ -1677,7 +1680,10 @@ begin
       -- the FIFO was exactly full, where usedw wraps to 0 and the snapshot
       -- logic substitutes AFIFO_DEPTH).
       if drain_pending_r = '1' then
-        if drain_rem = 0 then
+        if drain_snapshot_pending_r = '1' then
+          drain_rem <= fifo_rdusedw_r;
+          drain_snapshot_pending_r <= '0';
+        elsif drain_rem = 0 then
           drain_pending_r <= '0';
         elsif prefetch_valid_r = '1' then
           prefetch_valid_r <= '0';  -- discard one stale word

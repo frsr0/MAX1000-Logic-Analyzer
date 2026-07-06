@@ -251,6 +251,7 @@ $qsfLines = @(
     'set_global_assignment -name VHDL_FILE ../rtl/capture_compressor.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/rle_compressor.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/delta_calc.vhd',
+    'set_global_assignment -name VHDL_FILE ../rtl/delta_rle_compressor.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/analog_packer.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/digital_rle.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/mso_stream_mux.vhd',
