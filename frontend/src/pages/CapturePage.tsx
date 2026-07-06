@@ -1,4 +1,4 @@
-// Main capture view: waveform centre, collapsible side panel with tabs,
+// Main capture view: waveform center, collapsible side panel with tabs,
 // packet table bottom panel.
 import { useEffect, useState } from 'react';
 import { useApp } from '../state/appStore';
@@ -34,7 +34,6 @@ export function CapturePage() {
   const [panelOpen, setPanelOpen] = useState(window.innerWidth > 900);
   const [tableOpen, setTableOpen] = useState(true);
 
-  // auto-open newest session when a capture finishes
   useEffect(() => {
     const last = status?.last_session_id;
     if (last && last !== activeSession?.id
@@ -43,7 +42,6 @@ export function CapturePage() {
     }
   }, [status?.last_session_id, status?.capture_state]);
 
-  // space = start/stop shortcut handled in AppShell; ctrl+s save handled there too
   useEffect(() => {
     if (!activeSession && sessions.length) {
       openSession(sessions[0].id).catch(() => {});
@@ -51,6 +49,7 @@ export function CapturePage() {
   }, [sessions.length]);
 
   const enabledChannels = activeSession?.channels ?? [];
+  const deviceName = activeSession?.device.device_name ?? 'No capture loaded';
 
   return (
     <div className={`capture-page ${panelOpen ? 'panel-open' : ''}`}>
@@ -62,15 +61,16 @@ export function CapturePage() {
               <span className="hint">
                 {activeSession.num_samples.toLocaleString()} samples @{' '}
                 {activeSession.sample_rate >= 1e6
-                  ? `${activeSession.sample_rate / 1e6} MHz`
-                  : `${activeSession.sample_rate / 1e3} kHz`}
+                  ? `${(activeSession.sample_rate / 1e6).toFixed(1)} MHz`
+                  : `${(activeSession.sample_rate / 1e3).toFixed(1)} kHz`}
                 {activeSession.device.mock ? ' · MOCK' : ''}
               </span>
+              <span className="badge badge-soft">{deviceName}</span>
               <button className="slim" onClick={() => setTableOpen(!tableOpen)}>
-                {tableOpen ? '▾ packets' : '▸ packets'}
+                {tableOpen ? 'Hide packets' : 'Show packets'}
               </button>
               <button className="slim" onClick={() => setPanelOpen(!panelOpen)}>
-                {panelOpen ? '⟩⟩' : '⟨⟨'}
+                {panelOpen ? 'Collapse' : 'Expand'}
               </button>
             </div>
             <WaveformCanvas
@@ -82,7 +82,7 @@ export function CapturePage() {
         ) : (
           <div className="empty-state">
             <h2>No capture loaded</h2>
-            <p>Connect a device (Device page) and start a capture, or open a saved session.</p>
+            <p>Connect a device on the Device page, then start a capture or open a saved session.</p>
           </div>
         )}
       </div>

@@ -1,0 +1,65 @@
+[
+  {
+    "rate_hz": 1000000,
+    "codec": "raw",
+    "elapsed_ms": 939,
+    "throughput_msps": 0.266,
+    "session_id": "ses_a59dcb092e"
+  },
+  {
+    "rate_hz": 1000000,
+    "codec": "delta",
+    "elapsed_ms": 1173,
+    "throughput_msps": 0.213,
+    "session_id": "ses_131c80b170"
+  },
+  {
+    "rate_hz": 1000000,
+    "codec": "rle",
+    "elapsed_ms": 1174,
+    "throughput_msps": 0.213,
+    "session_id": "ses_684f920e9e"
+  },
+  {
+    "rate_hz": 10000000,
+    "codec": "raw",
+    "elapsed_ms": 1175,
+    "throughput_msps": 0.213,
+    "session_id": "ses_53bbf44205"
+  },
+  {
+    "rate_hz": 10000000,
+    "codec": "delta",
+    "elapsed_ms": 694,
+    "throughput_msps": 0.36,
+    "session_id": "ses_ff8d379f4b"
+  },
+  {
+    "rate_hz": 10000000,
+    "codec": "rle",
+    "elapsed_ms": 694,
+    "throughput_msps": 0.36,
+    "session_id": "ses_c12a2f6093"
+  },
+  {
+    "rate_hz": 50000000,
+    "codec": "raw",
+    "elapsed_ms": 1179,
+    "throughput_msps": 0.212,
+    "session_id": "ses_3676ad6e8b"
+  },
+  {
+    "rate_hz": 50000000,
+    "codec": "delta",
+    "elapsed_ms": 696,
+    "throughput_msps": 0.359,
+    "session_id": "ses_3427510ddb"
+  },
+  {
+    "rate_hz": 50000000,
+    "codec": "rle",
+    "elapsed_ms": 772,
+    "throughput_msps": 0.324,
+    "session_id": "ses_63994f7dfc"
+  }
+]

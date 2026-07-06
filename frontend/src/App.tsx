@@ -15,6 +15,7 @@ export default function App() {
     refreshCapabilities();
     loadCatalogs();
     document.documentElement.dataset.theme = useApp.getState().viewerSettings.theme;
+    document.title = 'MAX1000 Logic Analyzer';
 
     const statusWs = new ReconnectingSocket('/ws/status');
     statusWs.onStateChange = (ok) => {
