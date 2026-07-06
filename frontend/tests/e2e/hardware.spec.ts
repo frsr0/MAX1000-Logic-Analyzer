@@ -18,6 +18,13 @@ async function captureState(page: any) {
   });
 }
 
+async function deviceDebug(page: any) {
+  return page.evaluate(async () => {
+    const res = await fetch('/api/device/debug');
+    return res.json();
+  });
+}
+
 async function ensureConnected(page: any) {
   if (useMockHarness) return;
   await page.addInitScript((id) => {
@@ -130,6 +137,7 @@ test('compression sweep shows raw, delta, and rle throughput differences', async
     elapsed_ms: number;
     throughput_msps: number;
     session_id: string | null;
+    timings: Record<string, number | null>;
   }> = [];
 
   await page.getByRole('button', { name: 'Generator' }).click();
@@ -159,12 +167,22 @@ test('compression sweep shows raw, delta, and rle throughput differences', async
       const elapsedMs = Date.now() - startedAt;
       const throughputMsps = (sampleCount / (elapsedMs / 1000)) / 1_000_000;
       const state = await captureState(page);
+      const debug = await deviceDebug(page);
+      const timings = debug.timings ?? {};
       results.push({
         rate_hz: rate,
         codec,
         elapsed_ms: elapsedMs,
         throughput_msps: Number(throughputMsps.toFixed(3)),
         session_id: state.last_session_id ?? null,
+        timings: {
+          capture_s: timings.last_capture_s ?? null,
+          wait_s: timings.last_capture_wait_s ?? null,
+          readback_s: timings.last_capture_readback_s ?? null,
+          blocks_s: timings[`last_readback_blocks_s_${codec}`] ?? null,
+          decode_s: timings[`last_readback_decode_s_${codec}`] ?? null,
+          raw_retry_s: timings[`last_readback_raw_retry_s_${codec}`] ?? null,
+        },
       });
       await page.screenshot({ path: shot(`compression-sweep-${rate}-${codec}.png`) });
     }
@@ -173,9 +191,9 @@ test('compression sweep shows raw, delta, and rle throughput differences', async
   const lines = [
     '# Compression sweep results',
     '',
-    '| rate Hz | codec | elapsed ms | throughput Msps | session |',
-    '| --- | --- | ---: | ---: | --- |',
-    ...results.map((r) => `| ${r.rate_hz.toLocaleString()} | ${r.codec} | ${r.elapsed_ms} | ${r.throughput_msps} | ${r.session_id ?? ''} |`),
+    '| rate Hz | codec | elapsed ms | throughput Msps | capture ms | wait ms | readback ms | blocks ms | decode ms | retry ms | session |',
+    '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
+    ...results.map((r) => `| ${r.rate_hz.toLocaleString()} | ${r.codec} | ${r.elapsed_ms} | ${r.throughput_msps} | ${((r.timings.capture_s ?? 0) * 1000).toFixed(1)} | ${((r.timings.wait_s ?? 0) * 1000).toFixed(1)} | ${((r.timings.readback_s ?? 0) * 1000).toFixed(1)} | ${((r.timings.blocks_s ?? 0) * 1000).toFixed(1)} | ${((r.timings.decode_s ?? 0) * 1000).toFixed(1)} | ${((r.timings.raw_retry_s ?? 0) * 1000).toFixed(1)} | ${r.session_id ?? ''} |`),
     '',
     'Higher throughput means the hardware returned the capture faster for the same waveform window.',
   ];

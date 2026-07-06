@@ -499,6 +499,7 @@ class OLSDeviceSPI:
         self.glitch_threshold = 3
         # Ring metadata seeding for fast re-poll after first successful read
         self._ring_seeded = False
+        self._timings = {}
 
     def set_compression_enabled(self, enable: bool):
         return self.set_readback_compression('rle' if enable else 'raw')
@@ -1136,6 +1137,10 @@ class OLSDeviceSPI:
         codec = self._readback_codec()
         use_compress = codec != 'raw'
         batched_compressed = codec in ('delta', 'rle')
+        t_total = time.perf_counter()
+        blocks_total = 0.0
+        decode_total = 0.0
+        retry_total = 0.0
         while remaining > 0:
             # Plan a batch of overlapping block addresses (each non-zero block
             # requests one sample early and nets 511 samples after the drop).
@@ -1156,6 +1161,7 @@ class OLSDeviceSPI:
                 rem -= take
             blocks = None
             read_blocks = getattr(self.pkt, 'read_capture_blocks', None)
+            t_blocks = time.perf_counter()
             if callable(read_blocks):
                 blocks = read_blocks(addrs, compressed=batched_compressed)
             if not isinstance(blocks, list):
@@ -1163,6 +1169,7 @@ class OLSDeviceSPI:
                 # per-block packetized reads.
                 blocks = [self.pkt.read_capture_block(a, compressed=batched_compressed)
                           for a in addrs]
+            blocks_total += time.perf_counter() - t_blocks
             if use_compress:
                 decode_block = (
                     decompress_delta_stream if codec == 'delta'
@@ -1170,15 +1177,19 @@ class OLSDeviceSPI:
                 )
                 # Decompress each block; any short/invalid decode is re-read
                 # raw with the FPGA compression flags cleared.
+                t_decode = time.perf_counter()
                 decoded = [decode_block(b) if b else b'' for b in blocks]
                 need_raw = [j for j, d in enumerate(decoded) if len(d) != 1024]
                 if need_raw:
+                    t_retry = time.perf_counter()
                     raw_blocks = self._read_blocks_uncompressed(
                         [addrs[j] for j in need_raw])
+                    retry_total += time.perf_counter() - t_retry
                     for j, rb in zip(need_raw, raw_blocks):
                         if rb:
                             decoded[j] = rb
                 blocks = decoded
+                decode_total += time.perf_counter() - t_decode
             stop = False
             for i, (block, drop) in enumerate(zip(blocks, drops)):
                 if not block:
@@ -1194,6 +1205,11 @@ class OLSDeviceSPI:
                 remaining -= take
             if stop:
                 break
+        self._timings[f'last_readback_blocks_s_{codec}'] = blocks_total
+        if use_compress:
+            self._timings[f'last_readback_decode_s_{codec}'] = decode_total
+            self._timings[f'last_readback_raw_retry_s_{codec}'] = retry_total
+        self._timings[f'last_readback_total_s_{codec}'] = time.perf_counter() - t_total
         return bytes(out)
 
     def _read_blocks_uncompressed(self, byte_addrs):
@@ -1866,6 +1882,7 @@ class OLSDeviceSPI:
                 trigger=None, capture_time=None, progress_cb=None,
                 stop_evt=None, pre_trigger=0):
         self._ensure_open()
+        t_capture = time.perf_counter()
         if capture_time is not None:
             nsamples = int(capture_time * rate_hz)
             nsamples = max(2, min(nsamples, 500000))
@@ -1930,7 +1947,9 @@ class OLSDeviceSPI:
                     return b''
                 time.sleep(min(0.02, max(0.0, t_end - time.time())))
 
+        t_wait = time.perf_counter()
         st = self._wait_capture_done(timeout, stop_evt=stop_evt, expected_seq=expected_seq)
+        self._timings['last_capture_wait_s'] = time.perf_counter() - t_wait
         if stop_evt and stop_evt.is_set():
             return b''
         if st.get('capture_status') != ST_CAPTURE_DONE:
@@ -1940,8 +1959,10 @@ class OLSDeviceSPI:
         # The FPGA now packs 2 samples per 32-bit read-block entry, so the wire
         # is contiguous 16-bit little-endian samples: rc samples = rc*2 bytes,
         # decoded at stride 2. (One 1024-byte block carries 512 samples.)
+        t_read = time.perf_counter()
         need = rc * 2
         samples = self._stream_readback(0, rc)[:need]
+        self._timings['last_capture_readback_s'] = time.perf_counter() - t_read
         if not (self.analog_mode & MODE_MIXED) \
                 and not (self._raw_flags & MODE_PACKED_MSO):
             samples = self._repair_boundary_glitches(samples, 0)
@@ -1969,6 +1990,7 @@ class OLSDeviceSPI:
         if progress_cb and samples:
             progress_cb(samples, len(samples) // 2, rc)
 
+        self._timings['last_capture_s'] = time.perf_counter() - t_capture
         return samples
 
     def capture_analog(self, rate_hz=100000, frames=4096, mode=MODE_MIXED,

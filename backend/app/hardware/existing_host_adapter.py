@@ -899,17 +899,24 @@ class ExistingHostAdapter(HardwareDevice):
     def get_debug_info(self) -> DebugInfo:
         raw_meta = ""
         raw_status: Dict = {}
+        timings = dict(self._timings)
+        extra: Dict[str, Any] = {}
         if self._dev is not None:
             try:
                 raw_meta = self._dev.get_metadata().hex()
                 raw_status = self._dev.pkt.get_status()
+                child_timings = getattr(self._dev, "_timings", None)
+                if isinstance(child_timings, dict):
+                    timings.update(child_timings)
+                extra["readback_codec"] = getattr(self._dev, "_readback_codec",
+                                                   lambda: "unknown")()
             except Exception as e:
                 self._last_error = str(e)
         return DebugInfo(raw_metadata=raw_meta, raw_status=raw_status,
                          last_command=self._last_command,
                          last_error=self._last_error,
                          command_log=self._command_log[-50:],
-                         timings=self._timings)
+                         timings=timings, extra=extra)
 
     def self_test(self) -> dict:
         checks = []
