@@ -115,9 +115,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL SPI_RX_Valid     : STD_LOGIC := '0';
   SIGNAL SPI_RX_Data      : STD_LOGIC_VECTOR (8-1 DOWNTO 0) := (others => '0');
   -- SPI mode only: directly use SPI signals (no UART muxing)
-  SIGNAL spi_tx_busy       : STD_LOGIC := '0';
-  SIGNAL rx_count_debug    : STD_LOGIC_VECTOR(3 downto 0) := (others => '0');
-
   -- Generator FIFO depth (matches Signal_Gen.vhd generic)
   constant GEN_FIFO_DEPTH : natural := 256;
 
@@ -164,7 +161,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL gen_capture_start   : STD_LOGIC := '0';
   type gen_cap_state_t is (GENCAP_IDLE, GENCAP_LOOPBACK_ON, GENCAP_ARM, GENCAP_GUARD, GENCAP_WAIT_BUSY, GENCAP_RUNNING, GENCAP_WAIT_FULL, GENCAP_DONE, GENCAP_ERROR);
   SIGNAL gen_cap_state : gen_cap_state_t := GENCAP_IDLE;
-  SIGNAL pipe_depth          : NATURAL range 2 to 8 := 8;
 
   -- Synthesis preserve: prevent Quartus from optimizing away gen start chain
   attribute preserve : boolean;
@@ -179,12 +175,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL pkt_payload_len      : NATURAL range 0 to MAX_RX_PAYLOAD_BYTES := 0;
   SIGNAL pkt_payload_byte     : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL pkt_payload_valid    : STD_LOGIC := '0';
-  SIGNAL pkt_payload_last     : STD_LOGIC := '0';
   SIGNAL pkt_ok               : STD_LOGIC := '0';
   SIGNAL pkt_err              : STD_LOGIC := '0';
-  SIGNAL pkt_err_bad_crc      : STD_LOGIC := '0';
-  SIGNAL pkt_err_bad_sync     : STD_LOGIC := '0';
-  SIGNAL pkt_err_oversize     : STD_LOGIC := '0';
   -- First 8 payload bytes captured for quick dispatch access
   TYPE payload_header_t IS ARRAY(0 TO 7) OF STD_LOGIC_VECTOR(7 DOWNTO 0);
   SIGNAL rx_payload_header    : payload_header_t := (others => (others => '0'));
@@ -192,10 +184,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL rx_header_len        : NATURAL range 0 TO MAX_RX_PAYLOAD_BYTES := 0;
   -- TX streaming interface
   SIGNAL pkt_tx_byte          : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
-  SIGNAL pkt_tx_valid         : STD_LOGIC := '0';
   SIGNAL pkt_tx_done          : STD_LOGIC := '0';
   SIGNAL pkt_tx_payload_ready : STD_LOGIC := '0';
-  SIGNAL pkt_idle_byte        : STD_LOGIC := '0';
   SIGNAL raw_stream_tx_byte   : STD_LOGIC_VECTOR(7 downto 0) := x"FF";
   SIGNAL raw_stream_tx_sel    : STD_LOGIC := '0';
   SIGNAL disp_tx_build        : STD_LOGIC := '0';
@@ -215,9 +205,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL disp_gen_data    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL block_rd_pending     : STD_LOGIC := '0';
   SIGNAL block_rd_ack         : STD_LOGIC := '0';
-  SIGNAL block_rd_addr        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL block_rd_addr        : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   SIGNAL block_rd_issue_req   : STD_LOGIC := '0';
-  SIGNAL block_rd_issue_addr  : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL block_rd_issue_addr  : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   SIGNAL block_rd_release     : STD_LOGIC := '0';
   SIGNAL block_rd_state       : NATURAL range 0 to 8 := 0;
   -- Watchdog kill: forces the block-read FSM back to idle when the dispatch
@@ -305,11 +295,31 @@ SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
   SIGNAL comp_out_valid  : STD_LOGIC := '0';
   SIGNAL comp_busy_i     : STD_LOGIC := '0';
   SIGNAL comp_in_ready_i : STD_LOGIC := '1';
+  SIGNAL delta_feed_i    : STD_LOGIC := '0';
+  SIGNAL delta_out_data  : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  SIGNAL delta_out_valid : STD_LOGIC := '0';
+  SIGNAL delta_busy_i    : STD_LOGIC := '0';
+  SIGNAL delta_in_ready_i : STD_LOGIC := '1';
+  SIGNAL rle_feed_i      : STD_LOGIC := '0';
   SIGNAL rle_out_data   : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   SIGNAL rle_out_valid  : STD_LOGIC := '0';
   SIGNAL rle_busy_i     : STD_LOGIC := '0';
   SIGNAL rle_in_ready_i : STD_LOGIC := '1';
+  SIGNAL delta_enable_i : STD_LOGIC := '0';
   SIGNAL rle_enable_i   : STD_LOGIC := '0';
+  COMPONENT capture_compressor IS
+    PORT (
+      clk                : IN  STD_LOGIC;
+      rst                : IN  STD_LOGIC;
+      sample_in          : IN  STD_LOGIC_VECTOR(15 downto 0);
+      sample_valid       : IN  STD_LOGIC;
+      compression_enable : IN  STD_LOGIC;
+      comp_data          : OUT STD_LOGIC_VECTOR(15 downto 0);
+      comp_valid         : OUT STD_LOGIC;
+      busy               : OUT STD_LOGIC;
+      in_ready           : OUT STD_LOGIC
+    );
+  END COMPONENT;
   COMPONENT rle_compressor IS
     PORT (
       clk                : IN  STD_LOGIC;
@@ -333,8 +343,6 @@ SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
   SIGNAL div3_count   : NATURAL range 0 to 31 := 0;
   SIGNAL div3_busy    : STD_LOGIC := '0';
   SIGNAL div3_pending : STD_LOGIC := '0';
-  SIGNAL samples_div3  : NATURAL range 0 to Max_Samples := 0;
-  SIGNAL samples_2div3 : NATURAL range 0 to Max_Samples := 0;
 
   COMPONENT spi_packet_rx IS
   PORT (
@@ -348,7 +356,6 @@ SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
     payload_len : OUT NATURAL range 0 to MAX_RX_PAYLOAD_BYTES;
     payload_byte   : OUT STD_LOGIC_VECTOR(7 downto 0);
     payload_valid  : OUT STD_LOGIC;
-    payload_last   : OUT STD_LOGIC;
     packet_ok   : OUT STD_LOGIC;
     packet_err  : OUT STD_LOGIC;
     err_bad_crc  : OUT STD_LOGIC;
@@ -370,9 +377,7 @@ SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
     payload_ready    : OUT STD_LOGIC;
     tx_ready    : IN  STD_LOGIC := '1';
     tx_byte     : OUT STD_LOGIC_VECTOR(7 downto 0);
-    tx_valid    : OUT STD_LOGIC;
-    tx_done     : OUT STD_LOGIC;
-    idle_byte   : OUT STD_LOGIC
+    tx_done     : OUT STD_LOGIC
   );
   END COMPONENT;
 
@@ -929,8 +934,6 @@ BEGIN
         div3_count <= div3_count - 1;
         if div3_count = 1 then
           div3_busy <= '0';
-          samples_div3  <= div3_result;
-          samples_2div3 <= div3_result + div3_result;
         end if;
       end if;
     end if;
@@ -940,8 +943,6 @@ BEGIN
   -- pragma translate_off
   assert GEN_FIFO_DEPTH > 0 report "GEN_FIFO_DEPTH must be > 0" severity failure;
   -- pragma translate_on
-
-  pipe_depth <= 8 when ch_mode = '0' else 4;
 
   -- Bring-up/status preamble: run flags plus sticky SPI packet diagnostics.
   -- Registered on sys_clk before crossing to fast_clk SPI slave domain.
@@ -967,7 +968,7 @@ BEGIN
   Fast_Mode      <= fast_mode_i;
   Blk_Rd_Req_Tog <= blk_req_tog_i;
   Blk_Rd_Base    <= raw_blk_rd_base_cfg when raw_stream_req_active = '1'
-                    else TO_INTEGER(UNSIGNED(block_rd_addr(31 downto 1)));
+                    else TO_INTEGER(UNSIGNED(block_rd_addr(15 downto 1)));
   Blk_Rd_Count   <= raw_blk_rd_count_cfg when raw_stream_req_active = '1'
                     else blk_rd_samples;
   Continuous_Mode <= continuous_mode_i;
@@ -1029,13 +1030,12 @@ BEGIN
     payload_len => pkt_payload_len,
     payload_byte   => pkt_payload_byte,
     payload_valid  => pkt_payload_valid,
-    payload_last   => pkt_payload_last,
     cmd_active     => pkt_cmd_active,
     packet_ok   => pkt_ok,
     packet_err  => pkt_err,
-    err_bad_crc  => pkt_err_bad_crc,
-    err_bad_sync => pkt_err_bad_sync,
-    err_oversize => pkt_err_oversize
+    err_bad_crc  => open,
+    err_bad_sync => open,
+    err_oversize => open
   );
 
   -- ── RX payload header capture & GEN_LOAD streaming ───────────────
@@ -1289,16 +1289,15 @@ BEGIN
 
             when CMD_START_RAW_STREAM =>
               if rx_header_len >= 8 then
-                reg_val(7 downto 0) := rx_payload_header(0);
-                reg_val(15 downto 8) := rx_payload_header(1);
-                reg_val(23 downto 16) := rx_payload_header(2);
-                reg_val(31 downto 24) := rx_payload_header(3);
-                raw_blk_rd_base_cfg <= TO_INTEGER(UNSIGNED(reg_val(31 downto 1)));
+                reg_val(7 downto 0)   := rx_payload_header(0);
+                reg_val(15 downto 8)  := rx_payload_header(1);
+                block_rd_issue_addr   <= reg_val(15 downto 0);
+                raw_blk_rd_base_cfg   <= TO_INTEGER(UNSIGNED(reg_val(15 downto 1)));
                 reg_val(7 downto 0) := rx_payload_header(4);
                 reg_val(15 downto 8) := rx_payload_header(5);
                 reg_val(23 downto 16) := rx_payload_header(6);
                 reg_val(31 downto 24) := rx_payload_header(7);
-                raw_blk_rd_count_cfg <= TO_INTEGER(UNSIGNED(reg_val));
+                raw_blk_rd_count_cfg <= TO_INTEGER(UNSIGNED(reg_val(14 downto 0)));
                 raw_stream_req_active <= '1';
                 if rle_enable_i = '1' and analog_enable_i = '0' then
                   raw_stream_comp_mode <= '1';
@@ -1306,7 +1305,7 @@ BEGIN
                   raw_stream_comp_mode <= '0';
                 end if;
                 raw_blk_req_fire <= '1';
-                raw_words_rem := TO_INTEGER(UNSIGNED(reg_val));
+                raw_words_rem := TO_INTEGER(UNSIGNED(reg_val(14 downto 0)));
                 raw_start_pending := (raw_words_rem /= 0);
                 raw_have_word := false;
                 raw_fetch_state := 0;
@@ -1346,8 +1345,6 @@ BEGIN
               if rx_header_len >= 4 then
                 block_rd_issue_addr(7 downto 0)   <= rx_payload_header(0);
                 block_rd_issue_addr(15 downto 8)  <= rx_payload_header(1);
-                block_rd_issue_addr(23 downto 16) <= rx_payload_header(2);
-                block_rd_issue_addr(31 downto 24) <= rx_payload_header(3);
                 block_rd_issue_req <= '1';
                 block_wd := 0;
                 st := WAIT_BLOCK;
@@ -1684,14 +1681,12 @@ BEGIN
     rsp_status  => disp_tx_status,
     rsp_len     => disp_tx_len,
     payload_byte_in  => disp_tx_payload_in,
-    payload_valid_in => disp_tx_payload_vld,
-    payload_ready    => pkt_tx_payload_ready,
-    tx_ready    => spi_tx_ready_i,
-    tx_byte     => pkt_tx_byte,
-    tx_valid    => pkt_tx_valid,
-    tx_done     => pkt_tx_done,
-    idle_byte   => pkt_idle_byte
-  );
+        payload_valid_in => disp_tx_payload_vld,
+        payload_ready    => pkt_tx_payload_ready,
+        tx_ready    => spi_tx_ready_i,
+        tx_byte     => pkt_tx_byte,
+        tx_done     => pkt_tx_done
+      );
 
 
 
@@ -1700,7 +1695,10 @@ BEGIN
   Auto_Renew <= '0';
 
   blk_rd_samples <= BLOCK_SAMPLES;
+  delta_enable_i <= '1' when compress_mode_i = "01" else '0';
   rle_enable_i <= '1' when compress_mode_i = "10" else '0';
+  delta_feed_i <= comp_feed_i when delta_enable_i = '1' else '0';
+  rle_feed_i <= comp_feed_i when delta_enable_i = '0' else '0';
 
   -- Readback compressor runs at 100 MHz between the response FIFO drain and
   -- block_buf. RLE is the sole digital codec: it does raw passthrough when
@@ -1714,12 +1712,24 @@ BEGIN
   -- raw — lossless, just uncompressed — via the host's raw fallback. To
   -- restore a selectable delta codec, free ~320 LE elsewhere and reinstate
   -- capture_compressor + the mode mux (see git history / capture_compressor.vhd).
+  rd_delta_compressor : capture_compressor
+    PORT MAP (
+      clk                => CLK,
+      rst                => comp_rst_i,
+      sample_in          => comp_sample_in,
+      sample_valid       => delta_feed_i,
+      compression_enable => delta_enable_i,
+      comp_data          => delta_out_data,
+      comp_valid         => delta_out_valid,
+      busy               => delta_busy_i,
+      in_ready           => delta_in_ready_i
+    );
   rd_rle_compressor : rle_compressor
     PORT MAP (
       clk                => CLK,
       rst                => comp_rst_i,
       sample_in          => comp_sample_in,
-      sample_valid       => comp_feed_i,
+      sample_valid       => rle_feed_i,
       compression_enable => rle_enable_i,
       flush              => comp_flush_i,
       comp_data          => rle_out_data,
@@ -1728,10 +1738,10 @@ BEGIN
       in_ready           => rle_in_ready_i
     );
 
-  comp_out_data   <= rle_out_data;
-  comp_out_valid  <= rle_out_valid;
-  comp_busy_i     <= rle_busy_i;
-  comp_in_ready_i <= rle_in_ready_i;
+  comp_out_data   <= delta_out_data when delta_enable_i = '1' else rle_out_data;
+  comp_out_valid  <= delta_out_valid when delta_enable_i = '1' else rle_out_valid;
+  comp_busy_i     <= delta_busy_i when delta_enable_i = '1' else rle_busy_i;
+  comp_in_ready_i <= delta_in_ready_i when delta_enable_i = '1' else rle_in_ready_i;
 
   -- Streaming RLE feeds the compressor directly from the SDRAM read FIFO
   -- output; the FETCH/WAIT/FEED sequencer above only asserts comp_feed_i in the

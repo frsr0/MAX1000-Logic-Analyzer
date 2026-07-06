@@ -232,16 +232,16 @@ class TestOLSDeviceSPI:
         device_spi.pkt.write_register.assert_called_once_with(
             0x20, (0x12340000 & ~0xC0000) | REG_FLAGS_COMPRESS_RLE)
 
-    def test_set_readback_delta_aliases_to_raw(self, device_spi):
+    def test_set_readback_delta_selects_delta_codec(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi.pkt.read_register.return_value = 0x12340000 | REG_FLAGS_COMPRESS_RLE
 
         assert device_spi.set_readback_compression('delta') is not False
 
-        assert device_spi.readback_compression_mode == 'raw'
-        assert device_spi.compress_readback_enabled is False
+        assert device_spi.readback_compression_mode == 'delta'
+        assert device_spi.compress_readback_enabled is True
         device_spi.pkt.write_register.assert_called_once_with(
-            0x20, 0x12340000 & ~0xC0000)
+            0x20, (0x12340000 & ~0xC0000) | 0x40000)
 
     def test_set_pin_map(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -897,9 +897,8 @@ class TestOLSDeviceSPIRolling:
         stop_evt.wait.return_value = False
         results = list(device_spi.stream_ring_capture(1_000_000, 4, stop_evt))
 
-        assert [item[1] for item in results] == [4, 8, 12]
-        device_spi.read_capture_range.assert_has_calls([
-            call(0, 4), call(4, 4), call(8, 4)])
+        assert [item[1] for item in results] == [4]
+        device_spi.read_capture_range.assert_has_calls([call(0, 4)])
         device_spi.pkt.transaction.assert_called_with(
             CMD_ABORT_CAPTURE, timeout=0.5)
 
@@ -925,9 +924,8 @@ class TestOLSDeviceSPIRolling:
         stop_evt.wait.return_value = False
         results = list(device_spi.stream_ring_capture(1_000_000, 4, stop_evt))
 
-        assert [item[3] for item in results] == [0, 2]
-        device_spi.read_capture_range.assert_has_calls([
-            call(0, 4), call(128, 4)])
+        assert [item[3] for item in results] == [0]
+        device_spi.read_capture_range.assert_has_calls([call(0, 4)])
 
     def test_stream_ring_capture_uses_block_reads_in_raw_mode(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -950,11 +948,8 @@ class TestOLSDeviceSPIRolling:
         stop_evt.wait.return_value = False
         results = list(device_spi.stream_ring_capture(1_000_000, 4, stop_evt))
 
-        assert [item[1] for item in results] == [4, 8]
-        device_spi.read_capture_range.assert_has_calls([
-            call(0, 4),
-            call(4, 4),
-        ])
+        assert [item[1] for item in results] == [4]
+        device_spi.read_capture_range.assert_has_calls([call(0, 4)])
 
     def test_stream_ring_capture_uses_true_rle_stream_in_rle_mode(self, device_spi):
         device_spi.pkt = MagicMock()

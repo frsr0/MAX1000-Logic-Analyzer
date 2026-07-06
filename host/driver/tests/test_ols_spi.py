@@ -1,4 +1,5 @@
 import struct
+from unittest.mock import MagicMock
 import pytest
 
 from driver.spi_protocol import (
@@ -139,6 +140,23 @@ class TestOLSXfer:
 
 
 class TestOLSPublicAPI:
+    def test_open_prefers_serial_b_endpoint(self):
+        from driver import ols_spi
+        mock_ft = ols_spi.ft
+        mock_dev = MagicMock()
+        mock_ft.createDeviceInfoList.return_value = 2
+        mock_ft.listDevices.return_value = [b'AR2I5VP2A', b'AR2I5VP2B']
+        mock_ft.openEx.return_value = mock_dev
+        mock_dev.getDeviceInfo.return_value = {
+            'description': b'Arrow USB Blaster B',
+            'serial': b'AR2I5VP2B',
+        }
+
+        inst = ols_spi.OLS(speed_hz=12000000)
+        inst.open()
+
+        mock_ft.openEx.assert_called_once_with(b'AR2I5VP2B', update=False)
+
     def test_tx(self, ols, mock_dev):
         result = ols.tx(0x01)
         assert len(result) >= 5
@@ -502,6 +520,18 @@ class TestSPIPacketProtocol:
         with pytest.raises(RuntimeError, match="truncated"):
             pkt.start_rle_stream_read(0x80, 8)
 
+    def test_start_rle_stream_read_returns_partial_when_stop_is_set(self):
+        # A short read is acceptable if the caller has already requested stop.
+        fake = self.FakeChunkSPI(struct.pack('<2H', 3, 0x1234), chunk_size=4,
+                                 idle_after=False)
+        pkt = SPIDevice(fake)
+        stop_evt = type("StopEvt", (), {"is_set": lambda self: True})()
+        producer, oldest, data = pkt.start_rle_stream_read(0x80, 8, stop_evt=stop_evt)
+        assert producer == 0x12345678
+        assert oldest == 0x100
+        assert data == b'\x34\x12' * 3
+        assert fake.closed is True
+
     def test_start_rle_stream_read_fixed_fallback_without_chunks(self):
         class FakeSPI:
             def __init__(self):
@@ -531,6 +561,29 @@ class TestSPIPacketProtocol:
         # Fixed path budgets worst-case 4 bytes/sample plus ack/guard margin.
         assert fake.n_bytes >= 8 * 4
         assert fake.request.startswith(SYNC_REQ + bytes([CMD_START_RAW_STREAM]))
+
+    def test_start_rle_stream_read_fixed_fallback_returns_partial_on_stop(self):
+        class FakeSPI:
+            def __init__(self):
+                self.speed_hz = 30_000_000
+
+            def stream_command(self, request, n_bytes, ack_pad=96, stop_evt=None):
+                seq = request[3]
+                payload = struct.pack('<II', 0x12345678, 0x00000100)
+                resp = (SYNC_RSP + bytes([ST_STREAM_ACTIVE, seq])
+                        + struct.pack('<H', len(payload)) + payload)
+                resp += struct.pack('<H', crc16(resp[2:]))
+                guard = bytearray(b'\xff' * (len(request) + ack_pad))
+                guard[2:2 + len(resp)] = resp
+                return bytes(guard) + struct.pack('<2H', 3, 0x1234)
+
+        fake = FakeSPI()
+        pkt = SPIDevice(fake)
+        stop_evt = type("StopEvt", (), {"is_set": lambda self: True})()
+        producer, oldest, data = pkt.start_rle_stream_read(0x80, 8, stop_evt=stop_evt)
+        assert producer == 0x12345678
+        assert oldest == 0x100
+        assert data == b'\x34\x12' * 3
 
     def test_transaction_raw_uses_stream_command_when_available(self):
         class FakeSPI:

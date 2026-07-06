@@ -42,7 +42,7 @@ UART_MIN_SPB = 8
 try:
     from driver.ols_spi_device import (
         OLSDeviceSPI, NUM_CHANNELS as SPI_NUM_CH,
-        MODE_MIXED, MODE_ANALOG_FAST, MODE_ANALOG_ALL,
+        MODE_MIXED, MODE_ANALOG_FAST, MODE_ANALOG_ALL, MODE_DIGITAL,
         analog_frame_stride, analog_wire_stride, decode_analog_frames,
         compress_mixed_stream, decompress_mixed_stream,
         narrow_digital_flags, unpack_narrow_digital_words,
@@ -2506,19 +2506,16 @@ def test_accelerometer_whoami(dev):
 
 
 # ====================================================================
-# Test 34: Readback codec matrix — raw vs RLE vs delta, bit-exact, x rates.
-#   RLE is the live FPGA codec — assert bit-exact vs raw.
-#   Delta is accepted as a raw alias (the delta compressor is not present
-#   in this netlist) — characterisation only, logged as INFO on mismatch.
+# Test 34: Readback codec matrix — raw vs delta vs RLE, bit-exact, x rates.
+#   Raw is the reference. Delta and RLE are both real build codecs and should
+#   round-trip bit-exactly against it.
 # ====================================================================
 def test_codec_readback_matrix(dev):
     # One SDRAM capture per rate, read back three times (raw / RLE / delta)
     # and compared byte-for-byte. This is the first suite coverage of the
-    # readback codecs: raw is the reference, RLE is the real FPGA codec on
-    # this build, and the historical "delta" mode is accepted by the host as a
-    # raw alias because the delta compressor is not present in this netlist.
-    # RLE is asserted bit-exact; delta is characterisation only (INFO on fail).
-    print_header("Test 34: Codec readback matrix (raw/RLE/delta-as-raw x rates)")
+    # readback codecs: raw is the reference, and delta/RLE are both expected
+    # to be bit-exact against it on this build.
+    print_header("Test 34: Codec readback matrix (raw/delta/RLE x rates)")
     nsamp = 262_144
     rates = [1_000_000, 10_000_000, 50_000_000, 100_000_000, int(dev.sample_clk)]
     def record_matrix(ok, msg):
@@ -2559,7 +2556,7 @@ def test_codec_readback_matrix(dev):
         record_matrix(len(ref) == nsamp * 2 and tr > 10,
                       f"raw reference read @{rate//1000}kS/s ({len(ref)} bytes, {tr} byte-changes, "
                       f"{len(ref)/raw_dt/1e6:.2f} MB/s)")
-        for codec in ('rle', 'delta'):
+        for codec in ('delta', 'rle'):
             dev.set_readback_compression(codec)
             t0 = time.time()
             got = dev.read_capture_range(0, nsamp)[:nsamp * 2]
@@ -2567,16 +2564,12 @@ def test_codec_readback_matrix(dev):
             same = got == ref
             mism = next((i for i, (a, b) in enumerate(zip(ref, got)) if a != b), -1) \
                 if not same else -1
-            label = "delta(raw)" if codec == 'delta' else codec
+            label = codec
             log(f"  {label:10s} @{rate//1000:>6}kS/s: {len(got)} bytes in {dt:.2f}s "
                 f"({len(got)/max(dt,1e-6)/1e6:.2f} MB/s)"
                 + ("" if same else f", first mismatch at byte {mism}"))
-            if codec == 'rle':
-                check(same, f"{codec} readback bit-exact vs raw @{rate//1000}kS/s "
-                      f"({len(got)}/{len(ref)} bytes)")
-            else:
-                record_matrix(same, f"{codec} readback bit-exact vs raw @{rate//1000}kS/s "
-                              f"({len(got)}/{len(ref)} bytes)")
+            check(same, f"{codec} readback bit-exact vs raw @{rate//1000}kS/s "
+                  f"({len(got)}/{len(ref)} bytes)")
         dev.set_readback_compression('raw')
     dev.set_debug_ch0(False)
     check(True, "codec matrix characterization completed")
@@ -2587,19 +2580,25 @@ def test_codec_readback_matrix(dev):
 # Test 35: Live ring rate ceiling per codec — find the failing point
 # ====================================================================
 def test_live_rate_ceiling(dev):
-    # Walk the rate ladder per codec until the live ring goes lossy (firmware
-    # overrun or host falling behind wall-clock). Sweep a few CH0 source
-    # frequencies so the effect of signal compressibility is visible instead
-    # of being hidden by a single fixed waveform. Delta is a legacy alias to
-    # raw on this build, so raw/delta should match; RLE is the only distinct
-    # compression path here.
-    print_header("Test 35: Live ring rate ceiling per codec")
-    source_freqs = [1_000, 10_000, 100_000, 1_000_000]
-    ladder = [250_000, 500_000, 1_000_000, 1_500_000, 2_000_000]
+    # Walk the rate ladder per codec and report both the lossless ceiling and
+    # the peak sustained throughput. This keeps the strict overrun/lossless
+    # checks intact while making the compression headroom visible on highly
+    # compressible waveforms. All three codecs are distinct build paths now.
+    print_header("Test 35: Live ring peak throughput per codec")
+    source_freqs = [10_000, 100_000, 1_000_000]
+    ladder = [
+        250_000, 500_000, 1_000_000, 2_000_000, 4_000_000,
+        8_000_000, 12_000_000, 16_000_000, 20_000_000,
+        24_000_000, 30_000_000,
+    ]
     summary = {}
 
-    def measure_ceiling(rate_hz, codec, freq_hz):
+    dev.set_analog_config(MODE_DIGITAL)
+    dev.set_schmitt(False)
+
+    def measure_case(rate_hz, codec, freq_hz):
         dev.reset(); dev.spi.flush()
+        dev.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
         dev.set_debug_ch0(True, freq_hz=freq_hz)
         dev.set_readback_compression(codec)
         stop = threading.Event()
@@ -2629,39 +2628,61 @@ def test_live_rate_ceiling(dev):
             f"{got} samples in {wall:.2f}s ({thr/1e6:.2f} MS/s) overruns={over}"
             + (f" EXC={failed}" if failed else "")
             + f" -> {'LOSSLESS' if lossless else 'LOSSY'}")
-        return rate_hz if lossless else 0
+        return {
+            "rate_hz": rate_hz,
+            "samples": got,
+            "seconds": wall,
+            "throughput": thr,
+            "overruns": over,
+            "lossless": lossless,
+        }
 
     for freq_hz in source_freqs:
+        peaks = {}
         ceilings = {}
         for codec in ('raw', 'rle', 'delta'):
-            best = 0
+            best_lossless = 0
+            best_thr = 0.0
+            best_case = None
             for rate in ladder:
-                measured = measure_ceiling(rate, codec, freq_hz)
-                if measured:
-                    best = measured
-                else:
-                    break
-            ceilings[codec] = best
-        summary[freq_hz] = ceilings
-        check(ceilings['raw'] == ceilings['delta'],
-              f"delta aliases raw at {freq_hz//1000} kHz source "
-              f"({ceilings['raw']/1e6:.2f} vs {ceilings['delta']/1e6:.2f} MS/s)")
+                case = measure_case(rate, codec, freq_hz)
+                if case["throughput"] > best_thr:
+                    best_thr = case["throughput"]
+                    best_case = case
+                if case["lossless"] and case["rate_hz"] > best_lossless:
+                    best_lossless = case["rate_hz"]
+            peaks[codec] = best_case or {"throughput": 0.0, "rate_hz": 0, "samples": 0}
+            ceilings[codec] = best_lossless
+        summary[freq_hz] = {"ceilings": ceilings, "peaks": peaks}
         check(ceilings['raw'] >= 500_000,
               f"raw live ring lossless at >= 500 kS/s for {freq_hz//1000} kHz source "
               f"(measured ceiling {ceilings['raw']/1e6:.2f} MS/s)")
         if freq_hz == 10_000:
+            check(ceilings['delta'] >= ceilings['raw'],
+                  f"delta live ring lossless at >= raw for 10 kHz source "
+                  f"(measured ceilings raw={ceilings['raw']/1e6:.2f}, "
+                  f"delta={ceilings['delta']/1e6:.2f} MS/s)")
+            check(peaks['rle']['throughput'] >= peaks['raw']['throughput'],
+                  f"rle peak throughput exceeds raw at 10 kHz source "
+                  f"({peaks['rle']['throughput']/1e6:.2f} vs "
+                  f"{peaks['raw']['throughput']/1e6:.2f} MS/s)")
             check(ceilings['rle'] >= 250_000,
                   f"rle live ring lossless at >= 250 kS/s for 10 kHz source "
                   f"(measured ceiling {ceilings['rle']/1e6:.2f} MS/s)")
         else:
-            log(f"  [INFO] rle ceiling at {freq_hz//1000} kHz source is characterisation "
-                f"only (measured ceiling {ceilings['rle']/1e6:.2f} MS/s)")
+            log(f"  [INFO] rle peak at {freq_hz//1000} kHz source is "
+                f"{peaks['rle']['throughput']/1e6:.2f} MS/s "
+                f"(lossless ceiling {ceilings['rle']/1e6:.2f} MS/s)")
     dev.set_readback_compression('raw')
     dev.set_debug_ch0(False)
-    log("  measured lossless ceilings by source frequency: "
+    dev.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+    log("  measured ceilings/peaks by source frequency: "
         + "; ".join(
-            f"{freq//1000}kHz(raw={c['raw']/1e6:.2f}, rle={c['rle']/1e6:.2f}, "
-            f"delta={c['delta']/1e6:.2f})"
+            f"{freq//1000}kHz(raw={c['ceilings']['raw']/1e6:.2f}, "
+            f"rle={c['ceilings']['rle']/1e6:.2f}, delta={c['ceilings']['delta']/1e6:.2f}; "
+            f"peak_raw={c['peaks']['raw']['throughput']/1e6:.2f}, "
+            f"peak_rle={c['peaks']['rle']['throughput']/1e6:.2f}, "
+            f"peak_delta={c['peaks']['delta']['throughput']/1e6:.2f})"
             for freq, c in summary.items()))
     check(True, "live rate ceiling characterization completed")
     save_result("test35_live_rate_ceiling", b"", {"ceilings": summary})

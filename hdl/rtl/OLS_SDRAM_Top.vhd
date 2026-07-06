@@ -89,11 +89,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_proto     : std_logic;
   signal gen_tx_pin    : natural range 0 to 31 := 0;
   signal gen_scl_pin   : natural range 0 to 31 := 0;
-  signal gen_i2c_rd_len : natural range 0 to 255 := 0;
-  signal gen_i2c_dev_r  : std_logic_vector(7 downto 0) := (others => '0');
-  signal gen_i2c_test   : std_logic := '0';
   signal gen_spi_test   : std_logic := '0';
-  signal gen_repeat     : std_logic := '0';
   signal gen_rs485_pair : std_logic := '0';
   signal gen_accel_attach : std_logic := '0';
   -- Fast-domain syncs for the accel-bus capture mirror (attach toggle)
@@ -110,11 +106,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   constant GEN_LED_STRETCH_TOP : natural := 25000000;
   signal gen_led_stretch : natural range 0 to 25000000 := 0;
   signal fast_clk       : std_logic := '0';
-  signal continuous_mode : std_logic := '0';
   signal armed_i        : std_logic := '0';
   signal sdram_core_clk      : std_logic := '0';
   signal sdram_chip_clk_out  : std_logic := '0';
-  signal sdram_ctrl_clk_obs  : std_logic := '0';
 
   -- Expanded output drive (covers all bidirectional pins)
   signal pin_out      : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
@@ -155,7 +149,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   attribute preserve of gen_start : signal is true;
   attribute preserve of gen_tx : signal is true;
   attribute preserve of gen_busy : signal is true;
-  attribute preserve of gen_i2c_test : signal is true;
   attribute preserve of gen_spi_test : signal is true;
 
   signal analog_enable : std_logic := '0';
@@ -167,7 +160,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal debug_ch0_enable : std_logic := '0';
   signal debug_ch0_enable_eff : std_logic := '0';
   signal debug_ch0_channel : natural range 0 to LA_CHANNELS-1 := 0;
-  signal fast_mode_i : std_logic := '0';
   signal analog_frame_data  : std_logic_vector(127 downto 0) := (others => '0');
   signal analog_frame_len   : natural range 1 to 14 := 1;
   signal adc0_result, adc1_result : std_logic_vector(11 downto 0) := (others => '0');
@@ -204,7 +196,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal capture_data_fast_speed_r : std_logic_vector(LA_CHANNELS-1 downto 0) := (others => '0');
   signal capture_data_fast_mapped_r : std_logic_vector(LA_CHANNELS-1 downto 0) := (others => '0');
   signal capture_data_fast_normal_r : std_logic_vector(LA_CHANNELS-1 downto 0) := (others => '0');
-  signal fast_mode_f1 : std_logic := '0';
   signal pin_pool_fast_r   : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
   signal pin_pool_f1  : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
   signal pin_pool_f2  : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
@@ -216,8 +207,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal registered_ch0_f2 : std_logic := '0';
   signal gen_capture_active_f1 : std_logic := '0';
   signal gen_capture_active_f2 : std_logic := '0';
-  signal gen_i2c_test_f1 : std_logic := '0';
-  signal gen_i2c_test_f2 : std_logic := '0';
   signal gen_spi_test_f1 : std_logic := '0';
   signal gen_spi_test_f2 : std_logic := '0';
   signal gen_rs485_pair_f1 : std_logic := '0';
@@ -630,7 +619,6 @@ BEGIN
         debug_ch0_enable_f2 <= debug_ch0_enable_f1;
         debug_ch0_channel_f1 <= debug_ch0_channel;
         debug_ch0_channel_f2 <= debug_ch0_channel_f1;
-        fast_mode_f1        <= fast_mode_i;
       end if;
     end process;
   end generate;
@@ -679,8 +667,6 @@ BEGIN
         gen_scl_f2 <= gen_scl_f1;
         gen_capture_active_f1 <= gen_capture_active;
         gen_capture_active_f2 <= gen_capture_active_f1;
-        gen_i2c_test_f1 <= gen_i2c_test;
-        gen_i2c_test_f2 <= gen_i2c_test_f1;
         gen_spi_test_f1 <= gen_spi_test;
         gen_spi_test_f2 <= gen_spi_test_f1;
         gen_rs485_pair_f1 <= gen_rs485_pair;
@@ -711,7 +697,7 @@ BEGIN
             capture_data_fast_normal_r(i) <= gen_tx_f2;
           elsif gen_capture_active_f2 = '1' and gen_rs485_pair_f2 = '1' and gen_scl_pin_f2 = pin_map_fast(i) then
             capture_data_fast_normal_r(i) <= not gen_tx_f2;
-          elsif gen_capture_active_f2 = '1' and (gen_i2c_test_f2 = '1' or gen_spi_test_f2 = '1') and gen_scl_pin_f2 = pin_map_fast(i) then
+          elsif gen_capture_active_f2 = '1' and gen_spi_test_f2 = '1' and gen_scl_pin_f2 = pin_map_fast(i) then
             capture_data_fast_normal_r(i) <= gen_scl_f2;
           else
             capture_data_fast_normal_r(i) <= capture_data_fast_mapped_r(i);
@@ -737,11 +723,7 @@ BEGIN
     process(fast_clk)
     begin
       if rising_edge(fast_clk) then
-        if ENABLE_RUNTIME_INPUT_MUX and fast_mode_f1 = '1' then
-          capture_data_fast <= capture_data_fast_speed_r;
-        else
-          capture_data_fast <= capture_data_fast_normal_r;
-        end if;
+        capture_data_fast <= capture_data_fast_normal_r;
       end if;
     end process;
   end generate;
@@ -938,7 +920,7 @@ BEGIN
     sdram_dqm   => sdram_dqm,
     sdram_ras_n => sdram_ras_n,
     sdram_we_n  => sdram_we_n,
-    sdram_clk    => sdram_ctrl_clk_obs,
+    sdram_clk    => open,
     Gen_Load_Byte => gen_load_byte,
     Gen_Load_We   => gen_load_we,
     Gen_Start     => gen_start,
@@ -949,15 +931,15 @@ BEGIN
     Gen_TX_Pin    => gen_tx_pin,
     Gen_SCL_Pin   => gen_scl_pin,
     Gen_Clear      => gen_clear,
-    Gen_I2C_Rd_Len => gen_i2c_rd_len,
-    Gen_I2C_Dev_R  => gen_i2c_dev_r,
-    Gen_I2C_Test   => gen_i2c_test,
+    Gen_I2C_Rd_Len => open,
+    Gen_I2C_Dev_R  => open,
+    Gen_I2C_Test   => open,
     Gen_SPI_Test   => gen_spi_test,
-    Gen_Repeat     => gen_repeat,
+    Gen_Repeat     => open,
     Gen_RS485_Pair => gen_rs485_pair,
     Gen_Accel_Attach => gen_accel_attach,
     Armed          => armed_i,
-    Fast_Mode      => fast_mode_i,
+    Fast_Mode      => open,
     Narrow_Enable  => open,
     Narrow_Channel => open,
     Analog_Enable  => analog_enable,
@@ -965,7 +947,7 @@ BEGIN
     Analog_Profile => analog_profile,
     Analog_Channel => analog_channel,
     Status        => core_status,
-    Continuous_Mode => continuous_mode,
+    Continuous_Mode => open,
     Analog_Frame_Data => analog_frame_data,
     Analog_Frame_Len  => analog_frame_len,
     Analog_Stream_Mode => analog_stream_mode,

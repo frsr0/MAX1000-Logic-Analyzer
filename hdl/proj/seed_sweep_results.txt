@@ -1,13 +1,16 @@
 
 Seed   Clk1   Clk2  Clk0 LE                                           
 ----   ----   ----  ---- --                                           
-   5 -0.371 -0.089 0.273 Total logic elements : 7,779 / 8,064 ( 96 % )
-  21  0.008  0.127 1.474 Total logic elements : 7,778 / 8,064 ( 96 % )
-  30 -0.009  0.157 1.196 Total logic elements : 7,810 / 8,064 ( 97 % )
-  42 -0.259  0.183 1.225 Total logic elements : 7,774 / 8,064 ( 96 % )
-  12 -0.158  0.054 1.006 Total logic elements : 7,787 / 8,064 ( 97 % )
-   7 -0.356  0.272 0.715 Total logic elements : 7,778 / 8,064 ( 96 % )
-   3  0.128  0.138 0.793 Total logic elements : 7,799 / 8,064 ( 97 % )
+  81 -0.155 -0.259 0.626 Total logic elements : 7,600 / 8,064 ( 94 % )
+  82 -0.432 -0.807 0.743 Total logic elements : 7,607 / 8,064 ( 94 % )
+  83 -0.464 -0.029  0.88 Total logic elements : 7,623 / 8,064 ( 95 % )
+  84 -0.418   -0.3 0.882 Total logic elements : 7,660 / 8,064 ( 95 % )
+  85 -0.082 -0.333 0.699 Total logic elements : 7,606 / 8,064 ( 94 % )
+  86 -0.479 -0.381 0.598 Total logic elements : 7,664 / 8,064 ( 95 % )
+  87  0.127 -0.187   0.4 Total logic elements : 7,635 / 8,064 ( 95 % )
+  88 -0.375  -0.34 1.003 Total logic elements : 7,602 / 8,064 ( 94 % )
+  89 -0.485 -0.203 0.324 Total logic elements : 7,641 / 8,064 ( 95 % )
+  90 -0.108 -0.253 0.982 Total logic elements : 7,642 / 8,064 ( 95 % )
 
 
 

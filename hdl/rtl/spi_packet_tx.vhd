@@ -22,9 +22,7 @@ entity spi_packet_tx is
     -- Flow control / output
     tx_ready    : in  std_logic := '1';
     tx_byte     : out std_logic_vector(7 downto 0);
-    tx_valid    : out std_logic;  -- strobe when tx_byte valid
-    tx_done     : out std_logic;  -- strobe when entire response sent
-    idle_byte   : out std_logic   -- '1' when outputting IDLE (0xFF)
+    tx_done     : out std_logic   -- strobe when entire response sent
   );
 end spi_packet_tx;
 
@@ -46,16 +44,12 @@ begin
       if rst = '1' then
         state <= IDLE;
         tx_byte <= x"FF";
-        tx_valid <= '0';
         tx_done <= '0';
-        idle_byte <= '0';
         busy <= '0';
         payload_ready <= '0';
         payload_pending <= '0';
       else
-        tx_valid <= '0';
         tx_done <= '0';
-        idle_byte <= '0';
         payload_ready <= '0';
 
         if build = '1' and (busy = '0' or state = SEND_DONE) then
@@ -73,14 +67,12 @@ begin
           when SEND_SYNC0 =>
             if tx_ready = '1' then
               tx_byte <= SYNC_RSP(7 downto 0);
-              tx_valid <= '1';
               state <= SEND_SYNC1;
             end if;
 
           when SEND_SYNC1 =>
             if tx_ready = '1' then
               tx_byte <= SYNC_RSP(15 downto 8);
-              tx_valid <= '1';
               state <= SEND_STATUS;
               crc_acc <= (others => '1');
             end if;
@@ -88,7 +80,6 @@ begin
           when SEND_STATUS =>
             if tx_ready = '1' then
               tx_byte <= rsp_status;
-              tx_valid <= '1';
               crc_acc <= crc16(rsp_status, crc_acc);
               state <= SEND_SEQ;
             end if;
@@ -96,7 +87,6 @@ begin
           when SEND_SEQ =>
             if tx_ready = '1' then
               tx_byte <= req_seq;
-              tx_valid <= '1';
               crc_acc <= crc16(req_seq, crc_acc);
               state <= SEND_LEN_L;
             end if;
@@ -104,7 +94,6 @@ begin
           when SEND_LEN_L =>
             if tx_ready = '1' then
               tx_byte <= std_logic_vector(to_unsigned(rsp_len mod 256, 8));
-              tx_valid <= '1';
               crc_acc <= crc16(
                 std_logic_vector(to_unsigned(rsp_len mod 256, 8)), crc_acc);
               state <= SEND_LEN_H;
@@ -113,7 +102,6 @@ begin
           when SEND_LEN_H =>
             if tx_ready = '1' then
               tx_byte <= std_logic_vector(to_unsigned(rsp_len / 256, 8));
-              tx_valid <= '1';
               crc_acc <= crc16(
                 std_logic_vector(to_unsigned(rsp_len / 256, 8)), crc_acc);
               if rsp_len = 0 then
@@ -133,7 +121,6 @@ begin
               end if;
             elsif tx_ready = '1' then
               tx_byte <= payload_hold;
-              tx_valid <= '1';
               crc_acc <= crc16(payload_hold, crc_acc);
               payload_pending <= '0';
               if cnt + 1 >= rsp_len then
@@ -146,14 +133,12 @@ begin
           when SEND_CRC_L =>
             if tx_ready = '1' then
               tx_byte <= crc_acc(7 downto 0);
-              tx_valid <= '1';
               state <= SEND_CRC_H;
             end if;
 
           when SEND_CRC_H =>
             if tx_ready = '1' then
               tx_byte <= crc_acc(15 downto 8);
-              tx_valid <= '1';
               state <= SEND_DONE;
             end if;
 

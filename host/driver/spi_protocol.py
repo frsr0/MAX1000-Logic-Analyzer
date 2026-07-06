@@ -57,7 +57,7 @@ REG_CONT_MODE     = 0x22
 REG_FLAGS_COMPRESS_MASK = 0xC0000
 REG_FLAGS_COMPRESS_DELTA = 0x40000
 REG_FLAGS_COMPRESS_RLE = 0x80000
-REG_FLAGS_COMPRESS = REG_FLAGS_COMPRESS_DELTA  # back-compat alias
+REG_FLAGS_COMPRESS = REG_FLAGS_COMPRESS_DELTA  # back-compat alias for delta
 REG_GEN_PROTO     = 0x30
 REG_GEN_BAUD      = 0x31
 REG_GEN_PINS      = 0x32
@@ -211,7 +211,8 @@ class SPIDevice:
         return s
 
     @staticmethod
-    def _decode_rle_stream_bytes(data: bytes, sample_count: int) -> bytes:
+    def _decode_rle_stream_bytes(data: bytes, sample_count: int,
+                                 allow_short: bool = False) -> bytes:
         """Decode little-endian (count, value) uint16 pairs to raw samples,
         skipping 0x0000 idle-filler words (see _decode_rle_into)."""
         sample_count = max(0, int(sample_count))
@@ -240,7 +241,7 @@ class SPIDevice:
             if total > sample_count:
                 raise RuntimeError("RLE stream decode failed: decoded past requested sample count")
             out.extend(value * count)
-        if total != sample_count:
+        if total != sample_count and not allow_short:
             raise RuntimeError("RLE stream decode failed: truncated before requested sample count")
         return bytes(out)
 
@@ -725,6 +726,8 @@ class SPIDevice:
         if producer is None:
             raise RuntimeError("start_rle_stream_read failed: no stream ack")
         if total != sample_count:
+            if stop_evt is not None and stop_evt.is_set():
+                return producer, oldest, bytes(out)
             raise RuntimeError(
                 "RLE stream decode failed: truncated before requested sample count")
         return producer, oldest, bytes(out)
@@ -741,7 +744,10 @@ class SPIDevice:
             raise RuntimeError("start_rle_stream_read failed")
         producer, oldest, end = found
         # RLE data begins right after the ack packet (see _rle_stream_via_chunks).
-        decoded = self._decode_rle_stream_bytes(raw[end:], sample_count)
+        decoded = self._decode_rle_stream_bytes(
+            raw[end:], sample_count, allow_short=bool(stop_evt is not None and stop_evt.is_set()))
+        if len(decoded) != sample_count * 2 and stop_evt is not None and stop_evt.is_set():
+            return producer, oldest, decoded
         return producer, oldest, decoded
 
     @staticmethod

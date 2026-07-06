@@ -112,7 +112,6 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal run_sync1   : std_logic := '0';
   signal run_sync2   : std_logic := '0';
   signal samples_div_p  : natural range 0 to Max_Samples := 0;
-  signal samples_d1   : natural range 0 to Max_Samples := 0;
   signal samples_div  : natural range 0 to Max_Samples := 0;
   signal samples_div6 : natural range 0 to Max_Samples := 0;
 
@@ -120,9 +119,6 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal lpm_numer : std_logic_vector(21 downto 0) := (others => '0');
   signal lpm_quot  : std_logic_vector(21 downto 0) := (others => '0');
 
-  -- Old FIFO replaced by dcfifo. Keep fifo_cnt for external visibility.
-  signal fifo_cnt      : natural range 0 to 64 := 0;
-  signal buf_limit_r   : natural range 0 to Max_Samples := 0;
   -- In continuous mode each triple buffer is exactly one host read block
   -- (512 samples / 1024 bytes) so the standard CMD_READ_CAPTURE block protocol
   -- streams a completed buffer verbatim. Single-shot still uses samples/6.
@@ -135,10 +131,6 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal full_pending : std_logic := '0';
   signal full_clr_pending : std_logic := '0';
 
-  -- Per-buffer remaining-word count
-  signal buf_rem_0      : natural range 0 to Max_Samples := 0;
-  signal buf_rem_1      : natural range 0 to Max_Samples := 0;
-  signal buf_rem_2      : natural range 0 to Max_Samples := 0;
   signal buf_rem_single : natural range 0 to Max_Samples := 0;
   signal single_count_load_q : std_logic := '0';
   -- Single-shot drain-complete counter: number of consecutive pclk cycles the pump
@@ -157,31 +149,14 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal run_start_r : std_logic := '0';
   signal run_stop_r  : std_logic := '0';
 
-  -- Registered sample-rate divider: pre-computed rate_div_r - 1 breaks the
-  -- Rate_Div → Add0 (28-bit subtractor) → LessThan0 → cnt carry chain path.
-  -- Down-counter uses cnt = 0 (fast NOR gate) instead of cnt >= threshold
-  -- (slow 28-bit comparator). Rate_Div changes only when the user sets
-  -- the sample rate (before capture starts), so 1-cycle latency is harmless.
-  signal rate_div_r    : natural range 1 to 500000000 := 12;
-  signal rate_div_m1_r : natural range 0 to 500000000 := 11;
-
-  -- FAST_CLK domain signals (2FF CDC + async FIFO)
-  signal sdram_busy : std_logic := '0';
-
   constant MAX_RATE_DIV : natural := 500_000_000;
 
   -- Config handshake: CLK -> FAST_CLK
   signal cfg_rate_div  : natural range 1 to MAX_RATE_DIV := 12;
   signal cfg_samples   : natural range 1 to Max_Samples := Max_Samples;
   signal cfg_valid_toggle : std_logic := '0';
-  signal cfg_ack_s1    : std_logic := '0';
-  signal cfg_ack_s2    : std_logic := '0';
-  signal cfg_ack_edge  : std_logic := '0';
-
   -- Config handshake: FAST_CLK domain
   signal cfg_rate_div_f  : natural range 1 to MAX_RATE_DIV := 12;
-  signal cfg_rate_reload_f : natural range 0 to MAX_RATE_DIV := 11;
-  signal cfg_samples_f   : natural range 1 to Max_Samples := Max_Samples;
   signal cfg_valid_s1    : std_logic := '0';
   signal cfg_valid_s2    : std_logic := '0';
   signal cfg_valid_edge  : std_logic := '0';
@@ -266,7 +241,6 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   constant AFIFO_WIDTHU : natural := 10;
   signal fifo_wdata : std_logic_vector(AFIFO_WIDTH-1 downto 0) := (others => '0');
   signal fifo_wr    : std_logic := '0';
-  signal fifo_wrfull : std_logic := '0';
   -- Parallel packed-mode write mux: the afifo is fed from afifo_wdata/afifo_wr,
   -- which select the packed stream when packed_mode_f is set, else the native
   -- sample/analog writer's fifo_wdata/fifo_wr (so packed_mode='0' is bit-for-bit
@@ -484,7 +458,6 @@ begin
     -- elaborated here, otherwise Quartus rejects the now-unused LPM output.
     process(CLK) begin
       if rising_edge(CLK) then
-        samples_d1   <= Samples;
         samples_div  <= Samples;
         samples_div6 <= 0;
       end if;
@@ -513,9 +486,8 @@ begin
     -- Pipeline: register input, LPM divides over 4 cycles, register output
     process(CLK) begin
       if rising_edge(CLK) then
-        samples_d1   <= Samples;
-        lpm_numer    <= std_logic_vector(to_unsigned(samples_d1, 22));
-        samples_div  <= samples_d1;
+        lpm_numer    <= std_logic_vector(to_unsigned(Samples, 22));
+        samples_div  <= Samples;
         samples_div6 <= to_integer(unsigned(lpm_quot));
       end if;
     end process;
@@ -573,9 +545,6 @@ begin
   process(pclk)
   begin
     if rising_edge(pclk) then
-      cfg_ack_s1 <= cfg_ack_toggle;
-      cfg_ack_s2 <= cfg_ack_s1;
-      cfg_ack_edge <= cfg_ack_s1 xor cfg_ack_s2;
       cap_done_s1 <= cap_done_toggle_f;
       cap_done_s2 <= cap_done_s1;
       if cap_done_s2 /= cap_done_last then
@@ -603,33 +572,11 @@ begin
     end if;
   end process;
 
-  -- Register Rate_Div into pclk domain and pre-compute rate_div_r - 1 to
-  -- break the 28-bit carry chain comparator path (rate_div_r → Add0 →
-  -- LessThan0 → cnt). Down-counter uses cnt = 0 (fast NOR) instead of
-  -- cnt >= rate_div_r (slow 28-bit comparator).
-  process(pclk)
-  begin
-    if rising_edge(pclk) then
-      rate_div_r    <= Rate_Div;
-      if Rate_Div > 1 then
-        rate_div_m1_r <= Rate_Div - 1;
-      else
-        rate_div_m1_r <= 0;
-      end if;
-    end if;
-  end process;
-
   -- Re-register CLK-domain divide results into pclk domain; pre-compute buffer limits
   process(pclk)
   begin
     if rising_edge(pclk) then
       samples_div_p  <= samples_div;
-      if Continuous_Mode = '1' then
-        -- One 512-sample block per buffer, laid out 0 / 512 / 1024.
-        buf_limit_r <= CONT_BUF;
-      else
-        buf_limit_r    <= samples_div6;
-      end if;
     end if;
   end process;
 
@@ -662,12 +609,6 @@ begin
       cfg_valid_edge <= cfg_valid_s1 xor cfg_valid_s2;
       if cfg_valid_edge = '1' then
         cfg_rate_div_f  <= cfg_rate_div;
-        cfg_samples_f   <= cfg_samples;
-        if cfg_rate_div > 1 then
-          cfg_rate_reload_f <= cfg_rate_div - 1;
-        else
-          cfg_rate_reload_f <= 0;
-        end if;
         cfg_ack_toggle <= not cfg_ack_toggle;
       end if;
     end if;
@@ -750,6 +691,7 @@ begin
     signal aframe_shift : std_logic_vector(127 downto 0) := (others => '0');
     signal aframe_toggle_s1 : std_logic := '0';
     signal aframe_toggle_s2 : std_logic := '0';
+    signal aframe_toggle_last_r : std_logic := '0';
     signal aframe_ready_r : std_logic := '0';
     signal aword_count_pending : natural range 1 to 7 := 7;
     signal aword_count_f : natural range 1 to 7 := 7;
@@ -784,14 +726,13 @@ begin
     -- after it has settled. sys_clk toggles only after all 8 ADC result
     -- registers have been updated.
     process(FAST_CLK)
-      variable aframe_toggle_last_v : std_logic := '0';
     begin
       if rising_edge(FAST_CLK) then
         aframe_toggle_s1 <= Analog_Frame_Toggle;
         aframe_toggle_s2 <= aframe_toggle_s1;
         aframe_ready_r <= '0';
-        if aframe_toggle_s2 /= aframe_toggle_last_v then
-          aframe_toggle_last_v := aframe_toggle_s2;
+        if aframe_toggle_s2 /= aframe_toggle_last_r then
+          aframe_toggle_last_r <= aframe_toggle_s2;
           aframe_pending <= Analog_Frame_Data;
           if Analog_Frame_Len <= 2 then
             aword_count_pending <= 1;
@@ -1388,7 +1329,7 @@ begin
       rdclk    => pclk,
       q        => fifo_rdata,
       rdempty  => fifo_rdempty,
-      wrfull   => fifo_wrfull,
+      wrfull   => open,
       wrusedw  => fifo_wrusedw,
       rdusedw  => fifo_rdusedw
     );
@@ -1605,7 +1546,6 @@ begin
       -- Buffer ack handling (evaluated every cycle)
       if Buffer_Ack(0) = '1' then
         buf_full(0) <= '0';
-        buf_rem_0   <= buf_limit_r;
         if buf_sel = "00" and buf_full(1) = '1' then
           -- A was waiting to be written (B is full), reset pointer now
           waddr_0 := 0;
@@ -1613,7 +1553,6 @@ begin
       end if;
       if Buffer_Ack(1) = '1' then
         buf_full(1) <= '0';
-        buf_rem_1   <= buf_limit_r;
         if buf_sel = "01" and buf_full(0) = '1' then
           -- B was waiting to be written (A is full), reset pointer now
           waddr_1 := 0;
@@ -1621,7 +1560,6 @@ begin
       end if;
       if Buffer_Ack(2) = '1' then
         buf_full(2) <= '0';
-        buf_rem_2   <= buf_limit_r;
         if buf_sel = "10" and buf_full(1) = '1' then
           -- C was waiting to be written (B is full), reset pointer now
           waddr_2 := 0;
@@ -1651,7 +1589,6 @@ begin
 
       if run_edge_r = '1' then
         waddr_0 := 0; waddr_1 := 0; waddr_2 := 0;
-        buf_rem_0 <= buf_limit_r;
         drain_pending_r <= '1';
         -- Snapshot the stale-word count. usedw is fill mod DEPTH: a full FIFO
         -- reads 0, so substitute the full depth when non-empty (the empty-
@@ -1664,8 +1601,6 @@ begin
         -- Invalidate any word still sitting in the skid buffer from the
         -- previous run (overrides a same-cycle loader load).
         prefetch_valid_r <= '0';
-        buf_rem_1 <= buf_limit_r;
-        buf_rem_2 <= buf_limit_r;
         -- Loaded from cfg_samples one pclk later, after the run-edge config
         -- latch has updated. Keep the pump count at zero for that holdoff cycle.
         buf_rem_single <= 0;
@@ -1851,11 +1786,11 @@ begin
              or (buf_sel = "10" and buf_full(2) = '1') then
             cur_full := true;
             if buf_full(0) = '0' then
-              buf_sel <= "00"; waddr_0 := 0; buf_rem_0 <= buf_limit_r;
+              buf_sel <= "00"; waddr_0 := 0;
             elsif buf_full(1) = '0' then
-              buf_sel <= "01"; waddr_1 := 0; buf_rem_1 <= buf_limit_r;
+              buf_sel <= "01"; waddr_1 := 0;
             elsif buf_full(2) = '0' then
-              buf_sel <= "10"; waddr_2 := 0; buf_rem_2 <= buf_limit_r;
+              buf_sel <= "10"; waddr_2 := 0;
             end if;
           end if;
         end if;
@@ -2039,7 +1974,7 @@ begin
     Read_Enable  => s_rd,
     Read_Data    => s_rdata,
     Read_Valid   => s_rvalid,
-    Busy         => sdram_busy,
+    Busy         => open,
     Idle         => open,
     sdram_addr   => sdram_addr,
     sdram_ba     => sdram_ba,

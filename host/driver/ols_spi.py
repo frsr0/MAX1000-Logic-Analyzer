@@ -139,18 +139,34 @@ class OLS:
                 score += 10
             return (score, idx)
 
-        # Probe the device table once and try the most likely MPSSE slot first.
-        candidates = [i for _, i in sorted((_score_device(i) for i in range(n)),
-                                           reverse=True)]
-        if self.channel in candidates:
-            candidates.remove(self.channel)
-            candidates.insert(0, self.channel)
+        def _serial_candidates() -> list[bytes]:
+            """Prefer explicit serial-number opens so we can target channel B."""
+            serials = []
+            try:
+                listed = ft.listDevices()
+            except Exception:
+                listed = None
+            if isinstance(listed, (list, tuple)):
+                for entry in listed:
+                    if isinstance(entry, bytes):
+                        serial = entry
+                    elif isinstance(entry, str):
+                        serial = entry.encode()
+                    else:
+                        continue
+                    if serial not in serials:
+                        serials.append(serial)
+            return sorted(serials, key=lambda s: (not s.endswith(b"B"), s))
+
+        # Try the explicit serial-number path first: this is the most reliable
+        # way to land on the Channel B MPSSE endpoint when Windows enumerates
+        # both FTDI interfaces.
         last_exc = None
         d = None
-        for idx in candidates:
+        for serial in _serial_candidates():
             for attempt in range(3):
                 try:
-                    d = ft.open(idx)
+                    d = ft.openEx(serial, update=False)
                     break
                 except Exception as exc:
                     last_exc = exc
@@ -158,6 +174,35 @@ class OLS:
                     time.sleep(0.05)
             if d is not None:
                 break
+
+        if d is None:
+            # Fall back to index probing if serial-based opens are unavailable.
+            candidates = [i for _, i in sorted((_score_device(i) for i in range(n)),
+                                               reverse=True)]
+            if self.channel in candidates:
+                candidates.remove(self.channel)
+                candidates.insert(0, self.channel)
+            for idx in candidates:
+                for attempt in range(3):
+                    try:
+                        d = ft.open(idx)
+                        break
+                    except Exception as exc:
+                        last_exc = exc
+                        d = None
+                        time.sleep(0.05)
+                if d is not None:
+                    break
+
+        if d is None:
+            for attempt in range(3):
+                try:
+                    d = ft.open(self.channel)
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    d = None
+                    time.sleep(0.05)
         if d is None:
             raise last_exc or RuntimeError("no FTDI interface could be opened")
 

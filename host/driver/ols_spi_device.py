@@ -13,7 +13,7 @@ from driver.spi_protocol import (
     CMD_ABORT_CAPTURE, CMD_ACK_CAPTURE_DONE, CMD_START_STREAM,
     CMD_GEN_START, CMD_GEN_LOAD, CMD_GEN_CAPTURE, CMD_GEN_STATUS,
     CMD_GET_METADATA,
-    REG_FLAGS_COMPRESS_MASK, REG_FLAGS_COMPRESS_RLE,
+    REG_FLAGS_COMPRESS_MASK, REG_FLAGS_COMPRESS_DELTA, REG_FLAGS_COMPRESS_RLE,
     REG_DIVIDER, REG_SAMPLE_COUNT, REG_DELAY_COUNT,
     REG_TRIGGER_MASK, REG_TRIGGER_VALUE, REG_FLAGS,
     REG_FAST_MODE, REG_CONT_MODE,
@@ -507,18 +507,15 @@ class OLSDeviceSPI:
         mode = str(mode or 'raw').lower()
         if mode not in ('raw', 'delta', 'rle'):
             raise ValueError(f"unsupported readback compression mode: {mode}")
-        # The current FAST_RAW_BUILD bitstream only implements hardware RLE.
-        # Keep accepting the historical "delta" spelling, but serve it as raw
-        # passthrough so readback does not burn time failing delta decode and
-        # retrying every block uncompressed.
-        effective_mode = 'raw' if mode == 'delta' else mode
-        self.readback_compression_mode = effective_mode
-        self.compress_readback_enabled = effective_mode != 'raw'
+        self.readback_compression_mode = mode
+        self.compress_readback_enabled = mode != 'raw'
         cur = self.pkt.read_register(REG_FLAGS)
         if cur < 0:
             return False
         cur &= ~REG_FLAGS_COMPRESS_MASK
-        if effective_mode == 'rle':
+        if mode == 'delta':
+            cur |= REG_FLAGS_COMPRESS_DELTA
+        elif mode == 'rle':
             cur |= REG_FLAGS_COMPRESS_RLE
         return self.pkt.write_register(REG_FLAGS, cur)
 
@@ -1054,7 +1051,9 @@ class OLSDeviceSPI:
         """Write the full capture mode state before every arm."""
         mode_flags = (flags | self.analog_mode) & 0xFFFFFFFF
         mode_flags &= ~REG_FLAGS_COMPRESS_MASK
-        if self.readback_compression_mode == 'rle':
+        if self.readback_compression_mode == 'delta':
+            mode_flags |= REG_FLAGS_COMPRESS_DELTA
+        elif self.readback_compression_mode == 'rle':
             mode_flags |= REG_FLAGS_COMPRESS_RLE
         if mode_flags & MODE_ANALOG_ONLY:
             mode_flags |= (self.analog_channel & 0x1F) << 8
@@ -1092,6 +1091,11 @@ class OLSDeviceSPI:
                 return st
             time.sleep(delay)
         return st
+
+    def _ring_trace(self, msg: str):
+        """Emit optional trace lines for continuous ring debugging."""
+        if os.environ.get("OLS_RING_TRACE"):
+            print(f"[RINGTRACE] {msg}")
 
     def _wait_capture_done(self, timeout, stop_evt=None, expected_seq=None):
         deadline = time.time() + timeout
@@ -1462,7 +1466,15 @@ class OLSDeviceSPI:
         pending = b''
         pending_samples = 0
         try:
+            iteration = 0
             while not stop_evt.is_set():
+                iteration += 1
+                if os.environ.get("OLS_RING_TRACE"):
+                    self._ring_trace(
+                        f"iter={iteration} pre: next={next_sample} "
+                        f"producer={producer_hint} oldest={oldest_hint} "
+                        f"overrun={overrun_total} pending_samples={pending_samples} "
+                        f"rx_buf={len(getattr(self.pkt, '_rx_buf', b''))}")
                 if not use_raw_stream and pending_samples >= window_samples:
                     data = pending[:window_samples * 2]
                     pending = pending[window_samples * 2:]
@@ -1471,6 +1483,9 @@ class OLSDeviceSPI:
                     total += window_samples
                     if progress_cb:
                         progress_cb(data, total, window_samples)
+                    self._ring_trace(
+                        f"iter={iteration} yield buffered: total={total} "
+                        f"data_bytes={len(data)} pending_samples={pending_samples}")
                     yield data, total, window_samples, overrun_total
                     continue
 
@@ -1491,6 +1506,10 @@ class OLSDeviceSPI:
 
                 available = int(producer_hint) - int(next_sample)
                 if available < required_available:
+                    self._ring_trace(
+                        f"iter={iteration} wait: available={available} "
+                        f"required={required_available} next={next_sample} "
+                        f"producer={producer_hint} oldest={oldest_hint}")
                     if stop_evt.wait(0.0005):
                         break
                     continue
@@ -1508,6 +1527,11 @@ class OLSDeviceSPI:
                     total += valid_samples
                     if progress_cb:
                         progress_cb(data, total, window_samples)
+                    self._ring_trace(
+                        f"iter={iteration} yield rle: total={total} "
+                        f"data_bytes={len(data)} next={next_sample} "
+                        f"producer={producer_hint} oldest={oldest_hint} "
+                        f"overrun={overrun_total} rx_buf={len(getattr(self.pkt, '_rx_buf', b''))}")
                     yield data, total, window_samples, overrun_total
                 else:
                     fetch_nsamp = min(available, max(window_samples, window_samples * 8))
@@ -1516,6 +1540,9 @@ class OLSDeviceSPI:
                         break
                     pending += data
                     pending_samples += len(data) // 2
+                    self._ring_trace(
+                        f"iter={iteration} fetch raw: fetched={len(data)} "
+                        f"pending_samples={pending_samples} next={next_sample}")
         finally:
             try:
                 self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
