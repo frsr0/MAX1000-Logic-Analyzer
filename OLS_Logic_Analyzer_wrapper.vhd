@@ -31,6 +31,8 @@ end OLS_Logic_Analyzer_wrapper;
 architecture rtl of OLS_Logic_Analyzer_wrapper is
     -- Fast build: 100 MHz system clock, 200 MHz SDRAM/sample clock.
     constant FAST_SPEED : boolean := true;
+    -- false = full mixed-signal build (mso_capture bit-pack pipeline included)
+    constant FAST_RAW_BUILD : boolean := false;
     -- Quartus pin assignments
     attribute chip_pin : string;
     attribute chip_pin of MKR_D : signal is "H8,K10,H5,H4,J1,J2,L12,J12,J13,K11,K12,J10,H10,H13,G12";
@@ -38,7 +40,7 @@ architecture rtl of OLS_Logic_Analyzer_wrapper is
 
 begin
     core : entity work.OLS_SDRAM_Top
-    generic map (FAST_SPEED => FAST_SPEED)
+    generic map (FAST_SPEED => FAST_SPEED, FAST_RAW_BUILD => FAST_RAW_BUILD)
     port map (
         CLK => CLK,
         SPI_CS => SPI_CS, SPI_SCK => SPI_SCK, SPI_MOSI => SPI_MOSI, SPI_MISO => SPI_MISO,

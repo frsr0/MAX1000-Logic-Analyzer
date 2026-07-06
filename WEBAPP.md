@@ -92,8 +92,7 @@ sample-clock detect → capabilities → device self-test (debug CH0 PWM loopbac
 capture) → 4096-sample digital capture + sanity checks → UART generator
 loopback (`CMD_GEN_CAPTURE`) decoded and byte-compared. Exit code 0 = good;
 the captures it takes are saved as sessions and can be inspected in the web
-UI afterwards. If anything fails, the deeper 564-check suite is
-`cd host && python -m app.hw_validation`.
+UI afterwards. If anything fails, the deeper 577-check suite is
 
 The adapter (`backend/app/hardware/existing_host_adapter.py`) mirrors the
 exact call sequence of the proven tkinter GUI (`host/app/OLS_Console.py`) —

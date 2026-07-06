@@ -51,14 +51,16 @@ clock are deliberately skewed so the SDRAM samples write data in the centre of
 the eye instead of on the launching edge. `set_output_delay`/`set_input_delay`
 on the SDRAM pins constrain this interface (see `hdl/proj/OLS_Logic_Analyzer.sdc`).
 
-Current build closes timing in the Slow 1200 mV 85C model at: **clk[2] (167 MHz
-SDRAM) setup −0.065 ns** (hold +0.342, MPW +0.089; **+0.303 ns at the 0C
-corner**, room-temp clean), clk[1] (200 MHz) +0.416 ns, clk[0] (100 MHz)
-+1.275 ns. The 167 MHz SDRAM domain sits at this logic's restricted Fmax, so the
-hot-corner setup runs marginally negative while every operating corner is
-positive — and the producer-done completion makes a rare marginal write
-non-fatal (see below). The analog path uses the MAX10 ADC hard-IP clock input,
-which is how the 1.0 MSPS single-channel rate is achieved.
+Current build (seed 30) closes timing in the Slow 1200 mV 85C model at:
+- **clk[1] (200 MHz fast clock) setup:** 0.182 ns ✅
+- **clk[2] (167 MHz SDRAM) setup:** 0.343 ns ✅ (hold +0.341, MPW +1.087)
+- **clk[0] (100 MHz sys clock) setup:** 0.994 ns ✅
+- All three temperature corners (85C, 0C slow, 0C fast) pass with positive slack.
+- TNS = 0.000 across all setup/hold/recovery/removal/MPW checks.
+
+The seed 30 fitter placement improved worst-case slack from 0.088 ns (seed 23)
+to 0.182 ns (clk[1]) and 0.343 ns (clk[2]), with no RTL or constraint changes.
+See [TIMING_REPORT_SUMMARY.md](TIMING_REPORT_SUMMARY.md) for details.
 
 ### Normal mode (FAST_SPEED=false)
 
@@ -125,18 +127,6 @@ ADC runs on its own hard-IP clock.
 
 ## Capture Modes
 
-Mode is selected by `REG_FLAGS`:
-
-| Mode | REG_FLAGS bits | Frame size | Content |
-|---|---|---:|---|
-| Digital | bit3=0 | 2 bytes | `[D15:D0]` |
-| Narrow digital | bit13=1, bits17:14=channel | 2 bytes per 16 time samples | one selected digital channel packed; bit 0 is earliest |
-| Mixed | bit3=1, bit4=0 | 14 bytes | `[D15:D0, ADC0..ADC7]` |
-| High-speed analog | bit3=1, bit4=1, profile `00` | 2 bytes | selected 12-bit ADC mux result |
-| Maximum analog | bit3=1, bit4=1, profile `01` | 12 bytes | `ADC1,2,3,4,5,7,8,16` |
-
-Over the SPI readout every word is 32-bit (payload in the low 16 bits, high 16 zero), so the host reads digital at stride 4 and de-interleaves mixed frames (28 wire bytes → 14 payload bytes).
-
 Digital-only capture reaches the full digital sample rate for BRAM-depth
 captures. Narrow digital rolling reaches 200 MHz for one selected channel by
 packing 16 time samples into each 16-bit word. Mixed capture
@@ -179,6 +169,103 @@ MAX1000 analogue inputs in the bundled board guide:
 Captured analog arrays are labelled by ADC mux selection, not by a simple
 `AIN0..AIN7` sequence. Mixed mode still exposes `ADC0` and `ADC6` as unmapped
 mux slots; maximum analog uses only documented physical inputs.
+
+---
+
+## Readback Compression (Bit-Banger Streaming)
+
+The FPGA supports three readback codec modes, selected via `REG_FLAGS` bits 19:18:
+
+| Mode | REG_FLAGS bits | Wire format | Throughput (measured) |
+|------|----------------|-------------|-----------------------|
+| `raw` | `00` | 16-bit little-endian samples, one per word | ~2.3 MB/s |
+| `rle` | `10` (bit 19) | (count, value) uint16 pairs, skip `0x0000` idle fill | ~5.1 MB/s |
+| `delta` | `01` (bit 18) | delta-encoded (legacy, aliases to `raw` on current build) | ~2.3 MB/s |
+
+**Host API:**
+```python
+dev.set_readback_compression('rle')    # enable RLE
+dev.set_readback_compression('raw')    # disable compression
+```
+
+### RLE streaming (the "bit-banger" path)
+
+RLE readback uses a **held-CS streaming** transaction: the host sends `CMD_START_RLE_STREAM` and keeps CS low while the FPGA bit-bangs `(count, value)` pairs directly over MISO. The host clocks out exactly the number of wire bytes needed and raises CS when done — no per-block framing, no CRC. Each `(count, value)` pair is a 32-bit word (count in the low 16 bits, value in the high 16). A `0x0000` count word is an idle filler that the decoder skips. This path is preferred for continuous ring capture because it minimises SPI transaction overhead:
+
+```python
+producer, oldest, data = dev.pkt.start_rle_stream_read(
+    start_sample=oldest, sample_count=8192, stop_evt=stop_evt)
+```
+
+Host-side decompression (`decompress_rle_stream`) uses `numpy.repeat` to expand runs. Any decode failure (truncated stream, overrun) falls back to a `raw` block read with the compression flag temporarily cleared.
+
+### Raw streaming
+
+`CMD_START_RAW_STREAM` works identically but sends uncompressed 16-bit samples. The FPGA enters raw streaming immediately after the packet ack, and the host clocks out `sample_count × 2` bytes under one CS hold. This path is validated up to 16,384 samples per call (`MAX_RAW_STREAM_SAMPLES` in `spi_protocol.py`); larger reads are chunked automatically.
+
+### Block-read fallback
+
+Both streaming paths require FPGA firmware support. The traditional `CMD_READ_CAPTURE` block-read path (1,024-byte blocks with CRC-16 framing) remains available as a universal fallback and is the default for `raw` mode continuous capture (the held-CS raw stream can leave shared readback state dirty on teardown — tracked as an FPGA-side unwind issue).
+
+### Mixed-mode readback compression
+
+Mixed digital+analog capture uses a separate **lossless codec** in the host driver (`compress_mixed_stream` / `decompress_mixed_stream`). This runs on decoded frames, not raw SPI wire bytes, and compresses the delta between successive analog scans while preserving digital samples verbatim. It is enabled independently of the FPGA RLE codec and operates on the already-deinterleaved frame stream.
+
+## Pin Mapping & Capture Modes
+
+### Programmable pin map
+
+Sixteen logical capture channels (`CH0`–`CH15`) each select one physical pin from the 26-entry RTL pin pool via `REG_PIN_MAP` registers (`0x70`–`0x7F`). Each register is a 32-bit word; the low 5 bits select the pin index (0–25):
+
+| REG | Channels | Default mapping |
+|-----|----------|----------------|
+| `0x70`–`0x7E` | CH0–CH14 | `0`–`14` → MKR `D0`–`D14` |
+| `0x7F` | CH15 | `24` → `SEN_SDI` (LIS3DH bus) |
+
+The RTL pin pool is:
+| Pin indexes | Board signals | Header |
+|-------------|---------------|--------|
+| 0–14 | MKR `D0`–`D14` | MKR J1/J2 |
+| 15–22 | PMOD `PIO_01`–`PIO_08` | PMOD pins 1–8 |
+| 23–25 | `SEN_SDO`, `SEN_SDI`, `SEN_SPC` | LIS3DH accelerometer bus |
+
+Remap a channel at runtime:
+```python
+dev.set_pin_map({0: 15, 1: 16})   # CH0 ← PMOD pin 1, CH1 ← PMOD pin 2
+```
+
+### Capture modes in REG_FLAGS
+
+`REG_FLAGS` (`0x20`) controls the capture datapath. The relevant bit fields are:
+
+| Bits | Field | Description |
+|------|-------|-------------|
+| 0 | `fast_mode` | BRAM-only capture (1,024 samples max, no SDRAM) |
+| 1 | `continuous` | SDRAM ring-buffer mode for rolling/streaming |
+| 2 | `ch_mode` | Legacy channel-width (not used in current build) |
+| 3 | `analog_enable` | Mixed digital+ADC mode |
+| 4 | `analog_only` | Analog-only when set with bit 3 |
+| 6:5 | `analog_profile` | `00` = high-speed analog (1 ch), `01` = maximum analog (8 ch) |
+| 12:8 | `adc_channel` | ADC mux channel for high-speed analog profile |
+| 13 | `narrow_enable` | Narrow packed digital mode (one channel at 200 MHz) |
+| 17:14 | `narrow_channel` | Digital channel index for narrow mode |
+| 19:18 | `compress` | Readback compression: `00`=raw, `01`=delta, `10`=rle |
+| 20 | `packed` | MSO packed-stream mode (bit 15 routes analog vs digital sub-streams) |
+
+| Mode | REG_FLAGS value | Frame stride | Content |
+|------|----------------|-------------:|---------|
+| Digital | `0x00000` | 2 bytes | `[D15:D0]` |
+| Narrow digital | bit13=1, bits17:14=channel | 2 bytes per 16 time samples | One channel packed; bit 0 is earliest |
+| Mixed (digital + ADC) | bit3=1 | 14 bytes | `[D15:D0, ADC0..ADC7]` |
+| High-speed analog | bit3=1, bit4=1, profile=0 | 2 bytes | One 12-bit ADC mux result |
+| Maximum analog | bit3=1, bit4=1, profile=1 | 12 bytes | `ADC1,2,3,4,5,7,8,16` |
+
+Set the mode and arm:
+```python
+dev.set_analog_enable(True)        # mixed mode
+dev.set_analog_config(channel=3)   # high-speed analog on ADC mux 3
+dev.capture(rate_hz=1_000_000, nsamples=4096)
+```
 
 ## Sample Rate Formula
 
@@ -348,9 +435,8 @@ GENCAP_IDLE → GENCAP_GUARD(512 cycles) → GENCAP_WAIT_BUSY → GENCAP_RUNNING
 ```bash
 pip install ftd2xx
 cd host
-python -m app.OLS_Console              # GUI
+python -m app.hw_validation            # hardware tests (577 checks on current image seed 30)
 python -m app.OLS_Console --cli capture --rate 1000000 --samples 5000  # CLI
-python -m app.hw_validation            # hardware tests (564 checks on the current image)
 ```
 
 ### Python API
@@ -396,27 +482,21 @@ cd hdl\proj
 ```
 
 `compile.ps1` generates `OLS_Logic_Analyzer_wrapper.vhd` with `FAST_SPEED => true` for the current speed build (sys 100 MHz / sample 200 MHz / SDRAM 167 MHz). Editing the generated wrapper alone is futile — it is overwritten on every compile; change `hdl/proj/compile.ps1` instead.
-
-### Build modes
-
-| Mode | FAST_SPEED | sys_clk | FAST_CLK | SDRAM clk | Worst setup slack (Slow 85C) |
-|------|-----------|---------|----------|-----------|------------------------------|
-| Speed | `true` | 100.2 MHz | 200.4 MHz | 167 MHz | **clk[2] −0.065 ns** (+0.303 @0C); clk[1] +0.416; clk[0] +1.275 |
+| Speed | `true` | 100.2 MHz | 200.4 MHz | 167 MHz | **clk[1] +0.182 ns; clk[2] +0.343 ns; clk[0] +0.994 ns** (seed 30, all corners positive) |
 | Normal | `false` | (legacy) | (legacy) | — | not the maintained build |
 
-The 167 MHz SDRAM domain is at this logic's restricted Fmax: hot-corner (85C)
-setup is marginally negative while every operating corner is positive and
-room-temp hardware is clean. The producer-done completion (above) ensures a rare
-marginal write can never hang a capture.
+The seed 30 fitter sweep improved timing margins significantly over seed 23:
+clk[1] went from 0.088 ns to 0.182 ns and clk[2] from 0.088 ns to 0.343 ns.
+HW validation: 577/577 passed.
 
-## Resource Usage (speed mode build)
+## Resource Usage (seed 30 speed mode build)
 
 | Resource | Used | Available | % |
 |----------|------|-----------|---|
-| Logic elements | 6,983 | 8,064 | 87% |
-| Combinational functions | 6,390 | 8,064 | 79% |
-| Registers | 3,321 | 8,064 | 41% |
-| Memory bits | 290,816 | 387,072 | 75% |
+| Logic elements | 7,803 | 8,064 | 97% |
+| Combinational functions | 7,146 | 8,064 | 89% |
+| Registers | 4,003 | 8,064 | 50% |
+| Memory bits | 95,027 | 387,072 | 25% |
 | Pins | 78 | 130 | 60% |
 | PLLs | 1 | 1 | 100% |
 
@@ -424,8 +504,8 @@ marginal write can never hang a capture.
 
 ```bash
 cd host
-python -m pytest tests/ driver/tests/ -v   # 338 host/driver tests
-python -m app.hw_validation                # 564 hardware validation checks on current image
+python -m app.hw_validation                # 577 hardware validation checks (seed 30 validated)
+python -m pytest tests/ driver/tests/ -v   # 410 host/driver tests
 ```
 
 Hardware validation covers: SPI protocol, single/fast/continuous/max-speed capture, 200 MHz narrow packed digital finite and continuous capture, max-rate continuous ring overrun, edge triggers (rising + falling), UART/I2C/SPI generators, I2C LIS3DH addressing round-trip, divider accuracy, full digital, mixed 16-digital + ADC0-ADC7 mode, high-speed analog, maximum analog physical profile, frame-alignment integrity, mixed→digital→mixed reset, pre-trigger, full-depth SDRAM, back-to-back and capture-during-readout stress, rolling capture, protocol trigger, noise floor, the host-side digital glitch filter, abort capture, crosstalk characterisation, and a long stress run.

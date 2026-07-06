@@ -23,7 +23,7 @@ Main application. Two modes:
 
 ### `app/hw_validation.py`
 
-Hardware validation suite (564 checks on the current bitstream): SPI handshake, all commands, single/fast/continuous capture, rising/falling edge triggers, 200 MHz max-speed capture, 200 MHz narrow packed digital finite/continuous capture, max-rate continuous ring overrun, UART/I2C/SPI generators, I2C LIS3DH addressing round-trip, divider accuracy, pin-pool capture, mixed 16-digital + ADC0-ADC7 mode and frame-alignment integrity, high-speed analog, maximum analog physical profile, mixed→digital→mixed reset, pre-trigger, full-depth SDRAM, back-to-back and capture-during-readout stress, the host-side digital glitch filter, crosstalk characterisation, debug CH0 PWM, sticky DONE/abort behavior, rolling capture, and a long stress run. Results saved as JSON.
+Hardware validation suite (577 checks on the current bitstream): SPI handshake, all commands, single/fast/continuous capture, rising/falling edge triggers, 200 MHz max-speed capture, 200 MHz narrow packed digital finite/continuous capture, max-rate continuous ring overrun, UART/I2C/SPI generators, I2C LIS3DH addressing round-trip, divider accuracy, pin-pool capture, mixed 16-digital + ADC0-ADC7 mode and frame-alignment integrity, high-speed analog, maximum analog physical profile, mixed→digital→mixed reset, pre-trigger, full-depth SDRAM, back-to-back and capture-during-readout stress, the host-side digital glitch filter, crosstalk characterisation, debug CH0 PWM, sticky DONE/abort behavior, rolling capture, and a long stress run. Results saved as JSON.
 
 The current hardware analog validation covers the ADC0-ADC7 scan plus the
 analog-focused RTL profiles. The contract is in `docs/ANALOG_MODE_PLAN.md`:
@@ -63,7 +63,7 @@ EEPROM backup, FT_Prog config, driver recovery, `recover.ps1`.
 
 ### `tests/` and `driver/tests/`
 
-Current collection: **338 tests** across GUI helpers, decoders, analog frame
+Current collection: **410 tests** across GUI helpers, decoders, analog frame
 decode, hardware-validation helpers, packet SPI, `OLSDeviceSPI`, MPSSE, and
 pyftdi compatibility. Coverage includes mixed/high-speed/max analog framing,
 narrow digital packing, rolling ring readback, capture metadata, generator

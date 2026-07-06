@@ -1,0 +1,2 @@
+gen_capture: cmd resp=(16, 26, b'')
+gen_capture: status transitions=[(0.0017, 18)] timed_out=False

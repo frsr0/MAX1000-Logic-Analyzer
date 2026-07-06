@@ -1,5 +1,5 @@
-OLS MAX1000 — dense-sample datapath validation (2026-07-02)
-SPI 30 MHz | sample clock 200 MHz | bitstream: wedge+duplication fixes, seed 2, timing closed
+OLS MAX1000 — seed 30 build validation (2026-07-05)
+SPI 30 MHz | sample clock 200 MHz | timing closed | 577/577 passed, 0 failed, 1 skipped
 
 [1] deep capture 4,194,304 samples @ 2 MS/s ...
     capture done: True

@@ -1,0 +1,14 @@
+Updated OLS_Logic_Analyzer_wrapper.vhd with pin assignments from pin_assignments.csv
+Generated OLS_Logic_Analyzer.qsf with wrapper as top-level
+
+=== Compiling ===
+Compilation: SUCCESS
+
+=== Flashing ===
+
+Info (209007): Configuration succeeded -- 1 device(s) configured
+Flash: SUCCESS
+
+Done.
+
+
