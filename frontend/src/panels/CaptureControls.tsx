@@ -6,7 +6,9 @@ const DIGITAL_FAST_DEPTH = 1024;
 const DIGITAL_SDRAM_DEPTH = 4_194_304;
 const DIGITAL_NARROW_MAX_SAMPLES = DIGITAL_SDRAM_DEPTH * 16;
 const DIGITAL_RATES = [10e3, 100e3, 500e3, 1e6, 2e6, 5e6, 10e6, 12.5e6, 14e6, 20e6, 50e6, 100e6, 200e6];
-const DIGITAL_ROLLING_MAX_RATE = 15e6;
+// Live rolling uses repeated finite captures, so keep the selector below the
+// hardware-backed ceiling that still behaves cleanly on the real board.
+const DIGITAL_ROLLING_MAX_RATE = 50e6;
 const DIGITAL_ROLLING_RATES = DIGITAL_RATES.filter((rate) => rate <= DIGITAL_ROLLING_MAX_RATE);
 const DIGITAL_DEPTHS = [1024, 10_000, 50_000, 100_000, 250_000, 500_000, 1_048_576, 2_097_152, DIGITAL_SDRAM_DEPTH];
 const MIXED_RATES = [125e3];

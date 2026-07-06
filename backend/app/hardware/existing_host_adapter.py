@@ -37,7 +37,10 @@ from .protocol import import_host_driver
 
 ADC_SCAN_FRAME_RATE_HZ = 125_000.0
 ADC_FAST_FRAME_RATE_HZ = 1_000_000.0
-DIGITAL_DEEP_SAMPLE_RATE_HZ = 14_000_000.0
+# The live rolling UI is built on repeated finite captures, not the old
+# retention-ring path. 50 MHz is the tested ceiling for that user-facing live
+# mode on this board revision.
+DIGITAL_LIVE_SAMPLE_RATE_HZ = 50_000_000.0
 DIGITAL_FAST_BRAM_SAMPLES = 1024
 # Full 64 Mbit x16 SDRAM = 4,194,304 words. Raised from 1M after the deep-capture
 # write-path fix: hardware-validated end-to-end (1M/2M/4M captures all return 100%
@@ -222,12 +225,11 @@ class ExistingHostAdapter(HardwareDevice):
             findings.append({
                 "level": "warning",
                 "message": "Single-shot deep digital capture is clean up to the "
-                           "full 200 MHz sample clock. Rolling/continuous capture "
-                           "is a retention ring bounded by lossless readback "
-                           f"(~{DIGITAL_DEEP_SAMPLE_RATE_HZ / 1_000_000:.0f} MHz); "
-                           "above that the newest samples are kept and overruns "
-                           "are reported. Use single-shot for trustworthy "
-                           "high-rate deep capture.",
+                           "full 200 MHz sample clock. Live rolling capture has "
+                           f"a tested ceiling around {DIGITAL_LIVE_SAMPLE_RATE_HZ / 1_000_000:.0f} MHz "
+                           "on this board revision; above that the newest "
+                           "samples are kept and overruns are reported. Use "
+                           "single-shot for trustworthy high-rate deep capture.",
             })
         return findings
 
@@ -269,10 +271,10 @@ class ExistingHostAdapter(HardwareDevice):
             if (self._requires_unavailable_high_rate_deep_path(settings, trigger)
                     and not self._use_rolling_single_shot(settings, trigger)):
                 raise HardwareError(
-                    "Rolling/continuous capture above ~15 MHz overruns the "
-                    "retention ring on this bitstream. Use single-shot for "
+                    "Live rolling capture above ~50 MHz exceeds the tested "
+                    "ceiling for this board revision. Use single-shot for "
                     "trustworthy deep capture at any rate up to the full "
-                    "200 MHz sample clock, or lower the rolling rate.")
+                    "200 MHz sample clock, or lower the live rate.")
 
             dev.reset()
             # REG_FAST_MODE selects BRAM (1024-word) vs SDRAM capture storage.
@@ -606,9 +608,10 @@ class ExistingHostAdapter(HardwareDevice):
         if trigger is not None or settings.trigger.pre_trigger_samples:
             return False
         if settings.mode in ("continuous", "rolling"):
-            # Rolling/continuous is a retention ring bounded by lossless SPI
-            # readback (~15 MHz); above that it aliases/overruns the ring badly.
-            return settings.sample_rate > DIGITAL_DEEP_SAMPLE_RATE_HZ
+            # Rolling/continuous is a repeated finite-capture live view here,
+            # not the old ring streamer. Keep it within the tested 50 MHz
+            # ceiling for this board revision.
+            return settings.sample_rate > DIGITAL_LIVE_SAMPLE_RATE_HZ
         # Single-shot deep SDRAM capture is validated clean at every rate up to
         # the full sample clock (open-page write path + producer-done completion),
         # so it is no longer rate-limited.

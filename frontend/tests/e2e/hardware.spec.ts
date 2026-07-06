@@ -102,6 +102,10 @@ test('capture controls reflect MAX1000 modes', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'DELTA RLE' })).toHaveClass(/active/);
   await page.screenshot({ path: shot('capture-compression-delta-rle.png'), fullPage: true });
 
+  await page.getByRole('button', { name: 'Live ring' }).click();
+  await expect(page.getByRole('option', { name: '50 MHz' })).toBeAttached();
+  await page.screenshot({ path: shot('capture-live-50mhz.png'), fullPage: true });
+
   await page.locator('.mode-tile', { hasText: 'Analog fast' }).click();
   await expect(page.getByText('High-speed analog uses one physical analog input at the best ADC rate.')).toBeVisible();
   await expect(page.getByRole('option', { name: '1 MHz' })).toBeAttached();

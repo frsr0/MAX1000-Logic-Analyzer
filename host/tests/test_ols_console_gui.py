@@ -210,8 +210,8 @@ class TestOLScopeRateLimits:
         fmt = scope._fmt_rate(expected)
         assert fmt in [r for r, _ in ALL_RATES], f"{fmt} not in presets"
 
-    def test_rolling_digital_clamps_to_15mhz(self):
-        """Rolling 16 Digital clamps to 15 MHz (30 MB/s / 2 B)."""
+    def test_rolling_digital_clamps_to_50mhz(self):
+        """Rolling 16 Digital clamps to the live-view ceiling."""
         scope = _make_scope()
         scope.capture_type = MagicMock()
         scope.capture_type.get.return_value = 'rolling'
@@ -221,7 +221,7 @@ class TestOLScopeRateLimits:
         scope._update_rate_info = MagicMock()
         scope._update_buf_estimate = MagicMock()
         rate = scope._apply_rate('96MHz')
-        assert rate <= 15_000_000
+        assert rate <= 50_000_000
 
     def test_rolling_2ana_clamps(self):
         """Rolling 2-ana clamps to ~5 MHz (30 MB/s / 6 wire B)."""

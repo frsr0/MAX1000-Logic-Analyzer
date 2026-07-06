@@ -138,13 +138,33 @@ def test_rolling_digital_rejects_untrustworthy_high_rate_path():
     try:
         adapter.capture(settings)
     except HardwareError as exc:
-        assert "overruns the retention ring" in str(exc)
+        assert "tested ceiling" in str(exc)
     else:
         raise AssertionError("200 MHz rolling capture should be rejected")
 
-    assert any(f["level"] == "warning" and "retention ring" in f["message"]
+    assert any(f["level"] == "warning" and "tested ceiling" in f["message"]
                for f in findings)
     adapter._dev.capture.assert_not_called()
+
+
+def test_rolling_digital_allows_50mhz_live_path():
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+    settings = CaptureSettings(
+        mode="rolling",
+        sample_rate=50_000_000,
+        num_samples=1024,
+        enabled_digital=list(range(16)),
+    )
+
+    findings = adapter.validate_settings(settings)
+    result = adapter.capture(settings)
+
+    assert not [f for f in findings if f["level"] == "error"]
+    adapter._dev.capture.assert_called_once()
+    adapter._dev.read_capture_range.assert_not_called()
+    assert result.divider == 3
+    assert len(result.digital) == 2048
 
 
 def test_rolling_boundary_repair_uses_absolute_sample_index():
