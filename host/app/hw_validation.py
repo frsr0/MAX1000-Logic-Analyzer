@@ -854,8 +854,62 @@ def test_accel_who_am_i(dev):
         check(bool(hits),
               f"LIS3DH WHO_AM_I over SPI read == 0x33 (offsets {hits})")
     except Exception as e:
-        skip(f"accelerometer: exception during read ({e})")
+        check(False, f"accelerometer SPI read raised unexpectedly ({e})")
     save_result("test_accel_who_am_i", b"", {"spi_offsets": candidates})
+
+
+def test_device_lifecycle_sanity(dev):
+    """Strict reopen/reset smoke test for stale-session regressions.
+
+    The suite has already shown that an aborted prior run can leave the FTDI
+    path or FPGA state wedged for the next pass. This test forces a clean
+    close/open/reset boundary and requires both metadata and a known-good
+    capture to still work afterwards.
+    """
+    print_header("Test 36b: Device lifecycle / reopen sanity")
+    dev.reset()
+    dev.spi.flush()
+    before_meta = dev.get_metadata()
+    check(len(before_meta) >= 9,
+          f"metadata available before reopen ({len(before_meta)} bytes)")
+
+    dev.set_debug_ch0(True, freq_hz=100_000)
+    first = dev.capture(rate_hz=1_000_000, nsamples=256, timeout=5)
+    if first:
+        ch, ns = samples_to_channels(first)
+        tr0 = sum(1 for i in range(1, min(ns, len(ch[0])))
+                  if ch[0][i] != ch[0][i - 1])
+        check(tr0 > 10, f"pre-reopen capture sees debug CH0 activity ({tr0} transitions)")
+        check_channels_clean(ch, ns, except_ch=[0], label="lifecycle pre")
+    else:
+        check(False, "pre-reopen capture returned no data")
+
+    dev.close()
+    time.sleep(0.1)
+    dev.open()
+    dev.reset()
+    dev.spi.flush()
+
+    after_meta = dev.get_metadata()
+    check(len(after_meta) >= 9,
+          f"metadata available after reopen ({len(after_meta)} bytes)")
+    check(before_meta[:9] == after_meta[:9],
+          "metadata header is stable across close/open/reset")
+
+    dev.set_debug_ch0(True, freq_hz=100_000)
+    second = dev.capture(rate_hz=1_000_000, nsamples=256, timeout=5)
+    if second:
+        ch, ns = samples_to_channels(second)
+        tr0 = sum(1 for i in range(1, min(ns, len(ch[0])))
+                  if ch[0][i] != ch[0][i - 1])
+        check(tr0 > 10, f"post-reopen capture sees debug CH0 activity ({tr0} transitions)")
+        check_channels_clean(ch, ns, except_ch=[0], label="lifecycle post")
+    else:
+        check(False, "post-reopen capture returned no data")
+
+    dev.set_debug_ch0(False)
+    save_result("test36b_device_lifecycle", b"",
+                {"before_meta_len": len(before_meta), "after_meta_len": len(after_meta)})
 
 # ====================================================================
 # Test 11: Divider accuracy
@@ -2534,68 +2588,83 @@ def test_codec_readback_matrix(dev):
 # ====================================================================
 def test_live_rate_ceiling(dev):
     # Walk the rate ladder per codec until the live ring goes lossy (firmware
-    # overrun or host falling behind wall-clock). Strict floor: raw must be
-    # lossless at 500 kS/s (the documented envelope) and RLE at 250 kS/s.
-    # Delta is a legacy alias on this build, so we measure it but do not gate
-    # the suite on a floor until the real delta compressor is back.
+    # overrun or host falling behind wall-clock). Sweep a few CH0 source
+    # frequencies so the effect of signal compressibility is visible instead
+    # of being hidden by a single fixed waveform. Delta is a legacy alias to
+    # raw on this build, so raw/delta should match; RLE is the only distinct
+    # compression path here.
     print_header("Test 35: Live ring rate ceiling per codec")
+    source_freqs = [1_000, 10_000, 100_000, 1_000_000]
     ladder = [250_000, 500_000, 1_000_000, 1_500_000, 2_000_000]
-    floors = {'raw': 500_000, 'rle': 250_000}
-    ceilings = {}
-    for codec in ('raw', 'rle', 'delta'):
-        best = 0
-        for rate in ladder:
-            dev.reset(); dev.spi.flush()
-            # 10 kHz PWM: representative compressible source (runs of ~12-100
-            # samples across the ladder) without being RLE-pathological.
-            dev.set_debug_ch0(True, freq_hz=10_000)
-            dev.set_readback_compression(codec)
-            stop = threading.Event()
-            # Hard watchdog: a stalled stream read blocks inside the driver
-            # where this loop can't set stop (the RLE live-stream stall hung
-            # one rung for ~53 minutes without it).
-            watchdog = threading.Timer(6.0, stop.set)
-            watchdog.start()
-            got = 0
-            over = 0
-            failed = None
-            t0 = time.time()
-            try:
-                for _data, total, _w, overrun in dev.stream_ring_capture(
-                        rate, 4096, stop):
-                    got = total
-                    over = overrun
-                    if time.time() - t0 > 1.2:
-                        stop.set()
-            except Exception as exc:
-                failed = exc
-            finally:
-                watchdog.cancel()
-            wall = max(time.time() - t0, 1e-6)
-            thr = got / wall
-            lossless = failed is None and over == 0 and thr >= rate * 0.90
-            log(f"  {codec:5s} @{rate//1000:>5}kS/s: {got} samples in {wall:.2f}s "
-                f"({thr/1e6:.2f} MS/s) overruns={over}"
-                + (f" EXC={failed}" if failed else "")
-                + f" -> {'LOSSLESS' if lossless else 'LOSSY'}")
-            if lossless:
-                best = rate
-            else:
-                break   # failing point found; no need to climb further
-        ceilings[codec] = best
-        if codec in floors:
-            check(best >= floors[codec],
-                  f"{codec} live ring lossless at >= {floors[codec]//1000} kS/s "
-                  f"(measured ceiling {best/1e6:.2f} MS/s)")
+    summary = {}
+
+    def measure_ceiling(rate_hz, codec, freq_hz):
+        dev.reset(); dev.spi.flush()
+        dev.set_debug_ch0(True, freq_hz=freq_hz)
+        dev.set_readback_compression(codec)
+        stop = threading.Event()
+        # Hard watchdog: a stalled stream read blocks inside the driver where
+        # this loop can't set stop. Keep it bounded so the sweep remains usable.
+        watchdog = threading.Timer(6.0, stop.set)
+        watchdog.start()
+        got = 0
+        over = 0
+        failed = None
+        t0 = time.time()
+        try:
+            for _data, total, _w, overrun in dev.stream_ring_capture(
+                    rate_hz, 4096, stop):
+                got = total
+                over = overrun
+                if time.time() - t0 > 1.2:
+                    stop.set()
+        except Exception as exc:
+            failed = exc
+        finally:
+            watchdog.cancel()
+        wall = max(time.time() - t0, 1e-6)
+        thr = got / wall
+        lossless = failed is None and over == 0 and thr >= rate_hz * 0.90
+        log(f"  {codec:5s} src={freq_hz//1000:>6}kHz @{rate_hz//1000:>5}kS/s: "
+            f"{got} samples in {wall:.2f}s ({thr/1e6:.2f} MS/s) overruns={over}"
+            + (f" EXC={failed}" if failed else "")
+            + f" -> {'LOSSLESS' if lossless else 'LOSSY'}")
+        return rate_hz if lossless else 0
+
+    for freq_hz in source_freqs:
+        ceilings = {}
+        for codec in ('raw', 'rle', 'delta'):
+            best = 0
+            for rate in ladder:
+                measured = measure_ceiling(rate, codec, freq_hz)
+                if measured:
+                    best = measured
+                else:
+                    break
+            ceilings[codec] = best
+        summary[freq_hz] = ceilings
+        check(ceilings['raw'] == ceilings['delta'],
+              f"delta aliases raw at {freq_hz//1000} kHz source "
+              f"({ceilings['raw']/1e6:.2f} vs {ceilings['delta']/1e6:.2f} MS/s)")
+        check(ceilings['raw'] >= 500_000,
+              f"raw live ring lossless at >= 500 kS/s for {freq_hz//1000} kHz source "
+              f"(measured ceiling {ceilings['raw']/1e6:.2f} MS/s)")
+        if freq_hz == 10_000:
+            check(ceilings['rle'] >= 250_000,
+                  f"rle live ring lossless at >= 250 kS/s for 10 kHz source "
+                  f"(measured ceiling {ceilings['rle']/1e6:.2f} MS/s)")
         else:
-            log(f"  [INFO] delta live ring ceiling is characterisation only "
-                f"(measured ceiling {best/1e6:.2f} MS/s)")
+            log(f"  [INFO] rle ceiling at {freq_hz//1000} kHz source is characterisation "
+                f"only (measured ceiling {ceilings['rle']/1e6:.2f} MS/s)")
     dev.set_readback_compression('raw')
     dev.set_debug_ch0(False)
-    log("  measured lossless ceilings: "
-        + ", ".join(f"{c}={v/1e6:.2f} MS/s" for c, v in ceilings.items()))
+    log("  measured lossless ceilings by source frequency: "
+        + "; ".join(
+            f"{freq//1000}kHz(raw={c['raw']/1e6:.2f}, rle={c['rle']/1e6:.2f}, "
+            f"delta={c['delta']/1e6:.2f})"
+            for freq, c in summary.items()))
     check(True, "live rate ceiling characterization completed")
-    save_result("test35_live_rate_ceiling", b"", {"ceilings": ceilings})
+    save_result("test35_live_rate_ceiling", b"", {"ceilings": summary})
 
 
 def main():
@@ -2685,6 +2754,7 @@ def main():
 
         log("\n--- On-board accelerometer (LIS3DH) ---")
         test_accelerometer_whoami(dev)
+        test_device_lifecycle_sanity(dev)
 
         log("\n--- Readback codec matrix + live rate ceiling ---")
         test_codec_readback_matrix(dev)
@@ -2774,6 +2844,7 @@ def main_new_only():
         test_codec_readback_matrix(dev)
         test_live_rate_ceiling(dev)
         test_capture_during_readout(dev)
+        test_device_lifecycle_sanity(dev)
     except Exception as e:
         log(f"\nERROR: {e}")
         import traceback
