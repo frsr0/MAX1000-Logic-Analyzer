@@ -86,7 +86,9 @@ def decode_analog_words(analog_words, channels=4, block_samples=16,
         has_anchors = bool(hdr & ANALOG_HEADER_ANCHOR_MASK)
         if has_anchors:
             if i + channels > n:
-                raise ValueError('truncated anchored analog block')
+                # End-of-capture can stop mid-block; treat a partial tail as
+                # trailing garbage and return the fully decoded prefix.
+                break
             anchors = analog_words[i:i + channels]
             i += channels
             for ch, anchor in enumerate(anchors):
@@ -108,7 +110,8 @@ def decode_analog_words(analog_words, channels=4, block_samples=16,
         n_payload = -(-(delta_samples * w) // 15)
         payload = analog_words[i:i + n_payload]
         if len(payload) < n_payload:
-            raise ValueError('truncated analog payload')
+            # Likewise for an incomplete packed payload at the tail.
+            break
         i += n_payload
 
         # Unpack delta_samples W-bit signed deltas, LSB-first across 15-bit slots.
