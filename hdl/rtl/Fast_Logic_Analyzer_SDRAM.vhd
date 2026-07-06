@@ -713,6 +713,9 @@ begin
      signal narrow_bit_count_r : natural range 0 to 15 := 0;
      signal narrow_word_pending_r : std_logic := '0';
      signal narrow_word_data_r : std_logic_vector(15 downto 0) := (others => '0');
+     signal narrow_sample_bit_r : std_logic := '0';
+     signal narrow_sample_valid_r : std_logic := '0';
+     signal narrow_sample_last_r : std_logic := '0';
   begin
     -- Stage 0: sample pins
     process(FAST_CLK)
@@ -847,8 +850,16 @@ begin
 
     -- Stage 2d: BRAM/FIFO write (uses pipelined flags, only 1-bit compares)
     process(FAST_CLK)
+      variable narrow_count_v : natural range 0 to 15;
+      variable narrow_valid_v : std_logic;
+      variable narrow_bit_v   : std_logic;
+      variable narrow_last_v  : std_logic;
     begin
       if rising_edge(FAST_CLK) then
+        narrow_count_v := narrow_bit_count_r;
+        narrow_valid_v := narrow_sample_valid_r;
+        narrow_bit_v := narrow_sample_bit_r;
+        narrow_last_v := narrow_sample_last_r;
         fifo_wr <= '0';
         bram_wren <= '0';
         afull_r <= fifo_wralmost_full;
@@ -897,6 +908,13 @@ begin
         narrow_shift_r <= (others => '0');
         narrow_bit_count_r <= 0;
           narrow_word_pending_r <= '0';
+        narrow_sample_bit_r <= '0';
+        narrow_sample_valid_r <= '0';
+        narrow_sample_last_r <= '0';
+        narrow_count_v := 0;
+        narrow_valid_v := '0';
+        narrow_bit_v := '0';
+        narrow_last_v := '0';
         end if;
 
         if fifo_overflow_f = '0' then
@@ -967,25 +985,33 @@ begin
           elsif capture_en_r = '1' and sample_tick_r = '1' and narrow_enable_f = '1' then
             -- Narrow high-speed rolling packs 16 consecutive samples of one
             -- selected digital channel into one SDRAM word. Bit 0 is earliest.
-            if narrow_channel_f < Channels then
-              narrow_shift_r(narrow_bit_count_r) <= sample_word_r(narrow_channel_f);
-            else
-              narrow_shift_r(narrow_bit_count_r) <= '0';
+            -- Queue the selected bit first, then consume the previously queued
+            -- bit on this edge. That keeps the muxed input off the same cone as
+            -- the shift-register update.
+            if narrow_valid_v = '1' then
+              if narrow_last_v = '1' then
+                narrow_word_data_r(14 downto 0) <= narrow_shift_r(14 downto 0);
+                narrow_word_data_r(15) <= narrow_bit_v;
+                narrow_word_pending_r <= '1';
+                narrow_shift_r <= (others => '0');
+                narrow_count_v := 0;
+              else
+                narrow_shift_r(narrow_count_v) <= narrow_bit_v;
+                narrow_count_v := narrow_count_v + 1;
+              end if;
             end if;
 
-            if narrow_bit_count_r = 15 then
-              narrow_word_data_r(14 downto 0) <= narrow_shift_r(14 downto 0);
-              if narrow_channel_f < Channels then
-                narrow_word_data_r(15) <= sample_word_r(narrow_channel_f);
-              else
-                narrow_word_data_r(15) <= '0';
-              end if;
-              narrow_word_pending_r <= '1';
-              narrow_shift_r <= (others => '0');
-              narrow_bit_count_r <= 0;
+            if narrow_channel_f < Channels then
+              narrow_bit_v := sample_word_r(narrow_channel_f);
             else
-              narrow_bit_count_r <= narrow_bit_count_r + 1;
+              narrow_bit_v := '0';
             end if;
+            if narrow_count_v = 15 then
+              narrow_last_v := '1';
+            else
+              narrow_last_v := '0';
+            end if;
+            narrow_valid_v := '1';
 
             if afull_r = '1' and continuous_f = '0' then
               fifo_overflow_f <= '1';
@@ -1008,6 +1034,10 @@ begin
             end if;
           end if;
         end if;
+        narrow_bit_count_r <= narrow_count_v;
+        narrow_sample_bit_r <= narrow_bit_v;
+        narrow_sample_valid_r <= narrow_valid_v;
+        narrow_sample_last_r <= narrow_last_v;
       end if;
     end process;
   end generate;
