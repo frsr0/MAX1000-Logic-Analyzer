@@ -361,6 +361,18 @@ def decompress_rle_stream(data: bytes) -> bytes:
     return np.repeat(values, counts).astype("<u2").tobytes()
 
 
+def decompress_delta_rle_stream(data: bytes) -> bytes:
+    """Decompress the merged delta->RLE readback codec.
+
+    The wire stream is first RLE-expanded back to packed delta words, then the
+    delta stream is unpacked into the original 16-bit samples.
+    """
+    rle = decompress_rle_stream(data)
+    if not rle:
+        return b""
+    return decompress_delta_stream(rle)
+
+
 def compress_mixed_group(data: bytes) -> bytes:
     """Compress 16 mixed frames losslessly into one variable-length group."""
     frame_stride = analog_frame_stride(MODE_MIXED)
@@ -502,11 +514,13 @@ class OLSDeviceSPI:
         self._timings = {}
 
     def set_compression_enabled(self, enable: bool):
-        return self.set_readback_compression('rle' if enable else 'raw')
+        return self.set_readback_compression('delta_rle' if enable else 'raw')
 
     def set_readback_compression(self, mode: str):
         mode = str(mode or 'raw').lower()
-        if mode not in ('raw', 'delta', 'rle'):
+        if mode in ('delta', 'rle'):
+            mode = 'delta_rle'
+        if mode not in ('raw', 'delta_rle'):
             raise ValueError(f"unsupported readback compression mode: {mode}")
         self.readback_compression_mode = mode
         self.compress_readback_enabled = mode != 'raw'
@@ -514,9 +528,7 @@ class OLSDeviceSPI:
         if cur < 0:
             return False
         cur &= ~REG_FLAGS_COMPRESS_MASK
-        if mode == 'delta':
-            cur |= REG_FLAGS_COMPRESS_DELTA
-        elif mode == 'rle':
+        if mode == 'delta_rle':
             cur |= REG_FLAGS_COMPRESS_RLE
         return self.pkt.write_register(REG_FLAGS, cur)
 
@@ -526,6 +538,8 @@ class OLSDeviceSPI:
     def _readback_codec(self):
         if not self._can_compress_readback():
             return 'raw'
+        if self.readback_compression_mode in ('delta', 'rle'):
+            return 'delta_rle'
         return self.readback_compression_mode
 
     def _use_compressed_live_readback(self, *, use_continuous, payload_stride,
@@ -1052,9 +1066,7 @@ class OLSDeviceSPI:
         """Write the full capture mode state before every arm."""
         mode_flags = (flags | self.analog_mode) & 0xFFFFFFFF
         mode_flags &= ~REG_FLAGS_COMPRESS_MASK
-        if self.readback_compression_mode == 'delta':
-            mode_flags |= REG_FLAGS_COMPRESS_DELTA
-        elif self.readback_compression_mode == 'rle':
+        if self.readback_compression_mode == 'delta_rle':
             mode_flags |= REG_FLAGS_COMPRESS_RLE
         if mode_flags & MODE_ANALOG_ONLY:
             mode_flags |= (self.analog_channel & 0x1F) << 8
@@ -1136,7 +1148,7 @@ class OLSDeviceSPI:
         batch_blocks = 128
         codec = self._readback_codec()
         use_compress = codec != 'raw'
-        batched_compressed = codec in ('delta', 'rle')
+        batched_compressed = codec == 'delta_rle'
         t_total = time.perf_counter()
         blocks_total = 0.0
         decode_total = 0.0
@@ -1171,10 +1183,7 @@ class OLSDeviceSPI:
                           for a in addrs]
             blocks_total += time.perf_counter() - t_blocks
             if use_compress:
-                decode_block = (
-                    decompress_delta_stream if codec == 'delta'
-                    else decompress_rle_stream
-                )
+                decode_block = decompress_delta_rle_stream
                 # Decompress each block; any short/invalid decode is re-read
                 # raw with the FPGA compression flags cleared.
                 t_decode = time.perf_counter()
@@ -1473,11 +1482,12 @@ class OLSDeviceSPI:
         overrun_total = 0
         producer_hint = None
         oldest_hint = None
-        # True held-CS streaming is production-safe only for the new RLE path.
+        # True held-CS streaming is production-safe only for the merged
+        # delta_rle path.
         # The legacy raw stream still leaves the shared readback state dirty on
         # hardware after teardown, so raw mode stays on the stable block-read
         # path until that FPGA-side unwind bug is fixed.
-        use_raw_stream = self._readback_codec() == 'rle'
+        use_raw_stream = self._readback_codec() == 'delta_rle'
         required_available = window_samples * (2 if use_raw_stream else 1)
         pending = b''
         pending_samples = 0

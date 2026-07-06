@@ -31,6 +31,7 @@ from driver.ols_spi_device import (
     decompress_mixed_stream,
     decode_analog_frames,
     decompress_rle_stream,
+    decompress_delta_rle_stream,
     narrow_digital_flags,
     OLSDeviceSPI,
     decompress_delta_stream,
@@ -77,6 +78,14 @@ class TestCompressionHelpers:
         out = decompress_delta_stream(raw)
         assert len(out) == 64
         assert out[:2] == b"\x34\x12"
+
+    def test_decompress_delta_rle_stream_expands_merged_codec(self):
+        raw = struct.pack('<2H', 1, 0x1234) + struct.pack('<2H', 5, 0)
+        raw += struct.pack('<2H', 1, 0x5678) + struct.pack('<2H', 5, 0)
+        out = decompress_delta_rle_stream(raw)
+        assert len(out) == 64
+        assert struct.unpack('<32H', out)[:16] == (0x1234,) * 16
+        assert struct.unpack('<32H', out)[16:] == (0x5678,) * 16
 
     def test_mixed_compression_round_trips_delta_lanes(self):
         payload = bytearray()
@@ -227,21 +236,30 @@ class TestOLSDeviceSPI:
 
         assert device_spi.set_compression_enabled(True) is not False
 
-        assert device_spi.readback_compression_mode == 'rle'
+        assert device_spi.readback_compression_mode == 'delta_rle'
         assert device_spi.compress_readback_enabled is True
         device_spi.pkt.write_register.assert_called_once_with(
             0x20, (0x12340000 & ~0xC0000) | REG_FLAGS_COMPRESS_RLE)
 
-    def test_set_readback_delta_selects_delta_codec(self, device_spi):
+    def test_set_readback_delta_selects_merged_codec(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi.pkt.read_register.return_value = 0x12340000 | REG_FLAGS_COMPRESS_RLE
 
-        assert device_spi.set_readback_compression('delta') is not False
+        assert device_spi.set_readback_compression('delta_rle') is not False
 
-        assert device_spi.readback_compression_mode == 'delta'
+        assert device_spi.readback_compression_mode == 'delta_rle'
         assert device_spi.compress_readback_enabled is True
         device_spi.pkt.write_register.assert_called_once_with(
-            0x20, (0x12340000 & ~0xC0000) | 0x40000)
+            0x20, (0x12340000 & ~0xC0000) | REG_FLAGS_COMPRESS_RLE)
+
+    def test_set_readback_legacy_aliases_normalize_to_merged_codec(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.read_register.return_value = 0x12340000
+
+        assert device_spi.set_readback_compression('delta') is not False
+        assert device_spi.readback_compression_mode == 'delta_rle'
+        assert device_spi.set_readback_compression('rle') is not False
+        assert device_spi.readback_compression_mode == 'delta_rle'
 
     def test_set_pin_map(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -297,10 +315,12 @@ class TestOLSDeviceSPI:
         assert len(data) == 1200
 
     def test_read_capture_range_decompresses_compressed_blocks(self, device_spi):
-        block0 = struct.pack('<6H', 0x1234, 0, 0, 0, 0, 0) * 32
-        block1 = struct.pack('<6H', 0x5678, 0, 0, 0, 0, 0) * 32
+        block0 = struct.pack('<2H', 1, 0x1234) + struct.pack('<2H', 5, 0)
+        block0 *= 32
+        block1 = struct.pack('<2H', 1, 0x5678) + struct.pack('<2H', 5, 0)
+        block1 *= 32
         device_spi.pkt = MagicMock()
-        device_spi.readback_compression_mode = 'delta'
+        device_spi.readback_compression_mode = 'delta_rle'
         device_spi.compress_readback_enabled = True
         device_spi.pkt.read_capture_blocks.return_value = [block0, block1]
 
@@ -315,10 +335,10 @@ class TestOLSDeviceSPI:
             [0, 1022], compressed=True)
 
     def test_read_capture_range_decompresses_rle_blocks(self, device_spi):
-        block0 = struct.pack('<2H', 512, 0x1234)
-        block1 = struct.pack('<2H', 512, 0x5678)
+        block0 = (struct.pack('<2H', 1, 0x1234) + struct.pack('<2H', 5, 0)) * 32
+        block1 = (struct.pack('<2H', 1, 0x5678) + struct.pack('<2H', 5, 0)) * 32
         device_spi.pkt = MagicMock()
-        device_spi.readback_compression_mode = 'rle'
+        device_spi.readback_compression_mode = 'delta_rle'
         device_spi.compress_readback_enabled = True
         device_spi.pkt.read_capture_blocks.return_value = [block0, block1]
 
@@ -876,7 +896,7 @@ class TestOLSDeviceSPII2CCapture:
 class TestOLSDeviceSPIRolling:
     def test_stream_ring_capture_reads_ring_via_block_reads(self, device_spi):
         device_spi.pkt = MagicMock()
-        device_spi.readback_compression_mode = 'delta'
+        device_spi.readback_compression_mode = 'delta_rle'
         device_spi.compress_readback_enabled = True
         device_spi.pkt.write_register.return_value = True
         device_spi.pkt.arm_capture.return_value = ST_OK
@@ -890,6 +910,11 @@ class TestOLSDeviceSPIRolling:
             b'\x02\x00' * 4,
             b'\x03\x00' * 4,
         ])
+        device_spi.pkt.start_rle_stream_read.side_effect = [
+            (4, 0, b'\x01\x00' * 4),
+            (8, 0, b'\x02\x00' * 4),
+            (12, 0, b'\x03\x00' * 4),
+        ]
         device_spi.spi.flush = MagicMock()
 
         stop_evt = MagicMock()
@@ -897,14 +922,15 @@ class TestOLSDeviceSPIRolling:
         stop_evt.wait.return_value = False
         results = list(device_spi.stream_ring_capture(1_000_000, 4, stop_evt))
 
-        assert [item[1] for item in results] == [4]
-        device_spi.read_capture_range.assert_has_calls([call(0, 4)])
-        device_spi.pkt.transaction.assert_called_with(
-            CMD_ABORT_CAPTURE, timeout=0.5)
+        assert [item[1] for item in results] == [4, 8]
+        device_spi.pkt.start_rle_stream_read.assert_has_calls([
+            call(0, 4, stop_evt=stop_evt),
+        ])
+        device_spi.pkt.transaction.assert_called_with(CMD_ABORT_CAPTURE, timeout=0.5)
 
     def test_stream_ring_capture_resyncs_to_oldest_after_overrun(self, device_spi):
         device_spi.pkt = MagicMock()
-        device_spi.readback_compression_mode = 'delta'
+        device_spi.readback_compression_mode = 'delta_rle'
         device_spi.compress_readback_enabled = True
         device_spi.pkt.write_register.return_value = True
         device_spi.pkt.arm_capture.return_value = ST_OK
@@ -917,6 +943,10 @@ class TestOLSDeviceSPIRolling:
             b'\x01\x00' * 4,
             b'\x02\x00' * 4,
         ])
+        device_spi.pkt.start_rle_stream_read.side_effect = [
+            (4, 0, b'\x01\x00' * 4),
+            (8, 0, b'\x02\x00' * 4),
+        ]
         device_spi.spi.flush = MagicMock()
 
         stop_evt = MagicMock()
@@ -924,8 +954,8 @@ class TestOLSDeviceSPIRolling:
         stop_evt.wait.return_value = False
         results = list(device_spi.stream_ring_capture(1_000_000, 4, stop_evt))
 
-        assert [item[3] for item in results] == [0]
-        device_spi.read_capture_range.assert_has_calls([call(0, 4)])
+        assert [item[3] for item in results] == [2]
+        device_spi.pkt.start_rle_stream_read.assert_has_calls([call(128, 4, stop_evt=stop_evt)])
 
     def test_stream_ring_capture_uses_block_reads_in_raw_mode(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -953,7 +983,7 @@ class TestOLSDeviceSPIRolling:
 
     def test_stream_ring_capture_uses_true_rle_stream_in_rle_mode(self, device_spi):
         device_spi.pkt = MagicMock()
-        device_spi.readback_compression_mode = 'rle'
+        device_spi.readback_compression_mode = 'delta_rle'
         device_spi.compress_readback_enabled = True
         device_spi.analog_mode = MODE_DIGITAL
         device_spi.pkt.write_register.return_value = True
@@ -1098,7 +1128,7 @@ class TestOLSDeviceSPIRolling:
 
     def test_rolling_capture_prefers_compression_only_for_plain_digital(self, device_spi):
         device_spi.analog_mode = MODE_DIGITAL
-        device_spi.readback_compression_mode = 'delta'
+        device_spi.readback_compression_mode = 'delta_rle'
         device_spi.compress_readback_enabled = True
 
         assert device_spi._use_compressed_live_readback(
@@ -1109,7 +1139,7 @@ class TestOLSDeviceSPIRolling:
             use_continuous=True, payload_stride=None, gen_data=b'abc', stride=2) is False
         assert device_spi._use_compressed_live_readback(
             use_continuous=False, payload_stride=None, gen_data=None, stride=2) is False
-        device_spi.readback_compression_mode = 'rle'
+        device_spi.readback_compression_mode = 'delta_rle'
         assert device_spi._use_compressed_live_readback(
             use_continuous=True, payload_stride=None, gen_data=None, stride=2) is True
         device_spi.analog_mode = MODE_MIXED

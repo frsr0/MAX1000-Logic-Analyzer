@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 ChannelType = Literal["digital", "analog", "derived", "decoder", "bus"]
-ReadbackCompression = Literal["raw", "delta", "rle"]
+ReadbackCompression = Literal["raw", "delta_rle", "delta", "rle"]
 
 
 def new_id(prefix: str) -> str:

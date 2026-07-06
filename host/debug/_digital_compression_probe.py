@@ -1,4 +1,4 @@
-"""Compare raw/delta/rle digital live-readback throughput on hardware.
+"""Compare raw/delta_rle digital live-readback throughput on hardware.
 
 Examples:
   python host/debug/_digital_compression_probe.py
@@ -81,8 +81,8 @@ def main() -> int:
     ap.add_argument("--signal", choices=("idle", "pwm"), default="pwm", help="controlled digital signal source")
     ap.add_argument("--pwm-freq", type=float, default=100_000.0, help="debug CH0 PWM frequency when --signal pwm")
     ap.add_argument("--pwm-duty", type=float, default=50.0, help="debug CH0 PWM duty percent when --signal pwm")
-    ap.add_argument("--modes", nargs="+", choices=("raw", "delta", "rle"),
-                    default=("raw", "delta", "rle"), help="compression modes to test")
+    ap.add_argument("--modes", nargs="+", choices=("raw", "delta_rle"),
+                    default=("raw", "delta_rle"), help="compression modes to test")
     ap.add_argument("--rate-sweep", type=str, default=None,
                     help="comma-separated list of rates to sweep (e.g. 1000000,4000000,10000000)")
     ap.add_argument("--chunk-sweep", type=str, default=None,

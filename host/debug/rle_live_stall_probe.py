@@ -100,7 +100,7 @@ def main() -> int:
     stop_evt = threading.Event()
     try:
         dev.reset()
-        dev.set_readback_compression("rle")
+        dev.set_readback_compression("delta_rle")
         configure_signal(dev, args.signal)
         div = max(0, int(dev.sample_clk / args.rate) - 1)
         dev._write_capture_config(

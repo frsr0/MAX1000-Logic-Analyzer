@@ -98,11 +98,9 @@ test('capture controls reflect MAX1000 modes', async ({ page }) => {
   await expect(page.getByRole('option', { name: '200 MHz' })).toBeAttached();
 
   await page.locator('.mode-tile', { hasText: 'Digital deep' }).click();
-  await page.getByRole('button', { name: 'DELTA' }).click();
-  await expect(page.getByRole('button', { name: 'DELTA' })).toHaveClass(/active/);
-  await page.getByRole('button', { name: 'RLE' }).click();
-  await expect(page.getByRole('button', { name: 'RLE' })).toHaveClass(/active/);
-  await page.screenshot({ path: shot('capture-compression-rle.png'), fullPage: true });
+  await page.getByRole('button', { name: 'DELTA RLE' }).click();
+  await expect(page.getByRole('button', { name: 'DELTA RLE' })).toHaveClass(/active/);
+  await page.screenshot({ path: shot('capture-compression-delta-rle.png'), fullPage: true });
 
   await page.locator('.mode-tile', { hasText: 'Analog fast' }).click();
   await expect(page.getByText('High-speed analog uses one physical analog input at the best ADC rate.')).toBeVisible();
@@ -124,13 +122,13 @@ test('capture controls reflect MAX1000 modes', async ({ page }) => {
   await page.screenshot({ path: shot('capture-controls.png'), fullPage: true });
 });
 
-test('compression sweep shows raw, delta, and rle throughput differences', async ({ page }) => {
+test('compression sweep shows raw and delta_rle throughput differences', async ({ page }) => {
   test.skip(useMockHarness, 'live hardware only');
   test.setTimeout(240_000);
 
   const sampleCount = 250_000;
   const sweepRates = [1_000_000, 10_000_000, 50_000_000];
-  const codecs = ['raw', 'delta', 'rle'] as const;
+  const codecs = ['raw', 'delta_rle'] as const;
   const results: Array<{
     rate_hz: number;
     codec: typeof codecs[number];
@@ -156,13 +154,18 @@ test('compression sweep shows raw, delta, and rle throughput differences', async
     await page.getByLabel('Sample rate').selectOption(String(rate));
     await expect(page.getByLabel('Sample rate')).toHaveValue(String(rate));
     for (const codec of codecs) {
-      await compressionGroup.getByRole('button', { name: codec.toUpperCase(), exact: true }).click();
-      const before = await captureState(page);
+      await compressionGroup.getByRole('button', {
+        name: codec === 'raw' ? 'RAW' : 'DELTA RLE',
+        exact: true,
+      }).click();
       const startedAt = Date.now();
       await page.locator('.panel-body button.primary.big').click();
-      await expect.poll(async () => (await captureState(page)).last_session_id, {
+      await expect.poll(async () => (await captureState(page)).progress?.samples_read, {
         timeout: 90_000,
-      }).not.toBe(before.last_session_id);
+      }).toBe(sampleCount);
+      await expect.poll(async () => (await captureState(page)).state, {
+        timeout: 90_000,
+      }).toBe('done');
       await expect(page.locator('canvas.waveform-canvas')).toBeVisible({ timeout: 30_000 });
       const elapsedMs = Date.now() - startedAt;
       const throughputMsps = (sampleCount / (elapsedMs / 1000)) / 1_000_000;
@@ -184,7 +187,7 @@ test('compression sweep shows raw, delta, and rle throughput differences', async
           raw_retry_s: timings[`last_readback_raw_retry_s_${codec}`] ?? null,
         },
       });
-      await page.screenshot({ path: shot(`compression-sweep-${rate}-${codec}.png`) });
+    await page.screenshot({ path: shot(`compression-sweep-${rate}-${codec}.png`) });
     }
   }
 
@@ -208,9 +211,8 @@ test('compression sweep shows raw, delta, and rle throughput differences', async
   }
   for (const [rate, row] of byRate.entries()) {
     expect(row.raw).toBeDefined();
-    expect(row.delta).toBeDefined();
-    expect(row.rle).toBeDefined();
-    const values = [row.raw!, row.delta!, row.rle!];
+    expect(row.delta_rle).toBeDefined();
+    const values = [row.raw!, row.delta_rle!];
     expect(Math.max(...values) - Math.min(...values)).toBeGreaterThan(Math.max(...values) * 0.1);
   }
 

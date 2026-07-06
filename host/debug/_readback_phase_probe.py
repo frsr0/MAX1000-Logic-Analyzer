@@ -6,7 +6,7 @@ readback phase into:
   - total capture wall time
   - read_capture_range wall time
   - batched SPI payload exchange time
-  - delta/rle decompression time
+  - delta_rle decompression time
 
 It is intentionally read-only and does not change production behavior.
 """
@@ -153,7 +153,7 @@ def main() -> int:
     ap.add_argument("--rates", type=str, default="1000000,10000000,50000000")
     ap.add_argument("--pwm-freq", type=float, default=100_000.0)
     ap.add_argument("--pwm-duty", type=float, default=50.0)
-    ap.add_argument("--codecs", nargs="+", default=("raw", "delta", "rle"))
+    ap.add_argument("--codecs", nargs="+", default=("raw", "delta_rle"))
     ap.add_argument("--output-json", type=str, default="host/debug/readback_phase_probe.json")
     args = ap.parse_args()
 

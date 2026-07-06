@@ -23,7 +23,7 @@ const NO_DIGITAL: number[] = [];
 type CaptureMode = 'single' | 'continuous' | 'rolling' | 'digital_narrow' | 'triggered' | 'analog'
   | 'analog_fast' | 'analog_all' | 'mixed' | 'analog_continuous'
   | 'analog_all_continuous' | 'mixed_continuous';
-type ReadbackCompression = 'raw' | 'delta' | 'rle';
+type ReadbackCompression = 'raw' | 'delta_rle' | 'delta' | 'rle';
 
 const ANALOG_MODES: CaptureMode[] = [
   'analog', 'analog_fast', 'analog_all', 'mixed',
@@ -458,7 +458,7 @@ export function CaptureControls() {
         <span>Readback codec</span>
         {digitalCompressionMode ? (
           <div className="seg-toggle" role="group" aria-label="Digital readback compression">
-            {(['raw', 'delta', 'rle'] as ReadbackCompression[]).map((codec) => (
+            {(['raw', 'delta_rle'] as ReadbackCompression[]).map((codec) => (
               <button
                 key={codec}
                 type="button"
@@ -468,12 +468,10 @@ export function CaptureControls() {
                 title={
                   codec === 'raw'
                     ? 'No compression'
-                    : codec === 'delta'
-                      ? 'Best for small sample-to-sample changes'
-                      : 'Best for long repeated values'
+                    : 'Merged delta packing followed by RLE'
                 }
               >
-                {codec.toUpperCase()}
+                {codec === 'raw' ? 'RAW' : 'DELTA RLE'}
               </button>
             ))}
           </div>

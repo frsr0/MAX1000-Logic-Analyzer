@@ -15,7 +15,7 @@ from live_readback_sweep import run_case
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", required=True, choices=("raw", "delta", "rle"))
+    ap.add_argument("--mode", required=True, choices=("raw", "delta_rle"))
     ap.add_argument("--signal", required=True, choices=("idle", "pwm100k", "pwm1m", "pwm5m"))
     ap.add_argument("--rate", required=True, type=int)
     ap.add_argument("--chunk", required=True, type=int)

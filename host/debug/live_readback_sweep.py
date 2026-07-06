@@ -2,8 +2,7 @@
 
 This measures the sustained samples/second delivered by rolling live capture for:
   - raw
-  - delta
-  - rle
+  - delta_rle
 
 Signal source matters for compressed modes, so the sweep can run multiple CH0
 patterns (idle, low-rate PWM, high-rate PWM). Results are printed live and
@@ -153,8 +152,8 @@ def summarize(results: list[dict]) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--modes", nargs="+", choices=("raw", "delta", "rle"),
-                    default=("raw", "delta", "rle"))
+    ap.add_argument("--modes", nargs="+", choices=("raw", "delta_rle"),
+                    default=("raw", "delta_rle"))
     ap.add_argument("--signals", nargs="+",
                     choices=("idle", "pwm100k", "pwm1m", "pwm5m"),
                     default=("idle", "pwm100k", "pwm5m"))

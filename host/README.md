@@ -74,8 +74,7 @@ Common operations include:
 The supported readback codecs are:
 
 - `raw`
-- `delta`
-- `rle`
+- `delta_rle`
 
 The host applies the selected codec on the supported readback paths and keeps
 the mixed-signal frame codec separate from the raw SPI wire codecs.

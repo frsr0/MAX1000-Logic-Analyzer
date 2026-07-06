@@ -85,7 +85,7 @@ export interface CaptureSettings {
   auto_rearm: boolean;
   repeat_count: number;
   auto_save: boolean;
-  readback_compression: 'raw' | 'delta' | 'rle';
+  readback_compression: 'raw' | 'delta_rle' | 'delta' | 'rle';
   mock_scenario?: string | null;
 }
 

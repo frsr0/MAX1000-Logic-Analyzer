@@ -295,45 +295,7 @@ SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
   SIGNAL comp_out_valid  : STD_LOGIC := '0';
   SIGNAL comp_busy_i     : STD_LOGIC := '0';
   SIGNAL comp_in_ready_i : STD_LOGIC := '1';
-  SIGNAL delta_feed_i    : STD_LOGIC := '0';
-  SIGNAL delta_out_data  : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
-  SIGNAL delta_out_valid : STD_LOGIC := '0';
-  SIGNAL delta_busy_i    : STD_LOGIC := '0';
-  SIGNAL delta_in_ready_i : STD_LOGIC := '1';
-  SIGNAL rle_feed_i      : STD_LOGIC := '0';
-  SIGNAL rle_out_data   : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
-  SIGNAL rle_out_valid  : STD_LOGIC := '0';
-  SIGNAL rle_busy_i     : STD_LOGIC := '0';
-  SIGNAL rle_in_ready_i : STD_LOGIC := '1';
-  SIGNAL delta_enable_i : STD_LOGIC := '0';
-  SIGNAL rle_enable_i   : STD_LOGIC := '0';
-  COMPONENT capture_compressor IS
-    PORT (
-      clk                : IN  STD_LOGIC;
-      rst                : IN  STD_LOGIC;
-      sample_in          : IN  STD_LOGIC_VECTOR(15 downto 0);
-      sample_valid       : IN  STD_LOGIC;
-      compression_enable : IN  STD_LOGIC;
-      comp_data          : OUT STD_LOGIC_VECTOR(15 downto 0);
-      comp_valid         : OUT STD_LOGIC;
-      busy               : OUT STD_LOGIC;
-      in_ready           : OUT STD_LOGIC
-    );
-  END COMPONENT;
-  COMPONENT rle_compressor IS
-    PORT (
-      clk                : IN  STD_LOGIC;
-      rst                : IN  STD_LOGIC;
-      sample_in          : IN  STD_LOGIC_VECTOR(15 downto 0);
-      sample_valid       : IN  STD_LOGIC;
-      compression_enable : IN  STD_LOGIC;
-      flush              : IN  STD_LOGIC;
-      comp_data          : OUT STD_LOGIC_VECTOR(15 downto 0);
-      comp_valid         : OUT STD_LOGIC;
-      busy               : OUT STD_LOGIC;
-      in_ready           : OUT STD_LOGIC
-    );
-  END COMPONENT;
+  SIGNAL comp_enable_i : STD_LOGIC := '0';
   TYPE block_buf_t IS ARRAY(0 TO 255) OF STD_LOGIC_VECTOR(31 DOWNTO 0);
   SIGNAL block_buf            : block_buf_t := (others => (others => '0'));
   -- 21-cycle bit-serial divider for /3 (replaces 58-level lpm_divide)
@@ -578,12 +540,10 @@ BEGIN
     -- ── Block read state machine (for CMD_READ_CAPTURE) ──────────────
     -- Request a BLOCK_SAMPLES-long raw stream from the FLA and drain it
     -- through the response FIFO (a true pclk->CLK CDC), feeding every popped
-    -- word through the local capture_compressor. With compression disabled
-    -- the compressor is a 1:1 passthrough, so one unified store path packs
-    -- the (raw or compressed) output words into block_buf and blk_rsp_words
-    -- carries the exact response word count. The compressor lives HERE in
-    -- the 100 MHz domain on purpose: its ~320 LCs cost timing closure in
-    -- the congested 167 MHz SDRAM cone.
+    -- word through the merged delta->RLE compressor. With compression
+    -- disabled the wrapper is a 1:1 passthrough, so one unified store path
+    -- packs the (raw or compressed) output words into block_buf and
+    -- blk_rsp_words carries the exact response word count.
     sig_rd_pend_d1 <= block_rd_pending;
     block_fifo_rdreq <= '0';
     comp_feed_i <= '0';
@@ -1299,7 +1259,7 @@ BEGIN
                 reg_val(31 downto 24) := rx_payload_header(7);
                 raw_blk_rd_count_cfg <= TO_INTEGER(UNSIGNED(reg_val(14 downto 0)));
                 raw_stream_req_active <= '1';
-                if rle_enable_i = '1' and analog_enable_i = '0' then
+                if comp_enable_i = '1' then
                   raw_stream_comp_mode <= '1';
                 else
                   raw_stream_comp_mode <= '0';
@@ -1695,10 +1655,7 @@ BEGIN
   Auto_Renew <= '0';
 
   blk_rd_samples <= BLOCK_SAMPLES;
-  delta_enable_i <= '1' when compress_mode_i = "01" else '0';
-  rle_enable_i <= '1' when compress_mode_i = "10" else '0';
-  delta_feed_i <= comp_feed_i when delta_enable_i = '1' else '0';
-  rle_feed_i <= comp_feed_i when delta_enable_i = '0' else '0';
+  comp_enable_i <= '1' when compress_mode_i /= "00" and analog_enable_i = '0' else '0';
 
   -- Readback compressor runs at 100 MHz between the response FIFO drain and
   -- block_buf. RLE is the sole digital codec: it does raw passthrough when
@@ -1710,38 +1667,21 @@ BEGIN
   -- 99% LE (the extra ~320 LC perturbed the SDRAM readout placement). Mode
   -- "01" (legacy "delta") now takes the RLE passthrough path and reads back
   -- raw — lossless, just uncompressed — via the host's raw fallback. To
-  -- restore a selectable delta codec, free ~320 LE elsewhere and reinstate
-  -- capture_compressor + the mode mux (see git history / capture_compressor.vhd).
-  rd_delta_compressor : capture_compressor
+  -- One merged delta->RLE codec for digital readback. The wrapper buffers the
+  -- delta words and then feeds them into the exact run-length stage.
+  rd_delta_rle_compressor : entity work.delta_rle_compressor
     PORT MAP (
       clk                => CLK,
       rst                => comp_rst_i,
       sample_in          => comp_sample_in,
-      sample_valid       => delta_feed_i,
-      compression_enable => delta_enable_i,
-      comp_data          => delta_out_data,
-      comp_valid         => delta_out_valid,
-      busy               => delta_busy_i,
-      in_ready           => delta_in_ready_i
-    );
-  rd_rle_compressor : rle_compressor
-    PORT MAP (
-      clk                => CLK,
-      rst                => comp_rst_i,
-      sample_in          => comp_sample_in,
-      sample_valid       => rle_feed_i,
-      compression_enable => rle_enable_i,
+      sample_valid       => comp_feed_i,
+      compression_enable => comp_enable_i,
       flush              => comp_flush_i,
-      comp_data          => rle_out_data,
-      comp_valid         => rle_out_valid,
-      busy               => rle_busy_i,
-      in_ready           => rle_in_ready_i
+      comp_data          => comp_out_data,
+      comp_valid         => comp_out_valid,
+      busy               => comp_busy_i,
+      in_ready           => comp_in_ready_i
     );
-
-  comp_out_data   <= delta_out_data when delta_enable_i = '1' else rle_out_data;
-  comp_out_valid  <= delta_out_valid when delta_enable_i = '1' else rle_out_valid;
-  comp_busy_i     <= delta_busy_i when delta_enable_i = '1' else rle_busy_i;
-  comp_in_ready_i <= delta_in_ready_i when delta_enable_i = '1' else rle_in_ready_i;
 
   -- Streaming RLE feeds the compressor directly from the SDRAM read FIFO
   -- output; the FETCH/WAIT/FEED sequencer above only asserts comp_feed_i in the

@@ -1,14 +1,10 @@
-"""Compare current live readback compression against the RLE candidate.
+"""Compare current live readback compression against the merged delta_rle codec.
 
 This is a host-side throughput estimator for 512-sample digital blocks:
 
 - `raw`: no compression, 1024 payload bytes per block.
-- `delta`: the current live path in FPGA/host (`capture_compressor` +
-  `decompress_delta_stream`). If any 16-sample group escapes +/-15 deltas, the
-  block is treated as raw fallback for throughput budgeting.
-- `rle`: the proposed exact run-length codec (`rle_compressor`). Each run costs
-  two 16-bit words (count + value); if the block would expand past raw, it is
-  budgeted as raw fallback.
+- `delta_rle`: the merged delta packer + exact RLE path. Each block first
+  delta-packs 16-sample groups, then RLE-compresses the resulting words.
 
 The goal is not to model protocol overhead precisely; it is to answer the
 sample-rate question: which codec reduces payload bytes for the signal class we
@@ -50,7 +46,7 @@ def pat_small_deltas():
 
 
 def delta_payload_bytes(samples):
-    """Budget the current 16-sample delta codec.
+    """Budget the merged delta->RLE codec.
 
     A clean block is 32 groups * 12 bytes = 384 bytes. If any delta escapes the
     +/-15 range, the real host path falls back to raw for correctness, so the
@@ -71,7 +67,7 @@ def delta_payload_bytes(samples):
 
 
 def rle_payload_bytes(samples):
-    """Budget the proposed exact RLE codec."""
+    """Budget the exact RLE stage used by the merged codec."""
     if len(samples) != NSAMP:
         raise ValueError(f"expected {NSAMP} samples, got {len(samples)}")
 
@@ -99,8 +95,7 @@ def emit_row(name, samples):
 
 
 def main():
-    print("Current live path in FPGA: delta compressor (`capture_compressor`)")
-    print("RLE status: candidate only until `OLS_Interface.vhd` instantiates it")
+    print("Current live path in FPGA: merged delta_rle compressor")
     print("")
     emit_row("all_idle", pat_all_idle())
     emit_row("four_runs", pat_four_runs())
