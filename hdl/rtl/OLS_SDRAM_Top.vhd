@@ -886,12 +886,14 @@ BEGIN
   -- its 16-bit stream drives the SDRAM write FIFO only when Packed_Mode is set
   -- (selected inside the core). Digital source is the fast-sampled channels.
   -- Elided entirely in FAST_RAW_BUILD to free logic for max-speed timing closure.
+  -- NOTE: the ADC controller's ch*_valid outputs are generated in sys_clk,
+  -- so mso_capture must latch them in sys_clk, not adc_conv_clk.
   gen_mso_cap : if not FAST_RAW_BUILD generate
   begin
     MSO_CAP : entity work.mso_capture
       port map (
         fast_clk      => fast_clk,
-        adc_clk       => adc_conv_clk,
+        adc_clk       => sys_clk,
         rst           => not armed_i,
         adc_ch0       => adc0_result, adc_ch0_valid => adc0_valid,
         adc_ch1       => adc1_result, adc_ch1_valid => adc1_valid,

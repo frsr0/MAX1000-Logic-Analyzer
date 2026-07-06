@@ -111,7 +111,40 @@ class OLS:
         """Open FTDI Channel B, enter MPSSE mode, configure SPI."""
         ft = _require_ftd2xx()
         n = ft.createDeviceInfoList()
-        candidates = [self.channel] + [i for i in range(n) if i != self.channel]
+
+        def _score_device(idx: int) -> tuple[int, int]:
+            """Prefer the physical MPSSE channel even if enumeration order shifts."""
+            try:
+                d = ft.open(idx)
+                info = d.getDeviceInfo()
+                d.close()
+            except Exception:
+                return (0, idx)
+            desc = info.get("description", b"")
+            serial = info.get("serial", b"")
+            if isinstance(desc, bytes):
+                desc = desc.decode(errors="replace")
+            if isinstance(serial, bytes):
+                serial = serial.decode(errors="replace")
+            desc = str(desc)
+            serial = str(serial)
+            score = 0
+            if desc.endswith("B"):
+                score += 100
+            if "SPI" in desc:
+                score += 50
+            if serial.endswith("B"):
+                score += 25
+            if idx == self.channel:
+                score += 10
+            return (score, idx)
+
+        # Probe the device table once and try the most likely MPSSE slot first.
+        candidates = [i for _, i in sorted((_score_device(i) for i in range(n)),
+                                           reverse=True)]
+        if self.channel in candidates:
+            candidates.remove(self.channel)
+            candidates.insert(0, self.channel)
         last_exc = None
         d = None
         for idx in candidates:

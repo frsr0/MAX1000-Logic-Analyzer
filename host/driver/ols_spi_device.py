@@ -1459,8 +1459,21 @@ class OLSDeviceSPI:
         # path until that FPGA-side unwind bug is fixed.
         use_raw_stream = self._readback_codec() == 'rle'
         required_available = window_samples * (2 if use_raw_stream else 1)
+        pending = b''
+        pending_samples = 0
         try:
             while not stop_evt.is_set():
+                if not use_raw_stream and pending_samples >= window_samples:
+                    data = pending[:window_samples * 2]
+                    pending = pending[window_samples * 2:]
+                    pending_samples -= window_samples
+                    next_sample += window_samples
+                    total += window_samples
+                    if progress_cb:
+                        progress_cb(data, total, window_samples)
+                    yield data, total, window_samples, overrun_total
+                    continue
+
                 if (producer_hint is None or oldest_hint is None
                         or int(producer_hint) - int(next_sample or 0) < required_available):
                     st = self._get_ring_status()
@@ -1488,16 +1501,21 @@ class OLSDeviceSPI:
                     if next_sample < int(oldest_hint):
                         next_sample = int(oldest_hint)
                         continue
+                    if not data:
+                        break
+                    valid_samples = len(data) // 2
+                    next_sample += valid_samples
+                    total += valid_samples
+                    if progress_cb:
+                        progress_cb(data, total, window_samples)
+                    yield data, total, window_samples, overrun_total
                 else:
-                    data = self.read_capture_range(next_sample, window_samples)
-                if not data:
-                    break
-                valid_samples = len(data) // 2
-                next_sample += valid_samples
-                total += valid_samples
-                if progress_cb:
-                    progress_cb(data, total, window_samples)
-                yield data, total, window_samples, overrun_total
+                    fetch_nsamp = min(available, max(window_samples, window_samples * 8))
+                    data = self.read_capture_range(next_sample, fetch_nsamp)
+                    if not data:
+                        break
+                    pending += data
+                    pending_samples += len(data) // 2
         finally:
             try:
                 self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
@@ -1906,10 +1924,12 @@ class OLSDeviceSPI:
         stride = analog_frame_stride(self.analog_mode)
         if (self._raw_flags & MODE_PACKED_MSO) and st.get('producer_index') is not None:
             # Packed captures do not necessarily fill the whole requested SDRAM
-            # window. Trim to the hardware-written word count so the decoder
-            # never sees untouched 0xFFFF tail words as fake slice packets.
+            # window. Some single-shot reads report producer_index=0 even when
+            # the capture buffer is valid, so only trust the hardware-written
+            # word count when it is non-zero.
             valid_words = max(0, int(st.get('producer_index')))
-            samples = samples[:valid_words * 2]
+            if valid_words > 0:
+                samples = samples[:valid_words * 2]
         if samples and any(samples[i:i+stride] != b'\x00' * stride
                            for i in range(0, len(samples), stride)):
             for i in range(0, len(samples), stride):

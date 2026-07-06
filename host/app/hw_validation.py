@@ -2706,6 +2706,10 @@ def main():
         traceback.print_exc()
     finally:
         try:
+            dev.reset()
+        except:
+            pass
+        try:
             dev.close()
         except:
             pass

@@ -9,7 +9,7 @@ use IEEE.numeric_std.all;
 -- write dcfifo. It is an additive, mode-selectable path: it does not touch the
 -- existing 128-bit Analog_Frame datapath.
 --
---   4x ADC results (adc_clk / sys_clk domain, one valid pulse per conversion)
+--   4x ADC results (ADC-results / sys_clk domain, one valid pulse per conversion)
 --        -> CDC into fast_clk -> delta_calc -> analog_packer  (bit15=0 words:
 --           4 verbatim anchors + 12 packed deltas per analog frame)
 --   16 raw digital pins -> 2-FF sync (fast_clk) -> digital_rle (bit15=1 words)
