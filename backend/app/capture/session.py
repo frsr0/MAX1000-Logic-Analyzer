@@ -208,7 +208,7 @@ def default_digital_channels(count: int = 16) -> List[ChannelInfo]:
     return channels
 
 
-def default_analog_channels(count: int = 8,
+def default_analog_channels(count: int = 4,
                             adc_channels: Optional[List[int]] = None) -> List[ChannelInfo]:
     from ..hardware.max1000_board import analog_channel_info
 

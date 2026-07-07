@@ -34,14 +34,11 @@ function digitalPinMap() {
 
 function analogPinMap() {
   return [
-    { board_label: 'AIN', fpga_pin: 'PIN_D2', header: 'User I/O', adc_channel: 16, available: true, current_rtl_stream: false,
-      note: 'Dedicated analogue input pin; present on the board but not streamed by the current bitstream.' },
-    { board_label: 'AIN7', fpga_pin: 'PIN_B1', header: 'User I/O', available: true, current_rtl_stream: false,
-      note: 'Dual-function analogue pin in the MAX1000 guide.' },
-    { board_label: 'AIN0', fpga_pin: 'PIN_E1', header: 'J1 / 2', adc_channel: 8, available: true, current_rtl_stream: false },
+    { board_label: 'AIN3', fpga_pin: 'PIN_D1', header: 'J1 / 5', adc_channel: 1, available: true, current_rtl_stream: true,
+      note: 'High-speed single analog lane.' },
     { board_label: 'AIN1', fpga_pin: 'PIN_C2', header: 'J1 / 3', adc_channel: 2, available: true, current_rtl_stream: true },
-    { board_label: 'AREF', fpga_pin: 'PIN_D3', header: 'J1 / 1', available: false, current_rtl_stream: false,
-      note: 'Analogue reference, not a capture input.' },
+    { board_label: 'AIN4', fpga_pin: 'PIN_E3', header: 'J1 / 6', adc_channel: 3, available: true, current_rtl_stream: true },
+    { board_label: 'AIN6', fpga_pin: 'PIN_E4', header: 'J1 / 8', adc_channel: 4, available: true, current_rtl_stream: true },
   ];
 }
 
@@ -60,7 +57,7 @@ function triggerMatrix() {
 function makeCap(): Json {
   return {
     digital_channels: 16,
-    analog_channels: 2,
+    analog_channels: 4,
     max_sample_rate: 200e6,
     min_sample_rate: 6,
     max_samples: 4_194_304,
@@ -70,14 +67,15 @@ function makeCap(): Json {
     supports_rolling: true,
     supports_continuous: true,
     supports_analog: true,
-    analog_rate_note: 'MAX10 ADC: 1 MSPS single-lane analog fast or 125 kframes/s dual-lane scan.',
+    analog_rate_note: 'MAX10 ADC supports 1 MSPS single-channel analog and 125 kframes/s 4-input physical analog scans. Mixed mode scans ADC0..ADC3 at the same scan frame rate.',
     generator_protocols: ['uart', 'rs485', 'i2c', 'pwm'],
     triggers: triggerMatrix(),
     trigger_matrix: triggerMatrix(),
     notes: [
       'The MAX1000 has 64 Mbit SDRAM for deep capture.',
       'Single-shot digital capture is validated up to the full 200 MHz sample clock.',
-      'Mixed mode captures digital plus 2 ADC lanes on a shared scan frame.',
+      'Maximum analog scans AIN3, AIN1, AIN4, and AIN6 at 125 kframes/s.',
+      'Mixed mode captures 16 digital bits plus the ADC0..ADC3 scan on a shared frame.',
     ],
     digital_pin_map: digitalPinMap(),
     analog_pin_map: analogPinMap(),
@@ -153,12 +151,12 @@ function makeAnalogSessionSummary(): Json {
     num_samples: 50_000,
     sample_rate: 125_000,
     duration_s: 0.4,
-    channel_count: 4,
+    channel_count: 20,
     has_analog: true,
     decoder_count: 1,
     marker_count: 1,
     tags: ['playwright', 'analog', 'mixed'],
-    notes: 'Fixture session with mixed digital + analog rows',
+    notes: 'Fixture session with mixed digital + 4 analog rows',
     device: 'MAX1000 OLS Logic Analyzer',
     mock: true,
   };
@@ -238,9 +236,9 @@ function makeSession(): Json {
 
 function makeAnalogSession(): Json {
   const channels = [
-    {
-      id: 'd0',
-      name: 'D0',
+    ...Array.from({ length: 16 }, (_, i) => ({
+      id: `d${i}`,
+      name: `D${i}`,
       type: 'digital',
       enabled: true,
       color: undefined,
@@ -254,34 +252,13 @@ function makeAnalogSession(): Json {
       coupling: 'DC',
       members: [],
       display_base: 'hex',
-      board_label: 'D0',
-      fpga_pin: 'PIN_H8',
-      header: 'J1 / 9',
-      pin_index: 0,
-    },
+      board_label: `D${i}`,
+      fpga_pin: 'PIN_XX',
+      header: 'J1',
+      pin_index: i,
+    })),
     {
-      id: 'd1',
-      name: 'D1',
-      type: 'digital',
-      enabled: true,
-      color: undefined,
-      units: '',
-      volts_per_div: 1,
-      offset: 0,
-      probe_attenuation: 1,
-      cal_gain: 1,
-      cal_offset: 0,
-      threshold: 1.65,
-      coupling: 'DC',
-      members: [],
-      display_base: 'hex',
-      board_label: 'D1',
-      fpga_pin: 'PIN_K10',
-      header: 'J1 / 10',
-      pin_index: 1,
-    },
-    {
-      id: 'a1',
+      id: 'a0',
       name: 'AIN3',
       type: 'analog',
       enabled: true,
@@ -303,13 +280,13 @@ function makeAnalogSession(): Json {
       physical_available: true,
     },
     {
-      id: 'a2',
+      id: 'a1',
       name: 'AIN1',
       type: 'analog',
       enabled: true,
       color: undefined,
       units: 'V',
-      volts_per_div: 1,
+      volts_per_div: 0.5,
       offset: 0,
       probe_attenuation: 1,
       cal_gain: 1,
@@ -322,6 +299,50 @@ function makeAnalogSession(): Json {
       fpga_pin: 'PIN_C2',
       header: 'J1 / 3',
       adc_channel: 2,
+      physical_available: true,
+    },
+    {
+      id: 'a2',
+      name: 'AIN4',
+      type: 'analog',
+      enabled: true,
+      color: undefined,
+      units: 'V',
+      volts_per_div: 0.5,
+      offset: 0,
+      probe_attenuation: 1,
+      cal_gain: 1,
+      cal_offset: 0,
+      threshold: 1.65,
+      coupling: 'DC',
+      members: [],
+      display_base: 'hex',
+      board_label: 'AIN4',
+      fpga_pin: 'PIN_E3',
+      header: 'J1 / 6',
+      adc_channel: 3,
+      physical_available: true,
+    },
+    {
+      id: 'a3',
+      name: 'AIN6',
+      type: 'analog',
+      enabled: true,
+      color: undefined,
+      units: 'V',
+      volts_per_div: 0.5,
+      offset: 0,
+      probe_attenuation: 1,
+      cal_gain: 1,
+      cal_offset: 0,
+      threshold: 1.65,
+      coupling: 'DC',
+      members: [],
+      display_base: 'hex',
+      board_label: 'AIN6',
+      fpga_pin: 'PIN_E4',
+      header: 'J1 / 8',
+      adc_channel: 4,
       physical_available: true,
     },
   ];
@@ -435,14 +456,26 @@ function buildDigitalSeries(length: number) {
 }
 
 function buildAnalogSeries(length: number) {
+  const a0 = new Float32Array(length);
   const a1 = new Float32Array(length);
   const a2 = new Float32Array(length);
+  const a3 = new Float32Array(length);
+  const a4 = new Float32Array(length);
+  const a5 = new Float32Array(length);
+  const a6 = new Float32Array(length);
+  const a7 = new Float32Array(length);
   for (let i = 0; i < length; i += 1) {
     const t = i / Math.max(1, length - 1);
+    a0[i] = 1.65 + 1.4 * Math.sin(t * Math.PI * 14);
     a1[i] = 1.65 + 1.05 * Math.sin(t * Math.PI * 12) + 0.15 * Math.sin(t * Math.PI * 60);
     a2[i] = 0.6 + 1.25 * (0.5 + 0.5 * Math.sin(t * Math.PI * 6 + 0.7));
+    a3[i] = 1.4 + 0.9 * Math.sin(t * Math.PI * 8 + 0.3);
+    a4[i] = 1.2 + 0.7 * Math.sin(t * Math.PI * 10 + 1.1);
+    a5[i] = 1.0 + 0.8 * (0.5 + 0.5 * Math.sin(t * Math.PI * 4 + 1.8));
+    a6[i] = 1.65 + 1.5 * Math.sin(t * Math.PI * 18 + 0.5);
+    a7[i] = 0.9 + 1.2 * (0.5 + 0.5 * Math.sin(t * Math.PI * 5 + 2.2));
   }
-  return { a1, a2 };
+  return { a0, a1, a2, a3, a4, a5, a6, a7 };
 }
 
 function downsampleDigital(series: Uint16Array, bins: number) {
@@ -512,20 +545,22 @@ function buildMixedAnalogBuffer(mode: 'lod' | 'overview' = 'lod') {
   const arrays: Array<{ name: string; dtype: 'u2' | 'u4' | 'f4'; data: Uint16Array | Uint32Array | Float32Array }> = [];
   if (mode === 'overview') {
     const { andMask, orMask, edges } = downsampleDigital(digital, bins);
-    const a1Stats = downsampleAnalog(analog.a1, bins);
-    const a2Stats = downsampleAnalog(analog.a2, bins);
+    const analogStats = Object.fromEntries(
+      Object.entries(analog).map(([name, data]) => [name, downsampleAnalog(data, bins)]),
+    ) as Record<string, { vmin: Float32Array; vmax: Float32Array }>;
     header.edges_channels = 16;
     arrays.push({ name: 'digital_and', dtype: 'u2', data: andMask });
     arrays.push({ name: 'digital_or', dtype: 'u2', data: orMask });
     arrays.push({ name: 'digital_edges', dtype: 'u4', data: edges });
-    arrays.push({ name: 'analog_min:a1', dtype: 'f4', data: a1Stats.vmin });
-    arrays.push({ name: 'analog_max:a1', dtype: 'f4', data: a1Stats.vmax });
-    arrays.push({ name: 'analog_min:a2', dtype: 'f4', data: a2Stats.vmin });
-    arrays.push({ name: 'analog_max:a2', dtype: 'f4', data: a2Stats.vmax });
+    for (const [name, stats] of Object.entries(analogStats)) {
+      arrays.push({ name: `analog_min:${name}`, dtype: 'f4', data: stats.vmin });
+      arrays.push({ name: `analog_max:${name}`, dtype: 'f4', data: stats.vmax });
+    }
   } else {
     arrays.push({ name: 'digital', dtype: 'u2', data: digital });
-    arrays.push({ name: 'analog:a1', dtype: 'f4', data: analog.a1 });
-    arrays.push({ name: 'analog:a2', dtype: 'f4', data: analog.a2 });
+    for (const [name, data] of Object.entries(analog)) {
+      arrays.push({ name: `analog:${name}`, dtype: 'f4', data });
+    }
   }
 
   const headerBytes = new TextEncoder().encode(JSON.stringify({

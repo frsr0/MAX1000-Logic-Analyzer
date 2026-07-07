@@ -227,7 +227,7 @@ def test_analog_only_capture_has_no_digital_channels(client):
     meta = client.get(f"/api/sessions/{sid}/metadata").json()
     channel_types = {ch["type"] for ch in meta["session"]["channels"]}
     assert channel_types == {"analog"}
-    assert len(meta["analog_channels"]) == 8
+    assert len(meta["analog_channels"]) == 4
 
 
 def test_mixed_capture_reenables_digital_channels(client):
@@ -243,7 +243,7 @@ def test_mixed_capture_reenables_digital_channels(client):
     digital = [ch for ch in channels if ch["type"] == "digital"]
     assert len(digital) == 16
     assert all(ch["enabled"] for ch in digital)
-    assert len(meta["analog_channels"]) == 8
+    assert len(meta["analog_channels"]) == 4
 
 
 def test_generator_loopback_self_test(client):

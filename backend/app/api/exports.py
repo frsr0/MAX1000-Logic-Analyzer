@@ -5,14 +5,14 @@ import time
 from typing import List, Optional
 
 from fastapi import APIRouter, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..capture.session import ExportRecord, new_id
-from ..exports.csv_export import decoder_csv, samples_csv
-from ..exports.json_export import session_to_json
+from ..exports.csv_export import decoder_csv, samples_csv, samples_csv_iter
 from ..exports.npz_export import npz_export
 from ..exports.report_export import html_report
-from ..exports.vcd_export import vcd_export
+from ..exports.vcd_export import vcd_export, vcd_export_iter
 from ..state import store
 from .deps import get_session_or_404, get_waveform_or_404
 
@@ -46,14 +46,17 @@ def export_csv(session_id: str, opts: CsvOptions):
         events = store.load_decoder_events(session_id, opts.decoder_instance)
         text = decoder_csv(events)
         fname = _filename(session, "decoded.csv")
-    else:
-        wf = get_waveform_or_404(session_id)
-        end = opts.end if opts.end >= 0 else wf.num_samples
-        text = samples_csv(session, wf, opts.start, end, opts.channels)
-        fname = _filename(session, "csv")
+        _record(session, "csv", fname, opts.model_dump())
+        return Response(content=text, media_type="text/csv", headers={
+            "Content-Disposition": f'attachment; filename="{fname}"'})
+    wf = get_waveform_or_404(session_id)
+    end = opts.end if opts.end >= 0 else wf.num_samples
+    fname = _filename(session, "csv")
     _record(session, "csv", fname, opts.model_dump())
-    return Response(content=text, media_type="text/csv", headers={
-        "Content-Disposition": f'attachment; filename="{fname}"'})
+    return StreamingResponse(
+        samples_csv_iter(session, wf, opts.start, end, opts.channels),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 class JsonOptions(BaseModel):
@@ -81,11 +84,12 @@ class VcdOptions(BaseModel):
 def export_vcd(session_id: str, opts: VcdOptions):
     session = get_session_or_404(session_id)
     wf = get_waveform_or_404(session_id)
-    text = vcd_export(session, wf, opts.channels)
     fname = _filename(session, "vcd")
     _record(session, "vcd", fname, opts.model_dump())
-    return Response(content=text, media_type="text/plain", headers={
-        "Content-Disposition": f'attachment; filename="{fname}"'})
+    return StreamingResponse(
+        vcd_export_iter(session, wf, opts.channels),
+        media_type="text/plain",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 @router.post("/api/sessions/{session_id}/export/npz")

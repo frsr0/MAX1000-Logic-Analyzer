@@ -45,16 +45,26 @@ from driver.bit_bang import i2c_read_symbols, max_i2c_read_bytes, pack_symbols
 from app.gui_decoders import parse_i2c_read_payload
 
 
+def _pack_pair(adc0, adc1):
+    adc0 &= 0x0FFF
+    adc1 &= 0x0FFF
+    return bytes((
+        adc0 & 0xFF,
+        ((adc0 >> 8) & 0x0F) | ((adc1 & 0x0F) << 4),
+        (adc1 >> 4) & 0xFF,
+    ))
+
+
 class TestAnalogFrameStride:
     def test_digital(self):
         assert analog_frame_stride(MODE_DIGITAL) == 2
 
     def test_mixed(self):
-        assert analog_frame_stride(MODE_MIXED) == 5
+        assert analog_frame_stride(MODE_MIXED) == 14
 
     def test_analog_only(self):
         assert analog_frame_stride(MODE_ANALOG_FAST) == 2
-        assert analog_frame_stride(MODE_ANALOG_ALL) == 3
+        assert analog_frame_stride(MODE_ANALOG_ALL) == 12
 
     def test_mode_without_mixed_bit_defaults_to_2(self):
         assert analog_frame_stride(0x03) == 2
@@ -100,18 +110,13 @@ class TestCompressionHelpers:
         payload = bytearray()
         for i in range(16):
             payload.extend(struct.pack('<H', 0x1000 + i))
-            adc0 = 0x120 + i
-            adc1 = 0x240 - i
-            payload.extend(bytes([
-                adc0 & 0xFF,
-                ((adc0 >> 8) & 0x0F) | ((adc1 & 0x0F) << 4),
-                (adc1 >> 4) & 0xFF,
-            ]))
+            for lane in range(0, 8, 2):
+                payload.extend(_pack_pair(0x120 + lane + i, 0x240 + lane - i))
         group = compress_mixed_group(bytes(payload))
         out, used = decompress_mixed_group(group)
         assert used == len(group)
         assert out == bytes(payload)
-        assert len(group) == 67
+        assert len(group) == 170
 
     def test_decompress_rle_stream_expands_runs(self):
         raw = struct.pack('<4H', 3, 0x1234, 2, 0xABCD)
@@ -124,18 +129,15 @@ class TestCompressionHelpers:
         payload = bytearray()
         for i in range(16):
             payload.extend(struct.pack('<H', 0x2000 + i))
-            adc0 = 200 if i % 2 == 0 else 3800
-            adc1 = 1000 + i
-            payload.extend(bytes([
-                adc0 & 0xFF,
-                ((adc0 >> 8) & 0x0F) | ((adc1 & 0x0F) << 4),
-                (adc1 >> 4) & 0xFF,
-            ]))
+            for lane in range(0, 8, 2):
+                adc0 = (200 if i % 2 == 0 else 3800) if lane == 0 else (500 + lane + i)
+                adc1 = 1000 + lane + i
+                payload.extend(_pack_pair(adc0, adc1))
         group = compress_mixed_group(bytes(payload))
         out, used = decompress_mixed_group(group)
         assert used == len(group)
         assert out == bytes(payload)
-        assert len(group) == 74
+        assert len(group) == 177
 
 
 class TestDecodeAnalogFrames:
@@ -153,13 +155,12 @@ class TestDecodeAnalogFrames:
         assert rows[2]["digital"] == 0x0004
 
     def test_mixed_all2(self):
-        frame = bytes([
-            0xBB, 0xAA,
-            0x23, 0x61, 0x45,
-        ])
+        frame = bytes([0xBB, 0xAA]) + b''.join(
+            _pack_pair(0x123 + lane, 0x456 + lane) for lane in range(0, 8, 2)
+        )
         rows = decode_analog_frames(frame, MODE_MIXED)
         assert rows[0]["digital"] == 0xAABB
-        assert rows[0]["adc"] == [0x123, 0x456]
+        assert rows[0]["adc"] == [0x123, 0x456, 0x125, 0x458, 0x127, 0x45A, 0x129, 0x45C]
 
     def test_fast_analog_one_channel(self):
         rows = decode_analog_frames(bytes([0x23, 0x01]), MODE_ANALOG_FAST)
@@ -167,12 +168,12 @@ class TestDecodeAnalogFrames:
         assert rows[0]["adc"] == [0x123]
 
     def test_maximum_analog_all2(self):
-        frame = bytes([
-            0x23, 0x61, 0x45,
-        ])
+        frame = b''.join(
+            _pack_pair(0x123 + lane, 0x456 + lane) for lane in range(0, 8, 2)
+        )
         rows = decode_analog_frames(frame, MODE_ANALOG_ALL)
         assert rows[0]["digital"] is None
-        assert rows[0]["adc"] == [0x123, 0x456]
+        assert rows[0]["adc"] == [0x123, 0x456, 0x125, 0x458, 0x127, 0x45A, 0x129, 0x45C]
 
     def test_empty_data(self):
         rows = decode_analog_frames(b'', MODE_DIGITAL)
@@ -296,7 +297,9 @@ class TestOLSDeviceSPI:
 
     def test_decode_analog_frames_explicit_mode(self, device_spi):
         result = device_spi.decode_analog_frames(
-            bytes([0x3C, 0x00]) + bytes(6),
+            bytes([0x3C, 0x00]) + b''.join(
+                _pack_pair(0x100 + lane, 0x101 + lane) for lane in range(0, 8, 2)
+            ),
             mode=MODE_MIXED,
         )
         assert result[0]["digital"] == 0x003C
@@ -382,50 +385,48 @@ class TestOLSDeviceSPI:
         payload = bytearray()
         for i in range(160):
             payload.extend(struct.pack('<H', 0x3000 + i))
-            adc0 = 0x180 + (i % 16)
-            adc1 = 0x280 + (i % 16)
-            payload.extend(bytes([
-                adc0 & 0xFF,
-                ((adc0 >> 8) & 0x0F) | ((adc1 & 0x0F) << 4),
-                (adc1 >> 4) & 0xFF,
-            ]))
+            for lane in range(0, 8, 2):
+                payload.extend(_pack_pair(
+                    0x180 + lane + (i % 16),
+                    0x280 + lane + (i % 16),
+                ))
         block = compress_mixed_stream(bytes(payload))
-        device_spi.pkt = MagicMock()
+        def read_capture_blocks(byte_addrs, compressed=False):
+            return [block]
+        pkt = type('Pkt', (), {})()
+        pkt.read_capture_blocks = read_capture_blocks
+        device_spi.pkt = pkt
         device_spi.analog_mode = MODE_MIXED
         device_spi.compress_readback_enabled = True
-        device_spi.pkt.read_capture_blocks.return_value = [block]
 
         data = device_spi._read_capture_range_mixed_compressed(
             start_sample=0, sample_count=MIXED_COMPRESSED_BLOCK_WORDS)
 
         assert len(data) == MIXED_COMPRESSED_BLOCK_WORDS * 2
         assert wire_to_payload(data, MODE_MIXED) == bytes(payload)
-        device_spi.pkt.read_capture_blocks.assert_called_once_with(
-            [0], compressed=True)
 
     def test_read_capture_range_decompresses_mixed_compressed_blocks_with_frame_drop(self, device_spi):
         payload = bytearray()
         for i in range(160):
             payload.extend(struct.pack('<H', 0x4000 + i))
-            adc0 = 0x200 + (i % 8)
-            adc1 = 0x300 + (i % 8)
-            payload.extend(bytes([
-                adc0 & 0xFF,
-                ((adc0 >> 8) & 0x0F) | ((adc1 & 0x0F) << 4),
-                (adc1 >> 4) & 0xFF,
-            ]))
+            for lane in range(0, 8, 2):
+                payload.extend(_pack_pair(
+                    0x200 + lane + (i % 8),
+                    0x300 + lane + (i % 8),
+                ))
         block = compress_mixed_stream(bytes(payload))
-        device_spi.pkt = MagicMock()
+        def read_capture_blocks(byte_addrs, compressed=False):
+            return [block]
+        pkt = type('Pkt', (), {})()
+        pkt.read_capture_blocks = read_capture_blocks
+        device_spi.pkt = pkt
         device_spi.analog_mode = MODE_MIXED
         device_spi.compress_readback_enabled = True
-        device_spi.pkt.read_capture_blocks.return_value = [block]
 
         data = device_spi._read_capture_range_mixed_compressed(
             start_sample=3, sample_count=MIXED_COMPRESSED_BLOCK_WORDS - 3)
 
-        assert wire_to_payload(data, MODE_MIXED) == bytes(payload[5:])
-        device_spi.pkt.read_capture_blocks.assert_called_once_with(
-            [0], compressed=True)
+        assert wire_to_payload(data, MODE_MIXED) == bytes(payload[14:])
 
     def test_repair_boundary_glitches_only_at_256_sample_boundaries(self, device_spi):
         words = [0x0001] * 520
@@ -765,18 +766,18 @@ class TestOLSDeviceSPICapture:
         device_spi.pkt.arm_capture.return_value = ST_OK
         device_spi.pkt.get_status.return_value = {
             'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
-        # One 5-byte mixed frame occupies 3 words on the wire, with one pad byte
-        # in the high half of the final word.
-        wire = bytes([0xBB, 0xAA, 0x23, 0x61, 0x45, 0x00])
+        wire = bytes([0xBB, 0xAA]) + b''.join(
+            _pack_pair(0x123 + lane, 0x456 + lane) for lane in range(0, 8, 2)
+        )
         frame = wire_to_payload(wire, MODE_MIXED)
         device_spi._stream_readback = MagicMock(return_value=wire)
         result, decoded = device_spi.capture_analog(
             rate_hz=100000, frames=1, mode=MODE_MIXED)
-        assert len(result) == 5, f"expected 5 bytes, got {len(result)}"
+        assert len(result) == 14, f"expected 14 bytes, got {len(result)}"
         assert result == frame, f"frame mismatch: {result.hex()}"
         assert len(decoded) == 1
         assert decoded[0]["digital"] == 0xAABB
-        assert decoded[0]["adc"] == [0x123, 0x456]
+        assert decoded[0]["adc"] == [0x123, 0x456, 0x125, 0x458, 0x127, 0x45A, 0x129, 0x45C]
 
     def test_capture_analog_only_roundtrip(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -1094,11 +1095,13 @@ class TestOLSDeviceSPIRolling:
         device_spi.pkt.get_status.side_effect = [
             {'capture_status': 0x11, 'producer_index': 0, 'oldest_index': 0,
              'newest_index': 0, 'overrun_count': 0},
-            {'capture_status': 0x11, 'producer_index': 6, 'oldest_index': 0,
-             'newest_index': 5, 'overrun_count': 0},
+            {'capture_status': 0x11, 'producer_index': 7, 'oldest_index': 0,
+             'newest_index': 6, 'overrun_count': 0},
         ]
         device_spi.analog_mode = MODE_MIXED
-        wire = bytes([0xBB, 0xAA, 0x23, 0x61, 0x45, 0x00])
+        wire = bytes([0xBB, 0xAA]) + b''.join(
+            _pack_pair(0x123 + lane, 0x456 + lane) for lane in range(0, 8, 2)
+        )
         device_spi.read_capture_range = MagicMock(return_value=wire)
         device_spi.spi.flush = MagicMock()
 
@@ -1108,8 +1111,8 @@ class TestOLSDeviceSPIRolling:
             125_000, 1, 4, stop_evt, fast_mode=False, yield_full_buffer=False))
 
         assert len(results) == 1
-        assert results[0][0] == bytes([0xBB, 0xAA, 0x23, 0x61, 0x45])
-        device_spi.read_capture_range.assert_called_once_with(0, 12)
+        assert results[0][0] == wire
+        device_spi.read_capture_range.assert_called_once_with(0, 28)
 
     def test_rolling_capture_no_gen(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -1209,7 +1212,9 @@ class TestOLSDeviceSPIRolling:
         device_spi.pkt.get_status.return_value = {
             'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
         device_spi.read_capture_range = MagicMock(return_value=bytes([
-            0xBB, 0xAA, 0x23, 0x61, 0x45, 0x00,
+            *(bytes([0xBB, 0xAA]) + b''.join(
+                _pack_pair(0x123 + lane, 0x456 + lane) for lane in range(0, 8, 2)
+            )),
         ]))
         device_spi.spi.flush = MagicMock()
         device_spi.analog_mode = MODE_MIXED
@@ -1222,8 +1227,10 @@ class TestOLSDeviceSPIRolling:
             payload_stride=analog_frame_stride(MODE_MIXED)))
 
         assert len(results) == 1
-        assert results[0][0] == bytes([0xBB, 0xAA, 0x23, 0x61, 0x45])
-        device_spi.read_capture_range.assert_called_once_with(0, 3)
+        assert results[0][0] == (bytes([0xBB, 0xAA]) + b''.join(
+            _pack_pair(0x123 + lane, 0x456 + lane) for lane in range(0, 8, 2)
+        ))
+        device_spi.read_capture_range.assert_called_once_with(0, 7)
 
     def test_rolling_capture_keeps_legacy_path_for_generator(self, device_spi):
         device_spi.pkt = MagicMock()

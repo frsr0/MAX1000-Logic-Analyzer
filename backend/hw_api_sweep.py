@@ -126,8 +126,8 @@ def maximum_analog_capture():
     digital_ch, analog_ch = channel_counts(meta)
     if digital_ch:
         raise RuntimeError("maximum analog capture unexpectedly has digital channels")
-    if analog_ch != 8:
-        raise RuntimeError(f"expected 8 analog channels, got {analog_ch}")
+    if analog_ch != 4:
+        raise RuntimeError(f"expected 4 analog channels, got {analog_ch}")
     return (f"session {sid['aa']} n={meta['num_samples']} "
             f"analog_ch={len(meta['analog_channels'])}")
 
@@ -146,8 +146,8 @@ def mixed_capture():
     digital_ch, analog_ch = channel_counts(meta)
     if digital_ch != 16:
         raise RuntimeError(f"expected 16 digital channels, got {digital_ch}")
-    if analog_ch != 8:
-        raise RuntimeError(f"expected 8 analog channels, got {analog_ch}")
+    if analog_ch != 4:
+        raise RuntimeError(f"expected 4 analog channels, got {analog_ch}")
     return (f"session {sid['m']} n={meta['num_samples']} "
             f"digital_ch={digital_ch} analog_ch={analog_ch}")
 

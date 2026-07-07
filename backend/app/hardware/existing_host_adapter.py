@@ -163,10 +163,10 @@ class ExistingHostAdapter(HardwareDevice):
             sample_clk_hz=sample_clk,
             supports_pre_trigger=True, supports_rolling=True,
             supports_continuous=True, supports_analog=True,
-            analog_rate_note="MAX10 ADC: 1 MSPS single-lane (analog fast) or "
-                             "125 kframes/s dual-lane. This bitstream streams "
-                             "1 ADC lane in fast mode and 2 ADC lanes in mixed "
-                             "and dual-analog modes.",
+            analog_rate_note="MAX10 ADC supports 1 MSPS single-channel "
+                             "analog and 125 kframes/s 4-input physical "
+                             "analog scans. Mixed mode scans ADC0..ADC3 at "
+                             "the same scan frame rate.",
             generator_protocols=["uart", "rs485", "i2c", "pwm"],
             triggers=[TriggerCapability(type=t, execution=e, description=d)
                       for t, e, d in trig],
@@ -176,11 +176,8 @@ class ExistingHostAdapter(HardwareDevice):
                 f"{DIGITAL_SDRAM_WORDS:,}-word 16-bit SDRAM capture ring "
                 f"({DIGITAL_NARROW_LOGICAL_SAMPLES:,} logical samples in "
                 "packed one-channel narrow mode).",
-                "This bitstream streams at most 2 analog lanes at once: "
-                "dual-analog captures ADC1 (AIN3) + ADC2 (AIN1); mixed "
-                "captures ADC0 (unmapped) + ADC1 (AIN3); analog-fast captures "
-                "1 lane, ADC1 (AIN3). The board has 8 AIN pins, but the "
-                "current capture engine does not scan all of them at once.",
+                "Maximum analog scans AIN3, AIN1, AIN4, and AIN6 at 125 kframes/s. "
+                "Mixed mode streams the same 4-lane analog scan in a shared frame.",
             ],
             digital_pin_map=DIGITAL_PIN_MAP,
             analog_pin_map=BOARD_ANALOG_INPUTS,
@@ -206,8 +203,9 @@ class ExistingHostAdapter(HardwareDevice):
         if settings.mode in ("mixed", "mixed_continuous"):
             findings.append({
                 "level": "info",
-                "message": "Mixed mode captures 16 digital bits plus 2 ADC "
-                           "lanes as a single time-correlated packed frame at up to "
+                "message": "Mixed mode captures 16 digital bits plus the current "
+                           "ADC0..ADC3 mux scan as a single time-correlated "
+                           "packed frame at up to "
                            f"{int(ADC_SCAN_FRAME_RATE_HZ):,} Hz. Digital is "
                            "sampled once per ADC frame; use digital-only mode "
                            "for higher digital sample rates.",
@@ -218,8 +216,9 @@ class ExistingHostAdapter(HardwareDevice):
             findings.append({
                 "level": "info",
                 "message": "Analog mode uses RTL analog-only frames. "
-                           "High-speed analog captures ADC1 (AIN3); dual analog "
-                           "captures ADC1 + ADC2 (AIN3 + AIN1).",
+                           "High-speed analog captures one selected ADC mux "
+                           "channel; maximum analog captures the documented "
+                           "physical analog profile.",
             })
         if self._requires_unavailable_high_rate_deep_path(
                 settings, self._build_trigger(settings)):
@@ -280,15 +279,13 @@ class ExistingHostAdapter(HardwareDevice):
             dev.reset()
             # REG_FAST_MODE selects BRAM (1024-word) vs SDRAM capture storage.
             # Only small single captures fit BRAM — same heuristic as the GUI.
-            # Mixed and analog-only captures use packed wire frames. Account
-            # for the actual wire words per frame, not just payload bytes, so
-            # odd-byte analog frames reserve their padded transport word.
+            # Mixed and analog-only stream packed multi-word frames.
             if mixed_requested:
-                storage_words = nsamp * 3
+                storage_words = nsamp * 7
             elif narrow_requested:
                 storage_words = max(1, (nsamp + 15) // 16)
             elif analog_all_requested:
-                storage_words = nsamp * 2
+                storage_words = nsamp * 6
             elif analog_requested:
                 storage_words = nsamp
             else:
@@ -306,19 +303,18 @@ class ExistingHostAdapter(HardwareDevice):
             try:
                 if mixed_requested:
                     # Single packed mixed pass. The FPGA streams one coherent
-                    # 5-byte payload frame (16 digital + 2x12-bit ADC) per ADC scan, so
+                    # 14-byte frame (16 digital + 8x12-bit ADC) per ADC scan, so
                     # digital and analog are sampled at the same instant and stay
                     # time-correlated. Digital is therefore limited to the ADC
                     # frame rate (one word per frame); higher digital rates need
                     # digital-only or analog-only mode.
                     from driver.ols_spi_device import (MODE_MIXED,
                                                        analog_frame_stride,
-                                                       analog_wire_stride,
                                                        decode_analog_frames,
                                                        wire_to_payload)
                     dev.set_analog_config(MODE_MIXED)
                     stride = analog_frame_stride(MODE_MIXED)
-                    words_per_frame = analog_wire_stride(MODE_MIXED) // 2
+                    words_per_frame = stride // 2
                     sdram_words = nsamp * words_per_frame
                     request_rate_hz = ADC_SCAN_FRAME_RATE_HZ * words_per_frame
                     capture_divider, actual_wire_rate = (
@@ -362,13 +358,12 @@ class ExistingHostAdapter(HardwareDevice):
                     from driver.ols_spi_device import (MODE_ANALOG_ALL,
                                                        MODE_ANALOG_FAST,
                                                        analog_frame_stride,
-                                                       analog_wire_stride,
                                                        decode_analog_frames,
                                                        wire_to_payload)
                     hw_mode = (MODE_ANALOG_ALL if analog_all_requested
                                else MODE_ANALOG_FAST)
                     stride = analog_frame_stride(hw_mode)
-                    words_per_frame = analog_wire_stride(hw_mode) // 2
+                    words_per_frame = max(1, stride // 2)
                     dev.set_analog_config(hw_mode, adc_channel=1)
                     sdram_words = nsamp * words_per_frame
                     request_rate_hz = (ADC_SCAN_FRAME_RATE_HZ * words_per_frame
@@ -401,7 +396,8 @@ class ExistingHostAdapter(HardwareDevice):
                     digital = None   # analog-only: drop the digital word
                     analog = {}
                     adc = np.array([fr["adc"] for fr in frames], dtype=np.uint16)
-                    adc_channels = [1, 2] if analog_all_requested else [1]
+                    adc_channels = ([1, 2, 3, 4]
+                                    if analog_all_requested else [1])
                     for idx, adc_channel in enumerate(adc_channels[:adc.shape[1]]):
                         analog[f"a{adc_channel}"] = adc_to_volts(adc[:, idx])
                     rate = (actual_wire_rate / words_per_frame
@@ -508,7 +504,7 @@ class ExistingHostAdapter(HardwareDevice):
                             "Capture returned 0 bytes — FPGA not responding")
                     # Packed wire: contiguous 16-bit little-endian samples.
                     n2 = len(data) - (len(data) % 2)
-                    digital = np.frombuffer(data[:n2], dtype="<u2").astype(np.uint16)
+                    digital = np.frombuffer(data[:n2], dtype="<u2")
                     analog = {}
                     if len(digital) < nsamp:
                         warnings.append(

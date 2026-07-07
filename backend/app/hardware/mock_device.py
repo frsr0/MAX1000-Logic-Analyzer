@@ -78,13 +78,13 @@ class MockDevice(HardwareDevice):
               ("i2c_nack", "post_capture"), ("spi_byte", "post_capture"),
               ("glitch", "post_capture"), ("decoder_error", "post_capture")]
         return DeviceCapabilities(
-            digital_channels=16, analog_channels=8,
+            digital_channels=16, analog_channels=4,
             max_sample_rate=100e6, min_sample_rate=10.0,
             max_samples=2_000_000, bram_samples=1024,
             sample_clk_hz=self.SAMPLE_CLK,
             supports_pre_trigger=True, supports_rolling=True,
             supports_continuous=True, supports_analog=True,
-            analog_rate_note="Mock analog channels (real hardware: 1 MSPS single-channel or 125 kframes/s scan)",
+            analog_rate_note="Mock analog channels (real hardware: 1 MSPS single-channel or 125 kframes/s 4-input scan)",
             generator_protocols=["uart", "rs485", "i2c", "spi", "pwm", "square",
                                  "pattern", "counter", "prbs"],
             triggers=[TriggerCapability(type=t, execution=e) for t, e in hw],
@@ -209,12 +209,6 @@ class MockDevice(HardwareDevice):
             analog["a2"] = ms.ramp_wave(n, rate, rate / 500)
             analog["a3"] = ms.sine_wave(n, rate, rate / 180, amplitude=0.4,
                                         offset=1.0, noise=0.15, seed=7)
-            analog["a4"] = ms.sine_wave(n, rate, rate / 320, amplitude=0.25,
-                                        offset=0.7, noise=0.02, seed=11)
-            analog["a5"] = ms.ramp_wave(n, rate, rate / 720)
-            analog["a6"] = ms.analog_square(n, rate, rate / 420)
-            analog["a7"] = ms.sine_wave(n, rate, rate / 150, amplitude=0.2,
-                                        offset=2.2, noise=0.03, seed=13)
             if scenario == "analog_demo":
                 put(0, ms.square(n, rate, rate / 240))     # aligned with a0
                 put(1, (analog["a0"] > 1.65).astype(np.uint8))

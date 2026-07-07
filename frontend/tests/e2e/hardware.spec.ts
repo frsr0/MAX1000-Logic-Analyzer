@@ -95,7 +95,7 @@ test('capture controls reflect MAX1000 modes', async ({ page }) => {
   await expect(page.locator('.mode-tile', { hasText: 'Mixed scan' }).first()).toBeVisible();
   await expect(page.locator('.mode-tile', { hasText: 'Packed narrow' }).first()).toBeVisible();
   await expect(page.locator('.mode-tile', { hasText: 'Analog fast' }).first()).toBeVisible();
-  await expect(page.locator('.mode-tile', { hasText: 'Dual analog' }).first()).toBeVisible();
+  await expect(page.locator('.mode-tile', { hasText: 'Maximum analog' }).first()).toBeVisible();
   await expect(page.getByRole('option', { name: '200 MHz' })).toBeAttached();
 
   await page.locator('.mode-tile', { hasText: 'Digital deep' }).click();
@@ -113,12 +113,12 @@ test('capture controls reflect MAX1000 modes', async ({ page }) => {
   await expect(page.getByText('Analog and mixed captures use raw readback.')).toBeVisible();
   await page.screenshot({ path: shot('capture-analog-fast.png'), fullPage: true });
 
-  await page.locator('.mode-tile', { hasText: 'Dual analog' }).click();
-  await expect(page.getByText('Dual analog captures two ADC lanes together (AIN3 + AIN1). The board has more AIN pins, but this bitstream streams 2 at once.')).toBeVisible();
+  await page.locator('.mode-tile', { hasText: 'Maximum analog' }).click();
+  await expect(page.getByText('Maximum analog captures the physical MAX1000 analog profile: AIN3, AIN1, AIN4, and AIN6.')).toBeVisible();
   await expect(page.getByRole('option', { name: '125 kHz' })).toBeAttached();
 
   await page.locator('.mode-tile', { hasText: 'Mixed scan' }).click();
-  await expect(page.getByText('Mixed mode captures 16 digital bits plus 2 ADC lanes, sampled together at a shared scan frame rate.')).toBeVisible();
+  await expect(page.getByText('Mixed mode captures 16 digital bits plus the 4 analog scan channels, sampled together at a shared scan frame rate.')).toBeVisible();
   await expect(page.getByText('Analog and mixed captures use raw readback.')).toBeVisible();
   await expect(page.getByRole('option', { name: '125 kHz' })).toBeAttached();
 

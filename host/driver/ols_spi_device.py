@@ -38,7 +38,7 @@ from driver.ols_spi import GPIO_CS_LO, GPIO_CS_HI, PIN_DIR
 # Capture mode bits in REG_FLAGS:
 #   bit 3: analog stream enable
 #   bit 4: analog-only profile
-#   bit 5: dual-analog profile when bit 4 is set
+#   bit 5: maximum-analog profile when bit 4 is set
 #   bits 8..12: selected ADC mux channel for high-speed analog
 #   bit 13: narrow packed digital stream enable
 #   bits 14..17: selected digital channel for narrow packed mode
@@ -65,7 +65,7 @@ NUM_CHANNELS = 16
 GEN_SCL_PARK = 25
 MIXED_COMPRESSED_GROUP_FRAMES = 16
 MIXED_COMPRESSED_BLOCK_FRAMES = 160
-MIXED_COMPRESSED_BLOCK_WORDS = MIXED_COMPRESSED_BLOCK_FRAMES * 3
+MIXED_COMPRESSED_BLOCK_WORDS = MIXED_COMPRESSED_BLOCK_FRAMES * 7
 MIXED_ADC_LANE_DELTA8 = 0
 MIXED_ADC_LANE_RAW12 = 1
 
@@ -80,11 +80,13 @@ WIRE_WORD_BYTES = 4
 
 def analog_frame_stride(mode):
     # Dense payload bytes per frame:
-    # digital-only = 2 bytes, mixed 16 digital + 2 ADC = 5 bytes,
-    # high-speed analog-only = 2 bytes, dual analog-only = 3 bytes.
+    # digital-only = 2 bytes,
+    # mixed = 16 digital + 4 ADC x 12-bit = 14 bytes,
+    # high-speed analog-only = 2 bytes,
+    # maximum analog-only = 4 ADC x 12-bit = 12 bytes.
     if mode & MODE_ANALOG_ONLY:
-        return 3 if mode & 0x20 else 2
-    return 5 if mode & MODE_MIXED else 2
+        return 12 if mode & 0x20 else 2
+    return 14 if mode & MODE_MIXED else 2
 
 
 def analog_wire_stride(mode):
@@ -323,9 +325,9 @@ def decompress_delta_stream(data: bytes) -> bytes:
         deltas[:, 1::3] = (d >> 5) & 0x1F
         deltas[:, 2::3] = (d >> 10) & 0x1F
         deltas -= (deltas & 0x10) << 1   # sign-extend 5-bit
-        samples = np.empty((d.shape[0], 16), dtype=np.int64)
+        samples = np.empty((d.shape[0], 16), dtype=np.int32)
         samples[:, 0] = words[:, 0]
-        samples[:, 1:] = (words[:, 0].astype(np.int64)[:, None]
+        samples[:, 1:] = (words[:, 0].astype(np.int32)[:, None]
                           + np.cumsum(deltas, axis=1))
         return (samples & 0xFFFF).astype('<u2').tobytes()
     except ImportError:
@@ -358,7 +360,7 @@ def decompress_rle_stream(data: bytes) -> bytes:
         return b""
     if int(counts.sum()) > 512:
         return b""   # overflow guard; a full block expands to exactly 512
-    return np.repeat(values, counts).astype("<u2").tobytes()
+    return np.repeat(values, counts).tobytes()
 
 
 def decompress_delta_rle_stream(data: bytes) -> bytes:
@@ -394,19 +396,20 @@ def compress_mixed_group(data: bytes) -> bytes:
         raise ValueError(
             f"expected {MIXED_COMPRESSED_GROUP_FRAMES * frame_stride} payload bytes, got {len(data)}")
     digital = bytearray()
-    lane0 = []
-    lane1 = []
+    lane_count = max(0, (frame_stride - 2) // 3 * 2)
+    lanes = [[] for _ in range(lane_count)]
     for i in range(MIXED_COMPRESSED_GROUP_FRAMES):
         frame = data[i * frame_stride:(i + 1) * frame_stride]
         digital.extend(frame[:2])
-        adc0, adc1 = _decode_adc(frame)
-        lane0.append(adc0)
-        lane1.append(adc1)
+        for lane_idx, sample in enumerate(_decode_adc(frame)):
+            lanes[lane_idx].append(sample)
 
     out = bytearray()
     header = 0
+    header_bytes = max(1, (lane_count * 2 + 7) // 8)
     lane_payloads = []
-    for shift, samples in ((0, lane0), (2, lane1)):
+    for lane_idx, samples in enumerate(lanes):
+        shift = lane_idx * 2
         deltas = [samples[i] - samples[i - 1] for i in range(1, len(samples))]
         if all(-127 <= d <= 127 for d in deltas):
             lane_payloads.append(struct.pack('<H15b', samples[0], *deltas))
@@ -414,7 +417,7 @@ def compress_mixed_group(data: bytes) -> bytes:
         else:
             lane_payloads.append(_pack_adc_lane_raw12(samples))
             header |= MIXED_ADC_LANE_RAW12 << shift
-    out.append(header)
+    out.extend(header.to_bytes(header_bytes, 'little'))
     out.extend(digital)
     for payload in lane_payloads:
         out.extend(payload)
@@ -437,13 +440,19 @@ def decompress_mixed_group(data: bytes, offset: int = 0):
 
     Returns ``(payload_bytes, bytes_consumed)``.
     """
-    if len(data) < offset + 33:
+    frame_stride = analog_frame_stride(MODE_MIXED)
+    lane_count = max(0, (frame_stride - 2) // 3 * 2)
+    header_bytes = max(1, (lane_count * 2 + 7) // 8)
+    fixed_bytes = header_bytes + (MIXED_COMPRESSED_GROUP_FRAMES * 2)
+    if len(data) < offset + fixed_bytes:
         raise ValueError("truncated mixed group header")
-    header = data[offset]
-    digital = data[offset + 1:offset + 33]
-    pos = offset + 33
+    header = int.from_bytes(data[offset:offset + header_bytes], 'little')
+    digital_start = offset + header_bytes
+    digital = data[digital_start:digital_start + (MIXED_COMPRESSED_GROUP_FRAMES * 2)]
+    pos = digital_start + (MIXED_COMPRESSED_GROUP_FRAMES * 2)
     lanes = []
-    for shift in (0, 2):
+    for lane_idx in range(lane_count):
+        shift = lane_idx * 2
         mode = (header >> shift) & 0x03
         if mode == MIXED_ADC_LANE_DELTA8:
             if len(data) < pos + 17:
@@ -466,12 +475,14 @@ def decompress_mixed_group(data: bytes, offset: int = 0):
             raise ValueError(f"unknown mixed lane mode {mode}")
         lanes.append(samples)
 
-    frame_stride = analog_frame_stride(MODE_MIXED)
     out = bytearray(MIXED_COMPRESSED_GROUP_FRAMES * frame_stride)
     for i in range(MIXED_COMPRESSED_GROUP_FRAMES):
         dst = i * frame_stride
         out[dst:dst + 2] = digital[i * 2:i * 2 + 2]
-        out[dst + 2:dst + 5] = _pack_adc_pair(lanes[0][i], lanes[1][i])
+        adc_bytes = bytearray()
+        for lane_idx in range(0, lane_count, 2):
+            adc_bytes.extend(_pack_adc_pair(lanes[lane_idx][i], lanes[lane_idx + 1][i]))
+        out[dst + 2:dst + 2 + len(adc_bytes)] = adc_bytes
     return bytes(out), pos - offset
 
 
@@ -1267,6 +1278,17 @@ class OLSDeviceSPI:
         frame_words = analog_wire_stride(MODE_MIXED) // 2
         start_sample = max(0, int(start_sample))
         remaining = max(0, int(sample_count))
+        # Mixed frames are indivisible on the compressed block path. If the
+        # caller starts mid-frame, advance to the next whole frame because the
+        # decoder cannot return a partial mixed frame.
+        misalign = start_sample % frame_words
+        if misalign:
+            skip = frame_words - misalign
+            start_sample += skip
+            remaining = max(0, remaining - skip)
+        # Trim any trailing partial-frame request up front so a <frame_words
+        # remainder cannot survive the planning loop and spin forever.
+        remaining -= remaining % frame_words
         out = bytearray()
         sample = start_sample
         batch_blocks = 128
@@ -1291,7 +1313,7 @@ class OLSDeviceSPI:
                 takes.append(take)
                 s += take
                 rem -= take
-            if not addrs:
+            if not addrs or not takes:
                 break
 
             blocks = None

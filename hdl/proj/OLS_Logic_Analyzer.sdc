@@ -21,46 +21,41 @@
  # 12 MHz input clock
  create_clock -name CLK -period 83.333 [get_ports CLK]
  
-  # Derive PLL output clocks (FAST_SPEED: c0~100.2MHz, c1~200.4MHz, c2~167.0MHz core, c4~167.0MHz delayed)
+ # Explicit named PLL output clocks. Must come before derive_pll_clocks;
+ # derive_pll_clocks respects pre-existing clocks on PLL outputs and will
+ # not overwrite these names. The names are stable across fitter runs even
+ # when the PLL instance name changes.
+ # FAST_SPEED: c0~100.2MHz sys, c1~200.4MHz fast, c2~167.0MHz sdram core
+ # Normal:     c0~96MHz   sys, c1~120MHz   fast, c2~167.0MHz sdram core
+ # c3 = 12 MHz ADC conversion clock (present in mixed/analog builds).
+ create_generated_clock -name sys_clk \
+   -source [get_pins {*pll_inst|inclk[0]}] \
+   [get_pins {*pll_inst|clk[0]}]
+ create_generated_clock -name fast_clk \
+   -source [get_pins {*pll_inst|inclk[0]}] \
+   [get_pins {*pll_inst|clk[1]}]
+ create_generated_clock -name sdram_core_clk \
+   -source [get_pins {*pll_inst|inclk[0]}] \
+   [get_pins {*pll_inst|clk[2]}]
+ create_generated_clock -name adc_clk \
+   -source [get_pins {*pll_inst|inclk[0]}] \
+   [get_pins {*pll_inst|clk[3]}]
+ 
+ # Derive remaining PLL output clocks and PLL-internal dividers
  derive_pll_clocks
  
  # Realistic clock uncertainty for timing signoff
  derive_clock_uncertainty
  
  # Asynchronous clock groups: all cross-domain CDC paths properly synchronized.
- # FAST_SPEED build: clk[0]=sys, clk[1]=fast, clk[2]=sdram, clk[3]=12 MHz ADC
- # conversion clock (the modular ADC control core handles the clk<->adcblock
- # crossing internally; result handoff to sys_clk is via rsp_valid handshake).
+ # Note: sdram_chip_clk_out (c4) is intentionally NOT in these async groups —
+ # the core↔chip relationship is synchronous-by-design (same PLL, phase-shifted),
+ # and the I/O delays & multicycle constraints at lines 84–103 already cover it.
  set_clock_groups -asynchronous \
-   -group [get_clocks {*pll_inst|*clk[0]}] \
-   -group [get_clocks {*pll_inst|*clk[1]}] \
-   -group [get_clocks {*pll_inst|*clk[2]}] \
-   -group [get_clocks {*pll_inst|*clk[3]}]
- 
- # External SPI timing:
- # - SPI_SCK is the FTDI-generated clock that times the slave interface.
- # - MOSI is captured relative to that clock.
- # - MISO is launched relative to that same clock.
- # The hardware validation suite treats 15 MHz as the validated ceiling.
- create_clock -name SPI_SCK_EXT -period 66.667 [get_ports SPI_SCK]
- create_clock -name SPI_CS_QUAL -period 1000.000 [get_ports SPI_CS]
- set_input_delay -clock [get_clocks SPI_SCK_EXT] -max 12.0 [get_ports SPI_MOSI]
- set_input_delay -clock [get_clocks SPI_SCK_EXT] -min 0.0 [get_ports SPI_MOSI]
- set_output_delay -clock [get_clocks SPI_SCK_EXT] -max 12.0 [get_ports SPI_MISO]
- set_output_delay -clock [get_clocks SPI_SCK_EXT] -min -2.0 [get_ports SPI_MISO]
- 
- # The SPI chip-select is used as an asynchronous qualifier/reset, not a clock.
- # Keep it out of the timed datapaths.
- set_false_path -from [get_ports {SPI_SCK SPI_CS}]
- set_false_path -to   [get_ports {SPI_SCK SPI_CS}]
- set_false_path -from [get_ports {SPI_MOSI}]  -to [all_registers]
- set_clock_groups -asynchronous \
-   -group [get_clocks SPI_SCK_EXT] \
-   -group [get_clocks SPI_CS_QUAL] \
-   -group [get_clocks {*pll_inst|*clk[0]}] \
-   -group [get_clocks {*pll_inst|*clk[1]}] \
-   -group [get_clocks {*pll_inst|*clk[2]}] \
-   -group [get_clocks {*pll_inst|*clk[3]}]
+   -group [get_clocks sys_clk] \
+   -group [get_clocks fast_clk] \
+   -group [get_clocks sdram_core_clk] \
+   -group [get_clocks adc_clk]
  
  # Async FIFO internal gray-code synchronizer paths
  # The dcfifo megafunction generates these internally; they are intentional

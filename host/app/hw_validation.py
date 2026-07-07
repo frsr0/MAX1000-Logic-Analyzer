@@ -974,18 +974,18 @@ def test_mixed_analog_mode(dev, debug_on=False):
     print_header("Test 12c: Mixed digital + analog mode")
     log(f"debug CH0 = {debug_on}")
     # capture_analog reads the 32-bit wire format and de-interleaves to dense
-    # 5-byte frames (16 digital + 2 ADC).
+    # 14-byte frames (16 digital + 4 ADC).
     data, frames = dev.capture_analog(rate_hz=125_000, frames=256, mode=MODE_MIXED)
     nf = len(frames)
     log(f"Mixed analog: {nf} frames, {len(data)} payload bytes")
-    check(analog_frame_stride(MODE_MIXED) == 5,
-          f"mixed frame stride is 5 bytes ({analog_frame_stride(MODE_MIXED)})")
+    check(analog_frame_stride(MODE_MIXED) == 14,
+          f"mixed frame stride is 14 bytes ({analog_frame_stride(MODE_MIXED)})")
     if nf > 0:
         d0 = frames[0].get('digital', 0)
         adc_vals = frames[0].get('adc', [])
         log(f"frame 0: digital=0x{d0:04X}, ADC values={adc_vals}")
         check(frames[0].get('digital') is not None, "mixed frame includes digital word")
-        check(len(adc_vals) == 2, f"frame has 2 analog channels ({len(adc_vals)})")
+        check(len(adc_vals) == 4, f"frame has 4 analog channels ({len(adc_vals)})")
         for ai, av in enumerate(adc_vals):
             check(0 <= av < 4096, f"A{ai} value {av} in 12-bit range")
         any_nonzero = any(any(v != 0 for v in fr.get('adc', [])) for fr in frames[:10])
@@ -1028,7 +1028,7 @@ def test_high_speed_analog_mode(dev):
 
 
 def test_maximum_analog_mode(dev):
-    print_header("Test 12c3: Dual analog channel mode")
+    print_header("Test 12c3: Maximum analog channel mode")
     data = b""
     frames = []
     for attempt in range(3):
@@ -1050,20 +1050,20 @@ def test_maximum_analog_mode(dev):
         if frames:
             break
     nf = len(frames)
-    log(f"Dual analog: {nf} frames, {len(data)} payload bytes")
-    check(analog_frame_stride(MODE_ANALOG_ALL) == 3,
-          f"dual analog stride is 3 bytes ({analog_frame_stride(MODE_ANALOG_ALL)})")
-    check(len(data) == nf * 3,
-          f"payload length matches two SDRAM words per frame ({len(data)} bytes)")
+    log(f"Maximum analog: {nf} frames, {len(data)} payload bytes")
+    check(analog_frame_stride(MODE_ANALOG_ALL) == 12,
+          f"maximum analog stride is 12 bytes ({analog_frame_stride(MODE_ANALOG_ALL)})")
+    check(len(data) == nf * 12,
+          f"payload length matches the 4-lane frame size ({len(data)} bytes)")
     if nf > 0:
         adc_vals = frames[0].get('adc', [])
         log(f"frame 0: digital={frames[0].get('digital')}, ADC values={adc_vals}")
-        check(frames[0].get('digital') is None, "dual analog has no digital word")
-        check(len(adc_vals) == 2,
-              f"dual analog frame has 2 ADC channels ({len(adc_vals)})")
+        check(frames[0].get('digital') is None, "maximum analog has no digital word")
+        check(len(adc_vals) == 4,
+              f"maximum analog frame has 4 ADC channels ({len(adc_vals)})")
         for ai, av in enumerate(adc_vals):
-            check(0 <= av < 4096, f"dual analog value {ai}={av} in 12-bit range")
-    check(nf > 0, f"Received {nf} dual analog frames (need > 0)")
+            check(0 <= av < 4096, f"maximum analog value {ai}={av} in 12-bit range")
+    check(nf > 0, f"Received {nf} maximum analog frames (need > 0)")
     save_result("test12c3_dual_analog", data,
                 {"mode": "analog_all", "adc_channels": [1, 2, 3, 4],
                  "frames": nf})
@@ -1119,8 +1119,8 @@ def test_mixed_digital_mixed_back_to_back(dev):
         rate_hz=125_000, frames=128, mode=MODE_MIXED, timeout=5)
     check(len(mixed1) > 0, f"first mixed capture returned frames ({len(mixed1)})")
     if mixed1:
-        check(len(mixed1[0].get('adc', [])) == 2,
-              f"first mixed frame has 2 ADC channels ({len(mixed1[0].get('adc', []))})")
+        check(len(mixed1[0].get('adc', [])) == 4,
+              f"first mixed frame has 4 ADC channels ({len(mixed1[0].get('adc', []))})")
 
     digital = dev.capture(rate_hz=1_000_000, nsamples=1024, timeout=5)
     ch, ns = samples_to_channels(digital, stride=2) if digital else ([], 0)
@@ -1133,8 +1133,8 @@ def test_mixed_digital_mixed_back_to_back(dev):
         rate_hz=125_000, frames=128, mode=MODE_MIXED, timeout=5)
     check(len(mixed2) > 0, f"second mixed capture returned frames ({len(mixed2)})")
     if mixed2:
-        check(len(mixed2[0].get('adc', [])) == 2,
-              f"second mixed frame has 2 ADC channels ({len(mixed2[0].get('adc', []))})")
+        check(len(mixed2[0].get('adc', [])) == 4,
+              f"second mixed frame has 4 ADC channels ({len(mixed2[0].get('adc', []))})")
         dig_values = {fr.get('digital', 0) for fr in mixed2[:32]}
         check(len(dig_values) <= 32,
               f"second mixed digital phase is clean ({len(dig_values)} distinct values)")
@@ -1180,7 +1180,7 @@ def test_mixed_compressed_rolling(dev):
     if frames:
         adc_vals = frames[0].get('adc', [])
         check(frames[0].get('digital') is not None, "mixed frame includes digital word")
-        check(len(adc_vals) == 2, f"mixed frame has 2 ADC channels ({len(adc_vals)})")
+        check(len(adc_vals) == 4, f"mixed frame has 4 ADC channels ({len(adc_vals)})")
         dig_values = {fr.get('digital', 0) for fr in frames[:128]}
         check(len(dig_values) <= 128,
               f"mixed digital phase is bounded ({len(dig_values)} distinct values)")
@@ -1213,8 +1213,8 @@ def test_analog_profiles_digital_recovery(dev):
             break
     check(len(all_frames) > 0, f"maximum analog profile returned frames ({len(all_frames)})")
     if all_frames:
-        check(len(all_frames[0].get('adc', [])) == 2,
-              f"maximum analog profile has 2 ADC channels ({len(all_frames[0].get('adc', []))})")
+        check(len(all_frames[0].get('adc', [])) == 4,
+              f"maximum analog profile has 4 ADC channels ({len(all_frames[0].get('adc', []))})")
 
     dev.set_analog_enable(False)
     dev.set_debug_ch0(True, freq_hz=100_000)
