@@ -481,6 +481,18 @@ export function CaptureControls() {
           <span className="mode-detail">Analog and mixed captures use raw readback.</span>
         )}
       </div>
+      <div className="field">
+        <label className="checkbox-label">
+          <input type="checkbox"
+            checked={captureSettings.packed_mode}
+            onChange={(e) => setCaptureSettings({ packed_mode: e.target.checked })}
+            disabled={!controlMode || isAnalog}
+          />
+          <span>Packed mode (200 MHz rolling)</span>
+        </label>
+        {captureSettings.packed_mode && (
+          <span className="mode-detail">Capture-side MSO compression active. Rolling ceiling raised to 200 MHz.</span>
+        )}
 
       <div className="capture-summary">
         <span>{activeModeLabel}</span>

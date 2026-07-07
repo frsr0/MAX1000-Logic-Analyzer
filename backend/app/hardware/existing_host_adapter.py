@@ -35,6 +35,8 @@ from .strategies import (
     analog_all as _analog_all_strategy,
     narrow_digital as _narrow_digital_strategy,
 )
+from .packed_decoder import decode as packed_decode
+from driver.wire_format import MODE_PACKED_MSO
 
 ADC_SCAN_FRAME_RATE_HZ = 125_000.0
 ADC_FAST_FRAME_RATE_HZ = 1_000_000.0
@@ -253,6 +255,10 @@ class ExistingHostAdapter(HardwareDevice):
         return findings
 
     def _digital_readback_compression(self, settings: CaptureSettings) -> str:
+        # Packed capture produces compressed data in SDRAM — readback must
+        # be raw to avoid double-compression (RLE on top of packed).
+        if settings.packed_mode:
+            return "raw"
         if settings.mode in ("single", "continuous", "rolling", "digital_narrow", "triggered"):
             return settings.readback_compression
         return "raw"
@@ -267,6 +273,7 @@ class ExistingHostAdapter(HardwareDevice):
 
             dev.set_readback_compression(
                 self._digital_readback_compression(settings))
+            dev.set_packed_mode(settings.packed_mode)
 
             # Build trigger (may configure hardware via dev.trigger_decode)
             trigger = self._build_trigger(settings)
@@ -299,6 +306,13 @@ class ExistingHostAdapter(HardwareDevice):
                 self._recover_after_failed_capture()
                 raise HardwareError(f"Capture failed: {e}") from e
             self._timings["last_capture_s"] = time.time() - t0
+            # If packed capture mode was active, decode the compressed stream
+            packed_active = bool(getattr(dev, "_raw_flags", 0) & MODE_PACKED_MSO)
+            if packed_active and result.digital is not None:
+                total_samples = int(settings.num_samples)
+                dig, ana = packed_decode(result.digital, total_samples)
+                result.digital = dig
+                result.analog = ana
             return result
 
     def stream_capture(self, settings: CaptureSettings,
@@ -377,8 +391,14 @@ class ExistingHostAdapter(HardwareDevice):
             return False
         if settings.mode in ("continuous", "rolling"):
             # Rolling/continuous is a repeated finite-capture live view here,
-            # not the old ring streamer. Keep it within the tested 50 MHz
-            # ceiling for this board revision.
+            # not the old ring streamer. The 50 MHz ceiling is caused by CDC
+            # sampling artifacts when sys_clk-domain signals cross to fast_clk.
+            # Packed mode (mso_capture) runs entirely in fast_clk with no CDC
+            # crossing — the ceiling does not apply.
+            packed_active = bool(
+                getattr(self._dev, "_raw_flags", 0) & MODE_PACKED_MSO)
+            if packed_active:
+                return False
             return settings.sample_rate > DIGITAL_LIVE_SAMPLE_RATE_HZ
         # Single-shot deep SDRAM capture is validated clean at every rate up to
         # the full sample clock (open-page write path + producer-done completion),

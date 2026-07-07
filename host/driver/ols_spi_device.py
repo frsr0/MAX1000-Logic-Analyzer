@@ -19,7 +19,7 @@ from .wire_format import (
     _decode_adc, _pack_adc_pair, _pack_adc_lane_raw12, _unpack_adc_lane_raw12,
     decode_analog_frames,
     decompress_delta_block, decompress_delta_stream,
-    decompress_rle_stream, decompress_delta_rle_stream,
+    decompress_rle_stream,
     decompress_block_readback_stream,
 )
 from driver.ols_spi import OLS as OLS_SPI
@@ -236,6 +236,25 @@ class OLSDeviceSPI:
         cur &= ~REG_FLAGS_COMPRESS_MASK
         if mode == 'delta_rle':
             cur |= REG_FLAGS_COMPRESS_RLE
+        return self.pkt.write_register(REG_FLAGS, cur)
+
+    def set_packed_mode(self, enable: bool) -> bool:
+        """Enable or disable capture-side MSO bit-packing (REG_FLAGS bit 20).
+        
+        When enabled, the mso_capture pipeline (digital_rle + analog_packer)
+        compresses samples before writing to SDRAM. Readback must use raw
+        (no double-compression). MODE_PACKED_MSO flag is set in _raw_flags
+        so the readback path can detect packed data.
+        """
+        cur = self.pkt.read_register(REG_FLAGS)
+        if cur < 0:
+            return False
+        if enable:
+            cur |= 1 << 20  # packed_mode bit
+            self._raw_flags |= MODE_PACKED_MSO
+        else:
+            cur &= ~(1 << 20)
+            self._raw_flags &= ~MODE_PACKED_MSO
         return self.pkt.write_register(REG_FLAGS, cur)
 
     def _can_compress_readback(self):
@@ -854,7 +873,7 @@ class OLSDeviceSPI:
         batch_blocks = 128
         codec = self._readback_codec()
         use_compress = codec != 'raw'
-        batched_compressed = codec == 'delta_rle'
+        batched_compressed = codec != 'raw'
         t_total = time.perf_counter()
         blocks_total = 0.0
         decode_total = 0.0

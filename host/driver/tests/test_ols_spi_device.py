@@ -32,10 +32,8 @@ from driver.ols_spi_device import (
     decode_analog_frames,
     decompress_block_readback_stream,
     decompress_rle_stream,
-    decompress_delta_rle_stream,
     narrow_digital_flags,
     OLSDeviceSPI,
-    decompress_delta_stream,
     find_spi_device,
     payload_to_wire,
     wire_to_payload,
@@ -84,20 +82,6 @@ class TestNarrowDigitalPacking:
 
 
 class TestCompressionHelpers:
-    def test_decompress_delta_stream_expands_multiple_blocks(self):
-        raw = b"\x34\x12\x00\x00\x00\x00\x00\x00\x34\x12\x00\x00" * 2
-        out = decompress_delta_stream(raw)
-        assert len(out) == 64
-        assert out[:2] == b"\x34\x12"
-
-    def test_decompress_delta_rle_stream_expands_merged_codec(self):
-        raw = struct.pack('<2H', 1, 0x1234) + struct.pack('<2H', 5, 0)
-        raw += struct.pack('<2H', 1, 0x5678) + struct.pack('<2H', 5, 0)
-        out = decompress_delta_rle_stream(raw)
-        assert len(out) == 64
-        assert struct.unpack('<32H', out)[:16] == (0x1234,) * 16
-        assert struct.unpack('<32H', out)[16:] == (0x5678,) * 16
-
     def test_decompress_block_readback_stream_expands_rle_raw_payload(self):
         raw = struct.pack('<4H', 256, 0xFFFE, 256, 0xFFFF)
         out = decompress_block_readback_stream(raw)
@@ -327,12 +311,11 @@ class TestOLSDeviceSPI:
         assert len(data) == 1200
 
     def test_read_capture_range_decompresses_compressed_blocks(self, device_spi):
-        block0 = struct.pack('<2H', 1, 0x1234) + struct.pack('<2H', 5, 0)
-        block0 *= 32
-        block1 = struct.pack('<2H', 1, 0x5678) + struct.pack('<2H', 5, 0)
-        block1 *= 32
+        # Pure RLE data: each block decompresses to 1024 bytes (512 samples)
+        block0 = struct.pack('<4H', 256, 0xFFFE, 256, 0xFFFF)  # 512 samples of two runs
+        block1 = struct.pack('<4H', 8, 0x5678, 504, 0x5678)     # 512 samples, one value
         device_spi.pkt = MagicMock()
-        device_spi.readback_compression_mode = 'delta_rle'
+        device_spi.readback_compression_mode = 'rle'
         device_spi.compress_readback_enabled = True
         device_spi.pkt.read_capture_blocks.return_value = [block0, block1]
 
@@ -340,8 +323,8 @@ class TestOLSDeviceSPI:
 
         assert len(data) == 1040
         words = struct.unpack('<520H', data)
-        assert words[:16] == (0x1234,) * 16
-        assert words[16:512] == (0x1234,) * 496
+        assert words[:256] == (0xFFFE,) * 256
+        assert words[256:512] == (0xFFFF,) * 256
         assert words[512:] == (0x5678,) * 8
         device_spi.pkt.read_capture_blocks.assert_called_once_with(
             [0, 1022], compressed=True)
@@ -365,10 +348,11 @@ class TestOLSDeviceSPI:
             [0, 1022], compressed=True)
 
     def test_read_capture_range_decompresses_rle_blocks(self, device_spi):
-        block0 = (struct.pack('<2H', 1, 0x1234) + struct.pack('<2H', 5, 0)) * 32
-        block1 = (struct.pack('<2H', 1, 0x5678) + struct.pack('<2H', 5, 0)) * 32
+        # Pure RLE data: each block decompresses to 1024 bytes (512 samples)
+        block0 = struct.pack('<2H', 512, 0x1234)  # 512 samples of 0x1234
+        block1 = struct.pack('<2H', 512, 0x5678)  # 512 samples of 0x5678
         device_spi.pkt = MagicMock()
-        device_spi.readback_compression_mode = 'delta_rle'
+        device_spi.readback_compression_mode = 'rle'
         device_spi.compress_readback_enabled = True
         device_spi.pkt.read_capture_blocks.return_value = [block0, block1]
 

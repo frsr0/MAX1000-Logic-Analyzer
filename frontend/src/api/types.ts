@@ -87,6 +87,7 @@ export interface CaptureSettings {
   auto_save: boolean;
   readback_compression: 'raw' | 'delta_rle' | 'delta' | 'rle';
   mock_scenario?: string | null;
+  packed_mode: boolean;
 }
 
 export interface ChannelInfo {
@@ -363,5 +364,6 @@ export const defaultCaptureSettings = (): CaptureSettings => ({
   repeat_count: 1,
   auto_save: false,
   readback_compression: 'raw',
+  packed_mode: false,
   mock_scenario: 'demo_mixed',
 });

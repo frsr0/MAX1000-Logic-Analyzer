@@ -1660,16 +1660,13 @@ BEGIN
   -- Readback compressor runs at 100 MHz between the response FIFO drain and
   -- block_buf. RLE is the sole digital codec: it does raw passthrough when
   -- compression is disabled (mode "00") and run-length compression when
-  -- enabled (mode "10"). It supersedes the old delta codec for digital
-  -- readback (idle/slow data compresses far more, and it is lossless with no
-  -- keyframe ambiguity). The delta compressor (capture_compressor) was
-  -- dropped from the build: keeping BOTH could not close 167 MHz timing at
-  -- 99% LE (the extra ~320 LC perturbed the SDRAM readout placement). Mode
-  -- "01" (legacy "delta") now takes the RLE passthrough path and reads back
-  -- raw — lossless, just uncompressed — via the host's raw fallback. To
-  -- One merged delta->RLE codec for digital readback. The wrapper buffers the
-  -- delta words and then feeds them into the exact run-length stage.
-  rd_delta_rle_compressor : entity work.delta_rle_compressor
+  -- enabled (mode "01"/"10"). The delta wrapper (delta_rle_compressor) was
+  -- removed: keeping both delta and RLE could not close 167 MHz timing at
+  -- 99% LE, and the signed-delta stage overflowed on every digital toggle,
+  -- preventing RLE from collapsing idle/slow runs. Mode "01" (legacy "delta"
+  -- alias in the host driver) now does RLE the same as mode "10" — lossless,
+  -- exact, and fundamentally better on digital data.
+  rd_rle_compressor : entity work.rle_compressor
     PORT MAP (
       clk                => CLK,
       rst                => comp_rst_i,

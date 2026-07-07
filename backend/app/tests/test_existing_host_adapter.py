@@ -44,6 +44,7 @@ class FakeHostDevice:
         self.close = Mock()
         self.set_debug_ch0 = Mock()
         self.set_readback_compression = Mock()
+        self.set_packed_mode = Mock()
         self.set_schmitt = Mock()
         self._write_capture_config = Mock()
         self.read_capture_range = Mock(return_value=b"\x01\x00" * 2048)

@@ -78,6 +78,7 @@ class CaptureSettings(BaseModel):
     repeat_count: int = 1
     auto_save: bool = False
     readback_compression: ReadbackCompression = "raw"
+    packed_mode: bool = False
     mock_scenario: Optional[str] = None   # mock device only
 
 
