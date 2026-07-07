@@ -37,7 +37,10 @@ from .protocol import import_host_driver
 
 ADC_SCAN_FRAME_RATE_HZ = 125_000.0
 ADC_FAST_FRAME_RATE_HZ = 1_000_000.0
-DIGITAL_DEEP_SAMPLE_RATE_HZ = 14_000_000.0
+# The live rolling UI is built on repeated finite captures, not the old
+# retention-ring path. 50 MHz is the tested ceiling for that user-facing live
+# mode on this board revision.
+DIGITAL_LIVE_SAMPLE_RATE_HZ = 50_000_000.0
 DIGITAL_FAST_BRAM_SAMPLES = 1024
 # Full 64 Mbit x16 SDRAM = 4,194,304 words. Raised from 1M after the deep-capture
 # write-path fix: hardware-validated end-to-end (1M/2M/4M captures all return 100%
@@ -160,10 +163,10 @@ class ExistingHostAdapter(HardwareDevice):
             sample_clk_hz=sample_clk,
             supports_pre_trigger=True, supports_rolling=True,
             supports_continuous=True, supports_analog=True,
-            analog_rate_note="MAX10 ADC supports 1 MSPS single-channel "
-                             "analog and 125 kframes/s 8-input physical "
-                             "analog scans. Mixed mode scans ADC0..ADC7 at "
-                             "the same scan frame rate.",
+            analog_rate_note="MAX10 ADC: 1 MSPS single-lane (analog fast) or "
+                             "125 kframes/s dual-lane. This bitstream streams "
+                             "1 ADC lane in fast mode and 2 ADC lanes in mixed "
+                             "and dual-analog modes.",
             generator_protocols=["uart", "rs485", "i2c", "pwm"],
             triggers=[TriggerCapability(type=t, execution=e, description=d)
                       for t, e, d in trig],
@@ -173,8 +176,11 @@ class ExistingHostAdapter(HardwareDevice):
                 f"{DIGITAL_SDRAM_WORDS:,}-word 16-bit SDRAM capture ring "
                 f"({DIGITAL_NARROW_LOGICAL_SAMPLES:,} logical samples in "
                 "packed one-channel narrow mode).",
-                "Maximum analog scans ADC1,2,3,4,5,7,8,16 at 125 kframes/s. "
-                "Mixed mode still exposes ADC0/ADC6 as unmapped mux slots.",
+                "This bitstream streams at most 2 analog lanes at once: "
+                "dual-analog captures ADC1 (AIN3) + ADC2 (AIN1); mixed "
+                "captures ADC0 (unmapped) + ADC1 (AIN3); analog-fast captures "
+                "1 lane, ADC1 (AIN3). The board has 8 AIN pins, but the "
+                "current capture engine does not scan all of them at once.",
             ],
             digital_pin_map=DIGITAL_PIN_MAP,
             analog_pin_map=BOARD_ANALOG_INPUTS,
@@ -200,9 +206,8 @@ class ExistingHostAdapter(HardwareDevice):
         if settings.mode in ("mixed", "mixed_continuous"):
             findings.append({
                 "level": "info",
-                "message": "Mixed mode captures 16 digital bits plus the current "
-                           "ADC0..ADC7 mux scan as a single time-correlated "
-                           "packed frame at up to "
+                "message": "Mixed mode captures 16 digital bits plus 2 ADC "
+                           "lanes as a single time-correlated packed frame at up to "
                            f"{int(ADC_SCAN_FRAME_RATE_HZ):,} Hz. Digital is "
                            "sampled once per ADC frame; use digital-only mode "
                            "for higher digital sample rates.",
@@ -213,23 +218,26 @@ class ExistingHostAdapter(HardwareDevice):
             findings.append({
                 "level": "info",
                 "message": "Analog mode uses RTL analog-only frames. "
-                           "High-speed analog captures one selected ADC mux "
-                           "channel; maximum analog captures the documented "
-                           "physical analog profile.",
+                           "High-speed analog captures ADC1 (AIN3); dual analog "
+                           "captures ADC1 + ADC2 (AIN3 + AIN1).",
             })
         if self._requires_unavailable_high_rate_deep_path(
                 settings, self._build_trigger(settings)):
             findings.append({
                 "level": "warning",
                 "message": "Single-shot deep digital capture is clean up to the "
-                           "full 200 MHz sample clock. Rolling/continuous capture "
-                           "is a retention ring bounded by lossless readback "
-                           f"(~{DIGITAL_DEEP_SAMPLE_RATE_HZ / 1_000_000:.0f} MHz); "
-                           "above that the newest samples are kept and overruns "
-                           "are reported. Use single-shot for trustworthy "
-                           "high-rate deep capture.",
+                           "full 200 MHz sample clock. Live rolling capture has "
+                           f"a tested ceiling around {DIGITAL_LIVE_SAMPLE_RATE_HZ / 1_000_000:.0f} MHz "
+                           "on this board revision; above that the newest "
+                           "samples are kept and overruns are reported. Use "
+                           "single-shot for trustworthy high-rate deep capture.",
             })
         return findings
+
+    def _digital_readback_compression(self, settings: CaptureSettings) -> str:
+        if settings.mode in ("single", "continuous", "rolling", "digital_narrow", "triggered"):
+            return settings.readback_compression
+        return "raw"
 
     def capture(self, settings: CaptureSettings,
                 progress: Optional[ProgressCb] = None,
@@ -238,6 +246,8 @@ class ExistingHostAdapter(HardwareDevice):
             if self._dev is None:
                 raise HardwareError("Device not connected")
             dev = self._dev
+            dev.set_readback_compression(
+                self._digital_readback_compression(settings))
             rate = float(settings.sample_rate)
             nsamp = int(settings.num_samples)
             trigger = self._build_trigger(settings)
@@ -262,23 +272,23 @@ class ExistingHostAdapter(HardwareDevice):
             if (self._requires_unavailable_high_rate_deep_path(settings, trigger)
                     and not self._use_rolling_single_shot(settings, trigger)):
                 raise HardwareError(
-                    "Rolling/continuous capture above ~15 MHz overruns the "
-                    "retention ring on this bitstream. Use single-shot for "
+                    "Live rolling capture above ~50 MHz exceeds the tested "
+                    "ceiling for this board revision. Use single-shot for "
                     "trustworthy deep capture at any rate up to the full "
-                    "200 MHz sample clock, or lower the rolling rate.")
+                    "200 MHz sample clock, or lower the live rate.")
 
             dev.reset()
             # REG_FAST_MODE selects BRAM (1024-word) vs SDRAM capture storage.
             # Only small single captures fit BRAM — same heuristic as the GUI.
-            # Both mixed and analog-only stream the 7-word MODE_MIXED frame
-            # (analog-only just drops the digital word — the dedicated 12-byte
-            # analog_only HW path streams flat data, so it is not used).
+            # Mixed and analog-only captures use packed wire frames. Account
+            # for the actual wire words per frame, not just payload bytes, so
+            # odd-byte analog frames reserve their padded transport word.
             if mixed_requested:
-                storage_words = nsamp * 7
+                storage_words = nsamp * 3
             elif narrow_requested:
                 storage_words = max(1, (nsamp + 15) // 16)
             elif analog_all_requested:
-                storage_words = nsamp * 6
+                storage_words = nsamp * 2
             elif analog_requested:
                 storage_words = nsamp
             else:
@@ -296,18 +306,19 @@ class ExistingHostAdapter(HardwareDevice):
             try:
                 if mixed_requested:
                     # Single packed mixed pass. The FPGA streams one coherent
-                    # 14-byte frame (16 digital + 8x12-bit ADC) per ADC scan, so
+                    # 5-byte payload frame (16 digital + 2x12-bit ADC) per ADC scan, so
                     # digital and analog are sampled at the same instant and stay
                     # time-correlated. Digital is therefore limited to the ADC
                     # frame rate (one word per frame); higher digital rates need
                     # digital-only or analog-only mode.
                     from driver.ols_spi_device import (MODE_MIXED,
                                                        analog_frame_stride,
+                                                       analog_wire_stride,
                                                        decode_analog_frames,
                                                        wire_to_payload)
                     dev.set_analog_config(MODE_MIXED)
-                    stride = analog_frame_stride(MODE_MIXED)      # 14
-                    words_per_frame = stride // 2                 # 7
+                    stride = analog_frame_stride(MODE_MIXED)
+                    words_per_frame = analog_wire_stride(MODE_MIXED) // 2
                     sdram_words = nsamp * words_per_frame
                     request_rate_hz = ADC_SCAN_FRAME_RATE_HZ * words_per_frame
                     capture_divider, actual_wire_rate = (
@@ -351,12 +362,13 @@ class ExistingHostAdapter(HardwareDevice):
                     from driver.ols_spi_device import (MODE_ANALOG_ALL,
                                                        MODE_ANALOG_FAST,
                                                        analog_frame_stride,
+                                                       analog_wire_stride,
                                                        decode_analog_frames,
                                                        wire_to_payload)
                     hw_mode = (MODE_ANALOG_ALL if analog_all_requested
                                else MODE_ANALOG_FAST)
                     stride = analog_frame_stride(hw_mode)
-                    words_per_frame = max(1, stride // 2)
+                    words_per_frame = analog_wire_stride(hw_mode) // 2
                     dev.set_analog_config(hw_mode, adc_channel=1)
                     sdram_words = nsamp * words_per_frame
                     request_rate_hz = (ADC_SCAN_FRAME_RATE_HZ * words_per_frame
@@ -389,8 +401,7 @@ class ExistingHostAdapter(HardwareDevice):
                     digital = None   # analog-only: drop the digital word
                     analog = {}
                     adc = np.array([fr["adc"] for fr in frames], dtype=np.uint16)
-                    adc_channels = ([1, 2, 3, 4, 5, 7, 8, 16]
-                                    if analog_all_requested else [1])
+                    adc_channels = [1, 2] if analog_all_requested else [1]
                     for idx, adc_channel in enumerate(adc_channels[:adc.shape[1]]):
                         analog[f"a{adc_channel}"] = adc_to_volts(adc[:, idx])
                     rate = (actual_wire_rate / words_per_frame
@@ -599,9 +610,10 @@ class ExistingHostAdapter(HardwareDevice):
         if trigger is not None or settings.trigger.pre_trigger_samples:
             return False
         if settings.mode in ("continuous", "rolling"):
-            # Rolling/continuous is a retention ring bounded by lossless SPI
-            # readback (~15 MHz); above that it aliases/overruns the ring badly.
-            return settings.sample_rate > DIGITAL_DEEP_SAMPLE_RATE_HZ
+            # Rolling/continuous is a repeated finite-capture live view here,
+            # not the old ring streamer. Keep it within the tested 50 MHz
+            # ceiling for this board revision.
+            return settings.sample_rate > DIGITAL_LIVE_SAMPLE_RATE_HZ
         # Single-shot deep SDRAM capture is validated clean at every rate up to
         # the full sample clock (open-page write path + producer-done completion),
         # so it is no longer rate-limited.
@@ -892,17 +904,24 @@ class ExistingHostAdapter(HardwareDevice):
     def get_debug_info(self) -> DebugInfo:
         raw_meta = ""
         raw_status: Dict = {}
+        timings = dict(self._timings)
+        extra: Dict[str, Any] = {}
         if self._dev is not None:
             try:
                 raw_meta = self._dev.get_metadata().hex()
                 raw_status = self._dev.pkt.get_status()
+                child_timings = getattr(self._dev, "_timings", None)
+                if isinstance(child_timings, dict):
+                    timings.update(child_timings)
+                extra["readback_codec"] = getattr(self._dev, "_readback_codec",
+                                                   lambda: "unknown")()
             except Exception as e:
                 self._last_error = str(e)
         return DebugInfo(raw_metadata=raw_meta, raw_status=raw_status,
                          last_command=self._last_command,
                          last_error=self._last_error,
                          command_log=self._command_log[-50:],
-                         timings=self._timings)
+                         timings=timings, extra=extra)
 
     def self_test(self) -> dict:
         checks = []

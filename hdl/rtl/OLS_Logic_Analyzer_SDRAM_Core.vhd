@@ -6,13 +6,14 @@ use IEEE.numeric_std.all;
 
 ENTITY OLS_Logic_Analyzer IS
   GENERIC (
-      CLK_Frequency   : INTEGER := 12000000;     
+      CLK_Frequency   : INTEGER := 12000000;
       SDRAM_CLK_HZ   : INTEGER := 166_666_667;
       SAMPLE_CLK_HZ  : INTEGER := 200_000_000;
-    Max_Samples     : NATURAL := 4194304;      
+    Max_Samples     : NATURAL := 4194304;
     Channels        : NATURAL := 4;
     Sim             : boolean := false;
-    FAST_SPEED      : boolean := false
+    FAST_SPEED      : boolean := false;
+    FAST_RAW_BUILD  : boolean := true
   );
 PORT (
   CLK : IN STD_LOGIC;
@@ -49,8 +50,12 @@ PORT (
     Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Gen_I2C_Test   : OUT STD_LOGIC := '0';
     Gen_SPI_Test   : OUT STD_LOGIC := '0';
+    Gen_RX_Data      : IN  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+    Gen_RX_Used      : IN  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+    Gen_RX_Re        : OUT STD_LOGIC := '0';
     Gen_Repeat     : OUT STD_LOGIC := '0';
     Gen_RS485_Pair : OUT STD_LOGIC := '0';
+    Gen_Accel_Attach : OUT STD_LOGIC := '0';
     Armed          : OUT STD_LOGIC := '0';
     Fast_Mode      : OUT STD_LOGIC := '0';
     Narrow_Enable  : OUT STD_LOGIC := '0';
@@ -65,10 +70,18 @@ PORT (
     Analog_Frame_Len  : IN NATURAL range 1 to 14 := 1;
     Analog_Stream_Mode : IN STD_LOGIC := '0';
     Analog_Frame_Toggle : IN STD_LOGIC := '0';
+    -- Parallel bit-packing capture: Packed_Mode out (host REG_FLAGS bit 20, for
+    -- ADC channel enable in the top), the packed 16-bit stream in from the
+    -- top's mso_capture, and Packed_Ready backpressure out.
+    Packed_Mode   : OUT STD_LOGIC := '0';
+    Packed_Data   : IN  STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+    Packed_Valid  : IN  STD_LOGIC := '0';
+    Packed_Ready  : OUT STD_LOGIC := '0';
     Pin_Map_Write  : OUT STD_LOGIC := '0';
     Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
     Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
     Debug_Ch0_Enable : OUT STD_LOGIC := '0';
+    Debug_Ch0_Channel : OUT NATURAL range 0 to 15 := 0;
     Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
     Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
     Gen_Start_Ack    : IN  STD_LOGIC := '0';
@@ -96,13 +109,11 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL OLS_Interface_Outputs       : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL OLS_Interface_Inputs        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL LA_Out : STD_LOGIC_VECTOR(15 downto 0);
-  SIGNAL Fast_Logic_Analyzer_SDRAM_CLK_150      : STD_LOGIC;
   SIGNAL LA_Address       : NATURAL          range 0 to Max_Samples := 0;
   -- Block-readout response-FIFO interface (OLS_Interface <-> FLA)
   SIGNAL blk_rd_req_tog_i : STD_LOGIC := '0';
   SIGNAL blk_rd_base_i    : NATURAL range 0 to Max_Samples := 0;
   SIGNAL blk_rd_count_i   : NATURAL range 0 to Max_Samples := 0;
-  SIGNAL compress_enable_i   : STD_LOGIC := '0';
   SIGNAL auto_renew_i     : STD_LOGIC := '0';
   SIGNAL rd_fifo_q_i      : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   SIGNAL rd_fifo_empty_i  : STD_LOGIC := '1';
@@ -125,12 +136,16 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL Gen_Busy_i         : STD_LOGIC := '0';
   SIGNAL Gen_TX_Pin_i       : NATURAL range 0 to 31 := 0;
   SIGNAL Gen_SCL_Pin_i      : NATURAL range 0 to 31 := 0;
+  SIGNAL Gen_RX_Data_i    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+  SIGNAL Gen_RX_Used_i    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+  SIGNAL Gen_RX_Re_i      : STD_LOGIC := '0';
   SIGNAL gen_i2c_rd_len_i    : NATURAL range 0 to 255 := 0;
   SIGNAL gen_i2c_dev_r_i     : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL gen_i2c_test_i      : STD_LOGIC := '0';
   SIGNAL gen_spi_test_i      : STD_LOGIC := '0';
   SIGNAL gen_repeat_i        : STD_LOGIC := '0';
   SIGNAL gen_rs485_pair_i    : STD_LOGIC := '0';
+  SIGNAL gen_accel_attach_i  : STD_LOGIC := '0';
   SIGNAL armed_i             : STD_LOGIC := '0';
   SIGNAL fast_mode_i         : STD_LOGIC := '0';
   SIGNAL narrow_enable_i     : STD_LOGIC := '0';
@@ -141,6 +156,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL fla_status          : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL analog_enable_i     : STD_LOGIC := '0';
   SIGNAL analog_only_i       : STD_LOGIC := '0';
+  SIGNAL packed_mode_i       : STD_LOGIC := '0';
   SIGNAL analog_profile_i    : STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
   SIGNAL analog_channel_i    : NATURAL range 0 to 31 := 1;
   SIGNAL gen_clear_i         : STD_LOGIC := '0';
@@ -148,6 +164,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL pin_map_channel_i   : NATURAL range 0 to 15 := 0;
   SIGNAL pin_map_pin_i       : NATURAL range 0 to 31 := 0;
   SIGNAL debug_ch0_enable_i  : STD_LOGIC := '0';
+  SIGNAL debug_ch0_channel_i : NATURAL range 0 to 15 := 0;
   SIGNAL debug_ch0_period_i  : STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
   SIGNAL debug_ch0_duty_i    : STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
   SIGNAL gen_capture_active_i : STD_LOGIC := '0';
@@ -192,6 +209,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
      Gen_SPI_Test   : OUT STD_LOGIC := '0';
      Gen_Repeat     : OUT STD_LOGIC := '0';
      Gen_RS485_Pair : OUT STD_LOGIC := '0';
+     Gen_Accel_Attach : OUT STD_LOGIC := '0';
       Armed          : OUT STD_LOGIC := '0';
       Fast_Mode      : OUT STD_LOGIC := '0';
       Narrow_Enable   : OUT STD_LOGIC := '0';
@@ -201,22 +219,26 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
       Analog_Only     : OUT STD_LOGIC := '0';
       Analog_Profile  : OUT STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
       Analog_Channel  : OUT NATURAL range 0 to 31 := 1;
+      Packed_Mode     : OUT STD_LOGIC := '0';
       Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
       Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
       Pin_Map_Write   : OUT STD_LOGIC := '0';
       Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
       Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
        Debug_Ch0_Enable : OUT STD_LOGIC := '0';
+       Debug_Ch0_Channel : OUT NATURAL range 0 to 15 := 0;
        Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
        Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
         Gen_Capture_Active : OUT STD_LOGIC := '0';
        Gen_Start_Ack      : IN  STD_LOGIC := '0';
        Gen_Start_Reject   : IN  STD_LOGIC := '0';
        Gen_Done_Pulse     : IN  STD_LOGIC := '0';
+       Gen_RX_Data      : IN  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+       Gen_RX_Used      : IN  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+       Gen_RX_Re        : OUT STD_LOGIC := '0';
        Blk_Rd_Req_Tog : OUT STD_LOGIC := '0';
        Blk_Rd_Base    : OUT NATURAL range 0 to Max_Samples := 0;
        Blk_Rd_Count   : OUT NATURAL range 0 to Max_Samples := 0;
-         Compress_Enable     : OUT STD_LOGIC := '0';
        Auto_Renew     : OUT STD_LOGIC := '0';
        Rd_Fifo_Q      : IN  STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
        Rd_Fifo_Empty  : IN  STD_LOGIC := '1';
@@ -239,6 +261,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
     Channels       : NATURAL range 1 to 16 := 16;
     Sim            : boolean := false;
     FAST_SPEED     : boolean := false;
+    FAST_RAW_BUILD : boolean := true;
     CLK_Frequency  : NATURAL := 100_000_000;
     SDRAM_CLK_HZ   : NATURAL := 166_666_667;
     SAMPLE_CLK_HZ  : NATURAL := 200_000_000;
@@ -282,9 +305,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
     Analog_Frame_Len  : IN NATURAL range 1 to 14 := 1;
     Analog_Stream_Mode : IN STD_LOGIC := '0';
     Analog_Frame_Toggle : IN STD_LOGIC := '0';
+     Packed_Mode  : IN  STD_LOGIC := '0';
+     Packed_Data  : IN  STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+     Packed_Valid : IN  STD_LOGIC := '0';
+     Packed_Ready : OUT STD_LOGIC := '0';
      Blk_Rd_Req_Tog : IN  STD_LOGIC := '0';
      Blk_Rd_Base    : IN  NATURAL range 0 to Max_Samples := 0;
-     Compress_Enable : IN  STD_LOGIC := '0';
      Blk_Rd_Count   : IN  NATURAL range 0 to Max_Samples := 0;
      Auto_Renew     : IN  STD_LOGIC := '0';
      Rd_Fifo_Q      : OUT STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
@@ -311,6 +337,9 @@ BEGIN
   OLS_Interface_Outputs(Channels-1 downto 0) <= LA_Out(((OLS_Interface_Address mod sub_steps + 1)*Channels)-1 downto (OLS_Interface_Address mod sub_steps)*Channels);
   LA_Address <= OLS_Interface_Address/sub_steps;
   Gen_Load_Byte <= Gen_Load_Byte_i;
+  Gen_RX_Data_i   <= Gen_RX_Data;
+  Gen_RX_Used_i   <= Gen_RX_Used;
+  Gen_RX_Re       <= Gen_RX_Re_i;
   Gen_Load_We   <= Gen_Load_We_i;
   Gen_Start     <= Gen_Start_i;
   Gen_Baud_Div  <= Gen_Baud_Div_i;
@@ -328,11 +357,13 @@ BEGIN
   Gen_SPI_Test   <= gen_spi_test_i;
   Gen_Repeat     <= gen_repeat_i;
   Gen_RS485_Pair <= gen_rs485_pair_i;
+  Gen_Accel_Attach <= gen_accel_attach_i;
   Armed          <= armed_i;
   Fast_Mode      <= fast_mode_i;
   Narrow_Enable  <= narrow_enable_i;
   Narrow_Channel <= narrow_channel_i;
   Analog_Enable <= analog_enable_i;
+  Packed_Mode <= packed_mode_i;
   Analog_Only <= analog_only_i;
   Analog_Profile <= analog_profile_i;
   Analog_Channel <= analog_channel_i;
@@ -342,6 +373,7 @@ BEGIN
   Pin_Map_Channel <= pin_map_channel_i;
   Pin_Map_Pin <= pin_map_pin_i;
   Debug_Ch0_Enable <= debug_ch0_enable_i;
+  Debug_Ch0_Channel <= debug_ch0_channel_i;
   Debug_Ch0_Period <= debug_ch0_period_i;
   Debug_Ch0_Duty   <= debug_ch0_duty_i;
   Gen_Capture_Active <= gen_capture_active_i;
@@ -365,6 +397,7 @@ BEGIN
     Gen_SPI_Test   => gen_spi_test_i,
     Gen_Repeat     => gen_repeat_i,
     Gen_RS485_Pair => gen_rs485_pair_i,
+    Gen_Accel_Attach => gen_accel_attach_i,
     Armed          => armed_i,
     Fast_Mode      => fast_mode_i,
     Narrow_Enable  => narrow_enable_i,
@@ -373,6 +406,7 @@ BEGIN
     Analog_Only    => analog_only_i,
     Analog_Profile => analog_profile_i,
     Analog_Channel => analog_channel_i,
+    Packed_Mode    => packed_mode_i,
     Continuous_Mode => continuous_mode_i,
     Buffer_Full     => buffer_full_i,
     Buffer_Ack      => buffer_ack_i,
@@ -380,17 +414,20 @@ BEGIN
     Pin_Map_Channel => pin_map_channel_i,
     Pin_Map_Pin     => pin_map_pin_i,
     Debug_Ch0_Enable => debug_ch0_enable_i,
+    Debug_Ch0_Channel => debug_ch0_channel_i,
     Debug_Ch0_Period => debug_ch0_period_i,
     Debug_Ch0_Duty   => debug_ch0_duty_i,
     Gen_Capture_Active => gen_capture_active_i,
     Gen_Start_Ack      => gen_start_ack_i,
     Gen_Start_Reject   => gen_start_reject_i,
     Gen_Done_Pulse     => gen_done_pulse_i,
+    Gen_RX_Data      => Gen_RX_Data_i,
+    Gen_RX_Used      => Gen_RX_Used_i,
+    Gen_RX_Re        => Gen_RX_Re_i,
     Blk_Rd_Req_Tog     => blk_rd_req_tog_i,
     Blk_Rd_Base        => blk_rd_base_i,
     Blk_Rd_Count       => blk_rd_count_i,
     Auto_Renew         => auto_renew_i,
-    Compress_Enable      => compress_enable_i,
     Rd_Fifo_Q          => rd_fifo_q_i,
     Rd_Fifo_Empty      => rd_fifo_empty_i,
     Rd_Fifo_RdReq      => rd_fifo_rdreq_i,
@@ -408,11 +445,11 @@ BEGIN
   );
   Fast_Logic_Analyzer_SDRAM1 : Fast_Logic_Analyzer_SDRAM
    GENERIC MAP (
-      Max_Samples  => Max_Samples,Channels     => Channels,Sim          => Sim,FAST_SPEED   => FAST_SPEED,CLK_Frequency => CLK_Frequency,SDRAM_CLK_HZ => SDRAM_CLK_HZ,SAMPLE_CLK_HZ => SAMPLE_CLK_HZ
+      Max_Samples  => Max_Samples,Channels     => Channels,Sim          => Sim,FAST_SPEED   => FAST_SPEED,FAST_RAW_BUILD => FAST_RAW_BUILD,CLK_Frequency => CLK_Frequency,SDRAM_CLK_HZ => SDRAM_CLK_HZ,SAMPLE_CLK_HZ => SAMPLE_CLK_HZ
   ) PORT MAP (
     CLK => CLK,
     SDRAM_CLK_IN => SDRAM_CLK_IN,
-    CLK_150      => Fast_Logic_Analyzer_SDRAM_CLK_150,Rate_Div     => OLS_Interface_Rate_Div,Samples      => OLS_Interface_Samples,Start_Offset => OLS_Interface_Start_Offset,Run          => OLS_Interface_Run,Full         => OLS_Interface_Full,Inputs       => Inputs_Fast,Address      => LA_Address,Outputs      => LA_Out,sdram_addr   => sdram_addr,sdram_ba     => sdram_ba,sdram_cas_n  => sdram_cas_n,sdram_dq     => sdram_dq,sdram_dqm    => sdram_dqm,sdram_ras_n  => sdram_ras_n,sdram_we_n   => sdram_we_n,    sdram_cke    => sdram_cke,sdram_cs_n   => sdram_cs_n,sdram_clk    => sdram_clk,
+    CLK_150      => open,Rate_Div     => OLS_Interface_Rate_Div,Samples      => OLS_Interface_Samples,Start_Offset => OLS_Interface_Start_Offset,Run          => OLS_Interface_Run,Full         => OLS_Interface_Full,Inputs       => Inputs_Fast,Address      => LA_Address,Outputs      => LA_Out,sdram_addr   => sdram_addr,sdram_ba     => sdram_ba,sdram_cas_n  => sdram_cas_n,sdram_dq     => sdram_dq,sdram_dqm    => sdram_dqm,sdram_ras_n  => sdram_ras_n,sdram_we_n   => sdram_we_n,    sdram_cke    => sdram_cke,sdram_cs_n   => sdram_cs_n,sdram_clk    => sdram_clk,
     Status       => fla_status,
     Armed        => armed_i,
     Fast_Mode    => fast_mode_i,
@@ -426,10 +463,13 @@ BEGIN
     Analog_Frame_Len  => Analog_Frame_Len,
     Analog_Stream_Mode => Analog_Stream_Mode,
     Analog_Frame_Toggle => Analog_Frame_Toggle,
+    Packed_Mode  => packed_mode_i,
+    Packed_Data  => Packed_Data,
+    Packed_Valid => Packed_Valid,
+    Packed_Ready => Packed_Ready,
     Blk_Rd_Req_Tog    => blk_rd_req_tog_i,
     Blk_Rd_Base       => blk_rd_base_i,
     Blk_Rd_Count      => blk_rd_count_i,
-    Compress_Enable     => compress_enable_i,
     Auto_Renew        => auto_renew_i,
     Rd_Fifo_Q         => rd_fifo_q_i,
     Rd_Fifo_Empty     => rd_fifo_empty_i,

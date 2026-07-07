@@ -21,7 +21,6 @@ entity spi_packet_rx is
     -- Streaming payload output (each byte as it arrives from SPI)
     payload_byte   : out std_logic_vector(7 downto 0);
     payload_valid  : out std_logic;  -- strobes once per payload byte
-    payload_last   : out std_logic;  -- strobes on the last payload byte
 
     -- Packet completion flags
     packet_ok      : out std_logic;  -- pulse on valid complete packet
@@ -46,7 +45,6 @@ architecture rtl of spi_packet_rx is
   signal crc_rx   : std_logic_vector(15 downto 0) := (others => '0');
   signal packet_ok_int  : std_logic := '0';
   signal packet_err_int : std_logic := '0';
-  signal last_int : std_logic := '0';
 begin
 
   process(clk)
@@ -61,14 +59,11 @@ begin
         len_vec <= (others => '0');
         cnt <= 0; plen <= 0;
         crc_int := 65535;
-        last_int <= '0';
       else
         payload_valid <= '0';
-        payload_last <= '0';
         packet_ok_int <= '0';
         packet_err_int <= '0';
         err_bad_crc <= '0'; err_bad_sync <= '0'; err_oversize <= '0';
-        last_int <= '0';
 
         if cs_rise = '1' then
           -- CS deasserted mid-packet: abort and resync on the next frame so a
@@ -84,6 +79,14 @@ begin
               if rx_byte & sync_low = SYNC_REQ then
                 state <= GET_CMD;
                 crc_int := 65535;
+              elsif rx_byte = SYNC_REQ(7 downto 0) then
+                -- Self-healing hunt: this byte can start a new sync pair.
+                -- Without this, a single odd byte in the idle stream (e.g.
+                -- the SPI slave delivering a transaction's final byte after
+                -- the CS_Rise resync) flips the hunt parity and every
+                -- following frame is consumed silently.
+                sync_low := rx_byte;
+                err_bad_sync <= '1';
               else
                 state <= WAIT_SYNC0;
                 err_bad_sync <= '1';
@@ -126,8 +129,6 @@ begin
               cnt <= cnt + 1;
               crc_int := crc16_int(to_integer(unsigned(rx_byte)), crc_int);
               if cnt + 1 >= plen then
-                last_int <= '1';
-                payload_last <= '1';
                 state <= GET_CRC_L;
               end if;
 

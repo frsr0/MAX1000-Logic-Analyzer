@@ -44,6 +44,7 @@ PORT (
     Gen_SPI_Test   : OUT STD_LOGIC := '0';
     Gen_Repeat     : OUT STD_LOGIC := '0';
     Gen_RS485_Pair : OUT STD_LOGIC := '0';
+    Gen_Accel_Attach : OUT STD_LOGIC := '0';
      Armed          : OUT STD_LOGIC := '0';
       Fast_Mode      : OUT STD_LOGIC := '0';
       Continuous_Mode : OUT STD_LOGIC := '0';
@@ -53,18 +54,26 @@ PORT (
       Analog_Only     : OUT STD_LOGIC := '0';
       Analog_Profile  : OUT STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
       Analog_Channel  : OUT NATURAL range 0 to 31 := 1;
+      -- Parallel bit-packing capture mode select (REG_FLAGS bit 20). When set,
+      -- the mso_capture front end drives the SDRAM write FIFO instead of the
+      -- 128-bit Analog_Frame path.
+      Packed_Mode     : OUT STD_LOGIC := '0';
        Buffer_Full     : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
        Buffer_Ack      : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
-       Pin_Map_Write   : OUT STD_LOGIC := '0';
+        Pin_Map_Write   : OUT STD_LOGIC := '0';
         Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
         Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
         Debug_Ch0_Enable : OUT STD_LOGIC := '0';
+        Debug_Ch0_Channel : OUT NATURAL range 0 to 15 := 0;
         Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
         Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
          Gen_Capture_Active : OUT STD_LOGIC := '0';
          Gen_Start_Ack      : IN  STD_LOGIC := '0';
          Gen_Start_Reject   : IN  STD_LOGIC := '0';
          Gen_Done_Pulse     : IN  STD_LOGIC := '0';
+         Gen_RX_Data      : IN  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+         Gen_RX_Used      : IN  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+         Gen_RX_Re        : OUT STD_LOGIC := '0';
          -- Block readout (CMD_READ_CAPTURE) via the FLA response FIFO. Replaces
          -- the fixed-latency Address/Outputs latch and its prime/drain hack.
          Blk_Rd_Req_Tog : OUT STD_LOGIC := '0';
@@ -72,8 +81,6 @@ PORT (
          Blk_Rd_Count   : OUT NATURAL range 0 to Max_Samples := 0;
          -- Auto-renew block read (pass-through to FLA, controlled by dispatch)
          Auto_Renew     : OUT STD_LOGIC := '0';
-         -- Readback compression enable
-         Compress_Enable : OUT STD_LOGIC := '0';
          Rd_Fifo_Q      : IN  STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
          Rd_Fifo_Empty  : IN  STD_LOGIC := '1';
          Rd_Fifo_RdReq  : OUT STD_LOGIC := '0';
@@ -94,7 +101,6 @@ END OLS_Interface;
 ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
 
   SIGNAL Run_OLS  : STD_LOGIC := '0';
-  SIGNAL dbg_rx_valid_seen : STD_LOGIC := '0';
   SIGNAL Trigger_Mask   : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL Trigger_Values : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL inputs_prev    : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
@@ -105,12 +111,10 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL analog_only_i    : STD_LOGIC := '0';
   SIGNAL analog_profile_i : STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
   SIGNAL analog_channel_i : NATURAL range 0 to 31 := 1;
+  SIGNAL packed_mode_i    : STD_LOGIC := '0';
   SIGNAL SPI_RX_Valid     : STD_LOGIC := '0';
   SIGNAL SPI_RX_Data      : STD_LOGIC_VECTOR (8-1 DOWNTO 0) := (others => '0');
   -- SPI mode only: directly use SPI signals (no UART muxing)
-  SIGNAL spi_tx_busy       : STD_LOGIC := '0';
-  SIGNAL rx_count_debug    : STD_LOGIC_VECTOR(3 downto 0) := (others => '0');
-
   -- Generator FIFO depth (matches Signal_Gen.vhd generic)
   constant GEN_FIFO_DEPTH : natural := 256;
 
@@ -132,7 +136,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
    SIGNAL gen_spi_test_int   : STD_LOGIC := '0';
    SIGNAL gen_repeat_int     : STD_LOGIC := '0';
    SIGNAL gen_rs485_pair_int : STD_LOGIC := '0';
-  SIGNAL compress_enable_i  : STD_LOGIC := '0';
+   SIGNAL gen_accel_attach_int : STD_LOGIC := '0';
+  SIGNAL compress_mode_i    : STD_LOGIC_VECTOR(1 downto 0) := "00";
    SIGNAL gen_proto_int      : STD_LOGIC := '0';
    SIGNAL gen_baud_div_int   : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   SIGNAL fast_mode_i        : STD_LOGIC := '0';
@@ -142,13 +147,10 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL spi_preamble        : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL spi_preamble_r      : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL spi_tx_ready_i      : STD_LOGIC := '0';
-  SIGNAL proto_trig_enable   : STD_LOGIC := '0';
-  SIGNAL dbg_pkt_ok_seen     : STD_LOGIC := '0';
-  SIGNAL dbg_bad_crc_seen    : STD_LOGIC := '0';
-  SIGNAL dbg_bad_frame_seen  : STD_LOGIC := '0';
 
   SIGNAL ch_mode             : STD_LOGIC := '0';  -- 0=8ch/500k, 1=4ch/4M
   SIGNAL debug_ch0_enable_i  : STD_LOGIC := '0';
+  SIGNAL debug_ch0_channel_i : NATURAL range 0 to 15 := 0;
   SIGNAL debug_ch0_period_i  : STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
   SIGNAL debug_ch0_duty_i    : STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
   SIGNAL gen_capture_active_i  : STD_LOGIC := '0';
@@ -159,12 +161,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL gen_capture_start   : STD_LOGIC := '0';
   type gen_cap_state_t is (GENCAP_IDLE, GENCAP_LOOPBACK_ON, GENCAP_ARM, GENCAP_GUARD, GENCAP_WAIT_BUSY, GENCAP_RUNNING, GENCAP_WAIT_FULL, GENCAP_DONE, GENCAP_ERROR);
   SIGNAL gen_cap_state : gen_cap_state_t := GENCAP_IDLE;
-  SIGNAL pipe_depth          : NATURAL range 2 to 8 := 8;
-  SIGNAL proto_trig_protocol : STD_LOGIC_VECTOR(1 downto 0) := "00";
-  SIGNAL proto_trig_match    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
-  SIGNAL proto_trig_bauddiv  : NATURAL range 1 to 65535 := 416;
-  SIGNAL proto_trig_channel  : NATURAL range 0 to 7 := 0;
-  SIGNAL proto_trig_pulse    : STD_LOGIC := '0';
 
   -- Synthesis preserve: prevent Quartus from optimizing away gen start chain
   attribute preserve : boolean;
@@ -179,23 +175,19 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL pkt_payload_len      : NATURAL range 0 to MAX_RX_PAYLOAD_BYTES := 0;
   SIGNAL pkt_payload_byte     : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL pkt_payload_valid    : STD_LOGIC := '0';
-  SIGNAL pkt_payload_last     : STD_LOGIC := '0';
   SIGNAL pkt_ok               : STD_LOGIC := '0';
   SIGNAL pkt_err              : STD_LOGIC := '0';
-  SIGNAL pkt_err_bad_crc      : STD_LOGIC := '0';
-  SIGNAL pkt_err_bad_sync     : STD_LOGIC := '0';
-  SIGNAL pkt_err_oversize     : STD_LOGIC := '0';
   -- First 8 payload bytes captured for quick dispatch access
   TYPE payload_header_t IS ARRAY(0 TO 7) OF STD_LOGIC_VECTOR(7 DOWNTO 0);
   SIGNAL rx_payload_header    : payload_header_t := (others => (others => '0'));
-  SIGNAL rx_header_idx        : NATURAL range 0 TO 7 := 0;
+  SIGNAL rx_header_idx        : NATURAL range 0 TO 8 := 0;
   SIGNAL rx_header_len        : NATURAL range 0 TO MAX_RX_PAYLOAD_BYTES := 0;
   -- TX streaming interface
   SIGNAL pkt_tx_byte          : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
-  SIGNAL pkt_tx_valid         : STD_LOGIC := '0';
   SIGNAL pkt_tx_done          : STD_LOGIC := '0';
   SIGNAL pkt_tx_payload_ready : STD_LOGIC := '0';
-  SIGNAL pkt_idle_byte        : STD_LOGIC := '0';
+  SIGNAL raw_stream_tx_byte   : STD_LOGIC_VECTOR(7 downto 0) := x"FF";
+  SIGNAL raw_stream_tx_sel    : STD_LOGIC := '0';
   SIGNAL disp_tx_build        : STD_LOGIC := '0';
   SIGNAL disp_tx_status       : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL disp_tx_len          : NATURAL range 0 to MAX_TX_PAYLOAD_BYTES := 0;
@@ -213,17 +205,11 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL disp_gen_data    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL block_rd_pending     : STD_LOGIC := '0';
   SIGNAL block_rd_ack         : STD_LOGIC := '0';
-  SIGNAL block_rd_addr        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL block_rd_addr        : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   SIGNAL block_rd_issue_req   : STD_LOGIC := '0';
-  SIGNAL block_rd_issue_addr  : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL block_rd_issue_addr  : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   SIGNAL block_rd_release     : STD_LOGIC := '0';
-SIGNAL stream_addr         : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
-SIGNAL streaming_active    : STD_LOGIC := '0';
-  SIGNAL prefetch_arm_pending : STD_LOGIC := '0';
-  SIGNAL prefetch_inflight    : STD_LOGIC := '0';
-  SIGNAL prefetch_valid       : STD_LOGIC := '0';
-  SIGNAL prefetch_addr        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
-  SIGNAL block_rd_state       : NATURAL range 0 to 6 := 0;
+  SIGNAL block_rd_state       : NATURAL range 0 to 8 := 0;
   -- Watchdog kill: forces the block-read FSM back to idle when the dispatch
   -- gives up on a stalled block read (e.g. a read issued during continuous
   -- capture, where rd_mode is false so the FLA never streams and the response
@@ -237,7 +223,7 @@ SIGNAL streaming_active    : STD_LOGIC := '0';
   -- Block readout now streams the 512 samples through the FLA response FIFO
   -- (a true CLK<->pclk CDC), so there is no fixed-latency latch to warm and the
   -- old prime/drain read-ahead/read-behind padding has been removed.
-  SIGNAL block_rd_j           : INTEGER range 0 to BLOCK_SAMPLES - 1 := 0;
+  SIGNAL block_rd_j           : INTEGER range 0 to BLOCK_SAMPLES := 0;
   -- Holds the even sample so the odd cycle can write the full 32-bit block_buf
   -- entry in one go (partial-width writes don't infer correctly on the RAM).
   SIGNAL block_pack_lo        : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
@@ -246,6 +232,47 @@ SIGNAL streaming_active    : STD_LOGIC := '0';
   SIGNAL done_suppressed      : STD_LOGIC := '0';
   SIGNAL disp_ack_done        : STD_LOGIC := '0';
   SIGNAL disp_ack_seq         : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL raw_blk_rd_base_cfg  : NATURAL range 0 to Max_Samples := 0;
+  SIGNAL raw_blk_rd_count_cfg : NATURAL range 0 to 16384 := 0;
+  SIGNAL raw_stream_req_active : STD_LOGIC := '0';
+  SIGNAL raw_stream_comp_mode : STD_LOGIC := '0';
+  SIGNAL raw_blk_req_fire     : STD_LOGIC := '0';
+  SIGNAL block_fifo_rdreq     : STD_LOGIC := '0';
+  SIGNAL raw_fifo_rdreq       : STD_LOGIC := '0';
+  SIGNAL raw_fifo_drain_active : STD_LOGIC := '0';
+  SIGNAL raw_comp_fifo_rdreq  : STD_LOGIC := '0';
+  SIGNAL raw_comp_state       : NATURAL range 0 to 6 := 0;
+  SIGNAL raw_comp_samples_read : NATURAL range 0 to 16384 := 0;
+  SIGNAL raw_comp_samples_fed : NATURAL range 0 to 16384 := 0;
+  SIGNAL raw_comp_flush_issued : STD_LOGIC := '0';
+  SIGNAL raw_comp_done        : STD_LOGIC := '0';
+  SIGNAL comp_sample_in        : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  -- Output FIFO between the streaming RLE compressor and the SPI shifter. The
+  -- compressor runs far ahead of the slow SPI drain (it feeds a sample every
+  -- few 100 MHz cycles; SPI clocks one byte every ~160), emitting runs into
+  -- this FIFO in bursts which SPI then drains contiguously. Without buffering,
+  -- the wire would go idle between runs during a long run's accumulation and
+  -- the host would decode the idle bytes as bogus pairs. A WORD FIFO (not a
+  -- byte FIFO) is used: the compressor emits one 16-bit word per valid, so a
+  -- single write per emit -- half the entries and no per-entry dual-byte write
+  -- mux, which matters on this ~full device. Bytes are split out at the SPI
+  -- side (low byte first), like the raw-stream path. raw_comp_pop is the
+  -- SPI-side "byte consumed" handshake. Depth 8 words with the DEPTH-4 feed
+  -- gate below keeps the (up to two feeds x two words) in flight from
+  -- overflowing.
+  CONSTANT RAW_COMP_FIFO_DEPTH : NATURAL := 8;  -- words
+  CONSTANT RAW_COMP_FIFO_LAST  : NATURAL := RAW_COMP_FIFO_DEPTH - 1;
+  TYPE raw_comp_fifo_t IS ARRAY(0 TO RAW_COMP_FIFO_LAST) OF STD_LOGIC_VECTOR(15 downto 0);
+  SIGNAL raw_comp_fifo        : raw_comp_fifo_t := (others => (others => '0'));
+  SIGNAL raw_comp_fifo_wr_ptr : NATURAL range 0 to RAW_COMP_FIFO_LAST := 0;
+  SIGNAL raw_comp_fifo_rd_ptr : NATURAL range 0 to RAW_COMP_FIFO_LAST := 0;
+  SIGNAL raw_comp_fifo_count  : NATURAL range 0 to RAW_COMP_FIFO_DEPTH := 0;
+  -- Byte serialization + idle framing live in the SPI dispatch process; process
+  -- 1 only does whole-word pops via raw_comp_pop. When the FIFO is empty while
+  -- streaming, the dispatch process shifts out 0x0000 filler WORDS (a count word
+  -- is never 0x0000, so the host skips them) so the continuously-clocked wire is
+  -- never starved into carrying ambiguous data between runs.
+  SIGNAL raw_comp_pop         : STD_LOGIC := '0';
   CONSTANT SAMPLE_CLK_KHZ_SLV : STD_LOGIC_VECTOR(31 downto 0) :=
     STD_LOGIC_VECTOR(TO_UNSIGNED(SAMPLE_CLK_HZ / 1000, 32));
   SIGNAL sig_rd_pend_d1       : STD_LOGIC := '0';
@@ -254,6 +281,21 @@ SIGNAL streaming_active    : STD_LOGIC := '0';
 -- Max entries per block read: 512 uncompressed, 192 when compression is active in streaming mode
 SIGNAL blk_rd_samples : INTEGER range 0 to 512 := BLOCK_SAMPLES;
 SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
+  -- Local readback compressor (CLK domain — deliberately NOT in the FLA's
+  -- 167 MHz cone). Passthrough when compression is disabled, so all block
+  -- reads share one drain/store path.
+  SIGNAL drain_in_cnt  : INTEGER range 0 to 512 := 0;
+  SIGNAL comp_wait_cnt : INTEGER range 0 to 63 := 0;
+  SIGNAL pad_req       : STD_LOGIC := '0';
+  SIGNAL comp_rst_i    : STD_LOGIC := '0';
+  SIGNAL comp_feed_i   : STD_LOGIC := '0';
+  SIGNAL comp_flush_i  : STD_LOGIC := '0';
+  SIGNAL comp_sample_hold : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  SIGNAL comp_out_data   : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  SIGNAL comp_out_valid  : STD_LOGIC := '0';
+  SIGNAL comp_busy_i     : STD_LOGIC := '0';
+  SIGNAL comp_in_ready_i : STD_LOGIC := '1';
+  SIGNAL comp_enable_i : STD_LOGIC := '0';
   TYPE block_buf_t IS ARRAY(0 TO 255) OF STD_LOGIC_VECTOR(31 DOWNTO 0);
   SIGNAL block_buf            : block_buf_t := (others => (others => '0'));
   -- 21-cycle bit-serial divider for /3 (replaces 58-level lpm_divide)
@@ -263,20 +305,7 @@ SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
   SIGNAL div3_count   : NATURAL range 0 to 31 := 0;
   SIGNAL div3_busy    : STD_LOGIC := '0';
   SIGNAL div3_pending : STD_LOGIC := '0';
-  SIGNAL samples_div3  : NATURAL range 0 to Max_Samples := 0;
-  SIGNAL samples_2div3 : NATURAL range 0 to Max_Samples := 0;
-  COMPONENT Protocol_Trigger IS
-  port (
-    CLK          : in  std_logic;
-    Inputs       : in  std_logic_vector(7 downto 0);
-    Enable       : in  std_logic;
-    Protocol     : in  std_logic_vector(1 downto 0);
-    Match_Value  : in  std_logic_vector(7 downto 0);
-    Baud_Div     : in  natural range 1 to 65535;
-    UART_Channel : in  natural range 0 to 7;
-    Trigger      : out std_logic
-  );
-  END COMPONENT;
+
   COMPONENT spi_packet_rx IS
   PORT (
     clk         : IN  STD_LOGIC;
@@ -289,7 +318,6 @@ SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
     payload_len : OUT NATURAL range 0 to MAX_RX_PAYLOAD_BYTES;
     payload_byte   : OUT STD_LOGIC_VECTOR(7 downto 0);
     payload_valid  : OUT STD_LOGIC;
-    payload_last   : OUT STD_LOGIC;
     packet_ok   : OUT STD_LOGIC;
     packet_err  : OUT STD_LOGIC;
     err_bad_crc  : OUT STD_LOGIC;
@@ -311,9 +339,7 @@ SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
     payload_ready    : OUT STD_LOGIC;
     tx_ready    : IN  STD_LOGIC := '1';
     tx_byte     : OUT STD_LOGIC_VECTOR(7 downto 0);
-    tx_valid    : OUT STD_LOGIC;
-    tx_done     : OUT STD_LOGIC;
-    idle_byte   : OUT STD_LOGIC
+    tx_done     : OUT STD_LOGIC
   );
   END COMPONENT;
 
@@ -338,14 +364,25 @@ SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
   END COMPONENT;
 
 BEGIN
-  PROCESS (CLK)  
+  PROCESS (CLK)
+    variable fifo_v : raw_comp_fifo_t;
+    variable fifo_wr_v : natural range 0 to RAW_COMP_FIFO_LAST;
+    variable fifo_rd_v : natural range 0 to RAW_COMP_FIFO_LAST;
+    variable fifo_count_v : natural range 0 to RAW_COMP_FIFO_DEPTH;
   BEGIN
   IF RISING_EDGE(CLK) THEN
+    fifo_v := raw_comp_fifo;
+    fifo_wr_v := raw_comp_fifo_wr_ptr;
+    fifo_rd_v := raw_comp_fifo_rd_ptr;
+    fifo_count_v := raw_comp_fifo_count;
     div3_pending <= '0';
     Pin_Map_Write <= '0';
     gen_reg_load_req <= '0';
-    IF disp_arm = '1' THEN
-      Run_OLS <= '1';
+    if raw_blk_req_fire = '1' then
+      blk_req_tog_i <= NOT blk_req_tog_i;
+    end if;
+      IF disp_arm = '1' THEN
+        Run_OLS <= '1';
       Run <= '0';  -- force a clean 0->1 Run edge so the FLA starts a new capture
       done_latched <= '0';
       done_suppressed <= '0';
@@ -385,7 +422,8 @@ BEGIN
           analog_channel_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(12 downto 8)));
           narrow_enable_i <= disp_reg_wdata(13);
           narrow_channel_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(17 downto 14)));
-          compress_enable_i <= disp_reg_wdata(18);
+          compress_mode_i <= disp_reg_wdata(19 downto 18);
+          packed_mode_i <= disp_reg_wdata(20);
         WHEN REG_FAST_MODE =>
           fast_mode_i <= disp_reg_wdata(0);
         WHEN REG_CONT_MODE =>
@@ -423,12 +461,18 @@ BEGIN
             gen_spi_test_int <= disp_reg_wdata(1);
             gen_repeat_int <= disp_reg_wdata(2);
             gen_rs485_pair_int <= disp_reg_wdata(3);
+            -- bit 4: mirror the accelerometer bus (SDI/SPC/SDO) onto
+            -- capture channels 13/14/15 so a normal capture shows the
+            -- Bit_Engine <-> LIS3DH dialogue.
+            gen_accel_attach_int <= disp_reg_wdata(4);
             gen_i2c_rd_len_int <= TO_INTEGER(UNSIGNED(disp_reg_wdata(15 downto 8)));
             gen_i2c_dev_r_int <= disp_reg_wdata(23 downto 16);
           END IF;
 
         WHEN REG_DEBUG_CH0_ENABLE =>
           debug_ch0_enable_i <= disp_reg_wdata(0);
+        WHEN REG_DEBUG_CH0_ROUTE =>
+          debug_ch0_channel_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(3 downto 0)));
         WHEN REG_DEBUG_CH0_PERIOD =>
           debug_ch0_period_i <= disp_reg_wdata;
         WHEN REG_DEBUG_CH0_DUTY =>
@@ -470,7 +514,7 @@ BEGIN
     END IF;
     IF (Run = '0') THEN
       IF (Run_OLS = '1') THEN
-        IF (UNSIGNED(Trigger_Mask(29 downto 0)) = 0 AND proto_trig_enable = '0') THEN
+        IF (UNSIGNED(Trigger_Mask(29 downto 0)) = 0) THEN
           Run <= '1';
         ELSIF (Trigger_Mask(31 downto 30) = "00") THEN
           -- Level trigger: fire when inputs match Trigger_Values on masked bits
@@ -488,22 +532,84 @@ BEGIN
               Run <= '1';
             END IF;
           END IF;
-          -- Protocol decode trigger (independent of mask bits)
-          IF proto_trig_enable = '1' AND proto_trig_pulse = '1' THEN
-            Run <= '1';
-          END IF;
         END IF;
         IF Run_OLS = '1' THEN
           inputs_prev <= Inputs;
         END IF;
     END IF;
     -- ── Block read state machine (for CMD_READ_CAPTURE) ──────────────
-    -- Request a BLOCK_SAMPLES-long stream from the FLA and drain it through the
-    -- response FIFO. The FIFO is a true CDC across the FLA's pclk readout domain
-    -- and this CLK domain, so there is no fixed-latency latch to mis-time at a
-    -- block boundary (that was the block-boundary corruption) and no prime/drain.
+    -- Request a BLOCK_SAMPLES-long raw stream from the FLA and drain it
+    -- through the response FIFO (a true pclk->CLK CDC), feeding every popped
+    -- word through the merged delta->RLE compressor. With compression
+    -- disabled the wrapper is a 1:1 passthrough, so one unified store path
+    -- packs the (raw or compressed) output words into block_buf and
+    -- blk_rsp_words carries the exact response word count.
     sig_rd_pend_d1 <= block_rd_pending;
-    Rd_Fifo_RdReq <= '0';
+    block_fifo_rdreq <= '0';
+    comp_feed_i <= '0';
+    comp_rst_i <= '0';
+    comp_flush_i <= '0';
+    raw_comp_fifo_rdreq <= '0';
+    -- The dispatch process consumed a whole output word: pop it off the FIFO.
+    if raw_comp_pop = '1' and fifo_count_v > 0 then
+      if fifo_rd_v = RAW_COMP_FIFO_LAST then
+        fifo_rd_v := 0;
+      else
+        fifo_rd_v := fifo_rd_v + 1;
+      end if;
+      fifo_count_v := fifo_count_v - 1;
+    end if;
+    if raw_stream_comp_mode = '0' then
+      fifo_wr_v := 0;
+      fifo_rd_v := 0;
+      fifo_count_v := 0;
+      raw_comp_state <= 0;
+      raw_comp_samples_read <= 0;
+      raw_comp_samples_fed <= 0;
+      raw_comp_flush_issued <= '0';
+      raw_comp_done <= '0';
+    end if;
+
+    -- Store path: pack compressor output words (raw passthrough or delta
+    -- stream) 2-per-32-bit block_buf entry. Clamped at BLOCK_SAMPLES words:
+    -- incompressible content can emit MORE words than went in (overflow
+    -- keyframes); a truncated payload decompresses short and the host
+    -- retries that block uncompressed.
+    -- NB: this if/elsif is the ONLY block_buf write site — a second write
+    -- elsewhere in the process makes the writes non-exclusive, block_buf
+    -- stops inferring as an M9K altsyncram, and 8 kbit of RAM explodes into
+    -- ~15k logic cells of registers and muxes.
+    IF comp_out_valid = '1' THEN
+      IF raw_stream_comp_mode = '1' THEN
+        -- Push one emitted word into the word FIFO. The FETCH feed gate leaves
+        -- room for the (at most two feeds x two words) that can be in flight.
+        if fifo_count_v < RAW_COMP_FIFO_DEPTH then
+          fifo_v(fifo_wr_v) := comp_out_data;
+          if fifo_wr_v = RAW_COMP_FIFO_LAST then
+            fifo_wr_v := 0;
+          else
+            fifo_wr_v := fifo_wr_v + 1;
+          end if;
+          fifo_count_v := fifo_count_v + 1;
+        else
+          report "raw RLE output FIFO overflow" severity failure;
+        end if;
+      ELSIF block_rd_j < BLOCK_SAMPLES THEN
+        IF (block_rd_j MOD 2) = 0 THEN
+          block_pack_lo <= comp_out_data;
+        ELSE
+          block_buf(block_rd_j / 2) <= comp_out_data & block_pack_lo;
+        END IF;
+        block_rd_j <= block_rd_j + 1;
+      END IF;
+    ELSIF pad_req = '1' THEN
+      -- Odd word count: zero-pad the high half of the final entry.
+      IF (block_rd_j MOD 2) = 1 THEN
+        block_buf(block_rd_j / 2) <= x"0000" & block_pack_lo;
+      END IF;
+      pad_req <= '0';
+    END IF;
+
     IF block_rd_release = '1' THEN
       block_rd_pending <= '0';
     END IF;
@@ -519,9 +625,12 @@ BEGIN
     ELSIF block_rd_pending = '1' AND sig_rd_pend_d1 = '0' THEN
       -- block_rd_addr is a BYTE address; the wire is 2 bytes/sample, so the
       -- base sample index = byte_addr / 2 (one 1024-byte block = 512 samples).
-      Blk_Rd_Base  <= TO_INTEGER(UNSIGNED(block_rd_addr(31 downto 1)));
-      Blk_Rd_Count <= blk_rd_samples;
       block_rd_j <= 0;
+      drain_in_cnt <= 0;
+      blk_rsp_words <= 0;
+      pad_req <= '0';
+      comp_rst_i <= '1';   -- fresh anchor per block: each response payload
+                           -- must be independently decodable by the host
       block_rd_state <= 1;
     END IF;
     CASE block_rd_state IS
@@ -532,39 +641,130 @@ BEGIN
         block_rd_state <= 2;
       WHEN 2 =>
         -- Drain one sample: pop when the FIFO has data (rdreq asserted next
-        -- cycle, q valid the cycle after that -- showahead OFF).
-        IF Rd_Fifo_Empty = '0' THEN
-          Rd_Fifo_RdReq <= '1';
+        -- cycle, q valid the cycle after that -- showahead OFF). The pop is
+        -- also gated on comp_in_ready: the compressor drops inputs while it
+        -- flushes a packed group.
+        IF drain_in_cnt = blk_rd_samples THEN
+          comp_wait_cnt <= 0;
+          block_rd_state <= 6;
+        ELSIF Rd_Fifo_Empty = '0' AND comp_in_ready_i = '1' THEN
+          block_fifo_rdreq <= '1';
           block_rd_state <= 3;
         END IF;
       WHEN 3 =>
         block_rd_state <= 4;
       WHEN 4 =>
-        -- q now holds the popped sample. Pack 2 samples per 32-bit entry as one
-        -- full-word write on the odd index: even -> bits 15:0, odd -> 31:16
-        -- (contiguous 16-bit LE).
-        IF (block_rd_j MOD 2) = 0 THEN
-          block_pack_lo <= Rd_Fifo_Q;
-        ELSE
-          block_buf(block_rd_j / 2) <= Rd_Fifo_Q & block_pack_lo;
-        END IF;
-        IF block_rd_j >= blk_rsp_words - 1 THEN
+        block_rd_state <= 7;
+      WHEN 7 =>
+        -- q now holds the popped sample. Latch it first so the compressor sees
+        -- a stable word for the full cycle before sample_valid is pulsed.
+        comp_sample_hold <= Rd_Fifo_Q;
+        block_rd_state <= 8;
+      WHEN 8 =>
+        comp_feed_i <= '1';
+        drain_in_cnt <= drain_in_cnt + 1;
+        block_rd_state <= 2;
+      WHEN 6 =>
+        comp_flush_i <= '1';
+        -- All input words fed; wait for the compressor to finish flushing
+        -- the final packed group. If overflow keyframes left a partial tail
+        -- group (busy never clears without more input), time out — the
+        -- short payload is caught by the host's uncompressed retry.
+        IF (comp_busy_i = '0' AND comp_out_valid = '0')
+           OR comp_wait_cnt = 63 THEN
+          pad_req <= '1';   -- executed by the single block_buf write site
           block_rd_state <= 5;
         ELSE
-          block_rd_j <= block_rd_j + 1;
-          block_rd_state <= 2;
+          comp_wait_cnt <= comp_wait_cnt + 1;
         END IF;
       WHEN 5 =>
-        block_rd_ack <= '1';
-        block_rd_state <= 6;
-      WHEN 6 =>
-        IF block_rd_pending = '0' THEN
-          block_rd_ack <= '0';
-          block_rd_state <= 0;
+        IF pad_req = '0' THEN
+          blk_rsp_words <= block_rd_j;
+          block_rd_ack <= '1';
+          IF block_rd_pending = '0' THEN
+            block_rd_ack <= '0';
+            block_rd_state <= 0;
+          END IF;
         END IF;
       WHEN OTHERS =>
         null;
     END CASE;
+
+    if raw_blk_req_fire = '1' and raw_stream_comp_mode = '1' then
+      comp_rst_i <= '1';
+      raw_comp_state <= 1;
+      raw_comp_samples_read <= 0;
+      raw_comp_samples_fed <= 0;
+      raw_comp_flush_issued <= '0';
+      raw_comp_done <= '0';
+      fifo_wr_v := 0;
+      fifo_rd_v := 0;
+      fifo_count_v := 0;
+    elsif raw_stream_comp_mode = '1' then
+      case raw_comp_state is
+        -- ── STATE 1: FETCH ───────────────────────────────────────────────
+        -- Issue one FIFO read, or transition to flush once every requested
+        -- source sample has been fed. Gated only on the compressor being ready
+        -- and the output FIFO having room (so the compressor may run ahead of
+        -- the slow SPI drain and buffer whole runs). Rd_Fifo latency is two
+        -- cycles (mirror the block-read drain): rdreq here, WAIT (state 2), q
+        -- valid in state 3, latched there, then fed in state 5.
+        when 1 =>
+          if raw_comp_samples_read >= raw_blk_rd_count_cfg then
+            raw_comp_state <= 4;  -- all samples fed; go flush
+          elsif Rd_Fifo_Empty = '0'
+                and comp_in_ready_i = '1'
+                and fifo_count_v <= RAW_COMP_FIFO_DEPTH - 4 then
+            raw_comp_fifo_rdreq <= '1';
+            raw_comp_samples_read <= raw_comp_samples_read + 1;
+            raw_comp_state <= 2;
+          end if;
+
+        -- ── STATE 2: WAIT ────────────────────────────────────────────────
+        -- Rd_Fifo latency cycle: rdreq was asserted in state 1, but Rd_Fifo_Q
+        -- does not present the popped sample until the following cycle.
+        when 2 =>
+          raw_comp_state <= 3;
+
+        -- ── STATE 3: FEED ────────────────────────────────────────────────
+        -- Rd_Fifo_Q now holds the requested sample. Latch it before pulsing
+        -- sample_valid so the compressor does not sample a moving FIFO output.
+        when 3 =>
+          raw_comp_state <= 5;
+
+        -- Feed the previously latched sample into the compressor.
+        when 5 =>
+          comp_sample_hold <= Rd_Fifo_Q;
+          raw_comp_state <= 6;
+
+        when 6 =>
+          comp_feed_i <= '1';
+          raw_comp_samples_fed <= raw_comp_samples_fed + 1;
+          raw_comp_state <= 1;
+
+        -- ── STATE 4: FLUSH ───────────────────────────────────────────────
+        -- All samples fed: drain the FIFO, emit the compressor's final held
+        -- run, then finish.
+        when 4 =>
+          if raw_comp_flush_issued = '0'
+             and fifo_count_v = 0 then
+            comp_flush_i <= '1';
+            raw_comp_flush_issued <= '1';
+          elsif raw_comp_flush_issued = '1'
+                and comp_busy_i = '0' and comp_out_valid = '0' then
+            raw_comp_done <= '1';
+            raw_comp_state <= 0;
+          end if;
+
+        when others =>
+          raw_comp_state <= 0;
+      end case;
+    end if;
+
+    raw_comp_fifo       <= fifo_v;
+    raw_comp_fifo_wr_ptr <= fifo_wr_v;
+    raw_comp_fifo_rd_ptr <= fifo_rd_v;
+    raw_comp_fifo_count <= fifo_count_v;
   END IF;
   END PROCESS;
 
@@ -694,8 +894,6 @@ BEGIN
         div3_count <= div3_count - 1;
         if div3_count = 1 then
           div3_busy <= '0';
-          samples_div3  <= div3_result;
-          samples_2div3 <= div3_result + div3_result;
         end if;
       end if;
     end if;
@@ -706,13 +904,9 @@ BEGIN
   assert GEN_FIFO_DEPTH > 0 report "GEN_FIFO_DEPTH must be > 0" severity failure;
   -- pragma translate_on
 
-  pipe_depth <= 8 when ch_mode = '0' else 4;
-
   -- Bring-up/status preamble: run flags plus sticky SPI packet diagnostics.
   -- Registered on sys_clk before crossing to fast_clk SPI slave domain.
-  spi_preamble <= Run & Run_OLS & Full & '1' &
-                  dbg_rx_valid_seen & dbg_pkt_ok_seen &
-                  dbg_bad_crc_seen & dbg_bad_frame_seen;
+  spi_preamble <= Run & Run_OLS & Full & '1' & "0000";
   process(CLK)
   begin
     if rising_edge(CLK) then
@@ -730,8 +924,13 @@ BEGIN
   Gen_SPI_Test   <= gen_spi_test_int;
   Gen_Repeat     <= gen_repeat_int;
   Gen_RS485_Pair <= gen_rs485_pair_int;
+  Gen_Accel_Attach <= gen_accel_attach_int;
   Fast_Mode      <= fast_mode_i;
   Blk_Rd_Req_Tog <= blk_req_tog_i;
+  Blk_Rd_Base    <= raw_blk_rd_base_cfg when raw_stream_req_active = '1'
+                    else TO_INTEGER(UNSIGNED(block_rd_addr(15 downto 1)));
+  Blk_Rd_Count   <= raw_blk_rd_count_cfg when raw_stream_req_active = '1'
+                    else blk_rd_samples;
   Continuous_Mode <= continuous_mode_i;
   Narrow_Enable <= narrow_enable_i;
   Narrow_Channel <= narrow_channel_i;
@@ -739,37 +938,31 @@ BEGIN
   Analog_Only <= analog_only_i;
   Analog_Profile <= analog_profile_i;
   Analog_Channel <= analog_channel_i;
+  Packed_Mode <= packed_mode_i;
   Buffer_Ack      <= (others => '0');  -- FLA frees its own continuous buffers
   Armed          <= Run_OLS;
   Debug_Ch0_Enable <= debug_ch0_enable_i;
+  Debug_Ch0_Channel <= debug_ch0_channel_i;
   Debug_Ch0_Period <= debug_ch0_period_i;
   Debug_Ch0_Duty   <= debug_ch0_duty_i;
   Gen_Capture_Active <= gen_capture_active_i;
   -- Pin_Map_Write is driven from the main process (default low, pulsed in CMD_PIN_MAP handler)
 
-  Proto_Trigger1 : Protocol_Trigger
-  PORT MAP (
-    CLK          => CLK,
-    Inputs       => Inputs(7 downto 0),
-    Enable       => proto_trig_enable,
-    Protocol     => proto_trig_protocol,
-    Match_Value  => proto_trig_match,
-    Baud_Div     => proto_trig_bauddiv,
-    UART_Channel => proto_trig_channel,
-    Trigger      => proto_trig_pulse
-  );
-
   Interface_Mode <= '1';
 
   -- Mux TX_Data between UART path (UART mode) and packet protocol (SPI mode)
+  Rd_Fifo_RdReq <= '1' when block_fifo_rdreq = '1'
+                           or raw_fifo_rdreq = '1'
+                           or raw_comp_fifo_rdreq = '1' else '0';
+
   spi_tx_mux : block
     signal spi_tx_tdata : std_logic_vector(7 downto 0) := x"FF";
   begin
-    spi_tx_tdata <= pkt_tx_byte;
-    SPI_Slave1 : SPI_Slave2
-    PORT MAP (
-      sys_clk    => CLK,
-      fast_clk   => FAST_CLK,
+    spi_tx_tdata <= raw_stream_tx_byte when raw_stream_tx_sel = '1' else pkt_tx_byte;
+      SPI_Slave1 : SPI_Slave2
+      PORT MAP (
+        sys_clk    => CLK,
+        fast_clk   => FAST_CLK,
       reset      => '0',
       SCK        => SPI_SCK,
       MOSI       => SPI_MOSI,
@@ -777,11 +970,11 @@ BEGIN
       CS_n       => SPI_CS,
       TX_Data    => spi_tx_tdata,
       SPI_Preamble   => spi_preamble_r,
-      TX_Ready   => spi_tx_ready_i,
-      RX_Data    => SPI_RX_Data,
-      RX_Valid   => SPI_RX_Valid,
-      CS_Rise    => spi_cs_rise
-    );
+        TX_Ready   => spi_tx_ready_i,
+        RX_Data    => SPI_RX_Data,
+        RX_Valid   => SPI_RX_Valid,
+        CS_Rise    => spi_cs_rise
+      );
   end block;
 
   -- ── SPI Packet Protocol (parallel path, SPI mode only) ───────────
@@ -797,13 +990,12 @@ BEGIN
     payload_len => pkt_payload_len,
     payload_byte   => pkt_payload_byte,
     payload_valid  => pkt_payload_valid,
-    payload_last   => pkt_payload_last,
     cmd_active     => pkt_cmd_active,
     packet_ok   => pkt_ok,
     packet_err  => pkt_err,
-    err_bad_crc  => pkt_err_bad_crc,
-    err_bad_sync => pkt_err_bad_sync,
-    err_oversize => pkt_err_oversize
+    err_bad_crc  => open,
+    err_bad_sync => open,
+    err_oversize => open
   );
 
   -- ── RX payload header capture & GEN_LOAD streaming ───────────────
@@ -816,8 +1008,8 @@ BEGIN
       if pkt_payload_valid = '1' then
         if rx_header_idx < 8 then
           rx_payload_header(rx_header_idx) <= pkt_payload_byte;
+          rx_header_idx <= rx_header_idx + 1;
         end if;
-        rx_header_idx <= rx_header_idx + 1;
         if pkt_cmd_active = CMD_GEN_LOAD then
           disp_gen_data <= pkt_payload_byte;
           disp_gen_load <= '1';
@@ -834,32 +1026,44 @@ BEGIN
   -- All control registers are small (no wide payload buses).
   -- Block read data is streamed directly from block_buf to the TX.
   spi_pkt_dispatch: process(CLK)
-    type state_t is (IDLE, EXEC, WAIT_BLOCK, BUILD_RSP, FEED_TX, WAIT_TX);
+    type state_t is (IDLE, EXEC, WAIT_BLOCK, BUILD_RSP, FEED_TX, WAIT_TX, RAW_STREAM);
     variable st : state_t := IDLE;
     variable rsp_seq_v : std_logic_vector(7 downto 0) := (others => '0');
     variable rsp_stat_v : std_logic_vector(7 downto 0) := ST_OK;
     variable rsp_len_v : natural range 0 to MAX_TX_PAYLOAD_BYTES := 0;
     -- Small response buffer (24 bytes covers status metadata responses)
-    type rspbuf_t is array(0 to 31) of std_logic_vector(7 downto 0);
+    type rspbuf_t is array(0 to 23) of std_logic_vector(7 downto 0);
     variable rsp_buf : rspbuf_t;
-    variable rsp_buf_len : natural range 0 to 31 := 0;
-    variable rsp_buf_idx : natural range 0 to 31 := 0;
+    variable rsp_buf_len : natural range 0 to 24 := 0;
+    variable rsp_buf_idx : natural range 0 to 24 := 0;
     variable reg_val : std_logic_vector(31 downto 0) := (others => '0');
     -- Block-read streaming state
     variable blk_wc : natural range 0 to 255 := 0;  -- word counter
     variable blk_bc : natural range 0 to 3 := 0;    -- byte-within-word counter
+    variable blk_bytes_sent : natural range 0 to MAX_TX_PAYLOAD_BYTES := 0;
     -- Flag: true when payload comes from block_buf, not rsp_buf
     variable feeding_block : boolean := false;
     variable feed_wait_ready_low : boolean := false;
     variable block_last_v : boolean := false;
+    -- A normal 512-sample block read completes in ~5000 CLK cycles (~50 us at
+    -- 100 MHz); 50000 gives ~10x margin before the watchdog declares a stall.
+    constant BLOCK_WD_MAX : natural := 50000;
     -- Watchdog for WAIT_BLOCK. A healthy block read completes in a few thousand
     -- CLK cycles; if block_rd_ack has not arrived well past that the stream has
     -- stalled (read issued during continuous capture), so give up and recover
     -- rather than hang the whole command dispatcher forever.
-    variable block_wd : natural range 0 to 2097151 := 0;
-    -- A normal 512-sample block read completes in ~5000 CLK cycles (~50 us at
-    -- 100 MHz); 50000 gives ~10x margin before the watchdog declares a stall.
-    constant BLOCK_WD_MAX : natural := 50000;
+    variable block_wd : natural range 0 to BLOCK_WD_MAX := 0;
+    variable raw_start_pending : boolean := false;
+    variable raw_words_rem : natural range 0 to 16384 := 0;
+    variable raw_fetch_state : natural range 0 to 2 := 0;
+    variable raw_word : std_logic_vector(15 downto 0) := (others => '0');
+    variable raw_have_word : boolean := false;
+    variable raw_byte_hi_next : boolean := false;
+    -- Compressed-stream byte serializer state: which byte of the current
+    -- output word is next, and whether that word is a 0x0000 idle filler
+    -- (FIFO was empty at the word boundary) rather than a real FIFO word.
+    variable raw_comp_bhi : std_logic := '0';
+    variable raw_comp_word_idle : boolean := false;
   begin
     if rising_edge(CLK) then
       -- Defaults
@@ -871,55 +1075,90 @@ BEGIN
       disp_gen_start <= '0';
       disp_tx_payload_vld <= '0';
       block_rd_kill <= '0';
+      Gen_RX_Re <= '0';
       block_rd_issue_req <= '0';
       block_rd_release <= '0';
       disp_ack_done <= '0';
+      raw_blk_req_fire <= '0';
+      raw_fifo_rdreq <= '0';
+      raw_comp_pop <= '0';
 
+      -- (The idle-loop SDRAM prefetch that used to live here was removed:
+      -- a prefetch block read was never released by anyone — its ack/pending
+      -- stuck high until the next host WAIT_BLOCK consumed the stale ack and
+      -- served the WRONG address's data while the host request's own issue
+      -- was silently swallowed. During continuous capture it also reissued
+      -- endlessly as Oldest advanced, stealing the SDRAM bus from the write
+      -- pump. It only existed to feed the abandoned compressed-streaming
+      -- path. See tb_batched_reads.)
       if disp_arm = '1' then
-        streaming_active <= '0';
-        prefetch_inflight <= '0';
-        prefetch_valid <= '0';
-        prefetch_addr <= (others => '0');
-        if continuous_mode_i = '1' then
-          prefetch_arm_pending <= '1';
-        else
-          prefetch_arm_pending <= '0';
-        end if;
+        raw_stream_tx_sel <= '0';
+        raw_stream_req_active <= '0';
+        raw_stream_comp_mode <= '0';
+        raw_start_pending := false;
+        raw_words_rem := 0;
       elsif disp_abort = '1' then
-        streaming_active <= '0';
-        prefetch_arm_pending <= '0';
-        prefetch_inflight <= '0';
-        prefetch_valid <= '0';
-      elsif prefetch_inflight = '1' and block_rd_ack = '1' then
-        prefetch_inflight <= '0';
-        prefetch_valid <= '1';
+        raw_stream_tx_sel <= '0';
+        raw_stream_req_active <= '0';
+        raw_stream_comp_mode <= '0';
+        raw_start_pending := false;
+        raw_words_rem := 0;
+      end if;
+        -- Clear streaming mode on CS rise (host drops SPI chip select).
+        -- Also flag the residual Rd_Fifo entries so the drain logic below
+        -- flushes them before the next command reuses the FIFO read path.
+        if spi_cs_rise = '1' then
+          raw_stream_tx_sel <= '0';
+          raw_stream_req_active <= '0';
+          raw_stream_comp_mode <= '0';
+        raw_start_pending := false;
+        raw_words_rem := 0;
+        if st = RAW_STREAM then
+          st := IDLE;
+        end if;
+        raw_fifo_drain_active <= '1';
       end if;
 
-      -- Clear streaming mode on CS rise (host drops SPI chip select)
-      if spi_cs_rise = '1' then
-        streaming_active <= '0';
+      if (raw_start_pending or st = RAW_STREAM) and raw_stream_comp_mode = '0' then
+        if (not raw_have_word) and raw_words_rem > 0 then
+          case raw_fetch_state is
+            when 0 =>
+              if Rd_Fifo_Empty = '0' then
+                raw_fifo_rdreq <= '1';
+                raw_fetch_state := 1;
+              end if;
+            when 1 =>
+              raw_fetch_state := 2;
+            when others =>
+              raw_word := Rd_Fifo_Q;
+              raw_have_word := true;
+              raw_fetch_state := 0;
+          end case;
+        end if;
+      else
+        raw_fetch_state := 0;
+        raw_have_word := false;
+        if raw_stream_comp_mode = '0' then
+          raw_byte_hi_next := false;
+        end if;
+      end if;
+
+      -- Drain residual Rd_Fifo entries left from a raw-stream session.
+      -- The raw stream ends on CS rise (handled above); by that time the FLA
+      -- has finished streaming every requested sample into the dcfifo, but
+      -- straggler words that were enqueued but never read by the raw-stream
+      -- byte shifter remain.  Without this drain, the next CMD_READ_CAPTURE
+      -- reads stale FIFO data first, corrupting the block payload.
+      if raw_fifo_drain_active = '1' then
+        if Rd_Fifo_Empty = '0' then
+          raw_fifo_rdreq <= '1';
+        else
+          raw_fifo_drain_active <= '0';
+        end if;
       end if;
 
       case st is
         when IDLE =>
-          if continuous_mode_i = '1' and streaming_active = '0' then
-            if prefetch_valid = '1'
-               and prefetch_addr /= (Oldest_Index(30 downto 0) & '0') then
-              prefetch_valid <= '0';
-              prefetch_arm_pending <= '1';
-            elsif prefetch_arm_pending = '1'
-              and prefetch_inflight = '0'
-              and block_rd_pending = '0'
-              and block_rd_state = 0
-              and unsigned(Producer_Index) >= unsigned(Oldest_Index) +
-                  to_unsigned(BLOCK_SAMPLES, Producer_Index'length) then
-              block_rd_issue_addr <= Oldest_Index(30 downto 0) & '0';
-              prefetch_addr <= Oldest_Index(30 downto 0) & '0';
-              block_rd_issue_req <= '1';
-              prefetch_inflight <= '1';
-              prefetch_arm_pending <= '0';
-            end if;
-          end if;
           if pkt_ok = '1' then
             rsp_seq_v := pkt_seq;
             rsp_stat_v := ST_OK;
@@ -1005,24 +1244,34 @@ BEGIN
 
             when CMD_ABORT_CAPTURE =>
               disp_abort <= '1';
-              streaming_active <= '0';
               rsp_stat_v := ST_CAPTURE_IDLE;
               st := BUILD_RSP;
-            when CMD_START_STREAM =>
-              if rx_header_len >= 4 then
-                stream_addr(7 downto 0)   <= rx_payload_header(0);
-                stream_addr(15 downto 8)  <= rx_payload_header(1);
-                stream_addr(23 downto 16) <= rx_payload_header(2);
-                stream_addr(31 downto 24) <= rx_payload_header(3);
-                streaming_active <= '1';
-                if (prefetch_valid = '1' or prefetch_inflight = '1')
-                   and prefetch_addr /=
-                       (rx_payload_header(3) & rx_payload_header(2) &
-                        rx_payload_header(1) & rx_payload_header(0)) then
-                  prefetch_valid <= '0';
-                  prefetch_inflight <= '0';
-                  block_rd_kill <= '1';
+
+            when CMD_START_RAW_STREAM =>
+              if rx_header_len >= 8 then
+                reg_val(7 downto 0)   := rx_payload_header(0);
+                reg_val(15 downto 8)  := rx_payload_header(1);
+                block_rd_issue_addr   <= reg_val(15 downto 0);
+                raw_blk_rd_base_cfg   <= TO_INTEGER(UNSIGNED(reg_val(15 downto 1)));
+                reg_val(7 downto 0) := rx_payload_header(4);
+                reg_val(15 downto 8) := rx_payload_header(5);
+                reg_val(23 downto 16) := rx_payload_header(6);
+                reg_val(31 downto 24) := rx_payload_header(7);
+                raw_blk_rd_count_cfg <= TO_INTEGER(UNSIGNED(reg_val(14 downto 0)));
+                raw_stream_req_active <= '1';
+                if comp_enable_i = '1' then
+                  raw_stream_comp_mode <= '1';
+                else
+                  raw_stream_comp_mode <= '0';
                 end if;
+                raw_blk_req_fire <= '1';
+                raw_words_rem := TO_INTEGER(UNSIGNED(reg_val(14 downto 0)));
+                raw_start_pending := (raw_words_rem /= 0);
+                raw_have_word := false;
+                raw_fetch_state := 0;
+                raw_byte_hi_next := false;
+                raw_comp_bhi := '0';
+                raw_comp_word_idle := false;
                 rsp_buf(0) := Producer_Index(7 downto 0);
                 rsp_buf(1) := Producer_Index(15 downto 8);
                 rsp_buf(2) := Producer_Index(23 downto 16);
@@ -1036,32 +1285,10 @@ BEGIN
                 rsp_stat_v := ST_STREAM_ACTIVE;
               else
                 rsp_stat_v := ST_BAD_LEN;
+                raw_start_pending := false;
+                raw_words_rem := 0;
               end if;
               st := BUILD_RSP;
-
-            when CMD_READ_STREAM_BLOCK =>
-              if streaming_active = '1' then
-                if prefetch_valid = '1' and prefetch_addr = stream_addr then
-                  -- Prefetch works for both compressed and uncompressed.
-                  -- Compression is applied in TX path after prefetch.
-                  rsp_len_v := blk_rsp_words * 2;
-                  blk_wc := 0;
-                  blk_bc := 0;
-                  feeding_block := true;
-                  prefetch_valid <= '0';
-                  stream_addr <= std_logic_vector(unsigned(stream_addr) + 1024);
-                  st := BUILD_RSP;
-                else
-                  block_rd_issue_addr <= stream_addr;
-                  block_rd_issue_req <= '1';
-                  block_wd := 0;
-                  st := WAIT_BLOCK;
-                end if;
-              else
-                rsp_stat_v := ST_CAPTURE_IDLE;
-                st := BUILD_RSP;
-              end if;
-
 
             when CMD_ACK_CAPTURE_DONE =>
               disp_ack_seq <= (others => '0');
@@ -1078,8 +1305,6 @@ BEGIN
               if rx_header_len >= 4 then
                 block_rd_issue_addr(7 downto 0)   <= rx_payload_header(0);
                 block_rd_issue_addr(15 downto 8)  <= rx_payload_header(1);
-                block_rd_issue_addr(23 downto 16) <= rx_payload_header(2);
-                block_rd_issue_addr(31 downto 24) <= rx_payload_header(3);
                 block_rd_issue_req <= '1';
                 block_wd := 0;
                 st := WAIT_BLOCK;
@@ -1125,7 +1350,7 @@ BEGIN
                     reg_val(12 downto 8) := std_logic_vector(to_unsigned(analog_channel_i, 5));
                     reg_val(13) := narrow_enable_i;
                     reg_val(17 downto 14) := std_logic_vector(to_unsigned(narrow_channel_i, 4));
-                    reg_val(18) := compress_enable_i;
+                    reg_val(19 downto 18) := compress_mode_i;
                   when REG_CONT_MODE =>
                     reg_val(0) := continuous_mode_i;
                   when REG_GEN_PROTO =>
@@ -1140,10 +1365,16 @@ BEGIN
                     reg_val(1) := gen_spi_test_int;
                     reg_val(2) := gen_repeat_int;
                     reg_val(3) := gen_rs485_pair_int;
+                    reg_val(4) := gen_accel_attach_int;
                     reg_val(15 downto 8) := std_logic_vector(to_unsigned(gen_i2c_rd_len_int, 8));
                     reg_val(23 downto 16) := gen_i2c_dev_r_int;
+                  when REG_GEN_RX_DATA =>
+                    reg_val(7 downto 0)  := Gen_RX_Data;
+                    reg_val(15 downto 8) := Gen_RX_Used;
                   when REG_DEBUG_CH0_ENABLE =>
                     reg_val(0) := debug_ch0_enable_i;
+                  when REG_DEBUG_CH0_ROUTE =>
+                    reg_val(3 downto 0) := std_logic_vector(to_unsigned(debug_ch0_channel_i, 4));
                   when REG_DEBUG_CH0_PERIOD =>
                     reg_val := debug_ch0_period_i;
                   when REG_DEBUG_CH0_DUTY =>
@@ -1172,6 +1403,8 @@ BEGIN
                     reg_val := Pump_NoData_Cycles;
                   when REG_PUMP_OVERFLOW_COUNT =>
                     reg_val := Pump_Overflow_Count;
+                  when REG_STREAM_DEBUG0 | REG_STREAM_DEBUG1 =>
+                    reg_val := (others => '0');
                   when others => null;
                 end case;
                 rsp_buf(0) := reg_val(7 downto 0);
@@ -1179,6 +1412,12 @@ BEGIN
                 rsp_buf(2) := reg_val(23 downto 16);
                 rsp_buf(3) := reg_val(31 downto 24);
                 rsp_buf_len := 4;
+                -- Pop the RX FIFO on the address being READ (NOT
+                -- disp_reg_addr, which only tracks register WRITES and
+                -- left the FIFO stuck at its head byte forever).
+                if rx_payload_header(0) = REG_GEN_RX_DATA then
+                  Gen_RX_Re <= '1';
+                end if;
                 rsp_len_v := 4;
               else
                 rsp_stat_v := ST_BAD_LEN;
@@ -1231,20 +1470,15 @@ BEGIN
             block_rd_release <= '1';
             blk_wc := 0;
             blk_bc := 0;
+            blk_bytes_sent := 0;
             feeding_block := true;
             st := BUILD_RSP;
-            -- Advance stream address in streaming mode (always 1024 bytes per block)
-            if streaming_active = '1' then
-              stream_addr <= std_logic_vector(unsigned(stream_addr) + 1024);
-            end if;
           elsif block_wd >= BLOCK_WD_MAX then
             -- Stream stalled (e.g. block read during continuous capture). Kill
             -- the block-read FSM, drop the pending request, and return an empty
             -- error response so the dispatcher frees up for the next command
             -- instead of wedging the device until it is reconfigured.
             block_rd_kill <= '1';
-            prefetch_inflight <= '0';
-            prefetch_valid <= '0';
             rsp_stat_v := ST_CAPTURE_IDLE;
             rsp_len_v := 0;
             st := BUILD_RSP;
@@ -1272,24 +1506,20 @@ BEGIN
             end if;
           elsif pkt_tx_payload_ready = '1' then
             if feeding_block then
-              -- Stream from block_buf (varies: 256 x 32-bit = 1024 B uncompressed,
-              -- 96 x 32-bit = 384 B compressed)
+              -- Stream from block_buf; rsp_len_v carries the exact byte count.
               disp_tx_payload_in <= block_buf(blk_wc)(blk_bc * 8 + 7 downto blk_bc * 8);
               disp_tx_payload_vld <= '1';
               feed_wait_ready_low := true;
-              if blk_rsp_words = 192 then
-                block_last_v := (blk_wc = 95 and blk_bc = 3);
-              else
-                block_last_v := (blk_wc = 255 and blk_bc = 3);
-              end if;
+              block_last_v := (blk_bytes_sent + 1 >= rsp_len_v);
               if block_last_v then
                 st := WAIT_TX;
               else
+                blk_bytes_sent := blk_bytes_sent + 1;
                 if blk_bc < 3 then
                   blk_bc := blk_bc + 1;
                 else
                   blk_bc := 0;
-                  if (blk_rsp_words = 192 and blk_wc < 95) or (blk_rsp_words = 512 and blk_wc < 255) then
+                  if blk_wc < 255 then
                     blk_wc := blk_wc + 1;
                   end if;
                 end if;
@@ -1310,7 +1540,92 @@ BEGIN
 
         when WAIT_TX =>
           if pkt_tx_done = '1' then
-            st := IDLE;
+            if raw_start_pending then
+              if raw_stream_comp_mode = '1' then
+                -- Seed an explicit 0x0000 filler word at the handoff. Without
+                -- this, one stale packet-side byte can leak ahead of the RAW
+                -- stream and misalign every later filler/real word boundary.
+                raw_stream_tx_sel <= '1';
+                raw_stream_tx_byte <= x"00";
+                raw_comp_bhi := '1';
+                raw_comp_word_idle := true;
+              else
+                if raw_have_word then
+                  raw_stream_tx_sel <= '1';
+                  raw_stream_tx_byte <= raw_word(7 downto 0);
+                  raw_byte_hi_next := true;
+                else
+                  raw_stream_tx_sel <= '0';
+                  raw_byte_hi_next := false;
+                end if;
+              end if;
+              st := RAW_STREAM;
+            else
+              st := IDLE;
+            end if;
+          end if;
+
+        when RAW_STREAM =>
+          if raw_stream_comp_mode = '1' then
+            -- Serialize output words low-byte-first. At each word boundary
+            -- (raw_comp_bhi = '0') pick a real FIFO word if one is available,
+            -- else -- if not finished -- a 0x0000 idle filler word so the
+            -- continuously-clocked wire is never starved into ambiguous bytes.
+            -- raw_comp_word_idle latches that choice so the two bytes of a word
+            -- are never mixed (idle low + real high or vice-versa), which keeps
+            -- the host word-aligned and lets it skip whole idle words.
+            if spi_tx_ready_i = '1' then
+              if raw_comp_bhi = '0' then
+                if raw_comp_fifo_count > 0 then
+                  raw_comp_word_idle := false;
+                  raw_stream_tx_sel <= '1';
+                  raw_stream_tx_byte <= raw_comp_fifo(raw_comp_fifo_rd_ptr)(7 downto 0);
+                  raw_comp_bhi := '1';
+                elsif raw_comp_done = '1' then
+                  raw_start_pending := false;
+                  st := IDLE;
+                else
+                  raw_comp_word_idle := true;
+                  raw_stream_tx_sel <= '1';
+                  raw_stream_tx_byte <= x"00";
+                  raw_comp_bhi := '1';
+                end if;
+              else
+                raw_stream_tx_sel <= '1';
+                if raw_comp_word_idle then
+                  raw_stream_tx_byte <= x"00";
+                else
+                  raw_stream_tx_byte <= raw_comp_fifo(raw_comp_fifo_rd_ptr)(15 downto 8);
+                  raw_comp_pop <= '1';  -- whole real word consumed
+                end if;
+                raw_comp_bhi := '0';
+              end if;
+            end if;
+          elsif spi_tx_ready_i = '1' and raw_have_word then
+            if raw_stream_tx_sel = '0' then
+              raw_stream_tx_sel <= '1';
+              raw_stream_tx_byte <= raw_word(7 downto 0);
+              raw_byte_hi_next := true;
+            elsif raw_byte_hi_next then
+              raw_stream_tx_byte <= raw_word(15 downto 8);
+              raw_byte_hi_next := false;
+              raw_have_word := false;
+              if raw_words_rem > 0 then
+                raw_words_rem := raw_words_rem - 1;
+              end if;
+              -- raw_words_rem is a variable, so this reads the POST-decrement
+              -- count: 0 means the high byte just queued completes the LAST
+              -- requested word. The old "<= 1" exit here left one word unsent
+              -- on every stream segment (host saw 0xFFFF idle in the final
+              -- word slot; hw-verified 2026-07-04).
+              if raw_words_rem = 0 then
+                raw_start_pending := false;
+                st := IDLE;
+              end if;
+            else
+              raw_stream_tx_byte <= raw_word(7 downto 0);
+              raw_byte_hi_next := true;
+            end if;
           end if;
       end case;
     end if;
@@ -1326,49 +1641,51 @@ BEGIN
     rsp_status  => disp_tx_status,
     rsp_len     => disp_tx_len,
     payload_byte_in  => disp_tx_payload_in,
-    payload_valid_in => disp_tx_payload_vld,
-    payload_ready    => pkt_tx_payload_ready,
-    tx_ready    => spi_tx_ready_i,
-    tx_byte     => pkt_tx_byte,
-    tx_valid    => pkt_tx_valid,
-    tx_done     => pkt_tx_done,
-    idle_byte   => pkt_idle_byte
-  );
+        payload_valid_in => disp_tx_payload_vld,
+        payload_ready    => pkt_tx_payload_ready,
+        tx_ready    => spi_tx_ready_i,
+        tx_byte     => pkt_tx_byte,
+        tx_done     => pkt_tx_done
+      );
 
 
 
   -- Debug: rising-edge detect on SPI_RX_Valid (sys_clk domain)
-  rx_valid_edge: process(CLK)
-    variable rv_s1 : std_logic := '0';
-    variable rv_s2 : std_logic := '0';
-  begin
-    if rising_edge(CLK) then
-      rv_s2 := rv_s1;
-      rv_s1 := SPI_RX_Valid;
-      if rv_s1 = '1' and rv_s2 = '0' then
-        dbg_rx_valid_seen <= '1';
-      end if;
-      if pkt_ok = '1' then
-        dbg_pkt_ok_seen <= '1';
-      end if;
-      if pkt_err_bad_crc = '1' then
-        dbg_bad_crc_seen <= '1';
-      end if;
-      if pkt_err_bad_sync = '1' or pkt_err_oversize = '1' then
-        dbg_bad_frame_seen <= '1';
-      end if;
-    end if;
-  end process;
-
   -- Auto_Renew: drives FLA block-read auto-renew.  Default '0' (single-shot).
   Auto_Renew <= '0';
 
-  -- Block-read in progress → force compressor OFF so CMD_READ_CAPTURE returns
-  -- raw uncompressed data (the block FSM expects fixed-size blocks).
-  -- Compression is active during streaming block reads (CMD_READ_STREAM_BLOCK).
   blk_rd_samples <= BLOCK_SAMPLES;
-  blk_rsp_words <= BLOCK_SAMPLES when compress_enable_i = '0' or streaming_active = '0' else 192;
-  Compress_Enable <= '1' when compress_enable_i = '1' and block_rd_pending = '0' and block_rd_ack = '0' else
-                     '1' when compress_enable_i = '1' and streaming_active = '1' else '0';
+  comp_enable_i <= '1' when compress_mode_i /= "00" and analog_enable_i = '0' else '0';
+
+  -- Readback compressor runs at 100 MHz between the response FIFO drain and
+  -- block_buf. RLE is the sole digital codec: it does raw passthrough when
+  -- compression is disabled (mode "00") and run-length compression when
+  -- enabled (mode "10"). It supersedes the old delta codec for digital
+  -- readback (idle/slow data compresses far more, and it is lossless with no
+  -- keyframe ambiguity). The delta compressor (capture_compressor) was
+  -- dropped from the build: keeping BOTH could not close 167 MHz timing at
+  -- 99% LE (the extra ~320 LC perturbed the SDRAM readout placement). Mode
+  -- "01" (legacy "delta") now takes the RLE passthrough path and reads back
+  -- raw — lossless, just uncompressed — via the host's raw fallback. To
+  -- One merged delta->RLE codec for digital readback. The wrapper buffers the
+  -- delta words and then feeds them into the exact run-length stage.
+  rd_delta_rle_compressor : entity work.delta_rle_compressor
+    PORT MAP (
+      clk                => CLK,
+      rst                => comp_rst_i,
+      sample_in          => comp_sample_in,
+      sample_valid       => comp_feed_i,
+      compression_enable => comp_enable_i,
+      flush              => comp_flush_i,
+      comp_data          => comp_out_data,
+      comp_valid         => comp_out_valid,
+      busy               => comp_busy_i,
+      in_ready           => comp_in_ready_i
+    );
+
+  -- Streaming RLE feeds the compressor directly from the SDRAM read FIFO
+  -- output; the FETCH/WAIT/FEED sequencer above only asserts comp_feed_i in the
+  -- cycle Rd_Fifo_Q is valid, so no skid/holding register is needed.
+  comp_sample_in <= comp_sample_hold;
 
 END BEHAVIORAL;

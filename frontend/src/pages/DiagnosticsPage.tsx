@@ -19,25 +19,37 @@ export function DiagnosticsPage() {
   }, [logs.length]);
 
   const runSanity = async () => {
-    if (!activeSession) { toast('warning', 'Open a session first'); return; }
+    if (!activeSession) {
+      toast('warning', 'Open a session first');
+      return;
+    }
     try {
       const r = await api.sanity(activeSession.id);
       setSanity(r.findings);
-    } catch (e: any) { toast('error', e.message); }
+    } catch (e: any) {
+      toast('error', e.message);
+    }
   };
 
   const mockCap = async (scenario: string, analog = false) => {
     try {
       await api.mockCapture(scenario, 1_000_000, 100_000, analog);
       toast('info', `Mock capture started: ${scenario}`);
-    } catch (e: any) { toast('error', e.message); }
+    } catch (e: any) {
+      toast('error', e.message);
+    }
   };
 
   const shown = levelFilter ? logs.filter((l) => l.level === levelFilter) : logs;
 
   return (
     <div className="page">
-      <h2>Diagnostics</h2>
+      <div className="page-head">
+        <div>
+          <h2>Diagnostics</h2>
+          <p className="hint">This page is for checking the control plane, logs, and mock data paths without guessing at the hardware state.</p>
+        </div>
+      </div>
       <div className="gen-grid">
         <div className="card">
           <h3>Tools</h3>
@@ -45,7 +57,7 @@ export function DiagnosticsPage() {
             <button onClick={() => downloadDebugBundle().then(
               () => toast('success', 'Debug bundle downloaded'),
               (e) => toast('error', e.message))}>
-              ⬇ Debug bundle (ZIP)
+              Debug bundle (ZIP)
             </button>
             <button onClick={runSanity}>Run capture sanity checks</button>
           </div>
@@ -58,7 +70,7 @@ export function DiagnosticsPage() {
               ))}
             </ul>
           )}
-          <h3>Mock captures (never touches hardware)</h3>
+          <h3>Mock captures</h3>
           <div className="button-row wrap">
             <button disabled={!controlMode} onClick={() => mockCap('demo_mixed')}>Demo mixed</button>
             <button disabled={!controlMode} onClick={() => mockCap('uart')}>UART</button>
@@ -76,7 +88,7 @@ export function DiagnosticsPage() {
               {diag.lan_urls?.map((u: string) => (
                 <div key={u} className="mono">{u}</div>
               ))}
-              <p><a href="/connect" target="_blank" rel="noreferrer">QR code page →</a></p>
+              <p><a href="/connect" target="_blank" rel="noreferrer">QR code page</a></p>
             </>
           )}
         </div>

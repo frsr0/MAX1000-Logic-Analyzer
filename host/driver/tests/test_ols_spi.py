@@ -1,7 +1,9 @@
 import struct
+from unittest.mock import MagicMock
+import pytest
 
 from driver.spi_protocol import (
-    CMD_START_STREAM, ST_OK, ST_STREAM_ACTIVE, SYNC_REQ, SYNC_RSP,
+    CMD_START_RAW_STREAM, ST_OK, ST_STREAM_ACTIVE, SYNC_REQ, SYNC_RSP,
     SPIDevice, crc16, parse_response,
 )
 
@@ -138,6 +140,23 @@ class TestOLSXfer:
 
 
 class TestOLSPublicAPI:
+    def test_open_prefers_serial_b_endpoint(self):
+        from driver import ols_spi
+        mock_ft = ols_spi.ft
+        mock_dev = MagicMock()
+        mock_ft.createDeviceInfoList.return_value = 2
+        mock_ft.listDevices.return_value = [b'AR2I5VP2A', b'AR2I5VP2B']
+        mock_ft.openEx.return_value = mock_dev
+        mock_dev.getDeviceInfo.return_value = {
+            'description': b'Arrow USB Blaster B',
+            'serial': b'AR2I5VP2B',
+        }
+
+        inst = ols_spi.OLS(speed_hz=12000000)
+        inst.open()
+
+        mock_ft.openEx.assert_called_once_with(b'AR2I5VP2B', update=False)
+
     def test_tx(self, ols, mock_dev):
         result = ols.tx(0x01)
         assert len(result) >= 5
@@ -267,6 +286,7 @@ class TestSPIPacketProtocol:
     def test_start_stream_read_parses_ack_and_returns_stream_data(self):
         class FakeSPI:
             def __init__(self):
+                self.speed_hz = 30_000_000
                 self.request = None
                 self.tx_read_calls = 0
                 self.n_bytes = 0
@@ -279,11 +299,9 @@ class TestSPIPacketProtocol:
                 resp = (SYNC_RSP + bytes([ST_STREAM_ACTIVE, seq])
                         + struct.pack('<H', len(payload)) + payload)
                 resp += struct.pack('<H', crc16(resp[2:]))
-                guard = bytearray(b'\xff' * (len(request) + ack_pad))
-                guard[2:2 + len(resp)] = resp
+                guard = bytearray(b'\xff' * 2)
                 stream = bytearray(range(n_bytes))
-                stream[0::2], stream[1::2] = stream[1::2], stream[0::2]
-                return bytes(guard) + bytes(stream)
+                return bytes(guard) + resp + bytes(stream)
 
             def tx_read(self, n):
                 self.tx_read_calls += 1
@@ -295,23 +313,22 @@ class TestSPIPacketProtocol:
         assert producer == 0x12345678
         assert oldest == 0x100
         assert data == bytes(range(16))
-        assert fake.n_bytes == 18
-        assert fake.request.startswith(SYNC_REQ + bytes([CMD_START_STREAM]))
+        assert fake.n_bytes == 16
+        assert fake.request.startswith(SYNC_REQ + bytes([CMD_START_RAW_STREAM]))
         assert fake.tx_read_calls == 0
 
     def test_start_stream_read_keeps_sample_boundary_after_shifted_ack(self):
         class FakeSPI:
+            speed_hz = 30_000_000
             def stream_command(self, request, n_bytes, ack_pad=96, stop_evt=None):
                 seq = request[3]
                 payload = struct.pack('<II', 0x12345678, 0x00000100)
                 resp = (SYNC_RSP + bytes([ST_STREAM_ACTIVE, seq])
                         + struct.pack('<H', len(payload)) + payload)
                 resp += struct.pack('<H', crc16(resp[2:]))
-                guard = bytearray(b'\xff' * (len(request) + ack_pad))
-                guard[3:3 + len(resp)] = resp
+                guard = bytearray(b'\xff' * 3)
                 stream = bytearray(range(n_bytes))
-                stream[0::2], stream[1::2] = stream[1::2], stream[0::2]
-                return bytes(guard) + b'\xee' + bytes(stream)
+                return bytes(guard) + resp + bytes(stream)
 
         pkt = SPIDevice(FakeSPI())
         producer, oldest, data = pkt.start_stream_read(0x80, 16)
@@ -319,9 +336,259 @@ class TestSPIPacketProtocol:
         assert oldest == 0x100
         assert data == bytes(range(16))
 
+    def test_start_raw_stream_read_parses_ack_and_returns_samples(self):
+        class FakeSPI:
+            def __init__(self):
+                self.speed_hz = 30_000_000
+                self.request = None
+                self.n_bytes = 0
+
+            def stream_command(self, request, n_bytes, ack_pad=96, stop_evt=None):
+                self.request = request
+                self.n_bytes = n_bytes
+                seq = request[3]
+                payload = struct.pack('<II', 0x12345678, 0x00000100)
+                resp = (SYNC_RSP + bytes([ST_STREAM_ACTIVE, seq])
+                        + struct.pack('<H', len(payload)) + payload)
+                resp += struct.pack('<H', crc16(resp[2:]))
+                guard = bytearray(b'\xff' * 2)
+                stream = bytearray(range(n_bytes))
+                return bytes(guard) + resp + bytes(stream)
+
+        fake = FakeSPI()
+        pkt = SPIDevice(fake)
+        producer, oldest, data = pkt.start_raw_stream_read(0x80, 8)
+        assert producer == 0x12345678
+        assert oldest == 0x100
+        assert data == bytes(range(16))
+        assert fake.n_bytes == 16
+        assert fake.request.startswith(SYNC_REQ + bytes([CMD_START_RAW_STREAM]))
+
+    def test_start_raw_stream_read_precise_path_starts_data_at_ack_end(self):
+        class FakeSPI:
+            def __init__(self):
+                self.speed_hz = 30_000_000
+                self.request = None
+                self.pos = 0
+                self.closed = False
+                self.clock_calls = []
+                self.body = None
+
+            def stream_command_begin(self, request, stop_evt=None):
+                self.request = bytes(request)
+                seq = request[3]
+                payload = struct.pack('<II', 0x12345678, 0x00000100)
+                resp = (SYNC_RSP + bytes([ST_STREAM_ACTIVE, seq])
+                        + struct.pack('<H', len(payload)) + payload)
+                resp += struct.pack('<H', crc16(resp[2:]))
+                # Stream bytes start immediately after the ack, not at any
+                # fixed request+ack_pad boundary.
+                self.body = b'\xff\xff' + resp + bytes(range(16))
+                out = self.body[:len(request)]
+                self.pos = len(request)
+                return out
+
+            def stream_command_clock(self, n_bytes, stop_evt=None):
+                self.clock_calls.append(n_bytes)
+                out = self.body[self.pos:self.pos + n_bytes]
+                self.pos += len(out)
+                if len(out) < n_bytes:
+                    out += b'\x00' * (n_bytes - len(out))
+                    self.pos += n_bytes - len(out)
+                return out
+
+            def stream_command_end(self):
+                self.closed = True
+
+        fake = FakeSPI()
+        pkt = SPIDevice(fake)
+        producer, oldest, data = pkt.start_raw_stream_read(0x80, 8)
+        assert producer == 0x12345678
+        assert oldest == 0x100
+        assert data == bytes(range(16))
+        assert fake.request.startswith(SYNC_REQ + bytes([CMD_START_RAW_STREAM]))
+        assert fake.closed is True
+        # Ack hunt uses one small probe chunk; the remainder is clocked exactly.
+        assert fake.clock_calls == [16, 2]
+
+    class FakeChunkSPI:
+        """Fake transport implementing the chunked RLE stream primitive.
+
+        Mirrors the hardware wire layout: a few leading guard bytes, the packet
+        ack, then the RLE stream data IMMEDIATELY after the ack (``pre_data`` can
+        inject guard/idle words between the ack and the first run to exercise the
+        decoder's leading-skip). The whole byte sequence is yielded as a first
+        ``len(request)+ack_pad`` prefix (so data straddles the prefix boundary,
+        as it does on real hardware) then ``chunk_size`` slices, followed by
+        0x0000 idle filler (what the FPGA sends while starved / after it stops).
+        """
+
+        def __init__(self, stream_bytes, chunk_size=4, idle_after=True,
+                     pre_data=b''):
+            self.speed_hz = 30_000_000
+            self.stream_bytes = bytes(stream_bytes)
+            self.chunk_size = chunk_size
+            self.idle_after = idle_after
+            self.pre_data = bytes(pre_data)
+            self.request = None
+            self.data_chunks = 0
+            self.closed = False
+
+        def stream_command_chunks(self, request, ack_pad=96, chunk_bytes=4096,
+                                  stop_evt=None):
+            self.request = bytes(request)
+            seq = request[3]
+            payload = struct.pack('<II', 0x12345678, 0x00000100)
+            resp = (SYNC_RSP + bytes([ST_STREAM_ACTIVE, seq])
+                    + struct.pack('<H', len(payload)) + payload)
+            resp += struct.pack('<H', crc16(resp[2:]))
+            # Contiguous body: 2 leading guard bytes, ack, optional pre-data,
+            # then the RLE stream. Idle 0x0000 filler pads the tail.
+            body = (b'\xff\xff' + resp + self.pre_data + self.stream_bytes)
+            prefix_len = len(request) + ack_pad
+            tail = (b'\x00\x00' * 2048) if self.idle_after else b''
+            full = body + tail
+            if len(full) < prefix_len:
+                full = full + b'\x00\x00' * ((prefix_len - len(full) + 1) // 2)
+            try:
+                yield full[:prefix_len]
+                pos = prefix_len
+                while pos < len(full):
+                    if stop_evt is not None and stop_evt.is_set():
+                        return
+                    self.data_chunks += 1
+                    yield full[pos:pos + self.chunk_size]
+                    pos += self.chunk_size
+            finally:
+                self.closed = True
+
+    def test_start_rle_stream_read_parses_ack_and_decodes_samples(self):
+        fake = self.FakeChunkSPI(struct.pack('<4H', 3, 0x1234, 5, 0x5678),
+                                 chunk_size=4)
+        pkt = SPIDevice(fake)
+        producer, oldest, data = pkt.start_rle_stream_read(0x80, 8)
+        assert producer == 0x12345678
+        assert oldest == 0x100
+        assert data == (b'\x34\x12' * 3) + (b'\x78\x56' * 5)
+        assert fake.request.startswith(SYNC_REQ + bytes([CMD_START_RAW_STREAM]))
+        # Data may already straddle the prefix buffer, so the decoder can stop
+        # without needing all post-prefix chunks; it must still close the
+        # transaction before draining the idle filler tail.
+        assert fake.data_chunks <= 2
+        assert fake.closed is True
+
+    def test_start_rle_stream_read_handles_pairs_split_across_chunks(self):
+        # 3-byte chunks split every (count, value) pair across a boundary.
+        fake = self.FakeChunkSPI(struct.pack('<4H', 3, 0x1234, 5, 0x5678),
+                                 chunk_size=3)
+        pkt = SPIDevice(fake)
+        producer, oldest, data = pkt.start_rle_stream_read(0x80, 8)
+        assert data == (b'\x34\x12' * 3) + (b'\x78\x56' * 5)
+        assert fake.closed is True
+
+    def test_start_rle_stream_read_skips_idle_filler_words(self):
+        # 0x0000 idle-filler words (inserted by the FPGA when it starves the
+        # wire between runs) appear before and between real pairs and must be
+        # skipped. Use a 2-byte chunk so idles also straddle chunk boundaries.
+        stream = (struct.pack('<H', 0)          # leading idle
+                  + struct.pack('<2H', 3, 0x1234)
+                  + struct.pack('<H', 0) * 2    # two idles between pairs
+                  + struct.pack('<2H', 5, 0x5678))
+        fake = self.FakeChunkSPI(stream, chunk_size=2)
+        pkt = SPIDevice(fake)
+        producer, oldest, data = pkt.start_rle_stream_read(0x80, 8)
+        assert data == (b'\x34\x12' * 3) + (b'\x78\x56' * 5)
+        assert fake.closed is True
+
+    def test_start_rle_stream_read_rejects_decode_overrun(self):
+        # Leading impossible counts (> sample_count) are treated as boundary
+        # guard noise, so use a valid first run followed by an oversized second
+        # run to exercise a real decode overrun.
+        fake = self.FakeChunkSPI(
+            struct.pack('<4H', 3, 0x1234, 6, 0x5678),
+            chunk_size=4,
+        )
+        pkt = SPIDevice(fake)
+        with pytest.raises(RuntimeError, match="decoded past requested sample count"):
+            pkt.start_rle_stream_read(0x80, 8)
+
+    def test_start_rle_stream_read_raises_on_truncated_stream(self):
+        # Stream ends (no idle tail) before the requested 8 samples decode.
+        fake = self.FakeChunkSPI(struct.pack('<2H', 3, 0x1234), chunk_size=4,
+                                 idle_after=False)
+        pkt = SPIDevice(fake)
+        with pytest.raises(RuntimeError, match="truncated"):
+            pkt.start_rle_stream_read(0x80, 8)
+
+    def test_start_rle_stream_read_returns_partial_when_stop_is_set(self):
+        # A short read is acceptable if the caller has already requested stop.
+        fake = self.FakeChunkSPI(struct.pack('<2H', 3, 0x1234), chunk_size=4,
+                                 idle_after=False)
+        pkt = SPIDevice(fake)
+        stop_evt = type("StopEvt", (), {"is_set": lambda self: True})()
+        producer, oldest, data = pkt.start_rle_stream_read(0x80, 8, stop_evt=stop_evt)
+        assert producer == 0x12345678
+        assert oldest == 0x100
+        assert data == b'\x34\x12' * 3
+        assert fake.closed is True
+
+    def test_start_rle_stream_read_fixed_fallback_without_chunks(self):
+        class FakeSPI:
+            def __init__(self):
+                self.speed_hz = 30_000_000
+                self.request = None
+                self.n_bytes = 0
+
+            def stream_command(self, request, n_bytes, ack_pad=96, stop_evt=None):
+                self.request = request
+                self.n_bytes = n_bytes
+                seq = request[3]
+                payload = struct.pack('<II', 0x12345678, 0x00000100)
+                resp = (SYNC_RSP + bytes([ST_STREAM_ACTIVE, seq])
+                        + struct.pack('<H', len(payload)) + payload)
+                resp += struct.pack('<H', crc16(resp[2:]))
+                guard = bytearray(b'\xff' * (len(request) + ack_pad))
+                guard[2:2 + len(resp)] = resp
+                rle_words = struct.pack('<4H', 3, 0x1234, 5, 0x5678)
+                return bytes(guard) + rle_words
+
+        fake = FakeSPI()
+        pkt = SPIDevice(fake)
+        producer, oldest, data = pkt.start_rle_stream_read(0x80, 8)
+        assert producer == 0x12345678
+        assert oldest == 0x100
+        assert data == (b'\x34\x12' * 3) + (b'\x78\x56' * 5)
+        # Fixed path budgets worst-case 4 bytes/sample plus ack/guard margin.
+        assert fake.n_bytes >= 8 * 4
+        assert fake.request.startswith(SYNC_REQ + bytes([CMD_START_RAW_STREAM]))
+
+    def test_start_rle_stream_read_fixed_fallback_returns_partial_on_stop(self):
+        class FakeSPI:
+            def __init__(self):
+                self.speed_hz = 30_000_000
+
+            def stream_command(self, request, n_bytes, ack_pad=96, stop_evt=None):
+                seq = request[3]
+                payload = struct.pack('<II', 0x12345678, 0x00000100)
+                resp = (SYNC_RSP + bytes([ST_STREAM_ACTIVE, seq])
+                        + struct.pack('<H', len(payload)) + payload)
+                resp += struct.pack('<H', crc16(resp[2:]))
+                guard = bytearray(b'\xff' * (len(request) + ack_pad))
+                guard[2:2 + len(resp)] = resp
+                return bytes(guard) + struct.pack('<2H', 3, 0x1234)
+
+        fake = FakeSPI()
+        pkt = SPIDevice(fake)
+        stop_evt = type("StopEvt", (), {"is_set": lambda self: True})()
+        producer, oldest, data = pkt.start_rle_stream_read(0x80, 8, stop_evt=stop_evt)
+        assert producer == 0x12345678
+        assert oldest == 0x100
+        assert data == b'\x34\x12' * 3
+
     def test_transaction_raw_uses_stream_command_when_available(self):
         class FakeSPI:
             def __init__(self):
+                self.speed_hz = 30_000_000
                 self.request = None
                 self.read_n = None
                 self.ack_pad = None
@@ -353,7 +620,7 @@ class TestSPIPacketProtocol:
         assert result == (ST_OK, 0x00, bytes(range(16)))
         assert fake.request.startswith(SYNC_REQ + b'\x12')
         assert fake.read_n == 168
-        assert fake.ack_pad == 96
+        assert fake.ack_pad == 64
         assert fake.tx_bytes_called is False
         assert fake.tx_read_called is False
 
@@ -379,33 +646,108 @@ class TestSPIPacketProtocol:
         result = pkt._transaction_raw(0x12, b'', read_extra=8, timeout=0.01)
         assert result == (ST_OK, 0x00, b'xyz')
 
-    def test_start_stream_read_compressed_parses_block_packets(self):
+    def test_start_stream_read_compressed_raises(self):
+        pkt = SPIDevice(object())
+        with pytest.raises(RuntimeError, match="no longer supported"):
+            pkt.start_stream_read_compressed(0x80, 1024)
+
+    def test_read_capture_blocks_batches_requests_under_one_transaction(self):
         class FakeSPI:
             def __init__(self):
-                self.request = None
-                self.tx_bytes_called = False
+                self.payloads = []
+                self.single_reads = []
 
             def stream_payload(self, payload, stop_evt=None):
-                self.request = payload
+                self.payloads.append(bytes(payload))
+                out = bytearray()
+                # Answer each embedded CMD_READ_CAPTURE request with a
+                # 1024-byte block derived from the request address.
+                idx = payload.find(SYNC_REQ)
+                while idx >= 0:
+                    seq = payload[idx + 3]
+                    addr = struct.unpack('<I', payload[idx + 6:idx + 10])[0]
+                    block = bytes([(addr // 1024) & 0xFF]) * 1024
+                    resp = (SYNC_RSP + bytes([ST_OK, seq])
+                            + struct.pack('<H', 1024) + block)
+                    resp += struct.pack('<H', crc16(resp[2:]))
+                    out += b'\xff' * 166 + resp
+                    idx = payload.find(SYNC_REQ, idx + 12)
+                return bytes(out)
 
-                start_seq = payload[3]
-                block_seq = payload[111]
+        fake = FakeSPI()
+        pkt = SPIDevice(fake)
+        addrs = [0, 1024, 2048, 3072]
+        blocks = pkt.read_capture_blocks(addrs)
 
-                ack_payload = struct.pack('<II', 0x12345678, 0x00000100)
-                ack = (SYNC_RSP + bytes([ST_STREAM_ACTIVE, start_seq])
-                       + struct.pack('<H', len(ack_payload)) + ack_payload)
-                ack += struct.pack('<H', crc16(ack[2:]))
+        assert len(fake.payloads) == 1          # one CS-held transaction
+        assert len(blocks) == 4
+        for i, blk in enumerate(blocks):
+            assert len(blk) == 1024
+            assert blk == bytes([i]) * 1024
 
-                block_payload = bytes(range(24))
-                block = (SYNC_RSP + bytes([ST_OK, block_seq])
-                         + struct.pack('<H', len(block_payload)) + block_payload)
-                block += struct.pack('<H', crc16(block[2:]))
+    def test_read_capture_blocks_batches_variable_length_compressed_packets(self):
+        class FakeSPI:
+            def __init__(self):
+                self.payloads = []
 
-                guard = b'\xff' * 96
-                return payload[:12] + guard + ack + payload[108:116] + block + (b'\xff' * 8)
+            def stream_payload(self, payload, stop_evt=None):
+                self.payloads.append(bytes(payload))
+                out = bytearray()
+                idx = payload.find(SYNC_REQ)
+                block_num = 0
+                while idx >= 0:
+                    seq = payload[idx + 3]
+                    pl = bytes([0x40 + block_num]) * (12 + block_num * 4)
+                    resp = (SYNC_RSP + bytes([ST_OK, seq])
+                            + struct.pack('<H', len(pl)) + pl)
+                    resp += struct.pack('<H', crc16(resp[2:]))
+                    out += b'\xff' * 166 + resp
+                    idx = payload.find(SYNC_REQ, idx + 12)
+                    block_num += 1
+                return bytes(out)
 
-        pkt = SPIDevice(FakeSPI())
-        producer, oldest, data = pkt.start_stream_read_compressed(0x80, 1024)
-        assert producer == 0x12345678
-        assert oldest == 0x100
-        assert data == bytes(range(24))
+        fake = FakeSPI()
+        pkt = SPIDevice(fake)
+        blocks = pkt.read_capture_blocks([0, 1024], compressed=True)
+
+        assert len(fake.payloads) == 1
+        assert blocks == [bytes([0x40]) * 12, bytes([0x41]) * 16]
+
+    def test_read_capture_blocks_retries_missing_block_individually(self):
+        class FakeSPI:
+            def __init__(self):
+                self.stream_command_calls = 0
+
+            def stream_payload(self, payload, stop_evt=None):
+                out = bytearray()
+                first = True
+                idx = payload.find(SYNC_REQ)
+                while idx >= 0:
+                    seq = payload[idx + 3]
+                    if first:
+                        # Drop the first block's response (simulated CRC hit).
+                        first = False
+                    else:
+                        resp = (SYNC_RSP + bytes([ST_OK, seq])
+                                + struct.pack('<H', 1024) + b'\x22' * 1024)
+                        resp += struct.pack('<H', crc16(resp[2:]))
+                        out += b'\xff' * 166 + resp
+                    idx = payload.find(SYNC_REQ, idx + 12)
+                return bytes(out)
+
+            def stream_command(self, request, n_bytes, ack_pad=96, stop_evt=None):
+                # Single-block retry path (read_capture_block).
+                self.stream_command_calls += 1
+                seq = request[3]
+                resp = (SYNC_RSP + bytes([ST_OK, seq])
+                        + struct.pack('<H', 1024) + b'\x11' * 1024)
+                resp += struct.pack('<H', crc16(resp[2:]))
+                return b'\xff' * len(request) + resp + b'\xff' * 32
+
+        fake = FakeSPI()
+        pkt = SPIDevice(fake)
+        blocks = pkt.read_capture_blocks([0, 1024])
+
+        assert fake.stream_command_calls == 1
+        assert blocks[0] == b'\x11' * 1024      # recovered via retry
+        assert blocks[1] == b'\x22' * 1024

@@ -30,6 +30,7 @@ package spi_protocol_pkg is
   constant CMD_START_STREAM     : cmd_t := x"13";
   constant CMD_READ_STREAM_BLOCK : cmd_t := x"14";
   constant CMD_ACK_CAPTURE_DONE : cmd_t := x"15";
+  constant CMD_START_RAW_STREAM : cmd_t := x"16";
   constant CMD_WRITE_REG        : cmd_t := x"20";
   constant CMD_READ_REG         : cmd_t := x"21";
   constant CMD_GEN_CONFIG       : cmd_t := x"30";
@@ -71,12 +72,15 @@ package spi_protocol_pkg is
   constant REG_GEN_BAUD     : reg_addr_t := x"31";
   constant REG_GEN_PINS     : reg_addr_t := x"32";
   constant REG_GEN_DATA     : reg_addr_t := x"33";
+  constant REG_GEN_RX_DATA  : reg_addr_t := x"34";
   constant REG_IFACE_MODE   : reg_addr_t := x"F0";
   constant REG_DEBUG_CH0_ENABLE : reg_addr_t := x"40";
+  constant REG_DEBUG_CH0_ROUTE  : reg_addr_t := x"41";
   constant REG_DEBUG_CH0_PERIOD : reg_addr_t := x"43";
   constant REG_DEBUG_CH0_DUTY   : reg_addr_t := x"44";
-  -- 0x41, 0x42 formerly REG_SCHMITT_ENABLE/THRESHOLD (digital glitch filter
-  -- moved to host software); addresses left unused/reserved.
+  -- 0x41 formerly REG_SCHMITT_ENABLE (digital glitch filter moved to host
+  -- software); repurposed for debug waveform logical channel select.
+  -- 0x42 remains reserved.
   constant REG_CAPTURE_SEQ       : reg_addr_t := x"50";
   constant REG_PRODUCER_INDEX    : reg_addr_t := x"51";
   constant REG_OLDEST_INDEX      : reg_addr_t := x"52";
@@ -89,6 +93,8 @@ package spi_protocol_pkg is
   constant REG_PUMP_STALL_CYCLES    : reg_addr_t := x"63";
   constant REG_PUMP_NODATA_CYCLES   : reg_addr_t := x"64";
   constant REG_PUMP_OVERFLOW_COUNT  : reg_addr_t := x"65";
+  constant REG_STREAM_DEBUG0        : reg_addr_t := x"66";
+  constant REG_STREAM_DEBUG1        : reg_addr_t := x"67";
 
   -- ── Helper: CRC-16-IBM ──────────────────────────────────────────
   function crc16(data : std_logic_vector; init : std_logic_vector(15 downto 0) := x"FFFF")

@@ -178,6 +178,12 @@ architecture rtl of SDRAM_Controller is
     signal s_we  : std_logic := '1';
     signal s_addr : std_logic_vector(11 downto 0) := (others => '0');
     signal s_ba   : std_logic_vector(1 downto 0) := (others => '0');
+    signal s_cs_r   : std_logic := '1';
+    signal s_ras_r  : std_logic := '1';
+    signal s_cas_r  : std_logic := '1';
+    signal s_we_r   : std_logic := '1';
+    signal s_ba_r   : std_logic_vector(1 downto 0) := (others => '0');
+    signal s_addr_r : std_logic_vector(11 downto 0) := (others => '0');
 
     signal write_depth : natural := 0;
     signal max_write_depth : natural := 0;
@@ -190,6 +196,7 @@ architecture rtl of SDRAM_Controller is
     signal last_op_was_stream : std_logic := '0';
     signal capture_stream_ready_now : std_logic := '0';
     signal stream_ready_r        : std_logic := '0';
+    signal r_pipe_stream_ready : std_logic := '0';
     -- Registered is_same_row comparator outputs decouple 14-bit address
     -- comparisons from command/address output timing.
     signal same_row_buf_a      : std_logic := '0';
@@ -217,12 +224,12 @@ begin
     sdram_cke <= '1';
     sdram_dqm <= "00";
 
-    sdram_cs_n <= s_cs;
-    sdram_ras_n <= s_ras;
-    sdram_cas_n <= s_cas;
-    sdram_we_n  <= s_we;
-    sdram_addr  <= s_addr;
-    sdram_ba    <= s_ba;
+    sdram_cs_n <= s_cs_r;
+    sdram_ras_n <= s_ras_r;
+    sdram_cas_n <= s_cas_r;
+    sdram_we_n  <= s_we_r;
+    sdram_addr  <= s_addr_r;
+    sdram_ba    <= s_ba_r;
 
     -- DQ pin driven by a SINGLE registered value (dq_out) gated by a registered
     -- output-enable (dq_oe). OE is asserted only in the actual write-command
@@ -245,7 +252,7 @@ begin
          and pend_rn = '0'
          and same_row_cap_stream = '1'
         else '0';
-    capture_stream_ready <= stream_ready_r;
+    capture_stream_ready <= r_pipe_stream_ready;
 
     -- synthesis translate_off
     process(max_write_depth)
@@ -275,10 +282,17 @@ begin
             is_read <= '0';
             s_cs <= '1'; s_ras <= '1'; s_cas <= '1'; s_we <= '1';
             s_addr <= (others => '0'); s_ba <= (others => '0');
+            s_cs_r   <= '1';
+            s_ras_r  <= '1';
+            s_cas_r  <= '1';
+            s_we_r   <= '1';
+            s_ba_r   <= (others => '0');
+            s_addr_r <= (others => '0');
             write_depth <= 0; max_write_depth <= 0;
             prev_buf_a <= (others => '0');
             row_open <= '0'; active_row <= (others => '0'); active_bank <= (others => '0');
             same_row_buf_a <= '0'; same_row_buf_next <= '0'; same_row_cap_stream <= '0';
+            r_pipe_stream_ready <= '0';
 
             burst_fifo_cnt <= 0; burst_active <= '0'; burst_cnt <= 0;
             last_op_was_stream <= '0';
@@ -321,6 +335,7 @@ begin
 
             -- Register stream ready (one cycle latency absorbed by write pump double-buffer)
             stream_ready_r <= capture_stream_ready_now;
+            r_pipe_stream_ready <= stream_ready_r;
 
             v_depth := write_depth;
 
@@ -753,6 +768,12 @@ begin
             if v_peak > max_write_depth then
                 max_write_depth <= v_peak;
             end if;
+            s_cs_r   <= s_cs;
+            s_ras_r  <= s_ras;
+            s_cas_r  <= s_cas;
+            s_we_r   <= s_we;
+            s_ba_r   <= s_ba;
+            s_addr_r <= s_addr;
 
         end if;
     end process;

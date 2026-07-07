@@ -1,0 +1,173 @@
+hw_validation watchdog: mode=new, timeout=1200s
+  SPI device opened, sys_clk=100 MHz
+
+============================================================
+  Test 5c: Max-rate continuous ring overrun
+============================================================
+  producer=2097151 oldest=0 newest=2097150 overruns=0
+    >>> PASS: continuous producer advanced (2097151)
+    [INFO] overrun counter stayed at zero on this board/session
+    >>> PASS: ring indexes are ordered
+    >>> PASS: indexed ring read returned data (1024 bytes)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test5c_continuous_max_rate_overrun.bin (1024 bytes) + .json
+
+============================================================
+  Test 5d: 200 MHz narrow packed digital mode
+============================================================
+  finite narrow: 1024 bytes, 512 packed words, 87 CH0 transitions, 4134 high samples
+    >>> PASS: finite narrow returned near-full packed words (512/512)
+    >>> PASS: finite narrow contains packed CH0 activity (87 transitions, 4134 high samples)
+  continuous narrow chunks: [(512, 256, 43), (512, 512, 43), (512, 768, 44), (512, 1024, 43)]
+    >>> PASS: continuous narrow produced chunks (4)
+    >>> PASS: continuous narrow chunks contain CH0 activity
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test5d_narrow_digital_200m.bin (1024 bytes) + .json
+
+============================================================
+  Test 12c2: High-speed analog-only mode
+============================================================
+  High-speed analog: 512 frames, 1024 payload bytes
+    >>> PASS: high-speed analog stride is 2 bytes (2)
+    >>> PASS: payload length matches one ADC sample per frame (1024 bytes)
+  frame 0: digital=None, ADC values=[1519]
+    >>> PASS: high-speed analog has no digital word
+    >>> PASS: high-speed analog frame has 1 ADC channel (1)
+    >>> PASS: high-speed ADC1 value 1519 in 12-bit range
+    >>> PASS: Received 512 high-speed analog frames (need > 0)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test12c2_high_speed_analog.bin (1024 bytes) + .json
+
+============================================================
+  Test 12c3: Dual analog channel mode
+============================================================
+  Dual analog: 256 frames, 768 payload bytes
+    >>> PASS: dual analog stride is 3 bytes (3)
+    >>> PASS: payload length matches two SDRAM words per frame (768 bytes)
+  frame 0: digital=None, ADC values=[1520, 3849]
+    >>> PASS: dual analog has no digital word
+    >>> PASS: dual analog frame has 2 ADC channels (2)
+    >>> PASS: dual analog value 0=1520 in 12-bit range
+    >>> PASS: dual analog value 1=3849 in 12-bit range
+    >>> PASS: Received 256 dual analog frames (need > 0)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test12c3_dual_analog.bin (768 bytes) + .json
+
+============================================================
+  Test 12e: Mixed -> digital -> mixed back-to-back
+============================================================
+    >>> PASS: first mixed capture returned frames (128)
+    >>> PASS: first mixed frame has 2 ADC channels (2)
+    >>> PASS: digital capture after mixed returned samples (1024)
+    >>> PASS: digital capture after mixed has CH0 activity (513 transitions)
+    >>> PASS: second mixed capture returned frames (128)
+    >>> PASS: second mixed frame has 2 ADC channels (2)
+    >>> PASS: second mixed digital phase is clean (9 distinct values)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test12e_mixed_digital_mixed.bin (768 bytes) + .json
+
+============================================================
+  Test 12f: Mixed capture with lossless codec roundtrip
+============================================================
+    >>> PASS: mixed capture returned payload bytes (1920)
+    >>> PASS: mixed codec roundtrips real hardware frames losslessly
+    >>> PASS: mixed capture decoded >256 frames (384)
+    >>> PASS: mixed frame includes digital word
+    >>> PASS: mixed frame has 2 ADC channels (2)
+    >>> PASS: mixed digital phase is bounded (2 distinct values)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test12f_mixed_compressed_rolling.bin (1024 bytes) + .json
+
+============================================================
+  Test 12g: Analog profile -> digital recovery
+============================================================
+    >>> PASS: high-speed analog profile returned frames (128)
+    >>> PASS: high-speed analog profile has 1 ADC channel (1)
+    >>> PASS: maximum analog profile returned frames (128)
+    >>> PASS: maximum analog profile has 2 ADC channels (2)
+    >>> PASS: digital capture after analog profiles returned samples (1024)
+    >>> PASS: digital capture after analog profiles has CH0 activity (204 transitions)
+    >>> PASS: digital recovery exposes 16 channels (16)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test12f_analog_profiles_digital_recovery.bin (768 bytes) + .json
+
+============================================================
+  Test 26: Pre-trigger capture (Start_Offset path)
+============================================================
+  captured 4096 bytes, 2048 samples (pre_trigger=8)
+    >>> PASS: pre-trigger capture near-full (2048/2048 samples)
+  CH0 transitions: 408
+    >>> PASS: signal present with pre-trigger enabled (408 transitions)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test26_pre_trigger.bin (4096 bytes) + .json
+
+============================================================
+  Test 27: Full-depth SDRAM capture (Max_Samples boundary)
+============================================================
+    >>> PASS: full-depth capture completed
+    >>> PASS: first block read (1024 bytes)
+    >>> PASS: middle block read (1024 bytes)
+    >>> PASS: last block at Max_Samples boundary (1024 bytes)
+  activity: first block 10 byte-changes, last block 11
+    >>> PASS: PWM activity in first block
+    >>> PASS: PWM activity in last block (buffer filled to boundary)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test27_full_depth.bin (2048 bytes) + .json
+
+============================================================
+  Test 28: Back-to-back captures without reset
+============================================================
+  capture #1: 2048 bytes, 1024 samples, CH0 204 trans
+  capture #2: 2048 bytes, 1024 samples, CH0 204 trans
+  capture #3: 2048 bytes, 1024 samples, CH0 204 trans
+    >>> PASS: back-to-back returned 3 fresh captures without reset (3/3)
+
+============================================================
+  Test 34: Codec readback matrix (raw/RLE/delta-as-raw x rates)
+============================================================
+    >>> PASS: raw reference read @1000kS/s (524288 bytes, 3992 byte-changes, 2.23 MB/s)
+    rle        @  1000kS/s: 524288 bytes in 0.13s (4.19 MB/s)
+    >>> PASS: rle readback bit-exact vs raw @1000kS/s (524288/524288 bytes)
+    delta(raw) @  1000kS/s: 524288 bytes in 0.23s (2.32 MB/s)
+    >>> PASS: delta readback bit-exact vs raw @1000kS/s (524288/524288 bytes)
+    >>> PASS: raw reference read @10000kS/s (524288 bytes, 399 byte-changes, 2.32 MB/s)
+    rle        @ 10000kS/s: 524288 bytes in 0.11s (4.92 MB/s)
+    >>> PASS: rle readback bit-exact vs raw @10000kS/s (524288/524288 bytes)
+    delta(raw) @ 10000kS/s: 524288 bytes in 0.22s (2.33 MB/s)
+    >>> PASS: delta readback bit-exact vs raw @10000kS/s (524288/524288 bytes)
+    >>> PASS: raw reference read @50000kS/s (524288 bytes, 366 byte-changes, 2.33 MB/s)
+    rle        @ 50000kS/s: 524288 bytes in 0.11s (4.74 MB/s)
+    >>> PASS: rle readback bit-exact vs raw @50000kS/s (524288/524288 bytes)
+    delta(raw) @ 50000kS/s: 524288 bytes in 0.23s (2.26 MB/s)
+    >>> PASS: delta readback bit-exact vs raw @50000kS/s (524288/524288 bytes)
+    >>> PASS: raw reference read @100000kS/s (524288 bytes, 364 byte-changes, 2.30 MB/s)
+    rle        @100000kS/s: 524288 bytes in 0.11s (4.91 MB/s)
+    >>> PASS: rle readback bit-exact vs raw @100000kS/s (524288/524288 bytes)
+    delta(raw) @100000kS/s: 524288 bytes in 0.22s (2.37 MB/s)
+    >>> PASS: delta readback bit-exact vs raw @100000kS/s (524288/524288 bytes)
+    >>> PASS: raw reference read @200400kS/s (524288 bytes, 364 byte-changes, 2.29 MB/s)
+    rle        @200400kS/s: 524288 bytes in 0.11s (4.90 MB/s)
+    >>> PASS: rle readback bit-exact vs raw @200400kS/s (524288/524288 bytes)
+    delta(raw) @200400kS/s: 524288 bytes in 0.23s (2.28 MB/s)
+    >>> PASS: delta readback bit-exact vs raw @200400kS/s (524288/524288 bytes)
+    >>> PASS: codec matrix characterization completed
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test34_codec_matrix.bin (0 bytes) + .json
+
+============================================================
+  Test 35: Live ring rate ceiling per codec
+============================================================
+    raw   @  250kS/s: 294912 samples in 1.21s (0.24 MS/s) overruns=0 -> LOSSLESS
+    raw   @  500kS/s: 585728 samples in 1.22s (0.48 MS/s) overruns=0 -> LOSSLESS
+    raw   @ 1000kS/s: 868352 samples in 1.21s (0.72 MS/s) overruns=0 -> LOSSY
+    >>> PASS: raw live ring lossless at >= 500 kS/s (measured ceiling 0.50 MS/s)
+    rle   @  250kS/s: 290816 samples in 1.21s (0.24 MS/s) overruns=0 -> LOSSLESS
+    rle   @  500kS/s: 28672 samples in 6.01s (0.00 MS/s) overruns=0 EXC=RLE stream decode failed: truncated before requested sample count -> LOSSY
+    >>> PASS: rle live ring lossless at >= 250 kS/s (measured ceiling 0.25 MS/s)
+    delta @  250kS/s: 294912 samples in 1.21s (0.24 MS/s) overruns=0 -> LOSSLESS
+    delta @  500kS/s: 585728 samples in 1.21s (0.49 MS/s) overruns=0 -> LOSSLESS
+    delta @ 1000kS/s: 905216 samples in 1.21s (0.75 MS/s) overruns=0 -> LOSSY
+    >>> PASS: delta live ring lossless at >= 500 kS/s (measured ceiling 0.50 MS/s)
+    measured lossless ceilings: raw=0.50 MS/s, rle=0.25 MS/s, delta=0.50 MS/s
+    >>> PASS: live rate ceiling characterization completed
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test35_live_rate_ceiling.bin (0 bytes) + .json
+
+============================================================
+  Test 29: SPI readout stress during active capture
+============================================================
+  mid-capture: 74 status, 74 block reads, 0 errors
+    >>> PASS: no SPI errors during capture (74 statuses, 74 blocks)
+    >>> PASS: capture survived SPI readout stress — readout intact (65536 bytes)
+  saved C:\Users\Fraser\Documents\GitHub\OLS_Logic_Analyzer_Clean\host\app\..\..\hdl\hw_test\hw_results\test29_capture_during_readout.bin (4096 bytes) + .json
+
+  RESULTS: 71/71 passed, 0 failed, 0 skipped

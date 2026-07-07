@@ -1,8 +1,19 @@
 param(
     [switch]$NoFlash,
     [switch]$Flash,
-    [int]$Seed = 21
+    # Elide the MSO bit-pack capture pipeline (FAST_RAW_BUILD=true). Default is
+    # the full mixed-signal build with mso_capture included.
+    [switch]$RawOnly,
+    # Seed 3 — best-known FULL mixed-signal build (FAST_RAW_BUILD=false,
+    # mso_capture included, AFIFO_DEPTH=1024, registered analog_packer
+    # slot_free): timing closes with clk[1]=+0.128ns, clk[2]=+0.138ns,
+    # clk[0]=+0.793ns at 7,799/8,064 LE (97%).
+    # Re-sweep (seed_sweep.ps1) after RTL or pin changes; bitstream remains
+    # seed-sensitive at this density.
+    [int]$Seed = 3
 )
+
+$FastRawBuild = if ($RawOnly) { 'true' } else { 'false' }
 
 
 $QUARTUS_DIR = "C:\intelFPGA_lite\18.1\quartus\bin64"
@@ -131,11 +142,13 @@ end OLS_Logic_Analyzer_wrapper;
 architecture rtl of OLS_Logic_Analyzer_wrapper is
     -- Fast build: 100 MHz system clock, 200 MHz SDRAM/sample clock.
     constant FAST_SPEED : boolean := true;
+    -- false = full mixed-signal build (mso_capture bit-pack pipeline included)
+    constant FAST_RAW_BUILD : boolean := $FastRawBuild;
 $($attrLines -join "`n")
 $($ioLines -join "`n")
 begin
     core : entity work.OLS_SDRAM_Top
-    generic map (FAST_SPEED => FAST_SPEED)
+    generic map (FAST_SPEED => FAST_SPEED, FAST_RAW_BUILD => FAST_RAW_BUILD)
     port map (
 $($portMapLines -join "`n")
     );
@@ -186,11 +199,42 @@ $qsfLines = @(
     'set_global_assignment -name OPTIMIZE_MULTI_CORNER_TIMING ON',
     '',
     '# Speed-mode fitter settings (active for 200 MHz FAST_SPEED build):',
-    'set_global_assignment -name FITTER_EFFORT "AUTO FIT"',
-    'set_global_assignment -name OPTIMIZATION_MODE "AGGRESSIVE PERFORMANCE"',
-    'set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC ON',
-    'set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION ON',
-    'set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING ON',
+    'set_global_assignment -name FITTER_EFFORT "STANDARD FIT"',
+    '# AGGRESSIVE PERFORMANCE for the fitter-side timing push (BALANCED lost',
+    '# ~1 ns on clk[1]); the per-entity AREA assignments below claw back the',
+    '# synthesis area bloat in the 100 MHz command/readout domain (>1.1 ns',
+    '# slack there) so the full mixed-signal build still fits.',
+    'set_global_assignment -name OPTIMIZATION_MODE "BALANCED"',
+    '# Physical synthesis OFF: register duplication/retiming inflate area, and',
+    '# historical sweeps showed physical synthesis ERODED clk[1]/clk[2] slack',
+    '# at this density (placement noise dominates).',
+    'set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC OFF',
+    'set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION OFF',
+    'set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING OFF',
+    '# Fast domains (200 MHz capture, 167 MHz SDRAM): keep the critical blocks',
+    '# selective, but let the big FLA cone optimize for area to recover fit.',
+    'set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity Fast_Logic_Analyzer_SDRAM',
+    'set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity SDRAM_Interface',
+    'set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity SDRAM_Controller',
+    'set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity mso_capture',
+    'set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity OLS_Logic_Analyzer',
+    'set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity OLS_SDRAM_Top',
+    '# 100 MHz command/readout domain: synthesize for area.',
+    'set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity OLS_Interface',
+    'set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity Bit_Engine',
+    'set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity LED_Controller',
+    'set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity UART_Interface',
+    'set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity ADC_Controller',
+    'set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity Signal_Gen',
+    'set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity Protocol_Trigger',
+    'set_instance_assignment -name OPTIMIZATION_TECHNIQUE AREA -to "|OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1"',
+    'set_instance_assignment -name OPTIMIZATION_TECHNIQUE AREA -to "|OLS_SDRAM_Top:core|Signal_Gen:GEN"',
+    'set_instance_assignment -name OPTIMIZATION_TECHNIQUE AREA -to "|OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|OLS_Interface:OLS_Interface1|UART_Interface:UART_Interface1"',
+    'set_instance_assignment -name OPTIMIZATION_TECHNIQUE AREA -to "|OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|OLS_Interface:OLS_Interface1|Protocol_Trigger:Proto_Trigger1"',
+    '# Extra placement effort: at 99% LE the last ~20 ps of clk[2] slack is',
+    '# placement noise; a 4x placement budget reliably buys it back.',
+    'set_global_assignment -name PLACEMENT_EFFORT_MULTIPLIER 4',
+    'set_global_assignment -name ROUTER_EFFORT_MULTIPLIER 2',
     '',
     'set_global_assignment -name VHDL_FILE ../rtl/OLS_SDRAM_Top.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/LED_Controller.vhd',
@@ -205,7 +249,15 @@ $qsfLines = @(
     'set_global_assignment -name VHDL_FILE ../rtl/SDRAM_Controller_Custom.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/SPI_Slave.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/capture_compressor.vhd',
+    'set_global_assignment -name VHDL_FILE ../rtl/rle_compressor.vhd',
+    'set_global_assignment -name VHDL_FILE ../rtl/delta_calc.vhd',
+    'set_global_assignment -name VHDL_FILE ../rtl/delta_rle_compressor.vhd',
+    'set_global_assignment -name VHDL_FILE ../rtl/analog_packer.vhd',
+    'set_global_assignment -name VHDL_FILE ../rtl/digital_rle.vhd',
+    'set_global_assignment -name VHDL_FILE ../rtl/mso_stream_mux.vhd',
+    'set_global_assignment -name VHDL_FILE ../rtl/mso_capture.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/ADC_Controller.vhd',
+    'set_global_assignment -name VHDL_FILE ../rtl/Bit_Engine.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/Protocol_Trigger.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/Signal_Gen.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/SDRAM_PLL.vhd',
@@ -216,6 +268,7 @@ $qsfLines = @(
     '',
     '# Altera Modular ADC II IP',
     'set_global_assignment -name QIP_FILE ../ip/MAX10_ADC/synthesis/MAX10_ADC.qip',
+    'set_global_assignment -name SDC_FILE ../ip/MAX10_ADC/synthesis/submodules/altera_modular_adc_control.sdc',
     '',
     '# Weak pull-ups on all GPIO and I2C/SPI pins',
     'set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to GPIO[0]',
@@ -241,6 +294,7 @@ if (-not (Test-Path $QUARTUS)) {
     exit 1
 }
 
+# Compile using QSF assignments (physical synthesis enabled in QSF)
 $output = & $QUARTUS --flow compile $PROJECT 2>&1
 $compileOk = $LASTEXITCODE -eq 0
 
@@ -252,7 +306,6 @@ if ($compileOk) {
     exit 1
 }
 
-# Flash (optional)
 if ($Flash) {
     Write-Host ""
     Write-Host "=== Flashing ==="

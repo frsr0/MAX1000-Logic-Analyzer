@@ -1,5 +1,5 @@
 // Trigger configuration with explicit hardware / post-capture / unavailable
-// labelling driven by the device capability matrix.
+// labeling driven by the device capability matrix.
 import { useApp } from '../state/appStore';
 
 const EXEC_BADGE: Record<string, { label: string; cls: string }> = {
@@ -83,7 +83,7 @@ export function TriggerPanel() {
       )}
       {needsWidth && (
         <label className="field">
-          <span>Width (µs)</span>
+          <span>Width (us)</span>
           <input type="number" step="0.1"
             value={trig.width_s != null ? trig.width_s * 1e6 : 1}
             onChange={(e) => setTrig({ width_s: Number(e.target.value) / 1e6 })} />

@@ -79,10 +79,10 @@ export function ChannelPanel() {
             <input className="ch-name" defaultValue={ch.name} key={`${ch.id}:${ch.name}`}
               onBlur={(e) => e.target.value !== ch.name
                 && patchChannels([{ id: ch.id, name: e.target.value }])} />
-            <span className="ch-type">{ch.type === 'analog' ? '∿' : ch.type === 'derived' ? 'ƒ' : '⎍'}</span>
+            <span className="ch-type">{ch.type === 'analog' ? '~' : ch.type === 'derived' ? 'f' : '|'}</span>
             <button title="solo" onClick={() => solo(ch.id)}>S</button>
-            <button title="move up" onClick={() => move(idx, -1)}>↑</button>
-            <button title="move down" onClick={() => move(idx, 1)}>↓</button>
+            <button title="move up" onClick={() => move(idx, -1)}>^</button>
+            <button title="move down" onClick={() => move(idx, 1)}>v</button>
             {ch.type === 'analog' && (
               <select value={ch.volts_per_div} title="volts/div"
                 onChange={(e) => patchChannels([{ id: ch.id, volts_per_div: Number(e.target.value) }])}>
@@ -99,7 +99,7 @@ export function ChannelPanel() {
       </div>
 
       <h4>Derived channel (software filter / threshold)</h4>
-      <div className="hint">Filters never modify raw data — they create new channels.</div>
+      <div className="hint">Filters never modify raw data - they create new channels.</div>
       <label className="field">
         <span>Source</span>
         <select value={deriveSource} onChange={(e) => setDeriveSource(e.target.value)}>
@@ -142,13 +142,18 @@ export function ChannelPanel() {
         ))}
       </div>
       <button onClick={async () => {
-        if (busMembers.length < 2) { toast('warning', 'Pick ≥ 2 members (bit0 first)'); return; }
+        if (busMembers.length < 2) {
+          toast('warning', 'Pick 2 or more members (bit 0 first)');
+          return;
+        }
         try {
           await api.addBus(activeSession.id, busName, busMembers);
           await refreshActiveSession();
           waveformView.notify();
           toast('success', `Bus ${busName} added`);
-        } catch (e: any) { toast('error', e.message); }
+        } catch (e: any) {
+          toast('error', e.message);
+        }
       }}>Create bus</button>
     </div>
   );

@@ -20,7 +20,12 @@ entity capture_compressor is
     sample_valid      : in  std_logic;
     compression_enable : in  std_logic;
     comp_data         : out std_logic_vector(15 downto 0) := (others => '0');
-    comp_valid        : out std_logic := '0'
+    comp_valid        : out std_logic := '0';
+    busy              : out std_logic := '0';
+    -- '0' while flushing packed delta words: sample_valid pulses asserted in
+    -- FLUSH are silently dropped, so a paced feeder (the OLS_Interface block
+    -- drain) must hold input while in_ready is low.
+    in_ready          : out std_logic := '1'
   );
 end capture_compressor;
 
@@ -41,6 +46,9 @@ architecture rtl of capture_compressor is
   -- FLUSH output counter: which packed word (0..4) we are emitting
   signal out_idx : natural range 0 to 5 := 0;
 begin
+  busy <= '1' when state = ACCUM or state = FLUSH or sample_pipe_valid = '1'
+          else '0';
+  in_ready <= '0' when state = FLUSH else '1';
 
   process(clk)
     variable delta_v : signed(15 downto 0);

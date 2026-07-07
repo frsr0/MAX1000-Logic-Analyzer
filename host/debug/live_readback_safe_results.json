@@ -1,0 +1,3253 @@
+[
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 1000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 938237.2863522525,
+    "samples": 1130496,
+    "elapsed_s": 1.2049148082733154,
+    "median_samples_per_s": 938237.2863522525,
+    "runs": [
+      {
+        "samples": 1130496,
+        "elapsed_s": 1.2049148082733154,
+        "samples_per_s": 938237.2863522525
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 1000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 931440.7547779204,
+    "samples": 1146880,
+    "elapsed_s": 1.2312967777252197,
+    "median_samples_per_s": 931440.7547779204,
+    "runs": [
+      {
+        "samples": 1146880,
+        "elapsed_s": 1.2312967777252197,
+        "samples_per_s": 931440.7547779204
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 1000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 922452.6024911164,
+    "samples": 1114112,
+    "elapsed_s": 1.2077715396881104,
+    "median_samples_per_s": 922452.6024911164,
+    "runs": [
+      {
+        "samples": 1114112,
+        "elapsed_s": 1.2077715396881104,
+        "samples_per_s": 922452.6024911164
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 2000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 930719.5647909552,
+    "samples": 1130496,
+    "elapsed_s": 1.2146472930908203,
+    "median_samples_per_s": 930719.5647909552,
+    "runs": [
+      {
+        "samples": 1130496,
+        "elapsed_s": 1.2146472930908203,
+        "samples_per_s": 930719.5647909552
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 2000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 945761.132059372,
+    "samples": 1146880,
+    "elapsed_s": 1.2126529216766357,
+    "median_samples_per_s": 945761.132059372,
+    "runs": [
+      {
+        "samples": 1146880,
+        "elapsed_s": 1.2126529216766357,
+        "samples_per_s": 945761.132059372
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 2000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 972777.9060083625,
+    "samples": 1179648,
+    "elapsed_s": 1.2126591205596924,
+    "median_samples_per_s": 972777.9060083625,
+    "runs": [
+      {
+        "samples": 1179648,
+        "elapsed_s": 1.2126591205596924,
+        "samples_per_s": 972777.9060083625
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 4000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 882369.4624988148,
+    "samples": 1064960,
+    "elapsed_s": 1.2069320678710938,
+    "median_samples_per_s": 882369.4624988148,
+    "runs": [
+      {
+        "samples": 1064960,
+        "elapsed_s": 1.2069320678710938,
+        "samples_per_s": 882369.4624988148
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 4000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 900336.2876638744,
+    "samples": 1081344,
+    "elapsed_s": 1.2010445594787598,
+    "median_samples_per_s": 900336.2876638744,
+    "runs": [
+      {
+        "samples": 1081344,
+        "elapsed_s": 1.2010445594787598,
+        "samples_per_s": 900336.2876638744
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 4000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 895008.331210152,
+    "samples": 1114112,
+    "elapsed_s": 1.2448062896728516,
+    "median_samples_per_s": 895008.331210152,
+    "runs": [
+      {
+        "samples": 1114112,
+        "elapsed_s": 1.2448062896728516,
+        "samples_per_s": 895008.331210152
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 6000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 933315.650072858,
+    "samples": 1130496,
+    "elapsed_s": 1.211268663406372,
+    "median_samples_per_s": 933315.650072858,
+    "runs": [
+      {
+        "samples": 1130496,
+        "elapsed_s": 1.211268663406372,
+        "samples_per_s": 933315.650072858
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 6000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 952808.5170923114,
+    "samples": 1146880,
+    "elapsed_s": 1.203683614730835,
+    "median_samples_per_s": 952808.5170923114,
+    "runs": [
+      {
+        "samples": 1146880,
+        "elapsed_s": 1.203683614730835,
+        "samples_per_s": 952808.5170923114
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 6000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 961234.984715792,
+    "samples": 1179648,
+    "elapsed_s": 1.2272212505340576,
+    "median_samples_per_s": 961234.984715792,
+    "runs": [
+      {
+        "samples": 1179648,
+        "elapsed_s": 1.2272212505340576,
+        "samples_per_s": 961234.984715792
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 8000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 978008.8117196545,
+    "samples": 1179648,
+    "elapsed_s": 1.2061731815338135,
+    "median_samples_per_s": 978008.8117196545,
+    "runs": [
+      {
+        "samples": 1179648,
+        "elapsed_s": 1.2061731815338135,
+        "samples_per_s": 978008.8117196545
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 8000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 977739.9797393433,
+    "samples": 1179648,
+    "elapsed_s": 1.2065048217773438,
+    "median_samples_per_s": 977739.9797393433,
+    "runs": [
+      {
+        "samples": 1179648,
+        "elapsed_s": 1.2065048217773438,
+        "samples_per_s": 977739.9797393433
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 8000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1006841.5111559394,
+    "samples": 1245184,
+    "elapsed_s": 1.2367229461669922,
+    "median_samples_per_s": 1006841.5111559394,
+    "runs": [
+      {
+        "samples": 1245184,
+        "elapsed_s": 1.2367229461669922,
+        "samples_per_s": 1006841.5111559394
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 10000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 958798.6604668419,
+    "samples": 1163264,
+    "elapsed_s": 1.2132515907287598,
+    "median_samples_per_s": 958798.6604668419,
+    "runs": [
+      {
+        "samples": 1163264,
+        "elapsed_s": 1.2132515907287598,
+        "samples_per_s": 958798.6604668419
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 10000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 972454.4084805815,
+    "samples": 1179648,
+    "elapsed_s": 1.2130625247955322,
+    "median_samples_per_s": 972454.4084805815,
+    "runs": [
+      {
+        "samples": 1179648,
+        "elapsed_s": 1.2130625247955322,
+        "samples_per_s": 972454.4084805815
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 10000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 969939.5576859704,
+    "samples": 1179648,
+    "elapsed_s": 1.21620774269104,
+    "median_samples_per_s": 969939.5576859704,
+    "runs": [
+      {
+        "samples": 1179648,
+        "elapsed_s": 1.21620774269104,
+        "samples_per_s": 969939.5576859704
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 12000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1004291.9006573544,
+    "samples": 1228800,
+    "elapsed_s": 1.2235486507415771,
+    "median_samples_per_s": 1004291.9006573544,
+    "runs": [
+      {
+        "samples": 1228800,
+        "elapsed_s": 1.2235486507415771,
+        "samples_per_s": 1004291.9006573544
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 12000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1009236.5628490358,
+    "samples": 1212416,
+    "elapsed_s": 1.201319932937622,
+    "median_samples_per_s": 1009236.5628490358,
+    "runs": [
+      {
+        "samples": 1212416,
+        "elapsed_s": 1.201319932937622,
+        "samples_per_s": 1009236.5628490358
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 12000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1000594.9204554011,
+    "samples": 1245184,
+    "elapsed_s": 1.244443655014038,
+    "median_samples_per_s": 1000594.9204554011,
+    "runs": [
+      {
+        "samples": 1245184,
+        "elapsed_s": 1.244443655014038,
+        "samples_per_s": 1000594.9204554011
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 14000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 961196.5774685873,
+    "samples": 1163264,
+    "elapsed_s": 1.2102248668670654,
+    "median_samples_per_s": 961196.5774685873,
+    "runs": [
+      {
+        "samples": 1163264,
+        "elapsed_s": 1.2102248668670654,
+        "samples_per_s": 961196.5774685873
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 14000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1031931.8246940223,
+    "samples": 1245184,
+    "elapsed_s": 1.206653356552124,
+    "median_samples_per_s": 1031931.8246940223,
+    "runs": [
+      {
+        "samples": 1245184,
+        "elapsed_s": 1.206653356552124,
+        "samples_per_s": 1031931.8246940223
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 14000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1031173.6853035623,
+    "samples": 1245184,
+    "elapsed_s": 1.207540512084961,
+    "median_samples_per_s": 1031173.6853035623,
+    "runs": [
+      {
+        "samples": 1245184,
+        "elapsed_s": 1.207540512084961,
+        "samples_per_s": 1031173.6853035623
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 16000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 997357.2323824273,
+    "samples": 1212416,
+    "elapsed_s": 1.2156286239624023,
+    "median_samples_per_s": 997357.2323824273,
+    "runs": [
+      {
+        "samples": 1212416,
+        "elapsed_s": 1.2156286239624023,
+        "samples_per_s": 997357.2323824273
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 16000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1031720.6317322017,
+    "samples": 1245184,
+    "elapsed_s": 1.2069003582000732,
+    "median_samples_per_s": 1031720.6317322017,
+    "runs": [
+      {
+        "samples": 1245184,
+        "elapsed_s": 1.2069003582000732,
+        "samples_per_s": 1031720.6317322017
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 16000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1025276.836185556,
+    "samples": 1245184,
+    "elapsed_s": 1.2144856452941895,
+    "median_samples_per_s": 1025276.836185556,
+    "runs": [
+      {
+        "samples": 1245184,
+        "elapsed_s": 1.2144856452941895,
+        "samples_per_s": 1025276.836185556
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 18000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1006124.7591823571,
+    "samples": 1212416,
+    "elapsed_s": 1.2050354480743408,
+    "median_samples_per_s": 1006124.7591823571,
+    "runs": [
+      {
+        "samples": 1212416,
+        "elapsed_s": 1.2050354480743408,
+        "samples_per_s": 1006124.7591823571
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 18000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1024570.8489953373,
+    "samples": 1245184,
+    "elapsed_s": 1.215322494506836,
+    "median_samples_per_s": 1024570.8489953373,
+    "runs": [
+      {
+        "samples": 1245184,
+        "elapsed_s": 1.215322494506836,
+        "samples_per_s": 1024570.8489953373
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 18000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1018800.1361479663,
+    "samples": 1245184,
+    "elapsed_s": 1.2222063541412354,
+    "median_samples_per_s": 1018800.1361479663,
+    "runs": [
+      {
+        "samples": 1245184,
+        "elapsed_s": 1.2222063541412354,
+        "samples_per_s": 1018800.1361479663
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 20000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1006212.3548434904,
+    "samples": 1212416,
+    "elapsed_s": 1.2049305438995361,
+    "median_samples_per_s": 1006212.3548434904,
+    "runs": [
+      {
+        "samples": 1212416,
+        "elapsed_s": 1.2049305438995361,
+        "samples_per_s": 1006212.3548434904
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 20000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1021381.3315998318,
+    "samples": 1245184,
+    "elapsed_s": 1.2191176414489746,
+    "median_samples_per_s": 1021381.3315998318,
+    "runs": [
+      {
+        "samples": 1245184,
+        "elapsed_s": 1.2191176414489746,
+        "samples_per_s": 1021381.3315998318
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 20000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1027229.2873538621,
+    "samples": 1245184,
+    "elapsed_s": 1.2121772766113281,
+    "median_samples_per_s": 1027229.2873538621,
+    "runs": [
+      {
+        "samples": 1245184,
+        "elapsed_s": 1.2121772766113281,
+        "samples_per_s": 1027229.2873538621
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 24000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 999955.2211337833,
+    "samples": 1212416,
+    "elapsed_s": 1.212470293045044,
+    "median_samples_per_s": 999955.2211337833,
+    "runs": [
+      {
+        "samples": 1212416,
+        "elapsed_s": 1.212470293045044,
+        "samples_per_s": 999955.2211337833
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 24000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1026639.2601485858,
+    "samples": 1245184,
+    "elapsed_s": 1.212873935699463,
+    "median_samples_per_s": 1026639.2601485858,
+    "runs": [
+      {
+        "samples": 1245184,
+        "elapsed_s": 1.212873935699463,
+        "samples_per_s": 1026639.2601485858
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 24000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1023153.9700894761,
+    "samples": 1245184,
+    "elapsed_s": 1.2170054912567139,
+    "median_samples_per_s": 1023153.9700894761,
+    "runs": [
+      {
+        "samples": 1245184,
+        "elapsed_s": 1.2170054912567139,
+        "samples_per_s": 1023153.9700894761
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 28000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1002547.8052566893,
+    "samples": 1212416,
+    "elapsed_s": 1.2093348503112793,
+    "median_samples_per_s": 1002547.8052566893,
+    "runs": [
+      {
+        "samples": 1212416,
+        "elapsed_s": 1.2093348503112793,
+        "samples_per_s": 1002547.8052566893
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 28000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1023588.7128149277,
+    "samples": 1245184,
+    "elapsed_s": 1.2164885997772217,
+    "median_samples_per_s": 1023588.7128149277,
+    "runs": [
+      {
+        "samples": 1245184,
+        "elapsed_s": 1.2164885997772217,
+        "samples_per_s": 1023588.7128149277
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 28000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1023646.8936864971,
+    "samples": 1245184,
+    "elapsed_s": 1.2164194583892822,
+    "median_samples_per_s": 1023646.8936864971,
+    "runs": [
+      {
+        "samples": 1245184,
+        "elapsed_s": 1.2164194583892822,
+        "samples_per_s": 1023646.8936864971
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 32000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 980070.637034126,
+    "samples": 1179648,
+    "elapsed_s": 1.2036356925964355,
+    "median_samples_per_s": 980070.637034126,
+    "runs": [
+      {
+        "samples": 1179648,
+        "elapsed_s": 1.2036356925964355,
+        "samples_per_s": 980070.637034126
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 32000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1032140.4837912295,
+    "samples": 1277952,
+    "elapsed_s": 1.238157033920288,
+    "median_samples_per_s": 1032140.4837912295,
+    "runs": [
+      {
+        "samples": 1277952,
+        "elapsed_s": 1.238157033920288,
+        "samples_per_s": 1032140.4837912295
+      }
+    ]
+  },
+  {
+    "mode": "raw",
+    "signal": "pwm100k",
+    "rate_hz": 32000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1027845.480339259,
+    "samples": 1245184,
+    "elapsed_s": 1.2114505767822266,
+    "median_samples_per_s": 1027845.480339259,
+    "runs": [
+      {
+        "samples": 1245184,
+        "elapsed_s": 1.2114505767822266,
+        "samples_per_s": 1027845.480339259
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 1000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 362228.32949003903,
+    "samples": 442368,
+    "elapsed_s": 1.221240758895874,
+    "median_samples_per_s": 362228.32949003903,
+    "runs": [
+      {
+        "samples": 442368,
+        "elapsed_s": 1.221240758895874,
+        "samples_per_s": 362228.32949003903
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 1000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 389722.5402556619,
+    "samples": 491520,
+    "elapsed_s": 1.2612049579620361,
+    "median_samples_per_s": 389722.5402556619,
+    "runs": [
+      {
+        "samples": 491520,
+        "elapsed_s": 1.2612049579620361,
+        "samples_per_s": 389722.5402556619
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 1000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 396915.4016983251,
+    "samples": 524288,
+    "elapsed_s": 1.320906162261963,
+    "median_samples_per_s": 396915.4016983251,
+    "runs": [
+      {
+        "samples": 524288,
+        "elapsed_s": 1.320906162261963,
+        "samples_per_s": 396915.4016983251
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 2000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 352426.41078763775,
+    "samples": 425984,
+    "elapsed_s": 1.2087175846099854,
+    "median_samples_per_s": 352426.41078763775,
+    "runs": [
+      {
+        "samples": 425984,
+        "elapsed_s": 1.2087175846099854,
+        "samples_per_s": 352426.41078763775
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 2000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 380276.8515866268,
+    "samples": 458752,
+    "elapsed_s": 1.2063632011413574,
+    "median_samples_per_s": 380276.8515866268,
+    "runs": [
+      {
+        "samples": 458752,
+        "elapsed_s": 1.2063632011413574,
+        "samples_per_s": 380276.8515866268
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 2000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 390162.69125168334,
+    "samples": 524288,
+    "elapsed_s": 1.3437676429748535,
+    "median_samples_per_s": 390162.69125168334,
+    "runs": [
+      {
+        "samples": 524288,
+        "elapsed_s": 1.3437676429748535,
+        "samples_per_s": 390162.69125168334
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 4000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 342881.68410321994,
+    "samples": 425984,
+    "elapsed_s": 1.2423644065856934,
+    "median_samples_per_s": 342881.68410321994,
+    "runs": [
+      {
+        "samples": 425984,
+        "elapsed_s": 1.2423644065856934,
+        "samples_per_s": 342881.68410321994
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 4000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 368804.8670530136,
+    "samples": 458752,
+    "elapsed_s": 1.2438881397247314,
+    "median_samples_per_s": 368804.8670530136,
+    "runs": [
+      {
+        "samples": 458752,
+        "elapsed_s": 1.2438881397247314,
+        "samples_per_s": 368804.8670530136
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 4000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 374360.59965703066,
+    "samples": 458752,
+    "elapsed_s": 1.2254281044006348,
+    "median_samples_per_s": 374360.59965703066,
+    "runs": [
+      {
+        "samples": 458752,
+        "elapsed_s": 1.2254281044006348,
+        "samples_per_s": 374360.59965703066
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 6000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 346503.81772184104,
+    "samples": 425984,
+    "elapsed_s": 1.2293775081634521,
+    "median_samples_per_s": 346503.81772184104,
+    "runs": [
+      {
+        "samples": 425984,
+        "elapsed_s": 1.2293775081634521,
+        "samples_per_s": 346503.81772184104
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 6000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 388026.77248519904,
+    "samples": 491520,
+    "elapsed_s": 1.266716718673706,
+    "median_samples_per_s": 388026.77248519904,
+    "runs": [
+      {
+        "samples": 491520,
+        "elapsed_s": 1.266716718673706,
+        "samples_per_s": 388026.77248519904
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 6000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 405278.78896680253,
+    "samples": 524288,
+    "elapsed_s": 1.2936477661132812,
+    "median_samples_per_s": 405278.78896680253,
+    "runs": [
+      {
+        "samples": 524288,
+        "elapsed_s": 1.2936477661132812,
+        "samples_per_s": 405278.78896680253
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 8000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 357568.4435837363,
+    "samples": 442368,
+    "elapsed_s": 1.2371561527252197,
+    "median_samples_per_s": 357568.4435837363,
+    "runs": [
+      {
+        "samples": 442368,
+        "elapsed_s": 1.2371561527252197,
+        "samples_per_s": 357568.4435837363
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 8000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 394710.634672193,
+    "samples": 491520,
+    "elapsed_s": 1.2452666759490967,
+    "median_samples_per_s": 394710.634672193,
+    "runs": [
+      {
+        "samples": 491520,
+        "elapsed_s": 1.2452666759490967,
+        "samples_per_s": 394710.634672193
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 8000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 398515.13554119377,
+    "samples": 524288,
+    "elapsed_s": 1.3156037330627441,
+    "median_samples_per_s": 398515.13554119377,
+    "runs": [
+      {
+        "samples": 524288,
+        "elapsed_s": 1.3156037330627441,
+        "samples_per_s": 398515.13554119377
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 10000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 346582.7945518396,
+    "samples": 425984,
+    "elapsed_s": 1.2290973663330078,
+    "median_samples_per_s": 346582.7945518396,
+    "runs": [
+      {
+        "samples": 425984,
+        "elapsed_s": 1.2290973663330078,
+        "samples_per_s": 346582.7945518396
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 10000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 394616.49536308687,
+    "samples": 491520,
+    "elapsed_s": 1.2455637454986572,
+    "median_samples_per_s": 394616.49536308687,
+    "runs": [
+      {
+        "samples": 491520,
+        "elapsed_s": 1.2455637454986572,
+        "samples_per_s": 394616.49536308687
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 10000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 400876.5697053907,
+    "samples": 524288,
+    "elapsed_s": 1.3078539371490479,
+    "median_samples_per_s": 400876.5697053907,
+    "runs": [
+      {
+        "samples": 524288,
+        "elapsed_s": 1.3078539371490479,
+        "samples_per_s": 400876.5697053907
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 12000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 358757.1313194437,
+    "samples": 442368,
+    "elapsed_s": 1.2330570220947266,
+    "median_samples_per_s": 358757.1313194437,
+    "runs": [
+      {
+        "samples": 442368,
+        "elapsed_s": 1.2330570220947266,
+        "samples_per_s": 358757.1313194437
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 12000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 394812.4553936664,
+    "samples": 491520,
+    "elapsed_s": 1.2449455261230469,
+    "median_samples_per_s": 394812.4553936664,
+    "runs": [
+      {
+        "samples": 491520,
+        "elapsed_s": 1.2449455261230469,
+        "samples_per_s": 394812.4553936664
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 12000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 407670.28546110005,
+    "samples": 524288,
+    "elapsed_s": 1.2860589027404785,
+    "median_samples_per_s": 407670.28546110005,
+    "runs": [
+      {
+        "samples": 524288,
+        "elapsed_s": 1.2860589027404785,
+        "samples_per_s": 407670.28546110005
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 14000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 353665.4921015913,
+    "samples": 425984,
+    "elapsed_s": 1.2044827938079834,
+    "median_samples_per_s": 353665.4921015913,
+    "runs": [
+      {
+        "samples": 425984,
+        "elapsed_s": 1.2044827938079834,
+        "samples_per_s": 353665.4921015913
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 14000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 392519.4361202883,
+    "samples": 491520,
+    "elapsed_s": 1.252218246459961,
+    "median_samples_per_s": 392519.4361202883,
+    "runs": [
+      {
+        "samples": 491520,
+        "elapsed_s": 1.252218246459961,
+        "samples_per_s": 392519.4361202883
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 14000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 408062.98235252965,
+    "samples": 524288,
+    "elapsed_s": 1.2848212718963623,
+    "median_samples_per_s": 408062.98235252965,
+    "runs": [
+      {
+        "samples": 524288,
+        "elapsed_s": 1.2848212718963623,
+        "samples_per_s": 408062.98235252965
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 16000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 358428.76783899096,
+    "samples": 442368,
+    "elapsed_s": 1.2341866493225098,
+    "median_samples_per_s": 358428.76783899096,
+    "runs": [
+      {
+        "samples": 442368,
+        "elapsed_s": 1.2341866493225098,
+        "samples_per_s": 358428.76783899096
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 16000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 402383.30426038476,
+    "samples": 491520,
+    "elapsed_s": 1.2215218544006348,
+    "median_samples_per_s": 402383.30426038476,
+    "runs": [
+      {
+        "samples": 491520,
+        "elapsed_s": 1.2215218544006348,
+        "samples_per_s": 402383.30426038476
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 16000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 407412.6560323022,
+    "samples": 524288,
+    "elapsed_s": 1.286872148513794,
+    "median_samples_per_s": 407412.6560323022,
+    "runs": [
+      {
+        "samples": 524288,
+        "elapsed_s": 1.286872148513794,
+        "samples_per_s": 407412.6560323022
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 18000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 356995.2844862949,
+    "samples": 442368,
+    "elapsed_s": 1.2391424179077148,
+    "median_samples_per_s": 356995.2844862949,
+    "runs": [
+      {
+        "samples": 442368,
+        "elapsed_s": 1.2391424179077148,
+        "samples_per_s": 356995.2844862949
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 18000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 397718.0621398691,
+    "samples": 491520,
+    "elapsed_s": 1.2358503341674805,
+    "median_samples_per_s": 397718.0621398691,
+    "runs": [
+      {
+        "samples": 491520,
+        "elapsed_s": 1.2358503341674805,
+        "samples_per_s": 397718.0621398691
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 18000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 412446.1107159456,
+    "samples": 524288,
+    "elapsed_s": 1.271167278289795,
+    "median_samples_per_s": 412446.1107159456,
+    "runs": [
+      {
+        "samples": 524288,
+        "elapsed_s": 1.271167278289795,
+        "samples_per_s": 412446.1107159456
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 20000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 355984.7976373407,
+    "samples": 442368,
+    "elapsed_s": 1.2426598072052002,
+    "median_samples_per_s": 355984.7976373407,
+    "runs": [
+      {
+        "samples": 442368,
+        "elapsed_s": 1.2426598072052002,
+        "samples_per_s": 355984.7976373407
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 20000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 391982.30781911407,
+    "samples": 491520,
+    "elapsed_s": 1.2539341449737549,
+    "median_samples_per_s": 391982.30781911407,
+    "runs": [
+      {
+        "samples": 491520,
+        "elapsed_s": 1.2539341449737549,
+        "samples_per_s": 391982.30781911407
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 20000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 398804.0820044236,
+    "samples": 524288,
+    "elapsed_s": 1.314650535583496,
+    "median_samples_per_s": 398804.0820044236,
+    "runs": [
+      {
+        "samples": 524288,
+        "elapsed_s": 1.314650535583496,
+        "samples_per_s": 398804.0820044236
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 24000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 355861.3544583988,
+    "samples": 442368,
+    "elapsed_s": 1.2430908679962158,
+    "median_samples_per_s": 355861.3544583988,
+    "runs": [
+      {
+        "samples": 442368,
+        "elapsed_s": 1.2430908679962158,
+        "samples_per_s": 355861.3544583988
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 24000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 412273.44286904787,
+    "samples": 524288,
+    "elapsed_s": 1.2716996669769287,
+    "median_samples_per_s": 412273.44286904787,
+    "runs": [
+      {
+        "samples": 524288,
+        "elapsed_s": 1.2716996669769287,
+        "samples_per_s": 412273.44286904787
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 24000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 411684.6928398511,
+    "samples": 524288,
+    "elapsed_s": 1.2735183238983154,
+    "median_samples_per_s": 411684.6928398511,
+    "runs": [
+      {
+        "samples": 524288,
+        "elapsed_s": 1.2735183238983154,
+        "samples_per_s": 411684.6928398511
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 28000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 360791.5041284131,
+    "samples": 442368,
+    "elapsed_s": 1.2261042594909668,
+    "median_samples_per_s": 360791.5041284131,
+    "runs": [
+      {
+        "samples": 442368,
+        "elapsed_s": 1.2261042594909668,
+        "samples_per_s": 360791.5041284131
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 28000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 394056.1412098778,
+    "samples": 491520,
+    "elapsed_s": 1.2473349571228027,
+    "median_samples_per_s": 394056.1412098778,
+    "runs": [
+      {
+        "samples": 491520,
+        "elapsed_s": 1.2473349571228027,
+        "samples_per_s": 394056.1412098778
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 28000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 409141.8430002227,
+    "samples": 524288,
+    "elapsed_s": 1.281433343887329,
+    "median_samples_per_s": 409141.8430002227,
+    "runs": [
+      {
+        "samples": 524288,
+        "elapsed_s": 1.281433343887329,
+        "samples_per_s": 409141.8430002227
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 32000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 358915.0123525474,
+    "samples": 442368,
+    "elapsed_s": 1.2325146198272705,
+    "median_samples_per_s": 358915.0123525474,
+    "runs": [
+      {
+        "samples": 442368,
+        "elapsed_s": 1.2325146198272705,
+        "samples_per_s": 358915.0123525474
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 32000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 399637.6370333697,
+    "samples": 491520,
+    "elapsed_s": 1.2299141883850098,
+    "median_samples_per_s": 399637.6370333697,
+    "runs": [
+      {
+        "samples": 491520,
+        "elapsed_s": 1.2299141883850098,
+        "samples_per_s": 399637.6370333697
+      }
+    ]
+  },
+  {
+    "mode": "delta",
+    "signal": "pwm100k",
+    "rate_hz": 32000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 413082.50884614635,
+    "samples": 524288,
+    "elapsed_s": 1.2692089080810547,
+    "median_samples_per_s": 413082.50884614635,
+    "runs": [
+      {
+        "samples": 524288,
+        "elapsed_s": 1.2692089080810547,
+        "samples_per_s": 413082.50884614635
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 1000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 977959.3247130589,
+    "samples": 1179648,
+    "elapsed_s": 1.2062342166900635,
+    "median_samples_per_s": 977959.3247130589,
+    "runs": [
+      {
+        "samples": 1179648,
+        "elapsed_s": 1.2062342166900635,
+        "samples_per_s": 977959.3247130589
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 1000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 973338.2261189657,
+    "samples": 1179648,
+    "elapsed_s": 1.211961030960083,
+    "median_samples_per_s": 973338.2261189657,
+    "runs": [
+      {
+        "samples": 1179648,
+        "elapsed_s": 1.211961030960083,
+        "samples_per_s": 973338.2261189657
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 1000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 972098.847814871,
+    "samples": 1179648,
+    "elapsed_s": 1.2135062217712402,
+    "median_samples_per_s": 972098.847814871,
+    "runs": [
+      {
+        "samples": 1179648,
+        "elapsed_s": 1.2135062217712402,
+        "samples_per_s": 972098.847814871
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 2000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1949357.2170399656,
+    "samples": 2342912,
+    "elapsed_s": 1.2018895149230957,
+    "median_samples_per_s": 1949357.2170399656,
+    "runs": [
+      {
+        "samples": 2342912,
+        "elapsed_s": 1.2018895149230957,
+        "samples_per_s": 1949357.2170399656
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 2000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1958064.2981473827,
+    "samples": 2359296,
+    "elapsed_s": 1.2049124240875244,
+    "median_samples_per_s": 1958064.2981473827,
+    "runs": [
+      {
+        "samples": 2359296,
+        "elapsed_s": 1.2049124240875244,
+        "samples_per_s": 1958064.2981473827
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 2000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1935765.9667917583,
+    "samples": 2359296,
+    "elapsed_s": 1.2187919616699219,
+    "median_samples_per_s": 1935765.9667917583,
+    "runs": [
+      {
+        "samples": 2359296,
+        "elapsed_s": 1.2187919616699219,
+        "samples_per_s": 1935765.9667917583
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 4000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 3376835.983586644,
+    "samples": 4096000,
+    "elapsed_s": 1.2129697799682617,
+    "median_samples_per_s": 3376835.983586644,
+    "runs": [
+      {
+        "samples": 4096000,
+        "elapsed_s": 1.2129697799682617,
+        "samples_per_s": 3376835.983586644
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 4000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 3396867.065027168,
+    "samples": 4096000,
+    "elapsed_s": 1.2058169841766357,
+    "median_samples_per_s": 3396867.065027168,
+    "runs": [
+      {
+        "samples": 4096000,
+        "elapsed_s": 1.2058169841766357,
+        "samples_per_s": 3396867.065027168
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 4000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 3371125.8806459294,
+    "samples": 4063232,
+    "elapsed_s": 1.2053041458129883,
+    "median_samples_per_s": 3371125.8806459294,
+    "runs": [
+      {
+        "samples": 4063232,
+        "elapsed_s": 1.2053041458129883,
+        "samples_per_s": 3371125.8806459294
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 6000000,
+    "chunk_nsamp": 16384,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 6000000,
+    "chunk_nsamp": 32768,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 6000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 8000000,
+    "chunk_nsamp": 16384,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 8000000,
+    "chunk_nsamp": 32768,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 8000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 10000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 5192542.985025348,
+    "samples": 6242304,
+    "elapsed_s": 1.20216703414917,
+    "median_samples_per_s": 5192542.985025348,
+    "runs": [
+      {
+        "samples": 6242304,
+        "elapsed_s": 1.20216703414917,
+        "samples_per_s": 5192542.985025348
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 10000000,
+    "chunk_nsamp": 32768,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 10000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 5862369.020532144,
+    "samples": 7077888,
+    "elapsed_s": 1.2073426246643066,
+    "median_samples_per_s": 5862369.020532144,
+    "runs": [
+      {
+        "samples": 7077888,
+        "elapsed_s": 1.2073426246643066,
+        "samples_per_s": 5862369.020532144
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 12000000,
+    "chunk_nsamp": 16384,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 12000000,
+    "chunk_nsamp": 32768,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 12000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 14000000,
+    "chunk_nsamp": 16384,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 14000000,
+    "chunk_nsamp": 32768,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 14000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 6056213.859116641,
+    "samples": 7274496,
+    "elapsed_s": 1.201162338256836,
+    "median_samples_per_s": 6056213.859116641,
+    "runs": [
+      {
+        "samples": 7274496,
+        "elapsed_s": 1.201162338256836,
+        "samples_per_s": 6056213.859116641
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 16000000,
+    "chunk_nsamp": 16384,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 16000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 5784476.925679635,
+    "samples": 6946816,
+    "elapsed_s": 1.2009410858154297,
+    "median_samples_per_s": 5784476.925679635,
+    "runs": [
+      {
+        "samples": 6946816,
+        "elapsed_s": 1.2009410858154297,
+        "samples_per_s": 5784476.925679635
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 16000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 6138063.428019471,
+    "samples": 7405568,
+    "elapsed_s": 1.2064990997314453,
+    "median_samples_per_s": 6138063.428019471,
+    "runs": [
+      {
+        "samples": 7405568,
+        "elapsed_s": 1.2064990997314453,
+        "samples_per_s": 6138063.428019471
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 18000000,
+    "chunk_nsamp": 16384,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 18000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 5916132.413486224,
+    "samples": 7110656,
+    "elapsed_s": 1.2019095420837402,
+    "median_samples_per_s": 5916132.413486224,
+    "runs": [
+      {
+        "samples": 7110656,
+        "elapsed_s": 1.2019095420837402,
+        "samples_per_s": 5916132.413486224
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 18000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 20000000,
+    "chunk_nsamp": 16384,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 20000000,
+    "chunk_nsamp": 32768,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 20000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 24000000,
+    "chunk_nsamp": 16384,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 24000000,
+    "chunk_nsamp": 32768,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 24000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 28000000,
+    "chunk_nsamp": 16384,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 28000000,
+    "chunk_nsamp": 32768,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 28000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 32000000,
+    "chunk_nsamp": 16384,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 32000000,
+    "chunk_nsamp": 32768,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "idle",
+    "rate_hz": 32000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 1000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 883951.4895254078,
+    "samples": 1064960,
+    "elapsed_s": 1.2047719955444336,
+    "median_samples_per_s": 883951.4895254078,
+    "runs": [
+      {
+        "samples": 1064960,
+        "elapsed_s": 1.2047719955444336,
+        "samples_per_s": 883951.4895254078
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 1000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 876264.3304262246,
+    "samples": 1081344,
+    "elapsed_s": 1.2340385913848877,
+    "median_samples_per_s": 876264.3304262246,
+    "runs": [
+      {
+        "samples": 1081344,
+        "elapsed_s": 1.2340385913848877,
+        "samples_per_s": 876264.3304262246
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 1000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 2000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1704496.510319426,
+    "samples": 2048000,
+    "elapsed_s": 1.2015278339385986,
+    "median_samples_per_s": 1704496.510319426,
+    "runs": [
+      {
+        "samples": 2048000,
+        "elapsed_s": 1.2015278339385986,
+        "samples_per_s": 1704496.510319426
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 2000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1675615.4679067074,
+    "samples": 2031616,
+    "elapsed_s": 1.2124595642089844,
+    "median_samples_per_s": 1675615.4679067074,
+    "runs": [
+      {
+        "samples": 2031616,
+        "elapsed_s": 1.2124595642089844,
+        "samples_per_s": 1675615.4679067074
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 2000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 4000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 2860266.8220356703,
+    "samples": 3440640,
+    "elapsed_s": 1.2029087543487549,
+    "median_samples_per_s": 2860266.8220356703,
+    "runs": [
+      {
+        "samples": 3440640,
+        "elapsed_s": 1.2029087543487549,
+        "samples_per_s": 2860266.8220356703
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 4000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 2762083.7317962465,
+    "samples": 3375104,
+    "elapsed_s": 1.2219412326812744,
+    "median_samples_per_s": 2762083.7317962465,
+    "runs": [
+      {
+        "samples": 3375104,
+        "elapsed_s": 1.2219412326812744,
+        "samples_per_s": 2762083.7317962465
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 4000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 6000000,
+    "chunk_nsamp": 16384,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 6000000,
+    "chunk_nsamp": 32768,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 6000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 8000000,
+    "chunk_nsamp": 16384,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 8000000,
+    "chunk_nsamp": 32768,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 8000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 10000000,
+    "chunk_nsamp": 16384,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 10000000,
+    "chunk_nsamp": 32768,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 10000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 12000000,
+    "chunk_nsamp": 16384,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 12000000,
+    "chunk_nsamp": 32768,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 12000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 14000000,
+    "chunk_nsamp": 16384,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 14000000,
+    "chunk_nsamp": 32768,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 14000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 16000000,
+    "chunk_nsamp": 16384,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 16000000,
+    "chunk_nsamp": 32768,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 16000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 18000000,
+    "chunk_nsamp": 16384,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 18000000,
+    "chunk_nsamp": 32768,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 18000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 20000000,
+    "chunk_nsamp": 16384,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 20000000,
+    "chunk_nsamp": 32768,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 20000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 24000000,
+    "chunk_nsamp": 16384,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 24000000,
+    "chunk_nsamp": 32768,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 24000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 28000000,
+    "chunk_nsamp": 16384,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 28000000,
+    "chunk_nsamp": 32768,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 28000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 32000000,
+    "chunk_nsamp": 16384,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 32000000,
+    "chunk_nsamp": 32768,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm100k",
+    "rate_hz": 32000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 1000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 968303.1130959813,
+    "samples": 1179648,
+    "elapsed_s": 1.2182631492614746,
+    "median_samples_per_s": 968303.1130959813,
+    "runs": [
+      {
+        "samples": 1179648,
+        "elapsed_s": 1.2182631492614746,
+        "samples_per_s": 968303.1130959813
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 1000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 969094.5449415965,
+    "samples": 1179648,
+    "elapsed_s": 1.2172682285308838,
+    "median_samples_per_s": 969094.5449415965,
+    "runs": [
+      {
+        "samples": 1179648,
+        "elapsed_s": 1.2172682285308838,
+        "samples_per_s": 969094.5449415965
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 1000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 965398.6604055031,
+    "samples": 1179648,
+    "elapsed_s": 1.221928358078003,
+    "median_samples_per_s": 965398.6604055031,
+    "runs": [
+      {
+        "samples": 1179648,
+        "elapsed_s": 1.221928358078003,
+        "samples_per_s": 965398.6604055031
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 2000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 459534.1271363569,
+    "samples": 557056,
+    "elapsed_s": 1.212218999862671,
+    "median_samples_per_s": 459534.1271363569,
+    "runs": [
+      {
+        "samples": 557056,
+        "elapsed_s": 1.212218999862671,
+        "samples_per_s": 459534.1271363569
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 2000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 480593.4035815158,
+    "samples": 589824,
+    "elapsed_s": 1.2272827625274658,
+    "median_samples_per_s": 480593.4035815158,
+    "runs": [
+      {
+        "samples": 589824,
+        "elapsed_s": 1.2272827625274658,
+        "samples_per_s": 480593.4035815158
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 2000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 473578.68314903736,
+    "samples": 589824,
+    "elapsed_s": 1.2454614639282227,
+    "median_samples_per_s": 473578.68314903736,
+    "runs": [
+      {
+        "samples": 589824,
+        "elapsed_s": 1.2454614639282227,
+        "samples_per_s": 473578.68314903736
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 4000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 934774.7322934908,
+    "samples": 1130496,
+    "elapsed_s": 1.2093780040740967,
+    "median_samples_per_s": 934774.7322934908,
+    "runs": [
+      {
+        "samples": 1130496,
+        "elapsed_s": 1.2093780040740967,
+        "samples_per_s": 934774.7322934908
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 4000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 938944.5911351588,
+    "samples": 1146880,
+    "elapsed_s": 1.221456527709961,
+    "median_samples_per_s": 938944.5911351588,
+    "runs": [
+      {
+        "samples": 1146880,
+        "elapsed_s": 1.221456527709961,
+        "samples_per_s": 938944.5911351588
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 4000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 6000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1306070.872087777,
+    "samples": 1572864,
+    "elapsed_s": 1.2042715549468994,
+    "median_samples_per_s": 1306070.872087777,
+    "runs": [
+      {
+        "samples": 1572864,
+        "elapsed_s": 1.2042715549468994,
+        "samples_per_s": 1306070.872087777
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 6000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1305518.7945928306,
+    "samples": 1572864,
+    "elapsed_s": 1.2047808170318604,
+    "median_samples_per_s": 1305518.7945928306,
+    "runs": [
+      {
+        "samples": 1572864,
+        "elapsed_s": 1.2047808170318604,
+        "samples_per_s": 1305518.7945928306
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 6000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 8000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 681286.379363607,
+    "samples": 819200,
+    "elapsed_s": 1.2024312019348145,
+    "median_samples_per_s": 681286.379363607,
+    "runs": [
+      {
+        "samples": 819200,
+        "elapsed_s": 1.2024312019348145,
+        "samples_per_s": 681286.379363607
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 8000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 702699.8393144739,
+    "samples": 851968,
+    "elapsed_s": 1.21242094039917,
+    "median_samples_per_s": 702699.8393144739,
+    "runs": [
+      {
+        "samples": 851968,
+        "elapsed_s": 1.21242094039917,
+        "samples_per_s": 702699.8393144739
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 8000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 10000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 525354.8845654363,
+    "samples": 638976,
+    "elapsed_s": 1.2162749767303467,
+    "median_samples_per_s": 525354.8845654363,
+    "runs": [
+      {
+        "samples": 638976,
+        "elapsed_s": 1.2162749767303467,
+        "samples_per_s": 525354.8845654363
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 10000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 537876.4889046475,
+    "samples": 655360,
+    "elapsed_s": 1.2184209823608398,
+    "median_samples_per_s": 537876.4889046475,
+    "runs": [
+      {
+        "samples": 655360,
+        "elapsed_s": 1.2184209823608398,
+        "samples_per_s": 537876.4889046475
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 10000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 540437.9077453985,
+    "samples": 655360,
+    "elapsed_s": 1.212646245956421,
+    "median_samples_per_s": 540437.9077453985,
+    "runs": [
+      {
+        "samples": 655360,
+        "elapsed_s": 1.212646245956421,
+        "samples_per_s": 540437.9077453985
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 12000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 643246.0528741298,
+    "samples": 786432,
+    "elapsed_s": 1.2225990295410156,
+    "median_samples_per_s": 643246.0528741298,
+    "runs": [
+      {
+        "samples": 786432,
+        "elapsed_s": 1.2225990295410156,
+        "samples_per_s": 643246.0528741298
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 12000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 650951.8050776664,
+    "samples": 786432,
+    "elapsed_s": 1.2081263065338135,
+    "median_samples_per_s": 650951.8050776664,
+    "runs": [
+      {
+        "samples": 786432,
+        "elapsed_s": 1.2081263065338135,
+        "samples_per_s": 650951.8050776664
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 12000000,
+    "chunk_nsamp": 65536,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 666387.9567735182,
+    "samples": 851968,
+    "elapsed_s": 1.2784864902496338,
+    "median_samples_per_s": 666387.9567735182,
+    "runs": [
+      {
+        "samples": 851968,
+        "elapsed_s": 1.2784864902496338,
+        "samples_per_s": 666387.9567735182
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 14000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 703798.3170807463,
+    "samples": 851968,
+    "elapsed_s": 1.2105286121368408,
+    "median_samples_per_s": 703798.3170807463,
+    "runs": [
+      {
+        "samples": 851968,
+        "elapsed_s": 1.2105286121368408,
+        "samples_per_s": 703798.3170807463
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 14000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 705421.7809145538,
+    "samples": 851968,
+    "elapsed_s": 1.207742691040039,
+    "median_samples_per_s": 705421.7809145538,
+    "runs": [
+      {
+        "samples": 851968,
+        "elapsed_s": 1.207742691040039,
+        "samples_per_s": 705421.7809145538
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 14000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 16000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 830334.333556901,
+    "samples": 999424,
+    "elapsed_s": 1.2036404609680176,
+    "median_samples_per_s": 830334.333556901,
+    "runs": [
+      {
+        "samples": 999424,
+        "elapsed_s": 1.2036404609680176,
+        "samples_per_s": 830334.333556901
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 16000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 853484.483572441,
+    "samples": 1048576,
+    "elapsed_s": 1.2285823822021484,
+    "median_samples_per_s": 853484.483572441,
+    "runs": [
+      {
+        "samples": 1048576,
+        "elapsed_s": 1.2285823822021484,
+        "samples_per_s": 853484.483572441
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 16000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 18000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 906764.199476881,
+    "samples": 1097728,
+    "elapsed_s": 1.2105991840362549,
+    "median_samples_per_s": 906764.199476881,
+    "runs": [
+      {
+        "samples": 1097728,
+        "elapsed_s": 1.2105991840362549,
+        "samples_per_s": 906764.199476881
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 18000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 924840.761348037,
+    "samples": 1114112,
+    "elapsed_s": 1.2046527862548828,
+    "median_samples_per_s": 924840.761348037,
+    "runs": [
+      {
+        "samples": 1114112,
+        "elapsed_s": 1.2046527862548828,
+        "samples_per_s": 924840.761348037
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 18000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 20000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 906117.8418965596,
+    "samples": 1097728,
+    "elapsed_s": 1.2114627361297607,
+    "median_samples_per_s": 906117.8418965596,
+    "runs": [
+      {
+        "samples": 1097728,
+        "elapsed_s": 1.2114627361297607,
+        "samples_per_s": 906117.8418965596
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 20000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 930281.2431022245,
+    "samples": 1146880,
+    "elapsed_s": 1.2328314781188965,
+    "median_samples_per_s": 930281.2431022245,
+    "runs": [
+      {
+        "samples": 1146880,
+        "elapsed_s": 1.2328314781188965,
+        "samples_per_s": 930281.2431022245
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 20000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 24000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 894853.174864795,
+    "samples": 1081344,
+    "elapsed_s": 1.2084038257598877,
+    "median_samples_per_s": 894853.174864795,
+    "runs": [
+      {
+        "samples": 1081344,
+        "elapsed_s": 1.2084038257598877,
+        "samples_per_s": 894853.174864795
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 24000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 929858.830936792,
+    "samples": 1146880,
+    "elapsed_s": 1.233391523361206,
+    "median_samples_per_s": 929858.830936792,
+    "runs": [
+      {
+        "samples": 1146880,
+        "elapsed_s": 1.233391523361206,
+        "samples_per_s": 929858.830936792
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 24000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 28000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1002553.3395101621,
+    "samples": 1212416,
+    "elapsed_s": 1.2093281745910645,
+    "median_samples_per_s": 1002553.3395101621,
+    "runs": [
+      {
+        "samples": 1212416,
+        "elapsed_s": 1.2093281745910645,
+        "samples_per_s": 1002553.3395101621
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 28000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1039067.5245906534,
+    "samples": 1277952,
+    "elapsed_s": 1.229902744293213,
+    "median_samples_per_s": 1039067.5245906534,
+    "runs": [
+      {
+        "samples": 1277952,
+        "elapsed_s": 1.229902744293213,
+        "samples_per_s": 1039067.5245906534
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 28000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 32000000,
+    "chunk_nsamp": 16384,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1006662.9170428358,
+    "samples": 1212416,
+    "elapsed_s": 1.2043912410736084,
+    "median_samples_per_s": 1006662.9170428358,
+    "runs": [
+      {
+        "samples": 1212416,
+        "elapsed_s": 1.2043912410736084,
+        "samples_per_s": 1006662.9170428358
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 32000000,
+    "chunk_nsamp": 32768,
+    "buffer_nsamp": 131072,
+    "duration_s": 1.2,
+    "repeats": 1,
+    "samples_per_s": 1042958.4620689695,
+    "samples": 1277952,
+    "elapsed_s": 1.2253143787384033,
+    "median_samples_per_s": 1042958.4620689695,
+    "runs": [
+      {
+        "samples": 1277952,
+        "elapsed_s": 1.2253143787384033,
+        "samples_per_s": 1042958.4620689695
+      }
+    ]
+  },
+  {
+    "mode": "rle",
+    "signal": "pwm5m",
+    "rate_hz": 32000000,
+    "chunk_nsamp": 65536,
+    "error": "timeout"
+  }
+]

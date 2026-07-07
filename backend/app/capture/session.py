@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 ChannelType = Literal["digital", "analog", "derived", "decoder", "bus"]
+ReadbackCompression = Literal["raw", "delta_rle", "delta", "rle"]
 
 
 def new_id(prefix: str) -> str:
@@ -76,6 +77,7 @@ class CaptureSettings(BaseModel):
     auto_rearm: bool = False
     repeat_count: int = 1
     auto_save: bool = False
+    readback_compression: ReadbackCompression = "raw"
     mock_scenario: Optional[str] = None   # mock device only
 
 

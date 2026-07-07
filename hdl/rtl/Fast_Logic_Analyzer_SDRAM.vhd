@@ -10,6 +10,11 @@ entity Fast_Logic_Analyzer_SDRAM is
     Channels    : natural range 1 to 16 := 16;
     Sim         : boolean := false;
     FAST_SPEED  : boolean := false;
+    -- FAST_RAW_BUILD: when true, exclude compression modules at elaboration
+    -- time for maximum timing closure. Only fast input sampling, minimal
+    -- packing, registered FIFO bridge, SDRAM write pump, and OLS readout
+    -- are included. When false, compression modules are available for MSO builds.
+    FAST_RAW_BUILD : boolean := true;
     CLK_Frequency : natural := 100_000_000;
     SDRAM_CLK_HZ : natural := 166_666_667;
     SAMPLE_CLK_HZ : natural := 200_000_000;
@@ -54,6 +59,14 @@ port (
     Analog_Frame_Len  : in natural range 1 to 14 := 1;
     Analog_Stream_Mode : in std_logic := '0';
     Analog_Frame_Toggle : in std_logic := '0';
+    -- Parallel bit-packing capture path. When Packed_Mode is set, the packed
+    -- 16-bit valid/ready stream (from mso_capture in the top, already in the
+    -- FAST_CLK domain) drives the write FIFO instead of the Analog_Frame/sample
+    -- writer. Packed_Ready backpressures the producer (FIFO not full).
+    Packed_Mode  : in  std_logic := '0';
+    Packed_Data  : in  std_logic_vector(15 downto 0) := (others => '0');
+    Packed_Valid : in  std_logic := '0';
+    Packed_Ready : out std_logic := '0';
     -- Single-shot block readout via a response FIFO. The OLS side (CLK domain)
     -- requests a stream and drains the FIFO; the FLA walks the addresses on pclk
     -- and pushes each valid sample in. The dcfifo is a proper CDC between the
@@ -63,7 +76,8 @@ port (
     Blk_Rd_Base    : in  natural range 0 to Max_Samples := 0;  -- base sample idx
     Blk_Rd_Count   : in  natural range 0 to Max_Samples := 0;  -- samples to stream
     Auto_Renew     : in  std_logic := '0';  -- auto-renew stream (no deassert on block end)
-    Compress_Enable : in  std_logic := '0';  -- enable delta-packed readback
+    -- (Compression moved to the OLS_Interface CLK-domain drain; the FLA
+    -- always streams raw samples into the response FIFO.)
     Rd_Fifo_Q      : out std_logic_vector(15 downto 0) := (others => '0');
     Rd_Fifo_Empty  : out std_logic := '1';
     Rd_Fifo_RdReq  : in  std_logic := '0';
@@ -81,6 +95,7 @@ port (
 end Fast_Logic_Analyzer_SDRAM;
 
 architecture rtl of Fast_Logic_Analyzer_SDRAM is
+  attribute altera_attribute : string;
 
   constant sub_steps : natural := 16 / Channels;
 
@@ -97,8 +112,6 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal run_sync1   : std_logic := '0';
   signal run_sync2   : std_logic := '0';
   signal samples_div_p  : natural range 0 to Max_Samples := 0;
-  signal samples_div6_p : natural range 0 to Max_Samples := 0;
-  signal samples_d1   : natural range 0 to Max_Samples := 0;
   signal samples_div  : natural range 0 to Max_Samples := 0;
   signal samples_div6 : natural range 0 to Max_Samples := 0;
 
@@ -106,13 +119,6 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal lpm_numer : std_logic_vector(21 downto 0) := (others => '0');
   signal lpm_quot  : std_logic_vector(21 downto 0) := (others => '0');
 
-  -- Old FIFO replaced by dcfifo. Keep fifo_cnt for external visibility.
-  signal fifo_cnt      : natural range 0 to 64 := 0;
-  signal buf_limit_r   : natural range 0 to Max_Samples := 0;
-  signal buf_last_r    : natural range 0 to Max_Samples := 0;
-  signal buf_base0_r   : natural range 0 to Max_Samples := 0;
-  signal buf_base1_r   : natural range 0 to Max_Samples := 0;
-  signal buf_base2_r   : natural range 0 to Max_Samples := 0;
   -- In continuous mode each triple buffer is exactly one host read block
   -- (512 samples / 1024 bytes) so the standard CMD_READ_CAPTURE block protocol
   -- streams a completed buffer verbatim. Single-shot still uses samples/6.
@@ -125,10 +131,6 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal full_pending : std_logic := '0';
   signal full_clr_pending : std_logic := '0';
 
-  -- Per-buffer remaining-word count
-  signal buf_rem_0      : natural range 0 to Max_Samples := 0;
-  signal buf_rem_1      : natural range 0 to Max_Samples := 0;
-  signal buf_rem_2      : natural range 0 to Max_Samples := 0;
   signal buf_rem_single : natural range 0 to Max_Samples := 0;
   signal single_count_load_q : std_logic := '0';
   -- Single-shot drain-complete counter: number of consecutive pclk cycles the pump
@@ -137,9 +139,6 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal single_drain_cnt : natural range 0 to 2047 := 0;
 
   -- Pipeline registers: pre-compute buf_rem decrements
-  signal brem0_dec : natural range 0 to Max_Samples := 0;
-  signal brem1_dec : natural range 0 to Max_Samples := 0;
-  signal brem2_dec : natural range 0 to Max_Samples := 0;
   signal brem_single_dec : natural range 0 to Max_Samples := 0;
 
   -- Registered run-edge event detection: breaks run_r → process_5~0 → burst_rem →
@@ -150,31 +149,14 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal run_start_r : std_logic := '0';
   signal run_stop_r  : std_logic := '0';
 
-  -- Registered sample-rate divider: pre-computed rate_div_r - 1 breaks the
-  -- Rate_Div → Add0 (28-bit subtractor) → LessThan0 → cnt carry chain path.
-  -- Down-counter uses cnt = 0 (fast NOR gate) instead of cnt >= threshold
-  -- (slow 28-bit comparator). Rate_Div changes only when the user sets
-  -- the sample rate (before capture starts), so 1-cycle latency is harmless.
-  signal rate_div_r    : natural range 1 to 500000000 := 12;
-  signal rate_div_m1_r : natural range 0 to 500000000 := 11;
-
-  -- FAST_CLK domain signals (2FF CDC + async FIFO)
-  signal sdram_busy : std_logic := '0';
-
   constant MAX_RATE_DIV : natural := 500_000_000;
 
   -- Config handshake: CLK -> FAST_CLK
   signal cfg_rate_div  : natural range 1 to MAX_RATE_DIV := 12;
   signal cfg_samples   : natural range 1 to Max_Samples := Max_Samples;
   signal cfg_valid_toggle : std_logic := '0';
-  signal cfg_ack_s1    : std_logic := '0';
-  signal cfg_ack_s2    : std_logic := '0';
-  signal cfg_ack_edge  : std_logic := '0';
-
   -- Config handshake: FAST_CLK domain
   signal cfg_rate_div_f  : natural range 1 to MAX_RATE_DIV := 12;
-  signal cfg_rate_reload_f : natural range 0 to MAX_RATE_DIV := 11;
-  signal cfg_samples_f   : natural range 1 to Max_Samples := Max_Samples;
   signal cfg_valid_s1    : std_logic := '0';
   signal cfg_valid_s2    : std_logic := '0';
   signal cfg_valid_edge  : std_logic := '0';
@@ -204,6 +186,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal Armed_f    : std_logic := '0';
   signal run_f_level : std_logic := '0';
   signal fifo_overflow_f  : std_logic := '0';
+  signal fifo_overflow_f_q : std_logic := '0';
   signal overflow_toggle  : std_logic := '0';
   signal overflow_t_s1    : std_logic := '0';
   signal overflow_t_s2    : std_logic := '0';
@@ -218,6 +201,14 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal oldest_index_u    : unsigned(31 downto 0) := (others => '0');
   signal newest_index_u    : unsigned(31 downto 0) := (others => '0');
   signal overrun_count_u   : unsigned(31 downto 0) := (others => '0');
+  -- Write-pump utilisation counters (host regs 0x60..0x64). Diagnostic only
+  -- (read by host/debug/_deep_rate_sweep.py); compiled out by default to
+  -- reclaim five 32-bit counters (~200 LEs) from the congested 167 MHz cone
+  -- — at 99% device utilisation they cost timing closure and can push the
+  -- fitter past device capacity. The register map is unchanged: reads
+  -- return zero. Pump_Overflow_Count (0x65) stays — it counts real capture
+  -- overflow aborts.
+  constant PUMP_METRICS : boolean := false;
   signal pump_valid_cycles_u   : unsigned(31 downto 0) := (others => '0');
   signal pump_ready_cycles_u   : unsigned(31 downto 0) := (others => '0');
   signal pump_accept_cycles_u  : unsigned(31 downto 0) := (others => '0');
@@ -236,19 +227,107 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal cont_accept_q : boolean := false;
   signal cont_meta_reset_q : std_logic := '0';
   signal ring_used         : natural range 0 to CONT_RING_WORDS := 0;
+  attribute altera_attribute of run_f_s1 : signal is "-name AUTO_SHIFT_REGISTER_RECOGNITION OFF";
+  attribute altera_attribute of run_f_s2 : signal is "-name AUTO_SHIFT_REGISTER_RECOGNITION OFF";
+  attribute altera_attribute of run_f_level : signal is "-name AUTO_SHIFT_REGISTER_RECOGNITION OFF";
 
-  constant AFIFO_DEPTH : natural := 16384;
+  -- 1024 (was 2048, originally 4096): trims one afifo pointer bit and the
+  -- associated empty/used-word compare logic from the 167 MHz read-side cone.
+  -- Functionally the FIFO only has to ride out SDRAM drain stalls (refresh +
+  -- page turnaround, ~120 words at 200 MW/s); the DEPTH-320 almost-full
+  -- cushion still leaves ~700 words of normal fill headroom.
+  constant AFIFO_DEPTH : natural := 1024;
   constant AFIFO_WIDTH : natural := 16;
-  constant AFIFO_WIDTHU : natural := 14;
+  constant AFIFO_WIDTHU : natural := 10;
   signal fifo_wdata : std_logic_vector(AFIFO_WIDTH-1 downto 0) := (others => '0');
   signal fifo_wr    : std_logic := '0';
-  signal fifo_wrfull : std_logic := '0';
+  -- Parallel packed-mode write mux: the afifo is fed from afifo_wdata/afifo_wr,
+  -- which select the packed stream when packed_mode_f is set, else the native
+  -- sample/analog writer's fifo_wdata/fifo_wr (so packed_mode='0' is bit-for-bit
+  -- the original behaviour). packed_mode_f is Packed_Mode 2FF-synced to FAST_CLK.
+  signal afifo_wdata : std_logic_vector(AFIFO_WIDTH-1 downto 0) := (others => '0');
+  signal afifo_wr    : std_logic := '0';
+  signal packed_stage_data  : std_logic_vector(15 downto 0) := (others => '0');
+  signal packed_stage_valid : std_logic := '0';
+  signal packed_stage_pop   : std_logic := '0';
+  signal packed_stage_push  : std_logic := '0';
+  signal packed_fifo_wdata_r : std_logic_vector(15 downto 0) := (others => '0');
+  signal packed_fifo_wr_r    : std_logic := '0';
+  signal packed_mode_meta : std_logic := '0';
+  signal packed_mode_f    : std_logic := '0';
   signal fifo_wrusedw : std_logic_vector(AFIFO_WIDTHU-1 downto 0) := (others => '0');
+  -- Pipelined almost-full compare (two-stage): fifo_afull_cmp_r is the
+  -- wrusedw >= threshold comparison; fifo_afull_r is one more register stage
+  -- so the compare result has a full cycle to settle before gating producers.
+  signal fifo_afull_cmp_r : std_logic := '0';
+  signal fifo_afull_r     : std_logic := '0';
+  -- Legacy (deprecated, kept for external compatibility — use fifo_afull_r):
   signal fifo_wralmost_full : std_logic := '0';
+  -- Registered skid buffer for the non-packed FAST_CLK write path.
+  -- fifo_wr_skid_data_r drives afifo_wdata; fifo_wr_skid_req_r drives afifo_wr.
+  signal fifo_wr_skid_data_r : std_logic_vector(AFIFO_WIDTH-1 downto 0) := (others => '0');
+  signal fifo_wr_skid_req_r  : std_logic := '0';
+  -- Registered almost-full for packed-mode backpressure. Same 256-word cushion
+  -- as afull_r in the digital writer; keeps the wrusedw compare off the path
+  -- from producer -> Packed_Ready -> mso_capture -> analog_packer.
+  signal packed_afull_r : std_logic := '0';
+  -- FAST_CLK level: '1' once the capture's tick budget is exhausted (driven
+  -- from sample_rem_nonzero_r inside gen_fast_speed). Stops the packed
+  -- producer at capture end; otherwise its continuous trickle (digital RLE
+  -- saturation markers arrive every <= 2.56 us) keeps the FIFO non-empty and
+  -- the single-shot drain-completion window (2047 empty pclk cycles) never
+  -- elapses, so Full never rises. Left at '0' in non-FAST_SPEED builds
+  -- (packed capture is a FAST_SPEED feature).
+  signal packed_stop_f : std_logic := '0';
+  -- Run-start gate for the packed producer. The pclk side discards a snapshot
+  -- of stale FIFO words on the run edge; the FAST side sees Run a few cycles
+  -- earlier than pclk, so packed words pushed immediately at run start can
+  -- land inside that snapshot and be discarded — losing the leading analog
+  -- block header and mis-framing the whole analog sub-stream. Hold the
+  -- producer off until the pclk drain has completed (2FF-synced level).
+  signal pump_live_p  : std_logic := '0';
+  signal pump_live_s1 : std_logic := '0';
+  signal pump_live_f  : std_logic := '0';
   signal fifo_aclr  : std_logic := '0';
+  -- FAST_CLK synchronous reset for packed-mode registers (derived from
+  -- cfg_valid_edge, already 2FF-synchronized to FAST_CLK). Replaces the old
+  -- pclk-domain fifo_aclr that was unsynchronized in FAST_CLK.
+  signal packed_rst_f : std_logic := '0';
+  -- FIFO read-side prefetch: 1-deep skid buffer between the dcfifo show-ahead
+  -- output and the SDRAM write pump. Loaded (and popped) only by the pump
+  -- process loader; consumed by the pump accept/drain paths. Keeps the long
+  -- M9K address-reg -> q path off the cap_stream_data mux.
+  signal prefetch_data_r : std_logic_vector(15 downto 0) := (others => '0');
+  signal prefetch_valid_r : std_logic := '0';
+  -- Loader settling trackers: rdempty must be low for two consecutive cycles
+  -- before q is trusted (real show-ahead q can lag empty by one cycle), and a
+  -- pop must be fully settled (fifo_rd, fifo_rd_q both low) before reloading.
+  signal rdempty_q  : std_logic := '1';
+  signal fifo_rd_q  : std_logic := '0';
   signal fifo_rdata : std_logic_vector(AFIFO_WIDTH-1 downto 0) := (others => '0');
   signal fifo_rd    : std_logic := '0';
   signal fifo_rdempty : std_logic := '0';
+  signal fifo_rdempty_r : std_logic := '0';
+  -- Drain mode: instead of asynchronously clearing the DCFIFO on every run
+  -- start (which created unsafe CDC paths), we drain stale data on the pclk
+  -- side. drain_pending_r is set on run_edge_r or overflow_clk; the write
+  -- pump discards exactly drain_rem skid-buffer words, where drain_rem is a
+  -- SNAPSHOT of rdusedw taken when the drain was requested. A fixed target
+  -- (rather than drain-until-empty) matters: at max sample rate the FAST_CLK
+  -- producer refills faster than the pclk side pops, so waiting for empty
+  -- never terminates (hw-verified deadlock at div=0: producer_index stuck at
+  -- 0). The snapshot covers every stale word (they were written a whole run
+  -- ago, so the read-side usedw view includes them all) and completes
+  -- instantly in the common empty-at-arm case.
+  signal drain_pending_r : std_logic := '0';
+  signal drain_rem       : natural range 0 to AFIFO_DEPTH := 0;
+  signal fifo_rdusedw    : std_logic_vector(AFIFO_WIDTHU-1 downto 0) := (others => '0');
+  -- Registered fill snapshot for drain start. The async FIFO's rdusedw / rdptr
+  -- compare chain is too deep to drive the drain counter load directly on the
+  -- same pclk edge, so we snapshot it here and let the drain state machine pick
+  -- it up on the next cycle.
+  signal drain_snapshot_pending_r : std_logic := '0';
+  signal fifo_rdusedw_r           : natural range 0 to AFIFO_DEPTH := 0;
 
   -- Readout response FIFO: pclk write (FLA streams samples) / CLK read (OLS
   -- drains). Depth >= one block so a whole block streams without backpressure.
@@ -261,23 +340,23 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   -- Pipeline registers for readout address (breaks 22-bit comparator + conversion path)
   signal addr_is_wrap  : std_logic := '0';
   signal stream_addr_r : std_logic_vector(21 downto 0) := (others => '0');
+  -- Pre-computed increment + ring-wrap compare for the stream address. Both
+  -- used to sit combinationally inside the address-update mux and made
+  -- stream_addr_u's 22-bit carry chain the worst clk[2] setup path. They are
+  -- computed off stream_addr_r (the REGISTERED mirror — not the process
+  -- variable, whose reads chain the current cycle's update logic into the
+  -- path), so each is a shallow reg->logic->reg path with a full cycle
+  -- budget, valid two cycles after any stream_addr_u write. Consumers only
+  -- fire on read COMPLETIONS, which are spaced by at least CAS latency plus
+  -- the rd_gap bubble (and a stream start loads the address several cycles
+  -- before the first completion), so the lag can never be consumed stale.
+  signal stream_at_ring_end : std_logic := '0';
+  signal stream_addr_nxt_r  : unsigned(21 downto 0) := (others => '0');
+  -- Registered pre-decrement of stream_rem. Read completions are spaced by at
+  -- least CAS latency plus the rd_gap bubble, so this 1-cycle look-ahead is
+  -- always settled before any consumer needs it.
+  signal stream_rem_dec_r   : natural range 0 to Max_Samples := 0;
 
-  -- Delta compressor for readback data compression (2.67x)
-  component capture_compressor is
-    port (
-      clk               : in  std_logic;
-      rst               : in  std_logic;
-      sample_in         : in  std_logic_vector(15 downto 0);
-      sample_valid      : in  std_logic;
-      compression_enable : in  std_logic;
-      comp_data         : out std_logic_vector(15 downto 0);
-      comp_valid        : out std_logic
-    );
-  end component;
-
-  signal comp_rdata : std_logic_vector(15 downto 0) := (others => '0');
-  signal comp_feed   : std_logic := '0';
-  signal comp_valid : std_logic := '0';
   -- 2FF synchroniser for the block-read request toggle (CLK -> pclk)
   signal blk_req_s1    : std_logic := '0';
   signal blk_req_s2    : std_logic := '0';
@@ -366,12 +445,15 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
 
 begin
 
-  -- Clear both CDC FIFOs whenever a capture run starts/stops or the writer
-  -- aborts on overflow. Without this, stale capture words can survive between
-  -- runs and get written into SDRAM starting at address 0 on the next capture,
-  -- which matches the rare large bad-prefix burst seen on hardware.
-  fifo_aclr <= run_edge_r or overflow_clk;
-  rdfifo_aclr <= run_edge_r;
+  -- The DCFIFO aclr port is tied to '0' permanently. Stale data between capture
+  -- runs is handled by draining the FIFO on the pclk side (see drain_pending_r
+  -- in the write pump). Async clear on every run start created unsafe CDC timing
+  -- paths across both clock domains. For overflow recovery the FAST_CLK writer
+  -- stops on fifo_overflow_f and the pclk side drains before resuming.
+  fifo_aclr <= '0';
+  -- rdfifo_aclr likewise: the readout response FIFO is naturally drained by the
+  -- host read logic after each block transfer, so no async clear is needed.
+  rdfifo_aclr <= '0';
 
   pclk <= CLK when Sim else SDRAM_CLK_IN;
 
@@ -382,7 +464,6 @@ begin
     -- elaborated here, otherwise Quartus rejects the now-unused LPM output.
     process(CLK) begin
       if rising_edge(CLK) then
-        samples_d1   <= Samples;
         samples_div  <= Samples;
         samples_div6 <= 0;
       end if;
@@ -411,21 +492,34 @@ begin
     -- Pipeline: register input, LPM divides over 4 cycles, register output
     process(CLK) begin
       if rising_edge(CLK) then
-        samples_d1   <= Samples;
-        lpm_numer    <= std_logic_vector(to_unsigned(samples_d1, 22));
-        samples_div  <= samples_d1;
+        lpm_numer    <= std_logic_vector(to_unsigned(Samples, 22));
+        samples_div  <= Samples;
         samples_div6 <= to_integer(unsigned(lpm_quot));
       end if;
     end process;
   end generate;
 
   CLK_150 <= pclk;
-  -- wrfull can arrive too late for the 200 MHz write clock. Stop early using
-  -- write-domain fill level so Rate_Div=1 captures backpressure cleanly
-  -- instead of silently losing FIFO writes and wedging producer progress.
-  fifo_wralmost_full <= '1'
-    when unsigned(fifo_wrusedw) >= to_unsigned(AFIFO_DEPTH - 256, AFIFO_WIDTHU)
-    else '0';
+  -- Pipelined almost-full: wrusedw compare is registered, then registered again
+  -- so producers see a clean synchronous backpressure signal. The compare output
+  -- changes asynchronously when wrusedw (itself a registered dcfifo output)
+  -- updates; adding two register stages ensures the producer always sees a stable
+  -- value. The threshold is earlier (DEPTH - 320 instead of -256) to account for
+  -- the extra pipeline latency, maintaining the same effective headroom.
+  -- Pipeline is on FAST_CLK because fifo_wrusedw is synchronous to wrclk=FAST_CLK.
+  -- The pclk side never reads wrusedw directly (it uses rdempty for drain detection).
+  process(FAST_CLK)
+  begin
+    if rising_edge(FAST_CLK) then
+      if unsigned(fifo_wrusedw) >= to_unsigned(AFIFO_DEPTH - 320, AFIFO_WIDTHU) then
+        fifo_afull_cmp_r <= '1';
+      else
+        fifo_afull_cmp_r <= '0';
+      end if;
+      fifo_afull_r     <= fifo_afull_cmp_r;
+      fifo_wralmost_full <= fifo_afull_r;  -- legacy alias, used by afull_r in FAST_CLK
+    end if;
+  end process;
 
   -- 2FF synchronizer: Run from CLK domain into pclk domain
   process(pclk)
@@ -457,9 +551,6 @@ begin
   process(pclk)
   begin
     if rising_edge(pclk) then
-      cfg_ack_s1 <= cfg_ack_toggle;
-      cfg_ack_s2 <= cfg_ack_s1;
-      cfg_ack_edge <= cfg_ack_s1 xor cfg_ack_s2;
       cap_done_s1 <= cap_done_toggle_f;
       cap_done_s2 <= cap_done_s1;
       if cap_done_s2 /= cap_done_last then
@@ -487,46 +578,11 @@ begin
     end if;
   end process;
 
-  -- Register Rate_Div into pclk domain and pre-compute rate_div_r - 1 to
-  -- break the 28-bit carry chain comparator path (rate_div_r → Add0 →
-  -- LessThan0 → cnt). Down-counter uses cnt = 0 (fast NOR) instead of
-  -- cnt >= rate_div_r (slow 28-bit comparator).
-  process(pclk)
-  begin
-    if rising_edge(pclk) then
-      rate_div_r    <= Rate_Div;
-      if Rate_Div > 1 then
-        rate_div_m1_r <= Rate_Div - 1;
-      else
-        rate_div_m1_r <= 0;
-      end if;
-    end if;
-  end process;
-
   -- Re-register CLK-domain divide results into pclk domain; pre-compute buffer limits
   process(pclk)
   begin
     if rising_edge(pclk) then
       samples_div_p  <= samples_div;
-      samples_div6_p <= samples_div6;
-      if Continuous_Mode = '1' then
-        -- One 512-sample block per buffer, laid out 0 / 512 / 1024.
-        buf_limit_r <= CONT_BUF;
-        buf_last_r  <= CONT_BUF - 1;
-        buf_base0_r <= 0;
-        buf_base1_r <= CONT_BUF;
-        buf_base2_r <= CONT_BUF + CONT_BUF;
-      else
-        buf_limit_r    <= samples_div6;
-        if samples_div6 > 0 then
-          buf_last_r <= samples_div6 - 1;
-        else
-          buf_last_r <= 0;
-        end if;
-        buf_base0_r    <= 0;
-        buf_base1_r    <= samples_div6;
-        buf_base2_r    <= samples_div6 + samples_div6;
-      end if;
     end if;
   end process;
 
@@ -539,9 +595,6 @@ begin
     if rising_edge(pclk) then
       -- The decremented value is only consumed while the counter is > 0;
       -- guard the natural subtraction so simulation doesn't trap at 0.
-      if buf_rem_0 > 0 then brem0_dec <= buf_rem_0 - 1; else brem0_dec <= 0; end if;
-      if buf_rem_1 > 0 then brem1_dec <= buf_rem_1 - 1; else brem1_dec <= 0; end if;
-      if buf_rem_2 > 0 then brem2_dec <= buf_rem_2 - 1; else brem2_dec <= 0; end if;
       if buf_rem_single > 0 then brem_single_dec <= buf_rem_single - 1; else brem_single_dec <= 0; end if;
     end if;
   end process;
@@ -562,12 +615,6 @@ begin
       cfg_valid_edge <= cfg_valid_s1 xor cfg_valid_s2;
       if cfg_valid_edge = '1' then
         cfg_rate_div_f  <= cfg_rate_div;
-        cfg_samples_f   <= cfg_samples;
-        if cfg_rate_div > 1 then
-          cfg_rate_reload_f <= cfg_rate_div - 1;
-        else
-          cfg_rate_reload_f <= 0;
-        end if;
         cfg_ack_toggle <= not cfg_ack_toggle;
       end if;
     end if;
@@ -604,11 +651,17 @@ begin
     end if;
   end process;
 
-  -- Overflow flag CDC: FAST_CLK domain -> CLK domain (toggle synchronizer)
+  -- Overflow flag CDC: FAST_CLK domain -> CLK domain (toggle synchronizer).
+  -- Toggle once per overflow EVENT (rising edge of the latched flag), not on
+  -- every cycle the flag is high: a free-running toggle floods the pclk edge
+  -- detector with pulses that keep arriving after the next run has started
+  -- and instantly re-abort it (sim-verified: post-overflow capture returned
+  -- 0 words).
   process(FAST_CLK)
   begin
     if rising_edge(FAST_CLK) then
-      if fifo_overflow_f = '1' then
+      fifo_overflow_f_q <= fifo_overflow_f;
+      if fifo_overflow_f = '1' and fifo_overflow_f_q = '0' then
         overflow_toggle <= not overflow_toggle;
       end if;
     end if;
@@ -644,12 +697,13 @@ begin
     signal aframe_shift : std_logic_vector(127 downto 0) := (others => '0');
     signal aframe_toggle_s1 : std_logic := '0';
     signal aframe_toggle_s2 : std_logic := '0';
-    signal aframe_toggle_last : std_logic := '0';
+    signal aframe_toggle_last_r : std_logic := '0';
     signal aframe_ready_r : std_logic := '0';
     signal aword_count_pending : natural range 1 to 7 := 7;
     signal aword_count_f : natural range 1 to 7 := 7;
     signal aword_idx    : natural range 0 to 6 := 0;
     signal analog_burst_active : std_logic := '0';
+    signal aframe_load_pending_r : std_logic := '0';
     -- Registered copy of fifo_wralmost_full for the analog burst gate. The flag
     -- is a wide wrusedw>=(DEPTH-256) compare off the afifo status reg; feeding it
     -- straight into the burst next-state logic is the 200 MHz critical path.
@@ -658,12 +712,17 @@ begin
     -- mode, so reacting a cycle late is harmless and keeps the compare off path.
     signal afull_r       : std_logic := '0';
     signal start_gate_r  : natural range 0 to 3 := 0;
-    signal narrow_enable_s1 : std_logic := '0';
-    signal narrow_enable_f  : std_logic := '0';
-    signal narrow_channel_s1 : natural range 0 to 15 := 0;
-    signal narrow_channel_f  : natural range 0 to 15 := 0;
-    signal narrow_shift_r : std_logic_vector(15 downto 0) := (others => '0');
-    signal narrow_bit_count_r : natural range 0 to 15 := 0;
+     signal narrow_enable_s1 : std_logic := '0';
+     signal narrow_enable_f  : std_logic := '0';
+     signal narrow_channel_s1 : natural range 0 to 15 := 0;
+     signal narrow_channel_f  : natural range 0 to 15 := 0;
+     signal narrow_shift_r : std_logic_vector(15 downto 0) := (others => '0');
+     signal narrow_bit_count_r : natural range 0 to 15 := 0;
+     signal narrow_word_pending_r : std_logic := '0';
+     signal narrow_word_data_r : std_logic_vector(15 downto 0) := (others => '0');
+     signal narrow_sample_bit_r : std_logic := '0';
+     signal narrow_sample_valid_r : std_logic := '0';
+     signal narrow_sample_last_r : std_logic := '0';
   begin
     -- Stage 0: sample pins
     process(FAST_CLK)
@@ -682,8 +741,8 @@ begin
         aframe_toggle_s1 <= Analog_Frame_Toggle;
         aframe_toggle_s2 <= aframe_toggle_s1;
         aframe_ready_r <= '0';
-        if aframe_toggle_s2 /= aframe_toggle_last then
-          aframe_toggle_last <= aframe_toggle_s2;
+        if aframe_toggle_s2 /= aframe_toggle_last_r then
+          aframe_toggle_last_r <= aframe_toggle_s2;
           aframe_pending <= Analog_Frame_Data;
           if Analog_Frame_Len <= 2 then
             aword_count_pending <= 1;
@@ -780,6 +839,9 @@ begin
       end if;
     end process;
 
+    -- Packed producer halt: budget exhausted (registered level, same domain).
+    packed_stop_f <= not sample_rem_nonzero_r;
+
     -- Pre-trigger tick counter: limits BRAM pre-trigger to 8 ticks, then switches to FIFO.
     -- Prevents CDC settling window from causing 1024 pre-trigger writes that delay gen data.
     process(FAST_CLK)
@@ -795,11 +857,46 @@ begin
 
     -- Stage 2d: BRAM/FIFO write (uses pipelined flags, only 1-bit compares)
     process(FAST_CLK)
+      variable narrow_count_v : natural range 0 to 15;
+      variable narrow_valid_v : std_logic;
+      variable narrow_bit_v   : std_logic;
+      variable narrow_last_v  : std_logic;
     begin
       if rising_edge(FAST_CLK) then
+        narrow_count_v := narrow_bit_count_r;
+        narrow_valid_v := narrow_sample_valid_r;
+        narrow_bit_v := narrow_sample_bit_r;
+        narrow_last_v := narrow_sample_last_r;
         fifo_wr <= '0';
         bram_wren <= '0';
         afull_r <= fifo_wralmost_full;
+
+        -- fifo_wdata datapath mux (DECOUPLED from capture_en_r).
+        -- The 16-bit data source is chosen purely from the quasi-static mode
+        -- flags (narrow_word_pending_r / astream_f) and the burst index
+        -- aword_idx; capture_en_r / sample_tick_r / afull_r only gate the 1-bit
+        -- write STROBE (fifo_wr) in the control cascade below. Previously the
+        -- data mux sat at the bottom of a 5-deep capture_en_r priority cascade,
+        -- so the 200 MHz hot path was capture_en_r -> cascade -> fifo_wdata[15].
+        -- Loading fifo_wdata every cycle is harmless: the async FIFO only
+        -- consumes it when fifo_wr is asserted, which the control logic still
+        -- gates exactly as before. narrow/analog/digital modes are mutually
+        -- exclusive, so priority order here only resolves impossible overlaps.
+        if narrow_word_pending_r = '1' then
+          fifo_wdata <= narrow_word_data_r;
+        elsif astream_f = '1' then
+          case aword_idx is
+            when 0      => fifo_wdata <= aframe_shift(15 downto 0);
+            when 1      => fifo_wdata <= aframe_shift(31 downto 16);
+            when 2      => fifo_wdata <= aframe_shift(47 downto 32);
+            when 3      => fifo_wdata <= aframe_shift(63 downto 48);
+            when 4      => fifo_wdata <= aframe_shift(79 downto 64);
+            when 5      => fifo_wdata <= aframe_shift(95 downto 80);
+            when others => fifo_wdata <= aframe_shift(111 downto 96);
+          end case;
+        else
+          fifo_wdata <= sample_word_r;
+        end if;
 
         if cfg_valid_edge = '1' then
           -- Load from cfg_samples (CLK-domain value, quasi-static while the
@@ -808,21 +905,38 @@ begin
           -- here returned the PREVIOUS capture's sample count — captures ran
           -- with stale lengths (e.g. the host reset()'s SAMPLE_COUNT=2),
           -- completed instantly and read back as full-length flat data.
-          sample_remaining <= cfg_samples;
-          fifo_overflow_f <= '0';
-          bram_wp_r <= 0;
-          bram_cnt_r <= 0;
-          aframe_shift <= (others => '0');
-          aword_idx <= 0;
-          analog_burst_active <= '0';
-          narrow_shift_r <= (others => '0');
-          narrow_bit_count_r <= 0;
+        sample_remaining <= cfg_samples;
+        fifo_overflow_f <= '0';
+        bram_wp_r <= 0;
+        bram_cnt_r <= 0;
+        aframe_shift <= (others => '0');
+        aword_idx <= 0;
+        analog_burst_active <= '0';
+        narrow_shift_r <= (others => '0');
+        narrow_bit_count_r <= 0;
+          narrow_word_pending_r <= '0';
+        narrow_sample_bit_r <= '0';
+        narrow_sample_valid_r <= '0';
+        narrow_sample_last_r <= '0';
+        aframe_load_pending_r <= '0';
+        narrow_count_v := 0;
+        narrow_valid_v := '0';
+        narrow_bit_v := '0';
+        narrow_last_v := '0';
         end if;
 
         if fifo_overflow_f = '0' then
+          if narrow_word_pending_r = '1' and afull_r = '0' then
+            -- fifo_wdata (= narrow_word_data_r) is driven by the decoupled data
+            -- mux above; here we only assert the write strobe and clear pending.
+            fifo_wr <= '1';
+            narrow_word_pending_r <= '0';
+            if sample_rem_nonzero_r = '1' then
+              sample_remaining <= sample_rem_dec_r;
+            end if;
           -- Pre-trigger BRAM is digital-only; skip it entirely in analog stream
           -- mode so only ADC frame words enter the FIFO.
-          if pretrig_en_r = '1' and pretrig_tick_cnt < 8 and astream_f = '0' then
+          elsif pretrig_en_r = '1' and pretrig_tick_cnt < 8 and astream_f = '0' then
             bram_waddr <= bram_wp_r;
             bram_wdata <= sample_word_r;
             bram_wren  <= '1';
@@ -845,36 +959,24 @@ begin
             -- a frame in flight always finishes (the burst loop below is not
             -- gated), and cfg_samples is a whole number of frames, so capture
             -- stops cleanly on a frame boundary.
-            if aframe_ready_r = '1' and analog_burst_active = '0'
-               and sample_rem_nonzero_r = '1' then
+            if aframe_load_pending_r = '1' and analog_burst_active = '0' then
               -- Snapshot the coherent frame once; it is NOT shifted (see below).
               aframe_shift <= aframe_pending;
               aword_count_f <= aword_count_pending;
               aword_idx <= 0;
               analog_burst_active <= '1';
+              aframe_load_pending_r <= '0';
+            elsif aframe_ready_r = '1' and analog_burst_active = '0'
+               and sample_rem_nonzero_r = '1' then
+              aframe_load_pending_r <= '1';
             end if;
 
-            -- Emit word[aword_idx] via a 16-bit 8:1 mux instead of shifting the
-            -- whole 128-bit frame each cycle. The old `x"0000" & shift(127..16)`
-            -- put a 128-bit-wide mux on the FAST_CLK (200 MHz) path, gated by the
-            -- late-arriving afifo almost-full flag, and would not close timing
-            -- (every seed -0.64..-1.12 ns). fifo_wdata is selected purely from
-            -- aword_idx (NOT gated by almost_full — it only matters when fifo_wr
-            -- is asserted), so the wide datapath and the almost-full fanout are
-            -- off the critical path; only the 1-bit write strobe and the 3-bit
-            -- index counter remain gated.
-            if analog_burst_active = '1' then
-              case aword_idx is
-                when 0      => fifo_wdata <= aframe_shift(15 downto 0);
-                when 1      => fifo_wdata <= aframe_shift(31 downto 16);
-                when 2      => fifo_wdata <= aframe_shift(47 downto 32);
-                when 3      => fifo_wdata <= aframe_shift(63 downto 48);
-                when 4      => fifo_wdata <= aframe_shift(79 downto 64);
-                when 5      => fifo_wdata <= aframe_shift(95 downto 80);
-                when others => fifo_wdata <= aframe_shift(111 downto 96);
-              end case;
-            end if;
-
+            -- Emit word[aword_idx] via the 16-bit 8:1 mux in the decoupled data
+            -- block above (aframe_shift selected purely from aword_idx). Shifting
+            -- the whole 128-bit frame each cycle, or gating that wide mux with the
+            -- late-arriving afifo almost-full flag, would not close timing (every
+            -- seed -0.64..-1.12 ns). Here only the 1-bit write strobe and the
+            -- 3-bit burst index remain gated by capture/almost-full.
             if analog_burst_active = '1' and afull_r = '0' then
               fifo_wr <= '1';
               if aword_idx + 1 >= aword_count_f then
@@ -894,41 +996,42 @@ begin
           elsif capture_en_r = '1' and sample_tick_r = '1' and narrow_enable_f = '1' then
             -- Narrow high-speed rolling packs 16 consecutive samples of one
             -- selected digital channel into one SDRAM word. Bit 0 is earliest.
-            if narrow_channel_f < Channels then
-              narrow_shift_r(narrow_bit_count_r) <= sample_word_r(narrow_channel_f);
-            else
-              narrow_shift_r(narrow_bit_count_r) <= '0';
+            -- Queue the selected bit first, then consume the previously queued
+            -- bit on this edge. That keeps the muxed input off the same cone as
+            -- the shift-register update.
+            if narrow_valid_v = '1' then
+              if narrow_last_v = '1' then
+                narrow_word_data_r(14 downto 0) <= narrow_shift_r(14 downto 0);
+                narrow_word_data_r(15) <= narrow_bit_v;
+                narrow_word_pending_r <= '1';
+                narrow_shift_r <= (others => '0');
+                narrow_count_v := 0;
+              else
+                narrow_shift_r(narrow_count_v) <= narrow_bit_v;
+                narrow_count_v := narrow_count_v + 1;
+              end if;
             end if;
 
-            if narrow_bit_count_r = 15 then
-              if afull_r = '0' then
-                fifo_wdata(14 downto 0) <= narrow_shift_r(14 downto 0);
-                if narrow_channel_f < Channels then
-                  fifo_wdata(15) <= sample_word_r(narrow_channel_f);
-                else
-                  fifo_wdata(15) <= '0';
-                end if;
-                fifo_wr <= '1';
-                if sample_rem_nonzero_r = '1' then
-                  sample_remaining <= sample_rem_dec_r;
-                end if;
-              end if;
-              narrow_shift_r <= (others => '0');
-              narrow_bit_count_r <= 0;
+            if narrow_channel_f < Channels then
+              narrow_bit_v := sample_word_r(narrow_channel_f);
             else
-              narrow_bit_count_r <= narrow_bit_count_r + 1;
+              narrow_bit_v := '0';
             end if;
+            if narrow_count_v = 15 then
+              narrow_last_v := '1';
+            else
+              narrow_last_v := '0';
+            end if;
+            narrow_valid_v := '1';
 
             if afull_r = '1' and continuous_f = '0' then
               fifo_overflow_f <= '1';
             end if;
 
           elsif capture_en_r = '1' and sample_tick_r = '1' then
-            -- Data is registered unconditionally; it is only consumed when
-            -- fifo_wr is asserted, so keeping the almost-full compare off the
-            -- 16-bit fifo_wdata mux (it now only gates the 1-bit write strobe)
-            -- shortens the 200 MHz path that the analog frame mux shares.
-            fifo_wdata <= sample_word_r;
+            -- fifo_wdata (= sample_word_r) is driven by the decoupled data mux
+            -- above; this branch only asserts the write strobe and decrements
+            -- the sample budget, keeping capture_en_r off the fifo_wdata cone.
             if afull_r = '0' then
               fifo_wr <= '1';
               -- guard: at full rate one in-flight tick can push a word after
@@ -942,6 +1045,10 @@ begin
             end if;
           end if;
         end if;
+        narrow_bit_count_r <= narrow_count_v;
+        narrow_sample_bit_r <= narrow_bit_v;
+        narrow_sample_valid_r <= narrow_valid_v;
+        narrow_sample_last_r <= narrow_last_v;
       end if;
     end process;
   end generate;
@@ -1137,6 +1244,112 @@ begin
   -- saw as the mixed-frame 2-sample preamble. read-at-pop timing is unchanged,
   -- so this does not perturb the (phase-sensitive) SDRAM readout the way an
   -- extra pump pipeline stage did.
+  -- 2-FF synchronise the (CLK-domain) mode select into FAST_CLK.
+  -- pclk-domain level: run active and the run-start stale drain finished.
+  pump_live_p <= run_level_r and not drain_pending_r;
+
+  process(FAST_CLK)
+  begin
+    if rising_edge(FAST_CLK) then
+      packed_mode_meta <= Packed_Mode;
+      packed_mode_f    <= packed_mode_meta;
+      packed_afull_r   <= fifo_wralmost_full;
+      pump_live_s1     <= pump_live_p;
+      pump_live_f      <= pump_live_s1;
+    end if;
+  end process;
+
+  -- FAST_CLK-domain synchronous reset for packed-mode registers, derived from
+  -- cfg_valid_edge (already 2FF-synchronized to FAST_CLK) and fifo_overflow_f.
+  -- Replaces the old pclk-domain fifo_aclr which was unsynchronized in FAST_CLK.
+  process(FAST_CLK)
+  begin
+    if rising_edge(FAST_CLK) then
+      if cfg_valid_edge = '1' or fifo_overflow_f = '1' then
+        packed_rst_f <= '1';
+      else
+        packed_rst_f <= '0';
+      end if;
+    end if;
+  end process;
+
+  -- Write-port source mux. In packed mode a 1-word staging register breaks the
+  -- producer -> FIFO RAM input path in the 200 MHz domain while preserving
+  -- one-word-per-cycle throughput when the FIFO is draining. A second register
+  -- stage on wrreq/data breaks packed_afull_r -> dcfifo wrptr (same-cycle pop
+  -- was the -0.61 ns path after registering almost-full).
+  packed_stage_pop  <= '1' when packed_stage_valid = '1' and packed_afull_r = '0' else '0';
+  packed_stage_push <= '1' when Packed_Valid = '1' and packed_mode_f = '1'
+                               and run_f_level = '1' and packed_stop_f = '0'
+                               and pump_live_f = '1'
+                               and (packed_stage_valid = '0' or packed_afull_r = '0')
+                       else '0';
+
+  -- Producer-side ready: mirrors the packed_stage_push acceptance exactly
+  -- (minus Packed_Valid, which the producer ANDs in), so a word the mux
+  -- writes on ready is always the word the stage pushes the same cycle.
+  -- All terms are FAST_CLK-registered.
+  Packed_Ready <= '1' when packed_mode_f = '1' and run_f_level = '1'
+                       and packed_stop_f = '0' and pump_live_f = '1'
+                       and (packed_stage_valid = '0' or packed_afull_r = '0')
+                  else '0';
+
+  process(FAST_CLK)
+  begin
+    if rising_edge(FAST_CLK) then
+      if packed_rst_f = '1' then
+        packed_fifo_wr_r <= '0';
+      else
+        packed_fifo_wr_r <= packed_stage_pop;
+      end if;
+      if packed_stage_pop = '1' then
+        packed_fifo_wdata_r <= packed_stage_data;
+      end if;
+    end if;
+  end process;
+
+  process(FAST_CLK)
+  begin
+    if rising_edge(FAST_CLK) then
+      if packed_rst_f = '1' or packed_mode_f = '0' or run_f_level = '0' then
+        packed_stage_valid <= '0';
+      else
+        if packed_stage_push = '1' then
+          packed_stage_data <= Packed_Data;
+        end if;
+
+        if packed_stage_push = '1' then
+          packed_stage_valid <= '1';
+        elsif packed_stage_pop = '1' then
+          packed_stage_valid <= '0';
+        end if;
+      end if;
+    end if;
+  end process;
+
+  -- Non-packed FAST_CLK skid buffer: registers fifo_wdata and fifo_wr from the
+  -- producer processes so the dcfifo write port sees clean registered signals.
+  -- This breaks the producer combinational logic -> dcfifo data/wrreq timing path
+  -- at 200 MHz. A single register stage adds one cycle of latency, which the
+  -- 320-word almost-full cushion absorbs.
+  process(FAST_CLK)
+  begin
+    if rising_edge(FAST_CLK) then
+      -- No async clear: data follows the producer stream synchronously.
+      fifo_wr_skid_data_r <= fifo_wdata;
+      fifo_wr_skid_req_r  <= fifo_wr;
+    end if;
+  end process;
+
+  -- Write-port source mux: packed mode uses the registered packed path (which
+  -- has its own two-stage skid in packed_fifo_wdata_r/wr_r); non-packed mode
+  -- uses the skid buffer above. Both present registered data/wrreq to the dcfifo.
+  afifo_wdata  <= packed_fifo_wdata_r when packed_mode_f = '1' else fifo_wr_skid_data_r;
+  afifo_wr     <= packed_fifo_wr_r    when packed_mode_f = '1' else fifo_wr_skid_req_r;
+
+  -- Async FIFO (dcfifo) bridging FAST_CLK (write) to pclk (read).
+  -- Sync depths increased to 4 for safer CDC across the ~200 MHz / ~167 MHz
+  -- boundary. The skid buffers upstream ensure data/wrreq are registered.
   afifo : dcfifo
     generic map (
       lpm_width       => AFIFO_WIDTH,
@@ -1144,22 +1357,22 @@ begin
       lpm_numwords    => AFIFO_DEPTH,
       lpm_showahead   => "ON",
       lpm_type        => "dcfifo",
-      rdsync_delaypipe => 3,
-      wrsync_delaypipe => 3,
+      rdsync_delaypipe => 4,
+      wrsync_delaypipe => 4,
       intended_device_family => "MAX 10"
     )
     port map (
       aclr     => fifo_aclr,
-      data     => fifo_wdata,
-      wrreq    => fifo_wr,
+      data     => afifo_wdata,
+      wrreq    => afifo_wr,
       wrclk    => FAST_CLK,
       rdreq    => fifo_rd,
       rdclk    => pclk,
       q        => fifo_rdata,
       rdempty  => fifo_rdempty,
-      wrfull   => fifo_wrfull,
+      wrfull   => open,
       wrusedw  => fifo_wrusedw,
-      rdusedw  => open
+      rdusedw  => fifo_rdusedw
     );
 
   -- Readout response FIFO: bridges the pclk readout domain to the CLK (OLS)
@@ -1172,14 +1385,14 @@ begin
       lpm_numwords    => RDFIFO_DEPTH,
       lpm_showahead   => "OFF",
       lpm_type        => "dcfifo",
-      rdsync_delaypipe => 3,
-      wrsync_delaypipe => 3,
+      rdsync_delaypipe => 4,
+      wrsync_delaypipe => 4,
       intended_device_family => "MAX 10"
     )
     port map (
       aclr     => rdfifo_aclr,
-      data     => comp_rdata,
-      wrreq    => comp_valid,
+      data     => rdfifo_wdata,
+      wrreq    => rdfifo_wr,
       wrclk    => pclk,
       rdreq    => Rd_Fifo_RdReq,
       rdclk    => CLK,
@@ -1190,18 +1403,30 @@ begin
       rdusedw  => open
     );
 
-  -- Delta compressor: readback data compression (2.67x)
-  rd_compressor: capture_compressor
-    port map (
-      clk               => pclk,
-      rst               => rdfifo_aclr,
-      sample_in         => s_rdata,
-      sample_valid      => comp_feed,
-      compression_enable => Compress_Enable,
-      comp_data         => comp_rdata,
-      comp_valid        => comp_valid
-    );
+  -- (The readback delta compressor used to sit here in the pclk domain. It
+  -- was moved to OLS_Interface's CLK-domain block drain: 322 LCs of packing
+  -- logic in the congested 167 MHz SDRAM cone cost timing closure, and the
+  -- readout drain at 100 MHz has both headroom and the natural place to
+  -- produce the variable-length response.)
 
+
+  -- ============================================================
+  -- pclk-side FIFO read prefetch (1-deep skid buffer)
+  -- ============================================================
+  -- prefetch_data_r/prefetch_valid_r form a proper 1-deep skid buffer loaded
+  -- by the write-pump process below, which is the SOLE owner of fifo_rd.
+  -- The registers break the long M9K read-address-reg -> q -> cap_stream_data
+  -- and empty-comparator -> pump combinational paths, same as the original
+  -- free-running prefetch, but with explicit load/consume handshakes.
+  --
+  -- Why not a free-running "prefetch_data_r <= fifo_rdata every cycle" copy:
+  -- on real silicon a show-ahead dcfifo with registered M9K output can present
+  -- q one cycle AFTER rdempty deasserts, so a valid flag derived only from
+  -- rdempty pairs garbage data with valid='1' on every first-word fall-through
+  -- (on hardware this wrote a junk word before every real sample - the
+  -- sample-duplication bug reintroduced, see git history 2026-07-04). The
+  -- loader below therefore requires empty to have been low for TWO consecutive
+  -- cycles before trusting q, and waits out its own pop settling window.
   -- Main: SDRAM write pump + buffer management + readout
   -- Runs on pclk (96 MHz). Reads 16-bit sample words from async FIFO,
   -- assigns SDRAM addresses, manages triple-buffer continuous mode.
@@ -1231,12 +1456,44 @@ begin
     -- leaves the SECOND read unsettled too.
     constant STREAM_PRIME_N : natural := 2;
     variable stream_prime  : natural range 0 to STREAM_PRIME_N := 0;
+    -- Read watchdog: an SDRAM read issued concurrently with capture-stream
+    -- writes occasionally goes unanswered on hardware (stochastic arbitration
+    -- loss; s_rvalid never comes). Without a timeout the readout waits
+    -- forever, holding rd_mode and starving the write pump — the host sees a
+    -- wedged block read. Time out and reissue the SAME address (the address
+    -- now only advances on completion, so a retry is transparent; a late
+    -- s_rvalid from the dropped attempt just completes the identical retry).
+    -- Generous vs any legitimate latency (pump burst + refresh < ~1 us) so a
+    -- merely-slow read cannot be retried into a duplicate sample; still ~40x
+    -- faster than the OLS-side 500 us block watchdog.
+    constant STREAM_RD_WD : natural := 2047;  -- ~12 us at 167 MHz
+    variable rd_wd_cnt     : natural range 0 to STREAM_RD_WD := 0;
+    -- One idle cycle after each completed read: stream_addr_r (the registered
+    -- copy of stream_addr_u that feeds s_addr) lags the completion-time
+    -- address advance by one pclk, so an immediate reissue would re-read the
+    -- same address and duplicate a sample.
+    variable rd_gap        : std_logic := '0';
+    -- FIFO pops are owned exclusively by the prefetch loader at the top of
+    -- this process; the accept/drain paths only consume the skid buffer
+    -- (prefetch_valid_r <= '0'). This makes duplicate SDRAM writes impossible
+    -- by construction: a word is committed at most once per load, and the
+    -- loader's settling guards make a load grab the head word at most once.
+    -- (Historic context: both the original 2026-07-02 duplication bug and its
+    -- 2026-07-04 reintroduction came from pop/valid timing races between a
+    -- registered pop and the show-ahead q/empty outputs.)
     -- Continuous-mode readout: a host block read temporarily enters rd_mode to
     -- stream the rolling SDRAM window, then returns to capture.
     -- cur_full backpressures the write pump off a full buffer.
     variable cur_full      : boolean := false;
     variable cont_base_v   : natural range 0 to Max_Samples - 1 := 0;
     variable ring_waddr    : natural range 0 to Max_Samples - 1 := 0;
+    -- Snapshot the persistent readout state at the start of each pclk tick so
+    -- current-cycle updates do not feed back into the same cycle's mux tree.
+    variable rd_mode_cur       : boolean := false;
+    variable stream_rem_cur    : natural range 0 to Max_Samples := 0;
+    variable stream_active_cur : boolean := false;
+    variable rd_pend2_cur      : std_logic := '0';
+    variable rd_gap_cur        : std_logic := '0';
     variable pump_valid_v  : boolean := false;
     variable pump_ready_v  : boolean := false;
     variable pump_accept_v : boolean := false;
@@ -1245,6 +1502,11 @@ begin
     variable cont_accept_v : boolean := false;
   begin
     if rising_edge(pclk) then
+      rd_mode_cur := rd_mode;
+      stream_rem_cur := stream_rem;
+      stream_active_cur := stream_active;
+      rd_pend2_cur := rd_pend2;
+      rd_gap_cur := rd_gap;
       pump_valid_v := false;
       pump_ready_v := false;
       pump_accept_v := false;
@@ -1256,18 +1518,43 @@ begin
       s_burst_i <= '0';
       cap_stream_valid <= '0';
       rdfifo_wr <= '0';
-      comp_feed <= '0';
+      fifo_rdempty_r <= fifo_rdempty;
+      -- Loader settling trackers (see skid-buffer comment above the process).
+      fifo_rd_q <= fifo_rd;
+      rdempty_q <= fifo_rdempty;
+      if fifo_rdempty = '0' and unsigned(fifo_rdusedw) = 0 then
+        fifo_rdusedw_r <= AFIFO_DEPTH;
+      else
+        fifo_rdusedw_r <= to_integer(unsigned(fifo_rdusedw));
+      end if;
+      -- Prefetch loader: capture the show-ahead head word into the skid buffer
+      -- and pop it, in the same cycle. Guards: skid empty; rdempty low for two
+      -- consecutive cycles (q can lag empty by one cycle on silicon); previous
+      -- pop fully settled (fifo_rd and fifo_rd_q low). run_edge_r reset below
+      -- overrides prefetch_valid_r for the run-start cycle.
+      if prefetch_valid_r = '0' and fifo_rdempty_r = '0' and rdempty_q = '0'
+         and fifo_rd = '0' and fifo_rd_q = '0' then
+        prefetch_data_r  <= fifo_rdata;
+        prefetch_valid_r <= '1';
+        fifo_rd <= '1';
+      end if;
       overflow_count_en_q <= overflow_clk;
       if overflow_count_en_q = '1' then
         pump_overflow_count_u <= pump_overflow_count_u + 1;
       end if;
       if stream_addr_inc_pending then
-        if Continuous_Mode = '1' and stream_addr_u = to_unsigned(CONT_RING_WORDS - 1, 22) then
+        if Continuous_Mode = '1' and stream_at_ring_end = '1' then
           stream_addr_u := (others => '0');
         else
-          stream_addr_u := stream_addr_u + 1;
+          -- Registered pre-increment: no adder in this mux (see declaration)
+          stream_addr_u := stream_addr_nxt_r;
         end if;
         stream_addr_inc_pending := false;
+      end if;
+      if stream_rem_cur /= 0 then
+        stream_rem_dec_r <= stream_rem_cur - 1;
+      else
+        stream_rem_dec_r <= 0;
       end if;
       if single_count_load_q = '1' then
         buf_rem_single <= cfg_samples;
@@ -1283,12 +1570,12 @@ begin
       if overflow_clk = '1' then
         run_stop_overflow <= '1';
         status_overflow <= '1';
+        drain_pending_r <= '1';
+        drain_snapshot_pending_r <= '1';
+        -- Snapshot as at run start. Overflow only latches in single-shot
+        -- mode, where the producer has already stopped, so the fill can only
+        -- shrink and a re-snapshot on repeated overflow pulses stays correct.
         if Continuous_Mode = '0' and full_i = '0' then
-          -- End the single-shot capture on producer overflow. Re-entering the
-          -- run-edge reset path here clears the write/read bookkeeping and
-          -- leaves the host polling BUSY until timeout; latching Full preserves
-          -- readout access to whatever was captured and makes the failure visible
-          -- through the overflow/status counters.
           full_i <= '1';
           overflow_readout_q <= '1';
         end if;
@@ -1301,7 +1588,6 @@ begin
       -- Buffer ack handling (evaluated every cycle)
       if Buffer_Ack(0) = '1' then
         buf_full(0) <= '0';
-        buf_rem_0   <= buf_limit_r;
         if buf_sel = "00" and buf_full(1) = '1' then
           -- A was waiting to be written (B is full), reset pointer now
           waddr_0 := 0;
@@ -1309,7 +1595,6 @@ begin
       end if;
       if Buffer_Ack(1) = '1' then
         buf_full(1) <= '0';
-        buf_rem_1   <= buf_limit_r;
         if buf_sel = "01" and buf_full(0) = '1' then
           -- B was waiting to be written (A is full), reset pointer now
           waddr_1 := 0;
@@ -1317,7 +1602,6 @@ begin
       end if;
       if Buffer_Ack(2) = '1' then
         buf_full(2) <= '0';
-        buf_rem_2   <= buf_limit_r;
         if buf_sel = "10" and buf_full(1) = '1' then
           -- C was waiting to be written (B is full), reset pointer now
           waddr_2 := 0;
@@ -1337,7 +1621,8 @@ begin
           full_pending <= '0';
           full_clr_pending <= '0';
         end if;
-        if full_pending = '1' and fifo_rdempty = '1'
+        if full_pending = '1' and prefetch_valid_r = '0'
+           and fifo_rdempty_r = '1' and rdempty_q = '1'
            and cap_stream_valid = '0' then
           full_i <= '1';
           full_pending <= '0';
@@ -1346,9 +1631,14 @@ begin
 
       if run_edge_r = '1' then
         waddr_0 := 0; waddr_1 := 0; waddr_2 := 0;
-        buf_rem_0 <= buf_limit_r;
-        buf_rem_1 <= buf_limit_r;
-        buf_rem_2 <= buf_limit_r;
+        drain_pending_r <= '1';
+        drain_snapshot_pending_r <= '1';
+        -- Snapshot the stale-word count. usedw is fill mod DEPTH: a full FIFO
+        -- reads 0, so substitute the full depth when non-empty (the empty-
+        -- pipeline drain exit absorbs any overestimate).
+        -- Invalidate any word still sitting in the skid buffer from the
+        -- previous run (overrides a same-cycle loader load).
+        prefetch_valid_r <= '0';
         -- Loaded from cfg_samples one pclk later, after the run-edge config
         -- latch has updated. Keep the pump count at zero for that holdoff cycle.
         buf_rem_single <= 0;
@@ -1385,10 +1675,34 @@ begin
       else
       -- Normal capture/readout/write-pump logic (skipped on run-edge cycle)
 
+      -- Drain mode: on run start or overflow recovery, discard the snapshot
+      -- count of stale FIFO words before allowing normal operation. This
+      -- replaces the old async fifo_aclr which created unsafe CDC timing
+      -- paths. The loader keeps refilling the skid buffer; this block
+      -- discards each loaded word. Terminates on drain_rem = 0 (target met;
+      -- immune to a producer that refills faster than we pop) or on a
+      -- genuinely empty pipeline (covers the usedw-snapshot overestimate when
+      -- the FIFO was exactly full, where usedw wraps to 0 and the snapshot
+      -- logic substitutes AFIFO_DEPTH).
+      if drain_pending_r = '1' then
+        if drain_snapshot_pending_r = '1' then
+          drain_rem <= fifo_rdusedw_r;
+          drain_snapshot_pending_r <= '0';
+        elsif drain_rem = 0 then
+          drain_pending_r <= '0';
+        elsif prefetch_valid_r = '1' then
+          prefetch_valid_r <= '0';  -- discard one stale word
+          drain_rem <= drain_rem - 1;
+        elsif fifo_rdempty_r = '1' and rdempty_q = '1'
+              and fifo_rd = '0' and fifo_rd_q = '0' then
+          drain_pending_r <= '0';  -- FIFO ran dry before target: stale gone
+          drain_rem <= 0;
+        end if;
+      end if;
       -- Block-read toggle edge -> start a stream. Base/Count are stable by now
       -- (set on the OLS side before the toggle flipped and held for the stream).
       if blk_req_edge_r = '1' then
-        if rd_mode then
+        if rd_mode_cur then
           -- Single-shot: read exactly the host-requested block.
           stream_addr_u := to_unsigned(Blk_Rd_Base + Start_Offset, 22);
           stream_rem    := Blk_Rd_Count;
@@ -1413,39 +1727,39 @@ begin
       end if;
 
       stream_addr_r <= std_logic_vector(stream_addr_u);
-      if rd_mode then
+      if rd_mode_cur then
 
-        if stream_active then
+        if stream_active_cur then
           -- STREAMING READOUT: walk the block addresses, latch on the SDRAM
           -- valid strobe, push each sample into the response FIFO. Self-timed,
           -- so it is immune to the CLK/pclk phase relationship that broke the
           -- old fixed-latency latch at block boundaries.
-          if rd_pend2 = '0' then
-            if rdfifo_wrfull = '0' then
+          if rd_pend2_cur = '0' then
+            if rd_gap_cur = '1' then
+              rd_gap := '0';   -- let stream_addr_r catch up post-completion
+            elsif rdfifo_wrfull = '0' then
               s_addr <= stream_addr_r;
               s_rd     <= '1';
               rd_pend2 := '1';
-              -- Do not advance the address on the prime read: the next (real)
-              -- read re-fetches the same base address.
-              if stream_prime = 0 then
-                stream_addr_inc_pending := true;
-              end if;
+              rd_wd_cnt := 0;
             end if;
           elsif s_rvalid = '1' then
             s_rd         <= '0';
             rd_pend2     := '0';
+            rd_gap       := '1';
             if stream_prime /= 0 then
               -- Discard the throwaway prime read(s); the real stream starts next.
               stream_prime := stream_prime - 1;
             else
-              comp_feed <= '1';
-              if stream_rem <= 1 then
+              rdfifo_wdata <= s_rdata;
+              rdfifo_wr    <= '1';
+              -- Advance the address on COMPLETION (not issue) so a timed-out
+              -- read can be reissued at the same address without skipping.
+              stream_addr_inc_pending := true;
+              if stream_rem_cur <= 1 then
                 if Auto_Renew = '1' then
                   -- Auto-renew: reload and keep streaming
                   stream_rem := Blk_Rd_Count;
-                  -- stream_addr_u is already advanced; no wrap needed here
-                  -- (the address advance at line 1374 already handles
-                  -- CONT_RING_WORDS wrapping per-sample).
                 else
                   stream_active := false;
                   stream_rem    := 0;
@@ -1456,10 +1770,17 @@ begin
                   end if;
                 end if;
               else
-                stream_rem := stream_rem - 1;
+                stream_rem := stream_rem_dec_r;
               end if;
             end if;  -- closes stream_prime if/else
-          end if;    -- closes if rd_pend2 / elsif s_rvalid
+          elsif rd_wd_cnt = STREAM_RD_WD then
+            -- Unanswered read: drop the request; the next cycle reissues the
+            -- same address (see the watchdog comment at the declarations).
+            s_rd     <= '0';
+            rd_pend2 := '0';
+          else
+            rd_wd_cnt := rd_wd_cnt + 1;
+          end if;    -- closes if rd_pend2 / elsif s_rvalid / watchdog
 
         elsif Sim then
           -- LEGACY Address-driven readout -> Outputs. Used ONLY by the FLA-direct
@@ -1506,17 +1827,21 @@ begin
              or (buf_sel = "10" and buf_full(2) = '1') then
             cur_full := true;
             if buf_full(0) = '0' then
-              buf_sel <= "00"; waddr_0 := 0; buf_rem_0 <= buf_limit_r;
+              buf_sel <= "00"; waddr_0 := 0;
             elsif buf_full(1) = '0' then
-              buf_sel <= "01"; waddr_1 := 0; buf_rem_1 <= buf_limit_r;
+              buf_sel <= "01"; waddr_1 := 0;
             elsif buf_full(2) = '0' then
-              buf_sel <= "10"; waddr_2 := 0; buf_rem_2 <= buf_limit_r;
+              buf_sel <= "10"; waddr_2 := 0;
             end if;
           end if;
         end if;
 
         cap_stream_valid <= '0';
-        if fifo_rdempty = '0' and not cur_full then
+        if drain_pending_r = '1' then
+          -- Drain owns the skid buffer this cycle (block above); committing
+          -- here would leak stale words from the previous run into SDRAM.
+          null;
+        elsif prefetch_valid_r = '1' and not cur_full then
           single_drain_cnt <= 0;
           if Continuous_Mode = '1' then
             write_addr := std_logic_vector(to_unsigned(ring_waddr, 22));
@@ -1525,50 +1850,57 @@ begin
           end if;
 
           cap_stream_addr <= write_addr;
-          cap_stream_data <= fifo_rdata;
+          cap_stream_data <= prefetch_data_r;
 
           if Continuous_Mode = '1' or buf_rem_single > 0 then
-            cap_stream_valid <= '1';
-            pump_valid_v := true;
-            if cap_stream_ready = '1' then
+            -- Registered valid/ack handshake. cap_stream_ready is a 2-stage
+            -- pipelined ack OF cap_stream_valid (ready_now needs valid; see
+            -- SDRAM_Controller_Custom r_pipe_stream_ready), so it arrives
+            -- late and can stay high for several cycles. Accepting on ready
+            -- alone therefore transfers the same word more than once (the
+            -- 2026-07-04 duplication regression). Transfer exactly once:
+            -- hold valid+addr+data until ready is seen WHILE valid is high,
+            -- then drop valid (top-of-process default) and consume the word.
+            if cap_stream_valid = '1' and cap_stream_ready = '1' then
+              pump_valid_v := true;
               pump_ready_v := true;
               pump_accept_v := true;
-            else
-              pump_stall_v := true;
-            end if;
-          end if;
-
-          if cap_stream_ready = '1' then
-            -- Normal SDRAM-write path: pop FIFO and update bookkeeping
-            fifo_rd <= '1';
-            if Continuous_Mode = '1' then
-              cont_accept_v := true;
-              if ring_waddr = Max_Samples - 1 then
-                ring_waddr := 0;
+              prefetch_valid_r <= '0';
+              if Continuous_Mode = '1' then
+                cont_accept_v := true;
+                if ring_waddr = Max_Samples - 1 then
+                  ring_waddr := 0;
+                else
+                  ring_waddr := ring_waddr + 1;
+                end if;
               else
-                ring_waddr := ring_waddr + 1;
+                buf_rem_single <= brem_single_dec;
+                waddr_0 := waddr_0 + 1;
               end if;
             else
-              buf_rem_single <= brem_single_dec;
-              waddr_0 := waddr_0 + 1;
+              cap_stream_valid <= '1';
+              pump_valid_v := true;
+              if cap_stream_ready = '0' then
+                pump_stall_v := true;
+              end if;
             end if;
-          elsif producer_done_q = '1' and buf_rem_single <= 0 then
-            -- Drain mode: producer finished and all samples written to SDRAM.
-            -- Pop remaining FIFO entries (discard) so the drain-completion
-            -- logic (elsif below) can count the empty-FIFO window and assert
-            -- full_i. Without this, cur_full blocks SDRAM writes and cap_
-            -- stream_ready never fires, so the pump stops draining.
-            fifo_rd <= '1';
+          elsif producer_done_q = '1' then
+            -- Budget exhausted and producer finished: discard remaining words
+            -- so the drain-completion logic (elsif below) can count the empty
+            -- window and assert full_i. Without this, cur_full blocks SDRAM
+            -- writes and cap_stream_ready never fires, so the pump stops
+            -- draining.
+            prefetch_valid_r <= '0';
           end if;
 
-        elsif producer_done_q = '1' and fifo_rdempty = '0' then
+        elsif producer_done_q = '1' and prefetch_valid_r = '1' then
           -- Fallback flush: when the main path was blocked by cur_full but the
-          -- FIFO still has items. Pop and discard.
-          fifo_rd <= '1';
+          -- FIFO still has items. Discard.
+          prefetch_valid_r <= '0';
           single_drain_cnt <= 0;
         elsif Continuous_Mode = '0' and run_level_r = '1' and not rd_mode
               and producer_done_q = '1' then
-          if fifo_rdempty = '1' then
+          if prefetch_valid_r = '0' then
             if single_drain_cnt = 2047 then
               full_i <= '1';
               rd_mode := true;
@@ -1578,7 +1910,7 @@ begin
           else
             single_drain_cnt <= 0;
           end if;
-        elsif fifo_rdempty = '1' then
+        elsif prefetch_valid_r = '0' then
           single_drain_cnt <= 0;
           pump_nodata_v := true;
         end if;
@@ -1614,11 +1946,13 @@ begin
         pump_stall_q  <= false;
         pump_nodata_q <= false;
       end if;
-      if pump_valid_q  then pump_valid_cycles_u  <= pump_valid_cycles_u  + 1; end if;
-      if pump_ready_q  then pump_ready_cycles_u  <= pump_ready_cycles_u  + 1; end if;
-      if pump_accept_q then pump_accept_cycles_u <= pump_accept_cycles_u + 1; end if;
-      if pump_stall_q  then pump_stall_cycles_u  <= pump_stall_cycles_u  + 1; end if;
-      if pump_nodata_q then pump_nodata_cycles_u <= pump_nodata_cycles_u + 1; end if;
+      if PUMP_METRICS then
+        if pump_valid_q  then pump_valid_cycles_u  <= pump_valid_cycles_u  + 1; end if;
+        if pump_ready_q  then pump_ready_cycles_u  <= pump_ready_cycles_u  + 1; end if;
+        if pump_accept_q then pump_accept_cycles_u <= pump_accept_cycles_u + 1; end if;
+        if pump_stall_q  then pump_stall_cycles_u  <= pump_stall_cycles_u  + 1; end if;
+        if pump_nodata_q then pump_nodata_cycles_u <= pump_nodata_cycles_u + 1; end if;
+      end if;
 
       if cont_meta_reset_q = '1' then
         producer_index_u <= (others => '0');
@@ -1637,6 +1971,14 @@ begin
         end if;
       end if;
       cont_accept_q <= cont_accept_v;
+      -- Off the REGISTERED address mirror on purpose — see the declaration
+      -- comment for the two-cycle-lag validity argument.
+      stream_addr_nxt_r <= unsigned(stream_addr_r) + 1;
+      if unsigned(stream_addr_r) = to_unsigned(CONT_RING_WORDS - 1, 22) then
+        stream_at_ring_end <= '1';
+      else
+        stream_at_ring_end <= '0';
+      end if;
     end if;
   end process;
 
@@ -1673,7 +2015,7 @@ begin
     Read_Enable  => s_rd,
     Read_Data    => s_rdata,
     Read_Valid   => s_rvalid,
-    Busy         => sdram_busy,
+    Busy         => open,
     Idle         => open,
     sdram_addr   => sdram_addr,
     sdram_ba     => sdram_ba,

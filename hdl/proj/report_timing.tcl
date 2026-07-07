@@ -1,11 +1,17 @@
-# Report worst timing paths
+# Report worst paths
 load_package report
-project_open C:/Users/Fraser/Documents/GitHub/OLS_Logic_Analyzer_Clean/vhdplus/OLS_Logic_Analyzer -revision OLS_Logic_Analyzer
+project_open OLS_Logic_Analyzer -revision OLS_Logic_Analyzer
 create_timing_netlist
 read_sdc
+
+# Slow corner
+set_operating_conditions -model slow -temperature 85 -voltage 1200
 update_timing_netlist
-# Report worst 10 setup paths
-report_timing -setup -npaths 10 -panel_name "Worst Setup Paths" -file "C:/Users/Fraser/Documents/GitHub/OLS_Logic_Analyzer_Clean/vhdplus/timing_rpt.txt"
-# Report clock summary
-report_clock_transfers -panel_name "Clock Transfers" -file "C:/Users/Fraser/Documents/GitHub/OLS_Logic_Analyzer_Clean/vhdplus/clock_xfer.txt"
+
+puts "=== TOP 10 FAST_CLK ==="
+report_timing -npaths 10 -setup -detail full_path -clock_filter {*clk[1]}
+
+puts "=== TOP 10 pclk ==="
+report_timing -npaths 10 -setup -detail full_path -clock_filter {*clk[2]}
+
 project_close

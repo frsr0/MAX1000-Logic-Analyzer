@@ -2,6 +2,7 @@
 OLS Logic Analyzer - SPI Host Library
 Fixed MPSSE driver: batched writes, 0x87, correct init, drain.
 """
+import threading
 import time
 
 # ftd2xx wraps the native FTDI D2XX library and is only needed to talk to real
@@ -56,6 +57,7 @@ class OLS:
         self.channel = channel
         self.speed_hz = speed_hz
         self.dev = None
+        self._stream_open = False
 
     # ── Low-level helpers ────────────────────────────────────────────
 
@@ -109,23 +111,140 @@ class OLS:
         """Open FTDI Channel B, enter MPSSE mode, configure SPI."""
         ft = _require_ftd2xx()
         n = ft.createDeviceInfoList()
-        idx = self.channel
-        for i in range(n):
-            try:
-                t = ft.open(i)
-                info = t.getDeviceInfo()
-                t.close()
-                desc = info.get('description', b'').decode().strip()
-                # Match descriptions ending with 'B', '2', or containing 'SPI'
-                if desc.endswith('B') or desc.endswith('2') or 'SPI' in desc:
-                    idx = i
-                    break
-                if i == 1:
-                    idx = i
-            except:
-                pass
 
-        d = ft.open(idx)
+        def _score_device(idx: int) -> tuple[int, int]:
+            """Prefer the physical MPSSE channel even if enumeration order shifts."""
+            try:
+                d = ft.open(idx)
+                info = d.getDeviceInfo()
+                d.close()
+            except Exception:
+                return (0, idx)
+            desc = info.get("description", b"")
+            serial = info.get("serial", b"")
+            if isinstance(desc, bytes):
+                desc = desc.decode(errors="replace")
+            if isinstance(serial, bytes):
+                serial = serial.decode(errors="replace")
+            desc = str(desc)
+            serial = str(serial)
+            score = 0
+            if desc.endswith("B"):
+                score += 100
+            if "SPI" in desc:
+                score += 50
+            if serial.endswith("B"):
+                score += 25
+            if idx == self.channel:
+                score += 10
+            return (score, idx)
+
+        def _is_jtag_endpoint(serial, desc) -> bool:
+            """True when the endpoint positively identifies as FTDI channel A.
+
+            On FT2232-based boards channel A carries JTAG; clocking SPI into it
+            silently yields no responses for every command, so it must never be
+            used as a fallback when channel B is busy.
+            """
+            if isinstance(serial, bytes):
+                serial = serial.decode(errors="replace")
+            if isinstance(desc, bytes):
+                desc = desc.decode(errors="replace")
+            return str(serial).endswith("A") or str(desc).endswith(" A")
+
+        def _reject_if_jtag(d):
+            """Close and reject an opened handle that turns out to be channel A."""
+            try:
+                info = d.getDeviceInfo()
+            except Exception:
+                return d
+            if _is_jtag_endpoint(info.get("serial", b""), info.get("description", b"")):
+                try:
+                    d.close()
+                except Exception:
+                    pass
+                return None
+            return d
+
+        def _serial_candidates() -> list[bytes]:
+            """Prefer explicit serial-number opens so we can target channel B."""
+            serials = []
+            try:
+                listed = ft.listDevices()
+            except Exception:
+                listed = None
+            if isinstance(listed, (list, tuple)):
+                for entry in listed:
+                    if isinstance(entry, bytes):
+                        serial = entry
+                    elif isinstance(entry, str):
+                        serial = entry.encode()
+                    else:
+                        continue
+                    if serial not in serials:
+                        serials.append(serial)
+            return sorted(serials, key=lambda s: (not s.endswith(b"B"), s))
+
+        # Try the explicit serial-number path first: this is the most reliable
+        # way to land on the Channel B MPSSE endpoint when Windows enumerates
+        # both FTDI interfaces.
+        last_exc = None
+        d = None
+        for serial in _serial_candidates():
+            if _is_jtag_endpoint(serial, b""):
+                continue
+            for attempt in range(3):
+                try:
+                    d = ft.openEx(serial, update=False)
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    d = None
+                    time.sleep(0.05)
+            if d is not None:
+                d = _reject_if_jtag(d)
+            if d is not None:
+                break
+
+        if d is None:
+            # Fall back to index probing if serial-based opens are unavailable.
+            candidates = [i for _, i in sorted((_score_device(i) for i in range(n)),
+                                               reverse=True)]
+            if self.channel in candidates:
+                candidates.remove(self.channel)
+                candidates.insert(0, self.channel)
+            for idx in candidates:
+                for attempt in range(3):
+                    try:
+                        d = ft.open(idx)
+                        break
+                    except Exception as exc:
+                        last_exc = exc
+                        d = None
+                        time.sleep(0.05)
+                if d is not None:
+                    d = _reject_if_jtag(d)
+                if d is not None:
+                    break
+
+        if d is None:
+            for attempt in range(3):
+                try:
+                    d = ft.open(self.channel)
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    d = None
+                    time.sleep(0.05)
+            if d is not None:
+                d = _reject_if_jtag(d)
+        if d is None:
+            raise RuntimeError(
+                "SPI channel (FTDI channel B) could not be opened — it may be "
+                "held by another process (backend server, UI, or a stale test "
+                "run). The JTAG channel A is never used as a fallback."
+            ) from last_exc
+
         d.setBitMode(0xFF, 0); time.sleep(0.05)
         d.setBitMode(0xFF, 2); time.sleep(0.1)
         try:
@@ -166,6 +285,7 @@ class OLS:
     def close(self):
         if self.dev:
             try:
+                self._stream_open = False
                 self.dev.setBitMode(0xFF, 0)
                 self.dev.close()
             except:
@@ -439,8 +559,113 @@ class OLS:
         self.dev.write(buf)
         return self._read_n(read_len, timeout=max(0.5, n_bytes / max(self.speed_hz / 8, 1) + 0.5))
 
+    @staticmethod
+    def _mpsse_clock_out(payload):
+        """Wrap a byte payload in 0x31 (clock-out-and-in) MPSSE commands."""
+        out = bytearray()
+        remaining = len(payload)
+        pos = 0
+        MAX_PER_CMD = 65536
+        while remaining > 0:
+            n = min(MAX_PER_CMD, remaining)
+            out += bytes([0x31, (n - 1) & 0xFF, ((n - 1) >> 8) & 0xFF])
+            out += payload[pos:pos + n]
+            pos += n
+            remaining -= n
+        return bytes(out)
+
+    def stream_command_begin(self, request, stop_evt=None):
+        """Open a held-CS stream transaction and clock the request bytes."""
+        if stop_evt is not None and stop_evt.is_set():
+            return b""
+        request = bytes(request)
+        self._drain()
+        self.dev.write(
+            bytes([0x80, GPIO_CS_LO, PIN_DIR])
+            + self._mpsse_clock_out(request)
+            + bytes([0x87])
+        )
+        self._stream_open = True
+        return self._read_n(
+            len(request),
+            timeout=max(0.5, len(request) / max(self.speed_hz / 8, 1) + 0.5),
+        )
+
+    def stream_command_clock(self, n_bytes, stop_evt=None):
+        """Clock exactly ``n_bytes`` dummy bytes under an open held-CS stream."""
+        if n_bytes <= 0:
+            return b""
+        if stop_evt is not None and stop_evt.is_set():
+            return b""
+        self.dev.write(
+            self._mpsse_clock_out(bytes([0x11] * n_bytes))
+            + bytes([0x87])
+        )
+        return self._read_n(
+            n_bytes,
+            timeout=max(0.5, n_bytes / max(self.speed_hz / 8, 1) + 0.5),
+        )
+
+    def stream_command_end(self):
+        """Raise CS for a previously opened held-CS stream transaction."""
+        if not self._stream_open:
+            return
+        self.dev.write(bytes([0x87, 0x80, GPIO_CS_HI, PIN_DIR, 0x87]))
+        self._stream_open = False
+
+    def stream_command_chunks(self, request, ack_pad=96, chunk_bytes=4096,
+                              stop_evt=None):
+        """Yield stream bytes from one CS-held request+stream transaction.
+
+        Unlike :meth:`stream_command`, which clocks a fixed ``n_bytes``, this
+        holds CS low and keeps clocking fresh ``0x11`` chunks until the caller
+        stops iterating (breaks the loop / calls ``close()``) or ``stop_evt``
+        fires, then raises CS. This lets a variable-length compressed stream be
+        read only until the caller has decoded enough samples, without
+        over-clocking incompressible-or-not data to a fixed worst-case budget.
+
+        The first yielded item is the ``request + ack_pad`` region (which
+        carries the packet ack); every later item is a ``chunk_bytes`` read of
+        stream data. CS is raised in a ``finally`` so an early ``break`` still
+        closes the transaction cleanly.
+        """
+        request = bytes(request)
+        ack_pad = int(ack_pad)
+        chunk_bytes = max(1, int(chunk_bytes))
+        if stop_evt is not None and stop_evt.is_set():
+            return
+        self._drain()
+        prefix = request + bytes([0xFF] * ack_pad)
+        opened = False
+        try:
+            self.dev.write(bytes([0x80, GPIO_CS_LO, PIN_DIR])
+                           + self._mpsse_clock_out(prefix)
+                           + bytes([0x87]))
+            opened = True
+            self._stream_open = True
+            yield self._read_n(
+                len(prefix),
+                timeout=max(0.5, len(prefix) / max(self.speed_hz / 8, 1) + 0.5))
+            while True:
+                if stop_evt is not None and stop_evt.is_set():
+                    break
+                self.dev.write(self._mpsse_clock_out(bytes([0x11] * chunk_bytes))
+                               + bytes([0x87]))
+                yield self._read_n(
+                    chunk_bytes,
+                    timeout=max(0.5, chunk_bytes / max(self.speed_hz / 8, 1) + 0.5))
+        finally:
+            if opened:
+                self.stream_command_end()
+
     def stream_payload(self, payload, stop_evt=None):
-        """Clock an arbitrary payload under one CS-held transaction."""
+        """Clock an arbitrary payload under one CS-held transaction.
+
+        The response is drained by a reader thread concurrently with the
+        write: for payloads larger than the FTDI RX buffering (~64 KB) a
+        write-then-read sequence stalls the MPSSE mid-transaction once the
+        RX side backs up, which crippled batched block readback.
+        """
         payload = bytes(payload)
         if not payload:
             return b""
@@ -458,5 +683,12 @@ class OLS:
             pos += n
             remaining -= n
         buf += bytes([0x87, 0x80, GPIO_CS_HI, PIN_DIR, 0x87])
+        timeout = max(0.5, len(payload) / max(self.speed_hz / 8, 1) + 0.5)
+        result = []
+        reader = threading.Thread(
+            target=lambda: result.append(self._read_n(len(payload), timeout=timeout)),
+            daemon=True)
+        reader.start()
         self.dev.write(buf)
-        return self._read_n(len(payload), timeout=max(0.5, len(payload) / max(self.speed_hz / 8, 1) + 0.5))
+        reader.join(timeout + 1.0)
+        return result[0] if result else b''

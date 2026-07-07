@@ -43,11 +43,10 @@ class FakeHostDevice:
         self.open = Mock()
         self.close = Mock()
         self.set_debug_ch0 = Mock()
+        self.set_readback_compression = Mock()
         self.set_schmitt = Mock()
         self._write_capture_config = Mock()
-        samples = np.full(2048, 0x1234, dtype="<u2")
-        samples[256] ^= 0x0001
-        self.read_capture_range = Mock(return_value=samples.tobytes())
+        self.read_capture_range = Mock(return_value=b"\x01\x00" * 2048)
         self.ack_capture_done = self.pkt.ack_capture_done
 
 
@@ -139,13 +138,33 @@ def test_rolling_digital_rejects_untrustworthy_high_rate_path():
     try:
         adapter.capture(settings)
     except HardwareError as exc:
-        assert "overruns the retention ring" in str(exc)
+        assert "tested ceiling" in str(exc)
     else:
         raise AssertionError("200 MHz rolling capture should be rejected")
 
-    assert any(f["level"] == "warning" and "retention ring" in f["message"]
+    assert any(f["level"] == "warning" and "tested ceiling" in f["message"]
                for f in findings)
     adapter._dev.capture.assert_not_called()
+
+
+def test_rolling_digital_allows_50mhz_live_path():
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+    settings = CaptureSettings(
+        mode="rolling",
+        sample_rate=50_000_000,
+        num_samples=1024,
+        enabled_digital=list(range(16)),
+    )
+
+    findings = adapter.validate_settings(settings)
+    result = adapter.capture(settings)
+
+    assert not [f for f in findings if f["level"] == "error"]
+    adapter._dev.capture.assert_called_once()
+    adapter._dev.read_capture_range.assert_not_called()
+    assert result.divider == 3
+    assert len(result.digital) == 2048
 
 
 def test_rolling_boundary_repair_uses_absolute_sample_index():
@@ -328,12 +347,12 @@ def test_maximum_analog_capture_uses_physical_analog_profile():
 
     dev = adapter._dev
     dev.capture.assert_called_once()
-    assert dev.capture.call_args.kwargs["nsamples"] == 128 * 6
+    assert dev.capture.call_args.kwargs["nsamples"] == 128 * 2
     dev.set_analog_config.assert_any_call(0x38, adc_channel=1)
     assert result.digital is None
-    assert len(result.analog) == 8
-    assert list(result.analog) == ["a1", "a2", "a3", "a4", "a5", "a7", "a8", "a16"]
-    assert np.isclose(result.sample_rate, 200_000_000 / 267 / 6)
+    assert len(result.analog) == 2
+    assert list(result.analog) == ["a1", "a2"]
+    assert np.isclose(result.sample_rate, 125_000)
 
 
 def test_mixed_capture_uses_single_packed_pass():
@@ -349,14 +368,14 @@ def test_mixed_capture_uses_single_packed_pass():
     ))
 
     dev = adapter._dev
-    # One pass: the 14-byte packed frame carries digital + ADC together.
+    # One pass: the packed frame carries digital + 2 ADC lanes together.
     dev.capture.assert_called_once()
-    assert dev.capture.call_args.kwargs["nsamples"] == 128 * 7
+    assert dev.capture.call_args.kwargs["nsamples"] == 128 * 3
     dev.set_analog_config.assert_any_call(0x08)   # MODE_MIXED
     dev.set_analog_config.assert_any_call(0)      # recovery
     assert len(result.digital) == 128
-    assert sorted(result.analog) == [f"a{i}" for i in range(8)]
-    assert np.isclose(result.sample_rate, 200_000_000 / 229 / 7)
+    assert sorted(result.analog) == ["a0", "a1"]
+    assert np.isclose(result.sample_rate, 200_000_000 / 533 / 3)
 
 
 def test_mixed_continuous_packs_and_skips_recovery_reset():
@@ -372,10 +391,10 @@ def test_mixed_continuous_packs_and_skips_recovery_reset():
     dev = adapter._dev
     # Same single packed pass as mixed...
     dev.capture.assert_called_once()
-    assert dev.capture.call_args.kwargs["nsamples"] == 128 * 7
+    assert dev.capture.call_args.kwargs["nsamples"] == 128 * 3
     dev.set_analog_config.assert_any_call(0x08)
     assert len(result.digital) == 128
-    assert sorted(result.analog) == [f"a{i}" for i in range(8)]
+    assert sorted(result.analog) == ["a0", "a1"]
     # ...but the per-capture anti-wedge recovery (disable analog + reopen) is
     # skipped so the continuous loop streams without a reset gap.
     dev.close.assert_not_called()
