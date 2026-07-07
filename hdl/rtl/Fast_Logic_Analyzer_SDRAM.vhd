@@ -703,6 +703,7 @@ begin
     signal aword_count_f : natural range 1 to 7 := 7;
     signal aword_idx    : natural range 0 to 6 := 0;
     signal analog_burst_active : std_logic := '0';
+    signal aframe_load_pending_r : std_logic := '0';
     -- Registered copy of fifo_wralmost_full for the analog burst gate. The flag
     -- is a wide wrusedw>=(DEPTH-256) compare off the afifo status reg; feeding it
     -- straight into the burst next-state logic is the 200 MHz critical path.
@@ -917,6 +918,7 @@ begin
         narrow_sample_bit_r <= '0';
         narrow_sample_valid_r <= '0';
         narrow_sample_last_r <= '0';
+        aframe_load_pending_r <= '0';
         narrow_count_v := 0;
         narrow_valid_v := '0';
         narrow_bit_v := '0';
@@ -957,13 +959,16 @@ begin
             -- a frame in flight always finishes (the burst loop below is not
             -- gated), and cfg_samples is a whole number of frames, so capture
             -- stops cleanly on a frame boundary.
-            if aframe_ready_r = '1' and analog_burst_active = '0'
-               and sample_rem_nonzero_r = '1' then
+            if aframe_load_pending_r = '1' and analog_burst_active = '0' then
               -- Snapshot the coherent frame once; it is NOT shifted (see below).
               aframe_shift <= aframe_pending;
               aword_count_f <= aword_count_pending;
               aword_idx <= 0;
               analog_burst_active <= '1';
+              aframe_load_pending_r <= '0';
+            elsif aframe_ready_r = '1' and analog_burst_active = '0'
+               and sample_rem_nonzero_r = '1' then
+              aframe_load_pending_r <= '1';
             end if;
 
             -- Emit word[aword_idx] via the 16-bit 8:1 mux in the decoupled data
