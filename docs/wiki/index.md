@@ -1,0 +1,81 @@
+# OLS Logic Analyzer — Project Wiki
+
+> A mixed-signal logic analyzer, capture backend, and signal-generator stack for the Arrow MAX1000 board (Intel MAX 10 10M08).
+
+```mermaid
+graph TB
+    subgraph FPGA["FPGA (hdl/)"]
+        TOP[OLS_SDRAM_Top] --> PLL[SDRAM_PLL]
+        TOP --> CORE[OLS_Logic_Analyzer_SDRAM_Core]
+        TOP --> ADC[ADC_Controller]
+        TOP --> LED[LED_Controller]
+        CORE --> IFACE[OLS_Interface]
+        CORE --> FLA[Fast_Logic_Analyzer_SDRAM]
+        CORE --> GEN[Signal_Gen]
+        FLA --> SDRAM[SDRAM Controller]
+        FLA --> MSO[mso_capture pipeline]
+    end
+
+    subgraph HOST["Classic Host (host/)"]
+        SPI[ols_spi.py - FTDI MPSSE]
+        DEV[OLSDeviceSPI]
+        GUI[OLS_Console.py tkinter]
+    end
+
+    subgraph BACKEND["Backend Server (backend/)"]
+        ADAPTER[ExistingHostAdapter]
+        MOCK[MockDevice]
+        CM[CaptureManager]
+        SESS[Session Store]
+        API[REST + WS API]
+        DEC[Decoder Service]
+    end
+
+    subgraph FRONTEND["Web Frontend (frontend/)"]
+        SHELL[AppShell]
+        PAGES[Pages]
+        PANELS[Side Panels]
+        WAVEFORM[Waveform Canvas]
+        STORE[Zustand + WaveformView]
+    end
+
+    FPGA -- SPI --> HOST
+    HOST -- reused unchanged --> BACKEND
+    ADAPTER --> DEV
+    CM --> ADAPTER
+    CM --> MOCK
+    API --> CM
+    API --> SESS
+    API --> DEC
+    FRONTEND -- HTTP/WS --> BACKEND
+```
+
+## Repository Layout
+
+| Directory | Purpose |
+|---|---|
+| `hdl/` | FPGA RTL (VHDL), Quartus project, constraints, testbenches |
+| `backend/` | FastAPI Python backend server |
+| `frontend/` | React/TypeScript web UI |
+| `host/` | Python host driver (SPI + device class) and tkinter app |
+| `docs/` | Design notes, ADRs, (this wiki) |
+
+## Wiki Sections
+
+- [HDL — FPGA Design](hdl/README.md) — VHDL entities, clock domains, SDRAM controller, capture pipeline, signal generator, testbenches, build flow
+- [Backend — Python Server](backend/README.md) — FastAPI app, hardware abstraction, capture manager, session model, decoders, exports, WebSockets
+- [Frontend — Web UI](frontend/README.md) — React components, state management, waveform viewer, API client, E2E tests
+
+## Key Architecture Decisions
+
+- **ADR-001**: [Capture Mode Strategy Pattern](docs/adr/001-capture-strategy-pattern.md) — decomposed monolithic `capture()` into 5 strategy classes
+- **ADR-002**: [Wire Format Extraction](docs/adr/002-wire-format-extraction.md) — extracted pure wire-format functions from 2355-line driver into `wire_format.py`
+
+## Current Status
+
+- 16-channel digital capture at 200.4 MHz
+- 4,194,304-word SDRAM single-shot depth
+- Analog-fast (1 ADC lane), analog-all (4 lanes), mixed (digital + analog) modes
+- Narrow packed digital (200 MHz, 1 channel)
+- UART, I2C, SPI, PWM, RS-485 generation
+- Built with Quartus, targeting 10M08DAF484C8G, validated seed 33, FAST_SPEED build
