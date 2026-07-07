@@ -117,7 +117,26 @@
    [get_ports {sdram_addr[*] sdram_ba[*] sdram_cas_n sdram_cke sdram_cs_n sdram_dqm[*] sdram_ras_n sdram_we_n sdram_dq[*]}]
  set_output_delay -clock [get_clocks SDRAM_CHIP_CLK_OUT] -min -0.8 \
    [get_ports {sdram_addr[*] sdram_ba[*] sdram_cas_n sdram_cke sdram_cs_n sdram_dqm[*] sdram_ras_n sdram_we_n sdram_dq[*]}]
- 
+
+ # DQ write-side multicycle: dq_oe/dq_out (SDRAM_Controller_Custom.vhd) are
+ # deliberately NOT pipelined through the extra s_*_r register stage that
+ # every command signal (s_cas/s_we/s_ras/s_addr/s_ba) goes through before
+ # reaching its pin -- see the "keeping row/page-hit decisions out of the IO
+ # OE timing path" comment at sdram_dq's driver. dq_oe/dq_out and the command
+ # signals are all written in the SAME ST_WR/ST_STREAM_WR case branch on the
+ # same edge, but the command's extra _r stage means sdram_cas_n/sdram_we_n
+ # (the edge the SDRAM actually latches DQ on) become valid to the chip one
+ # full sdram_core_clk cycle AFTER sdram_dq does. DQ is safely stable well
+ # before the command that consumes it; the default single-cycle relationship
+ # checks an edge the memory never samples against. Model the real one-cycle
+ # head start, mirroring the read-side CL3 multicycle below (2026-07-07).
+ set_multicycle_path -setup 2 \
+   -from [get_registers {*dq_oe* *dq_out*}] \
+   -to   [get_ports {sdram_dq[*]}]
+ set_multicycle_path -hold 1 \
+   -from [get_registers {*dq_oe* *dq_out*}] \
+   -to   [get_ports {sdram_dq[*]}]
+
  # SDRAM read-side timing: use the same forwarded clock and model a 5.4 ns
  # access window for the 166 MHz SDRAM grade, with a conservative 0 ns minimum
  # arrival for hold analysis.
