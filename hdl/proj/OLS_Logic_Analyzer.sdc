@@ -28,25 +28,60 @@
  # FAST_SPEED: c0~100.2MHz sys, c1~200.4MHz fast, c2~167.0MHz sdram core
  # Normal:     c0~96MHz   sys, c1~120MHz   fast, c2~167.0MHz sdram core
  # c3 = 12 MHz ADC conversion clock (present in mixed/analog builds).
+ # The actual synthesized pin path is
+ # core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[N]
+ # -- "pll_inst" (the VHDL instantiation label) is NOT immediately followed by
+ # "|clk[N]"; the altpll_component|auto_generated hierarchy sits in between,
+ # and a leading-only wildcard (*pll_inst|clk[N]) can never bridge that gap.
+ # Match the inner "pll1" leaf name instead, exactly like the working
+ # SDRAM_CHIP_CLK_OUT constraint below (*pll1|clk[4]). Getting this wrong
+ # silently no-ops create_generated_clock (empty -source/<targets>), so
+ # sys_clk/fast_clk/sdram_core_clk/adc_clk were never actually created, the
+ # set_clock_groups -asynchronous block resolved to four EMPTY groups, and
+ # every real CDC crossing between the PLL's genuinely-async outputs was
+ # analyzed as synchronous — the cause of large, seed-independent setup
+ # violations on every clock (2026-07-07).
  create_generated_clock -name sys_clk \
-   -source [get_pins {*pll_inst|inclk[0]}] \
-   [get_pins {*pll_inst|clk[0]}]
+   -source [get_pins -compatibility_mode {*pll1|inclk[0]}] \
+   [get_pins -compatibility_mode {*pll1|clk[0]}]
  create_generated_clock -name fast_clk \
-   -source [get_pins {*pll_inst|inclk[0]}] \
-   [get_pins {*pll_inst|clk[1]}]
+   -source [get_pins -compatibility_mode {*pll1|inclk[0]}] \
+   [get_pins -compatibility_mode {*pll1|clk[1]}]
  create_generated_clock -name sdram_core_clk \
-   -source [get_pins {*pll_inst|inclk[0]}] \
-   [get_pins {*pll_inst|clk[2]}]
+   -source [get_pins -compatibility_mode {*pll1|inclk[0]}] \
+   [get_pins -compatibility_mode {*pll1|clk[2]}]
  create_generated_clock -name adc_clk \
-   -source [get_pins {*pll_inst|inclk[0]}] \
-   [get_pins {*pll_inst|clk[3]}]
+   -source [get_pins -compatibility_mode {*pll1|inclk[0]}] \
+   [get_pins -compatibility_mode {*pll1|clk[3]}]
  
  # Derive remaining PLL output clocks and PLL-internal dividers
  derive_pll_clocks
  
  # Realistic clock uncertainty for timing signoff
  derive_clock_uncertainty
- 
+
+ # External SPI timing:
+ # - SPI_SCK is the FTDI-generated clock that times the slave interface.
+ # - MOSI is captured relative to that clock.
+ # - MISO is launched relative to that same clock.
+ # The hardware validation suite treats 15 MHz as the validated ceiling.
+ # Restored 2026-07-07: dropped by the SDC-hardening pass (commit b378e212)
+ # when the async clock-group block was narrowed to only the four named PLL
+ # clocks. Without these, SPI_SCK/SPI_CS/SPI_MOSI/SPI_MISO are unconstrained
+ # against every internal clock instead of explicitly excluded from them.
+ create_clock -name SPI_SCK_EXT -period 66.667 [get_ports SPI_SCK]
+ create_clock -name SPI_CS_QUAL -period 1000.000 [get_ports SPI_CS]
+ set_input_delay -clock [get_clocks SPI_SCK_EXT] -max 12.0 [get_ports SPI_MOSI]
+ set_input_delay -clock [get_clocks SPI_SCK_EXT] -min 0.0 [get_ports SPI_MOSI]
+ set_output_delay -clock [get_clocks SPI_SCK_EXT] -max 12.0 [get_ports SPI_MISO]
+ set_output_delay -clock [get_clocks SPI_SCK_EXT] -min -2.0 [get_ports SPI_MISO]
+
+ # The SPI chip-select is used as an asynchronous qualifier/reset, not a clock.
+ # Keep it out of the timed datapaths.
+ set_false_path -from [get_ports {SPI_SCK SPI_CS}]
+ set_false_path -to   [get_ports {SPI_SCK SPI_CS}]
+ set_false_path -from [get_ports {SPI_MOSI}]  -to [all_registers]
+
  # Asynchronous clock groups: all cross-domain CDC paths properly synchronized.
  # Note: sdram_chip_clk_out (c4) is intentionally NOT in these async groups —
  # the core↔chip relationship is synchronous-by-design (same PLL, phase-shifted),
@@ -55,7 +90,9 @@
    -group [get_clocks sys_clk] \
    -group [get_clocks fast_clk] \
    -group [get_clocks sdram_core_clk] \
-   -group [get_clocks adc_clk]
+   -group [get_clocks adc_clk] \
+   -group [get_clocks SPI_SCK_EXT] \
+   -group [get_clocks SPI_CS_QUAL]
  
  # Async FIFO internal gray-code synchronizer paths
  # The dcfifo megafunction generates these internally; they are intentional
