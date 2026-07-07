@@ -139,6 +139,33 @@ class OLS:
                 score += 10
             return (score, idx)
 
+        def _is_jtag_endpoint(serial, desc) -> bool:
+            """True when the endpoint positively identifies as FTDI channel A.
+
+            On FT2232-based boards channel A carries JTAG; clocking SPI into it
+            silently yields no responses for every command, so it must never be
+            used as a fallback when channel B is busy.
+            """
+            if isinstance(serial, bytes):
+                serial = serial.decode(errors="replace")
+            if isinstance(desc, bytes):
+                desc = desc.decode(errors="replace")
+            return str(serial).endswith("A") or str(desc).endswith(" A")
+
+        def _reject_if_jtag(d):
+            """Close and reject an opened handle that turns out to be channel A."""
+            try:
+                info = d.getDeviceInfo()
+            except Exception:
+                return d
+            if _is_jtag_endpoint(info.get("serial", b""), info.get("description", b"")):
+                try:
+                    d.close()
+                except Exception:
+                    pass
+                return None
+            return d
+
         def _serial_candidates() -> list[bytes]:
             """Prefer explicit serial-number opens so we can target channel B."""
             serials = []
@@ -164,6 +191,8 @@ class OLS:
         last_exc = None
         d = None
         for serial in _serial_candidates():
+            if _is_jtag_endpoint(serial, b""):
+                continue
             for attempt in range(3):
                 try:
                     d = ft.openEx(serial, update=False)
@@ -172,6 +201,8 @@ class OLS:
                     last_exc = exc
                     d = None
                     time.sleep(0.05)
+            if d is not None:
+                d = _reject_if_jtag(d)
             if d is not None:
                 break
 
@@ -192,6 +223,8 @@ class OLS:
                         d = None
                         time.sleep(0.05)
                 if d is not None:
+                    d = _reject_if_jtag(d)
+                if d is not None:
                     break
 
         if d is None:
@@ -203,8 +236,14 @@ class OLS:
                     last_exc = exc
                     d = None
                     time.sleep(0.05)
+            if d is not None:
+                d = _reject_if_jtag(d)
         if d is None:
-            raise last_exc or RuntimeError("no FTDI interface could be opened")
+            raise RuntimeError(
+                "SPI channel (FTDI channel B) could not be opened — it may be "
+                "held by another process (backend server, UI, or a stale test "
+                "run). The JTAG channel A is never used as a fallback."
+            ) from last_exc
 
         d.setBitMode(0xFF, 0); time.sleep(0.05)
         d.setBitMode(0xFF, 2); time.sleep(0.1)

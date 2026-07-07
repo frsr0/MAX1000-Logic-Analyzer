@@ -30,6 +30,7 @@ from driver.ols_spi_device import (
     decompress_mixed_group,
     decompress_mixed_stream,
     decode_analog_frames,
+    decompress_block_readback_stream,
     decompress_rle_stream,
     decompress_delta_rle_stream,
     narrow_digital_flags,
@@ -86,6 +87,14 @@ class TestCompressionHelpers:
         assert len(out) == 64
         assert struct.unpack('<32H', out)[:16] == (0x1234,) * 16
         assert struct.unpack('<32H', out)[16:] == (0x5678,) * 16
+
+    def test_decompress_block_readback_stream_expands_rle_raw_payload(self):
+        raw = struct.pack('<4H', 256, 0xFFFE, 256, 0xFFFF)
+        out = decompress_block_readback_stream(raw)
+        assert len(out) == 1024
+        words = struct.unpack('<512H', out)
+        assert words[:256] == (0xFFFE,) * 256
+        assert words[256:] == (0xFFFF,) * 256
 
     def test_mixed_compression_round_trips_delta_lanes(self):
         payload = bytearray()
@@ -331,6 +340,24 @@ class TestOLSDeviceSPI:
         assert words[:16] == (0x1234,) * 16
         assert words[16:512] == (0x1234,) * 496
         assert words[512:] == (0x5678,) * 8
+        device_spi.pkt.read_capture_blocks.assert_called_once_with(
+            [0, 1022], compressed=True)
+
+    def test_read_capture_range_decompresses_rle_only_block_payloads(self, device_spi):
+        block0 = struct.pack('<4H', 256, 0xFFFE, 256, 0xFFFF)
+        block1 = struct.pack('<2H', 512, 0x1234)
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'delta_rle'
+        device_spi.compress_readback_enabled = True
+        device_spi.pkt.read_capture_blocks.return_value = [block0, block1]
+
+        data = device_spi.read_capture_range(start_sample=0, sample_count=520)
+
+        assert len(data) == 1040
+        words = struct.unpack('<520H', data)
+        assert words[:256] == (0xFFFE,) * 256
+        assert words[256:512] == (0xFFFF,) * 256
+        assert words[512:] == (0x1234,) * 8
         device_spi.pkt.read_capture_blocks.assert_called_once_with(
             [0, 1022], compressed=True)
 

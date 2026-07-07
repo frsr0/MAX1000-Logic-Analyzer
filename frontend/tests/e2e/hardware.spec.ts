@@ -107,17 +107,17 @@ test('capture controls reflect MAX1000 modes', async ({ page }) => {
   await page.screenshot({ path: shot('capture-live-50mhz.png'), fullPage: true });
 
   await page.locator('.mode-tile', { hasText: 'Analog fast' }).click();
-  await expect(page.getByText('High-speed analog uses one physical analog input at the best ADC rate.')).toBeVisible();
+  await expect(page.getByText('High-speed analog captures one analog input (AIN3) at the best ADC rate.')).toBeVisible();
   await expect(page.getByRole('option', { name: '1 MHz' })).toBeAttached();
   await expect(page.getByText('Analog and mixed captures use raw readback.')).toBeVisible();
   await page.screenshot({ path: shot('capture-analog-fast.png'), fullPage: true });
 
-  await page.locator('.mode-tile', { hasText: 'Analog wide' }).click();
-  await expect(page.getByText('Maximum analog exposes the full board analog map, including the dedicated AIN pin.')).toBeVisible();
+  await page.locator('.mode-tile', { hasText: 'Dual analog' }).click();
+  await expect(page.getByText('Dual analog captures two ADC lanes together (AIN3 + AIN1). The board has more AIN pins, but this bitstream streams 2 at once.')).toBeVisible();
   await expect(page.getByRole('option', { name: '125 kHz' })).toBeAttached();
 
   await page.locator('.mode-tile', { hasText: 'Mixed scan' }).click();
-  await expect(page.getByText('Mixed mode captures 16 digital bits plus ADC0-ADC7 at a shared scan frame rate.')).toBeVisible();
+  await expect(page.getByText('Mixed mode captures 16 digital bits plus 2 ADC lanes, sampled together at a shared scan frame rate.')).toBeVisible();
   await expect(page.getByText('Analog and mixed captures use raw readback.')).toBeVisible();
   await expect(page.getByRole('option', { name: '125 kHz' })).toBeAttached();
 

@@ -373,6 +373,20 @@ def decompress_delta_rle_stream(data: bytes) -> bytes:
     return decompress_delta_stream(rle)
 
 
+def decompress_block_readback_stream(data: bytes) -> bytes:
+    """Decompress one compressed CMD_READ_CAPTURE block payload.
+
+    Current hardware emits an exact RLE stream of raw 16-bit samples for block
+    reads. Older experiments used a merged delta->RLE payload instead. Accept
+    both so the host decodes the actual on-wire format first while preserving
+    compatibility with older bitstreams and synthetic tests.
+    """
+    raw = decompress_rle_stream(data)
+    if len(raw) == 1024:
+        return raw
+    return decompress_delta_rle_stream(data)
+
+
 def compress_mixed_group(data: bytes) -> bytes:
     """Compress 16 mixed frames losslessly into one variable-length group."""
     frame_stride = analog_frame_stride(MODE_MIXED)
@@ -1183,7 +1197,7 @@ class OLSDeviceSPI:
                           for a in addrs]
             blocks_total += time.perf_counter() - t_blocks
             if use_compress:
-                decode_block = decompress_delta_rle_stream
+                decode_block = decompress_block_readback_stream
                 # Decompress each block; any short/invalid decode is re-read
                 # raw with the FPGA compression flags cleared.
                 t_decode = time.perf_counter()

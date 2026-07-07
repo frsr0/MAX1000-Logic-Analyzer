@@ -163,10 +163,10 @@ class ExistingHostAdapter(HardwareDevice):
             sample_clk_hz=sample_clk,
             supports_pre_trigger=True, supports_rolling=True,
             supports_continuous=True, supports_analog=True,
-            analog_rate_note="MAX10 ADC supports 1 MSPS single-channel "
-                             "analog and 125 kframes/s 8-input physical "
-                             "analog scans. Mixed mode scans ADC0..ADC7 at "
-                             "the same scan frame rate.",
+            analog_rate_note="MAX10 ADC: 1 MSPS single-lane (analog fast) or "
+                             "125 kframes/s dual-lane. This bitstream streams "
+                             "1 ADC lane in fast mode and 2 ADC lanes in mixed "
+                             "and dual-analog modes.",
             generator_protocols=["uart", "rs485", "i2c", "pwm"],
             triggers=[TriggerCapability(type=t, execution=e, description=d)
                       for t, e, d in trig],
@@ -176,8 +176,11 @@ class ExistingHostAdapter(HardwareDevice):
                 f"{DIGITAL_SDRAM_WORDS:,}-word 16-bit SDRAM capture ring "
                 f"({DIGITAL_NARROW_LOGICAL_SAMPLES:,} logical samples in "
                 "packed one-channel narrow mode).",
-                "Maximum analog scans ADC1,2,3,4,5,7,8,16 at 125 kframes/s. "
-                "Mixed mode still exposes ADC0/ADC6 as unmapped mux slots.",
+                "This bitstream streams at most 2 analog lanes at once: "
+                "dual-analog captures ADC1 (AIN3) + ADC2 (AIN1); mixed "
+                "captures ADC0 (unmapped) + ADC1 (AIN3); analog-fast captures "
+                "1 lane, ADC1 (AIN3). The board has 8 AIN pins, but the "
+                "current capture engine does not scan all of them at once.",
             ],
             digital_pin_map=DIGITAL_PIN_MAP,
             analog_pin_map=BOARD_ANALOG_INPUTS,

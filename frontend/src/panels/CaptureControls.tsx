@@ -59,8 +59,8 @@ const SOURCES: {
   {
     source: 'mixed',
     label: 'Mixed scan',
-    detail: '16 digital + ADC0-ADC7 at the scan frame rate',
-    channels: 'D0-D15 + ADC0-ADC7',
+    detail: '16 digital + 2 ADC lanes, time-correlated at the scan frame rate',
+    channels: 'D0-D15 + 2 ADC',
   },
   {
     source: 'digital_narrow',
@@ -72,14 +72,14 @@ const SOURCES: {
   {
     source: 'analog_fast',
     label: 'Analog fast',
-    detail: 'One physical analog input at the highest ADC rate',
-    channels: 'one analog input',
+    detail: 'One analog input (AIN3) at the highest ADC rate',
+    channels: 'AIN3 (1 lane)',
   },
   {
     source: 'analog_all',
-    label: 'Analog wide',
-    detail: 'All exposed analog inputs, including the dedicated AIN pin',
-    channels: 'ADC1,2,3,4,5,7,8,16',
+    label: 'Dual analog',
+    detail: 'Two analog inputs captured together (AIN3 + AIN1)',
+    channels: 'AIN3 + AIN1 (2 lanes)',
   },
 ];
 
@@ -178,13 +178,13 @@ function hardwareSummary(mode: CaptureMode) {
       return 'Packed narrow mode keeps one line at 200 MHz and stretches it to a much longer logical stream.';
     case 'mixed':
     case 'mixed_continuous':
-      return 'Mixed mode captures 16 digital bits plus ADC0-ADC7 at a shared scan frame rate.';
+      return 'Mixed mode captures 16 digital bits plus 2 ADC lanes, sampled together at a shared scan frame rate.';
     case 'analog_fast':
     case 'analog_continuous':
-      return 'High-speed analog uses one physical analog input at the best ADC rate.';
+      return 'High-speed analog captures one analog input (AIN3) at the best ADC rate.';
     case 'analog_all':
     case 'analog_all_continuous':
-      return 'Maximum analog exposes the full board analog map, including the dedicated AIN pin.';
+      return 'Dual analog captures two ADC lanes together (AIN3 + AIN1). The board has more AIN pins, but this bitstream streams 2 at once.';
     default:
       return 'This mode is selected by the MAX1000 hardware profile.';
   }
