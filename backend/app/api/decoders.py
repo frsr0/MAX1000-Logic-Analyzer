@@ -8,7 +8,8 @@ from pydantic import BaseModel
 
 from ..capture.session import DecoderInstance, new_id
 from ..decoders import registry
-from ..state import capture_manager, store
+from ..decoders.service import decoder_service
+from ..state import store
 from .deps import get_session_or_404
 
 router = APIRouter(tags=["decoders"])
@@ -40,9 +41,8 @@ def add_decoder(session_id: str, req: DecoderCreate):
     session.decoders.append(inst)
     store.save(session)
     if req.run:
-        capture_manager.run_decoder(session, inst)
+        decoder_service.run(session, inst)
     return inst.model_dump()
-
 
 class DecoderPatch(BaseModel):
     name: Optional[str] = None
@@ -84,9 +84,8 @@ def patch_decoder(session_id: str, decoder_id: str, patch: DecoderPatch):
 def delete_decoder(session_id: str, decoder_id: str):
     session = get_session_or_404(session_id)
     _get_instance(session, decoder_id)
-    capture_manager.cancel_decoder(decoder_id)
+    decoder_service.cancel(decoder_id)
     session.decoders = [d for d in session.decoders if d.id != decoder_id]
-    store.save(session)
     store.delete_decoder_events(session_id, decoder_id)
     return {"deleted": True}
 
@@ -100,20 +99,17 @@ def run_decoder(session_id: str, decoder_id: str,
                 req: Optional[DecoderRunRequest] = None):
     session = get_session_or_404(session_id)
     inst = _get_instance(session, decoder_id)
-    if req is not None and req.region is not None:
-        inst.region = req.region
-        store.save(session)
+    region = req.region if req is not None else None
     try:
-        capture_manager.run_decoder(session, inst)
+        decoder_service.run(session, inst, region=region)
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {"running": True, "decoder_id": decoder_id}
 
-
 @router.post("/api/sessions/{session_id}/decoders/{decoder_id}/cancel")
 def cancel_decoder(session_id: str, decoder_id: str):
     get_session_or_404(session_id)
-    return {"cancelled": capture_manager.cancel_decoder(decoder_id)}
+    return {"cancelled": decoder_service.cancel(decoder_id)}
 
 
 @router.get("/api/sessions/{session_id}/decoders/{decoder_id}/annotations")

@@ -10,11 +10,12 @@ from pydantic import BaseModel
 
 from ..capture.session import ExportRecord, new_id
 from ..exports.csv_export import decoder_csv, samples_csv, samples_csv_iter
+from ..exports.json_export import session_to_json
 from ..exports.npz_export import npz_export
 from ..exports.report_export import html_report
 from ..exports.vcd_export import vcd_export, vcd_export_iter
-from ..state import store
 from .deps import get_session_or_404, get_waveform_or_404
+from ..state import store
 
 router = APIRouter(tags=["exports"])
 

@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from ..capture.chunk_store import clamp_window, value_at
 from ..capture.sample_format import find_edges
-from ..capture.waveform_store import overview_payload, window_payload
+from ..capture.waveform_query import WaveformQuery
 from ..config import MAX_RAW_POINTS
 from ..diagnostics.sanity_checks import run_sanity_checks
 from ..state import store
@@ -55,9 +55,10 @@ def waveform_window(session_id: str,
     lod = store.get_lod(session_id)
     if end < 0:
         end = wf.num_samples
-    payload = window_payload(session_id, wf, lod, start, end,
-                             max_points=resolution or 0,
-                             channels=_channels_param(channels))
+    query = WaveformQuery(wf, lod)
+    payload = query.window(session_id, start, end,
+                           max_points=resolution or 0,
+                           channels=_channels_param(channels))
     return Response(content=payload, media_type=BINARY)
 
 
@@ -69,28 +70,17 @@ def waveform_raw(session_id: str, start: int = 0, end: int = -1,
     wf = get_waveform_or_404(session_id)
     if end < 0:
         end = wf.num_samples
-    start, end = clamp_window(wf, start, end)
-    if end - start > MAX_RAW_POINTS:
-        raise HTTPException(400, f"Raw window limited to {MAX_RAW_POINTS} "
-                                 f"samples; use /waveform for larger ranges")
-    chans = _channels_param(channels)
-    out = {"start": start, "end": end, "sample_rate": wf.sample_rate}
-    if wf.digital is not None and (chans is None or any(c.startswith("d") for c in chans)):
-        out["digital_packed"] = wf.digital[start:end].tolist()
-    for name, arr in wf.analog.items():
-        if chans is None or name in chans:
-            out[f"analog_{name}"] = [float(v) for v in arr[start:end]]
-    for name, arr in wf.derived_digital.items():
-        if chans is None or name in chans:
-            out[f"derived_{name}"] = arr[start:end].tolist()
-    return out
+    query = WaveformQuery(wf)
+    return query.raw_window(session_id, start, end,
+                            channels=_channels_param(channels))
 
 
 @router.get("/api/sessions/{session_id}/overview")
 def waveform_overview(session_id: str, bins: int = Query(default=1024, le=8192)):
     get_session_or_404(session_id)
     wf = get_waveform_or_404(session_id)
-    return Response(content=overview_payload(session_id, wf, bins),
+    query = WaveformQuery(wf, store.get_lod(session_id))
+    return Response(content=query.overview(session_id, bins),
                     media_type=BINARY)
 
 
@@ -123,7 +113,6 @@ def waveform_value_at(session_id: str, sample: int, channels: str):
     wf = get_waveform_or_404(session_id)
     chans = _channels_param(channels) or []
     values = value_at(wf, sample, chans)
-    # bus channels: combine member values
     buses = {}
     for c in session.channels:
         if c.type == "bus" and c.id in chans:
@@ -138,8 +127,7 @@ def waveform_value_at(session_id: str, sample: int, channels: str):
 
 class DerivedChannelRequest(BaseModel):
     source: str
-    derive: dict       # {"kind": "majority3"|"debounce"|"min_pulse"|
-                       #  "glitch_suppress"|"threshold", ...params}
+    derive: dict
     name: Optional[str] = None
 
 
@@ -152,7 +140,7 @@ def add_derived_channel(session_id: str, req: DerivedChannelRequest):
                                       req.name)
     except (ValueError, KeyError) as e:
         raise HTTPException(400, str(e))
-    store.save_waveform(session_id, wf)   # persists derived arrays
+    store.save_waveform(session_id, wf)
     store.save(session)
     store.invalidate_lod(session_id)
     return info.model_dump()

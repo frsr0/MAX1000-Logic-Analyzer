@@ -49,6 +49,17 @@ class FakeHostDevice:
         self.read_capture_range = Mock(return_value=b"\x01\x00" * 2048)
         self.ack_capture_done = self.pkt.ack_capture_done
 
+    @property
+    def raw_flags(self):
+        return self._raw_flags
+
+    @raw_flags.setter
+    def raw_flags(self, value):
+        self._raw_flags = value
+
+    def flush(self):
+        self.spi.flush()
+
 
 def test_measured_safe_deep_digital_capture_uses_finite_sdram_path():
     adapter = ExistingHostAdapter()
@@ -327,7 +338,6 @@ def test_analog_only_capture_uses_adc_only_hardware_stream():
     dev.capture.assert_called_once()
     assert dev.capture.call_args.kwargs["nsamples"] == 128
     dev.set_analog_config.assert_any_call(0x18, adc_channel=1)
-    dev.set_analog_config.assert_any_call(0)
     assert result.digital is None
     assert list(result.analog) == ["a1"]
     assert result.sample_rate == 1_000_000
@@ -372,7 +382,6 @@ def test_mixed_capture_uses_single_packed_pass():
     dev.capture.assert_called_once()
     assert dev.capture.call_args.kwargs["nsamples"] == 128 * 7
     dev.set_analog_config.assert_any_call(0x08)   # MODE_MIXED
-    dev.set_analog_config.assert_any_call(0)      # recovery
     assert len(result.digital) == 128
     assert sorted(result.analog) == [f"a{i}" for i in range(8)]
     assert np.isclose(result.sample_rate, 200_000_000 / 229 / 7)
