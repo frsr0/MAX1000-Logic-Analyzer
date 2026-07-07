@@ -1,6 +1,7 @@
 from unittest.mock import Mock, call
 
 import numpy as np
+import pytest
 
 from app.capture.session import CaptureSettings
 from app.hardware.base import HardwareError
@@ -409,6 +410,59 @@ def test_mixed_continuous_packs_and_skips_recovery_reset():
     # skipped so the continuous loop streams without a reset gap.
     dev.close.assert_not_called()
     assert call(0) not in dev.set_analog_config.call_args_list
+
+
+def test_packed_capture_decodes_to_standard_result_contract():
+    # Regression test for the packed-mode integration bug: packed_decode
+    # returns (16, N) uint8 bit-planes + raw ADC codes, but CaptureResult
+    # contracts require 1-D bit-packed uint16 .digital and volts .analog
+    # keyed like every other strategy ("a0".."a3"), not "adc0".."adc3".
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+
+    # 4 digital_rle packets (one per slice), each dwell=3 -> run_len=4,
+    # exactly covering total_samples=4 (no tail padding involved).
+    # word = 0x8000 | (slice<<13) | (value<<9) | dwell
+    dig0 = 0x8000 | (0 << 13) | (0b0001 << 9) | 3  # slice0 -> ch0=1
+    dig1 = 0x8000 | (1 << 13) | (0b0010 << 9) | 3  # slice1 -> ch5=1
+    dig2 = 0x8000 | (2 << 13) | (0b0000 << 9) | 3  # slice2 -> 0
+    dig3 = 0x8000 | (3 << 13) | (0b0000 << 9) | 3  # slice3 -> 0
+
+    # One flat (W=0) analog block: header + 4 anchors, no payload words.
+    ana_header = (0 << 11) | (1 << 10)  # W=0, bit10=1 (anchors follow)
+    ana_anchors = [100, 200, 300, 400]
+
+    words = [dig0, ana_header, dig1, ana_anchors[0],
+             dig2, ana_anchors[1], dig3, ana_anchors[2], ana_anchors[3]]
+    dev.capture = Mock(return_value=np.array(words, dtype="<u2").tobytes())
+    adapter._dev = dev
+
+    result = adapter.capture(CaptureSettings(
+        sample_rate=200_000_000,
+        num_samples=4,
+        packed_mode=True,
+        analog_enabled=True,
+        enabled_digital=list(range(16)),
+    ))
+
+    dev.set_packed_mode.assert_called_once_with(True)
+    dev.set_readback_compression.assert_called_once_with("raw")
+
+    # .digital must be 1-D, bit-packed uint16 (matches every other strategy),
+    # not the decoder's internal (16, N) bit-plane shape.
+    assert result.digital.ndim == 1
+    assert len(result.digital) == 4
+    assert result.digital.dtype == np.uint16
+    # ch0 (bit0) and ch5 (bit5) held high for all 4 samples -> 0x21 each word.
+    assert result.digital.tolist() == [0x21, 0x21, 0x21, 0x21]
+
+    # .analog must be volts, keyed "a{n}" like analog/mixed/analog_all
+    # strategies — not the decoder's raw "adc{n}" 12-bit-code keys.
+    assert sorted(result.analog) == ["a0", "a1", "a2", "a3"]
+    for i, code in enumerate(ana_anchors):
+        expected_v = code * (3.3 / 4095)
+        assert result.analog[f"a{i}"] == pytest.approx(expected_v, rel=1e-4)
+        assert result.analog[f"a{i}"].dtype == np.float32
 
 
 def test_analog_continuous_streams_adc_only_no_recovery():

@@ -36,7 +36,6 @@ from .strategies import (
     narrow_digital as _narrow_digital_strategy,
 )
 from .packed_decoder import decode as packed_decode
-from driver.wire_format import MODE_PACKED_MSO
 
 ADC_SCAN_FRAME_RATE_HZ = 125_000.0
 ADC_FAST_FRAME_RATE_HZ = 1_000_000.0
@@ -306,13 +305,20 @@ class ExistingHostAdapter(HardwareDevice):
                 self._recover_after_failed_capture()
                 raise HardwareError(f"Capture failed: {e}") from e
             self._timings["last_capture_s"] = time.time() - t0
-            # If packed capture mode was active, decode the compressed stream
-            packed_active = bool(getattr(dev, "_raw_flags", 0) & MODE_PACKED_MSO)
-            if packed_active and result.digital is not None:
+            # If packed capture mode was active, decode the compressed stream.
+            # packed_decode returns (16, N) uint8 bit-planes and raw 12-bit ADC
+            # codes; CaptureResult.digital is a 1-D bit-packed uint16 per
+            # sample and .analog is volts (see base.py), matching every other
+            # capture strategy, so both need converting before they leave here.
+            if settings.packed_mode and result.digital is not None:
                 total_samples = int(settings.num_samples)
                 dig, ana = packed_decode(result.digital, total_samples)
-                result.digital = dig
-                result.analog = ana
+                packed = np.zeros(total_samples, dtype=np.uint16)
+                for ch in range(dig.shape[0]):
+                    packed |= dig[ch].astype(np.uint16) << ch
+                result.digital = packed
+                result.analog = {f"a{c[3:]}": adc_to_volts(codes)
+                                 for c, codes in ana.items()}
             return result
 
     def stream_capture(self, settings: CaptureSettings,
@@ -395,9 +401,7 @@ class ExistingHostAdapter(HardwareDevice):
             # sampling artifacts when sys_clk-domain signals cross to fast_clk.
             # Packed mode (mso_capture) runs entirely in fast_clk with no CDC
             # crossing — the ceiling does not apply.
-            packed_active = bool(
-                getattr(self._dev, "_raw_flags", 0) & MODE_PACKED_MSO)
-            if packed_active:
+            if settings.packed_mode:
                 return False
             return settings.sample_rate > DIGITAL_LIVE_SAMPLE_RATE_HZ
         # Single-shot deep SDRAM capture is validated clean at every rate up to
