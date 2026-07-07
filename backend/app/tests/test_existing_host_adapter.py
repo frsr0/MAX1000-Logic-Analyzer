@@ -347,12 +347,12 @@ def test_maximum_analog_capture_uses_physical_analog_profile():
 
     dev = adapter._dev
     dev.capture.assert_called_once()
-    assert dev.capture.call_args.kwargs["nsamples"] == 128 * 6
+    assert dev.capture.call_args.kwargs["nsamples"] == 128 * 2
     dev.set_analog_config.assert_any_call(0x38, adc_channel=1)
     assert result.digital is None
-    assert len(result.analog) == 8
-    assert list(result.analog) == ["a1", "a2", "a3", "a4", "a5", "a7", "a8", "a16"]
-    assert np.isclose(result.sample_rate, 200_000_000 / 267 / 6)
+    assert len(result.analog) == 2
+    assert list(result.analog) == ["a1", "a2"]
+    assert np.isclose(result.sample_rate, 125_000)
 
 
 def test_mixed_capture_uses_single_packed_pass():
@@ -368,14 +368,14 @@ def test_mixed_capture_uses_single_packed_pass():
     ))
 
     dev = adapter._dev
-    # One pass: the 14-byte packed frame carries digital + ADC together.
+    # One pass: the packed frame carries digital + 2 ADC lanes together.
     dev.capture.assert_called_once()
-    assert dev.capture.call_args.kwargs["nsamples"] == 128 * 7
+    assert dev.capture.call_args.kwargs["nsamples"] == 128 * 3
     dev.set_analog_config.assert_any_call(0x08)   # MODE_MIXED
     dev.set_analog_config.assert_any_call(0)      # recovery
     assert len(result.digital) == 128
-    assert sorted(result.analog) == [f"a{i}" for i in range(8)]
-    assert np.isclose(result.sample_rate, 200_000_000 / 229 / 7)
+    assert sorted(result.analog) == ["a0", "a1"]
+    assert np.isclose(result.sample_rate, 200_000_000 / 533 / 3)
 
 
 def test_mixed_continuous_packs_and_skips_recovery_reset():
@@ -391,10 +391,10 @@ def test_mixed_continuous_packs_and_skips_recovery_reset():
     dev = adapter._dev
     # Same single packed pass as mixed...
     dev.capture.assert_called_once()
-    assert dev.capture.call_args.kwargs["nsamples"] == 128 * 7
+    assert dev.capture.call_args.kwargs["nsamples"] == 128 * 3
     dev.set_analog_config.assert_any_call(0x08)
     assert len(result.digital) == 128
-    assert sorted(result.analog) == [f"a{i}" for i in range(8)]
+    assert sorted(result.analog) == ["a0", "a1"]
     # ...but the per-capture anti-wedge recovery (disable analog + reopen) is
     # skipped so the continuous loop streams without a reset gap.
     dev.close.assert_not_called()

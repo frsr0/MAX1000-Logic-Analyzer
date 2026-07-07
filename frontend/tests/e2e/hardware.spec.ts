@@ -72,6 +72,7 @@ test.beforeEach(async ({ page }) => {
   }
   if (useMockHarness) {
     await installMockApp(page);
+    await page.goto('/');
   }
   await ensureConnected(page);
 });
@@ -94,7 +95,7 @@ test('capture controls reflect MAX1000 modes', async ({ page }) => {
   await expect(page.locator('.mode-tile', { hasText: 'Mixed scan' }).first()).toBeVisible();
   await expect(page.locator('.mode-tile', { hasText: 'Packed narrow' }).first()).toBeVisible();
   await expect(page.locator('.mode-tile', { hasText: 'Analog fast' }).first()).toBeVisible();
-  await expect(page.locator('.mode-tile', { hasText: 'Analog wide' }).first()).toBeVisible();
+  await expect(page.locator('.mode-tile', { hasText: 'Dual analog' }).first()).toBeVisible();
   await expect(page.getByRole('option', { name: '200 MHz' })).toBeAttached();
 
   await page.locator('.mode-tile', { hasText: 'Digital deep' }).click();
@@ -245,7 +246,7 @@ test('signal generator loopback shows waveform and decode', async ({ page }) => 
   await expect(page.locator('canvas.waveform-canvas')).toBeVisible();
   await expect(page.locator('.decoder-table')).toBeVisible();
   await expect(page.locator('.decoder-table .table-toolbar select option').first()).toBeAttached();
-  await expect(page.locator('.decoder-table tbody tr').first()).toContainText('uart_byte');
+  await expect(page.locator('.decoder-table tbody tr').first()).toContainText('START');
   await expect(page.locator('.decoder-table tbody tr').first()).toContainText('0x48');
   await expect(page.locator('.decoder-table tbody tr').first()).toContainText('H');
   await page.screenshot({ path: shot('generator-loopback-capture.png'), fullPage: true });
@@ -264,7 +265,7 @@ test('bit banger loopback shows waveform and decode', async ({ page }) => {
   const milResult = page.locator('.card').filter({
     has: page.getByRole('heading', { name: 'Commands' }),
   });
-  await expect(milResult.getByText('READ', { exact: true })).toBeVisible();
+  await expect(milResult.getByText('RESPONSE', { exact: true })).toBeVisible();
   await page.screenshot({ path: shot('bit-banger-loopback-capture.png'), fullPage: true });
 });
 
@@ -315,7 +316,9 @@ test('analog session renders waveforms and decode on the mock fixture', async ({
   test.skip(!useMockHarness, 'fixture session is only available in mock mode');
 
   await page.getByRole('button', { name: 'Sessions' }).click();
-  const analogRow = page.locator('tr', { hasText: 'MAX1000 mixed analog sweep' });
+  const analogRow = page.locator('tr').filter({
+    has: page.locator('input[value="MAX1000 mixed analog sweep"]'),
+  }).first();
   await expect(analogRow).toBeVisible();
   await analogRow.getByRole('button', { name: 'Open' }).click();
   await expect(page.locator('canvas.waveform-canvas')).toBeVisible();
@@ -324,7 +327,7 @@ test('analog session renders waveforms and decode on the mock fixture', async ({
 
   await page.getByRole('button', { name: 'Channels' }).click();
   await expect(page.getByRole('option', { name: 'a1 (analog)' })).toBeAttached();
-  await expect(page.getByRole('option', { name: 'a16 (analog)' })).toBeAttached();
+  await expect(page.getByRole('option', { name: 'a2 (analog)' })).toBeAttached();
 
   await page.screenshot({ path: shot('analog-session-waveform.png'), fullPage: true });
 });
