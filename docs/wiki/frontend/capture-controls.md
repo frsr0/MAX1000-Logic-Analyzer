@@ -21,7 +21,7 @@ type Acquisition = 'single' | 'live';
 | Mixed (16+analog) | single | 125 kHz | ADC-limited |
 | Digital Narrow | single | 200 MHz | 1ch × 67M samples |
 | Analog Fast | single | 1 MHz | 1 ADC lane |
-| Max Analog | single | 125 kHz | 4 ADC lanes |
+| Max Analog | single | 125 kHz | 8 decoded ADC lanes |
 
 ## Rate Options
 

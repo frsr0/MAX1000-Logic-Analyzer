@@ -228,6 +228,12 @@ test('generator page matches supported board protocols', async ({ page }) => {
   await page.getByRole('button', { name: 'Generator' }).click();
   await expect(page.getByRole('heading', { name: 'Signal generator' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Send + capture' })).toBeVisible({ timeout: 15_000 });
+  await page.getByLabel('Generator protocol').selectOption('pwm');
+  await expect(page.getByLabel('Frequency (Hz)')).toBeVisible();
+  await page.getByLabel('Frequency (Hz)').fill('50000');
+  await page.getByLabel('Duty (%)').fill('30');
+  await page.getByLabel('Output pin').fill('0');
+  await expect(page.getByText('Hardware support on this board is UART, RS-485, I2C, and PWM.')).toBeVisible();
   await page.screenshot({ path: shot('generator-page.png'), fullPage: true });
 });
 

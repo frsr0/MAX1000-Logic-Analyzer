@@ -102,8 +102,8 @@ class CaptureStrategy(ABC):
 
 ### `AnalogAllCaptureStrategy` (analog_all.py)
 
-- Configures: `MODE_ANALOG_ALL`, 4 ADC lanes
-- Captures: 4 physical analog inputs at 125 kframes/s each
+- Configures: `MODE_ANALOG_ALL`, 8 decoded ADC lanes in the raw frame
+- Captures: the maximum analog frame format at 125 kframes/s
 - Readback: raw
 
 ### `NarrowDigitalCaptureStrategy` (narrow_digital.py)

@@ -50,7 +50,7 @@ Strategies receive a `CaptureDevice` protocol — a narrow interface extracted f
 - `DigitalCaptureStrategy` — single-shot and rolling general-purpose digital
 - `MixedCaptureStrategy` — time-correlated digital+analog frames
 - `AnalogCaptureStrategy` — analog-fast (1 ADC lane)
-- `AnalogAllCaptureStrategy` — maximum analog (4 ADC lanes)
+- `AnalogAllCaptureStrategy` — maximum analog (8 decoded ADC lanes in raw frames)
 - `NarrowDigitalCaptureStrategy` — packed 1-channel high-speed digital
 
 `stream_capture()` (narrow-digital streaming generator) stays in the adapter as a special case — it's a different abstraction (generator, no retry).

@@ -1,4 +1,4 @@
-"""Maximum-analog capture strategy (4 ADC lanes)."""
+"""Maximum-analog capture strategy (8 decoded ADC lanes in the raw frames)."""
 from __future__ import annotations
 
 import threading
@@ -21,7 +21,7 @@ ADC_SCAN_FRAME_RATE_HZ = 125_000.0
 
 
 class AnalogAllCaptureStrategy(CaptureStrategy):
-    """Maximum-analog capture — all 4 physical analog inputs."""
+    """Maximum-analog capture — all decoded analog inputs."""
 
     modes = {"analog_all", "analog_all_continuous"}
 

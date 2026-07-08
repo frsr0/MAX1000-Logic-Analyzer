@@ -486,13 +486,14 @@ export function CaptureControls() {
           <input type="checkbox"
             checked={captureSettings.packed_mode}
             onChange={(e) => setCaptureSettings({ packed_mode: e.target.checked })}
-            disabled={!controlMode || isAnalog}
+            disabled={!controlMode || analogMode}
           />
           <span>Packed mode (200 MHz rolling)</span>
         </label>
         {captureSettings.packed_mode && (
           <span className="mode-detail">Capture-side MSO compression active. Rolling ceiling raised to 200 MHz.</span>
         )}
+      </div>
 
       <div className="capture-summary">
         <span>{activeModeLabel}</span>
