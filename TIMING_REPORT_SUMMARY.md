@@ -4,6 +4,9 @@
 
 **Report Date:** July 5, 2026 (seed 30 build, STA summary from latest compilation)
 
+> Updated July 8, 2026: FAST_SPEED seed 3 now uses the DDIO-forwarded SDRAM chip clock and the
+> `SDRAM_CHIP_CLK_OUT` write cone closes in STA.
+
 ---
 
 ## Key Metrics
@@ -233,3 +236,15 @@ but with double the margin (0.182 ns vs 0.088 ns).
 **Timing is SAFE and STABLE.** The design operates with positive slack on all 20 measured paths, with the tightest margin at 0.088 ns on SDRAM write control. While this is tight, it's well within acceptable limits for production silicon and has been validated in hardware.
 
 The delta-compression optimizations integrate cleanly without timing violations.
+
+---
+
+## July 8, 2026 Update
+
+The FAST_SPEED seed 3 build now uses the DDIO-forwarded SDRAM chip clock. The write-side
+`SDRAM_CHIP_CLK_OUT` cone closes in STA with:
+
+- Setup slack: `+1.108 ns`
+- Hold slack: `+1.791 ns`
+- Worst setup endpoint: `s_addr_r[8] -> sdram_addr[8]`
+- Worst hold endpoint: `s_we_r -> sdram_we_n`

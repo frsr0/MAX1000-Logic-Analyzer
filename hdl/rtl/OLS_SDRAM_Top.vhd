@@ -1,6 +1,8 @@
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.numeric_std.all;
+library altera_mf;
+use altera_mf.altera_mf_components.all;
 use work.led_controller_pkg.all;
 
 ENTITY OLS_SDRAM_Top IS
@@ -11,7 +13,9 @@ ENTITY OLS_SDRAM_Top IS
     Sim         : boolean := false;
     FAST_SPEED  : boolean := false;
     -- FAST_RAW_BUILD: when true, exclude MSO compression at elaboration time.
-    FAST_RAW_BUILD : boolean := true
+    FAST_RAW_BUILD : boolean := true;
+    -- When true, forward the SDRAM chip clock through a DDIO output register.
+    USE_DDIO_CLK_FORWARD : boolean := true
   );
 PORT (
   CLK     : IN STD_LOGIC;
@@ -71,7 +75,10 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   constant SAMPLE_CLK_HZ : natural := get_sample_clk_freq;
   constant ENABLE_RUNTIME_INPUT_MUX : boolean := true;
   constant ENABLE_SIGNAL_GEN : boolean := true;
-  constant ENABLE_DEBUG_CH0 : boolean := true;
+  -- Timing-closure aid: gate the LED PWM/controller subsystem to free LEs and
+  -- pull its logic/pins out of the congested SDRAM I/O cone (X10_Y0-X20_Y12).
+  -- Set true to restore the LED bank.
+  constant ENABLE_LED : boolean := false;
   constant LA_CHANNELS : natural := 16;
   constant PIN_POOL_SIZE : natural := 26;
 
@@ -109,6 +116,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal armed_i        : std_logic := '0';
   signal sdram_core_clk      : std_logic := '0';
   signal sdram_chip_clk_out  : std_logic := '0';
+  signal sdram_clk_fwd       : std_logic := '0';
+  signal sdram_clk_ddio      : std_logic_vector(0 downto 0) := (others => '0');
 
   -- Expanded output drive (covers all bidirectional pins)
   signal pin_out      : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
@@ -123,12 +132,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal pin_map_wr_toggle : std_logic := '0';
 
   signal core_status   : std_logic_vector(7 downto 0) := (others => '0');
-  signal debug_ch0_cnt    : std_logic_vector(31 downto 0) := (others => '0');
-  signal registered_ch0 : std_logic := '0';
-  signal debug_ch0_period : std_logic_vector(31 downto 0) := x"00000400";
-  signal debug_ch0_duty   : std_logic_vector(31 downto 0) := x"00000200";
-  signal debug_ch0_period_active : std_logic_vector(31 downto 0) := x"00000400";
-  signal debug_ch0_duty_active   : std_logic_vector(31 downto 0) := x"00000200";
   signal sen_sdi_meta : std_logic := '1';
   signal sen_sdi_sync : std_logic := '1';
   signal sen_sdo_meta : std_logic := '1';
@@ -157,9 +160,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal analog_channel : natural range 0 to 31 := 1;
   signal gen_clear     : std_logic := '0';
   signal analog_stream_mode : std_logic := '0';
-  signal debug_ch0_enable : std_logic := '0';
-  signal debug_ch0_enable_eff : std_logic := '0';
-  signal debug_ch0_channel : natural range 0 to LA_CHANNELS-1 := 0;
+  signal gen_capture_tx_channel : natural range 0 to LA_CHANNELS-1 := 0;
+  signal gen_capture_scl_channel : natural range 0 to LA_CHANNELS-1 := 1;
   signal analog_frame_data  : std_logic_vector(127 downto 0) := (others => '0');
   signal analog_frame_len   : natural range 1 to 14 := 1;
   signal adc0_result, adc1_result : std_logic_vector(11 downto 0) := (others => '0');
@@ -203,20 +205,16 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_tx_f2    : std_logic := '0';
   signal gen_scl_f1   : std_logic := '0';
   signal gen_scl_f2   : std_logic := '0';
-  signal registered_ch0_f1 : std_logic := '0';
-  signal registered_ch0_f2 : std_logic := '0';
   signal gen_capture_active_f1 : std_logic := '0';
   signal gen_capture_active_f2 : std_logic := '0';
   signal gen_spi_test_f1 : std_logic := '0';
   signal gen_spi_test_f2 : std_logic := '0';
   signal gen_rs485_pair_f1 : std_logic := '0';
   signal gen_rs485_pair_f2 : std_logic := '0';
-  signal debug_ch0_enable_f1 : std_logic := '0';
-  signal debug_ch0_enable_f2 : std_logic := '0';
-  attribute preserve of debug_ch0_enable_f1 : signal is true;
-  attribute preserve of debug_ch0_enable_f2 : signal is true;
-  signal debug_ch0_channel_f1 : natural range 0 to LA_CHANNELS-1 := 0;
-  signal debug_ch0_channel_f2 : natural range 0 to LA_CHANNELS-1 := 0;
+  signal gen_capture_tx_channel_f1 : natural range 0 to LA_CHANNELS-1 := 0;
+  signal gen_capture_tx_channel_f2 : natural range 0 to LA_CHANNELS-1 := 0;
+  signal gen_capture_scl_channel_f1 : natural range 0 to LA_CHANNELS-1 := 1;
+  signal gen_capture_scl_channel_f2 : natural range 0 to LA_CHANNELS-1 := 1;
   signal gen_tx_pin_f1 : natural range 0 to 31 := 0;
   signal gen_tx_pin_f2 : natural range 0 to 31 := 0;
   signal gen_scl_pin_f1 : natural range 0 to 31 := 0;
@@ -309,10 +307,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Pin_Map_Write  : OUT STD_LOGIC := '0';
     Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
     Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
-    Debug_Ch0_Enable : OUT STD_LOGIC := '0';
-    Debug_Ch0_Channel : OUT NATURAL range 0 to 15 := 0;
-    Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
-    Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
+    Gen_Capture_Tx_Channel  : OUT NATURAL range 0 to 15 := 0;
+    Gen_Capture_Scl_Channel : OUT NATURAL range 0 to 15 := 1;
     Gen_Start_Ack    : IN  STD_LOGIC := '0';
     Gen_Start_Reject : IN  STD_LOGIC := '0';
     Gen_Done_Pulse   : IN  STD_LOGIC := '0';
@@ -382,20 +378,28 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   END COMPONENT;
 
 BEGIN
-  debug_ch0_enable_eff <= debug_ch0_enable when ENABLE_DEBUG_CH0 else '0';
-
-
   -- FAST_SPEED is a dedicated digital-only build profile. On this MAX 10 /
   -- 12 MHz reference combination the legal high-speed PLL solution is
   -- approximately 100.2 MHz sys, 200.4 MHz sample, and 167.0 MHz SDRAM.
-  gen_use_pll_fast : if (PLL_MULT /= 1 or PLL_DIV /= 1) and FAST_SPEED and not Sim generate
+  gen_use_pll_fast_direct : if (PLL_MULT /= 1 or PLL_DIV /= 1) and FAST_SPEED and not Sim and not USE_DDIO_CLK_FORWARD generate
+    pll_inst : entity work.SDRAM_PLL
+      generic map (FAST_SPEED_MODE => true)
+      port map (inclk0 => CLK, c0 => sys_clk, c1 => fast_clk, c2 => sdram_core_clk,
+                c3 => adc_conv_clk, c4 => sdram_chip_clk_out, locked => pll_locked);
+  end generate;
+  gen_use_pll_fast_ddio : if (PLL_MULT /= 1 or PLL_DIV /= 1) and FAST_SPEED and not Sim and USE_DDIO_CLK_FORWARD generate
     pll_inst : entity work.SDRAM_PLL
       generic map (FAST_SPEED_MODE => true)
       port map (inclk0 => CLK, c0 => sys_clk, c1 => fast_clk, c2 => sdram_core_clk,
                 c3 => adc_conv_clk, c4 => sdram_chip_clk_out, locked => pll_locked);
   end generate;
   -- Normal mode retains the legacy ADC clock requirement on c3.
-  gen_use_pll_normal : if (PLL_MULT /= 1 or PLL_DIV /= 1) and not FAST_SPEED and not Sim generate
+  gen_use_pll_normal_direct : if (PLL_MULT /= 1 or PLL_DIV /= 1) and not FAST_SPEED and not Sim and not USE_DDIO_CLK_FORWARD generate
+    pll_inst : entity work.SDRAM_PLL
+      port map (inclk0 => CLK, c0 => sys_clk, c1 => fast_clk, c2 => sdram_core_clk,
+                c3 => adc_conv_clk, c4 => sdram_chip_clk_out, locked => pll_locked);
+  end generate;
+  gen_use_pll_normal_ddio : if (PLL_MULT /= 1 or PLL_DIV /= 1) and not FAST_SPEED and not Sim and USE_DDIO_CLK_FORWARD generate
     pll_inst : entity work.SDRAM_PLL
       port map (inclk0 => CLK, c0 => sys_clk, c1 => fast_clk, c2 => sdram_core_clk,
                 c3 => adc_conv_clk, c4 => sdram_chip_clk_out, locked => pll_locked);
@@ -409,7 +413,39 @@ BEGIN
     pll_locked <= '1';
   end generate;
 
-  sdram_clk <= sdram_chip_clk_out;
+  gen_ddio_clk_forward : if USE_DDIO_CLK_FORWARD and not Sim generate
+    sdram_clk_ddio_inst : altddio_out
+      generic map (
+        intended_device_family => "MAX 10",
+        extend_oe_disable => "OFF",
+        invert_output => "OFF",
+        oe_reg => "UNREGISTERED",
+        power_up_high => "OFF",
+        width => 1,
+        lpm_hint => "UNUSED",
+        lpm_type => "altddio_out"
+      )
+      port map (
+        aclr => '0',
+        aset => '0',
+        datain_h => "1",
+        datain_l => "0",
+        dataout => sdram_clk_ddio,
+        oe => '1',
+        oe_out => open,
+        outclock => sdram_core_clk,
+        outclocken => '1',
+        sclr => '0',
+        sset => '0'
+      );
+    sdram_clk_fwd <= sdram_clk_ddio(0);
+  end generate;
+
+  gen_direct_clk_forward : if (not USE_DDIO_CLK_FORWARD) or Sim or ((PLL_MULT = 1) and (PLL_DIV = 1)) generate
+    sdram_clk_fwd <= sdram_chip_clk_out;
+  end generate;
+
+  sdram_clk <= sdram_clk_fwd;
 
   -- Pin pool: gather all physical digital-capable inputs into one vector.
   -- AIN0-AIN7 are reserved by the ADC IP block (bank 1A).
@@ -475,8 +511,10 @@ BEGIN
             internal_data_r(i) <= not gen_tx_d2;
           elsif gen_capture_active = '1' and gen_scl_pin = pin_map(i) then
             internal_data_r(i) <= gen_scl_d2;
-          elsif i = debug_ch0_channel and debug_ch0_enable_eff = '1' then
-            internal_data_r(i) <= registered_ch0;
+          elsif gen_capture_active = '1' and i = gen_capture_tx_channel then
+            internal_data_r(i) <= gen_tx_d2;
+          elsif gen_capture_active = '1' and i = gen_capture_scl_channel then
+            internal_data_r(i) <= gen_scl_d2;
           else
             internal_data_r(i) <= pin_pool(pin_map(i));
           end if;
@@ -484,35 +522,6 @@ BEGIN
       end if;
     end process;
   end generate;
-
-  process(sys_clk)
-  begin
-    if rising_edge(sys_clk) then
-      if debug_ch0_enable_eff = '1' then
-        if unsigned(debug_ch0_period_active) <= 1 then
-          debug_ch0_period_active <= x"00000002";
-          debug_ch0_duty_active <= x"00000001";
-          debug_ch0_cnt <= (others => '0');
-        elsif unsigned(debug_ch0_cnt) >= unsigned(debug_ch0_period_active) - 1 then
-          debug_ch0_cnt <= (others => '0');
-          debug_ch0_period_active <= debug_ch0_period;
-          debug_ch0_duty_active <= debug_ch0_duty;
-        else
-          debug_ch0_cnt <= std_logic_vector(unsigned(debug_ch0_cnt) + 1);
-        end if;
-        if unsigned(debug_ch0_cnt) < unsigned(debug_ch0_duty_active) then
-          registered_ch0 <= '1';
-        else
-          registered_ch0 <= '0';
-        end if;
-      else
-        registered_ch0 <= '0';
-        debug_ch0_cnt <= (others => '0');
-        debug_ch0_period_active <= debug_ch0_period;
-        debug_ch0_duty_active <= debug_ch0_duty;
-      end if;
-    end if;
-  end process;
 
   -- Input synchroniser + pin map write
   process(sys_clk) begin
@@ -551,11 +560,6 @@ BEGIN
     if rising_edge(sys_clk) then
       pin_out <= (others => '0');
       pin_dir <= (others => '0');
-
-      if debug_ch0_enable_eff = '1' then
-        pin_out(pin_map(debug_ch0_channel)) <= registered_ch0;
-        pin_dir(pin_map(debug_ch0_channel)) <= '1';
-      end if;
 
       if gen_busy = '1' then
         if gen_tx_pin < PIN_POOL_SIZE then
@@ -598,12 +602,10 @@ BEGIN
     process(fast_clk)
     begin
       if rising_edge(fast_clk) then
-        registered_ch0_f1   <= registered_ch0;
-        registered_ch0_f2   <= registered_ch0_f1;
-        debug_ch0_enable_f1 <= debug_ch0_enable_eff;
-        debug_ch0_enable_f2 <= debug_ch0_enable_f1;
-        debug_ch0_channel_f1 <= debug_ch0_channel;
-        debug_ch0_channel_f2 <= debug_ch0_channel_f1;
+        gen_capture_tx_channel_f1 <= gen_capture_tx_channel;
+        gen_capture_tx_channel_f2 <= gen_capture_tx_channel_f1;
+        gen_capture_scl_channel_f1 <= gen_capture_scl_channel;
+        gen_capture_scl_channel_f2 <= gen_capture_scl_channel_f1;
       end if;
     end process;
   end generate;
@@ -613,12 +615,10 @@ BEGIN
     process(fast_clk)
     begin
       if rising_edge(fast_clk) then
-        registered_ch0_f1   <= registered_ch0;
-        registered_ch0_f2   <= registered_ch0_f1;
-        debug_ch0_enable_f1 <= debug_ch0_enable_eff;
-        debug_ch0_enable_f2 <= debug_ch0_enable_f1;
-        debug_ch0_channel_f1 <= debug_ch0_channel;
-        debug_ch0_channel_f2 <= debug_ch0_channel_f1;
+        gen_capture_tx_channel_f1 <= gen_capture_tx_channel;
+        gen_capture_tx_channel_f2 <= gen_capture_tx_channel_f1;
+        gen_capture_scl_channel_f1 <= gen_capture_scl_channel;
+        gen_capture_scl_channel_f2 <= gen_capture_scl_channel_f1;
       end if;
     end process;
   end generate;
@@ -638,8 +638,10 @@ BEGIN
       sen_spc_fast_f1 <= SEN_SPC;  sen_spc_fast_f2 <= sen_spc_fast_f1;
       sen_sdo_fast_f1 <= SEN_SDO;  sen_sdo_fast_f2 <= sen_sdo_fast_f1;
       for i in 0 to LA_CHANNELS-1 loop
-        if i = debug_ch0_channel_f2 and debug_ch0_enable_f2 = '1' then
-          capture_data_fast_speed_r(i) <= registered_ch0_f2;
+        if gen_capture_active_f2 = '1' and i = gen_capture_tx_channel_f2 then
+          capture_data_fast_speed_r(i) <= gen_tx_d2;
+        elsif gen_capture_active_f2 = '1' and i = gen_capture_scl_channel_f2 then
+          capture_data_fast_speed_r(i) <= gen_scl_d2;
         elsif accel_attach_f2 = '1' and i = 13 then
           capture_data_fast_speed_r(i) <= sen_sdi_fast_f2;
         elsif accel_attach_f2 = '1' and i = 14 then
@@ -691,8 +693,10 @@ BEGIN
         for i in 0 to LA_CHANNELS-1 loop
           capture_data_fast_mapped_r(i) <= pin_pool_f2(pin_map_fast(i));
 
-          if i = debug_ch0_channel_f2 and debug_ch0_enable_f2 = '1' then
-            capture_data_fast_normal_r(i) <= registered_ch0_f2;
+          if gen_capture_active_f2 = '1' and i = gen_capture_tx_channel_f2 then
+            capture_data_fast_normal_r(i) <= gen_tx_f2;
+          elsif gen_capture_active_f2 = '1' and i = gen_capture_scl_channel_f2 then
+            capture_data_fast_normal_r(i) <= gen_scl_f2;
           elsif gen_capture_active_f2 = '1' and gen_tx_pin_f2 = pin_map_fast(i) then
             capture_data_fast_normal_r(i) <= gen_tx_f2;
           elsif gen_capture_active_f2 = '1' and gen_rs485_pair_f2 = '1' and gen_scl_pin_f2 = pin_map_fast(i) then
@@ -959,10 +963,8 @@ BEGIN
     Pin_Map_Write  => pin_map_write,
     Pin_Map_Channel => pin_map_channel,
     Pin_Map_Pin     => pin_map_pin,
-    Debug_Ch0_Enable => debug_ch0_enable,
-    Debug_Ch0_Channel => debug_ch0_channel,
-    Debug_Ch0_Period => debug_ch0_period,
-    Debug_Ch0_Duty   => debug_ch0_duty,
+    Gen_Capture_Tx_Channel => gen_capture_tx_channel,
+    Gen_Capture_Scl_Channel => gen_capture_scl_channel,
     Gen_Start_Ack    => gen_start_ack_i,
     Gen_Start_Reject => gen_start_reject_i,
     Gen_Done_Pulse   => gen_done_pulse_i,
@@ -1049,18 +1051,28 @@ BEGIN
   end process;
   LED(7) <= gen_busy_latch;
 
-  LED_CTRL: entity work.LED_Controller
-    port map (
-      clk            => sys_clk,
-      rst            => '0',
-      armed          => armed_i,
-      capture_run    => core_status(0),
-      capture_full   => core_status(3),
-      host_connected => '1',
-      fade_tick      => fade_tick,
-      led_target     => led_target,
-      fade_step      => led_fade_step
-    );
+  gen_led_on : if ENABLE_LED generate
+    LED_CTRL: entity work.LED_Controller
+      port map (
+        clk            => sys_clk,
+        rst            => '0',
+        armed          => armed_i,
+        capture_run    => core_status(0),
+        capture_full   => core_status(3),
+        host_connected => '1',
+        fade_tick      => fade_tick,
+        led_target     => led_target,
+        fade_step      => led_fade_step
+      );
+  end generate gen_led_on;
+
+  gen_led_off : if not ENABLE_LED generate
+    -- LED_Controller gated out (timing closure). Hold the fade targets at safe
+    -- constants; the surrounding PWM/brightness logic then constant-propagates
+    -- to a dark LED bank, freeing LEs and routing near the SDRAM I/O cone.
+    led_target    <= (others => 0);
+    led_fade_step <= (others => 1);
+  end generate gen_led_off;
 
   gen_signal_gen_on : if ENABLE_SIGNAL_GEN generate
   begin

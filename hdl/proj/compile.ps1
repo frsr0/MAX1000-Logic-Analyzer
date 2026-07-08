@@ -4,6 +4,8 @@ param(
     # Elide the MSO bit-pack capture pipeline (FAST_RAW_BUILD=true). Default is
     # the full mixed-signal build with mso_capture included.
     [switch]$RawOnly,
+    # Keep the old direct PLL c4 forward instead of the DDIO clock forward.
+    [switch]$LegacyClkForward,
     # Seed 3 — best-known FULL mixed-signal build (FAST_RAW_BUILD=false,
     # mso_capture included, AFIFO_DEPTH=1024, registered analog_packer
     # slot_free): timing closes with clk[1]=+0.128ns, clk[2]=+0.138ns,
@@ -14,6 +16,7 @@ param(
 )
 
 $FastRawBuild = if ($RawOnly) { 'true' } else { 'false' }
+$UseDdioClkForward = if ($LegacyClkForward) { 'false' } else { 'true' }
 
 
 $QUARTUS_DIR = "C:\intelFPGA_lite\18.1\quartus\bin64"
@@ -144,11 +147,13 @@ architecture rtl of OLS_Logic_Analyzer_wrapper is
     constant FAST_SPEED : boolean := true;
     -- false = full mixed-signal build (mso_capture bit-pack pipeline included)
     constant FAST_RAW_BUILD : boolean := $FastRawBuild;
+    -- true = DDIO forwarded SDRAM chip clock, false = legacy PLL c4 forward
+    constant USE_DDIO_CLK_FORWARD : boolean := $UseDdioClkForward;
 $($attrLines -join "`n")
 $($ioLines -join "`n")
 begin
     core : entity work.OLS_SDRAM_Top
-    generic map (FAST_SPEED => FAST_SPEED, FAST_RAW_BUILD => FAST_RAW_BUILD)
+    generic map (FAST_SPEED => FAST_SPEED, FAST_RAW_BUILD => FAST_RAW_BUILD, USE_DDIO_CLK_FORWARD => USE_DDIO_CLK_FORWARD)
     port map (
 $($portMapLines -join "`n")
     );

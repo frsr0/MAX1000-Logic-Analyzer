@@ -40,7 +40,7 @@ begin
       sdram_dqm=>sdram_dqm, sdram_ras_n=>sdram_ras_n, sdram_we_n=>sdram_we_n,
       sdram_s_address=>(others=>'0'), sdram_s_byteenable_n=>"00",
       sdram_s_chipselect=>'0', sdram_s_writedata=>(others=>'0'),
-      sdram_s_read_n=>'1', sdram_s_write_n=>'1', sdram_s_burst=>'0',
+      sdram_s_read_n=>'1', sdram_s_write_n=>'1',
       sdram_s_readdata=>open, sdram_s_readdatavalid=>open, sdram_s_waitrequest=>open,
       sdram_s_idle=>s_idle,
       capture_stream_valid=>stream_valid, capture_stream_ready=>stream_ready,

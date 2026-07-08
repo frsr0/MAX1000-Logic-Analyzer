@@ -23,7 +23,6 @@ port (
     sdram_s_writedata     : in std_logic_vector(15 downto 0);
     sdram_s_read_n        : in std_logic;
     sdram_s_write_n       : in std_logic;
-    sdram_s_burst         : in std_logic := 'X';
     sdram_s_readdata      : out std_logic_vector(15 downto 0);
     sdram_s_readdatavalid : out std_logic;
     sdram_s_waitrequest   : out std_logic;
@@ -150,15 +149,6 @@ architecture rtl of SDRAM_Controller is
     signal pend_wn_next : std_logic := '0';
     signal pend_wn_same_row : std_logic := '0';
     signal pend_wn_next_same_row : std_logic := '0';
-
-    -- Burst FIFO: stores up to 8 addr+data pairs during burst load
-    type burst_fifo_array is array(0 to 7) of std_logic_vector(37 downto 0);
-    signal burst_fifo      : burst_fifo_array := (others => (others => '0'));
-    signal burst_fifo_cnt  : natural range 0 to 8 := 0;
-    signal burst_fifo_head : natural range 0 to 7 := 0;
-    signal burst_fifo_tail : natural range 0 to 7 := 0;
-    signal burst_active    : std_logic := '0';
-    signal burst_cnt       : natural range 0 to 3 := 0;
 
     signal dq_oe : std_logic := '0';
     -- Registered streaming write data (see DQ mux comment).
@@ -294,7 +284,6 @@ begin
             same_row_buf_a <= '0'; same_row_buf_next <= '0'; same_row_cap_stream <= '0';
             r_pipe_stream_ready <= '0';
 
-            burst_fifo_cnt <= 0; burst_active <= '0'; burst_cnt <= 0;
             last_op_was_stream <= '0';
 
         elsif rising_edge(clk_in_clk) then
@@ -347,11 +336,10 @@ begin
                 pend_rn <= '1';
                 pend_wn <= '0';
             elsif last_wn = '1' and sdram_s_write_n = '0' then
-                -- Capture uses capture_stream_* exclusively. Keep the simple
-                -- single-write Avalon path for legacy/sim access, but remove the
-                -- unused burst FIFO service path from the 167 MHz timing cone.
-                v_depth := v_depth + 1;
-                if pend_wn = '0' then
+                    -- Capture uses capture_stream_* exclusively. Keep the simple
+                    -- single-write Avalon path for legacy/sim access.
+                    v_depth := v_depth + 1;
+                    if pend_wn = '0' then
                     buf_a <= sdram_s_address;
                     buf_wd <= sdram_s_writedata;
                     pend_wn <= '1';
@@ -538,26 +526,9 @@ begin
                     dq_oe <= '1';
                     last_op_was_stream <= '0';
                     -- Drive DQ from the single registered output, aligned with the
-                    -- write command (uses the CURRENT buf_wd; the burst branch below
-                    -- loads the NEXT beat into buf_wd in the same cycle).
+                    -- write command.
                     dq_out <= buf_wd;
-                    if burst_active = '1' and burst_cnt < 3 then
-                        -- Stay for next burst beat: drain FIFO entry
-                        burst_cnt <= burst_cnt + 1;
-                        if burst_fifo_cnt > 0 then
-                            buf_a <= burst_fifo(burst_fifo_tail)(37 downto 16);
-                            buf_wd <= burst_fifo(burst_fifo_tail)(15 downto 0);
-                            col_r <= burst_fifo(burst_fifo_tail)(23 downto 16);
-                            if burst_fifo_tail = 7 then burst_fifo_tail <= 0;
-                            else burst_fifo_tail <= burst_fifo_tail + 1; end if;
-                            burst_fifo_cnt <= burst_fifo_cnt - 1;
-                        end if;
-                        state <= ST_WR;
-                    else
-                        burst_active <= '0';
-                        burst_cnt <= 0;
-                        state <= ST_TWR;
-                    end if;
+                    state <= ST_TWR;
 
                 when ST_STREAM_WR =>
                     last_op_was_stream <= '1';
@@ -613,8 +584,6 @@ begin
 
                 when ST_TWR =>
                     dq_oe <= '0';
-                    burst_active <= '0';
-                    burst_cnt <= 0;
                     -- For page-mode writes (same row pending), skip TWR delay.
                     -- tWR is only needed before precharge, not between same-row writes.
                     if last_op_was_stream = '0'

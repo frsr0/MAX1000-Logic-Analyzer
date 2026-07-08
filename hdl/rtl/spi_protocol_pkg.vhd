@@ -74,12 +74,8 @@ package spi_protocol_pkg is
   constant REG_GEN_DATA     : reg_addr_t := x"33";
   constant REG_GEN_RX_DATA  : reg_addr_t := x"34";
   constant REG_IFACE_MODE   : reg_addr_t := x"F0";
-  constant REG_DEBUG_CH0_ENABLE : reg_addr_t := x"40";
-  constant REG_DEBUG_CH0_ROUTE  : reg_addr_t := x"41";
-  constant REG_DEBUG_CH0_PERIOD : reg_addr_t := x"43";
-  constant REG_DEBUG_CH0_DUTY   : reg_addr_t := x"44";
-  -- 0x41 formerly REG_SCHMITT_ENABLE (digital glitch filter moved to host
-  -- software); repurposed for debug waveform logical channel select.
+  constant REG_GEN_CAPTURE_TX_CHAN  : reg_addr_t := x"40";
+  constant REG_GEN_CAPTURE_SCL_CHAN : reg_addr_t := x"41";
   -- 0x42 remains reserved.
   constant REG_CAPTURE_SEQ       : reg_addr_t := x"50";
   constant REG_PRODUCER_INDEX    : reg_addr_t := x"51";

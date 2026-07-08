@@ -41,18 +41,22 @@
  # every real CDC crossing between the PLL's genuinely-async outputs was
  # analyzed as synchronous — the cause of large, seed-independent setup
  # violations on every clock (2026-07-07).
- create_generated_clock -name sys_clk \
-   -source [get_pins -compatibility_mode {*pll1|inclk[0]}] \
-   [get_pins -compatibility_mode {*pll1|clk[0]}]
- create_generated_clock -name fast_clk \
-   -source [get_pins -compatibility_mode {*pll1|inclk[0]}] \
-   [get_pins -compatibility_mode {*pll1|clk[1]}]
- create_generated_clock -name sdram_core_clk \
-   -source [get_pins -compatibility_mode {*pll1|inclk[0]}] \
-   [get_pins -compatibility_mode {*pll1|clk[2]}]
- create_generated_clock -name adc_clk \
-   -source [get_pins -compatibility_mode {*pll1|inclk[0]}] \
-   [get_pins -compatibility_mode {*pll1|clk[3]}]
+create_generated_clock -name sys_clk \
+  -source [get_pins -compatibility_mode {*pll1|inclk[0]}] \
+  -multiply_by 167 -divide_by 20 \
+  [get_pins -compatibility_mode {*pll1|clk[0]}]
+create_generated_clock -name fast_clk \
+  -source [get_pins -compatibility_mode {*pll1|inclk[0]}] \
+  -multiply_by 167 -divide_by 10 \
+  [get_pins -compatibility_mode {*pll1|clk[1]}]
+create_generated_clock -name sdram_core_clk \
+  -source [get_pins -compatibility_mode {*pll1|inclk[0]}] \
+  -multiply_by 167 -divide_by 12 \
+  [get_pins -compatibility_mode {*pll1|clk[2]}]
+create_generated_clock -name adc_clk \
+  -source [get_pins -compatibility_mode {*pll1|inclk[0]}] \
+  -multiply_by 167 -divide_by 168 \
+  [get_pins -compatibility_mode {*pll1|clk[3]}]
  
  # Derive remaining PLL output clocks and PLL-internal dividers
  derive_pll_clocks
@@ -102,11 +106,12 @@
  set_false_path -from [get_registers *auto_generated|rdptr_g*] \
                 -to   [get_registers *auto_generated|wrfull_eq_comp*]
  
-  # Make the forwarded SDRAM chip clock explicit so I/O delays are referenced to
- # the same delayed edge the external SDRAM sees, not the internal controller
- # clock that launches the commands/data.
+ # Make the forwarded SDRAM chip clock explicit so I/O delays are referenced to
+ # the same DDIO-forwarded edge the external SDRAM sees, not the internal
+ # controller clock that launches the commands/data.
  create_generated_clock -name SDRAM_CHIP_CLK_OUT \
-   -source [get_pins -compatibility_mode {*pll1|clk[4]}] \
+   -source [get_pins -compatibility_mode {*pll1|clk[2]}] \
+   -master_clock [get_clocks sdram_core_clk] -invert \
    [get_ports {sdram_clk}]
  
  # SDRAM write-side timing relative to the forwarded chip clock. The board now

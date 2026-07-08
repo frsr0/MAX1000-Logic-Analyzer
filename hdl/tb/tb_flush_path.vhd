@@ -41,7 +41,6 @@ architecture bench of tb_flush_path is
   signal sdram_ras_n : std_logic;
   signal sdram_we_n : std_logic;
   signal sdram_clk  : std_logic;
-  signal s_burst    : std_logic;
   signal status     : std_logic_vector(7 downto 0);
   signal fast_clk   : std_logic := '0';
 
@@ -101,7 +100,6 @@ begin
       sdram_we_n   => sdram_we_n,
       sdram_clk    => sdram_clk,
       Status       => status,
-      s_burst      => s_burst,
       Armed        => armed,
       Fast_Mode    => fast_mode,
       FAST_CLK     => fast_clk,

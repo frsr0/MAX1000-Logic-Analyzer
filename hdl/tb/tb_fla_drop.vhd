@@ -42,7 +42,6 @@ architecture bench of tb_fla_drop is
   signal sdram_we_n  : std_logic;
   signal sdram_clk   : std_logic;
   signal status      : std_logic_vector(7 downto 0);
-  signal s_burst     : std_logic;
 
   type word_arr is array (natural range <>) of std_logic_vector(15 downto 0);
   signal store : word_arr(0 to NSAMP-1) := (others => (others => '0'));
@@ -153,7 +152,6 @@ begin
       sdram_cs_n   => sdram_cs_n,
       sdram_clk    => sdram_clk,
       Status       => status,
-      s_burst      => s_burst,
       Armed        => armed,
       Fast_Mode    => fast_mode,
       FAST_CLK     => fastclk,

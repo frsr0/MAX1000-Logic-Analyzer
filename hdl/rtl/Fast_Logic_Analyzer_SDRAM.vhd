@@ -45,7 +45,6 @@ port (
    sdram_cs_n   : out std_logic := '0';
    sdram_clk    : out std_logic;
     Status       : out std_logic_vector(7 downto 0) := (others => '0');
-    s_burst      : out std_logic := '0';
     Armed        : in  std_logic := '0';
     Fast_Mode    : in  std_logic := '0';
     FAST_CLK     : in  std_logic := '0';
@@ -107,7 +106,6 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal s_rd    : std_logic := '0';
   signal s_rdata : std_logic_vector(15 downto 0) := (others => '0');
    signal s_rvalid: std_logic := '0';
-   signal s_burst_i : std_logic := '0';
   signal full_i      : std_logic := '0';
   signal run_sync1   : std_logic := '0';
   signal run_sync2   : std_logic := '0';
@@ -394,7 +392,6 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
     Address      : in  std_logic_vector(21 downto 0) := (others => '0');
     Write_Enable : in  std_logic := '0';
     Write_Data   : in  std_logic_vector(15 downto 0) := (others => '0');
-    Burst        : in  std_logic := '0';
     Capture_Stream_Valid : in  std_logic := '0';
     Capture_Stream_Ready : out std_logic := '0';
     Capture_Stream_Address : in std_logic_vector(21 downto 0) := (others => '0');
@@ -1515,7 +1512,6 @@ begin
       cont_accept_v := false;
       fifo_rd <= '0';
       s_wr <= '0';
-      s_burst_i <= '0';
       cap_stream_valid <= '0';
       rdfifo_wr <= '0';
       fifo_rdempty_r <= fifo_rdempty;
@@ -1983,7 +1979,6 @@ begin
   end process;
 
   Full <= full_i;
-  s_burst <= s_burst_i;
   Buffer_Full(0) <= buf_full(0);
   Buffer_Full(2) <= buf_full(2);
   Buffer_Full(1) <= buf_full(1);
@@ -2007,7 +2002,6 @@ begin
     Address      => s_addr,
     Write_Enable => s_wr,
     Write_Data   => s_wdata,
-    Burst        => s_burst_i,
     Capture_Stream_Valid => cap_stream_valid,
     Capture_Stream_Ready => cap_stream_ready,
     Capture_Stream_Address => cap_stream_addr,

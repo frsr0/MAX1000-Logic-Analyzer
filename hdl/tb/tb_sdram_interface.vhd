@@ -54,7 +54,6 @@ begin
       Address      => addr,
       Write_Enable => wr_en,
       Write_Data   => wr_data,
-      Burst        => burst,
       Capture_Stream_Valid => '0',
       Capture_Stream_Ready => open,
       Capture_Stream_Address => (others => '0'),

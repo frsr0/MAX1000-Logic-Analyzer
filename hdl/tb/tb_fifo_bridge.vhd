@@ -39,7 +39,6 @@ architecture bench of tb_fifo_bridge is
   signal packed_ready : std_logic;
   signal packed_accepted : integer := 0;
 
-  signal s_burst    : std_logic;
   signal sdram_addr : std_logic_vector(11 downto 0);
   signal sdram_ba   : std_logic_vector(1 downto 0);
   signal sdram_cas_n, sdram_cke, sdram_cs_n : std_logic;
@@ -117,7 +116,6 @@ begin
       sdram_we_n   => sdram_we_n,
       sdram_clk    => sdram_clk,
       Status       => status,
-      s_burst      => s_burst,
       Armed        => armed,
       Fast_Mode    => fast_mode,
       FAST_CLK     => fast_clk,

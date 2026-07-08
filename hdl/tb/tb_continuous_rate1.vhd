@@ -54,7 +54,7 @@ begin
       Samples => samples_in, Start_Offset => start_offset,
       Run => run, Full => full, Inputs => inputs,
       Address => address, Outputs => outputs,
-      sdram_dq => sdram_dq, Status => status, s_burst => open,
+      sdram_dq => sdram_dq, Status => status,
       Armed => armed, Fast_Mode => fast_mode,
       FAST_CLK => fast_clk, Continuous_Mode => continuous_mode,
       Buffer_Full => buffer_full, Buffer_Ack => buffer_ack,

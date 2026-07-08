@@ -42,7 +42,6 @@ architecture bench of tb_fast_analyzer is
   signal sdram_cs_n : std_logic := '0';
   signal sdram_clk : std_logic;
   signal status : std_logic_vector(7 downto 0);
-  signal s_burst : std_logic;
   signal armed : std_logic := '0';
   signal fast_mode : std_logic := '0';
   signal continuous_mode : std_logic := '0';
@@ -107,7 +106,6 @@ begin
       sdram_cs_n   => sdram_cs_n,
       sdram_clk    => sdram_clk,
       Status       => status,
-      s_burst      => s_burst,
       Armed        => armed,
       Fast_Mode    => fast_mode,
       FAST_CLK     => fast_clk,

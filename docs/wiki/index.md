@@ -78,4 +78,6 @@ graph TB
 - Analog-fast (1 ADC lane), analog-all (4 lanes), mixed (digital + analog) modes
 - Narrow packed digital (200 MHz, 1 channel)
 - UART, I2C, SPI, PWM, RS-485 generation
-- Built with Quartus, targeting 10M08DAF484C8G, validated seed 33, FAST_SPEED build
+- Built with Quartus, targeting 10M08DAF484C8G, FAST_SPEED build
+- SDRAM write timing is now closed in STA with the DDIO-forwarded chip clock:
+  worst setup `+1.108 ns`, worst hold `+1.791 ns` at seed 3

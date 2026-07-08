@@ -196,7 +196,7 @@ def _unpack_adc_lane_raw12(data: bytes) -> List[int]:
         out.append(lo0 | (hi0 << 8))
         lo1 = (data[i + 1] >> 4) & 0x0F
         hi1 = data[i + 2]
-        out.append((lo1 << 8) | hi1)
+        out.append(lo1 | (hi1 << 4))
     return out
 
 
