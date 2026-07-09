@@ -322,6 +322,25 @@ class TestOLSDeviceSPI:
         ])
         assert len(data) == 1200
 
+    def test_read_capture_range_looks_ahead_to_next_raw_batch(self, device_spi):
+        class PipelinedPacket:
+            def __init__(self):
+                self.batch_sizes = []
+
+            def read_capture_blocks(self, byte_addrs, compressed=False):
+                assert compressed is False
+                self.batch_sizes.append(len(byte_addrs))
+                return [b'\x00\x00' * 512 for _ in byte_addrs]
+
+        pkt = PipelinedPacket()
+        device_spi.pkt = pkt
+        sample_count = 512 * 129
+
+        data = device_spi.read_capture_range(0, sample_count)
+
+        assert len(data) == sample_count * 2
+        assert pkt.batch_sizes == [128, 2]
+
     def test_read_capture_range_decompresses_compressed_blocks(self, device_spi):
         # Pure RLE data: each block decompresses to 1024 bytes (512 samples)
         block0 = struct.pack('<4H', 256, 0xFFFE, 256, 0xFFFF)  # 512 samples of two runs

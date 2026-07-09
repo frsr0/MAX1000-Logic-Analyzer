@@ -5,6 +5,7 @@ import os
 import time
 import struct
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from array import array
 import numpy as np
 from .wire_format import (
@@ -901,13 +902,17 @@ class OLSDeviceSPI:
         blocks_total = 0.0
         decode_total = 0.0
         retry_total = 0.0
-        while remaining > 0:
-            # Plan a batch of overlapping block addresses (each non-zero block
-            # requests one sample early and nets 511 samples after the drop).
+        read_blocks = getattr(self.pkt, 'read_capture_blocks', None)
+        pipeline = (not use_compress and callable(read_blocks))
+        executor = ThreadPoolExecutor(max_workers=1) if pipeline else None
+        pending = None
+
+        def plan_batch(batch_sample, batch_remaining):
+            """Plan one batch and return its next logical cursor."""
             addrs = []
             drops = []
-            s = sample
-            rem = remaining
+            s = batch_sample
+            rem = batch_remaining
             while rem > 0 and len(addrs) < batch_blocks:
                 if s > 0:
                     addrs.append((s - 1) * 2)
@@ -919,49 +924,81 @@ class OLSDeviceSPI:
                     take = min(rem, 512)
                 s += take
                 rem -= take
-            blocks = None
-            read_blocks = getattr(self.pkt, 'read_capture_blocks', None)
-            t_blocks = time.perf_counter()
-            if callable(read_blocks):
-                blocks = read_blocks(addrs, compressed=batched_compressed)
-            if not isinstance(blocks, list):
-                # Transport without batching support (or test double):
-                # per-block packetized reads.
-                blocks = [self.pkt.read_capture_block(a, compressed=batched_compressed)
-                          for a in addrs]
-            blocks_total += time.perf_counter() - t_blocks
-            if use_compress:
-                decode_block = decompress_block_readback_stream
-                # Decompress each block; any short/invalid decode is re-read
-                # raw with the FPGA compression flags cleared.
-                t_decode = time.perf_counter()
-                decoded = [decode_block(b) if b else b'' for b in blocks]
-                need_raw = [j for j, d in enumerate(decoded) if len(d) != 1024]
-                if need_raw:
-                    t_retry = time.perf_counter()
-                    raw_blocks = self._read_blocks_uncompressed(
-                        [addrs[j] for j in need_raw])
-                    retry_total += time.perf_counter() - t_retry
-                    for j, rb in zip(need_raw, raw_blocks):
-                        if rb:
-                            decoded[j] = rb
-                blocks = decoded
-                decode_total += time.perf_counter() - t_decode
-            stop = False
-            for i, (block, drop) in enumerate(zip(blocks, drops)):
-                if not block:
-                    stop = True
+            return addrs, drops, s, rem
+
+        def fetch_batch(addrs):
+            blocks = read_blocks(addrs, compressed=False)
+            if isinstance(blocks, list):
+                return blocks
+            return [self.pkt.read_capture_block(a, compressed=False)
+                    for a in addrs]
+
+        try:
+            while remaining > 0:
+                # Plan a batch of overlapping block addresses (each non-zero
+                # block requests one sample early and nets 511 samples after
+                # the drop).
+                addrs, drops, next_sample, next_remaining = plan_batch(
+                    sample, remaining)
+                t_blocks = time.perf_counter()
+                if pending is None:
+                    if pipeline:
+                        pending = executor.submit(fetch_batch, addrs)
+                    else:
+                        blocks = None
+                        if callable(read_blocks):
+                            blocks = read_blocks(addrs, compressed=batched_compressed)
+                        if not isinstance(blocks, list):
+                            blocks = [self.pkt.read_capture_block(
+                                a, compressed=batched_compressed) for a in addrs]
+                if pending is not None:
+                    blocks = pending.result()
+                    pending = None
+                blocks_total += time.perf_counter() - t_blocks
+
+                # Start the next raw MPSSE batch before parsing/slicing the
+                # current one. The single worker serializes USB transactions;
+                # the caller can process this batch while the next is in flight.
+                if pipeline and next_remaining > 0:
+                    next_addrs, _, _, _ = plan_batch(
+                        next_sample, next_remaining)
+                    pending = executor.submit(fetch_batch, next_addrs)
+
+                if use_compress:
+                    decode_block = decompress_block_readback_stream
+                    # Decompress each block; any short/invalid decode is re-read
+                    # raw with the FPGA compression flags cleared.
+                    t_decode = time.perf_counter()
+                    decoded = [decode_block(b) if b else b'' for b in blocks]
+                    need_raw = [j for j, d in enumerate(decoded) if len(d) != 1024]
+                    if need_raw:
+                        t_retry = time.perf_counter()
+                        raw_blocks = self._read_blocks_uncompressed(
+                            [addrs[j] for j in need_raw])
+                        retry_total += time.perf_counter() - t_retry
+                        for j, rb in zip(need_raw, raw_blocks):
+                            if rb:
+                                decoded[j] = rb
+                    blocks = decoded
+                    decode_total += time.perf_counter() - t_decode
+                stop = False
+                for i, (block, drop) in enumerate(zip(blocks, drops)):
+                    if not block:
+                        stop = True
+                        break
+                    block = block[drop * 2:]
+                    take = min(remaining, len(block) // 2)
+                    if take <= 0:
+                        stop = True
+                        break
+                    out.extend(block[:take * 2])
+                    sample += take
+                    remaining -= take
+                if stop:
                     break
-                block = block[drop * 2:]
-                take = min(remaining, len(block) // 2)
-                if take <= 0:
-                    stop = True
-                    break
-                out.extend(block[:take * 2])
-                sample += take
-                remaining -= take
-            if stop:
-                break
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=True)
         self._timings[f'last_readback_blocks_s_{codec}'] = blocks_total
         if use_compress:
             self._timings[f'last_readback_decode_s_{codec}'] = decode_total
