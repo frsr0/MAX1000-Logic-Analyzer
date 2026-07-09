@@ -13,6 +13,7 @@ from .parallel import ParallelDecoder
 from .pwm import PwmDecoder
 from .rs485 import Rs485Decoder
 from .spi import SpiDecoder
+from .swd import SwdDecoder
 from .uart import UartDecoder
 
 _REGISTRY: Dict[str, Decoder] = {}
@@ -32,5 +33,5 @@ def list_decoders() -> List[dict]:
 
 for _d in (UartDecoder(), I2cDecoder(), SpiDecoder(), PwmDecoder(),
            ParallelDecoder(), OneWireDecoder(), ModbusDecoder(),
-           Rs485Decoder()):
+           Rs485Decoder(), SwdDecoder()):
     register(_d)

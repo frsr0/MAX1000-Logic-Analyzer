@@ -119,8 +119,9 @@ export const api = {
     post<ChannelInfo>(`/api/sessions/${id}/buses`, { name, members, display_base }),
   addDerivedChannel: (id: string, source: string, derive: Record<string, unknown>, name?: string) =>
     post<ChannelInfo>(`/api/sessions/${id}/derived-channels`, { source, derive, name }),
-  spectrum: (id: string, channel: string) =>
-    get<{ freqs: number[]; magnitude: number[] }>(`/api/sessions/${id}/spectrum?channel=${channel}`),
+  spectrum: (id: string, channel: string, start = 0, end = -1) =>
+    get<{ freqs: number[]; magnitude: number[] }>(
+      `/api/sessions/${id}/spectrum?channel=${channel}&start=${start}&end=${end}`),
 
   // decoders
   decoderTypes: () => get<{ decoders: DecoderDescription[] }>('/api/decoders'),

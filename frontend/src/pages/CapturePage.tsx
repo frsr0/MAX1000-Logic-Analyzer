@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useApp } from '../state/appStore';
 import { waveformView } from '../state/waveformStore';
 import { DecoderTable } from '../decoders/DecoderTable';
+import { AnalogPanel } from '../panels/AnalogPanel';
 import { CaptureControls } from '../panels/CaptureControls';
 import { ChannelPanel } from '../panels/ChannelPanel';
 import { DecoderPanel } from '../panels/DecoderPanel';
@@ -15,7 +16,7 @@ import { TriggerPanel } from '../panels/TriggerPanel';
 import { WaveformCanvas } from '../waveform/WaveformCanvas';
 
 type Tab = 'capture' | 'channels' | 'trigger' | 'decoders' | 'measure'
-  | 'markers' | 'export' | 'raw';
+  | 'markers' | 'export' | 'raw' | 'analog';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'capture', label: 'Capture' },
@@ -23,6 +24,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'trigger', label: 'Trigger' },
   { id: 'decoders', label: 'Decoders' },
   { id: 'measure', label: 'Measure' },
+  { id: 'analog', label: 'Analog' },
   { id: 'markers', label: 'Markers' },
   { id: 'export', label: 'Export' },
   { id: 'raw', label: 'Raw' },
@@ -99,6 +101,7 @@ export function CapturePage() {
           {tab === 'trigger' && <TriggerPanel />}
           {tab === 'decoders' && <DecoderPanel />}
           {tab === 'measure' && <MeasurementPanel />}
+          {tab === 'analog' && <AnalogPanel />}
           {tab === 'markers' && <MarkerPanel />}
           {tab === 'export' && <ExportPanel />}
           {tab === 'raw' && <RawInspector />}
