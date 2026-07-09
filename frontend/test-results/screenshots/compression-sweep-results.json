@@ -2,14 +2,14 @@
   {
     "rate_hz": 1000000,
     "codec": "raw",
-    "elapsed_ms": 474,
-    "throughput_msps": 0.105,
-    "session_id": "ses_94fad6fdf1",
+    "elapsed_ms": 469,
+    "throughput_msps": 0.107,
+    "session_id": "ses_0f714ab7e9",
     "timings": {
-      "capture_s": 0.2693450999795459,
-      "wait_s": 0.0022205000277608633,
-      "readback_s": 0.041462100052740425,
-      "blocks_s": 0.04133199999341741,
+      "capture_s": 0.2238399000489153,
+      "wait_s": 0.002238999994006008,
+      "readback_s": 0.04127039999002591,
+      "blocks_s": 0.041174599959049374,
       "decode_s": null,
       "raw_retry_s": null
     }
@@ -17,29 +17,29 @@
   {
     "rate_hz": 1000000,
     "codec": "delta_rle",
-    "elapsed_ms": 654,
-    "throughput_msps": 0.076,
-    "session_id": "ses_e8fcb266c5",
+    "elapsed_ms": 650,
+    "throughput_msps": 0.077,
+    "session_id": "ses_029a8c478e",
     "timings": {
-      "capture_s": 0.2420194000005722,
-      "wait_s": 0.0011680000461637974,
-      "readback_s": 0.05830000003334135,
-      "blocks_s": 0.045761499961372465,
-      "decode_s": 0.012397400045301765,
-      "raw_retry_s": 0.01054889999795705
+      "capture_s": 0.21779039996908978,
+      "wait_s": 0.0022435999708250165,
+      "readback_s": 0.031099200015887618,
+      "blocks_s": 0.030192599981091917,
+      "decode_s": 0.0007591000176034868,
+      "raw_retry_s": 0
     }
   },
   {
     "rate_hz": 10000000,
     "codec": "raw",
-    "elapsed_ms": 660,
-    "throughput_msps": 0.076,
-    "session_id": "ses_22de4658e7",
+    "elapsed_ms": 650,
+    "throughput_msps": 0.077,
+    "session_id": "ses_b3a6e157b7",
     "timings": {
-      "capture_s": 0.1808710999903269,
-      "wait_s": 0.0022115999599918723,
-      "readback_s": 0.04147649998776615,
-      "blocks_s": 0.04135130002396181,
+      "capture_s": 0.18138209998141974,
+      "wait_s": 0.0024547000066377223,
+      "readback_s": 0.042152500012889504,
+      "blocks_s": 0.04201929998816922,
       "decode_s": null,
       "raw_retry_s": null
     }
@@ -47,16 +47,16 @@
   {
     "rate_hz": 10000000,
     "codec": "delta_rle",
-    "elapsed_ms": 664,
-    "throughput_msps": 0.075,
-    "session_id": "ses_cc3611765e",
+    "elapsed_ms": 650,
+    "throughput_msps": 0.077,
+    "session_id": "ses_d765a5abc7",
     "timings": {
-      "capture_s": 0.21026089997030795,
-      "wait_s": 0.0016370000084862113,
-      "readback_s": 0.07194920000620186,
-      "blocks_s": 0.05886530003044754,
-      "decode_s": 0.012868699966929853,
-      "raw_retry_s": 0.010988300025928766
+      "capture_s": 0.16036449995590374,
+      "wait_s": 0.0015739999944344163,
+      "readback_s": 0.021328800008632243,
+      "blocks_s": 0.020570299995597452,
+      "decode_s": 0.0006466000340878963,
+      "raw_retry_s": 0
     }
   }
 ]

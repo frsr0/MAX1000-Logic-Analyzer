@@ -393,6 +393,7 @@ test('live hardware sessions show waveform screenshots across digital and analog
   test.skip(useMockHarness, 'real hardware sessions only exist in live mode');
   test.skip(process.env.PLAYWRIGHT_LIVE_SESSION_SCREENSHOTS !== '1',
     'optional live session screenshot pass; core hardware validation already covers generator and MIL waveforms');
+  test.setTimeout(240_000);
 
   await page.getByRole('button', { name: 'Device' }).click();
   await expect(page.getByRole('heading', { name: 'Device' })).toBeVisible();
@@ -407,11 +408,29 @@ test('live hardware sessions show waveform screenshots across digital and analog
   await openLiveSession(page, 'Generator self-test (uart)');
   await page.screenshot({ path: shot('live-generator-loopback-capture.png'), fullPage: true });
 
+  await page.evaluate(async () => {
+    const clientId = localStorage.getItem('msa_client_id') ?? '';
+    const res = await fetch('/api/diagnostics/live-accel-session', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Client-Id': clientId,
+      },
+    });
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+  });
+
+  await openLiveSession(page, 'LIS3DH WHO_AM_I live');
+  await page.screenshot({ path: shot('live-accelerometer-session-waveform.png'), fullPage: true });
+
   const sessions = await listLiveSessions(page);
   const picks = [
     { query: 'Generator self-test (uart)', shot: 'live-generator-session-waveform.png' },
     { query: 'MIL transaction - Modbus RTU demo', shot: 'live-mil-session-waveform.png' },
     { query: 'HW smoke test capture', shot: 'live-hw-smoke-session-waveform.png' },
+    { query: 'LIS3DH WHO_AM_I live', shot: 'live-accelerometer-session-waveform.png' },
     { query: 'README HW analog fast live', shot: 'live-analog-fast-waveform.png' },
     { query: 'README HW dual analog live', shot: 'live-dual-analog-waveform.png' },
     { query: 'README HW mixed analog live', shot: 'live-mixed-analog-waveform.png' },
@@ -425,7 +444,6 @@ test('live hardware sessions show waveform screenshots across digital and analog
     const row = page.locator('tr').filter({
       hasText: pick.query,
     }).first();
-    if (await row.count() === 0) continue;
     try {
       await expect(row).toBeVisible({ timeout: 15_000 });
       await row.scrollIntoViewIfNeeded();

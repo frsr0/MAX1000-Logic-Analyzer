@@ -96,6 +96,7 @@ Test screenshots are saved to `frontend/test-results/screenshots/` for visual co
 | `capture-compression-delta-rle.png` | Compressed capture readback |
 | `generator-loopback-capture.png` | Generator self-test result |
 | `accelerometer-session-waveform.png` | LIS3DH WHO_AM_I waveform-viewer fixture |
+| `live-accelerometer-session-waveform.png` | LIS3DH WHO_AM_I live hardware session |
 | And many more (analog, mixed, diagnostics, sessions) |
 
 ### Running Tests
