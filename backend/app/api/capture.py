@@ -4,6 +4,8 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ..capture.session import CaptureSettings
@@ -54,12 +56,15 @@ def disarm_capture(client_id: str = Depends(client_id_header)):
 
 @router.get("/api/capture/state")
 def capture_state():
-    return {
+    return JSONResponse(content=jsonable_encoder({
         "state": capture_manager.capture_state,
         "progress": capture_manager.capture_progress,
         "last_session_id": capture_manager.last_session_id,
         "last_error": capture_manager.last_error,
-    }
+    }, custom_encoder={
+        bytes: lambda b: b.hex(),
+        bytearray: lambda b: bytes(b).hex(),
+    }))
 
 
 @router.post("/api/capture/settings/validate")

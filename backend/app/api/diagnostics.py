@@ -5,6 +5,8 @@ import io
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ..capture.session import CaptureSettings
@@ -26,12 +28,15 @@ def logs(limit: int = 500, level: str = ""):
 @router.get("/api/diagnostics")
 def diagnostics():
     st = capture_manager.status()
-    return {
+    return JSONResponse(content=jsonable_encoder({
         "app": APP_NAME, "version": APP_VERSION,
         "status": st,
         "lan_urls": _lan_urls(),
         "time": time.time(),
-    }
+    }, custom_encoder={
+        bytes: lambda b: b.hex(),
+        bytearray: lambda b: bytes(b).hex(),
+    }))
 
 
 @router.post("/api/diagnostics/debug-bundle")

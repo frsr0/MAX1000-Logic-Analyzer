@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ..state import capture_manager
@@ -12,7 +14,13 @@ router = APIRouter(tags=["status"])
 
 @router.get("/api/status")
 def get_status():
-    return capture_manager.status()
+    return JSONResponse(content=jsonable_encoder(
+        capture_manager.status(),
+        custom_encoder={
+            bytes: lambda b: b.hex(),
+            bytearray: lambda b: bytes(b).hex(),
+        },
+    ))
 
 
 class ControlRequest(BaseModel):

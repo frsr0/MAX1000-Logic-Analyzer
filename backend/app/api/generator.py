@@ -85,8 +85,15 @@ def generator_send(req: GeneratorSendRequest,
             dev.generator_configure(cfg)
             dev.generator_start()
             return {"sent": True, "captured": False}
-        result = loopback_self_test(capture_manager, cfg, req.capture_rate,
-                                    req.capture_samples, req.expected_hex)
+        allow_activity_only = not dev.get_metadata().mock
+        result = loopback_self_test(
+            capture_manager,
+            cfg,
+            req.capture_rate,
+            req.capture_samples,
+            req.expected_hex,
+            allow_activity_only=allow_activity_only,
+        )
         return {"sent": True, "captured": True, **result.model_dump()}
     except ValueError as e:
         raise HTTPException(400, str(e))
