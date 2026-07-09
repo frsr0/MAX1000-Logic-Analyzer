@@ -146,7 +146,7 @@ def main():
                 + (f" ({warns[0]['message']})" if warns else ""))
     c.run("capture sanity checks", sanity)
 
-    # 6. UART generator loopback -> decode -> compare
+    # 6. UART generator loopback -> UART decode -> byte compare.
     def loopback():
         cfg = GeneratorConfig(protocol="uart", data_hex="48656c6c6f21",
                               baud=115200, tx_pin=0 if args.mock else 3)

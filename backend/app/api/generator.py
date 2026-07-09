@@ -85,14 +85,12 @@ def generator_send(req: GeneratorSendRequest,
             dev.generator_configure(cfg)
             dev.generator_start()
             return {"sent": True, "captured": False}
-        allow_activity_only = not dev.get_metadata().mock
         result = loopback_self_test(
             capture_manager,
             cfg,
             req.capture_rate,
             req.capture_samples,
             req.expected_hex,
-            allow_activity_only=allow_activity_only,
         )
         return {"sent": True, "captured": True, **result.model_dump()}
     except ValueError as e:
@@ -105,10 +103,8 @@ def generator_send(req: GeneratorSendRequest,
 def generator_self_test(client_id: str = Depends(client_id_header)):
     """Built-in UART generator self-test.
 
-    Mock uses strict byte-for-byte loopback decode. Real hardware currently
-    uses an activity-visible check on the selected TX capture channel because
-    the FAST_SPEED self-test loopback path is not yet trustworthy enough for
-    exact UART byte recovery.
+    This exercises the real loopback decode path and requires the captured
+    bytes to match the sent pattern.
     """
     require_control(client_id)
     try:
@@ -125,7 +121,6 @@ def generator_self_test(client_id: str = Depends(client_id_header)):
         result = loopback_self_test(capture_manager, cfg,
                                     capture_rate=2_000_000,
                                     capture_samples=4_000,
-                                    allow_activity_only=not is_mock)
     except HardwareError as e:
         raise HTTPException(502, str(e))
     return result.model_dump()
