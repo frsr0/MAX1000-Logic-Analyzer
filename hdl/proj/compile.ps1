@@ -6,13 +6,14 @@ param(
     [switch]$RawOnly,
     # Keep the old direct PLL c4 forward instead of the DDIO clock forward.
     [switch]$LegacyClkForward,
-    # Seed 3 — best-known FULL mixed-signal build (FAST_RAW_BUILD=false,
-    # mso_capture included, AFIFO_DEPTH=1024, registered analog_packer
-    # slot_free): timing closes with clk[1]=+0.128ns, clk[2]=+0.138ns,
-    # clk[0]=+0.793ns at 7,799/8,064 LE (97%).
+    # Seed 30 — best-known FULL mixed-signal build (2026-07-09, after the
+    # rdfifo registered almost-full fix in Fast_Logic_Analyzer_SDRAM):
+    # Slow-85C setup slack fast_clk=+0.068ns, sdram_core_clk=+0.375ns,
+    # sys_clk=+1.000ns, SDRAM_CHIP_CLK_OUT=+1.108ns at 6,691/8,064 LE (83%).
+    # (Old seed 3 went fast_clk-negative after the July-9 RTL changes.)
     # Re-sweep (seed_sweep.ps1) after RTL or pin changes; bitstream remains
     # seed-sensitive at this density.
-    [int]$Seed = 3
+    [int]$Seed = 30
 )
 
 $FastRawBuild = if ($RawOnly) { 'true' } else { 'false' }

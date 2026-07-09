@@ -13,7 +13,10 @@ param(
     [switch]$RawOnly
 )
 
-$clockNames = @('sys_clk', 'fast_clk', 'sdram_core_clk', 'adc_clk', 'SDRAM_CHIP_CLK_OUT')
+# NB: no 'adc_clk' here — the SDC defines no such named clock, so tracking it
+# fed a permanent -999 sentinel into the worst-slack comparison and the
+# best-seed picker always kept the first seed tried regardless of results.
+$clockNames = @('sys_clk', 'fast_clk', 'sdram_core_clk', 'SDRAM_CHIP_CLK_OUT')
 
 $results = @()
 $best = $null
@@ -49,17 +52,17 @@ foreach ($s in $Seeds) {
     $r = [pscustomobject]@{
         Seed = $s
         Sys = $slk['sys_clk']; Fast = $slk['fast_clk']; Sdram = $slk['sdram_core_clk']
-        Adc = $slk['adc_clk']; ChipOut = $slk['SDRAM_CHIP_CLK_OUT']
+        ChipOut = $slk['SDRAM_CHIP_CLK_OUT']
         LE = $le
     }
     $results += $r
-    Write-Host ("seed {0}: sys={1} fast={2} sdram={3} adc={4} chip_out={5}  {6}" -f `
-        $s, $r.Sys, $r.Fast, $r.Sdram, $r.Adc, $r.ChipOut, $le)
+    Write-Host ("seed {0}: sys={1} fast={2} sdram={3} chip_out={4}  {5}" -f `
+        $s, $r.Sys, $r.Fast, $r.Sdram, $r.ChipOut, $le)
 
     # Worst-case across every tracked clock. Missing values (parse miss) sort
     # last via a large negative sentinel, so a broken parse can't masquerade
     # as "best".
-    $vals = @($r.Sys, $r.Fast, $r.Sdram, $r.Adc, $r.ChipOut) | ForEach-Object {
+    $vals = @($r.Sys, $r.Fast, $r.Sdram, $r.ChipOut) | ForEach-Object {
         if ($null -eq $_) { -999.0 } else { $_ }
     }
     $worst = ($vals | Measure-Object -Minimum).Minimum

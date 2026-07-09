@@ -334,6 +334,15 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal rdfifo_wdata  : std_logic_vector(15 downto 0) := (others => '0');
   signal rdfifo_wr     : std_logic := '0';
   signal rdfifo_wrfull : std_logic := '0';
+  signal rdfifo_wrusedw : std_logic_vector(RDFIFO_WIDTHU - 1 downto 0) := (others => '0');
+  -- Registered almost-full gate for the streaming-read issue decision. The
+  -- dcfifo's combinational wrfull (wrptr vs synced rdptr compare) fans out to
+  -- the whole s_addr/rd_wd_cnt enable cone and was the worst sdram_core_clk
+  -- setup path (-0.106 ns, 65% interconnect). Registering the compare one
+  -- cycle early cuts the cone at a FF. Safe: only one read is ever
+  -- outstanding (rd_pend2), so a 1-cycle-stale gate admits at most one extra
+  -- in-flight write against 8 slots of reserved headroom.
+  signal rdfifo_afull_r : std_logic := '0';
   signal rdfifo_aclr   : std_logic := '0';
   -- Pipeline registers for readout address (breaks 22-bit comparator + conversion path)
   signal addr_is_wrap  : std_logic := '0';
@@ -1396,7 +1405,7 @@ begin
       q        => Rd_Fifo_Q,
       rdempty  => Rd_Fifo_Empty,
       wrfull   => rdfifo_wrfull,
-      wrusedw  => open,
+      wrusedw  => rdfifo_wrusedw,
       rdusedw  => open
     );
 
@@ -1515,6 +1524,14 @@ begin
       cap_stream_valid <= '0';
       rdfifo_wr <= '0';
       fifo_rdempty_r <= fifo_rdempty;
+      -- wrusedw wraps to 0 at full on dcfifo, so OR in wrfull; both cones
+      -- terminate in this FF instead of fanning out to the issue logic.
+      if rdfifo_wrfull = '1'
+         or unsigned(rdfifo_wrusedw) >= RDFIFO_DEPTH - 8 then
+        rdfifo_afull_r <= '1';
+      else
+        rdfifo_afull_r <= '0';
+      end if;
       -- Loader settling trackers (see skid-buffer comment above the process).
       fifo_rd_q <= fifo_rd;
       rdempty_q <= fifo_rdempty;
@@ -1733,7 +1750,7 @@ begin
           if rd_pend2_cur = '0' then
             if rd_gap_cur = '1' then
               rd_gap := '0';   -- let stream_addr_r catch up post-completion
-            elsif rdfifo_wrfull = '0' then
+            elsif rdfifo_afull_r = '0' then
               s_addr <= stream_addr_r;
               s_rd     <= '1';
               rd_pend2 := '1';

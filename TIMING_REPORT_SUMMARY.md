@@ -1,11 +1,28 @@
 # Timing Report Summary
-## Status: ✅ **PASSING - No Violations**
+## Status: ✅ **PASSING - No Violations** (seed 30 + rdfifo almost-full fix)
 
 
 **Report Date:** July 5, 2026 (seed 30 build, STA summary from latest compilation)
 
 > Updated July 8, 2026: FAST_SPEED seed 3 now uses the DDIO-forwarded SDRAM chip clock and the
 > `SDRAM_CHIP_CLK_OUT` write cone closes in STA.
+
+> **Updated July 9, 2026 (current):** the July-9 RTL changes pushed the seed-3
+> build fast_clk-negative (-0.206 ns @ Slow 85C; a fresh compile caught it —
+> the July-8 numbers below predate those commits). Root cause of the worst
+> sdram_core_clk cone: the rdfifo dcfifo's combinational `wrfull` (4-level
+> gray-code compare) fanned out to the whole 22-bit `s_addr`/`rd_wd_cnt`
+> enable cone (65% interconnect). Fixed by a registered almost-full gate
+> (`rdfifo_afull_r`, threshold DEPTH-8, safe with the single-outstanding-read
+> design) in `Fast_Logic_Analyzer_SDRAM.vhd`; regression-tested via
+> tb_fifo_bridge / tb_stream_readout / tb_repeated_blockreads. A re-sweep
+> (with the seed_sweep.ps1 best-picker bug fixed — it tracked a nonexistent
+> 'adc_clk' and always kept the first seed) found **seed 30** closes every
+> domain: Slow-85C setup fast_clk **+0.068**, sdram_core_clk **+0.375**,
+> sys_clk **+1.000**, SDRAM_CHIP_CLK_OUT **+1.108**; all holds positive; TNS
+> 0.000 everywhere; 6,691/8,064 LE (83%). compile.ps1 default seed is now 30.
+> The remaining tightest cone is analog_packer `held[]→out_data[]` on
+> fast_clk — the structural candidate if a future RTL change reopens timing.
 
 ---
 
