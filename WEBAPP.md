@@ -249,12 +249,13 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
 - `CMD_GEN_CAPTURE` generator loopback is covered by hardware smoke/API tests
   and the full host validation suite. The UART loopback path is decoded through
   the same backend decoder path used by user captures.
-- Hardware triggers limited to rising/falling edge (any channel mask) and the
-  UART-byte protocol trigger. All other trigger types are clearly labelled
+- Hardware triggers cover rising/falling edge, level triggers (high/low/
+  pattern/bus_value — REG_TRIGGER_MASK level matcher), and the UART-byte
+  protocol trigger. All other trigger types are clearly labelled
   *post-capture* and run as software searches.
 - No analogue front-end beyond the MAX10 ADC (1 MSPS single-channel,
-  125 kframes/s 8-input scan, 3.3 V internal reference). Mixed mode scans
-  ADC0-ADC7 and still shows ADC0/ADC6 as unmapped mux slots. High-speed analog
+  125 kframes/s 4-input physical analog scan, 3.3 V internal reference).
+  Mixed mode scans ADC0-ADC3 at the same scan frame rate. High-speed analog
   uses one selected ADC mux channel; maximum analog scans the physical profile
   ADC1,2,3,4,5,7,8,16. AC coupling,
   probe relays, per-channel gain
@@ -266,8 +267,10 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
   selected digital channel into 16-sample words so the FPGA can produce a
   200 MHz rolling stream with much lower memory/readback pressure than
   16-channel full-width digital.
-- Generator protocols on hardware: UART, I2C, PWM (debug CH0). SPI/pattern/
-  PRBS generators exist in mock only until firmware support lands.
+- Generator protocols on hardware: UART, RS-485, I2C, SPI (send + capture
+  only — loops MOSI/SCLK into the capture stream, no CS/MISO), PWM (debug
+  CH0). Pattern/PRBS generators exist in mock only until firmware support
+  lands.
 - Segmented/burst capture modes and hardware sequence triggers are not in the
   current core; the capture-mode model has fields reserved for them.
 - Rolling capture on real hardware is bounded by SDRAM write bandwidth, FIFO

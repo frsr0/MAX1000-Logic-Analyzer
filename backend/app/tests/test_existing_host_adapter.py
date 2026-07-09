@@ -34,6 +34,7 @@ class FakePkt:
 class FakeHostDevice:
     def __init__(self):
         self.sample_clk = 200_000_000
+        self.sys_clk = 100_000_000
         self.debug_ch0_enabled = False
         self._raw_flags = 0
         self.fast_mode_enabled = False
@@ -234,7 +235,7 @@ def test_real_hardware_capabilities_advertise_200mhz_digital_sampling():
     assert caps.sample_clk_hz == 200_000_000
     assert caps.max_samples == DIGITAL_SDRAM_WORDS
     assert any("64 Mbit SDRAM" in note for note in caps.notes)
-    assert caps.generator_protocols == ["uart", "rs485", "i2c"]
+    assert caps.generator_protocols == ["uart", "rs485", "i2c", "spi"]
 
 
 @pytest.mark.parametrize("trigger, expected", [
@@ -277,6 +278,39 @@ def test_invalid_advertised_level_trigger_is_rejected_before_capture():
 
     assert any(f["level"] == "error" and "Invalid pattern" in f["message"]
                for f in findings)
+
+
+def test_spi_generator_capture_loops_mosi_sclk_on_configured_pins():
+    from app.hardware.device_models import GeneratorConfig
+    from app.capture.session import CaptureSettings as _CS
+
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+    adapter._dev.capture_with_gen = Mock(return_value=b"\x00\x00" * 4)
+    cfg = GeneratorConfig(protocol="spi", data_hex="55aa", baud=1_000_000,
+                          tx_pin=3, scl_pin=1)
+
+    result = adapter.capture_with_generator(_CS(sample_rate=2_000_000, num_samples=4), cfg)
+
+    adapter._dev.capture_with_gen.assert_called_once()
+    _, kwargs = adapter._dev.capture_with_gen.call_args
+    assert kwargs["proto"] == "SPI"
+    assert kwargs["spi_mosi_pin"] == 3
+    assert kwargs["spi_sclk_pin"] == 1
+    # sys_clk // (2 * baud) = 100_000_000 // (2 * 1_000_000) = 50
+    assert kwargs["spi_clk_div"] == 50
+    assert len(result.digital) == 4
+
+
+def test_spi_generator_rejects_standalone_send():
+    from app.hardware.device_models import GeneratorConfig
+
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+    adapter.generator_configure(GeneratorConfig(protocol="spi", data_hex="55"))
+
+    with pytest.raises(HardwareError, match="Send \\+ capture"):
+        adapter.generator_start()
 
 
 def test_self_test_uses_generator_control_plane_instead_of_legacy_pwm_loopback():

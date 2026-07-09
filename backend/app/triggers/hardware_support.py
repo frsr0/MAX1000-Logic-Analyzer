@@ -3,6 +3,8 @@
 The current firmware supports (see README register map):
   * rising/falling edge on any channel set: REG_TRIGGER_MASK bits 31:30 =
     mode (1=rising, 2=falling), bits 15:0 = channel mask
+  * level triggers (high/low/pattern/bus_value): REG_TRIGGER_MASK mode ``00``,
+    every masked input bit must equal the corresponding value bit
   * UART byte match protocol trigger (driver trigger_decode())
 Everything else is post-capture.
 """

@@ -53,6 +53,15 @@ def validate_generator_payload(cfg: GeneratorConfig) -> bytes:
             f"current FPGA generator FIFO holds {MAX_GENERATOR_PAYLOAD_BYTES} bytes")
     if cfg.protocol == "rs485" and int(cfg.tx_pin) == int(cfg.scl_pin):
         raise ValueError("RS-485 generator A and B pins must be different")
+    if cfg.protocol == "spi":
+        # SPI packs 16 Bit_Engine symbols/byte vs UART's 10, so the shared
+        # FIFO holds far fewer SPI bytes than the generic cap above allows.
+        from driver import bit_bang as _bb  # imported via HOST_DIR shim
+        limit = _bb.max_spi_bytes()
+        if len(data) > limit:
+            raise ValueError(
+                f"SPI generator payload is {len(data)} bytes; the Bit_Engine "
+                f"symbol FIFO holds at most {limit} SPI bytes")
     return data
 
 
@@ -123,9 +132,16 @@ def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
     dec_id, ch_fn, set_fn = spec
     decoder = decoder_registry.get(dec_id)
     decoder_settings = {**decoder.defaults(), **set_fn(cfg)}
+    if cfg.protocol == "spi" and mgr.device_kind != "mock":
+        # Real hardware only loops MOSI+SCLK into the capture (no CS/MISO —
+        # see capture_with_generator's SPI branch), onto whatever pins the
+        # user configured, unlike the mock's fixed CH4-7 SPI scenario.
+        channels = {"sclk": f"d{cfg.scl_pin}", "mosi": f"d{cfg.tx_pin}"}
+    else:
+        channels = ch_fn(cfg)
     inst = DecoderInstance(id=new_id("dec"), decoder_id=dec_id,
                            name=f"{dec_id} (self-test)",
-                           channels=ch_fn(cfg), settings=decoder_settings)
+                           channels=channels, settings=decoder_settings)
     ctx = DecodeContext(wf, inst.channels)
     dec_result = decoder.decode(ctx, inst.settings)
     for ev in dec_result.events:

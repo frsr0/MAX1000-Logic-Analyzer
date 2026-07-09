@@ -171,7 +171,7 @@ class ExistingHostAdapter(HardwareDevice):
                              "analog and 125 kframes/s 4-input physical "
                              "analog scans. Mixed mode scans ADC0..ADC3 at "
                              "the same scan frame rate.",
-            generator_protocols=["uart", "rs485", "i2c"],
+            generator_protocols=["uart", "rs485", "i2c", "spi"],
             triggers=[TriggerCapability(type=t, execution=e, description=d)
                       for t, e, d in trig],
             notes=[
@@ -573,13 +573,13 @@ class ExistingHostAdapter(HardwareDevice):
                                protocol=self._gen_cfg.protocol if self._gen_cfg else None,
                                config=self._gen_cfg.model_dump() if self._gen_cfg else None,
                                supported=True,
-                               detail="UART/RS-485/I2C generator (FPGA); debug pin exercise now lives in the bit-banger/MIL flow")
+                               detail="UART/RS-485/I2C/SPI generator (FPGA); debug pin exercise now lives in the bit-banger/MIL flow")
 
     def generator_configure(self, cfg: GeneratorConfig) -> None:
-        if cfg.protocol not in ("uart", "rs485", "i2c"):
+        if cfg.protocol not in ("uart", "rs485", "i2c", "spi"):
             raise HardwareError(
                 f"Generator protocol '{cfg.protocol}' is not supported by the "
-                "current FPGA firmware (supported: uart, rs485, i2c)")
+                "current FPGA firmware (supported: uart, rs485, i2c, spi)")
         self._gen_cfg = cfg
 
     def generator_start(self) -> None:
@@ -603,6 +603,13 @@ class ExistingHostAdapter(HardwareDevice):
                                          speed=cfg.baud, tx_pin=cfg.tx_pin,
                                          scl_pin=cfg.scl_pin)
                 self._dev.start_gen()
+            elif cfg.protocol == "spi":
+                # The SPI generator only exists on the atomic CMD_GEN_CAPTURE
+                # path (it loops MOSI/SCLK straight into the capture stream);
+                # there is no free-running send-without-capture mode.
+                raise HardwareError(
+                    "SPI generator requires 'Send + capture' on this "
+                    "firmware; standalone send is not supported")
     def generator_stop(self) -> None:
         with self._lock:
             if self._dev is None:
@@ -680,6 +687,20 @@ class ExistingHostAdapter(HardwareDevice):
                                            proto='RS485',
                                            rs485_b_pin=cfg.tx_pin,
                                            rs485_a_pin=cfg.scl_pin,
+                                           fast_mode=False)
+            elif cfg.protocol == "spi":
+                # SPI generator loops MOSI (tx_pin) and SCLK (scl_pin) into
+                # the capture stream directly; there is no CS/MISO from the
+                # generator itself (see capture_with_gen's SPI branch).
+                # cfg.baud is reused here as the SPI clock rate in Hz.
+                dev._gen_data = data
+                spi_clk_div = max(1, int(dev.sys_clk // (2 * max(1, int(cfg.baud)))))
+                raw = dev.capture_with_gen(rate_hz=rate, nsamples=nsamp,
+                                           stop_evt=stop_evt, progress_cb=cb,
+                                           proto='SPI',
+                                           spi_mosi_pin=cfg.tx_pin,
+                                           spi_sclk_pin=cfg.scl_pin,
+                                           spi_clk_div=spi_clk_div,
                                            fast_mode=False)
             else:
                 raise HardwareError(

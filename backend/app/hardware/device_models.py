@@ -50,7 +50,7 @@ class CaptureProgress(BaseModel):
 
 
 class GeneratorConfig(BaseModel):
-    protocol: str = "uart"       # protocol ids are device-specific; MAX1000 hardware currently exposes uart | rs485 | i2c
+    protocol: str = "uart"       # protocol ids are device-specific; MAX1000 hardware currently exposes uart | rs485 | i2c | spi
     data_hex: str = ""           # payload bytes as hex string
     baud: int = 115200
     tx_pin: int = 3

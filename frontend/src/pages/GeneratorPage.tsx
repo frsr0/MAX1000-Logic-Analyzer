@@ -77,6 +77,8 @@ export function GeneratorPage() {
       setCfg({ ...cfg, protocol, tx_pin: status?.device_kind === 'mock' ? 0 : 3, scl_pin: 1, baud: 115200 });
     } else if (protocol === 'uart') {
       setCfg({ ...cfg, protocol, tx_pin: status?.device_kind === 'mock' ? 0 : 3, baud: 115200 });
+    } else if (protocol === 'spi') {
+      setCfg({ ...cfg, protocol, tx_pin: status?.device_kind === 'mock' ? 5 : 3, scl_pin: status?.device_kind === 'mock' ? 4 : 1, baud: 1000000 });
     } else {
       setCfg({ ...cfg, protocol });
     }
@@ -114,7 +116,8 @@ export function GeneratorPage() {
   };
 
   const needsData = ['uart', 'rs485', 'spi', 'pattern', 'i2c'].includes(cfg.protocol);
-  const canLoopbackCapture = ['uart', 'rs485', 'i2c'].includes(cfg.protocol) || status?.device_kind === 'mock';
+  const canLoopbackCapture = ['uart', 'rs485', 'i2c', 'spi'].includes(cfg.protocol) || status?.device_kind === 'mock';
+  const canStandaloneSend = cfg.protocol !== 'spi' || status?.device_kind === 'mock';
 
   if (!connected) {
     return (
@@ -152,7 +155,7 @@ export function GeneratorPage() {
             </select>
           </label>
           <div className="finding info">
-            Hardware support on this board is UART, RS-485, and I2C. Bit-banger-driven pin exercise lives on the MIL page.
+            Hardware support on this board is UART, RS-485, I2C, and SPI. Bit-banger-driven pin exercise lives on the MIL page.
           </div>
 
           {needsData && (
@@ -227,6 +230,30 @@ export function GeneratorPage() {
             </>
           )}
 
+          {cfg.protocol === 'spi' && (
+            <>
+              <label className="field">
+                <span>Clock rate (Hz)</span>
+                <input type="number" value={cfg.baud} onChange={(e) => set({ baud: Number(e.target.value) })} />
+              </label>
+              <label className="field">
+                <span>MOSI pin / SCLK pin</span>
+                <span className="button-row">
+                  <input type="number" min={0} max={15} value={cfg.tx_pin}
+                    onChange={(e) => set({ tx_pin: Number(e.target.value) })} />
+                  <input type="number" min={0} max={15} value={cfg.scl_pin}
+                    onChange={(e) => set({ scl_pin: Number(e.target.value) })} />
+                </span>
+              </label>
+              {status?.device_kind !== 'mock' && (
+                <div className="hint">
+                  Hardware SPI generator loops MOSI and SCLK only (no CS/MISO); standalone
+                  Send is unsupported — use Send + capture.
+                </div>
+              )}
+            </>
+          )}
+
           {['counter', 'prbs'].includes(cfg.protocol) && (
             <div className="hint">Pattern generator: {cfg.protocol === 'counter'
               ? '16-bit counter across all channels' : 'pseudo-random bits on the output pin'}.</div>
@@ -239,7 +266,7 @@ export function GeneratorPage() {
           </label>
 
           <div className="button-row">
-            <button className="primary" disabled={busy || !controlMode} onClick={() => send(false)}>Send</button>
+            <button className="primary" disabled={busy || !controlMode || !canStandaloneSend} onClick={() => send(false)}>Send</button>
             <button className="primary" disabled={busy || !controlMode || !canLoopbackCapture} onClick={() => send(true)}>
               Send + capture
             </button>
@@ -275,6 +302,7 @@ export function GeneratorPage() {
           <ul className="sanity-list">
             <li>UART and RS-485 support loopback capture in one action.</li>
             <li>I2C uses the configured SDA and SCL capture channels.</li>
+            <li>SPI loops MOSI/SCLK into the capture on hardware (send + capture only, no CS/MISO); mock simulates full SCLK/MOSI/MISO/CS on CH4-7.</li>
             <li>Bit-banger-driven pin activity is exercised from the MIL page rather than the generator page.</li>
           </ul>
           <div className="divider" />
