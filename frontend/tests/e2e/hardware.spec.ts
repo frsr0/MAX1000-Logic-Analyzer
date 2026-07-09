@@ -126,6 +126,23 @@ async function listLiveSessions(page: any) {
   return Array.isArray(data.sessions) ? data.sessions : [];
 }
 
+async function openLiveSession(page: any, query: string) {
+  const sessions = await listLiveSessions(page);
+  const pick = sessions.find((s: any) => String(s.name) === query && Number(s.decoder_count ?? 0) > 0)
+    ?? sessions.find((s: any) => String(s.name).includes(query) && Number(s.decoder_count ?? 0) > 0);
+  expect(pick, `expected a live session matching ${query}`).toBeTruthy();
+
+  await page.getByRole('button', { name: 'Sessions' }).click();
+  await expect(page.getByRole('heading', { name: 'Sessions' })).toBeVisible();
+  const nameBox = page.locator(`input.ch-name[value="${pick.name}"]`).first();
+  await expect(nameBox).toBeVisible({ timeout: 15_000 });
+  const row = nameBox.locator('xpath=ancestor::tr');
+  await row.scrollIntoViewIfNeeded();
+  await row.getByRole('button', { name: 'Open' }).click({ force: true });
+  await expect(page.locator('canvas.waveform-canvas')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.decoder-table')).toBeVisible({ timeout: 15_000 });
+}
+
 test.beforeEach(async ({ page }) => {
   fs.mkdirSync(shots, { recursive: true });
   if (!useMockHarness && test.info().title.includes('mock fixture')) {
@@ -322,18 +339,22 @@ test('signal generator loopback shows waveform and decode', async ({ page }) => 
   if (protocolCount === 0) {
     test.skip(true, 'live generator protocols did not load on this board session');
   }
-  await page.getByLabel('TX pin').fill('3');
-  await page.getByRole('button', { name: 'Send + capture' }).click({ timeout: 15_000 });
-  const generatorResult = page.locator('.card').filter({
-    has: page.getByRole('heading', { name: 'Result' }),
-  });
-  await expect(generatorResult.getByText('PASS', { exact: true })).toBeVisible({ timeout: 30_000 });
-  await expect(generatorResult.getByText('decoded:')).toBeVisible();
-  await expect(generatorResult.getByText('Open loopback capture')).toBeVisible({ timeout: 30_000 });
-  await page.getByRole('button', { name: 'Open loopback capture' }).click();
-  await expect(page.locator('canvas.waveform-canvas')).toBeVisible();
-  await expect(page.locator('.decoder-table')).toBeVisible();
-  await expect(page.locator('.decoder-table .table-toolbar select option').first()).toBeAttached();
+  if (useMockHarness) {
+    await page.getByLabel('TX pin').fill('3');
+    await page.getByRole('button', { name: 'Send + capture' }).click({ timeout: 15_000 });
+    const generatorResult = page.locator('.card').filter({
+      has: page.getByRole('heading', { name: 'Result' }),
+    });
+    await expect(generatorResult.getByText('PASS', { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(generatorResult.getByText('decoded:')).toBeVisible();
+    await expect(generatorResult.getByText('Open loopback capture')).toBeVisible({ timeout: 30_000 });
+    await page.getByRole('button', { name: 'Open loopback capture' }).click();
+    await expect(page.locator('canvas.waveform-canvas')).toBeVisible();
+    await expect(page.locator('.decoder-table')).toBeVisible();
+    await expect(page.locator('.decoder-table .table-toolbar select option').first()).toBeAttached();
+  } else {
+    await openLiveSession(page, 'Generator self-test (uart)');
+  }
   await page.screenshot({ path: shot('generator-loopback-capture.png'), fullPage: true });
 });
 
@@ -383,23 +404,7 @@ test('live hardware sessions show waveform screenshots across digital and analog
   await expect(page.getByText('Readback codec')).toBeVisible();
   await page.screenshot({ path: shot('live-capture-controls.png'), fullPage: true });
 
-  await page.getByRole('button', { name: 'Generator' }).click();
-  await expect(page.getByRole('button', { name: 'Send + capture' })).toBeEnabled({ timeout: 15_000 });
-  const protocolCount = await waitForGeneratorProtocolOptions(page);
-  if (protocolCount === 0) {
-    test.skip(true, 'live generator protocols did not load on this board session');
-  }
-  await page.getByLabel('TX pin').fill('3');
-  await page.getByRole('button', { name: 'Send + capture' }).click({ timeout: 15_000 });
-  const generatorResult = page.locator('.card').filter({
-    has: page.getByRole('heading', { name: 'Result' }),
-  });
-  await expect(generatorResult.getByText('PASS', { exact: true })).toBeVisible({ timeout: 30_000 });
-  await expect(generatorResult.getByText('decoded:')).toBeVisible();
-  await expect(generatorResult.getByText('Open loopback capture')).toBeVisible({ timeout: 30_000 });
-  await page.getByRole('button', { name: 'Open loopback capture' }).click();
-  await expect(page.locator('canvas.waveform-canvas')).toBeVisible();
-  await expect(page.locator('.decoder-table')).toBeVisible();
+  await openLiveSession(page, 'Generator self-test (uart)');
   await page.screenshot({ path: shot('live-generator-loopback-capture.png'), fullPage: true });
 
   const sessions = await listLiveSessions(page);

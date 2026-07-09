@@ -120,7 +120,7 @@ def generator_self_test(client_id: str = Depends(client_id_header)):
     try:
         result = loopback_self_test(capture_manager, cfg,
                                     capture_rate=2_000_000,
-                                    capture_samples=4_000,
+                                    capture_samples=4_000)
     except HardwareError as e:
         raise HTTPException(502, str(e))
     return result.model_dump()
