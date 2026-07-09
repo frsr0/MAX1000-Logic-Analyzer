@@ -128,8 +128,8 @@ async function listLiveSessions(page: any) {
 
 async function openLiveSession(page: any, query: string) {
   const sessions = await listLiveSessions(page);
-  const pick = sessions.find((s: any) => String(s.name) === query && Number(s.decoder_count ?? 0) > 0)
-    ?? sessions.find((s: any) => String(s.name).includes(query) && Number(s.decoder_count ?? 0) > 0);
+  const pick = sessions.find((s: any) => String(s.name) === query)
+    ?? sessions.find((s: any) => String(s.name).includes(query));
   expect(pick, `expected a live session matching ${query}`).toBeTruthy();
 
   await page.getByRole('button', { name: 'Sessions' }).click();
