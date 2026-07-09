@@ -10,6 +10,8 @@ from driver.spi_protocol import (
     REG_GEN_CAPTURE_TX_CHAN,
     REG_GEN_DATA,
     REG_CONT_MODE,
+    REG_TRIGGER_MASK,
+    REG_TRIGGER_VALUE,
     REG_FLAGS_COMPRESS_RLE,
     SPIDevice,
     ST_OK,
@@ -729,6 +731,22 @@ class TestOLSDeviceSPICapture:
         device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024
         result = device_spi.capture(rate_hz=1000000, nsamples=100, timeout=0.5, trigger=1)
         assert result is not None
+
+    def test_capture_with_level_trigger_writes_mask_and_value(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi._stream_readback = MagicMock(return_value=b'\x01\x00' * 100)
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
+        device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024
+
+        device_spi.capture(rate_hz=1000000, nsamples=100, timeout=0.5,
+                           trigger=(0xA, 0x8))
+
+        writes = [call.args for call in device_spi.pkt.write_register.call_args_list]
+        assert (REG_TRIGGER_MASK, 0xA) in writes
+        assert (REG_TRIGGER_VALUE, 0x8) in writes
 
     def test_capture_with_capture_time(self, device_spi):
         device_spi.pkt = MagicMock()

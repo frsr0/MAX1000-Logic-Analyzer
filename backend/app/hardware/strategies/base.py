@@ -26,7 +26,7 @@ class CaptureDevice(Protocol):
         rate_hz: float,
         nsamples: int,
         timeout: float,
-        trigger: Optional[int] = None,
+        trigger: Optional[int | tuple[int, int]] = None,
         stop_evt: Optional[threading.Event] = None,
         progress_cb: Optional[Callable] = None,
         pre_trigger: int = 0,
@@ -66,7 +66,7 @@ class CaptureStrategy(ABC):
         self,
         dev: CaptureDevice,
         settings: CaptureSettings,
-        trigger: Optional[int] = None,
+        trigger: Optional[int | tuple[int, int]] = None,
         progress: Optional[ProgressCb] = None,
         stop_evt: Optional[threading.Event] = None,
     ) -> CaptureResult:
@@ -103,7 +103,7 @@ class CaptureStrategy(ABC):
         self,
         dev: CaptureDevice,
         settings: CaptureSettings,
-        trigger: Optional[int] = None,
+        trigger: Optional[int | tuple[int, int]] = None,
         progress: Optional[ProgressCb] = None,
         stop_evt: Optional[threading.Event] = None,
     ) -> CaptureResult: ...

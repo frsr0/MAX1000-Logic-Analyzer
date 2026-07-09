@@ -27,7 +27,7 @@ class DigitalCaptureStrategy(CaptureStrategy):
         self,
         dev: CaptureDevice,
         settings: CaptureSettings,
-        trigger: Optional[int] = None,
+        trigger: Optional[int | tuple[int, int]] = None,
         progress: Optional[ProgressCb] = None,
         stop_evt: Optional[threading.Event] = None,
     ) -> CaptureResult:

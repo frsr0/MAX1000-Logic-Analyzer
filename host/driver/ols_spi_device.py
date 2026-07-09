@@ -817,6 +817,21 @@ class OLSDeviceSPI:
         if fast_mode is not None:
             self.pkt.write_register(REG_FAST_MODE, 1 if fast_mode else 0)
 
+    @staticmethod
+    def _trigger_register_values(trigger):
+        """Normalize legacy and mask/value trigger forms for capture setup."""
+        if trigger is None:
+            return 0, 0
+        if isinstance(trigger, tuple) and len(trigger) == 2:
+            return trigger
+        if isinstance(trigger, int):
+            return trigger, 0
+        if trigger == 'rising':
+            return (1 << 30) | 1, 1
+        if trigger == 'falling':
+            return (2 << 30) | 1, 0
+        return 0, 0
+
     def _get_ring_status(self, retries=20, delay=0.005):
         """get_status with retry until ring metadata (producer/oldest) appears.
 
@@ -1500,21 +1515,7 @@ class OLSDeviceSPI:
         div = max(0, int(self.sample_clk / (rate_hz * words_per_frame)) - 1)
         rc = max(1, nsamples * words_per_frame)
 
-        if trigger is None:
-            mask = 0
-            value = 0
-        elif isinstance(trigger, int):
-            mask = trigger
-            value = 0
-        elif trigger == 'rising':
-            mask = (1 << 30) | 1
-            value = 1
-        elif trigger == 'falling':
-            mask = (2 << 30) | 1
-            value = 0
-        else:
-            mask = 0
-            value = 0
+        mask, value = self._trigger_register_values(trigger)
         self._write_capture_config(
             div=div, samples=rc, delay_count=rc, mask=mask, value=value,
             flags=self._raw_flags, fast_mode=fast_mode, continuous=False)
@@ -1697,21 +1698,7 @@ class OLSDeviceSPI:
         # as Start_Offset = SAMPLE_COUNT - DELAY_COUNT.
         pre = max(0, min(pre_trigger, rc - 1))
 
-        if trigger is None:
-            mask = 0
-            value = 0
-        elif isinstance(trigger, int):
-            mask = trigger
-            value = 0
-        elif trigger == 'rising':
-            mask = (1 << 30) | 1
-            value = 1
-        elif trigger == 'falling':
-            mask = (2 << 30) | 1
-            value = 0
-        else:
-            mask = 0
-            value = 0
+        mask, value = self._trigger_register_values(trigger)
         self._write_capture_config(
             div=div, samples=rc, delay_count=rc - pre, mask=mask, value=value,
             flags=self._raw_flags, fast_mode=self.fast_mode_enabled, continuous=False)

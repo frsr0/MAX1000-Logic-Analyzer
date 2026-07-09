@@ -10,6 +10,7 @@ from app.hardware.existing_host_adapter import (
     DIGITAL_SDRAM_WORDS,
     ExistingHostAdapter,
 )
+from app.triggers.hardware_support import to_register_config
 
 
 class FakeSpi:
@@ -234,6 +235,48 @@ def test_real_hardware_capabilities_advertise_200mhz_digital_sampling():
     assert caps.max_samples == DIGITAL_SDRAM_WORDS
     assert any("64 Mbit SDRAM" in note for note in caps.notes)
     assert caps.generator_protocols == ["uart", "rs485", "i2c"]
+
+
+@pytest.mark.parametrize("trigger, expected", [
+    ("high", (0b1010, 0b1010)),
+    ("low", (0b1010, 0)),
+])
+def test_level_triggers_encode_fpga_mask_and_value(trigger, expected):
+    from app.capture.session import TriggerConfig
+
+    assert to_register_config(TriggerConfig(type=trigger, channels=[1, 3])) == expected
+
+
+def test_pattern_and_bus_value_triggers_encode_selected_bits():
+    from app.capture.session import TriggerConfig
+
+    assert to_register_config(TriggerConfig(
+        type="pattern", channels=[4, 6, 8], pattern="1x0")) == (0x110, 0x10)
+    assert to_register_config(TriggerConfig(
+        type="bus_value", channels=[2, 5, 7], value=0b101)) == (0xA4, 0x84)
+
+
+def test_adapter_builds_level_trigger_register_pair():
+    from app.capture.session import TriggerConfig
+
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+    settings = CaptureSettings(trigger=TriggerConfig(
+        type="pattern", channels=[0, 2, 4], pattern="1x0"))
+
+    assert adapter._build_trigger(settings) == (0x11, 0x01)
+
+
+def test_invalid_advertised_level_trigger_is_rejected_before_capture():
+    from app.capture.session import TriggerConfig
+
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+    findings = adapter.validate_settings(CaptureSettings(
+        trigger=TriggerConfig(type="pattern", channels=[0], pattern="1x")))
+
+    assert any(f["level"] == "error" and "Invalid pattern" in f["message"]
+               for f in findings)
 
 
 def test_self_test_uses_generator_control_plane_instead_of_legacy_pwm_loopback():

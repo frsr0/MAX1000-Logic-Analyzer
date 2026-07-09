@@ -36,6 +36,7 @@ from .strategies import (
     narrow_digital as _narrow_digital_strategy,
 )
 from .packed_decoder import decode as packed_decode
+from ..triggers.hardware_support import to_register_config
 
 ADC_SCAN_FRAME_RATE_HZ = 125_000.0
 ADC_FAST_FRAME_RATE_HZ = 1_000_000.0
@@ -148,8 +149,10 @@ class ExistingHostAdapter(HardwareDevice):
             ("falling", "hardware", "REG_TRIGGER_MASK edge trigger, any channel set"),
             ("uart_byte", "hardware", "Protocol trigger (byte match at baud)"),
             ("any_edge", "post_capture", "Software search after capture"),
-            ("high", "post_capture", ""), ("low", "post_capture", ""),
-            ("pattern", "post_capture", ""), ("bus_value", "post_capture", ""),
+            ("high", "hardware", "REG_TRIGGER_MASK level trigger: all selected channels high"),
+            ("low", "hardware", "REG_TRIGGER_MASK level trigger: all selected channels low"),
+            ("pattern", "hardware", "REG_TRIGGER_MASK level trigger with masked bits"),
+            ("bus_value", "hardware", "REG_TRIGGER_MASK level trigger on selected bus bits"),
             ("pulse_wider", "post_capture", ""), ("pulse_narrower", "post_capture", ""),
             ("timeout", "post_capture", ""), ("sequence", "post_capture", ""),
             ("i2c_address", "post_capture", ""), ("i2c_nack", "post_capture", ""),
@@ -219,6 +222,13 @@ class ExistingHostAdapter(HardwareDevice):
                                f"{DIGITAL_NARROW_LOGICAL_SAMPLES}",
                 })
         sample_clk = float(self._dev.sample_clk) if self._dev else 200_000_000.0
+        if (settings.trigger.type in {"high", "low", "pattern", "bus_value"}
+                and to_register_config(settings.trigger) is None):
+            findings.append({
+                "level": "error",
+                "message": f"Invalid {settings.trigger.type} hardware trigger: "
+                           "select channels and provide a valid matching value",
+            })
         if settings.mode in ("mixed", "mixed_continuous"):
             findings.append({
                 "level": "info",
@@ -514,12 +524,9 @@ class ExistingHostAdapter(HardwareDevice):
 
     def _build_trigger(self, settings: CaptureSettings):
         trig = settings.trigger
-        if trig.type in ("rising", "falling") and trig.channels:
-            mode_bits = (1 if trig.type == "rising" else 2) << 30
-            ch_mask = 0
-            for c in trig.channels:
-                ch_mask |= 1 << c
-            return mode_bits | ch_mask
+        register_trigger = to_register_config(trig)
+        if register_trigger is not None:
+            return register_trigger
         if trig.type == "uart_byte" and trig.value is not None:
             # Configured via trigger_decode just before arm
             dev = self._dev
