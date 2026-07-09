@@ -79,6 +79,8 @@ export function GeneratorPage() {
       setCfg({ ...cfg, protocol, tx_pin: status?.device_kind === 'mock' ? 0 : 3, baud: 115200 });
     } else if (protocol === 'spi') {
       setCfg({ ...cfg, protocol, tx_pin: status?.device_kind === 'mock' ? 5 : 3, scl_pin: status?.device_kind === 'mock' ? 4 : 1, baud: 1000000 });
+    } else if (protocol === 'pattern') {
+      setCfg({ ...cfg, protocol, tx_pin: 0, baud: 9600 });
     } else {
       setCfg({ ...cfg, protocol });
     }
@@ -117,7 +119,8 @@ export function GeneratorPage() {
 
   const needsData = ['uart', 'rs485', 'spi', 'pattern', 'i2c'].includes(cfg.protocol);
   const canLoopbackCapture = ['uart', 'rs485', 'i2c', 'spi'].includes(cfg.protocol) || status?.device_kind === 'mock';
-  const canStandaloneSend = cfg.protocol !== 'spi' || status?.device_kind === 'mock';
+  const canStandaloneSend = !['spi', 'pattern', 'counter', 'prbs'].includes(cfg.protocol)
+    || status?.device_kind === 'mock';
 
   if (!connected) {
     return (
@@ -254,9 +257,29 @@ export function GeneratorPage() {
             </>
           )}
 
+          {cfg.protocol === 'pattern' && (
+            <>
+              <label className="field">
+                <span>Bit rate (bits/s)</span>
+                <input type="number" value={cfg.baud} onChange={(e) => set({ baud: Number(e.target.value) })} />
+              </label>
+              <label className="field">
+                <span>Output pin</span>
+                <input type="number" min={0} max={15} value={cfg.tx_pin}
+                  onChange={(e) => set({ tx_pin: Number(e.target.value) })} />
+              </label>
+              <div className="hint">
+                Bit-banger playback of the data bytes above, MSB-first, one bit per
+                {' '}{cfg.baud ? (1e6 / cfg.baud).toFixed(1) : '?'} µs — no protocol framing.
+                {status?.device_kind !== 'mock' && ' Mock only; the Bit_Engine has no raw-pattern mode on this firmware.'}
+              </div>
+            </>
+          )}
+
           {['counter', 'prbs'].includes(cfg.protocol) && (
             <div className="hint">Pattern generator: {cfg.protocol === 'counter'
-              ? '16-bit counter across all channels' : 'pseudo-random bits on the output pin'}.</div>
+              ? '16-bit counter across all channels' : 'pseudo-random bits on the output pin'}.
+              {status?.device_kind !== 'mock' && ' Mock only.'}</div>
           )}
 
           <label className="field checkbox">
