@@ -50,6 +50,8 @@ class FakeHostDevice:
         self._write_capture_config = Mock()
         self.read_capture_range = Mock(return_value=b"\x01\x00" * 2048)
         self.ack_capture_done = self.pkt.ack_capture_done
+        self.get_metadata = Mock(return_value=b"\x12\x34")
+        self._readback_codec = Mock(return_value="raw")
 
     @property
     def raw_flags(self):
@@ -61,6 +63,20 @@ class FakeHostDevice:
 
     def flush(self):
         self.spi.flush()
+
+
+class RecordingLock:
+    def __init__(self):
+        self.enter_count = 0
+        self.exit_count = 0
+
+    def __enter__(self):
+        self.enter_count += 1
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.exit_count += 1
+        return False
 
 
 def test_measured_safe_deep_digital_capture_uses_finite_sdram_path():
@@ -217,6 +233,63 @@ def test_real_hardware_capabilities_advertise_200mhz_digital_sampling():
     assert caps.sample_clk_hz == 200_000_000
     assert caps.max_samples == DIGITAL_SDRAM_WORDS
     assert any("64 Mbit SDRAM" in note for note in caps.notes)
+    assert caps.generator_protocols == ["uart", "rs485", "i2c"]
+
+
+def test_self_test_uses_generator_control_plane_instead_of_legacy_pwm_loopback():
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+    adapter._dev.pkt.get_status.return_value = {
+        "gen_busy": False,
+        "capture_seq": 42,
+        "producer_index": 0,
+        "oldest_index": 0,
+        "overrun_count": 0,
+    }
+
+    result = adapter.self_test()
+
+    assert result["passed"] is True
+    assert [c["name"] for c in result["checks"]] == [
+        "metadata", "status", "generator_control_plane",
+    ]
+    adapter._dev.set_debug_ch0.assert_not_called()
+
+
+def test_generator_status_serializes_status_polling_through_adapter_lock():
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+    adapter._lock = RecordingLock()
+    adapter._gen_cfg = Mock(protocol="uart", model_dump=Mock(return_value={"protocol": "uart"}))
+    adapter._dev.pkt.get_status.return_value = {"gen_busy": True}
+
+    status = adapter.generator_status()
+
+    assert status.busy is True
+    assert adapter._lock.enter_count == 1
+    assert adapter._lock.exit_count == 1
+    adapter._dev.pkt.get_status.assert_called_once()
+
+
+def test_get_debug_info_serializes_hardware_reads_through_adapter_lock():
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+    adapter._lock = RecordingLock()
+    adapter._timings = {"adapter_s": 1.0}
+    adapter._dev._timings = {"device_s": 2.0}
+    adapter._dev.pkt.get_status.return_value = {"gen_busy": False}
+
+    info = adapter.get_debug_info()
+
+    assert info.raw_metadata == "1234"
+    assert info.raw_status == {"gen_busy": False}
+    assert info.timings["adapter_s"] == 1.0
+    assert info.timings["device_s"] == 2.0
+    assert info.extra["readback_codec"] == "raw"
+    assert adapter._lock.enter_count == 1
+    assert adapter._lock.exit_count == 1
+    adapter._dev.get_metadata.assert_called_once()
+    adapter._dev.pkt.get_status.assert_called_once()
 
 
 def test_narrow_digital_validation_uses_packed_logical_depth():

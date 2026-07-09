@@ -6,6 +6,8 @@ from driver.spi_protocol import (
     CMD_ACK_CAPTURE_DONE,
     CMD_ABORT_CAPTURE,
     REG_GEN_BAUD,
+    REG_GEN_CAPTURE_SCL_CHAN,
+    REG_GEN_CAPTURE_TX_CHAN,
     REG_GEN_DATA,
     REG_CONT_MODE,
     REG_FLAGS_COMPRESS_RLE,
@@ -203,6 +205,13 @@ class TestOLSDeviceSPI:
     def test_raw_mode_disable(self, device_spi):
         device_spi.raw_mode(False)
         assert device_spi._stride == 2
+
+    def test_raw_flags_property_round_trips_private_state(self, device_spi):
+        device_spi._raw_flags = 0x1234
+        assert device_spi.raw_flags == 0x1234
+
+        device_spi.raw_flags = 0x5678
+        assert device_spi._raw_flags == 0x5678
 
     def test_set_analog_config(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -606,6 +615,40 @@ class TestOLSDeviceSPIGenerator:
         assert data
         device_spi.pkt.write_register.assert_any_call(
             REG_GEN_BAUD, device_spi._uart_baud_div(115200) & 0xFFFF)
+        device_spi.pkt.write_register.assert_any_call(
+            REG_GEN_CAPTURE_TX_CHAN, 3)
+
+    def test_capture_with_gen_i2c_programs_capture_channels(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi._stream_readback = MagicMock(return_value=b"\x01\x00" * 32)
+        device_spi.spi.flush = MagicMock()
+        device_spi.reset = MagicMock()
+        device_spi._wait_gen_idle = MagicMock()
+        device_spi.set_debug_ch0 = MagicMock()
+        device_spi.pkt.transaction = MagicMock(return_value=(0x10, 0, b""))
+        device_spi.pkt.get_status = MagicMock(
+            side_effect=[
+                {"capture_status": ST_CAPTURE_IDLE, "capture_seq": 9},
+                {"capture_seq": 9},
+                {"capture_status": ST_CAPTURE_DONE, "capture_seq": 9},
+            ])
+        device_spi.ack_capture_done = MagicMock()
+
+        data = device_spi.capture_with_gen(
+            rate_hz=2_000_000,
+            nsamples=32,
+            proto='I2C',
+            i2c_frame=b'\x32\x0f',
+            i2c_tx_pin=2,
+            i2c_scl_pin=1,
+            i2c_read_len=0,
+        )
+
+        assert data
+        device_spi.pkt.write_register.assert_any_call(
+            REG_GEN_CAPTURE_TX_CHAN, 2)
+        device_spi.pkt.write_register.assert_any_call(
+            REG_GEN_CAPTURE_SCL_CHAN, 1)
 
 
 class TestOLSDeviceSPIModbus:

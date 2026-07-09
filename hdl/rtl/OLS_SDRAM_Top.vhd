@@ -1108,6 +1108,10 @@ BEGIN
   gen_rx_in <= sen_sdo_sync when gen_spi_test = '1' else sen_sdi_sync;
   gen_start_ack_i <= gen_start and not gen_busy;
   gen_active <= gen_busy;
+  -- Bit_Engine has no start-reject output. Tie reject low so the OLS_Interface
+  -- GENCAP_WAIT_BUSY reject check reads a defined level; genuine start failures
+  -- are caught by the FSM's 2000-cycle timeout instead.
+  gen_start_reject_i <= '0';
 
   gen_signal_gen_off : if not ENABLE_SIGNAL_GEN generate
   begin
@@ -1117,7 +1121,6 @@ BEGIN
     gen_active <= '0';
     gen_fifo_count <= (others => '0');
     gen_start_ack_i <= '0';
-    gen_start_reject_i <= gen_start;
     gen_done_pulse_i <= '0';
   end generate;
 END BEHAVIORAL;

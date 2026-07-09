@@ -33,7 +33,7 @@ from driver.spi_protocol import (
     REG_TRIGGER_MASK, REG_TRIGGER_VALUE, REG_FLAGS,
     REG_FAST_MODE, REG_CONT_MODE,
     REG_GEN_PROTO, REG_GEN_BAUD, REG_GEN_PINS, REG_GEN_DATA,
-    REG_GEN_RX_DATA,
+    REG_GEN_RX_DATA, REG_GEN_CAPTURE_TX_CHAN, REG_GEN_CAPTURE_SCL_CHAN,
     REG_IFACE_MODE, REG_DEBUG_CH0_ENABLE, REG_DEBUG_CH0_PERIOD, REG_DEBUG_CH0_DUTY,
     ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_DONE,
     GEN_FLAG_SPI_TEST, GEN_FLAG_REPEAT, GEN_FLAG_RS485_PAIR,
@@ -221,6 +221,14 @@ class OLSDeviceSPI:
 
     def set_compression_enabled(self, enable: bool):
         return self.set_readback_compression('delta_rle' if enable else 'raw')
+
+    @property
+    def raw_flags(self):
+        return self._raw_flags
+
+    @raw_flags.setter
+    def raw_flags(self, value):
+        self._raw_flags = int(value)
 
     def set_readback_compression(self, mode: str):
         mode = str(mode or 'raw').lower()
@@ -1370,6 +1378,12 @@ class OLSDeviceSPI:
         val = (self.gen_pins['tx'] & 0x1F) | ((self.gen_pins['scl'] & 0x1F) << 8)
         self.pkt.write_register(REG_GEN_PINS, val)
 
+    def _set_gen_capture_channels(self, tx_channel=None, scl_channel=None):
+        if tx_channel is not None:
+            self.pkt.write_register(REG_GEN_CAPTURE_TX_CHAN, int(tx_channel) & 0x0F)
+        if scl_channel is not None:
+            self.pkt.write_register(REG_GEN_CAPTURE_SCL_CHAN, int(scl_channel) & 0x0F)
+
     def send_uart(self, data_bytes, baud=115200, tx_pin=None):
         self._gen_data = data_bytes
         self._gen_baud = baud
@@ -1513,12 +1527,16 @@ class OLSDeviceSPI:
         # for the clock line (Out_1).
         swd_loaded = False
         if proto == 'RS485':
+            self._set_gen_capture_channels(tx_channel=rs485_b_pin,
+                                           scl_channel=rs485_a_pin)
             self.pkt.write_register(REG_GEN_DATA, 1 << 8)
             self.pkt.write_register(REG_GEN_PROTO, 0)
             self._pins(tx_pin=rs485_b_pin, scl_pin=rs485_a_pin)
             self.pkt.write_register(REG_GEN_DATA, (1 << 8) | GEN_FLAG_RS485_PAIR)
             self._gen_load_uart(self._gen_data, self._gen_baud)
         elif proto == 'I2C':
+            self._set_gen_capture_channels(tx_channel=i2c_tx_pin,
+                                           scl_channel=i2c_scl_pin)
             self._pins(tx_pin=i2c_tx_pin, scl_pin=i2c_scl_pin)
             self.pkt.write_register(REG_GEN_PROTO, 1)
             dev_r = 1 if i2c_dev_r is None else i2c_dev_r & 0xFF
@@ -1532,6 +1550,8 @@ class OLSDeviceSPI:
                 # Write-only (legacy loopback path)
                 i2c_frame = self._gen_load_i2c(i2c_frame, i2c_speed)
         elif proto == 'SPI':
+            self._set_gen_capture_channels(tx_channel=spi_mosi_pin,
+                                           scl_channel=spi_sclk_pin)
             # MOSI (Out_0) and SCLK (Out_1) are looped into the capture
             # stream on the channels mapped to spi_mosi_pin / spi_sclk_pin.
             # The SPI-test bit must be set HERE (after the reset() above
@@ -1542,6 +1562,8 @@ class OLSDeviceSPI:
             self.pkt.write_register(REG_GEN_DATA, GEN_FLAG_SPI_TEST | (1 << 8))
             self._gen_load_spi(self._gen_data, spi_clk_div)
         elif proto == 'SWD':
+            self._set_gen_capture_channels(tx_channel=swd_swdio_pin,
+                                           scl_channel=swd_swclk_pin)
             # SWDIO (Out_0) and SWCLK (Out_1) loop into the capture stream
             # like SPI — the SPI-test routing flag drives Out_1 onto the
             # clock pin (same REG_GEN_DATA latch caveat as the SPI branch).
@@ -1551,6 +1573,7 @@ class OLSDeviceSPI:
             swd_loaded = self._gen_load_swd(
                 swd_ops, swd_clk_hz, connect=swd_connect)
         elif self._gen_data is not None:
+            self._set_gen_capture_channels(tx_channel=self._gen_tx_pin)
             # Clear any leftover I2C/SPI test-mode flags (bit0/bit1) from a prior
             # capture — they are not cleared on reset, and a stale SPI-test bit
             # would drive SCLK onto a pin and corrupt this UART capture. Upper
@@ -1569,6 +1592,75 @@ class OLSDeviceSPI:
         if not has_gen:
             return b''
 
+        def _finish_gen_capture(expected_seq):
+            _trace = os.environ.get("OLS_GEN_TRACE")
+            deadline = time.time() + timeout
+            t0 = time.time()
+            seen = []
+            while time.time() < deadline:
+                st = self.pkt.get_status()
+                cs = st.get('capture_status', -1)
+                if not seen or seen[-1][1] != cs:
+                    seen.append((round(time.time() - t0, 4), cs))
+                seq_ok = expected_seq is None or st.get('capture_seq') in (None, expected_seq)
+                if cs == ST_CAPTURE_DONE and seq_ok:
+                    break
+                if stop_evt and stop_evt.is_set():
+                    return b''
+                time.sleep(0.001)
+            if _trace:
+                with open(_trace, "a") as f:
+                    f.write(f"gen_capture: status transitions={seen} "
+                            f"timed_out={time.time() >= deadline}\n")
+            need = rc * 2
+            samples = self._stream_readback(0, rc)[:need]
+            # Same 256-sample-boundary readout-inversion repair as capture(); the
+            # gen-capture path was missing it, which corrupted ~1 sample every 256
+            # (≈1.5 UART bytes here) and garbled multi-byte loopback decodes.
+            if not (self.analog_mode & MODE_MIXED):
+                samples = self._repair_boundary_glitches(samples, 0)
+            if expected_seq is not None:
+                self.ack_capture_done(expected_seq)
+
+            stride = analog_frame_stride(self.analog_mode)
+            if samples and any(samples[i:i+stride] != b'\x00' * stride
+                               for i in range(0, len(samples), stride)):
+                for i in range(0, len(samples), stride):
+                    if samples[i:i+stride] != b'\x00' * stride:
+                        samples = samples[i:]
+                        break
+
+            samples = self._filter_digital(samples)
+
+            if progress_cb and samples:
+                progress_cb(samples, len(samples) // 2, rc)
+
+            return samples
+
+        if gen_first:
+            # Start the generator first, then open the capture window around the
+            # already-running burst. This is useful for the bench scripts that
+            # care more about observing a live waveform than capturing the very
+            # first generator symbol.
+            if self.pkt.transaction(CMD_GEN_START, timeout=1.0) is None:
+                return b''
+            time.sleep(0.001)
+            prev = self.pkt.get_status().get('capture_seq')
+            status = self.pkt.arm_capture()
+            if status < 0:
+                return b''
+            expected_seq = ((prev + 1) & 0xFFFFFFFF) if prev is not None else None
+
+            if rate_hz > 0:
+                quiet = min(timeout, rc / float(rate_hz) + 0.05)
+                t_end = time.time() + quiet
+                while time.time() < t_end:
+                    if stop_evt and stop_evt.is_set():
+                        return b''
+                    time.sleep(min(0.02, max(0.0, t_end - time.time())))
+
+            return _finish_gen_capture(expected_seq)
+
         # Atomic generated capture via hardware FSM
         _trace = os.environ.get("OLS_GEN_TRACE")
         r = self.pkt.transaction(CMD_GEN_CAPTURE, timeout=1.0)
@@ -1580,49 +1672,7 @@ class OLSDeviceSPI:
         arm_status = self.pkt.get_status()
         expected_seq = arm_status.get('capture_seq')
 
-        deadline = time.time() + timeout
-        capture_active_seen = False
-        t0 = time.time()
-        seen = []
-        while time.time() < deadline:
-            st = self.pkt.get_status()
-            cs = st.get('capture_status', -1)
-            if not seen or seen[-1][1] != cs:
-                seen.append((round(time.time() - t0, 4), cs))
-            seq_ok = expected_seq is None or st.get('capture_seq') in (None, expected_seq)
-            if cs == ST_CAPTURE_DONE and seq_ok:
-                break
-            if stop_evt and stop_evt.is_set():
-                return b''
-            time.sleep(0.001)
-        if _trace:
-            with open(_trace, "a") as f:
-                f.write(f"gen_capture: status transitions={seen} "
-                        f"timed_out={time.time() >= deadline}\n")
-        need = rc * 2
-        samples = self._stream_readback(0, rc)[:need]
-        # Same 256-sample-boundary readout-inversion repair as capture(); the
-        # gen-capture path was missing it, which corrupted ~1 sample every 256
-        # (≈1.5 UART bytes here) and garbled multi-byte loopback decodes.
-        if not (self.analog_mode & MODE_MIXED):
-            samples = self._repair_boundary_glitches(samples, 0)
-        if expected_seq is not None:
-            self.ack_capture_done(expected_seq)
-
-        stride = analog_frame_stride(self.analog_mode)
-        if samples and any(samples[i:i+stride] != b'\x00' * stride
-                           for i in range(0, len(samples), stride)):
-            for i in range(0, len(samples), stride):
-                if samples[i:i+stride] != b'\x00' * stride:
-                    samples = samples[i:]
-                    break
-
-        samples = self._filter_digital(samples)
-
-        if progress_cb and samples:
-            progress_cb(samples, len(samples) // 2, rc)
-
-        return samples
+        return _finish_gen_capture(expected_seq)
 
     def capture(self, rate_hz=1000000, nsamples=5000, timeout=6,
                 trigger=None, capture_time=None, progress_cb=None,

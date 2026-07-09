@@ -14,7 +14,7 @@ ExistingHostAdapter -> host/driver/OLSDeviceSPI):
   1. device discovery
   2. connect + metadata (sample clock auto-detect)
   3. capabilities
-  4. device self-test (debug CH0 PWM -> capture -> edge count)
+  4. device self-test (metadata + status/control-plane checks)
   5. plain digital capture (1 MHz, 4096 samples) + sanity checks
   6. UART generator loopback (CMD_GEN_CAPTURE) -> UART decode -> byte compare
 
@@ -100,7 +100,7 @@ def main():
         f"max {mgr.device.get_capabilities().max_sample_rate / 1e6:.0f} MHz, "
         f"gen: {','.join(mgr.device.get_capabilities().generator_protocols)}"))
 
-    # 4. self-test (debug CH0 PWM loopback on hardware)
+    # 4. self-test (lightweight hardware/control-plane checks)
     def self_test():
         r = mgr.device.self_test()
         fails = [ck for ck in r["checks"] if not ck["passed"]]

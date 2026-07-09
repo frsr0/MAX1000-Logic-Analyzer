@@ -114,7 +114,6 @@ export function GeneratorPage() {
   };
 
   const needsData = ['uart', 'rs485', 'spi', 'pattern', 'i2c'].includes(cfg.protocol);
-  const isPwm = ['pwm', 'square'].includes(cfg.protocol);
   const canLoopbackCapture = ['uart', 'rs485', 'i2c'].includes(cfg.protocol) || status?.device_kind === 'mock';
 
   if (!connected) {
@@ -153,7 +152,7 @@ export function GeneratorPage() {
             </select>
           </label>
           <div className="finding info">
-            Hardware support on this board is UART, RS-485, I2C, and PWM.
+            Hardware support on this board is UART, RS-485, and I2C. Bit-banger-driven pin exercise lives on the MIL page.
           </div>
 
           {needsData && (
@@ -228,25 +227,6 @@ export function GeneratorPage() {
             </>
           )}
 
-          {isPwm && (
-            <>
-              <label className="field">
-                <span>Frequency (Hz)</span>
-                <input type="number" value={cfg.freq_hz} onChange={(e) => set({ freq_hz: Number(e.target.value) })} />
-              </label>
-              <label className="field">
-                <span>Duty (%)</span>
-                <input type="number" min={1} max={99} value={cfg.duty_pct}
-                  onChange={(e) => set({ duty_pct: Number(e.target.value) })} />
-              </label>
-              <label className="field">
-                <span>Output pin</span>
-                <input type="number" min={0} max={15} value={cfg.tx_pin}
-                  onChange={(e) => set({ tx_pin: Number(e.target.value) })} />
-              </label>
-            </>
-          )}
-
           {['counter', 'prbs'].includes(cfg.protocol) && (
             <div className="hint">Pattern generator: {cfg.protocol === 'counter'
               ? '16-bit counter across all channels' : 'pseudo-random bits on the output pin'}.</div>
@@ -260,8 +240,7 @@ export function GeneratorPage() {
 
           <div className="button-row">
             <button className="primary" disabled={busy || !controlMode} onClick={() => send(false)}>Send</button>
-            <button className="primary" disabled={busy || !controlMode || !canLoopbackCapture} onClick={() => send(true)}
-              title={canLoopbackCapture ? '' : 'PWM is a continuous CH0 output on real hardware; start it, then run a normal capture.'}>
+            <button className="primary" disabled={busy || !controlMode || !canLoopbackCapture} onClick={() => send(true)}>
               Send + capture
             </button>
             <button disabled={!controlMode} onClick={() => api.generatorStop().catch(() => {})}>Stop</button>
@@ -296,7 +275,7 @@ export function GeneratorPage() {
           <ul className="sanity-list">
             <li>UART and RS-485 support loopback capture in one action.</li>
             <li>I2C uses the configured SDA and SCL capture channels.</li>
-            <li>PWM remains a live output, so you capture it through the normal analyzer flow.</li>
+            <li>Bit-banger-driven pin activity is exercised from the MIL page rather than the generator page.</li>
           </ul>
           <div className="divider" />
           <h3>Result</h3>

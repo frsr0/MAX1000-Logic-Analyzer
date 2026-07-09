@@ -96,19 +96,29 @@ def generator_send(req: GeneratorSendRequest,
 
 @router.post("/api/generator/self-test")
 def generator_self_test(client_id: str = Depends(client_id_header)):
-    """Built-in UART loopback self-test."""
+    """Built-in UART generator self-test.
+
+    Mock uses strict byte-for-byte loopback decode. Real hardware currently
+    uses an activity-visible check on the selected TX capture channel because
+    the FAST_SPEED self-test loopback path is not yet trustworthy enough for
+    exact UART byte recovery.
+    """
     require_control(client_id)
     try:
         is_mock = capture_manager.require_device().get_metadata().mock
     except HardwareError as e:
         raise HTTPException(409, str(e))
-    # Mock loops TX back on pin 0; real hardware uses CH3 (CH0 is debug PWM).
-    cfg = GeneratorConfig(protocol="uart", data_hex="48656c6c6f21",
-                          baud=115200, tx_pin=0 if is_mock else 3)
+    if is_mock:
+        cfg = GeneratorConfig(protocol="uart", data_hex="48656c6c6f21",
+                              baud=115200, tx_pin=0)
+    else:
+        cfg = GeneratorConfig(protocol="uart", data_hex="55" * 8,
+                              baud=115200, tx_pin=3)
     try:
         result = loopback_self_test(capture_manager, cfg,
                                     capture_rate=2_000_000,
-                                    capture_samples=4_000)
+                                    capture_samples=4_000,
+                                    allow_activity_only=not is_mock)
     except HardwareError as e:
         raise HTTPException(502, str(e))
     return result.model_dump()

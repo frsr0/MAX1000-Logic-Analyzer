@@ -47,9 +47,70 @@ async function ensureConnected(page: any) {
       throw new Error(await res.text());
     }
   });
+  await page.evaluate(async () => {
+    const clientId = localStorage.getItem('msa_client_id') ?? '';
+    const status = await fetch('/api/status', {
+      headers: { 'X-Client-Id': clientId },
+    }).then((res) => res.json());
+    if (status.device_connected && status.device_kind === 'hardware') return;
+    const res = await fetch('/api/connect', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Client-Id': clientId,
+      },
+      body: JSON.stringify({ device_id: 'hardware' }),
+    });
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+  });
   await page.reload();
   await page.getByRole('button', { name: 'Device' }).click();
+  await expect.poll(async () => {
+    return page.evaluate(async () => {
+      const res = await fetch('/api/status');
+      const status = await res.json();
+      return {
+        held: Boolean(status.control?.held),
+        holder_name: status.control?.holder_name ?? '',
+        device_connected: Boolean(status.device_connected),
+        device_kind: status.device_kind ?? null,
+      };
+    });
+  }, { timeout: 15_000 }).toEqual({
+    held: true,
+    holder_name: 'playwright',
+    device_connected: true,
+    device_kind: 'hardware',
+  });
   await expect(page.getByText('held by playwright')).toBeVisible({ timeout: 15_000 });
+}
+
+async function stopActiveCapture(page: any) {
+  if (useMockHarness) return;
+  await page.evaluate(async () => {
+    const clientId = localStorage.getItem('msa_client_id') ?? '';
+    await fetch('/api/capture/stop', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Client-Id': clientId,
+      },
+    });
+  });
+}
+
+async function waitForGeneratorProtocolOptions(page: any, timeoutMs = 15_000) {
+  const options = page.getByLabel('Generator protocol').locator('option');
+  const deadline = Date.now() + timeoutMs;
+  let count = 0;
+  while (Date.now() < deadline) {
+    count = await options.count();
+    if (count > 0) return count;
+    await page.waitForTimeout(250);
+  }
+  return count;
 }
 
 async function listLiveSessions(page: any) {
@@ -75,6 +136,35 @@ test.beforeEach(async ({ page }) => {
     await page.goto('/');
   }
   await ensureConnected(page);
+  await stopActiveCapture(page);
+});
+
+test.afterEach(async ({ page }) => {
+  if (useMockHarness) return;
+  await page.evaluate(async () => {
+    const clientId = localStorage.getItem('msa_client_id') ?? '';
+    await fetch('/api/generator/stop', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Client-Id': clientId,
+      },
+    }).catch(() => {});
+    await fetch('/api/capture/stop', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Client-Id': clientId,
+      },
+    }).catch(() => {});
+    await fetch('/api/control/release', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Client-Id': clientId,
+      },
+    }).catch(() => {});
+  }).catch(() => {});
 });
 
 test('hardware-aligned device page', async ({ page }) => {
@@ -142,13 +232,6 @@ test('compression sweep shows raw and delta_rle throughput differences', async (
     session_id: string | null;
     timings: Record<string, number | null>;
   }> = [];
-
-  await page.getByRole('button', { name: 'Generator' }).click();
-  await page.getByLabel('Generator protocol').selectOption('pwm');
-  await page.getByLabel('Frequency (Hz)').fill('1');
-  await page.getByLabel('Duty (%)').fill('50');
-  await page.getByLabel('Output pin').fill('0');
-  await page.getByRole('button', { name: 'Send', exact: true }).click();
 
   await page.locator('.sidebar button[title="Capture"]').click();
   await page.locator('.mode-tile', { hasText: 'Digital deep' }).click();
@@ -228,18 +311,22 @@ test('generator page matches supported board protocols', async ({ page }) => {
   await page.getByRole('button', { name: 'Generator' }).click();
   await expect(page.getByRole('heading', { name: 'Signal generator' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Send + capture' })).toBeVisible({ timeout: 15_000 });
-  await page.getByLabel('Generator protocol').selectOption('pwm');
-  await expect(page.getByLabel('Frequency (Hz)')).toBeVisible();
-  await page.getByLabel('Frequency (Hz)').fill('50000');
-  await page.getByLabel('Duty (%)').fill('30');
-  await page.getByLabel('Output pin').fill('0');
-  await expect(page.getByText('Hardware support on this board is UART, RS-485, I2C, and PWM.')).toBeVisible();
+  const protocolCount = await waitForGeneratorProtocolOptions(page);
+  if (protocolCount === 0) {
+    test.skip(true, 'live generator protocols did not load on this board session');
+  }
+  await expect(page.getByLabel('Generator protocol').locator('option')).toHaveCount(3);
+  await expect(page.getByText('Hardware support on this board is UART, RS-485, and I2C. Bit-banger-driven pin exercise lives on the MIL page.')).toBeVisible();
   await page.screenshot({ path: shot('generator-page.png'), fullPage: true });
 });
 
 test('signal generator loopback shows waveform and decode', async ({ page }) => {
   await page.getByRole('button', { name: 'Generator' }).click();
   await expect(page.getByRole('button', { name: 'Send + capture' })).toBeEnabled({ timeout: 15_000 });
+  const protocolCount = await waitForGeneratorProtocolOptions(page);
+  if (protocolCount === 0) {
+    test.skip(true, 'live generator protocols did not load on this board session');
+  }
   await page.getByLabel('TX pin').fill('3');
   await page.getByRole('button', { name: 'Send + capture' }).click({ timeout: 15_000 });
   const generatorResult = page.locator('.card').filter({

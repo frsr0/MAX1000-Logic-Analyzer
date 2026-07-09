@@ -66,11 +66,13 @@ REG_GEN_DATA      = 0x33
 # generator symbol, LSB-first), bits 15:8 = FIFO fill count. Reading the
 # register pops one byte.
 REG_GEN_RX_DATA   = 0x34
+REG_GEN_CAPTURE_TX_CHAN  = 0x40
+REG_GEN_CAPTURE_SCL_CHAN = 0x41
 # REG_GEN_DATA mode-flag bit 4: mirror the accelerometer bus onto capture
 # channels 13 (SDI/SDA) / 14 (SPC/SCL) / 15 (SDO) so a normal capture
 # records the Bit_Engine <-> LIS3DH dialogue.
 GEN_FLAG_ACCEL_ATTACH = 0x10
-REG_DEBUG_CH0_ENABLE = 0x40
+REG_DEBUG_CH0_ENABLE = 0x42
 REG_DEBUG_CH0_PERIOD = 0x43
 REG_DEBUG_CH0_DUTY   = 0x44
 # 0x41, 0x42 formerly REG_SCHMITT_ENABLE/THRESHOLD — the digital glitch filter

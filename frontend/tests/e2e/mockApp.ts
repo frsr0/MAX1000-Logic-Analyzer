@@ -68,7 +68,7 @@ function makeCap(): Json {
     supports_continuous: true,
     supports_analog: true,
     analog_rate_note: 'MAX10 ADC supports 1 MSPS single-channel analog and 125 kframes/s 4-input physical analog scans. Mixed mode scans ADC0..ADC3 at the same scan frame rate.',
-    generator_protocols: ['uart', 'rs485', 'i2c', 'pwm'],
+    generator_protocols: ['uart', 'rs485', 'i2c'],
     triggers: triggerMatrix(),
     trigger_matrix: triggerMatrix(),
     notes: [
@@ -720,7 +720,7 @@ export async function installMockApp(page: Page) {
     if (matches('POST', req, '/api/control/release')) return route.fulfill(okJson({ released: true }));
 
     if (matches('GET', req, '/api/generator/capabilities')) {
-      return route.fulfill(okJson({ protocols: ['uart', 'rs485', 'i2c', 'pwm'], status: { busy: false, running: false, supported: true, detail: 'fixture ready' } }));
+      return route.fulfill(okJson({ protocols: ['uart', 'rs485', 'i2c'], status: { busy: false, running: false, supported: true, detail: 'fixture ready' } }));
     }
     if (matches('GET', req, '/api/generator/status')) return route.fulfill(okJson({ busy: false, running: false, supported: true, detail: 'fixture ready' }));
     if (matches('POST', req, '/api/generator/send')) return route.fulfill(okJson({ passed: true, sent_hex: '48656c6c6f21', decoded_hex: '48656c6c6f21', detail: 'fixture loopback', session_id: 'session-demo' }));

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -118,7 +118,6 @@ class ExistingHostAdapter(HardwareDevice):
         assert self._dev is not None
         self._dev.reset()
         self._dev.set_analog_config(0)
-        self._dev.set_debug_ch0(False)
         self._dev.set_schmitt(False)
         self._dev.spi.flush()
         self._log("connect_reset")
@@ -169,11 +168,11 @@ class ExistingHostAdapter(HardwareDevice):
                              "analog and 125 kframes/s 4-input physical "
                              "analog scans. Mixed mode scans ADC0..ADC3 at "
                              "the same scan frame rate.",
-            generator_protocols=["uart", "rs485", "i2c", "pwm"],
+            generator_protocols=["uart", "rs485", "i2c"],
             triggers=[TriggerCapability(type=t, execution=e, description=d)
                       for t, e, d in trig],
             notes=[
-                "Host-side digital glitch filter (a.k.a. Schmitt) and debug CH0 PWM available via driver",
+                "Host-side digital glitch filter (a.k.a. Schmitt) is available; the legacy debug CH0 PWM path has been replaced by the bit-banger/MIL flow on this bitstream.",
                 "The MAX1000 has 64 Mbit SDRAM. This bitstream exposes a "
                 f"{DIGITAL_SDRAM_WORDS:,}-word 16-bit SDRAM capture ring "
                 f"({DIGITAL_NARROW_LOGICAL_SAMPLES:,} logical samples in "
@@ -556,23 +555,24 @@ class ExistingHostAdapter(HardwareDevice):
 
     def generator_status(self) -> GeneratorStatus:
         busy = False
-        if self._dev is not None:
-            try:
-                st = self._dev.pkt.get_status()
-                busy = bool(st.get("gen_busy", False))
-            except Exception:
-                pass
+        with self._lock:
+            if self._dev is not None:
+                try:
+                    st = self._dev.pkt.get_status()
+                    busy = bool(st.get("gen_busy", False))
+                except Exception:
+                    pass
         return GeneratorStatus(busy=busy, running=busy,
                                protocol=self._gen_cfg.protocol if self._gen_cfg else None,
                                config=self._gen_cfg.model_dump() if self._gen_cfg else None,
                                supported=True,
-                               detail="UART/RS-485/I2C generator + debug CH0 PWM (FPGA)")
+                               detail="UART/RS-485/I2C generator (FPGA); debug pin exercise now lives in the bit-banger/MIL flow")
 
     def generator_configure(self, cfg: GeneratorConfig) -> None:
-        if cfg.protocol not in ("uart", "rs485", "i2c", "pwm"):
+        if cfg.protocol not in ("uart", "rs485", "i2c"):
             raise HardwareError(
                 f"Generator protocol '{cfg.protocol}' is not supported by the "
-                "current FPGA firmware (supported: uart, rs485, i2c, pwm)")
+                "current FPGA firmware (supported: uart, rs485, i2c)")
         self._gen_cfg = cfg
 
     def generator_start(self) -> None:
@@ -596,16 +596,10 @@ class ExistingHostAdapter(HardwareDevice):
                                          speed=cfg.baud, tx_pin=cfg.tx_pin,
                                          scl_pin=cfg.scl_pin)
                 self._dev.start_gen()
-            elif cfg.protocol == "pwm":
-                self._dev.set_debug_ch0(True, freq_hz=cfg.freq_hz,
-                                        duty_pct=cfg.duty_pct)
-
     def generator_stop(self) -> None:
         with self._lock:
             if self._dev is None:
                 return
-            if self._gen_cfg and self._gen_cfg.protocol == "pwm":
-                self._dev.set_debug_ch0(False)
             self._log("gen_stop")
 
     def capture_with_generator(self, settings: CaptureSettings, cfg: GeneratorConfig,
@@ -696,17 +690,18 @@ class ExistingHostAdapter(HardwareDevice):
         raw_status: Dict = {}
         timings = dict(self._timings)
         extra: Dict[str, Any] = {}
-        if self._dev is not None:
-            try:
-                raw_meta = self._dev.get_metadata().hex()
-                raw_status = self._dev.pkt.get_status()
-                child_timings = getattr(self._dev, "_timings", None)
-                if isinstance(child_timings, dict):
-                    timings.update(child_timings)
-                extra["readback_codec"] = getattr(self._dev, "_readback_codec",
-                                                   lambda: "unknown")()
-            except Exception as e:
-                self._last_error = str(e)
+        with self._lock:
+            if self._dev is not None:
+                try:
+                    raw_meta = self._dev.get_metadata().hex()
+                    raw_status = self._dev.pkt.get_status()
+                    child_timings = getattr(self._dev, "_timings", None)
+                    if isinstance(child_timings, dict):
+                        timings.update(child_timings)
+                    extra["readback_codec"] = getattr(self._dev, "_readback_codec",
+                                                       lambda: "unknown")()
+                except Exception as e:
+                    self._last_error = str(e)
         return DebugInfo(raw_metadata=raw_meta, raw_status=raw_status,
                          last_command=self._last_command,
                          last_error=self._last_error,
@@ -732,28 +727,20 @@ class ExistingHostAdapter(HardwareDevice):
             except Exception as e:
                 checks.append({"name": "status", "passed": False, "detail": str(e)})
             try:
-                # Debug CH0 loopback: enable PWM, tiny capture, expect edges on
-                # CH0. The first capture after (re)enabling the PWM sometimes
-                # races the enable and comes back flat, so retry once.
-                self._dev.set_debug_ch0(True, freq_hz=100000, duty_pct=50)
-                edges = 0
-                for _ in range(2):
-                    raw = self._dev.capture(rate_hz=1_000_000, nsamples=1024,
-                                            timeout=4)
-                    n4 = len(raw) - (len(raw) % 4)
-                    words = np.frombuffer(raw[:n4], dtype="<u4") & 1
-                    edges = int(np.count_nonzero(np.diff(words)))
-                    if edges > 2:
-                        break
-                self._dev.set_debug_ch0(False)
-                checks.append({"name": "ch0_loopback", "passed": edges > 2,
-                               "detail": f"{edges} CH0 edges with debug PWM on"})
+                st = self._dev.pkt.get_status()
+                ok = "gen_busy" in st and "capture_seq" in st
+                checks.append({
+                    "name": "generator_control_plane",
+                    "passed": ok,
+                    "detail": ("generator/capture status fields visible"
+                               if ok else str(st)),
+                })
             except Exception as e:
-                checks.append({"name": "ch0_loopback", "passed": False,
-                               "detail": str(e)})
+                checks.append({"name": "generator_control_plane",
+                               "passed": False, "detail": str(e)})
         return {"passed": all(c["passed"] for c in checks), "checks": checks,
                 "message": "Hardware self-test complete "
-                           "(full suite: python -m app.hw_validation)"}
+                           "(full loopback coverage now lives in the generator and bit-banger/MIL tests)"}
 
     def _log(self, cmd: str) -> None:
         self._last_command = cmd

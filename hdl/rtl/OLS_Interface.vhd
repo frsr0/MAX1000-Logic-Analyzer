@@ -807,6 +807,7 @@ BEGIN
   -- until the capture completes — not tied to gen_busy duration alone.
   gen_capture_fsm: PROCESS (CLK)
     VARIABLE guard_var : NATURAL range 0 to 1023 := 0;
+    VARIABLE timeout_var : NATURAL range 0 to 8388607 := 0;
     VARIABLE disp_gen_arm_d : STD_LOGIC := '0';
   BEGIN
     IF RISING_EDGE(CLK) THEN
@@ -831,25 +832,40 @@ BEGIN
               guard_var := guard_var - 1;
             ELSE
               gen_start_pulse <= '1';
+              timeout_var := 2000;
               gen_cap_state <= GENCAP_WAIT_BUSY;
             END IF;
           WHEN GENCAP_WAIT_BUSY =>
+            gen_start_pulse <= '1';
             IF Gen_Busy = '1' OR Gen_Start_Ack = '1' THEN
+              timeout_var := 5000000;
               gen_cap_state <= GENCAP_RUNNING;
+            ELSIF Gen_Start_Reject = '1' OR timeout_var = 0 THEN
+              gen_cap_state <= GENCAP_ERROR;
+            ELSE
+              timeout_var := timeout_var - 1;
             END IF;
           WHEN GENCAP_RUNNING =>
+            gen_start_pulse <= '0';
             IF Gen_Busy = '0' AND gen_busy_d = '1' THEN
               gen_cap_state <= GENCAP_WAIT_FULL;
+            ELSIF timeout_var = 0 THEN
+              gen_cap_state <= GENCAP_ERROR;
+            ELSE
+              timeout_var := timeout_var - 1;
             END IF;
           WHEN GENCAP_WAIT_FULL =>
+            gen_start_pulse <= '0';
             IF Full = '1' THEN
               gen_capture_active_i <= '0';
               gen_capture_done_i <= '1';
               gen_cap_state <= GENCAP_DONE;
             END IF;
           WHEN GENCAP_DONE =>
+            gen_start_pulse <= '0';
             NULL;
           WHEN GENCAP_ERROR =>
+            gen_start_pulse <= '0';
             gen_capture_error_i <= '1';
             gen_capture_active_i <= '0';
             gen_cap_state <= GENCAP_IDLE;

@@ -258,6 +258,16 @@ def test_generator_loopback_self_test(client):
     assert body["decoded_hex"] == "414243"
 
 
+def test_generator_builtin_self_test_uses_strict_decode_on_mock(client):
+    r = client.post("/api/generator/self-test", headers=HDR)
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["passed"] is True, body
+    assert body["sent_hex"] == "48656c6c6f21"
+    assert body["decoded_hex"] == "48656c6c6f21"
+
+
 def test_generator_rs485_loopback(client):
     caps = client.get("/api/generator/capabilities").json()
     assert "rs485" in caps["protocols"]
