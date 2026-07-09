@@ -10,6 +10,7 @@ from driver.spi_protocol import (
     REG_GEN_CAPTURE_TX_CHAN,
     REG_GEN_DATA,
     REG_CONT_MODE,
+    REG_DEBUG_CH0_ENABLE,
     REG_TRIGGER_MASK,
     REG_TRIGGER_VALUE,
     REG_FLAGS_COMPRESS_RLE,
@@ -447,7 +448,7 @@ class TestOLSDeviceSPI:
         device_spi.pkt.read_register.return_value = 2  # bit1=1 (debug ON)
         pre = device_spi.read_preamble()
         assert pre == 2
-        device_spi.pkt.read_register.assert_called_once_with(0x40)
+        device_spi.pkt.read_register.assert_called_once_with(REG_DEBUG_CH0_ENABLE)
 
     def test_read_preamble_returns_zero_on_empty(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -461,7 +462,7 @@ class TestOLSDeviceSPI:
         device_spi._stream_readback = MagicMock(return_value=b'\x01\x00' * 100)
         device_spi.set_debug_ch0(True)
         assert device_spi.debug_ch0_enabled is True
-        device_spi.pkt.write_register.assert_called_once_with(0x40, 1)
+        device_spi.pkt.write_register.assert_called_once_with(REG_DEBUG_CH0_ENABLE, 1)
 
     def test_set_debug_ch0_replays_period_after_reset(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -474,7 +475,7 @@ class TestOLSDeviceSPI:
         device_spi.pkt.write_register.assert_has_calls([
             call(0x43, 1000),
             call(0x44, 500),
-            call(0x40, 1),
+            call(REG_DEBUG_CH0_ENABLE, 1),
         ])
 
     def test_set_debug_ch0_disable(self, device_spi):
@@ -482,7 +483,7 @@ class TestOLSDeviceSPI:
         device_spi._stream_readback = MagicMock(return_value=b'\x01\x00' * 100)
         device_spi.set_debug_ch0(False)
         assert device_spi.debug_ch0_enabled is False
-        device_spi.pkt.write_register.assert_called_once_with(0x40, 0)
+        device_spi.pkt.write_register.assert_called_once_with(REG_DEBUG_CH0_ENABLE, 0)
 
     def test_set_debug_ch0_default(self, device_spi):
         assert device_spi.debug_ch0_enabled is False
