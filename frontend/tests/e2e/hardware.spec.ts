@@ -435,22 +435,22 @@ test('live hardware sessions show waveform screenshots across digital and analog
   }
 });
 
-test('analog session renders waveforms and decode on the mock fixture', async ({ page }) => {
-  test.skip(!useMockHarness, 'fixture session is only available in mock mode');
+if (useMockHarness) {
+  test('analog session renders waveforms and decode on the mock fixture', async ({ page }) => {
+    await page.getByRole('button', { name: 'Sessions' }).click();
+    const analogRow = page.locator('tr').filter({
+      has: page.locator('input[value="MAX1000 mixed analog sweep"]'),
+    }).first();
+    await expect(analogRow).toBeVisible();
+    await analogRow.getByRole('button', { name: 'Open' }).click();
+    await expect(page.locator('canvas.waveform-canvas')).toBeVisible();
+    await expect(page.locator('.decoder-table')).toBeVisible();
+    await expect(page.locator('.decoder-table tbody tr').first()).toContainText('START');
 
-  await page.getByRole('button', { name: 'Sessions' }).click();
-  const analogRow = page.locator('tr').filter({
-    has: page.locator('input[value="MAX1000 mixed analog sweep"]'),
-  }).first();
-  await expect(analogRow).toBeVisible();
-  await analogRow.getByRole('button', { name: 'Open' }).click();
-  await expect(page.locator('canvas.waveform-canvas')).toBeVisible();
-  await expect(page.locator('.decoder-table')).toBeVisible();
-  await expect(page.locator('.decoder-table tbody tr').first()).toContainText('START');
+    await page.getByRole('button', { name: 'Channels' }).click();
+    await expect(page.getByRole('option', { name: 'a1 (analog)' })).toBeAttached();
+    await expect(page.getByRole('option', { name: 'a2 (analog)' })).toBeAttached();
 
-  await page.getByRole('button', { name: 'Channels' }).click();
-  await expect(page.getByRole('option', { name: 'a1 (analog)' })).toBeAttached();
-  await expect(page.getByRole('option', { name: 'a2 (analog)' })).toBeAttached();
-
-  await page.screenshot({ path: shot('analog-session-waveform.png'), fullPage: true });
-});
+    await page.screenshot({ path: shot('analog-session-waveform.png'), fullPage: true });
+  });
+}
