@@ -458,4 +458,19 @@ if (useMockHarness) {
 
     await page.screenshot({ path: shot('analog-session-waveform.png'), fullPage: true });
   });
+
+  test('accelerometer session renders waveform and decode on the mock fixture', async ({ page }) => {
+    await page.getByRole('button', { name: 'Sessions' }).click();
+    const accelRow = page.locator('tr').filter({
+      has: page.locator('input[value="LIS3DH WHO_AM_I dialogue"]'),
+    }).first();
+    await expect(accelRow).toBeVisible();
+    await accelRow.getByRole('button', { name: 'Open' }).click();
+    await expect(page.locator('canvas.waveform-canvas')).toBeVisible();
+    await expect(page.locator('.decoder-table')).toBeVisible();
+    await expect(page.getByRole('cell', { name: 'START', exact: true })).toBeVisible();
+    await expect(page.getByRole('cell', { name: '0x33', exact: true })).toBeVisible();
+
+    await page.screenshot({ path: shot('accelerometer-session-waveform.png'), fullPage: true });
+  });
 }

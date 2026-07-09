@@ -82,7 +82,7 @@ The `PLAYWRIGHT_USE_MOCK=1` env var sets the backend to use `MockDevice` instead
 
 | Test File | Tests | What it covers |
 |---|---|---|
-| `hardware.spec.ts` | 8 passed, 2 skipped | Full E2E flow through mock: connect, capture, decode, export |
+| `hardware.spec.ts` | 9 passed, 2 skipped | Full E2E flow through mock: connect, capture, decode, export |
 
 ### Screenshots
 
@@ -95,6 +95,7 @@ Test screenshots are saved to `frontend/test-results/screenshots/` for visual co
 | `capture-analog-fast.png` | Analog-fast capture result |
 | `capture-compression-delta-rle.png` | Compressed capture readback |
 | `generator-loopback-capture.png` | Generator self-test result |
+| `accelerometer-session-waveform.png` | LIS3DH WHO_AM_I waveform-viewer fixture |
 | And many more (analog, mixed, diagnostics, sessions) |
 
 ### Running Tests

@@ -162,6 +162,98 @@ function makeAnalogSessionSummary(): Json {
   };
 }
 
+function makeAccelSessionSummary(): Json {
+  return {
+    id: 'session-accel',
+    name: 'LIS3DH WHO_AM_I dialogue',
+    created_at: 1_725_200_000,
+    modified_at: 1_725_200_600,
+    num_samples: 32_000,
+    sample_rate: 2_000_000,
+    duration_s: 0.016,
+    channel_count: 16,
+    has_analog: false,
+    decoder_count: 1,
+    marker_count: 0,
+    tags: ['playwright', 'hardware', 'accelerometer'],
+    notes: 'Fixture session for the on-board LIS3DH dialogue',
+    device: 'MAX1000 OLS Logic Analyzer',
+    mock: true,
+  };
+}
+
+function makeAccelSession(): Json {
+  const channels = Array.from({ length: 16 }, (_, i) => ({
+    id: `d${i}`,
+    name: `D${i}`,
+    type: 'digital',
+    enabled: true,
+    color: undefined,
+    units: '',
+    volts_per_div: 1,
+    offset: 0,
+    probe_attenuation: 1,
+    cal_gain: 1,
+    cal_offset: 0,
+    threshold: 1.65,
+    coupling: 'DC',
+    members: [],
+    display_base: 'hex',
+    board_label: `D${i}`,
+    fpga_pin: 'PIN_XX',
+    header: 'J1',
+    pin_index: i,
+  }));
+  return {
+    id: 'session-accel',
+    name: 'LIS3DH WHO_AM_I dialogue',
+    created_at: 1_725_200_000,
+    modified_at: 1_725_200_600,
+    app_version: '2.0.0',
+    device: makeStatus().device,
+    settings: {
+      sample_rate: 2_000_000,
+      num_samples: 32_000,
+      mode: 'single',
+      analog_enabled: false,
+      enabled_digital: [13, 14, 15],
+      trigger: { type: 'none', channels: [], pre_trigger_samples: 0, position_pct: 0, execution: 'hardware' },
+      auto_rearm: false,
+      repeat_count: 1,
+      auto_save: false,
+      readback_compression: 'raw',
+      mock_scenario: 'accel_whoami',
+    },
+    sample_rate: 2_000_000,
+    divider: null,
+    sample_clk_hz: 2_000_000,
+    num_samples: 32_000,
+    trigger_sample: null,
+    channels,
+    decoders: [
+      {
+        id: 'dec-accel',
+        decoder_id: 'i2c',
+        name: 'LIS3DH WHO_AM_I decode',
+        enabled: true,
+        channels: { sda: 'd13', scl: 'd14' },
+        settings: { address: '0x19', speed: 100_000 },
+        region: null,
+        status: 'done',
+        error: null,
+        event_count: 4,
+        warning_count: 0,
+      },
+    ],
+    measurements: [],
+    markers: [],
+    notes: 'Accelerometer dialogue fixture',
+    tags: ['playwright', 'hardware', 'accelerometer'],
+    exports: [],
+    diagnostics: [],
+  };
+}
+
 function makeSession(): Json {
   const channels = Array.from({ length: 16 }, (_, i) => ({
     id: `d${i}`,
@@ -442,6 +534,110 @@ function makeDecoderRows() {
   };
 }
 
+function makeAccelDecoderRows() {
+  return {
+    total: 4,
+    events: [
+      {
+        id: 'evt-1',
+        decoder_id: 'dec-accel',
+        type: 'start',
+        start_sample: 1800,
+        end_sample: 1800,
+        start_time: 0.0009,
+        end_time: 0.0009,
+        label: 'START',
+        severity: 'normal',
+        fields: { value: 0x19 },
+      },
+      {
+        id: 'evt-2',
+        decoder_id: 'dec-accel',
+        type: 'byte',
+        start_sample: 3800,
+        end_sample: 3800,
+        start_time: 0.0019,
+        end_time: 0.0019,
+        label: '0x0F',
+        severity: 'normal',
+        fields: { value: 0x0f },
+      },
+      {
+        id: 'evt-3',
+        decoder_id: 'dec-accel',
+        type: 'byte',
+        start_sample: 7600,
+        end_sample: 7600,
+        start_time: 0.0038,
+        end_time: 0.0038,
+        label: '0x33',
+        severity: 'normal',
+        fields: { value: 0x33, ascii: '3' },
+      },
+      {
+        id: 'evt-4',
+        decoder_id: 'dec-accel',
+        type: 'stop',
+        start_sample: 11200,
+        end_sample: 11200,
+        start_time: 0.0056,
+        end_time: 0.0056,
+        label: 'STOP',
+        severity: 'normal',
+        fields: { value: 0x33 },
+      },
+    ],
+  };
+}
+
+function buildAccelBuffer(mode: 'lod' | 'overview' = 'lod') {
+  const rawSamples = 32_000;
+  const bins = mode === 'overview' ? 512 : 2048;
+  const digital = buildDigitalSeries(rawSamples);
+  const header: Json = {
+    session_id: 'session-accel',
+    start: 0,
+    end: rawSamples,
+    num_samples: rawSamples,
+    sample_rate: 2_000_000,
+    mode,
+    samples_per_bin: Math.floor(rawSamples / bins),
+    bin_start: 0,
+  };
+  const arrays: Array<{ name: string; dtype: 'u2' | 'u4'; data: Uint16Array | Uint32Array }> = [];
+  const { andMask, orMask, edges } = downsampleDigital(digital, bins);
+  header.edges_channels = 16;
+  arrays.push({ name: 'digital_and', dtype: 'u2', data: andMask });
+  arrays.push({ name: 'digital_or', dtype: 'u2', data: orMask });
+  arrays.push({ name: 'digital_edges', dtype: 'u4', data: edges });
+
+  const headerBytes = new TextEncoder().encode(JSON.stringify({
+    ...header,
+    arrays: arrays.map((arr) => ({ name: arr.name, dtype: arr.dtype, count: arr.data.length })),
+  }));
+  const pad = (4 - ((8 + headerBytes.length) % 4)) % 4;
+  const total = 8 + headerBytes.length + pad
+    + arrays.reduce((sum, arr) => sum + arr.data.byteLength + ((4 - (arr.data.byteLength % 4)) % 4), 0);
+  const buf = new ArrayBuffer(total);
+  const dv = new DataView(buf);
+  const u8 = new Uint8Array(buf);
+  u8.set([0x4d, 0x53, 0x41, 0x57], 0);
+  dv.setUint32(4, headerBytes.length + pad, true);
+  u8.set(headerBytes, 8);
+  u8.fill(0x20, 8 + headerBytes.length, 8 + headerBytes.length + pad);
+  let offset = 8 + headerBytes.length + pad;
+  for (const arr of arrays) {
+    u8.set(new Uint8Array(arr.data.buffer, arr.data.byteOffset, arr.data.byteLength), offset);
+    offset += arr.data.byteLength;
+    const arrayPad = (4 - (arr.data.byteLength % 4)) % 4;
+    if (arrayPad) {
+      u8.fill(0x00, offset, offset + arrayPad);
+      offset += arrayPad;
+    }
+  }
+  return buf;
+}
+
 function buildDigitalSeries(length: number) {
   const digital = new Uint16Array(length);
   for (let i = 0; i < length; i += 1) {
@@ -706,7 +902,7 @@ export async function installMockApp(page: Page) {
 
     if (matches('GET', req, '/api/decoders')) return route.fulfill(okJson({ decoders: [] }));
     if (matches('GET', req, '/api/measurements/types')) return route.fulfill(okJson({ types: [] }));
-    if (matches('GET', req, '/api/sessions')) return route.fulfill(okJson({ sessions: [makeSessionSummary(), makeAnalogSessionSummary()] }));
+    if (matches('GET', req, '/api/sessions')) return route.fulfill(okJson({ sessions: [makeSessionSummary(), makeAnalogSessionSummary(), makeAccelSessionSummary()] }));
     if (matches('GET', req, '/api/logs')) return route.fulfill(okJson({ logs: [] }));
     if (matches('GET', req, '/api/diagnostics')) return route.fulfill(okJson({ lan_urls: ['http://127.0.0.1:4173', 'http://192.168.0.10:4173'] }));
     if (matches('GET', req, '/api/capture/scenarios')) return route.fulfill(okJson({ scenarios: [
@@ -860,6 +1056,33 @@ export async function installMockApp(page: Page) {
         contentType: 'application/octet-stream',
         body: Buffer.from(buildMixedAnalogBuffer('lod')),
       });
+    }
+    if (matches('GET', req, '/api/sessions/session-accel')) return route.fulfill(okJson(makeAccelSession()));
+    if (matches('GET', req, '/api/sessions/session-accel/metadata')) {
+      return route.fulfill(okJson({ num_samples: 32_000, sample_rate: 2_000_000 }));
+    }
+    if (matches('GET', req, '/api/sessions/session-accel/overview')) {
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/octet-stream',
+        body: Buffer.from(buildAccelBuffer('overview')),
+      });
+    }
+    if (matches('GET', req, '/api/sessions/session-accel/waveform')) {
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/octet-stream',
+        body: Buffer.from(buildAccelBuffer('lod')),
+      });
+    }
+    if (path === '/api/sessions/session-accel/decoders/dec-accel/table') {
+      return route.fulfill(okJson(makeAccelDecoderRows()));
+    }
+    if (path === '/api/sessions/session-accel/decoder-events') {
+      return route.fulfill(okJson({ events: makeAccelDecoderRows().events }));
+    }
+    if (path === '/api/sessions/session-accel/decoders/dec-accel/annotations') {
+      return route.fulfill(okJson({ events: makeAccelDecoderRows().events, truncated: false }));
     }
     if (path === '/api/sessions/session-analog/decoders/dec-fixture/table') {
       return route.fulfill(okJson(makeDecoderRows()));
