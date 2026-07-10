@@ -8,6 +8,29 @@
 -- cycles happen within a short simulation. A producer that never stops
 -- offering packed_valid proves the fix: total accepted words must exceed
 -- several multiples of the budget, not plateau at/near it.
+--
+-- Phase 2 exercises a continuous->single-shot packed-mode transition
+-- (mirroring test_continuous_max_rate_overrun -> test_mso_packed_capture in
+-- hw_validation.py), which surfaced two real bugs found 2026-07-10:
+--
+-- 1) Raw Continuous_Mode port read directly in FAST_CLK-domain logic
+--    instead of continuous_f (the 2FF-synchronized copy). Fixed by using
+--    continuous_f throughout, matching every other FAST_CLK-domain use of
+--    continuous mode in this generate block.
+--
+-- 2) sample_rem_dec_r (a 1-cycle-ahead pipeline of "sample_remaining - 1")
+--    is fed back into sample_remaining a cycle later, making
+--    sample_remaining(k+1) depend on sample_remaining(k-1) -- two
+--    independent interleaved countdown chains, one per cycle parity.
+--    Reloading sample_remaining alone on cfg_valid_edge only resynced ONE
+--    of those chains; the other silently kept counting down from the
+--    PRIOR capture's stale value and could hit zero early, spuriously
+--    latching sample_rem_nonzero_r low with real samples still remaining.
+--    Reproduced directly in this GHDL sim via fine-grained per-cycle
+--    tracing (sample_remaining visibly alternated between the fresh
+--    20000-scale reload and a leftover ~63-scale sequence from the prior
+--    capture). Fixed by resyncing sample_rem_dec_r to the new budget on
+--    the same cfg_valid_edge cycle that resyncs sample_remaining.
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.numeric_std.all;
@@ -41,6 +64,14 @@ architecture bench of tb_packed_continuous_renew is
   signal packed_valid : std_logic := '0';
   signal packed_ready : std_logic;
   signal packed_accepted : integer := 0;
+  signal cont_mode    : std_logic := '1';
+  signal probe_full_i        : std_logic;
+  signal probe_sample_rem    : natural range 0 to 3000000;
+  signal probe_rem_nonzero   : std_logic;
+  signal probe_packed_stop_f : std_logic;
+  signal probe_run_f_level   : std_logic;
+  signal probe_cfg_valid_edge : std_logic;
+  signal probe_cfg_samples    : natural range 1 to 3000000;
 
   signal sdram_addr : std_logic_vector(11 downto 0);
   signal sdram_ba   : std_logic_vector(1 downto 0);
@@ -53,6 +84,14 @@ begin
 
   fast_clk <= not fast_clk after FAST_PERIOD / 2;
   pclk     <= not pclk     after PCLK_PERIOD / 2;
+
+  probe_full_i        <= << signal .tb_packed_continuous_renew.dut.full_i : std_logic >>;
+  probe_sample_rem    <= << signal .tb_packed_continuous_renew.dut.sample_remaining : natural range 0 to 3000000 >>;
+  probe_rem_nonzero   <= << signal .tb_packed_continuous_renew.dut.gen_fast_speed.sample_rem_nonzero_r : std_logic >>;
+  probe_packed_stop_f <= << signal .tb_packed_continuous_renew.dut.packed_stop_f : std_logic >>;
+  probe_run_f_level   <= << signal .tb_packed_continuous_renew.dut.run_f_level : std_logic >>;
+  probe_cfg_valid_edge <= << signal .tb_packed_continuous_renew.dut.cfg_valid_edge : std_logic >>;
+  probe_cfg_samples    <= << signal .tb_packed_continuous_renew.dut.cfg_samples : natural range 1 to 3000000 >>;
 
   process(fast_clk)
   begin
@@ -98,7 +137,7 @@ begin
       Armed        => armed,
       Fast_Mode    => fast_mode,
       FAST_CLK     => fast_clk,
-      Continuous_Mode => '1',
+      Continuous_Mode => cont_mode,
       Packed_Mode  => packed_mode,
       Packed_Data  => packed_data,
       Packed_Valid => packed_valid,
@@ -137,6 +176,7 @@ begin
     );
 
   main : process
+    variable baseline : integer := 0;
   begin
     report "=== Starting packed continuous-renew test ===";
     armed <= '1';
@@ -162,6 +202,37 @@ begin
     report "PASS: packed continuous capture renewed its budget repeatedly " &
            "(" & integer'image(packed_accepted) & " words accepted over " &
            "~625 budget windows)";
+
+    -- Phase 2: stop the continuous capture and IMMEDIATELY start a new
+    -- single-shot packed capture (no settle delay), mirroring the failing
+    -- hw_validation sequence. Use a larger budget so an instant/near-zero
+    -- completion is unambiguous.
+    report "=== Phase 2: continuous -> single-shot transition ===";
+    baseline := packed_accepted;
+    cont_mode <= '0';
+    samples_cfg <= 20000;
+    run <= '0';
+    wait for 200 ns;  -- long enough for run_sync2/run_edge_r to settle at 0
+                       -- (2FF into pclk, 6ns period) before the new run edge
+    run <= '1';
+    wait for 61 us;  -- 20000 cycles @200MHz = 100us budget; sample well within it
+    report "  after 61us: full_i=" & std_logic'image(probe_full_i) &
+           " sample_remaining=" & integer'image(probe_sample_rem) &
+           " rem_nonzero=" & std_logic'image(probe_rem_nonzero) &
+           " packed_stop_f=" & std_logic'image(probe_packed_stop_f);
+    report "packed_accepted gained in phase 2 (single-shot, Samples=20000): " &
+           integer'image(packed_accepted - baseline);
+    assert (packed_accepted - baseline) > 5000
+      report "FAIL: only " & integer'image(packed_accepted - baseline) &
+             " words gained -- single-shot packed capture immediately " &
+             "following a continuous one produced ~zero words (the " &
+             "sample_rem_dec_r stale-pipeline-parity bug: sample_remaining " &
+             "silently reverted to the prior capture's leftover countdown " &
+             "and hit zero early)"
+      severity failure;
+    report "PASS: single-shot packed capture after a continuous one " &
+           "accepted real words (" & integer'image(packed_accepted - baseline) & ")";
+
     std.env.finish;
     wait;
   end process;

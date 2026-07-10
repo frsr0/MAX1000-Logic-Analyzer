@@ -687,6 +687,7 @@ begin
     signal fast_rate_reload_r : natural range 0 to FAST_MAX_RATE_DIV := 0;
     signal sample_tick_r  : std_logic := '0';
     signal sample_rem_nonzero_r : std_logic := '0';
+    signal cfg_valid_edge_d1 : std_logic := '0';
     -- Pipeline register: pre-compute sample_remaining - 1 to break 22-bit carry chain
     signal sample_rem_dec_r    : natural range 0 to Max_Samples := 0;
     -- Pre-trigger counter: limits BRAM pre-trigger to 8 ticks, then switches to FIFO.
@@ -819,16 +820,60 @@ begin
     process(FAST_CLK)
     begin
       if rising_edge(FAST_CLK) then
-        if sample_remaining > 0 then
+        -- sample_rem_dec_r is a 1-cycle-ahead pipeline of "sample_remaining - 1"
+        -- (see comment on the signal decl) that Stage 2d writes back into
+        -- sample_remaining the FOLLOWING cycle. That round trip means
+        -- sample_remaining(k+1) actually depends on sample_remaining(k-1),
+        -- not sample_remaining(k) -- two independent interleaved countdown
+        -- chains, one per cycle parity. Reloading sample_remaining alone on
+        -- cfg_valid_edge (in Stage 2d below) only resyncs ONE of those two
+        -- chains; the other silently keeps counting down from the PREVIOUS
+        -- capture's stale value forever, since nothing ever touches it again.
+        -- Found 2026-07-10 by tracing a continuous->single-shot packed-mode
+        -- transition in tb_packed_continuous_renew Phase 2: sample_remaining
+        -- visibly alternated between a freshly-reloaded 20000-scale sequence
+        -- and a leftover ~63-scale sequence from the prior capture every
+        -- other cycle. When the stale chain's turn to be visible landed on
+        -- exactly 0, Stage 2c's clear-check below (mis)fired on that stale
+        -- zero and permanently latched sample_rem_nonzero_r low, halting
+        -- Packed_Ready with ~19937 genuine samples still remaining. Fix:
+        -- resync dec_r to the new budget on the SAME cfg_valid_edge cycle
+        -- that resyncs sample_remaining, so both pipeline parities restart
+        -- from the new capture together.
+        if cfg_valid_edge = '1' then
+          if cfg_samples > 0 then
+            sample_rem_dec_r <= cfg_samples - 1;
+          else
+            sample_rem_dec_r <= 0;
+          end if;
+        elsif sample_remaining > 0 then
           sample_rem_dec_r <= sample_remaining - 1;
         else
           sample_rem_dec_r <= 0;
         end if;
 
+        -- One-cycle-delayed copy of cfg_valid_edge: extra defense-in-depth
+        -- for the elsif branch below (kept from the earlier fix attempt;
+        -- harmless now that the dec_r resync above addresses the actual
+        -- root cause).
+        cfg_valid_edge_d1 <= cfg_valid_edge;
+
         if cfg_valid_edge = '1' then
           sample_rem_nonzero_r <= '1';
-        elsif fifo_wr = '1' and sample_remaining = 0 then
-          if packed_mode_f = '1' and Continuous_Mode = '1' then
+        elsif cfg_valid_edge_d1 = '0' and fifo_wr = '1' and sample_remaining = 0 then
+          -- Use continuous_f (the FAST_CLK-synchronized copy, driven near
+          -- line 636), NOT the raw Continuous_Mode port -- an earlier version
+          -- of this fix used the raw port directly and it caused a real,
+          -- reproducible bug: at the exact boundary between a continuous
+          -- capture ending and a new single-shot packed capture starting,
+          -- sampling the async port let sample_rem_nonzero_r latch low
+          -- (falling into the single-shot "done" branch) on stale/transitional
+          -- data, so the new capture reported instant completion with
+          -- producer_index=0 and zero real words. Every other FAST_CLK-domain
+          -- use of continuous mode in this generate block goes through
+          -- continuous_f for the same reason (e.g. the afull_r/continuous_f
+          -- checks below) -- this fix now matches that convention.
+          if packed_mode_f = '1' and continuous_f = '1' then
             -- Packed continuous/live capture: auto-renew the budget instead
             -- of halting Packed_Ready forever. The plain digital/narrow/
             -- analog-frame producers' fifo_wr pulse is NOT gated by
@@ -976,7 +1021,9 @@ begin
             -- inline compressor can actually sustain.
             fifo_wr <= '1';
             if sample_rem_nonzero_r = '1' then
-              if sample_remaining = 0 and Continuous_Mode = '1' then
+              -- continuous_f (synced), not the raw Continuous_Mode port --
+              -- see the Stage 2c comment above for the bug this caused.
+              if sample_remaining = 0 and continuous_f = '1' then
                 -- Auto-renew (mirrors Stage 2c's reload on the same edge):
                 -- reload the budget instead of freezing at 0, so packed
                 -- continuous/live capture never permanently halts.
