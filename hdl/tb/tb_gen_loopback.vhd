@@ -198,7 +198,6 @@ begin
       wreg(spi_cs, sck, spi_mosi, spi_miso, REG_IFACE_MODE, 1);
       wait for 20 us;
       -- capture config: 2 MHz (div 99 from 200 MHz), 1000 sample-units
-      wreg(spi_cs, sck, spi_mosi, spi_miso, REG_DEBUG_CH0_ENABLE, 0);
       wreg(spi_cs, sck, spi_mosi, spi_miso, REG_DIVIDER, 99);
       wreg(spi_cs, sck, spi_mosi, spi_miso, REG_SAMPLE_COUNT, 1000);
       wreg(spi_cs, sck, spi_mosi, spi_miso, REG_DELAY_COUNT, 1000);
@@ -209,8 +208,19 @@ begin
       wreg(spi_cs, sck, spi_mosi, spi_miso, REG_GEN_PROTO, 0);
       wreg(spi_cs, sck, spi_mosi, spi_miso, REG_GEN_BAUD, 868);
       wreg(spi_cs, sck, spi_mosi, spi_miso, REG_GEN_PINS, 16#0103#);
+      -- FAST_SPEED's loopback mux (OLS_SDRAM_Top "speed input path") is
+      -- driven exclusively by REG_GEN_CAPTURE_TX_CHAN, not the legacy
+      -- REG_GEN_PINS routing above (that only feeds the not-FAST_SPEED
+      -- paths). Without this write gen_capture_tx_channel stays at its
+      -- reset default (0), so the loopback lands on channel 0, not TX_CH.
+      wreg(spi_cs, sck, spi_mosi, spi_miso, REG_GEN_CAPTURE_TX_CHAN, TX_CH);
+      -- Payload must be Bit_Engine's host-encoded 2-bit symbol stream (the
+      -- generic symbol shifter has no protocol FSM of its own), not a raw
+      -- data byte -- one raw byte is consumed as a single symbol and drains
+      -- the FIFO almost instantly instead of transmitting a framed UART
+      -- byte. This is bit_bang.pack_symbols(bit_bang.uart_symbols(b"\x55")).
       pkt_cmd(spi_cs, sck, spi_mosi, spi_miso, CMD_GEN_LOAD,
-              byte_array'(0 => x"55"), 1, st);
+              byte_array'(x"EE", x"EE", x"FE"), 3, st);
       wreg(spi_cs, sck, spi_mosi, spi_miso, REG_FAST_MODE, 1);
       -- atomic generated capture
       pkt_cmd(spi_cs, sck, spi_mosi, spi_miso, CMD_GEN_CAPTURE, empty, 0, st);
