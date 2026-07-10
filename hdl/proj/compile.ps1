@@ -6,16 +6,17 @@ param(
     [switch]$RawOnly,
     # Keep the old direct PLL c4 forward instead of the DDIO clock forward.
     [switch]$LegacyClkForward,
-    # Seed 3 — best-known FULL mixed-signal build (2026-07-10, after fixing
-    # the packed/MSO continuous-mode sample-budget bug in the write pump; see
-    # fast-capture-write-scramble memory note / Fast_Logic_Analyzer_SDRAM.vhd):
-    # Slow-85C setup slack fast_clk=+0.094ns, sdram_core_clk=+0.534ns,
-    # sys_clk=+1.275ns, SDRAM_CHIP_CLK_OUT=+1.098ns at 6,750/8,064 LE (84%).
-    # (Old seed 5 went fast_clk-negative after the packed budget-renew fix
-    # reopened timing; old seed 12 predates the rdempty_q fix.)
+    # Seed 21 — best-known FULL mixed-signal build (2026-07-10, after fixing
+    # the packed-mode continuous->single-shot sample_rem_dec_r pipeline-parity
+    # race; see fast-capture-write-scramble memory note /
+    # Fast_Logic_Analyzer_SDRAM.vhd): Slow-85C setup slack sys_clk=+0.608ns,
+    # fast_clk=+0.075ns, sdram_core_clk=+0.432ns, SDRAM_CHIP_CLK_OUT=+1.098ns
+    # at 6,765/8,064 LE (84%).
+    # (Old seed 3 went fast_clk-negative after the dec_r pipeline-parity fix
+    # reopened timing.)
     # Re-sweep (seed_sweep.ps1) after RTL or pin changes; bitstream remains
     # seed-sensitive at this density.
-    [int]$Seed = 3
+    [int]$Seed = 21
 )
 
 $FastRawBuild = if ($RawOnly) { 'true' } else { 'false' }

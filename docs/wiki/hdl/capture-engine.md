@@ -141,6 +141,38 @@ instead of latching `packed_stop_f` permanently), since `Packed_Ready` — unlik
 the plain digital path, whose `fifo_wr` is not gated by this flag — really did
 stop forever once the budget hit zero. Regression: `tb_packed_continuous_renew.vhd`.
 
+### Continuous→Single-Shot Packed Transition Race (fixed 2026-07-10)
+
+A second, separate bug in the same budget mechanism caused an intermittent
+hardware failure: a packed continuous/live capture immediately followed by a
+new packed single-shot capture would sometimes report near-zero samples even
+though the new capture's config had armed correctly.
+
+Root cause: `sample_rem_dec_r` is a 1-cycle-ahead pipeline of
+`sample_remaining - 1`, added purely to keep a 22-bit comparison off the
+FAST_CLK write-path critical path. Because that value is written back into
+`sample_remaining` one cycle later, `sample_remaining(k+1)` actually depends
+on `sample_remaining(k-1)`, not `sample_remaining(k)` — two independent
+interleaved countdown chains, one per cycle parity. The `cfg_valid_edge`
+reload only resynced `sample_remaining` itself (one parity); the other
+silently kept counting down from the *previous* capture's stale leftover
+value. When that stale chain's turn to be visible happened to land on
+exactly 0, the existing completion-clear logic fired on the spurious zero
+and permanently halted `Packed_Ready` — even though the real, correctly
+reloaded chain still had thousands of genuine samples left. This is why the
+failure was intermittent: it depended on the parity and magnitude of
+whatever budget the prior capture happened to leave behind.
+
+Fixed by resyncing `sample_rem_dec_r` to the new budget on the same
+`cfg_valid_edge` cycle that resyncs `sample_remaining`
+(`sample_rem_dec_r <= cfg_samples`, a plain register copy — not
+`cfg_samples - 1`, since a duplicate wide subtractor in parallel on this hot
+path cost enough `fast_clk` timing margin to push the domain negative on
+every swept seed; being one cycle "long" on a multi-thousand-to-million
+sample budget is functionally negligible). Regression: `tb_packed_continuous_renew.vhd`
+Phase 2. Reproduced and diagnosed via fine-grained per-`fast_clk`-cycle GHDL
+tracing rather than hardware probing.
+
 ## Known Limitations
 
 - Pump metric counters (`PUMP_METRICS=false`) are disabled by default to save ~200 LEs
@@ -160,4 +192,4 @@ stop forever once the budget hit zero. Regression: `tb_packed_continuous_renew.v
 | `tb_continuous.vhd` | Continuous/ring mode |
 | `tb_continuous_wedge.vhd` | Continuous-mode hang recovery |
 | `tb_flush_path.vhd` | FIFO flush path |
-| `tb_packed_continuous_renew.vhd` | Packed-mode continuous capture budget auto-renew (2026-07-10 fix) |
+| `tb_packed_continuous_renew.vhd` | Packed-mode continuous capture budget auto-renew (Phase 1) + continuous→single-shot transition race (Phase 2), both fixed 2026-07-10 |

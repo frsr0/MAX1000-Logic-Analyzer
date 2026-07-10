@@ -120,6 +120,12 @@ higher requested `rate_hz` shortened a packed capture instead of leaving it
 unaffected). For `Continuous_Mode='1'` the budget auto-renews instead of
 halting, so live/rolling packed capture runs indefinitely.
 
+A separate race in this same budget mechanism could intermittently corrupt
+the very next single-shot packed capture immediately following a continuous
+one (near-zero samples reported despite a correctly armed new capture); see
+[capture-engine.md](capture-engine.md#continuoussingle-shot-packed-transition-race-fixed-2026-07-10)
+for the mechanism and fix (2026-07-10).
+
 **Measured throughput (2026-07-10, current board):** live continuous packed
 capture sustains **~90–105 MS/s effective 16-channel digital throughput**
 (after RLE reconstruction) and **~25–30 kS/s per analog channel**

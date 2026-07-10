@@ -1,13 +1,7 @@
 
-Seed   Sys   Fast Sdram ChipOut LE                                           
-----   ---   ---- ----- ------- --                                           
-  21 1.181 -0.226 0.305   1.098 Total logic elements : 6,759 / 8,064 ( 84 % )
-  30 0.657 -0.327 0.236   1.098 Total logic elements : 6,745 / 8,064 ( 84 % )
-   5  1.18 -0.112     0   1.098 Total logic elements : 6,739 / 8,064 ( 84 % )
-  12 0.887 -0.107 0.256   1.098 Total logic elements : 6,732 / 8,064 ( 83 % )
-  42 0.455 -0.233 0.275   1.098 Total logic elements : 6,773 / 8,064 ( 84 % )
-   7 0.567 -0.302 0.411   1.098 Total logic elements : 6,778 / 8,064 ( 84 % )
-   3 1.275  0.094 0.534   1.098 Total logic elements : 6,750 / 8,064 ( 84 % )
+Seed   Sys  Fast Sdram ChipOut LE                                           
+----   ---  ---- ----- ------- --                                           
+  21 0.608 0.075 0.432   1.098 Total logic elements : 6,765 / 8,064 ( 84 % )
 
 
 
