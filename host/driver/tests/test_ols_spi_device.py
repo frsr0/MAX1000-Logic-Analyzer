@@ -626,8 +626,13 @@ class TestOLSDeviceSPIGenerator:
         device_spi.pkt.transaction = MagicMock(return_value=(0x10, 0, b""))
         device_spi.pkt.get_status = MagicMock(
             side_effect=[
+                # Consumed by _wait_gen_idle (gen_busy absent -> returns immediately).
                 {"capture_status": ST_CAPTURE_IDLE, "capture_seq": 7},
-                {"capture_seq": 7},
+                # Consumed by the capture_seq read BEFORE CMD_GEN_CAPTURE
+                # (its internal arm increments it by one, like
+                # CMD_ARM_CAPTURE); expected_seq = prev+1 = 7, matching the
+                # DONE poll below.
+                {"capture_seq": 6},
                 {"capture_status": ST_CAPTURE_DONE, "capture_seq": 7},
             ])
         device_spi.ack_capture_done = MagicMock()
@@ -650,7 +655,10 @@ class TestOLSDeviceSPIGenerator:
         device_spi.pkt.transaction = MagicMock(return_value=(0x10, 0, b""))
         device_spi.pkt.get_status = MagicMock(
             side_effect=[
-                {"capture_status": ST_CAPTURE_IDLE, "capture_seq": 9},
+                # _wait_gen_idle is mocked out above, so this first call is
+                # consumed by the capture_seq read BEFORE CMD_GEN_CAPTURE;
+                # expected_seq = prev+1 = 9, matching the DONE poll below.
+                {"capture_status": ST_CAPTURE_IDLE, "capture_seq": 8},
                 {"capture_seq": 9},
                 {"capture_status": ST_CAPTURE_DONE, "capture_seq": 9},
             ])
