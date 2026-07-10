@@ -25,6 +25,12 @@ end tb_gen_loopback;
 architecture bench of tb_gen_loopback is
   constant CLK_PERIOD : time := 1 sec / 12000000;
   constant TX_CH : natural := 3;
+  -- samples/bit at 2 MHz capture rate and the ~400 kBd REG_GEN_BAUD=249
+  -- configured below (sys_clk=100 MHz, Bit_Div=249 -> actual_baud =
+  -- 100e6/(249+1.25) = 399600.4 Hz).
+  constant SPB : real := 2000000.0 / (100000000.0 / 250.25);
+
+  type samplebit_array is array (natural range <>) of std_logic;
 
   signal clk_12 : std_logic := '0';
   signal spi_cs  : std_logic := '1';
@@ -151,7 +157,14 @@ begin
 
   DUT : entity work.OLS_SDRAM_Top
     generic map (TX_PIN => 3, PLL_MULT => 8, PLL_DIV => 1,
-                 Sim => true, FAST_SPEED => true)
+                 -- Sim => false + the tb/SDRAM_PLL.vhd behavioral PLL model
+                 -- (PLL_Model) give REAL, independently-clocked sys_clk/
+                 -- fast_clk/sdram_core_clk domains -- Sim => true collapses
+                 -- all three onto this testbench's single clk_12, which
+                 -- eliminates the actual clock-domain crossing entirely and
+                 -- cannot exercise (or ever disprove) a CDC bug.
+                 Sim => false, FAST_SPEED => true,
+                 USE_DDIO_CLK_FORWARD => false)
     port map (
       CLK => clk_12,
       SPI_CS => spi_cs, SPI_SCK => sck, SPI_MOSI => spi_mosi, SPI_MISO => spi_miso,
@@ -187,6 +200,13 @@ begin
     -- of a 0x55 byte shows ~10 transitions; a flat (broken) capture shows 0.
     procedure gen_capture_and_check(constant label_s : in string) is
       variable deadline : natural := 0;
+      variable n_samples : natural;
+      variable bits : samplebit_array(0 to 1099);
+      variable start_idx : integer;
+      variable centre : integer;
+      variable expect : std_logic;
+      variable mismatches : natural;
+      variable first_bad : integer;
     begin
       -- driver reset()
       pkt_cmd(spi_cs, sck, spi_mosi, spi_miso, CMD_ABORT_CAPTURE, empty, 0, st);
@@ -204,9 +224,19 @@ begin
       wreg(spi_cs, sck, spi_mosi, spi_miso, REG_TRIGGER_MASK, 0);
       wreg(spi_cs, sck, spi_mosi, spi_miso, REG_TRIGGER_VALUE, 0);
       wreg(spi_cs, sck, spi_mosi, spi_miso, REG_FLAGS, 0);
-      -- UART generator: 115200 from 100 MHz sys clk, tx=3 scl=1
+      -- UART generator: 8 back-to-back 0x55 bytes (matches the real
+      -- /api/generator/self-test payload, not just 1 byte -- a longer burst
+      -- gives any rare/phase-dependent CDC issue far more opportunities to
+      -- show up, and the two free-running PLL_Model clocks genuinely drift
+      -- in relative phase over simulated time, so a longer run explores
+      -- more of that phase space than a single byte can).
+      --
+      -- Baud raised to ~400 kBd (from the real 115200) so all 80 bit-times
+      -- (8 bytes x 10 bits) fit inside one 512-sample readback block at the
+      -- 2 MHz capture rate -- avoids the multi-block prime/drop addressing
+      -- dance for what is a CDC/mux check, not a baud-accuracy check.
       wreg(spi_cs, sck, spi_mosi, spi_miso, REG_GEN_PROTO, 0);
-      wreg(spi_cs, sck, spi_mosi, spi_miso, REG_GEN_BAUD, 868);
+      wreg(spi_cs, sck, spi_mosi, spi_miso, REG_GEN_BAUD, 249);
       wreg(spi_cs, sck, spi_mosi, spi_miso, REG_GEN_PINS, 16#0103#);
       -- FAST_SPEED's loopback mux (OLS_SDRAM_Top "speed input path") is
       -- driven exclusively by REG_GEN_CAPTURE_TX_CHAN, not the legacy
@@ -218,9 +248,12 @@ begin
       -- generic symbol shifter has no protocol FSM of its own), not a raw
       -- data byte -- one raw byte is consumed as a single symbol and drains
       -- the FIFO almost instantly instead of transmitting a framed UART
-      -- byte. This is bit_bang.pack_symbols(bit_bang.uart_symbols(b"\x55")).
+      -- byte. This is bit_bang.pack_symbols(bit_bang.uart_symbols(b"\x55"*8)).
       pkt_cmd(spi_cs, sck, spi_mosi, spi_miso, CMD_GEN_LOAD,
-              byte_array'(x"EE", x"EE", x"FE"), 3, st);
+              byte_array'(x"EE", x"EE", x"EE", x"EE", x"EE", x"EE", x"EE",
+                          x"EE", x"EE", x"EE", x"EE", x"EE", x"EE", x"EE",
+                          x"EE", x"EE", x"EE", x"EE", x"EE", x"EE", x"FF"),
+              21, st);
       wreg(spi_cs, sck, spi_mosi, spi_miso, REG_FAST_MODE, 1);
       -- atomic generated capture
       pkt_cmd(spi_cs, sck, spi_mosi, spi_miso, CMD_GEN_CAPTURE, empty, 0, st);
@@ -242,26 +275,73 @@ begin
         fails := fails + 1;
       end if;
 
-      -- read block 0 and count TX-channel edges
+      -- read block 0, extract the TX-channel bit per sample, then do a
+      -- bit-exact decode: find the start edge, mid-bit-sample all 80 bit
+      -- times (8 back-to-back 0x55 bytes = start,d0..d7,stop repeated,
+      -- which for 0x55 LSB-first dovetails into one continuous alternating
+      -- 0/1/0/1/... sequence with NO interruption at byte boundaries), and
+      -- compare every single bit against that expected alternation. This
+      -- catches partial/rare corruption that a mere ">=4 edges present"
+      -- check would miss entirely.
       addr_pld := (x"00", x"00", x"00", x"00");
       pkt_send(spi_cs, sck, spi_mosi, spi_miso, CMD_READ_CAPTURE, addr_pld, 4);
       wait for 30 us;
       pkt_read_rsp(spi_cs, sck, spi_mosi, spi_miso, 1100, st, pay, pl);
+      -- Current wire format is 2 bytes/sample (512-sample block = 1024
+      -- payload bytes), not the legacy stride-4 layout -- see
+      -- host/driver/spi_protocol.py read_capture_block (BLOCK_SIZE=1024
+      -- for 512 samples) and the sample-duplication-bug memory note
+      -- ("stride-4 legacy... dense format + stride 2 now"). The old w*4
+      -- indexing here silently discarded every other real sample and
+      -- read the NEXT sample's bytes as padding -- a self-inflicted
+      -- aliasing artifact, not an RTL bug.
+      n_samples := pl / 2;
+      start_idx := -1;
+      mismatches := 0;
+      first_bad := -1;
       edges := 0;
       prev_bit := 'U';
-      for w in 0 to (pl / 4) - 1 loop
-        word := pay(w*4 + 1) & pay(w*4);
-        if prev_bit /= 'U' and word(TX_CH) /= prev_bit then
+      for w in 0 to n_samples - 1 loop
+        word := pay(w*2 + 1) & pay(w*2);
+        bits(w) := word(TX_CH);
+        if prev_bit /= 'U' and bits(w) /= prev_bit then
           edges := edges + 1;
+          if start_idx = -1 and prev_bit = '1' and bits(w) = '0' then
+            start_idx := w;  -- first falling edge = start bit
+          end if;
         end if;
-        prev_bit := word(TX_CH);
+        prev_bit := bits(w);
       end loop;
       report label_s & ": TX edges in readback = " & integer'image(edges);
-      if edges >= 4 then
-        report label_s & ": PASS (generator burst present)" severity note;
-      else
-        report label_s & ": FAIL (flat capture)" severity error;
+      if start_idx = -1 then
+        report label_s & ": FAIL (flat capture, no start edge found)" severity error;
         fails := fails + 1;
+      else
+        for n in 0 to 79 loop
+          -- VHDL's real->integer conversion rounds to nearest (LRM 14.3).
+          centre := start_idx + integer(SPB * (real(n) + 0.5));
+          expect := '1';
+          if (n mod 2) = 0 then
+            expect := '0';
+          end if;
+          if centre >= n_samples then
+            exit;  -- ran off the end of this block; already have plenty of bits
+          end if;
+          if bits(centre) /= expect then
+            mismatches := mismatches + 1;
+            if first_bad = -1 then
+              first_bad := n;
+            end if;
+          end if;
+        end loop;
+        if mismatches = 0 then
+          report label_s & ": PASS (80/80 bit-exact, 8x 0x55 decoded correctly)" severity note;
+        else
+          report label_s & ": FAIL (" & integer'image(mismatches) &
+                 "/80 bit-time mismatches, first at bit " &
+                 integer'image(first_bad) & ")" severity error;
+          fails := fails + 1;
+        end if;
       end if;
     end procedure;
 
