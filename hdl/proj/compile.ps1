@@ -6,15 +6,16 @@ param(
     [switch]$RawOnly,
     # Keep the old direct PLL c4 forward instead of the DDIO clock forward.
     [switch]$LegacyClkForward,
-    # Seed 12 — best-known FULL mixed-signal build (2026-07-10, after inverting
-    # the DDIO SDRAM clock forward to match the SDC's -invert constraint; see
-    # fast-capture-write-scramble root cause / OLS_SDRAM_Top.vhd altddio_out):
-    # Slow-85C setup slack fast_clk=+0.107ns, sdram_core_clk=+0.566ns,
-    # sys_clk=+1.145ns, SDRAM_CHIP_CLK_OUT=+1.098ns at 6,772/8,064 LE (84%).
-    # (Old seed 30 went sdram_core_clk-negative, -0.412ns, after the DDIO fix.)
+    # Seed 5 — best-known FULL mixed-signal build (2026-07-10, after fixing the
+    # degenerate 1-cycle rdempty_q FIFO settling guard in the write pump; see
+    # fast-capture-write-scramble memory note / Fast_Logic_Analyzer_SDRAM.vhd):
+    # Slow-85C setup slack fast_clk=+0.078ns, sdram_core_clk=+0.254ns,
+    # sys_clk=+1.078ns, SDRAM_CHIP_CLK_OUT=+1.098ns at 6,783/8,064 LE (84%).
+    # (Old seed 12 went fast_clk/sdram_core_clk-negative after the rdempty_q
+    # fix reopened timing; old seed 30 predates the DDIO clock-forward fix.)
     # Re-sweep (seed_sweep.ps1) after RTL or pin changes; bitstream remains
     # seed-sensitive at this density.
-    [int]$Seed = 12
+    [int]$Seed = 5
 )
 
 $FastRawBuild = if ($RawOnly) { 'true' } else { 'false' }
