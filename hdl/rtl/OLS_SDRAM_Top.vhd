@@ -205,6 +205,16 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_tx_f2    : std_logic := '0';
   signal gen_scl_f1   : std_logic := '0';
   signal gen_scl_f2   : std_logic := '0';
+  -- FAST_SPEED's own 2-flop synchronizer for the loopback bit, sampled
+  -- straight off gen_tx/gen_scl (not gen_tx_d2/gen_scl_d2, which are already
+  -- 2 sys_clk flops deep -- reading THOSE directly in the fast_clk process
+  -- below had zero destination-side synchronization, a real CDC hazard that
+  -- showed up as single-sample glitches on the captured generator loopback
+  -- channel on real hardware).
+  signal gen_tx_fastclk_f1  : std_logic := '0';
+  signal gen_tx_fastclk_f2  : std_logic := '0';
+  signal gen_scl_fastclk_f1 : std_logic := '0';
+  signal gen_scl_fastclk_f2 : std_logic := '0';
   signal gen_capture_active_f1 : std_logic := '0';
   signal gen_capture_active_f2 : std_logic := '0';
   signal gen_spi_test_f1 : std_logic := '0';
@@ -606,6 +616,18 @@ BEGIN
         gen_capture_tx_channel_f2 <= gen_capture_tx_channel_f1;
         gen_capture_scl_channel_f1 <= gen_capture_scl_channel;
         gen_capture_scl_channel_f2 <= gen_capture_scl_channel_f1;
+        -- Missing until now: the FAST_SPEED speed-input-path mux below reads
+        -- gen_capture_active_f2, but nothing in this build profile ever drove
+        -- it off its '0' reset default (the only assignment lived in
+        -- gen_mapped_path, gated "not FAST_SPEED"). The mux's loopback
+        -- override was therefore always false, so a CMD_GEN_CAPTURE on this
+        -- board silently captured the raw (floating) physical pin on the
+        -- selected channel instead of the generated signal -- the root
+        -- cause of the FAST_SPEED-hardware-only UART self-test byte
+        -- mismatches (real edge activity was present, just from the wrong
+        -- source: an unconnected pin, not the loopback).
+        gen_capture_active_f1 <= gen_capture_active;
+        gen_capture_active_f2 <= gen_capture_active_f1;
       end if;
     end process;
   end generate;
@@ -637,11 +659,13 @@ BEGIN
       sen_sdi_fast_f1 <= SEN_SDI;  sen_sdi_fast_f2 <= sen_sdi_fast_f1;
       sen_spc_fast_f1 <= SEN_SPC;  sen_spc_fast_f2 <= sen_spc_fast_f1;
       sen_sdo_fast_f1 <= SEN_SDO;  sen_sdo_fast_f2 <= sen_sdo_fast_f1;
+      gen_tx_fastclk_f1  <= gen_tx;  gen_tx_fastclk_f2  <= gen_tx_fastclk_f1;
+      gen_scl_fastclk_f1 <= gen_scl; gen_scl_fastclk_f2 <= gen_scl_fastclk_f1;
       for i in 0 to LA_CHANNELS-1 loop
         if gen_capture_active_f2 = '1' and i = gen_capture_tx_channel_f2 then
-          capture_data_fast_speed_r(i) <= gen_tx_d2;
+          capture_data_fast_speed_r(i) <= gen_tx_fastclk_f2;
         elsif gen_capture_active_f2 = '1' and i = gen_capture_scl_channel_f2 then
-          capture_data_fast_speed_r(i) <= gen_scl_d2;
+          capture_data_fast_speed_r(i) <= gen_scl_fastclk_f2;
         elsif accel_attach_f2 = '1' and i = 13 then
           capture_data_fast_speed_r(i) <= sen_sdi_fast_f2;
         elsif accel_attach_f2 = '1' and i = 14 then
