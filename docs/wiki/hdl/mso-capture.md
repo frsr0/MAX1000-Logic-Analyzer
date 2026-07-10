@@ -101,3 +101,32 @@ The packed stream is decoded on the host by `host/driver/mso_packed.py`:
 - `decode_analog_words(analog_words)` — reconstructs per-channel ADC samples from bit15=0 sub-stream
 - `decode_digital_words(digital_words)` — reconstructs digital timeline from bit15=1 sub-stream
 - `decode_packed_stream(data)` — splits and decodes both sub-streams
+
+## Rate Behavior and Live/Continuous Capture
+
+`mso_capture` has **no `Rate_Div` input and no sample-tick gating** — `digital_in`
+is 2FF-synced and fed into `digital_rle` unconditionally on every single
+`fast_clk` cycle (200.4 MHz). The `rate_hz`/`Rate_Div` a caller configures via
+`REG_DIVIDER` is meaningless to this pipeline; it only affects the plain
+digital/narrow/analog-frame producers in `Fast_Logic_Analyzer_SDRAM.vhd`,
+whose output this mode's write-port mux never selects. Packed mode always
+runs at the maximum possible ingest rate.
+
+**Capture-length budget:** the `Samples` register still bounds how long a
+capture runs, via the shared `sample_remaining`/`packed_stop_f` gate on
+`Packed_Ready` (see [capture-engine.md](capture-engine.md#packed-mode-capture-budget-fixed-2026-07-10)
+for the mechanism and a 2026-07-10 bug fix in that gate — before the fix, a
+higher requested `rate_hz` shortened a packed capture instead of leaving it
+unaffected). For `Continuous_Mode='1'` the budget auto-renews instead of
+halting, so live/rolling packed capture runs indefinitely.
+
+**Measured throughput (2026-07-10, current board):** live continuous packed
+capture sustains **~90–105 MS/s effective 16-channel digital throughput**
+(after RLE reconstruction) and **~25–30 kS/s per analog channel**
+simultaneously and independently — digital doesn't wait on the ADC's slower
+scan cadence the way the legacy `MODE_MIXED` frame-locked path does (that
+path caps around ~140 kS/s total regardless of requested rate, since one
+14-byte frame is emitted per ADC scan). This is the only mode that gives a
+genuine "compressed digital + analog together" live capture; compression
+is unavailable in `MODE_MIXED`/`MODE_ANALOG_*` (`OLS_Interface.vhd`:
+`comp_enable_i` is hardware-gated off whenever `analog_enable_i='1'`).

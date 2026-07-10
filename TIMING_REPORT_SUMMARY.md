@@ -1,5 +1,5 @@
 # Timing Report Summary
-## Status: ✅ **PASSING - No Violations** (seed 5, current flashed build — see July 10 update below)
+## Status: ✅ **PASSING - No Violations** (seed 3, current flashed build — see July 10 updates below)
 
 
 **Report Date:** July 5, 2026 (seed 30 build, STA summary from latest compilation)
@@ -56,13 +56,43 @@
 > Both fixes are flashed and hardware-verified: 0 injected write glitches on
 > a constant-low-MOSI probe, 5/5 bit-exact UART decodes, 3/3 clean
 > `/api/generator/self-test` runs, and 51/51 on the broader
-> `host/app/hw_validation.py` subset (run twice). **Seed 5 is the current
-> flashed board state; `compile.ps1`'s default and the committed `.qsf`
-> `SEED` are both 5.** Neither bug was reachable by prior GHDL functional
-> simulation — both are real-silicon-only hazards (a clock-phase race and a
-> show-ahead-FIFO settling race) that no dcfifo/SDRAM behavioral model in
-> this repo reproduces; catching them required bit-exact hardware probing,
-> not more testbench work.
+> `host/app/hw_validation.py` subset (run twice). Neither bug was reachable
+> by prior GHDL functional simulation — both are real-silicon-only hazards
+> (a clock-phase race and a show-ahead-FIFO settling race) that no
+> dcfifo/SDRAM behavioral model in this repo reproduces; catching them
+> required bit-exact hardware probing, not more testbench work.
+
+> **Updated July 10, 2026 (current, third fix same day): packed/MSO
+> capture budget was gated by the wrong counter, silently capping
+> compressed live throughput.** Investigating why RLE compression only
+> bought ~2x on a signal measured to be ~35x compressible by run-length
+> found that the read-side RLE-over-`CMD_START_RAW_STREAM` path
+> (`OLS_Interface.vhd`) is architecturally capped at ~1.85 MS/s by shared
+> SDRAM read/write bus time-multiplexing, since it recompresses data
+> *after* an expensive bus read rather than before — not fixable by tuning
+> that path. The real fix is the already-built MSO/Packed inline pipeline
+> (`mso_capture.vhd`), which has no `Rate_Div` gating at all and ingests
+> digital data at the full native 200.4 MHz unconditionally — but its
+> `Samples` capture-length budget (gating `Packed_Ready` via
+> `packed_stop_f`) was being decremented by the legacy digital write pump's
+> `Rate_Div`-gated tick instead of its own full-rate cadence, so a *higher*
+> requested `rate_hz` (meaningless to packed mode) drained the budget
+> *faster*, halting the packed producer sooner the more aggressively a
+> caller asked for speed. Fixed in `Fast_Logic_Analyzer_SDRAM.vhd`
+> (decrement every `fast_clk` cycle when `packed_mode_f='1'`); this also
+> exposed a second bug (the budget never reloaded in `Continuous_Mode`,
+> which would have capped every live packed capture at ~21 ms) fixed with
+> an auto-renew. New regression `tb_packed_continuous_renew.vhd` confirmed
+> via git-stash A/B to fail pre-fix and pass post-fix. Reopened timing on
+> seed 5; re-swept, **seed 3** closed every domain: setup slack
+> `fast_clk +0.094 ns`, `sdram_core_clk +0.534 ns`, `sys_clk +1.275 ns`,
+> `SDRAM_CHIP_CLK_OUT +1.098 ns`; 84% LE (6,750/8,064). Flashed and
+> hardware-verified: `producer_index` sustained ~3.6M words/sec
+> continuously (direct register polling, up from the old ~0.1-1.85 MS/s
+> ceiling), live decoded throughput ~90-105 MS/s effective 16-channel
+> digital + ~25-30 kS/s per analog channel simultaneously, hw_validation
+> 58/58. **Seed 3 is the current flashed board state; `compile.ps1`'s
+> default and the committed `.qsf` `SEED` are both 3.**
 
 ---
 

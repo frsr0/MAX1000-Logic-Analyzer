@@ -121,6 +121,26 @@ The core capture engine: registered input sampling, sample rate division, BRAM p
 | `packed_mode_f` | 1 | Synchronised packed mode flag |
 | `packed_stop_f` | 1 | End-of-capture gate for packed producer |
 
+### Packed-Mode Capture Budget (fixed 2026-07-10)
+
+`packed_stop_f` (`<= not sample_rem_nonzero_r`) gates `Packed_Ready` for the
+MSO/packed producer (see [mso-capture.md](mso-capture.md)). Because
+`mso_capture.vhd` has no `Rate_Div`/`sample_tick_r` gating of its own — it
+ingests `digital_in` unconditionally every `fast_clk` cycle — the shared
+`sample_remaining`/`sample_rem_nonzero_r` budget that `packed_stop_f` reads
+must also deplete at that same full-rate cadence, not at the `Rate_Div`-gated
+rate used by the plain digital/narrow/analog-frame producers. Before the fix,
+it was accidentally tied to the legacy `sample_tick_r` pulse, so a *higher*
+requested `rate_hz` (meaningless to packed mode, since the write-port mux
+never routes plain-digital data when `packed_mode_f='1'`) burned the budget
+*faster* in wall-clock time — capture got shorter the more aggressively a
+caller asked for speed. Fixed by decrementing on every `fast_clk` cycle when
+`packed_mode_f='1'` instead. This also required adding an explicit
+`Continuous_Mode='1'` auto-renew (reload `sample_remaining <= cfg_samples`
+instead of latching `packed_stop_f` permanently), since `Packed_Ready` — unlike
+the plain digital path, whose `fifo_wr` is not gated by this flag — really did
+stop forever once the budget hit zero. Regression: `tb_packed_continuous_renew.vhd`.
+
 ## Known Limitations
 
 - Pump metric counters (`PUMP_METRICS=false`) are disabled by default to save ~200 LEs
@@ -140,3 +160,4 @@ The core capture engine: registered input sampling, sample rate division, BRAM p
 | `tb_continuous.vhd` | Continuous/ring mode |
 | `tb_continuous_wedge.vhd` | Continuous-mode hang recovery |
 | `tb_flush_path.vhd` | FIFO flush path |
+| `tb_packed_continuous_renew.vhd` | Packed-mode continuous capture budget auto-renew (2026-07-10 fix) |

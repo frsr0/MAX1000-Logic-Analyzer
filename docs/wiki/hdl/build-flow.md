@@ -10,7 +10,7 @@
 | Family | MAX 10 |
 | Package | 484-pin FBGA |
 | Speed grade | C8 |
-| Logic elements | 8,000 (∼87% used in current build) |
+| Logic elements | 8,064 (84% used in current build, 2026-07-10) |
 
 ## Project Files
 
@@ -29,15 +29,17 @@
 
 ### compile.ps1
 
-PowerShell build script:
+PowerShell build script (current parameters, verified against the script 2026-07-10):
 ```
-.\compile.ps1 -Seed 33
+.\compile.ps1 -Flash -Seed 3
 ```
 
 Parameters:
-- `-Seed` (default: 1): Quartus fitter seed for placement/routing
-- `-Fast` (switch): enable FAST_SPEED build profile
-- `-NoClean` (switch): skip clean before compile (incremental)
+- `-Seed` (default: 3 as of 2026-07-10; re-swept after every RTL change): Quartus fitter seed for placement/routing
+- `-NoFlash` (switch): compile only, skip JTAG programming
+- `-Flash` (switch): program the board via JTAG after compiling
+- `-RawOnly` (switch): build with `FAST_RAW_BUILD=true`, eliding the `mso_capture`/MSO bit-pack pipeline for extra timing margin (default is the full mixed-signal build with `mso_capture` included)
+- `-LegacyClkForward` (switch): use the direct PLL c4 SDRAM clock forward instead of the default DDIO forward (see [`sdram-pll.md`](../hdl/sdram-pll.md))
 
 Steps:
 1. Generate top-level wrapper VHDL with generic parameters
@@ -50,12 +52,15 @@ Steps:
 
 ### seed_sweep.ps1
 
-Automated fitting with multiple seeds:
+Automated fitting with multiple seeds, stopping as soon as every tracked
+clock closes with margin:
 ```
-.\seed_sweep.ps1 -Seeds @(1,10,20,30,33,40,50)
+.\seed_sweep.ps1
 ```
 
-Reports results to `seed_sweep_results.txt` and identifies the best-fit seed.
+Reports results to `seed_sweep_results.txt` and identifies the best-fit seed
+(current default candidate list defined in the script; last picked **seed 3**,
+2026-07-10).
 
 ## Timing Constraints (SDC)
 
@@ -84,14 +89,14 @@ Reports results to `seed_sweep_results.txt` and identifies the best-fit seed.
 
 | Profile | FAST_SPEED | FAST_RAW_BUILD | Fmax (fast_clk) | Use Case |
 |---|---|---|---|---|
-| Speed | true | true | 200.4 MHz | Production — excludes compression for timing |
-| Development | true | false | 200.4 MHz | Testing — includes compression |
+| Full (default) | true | false | 200.4 MHz | **Currently flashed build** — includes `mso_capture`/MSO bit-pack pipeline; `compile.ps1`'s default (no flag needed) |
+| Raw-only | true | true | 200.4 MHz | Elides `mso_capture` (`-RawOnly`) for extra timing margin when the MSO pipeline isn't needed |
 | Slow | false | true | 12-50 MHz | Low-speed debug |
 
 ## Known Issues
 
 - The generated wrapper in `proj/` is overwritten by `compile.ps1`
-- Seed 33 is the currently validated speed-build placement
+- Seed 3 is the currently validated placement (2026-07-10) — this design is seed-sensitive at ~84% LE; re-sweep with `seed_sweep.ps1` after any RTL change
 - At ∼87% LE utilisation, fitter struggles — changing one parameter often requires a seed sweep to find a new valid placement
 - The `FAST_RAW_BUILD` option that excludes compression modules exists purely for timing closure at 200 MHz
 

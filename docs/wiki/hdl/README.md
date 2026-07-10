@@ -87,6 +87,6 @@
 | FPGA | Intel MAX 10 10M08DAF484C8G |
 | Speed grade | C8 |
 | Build profile | FAST_SPEED (200 MHz sample clock) |
-| Validated seed | 33 |
-| Utilisation | ~87% LEs / 79% combinational / 41% registers / 75% memory bits |
+| Validated seed | 3 (2026-07-10; re-sweep after any RTL change — see `TIMING_REPORT_SUMMARY.md`) |
+| Utilisation | 84% LEs (6,750/8,064) |
 | Toolchain | Quartus Prime (proj/compile.ps1) |

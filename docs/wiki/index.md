@@ -80,10 +80,17 @@ graph TB
 - UART, I2C, SPI, PWM, RS-485 generation
 - Built with Quartus, targeting 10M08DAF484C8G, FAST_SPEED build
 - SDRAM write timing is closed in STA with the DDIO-forwarded chip clock at
-  **seed 5** (2026-07-10, current flashed build): worst setup slack
-  `fast_clk +0.078 ns`, `sdram_core_clk +0.254 ns`, `sys_clk +1.078 ns`,
-  `SDRAM_CHIP_CLK_OUT +1.098 ns`; 84% LE (6,783/8,064). See
-  [`hdl/sdram-pll.md`](hdl/sdram-pll.md) for the DDIO clock-forward phase fix
-  this seed was closed against, and `TIMING_REPORT_SUMMARY.md` for the full
-  per-domain history. Re-sweep with `hdl/proj/seed_sweep.ps1` after any RTL
-  change — this design is seed-sensitive at this density.
+  **seed 3** (2026-07-10, current flashed build): worst setup slack
+  `fast_clk +0.094 ns`, `sdram_core_clk +0.534 ns`, `sys_clk +1.275 ns`,
+  `SDRAM_CHIP_CLK_OUT +1.098 ns`; 84% LE (6,750/8,064). See
+  [`hdl/sdram-pll.md`](hdl/sdram-pll.md) for the DDIO clock-forward phase fix,
+  [`hdl/mso-capture.md`](hdl/mso-capture.md) for the packed/MSO live-capture
+  throughput fix, and `TIMING_REPORT_SUMMARY.md` for the full per-domain
+  history. Re-sweep with `hdl/proj/seed_sweep.ps1` after any RTL change —
+  this design is seed-sensitive at this density.
+- Live/continuous compressed digital capture (packed/MSO mode) sustains
+  ~90-105 MS/s effective 16-channel throughput plus ~25-30 kS/s per analog
+  channel simultaneously — see [`hdl/mso-capture.md`](hdl/mso-capture.md#rate-behavior-and-livecontinuous-capture).
+  The legacy `MODE_MIXED`/read-side-RLE paths are unchanged and much lower
+  (~0.14 MS/s and ~2 MS/s respectively) — packed mode is the one to use for
+  a fast compressed live view.
