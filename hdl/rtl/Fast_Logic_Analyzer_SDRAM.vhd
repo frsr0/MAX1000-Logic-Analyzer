@@ -1534,7 +1534,16 @@ begin
       end if;
       -- Loader settling trackers (see skid-buffer comment above the process).
       fifo_rd_q <= fifo_rd;
-      rdempty_q <= fifo_rdempty;
+      -- Chain off fifo_rdempty_r (not the live fifo_rdempty) so rdempty_q and
+      -- fifo_rdempty_r hold DISTINCT cycles: fifo_rdempty_r = empty one cycle
+      -- ago, rdempty_q = empty two cycles ago. Before this fix both loaded
+      -- from the same source on the same edge and were always equal, so the
+      -- "empty low for two consecutive cycles" guard below (intended: real
+      -- show-ahead q can lag the empty flag by one cycle on silicon) had
+      -- silently degenerated to a one-cycle check since 852572f4, which moved
+      -- the loader condition onto fifo_rdempty_r for timing but left this
+      -- assignment on the live signal.
+      rdempty_q <= fifo_rdempty_r;
       if fifo_rdempty = '0' and unsigned(fifo_rdusedw) = 0 then
         fifo_rdusedw_r <= AFIFO_DEPTH;
       else
