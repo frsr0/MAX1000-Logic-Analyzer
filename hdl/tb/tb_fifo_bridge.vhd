@@ -57,9 +57,51 @@ architecture bench of tb_fifo_bridge is
 
   type word_array is array (natural range <>) of std_logic_vector(15 downto 0);
   type addr_array is array (natural range <>) of std_logic_vector(21 downto 0);
-  shared variable captured : word_array(0 to 16383) := (others => (others => '0'));
-  shared variable cap_addrs : addr_array(0 to 16383) := (others => (others => '0'));
-  shared variable cap_cnt  : integer := 0;
+
+  -- Cross-process capture log: one process (below) records accepted
+  -- handshakes, the main test-sequence process reads them back. GHDL (recent
+  -- versions) requires cross-process shared state to be a protected type
+  -- rather than a plain `shared variable` of an unprotected array type.
+  type capture_log_t is protected
+    procedure record_word(data : std_logic_vector(15 downto 0);
+                          addr : std_logic_vector(21 downto 0));
+    impure function count return integer;
+    impure function get_data(idx : integer) return std_logic_vector;
+    impure function get_addr(idx : integer) return std_logic_vector;
+  end protected capture_log_t;
+
+  type capture_log_t is protected body
+    variable captured  : word_array(0 to 16383) := (others => (others => '0'));
+    variable cap_addrs : addr_array(0 to 16383) := (others => (others => '0'));
+    variable cap_cnt   : integer := 0;
+
+    procedure record_word(data : std_logic_vector(15 downto 0);
+                          addr : std_logic_vector(21 downto 0)) is
+    begin
+      if cap_cnt < captured'length then
+        captured(cap_cnt)  := data;
+        cap_addrs(cap_cnt) := addr;
+      end if;
+      cap_cnt := cap_cnt + 1;
+    end procedure;
+
+    impure function count return integer is
+    begin
+      return cap_cnt;
+    end function;
+
+    impure function get_data(idx : integer) return std_logic_vector is
+    begin
+      return captured(idx);
+    end function;
+
+    impure function get_addr(idx : integer) return std_logic_vector is
+    begin
+      return cap_addrs(idx);
+    end function;
+  end protected body capture_log_t;
+
+  shared variable cap_log : capture_log_t;
 
 begin
 
@@ -174,11 +216,7 @@ begin
   begin
     if rising_edge(pclk) then
       if cap_valid = '1' and cap_ready = '1' then
-        if cap_cnt < captured'length then
-          captured(cap_cnt) := cap_data;
-          cap_addrs(cap_cnt) := cap_addr;
-        end if;
-        cap_cnt := cap_cnt + 1;
+        cap_log.record_word(cap_data, cap_addr);
       end if;
     end if;
   end process;
@@ -203,7 +241,7 @@ begin
       rate_div <= div;
       samples_cfg <= nsamp;
       wait for 100 ns;
-      cap_base := cap_cnt;
+      cap_base := cap_log.count;
       run <= '1';
       wait until rising_edge(full) for 1 ms;
       assert full = '1'
@@ -211,14 +249,14 @@ begin
         severity failure;
       run <= '0';
       wait for 500 ns;
-      got := cap_cnt - cap_base;
+      got := cap_log.count - cap_base;
       report tname & ": captured " & integer'image(got) & " words (expect "
              & integer'image(nsamp) & ")";
       for i in cap_base to cap_base + 9 loop
-        if i < cap_cnt then
+        if i < cap_log.count then
           report "  captured[" & integer'image(i - cap_base) & "] = "
-                 & integer'image(to_integer(unsigned(captured(i))))
-                 & " @addr " & integer'image(to_integer(unsigned(cap_addrs(i))));
+                 & integer'image(to_integer(unsigned(cap_log.get_data(i))))
+                 & " @addr " & integer'image(to_integer(unsigned(cap_log.get_addr(i))));
         end if;
       end loop;
       assert got = nsamp
@@ -226,9 +264,9 @@ begin
                & " committed words, got " & integer'image(got)
                & " (duplication or drain eating samples)"
         severity failure;
-      for i in cap_base + 1 to cap_cnt - 1 loop
-        prev := to_integer(unsigned(captured(i - 1)));
-        curr := to_integer(unsigned(captured(i)));
+      for i in cap_base + 1 to cap_log.count - 1 loop
+        prev := to_integer(unsigned(cap_log.get_data(i - 1)));
+        curr := to_integer(unsigned(cap_log.get_data(i)));
         step := (curr - prev) mod 65536;
         assert step = div
           report "FAIL(" & tname & "): step at idx " & integer'image(i - cap_base)
@@ -262,22 +300,22 @@ begin
     rate_div <= 1;
     samples_cfg <= 8192;
     wait for 100 ns;
-    cap_base := cap_cnt;
+    cap_base := cap_log.count;
     run <= '1';
     wait until rising_edge(full) for 1 ms;
     assert full = '1'
       report "FAIL: full-rate capture never completed/overflowed" severity failure;
     run <= '0';
     wait for 500 ns;
-    got := cap_cnt - cap_base;
+    got := cap_log.count - cap_base;
     report "Full-rate: captured " & integer'image(got) & " words";
     assert got >= 10
       report "FAIL: too few committed words at full rate ("
              & integer'image(got) & ")" severity failure;
     anomalies := 0;
-    for i in cap_base + 1 to cap_cnt - 1 loop
-      prev := to_integer(unsigned(captured(i - 1)));
-      curr := to_integer(unsigned(captured(i)));
+    for i in cap_base + 1 to cap_log.count - 1 loop
+      prev := to_integer(unsigned(cap_log.get_data(i - 1)));
+      curr := to_integer(unsigned(cap_log.get_data(i)));
       step := (curr - prev) mod 65536;
       if step /= 1 then
         anomalies := anomalies + 1;
@@ -315,10 +353,10 @@ begin
     rate_div <= 8;
     samples_cfg <= 4096;
     wait for 100 ns;
-    cap_base := cap_cnt;
+    cap_base := cap_log.count;
     run <= '1';
     wait until rising_edge(full) for 1 ms;
-    got := cap_cnt - cap_base;
+    got := cap_log.count - cap_base;
     report "TEST 4 debug: full=" & std_logic'image(full)
            & " accepted=" & integer'image(packed_accepted)
            & " committed=" & integer'image(got);
@@ -326,7 +364,7 @@ begin
       report "FAIL(TEST 4): packed capture never completed" severity failure;
     run <= '0';
     wait for 500 ns;
-    got := cap_cnt - cap_base;
+    got := cap_log.count - cap_base;
     report "Packed: producer accepted " & integer'image(packed_accepted)
            & " words, committed " & integer'image(got);
     assert packed_accepted > 100
@@ -337,18 +375,18 @@ begin
              & integer'image(got) & ")" severity failure;
     -- Committed packed words must be the exact ascending producer sequence
     -- (contiguous, no duplicates or losses). The stream starts at 1.
-    for i in cap_base + 1 to cap_cnt - 1 loop
-      prev := to_integer(unsigned(captured(i - 1)));
-      curr := to_integer(unsigned(captured(i)));
+    for i in cap_base + 1 to cap_log.count - 1 loop
+      prev := to_integer(unsigned(cap_log.get_data(i - 1)));
+      curr := to_integer(unsigned(cap_log.get_data(i)));
       step := (curr - prev) mod 65536;
       assert step = 1
         report "FAIL(TEST 4): packed step at idx " & integer'image(i - cap_base)
                & " is " & integer'image(step) & " (prev=" & integer'image(prev)
                & " curr=" & integer'image(curr) & ")" severity failure;
     end loop;
-    assert to_integer(unsigned(captured(cap_base))) = 1
+    assert to_integer(unsigned(cap_log.get_data(cap_base))) = 1
       report "FAIL(TEST 4): packed stream does not start at word 1 (got "
-             & integer'image(to_integer(unsigned(captured(cap_base)))) & ")"
+             & integer'image(to_integer(unsigned(cap_log.get_data(cap_base)))) & ")"
       severity failure;
     packed_mode <= '0';
     report "TEST 4 PASS: packed handshake, contiguous committed stream";
