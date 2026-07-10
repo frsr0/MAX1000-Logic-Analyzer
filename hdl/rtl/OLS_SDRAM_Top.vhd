@@ -438,8 +438,18 @@ BEGIN
       port map (
         aclr => '0',
         aset => '0',
-        datain_h => "1",
-        datain_l => "0",
+        -- INVERTED forward (low during outclock's high phase): the SDC models
+        -- this pin as "create_generated_clock ... -invert" off sdram_core_clk,
+        -- so the chip's sampling edge lands half a period (~3 ns) after the
+        -- FPGA's command/DQ launch edge. The original datain_h="1"/datain_l="0"
+        -- forwarded a NON-inverted clock while the SDC still said -invert:
+        -- STA passed against a phase that did not exist on silicon, and the
+        -- chip sampled commands/DQ right at the launch edge. Writes lost that
+        -- race stochastically (~6% of capture words stored as stale cells /
+        -- floating-bus 0xFFFF); reads survived via CL3 + prime-read slack.
+        -- Constant data masked it — only dynamic captures corrupted.
+        datain_h => "0",
+        datain_l => "1",
         dataout => sdram_clk_ddio,
         oe => '1',
         oe_out => open,

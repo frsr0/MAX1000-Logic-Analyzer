@@ -1,12 +1,8 @@
 import pytest
-import numpy as np
 
-from app.capture.sample_format import WaveformData
 from app.generator.controller import (
     MAX_GENERATOR_PAYLOAD_BYTES,
     _compare_uart_loopback,
-    _expected_uart_edge_count,
-    _hardware_uart_activity_visible,
     normalized_loopback_samples,
     validate_generator_payload,
 )
@@ -62,26 +58,3 @@ def test_rs485_generator_rejects_same_a_b_pin():
 
     with pytest.raises(ValueError, match="A and B pins must be different"):
         validate_generator_payload(cfg)
-
-
-def test_hardware_uart_activity_visible_accepts_active_tx_channel():
-    bits = np.full(256, 0xFFFF, dtype=np.uint16)
-    pattern = [1, 0] * 32
-    for i, bit in enumerate(pattern, start=40):
-        if bit == 0:
-            bits[i] = np.uint16(int(bits[i]) & ~(1 << 3))
-    wf = WaveformData(sample_rate=2_000_000, digital=bits)
-    cfg = GeneratorConfig(protocol="uart", data_hex="55" * 8, baud=115200, tx_pin=3)
-
-    assert _hardware_uart_activity_visible(wf, cfg, bytes.fromhex(cfg.data_hex)) is True
-
-
-def test_hardware_uart_activity_visible_rejects_stuck_high_capture():
-    wf = WaveformData(sample_rate=2_000_000, digital=np.full(256, 0xFFFF, dtype=np.uint16))
-    cfg = GeneratorConfig(protocol="uart", data_hex="55" * 8, baud=115200, tx_pin=3)
-
-    assert _hardware_uart_activity_visible(wf, cfg, bytes.fromhex(cfg.data_hex)) is False
-
-
-def test_expected_uart_edge_count_scales_with_payload_activity():
-    assert _expected_uart_edge_count(b"\x55" * 8) > _expected_uart_edge_count(b"\x00")

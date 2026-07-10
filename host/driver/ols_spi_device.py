@@ -592,6 +592,11 @@ class OLSDeviceSPI:
         r = self.pkt.transaction(CMD_GEN_CAPTURE, timeout=1.0)
         if r is None or r[0] not in (0, ST_CAPTURE_ARMED):
             return b''
+        # No SPI traffic during the capture window: status polls disturb the
+        # SDRAM write pump and drop writes (stale cells). Sleep the fixed
+        # capture duration out, then poll for DONE.
+        if rate_hz > 0:
+            time.sleep(min(timeout, nsamples / float(rate_hz) + 0.05))
         deadline = time.time() + timeout
         while time.time() < deadline:
             st = self.pkt.get_status()
@@ -1699,16 +1704,30 @@ class OLSDeviceSPI:
 
             return _finish_gen_capture(expected_seq)
 
-        # Atomic generated capture via hardware FSM
+        # Atomic generated capture via hardware FSM. SPI traffic while the
+        # FPGA is streaming samples into SDRAM disturbs the write pump and
+        # drops writes (stale cells) — the same mechanism capture() avoids —
+        # so read capture_seq BEFORE the command (CMD_GEN_CAPTURE's internal
+        # arm asserts disp_arm and increments it by one, exactly like
+        # CMD_ARM_CAPTURE) and sleep through the fixed-duration capture with
+        # zero SPI traffic before the first status poll.
         _trace = os.environ.get("OLS_GEN_TRACE")
+        prev = self.pkt.get_status().get('capture_seq')
         r = self.pkt.transaction(CMD_GEN_CAPTURE, timeout=1.0)
         if _trace:
             with open(_trace, "a") as f:
                 f.write(f"gen_capture: cmd resp={r!r}\n")
         if r is None or r[0] not in (0, ST_CAPTURE_ARMED):
             return b''
-        arm_status = self.pkt.get_status()
-        expected_seq = arm_status.get('capture_seq')
+        expected_seq = ((prev + 1) & 0xFFFFFFFF) if prev is not None else None
+
+        if rate_hz > 0:
+            quiet = min(timeout, rc / float(rate_hz) + 0.05)
+            t_end = time.time() + quiet
+            while time.time() < t_end:
+                if stop_evt and stop_evt.is_set():
+                    return b''
+                time.sleep(min(0.02, max(0.0, t_end - time.time())))
 
         return _finish_gen_capture(expected_seq)
 

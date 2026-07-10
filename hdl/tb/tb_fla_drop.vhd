@@ -159,7 +159,7 @@ begin
     );
 
   SDRAM : entity work.sdram_pin_model
-    generic map (CL => 3, STRICT => false)
+    generic map (CL => 3, STRICT => true)
     port map (
       clk   => sdram_clk_model,
       cke   => sdram_cke,
