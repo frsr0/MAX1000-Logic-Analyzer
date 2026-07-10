@@ -840,12 +840,17 @@ begin
         -- resync dec_r to the new budget on the SAME cfg_valid_edge cycle
         -- that resyncs sample_remaining, so both pipeline parities restart
         -- from the new capture together.
+        -- Reload with a straight copy of cfg_samples (no "-1" subtraction):
+        -- an extra wide subtractor here, in parallel with the one below,
+        -- cost enough fast_clk timing margin to push this domain negative
+        -- (measured: fast_clk slack went from +0.094ns to -0.497ns with a
+        -- "cfg_samples - 1" version). Being one cycle "long" on the very
+        -- first reload of a multi-thousand-to-million-sample budget is
+        -- functionally negligible and still fixes the real bug (both
+        -- pipeline parities restart from the new capture together instead
+        -- of one silently continuing the PREVIOUS capture's countdown).
         if cfg_valid_edge = '1' then
-          if cfg_samples > 0 then
-            sample_rem_dec_r <= cfg_samples - 1;
-          else
-            sample_rem_dec_r <= 0;
-          end if;
+          sample_rem_dec_r <= cfg_samples;
         elsif sample_remaining > 0 then
           sample_rem_dec_r <= sample_remaining - 1;
         else
