@@ -14,7 +14,17 @@ Phase-Locked Loop configuration for the Intel MAX 10 device. Generates all clock
 | c1 → `fast_clk` | 200.4 MHz | 0° | Fast sample clock: digital capture, packing |
 | c2 → `sdram_core_clk` | 167 MHz | 0° | SDRAM controller core: write pump, readout |
 | c3 → `adc_conv_clk` | 12 MHz | 0° | MAX10 ADC conversion clock |
-| c4 → `sdram_chip_clk` | 167 MHz | -1.5 ns | Forwarded SDRAM device clock (phase-aligned to compensate board trace delay) |
+| c4 → `sdram_chip_clk_out` | 167 MHz | -1.5 ns | Forwarded SDRAM device clock, **legacy path only** (see below) |
+
+## SDRAM Chip Clock Forward
+
+The clock actually driven onto the `sdram_clk` pin is selected by the `USE_DDIO_CLK_FORWARD` generic on `OLS_SDRAM_Top` (default `true`; `compile.ps1 -LegacyClkForward` selects the other path):
+
+- **DDIO forward (default, `OLS_SDRAM_Top.vhd` `gen_ddio_clk_forward`):** an `altddio_out` re-times `sdram_core_clk` through the MAX 10 IOE's dedicated DDIO output register instead of forwarding PLL tap c4 directly. The SDC constrains this pin as `create_generated_clock ... -invert` off `sdram_core_clk` (`hdl/proj/OLS_Logic_Analyzer.sdc`, `SDRAM_CHIP_CLK_OUT`) — i.e. the chip is expected to sample write commands/DQ roughly half a period (~3 ns) *after* the FPGA's launch edge, not at it. The DDIO's `datain_h`/`datain_l` inputs must therefore be driven **inverted** (`"0"`/`"1"`) to actually produce that phase relationship in silicon.
+
+  **2026-07-10 incident:** the DDIO forward was introduced (commit `f911e9f2`) with `datain_h="1"`/`datain_l="0"` — non-inverted — while the SDC's `-invert` constraint was added in the same commit. STA validated a clock phase that never existed on the board: the SDRAM chip sampled writes at the FPGA's launch edge instead of after it, and silently dropped ~6% of write commands on any capture with changing data (static/constant data was immune, and reads survived via the existing CL3 + prime-read margin — see [`sdram-controller.md`](sdram-controller.md)). This was the actual cause of a `/api/generator/self-test` failure that had been misattributed to the generator-loopback mux; fixed by inverting the DDIO data inputs to match the SDC. See the `fast-capture-write-scramble` project history for the full investigation.
+
+- **Legacy direct forward (`gen_use_pll_fast_direct`/`gen_use_pll_normal_direct`, `-LegacyClkForward`):** PLL tap c4 (`sdram_chip_clk_out`, phase `-1.5 ns` off c2) drives the pin directly, no DDIO stage. Predates the DDIO path; kept as a fallback, not the default build.
 
 ## PLL Parameters
 

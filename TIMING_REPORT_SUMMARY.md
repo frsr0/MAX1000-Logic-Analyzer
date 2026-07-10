@@ -1,5 +1,5 @@
 # Timing Report Summary
-## Status: ✅ **PASSING - No Violations** (seed 30 + rdfifo almost-full fix)
+## Status: ✅ **PASSING - No Violations** (seed 5, current flashed build — see July 10 update below)
 
 
 **Report Date:** July 5, 2026 (seed 30 build, STA summary from latest compilation)
@@ -23,6 +23,46 @@
 > 0.000 everywhere; 6,691/8,064 LE (83%). compile.ps1 default seed is now 30.
 > The remaining tightest cone is analog_packer `held[]→out_data[]` on
 > fast_clk — the structural candidate if a future RTL change reopens timing.
+
+> **Updated July 10, 2026 (current, superseded twice in one session):**
+> two real RTL bugs were found and fixed, each reopening timing and requiring
+> a re-sweep:
+>
+> 1. **DDIO SDRAM clock-forward phase mismatch.** The DDIO chip-clock forward
+>    (`OLS_SDRAM_Top.vhd` `altddio_out`) had been driving its data inputs
+>    non-inverted since it was introduced (`f911e9f2`), while the SDC
+>    constrained the pin as `-invert` off `sdram_core_clk` — STA had been
+>    passing against a clock phase that never existed on silicon. The SDRAM
+>    chip sampled write commands/DQ at the FPGA's launch edge instead of
+>    ~3 ns later, silently corrupting ~6% of writes on any capture with
+>    changing data (constant data and reads were unaffected, which is why
+>    this went undetected through every prior "PASSING" report and hardware
+>    validation run). Fixed by inverting the DDIO data inputs to match the
+>    SDC. Reopened timing on seed 30 (`sdram_core_clk` -0.412 ns); re-swept,
+>    **seed 12** closed every domain (fast +0.107, sdram +0.566, sys +1.145,
+>    chip_out +1.098 ns, 84% LE).
+> 2. **Degenerate 1-cycle FIFO settling guard.** The write pump's
+>    `rdempty_q`/`fifo_rdempty_r` "empty low for two consecutive cycles"
+>    guard (`Fast_Logic_Analyzer_SDRAM.vhd`) had silently degenerated to a
+>    one-cycle check since commit `852572f4` (a July-5 timing pass moved one
+>    reference to the registered signal but left the other on the live
+>    signal, so both ended up reading the same value). Fixed by chaining
+>    `rdempty_q` off `fifo_rdempty_r`. Reopened timing on seed 12
+>    (fast/sdram went negative); re-swept, **seed 5** closed every domain:
+>    setup slack `fast_clk +0.078 ns`, `sdram_core_clk +0.254 ns`,
+>    `sys_clk +1.078 ns`, `SDRAM_CHIP_CLK_OUT +1.098 ns`; 84% LE
+>    (6,783/8,064).
+>
+> Both fixes are flashed and hardware-verified: 0 injected write glitches on
+> a constant-low-MOSI probe, 5/5 bit-exact UART decodes, 3/3 clean
+> `/api/generator/self-test` runs, and 51/51 on the broader
+> `host/app/hw_validation.py` subset (run twice). **Seed 5 is the current
+> flashed board state; `compile.ps1`'s default and the committed `.qsf`
+> `SEED` are both 5.** Neither bug was reachable by prior GHDL functional
+> simulation — both are real-silicon-only hazards (a clock-phase race and a
+> show-ahead-FIFO settling race) that no dcfifo/SDRAM behavioral model in
+> this repo reproduces; catching them required bit-exact hardware probing,
+> not more testbench work.
 
 ---
 
