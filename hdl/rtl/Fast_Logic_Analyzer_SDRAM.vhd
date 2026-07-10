@@ -828,6 +828,22 @@ begin
         if cfg_valid_edge = '1' then
           sample_rem_nonzero_r <= '1';
         elsif fifo_wr = '1' and sample_remaining = 0 then
+          if packed_mode_f = '1' and Continuous_Mode = '1' then
+            -- Packed continuous/live capture: auto-renew the budget instead
+            -- of halting Packed_Ready forever. The plain digital/narrow/
+            -- analog-frame producers' fifo_wr pulse is NOT gated by
+            -- sample_rem_nonzero_r (only this counter and the one-shot
+            -- cap_done_toggle_f below are), so continuous captures on those
+            -- paths already run indefinitely without needing a reload here.
+            -- Packed mode is different: Packed_Ready is hard-gated by
+            -- packed_stop_f <= not sample_rem_nonzero_r, so without this
+            -- renew every packed continuous/live capture would permanently
+            -- stop producing words after exactly cfg_samples fast_clk cycles
+            -- (~20.9 ms at the 4,194,304-sample budget stream_ring_capture
+            -- always requests) and never resume -- Stage 2d (below) reloads
+            -- sample_remaining <= cfg_samples on this same edge.
+            sample_rem_nonzero_r <= '1';
+          else
           -- fifo_wr and sample_remaining are both registered, so this process
           -- observes the POST-decrement count: remaining=0 here means the
           -- last word was just pushed. The previous <=2 threshold stopped two
@@ -841,6 +857,7 @@ begin
           -- required (the packed producer can fall a few words short at some
           -- dividers) and no wide compare in the hot 167 MHz accept branch.
           cap_done_toggle_f <= not cap_done_toggle_f;
+          end if;
         end if;
       end if;
     end process;
@@ -932,7 +949,43 @@ begin
         end if;
 
         if fifo_overflow_f = '0' then
-          if narrow_word_pending_r = '1' and afull_r = '0' then
+          if capture_en_r = '1' and packed_mode_f = '1' then
+            -- Packed mode (mso_capture) samples digital_in unconditionally
+            -- every fast_clk cycle -- no Rate_Div/sample_tick_r gating (see
+            -- mso_capture.vhd) -- and its own afifo write-port mux
+            -- (afifo_wdata/afifo_wr above) routes packed_fifo_wr_r/wdata_r
+            -- into the afifo instead of fifo_wr/fifo_wdata when
+            -- packed_mode_f='1', so asserting fifo_wr here is a pure
+            -- budget-tick (harmlessly discarded by that mux), not a real
+            -- write. Deplete the Samples budget at that SAME full-rate
+            -- cadence instead of falling through to the Rate_Div-gated
+            -- sample_tick_r branch below, which only ever applied to the
+            -- plain digital/narrow/analog-frame producers.
+            --
+            -- BEFORE THIS FIX: the shared sample_remaining/packed_stop_f
+            -- budget (packed_stop_f <= not sample_rem_nonzero_r, gating
+            -- Packed_Ready) was decremented by the stale sample_tick_r
+            -- branch below instead, so a HIGHER requested "rate_hz"
+            -- (irrelevant to packed mode) burned through the budget FASTER
+            -- in wall-clock time, halting the packed producer sooner the
+            -- more aggressively a caller asked for speed -- backwards from
+            -- every other capture mode. Measured: real decoded sample
+            -- throughput scaled INVERSELY with requested rate_hz (e.g.
+            -- ~96 MS/s effective at a 2 MS/s request vs ~4 MS/s at 100
+            -- MS/s), capping packed-mode throughput far below what the
+            -- inline compressor can actually sustain.
+            fifo_wr <= '1';
+            if sample_rem_nonzero_r = '1' then
+              if sample_remaining = 0 and Continuous_Mode = '1' then
+                -- Auto-renew (mirrors Stage 2c's reload on the same edge):
+                -- reload the budget instead of freezing at 0, so packed
+                -- continuous/live capture never permanently halts.
+                sample_remaining <= cfg_samples;
+              else
+                sample_remaining <= sample_rem_dec_r;
+              end if;
+            end if;
+          elsif narrow_word_pending_r = '1' and afull_r = '0' then
             -- fifo_wdata (= narrow_word_data_r) is driven by the decoupled data
             -- mux above; here we only assert the write strobe and clear pending.
             fifo_wr <= '1';
