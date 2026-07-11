@@ -34,7 +34,6 @@ architecture bench of tb_continuous_rate1 is
   signal newest_index   : std_logic_vector(31 downto 0);
   signal overrun_count  : std_logic_vector(31 downto 0);
   signal fast_clk  : std_logic := '0';
-  signal fifo_cnt  : natural range 0 to 64;
   signal buf_sel   : std_logic_vector(1 downto 0);
 
 begin
@@ -44,7 +43,6 @@ begin
   inputs <= x"A0";
 
   -- Probe internal signals
-  fifo_cnt      <= << signal .tb_continuous_rate1.dut.fifo_cnt : natural range 0 to 64 >>;
   buf_sel       <= << signal .tb_continuous_rate1.dut.buf_sel : std_logic_vector(1 downto 0) >>;
 
   DUT : entity work.Fast_Logic_Analyzer_SDRAM
@@ -97,6 +95,7 @@ begin
     wait_cycles(clk, 20);
 
     report "=== ALL CONTINUOUS RATE TESTS PASSED ===";
+    std.env.finish;
     wait;
   end process;
 end bench;

@@ -64,7 +64,8 @@ begin
     report "Test 1: Continuous fast mode fill + Full assertion";
     armed <= '1'; run <= '1';
     -- Wait for Full
-    wait until rising_edge(full);
+    wait until rising_edge(full) for 2 ms;
+    check(full = '1', "Full never asserted (timed out)");
     report "Full asserted";
     check(buffer_full(0) = '1', "Buffer_full(0) should be '1' in continuous mode");
     report "Test 1: PASS";
@@ -79,7 +80,8 @@ begin
     report "Test 2: PASS";
 
     report "Test 3: Second full cycle after ack";
-    wait until rising_edge(full);
+    wait until rising_edge(full) for 2 ms;
+    check(full = '1', "Full never asserted (timed out)");
     report "Full reasserted - continuous cycle working";
     check(full = '1', "Full should reassert for second capture cycle");
     report "Test 3: PASS";
@@ -87,6 +89,7 @@ begin
     run <= '0';
     wait_cycles(clk, 10);
     report "=== ALL CONTINUOUS CAPTURE TESTS PASSED ===";
+    std.env.finish;
     wait;
   end process;
 end bench;

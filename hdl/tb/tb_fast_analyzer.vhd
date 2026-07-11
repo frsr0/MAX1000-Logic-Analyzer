@@ -210,6 +210,7 @@ begin
     report "Test 3: PASS";
 
     report "=== ALL FAST ANALYZER TESTS PASSED ===";
+    std.env.finish;
     wait;
   end process;
 

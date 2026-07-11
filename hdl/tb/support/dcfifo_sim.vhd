@@ -133,6 +133,17 @@ begin
              else '0';
   wrfull  <= '1' when (wptr - rptr_seen_by_wr) >= lpm_numwords else '0';
   wrusedw <= std_logic_vector(to_unsigned((wptr - rptr_seen_by_wr) mod 2**lpm_widthu, lpm_widthu));
-  rdusedw <= std_logic_vector(to_unsigned((wptr - rptr_seen_by_wr) mod 2**lpm_widthu, lpm_widthu));
+  -- rdusedw must be the READ-domain view (wptr as seen through the read-side
+  -- synchroniser, minus the live read pointer) -- NOT the write-domain
+  -- formula. Using the raw/live wptr here over-reports how much data the
+  -- read side can actually see by up to rdsync_delaypipe cycles' worth of
+  -- recent writes. Fast_Logic_Analyzer_SDRAM.vhd's run-start drain snapshots
+  -- this value as its discard target (drain_rem <= fifo_rdusedw_r); an
+  -- over-reported snapshot makes the drain discard more words than were
+  -- truly stale, eating real samples from the start of the next capture
+  -- (found 2026-07-11 via tb_fifo_bridge TEST 3: a capture immediately after
+  -- an overflow came back exactly one word short, with a perfectly uniform
+  -- step sequence -- i.e. genuinely dropped, not corrupted).
+  rdusedw <= std_logic_vector(to_unsigned((wptr_seen_by_rd - rptr) mod 2**lpm_widthu, lpm_widthu));
 
 end sim;

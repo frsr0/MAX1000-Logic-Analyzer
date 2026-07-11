@@ -54,6 +54,17 @@ architecture bench of tb_fifo_bridge is
   signal cap_ready  : std_logic;
   signal cap_data   : std_logic_vector(15 downto 0);
   signal cap_addr   : std_logic_vector(21 downto 0);
+  signal dbg_prefetch_valid_r : std_logic;
+  signal dbg_buf_full         : std_logic_vector(2 downto 0);
+  signal dbg_producer_done_q  : std_logic;
+  signal dbg_prefetch_pulses  : integer := 0;
+  signal dbg_accept_pulses    : integer := 0;
+  signal dbg_capture_en_r     : std_logic;
+  signal dbg_fifo_wr          : std_logic;
+  signal dbg_fifo_rdempty     : std_logic;
+  signal dbg_drain_pending_r  : std_logic;
+  signal dbg_drain_cycles     : integer := 0;
+  signal dbg_fifo_wr_pulses   : integer := 0;
 
   type word_array is array (natural range <>) of std_logic_vector(15 downto 0);
   type addr_array is array (natural range <>) of std_logic_vector(21 downto 0);
@@ -114,6 +125,40 @@ begin
   cap_ready <= << signal .tb_fifo_bridge.dut.cap_stream_ready : std_logic >>;
   cap_data  <= << signal .tb_fifo_bridge.dut.cap_stream_data  : std_logic_vector(15 downto 0) >>;
   cap_addr  <= << signal .tb_fifo_bridge.dut.cap_stream_addr  : std_logic_vector(21 downto 0) >>;
+  dbg_prefetch_valid_r <= << signal .tb_fifo_bridge.dut.prefetch_valid_r : std_logic >>;
+  dbg_buf_full         <= << signal .tb_fifo_bridge.dut.buf_full : std_logic_vector(2 downto 0) >>;
+  dbg_producer_done_q  <= << signal .tb_fifo_bridge.dut.producer_done_q : std_logic >>;
+  dbg_capture_en_r     <= << signal .tb_fifo_bridge.dut.gen_fast_speed.capture_en_r : std_logic >>;
+  dbg_fifo_wr          <= << signal .tb_fifo_bridge.dut.fifo_wr : std_logic >>;
+  dbg_fifo_rdempty     <= << signal .tb_fifo_bridge.dut.fifo_rdempty : std_logic >>;
+  dbg_drain_pending_r  <= << signal .tb_fifo_bridge.dut.drain_pending_r : std_logic >>;
+
+  -- Diagnostic counters (TEST 1 root-cause: "got=0" despite full rising --
+  -- distinguish "pump never offered a word" from "testbench failed to
+  -- record an offered word").
+  process(fast_clk)
+  begin
+    if rising_edge(fast_clk) then
+      if dbg_prefetch_valid_r = '1' then
+        dbg_prefetch_pulses <= dbg_prefetch_pulses + 1;
+      end if;
+      if dbg_fifo_wr = '1' then
+        dbg_fifo_wr_pulses <= dbg_fifo_wr_pulses + 1;
+      end if;
+      if dbg_drain_pending_r = '1' then
+        dbg_drain_cycles <= dbg_drain_cycles + 1;
+      end if;
+    end if;
+  end process;
+
+  process(pclk)
+  begin
+    if rising_edge(pclk) then
+      if cap_valid = '1' and cap_ready = '1' then
+        dbg_accept_pulses <= dbg_accept_pulses + 1;
+      end if;
+    end if;
+  end process;
 
   -- Free-running input counter in FAST_CLK domain
   process(fast_clk)
@@ -247,6 +292,14 @@ begin
       assert full = '1'
         report "FAIL(" & tname & "): capture did not complete (full never rose)"
         severity failure;
+      report tname & " DEBUG: fifo_wr pulses=" & integer'image(dbg_fifo_wr_pulses)
+             & " prefetch_valid pulses=" & integer'image(dbg_prefetch_pulses)
+             & " accept pulses=" & integer'image(dbg_accept_pulses)
+             & " producer_done_q=" & std_logic'image(dbg_producer_done_q)
+             & " capture_en_r=" & std_logic'image(dbg_capture_en_r)
+             & " fifo_rdempty=" & std_logic'image(dbg_fifo_rdempty)
+             & " drain_cycles=" & integer'image(dbg_drain_cycles)
+             & " buf_full=" & to_hstring(dbg_buf_full);
       run <= '0';
       wait for 500 ns;
       got := cap_log.count - cap_base;
@@ -257,6 +310,20 @@ begin
           report "  captured[" & integer'image(i - cap_base) & "] = "
                  & integer'image(to_integer(unsigned(cap_log.get_data(i))))
                  & " @addr " & integer'image(to_integer(unsigned(cap_log.get_addr(i))));
+        end if;
+      end loop;
+      -- Locate the anomalous step BEFORE the count assert (which halts sim
+      -- on failure severity) so a short/duplicated capture is diagnosable.
+      for i in cap_base + 1 to cap_log.count - 1 loop
+        prev := to_integer(unsigned(cap_log.get_data(i - 1)));
+        curr := to_integer(unsigned(cap_log.get_data(i)));
+        step := (curr - prev) mod 65536;
+        if step /= div then
+          report "  ANOMALY at idx " & integer'image(i - cap_base) & ": step="
+                 & integer'image(step) & " expected=" & integer'image(div)
+                 & " prev=" & integer'image(prev) & " curr=" & integer'image(curr)
+                 & " prev_addr=" & integer'image(to_integer(unsigned(cap_log.get_addr(i-1))))
+                 & " curr_addr=" & integer'image(to_integer(unsigned(cap_log.get_addr(i))));
         end if;
       end loop;
       assert got = nsamp

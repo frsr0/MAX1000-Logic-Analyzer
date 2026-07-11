@@ -21,11 +21,18 @@ architecture bench of tb_minimal_capture is
   signal iface_mode : std_logic;
 
   signal inputs   : std_logic_vector(31 downto 0) := (others => '0');
-  signal addr_s   : natural := 0;
+  signal rate_div : natural range 1 to 500000000;
   signal samples  : natural range 1 to 25000;
   signal start_off : natural range 0 to 25000;
   signal run_s    : std_logic;
   signal full_s   : std_logic;
+  -- OLS_Interface's Address is BUFFER range 0 to Max_Samples-1, while
+  -- Fast_Logic_Analyzer_SDRAM's Address is IN range 0 to Max_Samples (off by
+  -- one between the two entities) -- the real integration
+  -- (OLS_Logic_Analyzer_SDRAM_Core.vhd) uses two separate signals bridged by
+  -- a plain assignment rather than one shared signal for exactly this
+  -- reason; mirror that here instead of a single addr_s.
+  signal ols_addr_s : natural range 0 to 24999 := 0;
   signal addr_s   : natural range 0 to 25000 := 0;
   signal outputs  : std_logic_vector(31 downto 0) := (others => '0');
 
@@ -147,6 +154,8 @@ architecture bench of tb_minimal_capture is
   end procedure;
 
 begin
+  addr_s <= ols_addr_s;
+
   gen_clk(clk, 5 ns);
   fastclk_gen : process
   begin
@@ -171,7 +180,7 @@ begin
       Interface_Mode => iface_mode, Inputs => inputs,
       Rate_Div => rate_div, Samples => samples,
       Start_Offset => start_off, Run => run_s,
-      Full => full_s, Address => addr_s, Outputs => outputs,
+      Full => full_s, Address => ols_addr_s, Outputs => outputs,
       Gen_Busy => '0', Armed => armed, Fast_Mode => fast_mode,
       Continuous_Mode => continuous_mode,
       Blk_Rd_Req_Tog => blk_req_tog, Blk_Rd_Base => blk_base,
