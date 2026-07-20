@@ -86,12 +86,13 @@ WATCHDOG_DEFAULTS = {
     "full": 3900,
     "new": 900,
     "jumper": 600,
+    "analog": 300,
     "codec": 600,
     "accel": 300,
 }
 
 def _suite_mode(argv):
-    if len(argv) > 1 and argv[1] in ("new", "jumper", "codec"):
+    if len(argv) > 1 and argv[1] in ("new", "jumper", "analog", "codec"):
         return argv[1]
     return "full"
 
@@ -1313,6 +1314,78 @@ def test_analog_profiles_digital_recovery(dev):
                 fast_data[:256] + all_data[:256] + digital[:256],
                 {"fast_frames": len(fast), "all_frames": len(all_frames),
                  "digital_samples": ns})
+
+
+# Test 12g: Physical analog jumper paths
+#
+# The MAX1000 ADC mux numbering is not the same as the AIN label. This is
+# the current two-jumper bench fixture: PMOD5 (pool pin 20) is wired to AIN5
+# (ADC7), and PMOD6 (pool pin 21) is wired to AIN4 (ADC3). Keep this test
+# explicit and hard-gated so a floating ADC or swapped jumper cannot make the
+# analog hardware validation appear green.
+PHYSICAL_ANALOG_JUMPER_MAP = (
+    (20, 7, "PMOD5 -> AIN5/ADC7"),
+    (21, 3, "PMOD6 -> AIN4/ADC3"),
+)
+
+
+def _capture_physical_analog_activity(dev, tx_pin, adc_channel):
+    dev.set_analog_config(MODE_ANALOG_FAST, adc_channel=adc_channel)
+    dev._gen_data = b"\x55" * 200
+    dev._gen_baud = 115200
+    dev._gen_tx_pin = tx_pin
+    raw = dev.capture_with_gen(rate_hz=1_000_000, nsamples=30_000,
+                               timeout=8, fast_mode=True,
+                               reset_board=False)
+    if not raw:
+        return {"samples": 0, "min": None, "max": None,
+                "amplitude": 0, "edges": 0}
+    frames = decode_analog_frames(raw, MODE_ANALOG_FAST)
+    vals = [f["adc"][0] for f in frames if f.get("adc")]
+    if not vals:
+        return {"samples": 0, "min": None, "max": None,
+                "amplitude": 0, "edges": 0}
+    lo, hi = min(vals), max(vals)
+    mid = lo + (hi - lo) / 2.0
+    hysteresis = max(80.0, (hi - lo) * 0.18)
+    state = vals[0] > mid
+    edges = 0
+    for value in vals[1:]:
+        if state and value < mid - hysteresis:
+            edges += 1
+            state = False
+        elif not state and value > mid + hysteresis:
+            edges += 1
+            state = True
+    return {"samples": len(vals), "min": lo, "max": hi,
+            "amplitude": hi - lo, "edges": edges}
+
+
+def test_physical_analog_jumpers(dev):
+    print_header("Test 12g: Physical analog jumper paths")
+    dev.reset(); dev.spi.flush(); dev.set_debug_ch0(False)
+    time.sleep(0.02)
+    results = []
+    try:
+        for tx_pin, target_adc, label in PHYSICAL_ANALOG_JUMPER_MAP:
+            other_adc = next(adc for _, adc, _ in PHYSICAL_ANALOG_JUMPER_MAP
+                             if adc != target_adc)
+            target = _capture_physical_analog_activity(dev, tx_pin, target_adc)
+            cross = _capture_physical_analog_activity(dev, tx_pin, other_adc)
+            log(f"  {label}: target amp={target['amplitude']} codes, "
+                f"edges={target['edges']}; cross amp={cross['amplitude']} "
+                f"codes, edges={cross['edges']}")
+            check(target["samples"] > 100,
+                  f"{label} returned analog samples ({target['samples']})")
+            check(target["amplitude"] >= 3000 and target["edges"] >= 8,
+                  f"{label} carries full-scale UART activity")
+            check(not (cross["amplitude"] >= 2500 and cross["edges"] >= 8),
+                  f"{label} does not appear as repeated activity on ADC{other_adc}")
+            results.append({"tx_pin": tx_pin, "target_adc": target_adc,
+                            "label": label, "target": target, "cross": cross})
+    finally:
+        dev.set_analog_enable(False)
+    save_result("test12g_physical_analog_jumpers", b"", {"routes": results})
 
 
 # Backward-compatible name for older ad-hoc invocations.
@@ -2995,6 +3068,7 @@ def main():
         test_mixed_digital_mixed_back_to_back(dev)
         test_mixed_compressed_rolling(dev)
         test_analog_profiles_digital_recovery(dev)
+        test_physical_analog_jumpers(dev)
 
         log("\n--- Rolling + generator test (debug OFF + ON) ---")
         run_with_debug(test_rolling_gen_uart, dev, "Rolling gen UART")
@@ -3115,6 +3189,7 @@ def main_new_only():
         test_mixed_digital_mixed_back_to_back(dev)
         test_mixed_compressed_rolling(dev)
         test_analog_profiles_digital_recovery(dev)
+        test_physical_analog_jumpers(dev)
         test_pre_trigger(dev)
         test_full_depth_capture(dev)
         test_back_to_back_capture(dev)
@@ -3190,6 +3265,30 @@ def main_jumper_only():
     return 0 if FAIL == 0 else 1
 
 
+def main_analog_only():
+    """Run the physical two-jumper analog fixture validation."""
+    global PASS, FAIL, TOTAL
+    dev = OLSDeviceSPI()
+    try:
+        dev.open()
+        log(f"SPI device opened, sys_clk={dev.sys_clk / 1e6:.0f} MHz")
+        dev.reset()
+        time.sleep(0.5)
+        test_physical_analog_jumpers(dev)
+    except Exception as e:
+        log(f"\nERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        check(False, f"analog validation aborted: {e}")
+    finally:
+        try:
+            dev.close()
+        except Exception:
+            pass
+    print(f"\n  RESULTS: {PASS}/{TOTAL} passed, {FAIL} failed, {SKIPPED} skipped")
+    return 0 if FAIL == 0 else 1
+
+
 if __name__ == "__main__":
     watchdog_rc = _run_under_watchdog()
     if watchdog_rc is not None:
@@ -3198,6 +3297,8 @@ if __name__ == "__main__":
         sys.exit(main_new_only())
     if len(sys.argv) > 1 and sys.argv[1] == 'jumper':
         sys.exit(main_jumper_only())
+    if len(sys.argv) > 1 and sys.argv[1] == 'analog':
+        sys.exit(main_analog_only())
     if len(sys.argv) > 1 and sys.argv[1] == 'codec':
         sys.exit(main_codec_only())
     if len(sys.argv) > 1 and sys.argv[1] == 'accel':

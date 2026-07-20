@@ -11,6 +11,7 @@ python hw_smoke_test.py
 python debug/hwt_test_debug_pwm_registers.py
 python debug/hwt_test_compression_matrix.py
 python -m app.hw_validation
+python -m app.hw_validation analog
 ```
 
 ## PWM/register regression
@@ -57,3 +58,11 @@ implementation is not instantiated in the current FAST_SPEED bitstream;
 bit-exact raw/RLE round trips across rates, live-ring throughput
 characterization for raw and `delta_rle`, and digital, analog, mixed-signal,
 generator, trigger, reset, and recovery tests.
+
+The physical two-jumper analog fixture is hard-gated by
+`python -m app.hw_validation analog`. The current board wiring is PMOD5/pool
+20 to AIN5/ADC7 and PMOD6/pool 21 to AIN4/ADC3. The test drives a UART pattern
+through each jumper, requires full-scale repeated ADC activity on the expected
+channel, and checks that the other connected ADC does not carry the repeated
+pattern. The full suite includes this test. Digital pin-to-pin jumper tests
+are separate and require rewiring at least one jumper to a digital input.
