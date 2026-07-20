@@ -261,6 +261,8 @@ def test_generator_loopback_self_test(client):
     body = r.json()
     assert body["passed"] is True, body
     assert body["decoded_hex"] == "414243"
+    meta = client.get(f"/api/sessions/{body['session_id']}/metadata").json()
+    assert meta["session"]["generator"]["config"]["protocol"] == "uart"
 
 
 def test_generator_builtin_self_test_uses_strict_decode_on_mock(client):

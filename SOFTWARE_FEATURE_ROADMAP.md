@@ -17,9 +17,9 @@ current SPI readback bandwidth.
 
 ## Phase 0 — Baseline and project scaffolding
 
-- [ ] Record the current branch baseline and test commands.
-- [ ] Add a feature/capability matrix covering mock, real hardware, and post-capture-only behavior.
-- [ ] Reconcile documentation with the implementation: SWD is already present, and the analog spectrum/XY UI already exists.
+- [x] Record the current branch baseline and test commands.
+- [x] Add a feature/capability matrix covering mock, real hardware, and post-capture-only behavior.
+- [x] Reconcile documentation with the implementation: SWD is already present, and the analog spectrum/XY UI already exists.
 - [ ] Add shared protocol concepts: bit order, parity, stop bits, clock phase, line idle state, differential polarity, and error severity.
 - [x] Add common event fields for all decoders: sample position, duration, raw value, decoded value, error flags, and human-readable label.
 - [ ] Add a standard fixture format for protocol captures and expected decoder events.
@@ -36,7 +36,7 @@ current SPI readback bandwidth.
 - [x] Add a transaction script format with symbol steps, gaps, delays, and repeats.
 - [x] Add script import/export as JSON.
 - [x] Add a preview waveform before sending.
-- [ ] Add a send-and-capture operation that creates a normal session with generator metadata.
+- [x] Add a send-and-capture operation that creates a normal session with generator metadata.
 - [x] Add clear errors when a requested waveform cannot fit the current FIFO.
 
 ### Existing protocol generators
@@ -77,7 +77,7 @@ current SPI readback bandwidth.
 - [x] NEC/RC5/RC6 infrared protocol decoders.
 - [x] Quadrature encoder decoder with direction, count, and illegal-transition detection.
 - [x] Add decoder confidence/quality scores for ambiguous or undersampled captures.
-- [ ] Add decoder presets and reusable channel mappings.
+- [x] Add decoder presets and reusable channel mappings.
 - [x] Add stacked decoders for UART → Modbus/LIN/custom framing and SPI/I²C → device-register views.
 
 ## Phase 3 — Trigger and search engine
@@ -141,31 +141,31 @@ current SPI readback bandwidth.
 
 ## Phase 5 — Frontend workflow improvements
 
-- [ ] Add decoder table filters for errors, addresses, values, and time ranges.
-- [ ] Make every decoder event clickable from table to waveform and vice versa.
-- [ ] Add bookmarkable event markers and named regions.
+- [x] Add decoder table filters for errors, addresses, values, and time ranges.
+- [x] Make every decoder event clickable from table to waveform and vice versa.
+- [x] Add bookmarkable event markers and named regions.
 - [ ] Add keyboard navigation for next/previous edge, decoder event, trigger match, and error.
 - [ ] Add drag-and-drop channel reordering.
 - [ ] Add per-channel visibility groups and saved layouts.
 - [ ] Add command palette for capture, decode, trigger search, export, and navigation.
-- [ ] Add session tags, notes, and searchable metadata.
-- [ ] Add reusable capture/decoder/measurement presets.
+- [x] Add session tags, notes, and searchable metadata.
+- [x] Add reusable capture/decoder/measurement presets.
 - [ ] Add a protocol dashboard summarizing packets, errors, timing, and throughput.
-- [ ] Add a generator-to-capture comparison view showing expected versus observed bytes.
-- [ ] Add clear capability badges for hardware versus mock-only generator features.
+- [x] Add a generator-to-capture comparison view showing expected versus observed bytes.
+- [x] Add clear capability badges for hardware versus mock-only generator features.
 
 ## Phase 6 — Import, export, and automation
 
 - [x] Add CSV import with channel names and digital/analog inference.
 - [x] Add VCD import and map `$var` signals to analyzer channels.
 - [ ] Add optional Sigrok/ PulseView-compatible export where the format can be supported reliably.
-- [ ] Add decoded protocol JSON export with stable schema versioning.
+- [x] Add decoded protocol JSON export with stable schema versioning.
 - [ ] Add richer HTML/PDF reports with plots, error summaries, trigger details, and measurements.
-- [ ] Add batch decode of multiple sessions.
-- [ ] Add command-line capture/decode/export workflows for CI and regression testing.
+- [x] Add batch decode of multiple sessions.
+- [x] Add command-line capture/decode/export workflows for CI and regression testing.
 - [ ] Add automated generator/capture protocol sweeps.
-- [ ] Add pass/fail assertions for expected packets, timing bounds, and error counts.
-- [ ] Add machine-readable JUnit/JSON results for hardware validation runs.
+- [x] Add pass/fail assertions for expected packets, timing bounds, and error counts.
+- [x] Add machine-readable JUnit/JSON results for hardware validation runs.
 
 ## Phase 7 — Verification and release hardening
 

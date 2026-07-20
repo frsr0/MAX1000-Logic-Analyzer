@@ -172,6 +172,7 @@ class Session(BaseModel):
     tags: List[str] = Field(default_factory=list)
     exports: List[ExportRecord] = Field(default_factory=list)
     diagnostics: List[Dict[str, Any]] = Field(default_factory=list)
+    generator: Optional[Dict[str, Any]] = None
 
     def touch(self) -> None:
         self.modified_at = time.time()

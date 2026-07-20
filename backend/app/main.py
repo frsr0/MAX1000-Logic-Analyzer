@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api import (capture, decoders, devices, diagnostics, exports, generator,
-                  measurements, mil, sessions, status, waveform)
+                  measurements, mil, sessions, status, validation, waveform)
 from .config import APP_NAME, APP_VERSION, FRONTEND_DIST, PORT
 from .diagnostics.logger import setup_logging
 from .hardware.base import HardwareError
@@ -80,7 +80,7 @@ async def hardware_error_handler(request: Request, exc: HardwareError):
 
 
 for r in (status, devices, capture, sessions, waveform, decoders,
-          measurements, exports, generator, mil, diagnostics):
+          measurements, exports, generator, mil, diagnostics, validation):
     app.include_router(r.router)
 app.include_router(status_ws.router)
 

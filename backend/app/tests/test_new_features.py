@@ -21,6 +21,7 @@ from app.measurements import digital
 from app.measurements.base import MeasurementContext, run_measurement
 from app.triggers.software_trigger import find_software_trigger
 from app.waveform.analogue import cross_correlation_delay, spectrogram, spectrum_peaks
+from app.validation import junit_xml, validate_events
 
 
 def test_manchester_decoder_decodes_msb_word():
@@ -335,3 +336,13 @@ def test_smbus_stacked_decoder_validates_pec():
     result = SmbusDecoder().decode(DecodeContext(wf, {}, upstream_events=events), {})
     assert result.events[0]["fields"]["command"] == command
     assert result.events[0]["fields"]["pec_ok"] is True
+
+
+def test_session_assertions_support_expected_events_and_junit():
+    events = [{"type": "uart_byte", "severity": "normal",
+               "start_time": 0.0, "end_time": 1e-6,
+               "fields": {"byte": 0x55}}]
+    result = validate_events(events, {"expected_events": [{"type": "uart_byte",
+        "fields": {"byte": 0x55}}], "min_events": 1, "max_errors": 0})
+    assert result["passed"] is True
+    assert "testsuite" in junit_xml(result)

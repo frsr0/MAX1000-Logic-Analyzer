@@ -108,7 +108,10 @@ def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
                       device=dev.get_metadata(),
                       settings=settings, sample_rate=result.sample_rate,
                       num_samples=wf.num_samples,
-                      tags=["generator", "self-test"])
+                      tags=["generator", "self-test"],
+                      generator={"config": cfg.model_dump(),
+                                 "expected_hex": expected.hex(),
+                                 "sent_hex": sent.hex()})
     session.channels = default_digital_channels(16)
     mgr.store.save(session)
     mgr.store.save_waveform(session.id, wf)
