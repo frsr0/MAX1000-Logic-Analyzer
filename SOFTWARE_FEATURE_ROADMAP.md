@@ -103,7 +103,7 @@ current SPI readback bandwidth.
 - [ ] Add visual trigger previews on the waveform.
 - [x] Add “jump to first match”, “next match”, and “previous match”.
 - [ ] Add trigger result metadata to session exports and reports.
-- [ ] Add tests proving that post-capture triggers never alter raw samples.
+- [x] Add tests proving that post-capture triggers never alter raw samples.
 
 ## Phase 4 — Signal processing and measurements
 

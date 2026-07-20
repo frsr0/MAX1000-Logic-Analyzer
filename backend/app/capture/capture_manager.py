@@ -136,6 +136,10 @@ class CaptureManager:
             self.device_kind = None
             log.info("Device disconnected")
             manager.publish_threadsafe("status", "device_disconnected", {})
+        # A disconnected device cannot remain exclusively controlled by a
+        # stale client; the next connection must be able to acquire control.
+        if self.control.holder is not None:
+            self.control.release(self.control.holder)
 
     def require_device(self) -> HardwareDevice:
         if self.device is None or not self.device.is_connected():
