@@ -179,7 +179,7 @@ current SPI readback bandwidth.
 - [ ] Add malformed-input tests: truncation, undersampling, noise, missing edges, illegal transitions, and FIFO overflow.
 - [ ] Add property tests for round-tripping generator output through decoder input.
 - [ ] Add mock scenarios for every supported protocol and error condition.
-- [ ] Add frontend E2E coverage for generator, decoder, trigger builder, measurements, reports, and session comparison.
+- [x] Add frontend E2E coverage for generator, decoder, trigger builder, measurements, reports, and session comparison.
 - [x] Run the existing backend test suite.
 - [x] Run the existing host/driver test suite.
 - [x] Run frontend typecheck and production build.

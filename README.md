@@ -30,7 +30,7 @@ Recently re-verified before this README update:
 - `backend/app/tests/test_existing_host_adapter.py`: `19/19` passed
 - `host/driver/tests/test_ols_spi_device.py` + `test_ols_spi.py`: `194/194` passed
 - `frontend` typecheck and production build: passed
-- `frontend/tests/e2e/hardware.spec.ts` in mock mode: `9 passed, 2 skipped`
+- `frontend/tests/e2e/hardware.spec.ts`: `19 passed, 2 skipped` (full suite; mock workflow coverage included)
 - `backend/hw_smoke_test.py`: `7/7` passed on hardware
 - Focused hardware checks for digital compression, analog-fast, dual-analog, and mixed capture: passed
 
