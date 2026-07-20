@@ -99,14 +99,15 @@ Controls the FPGA's signal generator and orchestrates the loopback self-test wor
 
 ```python
 class GeneratorConfig(BaseModel):
-    protocol: str = "uart"              # uart, i2c, spi, pwm, pattern
-    baud_rate: int = 115200
-    data: str = ""                      # hex string of bytes to transmit
-    pin_tx: Optional[int] = None
-    pin_scl: Optional[int] = None
-    repeat: bool = False
-    i2c_read_len: Optional[int] = None
-    i2c_dev_r: Optional[str] = None
+    protocol: str = "uart"              # uart|rs485|i2c|spi|swd|bitbang
+    baud: int = 115200
+    data_hex: str = ""                  # payload bytes as hex
+    tx_pin: int = 3
+    scl_pin: int = 1
+    repeat: int = 1
+    continuous: bool = False
+    i2c_read_len: int = 0
+    extra: dict = {}                    # DE/CS/MISO routes and capture channels
 ```
 
 ## Loopback Self-Test

@@ -22,7 +22,7 @@ The SPI command decoder and device controller for the OLS core. Receives packeti
 
 **Capture control:** `Inputs[31:0]`, `Rate_Div`, `Samples`, `Start_Offset`, `Run`, `Full`, `Address`, `Outputs`
 
-**Generator:** `Gen_Load_Byte`, `Gen_Load_We`, `Gen_Start`, `Gen_Baud_Div`, `Gen_Busy`, `Gen_Fifo_Count`, `Gen_Proto`, `Gen_TX_Pin`, `Gen_SCL_Pin`, `Gen_Clear`, all `Gen_I2C_*`/`Gen_SPI_Test`/`Gen_Repeat`/`Gen_RS485_Pair` flags
+**Generator:** `Gen_Load_Byte`, `Gen_Load_We`, `Gen_Start`, `Gen_Baud_Div`, `Gen_Busy`, `Gen_Fifo_Count`, `Gen_Proto`, `Gen_TX_Pin`, `Gen_SCL_Pin`, optional `Gen_DE_*`, `Gen_CS_*`, and `Gen_MISO_*` routes, `Gen_Clear`, all `Gen_I2C_*`/`Gen_SPI_Test`/`Gen_Repeat`/`Gen_RS485_Pair` flags
 
 **Mode control:** `Armed`, `Fast_Mode`, `Continuous_Mode`, `Narrow_Enable`, `Narrow_Channel`, `Analog_Enable`, `Analog_Only`, `Analog_Profile`, `Analog_Channel`, `Packed_Mode`
 
@@ -85,6 +85,10 @@ The SPI dispatch process decodes `pkt_cmd_active` and routes to sub-handlers:
 - `REG_GEN_PINS` (0x32): generator pin assignment
 - `REG_GEN_DATA` (0x33): generator data / mode flags
 - `REG_GEN_RX_DATA` (0x34): read RX FIFO byte
+- `REG_GEN_AUX_PINS` (0x35): optional DE/CS/MISO physical routes
+- `REG_GEN_CAPTURE_TX_CHAN` (0x40): direct generator data capture channel
+- `REG_GEN_CAPTURE_SCL_CHAN` (0x41): direct generator clock capture channel
+- `REG_GEN_CAPTURE_AUX` (0x45): direct SPI CS/MISO capture channels and enables
 - `REG_CAPTURE_SEQ` (0x50): capture sequence ID
 - `REG_PRODUCER_INDEX` (0x51): ring buffer producer index
 - `REG_OLDEST_INDEX` (0x52): ring buffer oldest index

@@ -4,7 +4,11 @@
 
 ## Purpose
 
-Programmable protocol generator that produces UART, I2C, SPI, PWM, and pattern waveforms on selected output pins. Used for loopback self-test and as a general-purpose signal source.
+Programmable protocol generator that produces UART, I²C, SPI, RS-485, SWD,
+raw Bit Banger, PWM, and pattern waveforms on selected output pins. Used for
+loopback self-test and as a general-purpose signal source. Protocol frames are
+encoded on the host; the FPGA remains a deterministic two-output symbol
+engine.
 
 ## Architecture
 
@@ -35,6 +39,9 @@ SPI───load──┤ FIFO      ├───┤ 2-bit      ├─── gen_
 | `Gen_Proto` | 1 | IN | Protocol select |
 | `Gen_TX_Pin` | 5 | IN | TX output pin assignment |
 | `Gen_SCL_Pin` | 5 | IN | SCL output pin assignment |
+| `Gen_DE_Pin` / `Gen_DE_Enable` | 5 / 1 | IN | Optional RS-485 DE route |
+| `Gen_CS_Pin` / `Gen_CS_Enable` | 5 / 1 | IN | Optional SPI CS route |
+| `Gen_MISO_Pin` / `Gen_MISO_Enable` | 5 / 1 | IN | Optional SPI MISO input route |
 | `Gen_Clear` | 1 | IN | Clear FIFO, stop generator |
 | `Gen_I2C_Rd_Len` | 8 | IN | I2C read length |
 | `Gen_I2C_Dev_R` | 8 | IN | I2C device address for reads |
@@ -84,12 +91,23 @@ The host-side Python encoder (`host/driver/bit_bang.py`) pre-computes symbol seq
 
 **SPI mode 3 (CPOL=1/CPHA=1):** SCLK idles high (matches Bit_Engine idle). Data on falling edge, sampled on rising. Used for LIS3DH accelerometer register reads.
 
+## Auxiliary routing and fast capture
+
+The two Bit_Engine outputs remain the data and clock lines. `OLS_SDRAM_Top`
+adds optional auxiliary routes for RS-485 DE and SPI CS/MISO. Their register
+selectors are `REG_GEN_AUX_PINS` (`0x35`) and
+`REG_GEN_CAPTURE_AUX` (`0x45`). The latter inserts CS/MISO directly into
+logical capture channels in the FAST build, where runtime general pin-map
+writes are frozen. See [Generator Routing](../generator-routing.md) for the
+bit layout and physical pin pool.
+
 ### RX Path (Loopback)
 
 During generator operation, the Bit_Engine captures data on the RX input pin:
 - `Gen_RX_Data` — 8-bit RX sample byte (8 line samples, LSB-first)
 - `Gen_RX_Used` — RX FIFO fill level
-- For SPI test mode: RX source = SDO (SPI MISO)
+- For SPI test mode: RX source = selected MISO input, or the on-board sensor
+  SDO input (pool pin 23)
 - For I2C test mode: RX source = SDI (I2C SDA)
 
 ## Generator Capture Loopback

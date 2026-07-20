@@ -95,7 +95,8 @@ Client (browser / curl)
 - [Export Formats](export-formats.md) — CSV, JSON, VCD, NPZ, HTML report
 
 ### Generator & MIL
-- [Generator Controller](generator-controller.md) — Generator config, loopback self-test workflow
+- [Generator Controller](generator-controller.md) — Generator config, loopback self-test workflow, route validation
+- [Generator Routing](../generator-routing.md) — Physical pin pool, auxiliary routes, capture channels, and register contract
 - [Machine-In-Loop](machine-in-loop.md) — MIL subsystem: UART/modbus/RS485 automated testing
 
 ## Key Design Decisions

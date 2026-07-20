@@ -4,10 +4,31 @@ Hardware validation runs against the FPGA image flashed on the MAX1000. These
 tests exercise register writes, capture timing, SDRAM readback, SPI transport,
 and lossless decompression on the real board.
 
-Run from `host/` with the FTDI/JTAG hardware connected:
+## Latest board result
+
+On 2026-07-20 the connected MAX1000 was programmed with SOF checksum
+`0x004ADCB4`. The end-to-end smoke test passed **10/10**:
+
+| Check | Result |
+|---|---|
+| Discovery, connect, metadata | PASS |
+| Capabilities and self-test | PASS |
+| 4096-sample digital capture and sanity checks | PASS |
+| UART loopback/decode | PASS |
+| RS-485 loopback/decode with DE route | PASS |
+| SPI loopback/decode with CS/MISO auxiliary capture | PASS |
+| SWD generator loopback/decode | PASS |
+
+The full evidence, including session IDs and the programmed image, is in
+[docs/hardware-smoke-2026-07-20.md](../hardware-smoke-2026-07-20.md).
+
+Run the smoke test from `backend/`; run the legacy validation/debug tools from
+`host/`, with the FTDI/JTAG hardware connected:
 
 ```powershell
+cd ..\backend
 python hw_smoke_test.py
+cd ..\host
 python debug/hwt_test_debug_pwm_registers.py
 python debug/hwt_test_compression_matrix.py
 python -m app.hw_validation

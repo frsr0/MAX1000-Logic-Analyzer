@@ -94,6 +94,7 @@ GET|POST /api/sessions/{id}/export/{csv,json,vcd,npz,report}
 
 ```
 GET  /api/generator/capabilities         → supported protocols
+GET  /api/generator/status               → current generator state
 POST /api/generator/configure            ← GeneratorConfig
 POST /api/generator/start/stop           → state change
 POST /api/generator/self-test            → loopback capture + compare

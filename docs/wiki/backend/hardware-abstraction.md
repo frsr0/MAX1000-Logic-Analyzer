@@ -60,7 +60,7 @@ Pydantic models for structured device information:
 | Model | Key Fields |
 |---|---|
 | `DeviceCapabilities` | `modes`, `max_sample_rate`, `max_depth`, `analog_channels`, `trigger_types`, `compression`, `generator_protocols` |
-| `GeneratorConfig` | `protocol` (uart/i2c/spi/pwm/pattern), `baud_rate`, `data` (hex string), `repeat`, `pins` |
+| `GeneratorConfig` | `protocol` (uart/rs485/i2c/spi/swd/bitbang), `data_hex`, `baud`, `tx_pin`, `scl_pin`, `repeat`, `continuous`, `extra` routes |
 | `GeneratorStatus` | `supported`, `running`, `fifo_fill`, `detail` |
 | `DebugInfo` | `registers`, `device_status`, `metadata`, `command_log` |
 | `TriggerCapability` | `type`, `available`, `min_pulse` |

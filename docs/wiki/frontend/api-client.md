@@ -98,7 +98,7 @@ Every Pydantic model has a corresponding TypeScript interface:
 | `Marker` | id, sample, label, color |
 | `MeasurementInstance` | id, measurement_type, channel_id, result |
 | `DecoderEvent` | id, decoder_id, type, start_sample, end_sample, label, severity |
-| `GeneratorConfig` | protocol, baud_rate, data, pin_tx, pin_scl |
+| `GeneratorConfig` | protocol, data_hex, baud, tx_pin, scl_pin, repeat, continuous, extra |
 | `MilConfig` | protocol, registers, timing |
 
 ## Binary Parser (`binary.ts`)

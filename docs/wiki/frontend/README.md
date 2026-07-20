@@ -2,6 +2,11 @@
 
 > Browser-based mixed-signal analyser UI: waveform viewer, capture controls, protocol decoders, measurements, generator, device management.
 
+The Generator page is capability-driven. It reads the connected device route
+descriptor before showing optional RS-485 DE and SPI CS/MISO controls; the
+backend still validates every request. See [Generator Routing](../generator-routing.md)
+for the physical and register contract.
+
 ## Technology Stack
 
 | Tool | Version | Purpose |

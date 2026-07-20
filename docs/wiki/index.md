@@ -39,8 +39,8 @@ graph TB
         STORE[Zustand + WaveformView]
     end
 
-    FPGA -- SPI --> HOST
-    HOST -- reused unchanged --> BACKEND
+    FPGA -- FT2232H MPSSE SPI --> HOST
+    HOST -- shared driver --> BACKEND
     ADAPTER --> DEV
     CM --> ADAPTER
     CM --> MOCK
@@ -62,6 +62,8 @@ graph TB
 
 ## Wiki Sections
 
+- [Current Implementation Status](current-status.md) - validated hardware contract, supported routes, limits, and verification baseline
+- [Generator Routing and Bit Banger Contract](generator-routing.md) - two-output engine, RS-485 DE, SPI CS/MISO, pin pool, and registers
 - [Hardware Validation](hardware-validation.md) - real-board smoke tests, PWM regression, compression matrix, and full validation
 
 - [HDL — FPGA Design](hdl/README.md) — VHDL entities, clock domains, SDRAM controller, capture pipeline, signal generator, testbenches, build flow
@@ -70,8 +72,8 @@ graph TB
 
 ## Key Architecture Decisions
 
-- **ADR-001**: [Capture Mode Strategy Pattern](docs/adr/001-capture-strategy-pattern.md) — decomposed monolithic `capture()` into 5 strategy classes
-- **ADR-002**: [Wire Format Extraction](docs/adr/002-wire-format-extraction.md) — extracted pure wire-format functions from 2355-line driver into `wire_format.py`
+- **ADR-001**: [Capture Mode Strategy Pattern](../adr/001-capture-strategy-pattern.md) — decomposed monolithic `capture()` into 5 strategy classes
+- **ADR-002**: [Wire Format Extraction](../adr/002-wire-format-extraction.md) — extracted pure wire-format functions from 2355-line driver into `wire_format.py`
 
 ## Current Status
 
@@ -79,14 +81,16 @@ graph TB
 - 4,194,304-word SDRAM single-shot depth
 - Analog-fast (1 ADC lane), analog-all (4 lanes), mixed (digital + analog) modes
 - Narrow packed digital (200 MHz, 1 channel)
-- UART, I2C, SPI, PWM, RS-485 generation
+- UART, I²C, SPI, RS-485, SWD, raw Bit Banger, and PWM generation
+- Hardware route capabilities advertise optional RS-485 DE and SPI CS/MISO auxiliary routes
 - Register-controlled debug CH0 PWM loopback for hardware self-test
 - Exact full-word RLE readback compression (`raw` / `delta_rle` host modes)
 - Built with Quartus, targeting 10M08DAF484C8G, FAST_SPEED build
 - SDRAM write timing is closed in STA with the DDIO-forwarded chip clock at
-  **seed 3** (2026-07-10, current flashed build): worst setup slack
+  **seed 3** (2026-07-10 timing baseline): worst setup slack
   `fast_clk +0.094 ns`, `sdram_core_clk +0.534 ns`, `sys_clk +1.275 ns`,
-  `SDRAM_CHIP_CLK_OUT +1.098 ns`; 84% LE (6,750/8,064). See
+  `SDRAM_CHIP_CLK_OUT +1.098 ns`; 84% LE (6,750/8,064). The latest smoke
+  image was compiled with seed 21; see
   [`hdl/sdram-pll.md`](hdl/sdram-pll.md) for the DDIO clock-forward phase fix,
   [`hdl/mso-capture.md`](hdl/mso-capture.md) for the packed/MSO live-capture
   throughput fix, and `TIMING_REPORT_SUMMARY.md` for the full per-domain

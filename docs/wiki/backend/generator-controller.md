@@ -4,7 +4,11 @@
 
 ## Purpose
 
-Controls the FPGA's on-board signal generator and orchestrates the loopback self-test workflow. The generator produces UART, I2C, SPI, PWM, or pattern waveforms on selected output pins.
+Controls the FPGA's on-board signal generator and orchestrates the loopback
+self-test workflow. The real MAX1000 generator produces UART, RS-485, I²C, SPI,
+SWD, and raw Bit Banger waveforms through a two-output symbol engine. Optional
+RS-485 DE and SPI CS/MISO routes are validated against the connected device's
+capability descriptor before hardware is touched.
 
 ## Files
 
@@ -17,23 +21,29 @@ Controls the FPGA's on-board signal generator and orchestrates the loopback self
 
 ```python
 class GeneratorConfig(BaseModel):
-    protocol: str = "uart"              # uart, i2c, spi, pwm, pattern
-    baud_rate: int = 115200             # symbol rate for serial protocols
-    data: str = ""                      # hex string of bytes to transmit
-    pin_tx: Optional[int] = None        # TX data pin (pool index)
-    pin_scl: Optional[int] = None       # SCL/clock pin (pool index)
-    repeat: bool = False                # loop data continuously
-    i2c_read_len: Optional[int] = None  # I2C read transaction length
-    i2c_dev_r: Optional[str] = None     # I2C device address for read
+    protocol: str = "uart"              # uart|rs485|i2c|spi|swd|bitbang
+    data_hex: str = ""                  # payload bytes
+    baud: int = 115200
+    tx_pin: int = 3                      # data/MOSI/SDA/SWDIO pool pin
+    scl_pin: int = 1                     # clock/SCLK/SCL/SWCLK pool pin
+    repeat: int = 1
+    continuous: bool = False
+    i2c_address: int = 0x19
+    i2c_register: int = 0x0F
+    i2c_read_len: int = 0
+    extra: dict = {}                    # DE/CS/MISO pins and capture channels
 ```
 
 ## GeneratorStatus
 
 ```python
 class GeneratorStatus(BaseModel):
-    supported: bool = True
+    busy: bool = False
     running: bool = False
-    fifo_fill: int = 0                  # generator FIFO fill level (0..256)
+    protocol: Optional[str] = None
+    config: Optional[dict] = None
+    last_error: Optional[str] = None
+    supported: bool = True
     detail: str = ""
 ```
 
@@ -51,8 +61,10 @@ The controller translates `GeneratorConfig` to the hardware register writes:
 1. Set protocol via `REG_GEN_PROTO`
 2. Set baud rate via `REG_GEN_BAUD`
 3. Set pins via `REG_GEN_PINS`
-4. Load bit-bang symbols (pre-computed by `host/driver/bit_bang.py`)
-5. Start generation via `CMD_GEN_START`
+4. Set optional routes via `REG_GEN_AUX_PINS` (`0x35`)
+5. Set direct auxiliary capture channels via `REG_GEN_CAPTURE_AUX` (`0x45`)
+6. Load bit-bang symbols (pre-computed by `host/driver/bit_bang.py`)
+7. Start generation via `CMD_GEN_START`
 
 ## Loopback Self-Test
 

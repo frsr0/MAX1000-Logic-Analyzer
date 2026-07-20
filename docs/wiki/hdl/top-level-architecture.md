@@ -54,9 +54,11 @@ The 16 LA channels map to a 26-entry pool via the `pin_map` register array (addr
 
 | LA Channel | Pool Index | Board Signal |
 |---|---|---|
-| 0-13 | 0-13 | MKR_D0-D13 |
-| 14 | 14 | MKR_D14 |
-| 15 | 24 | SEN_SDI (LIS3DH SDA) |
+| 0-14 | 0-14 | MKR_D0-D14 |
+| 15-22 | 15-22 | PMOD[0]-PMOD[7] |
+| 23 | 23 | SEN_SDO (LIS3DH SDO) |
+| 24 | 24 | SEN_SDI (LIS3DH SDA) |
+| 25 | 25 | SEN_SPC (LIS3DH SCL) |
 
 Each pool entry can independently be input (capture) or output (generator). The `pin_dir` and `pin_out` registers drive the bidirectional pads.
 
@@ -82,6 +84,13 @@ Registered input sampling at fast_clk with three mux paths:
 - **Mapped path**: `capture_data_fast_mapped_r` — pin_map selected
 
 ### Generator Wiring
+
+The base `gen_tx`/`gen_scl` outputs are complemented by optional `gen_de` and
+`gen_cs` physical outputs and a `gen_miso` input selector. RS-485 DE is active
+for the Bit_Engine burst; SPI CS is active during an SPI burst; MISO can use a
+GPIO pool entry or sensor SDO pool pin 23. `REG_GEN_CAPTURE_AUX` selects the
+logical capture channels for CS/MISO because runtime general pin-map writes are
+frozen in the FAST build.
 
 The generator (`Signal_Gen` entity) connects through a set of cross-domain signals:
 - `gen_busy` — indicates generator actively transmitting

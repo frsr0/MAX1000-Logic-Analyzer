@@ -4,7 +4,11 @@
 
 ## Purpose
 
-`HardwareDevice` implementation that wraps the existing, proven `OLSDeviceSPI` host driver (`host/driver/ols_spi_device.py`). Delegates capture modes to mode-specific `CaptureStrategy` classes (per ADR-001). Reuses the host driver unchanged — the adapter mirrors the exact call sequence of the tkinter GUI.
+`HardwareDevice` implementation that wraps the shared `OLSDeviceSPI` host driver
+(`host/driver/ols_spi_device.py`). Delegates capture modes to mode-specific
+`CaptureStrategy` classes (per ADR-001). The web backend and classic tkinter
+application use the same transport and register implementation; hardware
+feature additions must update the shared driver contract as well as the adapter.
 
 ## Key Constants
 
