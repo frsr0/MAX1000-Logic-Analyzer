@@ -16,7 +16,7 @@ ExistingHostAdapter -> host/driver/OLSDeviceSPI):
   3. capabilities
   4. device self-test (metadata + status/control-plane checks)
   5. plain digital capture (1 MHz, 4096 samples) + sanity checks
-  6. UART / RS-485 / SPI generator loopback (CMD_GEN_CAPTURE) -> decode -> compare
+  6. UART / RS-485 / SPI / SWD generator loopback (CMD_GEN_CAPTURE) -> decode -> compare
 
 Exit code 0 = all checks passed. Sessions created by the test are saved and
 visible in the web UI afterwards.
@@ -148,16 +148,21 @@ def main():
 
     # 6. Generator loopback routes that are physically supported by the
     # current adapter. I2C is intentionally excluded: it needs a connected
-    # external slave, unlike the internal UART/RS-485/SPI loopback routes.
+    # external slave, unlike the internal UART/RS-485/SPI/SWD routes.
     route_configs = [
         ("uart", 115200, 0 if args.mock else 3, 1),
         ("rs485", 115200, 0 if args.mock else 3, 1),
         ("spi", 1_000_000, 5 if args.mock else 3, 4 if args.mock else 1),
+        ("swd", 1_000_000, 1 if args.mock else 3, 0 if args.mock else 1),
     ]
     for protocol, baud, tx_pin, scl_pin in route_configs:
         def loopback(protocol=protocol, baud=baud, tx_pin=tx_pin, scl_pin=scl_pin):
             cfg = GeneratorConfig(protocol=protocol, data_hex="4142",
-                                  baud=baud, tx_pin=tx_pin, scl_pin=scl_pin)
+                                  baud=baud, tx_pin=tx_pin, scl_pin=scl_pin,
+                                  extra=(
+                                      {"requests": [{"ap": False, "read": True,
+                                                     "addr": 0, "data": 0}]}
+                                      if protocol == "swd" else {}))
             r = loopback_self_test(mgr, cfg, capture_rate=2_000_000,
                                    capture_samples=8_000)
             if not r.passed:

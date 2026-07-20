@@ -1,4 +1,5 @@
-from app.hardware.device_models import DeviceCapabilities, GeneratorRouteCapability
+from app.hardware.device_models import DeviceCapabilities, GeneratorConfig, GeneratorRouteCapability
+from app.hardware.mock_device import MockDevice
 
 
 def test_generator_routes_describe_optional_physical_wires_without_overclaiming():
@@ -48,3 +49,9 @@ def test_future_routes_can_advertise_cs_miso_and_swd_capture():
     assert {route.protocol for route in caps.generator_routes} == {"spi", "swd"}
     assert "cs" in caps.generator_routes[0].features
     assert "transaction_capture" in caps.generator_routes[1].features
+
+
+def test_route_validation_preserves_mock_only_protocols_without_physical_routes():
+    device = MockDevice()
+    device.connect()
+    device.validate_generator_config(GeneratorConfig(protocol="pwm"))

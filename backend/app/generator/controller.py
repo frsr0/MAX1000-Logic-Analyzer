@@ -85,6 +85,9 @@ def loopback_self_test(mgr: CaptureManager, cfg: GeneratorConfig,
     """Send a pattern through the generator while capturing, decode the
     capture, and compare against the sent/expected bytes."""
     dev = mgr.require_device()
+    validate_route = getattr(dev, "validate_generator_config", None)
+    if callable(validate_route):
+        validate_route(cfg)
     sent = validate_generator_payload(cfg)
     expected = bytes.fromhex(expected_hex) if expected_hex else sent
     capture_samples = normalized_loopback_samples(cfg, capture_rate, capture_samples)

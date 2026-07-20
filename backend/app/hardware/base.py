@@ -100,6 +100,47 @@ class HardwareDevice(ABC):
     def generator_status(self) -> GeneratorStatus:
         return GeneratorStatus(supported=False, detail="No generator on this device")
 
+    def validate_generator_config(self, cfg: GeneratorConfig) -> None:
+        """Reject requests for wires/features absent from the device route.
+
+        Older/custom adapters may not publish route descriptors yet, so an
+        empty descriptor list preserves their existing protocol validation.
+        Once descriptors are present, optional physical wires become an
+        explicit capability boundary instead of silently being ignored.
+        """
+        caps = self.get_capabilities()
+        routes = caps.generator_routes
+        if not routes:
+            return
+        route = next((r for r in routes if r.protocol == cfg.protocol), None)
+        if route is None:
+            # A protocol may be mock-only or preview-only and therefore have
+            # no physical route descriptor. Preserve the protocol list as the
+            # source of truth for those software-only generators.
+            if cfg.protocol in caps.generator_protocols:
+                return
+            raise HardwareError(
+                f"Generator route '{cfg.protocol}' is unavailable on this device")
+        if not route.available:
+            raise HardwareError(
+                f"Generator route '{cfg.protocol}' is unavailable on this device")
+
+        extra = cfg.extra or {}
+        requested = []
+        if cfg.protocol == "rs485" and extra.get("de_pin") is not None:
+            requested.append(("de_pin", "a separate RS-485 DE pin"))
+        if cfg.protocol == "spi":
+            if extra.get("cs_pin") is not None:
+                requested.append(("cs", "SPI CS output"))
+            if extra.get("miso_pin") is not None:
+                requested.append(("miso", "SPI MISO output"))
+        if cfg.protocol == "swd" and extra.get("capture_target_response", True):
+            requested.append(("transaction_capture", "SWD transaction capture"))
+        for feature, label in requested:
+            if feature not in route.features:
+                raise HardwareError(
+                    f"{label} is not routed by the connected device firmware")
+
     def generator_configure(self, cfg: GeneratorConfig) -> None:
         raise HardwareError("Signal generator not supported on this device")
 

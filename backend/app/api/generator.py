@@ -80,6 +80,7 @@ def generator_configure(cfg: GeneratorConfig,
     require_control(client_id)
     try:
         dev = capture_manager.require_device()
+        dev.validate_generator_config(cfg)
         dev.generator_configure(cfg)
     except HardwareError as e:
         raise HTTPException(502, str(e))
@@ -143,6 +144,7 @@ def generator_send(req: GeneratorSendRequest,
         raise HTTPException(400, "Generator not configured")
     try:
         dev = capture_manager.require_device()
+        dev.validate_generator_config(cfg)
         validate_generator_payload(cfg)
         if not req.capture:
             dev.generator_configure(cfg)

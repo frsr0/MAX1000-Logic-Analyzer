@@ -11,8 +11,8 @@ current SPI readback bandwidth.
 - [x] Keep raw capture data immutable; all filters and thresholds create derived data.
 - [x] Label hardware triggers, post-capture triggers, and unavailable features accurately.
 - [x] Every new decoder or processing feature gets deterministic backend tests.
-- [x] Every user-facing feature gets a mock-mode E2E test before hardware testing (24 browser checks pass; real hardware/live-session checks remain bench-dependent).
-- [x] Add hardware smoke coverage only where the existing pins and routing genuinely support it (UART, RS-485, SPI; I²C remains external-slave opt-in).
+- [x] Every user-facing feature gets a mock-mode E2E test before hardware testing (25 browser checks pass; real hardware/live-session checks remain bench-dependent).
+- [x] Add hardware smoke coverage only where the existing pins and routing genuinely support it (UART, RS-485, SPI, SWD; I²C remains external-slave opt-in).
 - [x] Update `README.md` and `WEBAPP.md` whenever the advertised capability changes.
 
 ## Phase 0 — Baseline and project scaffolding
@@ -44,6 +44,7 @@ current SPI readback bandwidth.
 - [x] UART: parity selection, 1/1.5/2 stop bits, break generation, configurable idle bits, and framing-error injection.
 - [x] RS-485 Bit Banger exerciser: transmit-enable timing, turnaround delay, direction-change markers, and half-duplex transaction scripts.
 - [x] Add structured generator-route capabilities so physical DE/CS/MISO/SWD wiring is advertised per connected target.
+- [x] Reject optional physical pin requests when the connected route does not advertise them; preserve mock-only protocol generators.
 - [ ] Hardware RS-485 generator: expose physical DE timing if a future firmware route provides it.
 - [x] SPI Bit Banger template: CPOL/CPHA 0–3, MSB/LSB first, word sizes 4–32 bits, and inter-word gaps.
 - [ ] Hardware SPI generator: configurable CS/MISO only where firmware routing permits.
@@ -184,7 +185,7 @@ current SPI readback bandwidth.
 - [x] Run the existing backend test suite.
 - [x] Run the existing host/driver test suite.
 - [x] Run frontend typecheck and production build.
-- [ ] Run real-target hardware smoke tests for unchanged capture paths after host-driver changes (mock target: 9/9 passed; real execution remains bench-dependent).
+- [ ] Run real-target hardware smoke tests for unchanged capture paths after host-driver changes (mock target: 10/10 passed; real execution remains bench-dependent).
 - [x] Validate no new feature falsely advertises unavailable physical capabilities.
 - [x] Update screenshots and user documentation.
 - [x] Add release notes and migration notes for session/decoder schema changes.

@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from app.capture.session import CaptureSettings
+from app.hardware.device_models import GeneratorConfig
 from app.hardware.base import HardwareError
 from app.hardware.existing_host_adapter import (
     DIGITAL_NARROW_LOGICAL_SAMPLES,
@@ -237,6 +238,19 @@ def test_real_hardware_capabilities_advertise_200mhz_digital_sampling():
     assert caps.max_samples == DIGITAL_SDRAM_WORDS
     assert any("64 Mbit SDRAM" in note for note in caps.notes)
     assert caps.generator_protocols == ["uart", "rs485", "i2c", "spi", "swd", "bitbang"]
+
+
+def test_real_route_rejects_unwired_spi_cs_and_miso_requests():
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+
+    with pytest.raises(HardwareError, match="SPI CS output"):
+        adapter.validate_generator_config(
+            GeneratorConfig(protocol="spi", extra={"cs_pin": 7}))
+
+    with pytest.raises(HardwareError, match="SPI MISO output"):
+        adapter.validate_generator_config(
+            GeneratorConfig(protocol="spi", extra={"miso_pin": 6}))
 
 
 def test_adapter_connect_disconnect_and_unavailable_metadata(monkeypatch):

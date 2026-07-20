@@ -107,7 +107,7 @@ class MockDevice(HardwareDevice):
                 ),
                 GeneratorRouteCapability(
                     protocol="rs485", name="RS-485 A/B", outputs={"a": "d1", "b": "d0", "de": "d2"},
-                    features=["capture_loopback", "de_timing", "direction_changes"],
+                    features=["capture_loopback", "de_timing", "de_pin", "direction_changes"],
                 ),
                 GeneratorRouteCapability(
                     protocol="i2c", name="I²C", outputs={"sda": "d2", "scl": "d1"},
