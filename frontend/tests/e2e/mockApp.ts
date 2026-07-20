@@ -916,6 +916,10 @@ export async function installMockApp(page: Page) {
       return route.fulfill(okJson({ channel: 'd0', baud: 115200, unit_samples: 8.68, traces: 24,
         grid: Array.from({ length: 64 }, (_, y) => Array.from({ length: 160 }, (_, x) => (x + y) % 7 === 0 ? 1 : 0)) }));
     }
+    if (req.method() === 'GET' && /\/api\/sessions\/[^/]+\/timing-suspects$/.test(new URL(req.url()).pathname)) {
+      return route.fulfill(okJson({ channel: 'd0', median_samples: 10, mad_samples: 0, threshold_samples: 5,
+        suspects: [{ start_sample: 800, end_sample: 840, kind: 'pulse', duration_samples: 40, median_samples: 10 }] }));
+    }
     if (matches('GET', req, '/api/logs')) return route.fulfill(okJson({ logs: [] }));
     if (matches('GET', req, '/api/diagnostics')) return route.fulfill(okJson({ lan_urls: ['http://127.0.0.1:4173', 'http://192.168.0.10:4173'] }));
     if (matches('GET', req, '/api/capture/scenarios')) return route.fulfill(okJson({ scenarios: [

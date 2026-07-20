@@ -353,6 +353,8 @@ test('mock capture dashboard shows protocol activity and errors', async ({ page 
   await expect(page.getByText('Activity heatmap')).toBeVisible();
   await expect(page.getByText('Bus transaction timeline')).toBeVisible();
   await expect(page.getByText('framing error')).toBeVisible();
+  await expect(page.getByText('Suspect timing annotations')).toBeVisible();
+  await expect(page.getByText('40 samples')).toBeVisible();
 });
 
 test('mock trigger builder previews pattern qualifiers', async ({ page }) => {

@@ -1508,6 +1508,14 @@ def test_remaining_api_decoder_compare_and_waveform_branches(monkeypatch):
     eye = wf_api.digital_eye_diagram(mixed.id, "d0", baud=10)
     assert len(eye["grid"]) == 64
     assert len(eye["grid"][0]) == 160
+    suspect_wf = np.concatenate([
+        np.zeros(10, dtype=np.uint16), np.ones(10, dtype=np.uint16),
+        np.zeros(40, dtype=np.uint16), np.ones(10, dtype=np.uint16)])
+    suspect = Session(name="timing-suspect", channels=default_digital_channels(1))
+    store.save(suspect)
+    store.save_waveform(suspect.id, _wf(digital=suspect_wf, rate=100))
+    suspects = wf_api.timing_suspects(suspect.id, "d0")
+    assert any(item["duration_samples"] == 40 for item in suspects["suspects"])
     shifted = Session(name="shifted", channels=default_digital_channels(2))
     store.save(shifted)
     store.save_waveform(shifted.id, _wf(digital=np.array([0, 0, 1, 0, 1], dtype=np.uint16), rate=10))

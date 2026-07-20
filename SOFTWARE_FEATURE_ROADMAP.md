@@ -138,7 +138,7 @@ current SPI readback bandwidth.
 - [x] Add protocol activity heatmaps.
 - [x] Add bus transaction timeline view.
 - [x] Add waveform/session diff view with first divergence and alignment controls.
-- [ ] Add automatic “suspect timing” annotations for out-of-family pulses or gaps.
+- [x] Add automatic “suspect timing” annotations for out-of-family pulses or gaps.
 
 ## Phase 5 — Frontend workflow improvements
 

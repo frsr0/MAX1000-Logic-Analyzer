@@ -6,8 +6,13 @@ import { waveformView } from '../state/waveformStore';
 export function DashboardPanel() {
   const { activeSession } = useApp();
   const [data, setData] = useState<any>(null);
+  const [suspects, setSuspects] = useState<any[]>([]);
   useEffect(() => {
-    if (activeSession) api.sessionDashboard(activeSession.id).then(setData).catch(() => setData(null));
+    if (!activeSession) return;
+    const channel = activeSession.channels.find((item) => item.type === 'digital' || item.type === 'derived');
+    api.sessionDashboard(activeSession.id).then(setData).catch(() => setData(null));
+    if (channel) api.timingSuspects(activeSession.id, channel.id).then((result) => setSuspects(result.suspects)).catch(() => setSuspects([]));
+    else setSuspects([]);
   }, [activeSession?.id]);
   if (!activeSession) return <div className="panel-body hint">No session open.</div>;
   if (!data) return <div className="panel-body hint">Loading protocol dashboard…</div>;
@@ -40,5 +45,14 @@ export function DashboardPanel() {
       ))}
       {!(data.events ?? []).length && <span className="hint">No decoded transactions available.</span>}
     </div>
+    <h4>Suspect timing annotations</h4>
+    {suspects.length ? <div className="dashboard-suspects">
+      {suspects.slice(0, 12).map((item: any) => <button key={`${item.start_sample}-${item.end_sample}`}
+        className="timing-suspect" onClick={() => waveformView.jumpTo(Number(item.start_sample))}>
+        <span className="mono">{item.duration_samples} samples</span>
+        <span>{item.kind}</span>
+        <span className="hint">expected ~{Number(item.median_samples).toFixed(1)}</span>
+      </button>)}
+    </div> : <span className="hint">No out-of-family pulse widths detected.</span>}
   </div>;
 }

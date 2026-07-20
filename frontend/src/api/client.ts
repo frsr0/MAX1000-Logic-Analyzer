@@ -148,6 +148,9 @@ export const api = {
   eyeDiagram: (id: string, channel: string, baud: number) =>
     get<{ channel: string; baud: number; unit_samples: number; traces: number; grid: number[][] }>(
       `/api/sessions/${id}/eye?channel=${encodeURIComponent(channel)}&baud=${encodeURIComponent(baud)}`),
+  timingSuspects: (id: string, channel: string) =>
+    get<{ channel: string; median_samples: number | null; suspects: any[] }>(
+      `/api/sessions/${id}/timing-suspects?channel=${encodeURIComponent(channel)}`),
 
   // decoders
   decoderTypes: () => get<{ decoders: DecoderDescription[] }>('/api/decoders'),

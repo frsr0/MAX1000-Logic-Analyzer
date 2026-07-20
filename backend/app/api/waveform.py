@@ -321,6 +321,43 @@ def digital_eye_diagram(session_id: str, channel: str, baud: float,
             "grid": grid.tolist()}
 
 
+@router.get("/api/sessions/{session_id}/timing-suspects")
+def timing_suspects(session_id: str, channel: str, sigma: float = 3.0,
+                    limit: int = 200):
+    """Find pulse/gap widths that are outliers for a digital channel."""
+    get_session_or_404(session_id)
+    wf = get_waveform_or_404(session_id)
+    try:
+        bits = wf.channel_bits(channel)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    edges = find_edges(bits, "any")
+    boundaries = np.concatenate(([0], edges, [len(bits)]))
+    widths = np.diff(boundaries).astype(np.float64)
+    if len(widths) < 3:
+        return {"channel": channel, "median_samples": None, "mad_samples": None, "suspects": []}
+    median = float(np.median(widths))
+    mad = float(np.median(np.abs(widths - median)))
+    threshold = max(2.0, float(sigma) * max(mad, 1.0), median * 0.5)
+    suspects = []
+    for index, width in enumerate(widths):
+        deviation = abs(float(width) - median)
+        if deviation <= threshold:
+            continue
+        start = int(boundaries[index]); end = int(boundaries[index + 1])
+        suspects.append({"start_sample": start, "end_sample": end,
+                         "level": int(bits[start]) if start < len(bits) else 0,
+                         "duration_s": float(width / wf.sample_rate),
+                         "duration_samples": int(width),
+                         "median_samples": median,
+                         "deviation_samples": deviation,
+                         "kind": "pulse" if index else "leading-gap"})
+    suspects.sort(key=lambda item: item["deviation_samples"], reverse=True)
+    return {"channel": channel, "median_samples": median,
+            "mad_samples": mad, "threshold_samples": threshold,
+            "suspects": suspects[:max(1, min(2000, int(limit)))]}
+
+
 @router.get("/api/sessions/{session_id}/sanity")
 def waveform_sanity(session_id: str):
     session = get_session_or_404(session_id)

@@ -679,3 +679,6 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .timeline-event:hover { background: var(--accent); color: white; }
 .timeline-event.severity-warning { border-left-color: var(--warning); }
 .timeline-event.severity-error { border-left-color: var(--danger); }
+.dashboard-suspects { display: grid; gap: 4px; }
+.timing-suspect { display: grid; grid-template-columns: 100px 1fr 110px; gap: 8px; padding: 6px 8px; border: 1px solid var(--warning); border-radius: 4px; background: var(--panel-alt); color: var(--text); text-align: left; cursor: pointer; }
+.timing-suspect:hover { background: var(--warning); color: #111; }
