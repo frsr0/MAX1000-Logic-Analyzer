@@ -59,6 +59,9 @@ class TriggerConfig(BaseModel):
     value: Optional[int] = None         # bus value / byte match
     width_s: Optional[float] = None     # pulse width threshold
     baud: Optional[int] = None          # protocol trigger baud
+    occurrence: int = 1                 # nth matching event for software search
+    window_s: Optional[float] = None    # sequence/event qualification window
+    sequence_steps: List[Dict[str, Any]] = Field(default_factory=list)
     pre_trigger_samples: int = 0
     position_pct: float = 0.0           # trigger position within capture, 0..100
     # filled in by the trigger capability model:

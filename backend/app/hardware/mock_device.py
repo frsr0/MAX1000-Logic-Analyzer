@@ -86,7 +86,7 @@ class MockDevice(HardwareDevice):
             supports_continuous=True, supports_analog=True,
             analog_rate_note="Mock analog channels (real hardware: 1 MSPS single-channel or 125 kframes/s 4-input scan)",
             generator_protocols=["uart", "rs485", "i2c", "spi", "pwm", "square",
-                                 "pattern", "counter", "prbs"],
+                                 "pattern", "counter", "prbs", "bitbang"],
             triggers=[TriggerCapability(type=t, execution=e) for t, e in hw],
             notes=["Mock device — all data is synthetic"],
         )
@@ -291,6 +291,20 @@ class MockDevice(HardwareDevice):
                         break
                     bits[a:a + spb] = (byte >> (7 - b)) & 1
             put(cfg.tx_pin, bits)
+        elif cfg.protocol == "bitbang":
+            symbols = cfg.extra.get("symbols", [])
+            spb = max(1, int(rate / max(1, cfg.baud)))
+            tx = np.ones(n, dtype=np.uint8)
+            scl = np.ones(n, dtype=np.uint8)
+            for i, symbol in enumerate(symbols):
+                a = i * spb
+                if a >= n:
+                    break
+                b = min(n, a + spb)
+                tx[a:b] = int(symbol) & 1
+                scl[a:b] = (int(symbol) >> 1) & 1
+            put(cfg.tx_pin, tx)
+            put(cfg.scl_pin, scl)
         else:
             raise HardwareError(f"Unknown generator protocol: {cfg.protocol}")
 

@@ -87,6 +87,8 @@ export const api = {
   deleteSession: (id: string) => del(`/api/sessions/${id}`),
   duplicateSession: (id: string) => post<SessionSummary>(`/api/sessions/${id}/duplicate`),
   compareSessions: (a: string, b: string) => post<any>(`/api/sessions/${a}/compare/${b}`),
+  triggerSearch: (id: string, trigger: any, decoder_instance?: string) =>
+    post<any>(`/api/sessions/${id}/trigger-search`, { trigger, decoder_instance }),
   importSession: (json_text: string) => post<SessionSummary>('/api/sessions', { json_text }),
 
   // waveform

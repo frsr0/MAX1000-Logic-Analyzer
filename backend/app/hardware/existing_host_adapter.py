@@ -171,7 +171,7 @@ class ExistingHostAdapter(HardwareDevice):
                              "analog and 125 kframes/s 4-input physical "
                              "analog scans. Mixed mode scans ADC0..ADC3 at "
                              "the same scan frame rate.",
-            generator_protocols=["uart", "rs485", "i2c", "spi"],
+            generator_protocols=["uart", "rs485", "i2c", "spi", "bitbang"],
             triggers=[TriggerCapability(type=t, execution=e, description=d)
                       for t, e, d in trig],
             notes=[
@@ -573,13 +573,13 @@ class ExistingHostAdapter(HardwareDevice):
                                protocol=self._gen_cfg.protocol if self._gen_cfg else None,
                                config=self._gen_cfg.model_dump() if self._gen_cfg else None,
                                supported=True,
-                               detail="UART/RS-485/I2C/SPI generator (FPGA); debug CH0 PWM is available for capture self-tests")
+                               detail="UART/RS-485/I2C/SPI/raw Bit Banger generator (FPGA); debug CH0 PWM is available for capture self-tests")
 
     def generator_configure(self, cfg: GeneratorConfig) -> None:
-        if cfg.protocol not in ("uart", "rs485", "i2c", "spi"):
+        if cfg.protocol not in ("uart", "rs485", "i2c", "spi", "bitbang"):
             raise HardwareError(
                 f"Generator protocol '{cfg.protocol}' is not supported by the "
-                "current FPGA firmware (supported: uart, rs485, i2c, spi)")
+                "current FPGA firmware (supported: uart, rs485, i2c, spi, bitbang)")
         self._gen_cfg = cfg
 
     def generator_start(self) -> None:
@@ -610,6 +610,17 @@ class ExistingHostAdapter(HardwareDevice):
                 raise HardwareError(
                     "SPI generator requires 'Send + capture' on this "
                     "firmware; standalone send is not supported")
+            elif cfg.protocol == "bitbang":
+                symbols = cfg.extra.get("symbols", [])
+                if not isinstance(symbols, list) or not symbols:
+                    raise HardwareError("Bit Banger requires extra.symbols[]")
+                from driver import bit_bang
+                if len(symbols) > bit_bang.MAX_SYMBOLS:
+                    raise HardwareError(
+                        f"Bit Banger pattern exceeds {bit_bang.MAX_SYMBOLS} symbols")
+                self._dev.send_raw_symbols(
+                    symbols, symbol_rate=max(1, int(cfg.baud)),
+                    tx_pin=int(cfg.tx_pin), scl_pin=int(cfg.scl_pin))
     def generator_stop(self) -> None:
         with self._lock:
             if self._dev is None:
@@ -702,6 +713,10 @@ class ExistingHostAdapter(HardwareDevice):
                                            spi_sclk_pin=cfg.scl_pin,
                                            spi_clk_div=spi_clk_div,
                                            fast_mode=False)
+            elif cfg.protocol == "bitbang":
+                raise HardwareError(
+                    "Bit Banger raw mode currently supports standalone send; "
+                    "use a protocol-specific loopback capture for verification")
             else:
                 raise HardwareError(
                     f"Loopback capture not supported for '{cfg.protocol}' on hardware")

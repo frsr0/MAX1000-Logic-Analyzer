@@ -236,7 +236,7 @@ def test_real_hardware_capabilities_advertise_200mhz_digital_sampling():
     assert caps.sample_clk_hz == 200_000_000
     assert caps.max_samples == DIGITAL_SDRAM_WORDS
     assert any("64 Mbit SDRAM" in note for note in caps.notes)
-    assert caps.generator_protocols == ["uart", "rs485", "i2c", "spi"]
+    assert caps.generator_protocols == ["uart", "rs485", "i2c", "spi", "bitbang"]
 
 
 def test_adapter_connect_disconnect_and_unavailable_metadata(monkeypatch):

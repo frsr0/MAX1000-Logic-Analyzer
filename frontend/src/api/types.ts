@@ -68,6 +68,9 @@ export interface TriggerConfig {
   value?: number | null;
   width_s?: number | null;
   baud?: number | null;
+  occurrence?: number;
+  window_s?: number | null;
+  sequence_steps?: { type: string; value?: number | null }[];
   pre_trigger_samples: number;
   position_pct: number;
   execution: string;
@@ -269,6 +272,7 @@ export interface GeneratorConfig {
   duty_pct: number;
   repeat: number;
   continuous: boolean;
+  extra?: Record<string, any>;
 }
 
 export type MilProtocol = 'uart' | 'modbus_uart' | 'rs485_modbus';

@@ -1455,6 +1455,26 @@ class OLSDeviceSPI:
         time.sleep(0.005)
         self.start_gen()
 
+    def send_raw_symbols(self, symbols, symbol_rate=1_000_000,
+                         tx_pin=3, scl_pin=1):
+        """Play a host-supplied 2-bit Bit_Engine waveform.
+
+        Symbol bit 0 drives the TX/SDA/MOSI route and bit 1 drives the
+        SCL/SCLK route. This deliberately exposes the existing FIFO rather
+        than pretending the FPGA can stream an unlimited arbitrary waveform.
+        """
+        symbols = [int(s) & 0x03 for s in (symbols or [])]
+        packed = bit_bang.pack_symbols(symbols)
+        div = max(1, int(round(self.sys_clk / max(1, int(symbol_rate)) - 1.25)))
+        self.pkt.write_register(REG_GEN_DATA, 1 << 8)
+        self.pkt.write_register(REG_GEN_PROTO, 0)
+        self._pins(tx_pin=tx_pin, scl_pin=scl_pin)
+        self.pkt.write_register(REG_GEN_BAUD, div & 0xFFFF)
+        self.pkt.load_gen_data(packed)
+        self.spi.flush()
+        self.start_gen()
+        return len(symbols)
+
     def send_rs485(self, data_bytes, baud=115200, b_pin=3, a_pin=1,
                    repeat=False):
         self._gen_data = data_bytes

@@ -1,6 +1,8 @@
 // Trigger configuration with explicit hardware / post-capture / unavailable
 // labeling driven by the device capability matrix.
 import { useApp } from '../state/appStore';
+import { api } from '../api/client';
+import { waveformView } from '../state/waveformStore';
 
 const EXEC_BADGE: Record<string, { label: string; cls: string }> = {
   hardware: { label: 'HW', cls: 'badge-hw' },
@@ -9,7 +11,7 @@ const EXEC_BADGE: Record<string, { label: string; cls: string }> = {
 };
 
 export function TriggerPanel() {
-  const { capabilities, captureSettings, setCaptureSettings } = useApp();
+  const { capabilities, captureSettings, setCaptureSettings, activeSession, toast } = useApp();
   const trig = captureSettings.trigger;
   const matrix = capabilities?.trigger_matrix ?? [];
 
@@ -23,6 +25,8 @@ export function TriggerPanel() {
   const needsWidth = ['pulse_wider', 'pulse_narrower', 'timeout', 'glitch'].includes(trig.type);
   const needsPattern = trig.type === 'pattern';
   const needsBaud = trig.type === 'uart_byte';
+  const needsOccurrence = ['uart_byte', 'i2c_address', 'i2c_nack', 'spi_byte', 'decoder_error'].includes(trig.type);
+  const needsSequence = trig.type === 'sequence';
 
   return (
     <div className="panel-body">
@@ -95,6 +99,40 @@ export function TriggerPanel() {
           <input type="number" value={trig.baud ?? 115200}
             onChange={(e) => setTrig({ baud: Number(e.target.value) })} />
         </label>
+      )}
+      {needsOccurrence && (
+        <label className="field">
+          <span>Match occurrence</span>
+          <input type="number" min={1} step={1} value={trig.occurrence ?? 1}
+            onChange={(e) => setTrig({ occurrence: Math.max(1, Number(e.target.value)) })} />
+        </label>
+      )}
+      {needsSequence && (
+        <>
+          <label className="field">
+            <span>Sequence steps (JSON)</span>
+            <input value={JSON.stringify(trig.sequence_steps ?? [])}
+              placeholder='[{"type":"uart_byte","value":85}]'
+              onChange={(e) => {
+                try { setTrig({ sequence_steps: JSON.parse(e.target.value) }); } catch { /* edit in progress */ }
+              }} />
+          </label>
+          <label className="field">
+            <span>Sequence window (us)</span>
+            <input type="number" min={0} step={0.1}
+              value={(trig.window_s ?? 0) * 1e6}
+              onChange={(e) => setTrig({ window_s: Number(e.target.value) / 1e6 })} />
+          </label>
+        </>
+      )}
+      {activeSession && exec === 'post_capture' && (
+        <button onClick={async () => {
+          try {
+            const r = await api.triggerSearch(activeSession.id, trig);
+            if (r.sample == null) toast('warning', 'No matching event found');
+            else { waveformView.jumpTo(r.sample); toast('success', `Match at sample ${r.sample}`); }
+          } catch (e: any) { toast('error', e.message); }
+        }}>Search existing capture</button>
       )}
       {capabilities?.supports_pre_trigger && trig.type !== 'none' && (
         <>

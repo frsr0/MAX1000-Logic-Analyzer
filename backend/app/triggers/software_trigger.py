@@ -13,8 +13,96 @@ from ..capture.sample_format import WaveformData, find_edges
 from ..capture.session import TriggerConfig
 
 
-def find_software_trigger(wf: WaveformData, trig: TriggerConfig) -> Optional[int]:
-    if wf.digital is None or trig.type == "none":
+def _event_value(event: dict) -> Optional[int]:
+    fields = event.get("fields", {})
+    for key in ("byte", "mosi", "miso", "address", "value", "word"):
+        if fields.get(key) is not None:
+            try:
+                return int(fields[key])
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
+def _event_matches(event: dict, event_type: str, value: Optional[int]) -> bool:
+    if event.get("type") != event_type:
+        return False
+    return value is None or _event_value(event) == int(value)
+
+
+def _protocol_event_trigger(trig: TriggerConfig,
+                            decoder_events: list[dict]) -> Optional[int]:
+    event_type = {
+        "uart_byte": "uart_byte",
+        "i2c_address": "i2c_address",
+        "i2c_nack": None,
+        "spi_byte": "spi_word",
+        "decoder_error": None,
+    }.get(trig.type)
+    matches = []
+    for event in sorted(decoder_events, key=lambda e: e.get("start_sample", 0)):
+        if trig.type == "i2c_nack":
+            fields = event.get("fields", {})
+            hit = fields.get("ack") is False
+        elif trig.type == "decoder_error":
+            hit = event.get("severity") == "error"
+        else:
+            hit = _event_matches(event, event_type or "", trig.value)
+            if trig.type == "spi_byte":
+                hit = hit and (trig.value is None or
+                               _event_value(event) == int(trig.value))
+        if hit:
+            matches.append(event)
+    occurrence = max(1, int(trig.occurrence or 1))
+    if len(matches) < occurrence:
+        return None
+    return int(matches[occurrence - 1].get("start_sample", 0))
+
+
+def _sequence_trigger(trig: TriggerConfig,
+                      decoder_events: list[dict]) -> Optional[int]:
+    if not trig.sequence_steps:
+        return None
+    steps = trig.sequence_steps
+    events = sorted(decoder_events, key=lambda e: e.get("start_sample", 0))
+    window = float(trig.window_s or 0)
+    first_step = steps[0]
+    for first_i, first in enumerate(events):
+        if not _event_matches(first, str(first_step.get("type", "")),
+                              first_step.get("value")):
+            continue
+        cursor = first
+        ok = True
+        for step in steps[1:]:
+            typ = str(step.get("type", ""))
+            value = step.get("value")
+            found = next((e for e in events[first_i:]
+                          if e.get("start_sample", 0) >= cursor.get("start_sample", 0)
+                          and _event_matches(e, typ, value)), None)
+            if found is None:
+                ok = False
+                break
+            if window and (found.get("start_time", 0) -
+                           first.get("start_time", 0)) > window:
+                ok = False
+                break
+            cursor = found
+        if ok:
+            return int(first.get("start_sample", 0))
+    return None
+
+
+def find_software_trigger(wf: WaveformData, trig: TriggerConfig,
+                          decoder_events: Optional[list[dict]] = None) -> Optional[int]:
+    if trig.type == "none":
+        return None
+    decoder_events = decoder_events or []
+    if trig.type in ("uart_byte", "i2c_address", "i2c_nack", "spi_byte",
+                     "decoder_error"):
+        return _protocol_event_trigger(trig, decoder_events)
+    if trig.type == "sequence":
+        return _sequence_trigger(trig, decoder_events)
+    if wf.digital is None:
         return None
     t = trig.type
     chans = trig.channels or [0]
@@ -93,7 +181,4 @@ def find_software_trigger(wf: WaveformData, trig: TriggerConfig) -> Optional[int
                 return int(bounds[i])
         return None
 
-    # uart_byte/i2c_address/i2c_nack/spi_byte/sequence/decoder_error need a
-    # decoder pass — handled at the API layer by running the decoder and
-    # picking the first matching event.
     return None

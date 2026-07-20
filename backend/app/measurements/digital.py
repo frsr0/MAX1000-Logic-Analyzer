@@ -125,6 +125,29 @@ def m_transitions_per_s(ctx, channels):
     return {"value": edges / d if d > 0 else None, "edges": int(edges)}
 
 
+def m_jitter(ctx, channels):
+    periods = _periods(ctx, channels)
+    if len(periods) < 2:
+        return {"value": None, "note": "fewer than 3 rising edges"}
+    mean = float(np.mean(periods))
+    deviations = periods - mean
+    return {"value": float(np.std(periods)), "mean": mean,
+            "rms": float(np.sqrt(np.mean(deviations ** 2))),
+            "peak_to_peak": float(np.ptp(periods)),
+            "cycles": int(len(periods))}
+
+
+def m_period_histogram(ctx, channels):
+    periods = _periods(ctx, channels)
+    bins = max(2, min(64, int(ctx.settings.get("bins", 16))))
+    if len(periods) == 0:
+        return {"value": None, "bins": [], "counts": []}
+    counts, edges = np.histogram(periods, bins=bins)
+    return {"value": float(np.mean(periods)),
+            "bins": [float(x) for x in edges],
+            "counts": [int(x) for x in counts]}
+
+
 def m_bus_value_at(ctx, channels):
     """Value of the listed digital channels (LSB first) at region start."""
     val = 0
@@ -150,6 +173,10 @@ for mt in [
     MeasurementType("dig_glitch_count", "Glitch count", "digital", "", fn=m_glitch_count),
     MeasurementType("dig_transition_rate", "Transitions per second", "digital", "1/s",
                     fn=m_transitions_per_s),
+    MeasurementType("dig_jitter", "Period jitter", "digital", "s",
+                    fn=m_jitter),
+    MeasurementType("dig_period_histogram", "Period histogram", "digital", "s",
+                    fn=m_period_histogram),
     MeasurementType("dig_bus_value", "Bus value at cursor", "digital", "",
                     fn=m_bus_value_at),
 ]:

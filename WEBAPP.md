@@ -118,7 +118,7 @@ hardware commands (Settings page → acquire/force/release, or read-only mode).
 |---|---|
 | `hardware/` | `HardwareDevice` interface, mock device, adapter wrapping `host/driver` |
 | `capture/` | Session model/store (JSON + NPZ), capture manager, LOD pyramid, binary waveform encoding |
-| `decoders/` | Plugin decoder framework + UART, I2C, SPI, PWM, parallel, 1-Wire, Modbus RTU (stacked on UART) |
+| `decoders/` | Plugin decoder framework + UART, I2C, SPI, PWM, parallel, 1-Wire, Modbus RTU, RS-485, SWD, Manchester, and clocked NRZ |
 | `measurements/` | Digital / analog / protocol measurement types |
 | `triggers/` | Trigger model, hardware-vs-post-capture classification, software trigger search |
 | `generator/` | Generator control + loopback self-test workflow (configure → capture → decode → compare) |
@@ -174,6 +174,7 @@ GET  /api/sessions/{id}/decoder-events
 GET  /api/measurements/types             POST|PATCH|DELETE /api/sessions/{id}/measurements[/{m}]
 GET  /api/sessions/{id}/measurements/results?cursor_a=&cursor_b=
 GET|POST|PATCH|DELETE /api/sessions/{id}/markers[/{m}]
+POST /api/sessions/{id}/trigger-search
 POST /api/sessions/{id}/export/{csv,json,vcd,npz,report}
 GET  /api/generator/{capabilities,status}  POST /api/generator/{configure,start,stop,send,self-test}
 GET  /api/logs | /api/diagnostics        POST /api/diagnostics/{debug-bundle,run-self-test,mock-capture}
@@ -203,7 +204,8 @@ WebSockets: `/ws/status`, `/ws/capture`, `/ws/logs`, `/ws/session/{id}`,
 Decoders implemented: UART (auto-baud, parity/framing errors), I2C (START/
 repeated-START/STOP, address+R/W, ACK/NACK; 7-bit with a 10-bit extension
 point), SPI (CPOL/CPHA/bit-order/word-size/CS), PWM/frequency, parallel bus,
-1-Wire, Modbus RTU. New decoders register in `backend/app/decoders/registry.py`.
+1-Wire, Modbus RTU, RS-485, SWD, Manchester, and clocked NRZ. New decoders
+register in `backend/app/decoders/registry.py`.
 
 ## Export usage
 
@@ -268,9 +270,10 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
   200 MHz rolling stream with much lower memory/readback pressure than
   16-channel full-width digital.
 - Generator protocols on hardware: UART, RS-485, I2C, SPI (send + capture
-  only — loops MOSI/SCLK into the capture stream, no CS/MISO), PWM (debug
-  CH0). Pattern/PRBS generators exist in mock only until firmware support
-  lands.
+  only — loops MOSI/SCLK into the capture stream, no CS/MISO), and raw
+  two-output Bit Banger playback. PWM (debug CH0), pattern, counter, and PRBS
+  remain mock-only. Raw Bit Banger playback is bounded by the 1024-symbol
+  generator FIFO.
 - Segmented/burst capture modes and hardware sequence triggers are not in the
   current core; the capture-mode model has fields reserved for them.
 - Rolling capture on real hardware is bounded by SDRAM write bandwidth, FIFO

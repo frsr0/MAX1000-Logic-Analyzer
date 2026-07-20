@@ -18,6 +18,7 @@ const DEFAULT_CFG: GeneratorConfig = {
   duty_pct: 50,
   repeat: 1,
   continuous: false,
+  extra: {},
 };
 const MAX_GENERATOR_PAYLOAD_BYTES = 256;
 const UART_BITS_PER_BYTE = 10;
@@ -79,7 +80,7 @@ export function GeneratorPage() {
       setCfg({ ...cfg, protocol, tx_pin: status?.device_kind === 'mock' ? 0 : 3, baud: 115200 });
     } else if (protocol === 'spi') {
       setCfg({ ...cfg, protocol, tx_pin: status?.device_kind === 'mock' ? 5 : 3, scl_pin: status?.device_kind === 'mock' ? 4 : 1, baud: 1000000 });
-    } else if (protocol === 'pattern') {
+    } else if (protocol === 'pattern' || protocol === 'bitbang') {
       setCfg({ ...cfg, protocol, tx_pin: 0, baud: 9600 });
     } else {
       setCfg({ ...cfg, protocol });
@@ -158,7 +159,7 @@ export function GeneratorPage() {
             </select>
           </label>
           <div className="finding info">
-            Hardware support on this board is UART, RS-485, I2C, and SPI. Bit-banger-driven pin exercise lives on the MIL page.
+            Hardware support on this board is UART, RS-485, I2C, SPI, and raw two-output Bit Banger playback. Protocol exerciser workflows can be built from the raw symbol mode.
           </div>
 
           {needsData && (
@@ -257,6 +258,23 @@ export function GeneratorPage() {
             </>
           )}
 
+          {cfg.protocol === 'bitbang' && (
+            <>
+              <label className="field">
+                <span>Symbol rate (symbols/s)</span>
+                <input type="number" min={1} value={cfg.baud}
+                  onChange={(e) => set({ baud: Number(e.target.value) })} />
+              </label>
+              <label className="field">
+                <span>2-bit symbols (0–3, comma separated)</span>
+                <input className="mono"
+                  value={(cfg.extra?.symbols ?? []).join(',')}
+                  onChange={(e) => set({ extra: { ...(cfg.extra ?? {}), symbols: e.target.value.split(',').map((v) => Number(v.trim())).filter((v) => Number.isFinite(v) && v >= 0 && v <= 3) } })} />
+              </label>
+              <div className="hint">Bit 0 drives TX/SDA/MOSI; bit 1 drives SCL/SCLK. The hardware FIFO supports 1024 symbols per burst.</div>
+            </>
+          )}
+
           {cfg.protocol === 'pattern' && (
             <>
               <label className="field">
@@ -326,7 +344,7 @@ export function GeneratorPage() {
             <li>UART and RS-485 support loopback capture in one action.</li>
             <li>I2C uses the configured SDA and SCL capture channels.</li>
             <li>SPI loops MOSI/SCLK into the capture on hardware (send + capture only, no CS/MISO); mock simulates full SCLK/MOSI/MISO/CS on CH4-7.</li>
-            <li>Bit-banger-driven pin activity is exercised from the MIL page rather than the generator page.</li>
+            <li>Raw Bit Banger mode drives TX/SDA/MOSI and SCL/SCLK from a bounded 2-bit symbol list.</li>
           </ul>
           <div className="divider" />
           <h3>Result</h3>

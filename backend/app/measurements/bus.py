@@ -67,6 +67,16 @@ def m_inter_packet(ctx, channels):
             "max": float(np.max(gaps))}
 
 
+def m_response_latency(ctx, channels):
+    ev = sorted(_events_in_region(ctx), key=lambda e: e["start_time"])
+    if len(ev) < 2:
+        return {"value": None, "note": "fewer than 2 protocol events"}
+    gaps = np.array([max(0.0, ev[i + 1]["start_time"] - ev[i]["end_time"])
+                     for i in range(len(ev) - 1)], dtype=float)
+    return {"value": float(np.mean(gaps)), "min": float(np.min(gaps)),
+            "max": float(np.max(gaps)), "count": int(len(gaps))}
+
+
 for mt in [
     MeasurementType("proto_packet_count", "Packet count", "protocol", "",
                     needs_decoder=True, fn=m_packet_count),
@@ -84,5 +94,7 @@ for mt in [
                     needs_decoder=True, fn=m_bus_utilisation),
     MeasurementType("proto_inter_packet", "Time between packets", "protocol", "s",
                     needs_decoder=True, fn=m_inter_packet),
+    MeasurementType("proto_response_latency", "Response/event latency", "protocol", "s",
+                    needs_decoder=True, fn=m_response_latency),
 ]:
     register(mt)

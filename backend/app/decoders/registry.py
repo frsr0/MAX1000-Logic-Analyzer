@@ -7,7 +7,9 @@ from typing import Dict, List, Optional
 
 from .base import Decoder
 from .i2c import I2cDecoder
+from .manchester import ManchesterDecoder
 from .modbus import ModbusDecoder
+from .nrz import NrzDecoder
 from .onewire import OneWireDecoder
 from .parallel import ParallelDecoder
 from .pwm import PwmDecoder
@@ -33,5 +35,5 @@ def list_decoders() -> List[dict]:
 
 for _d in (UartDecoder(), I2cDecoder(), SpiDecoder(), PwmDecoder(),
            ParallelDecoder(), OneWireDecoder(), ModbusDecoder(),
-           Rs485Decoder(), SwdDecoder()):
+           Rs485Decoder(), SwdDecoder(), ManchesterDecoder(), NrzDecoder()):
     register(_d)

@@ -9,11 +9,12 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ..capture.sample_format import find_edges
-from ..capture.session import Marker, Session, new_id
+from ..capture.session import Marker, Session, TriggerConfig, new_id
 from ..config import APP_VERSION
 from ..exports.json_export import session_from_json
 from ..state import store
 from ..websocket.manager import manager
+from ..triggers.software_trigger import find_software_trigger
 from .deps import get_session_or_404, get_waveform_or_404
 
 router = APIRouter(tags=["sessions"])
@@ -147,6 +148,33 @@ def compare_sessions(session_id: str, other_session_id: str):
             and wa.digital.shape == wb.digital.shape
             and bool(np.array_equal(wa.digital, wb.digital))),
     }
+
+
+class TriggerSearchRequest(BaseModel):
+    trigger: TriggerConfig
+    decoder_instance: Optional[str] = None
+
+
+@router.post("/api/sessions/{session_id}/trigger-search")
+def search_trigger(session_id: str, req: TriggerSearchRequest):
+    """Search an existing capture using raw samples and decoded events."""
+    session = get_session_or_404(session_id)
+    wf = get_waveform_or_404(session_id)
+    events = []
+    if req.decoder_instance:
+        events = store.load_decoder_events(session_id, req.decoder_instance)
+    else:
+        for decoder in session.decoders:
+            if decoder.enabled and decoder.status == "done":
+                events.extend(store.load_decoder_events(session_id, decoder.id))
+    sample = find_software_trigger(wf, req.trigger, events)
+    event = next((e for e in events
+                  if sample is not None and e.get("start_sample") == sample), None)
+    return {"sample": sample,
+            "time_s": sample / wf.sample_rate
+            if sample is not None and wf.sample_rate else None,
+            "event": event, "event_count": len(events),
+            "execution": "post_capture"}
 
 
 # ── bus channels ─────────────────────────────────────────────────────
