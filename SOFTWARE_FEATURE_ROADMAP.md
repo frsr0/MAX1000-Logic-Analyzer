@@ -44,7 +44,8 @@ current SPI readback bandwidth.
 - [x] UART: parity selection, 1/1.5/2 stop bits, break generation, configurable idle bits, and framing-error injection.
 - [x] RS-485 Bit Banger exerciser: transmit-enable timing, turnaround delay, direction-change markers, and half-duplex transaction scripts.
 - [ ] Hardware RS-485 generator: expose physical DE timing if a future firmware route provides it.
-- [ ] SPI: CPOL/CPHA 0–3, MSB/LSB first, word sizes 4–32 bits, configurable CS where routing permits, and inter-word gaps.
+- [x] SPI Bit Banger template: CPOL/CPHA 0–3, MSB/LSB first, word sizes 4–32 bits, and inter-word gaps.
+- [ ] Hardware SPI generator: configurable CS/MISO only where firmware routing permits.
 - [x] I²C Bit Banger templates: 7-bit address/register read-write forms, repeated starts, ACK/NACK control, clock stretching visualization, and bus recovery clocks.
 - [x] PWM Bit Banger templates: frequency/duty sweeps, bursts, finite pulse counts, and configurable start phase.
 - [ ] SWD: line reset, JTAG-to-SWD transition, DP/AP read/write forms, IDCODE discovery, ACK decoding, and transaction logs.
@@ -59,7 +60,7 @@ current SPI readback bandwidth.
 - [x] MIDI serial generation.
 - [x] LIN break, sync, identifier, payload, and checksum generation.
 - [ ] Optional I²S clock/word-select/data generation where three captured/generated lines can be represented by available routing; otherwise support decode-only.
-- [ ] Add protocol fault injection: wrong parity, invalid stop bit, malformed checksum, missing ACK, shortened pulse, and illegal bus transition.
+- [x] Add Bit Banger protocol fault injection: wrong parity, invalid stop bit, malformed checksum, missing ACK, shortened pulse, and illegal bus transition.
 
 ## Phase 2 — Decoder expansion
 

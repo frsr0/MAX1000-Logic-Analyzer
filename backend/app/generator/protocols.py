@@ -86,9 +86,9 @@ def spi_symbols(data: bytes, **options: Any) -> List[int]:
             leading = cpol ^ 1
             trailing = cpol
             if cpha:
-                out.extend([bit | (leading << 1), bit | (trailing << 1)])
+                out.extend([cpol << 1, bit | (leading << 1), bit | (trailing << 1)])
             else:
-                out.extend([bit | (leading << 1), bit | (trailing << 1)])
+                out.extend([bit | (cpol << 1), bit | (leading << 1), bit | (trailing << 1)])
         out.extend([cpol << 1] * gap)
     return out
 
@@ -118,7 +118,7 @@ def i2c_symbols(data: bytes, symbol_rate: int, **options: Any) -> List[int]:
     depends on the board routing and external bus.
     """
     half_us = 500_000 / max(1, int(options.get("bus_hz", options.get("baud", 100_000))))
-    ack = bool(options.get("ack", True))
+    ack = bool(options.get("ack", True)) and options.get("fault") != "missing_ack"
     nack_last = bool(options.get("nack_last", False))
     repeated_start = bool(options.get("repeated_start", False))
     stretch_us = max(0.0, float(options.get("clock_stretch_us", 0)))
@@ -160,6 +160,8 @@ def i2c_symbols(data: bytes, symbol_rate: int, **options: Any) -> List[int]:
         for index in range(read_len):
             byte(0xFF, ack and not (nack_last and index == read_len - 1))
     stop()
+    if options.get("fault") == "illegal_transition":
+        level(0, 1); level(1, 0)
     for _ in range(max(0, int(options.get("recovery_clocks", 0)))):
         level(1, 0); level(1, 1); level(1, 0)
     if options.get("recovery_clocks", 0):
@@ -206,7 +208,10 @@ def pwm_symbols(symbol_rate: int, **options: Any) -> List[int]:
             offset = phase * period_us if step == 0 and cycle == 0 else 0
             if offset:
                 out.extend(_hold(0, offset, symbol_rate))
-            out.extend(_hold(1, period_us * duty / 100, symbol_rate))
+            high_us = period_us * duty / 100
+            if options.get("fault") == "shortened_pulse" and step == 0 and cycle == 0:
+                high_us *= 0.25
+            out.extend(_hold(1, high_us, symbol_rate))
             out.extend(_hold(0, period_us * (1 - duty / 100), symbol_rate))
     return out
 
@@ -231,6 +236,8 @@ def lin_symbols(data: bytes, **options: Any) -> List[int]:
     enhanced = bool(options.get("enhanced_checksum", True))
     checksum_sum = (pid if enhanced else 0) + sum(data)
     checksum = 0xFF - ((checksum_sum & 0xFF) + (checksum_sum >> 8))
+    if options.get("fault") == "malformed_checksum":
+        checksum ^= 0x01
     frame = bytes([0x55, pid, *data, checksum & 0xFF])
     return uart_symbols(frame, int(options.get("baud", 19_200)),
                         parity="none", stop_bits=1, break_bits=int(options.get("break_bits", 13)),

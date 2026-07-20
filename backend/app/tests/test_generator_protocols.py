@@ -53,6 +53,16 @@ def test_encode_exposes_new_bitbang_templates():
         assert symbols
 
 
+def test_spi_modes_and_faults_change_the_software_waveform():
+    mode0 = encode("spi", b"\xA5", 1_000_000, {"cpol": 0, "cpha": 0, "word_size": 8})
+    mode3 = encode("spi", b"\xA5", 1_000_000, {"cpol": 1, "cpha": 1, "word_size": 8})
+    assert len(mode0) == len(mode3) == 24
+    assert mode0 != mode3
+    assert encode("i2c", b"\x01", 1_000_000, {"fault": "missing_ack"})
+    assert encode("lin", b"\x01", 100_000, {"fault": "malformed_checksum"})
+    assert encode("pwm", b"", 100_000, {"fault": "shortened_pulse"})
+
+
 def test_generator_sweep_expands_axes_and_reports_preview_rows():
     base = GeneratorConfig(protocol="bitbang", baud=100_000,
                            data_hex="55", extra={"preset": "pulse", "count": 8})

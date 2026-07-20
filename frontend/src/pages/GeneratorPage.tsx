@@ -329,6 +329,19 @@ export function GeneratorPage() {
                       onChange={(e) => setExtra({ direction_changes: Number(e.target.value) })} /></label>
                 </>
               )}
+              {cfg.extra?.encoding === 'spi' && (
+                <>
+                  <label className="field"><span>SPI mode</span>
+                    <select value={`${cfg.extra.cpol ?? 0}${cfg.extra.cpha ?? 0}`} onChange={(e) => setExtra({ cpol: Number(e.target.value[0]), cpha: Number(e.target.value[1]) })}>
+                      {[0, 1, 2, 3].map((mode) => <option key={mode} value={`${Math.floor(mode / 2)}${mode % 2}`}>Mode {mode}</option>)}
+                    </select></label>
+                  <label className="field"><span>Bit order / word size</span>
+                    <span className="button-row"><select value={cfg.extra.bit_order ?? 'msb'} onChange={(e) => setExtra({ bit_order: e.target.value })}><option value="msb">MSB first</option><option value="lsb">LSB first</option></select><input type="number" min={4} max={32} value={cfg.extra.word_size ?? 8} onChange={(e) => setExtra({ word_size: Number(e.target.value) })} /></span></label>
+                  <label className="field"><span>Inter-word gap (symbols)</span>
+                    <input type="number" min={0} value={cfg.extra.gap_symbols ?? 0} onChange={(e) => setExtra({ gap_symbols: Number(e.target.value) })} /></label>
+                  <div className="hint">Bit Banger maps MOSI to bit 0 and clock to bit 1; CS/MISO require separate routing.</div>
+                </>
+              )}
               {cfg.extra?.encoding === 'i2c' && (
                 <>
                   <label className="field"><span>7-bit address (hex)</span>
@@ -377,6 +390,23 @@ export function GeneratorPage() {
                     <input type="number" min={0} max={360} value={cfg.extra.phase_deg ?? 0}
                       onChange={(e) => setExtra({ phase_deg: Number(e.target.value) })} /></label>
                 </>
+              )}
+              {cfg.extra?.encoding && (
+                <label className="field"><span>Fault injection</span>
+                  <select value={cfg.extra.fault ?? ''} onChange={(e) => {
+                    const fault = e.target.value;
+                    if (fault) setExtra({ fault });
+                    else { const { fault: _fault, ...extra } = cfg.extra ?? {}; set({ extra }); }
+                  }}>
+                    <option value="">None</option>
+                    <option value="wrong_parity">Wrong parity</option>
+                    <option value="invalid_stop">Invalid stop bit</option>
+                    <option value="malformed_checksum">Malformed checksum</option>
+                    <option value="missing_ack">Missing ACK</option>
+                    <option value="shortened_pulse">Shortened pulse</option>
+                    <option value="illegal_transition">Illegal bus transition</option>
+                  </select>
+                </label>
               )}
               <label className="field">
                 <span>Symbol rate (symbols/s)</span>
