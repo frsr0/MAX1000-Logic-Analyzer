@@ -11,6 +11,8 @@ from app.decoders.lin import LinDecoder, lin_checksum, lin_pid
 from app.decoders.midi import MidiDecoder
 from app.decoders.ps2 import Ps2Decoder
 from app.decoders.quadrature import QuadratureDecoder
+from app.decoders.hdlc import HdlcDecoder, hdlc_crc16
+from app.decoders.jtag import JtagDecoder
 from app.generator.bitbang import expand_symbols, preview
 from app.exports.importers import csv_session, vcd_session
 from app.measurements import digital
@@ -239,3 +241,36 @@ def test_setup_hold_and_channel_skew_measurements_are_registered():
     skew = run_measurement("dig_channel_skew", ctx, ["d0", "d1"])
     assert setup["clock_edges"] == 4 and setup["min_setup"] == 1e-6
     assert skew["pairs"] == 4 and skew["min"] == 2e-6
+
+
+def test_hdlc_decoder_unstuffs_and_checks_crc():
+    body = bytes([0xC0, 0x21, 0x7E])
+    payload = body + hdlc_crc16(body).to_bytes(2, "little")
+    raw = []
+    ones = 0
+    for byte in payload:
+        for bit_index in range(8):
+            bit = (byte >> bit_index) & 1
+            raw.append(bit)
+            ones = ones + 1 if bit else 0
+            if ones == 5:
+                raw.append(0)
+                ones = 0
+    bits = [0, 1, 1, 1, 1, 1, 1, 0] + raw + [0, 1, 1, 1, 1, 1, 1, 0]
+    signal = np.repeat(bits, 4).astype(np.uint16)
+    wf = WaveformData(sample_rate=4_000_000, digital=signal)
+    result = HdlcDecoder().decode(DecodeContext(wf, {"data": "d0"}), {"bit_rate": 1_000_000})
+    assert result.events[0]["fields"]["payload_hex"] == payload.hex()
+    assert result.events[0]["fields"]["crc_ok"] is True
+
+
+def test_jtag_decoder_groups_shift_bits():
+    tck = np.tile([0, 1], 8).astype(np.uint16)
+    tms = np.zeros(16, dtype=np.uint16); tms[-1] = 1
+    tdi = np.array([0, 1] * 8, dtype=np.uint16)
+    tdo = np.array([1, 0] * 8, dtype=np.uint16)
+    digital = tck | (tms << 1) | (tdi << 2) | (tdo << 3)
+    wf = WaveformData(sample_rate=1_000_000, digital=digital)
+    result = JtagDecoder().decode(DecodeContext(wf, {"tck": "d0", "tms": "d1",
+                                                       "tdi": "d2", "tdo": "d3"}), {})
+    assert result.events and result.events[0]["fields"]["bits"] == 8

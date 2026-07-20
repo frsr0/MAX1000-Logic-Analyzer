@@ -22,6 +22,8 @@ from .rs485 import Rs485Decoder
 from .spi import SpiDecoder
 from .swd import SwdDecoder
 from .uart import UartDecoder
+from .hdlc import HdlcDecoder
+from .jtag import JtagDecoder
 
 _REGISTRY: Dict[str, Decoder] = {}
 
@@ -43,4 +45,7 @@ for _d in (UartDecoder(), I2cDecoder(), SpiDecoder(), PwmDecoder(),
            Rs485Decoder(), SwdDecoder(), ManchesterDecoder(), NrzDecoder(),
            LinDecoder(), MidiDecoder(), Ps2Decoder(), QuadratureDecoder(),
            I2sDecoder(), CanDecoder()):
+    register(_d)
+
+for _d in (HdlcDecoder(), JtagDecoder()):
     register(_d)
