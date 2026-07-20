@@ -28,6 +28,11 @@ export function TriggerPanel() {
   const needsOccurrence = ['uart_byte', 'i2c_address', 'i2c_nack', 'spi_byte', 'decoder_error'].includes(trig.type);
   const needsSequence = trig.type === 'sequence';
   const needsTimingQualifier = !['none', 'sequence', 'timeout'].includes(trig.type);
+  const previewSteps = trig.type === 'sequence'
+    ? (trig.sequence_steps ?? []).map((step: any) => step.type ?? 'event')
+    : trig.type === 'pattern'
+      ? String(trig.pattern ?? '').split('').map((bit) => bit === 'x' ? "don't care" : bit === '1' ? 'high' : 'low')
+      : [trig.type.replace(/_/g, ' ')];
   const searchExisting = async (occurrence: number) => {
     try {
       const query = { ...trig, occurrence };
@@ -59,6 +64,19 @@ export function TriggerPanel() {
           {exec === 'hardware' ? 'Supported in hardware'
             : exec === 'post_capture' ? 'Post-capture only (software search)'
             : 'Unavailable on this device'}
+        </div>
+      )}
+      {trig.type !== 'none' && (
+        <div className="trigger-preview" aria-label="Trigger preview">
+          <span className="trigger-preview-title">Preview</span>
+          <div className="trigger-preview-track">
+            {previewSteps.slice(0, 16).map((step: string, index: number) => (
+              <span key={`${step}-${index}`} className={`trigger-preview-step ${step === 'high' ? 'high' : step === 'low' ? 'low' : ''}`}>
+                {step === 'high' ? '1' : step === 'low' ? '0' : step === "don't care" ? 'x' : '•'}
+              </span>
+            ))}
+          </div>
+          <span className="hint">{previewSteps.length > 16 ? `${previewSteps.length} steps; first 16 shown` : previewSteps.join(' → ')}</span>
         </div>
       )}
       {needsChannels && (

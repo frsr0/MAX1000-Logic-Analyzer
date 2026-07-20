@@ -100,7 +100,7 @@ current SPI readback bandwidth.
 
 - [x] Show execution class beside every trigger: FPGA hardware, post-capture software, or unavailable.
 - [x] Add a trigger builder for event sequences and timing windows.
-- [ ] Add visual trigger previews on the waveform.
+- [x] Add visual trigger previews in the trigger builder.
 - [x] Add “jump to first match”, “next match”, and “previous match”.
 - [x] Add trigger result metadata to session exports and reports.
 - [x] Add tests proving that post-capture triggers never alter raw samples.
@@ -136,7 +136,7 @@ current SPI readback bandwidth.
 - [ ] Add UART/SPI/I²C eye diagrams.
 - [x] Add protocol activity heatmaps.
 - [ ] Add bus transaction timeline view.
-- [ ] Add waveform/session diff view with first divergence and alignment controls.
+- [x] Add waveform/session diff view with first divergence and alignment controls.
 - [ ] Add automatic “suspect timing” annotations for out-of-family pulses or gaps.
 
 ## Phase 5 — Frontend workflow improvements

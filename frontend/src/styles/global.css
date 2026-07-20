@@ -473,6 +473,12 @@ input[type="checkbox"] { accent-color: var(--accent); }
   max-height: 420px;
 }
 .trigger-matrix { display: flex; flex-wrap: wrap; gap: 6px; }
+.trigger-preview { margin: 10px 0; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-alt); }
+.trigger-preview-title { display: block; margin-bottom: 6px; font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.trigger-preview-track { display: flex; min-height: 28px; align-items: stretch; overflow: hidden; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); }
+.trigger-preview-step { display: grid; min-width: 24px; place-items: center; border-right: 1px solid var(--line); color: var(--muted); font-family: var(--mono); font-size: 0.8rem; }
+.trigger-preview-step.high { background: color-mix(in srgb, var(--accent) 28%, transparent); color: var(--text); }
+.trigger-preview-step.low { background: color-mix(in srgb, var(--danger) 18%, transparent); color: var(--text); }
 .compare-result {
   margin-top: 14px;
   background: var(--panel);
