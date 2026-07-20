@@ -70,3 +70,15 @@ Each channel has an assigned colour (configurable in ChannelPanel):
 | `WaveformView` | `state/waveformStore.ts` |
 | `WaveformPayload` | `api/binary.ts` |
 | `DecoderEvent`, `Marker` | `api/types.ts` |
+
+## Playwright captures
+
+![Analog and digital waveform](../../../frontend/test-results/screenshots/analog-session-waveform.png)
+
+![Eye diagram](../../../frontend/test-results/screenshots/eye-diagram.png)
+
+![Markers panel](../../../frontend/test-results/screenshots/markers-panel.png)
+
+![Session comparison](../../../frontend/test-results/screenshots/session-comparison.png)
+
+![Measurements](../../../frontend/test-results/screenshots/measurements.png)

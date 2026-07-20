@@ -46,6 +46,12 @@ Decoder events rendered as coloured markers above the waveform canvas:
 | warning | `#FFC107` (amber) | Marginal condition |
 | error | `#F44336` (red) | Protocol error (parity, framing, CRC) |
 
+## Playwright captures
+
+![Decoder builder](../../../frontend/test-results/screenshots/decoder-builder.png)
+
+![Session dashboard with decoder activity](../../../frontend/test-results/screenshots/session-dashboard.png)
+
 ## Dependencies
 
 | Module | File |

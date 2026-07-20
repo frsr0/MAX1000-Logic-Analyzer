@@ -95,6 +95,23 @@ Test screenshots are saved to `frontend/test-results/screenshots/` for visual co
 | `capture-analog-fast.png` | Analog-fast capture result |
 | `capture-compression-delta-rle.png` | Compressed capture readback |
 | `generator-loopback-capture.png` | Generator self-test result |
+| `generator-page-latest.png` | Generator route capabilities and protocol controls |
+| `diagnostics-page-latest.png` | Diagnostics and control-plane tools |
+| `bit-banger-preview-sweep.png` | Raw Bit Banger preview and parameter sweep |
+| `mil-transaction.png` | Machine-in-loop request/response waveform |
+| `swd-generator-capture.png` | SWD transaction capture result |
+| `session-dashboard.png` | Protocol activity dashboard |
+| `trigger-builder.png` | Pattern trigger preview |
+| `decoder-builder.png` | Add-and-run decoder workflow |
+| `raw-inspector.png` | Packed raw sample inspector |
+| `markers-panel.png` | Named waveform marker |
+| `eye-diagram.png` | Folded digital eye diagram |
+| `channel-layout.png` | Channel visibility/layout controls |
+| `command-palette.png` | Keyboard command palette |
+| `analog-spectrum.png` | Analog spectrum analysis |
+| `session-comparison.png` | Session alignment and divergence |
+| `measurements.png` | Measurement panel |
+| `exports.png` | HTML/PDF/PulseView export panel |
 | `accelerometer-session-waveform.png` | LIS3DH WHO_AM_I waveform-viewer fixture |
 | `live-accelerometer-session-waveform.png` | LIS3DH WHO_AM_I live hardware session |
 | And many more (analog, mixed, diagnostics, sessions) |

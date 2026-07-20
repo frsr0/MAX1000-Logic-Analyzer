@@ -6,6 +6,8 @@
 
 Automated Machine-In-Loop subsystem for running predefined test scenarios. Configures the signal generator to transmit protocol frames, captures the response, decodes it, and validates against expected values. Designed for CI and automated regression testing.
 
+![Machine-in-loop transaction](../../../frontend/test-results/screenshots/mil-transaction.png)
+
 ## Files
 
 | File | Purpose |

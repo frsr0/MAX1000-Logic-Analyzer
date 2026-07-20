@@ -215,7 +215,7 @@ test('capture controls reflect MAX1000 modes', async ({ page }) => {
 
   await page.getByRole('button', { name: 'Live ring' }).click();
   await expect(page.getByRole('option', { name: '50 MHz' })).toBeAttached();
-  await page.screenshot({ path: shot('capture-live-50mhz.png'), fullPage: true });
+  await page.screenshot({ path: shot('capture-live-50mhz-latest.png'), fullPage: true });
 
   await page.locator('.mode-tile', { hasText: 'Analog fast' }).click();
   await expect(page.getByText('High-speed analog captures one analog input (AIN3) at the best ADC rate.')).toBeVisible();
@@ -345,7 +345,7 @@ test('generator page matches supported board protocols', async ({ page }) => {
   await expect(page.getByTestId('generator-route-capabilities')).toBeVisible();
   await expect(page.getByLabel('Generator protocol').locator('option')).toHaveCount(6);
   await expect(page.getByText('Hardware support on this board is UART, RS-485, I2C, SPI, SWD transaction capture, and raw two-output Bit Banger playback. Protocol exerciser workflows can be built from the raw symbol mode.')).toBeVisible();
-  await page.screenshot({ path: shot('generator-page.png'), fullPage: true });
+  await page.screenshot({ path: shot('generator-page-latest.png'), fullPage: true });
 });
 
 test('mock generator exposes Bit Banger templates and bounded preview controls', async ({ page }) => {
@@ -359,6 +359,7 @@ test('mock generator exposes Bit Banger templates and bounded preview controls',
   await expect(page.getByText(/symbols/).last()).toBeVisible();
   await page.getByRole('button', { name: 'Preview parameter sweep' }).click();
   await expect(page.getByText('3/3 variants valid')).toBeVisible();
+  await page.screenshot({ path: shot('bit-banger-preview-sweep.png'), fullPage: true });
   await protocol.selectOption('uart');
   await page.getByRole('button', { name: 'Run capture-backed sweep' }).click();
   await expect(page.getByText('2/2 variants valid')).toBeVisible();
@@ -371,6 +372,7 @@ test('mock SWD generator captures and reports decoded transactions', async ({ pa
   await expect(page.getByLabel('SWD requests (JSON)')).toBeVisible();
   await page.getByRole('button', { name: 'Send + capture' }).click();
   await expect(page.locator('.toast').filter({ hasText: 'decoded 1 SWD transaction' })).toBeVisible();
+  await page.screenshot({ path: shot('swd-generator-capture.png'), fullPage: true });
 });
 
 test('mock capture dashboard shows protocol activity and errors', async ({ page }) => {
@@ -385,6 +387,7 @@ test('mock capture dashboard shows protocol activity and errors', async ({ page 
   await expect(page.getByText('framing error')).toBeVisible();
   await expect(page.getByText('Suspect timing annotations')).toBeVisible();
   await expect(page.getByText('40 samples')).toBeVisible();
+  await page.screenshot({ path: shot('session-dashboard.png'), fullPage: true });
 });
 
 test('mock trigger builder previews pattern qualifiers', async ({ page }) => {
@@ -395,6 +398,7 @@ test('mock trigger builder previews pattern qualifiers', async ({ page }) => {
   await expect(page.getByLabel('Trigger preview')).toBeVisible();
   await expect(page.getByLabel('Trigger preview')).toContainText('1x01');
   await expect(page.getByLabel('Trigger preview')).toContainText("don't care");
+  await page.screenshot({ path: shot('trigger-builder.png'), fullPage: true });
 });
 
 test('mock decoder builder adds and runs a decoder instance', async ({ page }) => {
@@ -406,6 +410,7 @@ test('mock decoder builder adds and runs a decoder instance', async ({ page }) =
   await page.getByRole('button', { name: 'Add & run' }).click();
   await expect(page.locator('.decoder-card')).toHaveCount(2);
   await expect(page.getByRole('button', { name: '+ Add decoder' })).toBeVisible();
+  await page.screenshot({ path: shot('decoder-builder.png'), fullPage: true });
 });
 
 test('mock raw inspector loads packed samples and supports paging', async ({ page }) => {
@@ -414,6 +419,7 @@ test('mock raw inspector loads packed samples and supports paging', async ({ pag
   await expect(page.getByText('0x0000', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '⟩', exact: true }).last().click();
   await expect(page.getByText('0x0003', { exact: true })).toBeVisible();
+  await page.screenshot({ path: shot('raw-inspector.png'), fullPage: true });
 });
 
 test('mock marker panel adds a named bookmark from waveform hover', async ({ page }) => {
@@ -423,6 +429,7 @@ test('mock marker panel adds a named bookmark from waveform hover', async ({ pag
   await page.getByPlaceholder('marker label').fill('bus-start');
   await page.getByRole('button', { name: '@ hover' }).click();
   await expect(page.getByText('bus-start', { exact: true })).toBeVisible();
+  await page.screenshot({ path: shot('markers-panel.png'), fullPage: true });
 });
 
 test('mock eye diagram folds a digital channel at a configured rate', async ({ page }) => {
@@ -433,6 +440,7 @@ test('mock eye diagram folds a digital channel at a configured rate', async ({ p
   await page.getByRole('button', { name: 'Compute eye diagram' }).click();
   await expect(page.getByText(/24 folded traces/)).toBeVisible();
   await expect(page.getByLabel('Eye diagram')).toBeVisible();
+  await page.screenshot({ path: shot('eye-diagram.png'), fullPage: true });
 });
 
 test('mock channel panel saves a visibility layout and exposes drag ordering', async ({ page }) => {
@@ -443,11 +451,13 @@ test('mock channel panel saves a visibility layout and exposes drag ordering', a
   await page.getByRole('button', { name: 'Save layout' }).click();
   await expect(page.getByText("Channel layout 'smoke' saved")).toBeVisible();
   await page.getByRole('button', { name: 'Digital only' }).click();
+  await page.screenshot({ path: shot('channel-layout.png'), fullPage: true });
 });
 
 test('command palette navigates between app pages', async ({ page }) => {
   await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })));
   await expect(page.getByRole('dialog', { name: 'Command palette' })).toBeVisible();
+  await page.screenshot({ path: shot('command-palette.png'), fullPage: true });
   await page.getByLabel('Command search').fill('generator');
   await page.keyboard.press('Enter');
   await expect(page.getByRole('heading', { name: 'Signal generator' })).toBeVisible();
@@ -489,7 +499,7 @@ test('signal generator loopback shows waveform and decode', async ({ page }) => 
   await page.screenshot({ path: shot('generator-loopback-capture.png'), fullPage: true });
 });
 
-test('bit banger loopback shows waveform and decode', async ({ page }) => {
+test('machine-in-loop transaction shows request and response waveforms', async ({ page }) => {
   await page.getByRole('button', { name: 'MIL' }).click();
   await page.getByRole('button', { name: 'Load' }).click();
   await expect(page.getByRole('button', { name: 'Start emulator' })).toBeEnabled({ timeout: 15_000 });
@@ -503,7 +513,7 @@ test('bit banger loopback shows waveform and decode', async ({ page }) => {
     has: page.getByRole('heading', { name: 'Commands' }),
   });
   await expect(milResult).toContainText(/READ|RESPONSE/);
-  await page.screenshot({ path: shot('bit-banger-loopback-capture.png'), fullPage: true });
+  await page.screenshot({ path: shot('mil-transaction.png'), fullPage: true });
 });
 
 test('settings page keeps control lock and viewer settings clear', async ({ page }) => {
@@ -517,7 +527,7 @@ test('diagnostics page shows the control plane without hardware', async ({ page 
   await page.getByRole('button', { name: 'Diagnostics' }).click();
   await expect(page.getByRole('heading', { name: 'Diagnostics' })).toBeVisible();
   await expect(page.getByText('Mock captures')).toBeVisible();
-  await page.screenshot({ path: shot('diagnostics-page.png'), fullPage: true });
+  await page.screenshot({ path: shot('diagnostics-page-latest.png'), fullPage: true });
 });
 
 test('live hardware sessions show waveform screenshots across digital and analog modes', async ({ page }) => {
@@ -613,8 +623,9 @@ if (useMockHarness) {
     const analogRow = page.locator('tr').filter({ has: page.locator('input[value="MAX1000 mixed analog sweep"]') }).first();
     await analogRow.getByRole('button', { name: 'Open' }).click();
     await page.getByRole('button', { name: 'Analog', exact: true }).click();
-    await page.getByRole('button', { name: 'Compute spectrum' }).click();
-    await expect(page.getByText('Peaks: 1.00 kHz', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Compute spectrum' }).click();
+  await expect(page.getByText('Peaks: 1.00 kHz', { exact: true })).toBeVisible();
+  await page.screenshot({ path: shot('analog-spectrum.png'), fullPage: true });
   });
 
   test('accelerometer session renders waveform and decode on the mock fixture', async ({ page }) => {
@@ -640,8 +651,9 @@ if (useMockHarness) {
     await rows.nth(0).getByRole('button', { name: 'Cmp...' }).click();
     await rows.nth(1).getByRole('button', { name: 'Cmp!' }).click();
 
-    await expect(page.getByText(/Applied alignment: 2 samples/)).toBeVisible();
-    await expect(page.getByText(/first divergence A 420 \/ B 418/)).toBeVisible();
+  await expect(page.getByText(/Applied alignment: 2 samples/)).toBeVisible();
+  await expect(page.getByText(/first divergence A 420 \/ B 418/)).toBeVisible();
+  await page.screenshot({ path: shot('session-comparison.png'), fullPage: true });
   });
 
   test('measurement panel renders a fixture result and recomputes it', async ({ page }) => {
@@ -649,8 +661,9 @@ if (useMockHarness) {
     const measurementRow = page.locator('.side-panel .data-table tbody tr').first();
     await expect(measurementRow).toContainText('Frequency');
     await expect(measurementRow).toContainText('115.2000 kHz');
-    await page.getByRole('button', { name: /Recompute all/ }).click();
-    await expect(measurementRow).toContainText('115.2000 kHz');
+  await page.getByRole('button', { name: /Recompute all/ }).click();
+  await expect(measurementRow).toContainText('115.2000 kHz');
+  await page.screenshot({ path: shot('measurements.png'), fullPage: true });
   });
 
   test('export panel downloads a report and PulseView-compatible VCD', async ({ page }) => {
@@ -660,7 +673,8 @@ if (useMockHarness) {
     await expect(page.getByText('REPORT export downloaded')).toBeVisible();
     await page.getByRole('button', { name: 'PDF report' }).click();
     await expect(page.getByText('PDF export downloaded')).toBeVisible();
-    await page.getByRole('button', { name: 'PulseView-compatible VCD' }).click();
-    await expect(page.getByText('PULSEVIEW export downloaded')).toBeVisible();
+  await page.getByRole('button', { name: 'PulseView-compatible VCD' }).click();
+  await expect(page.getByText('PULSEVIEW export downloaded')).toBeVisible();
+  await page.screenshot({ path: shot('exports.png'), fullPage: true });
   });
 }

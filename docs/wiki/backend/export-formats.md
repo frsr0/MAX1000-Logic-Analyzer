@@ -112,6 +112,11 @@ class GeneratorConfig(BaseModel):
 
 ## Loopback Self-Test
 
+The browser export panel is covered by Playwright for HTML report, PDF report,
+and PulseView-compatible VCD downloads:
+
+![Export panel](../../../frontend/test-results/screenshots/exports.png)
+
 ```python
 def run_loopback_test(dev: HardwareDevice, settings: CaptureSettings,
                       gen_cfg: GeneratorConfig) -> dict:

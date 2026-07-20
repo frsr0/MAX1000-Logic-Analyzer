@@ -137,3 +137,15 @@ validates the request before any register writes occur.
 6. If SPI produces no decoder events, inspect CS polarity and verify the CS
    capture channel goes active during the burst.
 7. Run `backend/hw_smoke_test.py` after any RTL reprogramming.
+
+## Playwright captures
+
+![Generator route capabilities](../../frontend/test-results/screenshots/generator-page-latest.png)
+
+![Bit Banger preview and sweep](../../frontend/test-results/screenshots/bit-banger-preview-sweep.png)
+
+![SWD generator capture](../../frontend/test-results/screenshots/swd-generator-capture.png)
+
+![UART/SPI-style generator loopback](../../frontend/test-results/screenshots/generator-loopback-capture.png)
+
+![Machine-in-loop transaction](../../frontend/test-results/screenshots/mil-transaction.png)

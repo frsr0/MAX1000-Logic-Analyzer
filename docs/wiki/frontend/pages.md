@@ -57,3 +57,19 @@ Log viewer, debug bundle download, self-test, mock capture with scenario selecto
 ## SettingsPage (`SettingsPage.tsx`)
 
 Theme toggle, control lock acquire/release, capture defaults, version info.
+
+## UI feature gallery
+
+These Playwright captures show the main application surfaces in mock mode:
+
+![Device page](../../../frontend/test-results/screenshots/device-page.png)
+
+![Capture controls](../../../frontend/test-results/screenshots/capture-controls.png)
+
+![Generator page](../../../frontend/test-results/screenshots/generator-page-latest.png)
+
+![Session dashboard](../../../frontend/test-results/screenshots/session-dashboard.png)
+
+![Settings](../../../frontend/test-results/screenshots/settings-page.png)
+
+![Diagnostics](../../../frontend/test-results/screenshots/diagnostics-page-latest.png)

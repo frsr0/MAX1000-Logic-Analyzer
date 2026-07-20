@@ -1,5 +1,11 @@
 # Measurements
 
+The measurement panel is exercised by the Playwright fixture suite and
+captures frequency, duty-cycle, pulse-width, edge-count, and bus measurements
+without changing the raw session.
+
+![Measurement panel](../../../frontend/test-results/screenshots/measurements.png)
+
 **Directory:** `backend/app/measurements/`
 
 ## Purpose

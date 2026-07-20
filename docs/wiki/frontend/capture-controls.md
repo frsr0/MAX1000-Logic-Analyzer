@@ -53,3 +53,17 @@ readback path. Mixed/analog: raw only.
 ## State
 
 Connected to `useApp().captureSettings` with `setCaptureSettings()` partial updates.
+
+## Playwright captures
+
+![Capture modes and compression](../../../frontend/test-results/screenshots/capture-controls.png)
+
+![Live ring capture](../../../frontend/test-results/screenshots/capture-live-50mhz-latest.png)
+
+![Analog-fast mode](../../../frontend/test-results/screenshots/capture-analog-fast.png)
+
+![Trigger builder](../../../frontend/test-results/screenshots/trigger-builder.png)
+
+![Channel layout](../../../frontend/test-results/screenshots/channel-layout.png)
+
+![Raw sample inspector](../../../frontend/test-results/screenshots/raw-inspector.png)
