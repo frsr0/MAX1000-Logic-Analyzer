@@ -34,7 +34,7 @@ current SPI readback bandwidth.
 - [ ] Add waveform presets: idle, pulse, square wave, alternating bits, counter, walking bit, and PRBS.
 - [x] Add repeat count, inter-transaction gap, continuous mode, and stop behavior for Bit Banger scripts.
 - [x] Add a transaction script format with symbol steps, gaps, delays, and repeats.
-- [ ] Add script import/export as JSON.
+- [x] Add script import/export as JSON.
 - [x] Add a preview waveform before sending.
 - [ ] Add a send-and-capture operation that creates a normal session with generator metadata.
 - [ ] Add clear errors when a requested waveform cannot fit the current FIFO.

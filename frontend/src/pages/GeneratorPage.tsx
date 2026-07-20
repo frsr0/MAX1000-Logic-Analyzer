@@ -94,6 +94,28 @@ export function GeneratorPage() {
       .map((b) => b.toString(16).padStart(2, '0')).join('') });
   };
 
+  const exportBitbangScript = () => {
+    const payload = { format: 'ols-bitbang-v1', symbol_rate: cfg.baud, ...cfg.extra };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url; link.download = 'bitbang-script.json'; link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importBitbangScript = async (file?: File) => {
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text());
+      const extra = parsed.extra ?? parsed;
+      if (!Array.isArray(extra.symbols) && !Array.isArray(extra.script)) {
+        throw new Error('JSON must contain symbols or script');
+      }
+      setCfg({ ...cfg, protocol: 'bitbang', baud: Number(parsed.symbol_rate ?? cfg.baud), extra });
+      toast('success', 'Bit Banger script imported');
+    } catch (e: any) { toast('error', `Could not import script: ${e.message}`); }
+  };
+
   const send = async (capture: boolean) => {
     setBusy(true);
     setResult(null);
@@ -277,6 +299,14 @@ export function GeneratorPage() {
                 try { setPreview(await api.generatorPreview(cfg)); }
                 catch (e: any) { toast('error', e.message); }
               }}>Preview waveform</button>
+              <div className="button-row">
+                <button onClick={exportBitbangScript}>Export JSON</button>
+                <label className="button">
+                  Import JSON
+                  <input type="file" accept="application/json,.json" hidden
+                    onChange={(e) => { void importBitbangScript(e.target.files?.[0]); e.currentTarget.value = ''; }} />
+                </label>
+              </div>
               {preview && <div className="finding info">
                 {preview.count} symbols · {(preview.duration_s * 1e6).toFixed(1)} µs
                 <div className="mono">TX {preview.tx_levels.join('')}<br />CLK {preview.clock_levels.join('')}</div>
