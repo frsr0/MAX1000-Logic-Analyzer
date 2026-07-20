@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { useApp } from '../state/appStore';
+import { waveformView } from '../state/waveformStore';
 
 export function DashboardPanel() {
   const { activeSession } = useApp();
@@ -25,6 +26,19 @@ export function DashboardPanel() {
     <div className="dashboard-heatmap" title="event activity over capture time">
       {data.timeline.map((count: number, i: number) => <i key={i}
         style={{ opacity: Math.max(0.08, count / timeMax), background: data.error_timeline[i] ? '#ef5350' : '#4fc3f7' }} />)}
+    </div>
+    <h4>Bus transaction timeline</h4>
+    <div className="dashboard-timeline">
+      {(data.events ?? []).map((event: any) => (
+        <button key={`${event.id}-${event.start_sample}`} className={`timeline-event severity-${event.severity ?? 'normal'}`}
+          title={`${event.start_time.toFixed(6)} s · ${event.label || event.type}`}
+          onClick={() => waveformView.jumpTo(Number(event.start_sample))}>
+          <span className="mono">{(Number(event.start_time) * 1e3).toFixed(3)} ms</span>
+          <strong>{event.type}</strong>
+          <span>{event.label || 'event'}</span>
+        </button>
+      ))}
+      {!(data.events ?? []).length && <span className="hint">No decoded transactions available.</span>}
     </div>
   </div>;
 }

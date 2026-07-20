@@ -234,13 +234,27 @@ def session_dashboard(session_id: str, bins: int = 32):
         index = max(0, min(bins - 1, int(pos * bins)))
         timeline[index] += 1
         if event.get("severity") == "error": error_timeline[index] += 1
+    timeline_events = []
+    for event in sorted(events, key=lambda e: int(e.get("start_sample", 0))):
+        timeline_events.append({
+            "id": event.get("id"),
+            "decoder_id": event.get("decoder_id"),
+            "type": event.get("type", "unknown"),
+            "label": event.get("label", ""),
+            "severity": event.get("severity", "normal"),
+            "start_sample": int(event.get("start_sample", 0)),
+            "end_sample": int(event.get("end_sample", event.get("start_sample", 0))),
+            "start_time": float(event.get("start_time", 0)),
+            "end_time": float(event.get("end_time", event.get("start_time", 0))),
+        })
     return {"session_id": session_id, "duration_s": duration,
             "event_count": len(events),
             "error_count": sum(1 for e in events if e.get("severity") == "error"),
             "warning_count": sum(1 for e in events if e.get("severity") == "warning"),
             "events_per_second": len(events) / max(duration, 1e-12),
             "by_type": by_type, "timeline": timeline,
-            "error_timeline": error_timeline}
+            "error_timeline": error_timeline,
+            "events": timeline_events[:10_000]}
 
 
 # ── bus channels ─────────────────────────────────────────────────────

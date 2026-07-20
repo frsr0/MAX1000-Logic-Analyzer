@@ -224,6 +224,62 @@ def analog_threshold_sweep(session_id: str, channel: str, levels: int = 16):
     return {"channel": channel, "levels": rows}
 
 
+@router.get("/api/sessions/{session_id}/event-correlation")
+def analog_digital_event_correlation(session_id: str, analog_channel: str,
+                                     digital_channel: str,
+                                     threshold: Optional[float] = None,
+                                     edge: str = "rising",
+                                     tolerance_samples: int = 0,
+                                     limit: int = 5000):
+    """Align analog threshold crossings with digital edges and decoder events."""
+    session = get_session_or_404(session_id)
+    wf = get_waveform_or_404(session_id)
+    if analog_channel not in wf.analog:
+        raise HTTPException(404, f"No analog channel: {analog_channel}")
+    try:
+        digital = wf.channel_bits(digital_channel)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    if edge not in ("rising", "falling", "any"):
+        raise HTTPException(400, "edge must be rising, falling, or any")
+    limit = max(1, min(20_000, int(limit)))
+    signal = np.asarray(wf.analog[analog_channel])
+    level = float(threshold) if threshold is not None else float((np.min(signal) + np.max(signal)) / 2)
+    analog_bits = (signal > level).astype(np.uint8)
+    analog_edges = find_edges(analog_bits, edge)
+    digital_edges = find_edges(digital, edge)
+    tolerance = int(tolerance_samples) if tolerance_samples else max(1, int(wf.sample_rate * 0.01))
+    events = []
+    for decoder in session.decoders:
+        if decoder.status == "done":
+            events.extend(store.load_decoder_events(session_id, decoder.id))
+    pairs = []
+    for sample in analog_edges[:limit]:
+        index = int(np.searchsorted(digital_edges, sample))
+        candidates = []
+        if index < len(digital_edges): candidates.append(int(digital_edges[index]))
+        if index > 0: candidates.append(int(digital_edges[index - 1]))
+        if not candidates: continue
+        nearest = min(candidates, key=lambda value: abs(value - int(sample)))
+        delta = nearest - int(sample)
+        if abs(delta) > tolerance: continue
+        related = [
+            {"type": event.get("type", "unknown"), "label": event.get("label", ""),
+             "severity": event.get("severity", "normal"), "start_sample": int(event.get("start_sample", 0))}
+            for event in events
+            if int(event.get("start_sample", 0)) <= max(int(sample), nearest) + tolerance
+            and int(event.get("end_sample", event.get("start_sample", 0))) >= min(int(sample), nearest) - tolerance
+        ][:16]
+        pairs.append({"analog_sample": int(sample), "digital_sample": nearest,
+                      "lag_samples": int(delta), "lag_s": float(delta / wf.sample_rate),
+                      "events": related})
+    return {"session_id": session_id, "analog_channel": analog_channel,
+            "digital_channel": digital_channel, "threshold": level,
+            "edge": edge, "tolerance_samples": tolerance,
+            "analog_edge_count": int(len(analog_edges)),
+            "digital_edge_count": int(len(digital_edges)), "pairs": pairs}
+
+
 @router.get("/api/sessions/{session_id}/sanity")
 def waveform_sanity(session_id: str):
     session = get_session_or_404(session_id)

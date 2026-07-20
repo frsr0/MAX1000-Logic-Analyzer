@@ -140,6 +140,11 @@ export const api = {
   thresholdSweep: (id: string, channel: string, levels = 16) =>
     get<{ channel: string; levels: { level: number; rising_edges: number; frequency_hz: number }[] }>(
       `/api/sessions/${id}/threshold-sweep?channel=${encodeURIComponent(channel)}&levels=${levels}`),
+  eventCorrelation: (id: string, analog: string, digital: string, threshold?: number, edge = 'rising') => {
+    const q = new URLSearchParams({ analog_channel: analog, digital_channel: digital, edge });
+    if (threshold !== undefined) q.set('threshold', String(threshold));
+    return get<any>(`/api/sessions/${id}/event-correlation?${q.toString()}`);
+  },
 
   // decoders
   decoderTypes: () => get<{ decoders: DecoderDescription[] }>('/api/decoders'),

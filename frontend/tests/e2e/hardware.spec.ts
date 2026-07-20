@@ -349,8 +349,10 @@ test('mock capture dashboard shows protocol activity and errors', async ({ page 
   await row.getByRole('button', { name: 'Open' }).click();
   await page.getByRole('button', { name: 'Dashboard' }).click();
   await expect(page.getByText('12', { exact: true })).toBeVisible();
-  await expect(page.getByText('uart_byte')).toBeVisible();
+  await expect(page.getByText('uart_byte').first()).toBeVisible();
   await expect(page.getByText('Activity heatmap')).toBeVisible();
+  await expect(page.getByText('Bus transaction timeline')).toBeVisible();
+  await expect(page.getByText('framing error')).toBeVisible();
 });
 
 test('mock trigger builder previews pattern qualifiers', async ({ page }) => {

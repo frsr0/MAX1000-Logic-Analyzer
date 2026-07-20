@@ -128,7 +128,7 @@ current SPI readback bandwidth.
 - [x] Add spectrum peak finding and frequency labeling.
 - [x] Add waveform persistence and min/max envelope display.
 - [x] Add cross-correlation and estimated time delay between channels.
-- [ ] Add analog/digital event correlation and aligned protocol annotations.
+- [x] Add analog/digital event correlation and aligned protocol annotations.
 - [x] Add optional software filters: moving average, median, low-pass, high-pass, and baseline removal.
 - [x] Keep all filtered signals as named derived channels with reproducible settings.
 
@@ -136,7 +136,7 @@ current SPI readback bandwidth.
 
 - [ ] Add UART/SPI/I²C eye diagrams.
 - [x] Add protocol activity heatmaps.
-- [ ] Add bus transaction timeline view.
+- [x] Add bus transaction timeline view.
 - [x] Add waveform/session diff view with first divergence and alignment controls.
 - [ ] Add automatic “suspect timing” annotations for out-of-family pulses or gaps.
 

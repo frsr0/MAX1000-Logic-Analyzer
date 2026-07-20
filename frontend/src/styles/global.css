@@ -671,3 +671,8 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .dashboard-bar b { text-align: right; }
 .dashboard-heatmap { display: flex; gap: 2px; height: 34px; align-items: stretch; background: #111820; padding: 4px; }
 .dashboard-heatmap i { flex: 1; min-width: 2px; border-radius: 1px; }
+.dashboard-timeline { display: grid; gap: 4px; max-height: 260px; overflow-y: auto; }
+.timeline-event { display: grid; grid-template-columns: 86px 110px 1fr; gap: 8px; align-items: center; padding: 6px 8px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 4px; background: var(--panel-alt); color: var(--text); text-align: left; cursor: pointer; }
+.timeline-event:hover { background: var(--accent); color: white; }
+.timeline-event.severity-warning { border-left-color: var(--warning); }
+.timeline-event.severity-error { border-left-color: var(--danger); }

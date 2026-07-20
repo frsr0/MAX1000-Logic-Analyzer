@@ -906,7 +906,11 @@ export async function installMockApp(page: Page) {
     if (req.method() === 'GET' && /\/api\/sessions\/[^/]+\/dashboard$/.test(new URL(req.url()).pathname)) {
       return route.fulfill(okJson({ event_count: 12, error_count: 1, warning_count: 2,
         events_per_second: 4.5, by_type: { uart_byte: 10, decoder_error: 2 },
-        timeline: [0, 2, 1, 4, 3], error_timeline: [0, 0, 1, 0, 0] }));
+        timeline: [0, 2, 1, 4, 3], error_timeline: [0, 0, 1, 0, 0],
+        events: [
+          { id: 'ev-1', type: 'uart_byte', label: '0x48 H', severity: 'normal', start_sample: 1200, start_time: 0.0012, end_sample: 1300, end_time: 0.0013 },
+          { id: 'ev-2', type: 'decoder_error', label: 'framing error', severity: 'error', start_sample: 2400, start_time: 0.0024, end_sample: 2500, end_time: 0.0025 },
+        ] }));
     }
     if (matches('GET', req, '/api/logs')) return route.fulfill(okJson({ logs: [] }));
     if (matches('GET', req, '/api/diagnostics')) return route.fulfill(okJson({ lan_urls: ['http://127.0.0.1:4173', 'http://192.168.0.10:4173'] }));

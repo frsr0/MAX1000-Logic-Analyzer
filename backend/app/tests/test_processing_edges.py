@@ -1493,6 +1493,18 @@ def test_remaining_api_decoder_compare_and_waveform_branches(monkeypatch):
     comparison = ses_api.compare_sessions(session.id, other.id)
     assert comparison["settings_diff"]
     assert comparison["channel_diffs"]
+    dashboard = ses_api.session_dashboard(session.id)
+    assert isinstance(dashboard["events"], list)
+    mixed = Session(name="event-correlation", channels=default_digital_channels(2))
+    store.save(mixed)
+    store.save_waveform(mixed.id, _wf(
+        digital=np.array([0, 0, 1, 1, 0, 0, 1, 1], dtype=np.uint16),
+        analog={"a0": np.array([0, 0, 1, 1, 0, 0, 1, 1], dtype=np.float32)},
+        rate=100))
+    correlated = wf_api.analog_digital_event_correlation(
+        mixed.id, "a0", "d0", tolerance_samples=1)
+    assert correlated["pairs"]
+    assert correlated["pairs"][0]["lag_samples"] == 0
     shifted = Session(name="shifted", channels=default_digital_channels(2))
     store.save(shifted)
     store.save_waveform(shifted.id, _wf(digital=np.array([0, 0, 1, 0, 1], dtype=np.uint16), rate=10))
