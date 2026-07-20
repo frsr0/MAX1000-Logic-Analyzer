@@ -20,7 +20,8 @@ from ..capture.session import CaptureSettings, DeviceMetadata
 from ..capture.sample_format import adc_to_volts
 from .base import CaptureResult, HardwareDevice, HardwareError, ProgressCb
 from .device_models import (DebugInfo, DeviceCapabilities, GeneratorConfig,
-                            GeneratorStatus, TriggerCapability)
+                            GeneratorRouteCapability, GeneratorStatus,
+                            TriggerCapability)
 from .max1000_board import (
     BOARD_ANALOG_INPUTS,
     DIGITAL_PIN_MAP,
@@ -171,7 +172,42 @@ class ExistingHostAdapter(HardwareDevice):
                              "analog and 125 kframes/s 4-input physical "
                              "analog scans. Mixed mode scans ADC0..ADC3 at "
                              "the same scan frame rate.",
-            generator_protocols=["uart", "rs485", "i2c", "spi", "bitbang"],
+            generator_protocols=["uart", "rs485", "i2c", "spi", "swd", "bitbang"],
+            generator_routes=[
+                GeneratorRouteCapability(
+                    protocol="uart", name="UART TX", physical=True,
+                    outputs={"tx": "configurable"},
+                    features=["capture_loopback"],
+                ),
+                GeneratorRouteCapability(
+                    protocol="rs485", name="RS-485 A/B", physical=True,
+                    outputs={"a": "configurable", "b": "configurable"},
+                    features=["capture_loopback", "internal_de_timing"],
+                    detail="FPGA controls transceiver direction internally; no user DE pin is routed.",
+                ),
+                GeneratorRouteCapability(
+                    protocol="i2c", name="I²C", physical=True,
+                    outputs={"sda": "configurable", "scl": "configurable"},
+                    features=["external_slave"],
+                ),
+                GeneratorRouteCapability(
+                    protocol="spi", name="SPI MOSI/SCLK", physical=True,
+                    outputs={"mosi": "configurable", "sclk": "configurable"},
+                    features=["capture_loopback"],
+                    detail="CS and MISO are not routed by the current firmware.",
+                ),
+                GeneratorRouteCapability(
+                    protocol="bitbang", name="Two-output Bit Banger", physical=True,
+                    outputs={"data": "configurable", "clock": "configurable"},
+                    features=["raw_symbols"],
+                ),
+                GeneratorRouteCapability(
+                    protocol="swd", name="SWD SWCLK/SWDIO", physical=True,
+                    outputs={"swclk": "configurable", "swdio": "configurable"},
+                    features=["transaction_capture"],
+                    detail="Uses the existing two-output Bit Banger capture route; target response is observable only when electrically connected.",
+                ),
+            ],
             triggers=[TriggerCapability(type=t, execution=e, description=d)
                       for t, e, d in trig],
             notes=[
@@ -573,13 +609,13 @@ class ExistingHostAdapter(HardwareDevice):
                                protocol=self._gen_cfg.protocol if self._gen_cfg else None,
                                config=self._gen_cfg.model_dump() if self._gen_cfg else None,
                                supported=True,
-                               detail="UART/RS-485/I2C/SPI/raw Bit Banger generator (FPGA); debug CH0 PWM is available for capture self-tests")
+                               detail="UART/RS-485/I2C/SPI/SWD/raw Bit Banger generator (FPGA); SWD and SPI use send + capture")
 
     def generator_configure(self, cfg: GeneratorConfig) -> None:
-        if cfg.protocol not in ("uart", "rs485", "i2c", "spi", "bitbang"):
+        if cfg.protocol not in ("uart", "rs485", "i2c", "spi", "swd", "bitbang"):
             raise HardwareError(
                 f"Generator protocol '{cfg.protocol}' is not supported by the "
-                "current FPGA firmware (supported: uart, rs485, i2c, spi, bitbang)")
+                "current FPGA firmware (supported: uart, rs485, i2c, spi, swd, bitbang)")
         self._gen_cfg = cfg
 
     def generator_start(self) -> None:
@@ -610,6 +646,9 @@ class ExistingHostAdapter(HardwareDevice):
                 raise HardwareError(
                     "SPI generator requires 'Send + capture' on this "
                     "firmware; standalone send is not supported")
+            elif cfg.protocol == "swd":
+                raise HardwareError(
+                    "SWD transaction capture requires 'Send + capture' on this firmware")
             elif cfg.protocol == "bitbang":
                 from ..generator.bitbang import expand_symbols
                 symbols = expand_symbols(cfg.extra, max(1, int(cfg.baud)))
@@ -708,6 +747,28 @@ class ExistingHostAdapter(HardwareDevice):
                                            spi_sclk_pin=cfg.scl_pin,
                                            spi_clk_div=spi_clk_div,
                                            fast_mode=False)
+            elif cfg.protocol == "swd":
+                requests = cfg.extra.get("requests", [])
+                if isinstance(requests, str):
+                    import json
+                    requests = json.loads(requests)
+                ops = []
+                for request in requests:
+                    if not isinstance(request, dict):
+                        raise HardwareError("SWD requests must be objects")
+                    op = "r" if bool(request.get("read", True)) else "w"
+                    ops.append((op, int(bool(request.get("ap", False))),
+                                int(request.get("addr", 0)),
+                                int(request.get("data", 0))))
+                raw = dev.capture_with_gen(
+                    rate_hz=rate, nsamples=nsamp,
+                    stop_evt=stop_evt, progress_cb=cb,
+                    proto="SWD", swd_ops=ops,
+                    swd_clk_hz=max(1, int(cfg.baud)),
+                    swd_swdio_pin=int(cfg.tx_pin),
+                    swd_swclk_pin=int(cfg.scl_pin),
+                    swd_connect=bool(cfg.extra.get("jtag_to_swd", True)),
+                    fast_mode=False)
             elif cfg.protocol == "bitbang":
                 raise HardwareError(
                     "Bit Banger raw mode currently supports standalone send; "

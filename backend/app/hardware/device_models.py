@@ -22,6 +22,25 @@ class TriggerCapability(BaseModel):
     description: str = ""
 
 
+class GeneratorRouteCapability(BaseModel):
+    """A concrete generator/capture wiring route exposed by a device.
+
+    Protocol support alone is not enough to describe a physical route.  For
+    example, the current MAX1000 SPI path has MOSI and SCLK but no generator
+    CS/MISO, while a future firmware image may expose all four wires.  Keep
+    this additive and data-driven so the UI can advertise only what the
+    connected target actually provides.
+    """
+
+    protocol: str
+    name: str = ""
+    available: bool = True
+    physical: bool = False
+    outputs: Dict[str, str] = Field(default_factory=dict)
+    features: List[str] = Field(default_factory=list)
+    detail: str = ""
+
+
 class DeviceCapabilities(BaseModel):
     digital_channels: int = 16
     analog_channels: int = 0
@@ -36,6 +55,7 @@ class DeviceCapabilities(BaseModel):
     supports_analog: bool = False
     analog_rate_note: str = ""
     generator_protocols: List[str] = Field(default_factory=list)
+    generator_routes: List[GeneratorRouteCapability] = Field(default_factory=list)
     triggers: List[TriggerCapability] = Field(default_factory=list)
     notes: List[str] = Field(default_factory=list)
     digital_pin_map: List[Dict[str, Any]] = Field(default_factory=list)

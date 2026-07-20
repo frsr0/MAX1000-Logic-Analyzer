@@ -70,6 +70,7 @@ def generator_capabilities():
         raise HTTPException(409, str(e))
     caps = dev.get_capabilities()
     return {"protocols": caps.generator_protocols,
+            "routes": [route.model_dump() for route in caps.generator_routes],
             "status": dev.generator_status().model_dump()}
 
 

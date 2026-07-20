@@ -15,6 +15,14 @@ board. “Post-capture” means the feature consumes an immutable saved waveform
 | Reports and exports | Yes | Yes | No | JSON, CSV, VCD, PulseView-compatible VCD, NPZ, HTML report, and dependency-free PDF report. |
 | CAN electrical connectivity | No | No without external transceiver | Decoder only | Logic-level CAN decode is supported; the board is not a CAN transceiver. |
 
+## Generator route capability contract
+
+`/api/generator/capabilities` returns per-route outputs and optional features.
+This lets the UI distinguish current MOSI/SCLK-only SPI and internally timed
+RS-485 direction from future firmware routes that add CS/MISO or a user DE pin.
+SWD transaction capture uses the existing SWCLK/SWDIO Bit Banger route; target
+responses still require an electrically connected target.
+
 ## Verification baseline
 
 Baseline branch: `codex/software-feature-roadmap`.

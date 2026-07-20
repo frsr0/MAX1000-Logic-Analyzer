@@ -22,7 +22,7 @@ This repository is currently verified for:
 - Mixed capture with 16 digital bits plus the ADC0..ADC3 scan
 - Analog-fast capture of 1 ADC lane
 - Maximum-analog capture of 4 physical analog inputs
-- UART, RS-485, I2C, SPI, and raw two-output Bit Banger generation
+- UART, RS-485, I2C, SPI, SWD transaction capture, and raw two-output Bit Banger generation
 - Browser UI, backend API, and classic host-driver workflow
 
 Recently re-verified before this README update:

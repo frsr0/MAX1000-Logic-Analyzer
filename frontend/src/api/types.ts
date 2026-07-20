@@ -29,6 +29,16 @@ export interface TriggerCapability {
   description: string;
 }
 
+export interface GeneratorRouteCapability {
+  protocol: string;
+  name: string;
+  available: boolean;
+  physical: boolean;
+  outputs: Record<string, string>;
+  features: string[];
+  detail: string;
+}
+
 export interface DeviceCapabilities {
   digital_channels: number;
   analog_channels: number;
@@ -43,6 +53,7 @@ export interface DeviceCapabilities {
   supports_analog: boolean;
   analog_rate_note: string;
   generator_protocols: string[];
+  generator_routes?: GeneratorRouteCapability[];
   triggers: TriggerCapability[];
   trigger_matrix: TriggerCapability[];
   notes: string[];

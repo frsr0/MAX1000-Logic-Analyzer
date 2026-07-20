@@ -2,7 +2,7 @@
 // MAX1000 hardware routing constraints.
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
-import type { GeneratorConfig } from '../api/types';
+import type { GeneratorConfig, GeneratorRouteCapability } from '../api/types';
 import { useApp } from '../state/appStore';
 
 const DEFAULT_CFG: GeneratorConfig = {
@@ -39,6 +39,7 @@ function uartCaptureSamples(cfg: GeneratorConfig, captureRate: number): number {
 export function GeneratorPage() {
   const { status, toast, controlMode, openSession, setPage } = useApp();
   const [protocols, setProtocols] = useState<string[]>([]);
+  const [routes, setRoutes] = useState<GeneratorRouteCapability[]>([]);
   const [genStatus, setGenStatus] = useState<any>(null);
   const [cfg, setCfg] = useState<GeneratorConfig>(DEFAULT_CFG);
   const [result, setResult] = useState<any>(null);
@@ -56,6 +57,7 @@ export function GeneratorPage() {
     api.generatorCapabilities()
       .then((r) => {
         setProtocols(r.protocols);
+        setRoutes(r.routes ?? []);
         setGenStatus(r.status);
       })
       .catch(() => setProtocols([]));
@@ -85,6 +87,9 @@ export function GeneratorPage() {
       setCfg({ ...cfg, protocol, tx_pin: status?.device_kind === 'mock' ? 0 : 3, baud: 115200 });
     } else if (protocol === 'spi') {
       setCfg({ ...cfg, protocol, tx_pin: status?.device_kind === 'mock' ? 5 : 3, scl_pin: status?.device_kind === 'mock' ? 4 : 1, baud: 1000000 });
+    } else if (protocol === 'swd') {
+      setCfg({ ...cfg, protocol, tx_pin: status?.device_kind === 'mock' ? 1 : 3, scl_pin: status?.device_kind === 'mock' ? 0 : 1, baud: 1000000,
+        extra: { requests: [{ ap: false, read: true, addr: 0, data: 0 }], jtag_to_swd: true } });
     } else if (protocol === 'pattern' || protocol === 'bitbang') {
       setCfg({ ...cfg, protocol, tx_pin: 0, baud: 9600 });
     } else {
@@ -170,7 +175,7 @@ export function GeneratorPage() {
   };
 
   const needsData = ['uart', 'rs485', 'spi', 'pattern', 'i2c', 'bitbang'].includes(cfg.protocol);
-  const canLoopbackCapture = ['uart', 'rs485', 'i2c', 'spi'].includes(cfg.protocol) || status?.device_kind === 'mock';
+  const canLoopbackCapture = ['uart', 'rs485', 'i2c', 'spi', 'swd'].includes(cfg.protocol) || status?.device_kind === 'mock';
   const canStandaloneSend = !['spi', 'pattern', 'counter', 'prbs'].includes(cfg.protocol)
     || status?.device_kind === 'mock';
 
@@ -210,8 +215,17 @@ export function GeneratorPage() {
             </select>
           </label>
           <div className="finding info">
-            Hardware support on this board is UART, RS-485, I2C, SPI, and raw two-output Bit Banger playback. Protocol exerciser workflows can be built from the raw symbol mode.
+            Hardware support on this board is UART, RS-485, I2C, SPI, SWD transaction capture, and raw two-output Bit Banger playback. Protocol exerciser workflows can be built from the raw symbol mode.
           </div>
+          {routes.length > 0 && (
+            <div className="hint" data-testid="generator-route-capabilities">
+              {routes.map((route) => (
+                <div key={route.protocol}>
+                  <strong>{route.name || route.protocol.toUpperCase()}</strong>: {route.detail || route.features.join(', ') || 'basic route'}
+                </div>
+              ))}
+            </div>
+          )}
 
           {needsData && (
             <>
@@ -310,6 +324,31 @@ export function GeneratorPage() {
                   Send is unsupported — use Send + capture.
                 </div>
               )}
+            </>
+          )}
+
+          {cfg.protocol === 'swd' && (
+            <>
+              <label className="field">
+                <span>SWDIO pin / SWCLK pin</span>
+                <span className="button-row">
+                  <input type="number" min={0} max={15} value={cfg.tx_pin}
+                    onChange={(e) => set({ tx_pin: Number(e.target.value) })} />
+                  <input type="number" min={0} max={15} value={cfg.scl_pin}
+                    onChange={(e) => set({ scl_pin: Number(e.target.value) })} />
+                </span>
+              </label>
+              <label className="field">
+                <span>SWD requests (JSON)</span>
+                <textarea className="mono" rows={4}
+                  value={JSON.stringify(cfg.extra?.requests ?? [{ ap: false, read: true, addr: 0, data: 0 }], null, 2)}
+                  onChange={(e) => {
+                    try { setExtra({ requests: JSON.parse(e.target.value) }); } catch { /* wait for valid JSON */ }
+                  }} />
+              </label>
+              <label className="field checkbox"><input type="checkbox" checked={cfg.extra?.jtag_to_swd !== false}
+                onChange={(e) => setExtra({ jtag_to_swd: e.target.checked })} /><span>Send JTAG-to-SWD sequence</span></label>
+              <div className="hint">Send + capture logs the SWCLK/SWDIO transaction and runs the SWD decoder. A target response requires an electrically connected SWD route.</div>
             </>
           )}
 
@@ -575,6 +614,7 @@ export function GeneratorPage() {
             <li>UART and RS-485 support loopback capture in one action.</li>
             <li>I2C uses the configured SDA and SCL capture channels.</li>
             <li>SPI loops MOSI/SCLK into the capture on hardware (send + capture only, no CS/MISO); mock simulates full SCLK/MOSI/MISO/CS on CH4-7.</li>
+            <li>SWD uses the existing SWCLK/SWDIO two-output route and records decoded transaction events during Send + capture.</li>
             <li>Raw Bit Banger mode drives TX/SDA/MOSI and SCL/SCLK from a bounded 2-bit symbol list.</li>
           </ul>
           <div className="divider" />

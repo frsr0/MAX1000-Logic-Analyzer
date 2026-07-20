@@ -3,7 +3,7 @@
 import type {
   BackendStatus, CaptureSettings, ChannelInfo, DecoderDescription,
   DecoderEvent, DecoderInstance, DeviceCapabilities, DeviceDescriptor,
-  DeviceMetadata, GeneratorConfig, LogEntry, Marker, MeasurementInstance,
+  DeviceMetadata, GeneratorConfig, GeneratorRouteCapability, LogEntry, Marker, MeasurementInstance,
   MeasurementType, MilConfig, MilPresetSummary, MilRuntimeStatus,
   MilTransactionResponse, Session, SessionSummary,
 } from './types';
@@ -190,7 +190,7 @@ export const api = {
   deleteMarker: (id: string, mid: string) => del(`/api/sessions/${id}/markers/${mid}`),
 
   // generator
-  generatorCapabilities: () => get<{ protocols: string[]; status: any }>('/api/generator/capabilities'),
+  generatorCapabilities: () => get<{ protocols: string[]; routes: GeneratorRouteCapability[]; status: any }>('/api/generator/capabilities'),
   generatorConfigure: (cfg: GeneratorConfig) => post('/api/generator/configure', cfg),
   generatorStart: () => post('/api/generator/start'),
   generatorStop: () => post('/api/generator/stop'),

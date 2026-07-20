@@ -247,7 +247,9 @@ def swd_symbols(**options: Any) -> List[int]:
         read = int(bool(request.get("read", True)))
         addr = int(request.get("addr", 0))
         header = [1, ap, read, (addr >> 2) & 1, (addr >> 3) & 1]
-        header.append(sum(header) & 1)
+        # SWD request parity covers APnDP, RnW, A2 and A3; the start bit is
+        # not part of the parity calculation.
+        header.append((ap ^ read ^ header[3] ^ header[4]) & 1)
         header.extend([0, 1])
         for bit in header: clock(bit)
         for _ in range(max(1, int(options.get("turnaround_cycles", 1)))): clock(1)

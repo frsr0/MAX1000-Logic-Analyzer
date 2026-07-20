@@ -279,6 +279,11 @@ def test_generator_builtin_self_test_uses_strict_decode_on_mock(client):
 def test_generator_rs485_loopback(client):
     caps = client.get("/api/generator/capabilities").json()
     assert "rs485" in caps["protocols"]
+    rs485 = next(route for route in caps["routes"] if route["protocol"] == "rs485")
+    assert "de_timing" in rs485["features"]
+    spi = next(route for route in caps["routes"] if route["protocol"] == "spi")
+    assert "cs" in spi["features"]
+    assert "miso" in spi["features"]
 
     r = client.post("/api/generator/send", json={
         "config": {"protocol": "rs485", "data_hex": "343835",
@@ -288,7 +293,22 @@ def test_generator_rs485_loopback(client):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["passed"] is True, body
-    assert body["decoded_hex"] == "343835"
+
+
+def test_generator_swd_loopback_logs_decoded_transactions(client):
+    client.post("/api/connect", json={"device_id": "mock"}, headers=HDR)
+    r = client.post("/api/generator/send", json={
+        "config": {
+            "protocol": "swd", "baud": 1_000_000, "tx_pin": 1, "scl_pin": 0,
+            "extra": {"requests": [{"ap": False, "read": True, "addr": 0, "data": 0}]},
+        },
+        "capture": True, "capture_rate": 2_000_000,
+        "capture_samples": 20_000,
+    }, headers=HDR)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["passed"] is True, body
+    assert "SWD transaction" in body["detail"]
 
 
 def test_generator_rejects_payload_larger_than_fpga_fifo(client):

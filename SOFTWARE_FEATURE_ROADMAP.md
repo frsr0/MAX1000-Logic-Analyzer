@@ -43,13 +43,14 @@ current SPI readback bandwidth.
 
 - [x] UART: parity selection, 1/1.5/2 stop bits, break generation, configurable idle bits, and framing-error injection.
 - [x] RS-485 Bit Banger exerciser: transmit-enable timing, turnaround delay, direction-change markers, and half-duplex transaction scripts.
+- [x] Add structured generator-route capabilities so physical DE/CS/MISO/SWD wiring is advertised per connected target.
 - [ ] Hardware RS-485 generator: expose physical DE timing if a future firmware route provides it.
 - [x] SPI Bit Banger template: CPOL/CPHA 0–3, MSB/LSB first, word sizes 4–32 bits, and inter-word gaps.
 - [ ] Hardware SPI generator: configurable CS/MISO only where firmware routing permits.
 - [x] I²C Bit Banger templates: 7-bit address/register read-write forms, repeated starts, ACK/NACK control, clock stretching visualization, and bus recovery clocks.
 - [x] PWM Bit Banger templates: frequency/duty sweeps, bursts, finite pulse counts, and configurable start phase.
 - [x] SWD Bit Banger exerciser: line reset, JTAG-to-SWD transition, DP/AP read/write forms, ACK/data parity, and transaction scripts.
-- [ ] SWD transaction capture/logging against a physical route when firmware exposes one.
+- [x] SWD transaction capture/logging through the existing two-output physical Bit Banger route; target responses still require an electrically connected SWD target.
 - [x] SPI mode 3: promote the existing host helper into the public generator workflow.
 
 ### New generators using the existing two outputs

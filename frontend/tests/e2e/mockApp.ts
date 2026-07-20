@@ -1004,7 +1004,14 @@ export async function installMockApp(page: Page, options: { mockDevice?: boolean
     if (matches('POST', req, '/api/control/release')) return route.fulfill(okJson({ released: true }));
 
     if (matches('GET', req, '/api/generator/capabilities')) {
-      return route.fulfill(okJson({ protocols: ['uart', 'rs485', 'i2c', 'bitbang'], status: { busy: false, running: false, supported: true, detail: 'fixture ready' } }));
+      return route.fulfill(okJson({ protocols: ['uart', 'rs485', 'i2c', 'spi', 'swd', 'bitbang'], routes: [
+        { protocol: 'rs485', name: 'RS-485 A/B + DE', available: true, physical: false,
+          outputs: { a: 'd1', b: 'd0', de: 'd2' }, features: ['de_timing', 'direction_changes'], detail: 'fixture route' },
+        { protocol: 'spi', name: 'SPI SCLK/MOSI/MISO/CS', available: true, physical: false,
+          outputs: { sclk: 'd4', mosi: 'd5', miso: 'd6', cs: 'd7' }, features: ['cs', 'miso'], detail: 'fixture route' },
+        { protocol: 'swd', name: 'SWD transaction fixture', available: true, physical: false,
+          outputs: { swclk: 'd0', swdio: 'd1' }, features: ['transaction_capture'], detail: 'fixture route' },
+      ], status: { busy: false, running: false, supported: true, detail: 'fixture ready' } }));
     }
     if (matches('GET', req, '/api/generator/bitbang/presets')) return route.fulfill(okJson({ presets: ['idle', 'pulse', 'square', 'alternating', 'counter', 'walking', 'prbs'] }));
     if (matches('POST', req, '/api/generator/preview')) return route.fulfill(okJson({ symbols: [3, 0, 1, 2], count: 4, duration_s: 0.0004, tx_levels: [1, 0, 1, 0], clock_levels: [1, 0, 0, 1] }));
@@ -1014,7 +1021,13 @@ export async function installMockApp(page: Page, options: { mockDevice?: boolean
       rows: [{ protocol: 'bitbang', status: 'passed', passed: true, session_id: 'session-demo' },
         { protocol: 'bitbang', status: 'passed', passed: true, session_id: 'session-demo-2' }] }));
     if (matches('GET', req, '/api/generator/status')) return route.fulfill(okJson({ busy: false, running: false, supported: true, detail: 'fixture ready' }));
-    if (matches('POST', req, '/api/generator/send')) return route.fulfill(okJson({ passed: true, sent_hex: '48656c6c6f21', decoded_hex: '48656c6c6f21', detail: 'fixture loopback', session_id: 'session-demo' }));
+    if (matches('POST', req, '/api/generator/send')) {
+      const body = req.postDataJSON() as Json;
+      if ((body.config as Json | undefined)?.protocol === 'swd') {
+        return route.fulfill(okJson({ passed: true, sent_hex: '', decoded_hex: '', detail: 'PASS - captured and decoded 1 SWD transaction(s)', session_id: 'session-demo' }));
+      }
+      return route.fulfill(okJson({ passed: true, sent_hex: '48656c6c6f21', decoded_hex: '48656c6c6f21', detail: 'fixture loopback', session_id: 'session-demo' }));
+    }
     if (matches('POST', req, '/api/generator/self-test')) return route.fulfill(okJson({ passed: true, sent_hex: '48656c6c6f21', decoded_hex: '48656c6c6f21', detail: 'fixture self-test' }));
     if (matches('POST', req, '/api/generator/configure')) return route.fulfill(okJson({ ok: true }));
     if (matches('POST', req, '/api/generator/start')) return route.fulfill(okJson({ ok: true }));

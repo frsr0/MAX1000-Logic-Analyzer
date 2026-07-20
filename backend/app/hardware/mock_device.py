@@ -15,7 +15,8 @@ import numpy as np
 from ..capture.session import CaptureSettings, DeviceMetadata
 from .base import CaptureResult, HardwareDevice, HardwareError, ProgressCb
 from .device_models import (DebugInfo, DeviceCapabilities, GeneratorConfig,
-                            GeneratorStatus, TriggerCapability)
+                            GeneratorRouteCapability, GeneratorStatus,
+                            TriggerCapability)
 from . import mock_signals as ms
 
 SCENARIOS = [
@@ -97,8 +98,32 @@ class MockDevice(HardwareDevice):
             supports_pre_trigger=True, supports_rolling=True,
             supports_continuous=True, supports_analog=True,
             analog_rate_note="Mock analog channels (real hardware: 1 MSPS single-channel or 125 kframes/s 4-input scan)",
-            generator_protocols=["uart", "rs485", "i2c", "spi", "pwm", "square",
+            generator_protocols=["uart", "rs485", "i2c", "spi", "swd", "pwm", "square",
                                  "pattern", "counter", "prbs", "bitbang"],
+            generator_routes=[
+                GeneratorRouteCapability(
+                    protocol="uart", name="UART TX", outputs={"tx": "d0"},
+                    features=["capture_loopback"],
+                ),
+                GeneratorRouteCapability(
+                    protocol="rs485", name="RS-485 A/B", outputs={"a": "d1", "b": "d0", "de": "d2"},
+                    features=["capture_loopback", "de_timing", "direction_changes"],
+                ),
+                GeneratorRouteCapability(
+                    protocol="i2c", name="I²C", outputs={"sda": "d2", "scl": "d1"},
+                    features=["external_slave", "clock_stretching"],
+                ),
+                GeneratorRouteCapability(
+                    protocol="spi", name="SPI SCLK/MOSI/MISO/CS",
+                    outputs={"sclk": "d4", "mosi": "d5", "miso": "d6", "cs": "d7"},
+                    features=["capture_loopback", "cs", "miso"],
+                ),
+                GeneratorRouteCapability(
+                    protocol="swd", name="SWD transaction fixture",
+                    outputs={"swclk": "d0", "swdio": "d1"},
+                    features=["transaction_capture"],
+                ),
+            ],
             triggers=[TriggerCapability(type=t, execution=e) for t, e in hw],
             notes=["Mock device — all data is synthetic"],
         )
@@ -324,6 +349,21 @@ class MockDevice(HardwareDevice):
             sclk, mosi, miso, cs = ms.spi_signal(n, rate, cfg.baud, data,
                                                  start_sample=start)
             put(4, sclk); put(5, mosi); put(6, miso); put(7, cs)
+        elif cfg.protocol == "swd":
+            from ..generator.protocols import encode
+            symbols = encode("swd", data, max(1, int(cfg.baud)), cfg.extra)
+            spb = max(1, int(rate / max(1, int(cfg.baud))))
+            swdio = np.ones(n, dtype=np.uint8)
+            swclk = np.zeros(n, dtype=np.uint8)
+            for i, symbol in enumerate(symbols):
+                a = start + i * spb
+                if a >= n:
+                    break
+                b = min(n, a + spb)
+                swdio[a:b] = int(symbol) & 1
+                swclk[a:b] = (int(symbol) >> 1) & 1
+            put(cfg.tx_pin, swdio)
+            put(cfg.scl_pin, swclk)
         elif cfg.protocol in ("pwm", "square"):
             put(cfg.tx_pin, ms.square(n, rate, cfg.freq_hz, cfg.duty_pct / 100))
         elif cfg.protocol == "counter":

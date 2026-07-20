@@ -36,6 +36,8 @@ _LOOPBACK_DECODE = {
             lambda cfg: {}),
     "spi": ("spi", lambda cfg: {"sclk": "d4", "mosi": "d5", "miso": "d6", "cs": "d7"},
             lambda cfg: {}),
+    "swd": ("swd", lambda cfg: {"swclk": f"d{cfg.scl_pin}", "swdio": f"d{cfg.tx_pin}"},
+            lambda cfg: {"glitch_filter": int(cfg.extra.get("glitch_filter", 0))}),
 }
 
 
@@ -172,8 +174,18 @@ def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
         nacked = []
         decoded = bytes(e["fields"]["mosi"] & 0xFF for e in dec_result.events
                         if e["type"] == "spi_word" and e["fields"]["mosi"] is not None)
+    elif cfg.protocol == "swd":
+        nacked = []
+        decoded = b""
     if cfg.protocol in ("uart", "rs485"):
         passed, mismatches, detail = _compare_uart_loopback(expected, decoded)
+    elif cfg.protocol == "swd":
+        transfers = sum(1 for event in dec_result.events
+                        if event["type"] == "swd_xfer")
+        passed = transfers > 0
+        mismatches = []
+        detail = (f"PASS - captured and decoded {transfers} SWD transaction(s)"
+                  if passed else "FAIL - no SWD transactions decoded")
     else:
         mismatches = [i for i, (a, b) in enumerate(zip(expected, decoded)) if a != b]
         if len(expected) != len(decoded):

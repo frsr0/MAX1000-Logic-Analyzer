@@ -342,8 +342,9 @@ test('generator page matches supported board protocols', async ({ page }) => {
   if (protocolCount === 0) {
     test.skip(true, 'live generator protocols did not load on this board session');
   }
-  await expect(page.getByLabel('Generator protocol').locator('option')).toHaveCount(4);
-  await expect(page.getByText('Hardware support on this board is UART, RS-485, I2C, SPI, and raw two-output Bit Banger playback. Protocol exerciser workflows can be built from the raw symbol mode.')).toBeVisible();
+  await expect(page.getByTestId('generator-route-capabilities')).toBeVisible();
+  await expect(page.getByLabel('Generator protocol').locator('option')).toHaveCount(6);
+  await expect(page.getByText('Hardware support on this board is UART, RS-485, I2C, SPI, SWD transaction capture, and raw two-output Bit Banger playback. Protocol exerciser workflows can be built from the raw symbol mode.')).toBeVisible();
   await page.screenshot({ path: shot('generator-page.png'), fullPage: true });
 });
 
@@ -362,6 +363,14 @@ test('mock generator exposes Bit Banger templates and bounded preview controls',
   await page.getByRole('button', { name: 'Run capture-backed sweep' }).click();
   await expect(page.getByText('2/2 variants valid')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Open capture' })).toHaveCount(2);
+});
+
+test('mock SWD generator captures and reports decoded transactions', async ({ page }) => {
+  await page.getByRole('button', { name: 'Generator' }).click();
+  await page.getByLabel('Generator protocol').selectOption('swd');
+  await expect(page.getByLabel('SWD requests (JSON)')).toBeVisible();
+  await page.getByRole('button', { name: 'Send + capture' }).click();
+  await expect(page.locator('.toast').filter({ hasText: 'decoded 1 SWD transaction' })).toBeVisible();
 });
 
 test('mock capture dashboard shows protocol activity and errors', async ({ page }) => {
