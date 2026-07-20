@@ -353,6 +353,16 @@ test('mock capture dashboard shows protocol activity and errors', async ({ page 
   await expect(page.getByText('Activity heatmap')).toBeVisible();
 });
 
+test('mock trigger builder previews pattern qualifiers', async ({ page }) => {
+  await page.locator('.sidebar button[title="Capture"]').click();
+  await page.getByRole('button', { name: 'Trigger', exact: true }).click();
+  await page.getByLabel('Trigger type').selectOption('pattern');
+  await page.getByLabel('Pattern (1/0/x per channel)').fill('1x01');
+  await expect(page.getByLabel('Trigger preview')).toBeVisible();
+  await expect(page.getByLabel('Trigger preview')).toContainText('1x01');
+  await expect(page.getByLabel('Trigger preview')).toContainText("don't care");
+});
+
 test('signal generator loopback shows waveform and decode', async ({ page }) => {
   await page.getByRole('button', { name: 'Generator' }).click();
   await expect(page.getByRole('button', { name: 'Send + capture' })).toBeEnabled({ timeout: 15_000 });
