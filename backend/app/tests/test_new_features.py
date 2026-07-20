@@ -14,6 +14,7 @@ from app.decoders.quadrature import QuadratureDecoder
 from app.decoders.hdlc import HdlcDecoder, hdlc_crc16
 from app.decoders.jtag import JtagDecoder
 from app.decoders.infrared import InfraredDecoder
+from app.decoders.smbus import SmbusDecoder, smbus_pec
 from app.generator.bitbang import expand_symbols, preview, preset_symbols
 from app.exports.importers import csv_session, vcd_session
 from app.measurements import digital
@@ -315,3 +316,19 @@ def test_nec_infrared_decoder_validates_complement_bytes():
     assert result.events[0]["fields"]["address"] == 0x12
     assert result.events[0]["fields"]["command"] == 0x34
     assert result.events[0]["fields"]["valid"] is True
+
+
+def test_smbus_stacked_decoder_validates_pec():
+    address, command = 0x2A, 0x09
+    data = [0x34, 0x12]
+    read = 0
+    pec = smbus_pec([(address << 1) | read, command, *data])
+    events = [{"type": "i2c_address", "start_sample": 10,
+               "fields": {"address": address, "rw": read}},
+              *({"type": "i2c_byte", "start_sample": 20 + i,
+                 "end_sample": 21 + i, "fields": {"byte": value}}
+                for i, value in enumerate([command, *data, pec]))]
+    wf = WaveformData(sample_rate=1_000_000, digital=np.zeros(64, dtype=np.uint16))
+    result = SmbusDecoder().decode(DecodeContext(wf, {}, upstream_events=events), {})
+    assert result.events[0]["fields"]["command"] == command
+    assert result.events[0]["fields"]["pec_ok"] is True

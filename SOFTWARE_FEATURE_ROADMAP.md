@@ -72,13 +72,13 @@ current SPI readback bandwidth.
 - [x] Quadrature encoder: direction, count, and illegal-transition detection.
 - [x] I²S: basic stereo word extraction with format/edge/sample-width settings.
 - [x] JTAG: TMS/TDI/TDO/TCK sampling, TAP state transitions, IR/DR scans, and extracted data words.
-- [ ] SMBus/PMBus: address, command, PEC, alert response, and common transaction forms.
+- [x] SMBus/PMBus: address, command, PEC, alert response, and common transaction forms.
 - [x] HDLC/PPP-style framed serial with bit/byte stuffing and CRC.
 - [x] NEC/RC5/RC6 infrared protocol decoders.
 - [x] Quadrature encoder decoder with direction, count, and illegal-transition detection.
 - [x] Add decoder confidence/quality scores for ambiguous or undersampled captures.
 - [ ] Add decoder presets and reusable channel mappings.
-- [ ] Add stacked decoders for UART → Modbus/LIN/custom framing and SPI/I²C → device-register views.
+- [x] Add stacked decoders for UART → Modbus/LIN/custom framing and SPI/I²C → device-register views.
 
 ## Phase 3 — Trigger and search engine
 
