@@ -190,6 +190,36 @@ def search_trigger(session_id: str, req: TriggerSearchRequest):
             "execution": "post_capture"}
 
 
+@router.get("/api/sessions/{session_id}/dashboard")
+def session_dashboard(session_id: str, bins: int = 32):
+    """Aggregate protocol activity, errors, and timing into dashboard data."""
+    session = get_session_or_404(session_id)
+    wf = store.load_waveform(session_id)
+    duration = wf.duration_s if wf else session.num_samples / max(session.sample_rate, 1)
+    events = []
+    for decoder in session.decoders:
+        if decoder.status == "done":
+            events.extend(store.load_decoder_events(session_id, decoder.id))
+    by_type: dict[str, int] = {}
+    for event in events:
+        by_type[event.get("type", "unknown")] = by_type.get(event.get("type", "unknown"), 0) + 1
+    bins = max(1, min(256, int(bins)))
+    timeline = [0] * bins
+    error_timeline = [0] * bins
+    for event in events:
+        pos = float(event.get("start_time", 0)) / max(duration, 1e-12)
+        index = max(0, min(bins - 1, int(pos * bins)))
+        timeline[index] += 1
+        if event.get("severity") == "error": error_timeline[index] += 1
+    return {"session_id": session_id, "duration_s": duration,
+            "event_count": len(events),
+            "error_count": sum(1 for e in events if e.get("severity") == "error"),
+            "warning_count": sum(1 for e in events if e.get("severity") == "warning"),
+            "events_per_second": len(events) / max(duration, 1e-12),
+            "by_type": by_type, "timeline": timeline,
+            "error_timeline": error_timeline}
+
+
 # ── bus channels ─────────────────────────────────────────────────────
 
 class BusCreate(BaseModel):

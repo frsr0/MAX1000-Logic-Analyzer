@@ -89,6 +89,7 @@ export const api = {
   compareSessions: (a: string, b: string) => post<any>(`/api/sessions/${a}/compare/${b}`),
   triggerSearch: (id: string, trigger: any, decoder_instance?: string) =>
     post<any>(`/api/sessions/${id}/trigger-search`, { trigger, decoder_instance }),
+  sessionDashboard: (id: string, bins = 32) => get<any>(`/api/sessions/${id}/dashboard?bins=${bins}`),
   importSession: (json_text: string) => post<SessionSummary>('/api/sessions', { json_text }),
   importWaveform: (source_text: string, source_format: 'csv' | 'vcd', sample_rate = 1_000_000) =>
     post<SessionSummary>('/api/sessions', { source_text, source_format, sample_rate }),

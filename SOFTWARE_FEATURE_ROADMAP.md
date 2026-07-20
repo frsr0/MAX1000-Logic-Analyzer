@@ -134,7 +134,7 @@ current SPI readback bandwidth.
 ### Analysis views
 
 - [ ] Add UART/SPI/I²C eye diagrams.
-- [ ] Add protocol activity heatmaps.
+- [x] Add protocol activity heatmaps.
 - [ ] Add bus transaction timeline view.
 - [ ] Add waveform/session diff view with first divergence and alignment controls.
 - [ ] Add automatic “suspect timing” annotations for out-of-family pulses or gaps.
@@ -150,7 +150,7 @@ current SPI readback bandwidth.
 - [ ] Add command palette for capture, decode, trigger search, export, and navigation.
 - [x] Add session tags, notes, and searchable metadata.
 - [x] Add reusable capture/decoder/measurement presets.
-- [ ] Add a protocol dashboard summarizing packets, errors, timing, and throughput.
+- [x] Add a protocol dashboard summarizing packets, errors, timing, and throughput.
 - [x] Add a generator-to-capture comparison view showing expected versus observed bytes.
 - [x] Add clear capability badges for hardware versus mock-only generator features.
 
