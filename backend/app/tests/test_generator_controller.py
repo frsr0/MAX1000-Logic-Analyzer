@@ -139,3 +139,21 @@ def test_loopback_retry_i2c_nack_and_real_spi_channel_mapping(tmp_path, monkeypa
     monkeypatch.setattr(controller, "_loopback_attempt", lambda *args: next(outcomes))
     monkeypatch.setattr(mgr, "require_device", lambda: mgr.device)
     assert controller.loopback_self_test(mgr, cfg, 1_000_000, 8).passed
+
+
+@pytest.mark.parametrize("protocol", ["uart", "rs485", "i2c", "spi"])
+def test_mock_generator_output_round_trips_through_decoder(protocol, tmp_path):
+    from app.capture.capture_manager import CaptureManager
+    from app.capture.session_store import SessionStore
+    from app.generator.controller import loopback_self_test
+    from app.hardware.mock_device import MockDevice
+
+    device = MockDevice()
+    device.connect()
+    mgr = CaptureManager(SessionStore(tmp_path))
+    mgr.device = device
+    mgr.device_kind = "mock"
+    cfg = GeneratorConfig(protocol=protocol, data_hex="41", tx_pin=0,
+                          scl_pin=1, baud=100_000, i2c_register=0x10)
+    result = loopback_self_test(mgr, cfg, 2_000_000, 8_000, "41")
+    assert result.passed, result.detail

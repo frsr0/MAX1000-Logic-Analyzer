@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from itertools import product
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from ..hardware.device_models import GeneratorConfig
 from .bitbang import preview as bitbang_preview
@@ -53,3 +53,37 @@ def run_preview_sweep(base: GeneratorConfig, axes: Dict[str, List[Any]], limit: 
     rows = [preview_variant(cfg) for cfg in variants]
     return {"count": len(rows), "passed": sum(row["status"] == "ok" for row in rows),
             "failed": sum(row["status"] != "ok" for row in rows), "rows": rows}
+
+
+def run_capture_sweep(
+    base: GeneratorConfig,
+    axes: Dict[str, List[Any]],
+    limit: int,
+    capture_rate: float,
+    capture_samples: int,
+    expected_hex: Optional[str],
+    runner: Callable[[GeneratorConfig, float, int, Optional[str]], Any],
+    stop_on_failure: bool = False,
+) -> dict:
+    """Run bounded generator variants through a capture-backed runner."""
+    if capture_rate <= 0 or capture_samples <= 0:
+        raise ValueError("capture_rate and capture_samples must be positive")
+    variants = expand_variants(base, axes, limit)
+    rows: List[dict] = []
+    for cfg in variants:
+        row: Dict[str, Any] = {"protocol": cfg.protocol,
+                               "config": cfg.model_dump()}
+        try:
+            result = runner(cfg, float(capture_rate), int(capture_samples), expected_hex)
+            payload = result.model_dump() if hasattr(result, "model_dump") else dict(result)
+            row.update(payload)
+            row["status"] = "passed" if bool(payload.get("passed")) else "failed"
+        except Exception as exc:  # record a bad physical variant and continue
+            row.update({"status": "error", "passed": False, "error": str(exc)})
+        rows.append(row)
+        if stop_on_failure and row["status"] != "passed":
+            break
+    return {"count": len(rows), "requested_count": len(variants),
+            "passed": sum(row["status"] == "passed" for row in rows),
+            "failed": sum(row["status"] != "passed" for row in rows),
+            "rows": rows}

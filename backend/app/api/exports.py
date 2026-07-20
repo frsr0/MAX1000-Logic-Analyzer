@@ -1,4 +1,4 @@
-"""Export endpoints: CSV / JSON / VCD / PulseView / NPZ / HTML report."""
+"""Export endpoints: CSV / JSON / VCD / PulseView / NPZ / HTML / PDF reports."""
 from __future__ import annotations
 
 import time
@@ -13,6 +13,7 @@ from ..exports.csv_export import decoder_csv, samples_csv, samples_csv_iter
 from ..exports.json_export import session_to_json
 from ..exports.npz_export import npz_export
 from ..exports.report_export import html_report
+from ..exports.pdf_export import pdf_report
 from ..exports.vcd_export import vcd_export, vcd_export_iter
 from .deps import get_session_or_404, get_waveform_or_404
 from ..state import store
@@ -133,4 +134,17 @@ def export_report(session_id: str):
     fname = _filename(session, "report.html")
     _record(session, "report", fname, {})
     return Response(content=text, media_type="text/html", headers={
+        "Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+@router.post("/api/sessions/{session_id}/export/pdf")
+def export_pdf(session_id: str):
+    session = get_session_or_404(session_id)
+    wf = store.load_waveform(session_id)
+    events = {d.id: store.load_decoder_events(session_id, d.id)
+              for d in session.decoders if d.status == "done"}
+    data = pdf_report(session, wf, events)
+    fname = _filename(session, "report.pdf")
+    _record(session, "pdf", fname, {})
+    return Response(content=data, media_type="application/pdf", headers={
         "Content-Disposition": f'attachment; filename="{fname}"'})

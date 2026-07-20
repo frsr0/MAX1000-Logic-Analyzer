@@ -198,6 +198,8 @@ export const api = {
   generatorPreview: (cfg: GeneratorConfig) => post<any>('/api/generator/preview', cfg),
   generatorSweepPreview: (body: { base: GeneratorConfig; axes: Record<string, unknown[]>; limit?: number }) =>
     post<any>('/api/generator/sweep-preview', body),
+  generatorSweepCapture: (body: { base: GeneratorConfig; axes: Record<string, unknown[]>; limit?: number; capture_rate?: number; capture_samples?: number; expected_hex?: string; stop_on_failure?: boolean }) =>
+    post<any>('/api/generator/sweep-capture', body),
   bitbangPresets: () => get<{ presets: string[] }>('/api/generator/bitbang/presets'),
   generatorSend: (body: { config: GeneratorConfig; capture: boolean; capture_rate?: number; capture_samples?: number; expected_hex?: string }) =>
     post<any>('/api/generator/send', body),

@@ -12,7 +12,7 @@ board. “Post-capture” means the feature consumes an immutable saved waveform
 | Protocol decoders | Yes | Yes on captured channels | Yes | UART, I²C, SPI, LIN, MIDI, PS/2, I²S, CAN, JTAG, HDLC, SMBus/PMBus, IR, and others. |
 | Software triggers/search | Yes | Search saved captures | Yes | Hardware execution is shown separately in the trigger matrix. |
 | Filtering, thresholds, spectrum, spectrogram, correlation, eye diagrams, timing suspects | Yes | Yes on available analog/digital data | Yes | Derived channels never replace raw samples. |
-| Reports and exports | Yes | Yes | No | JSON, CSV, VCD, PulseView-compatible VCD, NPZ, HTML report. |
+| Reports and exports | Yes | Yes | No | JSON, CSV, VCD, PulseView-compatible VCD, NPZ, HTML report, and dependency-free PDF report. |
 | CAN electrical connectivity | No | No without external transceiver | Decoder only | Logic-level CAN decode is supported; the board is not a CAN transceiver. |
 
 ## Verification baseline

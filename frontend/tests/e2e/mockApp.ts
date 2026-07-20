@@ -938,10 +938,10 @@ export async function installMockApp(page: Page) {
     if (req.method() === 'GET' && /\/api\/sessions\/[^/]+\/measurements\/results$/.test(new URL(req.url()).pathname)) {
       return route.fulfill(okJson({ measurements: makeSession().measurements }));
     }
-    if (req.method() === 'POST' && /\/api\/sessions\/[^/]+\/export\/(csv|json|vcd|pulseview|npz|report)$/.test(new URL(req.url()).pathname)) {
+    if (req.method() === 'POST' && /\/api\/sessions\/[^/]+\/export\/(csv|json|vcd|pulseview|npz|report|pdf)$/.test(new URL(req.url()).pathname)) {
       const format = new URL(req.url()).pathname.split('/').pop() ?? 'export';
-      return route.fulfill({ status: 200, contentType: format === 'report' ? 'text/html' : 'application/octet-stream',
-        headers: { 'Content-Disposition': `attachment; filename=fixture.${format === 'report' ? 'html' : format}` }, body: `fixture ${format}` });
+      return route.fulfill({ status: 200, contentType: format === 'report' ? 'text/html' : (format === 'pdf' ? 'application/pdf' : 'application/octet-stream'),
+        headers: { 'Content-Disposition': `attachment; filename="fixture.${format === 'report' ? 'html' : format}"` }, body: `fixture ${format}` });
     }
     if (matches('GET', req, '/api/logs')) return route.fulfill(okJson({ logs: [] }));
     if (matches('GET', req, '/api/diagnostics')) return route.fulfill(okJson({ lan_urls: ['http://127.0.0.1:4173', 'http://192.168.0.10:4173'] }));
@@ -962,6 +962,9 @@ export async function installMockApp(page: Page) {
     if (matches('POST', req, '/api/generator/preview')) return route.fulfill(okJson({ symbols: [3, 0, 1, 2], count: 4, duration_s: 0.0004, tx_levels: [1, 0, 1, 0], clock_levels: [1, 0, 0, 1] }));
     if (matches('POST', req, '/api/generator/sweep-preview')) return route.fulfill(okJson({ count: 3, passed: 3, failed: 0,
       rows: [{ protocol: 'bitbang', status: 'ok' }, { protocol: 'bitbang', status: 'ok' }, { protocol: 'bitbang', status: 'ok' }] }));
+    if (matches('POST', req, '/api/generator/sweep-capture')) return route.fulfill(okJson({ count: 2, requested_count: 2, passed: 2, failed: 0,
+      rows: [{ protocol: 'bitbang', status: 'passed', passed: true, session_id: 'session-demo' },
+        { protocol: 'bitbang', status: 'passed', passed: true, session_id: 'session-demo-2' }] }));
     if (matches('GET', req, '/api/generator/status')) return route.fulfill(okJson({ busy: false, running: false, supported: true, detail: 'fixture ready' }));
     if (matches('POST', req, '/api/generator/send')) return route.fulfill(okJson({ passed: true, sent_hex: '48656c6c6f21', decoded_hex: '48656c6c6f21', detail: 'fixture loopback', session_id: 'session-demo' }));
     if (matches('POST', req, '/api/generator/self-test')) return route.fulfill(okJson({ passed: true, sent_hex: '48656c6c6f21', decoded_hex: '48656c6c6f21', detail: 'fixture self-test' }));

@@ -44,6 +44,7 @@ export function ExportPanel() {
         <button onClick={() => dl('pulseview', {})}>PulseView-compatible VCD</button>
         <button onClick={() => dl('npz')}>NumPy NPZ</button>
         <button onClick={() => dl('report')}>HTML report</button>
+        <button onClick={() => dl('pdf')}>PDF report</button>
         <button onClick={screenshot}>PNG screenshot</button>
         {activeSession.decoders.filter((d) => d.status === 'done').map((d) => (
           <button key={d.id}

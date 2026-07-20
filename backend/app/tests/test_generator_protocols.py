@@ -7,7 +7,7 @@ from app.generator.protocols import (
     pwm_symbols,
     rs485_symbols,
 )
-from app.generator.sweep import expand_variants, run_preview_sweep
+from app.generator.sweep import expand_variants, run_capture_sweep, run_preview_sweep
 from app.hardware.device_models import GeneratorConfig
 
 
@@ -79,3 +79,21 @@ def test_generator_sweep_expands_axes_and_reports_preview_rows():
     assert [v.extra["repeat"] for v in variants] == [1, 2, 3]
     result = run_preview_sweep(base, {"extra.repeat": [1, 2, 3]})
     assert result["count"] == result["passed"] == 3
+
+
+def test_capture_sweep_records_pass_fail_rows_and_can_stop_early():
+    base = GeneratorConfig(protocol="uart", data_hex="55")
+    calls = []
+
+    def runner(cfg, rate, samples, expected):
+        calls.append((cfg.baud, rate, samples, expected))
+        return {"passed": cfg.baud != 200, "session_id": f"ses-{cfg.baud}"}
+
+    result = run_capture_sweep(
+        base, {"baud": [100, 200, 300]}, 8, 1_000_000, 4_000, "55",
+        runner, stop_on_failure=True)
+    assert result["requested_count"] == 3
+    assert result["count"] == result["failed"] + result["passed"] == 2
+    assert result["rows"][0]["status"] == "passed"
+    assert result["rows"][1]["status"] == "failed"
+    assert len(calls) == 2

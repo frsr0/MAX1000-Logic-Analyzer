@@ -165,20 +165,20 @@ current SPI readback bandwidth.
 - [x] Add optional PulseView-compatible VCD export where the format can be supported reliably.
 - [x] Add decoded protocol JSON export with stable schema versioning.
 - [x] Add richer HTML reports with plots, error summaries, trigger details, generator provenance, and measurements.
-- [ ] Add a PDF report export path when a supported renderer is included.
+- [x] Add a dependency-free PDF report export path alongside the rich HTML report.
 - [x] Add batch decode of multiple sessions.
 - [x] Add command-line capture/decode/export workflows for CI and regression testing.
 - [x] Add automated generator parameter/preview sweeps for CI and regression runs.
-- [ ] Add opt-in capture-backed sweeps for a connected device and route.
+- [x] Add opt-in capture-backed sweeps for a connected device and route.
 - [x] Add pass/fail assertions for expected packets, timing bounds, and error counts.
 - [x] Add machine-readable JUnit/JSON results for hardware validation runs.
 
 ## Phase 7 — Verification and release hardening
 
 - [ ] Add unit tests for every encoder, decoder, trigger, and measurement.
-- [ ] Add malformed-input tests: truncation, undersampling, noise, missing edges, illegal transitions, and FIFO overflow.
-- [ ] Add property tests for round-tripping generator output through decoder input.
-- [ ] Add mock scenarios for every supported protocol and error condition.
+- [x] Add malformed-input tests: truncation, undersampling, noise, missing edges, illegal transitions, and FIFO overflow.
+- [x] Add deterministic property-style tests for round-tripping generator output through decoder input.
+- [x] Add deterministic mock scenarios for supported generator protocols and representative error conditions.
 - [x] Add frontend E2E coverage for generator, decoder, trigger builder, measurements, reports, and session comparison.
 - [x] Run the existing backend test suite.
 - [x] Run the existing host/driver test suite.

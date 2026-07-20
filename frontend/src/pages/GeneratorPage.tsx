@@ -107,6 +107,21 @@ export function GeneratorPage() {
     } catch (e: any) { toast('error', e.message); }
   };
 
+  const runCaptureSweep = async () => {
+    try {
+      const axes: Record<string, unknown[]> = cfg.protocol === 'bitbang'
+        ? { 'extra.repeat': [1, 2] }
+        : { baud: [Math.max(1, Math.floor(cfg.baud / 2)), cfg.baud] };
+      const captureRate = 2_000_000;
+      setSweepResult(await api.generatorSweepCapture({
+        base: cfg, axes, limit: 8, capture_rate: captureRate,
+        capture_samples: uartCaptureSamples(cfg, captureRate),
+        expected_hex: expected || undefined,
+      }));
+      toast('success', 'Capture-backed sweep complete');
+    } catch (e: any) { toast('error', e.message); }
+  };
+
   const exportBitbangScript = () => {
     const payload = { format: 'ols-bitbang-v1', symbol_rate: cfg.baud, ...cfg.extra };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -506,12 +521,18 @@ export function GeneratorPage() {
 
           <div className="button-row">
             <button onClick={runSweep}>Preview parameter sweep</button>
+            <button disabled={busy || !controlMode || !canLoopbackCapture}
+              onClick={runCaptureSweep}>Run capture-backed sweep</button>
             {sweepResult && <span className={`badge ${sweepResult.failed ? 'badge-na' : 'badge-soft'}`}>
               {sweepResult.passed}/{sweepResult.count} variants valid
             </span>}
           </div>
           {sweepResult && <div className="sweep-results">
             {sweepResult.rows.map((row: any, index: number) => <div key={index} className="hint">
+              {row.session_id && <button className="slim" onClick={async () => {
+                await openSession(row.session_id);
+                setPage('capture');
+              }}>Open capture</button>}
               {index + 1}. {row.protocol} · {row.status}{row.error ? ` · ${row.error}` : ''}
             </div>)}
           </div>}

@@ -313,8 +313,11 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
 - Web Workers: server-side LOD makes client-side parsing cheap (zero-copy
   TypedArray views), so workers are not yet needed; revisit if client-side
   filtering/FFT is added.
-- PulseView-compatible VCD and richer HTML reports are current; native PDF
-  rendering remains a future dependency-backed option.
+- PulseView-compatible VCD, richer HTML reports, and a dependency-free text PDF
+  report are current. HTML remains the plot-rich report path.
+- Generator parameter sweeps can be preview-only for CI or explicitly
+  capture-backed for a connected route; capture-backed rows retain their saved
+  session IDs and pass/fail comparison details.
 - Session storage uses NPZ per session; a chunked store for >10M-sample
   captures is architected (`chunk_store.py`) but not yet needed at current
   full-width hardware depths (4,194,304 samples).

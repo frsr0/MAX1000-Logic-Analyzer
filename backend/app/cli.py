@@ -20,6 +20,7 @@ from .decoders.base import DecodeContext
 from .exports.csv_export import samples_csv
 from .exports.json_export import session_to_json
 from .exports.report_export import html_report
+from .exports.pdf_export import pdf_report
 from .exports.vcd_export import vcd_export_iter
 from .state import store
 from .hardware.device_models import GeneratorConfig
@@ -88,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     batch.add_argument("--decoder", required=True); batch.add_argument("--channels", required=True)
     batch.add_argument("--settings", default="{}")
     exp = sub.add_parser("export")
-    exp.add_argument("session_id"); exp.add_argument("--format", choices=["json", "csv", "vcd", "report"], default="json")
+    exp.add_argument("session_id"); exp.add_argument("--format", choices=["json", "csv", "vcd", "report", "pdf"], default="json")
     exp.add_argument("--output")
     assertion = sub.add_parser("assert")
     assertion.add_argument("session_id"); assertion.add_argument("--spec", required=True)
@@ -135,7 +136,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.format == "json": text = session_to_json(session, wf, events)
     elif args.format == "csv": text = samples_csv(session, wf)
     elif args.format == "vcd": text = "".join(vcd_export_iter(session, wf))
-    else: text = html_report(session, wf, events)
+    elif args.format == "report": text = html_report(session, wf, events)
+    else:
+        data = pdf_report(session, wf, events)
+        if args.output:
+            Path(args.output).write_bytes(data)
+        else:
+            sys.stdout.buffer.write(data)
+        return 0
     _write(text, args.output)
     return 0
 

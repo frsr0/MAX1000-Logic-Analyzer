@@ -12,7 +12,7 @@ from ..generator.bitbang import PRESETS, preview as bitbang_preview
 from ..generator.model import GeneratorSendRequest
 from ..hardware.base import HardwareError
 from ..hardware.device_models import GeneratorConfig
-from ..generator.sweep import run_preview_sweep
+from ..generator.sweep import run_capture_sweep, run_preview_sweep
 from ..state import capture_manager
 from .deps import client_id_header, require_control
 
@@ -27,12 +27,39 @@ class GeneratorSweepRequest(BaseModel):
     limit: int = 256
 
 
+class GeneratorCaptureSweepRequest(GeneratorSweepRequest):
+    capture_rate: float = Field(default=2_000_000, gt=0, le=200_000_000)
+    capture_samples: int = Field(default=10_000, gt=0, le=4_194_304)
+    expected_hex: str | None = None
+    stop_on_failure: bool = False
+
+
 @router.post("/api/generator/sweep-preview")
 def generator_sweep_preview(req: GeneratorSweepRequest):
     try:
         return run_preview_sweep(req.base, req.axes, max(1, min(256, int(req.limit))))
     except (TypeError, ValueError) as exc:
         raise HTTPException(400, str(exc))
+
+
+@router.post("/api/generator/sweep-capture")
+def generator_sweep_capture(req: GeneratorCaptureSweepRequest,
+                             client_id: str = Depends(client_id_header)):
+    """Run bounded variants through the existing loopback capture workflow."""
+    require_control(client_id)
+    try:
+        capture_manager.require_device()
+        return run_capture_sweep(
+            req.base, req.axes, max(1, min(64, int(req.limit))),
+            req.capture_rate, req.capture_samples, req.expected_hex,
+            lambda cfg, rate, samples, expected: loopback_self_test(
+                capture_manager, cfg, rate, samples, expected),
+            req.stop_on_failure,
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+    except HardwareError as exc:
+        raise HTTPException(502, str(exc))
 
 
 @router.get("/api/generator/capabilities")

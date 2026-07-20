@@ -163,7 +163,8 @@ def test_capture_flow_uart(client):
 
     # exports
     for fmt, body in [("csv", {"start": 0, "end": 500}), ("json", {}),
-                      ("vcd", {}), ("pulseview", {}), ("npz", None), ("report", None)]:
+                      ("vcd", {}), ("pulseview", {}), ("npz", None),
+                      ("report", None), ("pdf", None)]:
         url = f"/api/sessions/{sid}/export/{fmt}"
         r = client.post(url, json=body) if body is not None else client.post(url)
         assert r.status_code == 200, f"{fmt}: {r.text}"
@@ -478,6 +479,25 @@ def test_generator_sweep_preview_endpoint(client):
     assert r.status_code == 200, r.text
     assert r.json()["count"] == 2
     assert r.json()["failed"] == 0
+
+
+def test_generator_capture_sweep_endpoint_uses_mock_loopback(client):
+    client.post("/api/connect", json={"device_id": "mock"}, headers=HDR)
+    r = client.post("/api/generator/sweep-capture", json={
+        "base": {"protocol": "uart", "baud": 100_000,
+                 "data_hex": "55", "tx_pin": 0},
+        "axes": {"baud": [100_000, 200_000]}, "limit": 8,
+        "capture_rate": 2_000_000, "capture_samples": 4_000,
+        "expected_hex": "55"}, headers=HDR)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["count"] == body["requested_count"] == 2
+    assert body["passed"] == 2
+    assert all(row["session_id"] for row in body["rows"])
+    too_large = client.post("/api/generator/sweep-capture", json={
+        "base": {"protocol": "uart", "data_hex": "55"},
+        "capture_rate": 200_000_001}, headers=HDR)
+    assert too_large.status_code == 422
 
 
 def test_api_management_error_and_filter_paths(client):

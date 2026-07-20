@@ -343,6 +343,10 @@ test('mock generator exposes Bit Banger templates and bounded preview controls',
   await expect(page.getByText(/symbols/).last()).toBeVisible();
   await page.getByRole('button', { name: 'Preview parameter sweep' }).click();
   await expect(page.getByText('3/3 variants valid')).toBeVisible();
+  await protocol.selectOption('uart');
+  await page.getByRole('button', { name: 'Run capture-backed sweep' }).click();
+  await expect(page.getByText('2/2 variants valid')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Open capture' })).toHaveCount(2);
 });
 
 test('mock capture dashboard shows protocol activity and errors', async ({ page }) => {
@@ -593,6 +597,8 @@ if (useMockHarness) {
     await expect(page.getByRole('button', { name: 'HTML report' })).toBeVisible();
     await page.getByRole('button', { name: 'HTML report' }).click();
     await expect(page.getByText('REPORT export downloaded')).toBeVisible();
+    await page.getByRole('button', { name: 'PDF report' }).click();
+    await expect(page.getByText('PDF export downloaded')).toBeVisible();
     await page.getByRole('button', { name: 'PulseView-compatible VCD' }).click();
     await expect(page.getByText('PULSEVIEW export downloaded')).toBeVisible();
   });
