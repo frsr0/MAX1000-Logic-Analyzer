@@ -71,6 +71,11 @@ export interface TriggerConfig {
   occurrence?: number;
   window_s?: number | null;
   sequence_steps?: { type: string; value?: number | null }[];
+  min_duration_s?: number | null;
+  max_duration_s?: number | null;
+  consecutive?: number;
+  holdoff_s?: number | null;
+  rearm?: boolean;
   pre_trigger_samples: number;
   position_pct: number;
   execution: string;

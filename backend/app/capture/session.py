@@ -62,6 +62,11 @@ class TriggerConfig(BaseModel):
     occurrence: int = 1                 # nth matching event for software search
     window_s: Optional[float] = None    # sequence/event qualification window
     sequence_steps: List[Dict[str, Any]] = Field(default_factory=list)
+    min_duration_s: Optional[float] = None
+    max_duration_s: Optional[float] = None
+    consecutive: int = 1
+    holdoff_s: Optional[float] = None
+    rearm: bool = False
     pre_trigger_samples: int = 0
     position_pct: float = 0.0           # trigger position within capture, 0..100
     # filled in by the trigger capability model:

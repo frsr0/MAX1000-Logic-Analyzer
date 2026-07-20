@@ -107,17 +107,33 @@ def find_software_trigger(wf: WaveformData, trig: TriggerConfig,
     t = trig.type
     chans = trig.channels or [0]
     occurrence = max(1, int(trig.occurrence or 1))
+    consecutive = max(1, int(trig.consecutive or 1))
 
     def nth(values):
         values = sorted(int(v) for v in values)
+        if consecutive > 1:
+            grouped = []
+            for value in values:
+                if not grouped or value > grouped[-1][-1] + 1:
+                    grouped.append([value])
+                else:
+                    grouped[-1].append(value)
+            values = [group[0] for group in grouped if len(group) >= consecutive]
         return values[occurrence - 1] if len(values) >= occurrence else None
+
+    def width_ok(width_samples: int) -> bool:
+        width_s = width_samples / wf.sample_rate
+        return ((trig.min_duration_s is None or width_s >= trig.min_duration_s) and
+                (trig.max_duration_s is None or width_s <= trig.max_duration_s))
 
     if t in ("rising", "falling", "any_edge"):
         kind = {"rising": "rising", "falling": "falling", "any_edge": "any"}[t]
         matches = []
         for c in chans:
             e = find_edges(wf.digital_channel(c), kind)
-            matches.extend(int(x) for x in e)
+            bounds = np.concatenate(([0], e, [wf.num_samples]))
+            matches.extend(int(x) for j, x in enumerate(e)
+                           if j + 2 < len(bounds) and width_ok(int(bounds[j + 2] - x)))
         return nth(matches)
 
     if t in ("high", "low"):
@@ -160,8 +176,8 @@ def find_software_trigger(wf: WaveformData, trig: TriggerConfig,
         matches = []
         for i in range(1, len(bounds) - 1):
             w = bounds[i + 1] - bounds[i]
-            if (t == "pulse_wider" and w > width_samples) or \
-               (t == "pulse_narrower" and w < width_samples):
+            if width_ok(int(w)) and ((t == "pulse_wider" and w > width_samples) or \
+               (t == "pulse_narrower" and w < width_samples)):
                 matches.append(int(bounds[i]))
         return nth(matches)
 

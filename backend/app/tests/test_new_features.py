@@ -88,6 +88,9 @@ def test_raw_trigger_occurrence_selects_nth_match():
     assert find_software_trigger(wf, TriggerConfig(type="rising", occurrence=2)) == 7
     assert find_software_trigger(wf, TriggerConfig(type="pattern", pattern="1",
                                                    occurrence=3)) == 14
+    wide = np.zeros(24, dtype=np.uint16); wide[2:10] = 1; wide[14:18] = 1
+    wide_wf = WaveformData(sample_rate=1_000_000, digital=wide)
+    assert find_software_trigger(wide_wf, TriggerConfig(type="rising", min_duration_s=6e-6)) == 2
 
 
 def test_jitter_measurement_reports_rms_and_peak_to_peak():

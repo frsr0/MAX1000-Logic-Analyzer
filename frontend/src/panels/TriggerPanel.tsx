@@ -27,6 +27,7 @@ export function TriggerPanel() {
   const needsBaud = trig.type === 'uart_byte';
   const needsOccurrence = ['uart_byte', 'i2c_address', 'i2c_nack', 'spi_byte', 'decoder_error'].includes(trig.type);
   const needsSequence = trig.type === 'sequence';
+  const needsTimingQualifier = !['none', 'sequence', 'timeout'].includes(trig.type);
   const searchExisting = async (occurrence: number) => {
     try {
       const query = { ...trig, occurrence };
@@ -115,6 +116,25 @@ export function TriggerPanel() {
             onChange={(e) => setTrig({ occurrence: Math.max(1, Number(e.target.value)) })} />
         </label>
       )}
+      {needsTimingQualifier && <>
+        <label className="field">
+          <span>Minimum duration (µs)</span>
+          <input type="number" min={0} step={0.1}
+            value={trig.min_duration_s != null ? trig.min_duration_s * 1e6 : ''}
+            onChange={(e) => setTrig({ min_duration_s: e.target.value ? Number(e.target.value) / 1e6 : null })} />
+        </label>
+        <label className="field">
+          <span>Maximum duration (µs)</span>
+          <input type="number" min={0} step={0.1}
+            value={trig.max_duration_s != null ? trig.max_duration_s * 1e6 : ''}
+            onChange={(e) => setTrig({ max_duration_s: e.target.value ? Number(e.target.value) / 1e6 : null })} />
+        </label>
+        <label className="field">
+          <span>Consecutive matching samples</span>
+          <input type="number" min={1} step={1} value={trig.consecutive ?? 1}
+            onChange={(e) => setTrig({ consecutive: Math.max(1, Number(e.target.value)) })} />
+        </label>
+      </>}
       {needsSequence && (
         <>
           <label className="field">
