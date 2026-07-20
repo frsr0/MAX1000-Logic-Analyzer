@@ -106,23 +106,26 @@ def find_software_trigger(wf: WaveformData, trig: TriggerConfig,
         return None
     t = trig.type
     chans = trig.channels or [0]
+    occurrence = max(1, int(trig.occurrence or 1))
+
+    def nth(values):
+        values = sorted(int(v) for v in values)
+        return values[occurrence - 1] if len(values) >= occurrence else None
 
     if t in ("rising", "falling", "any_edge"):
         kind = {"rising": "rising", "falling": "falling", "any_edge": "any"}[t]
-        best = None
+        matches = []
         for c in chans:
             e = find_edges(wf.digital_channel(c), kind)
-            if len(e):
-                best = int(e[0]) if best is None else min(best, int(e[0]))
-        return best
+            matches.extend(int(x) for x in e)
+        return nth(matches)
 
     if t in ("high", "low"):
         want = 1 if t == "high" else 0
+        matches = []
         for c in chans:
-            idx = np.nonzero(wf.digital_channel(c) == want)[0]
-            if len(idx):
-                return int(idx[0])
-        return None
+            matches.extend(int(x) for x in np.nonzero(wf.digital_channel(c) == want)[0])
+        return nth(matches)
 
     if t == "pattern" and trig.pattern:
         # pattern like "1x0" — index i = channel chans[i] (or i if not given)
@@ -136,7 +139,7 @@ def find_software_trigger(wf: WaveformData, trig: TriggerConfig,
             if ch == "1":
                 value |= 1 << c
         hits = np.nonzero((wf.digital & mask) == value)[0]
-        return int(hits[0]) if len(hits) else None
+        return nth(hits)
 
     if t == "bus_value" and trig.value is not None:
         mask = 0
@@ -147,38 +150,41 @@ def find_software_trigger(wf: WaveformData, trig: TriggerConfig,
             if (trig.value >> i) & 1:
                 value |= 1 << c
         hits = np.nonzero((wf.digital & mask) == value)[0]
-        return int(hits[0]) if len(hits) else None
+        return nth(hits)
 
     if t in ("pulse_wider", "pulse_narrower") and trig.width_s:
         width_samples = trig.width_s * wf.sample_rate
         bits = wf.digital_channel(chans[0])
         edges = find_edges(bits, "any")
         bounds = np.concatenate(([0], edges, [len(bits)]))
+        matches = []
         for i in range(1, len(bounds) - 1):
             w = bounds[i + 1] - bounds[i]
             if (t == "pulse_wider" and w > width_samples) or \
                (t == "pulse_narrower" and w < width_samples):
-                return int(bounds[i])
-        return None
+                matches.append(int(bounds[i]))
+        return nth(matches)
 
     if t == "timeout" and trig.width_s:
         width_samples = int(trig.width_s * wf.sample_rate)
         bits = wf.digital_channel(chans[0])
         edges = find_edges(bits, "any")
         bounds = np.concatenate(([0], edges, [len(bits)]))
+        matches = []
         for i in range(len(bounds) - 1):
             if bounds[i + 1] - bounds[i] >= width_samples:
-                return int(bounds[i] + width_samples)
-        return None
+                matches.append(int(bounds[i] + width_samples))
+        return nth(matches)
 
     if t == "glitch":
         max_w = max(1, int((trig.width_s or 3 / wf.sample_rate) * wf.sample_rate))
         bits = wf.digital_channel(chans[0])
         edges = find_edges(bits, "any")
         bounds = np.concatenate(([0], edges, [len(bits)]))
+        matches = []
         for i in range(1, len(bounds) - 1):
             if bounds[i + 1] - bounds[i] <= max_w:
-                return int(bounds[i])
-        return None
+                matches.append(int(bounds[i]))
+        return nth(matches)
 
     return None

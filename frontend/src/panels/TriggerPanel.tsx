@@ -27,6 +27,14 @@ export function TriggerPanel() {
   const needsBaud = trig.type === 'uart_byte';
   const needsOccurrence = ['uart_byte', 'i2c_address', 'i2c_nack', 'spi_byte', 'decoder_error'].includes(trig.type);
   const needsSequence = trig.type === 'sequence';
+  const searchExisting = async (occurrence: number) => {
+    try {
+      const query = { ...trig, occurrence };
+      const r = await api.triggerSearch(activeSession!.id, query);
+      if (r.sample == null) toast('warning', `No match for occurrence ${occurrence}`);
+      else { setTrig({ occurrence }); waveformView.jumpTo(r.sample); toast('success', `Match ${occurrence} at sample ${r.sample}`); }
+    } catch (e: any) { toast('error', e.message); }
+  };
 
   return (
     <div className="panel-body">
@@ -126,13 +134,12 @@ export function TriggerPanel() {
         </>
       )}
       {activeSession && exec === 'post_capture' && (
-        <button onClick={async () => {
-          try {
-            const r = await api.triggerSearch(activeSession.id, trig);
-            if (r.sample == null) toast('warning', 'No matching event found');
-            else { waveformView.jumpTo(r.sample); toast('success', `Match at sample ${r.sample}`); }
-          } catch (e: any) { toast('error', e.message); }
-        }}>Search existing capture</button>
+        <div className="button-row">
+          <button onClick={() => searchExisting(Math.max(1, (trig.occurrence ?? 1) - 1))}
+            disabled={(trig.occurrence ?? 1) <= 1}>Previous match</button>
+          <button onClick={() => searchExisting(trig.occurrence ?? 1)}>Search existing capture</button>
+          <button onClick={() => searchExisting((trig.occurrence ?? 1) + 1)}>Next match</button>
+        </div>
       )}
       {capabilities?.supports_pre_trigger && trig.type !== 'none' && (
         <>

@@ -79,6 +79,15 @@ def test_protocol_and_sequence_trigger_search_on_decoder_events():
         events) is None
 
 
+def test_raw_trigger_occurrence_selects_nth_match():
+    bits = np.zeros(24, dtype=np.uint16)
+    bits[[2, 7, 14, 21]] = 1
+    wf = WaveformData(sample_rate=1_000_000, digital=bits)
+    assert find_software_trigger(wf, TriggerConfig(type="rising", occurrence=2)) == 7
+    assert find_software_trigger(wf, TriggerConfig(type="pattern", pattern="1",
+                                                   occurrence=3)) == 14
+
+
 def test_jitter_measurement_reports_rms_and_peak_to_peak():
     signal = np.zeros(30, dtype=np.uint16)
     signal[[1, 5, 10, 14, 20, 25]] = 1

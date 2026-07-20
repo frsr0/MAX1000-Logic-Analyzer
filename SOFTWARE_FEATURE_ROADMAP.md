@@ -90,7 +90,7 @@ current SPI readback bandwidth.
 - [x] Implement `i2c_nack` using decoder ACK fields.
 - [x] Implement `spi_byte` using decoded SPI word values.
 - [x] Implement `decoder_error` using decoder severity.
-- [ ] Add trigger-on-nth-event and trigger-on-first-error modes.
+- [x] Add trigger-on-nth-event and trigger-on-first-error modes.
 - [ ] Add minimum/maximum duration and persistence qualifiers.
 - [ ] Add “N consecutive samples/events match” qualification.
 - [ ] Add trigger holdoff and re-arm search behavior for repeated captures.
@@ -101,7 +101,7 @@ current SPI readback bandwidth.
 - [ ] Show execution class beside every trigger: FPGA hardware, post-capture software, or unavailable.
 - [ ] Add a trigger builder for event sequences and timing windows.
 - [ ] Add visual trigger previews on the waveform.
-- [ ] Add “jump to first match”, “next match”, and “previous match”.
+- [x] Add “jump to first match”, “next match”, and “previous match”.
 - [ ] Add trigger result metadata to session exports and reports.
 - [ ] Add tests proving that post-capture triggers never alter raw samples.
 
