@@ -96,7 +96,8 @@ export function DecoderPanel() {
               }} />
             <strong>{d.name || d.decoder_id}</strong>
             <span className={`status status-${d.status}`}>{d.status}</span>
-            <span className="hint">{d.event_count} events</span>
+            <span className="hint">{d.event_count} events{d.quality_score != null
+              ? ` · quality ${(d.quality_score * 100).toFixed(0)}%` : ''}</span>
           </div>
           <div className="hint">
             {Object.entries(d.channels).map(([r, c]) => `${r}=${c}`).join('  ')}

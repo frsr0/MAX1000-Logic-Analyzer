@@ -132,6 +132,7 @@ export interface DecoderInstance {
   error?: string | null;
   event_count: number;
   warning_count: number;
+  quality_score?: number | null;
 }
 
 export interface DecoderEvent {

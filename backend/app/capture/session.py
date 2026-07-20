@@ -97,6 +97,7 @@ class DecoderInstance(BaseModel):
     error: Optional[str] = None
     event_count: int = 0
     warning_count: int = 0
+    quality_score: Optional[float] = None  # 0..1 host-side confidence estimate
 
 
 class MeasurementInstance(BaseModel):

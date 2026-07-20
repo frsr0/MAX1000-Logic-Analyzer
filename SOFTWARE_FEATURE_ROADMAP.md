@@ -76,7 +76,7 @@ current SPI readback bandwidth.
 - [x] HDLC/PPP-style framed serial with bit/byte stuffing and CRC.
 - [ ] NEC/RC5/RC6 infrared protocol decoders.
 - [ ] Quadrature encoder decoder with direction, count, and illegal-transition detection.
-- [ ] Add decoder confidence/quality scores for ambiguous or undersampled captures.
+- [x] Add decoder confidence/quality scores for ambiguous or undersampled captures.
 - [ ] Add decoder presets and reusable channel mappings.
 - [ ] Add stacked decoders for UART → Modbus/LIN/custom framing and SPI/I²C → device-register views.
 

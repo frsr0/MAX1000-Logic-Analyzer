@@ -479,11 +479,16 @@ class CaptureManager:
                 inst.status = "done"
                 inst.event_count = len(result.events)
                 inst.warning_count = len(result.warnings)
+                errors = sum(1 for ev in result.events if ev.get("severity") == "error")
+                denominator = max(1, inst.event_count + inst.warning_count)
+                inst.quality_score = max(0.0, min(1.0,
+                    1.0 - (inst.warning_count + errors) / denominator))
                 self.store.save(session)
                 manager.publish_threadsafe(topic, "decoder_complete", {
                     "decoder_id": inst.id,
                     "event_count": len(result.events),
                     "warnings": result.warnings,
+                    "quality_score": inst.quality_score,
                     "elapsed_s": time.time() - t0,
                 })
             except DecodeCancelled:
