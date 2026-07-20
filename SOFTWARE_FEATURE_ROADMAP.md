@@ -149,7 +149,7 @@ current SPI readback bandwidth.
 - [x] Add drag-and-drop channel reordering.
 - [x] Add per-channel visibility groups and saved layouts.
 - [x] Add command palette for navigation.
-- [ ] Extend the command palette with capture, decode, trigger search, and export actions.
+- [x] Extend the command palette with capture, decode, trigger search, and export actions.
 - [x] Add session tags, notes, and searchable metadata.
 - [x] Add reusable capture/decoder/measurement presets.
 - [x] Add a protocol dashboard summarizing packets, errors, timing, and throughput.

@@ -9,6 +9,7 @@ import { GeneratorPage } from '../pages/GeneratorPage';
 import { MachineInLoopPage } from '../pages/MachineInLoopPage';
 import { SessionsPage } from '../pages/SessionsPage';
 import { SettingsPage } from '../pages/SettingsPage';
+import { waveformView } from '../state/waveformStore';
 
 const NAV: { id: Page; icon: string; label: string }[] = [
   { id: 'capture', icon: 'CAP', label: 'Capture' },
@@ -20,13 +21,45 @@ const NAV: { id: Page; icon: string; label: string }[] = [
   { id: 'settings', icon: 'SET', label: 'Settings' },
 ];
 
+type Command = { label: string; action: () => void | Promise<void> };
+
 export function AppShell() {
   const { page, setPage, status, wsConnected, toasts, dismissToast,
           activeSession, captureSettings, toast, controlMode } = useApp();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState('');
   const paletteInput = useRef<HTMLInputElement>(null);
-  const commands = NAV.map((n) => ({ label: `Go to ${n.label}`, page: n.id }));
+  const commands: Command[] = [
+    ...NAV.map((n) => ({ label: `Go to ${n.label}`, action: () => setPage(n.id) })),
+    { label: 'Start or stop capture', action: async () => {
+      const st = useApp.getState().status;
+      if (st?.capture_state === 'capturing' || st?.capture_state === 'armed') await api.stopCapture();
+      else if (st?.device_connected && controlMode) await api.startCapture(captureSettings);
+      setPage('capture');
+    } },
+    { label: 'Run first decoder', action: async () => {
+      if (!activeSession) throw new Error('Open a session first');
+      const decoder = activeSession.decoders.find((item) => item.status !== 'running');
+      if (!decoder) throw new Error('No decoder is available');
+      await api.runDecoder(activeSession.id, decoder.id);
+      setPage('capture');
+    } },
+    { label: 'Search current trigger', action: async () => {
+      if (!activeSession) throw new Error('Open a session first');
+      const result = await api.triggerSearch(activeSession.id, captureSettings.trigger);
+      if (result.sample == null) throw new Error('No trigger match found');
+      waveformView.jumpTo(result.sample);
+      setPage('capture');
+    } },
+    { label: 'Export session JSON', action: async () => {
+      if (!activeSession) throw new Error('Open a session first');
+      await downloadExport(activeSession.id, 'json', { include_raw: true });
+    } },
+    { label: 'Export HTML report', action: async () => {
+      if (!activeSession) throw new Error('Open a session first');
+      await downloadExport(activeSession.id, 'report');
+    } },
+  ];
   const filteredCommands = commands.filter((c) => c.label.toLowerCase().includes(paletteQuery.toLowerCase()));
 
   // Global shortcuts: space (start/stop), ctrl+s (save session JSON)
@@ -75,6 +108,15 @@ export function AppShell() {
   useEffect(() => {
     if (paletteOpen) paletteInput.current?.focus();
   }, [paletteOpen]);
+
+  const runCommand = async (command: Command) => {
+    try {
+      await command.action();
+      setPaletteOpen(false);
+    } catch (err: any) {
+      toast('error', err.message);
+    }
+  };
 
   const capState = status?.capture_state ?? 'idle';
   const deviceBadge = status?.device_connected
@@ -158,13 +200,12 @@ export function AppShell() {
               aria-label="Command search" onChange={(e) => setPaletteQuery(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && filteredCommands[0]) {
-                  setPage(filteredCommands[0].page);
-                  setPaletteOpen(false);
+                  void runCommand(filteredCommands[0]);
                 }
               }} />
             <div className="command-list">
               {filteredCommands.map((command) => (
-                <button key={command.page} onClick={() => { setPage(command.page); setPaletteOpen(false); }}>
+                <button key={command.label} onClick={() => void runCommand(command)}>
                   <span>{command.label}</span><kbd>Enter</kbd>
                 </button>
               ))}

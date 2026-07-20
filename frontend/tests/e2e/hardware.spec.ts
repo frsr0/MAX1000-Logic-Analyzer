@@ -385,6 +385,16 @@ test('command palette navigates between app pages', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Signal generator' })).toBeVisible();
 });
 
+test('command palette exposes capture, decode, trigger, and export actions', async ({ page }) => {
+  await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })));
+  await expect(page.getByRole('dialog', { name: 'Command palette' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Start or stop capture/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Run first decoder/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Search current trigger/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Export session JSON/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Export HTML report/ })).toBeVisible();
+});
+
 test('signal generator loopback shows waveform and decode', async ({ page }) => {
   await page.getByRole('button', { name: 'Generator' }).click();
   await expect(page.getByRole('button', { name: 'Send + capture' })).toBeEnabled({ timeout: 15_000 });
