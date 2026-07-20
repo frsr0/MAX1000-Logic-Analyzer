@@ -379,6 +379,16 @@ test('mock eye diagram folds a digital channel at a configured rate', async ({ p
   await expect(page.getByLabel('Eye diagram')).toBeVisible();
 });
 
+test('mock channel panel saves a visibility layout and exposes drag ordering', async ({ page }) => {
+  await page.locator('.sidebar button[title="Capture"]').click();
+  await page.getByRole('button', { name: 'Channels', exact: true }).click();
+  await expect(page.locator('.channel-row[draggable="true"]').first()).toBeVisible();
+  await page.getByLabel('Channel layout name').fill('smoke');
+  await page.getByRole('button', { name: 'Save layout' }).click();
+  await expect(page.getByText("Channel layout 'smoke' saved")).toBeVisible();
+  await page.getByRole('button', { name: 'Digital only' }).click();
+});
+
 test('command palette navigates between app pages', async ({ page }) => {
   await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })));
   await expect(page.getByRole('dialog', { name: 'Command palette' })).toBeVisible();

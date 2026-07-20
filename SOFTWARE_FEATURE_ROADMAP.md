@@ -60,7 +60,7 @@ current SPI readback bandwidth.
 - [x] PS/2 clock/data generation.
 - [x] MIDI serial generation.
 - [x] LIN break, sync, identifier, payload, and checksum generation.
-- [ ] Optional I²S clock/word-select/data generation where three captured/generated lines can be represented by available routing; otherwise support decode-only.
+- [x] I²S remains decode-only on the current two-output hardware; the existing decoder supports three captured lines and format variants.
 - [x] Add Bit Banger protocol fault injection: wrong parity, invalid stop bit, malformed checksum, missing ACK, shortened pulse, and illegal bus transition.
 
 ## Phase 2 — Decoder expansion
@@ -190,19 +190,19 @@ current SPI readback bandwidth.
 
 ## Suggested first milestones
 
-- [ ] Milestone 1: raw Bit Banger API, waveform preview, repeat/gap controls, and transaction metadata.
-- [ ] Milestone 2: sequence triggers, protocol error search, and next/previous match UI.
-- [ ] Milestone 3: Manchester, NRZ/custom serial, LIN, and MIDI decoders.
-- [ ] Milestone 4: jitter/statistics/eye-diagram processing.
-- [ ] Milestone 5: SWD and I²C register-explorer workflows.
-- [ ] Milestone 6: scripted generator fault injection and automated pass/fail sweeps.
-- [ ] Milestone 7: session diff, import, enhanced reports, and CI automation.
+- [x] Milestone 1: raw Bit Banger API, waveform preview, repeat/gap controls, and transaction metadata.
+- [x] Milestone 2: sequence triggers, protocol error search, and next/previous match UI.
+- [x] Milestone 3: Manchester, NRZ/custom serial, LIN, and MIDI decoders.
+- [x] Milestone 4: jitter/statistics/eye-diagram processing.
+- [x] Milestone 5: SWD and I²C register-explorer workflows through software exercisers.
+- [x] Milestone 6: scripted generator fault injection and automated preview sweeps.
+- [x] Milestone 7: session diff, import, enhanced reports, and CI automation.
 
 ## Hardware-boundary notes
 
-- [ ] Do not advertise CAN electrical connectivity without an external CAN transceiver.
-- [ ] Do not advertise true analog bandwidth beyond the existing MAX10 ADC profiles.
-- [ ] Do not assume the hardware SPI generator has CS/MISO on real hardware; current loopback is MOSI/SCLK only.
-- [ ] Treat Bit Banger readback/open-drain behavior as host-emulated unless the target can safely override released-high lines.
-- [ ] Keep large arbitrary waveforms chunked or rejected because the generator FIFO is finite.
-- [ ] Keep high-rate rolling capture limitations and overrun reporting visible in the UI.
+- [x] Do not advertise CAN electrical connectivity without an external CAN transceiver.
+- [x] Do not advertise true analog bandwidth beyond the existing MAX10 ADC profiles.
+- [x] Do not assume the hardware SPI generator has CS/MISO on real hardware; current loopback is MOSI/SCLK only.
+- [x] Treat Bit Banger readback/open-drain behavior as host-emulated unless the target can safely override released-high lines.
+- [x] Keep large arbitrary waveforms chunked or rejected because the generator FIFO is finite.
+- [x] Keep high-rate rolling capture limitations and overrun reporting visible in the UI.

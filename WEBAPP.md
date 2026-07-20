@@ -299,17 +299,22 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
   debug/test mux logic guided by synthesis reports; do not block feature fixes
   on logic cleanup unless compile fails.
 
-**Planned (software):**
+**Current and planned (software):**
+- Current analysis includes spectrum, spectrogram, XY/correlation, envelopes,
+  threshold sweeps, eye diagrams, analog/digital event correlation, and timing
+  suspect annotations over immutable saved waveforms.
+- Current workflow includes drag-and-drop channel ordering, visibility groups,
+  saved layouts, transaction timelines, and a Ctrl/Cmd+K command palette.
 - FFT/spectrum view exists as an API endpoint (`/spectrum`) — dedicated UI
   panel, histogram and persistence views are future modules.
-- Additional protocol generators and register explorers remain software-roadmap
-  work; the current generator capability matrix is documented in
-  `FEATURE_CAPABILITY_MATRIX.md`.
+- Physical generator routes and register-explorer workflows remain bounded by
+  firmware and board routing; software exercisers and the capability matrix are
+  documented in `FEATURE_CAPABILITY_MATRIX.md`.
 - Web Workers: server-side LOD makes client-side parsing cheap (zero-copy
   TypedArray views), so workers are not yet needed; revisit if client-side
   filtering/FFT is added.
-- Drag-and-drop channel reorder (buttons exist), VCD/CSV import, PDF report,
-  command palette.
+- PulseView-compatible VCD and richer HTML reports are current; native PDF
+  rendering remains a future dependency-backed option.
 - Session storage uses NPZ per session; a chunked store for >10M-sample
   captures is architected (`chunk_store.py`) but not yet needed at current
   full-width hardware depths (4,194,304 samples).
