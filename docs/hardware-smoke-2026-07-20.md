@@ -34,6 +34,33 @@ on a configurable GPIO (tested with CS pin 7) plus MISO input selection (tested
 with the on-board sensor SDO pin 23 mapped to capture channel 15). The fixed
 sensor CS/SDO route remains available when no custom CS pin is selected.
 
+## Extended real-hardware validation
+
+The same programmed board then completed the extended host validation matrix:
+
+| Test group | Result |
+| --- | --- |
+| Debug PWM register and disable checks | PASS |
+| Raw/RLE compression matrix | PASS — all cases lossless |
+| Generator pin-routing sweep | PASS — 8/8 pins |
+| Host hardware validation | **418/419 passed** |
+| Isolated physical analog validation | **5/6 passed** |
+| Live Playwright browser session | PASS — 1/1 |
+
+The single failure is confined to the physical fixture path PMOD5/pool pin 20
+to AIN5/ADC7. It returned analog samples, but the expected full-scale UART
+activity was attenuated on the target channel and appeared on the cross-check
+channel. The second physical path, PMOD6/pool pin 21 to AIN4/ADC3, passed with
+full-scale activity and no repeated pattern on ADC7. This is a bench wiring or
+fixture issue to resolve before calling the analog fixture suite fully green;
+all digital, protocol, generator, capture, codec, trigger, mixed-signal,
+accelerometer, and browser-session checks passed.
+
+The live browser run used the real backend and physical board, and captured
+the device page, capture controls, generator loopback waveform, and live
+accelerometer session. The images are linked from the frontend wiki's
+[build and test page](wiki/frontend/build-and-test.md).
+
 Command:
 
 ```text

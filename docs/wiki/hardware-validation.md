@@ -22,6 +22,14 @@ On 2026-07-20 the connected MAX1000 was programmed with SOF checksum
 The full evidence, including session IDs and the programmed image, is in
 [docs/hardware-smoke-2026-07-20.md](../hardware-smoke-2026-07-20.md).
 
+The extended real-hardware run also passed the debug-PWM checks, lossless
+compression matrix, 8-pin generator routing sweep, protocol/trigger/SDRAM/
+mixed-signal matrix, and live Playwright browser session. The host matrix was
+**418/419 passed** and the isolated analog fixture run was **5/6 passed**.
+Both failures identify the same physical path: PMOD5/pool 20 to AIN5/ADC7.
+PMOD6/pool 21 to AIN4/ADC3 passed. Treat the PMOD5 result as a fixture/wiring
+blocker, not as a software pass.
+
 Run the smoke test from `backend/`; run the legacy validation/debug tools from
 `host/`, with the FTDI/JTAG hardware connected:
 

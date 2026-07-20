@@ -116,6 +116,20 @@ Test screenshots are saved to `frontend/test-results/screenshots/` for visual co
 | `live-accelerometer-session-waveform.png` | LIS3DH WHO_AM_I live hardware session |
 | And many more (analog, mixed, diagnostics, sessions) |
 
+### Real MAX1000 session captures
+
+The live Playwright scenario was run against the physical MAX1000 using the
+real backend. These captures document the connected device, capture controls,
+generator loopback, and LIS3DH session:
+
+![Live MAX1000 device page](../../../frontend/test-results/screenshots/live-device-page.png)
+
+![Live capture controls](../../../frontend/test-results/screenshots/live-capture-controls.png)
+
+![Live generator loopback capture](../../../frontend/test-results/screenshots/live-generator-loopback-capture.png)
+
+![Live accelerometer session waveform](../../../frontend/test-results/screenshots/live-accelerometer-session-waveform.png)
+
 ### Running Tests
 
 ```bash
@@ -125,6 +139,12 @@ npm run test:e2e -- hardware.spec.ts
 
 # All tests
 npx playwright test
+
+# Live MAX1000 session and screenshot capture
+$env:PLAYWRIGHT_USE_MOCK='0'
+$env:PLAYWRIGHT_LIVE_CLIENT_ID='web_o0v91tvupd'
+$env:PLAYWRIGHT_LIVE_SESSION_SCREENSHOTS='1'
+npm run test:e2e -- --project=chromium --grep "live hardware sessions"
 ```
 
 ---

@@ -32,7 +32,7 @@ async function ensureConnected(page: any) {
   }, liveClientId);
   await page.goto('/');
   await page.getByRole('button', { name: 'Device' }).click();
-  await expect(page.getByRole('heading', { name: 'MAX1000 OLS Logic Analyzer' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'MAX1000 OLS Logic Analyzer' }).first()).toBeVisible();
   await page.evaluate(async () => {
     const clientId = localStorage.getItem('msa_client_id') ?? '';
     const res = await fetch('/api/control/acquire', {
