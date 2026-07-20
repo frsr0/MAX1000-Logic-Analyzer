@@ -45,9 +45,9 @@ current SPI readback bandwidth.
 - [x] RS-485 Bit Banger exerciser: transmit-enable timing, turnaround delay, direction-change markers, and half-duplex transaction scripts.
 - [x] Add structured generator-route capabilities so physical DE/CS/MISO/SWD wiring is advertised per connected target.
 - [x] Reject optional physical pin requests when the connected route does not advertise them; preserve mock-only protocol generators.
-- [ ] Hardware RS-485 generator: expose physical DE timing if a future firmware route provides it.
+- [ ] Hardware RS-485 generator: expose physical DE timing if a future firmware route provides it (acceptance: a capability advertises a separate `de_pin`/timing feature and the generator API passes it through; current RTL only exposes the differential A/B pair).
 - [x] SPI Bit Banger template: CPOL/CPHA 0–3, MSB/LSB first, word sizes 4–32 bits, and inter-word gaps.
-- [ ] Hardware SPI generator: configurable CS/MISO only where firmware routing permits.
+- [ ] Hardware SPI generator: configurable CS/MISO only where firmware routing permits (acceptance: route capabilities advertise `cs`/`miso`, the capture path maps both signals, and loopback decodes them; current RTL exposes only MOSI/SCLK generator outputs).
 - [x] I²C Bit Banger templates: 7-bit address/register read-write forms, repeated starts, ACK/NACK control, clock stretching visualization, and bus recovery clocks.
 - [x] PWM Bit Banger templates: frequency/duty sweeps, bursts, finite pulse counts, and configurable start phase.
 - [x] SWD Bit Banger exerciser: line reset, JTAG-to-SWD transition, DP/AP read/write forms, ACK/data parity, and transaction scripts.
@@ -185,7 +185,7 @@ current SPI readback bandwidth.
 - [x] Run the existing backend test suite.
 - [x] Run the existing host/driver test suite.
 - [x] Run frontend typecheck and production build.
-- [ ] Run real-target hardware smoke tests for unchanged capture paths after host-driver changes (mock target: 10/10 passed; real execution remains bench-dependent).
+- [ ] Run real-target hardware smoke tests for unchanged capture paths after host-driver changes (mock target: 10/10 passed; real execution remains bench-dependent; acceptance: run `backend/hw_smoke_test.py` against a safely connected MAX1000 and archive the result).
 - [x] Validate no new feature falsely advertises unavailable physical capabilities.
 - [x] Update screenshots and user documentation.
 - [x] Add release notes and migration notes for session/decoder schema changes.
