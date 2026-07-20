@@ -121,11 +121,11 @@ current SPI readback bandwidth.
 ### Analog and mixed signal
 
 - [x] Add RMS, mean, peak-to-peak, min/max, crest factor, and noise-floor measurements.
-- [ ] Add configurable digital threshold sweeps over analog channels.
+- [x] Add configurable digital threshold sweeps over analog channels.
 - [x] Add hysteresis threshold controls for derived analog digital channels.
 - [x] Add spectrogram/time-frequency view using a dedicated endpoint.
 - [x] Add spectrum peak finding and frequency labeling.
-- [ ] Add waveform persistence and min/max envelope display.
+- [x] Add waveform persistence and min/max envelope display.
 - [x] Add cross-correlation and estimated time delay between channels.
 - [ ] Add analog/digital event correlation and aligned protocol annotations.
 - [x] Add optional software filters: moving average, median, low-pass, high-pass, and baseline removal.

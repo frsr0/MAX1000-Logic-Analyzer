@@ -119,6 +119,19 @@ def spectrogram(sig: np.ndarray, sample_rate: float, window: int = 256,
             np.array(rows, dtype=np.float32))
 
 
+def envelope(sig: np.ndarray, bins: int = 512) -> tuple[np.ndarray, np.ndarray]:
+    """Return min/max bands for persistent/envelope rendering."""
+    bins = max(1, min(8192, int(bins)))
+    if len(sig) == 0:
+        return np.zeros(0, dtype=np.float32), np.zeros(0, dtype=np.float32)
+    edges = np.linspace(0, len(sig), min(bins, len(sig)) + 1).astype(int)
+    lows, highs = [], []
+    for start, end in zip(edges[:-1], edges[1:]):
+        part = sig[start:max(start + 1, end)]
+        lows.append(float(np.min(part))); highs.append(float(np.max(part)))
+    return np.asarray(lows, dtype=np.float32), np.asarray(highs, dtype=np.float32)
+
+
 def cross_correlation_delay(a: np.ndarray, b: np.ndarray,
                             sample_rate: float) -> dict:
     n = min(len(a), len(b))

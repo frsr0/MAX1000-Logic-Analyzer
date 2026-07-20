@@ -133,6 +133,12 @@ export const api = {
   correlation: (id: string, a: string, b: string, start = 0, end = -1) =>
     get<{ delay_s: number | null; lag_samples?: number; correlation?: number }>(
       `/api/sessions/${id}/correlation?channel_a=${encodeURIComponent(a)}&channel_b=${encodeURIComponent(b)}&start=${start}&end=${end}`),
+  envelope: (id: string, channel: string, bins = 512) =>
+    get<{ channel: string; min: number[]; max: number[] }>(
+      `/api/sessions/${id}/envelope?channel=${encodeURIComponent(channel)}&bins=${bins}`),
+  thresholdSweep: (id: string, channel: string, levels = 16) =>
+    get<{ channel: string; levels: { level: number; rising_edges: number; frequency_hz: number }[] }>(
+      `/api/sessions/${id}/threshold-sweep?channel=${encodeURIComponent(channel)}&levels=${levels}`),
 
   // decoders
   decoderTypes: () => get<{ decoders: DecoderDescription[] }>('/api/decoders'),

@@ -21,7 +21,7 @@ from app.exports.importers import csv_session, vcd_session
 from app.measurements import digital
 from app.measurements.base import MeasurementContext, run_measurement
 from app.triggers.software_trigger import find_software_trigger
-from app.waveform.analogue import cross_correlation_delay, spectrogram, spectrum_peaks
+from app.waveform.analogue import cross_correlation_delay, envelope, spectrogram, spectrum_peaks
 from app.validation import junit_xml, validate_events
 
 
@@ -261,6 +261,8 @@ def test_derived_waveform_analysis_finds_peaks_and_delay():
     delayed = np.concatenate([np.zeros(7), signal[:-7]])
     result = cross_correlation_delay(signal, delayed, sample_rate)
     assert abs(abs(result["delay_s"]) - 7 / sample_rate) < 1e-9
+    low, high = envelope(signal, 32)
+    assert len(low) == len(high) == 32 and np.all(low <= high)
 
 
 def test_setup_hold_and_channel_skew_measurements_are_registered():

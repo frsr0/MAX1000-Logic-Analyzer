@@ -7,7 +7,7 @@ import { useApp } from '../state/appStore';
 import { waveformView } from '../state/waveformStore';
 import { WaveformClient } from '../workers/waveformClient';
 
-type Mode = 'spectrum' | 'xy' | 'spectrogram' | 'correlation';
+type Mode = 'spectrum' | 'xy' | 'spectrogram' | 'correlation' | 'envelope' | 'threshold';
 
 function currentSelection(): [number, number] | null {
   const { selectionStart, selectionEnd, cursorA, cursorB } = waveformView;
@@ -33,6 +33,8 @@ export function AnalogPanel() {
   const [xyData, setXyData] = useState<{ x: Float32Array; y: Float32Array } | null>(null);
   const [spectrogramData, setSpectrogramData] = useState<{ freqs: number[]; times: number[]; magnitude: number[][] } | null>(null);
   const [correlationData, setCorrelationData] = useState<{ delay_s: number | null; correlation?: number } | null>(null);
+  const [envelopeData, setEnvelopeData] = useState<{ min: number[]; max: number[] } | null>(null);
+  const [thresholdData, setThresholdData] = useState<{ level: number; rising_edges: number; frequency_hz: number }[] | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const clientRef = useRef<WaveformClient | null>(null);
 
@@ -46,6 +48,8 @@ export function AnalogPanel() {
     setXyData(null);
     setSpectrogramData(null);
     setCorrelationData(null);
+    setEnvelopeData(null);
+    setThresholdData(null);
     if (analogChannels.length && !analogChannels.some((c) => c.id === chA)) {
       setChA(analogChannels[0].id);
     }
@@ -110,6 +114,20 @@ export function AnalogPanel() {
     finally { setBusy(false); }
   };
 
+  const runEnvelope = async () => {
+    if (!activeSession || !chA) return;
+    setBusy(true);
+    try { setEnvelopeData(await api.envelope(activeSession.id, chA)); }
+    catch (e: any) { toast('error', e.message); } finally { setBusy(false); }
+  };
+
+  const runThresholdSweep = async () => {
+    if (!activeSession || !chA) return;
+    setBusy(true);
+    try { setThresholdData((await api.thresholdSweep(activeSession.id, chA)).levels); }
+    catch (e: any) { toast('error', e.message); } finally { setBusy(false); }
+  };
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -172,6 +190,26 @@ export function AnalogPanel() {
       ctx.fillStyle = '#d5dbe3'; ctx.font = '14px monospace';
       ctx.fillText(`delay: ${correlationData.delay_s == null ? 'n/a' : `${(correlationData.delay_s * 1e6).toFixed(3)} µs`}`, 12, 80);
       ctx.fillText(`correlation: ${(correlationData.correlation ?? 0).toFixed(5)}`, 12, 110);
+    } else if (mode === 'envelope' && envelopeData) {
+      const lo = Math.min(...envelopeData.min), hi = Math.max(...envelopeData.max);
+      const range = hi - lo || 1;
+      ctx.fillStyle = 'rgba(79,195,247,0.28)'; ctx.beginPath();
+      envelopeData.max.forEach((v, i) => {
+        const x = i * w / Math.max(1, envelopeData.max.length - 1);
+        const y = h - ((v - lo) / range) * (h - 12) - 6;
+        if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+      });
+      for (let i = envelopeData.min.length - 1; i >= 0; i--) {
+        const x = i * w / Math.max(1, envelopeData.min.length - 1);
+        const y = h - ((envelopeData.min[i] - lo) / range) * (h - 12) - 6;
+        ctx.lineTo(x, y);
+      }
+      ctx.closePath(); ctx.fill();
+    } else if (mode === 'threshold' && thresholdData) {
+      ctx.fillStyle = '#d5dbe3'; ctx.font = '12px monospace';
+      thresholdData.forEach((row, i) => ctx.fillText(
+        `${row.level.toPrecision(4)} V  ${row.frequency_hz.toFixed(2)} Hz`,
+        12, 18 + i * Math.min(16, (h - 20) / Math.max(1, thresholdData.length))));
     } else if (mode === 'xy' && xyData) {
       const { x, y } = xyData;
       let xlo = Infinity, xhi = -Infinity, ylo = Infinity, yhi = -Infinity;
@@ -199,7 +237,7 @@ export function AnalogPanel() {
     }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, spectrumData, xyData, spectrogramData, correlationData]);
+  }, [mode, spectrumData, xyData, spectrogramData, correlationData, envelopeData, thresholdData]);
 
   if (!activeSession) return <div className="panel-body hint">No session open.</div>;
   if (!analogChannels.length) {
@@ -213,10 +251,12 @@ export function AnalogPanel() {
         <button className={mode === 'xy' ? 'active' : ''} onClick={() => setMode('xy')}>XY scope</button>
         <button className={mode === 'spectrogram' ? 'active' : ''} onClick={() => setMode('spectrogram')}>Spectrogram</button>
         <button className={mode === 'correlation' ? 'active' : ''} onClick={() => setMode('correlation')}>Correlation</button>
+        <button className={mode === 'envelope' ? 'active' : ''} onClick={() => setMode('envelope')}>Envelope</button>
+        <button className={mode === 'threshold' ? 'active' : ''} onClick={() => setMode('threshold')}>Threshold sweep</button>
       </div>
 
       <label className="field">
-        <span>{mode === 'spectrum' || mode === 'spectrogram' ? 'Channel' : 'X channel'}</span>
+        <span>{mode === 'spectrum' || mode === 'spectrogram' || mode === 'envelope' || mode === 'threshold' ? 'Channel' : 'X channel'}</span>
         <select value={chA} onChange={(e) => setChA(e.target.value)}>
           {analogChannels.map((c) => <option key={c.id} value={c.id}>{c.id} ({c.name})</option>)}
         </select>
@@ -237,8 +277,8 @@ export function AnalogPanel() {
       </label>
 
       <button className="primary" disabled={busy || ((mode === 'xy' || mode === 'correlation') && chA === chB)}
-        onClick={mode === 'spectrum' ? runSpectrum : mode === 'xy' ? runXY : mode === 'spectrogram' ? runSpectrogram : runCorrelation}>
-        {busy ? 'Working…' : mode === 'spectrum' ? 'Compute spectrum' : mode === 'xy' ? 'Plot XY' : mode === 'spectrogram' ? 'Compute spectrogram' : 'Correlate channels'}
+        onClick={mode === 'spectrum' ? runSpectrum : mode === 'xy' ? runXY : mode === 'spectrogram' ? runSpectrogram : mode === 'correlation' ? runCorrelation : mode === 'envelope' ? runEnvelope : runThresholdSweep}>
+        {busy ? 'Working…' : mode === 'spectrum' ? 'Compute spectrum' : mode === 'xy' ? 'Plot XY' : mode === 'spectrogram' ? 'Compute spectrogram' : mode === 'correlation' ? 'Correlate channels' : mode === 'envelope' ? 'Compute envelope' : 'Sweep thresholds'}
       </button>
       {mode === 'spectrum' && spectrumData?.peaks?.length ? (
         <div className="hint">Peaks: {spectrumData.peaks.map((p) => `${(p.frequency_hz / 1e3).toFixed(2)} kHz`).join(' · ')}</div>

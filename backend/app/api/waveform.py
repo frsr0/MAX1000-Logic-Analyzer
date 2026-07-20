@@ -14,7 +14,7 @@ from ..capture.waveform_query import WaveformQuery
 from ..config import MAX_RAW_POINTS
 from ..diagnostics.sanity_checks import run_sanity_checks
 from ..state import store
-from ..waveform.analogue import (cross_correlation_delay, spectrum,
+from ..waveform.analogue import (cross_correlation_delay, envelope, spectrum,
                                   spectrum_peaks, spectrogram)
 from ..waveform.bus import bus_values, format_bus_value
 from ..waveform.derived import create_derived_channel
@@ -194,6 +194,34 @@ def analog_correlation(session_id: str, channel_a: str, channel_b: str,
             **cross_correlation_delay(wf.analog[channel_a][start:end],
                                       wf.analog[channel_b][start:end],
                                       wf.sample_rate)}
+
+
+@router.get("/api/sessions/{session_id}/envelope")
+def analog_envelope(session_id: str, channel: str, bins: int = 512):
+    get_session_or_404(session_id)
+    wf = get_waveform_or_404(session_id)
+    if channel not in wf.analog:
+        raise HTTPException(404, f"No analog channel: {channel}")
+    low, high = envelope(wf.analog[channel], bins)
+    return {"channel": channel, "min": low.tolist(), "max": high.tolist()}
+
+
+@router.get("/api/sessions/{session_id}/threshold-sweep")
+def analog_threshold_sweep(session_id: str, channel: str, levels: int = 16):
+    get_session_or_404(session_id)
+    wf = get_waveform_or_404(session_id)
+    if channel not in wf.analog:
+        raise HTTPException(404, f"No analog channel: {channel}")
+    signal = wf.analog[channel]
+    low, high = float(np.min(signal)), float(np.max(signal))
+    rows = []
+    for level in np.linspace(low, high, max(2, min(128, int(levels)))):
+        bits = (signal > level).astype(np.uint8)
+        edges = find_edges(bits, "rising")
+        rows.append({"level": float(level), "rising_edges": int(len(edges)),
+                     "frequency_hz": (float(len(edges) - 1) / wf.duration_s
+                                       if len(edges) > 1 and wf.duration_s else 0.0)})
+    return {"channel": channel, "levels": rows}
 
 
 @router.get("/api/sessions/{session_id}/sanity")
