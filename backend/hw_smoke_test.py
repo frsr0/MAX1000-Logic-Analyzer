@@ -95,10 +95,20 @@ def main():
         return 1
 
     # 3. capabilities
-    c.run("capabilities", lambda: (
-        f"{mgr.device.get_capabilities().digital_channels} digital ch, "
-        f"max {mgr.device.get_capabilities().max_sample_rate / 1e6:.0f} MHz, "
-        f"gen: {','.join(mgr.device.get_capabilities().generator_protocols)}"))
+    def capabilities():
+        caps = mgr.device.get_capabilities()
+        routes = {r.protocol: r for r in caps.generator_routes}
+        for protocol, features in (("rs485", {"de_pin"}),
+                                    ("spi", {"cs_pin", "miso_pin"})):
+            route = routes.get(protocol)
+            if route is None or not features.issubset(set(route.features)):
+                raise HardwareError(
+                    f"{protocol} route missing auxiliary features {sorted(features)}")
+        return (f"{caps.digital_channels} digital ch, "
+                f"max {caps.max_sample_rate / 1e6:.0f} MHz, "
+                f"gen: {','.join(caps.generator_protocols)}, "
+                "RS-485 DE + SPI CS/MISO routes advertised")
+    c.run("capabilities", capabilities)
 
     # 4. self-test (lightweight hardware/control-plane checks)
     def self_test():
@@ -162,7 +172,12 @@ def main():
                                   extra=(
                                       {"requests": [{"ap": False, "read": True,
                                                      "addr": 0, "data": 0}]}
-                                      if protocol == "swd" else {}))
+                                      if protocol == "swd" else
+                                      {"de_pin": 6} if protocol == "rs485" else
+                                      {"cs_pin": 7, "cs_capture_channel": 14,
+                                       "miso_pin": 23,
+                                       "miso_capture_channel": 15}
+                                      if protocol == "spi" else {}))
             r = loopback_self_test(mgr, cfg, capture_rate=2_000_000,
                                    capture_samples=8_000)
             if not r.passed:

@@ -37,6 +37,12 @@ PORT (
   Gen_Proto     : OUT STD_LOGIC;
     Gen_TX_Pin    : OUT NATURAL range 0 to 31 := 0;
     Gen_SCL_Pin   : OUT NATURAL range 0 to 31 := 0;
+    Gen_DE_Pin    : OUT NATURAL range 0 to 31 := 0;
+    Gen_DE_Enable : OUT STD_LOGIC := '0';
+    Gen_CS_Pin    : OUT NATURAL range 0 to 31 := 0;
+    Gen_CS_Enable : OUT STD_LOGIC := '0';
+    Gen_MISO_Pin  : OUT NATURAL range 0 to 31 := 0;
+    Gen_MISO_Enable : OUT STD_LOGIC := '0';
    Gen_Clear      : OUT STD_LOGIC := '0';
    Gen_I2C_Rd_Len : OUT NATURAL range 0 to 255 := 0;
    Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
@@ -63,8 +69,12 @@ PORT (
         Pin_Map_Write   : OUT STD_LOGIC := '0';
         Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
         Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
-        Gen_Capture_Tx_Channel  : OUT NATURAL range 0 to 15 := 0;
+         Gen_Capture_Tx_Channel  : OUT NATURAL range 0 to 15 := 0;
          Gen_Capture_Scl_Channel : OUT NATURAL range 0 to 15 := 1;
+         Gen_Capture_CS_Channel  : OUT NATURAL range 0 to 15 := 0;
+         Gen_Capture_CS_Enable   : OUT STD_LOGIC := '0';
+         Gen_Capture_MISO_Channel : OUT NATURAL range 0 to 15 := 1;
+         Gen_Capture_MISO_Enable  : OUT STD_LOGIC := '0';
          Gen_Capture_Active : OUT STD_LOGIC := '0';
          Debug_Ch0_Enable : OUT STD_LOGIC := '0';
          Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 downto 0) := x"00000400";
@@ -131,6 +141,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL gen_reg_load_req_d : STD_LOGIC := '0';
    SIGNAL gen_tx_pin_int  : NATURAL range 0 to 31 := 3;
    SIGNAL gen_scl_pin_int : NATURAL range 0 to 31 := 1;  -- default=1 (CH0 is test counter, can't use 0)
+  SIGNAL gen_de_pin_int   : NATURAL range 0 to 31 := 0;
+  SIGNAL gen_de_enable_int : STD_LOGIC := '0';
+  SIGNAL gen_cs_pin_int   : NATURAL range 0 to 31 := 0;
+  SIGNAL gen_cs_enable_int : STD_LOGIC := '0';
+  SIGNAL gen_miso_pin_int : NATURAL range 0 to 31 := 0;
+  SIGNAL gen_miso_enable_int : STD_LOGIC := '0';
   SIGNAL gen_i2c_rd_len_int : NATURAL range 0 to 255 := 0;
   SIGNAL gen_i2c_dev_r_int  : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
    SIGNAL gen_i2c_test_int   : STD_LOGIC := '0';
@@ -152,6 +168,10 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL ch_mode             : STD_LOGIC := '0';  -- 0=8ch/500k, 1=4ch/4M
   SIGNAL gen_capture_tx_channel_i  : NATURAL range 0 to 15 := 0;
   SIGNAL gen_capture_scl_channel_i : NATURAL range 0 to 15 := 1;
+  SIGNAL gen_capture_cs_channel_i  : NATURAL range 0 to 15 := 0;
+  SIGNAL gen_capture_cs_enable_i   : STD_LOGIC := '0';
+  SIGNAL gen_capture_miso_channel_i : NATURAL range 0 to 15 := 1;
+  SIGNAL gen_capture_miso_enable_i  : STD_LOGIC := '0';
   SIGNAL gen_capture_active_i  : STD_LOGIC := '0';
   SIGNAL debug_ch0_enable_i : STD_LOGIC := '0';
   SIGNAL debug_ch0_period_i : STD_LOGIC_VECTOR(31 downto 0) := x"00000400";
@@ -471,10 +491,23 @@ BEGIN
             gen_i2c_dev_r_int <= disp_reg_wdata(23 downto 16);
           END IF;
 
+        WHEN REG_GEN_AUX_PINS =>
+          gen_de_pin_int <= TO_INTEGER(UNSIGNED(disp_reg_wdata(4 downto 0)));
+          gen_de_enable_int <= disp_reg_wdata(5);
+          gen_cs_pin_int <= TO_INTEGER(UNSIGNED(disp_reg_wdata(12 downto 8)));
+          gen_cs_enable_int <= disp_reg_wdata(13);
+          gen_miso_pin_int <= TO_INTEGER(UNSIGNED(disp_reg_wdata(20 downto 16)));
+          gen_miso_enable_int <= disp_reg_wdata(21);
+
         WHEN REG_GEN_CAPTURE_TX_CHAN =>
           gen_capture_tx_channel_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(3 downto 0)));
         WHEN REG_GEN_CAPTURE_SCL_CHAN =>
           gen_capture_scl_channel_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(3 downto 0)));
+        WHEN REG_GEN_CAPTURE_AUX =>
+          gen_capture_cs_channel_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(3 downto 0)));
+          gen_capture_cs_enable_i <= disp_reg_wdata(4);
+          gen_capture_miso_channel_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(11 downto 8)));
+          gen_capture_miso_enable_i <= disp_reg_wdata(12);
         WHEN REG_DEBUG_CH0_ENABLE =>
           debug_ch0_enable_i <= disp_reg_wdata(0);
         WHEN REG_DEBUG_CH0_PERIOD =>
@@ -938,6 +971,12 @@ BEGIN
   Gen_Baud_Div <= gen_baud_div_int;
   Gen_TX_Pin   <= gen_tx_pin_int;
   Gen_SCL_Pin <= gen_scl_pin_int;
+  Gen_DE_Pin <= gen_de_pin_int;
+  Gen_DE_Enable <= gen_de_enable_int;
+  Gen_CS_Pin <= gen_cs_pin_int;
+  Gen_CS_Enable <= gen_cs_enable_int;
+  Gen_MISO_Pin <= gen_miso_pin_int;
+  Gen_MISO_Enable <= gen_miso_enable_int;
   Gen_I2C_Rd_Len <= gen_i2c_rd_len_int;
   Gen_I2C_Dev_R  <= gen_i2c_dev_r_int;
   Gen_I2C_Test   <= gen_i2c_test_int;
@@ -963,6 +1002,10 @@ BEGIN
   Armed          <= Run_OLS;
   Gen_Capture_Tx_Channel <= gen_capture_tx_channel_i;
   Gen_Capture_Scl_Channel <= gen_capture_scl_channel_i;
+  Gen_Capture_CS_Channel <= gen_capture_cs_channel_i;
+  Gen_Capture_CS_Enable <= gen_capture_cs_enable_i;
+  Gen_Capture_MISO_Channel <= gen_capture_miso_channel_i;
+  Gen_Capture_MISO_Enable <= gen_capture_miso_enable_i;
   Debug_Ch0_Enable <= debug_ch0_enable_i;
   Debug_Ch0_Period <= debug_ch0_period_i;
   Debug_Ch0_Duty <= debug_ch0_duty_i;
@@ -1381,6 +1424,13 @@ BEGIN
                   when REG_GEN_PINS =>
                     reg_val(4 downto 0) := std_logic_vector(to_unsigned(gen_tx_pin_int, 5));
                     reg_val(12 downto 8) := std_logic_vector(to_unsigned(gen_scl_pin_int, 5));
+                  when REG_GEN_AUX_PINS =>
+                    reg_val(4 downto 0) := std_logic_vector(to_unsigned(gen_de_pin_int, 5));
+                    reg_val(5) := gen_de_enable_int;
+                    reg_val(12 downto 8) := std_logic_vector(to_unsigned(gen_cs_pin_int, 5));
+                    reg_val(13) := gen_cs_enable_int;
+                    reg_val(20 downto 16) := std_logic_vector(to_unsigned(gen_miso_pin_int, 5));
+                    reg_val(21) := gen_miso_enable_int;
                   when REG_GEN_DATA =>
                     reg_val(0) := gen_i2c_test_int;
                     reg_val(1) := gen_spi_test_int;
@@ -1396,6 +1446,11 @@ BEGIN
                     reg_val(3 downto 0) := std_logic_vector(to_unsigned(gen_capture_tx_channel_i, 4));
                   when REG_GEN_CAPTURE_SCL_CHAN =>
                     reg_val(3 downto 0) := std_logic_vector(to_unsigned(gen_capture_scl_channel_i, 4));
+                  when REG_GEN_CAPTURE_AUX =>
+                    reg_val(3 downto 0) := std_logic_vector(to_unsigned(gen_capture_cs_channel_i, 4));
+                    reg_val(4) := gen_capture_cs_enable_i;
+                    reg_val(11 downto 8) := std_logic_vector(to_unsigned(gen_capture_miso_channel_i, 4));
+                    reg_val(12) := gen_capture_miso_enable_i;
                   when REG_DEBUG_CH0_ENABLE =>
                     reg_val(0) := debug_ch0_enable_i;
                   when REG_DEBUG_CH0_PERIOD =>

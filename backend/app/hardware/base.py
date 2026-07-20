@@ -9,7 +9,7 @@ from __future__ import annotations
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import numpy as np
 
@@ -126,6 +126,29 @@ class HardwareDevice(ABC):
                 f"Generator route '{cfg.protocol}' is unavailable on this device")
 
         extra = cfg.extra or {}
+        def check_pin(name: str, value: Any) -> None:
+            if value is not None and not 0 <= int(value) <= 25:
+                raise HardwareError(f"{name} must be a physical pin in range 0..25")
+
+        check_pin("RS-485 DE pin", extra.get("de_pin"))
+        check_pin("SPI CS pin", extra.get("cs_pin"))
+        check_pin("SPI MISO pin", extra.get("miso_pin"))
+        for channel_name in ("miso_capture_channel", "cs_capture_channel"):
+            if extra.get(channel_name) is not None and not 0 <= int(extra[channel_name]) <= 15:
+                raise HardwareError(f"SPI {channel_name} must be in range 0..15")
+        if cfg.protocol == "rs485" and extra.get("de_pin") is not None:
+            if int(extra["de_pin"]) in (int(cfg.tx_pin), int(cfg.scl_pin)):
+                raise HardwareError("RS-485 DE pin must differ from A and B pins")
+        if cfg.protocol == "spi":
+            aux = [p for p in (extra.get("cs_pin"), extra.get("miso_pin"))
+                   if p is not None]
+            if any(int(p) in (int(cfg.tx_pin), int(cfg.scl_pin)) for p in aux):
+                raise HardwareError("SPI CS/MISO pins must differ from MOSI and SCLK pins")
+            channels = [c for c in (extra.get("cs_capture_channel"),
+                                    extra.get("miso_capture_channel"))
+                        if c is not None]
+            if len(channels) != len(set(map(int, channels))):
+                raise HardwareError("SPI CS/MISO capture channels must differ")
         requested = []
         if cfg.protocol == "rs485" and extra.get("de_pin") is not None:
             requested.append(("de_pin", "a separate RS-485 DE pin"))

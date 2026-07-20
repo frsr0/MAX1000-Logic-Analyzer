@@ -263,7 +263,14 @@ export function GeneratorPage() {
                     <input type="number" min={0} max={15} value={cfg.scl_pin}
                       onChange={(e) => set({ scl_pin: Number(e.target.value) })} />
                   </label>
-                  <div className="hint">B carries the UART logic level; A carries the inverted complement.</div>
+                  <label className="field">
+                    <span>Optional DE pin</span>
+                    <input type="number" min={0} max={25}
+                      value={cfg.extra?.de_pin ?? ''}
+                      placeholder="internal timing"
+                      onChange={(e) => setExtra({ de_pin: e.target.value === '' ? undefined : Number(e.target.value) })} />
+                  </label>
+                  <div className="hint">B carries the UART logic level; A carries the inverted complement. DE, when selected, is high for the active generator burst.</div>
                 </>
               ) : (
                 <label className="field">
@@ -318,9 +325,30 @@ export function GeneratorPage() {
                     onChange={(e) => set({ scl_pin: Number(e.target.value) })} />
                 </span>
               </label>
+              <label className="field">
+                <span>Optional CS pin / MISO input pin</span>
+                <span className="button-row">
+                  <input type="number" min={0} max={25} placeholder="sensor CS"
+                    value={cfg.extra?.cs_pin ?? ''}
+                    onChange={(e) => setExtra({ cs_pin: e.target.value === '' ? undefined : Number(e.target.value),
+                      cs_capture_channel: e.target.value === '' ? undefined : (cfg.extra?.cs_capture_channel ?? 14) })} />
+                  <input type="number" min={0} max={25} value={cfg.extra?.miso_pin ?? 23}
+                    onChange={(e) => setExtra({ miso_pin: Number(e.target.value) })} />
+                </span>
+              </label>
+              <label className="field">
+                <span>CS capture channel / MISO capture channel</span>
+                <span className="button-row">
+                  <input type="number" min={0} max={15} placeholder="optional"
+                    value={cfg.extra?.cs_capture_channel ?? ''}
+                    onChange={(e) => setExtra({ cs_capture_channel: e.target.value === '' ? undefined : Number(e.target.value) })} />
+                  <input type="number" min={0} max={15} value={cfg.extra?.miso_capture_channel ?? 15}
+                    onChange={(e) => setExtra({ miso_capture_channel: Number(e.target.value) })} />
+                </span>
+              </label>
               {status?.device_kind !== 'mock' && (
                 <div className="hint">
-                  Hardware SPI generator loops MOSI and SCLK only (no CS/MISO); standalone
+                  Hardware SPI drives MOSI/SCLK with optional GPIO CS and configurable MISO; standalone
                   Send is unsupported — use Send + capture.
                 </div>
               )}
@@ -613,7 +641,7 @@ export function GeneratorPage() {
           <ul className="sanity-list">
             <li>UART and RS-485 support loopback capture in one action.</li>
             <li>I2C uses the configured SDA and SCL capture channels.</li>
-            <li>SPI loops MOSI/SCLK into the capture on hardware (send + capture only, no CS/MISO); mock simulates full SCLK/MOSI/MISO/CS on CH4-7.</li>
+            <li>SPI loops MOSI/SCLK into capture and supports optional GPIO CS/MISO routes; mock simulates full SCLK/MOSI/MISO/CS on CH4-7.</li>
             <li>SWD uses the existing SWCLK/SWDIO two-output route and records decoded transaction events during Send + capture.</li>
             <li>Raw Bit Banger mode drives TX/SDA/MOSI and SCL/SCLK from a bounded 2-bit symbol list.</li>
           </ul>

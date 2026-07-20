@@ -135,10 +135,14 @@ def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
     decoder = decoder_registry.get(dec_id)
     decoder_settings = {**decoder.defaults(), **set_fn(cfg)}
     if cfg.protocol == "spi" and mgr.device_kind != "mock":
-        # Real hardware only loops MOSI+SCLK into the capture (no CS/MISO —
-        # see capture_with_generator's SPI branch), onto whatever pins the
-        # user configured, unlike the mock's fixed CH4-7 SPI scenario.
+        # Real hardware maps the configured MOSI/SCLK route and, when
+        # requested, auxiliary CS/MISO channels onto the capture stream.
         channels = {"sclk": f"d{cfg.scl_pin}", "mosi": f"d{cfg.tx_pin}"}
+        if cfg.extra.get("miso_pin") is not None:
+            channels["miso"] = f"d{int(cfg.extra.get('miso_capture_channel', 15))}"
+        if (cfg.extra.get("cs_pin") is not None
+                and cfg.extra.get("cs_capture_channel") is not None):
+            channels["cs"] = f"d{int(cfg.extra['cs_capture_channel'])}"
     else:
         channels = ch_fn(cfg)
     inst = DecoderInstance(id=new_id("dec"), decoder_id=dec_id,

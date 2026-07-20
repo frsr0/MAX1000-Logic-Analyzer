@@ -578,6 +578,19 @@ class TestOLSDeviceSPIGenerator:
         assert device_spi.gen_pins['tx'] == 7
         assert device_spi.gen_pins['scl'] == 1
 
+    def test_aux_generator_routes(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi._aux_pins(de_pin=6, cs_pin=7, miso_pin=23)
+        expected = (6 | (1 << 5) | (7 << 8) | (1 << 13)
+                    | (23 << 16) | (1 << 21))
+        device_spi.pkt.write_register.assert_called_once_with(0x35, expected)
+
+    def test_aux_generator_capture_routes(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi._set_gen_capture_aux(cs_channel=14, miso_channel=15)
+        expected = 14 | (1 << 4) | (15 << 8) | (1 << 12)
+        device_spi.pkt.write_register.assert_called_once_with(0x45, expected)
+
     def test_load_gen_data(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi._stream_readback = MagicMock(return_value=b'\x01\x00' * 100)

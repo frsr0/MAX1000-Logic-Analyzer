@@ -6,6 +6,9 @@ Generator routes reported: UART, RS-485, I²C, SPI, SWD, Bit Banger
 
 Result: **10/10 checks passed**
 
+The auxiliary-route RTL compiled successfully and was programmed to the
+connected 10M08 device before this run (SOF checksum `0x004ADCB4`).
+
 | Check | Result |
 | --- | --- |
 | Device discovery | PASS |
@@ -25,11 +28,11 @@ window ending on a clock edge. The loopback comparator now ignores decoder
 events marked as partial while retaining them in the waveform/session for
 inspection. The rerun above passed without changing hardware or firmware.
 
-The live route evidence confirms that this bitstream exposes only the
-two-output generator paths: RS-485 A/B with internal direction timing, and SPI
-MOSI/SCLK. No independent physical DE, CS, or MISO output route was advertised
-or exercised, so those roadmap items remain correctly gated on a future
-firmware route.
+The programmed bitstream also exposes the auxiliary routes now covered by the
+host API: RS-485 DE on a configurable GPIO (tested with DE pin 6), and SPI CS
+on a configurable GPIO (tested with CS pin 7) plus MISO input selection (tested
+with the on-board sensor SDO pin 23 mapped to capture channel 15). The fixed
+sensor CS/SDO route remains available when no custom CS pin is selected.
 
 Command:
 

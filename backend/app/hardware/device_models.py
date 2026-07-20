@@ -26,10 +26,10 @@ class GeneratorRouteCapability(BaseModel):
     """A concrete generator/capture wiring route exposed by a device.
 
     Protocol support alone is not enough to describe a physical route.  For
-    example, the current MAX1000 SPI path has MOSI and SCLK but no generator
-    CS/MISO, while a future firmware image may expose all four wires.  Keep
-    this additive and data-driven so the UI can advertise only what the
-    connected target actually provides.
+    example, the MAX1000 SPI path has MOSI/SCLK plus optional GPIO CS/MISO
+    auxiliary routes, while the fixed sensor CS/SDO route remains available
+    as a board-specific fallback.  Keep this additive and data-driven so the
+    UI can advertise only what the connected target actually provides.
     """
 
     protocol: str

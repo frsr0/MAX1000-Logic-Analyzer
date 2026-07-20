@@ -45,9 +45,9 @@ current SPI readback bandwidth.
 - [x] RS-485 Bit Banger exerciser: transmit-enable timing, turnaround delay, direction-change markers, and half-duplex transaction scripts.
 - [x] Add structured generator-route capabilities so physical DE/CS/MISO/SWD wiring is advertised per connected target.
 - [x] Reject optional physical pin requests when the connected route does not advertise them; preserve mock-only protocol generators.
-- [ ] Hardware RS-485 generator: expose physical DE timing if a future firmware route provides it (acceptance: a capability advertises a separate `de_pin`/timing feature and the generator API passes it through; current RTL only exposes the differential A/B pair).
+- [x] Hardware RS-485 generator: expose physical DE timing through the auxiliary route register (capability advertises `de_pin` and `internal_de_timing`; DE is high for the active Bit_Engine burst and the API passes `extra.de_pin`).
 - [x] SPI Bit Banger template: CPOL/CPHA 0–3, MSB/LSB first, word sizes 4–32 bits, and inter-word gaps.
-- [ ] Hardware SPI generator: configurable CS/MISO only where firmware routing permits (acceptance: route capabilities advertise `cs`/`miso`, the capture path maps both signals, and loopback decodes them; current RTL exposes only MOSI/SCLK generator outputs).
+- [x] Hardware SPI generator: configurable CS/MISO through the GPIO/input auxiliary route, with the fixed sensor CS/SDO route retained as the default; capabilities advertise `cs`/`miso`, capture maps MISO, and loopback decodes the generated MOSI stream.
 - [x] I²C Bit Banger templates: 7-bit address/register read-write forms, repeated starts, ACK/NACK control, clock stretching visualization, and bus recovery clocks.
 - [x] PWM Bit Banger templates: frequency/duty sweeps, bursts, finite pulse counts, and configurable start phase.
 - [x] SWD Bit Banger exerciser: line reset, JTAG-to-SWD transition, DP/AP read/write forms, ACK/data parity, and transaction scripts.
@@ -204,7 +204,7 @@ current SPI readback bandwidth.
 
 - [x] Do not advertise CAN electrical connectivity without an external CAN transceiver.
 - [x] Do not advertise true analog bandwidth beyond the existing MAX10 ADC profiles.
-- [x] Do not assume the hardware SPI generator has CS/MISO on real hardware; current loopback is MOSI/SCLK only.
+- [x] Advertise and validate hardware SPI CS/MISO only through the programmed auxiliary route; the fixed sensor CS/SDO route remains the safe default.
 - [x] Treat Bit Banger readback/open-drain behavior as host-emulated unless the target can safely override released-high lines.
 - [x] Keep large arbitrary waveforms chunked or rejected because the generator FIFO is finite.
 - [x] Keep high-rate rolling capture limitations and overrun reporting visible in the UI.

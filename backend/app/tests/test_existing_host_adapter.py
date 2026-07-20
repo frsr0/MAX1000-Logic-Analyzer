@@ -240,17 +240,14 @@ def test_real_hardware_capabilities_advertise_200mhz_digital_sampling():
     assert caps.generator_protocols == ["uart", "rs485", "i2c", "spi", "swd", "bitbang"]
 
 
-def test_real_route_rejects_unwired_spi_cs_and_miso_requests():
+def test_real_route_accepts_gpio_spi_cs_and_miso_requests():
     adapter = ExistingHostAdapter()
     adapter._dev = FakeHostDevice()
 
-    with pytest.raises(HardwareError, match="SPI CS output"):
-        adapter.validate_generator_config(
-            GeneratorConfig(protocol="spi", extra={"cs_pin": 7}))
-
-    with pytest.raises(HardwareError, match="SPI MISO output"):
-        adapter.validate_generator_config(
-            GeneratorConfig(protocol="spi", extra={"miso_pin": 6}))
+    adapter.validate_generator_config(
+        GeneratorConfig(protocol="spi", extra={"cs_pin": 7}))
+    adapter.validate_generator_config(
+        GeneratorConfig(protocol="spi", extra={"miso_pin": 6}))
 
 
 def test_adapter_connect_disconnect_and_unavailable_metadata(monkeypatch):
@@ -681,9 +678,38 @@ def test_spi_generator_capture_loops_mosi_sclk_on_configured_pins():
     assert kwargs["proto"] == "SPI"
     assert kwargs["spi_mosi_pin"] == 3
     assert kwargs["spi_sclk_pin"] == 1
+    assert kwargs["spi_miso_pin"] == 23
+    assert kwargs["spi_miso_channel"] == 15
+    assert kwargs["spi_cs_channel"] is None
     # sys_clk // (2 * baud) = 100_000_000 // (2 * 1_000_000) = 50
     assert kwargs["spi_clk_div"] == 50
     assert len(result.digital) == 4
+
+
+def test_generator_capture_passes_optional_rs485_de_and_spi_aux_routes():
+    from app.hardware.device_models import GeneratorConfig
+    from app.capture.session import CaptureSettings as _CS
+
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+    adapter._dev.capture_with_gen = Mock(return_value=b"\x00\x00" * 4)
+    rs = GeneratorConfig(protocol="rs485", data_hex="55", tx_pin=3,
+                         scl_pin=1, extra={"de_pin": 6})
+    adapter.capture_with_generator(_CS(sample_rate=2_000_000, num_samples=4), rs)
+    _, kwargs = adapter._dev.capture_with_gen.call_args
+    assert kwargs["rs485_de_pin"] == 6
+
+    adapter._dev.capture_with_gen.reset_mock()
+    spi = GeneratorConfig(protocol="spi", data_hex="55", tx_pin=3,
+                          scl_pin=1, extra={"cs_pin": 7, "cs_capture_channel": 13,
+                                            "miso_pin": 8,
+                                            "miso_capture_channel": 14})
+    adapter.capture_with_generator(_CS(sample_rate=2_000_000, num_samples=4), spi)
+    _, kwargs = adapter._dev.capture_with_gen.call_args
+    assert kwargs["spi_cs_pin"] == 7
+    assert kwargs["spi_cs_channel"] == 13
+    assert kwargs["spi_miso_pin"] == 8
+    assert kwargs["spi_miso_channel"] == 14
 
 
 def test_spi_generator_rejects_standalone_send():

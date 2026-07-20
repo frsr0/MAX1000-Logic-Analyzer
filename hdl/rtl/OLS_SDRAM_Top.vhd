@@ -96,6 +96,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_proto     : std_logic;
   signal gen_tx_pin    : natural range 0 to 31 := 0;
   signal gen_scl_pin   : natural range 0 to 31 := 0;
+  signal gen_de_pin    : natural range 0 to 31 := 0;
+  signal gen_de_enable : std_logic := '0';
+  signal gen_cs_pin    : natural range 0 to 31 := 0;
+  signal gen_cs_enable : std_logic := '0';
+  signal gen_miso_pin  : natural range 0 to 31 := 0;
+  signal gen_miso_enable : std_logic := '0';
   signal gen_spi_test   : std_logic := '0';
   signal gen_rs485_pair : std_logic := '0';
   signal gen_accel_attach : std_logic := '0';
@@ -139,6 +145,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   -- Bit_Engine RX source: SDO (SPI MISO) during SPI-test bursts, otherwise
   -- SDI (the I2C SDA line, where the slave drives ACK/read bits).
   signal gen_rx_in    : std_logic := '1';
+  signal gen_miso_in  : std_logic := '1';
   signal gen_scl_d1   : std_logic := '0';
   signal gen_scl_d2   : std_logic := '0';
   signal gen_tx_d1    : std_logic := '0';
@@ -167,6 +174,10 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal analog_stream_mode : std_logic := '0';
   signal gen_capture_tx_channel : natural range 0 to LA_CHANNELS-1 := 0;
   signal gen_capture_scl_channel : natural range 0 to LA_CHANNELS-1 := 1;
+  signal gen_capture_cs_channel : natural range 0 to LA_CHANNELS-1 := 0;
+  signal gen_capture_cs_enable : std_logic := '0';
+  signal gen_capture_miso_channel : natural range 0 to LA_CHANNELS-1 := 1;
+  signal gen_capture_miso_enable : std_logic := '0';
   signal analog_frame_data  : std_logic_vector(127 downto 0) := (others => '0');
   signal analog_frame_len   : natural range 1 to 14 := 1;
   signal adc0_result, adc1_result : std_logic_vector(11 downto 0) := (others => '0');
@@ -220,6 +231,11 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_tx_fastclk_f2  : std_logic := '0';
   signal gen_scl_fastclk_f1 : std_logic := '0';
   signal gen_scl_fastclk_f2 : std_logic := '0';
+  signal gen_cs_capture : std_logic := '1';
+  signal gen_cs_fastclk_f1 : std_logic := '1';
+  signal gen_cs_fastclk_f2 : std_logic := '1';
+  signal gen_miso_fastclk_f1 : std_logic := '1';
+  signal gen_miso_fastclk_f2 : std_logic := '1';
   signal gen_capture_active_f1 : std_logic := '0';
   signal gen_capture_active_f2 : std_logic := '0';
   signal gen_spi_test_f1 : std_logic := '0';
@@ -230,6 +246,14 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_capture_tx_channel_f2 : natural range 0 to LA_CHANNELS-1 := 0;
   signal gen_capture_scl_channel_f1 : natural range 0 to LA_CHANNELS-1 := 1;
   signal gen_capture_scl_channel_f2 : natural range 0 to LA_CHANNELS-1 := 1;
+  signal gen_capture_cs_channel_f1 : natural range 0 to LA_CHANNELS-1 := 0;
+  signal gen_capture_cs_channel_f2 : natural range 0 to LA_CHANNELS-1 := 0;
+  signal gen_capture_cs_enable_f1 : std_logic := '0';
+  signal gen_capture_cs_enable_f2 : std_logic := '0';
+  signal gen_capture_miso_channel_f1 : natural range 0 to LA_CHANNELS-1 := 1;
+  signal gen_capture_miso_channel_f2 : natural range 0 to LA_CHANNELS-1 := 1;
+  signal gen_capture_miso_enable_f1 : std_logic := '0';
+  signal gen_capture_miso_enable_f2 : std_logic := '0';
   signal gen_tx_pin_f1 : natural range 0 to 31 := 0;
   signal gen_tx_pin_f2 : natural range 0 to 31 := 0;
   signal gen_scl_pin_f1 : natural range 0 to 31 := 0;
@@ -293,6 +317,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Gen_Proto     : OUT STD_LOGIC := '0';
     Gen_TX_Pin    : OUT NATURAL range 0 to 31 := 0;
     Gen_SCL_Pin   : OUT NATURAL range 0 to 31 := 0;
+    Gen_DE_Pin    : OUT NATURAL range 0 to 31 := 0;
+    Gen_DE_Enable : OUT STD_LOGIC := '0';
+    Gen_CS_Pin    : OUT NATURAL range 0 to 31 := 0;
+    Gen_CS_Enable : OUT STD_LOGIC := '0';
+    Gen_MISO_Pin  : OUT NATURAL range 0 to 31 := 0;
+    Gen_MISO_Enable : OUT STD_LOGIC := '0';
     Gen_Clear      : OUT STD_LOGIC := '0';
     Gen_I2C_Rd_Len : OUT NATURAL range 0 to 255 := 0;
     Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
@@ -324,6 +354,10 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
     Gen_Capture_Tx_Channel  : OUT NATURAL range 0 to 15 := 0;
     Gen_Capture_Scl_Channel : OUT NATURAL range 0 to 15 := 1;
+    Gen_Capture_CS_Channel  : OUT NATURAL range 0 to 15 := 0;
+    Gen_Capture_CS_Enable   : OUT STD_LOGIC := '0';
+    Gen_Capture_MISO_Channel : OUT NATURAL range 0 to 15 := 1;
+    Gen_Capture_MISO_Enable  : OUT STD_LOGIC := '0';
     Gen_Start_Ack    : IN  STD_LOGIC := '0';
     Gen_Start_Reject : IN  STD_LOGIC := '0';
     Gen_Done_Pulse   : IN  STD_LOGIC := '0';
@@ -495,7 +529,13 @@ BEGIN
   -- Accelerometer (LIS3DH) bus. CS selects the protocol on the chip itself:
   -- CS low = SPI, CS high = I2C — so CS must only drop for SPI-test bursts,
   -- otherwise an I2C dialogue is silently ignored by the sensor.
-  SEN_CS <= '0' when (gen_busy = '1' and gen_spi_test = '1') else '1';
+  -- The board accelerometer CS/SDO pair is the default SPI route.  An
+  -- auxiliary CS route moves chip-select to a GPIO instead, while the
+  -- auxiliary MISO selector changes the Bit_Engine RX source to a pin-pool
+  -- input.  This keeps the fixed sensor route backward compatible.
+  SEN_CS <= '0' when (gen_busy = '1' and gen_spi_test = '1'
+                      and gen_cs_enable = '0') else '1';
+  gen_cs_capture <= '0' when (gen_busy = '1' and gen_spi_test = '1') else '1';
   -- SDI doubles as I2C SDA (bidirectional: the slave drives ACK/read bits),
   -- so drive it OPEN-DRAIN for non-SPI bursts (the QSF weak pull-up supplies
   -- the high level); SPI MOSI stays push-pull.
@@ -515,6 +555,12 @@ BEGIN
             internal_data_r(i) <= not gen_tx_d2;
           elsif gen_capture_active = '1' and gen_scl_pin = pin_map(i) then
             internal_data_r(i) <= gen_scl_d2;
+          elsif gen_capture_active = '1' and gen_capture_cs_enable = '1'
+                and i = gen_capture_cs_channel then
+            internal_data_r(i) <= gen_cs_capture;
+          elsif gen_capture_active = '1' and gen_capture_miso_enable = '1'
+                and i = gen_capture_miso_channel then
+            internal_data_r(i) <= gen_miso_in;
           else
             internal_data_r(i) <= pin_pool(pin_map(i));
           end if;
@@ -543,6 +589,12 @@ BEGIN
             internal_data_r(i) <= gen_tx_d2;
           elsif gen_capture_active = '1' and i = gen_capture_scl_channel then
             internal_data_r(i) <= gen_scl_d2;
+          elsif gen_capture_active = '1' and gen_capture_cs_enable = '1'
+                and i = gen_capture_cs_channel then
+            internal_data_r(i) <= gen_cs_capture;
+          elsif gen_capture_active = '1' and gen_capture_miso_enable = '1'
+                and i = gen_capture_miso_channel then
+            internal_data_r(i) <= gen_miso_in;
           else
             internal_data_r(i) <= pin_pool(pin_map(i));
           end if;
@@ -595,6 +647,20 @@ BEGIN
           pin_dir(gen_tx_pin) <= '1';
         end if;
       end if;
+
+      if gen_busy = '1' and gen_de_enable = '1' then
+        if gen_de_pin < PIN_POOL_SIZE then
+          pin_out(gen_de_pin) <= '1';
+          pin_dir(gen_de_pin) <= '1';
+        end if;
+      end if;
+
+      if gen_busy = '1' and gen_spi_test = '1' and gen_cs_enable = '1' then
+        if gen_cs_pin < PIN_POOL_SIZE then
+          pin_out(gen_cs_pin) <= '0';
+          pin_dir(gen_cs_pin) <= '1';
+        end if;
+      end if;
       
       if gen_busy = '1' then
         -- Drive SCLK on its physical pin for both I2C and SPI test modes so it
@@ -641,6 +707,18 @@ BEGIN
         gen_capture_tx_channel_f2 <= gen_capture_tx_channel_f1;
         gen_capture_scl_channel_f1 <= gen_capture_scl_channel;
         gen_capture_scl_channel_f2 <= gen_capture_scl_channel_f1;
+        gen_capture_cs_channel_f1 <= gen_capture_cs_channel;
+        gen_capture_cs_channel_f2 <= gen_capture_cs_channel_f1;
+        gen_capture_cs_enable_f1 <= gen_capture_cs_enable;
+        gen_capture_cs_enable_f2 <= gen_capture_cs_enable_f1;
+        gen_capture_miso_channel_f1 <= gen_capture_miso_channel;
+        gen_capture_miso_channel_f2 <= gen_capture_miso_channel_f1;
+        gen_capture_miso_enable_f1 <= gen_capture_miso_enable;
+        gen_capture_miso_enable_f2 <= gen_capture_miso_enable_f1;
+        gen_cs_fastclk_f1 <= gen_cs_capture;
+        gen_cs_fastclk_f2 <= gen_cs_fastclk_f1;
+        gen_miso_fastclk_f1 <= gen_miso_in;
+        gen_miso_fastclk_f2 <= gen_miso_fastclk_f1;
         -- Missing until now: the FAST_SPEED speed-input-path mux below reads
         -- gen_capture_active_f2, but nothing in this build profile ever drove
         -- it off its '0' reset default (the only assignment lived in
@@ -666,6 +744,18 @@ BEGIN
         gen_capture_tx_channel_f2 <= gen_capture_tx_channel_f1;
         gen_capture_scl_channel_f1 <= gen_capture_scl_channel;
         gen_capture_scl_channel_f2 <= gen_capture_scl_channel_f1;
+        gen_capture_cs_channel_f1 <= gen_capture_cs_channel;
+        gen_capture_cs_channel_f2 <= gen_capture_cs_channel_f1;
+        gen_capture_cs_enable_f1 <= gen_capture_cs_enable;
+        gen_capture_cs_enable_f2 <= gen_capture_cs_enable_f1;
+        gen_capture_miso_channel_f1 <= gen_capture_miso_channel;
+        gen_capture_miso_channel_f2 <= gen_capture_miso_channel_f1;
+        gen_capture_miso_enable_f1 <= gen_capture_miso_enable;
+        gen_capture_miso_enable_f2 <= gen_capture_miso_enable_f1;
+        gen_cs_fastclk_f1 <= gen_cs_capture;
+        gen_cs_fastclk_f2 <= gen_cs_fastclk_f1;
+        gen_miso_fastclk_f1 <= gen_miso_in;
+        gen_miso_fastclk_f2 <= gen_miso_fastclk_f1;
       end if;
     end process;
   end generate;
@@ -691,6 +781,12 @@ BEGIN
           capture_data_fast_speed_r(i) <= gen_tx_fastclk_f2;
         elsif gen_capture_active_f2 = '1' and i = gen_capture_scl_channel_f2 then
           capture_data_fast_speed_r(i) <= gen_scl_fastclk_f2;
+        elsif gen_capture_active_f2 = '1' and gen_capture_cs_enable_f2 = '1'
+              and i = gen_capture_cs_channel_f2 then
+          capture_data_fast_speed_r(i) <= gen_cs_fastclk_f2;
+        elsif gen_capture_active_f2 = '1' and gen_capture_miso_enable_f2 = '1'
+              and i = gen_capture_miso_channel_f2 then
+          capture_data_fast_speed_r(i) <= gen_miso_fastclk_f2;
         elsif accel_attach_f2 = '1' and i = 13 then
           capture_data_fast_speed_r(i) <= sen_sdi_fast_f2;
         elsif accel_attach_f2 = '1' and i = 14 then
@@ -746,6 +842,12 @@ BEGIN
             capture_data_fast_normal_r(i) <= gen_tx_f2;
           elsif gen_capture_active_f2 = '1' and i = gen_capture_scl_channel_f2 then
             capture_data_fast_normal_r(i) <= gen_scl_f2;
+          elsif gen_capture_active_f2 = '1' and gen_capture_cs_enable_f2 = '1'
+                and i = gen_capture_cs_channel_f2 then
+            capture_data_fast_normal_r(i) <= gen_cs_fastclk_f2;
+          elsif gen_capture_active_f2 = '1' and gen_capture_miso_enable_f2 = '1'
+                and i = gen_capture_miso_channel_f2 then
+            capture_data_fast_normal_r(i) <= gen_miso_fastclk_f2;
           elsif gen_capture_active_f2 = '1' and gen_tx_pin_f2 = pin_map_fast(i) then
             capture_data_fast_normal_r(i) <= gen_tx_f2;
           elsif gen_capture_active_f2 = '1' and gen_rs485_pair_f2 = '1' and gen_scl_pin_f2 = pin_map_fast(i) then
@@ -983,6 +1085,12 @@ BEGIN
     Gen_Proto     => gen_proto,
     Gen_TX_Pin    => gen_tx_pin,
     Gen_SCL_Pin   => gen_scl_pin,
+    Gen_DE_Pin    => gen_de_pin,
+    Gen_DE_Enable => gen_de_enable,
+    Gen_CS_Pin    => gen_cs_pin,
+    Gen_CS_Enable => gen_cs_enable,
+    Gen_MISO_Pin  => gen_miso_pin,
+    Gen_MISO_Enable => gen_miso_enable,
     Gen_Clear      => gen_clear,
     Gen_I2C_Rd_Len => open,
     Gen_I2C_Dev_R  => open,
@@ -1014,6 +1122,10 @@ BEGIN
     Pin_Map_Pin     => pin_map_pin,
     Gen_Capture_Tx_Channel => gen_capture_tx_channel,
     Gen_Capture_Scl_Channel => gen_capture_scl_channel,
+    Gen_Capture_CS_Channel => gen_capture_cs_channel,
+    Gen_Capture_CS_Enable => gen_capture_cs_enable,
+    Gen_Capture_MISO_Channel => gen_capture_miso_channel,
+    Gen_Capture_MISO_Enable => gen_capture_miso_enable,
     Gen_Start_Ack    => gen_start_ack_i,
     Gen_Start_Reject => gen_start_reject_i,
     Gen_Done_Pulse   => gen_done_pulse_i,
@@ -1173,7 +1285,20 @@ BEGIN
         In_0        => gen_rx_in
       );
   end generate;
-  gen_rx_in <= sen_sdo_sync when gen_spi_test = '1' else sen_sdi_sync;
+  process(gen_spi_test, gen_miso_enable, gen_miso_pin, pin_pool,
+          sen_sdo_sync, sen_sdi_sync)
+  begin
+    if gen_spi_test = '1' then
+      if gen_miso_enable = '1' and gen_miso_pin < PIN_POOL_SIZE then
+        gen_miso_in <= pin_pool(gen_miso_pin);
+      else
+        gen_miso_in <= sen_sdo_sync;
+      end if;
+    else
+      gen_miso_in <= sen_sdi_sync;
+    end if;
+  end process;
+  gen_rx_in <= gen_miso_in;
   gen_start_ack_i <= gen_start and not gen_busy;
   gen_active <= gen_busy;
   -- Bit_Engine has no start-reject output. Tie reject low so the OLS_Interface

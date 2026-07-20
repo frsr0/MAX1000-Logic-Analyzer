@@ -18,8 +18,8 @@ board. “Post-capture” means the feature consumes an immutable saved waveform
 ## Generator route capability contract
 
 `/api/generator/capabilities` returns per-route outputs and optional features.
-This lets the UI distinguish current MOSI/SCLK-only SPI and internally timed
-RS-485 direction from future firmware routes that add CS/MISO or a user DE pin.
+This lets the UI distinguish SPI MOSI/SCLK plus optional GPIO CS/MISO routes
+and RS-485 A/B plus optional user DE from routes that do not provide them.
 SWD transaction capture uses the existing SWCLK/SWDIO Bit Banger route; target
 responses still require an electrically connected target.
 

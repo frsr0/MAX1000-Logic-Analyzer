@@ -275,11 +275,11 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
   200 MHz rolling stream with much lower memory/readback pressure than
   16-channel full-width digital.
 - Generator protocols on hardware: UART, RS-485, I2C, SPI (send + capture
-  only — loops MOSI/SCLK into the capture stream, no CS/MISO), SWD transaction
+  only — loops MOSI/SCLK into the capture stream with optional GPIO CS/MISO), SWD transaction
   capture (send + capture through the existing SWCLK/SWDIO Bit Banger route),
   and raw two-output Bit Banger playback. The generator capabilities response
-  includes per-route outputs and features so future firmware can safely expose
-  CS/MISO or a separate DE route without changing the UI contract. PWM (debug
+  includes per-route outputs and features for optional CS/MISO and separate DE
+  routes. PWM (debug
   CH0), pattern, counter, and PRBS remain mock-only. Raw Bit Banger playback is
   bounded by the 1024-symbol generator FIFO.
 - Segmented/burst capture modes and hardware sequence triggers are not in the

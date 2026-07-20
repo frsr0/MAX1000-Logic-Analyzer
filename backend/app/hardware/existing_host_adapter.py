@@ -181,9 +181,10 @@ class ExistingHostAdapter(HardwareDevice):
                 ),
                 GeneratorRouteCapability(
                     protocol="rs485", name="RS-485 A/B", physical=True,
-                    outputs={"a": "configurable", "b": "configurable"},
-                    features=["capture_loopback", "internal_de_timing"],
-                    detail="FPGA controls transceiver direction internally; no user DE pin is routed.",
+                    outputs={"a": "configurable", "b": "configurable",
+                             "de": "configurable_gpio"},
+                    features=["capture_loopback", "internal_de_timing", "de_pin"],
+                    detail="DE is driven high for the active Bit_Engine burst; omit it when using the on-board transceiver direction path.",
                 ),
                 GeneratorRouteCapability(
                     protocol="i2c", name="I²C", physical=True,
@@ -191,10 +192,11 @@ class ExistingHostAdapter(HardwareDevice):
                     features=["external_slave"],
                 ),
                 GeneratorRouteCapability(
-                    protocol="spi", name="SPI MOSI/SCLK", physical=True,
-                    outputs={"mosi": "configurable", "sclk": "configurable"},
-                    features=["capture_loopback"],
-                    detail="CS and MISO are not routed by the current firmware.",
+                    protocol="spi", name="SPI MOSI/SCLK/CS/MISO", physical=True,
+                    outputs={"mosi": "configurable", "sclk": "configurable",
+                             "cs": "configurable_gpio", "miso": "configurable_input"},
+                    features=["capture_loopback", "cs", "miso", "cs_pin", "miso_pin", "fixed_sensor_cs_miso"],
+                    detail="CS can use a GPIO or the on-board sensor CS; MISO can use a GPIO input or the on-board sensor SDO (pin 23).",
                 ),
                 GeneratorRouteCapability(
                     protocol="bitbang", name="Two-output Bit Banger", physical=True,
@@ -732,11 +734,11 @@ class ExistingHostAdapter(HardwareDevice):
                                            proto='RS485',
                                            rs485_b_pin=cfg.tx_pin,
                                            rs485_a_pin=cfg.scl_pin,
+                                           rs485_de_pin=cfg.extra.get("de_pin"),
                                            fast_mode=False)
             elif cfg.protocol == "spi":
-                # SPI generator loops MOSI (tx_pin) and SCLK (scl_pin) into
-                # the capture stream directly; there is no CS/MISO from the
-                # generator itself (see capture_with_gen's SPI branch).
+                # SPI generator loops MOSI/SCLK and optional auxiliary
+                # CS/MISO routes into the capture stream directly.
                 # cfg.baud is reused here as the SPI clock rate in Hz.
                 dev._gen_data = data
                 spi_clk_div = max(1, int(dev.sys_clk // (2 * max(1, int(cfg.baud)))))
@@ -745,6 +747,10 @@ class ExistingHostAdapter(HardwareDevice):
                                            proto='SPI',
                                            spi_mosi_pin=cfg.tx_pin,
                                            spi_sclk_pin=cfg.scl_pin,
+                                           spi_cs_pin=cfg.extra.get("cs_pin"),
+                                           spi_miso_pin=cfg.extra.get("miso_pin", 23),
+                                           spi_cs_channel=cfg.extra.get("cs_capture_channel"),
+                                           spi_miso_channel=int(cfg.extra.get("miso_capture_channel", 15)),
                                            spi_clk_div=spi_clk_div,
                                            fast_mode=False)
             elif cfg.protocol == "swd":

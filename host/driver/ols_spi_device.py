@@ -34,7 +34,8 @@ from driver.spi_protocol import (
     REG_TRIGGER_MASK, REG_TRIGGER_VALUE, REG_FLAGS,
     REG_FAST_MODE, REG_CONT_MODE,
     REG_GEN_PROTO, REG_GEN_BAUD, REG_GEN_PINS, REG_GEN_DATA,
-    REG_GEN_RX_DATA, REG_GEN_CAPTURE_TX_CHAN, REG_GEN_CAPTURE_SCL_CHAN,
+    REG_GEN_RX_DATA, REG_GEN_AUX_PINS, REG_GEN_CAPTURE_AUX,
+    REG_GEN_CAPTURE_TX_CHAN, REG_GEN_CAPTURE_SCL_CHAN,
     REG_IFACE_MODE, REG_DEBUG_CH0_ENABLE, REG_DEBUG_CH0_PERIOD, REG_DEBUG_CH0_DUTY,
     ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_DONE,
     GEN_FLAG_SPI_TEST, GEN_FLAG_REPEAT, GEN_FLAG_RS485_PAIR,
@@ -1435,11 +1436,42 @@ class OLSDeviceSPI:
         val = (self.gen_pins['tx'] & 0x1F) | ((self.gen_pins['scl'] & 0x1F) << 8)
         self.pkt.write_register(REG_GEN_PINS, val)
 
+    def _aux_pins(self, de_pin=None, cs_pin=None, miso_pin=None):
+        """Configure optional generator-side auxiliary routes.
+
+        The route register is deliberately separate from the legacy TX/SCL
+        register so old host binaries cannot accidentally enable an auxiliary
+        output.  MISO is an input selector; DE and CS are driven only while
+        the Bit_Engine reports busy.
+        """
+        value = 0
+        if de_pin is not None:
+            value |= int(de_pin) & 0x1F
+            value |= 1 << 5
+        if cs_pin is not None:
+            value |= (int(cs_pin) & 0x1F) << 8
+            value |= 1 << 13
+        if miso_pin is not None:
+            value |= (int(miso_pin) & 0x1F) << 16
+            value |= 1 << 21
+        self.pkt.write_register(REG_GEN_AUX_PINS, value)
+
     def _set_gen_capture_channels(self, tx_channel=None, scl_channel=None):
         if tx_channel is not None:
             self.pkt.write_register(REG_GEN_CAPTURE_TX_CHAN, int(tx_channel) & 0x0F)
         if scl_channel is not None:
             self.pkt.write_register(REG_GEN_CAPTURE_SCL_CHAN, int(scl_channel) & 0x0F)
+
+    def _set_gen_capture_aux(self, cs_channel=None, miso_channel=None):
+        """Select optional fast-path capture channels for SPI CS/MISO."""
+        value = 0
+        if cs_channel is not None:
+            value |= int(cs_channel) & 0x0F
+            value |= 1 << 4
+        if miso_channel is not None:
+            value |= (int(miso_channel) & 0x0F) << 8
+            value |= 1 << 12
+        self.pkt.write_register(REG_GEN_CAPTURE_AUX, value)
 
     def send_uart(self, data_bytes, baud=115200, tx_pin=None):
         self._gen_data = data_bytes
@@ -1536,7 +1568,9 @@ class OLSDeviceSPI:
                          i2c_frame=None, i2c_tx_pin=3, i2c_scl_pin=1,
                          i2c_read_len=0, i2c_dev_r=None,
                          spi_mosi_pin=3, spi_sclk_pin=1, spi_clk_div=100,
-                         rs485_b_pin=3, rs485_a_pin=1,
+                         rs485_b_pin=3, rs485_a_pin=1, rs485_de_pin=None,
+                         spi_cs_pin=None, spi_miso_pin=None,
+                         spi_cs_channel=None, spi_miso_channel=15,
                          swd_ops=None, swd_clk_hz=1000000,
                          swd_swdio_pin=3, swd_swclk_pin=1, swd_connect=True,
                          gen_first=False, fast_mode=True,
@@ -1590,14 +1624,17 @@ class OLSDeviceSPI:
         # for the clock line (Out_1).
         swd_loaded = False
         if proto == 'RS485':
+            self._set_gen_capture_aux()
             self._set_gen_capture_channels(tx_channel=rs485_b_pin,
                                            scl_channel=rs485_a_pin)
             self.pkt.write_register(REG_GEN_DATA, 1 << 8)
             self.pkt.write_register(REG_GEN_PROTO, 0)
             self._pins(tx_pin=rs485_b_pin, scl_pin=rs485_a_pin)
+            self._aux_pins(de_pin=rs485_de_pin)
             self.pkt.write_register(REG_GEN_DATA, (1 << 8) | GEN_FLAG_RS485_PAIR)
             self._gen_load_uart(self._gen_data, self._gen_baud)
         elif proto == 'I2C':
+            self._set_gen_capture_aux()
             self._set_gen_capture_channels(tx_channel=i2c_tx_pin,
                                            scl_channel=i2c_scl_pin)
             self._pins(tx_pin=i2c_tx_pin, scl_pin=i2c_scl_pin)
@@ -1621,10 +1658,17 @@ class OLSDeviceSPI:
             # clears it) and only latches when REG_GEN_DATA bits 31:8 are
             # non-zero, so bit 8 is set as well.
             self._pins(tx_pin=spi_mosi_pin, scl_pin=spi_sclk_pin)
+            # Always rewrite the auxiliary route register so a prior SPI
+            # capture cannot leave a stale CS output enabled.
+            self._aux_pins(cs_pin=spi_cs_pin, miso_pin=spi_miso_pin)
+            self._set_gen_capture_aux(
+                cs_channel=spi_cs_channel if spi_cs_pin is not None else None,
+                miso_channel=spi_miso_channel if spi_miso_pin is not None else None)
             self.pkt.write_register(REG_GEN_PROTO, 0)
             self.pkt.write_register(REG_GEN_DATA, GEN_FLAG_SPI_TEST | (1 << 8))
             self._gen_load_spi(self._gen_data, spi_clk_div)
         elif proto == 'SWD':
+            self._set_gen_capture_aux()
             self._set_gen_capture_channels(tx_channel=swd_swdio_pin,
                                            scl_channel=swd_swclk_pin)
             # SWDIO (Out_0) and SWCLK (Out_1) loop into the capture stream
@@ -1636,6 +1680,7 @@ class OLSDeviceSPI:
             swd_loaded = self._gen_load_swd(
                 swd_ops, swd_clk_hz, connect=swd_connect)
         elif self._gen_data is not None:
+            self._set_gen_capture_aux()
             self._set_gen_capture_channels(tx_channel=self._gen_tx_pin)
             # Clear any leftover I2C/SPI test-mode flags (bit0/bit1) from a prior
             # capture — they are not cleared on reset, and a stale SPI-test bit
