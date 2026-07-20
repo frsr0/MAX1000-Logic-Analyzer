@@ -46,7 +46,9 @@ type Acquisition = 'single' | 'live';
 
 ## Compression
 
-Digital modes: raw | delta_rle | delta | rle. Mixed/analog: raw only.
+Digital modes: raw or delta_rle. The host retains `delta` and `rle` as
+compatibility spellings where accepted; both select the exact full-word RLE
+readback path. Mixed/analog: raw only.
 
 ## State
 

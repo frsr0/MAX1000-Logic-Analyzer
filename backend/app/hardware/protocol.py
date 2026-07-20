@@ -23,12 +23,12 @@ def import_host_driver():
     from .base import HardwareError
     try:
         from driver import ols_spi_device, spi_protocol  # noqa: import from host/
-    except ImportError as e:
+    except ImportError as e:  # pragma: no cover - environment-dependent FTDI absence
         raise HardwareError(
             "FTDI driver package not available: install it with "
             "'pip install ftd2xx' (real hardware only). "
             f"Underlying error: {e}") from e
-    except OSError as e:
+    except OSError as e:  # pragma: no cover - environment-dependent FTDI library absence
         raise HardwareError(
             "FTDI D2XX shared library not found (libftd2xx). Install the FTDI "
             "D2XX driver from ftdichip.com on the machine the FPGA is plugged "

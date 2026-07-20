@@ -93,9 +93,6 @@ class SpiDecoder(Decoder):
                 last_edge = e
                 count += 1
                 i += 1
-            if count == 0:
-                i += 1
-                continue
             partial = count < word_size
             parts = []
             if mosi is not None:

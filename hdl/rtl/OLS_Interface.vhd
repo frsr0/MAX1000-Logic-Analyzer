@@ -64,8 +64,11 @@ PORT (
         Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
         Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
         Gen_Capture_Tx_Channel  : OUT NATURAL range 0 to 15 := 0;
-        Gen_Capture_Scl_Channel : OUT NATURAL range 0 to 15 := 1;
+         Gen_Capture_Scl_Channel : OUT NATURAL range 0 to 15 := 1;
          Gen_Capture_Active : OUT STD_LOGIC := '0';
+         Debug_Ch0_Enable : OUT STD_LOGIC := '0';
+         Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 downto 0) := x"00000400";
+         Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 downto 0) := x"00000200";
          Gen_Start_Ack      : IN  STD_LOGIC := '0';
          Gen_Start_Reject   : IN  STD_LOGIC := '0';
          Gen_Done_Pulse     : IN  STD_LOGIC := '0';
@@ -150,6 +153,9 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL gen_capture_tx_channel_i  : NATURAL range 0 to 15 := 0;
   SIGNAL gen_capture_scl_channel_i : NATURAL range 0 to 15 := 1;
   SIGNAL gen_capture_active_i  : STD_LOGIC := '0';
+  SIGNAL debug_ch0_enable_i : STD_LOGIC := '0';
+  SIGNAL debug_ch0_period_i : STD_LOGIC_VECTOR(31 downto 0) := x"00000400";
+  SIGNAL debug_ch0_duty_i   : STD_LOGIC_VECTOR(31 downto 0) := x"00000200";
   SIGNAL gen_capture_done_i    : STD_LOGIC := '0';
   SIGNAL gen_capture_error_i   : STD_LOGIC := '0';
   SIGNAL gen_start_pulse     : STD_LOGIC := '0';
@@ -469,6 +475,12 @@ BEGIN
           gen_capture_tx_channel_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(3 downto 0)));
         WHEN REG_GEN_CAPTURE_SCL_CHAN =>
           gen_capture_scl_channel_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(3 downto 0)));
+        WHEN REG_DEBUG_CH0_ENABLE =>
+          debug_ch0_enable_i <= disp_reg_wdata(0);
+        WHEN REG_DEBUG_CH0_PERIOD =>
+          debug_ch0_period_i <= disp_reg_wdata;
+        WHEN REG_DEBUG_CH0_DUTY =>
+          debug_ch0_duty_i <= disp_reg_wdata;
         WHEN others => null;
       END CASE;
     END IF;
@@ -951,6 +963,9 @@ BEGIN
   Armed          <= Run_OLS;
   Gen_Capture_Tx_Channel <= gen_capture_tx_channel_i;
   Gen_Capture_Scl_Channel <= gen_capture_scl_channel_i;
+  Debug_Ch0_Enable <= debug_ch0_enable_i;
+  Debug_Ch0_Period <= debug_ch0_period_i;
+  Debug_Ch0_Duty <= debug_ch0_duty_i;
   Gen_Capture_Active <= gen_capture_active_i;
   -- Pin_Map_Write is driven from the main process (default low, pulsed in CMD_PIN_MAP handler)
 
@@ -1381,6 +1396,12 @@ BEGIN
                     reg_val(3 downto 0) := std_logic_vector(to_unsigned(gen_capture_tx_channel_i, 4));
                   when REG_GEN_CAPTURE_SCL_CHAN =>
                     reg_val(3 downto 0) := std_logic_vector(to_unsigned(gen_capture_scl_channel_i, 4));
+                  when REG_DEBUG_CH0_ENABLE =>
+                    reg_val(0) := debug_ch0_enable_i;
+                  when REG_DEBUG_CH0_PERIOD =>
+                    reg_val := debug_ch0_period_i;
+                  when REG_DEBUG_CH0_DUTY =>
+                    reg_val := debug_ch0_duty_i;
                   when REG_CAPTURE_SEQ =>
                     reg_val := capture_seq;
                   when REG_PRODUCER_INDEX =>

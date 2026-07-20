@@ -62,6 +62,8 @@ graph TB
 
 ## Wiki Sections
 
+- [Hardware Validation](hardware-validation.md) - real-board smoke tests, PWM regression, compression matrix, and full validation
+
 - [HDL — FPGA Design](hdl/README.md) — VHDL entities, clock domains, SDRAM controller, capture pipeline, signal generator, testbenches, build flow
 - [Backend — Python Server](backend/README.md) — FastAPI app, hardware abstraction, capture manager, session model, decoders, exports, WebSockets
 - [Frontend — Web UI](frontend/README.md) — React components, state management, waveform viewer, API client, E2E tests
@@ -78,6 +80,8 @@ graph TB
 - Analog-fast (1 ADC lane), analog-all (4 lanes), mixed (digital + analog) modes
 - Narrow packed digital (200 MHz, 1 channel)
 - UART, I2C, SPI, PWM, RS-485 generation
+- Register-controlled debug CH0 PWM loopback for hardware self-test
+- Exact full-word RLE readback compression (`raw` / `delta_rle` host modes)
 - Built with Quartus, targeting 10M08DAF484C8G, FAST_SPEED build
 - SDRAM write timing is closed in STA with the DDIO-forwarded chip clock at
   **seed 3** (2026-07-10, current flashed build): worst setup slack

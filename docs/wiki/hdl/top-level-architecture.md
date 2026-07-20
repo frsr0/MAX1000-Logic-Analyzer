@@ -107,11 +107,16 @@ The `altera_modular_adc_control` block controls the MAX10 ADC. It outputs:
 
 ### Debug CH0
 
+The current implementation is authoritative as follows: `REG_DEBUG_CH0_ENABLE`
+is register `0x42`, `REG_DEBUG_CH0_PERIOD` is `0x43`, and
+`REG_DEBUG_CH0_DUTY` is `0x44`. The PWM is generated in `sys_clk`, drives
+physical channel/pin 0, defaults to period `0x400` and duty `0x200` (50%), and
+is overridden by generator output when the generator is active. The counter
+resets when disabled or when the period is less than two.
+
 A configurable PWM loopback generator on LA channel 0 for self-test:
-- `debug_ch0_enable` — enable debug output
-- `debug_ch0_channel` — which pin to drive (default 0)
-- `debug_ch0_period` (default: 0x400) — PWM period in sys_clk cycles
-- `debug_ch0_duty` (default: 0x200) — PWM duty cycle
+- The legacy names above are superseded by the SPI register names documented
+  above; the active implementation has no programmable channel selector.
 
 ## Clock Domain Crossings
 

@@ -62,8 +62,6 @@ def _waveform_svg(session: Session, wf: WaveformData,
         path = []
         for b in range(bins):
             seg = bits[edges[b]:edges[b + 1]]
-            if len(seg) == 0:
-                continue
             lo, hi = int(seg.min()), int(seg.max())
             x = 80 + b * (width / bins)
             if lo != hi:
@@ -85,8 +83,6 @@ def _waveform_svg(session: Session, wf: WaveformData,
         pts = []
         for b in range(bins):
             seg = sig[edges[b]:edges[b + 1]]
-            if len(seg) == 0:
-                continue
             x = 80 + b * (width / bins)
             ylo = y + h3 - (float(seg.min()) - smin) / rng * h3
             yhi = y + h3 - (float(seg.max()) - smin) / rng * h3

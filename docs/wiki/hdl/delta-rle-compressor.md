@@ -1,40 +1,38 @@
-# Delta-RLE Compressor: `delta_rle_compressor`
+# Historical Delta-RLE Compressor: `delta_rle_compressor`
 
-**File:** `hdl/rtl/delta_rle_compressor.vhd` (6.1 KB)
+> This page documents a retired implementation. It is not instantiated by the
+> current FAST_SPEED bitstream.
 
-## Purpose
+**File:** `hdl/rtl/delta_rle_compressor.vhd` (historical)
 
-Merged delta→RLE codec that first applies delta encoding (difference between consecutive samples), then RLE compresses the resulting deltas. Used for digital capture compression in non-raw builds.
+## Status
 
-## Algorithm
+The former merged delta-to-RLE codec applied a delta stage before run-length
+encoding. The live implementation now uses exact full-word RLE directly. The
+host-facing `delta_rle` name remains as a compatibility alias for that RLE
+mode.
 
-1. Compute delta = sample[n] − sample[n−1] (XOR-based for digital)
-2. Delta values cluster near zero for static/low-activity signals
-3. RLE on the delta stream: long runs of identical deltas (especially 0 = no change) compress efficiently
-
-## Data Flow
+## Historical Data Flow
 
 ```
-sample_in[15:0] → [delta calc] → delta[15:0] → [RLE] → compressed_out
+sample_in[15:0] -> [delta calc] -> delta[15:0] -> [RLE]
 ```
 
-## Host-side Decompression
+This design is retained for historical RTL and testbench reference only. It is
+not part of the active readback path in `OLS_Interface`.
 
-The Python host (`host/driver/wire_format.py`) decompresses:
+## Why It Was Replaced
 
-- `decompress_delta_block(data)` → decompress 6 words to 16 samples
-- `decompress_delta_stream(data)` → decompress streaming delta blocks
-- `decompress_delta_rle_stream(data)` → decompress merged delta→RLE stream
-- `decompress_block_readback_stream(data)` → decompress one CMD_READ_CAPTURE block
+- The signed-delta stage did not close timing reliably in the dense MAX10 build.
+- Full-word RLE is simpler, exact, and performs well for idle and slow digital
+  signals.
+- Direct RLE makes the host round-trip contract unambiguous: each run is a
+  `(count, value)` pair and must expand to exactly 512 samples per block.
 
-## Known Limitations
+## Related Tests
 
-- Not synthesised when `FAST_RAW_BUILD=true`
-- Delta encoding assumes adjacent-sample correlation; random data may expand
-
-## Testing
-
-| Testbench | What it covers |
+| Test | What it covers |
 |---|---|
-| `tb_capture_compressor.vhd` | Full capture compressor path |
-| Host `wire_format.py` tests | Software decompression matching |
+| `tb_rle_compressor.vhd` | Active full-word RLE core |
+| `tb_ols_rle_raw_stream.vhd` | Active streaming RLE path |
+| `host/debug/hwt_test_compression_matrix.py` | Direct hardware payload ratios and lossless expansion |

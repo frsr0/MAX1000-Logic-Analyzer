@@ -20,3 +20,6 @@ ols-hw-validation = "app.hw_validation:main"
 [tool.pytest.ini_options]
 testpaths = ["host/tests", "host/driver/tests"]
 norecursedirs = ["host/debug", "archive"]
+
+[tool.coverage.run]
+omit = ["backend/app/tests/*"]

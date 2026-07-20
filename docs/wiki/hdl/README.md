@@ -51,6 +51,11 @@
 - [Core Wrapper](core-wrapper.md) — `OLS_Logic_Analyzer_SDRAM_Core` component wiring
 
 ### Capture Subsystem
+
+The active readback codec is exact full-word RLE in `OLS_Interface`; the
+delta-RLE and capture-compressor pages below are historical references. See
+[Hardware Validation](../hardware-validation.md) for the direct compression
+matrix and measured ratios.
 - [Capture Engine](capture-engine.md) — `Fast_Logic_Analyzer_SDRAM`: sample divider, BRAM, FIFO, SDRAM write pump, triple-buffer continuous mode, narrow digital, packed mode
 - [SDRAM Controller](sdram-controller.md) — `SDRAM_Controller_Custom`: open-page streaming, read/write/burst, single-shot completion
 - [MSO Capture Pipeline](mso-capture.md) — `mso_capture`: mixed-signal bit-packing, delta_calc → analog_packer, digital_rle → stream_mux
@@ -58,8 +63,8 @@
 - [Analog Packer](analog-packer.md) — `analog_packer`: v1/v2 packed analog block frames
 - [Digital RLE](digital-rle.md) — `digital_rle`: 4-slice run-length encoder
 - [RLE Compressor](rle-compressor.md) — Generic RLE compressor core
-- [Delta-RLE Compressor](delta-rle-compressor.md) — Merged delta→RLE codec
-- [Capture Compressor](capture-compressor.md) — Capture datapath compression wrapper
+- [Historical Delta-RLE Compressor](delta-rle-compressor.md) - Retired delta-to-RLE design and rationale
+- [Historical Capture Compressor](capture-compressor.md) - Legacy wrapper retained for reference
 - [Stream Mux](stream-mux.md) — `mso_stream_mux`: analog/digital sub-stream arbiter
 
 ### SPI / Control

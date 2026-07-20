@@ -175,7 +175,7 @@ class ExistingHostAdapter(HardwareDevice):
             triggers=[TriggerCapability(type=t, execution=e, description=d)
                       for t, e, d in trig],
             notes=[
-                "Host-side digital glitch filter (a.k.a. Schmitt) is available; the legacy debug CH0 PWM path has been replaced by the bit-banger/MIL flow on this bitstream.",
+                "Host-side digital glitch filter (a.k.a. Schmitt) is available; debug CH0 provides a register-controlled internal PWM source for capture self-tests, with generator output taking priority.",
                 "The MAX1000 has 64 Mbit SDRAM. This bitstream exposes a "
                 f"{DIGITAL_SDRAM_WORDS:,}-word 16-bit SDRAM capture ring "
                 f"({DIGITAL_NARROW_LOGICAL_SAMPLES:,} logical samples in "
@@ -573,7 +573,7 @@ class ExistingHostAdapter(HardwareDevice):
                                protocol=self._gen_cfg.protocol if self._gen_cfg else None,
                                config=self._gen_cfg.model_dump() if self._gen_cfg else None,
                                supported=True,
-                               detail="UART/RS-485/I2C/SPI generator (FPGA); debug pin exercise now lives in the bit-banger/MIL flow")
+                               detail="UART/RS-485/I2C/SPI generator (FPGA); debug CH0 PWM is available for capture self-tests")
 
     def generator_configure(self, cfg: GeneratorConfig) -> None:
         if cfg.protocol not in ("uart", "rs485", "i2c", "spi"):

@@ -169,10 +169,6 @@ def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
         nacked = []
         decoded = bytes(e["fields"]["mosi"] & 0xFF for e in dec_result.events
                         if e["type"] == "spi_word" and e["fields"]["mosi"] is not None)
-    else:
-        nacked = []
-        decoded = b""
-
     if cfg.protocol in ("uart", "rs485"):
         passed, mismatches, detail = _compare_uart_loopback(expected, decoded)
     else:

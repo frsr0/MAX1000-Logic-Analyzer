@@ -54,6 +54,11 @@ def test_status_and_devices(client):
     assert any(d["id"] == "mock" for d in devs)
 
 
+def test_frontend_spa_fallback_routes_when_built(client):
+    assert client.get("/").status_code == 200
+    assert client.get("/definitely-not-a-file").status_code == 200
+
+
 def test_connect_mock(client):
     r = client.post("/api/connect", json={"device_id": "mock"}, headers=HDR)
     assert r.status_code == 200
@@ -385,6 +390,9 @@ def test_machine_in_loop_emulator(client):
     assert event["inter_byte_gap_us"] == 100
 
     assert client.post("/api/mil/stop", headers=HDR).json()["running"] is False
+    assert client.post("/api/mil/load", json={}, headers=HDR).status_code == 400
+    assert client.post("/api/mil/transaction", json={"request_hex": "01"},
+                       headers=HDR).status_code == 400
 
 
 def test_control_lock(client):
@@ -458,3 +466,215 @@ def test_error_handling(client):
     assert client.get("/api/sessions/nope/waveform").status_code == 404
     r = client.post("/api/sessions", json={"json_text": "not json"})
     assert r.status_code == 400
+
+
+def test_api_management_error_and_filter_paths(client):
+    sessions = client.get("/api/sessions").json()["sessions"]
+    sid = None
+    for candidate in sessions:
+        detail = client.get(f"/api/sessions/{candidate['id']}").json()
+        if any(c.get("id") == "d0" for c in detail.get("channels", [])):
+            meta = client.get(f"/api/sessions/{candidate['id']}/metadata").json()
+            if meta.get("has_waveform"):
+                sid = candidate["id"]
+                break
+    if sid is None:
+        client.post("/api/connect", json={"device_id": "mock"}, headers=HDR)
+        client.post("/api/capture/start", json={
+            "settings": {"sample_rate": 100_000, "num_samples": 2_000,
+                         "mock_scenario": "uart"}}, headers=HDR)
+        sid = wait_capture_done(client)["last_session_id"]
+
+    assert client.get("/api/measurements/types").json()["types"]
+    assert client.post(f"/api/sessions/{sid}/measurements",
+                       json={"type": "missing"}).status_code == 400
+    missing = client.patch(f"/api/sessions/{sid}/measurements/missing",
+                           json={"scope": "capture"})
+    assert missing.status_code == 404
+    assert client.delete(f"/api/sessions/{sid}/measurements/missing").status_code == 404
+
+    bad_bus = client.post(f"/api/sessions/{sid}/buses",
+                          json={"name": "bad", "members": ["d999"]})
+    assert bad_bus.status_code == 400
+    good_bus = client.post(f"/api/sessions/{sid}/buses",
+                           json={"name": "bus", "members": ["d0", "d1"],
+                                 "display_base": "bin"})
+    assert good_bus.status_code == 200
+
+    dec = client.post(f"/api/sessions/{sid}/decoders", json={
+        "decoder_id": "uart", "channels": {"rx": "d0"}, "run": False}).json()
+    patched = client.patch(f"/api/sessions/{sid}/decoders/{dec['id']}", json={
+        "name": "UART test", "enabled": False, "settings": {"baud": 9600},
+        "region": [1, 2], "channels": {"rx": "d0"}}).json()
+    assert patched["name"] == "UART test" and patched["enabled"] is False
+    cleared = client.patch(f"/api/sessions/{sid}/decoders/{dec['id']}",
+                           json={"clear_region": True}).json()
+    assert cleared["region"] is None
+    assert client.post(f"/api/sessions/{sid}/decoders/{dec['id']}/cancel").status_code == 200
+    assert client.delete(f"/api/sessions/{sid}/decoders/{dec['id']}").status_code == 200
+    assert client.delete(f"/api/sessions/{sid}/decoders/missing").status_code == 404
+    assert client.post(f"/api/sessions/{sid}/decoders",
+                       json={"decoder_id": "missing"}).status_code == 400
+
+    runnable = client.post(f"/api/sessions/{sid}/decoders", json={
+        "decoder_id": "uart", "channels": {"rx": "d0"},
+        "settings": {"baud": 9_600}}).json()
+    assert client.post(f"/api/sessions/{sid}/decoders/{runnable['id']}/run",
+                       json={"region": [0, 100]}).status_code == 200
+    waited = wait_decoder_done(client, sid, runnable["id"])
+    assert waited["status"] in ("done", "error")
+    assert client.get(f"/api/sessions/{sid}/decoders/{runnable['id']}/annotations"
+                      "?start=0&end=100&limit=1").status_code == 200
+    assert client.get(f"/api/sessions/{sid}/decoders/{runnable['id']}/table"
+                      "?severity=normal&field=byte&value=0x00").status_code == 200
+    assert client.get(f"/api/sessions/{sid}/decoder-events?start=0&end=100&limit=1").status_code == 200
+    assert client.post(f"/api/sessions/{sid}/export/csv", json={
+        "decoder_instance": runnable["id"]}).status_code == 200
+    assert client.post(f"/api/sessions/{sid}/export/json", json={"include_raw": False}).status_code == 200
+    assert client.post(f"/api/sessions/{sid}/export/vcd", json={}).status_code == 200
+    assert client.post(f"/api/sessions/{sid}/export/npz").status_code == 200
+    assert client.post(f"/api/sessions/{sid}/export/report").status_code == 200
+    assert client.delete(f"/api/sessions/{sid}/decoders/{runnable['id']}").status_code == 200
+
+    marker_a = client.post(f"/api/sessions/{sid}/markers", json={
+        "sample": 10, "kind": "cursor_a"}).json()
+    marker_b = client.post(f"/api/sessions/{sid}/markers", json={
+        "sample": 100, "kind": "cursor_b"}).json()
+    measurement = client.post(f"/api/sessions/{sid}/measurements", json={
+        "type": "dig_edge_count", "channels": ["d0"], "scope": "cursors"}).json()
+    assert measurement["result"]["region"] == [10, 100]
+    results = client.get(f"/api/sessions/{sid}/measurements/results?cursor_a=10&cursor_b=100")
+    assert results.status_code == 200
+    assert client.patch(f"/api/sessions/{sid}/measurements/{measurement['id']}",
+                        json={"settings": {"threshold": 1}}).status_code == 200
+    assert client.delete(f"/api/sessions/{sid}/measurements/{measurement['id']}").status_code == 200
+    assert client.delete(f"/api/sessions/{sid}/markers/{marker_a['id']}").status_code == 200
+    assert client.delete(f"/api/sessions/{sid}/markers/{marker_b['id']}").status_code == 200
+
+    assert client.get(f"/api/sessions/{sid}/waveform?start=0&end=10&channels=a999").status_code == 200
+    assert client.get(f"/api/sessions/{sid}/metadata").status_code == 200
+    assert client.get(f"/api/sessions/{sid}/raw?start=0&end=4&channels=d0,d1").status_code == 200
+    assert client.get(f"/api/sessions/{sid}/waveform?start=0&channels=d0,d1").status_code == 200
+    assert client.get(f"/api/sessions/{sid}/overview?bins=4").status_code == 200
+    assert client.get(f"/api/sessions/{sid}/edges?channel=d999").status_code == 200
+    assert client.get(f"/api/sessions/{sid}/value-at?sample=0&channels=d999").status_code == 200
+    assert client.get(f"/api/sessions/{sid}/value-at?sample=0&channels={good_bus.json()['id']}").status_code == 200
+    assert client.get(f"/api/sessions/{sid}/spectrum?channel=a999").status_code == 404
+    assert client.post(f"/api/sessions/{sid}/derived-channels", json={
+        "source": "d0", "derive": {"kind": "majority3"}}).status_code == 200
+    assert client.post(f"/api/sessions/{sid}/derived-channels", json={
+        "source": "d999", "derive": {"op": "invert"}}).status_code == 400
+    assert client.get(f"/api/sessions/{sid}/sanity").status_code == 200
+    patched_session = client.patch(f"/api/sessions/{sid}", json={
+        "name": "renamed", "notes": "updated", "tags": ["tested"],
+        "channels": [{"id": "missing", "name": "ignored"},
+                     {"id": "d0", "name": "DATA", "enabled": True}]} )
+    assert patched_session.status_code == 200
+    current_channels = client.get(f"/api/sessions/{sid}").json()["channels"]
+    all_channels = [{"id": c["id"], "enabled": c["id"] == "d0"}
+                    for c in reversed(current_channels)]
+    assert client.patch(f"/api/sessions/{sid}", json={"channels": all_channels}).status_code == 200
+    assert client.post(f"/api/sessions/{sid}/duplicate").status_code == 200
+    assert client.post(f"/api/sessions/{sid}/compare/{sid}").status_code == 200
+    extra_marker = client.post(f"/api/sessions/{sid}/markers", json={"sample": 2}).json()
+    assert client.patch(f"/api/sessions/{sid}/markers/{extra_marker['id']}",
+                        json={"label": "patched"}).status_code == 200
+    assert client.delete(f"/api/sessions/{sid}/markers/{extra_marker['id']}").status_code == 200
+    assert client.delete(f"/api/sessions/{sid}/markers/missing").status_code == 404
+    assert client.patch(f"/api/sessions/{sid}/markers/missing", json={"label": "x"}).status_code == 404
+    assert client.post("/api/sessions/missing/duplicate").status_code == 404
+    assert client.delete("/api/sessions/nope").status_code == 404
+
+    assert client.get(f"/api/sessions/{sid}/raw?start=0&end=4&channels=d0").status_code == 200
+    assert client.get(f"/api/sessions/{sid}/edges?channel=d0").status_code == 200
+    assert client.get(f"/api/sessions/{sid}/decoder-events").status_code == 200
+
+
+def test_session_websocket_topics(client):
+    for path in ("/ws/session/missing", "/ws/decoder/missing"):
+        with client.websocket_connect(path) as ws:
+            ws.send_text(json.dumps({"type": "ping"}))
+            assert ws.receive_json()["type"] == "pong"
+
+
+def test_generator_control_plane_and_mock_diagnostics(client):
+    client.post("/api/connect", json={"device_id": "mock"}, headers=HDR)
+    assert client.get("/api/generator/capabilities").status_code == 200
+    cfg = {"protocol": "uart", "data_hex": "41", "baud": 9600, "tx_pin": 0}
+    configured = client.post("/api/generator/configure", json=cfg, headers=HDR)
+    assert configured.status_code == 200
+    assert client.get("/api/generator/status").status_code == 200
+    assert client.post("/api/generator/start", headers=HDR).status_code == 200
+    assert client.post("/api/generator/stop", headers=HDR).status_code == 200
+    sent = client.post("/api/generator/send", json={"capture": False}, headers=HDR)
+    assert sent.status_code == 200 and sent.json()["captured"] is False
+    self_test = client.post("/api/generator/self-test", headers=HDR)
+    assert self_test.status_code == 200, self_test.text
+
+    mock = client.post("/api/diagnostics/mock-capture", json={
+        "scenario": "demo_mixed", "sample_rate": 100_000,
+        "num_samples": 1_000, "analog": True}, headers=HDR)
+    assert mock.status_code == 200, mock.text
+    assert wait_capture_done(client)["last_session_id"]
+
+
+def test_diagnostics_qr_landing_and_live_accel_guards(client, monkeypatch):
+    import app.api.diagnostics as diagnostics_api
+
+    monkeypatch.setattr(diagnostics_api, "_lan_urls",
+                        lambda: ["http://localhost:8000", "http://192.0.2.1:8000"])
+    assert client.get("/api/connect").status_code == 200
+    qr = client.get("/api/qr")
+    assert qr.status_code in (200, 501)
+    client.post("/api/connect", json={"device_id": "mock"}, headers=HDR)
+    live = client.post("/api/diagnostics/live-accel-session", headers=HDR)
+    assert live.status_code == 409
+    # Exercise the real-hardware guard in mock-capture without touching a device.
+    original_kind = capture_manager.device_kind
+    capture_manager.device_kind = "hardware"
+    try:
+        blocked = client.post("/api/diagnostics/mock-capture", json={}, headers=HDR)
+        assert blocked.status_code == 409
+    finally:
+        capture_manager.device_kind = original_kind
+
+
+def test_api_disconnected_guards_and_hardware_error_mapping(client):
+    import app.api.generator as generator_api
+    generator_api._last_config.clear()
+    client.post("/api/disconnect", headers=HDR)
+    assert client.get("/api/device/metadata").status_code == 409
+    assert client.get("/api/device/capabilities").status_code == 409
+    assert client.get("/api/device/debug").status_code == 409
+    assert client.get("/api/generator/capabilities").status_code == 409
+    assert client.get("/api/generator/status").status_code == 409
+    assert client.post("/api/generator/configure", json={"protocol": "uart"},
+                       headers=HDR).status_code == 502
+    assert client.post("/api/generator/start", headers=HDR).status_code == 502
+    assert client.post("/api/generator/stop", headers=HDR).status_code == 502
+    assert client.post("/api/capture/settings/validate", json={}).status_code == 409
+    assert client.post("/api/capture/start", json={"settings": {}}, headers=HDR).status_code == 409
+    assert client.post("/api/capture/arm", json={"settings": {}}, headers=HDR).status_code == 409
+    assert client.get("/api/capture/scenarios").json()["scenarios"] == []
+    assert client.post("/api/connect", json={"device_id": "missing"},
+                       headers=HDR).status_code == 502
+    assert client.post("/api/generator/send", json={}, headers=HDR).status_code == 400
+    client.post("/api/connect", json={"device_id": "mock"}, headers=HDR)
+    assert client.get("/api/capture/scenarios").json()["scenarios"]
+    armed = client.post("/api/capture/arm", json={"settings": {
+        "sample_rate": 100_000, "num_samples": 2_000}}, headers=HDR)
+    assert armed.status_code == 200
+    assert client.post("/api/capture/disarm", headers=HDR).status_code == 200
+    assert client.post("/api/diagnostics/run-self-test", headers=HDR).status_code == 200
+
+
+def test_websocket_topics_and_ping(client):
+    for path in ("/ws/status", "/ws/capture"):
+        with client.websocket_connect(path) as ws:
+            hello = ws.receive_json()
+            assert hello["type"] in ("status_snapshot", "capture_state")
+            ws.send_json({"type": "ping"})
+            assert ws.receive_json()["type"] == "pong"
+    with client.websocket_connect("/ws/logs") as ws:
+        ws.send_text("not json")
+        ws.send_json({"type": "ignored"})

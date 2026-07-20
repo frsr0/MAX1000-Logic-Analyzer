@@ -34,7 +34,7 @@ The SPI command decoder and device controller for the OLS core. Receives packeti
 
 **Generator capture:** `Gen_Capture_Active`, `Gen_Start_Ack`, `Gen_Start_Reject`, `Gen_Done_Pulse`, `Gen_RX_Data[7:0]`, `Gen_RX_Used[7:0]`, `Gen_RX_Re`
 
-**Misc:** `Pin_Map_Write`, `Pin_Map_Channel`, `Pin_Map_Pin`, `Debug_Ch0_Enable/Channel/Period/Duty`, `Buffer_Full[2:0]`, `Buffer_Ack[2:0]`
+**Misc:** `Pin_Map_Write`, `Pin_Map_Channel`, `Pin_Map_Pin`, `Debug_Ch0_Enable/Period/Duty`, `Buffer_Full[2:0]`, `Buffer_Ack[2:0]`
 
 ## Internal Architecture
 
@@ -92,7 +92,7 @@ The SPI dispatch process decodes `pkt_cmd_active` and routes to sub-handlers:
 - `REG_OVERRUN_COUNT` (0x54): overflow counter
 - `REG_DONE_LATCHED` (0x55): sticky done flag
 - `REG_PUMP_*` (0x60-0x67): pump utilisation diagnostics
-- `REG_DEBUG_CH0_ENABLE` (0x40): debug channel 0 enable
+- `REG_DEBUG_CH0_ENABLE` (0x42): debug channel 0 enable
 - `REG_DEBUG_CH0_PERIOD` (0x43): debug PWM period
 - `REG_DEBUG_CH0_DUTY` (0x44): debug PWM duty
 - `REG_IFACE_MODE` (0xF0): interface mode
@@ -105,13 +105,17 @@ The SPI dispatch process decodes `pkt_cmd_active` and routes to sub-handlers:
 - `BLOCK_SAMPLES=512` per 1024-byte read block
 - `block_rd_kill` watchdog: forces the FSM back to idle if a block read stalls (prevents continuous-mode wedge)
 
-### 5. Raw Streaming Compressor
+### 5. Readback Compression and Raw Streaming
 
-- On `CMD_START_RAW_STREAM`: enables `compress_mode_i`, feeds samples through the streaming RLE compressor
+- On compressed `CMD_READ_CAPTURE` blocks and `CMD_START_RAW_STREAM`, feeds
+  complete 16-bit samples through the exact full-word RLE compressor
 - `RAW_COMP_FIFO_DEPTH=8` words buffers compressed output
 - The SPI dispatch drains the FIFO as a byte stream (low byte first)
 - `raw_comp_pop` handshake between compressor and SPI shifter
-- Passthrough when compression disabled (all blocks share one drain path)
+- Passthrough when compression is disabled (all blocks share one drain path)
+- Each run is two 16-bit words: count followed by sample value
+- The host expands the stream and falls back to raw block readback if a block
+  cannot be decoded to exactly 512 samples
 
 ### 6. Generator Capture FSM
 

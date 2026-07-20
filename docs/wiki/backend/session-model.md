@@ -37,7 +37,7 @@ class CaptureSettings(BaseModel):
     num_samples: int = 1024
     mode: str = "digital"               # digital | mixed | analog_fast | analog_all | digital_narrow
     trigger: Optional[TriggerConfig] = None
-    compression: ReadbackCompression = "raw"  # raw | delta_rle | delta | rle
+    compression: ReadbackCompression = "raw"  # raw | delta_rle (delta/rle aliases)
     source: str = "digital"
     acquisition: str = "single"         # single | live
     mock_scenario: Optional[str] = None # mock device only

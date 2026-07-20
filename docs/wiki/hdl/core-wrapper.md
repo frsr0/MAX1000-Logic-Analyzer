@@ -31,7 +31,7 @@ All ports are direct pass-throughs from the three sub-components:
 - Analog: `Analog_Frame_Data/Len/Stream_Mode/Toggle`, `Packed_Mode/Data/Valid/Ready`
 - Control: `Armed`, `Fast_Mode`, `Narrow_Enable/Channel`, `Analog_Enable/Only/Profile/Channel`, `Continuous_Mode`, `Status`, `Buffer_Full/Ack`
 - Pin mapping: `Pin_Map_Write/Channel/Pin`
-- Debug: `Debug_Ch0_Enable/Channel/Period/Duty`
+- Debug: `Debug_Ch0_Enable/Period/Duty` (fixed physical channel 0)
 - Generator capture: `Gen_Start_Ack/Reject`, `Gen_Done_Pulse`, `Gen_Capture_Active`
 - Diagnostics: `Pump_*_Cycles` counters
 

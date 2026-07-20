@@ -62,6 +62,10 @@ Drives the same adapter path the web app uses:
 4. 4096-sample digital capture + sanity checks
 5. UART generator loopback (`CMD_GEN_CAPTURE`) decoded and byte-compared
 
+The debug PWM is a real register-controlled FPGA source, not a mock or
+host-bit-bang waveform. The adapter exposes it for diagnostics and capture
+self-tests; generator output takes priority when both paths are enabled.
+
 ### `generator_configure(cfg)`
 
 Translates `GeneratorConfig` protocol to register writes:
@@ -97,3 +101,5 @@ def hardware_available() -> bool:
 |---|---|
 | `test_existing_host_adapter.py` (19 tests) | Full adapter flow through mock driver |
 | `hw_smoke_test.py` (7 tests) | Hardware smoke test driving adapter |
+| `host/debug/hwt_test_debug_pwm_registers.py` | CH0 register/readback, PWM frequency/duty, disable, and codec sanity |
+| `host/debug/hwt_test_compression_matrix.py` | 12-case direct raw-vs-RLE payload matrix with lossless checks |
