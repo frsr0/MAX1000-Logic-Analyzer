@@ -48,7 +48,8 @@ current SPI readback bandwidth.
 - [ ] Hardware SPI generator: configurable CS/MISO only where firmware routing permits.
 - [x] I²C Bit Banger templates: 7-bit address/register read-write forms, repeated starts, ACK/NACK control, clock stretching visualization, and bus recovery clocks.
 - [x] PWM Bit Banger templates: frequency/duty sweeps, bursts, finite pulse counts, and configurable start phase.
-- [ ] SWD: line reset, JTAG-to-SWD transition, DP/AP read/write forms, IDCODE discovery, ACK decoding, and transaction logs.
+- [x] SWD Bit Banger exerciser: line reset, JTAG-to-SWD transition, DP/AP read/write forms, ACK/data parity, and transaction scripts.
+- [ ] SWD transaction capture/logging against a physical route when firmware exposes one.
 - [x] SPI mode 3: promote the existing host helper into the public generator workflow.
 
 ### New generators using the existing two outputs

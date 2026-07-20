@@ -309,7 +309,7 @@ export function GeneratorPage() {
                   set({ extra });
                 }}>
                   <option value="">Raw symbols / preset</option>
-                  {['uart', 'rs485', 'spi', 'i2c', 'onewire', 'pwm', 'manchester', 'differential_manchester', 'nrz', 'ps2', 'midi', 'lin']
+                  {['uart', 'rs485', 'spi', 'i2c', 'onewire', 'pwm', 'swd', 'manchester', 'differential_manchester', 'nrz', 'ps2', 'midi', 'lin']
                     .map((p) => <option key={p} value={p}>{p.toUpperCase()}</option>)}
                 </select>
               </label>
@@ -369,6 +369,22 @@ export function GeneratorPage() {
                 <label className="field"><span>Read slots</span>
                   <input type="number" min={0} max={64} value={cfg.extra.read_slots ?? 0}
                     onChange={(e) => setExtra({ read_slots: Number(e.target.value) })} /></label>
+              )}
+              {cfg.extra?.encoding === 'swd' && (
+                <>
+                  <label className="field"><span>SWD requests (JSON)</span>
+                    <textarea className="mono" rows={4} value={JSON.stringify(cfg.extra.requests ?? [{ ap: false, read: true, addr: 0, data: 0 }])}
+                      onChange={(e) => { try { setExtra({ requests: JSON.parse(e.target.value) }); } catch { /* edit in progress */ } }} /></label>
+                  <label className="field"><span>Line reset / idle cycles</span>
+                    <span className="button-row"><input type="number" min={8} value={cfg.extra.line_reset_cycles ?? 50}
+                      onChange={(e) => setExtra({ line_reset_cycles: Number(e.target.value) })} /><input type="number" min={0} value={cfg.extra.idle_cycles ?? 8}
+                      onChange={(e) => setExtra({ idle_cycles: Number(e.target.value) })} /></span></label>
+                  <label className="field checkbox"><input type="checkbox" checked={cfg.extra.jtag_to_swd !== false}
+                    onChange={(e) => setExtra({ jtag_to_swd: e.target.checked })} /><span>JTAG-to-SWD transition</span></label>
+                  <label className="field checkbox"><input type="checkbox" checked={Boolean(cfg.extra.idcode_discovery)}
+                    onChange={(e) => setExtra({ idcode_discovery: e.target.checked })} /><span>Prepend IDCODE discovery</span></label>
+                  <div className="hint">SWDIO is bit 0 and SWCLK is bit 1. This is a software exerciser/preview; it does not advertise a hardware SWD generator route.</div>
+                </>
               )}
               {cfg.extra?.encoding === 'pwm' && (
                 <>

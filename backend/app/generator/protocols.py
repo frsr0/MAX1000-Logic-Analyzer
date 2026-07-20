@@ -6,6 +6,7 @@ route explicitly provides it.
 """
 from __future__ import annotations
 
+import json
 from typing import Any, Iterable, List
 
 
@@ -216,6 +217,55 @@ def pwm_symbols(symbol_rate: int, **options: Any) -> List[int]:
     return out
 
 
+def swd_symbols(**options: Any) -> List[int]:
+    """Software SWD transaction exerciser: SWDIO(bit 0)/SWCLK(bit 1)."""
+    out: List[int] = []
+
+    def clock(level: int) -> None:
+        out.extend([int(level) & 1, (int(level) & 1) | 2, int(level) & 1])
+
+    def bits_lsb(value: int, count: int) -> List[int]:
+        return [(int(value) >> i) & 1 for i in range(count)]
+
+    for _ in range(max(8, int(options.get("line_reset_cycles", 50)))):
+        clock(1)
+    if options.get("jtag_to_swd", True):
+        for bit in bits_lsb(0xE79E, 16):
+            clock(bit)
+        for _ in range(8): clock(1)
+    requests = options.get("requests", [])
+    if isinstance(requests, str):
+        requests = json.loads(requests)
+    if not isinstance(requests, list):
+        raise ValueError("SWD requests must be a list")
+    if options.get("idcode_discovery"):
+        requests = [{"ap": False, "read": True, "addr": 0, "data": 0}, *requests]
+    for request in requests:
+        if not isinstance(request, dict):
+            raise ValueError("SWD request entries must be objects")
+        ap = int(bool(request.get("ap", False)))
+        read = int(bool(request.get("read", True)))
+        addr = int(request.get("addr", 0))
+        header = [1, ap, read, (addr >> 2) & 1, (addr >> 3) & 1]
+        header.append(sum(header) & 1)
+        header.extend([0, 1])
+        for bit in header: clock(bit)
+        for _ in range(max(1, int(options.get("turnaround_cycles", 1)))): clock(1)
+        ack = int(request.get("ack", 1)) & 7
+        for bit in bits_lsb(ack, 3): clock(bit)
+        if ack == 1:
+            value = int(request.get("data", 0)) & 0xFFFFFFFF
+            if read:
+                for bit in bits_lsb(value, 32): clock(bit)
+                clock(sum(bits_lsb(value, 32)) & 1)
+            else:
+                for bit in bits_lsb(value, 32): clock(bit)
+                clock(sum(bits_lsb(value, 32)) & 1)
+        for _ in range(max(1, int(options.get("turnaround_cycles", 1)))): clock(1)
+    for _ in range(max(0, int(options.get("idle_cycles", 8)))): clock(1)
+    return out
+
+
 def ps2_symbols(data: bytes, **options: Any) -> List[int]:
     out: List[int] = [3] * 2
     for value in data:
@@ -265,4 +315,6 @@ def encode(protocol: str, data: bytes, symbol_rate: int, options: dict | None = 
         return onewire_symbols(data, symbol_rate, **options)
     if name == "pwm":
         return pwm_symbols(symbol_rate, **options)
+    if name == "swd":
+        return swd_symbols(**options)
     raise ValueError(f"Unsupported software generator protocol: {protocol}")

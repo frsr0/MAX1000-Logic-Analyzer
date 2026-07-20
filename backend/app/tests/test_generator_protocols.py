@@ -63,6 +63,15 @@ def test_spi_modes_and_faults_change_the_software_waveform():
     assert encode("pwm", b"", 100_000, {"fault": "shortened_pulse"})
 
 
+def test_swd_template_emits_reset_transition_and_request_transaction():
+    symbols = encode("swd", b"", 1_000_000, {
+        "idcode_discovery": True,
+        "requests": [{"ap": False, "read": True, "addr": 0, "data": 0x2BA01477}],
+    })
+    assert len(symbols) > 16 * 3
+    assert all(symbol in range(4) for symbol in symbols)
+
+
 def test_generator_sweep_expands_axes_and_reports_preview_rows():
     base = GeneratorConfig(protocol="bitbang", baud=100_000,
                            data_hex="55", extra={"preset": "pulse", "count": 8})
