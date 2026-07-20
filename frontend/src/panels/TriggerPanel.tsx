@@ -134,6 +134,17 @@ export function TriggerPanel() {
           <input type="number" min={1} step={1} value={trig.consecutive ?? 1}
             onChange={(e) => setTrig({ consecutive: Math.max(1, Number(e.target.value)) })} />
         </label>
+        <label className="field">
+          <span>Holdoff after match (µs)</span>
+          <input type="number" min={0} step={0.1}
+            value={trig.holdoff_s != null ? trig.holdoff_s * 1e6 : ''}
+            onChange={(e) => setTrig({ holdoff_s: e.target.value ? Number(e.target.value) / 1e6 : null })} />
+        </label>
+        <label className="field checkbox">
+          <input type="checkbox" checked={Boolean(trig.rearm)}
+            onChange={(e) => setTrig({ rearm: e.target.checked })} />
+          <span>Re-arm for repeated captures</span>
+        </label>
       </>}
       {needsSequence && (
         <>

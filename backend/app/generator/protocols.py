@@ -99,13 +99,28 @@ def ps2_symbols(data: bytes, **options: Any) -> List[int]:
     return out
 
 
+def lin_symbols(data: bytes, **options: Any) -> List[int]:
+    identifier = int(options.get("identifier", 0x12)) & 0x3F
+    pid = identifier | (((identifier >> 0) ^ (identifier >> 1) ^
+                         (identifier >> 2) ^ (identifier >> 4)) & 1) << 6
+    p1 = ((identifier >> 1) ^ (identifier >> 3) ^ (identifier >> 4) ^ (identifier >> 5)) & 1
+    pid |= p1 << 7
+    enhanced = bool(options.get("enhanced_checksum", True))
+    checksum_sum = (pid if enhanced else 0) + sum(data)
+    checksum = 0xFF - ((checksum_sum & 0xFF) + (checksum_sum >> 8))
+    frame = bytes([0x55, pid, *data, checksum & 0xFF])
+    return uart_symbols(frame, int(options.get("baud", 19_200)),
+                        parity="none", stop_bits=1, break_bits=int(options.get("break_bits", 13)),
+                        idle_bits=int(options.get("idle_bits", 2)))
+
+
 def encode(protocol: str, data: bytes, symbol_rate: int, options: dict | None = None) -> List[int]:
     options = options or {}
     name = protocol.lower()
-    if name in ("uart", "rs485", "midi", "lin"):
+    if name in ("uart", "rs485", "midi"):
         if name == "midi": options = {"baud": 31_250, **options}
-        if name == "lin": options = {"break_bits": 13, "idle_bits": 2, **options}
         return uart_symbols(data, symbol_rate, **options)
+    if name == "lin": return lin_symbols(data, **options)
     if name in ("manchester", "differential_manchester"):
         return manchester_symbols(data, differential=name.startswith("differential"), **options)
     if name in ("nrz", "custom"):

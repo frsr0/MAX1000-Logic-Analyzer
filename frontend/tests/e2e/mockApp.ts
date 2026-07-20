@@ -68,7 +68,7 @@ function makeCap(): Json {
     supports_continuous: true,
     supports_analog: true,
     analog_rate_note: 'MAX10 ADC supports 1 MSPS single-channel analog and 125 kframes/s 4-input physical analog scans. Mixed mode scans ADC0..ADC3 at the same scan frame rate.',
-    generator_protocols: ['uart', 'rs485', 'i2c'],
+    generator_protocols: ['uart', 'rs485', 'i2c', 'bitbang'],
     triggers: triggerMatrix(),
     trigger_matrix: triggerMatrix(),
     notes: [
@@ -903,6 +903,11 @@ export async function installMockApp(page: Page) {
     if (matches('GET', req, '/api/decoders')) return route.fulfill(okJson({ decoders: [] }));
     if (matches('GET', req, '/api/measurements/types')) return route.fulfill(okJson({ types: [] }));
     if (matches('GET', req, '/api/sessions')) return route.fulfill(okJson({ sessions: [makeSessionSummary(), makeAnalogSessionSummary(), makeAccelSessionSummary()] }));
+    if (req.method() === 'GET' && /\/api\/sessions\/[^/]+\/dashboard$/.test(new URL(req.url()).pathname)) {
+      return route.fulfill(okJson({ event_count: 12, error_count: 1, warning_count: 2,
+        events_per_second: 4.5, by_type: { uart_byte: 10, decoder_error: 2 },
+        timeline: [0, 2, 1, 4, 3], error_timeline: [0, 0, 1, 0, 0] }));
+    }
     if (matches('GET', req, '/api/logs')) return route.fulfill(okJson({ logs: [] }));
     if (matches('GET', req, '/api/diagnostics')) return route.fulfill(okJson({ lan_urls: ['http://127.0.0.1:4173', 'http://192.168.0.10:4173'] }));
     if (matches('GET', req, '/api/capture/scenarios')) return route.fulfill(okJson({ scenarios: [
@@ -916,8 +921,10 @@ export async function installMockApp(page: Page) {
     if (matches('POST', req, '/api/control/release')) return route.fulfill(okJson({ released: true }));
 
     if (matches('GET', req, '/api/generator/capabilities')) {
-      return route.fulfill(okJson({ protocols: ['uart', 'rs485', 'i2c'], status: { busy: false, running: false, supported: true, detail: 'fixture ready' } }));
+      return route.fulfill(okJson({ protocols: ['uart', 'rs485', 'i2c', 'bitbang'], status: { busy: false, running: false, supported: true, detail: 'fixture ready' } }));
     }
+    if (matches('GET', req, '/api/generator/bitbang/presets')) return route.fulfill(okJson({ presets: ['idle', 'pulse', 'square', 'alternating', 'counter', 'walking', 'prbs'] }));
+    if (matches('POST', req, '/api/generator/preview')) return route.fulfill(okJson({ symbols: [3, 0, 1, 2], count: 4, duration_s: 0.0004, tx_levels: [1, 0, 1, 0], clock_levels: [1, 0, 0, 1] }));
     if (matches('GET', req, '/api/generator/status')) return route.fulfill(okJson({ busy: false, running: false, supported: true, detail: 'fixture ready' }));
     if (matches('POST', req, '/api/generator/send')) return route.fulfill(okJson({ passed: true, sent_hex: '48656c6c6f21', decoded_hex: '48656c6c6f21', detail: 'fixture loopback', session_id: 'session-demo' }));
     if (matches('POST', req, '/api/generator/self-test')) return route.fulfill(okJson({ passed: true, sent_hex: '48656c6c6f21', decoded_hex: '48656c6c6f21', detail: 'fixture self-test' }));

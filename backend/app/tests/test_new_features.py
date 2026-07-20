@@ -90,6 +90,8 @@ def test_raw_trigger_occurrence_selects_nth_match():
     assert find_software_trigger(wf, TriggerConfig(type="rising", occurrence=2)) == 7
     assert find_software_trigger(wf, TriggerConfig(type="pattern", pattern="1",
                                                    occurrence=3)) == 14
+    assert find_software_trigger(wf, TriggerConfig(type="rising", occurrence=2,
+                                                   holdoff_s=10e-6)) == 14
     wide = np.zeros(24, dtype=np.uint16); wide[2:10] = 1; wide[14:18] = 1
     wide_wf = WaveformData(sample_rate=1_000_000, digital=wide)
     assert find_software_trigger(wide_wf, TriggerConfig(type="rising", min_duration_s=6e-6)) == 2
@@ -219,6 +221,7 @@ def test_bitbang_script_expansion_and_bounds():
     assert encode("manchester", b"\xA5", 1_000_000)
     assert encode("spi", b"\xA5", 1_000_000, {"cpol": 1, "cpha": 1,
                                                 "word_size": 8})
+    assert len(encode("lin", b"\x01\x02", 19_200, {"identifier": 0x12})) > 20
     assert expand_symbols({"encoding": "nrz", "data_hex": "A5"}, 1_000_000)
 
 

@@ -327,9 +327,30 @@ test('generator page matches supported board protocols', async ({ page }) => {
   if (protocolCount === 0) {
     test.skip(true, 'live generator protocols did not load on this board session');
   }
-  await expect(page.getByLabel('Generator protocol').locator('option')).toHaveCount(3);
-  await expect(page.getByText('Hardware support on this board is UART, RS-485, and I2C. Bit-banger-driven pin exercise lives on the MIL page.')).toBeVisible();
+  await expect(page.getByLabel('Generator protocol').locator('option')).toHaveCount(4);
+  await expect(page.getByText('Hardware support on this board is UART, RS-485, I2C, SPI, and raw two-output Bit Banger playback. Protocol exerciser workflows can be built from the raw symbol mode.')).toBeVisible();
   await page.screenshot({ path: shot('generator-page.png'), fullPage: true });
+});
+
+test('mock generator exposes Bit Banger templates and bounded preview controls', async ({ page }) => {
+  await page.getByRole('button', { name: 'Generator' }).click();
+  const protocol = page.getByLabel('Generator protocol');
+  await protocol.selectOption('bitbang');
+  await expect(page.getByLabel('Protocol template')).toBeVisible();
+  await page.locator('select').filter({ has: page.locator('option[value="counter"]') }).selectOption('counter');
+  await expect(page.getByLabel('Preset symbols')).toHaveValue('32');
+  await page.getByRole('button', { name: 'Preview waveform' }).click();
+  await expect(page.getByText(/symbols/).last()).toBeVisible();
+});
+
+test('mock capture dashboard shows protocol activity and errors', async ({ page }) => {
+  await page.getByRole('button', { name: 'Sessions' }).click();
+  const row = page.locator('tr').filter({ has: page.locator('input[value="MAX1000 mixed analog sweep"]') }).first();
+  await row.getByRole('button', { name: 'Open' }).click();
+  await page.getByRole('button', { name: 'Dashboard' }).click();
+  await expect(page.getByText('12', { exact: true })).toBeVisible();
+  await expect(page.getByText('uart_byte')).toBeVisible();
+  await expect(page.getByText('Activity heatmap')).toBeVisible();
 });
 
 test('signal generator loopback shows waveform and decode', async ({ page }) => {

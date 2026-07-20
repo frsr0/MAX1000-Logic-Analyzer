@@ -9,7 +9,7 @@ current SPI readback bandwidth.
 ## Working rules
 
 - [x] Keep raw capture data immutable; all filters and thresholds create derived data.
-- [ ] Label hardware triggers, post-capture triggers, and unavailable features accurately.
+- [x] Label hardware triggers, post-capture triggers, and unavailable features accurately.
 - [x] Every new decoder or processing feature gets deterministic backend tests.
 - [ ] Every user-facing feature gets a mock-mode E2E test before hardware testing.
 - [ ] Add hardware tests only where the existing pins and routing genuinely support them.
@@ -93,7 +93,7 @@ current SPI readback bandwidth.
 - [x] Add trigger-on-nth-event and trigger-on-first-error modes.
 - [x] Add minimum/maximum duration and persistence qualifiers.
 - [x] Add “N consecutive samples/events match” qualification.
-- [ ] Add trigger holdoff and re-arm search behavior for repeated captures.
+- [x] Add trigger holdoff and re-arm search behavior for repeated captures.
 - [x] Add trigger search over an existing session and its decoded event store.
 
 ### Trigger UI
@@ -102,7 +102,7 @@ current SPI readback bandwidth.
 - [x] Add a trigger builder for event sequences and timing windows.
 - [ ] Add visual trigger previews on the waveform.
 - [x] Add “jump to first match”, “next match”, and “previous match”.
-- [ ] Add trigger result metadata to session exports and reports.
+- [x] Add trigger result metadata to session exports and reports.
 - [x] Add tests proving that post-capture triggers never alter raw samples.
 
 ## Phase 4 — Signal processing and measurements
@@ -174,13 +174,13 @@ current SPI readback bandwidth.
 - [ ] Add property tests for round-tripping generator output through decoder input.
 - [ ] Add mock scenarios for every supported protocol and error condition.
 - [ ] Add frontend E2E coverage for generator, decoder, trigger builder, measurements, reports, and session comparison.
-- [ ] Run the existing backend test suite.
-- [ ] Run the existing host/driver test suite.
-- [ ] Run frontend typecheck and production build.
+- [x] Run the existing backend test suite.
+- [x] Run the existing host/driver test suite.
+- [x] Run frontend typecheck and production build.
 - [ ] Run hardware smoke tests for unchanged capture paths after host-driver changes.
-- [ ] Validate no new feature falsely advertises unavailable physical capabilities.
-- [ ] Update screenshots and user documentation.
-- [ ] Add release notes and migration notes for session/decoder schema changes.
+- [x] Validate no new feature falsely advertises unavailable physical capabilities.
+- [x] Update screenshots and user documentation.
+- [x] Add release notes and migration notes for session/decoder schema changes.
 
 ## Suggested first milestones
 

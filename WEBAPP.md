@@ -118,7 +118,7 @@ hardware commands (Settings page → acquire/force/release, or read-only mode).
 |---|---|
 | `hardware/` | `HardwareDevice` interface, mock device, adapter wrapping `host/driver` |
 | `capture/` | Session model/store (JSON + NPZ), capture manager, LOD pyramid, binary waveform encoding |
-| `decoders/` | Plugin decoder framework + UART, I2C, SPI, PWM, parallel, 1-Wire, Modbus RTU, RS-485, SWD, Manchester, clocked NRZ, LIN, MIDI, PS/2, quadrature, and I²S |
+| `decoders/` | Plugin decoder framework + UART, I2C, SPI, PWM, parallel, 1-Wire, Modbus RTU, RS-485, SWD, Manchester, clocked NRZ, LIN, MIDI, PS/2, quadrature, I²S, CAN, JTAG, HDLC, infrared, and SMBus/PMBus |
 | `measurements/` | Digital / analog / protocol measurement types |
 | `triggers/` | Trigger model, hardware-vs-post-capture classification, software trigger search |
 | `generator/` | Generator control + loopback self-test workflow (configure → capture → decode → compare) |
@@ -176,7 +176,9 @@ GET  /api/sessions/{id}/measurements/results?cursor_a=&cursor_b=
 GET|POST|PATCH|DELETE /api/sessions/{id}/markers[/{m}]
 POST /api/sessions/{id}/trigger-search
 POST /api/sessions/{id}/export/{csv,json,vcd,npz,report}
-GET  /api/generator/{capabilities,status}  POST /api/generator/{configure,start,stop,send,self-test}
+GET  /api/generator/{capabilities,status}  GET /api/generator/bitbang/presets
+POST /api/generator/{configure,start,stop,send,self-test,preview}
+POST /api/sessions/{id}/validate  GET /api/sessions/{id}/dashboard
 GET  /api/logs | /api/diagnostics        POST /api/diagnostics/{debug-bundle,run-self-test,mock-capture}
 GET  /api/qr | /connect
 ```
@@ -205,7 +207,8 @@ Decoders implemented: UART (auto-baud, parity/framing errors), I2C (START/
 repeated-START/STOP, address+R/W, ACK/NACK; 7-bit with a 10-bit extension
 point), SPI (CPOL/CPHA/bit-order/word-size/CS), PWM/frequency, parallel bus,
 1-Wire, Modbus RTU, RS-485, SWD, Manchester, clocked NRZ, LIN, MIDI, PS/2,
-quadrature, I²S, and classical CAN. New decoders
+quadrature, I²S, classical CAN, JTAG, HDLC/PPP, infrared NEC/RC5/RC6,
+and SMBus/PMBus. New decoders
 register in `backend/app/decoders/registry.py`.
 
 ## Export usage
@@ -299,8 +302,9 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
 **Planned (software):**
 - FFT/spectrum view exists as an API endpoint (`/spectrum`) — dedicated UI
   panel, histogram and persistence views are future modules.
-- Decoders to add on the existing framework: Manchester, NRZ, I2S, CAN, LIN,
-  MIDI, PS/2, JTAG/SWD, SMBus/PMBus, custom framed serial.
+- Additional protocol generators and register explorers remain software-roadmap
+  work; the current generator capability matrix is documented in
+  `FEATURE_CAPABILITY_MATRIX.md`.
 - Web Workers: server-side LOD makes client-side parsing cheap (zero-copy
   TypedArray views), so workers are not yet needed; revisit if client-side
   filtering/FFT is added.

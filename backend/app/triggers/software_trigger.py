@@ -112,6 +112,13 @@ def find_software_trigger(wf: WaveformData, trig: TriggerConfig,
 
     def nth(values):
         values = sorted(int(v) for v in values)
+        if trig.holdoff_s:
+            holdoff = max(1, int(float(trig.holdoff_s) * wf.sample_rate))
+            filtered = []
+            for value in values:
+                if not filtered or value - filtered[-1] >= holdoff:
+                    filtered.append(value)
+            values = filtered
         if consecutive > 1:
             grouped = []
             for value in values:
