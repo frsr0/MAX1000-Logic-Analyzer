@@ -55,7 +55,11 @@ def expand_symbols(extra: Dict[str, Any], symbol_rate: int) -> List[int]:
     bounded by the FPGA's 1024-symbol FIFO.
     """
     if "script" not in extra:
-        if extra.get("preset"):
+        if extra.get("encoding"):
+            from .protocols import encode
+            payload = bytes.fromhex(str(extra.get("data_hex", "55")))
+            result = encode(str(extra["encoding"]), payload, symbol_rate, extra)
+        elif extra.get("preset"):
             result = preset_symbols(str(extra["preset"]), int(extra.get("count", 32)))
         else:
             result = _symbols(extra.get("symbols", []))

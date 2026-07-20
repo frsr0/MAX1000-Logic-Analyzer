@@ -64,6 +64,7 @@ export interface PinMapInfo {
 export interface TriggerConfig {
   type: string;
   channels: number[];
+  channel_refs?: string[];
   pattern?: string | null;
   value?: number | null;
   width_s?: number | null;

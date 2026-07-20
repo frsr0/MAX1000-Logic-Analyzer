@@ -20,9 +20,9 @@ current SPI readback bandwidth.
 - [x] Record the current branch baseline and test commands.
 - [x] Add a feature/capability matrix covering mock, real hardware, and post-capture-only behavior.
 - [x] Reconcile documentation with the implementation: SWD is already present, and the analog spectrum/XY UI already exists.
-- [ ] Add shared protocol concepts: bit order, parity, stop bits, clock phase, line idle state, differential polarity, and error severity.
+- [x] Add shared protocol concepts: bit order, parity, stop bits, clock phase, line idle state, differential polarity, and error severity.
 - [x] Add common event fields for all decoders: sample position, duration, raw value, decoded value, error flags, and human-readable label.
-- [ ] Add a standard fixture format for protocol captures and expected decoder events.
+- [x] Add a standard fixture format for protocol captures and expected decoder events.
 
 ## Phase 1 — Bit Banger protocol exerciser
 
@@ -41,22 +41,22 @@ current SPI readback bandwidth.
 
 ### Existing protocol generators
 
-- [ ] UART: parity selection, 1/1.5/2 stop bits, break generation, configurable idle bits, and framing-error injection.
+- [x] UART: parity selection, 1/1.5/2 stop bits, break generation, configurable idle bits, and framing-error injection.
 - [ ] RS-485: transmit-enable timing, turnaround delay, direction-change markers, and half-duplex transaction scripts.
 - [ ] SPI: CPOL/CPHA 0–3, MSB/LSB first, word sizes 4–32 bits, configurable CS where routing permits, and inter-word gaps.
 - [ ] I²C: 7-bit address templates, register read/write templates, repeated starts, ACK/NACK control, clock stretching visualization, and bus recovery clocks.
 - [ ] PWM: frequency/duty sweeps, bursts, finite pulse counts, and configurable start phase.
 - [ ] SWD: line reset, JTAG-to-SWD transition, DP/AP read/write forms, IDCODE discovery, ACK decoding, and transaction logs.
-- [ ] SPI mode 3: promote the existing host helper into the public generator workflow.
+- [x] SPI mode 3: promote the existing host helper into the public generator workflow.
 
 ### New generators using the existing two outputs
 
 - [ ] 1-Wire reset/presence/read/write transactions.
-- [ ] Manchester and differential-Manchester waveform generation.
-- [ ] NRZ/custom framed serial generation.
-- [ ] PS/2 clock/data generation.
-- [ ] MIDI serial generation.
-- [ ] LIN break, sync, identifier, payload, and checksum generation.
+- [x] Manchester and differential-Manchester waveform generation.
+- [x] NRZ/custom framed serial generation.
+- [x] PS/2 clock/data generation.
+- [x] MIDI serial generation.
+- [x] LIN break, sync, identifier, payload, and checksum generation.
 - [ ] Optional I²S clock/word-select/data generation where three captured/generated lines can be represented by available routing; otherwise support decode-only.
 - [ ] Add protocol fault injection: wrong parity, invalid stop bit, malformed checksum, missing ACK, shortened pulse, and illegal bus transition.
 
@@ -84,7 +84,7 @@ current SPI readback bandwidth.
 
 ### Software trigger implementation
 
-- [ ] Implement `any_edge` consistently across channels and derived channels.
+- [x] Implement `any_edge` consistently across channels and derived channels.
 - [x] Implement `sequence`: event A followed by event B within a configurable time/sample window.
 - [x] Implement `i2c_address`, including read/write value matching.
 - [x] Implement `i2c_nack` using decoder ACK fields.
@@ -122,13 +122,13 @@ current SPI readback bandwidth.
 
 - [x] Add RMS, mean, peak-to-peak, min/max, crest factor, and noise-floor measurements.
 - [ ] Add configurable digital threshold sweeps over analog channels.
-- [ ] Add hysteresis threshold controls for derived analog digital channels.
+- [x] Add hysteresis threshold controls for derived analog digital channels.
 - [x] Add spectrogram/time-frequency view using a dedicated endpoint.
 - [x] Add spectrum peak finding and frequency labeling.
 - [ ] Add waveform persistence and min/max envelope display.
 - [x] Add cross-correlation and estimated time delay between channels.
 - [ ] Add analog/digital event correlation and aligned protocol annotations.
-- [ ] Add optional software filters: moving average, median, low-pass, high-pass, and baseline removal.
+- [x] Add optional software filters: moving average, median, low-pass, high-pass, and baseline removal.
 - [x] Keep all filtered signals as named derived channels with reproducible settings.
 
 ### Analysis views

@@ -16,6 +16,7 @@ from app.decoders.jtag import JtagDecoder
 from app.decoders.infrared import InfraredDecoder
 from app.decoders.smbus import SmbusDecoder, smbus_pec
 from app.generator.bitbang import expand_symbols, preview, preset_symbols
+from app.generator.protocols import encode, uart_symbols
 from app.exports.importers import csv_session, vcd_session
 from app.measurements import digital
 from app.measurements.base import MeasurementContext, run_measurement
@@ -92,6 +93,11 @@ def test_raw_trigger_occurrence_selects_nth_match():
     wide = np.zeros(24, dtype=np.uint16); wide[2:10] = 1; wide[14:18] = 1
     wide_wf = WaveformData(sample_rate=1_000_000, digital=wide)
     assert find_software_trigger(wide_wf, TriggerConfig(type="rising", min_duration_s=6e-6)) == 2
+    derived = WaveformData(sample_rate=1_000_000,
+                           digital=np.zeros(24, dtype=np.uint16),
+                           derived_digital={"x0": wide})
+    assert find_software_trigger(derived, TriggerConfig(type="any_edge",
+                                                        channel_refs=["x0"])) == 2
 
 
 def test_jitter_measurement_reports_rms_and_peak_to_peak():
@@ -207,6 +213,13 @@ def test_bitbang_script_expansion_and_bounds():
     assert p["count"] == 4 and p["duration_s"] == 4e-6
     assert len(preset_symbols("walking", 12)) == 12
     assert preset_symbols("counter", 4) == [0, 1, 2, 3]
+    framed = uart_symbols(b"A", 115200, parity="even", stop_bits=2,
+                          fault="wrong_parity")
+    assert framed[0] == 3 and 2 in framed
+    assert encode("manchester", b"\xA5", 1_000_000)
+    assert encode("spi", b"\xA5", 1_000_000, {"cpol": 1, "cpha": 1,
+                                                "word_size": 8})
+    assert expand_symbols({"encoding": "nrz", "data_hex": "A5"}, 1_000_000)
 
 
 def test_csv_and_vcd_importers_preserve_signal_names():

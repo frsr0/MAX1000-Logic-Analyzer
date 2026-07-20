@@ -32,6 +32,15 @@ def highpass(sig: np.ndarray, cutoff_hz: float, sample_rate: float) -> np.ndarra
     return (sig - lowpass(sig, cutoff_hz, sample_rate)).astype(np.float32)
 
 
+def baseline_remove(sig: np.ndarray, window: int = 0) -> np.ndarray:
+    """Remove a DC or slowly varying baseline without modifying the source."""
+    if len(sig) == 0:
+        return sig.copy().astype(np.float32)
+    if int(window) > 1:
+        return (sig - moving_average(sig, int(window))).astype(np.float32)
+    return (sig - float(np.median(sig))).astype(np.float32)
+
+
 def median_filter(sig: np.ndarray, window: int) -> np.ndarray:
     """Centered median filter with edge padding; returns a new float array."""
     window = max(1, int(window))

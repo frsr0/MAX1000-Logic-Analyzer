@@ -42,7 +42,7 @@ from app.measurements import analogue, bus, digital  # noqa: F401 (registers typ
 from app.measurements.base import MeasurementContext, run_measurement
 from app.triggers.software_trigger import find_software_trigger
 from app.waveform.analogue import (highpass, lowpass, moving_average, spectrum,
-                                   median_filter, threshold_to_digital)
+                      median_filter, threshold_to_digital, baseline_remove)
 from app.waveform.bus import bus_values, format_bus_value
 from app.waveform.derived import create_derived_channel
 from app.decoders.service import DecoderService
@@ -226,6 +226,7 @@ def test_analog_threshold_hysteresis_keeps_state_inside_deadband():
     assert threshold_to_digital(signal, 0.5, hysteresis=0.2).tolist() == [
         0, 0, 1, 1, 1, 0, 0
     ]
+    assert abs(float(np.median(baseline_remove(signal)))) < 1e-6
 
 
 def test_spectrum_limits_output_points():

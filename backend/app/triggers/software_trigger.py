@@ -102,10 +102,11 @@ def find_software_trigger(wf: WaveformData, trig: TriggerConfig,
         return _protocol_event_trigger(trig, decoder_events)
     if trig.type == "sequence":
         return _sequence_trigger(trig, decoder_events)
-    if wf.digital is None:
+    if wf.digital is None and not trig.channel_refs:
         return None
     t = trig.type
     chans = trig.channels or [0]
+    refs = list(trig.channel_refs or [f"d{c}" for c in (trig.channels or [0])])
     occurrence = max(1, int(trig.occurrence or 1))
     consecutive = max(1, int(trig.consecutive or 1))
 
@@ -129,8 +130,8 @@ def find_software_trigger(wf: WaveformData, trig: TriggerConfig,
     if t in ("rising", "falling", "any_edge"):
         kind = {"rising": "rising", "falling": "falling", "any_edge": "any"}[t]
         matches = []
-        for c in chans:
-            e = find_edges(wf.digital_channel(c), kind)
+        for ref in refs:
+            e = find_edges(wf.channel_bits(ref), kind)
             bounds = np.concatenate(([0], e, [wf.num_samples]))
             matches.extend(int(x) for j, x in enumerate(e)
                            if j + 2 < len(bounds) and width_ok(int(bounds[j + 2] - x)))
@@ -139,8 +140,8 @@ def find_software_trigger(wf: WaveformData, trig: TriggerConfig,
     if t in ("high", "low"):
         want = 1 if t == "high" else 0
         matches = []
-        for c in chans:
-            matches.extend(int(x) for x in np.nonzero(wf.digital_channel(c) == want)[0])
+        for ref in refs:
+            matches.extend(int(x) for x in np.nonzero(wf.channel_bits(ref) == want)[0])
         return nth(matches)
 
     if t == "pattern" and trig.pattern:

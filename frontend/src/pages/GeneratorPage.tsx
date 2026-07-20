@@ -143,7 +143,7 @@ export function GeneratorPage() {
     }
   };
 
-  const needsData = ['uart', 'rs485', 'spi', 'pattern', 'i2c'].includes(cfg.protocol);
+  const needsData = ['uart', 'rs485', 'spi', 'pattern', 'i2c', 'bitbang'].includes(cfg.protocol);
   const canLoopbackCapture = ['uart', 'rs485', 'i2c', 'spi'].includes(cfg.protocol) || status?.device_kind === 'mock';
   const canStandaloneSend = !['spi', 'pattern', 'counter', 'prbs'].includes(cfg.protocol)
     || status?.device_kind === 'mock';
@@ -196,7 +196,11 @@ export function GeneratorPage() {
               <label className="field">
                 <span>Data hex</span>
                 <input className="mono" value={cfg.data_hex}
-                  onChange={(e) => set({ data_hex: e.target.value.replace(/[^0-9a-fA-F]/g, '') })} />
+                  onChange={(e) => {
+                    const data_hex = e.target.value.replace(/[^0-9a-fA-F]/g, '');
+                    set({ data_hex, ...(cfg.protocol === 'bitbang' && cfg.extra?.encoding
+                      ? { extra: { ...(cfg.extra ?? {}), data_hex } } : {}) });
+                  }} />
               </label>
             </>
           )}
@@ -286,6 +290,19 @@ export function GeneratorPage() {
           {cfg.protocol === 'bitbang' && (
             <>
               <label className="field">
+                <span>Protocol template</span>
+                <select value={cfg.extra?.encoding ?? ''} onChange={(e) => {
+                  const encoding = e.target.value;
+                  const extra = { ...(cfg.extra ?? {}), data_hex: cfg.data_hex } as Record<string, any>;
+                  if (encoding) extra.encoding = encoding; else delete extra.encoding;
+                  set({ extra });
+                }}>
+                  <option value="">Raw symbols / preset</option>
+                  {['uart', 'rs485', 'spi', 'manchester', 'differential_manchester', 'nrz', 'ps2', 'midi', 'lin']
+                    .map((p) => <option key={p} value={p}>{p.toUpperCase()}</option>)}
+                </select>
+              </label>
+              <label className="field">
                 <span>Symbol rate (symbols/s)</span>
                 <input type="number" min={1} value={cfg.baud}
                   onChange={(e) => set({ baud: Number(e.target.value) })} />
@@ -314,7 +331,9 @@ export function GeneratorPage() {
               </label>}
               <div className="hint">Bit 0 drives TX/SDA/MOSI; bit 1 drives SCL/SCLK. The hardware FIFO supports 1024 symbols per burst.</div>
               <button onClick={async () => {
-                try { setPreview(await api.generatorPreview(cfg)); }
+                try { setPreview(await api.generatorPreview({
+                  ...cfg, extra: { ...(cfg.extra ?? {}), data_hex: cfg.data_hex },
+                })); }
                 catch (e: any) { toast('error', e.message); }
               }}>Preview waveform</button>
               <div className="button-row">

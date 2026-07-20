@@ -55,6 +55,7 @@ class TriggerConfig(BaseModel):
         "decoder_error",
     ] = "none"
     channels: List[int] = Field(default_factory=list)   # digital channel indices
+    channel_refs: List[str] = Field(default_factory=list)  # digital or derived ids for software search
     pattern: Optional[str] = None       # e.g. "1x0x" LSB first for pattern trigger
     value: Optional[int] = None         # bus value / byte match
     width_s: Optional[float] = None     # pulse width threshold

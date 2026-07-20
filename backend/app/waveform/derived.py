@@ -18,7 +18,7 @@ def create_derived_channel(session: Session, wf: WaveformData,
     derive: {"kind": "majority3"|"debounce"|"min_pulse"|"glitch_suppress"
                      |"threshold", ...params}"""
     kind = derive.get("kind")
-    if source in wf.analog and kind in ("moving_average", "median", "lowpass", "highpass"):
+    if source in wf.analog and kind in ("moving_average", "median", "lowpass", "highpass", "baseline"):
         signal = wf.analog[source]
         if kind == "moving_average":
             filtered = analogue.moving_average(signal, int(derive.get("window", 5)))
@@ -27,9 +27,11 @@ def create_derived_channel(session: Session, wf: WaveformData,
         elif kind == "lowpass":
             filtered = analogue.lowpass(signal, float(derive.get("cutoff_hz", 1_000)),
                                         wf.sample_rate)
-        else:
+        elif kind == "highpass":
             filtered = analogue.highpass(signal, float(derive.get("cutoff_hz", 1_000)),
                                          wf.sample_rate)
+        else:
+            filtered = analogue.baseline_remove(signal, int(derive.get("window", 0)))
         ch_id = f"x{new_id('drv')[4:]}"
         wf.analog[ch_id] = filtered.astype(np.float32)
         info = ChannelInfo(id=ch_id, name=name or f"{source}:{kind}",
