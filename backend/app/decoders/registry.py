@@ -24,6 +24,7 @@ from .swd import SwdDecoder
 from .uart import UartDecoder
 from .hdlc import HdlcDecoder
 from .jtag import JtagDecoder
+from .infrared import InfraredDecoder
 
 _REGISTRY: Dict[str, Decoder] = {}
 
@@ -49,3 +50,4 @@ for _d in (UartDecoder(), I2cDecoder(), SpiDecoder(), PwmDecoder(),
 
 for _d in (HdlcDecoder(), JtagDecoder()):
     register(_d)
+register(InfraredDecoder())

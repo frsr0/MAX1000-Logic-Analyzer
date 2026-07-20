@@ -13,6 +13,7 @@ from app.decoders.ps2 import Ps2Decoder
 from app.decoders.quadrature import QuadratureDecoder
 from app.decoders.hdlc import HdlcDecoder, hdlc_crc16
 from app.decoders.jtag import JtagDecoder
+from app.decoders.infrared import InfraredDecoder
 from app.generator.bitbang import expand_symbols, preview, preset_symbols
 from app.exports.importers import csv_session, vcd_session
 from app.measurements import digital
@@ -298,3 +299,19 @@ def test_jtag_decoder_groups_shift_bits():
     result = JtagDecoder().decode(DecodeContext(wf, {"tck": "d0", "tms": "d1",
                                                        "tdi": "d2", "tdo": "d3"}), {})
     assert result.events and result.events[0]["fields"]["bits"] == 8
+
+
+def test_nec_infrared_decoder_validates_complement_bytes():
+    values = [0x12, 0xED, 0x34, 0xCB]
+    signal = [np.ones(100, dtype=np.uint16)]
+    signal += [np.zeros(9000, dtype=np.uint16), np.ones(4500, dtype=np.uint16)]
+    for value in values:
+        for bit in range(8):
+            signal += [np.zeros(560, dtype=np.uint16),
+                       np.ones(1690 if (value >> bit) & 1 else 560, dtype=np.uint16)]
+    signal.append(np.ones(560, dtype=np.uint16))
+    wf = WaveformData(sample_rate=1_000_000, digital=np.concatenate(signal))
+    result = InfraredDecoder().decode(DecodeContext(wf, {"data": "d0"}), {"protocol": "nec"})
+    assert result.events[0]["fields"]["address"] == 0x12
+    assert result.events[0]["fields"]["command"] == 0x34
+    assert result.events[0]["fields"]["valid"] is True
