@@ -42,7 +42,7 @@ from app.measurements import analogue, bus, digital  # noqa: F401 (registers typ
 from app.measurements.base import MeasurementContext, run_measurement
 from app.triggers.software_trigger import find_software_trigger
 from app.waveform.analogue import (highpass, lowpass, moving_average, spectrum,
-                                   threshold_to_digital)
+                                   median_filter, threshold_to_digital)
 from app.waveform.bus import bus_values, format_bus_value
 from app.waveform.derived import create_derived_channel
 from app.decoders.service import DecoderService
@@ -70,6 +70,7 @@ def test_analog_processing_handles_empty_inputs_and_cutoff_boundaries():
     assert np.array_equal(lowpass(signal, 500_001, 1_000_000), signal)
     assert spectrum(np.zeros(7, dtype=np.float32), 1_000_000)[0].size == 0
     assert highpass(signal, 1_000, 1_000_000).dtype == np.float32
+    assert median_filter(signal, 3).dtype == np.float32
 
 
 def test_software_trigger_no_match_paths():

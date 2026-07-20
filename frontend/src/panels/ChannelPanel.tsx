@@ -51,6 +51,8 @@ export function ChannelPanel() {
     if (deriveKind === 'min_pulse') derive.min_width = deriveParam;
     if (deriveKind === 'glitch_suppress') derive.max_glitch = deriveParam;
     if (deriveKind === 'threshold') derive.level = deriveParam;
+    if (['moving_average', 'median'].includes(deriveKind)) derive.window = deriveParam;
+    if (['lowpass', 'highpass'].includes(deriveKind)) derive.cutoff_hz = deriveParam;
     try {
       await api.addDerivedChannel(activeSession.id, deriveSource, derive);
       await refreshActiveSession();
@@ -115,11 +117,15 @@ export function ChannelPanel() {
           <option value="min_pulse">Min pulse width</option>
           <option value="glitch_suppress">Glitch suppression</option>
           {analogIds.includes(deriveSource) && <option value="threshold">Analog threshold</option>}
+          {analogIds.includes(deriveSource) && <option value="moving_average">Analog moving average</option>}
+          {analogIds.includes(deriveSource) && <option value="median">Analog median</option>}
+          {analogIds.includes(deriveSource) && <option value="lowpass">Analog low-pass</option>}
+          {analogIds.includes(deriveSource) && <option value="highpass">Analog high-pass</option>}
         </select>
       </label>
       {deriveKind !== 'majority3' && (
         <label className="field">
-          <span>{deriveKind === 'threshold' ? 'Level (V)' : 'Samples'}</span>
+          <span>{deriveKind === 'threshold' ? 'Level (V)' : ['lowpass', 'highpass'].includes(deriveKind) ? 'Cutoff (Hz)' : 'Samples'}</span>
           <input type="number" step={deriveKind === 'threshold' ? 0.05 : 1}
             value={deriveParam} onChange={(e) => setDeriveParam(Number(e.target.value))} />
         </label>

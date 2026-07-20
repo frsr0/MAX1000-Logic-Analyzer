@@ -118,7 +118,7 @@ hardware commands (Settings page → acquire/force/release, or read-only mode).
 |---|---|
 | `hardware/` | `HardwareDevice` interface, mock device, adapter wrapping `host/driver` |
 | `capture/` | Session model/store (JSON + NPZ), capture manager, LOD pyramid, binary waveform encoding |
-| `decoders/` | Plugin decoder framework + UART, I2C, SPI, PWM, parallel, 1-Wire, Modbus RTU, RS-485, SWD, Manchester, and clocked NRZ |
+| `decoders/` | Plugin decoder framework + UART, I2C, SPI, PWM, parallel, 1-Wire, Modbus RTU, RS-485, SWD, Manchester, clocked NRZ, LIN, MIDI, PS/2, quadrature, and I²S |
 | `measurements/` | Digital / analog / protocol measurement types |
 | `triggers/` | Trigger model, hardware-vs-post-capture classification, software trigger search |
 | `generator/` | Generator control + loopback self-test workflow (configure → capture → decode → compare) |
@@ -204,7 +204,8 @@ WebSockets: `/ws/status`, `/ws/capture`, `/ws/logs`, `/ws/session/{id}`,
 Decoders implemented: UART (auto-baud, parity/framing errors), I2C (START/
 repeated-START/STOP, address+R/W, ACK/NACK; 7-bit with a 10-bit extension
 point), SPI (CPOL/CPHA/bit-order/word-size/CS), PWM/frequency, parallel bus,
-1-Wire, Modbus RTU, RS-485, SWD, Manchester, and clocked NRZ. New decoders
+1-Wire, Modbus RTU, RS-485, SWD, Manchester, clocked NRZ, LIN, MIDI, PS/2,
+quadrature, I²S, and classical CAN. New decoders
 register in `backend/app/decoders/registry.py`.
 
 ## Export usage

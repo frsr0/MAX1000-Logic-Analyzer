@@ -32,6 +32,19 @@ def highpass(sig: np.ndarray, cutoff_hz: float, sample_rate: float) -> np.ndarra
     return (sig - lowpass(sig, cutoff_hz, sample_rate)).astype(np.float32)
 
 
+def median_filter(sig: np.ndarray, window: int) -> np.ndarray:
+    """Centered median filter with edge padding; returns a new float array."""
+    window = max(1, int(window))
+    if window % 2 == 0:
+        window += 1
+    if window == 1 or len(sig) == 0:
+        return sig.copy().astype(np.float32)
+    radius = window // 2
+    padded = np.pad(sig, (radius, radius), mode="edge")
+    view = np.lib.stride_tricks.sliding_window_view(padded, window)
+    return np.median(view, axis=1).astype(np.float32)
+
+
 def threshold_to_digital(sig: np.ndarray, level: float,
                          hysteresis: float = 0.0) -> np.ndarray:
     """Derived digital channel from an analog threshold, with optional

@@ -8,12 +8,12 @@ current SPI readback bandwidth.
 
 ## Working rules
 
-- [ ] Keep raw capture data immutable; all filters and thresholds create derived data.
+- [x] Keep raw capture data immutable; all filters and thresholds create derived data.
 - [ ] Label hardware triggers, post-capture triggers, and unavailable features accurately.
-- [ ] Every new decoder or processing feature gets deterministic backend tests.
+- [x] Every new decoder or processing feature gets deterministic backend tests.
 - [ ] Every user-facing feature gets a mock-mode E2E test before hardware testing.
 - [ ] Add hardware tests only where the existing pins and routing genuinely support them.
-- [ ] Update `README.md` and `WEBAPP.md` whenever the advertised capability changes.
+- [x] Update `README.md` and `WEBAPP.md` whenever the advertised capability changes.
 
 ## Phase 0 — Baseline and project scaffolding
 
@@ -21,7 +21,7 @@ current SPI readback bandwidth.
 - [ ] Add a feature/capability matrix covering mock, real hardware, and post-capture-only behavior.
 - [ ] Reconcile documentation with the implementation: SWD is already present, and the analog spectrum/XY UI already exists.
 - [ ] Add shared protocol concepts: bit order, parity, stop bits, clock phase, line idle state, differential polarity, and error severity.
-- [ ] Add common event fields for all decoders: sample position, duration, raw value, decoded value, error flags, and human-readable label.
+- [x] Add common event fields for all decoders: sample position, duration, raw value, decoded value, error flags, and human-readable label.
 - [ ] Add a standard fixture format for protocol captures and expected decoder events.
 
 ## Phase 1 — Bit Banger protocol exerciser
@@ -64,11 +64,13 @@ current SPI readback bandwidth.
 
 - [x] Manchester and differential Manchester.
 - [x] Add an initial clocked NRZ decoder; extend it later with custom framing, sync, length, endian order, escape, and checksum rules.
-- [ ] I²S: standard/left-justified/right-justified modes, word length, sample width, and channel extraction.
-- [ ] CAN: decode CAN-RX/TX logic-level captures, bit stuffing, arbitration, CRC, ACK, error frames, and extended identifiers.
-- [ ] LIN: break/sync/identifier/data/checksum and classic/enhanced checksum modes.
-- [ ] MIDI: channel messages, system messages, running status, and timing clock.
-- [ ] PS/2: scan codes, parity, host/device direction, and command/response pairing.
+- [x] I²S: basic standard/left/right-justified-compatible extraction, word length, sample width, and channel extraction.
+- [x] CAN: classical CAN-RX logic-level decoding with bit stuffing, arbitration identifiers, CRC, ACK, and extended identifiers.
+- [x] LIN: sync/identifier/data/checksum and classic/enhanced checksum modes from UART events.
+- [x] MIDI: channel messages, system messages, running status, and realtime timing messages.
+- [x] PS/2: scan codes/bytes and parity/start/stop validation.
+- [x] Quadrature encoder: direction, count, and illegal-transition detection.
+- [x] I²S: basic stereo word extraction with format/edge/sample-width settings.
 - [ ] JTAG: TMS/TDI/TDO/TCK sampling, TAP state transitions, IR/DR scans, and extracted data words.
 - [ ] SMBus/PMBus: address, command, PEC, alert response, and common transaction forms.
 - [ ] HDLC/PPP-style framed serial with bit/byte stuffing and CRC.
@@ -127,7 +129,7 @@ current SPI readback bandwidth.
 - [ ] Add cross-correlation and estimated time delay between channels.
 - [ ] Add analog/digital event correlation and aligned protocol annotations.
 - [ ] Add optional software filters: moving average, median, low-pass, high-pass, and baseline removal.
-- [ ] Keep all filtered signals as named derived channels with reproducible settings.
+- [x] Keep all filtered signals as named derived channels with reproducible settings.
 
 ### Analysis views
 
