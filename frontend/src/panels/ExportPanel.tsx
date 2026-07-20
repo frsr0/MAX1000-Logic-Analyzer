@@ -41,6 +41,7 @@ export function ExportPanel() {
         {sel && <button onClick={() => dl('csv', { start: sel[0], end: sel[1] })}>Selection CSV</button>}
         <button onClick={() => dl('json', { include_raw: true })}>JSON session</button>
         <button onClick={() => dl('vcd', {})}>VCD (digital)</button>
+        <button onClick={() => dl('pulseview', {})}>PulseView-compatible VCD</button>
         <button onClick={() => dl('npz')}>NumPy NPZ</button>
         <button onClick={() => dl('report')}>HTML report</button>
         <button onClick={screenshot}>PNG screenshot</button>

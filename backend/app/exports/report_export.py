@@ -3,6 +3,7 @@ SVG rendered server-side), measurements, decoder summaries, markers, errors."""
 from __future__ import annotations
 
 import html
+import json
 import time
 from typing import Dict, List, Optional
 
@@ -133,10 +134,17 @@ def html_report(session: Session, wf: Optional[WaveformData],
                       f"<td>{shown}</td><td class=small>{_esc(extra)}</td></tr>")
 
     dec_rows = ""
+    all_events = [event for events in decoder_events.values() for event in events]
+    activity: Dict[str, Dict[str, int]] = {}
     for d in s.decoders:
         events = decoder_events.get(d.id, [])
         errs = sum(1 for e in events if e["severity"] == "error")
         warns = sum(1 for e in events if e["severity"] == "warning")
+        for event in events:
+            row = activity.setdefault(event.get("type", "unknown"), {"events": 0, "warnings": 0, "errors": 0})
+            row["events"] += 1
+            row["warnings"] += int(event.get("severity") == "warning")
+            row["errors"] += int(event.get("severity") == "error")
         dec_rows += (f"<tr><td>{_esc(d.name or d.decoder_id)}</td>"
                      f"<td>{_esc(d.decoder_id)}</td><td>{len(events)}</td>"
                      f"<td class={'err' if errs else 'ok'}>{errs}</td>"
@@ -151,6 +159,14 @@ def html_report(session: Session, wf: Optional[WaveformData],
                              f"<td>{_esc(e['label'])}</td></tr>"
                              for e in sample)
                          + "</table></td></tr>")
+
+    activity_rows = "".join(
+        f"<tr><td>{_esc(kind)}</td><td>{values['events']}</td>"
+        f"<td class={'err' if values['errors'] else 'ok'}>{values['errors']}</td>"
+        f"<td class={'warn' if values['warnings'] else 'ok'}>{values['warnings']}</td></tr>"
+        for kind, values in sorted(activity.items()))
+    trigger_text = json.dumps(s.settings.trigger.model_dump(), sort_keys=True)
+    generator_text = json.dumps(s.generator, sort_keys=True) if s.generator else "none"
 
     marker_rows = "".join(
         f"<tr><td>{_esc(m.label or m.id)}</td><td>{m.sample}</td>"
@@ -180,6 +196,13 @@ def html_report(session: Session, wf: Optional[WaveformData],
 <h2>Decoders ({len(s.decoders)})</h2>
 <table><tr><th>name</th><th>type</th><th>events</th><th>errors</th><th>warnings</th></tr>
 {dec_rows or '<tr><td colspan=5>none</td></tr>'}</table>
+<h2>Protocol activity and errors</h2>
+<table><tr><th>event type</th><th>events</th><th>errors</th><th>warnings</th></tr>
+{activity_rows or '<tr><td colspan=4>none</td></tr>'}</table>
+<p class=small>Total decoded events: {len(all_events)} · trigger sample: {_esc(s.trigger_sample if s.trigger_sample is not None else 'n/a')}</p>
+<h2>Trigger and generator provenance</h2>
+<table><tr><th>trigger configuration</th><td class=small>{_esc(trigger_text)}</td></tr>
+<tr><th>generator metadata</th><td class=small>{_esc(generator_text)}</td></tr></table>
 <h2>Markers & notes</h2>
 <table><tr><th>label</th><th>sample</th><th>time</th><th>kind</th><th>note</th></tr>
 {marker_rows or '<tr><td colspan=5>none</td></tr>'}</table>

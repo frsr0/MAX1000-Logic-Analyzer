@@ -1,4 +1,4 @@
-"""Export endpoints: CSV / JSON / VCD / NPZ / HTML report."""
+"""Export endpoints: CSV / JSON / VCD / PulseView / NPZ / HTML report."""
 from __future__ import annotations
 
 import time
@@ -103,6 +103,24 @@ def export_npz(session_id: str):
     return Response(content=data, media_type="application/octet-stream",
                     headers={"Content-Disposition":
                              f'attachment; filename="{fname}"'})
+
+
+@router.post("/api/sessions/{session_id}/export/pulseview")
+def export_pulseview(session_id: str, opts: VcdOptions):
+    """Export a VCD waveform with a PulseView-friendly filename.
+
+    Native sigrok ``.sr`` sessions are versioned binary containers; VCD is
+    the stable interoperable path supported by PulseView without claiming a
+    native sigrok writer here.
+    """
+    session = get_session_or_404(session_id)
+    wf = get_waveform_or_404(session_id)
+    fname = _filename(session, "pulseview.vcd")
+    _record(session, "pulseview", fname, opts.model_dump())
+    return StreamingResponse(
+        vcd_export_iter(session, wf, opts.channels),
+        media_type="text/plain",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 @router.post("/api/sessions/{session_id}/export/report")

@@ -160,9 +160,10 @@ current SPI readback bandwidth.
 
 - [x] Add CSV import with channel names and digital/analog inference.
 - [x] Add VCD import and map `$var` signals to analyzer channels.
-- [ ] Add optional Sigrok/ PulseView-compatible export where the format can be supported reliably.
+- [x] Add optional PulseView-compatible VCD export where the format can be supported reliably.
 - [x] Add decoded protocol JSON export with stable schema versioning.
-- [ ] Add richer HTML/PDF reports with plots, error summaries, trigger details, and measurements.
+- [x] Add richer HTML reports with plots, error summaries, trigger details, generator provenance, and measurements.
+- [ ] Add a PDF report export path when a supported renderer is included.
 - [x] Add batch decode of multiple sessions.
 - [x] Add command-line capture/decode/export workflows for CI and regression testing.
 - [ ] Add automated generator/capture protocol sweeps.

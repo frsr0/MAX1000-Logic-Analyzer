@@ -163,7 +163,7 @@ def test_capture_flow_uart(client):
 
     # exports
     for fmt, body in [("csv", {"start": 0, "end": 500}), ("json", {}),
-                      ("vcd", {}), ("npz", None), ("report", None)]:
+                      ("vcd", {}), ("pulseview", {}), ("npz", None), ("report", None)]:
         url = f"/api/sessions/{sid}/export/{fmt}"
         r = client.post(url, json=body) if body is not None else client.post(url)
         assert r.status_code == 200, f"{fmt}: {r.text}"
