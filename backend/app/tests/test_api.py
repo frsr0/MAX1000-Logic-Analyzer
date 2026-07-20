@@ -470,6 +470,16 @@ def test_error_handling(client):
     assert r.status_code == 400
 
 
+def test_generator_sweep_preview_endpoint(client):
+    r = client.post("/api/generator/sweep-preview", json={
+        "base": {"protocol": "bitbang", "baud": 100_000,
+                 "data_hex": "55", "extra": {"preset": "pulse", "count": 8}},
+        "axes": {"extra.repeat": [1, 2]}, "limit": 8})
+    assert r.status_code == 200, r.text
+    assert r.json()["count"] == 2
+    assert r.json()["failed"] == 0
+
+
 def test_api_management_error_and_filter_paths(client):
     sessions = client.get("/api/sessions").json()["sessions"]
     sid = None

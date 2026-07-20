@@ -166,7 +166,8 @@ current SPI readback bandwidth.
 - [ ] Add a PDF report export path when a supported renderer is included.
 - [x] Add batch decode of multiple sessions.
 - [x] Add command-line capture/decode/export workflows for CI and regression testing.
-- [ ] Add automated generator/capture protocol sweeps.
+- [x] Add automated generator parameter/preview sweeps for CI and regression runs.
+- [ ] Add opt-in capture-backed sweeps for a connected device and route.
 - [x] Add pass/fail assertions for expected packets, timing bounds, and error counts.
 - [x] Add machine-readable JUnit/JSON results for hardware validation runs.
 

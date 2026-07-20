@@ -5,6 +5,7 @@ Examples (run from ``backend``):
   python -m app.cli decode SESSION uart --channels '{"rx":"d0"}'
   python -m app.cli export SESSION --format json --output capture.msa.json
   python -m app.cli batch-decode --decoder uart --channels '{"rx":"d0"}'
+  python -m app.cli sweep generator-sweep.json
 """
 from __future__ import annotations
 
@@ -21,6 +22,8 @@ from .exports.json_export import session_to_json
 from .exports.report_export import html_report
 from .exports.vcd_export import vcd_export_iter
 from .state import store
+from .hardware.device_models import GeneratorConfig
+from .generator.sweep import run_preview_sweep
 from .validation import junit_xml, validate_events
 
 
@@ -90,6 +93,9 @@ def main(argv: list[str] | None = None) -> int:
     assertion = sub.add_parser("assert")
     assertion.add_argument("session_id"); assertion.add_argument("--spec", required=True)
     assertion.add_argument("--junit")
+    sweep = sub.add_parser("sweep")
+    sweep.add_argument("spec")
+    sweep.add_argument("--output")
     args = parser.parse_args(argv)
 
     if args.command == "list":
@@ -114,6 +120,12 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.junit).write_text(junit_xml(result, session.name), encoding="utf-8")
         _write(json.dumps(result, indent=2) + "\n", None)
         return 0 if result["passed"] else 1
+    if args.command == "sweep":
+        spec = json.loads(Path(args.spec).read_text(encoding="utf-8"))
+        result = run_preview_sweep(GeneratorConfig(**spec["base"]), spec.get("axes", {}),
+                                   int(spec.get("limit", 256)))
+        _write(json.dumps(result, indent=2) + "\n", args.output)
+        return 0 if result["failed"] == 0 else 1
     session = _session(args.session_id)
     wf = store.load_waveform(session.id)
     if wf is None:

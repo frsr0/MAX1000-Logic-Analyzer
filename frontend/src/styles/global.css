@@ -489,6 +489,7 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .command-list button { display: flex; justify-content: space-between; padding: 9px 10px; border: 0; border-radius: 4px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
 .command-list button:hover, .command-list button:focus-visible { background: var(--accent); color: white; outline: none; }
 .command-list kbd { opacity: 0.7; font-size: 0.7rem; }
+.sweep-results { max-height: 120px; overflow-y: auto; padding: 4px 0; }
 .compare-result {
   margin-top: 14px;
   background: var(--panel);

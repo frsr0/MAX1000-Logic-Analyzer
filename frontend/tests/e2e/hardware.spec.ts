@@ -341,6 +341,8 @@ test('mock generator exposes Bit Banger templates and bounded preview controls',
   await expect(page.getByLabel('Preset symbols')).toHaveValue('32');
   await page.getByRole('button', { name: 'Preview waveform' }).click();
   await expect(page.getByText(/symbols/).last()).toBeVisible();
+  await page.getByRole('button', { name: 'Preview parameter sweep' }).click();
+  await expect(page.getByText('3/3 variants valid')).toBeVisible();
 });
 
 test('mock capture dashboard shows protocol activity and errors', async ({ page }) => {

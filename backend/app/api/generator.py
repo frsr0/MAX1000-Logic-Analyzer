@@ -1,7 +1,10 @@
 """Signal generator endpoints."""
 from __future__ import annotations
 
+from typing import Any, Dict, List
+
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 
 from ..generator.controller import (loopback_self_test,
                                     validate_generator_payload)
@@ -9,12 +12,27 @@ from ..generator.bitbang import PRESETS, preview as bitbang_preview
 from ..generator.model import GeneratorSendRequest
 from ..hardware.base import HardwareError
 from ..hardware.device_models import GeneratorConfig
+from ..generator.sweep import run_preview_sweep
 from ..state import capture_manager
 from .deps import client_id_header, require_control
 
 router = APIRouter(tags=["generator"])
 
 _last_config: dict = {}
+
+
+class GeneratorSweepRequest(BaseModel):
+    base: GeneratorConfig
+    axes: Dict[str, List[Any]] = Field(default_factory=dict)
+    limit: int = 256
+
+
+@router.post("/api/generator/sweep-preview")
+def generator_sweep_preview(req: GeneratorSweepRequest):
+    try:
+        return run_preview_sweep(req.base, req.axes, max(1, min(256, int(req.limit))))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
 
 
 @router.get("/api/generator/capabilities")

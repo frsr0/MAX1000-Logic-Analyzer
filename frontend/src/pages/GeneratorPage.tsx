@@ -46,6 +46,7 @@ export function GeneratorPage() {
   const [text, setText] = useState('Hello!');
   const [expected, setExpected] = useState('');
   const [preview, setPreview] = useState<any>(null);
+  const [sweepResult, setSweepResult] = useState<any>(null);
   const [bitbangPresets, setBitbangPresets] = useState<string[]>([]);
 
   const connected = status?.device_connected ?? false;
@@ -95,6 +96,15 @@ export function GeneratorPage() {
     setText(t);
     set({ data_hex: Array.from(new TextEncoder().encode(t))
       .map((b) => b.toString(16).padStart(2, '0')).join('') });
+  };
+
+  const runSweep = async () => {
+    try {
+      const axes: Record<string, unknown[]> = cfg.protocol === 'bitbang'
+        ? { 'extra.repeat': [1, 2, 4] }
+        : { baud: [Math.max(1, Math.floor(cfg.baud / 2)), cfg.baud, cfg.baud * 2] };
+      setSweepResult(await api.generatorSweepPreview({ base: cfg, axes, limit: 16 }));
+    } catch (e: any) { toast('error', e.message); }
   };
 
   const exportBitbangScript = () => {
@@ -447,6 +457,18 @@ export function GeneratorPage() {
               onChange={(e) => set({ continuous: e.target.checked })} />
             <span>Continuous</span>
           </label>
+
+          <div className="button-row">
+            <button onClick={runSweep}>Preview parameter sweep</button>
+            {sweepResult && <span className={`badge ${sweepResult.failed ? 'badge-na' : 'badge-soft'}`}>
+              {sweepResult.passed}/{sweepResult.count} variants valid
+            </span>}
+          </div>
+          {sweepResult && <div className="sweep-results">
+            {sweepResult.rows.map((row: any, index: number) => <div key={index} className="hint">
+              {index + 1}. {row.protocol} · {row.status}{row.error ? ` · ${row.error}` : ''}
+            </div>)}
+          </div>}
 
           <div className="button-row">
             <button className="primary" disabled={busy || !controlMode || !canStandaloneSend} onClick={() => send(false)}>Send</button>

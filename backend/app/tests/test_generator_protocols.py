@@ -7,6 +7,8 @@ from app.generator.protocols import (
     pwm_symbols,
     rs485_symbols,
 )
+from app.generator.sweep import expand_variants, run_preview_sweep
+from app.hardware.device_models import GeneratorConfig
 
 
 def test_rs485_bitbang_symbols_hold_driver_enable_and_turnaround():
@@ -49,3 +51,12 @@ def test_encode_exposes_new_bitbang_templates():
     for name in ("rs485", "i2c", "onewire", "pwm"):
         symbols = encode(name, b"\x01", 100_000, {})
         assert symbols
+
+
+def test_generator_sweep_expands_axes_and_reports_preview_rows():
+    base = GeneratorConfig(protocol="bitbang", baud=100_000,
+                           data_hex="55", extra={"preset": "pulse", "count": 8})
+    variants = expand_variants(base, {"extra.repeat": [1, 2, 3]})
+    assert [v.extra["repeat"] for v in variants] == [1, 2, 3]
+    result = run_preview_sweep(base, {"extra.repeat": [1, 2, 3]})
+    assert result["count"] == result["passed"] == 3

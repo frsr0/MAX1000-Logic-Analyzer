@@ -937,6 +937,8 @@ export async function installMockApp(page: Page) {
     }
     if (matches('GET', req, '/api/generator/bitbang/presets')) return route.fulfill(okJson({ presets: ['idle', 'pulse', 'square', 'alternating', 'counter', 'walking', 'prbs'] }));
     if (matches('POST', req, '/api/generator/preview')) return route.fulfill(okJson({ symbols: [3, 0, 1, 2], count: 4, duration_s: 0.0004, tx_levels: [1, 0, 1, 0], clock_levels: [1, 0, 0, 1] }));
+    if (matches('POST', req, '/api/generator/sweep-preview')) return route.fulfill(okJson({ count: 3, passed: 3, failed: 0,
+      rows: [{ protocol: 'bitbang', status: 'ok' }, { protocol: 'bitbang', status: 'ok' }, { protocol: 'bitbang', status: 'ok' }] }));
     if (matches('GET', req, '/api/generator/status')) return route.fulfill(okJson({ busy: false, running: false, supported: true, detail: 'fixture ready' }));
     if (matches('POST', req, '/api/generator/send')) return route.fulfill(okJson({ passed: true, sent_hex: '48656c6c6f21', decoded_hex: '48656c6c6f21', detail: 'fixture loopback', session_id: 'session-demo' }));
     if (matches('POST', req, '/api/generator/self-test')) return route.fulfill(okJson({ passed: true, sent_hex: '48656c6c6f21', decoded_hex: '48656c6c6f21', detail: 'fixture self-test' }));
