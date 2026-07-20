@@ -73,6 +73,7 @@ export function GeneratorPage() {
   }, [connected, status?.device_kind]);
 
   const set = (p: Partial<GeneratorConfig>) => setCfg({ ...cfg, ...p });
+  const setExtra = (p: Record<string, any>) => set({ extra: { ...(cfg.extra ?? {}), ...p } });
 
   const setProtocol = (protocol: string) => {
     if (protocol === 'i2c') {
@@ -298,10 +299,75 @@ export function GeneratorPage() {
                   set({ extra });
                 }}>
                   <option value="">Raw symbols / preset</option>
-                  {['uart', 'rs485', 'spi', 'manchester', 'differential_manchester', 'nrz', 'ps2', 'midi', 'lin']
+                  {['uart', 'rs485', 'spi', 'i2c', 'onewire', 'pwm', 'manchester', 'differential_manchester', 'nrz', 'ps2', 'midi', 'lin']
                     .map((p) => <option key={p} value={p}>{p.toUpperCase()}</option>)}
                 </select>
               </label>
+              {cfg.extra?.encoding === 'rs485' && (
+                <>
+                  <label className="field"><span>DE assert delay (µs)</span>
+                    <input type="number" min={0} value={cfg.extra.de_assert_us ?? 0}
+                      onChange={(e) => setExtra({ de_assert_us: Number(e.target.value) })} /></label>
+                  <label className="field"><span>DE release delay (µs)</span>
+                    <input type="number" min={0} value={cfg.extra.de_release_us ?? 0}
+                      onChange={(e) => setExtra({ de_release_us: Number(e.target.value) })} /></label>
+                  <label className="field"><span>Turnaround delay (µs)</span>
+                    <input type="number" min={0} value={cfg.extra.turnaround_us ?? 0}
+                      onChange={(e) => setExtra({ turnaround_us: Number(e.target.value) })} /></label>
+                  <label className="field"><span>Direction changes</span>
+                    <input type="number" min={0} value={cfg.extra.direction_changes ?? 0}
+                      onChange={(e) => setExtra({ direction_changes: Number(e.target.value) })} /></label>
+                </>
+              )}
+              {cfg.extra?.encoding === 'i2c' && (
+                <>
+                  <label className="field"><span>7-bit address (hex)</span>
+                    <input className="mono" value={(cfg.extra.address ?? 0x50).toString(16)}
+                      onChange={(e) => setExtra({ address: parseInt(e.target.value, 16) || 0 })} /></label>
+                  <label className="field"><span>Register (hex)</span>
+                    <input className="mono" value={(cfg.extra.register ?? 0).toString(16)}
+                      onChange={(e) => setExtra({ register: parseInt(e.target.value, 16) || 0 })} /></label>
+                  <label className="field"><span>Read length</span>
+                    <input type="number" min={0} value={cfg.extra.read_len ?? 0}
+                      onChange={(e) => setExtra({ read_len: Number(e.target.value) })} /></label>
+                  <label className="field checkbox"><input type="checkbox" checked={cfg.extra.repeated_start !== false}
+                    onChange={(e) => setExtra({ repeated_start: e.target.checked })} /><span>Repeated start</span></label>
+                  <label className="field checkbox"><input type="checkbox" checked={cfg.extra.ack !== false}
+                    onChange={(e) => setExtra({ ack: e.target.checked })} /><span>ACK writes</span></label>
+                  <label className="field"><span>Bus recovery clocks</span>
+                    <input type="number" min={0} max={16} value={cfg.extra.recovery_clocks ?? 0}
+                      onChange={(e) => setExtra({ recovery_clocks: Number(e.target.value) })} /></label>
+                  <label className="field"><span>Clock stretch (µs)</span>
+                    <input type="number" min={0} value={cfg.extra.clock_stretch_us ?? 0}
+                      onChange={(e) => setExtra({ clock_stretch_us: Number(e.target.value) })} /></label>
+                </>
+              )}
+              {cfg.extra?.encoding === 'onewire' && (
+                <label className="field"><span>Read slots</span>
+                  <input type="number" min={0} max={64} value={cfg.extra.read_slots ?? 0}
+                    onChange={(e) => setExtra({ read_slots: Number(e.target.value) })} /></label>
+              )}
+              {cfg.extra?.encoding === 'pwm' && (
+                <>
+                  <label className="field"><span>Frequency (Hz)</span>
+                    <input type="number" min={1} value={cfg.extra.frequency_hz ?? 1000}
+                      onChange={(e) => setExtra({ frequency_hz: Number(e.target.value) })} /></label>
+                  <label className="field"><span>End frequency (Hz)</span>
+                    <input type="number" min={1} value={cfg.extra.end_frequency_hz ?? cfg.extra.frequency_hz ?? 1000}
+                      onChange={(e) => setExtra({ end_frequency_hz: Number(e.target.value) })} /></label>
+                  <label className="field"><span>Duty / end duty (%)</span>
+                    <span className="button-row"><input type="number" min={0} max={100} value={cfg.extra.duty_pct ?? 50}
+                      onChange={(e) => setExtra({ duty_pct: Number(e.target.value) })} /><input type="number" min={0} max={100} value={cfg.extra.end_duty_pct ?? cfg.extra.duty_pct ?? 50}
+                      onChange={(e) => setExtra({ end_duty_pct: Number(e.target.value) })} /></span></label>
+                  <label className="field"><span>Sweep steps / cycles</span>
+                    <span className="button-row"><input type="number" min={1} value={cfg.extra.sweep_steps ?? 1}
+                      onChange={(e) => setExtra({ sweep_steps: Number(e.target.value) })} /><input type="number" min={1} value={cfg.extra.cycles ?? 8}
+                      onChange={(e) => setExtra({ cycles: Number(e.target.value) })} /></span></label>
+                  <label className="field"><span>Start phase (degrees)</span>
+                    <input type="number" min={0} max={360} value={cfg.extra.phase_deg ?? 0}
+                      onChange={(e) => setExtra({ phase_deg: Number(e.target.value) })} /></label>
+                </>
+              )}
               <label className="field">
                 <span>Symbol rate (symbols/s)</span>
                 <input type="number" min={1} value={cfg.baud}

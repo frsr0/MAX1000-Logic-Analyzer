@@ -9,6 +9,11 @@ from __future__ import annotations
 from typing import Any, Iterable, List
 
 
+def _hold(level: int, duration_us: float, symbol_rate: int) -> List[int]:
+    count = max(1, int(round(float(duration_us) * max(1, symbol_rate) / 1_000_000)))
+    return [int(level) & 3] * count
+
+
 def _uart_byte_bits(value: int, data_bits: int, parity: str, stop_bits: float,
                     fault: str | None = None) -> List[int]:
     bits = [(value >> i) & 1 for i in range(data_bits)]
@@ -88,6 +93,124 @@ def spi_symbols(data: bytes, **options: Any) -> List[int]:
     return out
 
 
+def rs485_symbols(data: bytes, symbol_rate: int, **options: Any) -> List[int]:
+    """Two-output RS-485 exerciser: bit 0 is TX, bit 1 is driver-enable.
+
+    This is deliberately a Bit Banger representation, not a claim that the
+    FPGA exposes a physical RS-485 transceiver or DE pin.
+    """
+    frame = uart_symbols(data, symbol_rate, **options)
+    pre = _hold(2, float(options.get("de_assert_us", 0)), symbol_rate)
+    active = [(s & 1) | 2 for s in frame]
+    post = _hold(2, float(options.get("de_release_us", 0)), symbol_rate)
+    turnaround = _hold(0, float(options.get("turnaround_us", 0)), symbol_rate)
+    out = pre + active + post + turnaround
+    for _ in range(max(0, int(options.get("direction_changes", 0)))):
+        out.extend(turnaround + active + post)
+    return out
+
+
+def i2c_symbols(data: bytes, symbol_rate: int, **options: Any) -> List[int]:
+    """Open-drain I²C template encoded as SDA(bit 0)/SCL(bit 1).
+
+    A released line is represented by 1.  The template is intended for
+    preview and host-emulated Bit Banger use; physical pull-up behavior still
+    depends on the board routing and external bus.
+    """
+    half_us = 500_000 / max(1, int(options.get("bus_hz", options.get("baud", 100_000))))
+    ack = bool(options.get("ack", True))
+    nack_last = bool(options.get("nack_last", False))
+    repeated_start = bool(options.get("repeated_start", False))
+    stretch_us = max(0.0, float(options.get("clock_stretch_us", 0)))
+    out: List[int] = []
+
+    def level(sda: int, scl: int, us: float = half_us) -> None:
+        out.extend(_hold((int(scl) << 1) | int(sda), us, symbol_rate))
+
+    def start() -> None:
+        level(1, 1); level(0, 1); level(0, 0)
+
+    def stop() -> None:
+        level(0, 0); level(0, 1); level(1, 1)
+
+    def byte(value: int, ack_bit: bool) -> None:
+        for i in range(7, -1, -1):
+            bit = (value >> i) & 1
+            level(bit, 0); level(bit, 1)
+            if stretch_us:
+                level(bit, 1, stretch_us)
+            level(bit, 0)
+        level(0 if ack_bit else 1, 0)
+        level(0 if ack_bit else 1, 1)
+        level(0 if ack_bit else 1, 0)
+
+    address = int(options.get("address", options.get("i2c_address", 0x50))) & 0x7F
+    register = options.get("register", options.get("i2c_register"))
+    read_len = max(0, int(options.get("read_len", options.get("i2c_read_len", 0))))
+    start()
+    byte(address << 1, ack)
+    if register is not None:
+        byte(int(register) & 0xFF, ack)
+    for value in data:
+        byte(value, ack)
+    if read_len:
+        if repeated_start:
+            start()
+        byte((address << 1) | 1, ack)
+        for index in range(read_len):
+            byte(0xFF, ack and not (nack_last and index == read_len - 1))
+    stop()
+    for _ in range(max(0, int(options.get("recovery_clocks", 0)))):
+        level(1, 0); level(1, 1); level(1, 0)
+    if options.get("recovery_clocks", 0):
+        level(1, 1)
+    return out
+
+
+def onewire_symbols(data: bytes, symbol_rate: int, **options: Any) -> List[int]:
+    """1-Wire reset/presence and read/write slots on bit 0."""
+    out: List[int] = []
+    out.extend(_hold(0, float(options.get("reset_us", 480)), symbol_rate))
+    out.extend(_hold(1, float(options.get("presence_delay_us", 15)), symbol_rate))
+    out.extend(_hold(0, float(options.get("presence_us", 60)), symbol_rate))
+    out.extend(_hold(1, float(options.get("recovery_us", 30)), symbol_rate))
+    read_slots = max(0, int(options.get("read_slots", 0)))
+    for value in data:
+        for i in range(8):
+            bit = (value >> i) & 1
+            out.extend(_hold(0, 6, symbol_rate))
+            out.extend(_hold(1 if bit else 0, 64 if bit else 60, symbol_rate))
+            out.extend(_hold(1, 10 if bit else 0, symbol_rate))
+    for _ in range(read_slots):
+        out.extend(_hold(0, 6, symbol_rate))
+        out.extend(_hold(1, 64, symbol_rate))
+    return out
+
+
+def pwm_symbols(symbol_rate: int, **options: Any) -> List[int]:
+    """Finite PWM bursts with optional linear frequency/duty sweeps."""
+    start_freq = max(1.0, float(options.get("frequency_hz", options.get("freq_hz", 1_000))))
+    end_freq = max(1.0, float(options.get("end_frequency_hz", start_freq)))
+    start_duty = max(0.0, min(100.0, float(options.get("duty_pct", 50))))
+    end_duty = max(0.0, min(100.0, float(options.get("end_duty_pct", start_duty))))
+    steps = max(1, int(options.get("sweep_steps", 1)))
+    cycles = max(1, int(options.get("cycles", options.get("pulse_count", 8))))
+    phase = max(0.0, min(360.0, float(options.get("phase_deg", 0)))) / 360.0
+    out: List[int] = []
+    for step in range(steps):
+        t = step / max(1, steps - 1)
+        freq = start_freq + (end_freq - start_freq) * t
+        duty = start_duty + (end_duty - start_duty) * t
+        period_us = 1_000_000 / freq
+        for cycle in range(cycles):
+            offset = phase * period_us if step == 0 and cycle == 0 else 0
+            if offset:
+                out.extend(_hold(0, offset, symbol_rate))
+            out.extend(_hold(1, period_us * duty / 100, symbol_rate))
+            out.extend(_hold(0, period_us * (1 - duty / 100), symbol_rate))
+    return out
+
+
 def ps2_symbols(data: bytes, **options: Any) -> List[int]:
     out: List[int] = [3] * 2
     for value in data:
@@ -117,7 +240,9 @@ def lin_symbols(data: bytes, **options: Any) -> List[int]:
 def encode(protocol: str, data: bytes, symbol_rate: int, options: dict | None = None) -> List[int]:
     options = options or {}
     name = protocol.lower()
-    if name in ("uart", "rs485", "midi"):
+    if name == "rs485":
+        return rs485_symbols(data, symbol_rate, **options)
+    if name in ("uart", "midi"):
         if name == "midi": options = {"baud": 31_250, **options}
         return uart_symbols(data, symbol_rate, **options)
     if name == "lin": return lin_symbols(data, **options)
@@ -127,4 +252,10 @@ def encode(protocol: str, data: bytes, symbol_rate: int, options: dict | None = 
         return nrz_symbols(data, **options)
     if name == "spi": return spi_symbols(data, **options)
     if name == "ps2": return ps2_symbols(data, **options)
+    if name in ("i2c", "i2c_template"):
+        return i2c_symbols(data, symbol_rate, **options)
+    if name in ("1wire", "onewire"):
+        return onewire_symbols(data, symbol_rate, **options)
+    if name == "pwm":
+        return pwm_symbols(symbol_rate, **options)
     raise ValueError(f"Unsupported software generator protocol: {protocol}")

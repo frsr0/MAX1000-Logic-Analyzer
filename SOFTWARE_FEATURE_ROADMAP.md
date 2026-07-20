@@ -42,16 +42,17 @@ current SPI readback bandwidth.
 ### Existing protocol generators
 
 - [x] UART: parity selection, 1/1.5/2 stop bits, break generation, configurable idle bits, and framing-error injection.
-- [ ] RS-485: transmit-enable timing, turnaround delay, direction-change markers, and half-duplex transaction scripts.
+- [x] RS-485 Bit Banger exerciser: transmit-enable timing, turnaround delay, direction-change markers, and half-duplex transaction scripts.
+- [ ] Hardware RS-485 generator: expose physical DE timing if a future firmware route provides it.
 - [ ] SPI: CPOL/CPHA 0–3, MSB/LSB first, word sizes 4–32 bits, configurable CS where routing permits, and inter-word gaps.
-- [ ] I²C: 7-bit address templates, register read/write templates, repeated starts, ACK/NACK control, clock stretching visualization, and bus recovery clocks.
-- [ ] PWM: frequency/duty sweeps, bursts, finite pulse counts, and configurable start phase.
+- [x] I²C Bit Banger templates: 7-bit address/register read-write forms, repeated starts, ACK/NACK control, clock stretching visualization, and bus recovery clocks.
+- [x] PWM Bit Banger templates: frequency/duty sweeps, bursts, finite pulse counts, and configurable start phase.
 - [ ] SWD: line reset, JTAG-to-SWD transition, DP/AP read/write forms, IDCODE discovery, ACK decoding, and transaction logs.
 - [x] SPI mode 3: promote the existing host helper into the public generator workflow.
 
 ### New generators using the existing two outputs
 
-- [ ] 1-Wire reset/presence/read/write transactions.
+- [x] 1-Wire reset/presence/read/write transactions through the software Bit Banger exerciser.
 - [x] Manchester and differential-Manchester waveform generation.
 - [x] NRZ/custom framed serial generation.
 - [x] PS/2 clock/data generation.
