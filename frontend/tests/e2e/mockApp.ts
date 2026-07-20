@@ -317,7 +317,10 @@ function makeSession(): Json {
         warning_count: 0,
       },
     ],
-    measurements: [],
+    measurements: [{
+      id: 'measurement-fixture', type: 'dig_frequency', channels: ['d0'],
+      scope: 'capture', region: null, result: { value: 115200, unit: 'Hz', region: [0, 100000] }, error: null,
+    }],
     markers: [],
     notes: '',
     tags: ['playwright', 'hardware'],
@@ -901,8 +904,20 @@ export async function installMockApp(page: Page) {
     }
 
     if (matches('GET', req, '/api/decoders')) return route.fulfill(okJson({ decoders: [] }));
-    if (matches('GET', req, '/api/measurements/types')) return route.fulfill(okJson({ types: [] }));
+    if (matches('GET', req, '/api/measurements/types')) return route.fulfill(okJson({ types: [
+      { id: 'dig_frequency', name: 'Frequency', category: 'digital', unit: 'Hz', needs_decoder: false },
+      { id: 'dig_edge_count', name: 'Edge count (any)', category: 'digital', unit: '', needs_decoder: false },
+    ] }));
     if (matches('GET', req, '/api/sessions')) return route.fulfill(okJson({ sessions: [makeSessionSummary(), makeAnalogSessionSummary(), makeAccelSessionSummary()] }));
+    if (req.method() === 'POST' && /\/api\/sessions\/[^/]+\/compare\/[^/]+$/.test(new URL(req.url()).pathname)) {
+      return route.fulfill(okJson({
+        a: { id: 'session-demo', name: 'MAX1000 demo capture' },
+        b: { id: 'session-analog', name: 'MAX1000 mixed analog sweep' },
+        settings_diff: {}, channel_diffs: [], sample_count_diff: 0,
+        identical_digital: false, alignment_offset: 2,
+        first_divergence: { a: 420, b: 418 },
+      }));
+    }
     if (req.method() === 'GET' && /\/api\/sessions\/[^/]+\/dashboard$/.test(new URL(req.url()).pathname)) {
       return route.fulfill(okJson({ event_count: 12, error_count: 1, warning_count: 2,
         events_per_second: 4.5, by_type: { uart_byte: 10, decoder_error: 2 },
@@ -919,6 +934,14 @@ export async function installMockApp(page: Page) {
     if (req.method() === 'GET' && /\/api\/sessions\/[^/]+\/timing-suspects$/.test(new URL(req.url()).pathname)) {
       return route.fulfill(okJson({ channel: 'd0', median_samples: 10, mad_samples: 0, threshold_samples: 5,
         suspects: [{ start_sample: 800, end_sample: 840, kind: 'pulse', duration_samples: 40, median_samples: 10 }] }));
+    }
+    if (req.method() === 'GET' && /\/api\/sessions\/[^/]+\/measurements\/results$/.test(new URL(req.url()).pathname)) {
+      return route.fulfill(okJson({ measurements: makeSession().measurements }));
+    }
+    if (req.method() === 'POST' && /\/api\/sessions\/[^/]+\/export\/(csv|json|vcd|pulseview|npz|report)$/.test(new URL(req.url()).pathname)) {
+      const format = new URL(req.url()).pathname.split('/').pop() ?? 'export';
+      return route.fulfill({ status: 200, contentType: format === 'report' ? 'text/html' : 'application/octet-stream',
+        headers: { 'Content-Disposition': `attachment; filename=fixture.${format === 'report' ? 'html' : format}` }, body: `fixture ${format}` });
     }
     if (matches('GET', req, '/api/logs')) return route.fulfill(okJson({ logs: [] }));
     if (matches('GET', req, '/api/diagnostics')) return route.fulfill(okJson({ lan_urls: ['http://127.0.0.1:4173', 'http://192.168.0.10:4173'] }));

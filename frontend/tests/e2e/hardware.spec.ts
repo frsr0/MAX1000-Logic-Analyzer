@@ -566,4 +566,34 @@ if (useMockHarness) {
 
     await page.screenshot({ path: shot('accelerometer-session-waveform.png'), fullPage: true });
   });
+
+  test('session comparison shows alignment and first divergence on the mock fixture', async ({ page }) => {
+    await page.getByRole('button', { name: 'Sessions' }).click();
+    const rows = page.locator('.sessions-table tbody tr');
+    await expect(rows).toHaveCount(3);
+
+    await rows.nth(0).getByRole('button', { name: 'Cmp...' }).click();
+    await rows.nth(1).getByRole('button', { name: 'Cmp!' }).click();
+
+    await expect(page.getByText(/Applied alignment: 2 samples/)).toBeVisible();
+    await expect(page.getByText(/first divergence A 420 \/ B 418/)).toBeVisible();
+  });
+
+  test('measurement panel renders a fixture result and recomputes it', async ({ page }) => {
+    await page.getByRole('button', { name: 'Measure' }).click();
+    const measurementRow = page.locator('.side-panel .data-table tbody tr').first();
+    await expect(measurementRow).toContainText('Frequency');
+    await expect(measurementRow).toContainText('115.2000 kHz');
+    await page.getByRole('button', { name: /Recompute all/ }).click();
+    await expect(measurementRow).toContainText('115.2000 kHz');
+  });
+
+  test('export panel downloads a report and PulseView-compatible VCD', async ({ page }) => {
+    await page.getByRole('button', { name: 'Export' }).click();
+    await expect(page.getByRole('button', { name: 'HTML report' })).toBeVisible();
+    await page.getByRole('button', { name: 'HTML report' }).click();
+    await expect(page.getByText('REPORT export downloaded')).toBeVisible();
+    await page.getByRole('button', { name: 'PulseView-compatible VCD' }).click();
+    await expect(page.getByText('PULSEVIEW export downloaded')).toBeVisible();
+  });
 }
