@@ -388,6 +388,34 @@ test('mock trigger builder previews pattern qualifiers', async ({ page }) => {
   await expect(page.getByLabel('Trigger preview')).toContainText("don't care");
 });
 
+test('mock decoder builder adds and runs a decoder instance', async ({ page }) => {
+  await page.locator('.sidebar button[title="Capture"]').click();
+  await page.getByRole('button', { name: 'Decoders' }).click();
+  await page.getByRole('button', { name: '+ Add decoder' }).click();
+  await expect(page.getByLabel('Decoder')).toBeVisible();
+  await page.getByLabel('Decoder').selectOption('uart');
+  await page.getByRole('button', { name: 'Add & run' }).click();
+  await expect(page.locator('.decoder-card')).toHaveCount(2);
+  await expect(page.getByRole('button', { name: '+ Add decoder' })).toBeVisible();
+});
+
+test('mock raw inspector loads packed samples and supports paging', async ({ page }) => {
+  await page.locator('.sidebar button[title="Capture"]').click();
+  await page.getByRole('button', { name: 'Raw', exact: true }).click();
+  await expect(page.getByText('0x0000', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '⟩', exact: true }).last().click();
+  await expect(page.getByText('0x0003', { exact: true })).toBeVisible();
+});
+
+test('mock marker panel adds a named bookmark from waveform hover', async ({ page }) => {
+  await page.locator('.sidebar button[title="Capture"]').click();
+  await page.locator('canvas.waveform-canvas').hover({ position: { x: 420, y: 80 } });
+  await page.getByRole('button', { name: 'Markers' }).click();
+  await page.getByPlaceholder('marker label').fill('bus-start');
+  await page.getByRole('button', { name: '@ hover' }).click();
+  await expect(page.getByText('bus-start', { exact: true })).toBeVisible();
+});
+
 test('mock eye diagram folds a digital channel at a configured rate', async ({ page }) => {
   await page.getByRole('button', { name: 'Sessions' }).click();
   const row = page.locator('tr').filter({ has: page.locator('input[value="MAX1000 mixed analog sweep"]') }).first();
@@ -569,6 +597,15 @@ if (useMockHarness) {
     await expect(page.getByRole('option', { name: 'a2 (analog)' })).toBeAttached();
 
     await page.screenshot({ path: shot('analog-session-waveform.png'), fullPage: true });
+  });
+
+  test('mock analog panel computes a spectrum from the mixed capture', async ({ page }) => {
+    await page.getByRole('button', { name: 'Sessions' }).click();
+    const analogRow = page.locator('tr').filter({ has: page.locator('input[value="MAX1000 mixed analog sweep"]') }).first();
+    await analogRow.getByRole('button', { name: 'Open' }).click();
+    await page.getByRole('button', { name: 'Analog', exact: true }).click();
+    await page.getByRole('button', { name: 'Compute spectrum' }).click();
+    await expect(page.getByText('Peaks: 1.00 kHz', { exact: true })).toBeVisible();
   });
 
   test('accelerometer session renders waveform and decode on the mock fixture', async ({ page }) => {

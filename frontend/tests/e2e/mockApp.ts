@@ -861,6 +861,8 @@ function matches(method: string, req: Request, suffix: string) {
 
 export async function installMockApp(page: Page, options: { mockDevice?: boolean } = {}) {
   const mockDevice = Boolean(options.mockDevice);
+  let addedDecoder: Json | null = null;
+  const fixtureMarkers: Json[] = [];
   await page.addInitScript(() => {
     class MockWebSocket {
       url: string;
@@ -903,7 +905,16 @@ export async function installMockApp(page: Page, options: { mockDevice?: boolean
       return route.fulfill(okJson({ passed: true, message: 'Self-test passed', checks: [{ passed: true, name: 'SPI link', detail: 'fixture ok' }] }));
     }
 
-    if (matches('GET', req, '/api/decoders')) return route.fulfill(okJson({ decoders: [] }));
+    if (matches('GET', req, '/api/decoders')) return route.fulfill(okJson({ decoders: [
+      { id: 'uart', name: 'UART', consumes: null,
+        channels: [{ role: 'rx', name: 'RX', required: true, types: ['digital', 'derived', 'analog'] }],
+        settings: [{ key: 'baud', name: 'Baud', type: 'int', default: 115200, min: 1 }], },
+      { id: 'i2c', name: 'I²C', consumes: null,
+        channels: [
+          { role: 'scl', name: 'SCL', required: true, types: ['digital', 'derived', 'analog'] },
+          { role: 'sda', name: 'SDA', required: true, types: ['digital', 'derived', 'analog'] },
+        ], settings: [], },
+    ] }));
     if (matches('GET', req, '/api/measurements/types')) return route.fulfill(okJson({ types: [
       { id: 'dig_frequency', name: 'Frequency', category: 'digital', unit: 'Hz', needs_decoder: false },
       { id: 'dig_edge_count', name: 'Edge count (any)', category: 'digital', unit: '', needs_decoder: false },
@@ -937,6 +948,38 @@ export async function installMockApp(page: Page, options: { mockDevice?: boolean
     }
     if (req.method() === 'GET' && /\/api\/sessions\/[^/]+\/measurements\/results$/.test(new URL(req.url()).pathname)) {
       return route.fulfill(okJson({ measurements: makeSession().measurements }));
+    }
+    if (req.method() === 'GET' && /\/api\/sessions\/[^/]+\/raw$/.test(new URL(req.url()).pathname)) {
+      return route.fulfill(okJson({ start: 0, end: 64,
+        digital_packed: Array.from({ length: 64 }, (_, i) => (i * 3) & 0xffff) }));
+    }
+    if (req.method() === 'GET' && /\/api\/sessions\/[^/]+\/(spectrum|spectrogram|correlation|envelope|threshold-sweep|event-correlation)$/.test(new URL(req.url()).pathname)) {
+      const endpoint = new URL(req.url()).pathname.split('/').pop();
+      if (endpoint === 'spectrum') return route.fulfill(okJson({ freqs: [0, 1_000, 2_000], magnitude: [0.2, 1.0, 0.4], peaks: [{ frequency_hz: 1_000, magnitude: 1.0 }] }));
+      if (endpoint === 'spectrogram') return route.fulfill(okJson({ freqs: [0, 1_000], times: [0, 1], magnitude: [[0.2, 0.8], [0.4, 1.0]] }));
+      if (endpoint === 'correlation') return route.fulfill(okJson({ delay_s: 0.000002, correlation: 0.875 }));
+      if (endpoint === 'envelope') return route.fulfill(okJson({ min: [0.1, 0.2], max: [0.8, 0.9] }));
+      if (endpoint === 'threshold-sweep') return route.fulfill(okJson({ levels: [{ level: 1.2, rising_edges: 4, frequency_hz: 125 } ] }));
+      return route.fulfill(okJson({ threshold: 0.5, pairs: [{ analog_edge: 10, digital_edge: 12, lag_samples: 2 }] }));
+    }
+    if (req.method() === 'GET' && /\/api\/sessions\/[^/]+\/markers$/.test(new URL(req.url()).pathname)) {
+      return route.fulfill(okJson({ markers: fixtureMarkers }));
+    }
+    if (req.method() === 'POST' && /\/api\/sessions\/[^/]+\/markers$/.test(new URL(req.url()).pathname)) {
+      const body = req.postDataJSON() as Json;
+      const marker = { id: 'marker-fixture', sample: Number(body.sample ?? 0),
+        label: body.label ?? 'fixture', note: '', kind: 'bookmark' };
+      fixtureMarkers.push(marker);
+      return route.fulfill(okJson(marker));
+    }
+    if (req.method() === 'POST' && /\/api\/sessions\/[^/]+\/decoders$/.test(new URL(req.url()).pathname)) {
+      const body = req.postDataJSON() as Json;
+      addedDecoder = { id: 'dec-added', decoder_id: body.decoder_id ?? 'uart',
+        name: '', enabled: true, channels: body.channels ?? { rx: 'd0' },
+        settings: body.settings ?? { baud: 115200 }, region: body.region ?? null,
+        status: 'done', error: null, event_count: 3, warning_count: 0,
+        quality_score: 1 };
+      return route.fulfill(okJson(addedDecoder));
     }
     if (req.method() === 'POST' && /\/api\/sessions\/[^/]+\/export\/(csv|json|vcd|pulseview|npz|report|pdf)$/.test(new URL(req.url()).pathname)) {
       const format = new URL(req.url()).pathname.split('/').pop() ?? 'export';
@@ -1064,7 +1107,11 @@ export async function installMockApp(page: Page, options: { mockDevice?: boolean
       const body = req.postDataJSON() as { scenario?: string; analog?: boolean };
       return route.fulfill(okJson({ started: true, scenario: body.scenario ?? 'demo_mixed', analog: !!body.analog }));
     }
-    if (matches('GET', req, '/api/sessions/session-demo')) return route.fulfill(okJson(makeSession()));
+    if (matches('GET', req, '/api/sessions/session-demo')) {
+      const session = makeSession();
+      if (addedDecoder) session.decoders.push(addedDecoder);
+      return route.fulfill(okJson(session));
+    }
     if (matches('GET', req, '/api/sessions/session-demo/metadata')) {
       return route.fulfill(okJson({ num_samples: 100_000, sample_rate: 1_000_000 }));
     }

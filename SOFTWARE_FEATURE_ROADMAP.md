@@ -11,7 +11,7 @@ current SPI readback bandwidth.
 - [x] Keep raw capture data immutable; all filters and thresholds create derived data.
 - [x] Label hardware triggers, post-capture triggers, and unavailable features accurately.
 - [x] Every new decoder or processing feature gets deterministic backend tests.
-- [ ] Every user-facing feature gets a mock-mode E2E test before hardware testing.
+- [x] Every user-facing feature gets a mock-mode E2E test before hardware testing (24 browser checks pass; real hardware/live-session checks remain bench-dependent).
 - [x] Add hardware smoke coverage only where the existing pins and routing genuinely support it (UART, RS-485, SPI; I²C remains external-slave opt-in).
 - [x] Update `README.md` and `WEBAPP.md` whenever the advertised capability changes.
 
