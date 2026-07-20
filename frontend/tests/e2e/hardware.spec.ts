@@ -145,11 +145,14 @@ async function openLiveSession(page: any, query: string) {
 
 test.beforeEach(async ({ page }) => {
   fs.mkdirSync(shots, { recursive: true });
-  if (!useMockHarness && test.info().title.includes('mock fixture')) {
+  if (!useMockHarness && (test.info().title.includes('mock fixture')
+    || test.info().title.includes('mock device scenarios'))) {
     test.skip(true, 'fixture session is only available in mock mode');
   }
   if (useMockHarness) {
-    await installMockApp(page);
+    await installMockApp(page, {
+      mockDevice: test.info().title.includes('mock device scenarios'),
+    });
     await page.goto('/');
   }
   await ensureConnected(page);
@@ -232,6 +235,18 @@ test('capture controls reflect MAX1000 modes', async ({ page }) => {
   await page.locator('.mode-tile', { hasText: 'Packed narrow' }).click();
   await expect(page.getByText('Packed narrow is live-only.')).toBeVisible();
   await page.screenshot({ path: shot('capture-controls.png'), fullPage: true });
+});
+
+test('mock device scenarios expose protocol and fault fixtures', async ({ page }) => {
+  await page.locator('.sidebar button[title="Capture"]').click();
+  const scenario = page.locator('label.field').filter({ hasText: 'Mock scenario' }).locator('select');
+  await expect(scenario).toBeVisible();
+  await expect(scenario.locator('option')).toHaveCount(16);
+  await expect(scenario.locator('option[value="swd"]')).toBeAttached();
+  await expect(scenario.locator('option[value="i2c_nack"]')).toBeAttached();
+  await expect(scenario.locator('option[value="uart_fault"]')).toBeAttached();
+  await scenario.selectOption('swd');
+  await expect(scenario).toHaveValue('swd');
 });
 
 test('compression sweep shows raw and delta_rle throughput differences', async ({ page }) => {

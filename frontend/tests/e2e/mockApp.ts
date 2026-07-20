@@ -94,24 +94,23 @@ function makeDevice() {
   };
 }
 
-function makeStatus(): Json {
+function makeStatus(mock = false): Json {
+  const device = mock ? {
+    driver: 'mock', device_name: 'Mock MAX1000 Analyser', connection: 'mock',
+    port: 'mock://0', firmware_version: 'mock-2.0', protocol_version: '2',
+    sys_clk_hz: 100e6, sample_clk_hz: 200e6, mock: true, extra: {},
+  } : {
+    driver: 'ols_spi', device_name: 'MAX1000 OLS Logic Analyzer',
+    connection: 'FTDI FT2232H MPSSE SPI (Channel B)', port: 'ftdi://channel-b',
+    firmware_version: 'mock-firmware', protocol_version: '1',
+    sys_clk_hz: 100.2e6, sample_clk_hz: 200.4e6, mock: false, extra: {},
+  };
   return {
     app_version: '2.0.0',
     uptime_s: 7261,
     device_connected: true,
-    device_kind: 'hardware',
-    device: {
-      driver: 'ols_spi',
-      device_name: 'MAX1000 OLS Logic Analyzer',
-      connection: 'FTDI FT2232H MPSSE SPI (Channel B)',
-      port: 'ftdi://channel-b',
-      firmware_version: 'mock-firmware',
-      protocol_version: '1',
-      sys_clk_hz: 100.2e6,
-      sample_clk_hz: 200.4e6,
-      mock: false,
-      extra: {},
-    },
+    device_kind: mock ? 'mock' : 'hardware',
+    device,
     capture_state: 'idle',
     capture_progress: { samples_read: 0, samples_total: 0, message: '', repeat: 1 },
     last_session_id: null,
@@ -860,7 +859,8 @@ function matches(method: string, req: Request, suffix: string) {
   return req.method() === method && new URL(req.url()).pathname === suffix;
 }
 
-export async function installMockApp(page: Page) {
+export async function installMockApp(page: Page, options: { mockDevice?: boolean } = {}) {
+  const mockDevice = Boolean(options.mockDevice);
   await page.addInitScript(() => {
     class MockWebSocket {
       url: string;
@@ -892,11 +892,11 @@ export async function installMockApp(page: Page) {
       return;
     }
 
-    if (matches('GET', req, '/api/status')) return route.fulfill(okJson(makeStatus()));
+    if (matches('GET', req, '/api/status')) return route.fulfill(okJson(makeStatus(mockDevice)));
     if (matches('GET', req, '/api/devices')) return route.fulfill(okJson({ devices: [makeDevice(), { ...makeDevice(), id: 'mock', name: 'Mock MAX1000 Analyser', driver: 'mock', connection: 'mock', mock: true, detail: 'Synthetic device for preview and tests' }] }));
-    if (matches('POST', req, '/api/connect')) return route.fulfill(okJson({ connected: true, metadata: makeStatus().device }));
+    if (matches('POST', req, '/api/connect')) return route.fulfill(okJson({ connected: true, metadata: makeStatus(mockDevice).device }));
     if (matches('POST', req, '/api/disconnect')) return route.fulfill(okJson({ connected: false }));
-    if (matches('GET', req, '/api/device/metadata')) return route.fulfill(okJson(makeStatus().device));
+    if (matches('GET', req, '/api/device/metadata')) return route.fulfill(okJson(makeStatus(mockDevice).device));
     if (matches('GET', req, '/api/device/capabilities')) return route.fulfill(okJson(makeCap()));
     if (matches('GET', req, '/api/device/debug')) return route.fulfill(okJson({ raw_metadata: 'mock', raw_status: { ok: true }, last_command: 'noop', last_response: 'ok', last_error: '', command_log: [], timings: {}, extra: {} }));
     if (matches('POST', req, '/api/device/self-test')) {
@@ -946,10 +946,15 @@ export async function installMockApp(page: Page) {
     if (matches('GET', req, '/api/logs')) return route.fulfill(okJson({ logs: [] }));
     if (matches('GET', req, '/api/diagnostics')) return route.fulfill(okJson({ lan_urls: ['http://127.0.0.1:4173', 'http://192.168.0.10:4173'] }));
     if (matches('GET', req, '/api/capture/scenarios')) return route.fulfill(okJson({ scenarios: [
-      { id: 'demo_mixed', name: 'Demo mixed' },
-      { id: 'uart', name: 'UART' },
-      { id: 'i2c', name: 'I2C' },
-      { id: 'spi', name: 'SPI' },
+      { id: 'demo_mixed', name: 'Demo mixed' }, { id: 'uart', name: 'UART' },
+      { id: 'i2c', name: 'I2C' }, { id: 'i2c_nack', name: 'I2C NACK' },
+      { id: 'spi', name: 'SPI' }, { id: 'rs485', name: 'RS-485' },
+      { id: 'onewire', name: '1-Wire' }, { id: 'manchester', name: 'Manchester' },
+      { id: 'differential_manchester', name: 'Differential Manchester' },
+      { id: 'nrz', name: 'NRZ' }, { id: 'ps2', name: 'PS/2' },
+      { id: 'midi', name: 'MIDI' }, { id: 'lin', name: 'LIN' },
+      { id: 'swd', name: 'SWD' }, { id: 'uart_fault', name: 'UART parity fault' },
+      { id: 'pwm_fault', name: 'PWM shortened pulse' },
     ] }));
     if (matches('POST', req, '/api/capture/settings/validate')) return route.fulfill(okJson({ findings: [] }));
     if (matches('POST', req, '/api/control/acquire')) return route.fulfill(okJson({ acquired: true }));

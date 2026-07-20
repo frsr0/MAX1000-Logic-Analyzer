@@ -31,7 +31,7 @@ Recently re-verified before this README update:
 - `host/driver/tests/test_ols_spi_device.py` + `test_ols_spi.py`: `194/194` passed
 - `frontend` typecheck and production build: passed
 - `frontend/tests/e2e/hardware.spec.ts`: `19 passed, 2 skipped` (full suite; mock workflow coverage included)
-- `backend/hw_smoke_test.py`: `7/7` passed on hardware
+- `backend/hw_smoke_test.py --mock`: `9/9` passed; real-target execution remains bench-dependent
 - Focused hardware checks for digital compression, analog-fast, dual-analog, and mixed capture: passed
 
 ## What The Current Bitstream Actually Does

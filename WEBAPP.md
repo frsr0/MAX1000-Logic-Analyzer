@@ -252,7 +252,8 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
   deep capture now completes and reads back clean at every rate up to the full
   200 MHz sample clock (validated 36/36 captures, 0 isolated dropped samples,
   18–200 MHz, full 4,194,304-word depth).
-- `CMD_GEN_CAPTURE` generator loopback is covered by hardware smoke/API tests
+- `CMD_GEN_CAPTURE` UART, RS-485, and SPI loopback routes are covered by the
+  smoke/API tests; I²C smoke remains opt-in because it needs an external slave
   and the full host validation suite. The UART loopback path is decoded through
   the same backend decoder path used by user captures.
 - Hardware triggers cover rising/falling edge, level triggers (high/low/

@@ -12,7 +12,7 @@ current SPI readback bandwidth.
 - [x] Label hardware triggers, post-capture triggers, and unavailable features accurately.
 - [x] Every new decoder or processing feature gets deterministic backend tests.
 - [ ] Every user-facing feature gets a mock-mode E2E test before hardware testing.
-- [ ] Add hardware tests only where the existing pins and routing genuinely support them.
+- [x] Add hardware smoke coverage only where the existing pins and routing genuinely support it (UART, RS-485, SPI; I²C remains external-slave opt-in).
 - [x] Update `README.md` and `WEBAPP.md` whenever the advertised capability changes.
 
 ## Phase 0 — Baseline and project scaffolding
@@ -183,7 +183,7 @@ current SPI readback bandwidth.
 - [x] Run the existing backend test suite.
 - [x] Run the existing host/driver test suite.
 - [x] Run frontend typecheck and production build.
-- [ ] Run hardware smoke tests for unchanged capture paths after host-driver changes.
+- [ ] Run real-target hardware smoke tests for unchanged capture paths after host-driver changes (mock target: 9/9 passed; real execution remains bench-dependent).
 - [x] Validate no new feature falsely advertises unavailable physical capabilities.
 - [x] Update screenshots and user documentation.
 - [x] Add release notes and migration notes for session/decoder schema changes.

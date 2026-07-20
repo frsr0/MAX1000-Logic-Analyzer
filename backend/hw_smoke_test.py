@@ -16,7 +16,7 @@ ExistingHostAdapter -> host/driver/OLSDeviceSPI):
   3. capabilities
   4. device self-test (metadata + status/control-plane checks)
   5. plain digital capture (1 MHz, 4096 samples) + sanity checks
-  6. UART generator loopback (CMD_GEN_CAPTURE) -> UART decode -> byte compare
+  6. UART / RS-485 / SPI generator loopback (CMD_GEN_CAPTURE) -> decode -> compare
 
 Exit code 0 = all checks passed. Sessions created by the test are saved and
 visible in the web UI afterwards.
@@ -146,16 +146,24 @@ def main():
                 + (f" ({warns[0]['message']})" if warns else ""))
     c.run("capture sanity checks", sanity)
 
-    # 6. UART generator loopback -> UART decode -> byte compare.
-    def loopback():
-        cfg = GeneratorConfig(protocol="uart", data_hex="48656c6c6f21",
-                              baud=115200, tx_pin=0 if args.mock else 3)
-        r = loopback_self_test(mgr, cfg, capture_rate=2_000_000,
-                               capture_samples=4_000)
-        if not r.passed:
-            raise HardwareError(r.detail)
-        return f"{r.detail} -> session {r.session_id}"
-    c.run("UART generator loopback + decode", loopback)
+    # 6. Generator loopback routes that are physically supported by the
+    # current adapter. I2C is intentionally excluded: it needs a connected
+    # external slave, unlike the internal UART/RS-485/SPI loopback routes.
+    route_configs = [
+        ("uart", 115200, 0 if args.mock else 3, 1),
+        ("rs485", 115200, 0 if args.mock else 3, 1),
+        ("spi", 1_000_000, 5 if args.mock else 3, 4 if args.mock else 1),
+    ]
+    for protocol, baud, tx_pin, scl_pin in route_configs:
+        def loopback(protocol=protocol, baud=baud, tx_pin=tx_pin, scl_pin=scl_pin):
+            cfg = GeneratorConfig(protocol=protocol, data_hex="4142",
+                                  baud=baud, tx_pin=tx_pin, scl_pin=scl_pin)
+            r = loopback_self_test(mgr, cfg, capture_rate=2_000_000,
+                                   capture_samples=8_000)
+            if not r.passed:
+                raise HardwareError(r.detail)
+            return f"{r.detail} -> session {r.session_id}"
+        c.run(f"{protocol.upper()} generator loopback + decode", loopback)
 
     mgr.disconnect()
     ok = c.passed
