@@ -90,6 +90,8 @@ export const api = {
   triggerSearch: (id: string, trigger: any, decoder_instance?: string) =>
     post<any>(`/api/sessions/${id}/trigger-search`, { trigger, decoder_instance }),
   importSession: (json_text: string) => post<SessionSummary>('/api/sessions', { json_text }),
+  importWaveform: (source_text: string, source_format: 'csv' | 'vcd', sample_rate = 1_000_000) =>
+    post<SessionSummary>('/api/sessions', { source_text, source_format, sample_rate }),
 
   // waveform
   waveformMeta: (id: string) => get<any>(`/api/sessions/${id}/metadata`),
@@ -168,6 +170,7 @@ export const api = {
   generatorStart: () => post('/api/generator/start'),
   generatorStop: () => post('/api/generator/stop'),
   generatorStatus: () => get<any>('/api/generator/status'),
+  generatorPreview: (cfg: GeneratorConfig) => post<any>('/api/generator/preview', cfg),
   generatorSend: (body: { config: GeneratorConfig; capture: boolean; capture_rate?: number; capture_samples?: number; expected_hex?: string }) =>
     post<any>('/api/generator/send', body),
   generatorSelfTest: () => post<any>('/api/generator/self-test'),

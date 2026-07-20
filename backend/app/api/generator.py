@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from ..generator.controller import (loopback_self_test,
                                     validate_generator_payload)
+from ..generator.bitbang import preview as bitbang_preview
 from ..generator.model import GeneratorSendRequest
 from ..hardware.base import HardwareError
 from ..hardware.device_models import GeneratorConfig
@@ -67,6 +68,17 @@ def generator_status():
     except HardwareError as e:
         raise HTTPException(409, str(e))
     return dev.generator_status().model_dump()
+
+
+@router.post("/api/generator/preview")
+def generator_preview(cfg: GeneratorConfig):
+    """Preview a raw Bit Banger script without touching the device."""
+    if cfg.protocol != "bitbang":
+        raise HTTPException(400, "Preview is currently available for bitbang only")
+    try:
+        return bitbang_preview(cfg.extra, max(1, int(cfg.baud)))
+    except (TypeError, ValueError) as e:
+        raise HTTPException(400, str(e))
 
 
 @router.post("/api/generator/send")

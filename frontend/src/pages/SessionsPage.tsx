@@ -48,7 +48,12 @@ export function SessionsPage() {
   const importJson = async (file: File) => {
     try {
       const text = await file.text();
-      const s = await api.importSession(text);
+      const lower = file.name.toLowerCase();
+      const s = lower.endsWith('.csv')
+        ? await api.importWaveform(text, 'csv')
+        : lower.endsWith('.vcd')
+          ? await api.importWaveform(text, 'vcd')
+          : await api.importSession(text);
       toast('success', `Imported ${s.name}`);
       refreshSessions();
     } catch (e: any) {
@@ -63,8 +68,8 @@ export function SessionsPage() {
           <h2>Sessions</h2>
           <p className="hint">Saved captures stay tied to the hardware metadata that produced them, including analog channels when present.</p>
         </div>
-        <button onClick={() => fileRef.current?.click()}>Import JSON session</button>
-        <input ref={fileRef} type="file" accept=".json" hidden
+        <button onClick={() => fileRef.current?.click()}>Import JSON / CSV / VCD</button>
+        <input ref={fileRef} type="file" accept=".json,.csv,.vcd" hidden
           onChange={(e) => e.target.files?.[0] && importJson(e.target.files[0])} />
       </div>
 

@@ -11,6 +11,8 @@ from app.decoders.lin import LinDecoder, lin_checksum, lin_pid
 from app.decoders.midi import MidiDecoder
 from app.decoders.ps2 import Ps2Decoder
 from app.decoders.quadrature import QuadratureDecoder
+from app.generator.bitbang import expand_symbols, preview
+from app.exports.importers import csv_session, vcd_session
 from app.measurements import digital
 from app.measurements.base import MeasurementContext, run_measurement
 from app.triggers.software_trigger import find_software_trigger
@@ -176,3 +178,32 @@ def test_can_decoder_standard_data_frame():
     assert result.events
     assert result.events[0]["fields"]["identifier"] == identifier
     assert result.events[0]["fields"]["data_hex"] == "a5"
+
+
+def test_bitbang_script_expansion_and_bounds():
+    extra = {"script": [{"symbols": [0, 1], "gap_symbols": 2, "repeat": 2}],
+             "repeat": 2}
+    symbols = expand_symbols(extra, 1_000_000)
+    assert symbols == [3, 3, 0, 1, 3, 3, 0, 1] * 2
+    p = preview({"symbols": [0, 1, 2, 3]}, 1_000_000)
+    assert p["count"] == 4 and p["duration_s"] == 4e-6
+
+
+def test_csv_and_vcd_importers_preserve_signal_names():
+    session, wf = csv_session("sample,time_s,CLK,AIN (V)\n0,0,0,1.0\n1,1e-6,1,2.0\n",
+                             1_000_000)
+    assert session.channels[0].name == "CLK"
+    assert wf.analog["AIN"].tolist() == [1.0, 2.0]
+    vcd = """$timescale 1 us $end
+$var wire 1 ! CLK $end
+$enddefinitions $end
+#0
+0!
+#2
+1!
+#4
+0!
+"""
+    imported, vwf = vcd_session(vcd)
+    assert imported.channels[0].name == "CLK"
+    assert vwf.digital_channel(0).tolist()[:5] == [0, 0, 1, 1, 0]

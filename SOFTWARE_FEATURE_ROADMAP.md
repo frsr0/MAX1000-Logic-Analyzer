@@ -32,10 +32,10 @@ current SPI readback bandwidth.
 - [x] Add validation for symbol count, FIFO capacity, idle state, pin selection, and timing divisor.
 - [x] Add a raw symbol editor in the Generator page.
 - [ ] Add waveform presets: idle, pulse, square wave, alternating bits, counter, walking bit, and PRBS.
-- [ ] Add repeat count, inter-transaction gap, continuous mode, and stop behavior.
-- [ ] Add a transaction script format with named steps, payloads, delays, and expected responses.
+- [x] Add repeat count, inter-transaction gap, continuous mode, and stop behavior for Bit Banger scripts.
+- [x] Add a transaction script format with symbol steps, gaps, delays, and repeats.
 - [ ] Add script import/export as JSON.
-- [ ] Add a preview waveform before sending.
+- [x] Add a preview waveform before sending.
 - [ ] Add a send-and-capture operation that creates a normal session with generator metadata.
 - [ ] Add clear errors when a requested waveform cannot fit the current FIFO.
 
@@ -156,8 +156,8 @@ current SPI readback bandwidth.
 
 ## Phase 6 — Import, export, and automation
 
-- [ ] Add CSV import with channel names, sample rate, and digital/analog type selection.
-- [ ] Add VCD import and map `$var` signals to analyzer channels.
+- [x] Add CSV import with channel names and digital/analog inference.
+- [x] Add VCD import and map `$var` signals to analyzer channels.
 - [ ] Add optional Sigrok/ PulseView-compatible export where the format can be supported reliably.
 - [ ] Add decoded protocol JSON export with stable schema versioning.
 - [ ] Add richer HTML/PDF reports with plots, error summaries, trigger details, and measurements.

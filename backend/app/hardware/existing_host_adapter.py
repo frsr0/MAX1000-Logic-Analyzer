@@ -611,13 +611,8 @@ class ExistingHostAdapter(HardwareDevice):
                     "SPI generator requires 'Send + capture' on this "
                     "firmware; standalone send is not supported")
             elif cfg.protocol == "bitbang":
-                symbols = cfg.extra.get("symbols", [])
-                if not isinstance(symbols, list) or not symbols:
-                    raise HardwareError("Bit Banger requires extra.symbols[]")
-                from driver import bit_bang
-                if len(symbols) > bit_bang.MAX_SYMBOLS:
-                    raise HardwareError(
-                        f"Bit Banger pattern exceeds {bit_bang.MAX_SYMBOLS} symbols")
+                from ..generator.bitbang import expand_symbols
+                symbols = expand_symbols(cfg.extra, max(1, int(cfg.baud)))
                 self._dev.send_raw_symbols(
                     symbols, symbol_rate=max(1, int(cfg.baud)),
                     tx_pin=int(cfg.tx_pin), scl_pin=int(cfg.scl_pin))

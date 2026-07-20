@@ -292,7 +292,8 @@ class MockDevice(HardwareDevice):
                     bits[a:a + spb] = (byte >> (7 - b)) & 1
             put(cfg.tx_pin, bits)
         elif cfg.protocol == "bitbang":
-            symbols = cfg.extra.get("symbols", [])
+            from ..generator.bitbang import expand_symbols
+            symbols = expand_symbols(cfg.extra, max(1, int(cfg.baud)))
             spb = max(1, int(rate / max(1, cfg.baud)))
             tx = np.ones(n, dtype=np.uint8)
             scl = np.ones(n, dtype=np.uint8)

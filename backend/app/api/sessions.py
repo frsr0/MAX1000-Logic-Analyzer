@@ -12,6 +12,7 @@ from ..capture.sample_format import find_edges
 from ..capture.session import Marker, Session, TriggerConfig, new_id
 from ..config import APP_VERSION
 from ..exports.json_export import session_from_json
+from ..exports.importers import csv_session, vcd_session
 from ..state import store
 from ..websocket.manager import manager
 from ..triggers.software_trigger import find_software_trigger
@@ -26,14 +27,26 @@ def list_sessions():
 
 
 class SessionImport(BaseModel):
-    json_text: str
+    json_text: Optional[str] = None
+    source_text: Optional[str] = None
+    source_format: Optional[str] = None
+    sample_rate: float = 1_000_000.0
 
 
 @router.post("/api/sessions")
 def import_session(req: SessionImport):
-    """Import a previously exported JSON session."""
+    """Import a JSON, CSV, or VCD session."""
     try:
-        session, wf, decoder_events = session_from_json(req.json_text)
+        if req.json_text:
+            session, wf, decoder_events = session_from_json(req.json_text)
+        elif req.source_text and req.source_format == "csv":
+            session, wf = csv_session(req.source_text, req.sample_rate)
+            decoder_events = {}
+        elif req.source_text and req.source_format == "vcd":
+            session, wf = vcd_session(req.source_text)
+            decoder_events = {}
+        else:
+            raise ValueError("Provide json_text or source_text with csv/vcd format")
     except Exception as e:
         raise HTTPException(400, f"Invalid session JSON: {e}")
     session.id = new_id("ses")

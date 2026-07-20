@@ -45,6 +45,7 @@ export function GeneratorPage() {
   const [busy, setBusy] = useState(false);
   const [text, setText] = useState('Hello!');
   const [expected, setExpected] = useState('');
+  const [preview, setPreview] = useState<any>(null);
 
   const connected = status?.device_connected ?? false;
 
@@ -272,6 +273,14 @@ export function GeneratorPage() {
                   onChange={(e) => set({ extra: { ...(cfg.extra ?? {}), symbols: e.target.value.split(',').map((v) => Number(v.trim())).filter((v) => Number.isFinite(v) && v >= 0 && v <= 3) } })} />
               </label>
               <div className="hint">Bit 0 drives TX/SDA/MOSI; bit 1 drives SCL/SCLK. The hardware FIFO supports 1024 symbols per burst.</div>
+              <button onClick={async () => {
+                try { setPreview(await api.generatorPreview(cfg)); }
+                catch (e: any) { toast('error', e.message); }
+              }}>Preview waveform</button>
+              {preview && <div className="finding info">
+                {preview.count} symbols · {(preview.duration_s * 1e6).toFixed(1)} µs
+                <div className="mono">TX {preview.tx_levels.join('')}<br />CLK {preview.clock_levels.join('')}</div>
+              </div>}
             </>
           )}
 
