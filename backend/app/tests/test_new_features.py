@@ -13,7 +13,7 @@ from app.decoders.ps2 import Ps2Decoder
 from app.decoders.quadrature import QuadratureDecoder
 from app.decoders.hdlc import HdlcDecoder, hdlc_crc16
 from app.decoders.jtag import JtagDecoder
-from app.generator.bitbang import expand_symbols, preview
+from app.generator.bitbang import expand_symbols, preview, preset_symbols
 from app.exports.importers import csv_session, vcd_session
 from app.measurements import digital
 from app.measurements.base import MeasurementContext, run_measurement
@@ -199,6 +199,8 @@ def test_bitbang_script_expansion_and_bounds():
     assert symbols == [3, 3, 0, 1, 3, 3, 0, 1] * 2
     p = preview({"symbols": [0, 1, 2, 3]}, 1_000_000)
     assert p["count"] == 4 and p["duration_s"] == 4e-6
+    assert len(preset_symbols("walking", 12)) == 12
+    assert preset_symbols("counter", 4) == [0, 1, 2, 3]
 
 
 def test_csv_and_vcd_importers_preserve_signal_names():

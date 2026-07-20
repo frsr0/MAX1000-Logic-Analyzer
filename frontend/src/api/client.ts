@@ -177,6 +177,7 @@ export const api = {
   generatorStop: () => post('/api/generator/stop'),
   generatorStatus: () => get<any>('/api/generator/status'),
   generatorPreview: (cfg: GeneratorConfig) => post<any>('/api/generator/preview', cfg),
+  bitbangPresets: () => get<{ presets: string[] }>('/api/generator/bitbang/presets'),
   generatorSend: (body: { config: GeneratorConfig; capture: boolean; capture_rate?: number; capture_samples?: number; expected_hex?: string }) =>
     post<any>('/api/generator/send', body),
   generatorSelfTest: () => post<any>('/api/generator/self-test'),

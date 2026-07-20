@@ -46,6 +46,7 @@ export function GeneratorPage() {
   const [text, setText] = useState('Hello!');
   const [expected, setExpected] = useState('');
   const [preview, setPreview] = useState<any>(null);
+  const [bitbangPresets, setBitbangPresets] = useState<string[]>([]);
 
   const connected = status?.device_connected ?? false;
 
@@ -57,6 +58,7 @@ export function GeneratorPage() {
         setGenStatus(r.status);
       })
       .catch(() => setProtocols([]));
+    api.bitbangPresets().then((r) => setBitbangPresets(r.presets)).catch(() => {});
     const t = setInterval(() => {
       api.generatorStatus().then(setGenStatus).catch(() => {});
     }, 2000);
@@ -294,6 +296,22 @@ export function GeneratorPage() {
                   value={(cfg.extra?.symbols ?? []).join(',')}
                   onChange={(e) => set({ extra: { ...(cfg.extra ?? {}), symbols: e.target.value.split(',').map((v) => Number(v.trim())).filter((v) => Number.isFinite(v) && v >= 0 && v <= 3) } })} />
               </label>
+              <label className="field">
+                <span>Preset</span>
+                <select value={cfg.extra?.preset ?? ''} onChange={(e) => {
+                  const preset = e.target.value;
+                  if (preset) set({ extra: { ...(cfg.extra ?? {}), preset, count: cfg.extra?.count ?? 32 } });
+                  else { const { preset: _preset, ...extra } = cfg.extra ?? {}; set({ extra }); }
+                }}>
+                  <option value="">Custom symbols</option>
+                  {bitbangPresets.map((preset) => <option key={preset} value={preset}>{preset}</option>)}
+                </select>
+              </label>
+              {cfg.extra?.preset && <label className="field">
+                <span>Preset symbols</span>
+                <input type="number" min={1} max={1024} value={cfg.extra.count ?? 32}
+                  onChange={(e) => set({ extra: { ...(cfg.extra ?? {}), count: Number(e.target.value) } })} />
+              </label>}
               <div className="hint">Bit 0 drives TX/SDA/MOSI; bit 1 drives SCL/SCLK. The hardware FIFO supports 1024 symbols per burst.</div>
               <button onClick={async () => {
                 try { setPreview(await api.generatorPreview(cfg)); }

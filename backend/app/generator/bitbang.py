@@ -5,6 +5,35 @@ from typing import Any, Dict, List
 
 MAX_SYMBOLS = 1024
 
+PRESETS = ("idle", "pulse", "square", "alternating", "counter", "walking", "prbs")
+
+
+def preset_symbols(name: str, count: int = 32) -> List[int]:
+    """Return deterministic two-output symbols for a named exerciser preset."""
+    name = str(name).lower().strip()
+    count = max(1, min(MAX_SYMBOLS, int(count)))
+    if name not in PRESETS:
+        raise ValueError(f"Unknown Bit Banger preset '{name}'")
+    if name == "idle":
+        return [3] * count
+    if name == "pulse":
+        return [3] * max(1, count // 4) + [0] * max(1, count // 2) + [3] * max(1, count - (count // 4) - (count // 2))
+    if name == "square":
+        return [((i // 2) & 1) * 3 for i in range(count)]
+    if name == "alternating":
+        return [i & 1 for i in range(count)]
+    if name == "counter":
+        return [i & 3 for i in range(count)]
+    if name == "walking":
+        return [1 << (i % 2) for i in range(count)]
+    # A small deterministic maximal-length-ish pattern, suitable for repeatable tests.
+    state = 0x3
+    out = []
+    for _ in range(count):
+        out.append(state & 3)
+        state = ((state >> 1) ^ (-(state & 1) & 0xB8)) & 0xFF
+    return out
+
 
 def _symbols(value: Any) -> List[int]:
     if not isinstance(value, list):
@@ -26,7 +55,10 @@ def expand_symbols(extra: Dict[str, Any], symbol_rate: int) -> List[int]:
     bounded by the FPGA's 1024-symbol FIFO.
     """
     if "script" not in extra:
-        result = _symbols(extra.get("symbols", []))
+        if extra.get("preset"):
+            result = preset_symbols(str(extra["preset"]), int(extra.get("count", 32)))
+        else:
+            result = _symbols(extra.get("symbols", []))
     else:
         script = extra.get("script")
         if not isinstance(script, list):

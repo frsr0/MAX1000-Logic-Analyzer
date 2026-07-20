@@ -31,13 +31,13 @@ current SPI readback bandwidth.
 - [x] Expose the generic two-bit symbol format through a backend API.
 - [x] Add validation for symbol count, FIFO capacity, idle state, pin selection, and timing divisor.
 - [x] Add a raw symbol editor in the Generator page.
-- [ ] Add waveform presets: idle, pulse, square wave, alternating bits, counter, walking bit, and PRBS.
+- [x] Add waveform presets: idle, pulse, square wave, alternating bits, counter, walking bit, and PRBS.
 - [x] Add repeat count, inter-transaction gap, continuous mode, and stop behavior for Bit Banger scripts.
 - [x] Add a transaction script format with symbol steps, gaps, delays, and repeats.
 - [x] Add script import/export as JSON.
 - [x] Add a preview waveform before sending.
 - [ ] Add a send-and-capture operation that creates a normal session with generator metadata.
-- [ ] Add clear errors when a requested waveform cannot fit the current FIFO.
+- [x] Add clear errors when a requested waveform cannot fit the current FIFO.
 
 ### Existing protocol generators
 

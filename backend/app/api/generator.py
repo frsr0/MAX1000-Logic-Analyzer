@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from ..generator.controller import (loopback_self_test,
                                     validate_generator_payload)
-from ..generator.bitbang import preview as bitbang_preview
+from ..generator.bitbang import PRESETS, preview as bitbang_preview
 from ..generator.model import GeneratorSendRequest
 from ..hardware.base import HardwareError
 from ..hardware.device_models import GeneratorConfig
@@ -79,6 +79,11 @@ def generator_preview(cfg: GeneratorConfig):
         return bitbang_preview(cfg.extra, max(1, int(cfg.baud)))
     except (TypeError, ValueError) as e:
         raise HTTPException(400, str(e))
+
+
+@router.get("/api/generator/bitbang/presets")
+def bitbang_presets():
+    return {"presets": list(PRESETS)}
 
 
 @router.post("/api/generator/send")
