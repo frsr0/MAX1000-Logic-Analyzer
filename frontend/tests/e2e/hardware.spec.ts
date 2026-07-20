@@ -363,6 +363,14 @@ test('mock trigger builder previews pattern qualifiers', async ({ page }) => {
   await expect(page.getByLabel('Trigger preview')).toContainText("don't care");
 });
 
+test('command palette navigates between app pages', async ({ page }) => {
+  await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })));
+  await expect(page.getByRole('dialog', { name: 'Command palette' })).toBeVisible();
+  await page.getByLabel('Command search').fill('generator');
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('heading', { name: 'Signal generator' })).toBeVisible();
+});
+
 test('signal generator loopback shows waveform and decode', async ({ page }) => {
   await page.getByRole('button', { name: 'Generator' }).click();
   await expect(page.getByRole('button', { name: 'Send + capture' })).toBeEnabled({ timeout: 15_000 });

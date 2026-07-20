@@ -1,5 +1,5 @@
 // App chrome: sidebar, top bar, status bar, toasts, global shortcuts.
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, downloadExport } from '../api/client';
 import { Page, useApp } from '../state/appStore';
 import { CapturePage } from '../pages/CapturePage';
@@ -23,11 +23,27 @@ const NAV: { id: Page; icon: string; label: string }[] = [
 export function AppShell() {
   const { page, setPage, status, wsConnected, toasts, dismissToast,
           activeSession, captureSettings, toast, controlMode } = useApp();
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteQuery, setPaletteQuery] = useState('');
+  const paletteInput = useRef<HTMLInputElement>(null);
+  const commands = NAV.map((n) => ({ label: `Go to ${n.label}`, page: n.id }));
+  const filteredCommands = commands.filter((c) => c.label.toLowerCase().includes(paletteQuery.toLowerCase()));
 
   // Global shortcuts: space (start/stop), ctrl+s (save session JSON)
   useEffect(() => {
     const onKey = async (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setPaletteOpen((open) => !open);
+        setPaletteQuery('');
+        return;
+      }
+      if (e.key === 'Escape' && paletteOpen) {
+        e.preventDefault();
+        setPaletteOpen(false);
+        return;
+      }
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       if (e.key === ' ' && controlMode) {
         e.preventDefault();
@@ -54,7 +70,11 @@ export function AppShell() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [captureSettings, controlMode]);
+  }, [captureSettings, controlMode, paletteOpen]);
+
+  useEffect(() => {
+    if (paletteOpen) paletteInput.current?.focus();
+  }, [paletteOpen]);
 
   const capState = status?.capture_state ?? 'idle';
   const deviceBadge = status?.device_connected
@@ -131,6 +151,29 @@ export function AppShell() {
           </div>
         ))}
       </div>
+      {paletteOpen && (
+        <div className="command-palette-backdrop" onClick={() => setPaletteOpen(false)}>
+          <div className="command-palette" role="dialog" aria-label="Command palette" onClick={(e) => e.stopPropagation()}>
+            <input ref={paletteInput} value={paletteQuery} placeholder="Search commands..."
+              aria-label="Command search" onChange={(e) => setPaletteQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && filteredCommands[0]) {
+                  setPage(filteredCommands[0].page);
+                  setPaletteOpen(false);
+                }
+              }} />
+            <div className="command-list">
+              {filteredCommands.map((command) => (
+                <button key={command.page} onClick={() => { setPage(command.page); setPaletteOpen(false); }}>
+                  <span>{command.label}</span><kbd>Enter</kbd>
+                </button>
+              ))}
+              {!filteredCommands.length && <span className="hint">No matching commands</span>}
+            </div>
+            <div className="hint">Ctrl+K to toggle · Esc to close</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
