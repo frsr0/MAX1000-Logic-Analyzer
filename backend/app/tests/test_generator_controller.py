@@ -105,7 +105,12 @@ def test_loopback_attempt_compares_uart_i2c_spi_and_unknown_protocol(tmp_path, m
         "i2c": [{"type": "i2c_address", "fields": {"ack": True, "rw": "write"}},
                 {"type": "i2c_byte", "fields": {"byte": 0x10, "ack": True}},
                 {"type": "i2c_byte", "fields": {"byte": 0x41, "ack": True}}],
-        "spi": [{"type": "spi_word", "fields": {"mosi": 0x41}}],
+        "spi": [
+            {"type": "spi_word", "fields": {"mosi": 0x41}},
+            # A capture ending on a clock edge is retained as an inspectable
+            # partial word, but must not count as a payload byte.
+            {"type": "spi_word", "fields": {"mosi": 0x80, "bits": 1}},
+        ],
     }
     monkeypatch.setattr(controller.decoder_registry, "get",
                         lambda name: FakeDecoder(events.get(name, [])))

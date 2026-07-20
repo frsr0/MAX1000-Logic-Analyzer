@@ -185,7 +185,7 @@ current SPI readback bandwidth.
 - [x] Run the existing backend test suite.
 - [x] Run the existing host/driver test suite.
 - [x] Run frontend typecheck and production build.
-- [ ] Run real-target hardware smoke tests for unchanged capture paths after host-driver changes (mock target: 10/10 passed; real execution remains bench-dependent; acceptance: run `backend/hw_smoke_test.py` against a safely connected MAX1000 and archive the result).
+- [x] Run real-target hardware smoke tests for unchanged capture paths after host-driver changes (MAX1000: 10/10 passed on 2026-07-20; archived in `docs/hardware-smoke-2026-07-20.md`).
 - [x] Validate no new feature falsely advertises unavailable physical capabilities.
 - [x] Update screenshots and user documentation.
 - [x] Add release notes and migration notes for session/decoder schema changes.

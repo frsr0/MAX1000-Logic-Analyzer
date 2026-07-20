@@ -175,8 +175,14 @@ def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
             decoded = decoded[1:]
     elif cfg.protocol == "spi":
         nacked = []
+        # The atomic hardware capture window can end on a clock edge.  The
+        # decoder deliberately reports that tail as a partial SPI word so the
+        # waveform remains inspectable, but it is not a transmitted payload
+        # byte and must not make a loopback self-test fail.
         decoded = bytes(e["fields"]["mosi"] & 0xFF for e in dec_result.events
-                        if e["type"] == "spi_word" and e["fields"]["mosi"] is not None)
+                        if e["type"] == "spi_word"
+                        and e["fields"]["mosi"] is not None
+                        and int(e["fields"].get("bits", 8)) == 8)
     elif cfg.protocol == "swd":
         nacked = []
         decoded = b""

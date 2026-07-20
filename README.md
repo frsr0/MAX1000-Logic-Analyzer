@@ -31,7 +31,7 @@ Recently re-verified before this README update:
 - `host/driver/tests/test_ols_spi_device.py` + `test_ols_spi.py`: `194/194` passed
 - `frontend` typecheck and production build: passed
 - `frontend/tests/e2e/hardware.spec.ts`: `25 passed, 2 skipped` (full suite; mock workflow coverage included)
-- `backend/hw_smoke_test.py --mock`: `10/10` passed; real-target execution remains bench-dependent
+- `backend/hw_smoke_test.py --mock`: `10/10` passed; MAX1000 hardware smoke: `10/10` passed on 2026-07-20 ([archived result](docs/hardware-smoke-2026-07-20.md))
 - Focused hardware checks for digital compression, analog-fast, dual-analog, and mixed capture: passed
 
 ## What The Current Bitstream Actually Does
