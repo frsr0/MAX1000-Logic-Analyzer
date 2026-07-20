@@ -38,6 +38,18 @@ def m_period(ctx, channels):
             "max": float(np.max(p)), "std": float(np.std(p))}
 
 
+def _stats(values: np.ndarray) -> dict:
+    if len(values) == 0:
+        return {"value": None, "min": None, "max": None, "mean": None, "median": None, "count": 0}
+    return {"value": float(np.mean(values)), "min": float(np.min(values)),
+            "max": float(np.max(values)), "mean": float(np.mean(values)),
+            "median": float(np.median(values)), "count": int(len(values))}
+
+
+def m_period_stats(ctx, channels):
+    return _stats(_periods(ctx, channels))
+
+
 def _pulse_widths(ctx, channels, level: int) -> np.ndarray:
     bits = _bits(ctx, channels)
     start_kind = "rising" if level == 1 else "falling"
@@ -80,6 +92,25 @@ def m_low_time(ctx, channels):
             "max": float(np.max(w)), "count": int(len(w))}
 
 
+def m_pulse_stats(ctx, channels):
+    hi = _pulse_widths(ctx, channels, 1)
+    lo = _pulse_widths(ctx, channels, 0)
+    return {"high": _stats(hi), "low": _stats(lo),
+            "count": int(len(hi) + len(lo))}
+
+
+def m_pulse_histogram(ctx, channels):
+    hi = _pulse_widths(ctx, channels, 1)
+    lo = _pulse_widths(ctx, channels, 0)
+    values = np.concatenate([hi, lo]) if len(hi) or len(lo) else np.zeros(0)
+    bins = max(2, min(64, int(ctx.settings.get("bins", 16))))
+    if len(values) == 0:
+        return {"value": None, "bins": [], "counts": []}
+    counts, edges = np.histogram(values, bins=bins)
+    return {"value": float(np.mean(values)), "bins": [float(x) for x in edges],
+            "counts": [int(x) for x in counts]}
+
+
 def m_edges(kind):
     def fn(ctx, channels):
         return int(len(find_edges(_bits(ctx, channels), kind)))
@@ -115,8 +146,11 @@ def m_glitch_count(ctx, channels):
     hi = _pulse_widths(ctx, channels, 1)
     lo = _pulse_widths(ctx, channels, 0)
     allw = np.concatenate([hi, lo]) if len(hi) or len(lo) else np.zeros(0)
-    return {"value": int(np.count_nonzero(allw < thresh_s)),
-            "threshold_s": thresh_s}
+    glitches = allw[allw < thresh_s]
+    return {"value": int(len(glitches)), "threshold_s": thresh_s,
+            "density": float(len(glitches) / max(ctx.duration_s, 1e-12)),
+            "duration_mean": float(np.mean(glitches)) if len(glitches) else None,
+            "duration_max": float(np.max(glitches)) if len(glitches) else None}
 
 
 def m_transitions_per_s(ctx, channels):
@@ -204,9 +238,12 @@ def m_channel_skew(ctx, channels):
 for mt in [
     MeasurementType("dig_frequency", "Frequency", "digital", "Hz", fn=m_frequency),
     MeasurementType("dig_period", "Period", "digital", "s", fn=m_period),
+    MeasurementType("dig_period_stats", "Period statistics", "digital", "s", fn=m_period_stats),
     MeasurementType("dig_duty", "Duty cycle", "digital", "%", fn=m_duty),
     MeasurementType("dig_high_time", "High pulse width", "digital", "s", fn=m_high_time),
     MeasurementType("dig_low_time", "Low pulse width", "digital", "s", fn=m_low_time),
+    MeasurementType("dig_pulse_stats", "Pulse-width statistics", "digital", "s", fn=m_pulse_stats),
+    MeasurementType("dig_pulse_histogram", "Pulse-width histogram", "digital", "s", fn=m_pulse_histogram),
     MeasurementType("dig_edge_count", "Edge count (any)", "digital", "", fn=m_edges("any")),
     MeasurementType("dig_rising_edges", "Rising edge count", "digital", "", fn=m_edges("rising")),
     MeasurementType("dig_falling_edges", "Falling edge count", "digital", "", fn=m_edges("falling")),

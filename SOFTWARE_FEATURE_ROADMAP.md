@@ -109,18 +109,18 @@ current SPI readback bandwidth.
 
 ### Digital timing
 
-- [ ] Add min/maximum/mean/median period and pulse-width statistics.
+- [x] Add min/maximum/mean/median period and pulse-width statistics.
 - [x] Add standard deviation, peak-to-peak jitter, RMS jitter, and period histogram.
 - [x] Add setup/hold measurement between a data edge and a clock edge.
 - [x] Add clock-to-data skew and propagation-delay measurement between channels.
 - [x] Add inter-event and response/event latency measurements; extend to typed protocol transactions later.
 - [x] Add bus throughput, utilization, and event-rate measurements.
-- [ ] Add pulse-width and period histograms.
-- [ ] Add glitch density and glitch duration statistics.
+- [x] Add pulse-width and period histograms.
+- [x] Add glitch density and glitch duration statistics.
 
 ### Analog and mixed signal
 
-- [ ] Add RMS, mean, peak-to-peak, min/max, crest factor, and noise-floor measurements.
+- [x] Add RMS, mean, peak-to-peak, min/max, crest factor, and noise-floor measurements.
 - [ ] Add configurable digital threshold sweeps over analog channels.
 - [ ] Add hysteresis threshold controls for derived analog digital channels.
 - [x] Add spectrogram/time-frequency view using a dedicated endpoint.

@@ -254,6 +254,19 @@ def test_setup_hold_and_channel_skew_measurements_are_registered():
     assert skew["pairs"] == 4 and skew["min"] == 2e-6
 
 
+def test_extended_timing_and_analog_statistics_are_registered():
+    bits = np.tile([0, 0, 1, 1], 8).astype(np.uint16)
+    analog = np.sin(np.linspace(0, 4 * np.pi, len(bits))).astype(np.float32)
+    wf = WaveformData(sample_rate=1_000_000, digital=bits,
+                      analog={"a0": analog})
+    ctx = MeasurementContext(wf, 0, wf.num_samples)
+    periods = run_measurement("dig_period_stats", ctx, ["d0"])
+    pulses = run_measurement("dig_pulse_histogram", ctx, ["d0"])
+    crest = run_measurement("ana_crest", ctx, ["a0"])
+    assert periods["count"] > 0 and periods["median"] is not None
+    assert pulses["counts"] and crest["value"] > 1
+
+
 def test_hdlc_decoder_unstuffs_and_checks_crc():
     body = bytes([0xC0, 0x21, 0x7E])
     payload = body + hdlc_crc16(body).to_bytes(2, "little")

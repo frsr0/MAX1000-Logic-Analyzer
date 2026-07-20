@@ -26,6 +26,21 @@ def m_rms(ctx, ch): return float(np.sqrt(np.mean(np.square(_sig(ctx, ch)))))
 def m_std(ctx, ch): return float(np.std(_sig(ctx, ch)))
 
 
+def m_crest(ctx, ch):
+    s = _sig(ctx, ch)
+    rms = float(np.sqrt(np.mean(np.square(s))))
+    return {"value": float(np.max(np.abs(s))) / rms if rms else None}
+
+
+def m_noise_floor(ctx, ch):
+    s = _sig(ctx, ch)
+    if len(s) < 4:
+        return {"value": None}
+    # A first-difference estimate rejects slow signal content while retaining
+    # a reproducible broadband-noise proxy.
+    return {"value": float(np.std(np.diff(s)) / np.sqrt(2.0))}
+
+
 def _threshold_bits(ctx, channels) -> np.ndarray:
     s = _sig(ctx, channels)
     thresh = float(ctx.settings.get("threshold",
@@ -137,6 +152,8 @@ for mt in [
     MeasurementType("ana_rms", "RMS", "analog", "V", ["analog"], fn=m_rms),
     MeasurementType("ana_p2p", "Peak-to-peak", "analog", "V", ["analog"], fn=m_p2p),
     MeasurementType("ana_std", "Std deviation", "analog", "V", ["analog"], fn=m_std),
+    MeasurementType("ana_crest", "Crest factor", "analog", "ratio", ["analog"], fn=m_crest),
+    MeasurementType("ana_noise_floor", "Noise floor", "analog", "V", ["analog"], fn=m_noise_floor),
     MeasurementType("ana_frequency", "Frequency", "analog", "Hz", ["analog"], fn=m_frequency),
     MeasurementType("ana_period", "Period", "analog", "s", ["analog"], fn=m_period),
     MeasurementType("ana_duty", "Duty (thresholded)", "analog", "%", ["analog"], fn=m_duty),
