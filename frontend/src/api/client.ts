@@ -86,7 +86,8 @@ export const api = {
     patch<Session>(`/api/sessions/${id}`, body),
   deleteSession: (id: string) => del(`/api/sessions/${id}`),
   duplicateSession: (id: string) => post<SessionSummary>(`/api/sessions/${id}/duplicate`),
-  compareSessions: (a: string, b: string) => post<any>(`/api/sessions/${a}/compare/${b}`),
+  compareSessions: (a: string, b: string, alignmentOffset?: number) =>
+    post<any>(`/api/sessions/${a}/compare/${b}${alignmentOffset != null ? `?alignment_offset=${alignmentOffset}` : ''}`),
   triggerSearch: (id: string, trigger: any, decoder_instance?: string) =>
     post<any>(`/api/sessions/${id}/trigger-search`, { trigger, decoder_instance }),
   sessionDashboard: (id: string, bins = 32) => get<any>(`/api/sessions/${id}/dashboard?bins=${bins}`),

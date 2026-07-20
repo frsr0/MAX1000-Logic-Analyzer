@@ -117,7 +117,8 @@ def duplicate_session(session_id: str):
 
 
 @router.post("/api/sessions/{session_id}/compare/{other_session_id}")
-def compare_sessions(session_id: str, other_session_id: str):
+def compare_sessions(session_id: str, other_session_id: str,
+                      alignment_offset: Optional[int] = None):
     a = get_session_or_404(session_id)
     b = get_session_or_404(other_session_id)
     wa = store.load_waveform(a.id)
@@ -150,6 +151,26 @@ def compare_sessions(session_id: str, other_session_id: str):
         if da[k] != db[k]:
             settings_diff[k] = {"a": da[k], "b": db[k]}
 
+    auto_offset = 0
+    first_a = first_b = None
+    if wa is not None and wb is not None and wa.digital is not None and wb.digital is not None:
+        left, right = wa.digital, wb.digital
+        if alignment_offset is None:
+            best_score = -1.0
+            for off in range(-256, 257):
+                a0, b0 = max(0, off), max(0, -off)
+                count = min(len(left) - a0, len(right) - b0, 100_000)
+                if count <= 0: continue
+                score = float(np.mean(left[a0:a0 + count] == right[b0:b0 + count]))
+                if score > best_score: best_score, auto_offset = score, off
+        else:
+            auto_offset = int(alignment_offset)
+        a0, b0 = max(0, auto_offset), max(0, -auto_offset)
+        count = min(len(left) - a0, len(right) - b0)
+        if count > 0:
+            differences = np.nonzero(left[a0:a0 + count] != right[b0:b0 + count])[0]
+            if len(differences):
+                first_a, first_b = int(a0 + differences[0]), int(b0 + differences[0])
     return {
         "a": a.summary(), "b": b.summary(),
         "settings_diff": settings_diff,
@@ -160,6 +181,8 @@ def compare_sessions(session_id: str, other_session_id: str):
             and wa.digital is not None and wb.digital is not None
             and wa.digital.shape == wb.digital.shape
             and bool(np.array_equal(wa.digital, wb.digital))),
+        "alignment_offset": auto_offset,
+        "first_divergence": {"a": first_a, "b": first_b} if first_a is not None else None,
     }
 
 

@@ -1493,6 +1493,12 @@ def test_remaining_api_decoder_compare_and_waveform_branches(monkeypatch):
     comparison = ses_api.compare_sessions(session.id, other.id)
     assert comparison["settings_diff"]
     assert comparison["channel_diffs"]
+    shifted = Session(name="shifted", channels=default_digital_channels(2))
+    store.save(shifted)
+    store.save_waveform(shifted.id, _wf(digital=np.array([0, 0, 1, 0, 1], dtype=np.uint16), rate=10))
+    aligned = ses_api.compare_sessions(session.id, shifted.id, alignment_offset=-1)
+    assert aligned["alignment_offset"] == -1
+    assert aligned["first_divergence"] is None
     assert window_payload(session.id, wf, LodPyramid(wf), 0, 4,
                           max_points=1).startswith(b"MSAW")
 

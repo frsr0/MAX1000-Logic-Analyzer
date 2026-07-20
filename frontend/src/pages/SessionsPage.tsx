@@ -11,6 +11,7 @@ export function SessionsPage() {
   const { sessions, refreshSessions, openSession, setPage, toast, activeSession } = useApp();
   const [compareWith, setCompareWith] = useState<string | null>(null);
   const [compareResult, setCompareResult] = useState<any>(null);
+  const [alignmentOffset, setAlignmentOffset] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -36,9 +37,9 @@ export function SessionsPage() {
     refreshSessions();
   };
 
-  const compare = async (a: string, b: string) => {
+  const compare = async (a: string, b: string, offset = alignmentOffset) => {
     try {
-      setCompareResult(await api.compareSessions(a, b));
+      setCompareResult(await api.compareSessions(a, b, offset === '' ? undefined : Number(offset)));
     } catch (e: any) {
       toast('error', e.message);
     }
@@ -130,6 +131,26 @@ export function SessionsPage() {
           <p>
             Digital data identical: <strong>{compareResult.identical_digital ? 'yes' : 'no'}</strong>
             {' · '}sample count delta {compareResult.sample_count_diff}
+          </p>
+          <div className="button-row">
+            <label className="field compact">
+              <span>Alignment offset</span>
+              <input
+                type="number"
+                value={alignmentOffset}
+                onChange={(e) => setAlignmentOffset(e.target.value)}
+                placeholder="auto"
+              />
+            </label>
+            <button className="slim" onClick={() => compare(compareResult.a.id, compareResult.b.id)}>
+              Recompare
+            </button>
+          </div>
+          <p className="hint">
+            Applied alignment: {compareResult.alignment_offset} samples ·{' '}
+            {compareResult.first_divergence
+              ? `first divergence A ${compareResult.first_divergence.a} / B ${compareResult.first_divergence.b}`
+              : 'no digital divergence in the overlapping region'}
           </p>
           {Object.keys(compareResult.settings_diff).length > 0 && (
             <>
