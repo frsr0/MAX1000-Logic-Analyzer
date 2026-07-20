@@ -145,6 +145,9 @@ export const api = {
     if (threshold !== undefined) q.set('threshold', String(threshold));
     return get<any>(`/api/sessions/${id}/event-correlation?${q.toString()}`);
   },
+  eyeDiagram: (id: string, channel: string, baud: number) =>
+    get<{ channel: string; baud: number; unit_samples: number; traces: number; grid: number[][] }>(
+      `/api/sessions/${id}/eye?channel=${encodeURIComponent(channel)}&baud=${encodeURIComponent(baud)}`),
 
   // decoders
   decoderTypes: () => get<{ decoders: DecoderDescription[] }>('/api/decoders'),

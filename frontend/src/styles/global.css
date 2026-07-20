@@ -427,7 +427,10 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .channel-list { display: flex; flex-direction: column; gap: 4px; }
 .channel-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .channel-row.disabled { opacity: 0.5; }
+.channel-row[draggable="true"] { cursor: grab; }
+.channel-row.dragging { opacity: 0.45; outline: 1px dashed var(--accent); }
 .channel-row .ch-name { flex: 1; min-width: 40px; }
+.channel-layout-tools input { min-width: 110px; }
 .ch-type { color: var(--text-dim); width: 14px; text-align: center; }
 .bus-members { display: flex; flex-wrap: wrap; gap: 4px; }
 .chip {

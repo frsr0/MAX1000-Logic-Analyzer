@@ -16,6 +16,8 @@ export function ChannelPanel() {
   const [deriveSource, setDeriveSource] = useState('d0');
   const [deriveKind, setDeriveKind] = useState('min_pulse');
   const [deriveParam, setDeriveParam] = useState(3);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [layoutName, setLayoutName] = useState('default');
 
   if (!activeSession) return <div className="panel-body hint">No session open.</div>;
   const channels = activeSession.channels;
@@ -44,6 +46,28 @@ export function ChannelPanel() {
   };
 
   const allOn = () => patchChannels(channels.map((c) => ({ id: c.id, enabled: true })));
+  const setGroupVisible = (type: ChannelInfo['type'] | 'all') =>
+    patchChannels(channels.map((c) => ({ id: c.id, enabled: type === 'all' || c.type === type })));
+  const saveLayout = () => {
+    const layouts = JSON.parse(localStorage.getItem('msa_channel_layouts') ?? '{}');
+    layouts[layoutName || 'default'] = channels.map((c) => ({ id: c.id, enabled: c.enabled, color: c.color, name: c.name }));
+    localStorage.setItem('msa_channel_layouts', JSON.stringify(layouts));
+    toast('success', `Channel layout '${layoutName || 'default'}' saved`);
+  };
+  const loadLayout = () => {
+    const layouts = JSON.parse(localStorage.getItem('msa_channel_layouts') ?? '{}');
+    const saved = layouts[layoutName || 'default'];
+    if (!Array.isArray(saved)) { toast('warning', `No saved layout '${layoutName || 'default'}'`); return; }
+    patchChannels(saved.map((c: any) => ({ id: c.id, enabled: c.enabled, color: c.color, name: c.name })));
+  };
+  const dropChannel = (target: number) => {
+    if (dragIndex === null || dragIndex === target) return;
+    const order = [...channels];
+    const [moved] = order.splice(dragIndex, 1);
+    order.splice(target, 0, moved);
+    setDragIndex(null);
+    patchChannels(order.map((c) => ({ id: c.id })));
+  };
 
   const addDerived = async () => {
     const derive: Record<string, unknown> = { kind: deriveKind };
@@ -70,10 +94,20 @@ export function ChannelPanel() {
     <div className="panel-body">
       <div className="button-row">
         <button onClick={allOn}>Show all</button>
+        <button onClick={() => setGroupVisible('digital')}>Digital only</button>
+        <button onClick={() => setGroupVisible('analog')}>Analog only</button>
+      </div>
+      <div className="button-row channel-layout-tools">
+        <input value={layoutName} aria-label="Channel layout name" placeholder="layout name"
+          onChange={(e) => setLayoutName(e.target.value)} />
+        <button onClick={saveLayout}>Save layout</button>
+        <button onClick={loadLayout}>Load layout</button>
       </div>
       <div className="channel-list">
         {channels.map((ch, idx) => (
-          <div key={ch.id} className={`channel-row ${ch.enabled ? '' : 'disabled'}`}>
+          <div key={ch.id} draggable onDragStart={() => setDragIndex(idx)}
+            onDragOver={(e) => e.preventDefault()} onDrop={() => dropChannel(idx)}
+            className={`channel-row ${ch.enabled ? '' : 'disabled'} ${dragIndex === idx ? 'dragging' : ''}`}>
             <input type="checkbox" checked={ch.enabled} title="show/hide"
               onChange={(e) => patchChannels([{ id: ch.id, enabled: e.target.checked }])} />
             <input type="color" value={ch.color ?? PALETTE[idx % PALETTE.length]}

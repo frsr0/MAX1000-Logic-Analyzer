@@ -134,7 +134,7 @@ current SPI readback bandwidth.
 
 ### Analysis views
 
-- [ ] Add UART/SPI/I²C eye diagrams.
+- [x] Add configurable digital eye diagrams for UART/SPI/I²C lines.
 - [x] Add protocol activity heatmaps.
 - [x] Add bus transaction timeline view.
 - [x] Add waveform/session diff view with first divergence and alignment controls.
@@ -145,9 +145,9 @@ current SPI readback bandwidth.
 - [x] Add decoder table filters for errors, addresses, values, and time ranges.
 - [x] Make every decoder event clickable from table to waveform and vice versa.
 - [x] Add bookmarkable event markers and named regions.
-- [ ] Add keyboard navigation for next/previous edge, decoder event, trigger match, and error.
-- [ ] Add drag-and-drop channel reordering.
-- [ ] Add per-channel visibility groups and saved layouts.
+- [x] Add keyboard navigation for next/previous edge, decoder event, trigger match, and error.
+- [x] Add drag-and-drop channel reordering.
+- [x] Add per-channel visibility groups and saved layouts.
 - [x] Add command palette for navigation.
 - [ ] Extend the command palette with capture, decode, trigger search, and export actions.
 - [x] Add session tags, notes, and searchable metadata.

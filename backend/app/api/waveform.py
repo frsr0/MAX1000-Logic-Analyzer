@@ -280,6 +280,47 @@ def analog_digital_event_correlation(session_id: str, analog_channel: str,
             "digital_edge_count": int(len(digital_edges)), "pairs": pairs}
 
 
+@router.get("/api/sessions/{session_id}/eye")
+def digital_eye_diagram(session_id: str, channel: str, baud: float,
+                        ui_width: float = 2.0, bins_x: int = 160,
+                        bins_y: int = 64):
+    """Fold a digital channel into a normalized-unit-interval eye diagram."""
+    get_session_or_404(session_id)
+    wf = get_waveform_or_404(session_id)
+    try:
+        bits = wf.channel_bits(channel).astype(np.float32)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    if baud <= 0:
+        raise HTTPException(400, "baud must be positive")
+    unit_samples = wf.sample_rate / float(baud)
+    if unit_samples < 2:
+        raise HTTPException(400, "capture sample rate is too low for an eye diagram at this baud")
+    bins_x = max(16, min(512, int(bins_x)))
+    bins_y = max(8, min(128, int(bins_y)))
+    width = max(1.0, min(4.0, float(ui_width)))
+    starts = find_edges(bits.astype(np.uint8), "rising")
+    origin = int(starts[0]) if len(starts) else 0
+    span = unit_samples * width
+    grid = np.zeros((bins_y, bins_x), dtype=np.float64)
+    trace_count = 0
+    max_traces = 10_000
+    for trace in range(max_traces):
+        base = origin + trace * unit_samples
+        if base + span >= len(bits): break
+        sample_positions = np.linspace(base, base + span, bins_x, endpoint=False)
+        values = bits[np.clip(sample_positions.astype(int), 0, len(bits) - 1)]
+        for x, value in enumerate(values):
+            y = min(bins_y - 1, max(0, int(round((1.0 - float(value)) * (bins_y - 1)))))
+            grid[y, x] += 1
+        trace_count += 1
+    if trace_count:
+        grid /= float(trace_count)
+    return {"channel": channel, "baud": float(baud),
+            "unit_samples": float(unit_samples), "traces": trace_count,
+            "grid": grid.tolist()}
+
+
 @router.get("/api/sessions/{session_id}/sanity")
 def waveform_sanity(session_id: str):
     session = get_session_or_404(session_id)

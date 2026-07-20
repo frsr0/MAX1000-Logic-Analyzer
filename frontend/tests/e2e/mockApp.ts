@@ -912,6 +912,10 @@ export async function installMockApp(page: Page) {
           { id: 'ev-2', type: 'decoder_error', label: 'framing error', severity: 'error', start_sample: 2400, start_time: 0.0024, end_sample: 2500, end_time: 0.0025 },
         ] }));
     }
+    if (req.method() === 'GET' && /\/api\/sessions\/[^/]+\/eye$/.test(new URL(req.url()).pathname)) {
+      return route.fulfill(okJson({ channel: 'd0', baud: 115200, unit_samples: 8.68, traces: 24,
+        grid: Array.from({ length: 64 }, (_, y) => Array.from({ length: 160 }, (_, x) => (x + y) % 7 === 0 ? 1 : 0)) }));
+    }
     if (matches('GET', req, '/api/logs')) return route.fulfill(okJson({ logs: [] }));
     if (matches('GET', req, '/api/diagnostics')) return route.fulfill(okJson({ lan_urls: ['http://127.0.0.1:4173', 'http://192.168.0.10:4173'] }));
     if (matches('GET', req, '/api/capture/scenarios')) return route.fulfill(okJson({ scenarios: [

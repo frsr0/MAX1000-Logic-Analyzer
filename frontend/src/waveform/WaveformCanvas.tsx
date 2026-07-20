@@ -47,6 +47,29 @@ export function WaveformCanvas({ channels, onSelectRegion }: Props) {
     render(ctx, waveformView, layout, cssW, cssH);
   }, [channels, labelWidth]);
 
+  const jumpEdge = useCallback(async (direction: 1 | -1) => {
+    if (!activeSession) return;
+    const channel = channels.find((c) => c.type === 'digital' || c.type === 'derived');
+    if (!channel) return;
+    try {
+      const result = await api.edges(activeSession.id, channel.id, 'any', 0, activeSession.num_samples, 50_000);
+      const centre = waveformView.start + waveformView.span() / 2;
+      const edge = direction > 0
+        ? result.edges.find((sample) => sample > centre + 1)
+        : [...result.edges].reverse().find((sample) => sample < centre - 1);
+      if (edge !== undefined) waveformView.jumpTo(edge);
+    } catch (e: any) { toast('error', e.message); }
+  }, [activeSession?.id, activeSession?.num_samples, channels, toast]);
+
+  const jumpError = useCallback((direction: 1 | -1) => {
+    const errors = waveformView.annotations.filter((event) => event.severity === 'error');
+    const centre = waveformView.start + waveformView.span() / 2;
+    const event = direction > 0
+      ? errors.find((item) => item.start_sample > centre + 1)
+      : [...errors].reverse().find((item) => item.start_sample < centre - 1);
+    if (event) waveformView.jumpTo(event.start_sample);
+  }, []);
+
   // redraw on store changes + element resize
   useEffect(() => {
     let raf = 0;
@@ -303,13 +326,17 @@ export function WaveformCanvas({ channels, onSelectRegion }: Props) {
         case '-': v.zoomAround(v.start + v.span() / 2, 1.4); break;
         case 'n': jumpAnnotation(1); break;
         case 'p': jumpAnnotation(-1); break;
+        case 'e': void jumpEdge(1); break;
+        case 'E': void jumpEdge(-1); break;
+        case 'r': jumpError(1); break;
+        case 'R': jumpError(-1); break;
         default: return;
       }
       e.preventDefault();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [placeCursor]);
+  }, [placeCursor, jumpEdge, jumpError]);
 
   const jumpAnnotation = (dir: 1 | -1) => {
     const v = waveformView;

@@ -1505,6 +1505,9 @@ def test_remaining_api_decoder_compare_and_waveform_branches(monkeypatch):
         mixed.id, "a0", "d0", tolerance_samples=1)
     assert correlated["pairs"]
     assert correlated["pairs"][0]["lag_samples"] == 0
+    eye = wf_api.digital_eye_diagram(mixed.id, "d0", baud=10)
+    assert len(eye["grid"]) == 64
+    assert len(eye["grid"][0]) == 160
     shifted = Session(name="shifted", channels=default_digital_channels(2))
     store.save(shifted)
     store.save_waveform(shifted.id, _wf(digital=np.array([0, 0, 1, 0, 1], dtype=np.uint16), rate=10))

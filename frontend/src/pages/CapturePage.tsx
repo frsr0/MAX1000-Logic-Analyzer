@@ -14,10 +14,11 @@ import { MeasurementPanel } from '../panels/MeasurementPanel';
 import { RawInspector } from '../panels/RawInspector';
 import { TriggerPanel } from '../panels/TriggerPanel';
 import { DashboardPanel } from '../panels/DashboardPanel';
+import { EyePanel } from '../panels/EyePanel';
 import { WaveformCanvas } from '../waveform/WaveformCanvas';
 
 type Tab = 'capture' | 'channels' | 'trigger' | 'decoders' | 'measure'
-  | 'markers' | 'export' | 'raw' | 'analog' | 'dashboard';
+  | 'markers' | 'export' | 'raw' | 'analog' | 'dashboard' | 'eye';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'capture', label: 'Capture' },
@@ -27,6 +28,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'measure', label: 'Measure' },
   { id: 'analog', label: 'Analog' },
   { id: 'dashboard', label: 'Dashboard' },
+  { id: 'eye', label: 'Eye' },
   { id: 'markers', label: 'Markers' },
   { id: 'export', label: 'Export' },
   { id: 'raw', label: 'Raw' },
@@ -108,6 +110,7 @@ export function CapturePage() {
           {tab === 'export' && <ExportPanel />}
           {tab === 'raw' && <RawInspector />}
           {tab === 'dashboard' && <DashboardPanel />}
+          {tab === 'eye' && <EyePanel />}
         </div>
       )}
     </div>

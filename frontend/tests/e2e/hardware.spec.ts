@@ -365,6 +365,16 @@ test('mock trigger builder previews pattern qualifiers', async ({ page }) => {
   await expect(page.getByLabel('Trigger preview')).toContainText("don't care");
 });
 
+test('mock eye diagram folds a digital channel at a configured rate', async ({ page }) => {
+  await page.getByRole('button', { name: 'Sessions' }).click();
+  const row = page.locator('tr').filter({ has: page.locator('input[value="MAX1000 mixed analog sweep"]') }).first();
+  await row.getByRole('button', { name: 'Open' }).click();
+  await page.getByRole('button', { name: 'Eye', exact: true }).click();
+  await page.getByRole('button', { name: 'Compute eye diagram' }).click();
+  await expect(page.getByText(/24 folded traces/)).toBeVisible();
+  await expect(page.getByLabel('Eye diagram')).toBeVisible();
+});
+
 test('command palette navigates between app pages', async ({ page }) => {
   await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })));
   await expect(page.getByRole('dialog', { name: 'Command palette' })).toBeVisible();
