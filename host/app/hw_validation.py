@@ -2202,7 +2202,6 @@ JUMPER_BAUD = 115200
 JUMPER_RATE = 2_000_000        # ~17.4 samples/bit, well above UART_MIN_SPB
 _JUMPER_PAIR_CACHE = None
 _JUMPER_PAIR_SEARCHED = False
-_BENCH_JUMPER_PAIR = (21, 11)
 
 
 def _channel_transitions(ch, ns):
@@ -2266,9 +2265,8 @@ def _get_jumper_pair(dev):
     """Discover the jumper pair once and reuse it across all jumper tests."""
     global _JUMPER_PAIR_CACHE, _JUMPER_PAIR_SEARCHED
     if not _JUMPER_PAIR_SEARCHED:
-        log(f"using known wired jumper pair: {_BENCH_JUMPER_PAIR[0]} -> "
-            f"{_BENCH_JUMPER_PAIR[1]}")
-        _JUMPER_PAIR_CACHE = _BENCH_JUMPER_PAIR
+        log("discovering wired jumper pair from the physical pin pool...")
+        _JUMPER_PAIR_CACHE = _discover_jumper_pair(dev)
         _JUMPER_PAIR_SEARCHED = True
     elif _JUMPER_PAIR_CACHE is not None:
         log(f"reusing cached wired jumper pair: {_JUMPER_PAIR_CACHE[0]} -> "
@@ -2360,6 +2358,9 @@ def test_jumper_loopback(dev):
         rx_bytes = bytes(d.value for d in dec_rx)
         text = ''.join(chr(c) if 32 <= c < 127 else '.' for c in rx_bytes)
         log(f"  decoded on CH{rx}: {len(rx_bytes)} bytes '{text}'")
+        check(payload in rx_bytes,
+              f"exact UART payload received across jumper on CH{rx} "
+              f"(got {text!r})")
         frac, off = _uart_waveform_match_fraction(
             ch[rx], payload, JUMPER_RATE, JUMPER_BAUD)
         if frac >= 0.85:
@@ -2450,8 +2451,12 @@ def _discover_jumper_pair(dev, deadline_s=20.0):
             continue
         ch, ns = samples_to_channels(chunk, stride=2)
         tr = _channel_transitions(ch, ns)
+        # capture_with_gen exposes an internal generator mirror on
+        # (tx & 0x0F).  For PMOD pins (16..22) that mirror is not the physical
+        # pin and must not be mistaken for the jumper partner.
+        internal_mirror = tx & 0x0F
         hits = [c for c in range(min(len(ch), 16))
-                if c != tx and tr[c] >= 40]
+                if c != tx and c != internal_mirror and tr[c] >= 40]
         for rx in hits:
             dec = decode_uart_safe(ch, JUMPER_RATE, ch_idx=rx, baud=JUMPER_BAUD)
             if pattern in bytes(d.value for d in dec):
@@ -2462,13 +2467,86 @@ def _discover_jumper_pair(dev, deadline_s=20.0):
 
 def test_jumper_generator_matrix(dev):
     # Drive each generator protocol through the wired pin pair and decode it
-    # back across several sample rates and both capture data paths (BRAM fast
-    # path = fast_mode True, SDRAM = fast_mode False). Higher rates are
-    # expected to exceed the BRAM/SDRAM envelope on some rungs — mismatches
-    # are logged as INFO rather than failing the suite. UART rides the single
+    # back across both capture data paths (BRAM fast path = fast_mode True,
+    # SDRAM = fast_mode False). UART rides the single
     # jumper wire directly; SPI/I2C put their DATA line on the jumpered pin
     # (gen TX -> partner) and their CLOCK on a separate internal channel.
-    print_header("Test 31: Generator matrix over jumper (type x rate x mode) (characterisation)")
+    print_header("Test 31: Generator matrix over jumper (type x rate x mode)")
+    pair = _get_jumper_pair(dev)
+    if pair is None:
+        skip("jumper generator matrix: no wired pair on this bench")
+        save_result("test31_jumper_generator_matrix", b"",
+                    {"skipped": True, "reason": "no wired pair"})
+        return
+
+    tx, rx = pair
+    clock = next(pin for pin in range(15) if pin not in (tx, rx))
+    modes = [False, True]  # SDRAM and BRAM/fast capture paths
+    results = []
+
+    def capture(fast_mode, **kwargs):
+        label = kwargs.pop("label")
+        data = dev.capture_with_gen(
+            rate_hz=kwargs.pop("rate_hz"), nsamples=kwargs.pop("nsamples"),
+            timeout=10, fast_mode=fast_mode, reset_board=False,
+            **kwargs)
+        if not data:
+            raise RuntimeError(f"{label} capture returned no data")
+        return samples_to_channels(data, stride=2)
+
+    # UART: single-wire payload across the jumper.
+    uart_payload = b"JMP-UART\x00\xffU\xaa"
+    for fast_mode in modes:
+        dev.reset(); dev.spi.flush(); time.sleep(0.02)
+        dev._gen_data = uart_payload
+        dev._gen_baud = JUMPER_BAUD
+        dev._gen_tx_pin = tx
+        ch, ns = capture(fast_mode, label="UART", rate_hz=JUMPER_RATE,
+                          nsamples=24000)
+        decoded = bytes(d.value for d in decode_uart_safe(
+            ch, JUMPER_RATE, ch_idx=rx, baud=JUMPER_BAUD))
+        ok = uart_payload in decoded
+        log(f"  UART {'fast' if fast_mode else 'SDRAM'}: decoded={decoded!r}")
+        check(ok, f"UART jumper matrix exact payload ({'fast' if fast_mode else 'SDRAM'})")
+        results.append({"protocol": "UART", "fast_mode": fast_mode,
+                        "decoded": decoded.hex(), "ok": ok})
+
+    # SPI: MOSI crosses the jumper; SCLK is driven on a separate physical pin.
+    spi_payload = bytes([0xA5, 0x3C, 0xDE, 0xAD, 0x00, 0xFF])
+    for fast_mode in modes:
+        dev.reset(); dev.spi.flush(); time.sleep(0.02)
+        dev._gen_data = spi_payload
+        ch, ns = capture(fast_mode, label="SPI", rate_hz=8_000_000,
+                          nsamples=20000, proto="SPI", spi_mosi_pin=tx,
+                          spi_sclk_pin=clock, spi_clk_div=100)
+        decoded = bytes(decode_spi(ch, 8_000_000, miso_idx=rx,
+                                   sclk_idx=clock))[:len(spi_payload)]
+        ok = decoded == spi_payload
+        log(f"  SPI {'fast' if fast_mode else 'SDRAM'}: decoded={decoded.hex()}")
+        check(ok, f"SPI jumper matrix exact payload ({'fast' if fast_mode else 'SDRAM'})")
+        results.append({"protocol": "SPI", "fast_mode": fast_mode,
+                        "decoded": decoded.hex(), "ok": ok})
+
+    # I2C write-only: SDA crosses the jumper and SCL is independently captured.
+    i2c_frame = bytes([0xA6, 0x2D, 0x08])
+    for fast_mode in modes:
+        dev.reset(); dev.spi.flush(); time.sleep(0.02)
+        ch, ns = capture(fast_mode, label="I2C", rate_hz=8_000_000,
+                          nsamples=20000, proto="I2C", i2c_speed=400_000,
+                          i2c_frame=i2c_frame, i2c_tx_pin=tx,
+                          i2c_scl_pin=clock, i2c_read_len=0)
+        decoded = bytes(v for kind, v in decode_i2c(
+            ch, 8_000_000, scl_idx=clock, sda_idx=rx) if kind == "DATA")
+        ok = decoded[:len(i2c_frame)] == i2c_frame
+        log(f"  I2C {'fast' if fast_mode else 'SDRAM'}: decoded={decoded.hex()}")
+        check(ok, f"I2C jumper matrix exact payload ({'fast' if fast_mode else 'SDRAM'})")
+        results.append({"protocol": "I2C", "fast_mode": fast_mode,
+                        "decoded": decoded.hex(), "ok": ok})
+
+    _restore_pin_map(dev)
+    save_result("test31_jumper_generator_matrix", b"", {
+        "pair": [tx, rx], "clock_pin": clock, "results": results,
+    })
 
 
 def test_live_generator_decode(dev):
@@ -2578,13 +2656,10 @@ def test_repeating_uart_continuous_ring(dev):
     # The ring helper is still host-driven and can miss a few chunks while the
     # generator is re-armed. A sustained run with most chunks decoding is
     # enough to prove the live ring path stays connected on this bench.
-    if good >= chunks_needed - 4 and max_consecutive >= 5:
-        check(True,
-              f"repeating payload decoded on SDRAM-ring chunks "
-              f"({good}/{chunks_needed}, longest run {max_consecutive})")
-    else:
-        log(f"  [INFO] repeating payload on SDRAM-ring chunks "
-            f"({good}/{chunks_needed}, longest run {max_consecutive})")
+    ok = good >= chunks_needed - 4 and max_consecutive >= 5
+    check(ok,
+          f"repeating payload decoded on SDRAM-ring chunks "
+          f"({good}/{chunks_needed}, longest run {max_consecutive})")
     _restore_pin_map(dev)
     save_result("test33_repeating_uart_ring", b"", {
         "pair": [tx, rx], "payload": payload.decode(), "chunks": chunks_needed,
@@ -2998,6 +3073,7 @@ def main():
         log(f"\nERROR: {e}")
         import traceback
         traceback.print_exc()
+        check(False, f"hardware validation aborted: {e}")
     finally:
         try:
             dev.reset()
@@ -3104,6 +3180,7 @@ def main_jumper_only():
         log(f"\nERROR: {e}")
         import traceback
         traceback.print_exc()
+        check(False, f"jumper validation aborted: {e}")
     finally:
         try:
             dev.close()
