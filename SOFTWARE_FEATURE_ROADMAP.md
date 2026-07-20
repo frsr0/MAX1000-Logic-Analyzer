@@ -111,8 +111,8 @@ current SPI readback bandwidth.
 
 - [ ] Add min/maximum/mean/median period and pulse-width statistics.
 - [x] Add standard deviation, peak-to-peak jitter, RMS jitter, and period histogram.
-- [ ] Add setup/hold measurement between a data edge and a clock edge.
-- [ ] Add clock-to-data skew and propagation-delay measurement between channels.
+- [x] Add setup/hold measurement between a data edge and a clock edge.
+- [x] Add clock-to-data skew and propagation-delay measurement between channels.
 - [x] Add inter-event and response/event latency measurements; extend to typed protocol transactions later.
 - [x] Add bus throughput, utilization, and event-rate measurements.
 - [ ] Add pulse-width and period histograms.
@@ -123,10 +123,10 @@ current SPI readback bandwidth.
 - [ ] Add RMS, mean, peak-to-peak, min/max, crest factor, and noise-floor measurements.
 - [ ] Add configurable digital threshold sweeps over analog channels.
 - [ ] Add hysteresis threshold controls for derived analog digital channels.
-- [ ] Add spectrogram/time-frequency view using the existing spectrum endpoint.
-- [ ] Add spectrum peak finding and harmonic labeling.
+- [x] Add spectrogram/time-frequency view using a dedicated endpoint.
+- [x] Add spectrum peak finding and frequency labeling.
 - [ ] Add waveform persistence and min/max envelope display.
-- [ ] Add cross-correlation and estimated time delay between channels.
+- [x] Add cross-correlation and estimated time delay between channels.
 - [ ] Add analog/digital event correlation and aligned protocol annotations.
 - [ ] Add optional software filters: moving average, median, low-pass, high-pass, and baseline removal.
 - [x] Keep all filtered signals as named derived channels with reproducible settings.

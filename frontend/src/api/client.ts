@@ -124,8 +124,14 @@ export const api = {
   addDerivedChannel: (id: string, source: string, derive: Record<string, unknown>, name?: string) =>
     post<ChannelInfo>(`/api/sessions/${id}/derived-channels`, { source, derive, name }),
   spectrum: (id: string, channel: string, start = 0, end = -1) =>
-    get<{ freqs: number[]; magnitude: number[] }>(
+    get<{ freqs: number[]; magnitude: number[]; peaks?: { frequency_hz: number; magnitude: number }[] }>(
       `/api/sessions/${id}/spectrum?channel=${channel}&start=${start}&end=${end}`),
+  spectrogram: (id: string, channel: string, start = 0, end = -1) =>
+    get<{ freqs: number[]; times: number[]; magnitude: number[][] }>(
+      `/api/sessions/${id}/spectrogram?channel=${channel}&start=${start}&end=${end}`),
+  correlation: (id: string, a: string, b: string, start = 0, end = -1) =>
+    get<{ delay_s: number | null; lag_samples?: number; correlation?: number }>(
+      `/api/sessions/${id}/correlation?channel_a=${encodeURIComponent(a)}&channel_b=${encodeURIComponent(b)}&start=${start}&end=${end}`),
 
   // decoders
   decoderTypes: () => get<{ decoders: DecoderDescription[] }>('/api/decoders'),

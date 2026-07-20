@@ -7,7 +7,7 @@ import { useApp } from '../state/appStore';
 import { waveformView } from '../state/waveformStore';
 import { WaveformClient } from '../workers/waveformClient';
 
-type Mode = 'spectrum' | 'xy';
+type Mode = 'spectrum' | 'xy' | 'spectrogram' | 'correlation';
 
 function currentSelection(): [number, number] | null {
   const { selectionStart, selectionEnd, cursorA, cursorB } = waveformView;
@@ -29,8 +29,10 @@ export function AnalogPanel() {
   const [chB, setChB] = useState('');
   const [scopeAll, setScopeAll] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [spectrumData, setSpectrumData] = useState<{ freqs: number[]; magnitude: number[] } | null>(null);
+  const [spectrumData, setSpectrumData] = useState<{ freqs: number[]; magnitude: number[]; peaks?: { frequency_hz: number; magnitude: number }[] } | null>(null);
   const [xyData, setXyData] = useState<{ x: Float32Array; y: Float32Array } | null>(null);
+  const [spectrogramData, setSpectrogramData] = useState<{ freqs: number[]; times: number[]; magnitude: number[][] } | null>(null);
+  const [correlationData, setCorrelationData] = useState<{ delay_s: number | null; correlation?: number } | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const clientRef = useRef<WaveformClient | null>(null);
 
@@ -42,6 +44,8 @@ export function AnalogPanel() {
   useEffect(() => {
     setSpectrumData(null);
     setXyData(null);
+    setSpectrogramData(null);
+    setCorrelationData(null);
     if (analogChannels.length && !analogChannels.some((c) => c.id === chA)) {
       setChA(analogChannels[0].id);
     }
@@ -86,6 +90,26 @@ export function AnalogPanel() {
     }
   };
 
+  const runSpectrogram = async () => {
+    if (!activeSession || !chA) return;
+    setBusy(true);
+    try {
+      const sel = scopeAll ? null : currentSelection();
+      setSpectrogramData(await api.spectrogram(activeSession.id, chA, sel?.[0] ?? 0, sel?.[1] ?? -1));
+    } catch (e: any) { toast('error', e.message); }
+    finally { setBusy(false); }
+  };
+
+  const runCorrelation = async () => {
+    if (!activeSession || !chA || !chB) return;
+    setBusy(true);
+    try {
+      const sel = scopeAll ? null : currentSelection();
+      setCorrelationData(await api.correlation(activeSession.id, chA, chB, sel?.[0] ?? 0, sel?.[1] ?? -1));
+    } catch (e: any) { toast('error', e.message); }
+    finally { setBusy(false); }
+  };
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -126,6 +150,28 @@ export function AnalogPanel() {
       ctx.font = '11px monospace';
       ctx.fillText('0 Hz', 4, h - 4);
       ctx.fillText(`${(maxFreq / 1e3).toFixed(1)} kHz`, w - 70, h - 4);
+    } else if (mode === 'spectrogram' && spectrogramData) {
+      const rows = spectrogramData.magnitude;
+      let maxMag = 1e-9;
+      for (const row of rows) for (const value of row) maxMag = Math.max(maxMag, value);
+      const cellW = w / Math.max(1, rows.length);
+      const cellH = h / Math.max(1, spectrogramData.freqs.length);
+      for (let x = 0; x < rows.length; x++) {
+        for (let y = 0; y < (rows[x]?.length ?? 0); y++) {
+          const level = Math.min(1, (rows[x][y] ?? 0) / maxMag);
+          ctx.fillStyle = `hsl(${240 - level * 240} 80% ${20 + level * 55}%)`;
+          ctx.fillRect(x * cellW, h - (y + 1) * cellH, Math.ceil(cellW), Math.ceil(cellH) + 1);
+        }
+      }
+      ctx.fillStyle = '#d5dbe3'; ctx.font = '11px monospace';
+      ctx.fillText('time →', 4, h - 4);
+      const lastFreq = spectrogramData.freqs.length
+        ? spectrogramData.freqs[spectrogramData.freqs.length - 1] : 0;
+      ctx.fillText(`${(lastFreq / 1e3).toFixed(1)} kHz`, 4, 12);
+    } else if (mode === 'correlation' && correlationData) {
+      ctx.fillStyle = '#d5dbe3'; ctx.font = '14px monospace';
+      ctx.fillText(`delay: ${correlationData.delay_s == null ? 'n/a' : `${(correlationData.delay_s * 1e6).toFixed(3)} µs`}`, 12, 80);
+      ctx.fillText(`correlation: ${(correlationData.correlation ?? 0).toFixed(5)}`, 12, 110);
     } else if (mode === 'xy' && xyData) {
       const { x, y } = xyData;
       let xlo = Infinity, xhi = -Infinity, ylo = Infinity, yhi = -Infinity;
@@ -153,7 +199,7 @@ export function AnalogPanel() {
     }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, spectrumData, xyData]);
+  }, [mode, spectrumData, xyData, spectrogramData, correlationData]);
 
   if (!activeSession) return <div className="panel-body hint">No session open.</div>;
   if (!analogChannels.length) {
@@ -165,16 +211,18 @@ export function AnalogPanel() {
       <div className="button-row">
         <button className={mode === 'spectrum' ? 'active' : ''} onClick={() => setMode('spectrum')}>Spectrum</button>
         <button className={mode === 'xy' ? 'active' : ''} onClick={() => setMode('xy')}>XY scope</button>
+        <button className={mode === 'spectrogram' ? 'active' : ''} onClick={() => setMode('spectrogram')}>Spectrogram</button>
+        <button className={mode === 'correlation' ? 'active' : ''} onClick={() => setMode('correlation')}>Correlation</button>
       </div>
 
       <label className="field">
-        <span>{mode === 'spectrum' ? 'Channel' : 'X channel'}</span>
+        <span>{mode === 'spectrum' || mode === 'spectrogram' ? 'Channel' : 'X channel'}</span>
         <select value={chA} onChange={(e) => setChA(e.target.value)}>
           {analogChannels.map((c) => <option key={c.id} value={c.id}>{c.id} ({c.name})</option>)}
         </select>
       </label>
 
-      {mode === 'xy' && (
+      {(mode === 'xy' || mode === 'correlation') && (
         <label className="field">
           <span>Y channel</span>
           <select value={chB} onChange={(e) => setChB(e.target.value)}>
@@ -188,10 +236,13 @@ export function AnalogPanel() {
         <span>Whole capture (uncheck to use cursor/selection range)</span>
       </label>
 
-      <button className="primary" disabled={busy || (mode === 'xy' && chA === chB)}
-        onClick={mode === 'spectrum' ? runSpectrum : runXY}>
-        {busy ? 'Working…' : mode === 'spectrum' ? 'Compute spectrum' : 'Plot XY'}
+      <button className="primary" disabled={busy || ((mode === 'xy' || mode === 'correlation') && chA === chB)}
+        onClick={mode === 'spectrum' ? runSpectrum : mode === 'xy' ? runXY : mode === 'spectrogram' ? runSpectrogram : runCorrelation}>
+        {busy ? 'Working…' : mode === 'spectrum' ? 'Compute spectrum' : mode === 'xy' ? 'Plot XY' : mode === 'spectrogram' ? 'Compute spectrogram' : 'Correlate channels'}
       </button>
+      {mode === 'spectrum' && spectrumData?.peaks?.length ? (
+        <div className="hint">Peaks: {spectrumData.peaks.map((p) => `${(p.frequency_hz / 1e3).toFixed(2)} kHz`).join(' · ')}</div>
+      ) : null}
       {mode === 'xy' && chA === chB && (
         <div className="hint">Pick two different channels for an XY plot.</div>
       )}

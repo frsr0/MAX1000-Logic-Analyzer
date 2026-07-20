@@ -27,6 +27,7 @@ export function MeasurementPanel() {
   const { activeSession, refreshActiveSession, measurementTypes, toast } = useApp();
   const [typeId, setTypeId] = useState('dig_frequency');
   const [channel, setChannel] = useState('d0');
+  const [channelB, setChannelB] = useState('d1');
   const [scope, setScope] = useState<'capture' | 'cursors' | 'region'>('capture');
   const lastCursors = useRef<string>('');
 
@@ -74,7 +75,7 @@ export function MeasurementPanel() {
     try {
       await api.addMeasurement(activeSession.id, {
         type: typeId,
-        channels: mt?.category === 'protocol' ? [] : [channel],
+        channels: mt?.category === 'protocol' ? [] : [channel, ...(typeId === 'dig_setup_hold' || typeId === 'dig_channel_skew' ? [channelB] : [])],
         scope,
         region: scope === 'region' ? selection ?? undefined : undefined,
       });
@@ -133,6 +134,14 @@ export function MeasurementPanel() {
         <label className="field">
           <span>Channel</span>
           <select value={channel} onChange={(e) => setChannel(e.target.value)}>
+            {channelOptions.map((c) => <option key={c.id} value={c.id}>{c.id} ({c.name})</option>)}
+          </select>
+        </label>
+      )}
+      {['dig_setup_hold', 'dig_channel_skew'].includes(typeId) && (
+        <label className="field">
+          <span>Reference channel</span>
+          <select value={channelB} onChange={(e) => setChannelB(e.target.value)}>
             {channelOptions.map((c) => <option key={c.id} value={c.id}>{c.id} ({c.name})</option>)}
           </select>
         </label>

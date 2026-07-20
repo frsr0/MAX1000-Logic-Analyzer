@@ -16,6 +16,7 @@ from app.exports.importers import csv_session, vcd_session
 from app.measurements import digital
 from app.measurements.base import MeasurementContext, run_measurement
 from app.triggers.software_trigger import find_software_trigger
+from app.waveform.analogue import cross_correlation_delay, spectrogram, spectrum_peaks
 
 
 def test_manchester_decoder_decodes_msb_word():
@@ -207,3 +208,34 @@ $enddefinitions $end
     imported, vwf = vcd_session(vcd)
     assert imported.channels[0].name == "CLK"
     assert vwf.digital_channel(0).tolist()[:5] == [0, 0, 1, 1, 0]
+
+
+def test_derived_waveform_analysis_finds_peaks_and_delay():
+    sample_rate = 1_000.0
+    t = np.arange(1024) / sample_rate
+    signal = np.sin(2 * np.pi * 125 * t) + 0.2 * np.sin(2 * np.pi * 250 * t)
+    freqs, magnitude = np.fft.rfftfreq(signal.size, 1 / sample_rate), np.abs(np.fft.rfft(signal))
+    peaks = spectrum_peaks(freqs, magnitude, count=3)
+    assert abs(peaks[0]["frequency_hz"] - 125) < 2
+    assert peaks[0]["magnitude"] > peaks[1]["magnitude"]
+
+    bins, frames, values = spectrogram(signal, sample_rate, window=128, hop=64)
+    assert len(frames) > 0 and len(bins) == 65 and len(values) == len(frames)
+    assert all(len(row) == len(bins) for row in values)
+
+    delayed = np.concatenate([np.zeros(7), signal[:-7]])
+    result = cross_correlation_delay(signal, delayed, sample_rate)
+    assert abs(abs(result["delay_s"]) - 7 / sample_rate) < 1e-9
+
+
+def test_setup_hold_and_channel_skew_measurements_are_registered():
+    data = np.zeros(32, dtype=np.uint16)
+    clock = np.zeros(32, dtype=np.uint16)
+    data[[3, 11, 19, 27]] = 1
+    clock[[5, 13, 21, 29]] = 1
+    wf = WaveformData(sample_rate=1_000_000, digital=data | (clock << 1))
+    ctx = MeasurementContext(wf, 0, wf.num_samples)
+    setup = run_measurement("dig_setup_hold", ctx, ["d0", "d1"])
+    skew = run_measurement("dig_channel_skew", ctx, ["d0", "d1"])
+    assert setup["clock_edges"] == 4 and setup["min_setup"] == 1e-6
+    assert skew["pairs"] == 4 and skew["min"] == 2e-6

@@ -14,7 +14,8 @@ from ..capture.waveform_query import WaveformQuery
 from ..config import MAX_RAW_POINTS
 from ..diagnostics.sanity_checks import run_sanity_checks
 from ..state import store
-from ..waveform.analogue import spectrum
+from ..waveform.analogue import (cross_correlation_delay, spectrum,
+                                  spectrum_peaks, spectrogram)
 from ..waveform.bus import bus_values, format_bus_value
 from ..waveform.derived import create_derived_channel
 from .deps import get_session_or_404, get_waveform_or_404
@@ -158,7 +159,41 @@ def analog_spectrum(session_id: str, channel: str,
     start, end = clamp_window(wf, start, end)
     freqs, mag = spectrum(wf.analog[channel][start:end], wf.sample_rate)
     return {"channel": channel, "freqs": freqs.tolist(),
-            "magnitude": mag.tolist()}
+            "magnitude": mag.tolist(), "peaks": spectrum_peaks(freqs, mag)}
+
+
+@router.get("/api/sessions/{session_id}/spectrogram")
+def analog_spectrogram(session_id: str, channel: str,
+                       start: int = 0, end: int = -1,
+                       window: int = 256, hop: int = 128):
+    get_session_or_404(session_id)
+    wf = get_waveform_or_404(session_id)
+    if channel not in wf.analog:
+        raise HTTPException(404, f"No analog channel: {channel}")
+    if end < 0:
+        end = wf.num_samples
+    start, end = clamp_window(wf, start, end)
+    freqs, times, values = spectrogram(wf.analog[channel][start:end],
+                                       wf.sample_rate, window, hop)
+    return {"channel": channel, "freqs": freqs.tolist(),
+            "times": (times + start / wf.sample_rate).tolist(),
+            "magnitude": values.tolist()}
+
+
+@router.get("/api/sessions/{session_id}/correlation")
+def analog_correlation(session_id: str, channel_a: str, channel_b: str,
+                       start: int = 0, end: int = -1):
+    get_session_or_404(session_id)
+    wf = get_waveform_or_404(session_id)
+    if channel_a not in wf.analog or channel_b not in wf.analog:
+        raise HTTPException(404, "Both correlation channels must be analog")
+    if end < 0:
+        end = wf.num_samples
+    start, end = clamp_window(wf, start, end)
+    return {"channel_a": channel_a, "channel_b": channel_b,
+            **cross_correlation_delay(wf.analog[channel_a][start:end],
+                                      wf.analog[channel_b][start:end],
+                                      wf.sample_rate)}
 
 
 @router.get("/api/sessions/{session_id}/sanity")
