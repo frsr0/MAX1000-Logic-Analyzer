@@ -48,5 +48,9 @@ hdl/hw_test/hw_results/
 data/
 frontend/node_modules/
 frontend/dist/
+# Playwright traces are transient; curated screenshots under
+# frontend/test-results/screenshots/ are intentionally tracked.
+frontend/test-results/playwright/*
+!frontend/test-results/playwright/.last-run.json
 .claude/launch.json
 *.err
