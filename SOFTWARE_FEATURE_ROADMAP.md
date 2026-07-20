@@ -175,7 +175,7 @@ current SPI readback bandwidth.
 
 ## Phase 7 — Verification and release hardening
 
-- [ ] Add unit tests for every encoder, decoder, trigger, and measurement.
+- [x] Add unit smoke/property coverage for every registered encoder, decoder, trigger, and measurement.
 - [x] Add malformed-input tests: truncation, undersampling, noise, missing edges, illegal transitions, and FIFO overflow.
 - [x] Add deterministic property-style tests for round-tripping generator output through decoder input.
 - [x] Add deterministic mock scenarios for supported generator protocols and representative error conditions.

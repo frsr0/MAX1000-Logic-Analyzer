@@ -18,6 +18,11 @@ from app.hardware.mock_device import MockDevice, SCENARIOS
 from app.capture.session import CaptureSettings
 from app.capture.session import Session, default_digital_channels
 from app.exports.pdf_export import pdf_report
+from app.measurements.base import MeasurementContext, run_measurement
+from app.measurements import base as measurement_base
+from app.triggers.model import ALL_TRIGGER_TYPES
+from app.triggers.software_trigger import find_software_trigger
+from app.capture.session import TriggerConfig
 
 
 def _waveform(samples: int = 256) -> WaveformData:
@@ -42,6 +47,30 @@ def test_all_registered_decoders_handle_a_short_mixed_capture():
         result = decoder.decode(DecodeContext(wf, channels), decoder.defaults())
         assert isinstance(result.events, list), description["id"]
         assert isinstance(result.warnings, list), description["id"]
+
+
+def test_all_registered_measurements_handle_a_mixed_capture():
+    wf = _waveform()
+    ctx = MeasurementContext(wf, 0, wf.num_samples, decoder_events=[
+        {"type": "uart_byte", "start_sample": 10, "end_sample": 20,
+         "start_time": 0.00001, "end_time": 0.00002,
+         "severity": "normal", "fields": {"byte": 0x55}},
+    ])
+    for description in measurement_base.list_types():
+        channels = [] if description["category"] == "protocol" else (
+            ["a0"] if description["category"] == "analog" else ["d0"])
+        if description["id"] in ("dig_setup_hold", "dig_channel_skew"):
+            channels = ["d0", "d1"]
+        result = run_measurement(description["id"], ctx, channels)
+        assert isinstance(result, dict), description["id"]
+
+
+def test_all_trigger_types_are_safe_on_a_short_capture():
+    wf = _waveform()
+    for trigger_type in ALL_TRIGGER_TYPES:
+        result = find_software_trigger(
+            wf, TriggerConfig(type=trigger_type, channels=[0], channel_refs=["d0"]), [])
+        assert result is None or isinstance(result, int), trigger_type
 
 
 @pytest.mark.parametrize(
