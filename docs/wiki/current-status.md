@@ -24,16 +24,16 @@ RS-485, SPI, and SWD generator loopback. The archived report is
 
 The 2026-07-21 full-feature validation passed protocol, single/FAST/continuous
 capture, 200 MHz narrow packed, MSO packed, analog/mixed, trigger, generator,
-and lifecycle sections; the jumper section passed its PMOD6/ADC3 path and
-flagged the missing PMOD5/ADC7 fixture path. The codec matrix passed both `delta_rle` and
+both physical analog jumper paths, and lifecycle sections. The codec matrix
+passed both `delta_rle` and
 direct `rle` bit-exactly at 1, 10, 50, 100, and 200.4 MS/s. Live delta mode is
 lossless through 500 kS/s, matching raw's measured ceiling.
 
 The exact programmed image was revalidated on 2026-07-21: the full new-test
-regression recorded 119/120 checks, with the only failure being the known
-PMOD5-to-AIN5/ADC7 physical jumper path. The independent PMOD6-to-AIN4/ADC3
-path passed, as did the MSO packed test with 500,000 words, four balanced
-analog channels, digital RLE slices, and high-speed analog-only capture.
+regression recorded **120/120 checks passed**. Both PMOD5-to-AIN5/ADC7 and
+PMOD6-to-AIN4/ADC3 produced full-scale UART activity with cross-talk checks,
+alongside the MSO packed test with 500,000 words, four balanced analog
+channels, digital RLE slices, and high-speed analog-only capture.
 
 ## Generator support
 

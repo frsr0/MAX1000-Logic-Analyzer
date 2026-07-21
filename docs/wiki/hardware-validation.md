@@ -23,22 +23,20 @@ The full evidence, including session IDs and the programmed image, is in
 [docs/hardware-smoke-2026-07-20.md](../hardware-smoke-2026-07-20.md).
 
 The latest complete real-hardware run on 2026-07-21 completed
-**119/120 passed, 1 failed, 0 skipped** against the newly programmed seed-23
+**120/120 passed, 0 failed, 0 skipped** against the newly programmed seed-23
 SOF checksum `0x004EFFE9`. Continuous ring, 200 MHz narrow capture, packed
 digital/MSO, analog/mixed signal, codec, readout-stress, generator matrix,
-trigger, full-depth SDRAM, and lifecycle checks passed. The exact image also
+trigger, full-depth SDRAM, both physical analog jumper paths, and lifecycle
+checks passed. The exact image also
 passed the backend smoke suite at **10/10** and the dedicated jumper/generator
 matrix at **10/10**.
 
 The earlier complete suite on the prior flashed image was **432/434 passed,
 2 failed, 0 skipped**.
 
-The two failures are bench-sensitive rather than capture-path failures:
-
-- PMOD5/pool 20 to AIN5/ADC7 did not meet the full-scale UART-activity
-  threshold. PMOD6/pool 21 to AIN4/ADC3 passed, and the digital jumper matrix
-  passed. Treat the PMOD5 result as a fixture/wiring blocker until that path is
-  reseated or rerouted.
+The PMOD5 jumper was reseated before the final run; it now reaches 4095-code
+full scale with 728 detected edges, while the cross-check ADC remains free of
+repeated activity. PMOD6 likewise passes at 4095 codes and 727 edges.
 
 The raw live-ring characterization measured an approximately 1.00 MS/s
 lossless ceiling on this USB host path; packed `delta_rle` measured an
