@@ -266,6 +266,7 @@ $qsfLines = @(
     'set_global_assignment -name VHDL_FILE ../rtl/digital_rle.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/mso_stream_mux.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/mso_capture.vhd',
+    'set_global_assignment -name VHDL_FILE ../rtl/fast_capture_budget.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/ADC_Controller.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/Bit_Engine.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/Protocol_Trigger.vhd',
