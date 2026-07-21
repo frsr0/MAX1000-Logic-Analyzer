@@ -15,7 +15,7 @@ hardware contract, register map, or validated build changes.
 | Deep capture | 4,194,304 16-bit SDRAM words |
 | Physical generator pin pool | 26 entries: MKR_D[14:0], PMOD[7:0], SEN_SDO, SEN_SDI, SEN_SPC |
 | Generator FIFO | 256 bytes of host-encoded 2-bit symbols |
-| Latest programmed SOF | Full-feature seed-21 image, checksum `0x004FE6F7` |
+| Latest programmed SOF | Full-feature seed-21 image, checksum `0x005061C5` |
 
 The 2026-07-20 hardware smoke run passed all 10 checks, including discovery,
 metadata, capabilities, self-test, digital capture, sanity checks, UART,
@@ -27,6 +27,10 @@ capture, 200 MHz narrow packed, MSO packed, analog/mixed, trigger, generator,
 jumper, and lifecycle sections. The codec matrix passed both `delta_rle` and
 direct `rle` bit-exactly at 1, 10, 50, 100, and 200.4 MS/s. Live delta mode is
 lossless through 500 kS/s, matching raw's measured ceiling.
+
+The exact programmed image was revalidated on 2026-07-21: the MSO packed test
+produced 500,000 words with four balanced analog channels and digital RLE
+slices, and high-speed analog-only capture produced 512 valid frames.
 
 ## Generator support
 
@@ -86,9 +90,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\compile.ps1 -NoFlash -Seed
 Re-run the hardware smoke test after programming. A passing software suite is
 not evidence that a new bitstream has the expected routing.
 
-The restored full-feature seed-21 RTL/SDC build fits at 7,868/8,064 LEs and
+The restored full-feature seed-21 RTL/SDC build fits at 6,333/8,064 LEs and
 programs successfully, but its authoritative post-fit query still reports
-slow-85C `fast_clk` worst setup slack `-0.162 ns`; `sys_clk` and
+slow-85C `fast_clk` worst setup slack `-0.013 ns`; `sys_clk` and
 `sdram_core_clk` remain positive. This is an open timing-margin issue, not a
 feature-removal workaround: both compressed modes are present and validated on
 the board. Do not call this build timing-closed until the fast-clock path is
