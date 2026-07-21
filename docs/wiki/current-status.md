@@ -91,6 +91,11 @@ The corrected full RTL currently reports slow-85C `fast_clk` setup slack
 `-0.098 ns` and TNS `-0.147 ns` at seed 21. Do not use that image as a timing
 signoff build until setup closes.
 
+The full current eight-seed sweep still has no timing-closed MSO image: seed
+21 is best at `-0.098 ns` FAST setup slack, while the other tested seeds range
+down to `-0.413 ns`. See [the sweep table](../../hdl/proj/seed_sweep_results.txt) and
+[the build-flow timing notes](hdl/build-flow.md).
+
 ## Known boundaries
 
 - The 256-byte generator FIFO is finite. Large arbitrary waveforms must be

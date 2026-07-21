@@ -98,6 +98,10 @@ unless the corrected RTL and current constraints both close setup and hold.
 - The current corrected full build at seed 21 reports slow-85C `fast_clk`
   setup slack `-0.098 ns` and TNS `-0.147 ns`; it is not safe to call this
   200 MHz timing-closed or to flash it as a signoff image.
+- The complete current eight-seed sweep confirms that placement alone does
+  not close the full image: FAST setup slack ranges from `-0.098 ns` (best,
+  seed 21) to `-0.413 ns` (seed 5). The exact table is recorded in
+  `seed_sweep_results.txt`.
 - The design is seed-sensitive at roughly 93% LE. Re-sweep with
   `seed_sweep.ps1` after any RTL change, but do not select a seed based on
   frequency alone: all setup, hold, I/O, and CDC checks must be reviewed.
