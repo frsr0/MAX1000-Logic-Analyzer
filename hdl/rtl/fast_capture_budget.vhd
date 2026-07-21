@@ -27,35 +27,48 @@ entity fast_capture_budget is
 end fast_capture_budget;
 
 architecture rtl of fast_capture_budget is
-  signal remaining_r : natural range 0 to MAX_COUNT := 0;
-  signal reload_r    : natural range 1 to MAX_COUNT := MAX_COUNT;
+  function calc_width(max_value : positive) return positive is
+    variable width : natural := 0;
+    variable value : natural := max_value;
+  begin
+    while value > 0 loop
+      width := width + 1;
+      value := value / 2;
+    end loop;
+    return width;
+  end function;
+
+  constant COUNT_WIDTH : positive := calc_width(MAX_COUNT);
+  signal remaining_u : unsigned(COUNT_WIDTH-1 downto 0) := (others => '0');
+  signal reload_u    : unsigned(COUNT_WIDTH-1 downto 0) :=
+    to_unsigned(MAX_COUNT, COUNT_WIDTH);
   signal done_r      : std_logic := '0';
 begin
-  budget_open <= '1' when remaining_r > 0 else '0';
-  last      <= '1' when remaining_r = 1 else '0';
+  budget_open <= '1' when remaining_u /= 0 else '0';
+  last      <= '1' when remaining_u = to_unsigned(1, COUNT_WIDTH) else '0';
   done      <= done_r;
-  remaining <= remaining_r;
+  remaining <= to_integer(remaining_u);
 
   process(clk)
   begin
     if rising_edge(clk) then
       done_r <= '0';
       if rst = '1' then
-        remaining_r <= 0;
-        reload_r    <= MAX_COUNT;
+        remaining_u <= (others => '0');
+        reload_u    <= to_unsigned(MAX_COUNT, COUNT_WIDTH);
       elsif load = '1' then
-        remaining_r <= load_count;
-        reload_r    <= load_count;
-      elsif consume = '1' and remaining_r > 0 then
-        if remaining_r = 1 then
+        remaining_u <= to_unsigned(load_count, COUNT_WIDTH);
+        reload_u    <= to_unsigned(load_count, COUNT_WIDTH);
+      elsif consume = '1' and remaining_u /= 0 then
+        if remaining_u = to_unsigned(1, COUNT_WIDTH) then
           if continuous = '1' then
-            remaining_r <= reload_r;
+            remaining_u <= reload_u;
           else
-            remaining_r <= 0;
+            remaining_u <= (others => '0');
             done_r      <= '1';
           end if;
         else
-          remaining_r <= remaining_r - 1;
+          remaining_u <= remaining_u - 1;
         end if;
       end if;
     end if;
