@@ -16,6 +16,9 @@ class TriggerConfig:
     channel_mask: Optional[int] = None   # bitmask for edge triggers
     value: Optional[Union[int, bytes]] = None  # pattern / UART byte
     execution: Literal["hardware", "post_capture", "unavailable"] = "hardware"
+    occurrence: int = 1              # first, second, nth matching result
+    holdoff_us: float = 0             # ignore matches during holdoff
+    width_s: Optional[float] = None   # pulse-width match target
 ```
 
 ### Trigger Types
@@ -29,6 +32,12 @@ class TriggerConfig:
 | `uart_byte` | UART byte value match (hardware protocol trigger) |
 | `immediate` | Capture starts immediately on arm |
 | `none` | No trigger (manual stop) |
+
+Software search can additionally match a bus value/byte, pulse width, protocol
+event, or a selected edge after a start point. `occurrence` selects the nth
+match, while `holdoff_us` suppresses closely spaced matches. The Trigger panel
+provides previous/next match navigation and moves the waveform viewport to the
+selected sample.
 
 ## Hardware Support (`hardware_support.py`)
 

@@ -40,6 +40,18 @@ has an explicit scope boundary.
 | PWM | Pulse/frequency/duty decoder | Debug CH0 PWM and generator PWM | **HW** debug-register regression |
 | Raw Bit Banger | Raw waveform capture through normal channels | Two-output 2-bit symbol engine | **HW** through loopback and peripheral routes |
 | LIS3DH accelerometer | Standard I²C decoder on live session | I²C and SPI register reads | **HW**; see [accelerometer.md](accelerometer.md) |
+| Manchester / differential Manchester | Manchester decoder | Software encoder and preview | **SW** decoder/encoder tests |
+| NRZ | NRZ decoder | Software encoder and preview | **SW** |
+| I²S | I²S decoder | Preview/decode only; requires data, clock, and word-select | **SW** |
+| CAN/CAN-FD-style | CAN decoder with CRC/frame fields | No dedicated board generator route | **SW** |
+| LIN | LIN decoder with PID/checksum | No dedicated board generator route | **SW** |
+| MIDI | MIDI decoder with running status | No dedicated board generator route | **SW** |
+| PS/2 | PS/2 scan-code decoder | No dedicated board generator route | **SW** |
+| Quadrature | A/B count/direction decoder | No dedicated board generator route | **SW** |
+| HDLC | Flag, unstuffing, CRC decoder | No dedicated board generator route | **SW** |
+| JTAG | TAP and scan decoder | SWD/JTAG generator path is separate | **SW** decoder; external target required |
+| Infrared | NEC/RC5/RC6 decoder | No dedicated board generator route | **SW** |
+| SMBus/PMBus | SMBus decoder with PEC | No dedicated board generator route | **SW** |
 
 ## Application features
 
@@ -57,6 +69,13 @@ has an explicit scope boundary.
 | Machine-in-loop testing | [Machine-In-Loop](backend/machine-in-loop.md) | **SW** service/API coverage; external fixtures required for device claims |
 | Debug bundles and sanity checks | [WebSocket Diagnostics](backend/websocket-diagnostics.md) | **SW** |
 | Frontend screenshot/e2e suite | [Build and Test](frontend/build-and-test.md) | Typecheck/build pass; hardware scenario includes real-board sessions |
+| Bit Banger scripts and presets | [Recent Software Features](recent-software-features.md) | **SW/HW**; 1,024-symbol FIFO boundary |
+| CSV/VCD waveform import | [Recent Software Features](recent-software-features.md) | **SW** importer and session tests |
+| Session comparison | [Recent Software Features](recent-software-features.md) | **SW** alignment/divergence tests |
+| Analysis views | [Recent Software Features](recent-software-features.md) | **SW** spectrum, spectrogram, XY, correlation, envelope, threshold sweep |
+| Decoder quality scores | [Recent Software Features](recent-software-features.md) | **SW** host confidence estimate, 0–1 |
+| Protocol activity dashboard | [Recent Software Features](recent-software-features.md) | **SW** event-density/error summary |
+| Command palette | [Recent Software Features](recent-software-features.md) | **SW** Ctrl/Cmd+K navigation/actions |
 
 ## Hardware and build contract
 

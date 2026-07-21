@@ -115,6 +115,30 @@ Decodes RS-485 half-duplex frames from A and B differential channels.
 
 Events: `rs485_frame` (with data bytes, direction, CRC)
 
+## Additional decoders
+
+The registry also exposes the following software decoders. They are available
+through `GET /api/decoders` and the frontend Decoder Builder; they operate on
+captured, mock, or imported waveforms.
+
+| ID | Protocol / signal | Main output |
+|---|---|---|
+| `manchester` | Manchester / differential Manchester | Bits, polarity, and decoded words |
+| `nrz` | Generic NRZ | Bitstream and words |
+| `i2s` | I²S | Audio words, channel/word-select framing |
+| `can` | CAN/CAN-FD-style | Identifier, DLC, data, CRC/frame fields |
+| `lin` | LIN | Break, sync, PID, data, checksum |
+| `midi` | MIDI | Status, channel, data, running-status messages |
+| `ps2` | PS/2 | Scan-code bytes and parity |
+| `quadrature` | Rotary A/B | Direction, count, illegal transitions |
+| `hdlc` | HDLC | Flags, unstuffed payload, CRC |
+| `jtag` | JTAG TAP | TAP states and IR/DR scans |
+| `infrared` | NEC, RC5, RC6 | Remote-control address/value frames |
+| `smbus` | SMBus | I²C-compatible frames and PEC |
+
+See [Recent Software Features](../recent-software-features.md) for the
+settings, hardware-vs-software boundary, and related UI behavior.
+
 ## Event Common Structure
 
 Every event includes:

@@ -98,6 +98,7 @@ Client (browser / curl)
 - [Generator Controller](generator-controller.md) — Generator config, loopback self-test workflow, route validation
 - [Generator Routing](../generator-routing.md) — Physical pin pool, auxiliary routes, capture channels, and register contract
 - [Machine-In-Loop](machine-in-loop.md) — MIL subsystem: UART/modbus/RS485 automated testing
+- [Recent Software Features](../recent-software-features.md) — expanded decoder catalog, analysis APIs, imports, triggers, and generator scripts
 
 ## Key Design Decisions
 

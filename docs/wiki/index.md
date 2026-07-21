@@ -67,6 +67,7 @@ graph TB
 - [Hardware Validation](hardware-validation.md) - real-board smoke tests, PWM regression, compression matrix, and full validation
 - [Feature and Coverage Matrix](feature-matrix.md) - cross-layer feature inventory, implementation locations, and evidence
 - [On-board LIS3DH Accelerometer](accelerometer.md) - physical wiring, I²C/SPI access, live capture, and validation
+- [Recent Software Features](recent-software-features.md) - expanded decoders, Bit Banger scripts, analysis, imports, comparisons, triggers, and UI tools
 
 - [HDL — FPGA Design](hdl/README.md) — VHDL entities, clock domains, SDRAM controller, capture pipeline, signal generator, testbenches, build flow
 - [Backend — Python Server](backend/README.md) — FastAPI app, hardware abstraction, capture manager, session model, decoders, exports, WebSockets

@@ -90,6 +90,7 @@ for the physical and register contract.
 - [Workers](workers.md) — WebWorker for waveform data processing
 - [Build & Test](build-and-test.md) — Package config, TypeScript, Vite, Playwright E2E tests
 - [Decoder UI](decoder-ui.md) — DecoderTable, annotation overlays, packet table, severity filtering
+- [Recent Software Features](../recent-software-features.md) — command palette, analysis views, session comparison, generator scripts, and trigger navigation
 
 ## Key Design Points
 

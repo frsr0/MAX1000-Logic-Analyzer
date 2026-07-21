@@ -43,6 +43,19 @@ Measurement types that compute quantitative values from waveform data. Each meas
 |---|---|---|
 | `bus_value` | — | Sampled binary value on bus channels |
 
+## Extended measurement catalog
+
+The registry also exposes these newer measurement IDs:
+
+| Category | IDs |
+|---|---|
+| Digital | `dig_period_stats`, `dig_pulse_stats`, `dig_pulse_histogram`, `dig_glitch_count`, `dig_transition_rate`, `dig_jitter`, `dig_period_histogram`, `dig_setup_hold`, `dig_channel_skew` |
+| Analog | `ana_period`, `ana_duty`, `ana_rise_time`, `ana_fall_time`, `ana_overshoot`, `ana_undershoot`, `ana_noise`, `ana_crest` |
+| Protocol | `proto_packet_count`, `proto_error_count`, `proto_nack_count`, `proto_uart_framing`, `proto_uart_parity`, `proto_byte_rate`, `proto_utilisation`, `proto_inter_packet`, `proto_response_latency` |
+
+All measurements are computed over the selected cursor range and leave raw
+session arrays unchanged. Protocol measurements require decoder events.
+
 ## Measurement Model
 
 ```python

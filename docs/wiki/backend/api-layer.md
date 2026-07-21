@@ -13,8 +13,8 @@ REST and WebSocket endpoints that make the backend controllable from any HTTP cl
 | `status` | `api/status.py` | `GET /api/status` — backend status, device state, last session |
 | `devices` | `api/devices.py` | `GET /api/devices`, `POST /api/connect`, `POST /api/disconnect`, `GET /api/device/metadata`/`capabilities`/`debug`, `POST /api/device/self-test` |
 | `capture` | `api/capture.py` | `POST /api/capture/start`, `GET /api/capture/state`, `POST /api/capture/stop`, `POST /api/capture/settings/validate`, `GET /api/capture/scenarios` (mock) |
-| `sessions` | `api/sessions.py` | Full CRUD on `/api/sessions`, duplicate, compare, markers, buses |
-| `waveform` | `api/waveform.py` | Binary waveform window, raw JSON, overview, edges, value-at, derived channels, spectrum, sanity |
+| `sessions` | `api/sessions.py` | Full CRUD on `/api/sessions`, duplicate, compare, markers, buses, protocol activity |
+| `waveform` | `api/waveform.py` | Binary waveform window, raw JSON, overview, edges, value-at, derived channels, spectrum, spectrogram, XY, correlation, envelope, threshold sweep, sanity |
 | `decoders` | `api/decoders.py` | List types, CRUD instances, run/cancel, annotations, packet table, decoder events |
 | `measurements` | `api/measurements.py` | List types, CRUD instances, results between cursors |
 | `exports` | `api/exports.py` | Export CSV/JSON/VCD/NPZ/report, export by format |
@@ -69,6 +69,14 @@ GET /api/sessions/{id}/overview?bins=1024
     → binary MSAW overview
 GET /api/sessions/{id}/raw?start=&end=&channels=
     → JSON raw sample window (small windows only)
+GET /api/sessions/{id}/spectrum?channel=&bins=
+GET /api/sessions/{id}/spectrogram?channel=&bins=&windows=
+GET /api/sessions/{id}/xy?channel_x=&channel_y=
+GET /api/sessions/{id}/correlation?channel_a=&channel_b=
+GET /api/sessions/{id}/event-correlation?analog=&digital=&threshold=&edge=
+GET /api/sessions/{id}/envelope?channel=&bins=
+GET /api/sessions/{id}/threshold-sweep?channel=&levels=
+    → JSON analysis results for the Analog panel
 ```
 
 All waveform endpoints support `channels` parameter as comma-separated channel IDs.
@@ -81,6 +89,7 @@ POST /api/sessions/{id}/decoders         ← create instance
 POST /api/sessions/{id}/decoders/{dec}/run    → start decoding
 POST /api/sessions/{id}/decoders/{dec}/cancel → cancel running
 GET  /api/sessions/{id}/decoder-events?start=&end=  → events overlapping window
+POST /api/sessions/{id}/trigger-search               → first or nth software match
 ```
 
 ### Exports
@@ -94,6 +103,8 @@ GET|POST /api/sessions/{id}/export/{csv,json,vcd,npz,report}
 
 ```
 GET  /api/generator/capabilities         → supported protocols
+GET  /api/generator/bitbang/presets       → deterministic preset names
+POST /api/generator/bitbang/preview       → expanded symbols, levels, duration
 GET  /api/generator/status               → current generator state
 POST /api/generator/configure            ← GeneratorConfig
 POST /api/generator/start/stop           → state change
