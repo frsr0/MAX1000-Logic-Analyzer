@@ -31,11 +31,11 @@
 
 PowerShell build script (current parameters, verified against the script 2026-07-10):
 ```
-.\compile.ps1 -Flash -Seed 5
+.\compile.ps1 -Flash -Seed 21
 ```
 
 Parameters:
-- `-Seed` (default: 5 as of 2026-07-21; re-swept after every RTL change): Quartus fitter seed for placement/routing
+- `-Seed` (default: 21 as of 2026-07-21; re-swept after every RTL change): Quartus fitter seed for placement/routing
 - `-NoFlash` (switch): compile only, skip JTAG programming
 - `-Flash` (switch): program the board via JTAG after compiling
 - `-RawOnly` (switch): build with `FAST_RAW_BUILD=true`, eliding the `mso_capture`/MSO bit-pack pipeline for extra timing margin (default is the full mixed-signal build with `mso_capture` included)

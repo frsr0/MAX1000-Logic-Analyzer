@@ -87,11 +87,11 @@ graph TB
 - Exact full-word RLE readback compression (`raw` / `delta_rle` host modes)
 - Built with Quartus, targeting 10M08DAF484C8G, FAST_SPEED build
 - SDRAM write timing is closed in STA with the DDIO-forwarded chip clock. The
-  earlier full mixed-signal build used **seed 5** (2026-07-21): worst setup
-  slack `fast_clk +0.002 ns`, `sdram_core_clk +0.164 ns`,
-  `sys_clk +0.726 ns`, `SDRAM_CHIP_CLK_OUT +1.098 ns`; 93% LE
-  (7,524/8,064). The corrected backpressure handshake now measures
-  `fast_clk -0.107 ns` at seed 5; see
+  corrected full mixed-signal build uses **seed 21** (2026-07-21): worst setup
+  slack `fast_clk -0.139 ns`, `sdram_core_clk +0.172 ns`,
+  `sys_clk +0.492 ns`, `SDRAM_CHIP_CLK_OUT +1.098 ns`; 94% LE
+  (7,564/8,064). The analog-packer output remains bit-exact under
+  backpressure; setup timing is not yet closed; see
   [`hdl/sdram-pll.md`](hdl/sdram-pll.md) for the DDIO clock-forward phase fix,
   [`hdl/mso-capture.md`](hdl/mso-capture.md) for the packed/MSO live-capture
   throughput fix, and `TIMING_REPORT_SUMMARY.md` for the full per-domain
