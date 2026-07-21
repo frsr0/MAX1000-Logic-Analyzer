@@ -26,8 +26,8 @@ The latest complete real-hardware run on 2026-07-21 completed
 **120/120 passed, 0 failed, 0 skipped** against the newly programmed seed-23
 SOF checksum `0x004EFFE9`. Continuous ring, 200 MHz narrow capture, packed
 digital/MSO, analog/mixed signal, codec, readout-stress, generator matrix,
-trigger, full-depth SDRAM, both physical analog jumper paths, and lifecycle
-checks passed. The exact image also
+trigger, full-depth SDRAM, both physical analog jumper paths, lifecycle, and
+on-board LIS3DH accelerometer I²C/SPI checks passed. The exact image also
 passed the backend smoke suite at **10/10** and the dedicated jumper/generator
 matrix at **10/10**.
 

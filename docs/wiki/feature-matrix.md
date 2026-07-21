@@ -1,0 +1,80 @@
+# Feature and Coverage Matrix
+
+This page is the cross-layer index for the implemented product. It identifies
+where a feature lives, how it is exposed, and what evidence supports it. A
+feature marked **HW** has been exercised on the physical MAX1000; **SW** means
+software/mock or simulation coverage; **limited** means the feature exists but
+has an explicit scope boundary.
+
+## Acquisition and signal processing
+
+| Feature | Frontend / backend surface | HDL / host implementation | Evidence and scope |
+|---|---|---|---|
+| Digital capture | Capture controls, CaptureManager | `Fast_Logic_Analyzer_SDRAM`, `OLSDeviceSPI` | **HW**; 16 channels, up to 200.4 MHz |
+| Deep SDRAM capture | Depth selector, capture strategies | SDRAM controller and write pump | **HW**; 4,194,304 × 16-bit words |
+| BRAM fast capture | Fast/narrow strategy | 1,024-word BRAM path | **HW** |
+| Continuous/ring capture | Live capture and session streaming | Triple-buffer ring path | **HW**; lifecycle and recovery checks |
+| Narrow packed capture | Narrow mode control and decoder | 16 samples/channel packed into one word | **HW** at 200 MHz |
+| Analog-fast | Analog-fast mode and analog waveform | One MAX10 ADC lane | **HW**; ADC1/AIN3 profile and physical analog checks |
+| Analog-all | Maximum-analog mode | Four ADC inputs | **HW**; four balanced channels |
+| Mixed-signal capture | Mixed mode and analog/digital panels | `mso_capture`, analog packer, stream mux | **HW**; 500,000 packed words |
+| Digital RLE | Readback codec selection | Full-word/direct RLE | **HW**; bit-exact matrix through 200.4 MHz |
+| Packed `delta_rle` | Readback codec selection | Delta calculator + digital RLE + MSO stream | **HW**; lossless finite matrix and live characterization |
+| Raw readback | Session waveform transport | SPI block read path | **HW** |
+| Triggering | Trigger panel and backend trigger service | UART byte hardware trigger plus software search | **HW/SW**; protocol-trigger scope is UART byte matching |
+| Measurements | Measurements panel/API | Digital, analog, bus measurement services | **SW** and frontend E2E coverage |
+| Waveform LOD/downsampling | Canvas viewer | WaveformStore, worker, MSAW/LOD services | **SW**; transport and zoom performance coverage |
+
+## Protocol decoding and generation
+
+| Protocol / feature | Decode support | Generate / hardware support | Evidence and scope |
+|---|---|---|---|
+| UART | UART decoder, parity/framing/break | Bit Banger UART | **HW** loopback and decoder tests |
+| I²C | START/STOP, address, ACK/NACK, 7/10-bit | Master write/read Bit Banger | **HW** via jumper and LIS3DH |
+| SPI | Configurable CPOL/CPHA, MOSI/MISO/CS | SPI mode 0 and mode 3, CS/MISO routes | **HW** loopback and LIS3DH mode-3 reads |
+| RS-485 | Half-duplex decoder | UART-compatible generator plus DE route | **HW** loopback and generator matrix |
+| SWD | SWD packet decoder | SWD line-reset/turnaround/ACK generator | **SW** protocol path; no external SWD target attached |
+| Modbus RTU | Stacked UART decoder with CRC/function parsing | MIL/generator workflows | **SW/HW** where a loopback or device is available |
+| Parallel bus | Clocked multi-channel decoder | Not a dedicated generator protocol | **SW** decoder coverage |
+| 1-Wire | Reset, presence, and byte decoder | No dedicated hardware generator | **SW** decoder coverage |
+| PWM | Pulse/frequency/duty decoder | Debug CH0 PWM and generator PWM | **HW** debug-register regression |
+| Raw Bit Banger | Raw waveform capture through normal channels | Two-output 2-bit symbol engine | **HW** through loopback and peripheral routes |
+| LIS3DH accelerometer | Standard I²C decoder on live session | I²C and SPI register reads | **HW**; see [accelerometer.md](accelerometer.md) |
+
+## Application features
+
+| Feature | Documentation | Evidence / boundary |
+|---|---|---|
+| Device discovery and capabilities | [API Layer](backend/api-layer.md), [Hardware Abstraction](backend/hardware-abstraction.md) | **HW** backend smoke |
+| Real and mock hardware adapters | [Existing Host Adapter](backend/existing-host-adapter.md), [Mock Device](backend/mock-device.md) | **SW/HW** |
+| Session persistence | [Session Model](backend/session-model.md), [Session Stores](backend/session-stores.md) | **SW** JSON/NPZ/session tests |
+| REST API | [API Layer](backend/api-layer.md) | **SW** backend test suite |
+| WebSockets and live diagnostics | [WebSocket Diagnostics](backend/websocket-diagnostics.md) | **SW** reconnect/topic tests; live browser evidence |
+| CSV/JSON/VCD/NPZ/HTML report export | [Export Formats](backend/export-formats.md) | **SW** export tests |
+| Decoder annotations and packet table | [Decoder UI](frontend/decoder-ui.md) | **SW** Playwright coverage |
+| Cursor, markers, zoom, density shading | [Waveform Viewer](frontend/waveform-viewer.md) | **SW** Playwright coverage |
+| Generator page and route capability gating | [Generator Controller](backend/generator-controller.md), [Generator Routing](generator-routing.md) | **HW/SW** |
+| Machine-in-loop testing | [Machine-In-Loop](backend/machine-in-loop.md) | **SW** service/API coverage; external fixtures required for device claims |
+| Debug bundles and sanity checks | [WebSocket Diagnostics](backend/websocket-diagnostics.md) | **SW** |
+| Frontend screenshot/e2e suite | [Build and Test](frontend/build-and-test.md) | Typecheck/build pass; hardware scenario includes real-board sessions |
+
+## Hardware and build contract
+
+| Item | Current validated value |
+|---|---|
+| FPGA | Intel MAX 10 `10M08SAU169C8G` |
+| Full build | `FAST_SPEED=true`, `FAST_RAW_BUILD=false`, seed 23 |
+| Timing | Slow-85C worst `fast_clk` setup slack `+0.049 ns`; no setup/hold violations |
+| Logic use | 6,333/8,064 LEs (79%); 2,586 registers; 63 pins |
+| Current SOF | `0x004EFFE9` on the validation board |
+| Final hardware regression | 120/120 passed, 0 failed, 0 skipped on 2026-07-21 |
+
+## How to interpret coverage
+
+Passing the complete hardware regression proves the analyzer’s current
+board-level contract, not every possible external electrical configuration.
+In particular, SWD requires a real target for response validation; MIL tests
+need their external device fixtures; and accelerometer validation is a
+protocol/connection check rather than a sensor calibration characterization.
+The authoritative current snapshot is [Current Status](current-status.md),
+while the detailed test evidence is in [Hardware Validation](hardware-validation.md).

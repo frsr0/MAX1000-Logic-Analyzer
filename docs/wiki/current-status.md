@@ -99,6 +99,11 @@ programs successfully. The authoritative post-fit query reports slow-85C
 and `+1.286 ns`, with `sys_clk` and `sdram_core_clk` positive. Both compressed
 modes are present and validated on the board; seed 23 changes placement only.
 
+The on-board LIS3DH is a validated external protocol partner: the final
+regression reads `WHO_AM_I = 0x33` over I²C at 50/100 kHz and over SPI mode 3,
+also reads `CTRL_REG1`, and decodes capture-visible I²C/SPI dialogues. See
+[accelerometer.md](accelerometer.md) for the complete peripheral contract.
+
 The closure came from keeping the live sample-budget dependency single-cycle,
 removing the redundant nonzero-flag mux from the budget counter's data path,
 and constraining only stable configuration/inactive branch-select paths in the
