@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Clean diagnostic: close/reopen FTDI for each test to avoid stale data."""
 import time, sys, struct
-sys.path.insert(0, '.')
-from ols_spi import OLS
+sys.path.insert(0, '../../host')
+from driver.ols_spi import OLS
 
 NOP_BYTE = 0x07  # true NOP (hits WHEN others -> Thread44=6 -> null)
 NOP4 = bytes([NOP_BYTE]*4)
