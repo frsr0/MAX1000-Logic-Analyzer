@@ -4,7 +4,7 @@ Hardware validation runs against the FPGA image flashed on the MAX1000. These
 tests exercise register writes, capture timing, SDRAM readback, SPI transport,
 and lossless decompression on the real board.
 
-## Latest board result
+## Historical smoke result — 2026-07-20
 
 On 2026-07-20 the connected MAX1000 was programmed with SOF checksum
 `0x004ADCB4`. The end-to-end smoke test passed **10/10**:
