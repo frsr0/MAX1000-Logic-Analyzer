@@ -6,11 +6,11 @@
 
 | Property | Value |
 |---|---|
-| FPGA | Intel MAX 10 10M08DAF484C8G |
+| FPGA | Intel MAX 10 10M08SAU169C8G |
 | Family | MAX 10 |
 | Package | 484-pin FBGA |
 | Speed grade | C8 |
-| Logic elements | 8,064 (93% used in current build, 2026-07-21) |
+| Logic elements | 8,064 (6,333 / 79% used in current build, 2026-07-21) |
 
 ## Project Files
 
@@ -31,7 +31,7 @@
 
 PowerShell build script (current parameters, verified against the script 2026-07-10):
 ```
-.\compile.ps1 -Flash -Seed 21
+.\compile.ps1 -Flash -Seed 23
 ```
 
 Parameters:
@@ -88,25 +88,26 @@ unless the corrected RTL and current constraints both close setup and hold.
 
 | Profile | FAST_SPEED | FAST_RAW_BUILD | Fmax (fast_clk) | Use Case |
 |---|---|---|---|---|
-| Full (default) | true | false | 200.4 MHz nominal | Full RTL; includes `mso_capture`/MSO bit-pack pipeline; seed 21 currently closes post-fit setup |
+| Full (default) | true | false | 200.4 MHz nominal | Full RTL; includes `mso_capture`/MSO bit-pack pipeline; seed 23 closes post-fit setup |
 | Raw-only | true | true | 200.4 MHz (`+0.118 ns`) | Timing-closed digital/analog build; elides `mso_capture` (`-RawOnly`) |
 | Slow | false | true | 12-50 MHz | Low-speed debug |
 
 ## Known Issues
 
 - The generated wrapper in `proj/` is overwritten by `compile.ps1`
-- The current seed-21 full build closes the authoritative `query_final.tcl`
-  post-fit report at slow-85C: `fast_clk +0.095 ns` and
-  `sdram_core_clk +0.410 ns`, with zero violated paths in both reports.
-  Hold checks are positive. Re-run the query after every fitter or SDC change.
+- The current seed-23 full build closes the authoritative post-fit report at
+  slow-85C: `fast_clk +0.049 ns`; the other setup corners are `+0.270 ns` and
+  `+1.286 ns`. Hold checks are positive. Re-run the query after every fitter
+  or SDC change.
 - The earlier eight-seed sweep was run before the final budget-path change and
   is historical; its results remain in `seed_sweep_results.txt` and must not
   be used to select a replacement seed without a fresh sweep.
-- The design is seed-sensitive at roughly 93% LE. Re-sweep with
+- The design is seed-sensitive at high LE utilisation. Re-sweep with
   `seed_sweep.ps1` after any RTL change, but do not select a seed based on
   frequency alone: all setup, hold, I/O, and CDC checks must be reviewed.
 - At ∼87% LE utilisation, fitter struggles — changing one parameter often requires a seed sweep to find a new valid placement
-- The `FAST_RAW_BUILD` option that excludes compression modules exists purely for timing closure at 200 MHz
+- `FAST_RAW_BUILD` remains an optional diagnostic/minimal image; the default
+  full compression and MSO build now closes timing with seed 23.
 
 ## Testbenches
 

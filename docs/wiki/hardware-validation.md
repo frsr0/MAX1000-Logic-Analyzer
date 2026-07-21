@@ -23,10 +23,12 @@ The full evidence, including session IDs and the programmed image, is in
 [docs/hardware-smoke-2026-07-20.md](../hardware-smoke-2026-07-20.md).
 
 The latest complete real-hardware run on 2026-07-21 completed
-**432/433 passed, 1 failed, 0 skipped** against the newly programmed seed-21
-SOF checksum `0x004A74F2`. Continuous ring, 200 MHz narrow capture, packed
+**119/120 passed, 1 failed, 0 skipped** against the newly programmed seed-23
+SOF checksum `0x004EFFE9`. Continuous ring, 200 MHz narrow capture, packed
 digital/MSO, analog/mixed signal, codec, readout-stress, generator matrix,
-trigger, full-depth SDRAM, and lifecycle checks passed.
+trigger, full-depth SDRAM, and lifecycle checks passed. The exact image also
+passed the backend smoke suite at **10/10** and the dedicated jumper/generator
+matrix at **10/10**.
 
 The earlier complete suite on the prior flashed image was **432/434 passed,
 2 failed, 0 skipped**.
@@ -38,9 +40,11 @@ The two failures are bench-sensitive rather than capture-path failures:
   passed. Treat the PMOD5 result as a fixture/wiring blocker until that path is
   reseated or rerouted.
 
-The raw/delta-RLE live-ring characterization measured an approximately
-1.00 MS/s lossless ceiling on this USB host path; delta-RLE peak throughput
-was approximately 1.91 MS/s at the 10 kHz source case.
+The raw live-ring characterization measured an approximately 1.00 MS/s
+lossless ceiling on this USB host path; packed `delta_rle` measured an
+approximately 0.50 MS/s lossless ceiling. Direct `rle` and `delta_rle` remain
+bit-exact in the finite readback matrix through 200.4 MS/s; live throughput is
+reported separately because it is transport- and source-dependent.
 
 Run the smoke test from `backend/`; run the legacy validation/debug tools from
 `host/`, with the FTDI/JTAG hardware connected:

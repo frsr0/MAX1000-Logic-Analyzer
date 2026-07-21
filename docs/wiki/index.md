@@ -87,10 +87,10 @@ graph TB
 - Readback compression (`raw` / direct `rle` / packed `delta_rle` modes)
 - Built with Quartus, targeting 10M08DAF484C8G, FAST_SPEED build
 - SDRAM write timing is closed in STA with the DDIO-forwarded chip clock. The
-  current full mixed-signal build uses **seed 21** (2026-07-21): the
-  authoritative post-fit query reports worst setup slack `fast_clk +0.095 ns`
-  and `sdram_core_clk +0.410 ns`, with zero violated paths; hold checks are
-  positive. The analog-packer output remains bit-exact under backpressure.
+  current full mixed-signal build uses **seed 23** (2026-07-21): the
+  authoritative post-fit query reports worst setup slack `fast_clk +0.049 ns`
+  in the slow corner, with all setup/hold paths positive. The analog-packer
+  output remains bit-exact under backpressure.
   Program and validate the image before treating it as the current board
   image; see
   [`hdl/sdram-pll.md`](hdl/sdram-pll.md) for the DDIO clock-forward phase fix,

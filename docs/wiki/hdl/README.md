@@ -89,9 +89,9 @@ matrix and measured ratios.
 
 ## Current timing note
 
-The corrected RTL reference at fitter seed 21 reports slow-85C `fast_clk`
-setup slack `-0.139 ns` and TNS `-1.380 ns`; this is not a signoff-closed
-200 MHz image. See [Build Flow](build-flow.md) and
+The corrected RTL reference at fitter seed 23 reports slow-85C `fast_clk`
+setup slack `+0.049 ns` with no violated setup/hold paths; this is the
+signoff-closed full-feature 200 MHz image. See [Build Flow](build-flow.md) and
 [FAST Capture Stream](fast-capture-stream.md) for the current timing gate and
 the tested stream seams.
 
