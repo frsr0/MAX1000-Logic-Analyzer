@@ -15,7 +15,7 @@ hardware contract, register map, or validated build changes.
 | Deep capture | 4,194,304 16-bit SDRAM words |
 | Physical generator pin pool | 26 entries: MKR_D[14:0], PMOD[7:0], SEN_SDO, SEN_SDI, SEN_SPC |
 | Generator FIFO | 256 bytes of host-encoded 2-bit symbols |
-| Latest programmed SOF | Existing board image; corrected RTL not flashed because seed-21 FAST setup is negative |
+| Latest programmed SOF | Current corrected full image, checksum `0x004B11D4`; full profile remains timing-negative |
 
 The 2026-07-20 hardware smoke run passed all 10 checks, including discovery,
 metadata, capabilities, self-test, digital capture, sanity checks, UART,
@@ -88,7 +88,7 @@ Re-run the hardware smoke test after programming. A passing software suite is
 not evidence that a new bitstream has the expected routing.
 
 The corrected full RTL currently reports slow-85C `fast_clk` setup slack
-`-0.133 ns` and TNS `-0.539 ns` at seed 21. Do not use that image as a timing
+`-0.098 ns` and TNS `-0.147 ns` at seed 21. Do not use that image as a timing
 signoff build until setup closes.
 
 ## Known boundaries

@@ -22,11 +22,14 @@ On 2026-07-20 the connected MAX1000 was programmed with SOF checksum
 The full evidence, including session IDs and the programmed image, is in
 [docs/hardware-smoke-2026-07-20.md](../hardware-smoke-2026-07-20.md).
 
-The latest full real-hardware run on 2026-07-21 completed **432/434 passed,
-2 failed, 0 skipped**. Core protocol, digital/FAST/continuous capture,
-200 MHz sample-count, packed digital/MSO, generator, trigger, SDRAM,
-mixed-signal, codec, lifecycle, accelerometer, readout-stress, noise, and
-long-duration stress checks passed.
+The latest full-image targeted real-hardware run on 2026-07-21 completed
+**116/117 passed, 1 failed, 0 skipped** against SOF checksum `0x004B11D4`.
+Continuous ring, 200 MHz narrow capture, packed digital/MSO, analog/mixed
+signal, codec, readout-stress, and lifecycle checks passed.
+
+The earlier complete suite on the prior flashed image was **432/434 passed,
+2 failed, 0 skipped**; its additional protocol/generator/stress checks also
+passed.
 
 The two failures are bench-sensitive rather than capture-path failures:
 

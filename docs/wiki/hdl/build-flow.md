@@ -89,14 +89,14 @@ unless the corrected RTL and current constraints both close setup and hold.
 | Profile | FAST_SPEED | FAST_RAW_BUILD | Fmax (fast_clk) | Use Case |
 |---|---|---|---|---|
 | Full (default) | true | false | 200.4 MHz nominal | Corrected full RTL; includes `mso_capture`/MSO bit-pack pipeline; not a signoff image until timing closes |
-| Raw-only | true | true | 200.4 MHz | Elides `mso_capture` (`-RawOnly`) for extra timing margin when the MSO pipeline isn't needed |
+| Raw-only | true | true | 200.4 MHz (`+0.118 ns`) | Timing-closed digital/analog build; elides `mso_capture` (`-RawOnly`) |
 | Slow | false | true | 12-50 MHz | Low-speed debug |
 
 ## Known Issues
 
 - The generated wrapper in `proj/` is overwritten by `compile.ps1`
 - The current corrected full build at seed 21 reports slow-85C `fast_clk`
-  setup slack `-0.133 ns` and TNS `-0.539 ns`; it is not safe to call this
+  setup slack `-0.098 ns` and TNS `-0.147 ns`; it is not safe to call this
   200 MHz timing-closed or to flash it as a signoff image.
 - The design is seed-sensitive at roughly 93% LE. Re-sweep with
   `seed_sweep.ps1` after any RTL change, but do not select a seed based on

@@ -253,6 +253,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal packed_buf_rst : std_logic := '0';
   signal packed_mode_meta : std_logic := '0';
   signal packed_mode_f    : std_logic := '0';
+  signal packed_mode_path_f : std_logic := '0';
   signal fifo_wrusedw : std_logic_vector(AFIFO_WIDTHU-1 downto 0) := (others => '0');
   -- Pipelined almost-full compare (two-stage): fifo_afull_cmp_r is the
   -- wrusedw >= threshold comparison; fifo_afull_r is one more register stage
@@ -277,6 +278,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   -- elapses, so Full never rises. Left at '0' in non-FAST_SPEED builds
   -- (packed capture is a FAST_SPEED feature).
   signal packed_stop_f : std_logic := '0';
+  signal packed_budget_last_r : std_logic := '0';
   -- Run-start gate for the packed producer. The pclk side discards a snapshot
   -- of stale FIFO words on the run edge; the FAST side sees Run a few cycles
   -- earlier than pclk, so packed words pushed immediately at run start can
@@ -450,6 +452,18 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   end component;
 
 begin
+
+  -- The raw-only profile deliberately has no packed producer. Keeping its
+  -- path select at a constant lets Quartus remove the unused MSO branch and
+  -- its mode fanout from the 200 MHz write path.
+  gen_packed_path_enabled : if not FAST_RAW_BUILD generate
+  begin
+    packed_mode_path_f <= packed_mode_f;
+  end generate;
+  gen_packed_path_disabled : if FAST_RAW_BUILD generate
+  begin
+    packed_mode_path_f <= '0';
+  end generate;
 
   -- The DCFIFO aclr port is tied to '0' permanently. Stale data between capture
   -- runs is handled by draining the FIFO on the pclk side (see drain_pending_r
@@ -882,7 +896,9 @@ begin
 
         if cfg_valid_edge = '1' then
           sample_rem_nonzero_r <= '1';
-        elsif cfg_valid_edge_d1 = '0' and fifo_wr = '1' and sample_remaining = 0 then
+        elsif cfg_valid_edge_d1 = '0'
+              and (fifo_wr = '1' or packed_budget_last_r = '1')
+              and sample_remaining = 0 then
           -- Use continuous_f (the FAST_CLK-synchronized copy, driven near
           -- line 636), NOT the raw Continuous_Mode port -- an earlier version
           -- of this fix used the raw port directly and it caused a real,
@@ -895,7 +911,7 @@ begin
           -- use of continuous mode in this generate block goes through
           -- continuous_f for the same reason (e.g. the afull_r/continuous_f
           -- checks below) -- this fix now matches that convention.
-          if packed_mode_f = '1' and continuous_f = '1' then
+          if packed_mode_path_f = '1' and continuous_f = '1' then
             -- Packed continuous/live capture: auto-renew the budget instead
             -- of halting Packed_Ready forever. The plain digital/narrow/
             -- analog-frame producers' fifo_wr pulse is NOT gated by
@@ -958,6 +974,7 @@ begin
         narrow_bit_v := narrow_sample_bit_r;
         narrow_last_v := narrow_sample_last_r;
         fifo_wr <= '0';
+        packed_budget_last_r <= '0';
         bram_wren <= '0';
         afull_r <= fifo_wralmost_full;
 
@@ -1015,15 +1032,15 @@ begin
         end if;
 
         if fifo_overflow_f = '0' then
-          if capture_en_r = '1' and packed_mode_f = '1' then
+          if capture_en_r = '1' and packed_mode_path_f = '1' then
             -- Packed mode (mso_capture) samples digital_in unconditionally
             -- every fast_clk cycle -- no Rate_Div/sample_tick_r gating (see
             -- mso_capture.vhd) -- and its own afifo write-port mux
             -- (afifo_wdata/afifo_wr above) routes the elastic packed stream
-            -- into the afifo instead of fifo_wr/fifo_wdata when
-            -- packed_mode_f='1', so asserting fifo_wr here is a pure
-            -- budget-tick (harmlessly discarded by that mux), not a real
-            -- write. Deplete the Samples budget at that SAME full-rate
+            -- into the afifo. The packed branch deliberately does not assert
+            -- fifo_wr: that request is reserved for ordinary producers, while
+            -- packed_budget_last_r supplies the single-shot completion event.
+            -- Deplete the Samples budget at that SAME full-rate
             -- cadence instead of falling through to the Rate_Div-gated
             -- sample_tick_r branch below, which only ever applied to the
             -- plain digital/narrow/analog-frame producers.
@@ -1040,7 +1057,6 @@ begin
             -- ~96 MS/s effective at a 2 MS/s request vs ~4 MS/s at 100
             -- MS/s), capping packed-mode throughput far below what the
             -- inline compressor can actually sustain.
-            fifo_wr <= '1';
             if sample_rem_nonzero_r = '1' then
               -- continuous_f (synced), not the raw Continuous_Mode port --
               -- see the Stage 2c comment above for the bug this caused.
@@ -1051,6 +1067,9 @@ begin
                 sample_remaining <= cfg_samples;
               else
                 sample_remaining <= sample_rem_dec_r;
+                if sample_remaining = 1 and continuous_f = '0' then
+                  packed_budget_last_r <= '1';
+                end if;
               end if;
             end if;
           elsif narrow_word_pending_r = '1' and afull_r = '0' then
@@ -1401,9 +1420,9 @@ begin
   -- Write-port source mux. The registered-ready elastic buffer breaks the
   -- producer-ready -> producer-data timing loop identified by STA. It is
   -- conservative when full, but preserves ordering and never drops a word.
-  packed_buf_rst <= '1' when packed_rst_f = '1' or packed_mode_f = '0'
-                              or run_f_level = '0' else '0';
-  packed_buf_in_valid <= '1' when Packed_Valid = '1' and packed_mode_f = '1'
+  packed_buf_rst <= '1' when packed_rst_f = '1' or run_f_level = '0'
+                              else '0';
+  packed_buf_in_valid <= '1' when Packed_Valid = '1' and packed_mode_path_f = '1'
                               and run_f_level = '1' and packed_stop_f = '0'
                               and pump_live_f = '1' else '0';
   packed_buf_out_ready <= not packed_afull_r;
@@ -1421,7 +1440,7 @@ begin
       out_ready => packed_buf_out_ready
     );
 
-  Packed_Ready <= '1' when packed_mode_f = '1' and run_f_level = '1'
+  Packed_Ready <= '1' when packed_mode_path_f = '1' and run_f_level = '1'
                        and packed_stop_f = '0' and pump_live_f = '1'
                        and packed_buf_in_ready = '1' else '0';
 
@@ -1439,11 +1458,13 @@ begin
     end if;
   end process;
 
-  -- Write-port source mux: packed mode consumes the elastic buffer; non-packed
-  -- mode uses the existing registered skid path.
-  afifo_wdata  <= packed_buf_out_data when packed_mode_f = '1' else fifo_wr_skid_data_r;
-  afifo_wr     <= packed_buf_out_valid and packed_buf_out_ready when packed_mode_f = '1'
-                  else fifo_wr_skid_req_r;
+  -- Packed and ordinary producers are mutually exclusive. Select data from
+  -- the registered packed-valid bit and OR the registered write requests;
+  -- packed_mode_f is no longer on the async FIFO write-port control path.
+  afifo_wdata  <= packed_buf_out_data when packed_buf_out_valid = '1'
+                  else fifo_wr_skid_data_r;
+  afifo_wr     <= (packed_buf_out_valid and packed_buf_out_ready)
+                  or fifo_wr_skid_req_r;
 
   -- Async FIFO (dcfifo) bridging FAST_CLK (write) to pclk (read).
   -- Sync depths increased to 4 for safer CDC across the ~200 MHz / ~167 MHz

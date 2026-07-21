@@ -17,7 +17,7 @@ param(
     # reopened timing.)
     # Re-sweep (seed_sweep.ps1) after RTL or pin changes; bitstream remains
     # seed-sensitive at this density.
-    # Corrected-RTL reference: seed 21 currently gives fast_clk=-0.139 ns;
+    # Corrected-RTL reference: full seed 21 currently gives fast_clk=-0.098 ns;
     # re-run seed_sweep.ps1 after RTL changes because placement is seed-sensitive.
     [int]$Seed = 21
 )

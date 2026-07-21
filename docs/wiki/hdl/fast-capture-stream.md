@@ -30,9 +30,13 @@ fill, full-state readiness, stalled-head stability, simultaneous pop/push, and
 final drain.
 
 Both modules are included in the Quartus project. The registered-ready buffer
-is now integrated at the packed FIFO boundary. It removed the original
-producer-ready/data loop and improved seed-21 setup from `-0.139 ns` to
-`-0.133 ns` (TNS `-0.539 ns`), but the design is still not timing-closed.
+is integrated at the packed FIFO boundary. The packed budget tick is now
+separate from the ordinary FIFO write request, so `packed_mode_f` is no longer
+on the async FIFO write-port control path. The full MSO build at seed 21 now
+reports `-0.098 ns` FAST setup slack (`-0.147 ns` TNS); it remains a
+non-signoff image. The raw-only build hard-disables the packed branch and
+closes at `+0.118 ns` FAST setup and `+0.337 ns` SDRAM-core setup.
+
 An earlier combinational-ready integration worsened setup to `-0.284 ns` and
 was rejected by the timing gate.
 
