@@ -11,11 +11,14 @@ param(
     # race; see fast-capture-write-scramble memory note /
     # Fast_Logic_Analyzer_SDRAM.vhd): Slow-85C setup slack sys_clk=+0.608ns,
     # fast_clk=+0.075ns, sdram_core_clk=+0.432ns, SDRAM_CHIP_CLK_OUT=+1.098ns
-    # at 7,524/8,064 LE (93%); fresh STA fast_clk slack is +0.002ns.
+    # at 7,524/8,064 LE (93%); this predates the corrected backpressure
+    # handshake and is retained as historical timing context only.
     # (Old seed 3 went fast_clk-negative after the dec_r pipeline-parity fix
     # reopened timing.)
     # Re-sweep (seed_sweep.ps1) after RTL or pin changes; bitstream remains
     # seed-sensitive at this density.
+    # Corrected-RTL reference: seed 5 currently gives fast_clk=-0.107 ns;
+    # re-run seed_sweep.ps1 after RTL changes because placement is seed-sensitive.
     [int]$Seed = 5
 )
 

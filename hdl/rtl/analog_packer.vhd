@@ -103,7 +103,6 @@ architecture rtl of analog_packer is
   signal anchor_word_r : std_logic_vector(15 downto 0) := (others => '0');
 
   signal out_valid_r : std_logic := '0';
-  signal slot_free_r : std_logic := '1';
 
 begin
 
@@ -123,16 +122,7 @@ begin
         pcount    <= 0;
         acc       <= (others => '0');
         out_valid_r <= '0';
-        slot_free_r <= '1';
       elsif clk_en = '1' then
-        -- Registered downstream-ready view: trading one analog-packer cycle
-        -- for a shorter FIFO-ready -> packer state/address timing cone.
-        if out_valid_r = '0' or out_ready = '1' then
-          slot_free_r <= '1';
-        else
-          slot_free_r <= '0';
-        end if;
-
         -- Clear an accepted output word (unless a state below re-loads it).
         if out_valid_r = '1' and out_ready = '1' then
           out_valid_r <= '0';
@@ -169,7 +159,7 @@ begin
           -- EMIT_HEADER: present the header and precompute the block mask
           -- (2^W - 1) once, off the per-sample datapath.
           when EMIT_HEADER =>
-            if slot_free_r = '1' then
+            if out_valid_r = '0' or out_ready = '1' then
               out_data  <= '0' & std_logic_vector(w_lat) & '1' & "0000000000";
               out_valid_r <= '1';
               m12 := shift_left(to_unsigned(1, 12), to_integer(w_lat)) - 1;
@@ -185,7 +175,7 @@ begin
             state <= EMIT_ANCHOR;
 
           when EMIT_ANCHOR =>
-            if slot_free_r = '1' then
+            if out_valid_r = '0' or out_ready = '1' then
               out_data  <= anchor_word_r;
               out_valid_r <= '1';
               if pcount = 3 then
@@ -225,7 +215,7 @@ begin
           -- PACK_ACC: merge the pre-shifted chunk into the accumulator; emit a
           -- payload word when this sample completed 15 queued bits.
           when PACK_ACC =>
-            if slot_free_r = '1' then
+            if out_valid_r = '0' or out_ready = '1' then
               nacc := acc or chunk_shift_r;
               if emit_r = '1' then
                 out_data  <= '0' & std_logic_vector(nacc(14 downto 0));
@@ -244,7 +234,7 @@ begin
 
           -- DRAIN: flush any residual partial payload word (< 15 bits held).
           when DRAIN =>
-            if slot_free_r = '1' then
+            if out_valid_r = '0' or out_ready = '1' then
               if held > 0 then
                 out_data  <= '0' & std_logic_vector(acc(14 downto 0));
                 out_valid_r <= '1';

@@ -78,6 +78,9 @@ begin
 
     procedure expect_word(exp : std_logic_vector(15 downto 0); tag : string) is
     begin
+      -- Hold ready low before the word is produced, then validate that the
+      -- presented word remains stable for two stalled cycles.
+      out_ready <= '0';
       wait until rising_edge(clk) and out_valid = '1';
       if out_data /= exp then
         report "MISMATCH " & tag & ": got " & to_hstring(unsigned(out_data)) &
@@ -86,6 +89,20 @@ begin
       else
         report "OK " & tag & ": " & to_hstring(unsigned(out_data));
       end if;
+
+      -- Exercise the valid/ready contract: the consumer may stall after a
+      -- word is presented, so the packer must hold both valid and data.
+      for stall in 1 to 2 loop
+        wait until rising_edge(clk);
+        if out_valid /= '1' or out_data /= exp then
+          report "MISMATCH " & tag & " during backpressure: got valid=" &
+                 std_logic'image(out_valid) & " data=" &
+                 to_hstring(unsigned(out_data)) severity error;
+          errs := errs + 1;
+        end if;
+      end loop;
+      out_ready <= '1';
+      wait until rising_edge(clk);
     end procedure;
 
     -- W=5: 12 deltas of a small ramp, values fit in signed 5-bit (-16..15)
