@@ -106,7 +106,9 @@ The core capture engine: registered input sampling, sample rate division, BRAM p
 - FAST_CLK: `producer_done_toggle_f` toggles when sample budget exhausted
 - CLK side: detects toggle edge, enables drain completion counter
 - Fixes the old hang where completion waited on an exact write count the producer never reached
-- Validated 36/36 captures at full 4M depth across 18-200 MHz
+- The final seed-23 image passed the full-depth boundary capture,
+  back-to-back capture, readout-stress, and lifecycle checks in the 120/120
+  hardware regression.
 
 ## Key Signals
 

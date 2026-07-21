@@ -85,22 +85,20 @@ graph TB
 - Hardware route capabilities advertise optional RS-485 DE and SPI CS/MISO auxiliary routes
 - Register-controlled debug CH0 PWM loopback for hardware self-test
 - Readback compression (`raw` / direct `rle` / packed `delta_rle` modes)
-- Built with Quartus, targeting 10M08DAF484C8G, FAST_SPEED build
+- Built with Quartus, targeting Intel MAX 10 `10M08SAU169C8G`, FAST_SPEED build
 - SDRAM write timing is closed in STA with the DDIO-forwarded chip clock. The
   current full mixed-signal build uses **seed 23** (2026-07-21): the
   authoritative post-fit query reports worst setup slack `fast_clk +0.049 ns`
   in the slow corner, with all setup/hold paths positive. The analog-packer
   output remains bit-exact under backpressure.
-  Program and validate the image before treating it as the current board
-  image; see
+  The image is currently programmed on the validation board; see
   [`hdl/sdram-pll.md`](hdl/sdram-pll.md) for the DDIO clock-forward phase fix,
   [`hdl/mso-capture.md`](hdl/mso-capture.md) for the packed/MSO live-capture
   throughput fix, and `TIMING_REPORT_SUMMARY.md` for the full per-domain
   history. Re-sweep with `hdl/proj/seed_sweep.ps1` after any RTL change —
   this design is seed-sensitive at this density.
-- Live/continuous compressed digital capture (packed/MSO mode) sustains
-  ~90-105 MS/s effective 16-channel throughput plus ~25-30 kS/s per analog
-  channel simultaneously — see [`hdl/mso-capture.md`](hdl/mso-capture.md#rate-behavior-and-livecontinuous-capture).
-  The legacy `MODE_MIXED`/read-side-RLE paths are unchanged and much lower
-  (~0.14 MS/s and ~2 MS/s respectively) — packed mode is the one to use for
-  a fast compressed live view.
+- The exact programmed image passed the packed/MSO hardware check with
+  500,000 words, four balanced analog channels, and digital RLE slices. Live
+  readback characterization measured approximately 1.00 MS/s raw and
+  0.50 MS/s lossless `delta_rle` on the current USB path; see
+  [`hdl/mso-capture.md`](hdl/mso-capture.md#rate-behavior-and-livecontinuous-capture).

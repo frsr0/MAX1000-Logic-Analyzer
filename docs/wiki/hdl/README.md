@@ -97,9 +97,9 @@ the tested stream seams.
 
 | Property | Value |
 |---|---|
-| FPGA | Intel MAX 10 10M08DAF484C8G |
+| FPGA | Intel MAX 10 10M08SAU169C8G |
 | Speed grade | C8 |
 | Build profile | FAST_SPEED (200 MHz sample clock) |
-| Validated seed | 3 (2026-07-10; re-sweep after any RTL change — see `TIMING_REPORT_SUMMARY.md`) |
-| Utilisation | 84% LEs (6,750/8,064) |
+| Validated seed | 23 (2026-07-21; full mixed-signal build, see `TIMING_REPORT_SUMMARY.md`) |
+| Utilisation | 79% LEs (6,333/8,064) |
 | Toolchain | Quartus Prime (proj/compile.ps1) |

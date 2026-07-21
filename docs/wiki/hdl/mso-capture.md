@@ -126,13 +126,12 @@ one (near-zero samples reported despite a correctly armed new capture); see
 [capture-engine.md](capture-engine.md#continuoussingle-shot-packed-transition-race-fixed-2026-07-10)
 for the mechanism and fix (2026-07-10).
 
-**Measured throughput (2026-07-10, current board):** live continuous packed
-capture sustains **~90–105 MS/s effective 16-channel digital throughput**
-(after RLE reconstruction) and **~25–30 kS/s per analog channel**
-simultaneously and independently — digital doesn't wait on the ADC's slower
-scan cadence the way the legacy `MODE_MIXED` frame-locked path does (that
-path caps around ~140 kS/s total regardless of requested rate, since one
-14-byte frame is emitted per ADC scan). This is the only mode that gives a
-genuine "compressed digital + analog together" live capture; compression
-is unavailable in `MODE_MIXED`/`MODE_ANALOG_*` (`OLS_Interface.vhd`:
+**Board validation (2026-07-21):** the programmed seed-23 image produced
+500,000 packed words, four balanced analog channels (1,828 samples each),
+and digital RLE slices with the expected PWM dwell behavior. Separate live
+readback characterization measured approximately **1.00 MS/s raw** and
+**0.50 MS/s lossless `delta_rle`** on the current USB path. These live figures
+describe transport/readback capacity; the finite packed/MSO capture check
+validates the mixed-signal producer and decoder independently. Compression
+remains unavailable in `MODE_MIXED`/`MODE_ANALOG_*` (`OLS_Interface.vhd`:
 `comp_enable_i` is hardware-gated off whenever `analog_enable_i='1'`).

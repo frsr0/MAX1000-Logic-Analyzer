@@ -30,9 +30,9 @@ better.
 ## Known Limitations
 
 - Count limited to 16-bit (65,535 repeats); longer runs emit terminating pair + new run
-- The current FAST_SPEED full build instantiates this compressor. A
-  `FAST_RAW_BUILD=true` image excludes the MSO/compression path for timing
-  margin.
+- The current FAST_SPEED full build instantiates this compressor with the
+  MSO/compression path enabled. `FAST_RAW_BUILD=true` remains an explicit
+  diagnostic/minimal profile, not the validated default.
 
 ## Testing
 
