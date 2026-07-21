@@ -1,14 +1,10 @@
-# Historical Capture Compressor: `capture_compressor`
-
-> This wrapper is retained for RTL/testbench reference. The current FAST_SPEED
-> image performs readback compression in `OLS_Interface` with `rle_compressor`.
+# Capture Compressor: `capture_compressor`
 
 **File:** `hdl/rtl/capture_compressor.vhd` (6.7 KB)
 
 ## Purpose
 
-Legacy wrapper around the capture datapath compression modules. It is not on
-the active readback path.
+Delta-packing stage used by the active `delta_rle_compressor` readback path.
 
 ## Interface
 
@@ -21,12 +17,11 @@ The historical wrapper used `REG_FLAGS_COMPRESS` bits (18..19 of REG_FLAGS):
 | Value | Mode | Description |
 |---|---|---|
 | 00 | Raw | No compression (passthrough) |
-| 01 | Delta alias | No longer a separate active codec |
-| 10 | RLE | Historical RLE mode |
-| 11 | Delta+RLE | Retired |
+| 01 | Delta | Packed signed deltas followed by RLE |
+| 10 | RLE | Direct full-word RLE |
+| 11 | Reserved | Do not select |
 
-For the current image, the host supports `raw` and `delta_rle`; compatibility
-spellings resolve to the exact full-word RLE readback implementation.
+The host supports `raw`, `delta_rle` (or `delta`), and direct `rle`.
 
 ## Testing
 

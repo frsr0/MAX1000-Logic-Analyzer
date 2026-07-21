@@ -61,7 +61,7 @@ analog inputs wired in the RTL. The maximum-analog profile is the physical
 Digital readback supports:
 
 - `raw`
-- `delta_rle` in the host/UI surface
+- `delta_rle` packed-delta-plus-RLE and direct `rle` in the host/UI surface
 
 For the currently validated hardware block-read path, compressed capture blocks
 decode from exact RLE block payloads with zero raw-retry fallback on the tested

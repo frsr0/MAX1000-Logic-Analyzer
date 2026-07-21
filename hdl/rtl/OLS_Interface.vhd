@@ -318,6 +318,11 @@ SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
   SIGNAL comp_busy_i     : STD_LOGIC := '0';
   SIGNAL comp_in_ready_i : STD_LOGIC := '1';
   SIGNAL comp_enable_i : STD_LOGIC := '0';
+  SIGNAL delta_mode_i : STD_LOGIC := '0';
+  SIGNAL codec_out_data  : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  SIGNAL codec_out_valid : STD_LOGIC := '0';
+  SIGNAL codec_busy      : STD_LOGIC := '0';
+  SIGNAL codec_in_ready  : STD_LOGIC := '1';
   TYPE block_buf_t IS ARRAY(0 TO 255) OF STD_LOGIC_VECTOR(31 DOWNTO 0);
   SIGNAL block_buf            : block_buf_t := (others => (others => '0'));
   -- 21-cycle bit-serial divider for /3 (replaces 58-level lpm_divide)
@@ -1735,32 +1740,37 @@ BEGIN
   blk_rd_samples <= BLOCK_SAMPLES;
   comp_enable_i <= '1' when compress_mode_i /= "00" and analog_enable_i = '0' else '0';
 
-  -- Readback compressor runs at 100 MHz between the response FIFO drain and
-  -- block_buf. RLE is the sole digital codec: it does raw passthrough when
-  -- compression is disabled (mode "00") and run-length compression when
-  -- enabled (mode "01"/"10"). The delta wrapper (delta_rle_compressor) was
-  -- removed: keeping both delta and RLE could not close 167 MHz timing at
-  -- 99% LE, and the signed-delta stage overflowed on every digital toggle,
-  -- preventing RLE from collapsing idle/slow runs. Mode "01" (legacy "delta"
-  -- alias in the host driver) now does RLE the same as mode "10" — lossless,
-  -- exact, and fundamentally better on digital data.
-  rd_rle_compressor : entity work.rle_compressor
+  -- One shared RLE stage keeps both compressed modes timing-friendly:
+  -- mode "01" selects delta-packing before RLE, mode "10" feeds full words
+  -- directly into the same RLE stage, and mode "00" remains raw.
+  rd_readback_compressor : entity work.delta_rle_compressor
     PORT MAP (
       clk                => CLK,
       rst                => comp_rst_i,
       sample_in          => comp_sample_in,
       sample_valid       => comp_feed_i,
       compression_enable => comp_enable_i,
+      delta_mode         => delta_mode_i,
       flush              => comp_flush_i,
-      comp_data          => comp_out_data,
-      comp_valid         => comp_out_valid,
-      busy               => comp_busy_i,
-      in_ready           => comp_in_ready_i
+      comp_data          => codec_out_data,
+      comp_valid         => codec_out_valid,
+      busy               => codec_busy,
+      in_ready           => codec_in_ready
     );
+
+  -- The codec select is configuration state held for the duration of a
+  -- readback. Keep the common drain-facing interface registered/controlled by
+  -- that stable mode bit; the inactive codec is reset and cannot contribute
+  -- output words.
+  comp_out_data   <= codec_out_data;
+  comp_out_valid  <= codec_out_valid;
+  comp_busy_i     <= codec_busy;
+  comp_in_ready_i <= codec_in_ready;
 
   -- Streaming RLE feeds the compressor directly from the SDRAM read FIFO
   -- output; the FETCH/WAIT/FEED sequencer above only asserts comp_feed_i in the
   -- cycle Rd_Fifo_Q is valid, so no skid/holding register is needed.
   comp_sample_in <= comp_sample_hold;
+  delta_mode_i <= '1' when compress_mode_i = "01" else '0';
 
 END BEHAVIORAL;

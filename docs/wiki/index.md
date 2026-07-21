@@ -84,7 +84,7 @@ graph TB
 - UART, I²C, SPI, RS-485, SWD, raw Bit Banger, and PWM generation
 - Hardware route capabilities advertise optional RS-485 DE and SPI CS/MISO auxiliary routes
 - Register-controlled debug CH0 PWM loopback for hardware self-test
-- Exact full-word RLE readback compression (`raw` / `delta_rle` host modes)
+- Readback compression (`raw` / direct `rle` / packed `delta_rle` modes)
 - Built with Quartus, targeting 10M08DAF484C8G, FAST_SPEED build
 - SDRAM write timing is closed in STA with the DDIO-forwarded chip clock. The
   current full mixed-signal build uses **seed 21** (2026-07-21): the

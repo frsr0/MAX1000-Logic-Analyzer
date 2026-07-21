@@ -286,6 +286,9 @@ def decompress_rle_stream(data: bytes) -> bytes:
     return np.repeat(values, counts).tobytes()
 
 
-def decompress_block_readback_stream(data: bytes) -> bytes:
-    """Decompress one compressed CMD_READ_CAPTURE block (pure RLE)."""
-    return decompress_rle_stream(data)
+def decompress_block_readback_stream(data: bytes, *, codec: str = 'rle') -> bytes:
+    """Decompress one compressed CMD_READ_CAPTURE block."""
+    decoded = decompress_rle_stream(data)
+    if codec in ('delta', 'delta_rle'):
+        return decompress_delta_stream(decoded)
+    return decoded

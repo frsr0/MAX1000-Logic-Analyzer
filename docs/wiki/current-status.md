@@ -15,18 +15,18 @@ hardware contract, register map, or validated build changes.
 | Deep capture | 4,194,304 16-bit SDRAM words |
 | Physical generator pin pool | 26 entries: MKR_D[14:0], PMOD[7:0], SEN_SDO, SEN_SDI, SEN_SPC |
 | Generator FIFO | 256 bytes of host-encoded 2-bit symbols |
-| Latest programmed SOF | Previous validated image, checksum `0x004B11D4`; the new seed-21 image is built but not yet programmed |
+| Latest programmed SOF | Full-feature seed-21 image, checksum `0x004FE6F7` |
 
 The 2026-07-20 hardware smoke run passed all 10 checks, including discovery,
 metadata, capabilities, self-test, digital capture, sanity checks, UART,
 RS-485, SPI, and SWD generator loopback. The archived report is
 [hardware-smoke-2026-07-20.md](../hardware-smoke-2026-07-20.md).
 
-The 2026-07-21 full host validation run reached the existing board image and
-passed protocol, single/FAST/continuous capture, 200 MHz sample-count, narrow
-packed, MSO packed, trigger, generator, jumper, codec, and lifecycle sections
-before the long live-rate characterization. These results validate the
-flashed image, not the unflashed corrected RTL branch.
+The 2026-07-21 full-feature validation passed protocol, single/FAST/continuous
+capture, 200 MHz narrow packed, MSO packed, analog/mixed, trigger, generator,
+jumper, and lifecycle sections. The codec matrix passed both `delta_rle` and
+direct `rle` bit-exactly at 1, 10, 50, 100, and 200.4 MS/s. Live delta mode is
+lossless through 500 kS/s, matching raw's measured ceiling.
 
 ## Generator support
 
@@ -55,9 +55,8 @@ physical pins; it must never silently pretend that a missing wire exists.
   device; unsupported protocol searches run post-capture in software.
 - Raw capture data is preserved. Derived channels, decoder events,
   measurements, and exports are generated without mutating the source session.
-- Digital compressed readback is exact full-word RLE. `delta_rle` remains the
-  host-facing compatibility name for that path; mixed/analog readback remains
-  raw.
+- Digital compressed readback supports direct full-word `rle` and the restored
+  packed-delta-plus-RLE `delta_rle` codec. Mixed/analog readback remains raw.
 
 ## Verification baseline
 
@@ -87,11 +86,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\compile.ps1 -NoFlash -Seed
 Re-run the hardware smoke test after programming. A passing software suite is
 not evidence that a new bitstream has the expected routing.
 
-The current seed-21 full RTL/SDC build closes the authoritative post-fit query:
-slow-85C `fast_clk` worst setup slack is `+0.095 ns` (0 violated paths), and
-`sdram_core_clk` is `+0.410 ns` (0 violated paths). Hold timing is positive in
-the generated sign-off summary. The image must still be programmed and tested
-on the board before it replaces the previous validated SOF above.
+The restored full-feature seed-21 RTL/SDC build fits at 7,868/8,064 LEs and
+programs successfully, but its authoritative post-fit query still reports
+slow-85C `fast_clk` worst setup slack `-0.162 ns`; `sys_clk` and
+`sdram_core_clk` remain positive. This is an open timing-margin issue, not a
+feature-removal workaround: both compressed modes are present and validated on
+the board. Do not call this build timing-closed until the fast-clock path is
+fixed.
 
 The closure came from keeping the live sample-budget dependency single-cycle,
 removing the redundant nonzero-flag mux from the budget counter's data path,

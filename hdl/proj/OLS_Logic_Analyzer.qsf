@@ -49,10 +49,10 @@ set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity UART_Interface
 set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity ADC_Controller
 set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity Signal_Gen
 set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity Protocol_Trigger
-set_instance_assignment -name OPTIMIZATION_TECHNIQUE AREA -to "|OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1"
-set_instance_assignment -name OPTIMIZATION_TECHNIQUE AREA -to "|OLS_SDRAM_Top:core|Signal_Gen:GEN"
-set_instance_assignment -name OPTIMIZATION_TECHNIQUE AREA -to "|OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|OLS_Interface:OLS_Interface1|UART_Interface:UART_Interface1"
-set_instance_assignment -name OPTIMIZATION_TECHNIQUE AREA -to "|OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|OLS_Interface:OLS_Interface1|Protocol_Trigger:Proto_Trigger1"
+set_instance_assignment -name OPTIMIZATION_TECHNIQUE AREA -to "OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1"
+set_instance_assignment -name OPTIMIZATION_TECHNIQUE AREA -to "OLS_SDRAM_Top:core|Signal_Gen:GEN"
+set_instance_assignment -name OPTIMIZATION_TECHNIQUE AREA -to "OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|OLS_Interface:OLS_Interface1|UART_Interface:UART_Interface1"
+set_instance_assignment -name OPTIMIZATION_TECHNIQUE AREA -to "OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|OLS_Interface:OLS_Interface1|Protocol_Trigger:Proto_Trigger1"
 # Extra placement effort: at 99% LE the last ~20 ps of clk[2] slack is
 # placement noise; a 4x placement budget reliably buys it back.
 set_global_assignment -name PLACEMENT_EFFORT_MULTIPLIER 4
@@ -71,6 +71,8 @@ set_global_assignment -name VHDL_FILE ../rtl/SDRAM_Interface.vhd
 set_global_assignment -name VHDL_FILE ../rtl/SDRAM_Controller_Custom.vhd
 set_global_assignment -name VHDL_FILE ../rtl/SPI_Slave.vhd
 set_global_assignment -name VHDL_FILE ../rtl/rle_compressor.vhd
+set_global_assignment -name VHDL_FILE ../rtl/capture_compressor.vhd
+set_global_assignment -name VHDL_FILE ../rtl/delta_rle_compressor.vhd
 set_global_assignment -name VHDL_FILE ../rtl/delta_calc.vhd
 set_global_assignment -name VHDL_FILE ../rtl/analog_packer.vhd
 set_global_assignment -name VHDL_FILE ../rtl/digital_rle.vhd

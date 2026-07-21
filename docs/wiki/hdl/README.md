@@ -52,8 +52,8 @@
 
 ### Capture Subsystem
 
-The active readback codec is exact full-word RLE in `OLS_Interface`; the
-delta-RLE and capture-compressor pages below are historical references. See
+The active readback codecs are direct full-word RLE and packed delta-RLE in
+`OLS_Interface`. See
 [Hardware Validation](../hardware-validation.md) for the direct compression
 matrix and measured ratios.
 - [Capture Engine](capture-engine.md) — `Fast_Logic_Analyzer_SDRAM`: sample divider, BRAM, FIFO, SDRAM write pump, triple-buffer continuous mode, narrow digital, packed mode

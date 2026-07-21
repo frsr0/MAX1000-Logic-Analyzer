@@ -112,7 +112,7 @@ The SPI dispatch process decodes `pkt_cmd_active` and routes to sub-handlers:
 ### 5. Readback Compression and Raw Streaming
 
 - On compressed `CMD_READ_CAPTURE` blocks and `CMD_START_RAW_STREAM`, feeds
-  complete 16-bit samples through the exact full-word RLE compressor
+  complete 16-bit samples through the selected RLE compressor
 - `RAW_COMP_FIFO_DEPTH=8` words buffers compressed output
 - The SPI dispatch drains the FIFO as a byte stream (low byte first)
 - `raw_comp_pop` handshake between compressor and SPI shifter

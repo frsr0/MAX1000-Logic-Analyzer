@@ -84,15 +84,13 @@ class CaptureStrategy(ABC):
 
 - Configures: `MODE_DIGITAL`, set divider, sample count, trigger
 - Handles: single-shot and rolling (repeated finite captures)
-- Readback: `raw` or `delta_rle` (exact full-word RLE) compression
+- Readback: `raw`, direct `rle`, or packed-delta-plus-RLE `delta_rle`
 - BRAM fast path for ≤1024 samples
 
 ### `MixedCaptureStrategy` (mixed.py)
 
-Readback compression is digital-only. `delta_rle` is the host-facing name for
-the current exact RLE implementation; it does not imply that a delta stage is
-present in the flashed FAST_SPEED image. Compression efficiency depends on
-how many identical 16-bit samples occur in each run.
+Readback compression is digital-only. `delta_rle` expands packed delta words
+after RLE; `rle` expands full words directly. Mixed/analog readback remains raw.
 
 - Configures: `MODE_MIXED`, ADC scan profile
 - Captures: 16 digital channels + ADC0..ADC3 scan

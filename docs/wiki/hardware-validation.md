@@ -89,15 +89,14 @@ Ratios are encoded payload bytes only; SPI packet headers, USB latency, and
 host decode time are excluded. The 1 MHz PWM sampled at 1 MHz is
 phase/alias-sensitive and is not a useful waveform-compression benchmark.
 
-The current readback codec is exact full-word RLE. The historical delta-RLE
-implementation is not instantiated in the current FAST_SPEED bitstream;
-`delta_rle` remains the host-facing compatibility name.
+The readback matrix covers raw, exact full-word `rle`, and packed-delta-plus-RLE
+`delta_rle`; the two compressed modes are distinct hardware selections.
 
 ## Existing validation coverage
 
 `host/app/hw_validation.py` also contains a codec readback matrix that checks
-bit-exact raw/RLE round trips across rates, live-ring throughput
-characterization for raw and `delta_rle`, and digital, analog, mixed-signal,
+bit-exact raw/RLE/delta-RLE round trips across rates, live-ring throughput
+characterization for all three digital modes, and digital, analog, mixed-signal,
 generator, trigger, reset, and recovery tests.
 
 The physical two-jumper analog fixture is hard-gated by
