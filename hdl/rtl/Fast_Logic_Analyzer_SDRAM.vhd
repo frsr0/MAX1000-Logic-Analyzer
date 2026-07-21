@@ -1398,7 +1398,6 @@ begin
       end if;
     end if;
   end process;
-
   -- Write-port source mux. The registered-ready elastic buffer breaks the
   -- producer-ready -> producer-data timing loop identified by STA. It is
   -- conservative when full, but preserves ordering and never drops a word.
