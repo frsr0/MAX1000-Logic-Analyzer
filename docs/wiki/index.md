@@ -86,11 +86,11 @@ graph TB
 - Register-controlled debug CH0 PWM loopback for hardware self-test
 - Exact full-word RLE readback compression (`raw` / `delta_rle` host modes)
 - Built with Quartus, targeting 10M08DAF484C8G, FAST_SPEED build
-- SDRAM write timing is closed in STA with the DDIO-forwarded chip clock at
-  **seed 3** (2026-07-10 timing baseline): worst setup slack
-  `fast_clk +0.094 ns`, `sdram_core_clk +0.534 ns`, `sys_clk +1.275 ns`,
-  `SDRAM_CHIP_CLK_OUT +1.098 ns`; 84% LE (6,750/8,064). The latest smoke
-  image was compiled with seed 21; see
+- SDRAM write timing is closed in STA with the DDIO-forwarded chip clock. The
+  current full mixed-signal build uses **seed 5** (2026-07-21): worst setup
+  slack `fast_clk +0.002 ns`, `sdram_core_clk +0.164 ns`,
+  `sys_clk +0.726 ns`, `SDRAM_CHIP_CLK_OUT +1.098 ns`; 93% LE
+  (7,524/8,064). The fast-clock margin is only 2 ps; see
   [`hdl/sdram-pll.md`](hdl/sdram-pll.md) for the DDIO clock-forward phase fix,
   [`hdl/mso-capture.md`](hdl/mso-capture.md) for the packed/MSO live-capture
   throughput fix, and `TIMING_REPORT_SUMMARY.md` for the full per-domain

@@ -80,7 +80,8 @@ architecture rtl of analog_packer is
   -- Accumulator holds up to 14 residual bits + one MAX_WIDTH chunk before emit.
   constant ACC_W : positive := 15 + MAX_WIDTH;
 
-  type state_t is (FILL, EMIT_HEADER, EMIT_ANCHOR, PACK_LOAD, PACK_SHIFT, PACK_ACC, DRAIN);
+  type state_t is (FILL, EMIT_HEADER, EMIT_ANCHOR_LOAD, EMIT_ANCHOR,
+                   PACK_LOAD, PACK_SHIFT, PACK_ACC, DRAIN);
   signal state : state_t := FILL;
 
   type buf_array is array(0 to BLOCK_SAMPLES-1) of std_logic_vector(10 downto 0);
@@ -99,6 +100,7 @@ architecture rtl of analog_packer is
   signal hs_r     : natural range 0 to 14 := 0;                       -- shift amount for it
   signal emit_r   : std_logic := '0';                                 -- this sample fills a word
   signal chunk_shift_r : unsigned(ACC_W-1 downto 0) := (others => '0');
+  signal anchor_word_r : std_logic_vector(15 downto 0) := (others => '0');
 
   signal out_valid_r : std_logic := '0';
   signal slot_free_r : std_logic := '1';
@@ -172,12 +174,19 @@ begin
               out_valid_r <= '1';
               m12 := shift_left(to_unsigned(1, 12), to_integer(w_lat)) - 1;
               mask_lat <= m12(MAX_WIDTH-1 downto 0);
-              state <= EMIT_ANCHOR;
+              state <= EMIT_ANCHOR_LOAD;
             end if;
+
+          -- Select the next anchor in its own cycle.  Keeping the variable
+          -- anc_lat(pcount) mux off the output-register edge removes the
+          -- pcount -> out_data timing path in the 200 MHz FAST_CLK domain.
+          when EMIT_ANCHOR_LOAD =>
+            anchor_word_r <= "0000" & anc_lat(pcount);
+            state <= EMIT_ANCHOR;
 
           when EMIT_ANCHOR =>
             if slot_free_r = '1' then
-              out_data  <= "0000" & anc_lat(pcount);
+              out_data  <= anchor_word_r;
               out_valid_r <= '1';
               if pcount = 3 then
                 pcount <= 0;
@@ -188,6 +197,7 @@ begin
                 end if;
               else
                 pcount <= pcount + 1;
+                state <= EMIT_ANCHOR_LOAD;
               end if;
             end if;
 

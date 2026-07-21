@@ -10,7 +10,7 @@
 | Family | MAX 10 |
 | Package | 484-pin FBGA |
 | Speed grade | C8 |
-| Logic elements | 8,064 (84% used in current build, 2026-07-10) |
+| Logic elements | 8,064 (93% used in current build, 2026-07-21) |
 
 ## Project Files
 
@@ -59,8 +59,8 @@ clock closes with margin:
 ```
 
 Reports results to `seed_sweep_results.txt` and identifies the best-fit seed
-(current default candidate list defined in the script; last picked **seed 3**,
-2026-07-10).
+(current default candidate list defined in the script; best current pick
+**seed 5**, 2026-07-21).
 
 ## Timing Constraints (SDC)
 
@@ -96,7 +96,9 @@ Reports results to `seed_sweep_results.txt` and identifies the best-fit seed
 ## Known Issues
 
 - The generated wrapper in `proj/` is overwritten by `compile.ps1`
-- Seed 3 is the currently validated placement (2026-07-10) — this design is seed-sensitive at ~84% LE; re-sweep with `seed_sweep.ps1` after any RTL change
+- Seed 5 is the currently validated placement (2026-07-21), with only 0.002 ns
+  fast-clock setup margin; this design is seed-sensitive at ~93% LE. Re-sweep
+  with `seed_sweep.ps1` after any RTL change.
 - At ∼87% LE utilisation, fitter struggles — changing one parameter often requires a seed sweep to find a new valid placement
 - The `FAST_RAW_BUILD` option that excludes compression modules exists purely for timing closure at 200 MHz
 

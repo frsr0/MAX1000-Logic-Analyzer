@@ -16,7 +16,7 @@ set_global_assignment -name LAST_QUARTUS_VERSION "18.1.0 Lite Edition"
 set_global_assignment -name FAMILY "MAX 10"
 set_global_assignment -name DEVICE 10M08SAU169C8G
 set_global_assignment -name TOP_LEVEL_ENTITY OLS_Logic_Analyzer_wrapper
-set_global_assignment -name SEED 21
+set_global_assignment -name SEED 5
 set_global_assignment -name INTERNAL_FLASH_UPDATE_MODE "SINGLE IMAGE WITH ERAM"
 set_global_assignment -name OPTIMIZE_MULTI_CORNER_TIMING ON
 

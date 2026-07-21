@@ -11,12 +11,12 @@ param(
     # race; see fast-capture-write-scramble memory note /
     # Fast_Logic_Analyzer_SDRAM.vhd): Slow-85C setup slack sys_clk=+0.608ns,
     # fast_clk=+0.075ns, sdram_core_clk=+0.432ns, SDRAM_CHIP_CLK_OUT=+1.098ns
-    # at 6,765/8,064 LE (84%).
+    # at 7,524/8,064 LE (93%); fresh STA fast_clk slack is +0.002ns.
     # (Old seed 3 went fast_clk-negative after the dec_r pipeline-parity fix
     # reopened timing.)
     # Re-sweep (seed_sweep.ps1) after RTL or pin changes; bitstream remains
     # seed-sensitive at this density.
-    [int]$Seed = 21
+    [int]$Seed = 5
 )
 
 $FastRawBuild = if ($RawOnly) { 'true' } else { 'false' }

@@ -739,6 +739,23 @@ begin
       end if;
     end process;
 
+    -- Keep the wide analog-frame register out of the native digital/narrow
+    -- writer process.  Sharing that process caused Quartus to build a common
+    -- enable cone from narrow_word_pending_r into aframe_shift, which became
+    -- the post-route fast_clk critical path.  The load handshake is already
+    -- registered, so this separate process preserves the same cycle while
+    -- giving the frame register an independent enable path.
+    process(FAST_CLK)
+    begin
+      if rising_edge(FAST_CLK) then
+        if cfg_valid_edge = '1' then
+          aframe_shift <= (others => '0');
+        elsif aframe_load_pending_r = '1' and analog_burst_active = '0' then
+          aframe_shift <= aframe_pending;
+        end if;
+      end if;
+    end process;
+
     -- CDC: detect the slow ADC-frame toggle in FAST_CLK and snapshot the frame
     -- after it has settled. sys_clk toggles only after all 8 ADC result
     -- registers have been updated.
@@ -982,7 +999,6 @@ begin
         fifo_overflow_f <= '0';
         bram_wp_r <= 0;
         bram_cnt_r <= 0;
-        aframe_shift <= (others => '0');
         aword_idx <= 0;
         analog_burst_active <= '0';
         narrow_shift_r <= (others => '0');
@@ -1072,7 +1088,6 @@ begin
             -- stops cleanly on a frame boundary.
             if aframe_load_pending_r = '1' and analog_burst_active = '0' then
               -- Snapshot the coherent frame once; it is NOT shifted (see below).
-              aframe_shift <= aframe_pending;
               aword_count_f <= aword_count_pending;
               aword_idx <= 0;
               analog_burst_active <= '1';

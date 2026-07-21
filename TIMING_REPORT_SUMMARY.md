@@ -1,5 +1,14 @@
 # Timing Report Summary
-## Status: ✅ **PASSING - No Violations** (seed 3, current flashed build — see July 10 updates below)
+## Current status (2026-07-21)
+
+The fresh full mixed-signal Quartus build uses fitter seed 5 after isolating
+the analog frame register enable path. Slow 1200 mV 85 C setup slack is
+`fast_clk +0.002 ns`, `sdram_core_clk +0.164 ns`, `sys_clk +0.726 ns`, and
+`SDRAM_CHIP_CLK_OUT +1.098 ns`; all hold slack is positive and total negative
+slack is zero. The 2 ps fast-clock margin is technically closed but not robust;
+rerun `hdl/proj/seed_sweep.ps1` after any RTL or pin change.
+
+## Historical timing notes
 
 
 **Report Date:** July 5, 2026 (seed 30 build, STA summary from latest compilation)
