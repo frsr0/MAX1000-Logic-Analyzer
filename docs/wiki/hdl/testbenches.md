@@ -26,6 +26,8 @@ The HDL simulation suite covers every major subsystem. Testbenches use GHDL (VHD
 | `tb_core_batched_reads.vhd` | Core batched reads | CMD_READ_CAPTURE in series | Address continuity across blocks |
 | `tb_batched_reads.vhd` | FLA batched reads | Multiple read blocks | Correct block boundaries |
 | `tb_repeated_blockreads.vhd` | Repeated read blocks | Continuous block reads | No stale data |
+| `tb_fast_capture_budget.vhd` | FAST budget seam | Single-shot and continuous consume events | Exhaustion, done pulse, reload |
+| `tb_fast_capture_elastic_buffer.vhd` | FAST stream seam | Fill, stall, simultaneous pop/push | Stable output and ordered words |
 
 ## SDRAM
 

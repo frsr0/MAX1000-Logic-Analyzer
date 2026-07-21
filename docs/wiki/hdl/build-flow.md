@@ -19,7 +19,7 @@
 | `OLS_Logic_Analyzer.qsf` | Quartus Settings File — device, pin assignments, SDC, VHDL files |
 | `OLS_Logic_Analyzer.qpf` | Quartus Project File |
 | `OLS_Logic_Analyzer.sdc` | Synopsys Design Constraints — clock, I/O timing |
-| `OLS_Logic_Analyzer.vhd` | Generated wrapper (overwritten on compile) |
+| `OLS_Logic_Analyzer_wrapper.vhd` | Generated wrapper (overwritten on compile) |
 | `postfix_reports.tcl` | Post-fit timing report generation |
 | `report_after_buf_logic.tcl` | Report after buffer logic synthesis stage |
 | `report_after_analog_stage.tcl` | Report after analog synthesis stage |
@@ -35,7 +35,7 @@ PowerShell build script (current parameters, verified against the script 2026-07
 ```
 
 Parameters:
-- `-Seed` (default: 21 as of 2026-07-21; re-swept after every RTL change): Quartus fitter seed for placement/routing
+- `-Seed` (default: 21): Quartus fitter seed for placement/routing; re-sweep after every RTL change
 - `-NoFlash` (switch): compile only, skip JTAG programming
 - `-Flash` (switch): program the board via JTAG after compiling
 - `-RawOnly` (switch): build with `FAST_RAW_BUILD=true`, eliding the `mso_capture`/MSO bit-pack pipeline for extra timing margin (default is the full mixed-signal build with `mso_capture` included)
@@ -58,9 +58,8 @@ clock closes with margin:
 .\seed_sweep.ps1
 ```
 
-Reports results to `seed_sweep_results.txt` and identifies the best-fit seed
-(current default candidate list defined in the script; best current pick
-**seed 5**, 2026-07-21).
+Reports results to `seed_sweep_results.txt`. A seed is not considered validated
+unless the corrected RTL and current constraints both close setup and hold.
 
 ## Timing Constraints (SDC)
 
@@ -96,9 +95,12 @@ Reports results to `seed_sweep_results.txt` and identifies the best-fit seed
 ## Known Issues
 
 - The generated wrapper in `proj/` is overwritten by `compile.ps1`
-- Seed 5 is the currently validated placement (2026-07-21), with only 0.002 ns
-  fast-clock setup margin; this design is seed-sensitive at ~93% LE. Re-sweep
-  with `seed_sweep.ps1` after any RTL change.
+- The current corrected full build at seed 21 reports slow-85C `fast_clk`
+  setup slack `-0.139 ns` and TNS `-1.380 ns`; it is not safe to call this
+  200 MHz timing-closed or to flash it as a signoff image.
+- The design is seed-sensitive at roughly 93% LE. Re-sweep with
+  `seed_sweep.ps1` after any RTL change, but do not select a seed based on
+  frequency alone: all setup, hold, I/O, and CDC checks must be reviewed.
 - At ∼87% LE utilisation, fitter struggles — changing one parameter often requires a seed sweep to find a new valid placement
 - The `FAST_RAW_BUILD` option that excludes compression modules exists purely for timing closure at 200 MHz
 

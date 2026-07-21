@@ -15,12 +15,18 @@ hardware contract, register map, or validated build changes.
 | Deep capture | 4,194,304 16-bit SDRAM words |
 | Physical generator pin pool | 26 entries: MKR_D[14:0], PMOD[7:0], SEN_SDO, SEN_SDI, SEN_SPC |
 | Generator FIFO | 256 bytes of host-encoded 2-bit symbols |
-| Latest programmed SOF | `0x004ADCB4`, programmed 2026-07-20 |
+| Latest programmed SOF | Existing board image; corrected RTL not flashed because seed-21 FAST setup is negative |
 
-The latest hardware smoke run passed all 10 checks, including discovery,
+The 2026-07-20 hardware smoke run passed all 10 checks, including discovery,
 metadata, capabilities, self-test, digital capture, sanity checks, UART,
 RS-485, SPI, and SWD generator loopback. The archived report is
 [hardware-smoke-2026-07-20.md](../hardware-smoke-2026-07-20.md).
+
+The 2026-07-21 full host validation run reached the existing board image and
+passed protocol, single/FAST/continuous capture, 200 MHz sample-count, narrow
+packed, MSO packed, trigger, generator, jumper, codec, and lifecycle sections
+before the long live-rate characterization. These results validate the
+flashed image, not the unflashed corrected RTL branch.
 
 ## Generator support
 
@@ -80,6 +86,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\compile.ps1 -NoFlash -Seed
 
 Re-run the hardware smoke test after programming. A passing software suite is
 not evidence that a new bitstream has the expected routing.
+
+The corrected full RTL currently reports slow-85C `fast_clk` setup slack
+`-0.139 ns` and TNS `-1.380 ns` at seed 21. Do not use that image as a timing
+signoff build until setup closes.
 
 ## Known boundaries
 

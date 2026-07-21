@@ -87,6 +87,14 @@ matrix and measured ratios.
 
 ## Build Target
 
+## Current timing note
+
+The corrected RTL reference at fitter seed 21 reports slow-85C `fast_clk`
+setup slack `-0.139 ns` and TNS `-1.380 ns`; this is not a signoff-closed
+200 MHz image. See [Build Flow](build-flow.md) and
+[FAST Capture Stream](fast-capture-stream.md) for the current timing gate and
+the tested stream seams.
+
 | Property | Value |
 |---|---|
 | FPGA | Intel MAX 10 10M08DAF484C8G |
