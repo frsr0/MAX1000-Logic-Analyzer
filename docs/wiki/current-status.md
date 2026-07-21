@@ -15,7 +15,7 @@ hardware contract, register map, or validated build changes.
 | Deep capture | 4,194,304 16-bit SDRAM words |
 | Physical generator pin pool | 26 entries: MKR_D[14:0], PMOD[7:0], SEN_SDO, SEN_SDI, SEN_SPC |
 | Generator FIFO | 256 bytes of host-encoded 2-bit symbols |
-| Latest programmed SOF | Full-feature seed-21 image, checksum `0x005061C5` |
+| Latest programmed SOF | Full-feature seed-23 image, checksum `0x004EFFE9` |
 
 The 2026-07-20 hardware smoke run passed all 10 checks, including discovery,
 metadata, capabilities, self-test, digital capture, sanity checks, UART,
@@ -24,13 +24,16 @@ RS-485, SPI, and SWD generator loopback. The archived report is
 
 The 2026-07-21 full-feature validation passed protocol, single/FAST/continuous
 capture, 200 MHz narrow packed, MSO packed, analog/mixed, trigger, generator,
-jumper, and lifecycle sections. The codec matrix passed both `delta_rle` and
+and lifecycle sections; the jumper section passed its PMOD6/ADC3 path and
+flagged the missing PMOD5/ADC7 fixture path. The codec matrix passed both `delta_rle` and
 direct `rle` bit-exactly at 1, 10, 50, 100, and 200.4 MS/s. Live delta mode is
 lossless through 500 kS/s, matching raw's measured ceiling.
 
-The exact programmed image was revalidated on 2026-07-21: the MSO packed test
-produced 500,000 words with four balanced analog channels and digital RLE
-slices, and high-speed analog-only capture produced 512 valid frames.
+The exact programmed image was revalidated on 2026-07-21: the full new-test
+regression recorded 119/120 checks, with the only failure being the known
+PMOD5-to-AIN5/ADC7 physical jumper path. The independent PMOD6-to-AIN4/ADC3
+path passed, as did the MSO packed test with 500,000 words, four balanced
+analog channels, digital RLE slices, and high-speed analog-only capture.
 
 ## Generator support
 
@@ -83,20 +86,18 @@ For a new RTL image:
 
 ```powershell
 cd hdl\proj
-powershell -NoProfile -ExecutionPolicy Bypass -File .\compile.ps1 -NoFlash -Seed 21
+powershell -NoProfile -ExecutionPolicy Bypass -File .\compile.ps1 -NoFlash -Seed 23
 & 'C:\intelFPGA_lite\18.1\quartus\bin64\quartus_pgm.exe' -c 1 -m JTAG -o "P;output_files\OLS_Logic_Analyzer.sof"
 ```
 
 Re-run the hardware smoke test after programming. A passing software suite is
 not evidence that a new bitstream has the expected routing.
 
-The restored full-feature seed-21 RTL/SDC build fits at 6,333/8,064 LEs and
-programs successfully, but its authoritative post-fit query still reports
-slow-85C `fast_clk` worst setup slack `-0.013 ns`; `sys_clk` and
-`sdram_core_clk` remain positive. This is an open timing-margin issue, not a
-feature-removal workaround: both compressed modes are present and validated on
-the board. Do not call this build timing-closed until the fast-clock path is
-fixed.
+The restored full-feature seed-23 RTL/SDC build fits at 6,333/8,064 LEs and
+programs successfully. The authoritative post-fit query reports slow-85C
+`fast_clk` worst setup slack `+0.049 ns`; the other corners report `+0.270 ns`
+and `+1.286 ns`, with `sys_clk` and `sdram_core_clk` positive. Both compressed
+modes are present and validated on the board; seed 23 changes placement only.
 
 The closure came from keeping the live sample-budget dependency single-cycle,
 removing the redundant nonzero-flag mux from the budget counter's data path,
