@@ -11,7 +11,7 @@ hardware contract, register map, or validated build changes.
 | Board | Arrow MAX1000, Intel MAX 10 10M08 |
 | Transport | FT2232H Channel B, MPSSE SPI |
 | Digital channels | 16 |
-| FAST sample clock | 200 MHz nominal; 200.4 MHz in the validated build |
+| FAST sample clock | 200 MHz nominal; 200.4 MHz in the current build |
 | Deep capture | 4,194,304 16-bit SDRAM words |
 | Physical generator pin pool | 26 entries: MKR_D[14:0], PMOD[7:0], SEN_SDO, SEN_SDI, SEN_SPC |
 | Generator FIFO | 256 bytes of host-encoded 2-bit symbols |
@@ -88,7 +88,7 @@ Re-run the hardware smoke test after programming. A passing software suite is
 not evidence that a new bitstream has the expected routing.
 
 The corrected full RTL currently reports slow-85C `fast_clk` setup slack
-`-0.139 ns` and TNS `-1.380 ns` at seed 21. Do not use that image as a timing
+`-0.133 ns` and TNS `-0.539 ns` at seed 21. Do not use that image as a timing
 signoff build until setup closes.
 
 ## Known boundaries

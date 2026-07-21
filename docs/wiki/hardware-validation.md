@@ -22,13 +22,25 @@ On 2026-07-20 the connected MAX1000 was programmed with SOF checksum
 The full evidence, including session IDs and the programmed image, is in
 [docs/hardware-smoke-2026-07-20.md](../hardware-smoke-2026-07-20.md).
 
-The extended real-hardware run also passed the debug-PWM checks, lossless
-compression matrix, 8-pin generator routing sweep, protocol/trigger/SDRAM/
-mixed-signal matrix, and live Playwright browser session. The host matrix was
-**418/419 passed** and the isolated analog fixture run was **5/6 passed**.
-Both failures identify the same physical path: PMOD5/pool 20 to AIN5/ADC7.
-PMOD6/pool 21 to AIN4/ADC3 passed. Treat the PMOD5 result as a fixture/wiring
-blocker, not as a software pass.
+The latest full real-hardware run on 2026-07-21 completed **432/434 passed,
+2 failed, 0 skipped**. Core protocol, digital/FAST/continuous capture,
+200 MHz sample-count, packed digital/MSO, generator, trigger, SDRAM,
+mixed-signal, codec, lifecycle, accelerometer, readout-stress, noise, and
+long-duration stress checks passed.
+
+The two failures are bench-sensitive rather than capture-path failures:
+
+- The debug-on rising-edge test saw six transitions on floating CH13 against a
+  five-transition cleanliness threshold; the CH0 trigger fired correctly and
+  all other channel checks passed.
+- PMOD5/pool 20 to AIN5/ADC7 did not meet the full-scale UART-activity
+  threshold. PMOD6/pool 21 to AIN4/ADC3 passed, and the digital jumper matrix
+  passed. Treat the PMOD5 result as a fixture/wiring blocker until that path is
+  reseated or rerouted.
+
+The raw/delta-RLE live-ring characterization measured an approximately
+1.00 MS/s lossless ceiling on this USB host path; delta-RLE peak throughput
+was approximately 1.91 MS/s at the 10 kHz source case.
 
 Run the smoke test from `backend/`; run the legacy validation/debug tools from
 `host/`, with the FTDI/JTAG hardware connected:
