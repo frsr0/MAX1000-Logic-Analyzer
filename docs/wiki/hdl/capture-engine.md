@@ -16,7 +16,7 @@ The core capture engine: registered input sampling, sample rate division, BRAM p
 | `Channels` | 16 | Number of digital channels (1..16) |
 | `Sim` | false | Simulation mode (faster completion countdown) |
 | `FAST_SPEED` | false | Enable 200 MHz sample clock path |
-| `FAST_RAW_BUILD` | true | Exclude compression at elaboration |
+| `FAST_RAW_BUILD` | false | Full feature build; explicit `RawOnly` opt-out excludes compression |
 | `CLK_Frequency` | 100,000,000 | System clock |
 | `SDRAM_CLK_HZ` | 166,666,667 | SDRAM clock |
 | `SAMPLE_CLK_HZ` | 200,000,000 | Sample clock for BRAM depth calc |

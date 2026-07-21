@@ -13,7 +13,8 @@ ENTITY OLS_SDRAM_Top IS
     Sim         : boolean := false;
     FAST_SPEED  : boolean := false;
     -- FAST_RAW_BUILD: when true, exclude MSO compression at elaboration time.
-    FAST_RAW_BUILD : boolean := true;
+    -- Full feature build by default; RawOnly is an explicit opt-out.
+    FAST_RAW_BUILD : boolean := false;
     -- When true, forward the SDRAM chip clock through a DDIO output register.
     USE_DDIO_CLK_FORWARD : boolean := true
   );
@@ -285,7 +286,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Channels    : NATURAL := LA_CHANNELS;
     Sim         : boolean := false;
     FAST_SPEED  : boolean := false;
-    FAST_RAW_BUILD : boolean := true
+    -- Full feature build by default; RawOnly is an explicit opt-out.
+    FAST_RAW_BUILD : boolean := false
   );
   PORT (
     CLK : IN STD_LOGIC;

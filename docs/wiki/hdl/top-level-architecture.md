@@ -17,7 +17,7 @@ Top-level entity for the MAX1000 build. Integrates the SDRAM-based logic analyse
 | `PLL_DIV` | 1 | PLL divider |
 | `Sim` | false | Simulation mode (disables PLL, uses gated clocks) |
 | `FAST_SPEED` | false | When true: sys_clk=100.2 MHz, fast_clk=200.4 MHz, sdram_clk=167 MHz |
-| `FAST_RAW_BUILD` | true | Excludes compression modules at elaboration time for timing closure |
+| `FAST_RAW_BUILD` | false | Full feature build; explicit `RawOnly` opt-out excludes compression |
 
 ### Ports
 

@@ -19,7 +19,7 @@ Structural wrapper that instantiates and wires the three main components of the 
 | `Channels` | 4 | Number of channels (may differ from FLA) |
 | `Sim` | false | Simulation mode |
 | `FAST_SPEED` | false | Enable 200 MHz sample path |
-| `FAST_RAW_BUILD` | true | Exclude compression at elaboration |
+| `FAST_RAW_BUILD` | false | Full feature build; explicit `RawOnly` opt-out excludes compression |
 
 ### Ports
 

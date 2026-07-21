@@ -13,7 +13,8 @@ ENTITY OLS_Logic_Analyzer IS
     Channels        : NATURAL := 4;
     Sim             : boolean := false;
     FAST_SPEED      : boolean := false;
-    FAST_RAW_BUILD  : boolean := true
+    -- Full feature build by default; RawOnly is an explicit opt-out.
+    FAST_RAW_BUILD  : boolean := false
   );
 PORT (
   CLK : IN STD_LOGIC;
@@ -294,7 +295,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
     Channels       : NATURAL range 1 to 16 := 16;
     Sim            : boolean := false;
     FAST_SPEED     : boolean := false;
-    FAST_RAW_BUILD : boolean := true;
+    -- Full feature build by default; RawOnly is an explicit opt-out.
+    FAST_RAW_BUILD : boolean := false;
     CLK_Frequency  : NATURAL := 100_000_000;
     SDRAM_CLK_HZ   : NATURAL := 166_666_667;
     SAMPLE_CLK_HZ  : NATURAL := 200_000_000;

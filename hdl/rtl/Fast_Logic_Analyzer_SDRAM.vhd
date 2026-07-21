@@ -14,7 +14,9 @@ entity Fast_Logic_Analyzer_SDRAM is
     -- time for maximum timing closure. Only fast input sampling, minimal
     -- packing, registered FIFO bridge, SDRAM write pump, and OLS readout
     -- are included. When false, compression modules are available for MSO builds.
-    FAST_RAW_BUILD : boolean := true;
+    -- Full feature build by default; use the explicit RawOnly profile to
+    -- elide the MSO compression pipeline for diagnostic timing experiments.
+    FAST_RAW_BUILD : boolean := false;
     CLK_Frequency : natural := 100_000_000;
     SDRAM_CLK_HZ : natural := 166_666_667;
     SAMPLE_CLK_HZ : natural := 200_000_000;
