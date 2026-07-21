@@ -29,10 +29,12 @@ The invariants are exercised by
 fill, full-state readiness, stalled-head stability, simultaneous pop/push, and
 final drain.
 
-Both modules are included in the Quartus project, but the elastic buffer is
-currently a verified integration seam rather than the live packed FIFO mux.
-An attempted live integration worsened the measured fast-clock setup slack
-from `-0.139 ns` to `-0.284 ns`, so it was rejected by the timing gate.
+Both modules are included in the Quartus project. The registered-ready buffer
+is now integrated at the packed FIFO boundary. It removed the original
+producer-ready/data loop and improved seed-21 setup from `-0.139 ns` to
+`-0.133 ns` (TNS `-0.539 ns`), but the design is still not timing-closed.
+An earlier combinational-ready integration worsened setup to `-0.284 ns` and
+was rejected by the timing gate.
 
 ## Integration rule
 

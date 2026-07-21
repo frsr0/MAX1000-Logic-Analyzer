@@ -58,17 +58,29 @@ begin
     assert out_valid = '1' and out_data = x"11"
       report "head changed while full" severity failure;
 
-    -- Pop while pushing: the second word is delivered, new word is retained.
-    in_data <= x"33";
+    -- A full buffer conservatively releases ready for one cycle after a pop.
+    out_ready <= '1';
+    tick;
+    out_ready <= '0';
+    assert out_valid = '1' and out_data = x"22"
+      report "full-buffer pop did not advance to second word" severity failure;
+    assert in_ready = '1' report "pop did not re-open registered ready" severity failure;
+
+    push(16#33#);
+    pop_expect(16#22#);
+    pop_expect(16#33#);
+
+    -- With one entry present, pop and push are accepted together.
+    push(16#44#);
+    in_data <= x"55";
     in_valid <= '1';
     out_ready <= '1';
     tick;
     in_valid <= '0';
     out_ready <= '0';
-    assert out_valid = '1' and out_data = x"22"
+    assert out_valid = '1' and out_data = x"55"
       report "simultaneous pop/push lost ordering" severity failure;
-    pop_expect(16#22#);
-    pop_expect(16#33#);
+    pop_expect(16#55#);
 
     assert out_valid = '0' report "buffer not empty after final pop" severity failure;
     report "=== TB PASSED: fast_capture_elastic_buffer invariants ===" severity note;

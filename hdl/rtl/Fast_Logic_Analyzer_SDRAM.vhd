@@ -245,12 +245,12 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   -- the original behaviour). packed_mode_f is Packed_Mode 2FF-synced to FAST_CLK.
   signal afifo_wdata : std_logic_vector(AFIFO_WIDTH-1 downto 0) := (others => '0');
   signal afifo_wr    : std_logic := '0';
-  signal packed_stage_data  : std_logic_vector(15 downto 0) := (others => '0');
-  signal packed_stage_valid : std_logic := '0';
-  signal packed_stage_pop   : std_logic := '0';
-  signal packed_stage_push  : std_logic := '0';
-  signal packed_fifo_wdata_r : std_logic_vector(15 downto 0) := (others => '0');
-  signal packed_fifo_wr_r    : std_logic := '0';
+  signal packed_buf_in_valid : std_logic := '0';
+  signal packed_buf_in_ready : std_logic := '0';
+  signal packed_buf_out_data : std_logic_vector(15 downto 0) := (others => '0');
+  signal packed_buf_out_valid : std_logic := '0';
+  signal packed_buf_out_ready : std_logic := '0';
+  signal packed_buf_rst : std_logic := '0';
   signal packed_mode_meta : std_logic := '0';
   signal packed_mode_f    : std_logic := '0';
   signal fifo_wrusedw : std_logic_vector(AFIFO_WIDTHU-1 downto 0) := (others => '0');
@@ -1019,7 +1019,7 @@ begin
             -- Packed mode (mso_capture) samples digital_in unconditionally
             -- every fast_clk cycle -- no Rate_Div/sample_tick_r gating (see
             -- mso_capture.vhd) -- and its own afifo write-port mux
-            -- (afifo_wdata/afifo_wr above) routes packed_fifo_wr_r/wdata_r
+            -- (afifo_wdata/afifo_wr above) routes the elastic packed stream
             -- into the afifo instead of fifo_wr/fifo_wdata when
             -- packed_mode_f='1', so asserting fifo_wr here is a pure
             -- budget-tick (harmlessly discarded by that mux), not a real
@@ -1399,59 +1399,32 @@ begin
     end if;
   end process;
 
-  -- Write-port source mux. In packed mode a 1-word staging register breaks the
-  -- producer -> FIFO RAM input path in the 200 MHz domain while preserving
-  -- one-word-per-cycle throughput when the FIFO is draining. A second register
-  -- stage on wrreq/data breaks packed_afull_r -> dcfifo wrptr (same-cycle pop
-  -- was the -0.61 ns path after registering almost-full).
-  packed_stage_pop  <= '1' when packed_stage_valid = '1' and packed_afull_r = '0' else '0';
-  packed_stage_push <= '1' when Packed_Valid = '1' and packed_mode_f = '1'
-                               and run_f_level = '1' and packed_stop_f = '0'
-                               and pump_live_f = '1'
-                               and (packed_stage_valid = '0' or packed_afull_r = '0')
-                       else '0';
+  -- Write-port source mux. The registered-ready elastic buffer breaks the
+  -- producer-ready -> producer-data timing loop identified by STA. It is
+  -- conservative when full, but preserves ordering and never drops a word.
+  packed_buf_rst <= '1' when packed_rst_f = '1' or packed_mode_f = '0'
+                              or run_f_level = '0' else '0';
+  packed_buf_in_valid <= '1' when Packed_Valid = '1' and packed_mode_f = '1'
+                              and run_f_level = '1' and packed_stop_f = '0'
+                              and pump_live_f = '1' else '0';
+  packed_buf_out_ready <= not packed_afull_r;
 
-  -- Producer-side ready: mirrors the packed_stage_push acceptance exactly
-  -- (minus Packed_Valid, which the producer ANDs in), so a word the mux
-  -- writes on ready is always the word the stage pushes the same cycle.
-  -- All terms are FAST_CLK-registered.
+  packed_stream_buf : entity work.fast_capture_elastic_buffer
+    generic map (DATA_WIDTH => 16)
+    port map (
+      clk       => FAST_CLK,
+      rst       => packed_buf_rst,
+      in_data   => Packed_Data,
+      in_valid  => packed_buf_in_valid,
+      in_ready  => packed_buf_in_ready,
+      out_data  => packed_buf_out_data,
+      out_valid => packed_buf_out_valid,
+      out_ready => packed_buf_out_ready
+    );
+
   Packed_Ready <= '1' when packed_mode_f = '1' and run_f_level = '1'
                        and packed_stop_f = '0' and pump_live_f = '1'
-                       and (packed_stage_valid = '0' or packed_afull_r = '0')
-                  else '0';
-
-  process(FAST_CLK)
-  begin
-    if rising_edge(FAST_CLK) then
-      if packed_rst_f = '1' then
-        packed_fifo_wr_r <= '0';
-      else
-        packed_fifo_wr_r <= packed_stage_pop;
-      end if;
-      if packed_stage_pop = '1' then
-        packed_fifo_wdata_r <= packed_stage_data;
-      end if;
-    end if;
-  end process;
-
-  process(FAST_CLK)
-  begin
-    if rising_edge(FAST_CLK) then
-      if packed_rst_f = '1' or packed_mode_f = '0' or run_f_level = '0' then
-        packed_stage_valid <= '0';
-      else
-        if packed_stage_push = '1' then
-          packed_stage_data <= Packed_Data;
-        end if;
-
-        if packed_stage_push = '1' then
-          packed_stage_valid <= '1';
-        elsif packed_stage_pop = '1' then
-          packed_stage_valid <= '0';
-        end if;
-      end if;
-    end if;
-  end process;
+                       and packed_buf_in_ready = '1' else '0';
 
   -- Non-packed FAST_CLK skid buffer: registers fifo_wdata and fifo_wr from the
   -- producer processes so the dcfifo write port sees clean registered signals.
@@ -1467,11 +1440,11 @@ begin
     end if;
   end process;
 
-  -- Write-port source mux: packed mode uses the registered packed path (which
-  -- has its own two-stage skid in packed_fifo_wdata_r/wr_r); non-packed mode
-  -- uses the skid buffer above. Both present registered data/wrreq to the dcfifo.
-  afifo_wdata  <= packed_fifo_wdata_r when packed_mode_f = '1' else fifo_wr_skid_data_r;
-  afifo_wr     <= packed_fifo_wr_r    when packed_mode_f = '1' else fifo_wr_skid_req_r;
+  -- Write-port source mux: packed mode consumes the elastic buffer; non-packed
+  -- mode uses the existing registered skid path.
+  afifo_wdata  <= packed_buf_out_data when packed_mode_f = '1' else fifo_wr_skid_data_r;
+  afifo_wr     <= packed_buf_out_valid and packed_buf_out_ready when packed_mode_f = '1'
+                  else fifo_wr_skid_req_r;
 
   -- Async FIFO (dcfifo) bridging FAST_CLK (write) to pclk (read).
   -- Sync depths increased to 4 for safer CDC across the ~200 MHz / ~167 MHz

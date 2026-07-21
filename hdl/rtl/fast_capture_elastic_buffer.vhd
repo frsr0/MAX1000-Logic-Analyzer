@@ -28,18 +28,20 @@ architecture rtl of fast_capture_elastic_buffer is
   signal data1_r  : std_logic_vector(DATA_WIDTH-1 downto 0) := (others => '0');
   signal valid0_r : std_logic := '0';
   signal valid1_r : std_logic := '0';
-  signal in_ready_i : std_logic;
+  signal in_ready_r : std_logic := '1';
 begin
   out_data  <= data0_r;
   out_valid <= valid0_r;
 
-  -- A full buffer can accept exactly when its head is being consumed.
-  in_ready_i <= not valid1_r or (out_ready and valid0_r);
-  in_ready <= in_ready_i;
+  -- Registered ready intentionally avoids a producer-ready -> producer-data
+  -- combinational loop. It is conservative when full: a pop frees a slot and
+  -- re-advertises readiness on the following cycle.
+  in_ready <= in_ready_r;
 
   process(clk)
     variable pop : std_logic;
     variable push : std_logic;
+    variable count_v : integer range 0 to 2;
   begin
     if rising_edge(clk) then
       if rst = '1' then
@@ -47,9 +49,10 @@ begin
         valid1_r <= '0';
         data0_r  <= (others => '0');
         data1_r  <= (others => '0');
+        in_ready_r <= '1';
       else
         pop  := valid0_r and out_ready;
-        push := in_valid and in_ready_i;
+        push := in_valid and in_ready_r;
 
         if pop = '1' then
           if valid1_r = '1' then
@@ -79,6 +82,21 @@ begin
             data1_r  <= in_data;
             valid1_r <= '1';
           end if;
+        end if;
+
+        if valid1_r = '1' then
+          count_v := 2;
+        elsif valid0_r = '1' then
+          count_v := 1;
+        else
+          count_v := 0;
+        end if;
+        if pop = '1' then count_v := count_v - 1; end if;
+        if push = '1' then count_v := count_v + 1; end if;
+        if count_v < 2 then
+          in_ready_r <= '1';
+        else
+          in_ready_r <= '0';
         end if;
       end if;
     end if;
