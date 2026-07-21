@@ -33,9 +33,16 @@ Both modules are included in the Quartus project. The registered-ready buffer
 is integrated at the packed FIFO boundary. The packed budget tick is now
 separate from the ordinary FIFO write request, so `packed_mode_f` is no longer
 on the async FIFO write-port control path. The full MSO build at seed 21 now
-reports `-0.098 ns` FAST setup slack (`-0.147 ns` TNS); it remains a
-non-signoff image. The raw-only build hard-disables the packed branch and
-closes at `+0.118 ns` FAST setup and `+0.337 ns` SDRAM-core setup.
+reports `+0.095 ns` worst FAST setup slack and `+0.410 ns` SDRAM-core setup
+slack in the authoritative post-fit query. The new image is not a hardware
+sign-off image until it has been programmed and the board suite rerun.
+
+The budget counter's decrement pipeline is clamped at zero. Its write is
+therefore unconditional on the one-bit nonzero status: a stale terminal flag
+can only write zero, never underflow, while removing that flag from the wide
+counter data mux closes the 200.4 MHz path. The flag still gates producer
+activity and completion. The raw-only build remains available as a diagnostic
+profile.
 
 An earlier combinational-ready integration worsened setup to `-0.284 ns` and
 was rejected by the timing gate.

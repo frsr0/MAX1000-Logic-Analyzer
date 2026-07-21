@@ -88,20 +88,20 @@ unless the corrected RTL and current constraints both close setup and hold.
 
 | Profile | FAST_SPEED | FAST_RAW_BUILD | Fmax (fast_clk) | Use Case |
 |---|---|---|---|---|
-| Full (default) | true | false | 200.4 MHz nominal | Corrected full RTL; includes `mso_capture`/MSO bit-pack pipeline; not a signoff image until timing closes |
+| Full (default) | true | false | 200.4 MHz nominal | Full RTL; includes `mso_capture`/MSO bit-pack pipeline; seed 21 currently closes post-fit setup |
 | Raw-only | true | true | 200.4 MHz (`+0.118 ns`) | Timing-closed digital/analog build; elides `mso_capture` (`-RawOnly`) |
 | Slow | false | true | 12-50 MHz | Low-speed debug |
 
 ## Known Issues
 
 - The generated wrapper in `proj/` is overwritten by `compile.ps1`
-- The current corrected full build at seed 21 reports slow-85C `fast_clk`
-  setup slack `-0.098 ns` and TNS `-0.147 ns`; it is not safe to call this
-  200 MHz timing-closed or to flash it as a signoff image.
-- The complete current eight-seed sweep confirms that placement alone does
-  not close the full image: FAST setup slack ranges from `-0.098 ns` (best,
-  seed 21) to `-0.413 ns` (seed 5). The exact table is recorded in
-  `seed_sweep_results.txt`.
+- The current seed-21 full build closes the authoritative `query_final.tcl`
+  post-fit report at slow-85C: `fast_clk +0.095 ns` and
+  `sdram_core_clk +0.410 ns`, with zero violated paths in both reports.
+  Hold checks are positive. Re-run the query after every fitter or SDC change.
+- The earlier eight-seed sweep was run before the final budget-path change and
+  is historical; its results remain in `seed_sweep_results.txt` and must not
+  be used to select a replacement seed without a fresh sweep.
 - The design is seed-sensitive at roughly 93% LE. Re-sweep with
   `seed_sweep.ps1` after any RTL change, but do not select a seed based on
   frequency alone: all setup, hold, I/O, and CDC checks must be reviewed.

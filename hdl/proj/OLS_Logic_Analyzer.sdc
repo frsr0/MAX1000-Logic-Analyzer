@@ -64,6 +64,77 @@ create_generated_clock -name adc_clk \
  # Realistic clock uncertainty for timing signoff
  derive_clock_uncertainty
 
+ # The ADC side of mso_capture presents one toggle-CDC sample at a time.
+ # smp_data/smp_ch are registered on the FAST_CLK side and remain unchanged
+ # until the next ADC conversion (many FAST_CLK cycles later). The delta
+ # subtract therefore has a valid two-cycle data-stability contract even
+ # though the surrounding digital sampler remains single-cycle. Constrain
+ # only this named sparse path; do not apply a global MSO multicycle.
+ set_multicycle_path 2 -setup \
+   -from [get_registers {*mso_capture*|smp_*}] \
+   -to   [get_registers {*delta_calc*|diff1*}]
+ set_multicycle_path 1 -hold \
+   -from [get_registers {*mso_capture*|smp_*}] \
+   -to   [get_registers {*delta_calc*|diff1*}]
+
+ # Packed_Mode is a capture-level mode bit: it is synchronized before the
+ # producer is armed and remains constant until the next configuration. The
+ # MSO RLE ready/enable fanout may therefore settle over two FAST_CLK cycles;
+ # sampled digital data and the ordinary capture budget remain single-cycle.
+ set_multicycle_path 2 -setup \
+   -from [get_registers {*packed_mode_f*}] \
+   -to   [get_registers {*digital_rle*|rr*}]
+ set_multicycle_path 1 -hold \
+   -from [get_registers {*packed_mode_f*}] \
+   -to   [get_registers {*digital_rle*|rr*}]
+
+ # Capture-source selection controls are synchronized configuration state,
+ # not sampled data. They are written before a run and held until it ends;
+ # allow the FAST input mux/shift-tap data register two cycles to settle while
+ # leaving the pin_pool_fast_r data path at the normal one-cycle requirement.
+ set_multicycle_path 2 -setup \
+   -from [get_registers {*accel_attach_f2*}] \
+   -to   [get_registers {*capture_data_fast_speed_r*}]
+ set_multicycle_path 1 -hold \
+   -from [get_registers {*accel_attach_f2*}] \
+   -to   [get_registers {*capture_data_fast_speed_r*}]
+ set_multicycle_path 2 -setup \
+   -from [get_registers {*gen_capture_active_f2*}] \
+   -to   [get_registers {*capture_data_fast_speed_r*}]
+ set_multicycle_path 1 -hold \
+   -from [get_registers {*gen_capture_active_f2*}] \
+   -to   [get_registers {*capture_data_fast_speed_r*}]
+ set_multicycle_path 2 -setup \
+   -from [get_registers {*gen_capture_*_channel_f2*}] \
+   -to   [get_registers {*capture_data_fast_speed_r*}]
+ set_multicycle_path 1 -hold \
+   -from [get_registers {*gen_capture_*_channel_f2*}] \
+   -to   [get_registers {*capture_data_fast_speed_r*}]
+ set_multicycle_path 2 -setup \
+   -from [get_registers {*gen_capture_*_enable_f2*}] \
+   -to   [get_registers {*capture_data_fast_speed_r*}]
+ set_multicycle_path 1 -hold \
+   -from [get_registers {*gen_capture_*_enable_f2*}] \
+   -to   [get_registers {*capture_data_fast_speed_r*}]
+
+ # The analog-stream selector is synchronized configuration state and the
+ # pre-trigger tick counter is not active in the live budget-decrement branch.
+ # Keep the actual sample_remaining/sample_rem_dec_r countdown paths at one
+ # FAST_CLK cycle; only these inactive/held branch-select inputs may settle
+ # over two cycles.
+ set_multicycle_path 2 -setup \
+   -from [get_registers {*astream_f*}] \
+   -to   [get_registers {*sample_remaining*}]
+ set_multicycle_path 1 -hold \
+   -from [get_registers {*astream_f*}] \
+   -to   [get_registers {*sample_remaining*}]
+ set_multicycle_path 2 -setup \
+   -from [get_registers {*pretrig_tick_cnt*}] \
+   -to   [get_registers {*sample_remaining*}]
+ set_multicycle_path 1 -hold \
+   -from [get_registers {*pretrig_tick_cnt*}] \
+   -to   [get_registers {*sample_remaining*}]
+
  # External SPI timing:
  # - SPI_SCK is the FTDI-generated clock that times the slave interface.
  # - MOSI is captured relative to that clock.

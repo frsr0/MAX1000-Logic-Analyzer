@@ -1057,19 +1057,22 @@ begin
             -- ~96 MS/s effective at a 2 MS/s request vs ~4 MS/s at 100
             -- MS/s), capping packed-mode throughput far below what the
             -- inline compressor can actually sustain.
-            if sample_rem_nonzero_r = '1' then
-              -- continuous_f (synced), not the raw Continuous_Mode port --
-              -- see the Stage 2c comment above for the bug this caused.
-              if sample_remaining = 0 and continuous_f = '1' then
-                -- Auto-renew (mirrors Stage 2c's reload on the same edge):
-                -- reload the budget instead of freezing at 0, so packed
-                -- continuous/live capture never permanently halts.
-                sample_remaining <= cfg_samples;
-              else
-                sample_remaining <= sample_rem_dec_r;
-                if sample_remaining = 1 and continuous_f = '0' then
-                  packed_budget_last_r <= '1';
-                end if;
+            -- continuous_f (synced), not the raw Continuous_Mode port --
+            -- see the Stage 2c comment above for the bug this caused.
+            if sample_remaining = 0 and continuous_f = '1' then
+              -- Auto-renew (mirrors Stage 2c's reload on the same edge):
+              -- reload the budget instead of freezing at 0, so packed
+              -- continuous/live capture never permanently halts.
+              sample_remaining <= cfg_samples;
+            else
+              -- sample_rem_dec_r is already clamped at zero.  Keeping this
+              -- assignment unconditional removes the sample_rem_nonzero_r
+              -- flag from the counter's FAST_CLK data path; the flag still
+              -- gates producer activity and completion, while a stale flag
+              -- can only write another zero, never underflow the budget.
+              sample_remaining <= sample_rem_dec_r;
+              if sample_remaining = 1 and continuous_f = '0' then
+                packed_budget_last_r <= '1';
               end if;
             end if;
           elsif narrow_word_pending_r = '1' and afull_r = '0' then
@@ -1077,9 +1080,7 @@ begin
             -- mux above; here we only assert the write strobe and clear pending.
             fifo_wr <= '1';
             narrow_word_pending_r <= '0';
-            if sample_rem_nonzero_r = '1' then
-              sample_remaining <= sample_rem_dec_r;
-            end if;
+            sample_remaining <= sample_rem_dec_r;
           -- Pre-trigger BRAM is digital-only; skip it entirely in analog stream
           -- mode so only ADC frame words enter the FIFO.
           elsif pretrig_en_r = '1' and pretrig_tick_cnt < 8 and astream_f = '0' then
@@ -1130,9 +1131,7 @@ begin
               else
               aword_idx <= aword_idx + 1;
               end if;
-              if sample_rem_nonzero_r = '1' then
-                sample_remaining <= sample_rem_dec_r;
-              end if;
+              sample_remaining <= sample_rem_dec_r;
             end if;
             if afull_r = '1' and continuous_f = '0' then
               fifo_overflow_f <= '1';
@@ -1179,11 +1178,9 @@ begin
             -- the sample budget, keeping capture_en_r off the fifo_wdata cone.
             if afull_r = '0' then
               fifo_wr <= '1';
-              -- guard: at full rate one in-flight tick can push a word after
-              -- the nonzero flag clears; don't underflow the natural
-              if sample_rem_nonzero_r = '1' then
-                sample_remaining <= sample_rem_dec_r;
-              end if;
+              -- sample_rem_dec_r is clamped at zero, so a one-cycle stale
+              -- nonzero flag cannot underflow the natural counter.
+              sample_remaining <= sample_rem_dec_r;
             end if;
             if afull_r = '1' and continuous_f = '0' then
               fifo_overflow_f <= '1';

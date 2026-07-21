@@ -22,20 +22,17 @@ On 2026-07-20 the connected MAX1000 was programmed with SOF checksum
 The full evidence, including session IDs and the programmed image, is in
 [docs/hardware-smoke-2026-07-20.md](../hardware-smoke-2026-07-20.md).
 
-The latest full-image targeted real-hardware run on 2026-07-21 completed
-**116/117 passed, 1 failed, 0 skipped** against SOF checksum `0x004B11D4`.
-Continuous ring, 200 MHz narrow capture, packed digital/MSO, analog/mixed
-signal, codec, readout-stress, and lifecycle checks passed.
+The latest complete real-hardware run on 2026-07-21 completed
+**432/433 passed, 1 failed, 0 skipped** against the newly programmed seed-21
+SOF checksum `0x004A74F2`. Continuous ring, 200 MHz narrow capture, packed
+digital/MSO, analog/mixed signal, codec, readout-stress, generator matrix,
+trigger, full-depth SDRAM, and lifecycle checks passed.
 
 The earlier complete suite on the prior flashed image was **432/434 passed,
-2 failed, 0 skipped**; its additional protocol/generator/stress checks also
-passed.
+2 failed, 0 skipped**.
 
 The two failures are bench-sensitive rather than capture-path failures:
 
-- The debug-on rising-edge test saw six transitions on floating CH13 against a
-  five-transition cleanliness threshold; the CH0 trigger fired correctly and
-  all other channel checks passed.
 - PMOD5/pool 20 to AIN5/ADC7 did not meet the full-scale UART-activity
   threshold. PMOD6/pool 21 to AIN4/ADC3 passed, and the digital jumper matrix
   passed. Treat the PMOD5 result as a fixture/wiring blocker until that path is

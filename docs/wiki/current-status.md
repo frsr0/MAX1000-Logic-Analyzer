@@ -15,7 +15,7 @@ hardware contract, register map, or validated build changes.
 | Deep capture | 4,194,304 16-bit SDRAM words |
 | Physical generator pin pool | 26 entries: MKR_D[14:0], PMOD[7:0], SEN_SDO, SEN_SDI, SEN_SPC |
 | Generator FIFO | 256 bytes of host-encoded 2-bit symbols |
-| Latest programmed SOF | Current corrected full image, checksum `0x004B11D4`; full profile remains timing-negative |
+| Latest programmed SOF | Previous validated image, checksum `0x004B11D4`; the new seed-21 image is built but not yet programmed |
 
 The 2026-07-20 hardware smoke run passed all 10 checks, including discovery,
 metadata, capabilities, self-test, digital capture, sanity checks, UART,
@@ -87,14 +87,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\compile.ps1 -NoFlash -Seed
 Re-run the hardware smoke test after programming. A passing software suite is
 not evidence that a new bitstream has the expected routing.
 
-The corrected full RTL currently reports slow-85C `fast_clk` setup slack
-`-0.098 ns` and TNS `-0.147 ns` at seed 21. Do not use that image as a timing
-signoff build until setup closes.
+The current seed-21 full RTL/SDC build closes the authoritative post-fit query:
+slow-85C `fast_clk` worst setup slack is `+0.095 ns` (0 violated paths), and
+`sdram_core_clk` is `+0.410 ns` (0 violated paths). Hold timing is positive in
+the generated sign-off summary. The image must still be programmed and tested
+on the board before it replaces the previous validated SOF above.
 
-The full current eight-seed sweep still has no timing-closed MSO image: seed
-21 is best at `-0.098 ns` FAST setup slack, while the other tested seeds range
-down to `-0.413 ns`. See [the sweep table](../../hdl/proj/seed_sweep_results.txt) and
-[the build-flow timing notes](hdl/build-flow.md).
+The closure came from keeping the live sample-budget dependency single-cycle,
+removing the redundant nonzero-flag mux from the budget counter's data path,
+and constraining only stable configuration/inactive branch-select paths in the
+SDC. Sample data and the active countdown remain single-cycle paths.
 
 ## Known boundaries
 
