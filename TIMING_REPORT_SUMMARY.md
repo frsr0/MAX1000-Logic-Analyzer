@@ -1,14 +1,13 @@
 # Timing Report Summary
 ## Current status (2026-07-21)
 
-The corrected full mixed-signal Quartus build uses fitter seed 21 after adding
-an analog-packer RAM-read pipeline and pending output slot. Slow 1200 mV 85 C
-setup slack is `fast_clk -0.139 ns`, `sdram_core_clk +0.172 ns`,
-`sys_clk +0.492 ns`, and `SDRAM_CHIP_CLK_OUT +1.098 ns`; all hold slack is
-positive, but setup timing is not yet closed. The eight-seed sweep found seed
-21 best; see `hdl/proj/seed_sweep_results.txt`.
-rerun `hdl/proj/seed_sweep.ps1` after any RTL or pin change.
-
+The corrected full mixed-signal Quartus build uses fitter seed 23 after the
+analog-packer and FAST-stream timing work. Slow-85C setup slack is
+`fast_clk +0.049 ns`; the other setup corners report `+0.270 ns` and
+`+1.286 ns`, with all setup and hold checks positive. Resource use is
+6,333/8,064 LEs (79%), 2,586 registers, and 63 pins. See
+`hdl/proj/seed_sweep_results.txt`; rerun `hdl/proj/seed_sweep.ps1` after any
+RTL or pin change.
 ## Historical timing notes
 
 

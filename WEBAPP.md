@@ -250,11 +250,11 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
   ~12–18 MHz (completion waited on an exact write-count the producer never quite
   reached). Open-page policy + producer-done completion fix both: single-shot
   deep capture now completes and reads back clean at every rate up to the full
-  200 MHz sample clock (validated 36/36 captures, 0 isolated dropped samples,
+  200 MHz sample clock (covered by the final 120/120 hardware regression, 0 isolated dropped samples,
   18–200 MHz, full 4,194,304-word depth).
 - `CMD_GEN_CAPTURE` UART, RS-485, and SPI loopback routes are covered by the
-  smoke/API tests; I²C smoke remains opt-in because it needs an external slave
-  and the full host validation suite. The UART loopback path is decoded through
+  smoke/API tests; I²C is additionally validated against the on-board LIS3DH
+  accelerometer in the full host validation suite. The UART loopback path is decoded through
   the same backend decoder path used by user captures.
 - Hardware triggers cover rising/falling edge, level triggers (high/low/
   pattern/bus_value — REG_TRIGGER_MASK level matcher), and the UART-byte
@@ -263,8 +263,8 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
 - No analogue front-end beyond the MAX10 ADC (1 MSPS single-channel,
   125 kframes/s 4-input physical analog scan, 3.3 V internal reference).
   Mixed mode scans ADC0-ADC3 at the same scan frame rate. High-speed analog
-  uses one selected ADC mux channel; maximum analog scans the physical profile
-  ADC1,2,3,4,5,7,8,16. AC coupling,
+  uses one selected ADC mux channel; maximum analog uses the validated physical
+  four-input profile ADC1,2,3,4 -> AIN3, AIN1, AIN4, AIN6. AC coupling,
   probe relays, per-channel gain
   are **marked unavailable** — never faked. Mock analog exists only in mock mode.
 - The four capture modes are full digital, mixed, high-speed single-analog,
@@ -298,8 +298,8 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
 - Mixed/analog/digital recovery is validated by back-to-back hardware tests;
   each capture setup writes the complete mode state.
 - Continuous `Rate_Div=1` startup is covered by HDL and hardware validation.
-- FPGA utilization on the current image is ~87% logic elements / 79%
-  combinational / 41% registers / 75% memory bits. Planned: trim duplicate
+- FPGA utilization on the current image is 6,333/8,064 LEs (79%), with 2,586
+  registers and 63 pins. Planned: trim duplicate
   debug/test mux logic guided by synthesis reports; do not block feature fixes
   on logic cleanup unless compile fails.
 
@@ -309,8 +309,8 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
   suspect annotations over immutable saved waveforms.
 - Current workflow includes drag-and-drop channel ordering, visibility groups,
   saved layouts, transaction timelines, and a Ctrl/Cmd+K command palette.
-- FFT/spectrum view exists as an API endpoint (`/spectrum`) — dedicated UI
-  panel, histogram and persistence views are future modules.
+- FFT/spectrum, spectrogram, XY, correlation, envelope, and threshold-sweep
+  views are available through the API and current frontend analysis panels.
 - Physical generator routes and register-explorer workflows remain bounded by
   firmware and board routing; software exercisers and the capability matrix are
   documented in `FEATURE_CAPABILITY_MATRIX.md`.
