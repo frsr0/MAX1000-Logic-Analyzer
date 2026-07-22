@@ -83,6 +83,7 @@ set_global_assignment -name VHDL_FILE ../rtl/fast_capture_elastic_buffer.vhd
 set_global_assignment -name VHDL_FILE ../rtl/ADC_Controller.vhd
 set_global_assignment -name VHDL_FILE ../rtl/Bit_Engine.vhd
 set_global_assignment -name VHDL_FILE ../rtl/Protocol_Trigger.vhd
+set_global_assignment -name VHDL_FILE ../rtl/Generic_Pattern_Trigger.vhd
 set_global_assignment -name VHDL_FILE ../rtl/Signal_Gen.vhd
 set_global_assignment -name VHDL_FILE ../rtl/SDRAM_PLL.vhd
 set_global_assignment -name VHDL_FILE OLS_Logic_Analyzer_wrapper.vhd

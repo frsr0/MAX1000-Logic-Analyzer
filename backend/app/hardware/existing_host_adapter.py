@@ -149,6 +149,7 @@ class ExistingHostAdapter(HardwareDevice):
             ("rising", "hardware", "REG_TRIGGER_MASK edge trigger, any channel set"),
             ("falling", "hardware", "REG_TRIGGER_MASK edge trigger, any channel set"),
             ("uart_byte", "hardware", "Protocol trigger (byte match at baud)"),
+            ("generic_pattern", "hardware", "UART/SPI/parallel masked frame matcher"),
             ("any_edge", "post_capture", "Software search after capture"),
             ("high", "hardware", "REG_TRIGGER_MASK level trigger: all selected channels high"),
             ("low", "hardware", "REG_TRIGGER_MASK level trigger: all selected channels low"),
@@ -560,6 +561,14 @@ class ExistingHostAdapter(HardwareDevice):
 
     def _build_trigger(self, settings: CaptureSettings):
         trig = settings.trigger
+        dev = self._dev
+        if trig.type == "generic_pattern":
+            pattern = trig.model_dump()
+            if pattern.get("clock_source") == "internal_baud":
+                pattern["baud_div"] = max(1, round(dev.sample_clk / max(1, trig.baud or 115200)))
+            dev.configure_pattern_trigger(pattern)
+            return None
+        dev.configure_pattern_trigger(None)
         register_trigger = to_register_config(trig)
         if register_trigger is not None:
             return register_trigger

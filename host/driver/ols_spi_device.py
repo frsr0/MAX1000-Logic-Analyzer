@@ -32,6 +32,8 @@ from driver.spi_protocol import (
     REG_FLAGS_COMPRESS_MASK, REG_FLAGS_COMPRESS_DELTA, REG_FLAGS_COMPRESS_RLE,
     REG_DIVIDER, REG_SAMPLE_COUNT, REG_DELAY_COUNT,
     REG_TRIGGER_MASK, REG_TRIGGER_VALUE, REG_FLAGS,
+    REG_PATTERN_CTRL, REG_PATTERN_CHANNELS, REG_PATTERN_VALUE,
+    REG_PATTERN_MASK, REG_PATTERN_BAUD,
     REG_FAST_MODE, REG_CONT_MODE,
     REG_GEN_PROTO, REG_GEN_BAUD, REG_GEN_PINS, REG_GEN_DATA,
     REG_GEN_RX_DATA, REG_GEN_AUX_PINS, REG_GEN_CAPTURE_AUX,
@@ -777,6 +779,30 @@ class OLSDeviceSPI:
             "channel": max(0, min(15, int(channel))),
             "baud": max(1, int(baud)),
         }
+
+    def configure_pattern_trigger(self, config=None):
+        """Write the protocol-independent FPGA pattern-trigger registers."""
+        if not config:
+            self.pkt.write_register(REG_PATTERN_CTRL, 0)
+            return
+        channels = config.get("channels", [])
+        channel_mask = sum(1 << (int(c) & 31) for c in channels)
+        source = 1 if config.get("clock_source", "external_edge") == "external_edge" else 0
+        edge = 1 if config.get("clock_edge", "rising") == "falling" else 0
+        start = 1 if config.get("start_mode", "edge_on_channel") == "edge_on_channel" else 0
+        polarity = 1 if config.get("start_polarity", 0) else 0
+        order = 1 if config.get("bit_order", "lsb_first") == "msb_first" else 0
+        width = max(1, min(32, int(config.get("frame_width", 8))))
+        start_channel = max(0, min(31, int(config.get("start_channel", 0))))
+        clock_channel = max(0, min(31, int(config.get("clock_channel", 0))))
+        ctrl = (1 | source << 1 | edge << 2 | start << 3 | polarity << 4 |
+                order << 5 | start_channel << 6 | clock_channel << 11 |
+                width << 16)
+        self.pkt.write_register(REG_PATTERN_CHANNELS, channel_mask)
+        self.pkt.write_register(REG_PATTERN_VALUE, int(config.get("value", 0)) & 0xFFFFFFFF)
+        self.pkt.write_register(REG_PATTERN_MASK, int(config.get("match_mask", 0xFFFFFFFF)) & 0xFFFFFFFF)
+        self.pkt.write_register(REG_PATTERN_BAUD, max(1, min(65535, int(config.get("baud_div", 1)))))
+        self.pkt.write_register(REG_PATTERN_CTRL, ctrl)
 
     def protocol_trigger(self):
         return self._protocol_trigger

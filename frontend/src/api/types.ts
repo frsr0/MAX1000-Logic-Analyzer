@@ -80,6 +80,15 @@ export interface TriggerConfig {
   value?: number | null;
   width_s?: number | null;
   baud?: number | null;
+  clock_source?: 'internal_baud' | 'external_edge';
+  clock_edge?: 'rising' | 'falling';
+  start_mode?: 'edge_on_channel' | 'none';
+  start_channel?: number;
+  start_polarity?: number;
+  clock_channel?: number;
+  frame_width?: number;
+  match_mask?: number | null;
+  bit_order?: 'msb_first' | 'lsb_first';
   occurrence?: number;
   window_s?: number | null;
   sequence_steps?: { type: string; value?: number | null }[];
@@ -372,7 +381,9 @@ export interface MilTransactionResponse {
 
 export const defaultTrigger = (): TriggerConfig => ({
   type: 'none', channels: [], pre_trigger_samples: 0, position_pct: 0,
-  execution: 'hardware',
+  execution: 'hardware', clock_source: 'external_edge', clock_edge: 'rising',
+  start_mode: 'edge_on_channel', start_channel: 0, start_polarity: 0,
+  clock_channel: 0, frame_width: 8, match_mask: 0xFFFFFFFF, bit_order: 'lsb_first',
 });
 
 export const defaultCaptureSettings = (): CaptureSettings => ({

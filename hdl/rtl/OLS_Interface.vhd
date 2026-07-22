@@ -111,6 +111,13 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL Run_OLS  : STD_LOGIC := '0';
   SIGNAL Trigger_Mask   : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL Trigger_Values : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL pattern_ctrl    : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL pattern_channels : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL pattern_value   : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL pattern_mask    : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+  SIGNAL pattern_baud    : NATURAL range 1 to 65535 := 1;
+  SIGNAL pattern_width   : NATURAL range 1 to 32 := 8;
+  SIGNAL pattern_trigger : STD_LOGIC := '0';
   SIGNAL inputs_prev    : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL Divider : NATURAL range 0 to 16777215 := 0;
   SIGNAL Read_Count  : NATURAL := 0;
@@ -385,6 +392,26 @@ SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
   END COMPONENT;
 
 BEGIN
+  Generic_Trigger : entity work.Generic_Pattern_Trigger
+    port map (
+      CLK               => CLK,
+      Inputs            => Inputs,
+      Enable            => Run_OLS and pattern_ctrl(0),
+      Clock_Source      => pattern_ctrl(1),
+      Clock_Edge        => pattern_ctrl(2),
+      Start_Mode        => pattern_ctrl(3),
+      Start_Channel     => TO_INTEGER(UNSIGNED(pattern_ctrl(10 downto 6))),
+      Start_Polarity    => pattern_ctrl(4),
+      Clock_Channel     => TO_INTEGER(UNSIGNED(pattern_ctrl(15 downto 11))),
+      Data_Channel_Mask => pattern_channels,
+      Baud_Div          => pattern_baud,
+      Frame_Width       => pattern_width,
+      Match_Value       => pattern_value,
+      Match_Mask        => pattern_mask,
+      Bit_Order         => pattern_ctrl(5),
+      Trigger           => pattern_trigger
+    );
+
   PROCESS (CLK)
     variable fifo_v : raw_comp_fifo_t;
     variable fifo_wr_v : natural range 0 to RAW_COMP_FIFO_LAST;
@@ -433,6 +460,27 @@ BEGIN
           Trigger_Mask <= disp_reg_wdata;
         WHEN REG_TRIGGER_VALUE =>
           Trigger_Values <= disp_reg_wdata;
+        WHEN REG_PATTERN_CTRL =>
+          pattern_ctrl <= disp_reg_wdata;
+          IF TO_INTEGER(UNSIGNED(disp_reg_wdata(21 downto 16))) < 1 THEN
+            pattern_width <= 1;
+          ELSIF TO_INTEGER(UNSIGNED(disp_reg_wdata(21 downto 16))) > 32 THEN
+            pattern_width <= 32;
+          ELSE
+            pattern_width <= TO_INTEGER(UNSIGNED(disp_reg_wdata(21 downto 16)));
+          END IF;
+        WHEN REG_PATTERN_CHANNELS =>
+          pattern_channels <= disp_reg_wdata;
+        WHEN REG_PATTERN_VALUE =>
+          pattern_value <= disp_reg_wdata;
+        WHEN REG_PATTERN_MASK =>
+          pattern_mask <= disp_reg_wdata;
+        WHEN REG_PATTERN_BAUD =>
+          IF TO_INTEGER(UNSIGNED(disp_reg_wdata(15 downto 0))) = 0 THEN
+            pattern_baud <= 1;
+          ELSE
+            pattern_baud <= TO_INTEGER(UNSIGNED(disp_reg_wdata(15 downto 0)));
+          END IF;
         WHEN REG_FLAGS =>
           fast_mode_i <= disp_reg_wdata(0);
           continuous_mode_i <= disp_reg_wdata(1);
@@ -544,7 +592,11 @@ BEGIN
     END IF;
     IF (Run = '0') THEN
       IF (Run_OLS = '1') THEN
-        IF (UNSIGNED(Trigger_Mask(29 downto 0)) = 0) THEN
+        IF pattern_ctrl(0) = '1' THEN
+          IF pattern_trigger = '1' THEN
+            Run <= '1';
+          END IF;
+        ELSIF (UNSIGNED(Trigger_Mask(29 downto 0)) = 0) THEN
           Run <= '1';
         ELSIF (Trigger_Mask(31 downto 30) = "00") THEN
           -- Level trigger: fire when inputs match Trigger_Values on masked bits
@@ -1394,6 +1446,16 @@ BEGIN
                     reg_val := Trigger_Mask;
                   when REG_TRIGGER_VALUE =>
                     reg_val := Trigger_Values;
+                  when REG_PATTERN_CTRL =>
+                    reg_val := pattern_ctrl;
+                  when REG_PATTERN_CHANNELS =>
+                    reg_val := pattern_channels;
+                  when REG_PATTERN_VALUE =>
+                    reg_val := pattern_value;
+                  when REG_PATTERN_MASK =>
+                    reg_val := pattern_mask;
+                  when REG_PATTERN_BAUD =>
+                    reg_val := std_logic_vector(to_unsigned(pattern_baud, 32));
                   when REG_FLAGS | REG_FAST_MODE =>
                     reg_val(0) := fast_mode_i;
                     reg_val(1) := continuous_mode_i;
