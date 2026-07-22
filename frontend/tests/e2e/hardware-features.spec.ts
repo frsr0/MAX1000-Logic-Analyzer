@@ -37,3 +37,30 @@ test('hardware queue captures a real MAX1000 session', async ({ page }) => {
   await expect(page.getByText(/session ses_/)).toBeVisible();
   await page.screenshot({ path: path.join(screenshots, 'hardware-capture-job.png'), fullPage: true });
 });
+
+test('hardware accelerometer sequence trigger scopes the I2C decoder', async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const body = {
+      decoder_instance: 'dec-accel',
+      auto_scope: true,
+      trigger: {
+        type: 'sequence',
+        sequence_steps: [{ type: 'start', value: 25 }, { type: 'byte', value: 15 }],
+        window_s: 0.01,
+        occurrence: 1,
+        pre_trigger_samples: 0,
+        position_pct: 0,
+        execution: 'post_capture',
+      },
+    };
+    const response = await fetch('/api/sessions/ses_454be01209/trigger-search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Client-Id': localStorage.getItem('msa_client_id') ?? '' },
+      body: JSON.stringify(body),
+    });
+    return response.json();
+  });
+  expect(result.sample).toBe(1800);
+  expect(result.event.type).toBe('start');
+  expect(result.scopes).toEqual([{ decoder_id: 'dec-accel', start_sample: 1800, end_sample: 1800, event_count: 1 }]);
+});
