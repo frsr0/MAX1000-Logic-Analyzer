@@ -785,20 +785,30 @@ class OLSDeviceSPI:
         if not config:
             self.pkt.write_register(REG_PATTERN_CTRL, 0)
             return
-        channels = config.get("channels", [])
-        channel_mask = sum(1 << (int(c) & 31) for c in channels)
+        raw_channels = [int(c) for c in config.get("channels", [])]
+        if not 1 <= len(raw_channels) <= 4:
+            raise ValueError("generic pattern trigger requires 1 to 4 data channels")
+        if any(channel < 0 or channel > 15 for channel in raw_channels):
+            raise ValueError("generic pattern trigger channels must be in range 0..15")
+        channels = raw_channels[:]
+        while len(channels) < 4:
+            channels.append(0)
         source = 1 if config.get("clock_source", "external_edge") == "external_edge" else 0
         edge = 1 if config.get("clock_edge", "rising") == "falling" else 0
         start = 1 if config.get("start_mode", "edge_on_channel") == "edge_on_channel" else 0
         polarity = 1 if config.get("start_polarity", 0) else 0
         order = 1 if config.get("bit_order", "lsb_first") == "msb_first" else 0
         width = max(1, min(32, int(config.get("frame_width", 8))))
-        start_channel = max(0, min(31, int(config.get("start_channel", 0))))
-        clock_channel = max(0, min(31, int(config.get("clock_channel", 0))))
+        start_channel = int(config.get("start_channel", 0))
+        clock_channel = int(config.get("clock_channel", 0))
+        if not 0 <= start_channel <= 15 or not 0 <= clock_channel <= 15:
+            raise ValueError("generic pattern trigger clock/start channels must be in range 0..15")
+        lane_count = len(channels)
+        channel_selectors = sum((channel & 0xF) << (4 * i) for i, channel in enumerate(channels))
         ctrl = (1 | source << 1 | edge << 2 | start << 3 | polarity << 4 |
                 order << 5 | start_channel << 6 | clock_channel << 11 |
-                width << 16)
-        self.pkt.write_register(REG_PATTERN_CHANNELS, channel_mask)
+                width << 16 | (lane_count - 1) << 22)
+        self.pkt.write_register(REG_PATTERN_CHANNELS, channel_selectors)
         self.pkt.write_register(REG_PATTERN_VALUE, int(config.get("value", 0)) & 0xFFFFFFFF)
         self.pkt.write_register(REG_PATTERN_MASK, int(config.get("match_mask", 0xFFFFFFFF)) & 0xFFFFFFFF)
         self.pkt.write_register(REG_PATTERN_BAUD, max(1, min(65535, int(config.get("baud_div", 1)))))

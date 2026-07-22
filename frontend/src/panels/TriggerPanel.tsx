@@ -89,17 +89,18 @@ export function TriggerPanel() {
       )}
       {needsChannels && (
         <div className="field">
-          <span>Channels</span>
+          <span>{trig.type === 'generic_pattern' ? 'Channels (max 4, 0-15)' : 'Channels'}</span>
           <div className="bus-members">
             {Array.from({ length: capabilities?.digital_channels ?? 16 }, (_, i) => (
               <label key={i} className="chip">
                 <input type="checkbox" checked={trig.channels.includes(i)}
+                  disabled={trig.type === 'generic_pattern' && !trig.channels.includes(i) && trig.channels.length >= 4}
                   onChange={(e) => setTrig({
                     channels: e.target.checked
                       ? [...trig.channels, i].sort((a, b) => a - b)
                       : trig.channels.filter((c) => c !== i),
                   })} />
-                {i}
+                {i}{trig.type === 'generic_pattern' && i === 0 ? ' (max 4)' : ''}
               </label>
             ))}
           </div>
@@ -149,14 +150,14 @@ export function TriggerPanel() {
               <option value="uart">UART</option><option value="spi">SPI</option><option value="parallel">Parallel bus</option>
             </select>
           </label>
-          <label className="field"><span>Clock channel</span><input type="number" min={0} max={31} value={trig.clock_channel ?? 0} onChange={(e) => setTrig({ clock_channel: Number(e.target.value) })} /></label>
+          <label className="field"><span>Clock channel</span><input type="number" min={0} max={15} value={trig.clock_channel ?? 0} onChange={(e) => setTrig({ clock_channel: Number(e.target.value) })} /></label>
           <label className="field"><span>Clock source</span><select value={trig.clock_source ?? 'external_edge'} onChange={(e) => setTrig({ clock_source: e.target.value as any })}><option value="internal_baud">Internal baud</option><option value="external_edge">External edge</option></select></label>
           <label className="field"><span>Clock edge</span><select value={trig.clock_edge ?? 'rising'} onChange={(e) => setTrig({ clock_edge: e.target.value as any })}><option value="rising">Rising</option><option value="falling">Falling</option></select></label>
           <label className="field"><span>Baud</span><input type="number" min={1} value={trig.baud ?? 115200} onChange={(e) => setTrig({ baud: Number(e.target.value) })} /></label>
           <label className="field"><span>Frame width (bits)</span><input type="number" min={1} max={32} value={trig.frame_width ?? 8} onChange={(e) => setTrig({ frame_width: Math.max(1, Math.min(32, Number(e.target.value))) })} /></label>
           <label className="field"><span>Match mask (hex)</span><input value={(trig.match_mask ?? 0xFFFFFFFF).toString(16)} onChange={(e) => setTrig({ match_mask: parseInt(e.target.value, 16) || 0 })} /></label>
           <label className="field"><span>Bit order</span><select value={trig.bit_order ?? 'lsb_first'} onChange={(e) => setTrig({ bit_order: e.target.value as any })}><option value="lsb_first">LSB first</option><option value="msb_first">MSB first</option></select></label>
-          <label className="field"><span>Start channel</span><input type="number" min={0} max={31} value={trig.start_channel ?? 0} onChange={(e) => setTrig({ start_channel: Number(e.target.value) })} /></label>
+          <label className="field"><span>Start channel</span><input type="number" min={0} max={15} value={trig.start_channel ?? 0} onChange={(e) => setTrig({ start_channel: Number(e.target.value) })} /></label>
           <label className="field"><span>Start condition</span><select value={trig.start_mode ?? 'edge_on_channel'} onChange={(e) => setTrig({ start_mode: e.target.value as any })}><option value="edge_on_channel">Edge on channel</option><option value="none">None</option></select></label>
           <label className="field"><span>Start polarity</span><select value={trig.start_polarity ?? 0} onChange={(e) => setTrig({ start_polarity: Number(e.target.value) })}><option value={0}>Falling / low</option><option value={1}>Rising / high</option></select></label>
         </>

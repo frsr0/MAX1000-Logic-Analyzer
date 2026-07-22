@@ -4,23 +4,27 @@ use IEEE.NUMERIC_STD.ALL;
 
 -- Protocol-independent sampled pattern trigger.
 --
--- Data_Channel_Mask selects the input bits that are appended on each sample
--- edge.  Selected channels are packed in ascending channel order.  The
+-- Data_Channel_0..3 are compact selectors for the input bits that are
+-- appended on each sample edge. Data_Lane_Count chooses 1..4 of them. The
 -- module deliberately runs in the system/sample clock domain: an external
 -- clock is detected as an edge on Clock_Channel, which makes the interface
 -- safe to use with the already-synchronised capture inputs.
 entity Generic_Pattern_Trigger is
   port (
     CLK               : in  std_logic;
-    Inputs            : in  std_logic_vector(31 downto 0);
+    Inputs            : in  std_logic_vector(15 downto 0);
     Enable            : in  std_logic;
     Clock_Source      : in  std_logic; -- 0 = internal baud divider, 1 = external edge
     Clock_Edge        : in  std_logic; -- 0 = rising, 1 = falling
     Start_Mode        : in  std_logic; -- 0 = none, 1 = edge on Start_Channel
-    Start_Channel     : in  natural range 0 to 31;
+    Start_Channel     : in  natural range 0 to 15;
     Start_Polarity    : in  std_logic; -- asserted level: 0 = falling, 1 = rising
-    Clock_Channel     : in  natural range 0 to 31;
-    Data_Channel_Mask : in  std_logic_vector(31 downto 0);
+    Clock_Channel     : in  natural range 0 to 15;
+    Data_Lane_Count   : in  natural range 1 to 4;
+    Data_Channel_0    : in  natural range 0 to 15;
+    Data_Channel_1    : in  natural range 0 to 15;
+    Data_Channel_2    : in  natural range 0 to 15;
+    Data_Channel_3    : in  natural range 0 to 15;
     Baud_Div          : in  natural range 1 to 65535;
     Frame_Width       : in  natural range 1 to 32;
     Match_Value       : in  std_logic_vector(31 downto 0);
@@ -33,13 +37,13 @@ end Generic_Pattern_Trigger;
 architecture rtl of Generic_Pattern_Trigger is
 begin
   process (CLK)
-    variable prev_inputs : std_logic_vector(31 downto 0) := (others => '0');
+    variable prev_inputs : std_logic_vector(15 downto 0) := (others => '0');
     variable frame       : std_logic_vector(31 downto 0) := (others => '0');
     variable bit_count   : natural range 0 to 32 := 0;
     variable timer       : natural range 0 to 65535 := 0;
-    variable selected    : natural range 0 to 32 := 0;
+    variable selected    : natural range 1 to 4 := 1;
     variable pos         : natural range 0 to 31 := 0;
-    variable lane        : natural range 0 to 31 := 0;
+    variable sample_word : std_logic_vector(3 downto 0) := (others => '0');
     variable width_mask  : std_logic_vector(31 downto 0) := (others => '0');
     variable sample_edge : boolean;
     variable start_edge  : boolean;
@@ -57,14 +61,12 @@ begin
         waiting := false;
       else
         start_edge := false;
-        if Start_Channel <= 31 then
-          if Start_Polarity = '1' then
-            start_edge := Inputs(Start_Channel) = '1' and
-                         prev_inputs(Start_Channel) = '0';
-          else
-            start_edge := Inputs(Start_Channel) = '0' and
-                         prev_inputs(Start_Channel) = '1';
-          end if;
+        if Start_Polarity = '1' then
+          start_edge := Inputs(Start_Channel) = '1' and
+                       prev_inputs(Start_Channel) = '0';
+        else
+          start_edge := Inputs(Start_Channel) = '0' and
+                       prev_inputs(Start_Channel) = '1';
         end if;
 
         if Start_Mode = '1' and not started and start_edge then
@@ -110,56 +112,41 @@ begin
         end if;
 
         if started and sample_edge then
-          selected := 0;
-          for i in 0 to 31 loop
-            if Data_Channel_Mask(i) = '1' then
-              selected := selected + 1;
+          selected := Data_Lane_Count;
+          sample_word(0) := Inputs(Data_Channel_0);
+          sample_word(1) := Inputs(Data_Channel_1);
+          sample_word(2) := Inputs(Data_Channel_2);
+          sample_word(3) := Inputs(Data_Channel_3);
+          for lane in 0 to 3 loop
+            if lane < selected and bit_count + lane < Frame_Width then
+              if Bit_Order = '0' then
+                pos := bit_count + lane;
+              else
+                pos := Frame_Width - 1 - bit_count - lane;
+              end if;
+              frame(pos) := sample_word(lane);
             end if;
           end loop;
 
-          if selected = 0 then
-            started := false;
-          else
-            for i in 0 to 31 loop
-              if Data_Channel_Mask(i) = '1' then
-                lane := 0;
-                for j in 0 to i loop
-                  if Data_Channel_Mask(j) = '1' then
-                    lane := lane + 1;
-                  end if;
-                end loop;
-                lane := lane - 1;
-                if bit_count + lane < Frame_Width then
-                  if Bit_Order = '0' then
-                    pos := bit_count + lane;
-                  else
-                    pos := Frame_Width - 1 - bit_count - lane;
-                  end if;
-                  frame(pos) := Inputs(i);
-                end if;
+          if bit_count + selected >= Frame_Width then
+            width_mask := (others => '0');
+            for k in 0 to 31 loop
+              if k < Frame_Width then
+                width_mask(k) := '1';
               end if;
             end loop;
-
-            if bit_count + selected >= Frame_Width then
-              width_mask := (others => '0');
-              for k in 0 to 31 loop
-                if k < Frame_Width then
-                  width_mask(k) := '1';
-                end if;
-              end loop;
-              if unsigned((frame xor Match_Value) and Match_Mask and width_mask) = 0 then
-                Trigger <= '1';
-              end if;
-              frame := (others => '0');
-              bit_count := 0;
-              -- A start-qualified frame waits for the next start condition;
-              -- a free-running matcher continues with the next frame.
-              if Start_Mode = '1' then
-                started := false;
-              end if;
-            else
-              bit_count := bit_count + selected;
+            if unsigned((frame xor Match_Value) and Match_Mask and width_mask) = 0 then
+              Trigger <= '1';
             end if;
+            frame := (others => '0');
+            bit_count := 0;
+            -- A start-qualified frame waits for the next start condition;
+            -- a free-running matcher continues with the next frame.
+            if Start_Mode = '1' then
+              started := false;
+            end if;
+          else
+            bit_count := bit_count + selected;
           end if;
         end if;
       end if;

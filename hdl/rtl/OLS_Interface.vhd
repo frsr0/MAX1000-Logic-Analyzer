@@ -117,6 +117,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL pattern_mask    : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL pattern_baud    : NATURAL range 1 to 65535 := 1;
   SIGNAL pattern_width   : NATURAL range 1 to 32 := 8;
+  SIGNAL pattern_lanes   : NATURAL range 1 to 4 := 1;
   SIGNAL pattern_trigger : STD_LOGIC := '0';
   SIGNAL inputs_prev    : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL Divider : NATURAL range 0 to 16777215 := 0;
@@ -395,15 +396,19 @@ BEGIN
   Generic_Trigger : entity work.Generic_Pattern_Trigger
     port map (
       CLK               => CLK,
-      Inputs            => Inputs,
+      Inputs            => Inputs(15 downto 0),
       Enable            => Run_OLS and pattern_ctrl(0),
       Clock_Source      => pattern_ctrl(1),
       Clock_Edge        => pattern_ctrl(2),
       Start_Mode        => pattern_ctrl(3),
-      Start_Channel     => TO_INTEGER(UNSIGNED(pattern_ctrl(10 downto 6))),
+      Start_Channel     => TO_INTEGER(UNSIGNED(pattern_ctrl(9 downto 6))),
       Start_Polarity    => pattern_ctrl(4),
-      Clock_Channel     => TO_INTEGER(UNSIGNED(pattern_ctrl(15 downto 11))),
-      Data_Channel_Mask => pattern_channels,
+      Clock_Channel     => TO_INTEGER(UNSIGNED(pattern_ctrl(14 downto 11))),
+      Data_Lane_Count   => pattern_lanes,
+      Data_Channel_0    => TO_INTEGER(UNSIGNED(pattern_channels(3 downto 0))),
+      Data_Channel_1    => TO_INTEGER(UNSIGNED(pattern_channels(7 downto 4))),
+      Data_Channel_2    => TO_INTEGER(UNSIGNED(pattern_channels(11 downto 8))),
+      Data_Channel_3    => TO_INTEGER(UNSIGNED(pattern_channels(15 downto 12))),
       Baud_Div          => pattern_baud,
       Frame_Width       => pattern_width,
       Match_Value       => pattern_value,
@@ -462,6 +467,7 @@ BEGIN
           Trigger_Values <= disp_reg_wdata;
         WHEN REG_PATTERN_CTRL =>
           pattern_ctrl <= disp_reg_wdata;
+          pattern_lanes <= TO_INTEGER(UNSIGNED(disp_reg_wdata(23 downto 22))) + 1;
           IF TO_INTEGER(UNSIGNED(disp_reg_wdata(21 downto 16))) < 1 THEN
             pattern_width <= 1;
           ELSIF TO_INTEGER(UNSIGNED(disp_reg_wdata(21 downto 16))) > 32 THEN

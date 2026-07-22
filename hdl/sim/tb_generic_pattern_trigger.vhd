@@ -14,10 +14,12 @@ begin
 
   dut : entity work.Generic_Pattern_Trigger
     port map (
-      CLK => clk, Inputs => inputs, Enable => '1',
+      CLK => clk, Inputs => inputs(15 downto 0), Enable => '1',
       Clock_Source => '1', Clock_Edge => '0',
       Start_Mode => '0', Start_Channel => 0, Start_Polarity => '0',
-      Clock_Channel => 1, Data_Channel_Mask => x"00000001",
+      Clock_Channel => 1, Data_Lane_Count => 1,
+      Data_Channel_0 => 0, Data_Channel_1 => 0,
+      Data_Channel_2 => 0, Data_Channel_3 => 0,
       Baud_Div => 1, Frame_Width => 4,
       Match_Value => x"0000000A", Match_Mask => x"0000000F",
       Bit_Order => '0', Trigger => trigger
