@@ -1286,6 +1286,8 @@ BEGIN
         Out_1       => gen_scl,
         In_0        => gen_rx_in
       );
+      gen_start_ack_i <= gen_start and not gen_busy;
+      gen_active <= gen_busy;
   end generate;
   process(gen_spi_test, gen_miso_enable, gen_miso_pin, pin_pool,
           sen_sdo_sync, sen_sdi_sync)
@@ -1301,8 +1303,6 @@ BEGIN
     end if;
   end process;
   gen_rx_in <= gen_miso_in;
-  gen_start_ack_i <= gen_start and not gen_busy;
-  gen_active <= gen_busy;
   -- Bit_Engine has no start-reject output. Tie reject low so the OLS_Interface
   -- GENCAP_WAIT_BUSY reject check reads a defined level; genuine start failures
   -- are caught by the FSM's 2000-cycle timeout instead.
