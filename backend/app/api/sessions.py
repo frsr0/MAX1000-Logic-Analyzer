@@ -9,11 +9,13 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ..capture.sample_format import find_edges
-from ..capture.session import Marker, Session, new_id
+from ..capture.session import Marker, Session, TriggerConfig, new_id
 from ..config import APP_VERSION
 from ..exports.json_export import session_from_json
+from ..exports.importers import csv_session, vcd_session
 from ..state import store
 from ..websocket.manager import manager
+from ..triggers.software_trigger import find_software_trigger
 from .deps import get_session_or_404, get_waveform_or_404
 
 router = APIRouter(tags=["sessions"])
@@ -25,14 +27,26 @@ def list_sessions():
 
 
 class SessionImport(BaseModel):
-    json_text: str
+    json_text: Optional[str] = None
+    source_text: Optional[str] = None
+    source_format: Optional[str] = None
+    sample_rate: float = 1_000_000.0
 
 
 @router.post("/api/sessions")
 def import_session(req: SessionImport):
-    """Import a previously exported JSON session."""
+    """Import a JSON, CSV, or VCD session."""
     try:
-        session, wf, decoder_events = session_from_json(req.json_text)
+        if req.json_text:
+            session, wf, decoder_events = session_from_json(req.json_text)
+        elif req.source_text and req.source_format == "csv":
+            session, wf = csv_session(req.source_text, req.sample_rate)
+            decoder_events = {}
+        elif req.source_text and req.source_format == "vcd":
+            session, wf = vcd_session(req.source_text)
+            decoder_events = {}
+        else:
+            raise ValueError("Provide json_text or source_text with csv/vcd format")
     except Exception as e:
         raise HTTPException(400, f"Invalid session JSON: {e}")
     session.id = new_id("ses")
@@ -103,7 +117,8 @@ def duplicate_session(session_id: str):
 
 
 @router.post("/api/sessions/{session_id}/compare/{other_session_id}")
-def compare_sessions(session_id: str, other_session_id: str):
+def compare_sessions(session_id: str, other_session_id: str,
+                      alignment_offset: Optional[int] = None):
     a = get_session_or_404(session_id)
     b = get_session_or_404(other_session_id)
     wa = store.load_waveform(a.id)
@@ -136,6 +151,26 @@ def compare_sessions(session_id: str, other_session_id: str):
         if da[k] != db[k]:
             settings_diff[k] = {"a": da[k], "b": db[k]}
 
+    auto_offset = 0
+    first_a = first_b = None
+    if wa is not None and wb is not None and wa.digital is not None and wb.digital is not None:
+        left, right = wa.digital, wb.digital
+        if alignment_offset is None:
+            best_score = -1.0
+            for off in range(-256, 257):
+                a0, b0 = max(0, off), max(0, -off)
+                count = min(len(left) - a0, len(right) - b0, 100_000)
+                if count <= 0: continue
+                score = float(np.mean(left[a0:a0 + count] == right[b0:b0 + count]))
+                if score > best_score: best_score, auto_offset = score, off
+        else:
+            auto_offset = int(alignment_offset)
+        a0, b0 = max(0, auto_offset), max(0, -auto_offset)
+        count = min(len(left) - a0, len(right) - b0)
+        if count > 0:
+            differences = np.nonzero(left[a0:a0 + count] != right[b0:b0 + count])[0]
+            if len(differences):
+                first_a, first_b = int(a0 + differences[0]), int(b0 + differences[0])
     return {
         "a": a.summary(), "b": b.summary(),
         "settings_diff": settings_diff,
@@ -146,7 +181,80 @@ def compare_sessions(session_id: str, other_session_id: str):
             and wa.digital is not None and wb.digital is not None
             and wa.digital.shape == wb.digital.shape
             and bool(np.array_equal(wa.digital, wb.digital))),
+        "alignment_offset": auto_offset,
+        "first_divergence": {"a": first_a, "b": first_b} if first_a is not None else None,
     }
+
+
+class TriggerSearchRequest(BaseModel):
+    trigger: TriggerConfig
+    decoder_instance: Optional[str] = None
+
+
+@router.post("/api/sessions/{session_id}/trigger-search")
+def search_trigger(session_id: str, req: TriggerSearchRequest):
+    """Search an existing capture using raw samples and decoded events."""
+    session = get_session_or_404(session_id)
+    wf = get_waveform_or_404(session_id)
+    events = []
+    if req.decoder_instance:
+        events = store.load_decoder_events(session_id, req.decoder_instance)
+    else:
+        for decoder in session.decoders:
+            if decoder.enabled and decoder.status == "done":
+                events.extend(store.load_decoder_events(session_id, decoder.id))
+    sample = find_software_trigger(wf, req.trigger, events)
+    event = next((e for e in events
+                  if sample is not None and e.get("start_sample") == sample), None)
+    return {"sample": sample,
+            "time_s": sample / wf.sample_rate
+            if sample is not None and wf.sample_rate else None,
+            "event": event, "event_count": len(events),
+            "execution": "post_capture"}
+
+
+@router.get("/api/sessions/{session_id}/dashboard")
+def session_dashboard(session_id: str, bins: int = 32):
+    """Aggregate protocol activity, errors, and timing into dashboard data."""
+    session = get_session_or_404(session_id)
+    wf = store.load_waveform(session_id)
+    duration = wf.duration_s if wf else session.num_samples / max(session.sample_rate, 1)
+    events = []
+    for decoder in session.decoders:
+        if decoder.status == "done":
+            events.extend(store.load_decoder_events(session_id, decoder.id))
+    by_type: dict[str, int] = {}
+    for event in events:
+        by_type[event.get("type", "unknown")] = by_type.get(event.get("type", "unknown"), 0) + 1
+    bins = max(1, min(256, int(bins)))
+    timeline = [0] * bins
+    error_timeline = [0] * bins
+    for event in events:
+        pos = float(event.get("start_time", 0)) / max(duration, 1e-12)
+        index = max(0, min(bins - 1, int(pos * bins)))
+        timeline[index] += 1
+        if event.get("severity") == "error": error_timeline[index] += 1
+    timeline_events = []
+    for event in sorted(events, key=lambda e: int(e.get("start_sample", 0))):
+        timeline_events.append({
+            "id": event.get("id"),
+            "decoder_id": event.get("decoder_id"),
+            "type": event.get("type", "unknown"),
+            "label": event.get("label", ""),
+            "severity": event.get("severity", "normal"),
+            "start_sample": int(event.get("start_sample", 0)),
+            "end_sample": int(event.get("end_sample", event.get("start_sample", 0))),
+            "start_time": float(event.get("start_time", 0)),
+            "end_time": float(event.get("end_time", event.get("start_time", 0))),
+        })
+    return {"session_id": session_id, "duration_s": duration,
+            "event_count": len(events),
+            "error_count": sum(1 for e in events if e.get("severity") == "error"),
+            "warning_count": sum(1 for e in events if e.get("severity") == "warning"),
+            "events_per_second": len(events) / max(duration, 1e-12),
+            "by_type": by_type, "timeline": timeline,
+            "error_timeline": error_timeline,
+            "events": timeline_events[:10_000]}
 
 
 # ── bus channels ─────────────────────────────────────────────────────

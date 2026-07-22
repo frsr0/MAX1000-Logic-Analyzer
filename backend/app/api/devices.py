@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ..hardware.base import HardwareError
@@ -41,7 +43,13 @@ def disconnect(client_id: str = Depends(client_id_header)):
 @router.get("/api/device/metadata")
 def device_metadata():
     try:
-        return capture_manager.require_device().get_metadata().model_dump()
+        return JSONResponse(content=jsonable_encoder(
+            capture_manager.require_device().get_metadata().model_dump(),
+            custom_encoder={
+                bytes: lambda b: b.hex(),
+                bytearray: lambda b: bytes(b).hex(),
+            },
+        ))
     except HardwareError as e:
         raise HTTPException(409, str(e))
 
@@ -59,7 +67,13 @@ def device_capabilities():
 @router.get("/api/device/debug")
 def device_debug():
     try:
-        return capture_manager.require_device().get_debug_info().model_dump()
+        return JSONResponse(content=jsonable_encoder(
+            capture_manager.require_device().get_debug_info().model_dump(),
+            custom_encoder={
+                bytes: lambda b: b.hex(),
+                bytearray: lambda b: bytes(b).hex(),
+            },
+        ))
     except HardwareError as e:
         raise HTTPException(409, str(e))
 

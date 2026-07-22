@@ -2,10 +2,10 @@
 // arrays are big TypedArrays and view changes happen at animation rate.
 // React components subscribe to coarse change events for labels only.
 
+import { WaveformClient } from '../workers/waveformClient';
 import { api } from '../api/client';
 import type { WaveformPayload } from '../api/binary';
 import type { ChannelInfo, DecoderEvent, Marker } from '../api/types';
-
 export type ViewListener = () => void;
 
 const MAX_DECODER_ROWS = 6;
@@ -48,6 +48,8 @@ export class WaveformView {
   private fetchTimer: ReturnType<typeof setTimeout> | null = null;
   private abort: AbortController | null = null;
   private annotTimer: ReturnType<typeof setTimeout> | null = null;
+  private fetchGen = 0;
+  private workerClient = new WaveformClient();
   private channelFilter: string[] | undefined;
   decodersVersion = 0; // bump to refetch annotations
 
@@ -86,9 +88,9 @@ export class WaveformView {
     this.notify();
     if (!sessionId || !numSamples) return;
     try {
-      this.overview = await api.overview(sessionId);
-    } catch (e: any) {
-      this.error = String(e.message ?? e);
+      this.overview = await this.workerClient.fetchOverview(sessionId);
+    } catch (e: unknown) {
+      this.error = e instanceof Error ? e.message : String(e);
     }
     this.requestFetch(0);
     this.requestAnnotations();
@@ -118,9 +120,9 @@ export class WaveformView {
       this.clampView();
     }
     try {
-      this.overview = await api.overview(this.sessionId);
-    } catch (e: any) {
-      this.error = String(e.message ?? e);
+      this.overview = await this.workerClient.fetchOverview(this.sessionId);
+    } catch (e: unknown) {
+      this.error = e instanceof Error ? e.message : String(e);
     }
     this.requestFetch(0);
     this.requestAnnotations();
@@ -283,24 +285,26 @@ export class WaveformView {
     const ctl = new AbortController();
     this.abort = ctl;
     this.loading = true;
+    this.fetchGen++;
+    const gen = this.fetchGen;
     this.notify();
     // request ~2 bins per CSS pixel, capped to the server max
     const res = Math.min(4096, Math.max(512,
       Math.ceil((window.innerWidth || 1200) * 1.5)));
     try {
-      const p = await api.waveformWindow(
+      const p = await this.workerClient.fetchWindow(
         this.sessionId, Math.floor(this.start), Math.ceil(this.end), res,
-        this.channelFilter, ctl.signal);
-      if (!ctl.signal.aborted) {
+        this.channelFilter);
+      if (gen === this.fetchGen) {
         this.payload = p;
         this.error = null;
         if (this.liveRolling && this.liveFollow) {
           this.liveUpdatedAt = performance.now();
         }
       }
-    } catch (e: any) {
-      if (e.name !== 'AbortError' && !ctl.signal.aborted) {
-        this.error = String(e.message ?? e);
+    } catch (e: unknown) {
+      if (gen === this.fetchGen) {
+        this.error = e instanceof Error ? e.message : String(e);
       }
     } finally {
       if (this.abort === ctl) {

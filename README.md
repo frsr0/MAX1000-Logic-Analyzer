@@ -19,20 +19,20 @@ This repository is currently verified for:
 - 16-channel digital capture up to the full 200.4 MHz sample clock
 - Deep SDRAM single-shot capture up to `4,194,304` 16-bit words
 - Packed narrow digital capture at 200 MHz for one selected channel
-- Mixed capture with 16 digital bits plus 2 ADC lanes
+- Mixed capture with 16 digital bits plus the ADC0..ADC3 scan
 - Analog-fast capture of 1 ADC lane
-- Dual-analog capture of 2 ADC lanes
-- UART, RS-485, I2C, and PWM generation
+- Maximum-analog capture of 4 physical analog inputs
+- UART, RS-485, I2C, SPI, SWD transaction capture, and raw two-output Bit Banger generation
 - Browser UI, backend API, and classic host-driver workflow
 
-Recently re-verified before this README update:
+Latest validation baseline (2026-07-22):
 
 - `backend/app/tests/test_existing_host_adapter.py`: `19/19` passed
 - `host/driver/tests/test_ols_spi_device.py` + `test_ols_spi.py`: `194/194` passed
 - `frontend` typecheck and production build: passed
-- `frontend/tests/e2e/hardware.spec.ts` in mock mode: `8 passed, 2 skipped`
-- `backend/hw_smoke_test.py`: `7/7` passed on hardware
-- Focused hardware checks for digital compression, analog-fast, dual-analog, and mixed capture: passed
+- `frontend/tests/e2e/hardware.spec.ts`: `25 passed, 2 skipped` (full suite; mock workflow coverage included)
+- `backend/hw_smoke_test.py --mock`: `10/10` passed; the freshly programmed seed-23 image (SOF checksum `0x004FDDF3`) passed the full connected-fixture hardware regression `369/369`, `0 failed`, `0 skipped`
+- Backend smoke and jumper/generator matrix: `10/10` each; frontend typecheck/build: passed
 
 ## What The Current Bitstream Actually Does
 
@@ -46,22 +46,22 @@ Recently re-verified before this README update:
 
 ### Analog and Mixed
 
-The current hardware does **not** stream all board analog inputs at once.
+The current hardware exposes two analog capture profiles plus the mixed scan.
 
 - `analog_fast`: 1 ADC lane, currently `ADC1 -> AIN3`
-- `analog_all` / "Dual analog": 2 ADC lanes, currently `ADC1 + ADC2 -> AIN3 + AIN1`
-- `mixed`: 16 digital bits plus 2 ADC lanes in one time-correlated frame
+- `analog_all` / "Maximum analog": `ADC1,2,3,4 -> AIN3, AIN1, AIN4, AIN6`
+- `mixed`: 16 digital bits plus the `ADC0..ADC3` mux scan in one time-correlated frame
 
-Board analog inputs such as `AIN0`, `AIN5`, `AIN7`, and dedicated `AIN/ADC16`
-exist physically on the MAX1000, but the current capture RTL does not stream
-them all simultaneously.
+On MAX1000, the current mixed mode is a 4-lane scan aligned with the four
+analog inputs wired in the RTL. The maximum-analog profile is the physical
+4-input scan.
 
 ### Readback Compression
 
 Digital readback supports:
 
 - `raw`
-- `delta_rle` in the host/UI surface
+- `delta_rle` packed-delta-plus-RLE and direct `rle` in the host/UI surface
 
 For the currently validated hardware block-read path, compressed capture blocks
 decode from exact RLE block payloads with zero raw-retry fallback on the tested
@@ -89,37 +89,36 @@ Main storage paths:
 
 ## UI Screenshots
 
+All screenshots below were captured from the attached MAX1000 hardware on
+July 7, 2026. No mock sessions are used in this gallery.
+
 ### Device Overview
 
-![Device page](frontend/test-results/screenshots/device-page.png)
+![Device page](frontend/test-results/screenshots/live-device-page.png)
 
 ### Capture Mode Controls
 
-![Capture controls](frontend/test-results/screenshots/capture-controls.png)
-
-### Delta-RLE Digital Readback Selection
-
-![Capture compression](frontend/test-results/screenshots/capture-compression-delta-rle.png)
-
-### Live 50 MHz Digital Workflow
-
-![Live 50 MHz capture](frontend/test-results/screenshots/capture-live-50mhz.png)
-
-### Analog-Fast Mode
-
-![Analog fast capture](frontend/test-results/screenshots/capture-analog-fast.png)
+![Capture controls](frontend/test-results/screenshots/live-capture-controls.png)
 
 ### Generator Loopback Capture
 
-![Generator loopback](frontend/test-results/screenshots/generator-loopback-capture.png)
+![Generator loopback](frontend/test-results/screenshots/live-generator-loopback-capture.png)
 
-### MIL / Bit-Banger Loopback
+### Accelerometer Live Capture
 
-![MIL loopback](frontend/test-results/screenshots/bit-banger-loopback-capture.png)
+![LIS3DH WHO_AM_I live waveform](frontend/test-results/screenshots/live-accelerometer-session-waveform.png)
 
-### Mixed Analog Session
+### Analog-Fast Hardware Waveform
 
-![Mixed analog session](frontend/test-results/screenshots/analog-session-waveform.png)
+![Analog fast hardware waveform](frontend/test-results/screenshots/live-analog-fast-waveform.png)
+
+### Maximum-Analog Hardware Waveform
+
+![Maximum analog hardware waveform](frontend/test-results/screenshots/live-dual-analog-waveform.png)
+
+### Mixed Digital + Analog Hardware Waveform
+
+![Mixed analog hardware waveform](frontend/test-results/screenshots/live-mixed-analog-waveform.png)
 
 ## Running It
 
@@ -182,12 +181,12 @@ python -m app.hw_validation
 
 ## Rebuilding The FPGA Image
 
-The checked-in speed build has been tracked around Quartus seed `33`, but use
-the current project scripts and timing reports in [`hdl/proj/`](hdl/proj/).
+The validated full-feature speed build uses Quartus seed `23`; use the current
+project scripts and timing reports in [`hdl/proj/`](hdl/proj/).
 
 ```powershell
 cd hdl\proj
-.\compile.ps1 -Seed 33
+.\compile.ps1 -Flash -Seed 23
 ```
 
 For more detail, see:

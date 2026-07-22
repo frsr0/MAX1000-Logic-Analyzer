@@ -303,6 +303,52 @@ def test_spi_decoder_accepts_thresholded_analog_inputs():
     assert [w["miso"] for w in words] == [0x12, 0x34]
 
 
+def _swd_bit_signal(bits, samples_per_bit=20):
+    """SWCLK toggles low->high->low once per bit; SWDIO holds its value
+    across the whole bit period (sampled mid-plateau by the decoder)."""
+    n = len(bits) * samples_per_bit
+    swclk = np.zeros(n, dtype=np.uint8)
+    swdio = np.zeros(n, dtype=np.uint8)
+    for i, b in enumerate(bits):
+        lo, hi = i * samples_per_bit, (i + 1) * samples_per_bit
+        mid = lo + samples_per_bit // 2
+        swclk[lo:mid] = 0
+        swclk[mid:hi] = 1
+        swdio[lo:hi] = b
+    return swclk, swdio
+
+
+def _swd_read_xfer_bits(apndp, a2, a3, ack, data):
+    rnw = 1
+    parity = apndp ^ rnw ^ a2 ^ a3
+    hdr = [1, apndp, rnw, a2, a3, parity, 0, 1]
+    trn1 = [0]
+    ack_bits = [(ack >> k) & 1 for k in range(3)]
+    data_bits = [(data >> k) & 1 for k in range(32)]
+    data_parity = bin(data).count("1") & 1
+    trn2 = [0]
+    return hdr + trn1 + ack_bits + data_bits + [data_parity] + trn2
+
+
+def test_swd_decoder_parses_read_transfer():
+    bits = [1] * 60  # line reset (>=50 SWCLK cycles with SWDIO high)
+    bits += [0, 0]   # idle cycles between reset and the next packet (ARM spec)
+    bits += _swd_read_xfer_bits(apndp=0, a2=1, a3=0, ack=1, data=0xDEADBEEF)
+    swclk, swdio = _swd_bit_signal(bits)
+    dig = swclk.astype(np.uint16) << 1 | swdio.astype(np.uint16) << 3
+    wf = make_wf(digital=dig)
+    dec = registry.get("swd")
+    result = dec.decode(DecodeContext(wf, {"swclk": "d1", "swdio": "d3"}),
+                        dec.defaults())
+    types = [e["type"] for e in result.events]
+    assert "swd_linereset" in types
+    xfers = [e for e in result.events if e["type"] == "swd_xfer"]
+    assert len(xfers) == 1
+    f = xfers[0]["fields"]
+    assert f == {"apndp": 0, "rnw": 1, "addr": 4, "ack": 1,
+                "data": 0xDEADBEEF, "parity_ok": True}
+
+
 def test_pwm_decoder():
     n = 50_000
     sig = ms.square(n, RATE, 2000, duty=0.25)

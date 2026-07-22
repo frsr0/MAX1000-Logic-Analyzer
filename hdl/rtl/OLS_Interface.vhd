@@ -9,7 +9,7 @@ ENTITY OLS_Interface IS
   GENERIC (
       CLK_Frequency   :   INTEGER     := 12000000;    
       SAMPLE_CLK_HZ  :   INTEGER     := 200_000_000;
-    Max_Samples     :   NATURAL     := 25000       
+    Max_Samples     :   NATURAL     := 25000
 
   );
 PORT (
@@ -37,6 +37,12 @@ PORT (
   Gen_Proto     : OUT STD_LOGIC;
     Gen_TX_Pin    : OUT NATURAL range 0 to 31 := 0;
     Gen_SCL_Pin   : OUT NATURAL range 0 to 31 := 0;
+    Gen_DE_Pin    : OUT NATURAL range 0 to 31 := 0;
+    Gen_DE_Enable : OUT STD_LOGIC := '0';
+    Gen_CS_Pin    : OUT NATURAL range 0 to 31 := 0;
+    Gen_CS_Enable : OUT STD_LOGIC := '0';
+    Gen_MISO_Pin  : OUT NATURAL range 0 to 31 := 0;
+    Gen_MISO_Enable : OUT STD_LOGIC := '0';
    Gen_Clear      : OUT STD_LOGIC := '0';
    Gen_I2C_Rd_Len : OUT NATURAL range 0 to 255 := 0;
    Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
@@ -63,10 +69,12 @@ PORT (
         Pin_Map_Write   : OUT STD_LOGIC := '0';
         Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
         Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
-        Debug_Ch0_Enable : OUT STD_LOGIC := '0';
-        Debug_Ch0_Channel : OUT NATURAL range 0 to 15 := 0;
-        Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
-        Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
+         Gen_Capture_Tx_Channel  : OUT NATURAL range 0 to 15 := 0;
+         Gen_Capture_Scl_Channel : OUT NATURAL range 0 to 15 := 1;
+         Gen_Capture_CS_Channel  : OUT NATURAL range 0 to 15 := 0;
+         Gen_Capture_CS_Enable   : OUT STD_LOGIC := '0';
+         Gen_Capture_MISO_Channel : OUT NATURAL range 0 to 15 := 1;
+         Gen_Capture_MISO_Enable  : OUT STD_LOGIC := '0';
          Gen_Capture_Active : OUT STD_LOGIC := '0';
          Gen_Start_Ack      : IN  STD_LOGIC := '0';
          Gen_Start_Reject   : IN  STD_LOGIC := '0';
@@ -130,6 +138,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL gen_reg_load_req_d : STD_LOGIC := '0';
    SIGNAL gen_tx_pin_int  : NATURAL range 0 to 31 := 3;
    SIGNAL gen_scl_pin_int : NATURAL range 0 to 31 := 1;  -- default=1 (CH0 is test counter, can't use 0)
+  SIGNAL gen_de_pin_int   : NATURAL range 0 to 31 := 0;
+  SIGNAL gen_de_enable_int : STD_LOGIC := '0';
+  SIGNAL gen_cs_pin_int   : NATURAL range 0 to 31 := 0;
+  SIGNAL gen_cs_enable_int : STD_LOGIC := '0';
+  SIGNAL gen_miso_pin_int : NATURAL range 0 to 31 := 0;
+  SIGNAL gen_miso_enable_int : STD_LOGIC := '0';
   SIGNAL gen_i2c_rd_len_int : NATURAL range 0 to 255 := 0;
   SIGNAL gen_i2c_dev_r_int  : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
    SIGNAL gen_i2c_test_int   : STD_LOGIC := '0';
@@ -149,10 +163,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL spi_tx_ready_i      : STD_LOGIC := '0';
 
   SIGNAL ch_mode             : STD_LOGIC := '0';  -- 0=8ch/500k, 1=4ch/4M
-  SIGNAL debug_ch0_enable_i  : STD_LOGIC := '0';
-  SIGNAL debug_ch0_channel_i : NATURAL range 0 to 15 := 0;
-  SIGNAL debug_ch0_period_i  : STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
-  SIGNAL debug_ch0_duty_i    : STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
+  SIGNAL gen_capture_tx_channel_i  : NATURAL range 0 to 15 := 0;
+  SIGNAL gen_capture_scl_channel_i : NATURAL range 0 to 15 := 1;
+  SIGNAL gen_capture_cs_channel_i  : NATURAL range 0 to 15 := 0;
+  SIGNAL gen_capture_cs_enable_i   : STD_LOGIC := '0';
+  SIGNAL gen_capture_miso_channel_i : NATURAL range 0 to 15 := 1;
+  SIGNAL gen_capture_miso_enable_i  : STD_LOGIC := '0';
   SIGNAL gen_capture_active_i  : STD_LOGIC := '0';
   SIGNAL gen_capture_done_i    : STD_LOGIC := '0';
   SIGNAL gen_capture_error_i   : STD_LOGIC := '0';
@@ -296,6 +312,11 @@ SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
   SIGNAL comp_busy_i     : STD_LOGIC := '0';
   SIGNAL comp_in_ready_i : STD_LOGIC := '1';
   SIGNAL comp_enable_i : STD_LOGIC := '0';
+  SIGNAL delta_mode_i : STD_LOGIC := '0';
+  SIGNAL codec_out_data  : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  SIGNAL codec_out_valid : STD_LOGIC := '0';
+  SIGNAL codec_busy      : STD_LOGIC := '0';
+  SIGNAL codec_in_ready  : STD_LOGIC := '1';
   TYPE block_buf_t IS ARRAY(0 TO 255) OF STD_LOGIC_VECTOR(31 DOWNTO 0);
   SIGNAL block_buf            : block_buf_t := (others => (others => '0'));
   -- 21-cycle bit-serial divider for /3 (replaces 58-level lpm_divide)
@@ -469,14 +490,23 @@ BEGIN
             gen_i2c_dev_r_int <= disp_reg_wdata(23 downto 16);
           END IF;
 
-        WHEN REG_DEBUG_CH0_ENABLE =>
-          debug_ch0_enable_i <= disp_reg_wdata(0);
-        WHEN REG_DEBUG_CH0_ROUTE =>
-          debug_ch0_channel_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(3 downto 0)));
-        WHEN REG_DEBUG_CH0_PERIOD =>
-          debug_ch0_period_i <= disp_reg_wdata;
-        WHEN REG_DEBUG_CH0_DUTY =>
-          debug_ch0_duty_i <= disp_reg_wdata;
+        WHEN REG_GEN_AUX_PINS =>
+          gen_de_pin_int <= TO_INTEGER(UNSIGNED(disp_reg_wdata(4 downto 0)));
+          gen_de_enable_int <= disp_reg_wdata(5);
+          gen_cs_pin_int <= TO_INTEGER(UNSIGNED(disp_reg_wdata(12 downto 8)));
+          gen_cs_enable_int <= disp_reg_wdata(13);
+          gen_miso_pin_int <= TO_INTEGER(UNSIGNED(disp_reg_wdata(20 downto 16)));
+          gen_miso_enable_int <= disp_reg_wdata(21);
+
+        WHEN REG_GEN_CAPTURE_TX_CHAN =>
+          gen_capture_tx_channel_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(3 downto 0)));
+        WHEN REG_GEN_CAPTURE_SCL_CHAN =>
+          gen_capture_scl_channel_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(3 downto 0)));
+        WHEN REG_GEN_CAPTURE_AUX =>
+          gen_capture_cs_channel_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(3 downto 0)));
+          gen_capture_cs_enable_i <= disp_reg_wdata(4);
+          gen_capture_miso_channel_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(11 downto 8)));
+          gen_capture_miso_enable_i <= disp_reg_wdata(12);
         WHEN others => null;
       END CASE;
     END IF;
@@ -815,6 +845,7 @@ BEGIN
   -- until the capture completes — not tied to gen_busy duration alone.
   gen_capture_fsm: PROCESS (CLK)
     VARIABLE guard_var : NATURAL range 0 to 1023 := 0;
+    VARIABLE timeout_var : NATURAL range 0 to 8388607 := 0;
     VARIABLE disp_gen_arm_d : STD_LOGIC := '0';
   BEGIN
     IF RISING_EDGE(CLK) THEN
@@ -839,25 +870,40 @@ BEGIN
               guard_var := guard_var - 1;
             ELSE
               gen_start_pulse <= '1';
+              timeout_var := 2000;
               gen_cap_state <= GENCAP_WAIT_BUSY;
             END IF;
           WHEN GENCAP_WAIT_BUSY =>
+            gen_start_pulse <= '1';
             IF Gen_Busy = '1' OR Gen_Start_Ack = '1' THEN
+              timeout_var := 5000000;
               gen_cap_state <= GENCAP_RUNNING;
+            ELSIF Gen_Start_Reject = '1' OR timeout_var = 0 THEN
+              gen_cap_state <= GENCAP_ERROR;
+            ELSE
+              timeout_var := timeout_var - 1;
             END IF;
           WHEN GENCAP_RUNNING =>
+            gen_start_pulse <= '0';
             IF Gen_Busy = '0' AND gen_busy_d = '1' THEN
               gen_cap_state <= GENCAP_WAIT_FULL;
+            ELSIF timeout_var = 0 THEN
+              gen_cap_state <= GENCAP_ERROR;
+            ELSE
+              timeout_var := timeout_var - 1;
             END IF;
           WHEN GENCAP_WAIT_FULL =>
+            gen_start_pulse <= '0';
             IF Full = '1' THEN
               gen_capture_active_i <= '0';
               gen_capture_done_i <= '1';
               gen_cap_state <= GENCAP_DONE;
             END IF;
           WHEN GENCAP_DONE =>
+            gen_start_pulse <= '0';
             NULL;
           WHEN GENCAP_ERROR =>
+            gen_start_pulse <= '0';
             gen_capture_error_i <= '1';
             gen_capture_active_i <= '0';
             gen_cap_state <= GENCAP_IDLE;
@@ -918,6 +964,12 @@ BEGIN
   Gen_Baud_Div <= gen_baud_div_int;
   Gen_TX_Pin   <= gen_tx_pin_int;
   Gen_SCL_Pin <= gen_scl_pin_int;
+  Gen_DE_Pin <= gen_de_pin_int;
+  Gen_DE_Enable <= gen_de_enable_int;
+  Gen_CS_Pin <= gen_cs_pin_int;
+  Gen_CS_Enable <= gen_cs_enable_int;
+  Gen_MISO_Pin <= gen_miso_pin_int;
+  Gen_MISO_Enable <= gen_miso_enable_int;
   Gen_I2C_Rd_Len <= gen_i2c_rd_len_int;
   Gen_I2C_Dev_R  <= gen_i2c_dev_r_int;
   Gen_I2C_Test   <= gen_i2c_test_int;
@@ -941,10 +993,12 @@ BEGIN
   Packed_Mode <= packed_mode_i;
   Buffer_Ack      <= (others => '0');  -- FLA frees its own continuous buffers
   Armed          <= Run_OLS;
-  Debug_Ch0_Enable <= debug_ch0_enable_i;
-  Debug_Ch0_Channel <= debug_ch0_channel_i;
-  Debug_Ch0_Period <= debug_ch0_period_i;
-  Debug_Ch0_Duty   <= debug_ch0_duty_i;
+  Gen_Capture_Tx_Channel <= gen_capture_tx_channel_i;
+  Gen_Capture_Scl_Channel <= gen_capture_scl_channel_i;
+  Gen_Capture_CS_Channel <= gen_capture_cs_channel_i;
+  Gen_Capture_CS_Enable <= gen_capture_cs_enable_i;
+  Gen_Capture_MISO_Channel <= gen_capture_miso_channel_i;
+  Gen_Capture_MISO_Enable <= gen_capture_miso_enable_i;
   Gen_Capture_Active <= gen_capture_active_i;
   -- Pin_Map_Write is driven from the main process (default low, pulsed in CMD_PIN_MAP handler)
 
@@ -1360,6 +1414,13 @@ BEGIN
                   when REG_GEN_PINS =>
                     reg_val(4 downto 0) := std_logic_vector(to_unsigned(gen_tx_pin_int, 5));
                     reg_val(12 downto 8) := std_logic_vector(to_unsigned(gen_scl_pin_int, 5));
+                  when REG_GEN_AUX_PINS =>
+                    reg_val(4 downto 0) := std_logic_vector(to_unsigned(gen_de_pin_int, 5));
+                    reg_val(5) := gen_de_enable_int;
+                    reg_val(12 downto 8) := std_logic_vector(to_unsigned(gen_cs_pin_int, 5));
+                    reg_val(13) := gen_cs_enable_int;
+                    reg_val(20 downto 16) := std_logic_vector(to_unsigned(gen_miso_pin_int, 5));
+                    reg_val(21) := gen_miso_enable_int;
                   when REG_GEN_DATA =>
                     reg_val(0) := gen_i2c_test_int;
                     reg_val(1) := gen_spi_test_int;
@@ -1371,14 +1432,15 @@ BEGIN
                   when REG_GEN_RX_DATA =>
                     reg_val(7 downto 0)  := Gen_RX_Data;
                     reg_val(15 downto 8) := Gen_RX_Used;
-                  when REG_DEBUG_CH0_ENABLE =>
-                    reg_val(0) := debug_ch0_enable_i;
-                  when REG_DEBUG_CH0_ROUTE =>
-                    reg_val(3 downto 0) := std_logic_vector(to_unsigned(debug_ch0_channel_i, 4));
-                  when REG_DEBUG_CH0_PERIOD =>
-                    reg_val := debug_ch0_period_i;
-                  when REG_DEBUG_CH0_DUTY =>
-                    reg_val := debug_ch0_duty_i;
+                  when REG_GEN_CAPTURE_TX_CHAN =>
+                    reg_val(3 downto 0) := std_logic_vector(to_unsigned(gen_capture_tx_channel_i, 4));
+                  when REG_GEN_CAPTURE_SCL_CHAN =>
+                    reg_val(3 downto 0) := std_logic_vector(to_unsigned(gen_capture_scl_channel_i, 4));
+                  when REG_GEN_CAPTURE_AUX =>
+                    reg_val(3 downto 0) := std_logic_vector(to_unsigned(gen_capture_cs_channel_i, 4));
+                    reg_val(4) := gen_capture_cs_enable_i;
+                    reg_val(11 downto 8) := std_logic_vector(to_unsigned(gen_capture_miso_channel_i, 4));
+                    reg_val(12) := gen_capture_miso_enable_i;
                   when REG_CAPTURE_SEQ =>
                     reg_val := capture_seq;
                   when REG_PRODUCER_INDEX =>
@@ -1657,35 +1719,37 @@ BEGIN
   blk_rd_samples <= BLOCK_SAMPLES;
   comp_enable_i <= '1' when compress_mode_i /= "00" and analog_enable_i = '0' else '0';
 
-  -- Readback compressor runs at 100 MHz between the response FIFO drain and
-  -- block_buf. RLE is the sole digital codec: it does raw passthrough when
-  -- compression is disabled (mode "00") and run-length compression when
-  -- enabled (mode "10"). It supersedes the old delta codec for digital
-  -- readback (idle/slow data compresses far more, and it is lossless with no
-  -- keyframe ambiguity). The delta compressor (capture_compressor) was
-  -- dropped from the build: keeping BOTH could not close 167 MHz timing at
-  -- 99% LE (the extra ~320 LC perturbed the SDRAM readout placement). Mode
-  -- "01" (legacy "delta") now takes the RLE passthrough path and reads back
-  -- raw — lossless, just uncompressed — via the host's raw fallback. To
-  -- One merged delta->RLE codec for digital readback. The wrapper buffers the
-  -- delta words and then feeds them into the exact run-length stage.
-  rd_delta_rle_compressor : entity work.delta_rle_compressor
+  -- One shared RLE stage keeps both compressed modes timing-friendly:
+  -- mode "01" selects delta-packing before RLE, mode "10" feeds full words
+  -- directly into the same RLE stage, and mode "00" remains raw.
+  rd_readback_compressor : entity work.delta_rle_compressor
     PORT MAP (
       clk                => CLK,
       rst                => comp_rst_i,
       sample_in          => comp_sample_in,
       sample_valid       => comp_feed_i,
       compression_enable => comp_enable_i,
+      delta_mode         => delta_mode_i,
       flush              => comp_flush_i,
-      comp_data          => comp_out_data,
-      comp_valid         => comp_out_valid,
-      busy               => comp_busy_i,
-      in_ready           => comp_in_ready_i
+      comp_data          => codec_out_data,
+      comp_valid         => codec_out_valid,
+      busy               => codec_busy,
+      in_ready           => codec_in_ready
     );
+
+  -- The codec select is configuration state held for the duration of a
+  -- readback. Keep the common drain-facing interface registered/controlled by
+  -- that stable mode bit; the inactive codec is reset and cannot contribute
+  -- output words.
+  comp_out_data   <= codec_out_data;
+  comp_out_valid  <= codec_out_valid;
+  comp_busy_i     <= codec_busy;
+  comp_in_ready_i <= codec_in_ready;
 
   -- Streaming RLE feeds the compressor directly from the SDRAM read FIFO
   -- output; the FETCH/WAIT/FEED sequencer above only asserts comp_feed_i in the
   -- cycle Rd_Fifo_Q is valid, so no skid/holding register is needed.
   comp_sample_in <= comp_sample_hold;
+  delta_mode_i <= '1' when compress_mode_i = "01" else '0';
 
 END BEHAVIORAL;

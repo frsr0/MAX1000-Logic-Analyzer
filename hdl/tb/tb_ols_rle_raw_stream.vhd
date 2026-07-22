@@ -72,9 +72,6 @@ architecture bench of tb_ols_rle_raw_stream is
   signal pin_map_write : std_logic;
   signal pin_map_channel : natural range 0 to 15;
   signal pin_map_pin : natural range 0 to 31;
-  signal debug_ch0_enable : std_logic;
-  signal debug_ch0_period : std_logic_vector(31 downto 0);
-  signal debug_ch0_duty : std_logic_vector(31 downto 0);
   signal gen_capture_active : std_logic;
   signal gen_start_ack : std_logic := '0';
   signal gen_start_reject : std_logic := '0';
@@ -234,7 +231,6 @@ begin
       Analog_Profile => analog_profile, Analog_Channel => analog_channel,
       Buffer_Full => buffer_full, Buffer_Ack => buffer_ack,
       Pin_Map_Write => pin_map_write, Pin_Map_Channel => pin_map_channel, Pin_Map_Pin => pin_map_pin,
-      Debug_Ch0_Enable => debug_ch0_enable, Debug_Ch0_Period => debug_ch0_period, Debug_Ch0_Duty => debug_ch0_duty,
       Gen_Capture_Active => gen_capture_active, Gen_Start_Ack => gen_start_ack,
       Gen_Start_Reject => gen_start_reject, Gen_Done_Pulse => gen_done_pulse,
       Blk_Rd_Req_Tog => blk_rd_req_tog, Blk_Rd_Base => blk_rd_base, Blk_Rd_Count => blk_rd_count,

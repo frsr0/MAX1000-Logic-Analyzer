@@ -3,7 +3,7 @@
 import type {
   BackendStatus, CaptureSettings, ChannelInfo, DecoderDescription,
   DecoderEvent, DecoderInstance, DeviceCapabilities, DeviceDescriptor,
-  DeviceMetadata, GeneratorConfig, LogEntry, Marker, MeasurementInstance,
+  DeviceMetadata, GeneratorConfig, GeneratorRouteCapability, LogEntry, Marker, MeasurementInstance,
   MeasurementType, MilConfig, MilPresetSummary, MilRuntimeStatus,
   MilTransactionResponse, Session, SessionSummary,
 } from './types';
@@ -86,8 +86,14 @@ export const api = {
     patch<Session>(`/api/sessions/${id}`, body),
   deleteSession: (id: string) => del(`/api/sessions/${id}`),
   duplicateSession: (id: string) => post<SessionSummary>(`/api/sessions/${id}/duplicate`),
-  compareSessions: (a: string, b: string) => post<any>(`/api/sessions/${a}/compare/${b}`),
+  compareSessions: (a: string, b: string, alignmentOffset?: number) =>
+    post<any>(`/api/sessions/${a}/compare/${b}${alignmentOffset != null ? `?alignment_offset=${alignmentOffset}` : ''}`),
+  triggerSearch: (id: string, trigger: any, decoder_instance?: string) =>
+    post<any>(`/api/sessions/${id}/trigger-search`, { trigger, decoder_instance }),
+  sessionDashboard: (id: string, bins = 32) => get<any>(`/api/sessions/${id}/dashboard?bins=${bins}`),
   importSession: (json_text: string) => post<SessionSummary>('/api/sessions', { json_text }),
+  importWaveform: (source_text: string, source_format: 'csv' | 'vcd', sample_rate = 1_000_000) =>
+    post<SessionSummary>('/api/sessions', { source_text, source_format, sample_rate }),
 
   // waveform
   waveformMeta: (id: string) => get<any>(`/api/sessions/${id}/metadata`),
@@ -119,8 +125,32 @@ export const api = {
     post<ChannelInfo>(`/api/sessions/${id}/buses`, { name, members, display_base }),
   addDerivedChannel: (id: string, source: string, derive: Record<string, unknown>, name?: string) =>
     post<ChannelInfo>(`/api/sessions/${id}/derived-channels`, { source, derive, name }),
-  spectrum: (id: string, channel: string) =>
-    get<{ freqs: number[]; magnitude: number[] }>(`/api/sessions/${id}/spectrum?channel=${channel}`),
+  spectrum: (id: string, channel: string, start = 0, end = -1) =>
+    get<{ freqs: number[]; magnitude: number[]; peaks?: { frequency_hz: number; magnitude: number }[] }>(
+      `/api/sessions/${id}/spectrum?channel=${channel}&start=${start}&end=${end}`),
+  spectrogram: (id: string, channel: string, start = 0, end = -1) =>
+    get<{ freqs: number[]; times: number[]; magnitude: number[][] }>(
+      `/api/sessions/${id}/spectrogram?channel=${channel}&start=${start}&end=${end}`),
+  correlation: (id: string, a: string, b: string, start = 0, end = -1) =>
+    get<{ delay_s: number | null; lag_samples?: number; correlation?: number }>(
+      `/api/sessions/${id}/correlation?channel_a=${encodeURIComponent(a)}&channel_b=${encodeURIComponent(b)}&start=${start}&end=${end}`),
+  envelope: (id: string, channel: string, bins = 512) =>
+    get<{ channel: string; min: number[]; max: number[] }>(
+      `/api/sessions/${id}/envelope?channel=${encodeURIComponent(channel)}&bins=${bins}`),
+  thresholdSweep: (id: string, channel: string, levels = 16) =>
+    get<{ channel: string; levels: { level: number; rising_edges: number; frequency_hz: number }[] }>(
+      `/api/sessions/${id}/threshold-sweep?channel=${encodeURIComponent(channel)}&levels=${levels}`),
+  eventCorrelation: (id: string, analog: string, digital: string, threshold?: number, edge = 'rising') => {
+    const q = new URLSearchParams({ analog_channel: analog, digital_channel: digital, edge });
+    if (threshold !== undefined) q.set('threshold', String(threshold));
+    return get<any>(`/api/sessions/${id}/event-correlation?${q.toString()}`);
+  },
+  eyeDiagram: (id: string, channel: string, baud: number) =>
+    get<{ channel: string; baud: number; unit_samples: number; traces: number; grid: number[][] }>(
+      `/api/sessions/${id}/eye?channel=${encodeURIComponent(channel)}&baud=${encodeURIComponent(baud)}`),
+  timingSuspects: (id: string, channel: string) =>
+    get<{ channel: string; median_samples: number | null; suspects: any[] }>(
+      `/api/sessions/${id}/timing-suspects?channel=${encodeURIComponent(channel)}`),
 
   // decoders
   decoderTypes: () => get<{ decoders: DecoderDescription[] }>('/api/decoders'),
@@ -160,11 +190,17 @@ export const api = {
   deleteMarker: (id: string, mid: string) => del(`/api/sessions/${id}/markers/${mid}`),
 
   // generator
-  generatorCapabilities: () => get<{ protocols: string[]; status: any }>('/api/generator/capabilities'),
+  generatorCapabilities: () => get<{ protocols: string[]; routes: GeneratorRouteCapability[]; status: any }>('/api/generator/capabilities'),
   generatorConfigure: (cfg: GeneratorConfig) => post('/api/generator/configure', cfg),
   generatorStart: () => post('/api/generator/start'),
   generatorStop: () => post('/api/generator/stop'),
   generatorStatus: () => get<any>('/api/generator/status'),
+  generatorPreview: (cfg: GeneratorConfig) => post<any>('/api/generator/preview', cfg),
+  generatorSweepPreview: (body: { base: GeneratorConfig; axes: Record<string, unknown[]>; limit?: number }) =>
+    post<any>('/api/generator/sweep-preview', body),
+  generatorSweepCapture: (body: { base: GeneratorConfig; axes: Record<string, unknown[]>; limit?: number; capture_rate?: number; capture_samples?: number; expected_hex?: string; stop_on_failure?: boolean }) =>
+    post<any>('/api/generator/sweep-capture', body),
+  bitbangPresets: () => get<{ presets: string[] }>('/api/generator/bitbang/presets'),
   generatorSend: (body: { config: GeneratorConfig; capture: boolean; capture_rate?: number; capture_samples?: number; expected_hex?: string }) =>
     post<any>('/api/generator/send', body),
   generatorSelfTest: () => post<any>('/api/generator/self-test'),

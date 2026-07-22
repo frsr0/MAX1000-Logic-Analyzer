@@ -1,0 +1,10 @@
+{
+  "base": {
+    "protocol": "bitbang",
+    "baud": 100000,
+    "data_hex": "55",
+    "extra": {"preset": "pulse", "count": 8}
+  },
+  "axes": {"extra.repeat": [1, 2]},
+  "limit": 8
+}

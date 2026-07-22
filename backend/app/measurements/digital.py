@@ -38,6 +38,18 @@ def m_period(ctx, channels):
             "max": float(np.max(p)), "std": float(np.std(p))}
 
 
+def _stats(values: np.ndarray) -> dict:
+    if len(values) == 0:
+        return {"value": None, "min": None, "max": None, "mean": None, "median": None, "count": 0}
+    return {"value": float(np.mean(values)), "min": float(np.min(values)),
+            "max": float(np.max(values)), "mean": float(np.mean(values)),
+            "median": float(np.median(values)), "count": int(len(values))}
+
+
+def m_period_stats(ctx, channels):
+    return _stats(_periods(ctx, channels))
+
+
 def _pulse_widths(ctx, channels, level: int) -> np.ndarray:
     bits = _bits(ctx, channels)
     start_kind = "rising" if level == 1 else "falling"
@@ -80,6 +92,25 @@ def m_low_time(ctx, channels):
             "max": float(np.max(w)), "count": int(len(w))}
 
 
+def m_pulse_stats(ctx, channels):
+    hi = _pulse_widths(ctx, channels, 1)
+    lo = _pulse_widths(ctx, channels, 0)
+    return {"high": _stats(hi), "low": _stats(lo),
+            "count": int(len(hi) + len(lo))}
+
+
+def m_pulse_histogram(ctx, channels):
+    hi = _pulse_widths(ctx, channels, 1)
+    lo = _pulse_widths(ctx, channels, 0)
+    values = np.concatenate([hi, lo]) if len(hi) or len(lo) else np.zeros(0)
+    bins = max(2, min(64, int(ctx.settings.get("bins", 16))))
+    if len(values) == 0:
+        return {"value": None, "bins": [], "counts": []}
+    counts, edges = np.histogram(values, bins=bins)
+    return {"value": float(np.mean(values)), "bins": [float(x) for x in edges],
+            "counts": [int(x) for x in counts]}
+
+
 def m_edges(kind):
     def fn(ctx, channels):
         return int(len(find_edges(_bits(ctx, channels), kind)))
@@ -115,14 +146,40 @@ def m_glitch_count(ctx, channels):
     hi = _pulse_widths(ctx, channels, 1)
     lo = _pulse_widths(ctx, channels, 0)
     allw = np.concatenate([hi, lo]) if len(hi) or len(lo) else np.zeros(0)
-    return {"value": int(np.count_nonzero(allw < thresh_s)),
-            "threshold_s": thresh_s}
+    glitches = allw[allw < thresh_s]
+    return {"value": int(len(glitches)), "threshold_s": thresh_s,
+            "density": float(len(glitches) / max(ctx.duration_s, 1e-12)),
+            "duration_mean": float(np.mean(glitches)) if len(glitches) else None,
+            "duration_max": float(np.max(glitches)) if len(glitches) else None}
 
 
 def m_transitions_per_s(ctx, channels):
     edges = len(find_edges(_bits(ctx, channels), "any"))
     d = ctx.duration_s
     return {"value": edges / d if d > 0 else None, "edges": int(edges)}
+
+
+def m_jitter(ctx, channels):
+    periods = _periods(ctx, channels)
+    if len(periods) < 2:
+        return {"value": None, "note": "fewer than 3 rising edges"}
+    mean = float(np.mean(periods))
+    deviations = periods - mean
+    return {"value": float(np.std(periods)), "mean": mean,
+            "rms": float(np.sqrt(np.mean(deviations ** 2))),
+            "peak_to_peak": float(np.ptp(periods)),
+            "cycles": int(len(periods))}
+
+
+def m_period_histogram(ctx, channels):
+    periods = _periods(ctx, channels)
+    bins = max(2, min(64, int(ctx.settings.get("bins", 16))))
+    if len(periods) == 0:
+        return {"value": None, "bins": [], "counts": []}
+    counts, edges = np.histogram(periods, bins=bins)
+    return {"value": float(np.mean(periods)),
+            "bins": [float(x) for x in edges],
+            "counts": [int(x) for x in counts]}
 
 
 def m_bus_value_at(ctx, channels):
@@ -135,12 +192,58 @@ def m_bus_value_at(ctx, channels):
     return {"value": val, "hex": f"0x{val:X}"}
 
 
+def m_setup_hold(ctx, channels):
+    if len(channels) < 2:
+        raise ValueError("setup/hold measurement needs data and clock channels")
+    data = ctx.digital(channels[0])
+    clock = ctx.digital(channels[1])
+    data_edges = find_edges(data, "any")
+    clock_edges = find_edges(clock, "rising")
+    if len(data_edges) == 0 or len(clock_edges) == 0:
+        return {"value": None, "note": "no data/clock edges"}
+    setup, hold = [], []
+    for edge in clock_edges:
+        before = data_edges[data_edges < edge]
+        after = data_edges[data_edges > edge]
+        if len(before): setup.append((edge - before[-1]) / ctx.sample_rate)
+        if len(after): hold.append((after[0] - edge) / ctx.sample_rate)
+    values = setup + hold
+    return {"value": float(min(values)) if values else None,
+            "min_setup": float(min(setup)) if setup else None,
+            "min_hold": float(min(hold)) if hold else None,
+            "clock_edges": int(len(clock_edges))}
+
+
+def m_channel_skew(ctx, channels):
+    if len(channels) < 2:
+        raise ValueError("skew measurement needs two channels")
+    a = find_edges(ctx.digital(channels[0]), "rising")
+    b = find_edges(ctx.digital(channels[1]), "rising")
+    if len(a) == 0 or len(b) == 0:
+        return {"value": None, "note": "fewer than 1 rising edge on both channels"}
+    tolerance = max(1, int(ctx.sample_rate * 1e-3))
+    nearest = []
+    for x in a:
+        distances = np.abs(b.astype(np.int64) - int(x))
+        if len(distances) and int(np.min(distances)) <= tolerance:
+            nearest.append(int(np.min(distances)))
+    if not nearest:
+        return {"value": None, "note": "no corresponding edges"}
+    return {"value": float(np.mean(nearest)) / ctx.sample_rate,
+            "min": float(np.min(nearest)) / ctx.sample_rate,
+            "max": float(np.max(nearest)) / ctx.sample_rate,
+            "pairs": int(len(nearest))}
+
+
 for mt in [
     MeasurementType("dig_frequency", "Frequency", "digital", "Hz", fn=m_frequency),
     MeasurementType("dig_period", "Period", "digital", "s", fn=m_period),
+    MeasurementType("dig_period_stats", "Period statistics", "digital", "s", fn=m_period_stats),
     MeasurementType("dig_duty", "Duty cycle", "digital", "%", fn=m_duty),
     MeasurementType("dig_high_time", "High pulse width", "digital", "s", fn=m_high_time),
     MeasurementType("dig_low_time", "Low pulse width", "digital", "s", fn=m_low_time),
+    MeasurementType("dig_pulse_stats", "Pulse-width statistics", "digital", "s", fn=m_pulse_stats),
+    MeasurementType("dig_pulse_histogram", "Pulse-width histogram", "digital", "s", fn=m_pulse_histogram),
     MeasurementType("dig_edge_count", "Edge count (any)", "digital", "", fn=m_edges("any")),
     MeasurementType("dig_rising_edges", "Rising edge count", "digital", "", fn=m_edges("rising")),
     MeasurementType("dig_falling_edges", "Falling edge count", "digital", "", fn=m_edges("falling")),
@@ -150,7 +253,15 @@ for mt in [
     MeasurementType("dig_glitch_count", "Glitch count", "digital", "", fn=m_glitch_count),
     MeasurementType("dig_transition_rate", "Transitions per second", "digital", "1/s",
                     fn=m_transitions_per_s),
+    MeasurementType("dig_jitter", "Period jitter", "digital", "s",
+                    fn=m_jitter),
+    MeasurementType("dig_period_histogram", "Period histogram", "digital", "s",
+                    fn=m_period_histogram),
     MeasurementType("dig_bus_value", "Bus value at cursor", "digital", "",
                     fn=m_bus_value_at),
+    MeasurementType("dig_setup_hold", "Setup/hold timing", "digital", "s",
+                    fn=m_setup_hold),
+    MeasurementType("dig_channel_skew", "Channel skew", "digital", "s",
+                    fn=m_channel_skew),
 ]:
     register(mt)

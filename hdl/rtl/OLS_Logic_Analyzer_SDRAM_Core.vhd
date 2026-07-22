@@ -13,7 +13,8 @@ ENTITY OLS_Logic_Analyzer IS
     Channels        : NATURAL := 4;
     Sim             : boolean := false;
     FAST_SPEED      : boolean := false;
-    FAST_RAW_BUILD  : boolean := true
+    -- Full feature build by default; RawOnly is an explicit opt-out.
+    FAST_RAW_BUILD  : boolean := false
   );
 PORT (
   CLK : IN STD_LOGIC;
@@ -45,6 +46,12 @@ PORT (
   Gen_Proto     : OUT STD_LOGIC;
     Gen_TX_Pin    : OUT NATURAL range 0 to 31 := 0;
     Gen_SCL_Pin   : OUT NATURAL range 0 to 31 := 0;
+    Gen_DE_Pin    : OUT NATURAL range 0 to 31 := 0;
+    Gen_DE_Enable : OUT STD_LOGIC := '0';
+    Gen_CS_Pin    : OUT NATURAL range 0 to 31 := 0;
+    Gen_CS_Enable : OUT STD_LOGIC := '0';
+    Gen_MISO_Pin  : OUT NATURAL range 0 to 31 := 0;
+    Gen_MISO_Enable : OUT STD_LOGIC := '0';
     Gen_Clear      : OUT STD_LOGIC := '0';
     Gen_I2C_Rd_Len : OUT NATURAL range 0 to 255 := 0;
     Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
@@ -80,10 +87,12 @@ PORT (
     Pin_Map_Write  : OUT STD_LOGIC := '0';
     Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
     Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
-    Debug_Ch0_Enable : OUT STD_LOGIC := '0';
-    Debug_Ch0_Channel : OUT NATURAL range 0 to 15 := 0;
-    Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
-    Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
+    Gen_Capture_Tx_Channel  : OUT NATURAL range 0 to 15 := 0;
+    Gen_Capture_Scl_Channel : OUT NATURAL range 0 to 15 := 1;
+    Gen_Capture_CS_Channel  : OUT NATURAL range 0 to 15 := 0;
+    Gen_Capture_CS_Enable   : OUT STD_LOGIC := '0';
+    Gen_Capture_MISO_Channel : OUT NATURAL range 0 to 15 := 1;
+    Gen_Capture_MISO_Enable  : OUT STD_LOGIC := '0';
     Gen_Start_Ack    : IN  STD_LOGIC := '0';
     Gen_Start_Reject : IN  STD_LOGIC := '0';
     Gen_Done_Pulse   : IN  STD_LOGIC := '0';
@@ -106,8 +115,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL OLS_Interface_Run           : STD_LOGIC := '0';
   SIGNAL OLS_Interface_Full          : STD_LOGIC := '0';
   SIGNAL OLS_Interface_Address       : NATURAL          range 0 to Max_Samples-1 := 0;
-  SIGNAL OLS_Interface_Outputs       : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
-  SIGNAL OLS_Interface_Inputs        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+    SIGNAL OLS_Interface_Outputs       : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+    SIGNAL OLS_Interface_Inputs        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL LA_Out : STD_LOGIC_VECTOR(15 downto 0);
   SIGNAL LA_Address       : NATURAL          range 0 to Max_Samples := 0;
   -- Block-readout response-FIFO interface (OLS_Interface <-> FLA)
@@ -136,6 +145,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL Gen_Busy_i         : STD_LOGIC := '0';
   SIGNAL Gen_TX_Pin_i       : NATURAL range 0 to 31 := 0;
   SIGNAL Gen_SCL_Pin_i      : NATURAL range 0 to 31 := 0;
+  SIGNAL Gen_DE_Pin_i       : NATURAL range 0 to 31 := 0;
+  SIGNAL Gen_DE_Enable_i    : STD_LOGIC := '0';
+  SIGNAL Gen_CS_Pin_i       : NATURAL range 0 to 31 := 0;
+  SIGNAL Gen_CS_Enable_i    : STD_LOGIC := '0';
+  SIGNAL Gen_MISO_Pin_i     : NATURAL range 0 to 31 := 0;
+  SIGNAL Gen_MISO_Enable_i  : STD_LOGIC := '0';
   SIGNAL Gen_RX_Data_i    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL Gen_RX_Used_i    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL Gen_RX_Re_i      : STD_LOGIC := '0';
@@ -163,10 +178,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL pin_map_write_i     : STD_LOGIC := '0';
   SIGNAL pin_map_channel_i   : NATURAL range 0 to 15 := 0;
   SIGNAL pin_map_pin_i       : NATURAL range 0 to 31 := 0;
-  SIGNAL debug_ch0_enable_i  : STD_LOGIC := '0';
-  SIGNAL debug_ch0_channel_i : NATURAL range 0 to 15 := 0;
-  SIGNAL debug_ch0_period_i  : STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
-  SIGNAL debug_ch0_duty_i    : STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
+  SIGNAL gen_capture_tx_channel_i  : NATURAL range 0 to 15 := 0;
+  SIGNAL gen_capture_scl_channel_i : NATURAL range 0 to 15 := 1;
+  SIGNAL gen_capture_cs_channel_i  : NATURAL range 0 to 15 := 0;
+  SIGNAL gen_capture_cs_enable_i   : STD_LOGIC := '0';
+  SIGNAL gen_capture_miso_channel_i : NATURAL range 0 to 15 := 1;
+  SIGNAL gen_capture_miso_enable_i  : STD_LOGIC := '0';
   SIGNAL gen_capture_active_i : STD_LOGIC := '0';
   SIGNAL gen_start_ack_i      : STD_LOGIC := '0';
   SIGNAL gen_start_reject_i   : STD_LOGIC := '0';
@@ -175,7 +192,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   GENERIC (
       CLK_Frequency   :   INTEGER     := 12000000;    
       SAMPLE_CLK_HZ  :   INTEGER     := 200_000_000;
-    Max_Samples     :   NATURAL     := 25000       
+    Max_Samples     :   NATURAL     := 25000
   );
   PORT (
     CLK : IN STD_LOGIC;
@@ -202,6 +219,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   Gen_Proto     : OUT STD_LOGIC := '0';
     Gen_TX_Pin    : OUT NATURAL range 0 to 31 := 0;
     Gen_SCL_Pin   : OUT NATURAL range 0 to 31 := 0;
+    Gen_DE_Pin    : OUT NATURAL range 0 to 31 := 0;
+    Gen_DE_Enable : OUT STD_LOGIC := '0';
+    Gen_CS_Pin    : OUT NATURAL range 0 to 31 := 0;
+    Gen_CS_Enable : OUT STD_LOGIC := '0';
+    Gen_MISO_Pin  : OUT NATURAL range 0 to 31 := 0;
+    Gen_MISO_Enable : OUT STD_LOGIC := '0';
     Gen_I2C_Rd_Len : OUT NATURAL range 0 to 255 := 0;
    Gen_Clear      : OUT STD_LOGIC := '0';
    Gen_I2C_Dev_R  : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
@@ -225,10 +248,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
       Pin_Map_Write   : OUT STD_LOGIC := '0';
       Pin_Map_Channel : OUT NATURAL range 0 to 15 := 0;
       Pin_Map_Pin     : OUT NATURAL range 0 to 31 := 0;
-       Debug_Ch0_Enable : OUT STD_LOGIC := '0';
-       Debug_Ch0_Channel : OUT NATURAL range 0 to 15 := 0;
-       Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000400";
-       Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 DOWNTO 0) := x"00000200";
+    Gen_Capture_Tx_Channel  : OUT NATURAL range 0 to 15 := 0;
+    Gen_Capture_Scl_Channel : OUT NATURAL range 0 to 15 := 1;
+    Gen_Capture_CS_Channel  : OUT NATURAL range 0 to 15 := 0;
+    Gen_Capture_CS_Enable   : OUT STD_LOGIC := '0';
+    Gen_Capture_MISO_Channel : OUT NATURAL range 0 to 15 := 1;
+    Gen_Capture_MISO_Enable  : OUT STD_LOGIC := '0';
         Gen_Capture_Active : OUT STD_LOGIC := '0';
        Gen_Start_Ack      : IN  STD_LOGIC := '0';
        Gen_Start_Reject   : IN  STD_LOGIC := '0';
@@ -261,7 +286,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
     Channels       : NATURAL range 1 to 16 := 16;
     Sim            : boolean := false;
     FAST_SPEED     : boolean := false;
-    FAST_RAW_BUILD : boolean := true;
+    -- Full feature build by default; RawOnly is an explicit opt-out.
+    FAST_RAW_BUILD : boolean := false;
     CLK_Frequency  : NATURAL := 100_000_000;
     SDRAM_CLK_HZ   : NATURAL := 166_666_667;
     SAMPLE_CLK_HZ  : NATURAL := 200_000_000;
@@ -292,7 +318,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
     sdram_cs_n  : OUT std_logic := '0';
     sdram_clk   : OUT std_logic;
     Status      : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
-    s_burst     : OUT std_logic := '0';
     Armed       : IN  std_logic := '0';
     Fast_Mode   : IN  std_logic := '0';
     Narrow_Enable : IN std_logic := '0';
@@ -350,6 +375,12 @@ BEGIN
   Gen_Proto <= Gen_Proto_i;
   Gen_TX_Pin  <= Gen_TX_Pin_i;
   Gen_SCL_Pin <= Gen_SCL_Pin_i;
+  Gen_DE_Pin <= Gen_DE_Pin_i;
+  Gen_DE_Enable <= Gen_DE_Enable_i;
+  Gen_CS_Pin <= Gen_CS_Pin_i;
+  Gen_CS_Enable <= Gen_CS_Enable_i;
+  Gen_MISO_Pin <= Gen_MISO_Pin_i;
+  Gen_MISO_Enable <= Gen_MISO_Enable_i;
   Gen_Clear      <= gen_clear_i;
   Gen_I2C_Rd_Len <= gen_i2c_rd_len_i;
   Gen_I2C_Dev_R  <= gen_i2c_dev_r_i;
@@ -372,10 +403,12 @@ BEGIN
   Pin_Map_Write <= pin_map_write_i;
   Pin_Map_Channel <= pin_map_channel_i;
   Pin_Map_Pin <= pin_map_pin_i;
-  Debug_Ch0_Enable <= debug_ch0_enable_i;
-  Debug_Ch0_Channel <= debug_ch0_channel_i;
-  Debug_Ch0_Period <= debug_ch0_period_i;
-  Debug_Ch0_Duty   <= debug_ch0_duty_i;
+  Gen_Capture_Tx_Channel <= gen_capture_tx_channel_i;
+  Gen_Capture_Scl_Channel <= gen_capture_scl_channel_i;
+  Gen_Capture_CS_Channel <= gen_capture_cs_channel_i;
+  Gen_Capture_CS_Enable <= gen_capture_cs_enable_i;
+  Gen_Capture_MISO_Channel <= gen_capture_miso_channel_i;
+  Gen_Capture_MISO_Enable <= gen_capture_miso_enable_i;
   Gen_Capture_Active <= gen_capture_active_i;
   Pump_Valid_Cycles <= pump_valid_cycles_i;
   Pump_Ready_Cycles <= pump_ready_cycles_i;
@@ -392,6 +425,9 @@ BEGIN
     SPI_CS        => SPI_CS,SPI_SCK       => SPI_SCK,SPI_MOSI      => SPI_MOSI,SPI_MISO      => SPI_MISO,Interface_Mode=> Interface_Mode,Inputs        => OLS_Interface_Inputs,Rate_Div      => OLS_Interface_Rate_Div,Samples       => OLS_Interface_Samples,Start_Offset  => OLS_Interface_Start_Offset,Run           => OLS_Interface_Run,Full          => OLS_Interface_Full,Address       => OLS_Interface_Address,Outputs       => OLS_Interface_Outputs,
     Gen_Load_Byte => Gen_Load_Byte_i,Gen_Load_We   => Gen_Load_We_i,Gen_Start     => Gen_Start_i,Gen_Baud_Div  => Gen_Baud_Div_i,Gen_Busy      => Gen_Busy_i,Gen_Fifo_Count => Gen_Fifo_Count,Gen_Proto     => Gen_Proto_i,
     Gen_TX_Pin    => Gen_TX_Pin_i,Gen_SCL_Pin   => Gen_SCL_Pin_i,
+    Gen_DE_Pin    => Gen_DE_Pin_i,Gen_DE_Enable => Gen_DE_Enable_i,
+    Gen_CS_Pin    => Gen_CS_Pin_i,Gen_CS_Enable => Gen_CS_Enable_i,
+    Gen_MISO_Pin  => Gen_MISO_Pin_i,Gen_MISO_Enable => Gen_MISO_Enable_i,
     Gen_Clear      => gen_clear_i,
     Gen_I2C_Rd_Len => gen_i2c_rd_len_i,Gen_I2C_Dev_R  => gen_i2c_dev_r_i,    Gen_I2C_Test   => gen_i2c_test_i,
     Gen_SPI_Test   => gen_spi_test_i,
@@ -413,10 +449,12 @@ BEGIN
     Pin_Map_Write  => pin_map_write_i,
     Pin_Map_Channel => pin_map_channel_i,
     Pin_Map_Pin     => pin_map_pin_i,
-    Debug_Ch0_Enable => debug_ch0_enable_i,
-    Debug_Ch0_Channel => debug_ch0_channel_i,
-    Debug_Ch0_Period => debug_ch0_period_i,
-    Debug_Ch0_Duty   => debug_ch0_duty_i,
+    Gen_Capture_Tx_Channel => gen_capture_tx_channel_i,
+    Gen_Capture_Scl_Channel => gen_capture_scl_channel_i,
+    Gen_Capture_CS_Channel => gen_capture_cs_channel_i,
+    Gen_Capture_CS_Enable => gen_capture_cs_enable_i,
+    Gen_Capture_MISO_Channel => gen_capture_miso_channel_i,
+    Gen_Capture_MISO_Enable => gen_capture_miso_enable_i,
     Gen_Capture_Active => gen_capture_active_i,
     Gen_Start_Ack      => gen_start_ack_i,
     Gen_Start_Reject   => gen_start_reject_i,

@@ -14,9 +14,9 @@ ExistingHostAdapter -> host/driver/OLSDeviceSPI):
   1. device discovery
   2. connect + metadata (sample clock auto-detect)
   3. capabilities
-  4. device self-test (debug CH0 PWM -> capture -> edge count)
+  4. device self-test (metadata + status/control-plane checks)
   5. plain digital capture (1 MHz, 4096 samples) + sanity checks
-  6. UART generator loopback (CMD_GEN_CAPTURE) -> UART decode -> byte compare
+  6. UART / RS-485 / SPI / SWD generator loopback (CMD_GEN_CAPTURE) -> decode -> compare
 
 Exit code 0 = all checks passed. Sessions created by the test are saved and
 visible in the web UI afterwards.
@@ -95,12 +95,22 @@ def main():
         return 1
 
     # 3. capabilities
-    c.run("capabilities", lambda: (
-        f"{mgr.device.get_capabilities().digital_channels} digital ch, "
-        f"max {mgr.device.get_capabilities().max_sample_rate / 1e6:.0f} MHz, "
-        f"gen: {','.join(mgr.device.get_capabilities().generator_protocols)}"))
+    def capabilities():
+        caps = mgr.device.get_capabilities()
+        routes = {r.protocol: r for r in caps.generator_routes}
+        for protocol, features in (("rs485", {"de_pin"}),
+                                    ("spi", {"cs_pin", "miso_pin"})):
+            route = routes.get(protocol)
+            if route is None or not features.issubset(set(route.features)):
+                raise HardwareError(
+                    f"{protocol} route missing auxiliary features {sorted(features)}")
+        return (f"{caps.digital_channels} digital ch, "
+                f"max {caps.max_sample_rate / 1e6:.0f} MHz, "
+                f"gen: {','.join(caps.generator_protocols)}, "
+                "RS-485 DE + SPI CS/MISO routes advertised")
+    c.run("capabilities", capabilities)
 
-    # 4. self-test (debug CH0 PWM loopback on hardware)
+    # 4. self-test (lightweight hardware/control-plane checks)
     def self_test():
         r = mgr.device.self_test()
         fails = [ck for ck in r["checks"] if not ck["passed"]]
@@ -146,16 +156,34 @@ def main():
                 + (f" ({warns[0]['message']})" if warns else ""))
     c.run("capture sanity checks", sanity)
 
-    # 6. UART generator loopback -> decode -> compare
-    def loopback():
-        cfg = GeneratorConfig(protocol="uart", data_hex="48656c6c6f21",
-                              baud=115200, tx_pin=0 if args.mock else 3)
-        r = loopback_self_test(mgr, cfg, capture_rate=2_000_000,
-                               capture_samples=4_000)
-        if not r.passed:
-            raise HardwareError(r.detail)
-        return f"{r.detail} -> session {r.session_id}"
-    c.run("UART generator loopback + decode", loopback)
+    # 6. Generator loopback routes that are physically supported by the
+    # current adapter. I2C is intentionally excluded: it needs a connected
+    # external slave, unlike the internal UART/RS-485/SPI/SWD routes.
+    route_configs = [
+        ("uart", 115200, 0 if args.mock else 3, 1),
+        ("rs485", 115200, 0 if args.mock else 3, 1),
+        ("spi", 1_000_000, 5 if args.mock else 3, 4 if args.mock else 1),
+        ("swd", 1_000_000, 1 if args.mock else 3, 0 if args.mock else 1),
+    ]
+    for protocol, baud, tx_pin, scl_pin in route_configs:
+        def loopback(protocol=protocol, baud=baud, tx_pin=tx_pin, scl_pin=scl_pin):
+            cfg = GeneratorConfig(protocol=protocol, data_hex="4142",
+                                  baud=baud, tx_pin=tx_pin, scl_pin=scl_pin,
+                                  extra=(
+                                      {"requests": [{"ap": False, "read": True,
+                                                     "addr": 0, "data": 0}]}
+                                      if protocol == "swd" else
+                                      {"de_pin": 6} if protocol == "rs485" else
+                                      {"cs_pin": 7, "cs_capture_channel": 14,
+                                       "miso_pin": 23,
+                                       "miso_capture_channel": 15}
+                                      if protocol == "spi" else {}))
+            r = loopback_self_test(mgr, cfg, capture_rate=2_000_000,
+                                   capture_samples=8_000)
+            if not r.passed:
+                raise HardwareError(r.detail)
+            return f"{r.detail} -> session {r.session_id}"
+        c.run(f"{protocol.upper()} generator loopback + decode", loopback)
 
     mgr.disconnect()
     ok = c.passed

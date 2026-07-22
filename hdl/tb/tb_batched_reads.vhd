@@ -68,8 +68,6 @@ architecture bench of tb_batched_reads is
   signal analog_only   : std_logic;
   signal buffer_full  : std_logic_vector(2 downto 0) := (others => '0');
   signal buffer_ack   : std_logic_vector(2 downto 0);
-  signal debug_ch0_enable : std_logic;
-
   signal blk_req_tog  : std_logic := '0';
   signal blk_base     : natural range 0 to 25000 := 0;
   signal blk_count    : natural range 0 to 25000 := 0;
@@ -137,7 +135,6 @@ begin
       Armed => armed, Fast_Mode => fast_mode, Continuous_Mode => continuous_mode,
       Analog_Enable => analog_enable, Analog_Only => analog_only,
       Buffer_Full => buffer_full, Buffer_Ack => buffer_ack,
-      Debug_Ch0_Enable => debug_ch0_enable,
       Blk_Rd_Req_Tog => blk_req_tog, Blk_Rd_Base => blk_base,
       Blk_Rd_Count => blk_count, Auto_Renew => auto_renew,
       Rd_Fifo_Q => rd_fifo_q, Rd_Fifo_Empty => rd_fifo_empty,

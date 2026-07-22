@@ -19,7 +19,6 @@ PORT (
   Address               : IN    std_logic_vector(21 downto 0) := (others => '0'); 
   Write_Enable          : IN    std_logic                     := '0';             
   Write_Data            : IN    std_logic_vector(15 downto 0) := (others => '0'); 
-  Burst                 : IN    std_logic                     := '0';
   Capture_Stream_Valid  : IN    std_logic                     := '0';
   Capture_Stream_Ready  : OUT   std_logic                     := '0';
   Capture_Stream_Address : IN   std_logic_vector(21 downto 0) := (others => '0');
@@ -65,7 +64,6 @@ ARCHITECTURE BEHAVIORAL OF SDRAM_Interface IS
   sdram_s_writedata     : in    std_logic_vector(15 downto 0) := (others => 'X'); 
   sdram_s_read_n        : in    std_logic                     := 'X';             
    sdram_s_write_n       : in    std_logic                     := 'X';
-   sdram_s_burst         : in    std_logic                     := 'X';
   sdram_s_readdata      : out   std_logic_vector(15 downto 0);                    
    sdram_s_readdatavalid : out   std_logic;                                        
    sdram_s_waitrequest   : out   std_logic;                                        
@@ -87,7 +85,6 @@ ARCHITECTURE BEHAVIORAL OF SDRAM_Interface IS
   SIGNAL sdram_s_writedata     : std_logic_vector(15 downto 0) := (others => '0');
   SIGNAL sdram_s_read_n        : std_logic                     := '1';
   SIGNAL sdram_s_write_n       : std_logic                     := '1';
-  SIGNAL sdram_s_burst         : std_logic                     := '0';
   SIGNAL sdram_s_readdata      : std_logic_vector(15 downto 0);
   SIGNAL sdram_s_readdatavalid : std_logic;
    SIGNAL sdram_s_waitrequest   : std_logic;
@@ -102,7 +99,6 @@ BEGIN
   sdram_s_address <= Address;
   sdram_s_write_n <= NOT Write_Enable;
   sdram_s_writedata <= Write_Data;
-  sdram_s_burst <= Burst;
   sdram_s_read_n <= NOT Read_Enable;
   Read_Data <= sdram_s_readdata;
   Read_Valid <= sdram_s_readdatavalid;
@@ -147,7 +143,6 @@ BEGIN
   sdram_s_writedata     => sdram_s_writedata,     
   sdram_s_read_n        => sdram_s_read_n,        
    sdram_s_write_n       => sdram_s_write_n,
-   sdram_s_burst         => sdram_s_burst,
    sdram_s_readdata      => sdram_s_readdata,
    sdram_s_readdatavalid => sdram_s_readdatavalid, 
    sdram_s_waitrequest   => sdram_s_waitrequest,   

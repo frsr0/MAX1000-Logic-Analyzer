@@ -7,8 +7,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "driver"))
 sys.path.insert(0, str(ROOT / "app"))
 
-from ols_spi_device import OLSDeviceSPI
-from gui_decoders import samples_to_channels
+from driver.ols_spi_device import OLSDeviceSPI
+from app.gui_decoders import samples_to_channels
 
 PASS = 0
 FAIL = 0
@@ -29,11 +29,16 @@ dev.debug_ch0_enabled = False  # keep pin 0 as normal input
 LA_CHANNELS = 8
 
 for tx_pin in range(LA_CHANNELS):
-    dev._gen_data = bytes([0x55])
+    # Use a sustained burst so the capture includes multiple transitions;
+    # one UART byte is shorter than the atomic-capture guard window.
+    dev._gen_data = bytes([0x55]) * 80
     dev._gen_baud = 115200
     dev._gen_tx_pin = tx_pin
 
-    wire = dev.capture_with_gen(rate_hz=4000000, nsamples=256, gen_first=True)
+    # The FAST build freezes runtime pin-map writes; use the normal mapped
+    # capture path for this pin-routing sweep.
+    wire = dev.capture_with_gen(rate_hz=500000, nsamples=2000,
+                                gen_first=True, fast_mode=False)
     ch_data, ns = samples_to_channels(wire, num_ch=16, stride=2)
     if not ch_data:
         print(f"pin {tx_pin}: no capture data")

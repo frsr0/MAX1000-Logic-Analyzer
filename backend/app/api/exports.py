@@ -1,20 +1,22 @@
-"""Export endpoints: CSV / JSON / VCD / NPZ / HTML report."""
+"""Export endpoints: CSV / JSON / VCD / PulseView / NPZ / HTML / PDF reports."""
 from __future__ import annotations
 
 import time
 from typing import List, Optional
 
 from fastapi import APIRouter, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..capture.session import ExportRecord, new_id
-from ..exports.csv_export import decoder_csv, samples_csv
+from ..exports.csv_export import decoder_csv, samples_csv, samples_csv_iter
 from ..exports.json_export import session_to_json
 from ..exports.npz_export import npz_export
 from ..exports.report_export import html_report
-from ..exports.vcd_export import vcd_export
-from ..state import store
+from ..exports.pdf_export import pdf_report
+from ..exports.vcd_export import vcd_export, vcd_export_iter
 from .deps import get_session_or_404, get_waveform_or_404
+from ..state import store
 
 router = APIRouter(tags=["exports"])
 
@@ -46,14 +48,17 @@ def export_csv(session_id: str, opts: CsvOptions):
         events = store.load_decoder_events(session_id, opts.decoder_instance)
         text = decoder_csv(events)
         fname = _filename(session, "decoded.csv")
-    else:
-        wf = get_waveform_or_404(session_id)
-        end = opts.end if opts.end >= 0 else wf.num_samples
-        text = samples_csv(session, wf, opts.start, end, opts.channels)
-        fname = _filename(session, "csv")
+        _record(session, "csv", fname, opts.model_dump())
+        return Response(content=text, media_type="text/csv", headers={
+            "Content-Disposition": f'attachment; filename="{fname}"'})
+    wf = get_waveform_or_404(session_id)
+    end = opts.end if opts.end >= 0 else wf.num_samples
+    fname = _filename(session, "csv")
     _record(session, "csv", fname, opts.model_dump())
-    return Response(content=text, media_type="text/csv", headers={
-        "Content-Disposition": f'attachment; filename="{fname}"'})
+    return StreamingResponse(
+        samples_csv_iter(session, wf, opts.start, end, opts.channels),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 class JsonOptions(BaseModel):
@@ -81,11 +86,12 @@ class VcdOptions(BaseModel):
 def export_vcd(session_id: str, opts: VcdOptions):
     session = get_session_or_404(session_id)
     wf = get_waveform_or_404(session_id)
-    text = vcd_export(session, wf, opts.channels)
     fname = _filename(session, "vcd")
     _record(session, "vcd", fname, opts.model_dump())
-    return Response(content=text, media_type="text/plain", headers={
-        "Content-Disposition": f'attachment; filename="{fname}"'})
+    return StreamingResponse(
+        vcd_export_iter(session, wf, opts.channels),
+        media_type="text/plain",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 @router.post("/api/sessions/{session_id}/export/npz")
@@ -100,6 +106,24 @@ def export_npz(session_id: str):
                              f'attachment; filename="{fname}"'})
 
 
+@router.post("/api/sessions/{session_id}/export/pulseview")
+def export_pulseview(session_id: str, opts: VcdOptions):
+    """Export a VCD waveform with a PulseView-friendly filename.
+
+    Native sigrok ``.sr`` sessions are versioned binary containers; VCD is
+    the stable interoperable path supported by PulseView without claiming a
+    native sigrok writer here.
+    """
+    session = get_session_or_404(session_id)
+    wf = get_waveform_or_404(session_id)
+    fname = _filename(session, "pulseview.vcd")
+    _record(session, "pulseview", fname, opts.model_dump())
+    return StreamingResponse(
+        vcd_export_iter(session, wf, opts.channels),
+        media_type="text/plain",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
 @router.post("/api/sessions/{session_id}/export/report")
 def export_report(session_id: str):
     session = get_session_or_404(session_id)
@@ -110,4 +134,17 @@ def export_report(session_id: str):
     fname = _filename(session, "report.html")
     _record(session, "report", fname, {})
     return Response(content=text, media_type="text/html", headers={
+        "Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+@router.post("/api/sessions/{session_id}/export/pdf")
+def export_pdf(session_id: str):
+    session = get_session_or_404(session_id)
+    wf = store.load_waveform(session_id)
+    events = {d.id: store.load_decoder_events(session_id, d.id)
+              for d in session.decoders if d.status == "done"}
+    data = pdf_report(session, wf, events)
+    fname = _filename(session, "report.pdf")
+    _record(session, "pdf", fname, {})
+    return Response(content=data, media_type="application/pdf", headers={
         "Content-Disposition": f'attachment; filename="{fname}"'})

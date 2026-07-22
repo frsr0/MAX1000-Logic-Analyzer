@@ -18,7 +18,7 @@ Run them from `host/`.
 Main user-facing app.
 
 - GUI mode provides waveform viewing, trigger control, protocol decode,
-  generator control, debug CH0, and analog display.
+  generator control, Bit Engine waveform tests, and analog display.
 - CLI mode exposes headless capture and control flows for scripting.
 
 ### `app/hw_validation.py`
@@ -64,12 +64,21 @@ Common operations include:
 - `capture_continuous()`
 - `continuous_ring_capture()`
 - `capture_with_gen()`
+- `send_raw_symbols(..., repeat=True)` / `set_bitbang_pwm(..., repeat=True)`
+  for gapless hardware-looped Bit Engine patterns
+- `send_rs485()` / `capture_with_gen(proto="RS485")` with optional DE routing
+- `capture_with_gen(proto="SPI")` with optional GPIO CS/MISO and direct capture channels
 - `read_capture_range()`
 - `ack_capture_done()`
 - `set_readback_compression()`
 - analog frame decode helpers
 - narrow digital pack/unpack helpers
 - programmable pin map support
+- auxiliary generator route registers (`0x35`) and direct SPI capture routes (`0x45`)
+
+The hardware generator protocols are UART, RS-485, I²C, SPI, SWD, and raw
+two-output Bit Banger. Protocol frames are encoded into bounded 2-bit symbols
+by `driver/bit_bang.py`; the FPGA generator FIFO is 256 bytes.
 
 The supported readback codecs are:
 

@@ -1,6 +1,8 @@
 // Trigger configuration with explicit hardware / post-capture / unavailable
 // labeling driven by the device capability matrix.
 import { useApp } from '../state/appStore';
+import { api } from '../api/client';
+import { waveformView } from '../state/waveformStore';
 
 const EXEC_BADGE: Record<string, { label: string; cls: string }> = {
   hardware: { label: 'HW', cls: 'badge-hw' },
@@ -9,7 +11,7 @@ const EXEC_BADGE: Record<string, { label: string; cls: string }> = {
 };
 
 export function TriggerPanel() {
-  const { capabilities, captureSettings, setCaptureSettings } = useApp();
+  const { capabilities, captureSettings, setCaptureSettings, activeSession, toast } = useApp();
   const trig = captureSettings.trigger;
   const matrix = capabilities?.trigger_matrix ?? [];
 
@@ -23,6 +25,22 @@ export function TriggerPanel() {
   const needsWidth = ['pulse_wider', 'pulse_narrower', 'timeout', 'glitch'].includes(trig.type);
   const needsPattern = trig.type === 'pattern';
   const needsBaud = trig.type === 'uart_byte';
+  const needsOccurrence = ['uart_byte', 'i2c_address', 'i2c_nack', 'spi_byte', 'decoder_error'].includes(trig.type);
+  const needsSequence = trig.type === 'sequence';
+  const needsTimingQualifier = !['none', 'sequence', 'timeout'].includes(trig.type);
+  const previewSteps = trig.type === 'sequence'
+    ? (trig.sequence_steps ?? []).map((step: any) => step.type ?? 'event')
+    : trig.type === 'pattern'
+      ? String(trig.pattern ?? '').split('').map((bit) => bit === 'x' ? "don't care" : bit === '1' ? 'high' : 'low')
+      : [trig.type.replace(/_/g, ' ')];
+  const searchExisting = async (occurrence: number) => {
+    try {
+      const query = { ...trig, occurrence };
+      const r = await api.triggerSearch(activeSession!.id, query);
+      if (r.sample == null) toast('warning', `No match for occurrence ${occurrence}`);
+      else { setTrig({ occurrence }); waveformView.jumpTo(r.sample); toast('success', `Match ${occurrence} at sample ${r.sample}`); }
+    } catch (e: any) { toast('error', e.message); }
+  };
 
   return (
     <div className="panel-body">
@@ -46,6 +64,19 @@ export function TriggerPanel() {
           {exec === 'hardware' ? 'Supported in hardware'
             : exec === 'post_capture' ? 'Post-capture only (software search)'
             : 'Unavailable on this device'}
+        </div>
+      )}
+      {trig.type !== 'none' && (
+        <div className="trigger-preview" aria-label="Trigger preview">
+          <span className="trigger-preview-title">Preview</span>
+          <div className="trigger-preview-track">
+            {previewSteps.slice(0, 16).map((step: string, index: number) => (
+              <span key={`${step}-${index}`} className={`trigger-preview-step ${step === 'high' ? 'high' : step === 'low' ? 'low' : ''}`}>
+                {step === 'high' ? '1' : step === 'low' ? '0' : step === "don't care" ? 'x' : '•'}
+              </span>
+            ))}
+          </div>
+          <span className="hint">{previewSteps.length > 16 ? `${previewSteps.length} steps; first 16 shown` : previewSteps.join(' → ')}</span>
         </div>
       )}
       {needsChannels && (
@@ -95,6 +126,69 @@ export function TriggerPanel() {
           <input type="number" value={trig.baud ?? 115200}
             onChange={(e) => setTrig({ baud: Number(e.target.value) })} />
         </label>
+      )}
+      {needsOccurrence && (
+        <label className="field">
+          <span>Match occurrence</span>
+          <input type="number" min={1} step={1} value={trig.occurrence ?? 1}
+            onChange={(e) => setTrig({ occurrence: Math.max(1, Number(e.target.value)) })} />
+        </label>
+      )}
+      {needsTimingQualifier && <>
+        <label className="field">
+          <span>Minimum duration (µs)</span>
+          <input type="number" min={0} step={0.1}
+            value={trig.min_duration_s != null ? trig.min_duration_s * 1e6 : ''}
+            onChange={(e) => setTrig({ min_duration_s: e.target.value ? Number(e.target.value) / 1e6 : null })} />
+        </label>
+        <label className="field">
+          <span>Maximum duration (µs)</span>
+          <input type="number" min={0} step={0.1}
+            value={trig.max_duration_s != null ? trig.max_duration_s * 1e6 : ''}
+            onChange={(e) => setTrig({ max_duration_s: e.target.value ? Number(e.target.value) / 1e6 : null })} />
+        </label>
+        <label className="field">
+          <span>Consecutive matching samples</span>
+          <input type="number" min={1} step={1} value={trig.consecutive ?? 1}
+            onChange={(e) => setTrig({ consecutive: Math.max(1, Number(e.target.value)) })} />
+        </label>
+        <label className="field">
+          <span>Holdoff after match (µs)</span>
+          <input type="number" min={0} step={0.1}
+            value={trig.holdoff_s != null ? trig.holdoff_s * 1e6 : ''}
+            onChange={(e) => setTrig({ holdoff_s: e.target.value ? Number(e.target.value) / 1e6 : null })} />
+        </label>
+        <label className="field checkbox">
+          <input type="checkbox" checked={Boolean(trig.rearm)}
+            onChange={(e) => setTrig({ rearm: e.target.checked })} />
+          <span>Re-arm for repeated captures</span>
+        </label>
+      </>}
+      {needsSequence && (
+        <>
+          <label className="field">
+            <span>Sequence steps (JSON)</span>
+            <input value={JSON.stringify(trig.sequence_steps ?? [])}
+              placeholder='[{"type":"uart_byte","value":85}]'
+              onChange={(e) => {
+                try { setTrig({ sequence_steps: JSON.parse(e.target.value) }); } catch { /* edit in progress */ }
+              }} />
+          </label>
+          <label className="field">
+            <span>Sequence window (us)</span>
+            <input type="number" min={0} step={0.1}
+              value={(trig.window_s ?? 0) * 1e6}
+              onChange={(e) => setTrig({ window_s: Number(e.target.value) / 1e6 })} />
+          </label>
+        </>
+      )}
+      {activeSession && exec === 'post_capture' && (
+        <div className="button-row">
+          <button onClick={() => searchExisting(Math.max(1, (trig.occurrence ?? 1) - 1))}
+            disabled={(trig.occurrence ?? 1) <= 1}>Previous match</button>
+          <button onClick={() => searchExisting(trig.occurrence ?? 1)}>Search existing capture</button>
+          <button onClick={() => searchExisting((trig.occurrence ?? 1) + 1)}>Next match</button>
+        </div>
       )}
       {capabilities?.supports_pre_trigger && trig.type !== 'none' && (
         <>

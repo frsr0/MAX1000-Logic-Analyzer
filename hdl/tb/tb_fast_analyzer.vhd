@@ -8,7 +8,9 @@ entity tb_fast_analyzer is
     CLK_FREQ     : natural := 96000000;
     SAMPLE_RATE  : natural := 12;
     CHANNELS     : natural := 8;
-    MAX_SAMPLES  : natural := 1048576
+    MAX_SAMPLES  : natural := 1048576;
+    -- Narrow coverage is enabled with -gFAST_SPEED=true -gCHANNELS=16.
+    FAST_SPEED   : boolean := false
   );
 end tb_fast_analyzer;
 
@@ -42,10 +44,11 @@ architecture bench of tb_fast_analyzer is
   signal sdram_cs_n : std_logic := '0';
   signal sdram_clk : std_logic;
   signal status : std_logic_vector(7 downto 0);
-  signal s_burst : std_logic;
   signal armed : std_logic := '0';
   signal fast_mode : std_logic := '0';
   signal continuous_mode : std_logic := '0';
+  signal narrow_enable_s : std_logic := '0';
+  signal narrow_channel_s : natural range 0 to 15 := 0;
   signal buffer_full_s : std_logic_vector(2 downto 0) := (others => '0');
   signal buffer_ack_s : std_logic_vector(2 downto 0) := (others => '0');
 
@@ -80,6 +83,7 @@ begin
     generic map (
       Max_Samples   => MAX_SAMPLES,
       Channels      => CHANNELS,
+      FAST_SPEED    => FAST_SPEED,
       Sim           => true,
       Write_Latency => 1,
       Read_Latency  => 1,
@@ -107,10 +111,11 @@ begin
       sdram_cs_n   => sdram_cs_n,
       sdram_clk    => sdram_clk,
       Status       => status,
-      s_burst      => s_burst,
       Armed        => armed,
       Fast_Mode    => fast_mode,
       FAST_CLK     => fast_clk,
+      Narrow_Enable => narrow_enable_s,
+      Narrow_Channel => narrow_channel_s,
       Continuous_Mode => continuous_mode,
       Buffer_Full     => buffer_full_s,
       Buffer_Ack      => buffer_ack_s,
@@ -211,7 +216,51 @@ begin
     wait_cycles(clk, 50);
     report "Test 3: PASS";
 
+    ------------------------------------------------------------------
+    -- Test 4: Narrow packed capture (FAST_SPEED only)
+    ------------------------------------------------------------------
+    if FAST_SPEED then
+      report "Test 4: Narrow packed capture";
+      samples_s <= 32;
+      rate_div <= 1;
+      narrow_channel_s <= 3;
+      narrow_enable_s <= '1';
+      fast_mode <= '1';
+      armed <= '1';
+      wait_cycles(clk, 10);
+      pat_enable <= false;
+      inputs <= (others => '0');
+      inputs(3) <= '1';
+      run <= '1';
+
+      wait_until(clk, full, '1', 500 us,
+                 "Narrow packed capture should complete");
+      check(full = '1', "Full asserted in narrow packed mode");
+
+      -- The first packed word includes the input-pipeline fill.  Later words
+      -- must contain sixteen copies of selected channel 3's asserted bit.
+      for addr in 0 to 7 loop
+        address <= addr;
+        wait_cycles(clk, 3);
+        report "Narrow packed readback word " & integer'image(addr) &
+               " = " & to_hstring(outputs);
+        if addr >= 1 and addr <= 3 then
+          check(outputs = x"FFFF",
+                "Narrow packed readback word " & integer'image(addr));
+        end if;
+      end loop;
+
+      run <= '0';
+      armed <= '0';
+      narrow_enable_s <= '0';
+      fast_mode <= '0';
+      pat_enable <= false;
+      wait_cycles(clk, 50);
+      report "Test 4: PASS";
+    end if;
+
     report "=== ALL FAST ANALYZER TESTS PASSED ===";
+    std.env.finish;
     wait;
   end process;
 

@@ -9,9 +9,15 @@ from ..capture.sample_format import WaveformData
 from ..capture.session import Session
 
 
-def samples_csv(session: Session, wf: WaveformData,
-                start: int = 0, end: Optional[int] = None,
-                channels: Optional[List[str]] = None) -> str:
+def samples_csv_iter(session: Session, wf: WaveformData,
+                     start: int = 0, end: Optional[int] = None,
+                     channels: Optional[List[str]] = None, chunk_rows: int = 4096):
+    """Yield CSV rows as strings, chunked to limit per-yield size.
+
+    Yields header row first, then data rows in ``chunk_rows``-sized blocks.
+    Keeps only one chunk in memory at a time instead of building the entire
+    CSV string before returning it.
+    """
     end = wf.num_samples if end is None else min(end, wf.num_samples)
     dig = [c for c in session.channels
            if c.type == "digital" and (channels is None or c.id in channels)]
@@ -22,22 +28,40 @@ def samples_csv(session: Session, wf: WaveformData,
            if c.type == "derived" and (channels is None or c.id in channels)
            and c.id in wf.derived_digital]
 
+    import io, csv
+    rate = wf.sample_rate
+    dig_bits = [wf.digital_channel(int(c.id[1:]))[start:end] for c in dig]
+    der_bits = [wf.derived_digital[c.id][start:end] for c in der]
+    ana_arr = [wf.analog[c.id][start:end] for c in ana]
+
     out = io.StringIO()
     w = csv.writer(out)
     w.writerow(["sample", "time_s"]
                + [c.name for c in dig] + [c.name for c in der]
                + [f"{c.name} (V)" for c in ana])
-    rate = wf.sample_rate
-    dig_bits = [wf.digital_channel(int(c.id[1:]))[start:end] for c in dig]
-    der_bits = [wf.derived_digital[c.id][start:end] for c in der]
-    ana_arr = [wf.analog[c.id][start:end] for c in ana]
-    for i in range(end - start):
-        row = [start + i, (start + i) / rate]
-        row += [int(b[i]) for b in dig_bits]
-        row += [int(b[i]) for b in der_bits]
-        row += [f"{a[i]:.6f}" for a in ana_arr]
+    yield out.getvalue()
+
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    for idx, i in enumerate(range(start, end)):
+        row = [i, i / rate]
+        row += [int(b[idx]) for b in dig_bits]
+        row += [int(b[idx]) for b in der_bits]
+        row += [f"{a[idx]:.6f}" for a in ana_arr]
         w.writerow(row)
-    return out.getvalue()
+        if (idx + 1) % chunk_rows == 0:
+            yield buf.getvalue()
+            buf = io.StringIO()
+            w = csv.writer(buf)
+    leftover = buf.getvalue()
+    if leftover:
+        yield leftover
+
+
+def samples_csv(session: Session, wf: WaveformData,
+                start: int = 0, end: Optional[int] = None,
+                channels: Optional[List[str]] = None) -> str:
+    return "".join(samples_csv_iter(session, wf, start, end, channels))
 
 
 def decoder_csv(events: List[dict], columns: Optional[List[str]] = None) -> str:

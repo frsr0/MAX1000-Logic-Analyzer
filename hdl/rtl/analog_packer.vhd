@@ -80,7 +80,8 @@ architecture rtl of analog_packer is
   -- Accumulator holds up to 14 residual bits + one MAX_WIDTH chunk before emit.
   constant ACC_W : positive := 15 + MAX_WIDTH;
 
-  type state_t is (FILL, EMIT_HEADER, EMIT_ANCHOR, PACK_LOAD, PACK_SHIFT, PACK_ACC, DRAIN);
+  type state_t is (FILL, EMIT_HEADER, EMIT_ANCHOR_LOAD, EMIT_ANCHOR,
+                   PACK_LOAD, PACK_MASK, PACK_SHIFT, PACK_ACC, DRAIN);
   signal state : state_t := FILL;
 
   type buf_array is array(0 to BLOCK_SAMPLES-1) of std_logic_vector(10 downto 0);
@@ -95,13 +96,16 @@ architecture rtl of analog_packer is
   signal pcount   : natural range 0 to BLOCK_SAMPLES := 0;             -- reused across phases
 
   -- LOAD -> SHIFT -> ACC pipeline registers
+  signal sample_r : unsigned(10 downto 0) := (others => '0'); -- registered buffer read
   signal chunk_r  : unsigned(MAX_WIDTH-1 downto 0) := (others => '0'); -- masked delta
   signal hs_r     : natural range 0 to 14 := 0;                       -- shift amount for it
   signal emit_r   : std_logic := '0';                                 -- this sample fills a word
   signal chunk_shift_r : unsigned(ACC_W-1 downto 0) := (others => '0');
+  signal anchor_word_r : std_logic_vector(15 downto 0) := (others => '0');
 
   signal out_valid_r : std_logic := '0';
-  signal slot_free_r : std_logic := '1';
+  signal pending_data_r  : std_logic_vector(15 downto 0) := (others => '0');
+  signal pending_valid_r : std_logic := '0';
 
 begin
 
@@ -121,19 +125,18 @@ begin
         pcount    <= 0;
         acc       <= (others => '0');
         out_valid_r <= '0';
-        slot_free_r <= '1';
+        pending_valid_r <= '0';
       elsif clk_en = '1' then
-        -- Registered downstream-ready view: trading one analog-packer cycle
-        -- for a shorter FIFO-ready -> packer state/address timing cone.
-        if out_valid_r = '0' or out_ready = '1' then
-          slot_free_r <= '1';
-        else
-          slot_free_r <= '0';
-        end if;
-
-        -- Clear an accepted output word (unless a state below re-loads it).
+        -- Move pending data into the external output only when that register
+        -- is empty.  Deliberately do not refill on the same edge as a ready
+        -- acceptance: this keeps downstream backpressure off the output-data
+        -- timing path while the pending slot absorbs the bubble.
         if out_valid_r = '1' and out_ready = '1' then
           out_valid_r <= '0';
+        elsif out_valid_r = '0' and pending_valid_r = '1' then
+          out_data <= pending_data_r;
+          out_valid_r <= '1';
+          pending_valid_r <= '0';
         end if;
 
         case state is
@@ -167,18 +170,25 @@ begin
           -- EMIT_HEADER: present the header and precompute the block mask
           -- (2^W - 1) once, off the per-sample datapath.
           when EMIT_HEADER =>
-            if slot_free_r = '1' then
-              out_data  <= '0' & std_logic_vector(w_lat) & '1' & "0000000000";
-              out_valid_r <= '1';
+            if pending_valid_r = '0' then
+              pending_data_r <= '0' & std_logic_vector(w_lat) & '1' & "0000000000";
+              pending_valid_r <= '1';
               m12 := shift_left(to_unsigned(1, 12), to_integer(w_lat)) - 1;
               mask_lat <= m12(MAX_WIDTH-1 downto 0);
-              state <= EMIT_ANCHOR;
+              state <= EMIT_ANCHOR_LOAD;
             end if;
 
+          -- Select the next anchor in its own cycle.  Keeping the variable
+          -- anc_lat(pcount) mux off the output-register edge removes the
+          -- pcount -> out_data timing path in the 200 MHz FAST_CLK domain.
+          when EMIT_ANCHOR_LOAD =>
+            anchor_word_r <= "0000" & anc_lat(pcount);
+            state <= EMIT_ANCHOR;
+
           when EMIT_ANCHOR =>
-            if slot_free_r = '1' then
-              out_data  <= "0000" & anc_lat(pcount);
-              out_valid_r <= '1';
+            if pending_valid_r = '0' then
+              pending_data_r <= anchor_word_r;
+              pending_valid_r <= '1';
               if pcount = 3 then
                 pcount <= 0;
                 if w_lat = 0 then
@@ -188,14 +198,16 @@ begin
                 end if;
               else
                 pcount <= pcount + 1;
+                state <= EMIT_ANCHOR_LOAD;
               end if;
             end if;
 
-          -- PACK_LOAD: read the TOP sample, mask to W bits, register the chunk
-          -- and its target shift / emit bookkeeping.
+          -- PACK_LOAD: issue the sample-buffer read and register its result.
+          -- Keeping the inferred M9K read on its own edge prevents the RAM
+          -- output plus mask cone from landing on chunk_r in one fast_clk cycle.
           when PACK_LOAD =>
             wi      := to_integer(w_lat);
-            chunk_r <= unsigned(buf(pcount)) and mask_lat;
+            sample_r <= unsigned(buf(pcount));
             hs_r    <= held;
             if held + wi >= 15 then
               emit_r <= '1';
@@ -204,6 +216,12 @@ begin
               emit_r <= '0';
               held   <= held + wi;
             end if;
+            state <= PACK_MASK;
+
+          -- PACK_MASK: apply the precomputed width mask after the buffered
+          -- sample has been captured, leaving only the shift for the next edge.
+          when PACK_MASK =>
+            chunk_r <= sample_r and resize(mask_lat, sample_r'length);
             state <= PACK_SHIFT;
 
           -- PACK_SHIFT: perform the variable shift into a staging register so
@@ -215,15 +233,21 @@ begin
           -- PACK_ACC: merge the pre-shifted chunk into the accumulator; emit a
           -- payload word when this sample completed 15 queued bits.
           when PACK_ACC =>
-            if slot_free_r = '1' then
-              nacc := acc or chunk_shift_r;
-              if emit_r = '1' then
-                out_data  <= '0' & std_logic_vector(nacc(14 downto 0));
-                out_valid_r <= '1';
-                acc       <= resize(nacc(ACC_W-1 downto 15), ACC_W);
-              else
-                acc <= nacc;
+            nacc := acc or chunk_shift_r;
+            if emit_r = '1' then
+              if pending_valid_r = '0' then
+                pending_data_r <= '0' & std_logic_vector(nacc(14 downto 0));
+                pending_valid_r <= '1';
+                acc <= resize(nacc(ACC_W-1 downto 15), ACC_W);
+                if pcount = BLOCK_SAMPLES - 1 then
+                  state <= DRAIN;
+                else
+                  pcount <= pcount + 1;
+                  state  <= PACK_LOAD;
+                end if;
               end if;
+            else
+              acc <= nacc;
               if pcount = BLOCK_SAMPLES - 1 then
                 state <= DRAIN;
               else
@@ -234,12 +258,14 @@ begin
 
           -- DRAIN: flush any residual partial payload word (< 15 bits held).
           when DRAIN =>
-            if slot_free_r = '1' then
-              if held > 0 then
-                out_data  <= '0' & std_logic_vector(acc(14 downto 0));
-                out_valid_r <= '1';
-                held      <= 0;
+            if held > 0 then
+              if pending_valid_r = '0' then
+                pending_data_r <= '0' & std_logic_vector(acc(14 downto 0));
+                pending_valid_r <= '1';
+                held <= 0;
+                state <= FILL;
               end if;
+            else
               state <= FILL;
             end if;
 

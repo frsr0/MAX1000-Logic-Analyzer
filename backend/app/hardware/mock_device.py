@@ -15,7 +15,8 @@ import numpy as np
 from ..capture.session import CaptureSettings, DeviceMetadata
 from .base import CaptureResult, HardwareDevice, HardwareError, ProgressCb
 from .device_models import (DebugInfo, DeviceCapabilities, GeneratorConfig,
-                            GeneratorStatus, TriggerCapability)
+                            GeneratorRouteCapability, GeneratorStatus,
+                            TriggerCapability)
 from . import mock_signals as ms
 
 SCENARIOS = [
@@ -23,8 +24,20 @@ SCENARIOS = [
     {"id": "square_waves", "name": "Square waves (per-channel frequencies)"},
     {"id": "uart", "name": "UART frames on CH0 ('Hello MAX1000!')"},
     {"id": "i2c", "name": "I2C transaction (SCL=CH1, SDA=CH2)"},
+    {"id": "i2c_nack", "name": "I2C transaction with NACK injection"},
     {"id": "spi", "name": "SPI transaction (SCLK/MOSI/MISO/CS = CH4-7)"},
+    {"id": "rs485", "name": "RS-485 differential UART (A/B = CH0/CH1)"},
+    {"id": "onewire", "name": "1-Wire reset/presence/read slots on CH0"},
+    {"id": "manchester", "name": "Manchester encoded data on CH0"},
+    {"id": "differential_manchester", "name": "Differential Manchester data on CH0"},
+    {"id": "nrz", "name": "Clocked NRZ data on CH0"},
+    {"id": "ps2", "name": "PS/2 clock/data on CH0/CH1"},
+    {"id": "midi", "name": "MIDI serial data on CH0"},
+    {"id": "lin", "name": "LIN break/sync/data on CH0"},
+    {"id": "swd", "name": "SWDIO/SWCLK exerciser on CH0/CH1"},
+    {"id": "uart_fault", "name": "UART wrong-parity fault on CH0"},
     {"id": "pwm", "name": "PWM sweep on CH3"},
+    {"id": "pwm_fault", "name": "PWM shortened-pulse fault on CH3"},
     {"id": "glitchy", "name": "Noisy/glitchy square on CH0"},
     {"id": "edge_cases", "name": "All-zero CH14, all-one CH15, slow CH0"},
     {"id": "analog_demo", "name": "Analog: sine/square/ramp/noise (mixed mode)"},
@@ -78,15 +91,39 @@ class MockDevice(HardwareDevice):
               ("i2c_nack", "post_capture"), ("spi_byte", "post_capture"),
               ("glitch", "post_capture"), ("decoder_error", "post_capture")]
         return DeviceCapabilities(
-            digital_channels=16, analog_channels=8,
+            digital_channels=16, analog_channels=4,
             max_sample_rate=100e6, min_sample_rate=10.0,
             max_samples=2_000_000, bram_samples=1024,
             sample_clk_hz=self.SAMPLE_CLK,
             supports_pre_trigger=True, supports_rolling=True,
             supports_continuous=True, supports_analog=True,
-            analog_rate_note="Mock analog channels (real hardware: 1 MSPS single-channel or 125 kframes/s scan)",
-            generator_protocols=["uart", "rs485", "i2c", "spi", "pwm", "square",
-                                 "pattern", "counter", "prbs"],
+            analog_rate_note="Mock analog channels (real hardware: 1 MSPS single-channel or 125 kframes/s 4-input scan)",
+            generator_protocols=["uart", "rs485", "i2c", "spi", "swd", "pwm", "square",
+                                 "pattern", "counter", "prbs", "bitbang"],
+            generator_routes=[
+                GeneratorRouteCapability(
+                    protocol="uart", name="UART TX", outputs={"tx": "d0"},
+                    features=["capture_loopback"],
+                ),
+                GeneratorRouteCapability(
+                    protocol="rs485", name="RS-485 A/B", outputs={"a": "d1", "b": "d0", "de": "d2"},
+                    features=["capture_loopback", "de_timing", "de_pin", "direction_changes"],
+                ),
+                GeneratorRouteCapability(
+                    protocol="i2c", name="I²C", outputs={"sda": "d2", "scl": "d1"},
+                    features=["external_slave", "clock_stretching"],
+                ),
+                GeneratorRouteCapability(
+                    protocol="spi", name="SPI SCLK/MOSI/MISO/CS",
+                    outputs={"sclk": "d4", "mosi": "d5", "miso": "d6", "cs": "d7"},
+                    features=["capture_loopback", "cs", "miso"],
+                ),
+                GeneratorRouteCapability(
+                    protocol="swd", name="SWD transaction fixture",
+                    outputs={"swclk": "d0", "swdio": "d1"},
+                    features=["transaction_capture"],
+                ),
+            ],
             triggers=[TriggerCapability(type=t, execution=e) for t, e in hw],
             notes=["Mock device — all data is synthetic"],
         )
@@ -179,6 +216,45 @@ class MockDevice(HardwareDevice):
                                      ack_per_byte=[True, True, True, False])
             put(1, scl)
             put(2, sda)
+        elif scenario == "i2c_nack":
+            scl, sda = ms.i2c_signal(n, rate, max(100.0, rate / 200), 0x3C, True,
+                                     b"\x10\xA5\x42", start_sample=n // 10,
+                                     ack_per_byte=[True, True, False, True])
+            put(1, scl)
+            put(2, sda)
+        elif scenario in {
+            "rs485", "onewire", "manchester", "differential_manchester",
+            "nrz", "ps2", "midi", "lin", "swd", "uart_fault", "pwm_fault",
+        }:
+            from ..generator.protocols import encode
+            protocol = "uart" if scenario == "uart_fault" else (
+                "pwm" if scenario == "pwm_fault" else scenario)
+            options = {
+                "fault": "wrong_parity" if scenario == "uart_fault" else (
+                    "shortened_pulse" if scenario == "pwm_fault" else None),
+                "parity": "even", "frequency_hz": max(500.0, rate / 300),
+                "duty_pct": 50, "cycles": 6, "read_slots": 2,
+                "requests": [{"read": True, "addr": 0, "data": 0x2BA01477}],
+            }
+            options = {key: value for key, value in options.items() if value is not None}
+            symbols = encode(protocol, b"\x55\xA5", max(1, int(rate / 20)), options)
+            spb = max(1, int(rate / max(1, int(rate / 20))))
+            start = n // 10
+            tx = np.ones(n, dtype=np.uint8)
+            clk = np.ones(n, dtype=np.uint8)
+            for index, symbol in enumerate(symbols):
+                a = start + index * spb
+                if a >= n:
+                    break
+                b = min(n, a + spb)
+                tx[a:b] = int(symbol) & 1
+                clk[a:b] = (int(symbol) >> 1) & 1
+            put(0, tx)
+            put(1, clk)
+            if scenario == "rs485":
+                put(1, 1 - tx)
+            if scenario == "pwm_fault":
+                put(3, tx)
         elif scenario == "spi":
             sclk, mosi, miso, cs = ms.spi_signal(
                 n, rate, max(100.0, rate / 40), b"\xDE\xAD\xBE\xEF",
@@ -209,12 +285,6 @@ class MockDevice(HardwareDevice):
             analog["a2"] = ms.ramp_wave(n, rate, rate / 500)
             analog["a3"] = ms.sine_wave(n, rate, rate / 180, amplitude=0.4,
                                         offset=1.0, noise=0.15, seed=7)
-            analog["a4"] = ms.sine_wave(n, rate, rate / 320, amplitude=0.25,
-                                        offset=0.7, noise=0.02, seed=11)
-            analog["a5"] = ms.ramp_wave(n, rate, rate / 720)
-            analog["a6"] = ms.analog_square(n, rate, rate / 420)
-            analog["a7"] = ms.sine_wave(n, rate, rate / 150, amplitude=0.2,
-                                        offset=2.2, noise=0.03, seed=13)
             if scenario == "analog_demo":
                 put(0, ms.square(n, rate, rate / 240))     # aligned with a0
                 put(1, (analog["a0"] > 1.65).astype(np.uint8))
@@ -279,6 +349,21 @@ class MockDevice(HardwareDevice):
             sclk, mosi, miso, cs = ms.spi_signal(n, rate, cfg.baud, data,
                                                  start_sample=start)
             put(4, sclk); put(5, mosi); put(6, miso); put(7, cs)
+        elif cfg.protocol == "swd":
+            from ..generator.protocols import encode
+            symbols = encode("swd", data, max(1, int(cfg.baud)), cfg.extra)
+            spb = max(1, int(rate / max(1, int(cfg.baud))))
+            swdio = np.ones(n, dtype=np.uint8)
+            swclk = np.zeros(n, dtype=np.uint8)
+            for i, symbol in enumerate(symbols):
+                a = start + i * spb
+                if a >= n:
+                    break
+                b = min(n, a + spb)
+                swdio[a:b] = int(symbol) & 1
+                swclk[a:b] = (int(symbol) >> 1) & 1
+            put(cfg.tx_pin, swdio)
+            put(cfg.scl_pin, swclk)
         elif cfg.protocol in ("pwm", "square"):
             put(cfg.tx_pin, ms.square(n, rate, cfg.freq_hz, cfg.duty_pct / 100))
         elif cfg.protocol == "counter":
@@ -297,6 +382,21 @@ class MockDevice(HardwareDevice):
                         break
                     bits[a:a + spb] = (byte >> (7 - b)) & 1
             put(cfg.tx_pin, bits)
+        elif cfg.protocol == "bitbang":
+            from ..generator.bitbang import expand_symbols
+            symbols = expand_symbols(cfg.extra, max(1, int(cfg.baud)))
+            spb = max(1, int(rate / max(1, cfg.baud)))
+            tx = np.ones(n, dtype=np.uint8)
+            scl = np.ones(n, dtype=np.uint8)
+            for i, symbol in enumerate(symbols):
+                a = i * spb
+                if a >= n:
+                    break
+                b = min(n, a + spb)
+                tx[a:b] = int(symbol) & 1
+                scl[a:b] = (int(symbol) >> 1) & 1
+            put(cfg.tx_pin, tx)
+            put(cfg.scl_pin, scl)
         else:
             raise HardwareError(f"Unknown generator protocol: {cfg.protocol}")
 

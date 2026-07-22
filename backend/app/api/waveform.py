@@ -10,11 +10,12 @@ from pydantic import BaseModel
 
 from ..capture.chunk_store import clamp_window, value_at
 from ..capture.sample_format import find_edges
-from ..capture.waveform_store import overview_payload, window_payload
+from ..capture.waveform_query import WaveformQuery
 from ..config import MAX_RAW_POINTS
 from ..diagnostics.sanity_checks import run_sanity_checks
 from ..state import store
-from ..waveform.analogue import spectrum
+from ..waveform.analogue import (cross_correlation_delay, envelope, spectrum,
+                                  spectrum_peaks, spectrogram)
 from ..waveform.bus import bus_values, format_bus_value
 from ..waveform.derived import create_derived_channel
 from .deps import get_session_or_404, get_waveform_or_404
@@ -55,9 +56,10 @@ def waveform_window(session_id: str,
     lod = store.get_lod(session_id)
     if end < 0:
         end = wf.num_samples
-    payload = window_payload(session_id, wf, lod, start, end,
-                             max_points=resolution or 0,
-                             channels=_channels_param(channels))
+    query = WaveformQuery(wf, lod)
+    payload = query.window(session_id, start, end,
+                           max_points=resolution or 0,
+                           channels=_channels_param(channels))
     return Response(content=payload, media_type=BINARY)
 
 
@@ -69,28 +71,17 @@ def waveform_raw(session_id: str, start: int = 0, end: int = -1,
     wf = get_waveform_or_404(session_id)
     if end < 0:
         end = wf.num_samples
-    start, end = clamp_window(wf, start, end)
-    if end - start > MAX_RAW_POINTS:
-        raise HTTPException(400, f"Raw window limited to {MAX_RAW_POINTS} "
-                                 f"samples; use /waveform for larger ranges")
-    chans = _channels_param(channels)
-    out = {"start": start, "end": end, "sample_rate": wf.sample_rate}
-    if wf.digital is not None and (chans is None or any(c.startswith("d") for c in chans)):
-        out["digital_packed"] = wf.digital[start:end].tolist()
-    for name, arr in wf.analog.items():
-        if chans is None or name in chans:
-            out[f"analog_{name}"] = [float(v) for v in arr[start:end]]
-    for name, arr in wf.derived_digital.items():
-        if chans is None or name in chans:
-            out[f"derived_{name}"] = arr[start:end].tolist()
-    return out
+    query = WaveformQuery(wf)
+    return query.raw_window(session_id, start, end,
+                            channels=_channels_param(channels))
 
 
 @router.get("/api/sessions/{session_id}/overview")
 def waveform_overview(session_id: str, bins: int = Query(default=1024, le=8192)):
     get_session_or_404(session_id)
     wf = get_waveform_or_404(session_id)
-    return Response(content=overview_payload(session_id, wf, bins),
+    query = WaveformQuery(wf, store.get_lod(session_id))
+    return Response(content=query.overview(session_id, bins),
                     media_type=BINARY)
 
 
@@ -123,7 +114,6 @@ def waveform_value_at(session_id: str, sample: int, channels: str):
     wf = get_waveform_or_404(session_id)
     chans = _channels_param(channels) or []
     values = value_at(wf, sample, chans)
-    # bus channels: combine member values
     buses = {}
     for c in session.channels:
         if c.type == "bus" and c.id in chans:
@@ -138,8 +128,7 @@ def waveform_value_at(session_id: str, sample: int, channels: str):
 
 class DerivedChannelRequest(BaseModel):
     source: str
-    derive: dict       # {"kind": "majority3"|"debounce"|"min_pulse"|
-                       #  "glitch_suppress"|"threshold", ...params}
+    derive: dict
     name: Optional[str] = None
 
 
@@ -152,7 +141,7 @@ def add_derived_channel(session_id: str, req: DerivedChannelRequest):
                                       req.name)
     except (ValueError, KeyError) as e:
         raise HTTPException(400, str(e))
-    store.save_waveform(session_id, wf)   # persists derived arrays
+    store.save_waveform(session_id, wf)
     store.save(session)
     store.invalidate_lod(session_id)
     return info.model_dump()
@@ -170,7 +159,203 @@ def analog_spectrum(session_id: str, channel: str,
     start, end = clamp_window(wf, start, end)
     freqs, mag = spectrum(wf.analog[channel][start:end], wf.sample_rate)
     return {"channel": channel, "freqs": freqs.tolist(),
-            "magnitude": mag.tolist()}
+            "magnitude": mag.tolist(), "peaks": spectrum_peaks(freqs, mag)}
+
+
+@router.get("/api/sessions/{session_id}/spectrogram")
+def analog_spectrogram(session_id: str, channel: str,
+                       start: int = 0, end: int = -1,
+                       window: int = 256, hop: int = 128):
+    get_session_or_404(session_id)
+    wf = get_waveform_or_404(session_id)
+    if channel not in wf.analog:
+        raise HTTPException(404, f"No analog channel: {channel}")
+    if end < 0:
+        end = wf.num_samples
+    start, end = clamp_window(wf, start, end)
+    freqs, times, values = spectrogram(wf.analog[channel][start:end],
+                                       wf.sample_rate, window, hop)
+    return {"channel": channel, "freqs": freqs.tolist(),
+            "times": (times + start / wf.sample_rate).tolist(),
+            "magnitude": values.tolist()}
+
+
+@router.get("/api/sessions/{session_id}/correlation")
+def analog_correlation(session_id: str, channel_a: str, channel_b: str,
+                       start: int = 0, end: int = -1):
+    get_session_or_404(session_id)
+    wf = get_waveform_or_404(session_id)
+    if channel_a not in wf.analog or channel_b not in wf.analog:
+        raise HTTPException(404, "Both correlation channels must be analog")
+    if end < 0:
+        end = wf.num_samples
+    start, end = clamp_window(wf, start, end)
+    return {"channel_a": channel_a, "channel_b": channel_b,
+            **cross_correlation_delay(wf.analog[channel_a][start:end],
+                                      wf.analog[channel_b][start:end],
+                                      wf.sample_rate)}
+
+
+@router.get("/api/sessions/{session_id}/envelope")
+def analog_envelope(session_id: str, channel: str, bins: int = 512):
+    get_session_or_404(session_id)
+    wf = get_waveform_or_404(session_id)
+    if channel not in wf.analog:
+        raise HTTPException(404, f"No analog channel: {channel}")
+    low, high = envelope(wf.analog[channel], bins)
+    return {"channel": channel, "min": low.tolist(), "max": high.tolist()}
+
+
+@router.get("/api/sessions/{session_id}/threshold-sweep")
+def analog_threshold_sweep(session_id: str, channel: str, levels: int = 16):
+    get_session_or_404(session_id)
+    wf = get_waveform_or_404(session_id)
+    if channel not in wf.analog:
+        raise HTTPException(404, f"No analog channel: {channel}")
+    signal = wf.analog[channel]
+    low, high = float(np.min(signal)), float(np.max(signal))
+    rows = []
+    for level in np.linspace(low, high, max(2, min(128, int(levels)))):
+        bits = (signal > level).astype(np.uint8)
+        edges = find_edges(bits, "rising")
+        rows.append({"level": float(level), "rising_edges": int(len(edges)),
+                     "frequency_hz": (float(len(edges) - 1) / wf.duration_s
+                                       if len(edges) > 1 and wf.duration_s else 0.0)})
+    return {"channel": channel, "levels": rows}
+
+
+@router.get("/api/sessions/{session_id}/event-correlation")
+def analog_digital_event_correlation(session_id: str, analog_channel: str,
+                                     digital_channel: str,
+                                     threshold: Optional[float] = None,
+                                     edge: str = "rising",
+                                     tolerance_samples: int = 0,
+                                     limit: int = 5000):
+    """Align analog threshold crossings with digital edges and decoder events."""
+    session = get_session_or_404(session_id)
+    wf = get_waveform_or_404(session_id)
+    if analog_channel not in wf.analog:
+        raise HTTPException(404, f"No analog channel: {analog_channel}")
+    try:
+        digital = wf.channel_bits(digital_channel)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    if edge not in ("rising", "falling", "any"):
+        raise HTTPException(400, "edge must be rising, falling, or any")
+    limit = max(1, min(20_000, int(limit)))
+    signal = np.asarray(wf.analog[analog_channel])
+    level = float(threshold) if threshold is not None else float((np.min(signal) + np.max(signal)) / 2)
+    analog_bits = (signal > level).astype(np.uint8)
+    analog_edges = find_edges(analog_bits, edge)
+    digital_edges = find_edges(digital, edge)
+    tolerance = int(tolerance_samples) if tolerance_samples else max(1, int(wf.sample_rate * 0.01))
+    events = []
+    for decoder in session.decoders:
+        if decoder.status == "done":
+            events.extend(store.load_decoder_events(session_id, decoder.id))
+    pairs = []
+    for sample in analog_edges[:limit]:
+        index = int(np.searchsorted(digital_edges, sample))
+        candidates = []
+        if index < len(digital_edges): candidates.append(int(digital_edges[index]))
+        if index > 0: candidates.append(int(digital_edges[index - 1]))
+        if not candidates: continue
+        nearest = min(candidates, key=lambda value: abs(value - int(sample)))
+        delta = nearest - int(sample)
+        if abs(delta) > tolerance: continue
+        related = [
+            {"type": event.get("type", "unknown"), "label": event.get("label", ""),
+             "severity": event.get("severity", "normal"), "start_sample": int(event.get("start_sample", 0))}
+            for event in events
+            if int(event.get("start_sample", 0)) <= max(int(sample), nearest) + tolerance
+            and int(event.get("end_sample", event.get("start_sample", 0))) >= min(int(sample), nearest) - tolerance
+        ][:16]
+        pairs.append({"analog_sample": int(sample), "digital_sample": nearest,
+                      "lag_samples": int(delta), "lag_s": float(delta / wf.sample_rate),
+                      "events": related})
+    return {"session_id": session_id, "analog_channel": analog_channel,
+            "digital_channel": digital_channel, "threshold": level,
+            "edge": edge, "tolerance_samples": tolerance,
+            "analog_edge_count": int(len(analog_edges)),
+            "digital_edge_count": int(len(digital_edges)), "pairs": pairs}
+
+
+@router.get("/api/sessions/{session_id}/eye")
+def digital_eye_diagram(session_id: str, channel: str, baud: float,
+                        ui_width: float = 2.0, bins_x: int = 160,
+                        bins_y: int = 64):
+    """Fold a digital channel into a normalized-unit-interval eye diagram."""
+    get_session_or_404(session_id)
+    wf = get_waveform_or_404(session_id)
+    try:
+        bits = wf.channel_bits(channel).astype(np.float32)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    if baud <= 0:
+        raise HTTPException(400, "baud must be positive")
+    unit_samples = wf.sample_rate / float(baud)
+    if unit_samples < 2:
+        raise HTTPException(400, "capture sample rate is too low for an eye diagram at this baud")
+    bins_x = max(16, min(512, int(bins_x)))
+    bins_y = max(8, min(128, int(bins_y)))
+    width = max(1.0, min(4.0, float(ui_width)))
+    starts = find_edges(bits.astype(np.uint8), "rising")
+    origin = int(starts[0]) if len(starts) else 0
+    span = unit_samples * width
+    grid = np.zeros((bins_y, bins_x), dtype=np.float64)
+    trace_count = 0
+    max_traces = 10_000
+    for trace in range(max_traces):
+        base = origin + trace * unit_samples
+        if base + span >= len(bits): break
+        sample_positions = np.linspace(base, base + span, bins_x, endpoint=False)
+        values = bits[np.clip(sample_positions.astype(int), 0, len(bits) - 1)]
+        for x, value in enumerate(values):
+            y = min(bins_y - 1, max(0, int(round((1.0 - float(value)) * (bins_y - 1)))))
+            grid[y, x] += 1
+        trace_count += 1
+    if trace_count:
+        grid /= float(trace_count)
+    return {"channel": channel, "baud": float(baud),
+            "unit_samples": float(unit_samples), "traces": trace_count,
+            "grid": grid.tolist()}
+
+
+@router.get("/api/sessions/{session_id}/timing-suspects")
+def timing_suspects(session_id: str, channel: str, sigma: float = 3.0,
+                    limit: int = 200):
+    """Find pulse/gap widths that are outliers for a digital channel."""
+    get_session_or_404(session_id)
+    wf = get_waveform_or_404(session_id)
+    try:
+        bits = wf.channel_bits(channel)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    edges = find_edges(bits, "any")
+    boundaries = np.concatenate(([0], edges, [len(bits)]))
+    widths = np.diff(boundaries).astype(np.float64)
+    if len(widths) < 3:
+        return {"channel": channel, "median_samples": None, "mad_samples": None, "suspects": []}
+    median = float(np.median(widths))
+    mad = float(np.median(np.abs(widths - median)))
+    threshold = max(2.0, float(sigma) * max(mad, 1.0), median * 0.5)
+    suspects = []
+    for index, width in enumerate(widths):
+        deviation = abs(float(width) - median)
+        if deviation <= threshold:
+            continue
+        start = int(boundaries[index]); end = int(boundaries[index + 1])
+        suspects.append({"start_sample": start, "end_sample": end,
+                         "level": int(bits[start]) if start < len(bits) else 0,
+                         "duration_s": float(width / wf.sample_rate),
+                         "duration_samples": int(width),
+                         "median_samples": median,
+                         "deviation_samples": deviation,
+                         "kind": "pulse" if index else "leading-gap"})
+    suspects.sort(key=lambda item: item["deviation_samples"], reverse=True)
+    return {"channel": channel, "median_samples": median,
+            "mad_samples": mad, "threshold_samples": threshold,
+            "suspects": suspects[:max(1, min(2000, int(limit)))]}
 
 
 @router.get("/api/sessions/{session_id}/sanity")

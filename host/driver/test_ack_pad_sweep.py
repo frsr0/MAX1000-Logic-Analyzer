@@ -16,7 +16,10 @@ Requires device connected and OLS driver importable.
 import time
 import struct
 import sys
+import pytest
 from pathlib import Path
+
+pytestmark = pytest.mark.skip(reason="manual hardware sweep; run this file as a script")
 
 # Add driver to path (support both direct run and module import)
 driver_dir = Path(__file__).parent

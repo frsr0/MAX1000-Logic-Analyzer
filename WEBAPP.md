@@ -88,7 +88,7 @@ python hw_smoke_test.py          # add --mock to self-check the script
 ```
 
 This drives the same adapter path the web app uses: discovery → connect +
-sample-clock detect → capabilities → device self-test (debug CH0 PWM loopback
+sample-clock detect → capabilities → device self-test (Bit Engine PWM loopback
 capture) → 4096-sample digital capture + sanity checks → UART generator
 loopback (`CMD_GEN_CAPTURE`) decoded and byte-compared. Exit code 0 = good;
 the captures it takes are saved as sessions and can be inspected in the web
@@ -118,7 +118,7 @@ hardware commands (Settings page → acquire/force/release, or read-only mode).
 |---|---|
 | `hardware/` | `HardwareDevice` interface, mock device, adapter wrapping `host/driver` |
 | `capture/` | Session model/store (JSON + NPZ), capture manager, LOD pyramid, binary waveform encoding |
-| `decoders/` | Plugin decoder framework + UART, I2C, SPI, PWM, parallel, 1-Wire, Modbus RTU (stacked on UART) |
+| `decoders/` | Plugin decoder framework + UART, I2C, SPI, PWM, parallel, 1-Wire, Modbus RTU, RS-485, SWD, Manchester, clocked NRZ, LIN, MIDI, PS/2, quadrature, I²S, CAN, JTAG, HDLC, infrared, and SMBus/PMBus |
 | `measurements/` | Digital / analog / protocol measurement types |
 | `triggers/` | Trigger model, hardware-vs-post-capture classification, software trigger search |
 | `generator/` | Generator control + loopback self-test workflow (configure → capture → decode → compare) |
@@ -174,8 +174,11 @@ GET  /api/sessions/{id}/decoder-events
 GET  /api/measurements/types             POST|PATCH|DELETE /api/sessions/{id}/measurements[/{m}]
 GET  /api/sessions/{id}/measurements/results?cursor_a=&cursor_b=
 GET|POST|PATCH|DELETE /api/sessions/{id}/markers[/{m}]
+POST /api/sessions/{id}/trigger-search
 POST /api/sessions/{id}/export/{csv,json,vcd,npz,report}
-GET  /api/generator/{capabilities,status}  POST /api/generator/{configure,start,stop,send,self-test}
+GET  /api/generator/{capabilities,status}  GET /api/generator/bitbang/presets
+POST /api/generator/{configure,start,stop,send,self-test,preview}
+POST /api/sessions/{id}/validate  GET /api/sessions/{id}/dashboard
 GET  /api/logs | /api/diagnostics        POST /api/diagnostics/{debug-bundle,run-self-test,mock-capture}
 GET  /api/qr | /connect
 ```
@@ -203,7 +206,10 @@ WebSockets: `/ws/status`, `/ws/capture`, `/ws/logs`, `/ws/session/{id}`,
 Decoders implemented: UART (auto-baud, parity/framing errors), I2C (START/
 repeated-START/STOP, address+R/W, ACK/NACK; 7-bit with a 10-bit extension
 point), SPI (CPOL/CPHA/bit-order/word-size/CS), PWM/frequency, parallel bus,
-1-Wire, Modbus RTU. New decoders register in `backend/app/decoders/registry.py`.
+1-Wire, Modbus RTU, RS-485, SWD, Manchester, clocked NRZ, LIN, MIDI, PS/2,
+quadrature, I²S, classical CAN, JTAG, HDLC/PPP, infrared NEC/RC5/RC6,
+and SMBus/PMBus. New decoders
+register in `backend/app/decoders/registry.py`.
 
 ## Export usage
 
@@ -244,19 +250,21 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
   ~12–18 MHz (completion waited on an exact write-count the producer never quite
   reached). Open-page policy + producer-done completion fix both: single-shot
   deep capture now completes and reads back clean at every rate up to the full
-  200 MHz sample clock (validated 36/36 captures, 0 isolated dropped samples,
+  200 MHz sample clock (covered by the final 120/120 hardware regression, 0 isolated dropped samples,
   18–200 MHz, full 4,194,304-word depth).
-- `CMD_GEN_CAPTURE` generator loopback is covered by hardware smoke/API tests
-  and the full host validation suite. The UART loopback path is decoded through
+- `CMD_GEN_CAPTURE` UART, RS-485, and SPI loopback routes are covered by the
+  smoke/API tests; I²C is additionally validated against the on-board LIS3DH
+  accelerometer in the full host validation suite. The UART loopback path is decoded through
   the same backend decoder path used by user captures.
-- Hardware triggers limited to rising/falling edge (any channel mask) and the
-  UART-byte protocol trigger. All other trigger types are clearly labelled
+- Hardware triggers cover rising/falling edge, level triggers (high/low/
+  pattern/bus_value — REG_TRIGGER_MASK level matcher), and the UART-byte
+  protocol trigger. All other trigger types are clearly labelled
   *post-capture* and run as software searches.
 - No analogue front-end beyond the MAX10 ADC (1 MSPS single-channel,
-  125 kframes/s 8-input scan, 3.3 V internal reference). Mixed mode scans
-  ADC0-ADC7 and still shows ADC0/ADC6 as unmapped mux slots. High-speed analog
-  uses one selected ADC mux channel; maximum analog scans the physical profile
-  ADC1,2,3,4,5,7,8,16. AC coupling,
+  125 kframes/s 4-input physical analog scan, 3.3 V internal reference).
+  Mixed mode scans ADC0-ADC3 at the same scan frame rate. High-speed analog
+  uses one selected ADC mux channel; maximum analog uses the validated physical
+  four-input profile ADC1,2,3,4 -> AIN3, AIN1, AIN4, AIN6. AC coupling,
   probe relays, per-channel gain
   are **marked unavailable** — never faked. Mock analog exists only in mock mode.
 - The four capture modes are full digital, mixed, high-speed single-analog,
@@ -266,8 +274,14 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
   selected digital channel into 16-sample words so the FPGA can produce a
   200 MHz rolling stream with much lower memory/readback pressure than
   16-channel full-width digital.
-- Generator protocols on hardware: UART, I2C, PWM (debug CH0). SPI/pattern/
-  PRBS generators exist in mock only until firmware support lands.
+- Generator protocols on hardware: UART, RS-485, I2C, SPI (send + capture
+  only — loops MOSI/SCLK into the capture stream with optional GPIO CS/MISO), SWD transaction
+  capture (send + capture through the existing SWCLK/SWDIO Bit Banger route),
+  and raw two-output Bit Banger playback. The generator capabilities response
+  includes per-route outputs and features for optional CS/MISO and separate DE
+  routes. PWM (debug
+  CH0), pattern, counter, and PRBS remain mock-only. Raw Bit Banger playback is
+  bounded by the 1024-symbol generator FIFO.
 - Segmented/burst capture modes and hardware sequence triggers are not in the
   current core; the capture-mode model has fields reserved for them.
 - Rolling capture on real hardware is bounded by SDRAM write bandwidth, FIFO
@@ -284,21 +298,30 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
 - Mixed/analog/digital recovery is validated by back-to-back hardware tests;
   each capture setup writes the complete mode state.
 - Continuous `Rate_Div=1` startup is covered by HDL and hardware validation.
-- FPGA utilization on the current image is ~87% logic elements / 79%
-  combinational / 41% registers / 75% memory bits. Planned: trim duplicate
+- FPGA utilization on the current image is 6,333/8,064 LEs (79%), with 2,586
+  registers and 63 pins. Planned: trim duplicate
   debug/test mux logic guided by synthesis reports; do not block feature fixes
   on logic cleanup unless compile fails.
 
-**Planned (software):**
-- FFT/spectrum view exists as an API endpoint (`/spectrum`) — dedicated UI
-  panel, histogram and persistence views are future modules.
-- Decoders to add on the existing framework: Manchester, NRZ, I2S, CAN, LIN,
-  MIDI, PS/2, JTAG/SWD, SMBus/PMBus, custom framed serial.
+**Current and planned (software):**
+- Current analysis includes spectrum, spectrogram, XY/correlation, envelopes,
+  threshold sweeps, eye diagrams, analog/digital event correlation, and timing
+  suspect annotations over immutable saved waveforms.
+- Current workflow includes drag-and-drop channel ordering, visibility groups,
+  saved layouts, transaction timelines, and a Ctrl/Cmd+K command palette.
+- FFT/spectrum, spectrogram, XY, correlation, envelope, and threshold-sweep
+  views are available through the API and current frontend analysis panels.
+- Physical generator routes and register-explorer workflows remain bounded by
+  firmware and board routing; software exercisers and the capability matrix are
+  documented in `FEATURE_CAPABILITY_MATRIX.md`.
 - Web Workers: server-side LOD makes client-side parsing cheap (zero-copy
   TypedArray views), so workers are not yet needed; revisit if client-side
   filtering/FFT is added.
-- Drag-and-drop channel reorder (buttons exist), VCD/CSV import, PDF report,
-  command palette.
+- PulseView-compatible VCD, richer HTML reports, and a dependency-free text PDF
+  report are current. HTML remains the plot-rich report path.
+- Generator parameter sweeps can be preview-only for CI or explicitly
+  capture-backed for a connected route; capture-backed rows retain their saved
+  session IDs and pass/fail comparison details.
 - Session storage uses NPZ per session; a chunked store for >10M-sample
   captures is architected (`chunk_store.py`) but not yet needed at current
   full-width hardware depths (4,194,304 samples).

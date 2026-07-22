@@ -4,16 +4,17 @@ param(
     # Elide the MSO bit-pack capture pipeline (FAST_RAW_BUILD=true). Default is
     # the full mixed-signal build with mso_capture included.
     [switch]$RawOnly,
-    # Seed 3 — best-known FULL mixed-signal build (FAST_RAW_BUILD=false,
-    # mso_capture included, AFIFO_DEPTH=1024, registered analog_packer
-    # slot_free): timing closes with clk[1]=+0.128ns, clk[2]=+0.138ns,
-    # clk[0]=+0.793ns at 7,799/8,064 LE (97%).
+    # Keep the old direct PLL c4 forward instead of the DDIO clock forward.
+    [switch]$LegacyClkForward,
+    # Current validated default: full mixed-signal seed 23, timing-closed at
+    # slow-85C with +0.124 ns fast_clk setup slack.
     # Re-sweep (seed_sweep.ps1) after RTL or pin changes; bitstream remains
     # seed-sensitive at this density.
-    [int]$Seed = 3
+    [int]$Seed = 23
 )
 
 $FastRawBuild = if ($RawOnly) { 'true' } else { 'false' }
+$UseDdioClkForward = if ($LegacyClkForward) { 'false' } else { 'true' }
 
 
 $QUARTUS_DIR = "C:\intelFPGA_lite\18.1\quartus\bin64"
@@ -144,11 +145,13 @@ architecture rtl of OLS_Logic_Analyzer_wrapper is
     constant FAST_SPEED : boolean := true;
     -- false = full mixed-signal build (mso_capture bit-pack pipeline included)
     constant FAST_RAW_BUILD : boolean := $FastRawBuild;
+    -- true = DDIO forwarded SDRAM chip clock, false = legacy PLL c4 forward
+    constant USE_DDIO_CLK_FORWARD : boolean := $UseDdioClkForward;
 $($attrLines -join "`n")
 $($ioLines -join "`n")
 begin
     core : entity work.OLS_SDRAM_Top
-    generic map (FAST_SPEED => FAST_SPEED, FAST_RAW_BUILD => FAST_RAW_BUILD)
+    generic map (FAST_SPEED => FAST_SPEED, FAST_RAW_BUILD => FAST_RAW_BUILD, USE_DDIO_CLK_FORWARD => USE_DDIO_CLK_FORWARD)
     port map (
 $($portMapLines -join "`n")
     );
@@ -248,14 +251,16 @@ $qsfLines = @(
     'set_global_assignment -name VHDL_FILE ../rtl/SDRAM_Interface.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/SDRAM_Controller_Custom.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/SPI_Slave.vhd',
-    'set_global_assignment -name VHDL_FILE ../rtl/capture_compressor.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/rle_compressor.vhd',
-    'set_global_assignment -name VHDL_FILE ../rtl/delta_calc.vhd',
+    'set_global_assignment -name VHDL_FILE ../rtl/capture_compressor.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/delta_rle_compressor.vhd',
+    'set_global_assignment -name VHDL_FILE ../rtl/delta_calc.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/analog_packer.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/digital_rle.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/mso_stream_mux.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/mso_capture.vhd',
+    'set_global_assignment -name VHDL_FILE ../rtl/fast_capture_budget.vhd',
+    'set_global_assignment -name VHDL_FILE ../rtl/fast_capture_elastic_buffer.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/ADC_Controller.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/Bit_Engine.vhd',
     'set_global_assignment -name VHDL_FILE ../rtl/Protocol_Trigger.vhd',

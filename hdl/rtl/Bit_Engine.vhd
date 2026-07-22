@@ -19,6 +19,7 @@ entity Bit_Engine is
     RX_Enable   : in  std_logic;
     Clk_Toggle  : in  std_logic;
     Start       : in  std_logic;
+    Repeat      : in  std_logic := '0';
     Busy        : out std_logic;
     Done        : out std_logic;
     Clear       : in  std_logic;
@@ -44,6 +45,7 @@ architecture rtl of Bit_Engine is
   signal tx_wr_ptr : ptr_t := (others => '0');
   signal tx_rd_ptr : ptr_t := (others => '0');
   signal tx_count  : natural range 0 to FIFO_DEPTH := 0;
+  signal repeat_active : std_logic := '0';
 
   signal rx_wr_ptr : ptr_t := (others => '0');
   signal rx_rd_ptr : ptr_t := (others => '0');
@@ -100,6 +102,7 @@ begin
         tx_wr_ptr <= (others => '0');
         tx_rd_ptr <= (others => '0');
         tx_count  <= 0;
+        repeat_active <= '0';
         rx_wr_ptr <= (others => '0');
         rx_rd_ptr <= (others => '0');
         rx_count  <= 0;
@@ -153,6 +156,7 @@ begin
             start_rise := Start;
             if start_rise = '1' and tx_count > 0 then
               sym_cnt   <= unsigned(Num_Syms);
+              repeat_active <= Repeat;
               os_limit  <= unsigned(Over_Sample);
               state     <= LOAD;
             end if;
@@ -161,7 +165,9 @@ begin
             if tx_count > 0 then
               tx_buf    <= tx_ram(to_integer(tx_rd_ptr));
               tx_rd_ptr <= inc_ptr(tx_rd_ptr);
-              tx_count  <= tx_count - 1;
+              if repeat_active = '0' then
+                tx_count <= tx_count - 1;
+              end if;
               tx_sym    <= 0;
               state     <= SHIFT;
               Busy      <= '1';
@@ -192,6 +198,13 @@ begin
               if tx_sym = 3 then
                 tx_sym <= 0;
                 state  <= LOAD;
+                -- In repeat mode tx_count is deliberately retained. The
+                -- write pointer marks the end of a non-full pattern; a full
+                -- FIFO naturally wraps the 8-bit read pointer to zero.
+                if repeat_active = '1' and tx_count < FIFO_DEPTH and
+                   tx_rd_ptr = tx_wr_ptr then
+                  tx_rd_ptr <= (others => '0');
+                end if;
               else
                 tx_sym <= tx_sym + 1;
               end if;

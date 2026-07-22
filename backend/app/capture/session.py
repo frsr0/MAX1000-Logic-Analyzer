@@ -55,10 +55,19 @@ class TriggerConfig(BaseModel):
         "decoder_error",
     ] = "none"
     channels: List[int] = Field(default_factory=list)   # digital channel indices
+    channel_refs: List[str] = Field(default_factory=list)  # digital or derived ids for software search
     pattern: Optional[str] = None       # e.g. "1x0x" LSB first for pattern trigger
     value: Optional[int] = None         # bus value / byte match
     width_s: Optional[float] = None     # pulse width threshold
     baud: Optional[int] = None          # protocol trigger baud
+    occurrence: int = 1                 # nth matching event for software search
+    window_s: Optional[float] = None    # sequence/event qualification window
+    sequence_steps: List[Dict[str, Any]] = Field(default_factory=list)
+    min_duration_s: Optional[float] = None
+    max_duration_s: Optional[float] = None
+    consecutive: int = 1
+    holdoff_s: Optional[float] = None
+    rearm: bool = False
     pre_trigger_samples: int = 0
     position_pct: float = 0.0           # trigger position within capture, 0..100
     # filled in by the trigger capability model:
@@ -78,6 +87,7 @@ class CaptureSettings(BaseModel):
     repeat_count: int = 1
     auto_save: bool = False
     readback_compression: ReadbackCompression = "raw"
+    packed_mode: bool = False
     mock_scenario: Optional[str] = None   # mock device only
 
 
@@ -93,6 +103,7 @@ class DecoderInstance(BaseModel):
     error: Optional[str] = None
     event_count: int = 0
     warning_count: int = 0
+    quality_score: Optional[float] = None  # 0..1 host-side confidence estimate
 
 
 class MeasurementInstance(BaseModel):
@@ -162,6 +173,7 @@ class Session(BaseModel):
     tags: List[str] = Field(default_factory=list)
     exports: List[ExportRecord] = Field(default_factory=list)
     diagnostics: List[Dict[str, Any]] = Field(default_factory=list)
+    generator: Optional[Dict[str, Any]] = None
 
     def touch(self) -> None:
         self.modified_at = time.time()
@@ -208,7 +220,7 @@ def default_digital_channels(count: int = 16) -> List[ChannelInfo]:
     return channels
 
 
-def default_analog_channels(count: int = 8,
+def default_analog_channels(count: int = 4,
                             adc_channels: Optional[List[int]] = None) -> List[ChannelInfo]:
     from ..hardware.max1000_board import analog_channel_info
 

@@ -111,6 +111,8 @@ Use GHDL from `hdl/` or run the focused regression scripts in `hdl/tb/`.
 ## Notes
 
 - The generated wrapper in `proj/` is overwritten by `compile.ps1`.
-- `seed 33` is the currently validated speed-build placement in this branch.
+- `seed 23` is the current validated full-feature placement after the 2026-07-21
+  analog-packer and FAST-stream timing work; it closes slow-85C `fast_clk`
+  setup at `+0.049 ns` with all setup/hold checks positive.
 - No feature removals are implied by the timing work; the current build keeps
   the full digital, mixed-signal, and generator paths.

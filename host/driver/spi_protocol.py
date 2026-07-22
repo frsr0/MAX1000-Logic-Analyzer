@@ -57,7 +57,7 @@ REG_CONT_MODE     = 0x22
 REG_FLAGS_COMPRESS_MASK = 0xC0000
 REG_FLAGS_COMPRESS_DELTA = 0x40000
 REG_FLAGS_COMPRESS_RLE = 0x80000
-REG_FLAGS_COMPRESS = REG_FLAGS_COMPRESS_RLE  # back-compat alias for merged delta_rle
+REG_FLAGS_COMPRESS = REG_FLAGS_COMPRESS_DELTA  # historical enable alias
 REG_GEN_PROTO     = 0x30
 REG_GEN_BAUD      = 0x31
 REG_GEN_PINS      = 0x32
@@ -66,13 +66,14 @@ REG_GEN_DATA      = 0x33
 # generator symbol, LSB-first), bits 15:8 = FIFO fill count. Reading the
 # register pops one byte.
 REG_GEN_RX_DATA   = 0x34
+REG_GEN_AUX_PINS  = 0x35
+REG_GEN_CAPTURE_TX_CHAN  = 0x40
+REG_GEN_CAPTURE_SCL_CHAN = 0x41
+REG_GEN_CAPTURE_AUX      = 0x45
 # REG_GEN_DATA mode-flag bit 4: mirror the accelerometer bus onto capture
 # channels 13 (SDI/SDA) / 14 (SPC/SCL) / 15 (SDO) so a normal capture
 # records the Bit_Engine <-> LIS3DH dialogue.
 GEN_FLAG_ACCEL_ATTACH = 0x10
-REG_DEBUG_CH0_ENABLE = 0x40
-REG_DEBUG_CH0_PERIOD = 0x43
-REG_DEBUG_CH0_DUTY   = 0x44
 # 0x41, 0x42 formerly REG_SCHMITT_ENABLE/THRESHOLD — the digital glitch filter
 # now runs in host software (see ols_spi_device.apply_glitch_filter); these
 # register addresses are retired/reserved.
@@ -95,7 +96,7 @@ REG_IFACE_MODE    = 0xF0
 # REG_GEN_DATA flag bits (written with upper byte non-zero to enter mode-config branch)
 GEN_FLAG_I2C_TEST  = 0x01  # bit 0
 GEN_FLAG_SPI_TEST  = 0x02  # bit 1
-GEN_FLAG_REPEAT    = 0x04  # bit 2: replay loaded UART FIFO forever
+GEN_FLAG_REPEAT    = 0x04  # bit 2: replay the loaded Bit_Engine pattern forever
 GEN_FLAG_RS485_PAIR = 0x08  # bit 3: UART TX on B, inverted TX on A/SCL pin
 
 # Status codes

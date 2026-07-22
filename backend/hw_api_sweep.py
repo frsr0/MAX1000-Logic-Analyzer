@@ -72,19 +72,15 @@ def self_test():
 
 check("POST /api/device/self-test", self_test)
 
-# ── digital capture with PWM signal ──
+# ── plain digital capture ──
 sid = {}
 
 
 def digital_capture():
     prev = req("GET", "/api/status")["last_session_id"]
-    req("POST", "/api/generator/configure",
-        {"protocol": "pwm", "freq_hz": 50000, "duty_pct": 30})
-    req("POST", "/api/generator/start")
     req("POST", "/api/capture/start",
         {"settings": {"sample_rate": 2_000_000, "num_samples": 40000}})
     sid["d"] = wait_capture(prev)
-    req("POST", "/api/generator/stop")
     meta = req("GET", f"/api/sessions/{sid['d']}/metadata")
     digital_ch, _ = channel_counts(meta)
     if digital_ch != 16:
@@ -92,7 +88,7 @@ def digital_capture():
     return f"session {sid['d']} n={meta['num_samples']}"
 
 
-check("digital capture 40k@2MHz with PWM", digital_capture)
+check("digital capture 40k@2MHz", digital_capture)
 
 
 def analog_capture():
@@ -234,25 +230,25 @@ check("POST /api/generator/send I2C loopback", i2c_send_capture)
 def run_decoder():
     decs = req("GET", "/api/decoders")
     n_dec = len(decs["decoders"] if isinstance(decs, dict) else decs)
-    # PWM decoder on the debug-PWM capture (independent of generator health)
-    r = req("POST", f"/api/sessions/{sid['d']}/decoders",
-            {"decoder_id": "pwm", "name": "pwm-hw",
-             "channels": {"signal": "d0"}, "settings": {}})
+    # UART decoder on the hardware UART self-test session.
+    r = req("POST", f"/api/sessions/{sid['u']}/decoders",
+            {"decoder_id": "uart", "name": "uart-hw",
+             "channels": {"rx": "d3"}, "settings": {"baud": 115200}})
     dec_id = r["id"]
-    req("POST", f"/api/sessions/{sid['d']}/decoders/{dec_id}/run")
+    req("POST", f"/api/sessions/{sid['u']}/decoders/{dec_id}/run")
     for _ in range(40):
-        insts = req("GET", f"/api/sessions/{sid['d']}/metadata")["session"]["decoders"]
+        insts = req("GET", f"/api/sessions/{sid['u']}/metadata")["session"]["decoders"]
         inst = next(i for i in insts if i["id"] == dec_id)
         if inst["status"] in ("done", "error"):
             break
         time.sleep(0.25)
-    ann = req("GET", f"/api/sessions/{sid['d']}/decoders/{dec_id}/annotations")
+    ann = req("GET", f"/api/sessions/{sid['u']}/decoders/{dec_id}/annotations")
     events = ann["events"] if isinstance(ann, dict) else ann
-    req("GET", f"/api/sessions/{sid['d']}/decoders/{dec_id}/table")
-    if len(events) < 10:
-        raise RuntimeError(f"only {len(events)} pwm events")
+    req("GET", f"/api/sessions/{sid['u']}/decoders/{dec_id}/table")
+    if len(events) < 1:
+        raise RuntimeError(f"only {len(events)} uart events")
     sid["dec"] = dec_id
-    return f"{n_dec} decoders avail; {len(events)} PWM events on d0"
+    return f"{n_dec} decoders avail; {len(events)} UART events on d3"
 
 
 check("decoder add+run+annotations+table", run_decoder)

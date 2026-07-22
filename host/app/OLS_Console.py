@@ -10,7 +10,7 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-__version__ = "2.0.0"
+__version__ = "3.0.0"
 
 # SPI device backend (30 MHz fast mode)
 try:
@@ -493,7 +493,7 @@ class OLScope:
         self.debug_ch0_duty_var = tk.StringVar(value='50')
         df = ttk.Frame(self.trig_frame)
         df.grid(row=tr, column=0, columnspan=4, sticky='w', pady=1)
-        ttk.Checkbutton(df, text="CH0 debug PWM",
+        ttk.Checkbutton(df, text="Bit Engine PWM",
                         variable=self.debug_ch0_var,
                         command=self._debug_ch0_changed).pack(side='left')
         ttk.Label(df, text="Freq(Hz):").pack(side='left', padx=(8, 2))
@@ -761,7 +761,7 @@ class OLScope:
             # Apply GUI debug CH0 state to hardware after reset
             self._apply_debug_ch0_setting()
             if hasattr(self.dev, 'set_debug_ch0'):
-                self.dev.set_debug_ch0(self.debug_ch0_var.get())
+                self.dev.set_bitbang_pwm(self.debug_ch0_var.get())
             dbg = f"[DBG] Connected backend={self._backend} meta={len(meta)}B"
             if hasattr(self.dev, 'spi') and self.dev.spi:
                 q = self.dev.spi.dev.getQueueStatus() if hasattr(self.dev.spi, 'dev') else 0
@@ -794,11 +794,11 @@ class OLScope:
             self.dev._pending_debug_enable = enable
             self.dev._pending_debug_freq = freq
             self.dev._pending_debug_duty = duty
-        elif hasattr(self.dev, 'set_debug_ch0'):
+        elif hasattr(self.dev, 'set_bitbang_pwm'):
             try:
-                self.dev.set_debug_ch0(enable, freq_hz=freq, duty_pct=duty)
+                self.dev.set_bitbang_pwm(enable, freq_hz=freq, duty_pct=duty)
             except Exception as e:
-                self.status['text'] = f"CH0 debug update failed: {e}"
+                self.status['text'] = f"Bit Engine PWM update failed: {e}"
 
     def _apply_schmitt(self):
         if not self.dev or not hasattr(self.dev, 'set_schmitt'):

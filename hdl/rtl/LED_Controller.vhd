@@ -15,7 +15,11 @@ use work.led_controller_pkg.all;
 
 entity LED_Controller is
     generic (
-        BLINK_TOP : natural := 12500000  -- blink counter top (~8 Hz at 100 MHz)
+        BLINK_TOP : natural := 12500000;  -- blink counter top (~8 Hz at 100 MHz)
+        -- Sweep step top: deliberate scanner sweep during capture, not a blur.
+        -- 7,000,000 @ 100 MHz sys_clk = 70 ms/step (~14.3 Hz steps); the bar
+        -- bounces 0->6->0 (12 steps/cycle) so a full sweep takes ~0.84 s.
+        SWEEP_TOP : natural := 7000000
     );
     port (
         clk             : in  std_logic;
@@ -40,7 +44,7 @@ architecture rtl of LED_Controller is
     -- Sweep bar: position 0..6, lit span = sweep_pos .. sweep_pos+1
     signal sweep_pos  : natural range 0 to 6 := 0;
     signal sweep_dir  : std_logic := '1';  -- '1' = right, '0' = left
-    signal sweep_tick : natural range 0 to 500000 := 0;  -- 100 MHz / 500k = 200 Hz
+    signal sweep_tick : natural range 0 to SWEEP_TOP := 0;
 
     type state_t is (ST_IDLE, ST_ARMED, ST_CAPTURE, ST_DONE);
     signal state     : state_t := ST_IDLE;
@@ -72,7 +76,7 @@ begin
                 end if;
 
                 -- Sweep tick: advances the bar position during CAPTURE
-                if sweep_tick >= 500000 - 1 then
+                if sweep_tick >= SWEEP_TOP - 1 then
                     sweep_tick <= 0;
                     if state = ST_CAPTURE then
                         if sweep_dir = '1' then

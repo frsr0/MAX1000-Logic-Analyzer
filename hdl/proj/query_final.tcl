@@ -5,10 +5,10 @@ read_sdc
 update_timing_netlist
 
 puts "=== clk[1] worst 10 ==="
-report_timing -setup -npaths 10 -detail path_only -to_clock {*clk[1]} -file clk1_worst10.rpt -stdout
+report_timing -setup -npaths 10 -detail full_path -from_clock [get_clocks fast_clk] -to_clock [get_clocks fast_clk] -file clk1_worst10.rpt -stdout
 
 puts "=== clk[2] worst 10 ==="
-report_timing -setup -npaths 10 -detail path_only -to_clock {*clk[2]} -file clk2_worst10.rpt -stdout
+report_timing -setup -npaths 10 -detail full_path -from_clock [get_clocks sdram_core_clk] -to_clock [get_clocks sdram_core_clk] -file clk2_worst10.rpt -stdout
 
 project_close
 exit

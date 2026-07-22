@@ -194,7 +194,6 @@ begin
     wreg(spi_cs, sck, spi_mosi, spi_miso, REG_IFACE_MODE, 1);
     wait for 20 us;
     -- analog capture config: word rate via div=99, WORDS words, analog enable
-    wreg(spi_cs, sck, spi_mosi, spi_miso, REG_DEBUG_CH0_ENABLE, 0);
     wreg(spi_cs, sck, spi_mosi, spi_miso, REG_DIVIDER, 99);
     wreg(spi_cs, sck, spi_mosi, spi_miso, REG_SAMPLE_COUNT, WORDS);
     wreg(spi_cs, sck, spi_mosi, spi_miso, REG_DELAY_COUNT, WORDS);

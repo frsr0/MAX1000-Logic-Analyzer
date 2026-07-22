@@ -36,6 +36,8 @@ _LOOPBACK_DECODE = {
             lambda cfg: {}),
     "spi": ("spi", lambda cfg: {"sclk": "d4", "mosi": "d5", "miso": "d6", "cs": "d7"},
             lambda cfg: {}),
+    "swd": ("swd", lambda cfg: {"swclk": f"d{cfg.scl_pin}", "swdio": f"d{cfg.tx_pin}"},
+            lambda cfg: {"glitch_filter": int(cfg.extra.get("glitch_filter", 0))}),
 }
 
 
@@ -51,6 +53,15 @@ def validate_generator_payload(cfg: GeneratorConfig) -> bytes:
             f"current FPGA generator FIFO holds {MAX_GENERATOR_PAYLOAD_BYTES} bytes")
     if cfg.protocol == "rs485" and int(cfg.tx_pin) == int(cfg.scl_pin):
         raise ValueError("RS-485 generator A and B pins must be different")
+    if cfg.protocol == "spi":
+        # SPI packs 16 Bit_Engine symbols/byte vs UART's 10, so the shared
+        # FIFO holds far fewer SPI bytes than the generic cap above allows.
+        from driver import bit_bang as _bb  # imported via HOST_DIR shim
+        limit = _bb.max_spi_bytes()
+        if len(data) > limit:
+            raise ValueError(
+                f"SPI generator payload is {len(data)} bytes; the Bit_Engine "
+                f"symbol FIFO holds at most {limit} SPI bytes")
     return data
 
 
@@ -74,6 +85,9 @@ def loopback_self_test(mgr: CaptureManager, cfg: GeneratorConfig,
     """Send a pattern through the generator while capturing, decode the
     capture, and compare against the sent/expected bytes."""
     dev = mgr.require_device()
+    validate_route = getattr(dev, "validate_generator_config", None)
+    if callable(validate_route):
+        validate_route(cfg)
     sent = validate_generator_payload(cfg)
     expected = bytes.fromhex(expected_hex) if expected_hex else sent
     capture_samples = normalized_loopback_samples(cfg, capture_rate, capture_samples)
@@ -99,7 +113,10 @@ def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
                       device=dev.get_metadata(),
                       settings=settings, sample_rate=result.sample_rate,
                       num_samples=wf.num_samples,
-                      tags=["generator", "self-test"])
+                      tags=["generator", "self-test"],
+                      generator={"config": cfg.model_dump(),
+                                 "expected_hex": expected.hex(),
+                                 "sent_hex": sent.hex()})
     session.channels = default_digital_channels(16)
     mgr.store.save(session)
     mgr.store.save_waveform(session.id, wf)
@@ -117,9 +134,20 @@ def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
     dec_id, ch_fn, set_fn = spec
     decoder = decoder_registry.get(dec_id)
     decoder_settings = {**decoder.defaults(), **set_fn(cfg)}
+    if cfg.protocol == "spi" and mgr.device_kind != "mock":
+        # Real hardware maps the configured MOSI/SCLK route and, when
+        # requested, auxiliary CS/MISO channels onto the capture stream.
+        channels = {"sclk": f"d{cfg.scl_pin}", "mosi": f"d{cfg.tx_pin}"}
+        if cfg.extra.get("miso_pin") is not None:
+            channels["miso"] = f"d{int(cfg.extra.get('miso_capture_channel', 15))}"
+        if (cfg.extra.get("cs_pin") is not None
+                and cfg.extra.get("cs_capture_channel") is not None):
+            channels["cs"] = f"d{int(cfg.extra['cs_capture_channel'])}"
+    else:
+        channels = ch_fn(cfg)
     inst = DecoderInstance(id=new_id("dec"), decoder_id=dec_id,
                            name=f"{dec_id} (self-test)",
-                           channels=ch_fn(cfg), settings=decoder_settings)
+                           channels=channels, settings=decoder_settings)
     ctx = DecodeContext(wf, inst.channels)
     dec_result = decoder.decode(ctx, inst.settings)
     for ev in dec_result.events:
@@ -151,14 +179,26 @@ def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
             decoded = decoded[1:]
     elif cfg.protocol == "spi":
         nacked = []
+        # The atomic hardware capture window can end on a clock edge.  The
+        # decoder deliberately reports that tail as a partial SPI word so the
+        # waveform remains inspectable, but it is not a transmitted payload
+        # byte and must not make a loopback self-test fail.
         decoded = bytes(e["fields"]["mosi"] & 0xFF for e in dec_result.events
-                        if e["type"] == "spi_word" and e["fields"]["mosi"] is not None)
-    else:
+                        if e["type"] == "spi_word"
+                        and e["fields"]["mosi"] is not None
+                        and int(e["fields"].get("bits", 8)) == 8)
+    elif cfg.protocol == "swd":
         nacked = []
         decoded = b""
-
     if cfg.protocol in ("uart", "rs485"):
         passed, mismatches, detail = _compare_uart_loopback(expected, decoded)
+    elif cfg.protocol == "swd":
+        transfers = sum(1 for event in dec_result.events
+                        if event["type"] == "swd_xfer")
+        passed = transfers > 0
+        mismatches = []
+        detail = (f"PASS - captured and decoded {transfers} SWD transaction(s)"
+                  if passed else "FAIL - no SWD transactions decoded")
     else:
         mismatches = [i for i, (a, b) in enumerate(zip(expected, decoded)) if a != b]
         if len(expected) != len(decoded):

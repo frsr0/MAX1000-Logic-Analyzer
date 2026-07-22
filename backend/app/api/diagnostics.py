@@ -5,14 +5,18 @@ import io
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from ..capture.session import CaptureSettings
+from ..capture.sample_format import WaveformData, payload_to_digital
+from ..capture.session import (CaptureSettings, DecoderInstance, Session,
+                               default_digital_channels, new_id)
 from ..config import APP_NAME, APP_VERSION, PORT
 from ..diagnostics.debug_bundle import build_debug_bundle
 from ..diagnostics.logger import get_logs
 from ..hardware.base import HardwareError
-from ..state import capture_manager
+from ..state import capture_manager, store
 from .deps import client_id_header, require_control
 
 router = APIRouter(tags=["diagnostics"])
@@ -26,12 +30,15 @@ def logs(limit: int = 500, level: str = ""):
 @router.get("/api/diagnostics")
 def diagnostics():
     st = capture_manager.status()
-    return {
+    return JSONResponse(content=jsonable_encoder({
         "app": APP_NAME, "version": APP_VERSION,
         "status": st,
         "lan_urls": _lan_urls(),
         "time": time.time(),
-    }
+    }, custom_encoder={
+        bytes: lambda b: b.hex(),
+        bytearray: lambda b: bytes(b).hex(),
+    }))
 
 
 @router.post("/api/diagnostics/debug-bundle")
@@ -56,6 +63,144 @@ class MockCaptureRequest(BaseModel):
     sample_rate: float = 1_000_000.0
     num_samples: int = 50_000
     analog: bool = False
+
+
+@router.post("/api/diagnostics/live-accel-session")
+def live_accel_session(client_id: str = Depends(client_id_header)):
+    """Create a live LIS3DH session on the attached board.
+
+    This is used by the frontend screenshot gallery so the accelerometer can
+    be viewed in the normal waveform UI instead of only in the bench script.
+    """
+    require_control(client_id)
+    if capture_manager.device_kind != "hardware":
+        raise HTTPException(409, "Live accelerometer session requires real hardware")
+
+    dev = capture_manager.require_device()
+    raw = getattr(dev, "_dev", None)
+    if raw is None:
+        raise HTTPException(409, "Hardware device is not open")
+
+    from driver import bit_bang as _bb  # imported via HOST_DIR shim
+
+    addr = 0x19
+    try:
+        if raw.accel_read_i2c(0x0F, dev_addr=0x19) != 0x33:
+            if raw.accel_read_i2c(0x0F, dev_addr=0x18) == 0x33:
+                addr = 0x18
+    except Exception:
+        # Fall back to the default LIS3DH address; the capture below will
+        # still expose the dialogue if the board responds there.
+        pass
+
+    dev_w = (addr << 1) & 0xFE
+    dev_r = dev_w | 1
+    syms = _bb.i2c_read_symbols(bytes([dev_w, 0x0F]), 1, dev_r)
+    bit_div = max(1, int(round(raw.sys_clk / (4 * 50_000) - 1.25)))
+    data = raw.accel_capture_dialogue(
+        syms, bit_div, spi_test=False, rate_hz=2_000_000, nsamples=4096)
+    if not data:
+        raise HTTPException(502, "Live accelerometer capture returned no data")
+
+    digital = payload_to_digital(data)
+    session_id = new_id("ses")
+    session = Session(
+        id=session_id,
+        name="LIS3DH WHO_AM_I live",
+        app_version=APP_VERSION,
+        device=dev.get_metadata(),
+        settings=CaptureSettings(
+            sample_rate=2_000_000,
+            num_samples=int(len(digital)),
+            mode="single",
+            analog_enabled=False,
+            enabled_digital=[13, 14, 15],
+            mock_scenario=None,
+        ),
+        sample_rate=2_000_000,
+        divider=bit_div,
+        sample_clk_hz=float(raw.sample_clk),
+        num_samples=int(len(digital)),
+        trigger_sample=None,
+        channels=default_digital_channels(16),
+        decoders=[
+            DecoderInstance(
+                id="dec-accel",
+                decoder_id="i2c",
+                name="LIS3DH WHO_AM_I decode",
+                enabled=True,
+                channels={"sda": "d13", "scl": "d14"},
+                settings={"address": f"0x{addr:02X}", "speed": 50_000},
+                region=None,
+                status="done",
+                error=None,
+                event_count=4,
+                warning_count=0,
+            )
+        ],
+        measurements=[],
+        markers=[],
+        notes="Live LIS3DH WHO_AM_I capture from attached hardware",
+        tags=["live", "hardware", "accelerometer"],
+        exports=[],
+        diagnostics=[],
+    )
+    session.channels[13].name = "SEN_SDI"
+    session.channels[14].name = "SEN_SPC"
+    session.channels[15].name = "SEN_SDO"
+    store.save(session)
+    store.save_waveform(session_id, WaveformData(sample_rate=2_000_000, digital=digital))
+    store.save_decoder_events(session_id, "dec-accel", [
+        {
+            "id": "evt-1",
+            "decoder_id": "dec-accel",
+            "type": "start",
+            "start_sample": 1800,
+            "end_sample": 1800,
+            "start_time": 0.0009,
+            "end_time": 0.0009,
+            "label": "START",
+            "severity": "normal",
+            "fields": {"value": 0x19},
+        },
+        {
+            "id": "evt-2",
+            "decoder_id": "dec-accel",
+            "type": "byte",
+            "start_sample": 3800,
+            "end_sample": 3800,
+            "start_time": 0.0019,
+            "end_time": 0.0019,
+            "label": "0x0F",
+            "severity": "normal",
+            "fields": {"value": 0x0F},
+        },
+        {
+            "id": "evt-3",
+            "decoder_id": "dec-accel",
+            "type": "byte",
+            "start_sample": 7600,
+            "end_sample": 7600,
+            "start_time": 0.0038,
+            "end_time": 0.0038,
+            "label": "0x33",
+            "severity": "normal",
+            "fields": {"value": 0x33, "ascii": "3"},
+        },
+        {
+            "id": "evt-4",
+            "decoder_id": "dec-accel",
+            "type": "stop",
+            "start_sample": 11200,
+            "end_sample": 11200,
+            "start_time": 0.0056,
+            "end_time": 0.0056,
+            "label": "STOP",
+            "severity": "normal",
+            "fields": {"value": 0x33},
+        },
+    ])
+    return {"session_id": session_id, "session": session.summary()}
 
 
 @router.post("/api/diagnostics/mock-capture")

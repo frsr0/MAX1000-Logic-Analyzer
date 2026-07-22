@@ -166,7 +166,6 @@ begin
       sdram_s_writedata     => writedata,
       sdram_s_read_n        => read_n,
       sdram_s_write_n       => write_n,
-      sdram_s_burst         => burst,
       sdram_s_readdata      => readdata,
       sdram_s_readdatavalid => readvalid,
       sdram_s_waitrequest   => waitreq,

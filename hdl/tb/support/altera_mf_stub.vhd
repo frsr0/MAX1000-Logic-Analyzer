@@ -116,6 +116,38 @@ package altera_mf_components is
       vcounderrange : out std_logic
     );
   end component;
+
+  -- Minimal altddio_out stub. Only referenced inside "USE_DDIO_CLK_FORWARD
+  -- and not Sim" generate branches in OLS_SDRAM_Top.vhd, which never
+  -- elaborate under Sim => true -- this only needs to satisfy GHDL's
+  -- analysis-time name resolution (direct/default component binding checks
+  -- across all generate branches regardless of which one's condition is
+  -- true at elaboration).
+  component altddio_out
+    generic (
+      intended_device_family : string := "MAX 10";
+      extend_oe_disable      : string := "OFF";
+      invert_output          : string := "OFF";
+      oe_reg                 : string := "UNREGISTERED";
+      power_up_high          : string := "OFF";
+      width                  : natural := 1;
+      lpm_hint               : string := "UNUSED";
+      lpm_type               : string := "altddio_out"
+    );
+    port (
+      aclr       : in  std_logic := '0';
+      aset       : in  std_logic := '0';
+      datain_h   : in  std_logic_vector(width - 1 downto 0);
+      datain_l   : in  std_logic_vector(width - 1 downto 0);
+      dataout    : out std_logic_vector(width - 1 downto 0);
+      oe         : in  std_logic := '1';
+      oe_out     : out std_logic;
+      outclock   : in  std_logic;
+      outclocken : in  std_logic := '1';
+      sclr       : in  std_logic := '0';
+      sset       : in  std_logic := '0'
+    );
+  end component;
 end package altera_mf_components;
 
 package body altera_mf_components is

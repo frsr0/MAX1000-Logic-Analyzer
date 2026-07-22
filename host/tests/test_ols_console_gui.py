@@ -224,7 +224,7 @@ class TestOLScopeRateLimits:
         assert rate <= 50_000_000
 
     def test_rolling_2ana_clamps(self):
-        """Rolling 2-ana clamps to ~5 MHz (30 MB/s / 6 wire B)."""
+        """Rolling 2-ana clamps to ~2.1 MHz (30 MB/s / 14-byte wire stride)."""
         scope = _make_scope()
         scope.capture_type = MagicMock()
         scope.capture_type.get.return_value = 'rolling'
@@ -235,9 +235,10 @@ class TestOLScopeRateLimits:
         scope._update_buf_estimate = MagicMock()
         rate = scope._apply_rate('96MHz')
         assert rate <= 5_000_000
-        assert rate >= 4_500_000
+        assert rate >= 2_000_000
 
     def test_rolling_2ana_compressed_clamps_higher(self):
+        """Rolling 2-ana compressed clamps to ~5.7 MHz (80 MB/s / 14-byte wire stride)."""
         scope = _make_scope()
         scope.capture_type = MagicMock()
         scope.capture_type.get.return_value = 'rolling'
@@ -251,7 +252,7 @@ class TestOLScopeRateLimits:
         scope._update_buf_estimate = MagicMock()
         rate = scope._apply_rate('96MHz')
         assert rate <= 13_500_000
-        assert rate >= 13_000_000
+        assert rate >= 5_500_000
 
 
 # ====================================================================
@@ -523,12 +524,12 @@ class TestOLScopeTrigModeChanged:
         scope.debug_ch0_freq_var.get.return_value = '100000'
         scope.debug_ch0_duty_var.get.return_value = '50'
         scope._debug_ch0_changed()
-        scope.dev.set_debug_ch0.assert_called_once_with(True, freq_hz=100000, duty_pct=50)
+        scope.dev.set_bitbang_pwm.assert_called_once_with(True, freq_hz=100000, duty_pct=50)
 
         scope.dev.reset_mock()
         scope.debug_ch0_var.get.return_value = False
         scope._debug_ch0_changed()
-        scope.dev.set_debug_ch0.assert_called_once_with(False, freq_hz=100000, duty_pct=50)
+        scope.dev.set_bitbang_pwm.assert_called_once_with(False, freq_hz=100000, duty_pct=50)
 
     def test_apply_debug_ch0_setting_syncs_to_device(self):
         scope = _make_scope()

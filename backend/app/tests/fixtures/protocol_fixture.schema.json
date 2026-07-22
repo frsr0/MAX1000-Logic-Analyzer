@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MSA protocol decoder fixture",
+  "type": "object",
+  "required": ["name", "sample_rate", "channels", "digital", "expected_events"],
+  "properties": {
+    "name": {"type": "string"},
+    "sample_rate": {"type": "number", "exclusiveMinimum": 0},
+    "channels": {"type": "object", "additionalProperties": {"type": "string"}},
+    "digital": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+    "analog": {"type": "object"},
+    "settings": {"type": "object"},
+    "expected_events": {"type": "array", "items": {"type": "object"}}
+  }
+}

@@ -28,7 +28,6 @@ architecture bench of tb_pump_tput is
   signal sdram_dq   : std_logic_vector(15 downto 0);
   signal sdram_dqm  : std_logic_vector(1 downto 0);
   signal status     : std_logic_vector(7 downto 0);
-  signal s_burst    : std_logic;
   signal pump_valid_cycles   : std_logic_vector(31 downto 0);
   signal pump_ready_cycles   : std_logic_vector(31 downto 0);
   signal pump_accept_cycles  : std_logic_vector(31 downto 0);
@@ -52,7 +51,7 @@ begin
       Address=>address, Outputs=>outputs, sdram_addr=>sdram_addr, sdram_ba=>sdram_ba,
       sdram_cas_n=>sdram_cas_n, sdram_dq=>sdram_dq, sdram_dqm=>sdram_dqm,
       sdram_ras_n=>sdram_ras_n, sdram_we_n=>sdram_we_n, sdram_cke=>sdram_cke,
-      sdram_cs_n=>sdram_cs_n, sdram_clk=>sdram_clk, Status=>status, s_burst=>s_burst,
+      sdram_cs_n=>sdram_cs_n, sdram_clk=>sdram_clk, Status=>status,
       Armed=>armed, Fast_Mode=>fast_mode, FAST_CLK=>fastclk, Continuous_Mode=>'0',
       Pump_Valid_Cycles=>pump_valid_cycles, Pump_Ready_Cycles=>pump_ready_cycles,
       Pump_Accept_Cycles=>pump_accept_cycles, Pump_Stall_Cycles=>pump_stall_cycles,

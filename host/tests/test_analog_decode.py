@@ -9,33 +9,41 @@ from driver.ols_spi_device import (
     wire_to_payload,
 )
 
-# Frame formats after the 2-ADC-channel re-scope (OLS_SDRAM_Top):
+def _pack_pair(adc0: int, adc1: int) -> bytes:
+    adc0 &= 0x0FFF
+    adc1 &= 0x0FFF
+    return bytes((
+        adc0 & 0xFF,
+        ((adc0 >> 8) & 0x0F) | ((adc1 & 0x0F) << 4),
+        (adc1 >> 4) & 0xFF,
+    ))
+
+
+# Frame formats for the validated analog profiles:
 #   digital-only     2 bytes (16 digital)
-#   mixed            5 bytes (16 digital + 2 x 12-bit ADC, 3-byte packing)
+#   mixed           14 bytes (16 digital + 8 x 12-bit ADC)
 #   fast analog      2 bytes (1 x 12-bit ADC)
-#   dual analog-only 3 bytes (2 x 12-bit ADC)
+#   maximum analog  12 bytes (8 x 12-bit ADC)
 
 
 def test_stride_mixed():
-    assert analog_frame_stride(MODE_MIXED) == 5
+    assert analog_frame_stride(MODE_MIXED) == 14
 
 
 def test_stride_analog_only():
     assert analog_frame_stride(MODE_ANALOG_FAST) == 2
-    assert analog_frame_stride(MODE_ANALOG_ALL) == 3
+    assert analog_frame_stride(MODE_ANALOG_ALL) == 12
 
 
 def test_stride_digital():
     assert analog_frame_stride(MODE_DIGITAL) == 2
 
 
-def test_wire_stride_rounds_frames_to_words():
-    # Frames travel as dense 16-bit words since the write-pump duplication
-    # fix, so the wire stride is the frame stride rounded up to whole words.
+def test_wire_stride_matches_even_frame_payloads():
     assert analog_wire_stride(MODE_DIGITAL) == 2
-    assert analog_wire_stride(MODE_MIXED) == 6
+    assert analog_wire_stride(MODE_MIXED) == 14
     assert analog_wire_stride(MODE_ANALOG_FAST) == 2
-    assert analog_wire_stride(MODE_ANALOG_ALL) == 4
+    assert analog_wire_stride(MODE_ANALOG_ALL) == 12
 
 
 def test_wire_to_payload_is_identity_for_even_stride_frames():
@@ -43,30 +51,26 @@ def test_wire_to_payload_is_identity_for_even_stride_frames():
     assert wire_to_payload(data, MODE_DIGITAL) == data
 
 
-def test_wire_to_payload_strips_mixed_frame_padding():
-    # Mixed 5-byte payloads travel as 6 wire bytes (3 packed words), with the
-    # final high byte padded to zero.
-    wire = bytes([
-        0xBB, 0xAA, 0x23, 0x61, 0x45, 0x00,
-        0x34, 0x12, 0x67, 0x45, 0x89, 0x00,
-    ])
-    assert wire_to_payload(wire, MODE_MIXED) == bytes([
-        0xBB, 0xAA, 0x23, 0x61, 0x45,
-        0x34, 0x12, 0x67, 0x45, 0x89,
-    ])
+def test_wire_to_payload_is_identity_for_even_mixed_frames():
+    wire = bytes([0xBB, 0xAA]) + b''.join(
+        _pack_pair(0x100 + i, 0x200 + i) for i in range(0, 8, 2)
+    )
+    assert wire_to_payload(wire, MODE_MIXED) == wire
 
 
-def test_wire_to_payload_strips_dual_analog_padding():
-    wire = bytes([0x23, 0x61, 0x45, 0x00])
-    assert wire_to_payload(wire, MODE_ANALOG_ALL) == bytes([0x23, 0x61, 0x45])
+def test_wire_to_payload_is_identity_for_even_maximum_analog_frames():
+    wire = b''.join(_pack_pair(0x100 + i, 0x200 + i) for i in range(0, 8, 2))
+    assert wire_to_payload(wire, MODE_ANALOG_ALL) == wire
 
 
 def test_decode_mixed_frame_from_dense_wire():
-    frame = bytes([0xBB, 0xAA, 0x23, 0x61, 0x45, 0x00])
+    frame = bytes([0xBB, 0xAA]) + b''.join(
+        _pack_pair(0x100 + i, 0x101 + i) for i in range(0, 8, 2)
+    )
     rows = decode_analog_frames(wire_to_payload(frame, MODE_MIXED), MODE_MIXED)
     assert len(rows) == 1
     assert rows[0]["digital"] == 0xAABB
-    assert rows[0]["adc"] == [0x123, 0x456]
+    assert rows[0]["adc"] == [0x100, 0x101, 0x102, 0x103, 0x104, 0x105, 0x106, 0x107]
 
 
 def test_decode_fast_analog_frame_from_dense_wire():
@@ -78,11 +82,11 @@ def test_decode_fast_analog_frame_from_dense_wire():
 
 
 def test_decode_maximum_analog_frame_from_dense_wire():
-    frame = bytes([0x23, 0x61, 0x45, 0x00])
+    frame = b''.join(_pack_pair(0x120 + i, 0x121 + i) for i in range(0, 8, 2))
     rows = decode_analog_frames(wire_to_payload(frame, MODE_ANALOG_ALL), MODE_ANALOG_ALL)
     assert len(rows) == 1
     assert rows[0]["digital"] is None
-    assert rows[0]["adc"] == [0x123, 0x456]
+    assert rows[0]["adc"] == [0x120, 0x121, 0x122, 0x123, 0x124, 0x125, 0x126, 0x127]
 
 
 def test_decode_digital():
@@ -91,17 +95,12 @@ def test_decode_digital():
     assert rows[0]["adc"] == []
 
 
-def test_decode_mixed_dual():
-    # 5-byte frame. 12-bit ADC values packed across byte boundaries.
-    # A0=0x123: lo=0x23 (frame[2]), hi nibble=0x1 -> frame[3] bits 3:0
-    # A1=0x456: lo nibble=0x6 -> frame[3] bits 7:4, mid-high=0x45 (frame[4])
-    frame = bytes([
-        0xBB, 0xAA,  # digital = 0xAABB
-        0x23, 0x61,  # A0 lo, A0_hi|A1_lo
-        0x45,        # A1 mid-high
-    ])
+def test_decode_full_mixed_frame():
+    frame = bytes([0xBB, 0xAA]) + b''.join(
+        _pack_pair(0x123 + i, 0x456 + i) for i in range(0, 8, 2)
+    )
     rows = decode_analog_frames(frame, MODE_MIXED)
     assert len(rows) == 1
     assert rows[0]["digital"] == 0xAABB, f"digital={rows[0]['digital']:04X}"
-    assert rows[0]["adc"] == [0x123, 0x456], \
+    assert rows[0]["adc"] == [0x123, 0x456, 0x125, 0x458, 0x127, 0x45A, 0x129, 0x45C], \
         f"adc={[f'{v:03X}' for v in rows[0]['adc']]}"

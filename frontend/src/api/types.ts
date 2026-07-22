@@ -29,6 +29,16 @@ export interface TriggerCapability {
   description: string;
 }
 
+export interface GeneratorRouteCapability {
+  protocol: string;
+  name: string;
+  available: boolean;
+  physical: boolean;
+  outputs: Record<string, string>;
+  features: string[];
+  detail: string;
+}
+
 export interface DeviceCapabilities {
   digital_channels: number;
   analog_channels: number;
@@ -43,6 +53,7 @@ export interface DeviceCapabilities {
   supports_analog: boolean;
   analog_rate_note: string;
   generator_protocols: string[];
+  generator_routes?: GeneratorRouteCapability[];
   triggers: TriggerCapability[];
   trigger_matrix: TriggerCapability[];
   notes: string[];
@@ -64,10 +75,19 @@ export interface PinMapInfo {
 export interface TriggerConfig {
   type: string;
   channels: number[];
+  channel_refs?: string[];
   pattern?: string | null;
   value?: number | null;
   width_s?: number | null;
   baud?: number | null;
+  occurrence?: number;
+  window_s?: number | null;
+  sequence_steps?: { type: string; value?: number | null }[];
+  min_duration_s?: number | null;
+  max_duration_s?: number | null;
+  consecutive?: number;
+  holdoff_s?: number | null;
+  rearm?: boolean;
   pre_trigger_samples: number;
   position_pct: number;
   execution: string;
@@ -87,6 +107,7 @@ export interface CaptureSettings {
   auto_save: boolean;
   readback_compression: 'raw' | 'delta_rle' | 'delta' | 'rle';
   mock_scenario?: string | null;
+  packed_mode: boolean;
 }
 
 export interface ChannelInfo {
@@ -128,6 +149,7 @@ export interface DecoderInstance {
   error?: string | null;
   event_count: number;
   warning_count: number;
+  quality_score?: number | null;
 }
 
 export interface DecoderEvent {
@@ -268,6 +290,7 @@ export interface GeneratorConfig {
   duty_pct: number;
   repeat: number;
   continuous: boolean;
+  extra?: Record<string, any>;
 }
 
 export type MilProtocol = 'uart' | 'modbus_uart' | 'rs485_modbus';
@@ -363,5 +386,6 @@ export const defaultCaptureSettings = (): CaptureSettings => ({
   repeat_count: 1,
   auto_save: false,
   readback_compression: 'raw',
+  packed_mode: false,
   mock_scenario: 'demo_mixed',
 });

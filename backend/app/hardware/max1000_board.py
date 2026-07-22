@@ -44,56 +44,20 @@ DEFAULT_DIGITAL_PIN_INDEX = [
 ]
 
 
-# MAX1000 user guide table maps MKR analogue labels to ADC mux channels:
-# AIN0->ADC8, AIN1->ADC2, AIN2->ADC5, AIN3->ADC1, AIN4->ADC3,
-# AIN5->ADC7, AIN6->ADC4. The board exposes 8 AIN pins, but the current
-# capture RTL streams at most 2 ADC lanes at once (see CURRENT_RTL_ADC_LANES).
+# The current RTL only streams the four analog lanes wired for capture:
+# AIN3->ADC1, AIN1->ADC2, AIN4->ADC3, AIN6->ADC4.
 ANALOG_BY_ADC_CHANNEL: Dict[int, Dict[str, Any]] = {
     1: {"board_label": "AIN3", "fpga_pin": "PIN_D1", "header": "J1 / 5", "available": True},
     2: {"board_label": "AIN1", "fpga_pin": "PIN_C2", "header": "J1 / 3", "available": True},
     3: {"board_label": "AIN4", "fpga_pin": "PIN_E3", "header": "J1 / 6", "available": True},
     4: {"board_label": "AIN6", "fpga_pin": "PIN_E4", "header": "J1 / 8", "available": True},
-    5: {"board_label": "AIN2", "fpga_pin": "PIN_C1", "header": "J1 / 4", "available": True},
-    7: {"board_label": "AIN5", "fpga_pin": "PIN_F1", "header": "J1 / 7", "available": True},
-    8: {"board_label": "AIN0", "fpga_pin": "PIN_E1", "header": "J1 / 2", "available": True},
 }
 
 
-# ADC mux channels the CURRENT capture RTL actually streams into a waveform.
-# The engine carries at most 2 ADC lanes per frame: dual-analog captures
-# ADC1+ADC2, mixed captures ADC0(unmapped)+ADC1, analog-fast captures ADC1.
-# The union of physically-mapped channels that can appear in a capture is
-# {ADC1 (AIN3), ADC2 (AIN1)}. The other AIN pins exist on the board but are
-# not reachable by the current bitstream.
-CURRENT_RTL_ADC_LANES = (1, 2)
+# ADC mux channels the validated analog-only and mixed profiles stream.
+CURRENT_RTL_ADC_LANES = (1, 2, 3, 4)
 
 BOARD_ANALOG_INPUTS: List[Dict[str, Any]] = [
-    {
-        "board_label": "AIN",
-        "fpga_pin": "PIN_D2",
-        "header": "User I/O",
-        "adc_channel": 16,
-        "available": True,
-        "current_rtl_stream": False,
-        "note": "Dedicated analogue input pin (ADC16). Present on the board "
-                "but not streamed by the current capture bitstream.",
-    },
-    {
-        "board_label": "AIN7",
-        "fpga_pin": "PIN_B1",
-        "header": "User I/O",
-        "available": True,
-        "current_rtl_stream": False,
-        "note": "Dual-function analogue pin in user guide; not streamed by the current bitstream.",
-    },
-    {
-        "board_label": "AREF",
-        "fpga_pin": "PIN_D3",
-        "header": "J1 / 1",
-        "available": False,
-        "current_rtl_stream": False,
-        "note": "Analogue reference, not a capture input.",
-    },
 ]
 
 for _adc_channel, _info in sorted(ANALOG_BY_ADC_CHANNEL.items()):
@@ -129,7 +93,5 @@ def analog_channel_info(adc_channel: int) -> Dict[str, Any]:
 
 
 def exposed_analog_count_for_current_rtl() -> int:
-    """Maximum number of analog lanes the current capture bitstream streams
-    at once. The board has 8 AIN pins, but the deployed RTL frame carries at
-    most 2 ADC lanes (dual-analog / mixed); analog-fast carries 1."""
-    return 2
+    """Number of physical MAX1000 analogue inputs exposed by the current RTL."""
+    return len(CURRENT_RTL_ADC_LANES)

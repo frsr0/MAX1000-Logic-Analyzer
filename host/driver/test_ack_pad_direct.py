@@ -4,7 +4,10 @@ Direct ACK pad test - patch stream_command before any calls
 """
 import sys
 import time
+import pytest
 from pathlib import Path
+
+pytestmark = pytest.mark.skip(reason="manual hardware sweep; run this file as a script")
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))

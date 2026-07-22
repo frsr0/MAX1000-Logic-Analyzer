@@ -1,12 +1,22 @@
 # Seed sweep for the full mixed-signal (FAST_RAW_BUILD=false) 200 MHz build.
-# Compiles each seed, extracts clk[1] (200 MHz) and clk[2] (166.7 MHz) setup
-# slacks from the STA summary, and stops when both close with margin.
+# Compiles each seed, extracts setup slacks for the four named PLL clocks
+# (sys_clk/fast_clk/sdram_core_clk/adc_clk) plus the forwarded SDRAM chip
+# clock (SDRAM_CHIP_CLK_OUT) from the STA summary, and stops when all close
+# with margin. Clock names updated 2026-07-07 to match the SDC's explicit
+# create_generated_clock names (sys_clk/fast_clk/sdram_core_clk/adc_clk) --
+# the old 'clk\[(\d)\]' regex matched Quartus's auto-derived names and no
+# longer matches anything, so every field silently came back blank.
 param(
     [int[]]$Seeds = @(21, 30, 5, 12, 42, 7, 3, 17),
-    # stop as soon as both domains have at least this much setup slack (ns)
+    # stop as soon as every tracked domain has at least this much setup slack (ns)
     [double]$TargetSlack = 0.05,
     [switch]$RawOnly
 )
+
+# NB: no 'adc_clk' here — the SDC defines no such named clock, so tracking it
+# fed a permanent -999 sentinel into the worst-slack comparison and the
+# best-seed picker always kept the first seed tried regardless of results.
+$clockNames = @('sys_clk', 'fast_clk', 'sdram_core_clk', 'SDRAM_CHIP_CLK_OUT')
 
 $results = @()
 $best = $null
@@ -31,21 +41,33 @@ foreach ($s in $Seeds) {
     $slk = @{}
     $lines = Get-Content "output_files\OLS_Logic_Analyzer.sta.summary"
     for ($i = 0; $i -lt $lines.Count - 1; $i++) {
-        if ($lines[$i] -match "Slow 1200mV 85C Model Setup '.*clk\[(\d)\]'") {
+        if ($lines[$i] -match "Slow 1200mV 85C Model Setup '([^']+)'") {
             $clk = $matches[1]
-            if ($lines[$i+1] -match "Slack\s*:\s*(-?[\d.]+)") {
-                $slk["clk$clk"] = [double]$matches[1]
+            if ($clockNames -contains $clk -and $lines[$i+1] -match "Slack\s*:\s*(-?[\d.]+)") {
+                $slk[$clk] = [double]$matches[1]
             }
         }
     }
     $le = (Select-String "Total logic elements" "output_files\OLS_Logic_Analyzer.fit.summary").Line.Trim()
-    $r = [pscustomobject]@{ Seed=$s; Clk1=$slk["clk1"]; Clk2=$slk["clk2"]; Clk0=$slk["clk0"]; LE=$le }
+    $r = [pscustomobject]@{
+        Seed = $s
+        Sys = $slk['sys_clk']; Fast = $slk['fast_clk']; Sdram = $slk['sdram_core_clk']
+        ChipOut = $slk['SDRAM_CHIP_CLK_OUT']
+        LE = $le
+    }
     $results += $r
-    Write-Host ("seed {0}: clk1={1}  clk2={2}  clk0={3}  {4}" -f $s, $r.Clk1, $r.Clk2, $r.Clk0, $le)
+    Write-Host ("seed {0}: sys={1} fast={2} sdram={3} chip_out={4}  {5}" -f `
+        $s, $r.Sys, $r.Fast, $r.Sdram, $r.ChipOut, $le)
 
-    $worst = [math]::Min($r.Clk1, $r.Clk2)
+    # Worst-case across every tracked clock. Missing values (parse miss) sort
+    # last via a large negative sentinel, so a broken parse can't masquerade
+    # as "best".
+    $vals = @($r.Sys, $r.Fast, $r.Sdram, $r.ChipOut) | ForEach-Object {
+        if ($null -eq $_) { -999.0 } else { $_ }
+    }
+    $worst = ($vals | Measure-Object -Minimum).Minimum
     if ($null -eq $best -or $worst -gt $best.Worst) {
-        $best = [pscustomobject]@{ Seed=$s; Worst=$worst; Clk1=$r.Clk1; Clk2=$r.Clk2 }
+        $best = [pscustomobject]@{ Seed=$s; Worst=$worst }
         # archive this build's outputs
         Copy-Item "output_files\OLS_Logic_Analyzer.pof" "seed_sweep_best.pof" -Force
         Copy-Item "output_files\OLS_Logic_Analyzer.sof" "seed_sweep_best.sof" -Force
@@ -55,8 +77,8 @@ foreach ($s in $Seeds) {
     }
 
     $results | Format-Table -AutoSize | Out-String | Set-Content "seed_sweep_results.txt"
-    if ($r.Clk1 -ge $TargetSlack -and $r.Clk2 -ge $TargetSlack) {
-        Write-Host "seed $s closes timing with margin -- stopping sweep"
+    if ($worst -ge $TargetSlack) {
+        Write-Host "seed $s closes timing with margin on every tracked clock -- stopping sweep"
         break
     }
 }

@@ -11,6 +11,7 @@ export function SessionsPage() {
   const { sessions, refreshSessions, openSession, setPage, toast, activeSession } = useApp();
   const [compareWith, setCompareWith] = useState<string | null>(null);
   const [compareResult, setCompareResult] = useState<any>(null);
+  const [alignmentOffset, setAlignmentOffset] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -36,9 +37,9 @@ export function SessionsPage() {
     refreshSessions();
   };
 
-  const compare = async (a: string, b: string) => {
+  const compare = async (a: string, b: string, offset = alignmentOffset) => {
     try {
-      setCompareResult(await api.compareSessions(a, b));
+      setCompareResult(await api.compareSessions(a, b, offset === '' ? undefined : Number(offset)));
     } catch (e: any) {
       toast('error', e.message);
     }
@@ -48,7 +49,12 @@ export function SessionsPage() {
   const importJson = async (file: File) => {
     try {
       const text = await file.text();
-      const s = await api.importSession(text);
+      const lower = file.name.toLowerCase();
+      const s = lower.endsWith('.csv')
+        ? await api.importWaveform(text, 'csv')
+        : lower.endsWith('.vcd')
+          ? await api.importWaveform(text, 'vcd')
+          : await api.importSession(text);
       toast('success', `Imported ${s.name}`);
       refreshSessions();
     } catch (e: any) {
@@ -63,8 +69,8 @@ export function SessionsPage() {
           <h2>Sessions</h2>
           <p className="hint">Saved captures stay tied to the hardware metadata that produced them, including analog channels when present.</p>
         </div>
-        <button onClick={() => fileRef.current?.click()}>Import JSON session</button>
-        <input ref={fileRef} type="file" accept=".json" hidden
+        <button onClick={() => fileRef.current?.click()}>Import JSON / CSV / VCD</button>
+        <input ref={fileRef} type="file" accept=".json,.csv,.vcd" hidden
           onChange={(e) => e.target.files?.[0] && importJson(e.target.files[0])} />
       </div>
 
@@ -125,6 +131,26 @@ export function SessionsPage() {
           <p>
             Digital data identical: <strong>{compareResult.identical_digital ? 'yes' : 'no'}</strong>
             {' · '}sample count delta {compareResult.sample_count_diff}
+          </p>
+          <div className="button-row">
+            <label className="field compact">
+              <span>Alignment offset</span>
+              <input
+                type="number"
+                value={alignmentOffset}
+                onChange={(e) => setAlignmentOffset(e.target.value)}
+                placeholder="auto"
+              />
+            </label>
+            <button className="slim" onClick={() => compare(compareResult.a.id, compareResult.b.id)}>
+              Recompare
+            </button>
+          </div>
+          <p className="hint">
+            Applied alignment: {compareResult.alignment_offset} samples ·{' '}
+            {compareResult.first_divergence
+              ? `first divergence A ${compareResult.first_divergence.a} / B ${compareResult.first_divergence.b}`
+              : 'no digital divergence in the overlapping region'}
           </p>
           {Object.keys(compareResult.settings_diff).length > 0 && (
             <>

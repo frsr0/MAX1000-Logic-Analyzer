@@ -1,5 +1,5 @@
 // App chrome: sidebar, top bar, status bar, toasts, global shortcuts.
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, downloadExport } from '../api/client';
 import { Page, useApp } from '../state/appStore';
 import { CapturePage } from '../pages/CapturePage';
@@ -9,6 +9,7 @@ import { GeneratorPage } from '../pages/GeneratorPage';
 import { MachineInLoopPage } from '../pages/MachineInLoopPage';
 import { SessionsPage } from '../pages/SessionsPage';
 import { SettingsPage } from '../pages/SettingsPage';
+import { waveformView } from '../state/waveformStore';
 
 const NAV: { id: Page; icon: string; label: string }[] = [
   { id: 'capture', icon: 'CAP', label: 'Capture' },
@@ -20,14 +21,62 @@ const NAV: { id: Page; icon: string; label: string }[] = [
   { id: 'settings', icon: 'SET', label: 'Settings' },
 ];
 
+type Command = { label: string; action: () => void | Promise<void> };
+
 export function AppShell() {
   const { page, setPage, status, wsConnected, toasts, dismissToast,
           activeSession, captureSettings, toast, controlMode } = useApp();
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteQuery, setPaletteQuery] = useState('');
+  const paletteInput = useRef<HTMLInputElement>(null);
+  const commands: Command[] = [
+    ...NAV.map((n) => ({ label: `Go to ${n.label}`, action: () => setPage(n.id) })),
+    { label: 'Start or stop capture', action: async () => {
+      const st = useApp.getState().status;
+      if (st?.capture_state === 'capturing' || st?.capture_state === 'armed') await api.stopCapture();
+      else if (st?.device_connected && controlMode) await api.startCapture(captureSettings);
+      setPage('capture');
+    } },
+    { label: 'Run first decoder', action: async () => {
+      if (!activeSession) throw new Error('Open a session first');
+      const decoder = activeSession.decoders.find((item) => item.status !== 'running');
+      if (!decoder) throw new Error('No decoder is available');
+      await api.runDecoder(activeSession.id, decoder.id);
+      setPage('capture');
+    } },
+    { label: 'Search current trigger', action: async () => {
+      if (!activeSession) throw new Error('Open a session first');
+      const result = await api.triggerSearch(activeSession.id, captureSettings.trigger);
+      if (result.sample == null) throw new Error('No trigger match found');
+      waveformView.jumpTo(result.sample);
+      setPage('capture');
+    } },
+    { label: 'Export session JSON', action: async () => {
+      if (!activeSession) throw new Error('Open a session first');
+      await downloadExport(activeSession.id, 'json', { include_raw: true });
+    } },
+    { label: 'Export HTML report', action: async () => {
+      if (!activeSession) throw new Error('Open a session first');
+      await downloadExport(activeSession.id, 'report');
+    } },
+  ];
+  const filteredCommands = commands.filter((c) => c.label.toLowerCase().includes(paletteQuery.toLowerCase()));
 
   // Global shortcuts: space (start/stop), ctrl+s (save session JSON)
   useEffect(() => {
     const onKey = async (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setPaletteOpen((open) => !open);
+        setPaletteQuery('');
+        return;
+      }
+      if (e.key === 'Escape' && paletteOpen) {
+        e.preventDefault();
+        setPaletteOpen(false);
+        return;
+      }
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       if (e.key === ' ' && controlMode) {
         e.preventDefault();
@@ -54,7 +103,20 @@ export function AppShell() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [captureSettings, controlMode]);
+  }, [captureSettings, controlMode, paletteOpen]);
+
+  useEffect(() => {
+    if (paletteOpen) paletteInput.current?.focus();
+  }, [paletteOpen]);
+
+  const runCommand = async (command: Command) => {
+    try {
+      await command.action();
+      setPaletteOpen(false);
+    } catch (err: any) {
+      toast('error', err.message);
+    }
+  };
 
   const capState = status?.capture_state ?? 'idle';
   const deviceBadge = status?.device_connected
@@ -131,6 +193,28 @@ export function AppShell() {
           </div>
         ))}
       </div>
+      {paletteOpen && (
+        <div className="command-palette-backdrop" onClick={() => setPaletteOpen(false)}>
+          <div className="command-palette" role="dialog" aria-label="Command palette" onClick={(e) => e.stopPropagation()}>
+            <input ref={paletteInput} value={paletteQuery} placeholder="Search commands..."
+              aria-label="Command search" onChange={(e) => setPaletteQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && filteredCommands[0]) {
+                  void runCommand(filteredCommands[0]);
+                }
+              }} />
+            <div className="command-list">
+              {filteredCommands.map((command) => (
+                <button key={command.label} onClick={() => void runCommand(command)}>
+                  <span>{command.label}</span><kbd>Enter</kbd>
+                </button>
+              ))}
+              {!filteredCommands.length && <span className="hint">No matching commands</span>}
+            </div>
+            <div className="hint">Ctrl+K to toggle · Esc to close</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

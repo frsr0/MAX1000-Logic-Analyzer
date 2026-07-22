@@ -3,7 +3,7 @@
 # Testbench targets for ACK pad timing analysis
 
 GHDL := ghdl
-GHDL_FLAGS := --std=2008 -fsynopsys
+GHDL_FLAGS := --std=08 -fsynopsys
 
 PKG_FILES := ../rtl/spi_protocol_pkg.vhd
 TB_FILES := tb_stream_protocol_timing.vhd

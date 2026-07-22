@@ -21,60 +21,175 @@
  # 12 MHz input clock
  create_clock -name CLK -period 83.333 [get_ports CLK]
  
-  # Derive PLL output clocks (FAST_SPEED: c0~100.2MHz, c1~200.4MHz, c2~167.0MHz core, c4~167.0MHz delayed)
+ # Explicit named PLL output clocks. Must come before derive_pll_clocks;
+ # derive_pll_clocks respects pre-existing clocks on PLL outputs and will
+ # not overwrite these names. The names are stable across fitter runs even
+ # when the PLL instance name changes.
+ # FAST_SPEED: c0~100.2MHz sys, c1~200.4MHz fast, c2~167.0MHz sdram core
+ # Normal:     c0~96MHz   sys, c1~120MHz   fast, c2~167.0MHz sdram core
+ # c3 = 12 MHz ADC conversion clock (present in mixed/analog builds).
+ # The actual synthesized pin path is
+ # core|\gen_use_pll_fast:pll_inst|\gen_fast_speed:altpll_component|auto_generated|pll1|clk[N]
+ # -- "pll_inst" (the VHDL instantiation label) is NOT immediately followed by
+ # "|clk[N]"; the altpll_component|auto_generated hierarchy sits in between,
+ # and a leading-only wildcard (*pll_inst|clk[N]) can never bridge that gap.
+ # Match the inner "pll1" leaf name instead, exactly like the working
+ # SDRAM_CHIP_CLK_OUT constraint below (*pll1|clk[4]). Getting this wrong
+ # silently no-ops create_generated_clock (empty -source/<targets>), so
+ # sys_clk/fast_clk/sdram_core_clk/adc_clk were never actually created, the
+ # set_clock_groups -asynchronous block resolved to four EMPTY groups, and
+ # every real CDC crossing between the PLL's genuinely-async outputs was
+ # analyzed as synchronous — the cause of large, seed-independent setup
+ # violations on every clock (2026-07-07).
+create_generated_clock -name sys_clk \
+  -source [get_pins -compatibility_mode {*pll1|inclk[0]}] \
+  -multiply_by 167 -divide_by 20 \
+  [get_pins -compatibility_mode {*pll1|clk[0]}]
+create_generated_clock -name fast_clk \
+  -source [get_pins -compatibility_mode {*pll1|inclk[0]}] \
+  -multiply_by 167 -divide_by 10 \
+  [get_pins -compatibility_mode {*pll1|clk[1]}]
+create_generated_clock -name sdram_core_clk \
+  -source [get_pins -compatibility_mode {*pll1|inclk[0]}] \
+  -multiply_by 167 -divide_by 12 \
+  [get_pins -compatibility_mode {*pll1|clk[2]}]
+create_generated_clock -name adc_clk \
+  -source [get_pins -compatibility_mode {*pll1|inclk[0]}] \
+  -multiply_by 167 -divide_by 168 \
+  [get_pins -compatibility_mode {*pll1|clk[3]}]
+ 
+ # Derive remaining PLL output clocks and PLL-internal dividers
  derive_pll_clocks
  
  # Realistic clock uncertainty for timing signoff
  derive_clock_uncertainty
- 
- # Asynchronous clock groups: all cross-domain CDC paths properly synchronized.
- # FAST_SPEED build: clk[0]=sys, clk[1]=fast, clk[2]=sdram, clk[3]=12 MHz ADC
- # conversion clock (the modular ADC control core handles the clk<->adcblock
- # crossing internally; result handoff to sys_clk is via rsp_valid handshake).
- set_clock_groups -asynchronous \
-   -group [get_clocks {*pll_inst|*clk[0]}] \
-   -group [get_clocks {*pll_inst|*clk[1]}] \
-   -group [get_clocks {*pll_inst|*clk[2]}] \
-   -group [get_clocks {*pll_inst|*clk[3]}]
- 
+
+ # The ADC side of mso_capture presents one toggle-CDC sample at a time.
+ # smp_data/smp_ch are registered on the FAST_CLK side and remain unchanged
+ # until the next ADC conversion (many FAST_CLK cycles later). The delta
+ # subtract therefore has a valid two-cycle data-stability contract even
+ # though the surrounding digital sampler remains single-cycle. Constrain
+ # only this named sparse path; do not apply a global MSO multicycle.
+ set_multicycle_path 2 -setup \
+   -from [get_registers {*mso_capture*|smp_*}] \
+   -to   [get_registers {*delta_calc*|diff1*}]
+ set_multicycle_path 1 -hold \
+   -from [get_registers {*mso_capture*|smp_*}] \
+   -to   [get_registers {*delta_calc*|diff1*}]
+
+ # Packed_Mode is a capture-level mode bit: it is synchronized before the
+ # producer is armed and remains constant until the next configuration. The
+ # MSO RLE ready/enable fanout may therefore settle over two FAST_CLK cycles;
+ # sampled digital data and the ordinary capture budget remain single-cycle.
+ set_multicycle_path 2 -setup \
+   -from [get_registers {*packed_mode_f*}] \
+   -to   [get_registers {*digital_rle*|rr*}]
+ set_multicycle_path 1 -hold \
+   -from [get_registers {*packed_mode_f*}] \
+   -to   [get_registers {*digital_rle*|rr*}]
+
+ # Capture-source selection controls are synchronized configuration state,
+ # not sampled data. They are written before a run and held until it ends;
+ # allow the FAST input mux/shift-tap data register two cycles to settle while
+ # leaving the pin_pool_fast_r data path at the normal one-cycle requirement.
+ set_multicycle_path 2 -setup \
+   -from [get_registers {*accel_attach_f2*}] \
+   -to   [get_registers {*capture_data_fast_speed_r*}]
+ set_multicycle_path 1 -hold \
+   -from [get_registers {*accel_attach_f2*}] \
+   -to   [get_registers {*capture_data_fast_speed_r*}]
+ set_multicycle_path 2 -setup \
+   -from [get_registers {*gen_capture_active_f2*}] \
+   -to   [get_registers {*capture_data_fast_speed_r*}]
+ set_multicycle_path 1 -hold \
+   -from [get_registers {*gen_capture_active_f2*}] \
+   -to   [get_registers {*capture_data_fast_speed_r*}]
+ set_multicycle_path 2 -setup \
+   -from [get_registers {*gen_capture_*_channel_f2*}] \
+   -to   [get_registers {*capture_data_fast_speed_r*}]
+ set_multicycle_path 1 -hold \
+   -from [get_registers {*gen_capture_*_channel_f2*}] \
+   -to   [get_registers {*capture_data_fast_speed_r*}]
+ set_multicycle_path 2 -setup \
+   -from [get_registers {*gen_capture_*_enable_f2*}] \
+   -to   [get_registers {*capture_data_fast_speed_r*}]
+ set_multicycle_path 1 -hold \
+   -from [get_registers {*gen_capture_*_enable_f2*}] \
+   -to   [get_registers {*capture_data_fast_speed_r*}]
+
+ # The analog-stream selector is synchronized configuration state and the
+ # pre-trigger tick counter is not active in the live budget-decrement branch.
+ # Keep the actual sample_remaining/sample_rem_dec_r countdown paths at one
+ # FAST_CLK cycle; only these inactive/held branch-select inputs may settle
+ # over two cycles.
+ set_multicycle_path 2 -setup \
+   -from [get_registers {*astream_f*}] \
+   -to   [get_registers {*sample_remaining*}]
+ set_multicycle_path 1 -hold \
+   -from [get_registers {*astream_f*}] \
+   -to   [get_registers {*sample_remaining*}]
+ set_multicycle_path 2 -setup \
+   -from [get_registers {*pretrig_tick_cnt*}] \
+   -to   [get_registers {*sample_remaining*}]
+ set_multicycle_path 1 -hold \
+   -from [get_registers {*pretrig_tick_cnt*}] \
+   -to   [get_registers {*sample_remaining*}]
+
  # External SPI timing:
  # - SPI_SCK is the FTDI-generated clock that times the slave interface.
  # - MOSI is captured relative to that clock.
  # - MISO is launched relative to that same clock.
  # The hardware validation suite treats 15 MHz as the validated ceiling.
+ # Restored 2026-07-07: dropped by the SDC-hardening pass (commit b378e212)
+ # when the async clock-group block was narrowed to only the four named PLL
+ # clocks. Without these, SPI_SCK/SPI_CS/SPI_MOSI/SPI_MISO are unconstrained
+ # against every internal clock instead of explicitly excluded from them.
  create_clock -name SPI_SCK_EXT -period 66.667 [get_ports SPI_SCK]
  create_clock -name SPI_CS_QUAL -period 1000.000 [get_ports SPI_CS]
  set_input_delay -clock [get_clocks SPI_SCK_EXT] -max 12.0 [get_ports SPI_MOSI]
  set_input_delay -clock [get_clocks SPI_SCK_EXT] -min 0.0 [get_ports SPI_MOSI]
  set_output_delay -clock [get_clocks SPI_SCK_EXT] -max 12.0 [get_ports SPI_MISO]
  set_output_delay -clock [get_clocks SPI_SCK_EXT] -min -2.0 [get_ports SPI_MISO]
- 
+
  # The SPI chip-select is used as an asynchronous qualifier/reset, not a clock.
  # Keep it out of the timed datapaths.
  set_false_path -from [get_ports {SPI_SCK SPI_CS}]
  set_false_path -to   [get_ports {SPI_SCK SPI_CS}]
  set_false_path -from [get_ports {SPI_MOSI}]  -to [all_registers]
+
+ # Board GPIO has no source or destination timing clock. MKR_D/PMOD and the
+ # accelerometer pins are intentionally sampled as asynchronous logic-analyzer
+ # inputs or driven as slow control pins; LEDs and SEN_CS are board-control
+ # outputs with no external timing contract. Exclude only these GPIO ports so
+ # SPI and SDRAM I/O timing remains checked above and below.
+ set_false_path -from [get_ports {MKR_D[*] PMOD[*] SEN_SDI SEN_SDO SEN_SPC}] \
+                -to   [all_registers]
+ set_false_path -from [all_registers] \
+                -to   [get_ports {LED[*] MKR_D[*] PMOD[*] SEN_CS SEN_SDI SEN_SPC}]
+
+ # Asynchronous clock groups: all cross-domain CDC paths properly synchronized.
+ # Note: sdram_chip_clk_out (c4) is intentionally NOT in these async groups —
+ # the core↔chip relationship is synchronous-by-design (same PLL, phase-shifted),
+ # and the I/O delays & multicycle constraints at lines 84–103 already cover it.
  set_clock_groups -asynchronous \
+   -group [get_clocks sys_clk] \
+   -group [get_clocks fast_clk] \
+   -group [get_clocks sdram_core_clk] \
+   -group [get_clocks adc_clk] \
    -group [get_clocks SPI_SCK_EXT] \
-   -group [get_clocks SPI_CS_QUAL] \
-   -group [get_clocks {*pll_inst|*clk[0]}] \
-   -group [get_clocks {*pll_inst|*clk[1]}] \
-   -group [get_clocks {*pll_inst|*clk[2]}] \
-   -group [get_clocks {*pll_inst|*clk[3]}]
+   -group [get_clocks SPI_CS_QUAL]
  
- # Async FIFO internal gray-code synchronizer paths
- # The dcfifo megafunction generates these internally; they are intentional
- # CDC synchronization paths and cannot be timed at the fastest edge rate.
- set_false_path -from [get_registers *auto_generated|delayed_wrptr_g*] \
-                -to   [get_registers *auto_generated|rdemp_eq_comp*]
- set_false_path -from [get_registers *auto_generated|rdptr_g*] \
-                -to   [get_registers *auto_generated|wrfull_eq_comp*]
+ # Async FIFO internal gray-code synchronizer paths are constrained by the
+ # dcfifo megafunction's embedded SDC. Do not duplicate those paths here:
+ # Quartus-generated hierarchy names vary between dcfifo instances and the
+ # old hand-written wildcards silently matched nothing.
  
-  # Make the forwarded SDRAM chip clock explicit so I/O delays are referenced to
- # the same delayed edge the external SDRAM sees, not the internal controller
- # clock that launches the commands/data.
+ # Make the forwarded SDRAM chip clock explicit so I/O delays are referenced to
+ # the same DDIO-forwarded edge the external SDRAM sees, not the internal
+ # controller clock that launches the commands/data.
  create_generated_clock -name SDRAM_CHIP_CLK_OUT \
-   -source [get_pins -compatibility_mode {*pll1|clk[4]}] \
+   -source [get_pins -compatibility_mode {*pll1|clk[2]}] \
+   -master_clock [get_clocks sdram_core_clk] -invert \
    [get_ports {sdram_clk}]
  
  # SDRAM write-side timing relative to the forwarded chip clock. The board now
@@ -85,7 +200,26 @@
    [get_ports {sdram_addr[*] sdram_ba[*] sdram_cas_n sdram_cke sdram_cs_n sdram_dqm[*] sdram_ras_n sdram_we_n sdram_dq[*]}]
  set_output_delay -clock [get_clocks SDRAM_CHIP_CLK_OUT] -min -0.8 \
    [get_ports {sdram_addr[*] sdram_ba[*] sdram_cas_n sdram_cke sdram_cs_n sdram_dqm[*] sdram_ras_n sdram_we_n sdram_dq[*]}]
- 
+
+ # DQ write-side multicycle: dq_oe/dq_out (SDRAM_Controller_Custom.vhd) are
+ # deliberately NOT pipelined through the extra s_*_r register stage that
+ # every command signal (s_cas/s_we/s_ras/s_addr/s_ba) goes through before
+ # reaching its pin -- see the "keeping row/page-hit decisions out of the IO
+ # OE timing path" comment at sdram_dq's driver. dq_oe/dq_out and the command
+ # signals are all written in the SAME ST_WR/ST_STREAM_WR case branch on the
+ # same edge, but the command's extra _r stage means sdram_cas_n/sdram_we_n
+ # (the edge the SDRAM actually latches DQ on) become valid to the chip one
+ # full sdram_core_clk cycle AFTER sdram_dq does. DQ is safely stable well
+ # before the command that consumes it; the default single-cycle relationship
+ # checks an edge the memory never samples against. Model the real one-cycle
+ # head start, mirroring the read-side CL3 multicycle below (2026-07-07).
+ set_multicycle_path -setup 2 \
+   -from [get_registers {*dq_oe* *dq_out*}] \
+   -to   [get_ports {sdram_dq[*]}]
+ set_multicycle_path -hold 1 \
+   -from [get_registers {*dq_oe* *dq_out*}] \
+   -to   [get_ports {sdram_dq[*]}]
+
  # SDRAM read-side timing: use the same forwarded clock and model a 5.4 ns
  # access window for the 166 MHz SDRAM grade, with a conservative 0 ns minimum
  # arrival for hold analysis.

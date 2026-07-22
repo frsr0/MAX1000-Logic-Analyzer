@@ -44,7 +44,6 @@ architecture bench of tb_stream_readout is
   signal sdram_we_n  : std_logic;
   signal sdram_clk   : std_logic;
   signal status      : std_logic_vector(7 downto 0);
-  signal s_burst     : std_logic;
 
   -- Streaming readout ports
   signal blk_req_tog : std_logic := '0';
@@ -89,7 +88,7 @@ begin
       sdram_addr => sdram_addr, sdram_ba => sdram_ba, sdram_cas_n => sdram_cas_n,
       sdram_dq => sdram_dq, sdram_dqm => sdram_dqm, sdram_ras_n => sdram_ras_n,
       sdram_we_n => sdram_we_n, sdram_cke => sdram_cke, sdram_cs_n => sdram_cs_n,
-      sdram_clk => sdram_clk, Status => status, s_burst => s_burst,
+      sdram_clk => sdram_clk, Status => status,
       Armed => armed, Fast_Mode => fast_mode, FAST_CLK => fastclk,
       Continuous_Mode => '1',
       Blk_Rd_Req_Tog => blk_req_tog, Blk_Rd_Base => blk_base,

@@ -110,7 +110,10 @@ export function SettingsPage() {
               <tr><th>left / right</th><td>pan</td></tr>
               <tr><th>+ / -</th><td>zoom</td></tr>
               <tr><th>n / p</th><td>next / previous decoder event</td></tr>
+              <tr><th>e / E</th><td>next / previous digital edge</td></tr>
+              <tr><th>r / R</th><td>next / previous decoder error</td></tr>
               <tr><th>ctrl+s</th><td>save session (JSON download)</td></tr>
+              <tr><th>ctrl+k</th><td>open command palette</td></tr>
               <tr><th>shift+drag</th><td>select region</td></tr>
               <tr><th>double-click</th><td>cursor A snapped to edge (alt: B)</td></tr>
             </tbody>

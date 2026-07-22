@@ -1,14 +1,17 @@
+Current full-profile timing sweep after packed-budget/control-path fix
+(2026-07-21; all values are setup slack in ns, Slow 1200mV 85C Model):
 
-Seed   Clk1   Clk2  Clk0 LE                                           
-----   ----   ----  ---- --                                           
-  21 -0.244  0.062 0.354 Total logic elements : 7,726 / 8,064 ( 96 % )
-  30 -0.082 -0.413 0.373 Total logic elements : 7,744 / 8,064 ( 96 % )
-   5 -0.283  0.175 0.623 Total logic elements : 7,745 / 8,064 ( 96 % )
-  12 -0.323    0.1 0.553 Total logic elements : 7,753 / 8,064 ( 96 % )
-  42 -0.323 -0.053 0.648 Total logic elements : 7,763 / 8,064 ( 96 % )
-   7 -0.191  -0.19 0.506 Total logic elements : 7,741 / 8,064 ( 96 % )
-   3 -0.046  0.121 0.571 Total logic elements : 7,736 / 8,064 ( 96 % )
-  17 -0.306  0.194 0.425 Total logic elements : 7,738 / 8,064 ( 96 % )
+Seed   Sys    Fast   Sdram   ChipOut  LE
+-----  -----  -----  ------  -------  --------------------------------
+21     0.961  -0.098  0.258   1.098   7,557 / 8,064 (94%)
+30     0.661  -0.230  0.207   1.098   7,586 / 8,064 (94%)
+5      0.023  -0.413 -0.419   1.098   7,566 / 8,064 (94%)
+12     0.963  -0.167  0.154   1.098   7,572 / 8,064 (94%)
+42     0.417  -0.271  0.161   1.098   7,560 / 8,064 (94%)
+7      0.522  -0.395  0.138   1.098   7,579 / 8,064 (94%)
+3      0.909  -0.218  0.024   1.098   7,563 / 8,064 (94%)
+17     1.008  -0.123  0.018   1.098   7,525 / 8,064 (93%)
 
-
-
+Best full profile is seed 21 at -0.098 ns FAST setup slack; no tested seed
+closes the full mixed-signal 200 MHz image. The historical pre-fix table is
+retained in git history.

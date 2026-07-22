@@ -11,7 +11,14 @@ use work.sim_pkg.all;
 use work.spi_protocol_pkg.all;
 
 entity tb_continuous_wedge is
-  generic (SPI_HALF : time := 100 ns);
+  -- Sim => true collapses sys_clk/fast_clk/sdram_core_clk onto this
+  -- testbench's single 12 MHz clk_12 (see the DUT generic map comment
+  -- below). At SPI_HALF=100ns (5 MHz SCK) the SPI slave -- clocked at only
+  -- 12 MHz -- can't reliably sample the shift register (found 2026-07-11:
+  -- every response came back status=0xFF, i.e. no valid frame ever
+  -- decoded). 2000ns keeps the same collapsed-clock Sim=>true DUT config
+  -- but gives the 12 MHz core enough margin to shift correctly.
+  generic (SPI_HALF : time := 2000 ns);
 end tb_continuous_wedge;
 
 architecture bench of tb_continuous_wedge is
@@ -152,8 +159,12 @@ begin
       pkt_cmd(spi_cs, sck, spi_mosi, spi_miso, CMD_ARM_CAPTURE, empty, 0, st);
       loop
         pkt_cmd(spi_cs, sck, spi_mosi, spi_miso, CMD_GET_STATUS, empty, 0, st);
-        exit when st = ST_CAPTURE_DONE or deadline > 25;
-        deadline := deadline + 1; wait for 10 us;
+        -- Matches tb_gen_loopback.vhd's patience (deadline > 200 @ 20us):
+        -- the original deadline > 25 @ 10us (~260us total) was too tight for
+        -- this PLL/divider config and timed out before capture ever finished,
+        -- misreporting a real completion as a wedge.
+        exit when st = ST_CAPTURE_DONE or deadline > 200;
+        deadline := deadline + 1; wait for 20 us;
       end loop;
       addr_pld := (x"00", x"00", x"00", x"00");
       pkt_send(spi_cs, sck, spi_mosi, spi_miso, CMD_READ_CAPTURE, addr_pld, 4);
