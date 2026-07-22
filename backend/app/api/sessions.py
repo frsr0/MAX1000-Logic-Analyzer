@@ -132,8 +132,13 @@ def compare_sessions(session_id: str, other_session_id: str,
             if c.type != "digital":
                 continue
             bits = wf.digital_channel(int(c.id[1:]))
+            edges = find_edges(bits, "any")
+            periods = np.diff(edges)
             out[c.id] = {"edges": int(len(find_edges(bits, "any"))),
-                         "duty": float(np.mean(bits)) if len(bits) else 0.0}
+                         "duty": float(np.mean(bits)) if len(bits) else 0.0,
+                         "first_edge": int(edges[0]) if len(edges) else None,
+                         "mean_period_samples": float(np.mean(periods)) if len(periods) else None,
+                         "median_period_samples": float(np.median(periods)) if len(periods) else None}
         return out
 
     sa, sb = chan_stats(a, wa), chan_stats(b, wb)
@@ -141,7 +146,8 @@ def compare_sessions(session_id: str, other_session_id: str,
     for cid in sorted(set(sa) | set(sb)):
         ca, cb = sa.get(cid), sb.get(cid)
         if ca is None or cb is None or ca["edges"] != cb["edges"] or \
-                abs(ca["duty"] - cb["duty"]) > 0.01:
+                abs(ca["duty"] - cb["duty"]) > 0.01 or \
+                ca["mean_period_samples"] != cb["mean_period_samples"]:
             channel_diffs.append({"channel": cid, "a": ca, "b": cb})
 
     settings_diff = {}
@@ -171,11 +177,23 @@ def compare_sessions(session_id: str, other_session_id: str,
             differences = np.nonzero(left[a0:a0 + count] != right[b0:b0 + count])[0]
             if len(differences):
                 first_a, first_b = int(a0 + differences[0]), int(b0 + differences[0])
+    timing_deltas = []
+    for cid in sorted(set(sa) & set(sb)):
+        a_stats, b_stats = sa[cid], sb[cid]
+        if a_stats["mean_period_samples"] is not None and b_stats["mean_period_samples"] is not None:
+            timing_deltas.append({
+                "channel": cid,
+                "first_edge_delta_samples": (b_stats["first_edge"] - a_stats["first_edge"])
+                if a_stats["first_edge"] is not None and b_stats["first_edge"] is not None else None,
+                "mean_period_delta_samples": b_stats["mean_period_samples"] - a_stats["mean_period_samples"],
+                "median_period_delta_samples": b_stats["median_period_samples"] - a_stats["median_period_samples"],
+            })
     return {
         "a": a.summary(), "b": b.summary(),
         "settings_diff": settings_diff,
         "sample_count_diff": a.num_samples - b.num_samples,
         "channel_diffs": channel_diffs,
+        "timing_deltas": timing_deltas,
         "identical_digital": (
             wa is not None and wb is not None
             and wa.digital is not None and wb.digital is not None
@@ -189,6 +207,8 @@ def compare_sessions(session_id: str, other_session_id: str,
 class TriggerSearchRequest(BaseModel):
     trigger: TriggerConfig
     decoder_instance: Optional[str] = None
+    auto_scope: bool = False
+    scope_padding_samples: int = 0
 
 
 @router.post("/api/sessions/{session_id}/trigger-search")
@@ -206,11 +226,25 @@ def search_trigger(session_id: str, req: TriggerSearchRequest):
     sample = find_software_trigger(wf, req.trigger, events)
     event = next((e for e in events
                   if sample is not None and e.get("start_sample") == sample), None)
+    scopes = []
+    if sample is not None and req.auto_scope:
+        padding = max(0, int(req.scope_padding_samples))
+        for decoder in session.decoders:
+            if not decoder.enabled or decoder.status != "done":
+                continue
+            events_for_decoder = store.load_decoder_events(session_id, decoder.id)
+            overlapping = [e for e in events_for_decoder
+                           if int(e.get("start_sample", 0)) <= sample <= int(e.get("end_sample", 0))]
+            if overlapping:
+                start = max(0, min(int(e.get("start_sample", sample)) for e in overlapping) - padding)
+                end = min(session.num_samples, max(int(e.get("end_sample", sample)) for e in overlapping) + padding)
+                scopes.append({"decoder_id": decoder.id, "start_sample": start, "end_sample": end,
+                               "event_count": len(overlapping)})
     return {"sample": sample,
             "time_s": sample / wf.sample_rate
             if sample is not None and wf.sample_rate else None,
             "event": event, "event_count": len(events),
-            "execution": "post_capture"}
+            "execution": "post_capture", "scopes": scopes}
 
 
 @router.get("/api/sessions/{session_id}/dashboard")
@@ -235,7 +269,30 @@ def session_dashboard(session_id: str, bins: int = 32):
         timeline[index] += 1
         if event.get("severity") == "error": error_timeline[index] += 1
     timeline_events = []
+    bus_health = {"can": {"frames": 0, "error_frames": 0, "load_pct": 0.0,
+                           "arbitration_ids": {}, "ack_errors": 0, "crc_errors": 0},
+                  "lin": {"frames": 0, "error_frames": 0, "load_pct": 0.0,
+                           "identifiers": {}, "checksum_errors": 0}}
     for event in sorted(events, key=lambda e: int(e.get("start_sample", 0))):
+        event_type = event.get("type", "")
+        fields = event.get("fields", {})
+        protocol = "can" if event_type.startswith("can_") else "lin" if event_type.startswith("lin_") else None
+        if protocol:
+            health = bus_health[protocol]
+            is_error = event.get("severity") == "error"
+            health["frames"] += 1
+            health["error_frames"] += int(is_error)
+            duration = max(0.0, float(event.get("end_time", 0)) - float(event.get("start_time", 0)))
+            health["load_pct"] += duration / max(duration_s, 1e-12) * 100.0
+            if protocol == "can":
+                key = str(fields.get("identifier", "unknown"))
+                health["arbitration_ids"][key] = health["arbitration_ids"].get(key, 0) + 1
+                health["ack_errors"] += int(fields.get("ack") is False)
+                health["crc_errors"] += int(fields.get("crc_ok") is False)
+            else:
+                key = str(fields.get("identifier", "unknown"))
+                health["identifiers"][key] = health["identifiers"].get(key, 0) + 1
+                health["checksum_errors"] += int(fields.get("checksum_ok") is False)
         timeline_events.append({
             "id": event.get("id"),
             "decoder_id": event.get("decoder_id"),
@@ -254,7 +311,7 @@ def session_dashboard(session_id: str, bins: int = 32):
             "events_per_second": len(events) / max(duration, 1e-12),
             "by_type": by_type, "timeline": timeline,
             "error_timeline": error_timeline,
-            "events": timeline_events[:10_000]}
+            "events": timeline_events[:10_000], "bus_health": bus_health}
 
 
 # ── bus channels ─────────────────────────────────────────────────────

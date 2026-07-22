@@ -47,6 +47,8 @@ POST /api/capture/start                  ← {settings, name?}
      → {started: true, state}
 POST /api/capture/stop                   → {stopping, state}
 GET  /api/capture/state                  → {state, progress, last_session_id, last_error}
+POST /api/capture/jobs                  → queue a headless capture and return job id
+GET  /api/capture/jobs/{job_id}          → poll queued capture state and resulting session
 ```
 
 ### Sessions

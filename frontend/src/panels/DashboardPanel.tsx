@@ -45,6 +45,16 @@ export function DashboardPanel() {
       ))}
       {!(data.events ?? []).length && <span className="hint">No decoded transactions available.</span>}
     </div>
+    {(['can', 'lin'] as const).map((protocol) => {
+      const health = data.bus_health?.[protocol];
+      if (!health || !health.frames) return null;
+      return <div key={protocol} className="finding info">
+        <strong>{protocol.toUpperCase()} health</strong>{' '}
+        {health.frames} frame(s), {health.error_frames} error(s), {Number(health.load_pct).toFixed(1)}% bus load
+        {protocol === 'can' && ` · ${health.crc_errors} CRC · ${health.ack_errors} ACK error(s)`}
+        {protocol === 'lin' && ` · ${health.checksum_errors} checksum error(s)`}
+      </div>;
+    })}
     <h4>Suspect timing annotations</h4>
     {suspects.length ? <div className="dashboard-suspects">
       {suspects.slice(0, 12).map((item: any) => <button key={`${item.start_sample}-${item.end_sample}`}

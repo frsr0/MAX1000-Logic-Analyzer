@@ -152,6 +152,15 @@ export function SessionsPage() {
               ? `first divergence A ${compareResult.first_divergence.a} / B ${compareResult.first_divergence.b}`
               : 'no digital divergence in the overlapping region'}
           </p>
+          {compareResult.timing_deltas?.length > 0 && <>
+            <h4>Timing deltas</h4>
+            <table className="data-table"><thead><tr><th>channel</th><th>first edge Δ</th><th>mean period Δ</th><th>median period Δ</th></tr></thead>
+              <tbody>{compareResult.timing_deltas.map((d: any) => <tr key={d.channel}>
+                <td>{d.channel}</td><td className="mono">{d.first_edge_delta_samples ?? '—'}</td>
+                <td className="mono">{Number(d.mean_period_delta_samples).toFixed(2)}</td>
+                <td className="mono">{Number(d.median_period_delta_samples).toFixed(2)}</td>
+              </tr>)}</tbody></table>
+          </>}
           {Object.keys(compareResult.settings_diff).length > 0 && (
             <>
               <h4>Settings differences</h4>

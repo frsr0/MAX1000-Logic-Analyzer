@@ -12,6 +12,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
+import urllib.request
 from pathlib import Path
 
 from .capture.session import DecoderInstance, new_id
@@ -26,6 +28,15 @@ from .state import store
 from .hardware.device_models import GeneratorConfig
 from .generator.sweep import run_preview_sweep
 from .validation import junit_xml, validate_events
+
+
+def _api_json(url: str, path: str, method: str = "GET", body: dict | None = None) -> dict:
+    payload = None if body is None else json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url.rstrip("/") + path, data=payload, method=method,
+                                 headers={"Content-Type": "application/json",
+                                          "X-Client-Id": "ols-cli"})
+    with urllib.request.urlopen(req, timeout=15) as response:
+        return json.loads(response.read().decode("utf-8"))
 
 
 def _session(session_id: str):
@@ -97,7 +108,27 @@ def main(argv: list[str] | None = None) -> int:
     sweep = sub.add_parser("sweep")
     sweep.add_argument("spec")
     sweep.add_argument("--output")
+    queued = sub.add_parser("queue-capture", help="submit a capture job to a running backend")
+    queued.add_argument("settings", help="JSON file containing CaptureSettings")
+    queued.add_argument("--url", default="http://127.0.0.1:8000")
+    queued.add_argument("--name", default="CLI capture")
+    queued.add_argument("--poll", type=float, default=0.5)
+    queued.add_argument("--no-wait", action="store_true")
     args = parser.parse_args(argv)
+
+    if args.command == "queue-capture":
+        settings = json.loads(Path(args.settings).read_text(encoding="utf-8"))
+        job = _api_json(args.url, "/api/capture/jobs", "POST",
+                        {"settings": settings, "name": args.name})
+        if args.no_wait:
+            _write(json.dumps(job, indent=2) + "\n", None)
+            return 0
+        while True:
+            job = _api_json(args.url, f"/api/capture/jobs/{job['id']}")
+            _write(json.dumps(job, indent=2) + "\n", None)
+            if job["state"] not in ("queued", "starting", "running"):
+                return 0 if job["state"] == "done" else 1
+            time.sleep(max(0.05, args.poll))
 
     if args.command == "list":
         _write(json.dumps([s.summary() for s in store.list_sessions()], indent=2) + "\n", None)
