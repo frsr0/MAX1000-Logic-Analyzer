@@ -169,13 +169,10 @@ create_generated_clock -name adc_clk \
    -group [get_clocks SPI_SCK_EXT] \
    -group [get_clocks SPI_CS_QUAL]
  
- # Async FIFO internal gray-code synchronizer paths
- # The dcfifo megafunction generates these internally; they are intentional
- # CDC synchronization paths and cannot be timed at the fastest edge rate.
- set_false_path -from [get_registers *auto_generated|delayed_wrptr_g*] \
-                -to   [get_registers *auto_generated|rdemp_eq_comp*]
- set_false_path -from [get_registers *auto_generated|rdptr_g*] \
-                -to   [get_registers *auto_generated|wrfull_eq_comp*]
+ # Async FIFO internal gray-code synchronizer paths are constrained by the
+ # dcfifo megafunction's embedded SDC. Do not duplicate those paths here:
+ # Quartus-generated hierarchy names vary between dcfifo instances and the
+ # old hand-written wildcards silently matched nothing.
  
  # Make the forwarded SDRAM chip clock explicit so I/O delays are referenced to
  # the same DDIO-forwarded edge the external SDRAM sees, not the internal
