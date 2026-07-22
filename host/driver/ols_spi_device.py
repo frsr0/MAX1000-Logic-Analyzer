@@ -27,7 +27,7 @@ from driver.ols_spi import OLS as OLS_SPI
 from driver.spi_protocol import (
     SPIDevice,
     CMD_ABORT_CAPTURE, CMD_ACK_CAPTURE_DONE, CMD_START_STREAM,
-    CMD_GEN_START, CMD_GEN_LOAD, CMD_GEN_CAPTURE, CMD_GEN_STATUS,
+    CMD_GEN_START, CMD_GEN_STOP, CMD_GEN_LOAD, CMD_GEN_CAPTURE, CMD_GEN_STATUS,
     CMD_GET_METADATA,
     REG_FLAGS_COMPRESS_MASK, REG_FLAGS_COMPRESS_DELTA, REG_FLAGS_COMPRESS_RLE,
     REG_DIVIDER, REG_SAMPLE_COUNT, REG_DELAY_COUNT,
@@ -36,7 +36,7 @@ from driver.spi_protocol import (
     REG_GEN_PROTO, REG_GEN_BAUD, REG_GEN_PINS, REG_GEN_DATA,
     REG_GEN_RX_DATA, REG_GEN_AUX_PINS, REG_GEN_CAPTURE_AUX,
     REG_GEN_CAPTURE_TX_CHAN, REG_GEN_CAPTURE_SCL_CHAN,
-    REG_IFACE_MODE, REG_DEBUG_CH0_ENABLE, REG_DEBUG_CH0_PERIOD, REG_DEBUG_CH0_DUTY,
+    REG_IFACE_MODE,
     ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_DONE,
     GEN_FLAG_SPI_TEST, GEN_FLAG_REPEAT, GEN_FLAG_RS485_PAIR,
     GEN_FLAG_ACCEL_ATTACH,
@@ -204,8 +204,6 @@ class OLSDeviceSPI:
         self.analog_mode = MODE_DIGITAL
         self.analog_channel = 1
         self.debug_ch0_enabled = False
-        self._debug_ch0_period = None
-        self._debug_ch0_duty = None
         self._protocol_trigger = None
         # Pending flag for live toggling during rolling capture
         self._pending_debug_enable = None
@@ -735,17 +733,35 @@ class OLSDeviceSPI:
             time.sleep(max(0.0, float(poll)))
         return False
 
-    def set_debug_ch0(self, enable=True, freq_hz=None, duty_pct=50):
-        if freq_hz is not None:
-            period = max(2, int(self.sys_clk / freq_hz))
-            duty = max(1, min(period - 1, int(period * duty_pct / 100)))
-            self._debug_ch0_period = period
-            self._debug_ch0_duty = duty
-        if self._debug_ch0_period is not None and self._debug_ch0_duty is not None:
-            self.pkt.write_register(REG_DEBUG_CH0_PERIOD, self._debug_ch0_period & 0xFFFFFFFF)
-            self.pkt.write_register(REG_DEBUG_CH0_DUTY, self._debug_ch0_duty & 0xFFFFFFFF)
+    def set_bitbang_pwm(self, enable=True, freq_hz=None, duty_pct=50,
+                        tx_pin=0, cycles=8):
+        """Generate a finite PWM burst with the FPGA Bit_Engine.
+
+        The old debug-CH0 registers were removed from the production HDL.
+        PWM test sources now use the same two-output Bit Banger path as normal
+        hardware tests.  ``cycles`` is finite because the Bit_Engine FIFO is
+        finite; callers needing a longer source can restart bursts.
+        """
         self.debug_ch0_enabled = bool(enable)
-        self.pkt.write_register(REG_DEBUG_CH0_ENABLE, 1 if enable else 0)
+        if not enable:
+            self.pkt.transaction(CMD_GEN_STOP, timeout=0.5)
+            return
+        freq = max(1.0, float(freq_hz or 100_000.0))
+        symbol_rate = min(self.sys_clk, max(1_000_000, int(freq * 32)))
+        period = max(2, int(round(symbol_rate / freq)))
+        duty = max(0, min(period, int(round(period * float(duty_pct) / 100.0))))
+        symbols = []
+        for _ in range(max(1, int(cycles))):
+            symbols.extend([1] * duty)
+            symbols.extend([0] * (period - duty))
+        self.send_raw_symbols(symbols[:bit_bang.MAX_SYMBOLS],
+                              symbol_rate=symbol_rate, tx_pin=tx_pin,
+                              scl_pin=GEN_SCL_PARK)
+
+    # Compatibility name for older scripts; it now drives Bit_Engine PWM and
+    # does not access the retired debug register addresses.
+    def set_debug_ch0(self, enable=True, freq_hz=None, duty_pct=50):
+        self.set_bitbang_pwm(enable, freq_hz, duty_pct)
 
     def trigger_decode(self, match_byte=0x57, channel=0, baud=115200, enable=True):
         """Configure frontend protocol triggering for a UART byte match.
@@ -797,9 +813,11 @@ class OLSDeviceSPI:
         return data[byte_off:], pos
 
     def read_preamble(self):
-        """Read debug status register. Bit1 = debug_ch0_enable, bit0 = gen_busy."""
-        v = self.pkt.read_register(REG_DEBUG_CH0_ENABLE)
-        return v if v >= 0 else 0
+        """Return the generator-busy status used by legacy preamble callers."""
+        try:
+            return 1 if self.pkt.get_status().get("gen_busy", False) else 0
+        except Exception:
+            return 0
 
     def _write_capture_config(self, *, div, samples, delay_count, mask=0, value=0,
                               flags=0, fast_mode=None, continuous=False):
@@ -2118,15 +2136,12 @@ class OLSDeviceSPI:
             while not stop_evt.is_set():
                 # Apply pending GUI changes before each chunk
                 if self._pending_debug_enable is not None or self._pending_debug_freq is not None:
-                    if self._pending_debug_freq is not None:
-                        period = max(2, int(self.sys_clk / self._pending_debug_freq))
-                        duty = max(1, min(period - 1, int(period * (self._pending_debug_duty or 50) / 100)))
-                        self.pkt.write_register(REG_DEBUG_CH0_PERIOD, period & 0xFFFFFFFF)
-                        self.pkt.write_register(REG_DEBUG_CH0_DUTY, duty & 0xFFFFFFFF)
-                        self._pending_debug_freq = None
-                        self._pending_debug_duty = None
-                    self.pkt.write_register(REG_DEBUG_CH0_ENABLE, 1 if self._pending_debug_enable else 0)
-                    self.debug_ch0_enabled = self._pending_debug_enable
+                    self.set_bitbang_pwm(
+                        enable=bool(self._pending_debug_enable),
+                        freq_hz=self._pending_debug_freq,
+                        duty_pct=self._pending_debug_duty or 50)
+                    self._pending_debug_freq = None
+                    self._pending_debug_duty = None
                     self._pending_debug_enable = None
                 self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
                 if gen_packed is not None:

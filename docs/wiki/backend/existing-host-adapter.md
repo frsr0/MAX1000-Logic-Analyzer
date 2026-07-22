@@ -62,20 +62,19 @@ Strategy dispatch is a simple `if/elif` chain mapping mode strings to strategy i
 Drives the same adapter path the web app uses:
 1. Connect + sample-clock detect
 2. Capabilities query
-3. Debug CH0 PWM loopback capture
+3. Bit Engine PWM loopback capture
 4. 4096-sample digital capture + sanity checks
 5. UART generator loopback (`CMD_GEN_CAPTURE`) decoded and byte-compared
 
-The debug PWM is a real register-controlled FPGA source, not a mock or
-host-bit-bang waveform. The adapter exposes it for diagnostics and capture
-self-tests; generator output takes priority when both paths are enabled.
+PWM self-tests use the FPGA Bit Engine's two-output symbol path, the same path
+used for normal raw Bit Banger and protocol generation.
 
 ### `generator_configure(cfg)`
 
 Translates `GeneratorConfig` protocol to register writes:
 - UART: set baud, load bitbang symbols, start
 - I2C/SPI: set protocol, pins, load bitbang symbols
-- PWM: set period/duty on debug CH0
+- PWM: encode a finite period/duty pattern and load it into the Bit Engine
 
 ## Hardware Availability Check
 
@@ -105,5 +104,5 @@ def hardware_available() -> bool:
 |---|---|
 | `test_existing_host_adapter.py` (19 tests) | Full adapter flow through mock driver |
 | `hw_smoke_test.py` (7 tests) | Hardware smoke test driving adapter |
-| `host/debug/hwt_test_debug_pwm_registers.py` | CH0 register/readback, PWM frequency/duty, disable, and codec sanity |
+| `host/debug/hwt_test_bitbang_pwm.py` | Bit Engine PWM loopback and transition sanity |
 | `host/debug/hwt_test_compression_matrix.py` | 12-case direct raw-vs-RLE payload matrix with lossless checks |

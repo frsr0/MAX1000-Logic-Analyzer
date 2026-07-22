@@ -18,7 +18,7 @@ Run them from `host/`.
 Main user-facing app.
 
 - GUI mode provides waveform viewing, trigger control, protocol decode,
-  generator control, debug CH0, and analog display.
+  generator control, Bit Engine waveform tests, and analog display.
 - CLI mode exposes headless capture and control flows for scripting.
 
 ### `app/hw_validation.py`

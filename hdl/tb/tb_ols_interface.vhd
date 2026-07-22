@@ -55,7 +55,6 @@ architecture bench of tb_ols_interface is
   signal analog_enable : std_logic;
   signal buffer_full  : std_logic_vector(2 downto 0) := (others => '0');
   signal buffer_ack   : std_logic_vector(2 downto 0);
-  signal debug_ch0_enable : std_logic;
 
   -- Single-cycle pulse capture (single driver each)
   signal gen_start_cap : std_logic := '0';
@@ -65,7 +64,6 @@ architecture bench of tb_ols_interface is
 
   -- Internal-signal probes (still present after the SPI refactor)
   signal fast_mode_i        : std_logic;
-  signal debug_ch0_enable_i : std_logic;
 
   function flatten(b : byte_array; n : natural) return std_logic_vector is
     variable r : std_logic_vector(n*8-1 downto 0);
@@ -132,11 +130,9 @@ begin
       Armed => armed, Fast_Mode => fast_mode, Continuous_Mode => continuous_mode,
       Analog_Enable => analog_enable, Analog_Only => open,
       Buffer_Full => buffer_full, Buffer_Ack => buffer_ack,
-      Debug_Ch0_Enable => debug_ch0_enable
     );
 
   fast_mode_i        <= << signal .tb_ols_interface.dut.fast_mode_i : std_logic >>;
-  debug_ch0_enable_i <= << signal .tb_ols_interface.dut.debug_ch0_enable_i : std_logic >>;
 
   -- Capture a Gen_Start pulse
   process(clk)
@@ -171,23 +167,11 @@ begin
     report "Test 1: PASS";
 
     ----------------------------------------------------------------
-    report "Test 2: REG_DEBUG_CH0_ENABLE on/off";
-    check(debug_ch0_enable = '0', "Debug CH0 off after reset");
-    wreg(spi_cs, spi_sck, spi_mosi, spi_miso, REG_DEBUG_CH0_ENABLE, 1);
-    wait_cycles(clk, 50);
-    check(debug_ch0_enable = '1', "Debug CH0 on");
-    check(debug_ch0_enable_i = '1', "internal debug_ch0_enable_i on");
-    wreg(spi_cs, spi_sck, spi_mosi, spi_miso, REG_DEBUG_CH0_ENABLE, 0);
-    wait_cycles(clk, 50);
-    check(debug_ch0_enable = '0', "Debug CH0 off");
-    report "Test 2: PASS";
-
-    ----------------------------------------------------------------
-    report "Test 3: REG_DIVIDER = 100 -> Rate_Div = 101";
+    report "Test 2: REG_DIVIDER = 100 -> Rate_Div = 101";
     wreg(spi_cs, spi_sck, spi_mosi, spi_miso, REG_DIVIDER, 100);
     wait_cycles(clk, 50);
     check(rate_div = 101, "Rate_Div should be 101, got " & integer'image(rate_div));
-    report "Test 3: PASS";
+    report "Test 2: PASS";
 
     ----------------------------------------------------------------
     report "Test 4: REG_SAMPLE_COUNT = 5000 -> Samples = 5000";

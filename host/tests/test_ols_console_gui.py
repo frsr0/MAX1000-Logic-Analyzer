@@ -524,12 +524,12 @@ class TestOLScopeTrigModeChanged:
         scope.debug_ch0_freq_var.get.return_value = '100000'
         scope.debug_ch0_duty_var.get.return_value = '50'
         scope._debug_ch0_changed()
-        scope.dev.set_debug_ch0.assert_called_once_with(True, freq_hz=100000, duty_pct=50)
+        scope.dev.set_bitbang_pwm.assert_called_once_with(True, freq_hz=100000, duty_pct=50)
 
         scope.dev.reset_mock()
         scope.debug_ch0_var.get.return_value = False
         scope._debug_ch0_changed()
-        scope.dev.set_debug_ch0.assert_called_once_with(False, freq_hz=100000, duty_pct=50)
+        scope.dev.set_bitbang_pwm.assert_called_once_with(False, freq_hz=100000, duty_pct=50)
 
     def test_apply_debug_ch0_setting_syncs_to_device(self):
         scope = _make_scope()

@@ -37,7 +37,7 @@ has an explicit scope boundary.
 | Modbus RTU | Stacked UART decoder with CRC/function parsing | MIL/generator workflows | **SW/HW** where a loopback or device is available |
 | Parallel bus | Clocked multi-channel decoder | Not a dedicated generator protocol | **SW** decoder coverage |
 | 1-Wire | Reset, presence, and byte decoder | No dedicated hardware generator | **SW** decoder coverage |
-| PWM | Pulse/frequency/duty decoder | Debug CH0 PWM and generator PWM | **HW** debug-register regression |
+| PWM | Pulse/frequency/duty decoder | Bit Engine/Bit Banger PWM templates | **HW** Bit Engine loopback |
 | Raw Bit Banger | Raw waveform capture through normal channels | Two-output 2-bit symbol engine | **HW** through loopback and peripheral routes |
 | LIS3DH accelerometer | Standard I²C decoder on live session | I²C and SPI register reads | **HW**; see [accelerometer.md](accelerometer.md) |
 | Manchester / differential Manchester | Manchester decoder | Software encoder and preview | **SW** decoder/encoder tests |

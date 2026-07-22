@@ -86,7 +86,7 @@ graph TB
 - Narrow packed digital (200 MHz, 1 channel)
 - UART, I²C, SPI, RS-485, SWD, raw Bit Banger, and PWM generation
 - Hardware route capabilities advertise optional RS-485 DE and SPI CS/MISO auxiliary routes
-- Register-controlled debug CH0 PWM loopback for hardware self-test
+- Bit Engine/Bit Banger PWM loopback for hardware self-test
 - Readback compression (`raw` / direct `rle` / packed `delta_rle` modes)
 - Built with Quartus, targeting Intel MAX 10 `10M08SAU169C8G`, FAST_SPEED build
 - SDRAM write timing is closed in STA with the DDIO-forwarded chip clock. The

@@ -114,27 +114,19 @@ The `altera_modular_adc_control` block controls the MAX10 ADC. It outputs:
 
 `LED_Controller` drives the 8 board LEDs with PWM brightness and fade effects. Uses a shared PWM counter and per-LED target/brightness registers.
 
-### Debug CH0
+### Hardware test waveforms
 
-The current implementation is authoritative as follows: `REG_DEBUG_CH0_ENABLE`
-is register `0x42`, `REG_DEBUG_CH0_PERIOD` is `0x43`, and
-`REG_DEBUG_CH0_DUTY` is `0x44`. The PWM is generated in `sys_clk`, drives
-physical channel/pin 0, defaults to period `0x400` and duty `0x200` (50%), and
-is overridden by generator output when the generator is active. The counter
-resets when disabled or when the period is less than two.
-
-A configurable PWM loopback generator on LA channel 0 for self-test:
-- The legacy names above are superseded by the SPI register names documented
-  above; the active implementation has no programmable channel selector.
+Hardware test waveforms, including PWM, are generated through the two-output
+Bit Engine/Bit Banger. The retired register-controlled debug-CH0 PWM path is
+not present in the production HDL. This keeps one waveform-generation path for
+normal protocol traffic and hardware validation.
 
 ## Clock Domain Crossings
 
 All signals crossing from sys_clk → fast_clk go through 2-FF synchronisers:
 - `pin_pool_f1` / `pin_pool_f2` — input pins
 - `gen_tx_f1` / `gen_tx_f2` — generator TX
-- `registered_ch0_f1` / `registered_ch0_f2` — debug CH0
 - `gen_capture_active_f1` / `gen_capture_active_f2`
-- `debug_ch0_enable_f1` / `debug_ch0_enable_f2`
 - `pin_map_wr_t_s1` / `pin_map_wr_t_s2` — pin map write toggle
 
 ## Key Constants

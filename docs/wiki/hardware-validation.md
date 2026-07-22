@@ -51,25 +51,19 @@ Run the smoke test from `backend/`; run the legacy validation/debug tools from
 cd ..\backend
 python hw_smoke_test.py
 cd ..\host
-python debug/hwt_test_debug_pwm_registers.py
+python debug/hwt_test_bitbang_pwm.py
 python debug/hwt_test_compression_matrix.py
 python -m app.hw_validation
 python -m app.hw_validation analog
 ```
 
-## PWM/register regression
+## PWM/Bit Engine regression
 
-`hwt_test_debug_pwm_registers.py` verifies the complete debug-CH0 path:
-
-1. Writes and reads back enable, period, and duty registers.
-2. Captures a 100 kHz, 50% PWM at 1 MHz.
-3. Checks measured edge count and duty ratio.
-4. Disables the source and checks that CH0 stops toggling.
-5. Measures raw versus compressed payload bytes and checks a lossless round trip.
-
-The path uses `REG_DEBUG_CH0_ENABLE` (`0x42`),
-`REG_DEBUG_CH0_PERIOD` (`0x43`), and `REG_DEBUG_CH0_DUTY` (`0x44`). Generator
-output has priority over debug PWM when both are active.
+PWM hardware tests use the normal two-output Bit Engine/Bit Banger path. Encode
+a finite period/duty symbol pattern, load it through the generator API, capture
+the loopback, and check edge count, duty ratio, and compression round trips.
+The old debug-CH0 register test is retired because registers `0x42-0x44` no
+longer exist in the production HDL.
 
 ## Compression matrix
 

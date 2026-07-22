@@ -347,27 +347,9 @@ begin
     report "Test 1c: PASS (register write via packet protocol)";
 
     ------------------------------------------------------------------
-    -- Test 1d: Enable debug CH0 and verify CH0 toggles
+    -- Test 1d: Raw pin path uses 2-cycle pipeline
     ------------------------------------------------------------------
-    report "Test 1d: Debug CH0 capture path";
-    -- Enable debug CH0
-    spi_write_reg8(spi_cs, sck, spi_mosi, spi_miso, SPI_HALF,
-                   REG_DEBUG_CH0_ENABLE, x"01", st);
-    check(st = ST_OK, "FAIL: debug CH0 enable write status = " & to_hstring(st));
-    wait_cycles(sys_clk_probe, 20);
-    -- Verify CH0 toggles with test_div (registered pipeline)
-    check(test_out_probe = test_div_probe(9),
-          "FAIL: test_out != test_div(9) -- capture mux not passing test_div");
-    report "Test 1d: PASS -- debug CH0 toggling with test_div";
-
-    ------------------------------------------------------------------
-    -- Test 1e: Raw pin path uses 2-cycle pipeline
-    ------------------------------------------------------------------
-    report "Test 1e: raw pin path latency";
-    -- Disable debug CH0 to get raw pin path
-    spi_write_reg8(spi_cs, sck, spi_mosi, spi_miso, SPI_HALF,
-                   REG_DEBUG_CH0_ENABLE, x"00", st);
-    wait_cycles(sys_clk_probe, 20);
+    report "Test 1d: raw pin path latency";
     mkr_d(1) <= '0';
     wait_cycles(sys_clk_probe, 6);
     mkr_d(1) <= '1';

@@ -34,7 +34,7 @@ The SPI command decoder and device controller for the OLS core. Receives packeti
 
 **Generator capture:** `Gen_Capture_Active`, `Gen_Start_Ack`, `Gen_Start_Reject`, `Gen_Done_Pulse`, `Gen_RX_Data[7:0]`, `Gen_RX_Used[7:0]`, `Gen_RX_Re`
 
-**Misc:** `Pin_Map_Write`, `Pin_Map_Channel`, `Pin_Map_Pin`, `Debug_Ch0_Enable/Period/Duty`, `Buffer_Full[2:0]`, `Buffer_Ack[2:0]`
+**Misc:** `Pin_Map_Write`, `Pin_Map_Channel`, `Pin_Map_Pin`, `Buffer_Full[2:0]`, `Buffer_Ack[2:0]`
 
 ## Internal Architecture
 
@@ -96,9 +96,8 @@ The SPI dispatch process decodes `pkt_cmd_active` and routes to sub-handlers:
 - `REG_OVERRUN_COUNT` (0x54): overflow counter
 - `REG_DONE_LATCHED` (0x55): sticky done flag
 - `REG_PUMP_*` (0x60-0x67): pump utilisation diagnostics
-- `REG_DEBUG_CH0_ENABLE` (0x42): debug channel 0 enable
-- `REG_DEBUG_CH0_PERIOD` (0x43): debug PWM period
-- `REG_DEBUG_CH0_DUTY` (0x44): debug PWM duty
+- `0x42-0x44`: retired debug-PWM addresses; use Bit Engine waveform commands
+  for PWM and other hardware-test patterns
 - `REG_IFACE_MODE` (0xF0): interface mode
 
 ### 4. Block Readout (Response FIFO)

@@ -54,7 +54,6 @@ architecture bench of tb_ols_capture_contract is
   signal analog_only   : std_logic;
   signal buffer_full  : std_logic_vector(2 downto 0) := (others => '0');
   signal buffer_ack   : std_logic_vector(2 downto 0);
-  signal debug_ch0_enable : std_logic;
 
   signal done_latched_i : std_logic;
   signal capture_seq_i  : std_logic_vector(31 downto 0);
@@ -128,7 +127,6 @@ begin
       Armed => armed, Fast_Mode => fast_mode, Continuous_Mode => continuous_mode,
       Analog_Enable => analog_enable, Analog_Only => analog_only,
       Buffer_Full => buffer_full, Buffer_Ack => buffer_ack,
-      Debug_Ch0_Enable => debug_ch0_enable
     );
 
   done_latched_i <= << signal .tb_ols_capture_contract.dut.done_latched : std_logic >>;

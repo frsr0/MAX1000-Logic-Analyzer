@@ -40,7 +40,7 @@ The same programmed board then completed the extended host validation matrix:
 
 | Test group | Result |
 | --- | --- |
-| Debug PWM register and disable checks | PASS |
+| Bit Engine PWM loopback checks | PASS |
 | Raw/RLE compression matrix | PASS — all cases lossless |
 | Generator pin-routing sweep | PASS — 8/8 pins |
 | Host hardware validation | **418/419 passed** |

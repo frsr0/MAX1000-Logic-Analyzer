@@ -88,7 +88,7 @@ python hw_smoke_test.py          # add --mock to self-check the script
 ```
 
 This drives the same adapter path the web app uses: discovery → connect +
-sample-clock detect → capabilities → device self-test (debug CH0 PWM loopback
+sample-clock detect → capabilities → device self-test (Bit Engine PWM loopback
 capture) → 4096-sample digital capture + sanity checks → UART generator
 loopback (`CMD_GEN_CAPTURE`) decoded and byte-compared. Exit code 0 = good;
 the captures it takes are saved as sessions and can be inspected in the web

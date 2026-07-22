@@ -213,7 +213,7 @@ class ExistingHostAdapter(HardwareDevice):
             triggers=[TriggerCapability(type=t, execution=e, description=d)
                       for t, e, d in trig],
             notes=[
-                "Host-side digital glitch filter (a.k.a. Schmitt) is available; debug CH0 provides a register-controlled internal PWM source for capture self-tests, with generator output taking priority.",
+                "Host-side digital glitch filter (a.k.a. Schmitt) is available; Bit Engine PWM provides an internal waveform source for capture self-tests.",
                 "The MAX1000 has 64 Mbit SDRAM. This bitstream exposes a "
                 f"{DIGITAL_SDRAM_WORDS:,}-word 16-bit SDRAM capture ring "
                 f"({DIGITAL_NARROW_LOGICAL_SAMPLES:,} logical samples in "
@@ -423,10 +423,8 @@ class ExistingHostAdapter(HardwareDevice):
         """Single-shot deep digital must not use the continuous ring path.
 
         Hardware testing showed the ring is a retention window, not a lossless
-        high-rate acquisition path: once the async FIFO drains at SDRAM commit
-        cadence, a 100 kHz debug PWM captured at 200 MHz becomes an apparent
-        ~1.6 MHz waveform after about 17k samples. Keep the helper for direct
-        diagnostics/tests, but never select it for user captures.
+        high-rate acquisition path. Keep the Bit Engine waveform helper for
+        direct diagnostics/tests, but never select it for user captures.
         """
         return False
 
@@ -469,7 +467,7 @@ class ExistingHostAdapter(HardwareDevice):
             div=div, samples=nsamp, delay_count=nsamp,
             mask=0, value=0, flags=dev._raw_flags,
             fast_mode=True, continuous=True)
-        dev.set_debug_ch0(dev.debug_ch0_enabled)
+        dev.set_bitbang_pwm(dev.debug_ch0_enabled)
         dev.spi.flush()
         status = dev.pkt.arm_capture()
         if status < 0:

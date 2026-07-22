@@ -47,7 +47,7 @@ class FakeHostDevice:
         self.set_analog_config = Mock()
         self.open = Mock()
         self.close = Mock()
-        self.set_debug_ch0 = Mock()
+        self.set_bitbang_pwm = Mock()
         self.set_readback_compression = Mock()
         self.set_packed_mode = Mock()
         self.set_schmitt = Mock()
@@ -740,7 +740,7 @@ def test_self_test_uses_generator_control_plane_instead_of_legacy_pwm_loopback()
     assert [c["name"] for c in result["checks"]] == [
         "metadata", "status", "generator_control_plane",
     ]
-    adapter._dev.set_debug_ch0.assert_not_called()
+    adapter._dev.set_bitbang_pwm.assert_not_called()
 
 
 def test_generator_status_serializes_status_polling_through_adapter_lock():

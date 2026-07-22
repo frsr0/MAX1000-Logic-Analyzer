@@ -10,7 +10,6 @@ from driver.spi_protocol import (
     REG_GEN_CAPTURE_TX_CHAN,
     REG_GEN_DATA,
     REG_CONT_MODE,
-    REG_DEBUG_CH0_ENABLE,
     REG_TRIGGER_MASK,
     REG_TRIGGER_VALUE,
     REG_FLAGS_COMPRESS_RLE,
@@ -462,48 +461,42 @@ class TestOLSDeviceSPI:
         device_spi.ack_capture_done(123)
         device_spi.pkt.ack_capture_done.assert_called_once_with(123)
 
-    def test_read_preamble(self, device_spi):
+    def test_read_preamble_uses_generator_status(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi._stream_readback = MagicMock(return_value=b'\x01\x00' * 100)
-        device_spi.pkt.read_register.return_value = 2  # bit1=1 (debug ON)
+        device_spi.pkt.get_status.return_value = {'gen_busy': True}
         pre = device_spi.read_preamble()
-        assert pre == 2
-        device_spi.pkt.read_register.assert_called_once_with(REG_DEBUG_CH0_ENABLE)
+        assert pre == 1
+        device_spi.pkt.get_status.assert_called_once_with()
 
     def test_read_preamble_returns_zero_on_empty(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi._stream_readback = MagicMock(return_value=b'\x01\x00' * 100)
-        device_spi.pkt.read_register.return_value = -1
+        device_spi.pkt.get_status.side_effect = RuntimeError('status unavailable')
         pre = device_spi.read_preamble()
         assert pre == 0
 
-    def test_set_debug_ch0_enable(self, device_spi):
+    def test_set_bitbang_pwm_enable(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi._stream_readback = MagicMock(return_value=b'\x01\x00' * 100)
-        device_spi.set_debug_ch0(True)
+        device_spi.set_bitbang_pwm(True, freq_hz=100_000, duty_pct=50)
         assert device_spi.debug_ch0_enabled is True
-        device_spi.pkt.write_register.assert_called_once_with(REG_DEBUG_CH0_ENABLE, 1)
+        device_spi.pkt.load_gen_data.assert_called_once()
+        device_spi.pkt.transaction.assert_called()
 
-    def test_set_debug_ch0_replays_period_after_reset(self, device_spi):
+    def test_set_debug_ch0_compatibility_alias_uses_bit_engine(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi._stream_readback = MagicMock(return_value=b'\x01\x00' * 100)
-        device_spi.set_debug_ch0(True, freq_hz=100_000, duty_pct=50)
-        device_spi.pkt.reset_mock()
+        with patch.object(device_spi, 'set_bitbang_pwm') as pwm:
+            device_spi.set_debug_ch0(True, freq_hz=100_000, duty_pct=50)
+        pwm.assert_called_once_with(True, 100_000, 50)
 
-        device_spi.set_debug_ch0(True)
-
-        device_spi.pkt.write_register.assert_has_calls([
-            call(0x43, 1000),
-            call(0x44, 500),
-            call(REG_DEBUG_CH0_ENABLE, 1),
-        ])
-
-    def test_set_debug_ch0_disable(self, device_spi):
+    def test_set_bitbang_pwm_disable(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi._stream_readback = MagicMock(return_value=b'\x01\x00' * 100)
-        device_spi.set_debug_ch0(False)
+        device_spi.set_bitbang_pwm(False)
         assert device_spi.debug_ch0_enabled is False
-        device_spi.pkt.write_register.assert_called_once_with(REG_DEBUG_CH0_ENABLE, 0)
+        device_spi.pkt.transaction.assert_called_once()
 
     def test_set_debug_ch0_default(self, device_spi):
         assert device_spi.debug_ch0_enabled is False
