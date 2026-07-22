@@ -80,7 +80,8 @@ export const api = {
   mockScenarios: () => get<{ scenarios: { id: string; name: string }[] }>('/api/capture/scenarios'),
 
   // sessions
-  sessions: () => get<{ sessions: SessionSummary[] }>('/api/sessions'),
+  sessions: (search = '', offset = 0, limit = 100) => get<{ sessions: SessionSummary[]; total: number; offset: number; limit: number }>(
+    `/api/sessions?search=${encodeURIComponent(search)}&offset=${offset}&limit=${limit}`),
   session: (id: string) => get<Session>(`/api/sessions/${id}`),
   patchSession: (id: string, body: Partial<{ name: string; notes: string; tags: string[]; channels: Partial<ChannelInfo>[] }>) =>
     patch<Session>(`/api/sessions/${id}`, body),

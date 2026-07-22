@@ -5,7 +5,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from ..capture.sample_format import find_edges
@@ -22,8 +22,23 @@ router = APIRouter(tags=["sessions"])
 
 
 @router.get("/api/sessions")
-def list_sessions():
-    return {"sessions": [s.summary() for s in store.list_sessions()]}
+def list_sessions(
+    search: str = Query("", max_length=200),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+):
+    sessions = store.list_sessions()
+    if search.strip():
+        needle = search.strip().casefold()
+        sessions = [s for s in sessions if needle in s.name.casefold()
+                    or needle in s.id.casefold()
+                    or any(needle in tag.casefold() for tag in s.tags)]
+    return {
+        "sessions": [s.summary() for s in sessions[offset:offset + limit]],
+        "total": len(sessions),
+        "offset": offset,
+        "limit": limit,
+    }
 
 
 class SessionImport(BaseModel):

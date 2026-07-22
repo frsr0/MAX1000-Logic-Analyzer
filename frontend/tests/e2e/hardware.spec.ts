@@ -651,11 +651,11 @@ if (useMockHarness) {
     await rows.nth(0).getByRole('button', { name: 'Cmp...' }).click();
     await rows.nth(1).getByRole('button', { name: 'Cmp!' }).click();
 
-  await expect(page.getByText(/Applied alignment: 2 samples/)).toBeVisible();
-  await expect(page.getByText(/first divergence A 420 \/ B 418/)).toBeVisible();
-  await expect(page.getByText('Timing deltas')).toBeVisible();
-  await expect(page.getByText('0.50').first()).toBeVisible();
-  await page.screenshot({ path: shot('session-comparison.png'), fullPage: true });
+    await expect(page.getByText(/Applied alignment: 2 samples/)).toBeVisible();
+    await expect(page.getByText(/first divergence A 420 \/ B 418/)).toBeVisible();
+    await expect(page.getByText('Timing deltas')).toBeVisible();
+    await expect(page.getByText('0.50').first()).toBeVisible();
+    await page.screenshot({ path: shot('session-comparison.png'), fullPage: true });
   });
 
   test('mock trigger search auto-scopes the decoder window', async ({ page }) => {

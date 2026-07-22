@@ -12,11 +12,22 @@ export function SessionsPage() {
   const [compareWith, setCompareWith] = useState<string | null>(null);
   const [compareResult, setCompareResult] = useState<any>(null);
   const [alignmentOffset, setAlignmentOffset] = useState('');
+  const [search, setSearch] = useState('');
+  const [page, setPageNumber] = useState(0);
+  const [total, setTotal] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    refreshSessions();
-  }, []);
+    api.sessions(search, page * 100).then((r) => {
+      setTotal(r.total ?? r.sessions.length);
+      useApp.setState({ sessions: r.sessions });
+    }).catch(() => {});
+  }, [search, page]);
+
+  const reload = () => api.sessions(search, page * 100).then((r) => {
+    setTotal(r.total ?? r.sessions.length);
+    useApp.setState({ sessions: r.sessions });
+  }).catch(() => {});
 
   const open = async (id: string) => {
     try {
@@ -29,12 +40,12 @@ export function SessionsPage() {
 
   const rename = async (id: string, name: string) => {
     await api.patchSession(id, { name });
-    refreshSessions();
+    reload();
   };
 
   const setTags = async (id: string, raw: string) => {
     await api.patchSession(id, { tags: raw.split(',').map((t) => t.trim()).filter(Boolean) });
-    refreshSessions();
+    reload();
   };
 
   const compare = async (a: string, b: string, offset = alignmentOffset) => {
@@ -56,7 +67,7 @@ export function SessionsPage() {
           ? await api.importWaveform(text, 'vcd')
           : await api.importSession(text);
       toast('success', `Imported ${s.name}`);
-      refreshSessions();
+      reload();
     } catch (e: any) {
       toast('error', `Import failed: ${e.message}`);
     }
@@ -72,6 +83,16 @@ export function SessionsPage() {
         <button onClick={() => fileRef.current?.click()}>Import JSON / CSV / VCD</button>
         <input ref={fileRef} type="file" accept=".json,.csv,.vcd" hidden
           onChange={(e) => e.target.files?.[0] && importJson(e.target.files[0])} />
+      </div>
+
+      <div className="button-row" style={{ marginBottom: 12 }}>
+        <label className="field compact">
+          <span>Search sessions</span>
+          <input aria-label="Search sessions" value={search}
+            onChange={(e) => { setSearch(e.target.value); setPageNumber(0); }}
+            placeholder="name, id, or tag" />
+        </label>
+        <span className="hint">{total.toLocaleString()} matching sessions</span>
       </div>
 
       <table className="data-table sessions-table">
@@ -102,7 +123,7 @@ export function SessionsPage() {
                 <button className="primary slim" onClick={() => open(s.id)}>Open</button>
                 <button className="slim" onClick={async () => {
                   await api.duplicateSession(s.id);
-                  refreshSessions();
+                  reload();
                 }}>Dup</button>
                 {compareWith === null ? (
                   <button className="slim" onClick={() => setCompareWith(s.id)}>Cmp...</button>
@@ -114,13 +135,18 @@ export function SessionsPage() {
                 <button className="danger slim" onClick={async () => {
                   if (!confirm(`Delete session "${s.name}"?`)) return;
                   await api.deleteSession(s.id);
-                  refreshSessions();
+                  reload();
                 }}>Del</button>
               </td>
             </tr>
           ))}
         </tbody>
       </table>
+      {total > 100 && <div className="button-row" style={{ marginTop: 12 }}>
+        <button className="slim" disabled={page === 0} onClick={() => setPageNumber((p) => p - 1)}>Previous</button>
+        <span className="hint">Page {page + 1} of {Math.ceil(total / 100)}</span>
+        <button className="slim" disabled={(page + 1) * 100 >= total} onClick={() => setPageNumber((p) => p + 1)}>Next</button>
+      </div>}
       {compareWith && <div className="hint">Pick the second session to compare with...</div>}
       {compareResult && (
         <div className="compare-result">

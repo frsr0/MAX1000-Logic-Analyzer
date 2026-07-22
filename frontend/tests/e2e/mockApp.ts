@@ -921,7 +921,10 @@ export async function installMockApp(page: Page, options: { mockDevice?: boolean
       { id: 'dig_frequency', name: 'Frequency', category: 'digital', unit: 'Hz', needs_decoder: false },
       { id: 'dig_edge_count', name: 'Edge count (any)', category: 'digital', unit: '', needs_decoder: false },
     ] }));
-    if (matches('GET', req, '/api/sessions')) return route.fulfill(okJson({ sessions: [makeSessionSummary(), makeAnalogSessionSummary(), makeAccelSessionSummary()] }));
+    if (matches('GET', req, '/api/sessions')) return route.fulfill(okJson({
+      sessions: [makeSessionSummary(), makeAnalogSessionSummary(), makeAccelSessionSummary()],
+      total: 3, offset: 0, limit: 100,
+    }));
     if (req.method() === 'POST' && /\/api\/sessions\/[^/]+\/compare\/[^/]+$/.test(new URL(req.url()).pathname)) {
       return route.fulfill(okJson({
         a: { id: 'session-demo', name: 'MAX1000 demo capture' },
