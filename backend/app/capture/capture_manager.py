@@ -90,6 +90,10 @@ class CaptureManager:
         self.last_error: Optional[str] = None
 
         self._decoder_cancels: Dict[str, threading.Event] = {}
+        self._jobs: Dict[str, dict] = {}
+        self._job_queue: List[str] = []
+        self._job_lock = threading.Lock()
+        self._queue_thread: Optional[threading.Thread] = None
 
     # ── device lifecycle ─────────────────────────────────────────────
 
@@ -193,6 +197,54 @@ class CaptureManager:
             self._stop_evt.set()
             return True
         return False
+
+    def submit_capture_job(self, settings: CaptureSettings, name: str = "") -> dict:
+        """Queue a capture for unattended clients and return immediately."""
+        from .session import new_id
+        job = {"id": new_id("job"), "state": "queued", "name": name,
+               "settings": settings.model_dump(), "submitted_at": time.time(),
+               "started_at": None, "finished_at": None,
+               "session_id": None, "error": None}
+        with self._job_lock:
+            self._jobs[job["id"]] = job
+            self._job_queue.append(job["id"])
+            if self._queue_thread is None or not self._queue_thread.is_alive():
+                self._queue_thread = threading.Thread(target=self._run_job_queue,
+                                                       daemon=True, name="capture-job-queue")
+                self._queue_thread.start()
+        return {k: v for k, v in job.items() if k != "settings"}
+
+    def job_status(self, job_id: str) -> Optional[dict]:
+        with self._job_lock:
+            job = self._jobs.get(job_id)
+            return {k: v for k, v in job.items() if k != "settings"} if job else None
+
+    def _run_job_queue(self) -> None:
+        while True:
+            with self._job_lock:
+                if not self._job_queue:
+                    return
+                job_id = self._job_queue.pop(0)
+                job = self._jobs[job_id]
+                job["state"] = "starting"
+                job["started_at"] = time.time()
+            try:
+                self.start_capture(CaptureSettings(**job["settings"]), job["name"])
+                with self._job_lock:
+                    job["state"] = "running"
+                while self.capture_state in ("armed", "capturing"):
+                    time.sleep(0.05)
+                with self._job_lock:
+                    job["state"] = "done" if self.capture_state == "done" else self.capture_state
+                    job["session_id"] = self.last_session_id
+                    job["error"] = self.last_error
+            except Exception as exc:
+                with self._job_lock:
+                    job["state"] = "error"
+                    job["error"] = str(exc)
+            finally:
+                with self._job_lock:
+                    job["finished_at"] = time.time()
 
     def _capture_worker(self, settings: CaptureSettings, name: str) -> None:
         dev = self.device

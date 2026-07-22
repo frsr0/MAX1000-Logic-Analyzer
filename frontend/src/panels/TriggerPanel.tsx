@@ -36,9 +36,17 @@ export function TriggerPanel() {
   const searchExisting = async (occurrence: number) => {
     try {
       const query = { ...trig, occurrence };
-      const r = await api.triggerSearch(activeSession!.id, query);
+      const r = await api.triggerSearch(activeSession!.id, query, undefined, true);
       if (r.sample == null) toast('warning', `No match for occurrence ${occurrence}`);
-      else { setTrig({ occurrence }); waveformView.jumpTo(r.sample); toast('success', `Match ${occurrence} at sample ${r.sample}`); }
+      else {
+        setTrig({ occurrence });
+        waveformView.jumpTo(r.sample);
+        const scope = r.scopes?.[0];
+        if (scope) waveformView.setView(scope.start_sample, scope.end_sample);
+        toast('success', scope
+          ? `Match ${occurrence}; scoped decoder to ${scope.event_count} event(s)`
+          : `Match ${occurrence} at sample ${r.sample}`);
+      }
     } catch (e: any) { toast('error', e.message); }
   };
 

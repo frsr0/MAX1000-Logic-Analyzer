@@ -651,9 +651,40 @@ if (useMockHarness) {
     await rows.nth(0).getByRole('button', { name: 'Cmp...' }).click();
     await rows.nth(1).getByRole('button', { name: 'Cmp!' }).click();
 
-  await expect(page.getByText(/Applied alignment: 2 samples/)).toBeVisible();
-  await expect(page.getByText(/first divergence A 420 \/ B 418/)).toBeVisible();
-  await page.screenshot({ path: shot('session-comparison.png'), fullPage: true });
+    await expect(page.getByText(/Applied alignment: 2 samples/)).toBeVisible();
+    await expect(page.getByText(/first divergence A 420 \/ B 418/)).toBeVisible();
+    await expect(page.getByText('Timing deltas')).toBeVisible();
+    await expect(page.getByText('0.50').first()).toBeVisible();
+    await page.screenshot({ path: shot('session-comparison.png'), fullPage: true });
+  });
+
+  test('mock trigger search auto-scopes the decoder window', async ({ page }) => {
+    await page.locator('.sidebar button[title="Capture"]').click();
+    await page.getByRole('button', { name: 'Trigger', exact: true }).click();
+    await page.getByLabel('Trigger type').selectOption('any_edge');
+    await page.getByRole('button', { name: 'Search existing capture' }).click();
+  await expect(page.getByText(/scoped decoder to 1 event/)).toBeVisible();
+    await expect(page.getByText(/pre-trigger 0 samples/)).toBeVisible();
+    await page.screenshot({ path: shot('trigger-decoder-auto-scope.png'), fullPage: true });
+  });
+
+  test('mock capture queue submits, polls, and reports the resulting session', async ({ page }) => {
+    await page.locator('.sidebar button[title="Capture"]').click();
+    await page.getByRole('button', { name: 'Queue capture job' }).click();
+    await expect(page.getByText(/Headless job done/)).toBeVisible();
+    await expect(page.getByText(/session session-demo/)).toBeVisible();
+    await page.screenshot({ path: shot('capture-job-queue.png'), fullPage: true });
+  });
+
+  test('mock dashboard exposes CAN and LIN health summaries', async ({ page }) => {
+    await page.getByRole('button', { name: 'Sessions' }).click();
+    const row = page.locator('tr').filter({ has: page.locator('input[value="MAX1000 mixed analog sweep"]') }).first();
+    await row.getByRole('button', { name: 'Open' }).click();
+    await page.getByRole('button', { name: 'Dashboard', exact: true }).click();
+    await expect(page.getByText(/CAN health 3 frame/)).toBeVisible();
+    await expect(page.getByText(/LIN health 2 frame/)).toBeVisible();
+    await expect(page.getByText(/checksum error/)).toBeVisible();
+    await page.screenshot({ path: shot('can-lin-health.png'), fullPage: true });
   });
 
   test('measurement panel renders a fixture result and recomputes it', async ({ page }) => {

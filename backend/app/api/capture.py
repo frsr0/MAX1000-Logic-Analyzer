@@ -22,6 +22,21 @@ class CaptureRequest(BaseModel):
     name: str = ""
 
 
+@router.post("/api/capture/jobs")
+def submit_capture_job(req: CaptureRequest,
+                       client_id: str = Depends(client_id_header)):
+    require_control(client_id)
+    return capture_manager.submit_capture_job(req.settings, req.name)
+
+
+@router.get("/api/capture/jobs/{job_id}")
+def get_capture_job(job_id: str):
+    job = capture_manager.job_status(job_id)
+    if job is None:
+        raise HTTPException(404, f"Capture job not found: {job_id}")
+    return job
+
+
 @router.post("/api/capture/start")
 def start_capture(req: CaptureRequest,
                   client_id: str = Depends(client_id_header)):

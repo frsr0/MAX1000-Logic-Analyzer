@@ -65,6 +65,7 @@ graph TB
 - [Current Implementation Status](current-status.md) - validated hardware contract, supported routes, limits, and verification baseline
 - [Generator Routing and Bit Banger Contract](generator-routing.md) - two-output engine, RS-485 DE, SPI CS/MISO, pin pool, and registers
 - [Hardware Validation](hardware-validation.md) - real-board smoke tests, PWM regression, compression matrix, and full validation
+- [Hardware Screenshot Matrix](hardware-screenshot-matrix.md) - linked MAX1000 capture-mode and sample-rate screenshots
 - [Feature and Coverage Matrix](feature-matrix.md) - cross-layer feature inventory, implementation locations, and evidence
 - [On-board LIS3DH Accelerometer](accelerometer.md) - physical wiring, I²C/SPI access, live capture, and validation
 - [Recent Software Features](recent-software-features.md) - expanded decoders, Bit Banger scripts, analysis, imports, comparisons, triggers, and UI tools

@@ -31,6 +31,17 @@ on-board LIS3DH accelerometer I²C/SPI checks passed. The exact image also
 passed the backend smoke suite at **10/10** and the dedicated jumper/generator
 matrix at **10/10**.
 
+The post-regression automation checks also cover the operational paths around
+that hardware run: the live CLI queue command completed a real capture as
+`ses_ffa381dba9`, and the pre-trigger strategy test verifies 25%, 50%, and 75%
+sample positions reach the device driver and are recorded as the trigger
+sample. The Sessions page now requests filtered, bounded pages (100 rows by
+default), so comparison remains usable on large soak-test libraries.
+
+CAN/LIN health remains a hardware-fixture dependency: the software and mock
+dashboard checks pass, but an electrical end-to-end check still requires a
+CAN transceiver and an active LIN source connected to the board.
+
 The compact evidence record and reproduction commands are in
 [hardware-validation-2026-07-22.md](../hardware-validation-2026-07-22.md).
 

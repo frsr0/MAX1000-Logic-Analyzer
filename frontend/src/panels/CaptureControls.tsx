@@ -195,6 +195,7 @@ export function CaptureControls() {
   const [scenarios, setScenarios] = useState<{ id: string; name: string }[]>([]);
   const [findings, setFindings] = useState<{ level: string; message: string }[]>([]);
   const [name, setName] = useState('');
+  const [job, setJob] = useState<any>(null);
 
   const connected = status?.device_connected ?? false;
   const capturing = status?.capture_state === 'capturing' || status?.capture_state === 'armed';
@@ -337,6 +338,21 @@ export function CaptureControls() {
     } catch (e: any) {
       toast('error', e.message);
     }
+  };
+
+  const queue = async () => {
+    try {
+      const created = await api.submitCaptureJob(captureSettings, name || 'Queued capture');
+      setJob(created);
+      const poll = async () => {
+        const current = await api.captureJob(created.id);
+        setJob(current);
+        if (['queued', 'starting', 'running'].includes(current.state)) {
+          window.setTimeout(poll, 400);
+        }
+      };
+      window.setTimeout(poll, 100);
+    } catch (e: any) { toast('error', e.message); }
   };
 
   const duration = captureSettings.num_samples / captureSettings.sample_rate;
@@ -534,7 +550,15 @@ export function CaptureControls() {
         ) : (
           <button className="danger big" onClick={stop}>Stop</button>
         )}
+        <button disabled={!connected || !controlMode || hasErrors} onClick={queue}>
+          Queue capture job
+        </button>
       </div>
+      {job && <div className={`finding ${job.state === 'done' ? 'success' : job.state === 'error' ? 'error' : 'info'}`}>
+        <strong>Headless job {job.state}</strong>
+        {job.session_id ? ` · session ${job.session_id}` : ''}
+        {job.error ? ` · ${job.error}` : ''}
+      </div>}
     </div>
   );
 }

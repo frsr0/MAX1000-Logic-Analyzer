@@ -80,7 +80,8 @@ export const api = {
   mockScenarios: () => get<{ scenarios: { id: string; name: string }[] }>('/api/capture/scenarios'),
 
   // sessions
-  sessions: () => get<{ sessions: SessionSummary[] }>('/api/sessions'),
+  sessions: (search = '', offset = 0, limit = 100) => get<{ sessions: SessionSummary[]; total: number; offset: number; limit: number }>(
+    `/api/sessions?search=${encodeURIComponent(search)}&offset=${offset}&limit=${limit}`),
   session: (id: string) => get<Session>(`/api/sessions/${id}`),
   patchSession: (id: string, body: Partial<{ name: string; notes: string; tags: string[]; channels: Partial<ChannelInfo>[] }>) =>
     patch<Session>(`/api/sessions/${id}`, body),
@@ -88,8 +89,11 @@ export const api = {
   duplicateSession: (id: string) => post<SessionSummary>(`/api/sessions/${id}/duplicate`),
   compareSessions: (a: string, b: string, alignmentOffset?: number) =>
     post<any>(`/api/sessions/${a}/compare/${b}${alignmentOffset != null ? `?alignment_offset=${alignmentOffset}` : ''}`),
-  triggerSearch: (id: string, trigger: any, decoder_instance?: string) =>
-    post<any>(`/api/sessions/${id}/trigger-search`, { trigger, decoder_instance }),
+  triggerSearch: (id: string, trigger: any, decoder_instance?: string, auto_scope = false) =>
+    post<any>(`/api/sessions/${id}/trigger-search`, { trigger, decoder_instance, auto_scope }),
+  submitCaptureJob: (settings: CaptureSettings, name = '') =>
+    post<any>('/api/capture/jobs', { settings, name }),
+  captureJob: (jobId: string) => get<any>(`/api/capture/jobs/${jobId}`),
   sessionDashboard: (id: string, bins = 32) => get<any>(`/api/sessions/${id}/dashboard?bins=${bins}`),
   importSession: (json_text: string) => post<SessionSummary>('/api/sessions', { json_text }),
   importWaveform: (source_text: string, source_format: 'csv' | 'vcd', sample_rate = 1_000_000) =>

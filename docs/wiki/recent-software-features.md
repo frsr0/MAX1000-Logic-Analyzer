@@ -127,6 +127,21 @@ The Sessions page compares two sessions through
 - first divergence in each session;
 - per-channel differences and summary counts.
 
+Regression comparisons also report first-edge, mean-period, and median-period
+deltas per channel. Existing-capture trigger searches can return the matching
+decoder event window so the viewer can auto-scope to the relevant transaction.
+
+## Headless capture jobs and bus health
+
+`POST /api/capture/jobs` accepts normal capture settings and returns a job ID;
+`GET /api/capture/jobs/{id}` can be polled until the resulting session is
+available. The `queue-capture` CLI command wraps this workflow for unattended
+bench and CI runs.
+
+The protocol dashboard reports CAN frame load, arbitration IDs, CRC/ACK errors,
+and LIN frame load, identifiers, and checksum errors when those decoders have
+completed.
+
 This is intended for regression, generator loopback, and before/after signal
 investigation rather than analog calibration certification.
 
