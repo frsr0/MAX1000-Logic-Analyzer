@@ -14,8 +14,7 @@ ENTITY OLS_Logic_Analyzer IS
     Sim             : boolean := false;
     FAST_SPEED      : boolean := false;
     -- Full feature build by default; RawOnly is an explicit opt-out.
-    FAST_RAW_BUILD  : boolean := false;
-    DEBUG_FEATURES  : boolean := false
+    FAST_RAW_BUILD  : boolean := false
   );
 PORT (
   CLK : IN STD_LOGIC;
@@ -98,9 +97,6 @@ PORT (
     Gen_Start_Reject : IN  STD_LOGIC := '0';
     Gen_Done_Pulse   : IN  STD_LOGIC := '0';
     Gen_Capture_Active : OUT STD_LOGIC := '0';
-    Debug_Ch0_Enable : OUT STD_LOGIC := '0';
-    Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 downto 0) := x"00000400";
-    Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 downto 0) := x"00000200";
     Pump_Valid_Cycles   : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
     Pump_Ready_Cycles   : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
     Pump_Accept_Cycles  : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
@@ -121,9 +117,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL OLS_Interface_Address       : NATURAL          range 0 to Max_Samples-1 := 0;
     SIGNAL OLS_Interface_Outputs       : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
     SIGNAL OLS_Interface_Inputs        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
-  SIGNAL debug_ch0_enable_i : STD_LOGIC := '0';
-  SIGNAL debug_ch0_period_i : STD_LOGIC_VECTOR(31 downto 0) := x"00000400";
-  SIGNAL debug_ch0_duty_i   : STD_LOGIC_VECTOR(31 downto 0) := x"00000200";
   SIGNAL LA_Out : STD_LOGIC_VECTOR(15 downto 0);
   SIGNAL LA_Address       : NATURAL          range 0 to Max_Samples := 0;
   -- Block-readout response-FIFO interface (OLS_Interface <-> FLA)
@@ -199,8 +192,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   GENERIC (
       CLK_Frequency   :   INTEGER     := 12000000;    
       SAMPLE_CLK_HZ  :   INTEGER     := 200_000_000;
-    Max_Samples     :   NATURAL     := 25000;
-    ENABLE_DEBUG_FEATURES : boolean := false
+    Max_Samples     :   NATURAL     := 25000
   );
   PORT (
     CLK : IN STD_LOGIC;
@@ -263,9 +255,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
     Gen_Capture_MISO_Channel : OUT NATURAL range 0 to 15 := 1;
     Gen_Capture_MISO_Enable  : OUT STD_LOGIC := '0';
         Gen_Capture_Active : OUT STD_LOGIC := '0';
-       Debug_Ch0_Enable : OUT STD_LOGIC := '0';
-       Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 downto 0) := x"00000400";
-       Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 downto 0) := x"00000200";
        Gen_Start_Ack      : IN  STD_LOGIC := '0';
        Gen_Start_Reject   : IN  STD_LOGIC := '0';
        Gen_Done_Pulse     : IN  STD_LOGIC := '0';
@@ -421,9 +410,6 @@ BEGIN
   Gen_Capture_MISO_Channel <= gen_capture_miso_channel_i;
   Gen_Capture_MISO_Enable <= gen_capture_miso_enable_i;
   Gen_Capture_Active <= gen_capture_active_i;
-  Debug_Ch0_Enable <= debug_ch0_enable_i;
-  Debug_Ch0_Period <= debug_ch0_period_i;
-  Debug_Ch0_Duty <= debug_ch0_duty_i;
   Pump_Valid_Cycles <= pump_valid_cycles_i;
   Pump_Ready_Cycles <= pump_ready_cycles_i;
   Pump_Accept_Cycles <= pump_accept_cycles_i;
@@ -432,8 +418,7 @@ BEGIN
   Pump_Overflow_Count <= pump_overflow_count_i;
   OLS_Interface1 : OLS_Interface
   GENERIC MAP (
-      CLK_Frequency => CLK_Frequency,SAMPLE_CLK_HZ => SAMPLE_CLK_HZ,Max_Samples   => Max_Samples,
-      ENABLE_DEBUG_FEATURES => DEBUG_FEATURES
+      CLK_Frequency => CLK_Frequency,SAMPLE_CLK_HZ => SAMPLE_CLK_HZ,Max_Samples   => Max_Samples
   ) PORT MAP (
     CLK           => CLK,
     FAST_CLK      => FAST_CLK,
@@ -471,9 +456,6 @@ BEGIN
     Gen_Capture_MISO_Channel => gen_capture_miso_channel_i,
     Gen_Capture_MISO_Enable => gen_capture_miso_enable_i,
     Gen_Capture_Active => gen_capture_active_i,
-    Debug_Ch0_Enable => debug_ch0_enable_i,
-    Debug_Ch0_Period => debug_ch0_period_i,
-    Debug_Ch0_Duty => debug_ch0_duty_i,
     Gen_Start_Ack      => gen_start_ack_i,
     Gen_Start_Reject   => gen_start_reject_i,
     Gen_Done_Pulse     => gen_done_pulse_i,

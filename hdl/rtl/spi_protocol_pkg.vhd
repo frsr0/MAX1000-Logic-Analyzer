@@ -79,9 +79,6 @@ package spi_protocol_pkg is
   constant REG_GEN_CAPTURE_TX_CHAN  : reg_addr_t := x"40";
   constant REG_GEN_CAPTURE_SCL_CHAN : reg_addr_t := x"41";
   constant REG_GEN_CAPTURE_AUX      : reg_addr_t := x"45";
-  constant REG_DEBUG_CH0_ENABLE     : reg_addr_t := x"42";
-  constant REG_DEBUG_CH0_PERIOD     : reg_addr_t := x"43";
-  constant REG_DEBUG_CH0_DUTY       : reg_addr_t := x"44";
   constant REG_CAPTURE_SEQ       : reg_addr_t := x"50";
   constant REG_PRODUCER_INDEX    : reg_addr_t := x"51";
   constant REG_OLDEST_INDEX      : reg_addr_t := x"52";

@@ -15,8 +15,6 @@ ENTITY OLS_SDRAM_Top IS
     -- FAST_RAW_BUILD: when true, exclude MSO compression at elaboration time.
     -- Full feature build by default; RawOnly is an explicit opt-out.
     FAST_RAW_BUILD : boolean := false;
-    -- Production build omits the optional debug PWM/register logic.
-    DEBUG_FEATURES : boolean := false;
     -- When true, forward the SDRAM chip clock through a DDIO output register.
     USE_DDIO_CLK_FORWARD : boolean := true
   );
@@ -155,11 +153,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_tx_d2    : std_logic := '0';
 
   signal gen_capture_active : std_logic := '0';
-  signal debug_ch0_enable : std_logic := '0';
-  signal debug_ch0_period : std_logic_vector(31 downto 0) := x"00000400";
-  signal debug_ch0_duty : std_logic_vector(31 downto 0) := x"00000200";
-  signal debug_pwm_count : unsigned(31 downto 0) := (others => '0');
-  signal debug_ch0_pwm : std_logic := '0';
   signal gen_start_ack_i    : std_logic;
   signal gen_start_reject_i : std_logic;
   signal gen_done_pulse_i   : std_logic;
@@ -289,8 +282,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Sim         : boolean := false;
     FAST_SPEED  : boolean := false;
     -- Full feature build by default; RawOnly is an explicit opt-out.
-    FAST_RAW_BUILD : boolean := false;
-    DEBUG_FEATURES : boolean := false
+    FAST_RAW_BUILD : boolean := false
   );
   PORT (
     CLK : IN STD_LOGIC;
@@ -370,9 +362,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Gen_RX_Used    : IN  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Gen_RX_Re      : OUT STD_LOGIC := '0';
     Gen_Capture_Active : OUT STD_LOGIC := '0';
-    Debug_Ch0_Enable : OUT STD_LOGIC := '0';
-    Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 downto 0) := x"00000400";
-    Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 downto 0) := x"00000200";
     Pump_Valid_Cycles   : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
     Pump_Ready_Cycles   : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
     Pump_Accept_Cycles  : OUT STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
@@ -686,10 +675,6 @@ BEGIN
 
       -- Debug CH0 is a deterministic internal source on physical pin 0.
       -- Generator output retains priority so loopback tests are unaffected.
-      if DEBUG_FEATURES and gen_busy = '0' and debug_ch0_enable = '1' then
-        pin_out(0) <= debug_ch0_pwm;
-        pin_dir(0) <= '1';
-      end if;
     end if;
   end process;
 
@@ -1058,8 +1043,7 @@ BEGIN
     Channels     => LA_CHANNELS,
     Sim          => Sim,
     FAST_SPEED   => FAST_SPEED,
-    FAST_RAW_BUILD => FAST_RAW_BUILD,
-    DEBUG_FEATURES => DEBUG_FEATURES
+    FAST_RAW_BUILD => FAST_RAW_BUILD
   )
   PORT MAP (
     CLK => sys_clk,
@@ -1139,9 +1123,6 @@ BEGIN
     Gen_RX_Used    => gen_rx_used,
     Gen_RX_Re      => gen_rx_re,
     Gen_Capture_Active => gen_capture_active,
-    Debug_Ch0_Enable => debug_ch0_enable,
-    Debug_Ch0_Period => debug_ch0_period,
-    Debug_Ch0_Duty => debug_ch0_duty,
     Pump_Valid_Cycles   => open,
     Pump_Ready_Cycles   => open,
     Pump_Accept_Cycles  => open,
@@ -1150,31 +1131,6 @@ BEGIN
     Pump_Overflow_Count => open
   );
 
-  gen_debug_features_on : if DEBUG_FEATURES generate
-  begin
-    -- Programmable debug PWM. The host supplies a sys_clk period and high-time.
-    debug_ch0_pwm <= '1' when debug_ch0_enable = '1'
-                     and unsigned(debug_ch0_duty) > debug_pwm_count else '0';
-    process(sys_clk)
-    begin
-      if rising_edge(sys_clk) then
-        if debug_ch0_enable = '0' or unsigned(debug_ch0_period) < 2 then
-          debug_pwm_count <= (others => '0');
-        elsif debug_pwm_count >= unsigned(debug_ch0_period) - 1 then
-          debug_pwm_count <= (others => '0');
-        else
-          debug_pwm_count <= debug_pwm_count + 1;
-        end if;
-      end if;
-    end process;
-  end generate;
-
-  gen_debug_features_off : if not DEBUG_FEATURES generate
-  begin
-    debug_ch0_pwm <= '0';
-    debug_pwm_count <= (others => '0');
-  end generate;
-  
   -- PWM carrier counter
   process(sys_clk)
   begin

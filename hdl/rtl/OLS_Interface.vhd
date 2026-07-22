@@ -9,8 +9,7 @@ ENTITY OLS_Interface IS
   GENERIC (
       CLK_Frequency   :   INTEGER     := 12000000;    
       SAMPLE_CLK_HZ  :   INTEGER     := 200_000_000;
-    Max_Samples     :   NATURAL     := 25000;
-    ENABLE_DEBUG_FEATURES : boolean := false
+    Max_Samples     :   NATURAL     := 25000
 
   );
 PORT (
@@ -77,9 +76,6 @@ PORT (
          Gen_Capture_MISO_Channel : OUT NATURAL range 0 to 15 := 1;
          Gen_Capture_MISO_Enable  : OUT STD_LOGIC := '0';
          Gen_Capture_Active : OUT STD_LOGIC := '0';
-         Debug_Ch0_Enable : OUT STD_LOGIC := '0';
-         Debug_Ch0_Period : OUT STD_LOGIC_VECTOR(31 downto 0) := x"00000400";
-         Debug_Ch0_Duty   : OUT STD_LOGIC_VECTOR(31 downto 0) := x"00000200";
          Gen_Start_Ack      : IN  STD_LOGIC := '0';
          Gen_Start_Reject   : IN  STD_LOGIC := '0';
          Gen_Done_Pulse     : IN  STD_LOGIC := '0';
@@ -174,9 +170,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL gen_capture_miso_channel_i : NATURAL range 0 to 15 := 1;
   SIGNAL gen_capture_miso_enable_i  : STD_LOGIC := '0';
   SIGNAL gen_capture_active_i  : STD_LOGIC := '0';
-  SIGNAL debug_ch0_enable_i : STD_LOGIC := '0';
-  SIGNAL debug_ch0_period_i : STD_LOGIC_VECTOR(31 downto 0) := x"00000400";
-  SIGNAL debug_ch0_duty_i   : STD_LOGIC_VECTOR(31 downto 0) := x"00000200";
   SIGNAL gen_capture_done_i    : STD_LOGIC := '0';
   SIGNAL gen_capture_error_i   : STD_LOGIC := '0';
   SIGNAL gen_start_pulse     : STD_LOGIC := '0';
@@ -514,18 +507,6 @@ BEGIN
           gen_capture_cs_enable_i <= disp_reg_wdata(4);
           gen_capture_miso_channel_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(11 downto 8)));
           gen_capture_miso_enable_i <= disp_reg_wdata(12);
-        WHEN REG_DEBUG_CH0_ENABLE =>
-          IF ENABLE_DEBUG_FEATURES THEN
-            debug_ch0_enable_i <= disp_reg_wdata(0);
-          END IF;
-        WHEN REG_DEBUG_CH0_PERIOD =>
-          IF ENABLE_DEBUG_FEATURES THEN
-            debug_ch0_period_i <= disp_reg_wdata;
-          END IF;
-        WHEN REG_DEBUG_CH0_DUTY =>
-          IF ENABLE_DEBUG_FEATURES THEN
-            debug_ch0_duty_i <= disp_reg_wdata;
-          END IF;
         WHEN others => null;
       END CASE;
     END IF;
@@ -1018,9 +999,6 @@ BEGIN
   Gen_Capture_CS_Enable <= gen_capture_cs_enable_i;
   Gen_Capture_MISO_Channel <= gen_capture_miso_channel_i;
   Gen_Capture_MISO_Enable <= gen_capture_miso_enable_i;
-  Debug_Ch0_Enable <= debug_ch0_enable_i;
-  Debug_Ch0_Period <= debug_ch0_period_i;
-  Debug_Ch0_Duty <= debug_ch0_duty_i;
   Gen_Capture_Active <= gen_capture_active_i;
   -- Pin_Map_Write is driven from the main process (default low, pulsed in CMD_PIN_MAP handler)
 
@@ -1463,18 +1441,6 @@ BEGIN
                     reg_val(4) := gen_capture_cs_enable_i;
                     reg_val(11 downto 8) := std_logic_vector(to_unsigned(gen_capture_miso_channel_i, 4));
                     reg_val(12) := gen_capture_miso_enable_i;
-                  when REG_DEBUG_CH0_ENABLE =>
-                    if ENABLE_DEBUG_FEATURES then
-                      reg_val(0) := debug_ch0_enable_i;
-                    end if;
-                  when REG_DEBUG_CH0_PERIOD =>
-                    if ENABLE_DEBUG_FEATURES then
-                      reg_val := debug_ch0_period_i;
-                    end if;
-                  when REG_DEBUG_CH0_DUTY =>
-                    if ENABLE_DEBUG_FEATURES then
-                      reg_val := debug_ch0_duty_i;
-                    end if;
                   when REG_CAPTURE_SEQ =>
                     reg_val := capture_seq;
                   when REG_PRODUCER_INDEX =>
