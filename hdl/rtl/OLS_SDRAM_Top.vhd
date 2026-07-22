@@ -211,6 +211,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal capture_data_fast_speed_r : std_logic_vector(LA_CHANNELS-1 downto 0) := (others => '0');
   signal capture_data_fast_mapped_r : std_logic_vector(LA_CHANNELS-1 downto 0) := (others => '0');
   signal capture_data_fast_normal_r : std_logic_vector(LA_CHANNELS-1 downto 0) := (others => '0');
+  attribute altera_attribute : string;
+  -- Keep this short, timing-sensitive input pipeline in LE registers.  If
+  -- Quartus recognises it as an altshift_taps M9K, the M9K output feeds the
+  -- dynamic narrow-channel mux and loses about 150 ps on fast_clk.
+  attribute altera_attribute of capture_data_fast_speed_r : signal is
+    "-name AUTO_SHIFT_REGISTER_RECOGNITION OFF";
   signal pin_pool_fast_r   : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
   signal pin_pool_f1  : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
   signal pin_pool_f2  : std_logic_vector(PIN_POOL_SIZE-1 downto 0) := (others => '0');
