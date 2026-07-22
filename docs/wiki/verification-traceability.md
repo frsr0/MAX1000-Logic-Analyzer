@@ -28,15 +28,22 @@ The evidence levels used below are:
 | BUILD | RTL compiles and required post-fit timing paths close |
 | HW | Exact programmed image passes the relevant connected-board test |
 
-## Changes since the last complete hardware validation
+## Current exact-image hardware validation
+
+On 2026-07-22, the current seed-23 SOF was rebuilt, timing-analyzed, and
+programmed with checksum `0x004FDDF3`. The full connected-board regression
+recorded **369/369 passed, 0 failed, 0 skipped** after the digital loopback
+jumper was installed and discovered as pool pin 22 to capture channel 13.
+
+## Changes since the previous complete hardware validation
 
 | Commit | Change | Documentation | Evidence status |
 |---|---|---|---|
-| `89b84898` | Bit Engine hardware repeat mode; host `repeat=True` flag | [Signal Generator](hdl/signal-generator.md), [Generator Routing](generator-routing.md) | SIM and host-test coverage; the 2026-07-21 board run predates this change |
-| `6f506855` | Keep FAST capture input pipeline in LE registers with `AUTO_SHIFT_REGISTER_RECOGNITION OFF` | [Build Flow](hdl/build-flow.md), [FAST Capture Stream](hdl/fast-capture-stream.md) | BUILD evidence in the seed-23 timing reports; board evidence must be tied to the newly programmed SOF |
-| `ef7d4171` | Add narrow packed FAST regression to `tb_fast_analyzer` | [HDL Testbenches](hdl/testbenches.md), [FAST Capture Stream](hdl/fast-capture-stream.md) | SIM source coverage; not a board test and not part of the SOF checksum |
+| `89b84898` | Bit Engine hardware repeat mode; host `repeat=True` flag | [Signal Generator](hdl/signal-generator.md), [Generator Routing](generator-routing.md) | **HW** on SOF `0x004FDDF3`; full regression passed |
+| `6f506855` | Keep FAST capture input pipeline in LE registers with `AUTO_SHIFT_REGISTER_RECOGNITION OFF` | [Build Flow](hdl/build-flow.md), [FAST Capture Stream](hdl/fast-capture-stream.md) | **BUILD + HW** on SOF `0x004FDDF3` |
+| `ef7d4171` | Add narrow packed FAST regression to `tb_fast_analyzer` | [HDL Testbenches](hdl/testbenches.md), [FAST Capture Stream](hdl/fast-capture-stream.md) | **SIM + HW** on SOF `0x004FDDF3` |
 
-The latest complete board evidence remains the 2026-07-21 run documented in
+The latest complete board evidence is the 2026-07-22 run documented in
 [Hardware Validation](hardware-validation.md). Any later RTL change requires
 the build, image checksum, and relevant hardware test result to be recorded
 before changing a claim from BUILD or SIM to HW.

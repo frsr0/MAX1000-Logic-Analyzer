@@ -126,7 +126,7 @@ one (near-zero samples reported despite a correctly armed new capture); see
 [capture-engine.md](capture-engine.md#continuoussingle-shot-packed-transition-race-fixed-2026-07-10)
 for the mechanism and fix (2026-07-10).
 
-**Board validation (2026-07-21):** the programmed seed-23 image produced
+**Board validation (2026-07-22, SOF `0x004FDDF3`):** the programmed seed-23 image produced
 500,000 packed words, four balanced analog channels (1,828 samples each),
 and digital RLE slices with the expected PWM dwell behavior. Separate live
 readback characterization measured approximately **1.00 MS/s raw** and

@@ -106,7 +106,7 @@ function makeStatus(mock = false): Json {
     sys_clk_hz: 100.2e6, sample_clk_hz: 200.4e6, mock: false, extra: {},
   };
   return {
-    app_version: '2.0.0',
+    app_version: '3.0.0',
     uptime_s: 7261,
     device_connected: true,
     device_kind: mock ? 'mock' : 'hardware',
@@ -208,7 +208,7 @@ function makeAccelSession(): Json {
     name: 'LIS3DH WHO_AM_I dialogue',
     created_at: 1_725_200_000,
     modified_at: 1_725_200_600,
-    app_version: '2.0.0',
+    app_version: '3.0.0',
     device: makeStatus().device,
     settings: {
       sample_rate: 2_000_000,
@@ -280,7 +280,7 @@ function makeSession(): Json {
     name: 'MAX1000 hardware demo',
     created_at: 1_725_000_000,
     modified_at: 1_725_000_500,
-    app_version: '2.0.0',
+    app_version: '3.0.0',
     device: makeStatus().device,
     settings: {
       sample_rate: 1_000_000,
@@ -445,7 +445,7 @@ function makeAnalogSession(): Json {
     name: 'MAX1000 mixed analog sweep',
     created_at: 1_725_100_000,
     modified_at: 1_725_100_600,
-    app_version: '2.0.0',
+    app_version: '3.0.0',
     device: makeStatus().device,
     settings: {
       sample_rate: 125_000,

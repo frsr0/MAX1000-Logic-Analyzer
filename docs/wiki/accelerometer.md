@@ -64,7 +64,7 @@ as a device-level self-test and as a realistic protocol waveform source.
 ## Hardware validation status
 
 The seed-23 full-feature image passed the on-board accelerometer test as part
-of the final **120/120 passed, 0 failed, 0 skipped** regression on 2026-07-21.
+of the final **369/369 passed, 0 failed, 0 skipped** regression on 2026-07-22.
 That test covered:
 
 - I²C `WHO_AM_I` at 50 kHz and 100 kHz, probing both possible addresses;

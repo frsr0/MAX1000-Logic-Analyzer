@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 3.0.0 - 2026-07-22
+
+## 3.0.0 - 2026-07-22
+
 - Added MAX1000 physical pin metadata for the full RTL pin pool: MKR D0-D14,
   PMOD PIO_01-PIO_08, and LIS3DH `SEN_*` pins.
 - Added board-guide analogue input mapping and exposed it through device

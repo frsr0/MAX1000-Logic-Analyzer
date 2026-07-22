@@ -25,13 +25,13 @@ This repository is currently verified for:
 - UART, RS-485, I2C, SPI, SWD transaction capture, and raw two-output Bit Banger generation
 - Browser UI, backend API, and classic host-driver workflow
 
-Latest validation baseline (2026-07-21):
+Latest validation baseline (2026-07-22):
 
 - `backend/app/tests/test_existing_host_adapter.py`: `19/19` passed
 - `host/driver/tests/test_ols_spi_device.py` + `test_ols_spi.py`: `194/194` passed
 - `frontend` typecheck and production build: passed
 - `frontend/tests/e2e/hardware.spec.ts`: `25 passed, 2 skipped` (full suite; mock workflow coverage included)
-- `backend/hw_smoke_test.py --mock`: `10/10` passed; the exact seed-23 image passed the full hardware regression `120/120`, `0 failed`, `0 skipped`
+- `backend/hw_smoke_test.py --mock`: `10/10` passed; the freshly programmed seed-23 image (SOF checksum `0x004FDDF3`) passed the full connected-fixture hardware regression `369/369`, `0 failed`, `0 skipped`
 - Backend smoke and jumper/generator matrix: `10/10` each; frontend typecheck/build: passed
 
 ## What The Current Bitstream Actually Does

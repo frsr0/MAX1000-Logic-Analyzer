@@ -15,22 +15,23 @@ hardware contract, register map, or validated build changes.
 | Deep capture | 4,194,304 16-bit SDRAM words |
 | Physical generator pin pool | 26 entries: MKR_D[14:0], PMOD[7:0], SEN_SDO, SEN_SDI, SEN_SPC |
 | Generator FIFO | 256 bytes of host-encoded 2-bit symbols |
-| Latest programmed SOF | Full-feature seed-23 image, checksum `0x004EFFE9` |
+| Latest programmed SOF | Full-feature seed-23 image, checksum `0x004FDDF3` (2026-07-22) |
+| Persisted configuration POF | `OLS_Logic_Analyzer.pof`, checksum `0x01D65FD0`; verified after power cycle (2026-07-22) |
 
 The 2026-07-20 hardware smoke run passed all 10 checks, including discovery,
 metadata, capabilities, self-test, digital capture, sanity checks, UART,
 RS-485, SPI, and SWD generator loopback. The archived report is
 [hardware-smoke-2026-07-20.md](../hardware-smoke-2026-07-20.md).
 
-The 2026-07-21 full-feature validation passed protocol, single/FAST/continuous
+The 2026-07-22 full-feature validation passed protocol, single/FAST/continuous
 capture, 200 MHz narrow packed, MSO packed, analog/mixed, trigger, generator,
 both physical analog jumper paths, and lifecycle sections. The codec matrix
 passed both `delta_rle` and
 direct `rle` bit-exactly at 1, 10, 50, 100, and 200.4 MS/s. Live delta mode is
 lossless through 500 kS/s, matching raw's measured ceiling.
 
-The exact programmed image was revalidated on 2026-07-21: the full new-test
-regression recorded **120/120 checks passed**. Both PMOD5-to-AIN5/ADC7 and
+The exact programmed image was revalidated on 2026-07-22: the full regression
+recorded **369/369 checks passed, 0 failed, 0 skipped**. Both PMOD5-to-AIN5/ADC7 and
 PMOD6-to-AIN4/ADC3 produced full-scale UART activity with cross-talk checks,
 alongside the MSO packed test with 500,000 words, four balanced analog
 channels, digital RLE slices, and high-speed analog-only capture.
@@ -109,13 +110,9 @@ removing the redundant nonzero-flag mux from the budget counter's data path,
 and constraining only stable configuration/inactive branch-select paths in the
 SDC. Sample data and the active countdown remain single-cycle paths.
 
-The post-2026-07-21 source history is tracked separately from the last complete
-board run: `89b84898` adds Bit Engine repeat mode, `6f506855` changes FAST
-register inference for timing, and `ef7d4171` adds narrow packed simulation
-coverage. See [Verification and Change Traceability](verification-traceability.md)
-for the exact evidence level of each change. The 120/120 result must not be
-interpreted as validation of a later programmed image unless its checksum and
-test output are recorded.
+The current programmed image includes the repeat-mode, FAST timing, and narrow
+packed regression changes previously listed as pending. See [Verification and
+Change Traceability](verification-traceability.md) for the exact evidence chain.
 
 ## Known boundaries
 
@@ -128,8 +125,9 @@ test output are recorded.
 - SPI CS/MISO auxiliary routing is implemented in dedicated fast capture
   muxes because runtime general pin-map writes are frozen in the FAST build.
 - I²C and SWD need external electrical partners for meaningful response tests.
-- The validated SOF is volatile FPGA configuration unless it is separately
-  persisted to board flash.
+- The validated image is now persisted to the MAX 10 configuration flash via
+  POF checksum `0x01D65FD0`; a future replacement image must be programmed to
+  both SRAM (SOF) and configuration flash (POF) when persistence is required.
 
 ## Where to change the contract
 

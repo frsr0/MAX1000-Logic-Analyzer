@@ -35,10 +35,10 @@ cd hdl\sim
 make run
 
 # Option B: Manual step-by-step
-ghdl -a --std=2008 -fsynopsys ../rtl/spi_protocol_pkg.vhd
-ghdl -a --std=2008 -fsynopsys tb_stream_protocol_timing.vhd
-ghdl -e --std=2008 -fsynopsys tb_stream_protocol_timing
-ghdl -r --std=2008 -fsynopsys tb_stream_protocol_timing --stop-time=1us
+ghdl -a --std=08 -fsynopsys ../rtl/spi_protocol_pkg.vhd
+ghdl -a --std=08 -fsynopsys tb_stream_protocol_timing.vhd
+ghdl -e --std=08 -fsynopsys tb_stream_protocol_timing
+ghdl -r --std=08 -fsynopsys tb_stream_protocol_timing --stop-time=1us
 ```
 
 ### Expected Output

@@ -29,7 +29,7 @@
 
 ### compile.ps1
 
-PowerShell build script (current parameters, verified against the script 2026-07-21):
+PowerShell build script (current parameters, verified against the script 2026-07-22):
 ```
 .\compile.ps1 -Flash -Seed 23
 ```

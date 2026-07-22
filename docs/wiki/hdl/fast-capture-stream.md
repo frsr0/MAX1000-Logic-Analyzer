@@ -54,7 +54,7 @@ reports `+0.124 ns` worst FAST setup slack in the slow corner; the SDRAM core
 reports `+0.426 ns`, and the other setup/hold checks are positive. The narrow
 FAST regression covers a non-zero selected channel and verifies multiple
 packed words in simulation. The latest complete board validation is the
-2026-07-21 seed-23 image; see [Verification and Change Traceability](../verification-traceability.md)
+2026-07-22 seed-23 image with SOF checksum `0x004FDDF3`; see [Verification and Change Traceability](../verification-traceability.md)
 before treating later RTL as hardware-validated.
 
 The budget counter's decrement pipeline is clamped at zero. Its write is

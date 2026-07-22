@@ -22,14 +22,17 @@ On 2026-07-20 the connected MAX1000 was programmed with SOF checksum
 The full evidence, including session IDs and the programmed image, is in
 [docs/hardware-smoke-2026-07-20.md](../hardware-smoke-2026-07-20.md).
 
-The latest complete real-hardware run on 2026-07-21 completed
-**120/120 passed, 0 failed, 0 skipped** against the newly programmed seed-23
-SOF checksum `0x004EFFE9`. Continuous ring, 200 MHz narrow capture, packed
+The latest complete real-hardware run on 2026-07-22 completed
+**369/369 passed, 0 failed, 0 skipped** against the freshly rebuilt and programmed seed-23
+SOF checksum `0x004FDDF3`. Continuous ring, 200 MHz narrow capture, packed
 digital/MSO, analog/mixed signal, codec, readout-stress, generator matrix,
 trigger, full-depth SDRAM, both physical analog jumper paths, lifecycle, and
 on-board LIS3DH accelerometer I²C/SPI checks passed. The exact image also
 passed the backend smoke suite at **10/10** and the dedicated jumper/generator
 matrix at **10/10**.
+
+The compact evidence record and reproduction commands are in
+[hardware-validation-2026-07-22.md](../hardware-validation-2026-07-22.md).
 
 The earlier complete suite on the prior flashed image was **432/434 passed,
 2 failed, 0 skipped**.
@@ -65,10 +68,9 @@ the loopback, and check edge count, duty ratio, and compression round trips.
 The old debug-CH0 register test is retired because registers `0x42-0x44` no
 longer exist in the production HDL.
 
-The later `89b84898` change adds FPGA-side repeat mode for raw symbols, PWM,
-and RS-485. Its focused `tb_bit_engine_repeat.vhd` and host-driver test prove
-the repeat control path, but the 2026-07-21 board result predates that RTL and
-does not prove gapless repeated output on the current image.
+The 2026-07-22 board result includes the `89b84898` FPGA-side repeat-mode
+change for raw symbols, PWM, and RS-485; focused simulation, host-driver, and
+full connected-board coverage now agree on that path.
 
 ## Compression matrix
 

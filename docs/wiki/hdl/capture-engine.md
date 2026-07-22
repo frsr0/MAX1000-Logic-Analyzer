@@ -107,7 +107,7 @@ The core capture engine: registered input sampling, sample rate division, BRAM p
 - CLK side: detects toggle edge, enables drain completion counter
 - Fixes the old hang where completion waited on an exact write count the producer never reached
 - The final seed-23 image passed the full-depth boundary capture,
-  back-to-back capture, readout-stress, and lifecycle checks in the 120/120
+  back-to-back capture, readout-stress, and lifecycle checks in the 369/369
   hardware regression.
 
 ## Key Signals

@@ -7,7 +7,7 @@ param(
     # Keep the old direct PLL c4 forward instead of the DDIO clock forward.
     [switch]$LegacyClkForward,
     # Current validated default: full mixed-signal seed 23, timing-closed at
-    # slow-85C with +0.049 ns fast_clk setup slack.
+    # slow-85C with +0.124 ns fast_clk setup slack.
     # Re-sweep (seed_sweep.ps1) after RTL or pin changes; bitstream remains
     # seed-sensitive at this density.
     [int]$Seed = 23

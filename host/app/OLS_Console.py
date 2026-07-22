@@ -10,7 +10,7 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-__version__ = "2.0.0"
+__version__ = "3.0.0"
 
 # SPI device backend (30 MHz fast mode)
 try:

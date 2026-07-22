@@ -102,6 +102,6 @@ the tested stream seams.
 | Speed grade | C8 |
 | Build profile | FAST_SPEED (200 MHz sample clock) |
 | Current build seed | 23 (2026-07-22; full mixed-signal build, see `TIMING_REPORT_SUMMARY.md`) |
-| Last complete board validation | 2026-07-21; SOF `0x004EFFE9` |
+| Last complete board validation | 2026-07-22; SOF `0x004FDDF3` |
 | Utilisation | 98% LEs (7,875/8,064) |
 | Toolchain | Quartus Prime (proj/compile.ps1) |

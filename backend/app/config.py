@@ -12,7 +12,7 @@ HOST = os.environ.get("MSA_HOST", "0.0.0.0")
 PORT = int(os.environ.get("MSA_PORT", "8000"))
 
 APP_NAME = "MAX1000 Mixed-Signal Analyser"
-APP_VERSION = "2.0.0"
+APP_VERSION = "3.0.0"
 
 # Raw windows larger than this are served from the LOD pyramid instead.
 MAX_RAW_POINTS = 8192

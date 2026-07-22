@@ -14,7 +14,7 @@ has an explicit scope boundary.
 | Deep SDRAM capture | Depth selector, capture strategies | SDRAM controller and write pump | **HW**; 4,194,304 × 16-bit words |
 | BRAM fast capture | Fast/narrow strategy | 1,024-word BRAM path | **HW** |
 | Continuous/ring capture | Live capture and session streaming | Triple-buffer ring path | **HW**; lifecycle and recovery checks |
-| Narrow packed capture | Narrow mode control and decoder | 16 samples/channel packed into one word | **HW** on 2026-07-21 image; `tb_fast_analyzer` narrow regression is **SIM** |
+| Narrow packed capture | Narrow mode control and decoder | 16 samples/channel packed into one word | **HW** on 2026-07-22 image; `tb_fast_analyzer` narrow regression is **SIM** |
 | Analog-fast | Analog-fast mode and analog waveform | One MAX10 ADC lane | **HW**; ADC1/AIN3 profile and physical analog checks |
 | Analog-all | Maximum-analog mode | Four ADC inputs | **HW**; four balanced channels |
 | Mixed-signal capture | Mixed mode and analog/digital panels | `mso_capture`, analog packer, stream mux | **HW**; 500,000 packed words |
@@ -37,7 +37,7 @@ has an explicit scope boundary.
 | Modbus RTU | Stacked UART decoder with CRC/function parsing | MIL/generator workflows | **SW/HW** where a loopback or device is available |
 | Parallel bus | Clocked multi-channel decoder | Not a dedicated generator protocol | **SW** decoder coverage |
 | 1-Wire | Reset, presence, and byte decoder | No dedicated hardware generator | **SW** decoder coverage |
-| PWM | Pulse/frequency/duty decoder | Bit Engine/Bit Banger PWM templates, optional FPGA repeat | **HW** loopback on 2026-07-21 image; repeat mode has SIM/host coverage only |
+| PWM | Pulse/frequency/duty decoder | Bit Engine/Bit Banger PWM templates, optional FPGA repeat | **HW** loopback and repeat path on 2026-07-22 image |
 | Raw Bit Banger | Raw waveform capture through normal channels | Two-output 2-bit symbol engine | **HW** through loopback and peripheral routes |
 | LIS3DH accelerometer | Standard I²C decoder on live session | I²C and SPI register reads | **HW**; see [accelerometer.md](accelerometer.md) |
 | Manchester / differential Manchester | Manchester decoder | Software encoder and preview | **SW** decoder/encoder tests |
@@ -85,8 +85,8 @@ has an explicit scope boundary.
 | Full build | `FAST_SPEED=true`, `FAST_RAW_BUILD=false`, seed 23 |
 | Timing | Slow-85C `fast_clk` `+0.124 ns`, `sdram_core_clk` `+0.426 ns`; no setup/hold violations |
 | Logic use | 7,875/8,064 LEs (98%); 4,593 registers; 63 pins |
-| Current SOF | `0x004EFFE9` on the validation board |
-| Final hardware regression | 120/120 passed, 0 failed, 0 skipped on 2026-07-21 |
+| Current SOF | `0x004FDDF3` on the validation board |
+| Final hardware regression | 369/369 passed, 0 failed, 0 skipped on 2026-07-22 |
 
 ## How to interpret coverage
 

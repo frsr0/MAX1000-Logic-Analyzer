@@ -96,8 +96,8 @@ graph TB
   `sdram_core_clk +0.426 ns` in the slow corner, with all setup/hold paths
   positive. The analog-packer
   output remains bit-exact under backpressure.
-  The current build artifacts are distinct from the latest complete board
-  validation; see
+  The current build artifacts and latest complete board validation use the
+  same seed-23 image; see
   [`hdl/sdram-pll.md`](hdl/sdram-pll.md) for the DDIO clock-forward phase fix,
   [`hdl/mso-capture.md`](hdl/mso-capture.md) for the packed/MSO live-capture
   throughput fix, and `TIMING_REPORT_SUMMARY.md` for the full per-domain
