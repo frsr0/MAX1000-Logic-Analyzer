@@ -16,13 +16,17 @@ dev = OLSDeviceSPI()
 dev.open()
 try:
     dev.reset()
-    dev.set_bitbang_pwm(True, freq_hz=100_000, duty_pct=50, cycles=32)
-    samples = dev.capture(rate_hz=1_000_000, nsamples=4096)
+    symbol_rate = 3_200_000
+    period = 32
+    symbols = ([1] * 16 + [0] * 16) * 32
+    samples = dev.capture_with_gen(
+        rate_hz=1_000_000, nsamples=4096, raw_symbols=symbols,
+        raw_symbol_rate=symbol_rate, raw_tx_pin=0, fast_mode=False)
     tr_on = transitions(samples)
     assert tr_on >= 8, f"Bit Engine PWM produced too few transitions: {tr_on}"
     print(f"PASS: Bit Engine PWM transitions = {tr_on}")
 finally:
     try:
-        dev.set_bitbang_pwm(False)
+        dev.pkt.transaction(0x11, timeout=0.5)
     finally:
         dev.close()

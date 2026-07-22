@@ -1597,6 +1597,8 @@ class OLSDeviceSPI:
                          spi_cs_channel=None, spi_miso_channel=15,
                          swd_ops=None, swd_clk_hz=1000000,
                          swd_swdio_pin=3, swd_swclk_pin=1, swd_connect=True,
+                         raw_symbols=None, raw_symbol_rate=1_000_000,
+                         raw_tx_pin=0,
                          gen_first=False, fast_mode=True,
                          reset_board=True):
         """Atomic generator capture using CMD_GEN_CAPTURE.
@@ -1703,6 +1705,15 @@ class OLSDeviceSPI:
             self.pkt.write_register(REG_GEN_DATA, GEN_FLAG_SPI_TEST | (1 << 8))
             swd_loaded = self._gen_load_swd(
                 swd_ops, swd_clk_hz, connect=swd_connect)
+        elif raw_symbols is not None:
+            self._set_gen_capture_channels(tx_channel=raw_tx_pin)
+            self._pins(tx_pin=raw_tx_pin, scl_pin=GEN_SCL_PARK)
+            self.pkt.write_register(REG_GEN_PROTO, 0)
+            self.pkt.write_register(REG_GEN_DATA, 1 << 8)
+            raw_div = max(1, int(round(
+                self.sys_clk / max(1, int(raw_symbol_rate)) - 1.25)))
+            self.pkt.write_register(REG_GEN_BAUD, raw_div & 0xFFFF)
+            self.pkt.load_gen_data(bit_bang.pack_symbols(raw_symbols))
         elif self._gen_data is not None:
             self._set_gen_capture_aux()
             self._set_gen_capture_channels(tx_channel=self._gen_tx_pin)
@@ -1720,7 +1731,7 @@ class OLSDeviceSPI:
         self.pkt.write_register(REG_FAST_MODE, 1 if fast_mode else 0)
 
         has_gen = ((proto == 'I2C' and i2c_frame) or swd_loaded
-                   or self._gen_data is not None)
+                   or raw_symbols is not None or self._gen_data is not None)
         if not has_gen:
             return b''
 
