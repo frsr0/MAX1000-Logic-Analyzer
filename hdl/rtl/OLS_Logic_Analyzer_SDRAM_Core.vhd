@@ -14,7 +14,8 @@ ENTITY OLS_Logic_Analyzer IS
     Sim             : boolean := false;
     FAST_SPEED      : boolean := false;
     -- Full feature build by default; RawOnly is an explicit opt-out.
-    FAST_RAW_BUILD  : boolean := false
+    FAST_RAW_BUILD  : boolean := false;
+    DEBUG_FEATURES  : boolean := false
   );
 PORT (
   CLK : IN STD_LOGIC;
@@ -198,7 +199,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   GENERIC (
       CLK_Frequency   :   INTEGER     := 12000000;    
       SAMPLE_CLK_HZ  :   INTEGER     := 200_000_000;
-    Max_Samples     :   NATURAL     := 25000       
+    Max_Samples     :   NATURAL     := 25000;
+    ENABLE_DEBUG_FEATURES : boolean := false
   );
   PORT (
     CLK : IN STD_LOGIC;
@@ -430,7 +432,8 @@ BEGIN
   Pump_Overflow_Count <= pump_overflow_count_i;
   OLS_Interface1 : OLS_Interface
   GENERIC MAP (
-      CLK_Frequency => CLK_Frequency,SAMPLE_CLK_HZ => SAMPLE_CLK_HZ,Max_Samples   => Max_Samples
+      CLK_Frequency => CLK_Frequency,SAMPLE_CLK_HZ => SAMPLE_CLK_HZ,Max_Samples   => Max_Samples,
+      ENABLE_DEBUG_FEATURES => DEBUG_FEATURES
   ) PORT MAP (
     CLK           => CLK,
     FAST_CLK      => FAST_CLK,

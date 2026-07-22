@@ -9,7 +9,8 @@ ENTITY OLS_Interface IS
   GENERIC (
       CLK_Frequency   :   INTEGER     := 12000000;    
       SAMPLE_CLK_HZ  :   INTEGER     := 200_000_000;
-    Max_Samples     :   NATURAL     := 25000       
+    Max_Samples     :   NATURAL     := 25000;
+    ENABLE_DEBUG_FEATURES : boolean := false
 
   );
 PORT (
@@ -514,11 +515,17 @@ BEGIN
           gen_capture_miso_channel_i <= TO_INTEGER(UNSIGNED(disp_reg_wdata(11 downto 8)));
           gen_capture_miso_enable_i <= disp_reg_wdata(12);
         WHEN REG_DEBUG_CH0_ENABLE =>
-          debug_ch0_enable_i <= disp_reg_wdata(0);
+          IF ENABLE_DEBUG_FEATURES THEN
+            debug_ch0_enable_i <= disp_reg_wdata(0);
+          END IF;
         WHEN REG_DEBUG_CH0_PERIOD =>
-          debug_ch0_period_i <= disp_reg_wdata;
+          IF ENABLE_DEBUG_FEATURES THEN
+            debug_ch0_period_i <= disp_reg_wdata;
+          END IF;
         WHEN REG_DEBUG_CH0_DUTY =>
-          debug_ch0_duty_i <= disp_reg_wdata;
+          IF ENABLE_DEBUG_FEATURES THEN
+            debug_ch0_duty_i <= disp_reg_wdata;
+          END IF;
         WHEN others => null;
       END CASE;
     END IF;
@@ -1457,11 +1464,17 @@ BEGIN
                     reg_val(11 downto 8) := std_logic_vector(to_unsigned(gen_capture_miso_channel_i, 4));
                     reg_val(12) := gen_capture_miso_enable_i;
                   when REG_DEBUG_CH0_ENABLE =>
-                    reg_val(0) := debug_ch0_enable_i;
+                    if ENABLE_DEBUG_FEATURES then
+                      reg_val(0) := debug_ch0_enable_i;
+                    end if;
                   when REG_DEBUG_CH0_PERIOD =>
-                    reg_val := debug_ch0_period_i;
+                    if ENABLE_DEBUG_FEATURES then
+                      reg_val := debug_ch0_period_i;
+                    end if;
                   when REG_DEBUG_CH0_DUTY =>
-                    reg_val := debug_ch0_duty_i;
+                    if ENABLE_DEBUG_FEATURES then
+                      reg_val := debug_ch0_duty_i;
+                    end if;
                   when REG_CAPTURE_SEQ =>
                     reg_val := capture_seq;
                   when REG_PRODUCER_INDEX =>

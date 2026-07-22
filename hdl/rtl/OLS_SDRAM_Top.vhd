@@ -15,6 +15,8 @@ ENTITY OLS_SDRAM_Top IS
     -- FAST_RAW_BUILD: when true, exclude MSO compression at elaboration time.
     -- Full feature build by default; RawOnly is an explicit opt-out.
     FAST_RAW_BUILD : boolean := false;
+    -- Production build omits the optional debug PWM/register logic.
+    DEBUG_FEATURES : boolean := false;
     -- When true, forward the SDRAM chip clock through a DDIO output register.
     USE_DDIO_CLK_FORWARD : boolean := true
   );
@@ -287,7 +289,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Sim         : boolean := false;
     FAST_SPEED  : boolean := false;
     -- Full feature build by default; RawOnly is an explicit opt-out.
-    FAST_RAW_BUILD : boolean := false
+    FAST_RAW_BUILD : boolean := false;
+    DEBUG_FEATURES : boolean := false
   );
   PORT (
     CLK : IN STD_LOGIC;
@@ -683,7 +686,7 @@ BEGIN
 
       -- Debug CH0 is a deterministic internal source on physical pin 0.
       -- Generator output retains priority so loopback tests are unaffected.
-      if gen_busy = '0' and debug_ch0_enable = '1' then
+      if DEBUG_FEATURES and gen_busy = '0' and debug_ch0_enable = '1' then
         pin_out(0) <= debug_ch0_pwm;
         pin_dir(0) <= '1';
       end if;
@@ -1055,7 +1058,8 @@ BEGIN
     Channels     => LA_CHANNELS,
     Sim          => Sim,
     FAST_SPEED   => FAST_SPEED,
-    FAST_RAW_BUILD => FAST_RAW_BUILD
+    FAST_RAW_BUILD => FAST_RAW_BUILD,
+    DEBUG_FEATURES => DEBUG_FEATURES
   )
   PORT MAP (
     CLK => sys_clk,
@@ -1146,21 +1150,30 @@ BEGIN
     Pump_Overflow_Count => open
   );
 
-  -- Programmable debug PWM. The host supplies a sys_clk period and high-time.
-  debug_ch0_pwm <= '1' when debug_ch0_enable = '1'
-                   and unsigned(debug_ch0_duty) > debug_pwm_count else '0';
-  process(sys_clk)
+  gen_debug_features_on : if DEBUG_FEATURES generate
   begin
-    if rising_edge(sys_clk) then
-      if debug_ch0_enable = '0' or unsigned(debug_ch0_period) < 2 then
-        debug_pwm_count <= (others => '0');
-      elsif debug_pwm_count >= unsigned(debug_ch0_period) - 1 then
-        debug_pwm_count <= (others => '0');
-      else
-        debug_pwm_count <= debug_pwm_count + 1;
+    -- Programmable debug PWM. The host supplies a sys_clk period and high-time.
+    debug_ch0_pwm <= '1' when debug_ch0_enable = '1'
+                     and unsigned(debug_ch0_duty) > debug_pwm_count else '0';
+    process(sys_clk)
+    begin
+      if rising_edge(sys_clk) then
+        if debug_ch0_enable = '0' or unsigned(debug_ch0_period) < 2 then
+          debug_pwm_count <= (others => '0');
+        elsif debug_pwm_count >= unsigned(debug_ch0_period) - 1 then
+          debug_pwm_count <= (others => '0');
+        else
+          debug_pwm_count <= debug_pwm_count + 1;
+        end if;
       end if;
-    end if;
-  end process;
+    end process;
+  end generate;
+
+  gen_debug_features_off : if not DEBUG_FEATURES generate
+  begin
+    debug_ch0_pwm <= '0';
+    debug_pwm_count <= (others => '0');
+  end generate;
   
   -- PWM carrier counter
   process(sys_clk)
