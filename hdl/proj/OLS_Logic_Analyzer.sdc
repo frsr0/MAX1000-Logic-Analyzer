@@ -157,6 +157,16 @@ create_generated_clock -name adc_clk \
  set_false_path -to   [get_ports {SPI_SCK SPI_CS}]
  set_false_path -from [get_ports {SPI_MOSI}]  -to [all_registers]
 
+ # Board GPIO has no source or destination timing clock. MKR_D/PMOD and the
+ # accelerometer pins are intentionally sampled as asynchronous logic-analyzer
+ # inputs or driven as slow control pins; LEDs and SEN_CS are board-control
+ # outputs with no external timing contract. Exclude only these GPIO ports so
+ # SPI and SDRAM I/O timing remains checked above and below.
+ set_false_path -from [get_ports {MKR_D[*] PMOD[*] SEN_SDI SEN_SDO SEN_SPC}] \
+                -to   [all_registers]
+ set_false_path -from [all_registers] \
+                -to   [get_ports {LED[*] MKR_D[*] PMOD[*] SEN_CS SEN_SDI SEN_SPC}]
+
  # Asynchronous clock groups: all cross-domain CDC paths properly synchronized.
  # Note: sdram_chip_clk_out (c4) is intentionally NOT in these async groups —
  # the core↔chip relationship is synchronous-by-design (same PLL, phase-shifted),
