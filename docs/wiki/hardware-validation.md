@@ -65,6 +65,11 @@ the loopback, and check edge count, duty ratio, and compression round trips.
 The old debug-CH0 register test is retired because registers `0x42-0x44` no
 longer exist in the production HDL.
 
+The later `89b84898` change adds FPGA-side repeat mode for raw symbols, PWM,
+and RS-485. Its focused `tb_bit_engine_repeat.vhd` and host-driver test prove
+the repeat control path, but the 2026-07-21 board result predates that RTL and
+does not prove gapless repeated output on the current image.
+
 ## Compression matrix
 
 `hwt_test_compression_matrix.py` captures 4096 digital samples for idle,

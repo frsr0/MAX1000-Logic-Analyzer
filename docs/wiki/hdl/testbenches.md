@@ -28,6 +28,7 @@ The HDL simulation suite covers every major subsystem. Testbenches use GHDL (VHD
 | `tb_repeated_blockreads.vhd` | Repeated read blocks | Continuous block reads | No stale data |
 | `tb_fast_capture_budget.vhd` | FAST budget seam | Single-shot and continuous consume events | Exhaustion, done pulse, reload |
 | `tb_fast_capture_elastic_buffer.vhd` | FAST stream seam | Fill, stall, simultaneous pop/push | Stable output and ordered words |
+| `tb_fast_analyzer.vhd` (`FAST_SPEED=true`, `CHANNELS=16`) | Narrow packed FAST path | Select channel 3, capture 32 samples, read packed words | Full flag and words 1–3 equal `0xFFFF` |
 
 ## SDRAM
 
@@ -44,6 +45,7 @@ The HDL simulation suite covers every major subsystem. Testbenches use GHDL (VHD
 |---|---|---|---|
 | `tb_continuous.vhd` | Triple-buffer continuous | Ring capture with Buffer_Ack | Buffer rotation, no overwrite |
 | `tb_continuous_rate1.vhd` | Continuous at Rate_Div=1 | Max-rate capture into ring | Sample integrity at max rate |
+| `tb_packed_continuous_renew.vhd` | Packed continuous renewal | Repeated packed buffer renewal | Ordered samples and buffer turnover |
 | `tb_continuous_wedge.vhd` | Continuous wedge recovery | Host delays ACK → ring wraparound | Recovery without hang |
 
 ## Analog / MSO
@@ -51,7 +53,9 @@ The HDL simulation suite covers every major subsystem. Testbenches use GHDL (VHD
 | Testbench | UUT | Stimulus | Asserts |
 |---|---|---|---|
 | `tb_analog_preamble.vhd` | Analog frame preamble | Analog capture with ADC model | Correct frame header, sample count |
+| `tb_analog_packer.vhd` | Analog packer | Backpressure and framing transitions | Bit-exact ordered output |
 | `tb_mso_capture_probe.vhd` | Full MSO pipeline | ADC + digital inputs through mso_capture | Output word format, bit15 routing |
+| `tb_mso_full_roundtrip.vhd` | Full MSO round trip | Packed capture and readback | Digital/analog payload integrity |
 
 ## Generator
 
@@ -64,6 +68,7 @@ The HDL simulation suite covers every major subsystem. Testbenches use GHDL (VHD
 | `tb_gen_uart_decode.vhd` | UART gen + decode | Generate UART bytes, capture, decode | Matched bytes (VCD output) |
 | `tb_gen_spi_decode.vhd` | SPI gen + decode | Generate SPI frame, capture, decode | Matched frame |
 | `tb_gen_uart_repeat_decode.vhd` | Repeat mode UART | Gen UART in repeat, capture multiple frames | Each frame decodes correctly |
+| `tb_bit_engine_repeat.vhd` | Bit Engine repeat mode | Load one byte, start repeat, assert clear | Remains busy, no `Done` pulse before clear |
 | `tb_gen_start_sim.vhd` | Gen start timing | Start/load/handshake cycles | Timing diagrams in VCD |
 
 ## Interface / Control

@@ -93,11 +93,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\compile.ps1 -NoFlash -Seed
 Re-run the hardware smoke test after programming. A passing software suite is
 not evidence that a new bitstream has the expected routing.
 
-The restored full-feature seed-23 RTL/SDC build fits at 6,333/8,064 LEs and
-programs successfully. The authoritative post-fit query reports slow-85C
-`fast_clk` worst setup slack `+0.049 ns`; the other corners report `+0.270 ns`
-and `+1.286 ns`, with `sys_clk` and `sdram_core_clk` positive. Both compressed
-modes are present and validated on the board; seed 23 changes placement only.
+The current full-feature seed-23 RTL/SDC build fits at 7,875/8,064 LEs
+(98%) and compiles successfully. The authoritative post-fit query reports
+slow-85C `fast_clk` setup slack `+0.124 ns`, `sdram_core_clk` `+0.426 ns`,
+and `SDRAM_CHIP_CLK_OUT` `+1.098 ns`, with positive hold margins. Both
+compressed modes remain present; seed 23 changes placement only.
 
 The on-board LIS3DH is a validated external protocol partner: the final
 regression reads `WHO_AM_I = 0x33` over I²C at 50/100 kHz and over SPI mode 3,
@@ -108,6 +108,14 @@ The closure came from keeping the live sample-budget dependency single-cycle,
 removing the redundant nonzero-flag mux from the budget counter's data path,
 and constraining only stable configuration/inactive branch-select paths in the
 SDC. Sample data and the active countdown remain single-cycle paths.
+
+The post-2026-07-21 source history is tracked separately from the last complete
+board run: `89b84898` adds Bit Engine repeat mode, `6f506855` changes FAST
+register inference for timing, and `ef7d4171` adds narrow packed simulation
+coverage. See [Verification and Change Traceability](verification-traceability.md)
+for the exact evidence level of each change. The 120/120 result must not be
+interpreted as validation of a later programmed image unless its checksum and
+test output are recorded.
 
 ## Known boundaries
 

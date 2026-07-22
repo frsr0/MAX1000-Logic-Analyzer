@@ -68,6 +68,7 @@ graph TB
 - [Feature and Coverage Matrix](feature-matrix.md) - cross-layer feature inventory, implementation locations, and evidence
 - [On-board LIS3DH Accelerometer](accelerometer.md) - physical wiring, I²C/SPI access, live capture, and validation
 - [Recent Software Features](recent-software-features.md) - expanded decoders, Bit Banger scripts, analysis, imports, comparisons, triggers, and UI tools
+- [Verification and Change Traceability](verification-traceability.md) - commit-to-evidence matrix, validation boundaries, and audit rules
 
 - [HDL — FPGA Design](hdl/README.md) — VHDL entities, clock domains, SDRAM controller, capture pipeline, signal generator, testbenches, build flow
 - [Backend — Python Server](backend/README.md) — FastAPI app, hardware abstraction, capture manager, session model, decoders, exports, WebSockets
@@ -90,11 +91,13 @@ graph TB
 - Readback compression (`raw` / direct `rle` / packed `delta_rle` modes)
 - Built with Quartus, targeting Intel MAX 10 `10M08SAU169C8G`, FAST_SPEED build
 - SDRAM write timing is closed in STA with the DDIO-forwarded chip clock. The
-  current full mixed-signal build uses **seed 23** (2026-07-21): the
-  authoritative post-fit query reports worst setup slack `fast_clk +0.049 ns`
-  in the slow corner, with all setup/hold paths positive. The analog-packer
+  current full mixed-signal build uses **seed 23** (2026-07-22): the
+  authoritative post-fit query reports `fast_clk +0.124 ns` and
+  `sdram_core_clk +0.426 ns` in the slow corner, with all setup/hold paths
+  positive. The analog-packer
   output remains bit-exact under backpressure.
-  The image is currently programmed on the validation board; see
+  The current build artifacts are distinct from the latest complete board
+  validation; see
   [`hdl/sdram-pll.md`](hdl/sdram-pll.md) for the DDIO clock-forward phase fix,
   [`hdl/mso-capture.md`](hdl/mso-capture.md) for the packed/MSO live-capture
   throughput fix, and `TIMING_REPORT_SUMMARY.md` for the full per-domain
@@ -104,4 +107,9 @@ graph TB
   500,000 words, four balanced analog channels, and digital RLE slices. Live
   readback characterization measured approximately 1.00 MS/s raw and
   0.50 MS/s lossless `delta_rle` on the current USB path; see
-  [`hdl/mso-capture.md`](hdl/mso-capture.md#rate-behavior-and-livecontinuous-capture).
+  [`hdl/mso-capture.md`](hdl/mso-capture.md#rate-behavior-and-livecontinuous-capture)
+  and [Verification and Change Traceability](verification-traceability.md).
+
+For the distinction between source coverage, simulation, build/timing evidence,
+and exact-image board validation, see
+[Verification and Change Traceability](verification-traceability.md).

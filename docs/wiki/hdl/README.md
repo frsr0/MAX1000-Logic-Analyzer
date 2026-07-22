@@ -90,7 +90,8 @@ matrix and measured ratios.
 ## Current timing note
 
 The corrected RTL reference at fitter seed 23 reports slow-85C `fast_clk`
-setup slack `+0.049 ns` with no violated setup/hold paths; this is the
+setup slack `+0.124 ns` and `sdram_core_clk` setup slack `+0.426 ns`, with no
+violated setup/hold paths; this is the
 signoff-closed full-feature 200 MHz image. See [Build Flow](build-flow.md) and
 [FAST Capture Stream](fast-capture-stream.md) for the current timing gate and
 the tested stream seams.
@@ -100,6 +101,7 @@ the tested stream seams.
 | FPGA | Intel MAX 10 10M08SAU169C8G |
 | Speed grade | C8 |
 | Build profile | FAST_SPEED (200 MHz sample clock) |
-| Validated seed | 23 (2026-07-21; full mixed-signal build, see `TIMING_REPORT_SUMMARY.md`) |
-| Utilisation | 79% LEs (6,333/8,064) |
+| Current build seed | 23 (2026-07-22; full mixed-signal build, see `TIMING_REPORT_SUMMARY.md`) |
+| Last complete board validation | 2026-07-21; SOF `0x004EFFE9` |
+| Utilisation | 98% LEs (7,875/8,064) |
 | Toolchain | Quartus Prime (proj/compile.ps1) |

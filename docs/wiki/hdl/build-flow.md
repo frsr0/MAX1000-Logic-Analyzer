@@ -10,7 +10,7 @@
 | Family | MAX 10 |
 | Package | 484-pin FBGA |
 | Speed grade | C8 |
-| Logic elements | 8,064 (6,333 / 79% used in current build, 2026-07-21) |
+| Logic elements | 8,064 (7,875 / 98% used in current full build, 2026-07-22) |
 
 ## Project Files
 
@@ -84,6 +84,39 @@ unless the corrected RTL and current constraints both close setup and hold.
 | `seed_sweep_results.txt` | Multi-seed sweep results |
 | `cr_ie_info.json` | Compilation resource info (LE, register, memory usage) |
 
+## Optimization audit (2026-07-22)
+
+The retained timing optimization is the explicit
+`AUTO_SHIFT_REGISTER_RECOGNITION OFF` assignment on the FAST capture shift
+register in `OLS_SDRAM_Top.vhd`. It prevents Quartus from mapping that critical
+register path into an unsuitable shift-register structure.
+
+The following alternatives were compiled and measured, then rejected when
+they were neutral, worsened timing, or failed functional regression: FAST
+budget-counter restructuring; SDRAM budget flags/comparisons; narrow-mode
+latching and a standalone narrow packer; shared FIFO mux separation; FIFO
+almost-full register removal; M9K forcing and sequential-window retiming for
+`analog_packer`; SDRAM controller state re-encoding; seed values 21, 30, 5,
+and 12; higher placement/router effort; and Quartus physical combinational
+optimization, register duplication, and register retiming.
+
+The deeper alternatives are not enabled by default because they either
+reduced post-fit slack or failed backpressure/ordering tests. Any future
+optimization must beat the current post-fit result and rerun the relevant
+capture, packed-stream, analog, and SDRAM regressions.
+
+```mermaid
+flowchart LR
+    RTL["RTL + SDC"] --> SYN["Quartus analysis / synthesis"]
+    SYN --> FIT["Fitter: seed 23"]
+    FIT --> ASM["Assembler: SOF / POF"]
+    FIT --> STA["Post-fit STA"]
+    STA --> GATE{"All required setup/hold paths positive?"}
+    GATE -->|"yes"| TEST["GHDL + hardware regression"]
+    GATE -->|"no"| CHANGE["Reject candidate or rerun seed sweep"]
+    TEST --> SIGNOFF["Validated build"]
+```
+
 ## Build Profiles
 
 | Profile | FAST_SPEED | FAST_RAW_BUILD | Fmax (fast_clk) | Use Case |
@@ -96,9 +129,10 @@ unless the corrected RTL and current constraints both close setup and hold.
 
 - The generated wrapper in `proj/` is overwritten by `compile.ps1`
 - The current seed-23 full build closes the authoritative post-fit report at
-  slow-85C: `fast_clk +0.049 ns`; the other setup corners are `+0.270 ns` and
-  `+1.286 ns`. Hold checks are positive. Re-run the query after every fitter
-  or SDC change.
+  slow-85C: `fast_clk +0.124 ns`, `sdram_core_clk +0.426 ns`, and
+  `SDRAM_CHIP_CLK_OUT +1.098 ns`; hold checks are positive. The fitted design
+  uses 7,875/8,064 LEs (98%) and 4,593 registers. Re-run the query after every
+  fitter or SDC change.
 - The earlier eight-seed sweep was run before the final budget-path change and
   is historical; its results remain in `seed_sweep_results.txt` and must not
   be used to select a replacement seed without a fresh sweep.

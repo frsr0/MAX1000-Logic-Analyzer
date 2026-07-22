@@ -122,6 +122,29 @@ The host can run a `CMD_GEN_CAPTURE` flow:
 
 This is used by `hw_smoke_test.py` and the `CMD_GEN_CAPTURE` self-test workflow.
 
+## Hardware repeat mode
+
+```mermaid
+sequenceDiagram
+    participant H as Host driver
+    participant R as REG_GEN_DATA
+    participant E as Bit_Engine
+    participant P as Generator pins
+    H->>R: Write repeat flag (0x04) with generator config
+    H->>R: Load bounded symbol pattern
+    H->>E: CMD_GEN_START
+    loop Until CMD_GEN_STOP or Clear
+        E->>P: Shift loaded 2-bit symbols
+        E->>E: Wrap read pointer at pattern boundary
+    end
+```
+
+`send_raw_symbols(..., repeat=True)`, `set_bitbang_pwm(..., repeat=True)`, and
+the RS-485 repeat option request this FPGA-side loop. The host does not reload
+the FIFO between repetitions, so the output has no host scheduling gap. The
+finite FIFO limit still applies to the pattern itself; one-shot helpers retain
+their existing host-side burst behavior.
+
 ## Dependencies
 
 | Component | File |
@@ -153,5 +176,7 @@ This is used by `hw_smoke_test.py` and the `CMD_GEN_CAPTURE` self-test workflow.
 | `tb_gen_uart_decode.vhd` | UART generation + decode |
 | `tb_gen_spi_decode.vhd` | SPI generation + decode |
 | `tb_gen_uart_repeat_decode.vhd` | Repeat mode UART |
+| `tb_bit_engine_repeat.vhd` | Bit Engine repeat until `Clear`; no premature `Done` |
 | `tb_gen_start_sim.vhd` | Start FSM timing simulation |
+| `host/driver/tests/test_ols_spi_device.py` | Host repeat flag is written for PWM |
 | `host/driver/tests/test_ols_spi.py` | Host-side symbol encoder tests |
