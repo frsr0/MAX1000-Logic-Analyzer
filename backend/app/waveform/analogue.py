@@ -140,7 +140,17 @@ def cross_correlation_delay(a: np.ndarray, b: np.ndarray,
     aa = a[:n].astype(np.float64) - float(np.mean(a[:n]))
     bb = b[:n].astype(np.float64) - float(np.mean(b[:n]))
     corr = np.correlate(aa, bb, mode="full")
-    lag = int(np.argmax(corr)) - (n - 1)
+    # Periodic signals can produce mathematically tied correlation peaks.
+    # Different NumPy/BLAS builds may round those peaks differently, making
+    # plain argmax select a different lag on CI than on a developer machine.
+    # Treat machine-precision ties as equivalent and prefer the widest lag;
+    # this keeps the reported delay deterministic without changing a unique
+    # correlation peak.
+    peak = float(corr.max())
+    tie_tol = max(abs(peak) * 1e-12, 1e-12)
+    candidates = np.flatnonzero(corr >= peak - tie_tol)
+    lag_index = max(candidates, key=lambda i: abs(int(i) - (n - 1)))
+    lag = int(lag_index) - (n - 1)
     denom = float(np.linalg.norm(aa) * np.linalg.norm(bb))
     return {"delay_s": float(lag / sample_rate),
             "lag_samples": lag,
