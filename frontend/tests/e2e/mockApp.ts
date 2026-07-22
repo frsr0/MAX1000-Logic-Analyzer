@@ -901,6 +901,8 @@ export async function installMockApp(page: Page, options: { mockDevice?: boolean
     if (matches('GET', req, '/api/device/metadata')) return route.fulfill(okJson(makeStatus(mockDevice).device));
     if (matches('GET', req, '/api/device/capabilities')) return route.fulfill(okJson(makeCap()));
     if (matches('GET', req, '/api/device/debug')) return route.fulfill(okJson({ raw_metadata: 'mock', raw_status: { ok: true }, last_command: 'noop', last_response: 'ok', last_error: '', command_log: [], timings: {}, extra: {} }));
+    if (matches('POST', req, '/api/capture/jobs')) return route.fulfill(okJson({ id: 'job-fixture', state: 'queued', name: 'Queued capture', session_id: null, error: null }));
+    if (matches('GET', req, '/api/capture/jobs/job-fixture')) return route.fulfill(okJson({ id: 'job-fixture', state: 'done', name: 'Queued capture', session_id: 'session-demo', error: null }));
     if (matches('POST', req, '/api/device/self-test')) {
       return route.fulfill(okJson({ passed: true, message: 'Self-test passed', checks: [{ passed: true, name: 'SPI link', detail: 'fixture ok' }] }));
     }
@@ -927,12 +929,17 @@ export async function installMockApp(page: Page, options: { mockDevice?: boolean
         settings_diff: {}, channel_diffs: [], sample_count_diff: 0,
         identical_digital: false, alignment_offset: 2,
         first_divergence: { a: 420, b: 418 },
+        timing_deltas: [{ channel: 'd0', first_edge_delta_samples: 2, mean_period_delta_samples: 0.5, median_period_delta_samples: 1 }],
       }));
     }
     if (req.method() === 'GET' && /\/api\/sessions\/[^/]+\/dashboard$/.test(new URL(req.url()).pathname)) {
       return route.fulfill(okJson({ event_count: 12, error_count: 1, warning_count: 2,
         events_per_second: 4.5, by_type: { uart_byte: 10, decoder_error: 2 },
         timeline: [0, 2, 1, 4, 3], error_timeline: [0, 0, 1, 0, 0],
+        bus_health: {
+          can: { frames: 3, error_frames: 1, load_pct: 18.4, arbitration_ids: { '42': 2 }, ack_errors: 1, crc_errors: 1 },
+          lin: { frames: 2, error_frames: 1, load_pct: 7.2, identifiers: { '7': 2 }, checksum_errors: 1 },
+        },
         events: [
           { id: 'ev-1', type: 'uart_byte', label: '0x48 H', severity: 'normal', start_sample: 1200, start_time: 0.0012, end_sample: 1300, end_time: 0.0013 },
           { id: 'ev-2', type: 'decoder_error', label: 'framing error', severity: 'error', start_sample: 2400, start_time: 0.0024, end_sample: 2500, end_time: 0.0025 },
@@ -1086,6 +1093,11 @@ export async function installMockApp(page: Page, options: { mockDevice?: boolean
           notes: ['fixture'],
         },
       }));
+    }
+    if (req.method() === 'POST' && /\/api\/sessions\/[^/]+\/trigger-search$/.test(path)) {
+      return route.fulfill(okJson({ sample: 2400, time_s: 0.0024, event_count: 1, execution: 'post_capture',
+        event: { start_sample: 2400, end_sample: 2500 },
+        scopes: [{ decoder_id: 'dec-fixture', start_sample: 2300, end_sample: 2600, event_count: 1 }] }));
     }
     if (matches('POST', req, '/api/mil/start')) {
       return route.fulfill(okJson({
