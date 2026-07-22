@@ -104,6 +104,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_miso_pin  : natural range 0 to 31 := 0;
   signal gen_miso_enable : std_logic := '0';
   signal gen_spi_test   : std_logic := '0';
+  signal gen_repeat     : std_logic := '0';
   signal gen_rs485_pair : std_logic := '0';
   signal gen_accel_attach : std_logic := '0';
   -- Fast-domain syncs for the accel-bus capture mirror (attach toggle)
@@ -414,6 +415,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     RX_Enable   : in  std_logic;
     Clk_Toggle  : in  std_logic;
     Start       : in  std_logic;
+    Repeat      : in  std_logic := '0';
     Busy        : out std_logic;
     Done        : out std_logic;
     Clear       : in  std_logic;
@@ -1086,7 +1088,7 @@ BEGIN
     Gen_I2C_Dev_R  => open,
     Gen_I2C_Test   => open,
     Gen_SPI_Test   => gen_spi_test,
-    Gen_Repeat     => open,
+    Gen_Repeat     => gen_repeat,
     Gen_RS485_Pair => gen_rs485_pair,
     Gen_Accel_Attach => gen_accel_attach,
     Armed          => armed_i,
@@ -1248,6 +1250,7 @@ BEGIN
         RX_Enable   => '1',
         Clk_Toggle  => '0',
         Start       => gen_start,
+        Repeat      => gen_repeat,
         Busy        => gen_busy,
         Done        => gen_done_pulse_i,
         Clear       => gen_clear,

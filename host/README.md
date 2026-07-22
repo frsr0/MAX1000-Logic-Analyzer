@@ -64,6 +64,8 @@ Common operations include:
 - `capture_continuous()`
 - `continuous_ring_capture()`
 - `capture_with_gen()`
+- `send_raw_symbols(..., repeat=True)` / `set_bitbang_pwm(..., repeat=True)`
+  for gapless hardware-looped Bit Engine patterns
 - `send_rs485()` / `capture_with_gen(proto="RS485")` with optional DE routing
 - `capture_with_gen(proto="SPI")` with optional GPIO CS/MISO and direct capture channels
 - `read_capture_range()`

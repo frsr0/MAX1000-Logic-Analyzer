@@ -715,9 +715,8 @@ class OLSDeviceSPI:
     def _gen_kick(self, packed_symbols):
         """Restart the one-shot Bit_Engine if idle: reload + start.
 
-        Returns True when a new burst was started.  Used to emulate the
-        removed hardware repeat flag from the caller's own thread (the SPI
-        link is not thread-safe, so kicks are interleaved with reads).
+        Returns True when a new burst was started. Used for one-shot streams
+        that do not request the hardware repeat mode.
         """
         if not self._wait_gen_idle(timeout=0.25):
             return False
@@ -734,13 +733,13 @@ class OLSDeviceSPI:
         return False
 
     def set_bitbang_pwm(self, enable=True, freq_hz=None, duty_pct=50,
-                        tx_pin=0, cycles=8):
-        """Generate a finite PWM burst with the FPGA Bit_Engine.
+                        tx_pin=0, cycles=8, repeat=False):
+        """Generate a PWM burst, optionally repeating it in FPGA hardware.
 
         The old debug-CH0 registers were removed from the production HDL.
         PWM test sources now use the same two-output Bit Banger path as normal
-        hardware tests.  ``cycles`` is finite because the Bit_Engine FIFO is
-        finite; callers needing a longer source can restart bursts.
+        hardware tests.  With ``repeat=True`` the loaded FIFO pattern loops
+        until ``CMD_GEN_STOP``; no host reload gap is introduced.
         """
         self.debug_ch0_enabled = bool(enable)
         if not enable:
@@ -756,7 +755,7 @@ class OLSDeviceSPI:
             symbols.extend([0] * (period - duty))
         self.send_raw_symbols(symbols[:bit_bang.MAX_SYMBOLS],
                               symbol_rate=symbol_rate, tx_pin=tx_pin,
-                              scl_pin=GEN_SCL_PARK)
+                              scl_pin=GEN_SCL_PARK, repeat=repeat)
 
     # Compatibility name for older scripts; it now drives Bit_Engine PWM and
     # does not access the retired debug register addresses.
@@ -1415,7 +1414,7 @@ class OLSDeviceSPI:
         self.pkt.write_register(REG_GEN_PROTO, 0)
         self.pkt.write_register(REG_GEN_BAUD, self._uart_baud_div(baud) & 0xFFFF)
         self._pins(tx_pin=tx_pin, scl_pin=GEN_SCL_PARK)
-        # The Bit_Engine is one-shot (no hardware repeat), so build one burst
+        # The Bit_Engine is one-shot for this streaming helper, so build one burst
         # that fills the generator FIFO with as many payload repeats as fit
         # and re-kick it between chunk reads (same thread — the SPI link is
         # not thread-safe).  A full 1024-symbol burst lasts ~1024/baud s per
@@ -1512,7 +1511,7 @@ class OLSDeviceSPI:
         self.start_gen()
 
     def send_raw_symbols(self, symbols, symbol_rate=1_000_000,
-                         tx_pin=3, scl_pin=1):
+                         tx_pin=3, scl_pin=1, repeat=False):
         """Play a host-supplied 2-bit Bit_Engine waveform.
 
         Symbol bit 0 drives the TX/SDA/MOSI route and bit 1 drives the
@@ -1522,7 +1521,8 @@ class OLSDeviceSPI:
         symbols = [int(s) & 0x03 for s in (symbols or [])]
         packed = bit_bang.pack_symbols(symbols)
         div = max(1, int(round(self.sys_clk / max(1, int(symbol_rate)) - 1.25)))
-        self.pkt.write_register(REG_GEN_DATA, 1 << 8)
+        flags = GEN_FLAG_REPEAT if repeat else 0
+        self.pkt.write_register(REG_GEN_DATA, (1 << 8) | flags)
         self.pkt.write_register(REG_GEN_PROTO, 0)
         self._pins(tx_pin=tx_pin, scl_pin=scl_pin)
         self.pkt.write_register(REG_GEN_BAUD, div & 0xFFFF)
@@ -1538,8 +1538,6 @@ class OLSDeviceSPI:
         self._gen_tx_pin = b_pin
         self.pkt.write_register(REG_GEN_PROTO, 0)
         self._pins(tx_pin=b_pin, scl_pin=a_pin)
-        # NOTE: hardware repeat no longer exists (Bit_Engine is one-shot);
-        # callers that need repetition must re-issue send_rs485.
         flags = GEN_FLAG_RS485_PAIR | (GEN_FLAG_REPEAT if repeat else 0)
         self.pkt.write_register(REG_GEN_DATA, (1 << 8) | flags)
         self.spi.flush()

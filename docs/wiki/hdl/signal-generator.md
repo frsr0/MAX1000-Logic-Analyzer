@@ -58,17 +58,18 @@ SPI───load──┤ FIFO      ├───┤ 2-bit      ├─── gen_
 | `Gen_Done_Pulse` | 1 | OUT | Generation complete pulse |
 | `Gen_Capture_Active` | 1 | IN | Capture active flag |
 
-### Protocol FIFO
+### Bit Engine FIFO
 
 - Depth: `GEN_FIFO_DEPTH = 256` bytes
 - Each byte encodes four 2-bit symbols (pairs of data/clock bits)
 - `Gen_Load_We` loads one byte per cycle
-- `Gen_Busy` = FIFO non-empty during generation
-- `Gen_Repeat` continuously recycles the FIFO content (infinite loop)
+- `Gen_Busy` = generation active
+- `Gen_Repeat` recycles the loaded byte pattern at the FIFO boundary until
+  `Gen_Clear`/stop. The normal one-shot path remains unchanged.
 
 ## Bit_Engine
 
-Converts the 2-bit symbol stream from Signal_Gen into physical pin waveforms. Each symbol encodes:
+Converts the host-encoded 2-bit symbol stream into physical pin waveforms. Each symbol encodes:
 
 | Bit | Signal | Polarity |
 |---|---|---|

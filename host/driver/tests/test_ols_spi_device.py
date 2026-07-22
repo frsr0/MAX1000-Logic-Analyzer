@@ -484,6 +484,14 @@ class TestOLSDeviceSPI:
         device_spi.pkt.load_gen_data.assert_called_once()
         device_spi.pkt.transaction.assert_called()
 
+    def test_set_bitbang_pwm_repeat_sets_bit_engine_repeat_flag(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi._stream_readback = MagicMock(return_value=b'\x01\x00' * 100)
+        device_spi.set_bitbang_pwm(True, freq_hz=100_000, duty_pct=50,
+                                   repeat=True)
+        assert call(REG_GEN_DATA, 0x104) in \
+            device_spi.pkt.write_register.call_args_list
+
     def test_set_debug_ch0_compatibility_alias_uses_bit_engine(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi._stream_readback = MagicMock(return_value=b'\x01\x00' * 100)
