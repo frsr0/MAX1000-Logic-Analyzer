@@ -64,3 +64,44 @@ test('hardware accelerometer sequence trigger scopes the I2C decoder', async ({ 
   expect(result.event.type).toBe('start');
   expect(result.scopes).toEqual([{ decoder_id: 'dec-accel', start_sample: 1800, end_sample: 1800, event_count: 1 }]);
 });
+
+test('hardware capture controls screenshot matrix covers every advertised rate', async ({ page }) => {
+  await page.locator('.sidebar button[title="Capture"]').click();
+  const rateSelect = page.getByLabel('Sample rate');
+  const slug = (label: string) => label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const screenshotRates = async (mode: string, acquisition: 'single' | 'live' = 'single') => {
+    await page.locator('.mode-tile', { hasText: mode }).click();
+    if (acquisition === 'live') await page.getByRole('button', { name: 'Live ring' }).click();
+    const options = await rateSelect.locator('option').evaluateAll((items) => items.map((item) => ({
+      value: (item as HTMLOptionElement).value,
+      label: item.textContent?.trim() ?? '',
+    })));
+    for (const option of options) {
+      await rateSelect.selectOption(option.value);
+      await page.screenshot({
+        path: path.join(screenshots, `hardware-matrix-${slug(mode)}-${acquisition}-${slug(option.label)}.png`),
+        fullPage: true,
+      });
+    }
+    return options.map((option) => option.label);
+  };
+
+  const matrix: { mode: string; acquisition?: 'single' | 'live' }[] = [
+    { mode: 'Digital deep' },
+    { mode: 'Digital deep', acquisition: 'live' },
+    { mode: 'Packed narrow', acquisition: 'live' },
+    { mode: 'Analog fast' },
+    { mode: 'Maximum analog' },
+    { mode: 'Mixed scan' },
+  ];
+  const coverage: Record<string, string[]> = {};
+  for (const item of matrix) {
+    coverage[`${item.mode} / ${item.acquisition ?? 'single'}`] = await screenshotRates(item.mode, item.acquisition ?? 'single');
+  }
+  expect(coverage['Digital deep / single']).toContain('200 MHz');
+  expect(coverage['Digital deep / live']).toContain('50 MHz');
+  expect(coverage['Packed narrow / live']).toContain('200 MHz');
+  expect(coverage['Analog fast / single']).toContain('1 MHz');
+  expect(coverage['Maximum analog / single']).toEqual(['125 kHz']);
+  expect(coverage['Mixed scan / single']).toEqual(['125 kHz']);
+});
