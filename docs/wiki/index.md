@@ -92,15 +92,13 @@ graph TB
 - Readback compression (`raw` / direct `rle` / packed `delta_rle` modes)
 - Built with Quartus, targeting Intel MAX 10 `10M08SAU169C8G`, FAST_SPEED build
 - SDRAM write timing is closed in STA with the DDIO-forwarded chip clock. The
-  current full mixed-signal build uses **seed 23** (2026-07-22): the
-  authoritative post-fit query reports `fast_clk +0.124 ns` and
-  `sdram_core_clk +0.426 ns` in the slow corner, with all setup/hold paths
+  current full mixed-signal build uses **seed 44** (2026-07-23): the
+  authoritative post-fit query reports `fast_clk +0.002 ns` and
+  `sdram_core_clk +0.048 ns` in the slow corner, with all setup/hold paths
   positive. The analog-packer
   output remains bit-exact under backpressure.
   The current build artifacts and latest complete board validation use the
-  same seed-23 image; see
-  [`hdl/sdram-pll.md`](hdl/sdram-pll.md) for the DDIO clock-forward phase fix,
-  [`hdl/mso-capture.md`](hdl/mso-capture.md) for the packed/MSO live-capture
+  same seed-44 image (SOF `0x00515DB0`); see
   throughput fix, and `TIMING_REPORT_SUMMARY.md` for the full per-domain
   history. Re-sweep with `hdl/proj/seed_sweep.ps1` after any RTL change —
   this design is seed-sensitive at this density.

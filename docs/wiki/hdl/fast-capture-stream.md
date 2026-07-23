@@ -46,15 +46,19 @@ The invariants are exercised by
 fill, full-state readiness, stalled-head stability, simultaneous pop/push, and
 final drain.
 
-Both modules are included in the Quartus project. The registered-ready buffer
-is integrated at the packed FIFO boundary. The packed budget tick is now
-separate from the ordinary FIFO write request, so `packed_mode_f` is no longer
-on the async FIFO write-port control path. The full MSO build at seed 23
-reports `+0.124 ns` worst FAST setup slack in the slow corner; the SDRAM core
-reports `+0.426 ns`, and the other setup/hold checks are positive. The narrow
-FAST regression covers a non-zero selected channel and verifies multiple
-packed words in simulation. The latest complete board validation is the
-2026-07-22 seed-23 image with SOF checksum `0x004FDDF3`; see [Verification and Change Traceability](../verification-traceability.md)
+The registered-ready buffer is integrated at the packed FIFO boundary, keeping
+`packed_mode_f` off the async FIFO write-port control path.
+
+A later timing pass (2026-07-23) registered the Packed_Ready five-term AND
+(`Packed_Ready_r`) and the packed-moode valid/data path into the elastic buffer
+(`packed_buf_in_valid_r`, `Packed_Data_r`) to break the cross-hierarchy
+combinational path to `analog_packer`'s BRAM address register.  The full MSO
+build at seed 44 now reports **+0.002 ns** worst FAST setup slack in the slow
+corner and **+0.048 ns** for the SDRAM core.  See [Capture Engine](capture-engine.md)
+for the detailed register stages.
+
+The latest complete board validation is the 2026-07-23 seed-44 image with SOF
+checksum `0x00515DB0`; see [Verification and Change Traceability](../verification-traceability.md)
 before treating later RTL as hardware-validated.
 
 The budget counter's decrement pipeline is clamped at zero. Its write is
