@@ -121,6 +121,11 @@ July 7, 2026. No mock sessions are used in this gallery.
 
 ![Mixed analog hardware waveform](frontend/test-results/screenshots/live-mixed-analog-waveform.png)
 
+*Note: this screenshot was taken with analog input jumpers (PMOD5→AIN5,
+PMOD6→AIN4) connected on the tested board.  Without those jumpers the analog
+channels show flat or maximal ADC readings.  See `test_mixed_analog_mode` in
+the validation suite for the current pass/fail result.*
+
 ## Running It
 
 ### Browser App
