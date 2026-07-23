@@ -111,8 +111,10 @@ Use GHDL from `hdl/` or run the focused regression scripts in `hdl/tb/`.
 ## Notes
 
 - The generated wrapper in `proj/` is overwritten by `compile.ps1`.
-- `seed 23` is the current validated full-feature placement after the 2026-07-21
-  analog-packer and FAST-stream timing work; it closes slow-85C `fast_clk`
-  setup at `+0.049 ns` with all setup/hold checks positive.
+- `seed 44` is the current validated full-feature placement for the 2026-07-23
+  timing closure; slow-85C `fast_clk` setup is **+0.002 ns** and
+  `sdram_core_clk` **+0.048 ns** with all setup/hold checks positive.
+  Seed sensitivity is high — only seeds 44 and 57 fit at 100% density;
+  seed 57 gave `-0.762 ns` timing, so 44 is the stable build seed.
 - No feature removals are implied by the timing work; the current build keeps
-  the full digital, mixed-signal, and generator paths.
+  the full digital, mixed-signal, generator, and pattern trigger paths.
