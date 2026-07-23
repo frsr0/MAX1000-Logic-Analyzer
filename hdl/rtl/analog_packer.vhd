@@ -86,6 +86,11 @@ architecture rtl of analog_packer is
 
   type buf_array is array(0 to BLOCK_SAMPLES-1) of std_logic_vector(10 downto 0);
   signal buf   : buf_array := (others => (others => '0'));
+  -- FILL and PACK are disjoint states: the buffer is never read and written
+  -- on the same cycle.  Tell Quartus it may use the native M9K behaviour
+  -- instead of adding read-during-write bypass muxes around this tiny RAM.
+  attribute ramstyle : string;
+  attribute ramstyle of buf : signal is "M9K, no_rw_check";
   type anchor_array is array(0 to 3) of std_logic_vector(11 downto 0);
 
   signal w_lat    : unsigned(3 downto 0) := (others => '0');           -- latched block width

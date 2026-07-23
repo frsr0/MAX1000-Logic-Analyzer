@@ -1026,6 +1026,9 @@ BEGIN
   gen_mso_cap : if not FAST_RAW_BUILD generate
   begin
     MSO_CAP : entity work.mso_capture
+      generic map (
+        DIGITAL_INPUT_ALREADY_SYNC => true
+      )
       port map (
         fast_clk      => fast_clk,
         adc_clk       => sys_clk,

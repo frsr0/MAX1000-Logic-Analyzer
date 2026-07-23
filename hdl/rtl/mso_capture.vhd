@@ -32,6 +32,12 @@ use IEEE.numeric_std.all;
 --
 -- Synchronous resets within each domain; adc_clk reset is 2-FF-synchronised in.
 entity mso_capture is
+  generic (
+    -- OLS_SDRAM_Top already registers capture_data_fast in fast_clk.  Keep
+    -- the default safe for standalone users/tests whose input is asynchronous,
+    -- while allowing the production path to avoid a duplicate 2-FF pipeline.
+    DIGITAL_INPUT_ALREADY_SYNC : boolean := false
+  );
   port (
     fast_clk      : in  std_logic;                      -- pipeline + FIFO write clock (200.4 MHz)
     adc_clk       : in  std_logic;                      -- ADC result domain (sys_clk)
@@ -72,6 +78,7 @@ architecture rtl of mso_capture is
 
   -- digital 2-FF synchroniser
   signal dig_meta, dig_sync : std_logic_vector(15 downto 0) := (others => '0');
+  signal digital_sample : std_logic_vector(15 downto 0) := (others => '0');
 
   -- pipeline interconnect
   signal d_out  : std_logic_vector(10 downto 0);
@@ -112,7 +119,8 @@ begin
   end process;
 
   ----------------------------------------------------------------------------
-  -- fast_clk domain: synchronise the toggle and digital pins; form the sample
+  -- fast_clk domain: synchronise the toggle and (when required) digital pins;
+  -- form the sample
   -- strobe on a toggle edge (cap_data/cap_ch are long-stable by then).
   ----------------------------------------------------------------------------
   process(fast_clk)
@@ -120,7 +128,6 @@ begin
     if rising_edge(fast_clk) then
       -- 2-FF synchronisers
       tgl_meta <= adc_tgl;  tgl_s1 <= tgl_meta;  tgl_s2 <= tgl_s1;
-      dig_meta <= digital_in; dig_sync <= dig_meta;
 
       if rst = '1' then
         smp_valid <= '0';
@@ -136,6 +143,23 @@ begin
       end if;
     end if;
   end process;
+
+  gen_digital_sync : if not DIGITAL_INPUT_ALREADY_SYNC generate
+  begin
+    process(fast_clk)
+    begin
+      if rising_edge(fast_clk) then
+        dig_meta <= digital_in;
+        dig_sync <= dig_meta;
+      end if;
+    end process;
+    digital_sample <= dig_sync;
+  end generate;
+
+  gen_digital_passthrough : if DIGITAL_INPUT_ALREADY_SYNC generate
+  begin
+    digital_sample <= digital_in;
+  end generate;
 
   ----------------------------------------------------------------------------
   -- Compression pipeline (all fast_clk)
@@ -159,7 +183,7 @@ begin
 
   u_drle : entity work.digital_rle
     port map(clk => fast_clk, rst => rst, clk_en => '1',
-             digital_in => dig_sync,
+             digital_in => digital_sample,
              packet_out => g_data, packet_valid => g_valid, packet_ready => g_ready,
              overflow => dig_overflow);
 

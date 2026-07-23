@@ -14,6 +14,7 @@ entity Generic_Pattern_Trigger is
   port (
     CLK               : in  std_logic;
     Inputs            : in  std_logic_vector(15 downto 0);
+    Prev_Inputs       : in  std_logic_vector(15 downto 0);
     Enable            : in  std_logic;
     Clock_Source      : in  std_logic; -- 0 = internal baud divider, 1 = external edge
     Clock_Edge        : in  std_logic; -- 0 = rising, 1 = falling
@@ -36,7 +37,6 @@ end Generic_Pattern_Trigger;
 architecture rtl of Generic_Pattern_Trigger is
 begin
   process (CLK)
-    variable prev_inputs : std_logic_vector(15 downto 0) := (others => '0');
     variable frame       : std_logic_vector(31 downto 0) := (others => '0');
     variable bit_count   : natural range 0 to 32 := 0;
     variable timer       : natural range 0 to 65535 := 0;
@@ -58,10 +58,10 @@ begin
         start_edge := false;
         if Start_Polarity = '1' then
           start_edge := Inputs(Start_Channel) = '1' and
-                       prev_inputs(Start_Channel) = '0';
+                       Prev_Inputs(Start_Channel) = '0';
         else
           start_edge := Inputs(Start_Channel) = '0' and
-                       prev_inputs(Start_Channel) = '1';
+                       Prev_Inputs(Start_Channel) = '1';
         end if;
 
         if Start_Mode = '1' and not started and start_edge then
@@ -76,10 +76,10 @@ begin
         if Clock_Source = '1' then
           if Clock_Edge = '0' then
             sample_edge := Inputs(Clock_Channel) = '1' and
-                           prev_inputs(Clock_Channel) = '0';
+                           Prev_Inputs(Clock_Channel) = '0';
           else
             sample_edge := Inputs(Clock_Channel) = '0' and
-                           prev_inputs(Clock_Channel) = '1';
+                           Prev_Inputs(Clock_Channel) = '1';
           end if;
         elsif started then
           -- A start-qualified internal-baud frame begins at the centre of the
@@ -135,7 +135,6 @@ begin
           end if;
         end if;
       end if;
-      prev_inputs := Inputs;
     end if;
   end process;
 end rtl;

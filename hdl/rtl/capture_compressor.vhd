@@ -34,8 +34,12 @@ architecture rtl of capture_compressor is
   signal state : state_t := PASSTHROUGH;
 
   -- Accumulated deltas (up to 15 per block)
-  type delta_array is array(0 to 14) of std_logic_vector(4 downto 0);
-  signal deltas : delta_array := (others => (others => '0'));
+  -- Store three 5-bit deltas per word.  The previous implementation kept 15
+  -- separate entries and performed three indexed array reads for every flush
+  -- word, creating three mux trees.  The packed form keeps the same 75 bits
+  -- but reduces flush to one indexed 15-bit read.
+  type packed_delta_array is array(0 to 4) of std_logic_vector(14 downto 0);
+  signal packed_deltas : packed_delta_array := (others => (others => '0'));
   signal delta_cnt : natural range 0 to 15 := 0;
   signal sample_cnt : natural range 0 to 15 := 0;
   signal prev : signed(15 downto 0) := (others => '0');
@@ -51,8 +55,11 @@ begin
   in_ready <= '0' when state = FLUSH else '1';
 
   process(clk)
-    variable delta_v : signed(15 downto 0);
+    -- Difference of two 16-bit signed samples needs 17 bits before
+    -- saturation; keeping it at 16 bits can wrap and evade the overflow test.
+    variable delta_v : signed(16 downto 0);
     variable sat5   : std_logic_vector(4 downto 0);
+    variable flush_word : std_logic_vector(14 downto 0);
   begin
     if rising_edge(clk) then
       if rst = '1' then
@@ -98,12 +105,29 @@ begin
             end if;
 
             if sample_pipe_valid = '1' then
-              delta_v := signed(sample_pipe) - prev;
+              delta_v := resize(signed(sample_pipe), delta_v'length)
+                         - resize(prev, delta_v'length);
               if delta_v < -15 then sat5 := "10001";
               elsif delta_v > 15 then sat5 := "01111";
               else sat5 := std_logic_vector(delta_v(4 downto 0));
               end if;
-              deltas(delta_cnt) <= sat5;
+              case delta_cnt is
+                when 0  => packed_deltas(0)(4 downto 0)   <= sat5;
+                when 1  => packed_deltas(0)(9 downto 5)   <= sat5;
+                when 2  => packed_deltas(0)(14 downto 10) <= sat5;
+                when 3  => packed_deltas(1)(4 downto 0)   <= sat5;
+                when 4  => packed_deltas(1)(9 downto 5)   <= sat5;
+                when 5  => packed_deltas(1)(14 downto 10) <= sat5;
+                when 6  => packed_deltas(2)(4 downto 0)   <= sat5;
+                when 7  => packed_deltas(2)(9 downto 5)   <= sat5;
+                when 8  => packed_deltas(2)(14 downto 10) <= sat5;
+                when 9  => packed_deltas(3)(4 downto 0)   <= sat5;
+                when 10 => packed_deltas(3)(9 downto 5)   <= sat5;
+                when 11 => packed_deltas(3)(14 downto 10) <= sat5;
+                when 12 => packed_deltas(4)(4 downto 0)   <= sat5;
+                when 13 => packed_deltas(4)(9 downto 5)   <= sat5;
+                when others => packed_deltas(4)(14 downto 10) <= sat5;
+              end case;
               prev <= signed(sample_pipe);
 
               if delta_v < -15 or delta_v > 15 then
@@ -139,20 +163,16 @@ begin
           -- Words are independent; block completes after out_idx reaches
           -- the number needed for delta_cnt deltas.
           when FLUSH =>
-            -- Pack deltas[out_idx*3], deltas[out_idx*3+1], deltas[out_idx*3+2]
-            -- into one 16-bit word (if they exist).
+            -- Read one pre-packed 15-bit delta word (if it exists).
             if out_idx * 3 < delta_cnt then
-              comp_data(4 downto 0) <= deltas(out_idx * 3);
-              if out_idx * 3 + 1 < delta_cnt then
-                comp_data(9 downto 5) <= deltas(out_idx * 3 + 1);
-              else
-                comp_data(9 downto 5) <= (others => '0');
+              flush_word := packed_deltas(out_idx);
+              if out_idx * 3 + 1 >= delta_cnt then
+                flush_word(9 downto 5) := (others => '0');
               end if;
-              if out_idx * 3 + 2 < delta_cnt then
-                comp_data(14 downto 10) <= deltas(out_idx * 3 + 2);
-              else
-                comp_data(14 downto 10) <= (others => '0');
+              if out_idx * 3 + 2 >= delta_cnt then
+                flush_word(14 downto 10) := (others => '0');
               end if;
+              comp_data(14 downto 0) <= flush_word;
               comp_data(15) <= '0';
               comp_valid <= '1';
               out_idx <= out_idx + 1;

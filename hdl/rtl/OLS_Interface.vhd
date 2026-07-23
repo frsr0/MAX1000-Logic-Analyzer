@@ -326,6 +326,11 @@ SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
   SIGNAL codec_in_ready  : STD_LOGIC := '1';
   TYPE block_buf_t IS ARRAY(0 TO 255) OF STD_LOGIC_VECTOR(31 DOWNTO 0);
   SIGNAL block_buf            : block_buf_t := (others => (others => '0'));
+  -- The block is filled completely before FEED_TX reads it.  There is no
+  -- architecturally visible read-during-write case, so avoid Quartus' large
+  -- inferred-RAM bypass network and use the M9K directly.
+  ATTRIBUTE ramstyle : string;
+  ATTRIBUTE ramstyle OF block_buf : SIGNAL IS "M9K, no_rw_check";
   -- 21-cycle bit-serial divider for /3 (replaces 58-level lpm_divide)
   SIGNAL div3_shift   : STD_LOGIC_VECTOR(20 downto 0) := (others => '0');
   SIGNAL div3_acc     : NATURAL range 0 to 7 := 0;
@@ -396,6 +401,7 @@ BEGIN
     port map (
       CLK               => CLK,
       Inputs            => Inputs(15 downto 0),
+      Prev_Inputs       => inputs_prev(15 downto 0),
       Enable            => Run_OLS and pattern_ctrl(0),
       Clock_Source      => pattern_ctrl(1),
       Clock_Edge        => pattern_ctrl(2),
@@ -596,21 +602,21 @@ BEGIN
           IF pattern_trigger = '1' THEN
             Run <= '1';
           END IF;
-        ELSIF (UNSIGNED(Trigger_Mask(29 downto 0)) = 0) THEN
+        ELSIF (UNSIGNED(Trigger_Mask(15 downto 0)) = 0) THEN
           Run <= '1';
         ELSIF (Trigger_Mask(31 downto 30) = "00") THEN
           -- Level trigger: fire when inputs match Trigger_Values on masked bits
-          IF (UNSIGNED((Inputs XOR Trigger_Values) AND Trigger_Mask(29 downto 0)) = 0) THEN
+          IF (UNSIGNED((Inputs(15 downto 0) XOR Trigger_Values(15 downto 0)) AND Trigger_Mask(15 downto 0)) = 0) THEN
             Run <= '1';
           END IF;
         ELSIF (Trigger_Mask(31 downto 30) = "01") THEN
           -- Rising edge: 0→1 transition on any masked channel
-          IF (UNSIGNED(Inputs AND NOT inputs_prev AND Trigger_Mask(29 downto 0)) /= 0) THEN
+          IF (UNSIGNED(Inputs(15 downto 0) AND NOT inputs_prev(15 downto 0) AND Trigger_Mask(15 downto 0)) /= 0) THEN
             Run <= '1';
           END IF;
           ELSIF (Trigger_Mask(31 downto 30) = "10") THEN
             -- Falling edge: 1→0 transition on any masked channel
-            IF (UNSIGNED(inputs_prev AND NOT Inputs AND Trigger_Mask(29 downto 0)) /= 0) THEN
+            IF (UNSIGNED(inputs_prev(15 downto 0) AND NOT Inputs(15 downto 0) AND Trigger_Mask(15 downto 0)) /= 0) THEN
               Run <= '1';
             END IF;
           END IF;
