@@ -17,8 +17,8 @@ begin
       CLK => clk, Inputs => inputs(15 downto 0), Enable => '1',
       Clock_Source => '1', Clock_Edge => '0',
       Start_Mode => '0', Start_Channel => 0, Start_Polarity => '0',
-      Clock_Channel => 1, Data_Lane_Count => 2,
-      Data_Channel_0 => 0, Data_Channel_1 => 2,
+      Clock_Channel => 1,
+      Data_Channel_0 => 0,
       Baud_Div => 1, Frame_Width => 4,
       -- LSB-first value A is normalized to 5 by the host before writing.
       Match_Value => x"00000005", Match_Mask => x"0000000F",
@@ -26,10 +26,9 @@ begin
     );
 
   process
-    procedure sample_pair(first_value, second_value : std_logic) is
+    procedure sample_bit(value : std_logic) is
     begin
-      inputs(0) <= first_value;
-      inputs(2) <= second_value;
+      inputs(0) <= value;
       wait for 7 ns;
       inputs(1) <= '1';
       wait for 10 ns;
@@ -37,8 +36,10 @@ begin
       wait for 3 ns;
     end procedure;
   begin
-    sample_pair('0', '1');
-    sample_pair('0', '1');
+    sample_bit('0');
+    sample_bit('1');
+    sample_bit('0');
+    sample_bit('1');
     wait for 1 ns;
     assert trigger = '1' report "generic pattern trigger did not pulse" severity failure;
     wait for 10 ns;

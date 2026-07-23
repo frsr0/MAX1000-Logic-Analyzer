@@ -89,18 +89,18 @@ export function TriggerPanel() {
       )}
       {needsChannels && (
         <div className="field">
-          <span>{trig.type === 'generic_pattern' ? 'Channels (max 2, 0-15)' : 'Channels'}</span>
+          <span>{trig.type === 'generic_pattern' ? 'Channels (hardware coarse + software refine, 0-15)' : 'Channels'}</span>
           <div className="bus-members">
             {Array.from({ length: capabilities?.digital_channels ?? 16 }, (_, i) => (
               <label key={i} className="chip">
                 <input type="checkbox" checked={trig.channels.includes(i)}
-                  disabled={trig.type === 'generic_pattern' && !trig.channels.includes(i) && trig.channels.length >= 2}
+                  disabled={trig.type === 'generic_pattern' && !trig.channels.includes(i) && trig.channels.length >= (capabilities?.digital_channels ?? 16)}
                   onChange={(e) => setTrig({
                     channels: e.target.checked
                       ? [...trig.channels, i].sort((a, b) => a - b)
                       : trig.channels.filter((c) => c !== i),
                   })} />
-                {i}{trig.type === 'generic_pattern' && i === 0 ? ' (max 2)' : ''}
+                {i}{trig.type === 'generic_pattern' && i === 0 ? ' (all channels refined in software)' : ''}
               </label>
             ))}
           </div>

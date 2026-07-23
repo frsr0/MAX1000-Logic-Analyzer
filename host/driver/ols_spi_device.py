@@ -786,13 +786,11 @@ class OLSDeviceSPI:
             self.pkt.write_register(REG_PATTERN_CTRL, 0)
             return
         raw_channels = [int(c) for c in config.get("channels", [])]
-        if not 1 <= len(raw_channels) <= 2:
-            raise ValueError("generic pattern trigger requires 1 to 2 data channels")
+        if len(raw_channels) != 1:
+            raise ValueError("FPGA pattern trigger requires exactly 1 coarse data channel")
         if any(channel < 0 or channel > 15 for channel in raw_channels):
             raise ValueError("generic pattern trigger channels must be in range 0..15")
         channels = raw_channels[:]
-        while len(channels) < 2:
-            channels.append(0)
         source = 1 if config.get("clock_source", "external_edge") == "external_edge" else 0
         edge = 1 if config.get("clock_edge", "rising") == "falling" else 0
         start = 1 if config.get("start_mode", "edge_on_channel") == "edge_on_channel" else 0
@@ -803,11 +801,10 @@ class OLSDeviceSPI:
         clock_channel = int(config.get("clock_channel", 0))
         if not 0 <= start_channel <= 15 or not 0 <= clock_channel <= 15:
             raise ValueError("generic pattern trigger clock/start channels must be in range 0..15")
-        lane_count = len(channels)
         channel_selectors = sum((channel & 0xF) << (4 * i) for i, channel in enumerate(channels))
         ctrl = (1 | source << 1 | edge << 2 | start << 3 | polarity << 4 |
                 order << 5 | start_channel << 6 | clock_channel << 11 |
-                width << 16 | (lane_count - 1) << 22)
+                width << 16)
         value = int(config.get("value", 0)) & 0xFFFFFFFF
         mask = int(config.get("match_mask", 0xFFFFFFFF)) & 0xFFFFFFFF
         width_mask = (1 << width) - 1 if width < 32 else 0xFFFFFFFF

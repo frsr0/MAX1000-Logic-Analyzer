@@ -4,8 +4,9 @@ use IEEE.NUMERIC_STD.ALL;
 
 -- Protocol-independent sampled pattern trigger.
 --
--- Data_Channel_0..1 are compact selectors for the input bits that are
--- appended on each sample edge. Data_Lane_Count chooses 1 or 2 of them. The
+-- Data_Channel_0 is the compact selector for the input bit that is appended
+-- on each sample edge. Multi-channel patterns are refined in software after
+-- capture; the FPGA provides a selectable coarse trigger channel. The
 -- module deliberately runs in the system/sample clock domain: an external
 -- clock is detected as an edge on Clock_Channel, which makes the interface
 -- safe to use with the already-synchronised capture inputs.
@@ -20,9 +21,7 @@ entity Generic_Pattern_Trigger is
     Start_Channel     : in  natural range 0 to 15;
     Start_Polarity    : in  std_logic; -- asserted level: 0 = falling, 1 = rising
     Clock_Channel     : in  natural range 0 to 15;
-    Data_Lane_Count   : in  natural range 1 to 2;
     Data_Channel_0    : in  natural range 0 to 15;
-    Data_Channel_1    : in  natural range 0 to 15;
     Baud_Div          : in  natural range 1 to 65535;
     Frame_Width       : in  natural range 1 to 32;
     Match_Value       : in  std_logic_vector(31 downto 0);
@@ -41,9 +40,6 @@ begin
     variable frame       : std_logic_vector(31 downto 0) := (others => '0');
     variable bit_count   : natural range 0 to 32 := 0;
     variable timer       : natural range 0 to 65535 := 0;
-    variable selected    : natural range 1 to 2 := 1;
-    variable sample_word : std_logic_vector(1 downto 0) := (others => '0');
-    variable packed_sample : std_logic_vector(1 downto 0) := (others => '0');
     variable sample_edge : boolean;
     variable start_edge  : boolean;
     variable started     : boolean := false;
@@ -111,32 +107,19 @@ begin
         end if;
 
         if started and sample_edge then
-          selected := Data_Lane_Count;
-          sample_word(0) := Inputs(Data_Channel_0);
-          sample_word(1) := Inputs(Data_Channel_1);
+          -- This is intentionally a single-lane coarse matcher. When the
+          -- configured pattern has more channels, the host projects it onto
+          -- Data_Channel_0 and the backend refines the full capture.
+          frame := std_logic_vector(shift_left(unsigned(frame), 1));
+          frame(0) := Inputs(Data_Channel_0);
 
           -- The compare register is a fixed left-shifting register. The
-          -- selected lanes are reversed into the appended word so that the
-          -- register's MSB-to-LSB order is always the wire order. For
+          -- The register's MSB-to-LSB order is always the wire order. For
           -- LSB-first protocols the host reverses the configured value/mask
           -- within Frame_Width before writing the registers. The host also
           -- clears bits above Frame_Width; keeping both normalizations out of
           -- this datapath is what keeps the implementation small.
-          packed_sample := (others => '0');
-          case selected is
-            when 1 => packed_sample(0) := sample_word(0);
-            when 2 => packed_sample(1) := sample_word(0);
-                     packed_sample(0) := sample_word(1);
-          end case;
-
-          case selected is
-            when 1 => frame := std_logic_vector(shift_left(unsigned(frame), 1));
-                      frame(0) := packed_sample(0);
-            when 2 => frame := std_logic_vector(shift_left(unsigned(frame), 2));
-                      frame(1 downto 0) := packed_sample(1 downto 0);
-          end case;
-
-          if bit_count + selected >= Frame_Width then
+          if bit_count + 1 >= Frame_Width then
             if unsigned((frame xor Match_Value) and Match_Mask) = 0 then
               Trigger <= '1';
             end if;
@@ -148,7 +131,7 @@ begin
               started := false;
             end if;
           else
-            bit_count := bit_count + selected;
+            bit_count := bit_count + 1;
           end if;
         end if;
       end if;
