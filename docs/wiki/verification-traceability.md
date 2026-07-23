@@ -39,10 +39,8 @@ jumper was installed and discovered as pool pin 22 to capture channel 13.
 
 | Commit | Change | Documentation | Evidence status |
 |---|---|---|---|
-| `89b84898` | Bit Engine hardware repeat mode; host `repeat=True` flag | [Signal Generator](hdl/signal-generator.md), [Generator Routing](generator-routing.md) | **HW** on SOF `0x004FDDF3`; full regression passed |
-| `6f506855` | Keep FAST capture input pipeline in LE registers with `AUTO_SHIFT_REGISTER_RECOGNITION OFF` | [Build Flow](hdl/build-flow.md), [FAST Capture Stream](hdl/fast-capture-stream.md) | **BUILD + HW** on SOF `0x004FDDF3` |
-| `ef7d4171` | Add narrow packed FAST regression to `tb_fast_analyzer` | [HDL Testbenches](hdl/testbenches.md), [FAST Capture Stream](hdl/fast-capture-stream.md) | **SIM + HW** on SOF `0x004FDDF3` |
-
+| `07637559` | Register `Packed_Ready_r`, `packed_buf_in_valid_r`, `Packed_Data_r` for 200 MHz timing closure; dcfifo multicycle constraint; seed 23 to 44; Tests 14f, 14g | [Capture Engine](hdl/capture-engine.md), [Hardware Validation](hardware-validation.md), [Current Status](current-status.md) | **BUILD + HW** on SOF `0x00515DB0` |
+| `032137d8` | Add configure_pattern_trigger mock to FakeHostDevice for backend CI | [Backend Tests](../../backend/app/tests/test_existing_host_adapter.py) | **SW** (backend tests 325/325) |
 The latest complete board evidence is the 2026-07-22 run documented in
 [Hardware Validation](hardware-validation.md). Any later RTL change requires
 the build, image checksum, and relevant hardware test result to be recorded

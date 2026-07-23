@@ -123,6 +123,10 @@ The core capture engine: registered input sampling, sample rate division, BRAM p
 | `packed_mode_f` | 1 | Synchronised packed mode flag |
 | `packed_stop_f` | 1 | End-of-capture gate for packed producer |
 
+| `Packed_Ready_r` | 1 | Registered Packed_Ready (timing closure, fixed 2026-07-23) |
+| `packed_buf_in_valid_r` | 1 | Pipeline register for elastic buffer valid (timing closure) |
+| `Packed_Data_r` | 16 | Pipeline register for elastic buffer data (timing closure) |
+
 ### Packed-Mode Capture Budget (fixed 2026-07-10)
 
 `packed_stop_f` (`<= not sample_rem_nonzero_r`) gates `Packed_Ready` for the

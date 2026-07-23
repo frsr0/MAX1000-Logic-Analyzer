@@ -22,14 +22,23 @@ On 2026-07-20 the connected MAX1000 was programmed with SOF checksum
 The full evidence, including session IDs and the programmed image, is in
 [docs/hardware-smoke-2026-07-20.md](../hardware-smoke-2026-07-20.md).
 
-The latest complete real-hardware run on 2026-07-22 completed
-**369/369 passed, 0 failed, 0 skipped** against the freshly rebuilt and programmed seed-23
-SOF checksum `0x004FDDF3`. Continuous ring, 200 MHz narrow capture, packed
-digital/MSO, analog/mixed signal, codec, readout-stress, generator matrix,
-trigger, full-depth SDRAM, both physical analog jumper paths, lifecycle, and
-on-board LIS3DH accelerometer I²C/SPI checks passed. The exact image also
-passed the backend smoke suite at **10/10** and the dedicated jumper/generator
-matrix at **10/10**.
+The latest complete real-hardware run on 2026-07-23 completed
+**358/358 passed, 0 failed, 0 skipped** against the freshly rebuilt and
+programmed seed-44 SOF checksum `0x00515DB0`.  Two new hardware-trigger tests
+were added:
+
+| Test | What it proves |
+|---|---|
+| **14f** — `test_generic_pattern_trigger_hw` | Internal `Generic_Pattern_Trigger` FSM: baud counter to shift register to comparator to trigger to capture complete (match_mask=0, any pattern) |
+| **14g** — `test_generic_pattern_trigger_jumper` | Full external path: Bit_Engine UART 0x55 through physical jumper wire to pattern trigger with match_mask=0xFF |
+
+The on-board jumper (pool pin 22 to capture channel 13) is now discovered
+at the start of the suite via `_get_jumper_pair()`, and `_floating_except()`
+automatically excludes the jumper RX channel from noise-floor checks.
+Continuous ring, 200 MHz narrow capture, packed digital/MSO, analog/mixed
+signal, codec, readout-stress, generator matrix, trigger, full-depth SDRAM,
+both physical analog jumper paths, lifecycle, and on-board LIS3DH
+accelerometer I2C/SPI checks all passed.
 
 The post-regression automation checks also cover the operational paths around
 that hardware run: the live CLI queue command completed a real capture as
