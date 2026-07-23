@@ -808,11 +808,26 @@ class OLSDeviceSPI:
         ctrl = (1 | source << 1 | edge << 2 | start << 3 | polarity << 4 |
                 order << 5 | start_channel << 6 | clock_channel << 11 |
                 width << 16 | (lane_count - 1) << 22)
+        value = int(config.get("value", 0)) & 0xFFFFFFFF
+        mask = int(config.get("match_mask", 0xFFFFFFFF)) & 0xFFFFFFFF
+        width_mask = (1 << width) - 1 if width < 32 else 0xFFFFFFFF
+        value &= width_mask
+        mask &= width_mask
+        if config.get("bit_order", "lsb_first") == "lsb_first":
+            value = self._reverse_pattern_bits(value, width)
+            mask = self._reverse_pattern_bits(mask, width)
         self.pkt.write_register(REG_PATTERN_CHANNELS, channel_selectors)
-        self.pkt.write_register(REG_PATTERN_VALUE, int(config.get("value", 0)) & 0xFFFFFFFF)
-        self.pkt.write_register(REG_PATTERN_MASK, int(config.get("match_mask", 0xFFFFFFFF)) & 0xFFFFFFFF)
+        self.pkt.write_register(REG_PATTERN_VALUE, value)
+        self.pkt.write_register(REG_PATTERN_MASK, mask)
         self.pkt.write_register(REG_PATTERN_BAUD, max(1, min(65535, int(config.get("baud_div", 1)))))
         self.pkt.write_register(REG_PATTERN_CTRL, ctrl)
+
+    @staticmethod
+    def _reverse_pattern_bits(value, width):
+        result = 0
+        for bit in range(width):
+            result |= ((value >> bit) & 1) << (width - 1 - bit)
+        return result
 
     def protocol_trigger(self):
         return self._protocol_trigger

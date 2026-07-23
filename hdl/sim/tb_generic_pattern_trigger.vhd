@@ -21,7 +21,8 @@ begin
       Data_Channel_0 => 0, Data_Channel_1 => 0,
       Data_Channel_2 => 0, Data_Channel_3 => 0,
       Baud_Div => 1, Frame_Width => 4,
-      Match_Value => x"0000000A", Match_Mask => x"0000000F",
+      -- LSB-first value A is normalized to 5 by the host before writing.
+      Match_Value => x"00000005", Match_Mask => x"0000000F",
       Bit_Order => '0', Trigger => trigger
     );
 

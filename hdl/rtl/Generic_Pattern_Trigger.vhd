@@ -29,6 +29,8 @@ entity Generic_Pattern_Trigger is
     Frame_Width       : in  natural range 1 to 32;
     Match_Value       : in  std_logic_vector(31 downto 0);
     Match_Mask        : in  std_logic_vector(31 downto 0);
+    -- Register-compatibility indicator. The host normalizes LSB-first values
+    -- into the fixed left-shift compare order before writing the registers.
     Bit_Order         : in  std_logic; -- 0 = LSB first, 1 = MSB first
     Trigger           : out std_logic := '0'
   );
@@ -42,9 +44,8 @@ begin
     variable bit_count   : natural range 0 to 32 := 0;
     variable timer       : natural range 0 to 65535 := 0;
     variable selected    : natural range 1 to 4 := 1;
-    variable pos         : natural range 0 to 31 := 0;
     variable sample_word : std_logic_vector(3 downto 0) := (others => '0');
-    variable width_mask  : std_logic_vector(31 downto 0) := (others => '0');
+    variable packed_sample : std_logic_vector(3 downto 0) := (others => '0');
     variable sample_edge : boolean;
     variable start_edge  : boolean;
     variable started     : boolean := false;
@@ -117,25 +118,41 @@ begin
           sample_word(1) := Inputs(Data_Channel_1);
           sample_word(2) := Inputs(Data_Channel_2);
           sample_word(3) := Inputs(Data_Channel_3);
-          for lane in 0 to 3 loop
-            if lane < selected and bit_count + lane < Frame_Width then
-              if Bit_Order = '0' then
-                pos := bit_count + lane;
-              else
-                pos := Frame_Width - 1 - bit_count - lane;
-              end if;
-              frame(pos) := sample_word(lane);
-            end if;
-          end loop;
+
+          -- The compare register is a fixed left-shifting register. The
+          -- selected lanes are reversed into the appended word so that the
+          -- register's MSB-to-LSB order is always the wire order. For
+          -- LSB-first protocols the host reverses the configured value/mask
+          -- within Frame_Width before writing the registers. The host also
+          -- clears bits above Frame_Width; keeping both normalizations out of
+          -- this datapath is what keeps the implementation small.
+          packed_sample := (others => '0');
+          case selected is
+            when 1 => packed_sample(0) := sample_word(0);
+            when 2 => packed_sample(1) := sample_word(0);
+                     packed_sample(0) := sample_word(1);
+            when 3 => packed_sample(2) := sample_word(0);
+                     packed_sample(1) := sample_word(1);
+                     packed_sample(0) := sample_word(2);
+            when others => packed_sample(3) := sample_word(0);
+                           packed_sample(2) := sample_word(1);
+                           packed_sample(1) := sample_word(2);
+                           packed_sample(0) := sample_word(3);
+          end case;
+
+          case selected is
+            when 1 => frame := std_logic_vector(shift_left(unsigned(frame), 1));
+                      frame(0) := packed_sample(0);
+            when 2 => frame := std_logic_vector(shift_left(unsigned(frame), 2));
+                      frame(1 downto 0) := packed_sample(1 downto 0);
+            when 3 => frame := std_logic_vector(shift_left(unsigned(frame), 3));
+                      frame(2 downto 0) := packed_sample(2 downto 0);
+            when others => frame := std_logic_vector(shift_left(unsigned(frame), 4));
+                           frame(3 downto 0) := packed_sample(3 downto 0);
+          end case;
 
           if bit_count + selected >= Frame_Width then
-            width_mask := (others => '0');
-            for k in 0 to 31 loop
-              if k < Frame_Width then
-                width_mask(k) := '1';
-              end if;
-            end loop;
-            if unsigned((frame xor Match_Value) and Match_Mask and width_mask) = 0 then
+            if unsigned((frame xor Match_Value) and Match_Mask) = 0 then
               Trigger <= '1';
             end if;
             frame := (others => '0');
