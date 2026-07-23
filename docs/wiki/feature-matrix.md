@@ -21,7 +21,7 @@ has an explicit scope boundary.
 | Digital RLE | Readback codec selection | Full-word/direct RLE | **HW**; bit-exact matrix through 200.4 MHz |
 | Packed `delta_rle` | Readback codec selection | Delta calculator + digital RLE + MSO stream | **HW**; lossless finite matrix and live characterization |
 | Raw readback | Session waveform transport | SPI block read path | **HW** |
-| Triggering | Trigger panel and backend trigger service | UART byte hardware trigger plus software search | **HW/SW**; protocol-trigger scope is UART byte matching |
+| Triggering | Trigger panel and backend trigger service | UART byte hardware trigger, generic pattern trigger, plus software search | **HW**; Test 14f (internal FSM) and 14g (UART 0x55 through physical jumper, match_mask=0xFF) |
 | Measurements | Measurements panel/API | Digital, analog, bus measurement services | **SW** and frontend E2E coverage |
 | Waveform LOD/downsampling | Canvas viewer | WaveformStore, worker, MSAW/LOD services | **SW**; transport and zoom performance coverage |
 
@@ -82,11 +82,11 @@ has an explicit scope boundary.
 | Item | Current validated value |
 |---|---|
 | FPGA | Intel MAX 10 `10M08SAU169C8G` |
-| Full build | `FAST_SPEED=true`, `FAST_RAW_BUILD=false`, seed 23 |
-| Timing | Slow-85C `fast_clk` `+0.124 ns`, `sdram_core_clk` `+0.426 ns`; no setup/hold violations |
-| Logic use | 7,875/8,064 LEs (98%); 4,593 registers; 63 pins |
-| Current SOF | `0x004FDDF3` on the validation board |
-| Final hardware regression | 369/369 passed, 0 failed, 0 skipped on 2026-07-22 |
+| Full build | `FAST_SPEED=true`, `FAST_RAW_BUILD=false`, seed 44 |
+| Timing | Slow-85C `fast_clk` **+0.002 ns**, `sdram_core_clk` **+0.048 ns**; 0 setup/hold violations |
+| Logic use | 504/504 LABs (100%) |
+| Current SOF | `0x00515DB0` on the validation board |
+| Final hardware regression | 358/358 passed, 0 failed, 0 skipped on 2026-07-23 |
 
 ## How to interpret coverage
 

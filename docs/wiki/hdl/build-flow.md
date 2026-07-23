@@ -31,11 +31,11 @@
 
 PowerShell build script (current parameters, verified against the script 2026-07-22):
 ```
-.\compile.ps1 -Flash -Seed 23
+.\compile.ps1 -Flash -Seed 44
 ```
 
 Parameters:
-- `-Seed` (default: 23): Quartus fitter seed for placement/routing; re-sweep after every RTL change
+- `-Seed` (default: 44): Quartus fitter seed for placement/routing; re-sweep after every RTL change
 - `-NoFlash` (switch): compile only, skip JTAG programming
 - `-Flash` (switch): program the board via JTAG after compiling
 - `-RawOnly` (switch): build with `FAST_RAW_BUILD=true`, eliding the `mso_capture`/MSO bit-pack pipeline for extra timing margin (default is the full mixed-signal build with `mso_capture` included)
@@ -108,7 +108,7 @@ capture, packed-stream, analog, and SDRAM regressions.
 ```mermaid
 flowchart LR
     RTL["RTL + SDC"] --> SYN["Quartus analysis / synthesis"]
-    SYN --> FIT["Fitter: seed 23"]
+    SYN --> FIT["Fitter: seed 44"]
     FIT --> ASM["Assembler: SOF / POF"]
     FIT --> STA["Post-fit STA"]
     STA --> GATE{"All required setup/hold paths positive?"}
@@ -121,18 +121,17 @@ flowchart LR
 
 | Profile | FAST_SPEED | FAST_RAW_BUILD | Fmax (fast_clk) | Use Case |
 |---|---|---|---|---|
-| Full (default) | true | false | 200.4 MHz nominal | Full RTL; includes `mso_capture`/MSO bit-pack pipeline; seed 23 closes post-fit setup |
+| Full (default) | true | false | 200.4 MHz nominal | Full RTL; includes `mso_capture`/MSO bit-pack pipeline; seed 44 closes post-fit setup |
 | Raw-only | true | true | 200.4 MHz (`+0.118 ns`) | Timing-closed digital/analog build; elides `mso_capture` (`-RawOnly`) |
 | Slow | false | true | 12-50 MHz | Low-speed debug |
 
 ## Known Issues
 
 - The generated wrapper in `proj/` is overwritten by `compile.ps1`
-- The current seed-23 full build closes the authoritative post-fit report at
-  slow-85C: `fast_clk +0.124 ns`, `sdram_core_clk +0.426 ns`, and
-  `SDRAM_CHIP_CLK_OUT +1.098 ns`; hold checks are positive. The fitted design
-  uses 7,875/8,064 LEs (98%) and 4,593 registers. Re-run the query after every
-  fitter or SDC change.
+- The current seed-44 full build closes the authoritative post-fit report at
+  slow-85C: `fast_clk +0.002 ns`, `sdram_core_clk +0.048 ns`; hold checks are
+  positive.  The fitted design uses 504/504 LABs (100%) and 4,595+ registers.
+  Re-run the query after every fitter or SDC change.
 - The earlier eight-seed sweep was run before the final budget-path change and
   is historical; its results remain in `seed_sweep_results.txt` and must not
   be used to select a replacement seed without a fresh sweep.
@@ -141,7 +140,7 @@ flowchart LR
   frequency alone: all setup, hold, I/O, and CDC checks must be reviewed.
 - At ∼87% LE utilisation, fitter struggles — changing one parameter often requires a seed sweep to find a new valid placement
 - `FAST_RAW_BUILD` remains an optional diagnostic/minimal image; the default
-  full compression and MSO build now closes timing with seed 23.
+  full compression and MSO build now closes timing with seed 44.
 
 ## Testbenches
 

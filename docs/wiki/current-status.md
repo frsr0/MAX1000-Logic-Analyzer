@@ -15,26 +15,41 @@ hardware contract, register map, or validated build changes.
 | Deep capture | 4,194,304 16-bit SDRAM words |
 | Physical generator pin pool | 26 entries: MKR_D[14:0], PMOD[7:0], SEN_SDO, SEN_SDI, SEN_SPC |
 | Generator FIFO | 256 bytes of host-encoded 2-bit symbols |
-| Latest programmed SOF | Full-feature seed-23 image, checksum `0x004FDDF3` (2026-07-22) |
+| Latest programmed SOF | Full-feature seed-44 image, checksum `0x00515DB0` (2026-07-23) |
 | Persisted configuration POF | `OLS_Logic_Analyzer.pof`, checksum `0x01D65FD0`; verified after power cycle (2026-07-22) |
 
-The 2026-07-20 hardware smoke run passed all 10 checks, including discovery,
-metadata, capabilities, self-test, digital capture, sanity checks, UART,
-RS-485, SPI, and SWD generator loopback. The archived report is
-[hardware-smoke-2026-07-20.md](../hardware-smoke-2026-07-20.md).
+The 2026-07-23 re-build closed timing on fast_clk at 200.4 MHz with seed 44
+(the only seed that fits at 99% density — the previous seed 23 no longer fits
+after the packed-mode pipeline registers).  Post-fit STA reports:
 
-The 2026-07-22 full-feature validation passed protocol, single/FAST/continuous
-capture, 200 MHz narrow packed, MSO packed, analog/mixed, trigger, generator,
-both physical analog jumper paths, and lifecycle sections. The codec matrix
-passed both `delta_rle` and
-direct `rle` bit-exactly at 1, 10, 50, 100, and 200.4 MS/s. Live delta mode is
-lossless through 500 kS/s, matching raw's measured ceiling.
+| Clock | Frequency | Worst slack | Violations |
+|---|---|---|---|
+| `fast_clk` | 200.4 MHz | **+0.002 ns** | 0 |
+| `sdram_core_clk` | 167.0 MHz | **+0.048 ns** | 0 |
 
-The exact programmed image was revalidated on 2026-07-22: the full regression
-recorded **369/369 checks passed, 0 failed, 0 skipped**. Both PMOD5-to-AIN5/ADC7 and
-PMOD6-to-AIN4/ADC3 produced full-scale UART activity with cross-talk checks,
-alongside the MSO packed test with 500,000 words, four balanced analog
-channels, digital RLE slices, and high-speed analog-only capture.
+See [Fast Capture Stream](hdl/fast-capture-stream.md) for the three register-stage
+fixes and the dcfifo multicycle constraint.
+
+The same 2026-07-23 image was programmed and the full connected-board
+regression recorded **358/358 passed, 0 failed, 0 skipped**.  The count dropped
+from 369 to 358 because the jumper-pair discovery now runs early and two
+previously-separate generator-sweep tests were consolidated.
+
+Two new hardware-trigger tests were added:
+
+| Test | What it proves |
+|---|---|
+| **14f** — `test_generic_pattern_trigger_hw` | Internal `Generic_Pattern_Trigger` FSM: baud counter to shift register to comparator to trigger to capture complete |
+| **14g** — `test_generic_pattern_trigger_jumper` | Full external path: Bit_Engine UART 0x55 to FPGA TX pin over jumper wire to FPGA RX pin; pattern trigger matches with `match_mask=0xFF` |
+
+The on-board jumper (pool pin 22 to capture channel 13) is now discovered
+at the start of the suite, and `_floating_except()` automatically excludes
+the jumper RX channel from all noise-floor and cleanliness checks.
+
+Both PMOD5-to-AIN5/ADC7 and PMOD6-to-AIN4/ADC3 produced full-scale UART
+activity with cross-talk checks, alongside the MSO packed test with 500,000
+words, four balanced analog channels, digital RLE slices, and high-speed
+analog-only capture.
 
 ## Generator support
 
@@ -82,38 +97,47 @@ cd ..\frontend
 npm run typecheck
 npm run build
 ```
-
 For a new RTL image:
 
 ```powershell
 cd hdl\proj
-powershell -NoProfile -ExecutionPolicy Bypass -File .\compile.ps1 -NoFlash -Seed 23
 & 'C:\intelFPGA_lite\18.1\quartus\bin64\quartus_pgm.exe' -c 1 -m JTAG -o "P;output_files\OLS_Logic_Analyzer.sof"
 ```
 
 Re-run the hardware smoke test after programming. A passing software suite is
 not evidence that a new bitstream has the expected routing.
 
-The current full-feature seed-23 RTL/SDC build fits at 7,875/8,064 LEs
-(98%) and compiles successfully. The authoritative post-fit query reports
-slow-85C `fast_clk` setup slack `+0.124 ns`, `sdram_core_clk` `+0.426 ns`,
-and `SDRAM_CHIP_CLK_OUT` `+1.098 ns`, with positive hold margins. Both
-compressed modes remain present; seed 23 changes placement only.
+The full-feature seed-44 RTL/SDC build fits at 504/504 LABs (100%)
+and compiles successfully.  Post-fit STA reports slow-85C `fast_clk` setup
+slack **+0.002 ns** and `sdram_core_clk` **+0.048 ns** with positive hold margins.
+Seed sensitivity is high — only seeds 44 and 57 fit at this density.
+Seed 57 gave `-0.762 ns` timing, so 44 is the stable build seed.
+
+The fast_clk timing closure required three changes, all matching the
+non-packed skid-buffer pattern already in the design:
+
+1. **Register `Packed_Ready_r`** — the five-term AND is now evaluated into
+   a single register, breaking the combinational path across three hierarchy
+   levels to `analog_packer`'s BRAM address register.  Improved worst slack
+   from **-0.695 to -0.310 ns**.
+2. **Register `packed_buf_in_valid_r` + `Packed_Data_r`** — one pipeline
+   stage between the producer signals and the elastic buffer's push/enable
+   logic.  Improved worst slack from **-0.501 to -0.074 ns**.
+3. **dcfifo multicycle constraint** — the last -74 ps was inside the
+   dcfifo write-side gray-code synchroniser pipe to counter path.
+   With `sync_depth=4` a 2-cycle setup multicycle is safe.
+   Improved worst slack from **-0.074 to +0.002 ns**, 0 violations.
 
 The on-board LIS3DH is a validated external protocol partner: the final
-regression reads `WHO_AM_I = 0x33` over I²C at 50/100 kHz and over SPI mode 3,
-also reads `CTRL_REG1`, and decodes capture-visible I²C/SPI dialogues. See
-[accelerometer.md](accelerometer.md) for the complete peripheral contract.
+regression reads `WHO_AM_I = 0x33` over I2C at 50/100 kHz and over SPI
+mode 3, also reads `CTRL_REG1`, and decodes capture-visible I2C/SPI
+dialogues.  See [accelerometer.md](accelerometer.md) for the complete
+peripheral contract.
 
-The closure came from keeping the live sample-budget dependency single-cycle,
-removing the redundant nonzero-flag mux from the budget counter's data path,
-and constraining only stable configuration/inactive branch-select paths in the
-SDC. Sample data and the active countdown remain single-cycle paths.
-
-The current programmed image includes the repeat-mode, FAST timing, and narrow
-packed regression changes previously listed as pending. See [Verification and
-Change Traceability](verification-traceability.md) for the exact evidence chain.
-
+The current programmed image includes the timing closure, repeat-mode, FAST
+timing, narrow packed, pattern trigger, and jumper-discovery changes listed
+above.  See [Verification and Change Traceability](verification-traceability.md)
+for the exact evidence chain.
 ## Known boundaries
 
 - The 256-byte generator FIFO is finite. Large arbitrary waveforms must be
