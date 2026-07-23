@@ -20,7 +20,9 @@ from app.generator.protocols import encode, uart_symbols
 from app.exports.importers import csv_session, vcd_session
 from app.measurements import digital
 from app.measurements.base import MeasurementContext, run_measurement
-from app.triggers.software_trigger import find_software_trigger
+from app.triggers.software_trigger import (
+    find_software_trigger, project_generic_pattern_for_hardware,
+)
 from app.waveform.analogue import cross_correlation_delay, envelope, spectrogram, spectrum_peaks
 from app.validation import junit_xml, validate_events
 
@@ -81,6 +83,36 @@ def test_protocol_and_sequence_trigger_search_on_decoder_events():
                           sequence_steps=[{"type": "i2c_byte", "value": 0x55},
                                           {"type": "i2c_address", "value": 0x3C}]),
         events) is None
+
+
+def test_generic_pattern_refines_multi_channel_capture():
+    digital = np.zeros(8, dtype=np.uint16)
+    digital[1] = (1 << 1) | (1 << 0)  # clock rising, lane 0 = 1, lane 1 = 0
+    digital[3] = (1 << 1) | (1 << 2)  # clock rising, lane 0 = 0, lane 1 = 1
+    wf = WaveformData(sample_rate=1_000_000, digital=digital)
+    trigger = TriggerConfig(type="generic_pattern", channels=[0, 2],
+                            clock_channel=1, start_mode="none",
+                            frame_width=4, value=0b1001,
+                            match_mask=0xF, bit_order="msb_first")
+
+    assert find_software_trigger(wf, trigger) == 3
+    coarse = project_generic_pattern_for_hardware(trigger)
+    assert coarse.channels == [0]
+    assert coarse.frame_width == 2
+    assert coarse.value == 0b10
+    assert coarse.match_mask == 0b11
+
+
+def test_generic_pattern_refinement_handles_partial_final_lane_group():
+    digital = np.zeros(8, dtype=np.uint16)
+    digital[1] = (1 << 1) | (1 << 0)  # first pair contributes 10
+    digital[3] = (1 << 1) | (1 << 0)  # final partial group contributes 1
+    wf = WaveformData(sample_rate=1_000_000, digital=digital)
+    trigger = TriggerConfig(type="generic_pattern", channels=[0, 2],
+                            clock_channel=1, start_mode="none",
+                            frame_width=3, value=0b101,
+                            match_mask=0x7, bit_order="msb_first")
+    assert find_software_trigger(wf, trigger) == 3
 
 
 def test_raw_trigger_occurrence_selects_nth_match():

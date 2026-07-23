@@ -59,6 +59,109 @@ def _protocol_event_trigger(trig: TriggerConfig,
     return int(matches[occurrence - 1].get("start_sample", 0))
 
 
+def _reverse_pattern_bits(value: int, width: int) -> int:
+    result = 0
+    for bit in range(width):
+        result |= ((int(value) >> bit) & 1) << (width - 1 - bit)
+    return result
+
+
+def _normalized_pattern(trig: TriggerConfig) -> tuple[int, int, int]:
+    width = max(1, min(32, int(trig.frame_width or 8)))
+    width_mask = (1 << width) - 1 if width < 32 else 0xFFFFFFFF
+    value = int(trig.value or 0) & width_mask
+    mask = int(trig.match_mask if trig.match_mask is not None else width_mask) & width_mask
+    if trig.bit_order == "lsb_first":
+        value = _reverse_pattern_bits(value, width)
+        mask = _reverse_pattern_bits(mask, width)
+    return value, mask, width
+
+
+def project_generic_pattern_for_hardware(trig: TriggerConfig) -> TriggerConfig:
+    """Project a multi-channel pattern onto the first coarse trigger channel."""
+    channels = [int(c) for c in trig.channels]
+    if len(channels) <= 1:
+        return trig
+    value, mask, width = _normalized_pattern(trig)
+    lane_count = len(channels)
+    positions = list(range(0, width, lane_count))
+    coarse_value = 0
+    coarse_mask = 0
+    for position in positions:
+        source_bit = width - 1 - position
+        coarse_value = (coarse_value << 1) | ((value >> source_bit) & 1)
+        coarse_mask = (coarse_mask << 1) | ((mask >> source_bit) & 1)
+    return trig.model_copy(update={
+        "channels": [channels[0]],
+        "frame_width": len(positions),
+        "value": coarse_value,
+        "match_mask": coarse_mask,
+        "bit_order": "msb_first",
+        "execution": "hardware",
+    })
+
+
+def _generic_pattern_trigger(wf: WaveformData,
+                             trig: TriggerConfig) -> Optional[int]:
+    if wf.digital is None or not trig.channels:
+        return None
+    channels = [int(c) for c in trig.channels]
+    if any(c < 0 or c >= 16 for c in channels):
+        return None
+    value, mask, width = _normalized_pattern(trig)
+    lane_count = len(channels)
+    sample_count = wf.num_samples
+
+    if trig.clock_source == "internal_baud":
+        baud = max(1, int(trig.baud or 115200))
+        divisor = max(1, round(wf.sample_rate / baud))
+        if trig.start_mode == "edge_on_channel":
+            start_bits = wf.digital_channel(int(trig.start_channel))
+            starts = find_edges(start_bits,
+                                "rising" if trig.start_polarity else "falling")
+            first_offset = (2 if divisor < 2 else divisor + divisor // 2)
+            sample_groups = [range(int(start) + first_offset, sample_count, divisor)
+                             for start in starts]
+        else:
+            sample_groups = [range(divisor, sample_count, divisor)]
+    else:
+        clock_bits = wf.digital_channel(int(trig.clock_channel))
+        clock_edges = find_edges(clock_bits,
+                                 "falling" if trig.clock_edge == "falling" else "rising")
+        if trig.start_mode == "edge_on_channel":
+            start_bits = wf.digital_channel(int(trig.start_channel))
+            starts = find_edges(start_bits,
+                                "rising" if trig.start_polarity else "falling")
+            sample_groups = [clock_edges[clock_edges >= start] for start in starts]
+        else:
+            sample_groups = [clock_edges]
+
+    matches = []
+    for samples in sample_groups:
+        frame = 0
+        bit_count = 0
+        for sample in samples:
+            sample = int(sample)
+            if sample >= sample_count:
+                break
+            lanes_this_sample = min(lane_count, width - bit_count)
+            packed = 0
+            for channel in channels[:lanes_this_sample]:
+                packed = (packed << 1) | int((int(wf.digital[sample]) >> channel) & 1)
+            frame = (frame << lanes_this_sample) | packed
+            bit_count += lanes_this_sample
+            if bit_count < width:
+                continue
+            if ((frame ^ value) & mask) == 0:
+                matches.append(sample)
+                if trig.start_mode == "edge_on_channel":
+                    break
+            frame = 0
+            bit_count = 0
+    occurrence = max(1, int(trig.occurrence or 1))
+    return matches[occurrence - 1] if len(matches) >= occurrence else None
+
+
 def _sequence_trigger(trig: TriggerConfig,
                       decoder_events: list[dict]) -> Optional[int]:
     if not trig.sequence_steps:
@@ -97,6 +200,8 @@ def find_software_trigger(wf: WaveformData, trig: TriggerConfig,
     if trig.type == "none":
         return None
     decoder_events = decoder_events or []
+    if trig.type == "generic_pattern":
+        return _generic_pattern_trigger(wf, trig)
     if trig.type in ("uart_byte", "i2c_address", "i2c_nack", "spi_byte",
                      "decoder_error"):
         return _protocol_event_trigger(trig, decoder_events)

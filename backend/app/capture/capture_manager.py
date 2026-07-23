@@ -469,8 +469,12 @@ class CaptureManager:
             manager.publish_threadsafe("capture", "warning", {"message": w})
         # software trigger search if the device didn't resolve one
         trig = settings.trigger
-        if (session.trigger_sample is None and trig.type != "none"
-                and trig.execution != "hardware"):
+        needs_pattern_refinement = (trig.type == "generic_pattern"
+                                    and len(trig.channels) > 1)
+        if needs_pattern_refinement:
+            session.trigger_sample = find_software_trigger(wf, trig)
+        elif (session.trigger_sample is None and trig.type != "none"
+              and trig.execution != "hardware"):
             session.trigger_sample = find_software_trigger(wf, trig)
         self.store.save(session)
         self.store.save_waveform(session.id, wf)

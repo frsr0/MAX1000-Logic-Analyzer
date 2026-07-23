@@ -56,6 +56,7 @@ class FakeHostDevice:
         self.ack_capture_done = self.pkt.ack_capture_done
         self.get_metadata = Mock(return_value=b"\x12\x34")
         self._readback_codec = Mock(return_value="raw")
+        self.configure_pattern_trigger = Mock()
 
     @property
     def raw_flags(self):

@@ -235,6 +235,20 @@ create_generated_clock -name adc_clk \
  set_multicycle_path -hold 2 \
    -from [get_ports {sdram_dq[*]}] \
    -to   [get_registers {*sdram_s_readdata[*]}]
+
+# dcfifo write-side gray-code synchroniser pipe -> gray-code counter.
+# The dcfifo has sync_depth=4, and the gray code value propagates through
+# four pipe stages before reaching the write-side read-pointer comparator.
+# The path from the last pipe register back to the counter is inherently
+# multi-cycle: the counter is a registered update, not a combinational
+# product of the pipe.  At 200 MHz this path was -0.074 ns with a single-
+# cycle constraint; a 2-cycle setup multicycle is safe and closes it.
+set_multicycle_path 2 -setup \
+  -from [get_registers {*afifo*ws_dgrp*dffpipe*}] \
+  -to   [get_registers {*afifo*wrptr_g1p*counter*}]
+set_multicycle_path 1 -hold \
+  -from [get_registers {*afifo*ws_dgrp*dffpipe*}] \
+  -to   [get_registers {*afifo*wrptr_g1p*counter*}]
  
  # DELETED: old multicycle for afifo portb -> cap_stream_data. The prefetch
  # register (prefetch_data_r) now captures fifo_rdata one cycle before the
@@ -244,5 +258,3 @@ create_generated_clock -name adc_clk \
  # DELETED: old multicycle for stream_rem. The write pump now uses registered
  # drain logic; stream_rem decrements only on an SDRAM accept cycle, which
  # is at least one bubble apart. The timing path is naturally met.
-
-

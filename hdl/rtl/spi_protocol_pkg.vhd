@@ -65,6 +65,11 @@ package spi_protocol_pkg is
   constant REG_DELAY_COUNT  : reg_addr_t := x"02";
   constant REG_TRIGGER_MASK : reg_addr_t := x"10";
   constant REG_TRIGGER_VALUE : reg_addr_t := x"11";
+  constant REG_PATTERN_CTRL  : reg_addr_t := x"12";
+  constant REG_PATTERN_CHANNELS : reg_addr_t := x"13";
+  constant REG_PATTERN_VALUE : reg_addr_t := x"14";
+  constant REG_PATTERN_MASK  : reg_addr_t := x"15";
+  constant REG_PATTERN_BAUD  : reg_addr_t := x"16";
   constant REG_FLAGS        : reg_addr_t := x"20";
   constant REG_FAST_MODE    : reg_addr_t := x"21";
   constant REG_CONT_MODE    : reg_addr_t := x"22";

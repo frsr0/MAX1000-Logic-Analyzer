@@ -11,7 +11,7 @@ ALL_TRIGGER_TYPES = [
     "none", "rising", "falling", "any_edge", "high", "low", "pattern",
     "bus_value", "pulse_wider", "pulse_narrower", "timeout", "sequence",
     "uart_byte", "i2c_address", "i2c_nack", "spi_byte", "glitch",
-    "decoder_error",
+    "decoder_error", "generic_pattern",
 ]
 
 

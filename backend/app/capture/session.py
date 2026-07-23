@@ -53,6 +53,7 @@ class TriggerConfig(BaseModel):
         "bus_value", "pulse_wider", "pulse_narrower", "timeout", "sequence",
         "uart_byte", "i2c_address", "i2c_nack", "spi_byte", "glitch",
         "decoder_error",
+        "generic_pattern",
     ] = "none"
     channels: List[int] = Field(default_factory=list)   # digital channel indices
     channel_refs: List[str] = Field(default_factory=list)  # digital or derived ids for software search
@@ -60,6 +61,15 @@ class TriggerConfig(BaseModel):
     value: Optional[int] = None         # bus value / byte match
     width_s: Optional[float] = None     # pulse width threshold
     baud: Optional[int] = None          # protocol trigger baud
+    clock_source: str = "external_edge"
+    clock_edge: str = "rising"
+    start_mode: str = "edge_on_channel"
+    start_channel: int = 0
+    start_polarity: int = 0
+    clock_channel: int = 0
+    frame_width: int = 8
+    match_mask: Optional[int] = 0xFFFFFFFF
+    bit_order: str = "lsb_first"
     occurrence: int = 1                 # nth matching event for software search
     window_s: Optional[float] = None    # sequence/event qualification window
     sequence_steps: List[Dict[str, Any]] = Field(default_factory=list)

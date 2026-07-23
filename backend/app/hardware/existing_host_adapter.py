@@ -38,6 +38,7 @@ from .strategies import (
 )
 from .packed_decoder import decode as packed_decode
 from ..triggers.hardware_support import to_register_config
+from ..triggers.software_trigger import project_generic_pattern_for_hardware
 
 ADC_SCAN_FRAME_RATE_HZ = 125_000.0
 ADC_FAST_FRAME_RATE_HZ = 1_000_000.0
@@ -149,6 +150,7 @@ class ExistingHostAdapter(HardwareDevice):
             ("rising", "hardware", "REG_TRIGGER_MASK edge trigger, any channel set"),
             ("falling", "hardware", "REG_TRIGGER_MASK edge trigger, any channel set"),
             ("uart_byte", "hardware", "Protocol trigger (byte match at baud)"),
+            ("generic_pattern", "hardware", "Selectable coarse hardware trigger with full-channel software refinement"),
             ("any_edge", "post_capture", "Software search after capture"),
             ("high", "hardware", "REG_TRIGGER_MASK level trigger: all selected channels high"),
             ("low", "hardware", "REG_TRIGGER_MASK level trigger: all selected channels low"),
@@ -560,6 +562,14 @@ class ExistingHostAdapter(HardwareDevice):
 
     def _build_trigger(self, settings: CaptureSettings):
         trig = settings.trigger
+        dev = self._dev
+        if trig.type == "generic_pattern":
+            pattern = project_generic_pattern_for_hardware(trig).model_dump()
+            if pattern.get("clock_source") == "internal_baud":
+                pattern["baud_div"] = max(1, round(dev.sample_clk / max(1, trig.baud or 115200)))
+            dev.configure_pattern_trigger(pattern)
+            return None
+        dev.configure_pattern_trigger(None)
         register_trigger = to_register_config(trig)
         if register_trigger is not None:
             return register_trigger

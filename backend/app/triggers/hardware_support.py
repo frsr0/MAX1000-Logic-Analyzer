@@ -16,7 +16,7 @@ from ..capture.session import TriggerConfig
 
 HARDWARE_TYPES = {
     "none", "rising", "falling", "high", "low", "pattern", "bus_value",
-    "uart_byte",
+    "uart_byte", "generic_pattern",
 }
 
 

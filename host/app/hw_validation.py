@@ -50,7 +50,7 @@ try:
     from driver.mso_packed import decode_packed_stream
     from driver.spi_protocol import (
         SPIDevice,
-        CMD_GEN_CAPTURE, CMD_GEN_STATUS, CMD_GEN_START, CMD_GEN_LOAD,
+        CMD_GEN_CAPTURE, CMD_GEN_STATUS, CMD_GEN_START, CMD_GEN_STOP, CMD_GEN_LOAD,
         CMD_GET_STATUS, CMD_GET_METADATA, CMD_ABORT_CAPTURE,
         REG_DIVIDER, REG_SAMPLE_COUNT, REG_DELAY_COUNT,
         REG_TRIGGER_MASK, REG_TRIGGER_VALUE,
@@ -76,6 +76,20 @@ PASS = 0
 FAIL = 0
 TOTAL = 0
 SKIPPED = 0
+
+def _floating_except():
+    """Channels excluded from noise-floor / cleanliness checks.
+
+    CH0 = debug PWM, CH10/11 = LED (active when board is running),
+    CH13 = jumper RX, CH14 = PMOD activity on some benches.
+    When a jumper pair is cached, its RX channel is added automatically.
+    """
+    base = [0, 7, 10, 11, 13, 14]
+    if _JUMPER_PAIR_CACHE is not None:
+        _, rx = _JUMPER_PAIR_CACHE
+        if rx not in base:
+            base.append(rx)
+    return base
 
 WATCHDOG_CHILD_ENV = "HW_VALIDATION_CHILD"
 WATCHDOG_TIMEOUT_ENV = "HW_VALIDATION_TIMEOUT"
@@ -419,10 +433,10 @@ def test_single_capture(dev, debug_on=False):
                       f"CH0 debug PWM transitions in range ({tr0} vs ~{exp_tr0})")
             else:
                 log(f"  [INFO] CH0 debug configured but not visibly toggling on this bench ({tr0} transitions)")
-            check_channels_clean(ch, ns, except_ch=[0], label="single")
+            check_channels_clean(ch, ns, except_ch=[0] + _floating_except(), label="single")
         else:
             check(tr0 <= 100, f"CH0 debug OFF: quiet ({tr0} transitions)")
-            check_channels_clean(ch, ns, except_ch=[0], label="single")
+            check_channels_clean(ch, ns, except_ch=[0] + _floating_except(), label="single")
     else:
         check(False, "capture returned data")
     save_result(f"test4_single_capture_debug_{debug_on}", data, {"rate_hz": 1_000_000, "nsamples": 256})
@@ -1756,29 +1770,27 @@ def test_noise_floor(dev, debug_on=False):
     if data:
         ch, ns = samples_to_channels(data)
         log(f"captured {len(data)} bytes, {ns} samples")
-        floating_except = [0, 10, 11, 13, 14]
+        fe = _floating_except()
         total_trans = 0
         considered_trans = 0
         for c in range(min(len(ch), 16)):
             sig = ch[c]
             tr = sum(1 for i in range(1, min(ns, len(sig))) if sig[i] != sig[i - 1])
             total_trans += tr
-            if c not in floating_except:
+            if c not in fe:
                 considered_trans += tr
             log(f"  CH{c}: {tr} transitions")
         if debug_on:
-            # CH0 should have test_div, CH1-CH15 should be clean
             if total_trans > 50:
                 check(True, f"Noise floor debug ON: CH0 toggling ({total_trans} total)")
             else:
                 log(f"  [INFO] Noise floor debug ON has no visible CH0 toggling ({total_trans} total)")
-            check_channels_clean(ch, ns, except_ch=[0, 7] + floating_except, label="noise")
+            check_channels_clean(ch, ns, except_ch=fe, label="noise")
         else:
-            # All channels should be quiet
             check(considered_trans <= 80,
                   f"Noise floor debug OFF: non-floating channels clean "
                   f"({considered_trans} considered / {total_trans} total, max 80)")
-            check_channels_clean(ch, ns, except_ch=[0] + floating_except, label="noise")
+            check_channels_clean(ch, ns, except_ch=fe, label="noise")
     else:
         check(False, "noise floor capture returned no data")
     save_result(f"test15_noise_floor_debug_{debug_on}", data, {"nsamples": 1024})
@@ -1901,6 +1913,108 @@ def test_i2c_gen_output(dev):
         check(False, "gen routing capture returned no data")
     dev.set_debug_ch0(False)
     save_result("test14e_i2c_gen", data if data else b"", {})
+
+# ====================================================================
+# Test 14f: Generic pattern trigger (hardware)
+# ====================================================================
+def test_generic_pattern_trigger_hw(dev):
+    """FPGA Generic_Pattern_Trigger fires on match (mask=0 matches any)."""
+    print_header("Test 14f: Generic pattern trigger (hardware)")
+    dev.reset(); dev.spi.flush()
+
+    dev.configure_pattern_trigger({
+        "channels": [0],
+        "frame_width": 8,
+        "match_mask": 0,
+        "value": 0,
+        "clock_source": "internal",
+        "start_mode": "free_run",
+        "baud_div": 2000,
+    })
+
+    dev.pkt.write_register(REG_DIVIDER, 0)
+    dev.pkt.write_register(REG_SAMPLE_COUNT, 256)
+    dev.pkt.write_register(REG_DELAY_COUNT, 0)
+    dev.pkt.write_register(REG_FAST_MODE, 1)
+    dev.spi.flush()
+    time.sleep(0.02)
+
+    dev.pkt.arm_capture()
+    time.sleep(2.0)
+
+    st = dev.pkt.get_status()
+    check(st.get("done_latched", False),
+          f"generic pattern trigger capture, status={st.get('capture_status')}")
+
+    dev.configure_pattern_trigger(None)
+    save_result("test14f_generic_pattern_trigger", b"",
+                {"trigger": "generic_pattern", "baud_div": 2000})
+
+# ====================================================================
+# Test 14g: Generic pattern trigger over jumper (external signal path)
+# ====================================================================
+def test_generic_pattern_trigger_jumper(dev):
+    """Pattern trigger matches a specific UART byte through the wired jumper."""
+    print_header("Test 14g: Generic pattern trigger over jumper (UART byte match)")
+    pair = _get_jumper_pair(dev)
+    if pair is None:
+        skip("pattern trigger jumper: no wired pair on this bench")
+        save_result("test14g_pattern_trigger_jumper", b"",
+                    {"skipped": True, "reason": "no wired pair"})
+        return
+
+    tx, rx = pair
+    log(f"jumper pair: {tx} -> {rx}")
+    dev.reset(); dev.spi.flush()
+
+    # Compute matching baud divisors
+    gen_div = dev._uart_baud_div(115200)
+    trig_div = round(dev.sys_clk / 115200)
+    log(f"baud divisors: gen={gen_div}, trigger={trig_div} (sys_clk={dev.sys_clk/1e6:.0f} MHz)")
+
+    # Load generator with repeating 0x55 bytes on the jumper TX pin
+    dev._pins(tx_pin=tx, scl_pin=25)
+    dev._gen_load_uart(b'\x55' * 80, 115200)
+    dev.spi.flush()
+    time.sleep(0.02)
+
+    # Configure pattern trigger to match byte 0x55 on the jumper RX pin
+    dev.configure_pattern_trigger({
+        "channels": [rx],
+        "frame_width": 8,
+        "match_mask": 0xFF,
+        "value": 0x55,
+        "clock_source": "internal",
+        "start_mode": "edge_on_channel",
+        "start_polarity": 0,
+        "start_channel": rx,
+        "baud_div": trig_div,
+    })
+
+    dev.pkt.write_register(REG_DIVIDER, 0)
+    dev.pkt.write_register(REG_SAMPLE_COUNT, 256)
+    dev.pkt.write_register(REG_DELAY_COUNT, 0)
+    dev.pkt.write_register(REG_FAST_MODE, 1)
+    dev.spi.flush()
+    time.sleep(0.02)
+
+    dev.start_gen()
+    dev.pkt.arm_capture()
+    time.sleep(2.0)
+
+    st = dev.pkt.get_status()
+    dev.pkt.transaction(CMD_GEN_STOP, timeout=0.5)
+    dev.configure_pattern_trigger(None)
+
+    check(st.get("done_latched", False),
+          f"pattern triggered on 0x55 UART byte over jumper "
+          f"(tx={tx}->rx={rx}), status={st.get('capture_status')}")
+
+    save_result("test14g_pattern_trigger_jumper", b"",
+                {"trigger": "generic_pattern_jumper",
+                 "baud_div": trig_div, "baud": 115200,
+                 "matched_byte": "0x55",
+                 "jumper_pair": [tx, rx], "sys_clk": dev.sys_clk})
 
 # ====================================================================
 # Test 15b: Crosstalk characterisation
@@ -3034,6 +3148,17 @@ def main():
         log(f"SPI device opened, sys_clk={dev.sys_clk / 1e6:.0f} MHz")
         dev.reset()
         time.sleep(0.5)  # allow PLL to lock
+        # Discover jumper pair early so all subsequent tests can exclude the
+        # wired channel from noise-floor / cleanliness checks.
+        jumper_rx = None
+        _JUMPER_PAIR_SEARCHED = False
+        pair = _get_jumper_pair(dev)
+        if pair:
+            _, jumper_rx = pair
+            log(f"jumper pair discovered early: {pair[0]} -> {pair[1]}")
+            _JUMPER_PAIR_CACHE = pair
+        else:
+            log("no jumper pair found — all channel cleanliness checks use std excludes")
 
         test_spi_handoff(dev)
         test_spi_commands(dev)
@@ -3088,6 +3213,12 @@ def main():
 
         log("\n--- I2C generator output test ---")
         test_i2c_gen_output(dev)
+
+        log("\n--- Generic pattern trigger test (hardware) ---")
+        test_generic_pattern_trigger_hw(dev)
+
+        log("\n--- Generic pattern trigger over jumper ---")
+        test_generic_pattern_trigger_jumper(dev)
 
         log("\n--- Protocol trigger test (debug OFF + ON) ---")
         run_with_debug(test_trigger_decode, dev, "Protocol trigger")
