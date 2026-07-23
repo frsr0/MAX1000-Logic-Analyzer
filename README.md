@@ -117,14 +117,15 @@ July 7, 2026. No mock sessions are used in this gallery.
 
 ![Maximum analog hardware waveform](frontend/test-results/screenshots/live-dual-analog-waveform.png)
 
-### Mixed Digital + Analog Hardware Waveform
+### Generator Self-Test Capture
 
-![Mixed analog hardware waveform](frontend/test-results/screenshots/live-mixed-analog-waveform.png)
+![Generator loopback capture](frontend/test-results/screenshots/live-generator-loopback-capture.png)
 
-*Note: this screenshot was taken with analog input jumpers (PMOD5→AIN5,
-PMOD6→AIN4) connected on the tested board.  Without those jumpers the analog
-channels show flat or maximal ADC readings.  See `test_mixed_analog_mode` in
-the validation suite for the current pass/fail result.*
+*SWD self-test capture with packet decode, taken from a connected MAX1000
+board.  The mixed-signal analog waveform screenshot was removed because it
+requires physical jumper wiring (PMOD5→AIN5, PMOD6→AIN4) that is not
+present on every bench; see `test_mixed_analog_mode` in the validation suite
+for the current mixed-signal pass/fail result.*
 
 ## Running It
 
