@@ -253,6 +253,12 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal packed_buf_out_valid : std_logic := '0';
   signal packed_buf_out_ready : std_logic := '0';
   signal packed_buf_rst : std_logic := '0';
+  -- Registered pipeline stage for the packed-mode data/valid pair.  Breaks the
+  -- combinational path from the producer registers (packed_mode_f, Packed_Ready_r,
+  -- sample_rem_nonzero_r) through packed_buf_in_valid and the elastic buffer's
+  -- push/enable logic to data1_r[*] - the #1 fast_clk critical path at -0.501 ns.
+  signal packed_buf_in_valid_r : std_logic := '0';
+  signal Packed_Data_r : std_logic_vector(15 downto 0) := (others => '0');
   signal packed_mode_meta : std_logic := '0';
   signal packed_mode_f    : std_logic := '0';
   signal packed_mode_path_f : std_logic := '0';
@@ -272,6 +278,14 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   -- as afull_r in the digital writer; keeps the wrusedw compare off the path
   -- from producer -> Packed_Ready -> mso_capture -> analog_packer.
   signal packed_afull_r : std_logic := '0';
+  -- Registered Packed_Ready for timing closure. The combinational 5-term AND
+  -- feeding the output port created a cross-hierarchy path from the FAST_CLK
+  -- domain registers (sample_rem_nonzero_r -> packed_stop_f, run_f_level,
+  -- pump_live_f) through three levels of hierarchy into analog_packer's BRAM
+  -- write-address register. One register stage breaks this path; the extra
+  -- cycle of backpressure latency is absorbed by the elastic buffer (2 entries)
+  -- and the 320-word async-FIFO almost-full cushion downstream.
+  signal Packed_Ready_r : std_logic := '0';
   -- FAST_CLK level: '1' once the capture's tick budget is exhausted (driven
   -- from sample_rem_nonzero_r inside gen_fast_speed). Stops the packed
   -- producer at capture end; otherwise its continuous trickle (digital RLE
@@ -1425,23 +1439,47 @@ begin
                               and run_f_level = '1' and packed_stop_f = '0'
                               and pump_live_f = '1' else '0';
   packed_buf_out_ready <= not packed_afull_r;
+  -- Packed-mode pipeline register: registers in_valid and in_data so the
+  -- elastic buffer's push/enable logic sees clean registered signals rather than
+  -- combinational gating from packed_mode_f / Packed_Ready_r / sample_rem_nonzero_r.
+  process(FAST_CLK)
+  begin
+    if rising_edge(FAST_CLK) then
+      Packed_Data_r <= Packed_Data;
+      packed_buf_in_valid_r <= packed_buf_in_valid;
+    end if;
+  end process;
 
   packed_stream_buf : entity work.fast_capture_elastic_buffer
     generic map (DATA_WIDTH => 16)
     port map (
       clk       => FAST_CLK,
       rst       => packed_buf_rst,
-      in_data   => Packed_Data,
-      in_valid  => packed_buf_in_valid,
+      in_data   => Packed_Data_r,
+      in_valid  => packed_buf_in_valid_r,
       in_ready  => packed_buf_in_ready,
       out_data  => packed_buf_out_data,
       out_valid => packed_buf_out_valid,
       out_ready => packed_buf_out_ready
     );
 
-  Packed_Ready <= '1' when packed_mode_path_f = '1' and run_f_level = '1'
-                       and packed_stop_f = '0' and pump_live_f = '1'
-                       and packed_buf_in_ready = '1' else '0';
+  -- Registered Packed_Ready: breaks the combinational path from the FAST_CLK
+  -- producer registers through mso_capture/analog_packer's BRAM address logic.
+  -- Same pattern as the non-packed fifo_wr_skid buffer below.
+  process(FAST_CLK)
+  begin
+    if rising_edge(FAST_CLK) then
+      if packed_mode_path_f = '1' and run_f_level = '1'
+         and packed_stop_f = '0' and pump_live_f = '1'
+         and packed_buf_in_ready = '1' then
+        Packed_Ready_r <= '1';
+      else
+        Packed_Ready_r <= '0';
+      end if;
+    end if;
+  end process;
+
+  Packed_Ready <= Packed_Ready_r;
 
   -- Non-packed FAST_CLK skid buffer: registers fifo_wdata and fifo_wr from the
   -- producer processes so the dcfifo write port sees clean registered signals.
