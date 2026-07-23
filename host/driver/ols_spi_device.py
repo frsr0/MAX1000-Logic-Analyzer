@@ -786,12 +786,12 @@ class OLSDeviceSPI:
             self.pkt.write_register(REG_PATTERN_CTRL, 0)
             return
         raw_channels = [int(c) for c in config.get("channels", [])]
-        if not 1 <= len(raw_channels) <= 4:
-            raise ValueError("generic pattern trigger requires 1 to 4 data channels")
+        if not 1 <= len(raw_channels) <= 2:
+            raise ValueError("generic pattern trigger requires 1 to 2 data channels")
         if any(channel < 0 or channel > 15 for channel in raw_channels):
             raise ValueError("generic pattern trigger channels must be in range 0..15")
         channels = raw_channels[:]
-        while len(channels) < 4:
+        while len(channels) < 2:
             channels.append(0)
         source = 1 if config.get("clock_source", "external_edge") == "external_edge" else 0
         edge = 1 if config.get("clock_edge", "rising") == "falling" else 0

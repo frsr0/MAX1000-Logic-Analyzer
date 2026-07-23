@@ -4,8 +4,8 @@ use IEEE.NUMERIC_STD.ALL;
 
 -- Protocol-independent sampled pattern trigger.
 --
--- Data_Channel_0..3 are compact selectors for the input bits that are
--- appended on each sample edge. Data_Lane_Count chooses 1..4 of them. The
+-- Data_Channel_0..1 are compact selectors for the input bits that are
+-- appended on each sample edge. Data_Lane_Count chooses 1 or 2 of them. The
 -- module deliberately runs in the system/sample clock domain: an external
 -- clock is detected as an edge on Clock_Channel, which makes the interface
 -- safe to use with the already-synchronised capture inputs.
@@ -20,11 +20,9 @@ entity Generic_Pattern_Trigger is
     Start_Channel     : in  natural range 0 to 15;
     Start_Polarity    : in  std_logic; -- asserted level: 0 = falling, 1 = rising
     Clock_Channel     : in  natural range 0 to 15;
-    Data_Lane_Count   : in  natural range 1 to 4;
+    Data_Lane_Count   : in  natural range 1 to 2;
     Data_Channel_0    : in  natural range 0 to 15;
     Data_Channel_1    : in  natural range 0 to 15;
-    Data_Channel_2    : in  natural range 0 to 15;
-    Data_Channel_3    : in  natural range 0 to 15;
     Baud_Div          : in  natural range 1 to 65535;
     Frame_Width       : in  natural range 1 to 32;
     Match_Value       : in  std_logic_vector(31 downto 0);
@@ -43,9 +41,9 @@ begin
     variable frame       : std_logic_vector(31 downto 0) := (others => '0');
     variable bit_count   : natural range 0 to 32 := 0;
     variable timer       : natural range 0 to 65535 := 0;
-    variable selected    : natural range 1 to 4 := 1;
-    variable sample_word : std_logic_vector(3 downto 0) := (others => '0');
-    variable packed_sample : std_logic_vector(3 downto 0) := (others => '0');
+    variable selected    : natural range 1 to 2 := 1;
+    variable sample_word : std_logic_vector(1 downto 0) := (others => '0');
+    variable packed_sample : std_logic_vector(1 downto 0) := (others => '0');
     variable sample_edge : boolean;
     variable start_edge  : boolean;
     variable started     : boolean := false;
@@ -116,8 +114,6 @@ begin
           selected := Data_Lane_Count;
           sample_word(0) := Inputs(Data_Channel_0);
           sample_word(1) := Inputs(Data_Channel_1);
-          sample_word(2) := Inputs(Data_Channel_2);
-          sample_word(3) := Inputs(Data_Channel_3);
 
           -- The compare register is a fixed left-shifting register. The
           -- selected lanes are reversed into the appended word so that the
@@ -131,13 +127,6 @@ begin
             when 1 => packed_sample(0) := sample_word(0);
             when 2 => packed_sample(1) := sample_word(0);
                      packed_sample(0) := sample_word(1);
-            when 3 => packed_sample(2) := sample_word(0);
-                     packed_sample(1) := sample_word(1);
-                     packed_sample(0) := sample_word(2);
-            when others => packed_sample(3) := sample_word(0);
-                           packed_sample(2) := sample_word(1);
-                           packed_sample(1) := sample_word(2);
-                           packed_sample(0) := sample_word(3);
           end case;
 
           case selected is
@@ -145,10 +134,6 @@ begin
                       frame(0) := packed_sample(0);
             when 2 => frame := std_logic_vector(shift_left(unsigned(frame), 2));
                       frame(1 downto 0) := packed_sample(1 downto 0);
-            when 3 => frame := std_logic_vector(shift_left(unsigned(frame), 3));
-                      frame(2 downto 0) := packed_sample(2 downto 0);
-            when others => frame := std_logic_vector(shift_left(unsigned(frame), 4));
-                           frame(3 downto 0) := packed_sample(3 downto 0);
           end case;
 
           if bit_count + selected >= Frame_Width then
