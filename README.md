@@ -109,13 +109,8 @@ July 7, 2026. No mock sessions are used in this gallery.
 
 ![LIS3DH WHO_AM_I live waveform](frontend/test-results/screenshots/live-accelerometer-session-waveform.png)
 
-### Analog-Fast Hardware Waveform
 
-![Analog fast hardware waveform](frontend/test-results/screenshots/live-analog-fast-waveform.png)
 
-### Maximum-Analog Hardware Waveform
-
-![Maximum analog hardware waveform](frontend/test-results/screenshots/live-dual-analog-waveform.png)
 
 ### Generator Self-Test Capture
 
