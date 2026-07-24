@@ -35,10 +35,20 @@ NUM_CHANNELS = 16
 
 
 def analog_frame_stride(mode: int) -> int:
-    """Dense payload bytes per frame for *mode*."""
+    """Dense payload bytes per frame for *mode*.
+
+    HDL frame formats (Fast_Logic_Analyzer_SDRAM.vhd):
+      Digital-only (mode & MODE_MIXED == False): 2 bytes (16-bit sample)
+      Mixed (MODE_MIXED): 5 bytes (2 digital + 3 ADC for 2 x 12-bit)
+      Analog fast (MODE_ANALOG_FAST, profile "01"): 3 bytes (2 x 12-bit ADC)
+      Maximum analog (MODE_ANALOG_FAST | 0x20): 2 bytes (1 x 12-bit ADC)
+    Wire padding to 16-bit words is handled by analog_wire_stride.
+    """
+    if mode & MODE_MIXED and not (mode & MODE_ANALOG_ONLY):
+        return 5   # mixed: 2 bytes digital + 3 bytes (2 x 12-bit ADC)
     if mode & MODE_ANALOG_ONLY:
         return 12 if mode & 0x20 else 2
-    return 14 if mode & MODE_MIXED else 2
+    return 2  # digital-only
 
 
 def analog_wire_stride(mode: int) -> int:

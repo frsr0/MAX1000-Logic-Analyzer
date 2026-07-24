@@ -91,7 +91,8 @@ Main storage paths:
 ## UI Screenshots
 
 All screenshots below were captured from the attached MAX1000 hardware on
-July 7, 2026. No mock sessions are used in this gallery.
+July 23, 2026 (analog and mixed captures) and July 20–22, 2026 (digital
+captures). No mock sessions are used in this gallery.
 
 ### Device Overview
 
@@ -112,15 +113,33 @@ July 7, 2026. No mock sessions are used in this gallery.
 
 
 
+### Analog Fast Hardware Waveform (1 ADC lane)
+
+![Analog fast hardware waveform](frontend/test-results/screenshots/live-analog-fast-waveform.png)
+
+*Analog-fast capture on AIN5/ADC7 with a 1 kHz PWM generator driving the
+jumper input (PMOD5 → AIN5).  The ADC values oscillate between ~0.04 and
+~1.2 V, showing a clean square wave through the single-lane high-speed
+analog path.*
+
+### Maximum Analog Hardware Waveform (4 ADC lanes)
+
+![Maximum analog hardware waveform](frontend/test-results/screenshots/live-maximum-analog-waveform.png)
+
+*Four physical analog inputs captured together at the scan rate (~125 kHz).
+The jumper wiring (PMOD5 → AIN5, PMOD6 → AIN4) produces visible ADC
+activity on two channels (a1, a2/a3 show ADC noise from floating inputs;
+a4 is idle).  The 1 kHz PWM source is clearly resolved on a1.*
+
+
 ### Generator Self-Test Capture
 
 ![Generator loopback capture](frontend/test-results/screenshots/live-generator-loopback-capture.png)
 
 *SWD self-test capture with packet decode, taken from a connected MAX1000
-board.  The mixed-signal analog waveform screenshot was removed because it
-requires physical jumper wiring (PMOD5→AIN5, PMOD6→AIN4) that is not
-present on every bench; see `test_mixed_analog_mode` in the validation suite
-for the current mixed-signal pass/fail result.*
+board.  The mixed-signal analog waveform is not shown here because the 8
+analog channels capture ADC noise on unconnected inputs — see
+`test_mixed_analog_mode` in the validation suite for the pass/fail result.*
 
 ## Running It
 

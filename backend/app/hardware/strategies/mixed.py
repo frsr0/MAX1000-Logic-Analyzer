@@ -15,6 +15,7 @@ from .base import CaptureDevice, CaptureStrategy
 from driver.wire_format import (
     MODE_MIXED,
     analog_frame_stride,
+    analog_wire_stride,
     decode_analog_frames,
     wire_to_payload,
 )
@@ -40,9 +41,15 @@ class MixedCaptureStrategy(CaptureStrategy):
         stop_evt: Optional[threading.Event] = None,
     ) -> CaptureResult:
         nsamp = int(settings.num_samples)
-        stride = analog_frame_stride(MODE_MIXED)
-        words_per_frame = stride // 2
+        fstride = analog_frame_stride(MODE_MIXED)
+        wstride = analog_wire_stride(MODE_MIXED)
+        # SDRAM words per frame must match the HDL burst length, which is
+        # (Analog_Frame_Len + 1) / 2.  For mixed mode Analog_Frame_Len=5
+        # this gives 3 words per frame.
+        words_per_frame = wstride // 2
         sdram_words = nsamp * words_per_frame
+        # The ADC scan rate is fixed (~125 kHz); words_per_frame scales it
+        # up to the SDRAM word request rate the capture hardware expects.
         request_rate_hz = ADC_SCAN_FRAME_RATE_HZ * words_per_frame
 
         wire = dev.capture(
@@ -56,7 +63,7 @@ class MixedCaptureStrategy(CaptureStrategy):
         if not wire:
             raise HardwareError("Mixed capture returned 0 bytes — FPGA not responding")
 
-        payload = wire_to_payload(wire)[: nsamp * stride]
+        payload = wire_to_payload(wire)[: nsamp * fstride]
         frames = decode_analog_frames(payload, MODE_MIXED)
         if not frames:
             raise HardwareError("Mixed capture returned no complete frames")
@@ -71,15 +78,6 @@ class MixedCaptureStrategy(CaptureStrategy):
             max(1, round(dev.sample_clk / request_rate_hz) - 1) + 1
         )
         rate = actual_rate / words_per_frame
-        capture_divider = max(0, round(dev.sample_clk / request_rate_hz) - 1)
-
-        return CaptureResult(
-            sample_rate=rate,
-            digital=digital,
-            analog=analog,
-            divider=capture_divider,
-        )
-
     def _recover(self, dev: CaptureDevice) -> None:
         super()._recover(dev)
         try:
