@@ -13,7 +13,7 @@ The FPGA has three ADC scan profiles:
 |---|---|---|---|
 | Digital-only | 2-byte frames, 16 digital channels | Used for digital single/continuous/rolling captures | Good; reaches full digital rate |
 | Narrow digital | 2-byte packed words; one selected digital channel, 16 time samples per word | Used for 200 MHz narrow rolling mode | Works in finite and continuous hardware validation |
-| Mixed | 14-byte frames: 16 digital bits plus ADC0-ADC7 packed as eight 12-bit values | Used for mixed mode | Works at 125 kframes/s; digital is sampled once per ADC frame |
+| Mixed | 5-byte frames: 16 digital bits plus ADC0-ADC1 packed as two 12-bit values | Used for mixed mode | Works at 125 kframes/s; digital is sampled once per ADC frame |
 | High-speed analog | 2-byte frames: one selected 12-bit ADC mux result | Used for high-speed analog mode | Works at 1 MSPS; default host selection is ADC1/AIN3 |
 | Maximum analog | 12-byte frames: ADC1,2,3,4,5,7,8,16 packed as eight 12-bit values | Used for maximum analog mode | Works at 125 kframes/s |
 
@@ -21,7 +21,7 @@ Board-guide mapping is not a linear `AIN0..AIN7` sequence. Mixed mode still
 contains two unmapped mux slots, but maximum analog scans the documented
 physical analog profile:
 
-| Board pin | ADC mux channel | Mixed ADC0-ADC7 | Maximum analog |
+| Board pin | ADC mux channel | Mixed ADC0-ADC1 | Maximum analog |
 |---|---:|---|---|
 | AIN1 | ADC2 | Yes | Yes |
 | AIN2 | ADC5 | Yes | Yes |
@@ -47,7 +47,7 @@ digital mode is a digital-only rolling optimization, not a fifth analog mode.
 | User mode | Goal | Current support | Required fix |
 |---|---|---|---|
 | Full digital | 16 digital inputs at maximum digital speed, up to 200 MHz in speed builds | Supported | Keep existing digital path |
-| Mixed | A mix of analog and digital at the best practical combined speed | Supported via 16 digital + ADC0-ADC7 frame at 125 kframes/s | Keep pin-map/noise validation current |
+| Mixed | A mix of analog and digital at the best practical combined speed | Supported via 16 digital + ADC0-ADC1 frame at 125 kframes/s | Keep pin-map/noise validation current |
 | High-speed analog | Maximum analog detail for one selected physical analog input | Implemented as a one-slot ADC profile | Add UI channel selector beyond default ADC1/AIN3 |
 | Maximum analog | All verified physical analog inputs at best per-channel detail | Implemented as ADC1,2,3,4,5,7,8,16 profile at 125 kframes/s | Keep physical-input validation current |
 
@@ -63,7 +63,7 @@ Implemented:
    ADC16.
 5. `OLS_SDRAM_Top` selects slots per profile and toggles the analog frame on
    `adc0_valid` for high-speed analog or `adc7_valid` for 8-slot profiles.
-6. Frame formats are decoded by the host as 14-byte mixed, 2-byte high-speed
+6. Frame formats are decoded by the host as 5-byte mixed, 2-byte high-speed
    analog, or 12-byte maximum analog.
 7. Narrow digital uses `REG_FLAGS` bit 13 plus bits 17:14 for the selected
    digital channel and packs 16 consecutive time samples per word.

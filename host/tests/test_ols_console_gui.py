@@ -224,7 +224,7 @@ class TestOLScopeRateLimits:
         assert rate <= 50_000_000
 
     def test_rolling_2ana_clamps(self):
-        """Rolling 2-ana clamps to ~2.1 MHz (30 MB/s / 14-byte wire stride)."""
+        """Rolling 2-ana clamps using the 6-byte padded wire stride."""
         scope = _make_scope()
         scope.capture_type = MagicMock()
         scope.capture_type.get.return_value = 'rolling'
@@ -238,7 +238,7 @@ class TestOLScopeRateLimits:
         assert rate >= 2_000_000
 
     def test_rolling_2ana_compressed_clamps_higher(self):
-        """Rolling 2-ana compressed clamps to ~5.7 MHz (80 MB/s / 14-byte wire stride)."""
+        """Rolling 2-ana compressed clamps using the 6-byte wire stride."""
         scope = _make_scope()
         scope.capture_type = MagicMock()
         scope.capture_type.get.return_value = 'rolling'

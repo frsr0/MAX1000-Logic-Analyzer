@@ -15,7 +15,7 @@ hardware contract, register map, or validated build changes.
 | Deep capture | 4,194,304 16-bit SDRAM words |
 | Physical generator pin pool | 26 entries: MKR_D[14:0], PMOD[7:0], SEN_SDO, SEN_SDI, SEN_SPC |
 | Generator FIFO | 256 bytes of host-encoded 2-bit symbols |
-| Latest programmed SOF | Full-feature seed-44 image, checksum `0x00515DB0` (2026-07-23) |
+| Latest programmed SOF | Full-feature seed-30 image, checksum `0x0050CF93` (2026-07-26) |
 | Persisted configuration POF | `OLS_Logic_Analyzer.pof`, checksum `0x01D65FD0`; verified after power cycle (2026-07-22) |
 
 The 2026-07-23 re-build closed timing on fast_clk at 200.4 MHz with seed 44
@@ -30,10 +30,11 @@ after the packed-mode pipeline registers).  Post-fit STA reports:
 See [Fast Capture Stream](hdl/fast-capture-stream.md) for the three register-stage
 fixes and the dcfifo multicycle constraint.
 
-The same 2026-07-23 image was programmed and the full connected-board
-regression recorded **358/358 passed, 0 failed, 0 skipped**.  The count dropped
-from 369 to 358 because the jumper-pair discovery now runs early and two
-previously-separate generator-sweep tests were consolidated.
+The 2026-07-26 seed-30 image was rerun on the connected board. The baseline run
+was **357/380 passed, 23 failed, 0 skipped**. After correcting
+the mixed-frame contract and ring/codec test assumptions, focused regression is
+**117/117 passed**; capture-visible LIS3DH I²C/SPI decode passes.
+The final exhaustive hardware suite is **387/387 passed, 0 failed, 0 skipped**.
 
 Two new hardware-trigger tests were added:
 

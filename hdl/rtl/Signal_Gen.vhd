@@ -610,32 +610,15 @@ begin
       read_src_q <= issue_src_v;
       read_addr_q <= issue_addr_v;
 
-      -- Abort/flush takes precedence over same-cycle loads and start requests.
+      -- Clear FIFO pointers but NOT the generator state machines or pin output.
+      -- A running (repeating) generator keeps producing its waveform through
+      -- the repeat engine; a finished burst leaves the pin in its last driven
+      -- state. This decouples CMD_ABORT_CAPTURE from Gen_Clear so the
+      -- generator can survive capture resets for mixed-mode analog capture.
       if Clear = '1' then
         wr_ptr <= (others => '0');
         rd_ptr <= (others => '0');
         used_count <= 0;
-        tx_active <= '0';
-        active_mode <= MODE_NONE;
-        start_d <= Start;
-        read_issue_q <= '0';
-        read_src_q <= READ_NONE;
-        read_valid_q <= '0';
-        tx_out_r <= '1';
-        scl_out_r <= '1';
-        uart_state <= UART_IDLE;
-        spi_state <= SPI_IDLE;
-        i2c_state <= I2C_IDLE;
-        uart_baud_cnt <= 0;
-        uart_bit_idx <= 0;
-        uart_crc_run <= '0';
-        uart_crc_phase <= 0;
-        repeat_active <= '0';
-        repeat_count <= 0;
-        repeat_left <= 0;
-        i2c_bit_idx <= 0;
-        i2c_rd_remain <= 0;
-        i2c_read_phase <= '0';
       end if;
     end if;
   end process;

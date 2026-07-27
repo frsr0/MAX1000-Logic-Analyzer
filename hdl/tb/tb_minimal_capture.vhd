@@ -259,6 +259,10 @@ begin
       report "CAPTURE NOT DONE after " & integer'image(deadline)
              & " polls, status=" & to_hstring(st) severity failure;
     end if;
+    assert unsigned(producer_index_s) = 64
+      report "single-shot producer index should report 64 committed words, got "
+             & integer'image(to_integer(unsigned(producer_index_s)))
+      severity failure;
     report "=== CAPTURE DONE ===";
     std.env.finish;
   end process;

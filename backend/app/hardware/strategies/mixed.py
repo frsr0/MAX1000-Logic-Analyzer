@@ -63,7 +63,7 @@ class MixedCaptureStrategy(CaptureStrategy):
         if not wire:
             raise HardwareError("Mixed capture returned 0 bytes — FPGA not responding")
 
-        payload = wire_to_payload(wire)[: nsamp * fstride]
+        payload = wire_to_payload(wire, MODE_MIXED)[: nsamp * fstride]
         frames = decode_analog_frames(payload, MODE_MIXED)
         if not frames:
             raise HardwareError("Mixed capture returned no complete frames")
@@ -78,6 +78,11 @@ class MixedCaptureStrategy(CaptureStrategy):
             max(1, round(dev.sample_clk / request_rate_hz) - 1) + 1
         )
         rate = actual_rate / words_per_frame
+        return CaptureResult(
+            digital=digital,
+            analog=analog,
+            sample_rate=rate,
+        )
     def _recover(self, dev: CaptureDevice) -> None:
         super()._recover(dev)
         try:

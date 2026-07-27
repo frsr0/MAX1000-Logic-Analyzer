@@ -224,6 +224,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal pump_accept_q : boolean := false;
   signal pump_stall_q  : boolean := false;
   signal pump_nodata_q : boolean := false;
+  signal producer_accept_q : boolean := false;
   signal cont_accept_q : boolean := false;
   signal cont_meta_reset_q : std_logic := '0';
   signal ring_used         : natural range 0 to CONT_RING_WORDS := 0;
@@ -1655,6 +1656,7 @@ begin
     variable pump_accept_v : boolean := false;
     variable pump_stall_v  : boolean := false;
     variable pump_nodata_v : boolean := false;
+    variable producer_accept_v : boolean := false;
     variable cont_accept_v : boolean := false;
   begin
     if rising_edge(pclk) then
@@ -1668,6 +1670,7 @@ begin
       pump_accept_v := false;
       pump_stall_v := false;
       pump_nodata_v := false;
+      producer_accept_v := false;
       cont_accept_v := false;
       fifo_rd <= '0';
       s_wr <= '0';
@@ -2037,6 +2040,7 @@ begin
               pump_valid_v := true;
               pump_ready_v := true;
               pump_accept_v := true;
+              producer_accept_v := true;
               prefetch_valid_r <= '0';
               if Continuous_Mode = '1' then
                 cont_accept_v := true;
@@ -2132,16 +2136,19 @@ begin
         newest_index_u <= (others => '0');
         overrun_count_u <= (others => '0');
         ring_used <= 0;
-      elsif cont_accept_q then
+      elsif producer_accept_q then
         newest_index_u <= producer_index_u;
         producer_index_u <= producer_index_u + 1;
-        if ring_used < CONT_RING_WORDS then
-          ring_used <= ring_used + 1;
-        else
-          oldest_index_u <= oldest_index_u + 1;
-          overrun_count_u <= overrun_count_u + 1;
+        if cont_accept_q then
+          if ring_used < CONT_RING_WORDS then
+            ring_used <= ring_used + 1;
+          else
+            oldest_index_u <= oldest_index_u + 1;
+            overrun_count_u <= overrun_count_u + 1;
+          end if;
         end if;
       end if;
+      producer_accept_q <= producer_accept_v;
       cont_accept_q <= cont_accept_v;
       -- Off the REGISTERED address mirror on purpose — see the declaration
       -- comment for the two-cycle-lag validity argument.

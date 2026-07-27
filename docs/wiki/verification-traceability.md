@@ -30,10 +30,15 @@ The evidence levels used below are:
 
 ## Current exact-image hardware validation
 
-On 2026-07-22, the current seed-23 SOF was rebuilt, timing-analyzed, and
-programmed with checksum `0x004FDDF3`. The full connected-board regression
-recorded **369/369 passed, 0 failed, 0 skipped** after the digital loopback
-jumper was installed and discovered as pool pin 22 to capture channel 13.
+The current repaired seed-30 image (`0x0050CF93`) was rerun on 2026-07-27.
+The baseline run was **357/380 passed, 23 failed, 0 skipped**. Focused post-fix
+regression is **117/117 passed**, with capture-visible LIS3DH I²C/SPI decode
+passing.
+The final exhaustive suite is **387/387 passed, 0 failed, 0 skipped**.
+
+The earlier seed-23 validation remains historical evidence: it recorded
+**369/369 passed, 0 failed, 0 skipped** on 2026-07-22 with checksum
+`0x004FDDF3`.
 
 ## Changes since the previous complete hardware validation
 

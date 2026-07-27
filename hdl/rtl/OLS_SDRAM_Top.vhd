@@ -86,6 +86,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal sys_clk     : std_logic := '0';
   signal pll_locked  : std_logic := '0';
   signal internal_data_r : std_logic_vector(LA_CHANNELS-1 downto 0) := (others => '0');
+  signal internal_data_meta : std_logic_vector(LA_CHANNELS-1 downto 0) := (others => '0');
   signal gen_busy      : std_logic := '0';
   signal gen_tx        : std_logic;
   signal gen_scl       : std_logic;
@@ -544,29 +545,17 @@ BEGIN
   SEN_SDI <= gen_tx when (gen_busy = '1' and gen_spi_test = '1') else
              '0'    when (gen_busy = '1' and gen_tx = '0') else 'Z';
   SEN_SPC <= gen_scl when gen_busy = '1' else 'Z';
-
+  -- CDC: synchronize capture_data_fast (fast_clk domain) into sys_clk domain.
+  -- The fast capture path has correctly-sampled pin+generator data; this 2-FF
+  -- sync replaces the old pin_pool(pin_map(i)) mux which carried ADC scan
+  -- artifacts on dual-purpose analog/digital pins in FAST_SPEED mixed mode.
   gen_sys_capture_fast : if FAST_SPEED generate
   begin
     process(sys_clk)
     begin
       if rising_edge(sys_clk) then
-        for i in 0 to LA_CHANNELS-1 loop
-          if gen_capture_active = '1' and gen_tx_pin = pin_map(i) then
-            internal_data_r(i) <= gen_tx_d2;
-          elsif gen_capture_active = '1' and gen_rs485_pair = '1' and gen_scl_pin = pin_map(i) then
-            internal_data_r(i) <= not gen_tx_d2;
-          elsif gen_capture_active = '1' and gen_scl_pin = pin_map(i) then
-            internal_data_r(i) <= gen_scl_d2;
-          elsif gen_capture_active = '1' and gen_capture_cs_enable = '1'
-                and i = gen_capture_cs_channel then
-            internal_data_r(i) <= gen_cs_capture;
-          elsif gen_capture_active = '1' and gen_capture_miso_enable = '1'
-                and i = gen_capture_miso_channel then
-            internal_data_r(i) <= gen_miso_in;
-          else
-            internal_data_r(i) <= pin_pool(pin_map(i));
-          end if;
-        end loop;
+        internal_data_meta <= capture_data_fast;
+        internal_data_r    <= internal_data_meta;
       end if;
     end process;
   end generate;
@@ -901,8 +890,8 @@ BEGIN
       if analog_only = '1' and analog_profile /= "01" then
         adc0_sel <= analog_channel;
         adc1_start <= '0';
-      else
-        adc0_sel <= 1;
+        adc0_sel <= analog_channel;
+        adc1_sel <= analog_channel + 1;
         adc1_sel <= 2;
       end if;
     end if;

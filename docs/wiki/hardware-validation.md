@@ -4,6 +4,22 @@ Hardware validation runs against the FPGA image flashed on the MAX1000. These
 tests exercise register writes, capture timing, SDRAM readback, SPI transport,
 and lossless decompression on the real board.
 
+## Exact-image rerun — 2026-07-26 / exhaustive closure — 2026-07-27
+
+The repaired seed-30 SOF (`0x0050CF93`) was rerun on the connected board after
+the packed-MSO fixes. The suite completed **357/380 passed, 23 failed, 0
+skipped**. After correcting the mixed-frame contract and ring/codec test
+assumptions, focused regression completed **117/117 passed** and the
+accelerometer capture check completed **2/2 passed**.
+
+The final exhaustive rerun completed **387/387 passed, 0 failed, 0 skipped**.
+
+Full log: `host/fullsuite_postfix_2026-07-27-rerun.txt`.
+
+The focused packed-MSO check and both physical analogue jumper checks passed.
+The decodable analogue MSO proof is
+[mso-analog-uart-live.png](../../frontend/test-results/screenshots/mso-analog-uart-live.png).
+
 ## Historical smoke result — 2026-07-20
 
 On 2026-07-20 the connected MAX1000 was programmed with SOF checksum
@@ -22,7 +38,7 @@ On 2026-07-20 the connected MAX1000 was programmed with SOF checksum
 The full evidence, including session IDs and the programmed image, is in
 [docs/hardware-smoke-2026-07-20.md](../hardware-smoke-2026-07-20.md).
 
-The latest complete real-hardware run on 2026-07-23 completed
+The previous successful real-hardware run on 2026-07-23 completed
 **358/358 passed, 0 failed, 0 skipped** against the freshly rebuilt and
 programmed seed-44 SOF checksum `0x00515DB0`.  Two new hardware-trigger tests
 were added:

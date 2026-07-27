@@ -9,6 +9,9 @@ physical acquisition. Physical capture validation is recorded separately in
 the [hardware validation report](hardware-validation.md), including the
 full-rate digital, narrow, analog, mixed, codec, and readback checks.
 
+The exact-image physical MSO analogue proof is shown separately here:
+[PMOD6→AIN4/ADC3 UART loopback](../../frontend/test-results/screenshots/mso-analog-uart-live.png).
+
 | Mode | Acquisition | Rate | Screenshot |
 |---|---|---:|---|
 | Digital deep | single | 10 kHz | [PNG](../../frontend/test-results/screenshots/hardware-matrix-digital-deep-single-10-khz.png) |

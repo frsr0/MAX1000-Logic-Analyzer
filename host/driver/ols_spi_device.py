@@ -206,6 +206,8 @@ class OLSDeviceSPI:
         self.analog_mode = MODE_DIGITAL
         self.analog_channel = 1
         self.debug_ch0_enabled = False
+        self._debug_ch0_freq_hz = 100_000.0
+        self._debug_ch0_duty_pct = 50.0
         self._protocol_trigger = None
         # Pending flag for live toggling during rolling capture
         self._pending_debug_enable = None
@@ -612,7 +614,12 @@ class OLSDeviceSPI:
         """Run one Bit_Engine burst on the accelerometer bus and return the
         RX line samples (one bit per symbol, trailing partial byte lost)."""
         self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)  # flush FIFOs
-        flags = (1 << 8) | (GEN_FLAG_SPI_TEST if spi_test else 0)
+        # Keep the accelerometer attach route enabled for direct RX reads as
+        # well as capture-visible dialogue. Without it the Bit_Engine sees
+        # its own idle level even though the mirrored capture path can decode
+        # the sensor response.
+        flags = (1 << 8) | GEN_FLAG_ACCEL_ATTACH | \
+            (GEN_FLAG_SPI_TEST if spi_test else 0)
         self.pkt.write_register(REG_GEN_DATA, flags)
         self.pkt.write_register(REG_GEN_PROTO, 0)
         # Park both routing pins on unmapped pool entries so the burst does
@@ -734,7 +741,7 @@ class OLSDeviceSPI:
             time.sleep(max(0.0, float(poll)))
         return False
 
-    def set_bitbang_pwm(self, enable=True, freq_hz=None, duty_pct=50,
+    def set_bitbang_pwm(self, enable=True, freq_hz=None, duty_pct=None,
                         tx_pin=0, cycles=8, repeat=False):
         """Generate a PWM burst, optionally repeating it in FPGA hardware.
 
@@ -747,10 +754,16 @@ class OLSDeviceSPI:
         if not enable:
             self.pkt.transaction(CMD_GEN_STOP, timeout=0.5)
             return
-        freq = max(1.0, float(freq_hz or 100_000.0))
+        if freq_hz is not None:
+            self._debug_ch0_freq_hz = max(1.0, float(freq_hz))
+        if duty_pct is not None:
+            self._debug_ch0_duty_pct = max(
+                0.0, min(100.0, float(duty_pct)))
+        freq = self._debug_ch0_freq_hz
         symbol_rate = min(self.sys_clk, max(1_000_000, int(freq * 32)))
         period = max(2, int(round(symbol_rate / freq)))
-        duty = max(0, min(period, int(round(period * float(duty_pct) / 100.0))))
+        duty = max(0, min(period, int(round(
+            period * self._debug_ch0_duty_pct / 100.0))))
         symbols = []
         for _ in range(max(1, int(cycles))):
             symbols.extend([1] * duty)
@@ -761,8 +774,34 @@ class OLSDeviceSPI:
 
     # Compatibility name for older scripts; it now drives Bit_Engine PWM and
     # does not access the retired debug register addresses.
-    def set_debug_ch0(self, enable=True, freq_hz=None, duty_pct=50):
-        self.set_bitbang_pwm(enable, freq_hz, duty_pct)
+    def set_debug_ch0(self, enable=True, freq_hz=None, duty_pct=None):
+        # Capture setup resets the Bit Engine and then calls this compatibility
+        # hook again without arguments. Preserve the requested waveform and
+        # repeat it in hardware so the source remains active for the complete
+        # capture window instead of ending after the first eight PWM cycles.
+        self.set_bitbang_pwm(
+            enable, freq_hz, duty_pct, repeat=bool(enable))
+
+    def _trim_packed_capture(self, samples, status):
+        """Trim packed single-shot readback to committed SDRAM words."""
+        if not (self._raw_flags & MODE_PACKED_MSO):
+            return samples
+        producer = status.get('producer_index') if status else None
+        if producer is None:
+            return samples
+        valid_words = max(0, int(producer))
+        if valid_words <= 0:
+            return samples
+        return samples[:valid_words * 2]
+
+    def _capture_read_words(self, requested_words, status):
+        """Return the number of SDRAM words that should be read back."""
+        if not (self._raw_flags & MODE_PACKED_MSO):
+            return requested_words
+        producer = status.get('producer_index') if status else None
+        if producer is None or int(producer) <= 0:
+            return requested_words
+        return min(requested_words, int(producer))
 
     def trigger_decode(self, match_byte=0x57, channel=0, baud=115200, enable=True):
         """Configure frontend protocol triggering for a UART byte match.
@@ -1247,6 +1286,17 @@ class OLSDeviceSPI:
         self.spi.flush()
         status = self.pkt.arm_capture()
         if status < 0:
+            # A preceding capture can leave the FPGA handoff state busy for
+            # one SPI transaction. Abort/flush and retry once instead of
+            # silently returning an empty generator to callers.
+            try:
+                self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+                self.spi.flush()
+                time.sleep(0.005)
+            except Exception:
+                pass
+            status = self.pkt.arm_capture()
+        if status < 0:
             return
 
         buf = b''
@@ -1344,6 +1394,14 @@ class OLSDeviceSPI:
         self.set_debug_ch0(self.debug_ch0_enabled)
         self.spi.flush()
         status = self.pkt.arm_capture()
+        if status < 0:
+            try:
+                self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+                self.spi.flush()
+                time.sleep(0.005)
+            except Exception:
+                pass
+            status = self.pkt.arm_capture()
         if status < 0:
             return
 
@@ -1801,12 +1859,15 @@ class OLSDeviceSPI:
                 with open(_trace, "a") as f:
                     f.write(f"gen_capture: status transitions={seen} "
                             f"timed_out={time.time() >= deadline}\n")
-            need = rc * 2
-            samples = self._stream_readback(0, rc)[:need]
+            read_words = self._capture_read_words(rc, st)
+            need = read_words * 2
+            samples = self._stream_readback(0, read_words)[:need]
+            samples = self._trim_packed_capture(samples, st)
             # Same 256-sample-boundary readout-inversion repair as capture(); the
             # gen-capture path was missing it, which corrupted ~1 sample every 256
             # (≈1.5 UART bytes here) and garbled multi-byte loopback decodes.
-            if not (self.analog_mode & MODE_MIXED):
+            if not (self.analog_mode & MODE_MIXED) \
+                    and not (self._raw_flags & MODE_PACKED_MSO):
                 samples = self._repair_boundary_glitches(samples, 0)
             if expected_seq is not None:
                 self.ack_capture_done(expected_seq)
@@ -1945,8 +2006,9 @@ class OLSDeviceSPI:
         # is contiguous 16-bit little-endian samples: rc samples = rc*2 bytes,
         # decoded at stride 2. (One 1024-byte block carries 512 samples.)
         t_read = time.perf_counter()
-        need = rc * 2
-        samples = self._stream_readback(0, rc)[:need]
+        read_words = self._capture_read_words(rc, st)
+        need = read_words * 2
+        samples = self._stream_readback(0, read_words)[:need]
         self._timings['last_capture_readback_s'] = time.perf_counter() - t_read
         if not (self.analog_mode & MODE_MIXED) \
                 and not (self._raw_flags & MODE_PACKED_MSO):
@@ -1955,14 +2017,7 @@ class OLSDeviceSPI:
             self.ack_capture_done(expected_seq)
 
         stride = analog_frame_stride(self.analog_mode)
-        if (self._raw_flags & MODE_PACKED_MSO) and st.get('producer_index') is not None:
-            # Packed captures do not necessarily fill the whole requested SDRAM
-            # window. Some single-shot reads report producer_index=0 even when
-            # the capture buffer is valid, so only trust the hardware-written
-            # word count when it is non-zero.
-            valid_words = max(0, int(st.get('producer_index')))
-            if valid_words > 0:
-                samples = samples[:valid_words * 2]
+        samples = self._trim_packed_capture(samples, st)
         if samples and any(samples[i:i+stride] != b'\x00' * stride
                            for i in range(0, len(samples), stride)):
             for i in range(0, len(samples), stride):

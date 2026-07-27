@@ -158,50 +158,57 @@ begin
             cnt(i) <= cnt(i) + 1;
           end if;
         end loop;
-        -- ---- Stage 1: round-robin search (every cycle) ----
-        -- Searches for the next pending slice starting at rr. Always registers
-        -- the result; stage 2 gates on found_pre to avoid redundant work.
-        found := false;
-        sel   := 0;
-        for k in 0 to 3 loop
-          j := to_integer(rr) + k;
-          if j > 3 then j := j - 4; end if;
-          if not found and pend(j) = '1' then
-            sel   := j;
-            found := true;
-          end if;
-        end loop;
-        sel_pre <= sel;
-        if found then found_pre <= '1'; else found_pre <= '0'; end if;
-
-        -- ---- Stage 2: capture run data; advance only when stage 3 is free ----
+        -- ---- Stage 2: capture run data when its holding register is free ----
         -- Reads cap_val/cap_dur through the registered sel_pre (breaking the
         -- search mux chain from the array read), then clears pend_v so the
         -- tracking loop can queue the next run. The pend clear and cap read
         -- are in the same cycle, so the tracking loop (which already ran this
         -- cycle) cannot overwrite the captured data.
-        if found_pre = '1' and (found_r = '0' or (packet_valid_r = '1' and packet_ready = '1')) then
+        if found_pre = '1' and found_r = '0' then
           sel_r     <= sel_pre;
           cap_val_r <= cap_val(sel_pre);
           cap_dur_r <= cap_dur(sel_pre);
           found_r   <= '1';
           pend_v(sel_pre) := '0';
           rr        <= to_unsigned((sel_pre + 1) mod 4, 2);
-        elsif found_r = '1' and packet_valid_r = '1' and packet_ready = '1' then
-          found_r   <= '0';
         end if;
 
-        -- ---- Stage 3: emit packet from registered pipeline ----
-        if found_r = '1' and (packet_valid_r = '0' or packet_ready = '1') then
+        -- ---- Stage 3: move the held packet into the output slot once ----
+        -- found_r represents only the stage-2 holding register. Clear it as
+        -- soon as that packet moves to packet_out; otherwise an accepted
+        -- packet is emitted again on the following cycle.
+        if found_r = '1' and
+           (packet_valid_r = '0' or packet_ready = '1') then
           packet_out   <= '1'
                         & std_logic_vector(to_unsigned(sel_r, 2))
                         & cap_val_r
                         & std_logic_vector(cap_dur_r);
           packet_valid_r <= '1';
-        elsif packet_ready = '1' then
+          found_r <= '0';
+        elsif packet_valid_r = '1' and packet_ready = '1' then
           packet_valid_r <= '0';
         end if;
 
+        -- ---- Stage 1: round-robin search (every cycle) ----
+        -- Search the registered pending set, excluding the slice stage 2
+        -- captures on this edge. Using pend_v here would put the saturation
+        -- comparators and tracking updates in the 200 MHz selection path;
+        -- the explicit exclusion keeps that path registered while preventing
+        -- the just-drained slice from being selected a second time.
+        found := false;
+        sel   := 0;
+        for k in 0 to 3 loop
+          j := to_integer(rr) + k;
+          if j > 3 then j := j - 4; end if;
+          if not found and pend(j) = '1'
+             and not (found_pre = '1' and found_r = '0'
+                      and j = sel_pre) then
+            sel   := j;
+            found := true;
+          end if;
+        end loop;
+        sel_pre <= sel;
+        if found then found_pre <= '1'; else found_pre <= '0'; end if;
 
 
         pend    <= pend_v;

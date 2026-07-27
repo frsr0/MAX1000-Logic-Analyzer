@@ -685,7 +685,7 @@ class ExistingHostAdapter(HardwareDevice):
             self._log(f"gen_capture {cfg.protocol} nsamp={nsamp}")
             # Generator loopback is digital-only; a previous mixed-analog
             # capture leaves the device in MODE_MIXED, which would make the
-            # FPGA stream 14-byte analog frames that stride-4 parsing turns
+            # FPGA stream 5-byte mixed frames that stride-4 parsing turns
             # into garbage. Force digital mode first.
             dev.set_analog_config(0)
 

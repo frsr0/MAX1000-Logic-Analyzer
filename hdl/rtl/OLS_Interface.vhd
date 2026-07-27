@@ -226,6 +226,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL disp_gen_start       : STD_LOGIC := '0';
   SIGNAL disp_gen_load    : STD_LOGIC := '0';
   SIGNAL disp_gen_data    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+  SIGNAL disp_gen_stop       : STD_LOGIC := '0';
   SIGNAL block_rd_pending     : STD_LOGIC := '0';
   SIGNAL block_rd_ack         : STD_LOGIC := '0';
   SIGNAL block_rd_addr        : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
@@ -863,7 +864,7 @@ BEGIN
     IF RISING_EDGE(CLK) THEN
       Gen_Load_We <= '0';
       Gen_Start <= '0';
-      Gen_Clear <= disp_abort;  -- abort stops the generator and flushes its FIFO
+      Gen_Clear <= disp_abort or disp_gen_stop;  -- abort clears FIFO; gen_stop also clears FIFO
 
       IF (disp_gen_load = '1' AND disp_gen_load_d = '0')
          OR (gen_reg_load_req = '1' AND gen_reg_load_req_d = '0') THEN
@@ -1194,6 +1195,7 @@ BEGIN
       raw_blk_req_fire <= '0';
       raw_fifo_rdreq <= '0';
       raw_comp_pop <= '0';
+      disp_gen_stop <= '0';
 
       -- (The idle-loop SDRAM prefetch that used to live here was removed:
       -- a prefetch block read was never released by anyone — its ack/pending
@@ -1556,9 +1558,8 @@ BEGIN
 
             when CMD_GEN_START =>
               disp_gen_start <= '1';
-              st := BUILD_RSP;
-
             when CMD_GEN_STOP =>
+              disp_gen_stop <= '1';
               st := BUILD_RSP;
 
             when CMD_GEN_LOAD =>
