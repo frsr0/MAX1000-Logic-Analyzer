@@ -332,13 +332,26 @@ class CaptureManager:
                                             "sample_rate": result.sample_rate,
                                             "repeat": run,
                                             "rolling": settings.mode in continuous_modes})
+                # A live request with auto_rearm disabled is a bounded
+                # one-chunk probe (used by API clients and evidence capture).
+                # Do not immediately arm a second hardware capture; that race
+                # makes a normal client stop look like an FPGA failure.
+                if settings.mode in continuous_modes and not settings.auto_rearm:
+                    break
                 if settings.mode in single_modes and run >= repeat:
                     break
                 if not settings.auto_rearm and settings.mode in single_modes:
                     break
             self.capture_state = "cancelled" if self._stop_evt.is_set() else "done"
         except HardwareError as e:
-            cancelled = "cancel" in str(e).lower()
+            # A live capture is intentionally stopped while the worker is
+            # between chunks.  The underlying driver reports the interrupted
+            # read as an empty capture, which the strategy wraps in a
+            # HardwareError.  Treat that expected stop as cancellation rather
+            # than poisoning the run with a misleading "FPGA not responding"
+            # error (and losing the valid session just published for the prior
+            # chunk).
+            cancelled = self._stop_evt.is_set() or "cancel" in str(e).lower()
             self.capture_state = "cancelled" if cancelled else "error"
             self.last_error = None if cancelled else str(e)
             if cancelled:

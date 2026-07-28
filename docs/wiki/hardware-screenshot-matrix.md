@@ -12,6 +12,30 @@ full-rate digital, narrow, analog, mixed, codec, and readback checks.
 The exact-image physical MSO analogue proof is shown separately here:
 [PMOD6→AIN4/ADC3 UART loopback](../../frontend/test-results/screenshots/mso-analog-uart-live.png).
 
+## Physical acquisition evidence
+
+The following screenshots are from the connected-board acquisition run (not
+just control-panel selection). Each has a completed session and waveform
+metadata; see the [run manifest](../../frontend/test-results/screenshots/hardware-validated-matrix.json).
+
+| Mode | Acquisition | Rate | Screenshot |
+|---|---|---:|---|
+| Digital deep | single | 10 kHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-single-10000.png) |
+| Digital deep | single | 100 kHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-single-100000.png) |
+| Digital deep | single | 500 kHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-single-500000.png) |
+| Digital deep | single | 1 MHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-single-1000000.png) |
+| Digital deep | single | 2 MHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-single-2000000.png) |
+| Digital deep | single | 5 MHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-single-5000000.png) |
+| Digital deep | single | 10 MHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-single-10000000.png) |
+| Digital deep | single | 12.5 MHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-single-12500000.png) |
+| Digital deep | single | 14 MHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-single-14000000.png) |
+| Digital deep | single | 20 MHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-single-20000000.png) |
+| Digital deep | single | 50 MHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-single-50000000.png) |
+| Digital deep | single | 100 MHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-single-100000000.png) |
+| Digital deep | single | 200 MHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-single-200000000.png) |
+
+Failed or interrupted attempts are deliberately not linked as evidence.
+
 | Mode | Acquisition | Rate | Screenshot |
 |---|---|---:|---|
 | Digital deep | single | 10 kHz | [PNG](../../frontend/test-results/screenshots/hardware-matrix-digital-deep-single-10-khz.png) |
