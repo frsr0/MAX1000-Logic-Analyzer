@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
@@ -52,6 +52,25 @@ DIGITAL_FAST_BRAM_SAMPLES = 1024
 # of samples with 0 drops). 1M was the conservative pre-fix ceiling.
 DIGITAL_SDRAM_WORDS = 4_194_304
 DIGITAL_NARROW_LOGICAL_SAMPLES = DIGITAL_SDRAM_WORDS * 16
+
+
+def _adapt_driver_progress(progress: Optional[ProgressCb]) -> Optional[Callable[..., None]]:
+    """Translate the host driver's raw-buffer callback to the backend contract.
+
+    The host driver reports ``(partial_bytes, samples_read, buffer_samples)``.
+    Backend devices report ``(samples_read, samples_total, phase)``.  Keeping
+    this conversion at the hardware boundary prevents raw sample buffers from
+    leaking into API status and WebSocket progress messages.  The host driver's
+    callback contract is explicit here; do not infer a contract from payload
+    types because a byte count can be numeric too.
+    """
+    if progress is None:
+        return None
+
+    def report(_partial: Any, total: Any, buffer_samples: Any) -> None:
+        progress(int(total), int(buffer_samples), "capturing")
+
+    return report
 
 
 def hardware_available() -> bool:
@@ -344,8 +363,10 @@ class ExistingHostAdapter(HardwareDevice):
             self._log(f"capture rate={settings.sample_rate:.0f} "
                       f"nsamp={settings.num_samples} mode={settings.mode}")
             try:
+                driver_progress = _adapt_driver_progress(progress)
                 result = strategy.capture(dev, settings, trigger=trigger,
-                                          progress=progress, stop_evt=stop_evt)
+                                          progress=driver_progress,
+                                          stop_evt=stop_evt)
             except HardwareError:
                 self._recover_after_failed_capture()
                 raise
@@ -392,11 +413,12 @@ class ExistingHostAdapter(HardwareDevice):
             dev._raw_flags = (old_flags & ~0x3E000) | narrow_digital_flags(channel)
             dev.set_analog_config(0)
             try:
+                driver_progress = _adapt_driver_progress(progress)
                 for data, total, window_samp, overrun in dev.stream_ring_capture(
                         rate_hz=float(settings.sample_rate),
                         window_samples=window_samples,
                         stop_evt=stop_evt or threading.Event(),
-                        progress_cb=progress):
+                        progress_cb=driver_progress):
                     sample_count = min(
                         len(data) // 2 * 16, window_samp * 16)
                     digital = unpack_narrow_digital_words(
@@ -689,9 +711,7 @@ class ExistingHostAdapter(HardwareDevice):
             # into garbage. Force digital mode first.
             dev.set_analog_config(0)
 
-            def cb(partial, got, total):
-                if progress:
-                    progress(int(got), int(total), "capturing")
+            cb = _adapt_driver_progress(progress)
 
             if cfg.protocol == "i2c":
                 # On the MAX1000 board, the useful I2C loopback is the real

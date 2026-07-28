@@ -415,7 +415,27 @@ def test_adapter_generator_capture_unknown_empty_and_progress_paths():
     progress = Mock()
     adapter.capture_with_generator(CaptureSettings(num_samples=4),
                                     GeneratorConfig(protocol="uart"), progress=progress)
-    assert progress.called
+    progress.assert_called_once_with(4, 8, "capturing")
+
+
+def test_adapter_normalizes_driver_progress_payload_before_backend_callback():
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+    adapter._dev = dev
+
+    def capture(**kwargs):
+        kwargs["progress_cb"](b"\x01\x00" * 4, 4, 8)
+        return b"\x01\x00" * 4
+
+    dev.capture = Mock(side_effect=capture)
+    progress = Mock()
+
+    adapter.capture(
+        CaptureSettings(mode="single", sample_rate=1_000_000, num_samples=4),
+        progress=progress,
+    )
+
+    progress.assert_called_once_with(4, 8, "capturing")
 
 
 def test_adapter_analog_and_mixed_strategies_decode_wire_frames():
@@ -572,7 +592,10 @@ def test_adapter_generator_capture_protocol_matrix(protocol):
 def test_adapter_stream_capture_unpacks_narrow_ring_and_restores_flags():
     adapter = ExistingHostAdapter()
     dev = FakeHostDevice()
-    dev.stream_ring_capture = Mock(return_value=[(b"\x01\x00", 16, 1, 2)])
+    def stream_ring_capture(**kwargs):
+        kwargs["progress_cb"](b"\x01\x00", 16, 1)
+        yield b"\x01\x00", 16, 1, 2
+    dev.stream_ring_capture = Mock(side_effect=stream_ring_capture)
     adapter._dev = dev
     progress = Mock()
     result = list(adapter.stream_capture(
@@ -582,6 +605,7 @@ def test_adapter_stream_capture_unpacks_narrow_ring_and_restores_flags():
     assert len(result) == 1
     assert result[0].sample_rate == pytest.approx(1_000_000)
     assert "overrun count is 2" in result[0].warnings[1]
+    progress.assert_called_once_with(16, 1, "capturing")
     assert dev._raw_flags == 0
     with pytest.raises(HardwareError, match="only implemented"):
         list(adapter.stream_capture(CaptureSettings(mode="single")))

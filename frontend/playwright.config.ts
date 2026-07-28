@@ -3,6 +3,9 @@ import { defineConfig, devices } from '@playwright/test';
 export default defineConfig({
   testDir: './tests/e2e',
   outputDir: './test-results/playwright',
+  // The live suites share one physical MAX1000/FTDI device and backend.
+  // Parallel workers can interrupt one another's captures and lock channel B.
+  workers: 1,
   reporter: [['list']],
   use: {
     baseURL: 'http://127.0.0.1:4173',
