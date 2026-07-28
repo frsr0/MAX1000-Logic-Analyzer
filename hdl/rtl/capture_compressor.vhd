@@ -6,10 +6,9 @@ use IEEE.numeric_std.all;
 -- Word 0: verbatim anchor.
 -- Words 1..5: each packs 3 deltas (5-bit signed):
 --   bits 4:0 = d0, bits 9:5 = d1, bits 14:10 = d2, bit 15 = 0.
--- Overflow (|delta| > 15): the delta is saturated to +/-15, and an
--- overflow flag causes the current block to emit a verbatim-reset word
--- (bit 15=1, low 15 bits = new anchor) immediately after the anchor,
--- then resume normal delta packing.
+-- Overflow (|delta| > 15): the fixed six-word format cannot represent all
+-- fifteen deltas losslessly, so the block is marked invalid by suppressing
+-- its packed payload. The host detects the short decode and retries raw.
 -- Passthrough (compression_enable = '0'): comp_data <= sample_in;
 -- comp_valid <= sample_valid.
 entity capture_compressor is
@@ -59,6 +58,7 @@ begin
     -- saturation; keeping it at 16 bits can wrap and evade the overflow test.
     variable delta_v : signed(16 downto 0);
     variable sat5   : std_logic_vector(4 downto 0);
+    variable delta_overflow : boolean;
     variable flush_word : std_logic_vector(14 downto 0);
   begin
     if rising_edge(clk) then
@@ -78,9 +78,19 @@ begin
               sample_cnt <= 0;
               delta_cnt <= 0;
               overflow_flag <= '0';
+              -- Capture the first sample as the anchor. Passing it through
+              -- here would prepend a raw word to the compressed stream.
+              if sample_valid = '1' then
+                comp_data <= sample_in;
+                comp_valid <= '1';
+                prev <= signed(sample_in);
+                sample_cnt <= 1;
+                state <= ACCUM;
+              end if;
+            else
+              comp_data <= sample_in;
+              comp_valid <= sample_valid;
             end if;
-            comp_data <= sample_in;
-            comp_valid <= sample_valid;
 
           -- ANCHOR: wait for the first sample, emit verbatim anchor
           when ANCHOR =>
@@ -111,6 +121,7 @@ begin
               elsif delta_v > 15 then sat5 := "01111";
               else sat5 := std_logic_vector(delta_v(4 downto 0));
               end if;
+              delta_overflow := (delta_v < -15) or (delta_v > 15);
               case delta_cnt is
                 when 0  => packed_deltas(0)(4 downto 0)   <= sat5;
                 when 1  => packed_deltas(0)(9 downto 5)   <= sat5;
@@ -130,27 +141,20 @@ begin
               end case;
               prev <= signed(sample_pipe);
 
-              if delta_v < -15 or delta_v > 15 then
+              if delta_overflow then
                 overflow_flag <= '1';
               end if;
               if sample_cnt = 15 then
-                -- Block full: flush deltas. delta_cnt was NOT incremented for
-                -- this sample (15th delta at index 14, delta_cnt still 14).
-                -- Add one so FLUSH boundary checks include all 15 deltas.
-                delta_cnt <= delta_cnt + 1;
-                state <= FLUSH;
-                out_idx <= 0;
-              elsif overflow_flag = '1' then
-                -- Delta overflow: emit verbatim-reset, then flush accumulated deltas
-                -- First, emit the overflow reset word...
-                comp_data <= '1' & sample_pipe(14 downto 0);  -- bit 15 = 1
-                comp_valid <= '1';
-                prev <= signed(sample_pipe);
-                sample_cnt <= 0;
-                delta_cnt <= 0;
-                overflow_flag <= '0';
-                sample_pipe_valid <= '0';
-                -- Then flush accumulated deltas (delta_cnt entries)
+                -- Block full: an overflowed group must not look like a valid
+                -- six-word block. A keyframe cannot fit alongside all fifteen
+                -- deltas, so suppress the payload and let the host retry raw.
+                if (overflow_flag = '1') or delta_overflow then
+                  delta_cnt <= 0;
+                else
+                  -- delta_cnt was not incremented for this sample (the 15th
+                  -- delta is at index 14).
+                  delta_cnt <= delta_cnt + 1;
+                end if;
                 state <= FLUSH;
                 out_idx <= 0;
               else

@@ -751,10 +751,10 @@ begin
     signal afull_r       : std_logic := '0';
     signal start_gate_r  : natural range 0 to 3 := 0;
      signal narrow_enable_s1 : std_logic := '0';
-     signal narrow_enable_f  : std_logic := '0';
-     signal narrow_channel_s1 : natural range 0 to 15 := 0;
-     signal narrow_channel_f  : natural range 0 to 15 := 0;
-     signal narrow_shift_r : std_logic_vector(15 downto 0) := (others => '0');
+    signal narrow_enable_f  : std_logic := '0';
+    signal narrow_channel_s1 : natural range 0 to 15 := 0;
+    signal narrow_channel_f  : natural range 0 to 15 := 0;
+    signal narrow_shift_r : std_logic_vector(15 downto 0) := (others => '0');
      signal narrow_bit_count_r : natural range 0 to 15 := 0;
      signal narrow_word_pending_r : std_logic := '0';
      signal narrow_word_data_r : std_logic_vector(15 downto 0) := (others => '0');
@@ -1029,7 +1029,7 @@ begin
           -- here returned the PREVIOUS capture's sample count — captures ran
           -- with stale lengths (e.g. the host reset()'s SAMPLE_COUNT=2),
           -- completed instantly and read back as full-length flat data.
-        sample_remaining <= cfg_samples;
+          sample_remaining <= cfg_samples;
         fifo_overflow_f <= '0';
         bram_wp_r <= 0;
         bram_cnt_r <= 0;
@@ -1195,9 +1195,9 @@ begin
             -- the sample budget, keeping capture_en_r off the fifo_wdata cone.
             if afull_r = '0' then
               fifo_wr <= '1';
+              sample_remaining <= sample_rem_dec_r;
               -- sample_rem_dec_r is clamped at zero, so a one-cycle stale
               -- nonzero flag cannot underflow the natural counter.
-              sample_remaining <= sample_rem_dec_r;
             end if;
             if afull_r = '1' and continuous_f = '0' then
               fifo_overflow_f <= '1';

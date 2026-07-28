@@ -23,6 +23,14 @@ The historical wrapper used `REG_FLAGS_COMPRESS` bits (18..19 of REG_FLAGS):
 
 The host supports `raw`, `delta_rle` (or `delta`), and direct `rle`.
 
+### Delta overflow
+
+The packed delta format has room for fifteen signed 5-bit deltas per
+six-word group. If any delta exceeds +/-15, that group suppresses its packed
+payload rather than emitting a saturated value. The host sees the resulting
+short decode and retries that 512-sample block without compression, keeping
+the readback lossless.
+
 ## Testing
 
 | Testbench | What it covers |

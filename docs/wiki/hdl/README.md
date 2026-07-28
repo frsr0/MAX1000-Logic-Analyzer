@@ -76,8 +76,8 @@ matrix and measured ratios.
 
 ### Peripherals
 - [ADC Controller](adc-controller.md) — `ADC_Controller`: MAX10 ADC, one-slot high-speed, multi-slot scanning
-- [Protocol Trigger](protocol-trigger.md) — `Protocol_Trigger`: UART byte trigger
-- [UART Interface](uart-interface.md) — `UART_Interface`: async receiver
+- [Pattern Trigger](protocol-trigger.md) — `Generic_Pattern_Trigger`: configurable serial/data pattern trigger
+- [UART Interface](uart-interface.md) — `UART_Interface`: legacy async receiver reference (not part of the active build)
 - [LED Controller](led-controller.md) — `LED_Controller`: PWM, fade engine
 - [SDRAM PLL](sdram-pll.md) — `SDRAM_PLL`: clock generation, phase shifts
 

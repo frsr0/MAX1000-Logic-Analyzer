@@ -77,11 +77,20 @@ begin
         case state is
 
           when PASSTHROUGH =>
-            comp_data <= sample_in;
-            comp_valid <= sample_valid;
             have <= '0';
             if compression_enable = '1' then
+              -- Do not leak one unframed raw sample when compression is
+              -- enabled immediately after reset. Capture the first sample as
+              -- the initial run instead.
               state <= RUN;
+              if sample_valid = '1' then
+                prev <= sample_in;
+                cnt  <= to_unsigned(1, 10);
+                have <= '1';
+              end if;
+            else
+              comp_data <= sample_in;
+              comp_valid <= sample_valid;
             end if;
 
           when RUN =>

@@ -75,8 +75,7 @@ begin
       rst <= '1'; sample_valid <= '0'; flush <= '0'; col_rst <= '1';
       wait until rising_edge(clk);
       rst <= '0'; col_rst <= '0';
-      wait until rising_edge(clk);   -- PASSTHROUGH -> RUN
-      wait until falling_edge(clk);  -- feed from the opposite clock phase
+      wait until falling_edge(clk);  -- first sample follows reset immediately
       i := 0; flushing := false; trace_cycle := 0;
       loop
         fed := false;

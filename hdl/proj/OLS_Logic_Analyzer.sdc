@@ -135,6 +135,29 @@ create_generated_clock -name adc_clk \
    -from [get_registers {*pretrig_tick_cnt*}] \
    -to   [get_registers {*sample_remaining*}]
 
+ # Pattern-trigger selectors are programmed before ARM and remain unchanged
+ # while Run_OLS is asserted.  The start/clock-channel fields drive a dynamic
+ # input-bit mux in Generic_Pattern_Trigger; treating that stable configuration
+ # cone as single-cycle creates the worst sys_clk violation without changing
+ # capture behavior.  Keep the hold relationship at one cycle.
+ set_multicycle_path 2 -setup \
+   -from [get_registers {*pattern_ctrl[*]}] \
+   -to   [get_registers {*Generic_Trigger*}]
+ set_multicycle_path 1 -hold \
+   -from [get_registers {*pattern_ctrl[*]}] \
+   -to   [get_registers {*Generic_Trigger*}]
+
+ # Narrow-capture mode selectors are two-flop synchronized configuration. They
+ # are written before the run and held while sampling, so their mux/enable
+ # paths into the rolling packer may settle over two FAST_CLK cycles. The
+ # sampled pin data and the pending-word handshake remain single-cycle paths.
+ set_multicycle_path 2 -setup \
+   -from [get_registers {*narrow_enable_f* *astream_f*}] \
+   -to   [get_registers {*narrow_shift_r*}]
+ set_multicycle_path 1 -hold \
+   -from [get_registers {*narrow_enable_f* *astream_f*}] \
+   -to   [get_registers {*narrow_shift_r*}]
+
  # External SPI timing:
  # - SPI_SCK is the FTDI-generated clock that times the slave interface.
  # - MOSI is captured relative to that clock.

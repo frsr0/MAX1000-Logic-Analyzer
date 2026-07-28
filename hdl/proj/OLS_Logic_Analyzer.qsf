@@ -45,14 +45,10 @@ set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity OLS_SDRAM_Top
 set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity OLS_Interface
 set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity Bit_Engine
 set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity LED_Controller
-set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity UART_Interface
 set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity ADC_Controller
 set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity Signal_Gen
-set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity Protocol_Trigger
 set_instance_assignment -name OPTIMIZATION_TECHNIQUE SPEED -to "|OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1"
 set_instance_assignment -name OPTIMIZATION_TECHNIQUE AREA -to "|OLS_SDRAM_Top:core|Signal_Gen:GEN"
-set_instance_assignment -name OPTIMIZATION_TECHNIQUE AREA -to "|OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|OLS_Interface:OLS_Interface1|UART_Interface:UART_Interface1"
-set_instance_assignment -name OPTIMIZATION_TECHNIQUE AREA -to "|OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|OLS_Interface:OLS_Interface1|Protocol_Trigger:Proto_Trigger1"
 # Extra placement effort: at 99% LE the last ~20 ps of clk[2] slack is
 # placement noise; a 4x placement budget reliably buys it back.
 set_global_assignment -name PLACEMENT_EFFORT_MULTIPLIER 4
@@ -66,7 +62,6 @@ set_global_assignment -name VHDL_FILE ../rtl/spi_protocol_pkg.vhd
 set_global_assignment -name VHDL_FILE ../rtl/spi_packet_rx.vhd
 set_global_assignment -name VHDL_FILE ../rtl/spi_packet_tx.vhd
 set_global_assignment -name VHDL_FILE ../rtl/OLS_Interface.vhd
-set_global_assignment -name VHDL_FILE ../rtl/UART_Interface.vhd
 set_global_assignment -name VHDL_FILE ../rtl/SDRAM_Interface.vhd
 set_global_assignment -name VHDL_FILE ../rtl/SDRAM_Controller_Custom.vhd
 set_global_assignment -name VHDL_FILE ../rtl/SPI_Slave.vhd
@@ -82,7 +77,6 @@ set_global_assignment -name VHDL_FILE ../rtl/fast_capture_budget.vhd
 set_global_assignment -name VHDL_FILE ../rtl/fast_capture_elastic_buffer.vhd
 set_global_assignment -name VHDL_FILE ../rtl/ADC_Controller.vhd
 set_global_assignment -name VHDL_FILE ../rtl/Bit_Engine.vhd
-set_global_assignment -name VHDL_FILE ../rtl/Protocol_Trigger.vhd
 set_global_assignment -name VHDL_FILE ../rtl/Generic_Pattern_Trigger.vhd
 set_global_assignment -name VHDL_FILE ../rtl/Signal_Gen.vhd
 set_global_assignment -name VHDL_FILE ../rtl/SDRAM_PLL.vhd
