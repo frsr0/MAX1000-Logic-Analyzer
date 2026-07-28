@@ -177,6 +177,7 @@ test('hardware capture matrix validates every advertised mode and rate before ev
   const rateSelect = page.getByLabel('Sample rate');
   const slug = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   const evidence: Array<Record<string, unknown>> = [];
+  const failures: Array<Record<string, unknown>> = [];
 
   const state = async () => page.evaluate(async () => fetch('/api/capture/state').then((res) => res.json()));
   const stop = async () => page.evaluate(async () => {
@@ -201,6 +202,9 @@ test('hardware capture matrix validates every advertised mode and rate before ev
       await expect(rateSelect).toHaveValue(String(rate));
 
       const before = await state();
+      const caseLabel = `${item.mode} ${item.acquisition} ${rate}`;
+      let finished: Record<string, any> = {};
+      let metadata: Record<string, any> = {};
       const settings = {
         sample_rate: rate,
         num_samples: item.apiMode === 'digital_narrow' ? 4096 : 1024,
@@ -209,67 +213,92 @@ test('hardware capture matrix validates every advertised mode and rate before ev
         enabled_digital: item.digital ? Array.from({ length: 16 }, (_, index) => index) : [],
         readback_compression: 'raw',
       };
-      const started = await page.evaluate(async (payload) => {
-        const headers = {
-          'Content-Type': 'application/json',
-          'X-Client-Id': localStorage.getItem('msa_client_id') ?? '',
-        };
-        const res = await fetch('/api/capture/start', {
-          method: 'POST', headers, body: JSON.stringify(payload),
+      try {
+        const started = await page.evaluate(async (payload) => {
+          const headers = {
+            'Content-Type': 'application/json',
+            'X-Client-Id': localStorage.getItem('msa_client_id') ?? '',
+          };
+          const res = await fetch('/api/capture/start', {
+            method: 'POST', headers, body: JSON.stringify(payload),
+          });
+          return { ok: res.ok, status: res.status, body: await res.json().catch(() => ({})) };
+        }, { settings, name: `HW validated ${item.mode} ${item.acquisition} ${rate}` });
+        expect(started.ok, JSON.stringify(started.body)).toBeTruthy();
+
+        if (item.acquisition === 'single') {
+          await expect.poll(async () => (await state()).state, { timeout: 60_000 })
+            .toMatch(/^(done|error|cancelled)$/);
+        } else {
+          await expect.poll(async () => (await state()).last_session_id, { timeout: 60_000 })
+            .not.toBe(before.last_session_id);
+          await stop();
+          await expect.poll(async () => (await state()).state, { timeout: 30_000 })
+            .toMatch(/^(cancelled|done|error)$/);
+        }
+
+        finished = await state();
+        expect(finished.state, `${caseLabel} ended in ${finished.last_error || 'an unknown state'}`).toBe('done');
+        expect(finished.last_session_id, `${caseLabel} produced no session`).toBeTruthy();
+        metadata = await page.evaluate(async (sessionId) => (
+          fetch(`/api/sessions/${sessionId}/metadata`).then((res) => res.json())
+        ), finished.last_session_id);
+        expect(metadata.has_waveform, `${caseLabel} has no waveform`).toBeTruthy();
+        expect(metadata.num_samples, `${caseLabel} returned no samples`).toBeGreaterThan(0);
+        expect(metadata.sample_rate, `${caseLabel} has no effective rate`).toBeGreaterThan(0);
+        expect(Math.abs(metadata.sample_rate - rate) / rate,
+          `${caseLabel} effective rate was ${metadata.sample_rate}`).toBeLessThan(0.02);
+
+        const channels = metadata.session?.channels ?? [];
+        const digitalCount = channels.filter((channel: { type?: string }) => channel.type === 'digital').length;
+        if (item.digital) expect(digitalCount, `${caseLabel} digital channels`).toBeGreaterThan(0);
+        if (item.analog) expect(metadata.analog_channels.length, `${caseLabel} analog channels`).toBeGreaterThan(0);
+
+        evidence.push({
+          status: 'passed',
+          mode: item.mode,
+          acquisition: item.acquisition,
+          api_mode: item.apiMode,
+          requested_rate_hz: rate,
+          effective_rate_hz: metadata.sample_rate,
+          samples: metadata.num_samples,
+          digital_channels: digitalCount,
+          analog_channels: metadata.analog_channels,
+          session_id: finished.last_session_id,
         });
-        return { ok: res.ok, status: res.status, body: await res.json().catch(() => ({})) };
-      }, { settings, name: `HW validated ${item.mode} ${item.acquisition} ${rate}` });
-      expect(started.ok, JSON.stringify(started.body)).toBeTruthy();
-
-      if (item.acquisition === 'single') {
-        await expect.poll(async () => (await state()).state, { timeout: 60_000 }).toBe('done');
-      } else {
-        await expect.poll(async () => (await state()).last_session_id, { timeout: 60_000 })
-          .not.toBe(before.last_session_id);
-        await stop();
-        await expect.poll(async () => (await state()).state, { timeout: 30_000 })
-          .toMatch(/^(cancelled|done)$/);
+      } catch (error) {
+        finished = finished.state ? finished : await state().catch(() => ({}));
+        failures.push({
+          status: 'failed', mode: item.mode, acquisition: item.acquisition,
+          api_mode: item.apiMode, requested_rate_hz: rate,
+          state: finished.state, error: finished.last_error || String(error),
+          session_id: finished.last_session_id,
+        });
+      } finally {
+        await stop().catch(() => {});
+        if (finished.last_error) {
+          await page.evaluate(async () => {
+            const headers = {
+              'Content-Type': 'application/json',
+              'X-Client-Id': localStorage.getItem('msa_client_id') ?? '',
+            };
+            await fetch('/api/connect', {
+              method: 'POST', headers, body: JSON.stringify({ device_id: 'hardware' }),
+            });
+          }).catch(() => {});
+        }
+        await page.screenshot({
+          path: path.join(screenshots, `hardware-validated-matrix-${slug(item.mode)}-${item.acquisition}-${slug(String(rate))}.png`),
+          fullPage: true,
+        });
       }
-
-      const finished = await state();
-      expect(finished.last_session_id, `${item.mode} ${rate} produced no session`).toBeTruthy();
-      expect(finished.last_error, `${item.mode} ${rate} failed`).toBeFalsy();
-      const metadata = await page.evaluate(async (sessionId) => (
-        fetch(`/api/sessions/${sessionId}/metadata`).then((res) => res.json())
-      ), finished.last_session_id);
-      expect(metadata.has_waveform, `${item.mode} ${rate} has no waveform`).toBeTruthy();
-      expect(metadata.num_samples, `${item.mode} ${rate} returned no samples`).toBeGreaterThan(0);
-      expect(metadata.sample_rate, `${item.mode} ${rate} has no effective rate`).toBeGreaterThan(0);
-      expect(Math.abs(metadata.sample_rate - rate) / rate,
-        `${item.mode} ${rate} effective rate was ${metadata.sample_rate}`).toBeLessThan(0.02);
-
-      const channels = metadata.session?.channels ?? [];
-      const digitalCount = channels.filter((channel: { type?: string }) => channel.type === 'digital').length;
-      if (item.digital) expect(digitalCount, `${item.mode} ${rate} digital channels`).toBeGreaterThan(0);
-      if (item.analog) expect(metadata.analog_channels.length, `${item.mode} ${rate} analog channels`).toBeGreaterThan(0);
-
-      const evidenceRow = {
-        mode: item.mode,
-        acquisition: item.acquisition,
-        api_mode: item.apiMode,
-        requested_rate_hz: rate,
-        effective_rate_hz: metadata.sample_rate,
-        samples: metadata.num_samples,
-        digital_channels: digitalCount,
-        analog_channels: metadata.analog_channels,
-        session_id: finished.last_session_id,
-      };
-      evidence.push(evidenceRow);
-      await page.screenshot({
-        path: path.join(screenshots, `hardware-validated-matrix-${slug(item.mode)}-${item.acquisition}-${slug(String(rate))}.png`),
-        fullPage: true,
-      });
     }
   }
 
   fs.writeFileSync(
     path.join(screenshots, 'hardware-validated-matrix.json'),
-    `${JSON.stringify({ generated_at: new Date().toISOString(), cases: evidence }, null, 2)}\n`,
+    `${JSON.stringify({ generated_at: new Date().toISOString(), cases: [...evidence, ...failures], passed: evidence.length, failed: failures.length }, null, 2)}\n`,
   );
-  expect(evidence).toHaveLength(37);
+  expect([...evidence, ...failures]).toHaveLength(37);
+  expect(failures, JSON.stringify(failures, null, 2)).toHaveLength(0);
 });
