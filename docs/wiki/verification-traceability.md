@@ -34,7 +34,7 @@ The current repaired seed-30 image (`0x0050CF93`) was rerun on 2026-07-27.
 The baseline run was **357/380 passed, 23 failed, 0 skipped**. Focused post-fix
 regression is **117/117 passed**, with capture-visible LIS3DH I²C/SPI decode
 passing.
-The final exhaustive suite is **387/387 passed, 0 failed, 0 skipped**.
+The final exhaustive suite is **391/391 passed, 0 failed, 0 skipped**.
 
 The earlier seed-23 validation remains historical evidence: it recorded
 **369/369 passed, 0 failed, 0 skipped** on 2026-07-22 with checksum

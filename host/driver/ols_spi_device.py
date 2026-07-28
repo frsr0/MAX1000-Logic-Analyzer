@@ -628,8 +628,21 @@ class OLSDeviceSPI:
         self.pkt.write_register(REG_GEN_BAUD, bit_div & 0xFFFF)
         self.pkt.load_gen_data(bit_bang.pack_symbols(syms))
         self.spi.flush()
-        if self.pkt.transaction(CMD_GEN_START, timeout=1.0) is None:
-            return []
+        start_rsp = self.pkt.transaction(CMD_GEN_START, timeout=1.0)
+        if start_rsp is None:
+            # CMD_GEN_START is a fire-and-hold command on this image and may
+            # not emit a response packet. Confirm acceptance through status
+            # instead of treating the absent packet as a rejected start.
+            accepted = False
+            deadline = time.time() + 0.25
+            while time.time() < deadline:
+                st = self.pkt.get_status()
+                if st.get('gen_start_req') or st.get('gen_busy'):
+                    accepted = True
+                    break
+                time.sleep(0.001)
+            if not accepted:
+                return []
         self._wait_gen_idle(timeout=timeout)
         return self._rx_bits(self.gen_rx_read())
 

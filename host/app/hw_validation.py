@@ -736,12 +736,13 @@ def test_gen_uart(dev, debug_on=False):
             log(f"  [INFO] UART gen payload did not align to exact 'Hello' on this bench (got {dec_bytes[:20]!r})")
         log_floating_channel_activity(ch, ns, except_ch=[gen_ch], label="gen_uart")
     else:
-        log("  [INFO] direct gen_first capture unavailable on this image; "
-            "per-pin generator sweep below is the functional oracle")
+        log("  [INFO] direct gen_first capture has no physical return loopback; "
+            "per-pin capture sweep below is authoritative")
 
-    # Exact oracle: the Bit_Engine RX FIFO samples the generator line one bit at
-    # a time. That path is deterministic on this board, so compare the symbol
-    # stream directly instead of treating the capture decoder as the truth.
+    # Optional oracle: the Bit_Engine RX FIFO samples the sensor/auxiliary
+    # return line. The ordinary UART generator pins have no return loopback on
+    # this board, so this probe is informational for UART and cannot be a
+    # required generator correctness gate.
     dev.reset()
     time.sleep(0.02)
     dev.pkt.write_register(REG_GEN_DATA, 1 << 8)
@@ -769,8 +770,7 @@ def test_gen_uart(dev, debug_on=False):
                 break
         check(ok, "Bit_Engine RX FIFO matches UART symbols exactly")
     else:
-        log("  [INFO] Bit_Engine RX FIFO oracle unavailable on this image; "
-            "capture-visible generator checks remain authoritative")
+        log("  [INFO] UART RX oracle has no physical return loopback on this board")
     save_result(f"test8_gen_uart_debug_{debug_on}", None, {"baud": 115200})
 
     # Test 8c: Sweep all TX pins (run once; debug OFF=full sweep, debug ON=abbreviated)
@@ -927,12 +927,8 @@ def test_accel_who_am_i(dev):
         log("  SPI WHO_AM_I offset candidates: "
             + str({o: hex(v) for o, v in candidates.items()}))
         hits = sorted(o for o, v in candidates.items() if v == 0x33)
-        if hits:
-            check(True,
-                  f"LIS3DH WHO_AM_I over SPI read == 0x33 (offsets {hits})")
-        else:
-            log("  [INFO] direct Bit_Engine SPI RX unavailable on this image; "
-                "capture-visible LIS3DH validation is authoritative")
+        check(bool(hits),
+              f"LIS3DH WHO_AM_I over SPI read == 0x33 (offsets {hits})")
     except Exception as e:
         check(False, f"accelerometer SPI read raised unexpectedly ({e})")
     save_result("test_accel_who_am_i", b"", {"spi_offsets": candidates})
@@ -2885,13 +2881,9 @@ def test_accelerometer_whoami(dev):
         val, addr = i2c_read(0x0F, speed=speed)
         log(f"  I2C @{speed//1000}kHz WHO_AM_I: "
             f"{'0x%02X (addr 0x%02X)' % (val, addr) if val is not None else 'no response/NACK'}")
-        if val is not None:
-            check(val == 0x33,
-                  f"LIS3DH WHO_AM_I over I2C @{speed//1000}kHz == 0x33 "
-                  f"({'0x%02X' % val})")
-        else:
-            log("  [INFO] direct Bit_Engine RX is unavailable on this image; "
-                "capture-visible bus validation follows")
+        check(val == 0x33,
+              f"LIS3DH WHO_AM_I over I2C @{speed//1000}kHz == 0x33 "
+              f"({'0x%02X' % val if val is not None else 'None'})")
 
     # Second register over I2C: CTRL_REG1 (0x20). Confirms non-WHO_AM_I
     # addresses read too; the power-on default is 0x07 but the value is not
@@ -2899,8 +2891,7 @@ def test_accelerometer_whoami(dev):
     ctrl, _ = i2c_read(0x20)
     log(f"  I2C CTRL_REG1: {'0x%02X' % ctrl if ctrl is not None else 'no response'}"
         " (power-on default 0x07)")
-    if ctrl is not None:
-        check(True, "LIS3DH CTRL_REG1 readable over I2C")
+    check(ctrl is not None, "LIS3DH CTRL_REG1 readable over I2C")
 
     # SPI mode 3: SDO has no host echo to self-align the RX stream, so
     # require the SAME symbol offset to decode 0x33 on two independent
@@ -2911,13 +2902,9 @@ def test_accelerometer_whoami(dev):
                   if c1[o] == 0x33 and (c2 or {}).get(o) == 0x33)
     log("  SPI WHO_AM_I offset candidates: "
         + str({o: hex(v) for o, v in (c1 or {}).items()}))
-    if hits:
-        check(True,
-              f"LIS3DH WHO_AM_I over SPI mode 3 == 0x33 at a stable offset "
-              f"(offsets {hits})")
-    else:
-        log("  [INFO] direct Bit_Engine SPI RX is unavailable on this image; "
-            "capture-visible bus validation follows")
+    check(bool(hits),
+          f"LIS3DH WHO_AM_I over SPI mode 3 == 0x33 at a stable offset "
+          f"(offsets {hits})")
 
     # ── Capture-visible dialogue (attach toggle) ────────────────────
     # REG_GEN_DATA bit 4 mirrors the accel bus onto CH13 (SDA/MOSI),
@@ -3153,8 +3140,9 @@ def main():
     print(f"  Results: {RESULTS_DIR}")
     print()
 
-    # Test 1: UART (skipped per user request)
-    # test_uart_cmd_id()
+    # Test 1 is a legacy UART identity probe. It is available explicitly via
+    # ``python -m app.hw_validation uart`` but is not part of the SPI-based
+    # exhaustive hardware suite.
 
     # Tests 2+: SPI device needed
     dev = OLSDeviceSPI()
@@ -3455,6 +3443,10 @@ if __name__ == "__main__":
         finally:
             try: dev.close()
             except Exception: pass
+        print(f"\n  RESULTS: {PASS}/{TOTAL} passed, {FAIL} failed, {SKIPPED} skipped")
+        sys.exit(0 if FAIL == 0 else 1)
+    if len(sys.argv) > 1 and sys.argv[1] == 'uart':
+        test_uart_cmd_id()
         print(f"\n  RESULTS: {PASS}/{TOTAL} passed, {FAIL} failed, {SKIPPED} skipped")
         sys.exit(0 if FAIL == 0 else 1)
     sys.exit(main())

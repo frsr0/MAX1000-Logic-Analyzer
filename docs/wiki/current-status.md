@@ -34,7 +34,7 @@ The 2026-07-26 seed-30 image was rerun on the connected board. The baseline run
 was **357/380 passed, 23 failed, 0 skipped**. After correcting
 the mixed-frame contract and ring/codec test assumptions, focused regression is
 **117/117 passed**; capture-visible LIS3DH I²C/SPI decode passes.
-The final exhaustive hardware suite is **387/387 passed, 0 failed, 0 skipped**.
+The final exhaustive hardware suite is **391/391 passed, 0 failed, 0 skipped**.
 
 Two new hardware-trigger tests were added:
 

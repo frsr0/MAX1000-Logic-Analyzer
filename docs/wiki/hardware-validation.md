@@ -12,7 +12,7 @@ skipped**. After correcting the mixed-frame contract and ring/codec test
 assumptions, focused regression completed **117/117 passed** and the
 accelerometer capture check completed **2/2 passed**.
 
-The final exhaustive rerun completed **387/387 passed, 0 failed, 0 skipped**.
+The final exhaustive rerun completed **391/391 passed, 0 failed, 0 skipped**.
 
 Full log: `host/fullsuite_postfix_2026-07-27-rerun.txt`.
 

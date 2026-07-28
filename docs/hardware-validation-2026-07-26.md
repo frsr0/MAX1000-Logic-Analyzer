@@ -9,9 +9,10 @@ After the test fixes, focused regression completed **117/117 passed** and the
 accelerometer capture check completed **2/2 passed**. Direct Bit_Engine RX is
 unavailable on this image and is informational only.
 
-The subsequent exhaustive suite completed **387/387 passed, 0 failed, 0
-skipped**, including generator matrices, analogue profiles, codec/readback
-rates, live-ring ceilings, stress, lifecycle, and concurrent readout.
+The subsequent exhaustive suite completed **391/391 passed, 0 failed, 0
+skipped**, including direct LIS3DH RX, generator matrices, analogue profiles,
+codec/readback rates, live-ring ceilings, stress, lifecycle, and concurrent
+readout.
 
 Passing evidence included:
 
