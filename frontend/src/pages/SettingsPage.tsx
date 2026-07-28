@@ -4,6 +4,8 @@ import { api, clientId } from '../api/client';
 import type { VirtualBridgeStatus } from '../api/types';
 import { useApp } from '../state/appStore';
 
+const COM0COM_DOWNLOAD = 'https://sourceforge.net/projects/com0com/files/com0com/3.0.0.0/';
+
 export function SettingsPage() {
   const { viewerSettings, setViewerSettings, status, refreshStatus,
           controlMode, setControlMode, toast, setCaptureSettings } = useApp();
@@ -145,7 +147,14 @@ export function SettingsPage() {
           {virtual && !virtual.driver.available && (
             <div className="finding warning">
               No com0com driver is installed. The TCP bridge works now; paired
-              Windows COMx ports require a separately installed signed virtual-COM driver.
+              Windows COMx ports require a separately installed signed virtual-COM driver.{' '}
+              <a href={COM0COM_DOWNLOAD} target="_blank" rel="noreferrer">Install the signed driver</a>
+            </div>
+          )}
+          {virtual?.driver.available && virtual.driver.error && (
+            <div className="finding warning">
+              The driver is detected, but Windows requires elevation to enumerate or create pairs.
+              Open SetupG as Administrator once to create the pair, then refresh this page.
             </div>
           )}
           {virtual?.driver.available && (

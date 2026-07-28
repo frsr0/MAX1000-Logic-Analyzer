@@ -47,7 +47,7 @@ def test_virtual_com_setup_output_is_parsed_and_pair_creation_is_host_only(monke
 
     monkeypatch.setattr(virtual_bridge, "_setupc_path", lambda: "setupc.exe")
 
-    def fake_run(path, *args):
+    def fake_run(path, *args, **kwargs):
         calls.append((path, args))
         if args == ("list",):
             return subprocess.CompletedProcess([path, *args], 0, output, "")

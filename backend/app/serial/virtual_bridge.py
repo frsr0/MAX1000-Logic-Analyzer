@@ -67,8 +67,11 @@ def _valid_com_name(value: str) -> str:
 
 def _run_setupc(path: str, *args: str) -> subprocess.CompletedProcess[str]:
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    # setupc.exe is an interactive command prompt: it reads commands from
+    # stdin rather than accepting them as process arguments.
+    command = " ".join(args)
     return subprocess.run(
-        [path, *args], capture_output=True, text=True, timeout=15,
+        [path], input=f"{command}\nquit\n", capture_output=True, text=True, timeout=15,
         check=False, creationflags=creationflags,
     )
 
@@ -172,7 +175,16 @@ class VirtualComManager:
         existing = {p["device"].upper() for p in _serial_ports()}
         if a in existing or b in existing:
             raise ValueError(f"{a} or {b} already exists on this machine")
-        result = _run_setupc(setupc, "install", f"PortName={a}", f"PortName={b}")
+        try:
+            result = _run_setupc(setupc, "install", f"PortName={a}", f"PortName={b}")
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 740:
+                raise RuntimeError(
+                    "com0com is installed, but Windows requires an elevated "
+                    "SetupG/Setup Command Prompt to create pairs. Open SetupG "
+                    "as Administrator, create the pair, then refresh this page."
+                ) from exc
+            raise
         output = (result.stdout + "\n" + result.stderr).strip()
         if result.returncode != 0:
             raise RuntimeError(output or "com0com failed to create the virtual pair")
