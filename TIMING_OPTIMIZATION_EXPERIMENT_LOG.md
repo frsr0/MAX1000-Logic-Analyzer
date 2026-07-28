@@ -78,3 +78,14 @@ Seed 31 is worse than the seed-30 checkpoint. This confirms that “try another 
 The first RTL candidate with a direct timing prediction is to register the producer’s one-bit word-accepted event and update the wide budget counter from that delayed event. Prediction: `narrow_enable_f` and `analog_burst_active` disappear from the counter D mux, while the counter’s existing decrement pipeline remains intact.
 
 This candidate is not approved for fitting yet. The one-cycle event delay must first pass the packed continuous-renewal and single-shot completion tests, because an uncorrected delay could admit one extra word or move the done toggle.
+
+### Measured result
+
+The implementation compiled, but the full seed-30 fit rejected it:
+
+- `fast_clk`: **-0.049 ns -> -0.491 ns**, TNS **-4.732 ns**
+- `sdram_core_clk`: **+0.380 ns -> -0.309 ns**
+- Logic elements: **7,868 -> 7,881**
+- Registers: **4,788 -> 4,789**
+
+The delayed-event implementation was reverted. The added register did not buy timing because the remaining counter/decrement routing and new control fan-out dominated. This candidate is closed; do not retry it without a different counter representation or a proven legal timing boundary.
