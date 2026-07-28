@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-28T12:15:27.648Z",
+  "generated_at": "2026-07-28T12:42:32.435Z",
   "cases": [
     {
       "status": "passed",
@@ -11,7 +11,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_34cefcf4f5"
+      "session_id": "ses_eb4bce37bb"
     },
     {
       "status": "passed",
@@ -23,7 +23,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_27f3821b15"
+      "session_id": "ses_7c10d06766"
     },
     {
       "status": "passed",
@@ -35,7 +35,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_7e453c594f"
+      "session_id": "ses_dc844b052f"
     },
     {
       "status": "passed",
@@ -47,7 +47,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_9c1d468188"
+      "session_id": "ses_17b7e52fe9"
     },
     {
       "status": "passed",
@@ -59,7 +59,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_82fbbc5d95"
+      "session_id": "ses_628d643a89"
     },
     {
       "status": "passed",
@@ -71,7 +71,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_0cae953ac0"
+      "session_id": "ses_31a41b80f8"
     },
     {
       "status": "passed",
@@ -83,7 +83,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_e8d0ee51a9"
+      "session_id": "ses_ac0ebdd4d3"
     },
     {
       "status": "passed",
@@ -95,7 +95,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_88ca0e3589"
+      "session_id": "ses_8653d8c7fd"
     },
     {
       "status": "passed",
@@ -107,7 +107,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_dec42f9750"
+      "session_id": "ses_ace23177cc"
     },
     {
       "status": "passed",
@@ -119,7 +119,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_92d415b877"
+      "session_id": "ses_4a53768646"
     },
     {
       "status": "passed",
@@ -131,7 +131,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_0b0ef000f7"
+      "session_id": "ses_4dc5cd69e0"
     },
     {
       "status": "passed",
@@ -143,7 +143,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_ff03754825"
+      "session_id": "ses_020130e721"
     },
     {
       "status": "passed",
@@ -155,7 +155,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_0544e0880c"
+      "session_id": "ses_4d80c085e9"
     },
     {
       "status": "passed",
@@ -167,7 +167,7 @@
       "samples": 102,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_b0263f593d"
+      "session_id": "ses_c899082249"
     },
     {
       "status": "passed",
@@ -179,7 +179,7 @@
       "samples": 102,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_186d3774af"
+      "session_id": "ses_1d7e3f58fc"
     },
     {
       "status": "passed",
@@ -191,7 +191,7 @@
       "samples": 102,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_5a91a3206e"
+      "session_id": "ses_62e25baf2e"
     },
     {
       "status": "passed",
@@ -203,7 +203,7 @@
       "samples": 102,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_a5b18486ac"
+      "session_id": "ses_8369e4bd92"
     },
     {
       "status": "passed",
@@ -215,7 +215,7 @@
       "samples": 102,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_201b15807e"
+      "session_id": "ses_e2355d57a2"
     },
     {
       "status": "passed",
@@ -227,7 +227,7 @@
       "samples": 102,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_0c867b3688"
+      "session_id": "ses_bf4e69a823"
     },
     {
       "status": "passed",
@@ -239,179 +239,245 @@
       "samples": 102,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_46236ec1eb"
+      "session_id": "ses_12090729fa"
     },
     {
-      "status": "failed",
+      "status": "passed",
       "mode": "Digital deep",
       "acquisition": "live",
       "api_mode": "rolling",
       "requested_rate_hz": 12500000,
-      "state": "capturing",
-      "error": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mnot\u001b[2m.\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: not \u001b[32m\"ses_46236ec1eb\"\u001b[39m\n\nCall Log:\n- Timeout 60000ms exceeded while waiting on the predicate",
-      "session_id": "ses_46236ec1eb"
+      "effective_rate_hz": 12500000,
+      "samples": 102,
+      "digital_channels": 16,
+      "analog_channels": [],
+      "session_id": "ses_dc1bcedb18"
     },
     {
-      "status": "failed",
+      "status": "passed",
       "mode": "Digital deep",
       "acquisition": "live",
       "api_mode": "rolling",
       "requested_rate_hz": 14000000,
-      "state": "capturing",
-      "error": "Error: {\"detail\":\"A capture is already running\"}\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeTruthy\u001b[2m()\u001b[22m\n\nReceived: \u001b[31mfalse\u001b[39m",
-      "session_id": "ses_46236ec1eb"
+      "effective_rate_hz": 14000000,
+      "samples": 102,
+      "digital_channels": 16,
+      "analog_channels": [],
+      "session_id": "ses_2e0a5790f3"
     },
     {
-      "status": "failed",
+      "status": "passed",
       "mode": "Digital deep",
       "acquisition": "live",
       "api_mode": "rolling",
       "requested_rate_hz": 20000000,
-      "state": "capturing",
-      "error": "Error: {\"detail\":\"A capture is already running\"}\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeTruthy\u001b[2m()\u001b[22m\n\nReceived: \u001b[31mfalse\u001b[39m",
-      "session_id": "ses_46236ec1eb"
+      "effective_rate_hz": 20000000,
+      "samples": 102,
+      "digital_channels": 16,
+      "analog_channels": [],
+      "session_id": "ses_8672bf920e"
     },
     {
-      "status": "failed",
+      "status": "passed",
       "mode": "Digital deep",
       "acquisition": "live",
       "api_mode": "rolling",
       "requested_rate_hz": 50000000,
-      "state": "capturing",
-      "error": "Error: {\"detail\":\"A capture is already running\"}\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeTruthy\u001b[2m()\u001b[22m\n\nReceived: \u001b[31mfalse\u001b[39m",
-      "session_id": "ses_46236ec1eb"
+      "effective_rate_hz": 50000000,
+      "samples": 102,
+      "digital_channels": 16,
+      "analog_channels": [],
+      "session_id": "ses_28742dcd54"
     },
     {
-      "status": "failed",
+      "status": "passed",
       "mode": "Packed narrow",
       "acquisition": "live",
       "api_mode": "digital_narrow",
       "requested_rate_hz": 200000000,
-      "state": "capturing",
-      "error": "Error: {\"detail\":\"A capture is already running\"}\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeTruthy\u001b[2m()\u001b[22m\n\nReceived: \u001b[31mfalse\u001b[39m",
-      "session_id": "ses_46236ec1eb"
+      "effective_rate_hz": 200400000,
+      "samples": 4096,
+      "digital_channels": 16,
+      "analog_channels": [],
+      "session_id": "ses_7d62ccd112"
     },
     {
-      "status": "failed",
+      "status": "passed",
       "mode": "Analog fast",
       "acquisition": "single",
       "api_mode": "analog_fast",
       "requested_rate_hz": 100000,
-      "state": "capturing",
-      "error": "Error: {\"detail\":\"A capture is already running\"}\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeTruthy\u001b[2m()\u001b[22m\n\nReceived: \u001b[31mfalse\u001b[39m",
-      "session_id": "ses_46236ec1eb"
+      "effective_rate_hz": 100000,
+      "samples": 1024,
+      "digital_channels": 0,
+      "analog_channels": [
+        "a1"
+      ],
+      "session_id": "ses_460fca9b33"
     },
     {
-      "status": "failed",
+      "status": "passed",
       "mode": "Analog fast",
       "acquisition": "single",
       "api_mode": "analog_fast",
       "requested_rate_hz": 200000,
-      "state": "capturing",
-      "error": "Error: {\"detail\":\"A capture is already running\"}\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeTruthy\u001b[2m()\u001b[22m\n\nReceived: \u001b[31mfalse\u001b[39m",
-      "session_id": "ses_46236ec1eb"
+      "effective_rate_hz": 200000,
+      "samples": 1024,
+      "digital_channels": 0,
+      "analog_channels": [
+        "a1"
+      ],
+      "session_id": "ses_2d2c50bd39"
     },
     {
-      "status": "failed",
+      "status": "passed",
       "mode": "Analog fast",
       "acquisition": "single",
       "api_mode": "analog_fast",
       "requested_rate_hz": 500000,
-      "state": "capturing",
-      "error": "Error: {\"detail\":\"A capture is already running\"}\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeTruthy\u001b[2m()\u001b[22m\n\nReceived: \u001b[31mfalse\u001b[39m",
-      "session_id": "ses_46236ec1eb"
+      "effective_rate_hz": 499750.6234413965,
+      "samples": 1024,
+      "digital_channels": 0,
+      "analog_channels": [
+        "a1"
+      ],
+      "session_id": "ses_5f65fcf231"
     },
     {
-      "status": "failed",
+      "status": "passed",
       "mode": "Analog fast",
       "acquisition": "single",
       "api_mode": "analog_fast",
       "requested_rate_hz": 1000000,
-      "state": "capturing",
-      "error": "Error: {\"detail\":\"A capture is already running\"}\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeTruthy\u001b[2m()\u001b[22m\n\nReceived: \u001b[31mfalse\u001b[39m",
-      "session_id": "ses_46236ec1eb"
+      "effective_rate_hz": 1002000,
+      "samples": 1024,
+      "digital_channels": 0,
+      "analog_channels": [
+        "a1"
+      ],
+      "session_id": "ses_59c9dbe2e3"
     },
     {
-      "status": "failed",
+      "status": "passed",
       "mode": "Analog fast",
       "acquisition": "live",
       "api_mode": "analog_continuous",
       "requested_rate_hz": 100000,
-      "state": "capturing",
-      "error": "Error: {\"detail\":\"A capture is already running\"}\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeTruthy\u001b[2m()\u001b[22m\n\nReceived: \u001b[31mfalse\u001b[39m",
-      "session_id": "ses_46236ec1eb"
+      "effective_rate_hz": 100000,
+      "samples": 102,
+      "digital_channels": 0,
+      "analog_channels": [
+        "a1"
+      ],
+      "session_id": "ses_97d27d8d31"
     },
     {
-      "status": "failed",
+      "status": "passed",
       "mode": "Analog fast",
       "acquisition": "live",
       "api_mode": "analog_continuous",
       "requested_rate_hz": 200000,
-      "state": "capturing",
-      "error": "Error: {\"detail\":\"A capture is already running\"}\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeTruthy\u001b[2m()\u001b[22m\n\nReceived: \u001b[31mfalse\u001b[39m",
-      "session_id": "ses_46236ec1eb"
+      "effective_rate_hz": 200000,
+      "samples": 102,
+      "digital_channels": 0,
+      "analog_channels": [
+        "a1"
+      ],
+      "session_id": "ses_55a09da69a"
     },
     {
-      "status": "failed",
+      "status": "passed",
       "mode": "Analog fast",
       "acquisition": "live",
       "api_mode": "analog_continuous",
       "requested_rate_hz": 500000,
-      "state": "capturing",
-      "error": "Error: {\"detail\":\"A capture is already running\"}\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeTruthy\u001b[2m()\u001b[22m\n\nReceived: \u001b[31mfalse\u001b[39m",
-      "session_id": "ses_46236ec1eb"
+      "effective_rate_hz": 499750.6234413965,
+      "samples": 102,
+      "digital_channels": 0,
+      "analog_channels": [
+        "a1"
+      ],
+      "session_id": "ses_7a31eca106"
     },
     {
-      "status": "failed",
+      "status": "passed",
       "mode": "Analog fast",
       "acquisition": "live",
       "api_mode": "analog_continuous",
       "requested_rate_hz": 1000000,
-      "state": "capturing",
-      "error": "Error: {\"detail\":\"A capture is already running\"}\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeTruthy\u001b[2m()\u001b[22m\n\nReceived: \u001b[31mfalse\u001b[39m",
-      "session_id": "ses_46236ec1eb"
+      "effective_rate_hz": 1002000,
+      "samples": 102,
+      "digital_channels": 0,
+      "analog_channels": [
+        "a1"
+      ],
+      "session_id": "ses_ca8a0976ee"
     },
     {
-      "status": "failed",
+      "status": "passed",
       "mode": "Maximum analog",
       "acquisition": "single",
       "api_mode": "analog_all",
       "requested_rate_hz": 125000,
-      "state": "capturing",
-      "error": "Error: {\"detail\":\"A capture is already running\"}\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeTruthy\u001b[2m()\u001b[22m\n\nReceived: \u001b[31mfalse\u001b[39m",
-      "session_id": "ses_46236ec1eb"
+      "effective_rate_hz": 125093.6329588015,
+      "samples": 1024,
+      "digital_channels": 0,
+      "analog_channels": [
+        "a1",
+        "a2",
+        "a3",
+        "a4"
+      ],
+      "session_id": "ses_8ae69b3f1b"
     },
     {
-      "status": "failed",
+      "status": "passed",
       "mode": "Maximum analog",
       "acquisition": "live",
       "api_mode": "analog_all_continuous",
       "requested_rate_hz": 125000,
-      "state": "capturing",
-      "error": "Error: {\"detail\":\"A capture is already running\"}\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeTruthy\u001b[2m()\u001b[22m\n\nReceived: \u001b[31mfalse\u001b[39m",
-      "session_id": "ses_46236ec1eb"
+      "effective_rate_hz": 125093.6329588015,
+      "samples": 102,
+      "digital_channels": 0,
+      "analog_channels": [
+        "a1",
+        "a2",
+        "a3",
+        "a4"
+      ],
+      "session_id": "ses_ff3d7b9096"
     },
     {
-      "status": "failed",
+      "status": "passed",
       "mode": "Mixed scan",
       "acquisition": "single",
       "api_mode": "mixed",
       "requested_rate_hz": 125000,
-      "state": "capturing",
-      "error": "Error: {\"detail\":\"A capture is already running\"}\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeTruthy\u001b[2m()\u001b[22m\n\nReceived: \u001b[31mfalse\u001b[39m",
-      "session_id": "ses_46236ec1eb"
+      "effective_rate_hz": 125093.6329588015,
+      "samples": 1024,
+      "digital_channels": 16,
+      "analog_channels": [
+        "a0",
+        "a1"
+      ],
+      "session_id": "ses_58023cc69a"
     },
     {
-      "status": "failed",
+      "status": "passed",
       "mode": "Mixed scan",
       "acquisition": "live",
       "api_mode": "mixed_continuous",
       "requested_rate_hz": 125000,
-      "state": "capturing",
-      "error": "Error: {\"detail\":\"A capture is already running\"}\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBeTruthy\u001b[2m()\u001b[22m\n\nReceived: \u001b[31mfalse\u001b[39m",
-      "session_id": "ses_46236ec1eb"
+      "effective_rate_hz": 125093.6329588015,
+      "samples": 102,
+      "digital_channels": 16,
+      "analog_channels": [
+        "a0",
+        "a1"
+      ],
+      "session_id": "ses_5f4018ee43"
     }
   ],
-  "passed": 20,
-  "failed": 17
+  "passed": 37,
+  "failed": 0
 }

@@ -34,7 +34,34 @@ metadata; see the [run manifest](../../frontend/test-results/screenshots/hardwar
 | Digital deep | single | 100 MHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-single-100000000.png) |
 | Digital deep | single | 200 MHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-single-200000000.png) |
 
-Failed or interrupted attempts are deliberately not linked as evidence.
+The clean rerun completed all 37 physical cases (`passed=37`, `failed=0`).
+
+| Mode | Acquisition | Rate | Screenshot |
+|---|---|---:|---|
+| Digital deep | live | 10 kHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-live-10000.png) |
+| Digital deep | live | 100 kHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-live-100000.png) |
+| Digital deep | live | 500 kHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-live-500000.png) |
+| Digital deep | live | 1 MHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-live-1000000.png) |
+| Digital deep | live | 2 MHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-live-2000000.png) |
+| Digital deep | live | 5 MHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-live-5000000.png) |
+| Digital deep | live | 10 MHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-live-10000000.png) |
+| Digital deep | live | 12.5 MHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-live-12500000.png) |
+| Digital deep | live | 14 MHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-live-14000000.png) |
+| Digital deep | live | 20 MHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-live-20000000.png) |
+| Digital deep | live | 50 MHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-digital-deep-live-50000000.png) |
+| Packed narrow | live | 200 MHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-packed-narrow-live-200000000.png) |
+| Analog fast | single | 100 kHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-analog-fast-single-100000.png) |
+| Analog fast | single | 200 kHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-analog-fast-single-200000.png) |
+| Analog fast | single | 500 kHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-analog-fast-single-500000.png) |
+| Analog fast | single | 1 MHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-analog-fast-single-1000000.png) |
+| Analog fast | live | 100 kHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-analog-fast-live-100000.png) |
+| Analog fast | live | 200 kHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-analog-fast-live-200000.png) |
+| Analog fast | live | 500 kHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-analog-fast-live-500000.png) |
+| Analog fast | live | 1 MHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-analog-fast-live-1000000.png) |
+| Maximum analog | single | 125 kHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-maximum-analog-single-125000.png) |
+| Maximum analog | live | 125 kHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-maximum-analog-live-125000.png) |
+| Mixed scan | single | 125 kHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-mixed-scan-single-125000.png) |
+| Mixed scan | live | 125 kHz | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-mixed-scan-live-125000.png) |
 
 | Mode | Acquisition | Rate | Screenshot |
 |---|---|---:|---|
