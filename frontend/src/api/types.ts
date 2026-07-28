@@ -273,6 +273,41 @@ export interface BackendStatus {
   session_count: number;
 }
 
+export interface VirtualComPair {
+  index: string;
+  a: string;
+  b: string;
+}
+
+export interface VirtualBridgeStatus {
+  driver: {
+    available: boolean;
+    name: string;
+    setup_path?: string | null;
+    ports: VirtualComPair[];
+    error?: string | null;
+  };
+  running: boolean;
+  transport?: 'tcp' | 'com' | null;
+  app_port?: string | null;
+  tcp_host?: string | null;
+  tcp_port?: number | null;
+  tcp_endpoint?: string | null;
+  protocol: string;
+  hardware_changes: boolean;
+  physical_interfaces_untouched: boolean;
+  detail: string;
+}
+
+export interface VirtualComPairCreateResponse {
+  created: boolean;
+  port_a: string;
+  port_b: string;
+  driver: VirtualBridgeStatus['driver'];
+  output: string;
+  pairs: VirtualComPair[];
+}
+
 export interface LogEntry {
   ts: number;
   level: string;

@@ -8,6 +8,7 @@ export default defineConfig({
     proxy: {
       '/api': 'http://localhost:8000',
       '/connect': 'http://localhost:8000',
+      '/mcp': 'http://localhost:8000',
       '/ws': { target: 'ws://localhost:8000', ws: true },
     },
   },

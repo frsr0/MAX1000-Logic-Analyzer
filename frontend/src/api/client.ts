@@ -5,7 +5,8 @@ import type {
   DecoderEvent, DecoderInstance, DeviceCapabilities, DeviceDescriptor,
   DeviceMetadata, GeneratorConfig, GeneratorRouteCapability, LogEntry, Marker, MeasurementInstance,
   MeasurementType, MilConfig, MilPresetSummary, MilRuntimeStatus,
-  MilTransactionResponse, Session, SessionSummary,
+  MilTransactionResponse, Session, SessionSummary, VirtualBridgeStatus,
+  VirtualComPairCreateResponse,
 } from './types';
 import { parseWaveformPayload, WaveformPayload } from './binary';
 
@@ -208,6 +209,14 @@ export const api = {
   generatorSend: (body: { config: GeneratorConfig; capture: boolean; capture_rate?: number; capture_samples?: number; expected_hex?: string }) =>
     post<any>('/api/generator/send', body),
   generatorSelfTest: () => post<any>('/api/generator/self-test'),
+
+  // app-only virtual COM / SWD bridge
+  virtualSerialStatus: () => get<VirtualBridgeStatus>('/api/serial/virtual'),
+  createVirtualComPair: (port_a: string, port_b: string) =>
+    post<VirtualComPairCreateResponse>('/api/serial/virtual/com-pair', { port_a, port_b }),
+  startVirtualBridge: (body: { transport: 'tcp' | 'com'; app_port?: string; baud?: number }) =>
+    post<VirtualBridgeStatus>('/api/serial/virtual/start', body),
+  stopVirtualBridge: () => post<VirtualBridgeStatus>('/api/serial/virtual/stop'),
 
   // machine-in-loop emulator
   milPresets: () => get<{ presets: MilPresetSummary[] }>('/api/mil/presets'),

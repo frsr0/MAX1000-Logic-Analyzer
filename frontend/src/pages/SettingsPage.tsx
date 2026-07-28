@@ -1,6 +1,7 @@
 // Settings: theme, capture defaults, control lock, decoder presets.
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api, clientId } from '../api/client';
+import type { VirtualBridgeStatus } from '../api/types';
 import { useApp } from '../state/appStore';
 
 export function SettingsPage() {
@@ -8,6 +9,14 @@ export function SettingsPage() {
           controlMode, setControlMode, toast, setCaptureSettings } = useApp();
   const [presets, setPresets] = useState<any[]>(
     JSON.parse(localStorage.getItem('msa_decoder_presets') ?? '[]'));
+  const [virtual, setVirtual] = useState<VirtualBridgeStatus | null>(null);
+  const [portA, setPortA] = useState('COM20');
+  const [portB, setPortB] = useState('COM21');
+  const [bridgePort, setBridgePort] = useState('');
+  const [bridgeBusy, setBridgeBusy] = useState(false);
+
+  const refreshVirtual = () => api.virtualSerialStatus().then(setVirtual).catch(() => {});
+  useEffect(() => { refreshVirtual(); }, []);
 
   const lock = status?.control;
   const iAmHolder = lock?.holder === clientId();
@@ -118,6 +127,96 @@ export function SettingsPage() {
               <tr><th>double-click</th><td>cursor A snapped to edge (alt: B)</td></tr>
             </tbody>
           </table>
+        </div>
+
+        <div className="card">
+          <div className="card-head">
+            <h3>Virtual debug ports</h3>
+            <span className={`badge ${virtual?.running ? 'badge-hw' : 'badge-soft'}`}>
+              {virtual?.running ? 'bridge running' : 'app-only'}
+            </span>
+          </div>
+          <p className="hint">
+            This creates a software endpoint for debugger utilities and forwards
+            JSON-lines SWD requests through the existing generator path. It does
+            not reconfigure JTAG, MPSSE, FTDI EEPROM, or board wiring.
+          </p>
+          {!virtual && <div className="hint">Checking virtual-port support…</div>}
+          {virtual && !virtual.driver.available && (
+            <div className="finding warning">
+              No com0com driver is installed. The TCP bridge works now; paired
+              Windows COMx ports require a separately installed signed virtual-COM driver.
+            </div>
+          )}
+          {virtual?.driver.available && (
+            <>
+              <div className="hint">Driver: <span className="mono">{virtual.driver.setup_path}</span></div>
+              <label className="field">
+                <span>New COM pair (utility side is the second port)</span>
+                <div className="button-row">
+                  <input value={portA} onChange={(e) => setPortA(e.target.value)} placeholder="COM20" />
+                  <span>↔</span>
+                  <input value={portB} onChange={(e) => setPortB(e.target.value)} placeholder="COM21" />
+                </div>
+              </label>
+              <button disabled={bridgeBusy} onClick={async () => {
+                setBridgeBusy(true);
+                try {
+                  const result = await api.createVirtualComPair(portA, portB);
+                  setBridgePort(result.port_a);
+                  toast('success', `Created ${result.port_a} ↔ ${result.port_b}`);
+                  refreshVirtual();
+                } catch (e: any) { toast('error', e.message); }
+                finally { setBridgeBusy(false); }
+              }}>Make COM pair</button>
+            </>
+          )}
+          <label className="field">
+            <span>Bridge transport</span>
+            <select value={virtual?.driver.available && bridgePort ? 'com' : 'tcp'}
+              onChange={(e) => setBridgePort(e.target.value === 'com' ? portA : '')}>
+              <option value="tcp">TCP localhost (driver-free)</option>
+              <option value="com" disabled={!virtual?.driver.available}>Virtual COM pair</option>
+            </select>
+          </label>
+          {virtual?.driver.available && (
+            <label className="field">
+              <span>App-side COM endpoint</span>
+              <input value={bridgePort} onChange={(e) => setBridgePort(e.target.value)} placeholder={portA} />
+            </label>
+          )}
+          <div className="button-row">
+            {!virtual?.running ? (
+              <button className="primary" disabled={bridgeBusy} onClick={async () => {
+                setBridgeBusy(true);
+                try {
+                  const transport = virtual?.driver.available && bridgePort ? 'com' : 'tcp';
+                  const result = await api.startVirtualBridge({ transport, app_port: bridgePort });
+                  setVirtual(result);
+                  toast('success', result.tcp_endpoint ? `Bridge listening at ${result.tcp_endpoint}` : `Bridge opened ${result.app_port}`);
+                } catch (e: any) { toast('error', e.message); }
+                finally { setBridgeBusy(false); }
+              }}>Start SWD bridge</button>
+            ) : (
+              <button className="danger" disabled={bridgeBusy} onClick={async () => {
+                setBridgeBusy(true);
+                try { setVirtual(await api.stopVirtualBridge()); toast('success', 'SWD bridge stopped'); }
+                catch (e: any) { toast('error', e.message); }
+                finally { setBridgeBusy(false); }
+              }}>Stop bridge</button>
+            )}
+            <button onClick={refreshVirtual}>Refresh</button>
+          </div>
+          {virtual?.running && virtual.transport === 'tcp' && (
+            <div className="finding info">
+              Endpoint: <span className="mono">{virtual.tcp_endpoint}</span>. Send one JSON object per line;
+              use <span className="mono">PING</span> or <span className="mono">STATUS</span> to check it.
+            </div>
+          )}
+          <p className="hint">
+            SWD bridge request shape: <span className="mono">{'{"op":"swd","config":{"extra":{"requests":[...]}}}'}</span>.
+            This is an app protocol, not CMSIS-DAP; standard debuggers still need a CMSIS-DAP/OpenOCD adapter.
+          </p>
         </div>
       </div>
     </div>

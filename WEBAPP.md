@@ -53,6 +53,61 @@ On startup the server prints the URLs:
 
 API docs (Swagger): `http://localhost:8000/docs`.
 
+### AI / MCP integration
+
+The backend exposes the analyser through the standard MCP Streamable HTTP
+endpoint at `http://localhost:8000/mcp/` (the no-slash `/mcp` URL redirects).
+It uses the same live device, capture
+manager, saved sessions, decoders, measurements, and waveform store as the
+browser UI. Configure an MCP client with that URL, for example:
+
+```text
+http://localhost:8000/mcp/
+```
+
+The MCP tools cover device status and control, captures, sessions, bounded raw
+waveform/edge/value queries, protocol decoders, measurements, text exports,
+generator routes (UART, RS-485, I²C, SPI, and SWD), COM-port/FTDI inspection,
+virtual-port status/pair creation, SWD bridge control, and debugger status.
+Mutating hardware tools use the analyser control lock.
+
+The board's two FTDI interfaces are fixed: Channel A is JTAG/programming and
+Channel B is the analyser's MPSSE/SPI transport. The app will not rewrite the
+EEPROM to turn either one into a COM port, because that would break JTAG or
+capture access. If a debugger needs additional host-visible COM ports, that
+requires a separate virtual-COM driver plus a protocol bridge. The Settings
+page can start a driver-free localhost TCP bridge immediately, or create a
+paired Windows `COMx` endpoint through `com0com` when `setupc.exe` is installed.
+The backend does not install kernel drivers automatically and does not change
+the MAX1000. Bridge traffic is newline-delimited JSON, for example:
+
+```json
+{"op":"swd","config":{"baud":1000000,"tx_pin":3,"scl_pin":1,"extra":{"requests":[{"ap":false,"read":true,"addr":0,"data":0}]}}}
+```
+
+The response includes pass/fail evidence and the saved analyser session id.
+This is an app protocol, not CMSIS-DAP; OpenOCD/pyOCD still require a
+compatible CMSIS-DAP or remote-bitbang adapter. The analyser's MCP generator
+tools continue to work directly without this extra layer.
+
+Live verification on the attached MAX1000 confirmed the TCP bridge forwarded
+an SWD request and returned `PASS - captured and decoded 1 SWD transaction(s)`;
+the generated evidence was saved as a normal analyser session. The current
+machine has physical `COM6` but no com0com driver, so its tested fallback is
+TCP rather than a Windows `COMx` pair.
+
+For a local desktop agent that launches the server over stdio instead of using
+the running web app:
+
+```bash
+cd backend
+python -m app.mcp.server
+```
+
+The backend dependency list includes the official Python MCP SDK. If MCP is
+not installed, the normal REST/frontend app still starts and reports its MCP
+installation requirement in the server logs.
+
 ### Frontend development mode
 
 ```bash
@@ -181,6 +236,9 @@ POST /api/generator/{configure,start,stop,send,self-test,preview}
 POST /api/sessions/{id}/validate  GET /api/sessions/{id}/dashboard
 GET  /api/logs | /api/diagnostics        POST /api/diagnostics/{debug-bundle,run-self-test,mock-capture}
 GET  /api/qr | /connect
+GET  /api/serial/ports | /api/serial/ftdi | /api/serial/layout
+GET  /api/serial/virtual | /api/serial/virtual/log
+POST /api/serial/virtual/{com-pair,start,stop}
 ```
 
 WebSockets: `/ws/status`, `/ws/capture`, `/ws/logs`, `/ws/session/{id}`,

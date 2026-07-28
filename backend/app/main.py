@@ -12,19 +12,28 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api import (capture, decoders, devices, diagnostics, exports, generator,
-                  measurements, mil, sessions, status, validation, waveform)
+                  measurements, mil, serial, sessions, status, validation,
+                  waveform)
 from .config import APP_NAME, APP_VERSION, FRONTEND_DIST, PORT
 from .diagnostics.logger import setup_logging
 from .hardware.base import HardwareError
 from .state import capture_manager
+from .serial import virtual_com_manager
 from .websocket import status_ws
 from .websocket.manager import manager
 
+try:
+    from .mcp.server import mcp as MCP_SERVER
+except ImportError:  # MCP remains optional for lightweight API-only installs.
+    MCP_SERVER = None
+
 log = logging.getLogger("msa")
+if MCP_SERVER is None:
+    log.warning("MCP support is unavailable; install backend requirements to enable /mcp/")
 
 
 def lan_ip() -> str | None:
@@ -59,7 +68,12 @@ async def lifespan(app: FastAPI):
         "",
     ])
     print(banner, flush=True)
-    yield
+    if MCP_SERVER is not None:
+        async with MCP_SERVER.session_manager.run():
+            yield
+    else:
+        yield
+    virtual_com_manager.stop()
     capture_manager.disconnect()
     log.info("Backend stopped")
 
@@ -80,9 +94,23 @@ async def hardware_error_handler(request: Request, exc: HardwareError):
 
 
 for r in (status, devices, capture, sessions, waveform, decoders,
-          measurements, exports, generator, mil, diagnostics, validation):
+          measurements, exports, generator, mil, diagnostics, validation,
+          serial):
     app.include_router(r.router)
 app.include_router(status_ws.router)
+
+# MCP uses the recommended Streamable HTTP transport.  The server's path is
+# configured as "/" so the public endpoint is /mcp/ rather than /mcp/mcp when
+# mounted into this existing FastAPI application.
+if MCP_SERVER is not None:
+    app.mount("/mcp", MCP_SERVER.streamable_http_app())
+
+    @app.api_route("/mcp", methods=["GET", "POST", "DELETE"],
+                   include_in_schema=False)
+    async def mcp_root_redirect():
+        # Starlette mounts match /mcp/ as the child root; preserve the
+        # conventional no-slash URL as a redirect for MCP clients.
+        return RedirectResponse(url="/mcp/", status_code=307)
 
 
 # Serve the built frontend (frontend/dist) when present; SPA fallback to
