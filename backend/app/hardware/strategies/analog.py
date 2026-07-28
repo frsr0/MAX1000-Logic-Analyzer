@@ -41,7 +41,11 @@ class AnalogCaptureStrategy(CaptureStrategy):
         stride = analog_frame_stride(MODE_ANALOG_FAST)
         words_per_frame = max(1, stride // 2)
         sdram_words = nsamp * words_per_frame
-        request_rate_hz = ADC_FAST_FRAME_RATE_HZ
+        # The ADC profile supports a 1 MSPS ceiling, but the capture divider
+        # still allows the user-facing lower analog rates.  Preserve the
+        # requested rate instead of silently running every analog-fast capture
+        # at 1 MSPS.
+        request_rate_hz = min(ADC_FAST_FRAME_RATE_HZ, max(1.0, float(settings.sample_rate)))
 
         wire = dev.capture(
             rate_hz=request_rate_hz,
