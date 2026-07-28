@@ -71,4 +71,10 @@ The same unchanged HDL was fitted with seed 31 as a behavior-preserving check:
 - `sdram_core_clk`: **-0.028 ns**, TNS **-0.112 ns**
 - Logic elements: **7,921 / 8,064**
 
-Seed 31 is worse than the seed-30 checkpoint. This confirms that “try another seed” is not, by itself, a solution. Any placement experiment needs an explicit locality objective around the FAST capture counter/control cluster and must be judged against the seed-30 baseline.
+Seed 31 is worse than the seed-30 checkpoint. This confirms that “try another seed” is not, by itself, a solution. Although the timing report shows routing dominates the path, that does **not** prove a manual placement constraint will help; locality is not being treated as a fix without a controlled constraint experiment.
+
+## Next candidate: delayed acceptance event
+
+The first RTL candidate with a direct timing prediction is to register the producer’s one-bit word-accepted event and update the wide budget counter from that delayed event. Prediction: `narrow_enable_f` and `analog_burst_active` disappear from the counter D mux, while the counter’s existing decrement pipeline remains intact.
+
+This candidate is not approved for fitting yet. The one-cycle event delay must first pass the packed continuous-renewal and single-shot completion tests, because an uncorrected delay could admit one extra word or move the done toggle.
