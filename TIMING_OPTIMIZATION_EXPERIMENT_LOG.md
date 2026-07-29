@@ -118,3 +118,17 @@ ghdl -r --std=08 tb_mso_full_roundtrip --stop-time=250us
 ```
 
 These are the minimum functional gates for the next analog resource experiment. The next candidate must preserve the 16-bit packed word format, analog output production, digital RLE production, and both backpressure/drain behaviors before it is allowed into a full fit.
+
+## Rejected candidate: reduce analog accumulator width
+
+The analog packer accumulator was reduced from 26 to 25 bits. The width proof is sound: the maximum state is 14 residual bits plus one 11-bit chunk, so bit 24 is the highest required bit. All focused functional tests remained identical.
+
+The fit nevertheless regressed:
+
+- Logic elements: **7,868 -> 7,892**
+- Registers: **4,788 -> 4,786**
+- `fast_clk`: **-0.049 ns -> -0.062 ns**
+- `sys_clk`: **+0.244 ns -> -0.053 ns**
+- `sdram_core_clk`: **+0.380 ns -> -0.015 ns**
+
+The change was reverted. Removing one accumulator bit is too small to overcome placement movement at 98% utilisation and is not a viable closure strategy by itself.
