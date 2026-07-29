@@ -26,7 +26,7 @@ class OLS_SPI_MPSSE:
         time.sleep(0.01)
         self.d.write(bytes([0x85]))
         time.sleep(0.01)
-        self.d.write(bytes([0x94, 0x00]))
+        self.d.write(bytes([0x8A]))
         time.sleep(0.01)
         div = max(0, 60_000_000 // (2 * spi_hz) - 1)
         self.d.write(bytes([0x86, div & 0xFF, (div >> 8) & 0xFF]))

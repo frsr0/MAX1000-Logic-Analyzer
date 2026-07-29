@@ -22,7 +22,7 @@ for i in range(2):
     buf = bytes([
         0x4B, 0x01,         # 4-pin mode
         0x85,               # disable loopback
-        0x94, 0x00,         # disable clock /5
+        0x8A,               # disable clock /5
         0x86, 0x01, 0x00,   # clock div = 1
         0x80, 0x08, 0x0B,   # GPIO set (CS high)
         0x81,               # Read GPIO low byte

@@ -18,6 +18,9 @@ class TestOLS_SPI_MPSSE:
         mock_ft.open.assert_called_once_with(1)
         assert mock_d.setBitMode.called
         assert mock_d.purge.called
+        writes = [call.args[0] for call in mock_d.write.call_args_list]
+        assert bytes([0x8A]) in writes
+        assert all(bytes([0x94, 0x00]) != buf for buf in writes)
 
     @patch('driver.ols_spi_mpsse.ft')
     def test_xfer(self, mock_ft):
