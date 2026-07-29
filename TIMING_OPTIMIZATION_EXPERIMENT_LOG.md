@@ -198,3 +198,29 @@ The QSF was temporarily changed to enable `PHYSICAL_SYNTHESIS_COMBO_LOGIC` with 
 - `sdram_core_clk`: **+0.380 ns -> +0.518 ns**
 
 The setting was reverted. Physical combinational synthesis consumes the remaining logic budget and damages the 200 MHz path; the existing OFF setting is validated.
+
+## Fitter-setting test: physical register retiming
+
+The QSF was temporarily changed to enable `PHYSICAL_SYNTHESIS_REGISTER_RETIMING` while keeping combinational physical synthesis and register duplication disabled. The run compiled through analysis and synthesis, but the fitter failed:
+
+- Required LABs: **505**
+- Available LABs: **504**
+- `fast_clk`: **-0.049 ns**
+- `sys_clk`: **+0.244 ns**
+- `sdram_core_clk`: **+0.380 ns**
+- `Total logic elements`: **8,021 / 8,064**
+- `Total registers`: **4,840**
+
+The retiming setting was reverted. It did not improve the slow-clock slack and pushed the design one LAB beyond device capacity.
+
+## Fitter-setting test: physical register duplication
+
+The QSF was then temporarily changed to enable `PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION` with combinational physical synthesis and retiming still disabled. The build completed successfully, but the result matched the baseline exactly:
+
+- `fast_clk`: **-0.049 ns**
+- `sys_clk`: **+0.244 ns**
+- `sdram_core_clk`: **+0.380 ns**
+- Logic elements: **7,868 / 8,064 (98%)**
+- Registers: **4,788**
+
+The duplication setting was reverted. It did not move the critical path or reduce congestion enough to change the fit outcome, so it is not a useful closure lever for this design.
