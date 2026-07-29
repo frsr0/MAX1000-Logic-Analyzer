@@ -15,7 +15,8 @@ digital `raw`, direct `rle`, and packed `delta_rle` readback.
 ## Hardware compression performance
 
 The current board evidence comes from the connected-board hardware validation
-report and the live rate characterization in `host/app/hw_validation.py`.
+report, the live rate characterization in `host/app/hw_validation.py`, and the
+jumper-fed compression probe in `host/debug/jumper_compression_probe.py`.
 
 Payload-only compression ratios from the validated hardware matrix. This is the
 full source-rate sweep currently documented for the digital readback path:
@@ -35,6 +36,32 @@ compresses better than raw, PWM-like traffic compresses strongly because it is
 periodic, and the ratio generally improves as the sample rate rises for slower
 signals because more identical samples fall into each source period.
 
+Jumper-fed waveform sweep on the discovered physical pair `22 -> CH13`:
+
+| Stimulus | Rate | Raw bytes | Delta bytes | RLE bytes | Delta/raw | RLE/raw |
+|---|---:|---:|---:|---:|---:|---:|
+| idle | 1 MHz | 8192 | 3072 | 4 | 2.67x | 2048.00x |
+| idle | 10 MHz | 8192 | 3092 | 8 | 2.65x | 1024.00x |
+| idle | 50 MHz | 8192 | 3072 | 4 | 2.67x | 2048.00x |
+| pwm_10k | 1 MHz | 8192 | 3232 | 40 | 2.53x | 204.80x |
+| pwm_10k | 10 MHz | 8192 | 3232 | 36 | 2.53x | 227.56x |
+| pwm_10k | 50 MHz | 8192 | 3232 | 40 | 2.53x | 204.80x |
+| pwm_100k | 1 MHz | 8192 | 3152 | 44 | 2.60x | 186.18x |
+| pwm_100k | 10 MHz | 8192 | 3232 | 36 | 2.53x | 227.56x |
+| pwm_100k | 50 MHz | 8192 | 3112 | 12 | 2.63x | 682.67x |
+| alternating | 1 MHz | 8192 | 4372 | 4108 | 1.87x | 1.99x |
+| alternating | 10 MHz | 8192 | 8132 | 1776 | 1.01x | 4.61x |
+| alternating | 50 MHz | 8192 | 7732 | 1640 | 1.06x | 5.00x |
+| uart | 1 MHz | 8192 | 6872 | 1120 | 1.19x | 7.31x |
+| uart | 10 MHz | 8192 | 3592 | 128 | 2.28x | 64.00x |
+| uart | 50 MHz | 8192 | 3552 | 116 | 2.31x | 70.62x |
+| spi | 1 MHz | 8192 | 3192 | 400 | 2.57x | 20.48x |
+| spi | 10 MHz | 8192 | 3492 | 408 | 2.35x | 20.08x |
+| spi | 50 MHz | 8192 | 3272 | 272 | 2.50x | 30.12x |
+| i2c | 1 MHz | 8192 | 3172 | 260 | 2.58x | 31.51x |
+| i2c | 10 MHz | 8192 | 3432 | 320 | 2.39x | 25.60x |
+| i2c | 50 MHz | 8192 | 3272 | 172 | 2.50x | 47.63x |
+
 The same validated image also showed that the codec round-trip is exact at the
 finite readback seam through the full test matrix, including the 200.4 MS/s
 sample-rate sweep.
@@ -44,13 +71,40 @@ sample-rate sweep.
 Compression ratio is only part of the story. For live ring reads, the current
 validated image shows:
 
-- `raw` lossless ceiling in the ~0.50–1.00 MS/s range depending on source
+- `raw` lossless ceiling in the ~0.50-1.00 MS/s range depending on source
   pattern.
 - `delta_rle` lossless ceiling around 0.50 MS/s on the current USB path.
 
 That is a throughput characterization, not a correctness gate. The important
 part for correctness is that the compressed paths stay bit-exact when the
 validation suite says they should.
+
+## What this means for live-mode sample rates
+
+The jumper sweep tells us about compressibility; the live-mode ceiling tells us
+about transport. Those are related, but they are not the same thing.
+
+In practice:
+
+- idle and PWM-like traffic create the most headroom because they compress
+  strongly;
+- alternating or otherwise busy traffic is much closer to raw, so it will hit
+  the live ceiling sooner;
+- compression does not automatically raise the hardware sample clock, and it
+  does not guarantee the live ceiling will improve by the same factor as the
+  payload ratio.
+
+So the useful rule of thumb is:
+
+- if transport is the bottleneck, compression can buy you a lot of live-mode
+  headroom;
+- if the capture path or write pump is the bottleneck, the live ceiling may not
+  move much even when the waveform compresses well.
+
+The current validated live-mode characterization still sits around the
+sub-megasample-per-second range on the existing USB path, so the new compression
+figures should be read as "how much cheaper the waveform is to move," not "the
+sample clock can now run that much faster."
 
 ## Best source for jumper-based performance sweeps
 
@@ -111,3 +165,4 @@ python debug/hwt_test_compression_matrix.py
 
 That helper currently uses the on-board debug CH0 PWM source; the full suite is
 the authoritative source for jumper-driven generator validation.
+
