@@ -274,3 +274,31 @@ The build compiled successfully, but timing regressed hard:
 - Registers: **4,788 -> 4,794**
 
 The fast-clock cone stayed in the same neighborhood but got materially worse, so this candidate is rejected and will be reverted.
+
+## Rejected candidate: collapse dead sample-count staging
+
+The FAST-only `samples_div6` register bank and its `samples_div` staging shadow were removed, with the pclk shadow reading the source count directly in each mode.
+
+The build still compiled to exactly the baseline timing/resource result:
+
+- `fast_clk`: **-0.049 ns**
+- `sys_clk`: **+0.244 ns**
+- `sdram_core_clk`: **+0.380 ns**
+- Logic elements: **7,868 / 8,064**
+- Registers: **4,788**
+
+Quartus had already optimized the dead staging away, so this cleanup did not buy useful headroom. Rejected.
+
+## Successful diagnostic: FAST_RAW_BUILD / RawOnly
+
+The explicit raw-only profile, which elides the MSO bit-pack capture pipeline, was compiled as a timing diagnostic.
+
+This profile closed timing cleanly:
+
+- `fast_clk`: **+0.249 ns**
+- `sys_clk`: **+0.459 ns**
+- `sdram_core_clk`: **+0.316 ns**
+- Logic elements: **7,293 / 8,064 (90%)**
+- Registers: **4,172**
+
+This shows the raw capture core can meet timing, and the remaining closure problem lives in the mixed-signal / compression portion of the design rather than the basic FAST capture path.
