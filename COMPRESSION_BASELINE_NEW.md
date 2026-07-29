@@ -17,17 +17,23 @@ digital `raw`, direct `rle`, and packed `delta_rle` readback.
 The current board evidence comes from the connected-board hardware validation
 report and the live rate characterization in `host/app/hw_validation.py`.
 
-Payload-only compression ratios from the validated hardware matrix:
+Payload-only compression ratios from the validated hardware matrix. This is the
+full source-rate sweep currently documented for the digital readback path:
 
-| Source | 1 MHz | 10 MHz | 50 MHz |
-|---|---:|---:|---:|
-| Idle | 85.33x | 256.00x | 256.00x |
-| PWM 10 kHz | 13.04x | 128.00x | 128.00x |
-| PWM 100 kHz | 2.36x | 22.76x | 24.38x |
-| PWM 1 MHz | 256.00x* | 2.49x | 2.69x |
+| Source | 1 MHz | 10 MHz | 50 MHz | Interpretation |
+|---|---:|---:|---:|---|
+| Idle | 85.33x | 256.00x | 256.00x | Best-case compression; long repeated runs collapse very well. |
+| PWM 10 kHz | 13.04x | 128.00x | 128.00x | Strong compression, and it improves as the sample rate rises. |
+| PWM 100 kHz | 2.36x | 22.76x | 24.38x | More active than idle, but still benefits sharply from higher sample rates. |
+| PWM 1 MHz | 256.00x* | 2.49x | 2.69x | Alias/phase sensitive at 1 MHz sample rate; higher rates make it behave more like a normal repeating waveform. |
 
 `*` The 1 MHz PWM at 1 MHz sample rate is alias/phase sensitive and is not a
 stable benchmark point.
+
+That matches the expectation for this codec: data with longer repeated runs
+compresses better than raw, PWM-like traffic compresses strongly because it is
+periodic, and the ratio generally improves as the sample rate rises for slower
+signals because more identical samples fall into each source period.
 
 The same validated image also showed that the codec round-trip is exact at the
 finite readback seam through the full test matrix, including the 200.4 MS/s
@@ -71,6 +77,11 @@ tests passed:
 Those tests prove the generator path and the physical jumper path are sound.
 They are the right fixture for future compression sweeps when you want the
 stimulus to come from the Bit Engine instead of the on-board debug clock.
+
+If you want the next-step benchmark to be even closer to a true real-world
+capture source, the most useful follow-on is to run the same source-rate sweep
+with the generator output routed over the discovered jumper pair and record the
+raw versus `delta_rle` payload ratios separately.
 
 ## Recommendation
 
