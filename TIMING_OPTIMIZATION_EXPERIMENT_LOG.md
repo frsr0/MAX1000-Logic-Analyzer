@@ -89,3 +89,15 @@ The implementation compiled, but the full seed-30 fit rejected it:
 - Registers: **4,788 -> 4,789**
 
 The delayed-event implementation was reverted. The added register did not buy timing because the remaining counter/decrement routing and new control fan-out dominated. This candidate is closed; do not retry it without a different counter representation or a proven legal timing boundary.
+
+## Compression ablation: remove analog delta-packing only
+
+As a controlled resource experiment, the analog `delta_calc` + `analog_packer` half of `mso_capture` was temporarily elided while digital RLE remained active.
+
+Result:
+
+- Logic elements: **7,868 -> 7,556**
+- `fast_clk`: **-0.049 ns -> +0.129 ns**
+- `sys_clk`: **+0.244 ns -> -0.190 ns**
+
+This identifies the analog compressor as the main congestion lever, but deleting it is not a valid product fix because it creates a system-clock violation and removes analog compression. The next implementation must reduce the analog path while preserving its interface and lossless behavior.
