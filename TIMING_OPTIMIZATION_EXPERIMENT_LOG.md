@@ -101,3 +101,20 @@ Result:
 - `sys_clk`: **+0.244 ns -> -0.190 ns**
 
 This identifies the analog compressor as the main congestion lever, but deleting it is not a valid product fix because it creates a system-clock violation and removes analog compression. The next implementation must reduce the analog path while preserving its interface and lossless behavior.
+
+## Functional baseline regressions
+
+Before changing the analog path, the focused format tests were run from the restored baseline:
+
+```text
+ghdl -r --std=08 tb_analog_packer --stop-time=20us
+  PASS: bit-exact W=5/W=8 payloads and both DRAIN branches
+
+ghdl -r --std=08 tb_mso_capture_probe --stop-time=250us
+  PASS: analog_words=5621 digital_words=15076
+
+ghdl -r --std=08 tb_mso_full_roundtrip --stop-time=250us
+  PASS: 2680 packed words across IDLE, TOGGLE, and CYCLE sections
+```
+
+These are the minimum functional gates for the next analog resource experiment. The next candidate must preserve the 16-bit packed word format, analog output production, digital RLE production, and both backpressure/drain behaviors before it is allowed into a full fit.
