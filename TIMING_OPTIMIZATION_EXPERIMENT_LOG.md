@@ -158,3 +158,20 @@ The build documentation claimed that seed 44 closed the full mixed-signal image.
 - `fast_clk` hold: **+0.305 ns**
 
 Seed 44 is rejected. The build-flow documentation must not present it as a timing-closed full-profile seed.
+
+## Fresh eight-seed full-profile sweep
+
+The current full RTL and constraints were swept across seeds 21, 30, 5, 12, 42, 7, 3, and 17. All values below are slow 1200 mV / 85 C setup slack in ns:
+
+| Seed | sys_clk | fast_clk | sdram_core_clk | Chip out | LEs |
+|---:|---:|---:|---:|---:|---:|
+| 21 | -0.263 | -0.158 | -0.077 | +1.098 | 7,887 |
+| 30 | +0.244 | -0.049 | +0.380 | +1.098 | 7,868 |
+| 5 | -0.065 | -0.676 | -0.049 | +1.098 | 7,899 |
+| 12 | +0.246 | -0.382 | +0.115 | +1.098 | 7,907 |
+| 42 | -0.374 | -0.339 | +0.072 | +1.098 | 7,899 |
+| 7 | +0.175 | -0.151 | -0.176 | +1.098 | 7,879 |
+| 3 | +0.267 | -0.413 | -0.033 | +1.098 | 7,898 |
+| 17 | -0.361 | -0.103 | +0.101 | +1.098 | 7,856 |
+
+Seed 30 is the best of this sweep by worst-clock slack, but no tested full-profile seed closes all setup clocks. The historical 94%-LE table is obsolete for the current HDL.

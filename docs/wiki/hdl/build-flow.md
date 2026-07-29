@@ -108,7 +108,7 @@ capture, packed-stream, analog, and SDRAM regressions.
 ```mermaid
 flowchart LR
     RTL["RTL + SDC"] --> SYN["Quartus analysis / synthesis"]
-    SYN --> FIT["Fitter: seed 44"]
+    SYN --> FIT["Fitter: selected seed"]
     FIT --> ASM["Assembler: SOF / POF"]
     FIT --> STA["Post-fit STA"]
     STA --> GATE{"All required setup/hold paths positive?"}
