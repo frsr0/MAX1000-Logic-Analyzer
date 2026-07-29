@@ -253,3 +253,24 @@ The build completed successfully, but the result regressed versus the baseline:
 - Registers: **4,788 -> 4,788** (fit summary reports `4,768` dedicated logic registers)
 
 The critical path did not change in kind: it still runs through the FAST writer budget cone, now reported on `sample_remaining_u[1]~8` with `analog_burst_active~0` still in the same neighborhood. This candidate was rejected and will be reverted.
+
+## Rejected candidate: split analog frame budget out of the FAST sample counter
+
+The FAST-speed writer was temporarily given a separate analog frame counter so the analog burst state would no longer sit on the wide `sample_remaining` D path.
+
+The build did not make it to timing signoff: the fitter needed **506 LABs** on a **504-LAB** device, so the design failed fit before any timing result could improve. This candidate was therefore rejected and reverted.
+
+## Rejected candidate: delayed analog frame accept event
+
+The analog burst path was rewritten to raise a one-bit delayed accept event instead of touching the wide sample budget directly on the frame-start cycle.
+
+The build compiled successfully, but timing regressed hard:
+
+- `fast_clk`: **-0.049 ns -> -0.628 ns**
+- `fast_clk` TNS: **-0.097 ns -> -10.682 ns**
+- `sdram_core_clk`: **+0.380 ns -> +0.181 ns**
+- `sys_clk`: **+0.244 ns -> +0.346 ns**
+- Logic elements: **7,868 -> 7,938**
+- Registers: **4,788 -> 4,794**
+
+The fast-clock cone stayed in the same neighborhood but got materially worse, so this candidate is rejected and will be reverted.
