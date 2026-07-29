@@ -392,6 +392,26 @@ class TestOLSDeviceSPI:
         device_spi.pkt.read_capture_blocks.assert_called_once_with(
             [0, 1022], compressed=True)
 
+    def test_read_capture_range_disables_broken_delta_compressed_blocks_after_probe(self, device_spi):
+        raw_block = b'\x00' * 1024
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'delta_rle'
+        device_spi.compress_readback_enabled = True
+        device_spi._compressed_block_reads_supported = {'delta_rle': None, 'rle': None}
+        device_spi.pkt.read_register.return_value = 0
+        device_spi.pkt.read_capture_blocks.return_value = [raw_block, raw_block]
+
+        first = device_spi.read_capture_range(start_sample=0, sample_count=520)
+        second = device_spi.read_capture_range(start_sample=0, sample_count=520)
+
+        assert len(first) == 1040
+        assert len(second) == 1040
+        calls = device_spi.pkt.read_capture_blocks.call_args_list
+        assert calls[0].kwargs["compressed"] is True
+        assert calls[1].kwargs["compressed"] is False
+        assert calls[2].kwargs["compressed"] is False
+        assert device_spi._compressed_block_reads_supported["delta_rle"] is False
+
     def test_read_capture_range_decompresses_mixed_compressed_blocks(self, device_spi):
         payload = bytearray()
         for i in range(160):

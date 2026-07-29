@@ -215,6 +215,11 @@ class OLSDeviceSPI:
         self._pending_debug_duty = None
         self.compress_readback_enabled = False
         self.readback_compression_mode = 'raw'
+        # Live readback can probe the compressed block path once and then fall
+        # back to raw if the current bitstream/device path does not actually
+        # return decodable compressed blocks. This avoids paying the failed
+        # compression tax on every chunk of a long-running capture.
+        self._compressed_block_reads_supported = {'delta_rle': None, 'rle': None}
         # Software digital glitch / hysteresis filter (applied to captured
         # digital samples on the host; the FPGA captures raw pins).
         self.glitch_enable = False
@@ -1023,6 +1028,9 @@ class OLSDeviceSPI:
         codec = self._readback_codec()
         use_compress = codec != 'raw'
         batched_compressed = codec != 'raw'
+        if codec != 'raw' and self._compressed_block_reads_supported.get(codec) is False:
+            use_compress = False
+            batched_compressed = False
         t_total = time.perf_counter()
         blocks_total = 0.0
         decode_total = 0.0
@@ -1097,6 +1105,14 @@ class OLSDeviceSPI:
                     decoded = [decompress_block_readback_stream(
                         b, codec=decode_codec) if b else b'' for b in blocks]
                     need_raw = [j for j, d in enumerate(decoded) if len(d) != 1024]
+                    if codec in self._compressed_block_reads_supported and need_raw:
+                        # If every block came back undecodable, the current
+                        # bitstream is behaving like raw block readback even
+                        # though compression was requested. Remember that so
+                        # the next batch in this session skips the failed
+                        # compressed detour entirely.
+                        if len(need_raw) == len(decoded):
+                            self._compressed_block_reads_supported[codec] = False
                     if need_raw:
                         t_retry = time.perf_counter()
                         raw_blocks = self._read_blocks_uncompressed(
@@ -1105,6 +1121,8 @@ class OLSDeviceSPI:
                         for j, rb in zip(need_raw, raw_blocks):
                             if rb:
                                 decoded[j] = rb
+                        if codec in self._compressed_block_reads_supported and len(need_raw) != len(decoded):
+                            self._compressed_block_reads_supported[codec] = True
                     blocks = decoded
                     decode_total += time.perf_counter() - t_decode
                 stop = False
