@@ -179,3 +179,11 @@ Seed 30 is the best of this sweep by worst-clock slack, but no tested full-profi
 ## Fitter-setting test: `OPTIMIZATION_MODE SPEED`
 
 This test was rejected before fit. Quartus 18.1 does not accept `SPEED` as an `OPTIMIZATION_MODE` value; the legal value is `Aggressive Performance` (along with `Balanced`, `Aggressive Area`, and power variants). No timing or resource result was produced. The build script was restored to `Balanced`.
+
+The legal `Aggressive Performance` setting was then tested. Analysis completed, but the fitter rejected the design before timing signoff:
+
+- Required LABs: **538**
+- Available LABs: **504**
+- Result: **fit failure**
+
+This confirms that fitter-side performance optimization increases area beyond device capacity; `Balanced` remains the only viable current setting.
