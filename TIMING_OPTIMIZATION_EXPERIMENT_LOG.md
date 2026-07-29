@@ -132,3 +132,17 @@ The fit nevertheless regressed:
 - `sdram_core_clk`: **+0.380 ns -> -0.015 ns**
 
 The change was reverted. Removing one accumulator bit is too small to overcome placement movement at 98% utilisation and is not a viable closure strategy by itself.
+
+## Rejected candidate: explicit child AREA directives
+
+The build already assigns `OPTIMIZATION_TECHNIQUE AREA` to `mso_capture`. Temporary explicit AREA assignments were added for `analog_packer` and `delta_calc` to test whether the child entities were escaping that setting.
+
+The fit was identical to baseline:
+
+- Logic elements: **7,868**
+- `fast_clk`: **-0.049 ns**
+- `sys_clk`: **+0.244 ns**
+- `sdram_core_clk`: **+0.380 ns**
+- `analog_packer`: **301 LEs**
+
+The directives were reverted. Quartus is already applying the effective area strategy to these children; further QSF area annotations are not a lever.
