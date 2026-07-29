@@ -238,3 +238,18 @@ The fit compiled successfully, but timing regressed sharply:
 - Registers: **4,788 -> 4,769**
 
 The critical path remained the FAST writer budget cone from `narrow_enable_f` / `analog_burst_active` into `sample_remaining[17:18]`, just with much worse slack. This candidate was rejected and reverted.
+
+## Rejected candidate: convert FAST sample budget to local `unsigned`
+
+The FAST-speed writer was temporarily rewritten to keep the budget counter as local `unsigned` signals inside `gen_fast_speed`, with the intention of shrinking the wide `natural` compare/decrement cone in place.
+
+The build completed successfully, but the result regressed versus the baseline:
+
+- `fast_clk`: **-0.049 ns -> -0.376 ns**
+- `fast_clk` TNS: **-0.097 ns -> -0.717 ns**
+- `sys_clk`: **+0.244 ns -> -0.167 ns**
+- `sdram_core_clk`: **+0.380 ns -> +0.140 ns**
+- Logic elements: **7,868 -> 7,943**
+- Registers: **4,788 -> 4,788** (fit summary reports `4,768` dedicated logic registers)
+
+The critical path did not change in kind: it still runs through the FAST writer budget cone, now reported on `sample_remaining_u[1]~8` with `analog_burst_active~0` still in the same neighborhood. This candidate was rejected and will be reverted.
