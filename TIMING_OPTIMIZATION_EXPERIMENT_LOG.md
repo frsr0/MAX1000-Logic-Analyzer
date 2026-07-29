@@ -187,3 +187,14 @@ The legal `Aggressive Performance` setting was then tested. Analysis completed, 
 - Result: **fit failure**
 
 This confirms that fitter-side performance optimization increases area beyond device capacity; `Balanced` remains the only viable current setting.
+
+## Fitter-setting test: physical combinational synthesis
+
+The QSF was temporarily changed to enable `PHYSICAL_SYNTHESIS_COMBO_LOGIC` with register duplication and retiming still disabled. The fit completed, but regressed sharply:
+
+- Logic elements: **7,868 -> 7,961**
+- `fast_clk`: **-0.049 ns -> -0.861 ns**, TNS **-3.833 ns**
+- `sys_clk`: **+0.244 ns -> +0.731 ns**
+- `sdram_core_clk`: **+0.380 ns -> +0.518 ns**
+
+The setting was reverted. Physical combinational synthesis consumes the remaining logic budget and damages the 200 MHz path; the existing OFF setting is validated.
