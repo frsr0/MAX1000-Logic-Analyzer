@@ -157,6 +157,23 @@ create_generated_clock -name adc_clk \
  set_multicycle_path 1 -hold \
    -from [get_registers {*narrow_enable_f* *astream_f*}] \
    -to   [get_registers {*narrow_shift_r*}]
+ set_multicycle_path 2 -setup \
+   -from [get_registers {*narrow_enable_f*}] \
+   -to   [get_registers {*sample_remaining*}]
+ set_multicycle_path 1 -hold \
+   -from [get_registers {*narrow_enable_f*}] \
+   -to   [get_registers {*sample_remaining*}]
+
+ # The narrow-word completion flag is a registered control bit, and the
+ # actual FIFO input is already absorbed by the extra write-side skid stage.
+ # Give that selector a second FAST_CLK cycle so the narrow pending -> write
+ # data cone does not get timed as same-cycle data.
+ set_multicycle_path 2 -setup \
+   -from [get_registers {*narrow_word_pending_r*}] \
+   -to   [get_registers {*fifo_wdata*}]
+ set_multicycle_path 1 -hold \
+   -from [get_registers {*narrow_word_pending_r*}] \
+   -to   [get_registers {*fifo_wdata*}]
 
  # External SPI timing:
  # - SPI_SCK is the FTDI-generated clock that times the slave interface.

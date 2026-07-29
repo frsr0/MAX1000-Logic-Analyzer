@@ -81,7 +81,8 @@ architecture rtl of analog_packer is
   constant ACC_W : positive := 15 + MAX_WIDTH;
 
   type state_t is (FILL, EMIT_HEADER, EMIT_ANCHOR_LOAD, EMIT_ANCHOR,
-                   PACK_LOAD, PACK_MASK, PACK_SHIFT, PACK_ACC, DRAIN);
+                   PACK_LOAD, PACK_SAMPLE, PACK_MASK, PACK_SHIFT, PACK_ACC, PACK_COMMIT,
+                   DRAIN);
   signal state : state_t := FILL;
 
   type buf_array is array(0 to BLOCK_SAMPLES-1) of std_logic_vector(10 downto 0);
@@ -107,6 +108,9 @@ architecture rtl of analog_packer is
   signal emit_r   : std_logic := '0';                                 -- this sample fills a word
   signal chunk_shift_r : unsigned(ACC_W-1 downto 0) := (others => '0');
   signal anchor_word_r : std_logic_vector(15 downto 0) := (others => '0');
+  signal sample_hold_r : unsigned(10 downto 0) := (others => '0');    -- extra register stage for RAM output
+  signal pack_last_r : std_logic := '0';                              -- latched end-of-block flag
+  signal pack_commit_r : std_logic := '0';                            -- advance pcount/state next cycle
 
   signal out_valid_r : std_logic := '0';
   signal pending_data_r  : std_logic_vector(15 downto 0) := (others => '0');
@@ -131,6 +135,8 @@ begin
         acc       <= (others => '0');
         out_valid_r <= '0';
         pending_valid_r <= '0';
+        pack_last_r <= '0';
+        pack_commit_r <= '0';
       elsif clk_en = '1' then
         -- Move pending data into the external output only when that register
         -- is empty.  Deliberately do not refill on the same edge as a ready
@@ -214,6 +220,11 @@ begin
             wi      := to_integer(w_lat);
             sample_r <= unsigned(buf(pcount));
             hs_r    <= held;
+            if pcount = BLOCK_SAMPLES - 1 then
+              pack_last_r <= '1';
+            else
+              pack_last_r <= '0';
+            end if;
             if held + wi >= 15 then
               emit_r <= '1';
               held   <= held + wi - 15;
@@ -221,12 +232,16 @@ begin
               emit_r <= '0';
               held   <= held + wi;
             end if;
+            state <= PACK_SAMPLE;
+
+          when PACK_SAMPLE =>
+            sample_hold_r <= sample_r;
             state <= PACK_MASK;
 
           -- PACK_MASK: apply the precomputed width mask after the buffered
           -- sample has been captured, leaving only the shift for the next edge.
           when PACK_MASK =>
-            chunk_r <= sample_r and resize(mask_lat, sample_r'length);
+            chunk_r <= sample_hold_r and resize(mask_lat, sample_hold_r'length);
             state <= PACK_SHIFT;
 
           -- PACK_SHIFT: perform the variable shift into a staging register so
@@ -244,16 +259,19 @@ begin
                 pending_data_r <= '0' & std_logic_vector(nacc(14 downto 0));
                 pending_valid_r <= '1';
                 acc <= resize(nacc(ACC_W-1 downto 15), ACC_W);
-                if pcount = BLOCK_SAMPLES - 1 then
-                  state <= DRAIN;
-                else
-                  pcount <= pcount + 1;
-                  state  <= PACK_LOAD;
-                end if;
+                pack_commit_r <= '1';
+                state <= PACK_COMMIT;
               end if;
             else
               acc <= nacc;
-              if pcount = BLOCK_SAMPLES - 1 then
+              pack_commit_r <= '1';
+              state <= PACK_COMMIT;
+            end if;
+
+          when PACK_COMMIT =>
+            if pack_commit_r = '1' then
+              pack_commit_r <= '0';
+              if pack_last_r = '1' then
                 state <= DRAIN;
               else
                 pcount <= pcount + 1;

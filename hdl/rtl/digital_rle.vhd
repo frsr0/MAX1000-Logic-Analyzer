@@ -100,7 +100,6 @@ begin
     variable sat    : std_logic;
     variable sel    : integer range 0 to 3;
     variable found  : boolean;
-    variable j      : integer range 0 to 6;   -- rr(0..3) + k(0..3) before wrap
   begin
     if rising_edge(clk) then
       if rst = '1' then
@@ -197,16 +196,63 @@ begin
         -- the just-drained slice from being selected a second time.
         found := false;
         sel   := 0;
-        for k in 0 to 3 loop
-          j := to_integer(rr) + k;
-          if j > 3 then j := j - 4; end if;
-          if not found and pend(j) = '1'
-             and not (found_pre = '1' and found_r = '0'
-                      and j = sel_pre) then
-            sel   := j;
-            found := true;
+        if rr = "00" then
+          if not found and pend(0) = '1'
+             and not (found_pre = '1' and found_r = '0' and sel_pre = 0) then
+            sel := 0; found := true;
+          elsif not found and pend(1) = '1'
+             and not (found_pre = '1' and found_r = '0' and sel_pre = 1) then
+            sel := 1; found := true;
+          elsif not found and pend(2) = '1'
+             and not (found_pre = '1' and found_r = '0' and sel_pre = 2) then
+            sel := 2; found := true;
+          elsif not found and pend(3) = '1'
+             and not (found_pre = '1' and found_r = '0' and sel_pre = 3) then
+            sel := 3; found := true;
           end if;
-        end loop;
+        elsif rr = "01" then
+          if not found and pend(1) = '1'
+             and not (found_pre = '1' and found_r = '0' and sel_pre = 1) then
+            sel := 1; found := true;
+          elsif not found and pend(2) = '1'
+             and not (found_pre = '1' and found_r = '0' and sel_pre = 2) then
+            sel := 2; found := true;
+          elsif not found and pend(3) = '1'
+             and not (found_pre = '1' and found_r = '0' and sel_pre = 3) then
+            sel := 3; found := true;
+          elsif not found and pend(0) = '1'
+             and not (found_pre = '1' and found_r = '0' and sel_pre = 0) then
+            sel := 0; found := true;
+          end if;
+        elsif rr = "10" then
+          if not found and pend(2) = '1'
+             and not (found_pre = '1' and found_r = '0' and sel_pre = 2) then
+            sel := 2; found := true;
+          elsif not found and pend(3) = '1'
+             and not (found_pre = '1' and found_r = '0' and sel_pre = 3) then
+            sel := 3; found := true;
+          elsif not found and pend(0) = '1'
+             and not (found_pre = '1' and found_r = '0' and sel_pre = 0) then
+            sel := 0; found := true;
+          elsif not found and pend(1) = '1'
+             and not (found_pre = '1' and found_r = '0' and sel_pre = 1) then
+            sel := 1; found := true;
+          end if;
+        else
+          if not found and pend(3) = '1'
+             and not (found_pre = '1' and found_r = '0' and sel_pre = 3) then
+            sel := 3; found := true;
+          elsif not found and pend(0) = '1'
+             and not (found_pre = '1' and found_r = '0' and sel_pre = 0) then
+            sel := 0; found := true;
+          elsif not found and pend(1) = '1'
+             and not (found_pre = '1' and found_r = '0' and sel_pre = 1) then
+            sel := 1; found := true;
+          elsif not found and pend(2) = '1'
+             and not (found_pre = '1' and found_r = '0' and sel_pre = 2) then
+            sel := 2; found := true;
+          end if;
+        end if;
         sel_pre <= sel;
         if found then found_pre <= '1'; else found_pre <= '0'; end if;
 

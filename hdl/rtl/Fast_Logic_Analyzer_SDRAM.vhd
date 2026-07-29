@@ -232,14 +232,15 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   attribute altera_attribute of run_f_s2 : signal is "-name AUTO_SHIFT_REGISTER_RECOGNITION OFF";
   attribute altera_attribute of run_f_level : signal is "-name AUTO_SHIFT_REGISTER_RECOGNITION OFF";
 
-  -- 1024 (was 2048, originally 4096): trims one afifo pointer bit and the
-  -- associated empty/used-word compare logic from the 167 MHz read-side cone.
+  -- 512 (was 1024, originally 2048/4096): trims another afifo pointer bit and
+  -- the associated full/used-word compare logic from the 167 MHz cone.
   -- Functionally the FIFO only has to ride out SDRAM drain stalls (refresh +
   -- page turnaround, ~120 words at 200 MW/s); the DEPTH-320 almost-full
-  -- cushion still leaves ~700 words of normal fill headroom.
-  constant AFIFO_DEPTH : natural := 1024;
+  -- cushion still leaves ~200 words of normal fill headroom, which is enough
+  -- for the observed burstiness.
+  constant AFIFO_DEPTH : natural := 512;
   constant AFIFO_WIDTH : natural := 16;
-  constant AFIFO_WIDTHU : natural := 10;
+  constant AFIFO_WIDTHU : natural := 9;
   signal fifo_wdata : std_logic_vector(AFIFO_WIDTH-1 downto 0) := (others => '0');
   signal fifo_wr    : std_logic := '0';
   -- Parallel packed-mode write mux: the afifo is fed from afifo_wdata/afifo_wr,

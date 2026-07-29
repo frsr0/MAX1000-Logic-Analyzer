@@ -302,3 +302,22 @@ This profile closed timing cleanly:
 - Registers: **4,172**
 
 This shows the raw capture core can meet timing, and the remaining closure problem lives in the mixed-signal / compression portion of the design rather than the basic FAST capture path.
+
+## Successful full-build closure
+
+The mixed-signal build was taken back from the raw-only diagnostic state and re-closed by tightening the hot fast-clock cones instead of deleting functionality:
+
+- added an extra commit stage in `analog_packer` so the block index update is no longer on the same edge as the emit decision,
+- split the `analog_packer` sample read from the mask stage with an extra register boundary,
+- simplified the `digital_rle` round-robin selector into straight-line priority logic,
+- reduced the FAST async FIFO depth from 1024 to 512 to trim the pointer/full-detect cone,
+- added a narrow-word pending multicycle constraint for the write-data skid path,
+- and added the missing narrow-enable multicycle coverage for `sample_remaining`.
+
+Final post-fit STA result on the full mixed-signal build:
+
+- `fast_clk`: **+0.097 ns**
+- `sys_clk`: **+0.459 ns**
+- `sdram_core_clk`: **+0.316 ns**
+
+That is the actual product fix: full functionality preserved, no raw-only shortcut required, and timing now closes.

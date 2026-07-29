@@ -21,16 +21,17 @@ use IEEE.numeric_std.all;
 -- channel). This avoids the v1 "first sample from zero" offset problem while
 -- keeping the stream self-contained.
 --
--- Pipelining (3 stages) for the 200.4 MHz FAST_CLK domain
+-- Pipelining (4 stages) for the 200.4 MHz FAST_CLK domain
 -- -------------------------------------------------------
 -- A silicon-accurate fit on the 10M08 (C8) showed the flat single-cycle path
 -- channel-mux -> 13-bit subtract -> saturate -> width priority-scan -> max-fold
 -- at ~12.6 ns (~79 MHz). It is split across three register stages, each a short
 -- slice of that chain:
---   S1: select prev(ch), 13-bit subtract  -> diff
---   S2: saturate(diff) -> delta   ||  req_width(diff) -> width   (parallel)
---   S3: fold width into the running block max; emit delta + block result
--- delta_out and block_width/block_done are produced together in S3, so the
+--   S1: capture sample/prev for the selected channel
+--   S2: 13-bit subtract -> diff
+--   S3: saturate(diff) -> delta   ||  req_width(diff) -> width   (parallel)
+--   S4: fold width into the running block max; emit delta + block result
+-- delta_out and block_width/block_done are produced together in S4, so the
 -- packer's "block_done coincident with the last delta" contract is preserved;
 -- only the input->output latency grows (by 2 cycles), which is immaterial at
 -- ADC sample rates. Synchronous reset, single clock enable, no comb loops.
@@ -71,17 +72,24 @@ architecture rtl of delta_calc is
   signal run_max : unsigned(3 downto 0) := (others => '0');  -- running max width (S3)
 
   -- S1 -> S2 pipeline registers
-  signal diff1   : signed(12 downto 0) := (others => '0');
+  signal sample1 : unsigned(11 downto 0) := (others => '0');
+  signal prev1   : unsigned(11 downto 0) := (others => '0');
   signal v1      : std_logic := '0';
   signal first1  : std_logic := '0';
   signal last1   : std_logic := '0';
 
   -- S2 -> S3 pipeline registers
-  signal dsat2   : std_logic_vector(10 downto 0) := (others => '0');
-  signal w2      : unsigned(3 downto 0) := (others => '0');
+  signal diff1   : signed(12 downto 0) := (others => '0');
   signal v2      : std_logic := '0';
   signal first2  : std_logic := '0';
   signal last2   : std_logic := '0';
+
+  -- S3 -> S4 pipeline registers
+  signal dsat2   : std_logic_vector(10 downto 0) := (others => '0');
+  signal w2      : unsigned(3 downto 0) := (others => '0');
+  signal v3      : std_logic := '0';
+  signal first3  : std_logic := '0';
+  signal last3   : std_logic := '0';
 
   -- Minimum signed bit-width (1..11) needed to hold the 13-bit delta once
   -- saturated to 11 bits. Fixed 12-iteration priority scan from the MSB down
@@ -138,8 +146,8 @@ begin
               when others => anchor_ch3 <= sample_in;
             end case;
           end if;
-          diff1 <= signed(resize(unsigned(sample_in), 13))
-                   - signed(resize(prev(ch), 13));
+          sample1 <= unsigned(sample_in);
+          prev1   <= prev(ch);
           prev(ch) <= unsigned(sample_in);
           if count < CHANNELS then
             v1 <= '0';                        -- anchors replace the first 4 deltas
@@ -153,8 +161,19 @@ begin
           v1 <= '0';
         end if;
 
-        -- ------- Stage 2: saturate and width, in parallel from diff1 --------
+        -- ------- Stage 2: select prev/ch sample pair into the subtract stage
         if v1 = '1' then
+          diff1 <= signed(resize(sample1, 13))
+                   - signed(resize(prev1, 13));
+          v2     <= '1';
+          first2 <= first1;
+          last2  <= last1;
+        else
+          v2 <= '0';
+        end if;
+
+        -- ------- Stage 3: saturate and width, in parallel from diff1 --------
+        if v2 = '1' then
           if diff1 > 1023 then
             dsat2 <= std_logic_vector(to_signed(1023, 11));
           elsif diff1 < -1024 then
@@ -163,20 +182,20 @@ begin
             dsat2 <= std_logic_vector(diff1(10 downto 0));
           end if;
           w2     <= req_width_c(diff1);
-          v2     <= '1';
-          first2 <= first1;
-          last2  <= last1;
+          v3     <= '1';
+          first3 <= first2;
+          last3  <= last2;
         else
-          v2 <= '0';
+          v3 <= '0';
         end if;
 
-        -- ---------------- Stage 3: fold block max, emit ---------------------
+        -- ---------------- Stage 4: fold block max, emit ---------------------
         anchor_valid <= '0';
-        if v2 = '1' then
+        if v3 = '1' then
           delta_out   <= dsat2;
           delta_valid <= '1';
 
-          if first2 = '1' then
+          if first3 = '1' then
             wmax := w2;                        -- first sample resets the window
           elsif w2 > run_max then
             wmax := w2;
@@ -184,7 +203,7 @@ begin
             wmax := run_max;
           end if;
 
-          if last2 = '1' then
+          if last3 = '1' then
             anchor_valid <= '1';
             block_width <= std_logic_vector(wmax);
             block_done  <= '1';
