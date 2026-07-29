@@ -175,3 +175,7 @@ The current full RTL and constraints were swept across seeds 21, 30, 5, 12, 42, 
 | 17 | -0.361 | -0.103 | +0.101 | +1.098 | 7,856 |
 
 Seed 30 is the best of this sweep by worst-clock slack, but no tested full-profile seed closes all setup clocks. The historical 94%-LE table is obsolete for the current HDL.
+
+## Fitter-setting test: `OPTIMIZATION_MODE SPEED`
+
+This test was rejected before fit. Quartus 18.1 does not accept `SPEED` as an `OPTIMIZATION_MODE` value; the legal value is `Aggressive Performance` (along with `Balanced`, `Aggressive Area`, and power variants). No timing or resource result was produced. The build script was restored to `Balanced`.
