@@ -121,17 +121,18 @@ flowchart LR
 
 | Profile | FAST_SPEED | FAST_RAW_BUILD | Fmax (fast_clk) | Use Case |
 |---|---|---|---|---|
-| Full (default) | true | false | 200.4 MHz nominal | Full RTL; includes `mso_capture`/MSO bit-pack pipeline; seed 44 closes post-fit setup |
+| Full (default) | true | false | 200.4 MHz nominal | Full RTL; includes `mso_capture`/MSO bit-pack pipeline; current seed-30 baseline is not timing-closed |
 | Raw-only | true | true | 200.4 MHz (`+0.118 ns`) | Timing-closed digital/analog build; elides `mso_capture` (`-RawOnly`) |
 | Slow | false | true | 12-50 MHz | Low-speed debug |
 
 ## Known Issues
 
 - The generated wrapper in `proj/` is overwritten by `compile.ps1`
-- The current seed-44 full build closes the authoritative post-fit report at
-  slow-85C: `fast_clk +0.002 ns`, `sdram_core_clk +0.048 ns`; hold checks are
-  positive.  The fitted design uses 504/504 LABs (100%) and 4,595+ registers.
-  Re-run the query after every fitter or SDC change.
+- A fresh seed-44 fit on the current full RTL does **not** close: slow-85C
+  setup is `fast_clk -0.502 ns`, `sys_clk -0.046 ns`, and
+  `sdram_core_clk +0.081 ns`. Treat older seed-44 closure notes as historical
+  and invalid for the current checkpoint. Re-run the query after every fitter
+  or SDC change.
 - The earlier eight-seed sweep was run before the final budget-path change and
   is historical; its results remain in `seed_sweep_results.txt` and must not
   be used to select a replacement seed without a fresh sweep.
@@ -140,7 +141,7 @@ flowchart LR
   frequency alone: all setup, hold, I/O, and CDC checks must be reviewed.
 - At ∼87% LE utilisation, fitter struggles — changing one parameter often requires a seed sweep to find a new valid placement
 - `FAST_RAW_BUILD` remains an optional diagnostic/minimal image; the default
-  full compression and MSO build now closes timing with seed 44.
+  full compression and MSO build currently has a small setup violation.
 
 ## Testbenches
 

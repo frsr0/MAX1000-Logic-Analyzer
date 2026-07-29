@@ -146,3 +146,15 @@ The fit was identical to baseline:
 - `analog_packer`: **301 LEs**
 
 The directives were reverted. Quartus is already applying the effective area strategy to these children; further QSF area annotations are not a lever.
+
+## Seed-44 verification
+
+The build documentation claimed that seed 44 closed the full mixed-signal image. A fresh seed-44 fit on the current committed HDL disproves that claim:
+
+- Logic elements: **7,894 / 8,064**
+- `fast_clk`: **-0.502 ns**, TNS **-5.443 ns**
+- `sys_clk`: **-0.046 ns**, TNS **-0.506 ns**
+- `sdram_core_clk`: **+0.081 ns**
+- `fast_clk` hold: **+0.305 ns**
+
+Seed 44 is rejected. The build-flow documentation must not present it as a timing-closed full-profile seed.
