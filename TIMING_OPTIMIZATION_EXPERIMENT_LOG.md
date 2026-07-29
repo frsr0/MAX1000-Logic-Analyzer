@@ -224,3 +224,17 @@ The QSF was then temporarily changed to enable `PHYSICAL_SYNTHESIS_REGISTER_DUPL
 - Registers: **4,788**
 
 The duplication setting was reverted. It did not move the critical path or reduce congestion enough to change the fit outcome, so it is not a useful closure lever for this design.
+
+## Rejected candidate: isolate FAST sample budget into `fast_capture_budget`
+
+The FAST-speed writer was temporarily wired through the existing `fast_capture_budget` helper so the wide counter lived outside the hot process and the writer only saw one-bit budget-open and consume signals.
+
+The fit compiled successfully, but timing regressed sharply:
+
+- `fast_clk`: **-0.049 ns -> -1.016 ns**, TNS **-42.940 ns**
+- `sys_clk`: **+0.244 ns -> +0.472 ns**
+- `sdram_core_clk`: **+0.380 ns -> +0.276 ns**
+- Logic elements: **7,868 -> 7,861**
+- Registers: **4,788 -> 4,769**
+
+The critical path remained the FAST writer budget cone from `narrow_enable_f` / `analog_burst_active` into `sample_remaining[17:18]`, just with much worse slack. This candidate was rejected and reverted.
