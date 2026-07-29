@@ -121,7 +121,7 @@ flowchart LR
 
 | Profile | FAST_SPEED | FAST_RAW_BUILD | Fmax (fast_clk) | Use Case |
 |---|---|---|---|---|
-| Full (default) | true | false | 200.4 MHz nominal | Full RTL; includes `mso_capture`/MSO bit-pack pipeline; current seed-30 baseline is not timing-closed |
+| Full (default) | true | false | 200.4 MHz nominal | Full RTL; includes `mso_capture`/MSO bit-pack pipeline; current seed-29 checkpoint is timing-closed |
 | Raw-only | true | true | 200.4 MHz (`+0.118 ns`) | Timing-closed digital/analog build; elides `mso_capture` (`-RawOnly`) |
 | Slow | false | true | 12-50 MHz | Low-speed debug |
 
@@ -133,6 +133,9 @@ flowchart LR
   `sdram_core_clk +0.081 ns`. Treat older seed-44 closure notes as historical
   and invalid for the current checkpoint. Re-run the query after every fitter
   or SDC change.
+- The current focused recompile checkpoint is seed 29, which closes slow-85C
+  setup with `fast_clk +0.084 ns`, `sdram_core_clk +0.087 ns`, `sys_clk
+  +0.403 ns`, and `SPI_SCK_EXT +11.290 ns`.
 - The earlier eight-seed sweep was run before the final budget-path change and
   is historical; its results remain in `seed_sweep_results.txt` and must not
   be used to select a replacement seed without a fresh sweep.

@@ -1,13 +1,33 @@
 # Timing Report Summary
-## Current status (2026-07-21)
+## Current status (2026-07-29)
 
-The corrected full mixed-signal Quartus build uses fitter seed 23 after the
-analog-packer and FAST-stream timing work. Slow-85C setup slack is
-`fast_clk +0.049 ns`; the other setup corners report `+0.270 ns` and
-`+1.286 ns`, with all setup and hold checks positive. Resource use is
-6,333/8,064 LEs (79%), 2,586 registers, and 63 pins. See
-`hdl/proj/seed_sweep_results.txt`; rerun `hdl/proj/seed_sweep.ps1` after any
-RTL or pin change.
+A focused recompile on fitter seed 29 is timing-clean and is the best current
+local build in this neighborhood. The exact post-fit excerpts are:
+
+```text
+; Fitter Status                      ; Successful - Thu Jul 30 00:39:21 2026       ;
+; Total logic elements               ; 7,924 / 8,064 ( 98 % )                      ;
+; Total registers                    ; 4804                                        ;
+; Total memory bits                  ; 38,020 / 387,072 ( 10 % )                   ;
+```
+
+```text
+Type  : Slow 1200mV 85C Model Setup 'fast_clk'
+Slack : 0.084
+Type  : Slow 1200mV 85C Model Setup 'sdram_core_clk'
+Slack : 0.087
+Type  : Slow 1200mV 85C Model Setup 'sys_clk'
+Slack : 0.403
+Type  : Slow 1200mV 85C Model Setup 'SPI_SCK_EXT'
+Slack : 11.290
+```
+
+All hold checks are also positive, with the slow-85C hold slacks at
+`sdram_core_clk +0.286 ns`, `sys_clk +0.332 ns`, `fast_clk +0.342 ns`, and
+`SPI_SCK_EXT +0.394 ns`.
+
+The earlier seed-23 / seed-30 notes below are historical; the current compile
+to carry forward from this point is seed 29.
 ## Historical timing notes
 
 

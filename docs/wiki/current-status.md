@@ -30,6 +30,13 @@ after the packed-mode pipeline registers).  Post-fit STA reports:
 See [Fast Capture Stream](hdl/fast-capture-stream.md) for the three register-stage
 fixes and the dcfifo multicycle constraint.
 
+A fresh focused recompile on fitter seed 29 is also timing-clean and is the
+current best local checkpoint in the immediate seed neighborhood. The slow-85C
+setup slacks are `fast_clk +0.084 ns`, `sdram_core_clk +0.087 ns`,
+`sys_clk +0.403 ns`, and `SPI_SCK_EXT +11.290 ns`, with all hold checks
+positive. That compile used 7,924/8,064 LEs (98%), 4,804 registers, and
+38,020/387,072 memory bits.
+
 The 2026-07-26 seed-30 image was rerun on the connected board. The baseline run
 was **357/380 passed, 23 failed, 0 skipped**. After correcting
 the mixed-frame contract and ring/codec test assumptions, focused regression is
