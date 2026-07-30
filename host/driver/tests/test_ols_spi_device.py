@@ -1389,6 +1389,9 @@ class TestOLSDeviceSPIRolling:
         device_spi.compress_readback_enabled = True
 
         assert device_spi._use_compressed_live_readback(
+            use_continuous=True, payload_stride=None, gen_data=None, stride=2) is False
+        device_spi._compressed_block_reads_supported['delta_rle'] = True
+        assert device_spi._use_compressed_live_readback(
             use_continuous=True, payload_stride=None, gen_data=None, stride=2) is True
         assert device_spi._use_compressed_live_readback(
             use_continuous=True, payload_stride=5, gen_data=None, stride=2) is False
@@ -1396,15 +1399,35 @@ class TestOLSDeviceSPIRolling:
             use_continuous=True, payload_stride=None, gen_data=b'abc', stride=2) is False
         assert device_spi._use_compressed_live_readback(
             use_continuous=False, payload_stride=None, gen_data=None, stride=2) is False
-        device_spi.readback_compression_mode = 'delta_rle'
-        assert device_spi._use_compressed_live_readback(
-            use_continuous=True, payload_stride=None, gen_data=None, stride=2) is True
         device_spi.analog_mode = MODE_MIXED
         assert device_spi._use_compressed_live_readback(
             use_continuous=True,
             payload_stride=analog_frame_stride(MODE_MIXED),
             gen_data=None,
             stride=analog_wire_stride(MODE_MIXED)) is False
+
+    def test_rolling_capture_temporarily_forces_raw_when_delta_support_unknown(self, device_spi):
+        device_spi.analog_mode = MODE_DIGITAL
+        device_spi.readback_compression_mode = 'delta_rle'
+        device_spi.compress_readback_enabled = True
+        device_spi._compressed_block_reads_supported = {'delta_rle': None, 'rle': None}
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.read_register.return_value = 0
+        device_spi.pkt.write_register.return_value = True
+        device_spi.set_readback_compression = MagicMock(
+            wraps=device_spi.set_readback_compression)
+        device_spi.continuous_ring_capture = MagicMock(return_value=iter([
+            (b'\x01\x00' * 4, 4, 4),
+        ]))
+
+        stop_evt = MagicMock()
+        results = list(device_spi.rolling_capture(
+            1_000_000, 4, 8, stop_evt, use_continuous=True))
+
+        assert len(results) == 1
+        assert device_spi.continuous_ring_capture.call_count == 1
+        assert device_spi.set_readback_compression.call_args_list[0].args == ('raw',)
+        assert device_spi.set_readback_compression.call_args_list[-1].args == ('delta_rle',)
 
     def test_rolling_capture_uses_continuous_ring_for_mixed(self, device_spi):
         device_spi.analog_mode = MODE_MIXED

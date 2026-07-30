@@ -311,6 +311,8 @@ class OLSDeviceSPI:
 
     def _use_compressed_live_readback(self, *, use_continuous, payload_stride,
                                       gen_data, stride):
+        codec = self._readback_codec()
+        support = self._compressed_block_reads_supported.get(codec)
         return bool(
             use_continuous
             and not gen_data
@@ -318,7 +320,8 @@ class OLSDeviceSPI:
             and self.analog_mode == MODE_DIGITAL
             and payload_stride is None
             and stride == 2
-            and self._readback_codec() != 'raw'
+            and codec != 'raw'
+            and support is True
         )
 
     @property
@@ -1029,7 +1032,8 @@ class OLSDeviceSPI:
             time.sleep(0.001)
         return last_status
 
-    def read_capture_range(self, start_sample=0, sample_count=512):
+    def read_capture_range(self, start_sample=0, sample_count=512,
+                           probe_compression=True):
         """Read a dense 16-bit sample range by absolute sample index.
 
         The FPGA block readout's FIRST sample (offset 0 of each CMD_READ_CAPTURE
@@ -1047,10 +1051,13 @@ class OLSDeviceSPI:
         sample = start_sample
         codec = self._readback_codec()
         support = self._compressed_block_reads_supported.get(codec)
-        use_compress = codec != 'raw' and support is not False
+        use_compress = codec != 'raw' and (
+            support is True or (probe_compression and support is not False)
+        )
         probe_compress = (
             codec == 'delta_rle'
             and support is None
+            and probe_compression
         )
         # 128 blocks/CS transaction is the sweet spot for raw block reads.
         # Compressed reads tolerate deeper batches, so let them amortise the
@@ -1424,7 +1431,8 @@ class OLSDeviceSPI:
                 wire_words = ((fetch_nsamp * wire_stride) + 1) // 2
                 available = producer - next_sample
 
-                data = self.read_capture_range(next_sample, wire_words)
+                data = self.read_capture_range(
+                    next_sample, wire_words, probe_compression=False)
                 data = data[:fetch_nsamp * wire_stride]
                 if not data:
                     time.sleep(0.0003)
@@ -1561,7 +1569,8 @@ class OLSDeviceSPI:
                     fetch_multiplier = 32
                     fetch_nsamp = min(available,
                                       max(window_samples, window_samples * fetch_multiplier))
-                    data = self.read_capture_range(next_sample, fetch_nsamp)
+                    data = self.read_capture_range(
+                        next_sample, fetch_nsamp, probe_compression=False)
                     if not data:
                         break
                     pending += data
@@ -2246,24 +2255,34 @@ class OLSDeviceSPI:
             # path than on the live stream path; keep the exact stream probe
             # for the low-level handoff test, but use the safe rolling reader
             # for long-running throughput tests.
-            buf = bytearray()
-            for data, total, _window in self.continuous_ring_capture(
-                    rate_hz=rate_hz,
-                    chunk_nsamp=chunk_nsamp,
-                    buffer_nsamp=buffer_nsamp,
-                    stop_evt=stop_evt,
-                    progress_cb=None,
-                    full_out=full_out,
-                    fast_mode=False,
-                    yield_full_buffer=False):
-                data = self._filter_digital(data)
-                buf.extend(data)
-                if len(buf) > max_bytes:
-                    del buf[:-max_bytes]
-                snapshot = bytes(buf)
-                if progress_cb:
-                    progress_cb(snapshot, total, buffer_nsamp)
-                yield snapshot, total, buffer_nsamp
+            live_codec = self._readback_codec()
+            live_support = self._compressed_block_reads_supported.get(live_codec)
+            restore_mode = None
+            if live_codec == 'delta_rle' and live_support is not True:
+                restore_mode = self.readback_compression_mode
+                self.set_readback_compression('raw')
+            try:
+                buf = bytearray()
+                for data, total, _window in self.continuous_ring_capture(
+                        rate_hz=rate_hz,
+                        chunk_nsamp=chunk_nsamp,
+                        buffer_nsamp=buffer_nsamp,
+                        stop_evt=stop_evt,
+                        progress_cb=None,
+                        full_out=full_out,
+                        fast_mode=False,
+                        yield_full_buffer=False):
+                    data = self._filter_digital(data)
+                    buf.extend(data)
+                    if len(buf) > max_bytes:
+                        del buf[:-max_bytes]
+                    snapshot = bytes(buf)
+                    if progress_cb:
+                        progress_cb(snapshot, total, buffer_nsamp)
+                    yield snapshot, total, buffer_nsamp
+            finally:
+                if restore_mode is not None:
+                    self.set_readback_compression(restore_mode)
             return
         if (use_continuous and payload_stride and not gen_data
                 and self.analog_mode != MODE_DIGITAL):
