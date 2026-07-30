@@ -247,7 +247,10 @@ class OLSDeviceSPI:
         self.readback_compression_mode = mode
         self.compress_readback_enabled = mode != 'raw'
         if mode_changed:
-            self._compressed_block_reads_supported = {'delta_rle': None, 'rle': None}
+            # Keep the per-codec support cache across mode flips so a failed
+            # compressed-block probe does not get re-paid every time the user
+            # switches away and back. The transport support is stable for the
+            # current device session; only the active codec selection changes.
             if self.spi is not None:
                 try:
                     self.spi.flush()
