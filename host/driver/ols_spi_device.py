@@ -1028,15 +1028,15 @@ class OLSDeviceSPI:
         remaining = max(0, int(sample_count))
         out = bytearray()
         sample = start_sample
-        # 128 blocks/CS transaction: amortises the per-batch stream_payload
-        # thread setup over more wire. Measured ~4% over 64 (2026-07-03); the
-        # curve knees here (256 is no faster). ~83 KB compressed / 163 KB raw
-        # per transaction, well within the threaded RX drain's headroom.
-        batch_blocks = 128
         codec = self._readback_codec()
         use_compress = codec != 'raw'
+        # 128 blocks/CS transaction is the sweet spot for raw block reads.
+        # Compressed reads tolerate deeper batches, so let them amortise the
+        # per-transaction USB/parse overhead a bit harder.
+        batch_blocks = 256 if use_compress else 128
         batched_compressed = codec != 'raw'
-        if codec != 'raw' and self._compressed_block_reads_supported.get(codec) is False:
+        force_raw_blocks = codec != 'raw' and self._compressed_block_reads_supported.get(codec) is False
+        if force_raw_blocks:
             use_compress = False
             batched_compressed = False
         t_total = time.perf_counter()
@@ -1068,10 +1068,12 @@ class OLSDeviceSPI:
             return addrs, drops, s, rem
 
         def fetch_batch(addrs):
-            blocks = read_blocks(addrs, compressed=False)
+            if force_raw_blocks:
+                return self._read_blocks_uncompressed(addrs)
+            blocks = read_blocks(addrs, compressed=batched_compressed)
             if isinstance(blocks, list):
                 return blocks
-            return [self.pkt.read_capture_block(a, compressed=False)
+            return [self.pkt.read_capture_block(a, compressed=batched_compressed)
                     for a in addrs]
 
         try:
@@ -1097,9 +1099,9 @@ class OLSDeviceSPI:
                     pending = None
                 blocks_total += time.perf_counter() - t_blocks
 
-                # Start the next raw MPSSE batch before parsing/slicing the
-                # current one. The single worker serializes USB transactions;
-                # the caller can process this batch while the next is in flight.
+                # Start the next batch before parsing/slicing the current one.
+                # The single worker serializes USB transactions; the caller can
+                # process this batch while the next is in flight.
                 if pipeline and next_remaining > 0:
                     next_addrs, _, _, _ = plan_batch(
                         next_sample, next_remaining)
@@ -1530,7 +1532,9 @@ class OLSDeviceSPI:
                         f"overrun={overrun_total} rx_buf={len(getattr(self.pkt, '_rx_buf', b''))}")
                     yield data, total, window_samples, overrun_total
                 else:
-                    fetch_nsamp = min(available, max(window_samples, window_samples * 8))
+                    fetch_multiplier = 32
+                    fetch_nsamp = min(available,
+                                      max(window_samples, window_samples * fetch_multiplier))
                     data = self.read_capture_range(next_sample, fetch_nsamp)
                     if not data:
                         break
