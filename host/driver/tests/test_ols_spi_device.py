@@ -37,6 +37,7 @@ from driver.ols_spi_device import (
     decompress_mixed_stream,
     decode_analog_frames,
     decompress_block_readback_stream,
+    decompress_delta_stream,
     decompress_rle_stream,
     narrow_digital_flags,
     OLSDeviceSPI,
@@ -57,6 +58,36 @@ def _pack_pair(adc0, adc1):
         ((adc0 >> 8) & 0x0F) | ((adc1 & 0x0F) << 4),
         (adc1 >> 4) & 0xFF,
     ))
+
+
+def _pack_delta_block(samples, keyframe_word=None):
+    assert len(samples) == 16
+    words = [samples[0] & 0xFFFF]
+    idx = 1
+    for _ in range(5):
+        sample_word = 0
+        for shift in (0, 5, 10):
+            if idx >= len(samples):
+                break
+            sample = samples[idx] & 0xFFFF
+            if keyframe_word is not None and idx == keyframe_word:
+                sample_word |= 0x8000 | sample
+                words.append(sample_word)
+                idx += 1
+                break
+            delta = (sample - samples[idx - 1]) & 0xFFFF
+            if delta & 0xFFE0 and delta & 0xFFE0 != 0xFFE0:
+                raise ValueError("delta outside 5-bit range")
+            sample_word |= (delta & 0x1F) << shift
+            idx += 1
+        else:
+            words.append(sample_word)
+            continue
+        if len(words) < 6 and idx < len(samples):
+            continue
+    while len(words) < 6:
+        words.append(0)
+    return struct.pack('<6H', *words)
 
 
 class TestAnalogFrameStride:
@@ -95,6 +126,20 @@ class TestCompressionHelpers:
         words = struct.unpack('<512H', out)
         assert words[:256] == (0xFFFE,) * 256
         assert words[256:] == (0xFFFF,) * 256
+
+    def test_decompress_delta_stream_expands_keyframe_free_blocks(self):
+        block = struct.pack('<6H', 0x1000, 0x0421, 0x0421, 0x0421, 0x0421, 0x0421)
+        out = decompress_delta_stream(block)
+        assert len(out) == 32
+        assert struct.unpack('<16H', out) == tuple(0x1000 + i for i in range(16))
+
+    def test_decompress_delta_stream_handles_keyframe_blocks(self):
+        block = struct.pack('<6H', 0x1000, 0x9234, 0x0000, 0x0000, 0x0000, 0x0000)
+        out = decompress_delta_stream(block)
+        assert len(out) == 32
+        assert struct.unpack('<16H', out) == (
+            0x1000, 0x1234, *([0x1234] * 12), 0x0000, 0x0000
+        )
 
     def test_mixed_compression_round_trips_delta_lanes(self):
         payload = bytearray()
@@ -415,6 +460,21 @@ class TestOLSDeviceSPI:
         assert calls[1].kwargs["compressed"] is False
         assert calls[2].kwargs["compressed"] is False
         assert device_spi._compressed_block_reads_supported["delta_rle"] is False
+
+    def test_read_capture_range_skips_compressed_batch_once_delta_is_known_bad(self, device_spi):
+        raw_block = b'\x00' * 1024
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'delta_rle'
+        device_spi.compress_readback_enabled = True
+        device_spi._compressed_block_reads_supported = {'delta_rle': False, 'rle': None}
+        device_spi.pkt.read_register.return_value = 0
+        device_spi.pkt.read_capture_blocks.return_value = [raw_block, raw_block]
+
+        data = device_spi.read_capture_range(start_sample=0, sample_count=520)
+
+        assert len(data) == 1040
+        device_spi.pkt.read_capture_blocks.assert_called_once_with(
+            [0, 1022], compressed=False)
 
     def test_read_capture_range_decompresses_mixed_compressed_blocks(self, device_spi):
         payload = bytearray()

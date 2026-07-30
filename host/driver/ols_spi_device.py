@@ -220,6 +220,7 @@ class OLSDeviceSPI:
         # return decodable compressed blocks. This avoids paying the failed
         # compression tax on every chunk of a long-running capture.
         self._compressed_block_reads_supported = {'delta_rle': None, 'rle': None}
+        self._readback_hardware_is_raw = True
         # Software digital glitch / hysteresis filter (applied to captured
         # digital samples on the host; the FPGA captures raw pins).
         self.glitch_enable = False
@@ -246,6 +247,16 @@ class OLSDeviceSPI:
         mode_changed = mode != self.readback_compression_mode
         self.readback_compression_mode = mode
         self.compress_readback_enabled = mode != 'raw'
+        codec = self._readback_codec()
+        if mode != 'raw' and self._compressed_block_reads_supported.get(codec) is False:
+            cur = self.pkt.read_register(REG_FLAGS)
+            if cur >= 0 and (cur & REG_FLAGS_COMPRESS_MASK):
+                try:
+                    self.pkt.write_register(REG_FLAGS, cur & ~REG_FLAGS_COMPRESS_MASK)
+                except Exception:
+                    pass
+            self._readback_hardware_is_raw = True
+            return True
         if mode_changed:
             # Keep the per-codec support cache across mode flips so a failed
             # compressed-block probe does not get re-paid every time the user
@@ -264,7 +275,10 @@ class OLSDeviceSPI:
             cur |= REG_FLAGS_COMPRESS_DELTA
         elif mode == 'rle':
             cur |= REG_FLAGS_COMPRESS_RLE
-        return self.pkt.write_register(REG_FLAGS, cur)
+        ok = self.pkt.write_register(REG_FLAGS, cur)
+        if ok:
+            self._readback_hardware_is_raw = (mode == 'raw')
+        return ok
 
     def set_packed_mode(self, enable: bool) -> bool:
         """Enable or disable capture-side MSO bit-packing (REG_FLAGS bit 20).
@@ -1032,17 +1046,20 @@ class OLSDeviceSPI:
         out = bytearray()
         sample = start_sample
         codec = self._readback_codec()
-        use_compress = codec != 'raw'
+        support = self._compressed_block_reads_supported.get(codec)
+        use_compress = codec != 'raw' and support is not False
         probe_compress = (
             codec == 'delta_rle'
-            and self._compressed_block_reads_supported.get(codec) is None
+            and support is None
         )
         # 128 blocks/CS transaction is the sweet spot for raw block reads.
         # Compressed reads tolerate deeper batches, so let them amortise the
         # per-transaction USB/parse overhead a bit harder.
         batch_blocks = 1 if probe_compress else (256 if use_compress else 128)
-        batched_compressed = codec != 'raw'
-        force_raw_blocks = codec != 'raw' and self._compressed_block_reads_supported.get(codec) is False
+        batched_compressed = use_compress
+        force_raw_blocks = (codec != 'raw'
+                            and support is False
+                            and not self._readback_hardware_is_raw)
         if force_raw_blocks:
             use_compress = False
             batched_compressed = False

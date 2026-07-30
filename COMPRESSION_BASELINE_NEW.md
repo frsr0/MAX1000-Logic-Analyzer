@@ -1,8 +1,10 @@
-# Compression Baseline and Jumper-Driven Validation (2026-07-29)
+# Compression Baseline and Jumper-Driven Validation (2026-07-30)
 
 This supersedes the older 2026-07-03 note, which was written before the current
 timing/compression fixes landed. The current validated FPGA image has working
-digital `raw`, direct `rle`, and packed `delta_rle` readback.
+digital `raw`, direct `rle`, and packed `delta_rle` readback. This document was
+updated after a host-side readback fallback fix that stopped `delta_rle` from
+paying an unnecessary compressed batch before falling back to raw.
 
 ## What is actually validated
 
@@ -41,26 +43,26 @@ Jumper-fed waveform sweep on the discovered physical pair `22 -> CH13`:
 | Stimulus | Rate | Raw bytes | Delta bytes | RLE bytes | Delta/raw | RLE/raw |
 |---|---:|---:|---:|---:|---:|---:|
 | idle | 1 MHz | 8192 | 3072 | 4 | 2.67x | 2048.00x |
-| idle | 10 MHz | 8192 | 3092 | 8 | 2.65x | 1024.00x |
+| idle | 10 MHz | 8192 | 3072 | 4 | 2.67x | 2048.00x |
 | idle | 50 MHz | 8192 | 3072 | 4 | 2.67x | 2048.00x |
-| pwm_10k | 1 MHz | 8192 | 3232 | 40 | 2.53x | 204.80x |
+| pwm_10k | 1 MHz | 8192 | 3232 | 36 | 2.53x | 227.56x |
 | pwm_10k | 10 MHz | 8192 | 3232 | 36 | 2.53x | 227.56x |
 | pwm_10k | 50 MHz | 8192 | 3232 | 40 | 2.53x | 204.80x |
-| pwm_100k | 1 MHz | 8192 | 3152 | 44 | 2.60x | 186.18x |
+| pwm_100k | 1 MHz | 8192 | 3212 | 112 | 2.55x | 73.14x |
 | pwm_100k | 10 MHz | 8192 | 3232 | 36 | 2.53x | 227.56x |
-| pwm_100k | 50 MHz | 8192 | 3112 | 12 | 2.63x | 682.67x |
-| alternating | 1 MHz | 8192 | 4372 | 4108 | 1.87x | 1.99x |
-| alternating | 10 MHz | 8192 | 8132 | 1776 | 1.01x | 4.61x |
-| alternating | 50 MHz | 8192 | 7732 | 1640 | 1.06x | 5.00x |
+| pwm_100k | 50 MHz | 8192 | 3132 | 16 | 2.62x | 512.00x |
+| alternating | 1 MHz | 8192 | 4372 | 4112 | 1.87x | 1.99x |
+| alternating | 10 MHz | 8192 | 8132 | 1780 | 1.01x | 4.60x |
+| alternating | 50 MHz | 8192 | 7752 | 1636 | 1.06x | 5.01x |
 | uart | 1 MHz | 8192 | 6872 | 1120 | 1.19x | 7.31x |
-| uart | 10 MHz | 8192 | 3592 | 128 | 2.28x | 64.00x |
+| uart | 10 MHz | 8192 | 3612 | 132 | 2.27x | 62.06x |
 | uart | 50 MHz | 8192 | 3552 | 116 | 2.31x | 70.62x |
 | spi | 1 MHz | 8192 | 3192 | 400 | 2.57x | 20.48x |
-| spi | 10 MHz | 8192 | 3492 | 408 | 2.35x | 20.08x |
+| spi | 10 MHz | 8192 | 3472 | 404 | 2.36x | 20.28x |
 | spi | 50 MHz | 8192 | 3272 | 272 | 2.50x | 30.12x |
-| i2c | 1 MHz | 8192 | 3172 | 260 | 2.58x | 31.51x |
-| i2c | 10 MHz | 8192 | 3432 | 320 | 2.39x | 25.60x |
-| i2c | 50 MHz | 8192 | 3272 | 172 | 2.50x | 47.63x |
+| i2c | 1 MHz | 8192 | 3292 | 360 | 2.49x | 22.76x |
+| i2c | 10 MHz | 8192 | 3452 | 320 | 2.37x | 25.60x |
+| i2c | 50 MHz | 8192 | 3252 | 168 | 2.52x | 48.76x |
 
 The same validated image also showed that the codec round-trip is exact at the
 finite readback seam through the full test matrix, including the 200.4 MS/s

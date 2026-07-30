@@ -263,6 +263,33 @@ def decompress_delta_block(data: bytes) -> bytes:
     return bytes(out)
 
 
+def _sign_extend_5(values):
+    """Sign-extend packed 5-bit delta lanes."""
+    return ((values & 0x1F) ^ 0x10) - 0x10
+
+
+def _decompress_delta_blocks_fast(blocks: np.ndarray) -> np.ndarray:
+    """Vectorized delta-block decoder for blocks without keyframes."""
+    n = blocks.shape[0]
+    out = np.empty((n, 16), dtype=np.uint16)
+    prev = blocks[:, 0].astype(np.uint32)
+    out[:, 0] = prev.astype(np.uint16)
+    pos = 1
+    for wi in range(1, 6):
+        w = blocks[:, wi].astype(np.uint32)
+        d0 = _sign_extend_5(w)
+        prev = (prev + d0) & 0xFFFF
+        out[:, pos] = prev.astype(np.uint16)
+        d1 = _sign_extend_5(w >> 5)
+        prev = (prev + d1) & 0xFFFF
+        out[:, pos + 1] = prev.astype(np.uint16)
+        d2 = _sign_extend_5(w >> 10)
+        prev = (prev + d2) & 0xFFFF
+        out[:, pos + 2] = prev.astype(np.uint16)
+        pos += 3
+    return out
+
+
 def decompress_delta_stream(data: bytes) -> bytes:
     """Decompress a stream of packed 12-byte delta blocks.
 
@@ -273,13 +300,26 @@ def decompress_delta_stream(data: bytes) -> bytes:
     n_full = len(data) // BLOCK_BYTES
     if n_full == 0:
         return data
-    blocks = [data[i * BLOCK_BYTES:(i + 1) * BLOCK_BYTES]
-              for i in range(n_full)]
-    out = bytearray()
-    for b in blocks:
-        out.extend(decompress_delta_block(b))
+    payload = data[:n_full * BLOCK_BYTES]
+    blocks = np.frombuffer(payload, dtype='<u2').reshape(-1, 6)
+    key_mask = np.any(blocks[:, 1:] & 0x8000, axis=1)
+    if not key_mask.any():
+        out = _decompress_delta_blocks_fast(blocks)
+        tail = data[n_full * BLOCK_BYTES:]
+        return out.tobytes() + tail
+
+    out = np.empty((n_full, 16), dtype=np.uint16)
+    fast_idx = np.flatnonzero(~key_mask)
+    if fast_idx.size:
+        out[fast_idx] = _decompress_delta_blocks_fast(blocks[fast_idx])
+    for idx in np.flatnonzero(key_mask):
+        out[idx] = np.frombuffer(
+            decompress_delta_block(blocks[idx].tobytes()),
+            dtype='<u2',
+            count=16,
+        )
     tail = data[n_full * BLOCK_BYTES:]
-    return bytes(out) + tail
+    return out.tobytes() + tail
 
 
 def decompress_rle_stream(data: bytes) -> bytes:
