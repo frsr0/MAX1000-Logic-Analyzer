@@ -461,6 +461,23 @@ class TestOLSDeviceSPI:
         assert calls[2].kwargs["compressed"] is False
         assert device_spi._compressed_block_reads_supported["delta_rle"] is False
 
+    def test_read_capture_range_marks_clean_delta_compression_supported(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'delta_rle'
+        device_spi.compress_readback_enabled = True
+        device_spi._compressed_block_reads_supported = {'delta_rle': None, 'rle': None}
+        device_spi.pkt.read_register.return_value = 0
+
+        with patch('driver.ols_spi_device.decompress_block_readback_stream',
+                   side_effect=[b'\x00' * 1024, b'\x00' * 1024]):
+            device_spi.pkt.read_capture_blocks.side_effect = lambda addrs, compressed=False: [
+                b'compressed' for _addr in addrs
+            ]
+            data = device_spi.read_capture_range(start_sample=0, sample_count=520)
+
+        assert len(data) == 1040
+        assert device_spi._compressed_block_reads_supported["delta_rle"] is True
+
     def test_read_capture_range_skips_compressed_batch_once_delta_is_known_bad(self, device_spi):
         raw_block = b'\x00' * 1024
         device_spi.pkt = MagicMock()

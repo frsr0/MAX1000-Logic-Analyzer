@@ -1154,6 +1154,10 @@ class OLSDeviceSPI:
                             batched_compressed = False
                             force_raw_blocks = True
                             batch_blocks = 128
+                        elif self._compressed_block_reads_supported.get(codec) is None:
+                            self._compressed_block_reads_supported[codec] = True
+                    elif codec in self._compressed_block_reads_supported and self._compressed_block_reads_supported.get(codec) is None:
+                        self._compressed_block_reads_supported[codec] = True
                     if need_raw:
                         t_retry = time.perf_counter()
                         raw_blocks = self._read_blocks_uncompressed(
