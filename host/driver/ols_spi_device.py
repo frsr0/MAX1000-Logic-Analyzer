@@ -243,8 +243,16 @@ class OLSDeviceSPI:
         mode = str(mode or 'raw').lower()
         if mode not in ('raw', 'delta', 'rle', 'delta_rle'):
             raise ValueError(f"unsupported readback compression mode: {mode}")
+        mode_changed = mode != self.readback_compression_mode
         self.readback_compression_mode = mode
         self.compress_readback_enabled = mode != 'raw'
+        if mode_changed:
+            self._compressed_block_reads_supported = {'delta_rle': None, 'rle': None}
+            if self.spi is not None:
+                try:
+                    self.spi.flush()
+                except Exception:
+                    pass
         cur = self.pkt.read_register(REG_FLAGS)
         if cur < 0:
             return False

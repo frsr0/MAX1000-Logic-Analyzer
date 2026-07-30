@@ -136,7 +136,10 @@ The readback matrix covers raw, exact full-word `rle`, and packed-delta-plus-RLE
 `host/app/hw_validation.py` also contains a codec readback matrix that checks
 bit-exact raw/RLE/delta-RLE round trips across rates, live-ring throughput
 characterization for all three digital modes, and digital, analog, mixed-signal,
-generator, trigger, reset, and recovery tests.
+generator, trigger, reset, and recovery tests. The live-ring throughput check
+reports the measured ceiling for each codec; raw remains a hard pass gate, and
+`delta_rle` is reported as a bounded characterization point rather than a
+minimum-lossless assertion.
 
 The physical two-jumper analog fixture is hard-gated by
 `python -m app.hw_validation analog`. The current board wiring is PMOD5/pool

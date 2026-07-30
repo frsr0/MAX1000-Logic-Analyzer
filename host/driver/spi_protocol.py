@@ -368,36 +368,42 @@ class SPIDevice:
             payload.extend(build_packet(CMD_READ_CAPTURE, seq,
                                         struct.pack('<I', addr)))
             payload.extend(b"\xff" * (self.BATCH_GAP_PAD + rsp_pad))
-        raw = self.spi.stream_payload(bytes(payload), stop_evt=stop_evt)
+        try:
+            raw = self.spi.stream_payload(bytes(payload), stop_evt=stop_evt)
 
-        blocks = {}
-        idx = raw.find(SYNC_RSP)
-        while idx >= 0:
-            if len(raw) < idx + 8:
-                break
-            plen = struct.unpack('<H', raw[idx + 4:idx + 6])[0]
-            end = idx + 8 + plen
-            if plen > MAX_PAYLOAD:
-                idx = raw.find(SYNC_RSP, idx + 1)
-                continue
-            if len(raw) < end:
-                break
-            parsed = parse_response(raw[idx:end])
-            if parsed:
-                status, rsp_seq, rsp_payload = parsed
-                if status == ST_OK:
-                    blocks.setdefault(rsp_seq, rsp_payload)
-                idx = raw.find(SYNC_RSP, end)
-            else:
-                idx = raw.find(SYNC_RSP, idx + 1)
+            blocks = {}
+            idx = raw.find(SYNC_RSP)
+            while idx >= 0:
+                if len(raw) < idx + 8:
+                    break
+                plen = struct.unpack('<H', raw[idx + 4:idx + 6])[0]
+                end = idx + 8 + plen
+                if plen > MAX_PAYLOAD:
+                    idx = raw.find(SYNC_RSP, idx + 1)
+                    continue
+                if len(raw) < end:
+                    break
+                parsed = parse_response(raw[idx:end])
+                if parsed:
+                    status, rsp_seq, rsp_payload = parsed
+                    if status == ST_OK:
+                        blocks.setdefault(rsp_seq, rsp_payload)
+                    idx = raw.find(SYNC_RSP, end)
+                else:
+                    idx = raw.find(SYNC_RSP, idx + 1)
 
-        result = []
-        for addr, seq in zip(byte_addrs, seqs):
-            pl = blocks.get(seq)
-            if pl is None and (stop_evt is None or not stop_evt.is_set()):
-                pl = self.read_capture_block(addr, compressed=compressed)
-            result.append(pl or b'')
-        return result
+            result = []
+            for addr, seq in zip(byte_addrs, seqs):
+                pl = blocks.get(seq)
+                if pl is None and (stop_evt is None or not stop_evt.is_set()):
+                    pl = self.read_capture_block(addr, compressed=compressed)
+                result.append(pl or b'')
+            return result
+        finally:
+            try:
+                self.spi._drain()
+            except Exception:
+                pass
 
     def read_stream_block(self, timeout: float = 5.0) -> bytes:
         """Read one streaming block (1024 bytes uncompressed, 384 compressed)."""
