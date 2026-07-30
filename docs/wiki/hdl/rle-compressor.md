@@ -20,7 +20,7 @@ Generic run-length encoder core. Used by the streaming readback compression path
 | `flush` | 1 | IN | Flush pending run |
 | `busy` | 1 | OUT | Flush in progress |
 
-The compressor emits two 16-bit words per run: `{count[15:0], value[15:0]}` in consecutive LSB-first words. It operates on complete 16-bit digital sample words, not individual channels or slices. The current `OLS_Interface` uses it for compressed block readback and the compressed raw stream.
+The compressor emits two 16-bit words per run: `{count, value}` in consecutive LSB-first words. In the current implementation the count register is 10 bits wide, so a single run tops out at 1023 samples before the host must split the request. It operates on complete 16-bit digital sample words, not individual channels or slices. The current `OLS_Interface` uses it for compressed block readback and the compressed raw stream.
 
 Compression is driven by the number of identical full-word samples in each
 run. A 100 kHz PWM sampled at 1 MHz has only about five samples per high or
@@ -29,7 +29,7 @@ better.
 
 ## Known Limitations
 
-- Count limited to 16-bit (65,535 repeats); longer runs emit terminating pair + new run
+- Count limited to 10-bit in the current streaming implementation (1023 repeats); longer live requests must be chunked on the host
 - The current FAST_SPEED full build instantiates this compressor with the
   MSO/compression path enabled. `FAST_RAW_BUILD=true` remains an explicit
   diagnostic/minimal profile, not the validated default.

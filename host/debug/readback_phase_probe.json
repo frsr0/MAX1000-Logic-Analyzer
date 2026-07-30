@@ -3,117 +3,165 @@
     "rate_hz": 1000000,
     "codec": "raw",
     "sample_count": 250000,
-    "capture_total_s": 0.30101160000049276,
-    "capture_total_ms": 301.012,
-    "returned_bytes": 0,
-    "returned_samples": 0,
-    "throughput_msps": 0.831,
-    "stats": {},
-    "counts": {},
-    "bytes": {}
+    "capture_total_s": 0.6171998999998323,
+    "capture_total_ms": 617.2,
+    "returned_bytes": 500000,
+    "returned_samples": 250000,
+    "throughput_msps": 0.405,
+    "stats": {
+      "read_capture_blocks_s:raw:raw": 209.533,
+      "read_capture_range_s:raw": 211.767,
+      "spi_stream_payload_s:raw": 182.621
+    },
+    "counts": {
+      "spi_stream_payload_calls:raw": 4,
+      "read_capture_blocks_s:raw:raw": 4,
+      "read_capture_range_calls:raw": 1
+    },
+    "bytes": {
+      "spi_stream_payload_bytes:raw": 601720,
+      "read_capture_blocks_addrs:raw:raw": 490,
+      "read_capture_range_samples:raw": 250000
+    }
   },
   {
     "rate_hz": 1000000,
-    "codec": "delta",
+    "codec": "delta_rle",
     "sample_count": 250000,
-    "capture_total_s": 0.30348899999808054,
-    "capture_total_ms": 303.489,
-    "returned_bytes": 0,
-    "returned_samples": 0,
-    "throughput_msps": 0.824,
-    "stats": {},
-    "counts": {},
-    "bytes": {}
-  },
-  {
-    "rate_hz": 1000000,
-    "codec": "rle",
-    "sample_count": 250000,
-    "capture_total_s": 0.29936979999911273,
-    "capture_total_ms": 299.37,
-    "returned_bytes": 0,
-    "returned_samples": 0,
-    "throughput_msps": 0.835,
-    "stats": {},
-    "counts": {},
-    "bytes": {}
+    "capture_total_s": 0.6534726000027149,
+    "capture_total_ms": 653.473,
+    "returned_bytes": 500000,
+    "returned_samples": 250000,
+    "throughput_msps": 0.383,
+    "stats": {
+      "read_capture_block_s:delta_rle:compressed": 4.997,
+      "read_capture_blocks_s:delta_rle:compressed": 1.931,
+      "read_capture_blocks_s:delta_rle:raw": 210.63,
+      "read_capture_range_s:delta_rle": 250.008,
+      "spi_stream_payload_s:delta_rle": 184.892
+    },
+    "counts": {
+      "spi_stream_payload_calls:delta_rle": 6,
+      "read_capture_blocks_s:delta_rle:compressed": 1,
+      "read_capture_block_s:delta_rle:compressed": 8,
+      "read_capture_blocks_s:delta_rle:raw": 5,
+      "read_capture_range_calls:delta_rle": 1
+    },
+    "bytes": {
+      "spi_stream_payload_bytes:delta_rle": 606536,
+      "read_capture_blocks_addrs:delta_rle:compressed": 8,
+      "read_capture_blocks_addrs:delta_rle:raw": 490,
+      "read_capture_range_samples:delta_rle": 250000
+    }
   },
   {
     "rate_hz": 10000000,
     "codec": "raw",
     "sample_count": 250000,
-    "capture_total_s": 0.3001326000012341,
-    "capture_total_ms": 300.133,
-    "returned_bytes": 0,
-    "returned_samples": 0,
-    "throughput_msps": 0.833,
-    "stats": {},
-    "counts": {},
-    "bytes": {}
+    "capture_total_s": 0.3907954999958747,
+    "capture_total_ms": 390.795,
+    "returned_bytes": 500000,
+    "returned_samples": 250000,
+    "throughput_msps": 0.64,
+    "stats": {
+      "read_capture_blocks_s:raw:raw": 210.098,
+      "read_capture_range_s:raw": 211.665,
+      "spi_stream_payload_s:raw": 183.575
+    },
+    "counts": {
+      "spi_stream_payload_calls:raw": 4,
+      "read_capture_blocks_s:raw:raw": 4,
+      "read_capture_range_calls:raw": 1
+    },
+    "bytes": {
+      "spi_stream_payload_bytes:raw": 601720,
+      "read_capture_blocks_addrs:raw:raw": 490,
+      "read_capture_range_samples:raw": 250000
+    }
   },
   {
     "rate_hz": 10000000,
-    "codec": "delta",
+    "codec": "delta_rle",
     "sample_count": 250000,
-    "capture_total_s": 0.29960830000345595,
-    "capture_total_ms": 299.608,
-    "returned_bytes": 0,
-    "returned_samples": 0,
-    "throughput_msps": 0.834,
-    "stats": {},
-    "counts": {},
-    "bytes": {}
-  },
-  {
-    "rate_hz": 10000000,
-    "codec": "rle",
-    "sample_count": 250000,
-    "capture_total_s": 0.30066660000011325,
-    "capture_total_ms": 300.667,
-    "returned_bytes": 0,
-    "returned_samples": 0,
-    "throughput_msps": 0.831,
-    "stats": {},
-    "counts": {},
-    "bytes": {}
+    "capture_total_s": 0.434338499995647,
+    "capture_total_ms": 434.338,
+    "returned_bytes": 500000,
+    "returned_samples": 250000,
+    "throughput_msps": 0.576,
+    "stats": {
+      "read_capture_block_s:delta_rle:compressed": 5.535,
+      "read_capture_blocks_s:delta_rle:compressed": 1.947,
+      "read_capture_blocks_s:delta_rle:raw": 207.569,
+      "read_capture_range_s:delta_rle": 255.977,
+      "spi_stream_payload_s:delta_rle": 184.716
+    },
+    "counts": {
+      "spi_stream_payload_calls:delta_rle": 6,
+      "read_capture_blocks_s:delta_rle:compressed": 1,
+      "read_capture_block_s:delta_rle:compressed": 8,
+      "read_capture_blocks_s:delta_rle:raw": 5,
+      "read_capture_range_calls:delta_rle": 1
+    },
+    "bytes": {
+      "spi_stream_payload_bytes:delta_rle": 606536,
+      "read_capture_blocks_addrs:delta_rle:compressed": 8,
+      "read_capture_blocks_addrs:delta_rle:raw": 490,
+      "read_capture_range_samples:delta_rle": 250000
+    }
   },
   {
     "rate_hz": 50000000,
     "codec": "raw",
     "sample_count": 250000,
-    "capture_total_s": 0.30082719999336405,
-    "capture_total_ms": 300.827,
-    "returned_bytes": 0,
-    "returned_samples": 0,
-    "throughput_msps": 0.831,
-    "stats": {},
-    "counts": {},
-    "bytes": {}
+    "capture_total_s": 0.38067469999805326,
+    "capture_total_ms": 380.675,
+    "returned_bytes": 500000,
+    "returned_samples": 250000,
+    "throughput_msps": 0.657,
+    "stats": {
+      "read_capture_blocks_s:raw:raw": 218.638,
+      "read_capture_range_s:raw": 220.378,
+      "spi_stream_payload_s:raw": 182.736
+    },
+    "counts": {
+      "spi_stream_payload_calls:raw": 4,
+      "read_capture_blocks_s:raw:raw": 4,
+      "read_capture_range_calls:raw": 1
+    },
+    "bytes": {
+      "spi_stream_payload_bytes:raw": 601720,
+      "read_capture_blocks_addrs:raw:raw": 490,
+      "read_capture_range_samples:raw": 250000
+    }
   },
   {
     "rate_hz": 50000000,
-    "codec": "delta",
+    "codec": "delta_rle",
     "sample_count": 250000,
-    "capture_total_s": 0.29312490000302205,
-    "capture_total_ms": 293.125,
-    "returned_bytes": 0,
-    "returned_samples": 0,
-    "throughput_msps": 0.853,
-    "stats": {},
-    "counts": {},
-    "bytes": {}
-  },
-  {
-    "rate_hz": 50000000,
-    "codec": "rle",
-    "sample_count": 250000,
-    "capture_total_s": 0.3049756999971578,
-    "capture_total_ms": 304.976,
-    "returned_bytes": 0,
-    "returned_samples": 0,
-    "throughput_msps": 0.82,
-    "stats": {},
-    "counts": {},
-    "bytes": {}
+    "capture_total_s": 0.4076070000010077,
+    "capture_total_ms": 407.607,
+    "returned_bytes": 500000,
+    "returned_samples": 250000,
+    "throughput_msps": 0.613,
+    "stats": {
+      "read_capture_block_s:delta_rle:compressed": 5.223,
+      "read_capture_blocks_s:delta_rle:compressed": 1.996,
+      "read_capture_blocks_s:delta_rle:raw": 212.07,
+      "read_capture_range_s:delta_rle": 249.778,
+      "spi_stream_payload_s:delta_rle": 185.061
+    },
+    "counts": {
+      "spi_stream_payload_calls:delta_rle": 6,
+      "read_capture_blocks_s:delta_rle:compressed": 1,
+      "read_capture_block_s:delta_rle:compressed": 8,
+      "read_capture_blocks_s:delta_rle:raw": 5,
+      "read_capture_range_calls:delta_rle": 1
+    },
+    "bytes": {
+      "spi_stream_payload_bytes:delta_rle": 606536,
+      "read_capture_blocks_addrs:delta_rle:compressed": 8,
+      "read_capture_blocks_addrs:delta_rle:raw": 490,
+      "read_capture_range_samples:delta_rle": 250000
+    }
   }
 ]

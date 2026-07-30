@@ -13,6 +13,8 @@ paying an unnecessary compressed batch before falling back to raw.
   bit-exact against raw at the validated sample rates.
 - Mixed and analog readback remain raw-only by design; compression applies to
   the digital readback path.
+- Live direct `rle` streaming is now chunked on the host so each request stays
+  below the FPGA compressor's 1023-sample run-length ceiling.
 
 ## Hardware compression performance
 
@@ -107,6 +109,15 @@ The current validated live-mode characterization still sits around the
 sub-megasample-per-second range on the existing USB path, so the new compression
 figures should be read as "how much cheaper the waveform is to move," not "the
 sample clock can now run that much faster."
+
+Most recent live board spot-check after the chunking fix:
+
+- `raw` 1200-sample request: 2400 bytes returned in 0.003 s
+- `rle` 1200-sample request: 2400 bytes returned in 0.0026 s
+
+That is the expected shape for this fix: correctness first, with a small
+overhead reduction from the safer host chunking, but not a magical sample-clock
+multiplier.
 
 ## Best source for jumper-based performance sweeps
 

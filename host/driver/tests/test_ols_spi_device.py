@@ -444,6 +444,7 @@ class TestOLSDeviceSPI:
         device_spi.compress_readback_enabled = True
         device_spi._compressed_block_reads_supported = {'delta_rle': None, 'rle': None}
         device_spi.pkt.read_register.return_value = 0
+        device_spi.pkt.read_capture_block.return_value = b''
         def read_capture_blocks(byte_addrs, compressed=False):
             if compressed:
                 return [b''] * len(byte_addrs)
@@ -476,6 +477,28 @@ class TestOLSDeviceSPI:
             data = device_spi.read_capture_range(start_sample=0, sample_count=520)
 
         assert len(data) == 1040
+        assert device_spi._compressed_block_reads_supported["delta_rle"] is True
+
+    def test_read_capture_range_probes_multiple_delta_blocks_before_falling_back(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'delta_rle'
+        device_spi.compress_readback_enabled = True
+        device_spi._compressed_block_reads_supported = {'delta_rle': None, 'rle': None}
+        device_spi.pkt.read_register.return_value = 0
+
+        def fake_decompress(data, codec='rle'):
+            return b'' if data == b'bad' else b'\x00' * 1024
+
+        with patch('driver.ols_spi_device.decompress_block_readback_stream',
+                   side_effect=fake_decompress):
+            device_spi.pkt.read_capture_blocks.side_effect = lambda addrs, compressed=False: [
+                b'bad' if i == 1 else b'good' for i, _addr in enumerate(addrs)
+            ]
+            data = device_spi.read_capture_range(start_sample=0, sample_count=2048)
+
+        assert len(data) == 4096
+        assert device_spi.pkt.read_capture_blocks.call_args_list[0].kwargs["compressed"] is True
+        assert len(device_spi.pkt.read_capture_blocks.call_args_list[0].args[0]) > 1
         assert device_spi._compressed_block_reads_supported["delta_rle"] is True
 
     def test_read_capture_range_skips_compressed_batch_once_delta_is_known_bad(self, device_spi):
@@ -1436,8 +1459,10 @@ class TestOLSDeviceSPIRolling:
         device_spi.pkt = MagicMock()
         device_spi.pkt.read_register.return_value = 0
         device_spi.pkt.write_register.return_value = True
-        device_spi.continuous_ring_capture = MagicMock(return_value=iter([
-            (b'\x01\x00' * 4, 4, 4),
+        device_spi.set_readback_compression = MagicMock(
+            wraps=device_spi.set_readback_compression)
+        device_spi.stream_ring_capture = MagicMock(return_value=iter([
+            (b'\x01\x00' * 4, 4, 4, 0),
         ]))
 
         stop_evt = MagicMock()
@@ -1445,8 +1470,9 @@ class TestOLSDeviceSPIRolling:
             1_000_000, 4, 8, stop_evt, use_continuous=True))
 
         assert len(results) == 1
-        assert device_spi.continuous_ring_capture.call_count == 1
-        assert device_spi.continuous_ring_capture.call_args.kwargs['probe_compression'] is True
+        assert device_spi.stream_ring_capture.call_count == 1
+        assert device_spi.set_readback_compression.call_args_list[0].args == ('rle',)
+        assert device_spi.set_readback_compression.call_args_list[-1].args == ('delta_rle',)
         assert device_spi.readback_compression_mode == 'delta_rle'
 
     def test_rolling_capture_uses_continuous_ring_for_mixed(self, device_spi):

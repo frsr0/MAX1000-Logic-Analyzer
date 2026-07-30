@@ -3,8 +3,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from driver.spi_protocol import (
-    CMD_START_RAW_STREAM, ST_OK, ST_STREAM_ACTIVE, SYNC_REQ, SYNC_RSP,
-    SPIDevice, crc16, parse_response,
+    CMD_START_RAW_STREAM, MAX_RLE_STREAM_SAMPLES, ST_OK, ST_STREAM_ACTIVE,
+    SYNC_REQ, SYNC_RSP, SPIDevice, crc16, parse_response,
 )
 
 
@@ -584,6 +584,35 @@ class TestSPIPacketProtocol:
         assert producer == 0x12345678
         assert oldest == 0x100
         assert data == b'\x34\x12' * 3
+
+    def test_start_rle_stream_read_splits_large_requests_below_rle_counter_limit(self):
+        class FakeSPI:
+            def __init__(self):
+                self.speed_hz = 30_000_000
+                self.requests = []
+
+            def stream_command_chunks(self, request, ack_pad=96, stop_evt=None):
+                self.requests.append(request)
+                sample_count = struct.unpack('<I', request[10:14])[0]
+                seq = request[3]
+                payload = struct.pack('<II', 0x12345678, 0x00000100)
+                resp = (SYNC_RSP + bytes([ST_STREAM_ACTIVE, seq])
+                        + struct.pack('<H', len(payload)) + payload)
+                resp += struct.pack('<H', crc16(resp[2:]))
+                body = struct.pack('<H', sample_count) + struct.pack('<H', 0x1234)
+                yield (b'\xff' * (len(request) + ack_pad)) + resp + body
+
+        fake = FakeSPI()
+        pkt = SPIDevice(fake)
+        sample_count = MAX_RLE_STREAM_SAMPLES + 177
+        producer, oldest, data = pkt.start_rle_stream_read(0x80, sample_count)
+        assert producer == 0x12345678
+        assert oldest == 0x100
+        assert data == b'\x34\x12' * sample_count
+        assert len(fake.requests) == 2
+        assert [struct.unpack('<I', req[10:14])[0] for req in fake.requests] == [
+            MAX_RLE_STREAM_SAMPLES, 177
+        ]
 
     def test_transaction_raw_uses_stream_command_when_available(self):
         class FakeSPI:

@@ -122,6 +122,11 @@ ST_GEN_BUSY      = 0x30
 MAX_PAYLOAD = 4096
 BLOCK_SIZE  = 1024
 MAX_RAW_STREAM_SAMPLES = 16384
+# The RLE run counter is 10 bits wide in the FPGA compressor, so live RLE
+# requests must stay below the 1024-sample wrap point. Keep one sample of head-
+# room so the host never asks the hardware to encode a run that can overflow
+# the counter on a flat signal.
+MAX_RLE_STREAM_SAMPLES = 1023
 MAX_RLE_STREAM_BYTES_PER_SAMPLE = 4
 
 
@@ -667,12 +672,13 @@ class SPIDevice:
         sample_count = max(0, int(sample_count))
         if sample_count == 0:
             return 0, 0, b''
-        if sample_count > MAX_RAW_STREAM_SAMPLES:
+        max_chunk = min(MAX_RAW_STREAM_SAMPLES, MAX_RLE_STREAM_SAMPLES)
+        if sample_count > max_chunk:
             producer = oldest = None
             data = bytearray()
             done = 0
             while done < sample_count:
-                take = min(MAX_RAW_STREAM_SAMPLES, sample_count - done)
+                take = min(max_chunk, sample_count - done)
                 pi, oi, chunk = self.start_rle_stream_read(
                     start_sample + done, take, stop_evt=stop_evt, ack_pad=ack_pad)
                 producer, oldest = pi, oi

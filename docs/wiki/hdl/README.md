@@ -53,7 +53,8 @@
 ### Capture Subsystem
 
 The active readback codecs are direct full-word RLE and packed delta-RLE in
-`OLS_Interface`. See
+`OLS_Interface`. Live RLE streaming is host-chunked so no single request
+exceeds the compressor's 1023-sample run-count ceiling. See
 [Hardware Validation](../hardware-validation.md) for the direct compression
 matrix and measured ratios.
 - [Capture Engine](capture-engine.md) — `Fast_Logic_Analyzer_SDRAM`: sample divider, BRAM, FIFO, SDRAM write pump, triple-buffer continuous mode, narrow digital, packed mode

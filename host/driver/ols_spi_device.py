@@ -40,6 +40,7 @@ from driver.spi_protocol import (
     REG_GEN_CAPTURE_TX_CHAN, REG_GEN_CAPTURE_SCL_CHAN,
     REG_IFACE_MODE,
     ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_DONE,
+    MAX_RLE_STREAM_SAMPLES,
     GEN_FLAG_SPI_TEST, GEN_FLAG_REPEAT, GEN_FLAG_RS485_PAIR,
     GEN_FLAG_ACCEL_ATTACH,
 )
@@ -1062,7 +1063,12 @@ class OLSDeviceSPI:
         # 128 blocks/CS transaction is the sweet spot for raw block reads.
         # Compressed reads tolerate deeper batches, so let them amortise the
         # per-transaction USB/parse overhead a bit harder.
-        batch_blocks = 1 if probe_compress else (256 if use_compress else 128)
+        # When probing an unknown compressed codec, look at a handful of
+        # blocks before deciding that the session is really raw. A single
+        # awkward block can be a bad representative for live PWM / bursty
+        # traffic, and we only want to fall back permanently once the probe
+        # has a fair chance to see a compressible window.
+        batch_blocks = 8 if probe_compress else (256 if use_compress else 128)
         batched_compressed = use_compress
         force_raw_blocks = (codec != 'raw'
                             and support is False
@@ -1142,34 +1148,59 @@ class OLSDeviceSPI:
                     decoded = [decompress_block_readback_stream(
                         b, codec=decode_codec) if b else b'' for b in blocks]
                     need_raw = [j for j, d in enumerate(decoded) if len(d) != 1024]
-                    if codec in self._compressed_block_reads_supported and need_raw:
-                        # If every block came back undecodable, the current
-                        # bitstream is behaving like raw block readback even
-                        # though compression was requested. Remember that so
-                        # the next batch in this session skips the failed
-                        # compressed detour entirely.
-                        if len(need_raw) == len(decoded):
-                            self._compressed_block_reads_supported[codec] = False
-                            use_compress = False
-                            batched_compressed = False
-                            force_raw_blocks = True
-                            batch_blocks = 128
-                        elif self._compressed_block_reads_supported.get(codec) is None:
-                            self._compressed_block_reads_supported[codec] = True
-                    elif codec in self._compressed_block_reads_supported and self._compressed_block_reads_supported.get(codec) is None:
+                    if (not need_raw and codec in self._compressed_block_reads_supported
+                            and self._compressed_block_reads_supported.get(codec) is None):
                         self._compressed_block_reads_supported[codec] = True
                     if need_raw:
                         t_retry = time.perf_counter()
-                        raw_blocks = self._read_blocks_uncompressed(
-                            [addrs[j] for j in need_raw])
-                        retry_total += time.perf_counter() - t_retry
-                        for j, rb in zip(need_raw, raw_blocks):
-                            if rb:
-                                decoded[j] = rb
-                        if codec in self._compressed_block_reads_supported and len(need_raw) != len(decoded):
-                            self._compressed_block_reads_supported[codec] = True
-                            if probe_compress:
-                                batch_blocks = 256
+                        compressed_retry = []
+                        retry_capture_block = getattr(self.pkt, 'read_capture_block', None)
+                        if callable(retry_capture_block):
+                            for j in need_raw:
+                                try:
+                                    rb = retry_capture_block(
+                                        addrs[j], compressed=True)
+                                except Exception:
+                                    rb = b''
+                                if rb:
+                                    try:
+                                        decoded_rb = decompress_block_readback_stream(
+                                            rb, codec=decode_codec)
+                                    except Exception:
+                                        decoded_rb = b''
+                                    if len(decoded_rb) == 1024:
+                                        decoded[j] = decoded_rb
+                                    else:
+                                        compressed_retry.append(j)
+                                else:
+                                    compressed_retry.append(j)
+                        else:
+                            compressed_retry = list(need_raw)
+                        compressed_unresolved = [
+                            j for j in (compressed_retry or need_raw)
+                            if len(decoded[j]) != 1024
+                        ]
+                        if codec in self._compressed_block_reads_supported:
+                            if compressed_unresolved and len(compressed_unresolved) == len(decoded):
+                                self._compressed_block_reads_supported[codec] = False
+                                use_compress = False
+                                batched_compressed = False
+                                force_raw_blocks = True
+                                batch_blocks = 128
+                            elif self._compressed_block_reads_supported.get(codec) is None:
+                                self._compressed_block_reads_supported[codec] = True
+                                if compressed_unresolved and len(compressed_unresolved) != len(decoded) and probe_compress:
+                                    batch_blocks = 256
+                        need_raw = compressed_unresolved
+                        if need_raw:
+                            raw_blocks = self._read_blocks_uncompressed(
+                                [addrs[j] for j in need_raw])
+                            retry_total += time.perf_counter() - t_retry
+                            for j, rb in zip(need_raw, raw_blocks):
+                                if rb:
+                                    decoded[j] = rb
+                        else:
+                            retry_total += time.perf_counter() - t_retry
                     blocks = decoded
                     decode_total += time.perf_counter() - t_decode
                 stop = False
@@ -2250,35 +2281,56 @@ class OLSDeviceSPI:
         out_stride = payload_stride if payload_stride else stride
         max_bytes = buffer_nsamp * out_stride
 
-        if self._use_compressed_live_readback(
-                use_continuous=use_continuous,
-                payload_stride=payload_stride,
-                gen_data=gen_data,
-                stride=stride) or (
-                use_continuous and not payload_stride and not gen_data
+        if (use_continuous and not payload_stride and not gen_data
                 and stride == 2 and self.analog_mode == MODE_DIGITAL):
             live_codec = self._readback_codec()
-            live_support = self._compressed_block_reads_supported.get(live_codec)
-            buf = bytearray()
-            for data, total, _window in self.continuous_ring_capture(
-                    rate_hz=rate_hz,
-                    chunk_nsamp=chunk_nsamp,
-                    buffer_nsamp=buffer_nsamp,
-                    stop_evt=stop_evt,
-                    progress_cb=None,
-                    full_out=full_out,
-                    fast_mode=False,
-                    yield_full_buffer=False,
-                    probe_compression=(live_codec == 'delta_rle'
-                                       and live_support is not False)):
-                data = self._filter_digital(data)
-                buf.extend(data)
-                if len(buf) > max_bytes:
-                    del buf[:-max_bytes]
-                snapshot = bytes(buf)
-                if progress_cb:
-                    progress_cb(snapshot, total, buffer_nsamp)
-                yield snapshot, total, buffer_nsamp
+            if live_codec == 'raw':
+                buf = bytearray()
+                for data, total, _window in self.continuous_ring_capture(
+                        rate_hz=rate_hz,
+                        chunk_nsamp=chunk_nsamp,
+                        buffer_nsamp=buffer_nsamp,
+                        stop_evt=stop_evt,
+                        progress_cb=None,
+                        full_out=full_out,
+                        fast_mode=False,
+                        yield_full_buffer=False):
+                    data = self._filter_digital(data)
+                    buf.extend(data)
+                    if len(buf) > max_bytes:
+                        del buf[:-max_bytes]
+                    snapshot = bytes(buf)
+                    if progress_cb:
+                        progress_cb(snapshot, total, buffer_nsamp)
+                    yield snapshot, total, buffer_nsamp
+                return
+            restore_mode = None
+            if live_codec != 'rle':
+                restore_mode = self.readback_compression_mode
+                self.set_readback_compression('rle')
+            try:
+                # The FPGA RLE counter is 10 bits wide, so keep each live
+                # request below the 1024-sample wrap point. Larger host chunk
+                # sizes are satisfied by stitching together multiple safe
+                # sub-reads.
+                live_window = max(1, min(int(chunk_nsamp), MAX_RLE_STREAM_SAMPLES))
+                buf = bytearray()
+                for data, total, _window, _overrun in self.stream_ring_capture(
+                        rate_hz=rate_hz,
+                        window_samples=live_window,
+                        stop_evt=stop_evt,
+                        progress_cb=None):
+                    data = self._filter_digital(data)
+                    buf.extend(data)
+                    if len(buf) > max_bytes:
+                        del buf[:-max_bytes]
+                    snapshot = bytes(buf)
+                    if progress_cb:
+                        progress_cb(snapshot, total, buffer_nsamp)
+                    yield snapshot, total, buffer_nsamp
+            finally:
+                if restore_mode is not None:
+                    self.set_readback_compression(restore_mode)
             return
         if (use_continuous and payload_stride and not gen_data
                 and self.analog_mode != MODE_DIGITAL):

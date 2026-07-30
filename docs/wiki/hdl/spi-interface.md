@@ -117,6 +117,8 @@ The SPI dispatch process decodes `pkt_cmd_active` and routes to sub-handlers:
 - `raw_comp_pop` handshake between compressor and SPI shifter
 - Passthrough when compression is disabled (all blocks share one drain path)
 - Each run is two 16-bit words: count followed by sample value
+- Live RLE streaming is host-chunked below the 10-bit run-count ceiling in
+  `rle_compressor.vhd`, so flat signals are split into safe sub-requests
 - The host expands the stream and falls back to raw block readback if a block
   cannot be decoded to exactly 512 samples
 
