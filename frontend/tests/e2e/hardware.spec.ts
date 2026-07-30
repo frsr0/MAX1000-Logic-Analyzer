@@ -215,6 +215,7 @@ test('capture controls reflect MAX1000 modes', async ({ page }) => {
 
   await page.getByRole('button', { name: 'Live ring' }).click();
   await expect(page.getByRole('option', { name: '50 MHz' })).toBeAttached();
+  await expect(page.getByText('Live compression buffer: ready')).toBeVisible();
   await page.screenshot({ path: shot('capture-live-50mhz-latest.png'), fullPage: true });
 
   await page.locator('.mode-tile', { hasText: 'Analog fast' }).click();

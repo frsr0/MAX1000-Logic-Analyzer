@@ -215,6 +215,21 @@ export function CaptureControls() {
   const digitalCompressionMode = !analogMode
     && captureSettings.mode !== 'mixed'
     && captureSettings.mode !== 'mixed_continuous';
+  const liveCompressionActive = rollingMode
+    && digitalCompressionMode
+    && captureSettings.readback_compression !== 'raw';
+  const liveCompressionStatus = liveCompressionActive
+    ? (() => {
+        const progress = status?.capture_progress;
+        if (capturing && progress?.samples_total) {
+          const pct = Math.max(0, Math.min(100,
+            Math.round((progress.samples_read / Math.max(1, progress.samples_total)) * 100)));
+          return `Live compression buffer: ${pct}% full (${progress.message})`;
+        }
+        if (capturing) return 'Live compression buffer: filling...';
+        return 'Live compression buffer: ready';
+      })()
+    : '';
 
   useEffect(() => {
     if (isMock) api.mockScenarios().then((r) => setScenarios(r.scenarios)).catch(() => {});
@@ -495,6 +510,9 @@ export function CaptureControls() {
           </div>
         ) : (
           <span className="mode-detail">Analog and mixed captures use raw readback.</span>
+        )}
+        {liveCompressionActive && (
+          <span className="mode-detail">{liveCompressionStatus}</span>
         )}
       </div>
       <div className="field">
