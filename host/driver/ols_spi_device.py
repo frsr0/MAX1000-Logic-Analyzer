@@ -1342,7 +1342,8 @@ class OLSDeviceSPI:
 
     def continuous_ring_capture(self, rate_hz, chunk_nsamp, buffer_nsamp,
                                 stop_evt, progress_cb=None, full_out=None,
-                                fast_mode=True, yield_full_buffer=True):
+                                fast_mode=True, yield_full_buffer=True,
+                                probe_compression=False):
         """Yield chunks from the FPGA continuous SDRAM ring by absolute index.
 
         This arms continuous mode once, then follows producer/oldest/newest
@@ -1436,7 +1437,8 @@ class OLSDeviceSPI:
                 available = producer - next_sample
 
                 data = self.read_capture_range(
-                    next_sample, wire_words, probe_compression=False)
+                    next_sample, wire_words,
+                    probe_compression=probe_compression)
                 data = data[:fetch_nsamp * wire_stride]
                 if not data:
                     time.sleep(0.0003)
@@ -2255,38 +2257,28 @@ class OLSDeviceSPI:
                 stride=stride) or (
                 use_continuous and not payload_stride and not gen_data
                 and stride == 2 and self.analog_mode == MODE_DIGITAL):
-            # Compressed live readback is more stable on the block-read ring
-            # path than on the live stream path; keep the exact stream probe
-            # for the low-level handoff test, but use the safe rolling reader
-            # for long-running throughput tests.
             live_codec = self._readback_codec()
             live_support = self._compressed_block_reads_supported.get(live_codec)
-            restore_mode = None
-            if live_codec == 'delta_rle' and live_support is not True:
-                restore_mode = self.readback_compression_mode
-                self.set_readback_compression('raw')
-            try:
-                buf = bytearray()
-                for data, total, _window in self.continuous_ring_capture(
-                        rate_hz=rate_hz,
-                        chunk_nsamp=chunk_nsamp,
-                        buffer_nsamp=buffer_nsamp,
-                        stop_evt=stop_evt,
-                        progress_cb=None,
-                        full_out=full_out,
-                        fast_mode=False,
-                        yield_full_buffer=False):
-                    data = self._filter_digital(data)
-                    buf.extend(data)
-                    if len(buf) > max_bytes:
-                        del buf[:-max_bytes]
-                    snapshot = bytes(buf)
-                    if progress_cb:
-                        progress_cb(snapshot, total, buffer_nsamp)
-                    yield snapshot, total, buffer_nsamp
-            finally:
-                if restore_mode is not None:
-                    self.set_readback_compression(restore_mode)
+            buf = bytearray()
+            for data, total, _window in self.continuous_ring_capture(
+                    rate_hz=rate_hz,
+                    chunk_nsamp=chunk_nsamp,
+                    buffer_nsamp=buffer_nsamp,
+                    stop_evt=stop_evt,
+                    progress_cb=None,
+                    full_out=full_out,
+                    fast_mode=False,
+                    yield_full_buffer=False,
+                    probe_compression=(live_codec == 'delta_rle'
+                                       and live_support is not False)):
+                data = self._filter_digital(data)
+                buf.extend(data)
+                if len(buf) > max_bytes:
+                    del buf[:-max_bytes]
+                snapshot = bytes(buf)
+                if progress_cb:
+                    progress_cb(snapshot, total, buffer_nsamp)
+                yield snapshot, total, buffer_nsamp
             return
         if (use_continuous and payload_stride and not gen_data
                 and self.analog_mode != MODE_DIGITAL):

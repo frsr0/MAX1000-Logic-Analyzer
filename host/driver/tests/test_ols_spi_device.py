@@ -1198,7 +1198,8 @@ class TestOLSDeviceSPIRolling:
         results = list(device_spi.stream_ring_capture(1_000_000, 4, stop_evt))
 
         assert [item[1] for item in results] == [4]
-        device_spi.read_capture_range.assert_called_with(4, 4)
+        device_spi.read_capture_range.assert_called_with(
+            4, 4, probe_compression=False)
         device_spi.pkt.transaction.assert_called_with(CMD_ABORT_CAPTURE, timeout=0.5)
 
     def test_stream_ring_capture_resyncs_to_oldest_after_overrun(self, device_spi):
@@ -1228,7 +1229,8 @@ class TestOLSDeviceSPIRolling:
         results = list(device_spi.stream_ring_capture(1_000_000, 4, stop_evt))
 
         assert [item[3] for item in results] == [0]
-        device_spi.read_capture_range.assert_called_with(0, 4)
+        device_spi.read_capture_range.assert_called_with(
+            0, 4, probe_compression=False)
 
     def test_stream_ring_capture_uses_block_reads_in_raw_mode(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -1252,7 +1254,8 @@ class TestOLSDeviceSPIRolling:
         results = list(device_spi.stream_ring_capture(1_000_000, 4, stop_evt))
 
         assert [item[1] for item in results] == [4]
-        device_spi.read_capture_range.assert_has_calls([call(0, 4)])
+        device_spi.read_capture_range.assert_has_calls(
+            [call(0, 4, probe_compression=False)])
 
     def test_stream_ring_capture_uses_true_rle_stream_in_rle_mode(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -1308,7 +1311,8 @@ class TestOLSDeviceSPIRolling:
         assert len(results) == 1
         assert results[0][1:] == (128, 512)
         device_spi.pkt.arm_capture.assert_called_once()
-        device_spi.read_capture_range.assert_called_once_with(0, 128)
+        device_spi.read_capture_range.assert_called_once_with(
+            0, 128, probe_compression=False)
         device_spi.pkt.write_register.assert_any_call(REG_CONT_MODE, 1)
         device_spi.pkt.transaction.assert_called_with(CMD_ABORT_CAPTURE, timeout=0.5)
 
@@ -1330,7 +1334,8 @@ class TestOLSDeviceSPIRolling:
             1_000_000, 64, 256, stop_evt))
 
         assert len(results) == 1
-        device_spi.read_capture_range.assert_called_once_with(128, 64)
+        device_spi.read_capture_range.assert_called_once_with(
+            128, 64, probe_compression=False)
         assert device_spi.last_ring_status['overrun_count'] == 3
 
     def test_continuous_ring_capture_deinterleaves_mixed_frames(self, device_spi):
@@ -1356,7 +1361,7 @@ class TestOLSDeviceSPIRolling:
         assert len(results) == 1
         assert results[0][0] == wire[:analog_frame_stride(MODE_MIXED)]
         device_spi.read_capture_range.assert_called_once_with(
-            0, 2 * analog_wire_stride(MODE_MIXED))
+            0, 2 * analog_wire_stride(MODE_MIXED), probe_compression=False)
 
     def test_rolling_capture_no_gen(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -1423,7 +1428,7 @@ class TestOLSDeviceSPIRolling:
             gen_data=None,
             stride=analog_wire_stride(MODE_MIXED)) is False
 
-    def test_rolling_capture_temporarily_forces_raw_when_delta_support_unknown(self, device_spi):
+    def test_rolling_capture_probes_delta_compression_when_support_unknown(self, device_spi):
         device_spi.analog_mode = MODE_DIGITAL
         device_spi.readback_compression_mode = 'delta_rle'
         device_spi.compress_readback_enabled = True
@@ -1431,8 +1436,6 @@ class TestOLSDeviceSPIRolling:
         device_spi.pkt = MagicMock()
         device_spi.pkt.read_register.return_value = 0
         device_spi.pkt.write_register.return_value = True
-        device_spi.set_readback_compression = MagicMock(
-            wraps=device_spi.set_readback_compression)
         device_spi.continuous_ring_capture = MagicMock(return_value=iter([
             (b'\x01\x00' * 4, 4, 4),
         ]))
@@ -1443,8 +1446,8 @@ class TestOLSDeviceSPIRolling:
 
         assert len(results) == 1
         assert device_spi.continuous_ring_capture.call_count == 1
-        assert device_spi.set_readback_compression.call_args_list[0].args == ('raw',)
-        assert device_spi.set_readback_compression.call_args_list[-1].args == ('delta_rle',)
+        assert device_spi.continuous_ring_capture.call_args.kwargs['probe_compression'] is True
+        assert device_spi.readback_compression_mode == 'delta_rle'
 
     def test_rolling_capture_uses_continuous_ring_for_mixed(self, device_spi):
         device_spi.analog_mode = MODE_MIXED
