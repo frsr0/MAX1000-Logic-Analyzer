@@ -1033,15 +1033,20 @@ class OLSDeviceSPI:
         sample = start_sample
         codec = self._readback_codec()
         use_compress = codec != 'raw'
+        probe_compress = (
+            codec == 'delta_rle'
+            and self._compressed_block_reads_supported.get(codec) is None
+        )
         # 128 blocks/CS transaction is the sweet spot for raw block reads.
         # Compressed reads tolerate deeper batches, so let them amortise the
         # per-transaction USB/parse overhead a bit harder.
-        batch_blocks = 256 if use_compress else 128
+        batch_blocks = 1 if probe_compress else (256 if use_compress else 128)
         batched_compressed = codec != 'raw'
         force_raw_blocks = codec != 'raw' and self._compressed_block_reads_supported.get(codec) is False
         if force_raw_blocks:
             use_compress = False
             batched_compressed = False
+            batch_blocks = 128
         t_total = time.perf_counter()
         blocks_total = 0.0
         decode_total = 0.0
@@ -1091,12 +1096,7 @@ class OLSDeviceSPI:
                     if pipeline:
                         pending = executor.submit(fetch_batch, addrs)
                     else:
-                        blocks = None
-                        if callable(read_blocks):
-                            blocks = read_blocks(addrs, compressed=batched_compressed)
-                        if not isinstance(blocks, list):
-                            blocks = [self.pkt.read_capture_block(
-                                a, compressed=batched_compressed) for a in addrs]
+                        blocks = fetch_batch(addrs)
                 if pending is not None:
                     blocks = pending.result()
                     pending = None
@@ -1126,6 +1126,10 @@ class OLSDeviceSPI:
                         # compressed detour entirely.
                         if len(need_raw) == len(decoded):
                             self._compressed_block_reads_supported[codec] = False
+                            use_compress = False
+                            batched_compressed = False
+                            force_raw_blocks = True
+                            batch_blocks = 128
                     if need_raw:
                         t_retry = time.perf_counter()
                         raw_blocks = self._read_blocks_uncompressed(
@@ -1136,6 +1140,8 @@ class OLSDeviceSPI:
                                 decoded[j] = rb
                         if codec in self._compressed_block_reads_supported and len(need_raw) != len(decoded):
                             self._compressed_block_reads_supported[codec] = True
+                            if probe_compress:
+                                batch_blocks = 256
                     blocks = decoded
                     decode_total += time.perf_counter() - t_decode
                 stop = False

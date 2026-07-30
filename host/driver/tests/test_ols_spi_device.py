@@ -399,7 +399,11 @@ class TestOLSDeviceSPI:
         device_spi.compress_readback_enabled = True
         device_spi._compressed_block_reads_supported = {'delta_rle': None, 'rle': None}
         device_spi.pkt.read_register.return_value = 0
-        device_spi.pkt.read_capture_blocks.return_value = [raw_block, raw_block]
+        def read_capture_blocks(byte_addrs, compressed=False):
+            if compressed:
+                return [b''] * len(byte_addrs)
+            return [raw_block] * len(byte_addrs)
+        device_spi.pkt.read_capture_blocks.side_effect = read_capture_blocks
 
         first = device_spi.read_capture_range(start_sample=0, sample_count=520)
         second = device_spi.read_capture_range(start_sample=0, sample_count=520)
