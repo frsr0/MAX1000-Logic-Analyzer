@@ -221,6 +221,7 @@ class OLSDeviceSPI:
         # return decodable compressed blocks. This avoids paying the failed
         # compression tax on every chunk of a long-running capture.
         self._compressed_block_reads_supported = {'delta_rle': None, 'rle': None}
+        self._rle_stream_supported = None
         self._readback_hardware_is_raw = True
         # Software digital glitch / hysteresis filter (applied to captured
         # digital samples on the host; the FPGA captures raw pins).
@@ -241,7 +242,7 @@ class OLSDeviceSPI:
     def raw_flags(self, value):
         self._raw_flags = int(value)
 
-    def set_readback_compression(self, mode: str):
+    def set_readback_compression(self, mode: str, *, force_hardware=False):
         mode = str(mode or 'raw').lower()
         if mode not in ('raw', 'delta', 'rle', 'delta_rle'):
             raise ValueError(f"unsupported readback compression mode: {mode}")
@@ -249,7 +250,8 @@ class OLSDeviceSPI:
         self.readback_compression_mode = mode
         self.compress_readback_enabled = mode != 'raw'
         codec = self._readback_codec()
-        if mode != 'raw' and self._compressed_block_reads_supported.get(codec) is False:
+        if (mode != 'raw' and not force_hardware
+                and self._compressed_block_reads_supported.get(codec) is False):
             cur = self.pkt.read_register(REG_FLAGS)
             if cur >= 0 and (cur & REG_FLAGS_COMPRESS_MASK):
                 try:
@@ -1486,7 +1488,7 @@ class OLSDeviceSPI:
             self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
 
     def stream_ring_capture(self, rate_hz, window_samples, stop_evt,
-                            progress_cb=None):
+                            progress_cb=None, full_out=None):
         """Yield raw data chunks from the continuous SDRAM ring (caller must
         configure flags/analog before calling, restore after).
 
@@ -1552,6 +1554,8 @@ class OLSDeviceSPI:
                     total += window_samples
                     if progress_cb:
                         progress_cb(data, total, window_samples)
+                    if full_out is not None:
+                        full_out.extend(data)
                     self._ring_trace(
                         f"iter={iteration} yield buffered: total={total} "
                         f"data_bytes={len(data)} pending_samples={pending_samples}")
@@ -1596,6 +1600,8 @@ class OLSDeviceSPI:
                     total += valid_samples
                     if progress_cb:
                         progress_cb(data, total, window_samples)
+                    if full_out is not None:
+                        full_out.extend(data)
                     self._ring_trace(
                         f"iter={iteration} yield rle: total={total} "
                         f"data_bytes={len(data)} next={next_sample} "
@@ -2281,56 +2287,110 @@ class OLSDeviceSPI:
         out_stride = payload_stride if payload_stride else stride
         max_bytes = buffer_nsamp * out_stride
 
+        def yield_continuous_raw():
+            buf = bytearray()
+            for data, total, _window in self.continuous_ring_capture(
+                    rate_hz=rate_hz,
+                    chunk_nsamp=chunk_nsamp,
+                    buffer_nsamp=buffer_nsamp,
+                    stop_evt=stop_evt,
+                    progress_cb=None,
+                    full_out=full_out,
+                    fast_mode=False,
+                    yield_full_buffer=False):
+                data = self._filter_digital(data)
+                buf.extend(data)
+                if len(buf) > max_bytes:
+                    del buf[:-max_bytes]
+                snapshot = bytes(buf)
+                if progress_cb:
+                    progress_cb(snapshot, total, buffer_nsamp)
+                yield snapshot, total, buffer_nsamp
+
         if (use_continuous and not payload_stride and not gen_data
                 and stride == 2 and self.analog_mode == MODE_DIGITAL):
             live_codec = self._readback_codec()
             if live_codec == 'raw':
-                buf = bytearray()
-                for data, total, _window in self.continuous_ring_capture(
-                        rate_hz=rate_hz,
-                        chunk_nsamp=chunk_nsamp,
-                        buffer_nsamp=buffer_nsamp,
-                        stop_evt=stop_evt,
-                        progress_cb=None,
-                        full_out=full_out,
-                        fast_mode=False,
-                        yield_full_buffer=False):
-                    data = self._filter_digital(data)
-                    buf.extend(data)
-                    if len(buf) > max_bytes:
-                        del buf[:-max_bytes]
-                    snapshot = bytes(buf)
-                    if progress_cb:
-                        progress_cb(snapshot, total, buffer_nsamp)
-                    yield snapshot, total, buffer_nsamp
+                yield from yield_continuous_raw()
                 return
-            restore_mode = None
-            if live_codec != 'rle':
+            if self._raw_flags & MODE_NARROW_DIGITAL:
                 restore_mode = self.readback_compression_mode
-                self.set_readback_compression('rle')
+                try:
+                    self.set_readback_compression('raw', force_hardware=True)
+                    yield from yield_continuous_raw()
+                finally:
+                    if restore_mode != 'raw':
+                        self.set_readback_compression(
+                            restore_mode, force_hardware=True)
+                return
+
+            restore_mode = self.readback_compression_mode
+            stream_mode_changed = live_codec != 'rle'
+            fallback_used = False
             try:
-                # The FPGA RLE counter is 10 bits wide, so keep each live
-                # request below the 1024-sample wrap point. Larger host chunk
-                # sizes are satisfied by stitching together multiple safe
-                # sub-reads.
-                live_window = max(1, min(int(chunk_nsamp), MAX_RLE_STREAM_SAMPLES))
-                buf = bytearray()
-                for data, total, _window, _overrun in self.stream_ring_capture(
-                        rate_hz=rate_hz,
-                        window_samples=live_window,
-                        stop_evt=stop_evt,
-                        progress_cb=None):
-                    data = self._filter_digital(data)
-                    buf.extend(data)
-                    if len(buf) > max_bytes:
-                        del buf[:-max_bytes]
-                    snapshot = bytes(buf)
-                    if progress_cb:
-                        progress_cb(snapshot, total, buffer_nsamp)
-                    yield snapshot, total, buffer_nsamp
+                stream_failed = False
+                if stream_mode_changed:
+                    try:
+                        if not self.set_readback_compression(
+                                'rle', force_hardware=True):
+                            stream_failed = True
+                    except Exception:
+                        stream_failed = True
+                if self._rle_stream_supported is False:
+                    stream_failed = True
+
+                if not stream_failed:
+                    # The FPGA RLE counter is 10 bits wide, so keep each live
+                    # request below the 1024-sample wrap point. Larger host
+                    # chunk sizes are satisfied by stitching together multiple
+                    # safe sub-reads.
+                    live_window = max(1, min(int(chunk_nsamp), MAX_RLE_STREAM_SAMPLES))
+                    try:
+                        stream_iter = iter(self.stream_ring_capture(
+                            rate_hz=rate_hz,
+                            window_samples=live_window,
+                            stop_evt=stop_evt,
+                            progress_cb=None,
+                            full_out=full_out))
+                    except Exception:
+                        stream_failed = True
+
+                if not stream_failed:
+                    buf = bytearray()
+                    while True:
+                        try:
+                            item = next(stream_iter)
+                        except StopIteration:
+                            break
+                        except Exception:
+                            stream_failed = True
+                            break
+                        data, total, _window, _overrun = item
+                        self._rle_stream_supported = True
+                        data = self._filter_digital(data)
+                        buf.extend(data)
+                        if len(buf) > max_bytes:
+                            del buf[:-max_bytes]
+                        snapshot = bytes(buf)
+                        if progress_cb:
+                            progress_cb(snapshot, total, buffer_nsamp)
+                        yield snapshot, total, buffer_nsamp
+
+                if stream_failed:
+                    self._rle_stream_supported = False
+                    if stop_evt.is_set():
+                        return
+                    fallback_used = True
+                    if not self.set_readback_compression(
+                            'raw', force_hardware=True):
+                        raise RuntimeError("unable to enable raw live fallback")
+                    yield from yield_continuous_raw()
             finally:
-                if restore_mode is not None:
+                if stream_mode_changed:
                     self.set_readback_compression(restore_mode)
+                elif fallback_used:
+                    self.set_readback_compression(
+                        restore_mode, force_hardware=True)
             return
         if (use_continuous and payload_stride and not gen_data
                 and self.analog_mode != MODE_DIGITAL):

@@ -1303,9 +1303,12 @@ class TestOLSDeviceSPIRolling:
         stop_evt = MagicMock()
         stop_evt.is_set.side_effect = [False, False, True]
         stop_evt.wait.return_value = False
-        results = list(device_spi.stream_ring_capture(1_000_000, 4, stop_evt))
+        full_out = bytearray()
+        results = list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, full_out=full_out))
 
         assert [item[1] for item in results] == [4, 8]
+        assert full_out == b'\x34\x12' * 4 + b'\x78\x56' * 4
         device_spi.pkt.start_rle_stream_read.assert_has_calls([
             call(0, 4, stop_evt=stop_evt),
             call(4, 4, stop_evt=stop_evt),
@@ -1466,14 +1469,68 @@ class TestOLSDeviceSPIRolling:
         ]))
 
         stop_evt = MagicMock()
+        full_out = bytearray()
         results = list(device_spi.rolling_capture(
-            1_000_000, 4, 8, stop_evt, use_continuous=True))
+            1_000_000, 4, 8, stop_evt, full_out=full_out,
+            use_continuous=True))
 
         assert len(results) == 1
         assert device_spi.stream_ring_capture.call_count == 1
+        assert device_spi.stream_ring_capture.call_args.kwargs['full_out'] is full_out
         assert device_spi.set_readback_compression.call_args_list[0].args == ('rle',)
+        assert device_spi.set_readback_compression.call_args_list[0].kwargs == {
+            'force_hardware': True}
         assert device_spi.set_readback_compression.call_args_list[-1].args == ('delta_rle',)
         assert device_spi.readback_compression_mode == 'delta_rle'
+
+    def test_rolling_capture_falls_back_to_raw_ring_when_rle_stream_fails(self, device_spi):
+        device_spi.analog_mode = MODE_DIGITAL
+        device_spi.readback_compression_mode = 'delta_rle'
+        device_spi.compress_readback_enabled = True
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.read_register.return_value = 0
+        device_spi.pkt.write_register.return_value = True
+        device_spi.set_readback_compression = MagicMock(
+            wraps=device_spi.set_readback_compression)
+        device_spi.stream_ring_capture = MagicMock(
+            side_effect=RuntimeError("unsupported stream"))
+        device_spi.continuous_ring_capture = MagicMock(return_value=iter([
+            (b'\x22\x00' * 4, 4, 4),
+        ]))
+
+        stop_evt = MagicMock()
+        stop_evt.is_set.return_value = False
+        results = list(device_spi.rolling_capture(
+            1_000_000, 4, 8, stop_evt, use_continuous=True))
+
+        assert results[0][0] == b'\x22\x00' * 4
+        assert device_spi._rle_stream_supported is False
+        assert device_spi.continuous_ring_capture.call_count == 1
+        assert device_spi.readback_compression_mode == 'delta_rle'
+        assert device_spi.set_readback_compression.call_args_list[1].args == ('raw',)
+
+    def test_rolling_capture_keeps_narrow_digital_on_raw_ring(self, device_spi):
+        device_spi.analog_mode = MODE_DIGITAL
+        device_spi._raw_flags = MODE_NARROW_DIGITAL
+        device_spi.readback_compression_mode = 'rle'
+        device_spi.compress_readback_enabled = True
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.read_register.return_value = 0
+        device_spi.pkt.write_register.return_value = True
+        device_spi.set_readback_compression = MagicMock(
+            wraps=device_spi.set_readback_compression)
+        device_spi.stream_ring_capture = MagicMock()
+        device_spi.continuous_ring_capture = MagicMock(return_value=iter([
+            (b'\x33\x00' * 4, 4, 4),
+        ]))
+
+        results = list(device_spi.rolling_capture(
+            1_000_000, 4, 8, MagicMock(), use_continuous=True))
+
+        assert results[0][0] == b'\x33\x00' * 4
+        device_spi.stream_ring_capture.assert_not_called()
+        assert device_spi.continuous_ring_capture.call_count == 1
+        assert device_spi.readback_compression_mode == 'rle'
 
     def test_rolling_capture_uses_continuous_ring_for_mixed(self, device_spi):
         device_spi.analog_mode = MODE_MIXED
