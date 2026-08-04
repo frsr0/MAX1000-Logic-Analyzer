@@ -4,7 +4,7 @@ uvicorn[standard]>=0.29
 numpy>=1.26
 pydantic>=2.6
 qrcode>=7.4
-mcp>=1.13
+mcp>=1.13,<2.0
 pyserial>=3.0
 # real hardware only:
 # ftd2xx>=1.0.0
