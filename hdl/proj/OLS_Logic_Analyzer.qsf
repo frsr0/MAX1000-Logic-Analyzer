@@ -89,14 +89,31 @@ set_global_assignment -name SDC_FILE OLS_Logic_Analyzer.sdc
 set_global_assignment -name QIP_FILE ../ip/MAX10_ADC/synthesis/MAX10_ADC.qip
 set_global_assignment -name SDC_FILE ../ip/MAX10_ADC/synthesis/submodules/altera_modular_adc_control.sdc
 
-# Weak pull-ups on all GPIO and I2C/SPI pins
-set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to GPIO[0]
-set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to GPIO[1]
-set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to GPIO[2]
-set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to GPIO[3]
-set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to GPIO[4]
-set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to GPIO[5]
-set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to GPIO[6]
-set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to GPIO[7]
+# Weak pull-ups on the actual bidirectional board headers and I2C/SPI pins.
+# The old GPIO[0..7] names belonged to a retired top-level wrapper and were
+# silently reported under Quartus' Ignored Assignments section.
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to MKR_D[0]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to MKR_D[1]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to MKR_D[2]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to MKR_D[3]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to MKR_D[4]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to MKR_D[5]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to MKR_D[6]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to MKR_D[7]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to MKR_D[8]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to MKR_D[9]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to MKR_D[10]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to MKR_D[11]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to MKR_D[12]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to MKR_D[13]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to MKR_D[14]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to PMOD[0]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to PMOD[1]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to PMOD[2]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to PMOD[3]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to PMOD[4]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to PMOD[5]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to PMOD[6]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to PMOD[7]
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to SEN_SDI
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to SEN_SPC

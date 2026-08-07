@@ -16,6 +16,34 @@ The final exhaustive rerun completed **391/391 passed, 0 failed, 0 skipped**.
 
 Full log: `host/fullsuite_postfix_2026-07-27-rerun.txt`.
 
+## Latest web-app smoke result — 2026-08-07
+
+The connected MAX1000 passed the current `backend/hw_smoke_test.py` real-hardware path **10/10** at a 200 MHz sample clock. This covers the same `CaptureManager -> ExistingHostAdapter -> host/driver/OLSDeviceSPI` path used by the web app. The default plain capture now uses **10 MHz and 40,960 samples** (about 4.1 ms), keeping the same observation window as the old 1 MHz / 4,096-sample check while giving ten times more samples per pulse.
+
+| Check | Result |
+|---|---|
+| Discovery, connect, metadata | PASS — 200 MHz sample clock |
+| Capabilities and control-plane self-test | PASS — 16 digital channels, 200 MHz maximum, RS-485 DE and SPI CS/MISO routes advertised |
+| 40,960-sample digital capture and sanity checks | PASS — 40,960 samples; 0 edges and 0 warnings after the pin/pull-up fix |
+| UART generator loopback/decode | PASS — session `ses_6016ac5eaa` |
+| RS-485 generator loopback/decode | PASS — session `ses_cb40d27542` |
+| SPI generator loopback/decode | PASS — session `ses_92ff31d215` |
+| SWD generator loopback/decode | PASS — one decoded transaction, session `ses_114c6beaca` |
+
+The pre-fix digital capture was saved as session `ses_1aae405834` and reported one CH13 narrow-pulse warning. This was not intermittent readback corruption: repeated direct captures changed only bit 13, and the existing jumper-discovery routine identified a real generator path from pre-fix pool pin 22 to capture channel 13. A controlled UART burst on that path decoded correctly in both SDRAM and fast capture modes.
+
+The investigation found two hardware-definition issues behind the warning's misleading label. The pre-fix fitted Quartus report showed the QSF `GPIO[0..7]` weak-pull assignments were ignored, while the actual `MKR_D` inputs—including `MKR_D[13]`—had weak pull-up **Off**. The descending `MKR_D(14 downto 0)` / `PMOD(7 downto 0)` vectors were also assigned a D0-to-D14 / PIO1-to-PIO8 pin list, reversing the physical labels: fitted `MKR_D[13]` was board D1/K10, not D13/H13.
+
+The fix reversed the wrapper pin lists and moved pull-up assignments to the real `MKR_D`/`PMOD` ports. Quartus compiled successfully with SOF checksum `0x0051801E`; the image was programmed to the attached board and persisted as POF checksum `0x01D53118`. The final post-program smoke capture is session `ses_440cd83d82`, with 40,960 samples, 0 edges, and 0 warnings. Twelve additional direct captures at 10 MHz / 40,960 samples all remained constant with no changed bits. Post-fix jumper discovery now reports the expected pool pin 1 to capture channel 15 pair.
+
+`--rate` and `--samples` remain available for targeted rate or duration experiments; when `--samples` is omitted, the test preserves the ~4.1 ms observation window as the rate changes.
+
+Reproduce from `backend/` with the MAX1000 and FTDI driver connected:
+
+```text
+python hw_smoke_test.py
+```
+
 The focused packed-MSO check and both physical analogue jumper checks passed.
 The decodable analogue MSO proof is
 [mso-analog-uart-live.png](../../frontend/test-results/screenshots/mso-analog-uart-live.png).
@@ -48,7 +76,8 @@ were added:
 | **14f** — `test_generic_pattern_trigger_hw` | Internal `Generic_Pattern_Trigger` FSM: baud counter to shift register to comparator to trigger to capture complete (match_mask=0, any pattern) |
 | **14g** — `test_generic_pattern_trigger_jumper` | Full external path: Bit_Engine UART 0x55 through physical jumper wire to pattern trigger with match_mask=0xFF |
 
-The on-board jumper (pool pin 22 to capture channel 13) is now discovered
+The on-board jumper (post-fix pool pin 1 to capture channel 15; pre-fix it
+appeared as pool pin 22 to capture channel 13) is now discovered
 at the start of the suite via `_get_jumper_pair()`, and `_floating_except()`
 automatically excludes the jumper RX channel from noise-floor checks.
 Continuous ring, 200 MHz narrow capture, packed digital/MSO, analog/mixed

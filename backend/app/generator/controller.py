@@ -134,6 +134,13 @@ def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
     dec_id, ch_fn, set_fn = spec
     decoder = decoder_registry.get(dec_id)
     decoder_settings = {**decoder.defaults(), **set_fn(cfg)}
+    if cfg.protocol == "swd":
+        # The built-in generator is open-loop unless the caller explicitly
+        # asks to validate a real target response. Keep that distinction in
+        # the decoder event so an expected released-line read is not reported
+        # as a protocol warning.
+        decoder_settings["expected_no_target"] = not bool(
+            cfg.extra.get("expect_target_response", False))
     if cfg.protocol == "spi" and mgr.device_kind != "mock":
         # Real hardware maps the configured MOSI/SCLK route and, when
         # requested, auxiliary CS/MISO channels onto the capture stream.
@@ -154,6 +161,10 @@ def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
         ev["decoder_id"] = inst.id
     inst.status = "done"
     inst.event_count = len(dec_result.events)
+    inst.warning_count = (
+        len(dec_result.warnings)
+        + sum(1 for event in dec_result.events
+              if event.get("severity") == "warning"))
     session.decoders.append(inst)
     mgr.store.save(session)
     mgr.store.save_decoder_events(session.id, inst.id, dec_result.events)
@@ -195,10 +206,26 @@ def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
     elif cfg.protocol == "swd":
         transfers = sum(1 for event in dec_result.events
                         if event["type"] == "swd_xfer")
-        passed = transfers > 0
+        expect_target = bool(cfg.extra.get("expect_target_response", False))
+        target_failures = [
+            event for event in dec_result.events
+            if event["type"] == "swd_xfer"
+            and (event["fields"].get("ack") != 1
+                 or event["fields"].get("parity_ok") is False)
+        ]
+        passed = transfers > 0 and (not expect_target or not target_failures)
         mismatches = []
-        detail = (f"PASS - captured and decoded {transfers} SWD transaction(s)"
-                  if passed else "FAIL - no SWD transactions decoded")
+        if not transfers:
+            detail = "FAIL - no SWD transactions decoded"
+        elif expect_target and target_failures:
+            detail = (f"FAIL - {len(target_failures)} SWD transaction(s) "
+                      "did not receive a valid target response")
+        elif expect_target:
+            detail = (f"PASS - captured and validated {transfers} SWD "
+                      "transaction(s)")
+        else:
+            detail = (f"PASS - captured and decoded {transfers} open-loop SWD "
+                      "transaction(s); target response not requested")
     else:
         mismatches = [i for i, (a, b) in enumerate(zip(expected, decoded)) if a != b]
         if len(expected) != len(decoded):

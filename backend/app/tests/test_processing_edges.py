@@ -726,6 +726,14 @@ def test_capture_manager_worker_success_error_and_cancel_paths(tmp_path):
     continuous._capture_worker(CaptureSettings(mode="continuous", num_samples=20), "")
     assert continuous.capture_state == "cancelled"
 
+    analog_window = CaptureManager(SessionStore(tmp_path / "analog-window"))
+    analog_window.device = FakeDevice()
+    analog_window._capture_worker(
+        CaptureSettings(mode="analog_continuous", num_samples=20), "")
+    saved = analog_window.store.get(analog_window.last_session_id)
+    assert analog_window.device.calls == 1
+    assert saved is not None and saved.num_samples == 20
+
     repeated = CaptureManager(SessionStore(tmp_path / "repeated"))
     repeated.device = FakeDevice()
     repeated._capture_worker(CaptureSettings(num_samples=2, repeat_count=2,
@@ -1150,6 +1158,37 @@ def test_swd_helpers_and_decoder_invalid_header_and_glitch_filter():
         DecodeContext(_wf(digital=np.array([1, 3, 3, 0], dtype=np.uint16)),
                       {"swclk": "d0", "swdio": "d1"}), {"glitch_filter": 0})
     assert short_swd.events == []
+
+
+def test_swd_decoder_can_mark_open_loop_no_target_as_expected():
+    bits = [1] * 60
+    bits += [0, 0]
+    # DP read request (0xA5), turnaround, ACK=7, released all-one data, and
+    # a released parity bit of one (invalid for 32 one data bits).
+    bits += [1, 0, 1, 0, 0, 1, 0, 1] + [0] + [1, 1, 1]
+    bits += [1] * 32 + [1] + [0]
+    samples_per_bit = 20
+    swclk = np.zeros(len(bits) * samples_per_bit, dtype=np.uint8)
+    swdio = np.repeat(np.asarray(bits, dtype=np.uint8), samples_per_bit)
+    for i in range(len(bits)):
+        mid = i * samples_per_bit + samples_per_bit // 2
+        swclk[mid:(i + 1) * samples_per_bit] = 1
+    wf = _wf(digital=(swclk.astype(np.uint16) << 1)
+             | (swdio.astype(np.uint16) << 3))
+    dec = SwdDecoder()
+
+    normal = dec.decode(DecodeContext(wf, {"swclk": "d1", "swdio": "d3"}),
+                        dec.defaults())
+    expected = dec.decode(
+        DecodeContext(wf, {"swclk": "d1", "swdio": "d3"}),
+        {**dec.defaults(), "expected_no_target": True})
+
+    normal_xfer = next(e for e in normal.events if e["type"] == "swd_xfer")
+    expected_xfer = next(e for e in expected.events if e["type"] == "swd_xfer")
+    assert normal_xfer["severity"] == "warning"
+    assert "parity error" in normal_xfer["label"]
+    assert expected_xfer["severity"] == "normal"
+    assert "expected no target" in expected_xfer["label"]
 
 
 def test_live_accelerometer_diagnostics_builds_session_and_handles_empty_capture(monkeypatch):

@@ -69,12 +69,12 @@ def uart_symbols(data, idle_bits=2):
 
 # ── SPI (mode 0: CPOL=0/CPHA=0, MSB-first) ─────────────────────────
 # Two symbols per bit: SCLK low with data set, then SCLK high (receiver
-# samples the high plateau).  A trailing SCLK-low symbol bounds the final
-# high plateau; the forced-high idle then produces one stray rising edge
-# that clocks a harmless partial bit.
+# samples the high plateau).  A final high guard keeps the last high plateau
+# alive for the capture engine; the Bit_Engine's forced-high idle then cannot
+# create another rising edge while CS is still asserted.
 
 def max_spi_bytes():
-    return (MAX_SYMBOLS - 1) // 16
+    return MAX_SYMBOLS // 16
 
 
 def spi_symbols(data):
@@ -84,7 +84,7 @@ def spi_symbols(data):
             d = (byte >> b) & 1
             syms.append(d)          # SCLK low, MOSI = d
             syms.append(0b10 | d)   # SCLK high, MOSI = d
-    syms.append(0b01)               # SCLK low, MOSI high: bound last plateau
+    syms.append(0b11)                # high guard; no additional SCLK edge
     return syms
 
 

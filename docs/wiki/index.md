@@ -74,6 +74,7 @@ graph TB
 - [HDL — FPGA Design](hdl/README.md) — VHDL entities, clock domains, SDRAM controller, capture pipeline, signal generator, testbenches, build flow
 - [Backend — Python Server](backend/README.md) — FastAPI app, hardware abstraction, capture manager, session model, decoders, exports, WebSockets
 - [Frontend — Web UI](frontend/README.md) — React components, state management, waveform viewer, API client, E2E tests
+- [Frontend User Guide](frontend/user-guide.md) — screenshots and the end-to-end UI workflow
 
 ## Key Architecture Decisions
 

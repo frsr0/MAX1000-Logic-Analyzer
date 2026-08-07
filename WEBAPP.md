@@ -34,6 +34,14 @@ npm install
 npm run build
 ```
 
+### Windows packaged app
+
+The `desktop/` folder contains a portable Windows packaging path. It bundles
+the built React frontend, the FastAPI backend, and an Electron launcher into a
+single executable that users can open without separately starting frontend or
+backend processes. See [`desktop/README.md`](desktop/README.md) and run
+`desktop\build-windows.ps1` on a Windows build machine.
+
 ## Run
 
 ```bash

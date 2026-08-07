@@ -13,5 +13,9 @@ if __name__ == "__main__":
     # config.py reads these at import time (startup banner, QR page)
     os.environ["MSA_HOST"] = args.host
     os.environ["MSA_PORT"] = str(args.port)
-    uvicorn.run("app.main:app", host=args.host, port=args.port,
+    # Import the app after setting environment variables. Passing the object
+    # instead of a string also keeps frozen/PyInstaller builds discoverable.
+    from app.main import app
+
+    uvicorn.run(app, host=args.host, port=args.port,
                 reload=args.reload)

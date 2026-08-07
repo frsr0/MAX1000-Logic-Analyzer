@@ -16,7 +16,7 @@ hardware contract, register map, or validated build changes.
 | Physical generator pin pool | 26 entries: MKR_D[14:0], PMOD[7:0], SEN_SDO, SEN_SDI, SEN_SPC |
 | Generator FIFO | 256 bytes of host-encoded 2-bit symbols |
 | Latest programmed SOF | Full-feature seed-30 image, checksum `0x0050CF93` (2026-07-26) |
-| Persisted configuration POF | `OLS_Logic_Analyzer.pof`, checksum `0x01D65FD0`; verified after power cycle (2026-07-22) |
+| Persisted configuration POF | `OLS_Logic_Analyzer.pof`, checksum `0x01D53118`; programmed after pin-map/pull-up fix (2026-08-07) |
 
 The 2026-07-23 re-build closed timing on fast_clk at 200.4 MHz with seed 44
 (the only seed that fits at 99% density — the previous seed 23 no longer fits
@@ -50,7 +50,7 @@ Two new hardware-trigger tests were added:
 | **14f** — `test_generic_pattern_trigger_hw` | Internal `Generic_Pattern_Trigger` FSM: baud counter to shift register to comparator to trigger to capture complete |
 | **14g** — `test_generic_pattern_trigger_jumper` | Full external path: Bit_Engine UART 0x55 to FPGA TX pin over jumper wire to FPGA RX pin; pattern trigger matches with `match_mask=0xFF` |
 
-The on-board jumper (pool pin 22 to capture channel 13) is now discovered
+The on-board jumper (post-fix pool pin 1 to capture channel 15) is now discovered
 at the start of the suite, and `_floating_except()` automatically excludes
 the jumper RX channel from all noise-floor and cleanliness checks.
 
@@ -158,7 +158,7 @@ for the exact evidence chain.
   muxes because runtime general pin-map writes are frozen in the FAST build.
 - I²C and SWD need external electrical partners for meaningful response tests.
 - The validated image is now persisted to the MAX 10 configuration flash via
-  POF checksum `0x01D65FD0`; a future replacement image must be programmed to
+  POF checksum `0x01D53118`; a future replacement image must be programmed to
   both SRAM (SOF) and configuration flash (POF) when persistence is required.
 
 ## Where to change the contract
