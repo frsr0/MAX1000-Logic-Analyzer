@@ -1,0 +1,43 @@
+{
+  "name": "ols-logic-analyzer-desktop",
+  "version": "3.0.0",
+  "description": "Windows desktop shell for the MAX1000 OLS Logic Analyzer",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win portable",
+    "dist:installer": "electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron": "^39.2.7",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.ols.max1000",
+    "productName": "OLS Logic Analyzer",
+    "asar": true,
+    "files": [
+      "main.cjs",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/backend/ols-backend.exe",
+        "to": "backend/ols-backend.exe"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "artifactName": "OLS-Logic-Analyzer-${version}-${arch}.${ext}"
+    },
+    "portable": {
+      "requestExecutionLevel": "user"
+    }
+  }
+}

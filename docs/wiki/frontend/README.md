@@ -73,6 +73,7 @@ for the physical and register contract.
 ## Wiki Pages
 
 ### App Structure
+- [User Guide](user-guide.md) — visual walkthrough of connecting, capturing, sessions, and generation
 - [App Shell](app-shell.md) — Navigation, header, toasts, keyboard shortcuts
 - [Pages](pages.md) — All 7 page components and their layout
 - [Capture Controls](capture-controls.md) — Mode/acquisition/rate/depth selectors

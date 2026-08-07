@@ -81,10 +81,10 @@ def _floating_except():
     """Channels excluded from noise-floor / cleanliness checks.
 
     CH0 = debug PWM, CH10/11 = LED (active when board is running),
-    CH13 = jumper RX, CH14 = PMOD activity on some benches.
+    CH14 = PMOD activity on some benches, CH15 = the current jumper RX.
     When a jumper pair is cached, its RX channel is added automatically.
     """
-    base = [0, 7, 10, 11, 13, 14]
+    base = [0, 7, 10, 11, 14, 15]
     if _JUMPER_PAIR_CACHE is not None:
         _, rx = _JUMPER_PAIR_CACHE
         if rx not in base:

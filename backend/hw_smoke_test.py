@@ -15,7 +15,7 @@ ExistingHostAdapter -> host/driver/OLSDeviceSPI):
   2. connect + metadata (sample clock auto-detect)
   3. capabilities
   4. device self-test (metadata + status/control-plane checks)
-  5. plain digital capture (1 MHz, 4096 samples) + sanity checks
+  5. plain digital capture (10 MHz, 40960 samples, ~4.1 ms) + sanity checks
   6. UART / RS-485 / SPI / SWD generator loopback (CMD_GEN_CAPTURE) -> decode -> compare
 
 Exit code 0 = all checks passed. Sessions created by the test are saved and
@@ -37,6 +37,8 @@ from app.hardware.base import HardwareError                      # noqa: E402
 from app.hardware.device_models import GeneratorConfig           # noqa: E402
 
 GREEN, RED, YELLOW, RESET = "\033[92m", "\033[91m", "\033[93m", "\033[0m"
+DEFAULT_CAPTURE_RATE = 10_000_000
+DEFAULT_CAPTURE_DURATION_S = 4.096e-3
 
 
 class Check:
@@ -62,9 +64,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mock", action="store_true",
                     help="run against the mock device (script self-check)")
-    ap.add_argument("--rate", type=float, default=1_000_000)
-    ap.add_argument("--samples", type=int, default=4096)
+    ap.add_argument("--rate", type=float, default=DEFAULT_CAPTURE_RATE,
+                    help="digital capture rate in samples/sec (default: 10 MHz)")
+    ap.add_argument("--samples", type=int, default=None,
+                    help="digital capture sample count (default: preserve ~4.1 ms window)")
     args = ap.parse_args()
+    if args.samples is None:
+        args.samples = max(1, int(round(args.rate * DEFAULT_CAPTURE_DURATION_S)))
     device_id = "mock" if args.mock else "hardware"
 
     store = SessionStore()
@@ -98,8 +104,9 @@ def main():
     def capabilities():
         caps = mgr.device.get_capabilities()
         routes = {r.protocol: r for r in caps.generator_routes}
+        spi_features = {"cs", "miso"} if args.mock else {"cs_pin", "miso_pin"}
         for protocol, features in (("rs485", {"de_pin"}),
-                                    ("spi", {"cs_pin", "miso_pin"})):
+                                    ("spi", spi_features)):
             route = routes.get(protocol)
             if route is None or not features.issubset(set(route.features)):
                 raise HardwareError(

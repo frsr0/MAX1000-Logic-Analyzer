@@ -16,13 +16,13 @@ import numpy as np
 from ..capture.sample_format import WaveformData
 from ..capture.session import (CaptureSettings, DeviceMetadata, Marker,
                                Session, default_digital_channels, new_id)
+from ..config import DATA_DIR
 from ..websocket.manager import manager
 from .model import (MilConfig, MilLoadRequest, MilPresetSummary,
                     MilRuntimeStatus, MilTransactionRequest,
                     MilTransactionResponse)
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-PRESET_DIR = REPO_ROOT / "data" / "mil"
+PRESET_DIR = DATA_DIR / "mil"
 MAX_MIL_CAPTURE_SAMPLES = 1_000_000
 
 

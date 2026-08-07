@@ -63,15 +63,21 @@ class SwdDecoder(Decoder):
                 ChannelRole("swdio", "SWDIO", required=True)]
 
     def settings_schema(self) -> List[SettingField]:
-        return [SettingField("glitch_filter", "Glitch filter (samples)", "int",
-                             0, min=0, max=64,
-                             help="Debounce SWCLK/SWDIO before decoding; 0 disables")]
+        return [
+            SettingField("glitch_filter", "Glitch filter (samples)", "int",
+                         0, min=0, max=64,
+                         help="Debounce SWCLK/SWDIO before decoding; 0 disables"),
+            SettingField(
+                "expected_no_target", "Expected no target", "bool", False,
+                help="Treat released-line ACK/data as an open-loop fixture result"),
+        ]
 
     def decode(self, ctx: DecodeContext, settings: Dict[str, Any]) -> DecoderResult:
         result = DecoderResult(columns=["apndp", "rnw", "addr", "ack", "data"])
         swclk = ctx.bits("swclk").tolist()
         swdio = ctx.bits("swdio").tolist()
         threshold = int(settings.get("glitch_filter", 0) or 0)
+        expected_no_target = bool(settings.get("expected_no_target", False))
         if threshold > 0:
             swclk = _glitch_filter(swclk, threshold)
             swdio = _glitch_filter(swdio, threshold)
@@ -138,16 +144,22 @@ class SwdDecoder(Decoder):
             ack_label = _ACK_LABEL.get(ack, f"0x{ack:x}")
             label = (f"{'AP' if apndp else 'DP'} {'RD' if rnw else 'WR'} "
                      f"@0x{addr:X} {ack_label}")
+            no_target = (ack == 7 and data == 0xFFFFFFFF
+                         and parity_ok is False)
             if data is not None:
                 label += f" data=0x{data:08X}"
                 if parity_ok is False:
-                    label += " (parity error)"
+                    label += (" (expected no target; parity not driven)"
+                              if expected_no_target and no_target
+                              else " (parity error)")
             end = pos[min(j, n - 1)] if j < n else pos[i] + 1
             result.events.append(ctx.event(
                 "swd_xfer", pos[i], end, label,
                 fields={"apndp": apndp, "rnw": rnw, "addr": addr, "ack": ack,
                         "data": data, "parity_ok": parity_ok},
-                severity="normal" if ack == 1 else "warning"))
+                severity=("normal" if ack == 1
+                          or (expected_no_target and no_target)
+                          else "warning")))
             i = j
         ctx.report(1.0)
         return result

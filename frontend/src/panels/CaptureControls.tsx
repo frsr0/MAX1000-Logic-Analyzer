@@ -317,6 +317,7 @@ export function CaptureControls() {
         : nextDepths[nextDepths.length - 1];
     setCaptureSettings({
       mode,
+      auto_rearm: isRolling,
       analog_enabled: isAnalog,
       enabled_digital: isAnalogOnly ? NO_DIGITAL : isNarrow ? [0] : ALL_DIGITAL,
       sample_rate: maxRate,

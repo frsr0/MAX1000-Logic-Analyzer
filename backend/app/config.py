@@ -1,12 +1,30 @@
 """Backend configuration."""
 import os
+import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-HOST_DIR = REPO_ROOT / "host"          # existing, known-working host code
+def _runtime_root() -> Path:
+    """Return the read-only application root for source and frozen builds.
+
+    PyInstaller extracts one-file applications to ``sys._MEIPASS``. Keeping
+    this lookup here means the backend can serve bundled frontend assets and
+    load the bundled host driver without making the Electron launcher know
+    about PyInstaller internals.
+    """
+    configured = os.environ.get("MSA_APP_ROOT")
+    if configured:
+        return Path(configured).resolve()
+    if getattr(sys, "frozen", False) and getattr(sys, "_MEIPASS", None):
+        return Path(sys._MEIPASS).resolve()
+    return Path(__file__).resolve().parents[2]
+
+
+REPO_ROOT = _runtime_root()
+HOST_DIR = Path(os.environ.get("MSA_HOST_DIR", REPO_ROOT / "host"))
 DATA_DIR = Path(os.environ.get("MSA_DATA_DIR", REPO_ROOT / "data"))
 SESSION_DIR = DATA_DIR / "sessions"
-FRONTEND_DIST = REPO_ROOT / "frontend" / "dist"
+FRONTEND_DIST = Path(os.environ.get(
+    "MSA_FRONTEND_DIST", REPO_ROOT / "frontend" / "dist"))
 
 HOST = os.environ.get("MSA_HOST", "0.0.0.0")
 PORT = int(os.environ.get("MSA_PORT", "8000"))

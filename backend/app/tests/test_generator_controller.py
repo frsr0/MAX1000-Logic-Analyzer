@@ -109,7 +109,8 @@ def test_loopback_attempt_compares_uart_i2c_spi_and_unknown_protocol(tmp_path, m
             {"type": "spi_word", "fields": {"mosi": 0x41}},
             # A capture ending on a clock edge is retained as an inspectable
             # partial word, but must not count as a payload byte.
-            {"type": "spi_word", "fields": {"mosi": 0x80, "bits": 1}},
+            {"type": "spi_word", "severity": "warning",
+             "fields": {"mosi": 0x80, "bits": 1}},
         ],
     }
     monkeypatch.setattr(controller.decoder_registry, "get",
@@ -119,6 +120,9 @@ def test_loopback_attempt_compares_uart_i2c_spi_and_unknown_protocol(tmp_path, m
         result = controller._loopback_attempt(
             mgr, mgr.device, cfg, CaptureSettings(sample_rate=1_000_000, num_samples=8), b"A")
         assert result.passed is True
+        if protocol == "spi":
+            saved = mgr.store.get(result.session_id)
+            assert saved is not None and saved.decoders[0].warning_count == 1
     events["i2c"][0]["fields"]["ack"] = False
     nack = controller._loopback_attempt(
         mgr, mgr.device, GeneratorConfig(protocol="i2c", data_hex="41", i2c_register=0x10),

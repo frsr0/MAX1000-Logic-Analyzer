@@ -25,15 +25,15 @@ This repository is currently verified for:
 - UART, RS-485, I2C, SPI, SWD transaction capture, and raw two-output Bit Banger generation
 - Browser UI, backend API, and classic host-driver workflow
 
-Latest validation baseline (2026-07-23):
+Latest validation baseline (2026-08-07):
 
-- `backend/app/tests`: `325/325` passed
-- `host/tests/` + `host/driver/tests/`: `422/422` passed
-- `frontend` typecheck and production build: passed
-- `backend/hw_smoke_test.py`: `10/10` passed (hw) on programmed seed-44 SOF checksum `0x00515DB0`
+- `backend/app/tests`: `334/334` passed
+- `host/tests/` + `host/driver/tests/`: `435/435` passed
+- `frontend` production build: passed
+- `backend/hw_smoke_test.py`: `10/10` passed on the attached MAX1000
 - Full connected-fixture hardware regression: **358/358 passed, 0 failed, 0 skipped**
 - Includes new pattern trigger tests: Test 14f (internal FSM) and 14g (UART 0x55 through physical jumper, match_mask=0xFF)
-- Backend/host test suites: `747/747` combined; frontend typecheck/build: passed
+- Backend/host test suites: `769/769` combined; frontend build: passed
 
 ## What The Current Bitstream Actually Does
 
@@ -90,28 +90,24 @@ Main storage paths:
 
 ## UI Screenshots
 
-All screenshots below were captured from the attached MAX1000 hardware on
-July 23, 2026 (analog and mixed captures) and July 20–22, 2026 (digital
-captures). No mock sessions are used in this gallery.
+All screenshots below were captured from the attached MAX1000 hardware during
+the July 20–28, 2026 validation runs. No mock sessions are used in this
+gallery.
 
 ### Device Overview
 
 ![Device page](frontend/test-results/screenshots/live-device-page.png)
 
-### Capture Mode Controls
+### Mixed-Signal Capture
 
-![Capture controls](frontend/test-results/screenshots/live-capture-controls.png)
+![Mixed-signal capture](frontend/test-results/screenshots/live-mixed-analog-waveform.png)
 
-### Generator Loopback Capture
+This capture is deliberately signal-dense so the digital transitions and ADC
+waveform remain legible when the README image is shown at its normal size.
 
-![Generator loopback](frontend/test-results/screenshots/live-generator-loopback-capture.png)
+### Generator Controls
 
-### Accelerometer Live Capture
-
-![LIS3DH WHO_AM_I live waveform](frontend/test-results/screenshots/live-accelerometer-session-waveform.png)
-
-
-
+![Generator controls](frontend/test-results/screenshots/generator-page-latest.png)
 
 ### Analog Fast Hardware Waveform (1 ADC lane)
 
@@ -132,34 +128,57 @@ activity on two channels (a1, a2/a3 show ADC noise from floating inputs;
 a4 is idle).  The 1 kHz PWM source is clearly resolved on a1.*
 
 
-### Generator Self-Test Capture
-
-![Generator loopback capture](frontend/test-results/screenshots/live-generator-loopback-capture.png)
-
-*SWD self-test capture with packet decode, taken from a connected MAX1000
-board.  The mixed-signal analog waveform is not shown here because the 8
-analog channels capture ADC noise on unconnected inputs — see
-`test_mixed_analog_mode` in the validation suite for the pass/fail result.*
-
 ## Running It
 
 ### Browser App
 
-See [WEBAPP.md](WEBAPP.md) for the full browser-hosted stack. The usual entry
-point is:
+Requirements: Python 3.10+, Node.js 18+, and, for real hardware, the FTDI
+D2XX driver plus the Python `ftd2xx` package. From a fresh checkout:
 
 ```powershell
-cd backend
+cd C:\path\to\OLS_Logic_Analyzer_Clean
+python -m pip install -r backend\requirements.txt
+cd frontend
+npm install
+npm run build
+cd ..\backend
 python run.py
 ```
 
-Then start the frontend in another shell:
+Open `http://localhost:8000`. For frontend development with hot reload, leave
+the backend running and use a second shell:
 
 ```powershell
 cd frontend
-npm install
 npm run dev
 ```
+
+The Vite server runs at `http://localhost:5173` and proxies API/WebSocket
+traffic to the backend. For a no-hardware check, open **Device**, connect
+**Mock MAX1000 Analyser**, then choose a demo on **Capture**.
+
+For the attached MAX1000, install the FTDI D2XX driver, connect the board, and
+select **MAX1000 OLS Logic Analyzer** → **Connect**. Verify the complete device
+path with:
+
+```powershell
+python backend\hw_smoke_test.py
+```
+
+### Windows packaged app
+
+To build the portable Windows executable, use a Windows PowerShell prompt from
+the repository root:
+
+```powershell
+python -m pip install -r desktop\requirements-build.txt
+.\desktop\build-windows.ps1
+```
+
+The output is placed under `desktop\dist\`. Opening the `.exe` starts both the
+backend and the frontend; users do not need to run two terminals. Real hardware
+still requires the FTDI D2XX driver. See [WEBAPP.md](WEBAPP.md) and
+[desktop/README.md](desktop/README.md) for build options and troubleshooting.
 
 ### Classic Host App
 

@@ -284,6 +284,28 @@ def test_spi_decoder():
     assert [w["miso"] for w in words] == [0x12, 0x34]
 
 
+def test_spi_bitbang_burst_ends_without_partial_word():
+    from driver.bit_bang import spi_symbols
+
+    # Model the Bit_Engine's forced-high idle around a mode-0 burst. CS is
+    # asserted for the burst and released after the final high plateau.
+    symbols = [0b11] + list(spi_symbols(b"\x41\x42")) + [0b11, 0b11]
+    digital = []
+    for index, symbol in enumerate(symbols):
+        word = symbol & 0b11
+        word |= (0 if 0 < index < len(symbols) - 1 else 1) << 14
+        digital.append(word)
+
+    dec = registry.get("spi")
+    result = dec.decode(
+        DecodeContext(make_wf(digital=np.asarray(digital, dtype=np.uint16)),
+                      {"sclk": "d1", "mosi": "d0", "cs": "d14"}),
+        dec.defaults())
+    words = [e for e in result.events if e["type"] == "spi_word"]
+    assert [(e["fields"]["mosi"], e["fields"]["bits"], e["severity"])
+            for e in words] == [(0x41, 8, "normal"), (0x42, 8, "normal")]
+
+
 def test_spi_decoder_accepts_thresholded_analog_inputs():
     n = 120_000
     sclk, mosi, miso, cs = ms.spi_signal(n, RATE, 10_000, b"\xDE\xAD",

@@ -238,8 +238,8 @@ def main() -> int:
                 # Last known bench pair from the most recent full hardware
                 # validation. Keep this as a fallback so the benchmark can still
                 # run when the auto-discovery threshold is conservative.
-                tx, rx = 22, 13
-                print("auto-discovery missed the jumper; falling back to last known pair 22 -> 13")
+                tx, rx = 1, 15
+                print("auto-discovery missed the jumper; falling back to last known pair 1 -> 15")
         else:
             tx, rx = pair
         clock = next(pin for pin in range(15) if pin not in (tx, rx))

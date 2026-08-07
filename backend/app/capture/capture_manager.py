@@ -299,7 +299,7 @@ class CaptureManager:
                          "phase": phase, "repeat": run})
 
                 capture_settings = settings
-                if settings.mode in continuous_modes:
+                if settings.mode in continuous_modes and settings.auto_rearm:
                     is_streaming = (
                         settings.mode not in ("analog_continuous", "mixed_continuous")
                         and settings.readback_compression == "raw"
@@ -332,10 +332,9 @@ class CaptureManager:
                                             "sample_rate": result.sample_rate,
                                             "repeat": run,
                                             "rolling": settings.mode in continuous_modes})
-                # A live request with auto_rearm disabled is a bounded
-                # one-chunk probe (used by API clients and evidence capture).
-                # Do not immediately arm a second hardware capture; that race
-                # makes a normal client stop look like an FPGA failure.
+                # Without auto-rearm, continuous modes are a single bounded
+                # capture using the configured window. With auto-rearm, the
+                # smaller chunks above are appended into that same window.
                 if settings.mode in continuous_modes and not settings.auto_rearm:
                     break
                 if settings.mode in single_modes and run >= repeat:
@@ -547,7 +546,9 @@ class CaptureManager:
                                                result.events)
                 inst.status = "done"
                 inst.event_count = len(result.events)
-                inst.warning_count = len(result.warnings)
+                event_warnings = sum(
+                    1 for ev in result.events if ev.get("severity") == "warning")
+                inst.warning_count = len(result.warnings) + event_warnings
                 errors = sum(1 for ev in result.events if ev.get("severity") == "error")
                 denominator = max(1, inst.event_count + inst.warning_count)
                 inst.quality_score = max(0.0, min(1.0,
