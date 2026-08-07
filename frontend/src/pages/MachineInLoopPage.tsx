@@ -2,7 +2,7 @@
 // packet responses before the physical scope bridge is attached.
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
-import type { MilCaptureConfig, MilConfig, MilPresetSummary, MilRuntimeStatus, MilTransactionResponse } from '../api/types';
+import type { MilCaptureConfig, MilConfig, MilNode, MilPresetSummary, MilRuntimeStatus, MilTransactionResponse } from '../api/types';
 import { useApp } from '../state/appStore';
 
 const READ_MODBUS_17_0100_0002 = '110301000002c767';
@@ -49,17 +49,32 @@ function modbusWrite(unit: number, address: number, value: number): string {
   return body + modbusCrc(body);
 }
 
-function commandHex(kind: string, cfg: MilConfig | null): string {
+function milNodes(cfg: MilConfig | null): MilNode[] {
+  if (!cfg) return [];
+  if (cfg.nodes?.length) return cfg.nodes;
+  return [{
+    unit_id: cfg.unit_id,
+    name: cfg.name,
+    registers: cfg.registers,
+    description: cfg.description,
+  }];
+}
+
+function commandHex(kind: string, cfg: MilConfig | null, targetUnit?: number): string {
   if (!cfg) return '';
-  const first = cfg.registers[0];
-  const writable = cfg.registers.find((r) => r.access !== 'ro') ?? first;
+  const node = milNodes(cfg).find((candidate) => candidate.unit_id === targetUnit)
+    ?? milNodes(cfg)[0];
+  const first = node?.registers[0];
+  const writable = node?.registers.find((r) => r.access !== 'ro') ?? first;
+  if (!first || !writable) return '';
   if (cfg.protocol === 'uart') {
     if (kind === 'write') return `06${writable.address.toString(16).padStart(4, '0')}01`;
     return `03${first.address.toString(16).padStart(4, '0')}`;
   }
-  if (kind === 'write') return modbusWrite(cfg.unit_id, writable.address, 1);
-  if (kind === 'bad-crc') return modbusRead(cfg.unit_id, first.address, 1).slice(0, -2) + '00';
-  return modbusRead(cfg.unit_id, first.address, Math.min(2, cfg.registers.length || 1));
+  const unit = node?.unit_id ?? cfg.unit_id;
+  if (kind === 'write') return modbusWrite(unit, writable.address, 1);
+  if (kind === 'bad-crc') return modbusRead(unit, first.address, 1).slice(0, -2) + '00';
+  return modbusRead(unit, first.address, Math.min(2, node?.registers.length || 1));
 }
 
 function commandOptions(cfg: MilConfig | null) {
@@ -162,6 +177,7 @@ export function MachineInLoopPage() {
   const [status, setStatus] = useState<MilRuntimeStatus | null>(null);
   const [selected, setSelected] = useState('modbus-rtu-demo');
   const [path, setPath] = useState('');
+  const [targetUnit, setTargetUnit] = useState(1);
   const [requestHex, setRequestHex] = useState(READ_MODBUS_1_0000_0002);
   const [command, setCommand] = useState('read');
   const [params, setParams] = useState({ response_delay_us: 1000, inter_byte_gap_us: 0, jitter_us: 0 });
@@ -180,7 +196,20 @@ export function MachineInLoopPage() {
 
   const cfg = status?.config ?? null;
   const running = status?.running ?? false;
-  const registerRows = useMemo(() => cfg?.registers ?? [], [cfg]);
+  const nodes = useMemo(() => milNodes(cfg), [cfg]);
+  const networkNodes = cfg?.nodes ?? [];
+  const activeNode = useMemo(
+    () => nodes.find((node) => node.unit_id === targetUnit) ?? nodes[0],
+    [nodes, targetUnit],
+  );
+  const registerRows = useMemo(() => activeNode?.registers ?? [], [activeNode]);
+  useEffect(() => {
+    const unitIds = nodes.map((node) => node.unit_id);
+    if (!unitIds.length || unitIds.includes(targetUnit)) return;
+    const nextUnit = unitIds[0];
+    setTargetUnit(nextUnit);
+    if (command !== 'custom') setRequestHex(commandHex(command, cfg, nextUnit));
+  }, [cfg, command, nodes, targetUnit]);
   const transactions = useMemo(() => (status?.events ?? [])
     .filter((e) => e.kind === 'transaction')
     .slice()
@@ -205,7 +234,9 @@ export function MachineInLoopPage() {
       setParams(statusRes.config.timing);
       setCaptureCfg(statusRes.config.capture);
       setExtraChannels(statusRes.config.capture.extra_digital_channels.join(','));
-      setRequestHex(commandHex(command, statusRes.config) || defaultRequest(statusRes));
+      const firstUnit = statusRes.config.nodes?.[0]?.unit_id ?? statusRes.config.unit_id;
+      setTargetUnit(firstUnit);
+      setRequestHex(commandHex(command, statusRes.config, firstUnit) || defaultRequest(statusRes));
     }
   };
 
@@ -225,7 +256,9 @@ export function MachineInLoopPage() {
         setCaptureCfg(next.config.capture);
         setExtraChannels(next.config.capture.extra_digital_channels.join(','));
       }
-      setRequestHex(commandHex(command, next.config ?? null) || defaultRequest(next));
+      const firstUnit = next.config?.nodes?.[0]?.unit_id ?? next.config?.unit_id ?? 1;
+      setTargetUnit(firstUnit);
+      setRequestHex(commandHex(command, next.config ?? null, firstUnit) || defaultRequest(next));
       setResult(null);
       toast('success', 'MIL preset loaded');
     } catch (e: any) {
@@ -346,7 +379,7 @@ export function MachineInLoopPage() {
               <span>Trigger</span><strong>{cfg.trigger.mode.replace('_', ' ')}</strong>
               <span>RX / TX</span><strong>CH{cfg.trigger.rx_pin} / CH{cfg.trigger.tx_pin}</strong>
               <span>Baud</span><strong>{cfg.trigger.baud.toLocaleString()}</strong>
-              <span>Unit</span><strong>{cfg.unit_id}</strong>
+              <span>Units</span><strong>{cfg.nodes?.length ? `${cfg.nodes.length} virtual nodes` : cfg.unit_id}</strong>
               <span>RS485 DE</span><strong>{cfg.trigger.rs485_de_pin ?? '-'}</strong>
             </div>
           )}
@@ -360,11 +393,27 @@ export function MachineInLoopPage() {
             <select value={command} onChange={(e) => {
               const next = e.target.value;
               setCommand(next);
-              if (next !== 'custom') setRequestHex(commandHex(next, cfg));
+              if (next !== 'custom') setRequestHex(commandHex(next, cfg, targetUnit));
             }}>
               {commandOptions(cfg).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </label>
+          {networkNodes.length > 0 && (
+            <label className="field">
+              <span>Target unit</span>
+              <select value={targetUnit} onChange={(e) => {
+                const next = Number(e.target.value);
+                setTargetUnit(next);
+                if (command !== 'custom') setRequestHex(commandHex(command, cfg, next));
+              }}>
+                {networkNodes.map((node) => (
+                  <option key={node.unit_id} value={node.unit_id}>
+                    {node.unit_id} - {node.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <label className="field">
             <span>Request hex</span>
             <input className="mono" value={requestHex}
@@ -375,11 +424,12 @@ export function MachineInLoopPage() {
           </label>
           <div className="button-row wrap">
             <button disabled={!running || busy || !controlMode} onClick={sendProbe}>Send to emulator</button>
-            <button disabled={!cfg} onClick={() => setRequestHex(commandHex('read', cfg))}>Example read</button>
+            <button disabled={!cfg} onClick={() => setRequestHex(commandHex('read', cfg, targetUnit))}>Example read</button>
           </div>
           {result && (
             <div className={`finding ${result.action === 'exception' ? 'warning' : 'info'}`}>
               <strong>{result.action.toUpperCase()}</strong> {result.detail}<br />
+              {result.unit_id !== null && result.unit_id !== undefined && <>unit: <span className="mono">{result.unit_id}</span><br /></>}
               request: <span className="mono">{result.request_hex}</span><br />
               response: <span className="mono">{result.response_hex || '(none)'}</span>
             </div>
@@ -440,7 +490,7 @@ export function MachineInLoopPage() {
       </div>
 
       <div className="card mil-registers">
-        <h3>Register map</h3>
+        <h3>{cfg?.nodes?.length ? `Register map — unit ${activeNode?.unit_id ?? targetUnit}` : 'Register map'}</h3>
         {!registerRows.length && <div className="hint">Load a preset to inspect registers.</div>}
         {!!registerRows.length && (
           <div className="table-scroll">
@@ -471,6 +521,32 @@ export function MachineInLoopPage() {
           </div>
         )}
       </div>
+
+      {networkNodes.length > 0 && (
+        <div className="card mil-registers">
+          <h3>RS-485 virtual sensor network</h3>
+          <div className="table-scroll">
+            <table className="data-table">
+              <thead>
+                <tr><th>Unit</th><th>Sensor</th><th>Registers</th><th>Values</th></tr>
+              </thead>
+              <tbody>
+                {networkNodes.map((node) => (
+                  <tr key={node.unit_id}>
+                    <td className="mono">{node.unit_id}</td>
+                    <td>{node.name}</td>
+                    <td>{node.registers.length}</td>
+                    <td className="mono">
+                      {node.registers.map((register) => `${fmtAddress(register.address)}=${register.value}`).join(' · ')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="hint">Each unit answers only its own Modbus address; missing units remain silent on the bus.</div>
+        </div>
+      )}
 
       <div className="card mil-registers">
         <h3>TX / RX waveforms</h3>

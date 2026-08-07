@@ -19,6 +19,15 @@ class MilRegister(BaseModel):
     description: str = ""
 
 
+class MilNode(BaseModel):
+    """One virtual Modbus slave on a shared MIL bus."""
+
+    unit_id: int
+    name: str
+    registers: List[MilRegister] = Field(default_factory=list)
+    description: str = ""
+
+
 class MilTrigger(BaseModel):
     mode: Literal["uart_start_bit", "modbus_frame"] = "uart_start_bit"
     rx_pin: int = 0
@@ -54,6 +63,7 @@ class MilConfig(BaseModel):
     capture: MilCaptureConfig = Field(default_factory=MilCaptureConfig)
     unit_id: int = 1
     registers: List[MilRegister] = Field(default_factory=list)
+    nodes: List[MilNode] = Field(default_factory=list)
     default_response_hex: str = ""
     notes: List[str] = Field(default_factory=list)
 
@@ -92,5 +102,6 @@ class MilTransactionResponse(BaseModel):
     response_hex: str
     detail: str
     register_address: Optional[int] = None
+    unit_id: Optional[int] = None
     action: str = "ignored"
     session_id: Optional[str] = None

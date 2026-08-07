@@ -50,7 +50,8 @@ from app.exports.report_export import _fmt_time, html_report
 from app.exports.vcd_export import vcd_export, vcd_export_iter
 from app.mil.service import (BUILTIN_PRESETS, MilEmulator, _apply_line,
                               _clean_hex, _uart_samples, modbus_crc)
-from app.mil.model import MilLoadRequest, MilTransactionRequest
+from app.mil.model import (MilConfig, MilLoadRequest, MilNode, MilRegister,
+                           MilTransactionRequest)
 from app.websocket.manager import ConnectionManager
 from app.diagnostics.sanity_checks import run_sanity_checks
 from app.diagnostics import logger as logger_module
@@ -1046,6 +1047,65 @@ def test_mil_emulator_register_and_preset_file_branches(tmp_path):
     assert modbus.handle_transaction(MilTransactionRequest(
         request_hex=(unknown_write + modbus_crc(unknown_write).to_bytes(2, "little")).hex())).action == "exception"
     _apply_line(np.zeros(2, dtype=np.uint16), 0, np.ones(1, dtype=np.uint8), 3)
+
+
+def test_mil_modbus_network_dispatches_ten_virtual_sensors():
+    def frame(payload):
+        return (payload + modbus_crc(payload).to_bytes(2, "little")).hex()
+
+    nodes = [MilNode(
+        unit_id=unit_id,
+        name=f"Sensor {unit_id}",
+        registers=[
+            MilRegister(address=0, name="temperature", access="ro",
+                        value=200 + unit_id),
+            MilRegister(address=1, name="status", value=1),
+        ],
+    ) for unit_id in range(1, 11)]
+    emulator = MilEmulator()
+    emulator.load(MilLoadRequest(config=MilConfig(
+        name="ten sensors", protocol="rs485_modbus", nodes=nodes)))
+    emulator.start()
+
+    for unit_id in range(1, 11):
+        response = emulator.handle_transaction(MilTransactionRequest(
+            request_hex=frame(bytes([unit_id, 0x03, 0, 0, 0, 1])),
+            capture_evidence=False))
+        assert response.action == "read"
+        assert response.unit_id == unit_id
+        assert response.response_hex.startswith(
+            f"{unit_id:02x}0302{200 + unit_id:04x}")
+
+    missing = emulator.handle_transaction(MilTransactionRequest(
+        request_hex=frame(bytes([11, 0x03, 0, 0, 0, 1])),
+        capture_evidence=False))
+    assert missing.action == "ignored"
+    assert missing.response_hex == ""
+    bad_unknown = bytes.fromhex("0b0300000001") + b"\x00\x00"
+    bad_unknown_response = emulator.handle_transaction(MilTransactionRequest(
+        request_hex=bad_unknown.hex(), capture_evidence=False))
+    assert bad_unknown_response.action == "ignored"
+    assert bad_unknown_response.response_hex == ""
+
+    written = emulator.handle_transaction(MilTransactionRequest(
+        request_hex=frame(bytes([5, 0x06, 0, 1, 0, 9])),
+        capture_evidence=False))
+    assert written.action == "write"
+    read_back = emulator.handle_transaction(MilTransactionRequest(
+        request_hex=frame(bytes([5, 0x03, 0, 1, 0, 1])),
+        capture_evidence=False))
+    assert read_back.response_hex.startswith("0503020009")
+
+
+def test_mil_modbus_network_rejects_duplicate_unit_ids():
+    duplicate_nodes = [
+        MilNode(unit_id=7, name="A"),
+        MilNode(unit_id=7, name="B"),
+    ]
+    with pytest.raises(ValueError, match="unique"):
+        MilEmulator().load(MilLoadRequest(config=MilConfig(
+            name="invalid network", protocol="rs485_modbus",
+            nodes=duplicate_nodes)))
 
 
 def test_mil_preset_discovery_skips_bad_files_and_loads_unknown_path(tmp_path, monkeypatch):

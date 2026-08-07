@@ -375,6 +375,13 @@ export interface MilCaptureConfig {
   extra_digital_channels: number[];
 }
 
+export interface MilNode {
+  unit_id: number;
+  name: string;
+  registers: MilRegister[];
+  description: string;
+}
+
 export interface MilConfig {
   name: string;
   protocol: MilProtocol;
@@ -384,6 +391,7 @@ export interface MilConfig {
   capture: MilCaptureConfig;
   unit_id: number;
   registers: MilRegister[];
+  nodes?: MilNode[];
   default_response_hex: string;
   notes: string[];
 }
@@ -410,6 +418,7 @@ export interface MilTransactionResponse {
   response_hex: string;
   detail: string;
   register_address?: number | null;
+  unit_id?: number | null;
   action: string;
   session_id?: string | null;
 }

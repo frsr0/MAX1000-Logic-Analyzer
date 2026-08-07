@@ -22,6 +22,7 @@ Automated Machine-In-Loop subsystem for running predefined test scenarios. Confi
 | `uart` | UART loopback: generate bytes → capture → verify |
 | `modbus_uart` | Modbus RTU query/response: generate frame → capture → decode → validate CRC |
 | `rs485_modbus` | RS-485 half-duplex Modbus: generate with direction control → capture → validate |
+| `rs485-modbus-10-sensors` | Ten virtual Modbus slaves (unit IDs 1–10) sharing one RS-485 bus |
 
 ## Models
 
@@ -33,7 +34,15 @@ class MilConfig(BaseModel):
     registers: List[MilRegister]             # register read/write definitions
     trigger: Optional[MilTrigger] = None     # trigger on specific register or value
     timing: MilTiming                        # inter-byte and inter-frame gaps
+    nodes: List[MilNode]                     # optional shared-bus virtual slaves
 ```
+
+When `nodes` is present, each node supplies its own `unit_id` and register map.
+The MIL responder dispatches a request to the matching node, leaves unknown
+unit IDs silent, and keeps the legacy single-device `unit_id`/`registers`
+configuration working when `nodes` is empty. The built-in
+`rs485-modbus-10-sensors` preset demonstrates ten sensors on one RS-485
+transceiver.
 
 ### `MilRegister`
 

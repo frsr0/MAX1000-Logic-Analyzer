@@ -18,7 +18,7 @@ from ..capture.session import (CaptureSettings, DeviceMetadata, Marker,
                                Session, default_digital_channels, new_id)
 from ..config import DATA_DIR
 from ..websocket.manager import manager
-from .model import (MilConfig, MilLoadRequest, MilPresetSummary,
+from .model import (MilConfig, MilLoadRequest, MilNode, MilPresetSummary,
                     MilRuntimeStatus, MilTransactionRequest,
                     MilTransactionResponse)
 
@@ -77,6 +77,35 @@ BUILTIN_PRESETS: Dict[str, MilConfig] = {
         ],
         notes=["Uses the same RTU frame parser with RS485 direction metadata."],
     ),
+    "rs485-modbus-10-sensors": MilConfig(
+        name="RS485 Modbus 10-sensor network",
+        protocol="rs485_modbus",
+        description="Ten virtual Modbus RTU sensors sharing one RS-485 bus.",
+        trigger={"mode": "modbus_frame", "rx_pin": 2, "tx_pin": 3,
+                 "rs485_de_pin": 4, "baud": 19200},
+        unit_id=1,
+        nodes=[
+            MilNode(
+                unit_id=unit_id,
+                name=f"Sensor {unit_id}",
+                registers=[
+                    {"address": 0x0000, "name": "temperature_c_x10",
+                     "access": "ro", "value": 200 + unit_id},
+                    {"address": 0x0001, "name": "humidity_pct_x10",
+                     "access": "ro", "value": 450 + unit_id},
+                    {"address": 0x0002, "name": "status",
+                     "access": "rw", "value": 1},
+                    {"address": 0x0003, "name": "alarm",
+                     "access": "ro", "value": 0},
+                ],
+            )
+            for unit_id in range(1, 11)
+        ],
+        notes=[
+            "Poll unit IDs 1 through 10 on the shared RS-485 bus.",
+            "Supports Modbus functions 0x03 and 0x06 with CRC16.",
+        ],
+    ),
 }
 
 
@@ -117,6 +146,7 @@ class MilEmulator:
                 preset_id = req.preset_id
         else:
             raise ValueError("Provide preset_id, path, or config")
+        _validate_config(cfg)
 
         self._status = MilRuntimeStatus(
             loaded=True, running=False, config=cfg, preset_id=preset_id,
@@ -153,6 +183,8 @@ class MilEmulator:
             result = self._handle_modbus(cfg, data)
         else:
             raise ValueError(f"Unsupported MIL protocol: {protocol}")
+        if protocol in ("modbus_uart", "rs485_modbus") and data:
+            result.unit_id = data[0]
         if req.capture_evidence:
             result.session_id = self._create_transaction_session(cfg, result)
         self._event("transaction", result.detail, {
@@ -160,6 +192,7 @@ class MilEmulator:
             "response_hex": result.response_hex,
             "action": result.action,
             "register_address": result.register_address,
+            "unit_id": result.unit_id,
             "protocol": protocol,
             "baud": cfg.trigger.baud,
             "rx_pin": cfg.trigger.rx_pin,
@@ -209,17 +242,20 @@ class MilEmulator:
     ) -> MilTransactionResponse:
         if len(data) < 8:
             return self._default(cfg, data, "Modbus frame too short")
+        unit, fn = data[0], data[1]
+        node = _node_for_unit(cfg, unit)
+        if node is None:
+            if cfg.nodes:
+                return self._ignored(data, f"Ignored unit {unit}")
+            return self._default(cfg, data, f"Ignored unit {unit}")
         frame, got_crc = data[:-2], int.from_bytes(data[-2:], "little")
         calc_crc = modbus_crc(frame)
         if got_crc != calc_crc:
             return self._modbus_exception(
-                cfg, data, data[0], data[1], 0x03,
+                cfg, data, unit, fn, 0x03,
                 f"CRC mismatch: got 0x{got_crc:04x}, expected 0x{calc_crc:04x}")
-        unit, fn = data[0], data[1]
-        if unit != cfg.unit_id:
-            return self._default(cfg, data, f"Ignored unit {unit}")
         address = int.from_bytes(data[2:4], "big")
-        regs = _registers(cfg)
+        regs = _registers(node)
         if fn == 0x03:
             count = int.from_bytes(data[4:6], "big")
             values = []
@@ -259,6 +295,14 @@ class MilEmulator:
         return MilTransactionResponse(
             request_hex=data.hex(), response_hex=_clean_hex(cfg.default_response_hex),
             detail=detail, action="default")
+
+    def _ignored(
+        self, data: bytes, detail: str
+    ) -> MilTransactionResponse:
+        """Return a bus-silent result for an address with no virtual slave."""
+        return MilTransactionResponse(
+            request_hex=data.hex(), response_hex="", detail=detail,
+            action="ignored")
 
     def _modbus_exception(
         self, cfg: MilConfig, data: bytes, unit: int, fn: int, code: int,
@@ -341,7 +385,9 @@ class MilEmulator:
                 device_name=cfg.name,
                 connection="machine-in-loop emulator",
                 mock=True,
-                extra={"protocol": cfg.protocol, "unit_id": cfg.unit_id},
+                extra={"protocol": cfg.protocol,
+                 "unit_id": (result.unit_id if result.unit_id is not None
+                              else cfg.unit_id)},
             ),
             settings=settings,
             sample_rate=sample_rate,
@@ -351,6 +397,7 @@ class MilEmulator:
             tags=["mil", cfg.protocol, result.action],
             notes=(
                 f"{result.detail}\n"
+                f"Unit ID: {result.unit_id if result.unit_id is not None else cfg.unit_id}\n"
                 f"RX request: {result.request_hex}\n"
                 f"TX response: {result.response_hex or '(none)'}\n"
                 f"Capture mode: {cfg.capture.mode}\n"
@@ -397,8 +444,28 @@ class MilEmulator:
             return MilConfig(**json.load(f))
 
 
-def _registers(cfg: MilConfig):
-    return {r.address: r for r in cfg.registers}
+def _validate_config(cfg: MilConfig) -> None:
+    if not cfg.nodes:
+        return
+    if cfg.protocol not in ("modbus_uart", "rs485_modbus"):
+        raise ValueError("Modbus network nodes require a Modbus protocol")
+    if len(cfg.nodes) > 247:
+        raise ValueError("A Modbus network cannot contain more than 247 nodes")
+    unit_ids = [node.unit_id for node in cfg.nodes]
+    if any(unit_id < 1 or unit_id > 247 for unit_id in unit_ids):
+        raise ValueError("Modbus node unit IDs must be between 1 and 247")
+    if len(unit_ids) != len(set(unit_ids)):
+        raise ValueError("Modbus node unit IDs must be unique")
+
+
+def _node_for_unit(cfg: MilConfig, unit_id: int):
+    if cfg.nodes:
+        return next((node for node in cfg.nodes if node.unit_id == unit_id), None)
+    return cfg if unit_id == cfg.unit_id else None
+
+
+def _registers(node):
+    return {r.address: r for r in node.registers}
 
 
 def _clean_hex(value: str) -> str:
