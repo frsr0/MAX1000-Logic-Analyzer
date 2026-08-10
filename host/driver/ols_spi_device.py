@@ -1823,7 +1823,7 @@ class OLSDeviceSPI:
                          swd_ops=None, swd_clk_hz=1000000,
                          swd_swdio_pin=3, swd_swclk_pin=1, swd_connect=True,
                          raw_symbols=None, raw_symbol_rate=1_000_000,
-                         raw_tx_pin=0,
+                         raw_tx_pin=0, raw_scl_pin=None,
                          gen_first=False, fast_mode=True,
                          reset_board=True):
         """Atomic generator capture using CMD_GEN_CAPTURE.
@@ -1931,8 +1931,16 @@ class OLSDeviceSPI:
             swd_loaded = self._gen_load_swd(
                 swd_ops, swd_clk_hz, connect=swd_connect)
         elif raw_symbols is not None:
-            self._set_gen_capture_channels(tx_channel=raw_tx_pin)
-            self._pins(tx_pin=raw_tx_pin, scl_pin=GEN_SCL_PARK)
+            # Raw symbols use both Bit_Engine outputs.  Keep the capture mux
+            # aligned with the physical routes so a two-wire pattern (for
+            # example DI plus RS-485 direction) can be inspected open-loop.
+            self._set_gen_capture_channels(
+                tx_channel=raw_tx_pin,
+                scl_channel=raw_scl_pin)
+            self._set_gen_capture_aux()
+            self._pins(tx_pin=raw_tx_pin,
+                       scl_pin=(GEN_SCL_PARK if raw_scl_pin is None
+                                else raw_scl_pin))
             self.pkt.write_register(REG_GEN_PROTO, 0)
             self.pkt.write_register(REG_GEN_DATA, 1 << 8)
             raw_div = max(1, int(round(

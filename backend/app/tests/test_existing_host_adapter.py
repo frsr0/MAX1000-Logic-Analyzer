@@ -737,6 +737,29 @@ def test_generator_capture_passes_optional_rs485_de_and_spi_aux_routes():
     assert kwargs["spi_miso_channel"] == 14
 
 
+def test_bitbang_generator_capture_routes_both_symbol_outputs():
+    from app.hardware.device_models import GeneratorConfig
+    from app.capture.session import CaptureSettings as _CS
+
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+    adapter._dev.capture_with_gen = Mock(return_value=b"\x00\x00" * 4)
+    cfg = GeneratorConfig(
+        protocol="bitbang", baud=19_200, tx_pin=3, scl_pin=1,
+        extra={"symbols": [3, 2, 0, 1]},
+    )
+
+    result = adapter.capture_with_generator(
+        _CS(sample_rate=2_000_000, num_samples=4), cfg)
+
+    _, kwargs = adapter._dev.capture_with_gen.call_args
+    assert kwargs["raw_symbols"] == [3, 2, 0, 1]
+    assert kwargs["raw_symbol_rate"] == 19_200
+    assert kwargs["raw_tx_pin"] == 3
+    assert kwargs["raw_scl_pin"] == 1
+    assert len(result.digital) == 4
+
+
 def test_spi_generator_rejects_standalone_send():
     from app.hardware.device_models import GeneratorConfig
 

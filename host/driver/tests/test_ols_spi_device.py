@@ -873,11 +873,14 @@ class TestOLSDeviceSPIGenerator:
             raw_symbols=[1, 0] * 8,
             raw_symbol_rate=2_000_000,
             raw_tx_pin=0,
+            raw_scl_pin=1,
         )
 
         assert data == b"\x01\x80" * 5
         device_spi._stream_readback.assert_called_once_with(0, 5)
         device_spi._repair_boundary_glitches.assert_not_called()
+        device_spi.pkt.write_register.assert_any_call(
+            REG_GEN_CAPTURE_SCL_CHAN, 1)
 
 
 class TestOLSDeviceSPIModbus:

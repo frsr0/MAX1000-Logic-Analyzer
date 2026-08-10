@@ -175,7 +175,7 @@ export function GeneratorPage() {
   };
 
   const needsData = ['uart', 'rs485', 'spi', 'pattern', 'i2c', 'bitbang'].includes(cfg.protocol);
-  const canLoopbackCapture = ['uart', 'rs485', 'i2c', 'spi', 'swd'].includes(cfg.protocol) || status?.device_kind === 'mock';
+  const canLoopbackCapture = ['uart', 'rs485', 'i2c', 'spi', 'swd', 'bitbang'].includes(cfg.protocol) || status?.device_kind === 'mock';
   const canStandaloneSend = !['spi', 'pattern', 'counter', 'prbs'].includes(cfg.protocol)
     || status?.device_kind === 'mock';
 
@@ -654,7 +654,7 @@ export function GeneratorPage() {
             <li>I2C uses the configured SDA and SCL capture channels.</li>
             <li>SPI loops MOSI/SCLK into capture and supports optional GPIO CS/MISO routes; mock simulates full SCLK/MOSI/MISO/CS on CH4-7.</li>
             <li>SWD uses the existing SWCLK/SWDIO two-output route and records decoded transaction events during Send + capture.</li>
-            <li>Raw Bit Banger mode drives TX/SDA/MOSI and SCL/SCLK from a bounded 2-bit symbol list.</li>
+            <li>Raw Bit Banger mode drives and captures both outputs from a bounded 2-bit symbol list; output 1 can be the RS-485 DE + /RE direction line.</li>
           </ul>
           <div className="divider" />
           <h3>Result</h3>

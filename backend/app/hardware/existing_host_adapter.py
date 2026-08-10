@@ -222,7 +222,8 @@ class ExistingHostAdapter(HardwareDevice):
                 GeneratorRouteCapability(
                     protocol="bitbang", name="Two-output Bit Banger", physical=True,
                     outputs={"data": "configurable", "clock": "configurable"},
-                    features=["raw_symbols"],
+                    features=["raw_symbols", "capture_loopback"],
+                    detail="Send + capture records both Bit_Engine output lanes without an external loopback wire.",
                 ),
                 GeneratorRouteCapability(
                     protocol="swd", name="SWD SWCLK/SWDIO", physical=True,
@@ -804,9 +805,16 @@ class ExistingHostAdapter(HardwareDevice):
                     swd_connect=bool(cfg.extra.get("jtag_to_swd", True)),
                     fast_mode=False)
             elif cfg.protocol == "bitbang":
-                raise HardwareError(
-                    "Bit Banger raw mode currently supports standalone send; "
-                    "use a protocol-specific loopback capture for verification")
+                from ..generator.bitbang import expand_symbols
+                symbols = expand_symbols(cfg.extra, max(1, int(cfg.baud)))
+                raw = dev.capture_with_gen(
+                    rate_hz=rate, nsamples=nsamp,
+                    stop_evt=stop_evt, progress_cb=cb,
+                    raw_symbols=symbols,
+                    raw_symbol_rate=max(1, int(cfg.baud)),
+                    raw_tx_pin=int(cfg.tx_pin),
+                    raw_scl_pin=int(cfg.scl_pin),
+                    fast_mode=False)
             else:
                 raise HardwareError(
                     f"Loopback capture not supported for '{cfg.protocol}' on hardware")
