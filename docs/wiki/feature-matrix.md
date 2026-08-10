@@ -32,7 +32,7 @@ has an explicit scope boundary.
 | UART | UART decoder, parity/framing/break | Bit Banger UART | **HW** loopback and decoder tests |
 | I²C | START/STOP, address, ACK/NACK, 7/10-bit | Master write/read Bit Banger | **HW** via jumper and LIS3DH |
 | SPI | Configurable CPOL/CPHA, MOSI/MISO/CS | SPI mode 0 and mode 3, CS/MISO routes | **HW** loopback and LIS3DH mode-3 reads |
-| RS-485 | Half-duplex decoder | UART-compatible generator plus DE route | **HW** loopback and generator matrix |
+| RS-485 | Half-duplex decoder | UART-compatible generator plus two-output Bit Banger template | **HW** loopback and generator matrix |
 | SWD | SWD packet decoder | SWD line-reset/turnaround/ACK generator | **SW** protocol path; no external SWD target attached |
 | Modbus RTU | Stacked UART decoder with CRC/function parsing | MIL/generator workflows | **SW/HW** where a loopback or device is available |
 | Parallel bus | Clocked multi-channel decoder | Not a dedicated generator protocol | **SW** decoder coverage |

@@ -255,12 +255,12 @@ export function GeneratorPage() {
                 <>
                   <label className="field">
                     <span>B / + pin</span>
-                    <input type="number" min={0} max={15} value={cfg.tx_pin}
+                    <input type="number" min={0} max={25} value={cfg.tx_pin}
                       onChange={(e) => set({ tx_pin: Number(e.target.value) })} />
                   </label>
                   <label className="field">
                     <span>A / - pin</span>
-                    <input type="number" min={0} max={15} value={cfg.scl_pin}
+                    <input type="number" min={0} max={25} value={cfg.scl_pin}
                       onChange={(e) => set({ scl_pin: Number(e.target.value) })} />
                   </label>
                   <label className="field">
@@ -270,7 +270,7 @@ export function GeneratorPage() {
                       placeholder="internal timing"
                       onChange={(e) => setExtra({ de_pin: e.target.value === '' ? undefined : Number(e.target.value) })} />
                   </label>
-                  <div className="hint">B carries the UART logic level; A carries the inverted complement. DE, when selected, is high for the active generator burst.</div>
+                  <div className="hint">B carries the UART logic level; A carries the inverted complement. DE is high while transmitting. For a MAX485 breakout, use Bit Banger RS485 mode instead: bit 0 drives DI and bit 1 drives DE plus /RE tied together.</div>
                 </>
               ) : (
                 <label className="field">
@@ -383,6 +383,16 @@ export function GeneratorPage() {
           {cfg.protocol === 'bitbang' && (
             <>
               <label className="field">
+                <span>DI / output 0 pin</span>
+                <input type="number" min={0} max={25} value={cfg.tx_pin}
+                  onChange={(e) => set({ tx_pin: Number(e.target.value) })} />
+              </label>
+              <label className="field">
+                <span>DE + /RE / output 1 pin</span>
+                <input type="number" min={0} max={25} value={cfg.scl_pin}
+                  onChange={(e) => set({ scl_pin: Number(e.target.value) })} />
+              </label>
+              <label className="field">
                 <span>Protocol template</span>
                 <select value={cfg.extra?.encoding ?? ''} onChange={(e) => {
                   const encoding = e.target.value;
@@ -409,6 +419,7 @@ export function GeneratorPage() {
                   <label className="field"><span>Direction changes</span>
                     <input type="number" min={0} value={cfg.extra.direction_changes ?? 0}
                       onChange={(e) => setExtra({ direction_changes: Number(e.target.value) })} /></label>
+                  <div className="hint">Bit 0 drives MAX485 DI. Bit 1 is the direction signal: connect it to DE and /RE together. Low enables receive; high enables transmit.</div>
                 </>
               )}
               {cfg.extra?.encoding === 'spi' && (

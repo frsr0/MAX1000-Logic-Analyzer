@@ -82,9 +82,11 @@ physical output is connected to a capture input.
 ### RS-485
 
 `tx_pin` and `scl_pin` represent the A/B generator outputs. `extra.de_pin` is
-optional. When enabled, the FPGA drives DE high for the active Bit_Engine
-burst and releases it after completion. The route descriptor advertises
-`internal_de_timing` and `de_pin`.
+optional. For a MAX485 breakout, use the Bit Banger's `rs485` template: bit 0
+drives the transceiver `DI` input and bit 1 drives direction. Connect that
+direction output to both `DE` and `/RE`; low enables receive and high enables
+transmit. The MAX485 itself drives the bus A/B pins and returns `RO` to a
+capture input, so the tester does not need four independent outputs.
 
 ### SPI
 

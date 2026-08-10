@@ -67,7 +67,7 @@ The real FPGA advertises these routes through
 | Protocol | Hardware route | Capture behavior |
 |---|---|---|
 | UART | One configurable TX output | Optional loopback capture |
-| RS-485 | Configurable A/B outputs, optional DE GPIO | DE is high for the active Bit_Engine burst |
+| RS-485 | Configurable A/B outputs, optional DE GPIO; two-output Bit Banger template | DE high during TX; MAX485 DE and /RE can share the Bit Banger direction output |
 | I²C | Configurable SDA/SCL outputs | Requires an external slave or electrical loopback |
 | SPI | Configurable MOSI/SCLK, optional GPIO CS and MISO | MOSI/SCLK loopback plus direct CS/MISO capture channels |
 | SWD | Configurable SWDIO/SWCLK outputs | Transaction capture; target response requires a connected target |

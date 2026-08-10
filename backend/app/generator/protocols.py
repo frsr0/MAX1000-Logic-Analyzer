@@ -1,6 +1,7 @@
 """Software protocol encoders targeting the two Bit Banger output symbols.
 
-Symbols use bit 0 for data/TX and bit 1 for clock. Protocols needing a third
+Symbols use bit 0 for data/TX and bit 1 for the second route (clock or
+RS-485 direction). Protocols needing a third
 wire (for example I²S word-select) remain preview/decode-only unless a board
 route explicitly provides it.
 """
@@ -95,10 +96,11 @@ def spi_symbols(data: bytes, **options: Any) -> List[int]:
 
 
 def rs485_symbols(data: bytes, symbol_rate: int, **options: Any) -> List[int]:
-    """Two-output RS-485 exerciser: bit 0 is TX, bit 1 is driver-enable.
+    """Two-output RS-485 exerciser: bit 0 is DI, bit 1 is direction.
 
-    This is deliberately a Bit Banger representation, not a claim that the
-    FPGA exposes a physical RS-485 transceiver or DE pin.
+    Connect the direction output to both MAX485 DE and active-low /RE.  Low
+    enables receive; high enables transmit, so the transceiver handles A/B
+    and RO while the tester only needs two physical outputs.
     """
     frame = uart_symbols(data, symbol_rate, **options)
     pre = _hold(2, float(options.get("de_assert_us", 0)), symbol_rate)

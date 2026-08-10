@@ -20,6 +20,13 @@ def test_rs485_bitbang_symbols_hold_driver_enable_and_turnaround():
     assert all(symbol in range(4) for symbol in symbols)
 
 
+def test_rs485_bitbang_direction_can_drive_tied_de_and_re():
+    symbols = rs485_symbols(b"A", 100_000, turnaround_us=30)
+    turnaround = max(1, round(30 * 100_000 / 1_000_000))
+    assert symbols[-turnaround:] == [0] * turnaround
+    assert all((symbol & 2) == 2 for symbol in symbols[:-turnaround])
+
+
 def test_i2c_template_emits_address_register_repeated_start_and_recovery():
     symbols = i2c_symbols(b"\x33", 1_000_000, address=0x50,
                           register=0x0F, read_len=2, repeated_start=True,
