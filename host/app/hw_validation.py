@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Hardware Validation Suite for OLS Logic Analyzer
 
@@ -1339,13 +1339,14 @@ def test_analog_profiles_digital_recovery(dev):
 # Test 12g: Physical analog jumper paths
 #
 # The MAX1000 ADC mux numbering is not the same as the AIN label. This is
-# the current two-jumper bench fixture: PMOD5 (pool pin 20) is wired to AIN5
-# (ADC7), and PMOD6 (pool pin 21) is wired to AIN4 (ADC3). Keep this test
-# explicit and hard-gated so a floating ADC or swapped jumper cannot make the
-# analog hardware validation appear green.
+# the current two-jumper bench fixture, discovered by sweeping every pool pin
+# against every ADC channel in single-channel mode: PMOD1 (pool pin 16) is
+# wired to AIN4 (ADC3), and PMOD2 (pool pin 17) is wired to AIN5 (ADC7).
+# Keep this test explicit and hard-gated so a floating ADC or swapped jumper
+# cannot make the analog hardware validation appear green.
 PHYSICAL_ANALOG_JUMPER_MAP = (
-    (20, 7, "PMOD5 -> AIN5/ADC7"),
-    (21, 3, "PMOD6 -> AIN4/ADC3"),
+    (16, 3, "PMOD1 -> AIN4/ADC3"),
+    (17, 7, "PMOD2 -> AIN5/ADC7"),
 )
 
 

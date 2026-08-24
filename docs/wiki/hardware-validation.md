@@ -171,8 +171,9 @@ reports the measured ceiling for each codec; raw remains a hard pass gate, and
 minimum-lossless assertion.
 
 The physical two-jumper analog fixture is hard-gated by
-`python -m app.hw_validation analog`. The current board wiring is PMOD5/pool
-20 to AIN5/ADC7 and PMOD6/pool 21 to AIN4/ADC3. The test drives a UART pattern
+`python -m app.hw_validation analog`. The current board wiring is PMOD1/pool
+16 to AIN4/ADC3 and PMOD2/pool 17 to AIN5/ADC7 (discovered by a full
+single-channel pin x ADC sweep). The test drives a UART pattern
 through each jumper, requires full-scale repeated ADC activity on the expected
 channel, and checks that the other connected ADC does not carry the repeated
 pattern. The full suite includes this test. Digital pin-to-pin jumper tests

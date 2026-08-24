@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """
-PMOD21 -> ADC3 analog generator-path validation.
+PMOD1 -> ADC3 analog generator-path validation.
 
-Fixture:
-    PMOD21 (digital generator output) wired to ADC channel 3 (AIN3).
+Fixture (current bench, discovered by pin sweep):
+    PMOD1 (pool pin 16, digital generator output) wired to ADC channel 3
+    (AIN4), PMOD2 (pool pin 17) wired to ADC channel 7 (AIN5).
+    Pass --tx-pin/--adc-ch to target the other jumper.
 
-The ADC fast analog profile is a 1 MS/s single-channel capture, so UART sample
-margin is simply 1_000_000 / baud. Mixed mode is intentionally not used here:
-its 8-channel ADC scan rate/jitter makes UART framing a different test.
+The ADC fast analog profile samples at ~99.5 kS/s (measured on this bitstream;
+NOT the 1 MSPS assumed by earlier versions of this tool). The actual rate is
+measured at startup from a single 0x55 byte so UART decode uses the real
+samples-per-bit figure. With ~99.5 kS/s the reliable UART decode ceiling is
+9600 baud (~10 samples/bit); 19200 (~5 spb) is marginal.
 
 Usage:
     python host/debug/analog_uart_decode.py
     python host/debug/analog_uart_decode.py --test baud
-    python host/debug/analog_uart_decode.py --test bytes --baud 115200
+    python host/debug/analog_uart_decode.py --test bytes --baud 9600
 """
 import argparse
 import os
@@ -29,12 +33,13 @@ from driver.ols_spi_device import (
 )
 from driver.spi_protocol import CMD_ABORT_CAPTURE, CMD_GEN_STOP, REG_GEN_DATA
 from app.gui_decoders import decode_uart
+from driver import bit_bang
 
 
 ADC_CH = 3
-TX_PIN = 21
-SPI_SCLK_PIN = 20
-ANALOG_RATE = 1_000_000
+TX_PIN = 16
+SPI_SCLK_PIN = 17
+ANALOG_RATE = 99_500  # refined at startup from a live 0x55 edge measurement
 
 
 def banner(title):
@@ -64,6 +69,40 @@ def digitise(adc_vals, settle=100):
 
 def edge_count(bits):
     return sum(1 for a, b in zip(bits, bits[1:]) if a != b)
+
+
+def measure_analog_rate(dev, tx_pin, adc_ch, baud=2400):
+    """Measure the real ADC fast-profile sample rate from a single 0x55 byte.
+
+    0x55 alternates every symbol, so consecutive edge spacings are exactly one
+    symbol period. R = mean(edge spacing) * on-wire baud.
+    """
+    try:
+        dev.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+    except Exception:
+        pass
+    dev.set_analog_config(MODE_ANALOG_FAST, adc_channel=adc_ch)
+    dev._gen_data = b"\x55"
+    dev._gen_baud = baud
+    dev._gen_tx_pin = tx_pin
+    time.sleep(0.05)
+    raw = dev.capture_with_gen(rate_hz=1_000_000, nsamples=20_000,
+                               timeout=8, fast_mode=True)
+    dev.set_analog_config(0)
+    if not raw:
+        return None
+    frames = decode_analog_frames(raw, MODE_ANALOG_FAST)
+    vals = [f["adc"][0] for f in frames if f.get("adc")]
+    dig = digitise(vals)
+    if dig is None:
+        return None
+    idx = [i for i in range(1, len(dig["bits"]))
+           if dig["bits"][i] != dig["bits"][i - 1]]
+    spacings = [b - a for a, b in zip(idx, idx[1:])]
+    if len(spacings) < 5:
+        return None
+    spb = sum(spacings) / len(spacings)
+    return spb * dev.gen_actual_baud(baud)
 
 
 def run_lengths(bits, spb=None, limit=18):
@@ -188,7 +227,7 @@ def capture_uart_analog(dev, payload, baud, extra_bits=40):
 
 
 def baud_sweep(dev, bauds):
-    banner("1. Baud Rate Upper Limit Sweep (PMOD21 -> ADC3)")
+    banner("1. Baud Rate Upper Limit Sweep (ADC fast profile)")
     payload = b"FPGA Loopback OK!"
     results = []
     for baud in bauds:
@@ -219,16 +258,22 @@ def baud_sweep(dev, bauds):
         print(f"  highest passing baud: {max(passing)}")
     if first_fail:
         print(f"  first failing baud:   {first_fail}")
-    return all(status == "PASS" for baud, _, status, _ in results if baud <= 115200)
+    # The ADC fast profile samples at ~99.5 kS/s (measured), so the UART decode
+    # ceiling is ~9600 baud (10 spb). Require 9600 to pass; higher bauds are
+    # characterization, not a hard gate.
+    return all(status == "PASS" for baud, _, status, _ in results if baud <= 9600)
 
 
 def pattern_stress(dev, baud):
-    banner("2. All 256 Byte Values + Walking Pattern Stress")
+    banner("2. Byte Value + Walking Pattern Stress")
+    # The generator FIFO holds 1024 symbols = max_uart_bytes() UART bytes; a
+    # payload larger than that is clamped mid-frame and can never decode whole.
+    limit = bit_bang.max_uart_bytes()
     cases = [
-        ("all_256", bytes(range(256))),
+        ("all_bytes", bytes(range(limit))),
         ("walking_ones", bytes(1 << i for i in range(8)) + bytes(0xFF ^ (1 << i) for i in range(8))),
-        ("alternating", bytes([0x55, 0xAA]) * 64),
-        ("long_low_high", bytes([0x00]) * 32 + bytes([0xFF]) * 32),
+        ("alternating", (bytes([0x55, 0xAA]) * (limit // 2))[:limit]),
+        ("long_low_high", bytes([0x00]) * (limit // 2) + bytes([0xFF]) * (limit // 2)),
     ]
     all_ok = True
     for name, payload in cases:
@@ -403,6 +448,7 @@ def spi_single_wire(dev, sclk_hz_values):
 
 
 def main():
+    global ANALOG_RATE, ADC_CH, TX_PIN, SPI_SCLK_PIN
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--test",
@@ -410,8 +456,14 @@ def main():
         default="all",
         help="subset to run",
     )
-    parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument("--baud", type=int, default=9600)
     parser.add_argument("--chunks", type=int, default=8)
+    parser.add_argument("--tx-pin", type=int, default=16,
+                        help="generator TX pool pin (default 16 = PMOD1)")
+    parser.add_argument("--adc-ch", type=int, default=3,
+                        help="ADC mux channel (default 3 = AIN4)")
+    parser.add_argument("--sclk-pin", type=int, default=17,
+                        help="SPI SCLK pool pin (default 17 = PMOD2)")
     parser.add_argument(
         "--sclk",
         type=int,
@@ -420,6 +472,7 @@ def main():
         help="SPI SCLK frequencies for raw MOSI capture",
     )
     args = parser.parse_args()
+    ADC_CH, TX_PIN, SPI_SCLK_PIN = args.adc_ch, args.tx_pin, args.sclk_pin
 
     dev = OLSDeviceSPI()
     results = []
@@ -427,8 +480,15 @@ def main():
     try:
         dev.reset()
         time.sleep(0.5)
-        print(f"Device open: sys_clk={dev.sys_clk / 1e6:.0f} MHz, ADC rate={ANALOG_RATE} S/s")
-        print(f"Fixture: PMOD{TX_PIN} -> ADC{ADC_CH}")
+        measured = measure_analog_rate(dev, TX_PIN, ADC_CH)
+        if measured and measured > 0:
+            ANALOG_RATE = measured
+        print(f"Device open: sys_clk={dev.sys_clk / 1e6:.0f} MHz, "
+              f"ADC rate={ANALOG_RATE:.0f} S/s (measured)"
+              if measured else
+              f"Device open: sys_clk={dev.sys_clk / 1e6:.0f} MHz, "
+              f"ADC rate={ANALOG_RATE:.0f} S/s (default, measurement failed)")
+        print(f"Fixture: pool pin {TX_PIN} -> ADC{ADC_CH}")
 
         if args.test in ("all", "baud"):
             results.append(("baud", baud_sweep(
