@@ -15,6 +15,7 @@ from ..capture.session import (CaptureSettings, DecoderInstance, Session,
                                default_digital_channels, new_id)
 from ..decoders import registry as decoder_registry
 from ..decoders.base import DecodeContext
+from ..hardware.base import validate_capture_result
 from ..hardware.device_models import GeneratorConfig
 from ..websocket.manager import manager
 from .model import GeneratorSelfTestResult
@@ -107,6 +108,7 @@ def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
                       expected: bytes) -> GeneratorSelfTestResult:
     sent = generator_payload_bytes(cfg)
     result = dev.capture_with_generator(settings, cfg)
+    validate_capture_result(result)
     wf = WaveformData(sample_rate=result.sample_rate, digital=result.digital,
                       analog=result.analog)
     session = Session(name=f"Generator self-test ({cfg.protocol})",

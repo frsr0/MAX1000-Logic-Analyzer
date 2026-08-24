@@ -13,7 +13,8 @@ import numpy as np
 from ..config import APP_VERSION
 from ..decoders import registry as decoder_registry
 from ..decoders.base import DecodeCancelled, DecodeContext
-from ..hardware.base import CaptureResult, HardwareDevice, HardwareError
+from ..hardware.base import (CaptureResult, HardwareDevice, HardwareError,
+                              validate_capture_result)
 from ..hardware.existing_host_adapter import (ExistingHostAdapter,
                                               hardware_available)
 from ..hardware.mock_device import MockDevice
@@ -260,6 +261,7 @@ class CaptureManager:
                 for result in dev.stream_capture(settings, stop_evt=self._stop_evt):
                     if self._stop_evt.is_set():
                         break
+                    validate_capture_result(result)
                     run += 1
                     session = self._result_to_live_session(
                         settings, result, name, run, live_session)
@@ -309,6 +311,7 @@ class CaptureManager:
                     })
                 result = dev.capture(capture_settings, progress=progress,
                                      stop_evt=self._stop_evt)
+                validate_capture_result(result)
                 if settings.mode in continuous_modes:
                     session = self._result_to_live_session(
                         settings, result, name, run, live_session)

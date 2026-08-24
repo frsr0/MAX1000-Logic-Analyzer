@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -53,6 +53,8 @@ DIGITAL_FAST_BRAM_SAMPLES = 1024
 DIGITAL_SDRAM_WORDS = 4_194_304
 DIGITAL_NARROW_LOGICAL_SAMPLES = DIGITAL_SDRAM_WORDS * 16
 
+DriverLoader = Callable[[], Tuple[Any, Any]]
+
 
 def _adapt_driver_progress(progress: Optional[ProgressCb]) -> Optional[Callable[..., None]]:
     """Translate the host driver's raw-buffer callback to the backend contract.
@@ -73,9 +75,9 @@ def _adapt_driver_progress(progress: Optional[ProgressCb]) -> Optional[Callable[
     return report
 
 
-def hardware_available() -> bool:
+def hardware_available(driver_loader: Optional[DriverLoader] = None) -> bool:
     try:
-        ols_spi_device, _ = import_host_driver()
+        ols_spi_device, _ = (driver_loader or import_host_driver)()
         return bool(ols_spi_device.find_spi_device())
     except Exception:
         return False
@@ -84,8 +86,15 @@ def hardware_available() -> bool:
 class ExistingHostAdapter(HardwareDevice):
     """HardwareDevice implementation backed by host/driver/ols_spi_device.py."""
 
-    def __init__(self) -> None:
+    def __init__(self, driver_loader: Optional[DriverLoader] = None) -> None:
+        """Create the real-device adapter.
+
+        ``driver_loader`` is the external-driver seam: production uses the
+        lazy loader, while tests can provide a local driver module without
+        importing FTDI libraries or reaching into ``_dev`` after construction.
+        """
         self._dev = None
+        self._driver_loader = driver_loader or import_host_driver
         self._meta: Optional[DeviceMetadata] = None
         self._gen_cfg: Optional[GeneratorConfig] = None
         self._last_command = ""
@@ -98,7 +107,7 @@ class ExistingHostAdapter(HardwareDevice):
 
     def connect(self) -> DeviceMetadata:
         with self._lock:
-            ols_spi_device, _ = import_host_driver()
+            ols_spi_device, _ = self._driver_loader()
             try:
                 t0 = time.time()
                 self._dev = ols_spi_device.OLSDeviceSPI()

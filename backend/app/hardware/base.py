@@ -9,6 +9,7 @@ from __future__ import annotations
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+import math
 from typing import Any, Callable, Dict, Optional
 
 import numpy as np
@@ -22,6 +23,12 @@ ProgressCb = Callable[[int, int, str], None]   # (read, total, phase)
 
 @dataclass
 class CaptureResult:
+    """Canonical result returned by every hardware adapter.
+
+    The result is the seam between a hardware implementation and the capture
+    manager.  Digital samples are packed 16-channel words; analog arrays are
+    voltage samples.  All populated arrays must describe the same time axis.
+    """
     sample_rate: float
     digital: Optional[np.ndarray] = None         # packed uint16
     analog: Dict[str, np.ndarray] = field(default_factory=dict)  # volts f32
@@ -32,6 +39,50 @@ class CaptureResult:
 
 class HardwareError(Exception):
     pass
+
+
+def validate_capture_result(result: CaptureResult) -> int:
+    """Validate the capture contract and return the sample count.
+
+    Hardware adapters translate device-specific payloads before returning a
+    ``CaptureResult``.  Keeping this check at the seam prevents malformed
+    digital/analog lengths or trigger positions from leaking into session
+    storage, WebSocket events, and decoder input.
+    """
+    if not math.isfinite(float(result.sample_rate)) or result.sample_rate <= 0:
+        raise HardwareError("Capture result sample rate must be finite and positive")
+
+    arrays = []
+    if result.digital is not None:
+        digital = np.asarray(result.digital)
+        if digital.ndim != 1 or not np.issubdtype(digital.dtype, np.integer):
+            raise HardwareError("Capture result digital samples must be a 1-D integer array")
+        if digital.size and (int(digital.min()) < 0 or int(digital.max()) > 0xFFFF):
+            raise HardwareError("Capture result digital samples must fit in uint16 words")
+        arrays.append(("digital", digital))
+
+    for name, values in result.analog.items():
+        analog = np.asarray(values)
+        if analog.ndim != 1 or not np.issubdtype(analog.dtype, np.number):
+            raise HardwareError(f"Capture result analog channel '{name}' must be a 1-D numeric array")
+        arrays.append((f"analog channel '{name}'", analog))
+
+    if not arrays:
+        raise HardwareError("Capture result contains no samples")
+
+    sample_count = len(arrays[0][1])
+    mismatched = [(name, len(values)) for name, values in arrays
+                  if len(values) != sample_count]
+    if mismatched:
+        details = ", ".join(f"{name}={length}" for name, length in mismatched)
+        raise HardwareError(
+            f"Capture result channels must share one sample count ({details}, expected {sample_count})")
+
+    if result.trigger_sample is not None and not 0 <= int(result.trigger_sample) <= sample_count:
+        raise HardwareError("Capture result trigger sample is outside the capture")
+    if result.divider is not None and int(result.divider) < 0:
+        raise HardwareError("Capture result clock divider cannot be negative")
+    return sample_count
 
 
 class HardwareDevice(ABC):

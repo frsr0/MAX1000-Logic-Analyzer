@@ -56,3 +56,4 @@ desktop/dist/
 frontend/test-results/playwright/*
 .claude/launch.json
 *.err
+/graphify-out/cache

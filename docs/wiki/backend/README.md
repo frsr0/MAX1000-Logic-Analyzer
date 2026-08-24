@@ -70,6 +70,7 @@ Client (browser / curl)
 ## Wiki Pages
 
 ### Hardware Layer
+- [Hardware and Capture Seam](hardware-capture-seam.md) — normalized capture contract, adapter seam, and validation rules
 - [Hardware Abstraction](hardware-abstraction.md) — `HardwareDevice` ABC, `CaptureResult`, `HardwareError`
 - [Existing Host Adapter](existing-host-adapter.md) — Wrapping `OLSDeviceSPI`, strategy dispatch, capture flow
 - [Mock Device](mock-device.md) — 10 synthetic scenarios, mock-only analog
