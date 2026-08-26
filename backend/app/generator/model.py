@@ -12,6 +12,7 @@ from ..hardware.device_models import GeneratorConfig
 class GeneratorSendRequest(BaseModel):
     config: Optional[GeneratorConfig] = None     # None = use last configured
     capture: bool = False                        # loopback: capture while sending
+    live: bool = False                           # repeating pattern that survives captures
     capture_rate: float = 1_000_000.0
     capture_samples: int = 10_000
     expected_hex: Optional[str] = None           # auto-compare decoded output

@@ -66,36 +66,42 @@ export class WaveformClient {
 
   // ── private ──────────────────────────────────────────────────────
 
-  private send(request: unknown): Promise<WaveformPayload> {
+  private send(request: Record<string, unknown>): Promise<WaveformPayload> {
     return new Promise<WaveformPayload>((resolve, reject) => {
       const id = String(this.nextId++);
       this.pending.set(id, { resolve, reject });
-      this.getWorker().postMessage(request);
+      // The worker echoes this id back so concurrent window/overview
+      // requests resolve their own promises — live mode keeps both in flight
+      // at once, and resolving FIFO handed the overview payload to the
+      // window fetch (canvas rendered the overview as a viewport, or nothing).
+      this.getWorker().postMessage({ id, ...request });
     });
   }
 
   private handleMessage(e: MessageEvent): void {
     const data = e.data as Record<string, unknown>;
-    // Worker errors come as { error: string }
+    // Worker errors come as { id, error: string }
     if (data.error && typeof data.error === 'string') {
-      const first = this.pending.values().next().value;
-      if (first) {
-        first.reject(new Error(data.error));
-        this.pending.delete(this.pending.keys().next().value as string);
+      const id = typeof data.id === 'string' ? data.id : '';
+      const entry = id ? this.pending.get(id) : undefined;
+      if (entry) {
+        entry.reject(new Error(data.error));
+        this.pending.delete(id);
       }
       return;
     }
-    // Success: { header: WaveformHeader, buf: ArrayBuffer }
+    // Success: { id, header: WaveformHeader, buf: ArrayBuffer }
     const header = data.header as WaveformHeader | undefined;
     const buf = data.buf as ArrayBuffer | undefined;
     if (!header || !buf) return;
 
     // Reconstruct WaveformPayload on the transferred buffer
     const payload = parseWaveformPayload(buf);
-    const first = this.pending.values().next().value;
-    if (first) {
-      first.resolve(payload);
-      this.pending.delete(this.pending.keys().next().value as string);
+    const id = typeof data.id === 'string' ? data.id : '';
+    const entry = id ? this.pending.get(id) : undefined;
+    if (entry) {
+      entry.resolve(payload);
+      this.pending.delete(id);
     }
   }
 

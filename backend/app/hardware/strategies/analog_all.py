@@ -59,12 +59,15 @@ class AnalogAllCaptureStrategy(CaptureStrategy):
     ) -> CaptureResult:
         nsamp = int(settings.num_samples)
         # Window needed to gather nsamp analog samples per lane at the
-        # measured packed per-lane rate, then the capture word budget for that
-        # window at the packed word clock, capped by SDRAM depth.
+        # measured packed per-lane rate. The packed word stream is compressed
+        # and written at the fast clock, so the capture rate (sample counter)
+        # only gates the window length: choose it so the word budget for the
+        # window fits SDRAM, with a floor that keeps the window finite.
         window_s = max(nsamp, 1) / PACKED_LANE_RATE_HZ
+        rate = min(PACKED_WORD_RATE_HZ,
+                   max(1_000_000, PACKED_MAX_WORDS / window_s))
         word_budget = max(1024, min(PACKED_MAX_WORDS,
-                                    int(window_s * PACKED_WORD_RATE_HZ)))
-        rate = PACKED_WORD_RATE_HZ
+                                    int(window_s * rate)))
 
         data = dev.capture(
             rate_hz=rate,
@@ -83,6 +86,9 @@ class AnalogAllCaptureStrategy(CaptureStrategy):
             raise HardwareError(
                 f"Packed analog capture decoded {len(lanes)} lanes "
                 "(expected 4) — packed path not active on this image")
+        if not any(len(ch) for ch in lanes):
+            raise HardwareError(
+                "Packed analog capture returned no complete frames")
 
         analog = {}
         for idx, adc_ch in enumerate(PACKED_ADC_CHANNELS):

@@ -190,9 +190,9 @@ class ExistingHostAdapter(HardwareDevice):
             supports_pre_trigger=True, supports_rolling=True,
             supports_continuous=True, supports_analog=True,
             analog_rate_note="MAX10 ADC supports 1 MSPS single-channel "
-                             "analog and 125 kframes/s 4-input physical "
-                             "analog scans. Mixed mode scans ADC0..ADC3 at "
-                             "the same scan frame rate.",
+                             "analog (measured ~99.5 kS/s on this image) and "
+                             "a packed 4-input physical analog scan at "
+                             "~24 kS/s per lane.",
             generator_protocols=["uart", "rs485", "i2c", "spi", "swd", "bitbang"],
             generator_routes=[
                 GeneratorRouteCapability(
@@ -239,7 +239,8 @@ class ExistingHostAdapter(HardwareDevice):
                 f"{DIGITAL_SDRAM_WORDS:,}-word 16-bit SDRAM capture ring "
                 f"({DIGITAL_NARROW_LOGICAL_SAMPLES:,} logical samples in "
                 "packed one-channel narrow mode).",
-                "Maximum analog scans AIN3, AIN1, AIN4, and AIN6 at 125 kframes/s. "
+                "Maximum analog scans AIN3, AIN1, AIN4, and AIN6 at ~24 kS/s "
+                "per lane via the packed MSO path. "
                 "Mixed mode streams the same 4-lane analog scan in a shared frame.",
             ],
             digital_pin_map=DIGITAL_PIN_MAP,
@@ -630,6 +631,7 @@ class ExistingHostAdapter(HardwareDevice):
 
     def generator_status(self) -> GeneratorStatus:
         busy = False
+        live_armed = False
         with self._lock:
             if self._dev is not None:
                 try:
@@ -637,7 +639,12 @@ class ExistingHostAdapter(HardwareDevice):
                     busy = bool(st.get("gen_busy", False))
                 except Exception:
                     pass
-        return GeneratorStatus(busy=busy, running=busy,
+                # A repeating live generator loops in hardware; the FPGA's
+                # gen_busy bit may not be set until the first capture re-kick,
+                # so report the armed pattern as running too.
+                live_armed = bool(getattr(self._dev, "live_gen_active", False))
+        running = busy or live_armed
+        return GeneratorStatus(busy=running, running=running,
                                protocol=self._gen_cfg.protocol if self._gen_cfg else None,
                                config=self._gen_cfg.model_dump() if self._gen_cfg else None,
                                supported=True,
@@ -650,15 +657,18 @@ class ExistingHostAdapter(HardwareDevice):
                 "current FPGA firmware (supported: uart, rs485, i2c, spi, swd, bitbang)")
         self._gen_cfg = cfg
 
-    def generator_start(self) -> None:
+    def generator_start(self, live: bool = False) -> None:
         with self._lock:
             if self._dev is None:
                 raise HardwareError("Device not connected")
             cfg = self._gen_cfg
             if cfg is None:
                 raise HardwareError("Generator not configured")
+            self._log(f"gen_start {cfg.protocol} live={live}")
+            if live:
+                self._start_live_generator(self._dev, cfg)
+                return
             data = bytes.fromhex(cfg.data_hex) if cfg.data_hex else b"\x55"
-            self._log(f"gen_start {cfg.protocol}")
             if cfg.protocol == "uart":
                 self._dev.send_uart(data, baud=cfg.baud, tx_pin=cfg.tx_pin)
             elif cfg.protocol == "rs485":
@@ -687,11 +697,51 @@ class ExistingHostAdapter(HardwareDevice):
                 self._dev.send_raw_symbols(
                     symbols, symbol_rate=max(1, int(cfg.baud)),
                     tx_pin=int(cfg.tx_pin), scl_pin=int(cfg.scl_pin))
+
+    def _start_live_generator(self, dev, cfg: GeneratorConfig) -> None:
+        """Arm a repeating generator pattern that survives capture resets.
+
+        The pattern loops in hardware and the driver re-kicks it after every
+        capture chunk's reset, so a rolling/live capture continuously shows
+        the generator output on its pin (the one-shot path used to always
+        play in the inter-chunk gap and was never sampled).
+        """
+        from driver import bit_bang
+        from driver.spi_protocol import GEN_FLAG_RS485_PAIR
+
+        if cfg.protocol == "bitbang":
+            from ..generator.bitbang import expand_symbols
+            symbols = expand_symbols(cfg.extra, max(1, int(cfg.baud)))
+            dev.set_live_gen(
+                bit_bang.pack_symbols(symbols),
+                symbol_rate=max(1, int(cfg.baud)),
+                tx_pin=int(cfg.tx_pin), scl_pin=int(cfg.scl_pin))
+            return
+        if cfg.protocol not in ("uart", "rs485"):
+            raise HardwareError(
+                f"{cfg.protocol.upper()} generator cannot stream standalone; "
+                "use uart, rs485, or bitbang live mode (or Send + capture)")
+        data = bytes.fromhex(cfg.data_hex) if cfg.data_hex else b"\x55"
+        data = data[:bit_bang.max_uart_bytes()]
+        packed = bit_bang.pack_symbols(bit_bang.uart_symbols(data))
+        kwargs = {
+            "packed_symbols": packed,
+            "symbol_rate": max(1, int(cfg.baud)),
+            "tx_pin": int(cfg.tx_pin),
+        }
+        if cfg.protocol == "rs485":
+            kwargs["scl_pin"] = int(cfg.scl_pin)
+            kwargs["flags"] = GEN_FLAG_RS485_PAIR
+        dev.set_live_gen(**kwargs)
+
     def generator_stop(self) -> None:
         with self._lock:
             if self._dev is None:
                 return
             self._log("gen_stop")
+            # Live mode loops in hardware until CMD_GEN_STOP; one-shot sends
+            # finish on their own, so only live mode needs the explicit stop.
+            self._dev.clear_live_gen()
 
     def capture_with_generator(self, settings: CaptureSettings, cfg: GeneratorConfig,
                                progress: Optional[ProgressCb] = None,

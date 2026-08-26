@@ -148,8 +148,8 @@ def generator_send(req: GeneratorSendRequest,
         validate_generator_payload(cfg)
         if not req.capture:
             dev.generator_configure(cfg)
-            dev.generator_start()
-            return {"sent": True, "captured": False}
+            dev.generator_start(live=req.live)
+            return {"sent": True, "captured": False, "live": req.live}
         result = loopback_self_test(
             capture_manager,
             cfg,

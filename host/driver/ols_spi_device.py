@@ -202,6 +202,10 @@ class OLSDeviceSPI:
         self._gen_data = None
         self._gen_baud = 115200
         self._gen_tx_pin = 3
+        # Repeating generator pattern that capture() re-kicks after every
+        # reset (like the debug-CH0 PWM), so a generator keeps streaming into
+        # rolling/live captures. None = no live generator armed.
+        self._live_gen = None
         self.spi = None
         self._pkt = None
         self.analog_mode = MODE_DIGITAL
@@ -487,6 +491,12 @@ class OLSDeviceSPI:
         stalls one extra cycle every 4 symbols (its LOAD state), so the mean
         symbol period is (Bit_Div + 1.25) cycles.  Solve for that; at low
         bauds this converges to the classic sys_clk/baud value.
+
+        REG_GEN_BAUD is a 16-bit register: Bit_Div is capped at 65535, so the
+        slowest representable symbol rate is sys_clk / 65536.25 (~1.5 kHz at
+        100 MHz). Callers mask the return with ``& 0xFFFF``; requesting a
+        slower rate truncates and runs much faster than asked (e.g. 1200 baud
+        becomes ~5.6 kHz). ``set_live_gen`` rejects such rates instead.
         """
         return max(1, int(round(self.sys_clk / max(1, int(baud)) - 1.25)))
 
@@ -780,6 +790,75 @@ class OLSDeviceSPI:
             return False
         self.pkt.load_gen_data(packed_symbols)
         return self.pkt.transaction(CMD_GEN_START, timeout=0.5) is not None
+
+    def set_live_gen(self, packed_symbols, symbol_rate, tx_pin=3,
+                     scl_pin=GEN_SCL_PARK, flags=0):
+        """Arm a repeating Bit_Engine pattern that survives capture resets.
+
+        The pattern loops in hardware (GEN_FLAG_REPEAT) until
+        ``clear_live_gen()``. ``capture()`` re-kicks the stored pattern after
+        every reset — the same mechanism the debug-CH0 PWM uses — so the
+        generator keeps streaming while rolling/live captures run, instead of
+        being killed by the per-chunk capture reset.
+
+        ``packed_symbols`` is the output of ``bit_bang.pack_symbols``;
+        ``symbol_rate`` is the on-wire symbol rate (baud for UART).
+        """
+        packed = bytes(packed_symbols or b'')
+        if not packed:
+            raise ValueError("live generator pattern is empty")
+        div = max(1, int(round(
+            self.sys_clk / max(1, int(symbol_rate)) - 1.25)))
+        if div > 0xFFFF:
+            # REG_GEN_BAUD is a 16-bit divider; the FPGA Bit_Engine cannot
+            # slow below sys_clk / 65536.25 (~1.5 kHz at 100 MHz). Truncating
+            # silently would emit a much faster pattern (e.g. 1200 baud ->
+            # ~5.6 kHz), so reject the config instead.
+            raise ValueError(
+                f"symbol rate {symbol_rate} Hz is below the Bit_Engine floor "
+                f"of ~{self.sys_clk / 65536.25:.0f} Hz (16-bit divider)")
+        self._live_gen = {
+            "packed": packed,
+            "div": div & 0xFFFF,
+            "tx_pin": int(tx_pin),
+            "scl_pin": int(scl_pin),
+            "flags": int(flags) & 0xFFFF,
+        }
+        self._kick_live_gen()
+        return len(packed)
+
+    def clear_live_gen(self):
+        """Stop the repeating live generator and forget the pattern."""
+        self._live_gen = None
+        try:
+            self.pkt.transaction(CMD_GEN_STOP, timeout=0.5)
+        except Exception:
+            pass
+
+    @property
+    def live_gen_active(self) -> bool:
+        """True while a repeating live generator pattern is armed."""
+        return bool(self._live_gen)
+
+    def _kick_live_gen(self):
+        """(Re)load and start the repeating live generator pattern.
+
+        Called by ``capture()`` after each reset so the pattern is alive for
+        the upcoming sample window. Also the initial start for
+        ``set_live_gen``.
+        """
+        g = self._live_gen
+        if not g:
+            return False
+        flags = g["flags"] | GEN_FLAG_REPEAT
+        self.pkt.write_register(REG_GEN_DATA, (1 << 8) | flags)
+        self.pkt.write_register(REG_GEN_PROTO, 0)
+        self._pins(tx_pin=g["tx_pin"], scl_pin=g["scl_pin"])
+        self.pkt.write_register(REG_GEN_BAUD, g["div"])
+        self.pkt.load_gen_data(g["packed"])
+        self.spi.flush()
+        self.start_gen()
+        return True
 
     def _wait_gen_idle(self, timeout=0.25, poll=0.001):
         deadline = time.time() + max(0.0, float(timeout))
@@ -2075,6 +2154,10 @@ class OLSDeviceSPI:
             self.debug_ch0_enabled = self._pending_debug_enable
             self._pending_debug_enable = None
         self.set_debug_ch0(self.debug_ch0_enabled)
+        # A repeating live generator is killed by the reset above (ABORT
+        # clears the Bit_Engine FIFO), so re-arm it before the sample window
+        # — same re-kick the debug-CH0 PWM uses.
+        self._kick_live_gen()
 
         div = max(0, round(self.sample_clk / rate_hz) - 1)
         rc = max(1, nsamples)

@@ -206,7 +206,7 @@ export const api = {
   generatorSweepCapture: (body: { base: GeneratorConfig; axes: Record<string, unknown[]>; limit?: number; capture_rate?: number; capture_samples?: number; expected_hex?: string; stop_on_failure?: boolean }) =>
     post<any>('/api/generator/sweep-capture', body),
   bitbangPresets: () => get<{ presets: string[] }>('/api/generator/bitbang/presets'),
-  generatorSend: (body: { config: GeneratorConfig; capture: boolean; capture_rate?: number; capture_samples?: number; expected_hex?: string }) =>
+  generatorSend: (body: { config: GeneratorConfig; capture: boolean; live?: boolean; capture_rate?: number; capture_samples?: number; expected_hex?: string }) =>
     post<any>('/api/generator/send', body),
   generatorSelfTest: () => post<any>('/api/generator/self-test'),
 

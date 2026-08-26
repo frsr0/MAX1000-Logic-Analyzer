@@ -11,6 +11,7 @@ import type { WaveformHeader } from '../api/binary';
 
 interface FetchWindowRequest {
   type: 'window';
+  id: string;
   sessionId: string;
   start: number;
   end: number;
@@ -20,6 +21,7 @@ interface FetchWindowRequest {
 
 interface FetchOverviewRequest {
   type: 'overview';
+  id: string;
   sessionId: string;
   bins?: number;
 }
@@ -27,11 +29,13 @@ interface FetchOverviewRequest {
 type WorkerRequest = FetchWindowRequest | FetchOverviewRequest;
 
 interface WorkerResult {
+  id: string;
   header: WaveformHeader;
   buf: ArrayBuffer;
 }
 
 interface WorkerError {
+  id: string;
   error: string;
 }
 
@@ -45,18 +49,18 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
     const res = await fetch(url);
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      self.postMessage({ error: `fetch ${res.status}: ${text}` } satisfies WorkerError);
+      self.postMessage({ id: req.id, error: `fetch ${res.status}: ${text}` } satisfies WorkerError);
       return;
     }
     const buf = await res.arrayBuffer();
     const { header } = parseWaveformPayload(buf);
     // Transfer the buffer — the main thread re-creates TypedArray views
     // from the header's array descriptors.
-    const wResult: WorkerResult = { header, buf };
+    const wResult: WorkerResult = { id: req.id, header, buf };
     (self.postMessage as (msg: unknown, transfer: Transferable[]) => void)(wResult, [buf]);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    self.postMessage({ error: msg } satisfies WorkerError);
+    self.postMessage({ id: req.id, error: msg } satisfies WorkerError);
   }
 };
 

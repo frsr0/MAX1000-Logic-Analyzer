@@ -52,6 +52,7 @@ class MockDevice(HardwareDevice):
         self._connected = False
         self._gen_cfg: Optional[GeneratorConfig] = None
         self._gen_running = False
+        self._gen_live = False
         self._gen_error: Optional[str] = None
         self._last_command = ""
         self._command_log: List[dict] = []
@@ -97,7 +98,7 @@ class MockDevice(HardwareDevice):
             sample_clk_hz=self.SAMPLE_CLK,
             supports_pre_trigger=True, supports_rolling=True,
             supports_continuous=True, supports_analog=True,
-            analog_rate_note="Mock analog channels (real hardware: 1 MSPS single-channel or 125 kframes/s 4-input scan)",
+            analog_rate_note="Mock analog channels (real hardware: ~99.5 kS/s single-channel or ~24 kS/s per lane 4-input packed scan)",
             generator_protocols=["uart", "rs485", "i2c", "spi", "swd", "pwm", "square",
                                  "pattern", "counter", "prbs", "bitbang"],
             generator_routes=[
@@ -161,6 +162,19 @@ class MockDevice(HardwareDevice):
             if progress:
                 phase = "capturing" if i < steps - 2 else "reading"
                 progress(int(n * (i + 1) / steps), n, phase)
+
+        # Live generator: a repeating pattern stays on its pin for the whole
+        # capture (mirrors the real Bit_Engine GEN_FLAG_REPEAT re-kick), so
+        # rolling/live captures show the generator output.
+        if digital is not None and self._gen_running and self._gen_live \
+                and self._gen_cfg is not None:
+            cfg = self._gen_cfg
+            pin = int(cfg.scl_pin if cfg.protocol == "i2c" else cfg.tx_pin)
+            if 0 <= pin < 16:
+                baud = max(1, int(cfg.baud))
+                freq = min(baud / 2.0, rate / 8.0)
+                wave = ms.square(n, rate, max(1.0, freq), duty=0.5)
+                digital |= wave.astype(np.uint16) << pin
 
         trigger_sample = None
         trig = settings.trigger
@@ -303,12 +317,16 @@ class MockDevice(HardwareDevice):
         self._gen_error = None
         self._log(f"gen_configure {cfg.protocol}")
 
-    def generator_start(self) -> None:
+    def generator_start(self, live: bool = False) -> None:
         if self._gen_cfg is None:
             raise HardwareError("Generator not configured")
         self._gen_running = True
-        self._log("gen_start")
-        if not self._gen_cfg.continuous:
+        self._gen_live = bool(live)
+        self._log(f"gen_start live={live}")
+        # One-shot sends stop after a short burst; live mode (repeating
+        # pattern) keeps running until generator_stop(), matching the real
+        # Bit_Engine GEN_FLAG_REPEAT behavior.
+        if not self._gen_cfg.continuous and not live:
             def stop_later():
                 time.sleep(0.3)
                 self._gen_running = False
@@ -316,6 +334,7 @@ class MockDevice(HardwareDevice):
 
     def generator_stop(self) -> None:
         self._gen_running = False
+        self._gen_live = False
         self._log("gen_stop")
 
     def capture_with_generator(self, settings: CaptureSettings, cfg: GeneratorConfig,

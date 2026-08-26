@@ -65,6 +65,15 @@ export default function App() {
           refreshStatus();
           refreshSessions();
           break;
+        case 'capture_cancelled':
+          // Backend publishes this on Stop; without it the status bar keeps
+          // the stale "capturing" badge from the last capture_progress event.
+          // Also stop the live-follow animation: it is driven by wall-clock
+          // shift and would keep scrolling the view past the captured data.
+          waveformView.setLiveFollow(false);
+          refreshStatus();
+          refreshSessions();
+          break;
         case 'capture_error':
           toast('error', `Capture failed: ${msg.data.message}`);
           refreshStatus();
@@ -106,14 +115,19 @@ export default function App() {
       if (msg.type === 'measurement_updated') {
         useApp.getState().refreshActiveSession();
       } else if (msg.type === 'waveform_ready') {
-        await useApp.getState().refreshActiveSession();
         const s = useApp.getState().activeSession;
         if (s?.id === activeId) {
           await waveformView.updateLive(
-            s.num_samples, s.sample_rate, s.trigger_sample ?? null,
+            Number(msg.data?.num_samples ?? s.num_samples),
+            Number(msg.data?.sample_rate ?? s.sample_rate),
+            s.trigger_sample ?? null,
             Boolean(msg.data?.rolling),
             Number(msg.data?.chunk_samples ?? 0),
           );
+          // Metadata is not on the critical drawing path. Refresh it after
+          // scheduling the new waveform so a slow session request cannot make
+          // live frames queue up or stall the canvas.
+          void useApp.getState().refreshActiveSession();
         }
       }
     });

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-28T16:42:29.936Z",
+  "generated_at": "2026-08-26T14:13:32.913Z",
   "cases": [
     {
       "status": "passed",
@@ -11,7 +11,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_772e11316a"
+      "session_id": "ses_114ddc2bc1"
     },
     {
       "status": "passed",
@@ -23,7 +23,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_ea0c096ae3"
+      "session_id": "ses_d4407fed0b"
     },
     {
       "status": "passed",
@@ -35,7 +35,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_c6704ebbc0"
+      "session_id": "ses_b071ab275a"
     },
     {
       "status": "passed",
@@ -47,7 +47,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_d126ddc87e"
+      "session_id": "ses_d9c0483ce8"
     },
     {
       "status": "passed",
@@ -59,7 +59,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_fb99716cc4"
+      "session_id": "ses_163f5095a8"
     },
     {
       "status": "passed",
@@ -71,7 +71,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_dbe071027e"
+      "session_id": "ses_80ae7ddd1d"
     },
     {
       "status": "passed",
@@ -83,7 +83,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_596ca66a00"
+      "session_id": "ses_d1c0385650"
     },
     {
       "status": "passed",
@@ -95,7 +95,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_85885141ca"
+      "session_id": "ses_099e3c8c98"
     },
     {
       "status": "passed",
@@ -107,7 +107,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_eec0524c2b"
+      "session_id": "ses_53a7ee7190"
     },
     {
       "status": "passed",
@@ -119,7 +119,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_cceaeb1b0b"
+      "session_id": "ses_e2b03988d4"
     },
     {
       "status": "passed",
@@ -131,7 +131,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_f6ea2e12a7"
+      "session_id": "ses_c1477499f9"
     },
     {
       "status": "passed",
@@ -143,7 +143,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_dad0fa8905"
+      "session_id": "ses_53cdf6d3f4"
     },
     {
       "status": "passed",
@@ -155,7 +155,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_937eff1711"
+      "session_id": "ses_f016d55d4a"
     },
     {
       "status": "passed",
@@ -164,10 +164,10 @@
       "api_mode": "rolling",
       "requested_rate_hz": 10000,
       "effective_rate_hz": 10000,
-      "samples": 102,
+      "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_25bfe612f9"
+      "session_id": "ses_02327f2aab"
     },
     {
       "status": "passed",
@@ -176,10 +176,10 @@
       "api_mode": "rolling",
       "requested_rate_hz": 100000,
       "effective_rate_hz": 100000,
-      "samples": 102,
+      "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_fa8b53fb8c"
+      "session_id": "ses_ebd53908bc"
     },
     {
       "status": "passed",
@@ -188,10 +188,10 @@
       "api_mode": "rolling",
       "requested_rate_hz": 500000,
       "effective_rate_hz": 500000,
-      "samples": 102,
+      "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_6234ce2770"
+      "session_id": "ses_31a7c5750f"
     },
     {
       "status": "passed",
@@ -200,10 +200,10 @@
       "api_mode": "rolling",
       "requested_rate_hz": 1000000,
       "effective_rate_hz": 1000000,
-      "samples": 102,
+      "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_963e277ea7"
+      "session_id": "ses_d597de4b66"
     },
     {
       "status": "passed",
@@ -212,10 +212,10 @@
       "api_mode": "rolling",
       "requested_rate_hz": 2000000,
       "effective_rate_hz": 2000000,
-      "samples": 102,
+      "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_1e1af78ca1"
+      "session_id": "ses_8255897e8a"
     },
     {
       "status": "passed",
@@ -224,10 +224,10 @@
       "api_mode": "rolling",
       "requested_rate_hz": 5000000,
       "effective_rate_hz": 5000000,
-      "samples": 102,
+      "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_aaba4e06da"
+      "session_id": "ses_388337af07"
     },
     {
       "status": "passed",
@@ -236,10 +236,10 @@
       "api_mode": "rolling",
       "requested_rate_hz": 10000000,
       "effective_rate_hz": 10000000,
-      "samples": 102,
+      "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_6add39f757"
+      "session_id": "ses_39dd139de3"
     },
     {
       "status": "passed",
@@ -248,10 +248,10 @@
       "api_mode": "rolling",
       "requested_rate_hz": 12500000,
       "effective_rate_hz": 12500000,
-      "samples": 102,
+      "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_b7379e787f"
+      "session_id": "ses_877c85ffdc"
     },
     {
       "status": "passed",
@@ -260,10 +260,10 @@
       "api_mode": "rolling",
       "requested_rate_hz": 14000000,
       "effective_rate_hz": 14000000,
-      "samples": 102,
+      "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_516fb40a0b"
+      "session_id": "ses_8f2b8b3637"
     },
     {
       "status": "passed",
@@ -272,10 +272,10 @@
       "api_mode": "rolling",
       "requested_rate_hz": 20000000,
       "effective_rate_hz": 20000000,
-      "samples": 102,
+      "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_540f61a3a3"
+      "session_id": "ses_4c80062065"
     },
     {
       "status": "passed",
@@ -284,10 +284,10 @@
       "api_mode": "rolling",
       "requested_rate_hz": 50000000,
       "effective_rate_hz": 50000000,
-      "samples": 102,
+      "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_fa5831356b"
+      "session_id": "ses_2830883244"
     },
     {
       "status": "passed",
@@ -299,7 +299,7 @@
       "samples": 4096,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_bdd3087e56"
+      "session_id": "ses_69f509847e"
     },
     {
       "status": "passed",
@@ -313,7 +313,7 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_65ad661433"
+      "session_id": "ses_15a13e8576"
     },
     {
       "status": "passed",
@@ -327,7 +327,7 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_299e64b2da"
+      "session_id": "ses_e137a935f3"
     },
     {
       "status": "passed",
@@ -341,7 +341,7 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_bc554d9ab4"
+      "session_id": "ses_49a6f017c5"
     },
     {
       "status": "passed",
@@ -355,7 +355,7 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_5106b312d0"
+      "session_id": "ses_3e82208054"
     },
     {
       "status": "passed",
@@ -364,12 +364,12 @@
       "api_mode": "analog_continuous",
       "requested_rate_hz": 100000,
       "effective_rate_hz": 100000,
-      "samples": 102,
+      "samples": 1024,
       "digital_channels": 0,
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_cd25a32c1a"
+      "session_id": "ses_667b4f3f65"
     },
     {
       "status": "passed",
@@ -378,12 +378,12 @@
       "api_mode": "analog_continuous",
       "requested_rate_hz": 200000,
       "effective_rate_hz": 200000,
-      "samples": 102,
+      "samples": 1024,
       "digital_channels": 0,
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_fb6f2e3b6e"
+      "session_id": "ses_e00b66f50c"
     },
     {
       "status": "passed",
@@ -392,12 +392,12 @@
       "api_mode": "analog_continuous",
       "requested_rate_hz": 500000,
       "effective_rate_hz": 499750.6234413965,
-      "samples": 102,
+      "samples": 1024,
       "digital_channels": 0,
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_4d5bbe21a7"
+      "session_id": "ses_1c887486c3"
     },
     {
       "status": "passed",
@@ -406,20 +406,37 @@
       "api_mode": "analog_continuous",
       "requested_rate_hz": 1000000,
       "effective_rate_hz": 1002000,
-      "samples": 102,
+      "samples": 1024,
       "digital_channels": 0,
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_3cfaed9c4e"
+      "session_id": "ses_d88d1b8130"
     },
     {
       "status": "passed",
       "mode": "Maximum analog",
       "acquisition": "single",
       "api_mode": "analog_all",
-      "requested_rate_hz": 125000,
-      "effective_rate_hz": 125093.6329588015,
+      "requested_rate_hz": 24000,
+      "effective_rate_hz": 24000,
+      "samples": 1052,
+      "digital_channels": 0,
+      "analog_channels": [
+        "a1",
+        "a2",
+        "a3",
+        "a4"
+      ],
+      "session_id": "ses_b9aa1a0e9b"
+    },
+    {
+      "status": "passed",
+      "mode": "Maximum analog",
+      "acquisition": "live",
+      "api_mode": "analog_all_continuous",
+      "requested_rate_hz": 24000,
+      "effective_rate_hz": 24000,
       "samples": 1024,
       "digital_channels": 0,
       "analog_channels": [
@@ -428,24 +445,7 @@
         "a3",
         "a4"
       ],
-      "session_id": "ses_4cef1c7f97"
-    },
-    {
-      "status": "passed",
-      "mode": "Maximum analog",
-      "acquisition": "live",
-      "api_mode": "analog_all_continuous",
-      "requested_rate_hz": 125000,
-      "effective_rate_hz": 125093.6329588015,
-      "samples": 102,
-      "digital_channels": 0,
-      "analog_channels": [
-        "a1",
-        "a2",
-        "a3",
-        "a4"
-      ],
-      "session_id": "ses_11e099471c"
+      "session_id": "ses_4496ae7e30"
     },
     {
       "status": "passed",
@@ -460,7 +460,7 @@
         "a0",
         "a1"
       ],
-      "session_id": "ses_aa7806e465"
+      "session_id": "ses_593d29a158"
     },
     {
       "status": "passed",
@@ -469,13 +469,13 @@
       "api_mode": "mixed_continuous",
       "requested_rate_hz": 125000,
       "effective_rate_hz": 125093.6329588015,
-      "samples": 102,
+      "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [
         "a0",
         "a1"
       ],
-      "session_id": "ses_1589d852d8"
+      "session_id": "ses_72ceced757"
     }
   ],
   "passed": 37,

@@ -23,10 +23,19 @@ class TestOLSLowLevel:
         ols_no_dev._drain()
 
     def test_drain_with_data(self, ols, mock_dev):
-        mock_dev.getQueueStatus.side_effect = lambda: 5
+        # Deadline-based drain: poll the queue and read what is available,
+        # stopping once it empties (a constantly-full queue would loop until
+        # the 0.2s deadline — that is the point of the non-blocking drain).
+        mock_dev.getQueueStatus.side_effect = [5, 0]
         mock_dev.read.return_value = b'\x00\x00\x00\x00\x00'
         ols._drain()
         mock_dev.read.assert_called_once_with(5)
+
+    def test_drain_loop_until_empty(self, ols, mock_dev):
+        mock_dev.getQueueStatus.side_effect = [5, 5, 0]
+        mock_dev.read.return_value = b'\x00\x00\x00\x00\x00'
+        ols._drain()
+        assert mock_dev.read.call_count == 2
 
     def test_drain_empty(self, ols, mock_dev):
         mock_dev.getQueueStatus.side_effect = lambda: 0

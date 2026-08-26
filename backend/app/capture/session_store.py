@@ -101,7 +101,13 @@ class SessionStore:
             arrays[f"analog__{name}"] = arr
         for name, arr in wf.derived_digital.items():
             arrays[f"derived__{name}"] = arr
-        np.savez_compressed(d / "waveform.npz", **arrays)
+        # Uncompressed npz: digital samples are effectively incompressible at
+        # live rates, and savez_compressed costs ~150 ms on a 2.5M-sample
+        # window per chunk — slower than the chunk cadence itself, stalling
+        # live rolling captures (and starving LOD rebuilds, which made the
+        # frontend's live window fetches never complete). Plain savez writes
+        # the same bytes in ~5% of the time.
+        np.savez(d / "waveform.npz", **arrays)
         with self._lock:
             self._cache_put(self._wf_cache, session_id, wf)
             self._lod_cache.pop(session_id, None)

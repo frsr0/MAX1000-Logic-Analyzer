@@ -36,9 +36,15 @@ export function WaveformCanvas({ channels, onSelectRegion }: Props) {
     layoutRef.current = layout;
     const cssW = wrap.clientWidth;
     const cssH = Math.max(layout.totalHeight, wrap.clientHeight - 64);
-    if (canvas.width !== cssW * dpr || canvas.height !== cssH * dpr) {
-      canvas.width = cssW * dpr;
-      canvas.height = cssH * dpr;
+    // Canvas dimensions are integers. Comparing them with an unrounded DPR
+    // product (for example at 125% Windows scaling) made this branch run on
+    // every live frame, clearing the backing buffer before each redraw and
+    // producing a very visible flash.
+    const pixelW = Math.max(1, Math.round(cssW * dpr));
+    const pixelH = Math.max(1, Math.round(cssH * dpr));
+    if (canvas.width !== pixelW || canvas.height !== pixelH) {
+      canvas.width = pixelW;
+      canvas.height = pixelH;
       canvas.style.width = `${cssW}px`;
       canvas.style.height = `${cssH}px`;
     }
@@ -82,24 +88,6 @@ export function WaveformCanvas({ channels, onSelectRegion }: Props) {
     if (wrapRef.current) ro.observe(wrapRef.current);
     schedule();
     return () => { unsub(); ro.disconnect(); cancelAnimationFrame(raf); };
-  }, [draw]);
-
-  useEffect(() => {
-    let raf = 0;
-    let lastTick = 0;
-    const loop = () => {
-      if (waveformView.liveAnimating()) {
-        draw();
-        const now = performance.now();
-        if (now - lastTick > 250) {
-          lastTick = now;
-          setTick((t) => t + 1);
-        }
-      }
-      raf = requestAnimationFrame(loop);
-    };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
   }, [draw]);
 
   // ── pointer interaction ────────────────────────────────────────────

@@ -61,12 +61,28 @@ class OLS:
 
     # ── Low-level helpers ────────────────────────────────────────────
 
-    def _drain(self):
+    def _drain(self, timeout=0.2):
+        """Drain pending response bytes without ever blocking on FT_Read.
+
+        FT_Read waits for the *requested* byte count; a partial FPGA response
+        (desynced MPSSE pipe after a wedged/aborted transfer) makes it block
+        for the full read timeout — with ftd2xx's default 0 ms that is
+        forever, freezing every SPI command and hanging the app. Poll the
+        queue with a deadline instead and only read what is available.
+        """
         if not self.dev:
             return
-        q = self.dev.getQueueStatus()
-        if isinstance(q, int) and q > 0:
-            self.dev.read(q)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            q = self.dev.getQueueStatus()
+            if not isinstance(q, int) or q <= 0:
+                break
+            try:
+                chunk = self.dev.read(q)
+            except Exception:
+                break
+            if not isinstance(chunk, (bytes, bytearray)) or not chunk:
+                break
 
     def _read_n(self, n, timeout=0.5):
         raw = b''
@@ -247,6 +263,13 @@ class OLS:
 
         d.setBitMode(0xFF, 0); time.sleep(0.05)
         d.setBitMode(0xFF, 2); time.sleep(0.1)
+        # Bound every FT_Read/FT_Write: with the ftd2xx default 0 ms timeout a
+        # partial FPGA response blocks forever (live-mode hang when the FPGA
+        # desyncs mid-capture). The protocol layer's own deadlines then govern.
+        try:
+            d.setTimeouts(500, 500)
+        except Exception:
+            pass
         try:
             d.setLatencyTimer(1)
         except:

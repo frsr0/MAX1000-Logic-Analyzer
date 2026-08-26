@@ -48,6 +48,9 @@ class FakeHostDevice:
         self.open = Mock()
         self.close = Mock()
         self.set_bitbang_pwm = Mock()
+        self.set_live_gen = Mock()
+        self.clear_live_gen = Mock()
+        self.live_gen_active = False
         self.set_readback_compression = Mock()
         self.set_packed_mode = Mock()
         self.set_schmitt = Mock()
@@ -322,6 +325,114 @@ def test_adapter_generator_start_and_capture_protocol_failures():
     adapter.generator_stop()
 
 
+def test_adapter_live_generator_uart_uses_repeating_pattern():
+    from app.hardware.device_models import GeneratorConfig
+    from app.hardware.existing_host_adapter import ExistingHostAdapter
+
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+    dev.send_uart = Mock()
+    dev.send_rs485 = Mock()
+    adapter._dev = dev
+    adapter.generator_configure(GeneratorConfig(
+        protocol="uart", data_hex="55", baud=1200, tx_pin=3))
+    adapter.generator_start(live=True)
+    # Live mode must NOT take the one-shot path.
+    dev.send_uart.assert_not_called()
+    dev.send_rs485.assert_not_called()
+    dev.set_live_gen.assert_called_once()
+    kwargs = dev.set_live_gen.call_args.kwargs
+    assert kwargs["packed_symbols"]
+    assert kwargs["symbol_rate"] == 1200
+    assert kwargs["tx_pin"] == 3
+
+
+def test_adapter_live_generator_rs485_adds_pair_flag():
+    from app.hardware.device_models import GeneratorConfig
+    from app.hardware.existing_host_adapter import ExistingHostAdapter
+    from driver.spi_protocol import GEN_FLAG_RS485_PAIR
+
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+    dev.send_rs485 = Mock()
+    adapter._dev = dev
+    adapter.generator_configure(GeneratorConfig(
+        protocol="rs485", data_hex="55", baud=9600,
+        tx_pin=3, scl_pin=1))
+    adapter.generator_start(live=True)
+    dev.send_rs485.assert_not_called()
+    kwargs = dev.set_live_gen.call_args.kwargs
+    assert kwargs["tx_pin"] == 3
+    assert kwargs["scl_pin"] == 1
+    assert kwargs["flags"] == GEN_FLAG_RS485_PAIR
+
+
+def test_adapter_live_generator_bitbang_packs_symbols():
+    from app.hardware.device_models import GeneratorConfig
+    from app.hardware.existing_host_adapter import ExistingHostAdapter
+
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+    dev.send_raw_symbols = Mock()
+    adapter._dev = dev
+    adapter.generator_configure(GeneratorConfig(
+        protocol="bitbang", baud=100_000, tx_pin=3, scl_pin=1,
+        extra={"preset": "square", "count": 32}))
+    adapter.generator_start(live=True)
+    dev.send_raw_symbols.assert_not_called()
+    args, kwargs = dev.set_live_gen.call_args
+    assert args[0]  # packed symbols passed positionally
+    assert kwargs["symbol_rate"] == 100_000
+    assert kwargs["tx_pin"] == 3
+
+
+@pytest.mark.parametrize("protocol", ["i2c", "spi", "swd"])
+def test_adapter_live_generator_unsupported_protocol(protocol):
+    from app.hardware.device_models import GeneratorConfig
+    from app.hardware.existing_host_adapter import ExistingHostAdapter
+
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+    adapter._dev = dev
+    adapter.generator_configure(GeneratorConfig(
+        protocol=protocol, data_hex="41", baud=400_000))
+    with pytest.raises(HardwareError, match="cannot stream standalone"):
+        adapter.generator_start(live=True)
+
+
+def test_adapter_generator_stop_clears_live_gen():
+    from app.hardware.device_models import GeneratorConfig
+    from app.hardware.existing_host_adapter import ExistingHostAdapter
+
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+    adapter._dev = dev
+    adapter.generator_configure(GeneratorConfig(
+        protocol="uart", data_hex="55", baud=1200, tx_pin=3))
+    adapter.generator_start(live=True)
+    assert dev.set_live_gen.called
+    adapter.generator_stop()
+    dev.clear_live_gen.assert_called_once()
+
+
+def test_adapter_generator_status_reports_live_gen_running():
+    from app.hardware.device_models import GeneratorConfig
+    from app.hardware.existing_host_adapter import ExistingHostAdapter
+
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+    dev.pkt.get_status = Mock(return_value={"gen_busy": False})
+    adapter._dev = dev
+    adapter.generator_configure(GeneratorConfig(protocol="uart", baud=115200))
+    # The FPGA busy bit is not set until the first capture re-kick; an armed
+    # repeating pattern must still report as running.
+    assert adapter.generator_status().running is False
+    dev.live_gen_active = True
+    assert adapter.generator_status().running is True
+    dev.live_gen_active = False
+    assert adapter.generator_status().running is False
+
+
 def test_adapter_capture_recovery_and_trigger_configuration():
     adapter = ExistingHostAdapter()
     dev = FakeHostDevice()
@@ -451,6 +562,7 @@ def test_adapter_analog_and_mixed_strategies_decode_wire_frames():
     all_result = adapter.capture(CaptureSettings(mode="analog_all", num_samples=1,
                                                  analog_enabled=True))
     assert all_result.digital is None and all_result.analog
+
     mixed_payload = bytes([0x34, 0x12]) + bytes(range(12))
     dev.capture.return_value = payload_to_wire(mixed_payload, MODE_MIXED)
     mixed = adapter.capture(CaptureSettings(mode="mixed", num_samples=1,
@@ -931,9 +1043,15 @@ def test_analog_only_capture_uses_adc_only_hardware_stream():
     assert dev.capture.call_args.kwargs["rate_hz"] == pytest.approx(100_000)
 
 
-def test_maximum_analog_capture_uses_physical_analog_profile():
+def test_maximum_analog_capture_uses_packed_four_lane_path():
     adapter = ExistingHostAdapter()
-    adapter._dev = FakeHostDevice()
+    dev = FakeHostDevice(); adapter._dev = dev
+
+    # Packed path: 4 real lanes via MODE_PACKED_MSO; the fake device returns
+    # a flat (W=0) anchored analog block so decode yields 4 non-empty lanes.
+    ana_header = (0 << 11) | (1 << 10)  # W=0, bit10=1 (anchors follow)
+    words = [ana_header, 100, 200, 300, 400]
+    dev.capture = Mock(return_value=np.array(words, dtype="<u2").tobytes())
 
     result = adapter.capture(CaptureSettings(
         sample_rate=100_000,
@@ -945,12 +1063,13 @@ def test_maximum_analog_capture_uses_physical_analog_profile():
 
     dev = adapter._dev
     dev.capture.assert_called_once()
-    assert dev.capture.call_args.kwargs["nsamples"] == 128 * 6
-    dev.set_analog_config.assert_any_call(0x38, adc_channel=1)
+    assert dev.raw_flags & 0x100000  # MODE_PACKED_MSO set
+    # The strategy does not set the legacy MODE_ANALOG_ALL register config.
+    assert call(0x38) not in [c for c in dev.set_analog_config.call_args_list]
     assert result.digital is None
     assert len(result.analog) == 4
     assert list(result.analog) == ["a1", "a2", "a3", "a4"]
-    assert np.isclose(result.sample_rate, 200_000_000 / 267 / 6)
+    assert result.sample_rate == pytest.approx(24_000)
 
 
 def test_mixed_capture_uses_single_packed_pass():

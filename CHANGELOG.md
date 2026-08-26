@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- Fixed live (rolling) capture showing no signals: the waveform worker
+  resolved concurrent window/overview requests FIFO instead of by request id,
+  so the live window fetch received the overview payload (or nothing) and the
+  canvas stayed empty. The worker protocol now echoes a request id.
+- Live window fetches are no longer aborted on every appended chunk; in-flight
+  fetches are coalesced and re-run once they land, so a slow LOD rebuild no
+  longer starves the viewport payload.
+- Live chunk appends no longer rewrite the waveform npz compressed
+  (`savez_compressed` cost ~150 ms per chunk at a 2.5M-sample window —
+  slower than the chunk cadence, stalling rolling capture and LOD rebuilds);
+  sessions now persist with plain `savez`.
+- Live overview (minimap) refreshes are throttled and fire-and-forget instead
+  of queueing a blocking overview fetch per chunk.
+- The FTDI SPI driver now bounds all FT_Read/FT_Write calls (500 ms timeouts)
+  and drains via queue polling; a partial FPGA response after a wedged or
+  aborted transfer previously blocked forever, hanging the app mid-live-capture
+  ("hang" reports). It now fails fast and recovers on the next reset.
+- The generator can now stream into rolling/live captures: `POST
+  /api/generator/send` accepts `live: true` (UART, RS-485, bit-banger), which
+  arms the pattern as a hardware-repeating Bit_Engine loop. The capture path
+  re-kicks the pattern after every chunk's reset (same mechanism as the
+  debug-CH0 PWM), so a live capture continuously shows the generator output on
+  its pin instead of the one-shot burst always playing in the inter-chunk gap
+  and never being sampled. `generator_stop` clears it. The frontend Generator
+  page exposes this as a "Send live" button; the adapter reports the armed
+  pattern as running even before the first capture re-kick.
+
 ## 3.0.0 - 2026-07-22
 
 ## 3.0.0 - 2026-07-22

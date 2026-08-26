@@ -11,6 +11,27 @@ function shot(name: string) {
   return path.join(shots, name);
 }
 
+/**
+ * Screenshot with retry. On Windows, Defender briefly locks freshly-written
+ * PNGs when several are written in rapid succession (matrix runs), which
+ * surfaces as "UNKNOWN: unknown error, open <path>". Space the writes out
+ * and retry once the scan releases the file.
+ */
+async function takeScreenshot(page: any, name: string, opts: { fullPage?: boolean } = {}) {
+  await page.waitForTimeout(150);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await page.screenshot({ path: shot(name), ...opts });
+      return;
+    } catch (err: any) {
+      const msg = String(err?.message ?? err);
+      if (!/UNKNOWN/.test(msg)) throw err;
+      await page.waitForTimeout(300 * (attempt + 1));
+    }
+  }
+  await page.screenshot({ path: shot(name), ...opts });
+}
+
 async function captureState(page: any) {
   return page.evaluate(async () => {
     const res = await fetch('/api/capture/state');
@@ -194,7 +215,7 @@ test('hardware-aligned device page', async ({ page }) => {
   await expect(page.locator('.hero-badges .badge-hw')).toContainText('200.4 MHz sample clock');
   await expect(page.getByRole('button', { name: 'Raw debug inspector' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Run self-test' })).toBeVisible();
-  await page.screenshot({ path: shot('device-page.png'), fullPage: true });
+  await takeScreenshot(page, 'device-page.png', { fullPage: true });
 });
 
 test('capture controls reflect MAX1000 modes', async ({ page }) => {
@@ -211,22 +232,22 @@ test('capture controls reflect MAX1000 modes', async ({ page }) => {
   await page.locator('.mode-tile', { hasText: 'Digital deep' }).click();
   await page.getByRole('button', { name: 'DELTA RLE' }).click();
   await expect(page.getByRole('button', { name: 'DELTA RLE' })).toHaveClass(/active/);
-  await page.screenshot({ path: shot('capture-compression-delta-rle.png'), fullPage: true });
+  await takeScreenshot(page, 'capture-compression-delta-rle.png', { fullPage: true });
 
   await page.getByRole('button', { name: 'Live ring' }).click();
   await expect(page.getByRole('option', { name: '50 MHz' })).toBeAttached();
   await expect(page.getByText('Live compression buffer: ready')).toBeVisible();
-  await page.screenshot({ path: shot('capture-live-50mhz-latest.png'), fullPage: true });
+  await takeScreenshot(page, 'capture-live-50mhz-latest.png', { fullPage: true });
 
   await page.locator('.mode-tile', { hasText: 'Analog fast' }).click();
   await expect(page.getByText('High-speed analog captures one analog input (AIN3) at the best ADC rate.')).toBeVisible();
   await expect(page.getByRole('option', { name: '1 MHz' })).toBeAttached();
   await expect(page.getByText('Analog and mixed captures use raw readback.')).toBeVisible();
-  await page.screenshot({ path: shot('capture-analog-fast.png'), fullPage: true });
+  await takeScreenshot(page, 'capture-analog-fast.png', { fullPage: true });
 
   await page.locator('.mode-tile', { hasText: 'Maximum analog' }).click();
   await expect(page.getByText('Maximum analog captures the physical MAX1000 analog profile: AIN3, AIN1, AIN4, and AIN6.')).toBeVisible();
-  await expect(page.getByRole('option', { name: '125 kHz' })).toBeAttached();
+  await expect(page.getByRole('option', { name: '24 kHz' })).toBeAttached();
 
   await page.locator('.mode-tile', { hasText: 'Mixed scan' }).click();
   await expect(page.getByText('Mixed mode captures 16 digital bits plus the 4 analog scan channels, sampled together at a shared scan frame rate.')).toBeVisible();
@@ -235,7 +256,7 @@ test('capture controls reflect MAX1000 modes', async ({ page }) => {
 
   await page.locator('.mode-tile', { hasText: 'Packed narrow' }).click();
   await expect(page.getByText('Packed narrow is live-only.')).toBeVisible();
-  await page.screenshot({ path: shot('capture-controls.png'), fullPage: true });
+  await takeScreenshot(page, 'capture-controls.png', { fullPage: true });
 });
 
 test('mock device scenarios expose protocol and fault fixtures', async ({ page }) => {
@@ -305,7 +326,7 @@ test('compression sweep shows raw and delta_rle throughput differences', async (
           raw_retry_s: timings[`last_readback_raw_retry_s_${codec}`] ?? null,
         },
       });
-    await page.screenshot({ path: shot(`compression-sweep-${rate}-${codec}.png`) });
+    await takeScreenshot(page, `compression-sweep-${rate}-${codec}.png`);
     }
   }
 
@@ -332,7 +353,7 @@ test('compression sweep shows raw and delta_rle throughput differences', async (
     expect(row.delta_rle).toBeDefined();
   }
 
-  await page.screenshot({ path: shot('compression-sweep-summary.png'), fullPage: true });
+  await takeScreenshot(page, 'compression-sweep-summary.png', { fullPage: true });
 });
 
 test('generator page matches supported board protocols', async ({ page }) => {
@@ -346,7 +367,7 @@ test('generator page matches supported board protocols', async ({ page }) => {
   await expect(page.getByTestId('generator-route-capabilities')).toBeVisible();
   await expect(page.getByLabel('Generator protocol').locator('option')).toHaveCount(6);
   await expect(page.getByText('Hardware support on this board is UART, RS-485, I2C, SPI, SWD transaction capture, and raw two-output Bit Banger playback. Protocol exerciser workflows can be built from the raw symbol mode.')).toBeVisible();
-  await page.screenshot({ path: shot('generator-page-latest.png'), fullPage: true });
+  await takeScreenshot(page, 'generator-page-latest.png', { fullPage: true });
 });
 
 test('mock generator exposes Bit Banger templates and bounded preview controls', async ({ page }) => {
@@ -360,7 +381,7 @@ test('mock generator exposes Bit Banger templates and bounded preview controls',
   await expect(page.getByText(/symbols/).last()).toBeVisible();
   await page.getByRole('button', { name: 'Preview parameter sweep' }).click();
   await expect(page.getByText('3/3 variants valid')).toBeVisible();
-  await page.screenshot({ path: shot('bit-banger-preview-sweep.png'), fullPage: true });
+  await takeScreenshot(page, 'bit-banger-preview-sweep.png', { fullPage: true });
   await protocol.selectOption('uart');
   await page.getByRole('button', { name: 'Run capture-backed sweep' }).click();
   await expect(page.getByText('2/2 variants valid')).toBeVisible();
@@ -373,7 +394,7 @@ test('mock SWD generator captures and reports decoded transactions', async ({ pa
   await expect(page.getByLabel('SWD requests (JSON)')).toBeVisible();
   await page.getByRole('button', { name: 'Send + capture' }).click();
   await expect(page.locator('.toast').filter({ hasText: 'decoded 1 SWD transaction' })).toBeVisible();
-  await page.screenshot({ path: shot('swd-generator-capture.png'), fullPage: true });
+  await takeScreenshot(page, 'swd-generator-capture.png', { fullPage: true });
 });
 
 test('mock capture dashboard shows protocol activity and errors', async ({ page }) => {
@@ -388,7 +409,7 @@ test('mock capture dashboard shows protocol activity and errors', async ({ page 
   await expect(page.getByText('framing error')).toBeVisible();
   await expect(page.getByText('Suspect timing annotations')).toBeVisible();
   await expect(page.getByText('40 samples')).toBeVisible();
-  await page.screenshot({ path: shot('session-dashboard.png'), fullPage: true });
+  await takeScreenshot(page, 'session-dashboard.png', { fullPage: true });
 });
 
 test('mock trigger builder previews pattern qualifiers', async ({ page }) => {
@@ -399,7 +420,7 @@ test('mock trigger builder previews pattern qualifiers', async ({ page }) => {
   await expect(page.getByLabel('Trigger preview')).toBeVisible();
   await expect(page.getByLabel('Trigger preview')).toContainText('1x01');
   await expect(page.getByLabel('Trigger preview')).toContainText("don't care");
-  await page.screenshot({ path: shot('trigger-builder.png'), fullPage: true });
+  await takeScreenshot(page, 'trigger-builder.png', { fullPage: true });
 });
 
 test('mock decoder builder adds and runs a decoder instance', async ({ page }) => {
@@ -411,7 +432,7 @@ test('mock decoder builder adds and runs a decoder instance', async ({ page }) =
   await page.getByRole('button', { name: 'Add & run' }).click();
   await expect(page.locator('.decoder-card')).toHaveCount(2);
   await expect(page.getByRole('button', { name: '+ Add decoder' })).toBeVisible();
-  await page.screenshot({ path: shot('decoder-builder.png'), fullPage: true });
+  await takeScreenshot(page, 'decoder-builder.png', { fullPage: true });
 });
 
 test('mock raw inspector loads packed samples and supports paging', async ({ page }) => {
@@ -420,7 +441,7 @@ test('mock raw inspector loads packed samples and supports paging', async ({ pag
   await expect(page.getByText('0x0000', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '⟩', exact: true }).last().click();
   await expect(page.getByText('0x0003', { exact: true })).toBeVisible();
-  await page.screenshot({ path: shot('raw-inspector.png'), fullPage: true });
+  await takeScreenshot(page, 'raw-inspector.png', { fullPage: true });
 });
 
 test('mock marker panel adds a named bookmark from waveform hover', async ({ page }) => {
@@ -430,7 +451,7 @@ test('mock marker panel adds a named bookmark from waveform hover', async ({ pag
   await page.getByPlaceholder('marker label').fill('bus-start');
   await page.getByRole('button', { name: '@ hover' }).click();
   await expect(page.getByText('bus-start', { exact: true })).toBeVisible();
-  await page.screenshot({ path: shot('markers-panel.png'), fullPage: true });
+  await takeScreenshot(page, 'markers-panel.png', { fullPage: true });
 });
 
 test('mock eye diagram folds a digital channel at a configured rate', async ({ page }) => {
@@ -441,7 +462,7 @@ test('mock eye diagram folds a digital channel at a configured rate', async ({ p
   await page.getByRole('button', { name: 'Compute eye diagram' }).click();
   await expect(page.getByText(/24 folded traces/)).toBeVisible();
   await expect(page.getByLabel('Eye diagram')).toBeVisible();
-  await page.screenshot({ path: shot('eye-diagram.png'), fullPage: true });
+  await takeScreenshot(page, 'eye-diagram.png', { fullPage: true });
 });
 
 test('mock channel panel saves a visibility layout and exposes drag ordering', async ({ page }) => {
@@ -452,13 +473,13 @@ test('mock channel panel saves a visibility layout and exposes drag ordering', a
   await page.getByRole('button', { name: 'Save layout' }).click();
   await expect(page.getByText("Channel layout 'smoke' saved")).toBeVisible();
   await page.getByRole('button', { name: 'Digital only' }).click();
-  await page.screenshot({ path: shot('channel-layout.png'), fullPage: true });
+  await takeScreenshot(page, 'channel-layout.png', { fullPage: true });
 });
 
 test('command palette navigates between app pages', async ({ page }) => {
   await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })));
   await expect(page.getByRole('dialog', { name: 'Command palette' })).toBeVisible();
-  await page.screenshot({ path: shot('command-palette.png'), fullPage: true });
+  await takeScreenshot(page, 'command-palette.png', { fullPage: true });
   await page.getByLabel('Command search').fill('generator');
   await page.keyboard.press('Enter');
   await expect(page.getByRole('heading', { name: 'Signal generator' })).toBeVisible();
@@ -497,7 +518,7 @@ test('signal generator loopback shows waveform and decode', async ({ page }) => 
   } else {
     await openLiveSession(page, 'Generator self-test (uart)');
   }
-  await page.screenshot({ path: shot('generator-loopback-capture.png'), fullPage: true });
+  await takeScreenshot(page, 'generator-loopback-capture.png', { fullPage: true });
 });
 
 test('machine-in-loop transaction shows request and response waveforms', async ({ page }) => {
@@ -514,21 +535,21 @@ test('machine-in-loop transaction shows request and response waveforms', async (
     has: page.getByRole('heading', { name: 'Commands' }),
   });
   await expect(milResult).toContainText(/READ|RESPONSE/);
-  await page.screenshot({ path: shot('mil-transaction.png'), fullPage: true });
+  await takeScreenshot(page, 'mil-transaction.png', { fullPage: true });
 });
 
 test('settings page keeps control lock and viewer settings clear', async ({ page }) => {
   await page.getByRole('button', { name: 'Settings' }).click();
   await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
   await expect(page.getByText('Acquire the control lock before sending capture or generator commands to the hardware.')).toBeVisible();
-  await page.screenshot({ path: shot('settings-page.png'), fullPage: true });
+  await takeScreenshot(page, 'settings-page.png', { fullPage: true });
 });
 
 test('diagnostics page shows the control plane without hardware', async ({ page }) => {
   await page.getByRole('button', { name: 'Diagnostics' }).click();
   await expect(page.getByRole('heading', { name: 'Diagnostics' })).toBeVisible();
   await expect(page.getByText('Mock captures')).toBeVisible();
-  await page.screenshot({ path: shot('diagnostics-page-latest.png'), fullPage: true });
+  await takeScreenshot(page, 'diagnostics-page-latest.png', { fullPage: true });
 });
 
 test('live hardware sessions show waveform screenshots across digital and analog modes', async ({ page }) => {
@@ -540,15 +561,15 @@ test('live hardware sessions show waveform screenshots across digital and analog
   await page.getByRole('button', { name: 'Device' }).click();
   await expect(page.getByRole('heading', { name: 'Device' })).toBeVisible();
   await expect(page.getByText('held by playwright')).toBeVisible();
-  await page.screenshot({ path: shot('live-device-page.png'), fullPage: true });
+  await takeScreenshot(page, 'live-device-page.png', { fullPage: true });
 
   await page.locator('.sidebar button[title="Capture"]').click();
   await expect(page.getByText('Hardware mode')).toBeVisible();
   await expect(page.getByText('Readback codec')).toBeVisible();
-  await page.screenshot({ path: shot('live-capture-controls.png'), fullPage: true });
+  await takeScreenshot(page, 'live-capture-controls.png', { fullPage: true });
 
   await openLiveSession(page, 'Generator self-test (uart)');
-  await page.screenshot({ path: shot('live-generator-loopback-capture.png'), fullPage: true });
+  await takeScreenshot(page, 'live-generator-loopback-capture.png', { fullPage: true });
 
   await page.evaluate(async () => {
     const clientId = localStorage.getItem('msa_client_id') ?? '';
@@ -565,7 +586,7 @@ test('live hardware sessions show waveform screenshots across digital and analog
   });
 
   await openLiveSession(page, 'LIS3DH WHO_AM_I live');
-  await page.screenshot({ path: shot('live-accelerometer-session-waveform.png'), fullPage: true });
+  await takeScreenshot(page, 'live-accelerometer-session-waveform.png', { fullPage: true });
 
   const sessions = await listLiveSessions(page);
   const picks = [
@@ -591,7 +612,7 @@ test('live hardware sessions show waveform screenshots across digital and analog
       await row.scrollIntoViewIfNeeded();
       await row.getByRole('button', { name: 'Open' }).click({ force: true });
       await expect(page.locator('canvas.waveform-canvas')).toBeVisible({ timeout: 15_000 });
-      await page.screenshot({ path: shot(pick.shot) });
+      await takeScreenshot(page, pick.shot);
       await page.getByRole('button', { name: 'Sessions' }).click();
       await expect(page.getByRole('heading', { name: 'Sessions' })).toBeVisible();
     } catch {
@@ -616,7 +637,7 @@ if (useMockHarness) {
     await expect(page.getByRole('option', { name: 'a1 (analog)' })).toBeAttached();
     await expect(page.getByRole('option', { name: 'a2 (analog)' })).toBeAttached();
 
-    await page.screenshot({ path: shot('analog-session-waveform.png'), fullPage: true });
+    await takeScreenshot(page, 'analog-session-waveform.png', { fullPage: true });
   });
 
   test('mock analog panel computes a spectrum from the mixed capture', async ({ page }) => {
@@ -626,7 +647,7 @@ if (useMockHarness) {
     await page.getByRole('button', { name: 'Analog', exact: true }).click();
   await page.getByRole('button', { name: 'Compute spectrum' }).click();
   await expect(page.getByText('Peaks: 1.00 kHz', { exact: true })).toBeVisible();
-  await page.screenshot({ path: shot('analog-spectrum.png'), fullPage: true });
+  await takeScreenshot(page, 'analog-spectrum.png', { fullPage: true });
   });
 
   test('accelerometer session renders waveform and decode on the mock fixture', async ({ page }) => {
@@ -641,7 +662,7 @@ if (useMockHarness) {
     await expect(page.getByRole('cell', { name: 'START', exact: true })).toBeVisible();
     await expect(page.getByRole('cell', { name: '0x33', exact: true })).toBeVisible();
 
-    await page.screenshot({ path: shot('accelerometer-session-waveform.png'), fullPage: true });
+    await takeScreenshot(page, 'accelerometer-session-waveform.png', { fullPage: true });
   });
 
   test('session comparison shows alignment and first divergence on the mock fixture', async ({ page }) => {
@@ -656,7 +677,7 @@ if (useMockHarness) {
     await expect(page.getByText(/first divergence A 420 \/ B 418/)).toBeVisible();
     await expect(page.getByText('Timing deltas')).toBeVisible();
     await expect(page.getByText('0.50').first()).toBeVisible();
-    await page.screenshot({ path: shot('session-comparison.png'), fullPage: true });
+    await takeScreenshot(page, 'session-comparison.png', { fullPage: true });
   });
 
   test('mock trigger search auto-scopes the decoder window', async ({ page }) => {
@@ -666,7 +687,7 @@ if (useMockHarness) {
     await page.getByRole('button', { name: 'Search existing capture' }).click();
   await expect(page.getByText(/scoped decoder to 1 event/)).toBeVisible();
     await expect(page.getByText(/pre-trigger 0 samples/)).toBeVisible();
-    await page.screenshot({ path: shot('trigger-decoder-auto-scope.png'), fullPage: true });
+    await takeScreenshot(page, 'trigger-decoder-auto-scope.png', { fullPage: true });
   });
 
   test('mock capture queue submits, polls, and reports the resulting session', async ({ page }) => {
@@ -674,7 +695,7 @@ if (useMockHarness) {
     await page.getByRole('button', { name: 'Queue capture job' }).click();
     await expect(page.getByText(/Headless job done/)).toBeVisible();
     await expect(page.getByText(/session session-demo/)).toBeVisible();
-    await page.screenshot({ path: shot('capture-job-queue.png'), fullPage: true });
+    await takeScreenshot(page, 'capture-job-queue.png', { fullPage: true });
   });
 
   test('mock dashboard exposes CAN and LIN health summaries', async ({ page }) => {
@@ -685,7 +706,7 @@ if (useMockHarness) {
     await expect(page.getByText(/CAN health 3 frame/)).toBeVisible();
     await expect(page.getByText(/LIN health 2 frame/)).toBeVisible();
     await expect(page.getByText(/checksum error/)).toBeVisible();
-    await page.screenshot({ path: shot('can-lin-health.png'), fullPage: true });
+    await takeScreenshot(page, 'can-lin-health.png', { fullPage: true });
   });
 
   test('measurement panel renders a fixture result and recomputes it', async ({ page }) => {
@@ -695,7 +716,7 @@ if (useMockHarness) {
     await expect(measurementRow).toContainText('115.2000 kHz');
   await page.getByRole('button', { name: /Recompute all/ }).click();
   await expect(measurementRow).toContainText('115.2000 kHz');
-  await page.screenshot({ path: shot('measurements.png'), fullPage: true });
+  await takeScreenshot(page, 'measurements.png', { fullPage: true });
   });
 
   test('export panel downloads a report and PulseView-compatible VCD', async ({ page }) => {
@@ -707,6 +728,6 @@ if (useMockHarness) {
     await expect(page.getByText('PDF export downloaded')).toBeVisible();
   await page.getByRole('button', { name: 'PulseView-compatible VCD' }).click();
   await expect(page.getByText('PULSEVIEW export downloaded')).toBeVisible();
-  await page.screenshot({ path: shot('exports.png'), fullPage: true });
+  await takeScreenshot(page, 'exports.png', { fullPage: true });
   });
 }

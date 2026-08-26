@@ -5,6 +5,27 @@ import path from 'node:path';
 const screenshots = path.resolve(process.cwd(), 'test-results/screenshots');
 const clientId = 'codex-hardware-features';
 const runHardwareMatrix = process.env.PLAYWRIGHT_HARDWARE_MATRIX === '1';
+/**
+ * Screenshot with retry: Windows Defender briefly locks freshly-written PNGs
+ * during rapid matrix runs ("UNKNOWN: unknown error, open ..."). Space writes
+ * and retry once the scan releases the file.
+ */
+async function takeScreenshot(page: any, name: string, opts: { fullPage?: boolean } = {}) {
+  await page.waitForTimeout(150);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await page.screenshot({ path: path.join(screenshots, name), ...opts });
+      return;
+    } catch (err: any) {
+      const msg = String(err?.message ?? err);
+      if (!/UNKNOWN/.test(msg)) throw err;
+      await page.waitForTimeout(300 * (attempt + 1));
+    }
+  }
+  await page.screenshot({ path: path.join(screenshots, name), ...opts });
+}
+
+
 
 test.beforeEach(async ({ page }) => {
   if (test.info().title.includes('validates every advertised mode and rate') && !runHardwareMatrix) {
@@ -41,7 +62,7 @@ test('hardware capture controls expose the real pre-trigger path', async ({ page
   await expect(page.getByText(/Trigger position:/)).toBeVisible();
   await page.getByRole('slider').fill('25');
   await expect(page.getByText(/pre-trigger .* samples/)).toBeVisible();
-  await page.screenshot({ path: path.join(screenshots, 'hardware-pretrigger-controls.png'), fullPage: true });
+  await takeScreenshot(page, 'hardware-pretrigger-controls.png', { fullPage: true });
 });
 
 test('hardware queue captures a real MAX1000 session', async ({ page }) => {
@@ -50,7 +71,7 @@ test('hardware queue captures a real MAX1000 session', async ({ page }) => {
   await page.getByRole('button', { name: 'Queue capture job' }).click();
   await expect(page.getByText(/Headless job done/)).toBeVisible({ timeout: 45_000 });
   await expect(page.getByText(/session ses_/)).toBeVisible();
-  await page.screenshot({ path: path.join(screenshots, 'hardware-capture-job.png'), fullPage: true });
+  await takeScreenshot(page, 'hardware-capture-job.png', { fullPage: true });
 });
 
 test('hardware accelerometer sequence trigger scopes the I2C decoder', async ({ page }) => {
@@ -93,10 +114,7 @@ test('hardware capture controls screenshot matrix covers every advertised rate',
     })));
     for (const option of options) {
       await rateSelect.selectOption(option.value);
-      await page.screenshot({
-        path: path.join(screenshots, `hardware-matrix-${slug(mode)}-${acquisition}-${slug(option.label)}.png`),
-        fullPage: true,
-      });
+      await takeScreenshot(page, `hardware-matrix-${slug(mode)}-${acquisition}-${slug(option.label)}.png`, { fullPage: true });
     }
     return options.map((option) => option.label);
   };
@@ -117,7 +135,7 @@ test('hardware capture controls screenshot matrix covers every advertised rate',
   expect(coverage['Digital deep / live']).toContain('50 MHz');
   expect(coverage['Packed narrow / live']).toContain('200 MHz');
   expect(coverage['Analog fast / single']).toContain('1 MHz');
-  expect(coverage['Maximum analog / single']).toEqual(['125 kHz']);
+  expect(coverage['Maximum analog / single']).toEqual(['24 kHz']);
   expect(coverage['Mixed scan / single']).toEqual(['125 kHz']);
 });
 
@@ -158,11 +176,11 @@ test('hardware capture matrix validates every advertised mode and rate before ev
     },
     {
       mode: 'Maximum analog', acquisition: 'single', apiMode: 'analog_all',
-      rates: [125e3], analog: true, digital: false,
+      rates: [24e3], analog: true, digital: false,
     },
     {
       mode: 'Maximum analog', acquisition: 'live', apiMode: 'analog_all_continuous',
-      rates: [125e3], analog: true, digital: false,
+      rates: [24e3], analog: true, digital: false,
     },
     {
       mode: 'Mixed scan', acquisition: 'single', apiMode: 'mixed',
@@ -291,10 +309,7 @@ test('hardware capture matrix validates every advertised mode and rate before ev
             });
           }).catch(() => {});
         }
-        await page.screenshot({
-          path: path.join(screenshots, `hardware-validated-matrix-${slug(item.mode)}-${item.acquisition}-${slug(String(rate))}.png`),
-          fullPage: true,
-        });
+        await takeScreenshot(page, `hardware-validated-matrix-${slug(item.mode)}-${item.acquisition}-${slug(String(rate))}.png`, { fullPage: true });
       }
     }
   }

@@ -2,9 +2,13 @@ import os
 import struct
 from unittest.mock import MagicMock, patch, call, ANY
 
+import pytest
+
 from driver.spi_protocol import (
     CMD_ACK_CAPTURE_DONE,
     CMD_ABORT_CAPTURE,
+    CMD_GEN_START,
+    CMD_GEN_STOP,
     REG_GEN_BAUD,
     REG_GEN_CAPTURE_SCL_CHAN,
     REG_GEN_CAPTURE_TX_CHAN,
@@ -632,6 +636,72 @@ class TestOLSDeviceSPI:
         ][-1] == first_baud
         assert call(REG_GEN_DATA, 0x104) in \
             device_spi.pkt.write_register.call_args_list
+
+    def test_set_live_gen_loads_repeating_pattern_and_starts(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.set_live_gen(
+            pack_symbols([0, 1, 2, 3] * 16), symbol_rate=115200,
+            tx_pin=3, scl_pin=1)
+        # GEN_FLAG_REPEAT set: (1 << 8) | 0x04 == 0x104
+        assert call(REG_GEN_DATA, 0x104) in \
+            device_spi.pkt.write_register.call_args_list
+        assert call(REG_GEN_BAUD, device_spi._uart_baud_div(115200) & 0xFFFF) in \
+            device_spi.pkt.write_register.call_args_list
+        device_spi.pkt.load_gen_data.assert_called_once()
+        device_spi.pkt.transaction.assert_called_with(CMD_GEN_START)
+
+    def test_set_live_gen_empty_pattern_raises(self, device_spi):
+        device_spi.pkt = MagicMock()
+        with pytest.raises(ValueError, match="empty"):
+            device_spi.set_live_gen(b"", symbol_rate=115200)
+
+    def test_set_live_gen_rejects_unrepresentable_symbol_rate(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.sys_clk = 100_200_000
+        packed = pack_symbols([0, 1] * 16)
+        # 1200 baud needs div ~= 83499 > 65535 (16-bit REG_GEN_BAUD); the
+        # truncated divider would emit ~5.6 kHz instead of 1.2 kHz.
+        with pytest.raises(ValueError, match="below the Bit_Engine floor"):
+            device_spi.set_live_gen(packed, symbol_rate=1200)
+        assert device_spi._live_gen is None
+        # 9600 baud (div ~= 10437) is representable.
+        device_spi.set_live_gen(packed, symbol_rate=9600)
+        assert device_spi._live_gen is not None
+
+    def test_kick_live_gen_reloads_repeating_pattern(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.set_live_gen(
+            pack_symbols([0, 1, 2, 3] * 16), symbol_rate=115200, tx_pin=5)
+        device_spi.pkt.reset_mock()
+        assert device_spi._kick_live_gen() is True
+        assert call(REG_GEN_DATA, 0x104) in \
+            device_spi.pkt.write_register.call_args_list
+        device_spi.pkt.load_gen_data.assert_called_once()
+        device_spi.pkt.transaction.assert_called_with(CMD_GEN_START)
+        # No live gen armed -> no-op
+        device_spi._live_gen = None
+        assert device_spi._kick_live_gen() is False
+
+    def test_clear_live_gen_stops_and_forgets(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.set_live_gen(pack_symbols([1] * 16), symbol_rate=115200)
+        device_spi.pkt.reset_mock()
+        device_spi.clear_live_gen()
+        assert device_spi._live_gen is None
+        device_spi.pkt.transaction.assert_called_with(CMD_GEN_STOP, timeout=0.5)
+
+    def test_capture_rekicks_live_gen_after_reset(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.arm_capture.return_value = 0  # ST_OK
+        device_spi._stream_readback = MagicMock(return_value=b'\x01\x00' * 2048)
+        device_spi._live_gen = {"packed": b"\x00", "div": 100, "tx_pin": 3,
+                                "scl_pin": 1, "flags": 0}
+        with patch.object(device_spi, '_wait_capture_done',
+                          return_value={'capture_status': ST_CAPTURE_DONE,
+                                        'capture_seq': 0}):
+            with patch.object(device_spi, '_kick_live_gen') as kick:
+                device_spi.capture(rate_hz=1_000_000, nsamples=1024, timeout=1)
+        kick.assert_called_once()
 
     def test_trim_packed_capture_uses_committed_word_count(self, device_spi):
         samples = bytes(range(20))

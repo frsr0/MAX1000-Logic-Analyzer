@@ -46,7 +46,15 @@ export class WaveformView {
 
   private listeners = new Set<ViewListener>();
   private fetchTimer: ReturnType<typeof setTimeout> | null = null;
+  private overviewTimer = 0;
   private abort: AbortController | null = null;
+  // Live captures append chunks faster than window fetches complete (each
+  // chunk invalidates the backend LOD cache, so a fetch can take a second
+  // or more). Aborting the in-flight fetch on every chunk update meant no
+  // fetch ever landed and the canvas stayed empty. Instead coalesce: one
+  // fetch at a time, and re-fetch once it lands if newer data arrived.
+  private fetching = false;
+  private refetchQueued = false;
   private annotTimer: ReturnType<typeof setTimeout> | null = null;
   private fetchGen = 0;
   private workerClient = new WaveformClient();
@@ -109,7 +117,6 @@ export class WaveformView {
     this.liveRolling = followEnd;
     this.liveChunkSamples = Math.max(0, Math.min(numSamples, chunkSamples));
     this.liveUpdatedAt = performance.now();
-    this.overview = null;
     if (!followEnd) this.payload = null;
     this.error = null;
     if (followEnd || oldEnd >= Math.max(0, oldSamples - oldSpan * 0.05)) {
@@ -119,10 +126,18 @@ export class WaveformView {
     } else {
       this.clampView();
     }
-    try {
-      this.overview = await this.workerClient.fetchOverview(this.sessionId);
-    } catch (e: unknown) {
-      this.error = e instanceof Error ? e.message : String(e);
+    // Overview refresh is fire-and-forget and throttled: chunks arrive faster
+    // than the minimap needs, and awaiting it here delayed the viewport fetch
+    // behind a queue of per-chunk overview requests.
+    const sid = this.sessionId;
+    const now = performance.now();
+    if (!this.overviewTimer || now - this.overviewTimer > 400) {
+      this.overviewTimer = now;
+      this.workerClient.fetchOverview(sid)
+        .then((ov) => {
+          if (this.sessionId === sid) this.overview = ov;
+        })
+        .catch(() => { /* overview is best-effort */ });
     }
     this.requestFetch(0);
     this.requestAnnotations();
@@ -135,9 +150,12 @@ export class WaveformView {
   }
 
   liveShiftSamples(now = performance.now()): number {
-    if (!this.liveRolling || !this.liveFollow || !this.liveChunkSamples) return 0;
-    const elapsedSamples = ((now - this.liveUpdatedAt) / 1000) * this.sampleRate;
-    return Math.max(0, Math.min(this.liveChunkSamples, elapsedSamples));
+    // A rolling payload is already indexed over the complete retained window.
+    // Advancing past `numSamples` invents samples that do not exist, leaving
+    // the right side (and eventually the whole canvas) blank between chunks.
+    // Live motion is driven by each waveform_ready payload instead.
+    void now;
+    return 0;
   }
 
   displayStart(): number {
@@ -149,7 +167,7 @@ export class WaveformView {
   }
 
   liveAnimating(): boolean {
-    return this.liveRolling && this.liveFollow && this.liveShiftSamples() < this.liveChunkSamples;
+    return false;
   }
 
   setChannelFilter(channels: string[] | undefined) {
@@ -281,7 +299,14 @@ export class WaveformView {
 
   private async doFetch() {
     if (!this.sessionId || !this.numSamples) return;
-    this.abort?.abort();
+    if (this.fetching) {
+      // Keep the in-flight fetch alive (its window still covers the newest
+      // data it saw) and re-fetch once it lands instead of aborting it.
+      this.refetchQueued = true;
+      return;
+    }
+    this.fetching = true;
+    if (!this.liveRolling) this.abort?.abort();
     const ctl = new AbortController();
     this.abort = ctl;
     this.loading = true;
@@ -291,9 +316,11 @@ export class WaveformView {
     // request ~2 bins per CSS pixel, capped to the server max
     const res = Math.min(4096, Math.max(512,
       Math.ceil((window.innerWidth || 1200) * 1.5)));
+    const fetchStart = Math.floor(this.start);
+    const fetchEnd = Math.ceil(this.end);
     try {
       const p = await this.workerClient.fetchWindow(
-        this.sessionId, Math.floor(this.start), Math.ceil(this.end), res,
+        this.sessionId, fetchStart, fetchEnd, res,
         this.channelFilter);
       if (gen === this.fetchGen) {
         this.payload = p;
@@ -307,9 +334,17 @@ export class WaveformView {
         this.error = e instanceof Error ? e.message : String(e);
       }
     } finally {
+      this.fetching = false;
       if (this.abort === ctl) {
         this.loading = false;
         this.notify();
+      }
+      // A newer chunk arrived while this fetch was in flight: fetch again so
+      // the view catches up. Only refetch if no newer fetch already started
+      // (gen unchanged) — otherwise that fetch supersedes this one.
+      if (this.refetchQueued && gen === this.fetchGen) {
+        this.refetchQueued = false;
+        this.requestFetch(0);
       }
     }
   }

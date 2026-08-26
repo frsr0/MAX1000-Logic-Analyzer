@@ -342,6 +342,12 @@ class CaptureManager:
                 if not settings.auto_rearm and settings.mode in single_modes:
                     break
             self.capture_state = "cancelled" if self._stop_evt.is_set() else "done"
+            if self._stop_evt.is_set():
+                # Normal Stop path: the loop exits cleanly without raising, so
+                # the HardwareError branch never publishes. Notify the frontend
+                # so the stale "capturing" badge clears immediately.
+                manager.publish_threadsafe("capture", "capture_cancelled",
+                                           {"message": "stopped"})
         except HardwareError as e:
             # A live capture is intentionally stopped while the worker is
             # between chunks.  The underlying driver reports the interrupted

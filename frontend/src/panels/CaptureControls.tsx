@@ -13,7 +13,9 @@ const DIGITAL_ROLLING_RATES = DIGITAL_RATES.filter((rate) => rate <= DIGITAL_ROL
 const DIGITAL_DEPTHS = [1024, 10_000, 50_000, 100_000, 250_000, 500_000, 1_048_576, 2_097_152, DIGITAL_SDRAM_DEPTH];
 const MIXED_RATES = [125e3];
 const ANALOG_FAST_RATES = [100e3, 200e3, 500e3, 1e6];
-const ANALOG_ALL_RATES = [125e3];
+// Maximum analog uses the packed 4-lane MSO path: measured ~24 kS/s per lane
+// (4 ADC channels round-robin a ~96-100 kS/s aggregate conversion rate).
+const ANALOG_ALL_RATES = [24e3];
 const ANALOG_DEPTHS = [1024, 10_000, 50_000, 100_000, 250_000];
 const ROLLING_WINDOW_SECONDS = [
   100e-6, 500e-6, 1e-3, 5e-3, 10e-3, 50e-3,
@@ -158,7 +160,15 @@ function rateOptionsForMode(mode: CaptureMode) {
 }
 
 function depthOptionsForMode(mode: CaptureMode) {
-  return ANALOG_MODES.includes(mode) ? ANALOG_DEPTHS : DIGITAL_DEPTHS;
+  if (!ANALOG_MODES.includes(mode)) return DIGITAL_DEPTHS;
+  // Maximum analog uses the packed MSO path: one packed capture is bounded
+  // by the SDRAM word budget (~4.19M words at a 1 MHz word-clock floor
+  // => ~100k samples/lane at the measured ~24 kS/s/lane). Larger requests
+  // would silently truncate, so cap the selectable depths.
+  if (mode === 'analog_all' || mode === 'analog_all_continuous') {
+    return ANALOG_DEPTHS.filter((n) => n <= 100_000);
+  }
+  return ANALOG_DEPTHS;
 }
 
 function labelForMode(mode: CaptureMode) {

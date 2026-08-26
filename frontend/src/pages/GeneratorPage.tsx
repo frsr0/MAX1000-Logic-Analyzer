@@ -149,7 +149,7 @@ export function GeneratorPage() {
     } catch (e: any) { toast('error', `Could not import script: ${e.message}`); }
   };
 
-  const send = async (capture: boolean) => {
+  const send = async (capture: boolean, live = false) => {
     setBusy(true);
     setResult(null);
     try {
@@ -160,12 +160,14 @@ export function GeneratorPage() {
       const r = await api.generatorSend({
         config: cfg,
         capture,
+        live,
         capture_rate: captureRate,
         capture_samples: uartCaptureSamples(cfg, captureRate),
         expected_hex: expected || undefined,
       });
       setResult(r);
       if (capture && r.session_id) toast('success', r.detail ?? 'Loopback captured');
+      else if (live) toast('success', 'Live stream started — it repeats until Stop and shows in rolling captures');
       else toast('success', 'Pattern sent');
     } catch (e: any) {
       toast('error', e.message);
@@ -178,6 +180,7 @@ export function GeneratorPage() {
   const canLoopbackCapture = ['uart', 'rs485', 'i2c', 'spi', 'swd'].includes(cfg.protocol) || status?.device_kind === 'mock';
   const canStandaloneSend = !['spi', 'pattern', 'counter', 'prbs'].includes(cfg.protocol)
     || status?.device_kind === 'mock';
+  const canLiveStream = ['uart', 'rs485', 'bitbang'].includes(cfg.protocol);
 
   if (!connected) {
     return (
@@ -606,6 +609,9 @@ export function GeneratorPage() {
 
           <div className="button-row">
             <button className="primary" disabled={busy || !controlMode || !canStandaloneSend} onClick={() => send(false)}>Send</button>
+            <button disabled={busy || !controlMode || !canLiveStream}
+              title="Repeats the pattern continuously; the driver re-arms it every capture chunk, so a rolling/live capture shows it"
+              onClick={() => send(false, true)}>Send live</button>
             <button className="primary" disabled={busy || !controlMode || !canLoopbackCapture} onClick={() => send(true)}>
               Send + capture
             </button>

@@ -311,6 +311,47 @@ def test_generator_swd_loopback_logs_decoded_transactions(client):
     assert "SWD transaction" in body["detail"]
 
 
+def test_generator_live_send_streams_into_rolling_capture(client):
+    client.post("/api/connect", json={"device_id": "mock"}, headers=HDR)
+    # tx_pin 15: demo_mixed leaves d15 constant-high, so any transitions on
+    # d15 in the live session must come from the repeating generator overlay.
+    r = client.post("/api/generator/send", json={
+        "config": {"protocol": "uart", "data_hex": "55",
+                   "baud": 9600, "tx_pin": 15},
+        "live": True}, headers=HDR)
+    assert r.status_code == 200, r.text
+    assert r.json()["live"] is True
+    # Live mode keeps running (one-shot would self-stop after ~0.3s).
+    assert client.get("/api/generator/status", headers=HDR).json()["running"] is True
+
+    prev = client.get("/api/status").json()["last_session_id"]
+    r = client.post("/api/capture/start", json={"settings": {
+        "mode": "rolling", "sample_rate": 100_000, "num_samples": 50_000,
+        "auto_rearm": True, "readback_compression": "raw",
+        "enabled_digital": list(range(16))}}, headers=HDR)
+    assert r.status_code == 200, r.text
+    deadline = time.time() + 20
+    sid = None
+    while time.time() < deadline:
+        st = client.get("/api/capture/state").json()
+        if st["last_session_id"] and st["last_session_id"] != prev:
+            sid = st["last_session_id"]
+            break
+        time.sleep(0.1)
+    assert sid, "rolling capture produced no session"
+
+    w = client.get(f"/api/sessions/{sid}/raw?start=0&end=1024&channels=d15")
+    assert w.status_code == 200, w.text
+    p = w.json()["digital_packed"]
+    assert any(a != b for a, b in zip(p, p[1:])), \
+        "live session should show the repeating generator on d15"
+
+    client.post("/api/capture/stop", headers=HDR)
+    client.post("/api/generator/stop", headers=HDR)
+    st = client.get("/api/generator/status").json()
+    assert st["running"] is False
+
+
 def test_generator_rejects_payload_larger_than_fpga_fifo(client):
     r = client.post("/api/generator/send", json={
         "config": {"protocol": "uart", "data_hex": "55" * 257,
