@@ -33,7 +33,7 @@ architecture bench of tb_gen_start is
   signal gen_load_byte : std_logic_vector(7 downto 0);
   signal gen_load_we   : std_logic;
   signal gen_start     : std_logic;
-  signal gen_baud_div  : std_logic_vector(15 downto 0);
+  signal gen_baud_div  : std_logic_vector(23 downto 0);
   signal gen_busy      : std_logic := '0';
   signal gen_proto     : std_logic;
   signal gen_tx_pin    : natural range 0 to 31;

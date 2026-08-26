@@ -123,7 +123,13 @@ def generator_preview(cfg: GeneratorConfig):
     if cfg.protocol != "bitbang":
         raise HTTPException(400, "Preview is currently available for bitbang only")
     try:
-        return bitbang_preview(cfg.extra, max(1, int(cfg.baud)))
+        sys_clk = None
+        try:
+            dev = capture_manager.require_device()
+            sys_clk = float(dev.get_metadata().sys_clk_hz)
+        except (HardwareError, AttributeError, TypeError):
+            pass
+        return bitbang_preview(cfg.extra, max(1, int(cfg.baud)), sys_clk=sys_clk)
     except (TypeError, ValueError) as e:
         raise HTTPException(400, str(e))
 

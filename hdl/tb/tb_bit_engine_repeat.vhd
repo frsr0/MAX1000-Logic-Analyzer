@@ -32,7 +32,7 @@ begin
       RX_Re       => rx_re,
       RX_Used     => rx_used,
       RX_Overflow => rx_overflow,
-      Bit_Div     => x"0000",
+      Bit_Div     => x"000000",
       Num_Syms    => x"FFFF",
       Over_Sample => "00",
       RX_Enable   => '0',

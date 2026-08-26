@@ -632,6 +632,8 @@ class ExistingHostAdapter(HardwareDevice):
     def generator_status(self) -> GeneratorStatus:
         busy = False
         live_armed = False
+        actual_rate = None
+        below_floor = False
         with self._lock:
             if self._dev is not None:
                 try:
@@ -643,10 +645,22 @@ class ExistingHostAdapter(HardwareDevice):
                 # gen_busy bit may not be set until the first capture re-kick,
                 # so report the armed pattern as running too.
                 live_armed = bool(getattr(self._dev, "live_gen_active", False))
+                if self._gen_cfg is not None and self._gen_cfg.protocol in (
+                        "uart", "rs485", "bitbang"):
+                    try:
+                        rate = max(1, int(self._gen_cfg.baud))
+                        actual_rate = self._dev.actual_symbol_rate(rate)
+                        below_floor = self._dev._uart_baud_div(rate) > \
+                            self._dev.gen_div_mask
+                    except Exception:
+                        pass
         running = busy or live_armed
         return GeneratorStatus(busy=running, running=running,
                                protocol=self._gen_cfg.protocol if self._gen_cfg else None,
                                config=self._gen_cfg.model_dump() if self._gen_cfg else None,
+                               actual_symbol_rate=actual_rate,
+                               below_floor=below_floor,
+                               divider_width=getattr(self._dev, "_gen_div_width", 16),
                                supported=True,
                                detail="UART/RS-485/I2C/SPI/SWD/raw Bit Banger generator (FPGA); SWD and SPI use send + capture")
 

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+from app.generator.bitbang import preset_symbols, preview
 from app.generator.protocols import (
     encode,
     i2c_symbols,
@@ -70,6 +73,35 @@ def test_swd_template_emits_reset_transition_and_request_transaction():
     })
     assert len(symbols) > 16 * 3
     assert all(symbol in range(4) for symbol in symbols)
+
+
+def test_square_preset_emits_symbol_rate_half_not_quarter():
+    # One symbol per level: 0,3,0,3,... so TX toggles every symbol and the
+    # output is symbol_rate/2 (the old two-symbol-per-level encoding gave /4).
+    symbols = preset_symbols("square", 32)
+    tx = [s & 1 for s in symbols]
+    assert tx[:6] == [0, 1, 0, 1, 0, 1]
+    assert all(tx[i] == tx[i % 2] for i in range(len(tx)))
+
+
+def test_bitbang_preview_reports_actual_rate_frequency_and_floor():
+    p = preview({"preset": "square", "count": 32}, 100_000,
+                sys_clk=100_200_000)
+    # 100 kHz request at sys_clk 100.2 MHz: div = round(1002 - 1.25) = 1001
+    assert p["count"] == 32
+    assert p["below_floor"] is False
+    assert p["output_frequency_hz"] == pytest.approx(
+        p["actual_symbol_rate"] / 2, rel=1e-6)
+    assert p["actual_symbol_rate"] == pytest.approx(
+        100_200_000 / (1001 + 1.25), rel=1e-9)
+    # A sub-floor rate is flagged (16-bit divider).
+    p2 = preview({"preset": "square", "count": 32}, 1200,
+                 sys_clk=100_200_000)
+    assert p2["below_floor"] is True
+    # Without sys_clk, frequency falls back to the requested symbol rate.
+    p3 = preview({"preset": "square", "count": 32}, 100_000)
+    assert p3["output_frequency_hz"] == 50_000
+    assert p3["actual_symbol_rate"] is None
 
 
 def test_generator_sweep_expands_axes_and_reports_preview_rows():

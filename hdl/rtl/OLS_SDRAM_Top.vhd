@@ -94,7 +94,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_load_byte : std_logic_vector(7 downto 0);
   signal gen_load_we   : std_logic;
   signal gen_start     : std_logic;
-  signal gen_baud_div_s : std_logic_vector(15 downto 0);
+  signal gen_baud_div_s : std_logic_vector(23 downto 0);
   signal gen_proto     : std_logic;
   signal gen_tx_pin    : natural range 0 to 31 := 0;
   signal gen_scl_pin   : natural range 0 to 31 := 0;
@@ -316,7 +316,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     Gen_Load_Byte : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Gen_Load_We   : OUT STD_LOGIC := '0';
     Gen_Start     : OUT STD_LOGIC := '0';
-    Gen_Baud_Div  : OUT STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+    Gen_Baud_Div  : OUT STD_LOGIC_VECTOR(23 downto 0) := (others => '0');
     Gen_Busy      : IN  STD_LOGIC := '0';
     Gen_Fifo_Count : IN STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Gen_Proto     : OUT STD_LOGIC := '0';
@@ -416,7 +416,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
     RX_Re       : in  std_logic;
     RX_Used     : out std_logic_vector(7 downto 0);
     RX_Overflow : out std_logic;
-    Bit_Div     : in  std_logic_vector(15 downto 0);
+    Bit_Div     : in  std_logic_vector(23 downto 0);
     Num_Syms    : in  std_logic_vector(15 downto 0);
     Over_Sample : in  std_logic_vector(1 downto 0);
     RX_Enable   : in  std_logic;

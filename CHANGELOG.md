@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Bit Banger `square` preset now emits one symbol per level, so the output
+  frequency is symbol_rate/2 (previously 2 symbols per level gave /4 — the
+  requested symbol rate was never what the wire produced).
+- Bit Banger previews and generator status now report the exact on-wire rate
+  (the Bit_Engine divider model `sys_clk / (Bit_Div + 1.25)`), the TX output
+  frequency for periodic presets, and a warning when the requested rate falls
+  below the 16-bit `REG_GEN_BAUD` floor (~1.5 kHz) where the FPGA truncates
+  the divider and silently runs faster. The one-shot send paths log the same
+  warning instead of silently emitting the wrong rate.
+- The Bit_Engine generator divider (`REG_GEN_BAUD`) is widened from 16 to 24
+  bits in the RTL, so symbol rates down to ~6 Hz at 100 MHz are representable
+  (1200 baud no longer wraps to ~5.6 kHz). `CMD_GET_METADATA` gains a feature
+  byte (bit0 = 24-bit divider); the host driver auto-switches its divider mask
+  from the flashed bitstream's width, and the generator status reports
+  `divider_width`. The rebuilt image is gated on Quartus timing (see
+  `hdl/proj/WIDE_DIVIDER_REBUILD.md`) and validated by
+  `host/debug/rate_sweep_probe.py` after flashing.
+
 - Fixed live (rolling) capture showing no signals: the waveform worker
   resolved concurrent window/overview requests FIFO instead of by request id,
   so the live window fetch received the overview payload (or nothing) and the

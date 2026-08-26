@@ -40,7 +40,7 @@ PORT (
   Gen_Load_Byte : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   Gen_Load_We   : OUT STD_LOGIC := '0';
   Gen_Start     : OUT STD_LOGIC := '0';
-  Gen_Baud_Div  : OUT STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  Gen_Baud_Div  : OUT STD_LOGIC_VECTOR(23 downto 0) := (others => '0');
   Gen_Busy      : IN  STD_LOGIC := '0';
   Gen_Fifo_Count : IN STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   Gen_Proto     : OUT STD_LOGIC;
@@ -140,7 +140,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL Gen_Load_Byte_i    : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL Gen_Load_We_i      : STD_LOGIC := '0';
   SIGNAL Gen_Start_i        : STD_LOGIC := '0';
-  SIGNAL Gen_Baud_Div_i     : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  SIGNAL Gen_Baud_Div_i     : STD_LOGIC_VECTOR(23 downto 0) := (others => '0');
   SIGNAL Gen_Proto_i       : STD_LOGIC := '0';
   SIGNAL Gen_Busy_i         : STD_LOGIC := '0';
   SIGNAL Gen_TX_Pin_i       : NATURAL range 0 to 31 := 0;
@@ -213,7 +213,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
     Gen_Load_Byte : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     Gen_Load_We   : OUT STD_LOGIC := '0';
     Gen_Start     : OUT STD_LOGIC := '0';
-    Gen_Baud_Div  : OUT STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+    Gen_Baud_Div  : OUT STD_LOGIC_VECTOR(23 downto 0) := (others => '0');
   Gen_Busy      : IN  STD_LOGIC := '0';
   Gen_Fifo_Count : IN STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   Gen_Proto     : OUT STD_LOGIC := '0';

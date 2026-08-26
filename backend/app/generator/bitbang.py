@@ -19,7 +19,9 @@ def preset_symbols(name: str, count: int = 32) -> List[int]:
     if name == "pulse":
         return [3] * max(1, count // 4) + [0] * max(1, count // 2) + [3] * max(1, count - (count // 4) - (count // 2))
     if name == "square":
-        return [((i // 2) & 1) * 3 for i in range(count)]
+        # One symbol per level: a square wave at symbol_rate/2 (0,3,0,3,...).
+        # The previous two-symbol-per-level encoding emitted symbol_rate/4.
+        return [(i & 1) * 3 for i in range(count)]
     if name == "alternating":
         return [i & 1 for i in range(count)]
     if name == "counter":
@@ -86,9 +88,43 @@ def expand_symbols(extra: Dict[str, Any], symbol_rate: int) -> List[int]:
     return result
 
 
-def preview(extra: Dict[str, Any], symbol_rate: int) -> dict:
+def _tx_period_symbols(symbols):
+    """Fundamental period of the TX (bit 0) level sequence, in symbols.
+
+    Returns None when the TX line is constant or not periodic (e.g. prbs).
+    A square preset at symbol rate R yields period 2 -> R/2; the old
+    two-symbol-per-level encoding yielded period 4 -> R/4.
+    """
+    if not symbols:
+        return None
+    tx = [s & 1 for s in symbols]
+    if all(v == tx[0] for v in tx):
+        return None
+    for period in range(1, len(tx) // 2 + 1):
+        if len(tx) % period:
+            continue
+        if all(tx[i] == tx[i % period] for i in range(len(tx))):
+            return period
+    return None
+
+
+def preview(extra: Dict[str, Any], symbol_rate: int,
+            sys_clk: Optional[float] = None) -> dict:
     symbols = expand_symbols(extra, symbol_rate)
-    return {"symbols": symbols, "count": len(symbols),
-            "duration_s": len(symbols) / max(1, symbol_rate),
-            "tx_levels": [s & 1 for s in symbols],
-            "clock_levels": [(s >> 1) & 1 for s in symbols]}
+    out = {"symbols": symbols, "count": len(symbols),
+           "duration_s": len(symbols) / max(1, symbol_rate),
+           "tx_levels": [s & 1 for s in symbols],
+           "clock_levels": [(s >> 1) & 1 for s in symbols],
+           "output_frequency_hz": None, "actual_symbol_rate": None,
+           "below_floor": False}
+    period = _tx_period_symbols(symbols)
+    if sys_clk:
+        div = max(1, int(round(sys_clk / max(1, int(symbol_rate)) - 1.25)))
+        actual = sys_clk / (div + 1.25)
+        out["actual_symbol_rate"] = actual
+        out["below_floor"] = div > 0xFFFF
+        if period:
+            out["output_frequency_hz"] = actual / period
+    elif period:
+        out["output_frequency_hz"] = max(1, symbol_rate) / period
+    return out

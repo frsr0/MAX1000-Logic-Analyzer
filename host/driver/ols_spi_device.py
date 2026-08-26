@@ -1,6 +1,7 @@
 """
 SPI-based OLS device backend using packet protocol.
 """
+import logging
 import os
 import time
 import struct
@@ -8,6 +9,9 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from array import array
 import numpy as np
+
+LOG = logging.getLogger("ols_spi_device")
+
 from .wire_format import (
     MODE_DIGITAL, MODE_MIXED, MODE_ANALOG_ONLY,
     MODE_ANALOG_FAST, MODE_ANALOG_ALL, MODE_ANALOG,
@@ -206,6 +210,9 @@ class OLSDeviceSPI:
         # reset (like the debug-CH0 PWM), so a generator keeps streaming into
         # rolling/live captures. None = no live generator armed.
         self._live_gen = None
+        # REG_GEN_BAUD width reported by the bitstream (16-bit legacy or
+        # 24-bit wide-divider image). Detected from metadata byte 9 on open.
+        self._gen_div_width = 16
         self.spi = None
         self._pkt = None
         self.analog_mode = MODE_DIGITAL
@@ -360,6 +367,7 @@ class OLSDeviceSPI:
                     pass
                 self._pkt = SPIDevice(self.spi)
                 self._detect_sample_clk()
+                self._detect_gen_div_width()
                 self._ring_seeded = False
                 return
             except Exception as e:
@@ -430,6 +438,20 @@ class OLSDeviceSPI:
                 self._set_clocks(khz * 1000)
         # fallback: leave as default
 
+    @property
+    def gen_div_mask(self):
+        """Bit mask for the REG_GEN_BAUD divider of the flashed bitstream."""
+        return 0xFFFFFF if getattr(self, "_gen_div_width", 16) >= 24 else 0xFFFF
+
+    def _detect_gen_div_width(self):
+        """Read the generator divider width from metadata byte 9 (bit 0 =
+        24-bit wide divider). Defaults to 16-bit for legacy bitstreams."""
+        meta = self.get_metadata()
+        if len(meta) >= 10 and (meta[9] & 0x01):
+            self._gen_div_width = 24
+        else:
+            self._gen_div_width = 16
+
     def raw_mode(self, enable=True):
         self._stride = 1 if enable else 2
         self._raw_flags = 0
@@ -492,11 +514,12 @@ class OLSDeviceSPI:
         symbol period is (Bit_Div + 1.25) cycles.  Solve for that; at low
         bauds this converges to the classic sys_clk/baud value.
 
-        REG_GEN_BAUD is a 16-bit register: Bit_Div is capped at 65535, so the
-        slowest representable symbol rate is sys_clk / 65536.25 (~1.5 kHz at
-        100 MHz). Callers mask the return with ``& 0xFFFF``; requesting a
-        slower rate truncates and runs much faster than asked (e.g. 1200 baud
-        becomes ~5.6 kHz). ``set_live_gen`` rejects such rates instead.
+        REG_GEN_BAUD is 16-bit on the legacy bitstream (floor ~1.5 kHz at
+        100 MHz) and 24-bit on the wide-divider image (floor ~6 Hz). Callers
+        mask the return with ``gen_div_mask``; requesting a slower rate
+        truncates and runs much faster than asked (e.g. 1200 baud becomes
+        ~5.6 kHz on the 16-bit image). ``set_live_gen`` rejects such rates;
+        the loader paths log a warning.
         """
         return max(1, int(round(self.sys_clk / max(1, int(baud)) - 1.25)))
 
@@ -507,6 +530,28 @@ class OLSDeviceSPI:
         the +1.25-cycle quantisation is a few percent of the bit period.
         """
         return self.sys_clk / (self._uart_baud_div(baud) + 1.25)
+
+    def actual_symbol_rate(self, symbol_rate):
+        """Exact on-wire symbol rate for a requested rate (same divider as
+        UART baud; the Bit_Engine emits one symbol per (div+1.25) cycles)."""
+        return self.sys_clk / (self._uart_baud_div(symbol_rate) + 1.25)
+
+    def _warn_div_overflow(self, rate, div):
+        """Warn when a symbol rate cannot be represented in REG_GEN_BAUD.
+
+        The register is 16-bit, so div > 0xFFFF silently truncates and the
+        pattern runs much faster than asked (e.g. 1200 baud becomes ~5.6 kHz).
+        """
+        mask = self.gen_div_mask
+        if div > mask:
+            LOG.warning(
+                "symbol rate %s Hz needs divider %s > %s (%s-bit "
+                "REG_GEN_BAUD); the pattern will run at ~%.0f Hz, not %s Hz. "
+                "Use >= ~%.0f Hz or the wide-divider bitstream.",
+                rate, div, mask, self._gen_div_width,
+                self.sys_clk / ((div & mask) + 1.25), rate,
+                self.sys_clk / (mask + 1.25))
+
 
     # ── Bit_Engine pattern loaders ─────────────────────────────────
     # The FPGA generator is a generic 2-bit symbol shifter (Bit_Engine);
@@ -519,7 +564,9 @@ class OLSDeviceSPI:
         limit = bit_bang.max_uart_bytes()
         if len(data) > limit:
             data = data[:limit]
-        self.pkt.write_register(REG_GEN_BAUD, self._uart_baud_div(baud) & 0xFFFF)
+        div = self._uart_baud_div(baud)
+        self._warn_div_overflow(baud, div)
+        self.pkt.write_register(REG_GEN_BAUD, div & self.gen_div_mask)
         if data:
             self.pkt.load_gen_data(
                 bit_bang.pack_symbols(bit_bang.uart_symbols(data)))
@@ -531,7 +578,9 @@ class OLSDeviceSPI:
         if len(data) > limit:
             data = data[:limit]
         # 2 symbols per SCLK period: SCLK = sys_clk / (2 * (Bit_Div + 1.25))
-        self.pkt.write_register(REG_GEN_BAUD, max(1, int(spi_clk_div) - 1) & 0xFFFF)
+        div = max(1, int(spi_clk_div) - 1)
+        self._warn_div_overflow(spi_clk_div, div)
+        self.pkt.write_register(REG_GEN_BAUD, div & self.gen_div_mask)
         if data:
             self.pkt.load_gen_data(
                 bit_bang.pack_symbols(bit_bang.spi_symbols(data)))
@@ -544,7 +593,7 @@ class OLSDeviceSPI:
             frame = frame[:limit]
         # 4 symbols per SCL period: SCL = sys_clk / (4 * (Bit_Div + 1.25))
         div = max(1, self.sys_clk // (4 * max(1, int(i2c_speed))))
-        self.pkt.write_register(REG_GEN_BAUD, div & 0xFFFF)
+        self.pkt.write_register(REG_GEN_BAUD, div & self.gen_div_mask)
         if frame:
             self.pkt.load_gen_data(
                 bit_bang.pack_symbols(bit_bang.i2c_symbols(frame)))
@@ -558,7 +607,7 @@ class OLSDeviceSPI:
         if read_len > max_read:
             read_len = max_read
         div = max(1, self.sys_clk // (4 * max(1, int(i2c_speed))))
-        self.pkt.write_register(REG_GEN_BAUD, div & 0xFFFF)
+        self.pkt.write_register(REG_GEN_BAUD, div & self.gen_div_mask)
         syms = bit_bang.i2c_read_symbols(frame, read_len, rdev)
         if syms:
             self.pkt.load_gen_data(bit_bang.pack_symbols(syms))
@@ -578,7 +627,7 @@ class OLSDeviceSPI:
         # 2 symbols per SWCLK period: SWCLK = sys_clk / (2 * (Bit_Div + 1.25))
         div = max(1, int(round(
             self.sys_clk / (2 * max(1, int(swd_clk_hz))) - 1.25)))
-        self.pkt.write_register(REG_GEN_BAUD, div & 0xFFFF)
+        self.pkt.write_register(REG_GEN_BAUD, div & self.gen_div_mask)
         syms = bit_bang.swd_sequence_symbols(
             ops, connect=connect, idle_clocks=idle_clocks)
         if not syms:
@@ -631,7 +680,7 @@ class OLSDeviceSPI:
         self.pkt.write_register(REG_GEN_DATA, flags)
         self.pkt.write_register(REG_GEN_PROTO, 0)
         self._pins(tx_pin=24, scl_pin=GEN_SCL_PARK)
-        self.pkt.write_register(REG_GEN_BAUD, bit_div & 0xFFFF)
+        self.pkt.write_register(REG_GEN_BAUD, bit_div & self.gen_div_mask)
         self.pkt.load_gen_data(bit_bang.pack_symbols(syms))
         div = max(0, int(self.sample_clk / rate_hz) - 1)
         self._write_capture_config(
@@ -671,7 +720,7 @@ class OLSDeviceSPI:
         # Park both routing pins on unmapped pool entries so the burst does
         # not toggle any MKR/PMOD pad (SEN_* are driven unconditionally).
         self._pins(tx_pin=24, scl_pin=GEN_SCL_PARK)
-        self.pkt.write_register(REG_GEN_BAUD, bit_div & 0xFFFF)
+        self.pkt.write_register(REG_GEN_BAUD, bit_div & self.gen_div_mask)
         self.pkt.load_gen_data(bit_bang.pack_symbols(syms))
         self.spi.flush()
         start_rsp = self.pkt.transaction(CMD_GEN_START, timeout=1.0)
@@ -809,17 +858,19 @@ class OLSDeviceSPI:
             raise ValueError("live generator pattern is empty")
         div = max(1, int(round(
             self.sys_clk / max(1, int(symbol_rate)) - 1.25)))
-        if div > 0xFFFF:
-            # REG_GEN_BAUD is a 16-bit divider; the FPGA Bit_Engine cannot
-            # slow below sys_clk / 65536.25 (~1.5 kHz at 100 MHz). Truncating
-            # silently would emit a much faster pattern (e.g. 1200 baud ->
-            # ~5.6 kHz), so reject the config instead.
+        if div > self.gen_div_mask:
+            # REG_GEN_BAUD is a {16,24}-bit divider; the FPGA Bit_Engine
+            # cannot slow below sys_clk / (mask+1.25) (~1.5 kHz at 16-bit,
+            # ~6 Hz at 24-bit). Truncating silently would emit a much faster
+            # pattern (e.g. 1200 baud -> ~5.6 kHz on the 16-bit image), so
+            # reject the config instead.
             raise ValueError(
                 f"symbol rate {symbol_rate} Hz is below the Bit_Engine floor "
-                f"of ~{self.sys_clk / 65536.25:.0f} Hz (16-bit divider)")
+                f"of ~{self.sys_clk / (self.gen_div_mask + 1.25):.0f} Hz "
+                f"({self._gen_div_width}-bit divider)")
         self._live_gen = {
             "packed": packed,
-            "div": div & 0xFFFF,
+            "div": div & self.gen_div_mask,
             "tx_pin": int(tx_pin),
             "scl_pin": int(scl_pin),
             "flags": int(flags) & 0xFFFF,
@@ -1718,7 +1769,7 @@ class OLSDeviceSPI:
         self._wait_gen_idle(timeout=0.25)
         self.pkt.write_register(REG_GEN_DATA, 1 << 8)  # clear stale I2C/SPI flags
         self.pkt.write_register(REG_GEN_PROTO, 0)
-        self.pkt.write_register(REG_GEN_BAUD, self._uart_baud_div(baud) & 0xFFFF)
+        self.pkt.write_register(REG_GEN_BAUD, self._uart_baud_div(baud) & self.gen_div_mask)
         self._pins(tx_pin=tx_pin, scl_pin=GEN_SCL_PARK)
         # The Bit_Engine is one-shot for this streaming helper, so build one burst
         # that fills the generator FIFO with as many payload repeats as fit
@@ -1827,11 +1878,12 @@ class OLSDeviceSPI:
         symbols = [int(s) & 0x03 for s in (symbols or [])]
         packed = bit_bang.pack_symbols(symbols)
         div = max(1, int(round(self.sys_clk / max(1, int(symbol_rate)) - 1.25)))
+        self._warn_div_overflow(symbol_rate, div)
         flags = GEN_FLAG_REPEAT if repeat else 0
         self.pkt.write_register(REG_GEN_DATA, (1 << 8) | flags)
         self.pkt.write_register(REG_GEN_PROTO, 0)
         self._pins(tx_pin=tx_pin, scl_pin=scl_pin)
-        self.pkt.write_register(REG_GEN_BAUD, div & 0xFFFF)
+        self.pkt.write_register(REG_GEN_BAUD, div & self.gen_div_mask)
         self.pkt.load_gen_data(packed)
         self.spi.flush()
         self.start_gen()
@@ -2016,7 +2068,7 @@ class OLSDeviceSPI:
             self.pkt.write_register(REG_GEN_DATA, 1 << 8)
             raw_div = max(1, int(round(
                 self.sys_clk / max(1, int(raw_symbol_rate)) - 1.25)))
-            self.pkt.write_register(REG_GEN_BAUD, raw_div & 0xFFFF)
+            self.pkt.write_register(REG_GEN_BAUD, raw_div & self.gen_div_mask)
             self.pkt.load_gen_data(bit_bang.pack_symbols(raw_symbols))
         elif self._gen_data is not None:
             self._set_gen_capture_aux()
@@ -2311,7 +2363,7 @@ class OLSDeviceSPI:
         i2c_packed = bit_bang.pack_symbols(
             bit_bang.i2c_symbols(bytes([dev_w, reg_addr])))
         self.pkt.write_register(
-            REG_GEN_BAUD, max(1, self.sys_clk // (4 * i2c_speed)) & 0xFFFF)
+            REG_GEN_BAUD, max(1, self.sys_clk // (4 * i2c_speed)) & self.gen_div_mask)
         self.pkt.load_gen_data(i2c_packed)
         self.spi.flush()
 
@@ -2514,7 +2566,7 @@ class OLSDeviceSPI:
             self.pkt.write_register(REG_GEN_DATA, 1 << 8)  # clear stale flags
             self.pkt.write_register(REG_GEN_PROTO, 0)
             self.pkt.write_register(
-                REG_GEN_BAUD, self._uart_baud_div(gen_baud) & 0xFFFF)
+                REG_GEN_BAUD, self._uart_baud_div(gen_baud) & self.gen_div_mask)
             self._pins(tx_pin=gen_tx_pin, scl_pin=GEN_SCL_PARK)
             gen_packed = bit_bang.pack_symbols(bit_bang.uart_symbols(
                 bytes(gen_data)[:bit_bang.max_uart_bytes()]))

@@ -690,6 +690,45 @@ class TestOLSDeviceSPI:
         assert device_spi._live_gen is None
         device_spi.pkt.transaction.assert_called_with(CMD_GEN_STOP, timeout=0.5)
 
+    def test_actual_symbol_rate_matches_divider_model(self, device_spi):
+        device_spi.sys_clk = 100_200_000
+        assert device_spi.actual_symbol_rate(9600) == pytest.approx(
+            100_200_000 / (device_spi._uart_baud_div(9600) + 1.25))
+        assert device_spi.gen_actual_baud(9600) == \
+            device_spi.actual_symbol_rate(9600)
+
+    def test_div_overflow_warns_for_unrepresentable_rate(self, device_spi, caplog):
+        device_spi.sys_clk = 100_200_000
+        device_spi._warn_div_overflow(1200, device_spi._uart_baud_div(1200))
+        assert any("1200" in r.message and "65535" in r.message
+                   for r in caplog.records)
+        # Representable rates stay silent.
+        caplog.clear()
+        device_spi._warn_div_overflow(9600, device_spi._uart_baud_div(9600))
+        assert not caplog.records
+
+    def test_div_width_detection_from_metadata(self, device_spi):
+        device_spi.pkt = MagicMock()
+        # 9-byte metadata (legacy bitstream) -> 16-bit divider.
+        device_spi.pkt.transaction.return_value = (0, 0, b"\x10\x10\x00\xf0\x01" + b"\x00" * 4)
+        device_spi._detect_gen_div_width()
+        assert device_spi._gen_div_width == 16
+        assert device_spi.gen_div_mask == 0xFFFF
+        # 10-byte metadata with feature bit 0 -> 24-bit wide divider.
+        device_spi.pkt.transaction.return_value = (0, 0, b"\x10\x10\x00\xf0\x01" + b"\x00" * 4 + b"\x01")
+        device_spi._detect_gen_div_width()
+        assert device_spi._gen_div_width == 24
+        assert device_spi.gen_div_mask == 0xFFFFFF
+
+    def test_live_gen_accepts_1200_baud_on_wide_divider(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.sys_clk = 100_200_000
+        device_spi._gen_div_width = 24
+        packed = pack_symbols([0, 1] * 16)
+        device_spi.set_live_gen(packed, symbol_rate=1200)
+        assert device_spi._live_gen is not None
+        assert device_spi._live_gen["div"] == 83499  # no 16-bit truncation
+
     def test_capture_rekicks_live_gen_after_reset(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi.pkt.arm_capture.return_value = 0  # ST_OK

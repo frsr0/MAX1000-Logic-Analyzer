@@ -201,6 +201,11 @@ export function GeneratorPage() {
         {genStatus && (
           <span className={`badge ${genStatus.busy ? 'badge-soft' : 'badge-hw'}`}>
             {genStatus.busy ? 'BUSY' : 'idle'}{genStatus.detail ? ` · ${genStatus.detail}` : ''}
+            {genStatus.actual_symbol_rate
+              ? ` · ~${(genStatus.actual_symbol_rate / 1000).toFixed(1)} kS/s`
+              : ''}
+            {genStatus.below_floor ? ' · ⚠ below divider floor' : ''}
+            {genStatus.divider_width >= 24 ? ' · 24-bit divider' : ''}
           </span>
         )}
       </div>
@@ -553,6 +558,17 @@ export function GeneratorPage() {
               </div>
               {preview && <div className="finding info">
                 {preview.count} symbols · {(preview.duration_s * 1e6).toFixed(1)} µs
+                {preview.output_frequency_hz
+                  ? ` · TX ~${preview.output_frequency_hz >= 1000
+                    ? `${(preview.output_frequency_hz / 1000).toFixed(1)} kHz`
+                    : `${Math.round(preview.output_frequency_hz)} Hz`}`
+                  : ''}
+                {preview.actual_symbol_rate
+                  ? ` · ${(preview.actual_symbol_rate / 1000).toFixed(1)} kS/s actual`
+                  : ''}
+                {preview.below_floor && (
+                  <div className="hint">Requested rate is below the Bit_Engine 16-bit divider floor (~1.5 kHz) — the FPGA truncates the divider and the pattern runs much faster. Raise the rate.</div>
+                )}
                 <div className="mono">TX {preview.tx_levels.join('')}<br />CLK {preview.clock_levels.join('')}</div>
               </div>}
             </>

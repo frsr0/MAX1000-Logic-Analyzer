@@ -31,7 +31,7 @@ PORT (
   Gen_Load_Byte : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   Gen_Load_We   : OUT STD_LOGIC := '0';
   Gen_Start     : OUT STD_LOGIC := '0';
-  Gen_Baud_Div  : OUT STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  Gen_Baud_Div  : OUT STD_LOGIC_VECTOR(23 downto 0) := (others => '0');
   Gen_Busy      : IN  STD_LOGIC := '0';
   Gen_Fifo_Count : IN STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   Gen_Proto     : OUT STD_LOGIC;
@@ -160,7 +160,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
    SIGNAL gen_accel_attach_int : STD_LOGIC := '0';
   SIGNAL compress_mode_i    : STD_LOGIC_VECTOR(1 downto 0) := "00";
    SIGNAL gen_proto_int      : STD_LOGIC := '0';
-   SIGNAL gen_baud_div_int   : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+   SIGNAL gen_baud_div_int   : STD_LOGIC_VECTOR(23 downto 0) := (others => '0');
   SIGNAL fast_mode_i        : STD_LOGIC := '0';
   SIGNAL continuous_mode_i   : STD_LOGIC := '0';
   SIGNAL narrow_enable_i     : STD_LOGIC := '0';
@@ -516,7 +516,7 @@ BEGIN
         WHEN REG_GEN_PROTO =>
           gen_proto_int <= disp_reg_wdata(0);
         WHEN REG_GEN_BAUD =>
-          gen_baud_div_int <= disp_reg_wdata(15 downto 0);
+          gen_baud_div_int <= disp_reg_wdata(23 downto 0);
         WHEN REG_GEN_PINS =>
           IF disp_reg_wdata(31) = '1' THEN
             Pin_Map_Channel <= TO_INTEGER(UNSIGNED(disp_reg_wdata(3 downto 0)));
@@ -1347,8 +1347,12 @@ BEGIN
               rsp_buf(6) := SAMPLE_CLK_KHZ_SLV(15 downto 8);
               rsp_buf(7) := SAMPLE_CLK_KHZ_SLV(23 downto 16);
               rsp_buf(8) := SAMPLE_CLK_KHZ_SLV(31 downto 24);
-              rsp_buf_len := 9;
-              rsp_len_v := 9;
+              -- byte 9: feature flags. bit0 = 24-bit REG_GEN_BAUD divider
+              -- (Bit_Engine supports symbol rates down to ~6 Hz at 100 MHz;
+              -- without it the divider is 16-bit with a ~1.5 kHz floor).
+              rsp_buf(9) := x"01";
+              rsp_buf_len := 10;
+              rsp_len_v := 10;
               st := BUILD_RSP;
 
             when CMD_ARM_CAPTURE =>
@@ -1480,7 +1484,7 @@ BEGIN
                   when REG_GEN_PROTO =>
                     reg_val(0) := gen_proto_int;
                   when REG_GEN_BAUD =>
-                    reg_val(15 downto 0) := gen_baud_div_int;
+                    reg_val(23 downto 0) := gen_baud_div_int;
                   when REG_GEN_PINS =>
                     reg_val(4 downto 0) := std_logic_vector(to_unsigned(gen_tx_pin_int, 5));
                     reg_val(12 downto 8) := std_logic_vector(to_unsigned(gen_scl_pin_int, 5));

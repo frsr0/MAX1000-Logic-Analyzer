@@ -13,7 +13,7 @@ entity Bit_Engine is
     RX_Re       : in  std_logic;
     RX_Used     : out std_logic_vector(7 downto 0);
     RX_Overflow : out std_logic;
-    Bit_Div     : in  std_logic_vector(15 downto 0);
+    Bit_Div     : in  std_logic_vector(23 downto 0);
     Num_Syms    : in  std_logic_vector(15 downto 0);
     Over_Sample : in  std_logic_vector(1 downto 0);
     RX_Enable   : in  std_logic;
@@ -56,7 +56,7 @@ architecture rtl of Bit_Engine is
   signal state : state_t := IDLE;
 
   signal sym_cnt    : unsigned(15 downto 0) := (others => '0');
-  signal baud_acc   : unsigned(15 downto 0) := (others => '0');
+  signal baud_acc   : unsigned(23 downto 0) := (others => '0');
   signal tick       : std_logic := '0';
 
   signal tx_buf    : std_logic_vector(7 downto 0) := (others => '0');

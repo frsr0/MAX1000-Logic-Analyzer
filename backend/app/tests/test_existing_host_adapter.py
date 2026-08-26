@@ -51,6 +51,10 @@ class FakeHostDevice:
         self.set_live_gen = Mock()
         self.clear_live_gen = Mock()
         self.live_gen_active = False
+        self.actual_symbol_rate = lambda rate: self.sys_clk / (self._uart_baud_div(rate) + 1.25)
+        self._uart_baud_div = lambda rate: max(1, int(round(self.sys_clk / max(1, int(rate)) - 1.25)))
+        self._gen_div_width = 16
+        self.gen_div_mask = 0xFFFF
         self.set_readback_compression = Mock()
         self.set_packed_mode = Mock()
         self.set_schmitt = Mock()
@@ -431,6 +435,26 @@ def test_adapter_generator_status_reports_live_gen_running():
     assert adapter.generator_status().running is True
     dev.live_gen_active = False
     assert adapter.generator_status().running is False
+
+
+def test_adapter_generator_status_reports_actual_rate_and_floor():
+    from app.hardware.device_models import GeneratorConfig
+    from app.hardware.existing_host_adapter import ExistingHostAdapter
+
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()  # sys_clk = 100 MHz
+    adapter._dev = dev
+    adapter.generator_configure(GeneratorConfig(protocol="uart", baud=9600))
+    st = adapter.generator_status()
+    assert st.actual_symbol_rate == pytest.approx(
+        100_000_000 / (dev._uart_baud_div(9600) + 1.25))
+    assert st.below_floor is False
+    adapter.generator_configure(GeneratorConfig(protocol="uart", baud=1000))
+    st = adapter.generator_status()
+    assert st.below_floor is True
+    # I2C reports no symbol rate (different divider model).
+    adapter.generator_configure(GeneratorConfig(protocol="i2c", baud=100_000))
+    assert adapter.generator_status().actual_symbol_rate is None
 
 
 def test_adapter_capture_recovery_and_trigger_configuration():

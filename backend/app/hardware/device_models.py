@@ -93,6 +93,9 @@ class GeneratorStatus(BaseModel):
     last_error: Optional[str] = None
     supported: bool = True
     detail: str = ""
+    actual_symbol_rate: Optional[float] = None  # exact on-wire rate (div+1.25 model)
+    below_floor: bool = False                  # requested rate unrepresentable in the divider
+    divider_width: int = 16                    # REG_GEN_BAUD width of the flashed bitstream
 
 
 class DebugInfo(BaseModel):
