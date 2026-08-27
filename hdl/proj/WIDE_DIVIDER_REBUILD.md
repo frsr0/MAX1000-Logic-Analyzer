@@ -39,7 +39,7 @@ cd hdl\proj
 The script regenerates `OLS_Logic_Analyzer_wrapper.vhd` from
 `pin_assignments.csv` and compiles `OLS_Logic_Analyzer` in `hdl/proj`.
 
-## Timing gate — result (PASSED, seed 33)
+## Timing gate — result (PASSED, seed 10, after init-FSM fix)
 
 Measured under Quartus 25.1 (Slow 1200 mV 85 C setup), comparing the
 widened RTL against the pre-widening baseline at the same seed, then a seed
@@ -49,22 +49,26 @@ sweep (the design is fitter-seed sensitive at 95-97% LE density):
 |--------|-----------|----------|---------|----------------|----------|
 | Baseline (16-bit) | 5  | +0.023* | -0.084* | +0.206 | +1.098 |
 | Widened (24-bit)  | 33 | +0.210  | +0.310 | +0.060 | +1.098 |
+| + init_cnt fix    | 10 | +0.083  | +0.410 | +0.111 | +1.098 |
 
-(*baseline best was -0.043 ns overall; the 18.1-era design never had much
-fast_clk margin and the 25.1 fitter is slightly less favorable at 95-97%
-density.)
+(*baseline best was -0.043 ns overall.)
 
-The widened design closes every domain at seed 33 (all setup/hold positive,
-TNS 0) — **flashed to the MAX1000 CFM on 2026-08-27**. The widening costs
-~124 LEs (95% -> 97%) but the swept best seed beats the baseline's best.
+The tightest cone was the SDRAM controller init FSM: the live 15-bit
+`init_cnt < 19999` compare decoded straight into `state`. Registered it
+(`init_cnt_done`, same pattern as the existing `timer_ge_ref`/`timer_eq_zero`
+comparators); the state transition is now a 1-FF path. Remaining worst paths
+are `pretrig_en_r -> narrow_shift_r` (fast_clk) and
+`buf_rem_single -> prefetch_valid_r` (sdram_core), both >= +0.083.
+
+**Flashed to the MAX1000 CFM on 2026-08-27 (seed 10, init_cnt fix) — the best
+margin this design has shipped with.**
 
 Post-flash validation (all green):
 - `python backend/hw_smoke_test.py` — 10/10.
 - `python host/debug/rate_sweep_probe.py` — 1200..115200 baud all within
-  +0.79% of request (1200 baud measures 1197.6 Hz; the 16-bit image emitted
-  ~5.6 kHz).
-- Live generator streaming into rolling capture, and the 37-capture
-  hardware e2e matrix.
+  +0.79% of request.
+- Deep 1M-sample @ 200 MHz SDRAM capture, live generator streaming, clean
+  stops.
 
 Re-sweep after any RTL/pin change (`.\seed_sweep.ps1 -Seeds @(...)`), and
 check the `.sta.summary` numbers before flashing again.

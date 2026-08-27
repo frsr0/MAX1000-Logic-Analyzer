@@ -17,16 +17,22 @@
   byte (bit0 = 24-bit divider); the host driver auto-switches its divider mask
   from the flashed bitstream's width, and the generator status reports
   `divider_width`.
-- **Flashed to the MAX1000 (2026-08-27, seed 33, Quartus 25.1).** The timing
-  gate passed: the swept 24-bit build closes every clock domain with margin
-  (fast_clk +0.210, sys_clk +0.310, sdram_core +0.060 ns — better than the
-  16-bit baseline's best under the same toolchain). On-wire validation:
-  1200–115200 baud all measure within +0.79% of request
-  (`host/debug/rate_sweep_probe.py`), hardware smoke test 10/10, live
-  generator streaming and the 37-capture hardware matrix pass. Programming
-  the board uses the Arrow USB-Blaster plugin (Quartus 25.1 no longer ships
-  the FTDI VID_0403 match that the MAX1000's on-board JTAG needs; the Arrow
-  USB Programmer2 plugin DLL + JTAGServer registry key are installed).
+- **Flashed to the MAX1000 (2026-08-27, seed 10, Quartus 25.1).** The timing
+  gate passed: the swept 24-bit build closes every clock domain with margin.
+  The worst cone was the SDRAM controller init FSM's live 15-bit
+  `init_cnt < 19999` compare decoding into `state`; registered it
+  (`init_cnt_done`, matching the existing `timer_ge_ref` pattern) so the
+  transition is a 1-FF path. Final margins: fast_clk +0.083, sdram_core
+  +0.111, sys_clk +0.410 (best state this design has shipped with; the
+  16-bit baseline's best under the same toolchain was -0.043). On-wire
+  validation: 1200–115200 baud within +0.79%
+  (`host/debug/rate_sweep_probe.py`), smoke test 10/10, deep 1M-sample
+  @200 MHz capture, live generator streaming, 37-capture matrix.
+  Programming the board uses the Arrow USB-Blaster plugin: Quartus 25.1 no
+  longer ships the FTDI VID_0403 match the MAX1000's on-board JTAG needs, so
+  `jtag_hw_arrow_usb_blaster.dll` (Arrow USB Programmer2 2.5) is installed in
+  the Quartus bin64 dirs plus the `JTAGServer\Hardware_Arrow_USB_Blaster`
+  registry key.
 - `compile.ps1` now locates Quartus via `$env:QUARTUS_DIR` (default
   `C:\altera_lite\25.1std\quartus\bin64`) and flashes the persistent `.pof`
   (CFM) image; `hdl/proj/WIDE_DIVIDER_REBUILD.md` documents the rebuild,

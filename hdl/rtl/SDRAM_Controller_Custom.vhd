@@ -129,6 +129,7 @@ architecture rtl of SDRAM_Controller is
     -- compare/increment is off this (per-operation, timing-critical) counter.
     signal cnt   : integer range 0 to 63 := 0;
     signal init_cnt : integer range 0 to 32767 := 0;  -- ST_INIT power-up wait only
+    signal init_cnt_done : std_logic := '0';  -- registered init_cnt >= 19998
     signal timer : integer range 0 to 65535 := 0;
     -- Registered versions of wide comparator outputs to reduce combinational depth
     signal timer_ge_ref   : std_logic := '0';  -- timer >= REF_CYCLES - 1
@@ -259,7 +260,7 @@ begin
     begin
         if reset_reset_n = '0' then
             state <= ST_INIT;
-            cnt <= 0; init_cnt <= 0; timer <= 0; ref_req <= '0';
+            cnt <= 0; init_cnt <= 0; init_cnt_done <= '0'; timer <= 0; ref_req <= '0';
             dq_oe <= '0';
             sdram_s_waitrequest <= '1'; sdram_s_readdatavalid <= '0';
             sdram_s_readdata <= (others => '0');
@@ -362,8 +363,21 @@ begin
                 -- INITIALIZATION
                 when ST_INIT =>
                     s_cs <= '1';
-                    if init_cnt < 19999 then init_cnt <= init_cnt + 1;
-                    else init_cnt <= 0; state <= ST_INIT_NOP;
+                    -- Wide 15-bit compare registered (init_cnt_done) so the
+                    -- state transition is a 1-FF path, not a live counter
+                    -- decode (was the worst sdram_core_clk setup cone).
+                    if init_cnt >= 19998 then
+                        init_cnt_done <= '1';
+                    else
+                        init_cnt_done <= '0';
+                    end if;
+                    if init_cnt < 19999 then
+                        init_cnt <= init_cnt + 1;
+                    else
+                        init_cnt <= 0;
+                    end if;
+                    if init_cnt_done = '1' then
+                        state <= ST_INIT_NOP;
                     end if;
 
                 when ST_INIT_NOP =>
