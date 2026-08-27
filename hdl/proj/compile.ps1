@@ -6,12 +6,11 @@ param(
     [switch]$RawOnly,
     # Keep the old direct PLL c4 forward instead of the DDIO clock forward.
     [switch]$LegacyClkForward,
-    # Current best measured full mixed-signal seed: 30. It remains slightly
-    # negative on fast_clk at the current resource density; re-sweep after RTL
-    # or pin changes.
-    # Re-sweep (seed_sweep.ps1) after RTL or pin changes; bitstream remains
-    # seed-sensitive at this density.
-    [int]$Seed = 30
+    # Best measured full mixed-signal seed under Quartus 25.1: 10 (min setup
+    # slack +0.083 ns, all domains positive). The design is fitter-seed
+    # sensitive at 95-97% density; a 48-seed sweep found no better seed.
+    # Re-sweep (seed_sweep.ps1) after RTL or pin changes.
+    [int]$Seed = 10
 )
 
 $FastRawBuild = if ($RawOnly) { 'true' } else { 'false' }

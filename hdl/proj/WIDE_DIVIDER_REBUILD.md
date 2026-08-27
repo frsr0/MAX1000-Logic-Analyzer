@@ -63,6 +63,16 @@ are `pretrig_en_r -> narrow_shift_r` (fast_clk) and
 **Flashed to the MAX1000 CFM on 2026-08-27 (seed 10, init_cnt fix) — the best
 margin this design has shipped with.**
 
+A 48-seed sweep (11..48 after the early seeds) confirmed seed 10 is the
+optimum placement: the next-best seeds close at only +0.014 (seed 39), and
+most are negative. Fitter-effort variations were also exhausted: AUTO FIT at
+seed 10 gives fast_clk -0.339 (worse), and physical synthesis was
+historically shown to erode slack at this density. Remaining tight cones
+(`pretrig_en_r -> narrow_shift_r` fast_clk +0.083; `buf_rem_single ->
+prefetch_valid_r` sdram +0.111) are structural (enable-fanout mux and
+read-pump FSM); the only meaningful way to more margin is freeing LEs below
+~95% occupancy (the design sits at 96-97%).
+
 Post-flash validation (all green):
 - `python backend/hw_smoke_test.py` — 10/10.
 - `python host/debug/rate_sweep_probe.py` — 1200..115200 baud all within
