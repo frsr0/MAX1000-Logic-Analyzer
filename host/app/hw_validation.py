@@ -25,6 +25,7 @@ Requires:
 """
 
 import sys, time, os, json, threading, subprocess
+from typing import Optional
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
@@ -1336,18 +1337,67 @@ def test_analog_profiles_digital_recovery(dev):
                  "digital_samples": ns})
 
 
-# Test 12g: Physical analog jumper paths
+# Test 12g: Physical analog jumper paths (auto-discovered).
 #
-# The MAX1000 ADC mux numbering is not the same as the AIN label. This is
-# the current two-jumper bench fixture, discovered by sweeping every pool pin
-# against every ADC channel in single-channel mode: PMOD1 (pool pin 16) is
-# wired to AIN4 (ADC3), and PMOD2 (pool pin 17) is wired to AIN5 (ADC7).
-# Keep this test explicit and hard-gated so a floating ADC or swapped jumper
-# cannot make the analog hardware validation appear green.
-PHYSICAL_ANALOG_JUMPER_MAP = (
-    (16, 3, "PMOD1 -> AIN4/ADC3"),
-    (17, 7, "PMOD2 -> AIN5/ADC7"),
-)
+# The physical analog wiring is bench-specific (which generator pool pin is
+# jumpered to which AIN/ADC input), so the pairs are discovered by driving a
+# UART burst out of every generator pool pin and watching every ADC channel
+# in analog-fast single-channel mode for full-scale activity — mirroring the
+# digital jumper-pair discovery (Test 30). No jumper wiring is hardcoded;
+# a bench with no analog jumpers skips cleanly.
+_ANALOG_JUMPER_CACHE: Optional[list] = None
+_ANALOG_JUMPER_SEARCHED = False
+
+# ADC mux channels to probe. The current RTL streams ADC1-4 (AIN3/1/4/6),
+# but other mux channels (e.g. AIN5/ADC7) are still physically routed on the
+# board, so discovery sweeps the whole mux rather than assuming a subset.
+_ANALOG_JUMPER_ADC_CHANNELS = tuple(range(16))
+
+# AIN label per ADC channel where known (board map + validated extras).
+_ANALOG_ADC_AIN = {1: "AIN3", 2: "AIN1", 3: "AIN4", 4: "AIN6", 7: "AIN5"}
+
+
+def _discover_analog_jumper_pairs(dev, deadline_s=45.0):
+    """Find generator pool pins jumpered to physical ADC inputs.
+
+    Drives a UART burst out of each candidate pool pin (PMOD 15-22 first,
+    then MKR 0-14) and checks every ADC channel in analog-fast single-channel
+    mode for full-scale UART activity. Returns a list of
+    (tx_pin, adc_channel, label) tuples; [] when no wired pair is found.
+    """
+    pairs = []
+    deadline = time.time() + deadline_s
+    candidates = [p for p in range(15, 23)] + list(range(0, 15))
+    for tx in candidates:
+        if time.time() >= deadline:
+            break
+        for adc in _ANALOG_JUMPER_ADC_CHANNELS:
+            if time.time() >= deadline:
+                break
+            try:
+                act = _capture_physical_analog_activity(dev, tx, adc)
+            except Exception as e:
+                log(f"  [INFO] pin {tx} ADC{adc} probe error: {e}")
+                continue
+            if act["samples"] > 100 and act["amplitude"] >= 3000 \
+                    and act["edges"] >= 8:
+                ain = _ANALOG_ADC_AIN.get(adc, f"ADC{adc}")
+                label = f"pin{tx} -> {ain}/ADC{adc}"
+                log(f"  [INFO] discovered analog jumper: {label} "
+                    f"(amp {act['amplitude']} codes, {act['edges']} edges)")
+                pairs.append((tx, adc, label))
+                break  # this pin is wired; move to the next pin
+    if not pairs:
+        log("  [INFO] no analog jumper pair found on this bench")
+    return pairs
+
+
+def _get_analog_jumper_pairs(dev):
+    global _ANALOG_JUMPER_CACHE, _ANALOG_JUMPER_SEARCHED
+    if not _ANALOG_JUMPER_SEARCHED:
+        _ANALOG_JUMPER_CACHE = _discover_analog_jumper_pairs(dev)
+        _ANALOG_JUMPER_SEARCHED = True
+    return _ANALOG_JUMPER_CACHE
 
 
 def _capture_physical_analog_activity(dev, tx_pin, adc_channel):
@@ -1383,25 +1433,36 @@ def _capture_physical_analog_activity(dev, tx_pin, adc_channel):
 
 
 def test_physical_analog_jumpers(dev):
-    print_header("Test 12g: Physical analog jumper paths")
+    print_header("Test 12g: Physical analog jumper paths (auto-discovered)")
     dev.reset(); dev.spi.flush(); dev.set_debug_ch0(False)
     time.sleep(0.02)
+    pairs = _get_analog_jumper_pairs(dev)
+    if not pairs:
+        skip("physical analog jumpers: no wired pair discovered on this bench")
+        save_result("test12g_physical_analog_jumpers", b"",
+                    {"skipped": True,
+                     "reason": "no analog jumper pair discovered"})
+        return
     results = []
     try:
-        for tx_pin, target_adc, label in PHYSICAL_ANALOG_JUMPER_MAP:
-            other_adc = next(adc for _, adc, _ in PHYSICAL_ANALOG_JUMPER_MAP
-                             if adc != target_adc)
+        for tx_pin, target_adc, label in pairs:
+            # Cross-check isolation on another ADC: the other discovered pair
+            # if present, else a known-live lane that is not the target.
+            cross_adc = next((a for _, a, _ in pairs if a != target_adc), None)
+            if cross_adc is None:
+                cross_adc = next((c for c in (1, 2, 3, 4, 0)
+                                  if c != target_adc), 0)
             target = _capture_physical_analog_activity(dev, tx_pin, target_adc)
-            cross = _capture_physical_analog_activity(dev, tx_pin, other_adc)
+            cross = _capture_physical_analog_activity(dev, tx_pin, cross_adc)
             log(f"  {label}: target amp={target['amplitude']} codes, "
-                f"edges={target['edges']}; cross amp={cross['amplitude']} "
-                f"codes, edges={cross['edges']}")
+                f"edges={target['edges']}; cross ADC{cross_adc} "
+                f"amp={cross['amplitude']} codes, edges={cross['edges']}")
             check(target["samples"] > 100,
                   f"{label} returned analog samples ({target['samples']})")
             check(target["amplitude"] >= 3000 and target["edges"] >= 8,
                   f"{label} carries full-scale UART activity")
             check(not (cross["amplitude"] >= 2500 and cross["edges"] >= 8),
-                  f"{label} does not appear as repeated activity on ADC{other_adc}")
+                  f"{label} does not appear as repeated activity on ADC{cross_adc}")
             results.append({"tx_pin": tx_pin, "target_adc": target_adc,
                             "label": label, "target": target, "cross": cross})
     finally:

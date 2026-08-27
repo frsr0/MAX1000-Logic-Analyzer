@@ -1,4 +1,4 @@
-﻿"""
+"""
 Protocol decoders for OLS MaxScope â€” pure functions, no tkinter dependency.
 """
 from collections import namedtuple
@@ -198,6 +198,13 @@ def decode_spi(ch, samplerate, miso_idx=3, sclk_idx=1, filter_threshold=0):
     rising edge â€” on real hardware the data line can still be settling at the
     edge, so edge sampling occasionally read the wrong bit. (Same mid-plateau
     approach as decode_i2c.) Bits are shifted MSB-first.
+
+    The last SCLK plateau after the final bit is unbounded: SCLK stays high
+    through idle while the data line can drop when the generator releases its
+    output after the burst. Sampling the geometric middle of that unbounded
+    plateau reads the dropped tail as a 0 (a one-bit error in the last byte),
+    so anomalously long plateaus are sampled at the offset a normal bit's
+    plateau would use instead.
     """
     miso = ch[miso_idx]
     sclk = ch[sclk_idx]
@@ -209,12 +216,22 @@ def decode_spi(ch, samplerate, miso_idx=3, sclk_idx=1, filter_threshold=0):
     byte_val = 0
     nbits = 0
     i = 1
+    typical = 0   # running average SCLK-high plateau length (samples)
     while i < n:
         if sclk[i - 1] == 0 and sclk[i] == 1:      # SCLK rising edge
             j = i
             while j < n and sclk[j] == 1:          # extent of the high plateau
                 j += 1
-            mid = min((i + j) // 2, n - 1)
+            plateau = j - i
+            if typical and plateau > 3 * typical:
+                # Post-burst idle plateau: SCLK never falls again; sample
+                # where a real bit's plateau midpoint would be.
+                mid = min(i + typical // 2, n - 1)
+            else:
+                mid = min((i + j) // 2, n - 1)
+                if plateau > 0:
+                    typical = plateau if not typical \
+                        else (typical * 3 + plateau) // 4
             byte_val = ((byte_val << 1) | (1 if miso[mid] else 0)) & 0xFF
             nbits += 1
             if nbits == 8:

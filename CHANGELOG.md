@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Hardware validation Test 12g no longer hardcodes jumper wiring: the
+  physical analog jumper pairs are auto-discovered (drive UART out of every
+  pool pin, watch every ADC channel in analog-fast mode for full-scale
+  activity — mirroring the digital pair discovery), and the test skips
+  cleanly when a bench has none. Full hardware suite: 383/383 passed.
+- Host `decode_spi` no longer reads the last bit from the geometric middle of
+  an unbounded SCLK plateau: after the burst SCLK stays high through idle
+  while the data line drops when the generator releases its output, which
+  intermittently flipped the final bit (0xff -> 0xfe). Anomalously long
+  plateaus are now sampled at a normal bit's offset.
+
 - Bit Banger `square` preset now emits one symbol per level, so the output
   frequency is symbol_rate/2 (previously 2 symbols per level gave /4 — the
   requested symbol rate was never what the wire produced).
