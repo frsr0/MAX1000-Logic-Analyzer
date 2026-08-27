@@ -26,25 +26,32 @@ from driver.ols_spi_device import OLSDeviceSPI
 import numpy as np
 
 RATES = [1200, 2400, 4800, 9600, 19200, 57600, 115200]
-CAPTURE_RATE = 1_000_000
+CAPTURE_RATE = 8_000_000
 TOLERANCE = 0.02
 
 
 def measure_wire_rate(dev, symbol_rate, tx_pin=3):
-    """Arm a repeating 0xAA pattern and measure its toggle rate from a capture."""
+    """Arm a repeating 0xAA pattern and measure its toggle rate from a capture.
+
+    0xAA toggles on every data bit, so consecutive transition spacings are
+    the bit period quantised to the capture grid. The mean of the spacing
+    distribution is unbiased (the median snaps to a whole sample and reads
+    ~3.5% low at 115200 baud on a 1 MHz grid).
+    """
     packed = bit_bang.pack_symbols(bit_bang.uart_symbols(b"\xAA"))
     dev.set_live_gen(packed, symbol_rate=symbol_rate, tx_pin=tx_pin)
     time.sleep(0.1)
-    data = dev.capture(rate_hz=CAPTURE_RATE, nsamples=40000, timeout=10)
+    data = dev.capture(rate_hz=CAPTURE_RATE, nsamples=250_000, timeout=15)
     dig = np.frombuffer(data[:len(data) - (len(data) % 2)], dtype="<u2")
     bits = (dig >> tx_pin) & 1
     trans = np.nonzero(np.diff(bits))[0]
-    if len(trans) < 2:
+    if len(trans) < 3:
         return None
     spac = np.diff(trans)
-    # 0xAA toggles every bit: dominant spacing = one bit period in samples.
-    period = np.median(spac)
-    return CAPTURE_RATE / period
+    # 0xAA toggles on every data bit, so the majority of spacings are one bit
+    # period; the frame's idle gap is a single outlier. Median is unbiased at
+    # the 8 MHz capture grid (>= 69 samples/bit for every rate here).
+    return CAPTURE_RATE / float(np.median(spac))
 
 
 def main():

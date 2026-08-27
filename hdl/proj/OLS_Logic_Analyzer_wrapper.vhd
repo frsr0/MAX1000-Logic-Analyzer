@@ -57,11 +57,8 @@ architecture rtl of OLS_Logic_Analyzer_wrapper is
     attribute chip_pin of SPI_MISO : signal is "B5";
     attribute chip_pin of SPI_SCK : signal is "A4";
     attribute chip_pin of SPI_MOSI : signal is "B4";
-    -- These vectors are declared downto, so Quartus consumes the pin list
-    -- from the MSB down. Keep the board's D0/PIO1-first order at bit 0 by
-    -- listing the physical pins in reverse here.
-    attribute chip_pin of MKR_D : signal is "G12,H13,H10,J10,K12,K11,J13,J12,L12,J2,J1,H4,H5,K10,H8";
-    attribute chip_pin of PMOD : signal is "K1,K2,N2,N3,M1,M2,L3,M3";
+    attribute chip_pin of MKR_D : signal is "H8,K10,H5,H4,J1,J2,L12,J12,J13,K11,K12,J10,H10,H13,G12";
+    attribute chip_pin of PMOD : signal is "M3,L3,M2,M1,N3,N2,K2,K1";
     -- IO standard for LED
 begin
     core : entity work.OLS_SDRAM_Top

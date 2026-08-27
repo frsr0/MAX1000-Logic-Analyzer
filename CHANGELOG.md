@@ -16,9 +16,21 @@
   (1200 baud no longer wraps to ~5.6 kHz). `CMD_GET_METADATA` gains a feature
   byte (bit0 = 24-bit divider); the host driver auto-switches its divider mask
   from the flashed bitstream's width, and the generator status reports
-  `divider_width`. The rebuilt image is gated on Quartus timing (see
-  `hdl/proj/WIDE_DIVIDER_REBUILD.md`) and validated by
-  `host/debug/rate_sweep_probe.py` after flashing.
+  `divider_width`.
+- **Flashed to the MAX1000 (2026-08-27, seed 33, Quartus 25.1).** The timing
+  gate passed: the swept 24-bit build closes every clock domain with margin
+  (fast_clk +0.210, sys_clk +0.310, sdram_core +0.060 ns — better than the
+  16-bit baseline's best under the same toolchain). On-wire validation:
+  1200–115200 baud all measure within +0.79% of request
+  (`host/debug/rate_sweep_probe.py`), hardware smoke test 10/10, live
+  generator streaming and the 37-capture hardware matrix pass. Programming
+  the board uses the Arrow USB-Blaster plugin (Quartus 25.1 no longer ships
+  the FTDI VID_0403 match that the MAX1000's on-board JTAG needs; the Arrow
+  USB Programmer2 plugin DLL + JTAGServer registry key are installed).
+- `compile.ps1` now locates Quartus via `$env:QUARTUS_DIR` (default
+  `C:\altera_lite\25.1std\quartus\bin64`) and flashes the persistent `.pof`
+  (CFM) image; `hdl/proj/WIDE_DIVIDER_REBUILD.md` documents the rebuild,
+  timing gate and seed sweep.
 
 - Fixed live (rolling) capture showing no signals: the waveform worker
   resolved concurrent window/overview requests FIFO instead of by request id,

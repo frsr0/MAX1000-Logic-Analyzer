@@ -18,7 +18,10 @@ $FastRawBuild = if ($RawOnly) { 'true' } else { 'false' }
 $UseDdioClkForward = if ($LegacyClkForward) { 'false' } else { 'true' }
 
 
-$QUARTUS_DIR = "C:\intelFPGA_lite\18.1\quartus\bin64"
+# Quartus install: env override, else the default install location.
+# (18.1 Lite was removed from Intel's site; 25.1 Lite installs to
+# C:\altera_lite\25.1std\quartus\bin64 on this machine.)
+$QUARTUS_DIR = if ($env:QUARTUS_DIR) { $env:QUARTUS_DIR } else { "C:\altera_lite\25.1std\quartus\bin64" }
 $QUARTUS = "$QUARTUS_DIR\quartus_sh.exe"
 $PROGRAMMER = "$QUARTUS_DIR\quartus_pgm.exe"
 $CSV = "pin_assignments.csv"
@@ -310,12 +313,14 @@ if ($compileOk) {
 if ($Flash) {
     Write-Host ""
     Write-Host "=== Flashing ==="
-    $sof = "output_files\$PROJECT.sof"
-    if (Test-Path $sof) {
-        & $PROGRAMMER -c 1 -m JTAG -o "P;$sof" 2>&1 | Select-String "succeeded"
+    # Program the .pof (configuration flash) so the image persists across
+    # power cycles. A .sof "P;" is only a volatile SRAM load on MAX 10.
+    $pof = "output_files\$PROJECT.pof"
+    if (Test-Path $pof) {
+        & $PROGRAMMER -c 1 -m JTAG -o "P;$pof" 2>&1 | Select-String "successful|Success"
         Write-Host "Flash: SUCCESS"
     } else {
-        Write-Host "ERROR: $sof not found"
+        Write-Host "ERROR: $pof not found"
         exit 1
     }
 }

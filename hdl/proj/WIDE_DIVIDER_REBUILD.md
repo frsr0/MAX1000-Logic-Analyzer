@@ -28,42 +28,46 @@ The 83499 case is the regression: a 16-bit register would truncate it to
 
 ## Rebuild (on the Quartus machine)
 
+Quartus Prime Lite 25.1 is installed at `C:\altera_lite\25.1std` on this PC
+(`compile.ps1` finds it; override with `$env:QUARTUS_DIR`).
+
 ```
 cd hdl\proj
-.\compile.ps1 -Flash -Seed 44
-```
-
-Compile only (no flash) if you want to inspect timing first:
-
-```
-.\compile.ps1 -Seed 44        # then check timing, then re-run with -Flash
+.\compile.ps1 -Flash -Seed 33
 ```
 
 The script regenerates `OLS_Logic_Analyzer_wrapper.vhd` from
 `pin_assignments.csv` and compiles `OLS_Logic_Analyzer` in `hdl/proj`.
 
-## Timing gate — BEFORE flashing
+## Timing gate — result (PASSED, seed 33)
 
-The Bit_Engine runs in the `sys_clk` domain; the widening adds 8
-flip-flops to `baud_acc` and 8 bits to the accumulator comparator — the
-lowest-margin change possible in that domain. Baseline (seed 29, Slow
-1200 mV 85 C setup):
+Measured under Quartus 25.1 (Slow 1200 mV 85 C setup), comparing the
+widened RTL against the pre-widening baseline at the same seed, then a seed
+sweep (the design is fitter-seed sensitive at 95-97% LE density):
 
-| Domain          | Baseline slack |
-|-----------------|----------------|
-| `fast_clk`      | +0.084 ns      |
-| `sdram_core_clk`| +0.087 ns      |
-| `sys_clk`       | +0.403 ns      |
-| `SPI_SCK_EXT`   | +11.290 ns     |
+| Config | best seed | fast_clk | sys_clk | sdram_core_clk | chip_out |
+|--------|-----------|----------|---------|----------------|----------|
+| Baseline (16-bit) | 5  | +0.023* | -0.084* | +0.206 | +1.098 |
+| Widened (24-bit)  | 33 | +0.210  | +0.310 | +0.060 | +1.098 |
 
-All hold checks positive (fast_clk +0.342, sys_clk +0.332, sdram_core
-+0.286, SPI_SCK_EXT +0.394).
+(*baseline best was -0.043 ns overall; the 18.1-era design never had much
+fast_clk margin and the 25.1 fitter is slightly less favorable at 95-97%
+density.)
 
-Gate: extract the four setup slacks from the compile report
-(`OLS_Logic_Analyzer.fit.rpt`) or `quartus_sta`. **Do not flash if any
-setup or hold slack is negative.** The Bit_Engine change is expected to cost
-a few ps in `sys_clk`; if `sys_clk` closes below ~+0.1 ns, re-sweep fitter
-seeds (the repo's `seed_sweep.ps1`) before flashing.
+The widened design closes every domain at seed 33 (all setup/hold positive,
+TNS 0) — **flashed to the MAX1000 CFM on 2026-08-27**. The widening costs
+~124 LEs (95% -> 97%) but the swept best seed beats the baseline's best.
+
+Post-flash validation (all green):
+- `python backend/hw_smoke_test.py` — 10/10.
+- `python host/debug/rate_sweep_probe.py` — 1200..115200 baud all within
+  +0.79% of request (1200 baud measures 1197.6 Hz; the 16-bit image emitted
+  ~5.6 kHz).
+- Live generator streaming into rolling capture, and the 37-capture
+  hardware e2e matrix.
+
+Re-sweep after any RTL/pin change (`.\seed_sweep.ps1 -Seeds @(...)`), and
+check the `.sta.summary` numbers before flashing again.
 
 ## Post-flash hardware validation (this machine)
 
