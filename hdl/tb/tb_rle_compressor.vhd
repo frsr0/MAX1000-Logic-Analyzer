@@ -205,7 +205,7 @@ begin
     if errs = 0 then
       report "=== TB PASSED ===" severity note;
     else
-      report "=== TB FAILED (" & integer'image(errs) & " errors) ===" severity error;
+      report "=== TB FAILED (" & integer'image(errs) & " errors) ===" severity failure;
     end if;
     done <= true;
     wait;

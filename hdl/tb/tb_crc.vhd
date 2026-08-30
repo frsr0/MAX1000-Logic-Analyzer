@@ -37,15 +37,22 @@ begin
       report "  manual b=" & integer'image(b) & " crc=" & integer'image(to_integer(unsigned(mcrc)));
     end loop;
     report "Manual CRC after 0x01: " & integer'image(to_integer(unsigned(mcrc)));
-    c := crc16(x"01", x"FFFF");
+    -- crc16 is a range-sensitive helper (it indexes data(data'low+j)): it is
+    -- only correct for descending-range vectors, which is how the RTL calls
+    -- it (spi_packet_tx passes std_logic_vector(to_unsigned(...))). A bare
+    -- literal x"01" has an ascending range, so wrap it like the RTL does.
+    c := crc16(std_logic_vector(to_unsigned(1, 8)), x"FFFF");
     report "Function CRC after 0x01: " & integer'image(to_integer(unsigned(c)));
-    c := crc16(x"42", c);
+    c := crc16(std_logic_vector(to_unsigned(16#42#, 8)), c);
     report "CRC after 0x42: " & integer'image(to_integer(unsigned(c)));
-    c := crc16(x"00", c);
+    c := crc16(std_logic_vector(to_unsigned(0, 8)), c);
     report "CRC after 0x00: " & integer'image(to_integer(unsigned(c)));
-    c := crc16(x"00", c);
+    c := crc16(std_logic_vector(to_unsigned(0, 8)), c);
     report "CRC after 0x00: " & integer'image(to_integer(unsigned(c)));
     report "Expected: " & integer'image(52385);
+    assert to_integer(unsigned(c)) = 52385
+      report "CRC mismatch: function returned " & integer'image(to_integer(unsigned(c))) &
+             ", expected 52385" severity failure;
     wait;
   end process;
 end sim;

@@ -191,7 +191,7 @@ begin
     wait_cycles(clk, 40);
     run <= '1';
 
-    wait until rising_edge(full);
+    wait_until(clk, full, '1', 10 ms, "Capture should complete (Full asserted)");
     report "capture Full at " & integer'image(now / 1 ns) & " ns; reading back";
     run <= '0';
     wait_cycles(clk, 20);
@@ -262,7 +262,7 @@ begin
     if anom = 0 then
       report "CLEAN: no dropped writes" severity note;
     else
-      report "DROPS PRESENT" severity note;
+      report "DROPS PRESENT" severity failure;
     end if;
     std.env.finish;
     wait;

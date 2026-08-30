@@ -6,6 +6,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+from app.generator.bitbang import PRESETS
 from app.main import app
 from app.state import capture_manager
 
@@ -769,5 +770,180 @@ def test_websocket_topics_and_ping(client):
             ws.send_json({"type": "ping"})
             assert ws.receive_json()["type"] == "pong"
     with client.websocket_connect("/ws/logs") as ws:
+        # The log stream broadcasts a log frame on connect.
+        first = ws.receive_json()
+        assert first["type"] == "log"
+        # Malformed JSON and unknown message types are ignored by the server
+        # (no error frame); it must stay alive and answer the next ping.
         ws.send_text("not json")
         ws.send_json({"type": "ignored"})
+        ws.send_text(json.dumps({"type": "ping"}))
+        deadline = time.time() + 5
+        seen_pong = None
+        while time.time() < deadline:
+            msg = ws.receive_json()
+            if msg["type"] == "pong":
+                seen_pong = msg
+                break
+        assert seen_pong is not None and seen_pong["type"] == "pong"
+
+
+def test_capture_error_state_is_surfaced_over_rest_and_websocket(client, monkeypatch):
+    """A failing capture must land in state='error' with last_error on both
+    /api/capture/state and /api/status, and emit a capture_error frame on
+    /ws/capture."""
+    from app.hardware.base import HardwareError
+
+    client.post("/api/connect", json={"device_id": "mock"}, headers=HDR)
+    device = capture_manager.device
+
+    def failing_capture(settings, progress=None, stop_evt=None):
+        raise HardwareError("simulated FPGA failure")
+
+    monkeypatch.setattr(device, "capture", failing_capture)
+
+    with client.websocket_connect("/ws/capture") as ws:
+        hello = ws.receive_json()
+        assert hello["type"] == "capture_state"
+        r = client.post("/api/capture/start", json={
+            "settings": {"sample_rate": 100_000, "num_samples": 2_000}},
+            headers=HDR)
+        assert r.status_code == 200
+        deadline = time.time() + 10
+        error_frame = None
+        while time.time() < deadline:
+            msg = ws.receive_json()
+            if msg["type"] == "capture_error":
+                error_frame = msg
+                break
+        assert error_frame is not None
+        assert error_frame["data"]["message"] == "simulated FPGA failure"
+
+    st = wait_capture_done(client)
+    assert st["state"] == "error"
+    assert st["last_error"] == "simulated FPGA failure"
+    api_state = client.get("/api/capture/state").json()
+    assert api_state["state"] == "error"
+    assert api_state["last_error"] == "simulated FPGA failure"
+    status = client.get("/api/status").json()
+    assert status["capture_state"] == "error"
+    assert status["last_error"] == "simulated FPGA failure"
+
+    # a healthy device can capture again afterwards
+    client.post("/api/connect", json={"device_id": "mock"}, headers=HDR)
+    r = client.post("/api/capture/start", json={
+        "settings": {"sample_rate": 100_000, "num_samples": 1_000}},
+        headers=HDR)
+    assert r.status_code == 200
+    assert wait_capture_done(client)["state"] == "done"
+
+
+def test_capture_jobs_submit_get_lifecycle_and_404(client):
+    client.post("/api/connect", json={"device_id": "mock"}, headers=HDR)
+    # ~0.8s simulated capture: long enough to observe the "running" state.
+    r = client.post("/api/capture/jobs", json={
+        "settings": {"sample_rate": 100_000, "num_samples": 80_000,
+                     "mock_scenario": "uart"},
+        "name": "queued job"}, headers=HDR)
+    assert r.status_code == 200, r.text
+    job = r.json()
+    assert job["id"].startswith("job_")
+    assert job["state"] == "queued"
+    assert job["name"] == "queued job"
+    assert job["session_id"] is None
+    assert job["error"] is None
+    assert job["started_at"] is None
+    assert job["submitted_at"] > 0
+    assert "settings" not in job
+
+    # GET returns the job with its current state
+    got = client.get(f"/api/capture/jobs/{job['id']}")
+    assert got.status_code == 200, got.text
+    body = got.json()
+    assert body["id"] == job["id"]
+    assert body["state"] in ("queued", "starting", "running", "done")
+    assert "settings" not in body
+
+    # unknown job id -> 404
+    missing = client.get("/api/capture/jobs/nope")
+    assert missing.status_code == 404
+    assert "not found" in missing.json()["detail"]
+
+    # drive the queued job through the state machine to completion
+    observed = {body["state"]}
+    deadline = time.time() + 10
+    st = None
+    while time.time() < deadline:
+        st = client.get(f"/api/capture/jobs/{job['id']}").json()
+        observed.add(st["state"])
+        if st["state"] in ("done", "error"):
+            break
+        time.sleep(0.02)
+    assert st is not None
+    assert st["state"] == "done", st
+    assert "running" in observed, observed
+    assert st["session_id"]
+    assert st["error"] is None
+    assert st["started_at"] is not None
+    assert st["finished_at"] is not None
+    assert st["finished_at"] >= st["started_at"]
+    # the job produced a real session
+    assert client.get(f"/api/sessions/{st['session_id']}/metadata").status_code == 200
+
+
+def test_generator_preview_bitbang_success(client):
+    # baud above the 16-bit divider floor (div = sys_clk/baud - 1.25 <= 0xFFFF):
+    # below_floor must be False; the True case is covered in
+    # test_generator_protocols.py and test_existing_host_adapter.py
+    r = client.post("/api/generator/preview", json={
+        "protocol": "bitbang", "baud": 100_000,
+        "extra": {"symbols": [0, 1, 2, 3]}})
+    assert r.status_code == 200, r.text
+    p = r.json()
+    assert p["symbols"] == [0, 1, 2, 3]
+    assert p["count"] == 4
+    assert p["duration_s"] == pytest.approx(0.00004)
+    assert p["tx_levels"] == [0, 1, 0, 1]
+    assert p["clock_levels"] == [0, 0, 1, 1]
+    assert p["below_floor"] is False
+    # TX period 2 -> symbol_rate/2 (or the device-derived actual rate when a
+    # clocked device is connected)
+    effective_rate = p["actual_symbol_rate"] or 100_000
+    assert p["output_frequency_hz"] == pytest.approx(effective_rate / 2)
+
+    # scripted steps expand through the same preview path
+    r2 = client.post("/api/generator/preview", json={
+        "protocol": "bitbang", "baud": 1000,
+        "extra": {"script": [{"symbols": [0, 3], "gap_symbols": 2,
+                              "repeat": 2}]}})
+    assert r2.status_code == 200, r2.text
+    p2 = r2.json()
+    assert p2["symbols"] == [3, 3, 0, 3, 3, 3, 0, 3]
+    assert p2["count"] == 8
+
+
+def test_generator_preview_rejects_non_bitbang_and_invalid_script(client):
+    r = client.post("/api/generator/preview", json={
+        "protocol": "uart", "data_hex": "41", "baud": 115200, "tx_pin": 0})
+    assert r.status_code == 400
+    assert "bitbang" in r.json()["detail"]
+
+    bad = client.post("/api/generator/preview", json={
+        "protocol": "bitbang", "baud": 1000,
+        "extra": {"script": "not-a-list"}})
+    assert bad.status_code == 400
+    assert "script" in bad.json()["detail"]
+
+    oob = client.post("/api/generator/preview", json={
+        "protocol": "bitbang", "baud": 1000,
+        "extra": {"symbols": [0, 7]}})
+    assert oob.status_code == 400
+    assert "0..3" in oob.json()["detail"]
+
+
+def test_generator_bitbang_presets(client):
+    r = client.get("/api/generator/bitbang/presets")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"presets": list(PRESETS)}
+    assert set(PRESETS) == {"idle", "pulse", "square", "alternating",
+                            "counter", "walking", "prbs"}

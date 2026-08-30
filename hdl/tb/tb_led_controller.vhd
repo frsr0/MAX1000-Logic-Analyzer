@@ -17,10 +17,7 @@ architecture sim of tb_led_controller is
     signal armed        : std_logic := '0';
     signal capture_run  : std_logic := '0';
     signal capture_full : std_logic := '0';
-    signal continuous   : std_logic := '0';
     signal host_conn    : std_logic := '0';
-    signal ch_4_mode    : std_logic := '0';
-    signal fifo_act     : std_logic_vector(3 downto 0) := (others => '0');
 
     signal fade_tick    : std_logic;
 
@@ -29,7 +26,6 @@ architecture sim of tb_led_controller is
 
     signal pwm_cnt      : integer range 0 to PWM_MAX := 0;
     signal fade_cnt     : integer range 0 to FADE_MAX := 0;
-    signal led_bright   : led_bright_array := (others => 0);
 
     procedure wait_fade_cycles(n : natural) is
     begin
@@ -62,45 +58,16 @@ begin
         end if;
     end process;
 
-    process(clk)
-    begin
-        if rising_edge(clk) then
-            if fade_tick = '1' then
-                for i in 0 to 7 loop
-                    if led_bright(i) < led_target(i) then
-                        if led_bright(i) + fade_step(i) >= led_target(i) then
-                            led_bright(i) <= led_target(i);
-                        else
-                            led_bright(i) <= led_bright(i) + fade_step(i);
-                        end if;
-                    elsif led_bright(i) > led_target(i) then
-                        if led_bright(i) <= fade_step(i) then
-                            led_bright(i) <= led_target(i);
-                        elsif led_bright(i) - fade_step(i) <= led_target(i) then
-                            led_bright(i) <= led_target(i);
-                        else
-                            led_bright(i) <= led_bright(i) - fade_step(i);
-                        end if;
-                    end if;
-                end loop;
-            end if;
-        end if;
-    end process;
-
+    -- Current LED_Controller entity (BLINK_TOP/SWEEP_TOP generics; ports
+    -- clk/rst/armed/capture_run/capture_full/host_connected/fade_tick/
+    -- led_target/fade_step). The old CONFIRM_*/fifo_activity/ch_4_mode/
+    -- continuous_mode interface was removed in the LED redesign.
     DUT: entity work.LED_Controller
-        generic map (
-            CONFIRM_CYCLES => 1,
-            CONFIRM_OFF    => 1,
-            CONFIRM_RISE   => 3,
-            CONFIRM_ON     => 1,
-            CONFIRM_FALL   => 3
-        )
         port map (
             clk => clk, rst => rst,
             armed => armed, capture_run => capture_run,
-            capture_full => capture_full, continuous_mode => continuous,
-            host_connected => host_conn, ch_4_mode => ch_4_mode,
-            fifo_activity => fifo_act, fade_tick => fade_tick,
+            capture_full => capture_full, host_connected => host_conn,
+            fade_tick => fade_tick,
             led_target => led_target, fade_step => fade_step
         );
 
@@ -121,81 +88,59 @@ begin
         wait until rising_edge(clk);
         rst <= '0';
         wait_fade_cycles(2);
-        check(fade_step(0) = 1, "fade_step should be 1 in IDLE");
-        check(led_target(0) = 0 or led_target(0) = 255,
-              "LED0 target should be 0 or 255 in IDLE");
+        check(fade_step(0) = 1, "fade_step should be 1 in IDLE, got " & to_string(fade_step(0)));
+        check(led_target(0) = 0, "LED0 target should be 0 in IDLE (no host)");
 
-        report "=== Test 2: IDLE - LED1-7 remain off ===";
-        wait_fade_cycles(3);
-        for i in 1 to 7 loop
-            check(led_target(i) = 0,
-                  "LED" & to_string(i) & " should be 0 in IDLE");
-        end loop;
-
-        report "=== Test 3: Host connected triggers confirm animation ===";
+        report "=== Test 2: Host connected lights LED0 ===";
         host_conn <= '1';
-        wait_fade_cycles(1);
+        wait_fade_cycles(2);
+        check(led_target(0) = 255,
+              "LED0 target should be 255 when host connected, got " & to_string(led_target(0)));
         host_conn <= '0';
-        wait_fade_cycles(3);
-        check(fade_step(0) = 2,
-              "fade_step should be 2 during confirm, got " & to_string(fade_step(0)));
-        -- Wait for confirm to complete (1 cycle = 8 ticks, 10 for margin)
-        wait_fade_cycles(10);
-        check(fade_step(0) = 1,
-              "after confirm should return to fade_step=1, got " & to_string(fade_step(0)));
+        wait_fade_cycles(2);
+        check(led_target(0) = 0, "LED0 target back to 0 when host disconnects");
 
-        report "=== Test 4: Trigger armed ===";
+        report "=== Test 3: Armed state keeps fade_step 1, LED1 blinks ===";
         armed <= '1';
-        capture_run <= '0';
         wait_fade_cycles(3);
-        check(fade_step(0) = 3,
-              "fade_step should be 3 in ARMED, got " & to_string(fade_step(0)));
+        check(fade_step(0) = 1,
+              "fade_step should be 1 in ARMED, got " & to_string(fade_step(0)));
+        check(led_target(1) = 0 or led_target(1) = 255,
+              "LED1 should be blinking in ARMED (0 or 255)");
+        armed <= '0';
+        wait_fade_cycles(2);
+        check(led_target(1) = 0, "LED1 off when not armed");
 
-        report "=== Test 5: Single capture flash ===";
+        report "=== Test 4: Capture sets sweep-bar fade_step 16 ===";
+        armed <= '1';
+        wait_fade_cycles(1);
         capture_run <= '1';
         wait_fade_cycles(3);
         check(fade_step(0) = 16,
               "fade_step should be 16 in CAPTURE, got " & to_string(fade_step(0)));
+        -- Sweep bar: exactly two LEDs lit at a time
+        wait_fade_cycles(2);
+        check(led_target(0) = 255 or led_target(1) = 255,
+              "sweep bar should light at least one LED");
 
-        report "=== Test 6: Return to armed after capture complete ===";
+        report "=== Test 5: Capture full -> DONE -> back to IDLE ===";
         capture_full <= '1';
         wait_fade_cycles(3);
         capture_full <= '0';
         capture_run <= '0';
-        wait_fade_cycles(3);
-        check(fade_step(0) = 3,
-              "should return to ARMED (step=3), got " & to_string(fade_step(0)));
-
-        report "=== Test 7: Rolling capture ===";
-        continuous <= '1';
-        capture_run <= '1';
-        wait_fade_cycles(3);
-        check(fade_step(0) = 1,
-              "fade_step should be 1 in rolling, got " & to_string(fade_step(0)));
-        fifo_act <= "1111";
-        wait_fade_cycles(45);
-        fifo_act <= "0000";
-        wait_fade_cycles(45);
-
-        report "=== Test 8: 4-channel mode ===";
-        ch_4_mode <= '1';
-        wait_fade_cycles(3);
-        for i in 4 to 7 loop
-            check(led_target(i) = 0,
-                  "LED" & to_string(i) & " should be 0 in 4-ch mode");
-        end loop;
-
-        report "=== Test 9: Return to IDLE ===";
-        capture_run <= '0';
-        capture_full <= '1';
-        continuous <= '0';
         armed <= '0';
-        wait_fade_cycles(3);
+        -- DONE exits via blink countdown; give it a generous window.
+        wait_fade_cycles(30);
         check(fade_step(0) = 1,
-              "fade_step should return to 1 in IDLE, got " & to_string(fade_step(0)));
+              "should return to fade_step=1 after DONE, got " & to_string(fade_step(0)));
+
+        report "=== Test 6: Armed again after done ===";
+        armed <= '1';
+        wait_fade_cycles(2);
+        check(fade_step(0) = 1, "fade_step 1 in ARMED after done");
 
         if all_ok then
-            report "=== ALL TESTS PASSED ===";
+            report "=== ALL LED CONTROLLER TESTS PASSED ===";
         else
             report "=== SOME TESTS FAILED ===" severity failure;
         end if;

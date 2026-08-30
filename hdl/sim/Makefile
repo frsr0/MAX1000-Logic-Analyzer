@@ -36,7 +36,7 @@ run: compile
 	$(GHDL) -r $(GHDL_FLAGS) $(TB_NAME) --stop-time=1us 2>&1 | tee tb_output.log
 	@echo ""
 	@echo "=== RESULTS ==="
-	@grep -E "ACK|Results|Recommendations|byte|safe" tb_output.log || echo "(Check tb_output.log for details)"
+	@grep -E "ACK|Results|Recommendations|byte|safe" tb_output.log || { echo "ERROR: expected timing results not found in tb_output.log" >&2; exit 1; }
 
 clean:
 	rm -rf work *.cf *.o tb_output.log

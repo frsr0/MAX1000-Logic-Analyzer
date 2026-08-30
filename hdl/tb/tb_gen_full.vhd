@@ -136,7 +136,7 @@ begin
     generic map (FIFO_DEPTH => 256)
     port map (
       CLK => clk, Load_Byte => gen_load_byte, Load_We => gen_load_we, Start => gen_start,
-      Baud_Div => gen_baud_div, Proto => gen_proto, SPI_Mode => gen_spi_test,
+      Baud_Div => gen_baud_div(15 downto 0), Proto => gen_proto, SPI_Mode => gen_spi_test,
       Tx_Out => gen_tx_out, Scl_Out => gen_scl_out, Busy => gen_busy, Active => open,
       I2C_Rd_Len => gen_i2c_rd_len, I2C_Dev_R => gen_i2c_dev_r, Sda_In => '1',
       CRC_En => '0', CRC_Poly => x"A001"

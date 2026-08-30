@@ -85,11 +85,11 @@ begin
     report "total SCLK rising edges seen = " & integer'image(edges) &
            " (expect " & integer'image(8 * N) & ")";
     if edges < 8 * N then
-      report "=== FAIL: SCLK did not clock all bits ===" severity error;
+      assert false report "=== FAIL: SCLK did not clock all bits ===" severity failure;
     elsif fails = 0 then
       report "=== PASS: SPI generator clocks + data correct ===" severity note;
     else
-      report "=== FAIL: " & integer'image(fails) & " byte mismatches ===" severity error;
+      assert false report "=== FAIL: " & integer'image(fails) & " byte mismatches ===" severity failure;
     end if;
     wait;
   end process;

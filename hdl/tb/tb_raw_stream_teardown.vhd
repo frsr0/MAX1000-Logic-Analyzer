@@ -478,7 +478,7 @@ begin
     if b_fail then
       report "Assertion B1 FAIL: abort teardown S[" & integer'image(mismatch_idx)
              & "]=" & to_hstring(S(mismatch_idx)) & " expected=" & to_hstring(V0_ref(mismatch_idx))
-             severity error;
+             severity failure;
     else
       report "Assertion B1: ABORT TEARDOWN - first 8 samples match baseline" severity note;
     end if;

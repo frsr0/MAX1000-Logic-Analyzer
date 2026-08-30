@@ -73,6 +73,80 @@ def test_analog_processing_handles_empty_inputs_and_cutoff_boundaries():
     assert median_filter(signal, 3).dtype == np.float32
 
 
+def test_moving_average_window_values_and_edge_handling():
+    sig = np.array([1., 2., 3., 4.], dtype=np.float32)
+    # window 1 is the identity (copy)
+    assert np.array_equal(moving_average(sig, 1), sig)
+    # window 2: np.convolve(..., mode="same") zero-pads the left edge, so
+    # out[i] = (sig[i-1] + sig[i]) / 2 and out[0] = sig[0] / 2
+    s5 = np.array([1., 2., 4., 8., 16.], dtype=np.float32)
+    assert np.allclose(moving_average(s5, 2),
+                       np.array([0.5, 1.5, 3.0, 6.0, 12.0], dtype=np.float32))
+    # window 3: centered average out[i] = (sig[i-1] + sig[i] + sig[i+1]) / 3,
+    # with the missing edge neighbours treated as 0 (not padded)
+    assert np.allclose(moving_average(s5, 3),
+                       np.array([1.0, 7 / 3, 14 / 3, 28 / 3, 8.0],
+                                dtype=np.float32))
+    assert np.allclose(moving_average(np.array([1., 2., 3.], dtype=np.float32), 3),
+                       np.array([1.0, 2.0, 5 / 3], dtype=np.float32))
+
+
+def test_lowpass_iir_branch_smooths_step_and_converges():
+    rate = 100_000.0
+    cutoff = 1_000.0  # 0 < cutoff < rate/2 -> single-pole IIR branch
+    n_pre, n_post = 100, 2000
+    sig = np.concatenate([np.zeros(n_pre, dtype=np.float32),
+                          np.ones(n_post, dtype=np.float32)])
+    out = lowpass(sig, cutoff, rate)
+    dt = 1.0 / rate
+    alpha = dt / (1.0 / (2 * np.pi * cutoff) + dt)
+    assert out.dtype == np.float32
+    assert np.all(out >= 0.0) and np.all(out <= 1.0)
+    # step response: out[n_pre + k] = 1 - (1 - alpha)^(k+1); the first
+    # post-step sample is exactly alpha, i.e. the step is smoothed, not passed
+    assert out[n_pre] == pytest.approx(alpha, rel=1e-4)
+    # monotone non-decreasing: float32 rounding makes the converged tail flat
+    assert np.all(np.diff(out[n_pre:]) >= 0)
+    # output converges to the step level
+    assert out[-1] == pytest.approx(1.0, abs=1e-3)
+
+
+def test_highpass_rejects_dc_and_outputs_known_transient():
+    rate = 100_000.0
+    cutoff = 1_000.0
+    # constant (DC) signal -> output is numerically zero everywhere
+    dc = np.full(200, 3.0, dtype=np.float32)
+    assert np.allclose(highpass(dc, cutoff, rate), 0.0, atol=1e-6)
+    # step 0 -> 1: single-pole highpass yields out[n_pre + k] = (1 - alpha)^(k+1)
+    dt = 1.0 / rate
+    alpha = dt / (1.0 / (2 * np.pi * cutoff) + dt)
+    n_pre, n_post = 50, 3000
+    sig = np.concatenate([np.zeros(n_pre, dtype=np.float32),
+                          np.ones(n_post, dtype=np.float32)])
+    out = highpass(sig, cutoff, rate)
+    assert np.allclose(out[:n_pre], 0.0, atol=1e-7)
+    expected = np.array([(1.0 - alpha) ** (k + 1) for k in range(n_post)],
+                        dtype=np.float32)
+    assert np.allclose(out[n_pre:], expected, rtol=1e-5, atol=1e-6)
+
+
+def test_median_filter_value_outputs_and_edge_padding():
+    # single-sample spike is removed by the window-3 median
+    sig = np.array([1., 5., 1., 1., 1.], dtype=np.float32)
+    assert np.array_equal(median_filter(sig, 3), np.ones(5, dtype=np.float32))
+    # edge padding uses the signal edges: out[0] = median([s0, s0, s1]),
+    # out[-1] = median([s[-2], s[-1], s[-1]])
+    sig3 = np.array([3., 1., 2.], dtype=np.float32)
+    assert np.array_equal(median_filter(sig3, 3),
+                          np.array([3., 2., 2.], dtype=np.float32))
+    # window 5 on a known signal, and even windows promoted to the next odd size
+    sig2 = np.array([1., 2., 2., 1., 2.], dtype=np.float32)
+    assert np.array_equal(median_filter(sig2, 5),
+                          np.array([1., 1., 2., 2., 2.], dtype=np.float32))
+    assert np.array_equal(median_filter(sig2, 4),
+                          np.array([1., 1., 2., 2., 2.], dtype=np.float32))
+
+
 def test_software_trigger_no_match_paths():
     wf = _wf(digital=np.zeros(20, dtype=np.uint16), rate=10)
     assert find_software_trigger(wf, TriggerConfig(type="pattern", pattern="1")) is None
@@ -537,7 +611,7 @@ def test_decoder_service_runs_dependencies_reruns_and_cancels(monkeypatch):
 @pytest.mark.parametrize("scenario", [item["id"] for item in SCENARIOS])
 def test_mock_device_scenarios_and_analog_modes(scenario):
     dev = MockDevice()
-    with pytest.raises(Exception):
+    with pytest.raises(HardwareError, match="Mock device not connected"):
         dev.capture(CaptureSettings(num_samples=10, sample_rate=100_000))
     dev.connect()
     result = dev.capture(CaptureSettings(
@@ -567,7 +641,7 @@ def test_mock_generator_protocols(protocol):
     dev.generator_stop()
     assert dev.generator_status().running is False
     dev.disconnect()
-    with pytest.raises(Exception):
+    with pytest.raises(HardwareError, match="Mock device not connected"):
         dev.capture_with_generator(
             CaptureSettings(sample_rate=100_000, num_samples=10), cfg)
 
@@ -1117,13 +1191,21 @@ def test_uart_decoder_covers_formats_parity_idle_and_low_rate():
 
 def test_uart_decoder_reports_parity_and_framing_errors_and_tx():
     sig = _uart_frame(0x41, parity="even")
-    sig[-1] = 0
+    # zero the whole stop bit (10 samples): a single zeroed last sample would
+    # stay inside the decoder's +-1-sample stop tolerance, so corrupt the full
+    # stop bit to force a genuine framing error
+    sig[-10:] = 0
     dig = sig.astype(np.uint16) | (sig.astype(np.uint16) << 1)
     result = UartDecoder().decode(
         DecodeContext(_wf(digital=dig, rate=10_000), {"rx": "d0", "tx": "d1"}),
         {**UartDecoder().defaults(), "baud": 1000, "parity": "odd", "display": "ascii"})
     assert len(result.events) >= 1
-    assert any(e["fields"]["parity_error"] or e["fields"]["framing_error"] for e in result.events)
+    byte_events = [e for e in result.events if e["fields"]["byte"] == 0x41]
+    assert byte_events
+    # even-parity frame decoded as odd -> parity error on every byte event
+    assert all(e["fields"]["parity_error"] for e in byte_events)
+    # zeroed stop bit -> framing error on every byte event
+    assert all(e["fields"]["framing_error"] for e in byte_events)
     inverted = 1 - sig
     result = UartDecoder().decode(
         DecodeContext(_wf(digital=inverted.astype(np.uint16), rate=10_000), {"rx": "d0"}),
@@ -1194,6 +1276,7 @@ def test_swd_decoder_can_mark_open_loop_no_target_as_expected():
 def test_live_accelerometer_diagnostics_builds_session_and_handles_empty_capture(monkeypatch):
     import app.api.diagnostics as diagnostics_api
     from app.capture.session import DeviceMetadata
+    from fastapi import HTTPException
 
     raw = MagicMock(sys_clk=100_000_000, sample_clk=2_000_000)
     raw.accel_read_i2c.side_effect = [0, 0x33]
@@ -1213,36 +1296,38 @@ def test_live_accelerometer_diagnostics_builds_session_and_handles_empty_capture
     assert raw.accel_read_i2c.call_count == 2
 
     raw.accel_capture_dialogue.return_value = b""
-    with pytest.raises(Exception, match="returned no data"):
+    with pytest.raises(HTTPException, match="returned no data"):
         diagnostics_api.live_accel_session("test")
 
 
 def test_diagnostics_self_test_and_mock_capture_error_mapping(monkeypatch):
     import app.api.diagnostics as diagnostics_api
     from app.hardware.base import HardwareError
+    from fastapi import HTTPException
     manager = MagicMock(device_kind="mock", device=None)
     manager.require_device.side_effect = HardwareError("not connected")
     manager.connect.return_value = None
     manager.start_capture.side_effect = HardwareError("capture busy")
     monkeypatch.setattr(diagnostics_api, "capture_manager", manager)
     monkeypatch.setattr(diagnostics_api, "require_control", lambda _: None)
-    with pytest.raises(Exception, match="not connected"):
+    with pytest.raises(HTTPException, match="not connected"):
         diagnostics_api.run_self_test("test")
-    with pytest.raises(Exception, match="capture busy"):
+    with pytest.raises(HTTPException, match="capture busy"):
         diagnostics_api.mock_capture(diagnostics_api.MockCaptureRequest(), "test")
     manager.device_kind = "hardware"
-    with pytest.raises(Exception, match="real hardware"):
+    with pytest.raises(HTTPException, match="real hardware"):
         diagnostics_api.mock_capture(diagnostics_api.MockCaptureRequest(), "test")
 
 
 def test_diagnostics_lan_failure_and_missing_qrcode_package(monkeypatch):
     import app.api.diagnostics as diagnostics_api
+    from fastapi import HTTPException
     class BrokenSocket:
         def __init__(self, *args, **kwargs): raise OSError("network unavailable")
     monkeypatch.setattr(socket, "socket", BrokenSocket)
     assert diagnostics_api._lan_urls() == ["http://localhost:8000"]
     monkeypatch.setitem(sys.modules, "qrcode", None)
-    with pytest.raises(Exception, match="qrcode package not installed"):
+    with pytest.raises(HTTPException, match="qrcode package not installed"):
         diagnostics_api.qr_code()
 
 
@@ -1265,6 +1350,7 @@ def test_diagnostics_qrcode_svg_fallback(monkeypatch):
 def test_generator_self_test_hardware_error_and_real_device_config(monkeypatch):
     import app.api.generator as generator_api
     from app.hardware.base import HardwareError
+    from fastapi import HTTPException
     class Dev:
         def get_metadata(self): return MockDevice().get_metadata().model_copy(update={"mock": False})
     manager = MagicMock(); manager.require_device.return_value = Dev()
@@ -1272,7 +1358,7 @@ def test_generator_self_test_hardware_error_and_real_device_config(monkeypatch):
     monkeypatch.setattr(generator_api, "require_control", lambda _: None)
     monkeypatch.setattr(generator_api, "loopback_self_test",
                         Mock(side_effect=HardwareError("loopback failed")))
-    with pytest.raises(Exception, match="loopback failed"):
+    with pytest.raises(HTTPException, match="loopback failed"):
         generator_api.generator_self_test("test")
 
 
@@ -1588,7 +1674,8 @@ def test_small_remaining_processing_branches(monkeypatch):
     from app.exports.report_export import html_report
     from app.triggers.software_trigger import find_software_trigger
 
-    assert moving_average(np.array([1., 2., 3.], dtype=np.float32), 2).size == 3
+    assert np.allclose(moving_average(np.array([1., 2., 3.], dtype=np.float32), 2),
+                       np.array([0.5, 1.5, 2.5], dtype=np.float32))
     long_sig = np.full(20_005, 0.5, dtype=np.float32)
     monkeypatch.setattr(measurements_analogue, "_levels", lambda _s: (0.0, 1.0))
     monkeypatch.setattr(measurements_analogue, "find_edges", lambda *_: np.array([10001]))
@@ -1743,13 +1830,14 @@ def test_storage_measurement_generator_and_report_fallbacks(monkeypatch, tmp_pat
     from app.hardware.base import HardwareError
     from app.generator.model import GeneratorSendRequest
     from app.hardware.device_models import GeneratorConfig
+    from fastapi import HTTPException
 
     cfg = GeneratorConfig(protocol="uart", data_hex="41", baud=9600, tx_pin=0)
     generator_api._last_config["cfg"] = cfg
     generator_api.capture_manager.control.acquire("client", force=True)
     monkeypatch.setattr(generator_api.capture_manager, "require_device",
                         lambda: (_ for _ in ()).throw(HardwareError("no device")))
-    with pytest.raises(Exception):
+    with pytest.raises(HTTPException, match="no device"):
         generator_api.generator_send(GeneratorSendRequest(capture=False), "client")
     generator_api._last_config.clear()
     generator_api.capture_manager.control.release("client")
@@ -1793,7 +1881,9 @@ def test_storage_measurement_generator_and_report_fallbacks(monkeypatch, tmp_pat
     old_kind = diagnostics_api.capture_manager.device_kind
     diagnostics_api.capture_manager.device_kind = "hardware"
     diagnostics_api.capture_manager.device = None
-    with pytest.raises(Exception):
+    # require_device is still monkeypatched to raise HardwareError; it is not
+    # caught inside live_accel_session, so the raw HardwareError propagates
+    with pytest.raises(HardwareError, match="no device"):
         diagnostics_api.live_accel_session("client")
     diagnostics_api.capture_manager.device_kind = old_kind
 
@@ -1845,7 +1935,13 @@ def test_truncated_serial_and_report_edges(monkeypatch):
                                                 {"rx": "d0"}),
                                    {**UartDecoder().defaults(), "baud": 100,
                                     "parity": "odd"})
-    assert isinstance(result.events, list)
+    # The stop bit is cut 2 samples short but its centre is still sampled high
+    # (decoder tolerance is +-1 sample around the stop-bit centre), so the byte
+    # is still decoded cleanly: exactly one event, no framing/parity error.
+    assert len(result.events) == 1
+    assert result.events[0]["fields"]["byte"] == 0x41
+    assert result.events[0]["fields"]["framing_error"] is False
+    assert result.events[0]["fields"]["parity_error"] is False
     Rs485Decoder()._decode_bits(DecodeContext(_wf(digital=trunc, rate=1000), {}),
                                 trunc, {**Rs485Decoder().defaults(), "baud": 100,
                                         "parity": "odd"})
@@ -1871,16 +1967,23 @@ def test_truncated_serial_and_report_edges(monkeypatch):
         if key == "driver" or key.startswith("driver."):
             sys.modules.pop(key, None)
     monkeypatch.setattr(builtins, "__import__", os_driver)
-    with pytest.raises(Exception):
+    with pytest.raises(HardwareError, match="libftd2xx"):
         import_host_driver()
     monkeypatch.setattr(uart_module, "find_edges", lambda *_: np.array([0]))
-    UartDecoder().decode(DecodeContext(_wf(digital=np.zeros(19, dtype=np.uint16), rate=1000),
-                                       {"rx": "d0"}),
-                         {**UartDecoder().defaults(), "baud": 500, "parity": "odd"})
+    uart_result = UartDecoder().decode(
+        DecodeContext(_wf(digital=np.zeros(19, dtype=np.uint16), rate=1000),
+                      {"rx": "d0"}),
+        {**UartDecoder().defaults(), "baud": 500, "parity": "odd"})
+    # forced start edge at sample 0 on an all-low line: the parity bit position
+    # runs past the end of the signal, so no byte event is emitted
+    assert uart_result.events == []
     monkeypatch.setattr(rs485_module, "find_edges", lambda *_: np.array([0]))
-    Rs485Decoder()._decode_bits(DecodeContext(_wf(digital=np.zeros(19, dtype=np.uint16), rate=1000), {}),
-                                np.zeros(19), {**Rs485Decoder().defaults(), "baud": 500,
-                                               "parity": "odd"})
+    rs485_result, rs485_baud, rs485_starts = Rs485Decoder()._decode_bits(
+        DecodeContext(_wf(digital=np.zeros(19, dtype=np.uint16), rate=1000), {}),
+        np.zeros(19), {**Rs485Decoder().defaults(), "baud": 500, "parity": "odd"})
+    # same forced-start setup: no phase fits the whole frame, no byte event
+    assert rs485_result.events == []
+    assert rs485_starts == 1
     from app.capture.session import ChannelInfo
     non_digital = Session(name="non-digital", channels=[ChannelInfo(
         id="bus0", name="Bus", type="bus")])
@@ -1911,7 +2014,7 @@ def test_truncated_serial_and_report_edges(monkeypatch):
     sys.modules.pop("driver", None)
     sys.modules.pop("driver.ols_spi_device", None)
     sys.modules.pop("driver.spi_protocol", None)
-    with pytest.raises(Exception):
+    with pytest.raises(HardwareError, match="libftd2xx"):
         import_host_driver()
 
 
@@ -1960,6 +2063,7 @@ def test_last_hardware_and_fallback_lines(monkeypatch):
     from app.capture.session import CaptureSettings
     from app.hardware.protocol import import_host_driver
     from app.exports.report_export import _waveform_svg
+    from fastapi import HTTPException
 
     class OpenButEmpty:
         _dev = None
@@ -1968,7 +2072,7 @@ def test_last_hardware_and_fallback_lines(monkeypatch):
     old_device = diagnostics_api.capture_manager.device
     diagnostics_api.capture_manager.device_kind = "hardware"
     diagnostics_api.capture_manager.device = OpenButEmpty()
-    with pytest.raises(Exception):
+    with pytest.raises(HTTPException, match="Hardware device is not open"):
         diagnostics_api.live_accel_session("client")
     diagnostics_api.capture_manager.device_kind = old_kind
     diagnostics_api.capture_manager.device = old_device
@@ -1986,7 +2090,7 @@ def test_last_hardware_and_fallback_lines(monkeypatch):
     mock = MockDevice()
     mock._build_scenario("analog_demo", 32, 1000, True)
     mock._build_scenario("unknown", 32, 1000, False)
-    with pytest.raises(Exception):
+    with pytest.raises(HardwareError, match="Mock device not connected"):
         mock.capture_with_generator(CaptureSettings(num_samples=32),
                                     GeneratorConfig(protocol="bad", data_hex="41"))
 
@@ -1996,7 +2100,7 @@ def test_last_hardware_and_fallback_lines(monkeypatch):
         return original_import(name, *args, **kwargs)
     original_import = builtins.__import__
     monkeypatch.setattr(builtins, "__import__", missing_driver)
-    with pytest.raises(Exception):
+    with pytest.raises(HardwareError, match="FTDI driver package not available"):
         import_host_driver()
 
 
@@ -2040,10 +2144,11 @@ def test_rolling_capture_timeout_reaches_sleep(monkeypatch):
         debug_ch0_enabled = False
         def reset(self): pass
         def _write_capture_config(self, **kwargs): pass
+        def set_bitbang_pwm(self, value): pass
         def set_debug_ch0(self, value): pass
     times = iter((0.0, 1.0, 10.0))
     monkeypatch.setattr(adapter_module.time, "time", lambda: next(times))
-    with pytest.raises(Exception):
+    with pytest.raises(HardwareError, match="timed out"):
         adapter._rolling_single_shot_capture(Dev(), rate=1000, nsamp=1,
                                              progress=None, stop_evt=None)
 

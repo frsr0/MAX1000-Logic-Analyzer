@@ -7,7 +7,7 @@ sys.modules['serial.tools'] = MagicMock()
 sys.modules['serial.tools.list_ports'] = MagicMock()
 
 from app.OLS_Console import OLScope, WaveformDisplay, NUM_CHANNELS, samples_to_channels
-from app.OLS_Console import MODE_DIGITAL, MODE_MIXED
+from app.OLS_Console import MODE_DIGITAL, MODE_MIXED, analog_frame_stride
 
 
 def _make_scope(backend='UART'):
@@ -207,8 +207,16 @@ class TestOLScopeRateLimits:
     def test_fmt_rate_roundtrip(self, rate_str, expected):
         """_fmt_rate followed by _apply_rate returns same value."""
         scope = _make_scope()
+        scope.capture_type = MagicMock()
+        scope.capture_type.get.return_value = 'single'
+        scope.mode_cb = MagicMock()
+        scope.mode_cb.get.return_value = '16 Digital'
+        scope._update_time_display = MagicMock()
+        scope._update_rate_info = MagicMock()
+        scope._update_buf_estimate = MagicMock()
         fmt = scope._fmt_rate(expected)
         assert fmt in [r for r, _ in ALL_RATES], f"{fmt} not in presets"
+        assert scope._apply_rate(fmt) == expected
 
     def test_rolling_digital_clamps_to_50mhz(self):
         """Rolling 16 Digital clamps to the live-view ceiling."""
@@ -260,17 +268,26 @@ class TestOLScopeRateLimits:
 # ====================================================================
 
 class TestChannelVisibility:
-    def test_toggle_hides_channel(self):
-        wave = MagicMock()
+    def _make_wave(self):
+        parent = MagicMock()
+        wave = WaveformDisplay(parent)
+        wave.winfo_width = MagicMock(return_value=500)
         wave.channel_visible = [True] * 16
-        wave.toggle_channel = MagicMock()
+        return wave
+
+    def test_toggle_hides_channel(self):
+        """Real toggle_channel flips the channel off and out of visible indices."""
+        wave = self._make_wave()
         wave.toggle_channel(3)
-        wave.toggle_channel.assert_called_with(3)
+        assert wave.channel_visible[3] is False
+        assert 3 not in wave._visible_indices()
+        assert sum(wave.channel_visible) == 15
 
     def test_hidden_channel_not_in_visible_indices(self):
-        wave = MagicMock()
+        """_visible_indices skips channels whose visibility flag is False."""
+        wave = self._make_wave()
         wave.channel_visible = [True, False, True, True]
-        visible = [i for i, v in enumerate(wave.channel_visible) if v]
+        visible = wave._visible_indices()
         assert 1 not in visible
         assert len(visible) == 3
 
@@ -294,7 +311,9 @@ def _mk_scope_for_capture(capture_type='rolling', mode=MODE_DIGITAL):
     scope = _make_scope()
     scope.dev = MagicMock()
     scope.capture_type = _MockVar(value=capture_type)
-    scope.capture_mode = mode
+    # _capture recomputes capture_mode via _get_capture_mode(), which reads
+    # mode_cb — configure it so the requested mode actually takes effect.
+    scope.mode_cb = _MockVar(value='16 Dig + 2 Ana' if mode == MODE_MIXED else '16 Digital')
     scope.capture_stride = 4
     scope.wave = MagicMock()
     scope.wave.winfo_width.return_value = 500
@@ -341,28 +360,40 @@ class TestCapturePaths:
         threading.Thread = self._real_thread
 
     def test_rolling_disables_fast(self):
-        """Rolling capture should disable fast mode."""
+        """Rolling capture should disable fast mode and still start a worker thread."""
         scope = _mk_scope_for_capture(capture_type='rolling')
         scope._nsamp = 512
         scope.rate_cb = MagicMock()
         scope.rate_cb.get.return_value = '1MHz'
         scope._capture()
+        assert threading.Thread.called, "_capture should start a worker thread"
         assert not scope.dev.fast_mode_enabled, "fast mode should be off for rolling"
 
     def test_single_digital_path(self):
-        """Single digital capture reaches thread creation."""
+        """Single digital capture reaches thread creation on the digital path."""
         scope = _mk_scope_for_capture(capture_type='single')
         scope._capture()
+        assert threading.Thread.called, "_capture should start a worker thread"
+        assert scope.capture_mode == MODE_DIGITAL
+        assert scope.capture_stride == 2
+        assert scope.dev.fast_mode_enabled is False  # 5000 nsamp > 1024 BRAM limit
 
     def test_rolling_digital_path(self):
-        """Rolling digital capture reaches thread creation."""
+        """Rolling digital capture reaches thread creation with fast mode off."""
         scope = _mk_scope_for_capture(capture_type='rolling')
         scope._capture()
+        assert threading.Thread.called, "_capture should start a worker thread"
+        assert scope.capture_mode == MODE_DIGITAL
+        assert scope.dev.fast_mode_enabled is False
 
     def test_single_2ana_path(self):
-        """Single 2-analog capture reaches thread creation."""
+        """Single 2-analog capture reaches thread creation on the mixed path."""
         scope = _mk_scope_for_capture(capture_type='single', mode=MODE_MIXED)
         scope._capture()
+        assert threading.Thread.called, "_capture should start a worker thread"
+        assert scope.capture_mode == MODE_MIXED
+        assert scope.capture_stride == analog_frame_stride(MODE_MIXED)
+        assert scope.dev.fast_mode_enabled is False
 
     def test_fast_auto_selected_for_bram_ok(self):
         """Single capture with <= 1024 nsamp should auto-enable fast mode."""
@@ -372,6 +403,7 @@ class TestCapturePaths:
         scope.rate_cb.get.return_value = '200MHz'
         scope.dev = MagicMock()
         scope._capture()
+        assert threading.Thread.called, "_capture should start a worker thread"
         assert scope.dev.fast_mode_enabled, "fast mode should be enabled for <= 1024 samples"
 
     def test_fast_not_auto_for_deep_capture(self):
@@ -382,6 +414,7 @@ class TestCapturePaths:
         scope.rate_cb.get.return_value = '1MHz'
         scope.dev = MagicMock()
         scope._capture()
+        assert threading.Thread.called, "_capture should start a worker thread"
         assert not scope.dev.fast_mode_enabled, "fast mode should be off for deep capture"
 
 
@@ -504,14 +537,38 @@ class TestOLScopeTrigModeChanged:
             v.set.assert_called_with(False)
 
     def test_rising_enables_checks(self):
+        """Rising edge trigger sets the trig_frame checkbuttons to 'normal'."""
+        class _Frame:
+            def __init__(self):
+                self.children = []
+            def winfo_children(self):
+                return self.children
+        class _Checkbutton:
+            def __init__(self):
+                self.state = None
+            def configure(self, **kw):
+                self.state = kw.get('state')
+
         scope = _make_scope()
         scope.trig_mode = MagicMock()
         scope.trig_mode.get.return_value = 'Rising'
         scope.trig_ch_vars = [MagicMock() for _ in range(16)]
-        scope.trig_frame = MagicMock()
-        scope.trig_frame.winfo_children.return_value = []
-        scope._trig_mode_changed()
-        assert scope.trig_frame.winfo_children.called
+        # Real _trig_mode_changed: trig_frame children are sub-frames,
+        # checkbuttons live one level deeper.
+        frame = _Frame()
+        sub_frame = _Frame()
+        sub = _Checkbutton()
+        sub_frame.children.append(sub)
+        frame.children.append(sub_frame)
+        scope.trig_frame = frame
+        ttk_stub = MagicMock()
+        ttk_stub.Frame = _Frame
+        ttk_stub.Checkbutton = _Checkbutton
+        with patch('app.OLS_Console.ttk', ttk_stub):
+            scope._trig_mode_changed()
+        assert sub.state == 'normal'
+        for v in scope.trig_ch_vars:
+            v.set.assert_called_with(False)
 
     def test_debug_ch0_changed_updates_device(self):
         scope = _make_scope()
@@ -752,11 +809,14 @@ class TestOLScopeExports:
             'text', "Captured: 0 samples (0 MB)")
 
     def test_export_ols_no_data(self):
+        """No data -> info dialog for THIS call, and no save dialog."""
         scope = _make_scope()
         scope.captured_bytes = b''
-        scope._export_ols()
-        tk = sys.modules['tkinter']
-        tk.messagebox.showinfo.assert_called_once()
+        with patch('app.OLS_Console.messagebox') as mb, \
+             patch('app.OLS_Console.filedialog') as fd:
+            scope._export_ols()
+        mb.showinfo.assert_called_once_with("Export", "No data to export")
+        fd.asksaveasfilename.assert_not_called()
 
     def test_export_ols_writes_file(self, tmpdir):
         scope = _make_scope()
@@ -773,10 +833,14 @@ class TestOLScopeExports:
         assert 'Channels: 16' in content
 
     def test_export_sr_no_data(self):
+        """No data -> early return: no save dialog is opened, no file status set."""
         scope = _make_scope()
         scope.captured_bytes = b''
-        scope._export_sr()
-        assert True
+        scope.status.reset_mock()  # clear writes made during OLScope construction
+        with patch('app.OLS_Console.filedialog') as fd:
+            scope._export_sr()
+        fd.asksaveasfilename.assert_not_called()
+        scope.status.__setitem__.assert_not_called()
 
     def test_export_sr_writes_zip(self, tmpdir):
         scope = _make_scope()
@@ -793,10 +857,15 @@ class TestOLScopeExports:
         assert 'logic-1' in names
 
     def test_export_clip_no_data(self):
+        """No data -> early return: clipboard is neither cleared nor written."""
         scope = _make_scope()
         scope.captured_bytes = b''
+        scope.win = MagicMock()
+        scope.status.reset_mock()  # clear writes made during OLScope construction
         scope._export_clip()
-        assert True
+        scope.win.clipboard_clear.assert_not_called()
+        scope.win.clipboard_append.assert_not_called()
+        scope.status.__setitem__.assert_not_called()
 
     def test_export_clip_with_data(self):
         scope = _make_scope()
@@ -813,9 +882,11 @@ class TestOLScopeExports:
         scope.wave = MagicMock()
         scope.wave.marker1 = None
         scope.wave.marker2 = None
-        scope._export_marker_range()
-        tk = sys.modules['tkinter']
-        tk.messagebox.showinfo.assert_called()
+        with patch('app.OLS_Console.messagebox') as mb:
+            scope._export_marker_range()
+        mb.showinfo.assert_called_once_with(
+            "Export Range",
+            "Set markers M1 and M2 first\n(click on waveform to place markers)")
 
     def test_export_marker_range_no_data(self):
         scope = _make_scope()
@@ -823,20 +894,25 @@ class TestOLScopeExports:
         scope.wave.marker1 = 10
         scope.wave.marker2 = 20
         scope.captured_bytes = b''
-        scope._export_marker_range()
-        tk = sys.modules['tkinter']
-        tk.messagebox.showinfo.assert_called()
+        with patch('app.OLS_Console.messagebox') as mb:
+            scope._export_marker_range()
+        mb.showinfo.assert_called_once_with(
+            "Export Range", "No captured data to export")
 
     def test_export_marker_range_too_small(self):
+        """A marker range shorter than one stride is rejected with a message and no save dialog."""
         scope = _make_scope()
         scope.wave = MagicMock()
-        scope.wave.marker1 = 0
-        scope.wave.marker2 = 0
-        scope.captured_bytes = bytes(range(80))
+        scope.wave.marker1 = 1
+        scope.wave.marker2 = 1
+        scope.captured_bytes = bytes(range(6))  # 1 sample needs 4 bytes; only 2 remain after M1
         scope.samplerate = 1000000
-        scope._export_marker_range()
-        tk = sys.modules['tkinter']
-        tk.messagebox.showinfo.assert_called()
+        scope.capture_stride = 4
+        with patch('app.OLS_Console.messagebox') as mb, \
+             patch('tkinter.filedialog') as fd:
+            scope._export_marker_range()
+        mb.showinfo.assert_called_once_with("Export Range", "Range too small (need >= 1 sample)")
+        fd.asksaveasfilename.assert_not_called()
 
     def test_export_marker_range_writes_file(self, tmpdir):
         scope = _make_scope()

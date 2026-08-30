@@ -177,7 +177,7 @@ begin
       if pl >= 1024 then
         report label_s & ": PASS (full block read back)" severity note;
       else
-        report label_s & ": FAIL (" & integer'image(pl) & " bytes)" severity error;
+        report label_s & ": FAIL (" & integer'image(pl) & " bytes)" severity failure;
         fails := fails + 1;
       end if;
     end procedure;
@@ -212,7 +212,7 @@ begin
     if pl >= 1024 then
       report "B-continuous: PASS (readout delivered a full buffer)" severity note;
     else
-      report "B-continuous: FAIL (" & integer'image(pl) & " bytes)" severity error;
+      report "B-continuous: FAIL (" & integer'image(pl) & " bytes)" severity failure;
       fails := fails + 1;
     end if;
     wreg(spi_cs, sck, spi_mosi, spi_miso, REG_CONT_MODE, 0);  -- stop continuous
@@ -226,7 +226,7 @@ begin
       report "  tb_continuous_wedge: PASS (no wedge)";
     else
       report "  tb_continuous_wedge: " & integer'image(fails) & " FAILURE(S) - WEDGE REPRODUCED"
-        severity error;
+        severity failure;
     end if;
     report "======================================================";
     std.env.finish;

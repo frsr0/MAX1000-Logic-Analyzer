@@ -1,0 +1,122 @@
+# Hardware CI gate: the strictest validation in this repo.
+#
+# Runs the real-physical-hardware Playwright suites against a MAX1000 board:
+#   - frontend/tests/e2e/hardware-features.spec.ts with
+#     PLAYWRIGHT_HARDWARE_MATRIX=1: 37 real captures across every advertised
+#     mode/rate, per-case effective-rate tolerance < 2%, has_waveform, and
+#     failures === 0
+#   - frontend/tests/e2e/hardware.spec.ts in live (non-mock) mode
+#
+# This CANNOT run on GitHub-hosted runners: it needs the FTDI D2XX driver
+# (ftd2xx + libftd2xx; see host/requirements.txt), the host/driver SPI
+# transport, and a MAX1000 physically attached.  It is triggered manually
+# (workflow_dispatch) or on a weekly schedule.  When no MAX1000 is attached
+# the job skips itself with a notice (exit 0), so an unattended scheduled
+# run on a hardware-less runner stays green.
+name: Hardware Matrix
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 4 * * 1' # weekly: every Monday 04:00 UTC
+
+jobs:
+  hardware-matrix:
+    # Self-hosted runner labeled `max1000` with a MAX1000 board attached and
+    # the native FTDI D2XX driver preinstalled.  GitHub-hosted runners cannot
+    # satisfy these labels; the runner must also have `python`, `node`,
+    # `curl`, and the host/requirements.txt packages available under bash.
+    runs-on: [self-hosted, max1000]
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install backend + host driver dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install -r host/requirements.txt
+        # ftd2xx (native FTDI D2XX) is intentionally absent from both
+        # requirements files because it cannot be installed in CI; the
+        # hardware runner must have it (and libftd2xx) preinstalled.
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Start backend + host driver
+        working-directory: backend
+        run: |
+          nohup python run.py > backend.log 2>&1 &
+          echo $! > backend.pid
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8000/api/status >/dev/null 2>&1; then
+              echo "Backend ready (${i}s)"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Backend did not become ready; backend.log:" >&2
+          cat backend.log >&2
+          exit 1
+
+      - name: Probe MAX1000 presence
+        id: probe
+        working-directory: backend
+        run: |
+          # The backend connects lazily, so first attempt a real hardware
+          # connect (this exercises FTDI discovery), then confirm the device
+          # via /api/status.  A failed connect (no device) is not an error:
+          # the job reports a skip notice and exits 0.
+          curl -fsS -X POST http://127.0.0.1:8000/api/connect \
+            -H 'Content-Type: application/json' \
+            -d '{"device_id":"hardware"}' >/dev/null 2>&1 || true
+          device_present=$(curl -fsS http://127.0.0.1:8000/api/status | python -c \
+            "import json,sys; s=json.load(sys.stdin); print('yes' if s.get('device_connected') and s.get('device_kind') == 'hardware' else 'no')")
+          echo "device_present=$device_present" >> "$GITHUB_OUTPUT"
+          if [ "$device_present" != "yes" ]; then
+            echo "::notice::No MAX1000 attached (device_connected=false or device_kind != 'hardware'); skipping hardware matrix"
+            exit 0
+          fi
+          echo "MAX1000 hardware present - running hardware CI gate"
+
+      - name: Run hardware-features matrix suite (37 real captures)
+        if: steps.probe.outputs.device_present == 'yes'
+        working-directory: frontend
+        env:
+          PLAYWRIGHT_HARDWARE_MATRIX: '1'
+        run: npm run test:e2e -- hardware-features.spec.ts
+
+      - name: Run live hardware.spec.ts suite (non-mock)
+        if: steps.probe.outputs.device_present == 'yes'
+        working-directory: frontend
+        env:
+          PLAYWRIGHT_USE_MOCK: '0'
+        run: npm run test:e2e -- hardware.spec.ts
+
+      - name: Stop backend
+        if: always()
+        working-directory: backend
+        run: |
+          if [ -f backend.pid ]; then
+            kill "$(cat backend.pid)" 2>/dev/null || true
+          fi

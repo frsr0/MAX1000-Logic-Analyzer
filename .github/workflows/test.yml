@@ -96,3 +96,16 @@ jobs:
         env:
           PLAYWRIGHT_USE_MOCK: "1"
         run: npm run test:e2e -- hardware.spec.ts
+
+  hdl-tb:
+    runs-on: ubuntu-latest
+    # Pinned GHDL toolchain (ubuntu-22.04 base with bash as the default
+    # shell, so the plain `run` steps work unchanged). Running inside the
+    # verified container removes the apt-version skew of a bare
+    # `apt-get install ghdl` and keeps the CI bit-for-bit on the same
+    # compiler as the local container runs (GHDL 6.0.0, --std=08).
+    container: ghdl/ghdl:6.0.0-llvm-ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run HDL testbench suite
+        run: bash hdl/tb/run_all_tbs.sh

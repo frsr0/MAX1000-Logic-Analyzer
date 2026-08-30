@@ -150,6 +150,100 @@ def test_loopback_retry_i2c_nack_and_real_spi_channel_mapping(tmp_path, monkeypa
     assert controller.loopback_self_test(mgr, cfg, 1_000_000, 8).passed
 
 
+def test_loopback_attempt_swd_counts_transfers_and_filters_ack_parity(tmp_path, monkeypatch):
+    import app.generator.controller as controller
+    from app.capture.capture_manager import CaptureManager
+    from app.capture.session_store import SessionStore
+    from app.hardware.base import CaptureResult
+    from app.hardware.mock_device import MockDevice
+    from app.decoders.base import DecoderResult
+
+    class FakeDecoder:
+        def __init__(self, events): self.events = events; self.settings_seen = None
+        def defaults(self): return {}
+        def decode(self, ctx, settings):
+            self.settings_seen = dict(settings)
+            return DecoderResult(events=self.events)
+
+    class FakeDev:
+        def get_metadata(self): return MockDevice().get_metadata()
+        def capture_with_generator(self, settings, cfg):
+            return CaptureResult(sample_rate=settings.sample_rate,
+                                 digital=np.zeros(settings.num_samples, dtype=np.uint16))
+
+    def xfer(ack, parity_ok=True):
+        return {"type": "swd_xfer",
+                "fields": {"ack": ack, "parity_ok": parity_ok}}
+
+    mgr = CaptureManager(SessionStore(tmp_path)); mgr.device = FakeDev(); mgr.device_kind = "mock"
+
+    def attempt(events, cfg):
+        decoder = FakeDecoder(events)
+        monkeypatch.setattr(controller.decoder_registry, "get",
+                            lambda name: decoder)
+        result = controller._loopback_attempt(
+            mgr, mgr.device, cfg,
+            CaptureSettings(sample_rate=1_000_000, num_samples=8), b"")
+        return result, decoder
+
+    # open-loop: transfers count even with no target response, and the
+    # decoder is told the target is not expected to answer
+    cfg = GeneratorConfig(protocol="swd", data_hex="41", tx_pin=0, scl_pin=1)
+    result, decoder = attempt([xfer(7), xfer(7)], cfg)
+    assert result.passed is True
+    assert result.detail == ("PASS - captured and decoded 2 open-loop SWD "
+                             "transaction(s); target response not requested")
+    assert decoder.settings_seen["expected_no_target"] is True
+
+    # no decoded transactions -> explicit failure
+    result, decoder = attempt([], cfg)
+    assert result.passed is False
+    assert result.detail == "FAIL - no SWD transactions decoded"
+
+    # target response requested: WAIT/no-target ACK is a failure
+    cfg_t = GeneratorConfig(protocol="swd", data_hex="41", tx_pin=0, scl_pin=1,
+                            extra={"expect_target_response": True})
+    result, decoder = attempt([xfer(7)], cfg_t)
+    assert result.passed is False
+    assert result.detail == ("FAIL - 1 SWD transaction(s) did not receive "
+                             "a valid target response")
+    assert decoder.settings_seen["expected_no_target"] is False
+
+    # parity failure is a target failure even with ack==OK
+    result, decoder = attempt([xfer(1, parity_ok=False)], cfg_t)
+    assert result.passed is False
+    assert "did not receive" in result.detail
+
+    # ack==OK with good parity passes and reports the transfer count
+    result, decoder = attempt([xfer(1), xfer(1)], cfg_t)
+    assert result.passed is True
+    assert result.detail == ("PASS - captured and validated 2 SWD "
+                             "transaction(s)")
+
+    # ack==OK but one parity failure: still a failure (mixed)
+    result, decoder = attempt([xfer(1), xfer(1, parity_ok=False)], cfg_t)
+    assert result.passed is False
+    assert result.detail == ("FAIL - 1 SWD transaction(s) did not receive "
+                             "a valid target response")
+
+
+def test_loopback_self_test_swd_retries_like_other_protocols(tmp_path, monkeypatch):
+    import app.generator.controller as controller
+    from app.capture.capture_manager import CaptureManager
+    from app.capture.session_store import SessionStore
+    from app.generator.model import GeneratorSelfTestResult
+    from app.hardware.device_models import GeneratorConfig
+
+    mgr = CaptureManager(SessionStore(tmp_path)); mgr.device = object()
+    cfg = GeneratorConfig(protocol="swd", data_hex="41", tx_pin=0, scl_pin=1)
+    outcomes = iter([GeneratorSelfTestResult(passed=False),
+                     GeneratorSelfTestResult(passed=True)])
+    monkeypatch.setattr(controller, "_loopback_attempt", lambda *args: next(outcomes))
+    monkeypatch.setattr(mgr, "require_device", lambda: mgr.device)
+    result = controller.loopback_self_test(mgr, cfg, 1_000_000, 8)
+    assert result.passed is True
+
+
 @pytest.mark.parametrize("protocol", ["uart", "rs485", "i2c", "spi"])
 def test_mock_generator_output_round_trips_through_decoder(protocol, tmp_path):
     from app.capture.capture_manager import CaptureManager

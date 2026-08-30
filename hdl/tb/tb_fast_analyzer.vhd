@@ -175,7 +175,11 @@ begin
     run <= '1';
 
     -- Ring must capture all requested samples; producer index walks 0..CONT_SAMPLES.
-    wait_until(clk, prod_done, '1', 10 ms,
+    -- The watchdog must fire strictly before the suite's 10 ms --stop-time
+    -- bound, otherwise a stalled ring is masked by the run ending first
+    -- (previously 10 ms == the stop bound, so it could never fire). The ring
+    -- completes in ~0.3 ms in sim, so 5 ms leaves a wide margin both ways.
+    wait_until(clk, prod_done, '1', 5 ms,
                "Continuous ring should capture all requested samples");
     check(unsigned(producer_index_s) >= to_unsigned(CONT_SAMPLES, 32),
           "Producer index reached the requested sample count");

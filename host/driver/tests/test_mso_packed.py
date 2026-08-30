@@ -114,6 +114,73 @@ def test_digital_value_carry_and_slice_id():
     assert dec == [expected, expected, expected]
 
 
+def test_bit15_routes_interleaved_words_to_substreams():
+    # Interleaved analog + digital words: bit 15 must route each word to its
+    # own sub-stream without reordering either producer's sequence.
+    def pkt(sl, val, dwell):
+        return 0x8000 | (sl << 13) | ((val & 0xF) << 9) | (dwell & 0x1FF)
+
+    words = [
+        0x0000,                                        # analog W=0 flat header
+        pkt(0, 0xA, 2),                                # digital slice0
+        0x0000,                                        # analog again
+        pkt(1, 0x5, 2),                                # digital slice1
+        0x0000,
+        pkt(2, 0x0, 2),
+        pkt(3, 0x0, 2),
+    ]
+    res = decode_packed_stream(_pack(words))
+    # Three flat W=0 analog blocks -> 48 samples round-robin over 4 channels.
+    assert res['analog'] == [[0] * 12, [0] * 12, [0] * 12, [0] * 12]
+    # Digital: one 3-cycle run per slice; combined word = 0xA | 0x5<<4.
+    assert res['digital'] == [0xA | (0x5 << 4)] * 3
+    assert res['digital_runs'][0] == [(0xA, 3)]
+    assert res['digital_runs'][1] == [(0x5, 3)]
+    assert res['digital_runs'][2] == [(0x0, 3)]
+    assert res['digital_runs'][3] == [(0x0, 3)]
+
+
+def test_decode_analog_words_partial_anchors_break():
+    # v2 header promises 4 inline anchors but only 1 word follows: the tail is
+    # treated as trailing garbage and nothing decodes.
+    words = [0x1C00, 0x0010]
+    assert decode_analog_words(words) == [[], [], [], []]
+
+
+def test_decode_analog_words_incomplete_payload_breaks():
+    # W=1 header needs ceil(16/15) = 2 payload words; only 1 present: the
+    # block is incomplete and the already-decoded prefix (here: none) stays.
+    words = [0x0800, 0x0001]
+    assert decode_analog_words(words) == [[], [], [], []]
+
+
+def test_decode_digital_words_empty_slice_returns_no_timeline():
+    # Slices 0..2 are described but slice 3 never is: the combined timeline
+    # cannot be built, so decode returns [] while still reporting the runs.
+    def pkt(sl, val, dwell):
+        return 0x8000 | (sl << 13) | ((val & 0xF) << 9) | (dwell & 0x1FF)
+
+    words = [pkt(0, 0xA, 2), pkt(1, 0x5, 2), pkt(2, 0x0, 2)]
+    dec, runs = decode_digital_words(words)
+    assert dec == []
+    assert runs[0] == [(0xA, 3)]
+    assert runs[1] == [(0x5, 3)]
+    assert runs[2] == [(0x0, 3)]
+    assert runs[3] == []
+
+
+def test_decode_digital_words_dwell_zero_is_single_cycle():
+    # dwell is run length - 1: dwell=0 must produce a 1-cycle run.
+    def pkt(sl, val, dwell):
+        return 0x8000 | (sl << 13) | ((val & 0xF) << 9) | (dwell & 0x1FF)
+
+    words = [pkt(sl, 0x5, 0) for sl in range(4)]
+    dec, runs = decode_digital_words(words)
+    assert runs[0] == [(0x5, 1)]
+    assert runs[3] == [(0x5, 1)]
+    assert dec == [0x5555]  # one combined cycle: slice value 5 on all 4 slices
+
+
 def test_mode_bit_constant():
     assert REG_FLAGS_PACKED_BIT == 20
 

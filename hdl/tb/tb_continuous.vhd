@@ -55,16 +55,13 @@ architecture bench of tb_continuous is
   signal newest_index   : std_logic_vector(31 downto 0);
   signal overrun_count  : std_logic_vector(31 downto 0);
   signal fast_clk  : std_logic := '0';
-  signal bram_waddr : natural range 0 to 1023;
-  signal bram_wren  : std_logic;
 
 begin
   gen_clk(clk, CLK_HALF);
   fast_clk <= clk;
   inputs <= x"A0";
 
-  bram_wren  <= << signal .tb_continuous.dut.bram_wren : std_logic >>;
-  bram_waddr <= << signal .tb_continuous.dut.bram_waddr : natural range 0 to 1023 >>;
+  -- (dead diagnostic probes removed: GHDL 6.0.0 crashes on external names)
 
   DUT : entity work.Fast_Logic_Analyzer_SDRAM
     generic map (Max_Samples => 3000000, Channels => CHANNELS, Sim => true)

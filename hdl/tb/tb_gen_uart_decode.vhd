@@ -70,7 +70,8 @@ begin
 
     -- decode N bytes off Tx_Out (idle-high 8N1, LSB first)
     for i in 0 to N-1 loop
-      wait until falling_edge(tx_out);     -- leading edge of the start bit
+      wait_until(clk, tx_out, '0', 10 ms,
+                 "Tx_Out start-bit falling edge, byte " & integer'image(i));
       wait for BIT_TIME * 1.5;             -- advance to the centre of data bit 0
       for b in 0 to 7 loop
         rxb(b) := tx_out;
@@ -91,8 +92,8 @@ begin
     if fails = 0 then
       report "=== PASS: generator UART round-trips correctly ===" severity note;
     else
-      report "=== FAIL: " & integer'image(fails) &
-             " byte/stop mismatches ===" severity error;
+      assert false report "=== FAIL: " & integer'image(fails) &
+             " byte/stop mismatches ===" severity failure;
     end if;
     wait;
   end process;

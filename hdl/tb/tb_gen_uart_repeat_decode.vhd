@@ -43,7 +43,9 @@ begin
 
     for r in 0 to REPEATS-1 loop
       for i in 0 to N-1 loop
-        wait until falling_edge(tx_out);
+        wait_until(clk, tx_out, '0', 1 ms,
+                   "Tx_Out start-bit falling edge, repeat " & integer'image(r) &
+                   " byte " & integer'image(i));
         wait for BIT_TIME * 1.5;
         for b in 0 to 7 loop
           rxb(b) := tx_out;
@@ -51,11 +53,11 @@ begin
         end loop;
         assert rxb = PAYLOAD(i)
           report "repeat=" & integer'image(r) & " byte=" & integer'image(i) &
-                 " got=0x" & to_hstring(rxb) severity error;
-        assert tx_out = '1' report "stop bit missing" severity error;
+                 " got=0x" & to_hstring(rxb) severity failure;
+        assert tx_out = '1' report "stop bit missing" severity failure;
       end loop;
     end loop;
-    assert busy = '1' report "repeat generator stopped" severity error;
+    assert busy = '1' report "repeat generator stopped" severity failure;
     report "PASS: UART repeat decodes five complete FIFO replays" severity note;
     wait;
   end process;

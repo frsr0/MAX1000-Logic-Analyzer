@@ -30,6 +30,7 @@ architecture bench of tb_probe_run is
   signal sdram_clk   : std_logic;
   signal dummy0 : std_logic;
   signal dummy1 : natural range 0 to 31;
+  signal dummy2 : natural range 0 to 31;
 
   function flatten(b : byte_array; n : natural) return std_logic_vector is
     variable r : std_logic_vector(n*8-1 downto 0);
@@ -70,6 +71,10 @@ architecture bench of tb_probe_run is
     variable status : out std_logic_vector(7 downto 0)) is
     variable pay : byte_array(0 to 63);
     variable pl  : natural;
+    -- GHDL 6.0.0 does not support VHDL-2008 sequential declare blocks, so the
+    -- read-back byte array is a procedure-level variable instead.
+    variable tx : byte_array(0 to 39);
+    variable rx : byte_array(0 to 39);
   begin
     pkt_send(cs_n, sck_o, mosi, miso, cmd, payload, plen);
     wait for 6 us;
@@ -78,18 +83,13 @@ architecture bench of tb_probe_run is
     pl := 0;
     status := x"FF";
     -- Simple read
-    declare
-      variable tx : byte_array(0 to 39);
-      variable rx : byte_array(0 to 39);
-    begin
-      for i in 0 to 39 loop tx(i) := x"FF"; end loop;
-      spi_xfer(cs_n, sck_o, mosi, miso, SPI_HALF, tx, rx);
-      for i in 0 to 33 loop
-        if rx(i) = x"AA" and rx(i+1) = x"55" then
-          status := rx(i+2);
-        end if;
-      end loop;
-    end;
+    for i in 0 to 39 loop tx(i) := x"FF"; end loop;
+    spi_xfer(cs_n, sck_o, mosi, miso, SPI_HALF, tx, rx);
+    for i in 0 to 33 loop
+      if rx(i) = x"AA" and rx(i+1) = x"55" then
+        status := rx(i+2);
+      end if;
+    end loop;
   end procedure;
 
   procedure wreg(
@@ -105,7 +105,7 @@ architecture bench of tb_probe_run is
     pld(0) := reg;
     pld(1) := v(7 downto 0); pld(2) := v(15 downto 8);
     pld(3) := v(23 downto 16); pld(4) := v(31 downto 24);
-    pkt_cmd(spi_cs, sck, spi_mosi, spi_miso, CMD_WRITE_REG, pld, 5, st);
+    pkt_cmd(cs_n, sck_o, mosi, miso, CMD_WRITE_REG, pld, 5, st);
   end procedure;
 
 begin
@@ -143,7 +143,7 @@ begin
       Armed => dummy0, Fast_Mode => dummy0,
       Analog_Frame_Data => (others => '0'),
       Gen_Proto => dummy0, Gen_TX_Pin => dummy1,
-      Gen_SCL_Pin => dummy1);
+      Gen_SCL_Pin => dummy2);
 
   SDRAM : entity work.sdram_pin_model
     generic map (CL => 3, STRICT => false)
@@ -172,20 +172,28 @@ begin
     report "Arming...";
     pkt_cmd(spi_cs, sck, spi_mosi, spi_miso, CMD_ARM_CAPTURE, empty, 0, st);
     report "After arm status=" & to_hstring(st);
+    check(st = ST_CAPTURE_ARMED,
+          "ARM must return ST_CAPTURE_ARMED, got " & to_hstring(st));
 
     wait for 100 us;
 
     pkt_cmd(spi_cs, sck, spi_mosi, spi_miso, CMD_GET_STATUS, empty, 0, st);
     report "Status after wait=" & to_hstring(st);
+    check(st = ST_CAPTURE_DONE,
+          "64-sample fast capture must complete to ST_CAPTURE_DONE, got " & to_hstring(st));
 
     -- Try another arm + longer wait
     report "Re-arming...";
     pkt_cmd(spi_cs, sck, spi_mosi, spi_miso, CMD_ARM_CAPTURE, empty, 0, st);
     report "After arm2 status=" & to_hstring(st);
+    check(st = ST_CAPTURE_ARMED,
+          "Re-ARM must return ST_CAPTURE_ARMED, got " & to_hstring(st));
     wait for 500 us;
 
     pkt_cmd(spi_cs, sck, spi_mosi, spi_miso, CMD_GET_STATUS, empty, 0, st);
     report "Status after 500us=" & to_hstring(st);
+    check(st = ST_CAPTURE_DONE,
+          "Second capture must complete to ST_CAPTURE_DONE, got " & to_hstring(st));
 
     std.env.finish;
   end process;

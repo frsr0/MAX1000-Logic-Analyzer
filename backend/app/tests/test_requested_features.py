@@ -1,11 +1,15 @@
 """Focused coverage for the regression, automation, and bus-health additions."""
-import time
-
 import numpy as np
 
+from app.capture.capture_manager import CaptureManager
 from app.capture.sample_format import WaveformData
 from app.capture.session import CaptureSettings
-from app.state import capture_manager
+from app.capture.session_store import SessionStore
+from app.decoders.base import DecodeContext
+from app.decoders.can import CanDecoder, can_crc15
+from app.decoders.lin import LinDecoder, lin_checksum, lin_pid
+from app.decoders.uart import UartDecoder
+from app.hardware.mock_device import MockDevice
 from app.hardware.strategies.digital import DigitalCaptureStrategy
 from app.api import sessions as sessions_api
 
@@ -29,40 +33,161 @@ class _PreTriggerDevice:
         return np.arange(nsamples, dtype='<u2').tobytes()
 
 
-def test_capture_job_is_queued_and_polled_on_mock_device():
-    capture_manager.connect("mock")
+def test_capture_job_is_queued_and_completed_on_mock_device(tmp_path):
+    # Local manager: no global-state mutation, and the queue worker thread is
+    # joined (no wall-clock poll loop) so completion is deterministic.
+    manager = CaptureManager(SessionStore(tmp_path))
+    device = MockDevice()
+    device.connect()
+    manager.device = device
+    manager.device_kind = "mock"
     settings = CaptureSettings(num_samples=128, sample_rate=100_000,
                                mode="single", mock_scenario="demo_mixed")
-    job = capture_manager.submit_capture_job(settings, "queued test")
+    job = manager.submit_capture_job(settings, "queued test")
     assert job["id"].startswith("job_")
-    deadline = time.time() + 5
-    status = job
-    while time.time() < deadline:
-        status = capture_manager.job_status(job["id"])
-        if status and status["state"] not in {"queued", "starting", "running"}:
-            break
-        time.sleep(0.02)
-    assert status["state"] == "done"
+    queue_thread = manager._queue_thread
+    assert queue_thread is not None and queue_thread.is_alive()
+    queue_thread.join(timeout=10)
+    assert not queue_thread.is_alive()
+    status = manager.job_status(job["id"])
+    assert status["state"] == "done", status
     assert status["session_id"]
-    capture_manager.disconnect()
+    assert status["error"] is None
+    # the job's session has a real waveform
+    assert manager.store.load_waveform(status["session_id"]) is not None
 
 
-def test_can_and_lin_health_fields_are_available_in_decoder_events():
-    can = {"type": "can_frame", "severity": "error",
-           "start_time": 0.0, "end_time": 0.001,
-           "fields": {"identifier": 42, "crc_ok": False, "ack": False}}
-    lin = {"type": "lin_frame", "severity": "normal",
-           "start_time": 0.002, "end_time": 0.003,
-           "fields": {"identifier": 7, "checksum_ok": True}}
-    assert can["fields"]["crc_ok"] is False
-    assert lin["fields"]["checksum_ok"] is True
+def _can_frame_bits(identifier=0x123, data=b"\xDE\xAD", ack=0):
+    """Build a classical CAN standard frame: SOF, 11-bit ID, RTR/IDE/r0,
+    DLC, data, CRC-15, CRC delimiter, ACK slot, ACK delimiter."""
+    bits = [0]
+    for i in range(10, -1, -1):
+        bits.append((identifier >> i) & 1)
+    bits += [0, 0, 0]  # RTR, IDE, r0
+    for i in range(3, -1, -1):
+        bits.append((len(data) >> i) & 1)
+    for byte in data:
+        for i in range(7, -1, -1):
+            bits.append((byte >> i) & 1)
+    crc = can_crc15(bits)
+    for i in range(14, -1, -1):
+        bits.append((crc >> i) & 1)
+    bits += [1, ack, 1]  # CRC delim, ACK slot, ACK delim
+    return bits
 
 
-def test_pretrigger_position_is_serialized_as_sample_count():
-    settings = CaptureSettings(num_samples=1000)
-    settings.trigger.position_pct = 25
-    settings.trigger.pre_trigger_samples = 250
-    assert settings.trigger.pre_trigger_samples == 250
+def _stuff_can(bits):
+    """Insert a stuff bit (opposite polarity) after 5 identical bits."""
+    out = []
+    previous = None
+    run = 0
+    for b in bits:
+        if run == 5:
+            out.append(1 - previous)
+            run = 0
+        out.append(b)
+        if b == previous:
+            run += 1
+        else:
+            previous, run = b, 1
+    return out
+
+
+def _can_waveform(bits, samples_per_bit=4):
+    sig = np.ones(40 + len(bits) * samples_per_bit + 40, dtype=np.uint8)
+    for i, b in enumerate(bits):
+        a = 40 + i * samples_per_bit
+        sig[a:a + samples_per_bit] = b
+    return sig
+
+
+def _decode_can(frame_bits):
+    wf = WaveformData(sample_rate=2_000_000,
+                      digital=_can_waveform(_stuff_can(frame_bits)).astype(np.uint16))
+    decoder = CanDecoder()
+    result = decoder.decode(DecodeContext(wf, {"rx": "d0"}),
+                            {"bit_rate": 500_000})
+    return [e for e in result.events if e["type"] == "can_frame"]
+
+
+def test_can_health_fields_crc_ok_and_ack_come_from_real_decode():
+    frames = _decode_can(_can_frame_bits())
+    assert len(frames) == 1
+    fields = frames[0]["fields"]
+    assert fields["identifier"] == 0x123
+    assert fields["data_hex"] == "dead"
+    assert fields["crc_ok"] is True
+    assert fields["ack"] is True
+    assert fields["stuffing_ok"] is True
+    assert frames[0]["severity"] == "normal"
+
+
+def test_can_decode_flags_bad_crc():
+    bits = _can_frame_bits()
+    bits[29] ^= 1  # corrupt one data bit -> CRC mismatch
+    frames = _decode_can(bits)
+    assert len(frames) == 1
+    assert frames[0]["fields"]["crc_ok"] is False
+    assert frames[0]["severity"] == "error"
+
+
+def test_can_decode_flags_missing_ack():
+    frames = _decode_can(_can_frame_bits(ack=1))  # ACK slot left recessive
+    assert len(frames) == 1
+    assert frames[0]["fields"]["ack"] is False
+    assert frames[0]["severity"] == "error"
+
+
+def _uart_waveform(byte_list, baud=100_000, sample_rate=1_000_000):
+    spb = int(sample_rate / baud)
+    sig = np.ones(20 * spb, dtype=np.uint8)
+    for byte in byte_list:
+        frame = [0] + [(byte >> b) & 1 for b in range(8)] + [1]
+        sig = np.concatenate([sig, np.array(frame, dtype=np.uint8).repeat(spb)])
+    return np.concatenate([sig, np.ones(40 * spb, dtype=np.uint8)])
+
+
+def test_lin_checksum_ok_field_comes_from_real_stacked_decode():
+    identifier = 0x0A
+    pid = lin_pid(identifier)
+    data = bytes([0x11, 0x22, 0x33])
+    checksum = lin_checksum(data, pid, enhanced=True)
+    sig = _uart_waveform([0x55, pid, *data, checksum])
+    wf = WaveformData(sample_rate=1_000_000, digital=sig.astype(np.uint16))
+    uart = UartDecoder()
+    up = uart.decode(DecodeContext(wf, {"rx": "d0"}),
+                     {**uart.defaults(), "baud": 100_000})
+    assert [e["fields"]["byte"] for e in up.events] == [0x55, pid, *data, checksum]
+    lin = LinDecoder()
+    result = lin.decode(DecodeContext(wf, {}, upstream_events=up.events),
+                        {"data_length": 3, "checksum": "auto"})
+    frames = [e for e in result.events if e["type"] == "lin_frame"]
+    assert len(frames) == 1
+    fields = frames[0]["fields"]
+    assert fields["identifier"] == identifier
+    assert fields["data_hex"] == "112233"
+    assert fields["checksum_ok"] is True
+    assert fields["expected_checksum"] == checksum
+    assert frames[0]["severity"] == "normal"
+
+
+def test_lin_decode_flags_bad_checksum():
+    identifier = 0x0A
+    pid = lin_pid(identifier)
+    data = bytes([0x11, 0x22, 0x33])
+    checksum = lin_checksum(data, pid, enhanced=True)
+    sig = _uart_waveform([0x55, pid, *data, checksum ^ 0xFF])
+    wf = WaveformData(sample_rate=1_000_000, digital=sig.astype(np.uint16))
+    uart = UartDecoder()
+    up = uart.decode(DecodeContext(wf, {"rx": "d0"}),
+                     {**uart.defaults(), "baud": 100_000})
+    lin = LinDecoder()
+    result = lin.decode(DecodeContext(wf, {}, upstream_events=up.events),
+                        {"data_length": 3, "checksum": "auto"})
+    frames = [e for e in result.events if e["type"] == "lin_frame"]
+    assert len(frames) == 1
+    assert frames[0]["fields"]["checksum_ok"] is False
+    assert frames[0]["severity"] == "error"
 
 
 def test_pretrigger_positions_reach_driver_and_mark_session_sample():

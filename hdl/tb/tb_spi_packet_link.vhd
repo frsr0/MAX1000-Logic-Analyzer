@@ -20,7 +20,7 @@ architecture sim of tb_spi_packet_link is
   signal cmd, seq : std_logic_vector(7 downto 0);
   signal plen : natural range 0 to MAX_RX_PAYLOAD_BYTES;
   signal pbyte : std_logic_vector(7 downto 0);
-  signal pvalid, plast, ok, err : std_logic;
+  signal pvalid, ok, err : std_logic;
   signal ok_seen, err_seen : std_logic := '0';
 begin
   gen_clk(sys_clk, SYS_HALF);
@@ -38,7 +38,7 @@ begin
     port map (
       clk => sys_clk, rst => '0', rx_byte => rx_data, rx_valid => rx_valid,
       cs_rise => cs_rise, cmd_active => cmd, seq => seq, payload_len => plen,
-      payload_byte => pbyte, payload_valid => pvalid, payload_last => plast,
+      payload_byte => pbyte, payload_valid => pvalid,
       packet_ok => ok, packet_err => err,
       err_bad_crc => open, err_bad_sync => open, err_oversize => open
     );

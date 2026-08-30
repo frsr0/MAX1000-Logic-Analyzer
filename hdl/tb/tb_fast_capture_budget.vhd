@@ -36,7 +36,7 @@ begin
       wait until rising_edge(clk);
       load <= '0';
       wait for 1 ns;
-      assert remaining_i = count report "load count mismatch" severity error;
+      assert remaining_i = count report "load count mismatch" severity failure;
     end procedure;
 
     procedure pulse_consume is
@@ -51,27 +51,27 @@ begin
     wait until rising_edge(clk);
     rst <= '0';
     wait for 1 ns;
-    assert open_i = '0' and done_i = '0' report "reset mismatch" severity error;
+    assert open_i = '0' and done_i = '0' report "reset mismatch" severity failure;
 
     pulse_load(3, '0');
-    assert last_i = '0' report "unexpected last after load" severity error;
+    assert last_i = '0' report "unexpected last after load" severity failure;
     pulse_consume;
-    assert remaining_i = 2 and done_i = '0' severity error;
+    assert remaining_i = 2 and done_i = '0' severity failure;
     pulse_consume;
-    assert remaining_i = 1 and last_i = '1' severity error;
+    assert remaining_i = 1 and last_i = '1' severity failure;
     pulse_consume;
     assert remaining_i = 0 and open_i = '0' and done_i = '1'
-      report "single-shot final consume mismatch" severity error;
+      report "single-shot final consume mismatch" severity failure;
     wait until rising_edge(clk);
     wait for 1 ns;
-    assert done_i = '0' report "done was not a pulse" severity error;
+    assert done_i = '0' report "done was not a pulse" severity failure;
 
     pulse_load(2, '1');
     pulse_consume;
-    assert remaining_i = 1 severity error;
+    assert remaining_i = 1 severity failure;
     pulse_consume;
     assert remaining_i = 2 and done_i = '0'
-      report "continuous reload mismatch" severity error;
+      report "continuous reload mismatch" severity failure;
 
     report "=== TB PASSED: fast_capture_budget edge cases ===" severity note;
     wait;

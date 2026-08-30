@@ -172,7 +172,7 @@ begin
     if idx >= READN and nonzero > READN/2 then
       report "STREAM READOUT OK" severity note;
     else
-      report "STREAM READOUT BROKEN (underrun/zeros)" severity note;
+      report "STREAM READOUT BROKEN (underrun/zeros)" severity failure;
     end if;
     std.env.finish;
     wait;

@@ -859,11 +859,29 @@ function matches(method: string, req: Request, suffix: string) {
   return req.method() === method && new URL(req.url()).pathname === suffix;
 }
 
-export async function installMockApp(page: Page, options: { mockDevice?: boolean } = {}) {
+export async function installMockApp(page: Page, options: { mockDevice?: boolean; denyAcquire?: boolean } = {}) {
   const mockDevice = Boolean(options.mockDevice);
+  const denyAcquire = Boolean(options.denyAcquire);
   let addedDecoder: Json | null = null;
   const fixtureMarkers: Json[] = [];
   await page.addInitScript(() => {
+    const sockets: MockWebSocket[] = [];
+    // Controllable fixture: tests can push backend-originated WS messages
+    // (e.g. capture_error) into the stub by url suffix, so the app's WS
+    // handlers (App.tsx: 'Capture failed: …' toast) run without a backend.
+    // The window is a global extension only the mock harness installs.
+    (window as unknown as Window & { __mockWsEmit: (urlSuffix: string, message: unknown) => boolean })
+      .__mockWsEmit = (urlSuffix: string, message: unknown) => {
+      // React StrictMode mounts effects twice in dev, so two sockets with the
+      // same URL exist: the first has an empty (unsubscribed) handler set, the
+      // second is live. Emit to EVERY matching socket — stale ones no-op, the
+      // live one delivers — instead of find() hitting the stale mount.
+      const matched = sockets.filter((s) => s.url.endsWith(urlSuffix) && s.onmessage);
+      for (const sock of matched) {
+        sock.onmessage(new MessageEvent('message', { data: JSON.stringify(message) }));
+      }
+      return matched.length > 0;
+    };
     class MockWebSocket {
       url: string;
       readyState = 1;
@@ -873,6 +891,7 @@ export async function installMockApp(page: Page, options: { mockDevice?: boolean
       onerror: ((ev: Event) => void) | null = null;
       constructor(url: string) {
         this.url = url;
+        sockets.push(this);
         setTimeout(() => this.onopen?.(new Event('open')), 0);
       }
       send() {}
@@ -960,8 +979,15 @@ export async function installMockApp(page: Page, options: { mockDevice?: boolean
       return route.fulfill(okJson({ measurements: makeSession().measurements }));
     }
     if (req.method() === 'GET' && /\/api\/sessions\/[^/]+\/raw$/.test(new URL(req.url()).pathname)) {
-      return route.fulfill(okJson({ start: 0, end: 64,
-        digital_packed: Array.from({ length: 64 }, (_, i) => (i * 3) & 0xffff) }));
+      // Honor the start/end query params (client.rawWindow) so paging in the
+      // raw inspector actually moves the window; values are a function of the
+      // absolute sample index so successive pages differ.
+      const rawUrl = new URL(req.url());
+      const start = Math.max(0, Number(rawUrl.searchParams.get('start')) || 0);
+      const end = Math.max(start + 1, Number(rawUrl.searchParams.get('end')) || start + 64);
+      const count = Math.min(end - start, 8192);
+      const digital_packed = Array.from({ length: count }, (_, i) => ((start + i) * 3) & 0xffff);
+      return route.fulfill(okJson({ start, end, count, digital_packed }));
     }
     if (req.method() === 'GET' && /\/api\/sessions\/[^/]+\/(spectrum|spectrogram|correlation|envelope|threshold-sweep|event-correlation)$/.test(new URL(req.url()).pathname)) {
       const endpoint = new URL(req.url()).pathname.split('/').pop();
@@ -1008,9 +1034,30 @@ export async function installMockApp(page: Page, options: { mockDevice?: boolean
       { id: 'midi', name: 'MIDI' }, { id: 'lin', name: 'LIN' },
       { id: 'swd', name: 'SWD' }, { id: 'uart_fault', name: 'UART parity fault' },
       { id: 'pwm_fault', name: 'PWM shortened pulse' },
+      { id: 'capture_start_failure', name: 'Capture start failure' },
     ] }));
+    if (matches('POST', req, '/api/capture/start')) {
+      // Fixture failure scenario: reject the start so the UI's ApiError path
+      // (client.ts throws ApiError with the response detail) surfaces a toast.
+      // Any other scenario falls through to the 404 handler below, matching
+      // the previous behavior exactly.
+      const body = req.postDataJSON() as { settings?: { mock_scenario?: string | null } };
+      if (body.settings?.mock_scenario === 'capture_start_failure') {
+        return route.fulfill(okJson({
+          detail: 'Capture failed: mock capture rejected by fixture scenario (capture_start_failure)',
+        }, 500));
+      }
+    }
     if (matches('POST', req, '/api/capture/settings/validate')) return route.fulfill(okJson({ findings: [] }));
-    if (matches('POST', req, '/api/control/acquire')) return route.fulfill(okJson({ acquired: true }));
+    if (matches('POST', req, '/api/control/acquire')) {
+      if (denyAcquire) {
+        // Backend shape (backend/app/api/status.py): { acquired, **info }.
+        // SettingsPage toasts 'Another client holds control' when acquired is
+        // false; a non-2xx would throw ApiError and render nothing there.
+        return route.fulfill(okJson({ acquired: false, holder: 'other', holder_name: 'Other Client', acquired_at: 1_725_000_000 }));
+      }
+      return route.fulfill(okJson({ acquired: true }));
+    }
     if (matches('POST', req, '/api/control/release')) return route.fulfill(okJson({ released: true }));
 
     if (matches('GET', req, '/api/generator/capabilities')) {

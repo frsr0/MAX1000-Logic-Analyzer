@@ -7,13 +7,20 @@ import pytest
 from driver.spi_protocol import (
     CMD_ACK_CAPTURE_DONE,
     CMD_ABORT_CAPTURE,
+    CMD_GEN_LOAD,
     CMD_GEN_START,
     CMD_GEN_STOP,
+    GEN_FIFO_DEPTH,
+    REG_DIVIDER,
+    REG_FLAGS,
     REG_GEN_BAUD,
     REG_GEN_CAPTURE_SCL_CHAN,
     REG_GEN_CAPTURE_TX_CHAN,
     REG_GEN_DATA,
+    REG_GEN_PROTO,
     REG_CONT_MODE,
+    REG_IFACE_MODE,
+    REG_SAMPLE_COUNT,
     REG_TRIGGER_MASK,
     REG_TRIGGER_VALUE,
     REG_FLAGS_COMPRESS_RLE,
@@ -23,6 +30,9 @@ from driver.spi_protocol import (
     ST_CAPTURE_DONE,
     ST_CAPTURE_BUSY,
     ST_CAPTURE_IDLE,
+    SYNC_REQ,
+    SYNC_RSP,
+    crc16,
 )
 from driver.ols_spi_device import (
     MIXED_COMPRESSED_BLOCK_WORDS,
@@ -92,6 +102,91 @@ def _pack_delta_block(samples, keyframe_word=None):
     while len(words) < 6:
         words.append(0)
     return struct.pack('<6H', *words)
+
+
+class _GenLoadFakeSPI:
+    """Fake transport answering CMD_GEN_LOAD with an ST_OK ack (packet style).
+
+    Mirrors the TestSPIPacketProtocol fakes: tx_bytes() returns a preamble
+    byte plus the response so the packetized transaction() can parse it.
+    """
+
+    def __init__(self):
+        self.speed_hz = 30_000_000
+        self.request = None
+        self.tx_read_calls = 0
+
+    def _drain(self):
+        pass
+
+    def tx_bytes(self, request):
+        self.request = bytes(request)
+        seq = request[3]
+        resp = SYNC_RSP + bytes([ST_OK, seq]) + struct.pack('<H', 0)
+        resp += struct.pack('<H', crc16(resp[2:]))
+        return b'\xff' + resp
+
+    def tx_read(self, n):
+        self.tx_read_calls += 1
+        return b''
+
+
+class _SilentFakeSPI:
+    """Fake transport that never answers: every transaction returns None."""
+
+    def __init__(self):
+        self.tx_bytes_calls = 0
+        self.requests = []
+
+    def _drain(self):
+        pass
+
+    def tx_bytes(self, request):
+        self.tx_bytes_calls += 1
+        self.requests.append(bytes(request))
+        return b''
+
+    def tx_read(self, n):
+        return b''
+
+
+class _StreamReadbackFakeSPI:
+    """Fake transport answering batched CMD_READ_CAPTURE block reads.
+
+    Each requested address yields a 1024-byte block filled with
+    (addr & 0xFF); responses are glued into one stream_payload reply with the
+    same guard padding the hardware adds.
+    """
+
+    def __init__(self):
+        self.speed_hz = 30_000_000
+        self.stream_payload_calls = 0
+        self.addrs = []
+
+    def _drain(self):
+        pass
+
+    def tx_bytes(self, request):
+        return b''
+
+    def tx_read(self, n):
+        return b''
+
+    def stream_payload(self, payload, stop_evt=None):
+        self.stream_payload_calls += 1
+        out = bytearray()
+        idx = payload.find(SYNC_REQ)
+        while idx >= 0:
+            seq = payload[idx + 3]
+            addr = struct.unpack('<I', payload[idx + 6:idx + 10])[0]
+            self.addrs.append(addr)
+            block = bytes([addr & 0xFF]) * 1024
+            resp = (SYNC_RSP + bytes([ST_OK, seq])
+                    + struct.pack('<H', 1024) + block)
+            resp += struct.pack('<H', crc16(resp[2:]))
+            out += b'\xff' * 166 + resp
+            idx = payload.find(SYNC_REQ, idx + 12)
+        return bytes(out)
 
 
 class TestAnalogFrameStride:
@@ -236,15 +331,60 @@ class TestOLSDeviceSPI:
         device_spi.close()
         assert device_spi.spi is None
 
-    def test_reset_stale_spi(self, device_spi):
+    def test_reset_flushes_spi_and_writes_config_registers(self, device_spi):
+        # reset() never calls spi.reset() (a stale-SPI exception there is dead
+        # scaffolding): it re-ensures the link, writes the full capture-config
+        # state via the packet protocol, and flushes the SPI FIFO.
         device_spi.spi.dev = MagicMock()
-        device_spi.spi.reset = MagicMock(side_effect=Exception("stale"))
+        device_spi.spi.flush = MagicMock()
+        device_spi.pkt = MagicMock()
         device_spi._ensure_open = MagicMock()
-        try:
-            device_spi.reset()
-        except Exception:
-            pass
-        assert device_spi._ensure_open.called
+        device_spi.reset()
+        device_spi._ensure_open.assert_called_once()
+        device_spi.spi.flush.assert_called_once()
+        device_spi.pkt.transaction.assert_any_call(CMD_ABORT_CAPTURE)
+        writes = [call.args for call in
+                  device_spi.pkt.write_register.call_args_list]
+        assert (REG_DIVIDER, 0) in writes
+        assert (REG_SAMPLE_COUNT, 2) in writes
+        assert (REG_TRIGGER_MASK, 0) in writes
+        assert (REG_TRIGGER_VALUE, 0) in writes
+        assert (REG_FLAGS, 0) in writes
+        assert (REG_IFACE_MODE, 1) in writes
+
+    def test_reset_reopens_stale_link_when_dev_missing(self, device_spi):
+        # Real failure mode for a stale SPI handle: the device is gone, so
+        # reset() must re-open the link before programming anything.
+        device_spi.spi.dev = None
+        device_spi.open = MagicMock()
+        device_spi.reset()
+        device_spi.open.assert_called_once()
+
+    def test_stream_readback_caps_at_nsamples_times_two(self, device_spi):
+        # _stream_readback delegates to read_capture_range and slices the
+        # result to nsamples*2 bytes (defensive against over-delivery).
+        device_spi.read_capture_range = MagicMock(return_value=b'\x01\x00' * 1000)
+        result = device_spi._stream_readback(0, 100)
+        assert result == b'\x01\x00' * 100
+        device_spi.read_capture_range.assert_called_once_with(0, 100)
+
+    def test_stream_readback_zero_samples_returns_empty(self, device_spi):
+        device_spi.read_capture_range = MagicMock(side_effect=AssertionError)
+        assert device_spi._stream_readback(0, 0) == b''
+        device_spi.read_capture_range.assert_not_called()
+
+    def test_stream_readback_batches_blocks_via_fake_transport(self, device_spi):
+        # Drive the REAL _stream_readback -> read_capture_range -> batched
+        # read_capture_blocks path over a packet-protocol fake transport.
+        # 1000 samples span two 512-sample blocks; the second block is
+        # requested one sample early (addr 1022) and its first sample dropped.
+        fake = _StreamReadbackFakeSPI()
+        device_spi.spi = fake
+        result = device_spi._stream_readback(0, 1000)
+        assert result == b'\x00' * 1024 + b'\xFE' * 976
+        assert len(result) == 2000
+        assert fake.stream_payload_calls == 1
+        assert fake.addrs == [0, 1022]
 
     def test_raw_mode_enable(self, device_spi):
         device_spi.raw_mode(True)
@@ -768,6 +908,73 @@ class TestOLSDeviceSPI:
         assert device_spi.debug_ch0_enabled is False
 
 
+class TestDigitalGlitchFilter:
+    """Exact-value tests for set_schmitt / _filter_digital hysteresis."""
+
+    def test_schmitt_threshold_clamps_to_0_7(self, device_spi):
+        device_spi.set_schmitt(True, threshold=99)
+        assert device_spi.glitch_enable is True
+        assert device_spi.glitch_threshold == 7
+        device_spi.set_schmitt(True, threshold=-5)
+        assert device_spi.glitch_threshold == 0
+        device_spi.set_schmitt(False, threshold=3)
+        assert device_spi.glitch_enable is False
+
+    def test_filter_rejects_glitch_shorter_than_threshold(self, device_spi):
+        # ch0 holds 1, dips to 0 for three samples, then returns to 1. With
+        # threshold=3 the low run is never accepted: output stays high.
+        device_spi.set_schmitt(True, threshold=3)
+        data = struct.pack('<7H', 1, 1, 1, 0, 0, 0, 1)
+        out = device_spi._filter_digital(data)
+        assert out == struct.pack('<7H', 1, 1, 1, 1, 1, 1, 1)
+
+    def test_filter_accepts_transition_after_threshold_consecutive(self, device_spi):
+        # Four consecutive low samples ARE accepted at threshold=3 (the
+        # transition lands on the fourth differing sample).
+        device_spi.set_schmitt(True, threshold=3)
+        data = struct.pack('<7H', 1, 1, 1, 0, 0, 0, 0)
+        out = device_spi._filter_digital(data)
+        assert out == struct.pack('<7H', 1, 1, 1, 1, 1, 1, 0)
+
+    def test_filter_lower_threshold_accepts_sooner(self, device_spi):
+        device_spi.set_schmitt(True, threshold=2)
+        data = struct.pack('<7H', 1, 1, 1, 0, 0, 0, 0)
+        out = device_spi._filter_digital(data)
+        assert out == struct.pack('<7H', 1, 1, 1, 1, 1, 0, 0)
+
+    def test_filter_removes_glitch_on_one_of_many_channels(self, device_spi):
+        # ch0 glitches low for two samples while ch1 stays high; threshold 3
+        # must reject the ch0 dip and leave ch1 untouched.
+        device_spi.set_schmitt(True, threshold=3)
+        data = struct.pack('<6H', 0b11, 0b11, 0b10, 0b10, 0b11, 0b11)
+        out = device_spi._filter_digital(data)
+        assert out == struct.pack('<6H', 0b11, 0b11, 0b11, 0b11, 0b11, 0b11)
+
+    def test_filter_disabled_returns_input_verbatim(self, device_spi):
+        device_spi.set_schmitt(False, threshold=3)
+        data = struct.pack('<4H', 1, 0, 1, 0)
+        assert device_spi._filter_digital(data) == data
+
+    def test_filter_threshold_zero_returns_input_verbatim(self, device_spi):
+        device_spi.set_schmitt(True, threshold=0)
+        data = struct.pack('<4H', 1, 0, 1, 0)
+        assert device_spi._filter_digital(data) == data
+
+    def test_filter_skipped_for_non_digital_modes(self, device_spi):
+        # Hysteresis only applies to pure-digital captures.
+        device_spi.set_schmitt(True, threshold=3)
+        device_spi.analog_mode = MODE_MIXED
+        data = struct.pack('<4H', 1, 0, 1, 0)
+        assert device_spi._filter_digital(data) == data
+        device_spi.analog_mode = MODE_DIGITAL
+        device_spi._raw_flags = MODE_PACKED_MSO
+        assert device_spi._filter_digital(data) == data
+
+    def test_filter_empty_input_returns_empty(self, device_spi):
+        device_spi.set_schmitt(True, threshold=3)
+        assert device_spi._filter_digital(b'') == b''
+
+
 class TestSPIDeviceStatusMetadata:
     def test_legacy_short_status_still_parses(self):
         pkt = SPIDevice(MagicMock())
@@ -852,18 +1059,51 @@ class TestOLSDeviceSPIGenerator:
         device_spi.pkt.write_register.assert_called_once_with(0x45, expected)
 
     def test_load_gen_data(self, device_spi):
-        device_spi.pkt = MagicMock()
-        device_spi._stream_readback = MagicMock(return_value=b'\x01\x00' * 100)
-        device_spi.pkt.load_gen_data.return_value = True
-        device_spi.pkt.load_gen_data(bytes([0x01, 0x02]))
-        device_spi.pkt.load_gen_data.assert_called_once_with(bytes([0x01, 0x02]))
+        # Real SPIDevice.load_gen_data through a fake transport: the payload
+        # must travel as a CMD_GEN_LOAD packet and return True on the ST_OK
+        # ack.
+        device_spi.spi = _GenLoadFakeSPI()
+        pkt = device_spi.pkt
+        assert pkt.load_gen_data(bytes([0x01, 0x02, 0x03])) is True
+        req = device_spi.spi.request
+        assert req.startswith(SYNC_REQ + bytes([CMD_GEN_LOAD]))
+        # CMD, SEQ, LEN(LE), then the payload verbatim.
+        assert req[4:6] == bytes([0x03, 0x00])
+        assert req[6:9] == bytes([0x01, 0x02, 0x03])
 
     def test_load_gen_data_empty_via_device(self, device_spi):
-        device_spi.pkt = MagicMock()
-        device_spi._stream_readback = MagicMock(return_value=b'\x01\x00' * 100)
-        device_spi.pkt.load_gen_data.return_value = True
-        result = device_spi.pkt.load_gen_data(b'')
-        assert result is True
+        # An empty payload short-circuits to True without any SPI traffic.
+        device_spi.spi = _GenLoadFakeSPI()
+        pkt = device_spi.pkt
+        assert pkt.load_gen_data(b'') is True
+        assert device_spi.spi.request is None
+        assert device_spi.spi.tx_read_calls == 0
+
+    def test_load_gen_data_rejects_fifo_overflow(self, device_spi):
+        # Payloads larger than the 256-byte FPGA generator FIFO are rejected
+        # before anything is written.
+        device_spi.spi = _GenLoadFakeSPI()
+        pkt = device_spi.pkt
+        with pytest.raises(ValueError, match="FIFO"):
+            pkt.load_gen_data(bytes(GEN_FIFO_DEPTH + 1))
+        assert device_spi.spi.request is None
+
+    def test_load_gen_data_falls_back_to_register_writes(self, device_spi):
+        # When the CMD_GEN_LOAD ack never arrives, load_gen_data() falls back
+        # to one-byte FIFO writes through REG_GEN_DATA; the first failed
+        # write aborts the loop (no point writing half a pattern).
+        device_spi.spi = _SilentFakeSPI()
+        pkt = device_spi.pkt
+        assert pkt.load_gen_data(bytes([0x01, 0x02])) is False
+        # CMD_GEN_LOAD + one CMD_WRITE_REG before the fallback aborts.
+        assert device_spi.spi.tx_bytes_calls == 2
+        reqs = device_spi.spi.requests
+        assert reqs[0][2] == CMD_GEN_LOAD
+        assert reqs[1][2] == 0x20  # CMD_WRITE_REG
+        # The fallback writes REG_GEN_DATA (0x33) with the first payload byte.
+        assert reqs[1][4:6] == bytes([0x05, 0x00])  # len 5 = 1 addr + 4 value
+        assert reqs[1][6] == REG_GEN_DATA
+        assert reqs[1][7:11] == struct.pack('<I', 0x01)
 
     def test_start_gen(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -1013,14 +1253,33 @@ class TestOLSDeviceSPIModbus:
 
 class TestOLSDeviceSPII2C:
     def test_i2c_read_setup(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
-        device_spi.spi.flush = MagicMock()
+        device_spi.pkt = MagicMock()
         device_spi.i2c_read_setup(0x18, 0x0F, read_len=2)
+        writes = [call.args for call in
+                  device_spi.pkt.write_register.call_args_list]
+        # dev_w = 0x30, dev_r = 0x31; GEN_PROTO selects the I2C FSM and
+        # GEN_DATA = test_mode(1) | read_len<<8 | dev_r<<16.
+        assert (REG_GEN_PROTO, 1) in writes
+        assert (REG_GEN_DATA, 0x310201) in writes
+        # _pins(tx_pin=3, scl_pin=1) -> REG_GEN_PINS = 3 | 1<<8.
+        assert (0x32, 0x0103) in writes
+        # _gen_load_i2c: divider 100 MHz / (4 * 100 kHz) = 250.
+        assert (REG_GEN_BAUD, 250) in writes
+        device_spi.pkt.load_gen_data.assert_called_once()
 
     def test_i2c_read_setup_with_test_mode(self, device_spi):
-        device_spi.spi.tx = MagicMock(return_value=b'')
-        device_spi.spi.flush = MagicMock()
+        device_spi.pkt = MagicMock()
         device_spi.i2c_read_setup(0x18, 0x0F, read_len=4, test_mode=True)
+        writes = [call.args for call in
+                  device_spi.pkt.write_register.call_args_list]
+        assert (REG_GEN_DATA, 0x310401) in writes
+
+    def test_i2c_read_setup_test_mode_off_clears_bit0(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.i2c_read_setup(0x18, 0x0F, read_len=2, test_mode=False)
+        writes = [call.args for call in
+                  device_spi.pkt.write_register.call_args_list]
+        assert (REG_GEN_DATA, 0x310200) in writes
 
 
 class TestOLSDeviceSPICapture:
@@ -1044,7 +1303,11 @@ class TestOLSDeviceSPICapture:
             'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
         device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024
         result = device_spi.capture(rate_hz=1000000, nsamples=100, timeout=0.5, trigger='rising')
-        assert result is not None
+        assert result == b'\x01\x00' * 100
+        # rising edge: mask bit30 set, value 1 (rising comparator).
+        writes = [call.args for call in device_spi.pkt.write_register.call_args_list]
+        assert (REG_TRIGGER_MASK, (1 << 30) | 1) in writes
+        assert (REG_TRIGGER_VALUE, 1) in writes
 
     def test_capture_with_falling_trigger(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -1055,7 +1318,11 @@ class TestOLSDeviceSPICapture:
             'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
         device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024
         result = device_spi.capture(rate_hz=1000000, nsamples=100, timeout=0.5, trigger='falling')
-        assert result is not None
+        assert result == b'\x01\x00' * 100
+        # falling edge: mask bit31 set, value 0.
+        writes = [call.args for call in device_spi.pkt.write_register.call_args_list]
+        assert (REG_TRIGGER_MASK, (2 << 30) | 1) in writes
+        assert (REG_TRIGGER_VALUE, 0) in writes
 
     def test_capture_with_int_trigger(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -1066,7 +1333,11 @@ class TestOLSDeviceSPICapture:
             'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
         device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024
         result = device_spi.capture(rate_hz=1000000, nsamples=100, timeout=0.5, trigger=1)
-        assert result is not None
+        assert result == b'\x01\x00' * 100
+        # legacy int trigger is a raw mask with value 0.
+        writes = [call.args for call in device_spi.pkt.write_register.call_args_list]
+        assert (REG_TRIGGER_MASK, 1) in writes
+        assert (REG_TRIGGER_VALUE, 0) in writes
 
     def test_capture_with_level_trigger_writes_mask_and_value(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -1093,7 +1364,11 @@ class TestOLSDeviceSPICapture:
             'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
         device_spi.pkt.read_capture_block.return_value = b'\x01' * 1024
         result = device_spi.capture(rate_hz=1000000, capture_time=0.001, timeout=0.5)
-        assert result is not None
+        # capture_time converts to nsamples = 0.001 * 1 MHz = 1000; the mocked
+        # readback delivers 100 samples, so exactly those bytes come back.
+        assert result == b'\x01\x00' * 100
+        writes = [call.args for call in device_spi.pkt.write_register.call_args_list]
+        assert (REG_SAMPLE_COUNT, 1000) in writes
 
     def test_capture_progress_callback(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -1187,6 +1462,16 @@ class TestOLSDeviceSPICaptureWithGen:
         device_spi._gen_baud = 115200
         device_spi._gen_tx_pin = 3
         result = device_spi.capture_with_gen(rate_hz=1000000, nsamples=100, timeout=0.5)
+        # UART-mode no-proto path: the readback is returned verbatim.
+        assert result == b'\x01\x00' * 100
+        # Register programming for the default UART generator mode:
+        # GEN_DATA upper byte non-zero (mode-config branch), GEN_PROTO 0,
+        # TX channel 3 and the 115200-baud divider.
+        device_spi.pkt.write_register.assert_any_call(REG_GEN_DATA, 1 << 8)
+        device_spi.pkt.write_register.assert_any_call(REG_GEN_PROTO, 0)
+        device_spi.pkt.write_register.assert_any_call(REG_GEN_CAPTURE_TX_CHAN, 3)
+        device_spi.pkt.write_register.assert_any_call(
+            REG_GEN_BAUD, device_spi._uart_baud_div(115200) & 0xFFFF)
 
     def test_i2c_proto(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -1265,7 +1550,9 @@ class TestOLSDeviceSPICaptureWithGen:
         device_spi._gen_baud = 115200
         device_spi._gen_tx_pin = 3
         result = device_spi.capture_with_gen(rate_hz=1000000, nsamples=100, timeout=0.5)
-        assert result is not None
+        # 100 samples = 200 readback bytes, returned verbatim.
+        assert result == b'\x01\x00' * 100
+        device_spi.pkt.load_gen_data.assert_called_once()
 
     def test_capture_time(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -1279,7 +1566,9 @@ class TestOLSDeviceSPICaptureWithGen:
         device_spi._gen_baud = 115200
         device_spi._gen_tx_pin = 3
         result = device_spi.capture_with_gen(rate_hz=1000000, capture_time=0.001, timeout=0.5)
-        assert result is not None
+        # capture_time=1 ms at 1 MHz -> 1000 samples = 2000 bytes; the mock
+        # readback delivers exactly that many bytes.
+        assert result == b'\x01\x00' * 1000
 
 
 class TestOLSDeviceSPII2CCapture:

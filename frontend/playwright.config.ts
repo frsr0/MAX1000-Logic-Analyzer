@@ -14,12 +14,30 @@ export default defineConfig({
     viewport: { width: 1440, height: 1400 },
     deviceScaleFactor: 1,
   },
-  webServer: {
-    command: 'npm run dev -- --host 127.0.0.1 --port 4173',
-    url: 'http://127.0.0.1:4173',
-    reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
-  },
+  // The API backend (uvicorn on :8000) is started here whenever the suite may
+  // need real hardware: forced-mock CI (PLAYWRIGHT_USE_MOCK=1) intercepts all
+  // API routes and has no backend deps, so it is excluded there. In auto-detect
+  // mode the specs probe /api/devices: a MAX1000 -> live suite, otherwise the
+  // mock harness. reuseExistingServer lets a manually started backend (or the
+  // dev's own instance) be reused.
+  webServer: process.env.PLAYWRIGHT_USE_MOCK === '1'
+    ? [{
+        command: 'npm run dev -- --host 127.0.0.1 --port 4173',
+        url: 'http://127.0.0.1:4173',
+        reuseExistingServer: !process.env.CI,
+        timeout: 120_000,
+      }]
+    : [{
+        command: 'npm run dev -- --host 127.0.0.1 --port 4173',
+        url: 'http://127.0.0.1:4173',
+        reuseExistingServer: !process.env.CI,
+        timeout: 120_000,
+      }, {
+        command: 'cd ../backend && python run.py',
+        url: 'http://127.0.0.1:8000/api/status',
+        reuseExistingServer: !process.env.CI,
+        timeout: 60_000,
+      }],
   projects: [
     {
       name: 'chromium',

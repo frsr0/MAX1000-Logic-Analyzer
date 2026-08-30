@@ -24,11 +24,15 @@ architecture bench of tb_uart_interface is
   signal rx_data  : std_logic_vector(7 downto 0);
   signal rx_error : std_logic;
 
-  -- Loopback: tx is output from DUT, feed back to rx via a resolved signal
+  -- Loopback: tx is output from DUT, feed back to rx via a resolved signal.
+  -- Test 6 disconnects the loopback and drives RX directly with a broken
+  -- (short-stop-bit) frame to exercise RX_Error.
+  signal loopback_en : std_logic := '1';
+  signal manual_rx   : std_logic := '1';
   signal rx_net   : std_logic;
 begin
 
-  rx_net <= tx;
+  rx_net <= tx when loopback_en = '1' else manual_rx;
 
   gen_clk(clk, CLK_PERIOD / 2);
 
@@ -121,19 +125,59 @@ begin
     -- Test 5: Back-to-back loopback
     report "Test 5: Back-to-back loopback";
     wait_until(clk, rx_busy, '0', 10 * BAUD_TIME, "RX should be idle");
+    wait_until(clk, tx_busy, '0', 20 * BAUD_TIME, "TX should be idle");
     wait_cycles(clk, 10);
+    -- first byte 0x12
     tx_data <= x"12";
     tx_enable <= '1';
     wait_cycles(clk, 1);
     tx_enable <= '0';
+    wait_until(clk, tx_busy, '1', 20 * BAUD_TIME, "TX1 should go busy");
+    wait_until(clk, tx_busy, '0', 20 * BAUD_TIME, "TX1 should finish");
+    -- second byte 0x34 queued while TX1 was still running, transmitted
+    -- immediately after, so the two TX frames are back-to-back
     tx_data <= x"34";
-    wait_until(clk, tx_busy, '0', 20 * BAUD_TIME, "TX busy timeout");
     tx_enable <= '1';
     wait_cycles(clk, 1);
     tx_enable <= '0';
-    wait_until(clk, rx_busy, '0', 20 * BAUD_TIME, "RX back-to-back timeout");
-    report "Last RX data: " & to_hstring(rx_data);
+    -- RX1's frame ends within ~0.5 bit of TX1's end (os-tick phase); wait for
+    -- its completion (no-op if it already finished), then verify its data.
+    -- The previous code waited for rx_busy='0' while it was already low
+    -- between the frames and so reported the stale byte (x"FF" from Test 4).
+    wait_until(clk, rx_busy, '0', 20 * BAUD_TIME, "RX1 should finish");
+    wait_cycles(clk, 2);
+    check(rx_data = x"12", "RX first byte mismatch: expected 12, got " & to_hstring(rx_data));
+    -- now wait for the SECOND RX frame and verify its data
+    wait_until(clk, rx_busy, '1', 20 * BAUD_TIME, "RX second frame should start");
+    wait_until(clk, rx_busy, '0', 20 * BAUD_TIME, "RX second frame should finish");
+    wait_cycles(clk, 5);
+    check(rx_data = x"34", "RX back-to-back second byte mismatch: expected 34, got " & to_hstring(rx_data));
+    wait_until(clk, tx_busy, '0', 20 * BAUD_TIME, "TX2 should finish");
     report "Test 5: PASS";
+
+    -- Test 6: RX framing error (stop bit held low) -> RX_Error pulse
+    report "Test 6: RX framing error (short stop bit)";
+    loopback_en <= '0';
+    manual_rx <= '1';
+    wait_cycles(clk, 10);
+    -- One 8N1 frame of 0x00 with the STOP bit driven low: the receiver's
+    -- mid-stop sample sees '0', so RX_Error must assert when the frame ends.
+    -- (The trailing low also re-arms the receiver for a follow-up frame, so
+    -- the error is asserted from its latch rather than from the busy cycle.)
+    manual_rx <= '0';                  -- start bit
+    wait for BAUD_TIME;
+    for i in 0 to 7 loop
+      manual_rx <= '0';                -- data bits (0x00)
+      wait for BAUD_TIME;
+    end loop;
+    manual_rx <= '0';                  -- broken stop bit
+    wait for BAUD_TIME;
+    manual_rx <= '1';                  -- line idle again
+    wait_until(clk, rx_error, '1', 20 * BAUD_TIME, "RX_Error must assert on a short stop bit");
+    wait_cycles(clk, 5);
+    check(rx_data = x"00", "RX data bits must still be sampled (expected 00, got " & to_hstring(rx_data) & ")");
+    loopback_en <= '1';
+    report "Test 6: PASS";
 
     report "=== ALL UART TESTS PASSED ===";
     wait;

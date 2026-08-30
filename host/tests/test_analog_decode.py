@@ -6,6 +6,7 @@ from driver.ols_spi_device import (
     analog_frame_stride,
     analog_wire_stride,
     decode_analog_frames,
+    payload_to_wire,
     wire_to_payload,
 )
 
@@ -63,6 +64,54 @@ def test_wire_to_payload_is_identity_for_even_maximum_analog_frames():
     assert wire_to_payload(wire, MODE_ANALOG_ALL) == wire
 
 
+# ── payload_to_wire (inverse of wire_to_payload) ─────────────────────
+
+
+def test_payload_to_wire_is_identity_for_even_stride_modes():
+    # 2-byte digital frames and 2-byte fast-analog frames need no padding.
+    data = bytes([0x34, 0x12, 0xCD, 0xAB, 0x01, 0x02])
+    assert payload_to_wire(data, MODE_DIGITAL) == data
+    fast = bytes([0x23, 0x01, 0x45, 0x02])
+    assert payload_to_wire(fast, MODE_ANALOG_FAST) == fast
+    assert payload_to_wire(fast, MODE_ANALOG_ALL) == fast
+
+
+def test_payload_to_wire_pads_mixed_frames_to_six_bytes():
+    payload = bytes([0xBB, 0xAA]) + _pack_pair(0x100, 0x200)
+    wire = payload_to_wire(payload, MODE_MIXED)
+    assert wire == payload + b'\x00'
+    assert len(wire) == analog_wire_stride(MODE_MIXED)
+
+
+def test_payload_to_wire_roundtrip_multiple_mixed_frames():
+    payload = b''.join(
+        bytes([i, i ^ 0xFF]) + _pack_pair(0x100 + i, 0x200 + i)
+        for i in range(4))
+    wire = payload_to_wire(payload, MODE_MIXED)
+    assert len(wire) == 4 * analog_wire_stride(MODE_MIXED)
+    assert wire_to_payload(wire, MODE_MIXED) == payload
+    # And the 5-byte frames must occupy the 5 leading bytes of each 6-byte
+    # wire word — a padding bug (e.g. appending trailing zeros instead of
+    # per-frame gaps) would corrupt every frame boundary.
+    for i in range(4):
+        assert wire[i * 6:(i * 6) + 5] == payload[i * 5:(i * 5) + 5]
+
+
+def test_payload_to_wire_empty_and_partial_frame():
+    assert payload_to_wire(b'', MODE_MIXED) == b''
+    # A trailing partial frame is dropped (frames = len // payload_stride).
+    full = bytes([0xBB, 0xAA]) + _pack_pair(0x100, 0x200)
+    assert payload_to_wire(full + b'\x77', MODE_MIXED) == full + b'\x00'
+
+
+def test_wire_to_payload_drops_partial_trailing_wire_word():
+    # wire_to_payload keeps only whole wire words: 6 bytes -> 1 mixed frame,
+    # a 5th stray byte is dropped cleanly.
+    full = bytes([0xBB, 0xAA]) + _pack_pair(0x100, 0x200) + b'\x00'
+    assert wire_to_payload(full + b'\xAB', MODE_MIXED) == \
+        wire_to_payload(full, MODE_MIXED)
+
+
 def test_decode_mixed_frame_from_dense_wire():
     frame = bytes([0xBB, 0xAA]) + _pack_pair(0x100, 0x101)
     rows = decode_analog_frames(
@@ -101,3 +150,86 @@ def test_decode_full_mixed_frame():
     assert rows[0]["digital"] == 0xAABB, f"digital={rows[0]['digital']:04X}"
     assert rows[0]["adc"] == [0x123, 0x456], \
         f"adc={[f'{v:03X}' for v in rows[0]['adc']]}"
+
+
+# ── truncated trailing frames ────────────────────────────────────────
+
+
+def test_decode_drops_partial_trailing_mixed_frame():
+    # 5-byte stride: 9 bytes = 1 full frame + 4 trailing bytes dropped.
+    data = bytes([0xBB, 0xAA]) + _pack_pair(0x100, 0x101) + b'\x12\x34\x56\x78'
+    rows = decode_analog_frames(data, MODE_MIXED)
+    assert len(rows) == 1
+    assert rows[0]["digital"] == 0xAABB
+    assert rows[0]["adc"] == [0x100, 0x101]
+
+
+def test_decode_drops_partial_trailing_fast_analog_frame():
+    # 2-byte stride: 5 bytes = 2 full frames + 1 trailing byte dropped.
+    data = bytes([0x23, 0x01, 0x45, 0x02, 0x99])
+    rows = decode_analog_frames(data, MODE_ANALOG_FAST)
+    assert len(rows) == 2
+    assert rows[0]["adc"] == [0x123]
+    assert rows[1]["adc"] == [0x245]
+
+
+# ── ADC boundary values ──────────────────────────────────────────────
+
+
+def test_adc_boundary_values():
+    # 12-bit extremes 0x000 / 0x7FF / 0xFFF survive the 3-byte pack.
+    rows = decode_analog_frames(
+        bytes([0x00, 0x00]) + _pack_pair(0x000, 0x7FF), MODE_MIXED)
+    assert rows[0]["adc"] == [0x000, 0x7FF]
+    rows = decode_analog_frames(
+        bytes([0x00, 0x00]) + _pack_pair(0xFFF, 0x000), MODE_MIXED)
+    assert rows[0]["adc"] == [0xFFF, 0x000]
+    rows = decode_analog_frames(
+        bytes([0x00, 0x00]) + _pack_pair(0xFFF, 0xFFF), MODE_MIXED)
+    assert rows[0]["adc"] == [0xFFF, 0xFFF]
+
+
+def test_adc_pack_exercises_both_nibbles_of_mid_byte():
+    # The middle byte carries the HIGH nibble of adc0 in its low nibble and
+    # the LOW nibble of adc1 in its high nibble; 0xABC/0xDEF fill both.
+    packed = _pack_pair(0xABC, 0xDEF)
+    assert packed == bytes([0xBC, 0xFA, 0xDE])
+    rows = decode_analog_frames(bytes([0xBB, 0xAA]) + packed, MODE_MIXED)
+    assert rows[0]["adc"] == [0xABC, 0xDEF]
+
+
+# ── independent (hand-computed) fixtures ─────────────────────────────
+# The pack helper above uses the same bit layout as the code under test,
+# so those fixtures are agreement-blind. These frames were hand-computed
+# from the documented layout:
+#   byte0 = adc0 & 0xFF
+#   byte1 = ((adc0 >> 8) & 0x0F) | ((adc1 & 0x0F) << 4)
+#   byte2 = (adc1 >> 4) & 0xFF
+# e.g. pair (0xDEF, 0x321): 0xEF, 0xD | 0x10 = 0x1D, 0x32.
+
+def test_decode_hand_computed_mixed_frame():
+    # digital = 0xAABB, adc0 = 0x123, adc1 = 0x456:
+    #   [0xBB, 0xAA, 0x23, (0x1 | 0x60)=0x61, 0x45]
+    frame = bytes([0xBB, 0xAA, 0x23, 0x61, 0x45])
+    rows = decode_analog_frames(frame, MODE_MIXED)
+    assert len(rows) == 1
+    assert rows[0]["digital"] == 0xAABB
+    assert rows[0]["adc"] == [0x123, 0x456]
+
+
+def test_decode_hand_computed_max_analog_frame():
+    # 8 ADC values across 4 hand-packed pairs:
+    #   (0x123, 0x456) -> 0x23, 0x61, 0x45
+    #   (0x789, 0xABC) -> 0x89, 0xC7, 0xAB   (0x7 | 0xC0 = 0xC7)
+    #   (0xDEF, 0x321) -> 0xEF, 0x1D, 0x32   (0xD | 0x10 = 0x1D)
+    #   (0x654, 0x987) -> 0x54, 0x76, 0x98   (0x6 | 0x70 = 0x76)
+    wire = bytes([
+        0x23, 0x61, 0x45,
+        0x89, 0xC7, 0xAB,
+        0xEF, 0x1D, 0x32,
+        0x54, 0x76, 0x98,
+    ])
+    rows = decode_analog_frames(wire, MODE_ANALOG_ALL)
+    assert len(rows) == 1
+    assert rows[0]["adc"] == [0x123, 0x456, 0x789, 0xABC,
+                              0xDEF, 0x321, 0x654, 0x987]

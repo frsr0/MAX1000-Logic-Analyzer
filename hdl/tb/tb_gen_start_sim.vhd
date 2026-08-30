@@ -179,7 +179,7 @@ begin
       Load_Byte => gen_load_byte,
       Load_We   => gen_load_we,
       Start     => gen_start,
-      Baud_Div  => gen_baud_div,
+      Baud_Div  => gen_baud_div(15 downto 0),
       Proto     => gen_proto,
       SPI_Mode  => gen_spi_test,
       Tx_Out    => gen_tx_out,

@@ -75,13 +75,17 @@ class TestOLSLowLevel:
 class TestOLSXfer:
     def test_xfer_simple(self, ols, mock_dev):
         result = ols._xfer(bytes([0x11, 0x02, 0x00, 0x00, 0x00, 0x00]))
-        assert len(result) >= 0
+        # Response length == request length (6), and the smart mock echoes
+        # zeros for every clocked byte.
+        assert len(result) == 6
+        assert result == b'\x00' * 6
         buf = mock_dev.write.call_args[0][0]
         assert 0x87 in buf
 
     def test_xfer_with_longer_read(self, ols, mock_dev):
         result = ols._xfer(bytes([0x11, 0x02]), read_len=10)
-        assert len(result) >= 10
+        assert len(result) == 10
+        assert result == b'\x00' * 10
 
     def test_xfer_builds_correct_sequence(self, ols, mock_dev):
         ols._xfer(bytes([0x11, 0x02, 0x00, 0x00, 0x00, 0x00]))
@@ -148,6 +152,93 @@ class TestOLSXfer:
         assert buf[payload_start:payload_start + 4] == b'\x55\xaa\x13\x00'
 
 
+class TestOLSStreamPrimitives:
+    """Held-CS stream transactions: write-buffer framing and CS lifecycle."""
+
+    def test_stream_read_frames_single_0x31_command(self, ols, mock_dev):
+        result = ols.stream_read(8)
+        assert result == b'\x00' * 8
+        buf = mock_dev.write.call_args[0][0]
+        assert buf == (bytes([0x80, 0x00, 0x0B, 0x31, 0x07, 0x00])
+                       + bytes([0x11]) * 8
+                       + bytes([0x87, 0x80, 0x08, 0x0B, 0x87]))
+
+    def test_stream_read_zero_returns_empty(self, ols, mock_dev):
+        assert ols.stream_read(0) == b''
+        mock_dev.write.assert_not_called()
+
+    def test_stream_read_chunks_above_65536(self, ols, mock_dev):
+        # > 65536 bytes must be split across multiple 0x31 commands, all under
+        # one CS-low frame.
+        ols.stream_read(65536 + 4)
+        buf = mock_dev.write.call_args[0][0]
+        assert buf[:6] == bytes([0x80, 0x00, 0x0B, 0x31, 0xFF, 0xFF])
+        # Second header starts after CS-low + hdr1 + 65536 NOP bytes.
+        assert buf[65542:65545] == bytes([0x31, 0x03, 0x00])
+        assert buf[-5:] == bytes([0x87, 0x80, 0x08, 0x0B, 0x87])
+        assert len(buf) == 3 + 3 + 65536 + 3 + 4 + 5
+
+    def test_stream_command_begin_holds_cs_and_opens_stream(self, ols, mock_dev):
+        result = ols.stream_command_begin(b'\x55\xaa\x13\x00')
+        assert result == b'\x00' * 4
+        assert ols._stream_open is True
+        buf = mock_dev.write.call_args[0][0]
+        assert buf == (bytes([0x80, 0x00, 0x0B, 0x31, 0x03, 0x00])
+                       + b'\x55\xaa\x13\x00' + bytes([0x87]))
+
+    def test_stream_command_clock_writes_0x31_nop_chunk(self, ols, mock_dev):
+        result = ols.stream_command_clock(4)
+        assert result == b'\x00' * 4
+        buf = mock_dev.write.call_args[0][0]
+        assert buf == bytes([0x31, 0x03, 0x00]) + bytes([0x11]) * 4 + bytes([0x87])
+
+    def test_stream_command_clock_zero_writes_nothing(self, ols, mock_dev):
+        assert ols.stream_command_clock(0) == b''
+        mock_dev.write.assert_not_called()
+
+    def test_stream_command_end_raises_cs(self, ols, mock_dev):
+        ols._stream_open = True
+        ols.stream_command_end()
+        buf = mock_dev.write.call_args[0][0]
+        assert buf == bytes([0x87, 0x80, 0x08, 0x0B, 0x87])
+        assert ols._stream_open is False
+
+    def test_stream_command_end_noop_when_closed(self, ols, mock_dev):
+        ols._stream_open = False
+        ols.stream_command_end()
+        mock_dev.write.assert_not_called()
+
+    def test_stream_command_chunks_yields_prefix_then_chunks_and_closes(
+            self, ols, mock_dev):
+        gen = ols.stream_command_chunks(b'\x55\xaa\x13\x00', ack_pad=4,
+                                        chunk_bytes=8)
+        first = next(gen)
+        second = next(gen)
+        assert first == b'\x00' * 8
+        assert second == b'\x00' * 8
+        gen.close()  # early stop -> finally raises CS
+        writes = [call.args[0] for call in mock_dev.write.call_args_list]
+        assert writes == [
+            bytes([0x80, 0x00, 0x0B, 0x31, 0x07, 0x00])
+            + b'\x55\xaa\x13\x00' + b'\xff' * 4 + bytes([0x87]),
+            bytes([0x31, 0x07, 0x00]) + bytes([0x11]) * 8 + bytes([0x87]),
+            bytes([0x87, 0x80, 0x08, 0x0B, 0x87]),
+        ]
+        assert ols._stream_open is False
+
+    def test_stream_payload_writes_0x31_frame_and_reads_response(self, ols, mock_dev):
+        payload = b'\x55\xaa\x13\x00' + b'\xff' * 20
+        result = ols.stream_payload(payload)
+        assert result == b'\x00' * len(payload)
+        buf = mock_dev.write.call_args[0][0]
+        assert buf == (bytes([0x80, 0x00, 0x0B, 0x31, 0x17, 0x00])
+                       + payload + bytes([0x87, 0x80, 0x08, 0x0B, 0x87]))
+
+    def test_stream_payload_empty_returns_empty(self, ols, mock_dev):
+        assert ols.stream_payload(b'') == b''
+        mock_dev.write.assert_not_called()
+
+
 class TestOLSPublicAPI:
     def test_open_prefers_serial_b_endpoint(self):
         from driver import ols_spi
@@ -165,6 +256,44 @@ class TestOLSPublicAPI:
         inst.open()
 
         mock_ft.openEx.assert_called_once_with(b'AR2I5VP2B', update=False)
+
+    def test_open_rejects_jtag_channel_a(self):
+        from driver import ols_spi
+        mock_ft = ols_spi.ft
+        mock_dev = MagicMock()
+        mock_ft.createDeviceInfoList.return_value = 2
+        # The only enumerated serial is channel A (JTAG).
+        mock_ft.listDevices.return_value = [b'AR2I5VP2A']
+        mock_ft.open.return_value = mock_dev
+        mock_ft.openEx.return_value = mock_dev
+        mock_dev.getDeviceInfo.return_value = {
+            'description': b'USB Blaster A',
+            'serial': b'AR2I5VP2A',
+        }
+
+        inst = ols_spi.OLS(speed_hz=12000000)
+        with pytest.raises(RuntimeError, match="channel B"):
+            inst.open()
+
+        # The serial candidate was skipped outright (no openEx attempt) and
+        # every index-probed handle that turned out to be channel A was
+        # closed again.
+        mock_ft.openEx.assert_not_called()
+        assert mock_dev.close.called
+        assert inst.dev is None
+
+    def test_open_raises_when_no_device_available(self):
+        from driver import ols_spi
+        mock_ft = ols_spi.ft
+        mock_ft.createDeviceInfoList.return_value = 0
+        mock_ft.listDevices.return_value = 0
+        mock_ft.open.side_effect = Exception("DEVICE_NOT_OPENED")
+        mock_ft.openEx.side_effect = Exception("DEVICE_NOT_OPENED")
+
+        inst = ols_spi.OLS(speed_hz=12000000)
+        with pytest.raises(RuntimeError, match="could not be opened"):
+            inst.open()
+        assert inst.dev is None
 
     def test_tx(self, ols, mock_dev):
         result = ols.tx(0x01)
@@ -210,41 +339,50 @@ class TestOLSPublicAPI:
         assert 0x34 in buf
         assert 0x12 in buf
 
-    def test_set_divider(self, ols, mock_dev):
-        ols.set_divider(100)
-        assert mock_dev.write.called
+    def _xfer_cmd_buf(self, cmd, d0, d1, d2, d3):
+        """Exact MPSSE buffer _xfer_cmd() writes for a 6-byte command."""
+        return bytes([0x80, 0x00, 0x0B, 0x31, 0x05, 0x00,
+                      0x11, cmd, d0, d1, d2, d3,
+                      0x87, 0x80, 0x08, 0x0B, 0x87])
 
-    def test_set_trigger_mask(self, ols, mock_dev):
+    def test_set_divider_encodes_le_bytes(self, ols, mock_dev):
+        ols.set_divider(0x123456)
+        buf = mock_dev.write.call_args[0][0]
+        assert buf == self._xfer_cmd_buf(0x80, 0x56, 0x34, 0x12, 0x00)
+
+    def test_set_trigger_mask_encodes_le_bytes(self, ols, mock_dev):
         ols.set_trigger_mask(0x1234)
-        assert mock_dev.write.called
+        buf = mock_dev.write.call_args[0][0]
+        assert buf == self._xfer_cmd_buf(0xC0, 0x34, 0x12, 0x00, 0x00)
 
-    def test_set_trigger_value(self, ols, mock_dev):
+    def test_set_trigger_value_encodes_le_bytes(self, ols, mock_dev):
         ols.set_trigger_value(0x5678)
-        assert mock_dev.write.called
+        buf = mock_dev.write.call_args[0][0]
+        assert buf == self._xfer_cmd_buf(0xC1, 0x78, 0x56, 0x00, 0x00)
 
-    def test_set_fast_mode_enable(self, ols, mock_dev):
+    def test_set_fast_mode_encodes_flag_byte(self, ols, mock_dev):
         ols.set_fast_mode(True)
-        assert mock_dev.write.called
-
-    def test_set_fast_mode_disable(self, ols, mock_dev):
+        buf = mock_dev.write.call_args[0][0]
+        assert buf == self._xfer_cmd_buf(0xA8, 0x01, 0x00, 0x00, 0x00)
         ols.set_fast_mode(False)
-        assert mock_dev.write.called
+        buf = mock_dev.write.call_args[0][0]
+        assert buf == self._xfer_cmd_buf(0xA8, 0x00, 0x00, 0x00, 0x00)
 
-    def test_set_continuous_enable(self, ols, mock_dev):
+    def test_set_continuous_encodes_flag_byte(self, ols, mock_dev):
         ols.set_continuous(True)
-        assert mock_dev.write.called
-
-    def test_set_continuous_disable(self, ols, mock_dev):
+        buf = mock_dev.write.call_args[0][0]
+        assert buf == self._xfer_cmd_buf(0xAA, 0x01, 0x00, 0x00, 0x00)
         ols.set_continuous(False)
-        assert mock_dev.write.called
+        buf = mock_dev.write.call_args[0][0]
+        assert buf == self._xfer_cmd_buf(0xAA, 0x00, 0x00, 0x00, 0x00)
 
-    def test_set_ch_mode_4ch(self, ols, mock_dev):
+    def test_set_ch_mode_encodes_flag_byte(self, ols, mock_dev):
         ols.set_ch_mode(True)
-        assert mock_dev.write.called
-
-    def test_set_ch_mode_8ch(self, ols, mock_dev):
+        buf = mock_dev.write.call_args[0][0]
+        assert buf == self._xfer_cmd_buf(0xAE, 0x01, 0x00, 0x00, 0x00)
         ols.set_ch_mode(False)
-        assert mock_dev.write.called
+        buf = mock_dev.write.call_args[0][0]
+        assert buf == self._xfer_cmd_buf(0xAE, 0x00, 0x00, 0x00, 0x00)
 
 
 class TestOLSChainedRead:
@@ -291,6 +429,90 @@ class TestSPIPacketProtocol:
         parsed1 = parse_response(buf)
         assert parsed1 == (0x00, 0x01, b'xy')
         assert parse_response(buf[len(resp1):]) == (ST_OK, 0x02, b'')
+
+    def test_parse_response_rejects_corrupted_crc(self):
+        frame = SYNC_RSP + bytes([0x12, 0x34]) + struct.pack('<H', 2) + b'xy'
+        frame += struct.pack('<H', crc16(frame[2:]) ^ 0xFFFF)
+        assert parse_response(frame) is None
+
+    def test_parse_response_rejects_corrupted_payload(self):
+        frame = SYNC_RSP + bytes([0x12, 0x34]) + struct.pack('<H', 2) + b'xy'
+        frame += struct.pack('<H', crc16(frame[2:]))
+        corrupted = frame[:6] + bytes([frame[6] ^ 0x01]) + frame[7:]
+        assert parse_response(corrupted) is None
+
+    def test_crc16_known_check_vector(self):
+        # Standard CRC-16/MODBUS (reflected poly 0xA001, init 0xFFFF) check
+        # value for the ASCII string '123456789'.
+        assert crc16(b'123456789') == 0x4B37
+
+    def test_transaction_returns_parsed_response_and_increments_seq(self):
+        class FakeSPI:
+            def __init__(self):
+                self.speed_hz = 30_000_000
+                self.request = None
+
+            def tx_bytes(self, request):
+                self.request = bytes(request)
+                seq = request[3]
+                payload = b'ok'
+                resp = (SYNC_RSP + bytes([ST_OK, seq])
+                        + struct.pack('<H', len(payload)) + payload)
+                resp += struct.pack('<H', crc16(resp[2:]))
+                return b'\xff' + resp
+
+            def tx_read(self, _):
+                return b''
+
+        fake = FakeSPI()
+        pkt = SPIDevice(fake)
+        result = pkt.transaction(0x01, b'')
+        assert result == (ST_OK, 0x00, b'ok')
+        assert fake.request.startswith(SYNC_REQ + bytes([0x01]))
+        # The next transaction carries the next seq byte.
+        result2 = pkt.transaction(0x01, b'')
+        assert result2 == (ST_OK, 0x01, b'ok')
+
+    def test_transaction_poll_loop_skips_wrong_seq_and_finds_response(self):
+        class FakeSPI:
+            def __init__(self):
+                self.tx_read_calls = 0
+
+            def tx_bytes(self, _):
+                return b''
+
+            def tx_read(self, n):
+                self.tx_read_calls += 1
+
+                def frame(seq):
+                    resp = (SYNC_RSP + bytes([ST_OK, seq])
+                            + struct.pack('<H', 2) + b'ok')
+                    resp += struct.pack('<H', crc16(resp[2:]))
+                    return resp
+
+                # Stale response for a different seq, then the live one.
+                return b'\x00' + frame(0xAB) + frame(0x00)
+
+        fake = FakeSPI()
+        pkt = SPIDevice(fake)
+        result = pkt.transaction(0x01, b'', timeout=0.01)
+        assert result == (ST_OK, 0x00, b'ok')
+        assert fake.tx_read_calls == 1
+
+    def test_transaction_returns_none_without_response(self):
+        class FakeSPI:
+            def __init__(self):
+                self.tx_read_calls = 0
+
+            def tx_bytes(self, _):
+                return b''
+
+            def tx_read(self, _):
+                self.tx_read_calls += 1
+                return b''
+
+        pkt = SPIDevice(FakeSPI())
+        assert pkt.transaction(0x01, b'', timeout=0.01) is None
 
     def test_start_stream_read_parses_ack_and_returns_stream_data(self):
         class FakeSPI:

@@ -34,7 +34,6 @@ architecture bench of tb_continuous_rate1 is
   signal newest_index   : std_logic_vector(31 downto 0);
   signal overrun_count  : std_logic_vector(31 downto 0);
   signal fast_clk  : std_logic := '0';
-  signal buf_sel   : std_logic_vector(1 downto 0);
 
 begin
   gen_clk(clk, CLK_HALF);
@@ -42,8 +41,6 @@ begin
 
   inputs <= x"A0";
 
-  -- Probe internal signals
-  buf_sel       <= << signal .tb_continuous_rate1.dut.buf_sel : std_logic_vector(1 downto 0) >>;
 
   DUT : entity work.Fast_Logic_Analyzer_SDRAM
     generic map (Max_Samples => 3000000, Channels => CHANNELS, Sim => true)

@@ -143,6 +143,19 @@ class TestDecodeDigital:
         assert dig.shape == (16, 50)
         assert dig.sum() == 0
 
+    def test_runs_exceeding_total_samples_are_trimmed(self):
+        """A run longer than total_samples must be truncated by the
+        `del seq[total_samples:]` trim, not crash or over-allocate."""
+        pkts = [_dig_pkt(0, 0x5, 10)]  # 11 samples of 0x5, request only 5
+        dig = decode_digital(pkts, 5)
+        assert dig.shape == (16, 5)
+        # 0x5 = 0b0101 -> channels 0 and 2 high for every kept sample
+        assert dig[0].tolist() == [1, 1, 1, 1, 1]
+        assert dig[2].tolist() == [1, 1, 1, 1, 1]
+        assert dig[1].tolist() == [0, 0, 0, 0, 0]
+        assert dig[3].tolist() == [0, 0, 0, 0, 0]
+        assert dig[4:16, :].sum() == 0
+
 
 class TestDecodeAnalog:
     """Analog packed block decoding."""
@@ -215,6 +228,48 @@ class TestDecodeAnalog:
         ana = decode_analog(words)
         for c in range(4):
             assert len(ana[f"adc{c}"]) == 8, f"adc{c}: got {len(ana[f'adc{c}'])}"
+
+    @staticmethod
+    def _pack_deltas(deltas: List[int], width: int) -> List[int]:
+        """Pack signed deltas LSB-first into 15-bit payload words (the
+        analog_packer.vhd wire layout used by decode_analog)."""
+        value = 0
+        for k, d in enumerate(deltas):
+            value |= (d & ((1 << width) - 1)) << (k * width)
+        return [(value >> (15 * i)) & 0x7FFF for i in range((12 * width + 14) // 15)]
+
+    def test_width2_block_spans_two_payload_words_with_bit_carry(self):
+        """W=2: 24 delta bits straddle two 15-bit payload words; the decoder
+        must carry bits across the word boundary and sign-extend each 2-bit
+        delta (01=+1, 11=-1)."""
+        deltas = [+1, -1] * 6  # 12 deltas; channel c sees deltas at k ≡ c (mod 4)
+        payload = self._pack_deltas(deltas, 2)
+        assert len(payload) == 2, "W=2 must produce exactly 2 payload words"
+        words = [_ana_header(2), 0x100, 0x200, 0x300, 0x400] + payload
+        ana = decode_analog(words)
+        for c in range(4):
+            assert len(ana[f"adc{c}"]) == 4
+        # ch0 gets deltas +1,+1,+1 ; ch1 gets -1,-1,-1 ; etc.
+        assert ana["adc0"].tolist() == [0x100, 0x101, 0x102, 0x103]
+        assert ana["adc1"].tolist() == [0x200, 0x1FF, 0x1FE, 0x1FD]
+        assert ana["adc2"].tolist() == [0x300, 0x301, 0x302, 0x303]
+        assert ana["adc3"].tolist() == [0x400, 0x3FF, 0x3FE, 0x3FD]
+
+    def test_width3_block_spans_three_payload_words(self):
+        """W=3: 36 delta bits straddle three 15-bit payload words. Exercises
+        sign extension for 3-bit two's-complement deltas (+2, -3, +1, -4)."""
+        deltas = ([+2, -3, +1, -4] * 3)[:12]
+        payload = self._pack_deltas(deltas, 3)
+        assert len(payload) == 3, "W=3 must produce exactly 3 payload words"
+        words = [_ana_header(3), 0x100, 0x200, 0x300, 0x400] + payload
+        ana = decode_analog(words)
+        for c in range(4):
+            assert len(ana[f"adc{c}"]) == 4
+        # ch0: +2,+2,+2 ; ch1: -3,-3,-3 ; ch2: +1,+1,+1 ; ch3: -4,-4,-4
+        assert ana["adc0"].tolist() == [0x100, 0x102, 0x104, 0x106]
+        assert ana["adc1"].tolist() == [0x200, 0x1FD, 0x1FA, 0x1F7]
+        assert ana["adc2"].tolist() == [0x300, 0x301, 0x302, 0x303]
+        assert ana["adc3"].tolist() == [0x400, 0x3FC, 0x3F8, 0x3F4]
 
     def test_empty_input(self):
         """No analog words → empty dict."""

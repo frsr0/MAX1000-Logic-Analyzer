@@ -1,10 +1,70 @@
 import { expect, test } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { installMockApp, screenshotsDir } from './mockApp';
 
+/** True when the backend reports a MAX1000 available via /api/devices. */
+function hardwareAvailable(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object' || !('devices' in payload)) {
+    return false;
+  }
+  const devices = payload.devices; // narrowed to unknown by `in`
+  if (!Array.isArray(devices)) return false;
+  return devices.some((d) => {
+    if (!d || typeof d !== 'object' || !('id' in d) || !('available' in d)) {
+      return false;
+    }
+    return d.id === 'hardware' && d.available === true;
+  });
+}
+
 const shots = path.resolve(process.cwd(), screenshotsDir());
-const useMockHarness = process.env.PLAYWRIGHT_USE_MOCK !== '0';
+const mockOverride = process.env.PLAYWRIGHT_USE_MOCK; // '1' force mock | '0' force live | unset auto-detect
+let resolvedMock: boolean | undefined;
+let mockResolve: Promise<boolean> | undefined;
+
+/**
+ * Effective harness mode. PLAYWRIGHT_USE_MOCK=1/0 forces mock/live; unset means
+ * auto-detect: a MAX1000 available to the backend (/api/devices -> hardware
+ * entry available) runs the live suite, anything else (CI, no board, no
+ * backend) falls back to the mock harness. The old default was mock, which
+ * silently skipped the live tests even with hardware attached.
+ */
+async function effectiveMock(page: Page): Promise<boolean> {
+  if (mockOverride === '1') return true;
+  if (mockOverride === '0') return false;
+  if (resolvedMock !== undefined) return resolvedMock;
+  mockResolve ??= (async () => {
+    // Probe /api/devices with short retries so a transient backend blip does
+    // not silently flip a hardware run to the mock harness; log the resolved
+    // mode (mock/live) and the reason exactly once.
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        const r = await page.request.get('/api/devices', { timeout: 5000 });
+        const body: unknown = r.ok() ? await r.json() : { devices: [] };
+        if (hardwareAvailable(body)) {
+          resolvedMock = false;
+          console.log('[harness] resolved live mode: /api/devices advertises an available MAX1000');
+        } else {
+          resolvedMock = true;
+          console.log('[harness] resolved mock mode: /api/devices advertises no available MAX1000');
+        }
+        return resolvedMock;
+      } catch {
+        if (attempt < 3) {
+          await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+          continue;
+        }
+        resolvedMock = true;
+        console.log('[harness] resolved mock mode: /api/devices unreachable after 3 attempts');
+        return resolvedMock;
+      }
+    }
+    return resolvedMock!;
+  })();
+  return mockResolve;
+}
 const liveClientId = process.env.PLAYWRIGHT_LIVE_CLIENT_ID ?? 'web_o0v91tvupd';
 
 function shot(name: string) {
@@ -47,7 +107,7 @@ async function deviceDebug(page: any) {
 }
 
 async function ensureConnected(page: any) {
-  if (useMockHarness) return;
+  if (await effectiveMock(page)) return;
   await page.addInitScript((id) => {
     localStorage.setItem('msa_client_id', id);
   }, liveClientId);
@@ -109,7 +169,7 @@ async function ensureConnected(page: any) {
 }
 
 async function stopActiveCapture(page: any) {
-  if (useMockHarness) return;
+  if (await effectiveMock(page)) return;
   await page.evaluate(async () => {
     const clientId = localStorage.getItem('msa_client_id') ?? '';
     await fetch('/api/capture/stop', {
@@ -166,22 +226,31 @@ async function openLiveSession(page: any, query: string) {
 
 test.beforeEach(async ({ page }) => {
   fs.mkdirSync(shots, { recursive: true });
-  if (!useMockHarness && (test.info().title.includes('mock fixture')
-    || test.info().title.includes('mock device scenarios'))) {
-    test.skip(true, 'fixture session is only available in mock mode');
-  }
-  if (useMockHarness) {
+  const isMockTest = test.info().title.toLowerCase().includes('mock');
+  if (isMockTest) {
+    // Mock-harness UI tests run in EVERY environment (CI, no board, or board
+    // attached): the harness intercepts all API routes at the browser layer,
+    // so they never touch the real device/backend and never conflict with the
+    // live tests in the same run. Nothing hardware-dependent skips here.
     await installMockApp(page, {
       mockDevice: test.info().title.includes('mock device scenarios'),
+      denyAcquire: test.info().title.includes('control lock denial'),
     });
     await page.goto('/');
+    return;
   }
-  await ensureConnected(page);
+  const mockMode = await effectiveMock(page);
+  if (mockMode) {
+    await installMockApp(page, { mockDevice: false });
+    await page.goto('/');
+  } else {
+    await ensureConnected(page);
+  }
   await stopActiveCapture(page);
 });
 
 test.afterEach(async ({ page }) => {
-  if (useMockHarness) return;
+  if (await effectiveMock(page)) return;
   await page.evaluate(async () => {
     const clientId = localStorage.getItem('msa_client_id') ?? '';
     await fetch('/api/generator/stop', {
@@ -263,20 +332,74 @@ test('mock device scenarios expose protocol and fault fixtures', async ({ page }
   await page.locator('.sidebar button[title="Capture"]').click();
   const scenario = page.locator('label.field').filter({ hasText: 'Mock scenario' }).locator('select');
   await expect(scenario).toBeVisible();
-  await expect(scenario.locator('option')).toHaveCount(16);
+  await expect(scenario.locator('option')).toHaveCount(17);
   await expect(scenario.locator('option[value="swd"]')).toBeAttached();
   await expect(scenario.locator('option[value="i2c_nack"]')).toBeAttached();
   await expect(scenario.locator('option[value="uart_fault"]')).toBeAttached();
   await scenario.selectOption('swd');
   await expect(scenario).toHaveValue('swd');
+
+  // Observable consequence beyond the select's own value: the selected
+  // scenario rides in the settings submitted with POST /api/capture/start
+  // (CaptureControls.start -> api.startCapture).
+  const startBodies: Array<{ settings?: { mock_scenario?: string | null } }> = [];
+  page.on('request', (req) => {
+    if (req.method() === 'POST' && new URL(req.url()).pathname === '/api/capture/start') {
+      startBodies.push((req.postDataJSON() ?? {}) as { settings?: { mock_scenario?: string | null } });
+    }
+  });
+  await page.locator('.panel-body button.primary.big').click();
+  await expect.poll(() => startBodies.length).toBeGreaterThan(0);
+  expect(startBodies[startBodies.length - 1].settings?.mock_scenario).toBe('swd');
+});
+
+test('mock device scenarios surface a capture start failure toast', async ({ page }) => {
+  // Mock-only: the 'mock device scenarios' title makes beforeEach install the
+  // mock device (device_kind 'mock'), which is what renders the scenario
+  // select, and skips this test in live/hardware mode.
+  await page.locator('.sidebar button[title="Capture"]').click();
+  const scenario = page.locator('label.field').filter({ hasText: 'Mock scenario' }).locator('select');
+  await expect(scenario).toBeVisible();
+  await scenario.selectOption('capture_start_failure');
+  await expect(scenario).toHaveValue('capture_start_failure');
+
+  await page.locator('.panel-body button.primary.big').click();
+
+  // POST /api/capture/start answers 500 { detail: 'Capture failed: ...' } for
+  // the fixture scenario; client.ts throws ApiError(detail) and CaptureControls
+  // start() toasts toast('error', e.message), rendered as .toast.toast-error.
+  const toast = page.locator('.toast.toast-error').filter({ hasText: 'capture_start_failure' });
+  await expect(toast).toBeVisible();
+  await expect(toast).toContainText('Capture failed: mock capture rejected by fixture scenario (capture_start_failure)');
+  await takeScreenshot(page, 'capture-start-failure-toast.png', { fullPage: true });
+});
+
+test('mock capture websocket emits a capture error toast', async ({ page }) => {
+  // App.tsx renders a ws capture_error message as toast('error',
+  // `Capture failed: ${msg.data.message}`) (App.tsx:77-79). The mock
+  // WebSocket stub records every socket so the test can push a
+  // backend-originated message into /ws/capture.
+  const emitted = await page.evaluate(() => {
+    type EmitterWindow = Window & { __mockWsEmit?: (urlSuffix: string, message: unknown) => boolean };
+    return (window as unknown as EmitterWindow).__mockWsEmit?.('/ws/capture', {
+      type: 'capture_error',
+      data: { message: 'mock websocket capture rejected (fixture)' },
+    });
+  });
+  expect(emitted).toBe(true);
+  const toast = page.locator('.toast.toast-error').filter({
+    hasText: 'Capture failed: mock websocket capture rejected (fixture)',
+  });
+  await expect(toast).toBeVisible();
+  await takeScreenshot(page, 'capture-ws-error-toast.png', { fullPage: true });
 });
 
 test('compression sweep shows raw and delta_rle throughput differences', async ({ page }) => {
-  test.skip(useMockHarness, 'live hardware only');
+  test.skip(await effectiveMock(page), 'live hardware only');
   test.setTimeout(240_000);
 
-  const sampleCount = useMockHarness ? 250_000 : 50_000;
-  const sweepRates = useMockHarness ? [1_000_000, 10_000_000, 50_000_000] : [1_000_000, 10_000_000];
+  const sampleCount = 50_000;
+  const sweepRates = [1_000_000, 10_000_000];
   const codecs = ['raw', 'delta_rle'] as const;
   const results: Array<{
     rate_hz: number;
@@ -353,6 +476,24 @@ test('compression sweep shows raw and delta_rle throughput differences', async (
     expect(row.delta_rle).toBeDefined();
   }
 
+  // The meaningful, physically-sound difference: delta_rle MUST run the
+  // decompression step and raw MUST NOT (the driver only records
+  // last_readback_decode_s for the compressed path). A broken codec selector
+  // that captures the same data twice leaves delta_rle's decode timing null.
+  // Wall-clock throughput ordering is deliberately NOT asserted: RLE worst
+  // case ships 2x the bytes, so delta_rle can legitimately be slower than raw
+  // on incompressible signals.
+  for (const rate of sweepRates) {
+    const rawRow = results.find((r) => r.rate_hz === rate && r.codec === 'raw');
+    const rleRow = results.find((r) => r.rate_hz === rate && r.codec === 'delta_rle');
+    expect(rawRow, `raw sweep row missing for ${rate.toLocaleString()} Hz`).toBeDefined();
+    expect(rleRow, `delta_rle sweep row missing for ${rate.toLocaleString()} Hz`).toBeDefined();
+    expect(rawRow!.timings.blocks_s, `raw readback timing missing for ${rate.toLocaleString()} Hz`).not.toBeNull();
+    expect(rleRow!.timings.blocks_s, `delta_rle readback timing missing for ${rate.toLocaleString()} Hz`).not.toBeNull();
+    expect(rleRow!.timings.decode_s, `delta_rle decode timing missing at ${rate.toLocaleString()} Hz (codec selector broken?)`).not.toBeNull();
+    expect(rawRow!.timings.decode_s, `raw codec unexpectedly ran a decode at ${rate.toLocaleString()} Hz`).toBeNull();
+  }
+
   await takeScreenshot(page, 'compression-sweep-summary.png', { fullPage: true });
 });
 
@@ -361,12 +502,22 @@ test('generator page matches supported board protocols', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Signal generator' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Send + capture' })).toBeVisible({ timeout: 15_000 });
   const protocolCount = await waitForGeneratorProtocolOptions(page);
-  if (protocolCount === 0) {
-    test.skip(true, 'live generator protocols did not load on this board session');
-  }
+  // A generator-capabilities regression must FAIL this test, not silently
+  // convert it into a skip that keeps CI green.
+  expect(protocolCount, 'generator protocol options must render; a capabilities regression should fail, not skip').toBeGreaterThan(0);
   await expect(page.getByTestId('generator-route-capabilities')).toBeVisible();
-  await expect(page.getByLabel('Generator protocol').locator('option')).toHaveCount(6);
-  await expect(page.getByText('Hardware support on this board is UART, RS-485, I2C, SPI, SWD transaction capture, and raw two-output Bit Banger playback. Protocol exerciser workflows can be built from the raw symbol mode.')).toBeVisible();
+  // The protocol options are driven by /api/generator/capabilities; assert
+  // the rendered list matches the backend-advertised protocols instead of a
+  // static copy (the old 'Hardware support on this board…' paragraph was
+  // hard-coded JSX, not backend data).
+  const caps = await page.evaluate(async () => {
+    const res = await fetch('/api/generator/capabilities');
+    if (!res.ok) throw new Error(await res.text());
+    return res.json() as Promise<{ protocols: string[] }>;
+  });
+  expect(Array.isArray(caps.protocols) && caps.protocols.length).toBeGreaterThan(0);
+  await expect(page.getByLabel('Generator protocol').locator('option'))
+    .toHaveText(caps.protocols.map((p) => p.toUpperCase()));
   await takeScreenshot(page, 'generator-page-latest.png', { fullPage: true });
 });
 
@@ -436,11 +587,40 @@ test('mock decoder builder adds and runs a decoder instance', async ({ page }) =
 });
 
 test('mock raw inspector loads packed samples and supports paging', async ({ page }) => {
+  // The raw inspector needs an active session (it renders 'No session open'
+  // otherwise), so open the mixed-sweep fixture session first.
+  await page.getByRole('button', { name: 'Sessions' }).click();
+  await expect(page.getByRole('heading', { name: 'Sessions' })).toBeVisible();
+  const sessionRow = page.locator('tr').filter({
+    has: page.locator('input[value="MAX1000 mixed analog sweep"]'),
+  }).first();
+  await sessionRow.getByRole('button', { name: 'Open' }).click();
+  await expect(page.locator('canvas.waveform-canvas')).toBeVisible();
+
   await page.locator('.sidebar button[title="Capture"]').click();
   await page.getByRole('button', { name: 'Raw', exact: true }).click();
-  await expect(page.getByText('0x0000', { exact: true })).toBeVisible();
+  // Scope to the raw inspector's table (header row sample|hex|bits) — other
+  // tables on the page also match '.table-scroll table.data-table'.
+  const rawTable = page.locator('table.data-table').filter({
+    has: page.locator('th', { hasText: 'hex' }),
+  });
+  await expect(rawTable).toBeVisible();
+  // The inspector opens at waveformView.start/cursorA (not necessarily 0), so
+  // derive the expected values from the FIRST rendered row instead of
+  // assuming a fixed start. Fixture values are ((start+i)*3)&0xffff.
+  const firstRow = rawTable.locator('tbody tr').first();
+  const start0 = Number(await firstRow.locator('td').nth(0).textContent());
+  expect(Number.isInteger(start0) && start0 >= 0).toBeTruthy();
+  await expect(firstRow.locator('td').nth(1)).toHaveText(
+    `0x${((start0 * 3) & 0xffff).toString(16).toUpperCase().padStart(4, '0')}`);
+  // ⟩ pages forward by the 64-row window: the first row's sample address
+  // must advance to start + count and show the value at the new absolute
+  // sample, proving the window actually moved (the old fixture ignored
+  // start/end and kept re-showing page 1).
   await page.getByRole('button', { name: '⟩', exact: true }).last().click();
-  await expect(page.getByText('0x0003', { exact: true })).toBeVisible();
+  await expect(firstRow.locator('td').nth(0)).toHaveText(String(start0 + 64));
+  await expect(firstRow.locator('td').nth(1)).toHaveText(
+    `0x${(((start0 + 64) * 3) & 0xffff).toString(16).toUpperCase().padStart(4, '0')}`);
   await takeScreenshot(page, 'raw-inspector.png', { fullPage: true });
 });
 
@@ -499,25 +679,24 @@ test('signal generator loopback shows waveform and decode', async ({ page }) => 
   await page.getByRole('button', { name: 'Generator' }).click();
   await expect(page.getByRole('button', { name: 'Send + capture' })).toBeEnabled({ timeout: 15_000 });
   const protocolCount = await waitForGeneratorProtocolOptions(page);
-  if (protocolCount === 0) {
-    test.skip(true, 'live generator protocols did not load on this board session');
-  }
-  if (useMockHarness) {
-    await page.getByLabel('TX pin').fill('3');
-    await page.getByRole('button', { name: 'Send + capture' }).click({ timeout: 15_000 });
-    const generatorResult = page.locator('.card').filter({
-      has: page.getByRole('heading', { name: 'Result' }),
-    });
-    await expect(generatorResult.getByText('PASS', { exact: true })).toBeVisible({ timeout: 30_000 });
-    await expect(generatorResult.getByText('decoded:')).toBeVisible();
-    await expect(generatorResult.getByText('Open loopback capture')).toBeVisible({ timeout: 30_000 });
-    await page.getByRole('button', { name: 'Open loopback capture' }).click();
-    await expect(page.locator('canvas.waveform-canvas')).toBeVisible();
-    await expect(page.locator('.decoder-table')).toBeVisible();
-    await expect(page.locator('.decoder-table .table-toolbar select option').first()).toBeAttached();
-  } else {
-    await openLiveSession(page, 'Generator self-test (uart)');
-  }
+  // A generator-capabilities regression must FAIL this test, not silently
+  // convert it into a skip that keeps CI green.
+  expect(protocolCount, 'generator protocol options must render; a capabilities regression should fail, not skip').toBeGreaterThan(0);
+  // Self-sufficient in BOTH modes: run the real Send + capture (mock harness
+  // or live hardware) instead of opening a pre-existing session — the backend
+  // creates the 'Generator self-test (uart)' session this flow produces.
+  await page.getByLabel('TX pin').fill('3');
+  await page.getByRole('button', { name: 'Send + capture' }).click({ timeout: 15_000 });
+  const generatorResult = page.locator('.card').filter({
+    has: page.getByRole('heading', { name: 'Result' }),
+  });
+  await expect(generatorResult.getByText('PASS', { exact: true })).toBeVisible({ timeout: 45_000 });
+  await expect(generatorResult.getByText('decoded:')).toBeVisible();
+  await expect(generatorResult.getByText('Open loopback capture')).toBeVisible({ timeout: 45_000 });
+  await page.getByRole('button', { name: 'Open loopback capture' }).click();
+  await expect(page.locator('canvas.waveform-canvas')).toBeVisible();
+  await expect(page.locator('.decoder-table')).toBeVisible();
+  await expect(page.locator('.decoder-table .table-toolbar select option').first()).toBeAttached();
   await takeScreenshot(page, 'generator-loopback-capture.png', { fullPage: true });
 });
 
@@ -534,15 +713,36 @@ test('machine-in-loop transaction shows request and response waveforms', async (
   const milResult = page.locator('.card').filter({
     has: page.getByRole('heading', { name: 'Commands' }),
   });
-  await expect(milResult).toContainText(/READ|RESPONSE/);
+  // Both directions must render in the Commands card: the read command
+  // ('Example read') and the RESPONSE action / 'response:' line. Regex with
+  // the /i flag is used because the read option is rendered lowercase.
+  await expect(milResult).toContainText(/READ/i);
+  await expect(milResult).toContainText(/RESPONSE/i);
   await takeScreenshot(page, 'mil-transaction.png', { fullPage: true });
 });
 
 test('settings page keeps control lock and viewer settings clear', async ({ page }) => {
   await page.getByRole('button', { name: 'Settings' }).click();
   await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
-  await expect(page.getByText('Acquire the control lock before sending capture or generator commands to the hardware.')).toBeVisible();
+  // Lock state comes from /api/status control.holder_name (backend data),
+  // not static copy: mock fixture reports 'Playwright', live 'playwright'
+  // (getByText is case-insensitive).
+  await expect(page.getByText('held by playwright')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Appearance' })).toBeVisible();
   await takeScreenshot(page, 'settings-page.png', { fullPage: true });
+});
+
+test('mock control lock denial toasts when acquire is denied', async ({ page }) => {
+  // Mock-only: the 'control lock denial' title makes beforeEach install the
+  // harness with denyAcquire, so POST /api/control/acquire answers
+  // { acquired: false } (the backend shape from backend/app/api/status.py)
+  // and SettingsPage toasts the rendered denial.
+  await page.getByRole('button', { name: 'Settings' }).click();
+  await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
+  await page.getByRole('button', { name: 'Acquire control' }).click();
+  const toast = page.locator('.toast.toast-warning').filter({ hasText: 'Another client holds control' });
+  await expect(toast).toBeVisible();
+  await takeScreenshot(page, 'settings-control-denial.png', { fullPage: true });
 });
 
 test('diagnostics page shows the control plane without hardware', async ({ page }) => {
@@ -553,9 +753,11 @@ test('diagnostics page shows the control plane without hardware', async ({ page 
 });
 
 test('live hardware sessions show waveform screenshots across digital and analog modes', async ({ page }) => {
-  test.skip(useMockHarness, 'real hardware sessions only exist in live mode');
-  test.skip(process.env.PLAYWRIGHT_LIVE_SESSION_SCREENSHOTS !== '1',
-    'optional live session screenshot pass; core hardware validation already covers generator and MIL waveforms');
+  // Hardware presence is the only gate: with a MAX1000 attached this runs
+  // (auto-detected live mode), without one it skips. The old
+  // PLAYWRIGHT_LIVE_SESSION_SCREENSHOTS=1 opt-in silently skipped it on
+  // hardware.
+  test.skip(await effectiveMock(page), 'real hardware sessions only exist in live mode');
   test.setTimeout(240_000);
 
   await page.getByRole('button', { name: 'Device' }).click();
@@ -568,9 +770,10 @@ test('live hardware sessions show waveform screenshots across digital and analog
   await expect(page.getByText('Readback codec')).toBeVisible();
   await takeScreenshot(page, 'live-capture-controls.png', { fullPage: true });
 
-  await openLiveSession(page, 'Generator self-test (uart)');
-  await takeScreenshot(page, 'live-generator-loopback-capture.png', { fullPage: true });
-
+  // The generator loopback session is created by the 'signal generator
+  // loopback' test earlier in this file; the picks loop below opens it if
+  // present (and fails if it is missing but expected), so no hard dependency
+  // on pre-existing data here.
   await page.evaluate(async () => {
     const clientId = localStorage.getItem('msa_client_id') ?? '';
     const res = await fetch('/api/diagnostics/live-accel-session', {
@@ -603,9 +806,12 @@ test('live hardware sessions show waveform screenshots across digital and analog
   await page.getByRole('button', { name: 'Sessions' }).click();
   await expect(page.getByRole('heading', { name: 'Sessions' })).toBeVisible();
 
+  const failures: string[] = [];
   for (const pick of picks) {
+    // Session names render in an editable <input class="ch-name">, so match
+    // the row by input value (hasText never sees input values).
     const row = page.locator('tr').filter({
-      hasText: pick.query,
+      has: page.locator(`input[value="${pick.query}"]`),
     }).first();
     try {
       await expect(row).toBeVisible({ timeout: 15_000 });
@@ -615,13 +821,16 @@ test('live hardware sessions show waveform screenshots across digital and analog
       await takeScreenshot(page, pick.shot);
       await page.getByRole('button', { name: 'Sessions' }).click();
       await expect(page.getByRole('heading', { name: 'Sessions' })).toBeVisible();
-    } catch {
-      continue;
+    } catch (err: unknown) {
+      // Collect per-session failures instead of silently swallowing them: a
+      // partial render regression must fail the test, not just skip a shot.
+      failures.push(`${pick.query}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+  expect(failures, `live session render failures:\n${failures.join('\n')}`).toEqual([]);
 });
 
-if (useMockHarness) {
+test.describe('mock fixture sessions', () => {
   test('analog session renders waveforms and decode on the mock fixture', async ({ page }) => {
     await page.getByRole('button', { name: 'Sessions' }).click();
     const analogRow = page.locator('tr').filter({
@@ -709,7 +918,7 @@ if (useMockHarness) {
     await takeScreenshot(page, 'can-lin-health.png', { fullPage: true });
   });
 
-  test('measurement panel renders a fixture result and recomputes it', async ({ page }) => {
+  test('mock measurement panel renders a fixture result and recomputes it', async ({ page }) => {
     await page.getByRole('button', { name: 'Measure' }).click();
     const measurementRow = page.locator('.side-panel .data-table tbody tr').first();
     await expect(measurementRow).toContainText('Frequency');
@@ -719,7 +928,7 @@ if (useMockHarness) {
   await takeScreenshot(page, 'measurements.png', { fullPage: true });
   });
 
-  test('export panel downloads a report and PulseView-compatible VCD', async ({ page }) => {
+  test('mock export panel downloads a report and PulseView-compatible VCD', async ({ page }) => {
     await page.getByRole('button', { name: 'Export' }).click();
     await expect(page.getByRole('button', { name: 'HTML report' })).toBeVisible();
     await page.getByRole('button', { name: 'HTML report' }).click();
@@ -730,4 +939,4 @@ if (useMockHarness) {
   await expect(page.getByText('PULSEVIEW export downloaded')).toBeVisible();
   await takeScreenshot(page, 'exports.png', { fullPage: true });
   });
-}
+  });

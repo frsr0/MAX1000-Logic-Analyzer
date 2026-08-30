@@ -57,3 +57,10 @@ frontend/test-results/playwright/*
 .claude/launch.json
 *.err
 /graphify-out/cache
+
+# HDL TB regression artifacts
+hdl/tb/.ghdl_work/
+hdl/tb/.ghdl_logs/
+hdl/tb/.baseline.txt
+/.agents
+/.claude

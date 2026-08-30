@@ -129,7 +129,7 @@ begin
       Gen_I2C_Test => gen_i2c_test, Gen_SPI_Test => gen_spi_test,
       Armed => armed, Fast_Mode => fast_mode, Continuous_Mode => continuous_mode,
       Analog_Enable => analog_enable, Analog_Only => open,
-      Buffer_Full => buffer_full, Buffer_Ack => buffer_ack,
+      Buffer_Full => buffer_full, Buffer_Ack => buffer_ack
     );
 
   fast_mode_i        <= << signal .tb_ols_interface.dut.fast_mode_i : std_logic >>;

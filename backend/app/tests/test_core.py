@@ -467,10 +467,41 @@ def test_glitch_measurement_and_filters():
     g = run_measurement("dig_glitch_count", ctx, ["d0"])
     assert g["value"] > 0
     filtered = min_pulse_filter(glitchy, 3)
-    # filter removes 1-sample glitches; raw input unchanged
-    assert np.count_nonzero(filtered != clean) <= np.count_nonzero(glitchy != clean)
+    # filter must actually remove glitches: strictly fewer mismatches vs the
+    # clean square than the raw input has (a regressed identity filter would
+    # leave the counts equal and fail this)
+    assert np.count_nonzero(filtered != clean) < np.count_nonzero(glitchy != clean)
+    # majority3/debounce must change the signal (not be identity)
+    assert np.count_nonzero(majority3(glitchy) != glitchy) > 0
+    assert np.count_nonzero(debounce(glitchy, 3) != glitchy) > 0
     assert majority3(glitchy).shape == glitchy.shape
     assert debounce(glitchy, 3).shape == glitchy.shape
+
+
+def test_filters_remove_one_sample_glitches_exactly():
+    """Injected 1-sample glitches are removed with an exact output: the
+    filters must not regress to identity (shape-only asserts would pass)."""
+    clean = np.array([0] * 20 + [1] * 20 + [0] * 20, dtype=np.uint8)
+    glitchy = clean.copy()
+    glitchy[30] ^= 1  # 1-sample glitch inside the high run
+    glitchy[5] ^= 1   # 1-sample glitch inside the low run
+
+    assert np.array_equal(min_pulse_filter(glitchy, 3), clean)
+    assert np.array_equal(majority3(glitchy), clean)
+    # debounce lags transitions by hold-1 samples: 0s to sample 21, 1s to 41
+    expected_debounce = np.array([0] * 22 + [1] * 20 + [0] * 18, dtype=np.uint8)
+    assert np.array_equal(debounce(glitchy, 3), expected_debounce)
+
+
+def test_min_pulse_filter_width_boundary_is_exact():
+    """min_pulse_filter removes pulses < min_width, keeps pulses >= min_width."""
+    base = np.zeros(24, dtype=np.uint8)
+    two = base.copy(); two[6:8] = 1        # 2-sample pulse < 3 -> removed
+    assert np.array_equal(min_pulse_filter(two, 3), base)
+    three = base.copy(); three[6:9] = 1    # 3-sample pulse == 3 -> kept
+    kept = min_pulse_filter(three, 3)
+    assert kept[6:9].tolist() == [1, 1, 1]
+    assert kept[:6].tolist() == [0] * 6
 
 
 # ── software triggers ────────────────────────────────────────────────

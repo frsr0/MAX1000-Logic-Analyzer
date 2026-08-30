@@ -258,6 +258,142 @@ def test_real_route_accepts_gpio_spi_cs_and_miso_requests():
         GeneratorConfig(protocol="spi", extra={"miso_pin": 6}))
 
 
+def test_generator_config_rejects_pins_outside_0_25():
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+
+    with pytest.raises(HardwareError,
+                       match=r"RS-485 DE pin must be a physical pin in range 0\.\.25"):
+        adapter.validate_generator_config(
+            GeneratorConfig(protocol="rs485", extra={"de_pin": 26}))
+    with pytest.raises(HardwareError,
+                       match=r"SPI CS pin must be a physical pin in range 0\.\.25"):
+        adapter.validate_generator_config(
+            GeneratorConfig(protocol="spi", extra={"cs_pin": -1}))
+    with pytest.raises(HardwareError,
+                       match=r"SPI MISO pin must be a physical pin in range 0\.\.25"):
+        adapter.validate_generator_config(
+            GeneratorConfig(protocol="spi", extra={"miso_pin": 26}))
+    # boundary pins 0 and 25 are valid
+    adapter.validate_generator_config(
+        GeneratorConfig(protocol="spi", extra={"cs_pin": 0, "miso_pin": 25}))
+
+
+def test_generator_config_rejects_capture_channel_outside_0_15():
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+
+    with pytest.raises(HardwareError,
+                       match=r"SPI miso_capture_channel must be in range 0\.\.15"):
+        adapter.validate_generator_config(
+            GeneratorConfig(protocol="spi",
+                            extra={"miso_capture_channel": 16}))
+    with pytest.raises(HardwareError,
+                       match=r"SPI cs_capture_channel must be in range 0\.\.15"):
+        adapter.validate_generator_config(
+            GeneratorConfig(protocol="spi",
+                            extra={"cs_capture_channel": -1}))
+    # boundary capture channels are valid
+    adapter.validate_generator_config(
+        GeneratorConfig(protocol="spi",
+                        extra={"cs_capture_channel": 0,
+                               "miso_capture_channel": 15}))
+
+
+def test_generator_config_rejects_rs485_de_equal_to_a_or_b():
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+
+    with pytest.raises(HardwareError,
+                       match="RS-485 DE pin must differ from A and B pins"):
+        adapter.validate_generator_config(
+            GeneratorConfig(protocol="rs485", tx_pin=2, scl_pin=1,
+                            extra={"de_pin": 2}))
+    with pytest.raises(HardwareError,
+                       match="RS-485 DE pin must differ from A and B pins"):
+        adapter.validate_generator_config(
+            GeneratorConfig(protocol="rs485", tx_pin=2, scl_pin=1,
+                            extra={"de_pin": 1}))
+    adapter.validate_generator_config(
+        GeneratorConfig(protocol="rs485", tx_pin=2, scl_pin=1,
+                        extra={"de_pin": 3}))
+
+
+def test_generator_config_rejects_spi_cs_miso_equal_to_mosi_sclk():
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+
+    with pytest.raises(HardwareError,
+                       match="SPI CS/MISO pins must differ from MOSI and SCLK pins"):
+        adapter.validate_generator_config(
+            GeneratorConfig(protocol="spi", tx_pin=5, scl_pin=4,
+                            extra={"cs_pin": 5}))
+    with pytest.raises(HardwareError,
+                       match="SPI CS/MISO pins must differ from MOSI and SCLK pins"):
+        adapter.validate_generator_config(
+            GeneratorConfig(protocol="spi", tx_pin=5, scl_pin=4,
+                            extra={"miso_pin": 4}))
+    adapter.validate_generator_config(
+        GeneratorConfig(protocol="spi", tx_pin=5, scl_pin=4,
+                        extra={"cs_pin": 7, "miso_pin": 6}))
+
+
+def test_generator_config_rejects_duplicate_cs_miso_capture_channels():
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+
+    with pytest.raises(HardwareError,
+                       match="SPI CS/MISO capture channels must differ"):
+        adapter.validate_generator_config(
+            GeneratorConfig(protocol="spi",
+                            extra={"cs_capture_channel": 14,
+                                   "miso_capture_channel": 14}))
+    adapter.validate_generator_config(
+        GeneratorConfig(protocol="spi",
+                        extra={"cs_capture_channel": 14,
+                               "miso_capture_channel": 15}))
+
+
+def test_generator_config_rejects_features_not_routed_by_firmware(monkeypatch):
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+    caps = adapter.get_capabilities().model_copy(deep=True)
+    for route in caps.generator_routes:
+        if route.protocol == "spi":
+            route.features = [f for f in route.features
+                              if f not in ("cs", "miso")]
+        elif route.protocol == "rs485":
+            route.features = [f for f in route.features if f != "de_pin"]
+        elif route.protocol == "swd":
+            route.features = [f for f in route.features
+                              if f != "transaction_capture"]
+    monkeypatch.setattr(adapter, "get_capabilities", lambda: caps)
+
+    with pytest.raises(HardwareError,
+                       match="SPI CS output is not routed by the connected "
+                             "device firmware"):
+        adapter.validate_generator_config(
+            GeneratorConfig(protocol="spi", extra={"cs_pin": 7}))
+    with pytest.raises(HardwareError,
+                       match="SPI MISO output is not routed by the connected "
+                             "device firmware"):
+        adapter.validate_generator_config(
+            GeneratorConfig(protocol="spi", extra={"miso_pin": 6}))
+    with pytest.raises(HardwareError,
+                       match="a separate RS-485 DE pin is not routed by the "
+                             "connected device firmware"):
+        adapter.validate_generator_config(
+            GeneratorConfig(protocol="rs485", extra={"de_pin": 2}))
+    with pytest.raises(HardwareError,
+                       match="SWD transaction capture is not routed by the "
+                             "connected device firmware"):
+        adapter.validate_generator_config(GeneratorConfig(protocol="swd"))
+    # declining the optional capture target validates without the feature
+    adapter.validate_generator_config(
+        GeneratorConfig(protocol="swd",
+                        extra={"capture_target_response": False}))
+
+
 def test_adapter_connect_disconnect_and_unavailable_metadata(monkeypatch):
     import app.hardware.existing_host_adapter as module
 

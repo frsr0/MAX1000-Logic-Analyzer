@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -25,11 +25,71 @@ async function takeScreenshot(page: any, name: string, opts: { fullPage?: boolea
   await page.screenshot({ path: path.join(screenshots, name), ...opts });
 }
 
+type HardwareStatus = {
+  device_connected?: boolean;
+  device_kind?: string | null;
+};
+
+/**
+ * Poll the backend /api/status until a MAX1000 is reported or the window
+ * elapses.  The backend may still be booting when the suite starts, so a
+ * short poll avoids skipping a healthy run on startup latency.  Uses
+ * page.request (baseURL 127.0.0.1:4173 -> vite proxy -> backend) so no
+ * prior navigation is needed.  Returns the first definitive status body, or
+ * {} if the backend never answered.
+ */
+async function pollHardwareStatus(page: Page, timeoutMs = 15_000, intervalMs = 500): Promise<HardwareStatus> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const status: unknown = await page.request.get('/api/status').then((res) => res.json());
+      if (
+        typeof status === 'object' && status !== null
+        && 'device_connected' in status && 'device_kind' in status
+      ) {
+        const deviceConnected = status.device_connected; // narrowed to unknown by `in`
+        const deviceKind = status.device_kind; // narrowed to unknown by `in`
+        return {
+          device_connected: typeof deviceConnected === 'boolean' ? deviceConnected : false,
+          device_kind: typeof deviceKind === 'string' ? deviceKind : null,
+        };
+      }
+    } catch {
+      // Backend not ready yet; keep polling.
+    }
+    await page.waitForTimeout(intervalMs);
+  }
+  return {};
+}
+
 
 
 test.beforeEach(async ({ page }) => {
   if (test.info().title.includes('validates every advertised mode and rate') && !runHardwareMatrix) {
     test.skip(true, 'set PLAYWRIGHT_HARDWARE_MATRIX=1 to run the 37-capture physical hardware matrix');
+  }
+  // Hardware-presence guard: poll /api/status before force-acquiring the
+  // control lock.  Without a MAX1000 attached the suite skips cleanly
+  // instead of erroring on a failed connect; with hardware present the
+  // acquire/connect flow below runs exactly as before.
+  let status = await pollHardwareStatus(page);
+  if (!status.device_connected || status.device_kind !== 'hardware') {
+    // The backend connects lazily, so a disconnected status may simply mean
+    // nothing has connected yet.  Repeat the force-acquire + /api/connect
+    // the suite used unconditionally, then re-check; skip only if the device
+    // is really absent (the connect 502s and status stays disconnected).
+    await page.request.post('/api/control/acquire', {
+      headers: { 'Content-Type': 'application/json', 'X-Client-Id': clientId },
+      data: { name: 'codex-hardware', force: true },
+    }).catch(() => {});
+    await page.request.post('/api/connect', {
+      headers: { 'Content-Type': 'application/json', 'X-Client-Id': clientId },
+      data: { device_id: 'hardware' },
+    }).catch(() => {});
+    status = await pollHardwareStatus(page, 5_000, 500);
+  }
+  if (!status.device_connected || status.device_kind !== 'hardware') {
+    test.skip(true, `no MAX1000 hardware attached (device_connected=${String(status.device_connected)}, device_kind=${status.device_kind ?? 'null'}); skipping hardware suite`);
   }
   await page.addInitScript((id) => localStorage.setItem('msa_client_id', id), clientId);
   await page.goto('/');
@@ -60,8 +120,34 @@ test('hardware capture controls expose the real pre-trigger path', async ({ page
   await page.getByRole('button', { name: 'Trigger', exact: true }).click();
   await page.getByLabel('Trigger type').selectOption('rising');
   await expect(page.getByText(/Trigger position:/)).toBeVisible();
-  await page.getByRole('slider').fill('25');
-  await expect(page.getByText(/pre-trigger .* samples/)).toBeVisible();
+
+  // Drive the range input through React's onChange (native value setter +
+  // input/change events) so position_pct lands on 25.
+  const slider = page.locator('label.field', { hasText: 'Trigger position' }).getByRole('slider');
+  await slider.evaluate((el) => {
+    const input = el as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+    setter?.call(input, '25');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await expect(page.getByText('Trigger position: 25 %')).toBeVisible();
+
+  // TriggerPanel derives pre_trigger_samples = floor(num_samples * pct / 100)
+  // and renders both halves: 'pre-trigger X samples / post-trigger Y'. At 25 %
+  // the pre window is a real fraction of the capture (post ~= 3*pre within the
+  // floor rounding), not the 0-sample placeholder the old regex accepted.
+  const hint = page.locator('.hint', { hasText: 'pre-trigger' });
+  await expect(hint).toBeVisible();
+  const text = (await hint.textContent()) ?? '';
+  const m = text.match(/pre-trigger ([\d,]+) samples \/ post-trigger ([\d,]+)/);
+  expect(m, `pre/post-trigger hint rendered as: ${text}`).toBeTruthy();
+  const pre = Number(m![1].replace(/,/g, ''));
+  const post = Number(m![2].replace(/,/g, ''));
+  expect(pre).toBeGreaterThan(0);
+  expect(pre).toBeLessThan(post);
+  expect(Math.abs(post - 3 * pre)).toBeLessThanOrEqual(3);
+
   await takeScreenshot(page, 'hardware-pretrigger-controls.png', { fullPage: true });
 });
 
@@ -74,8 +160,26 @@ test('hardware queue captures a real MAX1000 session', async ({ page }) => {
   await takeScreenshot(page, 'hardware-capture-job.png', { fullPage: true });
 });
 
+type TriggerSearchResult = {
+  sample: number | null;
+  event: { type: string } | null;
+  scopes: Array<{ decoder_id: string; start_sample: number; end_sample: number; event_count: number }>;
+};
+
 test('hardware accelerometer sequence trigger scopes the I2C decoder', async ({ page }) => {
-  const result = await page.evaluate(async () => {
+  // Set up the condition instead of depending on a pre-recorded session id:
+  // capture a live LIS3DH WHO_AM_I session (creates the dec-accel decoder).
+  const { session_id: accelSessionId } = await page.evaluate(async () => {
+    const res = await fetch('/api/diagnostics/live-accel-session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Client-Id': localStorage.getItem('msa_client_id') ?? '' },
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json() as Promise<{ session_id: string }>;
+  });
+  expect(accelSessionId).toMatch(/^ses_[0-9a-f]+$/);
+
+  const result: TriggerSearchResult = await page.evaluate(async (sessionId) => {
     const body = {
       decoder_instance: 'dec-accel',
       auto_scope: true,
@@ -89,16 +193,27 @@ test('hardware accelerometer sequence trigger scopes the I2C decoder', async ({ 
         execution: 'post_capture',
       },
     };
-    const response = await fetch('/api/sessions/ses_454be01209/trigger-search', {
+    const response = await fetch(`/api/sessions/${sessionId}/trigger-search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Client-Id': localStorage.getItem('msa_client_id') ?? '' },
       body: JSON.stringify(body),
     });
-    return response.json();
-  });
-  expect(result.sample).toBe(1800);
-  expect(result.event.type).toBe('start');
-  expect(result.scopes).toEqual([{ decoder_id: 'dec-accel', start_sample: 1800, end_sample: 1800, event_count: 1 }]);
+    if (!response.ok) throw new Error(await response.text());
+    return response.json() as Promise<TriggerSearchResult>;
+  }, accelSessionId);
+
+  // A fresh capture starts at an arbitrary phase, so the trigger sample is
+  // not a fixed constant; assert the structural contract: the sequence
+  // matched at a real sample, the event is an I2C START, and the decoder is
+  // auto-scoped to exactly that sample.
+  expect(result.sample).toEqual(expect.any(Number));
+  expect(result.event?.type).toBe('start');
+  expect(result.scopes).toEqual([{
+    decoder_id: 'dec-accel',
+    start_sample: result.sample,
+    end_sample: result.sample,
+    event_count: 1,
+  }]);
 });
 
 test('hardware capture controls screenshot matrix covers every advertised rate', async ({ page }) => {
