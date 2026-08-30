@@ -84,23 +84,22 @@ matrix and measured ratios.
 
 ### Project
 - [Build Flow](build-flow.md) — Quartus project, constraints, compile/seed-sweep scripts, timing
-- [Testbenches](testbenches.md) — All 40+ HDL simulation testbenches
-
-## Build Target
+- [Testbenches](testbenches.md) — 57 HDL files classified into a 34-bench
+  maintained gate, toolchain/orphan exclusions, and tracked expected failures
 
 ## Current timing note
 
-The current seed-44 full-feature build (2026-07-23) closes slow-85C `fast_clk`
-setup slack at **+0.002 ns** and `sdram_core_clk` at **+0.048 ns**, with no
-violated setup/hold paths; see [Build Flow](build-flow.md) and
-[FAST Capture Stream](fast-capture-stream.md) for the timing closure details
-and the tested stream seams.
+The current Quartus 25.1 seed-10 full-feature build (2026-08-27) closes
+slow-85C setup with `fast_clk` **+0.083 ns**, `sdram_core_clk` **+0.111 ns**,
+and `sys_clk` **+0.410 ns**; every reported setup/hold domain is positive.
+It includes the 24-bit generator divider and the registered SDRAM-init
+terminal comparison. See [Build Flow](build-flow.md).
 
 | Property | Value |
 |---|---|
 | FPGA | Intel MAX 10 10M08SAU169C8G |
 | Speed grade | C8 |
 | Build profile | FAST_SPEED (200 MHz sample clock) |
-| Current build seed | 44 (2026-07-23; full mixed-signal build, see `TIMING_REPORT_SUMMARY.md`) |
-| Last complete board validation | 2026-07-23; SOF `0x00515DB0` |
-| Utilisation | 100% LABs (504/504) |
+| Toolchain / seed | Quartus Prime Lite 25.1 / seed 10 |
+| Last complete board validation | 2026-08-27 onward; SOF `0x0050ADC8`; 383/383 plus 37/37 browser matrix |
+| Utilisation | 7,761/8,064 LEs (96%); 4,821 registers |

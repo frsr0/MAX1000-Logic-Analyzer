@@ -63,11 +63,10 @@ as a device-level self-test and as a realistic protocol waveform source.
 
 ## Hardware validation status
 
-The seed-44 full-feature image (SOF `0x00515DB0`) passed the on-board
-accelerometer test as part of the final **358/358 passed, 0 failed, 0 skipped**
-regression on 2026-07-23.  The same test previously passed on the seed-23 image
-(**369/369** on 2026-07-22) and has been carried forward with no changes.
-That test covered:
+The current seed-10 wide-divider image (SOF `0x0050ADC8`) passed the on-board
+accelerometer checks as part of the **383/383** connected-board regression.
+Earlier seed-23 and seed-44 results remain historical evidence. The current
+test covers:
 
 - I²C `WHO_AM_I` at 50 kHz and 100 kHz, probing both possible addresses;
 - I²C `CTRL_REG1` read;

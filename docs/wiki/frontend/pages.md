@@ -8,7 +8,8 @@ Top-level page components rendered by `AppShell` based on navigation selection.
 
 ## CapturePage (`CapturePage.tsx`)
 
-Main capture view: waveform centre, collapsible side panel with 8 tabs, packet table at bottom.
+Main capture view: waveform centre, collapsible side panel with 11 tabs, packet
+table at bottom.
 
 ```
 ┌─────────────┬──────────────────────────────┐
@@ -19,9 +20,12 @@ Main capture view: waveform centre, collapsible side panel with 8 tabs, packet t
 │ Trigger     │                              │
 │ Decoders    │                              │
 │ Measure     │                              │
+│ Analog      │                              │
 │ Markers     │                              │
 │ Export      │                              │
 │ Raw         │                              │
+│ Dashboard   │                              │
+│ Eye         │                              │
 ├─────────────┴──────────────────────────────┤
 │  Packet Table (decoder events)             │
 └────────────────────────────────────────────┘
@@ -31,7 +35,8 @@ Key behaviour: auto-loads most recent session on mount, opens new session on cap
 
 ## SessionsPage (`SessionsPage.tsx`)
 
-Lists saved sessions: name, date, samples, rate, mode, device, tags. Click to open, delete, duplicate, import JSON.
+Lists saved sessions in searchable, 100-row pages. Supports open, delete,
+duplicate, JSON/CSV/VCD import, and two-session comparison/alignment.
 
 ## DevicePage (`DevicePage.tsx`)
 
@@ -44,7 +49,9 @@ Device discovery, connect/disconnect, hardware overview:
 
 ## GeneratorPage (`GeneratorPage.tsx`)
 
-Generator control: protocol select, data input, baud/pin config, start/stop, self-test.
+Capability-driven protocol, payload, timing, and pin controls; Bit Banger
+scripts/presets; exact rate preview; parameter sweeps; one-shot, live-repeat,
+loopback capture, stop, and self-test actions.
 
 ## MachineInLoopPage (`MachineInLoopPage.tsx`)
 
@@ -56,7 +63,8 @@ Log viewer, debug bundle download, self-test, mock capture with scenario selecto
 
 ## SettingsPage (`SettingsPage.tsx`)
 
-Theme toggle, control lock acquire/release, capture defaults, version info.
+Theme, capture defaults, control-lock acquire/force/release, decoder presets,
+keyboard shortcuts, and virtual COM/SWD bridge controls.
 
 ## UI feature gallery
 

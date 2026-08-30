@@ -22,7 +22,10 @@ The SPI command decoder and device controller for the OLS core. Receives packeti
 
 **Capture control:** `Inputs[31:0]`, `Rate_Div`, `Samples`, `Start_Offset`, `Run`, `Full`, `Address`, `Outputs`
 
-**Generator:** `Gen_Load_Byte`, `Gen_Load_We`, `Gen_Start`, `Gen_Baud_Div`, `Gen_Busy`, `Gen_Fifo_Count`, `Gen_Proto`, `Gen_TX_Pin`, `Gen_SCL_Pin`, optional `Gen_DE_*`, `Gen_CS_*`, and `Gen_MISO_*` routes, `Gen_Clear`, all `Gen_I2C_*`/`Gen_SPI_Test`/`Gen_Repeat`/`Gen_RS485_Pair` flags
+**Generator:** `Gen_Load_Byte`, `Gen_Load_We`, `Gen_Start`,
+`Gen_Baud_Div[23:0]`, `Gen_Busy`, `Gen_Fifo_Count`, `Gen_Proto`,
+`Gen_TX_Pin`, `Gen_SCL_Pin`, optional `Gen_DE_*`, `Gen_CS_*`, and
+`Gen_MISO_*` routes, `Gen_Clear`, and the I2C/SPI/repeat/RS-485 flags
 
 **Mode control:** `Armed`, `Fast_Mode`, `Continuous_Mode`, `Narrow_Enable`, `Narrow_Channel`, `Analog_Enable`, `Analog_Only`, `Analog_Profile`, `Analog_Channel`, `Packed_Mode`
 
@@ -53,7 +56,7 @@ The SPI dispatch process decodes `pkt_cmd_active` and routes to sub-handlers:
 |---|---|---|
 | `CMD_PING` | 0x01 | Return ST_OK |
 | `CMD_GET_STATUS` | 0x02 | Return status byte |
-| `CMD_GET_METADATA` | 0x03 | Return metadata string |
+| `CMD_GET_METADATA` | 0x03 | Return clocks/capacity metadata plus feature flags |
 | `CMD_ARM_CAPTURE` | 0x10 | Set Run=1, arm capture |
 | `CMD_ABORT_CAPTURE` | 0x11 | Set disp_abort, clear Run |
 | `CMD_READ_CAPTURE` | 0x12 | Block readout via response FIFO |
@@ -81,7 +84,7 @@ The SPI dispatch process decodes `pkt_cmd_active` and routes to sub-handlers:
 - `REG_FAST_MODE` (0x21): fast mode configuration
 - `REG_CONT_MODE` (0x22): continuous mode settings
 - `REG_GEN_PROTO` (0x30): generator protocol
-- `REG_GEN_BAUD` (0x31): generator baud rate
+- `REG_GEN_BAUD` (0x31): 24-bit generator symbol-rate divider
 - `REG_GEN_PINS` (0x32): generator pin assignment
 - `REG_GEN_DATA` (0x33): generator data / mode flags
 - `REG_GEN_RX_DATA` (0x34): read RX FIFO byte
@@ -142,6 +145,13 @@ GENCAP_WAIT_BUSY → GENCAP_RUNNING → GENCAP_WAIT_FULL → GENCAP_DONE | GENCA
 - `capture_seq` — monotonic capture sequence ID
 - `disp_ack_done` / `disp_ack_seq` — host ACK with sequence matching
 - `done_suppressed` — suppresses false DONE during abort
+
+### 8. Metadata feature flags
+
+The current metadata payload has a tenth byte (index 9). Bit 0 advertises the
+24-bit generator divider. Hosts that receive a shorter payload or a clear bit
+retain the legacy 16-bit divider mask, so the protocol remains backward
+compatible with older programmed images.
 
 ## Key Constants
 

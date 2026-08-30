@@ -58,7 +58,9 @@ graph TB
 | `backend/` | FastAPI Python backend server |
 | `frontend/` | React/TypeScript web UI |
 | `host/` | Python host driver (SPI + device class) and tkinter app |
+| `desktop/` | Electron/PyInstaller Windows packaging |
 | `docs/` | Design notes, ADRs, (this wiki) |
+| `.github/workflows/` | Software, HDL, and self-hosted hardware CI gates |
 
 ## Wiki Sections
 
@@ -85,28 +87,25 @@ graph TB
 
 - 16-channel digital capture at 200.4 MHz
 - 4,194,304-word SDRAM single-shot depth
-- Analog-fast (1 ADC lane), analog-all (4 lanes), mixed (digital + analog) modes
+- Analog-fast (1 ADC lane), maximum-analog (4 physical lanes), and mixed
+  (16 digital + 2 analog) modes, all with single/live variants
 - Narrow packed digital (200 MHz, 1 channel)
 - UART, I²C, SPI, RS-485, SWD, raw Bit Banger, and PWM generation
+- 24-bit generator divider, exact on-wire rate reporting, and repeating
+  UART/RS-485/Bit Banger output during live capture
 - Hardware route capabilities advertise optional RS-485 DE and SPI CS/MISO auxiliary routes
 - Bit Engine/Bit Banger PWM loopback for hardware self-test
 - Readback compression (`raw` / direct `rle` / packed `delta_rle` modes)
 - Built with Quartus, targeting Intel MAX 10 `10M08SAU169C8G`, FAST_SPEED build
-- SDRAM write timing is closed in STA with the DDIO-forwarded chip clock. The
-  current full mixed-signal build uses **seed 44** (2026-07-23): the
-  authoritative post-fit query reports `fast_clk +0.002 ns` and
-  `sdram_core_clk +0.048 ns` in the slow corner, with all setup/hold paths
-  positive. The analog-packer
-  output remains bit-exact under backpressure.
-  The current build artifacts and latest complete board validation use the
-  same seed-44 image (SOF `0x00515DB0`); see
-  throughput fix, and `TIMING_REPORT_SUMMARY.md` for the full per-domain
-  history. Re-sweep with `hdl/proj/seed_sweep.ps1` after any RTL change —
-  this design is seed-sensitive at this density.
-- The exact programmed image passed the packed/MSO hardware check with
-  500,000 words, four balanced analog channels, and digital RLE slices. Live
-  readback characterization measured approximately 1.00 MS/s raw and
-  0.50 MS/s lossless `delta_rle` on the current USB path; see
+- The current full mixed-signal image was built with Quartus 25.1 and fitter
+  **seed 10**, then programmed persistently on 2026-08-27. Slow-85C setup
+  slack is `fast_clk +0.083 ns`, `sdram_core_clk +0.111 ns`, and
+  `sys_clk +0.410 ns`; every reported setup/hold domain is clean. The image
+  has SOF checksum `0x0050ADC8`.
+- That exact image passed the 10-check smoke test, the 383-check full hardware
+  suite, an on-wire 1,200-115,200 baud sweep, and the 37-case real-browser
+  capture matrix. Live readback throughput remains transport- and
+  compressibility-dependent; see
   [`hdl/mso-capture.md`](hdl/mso-capture.md#rate-behavior-and-livecontinuous-capture)
   and [Verification and Change Traceability](verification-traceability.md).
 

@@ -1,77 +1,68 @@
 # ADC Controller: `ADC_Controller`
 
-**File:** `hdl/rtl/ADC_Controller.vhd` (8.0 KB)
+**File:** `hdl/rtl/ADC_Controller.vhd`
 
-## Purpose
+`ADC_Controller` adapts up to four requested MAX 10 ADC mux channels onto the
+`altera_modular_adc_control` command/response interface. Capture-profile policy
+lives in `OLS_SDRAM_Top`; the controller itself is an indexed round-robin
+request sequencer.
 
-Controls the MAX10 built-in ADC (altera_modular_adc_control hard IP). Configures scan profiles for one-slot high-speed analog, multi-slot mixed-signal, and maximum-analog scanning modes.
+## Interface
 
-## Entity Ports
-
-| Port | Width | Direction | Description |
-|---|---|---|---|
-| `CLK` | 1 | IN | System clock |
-| `adc_conv_clk` | 1 | IN | ADC conversion clock (12 MHz from PLL c3) |
-| `rst` | 1 | IN | Reset |
-| `enable` | 1 | IN | ADC enable |
-| `analog_profile` | 2 | IN | Scan profile select |
-| `analog_channel` | 5 | IN | Channel select (single-slot mode) |
-| `adc0..3_result` | 12 | OUT | Conversion results |
-| `adc0..3_valid` | 1 | OUT | Per-channel valid |
-| `adc_start` | 1 | OUT | Start conversion |
-| `adc_ready` | 1 | OUT | ADC ready |
-
-## Scan Profiles
-
-| Profile | Mode | Channels Scanned | Frame Rate |
-|---|---|---|---|
-| 00 | High-speed analog | 1 selected ADC lane | 1 MSPS |
-| 01 | Mixed | ADC0..ADC7 scan | 125 kframes/s |
-| 10 | Maximum analog | Physical profile ADC1..4,5,7,8,16 | 125 kframes/s |
-| 11 | (Reserved) | — | — |
-
-## ADC Mux Channel Map
-
-The MAX1000 board wiring maps ADC channels to physical inputs:
-
-| ADC Channel | Board Label | FPGA Pin | Header |
-|---|---|---|---|
-| 1 | AIN3 | PIN_D1 | J1/5 |
-| 2 | AIN1 | PIN_C2 | J1/3 |
-| 3 | AIN4 | PIN_E3 | J1/6 |
-| 4 | AIN6 | PIN_E4 | J1/8 |
-
-## Analog Frame Output
-
-The controller packs multiple ADC results into a 128-bit `analog_frame_data` bus with `analog_frame_len` (1..14) indicating how many samples are valid. Frame rate depends on profile:
-
-- High-speed single: 1 MSPS (1 sample per frame)
-- Mixed scan: 125 kframes/s (up to 8 samples per frame)
-- Max analog: 125 kframes/s (physical profile scan)
-
-## Analog Profile Flags (from REG_FLAGS)
-
-The OLS_Interface decodes REG_FLAGS to set analog mode:
-
-| Mode | Flags | Description |
-|---|---|---|
-| `MODE_DIGITAL` | 0x000000 | Digital-only capture |
-| `MODE_MIXED` | 0x000008 | Mixed digital+analog |
-| `MODE_ANALOG_ONLY` | 0x000010 | Analog-only (no digital) |
-| `MODE_ANALOG_FAST` | 0x000018 | = mixed + analog_only: one high-speed ADC lane |
-| `MODE_ANALOG_ALL` | 0x000038 | = analog_fast + 0x20: maximum physical analog |
-| `MODE_NARROW_DIGITAL` | 0x002000 | Narrow packed digital |
-
-## Dependencies
-
-| Component | File |
+| Port group | Purpose |
 |---|---|
-| `altera_modular_adc_control` | Quartus IP (altera_modular_adc_control_model.vhd for sim) |
-| `OLS_SDRAM_Top` | `OLS_SDRAM_Top.vhd` |
+| `sys_clk`, `adc_clk`, `reset` | Command FSM clock, 12 MHz conversion clock, reset |
+| `ch0_sel`-`ch3_sel` | ADC mux indices, each 0-31 |
+| `ch0_start`-`ch3_start` | Per-channel request bits |
+| `ch0_result`-`ch3_result` | 12-bit conversion results |
+| `ch0_valid`-`ch3_valid` | One-cycle result strobes |
 
-## Testing
+After ADC initialization, the controller latches the requested-channel vector,
+walks indices 0-3, issues one command for every asserted request, waits for the
+response, stores it in the corresponding result slot, and continues to the
+next requested channel.
 
-| Testbench | What it covers |
-|---|---|
-| `tb_adc_controller.vhd` | ADC scan profiles, channel mux |
-| `tb_analog_preamble.vhd` | Analog frame preamble through ADC |
+## Active capture profiles
+
+`OLS_SDRAM_Top` translates `REG_FLAGS` into request/select behavior:
+
+| Product profile | ADC behavior | User-facing rate |
+|---|---|---:|
+| Analog fast | Request one selected mux channel | 100 kS/s-1 MS/s |
+| Mixed scan | Request two ADC results alongside 16 digital inputs | about 125 kframes/s |
+| Maximum analog | Packed MSO mode requests ADC1-ADC4 in round robin | about 24 kS/s per physical lane |
+
+The maximum-analog backend deliberately uses packed MSO output. The legacy
+raw `MODE_ANALOG_ALL` frame path did not represent eight independent physical
+lanes and is not the product contract.
+
+## MAX1000 physical inputs
+
+| ADC mux | Board label | Header |
+|---:|---|---|
+| 1 | AIN3 | J1/5 |
+| 2 | AIN1 | J1/3 |
+| 3 | AIN4 | J1/6 |
+| 4 | AIN6 | J1/8 |
+
+Other MAX1000 mux inputs are represented in board metadata where physically
+available, but the current four-lane packed product profile is ADC1-ADC4.
+
+## Clocking and framing
+
+The MAX 10 ADC hard IP receives a 12 MHz conversion clock from PLL c3. The
+top-level capture logic converts valid strobes into either a single-lane raw
+frame, mixed framing, or packed four-lane MSO blocks. ADC codes are converted
+to volts in the host/backend with a 3.3 V, 12-bit scale.
+
+## Verification
+
+- `tb_adc_controller.vhd` is in the maintained GHDL gate and checks request
+  ordering, channel selection, and result strobes.
+- Packed four-lane behavior is covered by the MSO simulations and the
+  connected-board maximum-analog single/live matrix.
+- `tb_analog_preamble.vhd` is an explicit expected failure in the current
+  GHDL harness; it is not counted as a pass.
+
+See [MSO Capture](mso-capture.md), [Capture Strategies](../backend/capture-strategies.md),
+and [Hardware Validation](../hardware-validation.md).

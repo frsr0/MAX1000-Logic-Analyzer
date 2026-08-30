@@ -91,8 +91,8 @@ pattern trigger.  When `pattern_ctrl(0) = '1'`, `Run` is gated on
 
 ## Board validation
 
-The Generic_Pattern_Trigger is validated at **HW** level on SOF `0x00515DB0`
-(seed 44, 2026-07-23):
+The `Generic_Pattern_Trigger` remains validated at **HW** level on the current
+seed-10 image (SOF `0x0050ADC8`, 2026-08-27 onward):
 
 | Test | What it proves |
 |---|---|

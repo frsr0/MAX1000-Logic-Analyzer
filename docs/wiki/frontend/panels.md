@@ -1,35 +1,35 @@
-# Side Panels
+# Capture Side Panels
 
 **Directory:** `frontend/src/panels/`
 
-## Purpose
+The Capture page exposes 11 tabs:
 
-Collapsible side panel components on the Capture page. One panel per tab.
+| Panel | Purpose |
+|---|---|
+| `CaptureControls` | Source/acquisition/rate/depth/compression, validation findings, capture jobs |
+| `ChannelPanel` | Visibility, names/colors, row height, physical mapping, buses |
+| `TriggerPanel` | Hardware/post-capture trigger builder, search, auto-scope, navigation |
+| `DecoderPanel` | Add/configure/run/cancel/remove decoders; quality and event counts |
+| `MeasurementPanel` | Create scoped measurements and compute cursor results |
+| `AnalogPanel` | Spectrum, spectrogram, correlation, envelope, threshold, event-correlation analysis |
+| `MarkerPanel` | Named markers/cursors, notes, colors, time/sample deltas |
+| `ExportPanel` | CSV, JSON, VCD, PulseView-VCD, NPZ, HTML, and PDF downloads |
+| `RawInspector` | Bounded raw sample/value/hex inspection |
+| `DashboardPanel` | Protocol activity, event/error density, and decoder summaries |
+| `EyePanel` | Folded eye diagram and timing-suspect analysis |
 
-## TriggerPanel
+Panels store small configuration/metadata in Zustand and leave waveform arrays
+in the shared `WaveformView`. Actions that mutate hardware honor the current
+control lock; analysis and navigation remain available in read-only mode.
 
-Trigger configuration: type (rising/falling/any edge, pattern, uart_byte, immediate, none), channel mask, pattern value, UART byte. Shows hardware vs post-capture classification.
+Representative screenshots:
 
-## ChannelPanel
+![Trigger builder](../../../frontend/test-results/screenshots/trigger-builder.png)
 
-Channel list with colour dots, enable/disable toggle, editable label, colour picker, physical pin assignment display.
+![Analog spectrum](../../../frontend/test-results/screenshots/analog-spectrum.png)
 
-## DecoderPanel
+![Protocol dashboard](../../../frontend/test-results/screenshots/session-dashboard.png)
 
-Add decoder (type + channel assignment + settings), list instances with status (idle/running/complete/error), run/rerun/cancel/remove actions, progress bar, event/warning counts.
+![Eye diagram](../../../frontend/test-results/screenshots/eye-diagram.png)
 
-## MeasurementPanel
-
-Add measurement (type + channel), list with computed results, refresh with cursor positions, remove.
-
-## MarkerPanel
-
-Marker A/B positions with sample index and time, Δ values (samples, time, frequency), set/clear, colour picker.
-
-## ExportPanel
-
-Export session: format selector (CSV/JSON/VCD/NPZ/report), window option, channel select, download button.
-
-## RawInspector
-
-Sample range and channel select, raw value display (binary for digital, V for analog), hex dump.
+![Export panel](../../../frontend/test-results/screenshots/exports.png)

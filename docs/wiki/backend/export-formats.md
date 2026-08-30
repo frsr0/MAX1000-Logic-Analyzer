@@ -1,226 +1,88 @@
-# Export Formats
+# Export and Import Formats
 
 **Directory:** `backend/app/exports/`
 
-## Purpose
+Exports are generated from immutable session metadata, waveform arrays, and
+completed decoder-event files. Each successful export appends an
+`ExportRecord` to the session.
 
-Export captured sessions in various formats for external analysis, sharing, and archival.
+## Export formats
 
-## Formats
+| Format | Endpoint | Implementation | Notes |
+|---|---|---|---|
+| CSV | `POST /api/sessions/{id}/export/csv` | `csv_export.py` | Streams sample rows; supports window/channel selection or decoder-event CSV |
+| JSON | `POST /api/sessions/{id}/export/json` | `json_export.py` | Round-trippable MSA JSON; raw arrays optional |
+| VCD | `POST /api/sessions/{id}/export/vcd` | `vcd_export.py` | Streams digital value changes for HDL/sigrok tools |
+| PulseView | `POST /api/sessions/{id}/export/pulseview` | `vcd_export.py` | VCD with a PulseView-friendly filename; not a native `.sr` container |
+| NPZ | `POST /api/sessions/{id}/export/npz` | `npz_export.py` | NumPy waveform archive plus metadata |
+| HTML report | `POST /api/sessions/{id}/export/report` | `report_export.py` | Self-contained metadata, waveform summary, decoder, measurement, marker, and diagnostic report |
+| PDF report | `POST /api/sessions/{id}/export/pdf` | `pdf_export.py` | Dependency-free, multi-page text report |
 
-### CSV (`csv_export.py`)
+### Request options
 
-Raw sample data as comma-separated values.
+- CSV accepts `start`, `end`, `channels`, and optional `decoder_instance`.
+- JSON accepts `include_raw` (default `true`).
+- VCD and PulseView-VCD accept a digital channel list.
+- NPZ, HTML, and PDF currently export the complete session.
 
-- One column per channel (digital: 0/1, analog: voltage)
-- One row per sample
-- Optional: selection window (start/end sample)
-- Optional: header row with channel metadata
-- Usable with: spreadsheet apps, Python pandas, R
+All responses use `Content-Disposition` filenames derived from the sanitized
+session name. CSV and VCD use iterators so large exports do not first build one
+giant response string in memory.
 
-### JSON (`json_export.py`)
+## Format details
 
-Session export in a round-trippable JSON format that can be re-imported on the Sessions page.
+### CSV
 
-- Full session model (settings, channels, decoders, measurements, markers)
-- Waveform data as base64-encoded arrays
-- Import endpoint: `POST /api/sessions` with `json_text` body
+Sample CSV contains `sample`, `time_s`, one 0/1 column per selected digital
+channel, and voltage columns for selected analog channels. Decoder CSV instead
+serializes saved event rows for one decoder instance.
 
-### VCD (`vcd_export.py`)
+### JSON
 
-Value Change Dump (IEEE 1364-2001) — standard format for digital waveforms.
+The MSA JSON envelope contains the `Session` model, optional raw waveform
+arrays, and completed decoder events. It can be imported through
+`POST /api/sessions` with a `json_text` body.
 
-- Digital channels only (analog channels are omitted)
-- Uses `$var` declarations with `wire` type
-- All samples emitted as value changes
-- Compatible with: GTKWave, Sigrok PulseView, waveform viewers
+### VCD and PulseView
 
-### NPZ (`npz_export.py`)
+VCD includes digital channels only. The PulseView endpoint intentionally uses
+the same stable VCD writer because native sigrok `.sr` files are versioned
+binary containers and this project does not claim a native writer.
 
-NumPy compressed archive (`.npz` file).
+### NPZ
 
-- Arrays: `digital` (bit-packed uint8), `channel_*` (per-channel analog)
-- Metadata JSON in `metadata` key
-- Usable with: Python/NumPy scientific analysis
+The archive stores packed digital words, per-channel analog arrays, and JSON
+metadata for NumPy-based analysis. This download format is separate from the
+backend's live session persistence policy.
 
-### HTML Report (`report_export.py`)
+### Reports
 
-Self-contained HTML report with:
+The HTML report is the rich browser-viewable artifact. The PDF writer is a
+small built-in PDF 1.4 generator that produces portable text pages without a
+browser or third-party renderer.
 
-- Session metadata and settings summary
-- SVG waveform overview (sparkline per channel)
-- Decoder event table (with severity colouring)
-- Measurement results
-- Marker positions
-- Diagnostics (if any)
+## Waveform imports
 
-## API
+`importers.py` converts external waveform text into ordinary sessions:
 
-```python
-POST /api/sessions/{id}/export/csv      # → CSV file download
-POST /api/sessions/{id}/export/json     # → JSON file download
-POST /api/sessions/{id}/export/vcd      # → VCD file download
-POST /api/sessions/{id}/export/npz      # → NPZ file download
-POST /api/sessions/{id}/export/report   # → HTML file download
-```
+| Source | API | Behavior |
+|---|---|---|
+| JSON | `POST /api/sessions` with `json_text` | Restores an exported MSA session |
+| CSV | `POST /api/sessions` with `source_text`, `source_format: "csv"`, and `sample_rate` | Reads digital 0/1 and ` (V)` analog columns |
+| VCD | Same endpoint with `source_format: "vcd"` | Imports one-bit wire variables using the VCD timescale |
 
-Each supports an optional `start`/`end` parameter for windowed export, and `channels` for selective export.
+Imported sessions use the same decoders, measurements, trigger search,
+comparison, waveform analysis, and export paths as hardware captures.
 
-## Dependencies
+## Evidence
 
-| File | Purpose |
-|---|---|
-| `csv_export.py` | CSV export |
-| `json_export.py` | JSON round-trip export |
-| `vcd_export.py` | Value Change Dump |
-| `npz_export.py` | NumPy archive |
-| `report_export.py` | HTML report generator |
-| `Session`, `ChannelInfo` | `capture/session.py` |
-| `WaveformData` | `capture/sample_format.py` |
-
----
-
-# Generator Controller
-
-**Directory:** `backend/app/generator/`
-
-## Purpose
-
-Controls the FPGA's signal generator and orchestrates the loopback self-test workflow (configure → capture → decode → compare).
-
-## Files
-
-| File | Purpose |
-|---|---|
-| `controller.py` (9 KB) | Generator command dispatch, loopback test orchestration |
-| `model.py` (989 B) | GeneratorConfig and GeneratorStatus Pydantic models |
-
-## GeneratorConfig
-
-```python
-class GeneratorConfig(BaseModel):
-    protocol: str = "uart"              # uart|rs485|i2c|spi|swd|bitbang
-    baud: int = 115200
-    data_hex: str = ""                  # payload bytes as hex
-    tx_pin: int = 3
-    scl_pin: int = 1
-    repeat: int = 1
-    continuous: bool = False
-    i2c_read_len: int = 0
-    extra: dict = {}                    # DE/CS/MISO routes and capture channels
-```
-
-## Loopback Self-Test
-
-The browser export panel is covered by Playwright for HTML report, PDF report,
-and PulseView-compatible VCD downloads:
+Backend tests cover format generation, request validation, round trips, and
+edge cases. Playwright covers the browser export controls, including HTML,
+PDF, and PulseView-VCD downloads.
 
 ![Export panel](../../../frontend/test-results/screenshots/exports.png)
 
-```python
-def run_loopback_test(dev: HardwareDevice, settings: CaptureSettings,
-                      gen_cfg: GeneratorConfig) -> dict:
-    """Configure generator, capture generator output, decode, compare."""
-    1. dev.generator_configure(gen_cfg)
-    2. dev.generator_start()
-    3. dev.capture_with_generator(settings, gen_cfg) or
-       dev.capture(settings) with active generator
-    4. dev.generator_stop()
-    5. Decode captured data with appropriate protocol decoder
-    6. Compare decoded data with original `data` bytes
-    7. Return {passed, expected, decoded, errors}
-```
-
-Used by `hw_smoke_test.py` and the Generator page self-test button.
-
----
-
-# Machine-In-Loop (MIL)
-
-**Directory:** `backend/app/mil/`
-
-## Purpose
-
-Automated Machine-In-Loop subsystem: configures a test scenario (UART/modbus/RS485), runs the generator, captures the response, and validates the decoded data against expected values.
-
-## Files
-
-| File | Purpose |
-|---|---|
-| `service.py` (18.3 KB) | MIL orchestration logic |
-| `model.py` (2.5 KB) | MIL Pydantic models |
-
-## Presets
-
-Pre-configured test scenarios:
-- UART loopback: generate UART bytes → capture → verify
-- Modbus RTU query: generate Modbus frame → capture → decode → validate CRC/response
-- RS-485 half-duplex: generate RS-485 frame → capture → verify direction control
-
-## Models
-
-```python
-class MilConfig(BaseModel):
-    protocol: MilProtocol               # uart | modbus_uart | rs485_modbus
-    registers: List[MilRegister]        # register read/write definitions
-    trigger: Optional[MilTrigger]       # trigger on specific register/value
-    timing: MilTiming                   # inter-byte and inter-frame gaps
-
-class MilRuntimeStatus(BaseModel):
-    running: bool
-    current_step: int
-    total_steps: int
-    transactions: List[MilTransactionResponse]
-```
-
----
-
-# WebSocket & Diagnostics
-
-**Directory:** `backend/app/websocket/`, `backend/app/diagnostics/`
-
-## WebSocket Manager (`websocket/manager.py`)
-
-Topic-based broadcast manager:
-
-```python
-class WebSocketManager:
-    def subscribe(topic: str, websocket: WebSocket) -> None
-    def unsubscribe(topic: str, websocket: WebSocket) -> None
-    def broadcast(topic: str, message: dict) -> None
-```
-
-Topics: `status`, `capture`, `logs`, `session/{id}`, `decoder/{id}`
-
-## Status WebSocket (`websocket/status_ws.py`)
-
-FastAPI WebSocket router at `/ws/status`. Sends `device_connected`, `capture_state`, `session_created` events.
-
-## Diagnostics
-
-### Logger (`diagnostics/logger.py`)
-
-Ring-buffer log (last N entries) with WebSocket broadcast:
-```python
-class RingLogger:
-    def log(level, message, source=None) -> None
-    def get_recent(count=100) -> List[LogEntry]
-```
-
-### Debug Bundle (`diagnostics/debug_bundle.py`)
-
-ZIP archive containing:
-- Current status snapshot
-- Device debug info (command log, registers)
-- Last 250 log entries
-- Recent session metadata
-
-API: `POST /api/diagnostics/debug-bundle` → ZIP download
-
-### Sanity Checks (`diagnostics/sanity_checks.py`)
-
-Per-session data integrity checks:
-- Sample count matches session metadata
-- No NaN/Inf in analog data
-- Digital data within valid range (0/1)
-- ADC voltage within scaling range
+Related subsystems have their own pages:
+[Generator Controller](generator-controller.md),
+[Machine-In-Loop](machine-in-loop.md), and
+[WebSocket & Diagnostics](websocket-diagnostics.md).

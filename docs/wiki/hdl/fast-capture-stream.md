@@ -52,14 +52,14 @@ The registered-ready buffer is integrated at the packed FIFO boundary, keeping
 A later timing pass (2026-07-23) registered the Packed_Ready five-term AND
 (`Packed_Ready_r`) and the packed-moode valid/data path into the elastic buffer
 (`packed_buf_in_valid_r`, `Packed_Data_r`) to break the cross-hierarchy
-combinational path to `analog_packer`'s BRAM address register.  The full MSO
-build at seed 44 now reports **+0.002 ns** worst FAST setup slack in the slow
-corner and **+0.048 ns** for the SDRAM core.  See [Capture Engine](capture-engine.md)
-for the detailed register stages.
+  combinational path to `analog_packer`'s BRAM address register. Those stages
+  remain in the current full MSO image. The later Quartus 25.1 seed-10 build
+  reports **+0.083 ns** slow-85C FAST setup slack and **+0.111 ns** for the
+  SDRAM core. See [Capture Engine](capture-engine.md) for the detailed stages.
 
-The latest complete board validation is the 2026-07-23 seed-44 image with SOF
-checksum `0x00515DB0`; see [Verification and Change Traceability](../verification-traceability.md)
-before treating later RTL as hardware-validated.
+The current complete board validation is the 2026-08-27 seed-10 image with SOF
+checksum `0x0050ADC8`; see
+[Verification and Change Traceability](../verification-traceability.md).
 
 The budget counter's decrement pipeline is clamped at zero. Its write is
 therefore unconditional on the one-bit nonzero status: a stale terminal flag

@@ -1,121 +1,83 @@
-# API Client
+# Frontend API Client
 
-**Files:** `frontend/src/api/client.ts`, `frontend/src/api/types.ts`, `frontend/src/api/binary.ts`, `frontend/src/api/websocket.ts`
+**Files:** `frontend/src/api/client.ts`, `types.ts`, `binary.ts`, and
+`websocket.ts`
 
-## Purpose
+## JSON requests and control identity
 
-Type-safe REST client, WebSocket abstraction, TypeScript type interfaces mirroring backend Pydantic models, and binary MSAW waveform parser.
+`client.ts` provides typed GET/POST/PATCH/DELETE helpers. Non-success responses
+become `ApiError` with the HTTP status and backend detail. JSON requests carry
+`X-Client-Id`, a stable browser-local ID (`web_<random>` stored as
+`msa_client_id`) used by the backend control lock.
 
-## REST Client (`client.ts`)
+The `api` object groups calls by status/control, devices, capture/jobs,
+sessions/import/comparison, waveform/analysis, decoders, measurements,
+markers, generator/sweeps, virtual serial, MIL, and diagnostics. It mirrors
+the routes listed in the [Backend API Layer](../backend/api-layer.md).
+
+## Binary waveform calls
+
+`waveformWindow` and `overview` fetch `ArrayBuffer` responses and parse MSAW
+into zero-copy views:
 
 ```typescript
-class ApiError extends Error {
-  status: number;
-  constructor(status: number, message: string)
+interface WaveformPayload {
+  header: WaveformHeader;
+  arrays: Map<string, Uint8Array | Uint16Array | Uint32Array | Float32Array>;
 }
 ```
 
-Generic request helpers:
-```typescript
-const get = <T>(p: string) => req<T>('GET', p);
-const post = <T>(p: string, b?: unknown) => req<T>('POST', p, b);
-const patch = <T>(p: string, b?: unknown) => req<T>('PATCH', p, b);
-const del = <T>(p: string) => req<T>('DELETE', p);
+The header declares each array's name, dtype, and element count. Raw packed
+digital samples are `Uint16Array`; derived bits are `Uint8Array`; analog data
+is `Float32Array`; LOD edge density uses `Uint32Array`. The parser validates
+the `MSAW` magic and uses the backend's four-byte alignment.
+
+Large live windows normally go through `WaveformClient` in a Worker rather
+than these main-thread helpers. See [Workers](workers.md).
+
+## Session and analysis coverage
+
+Important higher-level methods include:
+
+```text
+sessions(search, offset, limit)
+importSession(json_text)
+importWaveform(source_text, csv|vcd, sample_rate)
+compareSessions(a, b, alignmentOffset?)
+triggerSearch(id, trigger, decoder_instance?, auto_scope?)
+submitCaptureJob / captureJob
+sessionDashboard
+
+spectrum / spectrogram / correlation / eventCorrelation
+envelope / thresholdSweep / eyeDiagram / timingSuspects / sanity
 ```
 
-### Client ID
+There is no current `xy` client or backend endpoint.
 
-Every request carries a `Client-Id` header with a stable per-browser UUID stored in `localStorage`:
-```typescript
-export function clientId(): string {
-  let id = localStorage.getItem('msa_client_id');
-  if (!id) { id = crypto.randomUUID(); localStorage.setItem('msa_client_id', id); }
-  return id;
-}
-```
+## Generator calls
 
-This is used by the backend's `ControlLock` to identify which browser owns the hardware.
+The generator surface includes capabilities, configure/start/stop/status,
+preview, presets, sweep preview/capture, send, and self-test. `generatorSend`
+accepts optional `live`; the UI enables it only for UART, RS-485, and Bit
+Banger.
 
-### API Methods (`api` object)
+## Downloads
 
-```typescript
-export const api = {
-  // Status
-  status: () => get<BackendStatus>('/api/status'),
-  // Devices
-  devices: () => get<{devices: DeviceDescriptor[]}>('/api/devices'),
-  connect: (device_id: string) => post('/api/connect', {device_id}),
-  disconnect: () => post('/api/disconnect'),
-  deviceDebug: () => get('/api/device/debug'),
-  deviceSelfTest: () => post('/api/device/self-test'),
-  // Capture
-  startCapture: (settings: CaptureSettings, name?: string) => post('/api/capture/start', {settings, name}),
-  stopCapture: () => post('/api/capture/stop'),
-  captureState: () => get('/api/capture/state'),
-  // Sessions
-  sessions: () => get<{sessions: SessionSummary[]}>('/api/sessions'),
-  session: (id: string) => get<Session>(`/api/sessions/${id}`),
-  deleteSession: (id: string) => del(`/api/sessions/${id}`),
-  duplicateSession: (id: string) => post(`/api/sessions/${id}/duplicate`),
-  importSession: (json: string) => post('/api/sessions', {json_text: json}),
-  // Waveform
-  waveform: (id: string, start: number, end: number, channels?: string) =>
-    req<ArrayBuffer>('GET', `/api/sessions/${id}/waveform?start=${start}&end=${end}&channels=${channels ?? ''}`),
-  // Decoders
-  decoderTypes: () => get<{types: DecoderDescription[]}>('/api/decoders'),
-  addDecoder: (sessionId: string, inst: Partial<DecoderInstance>) =>
-    post(`/api/sessions/${sessionId}/decoders`, inst),
-  deleteDecoder: (sessionId: string, decId: string) =>
-    del(`/api/sessions/${sessionId}/decoders/${decId}`),
-  // ... and more
-};
-```
+`downloadExport(sessionId, format, body)` posts to the selected export route,
+reads `Content-Disposition`, creates a temporary object URL, and triggers the
+browser download. `downloadDebugBundle()` does the same for the diagnostics
+ZIP.
 
-### Download Export
+## Types
 
-```typescript
-export async function downloadExport(sessionId: string, format: string, body: unknown = {}) {
-  // POST to /api/sessions/{id}/export/{format}, handles Content-Disposition
-  // Triggers browser download via hidden anchor click
-}
-```
+`types.ts` mirrors the backend models for status, capabilities/routes,
+capture/trigger settings, session/channel/decoder/measurement/marker records,
+generator and MIL configuration, log entries, and WebSocket messages. Runtime
+validation remains the backend's responsibility; TypeScript interfaces are a
+compile-time client contract.
 
-## TypeScript Types (`types.ts`)
+## Tests
 
-Every Pydantic model has a corresponding TypeScript interface:
-
-| Interface | Key Fields |
-|---|---|
-| `BackendStatus` | connected, device, mock, capture_state, last_session_id |
-| `DeviceDescriptor` | id, name, mock, available |
-| `DeviceCapabilities` | modes, max_sample_rate, max_depth, analog_channels |
-| `CaptureSettings` | sample_rate, num_samples, mode, compression, trigger |
-| `ChannelInfo` | id, label, type, index, enabled, color, physical_pin |
-| `Session` | id, name, created, device, settings, channels, decoders |
-| `SessionSummary` | id, name, created, num_samples, sample_rate, mode |
-| `DecoderInstance` | id, decoder_type, label, channel_map, settings, status |
-| `TriggerConfig` | type, channel_mask, value, execution |
-| `Marker` | id, sample, label, color |
-| `MeasurementInstance` | id, measurement_type, channel_id, result |
-| `DecoderEvent` | id, decoder_id, type, start_sample, end_sample, label, severity |
-| `GeneratorConfig` | protocol, data_hex, baud, tx_pin, scl_pin, repeat, continuous, extra |
-| `MilConfig` | protocol, registers, timing |
-
-## Binary Parser (`binary.ts`)
-
-```typescript
-export interface WaveformPayload {
-  num_samples: number;
-  sample_rate: number;
-  channels: { id: string; type: string; data: Uint8Array | Float32Array }[];
-}
-
-export function parseWaveformPayload(buffer: ArrayBuffer): WaveformPayload {
-  // Parse MSAW format: magic(4) + jsonLen(4) + json + typed arrays
-  // Returns zero-copy TypedArray views
-}
-```
-
-## WebSocket (`websocket.ts`)
-
-See [WebSocket Integration](websocket-integration.md) for `ReconnectingSocket` class.
+- `binary.test.ts` covers framing, alignment, dtypes, and malformed payloads.
+- `websocket.test.ts` covers URL selection, subscription, reconnect, and close.
+- Backend API tests remain the request/response schema authority.

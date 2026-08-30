@@ -4,6 +4,40 @@ Hardware validation runs against the FPGA image flashed on the MAX1000. These
 tests exercise register writes, capture timing, SDRAM readback, SPI transport,
 and lossless decompression on the real board.
 
+## Current exact-image result — 2026-08-27 to 2026-08-30
+
+The current full mixed-signal image was built with Quartus Prime Lite 25.1,
+fitter seed 10, and the 24-bit generator divider, then programmed into MAX 10
+configuration flash on 2026-08-27. The assembler reports SOF checksum
+`0x0050ADC8`. Slow-85C setup slack is `fast_clk +0.083 ns`,
+`sdram_core_clk +0.111 ns`, and `sys_clk +0.410 ns`; all reported setup and
+hold domains are positive.
+
+Connected-board evidence for this image:
+
+| Suite | Result | Scope |
+|---|---:|---|
+| `backend/hw_smoke_test.py` | **10/10** | Discovery, metadata, capture, routes, generator loopbacks, decode |
+| `host/app/hw_validation.py` | **383/383** | Register/capture contract, SDRAM, codecs, analog/MSO, triggers, generator, recovery, LIS3DH |
+| Generator rate sweep | **6/6** | 1,200-115,200 baud, every case within +0.79% |
+| Browser hardware matrix | **37/37** | Every advertised source/acquisition/rate combination |
+
+Additional focused checks passed a 1,000,000-sample capture at 200 MHz,
+generator traffic during rolling capture, and clean live stop/recovery. The
+hardware matrix manifest is timestamped 2026-08-27 and records `failed=0`.
+
+Test 12g no longer assumes fixed analogue jumper wiring. It drives UART from
+each generator pool pin, watches each ADC lane in analog-fast mode, discovers
+connected pairs, and runs the analogue checks for the detected fixture. With
+no analogue jumper, that fixture-dependent test skips explicitly rather than
+producing a false failure. Digital jumper discovery remains independent.
+
+The host SPI decoder also bounds sampling of the final SCLK plateau. After a
+burst, SCLK may remain high while the released data line falls; sampling the
+geometric middle of that unbounded idle plateau intermittently changed the
+last byte from `0xff` to `0xfe`. The current decoder samples an anomalously
+long final plateau at a normal bit offset.
+
 ## Exact-image rerun — 2026-07-26 / exhaustive closure — 2026-07-27
 
 The repaired seed-30 SOF (`0x0050CF93`) was rerun on the connected board after
@@ -16,7 +50,7 @@ The final exhaustive rerun completed **391/391 passed, 0 failed, 0 skipped**.
 
 Full log: `host/fullsuite_postfix_2026-07-27-rerun.txt`.
 
-## Latest web-app smoke result — 2026-08-07
+## Historical web-app smoke result — 2026-08-07
 
 The connected MAX1000 passed the current `backend/hw_smoke_test.py` real-hardware path **10/10** at a 200 MHz sample clock. This covers the same `CaptureManager -> ExistingHostAdapter -> host/driver/OLSDeviceSPI` path used by the web app. The default plain capture now uses **10 MHz and 40,960 samples** (about 4.1 ms), keeping the same observation window as the old 1 MHz / 4,096-sample check while giving ten times more samples per pulse.
 
@@ -144,7 +178,7 @@ full connected-board coverage now agree on that path.
 rates. Every compressed result is expanded and compared byte-for-byte with
 raw readback.
 
-Latest connected-board results:
+Historical 2026-07 connected-board ratios:
 
 | Source | 1 MHz | 10 MHz | 50 MHz |
 |---|---:|---:|---:|
@@ -170,11 +204,10 @@ reports the measured ceiling for each codec; raw remains a hard pass gate, and
 `delta_rle` is reported as a bounded characterization point rather than a
 minimum-lossless assertion.
 
-The physical two-jumper analog fixture is hard-gated by
-`python -m app.hw_validation analog`. The current board wiring is PMOD1/pool
-16 to AIN4/ADC3 and PMOD2/pool 17 to AIN5/ADC7 (discovered by a full
-single-channel pin x ADC sweep). The test drives a UART pattern
-through each jumper, requires full-scale repeated ADC activity on the expected
-channel, and checks that the other connected ADC does not carry the repeated
-pattern. The full suite includes this test. Digital pin-to-pin jumper tests
-are separate and require rewiring at least one jumper to a digital input.
+The analogue fixture is discovered instead of hard-coded. The validator sweeps
+generator pool pins against ADC lanes, drives a UART pattern through each
+detected jumper, requires repeated full-scale activity on the selected lane,
+and checks other connected ADCs for cross-talk. `python -m app.hw_validation
+analog` remains the focused command. The complete suite includes the same
+check but records an explicit skip when no analogue jumper is installed.
+Digital pin-to-pin jumper tests are separate and discover their own route.

@@ -1,201 +1,104 @@
-# Build & Test
+# Frontend Build and Test
 
-**Files:** `frontend/package.json`, `frontend/tsconfig.json`, `frontend/playwright.config.ts`, `frontend/vite.config.ts` (inferred)
+**Files:** `frontend/package.json`, `vite.config.ts`, `vitest.config.ts`,
+`playwright.config.ts`
 
-## Build Configuration
+## Toolchain
 
-### package.json
+| Tool | Current range | Purpose |
+|---|---:|---|
+| React / React DOM | ^18.3.1 | UI |
+| Zustand | ^4.5.4 | Application state |
+| TypeScript | ^5.5.3 | Type checking |
+| Vite | ^8.1.5 | Development and production build |
+| Vitest / V8 coverage | ^4.1.11 | Unit and coverage tests |
+| Playwright | ^1.61.1 | Browser E2E and hardware matrix |
 
-```json
-{
-  "name": "max1000-msa-frontend",
-  "version": "3.0.0",
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
-    "test:e2e": "playwright test"
-  }
-}
-```
+## Commands
 
-### Dependencies
-
-| Dependency | Version | Purpose |
-|---|---|---|
-| `react` | ^18.3.1 | UI framework |
-| `react-dom` | ^18.3.1 | DOM rendering |
-| `zustand` | ^4.5.4 | State management |
-
-### Dev Dependencies
-
-| Dependency | Version | Purpose |
-|---|---|---|
-| `@playwright/test` | ^1.61.1 | E2E testing |
-| `@types/react` | ^18.3.3 | TypeScript types |
-| `@types/react-dom` | ^18.3.0 | TypeScript types |
-| `@vitejs/plugin-react` | ^4.3.1 | Vite React plugin |
-| `typescript` | ^5.5.3 | TypeScript |
-| `vite` | ^5.4.0 | Build tool |
-
-### Commands
-
-```bash
-# Development (Vite dev server on :5173, proxies /api and /ws to :8000)
+```powershell
+cd frontend
+npm ci
 npm run dev
-
-# Production build
-npm run build       # tsc + vite build → frontend/dist/
-
-# Type checking
-npm run typecheck   # tsc --noEmit
-
-# Preview production build
-npm run preview
-```
-
-## Playwright E2E Tests
-
-**Files:** `frontend/tests/e2e/hardware.spec.ts`, `frontend/tests/e2e/mockApp.ts`
-
-### Configuration
-
-```typescript
-// playwright.config.ts
-export default defineConfig({
-  testDir: './tests/e2e',
-  webServer: {
-    command: 'cd backend && python run.py',       // starts backend with mock
-    port: 8000,
-    env: { PLAYWRIGHT_USE_MOCK: '1' },
-  },
-});
-```
-
-### Mock Mode
-
-The `PLAYWRIGHT_USE_MOCK=1` env var sets the backend to use `MockDevice` instead of real hardware. All test scenarios (UART, I2C, SPI, analog, etc.) are available without hardware.
-
-### Test Organization
-
-| Test File | Tests | What it covers |
-|---|---|---|
-| `hardware.spec.ts` | 9 passed, 2 skipped | Full E2E flow through mock: connect, capture, decode, export |
-
-### Screenshots
-
-Test screenshots are saved to `frontend/test-results/screenshots/` for visual comparison:
-
-| Screenshot | Description |
-|---|---|
-| `device-page.png` | Device page with mock connected |
-| `capture-controls.png` | Capture settings panel |
-| `capture-analog-fast.png` | Analog-fast capture result |
-| `capture-compression-delta-rle.png` | Compressed capture readback |
-| `generator-loopback-capture.png` | Generator self-test result |
-| `generator-page-latest.png` | Generator route capabilities and protocol controls |
-| `diagnostics-page-latest.png` | Diagnostics and control-plane tools |
-| `bit-banger-preview-sweep.png` | Raw Bit Banger preview and parameter sweep |
-| `mil-transaction.png` | Machine-in-loop request/response waveform |
-| `swd-generator-capture.png` | SWD transaction capture result |
-| `session-dashboard.png` | Protocol activity dashboard |
-| `trigger-builder.png` | Pattern trigger preview |
-| `decoder-builder.png` | Add-and-run decoder workflow |
-| `raw-inspector.png` | Packed raw sample inspector |
-| `markers-panel.png` | Named waveform marker |
-| `eye-diagram.png` | Folded digital eye diagram |
-| `channel-layout.png` | Channel visibility/layout controls |
-| `command-palette.png` | Keyboard command palette |
-| `analog-spectrum.png` | Analog spectrum analysis |
-| `session-comparison.png` | Session alignment and divergence |
-| `measurements.png` | Measurement panel |
-| `exports.png` | HTML/PDF/PulseView export panel |
-| `accelerometer-session-waveform.png` | LIS3DH WHO_AM_I waveform-viewer fixture |
-| `live-accelerometer-session-waveform.png` | LIS3DH WHO_AM_I live hardware session |
-| And many more (analog, mixed, diagnostics, sessions) |
-
-### Real MAX1000 session captures
-
-The live Playwright scenario was run against the physical MAX1000 using the
-real backend. These captures document the connected device, capture controls,
-generator loopback, and LIS3DH session:
-
-![Live MAX1000 device page](../../../frontend/test-results/screenshots/live-device-page.png)
-
-![Live capture controls](../../../frontend/test-results/screenshots/live-capture-controls.png)
-
-![Live generator loopback capture](../../../frontend/test-results/screenshots/live-generator-loopback-capture.png)
-
-![Live accelerometer session waveform](../../../frontend/test-results/screenshots/live-accelerometer-session-waveform.png)
-
-### Running Tests
-
-```bash
-# Mock mode E2E
+npm run typecheck
+npm run build
+npm run test:unit
 $env:PLAYWRIGHT_USE_MOCK='1'
 npm run test:e2e -- hardware.spec.ts
-
-# All tests
-npx playwright test
-
-# Live MAX1000 session and screenshot capture
-$env:PLAYWRIGHT_USE_MOCK='0'
-$env:PLAYWRIGHT_LIVE_CLIENT_ID='web_o0v91tvupd'
-$env:PLAYWRIGHT_LIVE_SESSION_SCREENSHOTS='1'
-npm run test:e2e -- --project=chromium --grep "live hardware sessions"
 ```
 
----
+`npm run build` runs `tsc && vite build`. The Vite development server proxies
+`/api` and `/ws` to the backend on port 8000; the production backend serves
+the built SPA.
 
-# Decoder UI
+## Unit tests
 
-**Files:** `frontend/src/decoders/DecoderTable.tsx` (name inferred from CapturePage imports)
+Vitest covers the frontend's non-visual transport seams:
 
-## Purpose
-
-UI integration for protocol decoders: annotation overlay on the waveform, packet table display, severity filtering, and event search.
-
-## DecoderTable
-
-Rendered at the bottom of `CapturePage`. Shows decoded events in a table:
-
-| Column | Description |
+| Test | Contract |
 |---|---|
-| # | Event index |
-| Time | Timestamp relative to trigger |
-| Type | Event type icon/colour |
-| Channel | Source channel |
-| Label | Human-readable summary |
-| Severity | normal | warning | error (colour-coded) |
+| `src/api/binary.test.ts` | MSAW framing, typed arrays, malformed/truncated payloads |
+| `src/api/websocket.test.ts` | URL construction, subscriptions, reconnect/close behavior |
+| `src/workers/waveformClient.test.ts` | Request IDs, concurrent responses, cancellation/termination behavior |
 
-Interactions:
-- Click row → jump waveform to event position
-- Severity filter (show/hide normal/warning/error)
-- Search/filter by text
-- Column sorting
+Coverage uses the V8 provider and is run in CI with `npm run test:unit`.
 
-## Annotation Overlay
+## Playwright modes
 
-Decoder events are rendered as coloured annotations above the waveform:
-- Event type determines annotation colour
-- Hover shows tooltip with full event data
-- Click selects event and shows in packet table
-- Stacked decoders show nested annotations
+The suite always uses one worker because a physical MAX1000/FTDI connection is
+exclusive.
 
-## Event Colours
-
-| Severity | Colour |
+| Environment | Behavior |
 |---|---|
-| normal | Green |
-| warning | Yellow/Amber |
-| error | Red |
+| `PLAYWRIGHT_USE_MOCK=1` | Starts Vite only; `mockApp.ts` intercepts API and WebSocket behavior |
+| `PLAYWRIGHT_USE_MOCK=0` | Starts/reuses Vite and the real backend, then runs against hardware |
+| unset | Specs may probe the backend and choose their supported path |
+| `PLAYWRIGHT_HARDWARE_MATRIX=1` | Enables the strict 37-capture physical matrix |
 
-## Dependencies
+```powershell
+# Real board
+$env:PLAYWRIGHT_USE_MOCK='0'
+npm run test:e2e -- hardware.spec.ts
 
-| Module | File |
+# Strict advertised-mode matrix
+$env:PLAYWRIGHT_HARDWARE_MATRIX='1'
+npm run test:e2e -- hardware-features.spec.ts
+```
+
+The 37-case matrix requires `status=passed`, a completed waveform, and an
+effective-rate error below 2% for every advertised combination. Its manifest
+is `frontend/test-results/screenshots/hardware-validated-matrix.json`.
+
+## CI gates
+
+`.github/workflows/test.yml` runs:
+
+- host tests with a 50% branch-coverage threshold;
+- backend tests with an 88% branch-coverage threshold;
+- frontend typecheck/build and Vitest coverage;
+- Playwright mock E2E on Chromium;
+- maintained and expected-failure GHDL jobs.
+
+`.github/workflows/hardware-matrix.yml` runs the two live Playwright suites on
+a self-hosted runner labeled `max1000`. The workflow attempts a real connect
+and fails when the board or native D2XX stack is unavailable. It runs manually,
+on relevant pull requests, and weekly.
+
+## Screenshot evidence
+
+Durable screenshots live in `frontend/test-results/screenshots/`. Key files:
+
+| Screenshot | Scope |
 |---|---|
-| `DecoderEvent` type | `api/types.ts` |
-| `WaveformView` | `state/waveformStore.ts` |
-| `WaveformCanvas` | `waveform/WaveformCanvas.tsx` |
+| `capture-controls.png` | Source/acquisition/rate/depth/compression controls |
+| `capture-live-50mhz-latest.png` | Live rolling waveform |
+| `capture-start-failure-toast.png` / `capture-ws-error-toast.png` | Error handling |
+| `generator-page-latest.png` | Capability-driven generator routes |
+| `bit-banger-preview-sweep.png` | Preset/script preview and sweep |
+| `settings-control-denial.png` | Control-lock denial |
+| `decoder-builder.png` | Decoder creation/run |
+| `exports.png` | HTML, PDF, and PulseView-VCD downloads |
+| `hardware-validated-matrix-*.png` | Real-board capture matrix |
+
+The current matrix index is [Hardware Screenshot Matrix](../hardware-screenshot-matrix.md).
+Decoder interaction details remain on [Decoder UI](decoder-ui.md).

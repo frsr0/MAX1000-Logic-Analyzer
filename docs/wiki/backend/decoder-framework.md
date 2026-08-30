@@ -118,7 +118,7 @@ Modbus RTU decoder → UART byte events → Modbus frame events
 ## Registry
 
 ```python
-# registry.py
+### `registry.py`
 decoder_types: Dict[str, Type[Decoder]] = {}  # "uart" → UartDecoder class
 
 def register(decoder_cls: Type[Decoder]):

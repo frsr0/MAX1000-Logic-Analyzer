@@ -33,7 +33,7 @@ SPI───load──┤ FIFO      ├───┤ 2-bit      ├─── gen_
 | `Gen_Load_Byte` | 8 | IN | Load FIFO data |
 | `Gen_Load_We` | 1 | IN | Load write enable |
 | `Gen_Start` | 1 | IN | Start generation pulse |
-| `Gen_Baud_Div` | 16 | IN | Baud rate divider |
+| `Gen_Baud_Div` | 24 | IN | Symbol-rate divider; current width advertised in metadata |
 | `Gen_Busy` | 1 | OUT | Generator actively transmitting |
 | `Gen_Fifo_Count` | 8 | OUT | FIFO fill level |
 | `Gen_Proto` | 1 | IN | Protocol select |
@@ -80,11 +80,23 @@ Converts the host-encoded 2-bit symbol stream into physical pin waveforms. Each 
 
 The host-side Python encoder (`host/driver/bit_bang.py`) pre-computes symbol sequences:
 
-**UART:** One symbol per bit time. Line idles high. Frame = start(0), 8 data bits LSB-first, stop(1). Max 2,047 bytes per burst.
+**UART:** One symbol per bit time. Line idles high. Frame = start(0), 8 data bits LSB-first, stop(1). The 1,024-symbol budget permits 101 payload bytes plus trailing idle.
 
-**SPI (mode 0/CPHA=0):** Two symbols per bit: SCLK low with data set, then SCLK high. Max 127 bytes per burst.
+**SPI (mode 0/CPHA=0):** Two symbols per bit: SCLK low with data set, then SCLK high. Max 64 bytes per burst.
 
-**I2C (master write):** Four symbols per bit so SDA only changes while SCL is low. START → data bytes MSB-first → ACK slot (released) → STOP. Max ~113 bytes per burst (write-only).
+**I2C (master write):** Four symbols per bit so SDA only changes while SCL is low. START → data bytes MSB-first → ACK slot (released) → STOP. Max 28 bytes per write burst after framing overhead.
+
+### Divider and exact rate
+
+`REG_GEN_BAUD` is 24 bits in the current image. `CMD_GET_METADATA` response
+byte 9 bit 0 advertises the wide divider, allowing the host to remain
+compatible with older 16-bit images. At a 100.2 MHz system clock the current
+divider reaches roughly 6 symbols/s; 1,200 baud no longer wraps to an
+unrelated high rate.
+
+The measured/modelled on-wire rate is `sys_clk / (Bit_Div + 1.25)`, including
+the byte-boundary FIFO/load latency. Backend preview/status surfaces report
+that exact rate and the current divider width.
 
 **I2C Read:** START | write bytes | repeated START | dev_r byte | read_len bytes (master releases SDA) | STOP. Uses `Gen_I2C_Rd_Len` and `Gen_I2C_Dev_R` settings.
 
@@ -145,6 +157,11 @@ the FIFO between repetitions, so the output has no host scheduling gap. The
 finite FIFO limit still applies to the pattern itself; one-shot helpers retain
 their existing host-side burst behavior.
 
+The web API's `live: true` mode builds on this repeat path. The host remembers
+the armed UART/RS-485/Bit Banger pattern and re-kicks it after each rolling
+capture chunk reset, keeping generated traffic present across the live
+session. Generator stop clears both the FPGA repeat and remembered live state.
+
 ## Dependencies
 
 | Component | File |
@@ -158,9 +175,9 @@ their existing host-side burst behavior.
 
 | Function | Protocol | Bytes/Burst | Symbols/Byte |
 |---|---|---|---|
-| `uart_symbols(data)` | UART | 2047 | 10 |
-| `spi_symbols(data)` | SPI mode 0 | 127 | 16 |
-| `i2c_symbols(frame)` | I2C write | 113 | 36 |
+| `uart_symbols(data)` | UART | 101 | 10 |
+| `spi_symbols(data)` | SPI mode 0 | 64 | 16 |
+| `i2c_symbols(frame)` | I2C write | 28 | 36 |
 | `i2c_read_symbols(write, read, dev_r)` | I2C read | ~55 + read_len | 36/byte |
 | `swd_sequence_symbols(ops)` | SWD | N packets | 92/packet |
 | `spi3_read_symbols(tx, read_len)` | SPI mode 3 | 127 + read_len | 16/byte |
@@ -177,6 +194,7 @@ their existing host-side burst behavior.
 | `tb_gen_spi_decode.vhd` | SPI generation + decode |
 | `tb_gen_uart_repeat_decode.vhd` | Repeat mode UART |
 | `tb_bit_engine_repeat.vhd` | Bit Engine repeat until `Clear`; no premature `Done` |
+| `tb_bit_engine_div24.vhd` | Cycle-exact 24-bit divider values, including the 1,200-baud regression |
 | `tb_gen_start_sim.vhd` | Start FSM timing simulation |
 | `host/driver/tests/test_ols_spi_device.py` | Host repeat flag is written for PWM |
 | `host/driver/tests/test_ols_spi.py` | Host-side symbol encoder tests |

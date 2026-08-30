@@ -14,7 +14,7 @@ feature additions must update the shared driver contract as well as the adapter.
 
 | Constant | Value | Description |
 |---|---|---|
-| `ADC_SCAN_FRAME_RATE_HZ` | 125,000.0 | Mixed/max-analog frame rate |
+| `ADC_SCAN_FRAME_RATE_HZ` | 125,000.0 | Mixed-mode frame rate; maximum-analog mode uses packed samples at about 24 kS/s per lane |
 | `ADC_FAST_FRAME_RATE_HZ` | 1,000,000.0 | High-speed single-analog frame rate |
 | `DIGITAL_LIVE_SAMPLE_RATE_HZ` | 50,000,000.0 | Tested ceiling for live rolling UI |
 | `DIGITAL_FAST_BRAM_SAMPLES` | 1,024 | BRAM fast capture depth |

@@ -14,8 +14,11 @@ capability descriptor before hardware is touched.
 
 | File | Purpose |
 |---|---|
-| `controller.py` (9 KB) | Generator command dispatch, loopback test orchestration |
-| `model.py` (989 B) | GeneratorConfig and GeneratorStatus Pydantic models |
+| `controller.py` | Generator command dispatch, loopback test orchestration |
+| `model.py` | Send/self-test request and response models |
+| `bitbang.py` | Presets, scripts, bounded symbol expansion, exact preview timing |
+| `protocols.py` | Reusable host protocol encoders |
+| `sweep.py` | Parameter expansion and sweep result records |
 
 ## GeneratorConfig
 
@@ -45,6 +48,9 @@ class GeneratorStatus(BaseModel):
     last_error: Optional[str] = None
     supported: bool = True
     detail: str = ""
+    actual_symbol_rate: Optional[float] = None
+    below_floor: bool = False
+    divider_width: int = 16
 ```
 
 ## Controller
@@ -65,6 +71,15 @@ The controller translates `GeneratorConfig` to the hardware register writes:
 5. Set direct auxiliary capture channels via `REG_GEN_CAPTURE_AUX` (`0x45`)
 6. Load bit-bang symbols (pre-computed by `host/driver/bit_bang.py`)
 7. Start generation via `CMD_GEN_START`
+
+The current FPGA advertises a 24-bit `REG_GEN_BAUD` through metadata byte 9,
+bit 0. The host automatically retains a 16-bit mask for legacy images and uses
+24 bits for the current image. Status and preview report the exact Bit Engine
+model `sys_clk / (divider + 1.25)`, not merely the requested rate.
+
+`square` emits alternating low/high symbols and therefore has a TX frequency
+of `actual_symbol_rate / 2`. Other periodic presets report their detected
+fundamental frequency when one exists.
 
 ## Loopback Self-Test
 
@@ -101,13 +116,20 @@ POST /api/generator/start           → start generation
 POST /api/generator/stop            → stop generation
 POST /api/generator/send            ← data (append to FIFO while running)
 POST /api/generator/self-test       → loopback capture + decode + compare
+POST /api/generator/preview         → symbols, levels, exact rates, warnings
+POST /api/generator/sweep-preview   → bounded parameter matrix
+POST /api/generator/sweep-capture   → run/capture/decode matrix
 ```
+
+`send` accepts `live: true` for UART, RS-485, and Bit Banger. It arms the
+pattern as an FPGA repeat; the host re-starts it after each rolling-capture
+chunk reset, and `generator/stop` clears the live pattern.
 
 ## Dependencies
 
 | Module | File |
 |---|---|
 | `HardwareDevice` | `hardware/base.py` |
-| `GeneratorConfig`, `GeneratorStatus` | `generator/model.py` |
+| `GeneratorConfig`, `GeneratorStatus` | `hardware/device_models.py` |
 | `CaptureSettings` | `capture/session.py` |
 | `bit_bang` symbol encoders | `host/driver/bit_bang.py` |

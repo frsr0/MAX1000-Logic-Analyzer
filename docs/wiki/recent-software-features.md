@@ -74,6 +74,13 @@ Manchester, SPI, I²C, RS-485, and SWD. Protocols that require more than two
 physical wires are preview/decode capable unless the board route supplies the
 required auxiliary pins.
 
+The `square` preset now emits one symbol per level (`0,3,0,3,...`), so its TX
+frequency is half the symbol rate. Previews and status use the hardware timing
+model `sys_clk / (divider + 1.25)` and expose `actual_symbol_rate`, periodic
+`output_frequency_hz`, `below_floor`, and `divider_width`. The current FPGA
+advertises a 24-bit divider through metadata and can represent rates down to
+roughly 6 symbols/s; the host still detects and supports older 16-bit images.
+
 ## Generator sweeps and self-test
 
 The generator workflow is configure → generate → optionally capture → decode →
@@ -86,6 +93,11 @@ The route capability descriptor controls whether optional RS-485 DE and SPI
 CS/MISO controls are shown. The backend validates routes before writing FPGA
 registers. See [Generator Routing](generator-routing.md).
 
+`POST /api/generator/send` accepts `live: true` for UART, RS-485, and Bit
+Banger. This arms a repeating FPGA pattern and re-kicks it after each rolling
+capture chunk reset, so generated traffic remains visible in a live session.
+`POST /api/generator/stop` clears the repeating pattern.
+
 ## Waveform analysis and derived views
 
 The Analog panel and waveform API now expose:
@@ -94,7 +106,6 @@ The Analog panel and waveform API now expose:
 |---|---|---|
 | Spectrum / peaks | `/api/sessions/{id}/spectrum` | Frequency bins and detected peaks |
 | Spectrogram | `/api/sessions/{id}/spectrogram` | Time-frequency magnitude slices |
-| XY plot | `/api/sessions/{id}/xy` | Paired-channel scatter/trajectory data |
 | Cross-correlation | `/api/sessions/{id}/correlation` | Delay estimate and correlation data |
 | Event correlation | `/api/sessions/{id}/event-correlation` | Analog/digital edge relationship |
 | Envelope | `/api/sessions/{id}/envelope` | Min/max values in configurable bins |
@@ -147,10 +158,12 @@ investigation rather than analog calibration certification.
 
 ## Trigger search and navigation
 
-Hardware triggering remains limited to the FPGA UART byte protocol trigger.
-Software search adds bus-value, byte, pulse-width, edge, and protocol-event
+Hardware triggering covers the basic capture-engine edge/value controls and
+the `Generic_Pattern_Trigger` serial/data pattern FSM. Software search adds
+bus-value, byte, pulse-width, edge, sequence, decoder-error, and protocol-event
 matching after capture. Trigger configuration supports threshold, polarity,
-baud, value/mask, pulse-width, holdoff, and occurrence number.
+baud, value/mask, pulse width, qualification windows, holdoff, and occurrence
+number.
 
 The Trigger panel can search the first or nth occurrence and navigate previous
 or next matches. The selected sample is sent to the waveform viewer so the
@@ -185,9 +198,9 @@ session JSON. Text inputs and selectors do not consume these global shortcuts.
 
 ## Validation boundary
 
-The new software features have backend unit/edge coverage and frontend
-Playwright/mock coverage. The final physical-board regression validates the
-FPGA acquisition/generator contract and the protocols with available physical
-partners, but it does not turn every software decoder into a real electrical
-hardware test. External protocol fixtures are still needed for meaningful CAN,
-I²S, LIN, MIDI, PS/2, infrared, JTAG, or SWD response validation.
+The software features have backend unit/branch coverage, frontend unit tests,
+and Playwright mock coverage. The current physical-board regression validates
+the FPGA acquisition/generator contract and protocols with available physical
+partners; it does not turn every software decoder into an electrical test.
+External fixtures are still needed for meaningful CAN, I²S, LIN, MIDI, PS/2,
+infrared, JTAG, or SWD response validation.

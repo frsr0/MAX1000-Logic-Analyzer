@@ -27,12 +27,17 @@ Settings persisted to `localStorage`.
 
 ## WaveformView (Plain Class)
 
-Key state: `session`, `waveform`, `channels`, `zoom.start/end`, `maxZoom`, `scrollOffset`, `markers`, `decoderEvents`.
+Key state: session ID/sample metadata, viewport `start`/`end`, current and
+overview MSAW payloads, annotations, markers, selected rows, cursor position,
+loading/error state, and live-follow/chunk metadata.
 
-Change notifications via `onChange(listener)` / `notifyChange()` for label/tooltip updates. Canvas reads data directly from this class.
+Change notifications use `subscribe(listener)`/internal `notify()`. The canvas
+reads TypedArray views directly. Window requests are debounced; live requests
+are coalesced and overview updates are throttled.
 
 ## Why Split
 
-- Sample arrays can be hundreds of MB (4M × 16 channels × 2 bytes = 128 MB)
+- A full digital session is one packed `uint16` per sample (about 8 MiB at
+  4,194,304 samples), with additional analog/LOD buffers as required
 - Zoom/pan at 60 fps — React re-render at that rate is prohibitive
 - Canvas rendering reads TypedArrays directly

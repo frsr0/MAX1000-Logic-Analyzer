@@ -93,7 +93,7 @@ Readback compression is digital-only. `delta_rle` expands packed delta words
 after RLE; `rle` expands full words directly. Mixed/analog readback remains raw.
 
 - Configures: `MODE_MIXED`, ADC scan profile
-- Captures: 16 digital channels + ADC0..ADC3 scan
+- Captures: 16 digital channels + two ADC results (`a0` and `a1`)
 - Frame rate: 125 kframes/s (ADC-limited)
 - Readback: raw (no compression on analog frames)
 
@@ -105,8 +105,11 @@ after RLE; `rle` expands full words directly. Mixed/analog readback remains raw.
 
 ### `AnalogAllCaptureStrategy` (analog_all.py)
 
-- Configures: `MODE_ANALOG_ALL`, 8 decoded ADC lanes in the raw frame
-- Captures: the maximum analog frame format at 125 kframes/s
+- Configures: packed MSO mode rather than the legacy raw `MODE_ANALOG_ALL` frame
+- Captures: four genuinely distinct physical ADC lanes (ADC1-ADC4) at about
+  24 kS/s per lane
+- Derives a packed-word budget from the requested per-lane window, capped by
+  4,194,304 SDRAM words
 - Readback: raw
 
 ### `NarrowDigitalCaptureStrategy` (narrow_digital.py)

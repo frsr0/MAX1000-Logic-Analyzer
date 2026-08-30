@@ -18,10 +18,10 @@ type Acquisition = 'single' | 'live';
 | Source | Modes | Max Rate | Notes |
 |---|---|---|---|
 | Digital (16ch) | single, live | 200 MHz / 50 MHz live | Full 16-channel |
-| Mixed (16+analog) | single | 125 kHz | ADC-limited |
-| Digital Narrow | single | 200 MHz | 1ch × 67M samples |
-| Analog Fast | single | 1 MHz | 1 ADC lane |
-| Max Analog | single | 125 kHz | 8 decoded ADC lanes |
+| Mixed (16+analog) | single, live | 125 kframes/s | 16 digital + two ADC lanes (`a0`/`a1`) |
+| Digital Narrow | live only | 200.4 MHz | One line, up to 16× SDRAM logical depth |
+| Analog Fast | single, live | 1 MHz | `AIN3`, one ADC lane |
+| Maximum Analog | single, live | 24 kS/s/lane | Four physical lanes: `AIN3`, `AIN1`, `AIN4`, `AIN6` |
 
 ## Rate Options
 
@@ -31,18 +31,21 @@ type Acquisition = 'single' | 'live';
 | Live Rolling | 10k–50 MHz (filtered) |
 | Mixed | 125 kHz only |
 | Analog Fast | 100k–1 MHz (4 steps) |
-| Analog All | 125 kHz only |
+| Maximum Analog | 24 kHz only |
 
 ## Depth Options
 
 | Mode | Depths |
 |---|---|
 | Digital | 1024, 10K, 50K, 100K, 250K, 500K, 1M, 2M, 4,194,304 |
-| Analog/Mixed | 1024, 10K, 50K, 100K, 250K |
+| Analog Fast/Mixed | 1024, 10K, 50K, 100K, 250K |
+| Maximum Analog | 1024, 10K, 50K, 100K |
 
 ## Live Rolling Window
 
-10 ms, 50 ms, 100 ms, 200 ms, 500 ms, 1 s, 2 s.
+100 µs, 500 µs, 1 ms, 5 ms, 10 ms, 50 ms, 100 ms, 500 ms, 1 s,
+and 5 s, filtered when the resulting sample count exceeds the selected mode's
+logical depth.
 
 ## Compression
 

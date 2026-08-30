@@ -1,112 +1,57 @@
 # WebSocket Integration
 
-**File:** `frontend/src/api/websocket.ts`
+**Files:** `frontend/src/api/websocket.ts`, `frontend/src/App.tsx`
 
 ## ReconnectingSocket
 
+`ReconnectingSocket` builds `ws://` or `wss://` from the current page origin,
+parses typed JSON messages, and broadcasts them to a set of subscribers. A
+disconnect retries after 500 ms and doubles up to a 10-second ceiling. Calling
+`close()` cancels pending retries and permanently closes that instance.
+
 ```typescript
-class ReconnectingSocket {
-  constructor(path: string)
-  subscribe(cb: (msg: WsMessage) => void): () => void  // returns unsubscribe
-  close(): void
-  onStateChange: ((connected: boolean) => void) | null
-}
+const socket = new ReconnectingSocket('/ws/status');
+const unsubscribe = socket.subscribe((message) => { /* route by type */ });
+socket.onStateChange = (connected) => { /* update status bar */ };
+unsubscribe();
+socket.close();
 ```
 
-Auto-reconnecting WebSocket with exponential backoff. Cleanly handles connection drops during network interruptions.
+Malformed JSON is ignored. A WebSocket error closes the socket and lets the
+normal reconnect path handle recovery.
 
-### Topics
+## Connections owned by App
 
-| Path | Purpose |
-|---|---|
-| `/ws/status` | Device connection, capture state, session created |
-| `/ws/capture` | Capture progress (read/total/phase) and completion |
-| `/ws/logs` | Log entries streamed in real-time |
-| `/ws/decoder/{sessionId}` | Decoder progress/completion per session |
-| `/ws/session/{sessionId}` | Waveform ready, session updated |
+| Path | Lifetime | Frontend behavior |
+|---|---|---|
+| `/ws/status` | Whole app | Tracks connection; refreshes status, sessions, and capabilities on reconnect/device changes |
+| `/ws/capture` | Whole app | Updates progress; refreshes status/sessions; stops live-follow on cancel; shows error/warning toasts |
+| `/ws/logs` | Whole app | Appends backend log entries |
+| `/ws/decoder/{sessionId}` | Active session | Refreshes session and annotations after decoder completion |
+| `/ws/session/{sessionId}` | Active session | Re-fetches measurements and advances the live waveform on `waveform_ready` |
 
-### Message Routing
+The active-session sockets are disposed and recreated when the selected
+session ID changes.
 
-In `App.tsx`:
-```typescript
-const statusWs = new ReconnectingSocket('/ws/status');
-statusWs.subscribe((msg) => {
-  switch(msg.type) {
-    case 'device_connected': refreshStatus(); toast('success', 'Device connected'); break;
-    case 'capture_state': refreshStatus(); break;
-    case 'session_created': refreshSessions(); break;
-  }
-});
+## Live waveform message path
 
-const captureWs = new ReconnectingSocket('/ws/capture');
-captureWs.subscribe((msg) => {
-  // Update capture progress in state
-  // On capture_complete: refresh session, load waveform
-});
+`waveform_ready` includes current `num_samples`, `sample_rate`, rolling state,
+and chunk size. `App.tsx` calls `waveformView.updateLive()` immediately, then
+refreshes session metadata asynchronously. Keeping the metadata request off
+the drawing path prevents a slow session response from queueing live frames.
 
-const decoderWs = new ReconnectingSocket(`/ws/decoder/${sessionId}`);
-decoderWs.subscribe((msg) => {
-  // Update decoder progress, load events on complete
-});
-```
+The waveform data itself is fetched over HTTP in a Web Worker; WebSockets only
+announce state changes. See [Workers](workers.md).
 
-### Message Format
+## Message envelope
 
 ```typescript
 interface WsMessage {
-  type: string;       // event type
-  data: any;          // event-specific payload
-  timestamp?: string; // ISO 8601
+  type: string;
+  data: unknown;
+  timestamp?: string;
 }
 ```
 
-# Workers
-
-**Files:** `frontend/src/workers/waveform.worker.ts`, `frontend/src/workers/waveformClient.ts`
-
-## Purpose
-
-WebWorker for offloading waveform data processing from the main thread.
-
-## waveform.worker.ts
-
-```typescript
-// Message handler for processing waveform data
-self.onmessage = (e) => {
-  const { type, payload } = e.data;
-  switch(type) {
-    case 'process_waveform':
-      // Unpack MSAW binary → structured arrays
-      // Build channel buffers
-      self.postMessage({ type: 'waveform_ready', payload: result });
-      break;
-    case 'process_overview':
-      // Build overview data
-      break;
-  }
-};
-```
-
-## waveformClient.ts
-
-Proxy that hides the worker message passing behind a clean async API:
-
-```typescript
-class WaveformClient {
-  private worker: Worker;
-
-  async processWaveform(buffer: ArrayBuffer): Promise<WaveformPayload> {
-    // Post message to worker, return promise that resolves on response
-  }
-
-  async processOverview(sessionId: string): Promise<OverviewPayload> {
-    // Post overview request, return promise
-  }
-
-  terminate(): void {
-    this.worker.terminate();
-  }
-}
-```
-
-The `WaveformView` class uses `WaveformClient` to process binary data without blocking the UI thread during large capture loads.
+Backend topic and event details are documented in
+[WebSocket & Diagnostics](../backend/websocket-diagnostics.md).

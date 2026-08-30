@@ -1,75 +1,71 @@
-# Session Stores
+# Session Storage
 
-**Files:** `backend/app/capture/session_store.py` (6.9 KB), `backend/app/capture/waveform_store.py` (6.9 KB), `backend/app/capture/chunk_store.py` (1.6 KB)
+**Files:** `backend/app/capture/session_store.py`, `waveform_store.py`, and
+`chunk_store.py`
 
-## Purpose
+`SessionStore` owns persistent session metadata, waveform arrays, decoder
+events, and small in-memory LRU caches. `waveform_store.py` encodes binary MSAW
+responses; it is not a second persistence class.
 
-Persistent storage for capture sessions. Sessions are stored as directories on disk containing JSON metadata, NPZ waveform data, and decoder event files.
+## Directory layout
 
-## SessionStore
-
-```python
-class SessionStore:
-    BASE_DIR = Path("data/sessions")
+```text
+data/sessions/<session_id>/
+  session.json
+  waveform.npz
+  decoders/
+    <decoder_instance_id>.json
+  exports/
 ```
 
-Manages session CRUD:
+`session.json` holds the Pydantic session model. Large decoder event lists are
+separate so fetching session metadata remains bounded.
 
-| Method | Description |
+## SessionStore responsibilities
+
+| Method group | Behavior |
 |---|---|
-| `create(session, waveform)` | Create session directory, write JSON + NPZ |
-| `get(session_id)` | Load session from JSON file |
-| `list_sessions()` | List all sessions sorted by creation date |
-| `update(session)` | Write updated session JSON |
-| `delete(session_id)` | Remove session directory and all files |
-| `duplicate(session_id)` | Copy session with new ID |
+| `list_sessions`, `get`, `save` | Metadata CRUD and startup reload |
+| `delete`, `duplicate` | Whole-session lifecycle |
+| `save_waveform`, `load_waveform` | NumPy waveform persistence with an LRU cache |
+| `get_lod`, `invalidate_lod` | Build/cache a resolution pyramid from current arrays |
+| `save_decoder_events`, `load_decoder_events`, `delete_decoder_events` | Per-instance event files |
+| `export_dir` | Per-session export workspace |
 
-### Directory Layout
+Session IDs are validated before they are resolved below the configured
+storage root.
 
-```
-data/sessions/
-  <session_id>/
-    session.json          # Session model (Pydantic → JSON)
-    waveform.npz           # Raw sample data (immutable)
-    decoders/
-      <decoder_id>.json   # Decoder events
-```
+## Waveform persistence
 
-## WaveformStore
+`waveform.npz` contains:
 
-```python
-class WaveformStore:
-    def save(session_id, wf: WaveformData, lod: LodPyramid = None)
-    def load(session_id) -> WaveformData
-    def load_lod(session_id) -> LodPyramid
-    def delete(session_id)
-```
+- packed `uint16` digital samples;
+- one float array per analog channel;
+- one array per derived channel;
+- sample-rate metadata.
 
-- Waveform saved as compressed NPZ with `digital` (uint8 bit-packed) and `analog` (float32) arrays
-- LOD pyramid saved alongside for fast zoomed-out rendering
-- NPZ format enables numpy-based loading without session model parsing
+Persistence intentionally uses plain `numpy.savez`, not
+`numpy.savez_compressed`. Live capture rewrites a multi-million-sample rolling
+window frequently; compression previously took about 150 ms per write and
+could exceed the chunk cadence, starving LOD and browser window requests.
+Exported NPZ files remain a separate user-facing format.
 
-## ChunkStore
+## MSAW transport
 
-```python
-def clamp_window(start: int, end: int, num_samples: int) -> Tuple[int, int]:
-    """Clamp query window to valid sample range."""
-```
+`waveform_store.py` converts a raw or LOD window into the binary `MSAW`
+protocol used by the frontend. `overview_payload` creates minimap data.
+`chunk_store.py` clamps raw windows and provides digital, analog, derived, and
+value-at accessors.
 
-Utility for waveform queries ensuring requested windows stay within capture bounds.
+## Live update lifecycle
 
-## Data Lifecycle
+1. CaptureManager appends/replaces the in-memory rolling window.
+2. `save_waveform` writes the current uncompressed NPZ and invalidates cached
+   LOD state.
+3. The session WebSocket announces `waveform_ready` with sample/chunk metadata.
+4. Browser window requests are served from current data while overview updates
+   are throttled.
+5. Metadata refresh happens outside the critical waveform drawing path.
 
-1. **Capture complete**: `CaptureManager` calls `store.create(session, waveform)`
-2. **Query**: API calls `waveform_store.load(session_id)` then `WaveformQuery` reads data
-3. **Update**: Session metadata (decoders, markers) saved via `session_store.update()`
-4. **Delete**: Entire session directory removed
-5. **Duplicate**: `session_store.duplicate()` copies with new ID, preserving all data and events
-
-## Dependencies
-
-| Module | File |
-|---|---|
-| `Session` model | `capture/session.py` |
-| `WaveformData` | `capture/sample_format.py` |
-| `LodPyramid` | `capture/lod.py` |
+See [Waveform Service](waveform-service.md), [Workers](../frontend/workers.md),
+and [Session Model](session-model.md).

@@ -1,196 +1,115 @@
 # Session Model
 
-**File:** `backend/app/capture/session.py` (233 lines)
+**File:** `backend/app/capture/session.py`
 
-## Purpose
+Every capture, import, and generated loopback is represented by a Pydantic
+`Session`. Metadata and analysis state are JSON; large waveform arrays are
+stored separately in `waveform.npz`.
 
-The core domain model. Every capture produces a `Session` — a Pydantic model that carries all metadata, channel configuration, trigger settings, decoder instances, measurements, markers, and export history. Raw waveform data lives in a separate NPZ file.
-
-## Models
-
-### `Session`
+## Session
 
 ```python
 class Session(BaseModel):
-    id: str                             # "ses_<uuid10>"
+    id: str                    # ses_<10 hex chars>
     name: str
-    created: datetime
+    created_at: float
+    modified_at: float
+    app_version: str
     device: DeviceMetadata
     settings: CaptureSettings
-    channels: List[ChannelInfo]         # digital + analog + derived
-    trigger: Optional[TriggerConfig]
-    decoders: List[DecoderInstance]     # decoder configurations
-    measurements: List[MeasurementInstance]
-    markers: List[Marker]
-    exports: List[ExportRecord]
-    num_samples: int
     sample_rate: float
-    tags: List[str]
+    divider: int | None
+    sample_clk_hz: float
+    num_samples: int
+    trigger_sample: int | None
+    channels: list[ChannelInfo]
+    decoders: list[DecoderInstance]
+    measurements: list[MeasurementInstance]
+    markers: list[Marker]
     notes: str
+    tags: list[str]
+    exports: list[ExportRecord]
+    diagnostics: list[dict]
+    generator: dict | None
 ```
 
-### `CaptureSettings`
+`summary()` returns the bounded list-page representation, including duration,
+channel/decoder/marker counts, notes preview, device name, and mock flag.
+
+## Capture settings
 
 ```python
 class CaptureSettings(BaseModel):
     sample_rate: float = 1_000_000.0
-    num_samples: int = 1024
-    mode: str = "digital"               # digital | mixed | analog_fast | analog_all | digital_narrow
-    trigger: Optional[TriggerConfig] = None
-    compression: ReadbackCompression = "raw"  # raw | delta_rle | rle
-    source: str = "digital"
-    acquisition: str = "single"         # single | live
-    mock_scenario: Optional[str] = None # mock device only
+    num_samples: int = 10_000
+    mode: Literal[
+        "single", "continuous", "rolling", "triggered", "digital_narrow",
+        "analog", "mixed", "analog_fast", "analog_all",
+        "analog_continuous", "analog_all_continuous", "mixed_continuous",
+    ] = "single"
+    analog_enabled: bool = False
+    enabled_digital: list[int] = list(range(16))
+    trigger: TriggerConfig
+    auto_rearm: bool = False
+    repeat_count: int = 1
+    auto_save: bool = False
+    readback_compression: Literal["raw", "delta_rle", "delta", "rle"] = "raw"
+    packed_mode: bool = False
+    mock_scenario: str | None = None
 ```
 
-### `ChannelInfo`
+The source/acquisition selector in the frontend maps its simpler choices onto
+these wire-facing modes. In particular, maximum-analog and mixed live capture
+use `analog_all_continuous` and `mixed_continuous`.
 
-```python
-class ChannelInfo(BaseModel):
-    id: str                             # 'd0'..'d15', 'a0'.., 'x<id>' derived, 'bus<id>'
-    label: str
-    type: ChannelType                   # digital | analog | derived | decoder | bus
-    index: int
-    enabled: bool = True
-    color: Optional[str] = None
-    voltage_range: Optional[float] = None
-    physical_pin: Optional[dict] = None  # board pin mapping
-    physical_available: Optional[bool] = None
-```
+## Channels
 
-### `TriggerConfig`
+`ChannelInfo` supports digital, analog, derived, decoder, and bus rows. It
+stores display state, analog calibration and threshold fields, bus members,
+derived-channel provenance, and physical board mapping (`board_label`,
+`fpga_pin`, `header`, `pin_index`, `adc_channel`, `physical_available`).
 
-```python
-class TriggerConfig(BaseModel):
-    type: Literal["rising_edge", "falling_edge", "any_edge", "pattern", "uart_byte", "immediate", "none"]
-    channel_mask: Optional[int] = None  # bitmask of enabled trigger channels
-    value: Optional[int] = None        # trigger pattern / UART byte
-    execution: Literal["hardware", "post_capture", "unavailable"] = "hardware"
-```
+Default digital IDs are `d0`-`d15`. Analog IDs follow their actual ADC mux
+channel (`a1`, `a2`, and so on), so IDs are not guaranteed to be dense.
+Derived and bus IDs are allocated by their services.
 
-### `DecoderInstance`
+## Trigger configuration
 
-```python
-class DecoderInstance(BaseModel):
-    id: str                             # "dec_<uuid10>"
-    decoder_type: str                   # "uart", "i2c", "spi", ...
-    label: str
-    channel_map: Dict[str, str]        # role → channel id
-    settings: Dict[str, Any]
-    enabled: bool = True
-    status: str = "idle"               # idle | running | complete | error
-    event_count: int = 0
-    warning_count: int = 0
-```
+`TriggerConfig` covers edge/level, pattern/bus, pulse/timeout/sequence,
+protocol byte/address/NACK, glitch, decoder-error, and generic FPGA pattern
+triggers. It carries channel references, value/mask, baud/clock framing,
+qualification windows, occurrence, holdoff/rearm, pre-trigger samples,
+position, and the resolved execution class (`hardware`, `post_capture`, or
+`unavailable`). See [Triggers](triggers.md).
 
-### `MeasurementInstance`
+## Analysis records
 
-```python
-class MeasurementInstance(BaseModel):
-    id: str                             # "mes_<uuid10>"
-    measurement_type: str               # "frequency", "duty_cycle", "pulse_width", ...
-    channel_id: str
-    label: str
-    settings: Dict[str, Any]
-    status: str = "idle"
-    result: Optional[Any] = None
-    error: Optional[str] = None
-```
-
-### `Marker`
-
-```python
-class Marker(BaseModel):
-    id: str                             # "mkr_<uuid10>"
-    sample: int
-    label: str
-    color: Optional[str] = None
-```
-
-### `DeviceMetadata`
-
-```python
-class DeviceMetadata(BaseModel):
-    driver: str = ""
-    device_name: str = ""
-    serial: str = ""
-    firmware: str = ""
-    sample_clk_hz: float = 0
-    capabilities: Optional[DeviceCapabilities] = None
-    extra: Dict[str, Any] = {}
-```
-
-## Channel Assignment
-
-| Type | IDs | Count |
-|---|---|---|
-| Digital | `d0`..`d15` | 16 |
-| Analog | `a0`..`a3` | 4 (physical) |
-| Derived | `x_<name>` | variable (software filters) |
-| Bus | `bus_<name>` | variable (grouped channels) |
-
-## Default Channel Configs
-
-- `default_digital_channels(count=16)` — creates digital channels with MAX1000 pin mapping
-- `default_analog_channels(count=4, adc_channels=None)` — creates analog channels from board config
-
-## Storage
-
-The `Session` model is serialised to `session.json` in the session directory. NPZ waveform data lives alongside it in `waveform.npz`.
-
-## Dependencies
-
-| Module | File |
+| Model | Important fields |
 |---|---|
-| `DeviceCapabilities` | `hardware/device_models.py` |
-| `max1000_board` | `hardware/max1000_board.py` |
+| `DecoderInstance` | Registry `decoder_id`, channel-role map, settings, region, status, event/warning counts, quality score |
+| `MeasurementInstance` | Measurement type, channels, scope/region, settings, result/error |
+| `Marker` | Sample, label/note, kind, optional channel/color |
+| `ExportRecord` | Format, filename, timestamp, request options |
 
----
+Decoder events are stored in per-instance files rather than embedded in
+`session.json`, keeping the session response bounded.
 
-# Session Stores
+## Device provenance
 
-**Files:** `backend/app/capture/session_store.py` (6.9 KB), `backend/app/capture/waveform_store.py` (6.9 KB), `backend/app/capture/chunk_store.py` (1.6 KB)
+`DeviceMetadata` records the driver, device/connection/port, firmware and
+protocol versions, system/sample clocks, mock flag, and extensible metadata.
+Generator-assisted captures additionally store generator provenance on the
+session.
 
-## SessionStore
+## Storage and mutation rules
 
-Manages session CRUD on the filesystem:
+- `session.json` is the mutable metadata/analysis record.
+- `waveform.npz` is the captured raw data and is not changed by decoders,
+  filters, measurements, or exports.
+- Live chunk appends use uncompressed NumPy persistence to avoid blocking the
+  rolling capture cadence.
+- `touch()` updates `modified_at` before saving metadata changes.
+- Session duplication assigns a new ID while preserving waveform and analysis
+  artifacts.
 
-```python
-class SessionStore:
-    def create(session: Session, waveform: WaveformData) -> Session
-    def get(session_id: str) -> Optional[Session]
-    def list_sessions() -> List[Session]
-    def update(session: Session) -> bool
-    def delete(session_id: str) -> bool
-    def duplicate(session_id: str) -> Optional[Session]
-```
-
-- Sessions stored in `data/sessions/<id>/`
-- `session.json` contains the Pydantic model
-- `waveform.npz` contains raw sample data
-- `decoders/<decoder_id>.json` contains decoder events
-
-## WaveformStore
-
-Manages waveform persistence and the LOD pyramid:
-
-```python
-class WaveformStore:
-    def save(session_id: str, wf: WaveformData, lod: LodPyramid = None)
-    def load(session_id: str) -> Optional[WaveformData]
-    def load_lod(session_id: str) -> Optional[LodPyramid]
-    def delete(session_id: str)
-```
-
-- Waveform saved as compressed NPZ with `digital` and `analog` arrays
-- LOD pyramid saved alongside for fast zoomed-out rendering
-
-## ChunkStore
-
-Window/clamping utility for waveform queries:
-
-```python
-def clamp_window(start: int, end: int, num_samples: int) -> (int, int)
-```
-
-Ensures query windows stay within the capture bounds.
+See [Session Stores](session-stores.md) for filesystem layout and lifecycle.

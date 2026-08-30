@@ -126,12 +126,10 @@ one (near-zero samples reported despite a correctly armed new capture); see
 [capture-engine.md](capture-engine.md#continuoussingle-shot-packed-transition-race-fixed-2026-07-10)
 for the mechanism and fix (2026-07-10).
 
-**Board validation (2026-07-23, SOF `0x00515DB0`):** the programmed seed-44 image produced
-500,000 packed words, four balanced analog channels (1,828 samples each),
-and digital RLE slices with the expected PWM dwell behavior. Separate live
-readback characterization measured approximately **1.00 MS/s raw** and
-**0.50 MS/s lossless `delta_rle`** on the current USB path. These live figures
-describe transport/readback capacity; the finite packed/MSO capture check
-validates the mixed-signal producer and decoder independently. Compression
-remains unavailable in `MODE_MIXED`/`MODE_ANALOG_*` (`OLS_Interface.vhd`:
-`comp_enable_i` is hardware-gated off whenever `analog_enable_i='1'`).
+**Current board validation (2026-08-27, SOF `0x0050ADC8`):** the seed-10 image
+passed maximum-analog single/live at four physical lanes and mixed-scan
+single/live in the 37-case browser matrix, plus the packed/MSO checks in the
+383-check host suite. Historical live characterization measured approximately
+**1.00 MS/s raw** and **0.50 MS/s lossless `delta_rle`** on this USB path;
+those are transport/source-dependent figures, not fixed FPGA limits.
+Compression remains unavailable in `MODE_MIXED`/`MODE_ANALOG_*`.

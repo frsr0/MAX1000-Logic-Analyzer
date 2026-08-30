@@ -13,7 +13,7 @@ for the physical and register contract.
 |---|---|---|
 | React | ^18.3.1 | UI framework |
 | Zustand | ^4.5.4 | State management (app-level only) |
-| Vite | ^5.4.0 | Build tool + dev server |
+| Vite | ^8.1.5 | Build tool + dev server |
 | TypeScript | ^5.5.3 | Type safety |
 | Playwright | ^1.61.1 | E2E testing |
 | Canvas API | (native) | Waveform rendering |
@@ -98,5 +98,9 @@ for the physical and register contract.
 - Waveform sample data (large TypedArrays) lives **outside React state** in a plain class (`WaveformView`) that emits change events — React subscribes only for label/metadata changes
 - Canvas-based waveform rendering with transition-density shading when zoomed out
 - Captures never enter React state as large objects; the API serves binary MSAW payloads parsed into zero-copy TypedArray views
-- ReconnectingSocket handles backoff reconnection for all 4 WebSocket topics
+- ReconnectingSocket handles backoff reconnection for three app-wide topics
+  plus active-session decoder and waveform topics
+- Waveform Worker requests carry correlation IDs; live viewport fetches are
+  coalesced and overview refreshes are throttled so chunk updates cannot starve
+  rendering
 - Mock mode supports full E2E testing without hardware via Playwright's `PLAYWRIGHT_USE_MOCK` env var

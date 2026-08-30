@@ -26,6 +26,11 @@ The base two outputs are selected by `REG_GEN_PINS`:
 | `0x32` | 4:0 | TX/data/MOSI/SDA pool pin |
 | `0x32` | 12:8 | SCL/clock/SCLK pool pin |
 
+`REG_GEN_BAUD` (`0x31`) is 24 bits in the current image. Metadata response
+byte 9 bit 0 advertises that width; the host falls back to 16 bits for older
+images. The on-wire symbol rate is `sys_clk / (divider + 1.25)` because of the
+Bit Engine's divider and byte-boundary pipeline timing.
+
 ## Auxiliary routes
 
 `REG_GEN_AUX_PINS` (`0x35`) adds optional routes without changing the two
@@ -104,6 +109,20 @@ encoders. SWD capture is useful with an electrically connected target; a
 disconnected target cannot provide response bits. Bit Banger exposes the raw
 bounded symbol list and does not add open-drain hardware—open-drain behavior
 must be represented by host symbols and external wiring.
+
+## Live generator mode
+
+`POST /api/generator/send` accepts `live: true` for UART, RS-485, and Bit
+Banger. The bounded FIFO pattern repeats in FPGA hardware. Rolling captures
+reset the generator-facing capture state at each chunk, so the driver records
+the live configuration and re-kicks the pattern after every reset. This keeps
+the output visible throughout the live session instead of placing a one-shot
+burst in an inter-chunk gap. `POST /api/generator/stop` clears the repeat.
+
+Previews report exact symbol rate, periodic output frequency, divider width,
+and whether a request is below the representable floor of the connected image.
+The `square` preset toggles once per symbol and therefore produces
+`actual_symbol_rate / 2` on the data output.
 
 ## API example
 

@@ -43,7 +43,7 @@ Client (browser / curl)
     ▼
 ┌──────────────────────────────────────┐
 │  host/driver/ols_spi_device.py       │
-│  (UNCHANGED — reused as-is)          │
+│  (shared and actively maintained)    │
 │  → wire_format.py (pure functions)   │
 │  → spi_protocol.py (packet protocol) │
 │  → ols_spi.py (FTDI MPSSE transport) │
@@ -57,12 +57,12 @@ Client (browser / curl)
 | `app/hardware/` | `base.py`, `existing_host_adapter.py`, `mock_device.py`, `strategies/`, `max1000_board.py`, `device_models.py`, `mock_signals.py` | Hardware abstraction, real FPGA adapter, mock device, capture strategy classes, board pin maps |
 | `app/capture/` | `capture_manager.py`, `session.py`, `session_store.py`, `waveform_store.py`, `waveform_query.py`, `lod.py`, `downsample.py`, `sample_format.py`, `chunk_store.py` | Capture orchestration, session data model, persistent storage, waveform query with LOD, binary encoding |
 | `app/api/` | `status.py`, `devices.py`, `capture.py`, `sessions.py`, `waveform.py`, `decoders.py`, `measurements.py`, `exports.py`, `generator.py`, `mil.py`, `diagnostics.py` | REST endpoints + WebSocket routers |
-| `app/decoders/` | `base.py`, `registry.py`, `service.py`, `uart.py`, `i2c.py`, `spi.py`, `parallel.py`, `onewire.py`, `modbus.py`, `rs485.py`, `pwm.py` | Plugin decoder framework + protocol implementations |
+| `app/decoders/` | Registry/service plus UART, I2C, SPI, RS-485, SWD, Modbus, CAN, LIN, I2S, JTAG, HDLC, SMBus, and other protocol modules | Stackable decoder framework and implementations |
 | `app/measurements/` | `base.py`, `digital.py`, `analogue.py`, `bus.py` | Measurement types (frequency, duty, pulse width, edge count, min/max/mean) |
 | `app/triggers/` | `model.py`, `hardware_support.py`, `software_trigger.py` | Trigger model, hardware-vs-post-capture classification, software search |
-| `app/generator/` | `controller.py`, `model.py` | Generator configuration and loopback self-test |
+| `app/generator/` | `controller.py`, `model.py`, `bitbang.py`, `protocols.py`, `sweep.py` | Generator configuration, exact preview timing, scripts/presets, sweeps, loopback |
 | `app/mil/` | `service.py`, `model.py` | Machine-in-loop automated test subsystem |
-| `app/exports/` | `csv_export.py`, `json_export.py`, `vcd_export.py`, `npz_export.py`, `report_export.py` | Export formats |
+| `app/exports/` | CSV, JSON, VCD/PulseView, NPZ, HTML/PDF reports, and CSV/VCD importers | Interchange and reports |
 | `app/websocket/` | `manager.py`, `status_ws.py` | Topic-based WebSocket broadcast |
 | `app/diagnostics/` | `logger.py`, `debug_bundle.py`, `sanity_checks.py` | Logging, debug bundle, session sanity checks |
 | `app/waveform/` | `digital.py`, `analogue.py`, `derived.py`, `bus.py` | Waveform data processing for derived channels |
