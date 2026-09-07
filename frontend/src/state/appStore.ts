@@ -64,6 +64,7 @@ interface AppState {
 }
 
 let toastSeq = 1;
+let sessionRequest = 0;
 
 export const useApp = create<AppState>((set, getState) => ({
   page: 'capture',
@@ -98,10 +99,13 @@ export const useApp = create<AppState>((set, getState) => ({
 
   activeSession: null,
   openSession: async (id) => {
+    const request = ++sessionRequest;
     const s = await api.session(id);
+    if (request !== sessionRequest) return;
     set({ activeSession: s });
     await waveformView.load(s.id, s.num_samples, s.sample_rate,
       s.trigger_sample ?? null, s.channels);
+    if (request !== sessionRequest) return;
     waveformView.markers = s.markers;
     const a = s.markers.find((m) => m.kind === 'cursor_a');
     const b = s.markers.find((m) => m.kind === 'cursor_b');
@@ -112,8 +116,10 @@ export const useApp = create<AppState>((set, getState) => ({
   refreshActiveSession: async () => {
     const cur = getState().activeSession;
     if (!cur) return;
+    const request = sessionRequest;
     try {
       const s = await api.session(cur.id);
+      if (request !== sessionRequest) return;
       set({ activeSession: s });
     } catch { /* deleted? */ }
   },

@@ -28,8 +28,9 @@ export function TriggerPanel() {
   const needsOccurrence = ['uart_byte', 'i2c_address', 'i2c_nack', 'spi_byte', 'decoder_error'].includes(trig.type);
   const needsSequence = trig.type === 'sequence';
   const needsTimingQualifier = !['none', 'sequence', 'timeout'].includes(trig.type);
+  const occurrence = Math.max(1, trig.occurrence ?? 1);
   const previewSteps = trig.type === 'sequence'
-    ? (trig.sequence_steps ?? []).map((step: any) => step.type ?? 'event')
+    ? (trig.sequence_steps ?? []).map((step) => step.type)
     : trig.type === 'pattern'
       ? String(trig.pattern ?? '').split('').map((bit) => bit === 'x' ? "don't care" : bit === '1' ? 'high' : 'low')
       : [trig.type.replace(/_/g, ' ')];
@@ -219,10 +220,10 @@ export function TriggerPanel() {
       )}
       {activeSession && exec === 'post_capture' && (
         <div className="button-row">
-          <button onClick={() => searchExisting(Math.max(1, (trig.occurrence ?? 1) - 1))}
-            disabled={(trig.occurrence ?? 1) <= 1}>Previous match</button>
-          <button onClick={() => searchExisting(trig.occurrence ?? 1)}>Search existing capture</button>
-          <button onClick={() => searchExisting((trig.occurrence ?? 1) + 1)}>Next match</button>
+          <button onClick={() => searchExisting(Math.max(1, occurrence - 1))}
+            disabled={occurrence <= 1}>Previous match</button>
+          <button onClick={() => searchExisting(occurrence)}>Search existing capture</button>
+          <button onClick={() => searchExisting(occurrence + 1)}>Next match</button>
         </div>
       )}
       {capabilities?.supports_pre_trigger && trig.type !== 'none' && (

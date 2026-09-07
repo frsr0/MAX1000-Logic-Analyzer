@@ -30,14 +30,18 @@ flowchart LR
 
 | Field | Current evidence |
 |---|---|
-| Source baseline | `master`, through `1598b9b` plus the documented wiki update |
+| Source baseline | 2026-09-07 working tree; current coverage/HDL repair set |
 | Build | Quartus Prime Lite 25.1, full mixed-signal profile, fitter seed 10 |
-| Image | Programmed to CFM on 2026-08-27; SOF checksum `0x0050ADC8` |
-| Timing | Slow-85C setup: fast +0.083 ns, SDRAM +0.111 ns, system +0.410 ns; all setup/hold checks positive |
+| Image | Programmed to volatile SRAM on 2026-09-07; SOF checksum `0x00504799`; persistent CFM unchanged |
+| Timing | Slow-85C setup: fast +0.253 ns, SDRAM +0.178 ns, system +0.278 ns; all setup/hold/recovery/removal/min-pulse checks positive |
 | Hardware smoke | 10/10 |
-| Full hardware suite | 383/383 |
-| Browser hardware matrix | 37/37, manifest timestamp 2026-08-27 |
-| Rate sweep | 1,200-115,200 baud within +0.79% |
+| Changed-path hardware suite | 117/117, 0 failed, 0 skipped; strict codec/rate rerun 26/26 |
+| Full hardware suite | 403/403, 0 failed, 0 skipped; includes both strict 60-second stress runs |
+| Host coverage | 983 tests; 8,241 statements and 2,482 branches at 100%, zero partial branches |
+| Backend coverage | 540 tests; 8,800 statements and 2,624 branches at 100%, zero partial branches |
+| Frontend coverage | 275 tests; 3,379 statements, 2,470 branches, 941 functions, and 2,868 lines at 100% |
+| Browser hardware matrix | 5/5 feature tests, including 37/37 advertised mode/rate combinations; broader hardware-aligned suite 33/33 |
+| Rate sweep | Historical persistent image: 1,200-115,200 baud within +0.79% |
 
 The complete matrix manifest and per-case session IDs are in
 [`hardware-validated-matrix.json`](../../frontend/test-results/screenshots/hardware-validated-matrix.json).
@@ -52,9 +56,9 @@ The fit, STA, and assembler reports are in `hdl/proj/output_files/`.
 | Exact generator rate and corrected square preset | generator preview/status and host divider model | Protocol/unit tests and on-wire rate sweep | **SW + HW** |
 | 24-bit `REG_GEN_BAUD` and metadata feature byte | `Bit_Engine`, `OLS_Interface`, core/top wiring, host detection | `tb_bit_engine_div24`, Quartus seed sweep, rate sweep | **SIM + BUILD + HW** |
 | SDRAM init comparator register | `SDRAM_Controller_Custom.vhd` | Post-fit STA, full hardware regression | **BUILD + HW** |
-| Auto-discovered analogue jumper fixture | `host/app/hw_validation.py` | Full 383-check suite; clean skip without fixture | **HW** |
+| Auto-discovered analogue jumper fixture | `host/app/hw_validation.py` | Current 403-check suite; clean skip without fixture | **HW** |
 | Bounded final SPI plateau decode | `host/app/gui_decoders.py` | Host tests and full connected-board suite | **SW + HW** |
-| Expanded regression/coverage gates | CI workflows, backend/host/frontend tests, HDL runner | Backend 88% and host 50% branch thresholds; unit/E2E/HDL jobs | **SW + SIM** |
+| Expanded regression/coverage gates | CI workflows, backend/host/frontend tests, HDL runner | Backend, host, and full production frontend scopes at literal 100%; 57/57 HDL benches with no exclusions | **SW + SIM** |
 
 ## Historical image records
 
@@ -64,7 +68,9 @@ The fit, STA, and assembler reports are in `hdl/proj/output_files/`.
 | 2026-07-23 | seed 44, SOF `0x00515DB0` | 358/358 | Historical |
 | 2026-07-27 | repaired seed 30, SOF `0x0050CF93` | 391/391 after focused corrections | Historical |
 | 2026-08-07 | pin-map/pull-up image, SOF `0x0051801E` | smoke 10/10 | Historical |
-| 2026-08-27 | seed 10 wide-divider, SOF `0x0050ADC8` | 383/383 + 37/37 | Current |
+| 2026-08-27 | seed 10 wide-divider, SOF `0x0050ADC8` | 383/383 + 37/37 | Persistent historical baseline |
+| 2026-09-04 | repaired seed 10, SOF `0x00504799` | full suite 396/396; corrected 60-second stress 29/29; smoke 10/10; changed paths 117/117; strict codec/rate 26/26 | Historical volatile baseline |
+| 2026-09-07 | seed 10, SOF `0x00504799` | full suite 403/403; 57/57 GHDL; browser hardware 5/5 and 33/33 | Current volatile image |
 
 Historical results remain useful regression evidence, but they do not prove a
 later RTL image. The current claim always follows the newest programmed image
@@ -74,12 +80,11 @@ that has both a clean build and a complete relevant board run.
 
 | Gate | Command/workflow | Contract |
 |---|---|---|
-| Backend | `python -m pytest backend/app/tests` | Branch coverage threshold 88% |
-| Host | `python -m pytest host/tests host/driver/tests` | Branch coverage threshold 50% |
-| Frontend unit | `npm run test:unit` | Binary parser, WebSocket, and waveform worker/client coverage |
+| Backend | `python -m pytest backend/app/tests` | 100% statement and branch coverage |
+| Host | `python -m pytest host/tests host/driver/tests` | 100% statement and branch coverage |
+| Frontend unit | `npm run test:unit` | 100% statement, branch, function, and line coverage for all production TS/TSX |
 | Frontend E2E | `PLAYWRIGHT_USE_MOCK=1 npm run test:e2e -- hardware.spec.ts` | Browser workflows without hardware |
-| HDL gate | `bash hdl/tb/run_all_tbs.sh` | Every non-excluded `tb_*.vhd` must terminate explicitly and pass |
-| HDL expected failures | `SUITE=known-failures bash hdl/tb/run_all_tbs.sh` | XFAIL remains visible; unexpected pass fails until reclassified |
+| HDL gate | `bash hdl/tb/run_all_tbs.sh` | All 57 `tb_*.vhd` benches must terminate explicitly and pass; no exclusions/XFAILs |
 | Hardware matrix | `.github/workflows/hardware-matrix.yml` | Self-hosted `max1000` runner; board absence is a failure |
 
 ## Audit rules
@@ -90,8 +95,8 @@ that has both a clean build and a complete relevant board run.
   change. Seed 10 is not evidence for modified inputs.
 - Keep missing external fixtures explicit. A decoder test does not prove CAN,
   LIN, SWD, JTAG, or MIL electrical interoperability.
-- Do not merge known-failing HDL benches into a nominal pass count. Repair and
-  move them back into the maintained gate when they explicitly terminate.
+- Do not add silent HDL exclusions or expected failures. A new `tb_*.vhd`
+  bench must explicitly terminate and pass in the required gate.
 - Update [Current Status](current-status.md), the
   [Feature Matrix](feature-matrix.md), and [Hardware Validation](hardware-validation.md)
   whenever the current image or board baseline changes.

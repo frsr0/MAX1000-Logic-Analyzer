@@ -711,6 +711,9 @@ class ExistingHostAdapter(HardwareDevice):
                 self._dev.send_raw_symbols(
                     symbols, symbol_rate=max(1, int(cfg.baud)),
                     tx_pin=int(cfg.tx_pin), scl_pin=int(cfg.scl_pin))
+            else:
+                raise HardwareError(
+                    f"Generator protocol '{cfg.protocol}' is not supported")
 
     def _start_live_generator(self, dev, cfg: GeneratorConfig) -> None:
         """Arm a repeating generator pattern that survives capture resets.

@@ -103,8 +103,6 @@ class CanDecoder(Decoder):
             if parsed is None:
                 continue
             fields, end_bit = parsed
-            if end_bit <= 0 or raw_end >= len(positions):
-                continue
             crc_ok = fields["crc_received"] == fields["crc_expected"]
             ack = fields["ack"] == 0
             valid = stuffing_ok and crc_ok and ack
@@ -136,8 +134,6 @@ class CanDecoder(Decoder):
         else:
             extended = False
             rtr, dlc_at = srr_or_rtr, 15
-        if len(bits) <= dlc_at + 3:
-            return None
         dlc = int("".join(map(str, bits[dlc_at:dlc_at + 4])), 2)
         data_len = min(dlc, 8)
         data_at = dlc_at + 4

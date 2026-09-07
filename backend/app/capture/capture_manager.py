@@ -412,8 +412,8 @@ class CaptureManager:
             new = result.analog.get(key)
             old = current.analog.get(key) if current is not None else None
             if new is None:
-                if old is not None:
-                    wf.analog[key] = old[-max_samples:]
+                # ``key`` came from ``current.analog`` when absent in result.
+                wf.analog[key] = old[-max_samples:]
             elif old is None:
                 wf.analog[key] = new[-max_samples:]
             else:

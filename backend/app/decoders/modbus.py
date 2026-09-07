@@ -62,13 +62,14 @@ class ModbusDecoder(Decoder):
             ctx.check_cancelled()
             ctx.report(fi / max(1, len(frames)))
             if len(frame) < 4:
-                if frame:
-                    result.events.append(ctx.event(
-                        "modbus_runt",
-                        frame[0]["start_sample"] - ctx.start,
-                        frame[-1]["end_sample"] - ctx.start,
-                        f"runt frame ({len(frame)} bytes)",
-                        fields={"length": len(frame)}, severity="warning"))
+                # ``frames`` is populated only from non-empty ``bytes_ev``;
+                # split frames therefore always contain at least one byte.
+                result.events.append(ctx.event(
+                    "modbus_runt",
+                    frame[0]["start_sample"] - ctx.start,
+                    frame[-1]["end_sample"] - ctx.start,
+                    f"runt frame ({len(frame)} bytes)",
+                    fields={"length": len(frame)}, severity="warning"))
                 continue
             raw = bytes(e["fields"]["byte"] for e in frame)
             addr, func = raw[0], raw[1]

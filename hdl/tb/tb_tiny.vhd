@@ -14,6 +14,8 @@ architecture sim of tb_tiny is
 begin
   gen_clk(clk, 5 ns);
   process begin
-    report "TINY_RUNNING"; wait; 
+    report "TINY_RUNNING";
+    std.env.finish;
+    wait;
   end process;
 end sim;

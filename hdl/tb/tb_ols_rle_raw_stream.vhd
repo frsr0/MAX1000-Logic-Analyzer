@@ -360,7 +360,10 @@ begin
       run_value := rx_stream(data_pos + 3) & rx_stream(data_pos + 2);
       check(run_count > 0, "zero-count RLE word at byte " & integer'image(data_pos));
       decoded := decoded + run_count;
-      check(decoded <= SAMPLE_COUNT, "decoded past requested sample count");
+      check(decoded <= SAMPLE_COUNT,
+            "decoded past requested sample count: run=" & integer'image(run_count) &
+            " total=" & integer'image(decoded) &
+            " requested=" & integer'image(SAMPLE_COUNT));
       check(run_value = expected_value,
             "unexpected run value " & to_hstring(run_value) &
             " at pair " & integer'image(pair_count));

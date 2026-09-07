@@ -89,8 +89,6 @@ class InfraredDecoder(Decoder):
         if len(runs) < 3:
             return result
         half = float(np.median(np.diff([r[0] for r in runs])))
-        if half <= 0:
-            return result
         # Manchester transition intervals give an estimate of the half-bit;
         # search both polarities and retain a stream with legal transitions.
         for phase in (half / 2, half * 1.5):

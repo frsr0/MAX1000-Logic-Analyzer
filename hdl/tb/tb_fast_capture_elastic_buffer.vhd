@@ -84,6 +84,7 @@ begin
 
     assert out_valid = '0' report "buffer not empty after final pop" severity failure;
     report "=== TB PASSED: fast_capture_elastic_buffer invariants ===" severity note;
+    std.env.finish;
     wait;
   end process;
 end sim;

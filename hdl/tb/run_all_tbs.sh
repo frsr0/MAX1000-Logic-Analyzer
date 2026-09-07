@@ -29,14 +29,13 @@
 #                         in simulation). RTL files are analyzed in dependency
 #                         order (packages first, then leaves, then dependents).
 #
-# A TB PASSes when it analyzes, elaborates and runs, the run exits 0, and the
-# log contains no "assertion failure" (GHDL's severity-failure message - the
-# sim_pkg check() failure signal). The suite exits non-zero if any TB fails or
-# the shared support/RTL set fails to analyze.
+# A TB PASSes only when it analyzes, elaborates and self-terminates cleanly.
+# GHDL stops on severity error/failure, and reaching --stop-time is a failure:
+# every gating TB must call std.env.finish/stop after its final assertion.
 #
 # Every run is bounded by --stop-time so a TB with a free-running clock (or a
-# stalled DUT) can never hang the suite; TBs that self-terminate (std.env.finish
-# / bare "wait;") finish earlier. tb_tiny.vhd is included as a print-only
+# stalled DUT) can never hang the suite; reaching that bound does not count as
+# completion. tb_tiny.vhd is included as a print-only
 # toolchain smoke TB: it has no assertions but verifies analyze/elaborate/run
 # end to end and always exits 0.
 #
@@ -45,6 +44,7 @@
 #   STOP_TIME=20ms bash hdl/tb/run_all_tbs.sh   # override the 10 ms bound
 #   GHDL=/opt/ghdl/bin/ghdl bash hdl/tb/run_all_tbs.sh
 #   FILTER=sdram bash hdl/tb/run_all_tbs.sh     # run only TBs whose name contains "sdram"
+#   SUITE=known-failures bash hdl/tb/run_all_tbs.sh  # audit the quarantine (currently empty)
 
 set -u   # no -e: per-TB failures are collected and reported
 
@@ -142,105 +142,57 @@ done
 # name contains the substring. The shared support/RTL set is still analyzed
 # once, so per-TB iteration stays fast without recompiling the DUT.
 FILTER="${FILTER:-}"
+SUITE="${SUITE:-gate}"
 
-# ---------------------------------------------------------------------------
-# Excluded TBs (documented dispositions; see each reason).
-# ---------------------------------------------------------------------------
-# Signal_Gen protocol TBs: Signal_Gen is NOT instantiated anywhere in the
-# shipped RTL hierarchy (OLS_SDRAM_Top instantiates Bit_Engine as the
-# generator; Quartus reports "entity Signal_Gen does not exist in design").
-# Moreover its UART/SPI read pipeline is provably non-functional in sim: the
-# playback read request pulses read_valid_q ~2 cycles after Start, but the
-# UART_FETCH/SPI_FETCH states only sample read_valid_q at the first baud tick
-# (Baud_Div cycles later), so the engine never fetches and Tx_Out/Scl_Out
-# never toggle (VCD-verified). tb_gen_uart_decode "passes" only because the
-# 10 ms stop-time masks its hang. tb_gen_start crashes GHDL with a NULL
-# access (external-name probes into OLS_Interface internals). These TBs test
-# orphaned RTL, so they are excluded from the gate rather than adapted.
-# EXCLUDED: Signal_Gen UART/SPI engines never start (orphaned DUT; broken
-# read_valid/baud-tick handshake) — tb_signal_gen tb_gen_spi_decode
-# tb_gen_uart_decode tb_gen_uart_repeat_decode tb_gen_start tb_gen_full
-# tb_gen_start_sim
-#
-# tb_sdram_controller: the legacy Avalon single-write path of
-# SDRAM_Controller_Custom registers the WRITE command one cycle AFTER it
-# drives DQ (s_cas_r <= s_cas reads the pre-update value), so the pin model
-# samples the WRITE edge with DQ already released and stores Z (VCD: DQ=DEAD
-# at t0, WRITE cmd at t0+1 with DQ=Z). The stream-write path used by real
-# captures holds the command across cycles and is unaffected (covered by the
-# stream/core TBs). This is a genuine RTL defect in a legacy path, so the TB
-# is excluded rather than weakened.
-# EXCLUDED: SDRAM single-write path data/command skew — tb_sdram_controller
-#
-# GHDL 6.0.0 crashes with "NULL access dereferenced" (exit 255, empty log)
-# on ANY VHDL-2008 external name (`<< signal ... >>`) — verified with a
-# minimal repro (entity + one external-name probe → crash at elaboration).
-# The following TBs use external names as load-bearing probes into RTL
-# internals (tb_ols_interface/tb_ols_capture_contract check fast_mode_i /
-# done_latched / capture_seq; tb_fla_drop/tb_flush_path/tb_fifo_bridge/
-# tb_packed_continuous_renew/tb_top probe stream pump state; tb_pump_tput
-# reads SDRAM model counters). Their checks cannot be expressed through the
-# public ports, so they are excluded with this toolchain limitation, not
-# because of a DUT or TB defect.
-# EXCLUDED: GHDL 6.0.0 external-name NULL-access crash — tb_ols_interface
-# tb_ols_capture_contract tb_fla_drop tb_flush_path tb_fifo_bridge
-# tb_packed_continuous_renew tb_top tb_pump_tput
-#
-# SDRAM readback data-integrity TBs (tb_capture_path, tb_core_stream,
-# tb_raw_stream_teardown): with the lpm_divide harness fixed these elaborate
-# and run, then fail on readback-data assertions (e.g. tb_core_stream block
-# read decodes a clean +1 ramp 0x7A19,0x7A1A,0x7A1B then corrupts at sample
-# 55; tb_capture_path reads CH0 lo/hi halves unequal at addr 5; teardown
-# reads metavalue XXXX at sample 27). The RTL's own commit c1647d4 documents
-# exactly this: "a Sim=false run does not reproduce the hardware readout
-# pipeline faithfully because the sim collapses CLK, the FLA readout clock
-# and sdram_clk into one phase... the block-boundary fix must be developed
-# and verified on hardware (SignalTap), not in this sim." These are genuine
-# RTL/sim-fidelity limitations, so the TBs are excluded with evidence rather
-# than weakened. (tb_stream_readout, tb_batched_reads and the FLA-direct
-# readout TBs that exercise the same pipeline through public ports still
-# pass.)
-# EXCLUDED: SDRAM readback data-integrity (sim phase-collapse limitation) —
-# tb_capture_path tb_core_stream tb_raw_stream_teardown
-#
-# tb_analog_preamble: the OLS_SDRAM_Top mixed-mode (MODE_MIXED) analog
-# capture never completes in simulation, so there is no preamble pattern to
-# assert. Evidence (container run, GHDL 6.0.0, FILTER=analog_preamble,
-# STOP_TIME=25ms): CMD_GET_STATUS never returns a response — "capture status
-# = FF (deadline=201)" after the full 201-iteration poll (~22 ms) — with both
-# the TB's original 100 ns SPI half-period and tb_probe_run's proven 50 ns;
-# CMD_READ_CAPTURE returns "block0 payload bytes = 0"; and the ADC/analog
-# path is metavalue-polluted from t=41.6 us (NUMERIC_STD.TO_INTEGER metavalue
-# warnings every 12 MHz cycle, ~120k per 10 ms run), contradicting the TB
-# header's premise that the sim ADC model returns a constant 0xAAA. The TB
-# "passes" only because the 10 ms --stop-time masks the never-completing
-# scenario (same disposition as the Signal_Gen TBs above); the preamble
-# offset/pattern the TB was written to observe is not producible by the DUT
-# in sim.
-# EXCLUDED: mixed-mode analog capture never completes in sim (metavalue ADC
-# path; no status response, no readback data) — tb_analog_preamble
-EXCLUDED="tb_signal_gen tb_gen_spi_decode tb_gen_uart_decode tb_gen_uart_repeat_decode tb_gen_start tb_gen_full tb_gen_start_sim tb_sdram_controller tb_ols_interface tb_ols_capture_contract tb_fla_drop tb_flush_path tb_fifo_bridge tb_packed_continuous_renew tb_top tb_pump_tput tb_capture_path tb_core_stream tb_raw_stream_teardown tb_analog_preamble"
+# Every tb_*.vhd file is maintained and runs in the normal gate. The exclusion
+# variables remain explicit and empty so the summary proves that no bench is
+# silently quarantined and an accidental reintroduction is visible in review.
+ORPHANED_TBS=""
+TOOLCHAIN_BLOCKED_TBS=""
+KNOWN_FAILING_TBS=""
+EXCLUDED="$ORPHANED_TBS $TOOLCHAIN_BLOCKED_TBS $KNOWN_FAILING_TBS"
 
 TBS=()
-for f in "$TB_DIR"/tb_*.vhd; do
-  [ -e "$f" ] || continue
-  tb="$(basename "$f" .vhd)"
-  if [ -n "$FILTER" ] && [[ "$tb" != *"$FILTER"* ]]; then
-    continue
-  fi
-  case " $EXCLUDED " in
-    *" $tb "*) continue ;;
-  esac
-  TBS+=("$tb")
-done
+case "$SUITE" in
+  gate)
+    for f in "$TB_DIR"/tb_*.vhd; do
+      [ -e "$f" ] || continue
+      tb="$(basename "$f" .vhd)"
+      if [ -n "$FILTER" ] && [[ "$tb" != *"$FILTER"* ]]; then
+        continue
+      fi
+      case " $EXCLUDED " in
+        *" $tb "*) continue ;;
+      esac
+      TBS+=("$tb")
+    done
+    ;;
+  known-failures)
+    for tb in $KNOWN_FAILING_TBS; do
+      if [ -n "$FILTER" ] && [[ "$tb" != *"$FILTER"* ]]; then
+        continue
+      fi
+      TBS+=("$tb")
+    done
+    ;;
+  *)
+    echo "ERROR: unknown SUITE=$SUITE (expected gate or known-failures)" >&2
+    exit 1
+    ;;
+esac
 
 if [ "${#TBS[@]}" -eq 0 ]; then
+  if [ "$SUITE" = "known-failures" ] && [ -z "$FILTER" ]; then
+    echo "No documented HDL failures: 0 XFAIL, 0 XPASS."
+    exit 0
+  fi
   echo "ERROR: no tb_*.vhd testbenches found in $TB_DIR" >&2
   exit 1
 fi
 
 passed=0
 failed=0
+xfailed=0
 failed_list=()
 
 for tb in "${TBS[@]}"; do
@@ -248,42 +200,48 @@ for tb in "${TBS[@]}"; do
 
   # Per-TB stop-time overrides (default STOP_TIME covers the rest).
   case "$tb" in
-    tb_top) stop_time="30ms" ;;   # 16-pin UART loopback, ~1.3 ms per pin
-    *)      stop_time="$STOP_TIME" ;;
+    tb_continuous_wedge)  stop_time="30ms" ;;  # four complete full-block stream scenarios
+    tb_gen_loopback)      stop_time="30ms" ;;  # real-pin SDRAM model, two capture scenarios
+    tb_ols_rle_raw_stream) stop_time="30ms" ;; # complete 16K-sample compressed stream
+    tb_top)               stop_time="30ms" ;;  # 16-pin UART loopback, ~1.3 ms per pin
+    *)                    stop_time="$STOP_TIME" ;;
   esac
 
+  reason=""
   if ! "$GHDL_BIN" -a $FLAGS "$TB_DIR/$tb.vhd" >"$log" 2>&1; then
-    echo "FAIL  $tb (analysis)"
-    failed=$((failed + 1)); failed_list+=("$tb")
-    continue
-  fi
-
-  if ! "$GHDL_BIN" -e $FLAGS "$tb" >>"$log" 2>&1; then
-    echo "FAIL  $tb (elaboration)"
-    failed=$((failed + 1)); failed_list+=("$tb")
-    continue
-  fi
-
-  if command -v timeout >/dev/null 2>&1; then
-    run_cmd=(timeout "$RUN_TIMEOUT" "$GHDL_BIN" -r $FLAGS "$tb" --stop-time="$stop_time")
+    reason="analysis"
+  elif ! "$GHDL_BIN" -e $FLAGS "$tb" >>"$log" 2>&1; then
+    reason="elaboration"
   else
-    run_cmd=("$GHDL_BIN" -r $FLAGS "$tb" --stop-time="$stop_time")
+    if command -v timeout >/dev/null 2>&1; then
+      run_cmd=(timeout "$RUN_TIMEOUT" "$GHDL_BIN" -r $FLAGS "$tb" --assert-level=error --stop-time="$stop_time")
+    else
+      run_cmd=("$GHDL_BIN" -r $FLAGS "$tb" --assert-level=error --stop-time="$stop_time")
+    fi
+    if ! "${run_cmd[@]}" >>"$log" 2>&1; then
+      reason="simulation error"
+    elif grep -qi "simulation stopped by --stop-time" "$log"; then
+      reason="reached stop-time without explicit completion"
+    elif grep -Eqi "assertion (error|failure)" "$log"; then
+      reason="error/failure assertion in log"
+    fi
   fi
 
-  if ! "${run_cmd[@]}" >>"$log" 2>&1; then
-    echo "FAIL  $tb (simulation exit != 0)"
+  if [ "$SUITE" = "known-failures" ]; then
+    if [ -n "$reason" ]; then
+      echo "XFAIL $tb ($reason)"
+      xfailed=$((xfailed + 1))
+    else
+      echo "XPASS $tb (documented failure unexpectedly passed; move it into the gate)"
+      failed=$((failed + 1)); failed_list+=("$tb")
+    fi
+  elif [ -n "$reason" ]; then
+    echo "FAIL  $tb ($reason)"
     failed=$((failed + 1)); failed_list+=("$tb")
-    continue
+  else
+    echo "PASS  $tb"
+    passed=$((passed + 1))
   fi
-
-  if grep -qi "assertion failure" "$log"; then
-    echo "FAIL  $tb (assertion failure in log)"
-    failed=$((failed + 1)); failed_list+=("$tb")
-    continue
-  fi
-
-  echo "PASS  $tb"
-  passed=$((passed + 1))
 done
 
 # ---------------------------------------------------------------------------
@@ -291,8 +249,13 @@ done
 # ---------------------------------------------------------------------------
 echo ""
 echo "=============================================="
-echo "  HDL TB SUMMARY: $passed passed, $failed failed"
+echo "  HDL TB SUMMARY: $passed passed, $xfailed expected failures, $failed failed"
 echo "=============================================="
+if [ "$SUITE" = "gate" ]; then
+  echo "Excluded orphaned TBs: $ORPHANED_TBS"
+  echo "Excluded toolchain-blocked TBs: $TOOLCHAIN_BLOCKED_TBS"
+  echo "Tracked by SUITE=known-failures: $KNOWN_FAILING_TBS"
+fi
 if [ "$failed" -gt 0 ]; then
   echo "Failed TBs: ${failed_list[*]}"
   echo "Logs: $LOG_DIR"

@@ -64,15 +64,8 @@ architecture bench of tb_packed_continuous_renew is
   signal packed_valid : std_logic := '0';
   signal packed_ready : std_logic;
   signal packed_accepted : integer := 0;
+  signal producer_index : std_logic_vector(31 downto 0);
   signal cont_mode    : std_logic := '1';
-  signal probe_full_i        : std_logic;
-  signal probe_sample_rem    : natural range 0 to 3000000;
-  signal probe_rem_nonzero   : std_logic;
-  signal probe_packed_stop_f : std_logic;
-  signal probe_run_f_level   : std_logic;
-  signal probe_cfg_valid_edge : std_logic;
-  signal probe_cfg_samples    : natural range 1 to 3000000;
-
   signal sdram_addr : std_logic_vector(11 downto 0);
   signal sdram_ba   : std_logic_vector(1 downto 0);
   signal sdram_cas_n, sdram_cke, sdram_cs_n : std_logic;
@@ -84,14 +77,6 @@ begin
 
   fast_clk <= not fast_clk after FAST_PERIOD / 2;
   pclk     <= not pclk     after PCLK_PERIOD / 2;
-
-  probe_full_i        <= << signal .tb_packed_continuous_renew.dut.full_i : std_logic >>;
-  probe_sample_rem    <= << signal .tb_packed_continuous_renew.dut.sample_remaining : natural range 0 to 3000000 >>;
-  probe_rem_nonzero   <= << signal .tb_packed_continuous_renew.dut.gen_fast_speed.sample_rem_nonzero_r : std_logic >>;
-  probe_packed_stop_f <= << signal .tb_packed_continuous_renew.dut.packed_stop_f : std_logic >>;
-  probe_run_f_level   <= << signal .tb_packed_continuous_renew.dut.run_f_level : std_logic >>;
-  probe_cfg_valid_edge <= << signal .tb_packed_continuous_renew.dut.cfg_valid_edge : std_logic >>;
-  probe_cfg_samples    <= << signal .tb_packed_continuous_renew.dut.cfg_samples : natural range 1 to 3000000 >>;
 
   process(fast_clk)
   begin
@@ -106,7 +91,8 @@ begin
       Channels      => 16,
       Sim           => true,
       FAST_SPEED    => true,
-      FAST_RAW_BUILD => true,
+      -- Packed_Mode is intentionally compiled out by the raw-only profile.
+      FAST_RAW_BUILD => false,
       CLK_Frequency => 166666667,
       SDRAM_CLK_HZ  => 166666667,
       SAMPLE_CLK_HZ => 200000000
@@ -141,7 +127,8 @@ begin
       Packed_Mode  => packed_mode,
       Packed_Data  => packed_data,
       Packed_Valid => packed_valid,
-      Packed_Ready => packed_ready
+      Packed_Ready => packed_ready,
+      Producer_Index => producer_index
     );
 
   -- Producer never stops offering a word (worst case for the budget: it
@@ -160,27 +147,28 @@ begin
     end if;
   end process;
 
-  sdram_model : entity work.sdram_pin_model
-    generic map (CL => 3, STRICT => false)
-    port map (
-      clk   => sdram_clk,
-      cke   => sdram_cke,
-      cs_n  => sdram_cs_n,
-      ras_n => sdram_ras_n,
-      cas_n => sdram_cas_n,
-      we_n  => sdram_we_n,
-      ba    => sdram_ba,
-      addr  => sdram_addr,
-      dqm   => sdram_dqm,
-      dq    => sdram_dq
-    );
-
   main : process
     variable baseline : integer := 0;
+    variable plain_produced : integer := 0;
   begin
-    report "=== Starting packed continuous-renew test ===";
+    report "=== Phase 0: plain digital continuous-renew test ===";
+    packed_mode <= '0';
     armed <= '1';
-    wait for 100 ns;
+    run <= '1';
+    wait for 200 us;
+    run <= '0';
+    plain_produced := to_integer(unsigned(producer_index));
+    report "plain producer_index after 200us with Continuous_Mode='1', " &
+           "Samples=64: " & integer'image(plain_produced);
+    assert plain_produced > 1000
+      report "FAIL: plain producer_index=" & integer'image(plain_produced) &
+             " -- ordinary digital continuous capture stopped at its first budget"
+      severity failure;
+    wait for 200 ns;
+
+    report "=== Starting packed continuous-renew test ===";
+    packed_mode <= '1';
+    armed <= '1';
     run <= '1';
     -- Run long enough to span MANY multiples of the 64-cycle budget
     -- (64 cycles = 320 ns at 200 MHz; 200 us spans ~625 budget windows).
@@ -216,10 +204,9 @@ begin
                        -- (2FF into pclk, 6ns period) before the new run edge
     run <= '1';
     wait for 61 us;  -- 20000 cycles @200MHz = 100us budget; sample well within it
-    report "  after 61us: full_i=" & std_logic'image(probe_full_i) &
-           " sample_remaining=" & integer'image(probe_sample_rem) &
-           " rem_nonzero=" & std_logic'image(probe_rem_nonzero) &
-           " packed_stop_f=" & std_logic'image(probe_packed_stop_f);
+    assert full = '0'
+      report "FAIL: single-shot capture completed before its 100 us sample budget"
+      severity failure;
     report "packed_accepted gained in phase 2 (single-shot, Samples=20000): " &
            integer'image(packed_accepted - baseline);
     -- Threshold recalibrated 2026-07-11: the committed, timing-closed,

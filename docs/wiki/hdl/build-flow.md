@@ -12,8 +12,8 @@
 | Toolchain | Quartus Prime Lite 25.1 |
 | Default profile | `FAST_SPEED=true`, `FAST_RAW_BUILD=false` |
 | Default fitter seed | 10 |
-| Logic use | 7,761/8,064 LEs (96%) |
-| Registers / memory | 4,821 registers; 38,020/387,072 memory bits |
+| Logic use | 7,713/8,064 LEs (96%) |
+| Registers / memory | 4,802 registers; 38,020/387,072 memory bits |
 
 ## Project inputs
 
@@ -61,16 +61,16 @@ The current seed-10 result is from the slow 1200 mV, 85 C setup corner:
 
 | Domain | Setup slack | Hold slack |
 |---|---:|---:|
-| `fast_clk` | +0.083 ns | +0.340 ns |
-| `sdram_core_clk` | +0.111 ns | +0.326 ns |
-| `sys_clk` | +0.410 ns | +0.293 ns |
+| `fast_clk` | +0.253 ns | +0.291 ns |
+| `sdram_core_clk` | +0.178 ns | +0.340 ns |
+| `sys_clk` | +0.278 ns | +0.223 ns |
 | `SDRAM_CHIP_CLK_OUT` | +1.098 ns | +1.808 ns |
-| `SPI_SCK_EXT` | +12.456 ns | +0.394 ns |
+| `SPI_SCK_EXT` | +12.025 ns | +0.394 ns |
 
-The last timing fix registers the SDRAM init counter terminal comparison as
-`init_cnt_done`, removing a live 15-bit comparator from the state transition.
-The remaining tight cones are the pre-trigger enable fanout in `fast_clk` and
-the read-pump prefetch path in `sdram_core_clk`.
+The latest timing fix represents the fast capture sample budget as a modular
+carry-chain accumulator, keeps packed ready registered, and separates the
+continuous-budget reload pulse from the wide seed mux. This removes the live
+22-bit equality/control cone from the 200.4 MHz capture path.
 
 The build is seed-sensitive. A 48-seed sweep found seed 10 best; seed 39 was
 next at only +0.014 ns overall and most placements failed timing. Re-run a
@@ -96,7 +96,7 @@ The signoff artifacts are under `hdl/proj/output_files/`:
 | `OLS_Logic_Analyzer.sof` | Volatile SRAM image |
 | `OLS_Logic_Analyzer.pof` | Persistent CFM image |
 
-The current assembler checksum is `0x0050ADC8`. A checksum identifies a build
+The current assembler checksum is `0x00504799`. A checksum identifies a build
 for bench records; it is not a cryptographic integrity proof. The current SOF
 SHA-256 is recorded in [Current Status](../current-status.md).
 

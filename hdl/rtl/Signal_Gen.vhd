@@ -122,7 +122,8 @@ architecture rtl of Signal_Gen is
   signal spi_bit_idx     : natural range 0 to 7 := 0;
 
   signal i2c_state       : i2c_state_t := I2C_IDLE;
-  signal i2c_bit_idx     : natural range 0 to 7 := 0;
+  -- Write sequencing uses 8 as the post-bit sentinel before the ACK phase.
+  signal i2c_bit_idx     : natural range 0 to 8 := 0;
   signal i2c_rd_remain   : natural range 0 to 255 := 0;
   signal i2c_read_phase  : std_logic := '0';
 
@@ -190,6 +191,7 @@ begin
     variable issue_read_v  : std_logic;
     variable issue_src_v   : read_src_t;
     variable issue_addr_v  : ptr_t;
+    variable consume_read_v : std_logic;
   begin
     if rising_edge(CLK) then
       Start_Ack <= '0';
@@ -200,9 +202,14 @@ begin
       issue_read_v := '0';
       issue_src_v := READ_NONE;
       issue_addr_v := read_addr_q;
+      consume_read_v := '0';
 
       -- Retire the previous read request through a single shared playback path.
-      read_valid_q <= read_issue_q;
+      -- Keep valid asserted until the selected protocol engine consumes it;
+      -- FETCH states run on baud ticks and can otherwise miss a one-CLK pulse.
+      if read_issue_q = '1' then
+        read_valid_q <= '1';
+      end if;
       case read_src_q is
         when READ_PLAYBACK =>
           if read_issue_q = '1' then
@@ -340,6 +347,7 @@ begin
             case uart_state is
               when UART_FETCH =>
                 if read_valid_q = '1' then
+                  consume_read_v := '1';
                   uart_shift <= read_data_q;
                   if repeat_active = '0' and CRC_En = '1' then
                     if uart_crc_run = '0' then
@@ -428,6 +436,7 @@ begin
             case spi_state is
               when SPI_FETCH =>
                 if read_valid_q = '1' then
+                  consume_read_v := '1';
                   byte_buf <= read_data_q;
                   spi_bit_idx <= 0;
                   spi_state <= SPI_LOAD;
@@ -502,6 +511,7 @@ begin
               when I2C_FETCH_BYTE =>
                 scl_out_r <= '0';
                 if read_valid_q = '1' then
+                  consume_read_v := '1';
                   byte_buf <= read_data_q;
                   tx_out_r <= read_data_q(7);
                   i2c_bit_idx <= 1;
@@ -578,6 +588,7 @@ begin
                 if i2c_rd_remain = 0 then
                   i2c_state <= I2C_STOP_LOW;
                 else
+                  i2c_rd_remain <= i2c_rd_remain - 1;
                   i2c_bit_idx <= 0;
                   i2c_state <= I2C_READ_LOW;
                 end if;
@@ -609,6 +620,9 @@ begin
       read_issue_q <= issue_read_v;
       read_src_q <= issue_src_v;
       read_addr_q <= issue_addr_v;
+      if consume_read_v = '1' then
+        read_valid_q <= '0';
+      end if;
 
       -- Clear FIFO pointers but NOT the generator state machines or pin output.
       -- A running (repeating) generator keeps producing its waveform through
@@ -619,6 +633,8 @@ begin
         wr_ptr <= (others => '0');
         rd_ptr <= (others => '0');
         used_count <= 0;
+        read_valid_q <= '0';
+        read_issue_q <= '0';
       end if;
     end if;
   end process;

@@ -142,8 +142,6 @@ def _generic_pattern_trigger(wf: WaveformData,
         bit_count = 0
         for sample in samples:
             sample = int(sample)
-            if sample >= sample_count:
-                break
             lanes_this_sample = min(lane_count, width - bit_count)
             packed = 0
             for channel in channels[:lanes_this_sample]:

@@ -297,8 +297,11 @@ def session_dashboard(session_id: str, bins: int = 32):
             is_error = event.get("severity") == "error"
             health["frames"] += 1
             health["error_frames"] += int(is_error)
-            duration = max(0.0, float(event.get("end_time", 0)) - float(event.get("start_time", 0)))
-            health["load_pct"] += duration / max(duration_s, 1e-12) * 100.0
+            event_duration = max(
+                0.0,
+                float(event.get("end_time", 0)) - float(event.get("start_time", 0)),
+            )
+            health["load_pct"] += event_duration / max(duration, 1e-12) * 100.0
             if protocol == "can":
                 key = str(fields.get("identifier", "unknown"))
                 health["arbitration_ids"][key] = health["arbitration_ids"].get(key, 0) + 1

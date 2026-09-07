@@ -61,8 +61,8 @@ to volts in the host/backend with a 3.3 V, 12-bit scale.
   ordering, channel selection, and result strobes.
 - Packed four-lane behavior is covered by the MSO simulations and the
   connected-board maximum-analog single/live matrix.
-- `tb_analog_preamble.vhd` is an explicit expected failure in the current
-  GHDL harness; it is not counted as a pass.
+- `tb_analog_preamble.vhd` is a required passing regression and checks that
+  the packed analogue preamble completes with balanced channel output.
 
 See [MSO Capture](mso-capture.md), [Capture Strategies](../backend/capture-strategies.md),
 and [Hardware Validation](../hardware-validation.md).

@@ -178,7 +178,6 @@ architecture rtl of SDRAM_Controller is
 
     signal write_depth : natural := 0;
     signal max_write_depth : natural := 0;
-    signal prev_buf_a : std_logic_vector(21 downto 0) := (others => '0');
 
     -- Page-mode: track open row
     signal active_row  : std_logic_vector(11 downto 0) := (others => '0');
@@ -280,7 +279,6 @@ begin
             s_ba_r   <= (others => '0');
             s_addr_r <= (others => '0');
             write_depth <= 0; max_write_depth <= 0;
-            prev_buf_a <= (others => '0');
             row_open <= '0'; active_row <= (others => '0'); active_bank <= (others => '0');
             same_row_buf_a <= '0'; same_row_buf_next <= '0'; same_row_cap_stream <= '0';
             r_pipe_stream_ready <= '0';
@@ -306,11 +304,6 @@ begin
             else
                 same_row_cap_stream <= '0';
             end if;
-
-            if buf_a /= prev_buf_a then
-                report "BUF_A: 0x" & to_hex(buf_a) & " (prev was 0x" & to_hex(prev_buf_a) & ")" severity note;
-            end if;
-            prev_buf_a <= buf_a;
 
             -- Refresh timer
             -- Refresh timer: use registered timer_ge_ref (computed concurrently)
@@ -597,7 +590,11 @@ begin
                     end if;
 
                 when ST_TWR =>
-                    dq_oe <= '0';
+                    -- Command/address pins pass through the s_*_r register bank,
+                    -- so the WRITE selected in ST_WR/ST_STREAM_WR reaches the
+                    -- SDRAM pins one clock after dq_oe is asserted.  Keep DQ
+                    -- driven through that pin-level command cycle; releasing it
+                    -- here used to make the chip sample Z for single writes.
                     -- For page-mode writes (same row pending), skip TWR delay.
                     -- tWR is only needed before precharge, not between same-row writes.
                     if last_op_was_stream = '0'
@@ -605,7 +602,10 @@ begin
                     or (pend_wn_next = '1' and pend_wn_next_same_row = '1')) then
                         cnt <= 0; state <= ST_DEASSERT;
                     elsif cnt < TWR_CYCLES - 1 then cnt <= cnt + 1;
-                    else cnt <= 0; state <= ST_DEASSERT;
+                    else
+                        cnt <= 0;
+                        dq_oe <= '0';
+                        state <= ST_DEASSERT;
                     end if;
 
                 when ST_PRE2 =>
@@ -640,6 +640,10 @@ begin
 
                 -- DONE: service next pending request, or go idle
                 when ST_DEASSERT =>
+                    -- Also releases DQ after the same-row fast path above.  At
+                    -- this point the registered command pins have returned to
+                    -- NOP, so data and output-enable remain aligned.
+                    dq_oe <= '0';
                     sdram_s_waitrequest <= '0';
                     if ref_req = '1' and pend_rn = '0' and pend_wn = '0' and pend_wn_next = '0' then
                         ref_req <= '0';

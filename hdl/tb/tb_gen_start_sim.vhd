@@ -1,6 +1,7 @@
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.numeric_std.all;
+use std.env.all;
 use work.sim_pkg.all;
 use work.spi_protocol_pkg.all;
 
@@ -60,6 +61,10 @@ architecture bench of tb_gen_start_sim is
   -- Capture
   signal gen_start_cap : std_logic := '0';
   signal gen_start_clr : std_logic := '0';
+  signal gen_load_count : natural := 0;
+  signal gen_start_count : natural := 0;
+  signal gen_busy_cap : std_logic := '0';
+  signal gen_tx_edges : natural := 0;
 
   -- SPI packet send procedure (CS held low)
   procedure spi_packet(
@@ -196,12 +201,30 @@ begin
 
   -- Capture gen_start pulse
   process(clk)
+    variable previous_start : std_logic := '0';
   begin
     if rising_edge(clk) then
       if gen_start_clr = '1' then
         gen_start_cap <= '0';
       elsif gen_start = '1' then
         gen_start_cap <= '1';
+      end if;
+      if gen_load_we = '1' then gen_load_count <= gen_load_count + 1; end if;
+      if gen_start = '1' and previous_start = '0' then
+        gen_start_count <= gen_start_count + 1;
+      end if;
+      previous_start := gen_start;
+      if gen_busy_sg = '1' then gen_busy_cap <= '1'; end if;
+    end if;
+  end process;
+
+  process(clk)
+    variable previous_tx : std_logic := '1';
+  begin
+    if rising_edge(clk) then
+      if gen_tx_out /= previous_tx then
+        gen_tx_edges <= gen_tx_edges + 1;
+        previous_tx := gen_tx_out;
       end if;
     end if;
   end process;
@@ -223,6 +246,7 @@ begin
       0 => x"30", 1 => x"00", 2 => x"00", 3 => x"00", 4 => x"00"));
     spi_packet(spi_cs, spi_sck, spi_mosi, spi_miso, SPI_HALF, pkt);
     wait_cycles(clk, 20);
+    check(gen_proto = '0', "REG_GEN_PROTO must select UART");
     report "Test 1: PASS";
 
     --------------------------------------------------------------
@@ -233,6 +257,7 @@ begin
       0 => x"31", 1 => x"A0", 2 => x"01", 3 => x"00", 4 => x"00"));
     spi_packet(spi_cs, spi_sck, spi_mosi, spi_miso, SPI_HALF, pkt);
     wait_cycles(clk, 20);
+    check(gen_baud_div = x"0001A0", "REG_GEN_BAUD must preserve the configured divider");
     report "Test 2: PASS";
 
     --------------------------------------------------------------
@@ -242,6 +267,8 @@ begin
     pkt := make_pkt(CMD_GEN_LOAD, (0 => x"48"));
     spi_packet(spi_cs, spi_sck, spi_mosi, spi_miso, SPI_HALF, pkt);
     wait_cycles(clk, 20);
+    check(gen_load_count = 1, "one load command must produce exactly one FIFO write");
+    check(unsigned(gen_fifo_count) = 1, "loaded byte must be visible in Signal_Gen FIFO");
     report "Test 3: PASS";
 
     --------------------------------------------------------------
@@ -255,25 +282,24 @@ begin
     spi_packet(spi_cs, spi_sck, spi_mosi, spi_miso, SPI_HALF, pkt);
     wait_cycles(clk, 50);
 
-    if gen_start_cap = '1' then
-      report "  *** GEN_START PULSED - CMD_GEN_START WORKS ***";
-    else
-      report "  *** GEN_START DID NOT PULSE ***";
-    end if;
+    check(gen_start_cap = '1', "CMD_GEN_START must pulse the generator start input");
+    check(gen_start_count = 1, "one command must produce exactly one start pulse");
 
     --------------------------------------------------------------
     -- Test 5: Check gen_busy (Signal_Gen runs)
     --------------------------------------------------------------
     report "Test 5: Signal_Gen gen_busy check";
-    wait_cycles(clk, 5000);
+    wait_until(clk, gen_busy_sg, '0', 1 ms, "single-byte UART transfer must complete");
+    wait_cycles(clk, 10);
     report "  gen_start=" & std_logic'image(gen_start);
     report "  gen_busy=" & std_logic'image(gen_busy_sg);
     report "  gen_tx_out=" & std_logic'image(gen_tx_out);
-    if gen_busy_sg = '1' then
-      report "  *** GEN BUSY ASSERTED - FULL CHAIN WORKS ***";
-    end if;
+    check(gen_busy_cap = '1', "Signal_Gen must become busy after the start pulse");
+    check(unsigned(gen_fifo_count) = 0, "Signal_Gen FIFO must be empty after transmission");
+    check(gen_load_count = 1, "start command must not create another FIFO write");
+    check(gen_tx_edges >= 4, "UART output must contain a framed byte");
 
-    report "=== GEN START SIMULATION TEST COMPLETE ===";
-    wait;
+    report "=== GEN START SIMULATION TEST PASSED ===";
+    finish;
   end process;
 end bench;

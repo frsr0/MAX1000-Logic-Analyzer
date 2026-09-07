@@ -126,10 +126,10 @@ one (near-zero samples reported despite a correctly armed new capture); see
 [capture-engine.md](capture-engine.md#continuoussingle-shot-packed-transition-race-fixed-2026-07-10)
 for the mechanism and fix (2026-07-10).
 
-**Current board validation (2026-08-27, SOF `0x0050ADC8`):** the seed-10 image
-passed maximum-analog single/live at four physical lanes and mixed-scan
-single/live in the 37-case browser matrix, plus the packed/MSO checks in the
-383-check host suite. Historical live characterization measured approximately
+**Current board validation (2026-09-07, SOF `0x00504799`):** the seed-10 image
+passed maximum-analog, high-speed analogue, mixed back-to-back recovery,
+lossless mixed-codec round-trip, and both installed physical analogue jumper
+paths in the 117-check changed-path suite. Historical live characterization measured approximately
 **1.00 MS/s raw** and **0.50 MS/s lossless `delta_rle`** on this USB path;
 those are transport/source-dependent figures, not fixed FPGA limits.
 Compression remains unavailable in `MODE_MIXED`/`MODE_ANALOG_*`.

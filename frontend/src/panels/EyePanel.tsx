@@ -10,8 +10,10 @@ export function EyePanel() {
   const [data, setData] = useState<{ grid: number[][]; traces: number; unit_samples: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const requestId = useRef(0);
 
   useEffect(() => {
+    requestId.current++;
     if (channels.length && !channels.some((c) => c.id === channel)) setChannel(channels[0].id);
     setData(null);
   }, [activeSession?.id]);
@@ -49,10 +51,16 @@ export function EyePanel() {
 
   const run = async () => {
     if (!channel) return;
+    const current = ++requestId.current;
     setBusy(true);
-    try { setData(await api.eyeDiagram(activeSession.id, channel, baud)); }
-    catch (e: any) { toast('error', e.message); }
-    finally { setBusy(false); }
+    try {
+      const result = await api.eyeDiagram(activeSession.id, channel, baud);
+      if (current === requestId.current) setData(result);
+    } catch (e: any) {
+      if (current === requestId.current) toast('error', e.message);
+    } finally {
+      if (current === requestId.current) setBusy(false);
+    }
   };
 
   return <div className="panel-body">

@@ -1,6 +1,7 @@
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.numeric_std.all;
+use std.env.all;
 use work.sim_pkg.all;
 use work.spi_protocol_pkg.all;
 
@@ -13,7 +14,6 @@ end tb_gen_start;
 
 architecture bench of tb_gen_start is
   constant CLK_PERIOD : time := 1 sec / real(CLK_FREQ);
-  constant BAUD_TIME  : time := 1 sec / real(CLK_FREQ / 416);  -- ~115200 baud
 
   signal clk       : std_logic := '0';
   signal fast_clk  : std_logic := '0';
@@ -52,122 +52,125 @@ architecture bench of tb_gen_start is
   signal pin_map_ch    : natural range 0 to 15;
   signal pin_map_pin   : natural range 0 to 31;
 
-  -- Probe OLS_Interface internal signals
-  signal pkt_cmd_active_v : std_logic_vector(7 downto 0);
-  signal pkt_payload_valid_v : std_logic;
-  signal pkt_ok_v : std_logic;
+  signal load_count  : natural := 0;
+  signal start_count : natural := 0;
+  signal last_loaded : std_logic_vector(7 downto 0) := (others => '0');
 
+  function flatten(b : byte_array; n : natural) return std_logic_vector is
+    variable r : std_logic_vector(n*8-1 downto 0);
+  begin
+    for i in 0 to n-1 loop
+      r(i*8+7 downto i*8) := b(b'low + i);
+    end loop;
+    return r;
+  end function;
+
+  procedure pkt_send(
+    signal cs_n : out std_logic; signal sck_o : out std_logic;
+    signal mosi : out std_logic; signal miso : in std_logic;
+    constant cmd : in std_logic_vector(7 downto 0);
+    constant payload : in byte_array; constant plen : in natural) is
+    variable tx : byte_array(0 to 31);
+    variable rx : byte_array(0 to 31);
+    variable len_v : std_logic_vector(15 downto 0);
+    variable crc_v : std_logic_vector(15 downto 0);
+    variable crc_data : std_logic_vector((4+plen)*8-1 downto 0);
+  begin
+    tx(0) := x"55"; tx(1) := x"AA"; tx(2) := cmd; tx(3) := x"00";
+    len_v := std_logic_vector(to_unsigned(plen, 16));
+    tx(4) := len_v(7 downto 0); tx(5) := len_v(15 downto 8);
+    for i in 0 to plen-1 loop tx(6+i) := payload(payload'low+i); end loop;
+    crc_data := flatten(tx(2 to 5+plen), 4+plen);
+    crc_v := crc16(crc_data);
+    tx(6+plen) := crc_v(7 downto 0); tx(7+plen) := crc_v(15 downto 8);
+    spi_xfer(cs_n, sck_o, mosi, miso, SPI_HALF, tx(0 to 7+plen), rx(0 to 7+plen));
+  end procedure;
+
+  procedure wreg(
+    signal cs_n : out std_logic; signal sck_o : out std_logic;
+    signal mosi : out std_logic; signal miso : in std_logic;
+    constant reg : in std_logic_vector(7 downto 0); constant value : in natural) is
+    variable pld : byte_array(0 to 4);
+    variable v : std_logic_vector(31 downto 0);
+  begin
+    v := std_logic_vector(to_unsigned(value, 32));
+    pld(0) := reg;
+    pld(1) := v(7 downto 0); pld(2) := v(15 downto 8);
+    pld(3) := v(23 downto 16); pld(4) := v(31 downto 24);
+    pkt_send(cs_n, sck_o, mosi, miso, CMD_WRITE_REG, pld, 5);
+  end procedure;
 begin
   gen_clk(clk, CLK_PERIOD / 2);
   fast_clk <= clk;
 
   DUT : entity work.OLS_Interface
-    generic map (
-      CLK_Frequency => CLK_FREQ,
-      Max_Samples   => 25000
-    )
+    generic map (CLK_Frequency => CLK_FREQ, Max_Samples => 25000)
     port map (
-      CLK        => clk,
-      FAST_CLK   => fast_clk,
-      SPI_CS     => spi_cs,
-      SPI_SCK    => spi_sck,
-      SPI_MOSI   => spi_mosi,
-      SPI_MISO   => spi_miso,
-      Interface_Mode => iface_mode,
-      Inputs     => inputs,
-      Rate_Div   => rate_div,
-      Samples    => samples,
-      Start_Offset => start_off,
-      Run        => run,
-      Full       => full,
-      Address    => address,
-      Outputs    => outputs,
-      Gen_Load_Byte => gen_load_byte,
-      Gen_Load_We   => gen_load_we,
-      Gen_Start     => gen_start,
-      Gen_Baud_Div  => gen_baud_div,
-      Gen_Busy      => gen_busy,
-      Gen_Proto     => gen_proto,
-      Gen_TX_Pin    => gen_tx_pin,
-      Gen_SCL_Pin   => gen_scl_pin,
-      Gen_I2C_Rd_Len => gen_i2c_rd_len,
-      Gen_I2C_Dev_R  => gen_i2c_dev_r,
-      Gen_I2C_Test   => gen_i2c_test,
-      Gen_SPI_Test   => gen_spi_test,
-      Armed        => armed,
-      Fast_Mode    => fast_mode,
-      Continuous_Mode => cont_mode,
-      Analog_Enable => analog_enable,
-      Analog_Only => open,
-      Buffer_Full     => buffer_full,
-      Buffer_Ack      => buffer_ack,
-      Pin_Map_Write  => pin_map_write,
-      Pin_Map_Channel => pin_map_ch,
-      Pin_Map_Pin     => pin_map_pin
+      CLK => clk, FAST_CLK => fast_clk,
+      SPI_CS => spi_cs, SPI_SCK => spi_sck, SPI_MOSI => spi_mosi, SPI_MISO => spi_miso,
+      Interface_Mode => iface_mode, Inputs => inputs,
+      Rate_Div => rate_div, Samples => samples, Start_Offset => start_off,
+      Run => run, Full => full, Address => address, Outputs => outputs,
+      Gen_Load_Byte => gen_load_byte, Gen_Load_We => gen_load_we, Gen_Start => gen_start,
+      Gen_Baud_Div => gen_baud_div, Gen_Busy => gen_busy, Gen_Proto => gen_proto,
+      Gen_TX_Pin => gen_tx_pin, Gen_SCL_Pin => gen_scl_pin,
+      Gen_I2C_Rd_Len => gen_i2c_rd_len, Gen_I2C_Dev_R => gen_i2c_dev_r,
+      Gen_I2C_Test => gen_i2c_test, Gen_SPI_Test => gen_spi_test,
+      Armed => armed, Fast_Mode => fast_mode, Continuous_Mode => cont_mode,
+      Analog_Enable => analog_enable, Analog_Only => open,
+      Buffer_Full => buffer_full, Buffer_Ack => buffer_ack,
+      Pin_Map_Write => pin_map_write, Pin_Map_Channel => pin_map_ch, Pin_Map_Pin => pin_map_pin
     );
 
-  -- Probe internals
-  pkt_cmd_active_v    <= << signal .tb_gen_start.dut.pkt_cmd_active : std_logic_vector(7 downto 0) >>;
-  pkt_payload_valid_v <= << signal .tb_gen_start.dut.pkt_payload_valid : std_logic >>;
-  pkt_ok_v            <= << signal .tb_gen_start.dut.pkt_ok : std_logic >>;
+  process(clk)
+    variable previous_start : std_logic := '0';
+  begin
+    if rising_edge(clk) then
+      if gen_load_we = '1' then
+        load_count <= load_count + 1;
+        last_loaded <= gen_load_byte;
+      end if;
+      if gen_start = '1' and previous_start = '0' then
+        start_count <= start_count + 1;
+      end if;
+      previous_start := gen_start;
+    end if;
+  end process;
 
   process
-    procedure load_fifo_byte(byte : std_logic_vector(7 downto 0)) is
-    begin
-      wait until rising_edge(clk);
-      gen_load_byte <= byte;
-      gen_load_we <= '1';
-      wait until rising_edge(clk);
-      gen_load_we <= '0';
-    end procedure;
-
-    procedure pulse_start is
-    begin
-      wait until rising_edge(clk);
-      -- Write REG_GEN_START via direct register write (0x31 = CMD_GEN_START)
-      -- This triggers disp_gen_start in the dispatch process
-      -- Simpler: just check that gen_start works from the main process
-      report "  gen_start=" & std_logic'image(gen_start);
-    end procedure;
-
+    variable empty : byte_array(0 to 0);
   begin
-    wait until rising_edge(clk);
     wait_cycles(clk, 50);
-    report "=== GEN START DIRECT TEST ===";
 
-    ------------------------------------------------------------------
-    -- Test 1: Load FIFO manually then pulse Gen_Start via disp_gen_start
-    ------------------------------------------------------------------
-    report "Test 1: Load 'H' to FIFO via direct Gen_Load_We pulse";
-    load_fifo_byte(x"48");  -- 'H'
-    load_fifo_byte(x"65");  -- 'e'
-    load_fifo_byte(x"6C");  -- 'l'
-    load_fifo_byte(x"6C");  -- 'l'
-    load_fifo_byte(x"6F");  -- 'o'
-    report "  Loaded 5 bytes to FIFO";
-    report "Test 1: PASS";
+    wreg(spi_cs, spi_sck, spi_mosi, spi_miso, REG_GEN_PROTO, 1);
+    wreg(spi_cs, spi_sck, spi_mosi, spi_miso, REG_GEN_BAUD, 16#123456#);
+    wreg(spi_cs, spi_sck, spi_mosi, spi_miso, REG_GEN_PINS, 16#0917#);
+    wait_cycles(clk, 10);
+    check(gen_proto = '1', "REG_GEN_PROTO must update the public protocol output");
+    check(gen_baud_div = x"123456", "REG_GEN_BAUD must preserve all 24 bits");
+    check(gen_tx_pin = 23 and gen_scl_pin = 9,
+          "REG_GEN_PINS must update both public pin selections");
 
-    ------------------------------------------------------------------
-    -- Test 2: Check Gen_Start from disp_gen_start pulse via SPI packet
-    ------------------------------------------------------------------
-    report "Test 2: Send CMD_GEN_START via SPI packet protocol";
-    -- We'll use the old-style direct SPI command to trigger CMD_GEN_START
-    -- The SPI packet builder is complex, so let's just check what happens
-    -- when we directly inspect the gen_start_cnt and Gen_Start
-    report "  gen_start=" & std_logic'image(gen_start);
-    report "  pkt_cmd_active=" & to_hstring(pkt_cmd_active_v);
-    report "  pkt_ok=" & std_logic'image(pkt_ok_v);
-    report "Test 2: incomplete (SPI packet protocol too complex for this TB)";
+    pkt_send(spi_cs, spi_sck, spi_mosi, spi_miso,
+             CMD_GEN_LOAD, byte_array'(0 => x"A5"), 1);
+    wait_cycles(clk, 10);
+    check(load_count = 1, "one load packet must generate exactly one write pulse");
+    check(last_loaded = x"A5", "load packet must present its payload byte");
 
-    ------------------------------------------------------------------
-    -- Test 3: Verify gen_start output from OLS_Interface
-    ------------------------------------------------------------------
-    report "Test 3: gen_start pin status";
-    report "  gen_start output: " & std_logic'image(gen_start);
-    check(gen_start = '0', "gen_start should be low at idle");
-    report "Test 3: PASS";
+    pkt_send(spi_cs, spi_sck, spi_mosi, spi_miso, CMD_GEN_START, empty, 0);
+    wait_cycles(clk, 10);
+    check(start_count = 1, "one start packet must create exactly one request edge");
+    check(gen_start = '1', "start request must remain asserted while awaiting Busy");
+    check(load_count = 1, "start packet must not create an extra FIFO write");
 
-    report "=== GEN START TESTS COMPLETE ===";
-    wait;
+    gen_busy <= '1';
+    wait_cycles(clk, 4);
+    gen_busy <= '0';
+    wait_cycles(clk, 4);
+    check(gen_start = '0', "start request must clear after Busy falls");
+    check(start_count = 1, "Busy acknowledgement must not retrigger start");
+
+    report "tb_gen_start PASSED";
+    finish;
   end process;
 end bench;

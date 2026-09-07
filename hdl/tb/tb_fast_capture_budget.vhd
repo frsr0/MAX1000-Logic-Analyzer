@@ -74,6 +74,7 @@ begin
       report "continuous reload mismatch" severity failure;
 
     report "=== TB PASSED: fast_capture_budget edge cases ===" severity note;
+    std.env.finish;
     wait;
   end process;
 end sim;

@@ -10,10 +10,11 @@ export function Minimap() {
 
   useEffect(() => {
     const draw = () => {
-      const canvas = ref.current;
-      if (!canvas) return;
+      // Effects run after React attaches the ref, and cleanup unsubscribes the
+      // callback before the element is released.
+      const canvas = ref.current!;
       const dpr = window.devicePixelRatio || 1;
-      const w = canvas.parentElement?.clientWidth ?? 600;
+      const w = canvas.parentElement!.clientWidth;
       canvas.width = w * dpr;
       canvas.height = H * dpr;
       canvas.style.width = `${w}px`;
@@ -40,7 +41,8 @@ export function Minimap() {
         for (const [name, arr] of ov.arrays) {
           if (!name.startsWith('analog_min')) continue;
           const vmin = arr as Float32Array;
-          const vmax = ov.arrays.get(name.replace('min', 'max')) as Float32Array;
+          const vmax = ov.arrays.get(name.replace('min', 'max')) as Float32Array | undefined;
+          if (!vmax || !vmin.length || vmax.length !== vmin.length) continue;
           let lo = Infinity, hi = -Infinity;
           for (let i = 0; i < vmin.length; i++) {
             if (vmin[i] < lo) lo = vmin[i];
@@ -73,7 +75,7 @@ export function Minimap() {
     };
     const unsub = waveformView.subscribe(draw);
     const ro = new ResizeObserver(draw);
-    if (ref.current?.parentElement) ro.observe(ref.current.parentElement);
+    ro.observe(ref.current!.parentElement!);
     draw();
     return () => { unsub(); ro.disconnect(); };
   }, []);

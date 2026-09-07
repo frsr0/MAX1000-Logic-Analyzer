@@ -97,8 +97,12 @@ def live_accel_session(client_id: str = Depends(client_id_header)):
     dev_r = dev_w | 1
     syms = _bb.i2c_read_symbols(bytes([dev_w, 0x0F]), 1, dev_r)
     bit_div = max(1, int(round(raw.sys_clk / (4 * 50_000) - 1.25)))
-    data = raw.accel_capture_dialogue(
-        syms, bit_div, spi_test=False, rate_hz=2_000_000, nsamples=4096)
+    data = b""
+    for _attempt in range(2):
+        data = raw.accel_capture_dialogue(
+            syms, bit_div, spi_test=False, rate_hz=2_000_000, nsamples=4096)
+        if data:
+            break
     if not data:
         raise HTTPException(502, "Live accelerometer capture returned no data")
 

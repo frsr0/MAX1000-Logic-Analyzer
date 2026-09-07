@@ -8,6 +8,7 @@
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.numeric_std.all;
+use std.env.all;
 use work.sim_pkg.all;
 use work.spi_protocol_pkg.all;
 
@@ -41,6 +42,7 @@ architecture bench of tb_gen_full is
   signal gen_start     : std_logic;
   signal gen_baud_div  : std_logic_vector(23 downto 0);
   signal gen_busy      : std_logic;
+  signal gen_fifo_count : std_logic_vector(7 downto 0);
   signal gen_proto     : std_logic;
   signal gen_tx_pin    : natural range 0 to 31;
   signal gen_scl_pin   : natural range 0 to 31;
@@ -63,6 +65,8 @@ architecture bench of tb_gen_full is
 
   signal gen_busy_cap : std_logic := '0';
   signal gen_tx_edges : natural := 0;
+  signal gen_load_count : natural := 0;
+  signal gen_start_count : natural := 0;
 
   -- Framed SPI packet send: 0x55 0xAA cmd seq len(2) payload crc16(2)
   function flatten(b : byte_array; n : natural) return std_logic_vector is
@@ -122,7 +126,8 @@ begin
       Rate_Div => rate_div, Samples => samples, Start_Offset => start_off,
       Run => run, Full => full, Address => address, Outputs => outputs,
       Gen_Load_Byte => gen_load_byte, Gen_Load_We => gen_load_we, Gen_Start => gen_start,
-      Gen_Baud_Div => gen_baud_div, Gen_Busy => gen_busy, Gen_Proto => gen_proto,
+      Gen_Baud_Div => gen_baud_div, Gen_Busy => gen_busy,
+      Gen_Fifo_Count => gen_fifo_count, Gen_Proto => gen_proto,
       Gen_TX_Pin => gen_tx_pin, Gen_SCL_Pin => gen_scl_pin,
       Gen_I2C_Rd_Len => gen_i2c_rd_len, Gen_I2C_Dev_R => gen_i2c_dev_r,
       Gen_I2C_Test => gen_i2c_test, Gen_SPI_Test => gen_spi_test,
@@ -138,15 +143,22 @@ begin
       CLK => clk, Load_Byte => gen_load_byte, Load_We => gen_load_we, Start => gen_start,
       Baud_Div => gen_baud_div(15 downto 0), Proto => gen_proto, SPI_Mode => gen_spi_test,
       Tx_Out => gen_tx_out, Scl_Out => gen_scl_out, Busy => gen_busy, Active => open,
+      Fifo_Count => gen_fifo_count,
       I2C_Rd_Len => gen_i2c_rd_len, I2C_Dev_R => gen_i2c_dev_r, Sda_In => '1',
       CRC_En => '0', CRC_Poly => x"A001"
     );
 
   -- Latch whether Signal_Gen ever asserted Busy
   process(clk)
+    variable previous_start : std_logic := '0';
   begin
     if rising_edge(clk) then
       if gen_busy = '1' then gen_busy_cap <= '1'; end if;
+      if gen_load_we = '1' then gen_load_count <= gen_load_count + 1; end if;
+      if gen_start = '1' and previous_start = '0' then
+        gen_start_count <= gen_start_count + 1;
+      end if;
+      previous_start := gen_start;
     end if;
   end process;
 
@@ -174,6 +186,9 @@ begin
     wreg(spi_cs, spi_sck, spi_mosi, spi_miso, REG_GEN_BAUD, 8);
     wreg(spi_cs, spi_sck, spi_mosi, spi_miso, REG_GEN_PINS, 16#0103#);
     wait_cycles(clk, 20);
+    check(gen_proto = '0', "UART protocol register must reach Signal_Gen");
+    check(gen_baud_div = x"000008", "baud register must reach Signal_Gen exactly");
+    check(gen_tx_pin = 3 and gen_scl_pin = 1, "generator pin register must decode exactly");
 
     -- Load "Hello" through CMD_GEN_LOAD (one payload byte per packet).
     pkt_send(spi_cs, spi_sck, spi_mosi, spi_miso, CMD_GEN_LOAD, byte_array'(0 => x"48"), 1); -- 'H'
@@ -181,6 +196,9 @@ begin
     pkt_send(spi_cs, spi_sck, spi_mosi, spi_miso, CMD_GEN_LOAD, byte_array'(0 => x"6C"), 1); -- 'l'
     pkt_send(spi_cs, spi_sck, spi_mosi, spi_miso, CMD_GEN_LOAD, byte_array'(0 => x"6C"), 1); -- 'l'
     pkt_send(spi_cs, spi_sck, spi_mosi, spi_miso, CMD_GEN_LOAD, byte_array'(0 => x"6F"), 1); -- 'o'
+    wait_cycles(clk, 20);
+    check(gen_load_count = 5, "five load packets must produce exactly five writes");
+    check(unsigned(gen_fifo_count) = 5, "Signal_Gen FIFO must contain all five bytes before start");
     report "Loaded 5 bytes via CMD_GEN_LOAD";
 
     -- Start the generator.
@@ -190,16 +208,19 @@ begin
     wait_until(clk, gen_busy, '1', 1 ms, "Signal_Gen should assert Busy after CMD_GEN_START");
     report "Signal_Gen busy";
 
-    -- Let the 5-byte burst transmit (5 * 10 bits * 8-cycle baud ~ 400 cycles).
-    wait_cycles(clk, 20000);
+    wait_until(clk, gen_busy, '0', 1 ms, "five-byte UART burst must complete");
+    wait_cycles(clk, 10);
 
     check(gen_busy_cap = '1', "Signal_Gen Busy asserted (OLS->Gen chain works)");
+    check(gen_start_count = 1, "one command must create exactly one start pulse");
+    check(gen_load_count = 5, "start must not create additional FIFO writes");
+    check(unsigned(gen_fifo_count) = 0, "FIFO must be empty after the complete burst");
     check(gen_tx_edges > 4, "Tx_Out toggled (UART output present), edges="
                             & integer'image(gen_tx_edges));
     report "gen_tx_edges=" & integer'image(gen_tx_edges)
          & " gen_busy(now)=" & std_logic'image(gen_busy);
 
     report "=== GEN FULL CHAIN TEST PASSED ===";
-    wait;
+    finish;
   end process;
 end bench;

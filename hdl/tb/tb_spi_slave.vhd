@@ -100,6 +100,7 @@ begin
     check(rx_data = x"A5", "RX data mismatch: expected A5, got " & to_hstring(rx_data));
 
     report "=== ALL SPI SLAVE TESTS PASSED ===";
+    std.env.finish;
     wait;
   end process;
 

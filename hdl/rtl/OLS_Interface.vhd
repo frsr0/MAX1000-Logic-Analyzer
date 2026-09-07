@@ -1294,12 +1294,16 @@ BEGIN
               st := BUILD_RSP;
 
             when CMD_GET_STATUS =>
-              if Run_OLS = '1' and Run = '0' then
+              -- DONE is a sticky host contract and must outrank the live
+              -- Run/Armed levels. Otherwise a short Full pulse latches DONE in
+              -- payload byte 23 while the primary status misleadingly returns
+              -- ARMED/BUSY, so a normal status poll can miss completion.
+              if done_latched = '1' then
+                rsp_stat_v := ST_CAPTURE_DONE;
+              elsif Run_OLS = '1' and Run = '0' then
                 rsp_stat_v := ST_CAPTURE_ARMED;
               elsif Run = '1' and Full = '0' then
                 rsp_stat_v := ST_CAPTURE_BUSY;
-              elsif done_latched = '1' then
-                rsp_stat_v := ST_CAPTURE_DONE;
               else
                 rsp_stat_v := ST_CAPTURE_IDLE;
               end if;

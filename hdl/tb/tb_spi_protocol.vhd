@@ -496,6 +496,7 @@ begin
     assert tx_walk(8) = x"03" severity failure;
 
     report "SPI protocol TB complete";
+    std.env.finish;
     wait;
   end process;
 end sim;

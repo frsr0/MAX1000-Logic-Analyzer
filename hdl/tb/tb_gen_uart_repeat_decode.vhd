@@ -59,6 +59,7 @@ begin
     end loop;
     assert busy = '1' report "repeat generator stopped" severity failure;
     report "PASS: UART repeat decodes five complete FIFO replays" severity note;
+    std.env.finish;
     wait;
   end process;
 end bench;

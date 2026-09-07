@@ -25,15 +25,14 @@ This repository is currently verified for:
 - UART, RS-485, I2C, SPI, SWD transaction capture, and raw two-output Bit Banger generation
 - Browser UI, backend API, and classic host-driver workflow
 
-Latest validation baseline (2026-08-07):
+Latest validation baseline (2026-09-07):
 
-- `backend/app/tests`: `334/334` passed
-- `host/tests/` + `host/driver/tests/`: `435/435` passed
-- `frontend` production build: passed
-- `backend/hw_smoke_test.py`: `10/10` passed on the attached MAX1000
-- Full connected-fixture hardware regression: **358/358 passed, 0 failed, 0 skipped**
-- Includes new pattern trigger tests: Test 14f (internal FSM) and 14g (UART 0x55 through physical jumper, match_mask=0xFF)
-- Backend/host test suites: `769/769` combined; frontend build: passed
+- `backend/app/tests`: `540/540` passed at 100% statement/branch coverage
+- `host/tests/` + `host/driver/tests/`: `983/983` passed at 100% statement/branch coverage
+- `frontend`: `275/275` passed at 100% statement/branch/function/line coverage; production build passed
+- Full connected-fixture hardware regression: **403/403 passed, 0 failed, 0 skipped**
+- Native GHDL regression: **57/57 passed**, with zero XFAIL/XPASS/exclusions
+- Real-browser hardware validation: **5/5 feature tests** (including all 37 advertised mode/rate combinations) and **33/33 hardware-aligned UI tests**
 
 ## What The Current Bitstream Actually Does
 

@@ -111,7 +111,7 @@ class SwdDecoder(Decoder):
                             i += 16
                     continue
                 # else: short run of 1s — fall through, try a request header
-            elif bits[i] == 0:
+            else:  # sampled SWD bits are normalized to 0/1
                 i += 1
                 continue
 

@@ -47,9 +47,11 @@ architecture rtl of rle_compressor is
   signal state : state_t := PASSTHROUGH;
 
   signal prev     : std_logic_vector(15 downto 0) := (others => '0');
-  -- A readback block is 512 samples, so a run can reach 512 words.
-  -- Ten bits cover 0..1023 while avoiding the unused upper six registers.
-  signal cnt      : unsigned(9 downto 0) := (others => '0');
+  -- Block reads are 512 samples, but CMD_START_RAW_STREAM can feed up to
+  -- 16,384 samples through this same compressor.  The counter therefore has
+  -- to cover the public streaming limit; the old 10-bit counter wrapped a
+  -- 4,096-sample run to zero, which is reserved as the wire idle-filler word.
+  signal cnt      : unsigned(15 downto 0) := (others => '0');
   signal have     : std_logic := '0';  -- a run is in progress
   signal pend_val : std_logic_vector(15 downto 0) := (others => '0');
   signal pend_new : std_logic_vector(15 downto 0) := (others => '0');
@@ -85,7 +87,7 @@ begin
               state <= RUN;
               if sample_valid = '1' then
                 prev <= sample_in;
-                cnt  <= to_unsigned(1, 10);
+                cnt  <= to_unsigned(1, cnt'length);
                 have <= '1';
               end if;
             else
@@ -107,7 +109,7 @@ begin
             elsif sample_valid = '1' then
               if have = '0' then
                 prev <= sample_in;
-                cnt  <= to_unsigned(1, 10);
+                cnt  <= to_unsigned(1, cnt'length);
                 have <= '1';
               elsif sample_in = prev then
                 cnt <= cnt + 1;
@@ -122,7 +124,7 @@ begin
             end if;
 
           when EMIT_CNT =>
-            comp_data  <= (5 downto 0 => '0') & std_logic_vector(cnt);
+            comp_data  <= std_logic_vector(cnt);
             comp_valid <= '1';
             state <= EMIT_VAL;
 
@@ -135,7 +137,7 @@ begin
               state <= RUN;
             else
               prev <= pend_new;
-              cnt  <= to_unsigned(1, 10);
+              cnt  <= to_unsigned(1, cnt'length);
               have <= '1';
               state <= RUN;
             end if;

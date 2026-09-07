@@ -28,6 +28,7 @@ export function AnalogPanel() {
   const digitalChannels = (activeSession?.channels ?? []).filter((c) => c.type === 'digital' || c.type === 'derived');
   const [chA, setChA] = useState('');
   const [chB, setChB] = useState('');
+  const [digitalCh, setDigitalCh] = useState('');
   const [scopeAll, setScopeAll] = useState(true);
   const [busy, setBusy] = useState(false);
   const [spectrumData, setSpectrumData] = useState<{ freqs: number[]; magnitude: number[]; peaks?: { frequency_hz: number; magnitude: number }[] } | null>(null);
@@ -39,6 +40,7 @@ export function AnalogPanel() {
   const [eventCorrelationData, setEventCorrelationData] = useState<any>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const clientRef = useRef<WaveformClient | null>(null);
+  const requestId = useRef(0);
 
   useEffect(() => {
     clientRef.current = new WaveformClient();
@@ -46,6 +48,8 @@ export function AnalogPanel() {
   }, []);
 
   useEffect(() => {
+    requestId.current++;
+    setBusy(false);
     setSpectrumData(null);
     setXyData(null);
     setSpectrogramData(null);
@@ -53,89 +57,89 @@ export function AnalogPanel() {
     setEnvelopeData(null);
     setThresholdData(null);
     setEventCorrelationData(null);
-    if (analogChannels.length && !analogChannels.some((c) => c.id === chA)) {
-      setChA(analogChannels[0].id);
-    }
-    if (analogChannels.length > 1 && !analogChannels.some((c) => c.id === chB)) {
-      setChB(analogChannels[1].id);
-    }
+    setChA((current) => analogChannels.some((c) => c.id === current)
+      ? current : analogChannels[0]?.id ?? '');
+    setChB((current) => analogChannels.some((c) => c.id === current)
+      ? current : analogChannels[1]?.id ?? '');
+    setDigitalCh((current) => digitalChannels.some((c) => c.id === current)
+      ? current : digitalChannels[0]?.id ?? '');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSession?.id]);
 
-  const runSpectrum = async () => {
-    if (!activeSession || !chA) return;
+  const runAnalysis = async <T,>(load: () => Promise<T>, commit: (result: T) => void) => {
+    const current = ++requestId.current;
     setBusy(true);
     try {
-      const sel = scopeAll ? null : currentSelection();
-      const r = await api.spectrum(activeSession.id, chA, sel?.[0] ?? 0, sel?.[1] ?? -1);
-      setSpectrumData(r);
+      const result = await load();
+      if (current === requestId.current) commit(result);
     } catch (e: any) {
-      toast('error', e.message);
+      if (current === requestId.current) toast('error', e.message);
     } finally {
-      setBusy(false);
+      if (current === requestId.current) setBusy(false);
     }
   };
 
+  const runSpectrum = async () => {
+    if (!chA) return;
+    const sel = scopeAll ? null : currentSelection();
+    await runAnalysis(
+      () => api.spectrum(activeSession!.id, chA, sel?.[0] ?? 0, sel?.[1] ?? -1),
+      setSpectrumData,
+    );
+  };
+
   const runXY = async () => {
-    if (!activeSession || !chA || !chB || !clientRef.current) return;
-    setBusy(true);
-    try {
-      const sel = scopeAll ? null : currentSelection();
+    if (!chA || !chB) return;
+    const sel = scopeAll ? null : currentSelection();
+    await runAnalysis(async () => {
       const start = sel?.[0] ?? 0;
-      const end = sel?.[1] ?? activeSession.num_samples;
-      const p = await clientRef.current.fetchWindow(activeSession.id, start, end, 2000, [chA, chB]);
+      const end = sel?.[1] ?? activeSession!.num_samples;
+      const p = await clientRef.current!.fetchWindow(activeSession!.id, start, end, 2000, [chA, chB]);
       const x = p.arrays.get(`analog:${chA}`) as Float32Array | undefined;
       const y = p.arrays.get(`analog:${chB}`) as Float32Array | undefined;
       if (!x || !y || !x.length || !y.length) {
         throw new Error('No analog samples for the selected channels/range');
       }
-      setXyData({ x, y });
-    } catch (e: any) {
-      toast('error', e.message);
-    } finally {
-      setBusy(false);
-    }
+      return { x, y };
+    }, setXyData);
   };
 
   const runSpectrogram = async () => {
-    if (!activeSession || !chA) return;
-    setBusy(true);
-    try {
-      const sel = scopeAll ? null : currentSelection();
-      setSpectrogramData(await api.spectrogram(activeSession.id, chA, sel?.[0] ?? 0, sel?.[1] ?? -1));
-    } catch (e: any) { toast('error', e.message); }
-    finally { setBusy(false); }
+    if (!chA) return;
+    const sel = scopeAll ? null : currentSelection();
+    await runAnalysis(
+      () => api.spectrogram(activeSession!.id, chA, sel?.[0] ?? 0, sel?.[1] ?? -1),
+      setSpectrogramData,
+    );
   };
 
   const runCorrelation = async () => {
-    if (!activeSession || !chA || !chB) return;
-    setBusy(true);
-    try {
-      const sel = scopeAll ? null : currentSelection();
-      setCorrelationData(await api.correlation(activeSession.id, chA, chB, sel?.[0] ?? 0, sel?.[1] ?? -1));
-    } catch (e: any) { toast('error', e.message); }
-    finally { setBusy(false); }
+    if (!chA || !chB) return;
+    const sel = scopeAll ? null : currentSelection();
+    await runAnalysis(
+      () => api.correlation(activeSession!.id, chA, chB, sel?.[0] ?? 0, sel?.[1] ?? -1),
+      setCorrelationData,
+    );
   };
 
   const runEnvelope = async () => {
-    if (!activeSession || !chA) return;
-    setBusy(true);
-    try { setEnvelopeData(await api.envelope(activeSession.id, chA)); }
-    catch (e: any) { toast('error', e.message); } finally { setBusy(false); }
+    if (!chA) return;
+    await runAnalysis(() => api.envelope(activeSession!.id, chA), setEnvelopeData);
   };
 
   const runThresholdSweep = async () => {
-    if (!activeSession || !chA) return;
-    setBusy(true);
-    try { setThresholdData((await api.thresholdSweep(activeSession.id, chA)).levels); }
-    catch (e: any) { toast('error', e.message); } finally { setBusy(false); }
+    if (!chA) return;
+    await runAnalysis(
+      () => api.thresholdSweep(activeSession!.id, chA).then((result) => result.levels),
+      setThresholdData,
+    );
   };
 
   const runEventCorrelation = async () => {
-    if (!activeSession || !chA || !chB) return;
-    setBusy(true);
-    try { setEventCorrelationData(await api.eventCorrelation(activeSession.id, chA, chB)); }
-    catch (e: any) { toast('error', e.message); } finally { setBusy(false); }
+    await runAnalysis(
+      () => api.eventCorrelation(activeSession!.id, chA, digitalCh),
+      setEventCorrelationData,
+    );
   };
 
   useEffect(() => {
@@ -185,8 +189,8 @@ export function AnalogPanel() {
       const cellW = w / Math.max(1, rows.length);
       const cellH = h / Math.max(1, spectrogramData.freqs.length);
       for (let x = 0; x < rows.length; x++) {
-        for (let y = 0; y < (rows[x]?.length ?? 0); y++) {
-          const level = Math.min(1, (rows[x][y] ?? 0) / maxMag);
+        for (let y = 0; y < rows[x].length; y++) {
+          const level = Math.min(1, rows[x][y] / maxMag);
           ctx.fillStyle = `hsl(${240 - level * 240} 80% ${20 + level * 55}%)`;
           ctx.fillRect(x * cellW, h - (y + 1) * cellH, Math.ceil(cellW), Math.ceil(cellH) + 1);
         }
@@ -298,7 +302,7 @@ export function AnalogPanel() {
       {mode === 'event-correlation' && (
         <label className="field">
           <span>Digital channel</span>
-          <select value={chB} onChange={(e) => setChB(e.target.value)}>
+          <select value={digitalCh} onChange={(e) => setDigitalCh(e.target.value)}>
             {digitalChannels.map((c) => <option key={c.id} value={c.id}>{c.id} ({c.name})</option>)}
           </select>
         </label>
@@ -309,9 +313,9 @@ export function AnalogPanel() {
         <span>Whole capture (uncheck to use cursor/selection range)</span>
       </label>
 
-      <button className="primary" disabled={busy || ((mode === 'xy' || mode === 'correlation') && chA === chB) || (mode === 'event-correlation' && (!chA || !chB))}
+      <button className="primary" disabled={busy || ((mode === 'xy' || mode === 'correlation') && chA === chB) || (mode === 'event-correlation' && (!chA || !digitalCh))}
         onClick={mode === 'spectrum' ? runSpectrum : mode === 'xy' ? runXY : mode === 'spectrogram' ? runSpectrogram : mode === 'correlation' ? runCorrelation : mode === 'envelope' ? runEnvelope : mode === 'threshold' ? runThresholdSweep : runEventCorrelation}>
-        {busy ? 'Working…' : mode === 'spectrum' ? 'Compute spectrum' : mode === 'xy' ? 'Plot XY' : mode === 'spectrogram' ? 'Compute spectrogram' : mode === 'correlation' ? 'Correlate channels' : mode === 'envelope' ? 'Compute envelope' : 'Sweep thresholds'}
+        {busy ? 'Working…' : mode === 'spectrum' ? 'Compute spectrum' : mode === 'xy' ? 'Plot XY' : mode === 'spectrogram' ? 'Compute spectrogram' : mode === 'correlation' ? 'Correlate channels' : mode === 'envelope' ? 'Compute envelope' : mode === 'threshold' ? 'Sweep thresholds' : 'Correlate events'}
       </button>
       {mode === 'event-correlation' && <div className="hint">Compute event correlation</div>}
       {mode === 'spectrum' && spectrumData?.peaks?.length ? (

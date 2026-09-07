@@ -5,7 +5,6 @@ import { api } from '../api/client';
 import type { MilCaptureConfig, MilConfig, MilPresetSummary, MilRuntimeStatus, MilTransactionResponse } from '../api/types';
 import { useApp } from '../state/appStore';
 
-const READ_MODBUS_17_0100_0002 = '110301000002c767';
 const READ_MODBUS_1_0000_0002 = '010300000002c40b';
 const READ_UART_0001 = '030001';
 
@@ -59,7 +58,7 @@ function commandHex(kind: string, cfg: MilConfig | null): string {
   }
   if (kind === 'write') return modbusWrite(cfg.unit_id, writable.address, 1);
   if (kind === 'bad-crc') return modbusRead(cfg.unit_id, first.address, 1).slice(0, -2) + '00';
-  return modbusRead(cfg.unit_id, first.address, Math.min(2, cfg.registers.length || 1));
+  return modbusRead(cfg.unit_id, first.address, Math.min(2, cfg.registers.length));
 }
 
 function commandOptions(cfg: MilConfig | null) {
@@ -95,8 +94,7 @@ function pathForSegments(
   segments: { x0: number; x1: number; value: number }[],
   scale: number, offsetUs: number, highY: number, lowY: number,
 ): string {
-  if (!segments.length) return '';
-  let path = `M ${(segments[0].x0 + offsetUs) * scale} ${segments[0].value ? highY : lowY}`;
+  let path = `M ${(segments[0].x0 + offsetUs) * scale} ${highY}`;
   segments.forEach((seg) => {
     const x0 = (seg.x0 + offsetUs) * scale;
     const x1 = (seg.x1 + offsetUs) * scale;
@@ -113,8 +111,8 @@ function TimelineTrace({ event, cfg }: { event: Record<string, any>; cfg: MilCon
   const responseDelayUs = Number(event.response_delay_us ?? cfg?.timing.response_delay_us ?? 0);
   const rx = uartSegments(event.request_hex ?? '', interByteGapUs, baud);
   const tx = uartSegments(event.response_hex ?? '', interByteGapUs, baud);
-  const rxEnd = rx.length ? rx[rx.length - 1].x1 : 0;
-  const txEnd = tx.length ? rxEnd + responseDelayUs + tx[tx.length - 1].x1 : rxEnd;
+  const rxEnd = rx[rx.length - 1].x1;
+  const txEnd = rxEnd + responseDelayUs + tx[tx.length - 1].x1;
   const totalUs = Math.max(txEnd, 1);
   const scale = width / totalUs;
   const txOffset = rxEnd + responseDelayUs;
@@ -147,13 +145,6 @@ function TimelineTrace({ event, cfg }: { event: Record<string, any>; cfg: MilCon
       )}
     </>
   );
-}
-
-function defaultRequest(status: MilRuntimeStatus | null): string {
-  const protocol = status?.config?.protocol;
-  if (protocol === 'rs485_modbus') return READ_MODBUS_17_0100_0002;
-  if (protocol === 'modbus_uart') return READ_MODBUS_1_0000_0002;
-  return READ_UART_0001;
 }
 
 export function MachineInLoopPage() {
@@ -205,7 +196,7 @@ export function MachineInLoopPage() {
       setParams(statusRes.config.timing);
       setCaptureCfg(statusRes.config.capture);
       setExtraChannels(statusRes.config.capture.extra_digital_channels.join(','));
-      setRequestHex(commandHex(command, statusRes.config) || defaultRequest(statusRes));
+      setRequestHex(commandHex(command, statusRes.config));
     }
   };
 
@@ -225,7 +216,7 @@ export function MachineInLoopPage() {
         setCaptureCfg(next.config.capture);
         setExtraChannels(next.config.capture.extra_digital_channels.join(','));
       }
-      setRequestHex(commandHex(command, next.config ?? null) || defaultRequest(next));
+      setRequestHex(commandHex(command, next.config ?? null) || READ_UART_0001);
       setResult(null);
       toast('success', 'MIL preset loaded');
     } catch (e: any) {
@@ -256,14 +247,15 @@ export function MachineInLoopPage() {
   };
 
   const applyParams = async () => {
-    if (!cfg) return;
     setBusy(true);
     try {
-      const extra = extraChannels.split(',')
-        .map((v) => Number(v.trim()))
-        .filter((v) => Number.isInteger(v) && v >= 0 && v <= 15);
+      const extra = [...new Set(extraChannels.split(',')
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .map(Number)
+        .filter((value) => Number.isInteger(value) && value >= 0 && value <= 15))];
       const nextCfg: MilConfig = {
-        ...cfg,
+        ...cfg!,
         timing: params,
         capture: { ...captureCfg, extra_digital_channels: extra },
       };
@@ -297,8 +289,7 @@ export function MachineInLoopPage() {
     } finally { setBusy(false); }
   };
 
-  const openEvidence = async (sessionId?: string | null) => {
-    if (!sessionId) return;
+  const openEvidence = async (sessionId: string) => {
     await openSession(sessionId);
     setPage('capture');
   };
@@ -385,7 +376,7 @@ export function MachineInLoopPage() {
             </div>
           )}
           {result?.session_id && (
-            <button onClick={() => openEvidence(result.session_id)}>
+            <button onClick={() => openEvidence(result.session_id!)}>
               Open TX/RX capture
             </button>
           )}

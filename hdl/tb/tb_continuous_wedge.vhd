@@ -11,18 +11,15 @@ use work.sim_pkg.all;
 use work.spi_protocol_pkg.all;
 
 entity tb_continuous_wedge is
-  -- Sim => true collapses sys_clk/fast_clk/sdram_core_clk onto this
-  -- testbench's single 12 MHz clk_12 (see the DUT generic map comment
-  -- below). At SPI_HALF=100ns (5 MHz SCK) the SPI slave -- clocked at only
-  -- 12 MHz -- can't reliably sample the shift register (found 2026-07-11:
-  -- every response came back status=0xFF, i.e. no valid frame ever
-  -- decoded). 2000ns keeps the same collapsed-clock Sim=>true DUT config
-  -- but gives the 12 MHz core enough margin to shift correctly.
-  generic (SPI_HALF : time := 2000 ns);
+  generic (SPI_HALF : time := 100 ns);
 end tb_continuous_wedge;
 
 architecture bench of tb_continuous_wedge is
-  constant CLK_PERIOD : time := 1 sec / 12000000;
+  -- Sim=true bypasses the PLL, so supply the FAST_SPEED system frequency
+  -- directly.  The previous 12 MHz clock contradicted the DUT's 100.2 MHz
+  -- timing constants and forced SPI down to 250 kHz; one 1,100-byte response
+  -- then exceeded the entire 30 ms test limit.
+  constant CLK_PERIOD : time := 1 sec / 100200000;
   signal clk_12 : std_logic := '0';
   signal spi_cs  : std_logic := '1';
   signal sck     : std_logic := '0';
@@ -131,11 +128,6 @@ begin
       sdram_dqm => sdram_dqm, sdram_ras_n => sdram_ras_n, sdram_we_n => sdram_we_n,
       sdram_clk => sdram_clk, SEN_SDI => sen_sdi, SEN_SPC => sen_spc, SEN_CS => sen_cs,
       SEN_SDO => sen_sdo, LED => led);
-
-  SDRAM_CHIP : entity work.sdram_pin_model
-    port map (clk => sdram_clk, cke => sdram_cke, cs_n => sdram_cs_n, ras_n => sdram_ras_n,
-      cas_n => sdram_cas_n, we_n => sdram_we_n, ba => sdram_ba, addr => sdram_addr,
-      dqm => sdram_dqm, dq => sdram_dq);
 
   stim : process
     variable st : std_logic_vector(7 downto 0);

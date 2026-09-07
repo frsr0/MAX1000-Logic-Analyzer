@@ -1,6 +1,8 @@
 """API smoke + end-to-end flow tests against the mock device."""
 import json
+import queue
 import struct
+import threading
 import time
 
 import pytest
@@ -46,6 +48,30 @@ def parse_binary(data: bytes):
     hlen = struct.unpack("<I", data[4:8])[0]
     header = json.loads(data[8:8 + hlen])
     return header
+
+
+def receive_json_matching(ws, predicate, timeout):
+    """Receive until predicate matches, with a real wall-clock deadline."""
+    result = queue.Queue(maxsize=1)
+
+    def receive():
+        try:
+            while True:
+                message = ws.receive_json()
+                if predicate(message):
+                    result.put((True, message))
+                    return
+        except BaseException as exc:  # propagate WebSocket/test-client errors
+            result.put((False, exc))
+
+    threading.Thread(target=receive, daemon=True).start()
+    try:
+        ok, value = result.get(timeout=timeout)
+    except queue.Empty as exc:
+        raise TimeoutError(f"WebSocket message not received within {timeout}s") from exc
+    if not ok:
+        raise value
+    return value
 
 
 def test_status_and_devices(client):
@@ -778,14 +804,9 @@ def test_websocket_topics_and_ping(client):
         ws.send_text("not json")
         ws.send_json({"type": "ignored"})
         ws.send_text(json.dumps({"type": "ping"}))
-        deadline = time.time() + 5
-        seen_pong = None
-        while time.time() < deadline:
-            msg = ws.receive_json()
-            if msg["type"] == "pong":
-                seen_pong = msg
-                break
-        assert seen_pong is not None and seen_pong["type"] == "pong"
+        seen_pong = receive_json_matching(
+            ws, lambda message: message["type"] == "pong", timeout=5)
+        assert seen_pong["type"] == "pong"
 
 
 def test_capture_error_state_is_surfaced_over_rest_and_websocket(client, monkeypatch):
@@ -809,14 +830,8 @@ def test_capture_error_state_is_surfaced_over_rest_and_websocket(client, monkeyp
             "settings": {"sample_rate": 100_000, "num_samples": 2_000}},
             headers=HDR)
         assert r.status_code == 200
-        deadline = time.time() + 10
-        error_frame = None
-        while time.time() < deadline:
-            msg = ws.receive_json()
-            if msg["type"] == "capture_error":
-                error_frame = msg
-                break
-        assert error_frame is not None
+        error_frame = receive_json_matching(
+            ws, lambda message: message["type"] == "capture_error", timeout=10)
         assert error_frame["data"]["message"] == "simulated FPGA failure"
 
     st = wait_capture_done(client)

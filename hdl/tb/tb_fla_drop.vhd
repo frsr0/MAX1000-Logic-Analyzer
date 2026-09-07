@@ -22,8 +22,6 @@ end tb_fla_drop;
 architecture bench of tb_fla_drop is
   signal clk      : std_logic := '0';   -- pclk / SDRAM core: 166.67 MHz (6 ns)
   signal fastclk  : std_logic := '0';   -- sample clock: 200 MHz (5 ns)
-  signal sdram_clk_model : std_logic := '0';
-
   signal rdiv       : natural range 1 to 500000000 := RATE_DIV;
   signal samples_in : natural range 1 to 3000000 := NSAMP;
   signal run, full, armed, fast_mode : std_logic := '0';
@@ -46,56 +44,7 @@ architecture bench of tb_fla_drop is
   type word_arr is array (natural range <>) of std_logic_vector(15 downto 0);
   signal store : word_arr(0 to NSAMP-1) := (others => (others => '0'));
 
-  signal p_valid : std_logic;
-  signal p_ready : std_logic;
-  signal p_addr  : std_logic_vector(21 downto 0);
-  signal p_data  : std_logic_vector(15 downto 0);
-  signal hs_gaps : integer := 0;   -- accepted-handshake address gaps (drops)
-  signal hs_acc  : integer := 0;   -- total accepted handshakes
 begin
-
-  -- Probe the write-pump handshake to see exactly which address gets which data.
-  p_valid <= << signal .tb_fla_drop.dut.cap_stream_valid : std_logic >>;
-  p_ready <= << signal .tb_fla_drop.dut.cap_stream_ready : std_logic >>;
-  p_addr  <= << signal .tb_fla_drop.dut.cap_stream_addr  : std_logic_vector(21 downto 0) >>;
-  p_data  <= << signal .tb_fla_drop.dut.cap_stream_data  : std_logic_vector(15 downto 0) >>;
-
-  -- TRUSTWORTHY write-path check: validate the accepted cap_stream handshakes
-  -- directly (independent of the unreliable legacy Address/Outputs readback).
-  -- Each accepted (valid&ready) transfer should carry the next address. A repeat
-  -- (addr == expected-1) is a harmless double-write; a GAP (addr > expected) means
-  -- the producer ADVANCED PAST an address without committing it = the over-advance
-  -- drop we are hunting (that SDRAM cell stays un-written = 0xFFFF on HW).
-  wlog : process(clk)
-    variable expected : integer := 0;
-    variable a        : integer;
-    variable gaps     : integer := 0;
-    variable acc      : integer := 0;
-  begin
-    if rising_edge(clk) then
-      if p_valid = '1' and p_ready = '1' then
-        a := to_integer(unsigned(p_addr));
-        acc := acc + 1;
-        if a = expected then
-          expected := expected + 1;
-        elsif a = expected - 1 then
-          null;  -- harmless re-write of the same sample
-        elsif a > expected then
-          gaps := gaps + 1;
-          report "HANDSHAKE GAP: addr=" & integer'image(a) &
-                 " expected=" & integer'image(expected) &
-                 " (skipped " & integer'image(a - expected) & ")" severity warning;
-          expected := a + 1;
-        else
-          report "HANDSHAKE BACKWARD: addr=" & integer'image(a) &
-                 " expected=" & integer'image(expected) severity warning;
-        end if;
-      end if;
-      hs_gaps <= gaps;
-      hs_acc  <= acc;
-    end if;
-  end process;
-
   -- 200 MHz and 166.67 MHz from the same time base (beat repeats every 30 ns).
   -- fastclk is offset by PHASE_PS to emulate the per-capture FAST_CLK/pclk phase
   -- relationship the PLL/Run-reset establishes on real hardware. Sweeping it
@@ -109,7 +58,6 @@ begin
       fastclk <= '0'; wait for 2.5 ns;
     end loop;
   end process;
-  sdram_clk_model <= transport sdram_clk after 1.5 ns;
 
   -- Free-running input counter (one unique 16-bit value per FAST_CLK).
   process(fastclk)
@@ -158,21 +106,6 @@ begin
       Continuous_Mode => '0'
     );
 
-  SDRAM : entity work.sdram_pin_model
-    generic map (CL => 3, STRICT => true)
-    port map (
-      clk   => sdram_clk_model,
-      cke   => sdram_cke,
-      cs_n  => sdram_cs_n,
-      ras_n => sdram_ras_n,
-      cas_n => sdram_cas_n,
-      we_n  => sdram_we_n,
-      ba    => sdram_ba,
-      addr  => sdram_addr,
-      dqm   => sdram_dqm,
-      dq    => sdram_dq
-    );
-
   main : process
     variable rd     : std_logic_vector(15 downto 0);
     variable prevv  : integer;
@@ -184,6 +117,9 @@ begin
     variable last_anom  : integer := -1;
     variable gap_prev   : integer := -1;
   begin
+    assert DO_READBACK
+      report "tb_fla_drop requires end-to-end Address/Outputs verification"
+      severity failure;
     rdiv       <= RATE_DIV;
     samples_in <= NSAMP;
     fast_mode  <= '1';
@@ -253,9 +189,6 @@ begin
       report "  RE-READ#2[" & integer'image(first_anom) & "] = " &
              integer'image(to_integer(unsigned(outputs)));
     end if;
-
-    report "HANDSHAKE CHECK: accepted=" & integer'image(hs_acc) &
-           " address-gaps(drops)=" & integer'image(hs_gaps) severity note;
 
     report "TOTAL anomalies = " & integer'image(anom) &
            "  (NSAMP=" & integer'image(NSAMP) & ", step=" & integer'image(mode_d) & ")";

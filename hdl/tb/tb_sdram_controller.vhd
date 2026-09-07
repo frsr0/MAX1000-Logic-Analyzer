@@ -117,26 +117,20 @@ architecture bench of tb_sdram_controller is
     cs <= '1';
     rn <= '0';
     wn <= '1';
-    if wreq = '1' then
-      timeout_cycles := 0;
-      while wreq = '1' loop
-        wait until rising_edge(sclk);
-        timeout_cycles := timeout_cycles + 1;
-        check(timeout_cycles < 20000, "avalon_read waitrequest timeout");
-      end loop;
-    end if;
-    wait until rising_edge(sclk);
+    -- This controller's public read contract is edge-triggered and completion
+    -- is signalled by readdatavalid (the production wrapper does not consume
+    -- waitrequest).  A refresh can keep waitrequest high until after the valid
+    -- pulse, so watching waitrequest first would miss a legitimate completion.
+    timeout_cycles := 0;
+    while rvalid = '0' loop
+      wait until rising_edge(sclk);
+      timeout_cycles := timeout_cycles + 1;
+      check(timeout_cycles < 20000, "avalon_read readdatavalid timeout");
+    end loop;
+    rdata := readdata;
     cs <= '0';
     rn <= '1';
-    if rvalid = '0' then
-      timeout_cycles := 0;
-      while rvalid = '0' loop
-        wait until rising_edge(sclk);
-        timeout_cycles := timeout_cycles + 1;
-        check(timeout_cycles < 20000, "avalon_read readdatavalid timeout");
-      end loop;
-    end if;
-    rdata := readdata;
+    wait until rising_edge(sclk);
     report "avalon_read done addr=" & integer'image(to_integer(unsigned(address))) &
            " data=" & to_hstring(rdata);
   end procedure;

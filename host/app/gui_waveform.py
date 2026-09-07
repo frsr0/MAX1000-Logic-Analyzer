@@ -48,12 +48,12 @@ class WaveformDisplay(tk.Canvas):
         return [i for i, v in enumerate(self.channel_visible) if v]
 
     def set_channel_visible(self, idx, visible):
-        if idx < len(self.channel_visible):
+        if 0 <= idx < len(self.channel_visible):
             self.channel_visible[idx] = visible
             self.redraw()
 
     def toggle_channel(self, idx):
-        if idx < len(self.channel_visible):
+        if 0 <= idx < len(self.channel_visible):
             self.channel_visible[idx] = not self.channel_visible[idx]
             self.redraw()
 
@@ -82,10 +82,13 @@ class WaveformDisplay(tk.Canvas):
         for vi, ci in enumerate(vis):
             y0 = ruler_h + vi * (ch_h + self.CH_GAP)
             samples = self.ch_data[ci]
+            channel_end = min(end, len(samples))
+            if start >= channel_end:
+                continue
             is_analog = samples and max(samples) > 1
             points = []
             prev = samples[start] if start > 0 else samples[0]
-            for si in range(start, end):
+            for si in range(start, channel_end):
                 v = samples[si]
                 px = self.LABEL_WIDTH + (si - self.scroll_x) * self.px_scale
                 if is_analog:
@@ -97,8 +100,7 @@ class WaveformDisplay(tk.Canvas):
                     points.extend([lpx, py, px, py])
                 points.extend([px, py])
                 prev = v
-            if points:
-                self.create_line(points, fill='#0066cc', width=1.3, tags='live')
+            self.create_line(points, fill='#0066cc', width=1.3, tags='live')
         self._drawn_to = upto
 
     def set_scale(self, px_scale):
@@ -132,14 +134,18 @@ class WaveformDisplay(tk.Canvas):
             si = int(sx)
             if self.marker1 is None:
                 self.marker1 = si
+                self.dragging = 'marker1'
             elif self.marker2 is None:
                 self.marker2 = si
                 if self.marker1 > self.marker2:
                     self.marker1, self.marker2 = self.marker2, self.marker1
+                    self.dragging = 'marker1'
+                else:
+                    self.dragging = 'marker2'
             else:
                 self.marker1 = si
                 self.marker2 = None
-            self.dragging = 'marker2' if self.marker2 is not None else 'marker1'
+                self.dragging = 'marker1'
             self.redraw()
 
     def _on_drag(self, e):
@@ -164,11 +170,9 @@ class WaveformDisplay(tk.Canvas):
         ruler_h = self.RULER_H
         ch_h = self._calc_ch_height()
         vis = self._visible_indices()
-        vi = 0
-        for i, ci in enumerate(vis):
-            if ci == ch_idx:
-                vi = i
-                break
+        vi = next((i for i, ci in enumerate(vis) if ci == ch_idx), None)
+        if vi is None:
+            return
         y0 = ruler_h + vi * (ch_h + self.CH_GAP)
         cw = self.winfo_width()
         self.create_rectangle(self.LABEL_WIDTH - 4, y0 - 1, cw, y0 + ch_h + 1,
@@ -186,13 +190,15 @@ class WaveformDisplay(tk.Canvas):
         nch = len(self.ch_data)
         if nch == 0 or self.num_samples == 0:
             return
+        if self.px_scale <= 0:
+            return
 
         ruler_h = self.RULER_H
         ch_h = self._calc_ch_height()
         vis = self._visible_indices()
 
         self.create_rectangle(0, 0, w, ruler_h, fill='#eee', outline='')
-        if self.px_scale > 0 and self.samplerate > 0:
+        if self.samplerate > 0:
             px_per_div = 100
             for step_ns in [1, 2, 5, 10, 20, 50, 100, 200, 500,
                             1000, 2000, 5000, 10000, 20000, 50000,
@@ -264,15 +270,16 @@ class WaveformDisplay(tk.Canvas):
                         if dname == name:
                             for f in slot.get('frames', []):
                                 pass
-                elif '_I2C' in name:
+                else:
                     for si, slot in enumerate(getattr(self.app, 'decoder_slots', [])):
                         if not slot.get('enabled'):
                             continue
                         dname = f"{slot['src_str']}_I2C"
                         if dname == name:
                             for f in slot.get('frames', []):
+                                px = self.LABEL_WIDTH + (f.get('pos', 0) - self.scroll_x) * self.px_scale
                                 if f['type'] == 'START':
-                                    self.create_text(self.LABEL_WIDTH + 4, mid_y, text='S',
+                                    self.create_text(px + 4, mid_y, text='S',
                                                     font=('Consolas', 8), fill='#a72')
                                 elif f['type'] == 'STOP':
                                     self.create_text(px - 8, y0 + 2, text='P',
@@ -294,16 +301,15 @@ class WaveformDisplay(tk.Canvas):
                         points.extend([lpx, py, px, py])
                     points.extend([px, py])
                     prev = v
-                if points:
-                    wf_clr = '#b05a00' if is_analog else '#2a7' if is_filt else '#0066cc'
-                    self.create_line(points, fill=wf_clr, width=1.3)
-                    if is_analog:
-                        self.create_text(w - 4, y0 + 2, text=f"{max(samples[start:end]):04d}",
-                                         anchor='ne', font=('Consolas', 7), fill='#b05a00')
-                        for v_label, frac in [('3.3V', 1.0), ('1.65V', 0.5), ('0V', 0.0)]:
-                            vy = y0 + ch_h - frac * ch_h
-                            self.create_text(1, vy, text=v_label, anchor='w',
-                                             font=('Consolas', 6), fill='#b05a00')
+                wf_clr = '#b05a00' if is_analog else '#2a7' if is_filt else '#0066cc'
+                self.create_line(points, fill=wf_clr, width=1.3)
+                if is_analog:
+                    self.create_text(w - 4, y0 + 2, text=f"{max(samples[start:end]):04d}",
+                                     anchor='ne', font=('Consolas', 7), fill='#b05a00')
+                    for v_label, frac in [('3.3V', 1.0), ('1.65V', 0.5), ('0V', 0.0)]:
+                        vy = y0 + ch_h - frac * ch_h
+                        self.create_text(1, vy, text=v_label, anchor='w',
+                                         font=('Consolas', 6), fill='#b05a00')
 
             self.create_line(0, y0 + ch_h + self.CH_GAP / 2,
                            w, y0 + ch_h + self.CH_GAP / 2,
@@ -325,8 +331,6 @@ class WaveformDisplay(tk.Canvas):
         if len(measurements) == 2:
             m1_idx, m1_samp, m1_time = measurements[0]
             m2_idx, m2_samp, m2_time = measurements[1]
-            if None in (m1_samp, m2_samp, m1_time, m2_time):
-                return
             dt_ns = abs(m2_time - m1_time)
             dsamp = abs(m2_samp - m1_samp)
             freq = 1e9 / dt_ns if dt_ns > 0 else 0

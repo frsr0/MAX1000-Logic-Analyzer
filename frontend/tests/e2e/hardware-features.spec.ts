@@ -78,18 +78,32 @@ test.beforeEach(async ({ page }) => {
     // nothing has connected yet.  Repeat the force-acquire + /api/connect
     // the suite used unconditionally, then re-check; skip only if the device
     // is really absent (the connect 502s and status stays disconnected).
-    await page.request.post('/api/control/acquire', {
+    const acquireResponse = await page.request.post('/api/control/acquire', {
       headers: { 'Content-Type': 'application/json', 'X-Client-Id': clientId },
       data: { name: 'codex-hardware', force: true },
-    }).catch(() => {});
-    await page.request.post('/api/connect', {
+    }).catch((error: unknown) => {
+      if (runHardwareMatrix) throw error;
+      return null;
+    });
+    const connectResponse = await page.request.post('/api/connect', {
       headers: { 'Content-Type': 'application/json', 'X-Client-Id': clientId },
       data: { device_id: 'hardware' },
-    }).catch(() => {});
+    }).catch((error: unknown) => {
+      if (runHardwareMatrix) throw error;
+      return null;
+    });
+    if (runHardwareMatrix && acquireResponse && !acquireResponse.ok()) {
+      throw new Error(`hardware control acquisition failed: ${acquireResponse.status()} ${await acquireResponse.text()}`);
+    }
+    if (runHardwareMatrix && connectResponse && !connectResponse.ok()) {
+      throw new Error(`MAX1000 connection failed: ${connectResponse.status()} ${await connectResponse.text()}`);
+    }
     status = await pollHardwareStatus(page, 5_000, 500);
   }
   if (!status.device_connected || status.device_kind !== 'hardware') {
-    test.skip(true, `no MAX1000 hardware attached (device_connected=${String(status.device_connected)}, device_kind=${status.device_kind ?? 'null'}); skipping hardware suite`);
+    const reason = `no MAX1000 hardware attached (device_connected=${String(status.device_connected)}, device_kind=${status.device_kind ?? 'null'})`;
+    if (runHardwareMatrix) throw new Error(reason);
+    test.skip(true, `${reason}; skipping hardware suite`);
   }
   await page.addInitScript((id) => localStorage.setItem('msa_client_id', id), clientId);
   await page.goto('/');

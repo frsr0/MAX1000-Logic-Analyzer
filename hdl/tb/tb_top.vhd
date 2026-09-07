@@ -8,7 +8,7 @@ entity tb_top is
   generic (
     PLL_MULT   : positive := 8;
     PLL_DIV    : positive := 1;
-    SPI_HALF   : time := 200 ns
+    SPI_HALF   : time := 500 ns
   );
 end tb_top;
 
@@ -45,31 +45,12 @@ architecture bench of tb_top is
 
   signal led : std_logic_vector(7 downto 0);
 
-  signal pll_locked : std_logic;
-
   signal accel_x : std_logic_vector(15 downto 0) := x"0040";
   signal accel_y : std_logic_vector(15 downto 0) := x"FFC0";
   signal accel_z : std_logic_vector(15 downto 0) := x"1000";
 
   signal sen_sdi_pu : std_logic := 'H';
   signal sen_spc_pu : std_logic := 'H';
-
-  signal running : boolean := true;
-
-  -- Hierarchical probes
-  signal test_div_probe    : std_logic_vector(9 downto 0);
-  signal test_out_probe    : std_logic;
-  signal internal_data_r_probe : std_logic_vector(15 downto 0);
-  signal sys_clk_probe     : std_logic;
-  signal pin_pool_d2_probe : std_logic_vector(22 downto 0);
-  signal gen_tx_d2_probe   : std_logic;
-  signal gen_scl_d2_probe  : std_logic;
-  signal gen_capture_active_probe : std_logic;
-  signal registered_ch0_d2_probe : std_logic;
-  signal gen_busy_probe    : std_logic;
-  signal gen_start_probe   : std_logic;
-  signal gen_active_probe  : std_logic;
-  signal gen_fifo_count_probe : std_logic_vector(7 downto 0);
 
   -- Flatten first N bytes of a byte_array into a std_logic_vector (LSB-first byte order)
   function flatten(b : byte_array; n : natural) return std_logic_vector is
@@ -79,6 +60,15 @@ architecture bench of tb_top is
       r(i*8+7 downto i*8) := b(b'low + i);
     end loop;
     return r;
+  end function;
+
+  function physical_pin(
+    mkr : std_logic_vector(14 downto 0);
+    pm  : std_logic_vector(7 downto 0);
+    idx : natural) return std_logic is
+  begin
+    if idx < 15 then return mkr(idx); end if;
+    return pm(idx - 15);
   end function;
 
   -- Packet command helper: send command + optional payload,
@@ -124,9 +114,9 @@ architecture bench of tb_top is
 
     spi_xfer(cs_n, sck, mosi, miso, half_period, tx(0 to pkt_len-1), rx(0 to pkt_len-1));
 
-    wait for 10 us;
+    wait for 20 us;
 
-    nread := 32;
+    nread := 40;
     for i in 0 to nread-1 loop
       tx(i) := x"FF";
     end loop;
@@ -197,8 +187,7 @@ architecture bench of tb_top is
     spi_write_reg(cs_n, sck, mosi, miso, half_period, reg, x"000000" & value, status);
   end procedure;
 
-  -- Fire-and-forget: send packet, skip response read, return immediately.
-  -- Used when gen_busy is checked via signal probe soon after.
+  -- Fire-and-forget packet helper for commands whose physical effect is timed.
   procedure spi_pkt_send(
     signal    cs_n   : out   std_logic;
     signal    sck    : out   std_logic;
@@ -236,21 +225,6 @@ architecture bench of tb_top is
 begin
 
   gen_clk(clk_12, CLK_PERIOD / 2);
-
-  -- Probe internal signals
-  test_div_probe    <= << signal .tb_top.DUT.test_div      : std_logic_vector(9 downto 0) >>;
-  test_out_probe    <= << signal .tb_top.DUT.test_out      : std_logic >>;
-  internal_data_r_probe <= << signal .tb_top.DUT.internal_data_r : std_logic_vector(15 downto 0) >>;
-  sys_clk_probe     <= << signal .tb_top.DUT.sys_clk : std_logic >>;
-  pin_pool_d2_probe <= << signal .tb_top.DUT.pin_pool_d2 : std_logic_vector(22 downto 0) >>;
-  gen_tx_d2_probe   <= << signal .tb_top.DUT.gen_tx_d2 : std_logic >>;
-  gen_scl_d2_probe  <= << signal .tb_top.DUT.gen_scl_d2 : std_logic >>;
-  gen_capture_active_probe <= << signal .tb_top.DUT.gen_capture_active : std_logic >>;
-  registered_ch0_d2_probe <= << signal .tb_top.DUT.registered_ch0_d2 : std_logic >>;
-  gen_busy_probe    <= << signal .tb_top.DUT.gen_busy : std_logic >>;
-  gen_start_probe   <= << signal .tb_top.DUT.gen_start : std_logic >>;
-  gen_active_probe  <= << signal .tb_top.DUT.gen_active : std_logic >>;
-  gen_fifo_count_probe <= << signal .tb_top.DUT.gen_fifo_count : std_logic_vector(7 downto 0) >>;
 
   -- Pull-ups on I2C bus
   sen_sdi <= sen_sdi_pu;
@@ -303,10 +277,13 @@ begin
 
   process
     variable st : std_logic_vector(7 downto 0);
-    variable div_t0 : std_logic_vector(9 downto 0);
-    variable div_t1 : std_logic_vector(9 downto 0);
-    variable tx_pins : byte_array(0 to 2);
-    variable tx_reg : std_logic_vector(31 downto 0);
+    variable pin_v, prev_pin_v : std_logic;
+    variable edges : natural := 0;
+    variable active_seen : boolean;
+    constant uart_symbols : byte_array(0 to 20) :=
+      (x"EE", x"EE", x"EE", x"EE", x"EE", x"EE", x"EE",
+       x"EE", x"EE", x"EE", x"EE", x"EE", x"EE", x"EE",
+       x"EE", x"EE", x"EE", x"EE", x"EE", x"EE", x"FF");
   begin
     wait for 20 us;
 
@@ -325,18 +302,6 @@ begin
     report "Test 1: PASS";
 
     ------------------------------------------------------------------
-    -- Test 1b: core_clk verified via test_div increment
-    ------------------------------------------------------------------
-    report "Test 1b: core_clk / test_div toggling";
-    wait_cycles(clk_12, 100);
-    div_t0 := test_div_probe;
-    wait_cycles(clk_12, 100);
-    div_t1 := test_div_probe;
-    check(unsigned(div_t1) /= unsigned(div_t0),
-          "FAIL: test_div did not change -- core_clk not reaching test_div");
-    report "Test 1b: PASS -- core_clk running, test_div incrementing";
-
-    ------------------------------------------------------------------
     -- Test 1c: Register write/read via packet protocol
     ------------------------------------------------------------------
     report "Test 1c: Packet protocol register write";
@@ -346,90 +311,70 @@ begin
     check(st = ST_OK, "FAIL: REG_DIVIDER write status = " & to_hstring(st));
     report "Test 1c: PASS (register write via packet protocol)";
 
-    ------------------------------------------------------------------
-    -- Test 1d: Raw pin path uses 2-cycle pipeline
-    ------------------------------------------------------------------
-    report "Test 1d: raw pin path latency";
-    mkr_d(1) <= '0';
-    wait_cycles(sys_clk_probe, 6);
-    mkr_d(1) <= '1';
-    wait_cycles(sys_clk_probe, 1);
-    check(internal_data_r_probe(1) = '0',
-          "FAIL: raw pin path changed too early (before 2 cycles)");
-    wait_cycles(sys_clk_probe, 2);
-    check(internal_data_r_probe(1) = pin_pool_d2_probe(1),
-          "FAIL: raw pin path not aligned to pin_pool_d2");
-    mkr_d(1) <= '0';
-    wait_cycles(sys_clk_probe, 2);
-    report "Test 1e: PASS -- raw pin 2-cycle pipeline verified";
-
-    ------------------------------------------------------------------
-    -- Test 2: UART generator loopback on gen_tx_pin=3,7,15
-    ------------------------------------------------------------------
-    report "Test 2: UART generator loopback on multiple gen_tx_pin values";
-
-    -- Configure UART generator
-    -- Clear any leftover SPI_TEST/I2C_TEST flags from REG_GEN_DATA
+    report "Test 2: physical generator routing on pins 0-15";
     spi_write_reg(spi_cs, sck, spi_mosi, spi_miso, SPI_HALF,
                   REG_GEN_DATA, x"00000000", st);
     check(st = ST_OK, "FAIL: GEN_DATA clear");
     spi_write_reg8(spi_cs, sck, spi_mosi, spi_miso, SPI_HALF,
                    REG_GEN_PROTO, x"00", st);
     check(st = ST_OK, "FAIL: GEN_PROTO write");
-    -- Baud divisor = sys_clk_freq / 115200
+    -- Sim=true runs sys_clk at the 12 MHz reference. A divisor of 12 gives a
+    -- compact 1 MHz symbol stream while preserving the exact UART bit pattern.
     spi_write_reg(spi_cs, sck, spi_mosi, spi_miso, SPI_HALF,
-                  REG_GEN_BAUD, std_logic_vector(to_unsigned(SYS_CLK_FREQ / 115200, 32)), st);
+                   REG_GEN_BAUD, std_logic_vector(to_unsigned(12, 32)), st);
     check(st = ST_OK, "FAIL: GEN_BAUD write");
-    -- Capture setup: fast mode, 256 samples, rate_div=500
-    spi_write_reg8(spi_cs, sck, spi_mosi, spi_miso, SPI_HALF,
-                   REG_FAST_MODE, x"01", st);
-    check(st = ST_OK, "FAIL: FAST_MODE write");
-    spi_write_reg(spi_cs, sck, spi_mosi, spi_miso, SPI_HALF,
-                  REG_SAMPLE_COUNT, std_logic_vector(to_unsigned(256, 32)), st);
-    check(st = ST_OK, "FAIL: SAMPLE_COUNT write");
-    spi_write_reg(spi_cs, sck, spi_mosi, spi_miso, SPI_HALF,
-                  REG_DELAY_COUNT, std_logic_vector(to_unsigned(256, 32)), st);
-    check(st = ST_OK, "FAIL: DELAY_COUNT write");
-    spi_write_reg(spi_cs, sck, spi_mosi, spi_miso, SPI_HALF,
-                  REG_DIVIDER, std_logic_vector(to_unsigned(500, 32)), st);
-    check(st = ST_OK, "FAIL: DIVIDER write");
 
-    -- Loop over all gen_tx_pin values 0 to 15
     for tx_pin in 0 to 15 loop
       report "Test 2: gen_tx_pin=" & integer'image(tx_pin);
+      spi_write_reg(spi_cs, sck, spi_mosi, spi_miso, SPI_HALF,
+                    REG_GEN_PINS, std_logic_vector(to_unsigned(tx_pin, 32)), st);
+      check(st = ST_OK, "FAIL: GEN_PINS write for pin " & integer'image(tx_pin));
+      spi_pkt_cmd(spi_cs, sck, spi_mosi, spi_miso, SPI_HALF,
+                  CMD_GEN_LOAD, uart_symbols, uart_symbols'length, st);
+      check(st = ST_OK, "FAIL: GEN_LOAD for pin " & integer'image(tx_pin));
       spi_pkt_send(spi_cs, sck, spi_mosi, spi_miso, SPI_HALF,
-                   CMD_WRITE_REG,
-                   byte_array'(REG_GEN_PINS,
-                     std_logic_vector(to_unsigned(tx_pin, 8)),
-                     x"00", x"00", x"00"), 5);
-      spi_pkt_send(spi_cs, sck, spi_mosi, spi_miso, SPI_HALF,
-                   CMD_GEN_LOAD, byte_array'(0 => x"55"), 1);
-      spi_pkt_send(spi_cs, sck, spi_mosi, spi_miso, SPI_HALF,
-                   CMD_GEN_CAPTURE, byte_array'(0 => x"00"), 1);
-      wait until gen_busy_probe = '1' for 200 us;
-      if gen_busy_probe = '1' then
-        wait_cycles(sys_clk_probe, 4);
-        check(internal_data_r_probe(tx_pin) = gen_tx_d2_probe,
-              "FAIL: gen_tx_pin=" & integer'image(tx_pin) &
-              " not routing gen_tx_d2");
-        check(gen_capture_active_probe = '1',
-              "FAIL: gen_tx_pin=" & integer'image(tx_pin) &
-              " gen_capture_active not asserted");
-      else
-        report "pin " & integer'image(tx_pin) & ": generator busy did not assert";
-      end if;
-      wait until gen_busy_probe = '0' for 10 ms;
-      spi_pkt_send(spi_cs, sck, spi_mosi, spi_miso, SPI_HALF,
-                   CMD_ABORT_CAPTURE, byte_array'(0 => x"00"), 1);
-      wait for 10 us;
+                   CMD_GEN_START, byte_array'(0 => x"00"), 0);
+
+      edges := 0;
+      active_seen := false;
+      prev_pin_v := 'Z';
+      for cycle in 0 to 2499 loop
+        wait until rising_edge(clk_12);
+        wait for 1 ps;
+        pin_v := physical_pin(mkr_d, pmod, tx_pin);
+        if pin_v = '0' or pin_v = '1' then
+          if not active_seen then
+            active_seen := true;
+            -- Exactly one physical output may be driven by the generator.
+            for other_pin in 0 to 15 loop
+              if other_pin /= tx_pin then
+                check(physical_pin(mkr_d, pmod, other_pin) = 'Z',
+                      "FAIL: pin " & integer'image(other_pin) &
+                      " also driven while routing pin " & integer'image(tx_pin));
+              end if;
+            end loop;
+          end if;
+          if (prev_pin_v = '0' or prev_pin_v = '1') and pin_v /= prev_pin_v then
+            edges := edges + 1;
+          end if;
+          prev_pin_v := pin_v;
+        end if;
+      end loop;
+      check(active_seen, "FAIL: selected physical pin was never driven");
+      check(edges >= 70, "FAIL: too few UART edges on pin " & integer'image(tx_pin) &
+                         " (" & integer'image(edges) & ")");
+      check(edges <= 82, "FAIL: duplicate/spurious UART edges on pin " &
+                         integer'image(tx_pin) & " (" & integer'image(edges) & ")");
+      check(physical_pin(mkr_d, pmod, tx_pin) = 'Z',
+            "FAIL: pin remains driven after generator completion");
     end loop;
 
-    report "Test 2: PASS (UART loopback verified on all pins 0-15)";
+    report "Test 2: PASS (complete UART waveform routed exclusively to pins 0-15)";
 
     report "======================================================";
     report "  ALL TOP-LEVEL TESTS PASSED";
     report "======================================================";
-    running <= false;
+    std.env.finish;
     wait;
   end process;
 

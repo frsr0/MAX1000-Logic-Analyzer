@@ -17,6 +17,8 @@ name: Hardware Matrix
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main, master]
   schedule:
     - cron: '0 4 * * 1' # weekly: every Monday 04:00 UTC
 
@@ -94,8 +96,8 @@ jobs:
             "import json,sys; s=json.load(sys.stdin); print('yes' if s.get('device_connected') and s.get('device_kind') == 'hardware' else 'no')")
           echo "device_present=$device_present" >> "$GITHUB_OUTPUT"
           if [ "$device_present" != "yes" ]; then
-            echo "::notice::No MAX1000 attached (device_connected=false or device_kind != 'hardware'); skipping hardware matrix"
-            exit 0
+            echo "::error::Expected MAX1000 hardware is unavailable (device_connected=false or device_kind != 'hardware')"
+            exit 1
           fi
           echo "MAX1000 hardware present - running hardware CI gate"
 

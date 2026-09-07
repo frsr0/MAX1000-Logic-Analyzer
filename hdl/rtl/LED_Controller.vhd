@@ -40,6 +40,7 @@ end LED_Controller;
 architecture rtl of LED_Controller is
     signal blink_cnt   : natural range 0 to BLINK_TOP := 0;
     signal blink       : std_logic := '0';
+    signal prev_blink  : std_logic := '0';
 
     -- Sweep bar: position 0..6, lit span = sweep_pos .. sweep_pos+1
     signal sweep_pos  : natural range 0 to 6 := 0;
@@ -58,6 +59,7 @@ begin
             if rst = '1' then
                 blink_cnt <= 0;
                 blink <= '0';
+                prev_blink <= '0';
                 sweep_pos <= 0;
                 sweep_dir <= '1';
                 sweep_tick <= 0;
@@ -67,6 +69,7 @@ begin
                 led_target <= (others => 0);
                 fade_step <= (others => 1);
             else
+                prev_blink <= blink;
                 -- Single blink counter for armed/done blinking
                 if blink_cnt >= BLINK_TOP - 1 then
                     blink_cnt <= 0;
@@ -122,12 +125,18 @@ begin
                         end if;
 
                     when ST_DONE =>
-                        if capture_run = '1' then
+                        -- capture_run remains asserted while the just-finished
+                        -- capture reports full.  Do not interpret that level as
+                        -- a back-to-back capture until full has cleared.
+                        if capture_run = '1' and capture_full = '0' then
                             state <= ST_CAPTURE;  -- back-to-back re-arm
-                        elsif blink = '1' then
-                            if done_cnt > 0 then
+                        elsif blink = '1' and prev_blink = '0' then
+                            -- Count blink edges, not every system clock for the
+                            -- entire high half-period.
+                            if done_cnt > 1 then
                                 done_cnt <= done_cnt - 1;
                             else
+                                done_cnt <= 0;
                                 state <= ST_IDLE;
                             end if;
                         end if;

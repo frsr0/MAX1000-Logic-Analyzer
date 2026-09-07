@@ -24,6 +24,7 @@ hdl/proj/db/
 hdl/proj/output_files/
 
 # Python bytecode
+.venv/
 __pycache__/
 *.pyc
 *.pyo
@@ -54,6 +55,10 @@ desktop/dist/
 # Playwright traces are transient; curated screenshots under
 # frontend/test-results/screenshots/ are intentionally tracked.
 frontend/test-results/playwright/*
+frontend/coverage/
+.coverage
+coverage-*.json
+*-coverage.json
 .claude/launch.json
 *.err
 /graphify-out/cache

@@ -8,7 +8,7 @@ use IEEE.numeric_std.all;
 use work.sim_pkg.all;
 
 entity tb_pump_tput is
-  generic (RATE_DIV : natural := 4);   -- 200/4 = 50 MHz front-end (fills afifo)
+  generic (RATE_DIV : natural := 10);  -- 200/10 = 20 MHz sustainable front-end
 end tb_pump_tput;
 
 architecture bench of tb_pump_tput is
@@ -45,7 +45,8 @@ begin
 
   DUT : entity work.Fast_Logic_Analyzer_SDRAM
     generic map (Max_Samples=>3000000, Channels=>16, Sim=>false, FAST_SPEED=>true,
-      CLK_Frequency=>166666667, SDRAM_CLK_HZ=>166666667, SAMPLE_CLK_HZ=>200000000)
+      CLK_Frequency=>166666667, SDRAM_CLK_HZ=>166666667, SAMPLE_CLK_HZ=>200000000,
+      Enable_Pump_Metrics=>true)
     port map (CLK=>clk, SDRAM_CLK_IN=>sdram_core_clk, CLK_150=>open, Rate_Div=>rdiv,
       Samples=>samples_in, Start_Offset=>0, Run=>run, Full=>full, Inputs=>inputs,
       Address=>address, Outputs=>outputs, sdram_addr=>sdram_addr, sdram_ba=>sdram_ba,
@@ -104,10 +105,26 @@ begin
            " overflow=" & integer'image(overflow);
     report "  cycles/accept = " & real'image(real(cyc)/real(maximum(1,acc))) &
            "  => pump rate @167 = " & real'image(166.667/(real(cyc)/real(maximum(1,acc)))) & " MHz";
-    report "  SDRAM cmds: ACT=" & integer'image(<< signal .tb_pump_tput.sdram.n_act : natural >>) &
-           " WRITE=" & integer'image(<< signal .tb_pump_tput.sdram.n_wr : natural >>) &
-           " PRE=" & integer'image(<< signal .tb_pump_tput.sdram.n_pre : natural >>) &
-           "  (ACT/WRITE ~1 => row NOT held open / page-mode broken)";
+    assert acc > 0
+      report "FAIL: write pump accepted no data during the measurement window"
+      severity failure;
+    assert ready = acc
+      report "FAIL: ready/accept counters disagree"
+      severity failure;
+    -- The controller's ready is a two-cycle acknowledgement. Each accepted
+    -- transfer therefore contributes one launch-valid and one ack-valid cycle.
+    assert abs(valid - (stall + 2 * acc)) <= 2
+      report "FAIL: valid cycles do not match launch/stall/ack accounting"
+      severity failure;
+    assert acc >= WIN / 12
+      report "FAIL: write pump did not sustain the configured 20 MHz producer"
+      severity failure;
+    assert overflow = 0
+      report "FAIL: sustainable-rate capture overflowed"
+      severity failure;
+    assert valid <= WIN and ready <= WIN and nopres <= WIN
+      report "FAIL: a per-cycle pump counter exceeded the measurement window"
+      severity failure;
     std.env.finish;
     wait;
   end process;

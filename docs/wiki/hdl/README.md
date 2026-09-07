@@ -84,16 +84,16 @@ matrix and measured ratios.
 
 ### Project
 - [Build Flow](build-flow.md) — Quartus project, constraints, compile/seed-sweep scripts, timing
-- [Testbenches](testbenches.md) — 57 HDL files classified into a 34-bench
-  maintained gate, toolchain/orphan exclusions, and tracked expected failures
+- [Testbenches](testbenches.md) — all 57 HDL benches in one required gate,
+  with explicit completion and no exclusions or expected failures
 
 ## Current timing note
 
-The current Quartus 25.1 seed-10 full-feature build (2026-08-27) closes
-slow-85C setup with `fast_clk` **+0.083 ns**, `sdram_core_clk` **+0.111 ns**,
-and `sys_clk` **+0.410 ns**; every reported setup/hold domain is positive.
-It includes the 24-bit generator divider and the registered SDRAM-init
-terminal comparison. See [Build Flow](build-flow.md).
+The current Quartus 25.1 seed-10 full-feature build (2026-09-07) closes
+slow-85C setup with `fast_clk` **+0.253 ns**, `sdram_core_clk` **+0.178 ns**,
+and `sys_clk` **+0.278 ns**; every reported timing check is positive. It
+includes the 24-bit generator divider and carry-chain fast capture budget.
+See [Build Flow](build-flow.md).
 
 | Property | Value |
 |---|---|
@@ -101,5 +101,5 @@ terminal comparison. See [Build Flow](build-flow.md).
 | Speed grade | C8 |
 | Build profile | FAST_SPEED (200 MHz sample clock) |
 | Toolchain / seed | Quartus Prime Lite 25.1 / seed 10 |
-| Last complete board validation | 2026-08-27 onward; SOF `0x0050ADC8`; 383/383 plus 37/37 browser matrix |
-| Utilisation | 7,761/8,064 LEs (96%); 4,821 registers |
+| Current board validation | 2026-09-07; SOF `0x00504799`; full suite 403/403, browser hardware 5/5 and 33/33 |
+| Utilisation | 7,713/8,064 LEs (96%); 4,802 registers |

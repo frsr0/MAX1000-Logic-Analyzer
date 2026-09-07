@@ -151,6 +151,7 @@ begin
 
     report "=== TB_CAPTURE_COMPRESSOR PASS ===" severity note;
     done <= true;
+    std.env.finish;
     wait;
   end process;
 end sim;

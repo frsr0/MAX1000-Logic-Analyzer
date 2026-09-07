@@ -83,9 +83,12 @@ begin
       start <= '1';
       wait_cycles(clk, 1);
       start <= '0';
-      wait_until(clk, valid(3), '1', 200 us, "seq " & integer'image(i) &
-                 " should complete all channels");
-      seen := "1111";
+      for cycle in 0 to 20_000 loop
+        wait until rising_edge(clk);
+        seen := seen or valid;
+        exit when seen = "1111";
+      end loop;
+      check(seen = "1111", "Every channel converted in seq " & integer'image(i));
     end loop;
     check(seen = "1111", "All channels converted in final sequence");
     report "Test 2: PASS";
@@ -112,6 +115,7 @@ begin
     report "Test 3: PASS";
 
     report "=== ALL ADC CONTROLLER TESTS PASSED ===";
+    std.env.finish;
     wait;
   end process;
 

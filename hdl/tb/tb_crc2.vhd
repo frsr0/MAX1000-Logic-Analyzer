@@ -25,6 +25,7 @@ begin
     report "crc16_int(0)=" & integer'image(c) & "  expected=52385";
     assert c = 52385
       report "crc16_int(0) mismatch: got " & integer'image(c) & ", expected 52385" severity failure;
+    std.env.finish;
     wait;
   end process;
 end sim;

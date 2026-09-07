@@ -62,9 +62,6 @@ architecture bench of tb_ols_interface is
   signal gen_load_we_cap : std_logic := '0';
   signal gen_load_we_clr : std_logic := '0';
 
-  -- Internal-signal probes (still present after the SPI refactor)
-  signal fast_mode_i        : std_logic;
-
   function flatten(b : byte_array; n : natural) return std_logic_vector is
     variable r : std_logic_vector(n*8-1 downto 0);
   begin
@@ -132,8 +129,6 @@ begin
       Buffer_Full => buffer_full, Buffer_Ack => buffer_ack
     );
 
-  fast_mode_i        <= << signal .tb_ols_interface.dut.fast_mode_i : std_logic >>;
-
   -- Capture a Gen_Start pulse
   process(clk)
   begin
@@ -184,7 +179,7 @@ begin
     report "Test 5: REG_GEN_BAUD = 208";
     wreg(spi_cs, spi_sck, spi_mosi, spi_miso, REG_GEN_BAUD, 208);
     wait_cycles(clk, 20);
-    check(gen_baud_div = std_logic_vector(to_unsigned(208, 16)),
+    check(gen_baud_div = std_logic_vector(to_unsigned(208, gen_baud_div'length)),
           "Gen_Baud_Div should be 208, got " & to_hstring(gen_baud_div));
     report "Test 5: PASS";
 
@@ -211,7 +206,6 @@ begin
     wreg(spi_cs, spi_sck, spi_mosi, spi_miso, REG_FAST_MODE, 1);
     wait_cycles(clk, 50);
     check(fast_mode = '1', "Fast_Mode output should be '1'");
-    check(fast_mode_i = '1', "internal fast_mode_i should be '1'");
     report "Test 8: PASS";
 
     ----------------------------------------------------------------
@@ -279,6 +273,7 @@ begin
     wait_cycles(clk, 50);
 
     report "=== ALL OLS INTERFACE TESTS PASSED ===";
+    std.env.finish;
     wait;
   end process;
 

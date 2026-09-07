@@ -119,6 +119,7 @@ begin
     measure_period(65536, 131077, "div 65536");
     report "PASS: 24-bit Bit_Engine divider holds 1200-baud and 65536 dividers"
            severity note;
+    std.env.finish;
     wait;
   end process;
 end architecture;

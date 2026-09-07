@@ -1785,34 +1785,31 @@ def test_trigger_decode(dev, debug_on=False):
             word = line_high if bit else 0
             words.extend([word & 0xFF, (word >> 8) & 0xFF] * spb)
     data = bytes(words)
-    if data:
-        trimmed, trig_pos = dev.apply_protocol_trigger(
-            data, UART_TRIGGER_RATE, stride=2)
-        check(trig_pos is not None, "frontend trigger found the match byte")
-        ch, ns = samples_to_channels(trimmed, stride=2)
-        gen_ch = ch[3] if len(ch) > 3 else ch[0]
-        tr = sum(1 for i in range(1, len(gen_ch)) if gen_ch[i] != gen_ch[i - 1])
-        log(f"trigger decode capture: {len(trimmed)} bytes after trim, {ns} samples, CH3 {tr} transitions")
-        clean_except = [0, 3]
-        check_channels_clean(ch, ns, except_ch=clean_except, max_trans=30, label="trig_decode")
-        decoded = decode_uart_safe(ch, UART_TRIGGER_RATE, ch_idx=3,
-                                   baud=UART_TRIGGER_BAUD)
-        log(f"  UART decoded: {len(decoded)} bytes")
-        text = ''.join(chr(b.value) if 32 <= b.value < 127 else '.'
-                       for b in decoded[:10])
-        if decoded:
-            log(f"  decoded text: {text}")
-            spb = UART_TRIGGER_RATE / UART_TRIGGER_BAUD
-            dec_bytes = bytes(b.value for b in decoded)
-            check(b"ell" in dec_bytes,
-                  f"Frontend trigger recovered 'Hello' content "
-                  f"(text='{text}', {spb:.2f} samples/bit)")
-        else:
-            spb = UART_TRIGGER_RATE / UART_TRIGGER_BAUD
-            check(False, f"UART decoded after frontend trigger "
-                  f"({spb:.2f} samples/bit, got 0 bytes)")
+    trimmed, trig_pos = dev.apply_protocol_trigger(
+        data, UART_TRIGGER_RATE, stride=2)
+    check(trig_pos is not None, "frontend trigger found the match byte")
+    ch, ns = samples_to_channels(trimmed, stride=2)
+    gen_ch = ch[3] if len(ch) > 3 else ch[0]
+    tr = sum(1 for i in range(1, len(gen_ch)) if gen_ch[i] != gen_ch[i - 1])
+    log(f"trigger decode capture: {len(trimmed)} bytes after trim, {ns} samples, CH3 {tr} transitions")
+    clean_except = [0, 3]
+    check_channels_clean(ch, ns, except_ch=clean_except, max_trans=30, label="trig_decode")
+    decoded = decode_uart_safe(ch, UART_TRIGGER_RATE, ch_idx=3,
+                               baud=UART_TRIGGER_BAUD)
+    log(f"  UART decoded: {len(decoded)} bytes")
+    text = ''.join(chr(b.value) if 32 <= b.value < 127 else '.'
+                   for b in decoded[:10])
+    if decoded:
+        log(f"  decoded text: {text}")
+        spb = UART_TRIGGER_RATE / UART_TRIGGER_BAUD
+        dec_bytes = bytes(b.value for b in decoded)
+        check(b"ell" in dec_bytes,
+              f"Frontend trigger recovered 'Hello' content "
+              f"(text='{text}', {spb:.2f} samples/bit)")
     else:
-        check(False, "trigger decode capture returned no data")
+        spb = UART_TRIGGER_RATE / UART_TRIGGER_BAUD
+        check(False, f"UART decoded after frontend trigger "
+              f"({spb:.2f} samples/bit, got 0 bytes)")
 
     # Disable trigger
     dev.trigger_decode(enable=False)
@@ -2105,10 +2102,10 @@ def test_crosstalk_characterisation(dev):
     save_result("test15b_crosstalk_char", None, {"bauds": [9600,19200,38400,57600,115200], "pins": "1-15"})
 
 # ====================================================================
-# Test 16: Long-duration stress test (30 seconds at 1 MHz)
+# Test 16: Long-duration stress test (60 seconds at 1 MHz)
 # ====================================================================
 def test_long_stress(dev, debug_on=False):
-    duration = 10
+    duration = 60
     print_header(f"Test 16: Long-duration stress ({duration} sec, rolling)")
     log(f"debug CH0 = {debug_on}")
     log(f"running rolling capture for {duration} seconds at 1 MHz, 100 ms buffer...")
@@ -2147,9 +2144,6 @@ def test_long_stress(dev, debug_on=False):
             try:
                 kind, item = next_with_timeout(gen, timeout_s=10.0)
                 if kind == "timeout":
-                    if time.time() >= deadline:
-                        log("  [INFO] rolling capture reached duration cap; stopping stress test")
-                        break
                     error_info[0] = TimeoutError("rolling capture yielded no chunk within 10s")
                     log("  [INFO] rolling capture chunk timeout; stopping stress test")
                     break
@@ -2169,7 +2163,9 @@ def test_long_stress(dev, debug_on=False):
                 log(f"  ERROR at chunk {chunk_count[0]}: {e}")
                 break
         total_data = bytes(captured)
-        log(f"stress test: {chunk_count[0]} chunks, {len(total_data)} total bytes, elapsed: {time.time() - (deadline - duration):.1f}s")
+        elapsed = time.time() - (deadline - duration)
+        log(f"stress test: {chunk_count[0]} chunks, {len(total_data)} total bytes, elapsed: {elapsed:.1f}s")
+        check(elapsed >= duration, f"Stress test completed full {duration}s duration ({elapsed:.1f}s)")
         check(chunk_count[0] > 20, f"Stress test got >20 chunks ({chunk_count[0]})")
         check(error_info[0] is None, f"No exceptions during stress test (got: {error_info[0]})")
         if total_data:
@@ -2424,11 +2420,12 @@ def test_capture_during_readout(dev):
                 empty_streak += 1
                 if empty_streak >= 2:
                     break
-        if len(data) >= 64 * 1024 * 0.9 or attempt == 1:
+        if len(data) >= 64 * 1024 * 0.9:
             break
-        log("post-stress readout short; retrying once after a brief settle")
-        time.sleep(0.25)
-        dev.spi.flush()
+        if attempt == 0:
+            log("post-stress readout short; retrying once after a brief settle")
+            time.sleep(0.25)
+            dev.spi.flush()
     dev.set_debug_ch0(False)
     # Survived = the concurrent SPI hammering neither errored (above) nor
     # broke the capture: the post-stress readout returns full-length data.
@@ -2487,13 +2484,14 @@ def _uart_waveform_match_fraction(sig, payload, rate_hz, baud, invert=False):
         if frac > best_frac:
             best_frac, best_off = frac, off
 
-    if best_off is not None:
-        lo = max(0, best_off - 32)
-        hi = min(max_offset, best_off + 32)
-        for off in range(lo, hi + 1):
-            frac = score(off)
-            if frac > best_frac:
-                best_frac, best_off = frac, off
+    # The coarse range always contains offset zero, so a valid input always
+    # establishes a best offset before this fine search.
+    lo = max(0, best_off - 32)
+    hi = min(max_offset, best_off + 32)
+    for off in range(lo, hi + 1):
+        frac = score(off)
+        if frac > best_frac:
+            best_frac, best_off = frac, off
 
     return best_frac, best_off
 
@@ -3111,32 +3109,52 @@ def test_live_rate_ceiling(dev):
         got = 0
         over = 0
         failed = None
-        t0 = time.time()
+        wall_t0 = time.time()
+        measure_t0 = None
+        measure_base = 0
         try:
             for _data, total, _w, overrun in dev.stream_ring_capture(
                     rate_hz, 4096, stop):
                 got = total
                 over = overrun
-                if time.time() - t0 > 1.2:
+                # Arm/setup and the first block have fixed latency that is not
+                # part of the sustained stream rate. Start the timed interval
+                # at that first block and require later blocks to keep pace.
+                # This remains strict about actual live throughput while
+                # avoiding a codec-dependent startup penalty.
+                if measure_t0 is None:
+                    measure_t0 = time.time()
+                    measure_base = got
+                elif time.time() - measure_t0 > 1.2:
                     stop.set()
         except Exception as exc:
             failed = exc
         finally:
             watchdog.cancel()
-        wall = max(time.time() - t0, 1e-6)
-        thr = got / wall
+        wall = max(time.time() - wall_t0, 1e-6)
+        if measure_t0 is None:
+            measured_wall = wall
+            measured_samples = got
+        else:
+            measured_wall = max(time.time() - measure_t0, 1e-6)
+            measured_samples = max(0, got - measure_base)
+        thr = measured_samples / measured_wall
         lossless = failed is None and over == 0 and thr >= rate_hz * 0.90
         log(f"  {codec:5s} src={freq_hz//1000:>6}kHz @{rate_hz//1000:>5}kS/s: "
-            f"{got} samples in {wall:.2f}s ({thr/1e6:.2f} MS/s) overruns={over}"
+            f"{got} total samples; {measured_samples} measured in "
+            f"{measured_wall:.2f}s ({thr/1e6:.2f} MS/s) overruns={over}"
             + (f" EXC={failed}" if failed else "")
             + f" -> {'LOSSLESS' if lossless else 'LOSSY'}")
         return {
             "rate_hz": rate_hz,
             "samples": got,
             "seconds": wall,
+            "measured_samples": measured_samples,
+            "measured_seconds": measured_wall,
             "throughput": thr,
             "overruns": over,
             "lossless": lossless,
+            "error": failed,
         }
 
     for freq_hz in source_freqs:
@@ -3146,8 +3164,10 @@ def test_live_rate_ceiling(dev):
             best_lossless = 0
             best_thr = 0.0
             best_case = None
+            cases = []
             for rate in ladder:
                 case = measure_case(rate, codec, freq_hz)
+                cases.append(case)
                 if case["throughput"] > best_thr:
                     best_thr = case["throughput"]
                     best_case = case
@@ -3155,19 +3175,17 @@ def test_live_rate_ceiling(dev):
                     best_lossless = case["rate_hz"]
             peaks[codec] = best_case or {"throughput": 0.0, "rate_hz": 0, "samples": 0}
             ceilings[codec] = best_lossless
+            check(all(case["error"] is None for case in cases),
+                  f"{codec} live ring completed every rate without transport errors")
         summary[freq_hz] = {"ceilings": ceilings, "peaks": peaks}
         check(ceilings['raw'] >= 500_000,
               f"raw live ring lossless at >= 500 kS/s for {freq_hz//1000} kHz source "
               f"(measured ceiling {ceilings['raw']/1e6:.2f} MS/s)")
         if freq_hz == 10_000:
-            if ceilings['delta_rle'] >= ceilings['raw']:
-                check(True,
-                      f"delta_rle live ring lossless at >= raw for 10 kHz source "
-                      f"(measured ceilings raw={ceilings['raw']/1e6:.2f}, "
-                      f"delta_rle={ceilings['delta_rle']/1e6:.2f} MS/s)")
-            else:
-                log(f"  [INFO] delta_rle live ring ceiling below raw for 10 kHz source "
-                    f"(raw={ceilings['raw']/1e6:.2f}, delta_rle={ceilings['delta_rle']/1e6:.2f} MS/s)")
+            check(ceilings['delta_rle'] >= ceilings['raw'],
+                  f"delta_rle live ring lossless at >= raw for 10 kHz source "
+                  f"(measured ceilings raw={ceilings['raw']/1e6:.2f}, "
+                  f"delta_rle={ceilings['delta_rle']/1e6:.2f} MS/s)")
             log(f"  [INFO] delta_rle peak is "
                 f"{peaks['delta_rle']['throughput']/1e6:.2f} vs raw "
                 f"{peaks['raw']['throughput']/1e6:.2f} MS/s; "
@@ -3194,7 +3212,7 @@ def test_live_rate_ceiling(dev):
 
 
 def main():
-    global PASS, FAIL, TOTAL
+    global PASS, FAIL, TOTAL, _JUMPER_PAIR_CACHE, _JUMPER_PAIR_SEARCHED
     print("=" * 60)
     print("  OLS Logic Analyzer â€” Hardware Validation Suite")
     print("=" * 60)
@@ -3396,6 +3414,7 @@ def main_new_only():
         log(f"\nERROR: {e}")
         import traceback
         traceback.print_exc()
+        check(False, f"changed-path validation aborted: {e}")
     finally:
         try:
             dev.close()
@@ -3420,6 +3439,7 @@ def main_codec_only():
         log(f"\nERROR: {e}")
         import traceback
         traceback.print_exc()
+        check(False, f"codec validation aborted: {e}")
     finally:
         try:
             dev.close()
@@ -3484,31 +3504,40 @@ def main_analog_only():
     return 0 if FAIL == 0 else 1
 
 
-if __name__ == "__main__":
+def cli(argv=None):
+    """Dispatch the command-line validation mode and return an exit code."""
+    argv = sys.argv if argv is None else argv
     watchdog_rc = _run_under_watchdog()
     if watchdog_rc is not None:
-        sys.exit(watchdog_rc)
-    if len(sys.argv) > 1 and sys.argv[1] == 'new':
-        sys.exit(main_new_only())
-    if len(sys.argv) > 1 and sys.argv[1] == 'jumper':
-        sys.exit(main_jumper_only())
-    if len(sys.argv) > 1 and sys.argv[1] == 'analog':
-        sys.exit(main_analog_only())
-    if len(sys.argv) > 1 and sys.argv[1] == 'codec':
-        sys.exit(main_codec_only())
-    if len(sys.argv) > 1 and sys.argv[1] == 'accel':
+        return watchdog_rc
+    command = argv[1] if len(argv) > 1 else None
+    if command == 'new':
+        return main_new_only()
+    if command == 'jumper':
+        return main_jumper_only()
+    if command == 'analog':
+        return main_analog_only()
+    if command == 'codec':
+        return main_codec_only()
+    if command == 'accel':
         dev = OLSDeviceSPI()
         try:
             dev.open()
             dev.reset(); time.sleep(0.5)
             test_accelerometer_whoami(dev)
         finally:
-            try: dev.close()
-            except Exception: pass
+            try:
+                dev.close()
+            except Exception:
+                pass
         print(f"\n  RESULTS: {PASS}/{TOTAL} passed, {FAIL} failed, {SKIPPED} skipped")
-        sys.exit(0 if FAIL == 0 else 1)
-    if len(sys.argv) > 1 and sys.argv[1] == 'uart':
+        return 0 if FAIL == 0 else 1
+    if command == 'uart':
         test_uart_cmd_id()
         print(f"\n  RESULTS: {PASS}/{TOTAL} passed, {FAIL} failed, {SKIPPED} skipped")
-        sys.exit(0 if FAIL == 0 else 1)
-    sys.exit(main())
+        return 0 if FAIL == 0 else 1
+    return main()
+
+
+if __name__ == "__main__":
+    sys.exit(cli())

@@ -183,6 +183,7 @@ begin
 
     for i in 0 to 15 loop report "SAMP[" & integer'image(i) & "]=" & to_hstring(sampled(i)); end loop;
     report "=== SPI PACKET TX 1024-BYTE PAYLOAD TEST PASSED ===";
+    std.env.finish;
     wait;
   end process;
 end bench;

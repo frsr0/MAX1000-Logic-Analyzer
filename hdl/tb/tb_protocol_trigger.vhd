@@ -88,6 +88,7 @@ begin
     enable <= '1';
 
     report "=== ALL PROTOCOL TRIGGER TESTS PASSED ===";
+    std.env.finish;
     wait;
   end process;
 

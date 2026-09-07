@@ -73,10 +73,9 @@ def vcd_session(text: str) -> Tuple[Session, WaveformData]:
             break
         session.channels[index].name = name
         arr = np.zeros(n, dtype=np.uint16)
-        level = 0
         for t, value in changes[name]:
-            if t < n:
-                arr[t:] = value
-                level = value
+            # ``n`` is one greater than the maximum timestamp in ``changes``.
+            # Every parsed timestamp is therefore in range by construction.
+            arr[t:] = value
         packed |= arr << index
     return session, WaveformData(sample_rate=sample_rate, digital=packed)

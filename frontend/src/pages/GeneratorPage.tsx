@@ -76,7 +76,7 @@ export function GeneratorPage() {
   }, [connected, status?.device_kind]);
 
   const set = (p: Partial<GeneratorConfig>) => setCfg({ ...cfg, ...p });
-  const setExtra = (p: Record<string, any>) => set({ extra: { ...(cfg.extra ?? {}), ...p } });
+  const setExtra = (p: Record<string, any>) => set({ extra: { ...cfg.extra, ...p } });
 
   const setProtocol = (protocol: string) => {
     if (protocol === 'i2c') {
@@ -247,7 +247,7 @@ export function GeneratorPage() {
                   onChange={(e) => {
                     const data_hex = e.target.value.replace(/[^0-9a-fA-F]/g, '');
                     set({ data_hex, ...(cfg.protocol === 'bitbang' && cfg.extra?.encoding
-                      ? { extra: { ...(cfg.extra ?? {}), data_hex } } : {}) });
+                      ? { extra: { ...cfg.extra, data_hex } } : {}) });
                   }} />
               </label>
             </>
@@ -377,7 +377,7 @@ export function GeneratorPage() {
               <label className="field">
                 <span>SWD requests (JSON)</span>
                 <textarea className="mono" rows={4}
-                  value={JSON.stringify(cfg.extra?.requests ?? [{ ap: false, read: true, addr: 0, data: 0 }], null, 2)}
+                  value={JSON.stringify(cfg.extra!.requests, null, 2)}
                   onChange={(e) => {
                     try { setExtra({ requests: JSON.parse(e.target.value) }); } catch { /* wait for valid JSON */ }
                   }} />
@@ -394,7 +394,7 @@ export function GeneratorPage() {
                 <span>Protocol template</span>
                 <select value={cfg.extra?.encoding ?? ''} onChange={(e) => {
                   const encoding = e.target.value;
-                  const extra = { ...(cfg.extra ?? {}), data_hex: cfg.data_hex } as Record<string, any>;
+                  const extra = { ...cfg.extra, data_hex: cfg.data_hex } as Record<string, any>;
                   if (encoding) extra.encoding = encoding; else delete extra.encoding;
                   set({ extra });
                 }}>
@@ -502,7 +502,7 @@ export function GeneratorPage() {
                   <select value={cfg.extra.fault ?? ''} onChange={(e) => {
                     const fault = e.target.value;
                     if (fault) setExtra({ fault });
-                    else { const { fault: _fault, ...extra } = cfg.extra ?? {}; set({ extra }); }
+                    else { const { fault: _fault, ...extra } = cfg.extra!; set({ extra }); }
                   }}>
                     <option value="">None</option>
                     <option value="wrong_parity">Wrong parity</option>
@@ -523,14 +523,14 @@ export function GeneratorPage() {
                 <span>2-bit symbols (0–3, comma separated)</span>
                 <input className="mono"
                   value={(cfg.extra?.symbols ?? []).join(',')}
-                  onChange={(e) => set({ extra: { ...(cfg.extra ?? {}), symbols: e.target.value.split(',').map((v) => Number(v.trim())).filter((v) => Number.isFinite(v) && v >= 0 && v <= 3) } })} />
+                  onChange={(e) => set({ extra: { ...cfg.extra, symbols: e.target.value.split(',').map((v) => Number(v.trim())).filter((v) => Number.isFinite(v) && v >= 0 && v <= 3) } })} />
               </label>
               <label className="field">
                 <span>Preset</span>
                 <select value={cfg.extra?.preset ?? ''} onChange={(e) => {
                   const preset = e.target.value;
-                  if (preset) set({ extra: { ...(cfg.extra ?? {}), preset, count: cfg.extra?.count ?? 32 } });
-                  else { const { preset: _preset, ...extra } = cfg.extra ?? {}; set({ extra }); }
+                  if (preset) set({ extra: { ...cfg.extra, preset, count: cfg.extra?.count ?? 32 } });
+                  else { const { preset: _preset, ...extra } = cfg.extra!; set({ extra }); }
                 }}>
                   <option value="">Custom symbols</option>
                   {bitbangPresets.map((preset) => <option key={preset} value={preset}>{preset}</option>)}
@@ -539,12 +539,12 @@ export function GeneratorPage() {
               {cfg.extra?.preset && <label className="field">
                 <span>Preset symbols</span>
                 <input type="number" min={1} max={1024} value={cfg.extra.count ?? 32}
-                  onChange={(e) => set({ extra: { ...(cfg.extra ?? {}), count: Number(e.target.value) } })} />
+                  onChange={(e) => set({ extra: { ...cfg.extra, count: Number(e.target.value) } })} />
               </label>}
               <div className="hint">Bit 0 drives TX/SDA/MOSI; bit 1 drives SCL/SCLK. The hardware FIFO supports 1024 symbols per burst.</div>
               <button onClick={async () => {
                 try { setPreview(await api.generatorPreview({
-                  ...cfg, extra: { ...(cfg.extra ?? {}), data_hex: cfg.data_hex },
+                  ...cfg, extra: { ...cfg.extra, data_hex: cfg.data_hex },
                 })); }
                 catch (e: any) { toast('error', e.message); }
               }}>Preview waveform</button>

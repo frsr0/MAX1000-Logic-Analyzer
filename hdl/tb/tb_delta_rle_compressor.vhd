@@ -94,6 +94,7 @@ begin
       report "packed-delta run value is incorrect"
       severity failure;
     report "=== TB_DELTA_RLE_COMPRESSOR PASS ===";
+    std.env.finish;
     wait;
   end process;
 end bench;

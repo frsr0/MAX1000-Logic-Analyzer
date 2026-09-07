@@ -85,7 +85,7 @@ export function WaveformCanvas({ channels, onSelectRegion }: Props) {
     };
     const unsub = waveformView.subscribe(schedule);
     const ro = new ResizeObserver(schedule);
-    if (wrapRef.current) ro.observe(wrapRef.current);
+    ro.observe(wrapRef.current!);
     schedule();
     return () => { unsub(); ro.disconnect(); cancelAnimationFrame(raf); };
   }, [draw]);
@@ -101,7 +101,7 @@ export function WaveformCanvas({ channels, onSelectRegion }: Props) {
     ctrl: boolean; moved: boolean;
   } | null>(null);
 
-  const widthOf = () => canvasRef.current?.clientWidth ?? 1;
+  const widthOf = () => canvasRef.current!.clientWidth;
 
   const rowAt = (y: number): RowLayout | undefined =>
     layoutRef.current?.rows.find((r) => y >= r.y && y < r.y + r.height);
@@ -160,7 +160,7 @@ export function WaveformCanvas({ channels, onSelectRegion }: Props) {
       if (ld.moved) {
         const ratio = (ld.startHeight + dy) / ld.startHeight;
         for (const id of ld.affected) {
-          const s = (ld.startScales.get(id) ?? 1) * ratio;
+          const s = ld.startScales.get(id)! * ratio;
           waveformView.heightScale.set(id,
             Math.max(WaveformView.MIN_SCALE, Math.min(WaveformView.MAX_SCALE, s)));
         }
@@ -168,9 +168,7 @@ export function WaveformCanvas({ channels, onSelectRegion }: Props) {
       }
       return;
     }
-    if (canvasRef.current) {
-      canvasRef.current.style.cursor = x < layout.labelWidth ? 'ns-resize' : 'crosshair';
-    }
+    canvasRef.current!.style.cursor = x < layout.labelWidth ? 'ns-resize' : 'crosshair';
     if (pointers.current.has(e.pointerId)) {
       pointers.current.set(e.pointerId, { x, y: e.nativeEvent.offsetY });
     }

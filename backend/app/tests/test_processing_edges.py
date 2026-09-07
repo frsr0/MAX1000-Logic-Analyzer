@@ -1298,6 +1298,31 @@ def test_live_accelerometer_diagnostics_builds_session_and_handles_empty_capture
     raw.accel_capture_dialogue.return_value = b""
     with pytest.raises(HTTPException, match="returned no data"):
         diagnostics_api.live_accel_session("test")
+    assert raw.accel_capture_dialogue.call_count == 3
+
+
+def test_live_accelerometer_diagnostics_retries_one_empty_hardware_capture(monkeypatch):
+    import app.api.diagnostics as diagnostics_api
+    from app.capture.session import DeviceMetadata
+
+    raw = MagicMock(sys_clk=100_000_000, sample_clk=2_000_000)
+    raw.accel_read_i2c.return_value = 0x33
+    raw.accel_capture_dialogue.side_effect = [b"", b"\x01\x00\x02\x00"]
+    dev = MagicMock(_dev=raw)
+    dev.get_metadata.return_value = DeviceMetadata(
+        driver="fake", device_name="fake", connection="test", port="p",
+        firmware_version="1", protocol_version="1",
+        sys_clk_hz=100_000_000, sample_clk_hz=2_000_000)
+    manager = MagicMock(device_kind="hardware")
+    manager.require_device.return_value = dev
+    manager.status.return_value = {}
+    monkeypatch.setattr(diagnostics_api, "capture_manager", manager)
+    monkeypatch.setattr(diagnostics_api, "require_control", lambda _: None)
+
+    result = diagnostics_api.live_accel_session("test")
+
+    assert result["session_id"].startswith("ses_")
+    assert raw.accel_capture_dialogue.call_count == 2
 
 
 def test_diagnostics_self_test_and_mock_capture_error_mapping(monkeypatch):

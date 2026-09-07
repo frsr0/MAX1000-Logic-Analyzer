@@ -117,24 +117,6 @@ create_generated_clock -name adc_clk \
    -from [get_registers {*gen_capture_*_enable_f2*}] \
    -to   [get_registers {*capture_data_fast_speed_r*}]
 
- # The analog-stream selector is synchronized configuration state and the
- # pre-trigger tick counter is not active in the live budget-decrement branch.
- # Keep the actual sample_remaining/sample_rem_dec_r countdown paths at one
- # FAST_CLK cycle; only these inactive/held branch-select inputs may settle
- # over two cycles.
- set_multicycle_path 2 -setup \
-   -from [get_registers {*astream_f*}] \
-   -to   [get_registers {*sample_remaining*}]
- set_multicycle_path 1 -hold \
-   -from [get_registers {*astream_f*}] \
-   -to   [get_registers {*sample_remaining*}]
- set_multicycle_path 2 -setup \
-   -from [get_registers {*pretrig_tick_cnt*}] \
-   -to   [get_registers {*sample_remaining*}]
- set_multicycle_path 1 -hold \
-   -from [get_registers {*pretrig_tick_cnt*}] \
-   -to   [get_registers {*sample_remaining*}]
-
  # Pattern-trigger selectors are programmed before ARM and remain unchanged
  # while Run_OLS is asserted.  The start/clock-channel fields drive a dynamic
  # input-bit mux in Generic_Pattern_Trigger; treating that stable configuration
@@ -157,13 +139,6 @@ create_generated_clock -name adc_clk \
  set_multicycle_path 1 -hold \
    -from [get_registers {*narrow_enable_f* *astream_f*}] \
    -to   [get_registers {*narrow_shift_r*}]
- set_multicycle_path 2 -setup \
-   -from [get_registers {*narrow_enable_f*}] \
-   -to   [get_registers {*sample_remaining*}]
- set_multicycle_path 1 -hold \
-   -from [get_registers {*narrow_enable_f*}] \
-   -to   [get_registers {*sample_remaining*}]
-
  # The narrow-word completion flag is a registered control bit, and the
  # actual FIFO input is already absorbed by the extra write-side skid stage.
  # Give that selector a second FAST_CLK cycle so the narrow pending -> write

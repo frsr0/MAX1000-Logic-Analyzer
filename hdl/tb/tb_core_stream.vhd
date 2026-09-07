@@ -1,4 +1,4 @@
--- Core integration testbench for CMD_START_STREAM.
+-- Core integration testbench for the current CS-held CMD_START_RAW_STREAM.
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.numeric_std.all;
@@ -151,6 +151,33 @@ architecture bench of tb_core_stream is
     sck_o <= '0';
   end procedure;
 
+  -- Send a complete packet and continue clocking its response and stream
+  -- without releasing CS.  Raw streaming is deliberately one transaction:
+  -- a CS rise is the protocol's teardown signal.
+  procedure stream_command_holdcs(
+    signal cs_n : out std_logic; signal sck_o : out std_logic;
+    signal mosi : out std_logic; signal miso : in std_logic;
+    constant cmd : in std_logic_vector(7 downto 0);
+    constant payload : in byte_array; constant plen : in natural;
+    variable rx_data : out byte_array) is
+    variable tx : byte_array(rx_data'range);
+    variable len_v : std_logic_vector(15 downto 0);
+    variable crc_v : std_logic_vector(15 downto 0);
+    variable crc_data : std_logic_vector((4+plen)*8-1 downto 0);
+  begin
+    for i in tx'range loop tx(i) := x"FF"; end loop;
+    tx(0) := x"55"; tx(1) := x"AA";
+    tx(2) := cmd; tx(3) := x"00";
+    len_v := std_logic_vector(to_unsigned(plen, 16));
+    tx(4) := len_v(7 downto 0); tx(5) := len_v(15 downto 8);
+    for i in 0 to plen-1 loop tx(6+i) := payload(i); end loop;
+    crc_data := flatten(tx(2 to 5+plen), 4+plen);
+    crc_v := crc16(crc_data);
+    tx(6+plen) := crc_v(7 downto 0);
+    tx(7+plen) := crc_v(15 downto 8);
+    spi_xfer(cs_n, sck_o, mosi, miso, SPI_HALF, tx, rx_data);
+  end procedure;
+
 begin
 
   gen_clk(clk, 5 ns);
@@ -161,10 +188,20 @@ begin
     fast_clk <= '0'; wait for 2.5 ns;
   end process;
 
+  -- Keep the stimulus ramp at the configured 20 MS/s sample cadence.  This
+  -- bench verifies block/stream protocol integrity, not intentional FIFO
+  -- overflow (which has dedicated coverage); driving 200 MS/s into the
+  -- 25 Mword/s behavioural SDRAM handshake truncated the capture at word 27.
   process(fast_clk)
+    variable stimulus_div : natural range 0 to 9 := 0;
   begin
     if rising_edge(fast_clk) then
-      inputs_fast <= std_logic_vector(unsigned(inputs_fast) + 1);
+      if stimulus_div = 9 then
+        stimulus_div := 0;
+        inputs_fast <= std_logic_vector(unsigned(inputs_fast) + 1);
+      else
+        stimulus_div := stimulus_div + 1;
+      end if;
     end if;
   end process;
 
@@ -212,20 +249,13 @@ begin
       Pump_Accept_Cycles => open, Pump_Stall_Cycles => open,
       Pump_NoData_Cycles => open, Pump_Overflow_Count => open);
 
-  SDRAM : entity work.sdram_pin_model
-    generic map (CL => 3, STRICT => false)
-    port map (
-      clk => sdram_clk, cke => sdram_cke, cs_n => sdram_cs_n,
-      ras_n => sdram_ras_n, cas_n => sdram_cas_n, we_n => sdram_we_n,
-      ba => sdram_ba, addr => sdram_addr, dqm => sdram_dqm,
-      dq => sdram_dq);
-
   stim : process
     variable st : std_logic_vector(7 downto 0);
     variable pay : byte_array(0 to 1099);
     variable pl : natural;
     variable empty : byte_array(0 to 0);
     variable addr_pld : byte_array(0 to 3);
+    variable start_pld : byte_array(0 to 7);
     variable word : std_logic_vector(15 downto 0);
     variable prev_word : std_logic_vector(15 downto 0) := (others => '0');
     variable V0_blockread : std_logic_vector(15 downto 0) := (others => '0');
@@ -238,7 +268,6 @@ begin
     variable ack_seq : std_logic_vector(7 downto 0);
     variable ack_paylen : natural;
     variable data_start : natural;
-    variable phantom : natural;
     variable deadline : natural := 0;
   begin
     wait for 30 us;
@@ -248,7 +277,7 @@ begin
     report "Configuring capture...";
     wreg(spi_cs, sck, spi_mosi, spi_miso, REG_FLAGS, 0);
     wreg(spi_cs, sck, spi_mosi, spi_miso, REG_FAST_MODE, 1);
-    wreg(spi_cs, sck, spi_mosi, spi_miso, REG_DIVIDER, 0);
+    wreg(spi_cs, sck, spi_mosi, spi_miso, REG_DIVIDER, 9);
     wreg(spi_cs, sck, spi_mosi, spi_miso, REG_SAMPLE_COUNT, 4096);
     wreg(spi_cs, sck, spi_mosi, spi_miso, REG_DELAY_COUNT, 4096);
     wreg(spi_cs, sck, spi_mosi, spi_miso, REG_TRIGGER_MASK, 0);
@@ -276,12 +305,10 @@ begin
     addr_pld := (x"00", x"00", x"00", x"00");
     pkt_send(spi_cs, sck, spi_mosi, spi_miso, CMD_READ_CAPTURE, addr_pld, 4);
     wait for 30 us;
-    -- Skip phantom bytes from pump startup (0-2 bytes)
-    -- First valid sample after phantoms: sample 0 = 0x0001
-    check(rx_stream(0) = x"00" or rx_stream(0) = x"01",
-          "Stream byte 0 should be 0x00 (phantom) or 0x01 (sample 0 low)");
-    check(rx_stream(1) = x"00" or rx_stream(1) = x"01",
-          "Stream byte 1 should be 0x00 (phantom) or 0x01 (sample 0 low/high)");
+    pkt_read_rsp(spi_cs, sck, spi_mosi, spi_miso, 1100, st, pay, pl);
+    check(pl = 1024,
+          "Block read payload length=" & integer'image(pl) & ", expected 1024");
+    V0_blockread := pay(1) & pay(0);
     for w in 0 to 255 loop
       -- Even sample in bits 15:0
       word := pay(w*4 + 1) & pay(w*4);
@@ -297,12 +324,10 @@ begin
       prev_word := word;
     end loop;
     report "Block read: +1 ramp confirmed";
-    addr_pld := (x"00", x"00", x"00", x"00");
-    pkt_send(spi_cs, sck, spi_mosi, spi_miso, CMD_START_STREAM, addr_pld, 4);
-    wait for 8 us;
-
-    -- CS-held stream read: ack (~16 bytes) + guard + 1024 samples
-    stream_read_holdcs(spi_cs, sck, spi_mosi, spi_miso, 2080, rx_stream);
+    start_pld := (x"00", x"00", x"00", x"00",
+                  x"00", x"04", x"00", x"00"); -- base 0, 1024 samples
+    stream_command_holdcs(spi_cs, sck, spi_mosi, spi_miso,
+                          CMD_START_RAW_STREAM, start_pld, 8, rx_stream);
     -- Raise CS to end the stream
     spi_cs <= '1';
     wait for SPI_HALF;
@@ -333,21 +358,11 @@ begin
            & integer'image(to_integer(unsigned(rx_stream(1)))) & ","
            & integer'image(to_integer(unsigned(rx_stream(2)))) & ","
            & integer'image(to_integer(unsigned(rx_stream(3))));
-    -- data_start = after ack header(6) + payload(8) + CRC(2) = 16 bytes from sync,
-    -- plus 2 more bytes to skip the pump-startup phantom 0x0000 sample
-    phantom := 0;
-    data_start := ack_base + 18;
-    -- Align to even byte boundary if needed
-    while (data_start + phantom) mod 2 = 1 loop
-      phantom := phantom + 1;
-    end loop;
-    data_start := data_start + phantom;
-    if phantom > 0 then
-      report "Skipped " & integer'image(phantom) & " phantom byte(s)";
-    end if;
-    -- Decode 1024 samples: pump sends high byte first, then low byte
+    -- Response frame is header(6) + payload(8) + CRC(2).  Raw sample words
+    -- immediately follow in little-endian order.
+    data_start := ack_base + 16;
     for i in 0 to 1023 loop
-      S(i) := rx_stream(data_start + 2*i) & rx_stream(data_start + 2*i + 1);
+      S(i) := rx_stream(data_start + 2*i + 1) & rx_stream(data_start + 2*i);
     end loop;
     report "data_start=" & integer'image(data_start)
            & " S(0)=" & integer'image(to_integer(unsigned(S(0))))

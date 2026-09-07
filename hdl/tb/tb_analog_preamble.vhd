@@ -1,15 +1,13 @@
--- Reproduce the mixed-mode (analog) 2-word frame preamble in simulation.
+-- Verify mixed-mode (analog) frame alignment in simulation.
 --
 -- Drives OLS_SDRAM_Top (FAST_SPEED=true, Sim=true) through the host's analog
 -- capture register sequence (REG_FLAGS bit3 = MODE_MIXED) and dumps the first
--- words read back via CMD_READ_CAPTURE. On hardware the aligned 7-word analog
--- frame starts at word index 2 (a fixed 2-sample preamble); this TB prints the
--- raw word stream so we can see whether the sim reproduces that phase.
+-- words read back via CMD_READ_CAPTURE.  The current mixed frame is five bytes,
+-- padded to three 16-bit SDRAM words: digital, packed ADC low, packed ADC high.
 --
 -- In sim the modular-ADC model returns a constant 0xAAA on all 8 channels, so
--- every analog frame is identical: word0 = digital (driven here to a constant),
--- words 1..6 = the 0xAAA-derived ADC bytes. The frame value pattern repeats
--- every 7 words; the offset of that period-7 pattern is the preamble length.
+-- every analog frame is identical and must be aligned from word zero:
+-- 0x0000, 0xAAAA, 0x00AA.
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.numeric_std.all;
@@ -21,7 +19,10 @@ entity tb_analog_preamble is
 end tb_analog_preamble;
 
 architecture bench of tb_analog_preamble is
-  constant CLK_PERIOD : time := 1 sec / 12000000;
+  -- Sim=true bypasses the PLL but FAST_SPEED still configures the DUT for its
+  -- 100.2 MHz system-clock contract.  Drive that modeled clock here so SPI,
+  -- capture timing, and watchdog constants remain coherent.
+  constant CLK_PERIOD : time := 1 sec / 100200000;
 
   signal clk_12 : std_logic := '0';
   signal spi_cs  : std_logic := '1';
@@ -162,22 +163,15 @@ begin
       SEN_SDI => sen_sdi, SEN_SPC => sen_spc, SEN_CS => sen_cs, SEN_SDO => sen_sdo,
       LED => led);
 
-  SDRAM_CHIP : entity work.sdram_pin_model
-    port map (
-      clk => sdram_clk, cke => sdram_cke, cs_n => sdram_cs_n,
-      ras_n => sdram_ras_n, cas_n => sdram_cas_n, we_n => sdram_we_n,
-      ba => sdram_ba, addr => sdram_addr, dqm => sdram_dqm, dq => sdram_dq);
-
   stim : process
     constant FRAMES : natural := 16;
-    constant WORDS  : natural := FRAMES * 7;     -- 7 words per mixed frame
+    constant WORDS  : natural := FRAMES * 3;
     variable st : std_logic_vector(7 downto 0);
     variable pay : byte_array(0 to 1099);
     variable pl : natural;
     variable empty : byte_array(0 to 0);
     variable addr_pld : byte_array(0 to 3);
     variable word : std_logic_vector(15 downto 0);
-    variable line_s : string(1 to 120);
     variable deadline : natural := 0;
   begin
     -- drive a recognisable constant on the pins
@@ -211,6 +205,8 @@ begin
     end loop;
     report "capture status = " & to_hstring(st) & " (deadline=" &
            integer'image(deadline) & ")";
+    check(st = ST_CAPTURE_DONE,
+          "mixed capture did not complete, status=" & to_hstring(st));
 
     -- read block 0 and dump the first 24 words
     addr_pld := (x"00", x"00", x"00", x"00");
@@ -218,17 +214,25 @@ begin
     wait for 30 us;
     pkt_read_rsp(spi_cs, sck, spi_mosi, spi_miso, 1100, st, pay, pl);
     report "block0 payload bytes = " & integer'image(pl);
+    check(pl = 1024,
+          "mixed capture block length=" & integer'image(pl) & ", expected 1024");
 
     for w in 0 to 23 loop
-      if w*2 + 1 <= pl - 1 then
-        word := pay(w*2 + 1) & pay(w*2);
-        report "  word[" & integer'image(w) & "] = " & to_hstring(word);
-      end if;
+      word := pay(w*2 + 1) & pay(w*2);
+      case w mod 3 is
+        when 0 => check(word = x"0000",
+                        "digital word mismatch at " & integer'image(w) &
+                        ": " & to_hstring(word));
+        when 1 => check(word = x"AAAA",
+                        "ADC packed-low mismatch at " & integer'image(w) &
+                        ": " & to_hstring(word));
+        when others => check(word = x"00AA",
+                             "ADC packed-high mismatch at " & integer'image(w) &
+                             ": " & to_hstring(word));
+      end case;
     end loop;
 
-    report "======================================================";
-    report "  tb_analog_preamble: done (inspect word dump above)";
-    report "======================================================";
+    report "tb_analog_preamble: PASS (8 exact aligned mixed frames)";
     std.env.finish;
   end process;
 

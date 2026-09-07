@@ -72,8 +72,6 @@ class LinDecoder(Decoder):
                     fields={"pid": pid, "identifier": identifier}, severity="error"))
                 continue
             body = raw[start_idx + 1:]
-            if len(body) < 2:
-                continue
             data = body[:min(length, len(body) - 1)]
             received = body[len(data)]
             mode = settings.get("checksum", "auto")

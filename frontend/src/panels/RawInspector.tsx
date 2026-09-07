@@ -1,5 +1,5 @@
 // Raw sample inspector: hex/bit dump of a small window around a position.
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { useApp } from '../state/appStore';
 import { waveformView } from '../state/waveformStore';
@@ -9,22 +9,27 @@ export function RawInspector() {
   const [start, setStart] = useState(0);
   const [rows, setRows] = useState<{ sample: number; value: number }[]>([]);
   const count = 64;
+  const requestId = useRef(0);
 
   const load = async (s: number) => {
+    const current = ++requestId.current;
     if (!activeSession) return;
     const clamped = Math.max(0, Math.min(s, waveformView.numSamples - count));
     setStart(clamped);
     try {
       const r = await api.rawWindow(activeSession.id, clamped, clamped + count);
+      if (current !== requestId.current) return;
       const packed: number[] = r.digital_packed ?? [];
       setRows(packed.map((v, i) => ({ sample: clamped + i, value: v })));
     } catch {
+      if (current !== requestId.current) return;
       setRows([]);
     }
   };
 
   useEffect(() => {
     load(waveformView.cursorA ?? Math.floor(waveformView.start));
+    return () => { requestId.current++; };
   }, [activeSession?.id]);
 
   if (!activeSession) return <div className="panel-body hint">No session open.</div>;

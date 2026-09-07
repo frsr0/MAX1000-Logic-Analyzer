@@ -45,8 +45,11 @@ begin
       DIVIDE_BY   => 6,
       FAST_MULT   => 50,
       FAST_DIV    => 3,
-      SDRAM_MULT  => 50,
-      SDRAM_DIV   => 6
+      -- FAST_SPEED production PLL c2 is 167 MHz (12 MHz * 167 / 12).
+      -- Keeping this at the old 100 MHz stretched every cycle-derived SDRAM
+      -- timeout/reset by 67% and let integration captures begin during init.
+      SDRAM_MULT  => 167,
+      SDRAM_DIV   => 12
     )
     port map (
       inclk0 => inclk0,

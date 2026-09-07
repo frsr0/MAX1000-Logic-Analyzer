@@ -77,6 +77,7 @@ begin
     assert cmd = x"01" report "cmd mismatch" severity failure;
     assert seq = x"55" report "seq mismatch" severity failure;
     report "SPI packet link passed";
+    std.env.finish;
     wait;
   end process;
 end sim;

@@ -125,7 +125,7 @@ if FRONTEND_DIST.exists():
         if path and candidate.is_file():
             return FileResponse(candidate)
         return FileResponse(FRONTEND_DIST / "index.html")
-else:  # pragma: no cover - frontend/dist is present in the shipped application
+else:
     @app.get("/", include_in_schema=False)
     async def root():
         return {"app": APP_NAME, "version": APP_VERSION,

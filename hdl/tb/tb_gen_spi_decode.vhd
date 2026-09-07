@@ -91,6 +91,7 @@ begin
     else
       assert false report "=== FAIL: " & integer'image(fails) & " byte mismatches ===" severity failure;
     end if;
+    std.env.finish;
     wait;
   end process;
 end bench;

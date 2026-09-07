@@ -85,11 +85,11 @@ has an explicit scope boundary.
 |---|---|
 | FPGA | Intel MAX 10 `10M08SAU169C8G` |
 | Full build | `FAST_SPEED=true`, `FAST_RAW_BUILD=false`, Quartus 25.1, seed 10 |
-| Timing | Slow-85C setup: `fast_clk` **+0.083 ns**, `sdram_core_clk` **+0.111 ns**, `sys_clk` **+0.410 ns**; all setup/hold domains clean |
-| Logic use | 7,761/8,064 LEs (96%); 4,821 registers |
+| Timing | Slow-85C setup: `fast_clk` **+0.253 ns**, `sdram_core_clk` **+0.178 ns**, `sys_clk` **+0.278 ns**; all timing checks clean |
+| Logic use | 7,713/8,064 LEs (96%); 4,802 registers |
 | Generator divider | 24-bit `REG_GEN_BAUD`; feature-advertised through metadata |
-| Current SOF | `0x0050ADC8`, programmed 2026-08-27 |
-| Hardware regression | 383/383 full suite; 10/10 smoke; 37/37 browser capture matrix |
+| Current SOF | `0x00504799`, programmed to volatile SRAM 2026-09-07 |
+| Hardware regression | 403/403 full suite; 57/57 GHDL; browser hardware suites 5/5 and 33/33 |
 
 ## How to interpret coverage
 

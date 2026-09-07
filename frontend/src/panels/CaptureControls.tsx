@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { useApp } from '../state/appStore';
 
@@ -147,7 +147,7 @@ function nearestWindowSecondsForDuration(durationSeconds: number, sampleRate: nu
   const options = windowOptionsForMode(mode, sampleRate);
   return options.reduce((best, value) => (
     Math.abs(value - durationSeconds) < Math.abs(best - durationSeconds) ? value : best
-  ), options[0] ?? ROLLING_WINDOW_SECONDS[0]);
+  ), options[0]);
 }
 
 function rateOptionsForMode(mode: CaptureMode) {
@@ -172,8 +172,7 @@ function depthOptionsForMode(mode: CaptureMode) {
 }
 
 function labelForMode(mode: CaptureMode) {
-  const src = SOURCES.find((s) => s.source === sourceForMode(mode));
-  if (!src) return mode;
+  const src = SOURCES.find((s) => s.source === sourceForMode(mode))!;
   if (src.liveOnly) return src.label;
   return acquisitionForMode(mode) === 'live' ? `${src.label} (live)` : src.label;
 }
@@ -189,6 +188,7 @@ function hardwareSummary(mode: CaptureMode) {
     case 'mixed':
     case 'mixed_continuous':
       return 'Mixed mode captures 16 digital bits plus the 4 analog scan channels, sampled together at a shared scan frame rate.';
+    case 'analog':
     case 'analog_fast':
     case 'analog_continuous':
       return 'High-speed analog captures one analog input (AIN3) at the best ADC rate.';
@@ -206,6 +206,7 @@ export function CaptureControls() {
   const [findings, setFindings] = useState<{ level: string; message: string }[]>([]);
   const [name, setName] = useState('');
   const [job, setJob] = useState<any>(null);
+  const validationRequest = useRef(0);
 
   const connected = status?.device_connected ?? false;
   const capturing = status?.capture_state === 'capturing' || status?.capture_state === 'armed';
@@ -247,11 +248,19 @@ export function CaptureControls() {
   }, [isMock, connected]);
 
   useEffect(() => {
-    if (!connected) return;
+    const request = ++validationRequest.current;
+    if (!connected) {
+      setFindings([]);
+      return;
+    }
     const t = setTimeout(() => {
       api.validateSettings(captureSettings)
-        .then((r) => setFindings(r.findings))
-        .catch(() => setFindings([]));
+        .then((r) => {
+          if (request === validationRequest.current) setFindings(r.findings);
+        })
+        .catch(() => {
+          if (request === validationRequest.current) setFindings([]);
+        });
     }, 300);
     return () => clearTimeout(t);
   }, [captureSettings, connected]);
@@ -340,14 +349,13 @@ export function CaptureControls() {
 
   const currentSource = sourceForMode(captureSettings.mode as CaptureMode);
   const currentAcq = acquisitionForMode(captureSettings.mode as CaptureMode);
-  const currentSourceLiveOnly = !!SOURCES.find((s) => s.source === currentSource)?.liveOnly;
+  const currentSourceLiveOnly = !!SOURCES.find((s) => s.source === currentSource)!.liveOnly;
 
   const selectSource = (source: CaptureSource) => {
-    const liveOnly = !!SOURCES.find((s) => s.source === source)?.liveOnly;
+    const liveOnly = !!SOURCES.find((s) => s.source === source)!.liveOnly;
     setMode(modeForSource(source, liveOnly ? 'live' : currentAcq));
   };
   const selectAcquisition = (acq: Acquisition) => {
-    if (currentSourceLiveOnly) return;
     setMode(modeForSource(currentSource, acq));
   };
 

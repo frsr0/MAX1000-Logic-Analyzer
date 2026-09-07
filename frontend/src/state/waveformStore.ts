@@ -57,6 +57,7 @@ export class WaveformView {
   private refetchQueued = false;
   private annotTimer: ReturnType<typeof setTimeout> | null = null;
   private fetchGen = 0;
+  private loadGen = 0;
   private workerClient = new WaveformClient();
   private channelFilter: string[] | undefined;
   decodersVersion = 0; // bump to refetch annotations
@@ -72,6 +73,7 @@ export class WaveformView {
 
   async load(sessionId: string, numSamples: number, sampleRate: number,
              trigSample: number | null, channels?: ChannelInfo[]) {
+    const loadGen = ++this.loadGen;
     this.sessionId = sessionId;
     this.numSamples = numSamples;
     this.sampleRate = sampleRate;
@@ -81,6 +83,7 @@ export class WaveformView {
     this.payload = null;
     this.overview = null;
     this.annotations = [];
+    this.markers = [];
     this.liveRolling = false;
     this.liveChunkSamples = 0;
     this.liveUpdatedAt = 0;
@@ -96,8 +99,11 @@ export class WaveformView {
     this.notify();
     if (!sessionId || !numSamples) return;
     try {
-      this.overview = await this.workerClient.fetchOverview(sessionId);
+      const overview = await this.workerClient.fetchOverview(sessionId);
+      if (loadGen !== this.loadGen) return;
+      this.overview = overview;
     } catch (e: unknown) {
+      if (loadGen !== this.loadGen) return;
       this.error = e instanceof Error ? e.message : String(e);
     }
     this.requestFetch(0);
@@ -312,6 +318,7 @@ export class WaveformView {
     this.loading = true;
     this.fetchGen++;
     const gen = this.fetchGen;
+    const loadGen = this.loadGen;
     this.notify();
     // request ~2 bins per CSS pixel, capped to the server max
     const res = Math.min(4096, Math.max(512,
@@ -322,7 +329,7 @@ export class WaveformView {
       const p = await this.workerClient.fetchWindow(
         this.sessionId, fetchStart, fetchEnd, res,
         this.channelFilter);
-      if (gen === this.fetchGen) {
+      if (gen === this.fetchGen && loadGen === this.loadGen) {
         this.payload = p;
         this.error = null;
         if (this.liveRolling && this.liveFollow) {
@@ -330,15 +337,13 @@ export class WaveformView {
         }
       }
     } catch (e: unknown) {
-      if (gen === this.fetchGen) {
+      if (gen === this.fetchGen && loadGen === this.loadGen) {
         this.error = e instanceof Error ? e.message : String(e);
       }
     } finally {
       this.fetching = false;
-      if (this.abort === ctl) {
-        this.loading = false;
-        this.notify();
-      }
+      this.loading = false;
+      this.notify();
       // A newer chunk arrived while this fetch was in flight: fetch again so
       // the view catches up. Only refetch if no newer fetch already started
       // (gen unchanged) — otherwise that fetch supersedes this one.
@@ -356,11 +361,13 @@ export class WaveformView {
 
   private async doFetchAnnotations() {
     if (!this.sessionId) return;
+    const loadGen = this.loadGen;
     try {
       const res = await fetch(
         `/api/sessions/${this.sessionId}/decoder-events?start=${Math.floor(this.start)}&end=${Math.ceil(this.end)}&limit=3000`);
       if (res.ok) {
         const j = await res.json();
+        if (loadGen !== this.loadGen) return;
         this.annotations = j.events as DecoderEvent[];
         this.notify();
       }
@@ -369,8 +376,10 @@ export class WaveformView {
 
   async refreshMarkers() {
     if (!this.sessionId) return;
+    const loadGen = this.loadGen;
     try {
       const r = await api.markers(this.sessionId);
+      if (loadGen !== this.loadGen) return;
       this.markers = r.markers;
       const a = this.markers.find((m) => m.kind === 'cursor_a');
       const b = this.markers.find((m) => m.kind === 'cursor_b');

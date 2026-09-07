@@ -180,6 +180,7 @@ begin
     report "Test 6: PASS";
 
     report "=== ALL UART TESTS PASSED ===";
+    std.env.finish;
     wait;
   end process;
 

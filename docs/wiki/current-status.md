@@ -18,22 +18,23 @@ map, build result, or connected-board baseline changes.
 | Generator pin pool | 26 entries: MKR D0-D14, PMOD PIO1-PIO8, `SEN_SDO`, `SEN_SDI`, `SEN_SPC` |
 | Generator FIFO | 256 bytes = 1,024 two-bit symbols |
 | Generator divider | 24 bits when metadata feature bit 0 is set; legacy 16-bit images remain supported |
-| Programmed image | Full mixed-signal seed-10 CFM image, 2026-08-27 |
-| SOF checksum | `0x0050ADC8` (Quartus Assembler report) |
-| SOF SHA-256 | `98AC43B50072A10DAD40930E3AB3BEEAEEBDC4887B07F23E14145A3E8E06828D` |
+| Programmed image | Current full mixed-signal seed-10 SOF in volatile SRAM, 2026-09-07 |
+| Persistent image | 2026-08-27 CFM image; unchanged by the current validation run |
+| SOF checksum | `0x00504799` (Quartus Assembler report) |
+| SOF SHA-256 | `2C33472F5C07F60CF41ED155EB0EAAA58D7C23320EC9A861C86ED82764F9FE50` |
 
 The image was built by Quartus Prime Lite 25.1. The slow 1200 mV, 85 C
 post-fit timing gate is fully clean:
 
 | Domain | Setup slack | Hold slack |
 |---|---:|---:|
-| `fast_clk` | +0.083 ns | +0.340 ns |
-| `sdram_core_clk` | +0.111 ns | +0.326 ns |
-| `sys_clk` | +0.410 ns | +0.293 ns |
+| `fast_clk` | +0.253 ns | +0.291 ns |
+| `sdram_core_clk` | +0.178 ns | +0.340 ns |
+| `sys_clk` | +0.278 ns | +0.223 ns |
 | `SDRAM_CHIP_CLK_OUT` | +1.098 ns | +1.808 ns |
-| `SPI_SCK_EXT` | +12.456 ns | +0.394 ns |
+| `SPI_SCK_EXT` | +12.025 ns | +0.394 ns |
 
-The fit uses 7,761/8,064 logic elements (96%), 4,821 registers, and
+The fit uses 7,713/8,064 logic elements (96%), 4,802 registers, and
 38,020/387,072 memory bits. The design remains placement-sensitive: a
 48-seed sweep found seed 10 best, so any RTL, QSF, SDC, or fitter change must
 be rebuilt and re-swept before it inherits this timing claim.
@@ -76,24 +77,43 @@ live captures.
 
 ## Verification baseline
 
-The programmed image has the following connected-board evidence:
+The current volatile image has the following connected-board evidence:
 
-- full host hardware validation: **383/383 passed**;
 - backend hardware smoke test: **10/10 passed**;
-- real-browser capture matrix: **37/37 passed** across every advertised
-  source/acquisition/rate case;
-- 1,000,000-sample digital SDRAM capture at 200 MHz;
-- generator live-stream capture and clean stop/recovery;
-- on-wire generator sweep from 1,200 to 115,200 baud, all within +0.79%;
-- auto-discovered digital and analogue jumpers, with analogue checks skipped
-  cleanly when no physical analogue jumper is present;
-- capture-visible LIS3DH I2C and SPI transactions.
+- focused changed-path hardware validation: **117/117 passed, 0 failed,
+  0 skipped**, including both physical analogue jumpers;
+- strict codec/rate rerun after the cancellation-race repair: **26/26
+  passed**, with no suppressed transport errors;
+- full connected-board suite: **403/403 passed, 0 failed, 0 skipped**,
+  including LIS3DH and physical-jumper generic-trigger checks;
+- both strict 60-second rolling stress runs passed inside the full suite, with
+  debug disabled and enabled, over 10 million samples captured in each run;
+- all 57 HDL testbenches pass with zero expected failures and zero exclusions;
+- auto-discovered analogue jumpers on both installed paths, full-depth SDRAM,
+  200.4 MHz narrow capture, packed MSO, pre-trigger, codec, readout-stress,
+  and close/reopen lifecycle checks.
 
-Software CI separately gates backend branch coverage at 88%, host branch
-coverage at 50%, frontend TypeScript/build/unit tests, Playwright mock E2E,
-and the maintained GHDL suite. The self-hosted hardware workflow fails when
+The persistent 2026-08-27 image retains its historical 383/383 full-suite,
+37/37 browser-matrix, 200 MHz million-sample, generator-rate, and LIS3DH
+evidence. Those results are not attributed to the newer volatile image.
+
+Software CI requires 100% statement and branch coverage for backend and host,
+and 100% statement, branch, function, and line coverage for all production
+frontend TypeScript/TSX, plus frontend build/typecheck,
+Playwright mock E2E, and all 57 GHDL benches. The self-hosted hardware workflow fails when
 its required MAX1000 is unavailable; it does not silently treat absence as a
 pass.
+
+The whole-frontend coverage requirement is met: **275 tests** cover all
+**3,379 statements, 2,470 branches, 941 functions, and 2,868 lines** in the
+configured production TypeScript/TSX scope. See
+[Frontend Build and Test](frontend/build-and-test.md).
+
+The latest host run passed **983 tests**, with all **8,241 statements** and
+**2,482 branches** covered (zero missing or partial branches). The backend
+run passed **540 tests**, covering all **8,800 statements** and **2,624
+branches**. Coverage is
+execution evidence, not proof of all possible behavior or electrical setups.
 
 Run the normal software checks from the repository root:
 
@@ -140,8 +160,8 @@ on-board FTDI JTAG interface. See [Build Flow](hdl/build-flow.md).
   electrical partners before software decoding becomes board-level evidence.
 - Live readback capacity depends on USB transport and signal compressibility;
   the ring reports overwrite loss and retains the newest samples.
-- The maintained HDL gate explicitly separates passing benches from orphaned,
-  GHDL-blocked, and known-failing benches. See [HDL Testbenches](hdl/testbenches.md).
+- The HDL gate requires every one of the 57 `tb_*.vhd` benches; there are no
+  exclusion or expected-failure lists. See [HDL Testbenches](hdl/testbenches.md).
 
 ## Contract change checklist
 

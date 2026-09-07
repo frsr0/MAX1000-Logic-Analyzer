@@ -50,23 +50,22 @@ The registered-ready buffer is integrated at the packed FIFO boundary, keeping
 `packed_mode_f` off the async FIFO write-port control path.
 
 A later timing pass (2026-07-23) registered the Packed_Ready five-term AND
-(`Packed_Ready_r`) and the packed-moode valid/data path into the elastic buffer
+(`Packed_Ready_r`) and the packed-mode valid/data path into the elastic buffer
 (`packed_buf_in_valid_r`, `Packed_Data_r`) to break the cross-hierarchy
   combinational path to `analog_packer`'s BRAM address register. Those stages
   remain in the current full MSO image. The later Quartus 25.1 seed-10 build
-  reports **+0.083 ns** slow-85C FAST setup slack and **+0.111 ns** for the
+  reports **+0.253 ns** slow-85C FAST setup slack and **+0.178 ns** for the
   SDRAM core. See [Capture Engine](capture-engine.md) for the detailed stages.
 
-The current complete board validation is the 2026-08-27 seed-10 image with SOF
-checksum `0x0050ADC8`; see
+The current board validation is the 2026-09-07 seed-10 image with
+SOF checksum `0x00504799`; see
 [Verification and Change Traceability](../verification-traceability.md).
 
-The budget counter's decrement pipeline is clamped at zero. Its write is
-therefore unconditional on the one-bit nonzero status: a stale terminal flag
-can only write zero, never underflow, while removing that flag from the wide
-counter data mux closes the 200.4 MHz path. The flag still gates producer
-activity and completion. The raw-only build remains available as a diagnostic
-profile.
+The budget is represented as a modular carry-chain accumulator. Carry is the
+terminal event, so no wide equality comparator sits in the producer control
+cone. Continuous reload is a separate registered pulse, while one-shot capture
+uses the same carry to stop exactly at the requested sample count. The raw-only
+build remains available as a diagnostic profile.
 
 An earlier combinational-ready integration worsened setup to `-0.284 ns` and
 was rejected by the timing gate.

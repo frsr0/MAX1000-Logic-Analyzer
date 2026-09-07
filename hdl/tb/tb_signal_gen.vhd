@@ -6,7 +6,7 @@ use work.sim_pkg.all;
 entity tb_signal_gen is
   generic (
     CLK_FREQ : natural := 96000000;
-    BAUD_DIV : natural := 834  -- ~115200 @ 96 MHz
+    BAUD_DIV : natural := 20   -- compact simulation; divider contract is unchanged
   );
 end tb_signal_gen;
 
@@ -215,6 +215,7 @@ begin
 
     report "=== ALL SIGNAL GENERATOR TESTS PASSED ===";
     running <= false;
+    std.env.finish;
     wait;
   end process;
 

@@ -71,6 +71,7 @@ begin
     wait until rising_edge(clk);
     assert busy = '0' report "Clear did not stop repeat mode" severity failure;
     report "PASS: Bit_Engine repeats a loaded pattern until Clear" severity note;
+    std.env.finish;
     wait;
   end process;
 end architecture;

@@ -19,7 +19,7 @@ use work.sim_pkg.all;
 use work.spi_protocol_pkg.all;
 
 entity tb_gen_loopback is
-  generic (SPI_HALF : time := 500 ns);
+  generic (SPI_HALF : time := 100 ns);
 end tb_gen_loopback;
 
 architecture bench of tb_gen_loopback is
@@ -31,6 +31,7 @@ architecture bench of tb_gen_loopback is
   constant SPB : real := 2000000.0 / (100000000.0 / 250.25);
 
   type samplebit_array is array (natural range <>) of std_logic;
+  type edge_count_array is array (0 to 15) of natural;
 
   signal clk_12 : std_logic := '0';
   signal spi_cs  : std_logic := '1';
@@ -57,6 +58,7 @@ architecture bench of tb_gen_loopback is
   signal sen_cs  : std_logic;
   signal sen_sdo : std_logic := '0';
   signal led : std_logic_vector(7 downto 0);
+  signal tx_pin_edges : natural := 0;
 
 
   function flatten(b : byte_array; n : natural) return std_logic_vector is
@@ -155,6 +157,19 @@ architecture bench of tb_gen_loopback is
 begin
   gen_clk(clk_12, CLK_PERIOD / 2);
 
+  -- Independent generator-side observation: distinguishes a generator that
+  -- never toggles from a capture/readback path that loses real pin activity.
+  pin_edge_monitor : process(mkr_d(TX_CH))
+    variable previous : std_logic := 'U';
+  begin
+    if (mkr_d(TX_CH) = '0' or mkr_d(TX_CH) = '1') then
+      if (previous = '0' or previous = '1') and mkr_d(TX_CH) /= previous then
+        tx_pin_edges <= tx_pin_edges + 1;
+      end if;
+      previous := mkr_d(TX_CH);
+    end if;
+  end process;
+
   DUT : entity work.OLS_SDRAM_Top
     generic map (TX_PIN => 3, PLL_MULT => 8, PLL_DIV => 1,
                  -- Sim => false + the tb/SDRAM_PLL.vhd behavioral PLL model
@@ -207,6 +222,8 @@ begin
       variable expect : std_logic;
       variable mismatches : natural;
       variable first_bad : integer;
+      variable all_edges : edge_count_array;
+      variable prev_word : std_logic_vector(15 downto 0);
     begin
       -- driver reset()
       pkt_cmd(spi_cs, sck, spi_mosi, spi_miso, CMD_ABORT_CAPTURE, empty, 0, st);
@@ -301,8 +318,18 @@ begin
       first_bad := -1;
       edges := 0;
       prev_bit := 'U';
+      all_edges := (others => 0);
+      prev_word := (others => 'U');
       for w in 0 to n_samples - 1 loop
         word := pay(w*2 + 1) & pay(w*2);
+        if w > 0 then
+          for ch in 0 to 15 loop
+            if word(ch) /= prev_word(ch) then
+              all_edges(ch) := all_edges(ch) + 1;
+            end if;
+          end loop;
+        end if;
+        prev_word := word;
         bits(w) := word(TX_CH);
         if prev_bit /= 'U' and bits(w) /= prev_bit then
           edges := edges + 1;
@@ -313,6 +340,13 @@ begin
         prev_bit := bits(w);
       end loop;
       report label_s & ": TX edges in readback = " & integer'image(edges);
+      report label_s & ": TX edges observed directly = " & integer'image(tx_pin_edges);
+      for ch in 0 to 15 loop
+        if all_edges(ch) > 0 then
+          report label_s & ": readback channel " & integer'image(ch) &
+                 " edges=" & integer'image(all_edges(ch));
+        end if;
+      end loop;
       if start_idx = -1 then
         report label_s & ": FAIL (flat capture, no start edge found)" severity error;
         fails := fails + 1;
@@ -346,7 +380,10 @@ begin
     end procedure;
 
   begin
-    wait for 30 us;  -- PLL lock + init
+    -- The production controller intentionally holds reset for 5 ms before its
+    -- JEDEC init sequence.  Start transactions only after that contract, so
+    -- test outcome is independent of SPI clock speed/configuration duration.
+    wait for 6 ms;
 
     report "=== Scenario A: cold gen capture ===";
     gen_capture_and_check("A-cold");

@@ -53,6 +53,7 @@ begin
     assert to_integer(unsigned(c)) = 52385
       report "CRC mismatch: function returned " & integer'image(to_integer(unsigned(c))) &
              ", expected 52385" severity failure;
+    std.env.finish;
     wait;
   end process;
 end sim;

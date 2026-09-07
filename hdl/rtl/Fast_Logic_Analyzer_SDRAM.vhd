@@ -22,7 +22,10 @@ entity Fast_Logic_Analyzer_SDRAM is
     SAMPLE_CLK_HZ : natural := 200_000_000;
     Write_Latency : natural := 10;
     Read_Latency  : natural := 3;
-    Page_Latency  : natural := 3
+    Page_Latency  : natural := 3;
+    -- Compile-time diagnostic instrumentation. Kept off in production builds
+    -- because the five wide counters cost timing/area; benches may enable it.
+    Enable_Pump_Metrics : boolean := false
   );
 port (
   CLK          : in  std_logic;
@@ -166,6 +169,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal cap_done_s2       : std_logic := '0';
   signal cap_done_last     : std_logic := '0';
   signal producer_done_q   : std_logic := '0';
+  signal pump_budget_done_q : std_logic := '0';
 
   signal rate_div_m1_f : natural range 0 to MAX_RATE_DIV := 11;
 
@@ -184,6 +188,8 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal Inputs_r   : std_logic_vector(Channels-1 downto 0) := (others => '0');
   signal Armed_s1   : std_logic := '0';
   signal Armed_f    : std_logic := '0';
+  signal Armed_f_d  : std_logic := '0';
+  signal Armed_f_d2 : std_logic := '0';
   signal run_f_level : std_logic := '0';
   signal fifo_overflow_f  : std_logic := '0';
   signal fifo_overflow_f_q : std_logic := '0';
@@ -208,7 +214,6 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   -- fitter past device capacity. The register map is unchanged: reads
   -- return zero. Pump_Overflow_Count (0x65) stays — it counts real capture
   -- overflow aborts.
-  constant PUMP_METRICS : boolean := false;
   signal pump_valid_cycles_u   : unsigned(31 downto 0) := (others => '0');
   signal pump_ready_cycles_u   : unsigned(31 downto 0) := (others => '0');
   signal pump_accept_cycles_u  : unsigned(31 downto 0) := (others => '0');
@@ -297,6 +302,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   -- (packed capture is a FAST_SPEED feature).
   signal packed_stop_f : std_logic := '0';
   signal packed_budget_last_r : std_logic := '0';
+  signal packed_budget_reload_r : std_logic := '0';
   -- Run-start gate for the packed producer. The pclk side discards a snapshot
   -- of stale FIFO words on the run edge; the FAST side sees Run a few cycles
   -- earlier than pclk, so packed words pushed immediately at run start can
@@ -612,7 +618,11 @@ begin
   process(pclk)
   begin
     if rising_edge(pclk) then
-      cont_meta_reset_q <= (run_edge_r and run_start_r) or run_stop_overflow;
+      -- Preserve the committed prefix metadata after a single-shot overflow so
+      -- the host can inspect/read it. The next run edge performs the reset;
+      -- using the latched run_stop_overflow level here erased Producer_Index
+      -- back to zero on every cycle after overflow.
+      cont_meta_reset_q <= run_edge_r and run_start_r;
     end if;
   end process;
 
@@ -648,12 +658,19 @@ begin
   process(FAST_CLK)
   begin
     if rising_edge(FAST_CLK) then
+      Armed_f_d <= Armed_f;
+      Armed_f_d2 <= Armed_f_d;
       cfg_valid_s1 <= cfg_valid_toggle;
       cfg_valid_s2 <= cfg_valid_s1;
       cfg_valid_edge <= cfg_valid_s1 xor cfg_valid_s2;
       if cfg_valid_edge = '1' then
         cfg_rate_div_f  <= cfg_rate_div;
         cfg_ack_toggle <= not cfg_ack_toggle;
+      elsif Armed_f = '1' and Armed_f_d = '0' then
+        -- Pre-trigger sampling starts before the run-edge config handshake.
+        -- Rate_Div is quasi-static (written before arming), so latch it when
+        -- synchronized Armed rises instead of silently using divisor 12.
+        cfg_rate_div_f <= Rate_Div;
       end if;
     end if;
   end process;
@@ -717,11 +734,21 @@ begin
     signal bram_cnt_r     : natural range 0 to BRAM_SIZE := 0;
     signal sample_div_cnt_r : natural range 0 to FAST_MAX_RATE_DIV := 0;
     signal fast_rate_reload_r : natural range 0 to FAST_MAX_RATE_DIV := 0;
-    signal sample_tick_r  : std_logic := '0';
+    signal fast_sample_tick_r  : std_logic := '0';
     signal sample_rem_nonzero_r : std_logic := '0';
-    signal cfg_valid_edge_d1 : std_logic := '0';
-    -- Pipeline register: pre-compute sample_remaining - 1 to break 22-bit carry chain
-    signal sample_rem_dec_r    : natural range 0 to Max_Samples := 0;
+    -- Modular sample-budget accumulator. It starts at -cfg_samples and adds
+    -- one for each consumed budget unit; the carry-out is the exact terminal
+    -- event. This uses the MAX 10 carry chain and avoids a 22-bit equality
+    -- comparator in the 200 MHz control cone.
+    constant BUDGET_WIDTH : positive := 22;
+    subtype budget_t is unsigned(BUDGET_WIDTH-1 downto 0);
+    signal budget_count_r : budget_t := (others => '0');
+    function budget_seed(n : natural) return budget_t is
+      variable magnitude : budget_t;
+    begin
+      magnitude := to_unsigned(n mod (2**BUDGET_WIDTH), BUDGET_WIDTH);
+      return (not magnitude) + 1;
+    end function;
     -- Pre-trigger counter: limits BRAM pre-trigger to 8 ticks, then switches to FIFO.
     -- Without this, the CDC settling window for run_f_level (Armed→Run) can cause up to
     -- 1024 pre-trigger BRAM writes before switching to FIFO, delaying gen capture data.
@@ -820,7 +847,12 @@ begin
     process(FAST_CLK)
     begin
       if rising_edge(FAST_CLK) then
-        capture_en_r <= run_f_level;
+        -- Do not let a new producer write into the async FIFO while the pclk
+        -- side is still snapshot-draining stale words from the previous run.
+        -- Packed mode already used pump_live_f at its ready boundary; applying
+        -- the same gate to ordinary digital/analog producers prevents the new
+        -- run from being discarded and overflowing with zero commits.
+        capture_en_r <= run_f_level and pump_live_f;
         pretrig_en_r <= Armed_f and not run_f_level;
       end if;
     end process;
@@ -852,7 +884,7 @@ begin
     process(FAST_CLK)
     begin
       if rising_edge(FAST_CLK) then
-        sample_tick_r <= '0';
+        fast_sample_tick_r <= '0';
         if cfg_valid_edge = '1' then
           start_gate_r <= 2;
         elsif capture_en_r = '1' and start_gate_r > 0 then
@@ -860,105 +892,25 @@ begin
         end if;
         if capture_en_r = '1' and sample_rem_nonzero_r = '1'
            and sample_div_cnt_r = 0 and start_gate_r = 0 then
-          sample_tick_r <= '1';
+          fast_sample_tick_r <= '1';
         end if;
       end if;
     end process;
 
-    -- Stage 2c: sample-remaining non-zero flag (pipelined, avoids 22-bit >0 in write path)
+    -- Stage 2c: registered budget-active flag. The write process emits a
+    -- one-cycle terminal carry pulse, so no wide terminal comparison feeds
+    -- this 200 MHz control path.
     process(FAST_CLK)
     begin
       if rising_edge(FAST_CLK) then
-        -- sample_rem_dec_r is a 1-cycle-ahead pipeline of "sample_remaining - 1"
-        -- (see comment on the signal decl) that Stage 2d writes back into
-        -- sample_remaining the FOLLOWING cycle. That round trip means
-        -- sample_remaining(k+1) actually depends on sample_remaining(k-1),
-        -- not sample_remaining(k) -- two independent interleaved countdown
-        -- chains, one per cycle parity. Reloading sample_remaining alone on
-        -- cfg_valid_edge (in Stage 2d below) only resyncs ONE of those two
-        -- chains; the other silently keeps counting down from the PREVIOUS
-        -- capture's stale value forever, since nothing ever touches it again.
-        -- Found 2026-07-10 by tracing a continuous->single-shot packed-mode
-        -- transition in tb_packed_continuous_renew Phase 2: sample_remaining
-        -- visibly alternated between a freshly-reloaded 20000-scale sequence
-        -- and a leftover ~63-scale sequence from the prior capture every
-        -- other cycle. When the stale chain's turn to be visible landed on
-        -- exactly 0, Stage 2c's clear-check below (mis)fired on that stale
-        -- zero and permanently latched sample_rem_nonzero_r low, halting
-        -- Packed_Ready with ~19937 genuine samples still remaining. Fix:
-        -- resync dec_r to the new budget on the SAME cfg_valid_edge cycle
-        -- that resyncs sample_remaining, so both pipeline parities restart
-        -- from the new capture together.
-        -- Reload with a straight copy of cfg_samples (no "-1" subtraction):
-        -- an extra wide subtractor here, in parallel with the one below,
-        -- cost enough fast_clk timing margin to push this domain negative
-        -- (measured: fast_clk slack went from +0.094ns to -0.497ns with a
-        -- "cfg_samples - 1" version). Being one cycle "long" on the very
-        -- first reload of a multi-thousand-to-million-sample budget is
-        -- functionally negligible and still fixes the real bug (both
-        -- pipeline parities restart from the new capture together instead
-        -- of one silently continuing the PREVIOUS capture's countdown).
-        if cfg_valid_edge = '1' then
-          sample_rem_dec_r <= cfg_samples;
-        elsif sample_remaining > 0 then
-          sample_rem_dec_r <= sample_remaining - 1;
-        else
-          sample_rem_dec_r <= 0;
-        end if;
-
-        -- One-cycle-delayed copy of cfg_valid_edge: extra defense-in-depth
-        -- for the elsif branch below (kept from the earlier fix attempt;
-        -- harmless now that the dec_r resync above addresses the actual
-        -- root cause).
-        cfg_valid_edge_d1 <= cfg_valid_edge;
-
         if cfg_valid_edge = '1' then
           sample_rem_nonzero_r <= '1';
-        elsif cfg_valid_edge_d1 = '0'
-              and (fifo_wr = '1' or packed_budget_last_r = '1')
-              and sample_remaining = 0 then
-          -- Use continuous_f (the FAST_CLK-synchronized copy, driven near
-          -- line 636), NOT the raw Continuous_Mode port -- an earlier version
-          -- of this fix used the raw port directly and it caused a real,
-          -- reproducible bug: at the exact boundary between a continuous
-          -- capture ending and a new single-shot packed capture starting,
-          -- sampling the async port let sample_rem_nonzero_r latch low
-          -- (falling into the single-shot "done" branch) on stale/transitional
-          -- data, so the new capture reported instant completion with
-          -- producer_index=0 and zero real words. Every other FAST_CLK-domain
-          -- use of continuous mode in this generate block goes through
-          -- continuous_f for the same reason (e.g. the afull_r/continuous_f
-          -- checks below) -- this fix now matches that convention.
-          if packed_mode_path_f = '1' and continuous_f = '1' then
-            -- Packed continuous/live capture: auto-renew the budget instead
-            -- of halting Packed_Ready forever. The plain digital/narrow/
-            -- analog-frame producers' fifo_wr pulse is NOT gated by
-            -- sample_rem_nonzero_r (only this counter and the one-shot
-            -- cap_done_toggle_f below are), so continuous captures on those
-            -- paths already run indefinitely without needing a reload here.
-            -- Packed mode is different: Packed_Ready is hard-gated by
-            -- packed_stop_f <= not sample_rem_nonzero_r, so without this
-            -- renew every packed continuous/live capture would permanently
-            -- stop producing words after exactly cfg_samples fast_clk cycles
-            -- (~20.9 ms at the 4,194,304-sample budget stream_ring_capture
-            -- always requests) and never resume -- Stage 2d (below) reloads
-            -- sample_remaining <= cfg_samples on this same edge.
-            sample_rem_nonzero_r <= '1';
-          else
-          -- fifo_wr and sample_remaining are both registered, so this process
-          -- observes the POST-decrement count: remaining=0 here means the
-          -- last word was just pushed. The previous <=2 threshold stopped two
-          -- words short, so the write pump (which counts the full sample
-          -- count) never saw Full and the capture never reported DONE.
+        elsif packed_budget_last_r = '1' then
           sample_rem_nonzero_r <= '0';
-          -- Producer just emitted the LAST requested sample to the async FIFO
-          -- (covers all three emit paths: digital / narrow / analog). Toggle the
-          -- producer-done bit so the pclk side completes the single-shot capture
-          -- once the pump FIFO has drained -- no exact SDRAM write-count match
-          -- required (the packed producer can fall a few words short at some
-          -- dividers) and no wide compare in the hot 167 MHz accept branch.
+          -- The terminal carry means the final requested budget unit was
+          -- consumed. The pclk side waits for the async FIFO to drain before
+          -- reporting completion.
           cap_done_toggle_f <= not cap_done_toggle_f;
-          end if;
         end if;
       end if;
     end process;
@@ -973,7 +925,7 @@ begin
       if rising_edge(FAST_CLK) then
         if cfg_valid_edge = '1' then
           pretrig_tick_cnt <= 0;
-        elsif pretrig_en_r = '1' and sample_tick_r = '1' and pretrig_tick_cnt < 15 then
+        elsif pretrig_en_r = '1' and fast_sample_tick_r = '1' and pretrig_tick_cnt < 15 then
           pretrig_tick_cnt <= pretrig_tick_cnt + 1;
         end if;
       end if;
@@ -985,14 +937,18 @@ begin
       variable narrow_valid_v : std_logic;
       variable narrow_bit_v   : std_logic;
       variable narrow_last_v  : std_logic;
+      variable budget_consume_v : boolean;
+      variable budget_sum_v : unsigned(BUDGET_WIDTH downto 0);
     begin
       if rising_edge(FAST_CLK) then
         narrow_count_v := narrow_bit_count_r;
         narrow_valid_v := narrow_sample_valid_r;
         narrow_bit_v := narrow_sample_bit_r;
         narrow_last_v := narrow_sample_last_r;
+        budget_consume_v := false;
         fifo_wr <= '0';
         packed_budget_last_r <= '0';
+        packed_budget_reload_r <= '0';
         bram_wren <= '0';
         afull_r <= fifo_wralmost_full;
 
@@ -1030,7 +986,7 @@ begin
           -- here returned the PREVIOUS capture's sample count — captures ran
           -- with stale lengths (e.g. the host reset()'s SAMPLE_COUNT=2),
           -- completed instantly and read back as full-length flat data.
-          sample_remaining <= cfg_samples;
+          budget_count_r <= budget_seed(cfg_samples);
         fifo_overflow_f <= '0';
         bram_wp_r <= 0;
         bram_cnt_r <= 0;
@@ -1077,28 +1033,13 @@ begin
             -- inline compressor can actually sustain.
             -- continuous_f (synced), not the raw Continuous_Mode port --
             -- see the Stage 2c comment above for the bug this caused.
-            if sample_remaining = 0 and continuous_f = '1' then
-              -- Auto-renew (mirrors Stage 2c's reload on the same edge):
-              -- reload the budget instead of freezing at 0, so packed
-              -- continuous/live capture never permanently halts.
-              sample_remaining <= cfg_samples;
-            else
-              -- sample_rem_dec_r is already clamped at zero.  Keeping this
-              -- assignment unconditional removes the sample_rem_nonzero_r
-              -- flag from the counter's FAST_CLK data path; the flag still
-              -- gates producer activity and completion, while a stale flag
-              -- can only write another zero, never underflow the budget.
-              sample_remaining <= sample_rem_dec_r;
-              if sample_remaining = 1 and continuous_f = '0' then
-                packed_budget_last_r <= '1';
-              end if;
-            end if;
+            budget_consume_v := (sample_rem_nonzero_r = '1');
           elsif narrow_word_pending_r = '1' and afull_r = '0' then
             -- fifo_wdata (= narrow_word_data_r) is driven by the decoupled data
             -- mux above; here we only assert the write strobe and clear pending.
             fifo_wr <= '1';
             narrow_word_pending_r <= '0';
-            sample_remaining <= sample_rem_dec_r;
+            budget_consume_v := (sample_rem_nonzero_r = '1');
           -- Pre-trigger BRAM is digital-only; skip it entirely in analog stream
           -- mode so only ADC frame words enter the FIFO.
           elsif pretrig_en_r = '1' and pretrig_tick_cnt < 8 and astream_f = '0' then
@@ -1149,13 +1090,13 @@ begin
               else
               aword_idx <= aword_idx + 1;
               end if;
-              sample_remaining <= sample_rem_dec_r;
+              budget_consume_v := (sample_rem_nonzero_r = '1');
             end if;
             if afull_r = '1' and continuous_f = '0' then
               fifo_overflow_f <= '1';
             end if;
 
-          elsif capture_en_r = '1' and sample_tick_r = '1' and narrow_enable_f = '1' then
+          elsif capture_en_r = '1' and fast_sample_tick_r = '1' and narrow_enable_f = '1' then
             -- Narrow high-speed rolling packs 16 consecutive samples of one
             -- selected digital channel into one SDRAM word. Bit 0 is earliest.
             -- Queue the selected bit first, then consume the previously queued
@@ -1190,18 +1131,36 @@ begin
               fifo_overflow_f <= '1';
             end if;
 
-          elsif capture_en_r = '1' and sample_tick_r = '1' then
+          elsif capture_en_r = '1' and fast_sample_tick_r = '1' then
             -- fifo_wdata (= sample_word_r) is driven by the decoupled data mux
             -- above; this branch only asserts the write strobe and decrements
             -- the sample budget, keeping capture_en_r off the fifo_wdata cone.
             if afull_r = '0' then
               fifo_wr <= '1';
-              sample_remaining <= sample_rem_dec_r;
-              -- sample_rem_dec_r is clamped at zero, so a one-cycle stale
-              -- nonzero flag cannot underflow the natural counter.
+              budget_consume_v := (sample_rem_nonzero_r = '1');
             end if;
             if afull_r = '1' and continuous_f = '0' then
               fifo_overflow_f <= '1';
+            end if;
+          end if;
+        end if;
+        -- Configuration has priority over a same-cycle producer event. For a
+        -- running capture, one carry-chain increment represents one consumed
+        -- budget unit; overflow is the exact terminal event. Continuous mode
+        -- reloads atomically, while single-shot emits one completion pulse.
+        if cfg_valid_edge = '0' and packed_budget_reload_r = '1' then
+          budget_count_r <= budget_seed(cfg_samples);
+        elsif cfg_valid_edge = '0' and budget_consume_v then
+          budget_sum_v := ('0' & budget_count_r) + 1;
+          -- Keep the carry off the wide register's synchronous-load mux: the
+          -- modular sum always writes back directly, while carry only sets a
+          -- one-bit registered completion/reload event.
+          budget_count_r <= budget_sum_v(BUDGET_WIDTH-1 downto 0);
+          if budget_sum_v(BUDGET_WIDTH) = '1' then
+            if continuous_f = '1' then
+              packed_budget_reload_r <= '1';
+            else
+              packed_budget_last_r <= '1';
             end if;
           end if;
         end if;
@@ -1245,6 +1204,7 @@ begin
       variable state     : natural range 0 to 2 := 0;
       variable flush_raddr : natural range 0 to BRAM_SIZE-1 := 0;
       variable flush_rem   : natural range 0 to BRAM_SIZE := 0;
+      variable flush_wait  : natural range 0 to 2 := 0;
       variable sample_en_v : boolean := false;
     begin
       if rising_edge(FAST_CLK) then
@@ -1258,7 +1218,7 @@ begin
         -- when Armed) or live capture (state 2). Holds count during flush.
         sample_en_v := false;
         if fifo_overflow_f = '0' then
-          if (state = 0 and Armed_f = '1' and run_f_level = '0') or state = 2 then
+          if (state = 0 and Armed_f_d2 = '1' and run_f_level = '0') or state = 2 then
             sample_en_v := true;
           end if;
         end if;
@@ -1295,6 +1255,7 @@ begin
               flush_raddr := BRAM_SIZE - bram_cnt + bram_wp;
             end if;
             flush_rem := bram_cnt;
+            flush_wait := 0;
             state := 1;
           else
             state := 2;
@@ -1305,7 +1266,7 @@ begin
 
           -- State 0: Pre-trigger — circular BRAM write
           if state = 0 then
-            if Armed_f = '1' and run_f_level = '0' then
+            if Armed_f_d2 = '1' and run_f_level = '0' then
               if sample_tick_r = '1' then
                 wbuf(((step_r + 1) * Channels) - 1 downto step_r * Channels) := Inputs_r;
                 if step_r = sub_steps - 1 then
@@ -1325,22 +1286,31 @@ begin
           -- State 1: Flush BRAM to async FIFO (pre-trigger samples first)
           elsif state = 1 then
             if flush_rem > 0 then
-              if fifo_wralmost_full = '0' then
+              -- bram_rdata_f is a registered synchronous read port. Allow two
+              -- edges after presenting each address before consuming its data;
+              -- the former one-cycle "skip first" pipeline duplicated address
+              -- zero and dropped the tail of every pre-trigger history.
+              if flush_wait = 0 then
                 bram_raddr_f <= flush_raddr;
-                -- Skip write on first cycle (BRAM read is registered)
-                if flush_rem < bram_cnt then
-                  fifo_wdata <= bram_rdata_f;
-                  fifo_wr <= '1';
+                flush_wait := 1;
+              elsif flush_wait = 1 then
+                flush_wait := 2;
+              elsif fifo_wralmost_full = '0' then
+                fifo_wdata <= bram_rdata_f;
+                fifo_wr <= '1';
+                if sample_remaining = 1 then
+                  sample_remaining <= 0;
+                  -- Last requested sample came from the pre-trigger flush
+                  -- (tiny-capture edge case); signal producer-done here too.
+                  cap_done_toggle_f <= not cap_done_toggle_f;
+                  flush_rem := 0;
+                else
                   sample_remaining <= sample_remaining - 1;
-                  if sample_remaining = 1 then
-                    -- Last requested sample came from the pre-trigger flush
-                    -- (tiny-capture edge case); signal producer-done here too.
-                    cap_done_toggle_f <= not cap_done_toggle_f;
-                  end if;
+                  flush_rem := flush_rem - 1;
                 end if;
                 if flush_raddr = BRAM_SIZE-1 then flush_raddr := 0;
                 else flush_raddr := flush_raddr + 1; end if;
-                flush_rem := flush_rem - 1;
+                flush_wait := 0;
               end if;
             else
               state := 2;
@@ -1363,7 +1333,12 @@ begin
                     cap_done_toggle_f <= not cap_done_toggle_f;
                   end if;
                 end if;
-                if continuous_f = '0' and (fifo_wralmost_full = '1' or sample_remaining <= 1) then
+                -- Reaching the requested budget is normal completion, not an
+                -- overflow. cap_done_toggle_f above tells the pclk pump to
+                -- wait until every queued word is committed before asserting
+                -- Full. Treating sample_remaining=1 as overflow made Full rise
+                -- immediately and exposed unwritten SDRAM words to readout.
+                if continuous_f = '0' and fifo_wralmost_full = '1' then
                   fifo_overflow_f <= '1';
                 end if;
                 step_r := 0;
@@ -1406,7 +1381,7 @@ begin
   -- extra pump pipeline stage did.
   -- 2-FF synchronise the (CLK-domain) mode select into FAST_CLK.
   -- pclk-domain level: run active and the run-start stale drain finished.
-  pump_live_p <= run_level_r and not drain_pending_r;
+  pump_live_p <= run_level_r and not drain_pending_r and not pump_budget_done_q;
 
   process(FAST_CLK)
   begin
@@ -1437,18 +1412,43 @@ begin
   -- conservative when full, but preserves ordering and never drops a word.
   packed_buf_rst <= '1' when packed_rst_f = '1' or run_f_level = '0'
                               else '0';
-  packed_buf_in_valid <= '1' when Packed_Valid = '1' and packed_mode_path_f = '1'
-                              and run_f_level = '1' and packed_stop_f = '0'
-                              and pump_live_f = '1' else '0';
+  packed_buf_in_valid <= packed_buf_in_valid_r;
   packed_buf_out_ready <= not packed_afull_r;
-  -- Packed-mode pipeline register: registers in_valid and in_data so the
-  -- elastic buffer's push/enable logic sees clean registered signals rather than
-  -- combinational gating from packed_mode_f / Packed_Ready_r / sample_rem_nonzero_r.
+  -- One-entry ready/valid pipeline in front of the elastic buffer. The former
+  -- unconditional register copied Packed_Valid every cycle, even while Ready
+  -- was low, so a producer correctly holding one word under backpressure could
+  -- be enqueued repeatedly. Hold the stage until the elastic buffer consumes it
+  -- and only replace it when the stage is empty or drains on this edge.
   process(FAST_CLK)
   begin
     if rising_edge(FAST_CLK) then
-      Packed_Data_r <= Packed_Data;
-      packed_buf_in_valid_r <= packed_buf_in_valid;
+      if packed_buf_rst = '1' then
+        packed_buf_in_valid_r <= '0';
+      elsif packed_buf_in_valid_r = '0' or packed_buf_in_ready = '1' then
+        if Packed_Valid = '1' and Packed_Ready_r = '1' then
+          Packed_Data_r <= Packed_Data;
+          packed_buf_in_valid_r <= '1';
+        else
+          packed_buf_in_valid_r <= '0';
+        end if;
+      end if;
+    end if;
+  end process;
+
+  -- Register producer backpressure so mso_capture/analog_packer never sees a
+  -- combinational path through the FLA pipeline and elastic-buffer state.
+  process(FAST_CLK)
+  begin
+    if rising_edge(FAST_CLK) then
+      if packed_buf_rst = '1' then
+        Packed_Ready_r <= '0';
+      elsif packed_mode_path_f = '1' and run_f_level = '1'
+         and packed_stop_f = '0' and pump_live_f = '1'
+         and (packed_buf_in_valid_r = '0' or packed_buf_in_ready = '1') then
+        Packed_Ready_r <= '1';
+      else
+        Packed_Ready_r <= '0';
+      end if;
     end if;
   end process;
 
@@ -1464,22 +1464,6 @@ begin
       out_valid => packed_buf_out_valid,
       out_ready => packed_buf_out_ready
     );
-
-  -- Registered Packed_Ready: breaks the combinational path from the FAST_CLK
-  -- producer registers through mso_capture/analog_packer's BRAM address logic.
-  -- Same pattern as the non-packed fifo_wr_skid buffer below.
-  process(FAST_CLK)
-  begin
-    if rising_edge(FAST_CLK) then
-      if packed_mode_path_f = '1' and run_f_level = '1'
-         and packed_stop_f = '0' and pump_live_f = '1'
-         and packed_buf_in_ready = '1' then
-        Packed_Ready_r <= '1';
-      else
-        Packed_Ready_r <= '0';
-      end if;
-    end if;
-  end process;
 
   Packed_Ready <= Packed_Ready_r;
 
@@ -1827,6 +1811,7 @@ begin
         run_stop_overflow <= '0';
         status_overflow <= '0';
         overflow_readout_q <= '0';
+        pump_budget_done_q <= '0';
         if run_start_r = '1' then
           pump_valid_cycles_u <= (others => '0');
           pump_ready_cycles_u <= (others => '0');
@@ -2053,6 +2038,9 @@ begin
               else
                 buf_rem_single <= brem_single_dec;
                 waddr_0 := waddr_0 + 1;
+                if buf_rem_single = 1 then
+                  pump_budget_done_q <= '1';
+                end if;
               end if;
             else
               cap_stream_valid <= '1';
@@ -2061,7 +2049,7 @@ begin
                 pump_stall_v := true;
               end if;
             end if;
-          elsif producer_done_q = '1' then
+          elsif producer_done_q = '1' or pump_budget_done_q = '1' then
             -- Budget exhausted and producer finished: discard remaining words
             -- so the drain-completion logic (elsif below) can count the empty
             -- window and assert full_i. Without this, cur_full blocks SDRAM
@@ -2070,13 +2058,14 @@ begin
             prefetch_valid_r <= '0';
           end if;
 
-        elsif producer_done_q = '1' and prefetch_valid_r = '1' then
+        elsif (producer_done_q = '1' or pump_budget_done_q = '1')
+              and prefetch_valid_r = '1' then
           -- Fallback flush: when the main path was blocked by cur_full but the
           -- FIFO still has items. Discard.
           prefetch_valid_r <= '0';
           single_drain_cnt <= 0;
         elsif Continuous_Mode = '0' and run_level_r = '1' and not rd_mode
-              and producer_done_q = '1' then
+              and (producer_done_q = '1' or pump_budget_done_q = '1') then
           if prefetch_valid_r = '0' then
             if single_drain_cnt = 2047 then
               full_i <= '1';
@@ -2123,7 +2112,7 @@ begin
         pump_stall_q  <= false;
         pump_nodata_q <= false;
       end if;
-      if PUMP_METRICS then
+      if Enable_Pump_Metrics then
         if pump_valid_q  then pump_valid_cycles_u  <= pump_valid_cycles_u  + 1; end if;
         if pump_ready_q  then pump_ready_cycles_u  <= pump_ready_cycles_u  + 1; end if;
         if pump_accept_q then pump_accept_cycles_u <= pump_accept_cycles_u + 1; end if;

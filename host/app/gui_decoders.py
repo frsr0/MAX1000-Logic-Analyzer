@@ -153,9 +153,10 @@ def decode_i2c(ch, samplerate, scl_idx=2, sda_idx=3, filter_threshold=0, sda_off
         ft = max(filter_threshold, max(2, med // 8))
     else:
         ft = max(filter_threshold, 2)
-    if ft > 0:
-        scl = glitch_filter(scl, ft)
-        sda = glitch_filter(sda, ft)
+    # ``ft`` is always at least two samples (explicitly or from the measured
+    # period), so every I2C decode uses the stabilizing filter.
+    scl = glitch_filter(scl, ft)
+    sda = glitch_filter(sda, ft)
 
     result = []
     in_txn = False
@@ -229,9 +230,8 @@ def decode_spi(ch, samplerate, miso_idx=3, sclk_idx=1, filter_threshold=0):
                 mid = min(i + typical // 2, n - 1)
             else:
                 mid = min((i + j) // 2, n - 1)
-                if plateau > 0:
-                    typical = plateau if not typical \
-                        else (typical * 3 + plateau) // 4
+                typical = plateau if not typical \
+                    else (typical * 3 + plateau) // 4
             byte_val = ((byte_val << 1) | (1 if miso[mid] else 0)) & 0xFF
             nbits += 1
             if nbits == 8:
@@ -358,8 +358,6 @@ def decode_modbus(ch, samplerate, ch_idx=0, baud=115200):
         total_len = 2 + fc_data_len + 2
         frame_end = min(i + total_len, len(uart))
         raw = bytes(b.value for b in uart[i:frame_end])
-        if len(raw) < 4:
-            i += 1; continue
         crc_recv = raw[-2] | (raw[-1] << 8)
         crc_calc = modbus_crc16(raw[:-2])
         crc_ok = crc_recv == crc_calc

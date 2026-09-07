@@ -33,7 +33,9 @@ the built SPA.
 
 ## Unit tests
 
-Vitest covers the frontend's non-visual transport seams:
+The Vitest suite covers rendered UI interactions, exported store/API methods,
+worker messages, canvas output, and browser/network boundaries. Representative
+transport tests include:
 
 | Test | Contract |
 |---|---|
@@ -41,7 +43,22 @@ Vitest covers the frontend's non-visual transport seams:
 | `src/api/websocket.test.ts` | URL construction, subscriptions, reconnect/close behavior |
 | `src/workers/waveformClient.test.ts` | Request IDs, concurrent responses, cancellation/termination behavior |
 
-Coverage uses the V8 provider and is run in CI with `npm run test:unit`.
+Coverage uses V8 and now inventories **all** production `src/**/*.ts` and
+`src/**/*.tsx` files, excluding only tests and test fixtures. The 100%
+statement/branch/function/line thresholds are unchanged.
+
+The initial full-source audit on 2026-09-04 found only 110/3,362 statements
+(3.27%) and 43/2,512 branches (1.71%); the former 100% report measured only
+three transport modules. The completed strict suite now has **275 passing
+tests** and literal 100% coverage: 3,379/3,379 statements, 2,470/2,470
+branches, 941/941 functions, and 2,868/2,868 lines. Playwright and real-board
+passes remain complementary evidence, not unmeasured coverage credit.
+
+This tranche found and fixed stale asynchronous results crossing session or
+page changes in waveform overviews, viewport payloads, decoder annotations,
+markers, raw-window inspection, app session selection, background session
+refresh, and eye-diagram analysis. Tests control response ordering at the
+browser/network/worker boundaries; they do not mock the modules under test.
 
 ## Playwright modes
 
@@ -73,11 +90,12 @@ is `frontend/test-results/screenshots/hardware-validated-matrix.json`.
 
 `.github/workflows/test.yml` runs:
 
-- host tests with a 50% branch-coverage threshold;
-- backend tests with an 88% branch-coverage threshold;
-- frontend typecheck/build and Vitest coverage;
+- host tests with 100% statement and branch coverage;
+- backend tests with 100% statement and branch coverage;
+- frontend typecheck/build and 100% statement, branch, function, and line
+  coverage for all production TypeScript/TSX;
 - Playwright mock E2E on Chromium;
-- maintained and expected-failure GHDL jobs.
+- all 57 GHDL testbenches with no expected failures or exclusions.
 
 `.github/workflows/hardware-matrix.yml` runs the two live Playwright suites on
 a self-hosted runner labeled `max1000`. The workflow attempts a real connect

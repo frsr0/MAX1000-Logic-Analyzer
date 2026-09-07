@@ -208,6 +208,7 @@ begin
       report "=== TB FAILED (" & integer'image(errs) & " errors) ===" severity failure;
     end if;
     done <= true;
+    std.env.finish;
     wait;
   end process;
 end sim;

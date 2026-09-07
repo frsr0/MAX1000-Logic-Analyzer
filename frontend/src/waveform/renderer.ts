@@ -129,7 +129,6 @@ function drawTimeAxis(ctx: CanvasRenderingContext2D, view: WaveformView,
   ctx.beginPath();
   for (let t = first; t <= t0 + spanT; t += step) {
     const x = sampleToX(view, layout, width, t * view.sampleRate);
-    if (x < layout.labelWidth) continue;
     ctx.moveTo(x, layout.axisHeight);
     ctx.lineTo(x, ctx.canvas.height);
     ctx.fillText(fmtTime(t), x + 3, 14);

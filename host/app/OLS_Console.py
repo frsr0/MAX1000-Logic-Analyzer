@@ -20,11 +20,14 @@ try:
         decode_analog_frames, analog_frame_stride, analog_wire_stride,
         wire_to_payload, decompress_delta_block, decompress_delta_stream,
     )
+    from driver.ols_spi import CMD_GEN_PROTO, CMD_GEN_BAUD
     HAS_SPI = True
 except ImportError:
     HAS_SPI = False
     MODE_DIGITAL = 0
     MODE_MIXED = 0x08
+    CMD_GEN_BAUD = 0xA2
+    CMD_GEN_PROTO = 0xA4
     def analog_wire_stride(_mode):
         return 2
     def wire_to_payload(data):
@@ -909,7 +912,7 @@ class OLScope:
             slot = {
                 'enabled': True,
                 'src_str': src,
-                'src_idx': int(src) if src.isdigit() else int(src[0]),
+                'src_idx': int(src) if src.isdigit() else int(src.split('_')[0]),
                 'src_is_filtered': '_f' in src,
                 'proto': proto,
                 'baud': int(vd['baud'].get()) if proto != 'I2C' else 0,
@@ -1034,9 +1037,10 @@ class OLScope:
         if fast:
             rate = min(rate, self._get_max_rate())
             nsamp = min(nsamp, 1024)
-        if hasattr(self, 'dev') and self.dev is not None:
-            try: self.dev.fast_mode_enabled = fast
-            except: pass
+        try:
+            self.dev.fast_mode_enabled = fast
+        except Exception:
+            pass
         # Build trigger mask from UI
         trig_mode_val = self.trig_mode.get()
         if trig_mode_val == 'Off':
@@ -1383,9 +1387,8 @@ class OLScope:
         ch0 = ch_data[0]
         trans = sum(1 for i in range(1, len(ch0)) if ch0[i] != ch0[i-1])
         print(f"[DBG] _load_capture: {len(data)}B {ns}samples {trans}CH0trans")
-        if ns > 0:
-            print(f"[DBG] CH0 first 20: {''.join(str(ch0[i]) for i in range(min(20, ns)))}")
-            print(f"[DBG] raw first 16B hex: {data[:16].hex()}")
+        print(f"[DBG] CH0 first 20: {''.join(str(ch0[i]) for i in range(min(20, ns)))}")
+        print(f"[DBG] raw first 16B hex: {data[:16].hex()}")
         self.ch_data = ch_data
         self.samplerate = rate
         self.captured_bytes = data
@@ -1526,7 +1529,8 @@ class OLScope:
                 src_idx = slot['src_idx']
                 src_matches = (src.isdigit() and src_idx == ci)
                 if not src_matches and not src.isdigit():
-                    src_matches = (new_names[-1] == src)
+                    src_label = src if src.startswith('CH') else f"CH{src.split('_')[0]}_f"
+                    src_matches = (new_names[-1] == src_label)
                 if not src_matches:
                     continue
 
@@ -1535,14 +1539,8 @@ class OLScope:
                 th_slot = slot.get('thresh', 0)
                 proto = slot.get('proto', 'UART')
 
-                src_row = None
-                for ri in range(len(new_data)):
-                    if (src.isdigit() and ri == src_idx) or \
-                       (not src.isdigit() and new_names[ri] == src):
-                        src_row = ri
-                        break
-                if src_row is None:
-                    continue
+                source_name = f"CH{src_idx}" if src.isdigit() else src_label
+                src_row = new_names.index(source_name)
                 chan_data = [new_data[src_row]]
 
                 if proto == 'UART':
@@ -1552,9 +1550,8 @@ class OLScope:
                     for r in dec:
                         frames.append({'type': 'byte', 'pos': r.pos, 'val': r.value,
                                        'end': r.pos + int(10 * self.samplerate / from_baud)})
-                        for j in range(r.pos, min(r.pos + int(10 * self.samplerate / from_baud), ns)):
-                            if j < len(sig_arr):
-                                sig_arr[j] = 1
+                        for j in range(max(0, r.pos), min(r.pos + int(10 * self.samplerate / from_baud), ns)):
+                            sig_arr[j] = 1
                 elif proto == 'I2C':
                     sda_src = slot.get('sda_idx', 3)
                     scl_src = slot.get('scl_idx', 1)
@@ -1563,9 +1560,8 @@ class OLScope:
                     for item in dec:
                         t, v = item
                         frames.append({'type': t, 'val': v})
-                        if 0 < ns:
-                            sig_arr[0] = 1
-                elif proto == 'SPI':
+                        sig_arr[0] = 1
+                else:  # SPI is the only remaining decoder protocol
                     spi_miso = slot.get('sda_idx', 3)
                     spi_sclk = slot.get('scl_idx', 1)
                     dec = decode_spi(base_data, self.samplerate, spi_miso, spi_sclk,
@@ -1595,7 +1591,7 @@ class OLScope:
                         elif f['val'] is not None:
                             parts.append(f"0x{f['val']:02X}")
                     line += ' '.join(parts)
-                elif proto == 'SPI':
+                else:  # SPI is the only remaining decoder protocol
                     line += ' '.join(f"0x{f['val']:02X}" for f in frames[:30])
                 dec_text_lines.append(line)
 
@@ -1645,15 +1641,13 @@ class OLScope:
                 frame = bytes([(addr << 1) & 0xFF]) + data_s.encode()
                 self.dev._load_block(frame)
                 self.dev.start_gen()
-            # If rolling, queue gen params â€” rolling thread loads + starts gen
-            if is_rolling:
-                self.dev._pending_gen = {
-                    'data': data_s.encode(),
-                    'baud': int(self.gen_baud.get()),
-                    'tx_pin': tx_pin,
-                    'proto': proto
-                }
-                self.status['text'] = "Generator started"
+            elif proto == 'Modbus':
+                self.dev.send_modbus(
+                    int(self.gen_addr.get(), 16), int(self.gen_func.get(), 16),
+                    data_s.encode(), baud=int(self.gen_baud.get()), tx_pin=tx_pin)
+            else:
+                raise ValueError(f"Unsupported generator protocol: {proto}")
+            self.status['text'] = "Generator started"
         except Exception as e:
             self.status['text'] = f"Gen error: {e}"
 
@@ -1922,9 +1916,9 @@ unitsize=1
                 lines.append(f"First digital word: 0x{d0:04X}")
                 ana_count = len(frames[0].get('adc', []))
                 for ai in range(min(ana_count, 8)):
-                    vals = [fr.get('adc', [0])[ai] for fr in frames[:100]]
-                    if vals:
-                        lines.append(f"A{ai}: min={min(vals)} max={max(vals)} avg={sum(vals)//len(vals)}")
+                    vals = [adc[ai] if ai < len(adc) else 0
+                            for fr in frames[:100] for adc in [fr.get('adc', [])]]
+                    lines.append(f"A{ai}: min={min(vals)} max={max(vals)} avg={sum(vals)//len(vals)}")
         else:
             stride = getattr(self, 'capture_stride', 2)
             ch_data, ns = samples_to_channels(self.captured_bytes, stride=stride)
@@ -2016,7 +2010,11 @@ unitsize=1
         try:
             with open(self.logger_csv_path, 'w') as f: f.write(hdr)
         except Exception as e:
-            self.log_status['text'] = f"CSV error: {e}"; return
+            self.logger_running = False
+            self.log_arm_btn.configure(state='normal')
+            self.log_stop_btn.configure(state='disabled')
+            self.log_status['text'] = f"CSV error: {e}"
+            return
         t = threading.Thread(target=self._logger_thread, daemon=True)
         t.start()
 
@@ -2097,6 +2095,9 @@ unitsize=1
 
 def cli_mode(args):
     """Command-line interface for automated capture and testing (SPI only)."""
+    if args.command == 'decode' and not args.input:
+        print("Provide --input for decode")
+        return 1
     if args.command == 'decode' and args.input:
         dev = None
     else:
@@ -2121,6 +2122,7 @@ def cli_mode(args):
             print(f"Saved raw to {args.output}")
         if ns == 0 or not ch_data or not ch_data[0]:
             print("No samples decoded from capture")
+            dev.close()
             return 1
         ch0 = ch_data[0]
         trans = sum(1 for i in range(1, len(ch0)) if ch0[i] != ch0[i-1])
@@ -2132,7 +2134,7 @@ def cli_mode(args):
         if args.format == 'raw4':
             # Raw 4-byte samples from capture
             pass
-        elif args.format == 'sr':
+        else:  # sr is the only other argparse-accepted format
             import zipfile
             with zipfile.ZipFile(args.input) as zf:
                 logic_files = [n for n in zf.namelist() if n.startswith('logic')]
@@ -2156,7 +2158,7 @@ def cli_mode(args):
                     print(f"{t} 0x{v:02X}")
                 else:
                     print(t)
-        elif args.protocol == 'modbus':
+        else:  # modbus is the only remaining argparse-accepted protocol
             res = decode_modbus(ch_data, rate, args.channel or 0, args.baud or 115200)
             for f in res:
                 data_hex = ' '.join(f'{b:02X}' for b in f.data)
@@ -2164,7 +2166,7 @@ def cli_mode(args):
                 print(f"Addr=0x{f.addr:02X} Func=0x{f.func:02X} Data=[{data_hex}] CRC=0x{f.crc:04X} {crc_str}")
             print(f"Total: {len(res)} frames")
 
-    elif args.command == 'send':
+    else:  # send is the only remaining argparse-accepted command
         if args.data:
             data = args.data.encode()
         elif args.input:
@@ -2172,6 +2174,7 @@ def cli_mode(args):
                 data = f.read()
         else:
             print("Provide --data or --input")
+            dev.close()
             return 1
         tx_pin = getattr(args, 'tx_pin', 3)
         scl_pin = getattr(args, 'scl_pin', 1)
@@ -2207,15 +2210,7 @@ def splash_choose():
     """Auto-detect SPI device. Returns 'SPI' or None."""
     if HAS_SPI and find_spi_device():
         return 'SPI'
-    win.protocol("WM_DELETE_WINDOW", win.destroy)
-    win.update_idletasks()
-    ww = win.winfo_width(); wh = win.winfo_height()
-    sw = win.winfo_screenwidth(); sh = win.winfo_screenheight()
-    win.geometry(f"{ww}x{wh}+{(sw-ww)//2}+{(sh-wh)//2}")
-    win.focus_force()
-    win.grab_set()
-    win.wait_window()
-    return result[0]
+    return None
 
 
 def main():
@@ -2233,8 +2228,11 @@ def main():
         p.add_argument('--output', default=None)
         p.add_argument('--input', default=None)
         p.add_argument('--protocol', default='uart', choices=['uart','i2c','modbus'])
+        p.add_argument('--format', default='raw4', choices=['raw4','sr'])
         p.add_argument('--baud', type=int, default=115200)
         p.add_argument('--channel', type=int, default=0)
+        p.add_argument('--sda-ch', type=int, default=2)
+        p.add_argument('--scl-ch', type=int, default=3)
         p.add_argument('--addr', default='0x28')
         p.add_argument('--data', default=None)
         p.add_argument('--capture', action='store_true')

@@ -198,7 +198,7 @@ def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
                         if e["type"] == "spi_word"
                         and e["fields"]["mosi"] is not None
                         and int(e["fields"].get("bits", 8)) == 8)
-    elif cfg.protocol == "swd":
+    else:  # SWD is the only remaining protocol in _LOOPBACK_DECODE.
         nacked = []
         decoded = b""
     if cfg.protocol in ("uart", "rs485"):
@@ -256,8 +256,9 @@ def _compare_uart_loopback(expected: bytes, decoded: bytes) -> tuple[bool, list[
         prefix = offset
         suffix = len(decoded) - offset - len(expected)
         detail = "PASS - decoded UART stream contains sent pattern"
-        if prefix or suffix:
-            detail += f" (ignored {prefix} leading/{suffix} trailing decoded byte(s))"
+        # Exact equality returned above, so a contained pattern necessarily
+        # has at least one leading or trailing byte.
+        detail += f" (ignored {prefix} leading/{suffix} trailing decoded byte(s))"
         return True, [], detail
 
     mismatches = [i for i, (a, b) in enumerate(zip(expected, decoded)) if a != b]

@@ -349,7 +349,8 @@ class OLSDeviceSPI:
         self._pkt = val
 
     def open(self):
-        for attempt in range(3):
+        attempt = 0
+        while True:
             try:
                 # 30 MHz SCK default: MOSI pipeline + source-sync MISO in
                 # SPI_Slave2 fix the timing.  Override with OLS_SPEED_HZ for
@@ -373,7 +374,8 @@ class OLSDeviceSPI:
             except Exception as e:
                 self.spi = None
                 self._pkt = None
-                if attempt == 2:
+                attempt += 1
+                if attempt >= 3:
                     raise
                 time.sleep(0.2)
 
@@ -673,6 +675,8 @@ class OLSDeviceSPI:
         onto capture channels 13/14/15, so the returned samples show the
         Bit_Engine <-> LIS3DH dialogue in a normal capture (decode with
         sda/mosi=CH13, scl/sclk=CH14, miso=CH15)."""
+        if rate_hz <= 0:
+            raise ValueError("rate_hz must be positive")
         self._ensure_open()
         self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)  # flush FIFOs
         flags = (1 << 8) | GEN_FLAG_ACCEL_ATTACH | \
@@ -693,8 +697,7 @@ class OLSDeviceSPI:
         # No SPI traffic during the capture window: status polls disturb the
         # SDRAM write pump and drop writes (stale cells). Sleep the fixed
         # capture duration out, then poll for DONE.
-        if rate_hz > 0:
-            time.sleep(min(timeout, nsamples / float(rate_hz) + 0.05))
+        time.sleep(min(timeout, nsamples / float(rate_hz) + 0.05))
         deadline = time.time() + timeout
         while time.time() < deadline:
             st = self.pkt.get_status()
@@ -768,8 +771,6 @@ class OLSDeviceSPI:
             for k in rises:
                 p = k + 1 + off
                 bits.append(rx[p] if 0 <= p < len(rx) else 1)
-            if len(bits) < nbits:
-                continue
             data, acks = [], []
             for i in range(nbits // 9):
                 chunk = bits[i * 9:(i + 1) * 9]
@@ -1312,17 +1313,18 @@ class OLSDeviceSPI:
                             j for j in (compressed_retry or need_raw)
                             if len(decoded[j]) != 1024
                         ]
-                        if codec in self._compressed_block_reads_supported:
-                            if compressed_unresolved and len(compressed_unresolved) == len(decoded):
-                                self._compressed_block_reads_supported[codec] = False
-                                use_compress = False
-                                batched_compressed = False
-                                force_raw_blocks = True
-                                batch_blocks = 128
-                            elif self._compressed_block_reads_supported.get(codec) is None:
-                                self._compressed_block_reads_supported[codec] = True
-                                if compressed_unresolved and len(compressed_unresolved) != len(decoded) and probe_compress:
-                                    batch_blocks = 256
+                        # Every compressed readback codec maps to one of the
+                        # session support-cache keys (delta_rle or rle).
+                        if compressed_unresolved and len(compressed_unresolved) == len(decoded):
+                            self._compressed_block_reads_supported[codec] = False
+                            use_compress = False
+                            batched_compressed = False
+                            force_raw_blocks = True
+                            batch_blocks = 128
+                        elif self._compressed_block_reads_supported.get(codec) is None:
+                            self._compressed_block_reads_supported[codec] = True
+                            if compressed_unresolved and len(compressed_unresolved) != len(decoded) and probe_compress:
+                                batch_blocks = 256
                         need_raw = compressed_unresolved
                         if need_raw:
                             raw_blocks = self._read_blocks_uncompressed(
@@ -1422,13 +1424,9 @@ class OLSDeviceSPI:
                     drops.append(0)
                     take = min(rem, MIXED_COMPRESSED_BLOCK_WORDS)
                 take -= take % frame_words
-                if take <= 0:
-                    break
                 takes.append(take)
                 s += take
                 rem -= take
-            if not addrs or not takes:
-                break
 
             blocks = None
             read_blocks = getattr(self.pkt, 'read_capture_blocks', None)
@@ -1963,6 +1961,8 @@ class OLSDeviceSPI:
         in hardware — no timing-critical host round-trips.
         """
         self._ensure_open()
+        if rate_hz <= 0:
+            raise ValueError("rate_hz must be positive")
         if capture_time is not None:
             nsamples = int(capture_time * rate_hz)
             nsamples = max(2, min(nsamples, 500000))
@@ -2096,6 +2096,7 @@ class OLSDeviceSPI:
             deadline = time.time() + timeout
             t0 = time.time()
             seen = []
+            st = {}
             while time.time() < deadline:
                 st = self.pkt.get_status()
                 cs = st.get('capture_status', -1)
@@ -2125,12 +2126,10 @@ class OLSDeviceSPI:
                 self.ack_capture_done(expected_seq)
 
             stride = analog_frame_stride(self.analog_mode)
-            if samples and any(samples[i:i+stride] != b'\x00' * stride
-                               for i in range(0, len(samples), stride)):
-                for i in range(0, len(samples), stride):
-                    if samples[i:i+stride] != b'\x00' * stride:
-                        samples = samples[i:]
-                        break
+            first_data = next((i for i in range(0, len(samples), stride)
+                               if samples[i:i+stride] != b'\x00' * stride), None)
+            if first_data is not None:
+                samples = samples[first_data:]
 
             samples = self._filter_digital(samples)
 
@@ -2153,13 +2152,12 @@ class OLSDeviceSPI:
                 return b''
             expected_seq = ((prev + 1) & 0xFFFFFFFF) if prev is not None else None
 
-            if rate_hz > 0:
-                quiet = min(timeout, rc / float(rate_hz) + 0.05)
-                t_end = time.time() + quiet
-                while time.time() < t_end:
-                    if stop_evt and stop_evt.is_set():
-                        return b''
-                    time.sleep(min(0.02, max(0.0, t_end - time.time())))
+            quiet = min(timeout, rc / float(rate_hz) + 0.05)
+            t_end = time.time() + quiet
+            while time.time() < t_end:
+                if stop_evt and stop_evt.is_set():
+                    return b''
+                time.sleep(min(0.02, max(0.0, t_end - time.time())))
 
             return _finish_gen_capture(expected_seq)
 
@@ -2180,13 +2178,12 @@ class OLSDeviceSPI:
             return b''
         expected_seq = ((prev + 1) & 0xFFFFFFFF) if prev is not None else None
 
-        if rate_hz > 0:
-            quiet = min(timeout, rc / float(rate_hz) + 0.05)
-            t_end = time.time() + quiet
-            while time.time() < t_end:
-                if stop_evt and stop_evt.is_set():
-                    return b''
-                time.sleep(min(0.02, max(0.0, t_end - time.time())))
+        quiet = min(timeout, rc / float(rate_hz) + 0.05)
+        t_end = time.time() + quiet
+        while time.time() < t_end:
+            if stop_evt and stop_evt.is_set():
+                return b''
+            time.sleep(min(0.02, max(0.0, t_end - time.time())))
 
         return _finish_gen_capture(expected_seq)
 
@@ -2274,12 +2271,10 @@ class OLSDeviceSPI:
 
         stride = analog_frame_stride(self.analog_mode)
         samples = self._trim_packed_capture(samples, st)
-        if samples and any(samples[i:i+stride] != b'\x00' * stride
-                           for i in range(0, len(samples), stride)):
-            for i in range(0, len(samples), stride):
-                if samples[i:i+stride] != b'\x00' * stride:
-                    samples = samples[i:]
-                    break
+        first_data = next((i for i in range(0, len(samples), stride)
+                           if samples[i:i+stride] != b'\x00' * stride), None)
+        if first_data is not None:
+            samples = samples[first_data:]
 
         samples = self._filter_digital(samples)
 
@@ -2454,9 +2449,8 @@ class OLSDeviceSPI:
                     self.set_readback_compression('raw', force_hardware=True)
                     yield from yield_continuous_raw()
                 finally:
-                    if restore_mode != 'raw':
-                        self.set_readback_compression(
-                            restore_mode, force_hardware=True)
+                    self.set_readback_compression(
+                        restore_mode, force_hardware=True)
                 return
 
             restore_mode = self.readback_compression_mode

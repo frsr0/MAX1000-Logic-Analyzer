@@ -44,37 +44,18 @@ architecture bench of tb_flush_path is
   signal status     : std_logic_vector(7 downto 0);
   signal fast_clk   : std_logic := '0';
 
-  -- Internal probes (waveform visibility). The flush FSM (flush_done_r,
-  -- enq_valid0/1) is now process-local state in the FAST_CLK domain and is not
-  -- separately probeable; flush correctness is validated end-to-end in Phase 3.
-  signal sample_en  : std_logic;
-  signal fifo_cnt   : natural range 0 to 64;
-  signal bram_wren  : std_logic;
-  signal bram_waddr : natural range 0 to 1023;
-  signal bram_raddr : natural range 0 to 1023;
-
 begin
   gen_clk(clk, CLK_HALF);
   fast_clk <= clk;
 
-  -- Input pattern: CH0 toggles based on counter
+  -- Free-running byte counter. At Rate_Div=2, each packed 8-bit sample must
+  -- advance by exactly two, including across 16-bit word boundaries.
   process(clk)
-    variable cnt : natural := 0;
   begin
     if rising_edge(clk) then
-      cnt := cnt + 1;
-      if cnt mod 4 = 0 then
-        inputs(0) <= not inputs(0);
-      end if;
+      inputs <= std_logic_vector(unsigned(inputs) + 1);
     end if;
   end process;
-
-  -- Internal probes
-  sample_en   <= << signal .tb_flush_path.dut.sample_tick_r : std_logic >>;
-  fifo_cnt    <= << signal .tb_flush_path.dut.fifo_cnt : natural range 0 to 64 >>;
-  bram_wren   <= << signal .tb_flush_path.dut.bram_wren : std_logic >>;
-  bram_waddr  <= << signal .tb_flush_path.dut.bram_waddr : natural range 0 to 1023 >>;
-  bram_raddr  <= << signal .tb_flush_path.dut.bram_raddr_f : natural range 0 to 1023 >>;
 
   DUT : entity work.Fast_Logic_Analyzer_SDRAM
     generic map (Max_Samples => 3000000, Channels => CHANNELS, Sim => true)
@@ -110,6 +91,7 @@ begin
 
   process
     variable rdata : std_logic_vector(15 downto 0);
+    variable lo, hi, prev_hi : integer := 0;
   begin
     wait_cycles(clk, 30);
 
@@ -138,7 +120,7 @@ begin
     -- FAST_CLK domain and no longer separately probeable. Its correctness is
     -- proven end-to-end in Phase 3: if the flush dropped or misordered the
     -- pre-trigger samples, capture would not complete (Full) or the readback
-    -- CH0-integrity checks would fail.
+    -- ordered counter checks would fail.
     report "Phase 2: PASS (flush validated via Phase 3 readback)";
 
     ------------------------------------------------------------------
@@ -149,14 +131,24 @@ begin
 
     -- Read back first PRE_TRIGGER words (pre-trigger data)
     -- With Sim=true, SDRAM read has low latency
+    -- Force an address transition before requesting address zero; the public
+    -- readout starts a request on Address changes and Address powers up at zero.
+    address <= PRE_TRIGGER;
+    wait_cycles(clk, 22);
     for addr in 0 to PRE_TRIGGER-1 loop
       address <= addr;
-      wait_cycles(clk, 3);
+      wait_cycles(clk, 22);
       rdata := outputs;
       check(not is_x(rdata), "Outputs must be known at addr " & integer'image(addr));
-      -- Verify CH0 data integrity: within each 16-bit word, both halves should have
-      -- the same CH0 (captured at same sample time)
-      check(rdata(0) = rdata(8), "CH0 mismatch within word at addr " & integer'image(addr));
+      lo := to_integer(unsigned(rdata(7 downto 0)));
+      hi := to_integer(unsigned(rdata(15 downto 8)));
+      check((hi - lo) mod 256 = rate_div,
+            "misordered packed samples within pre-trigger word " & integer'image(addr));
+      if addr > 0 then
+        check((lo - prev_hi) mod 256 = rate_div,
+              "gap or duplicate across pre-trigger words at addr " & integer'image(addr));
+      end if;
+      prev_hi := hi;
     end loop;
     report "Phase 3: PASS";
 
@@ -169,6 +161,7 @@ begin
     report "Phase 4: PASS";
 
     report "=== ALL FLUSH PATH TESTS PASSED ===";
+    std.env.finish;
     wait;
   end process;
 end bench;

@@ -63,10 +63,10 @@ as a device-level self-test and as a realistic protocol waveform source.
 
 ## Hardware validation status
 
-The current seed-10 wide-divider image (SOF `0x0050ADC8`) passed the on-board
-accelerometer checks as part of the **383/383** connected-board regression.
-Earlier seed-23 and seed-44 results remain historical evidence. The current
-test covers:
+The 2026-09-07 volatile seed-10 image (SOF `0x00504799`) passed the on-board
+accelerometer checks as part of the **403/403** connected-board regression.
+The persistent 2026-08-27 image retains its historical **383/383** evidence.
+The test covers:
 
 - I²C `WHO_AM_I` at 50 kHz and 100 kHz, probing both possible addresses;
 - I²C `CTRL_REG1` read;

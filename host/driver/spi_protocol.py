@@ -529,31 +529,10 @@ class SPIDevice:
         across command, ack, and stream data.
         """
         payload = struct.pack('<I', start_sample * 2)
-        seq = self._next_seq()
-        req = build_packet(CMD_START_STREAM, seq, payload)
-        # Send request
-        self.spi.tx_bytes(req)
-        # Poll for response with manual SYNC_RSP search
-        for _ in range(8):
-            time.sleep(0.0005)
-            r = self.spi.tx_read(32)
-            if r and len(r) > 1:
-                self._rx_buf += r[1:]
-            # Search for SYNC_RSP = 0xAA55
-            sync_at = self._rx_buf.find(SYNC_RSP)
-            if sync_at < 0:
-                continue
-            chunk = self._rx_buf[sync_at:]
-            if len(chunk) < 10:
-                continue
-            plen = struct.unpack('<H', chunk[4:6])[0]
-            total = 8 + plen
-            if len(chunk) >= total and chunk[2] == ST_STREAM_ACTIVE and plen >= 8:
-                pl = chunk[6:6+plen]
-                pi, oi = struct.unpack('<II', pl[:8])
-                self._rx_buf = self._rx_buf[sync_at + total:]
-                return pi, oi
-        raise RuntimeError("start_stream failed")
+        result = self.transaction(CMD_START_STREAM, payload)
+        if result is None or result[0] != ST_STREAM_ACTIVE or len(result[2]) < 8:
+            raise RuntimeError("start_stream failed")
+        return struct.unpack('<II', result[2][:8])
 
     def start_stream_read(self, start_sample: int, n_bytes: int,
                           stop_evt=None) -> tuple:
@@ -614,7 +593,9 @@ class SPIDevice:
         producer = oldest = None
         data = bytearray()
         try:
-            while producer is None:
+            # The ACK should arrive within the request/guard window. Bound the
+            # hunt so a disconnected or wedged target cannot hang the caller.
+            for _ in range(256):
                 found = self._find_stream_ack(acc, seq)
                 if found is not None:
                     producer, oldest, end = found
@@ -708,7 +689,6 @@ class SPIDevice:
         out = bytearray()
         pending = bytearray()   # undecoded stream bytes (partial pair carry-over)
         total = 0
-        skip_remaining = 0      # wire bytes still to drop before stream data
         try:
             for chunk in gen:
                 if producer is None:
@@ -722,18 +702,8 @@ class SPIDevice:
                     # pushes data out to the ack_pad boundary). Any guard/idle
                     # words before the first run are dropped by the decoder's
                     # leading-skip, so just start at ack_end.
-                    data_start = end
-                    if data_start <= len(acc):
-                        pending.extend(acc[data_start:])
-                    else:
-                        skip_remaining = data_start - len(acc)
+                    pending.extend(acc[end:])
                 else:
-                    if skip_remaining:
-                        if len(chunk) <= skip_remaining:
-                            skip_remaining -= len(chunk)
-                            continue
-                        chunk = chunk[skip_remaining:]
-                        skip_remaining = 0
                     pending.extend(chunk)
                 total = self._decode_rle_into(pending, out, total, sample_count)
                 if total >= sample_count:
@@ -743,6 +713,12 @@ class SPIDevice:
         finally:
             gen.close()
         if producer is None:
+            # Cancellation can race with the caller's loop condition: the
+            # transport may observe an already-set stop event and deliberately
+            # yield no bytes.  That is a clean early stop, not a missing FPGA
+            # acknowledgement.
+            if stop_evt is not None and stop_evt.is_set():
+                return 0, 0, b''
             raise RuntimeError("start_rle_stream_read failed: no stream ack")
         if total != sample_count:
             if stop_evt is not None and stop_evt.is_set():

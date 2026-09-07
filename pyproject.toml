@@ -22,4 +22,21 @@ testpaths = ["host/tests", "host/driver/tests"]
 norecursedirs = ["host/debug", "archive"]
 
 [tool.coverage.run]
-omit = ["backend/app/tests/*"]
+branch = true
+omit = [
+    "*/tests/*",
+    '*\tests\*',
+    "*/test_*.py",
+    '*\test_*.py',
+]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+skip_covered = true
+omit = [
+    "*/tests/*",
+    '*\tests\*',
+    "*/test_*.py",
+    '*\test_*.py',
+]

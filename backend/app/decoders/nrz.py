@@ -44,8 +44,6 @@ class NrzDecoder(Decoder):
         lsb = settings.get("bit_order") == "lsb"
         for start in range(0, len(edges), width):
             group = edges[start:start + width]
-            if len(group) == 0:
-                continue
             value = 0
             bits = [int(data[min(n - 1, int(e))]) for e in group]
             for bit in reversed(bits) if lsb else bits:

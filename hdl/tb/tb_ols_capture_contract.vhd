@@ -55,9 +55,6 @@ architecture bench of tb_ols_capture_contract is
   signal buffer_full  : std_logic_vector(2 downto 0) := (others => '0');
   signal buffer_ack   : std_logic_vector(2 downto 0);
 
-  signal done_latched_i : std_logic;
-  signal capture_seq_i  : std_logic_vector(31 downto 0);
-
   function flatten(b : byte_array; n : natural) return std_logic_vector is
     variable r : std_logic_vector(n*8-1 downto 0);
   begin
@@ -67,15 +64,13 @@ architecture bench of tb_ols_capture_contract is
     return r;
   end function;
 
-  procedure pkt_send(
+  procedure pkt_issue(
     signal cs_n : out std_logic; signal sck_o : out std_logic;
     signal mosi : out std_logic; signal miso : in std_logic;
     constant cmd : in std_logic_vector(7 downto 0);
     constant payload : in byte_array; constant plen : in natural) is
     variable tx : byte_array(0 to 300);
     variable rx : byte_array(0 to 300);
-    variable drain_tx : byte_array(0 to 63);
-    variable drain_rx : byte_array(0 to 63);
     variable len_v : std_logic_vector(15 downto 0);
     variable crc_v : std_logic_vector(15 downto 0);
     variable crc_data : std_logic_vector((4+plen)*8-1 downto 0);
@@ -88,9 +83,75 @@ architecture bench of tb_ols_capture_contract is
     crc_v := crc16(crc_data);
     tx(6+plen) := crc_v(7 downto 0); tx(7+plen) := crc_v(15 downto 8);
     spi_xfer(cs_n, sck_o, mosi, miso, SPI_HALF, tx(0 to 7+plen), rx(0 to 7+plen));
+  end procedure;
+
+  procedure pkt_read_rsp(
+    signal cs_n : out std_logic; signal sck_o : out std_logic;
+    signal mosi : out std_logic; signal miso : in std_logic;
+    variable status : out std_logic_vector(7 downto 0);
+    variable payload : out byte_array; variable pay_len : out natural) is
+    variable tx : byte_array(0 to 63);
+    variable rx : byte_array(0 to 63);
+    variable plen_v : natural;
+    variable found : boolean := false;
+  begin
+    status := x"FF"; pay_len := 0;
+    for i in tx'range loop tx(i) := x"FF"; end loop;
+    spi_xfer(cs_n, sck_o, mosi, miso, SPI_HALF, tx, rx);
+    for i in 0 to 57 loop
+      if not found and rx(i) = x"AA" and rx(i+1) = x"55" then
+        status := rx(i+2);
+        plen_v := to_integer(unsigned(rx(i+5))) * 256
+                + to_integer(unsigned(rx(i+4)));
+        assert plen_v <= payload'length
+          report "response payload exceeds capture-contract buffer" severity failure;
+        for k in 0 to plen_v-1 loop
+          payload(payload'low + k) := rx(i+6+k);
+        end loop;
+        pay_len := plen_v;
+        found := true;
+      end if;
+    end loop;
+    assert found report "framed SPI response not found" severity failure;
+  end procedure;
+
+  procedure pkt_send(
+    signal cs_n : out std_logic; signal sck_o : out std_logic;
+    signal mosi : out std_logic; signal miso : in std_logic;
+    constant cmd : in std_logic_vector(7 downto 0);
+    constant payload : in byte_array; constant plen : in natural) is
+    variable status : std_logic_vector(7 downto 0);
+    variable pay : byte_array(0 to 31);
+    variable pay_len : natural;
+  begin
+    pkt_issue(cs_n, sck_o, mosi, miso, cmd, payload, plen);
     wait for 8 us;
-    for i in 0 to 63 loop drain_tx(i) := x"FF"; end loop;
-    spi_xfer(cs_n, sck_o, mosi, miso, SPI_HALF, drain_tx, drain_rx);
+    pkt_read_rsp(cs_n, sck_o, mosi, miso, status, pay, pay_len);
+  end procedure;
+
+  procedure get_status(
+    signal cs_n : out std_logic; signal sck_o : out std_logic;
+    signal mosi : out std_logic; signal miso : in std_logic;
+    constant empty : in byte_array;
+    variable state : out std_logic_vector(7 downto 0);
+    variable seq : out unsigned(31 downto 0);
+    variable done : out std_logic) is
+    variable pay : byte_array(0 to 31);
+    variable pay_len : natural;
+    variable seq_bits : std_logic_vector(31 downto 0);
+  begin
+    pkt_issue(cs_n, sck_o, mosi, miso, CMD_GET_STATUS, empty, 0);
+    wait for 8 us;
+    pkt_read_rsp(cs_n, sck_o, mosi, miso, state, pay, pay_len);
+    assert pay_len >= 24
+      report "GET_STATUS payload shorter than the documented 24-byte contract"
+      severity failure;
+    seq_bits(7 downto 0) := pay(3);
+    seq_bits(15 downto 8) := pay(4);
+    seq_bits(23 downto 16) := pay(5);
+    seq_bits(31 downto 24) := pay(6);
+    seq := unsigned(seq_bits);
+    done := pay(23)(0);
   end procedure;
 
   procedure wreg(
@@ -129,60 +190,70 @@ begin
       Buffer_Full => buffer_full, Buffer_Ack => buffer_ack
     );
 
-  done_latched_i <= << signal .tb_ols_capture_contract.dut.done_latched : std_logic >>;
-  capture_seq_i  <= << signal .tb_ols_capture_contract.dut.capture_seq : std_logic_vector(31 downto 0) >>;
-
   process
     variable empty : byte_array(0 to 0);
     variable ack_zero : byte_array(0 to 3);
-    variable seq0 : unsigned(31 downto 0);
+    variable seq0, seq_v : unsigned(31 downto 0);
+    variable done_v : std_logic;
+    variable state_v : std_logic_vector(7 downto 0);
   begin
     ack_zero := (others => x"00");
     wait_cycles(clk, 100);
 
     report "=== OLS capture contract tests ===";
-    check(done_latched_i = '0', "DONE latch starts clear");
+    get_status(spi_cs, spi_sck, spi_mosi, spi_miso, empty, state_v, seq0, done_v);
+    check(done_v = '0', "public DONE status starts clear");
 
     report "Test 1: arm increments capture_seq and clears DONE";
-    seq0 := unsigned(capture_seq_i);
     pkt_send(spi_cs, spi_sck, spi_mosi, spi_miso, CMD_ARM_CAPTURE, empty, 0);
     wait_cycles(clk, 40);
-    check(unsigned(capture_seq_i) = seq0 + 1, "capture_seq increments on arm");
-    check(done_latched_i = '0', "DONE clear after arm");
+    get_status(spi_cs, spi_sck, spi_mosi, spi_miso, empty, state_v, seq_v, done_v);
+    check(seq_v = seq0 + 1, "public capture_seq increments on arm");
+    seq0 := seq_v;
+    check(done_v = '0', "public DONE clear after arm");
 
     report "Test 2: Full latches DONE and DONE is sticky";
     full <= '1';
     wait_cycles(clk, 10);
     full <= '0';
     wait_cycles(clk, 40);
-    check(done_latched_i = '1', "DONE latched from Full");
-    pkt_send(spi_cs, spi_sck, spi_mosi, spi_miso, CMD_GET_STATUS, empty, 0);
-    wait_cycles(clk, 40);
-    check(done_latched_i = '1', "DONE remains latched across status/readback path");
+    get_status(spi_cs, spi_sck, spi_mosi, spi_miso, empty, state_v, seq_v, done_v);
+    check(state_v = ST_CAPTURE_DONE, "GET_STATUS reports capture DONE");
+    check(done_v = '1', "DONE latched from Full");
+    get_status(spi_cs, spi_sck, spi_mosi, spi_miso, empty, state_v, seq_v, done_v);
+    check(done_v = '1', "DONE remains latched across repeated status reads");
 
     report "Test 3: ACK clears DONE";
     pkt_send(spi_cs, spi_sck, spi_mosi, spi_miso, CMD_ACK_CAPTURE_DONE, ack_zero, 4);
     wait_cycles(clk, 40);
-    check(done_latched_i = '0', "DONE clears on ACK wildcard");
+    get_status(spi_cs, spi_sck, spi_mosi, spi_miso, empty, state_v, seq_v, done_v);
+    check(done_v = '0', "DONE clears on ACK wildcard");
 
     report "Test 4: abort clears DONE and suppresses stale Full";
     full <= '1';
     wait_cycles(clk, 10);
-    check(done_latched_i = '1', "DONE re-latched before abort");
+    get_status(spi_cs, spi_sck, spi_mosi, spi_miso, empty, state_v, seq_v, done_v);
+    check(done_v = '1', "DONE re-latched before abort");
     pkt_send(spi_cs, spi_sck, spi_mosi, spi_miso, CMD_ABORT_CAPTURE, empty, 0);
     wait_cycles(clk, 80);
-    check(done_latched_i = '0', "DONE stays clear after abort even while Full is stale");
+    get_status(spi_cs, spi_sck, spi_mosi, spi_miso, empty, state_v, seq_v, done_v);
+    check(done_v = '0', "DONE stays clear after abort even while Full is stale");
     full <= '0';
     wait_cycles(clk, 20);
 
     report "Test 5: next arm clears abort suppression and can latch DONE again";
     pkt_send(spi_cs, spi_sck, spi_mosi, spi_miso, CMD_ARM_CAPTURE, empty, 0);
     wait_cycles(clk, 40);
+    get_status(spi_cs, spi_sck, spi_mosi, spi_miso, empty, state_v, seq_v, done_v);
+    check(seq_v = seq0 + 1, "capture_seq increments on re-arm");
+    seq0 := seq_v;
+    check(done_v = '0', "re-arm clears abort suppression and DONE");
     full <= '1';
     wait_cycles(clk, 10);
     full <= '0';
     wait_cycles(clk, 20);
-    check(done_latched_i = '1', "DONE can latch after next arm");
+    get_status(spi_cs, spi_sck, spi_mosi, spi_miso, empty, state_v, seq_v, done_v);
+    check(done_v = '1', "DONE can latch after next arm");
     pkt_send(spi_cs, spi_sck, spi_mosi, spi_miso, CMD_ACK_CAPTURE_DONE, ack_zero, 4);
     wait_cycles(clk, 40);
 
