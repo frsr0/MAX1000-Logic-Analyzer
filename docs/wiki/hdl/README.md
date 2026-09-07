@@ -39,7 +39,7 @@
 | Storage | Size | Purpose |
 |---|---|---|
 | BRAM (pre-trigger) | 1,024 words | Fast small captures (FAST_MODE) |
-| Async FIFO (bridge) | 1,024 words | FAST_CLK → SDRAM_CLK domain crossing |
+| Async FIFO (bridge) | 512 words | FAST_CLK → SDRAM_CLK domain crossing |
 | SDRAM | 4,194,304 words × 16-bit | Deep single-shot / bounded ring captures |
 | Generator FIFO | 256 bytes | Protocol symbol data for Signal_Gen / Bit_Engine |
 | Raw stream compressor FIFO | 8 words | On-chip RLE streaming buffer |

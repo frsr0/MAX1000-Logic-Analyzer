@@ -108,13 +108,19 @@ The HDL simulation suite covers:
 
 Use GHDL from `hdl/` or run the focused regression scripts in `hdl/tb/`.
 
+The current GHDL 6.0 gate runs all **57/57** `tb_*.vhd` benches as required
+tests. There are no excluded benches, XFAILs, or XPASSes, and every passing
+bench must terminate explicitly rather than timing out at `--stop-time`.
+
 ## Notes
 
 - The generated wrapper in `proj/` is overwritten by `compile.ps1`.
-- `seed 44` is the current validated full-feature placement for the 2026-07-23
-  timing closure; slow-85C `fast_clk` setup is **+0.002 ns** and
-  `sdram_core_clk` **+0.048 ns** with all setup/hold checks positive.
-  Seed sensitivity is high — only seeds 44 and 57 fit at 100% density;
-  seed 57 gave `-0.762 ns` timing, so 44 is the stable build seed.
+- `seed 10` is the current validated full-feature placement (2026-09-07).
+  Slow-85C setup slack is **+0.253 ns** on `fast_clk`, **+0.178 ns** on
+  `sdram_core_clk`, and **+0.278 ns** on `sys_clk`; all reported timing checks
+  are positive. The exact SOF checksum is `0x00504799` and its SHA-256 is
+  `2C33472F5C07F60CF41ED155EB0EAAA58D7C23320EC9A861C86ED82764F9FE50`.
+  The image is currently loaded in volatile SRAM; the 2026-08-27 CFM image
+  remains the persistent baseline.
 - No feature removals are implied by the timing work; the current build keeps
   the full digital, mixed-signal, generator, and pattern trigger paths.

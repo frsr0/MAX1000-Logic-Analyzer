@@ -42,6 +42,7 @@ it('maps every hardware source across single and live acquisition', () => {
 
   fireEvent.click(screen.getByRole('button', { name: /Mixed scan/ }));
   expect(useApp.getState().captureSettings.mode).toBe('mixed_continuous');
+  expect(screen.getByText(/16 digital bits plus two packed ADC results/)).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Single-shot' }));
   expect(useApp.getState().captureSettings).toMatchObject({ mode: 'mixed', analog_enabled: true, readback_compression: 'raw' });
 

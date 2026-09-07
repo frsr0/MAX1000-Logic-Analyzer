@@ -81,6 +81,19 @@ afterEach(() => {
   Reflect.deleteProperty(Element.prototype, 'setPointerCapture');
 });
 
+it('identifies the rendered session and reports whether waveform data is loaded', () => {
+  render(<WaveformCanvas channels={channels} />);
+  flushFrame();
+
+  const canvas = screen.getByLabelText('Waveform for s');
+  expect(canvas.getAttribute('aria-busy')).toBe('true');
+
+  waveformView.payload = { header: {}, digital: {}, analog: {} } as never;
+  act(() => waveformView.notify());
+  flushFrame();
+  expect(canvas.getAttribute('aria-busy')).toBe('false');
+});
+
 it('draws at integer backing dimensions and redraws on store and element changes', () => {
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 600 });
   const view = render(<WaveformCanvas channels={channels} />);

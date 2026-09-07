@@ -241,7 +241,8 @@ class ExistingHostAdapter(HardwareDevice):
                 "packed one-channel narrow mode).",
                 "Maximum analog scans AIN3, AIN1, AIN4, and AIN6 at ~24 kS/s "
                 "per lane via the packed MSO path. "
-                "Mixed mode streams the same 4-lane analog scan in a shared frame.",
+                "Mixed mode streams 16 digital bits plus the reduced two-result "
+                "ADC frame (a0 and a1) at ~125 kframes/s.",
             ],
             digital_pin_map=DIGITAL_PIN_MAP,
             analog_pin_map=BOARD_ANALOG_INPUTS,
@@ -293,7 +294,7 @@ class ExistingHostAdapter(HardwareDevice):
             findings.append({
                 "level": "info",
                 "message": "Mixed mode captures 16 digital bits plus the current "
-                           "ADC0..ADC3 mux scan as a single time-correlated "
+                           "two-result ADC path as a single time-correlated "
                            "packed frame at up to "
                            f"{int(ADC_SCAN_FRAME_RATE_HZ):,} Hz. Digital is "
                            "sampled once per ADC frame; use digital-only mode "

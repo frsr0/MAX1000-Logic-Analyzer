@@ -1,6 +1,6 @@
 // Main capture view: waveform center, collapsible side panel with tabs,
 // packet table bottom panel.
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useApp } from '../state/appStore';
 import { waveformView } from '../state/waveformStore';
 import { DecoderTable } from '../decoders/DecoderTable';
@@ -39,10 +39,13 @@ export function CapturePage() {
   const [tab, setTab] = useState<Tab>('capture');
   const [panelOpen, setPanelOpen] = useState(window.innerWidth > 900);
   const [tableOpen, setTableOpen] = useState(true);
+  const previousLastSessionId = useRef(status?.last_session_id);
 
   useEffect(() => {
     const last = status?.last_session_id;
-    if (last && last !== activeSession?.id
+    const isNewCapture = last !== previousLastSessionId.current;
+    previousLastSessionId.current = last;
+    if (isNewCapture && last && last !== activeSession?.id
         && (status?.capture_state === 'done' || status?.capture_state === 'capturing')) {
       openSession(last).catch(() => {});
     }

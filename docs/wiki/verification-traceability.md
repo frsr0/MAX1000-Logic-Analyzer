@@ -30,7 +30,7 @@ flowchart LR
 
 | Field | Current evidence |
 |---|---|
-| Source baseline | 2026-09-07 working tree; current coverage/HDL repair set |
+| Source baseline | 2026-09-07 working tree; current coverage, screenshot, and HDL repair set |
 | Build | Quartus Prime Lite 25.1, full mixed-signal profile, fitter seed 10 |
 | Image | Programmed to volatile SRAM on 2026-09-07; SOF checksum `0x00504799`; persistent CFM unchanged |
 | Timing | Slow-85C setup: fast +0.253 ns, SDRAM +0.178 ns, system +0.278 ns; all setup/hold/recovery/removal/min-pulse checks positive |
@@ -39,8 +39,8 @@ flowchart LR
 | Full hardware suite | 403/403, 0 failed, 0 skipped; includes both strict 60-second stress runs |
 | Host coverage | 983 tests; 8,241 statements and 2,482 branches at 100%, zero partial branches |
 | Backend coverage | 540 tests; 8,800 statements and 2,624 branches at 100%, zero partial branches |
-| Frontend coverage | 275 tests; 3,379 statements, 2,470 branches, 941 functions, and 2,868 lines at 100% |
-| Browser hardware matrix | 5/5 feature tests, including 37/37 advertised mode/rate combinations; broader hardware-aligned suite 33/33 |
+| Frontend coverage | 277 tests; 3,382 statements, 2,475 branches, 941 functions, and 2,871 lines at 100% |
+| Browser hardware matrix | 5/5 feature tests, including 37/37 advertised mode/rate combinations; broader hardware-aligned suite 33/33; screenshots regenerated and visually checked at 1440×1400 |
 | Rate sweep | Historical persistent image: 1,200-115,200 baud within +0.79% |
 
 The complete matrix manifest and per-case session IDs are in
@@ -52,6 +52,7 @@ The fit, STA, and assembler reports are in `hdl/proj/output_files/`.
 | Change | Primary implementation | Evidence | Level |
 |---|---|---|---|
 | Live waveform request correlation and coalescing | `frontend/src/workers/`, `waveformStore.ts`, session persistence | Worker unit tests, frontend build/E2E, live hardware captures | **SW + HW** |
+| Manual-session selection versus newest-capture updates | `CapturePage`, waveform canvas identity/loading contract | Rendered regression test plus exact-session live screenshot gallery | **SW + HW** |
 | Generator output during rolling capture | backend adapter, host driver, Generator page | Backend/host tests; live generator capture and clean stop | **SW + HW** |
 | Exact generator rate and corrected square preset | generator preview/status and host divider model | Protocol/unit tests and on-wire rate sweep | **SW + HW** |
 | 24-bit `REG_GEN_BAUD` and metadata feature byte | `Bit_Engine`, `OLS_Interface`, core/top wiring, host detection | `tb_bit_engine_div24`, Quartus seed sweep, rate sweep | **SIM + BUILD + HW** |
@@ -70,7 +71,7 @@ The fit, STA, and assembler reports are in `hdl/proj/output_files/`.
 | 2026-08-07 | pin-map/pull-up image, SOF `0x0051801E` | smoke 10/10 | Historical |
 | 2026-08-27 | seed 10 wide-divider, SOF `0x0050ADC8` | 383/383 + 37/37 | Persistent historical baseline |
 | 2026-09-04 | repaired seed 10, SOF `0x00504799` | full suite 396/396; corrected 60-second stress 29/29; smoke 10/10; changed paths 117/117; strict codec/rate 26/26 | Historical volatile baseline |
-| 2026-09-07 | seed 10, SOF `0x00504799` | full suite 403/403; 57/57 GHDL; browser hardware 5/5 and 33/33 | Current volatile image |
+| 2026-09-07 | seed 10, SOF `0x00504799` | full suite 403/403; 57/57 GHDL; browser hardware 5/5 and 33/33; 37-case screenshot matrix refreshed | Current volatile image |
 
 Historical results remain useful regression evidence, but they do not prove a
 later RTL image. The current claim always follows the newest programmed image

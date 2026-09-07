@@ -107,3 +107,12 @@ Client (browser / curl)
 - Waveform queries use LOD pyramids (bin sizes 16, 64, 256, …) for fast zoomed-out rendering
 - Binary `MSAW` format for waveform transport: magic + JSON header + 4-byte typed arrays
 - Decoder framework supports stacking: Modbus RTU consumes UART byte events
+
+## Current verification
+
+The 2026-09-07 backend gate passes **540/540** tests with all 8,800 statements
+and 2,624 branches covered (100%, with no partial branches). Its real-hardware
+adapter is also exercised by the 10/10 smoke test, 403/403 connected-board
+suite, and the current browser hardware runs. Source coverage and attached-
+board evidence remain separate claims; see
+[Verification and Change Traceability](../verification-traceability.md).

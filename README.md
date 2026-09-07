@@ -19,7 +19,7 @@ This repository is currently verified for:
 - 16-channel digital capture up to the full 200.4 MHz sample clock
 - Deep SDRAM single-shot capture up to `4,194,304` 16-bit words
 - Packed narrow digital capture at 200 MHz for one selected channel
-- Mixed capture with 16 digital bits plus the ADC0..ADC3 scan
+- Mixed capture with 16 digital bits plus the reduced two-result ADC frame
 - Analog-fast capture of 1 ADC lane
 - Maximum-analog capture of 4 physical analog inputs
 - UART, RS-485, I2C, SPI, SWD transaction capture, and raw two-output Bit Banger generation
@@ -29,7 +29,7 @@ Latest validation baseline (2026-09-07):
 
 - `backend/app/tests`: `540/540` passed at 100% statement/branch coverage
 - `host/tests/` + `host/driver/tests/`: `983/983` passed at 100% statement/branch coverage
-- `frontend`: `275/275` passed at 100% statement/branch/function/line coverage; production build passed
+- `frontend`: `277/277` passed at 100% statement/branch/function/line coverage; production build passed
 - Full connected-fixture hardware regression: **403/403 passed, 0 failed, 0 skipped**
 - Native GHDL regression: **57/57 passed**, with zero XFAIL/XPASS/exclusions
 - Real-browser hardware validation: **5/5 feature tests** (including all 37 advertised mode/rate combinations) and **33/33 hardware-aligned UI tests**
@@ -50,11 +50,11 @@ The current hardware exposes two analog capture profiles plus the mixed scan.
 
 - `analog_fast`: 1 ADC lane, currently `ADC1 -> AIN3`
 - `analog_all` / "Maximum analog": `ADC1,2,3,4 -> AIN3, AIN1, AIN4, AIN6`
-- `mixed`: 16 digital bits plus the `ADC0..ADC3` mux scan in one time-correlated frame
+- `mixed`: 16 digital bits plus two ADC results (`a0` and `a1`) in one time-correlated frame
 
-On MAX1000, the current mixed mode is a 4-lane scan aligned with the four
-analog inputs wired in the RTL. The maximum-analog profile is the physical
-4-input scan.
+On MAX1000, the current mixed wire format is the reduced two-result path. The
+maximum-analog profile is the separate four-input physical scan over `AIN3`,
+`AIN1`, `AIN4`, and `AIN6`.
 
 ### Readback Compression
 
@@ -84,14 +84,15 @@ The validated FAST build uses one PLL with these main domains:
 Main storage paths:
 
 - `1,024`-word BRAM capture path
-- `4,096`-word async FIFO between capture and SDRAM
+- `512`-word async FIFO between capture and SDRAM
 - `4,194,304` 16-bit SDRAM words for deep capture / bounded ring workflows
 
 ## UI Screenshots
 
-All screenshots below were captured from the attached MAX1000 hardware during
-the July 20–28, 2026 validation runs. No mock sessions are used in this
-gallery.
+All screenshots below were regenerated on 2026-09-07 from the attached
+MAX1000 and the current volatile seed-10 image. The browser tests require the
+named session to be active and its waveform payload to finish loading before
+writing each PNG.
 
 ### Device Overview
 
@@ -104,6 +105,14 @@ gallery.
 This capture is deliberately signal-dense so the digital transitions and ADC
 waveform remain legible when the README image is shown at its normal size.
 
+### Live Generator Loopback
+
+![UART generator loopback and decode](frontend/test-results/screenshots/live-generator-session-waveform.png)
+
+### On-board LIS3DH Capture
+
+![LIS3DH I2C waveform and decoded WHO_AM_I response](frontend/test-results/screenshots/live-accelerometer-session-waveform.png)
+
 ### Generator Controls
 
 ![Generator controls](frontend/test-results/screenshots/generator-page-latest.png)
@@ -112,19 +121,16 @@ waveform remain legible when the README image is shown at its normal size.
 
 ![Analog fast hardware waveform](frontend/test-results/screenshots/live-analog-fast-waveform.png)
 
-*Analog-fast capture on AIN5/ADC7 with a 1 kHz PWM generator driving the
-jumper input (PMOD5 → AIN5).  The ADC values oscillate between ~0.04 and
-~1.2 V, showing a clean square wave through the single-lane high-speed
-analog path.*
+*Current one-lane analog-fast acquisition on AIN3 (J1/5) at a measured
+1.002 MS/s. The trace is the actual attached-board input, not synthetic data.*
 
 ### Maximum Analog Hardware Waveform (4 ADC lanes)
 
 ![Maximum analog hardware waveform](frontend/test-results/screenshots/live-maximum-analog-waveform.png)
 
-*Four physical analog inputs captured together at the scan rate (~125 kHz).
-The jumper wiring (PMOD5 → AIN5, PMOD6 → AIN4) produces visible ADC
-activity on two channels (a1, a2/a3 show ADC noise from floating inputs;
-a4 is idle).  The 1 kHz PWM source is clearly resolved on a1.*
+*AIN3, AIN1, AIN4, and AIN6 captured together at 24 kS/s per lane. The four
+distinct traces include the attached fixture response and floating-input
+activity present during the validation run.*
 
 
 ## Running It
@@ -219,12 +225,14 @@ python -m app.hw_validation
 ```
 
 ## Rebuilding The FPGA Image
-The validated full-feature speed build uses Quartus seed `44`; use the current
-project scripts and timing reports in [`hdl/proj/`](hdl/proj/).
+The validated full-feature speed build uses Quartus seed `10`; use the current
+project scripts and timing reports in [`hdl/proj/`](hdl/proj/). The current
+validation image was loaded into volatile SRAM; persistent CFM was deliberately
+left at the 2026-08-27 baseline.
 
 ```powershell
 cd hdl\proj
-.\compile.ps1 -Flash -Seed 44
+.\compile.ps1 -Seed 10
 ```
 
 For more detail, see:

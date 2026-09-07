@@ -41,7 +41,10 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      // The device preset contains its own 1280x720 viewport, so keep the
+      // documentation-sized viewport after the spread. Mixed-scan captures
+      // need the height to show their digital and analog lanes together.
+      use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 1400 } },
     },
   ],
 });

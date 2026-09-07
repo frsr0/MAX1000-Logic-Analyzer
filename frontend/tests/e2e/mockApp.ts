@@ -67,15 +67,15 @@ function makeCap(): Json {
     supports_rolling: true,
     supports_continuous: true,
     supports_analog: true,
-    analog_rate_note: 'MAX10 ADC supports 1 MSPS single-channel analog and 125 kframes/s 4-input physical analog scans. Mixed mode scans ADC0..ADC3 at the same scan frame rate.',
+    analog_rate_note: 'MAX10 ADC supports 1 MSPS single-channel analog, a 4-input physical analog scan, and a reduced two-result mixed frame.',
     generator_protocols: ['uart', 'rs485', 'i2c', 'bitbang'],
     triggers: triggerMatrix(),
     trigger_matrix: triggerMatrix(),
     notes: [
       'The MAX1000 has 64 Mbit SDRAM for deep capture.',
       'Single-shot digital capture is validated up to the full 200 MHz sample clock.',
-      'Maximum analog scans AIN3, AIN1, AIN4, and AIN6 at 125 kframes/s.',
-      'Mixed mode captures 16 digital bits plus the ADC0..ADC3 scan on a shared frame.',
+      'Maximum analog scans AIN3, AIN1, AIN4, and AIN6 at about 24 kS/s per lane.',
+      'Mixed mode captures 16 digital bits plus two ADC results on a shared frame.',
     ],
     digital_pin_map: digitalPinMap(),
     analog_pin_map: analogPinMap(),
@@ -334,7 +334,7 @@ function makeAnalogSession(): Json {
       id: `d${i}`,
       name: `D${i}`,
       type: 'digital',
-      enabled: true,
+      enabled: i < 2,
       color: undefined,
       units: '',
       volts_per_div: 1,
@@ -359,7 +359,7 @@ function makeAnalogSession(): Json {
       color: undefined,
       units: 'V',
       volts_per_div: 0.5,
-      offset: 0,
+      offset: 1.65,
       probe_attenuation: 1,
       cal_gain: 1,
       cal_offset: 0,
@@ -381,7 +381,7 @@ function makeAnalogSession(): Json {
       color: undefined,
       units: 'V',
       volts_per_div: 0.5,
-      offset: 0,
+      offset: 1.65,
       probe_attenuation: 1,
       cal_gain: 1,
       cal_offset: 0,
@@ -403,7 +403,7 @@ function makeAnalogSession(): Json {
       color: undefined,
       units: 'V',
       volts_per_div: 0.5,
-      offset: 0,
+      offset: 1.65,
       probe_attenuation: 1,
       cal_gain: 1,
       cal_offset: 0,
@@ -425,7 +425,7 @@ function makeAnalogSession(): Json {
       color: undefined,
       units: 'V',
       volts_per_div: 0.5,
-      offset: 0,
+      offset: 1.65,
       probe_attenuation: 1,
       cal_gain: 1,
       cal_offset: 0,
@@ -741,24 +741,17 @@ function buildMixedAnalogBuffer(mode: 'lod' | 'overview' = 'lod') {
     bin_start: 0,
   };
   const arrays: Array<{ name: string; dtype: 'u2' | 'u4' | 'f4'; data: Uint16Array | Uint32Array | Float32Array }> = [];
-  if (mode === 'overview') {
-    const { andMask, orMask, edges } = downsampleDigital(digital, bins);
-    const analogStats = Object.fromEntries(
-      Object.entries(analog).map(([name, data]) => [name, downsampleAnalog(data, bins)]),
-    ) as Record<string, { vmin: Float32Array; vmax: Float32Array }>;
-    header.edges_channels = 16;
-    arrays.push({ name: 'digital_and', dtype: 'u2', data: andMask });
-    arrays.push({ name: 'digital_or', dtype: 'u2', data: orMask });
-    arrays.push({ name: 'digital_edges', dtype: 'u4', data: edges });
-    for (const [name, stats] of Object.entries(analogStats)) {
-      arrays.push({ name: `analog_min:${name}`, dtype: 'f4', data: stats.vmin });
-      arrays.push({ name: `analog_max:${name}`, dtype: 'f4', data: stats.vmax });
-    }
-  } else {
-    arrays.push({ name: 'digital', dtype: 'u2', data: digital });
-    for (const [name, data] of Object.entries(analog)) {
-      arrays.push({ name: `analog:${name}`, dtype: 'f4', data });
-    }
+  const { andMask, orMask, edges } = downsampleDigital(digital, bins);
+  const analogStats = Object.fromEntries(
+    Object.entries(analog).map(([name, data]) => [name, downsampleAnalog(data, bins)]),
+  ) as Record<string, { vmin: Float32Array; vmax: Float32Array }>;
+  header.edges_channels = 16;
+  arrays.push({ name: 'digital_and', dtype: 'u2', data: andMask });
+  arrays.push({ name: 'digital_or', dtype: 'u2', data: orMask });
+  arrays.push({ name: 'digital_edges', dtype: 'u4', data: edges });
+  for (const [name, stats] of Object.entries(analogStats)) {
+    arrays.push({ name: `analog_min:${name}`, dtype: 'f4', data: stats.vmin });
+    arrays.push({ name: `analog_max:${name}`, dtype: 'f4', data: stats.vmax });
   }
 
   const headerBytes = new TextEncoder().encode(JSON.stringify({

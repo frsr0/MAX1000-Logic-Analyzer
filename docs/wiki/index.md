@@ -103,7 +103,10 @@ graph TB
   `sys_clk +0.278 ns`; every reported timing check is clean. The image has SOF
   checksum `0x00504799`.
 - That exact image passed the 10-check smoke test, the 117-check changed-path
-  suite, and a 26-check strict codec/rate rerun. Live readback throughput remains transport- and
+  suite, a 26-check strict codec/rate rerun, the 403-check full suite, all 57
+  GHDL benches, and browser runs of 5/5 feature plus 33/33 hardware-aligned UI
+  tests. The 37-case screenshot matrix was regenerated and visually reviewed
+  on 2026-09-07. Live readback throughput remains transport- and
   compressibility-dependent; see
   [`hdl/mso-capture.md`](hdl/mso-capture.md#rate-behavior-and-livecontinuous-capture)
   and [Verification and Change Traceability](verification-traceability.md).

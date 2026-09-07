@@ -15,24 +15,20 @@ The FPGA has three ADC scan profiles:
 | Narrow digital | 2-byte packed words; one selected digital channel, 16 time samples per word | Used for 200 MHz narrow rolling mode | Works in finite and continuous hardware validation |
 | Mixed | 5-byte frames: 16 digital bits plus ADC0-ADC1 packed as two 12-bit values | Used for mixed mode | Works at 125 kframes/s; digital is sampled once per ADC frame |
 | High-speed analog | 2-byte frames: one selected 12-bit ADC mux result | Used for high-speed analog mode | Works at 1 MSPS; default host selection is ADC1/AIN3 |
-| Maximum analog | 12-byte frames: ADC1,2,3,4,5,7,8,16 packed as eight 12-bit values | Used for maximum analog mode | Works at 125 kframes/s |
+| Maximum analog | Packed MSO stream with ADC1-ADC4 round-robin samples | Used for maximum analog mode | Four distinct physical lanes at about 24 kS/s per lane |
 
-Board-guide mapping is not a linear `AIN0..AIN7` sequence. Mixed mode still
-contains two unmapped mux slots, but maximum analog scans the documented
-physical analog profile:
+Board-guide mapping is not a linear `AIN0..AIN7` sequence. The reduced mixed
+frame exposes `a0` (an unmapped mux result) and `a1` (`AIN3`). Maximum analog
+uses the separate packed MSO path and scans the four documented physical
+inputs:
 
-| Board pin | ADC mux channel | Mixed ADC0-ADC1 | Maximum analog |
+| Board pin/result | ADC mux channel | Mixed ADC0-ADC1 | Maximum analog |
 |---|---:|---|---|
-| AIN1 | ADC2 | Yes | Yes |
-| AIN2 | ADC5 | Yes | Yes |
-| AIN3 | ADC1 | Yes | Yes |
-| AIN4 | ADC3 | Yes | Yes |
-| AIN5 | ADC7 | Yes | Yes |
-| AIN6 | ADC4 | Yes | Yes |
-| AIN0 | ADC8 | No | Yes |
-| AIN | ADC16 | No | Yes |
-| AIN7 | needs verification | No | No |
-| AREF | reference | No | No |
+| Unmapped result | ADC0 | Yes (`a0`) | No |
+| AIN3 | ADC1 | Yes (`a1`) | Yes |
+| AIN1 | ADC2 | No | Yes |
+| AIN4 | ADC3 | No | Yes |
+| AIN6 | ADC4 | No | Yes |
 
 The original root cause was RTL selection, not the frontend. That is now
 addressed by widening ADC selections to 0-31, adding ADC8 to the ADC IP mask,
@@ -49,7 +45,7 @@ digital mode is a digital-only rolling optimization, not a fifth analog mode.
 | Full digital | 16 digital inputs at maximum digital speed, up to 200 MHz in speed builds | Supported | Keep existing digital path |
 | Mixed | A mix of analog and digital at the best practical combined speed | Supported via 16 digital + ADC0-ADC1 frame at 125 kframes/s | Keep pin-map/noise validation current |
 | High-speed analog | Maximum analog detail for one selected physical analog input | Implemented as a one-slot ADC profile | Add UI channel selector beyond default ADC1/AIN3 |
-| Maximum analog | All verified physical analog inputs at best per-channel detail | Implemented as ADC1,2,3,4,5,7,8,16 profile at 125 kframes/s | Keep physical-input validation current |
+| Maximum analog | All four current physical analog inputs at best per-channel detail | Packed MSO profile with ADC1-ADC4 at about 24 kS/s per lane | Keep physical-input validation current |
 
 ## RTL Work
 
@@ -61,10 +57,12 @@ Implemented:
 3. `REG_FLAGS` bits 12:8 select the ADC mux channel for high-speed analog.
 4. ADC selections are widened to 0-31 and the ADC IP mask includes ADC8 and
    ADC16.
-5. `OLS_SDRAM_Top` selects slots per profile and toggles the analog frame on
-   `adc0_valid` for high-speed analog or `adc7_valid` for 8-slot profiles.
-6. Frame formats are decoded by the host as 5-byte mixed, 2-byte high-speed
-   analog, or 12-byte maximum analog.
+5. `OLS_SDRAM_Top` selects slots per profile. The product maximum-analog mode
+   enables the packed MSO pipeline (`REG_FLAGS` bit 20), which converts ADC1-4.
+6. The host decodes 5-byte mixed and 2-byte high-speed frames directly. The
+   maximum-analog strategy decodes the packed MSO stream into four genuinely
+   distinct lanes; it does not expose the legacy raw `MODE_ANALOG_ALL` frame
+   as the product profile.
 7. Narrow digital uses `REG_FLAGS` bit 13 plus bits 17:14 for the selected
    digital channel and packs 16 consecutive time samples per word.
 
@@ -90,17 +88,17 @@ Remaining:
 Completed on the current bitstream:
 
 1. Quartus timing closes for the 100/200 MHz speed build.
-2. Hardware validation passes `369/369`, including mixed, high-speed analog,
+2. Hardware validation passes `403/403`, including mixed, high-speed analog,
    maximum analog, mixed/digital recovery, and 200 MHz narrow packed digital
    finite/continuous capture.
 3. Rate measurement confirms about 1 MSPS for high-speed single-channel analog
-   and about 125 kframes/s for mixed/maximum 8-input scan frames.
+   and about 125 kframes/s for mixed mode. Maximum analog returns four physical
+   lanes at about 24 kS/s per lane.
+4. The 37-case real-browser matrix passes in full, with waveform screenshots
+   regenerated at 1440×1400 and visually checked for the expected lane shapes.
 
 Still useful follow-up:
 
-1. Hardware sweep with each physical analog input driven and all other analog
-   inputs tied low, proving that no displayed physical channel is a floating
-   unmapped mux slot.
-2. Open-input and grounded-input tests to explain noise: floating ADC mux inputs
+1. Open-input and grounded-input tests to explain noise: floating ADC mux inputs
    and unconnected board pins will show noise unless the UI marks them unmapped
    or the RTL stops scanning them.

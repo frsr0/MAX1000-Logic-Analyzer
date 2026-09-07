@@ -316,7 +316,7 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
   ~12–18 MHz (completion waited on an exact write-count the producer never quite
   reached). Open-page policy + producer-done completion fix both: single-shot
   deep capture now completes and reads back clean at every rate up to the full
-  200 MHz sample clock (covered by the final 120/120 hardware regression, 0 isolated dropped samples,
+  200 MHz sample clock (covered by the current 403/403 hardware regression, 0 isolated dropped samples,
   18–200 MHz, full 4,194,304-word depth).
 - `CMD_GEN_CAPTURE` UART, RS-485, and SPI loopback routes are covered by the
   smoke/API tests; I²C is additionally validated against the on-board LIS3DH
@@ -326,11 +326,12 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
   pattern/bus_value — REG_TRIGGER_MASK level matcher), and the UART-byte
   protocol trigger. All other trigger types are clearly labelled
   *post-capture* and run as software searches.
-- No analogue front-end beyond the MAX10 ADC (1 MSPS single-channel,
-  125 kframes/s 4-input physical analog scan, 3.3 V internal reference).
-  Mixed mode scans ADC0-ADC3 at the same scan frame rate. High-speed analog
-  uses one selected ADC mux channel; maximum analog uses the validated physical
-  four-input profile ADC1,2,3,4 -> AIN3, AIN1, AIN4, AIN6. AC coupling,
+- No analogue front-end beyond the MAX10 ADC (about 1 MSPS single-channel,
+  about 24 kS/s per lane for the four-input physical scan, 3.3 V internal
+  reference). Mixed mode carries 16 digital bits plus the reduced two-result
+  ADC frame (`a0`/`a1`) at about 125 kframes/s. High-speed analog uses one
+  selected ADC mux channel; maximum analog uses the validated packed physical
+  profile ADC1,2,3,4 -> AIN3, AIN1, AIN4, AIN6. AC coupling,
   probe relays, per-channel gain
   are **marked unavailable** — never faked. Mock analog exists only in mock mode.
 - The four capture modes are full digital, mixed, high-speed single-analog,
@@ -364,7 +365,7 @@ save (ctrl+S) and re-import the JSON on the Sessions page.
 - Mixed/analog/digital recovery is validated by back-to-back hardware tests;
   each capture setup writes the complete mode state.
 - Continuous `Rate_Div=1` startup is covered by HDL and hardware validation.
-- FPGA utilization on the current image is 6,333/8,064 LEs (79%), with 2,586
+- FPGA utilization on the current image is 7,713/8,064 LEs (96%), with 4,802
   registers and 63 pins. Planned: trim duplicate
   debug/test mux logic guided by synthesis reports; do not block feature fixes
   on logic cleanup unless compile fails.

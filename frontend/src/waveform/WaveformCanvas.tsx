@@ -429,6 +429,8 @@ export function WaveformCanvas({ channels, onSelectRegion }: Props) {
         <canvas
           ref={canvasRef}
           className="waveform-canvas"
+          aria-label={`Waveform for ${activeSession?.name ?? 'no session'}`}
+          aria-busy={waveformView.loading || waveformView.payload === null}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}

@@ -48,7 +48,7 @@ be rebuilt and re-swept before it inherits this timing claim.
 | Packed narrow | Live | One selected channel at 200.4 MHz; up to 16x the SDRAM logical depth |
 | Analog fast | Single/live | One physical ADC lane, 100 kHz-1 MHz |
 | Maximum analog | Single/live | Four physical lanes (`AIN3`, `AIN1`, `AIN4`, `AIN6`) at about 24 kS/s per lane |
-| Mixed scan | Single/live | 16 digital plus two ADC lanes at about 125 kframes/s |
+| Mixed scan | Single/live | 16 digital plus two packed ADC results (`a0`, `a1`) at about 125 kframes/s |
 
 Digital readback supports `raw`, direct full-word `rle`, and packed
 `delta_rle` (`delta` remains a compatibility spelling). Analog and mixed
@@ -89,6 +89,11 @@ The current volatile image has the following connected-board evidence:
 - both strict 60-second rolling stress runs passed inside the full suite, with
   debug disabled and enabled, over 10 million samples captured in each run;
 - all 57 HDL testbenches pass with zero expected failures and zero exclusions;
+- browser hardware validation passes **5/5** feature tests (all **37/37**
+  advertised mode/rate cases) and **33/33** hardware-aligned UI tests;
+- the 2026-09-07 screenshot refresh checks exact session identity and loaded
+  waveform state; visual review confirmed the expected UART, MIL, LIS3DH,
+  analog-fast, four-lane analog, and mixed digital/analog traces;
 - auto-discovered analogue jumpers on both installed paths, full-depth SDRAM,
   200.4 MHz narrow capture, packed MSO, pre-trigger, codec, readout-stress,
   and close/reopen lifecycle checks.
@@ -104,8 +109,8 @@ Playwright mock E2E, and all 57 GHDL benches. The self-hosted hardware workflow 
 its required MAX1000 is unavailable; it does not silently treat absence as a
 pass.
 
-The whole-frontend coverage requirement is met: **275 tests** cover all
-**3,379 statements, 2,470 branches, 941 functions, and 2,868 lines** in the
+The whole-frontend coverage requirement is met: **277 tests** cover all
+**3,382 statements, 2,475 branches, 941 functions, and 2,871 lines** in the
 configured production TypeScript/TSX scope. See
 [Frontend Build and Test](frontend/build-and-test.md).
 

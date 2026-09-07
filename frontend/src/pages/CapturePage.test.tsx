@@ -73,6 +73,25 @@ it('opens the backend capture for both active capture states and ignores unrelat
   expect(openSession).not.toHaveBeenCalled();
 });
 
+it('preserves a manually selected session until the backend reports a newer capture', async () => {
+  const openSession = vi.fn().mockResolvedValue(undefined);
+  useApp.setState({
+    activeSession: session('manual'),
+    openSession,
+    status: { last_session_id: 'previous-latest', capture_state: 'done' } as never,
+  });
+
+  const { rerender } = render(<CapturePage />);
+  await Promise.resolve();
+  expect(openSession).not.toHaveBeenCalled();
+
+  useApp.setState({
+    status: { last_session_id: 'new-capture', capture_state: 'done' } as never,
+  });
+  rerender(<CapturePage />);
+  await waitFor(() => expect(openSession).toHaveBeenCalledWith('new-capture'));
+});
+
 it('renders a loaded capture and exercises every side-panel tab', () => {
   const notify = vi.spyOn(waveformView, 'notify');
   useApp.setState({ activeSession: session('fast', {

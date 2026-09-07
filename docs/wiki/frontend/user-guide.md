@@ -1,8 +1,11 @@
 # OLS Logic Analyzer — User Guide
 
 This page is a visual tour of the React/FastAPI application. The screenshots
-below were captured on 2026-08-06 using the built-in Mock MAX1000 Analyser, so
-they show the complete UI without requiring a board to be connected.
+were regenerated on 2026-09-07 at 1440×1400. Live images use the attached
+MAX1000; workflow-only images use the deterministic Playwright fixture. The
+live gallery asserts the exact selected session and a completed waveform load
+before capture, preventing an older or still-loading canvas from being
+mistaken for current evidence.
 
 ## Start here
 
@@ -31,7 +34,7 @@ Open **Device** from the left navigation. The page shows the detected devices,
 the board capability summary, the digital pin pool, analogue inputs, and the
 capture/trigger matrix.
 
-![Device page showing the mock and MAX1000 devices](../assets/app-device.png)
+![Device page showing the connected MAX1000](../../../frontend/test-results/screenshots/live-device-page.png)
 
 Choose **Mock MAX1000 Analyser** when exploring the UI or running a demo. It
 generates deterministic synthetic captures and exercises the same frontend and
@@ -48,7 +51,7 @@ Open **Capture**, choose a hardware mode, sample rate, sample count, and
 acquisition type. In mock mode, the **Mock scenario** selector provides UART,
 I²C, SPI, RS-485, PWM, analogue, Manchester, SWD, and fault scenarios.
 
-![Capture page showing a mock UART waveform](../assets/app-capture.png)
+![Live mixed capture showing digital and analog lanes](../../../frontend/test-results/screenshots/live-mixed-analog-waveform.png)
 
 Press **Capture** to create a session. The waveform viewer supports:
 
@@ -68,7 +71,7 @@ through the component tree.
 Every completed capture is stored as a session. Open **Sessions** to search,
 open, duplicate, compare, delete, or import sessions.
 
-![Sessions page listing a captured mock session](../assets/app-sessions.png)
+![Session comparison workflow using deterministic captures](../../../frontend/test-results/screenshots/session-comparison.png)
 
 Sessions retain device metadata, capture settings, channel metadata, trigger
 configuration, decoder results, measurements, markers, diagnostics, and the
@@ -82,12 +85,22 @@ result through the same analyser path. The page is capability-driven: it
 shows UART, RS-485, I²C, SPI, SWD, PWM, pattern, counter, PRBS, and Bit Banger
 options according to the connected device.
 
-![Signal generator page showing the UART route](../assets/app-generator.png)
+![Signal generator page showing current hardware routes](../../../frontend/test-results/screenshots/generator-page-latest.png)
 
 For a loopback check, select a protocol, enter the data and route pins, then
 use **Send + capture** or **Run generator self-test**. The self-test stores the
 capture as a normal session and compares decoded bytes or transactions with
 the expected result.
+
+![Live UART generator waveform and decoded bytes](../../../frontend/test-results/screenshots/live-generator-session-waveform.png)
+
+## Inspect the on-board accelerometer
+
+The diagnostics workflow can create a live LIS3DH `WHO_AM_I` capture using
+the on-board sensor pins. The resulting session contains the physical bus
+waveform and decoded `0x0f` register / `0x33` response transaction.
+
+![Live LIS3DH waveform and decode](../../../frontend/test-results/screenshots/live-accelerometer-session-waveform.png)
 
 ## Other pages
 

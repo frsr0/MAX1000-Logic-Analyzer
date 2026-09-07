@@ -26,7 +26,7 @@ same compiler and VHDL-2008 semantics.
 
 ## Current result
 
-The 2026-09-04 signoff run reports:
+The 2026-09-07 signoff run reports:
 
 ```text
 HDL TB SUMMARY: 57 passed, 0 expected failures, 0 failed

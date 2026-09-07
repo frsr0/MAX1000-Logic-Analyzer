@@ -1,10 +1,20 @@
 # Hardware Screenshot Matrix
 
-These screenshots are completed acquisitions from the connected MAX1000 on
-2026-08-27, using the current seed-10, 24-bit-divider image. The run completed
-**37/37 cases** with `failed=0`. Each case records requested/effective rate,
-sample count, channel metadata, and session ID in the
+These screenshots were regenerated from completed acquisitions on the
+connected MAX1000 on 2026-09-07, using the volatile seed-10 image with SOF
+checksum `0x00504799`. The run completed **37/37 cases** with `failed=0`.
+Each case records requested/effective rate, sample count, channel metadata,
+and session ID in the
 [machine-readable manifest](../../frontend/test-results/screenshots/hardware-validated-matrix.json).
+
+The browser runs at 1440×1400 for durable evidence, so mixed captures show
+their digital and analog lanes together. Before each screenshot the test
+checks the exact session identity and waits for a completed waveform payload.
+Visual review confirmed digital activity where present, a one-lane
+analog-fast trace, four distinct maximum-analog lanes, and both digital and
+two-result analog data in the mixed captures. Quiet digital inputs may
+legitimately render as flat lines; the manifest and API assertions validate
+the acquisition metadata independently of visible edge density.
 
 The matrix is an acquisition/UI integration check. Electrical quality claims
 and the broader register/codec/generator suite are documented in
@@ -62,7 +72,7 @@ and the broader register/codec/generator suite are documented in
 | Mixed scan | single | 125.094 kframes/s effective | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-mixed-scan-single-125000.png) |
 | Mixed scan | live | 125.094 kframes/s effective | [PNG](../../frontend/test-results/screenshots/hardware-validated-matrix-mixed-scan-live-125000.png) |
 
-The separate physical analogue UART proof is
+The separate historical physical analogue UART proof is
 [PMOD6 to AIN4/ADC3](../../frontend/test-results/screenshots/mso-analog-uart-live.png).
 Older `hardware-matrix-*` screenshots remain in the repository as historical
 UI-selection evidence; the `hardware-validated-matrix-*` files and manifest

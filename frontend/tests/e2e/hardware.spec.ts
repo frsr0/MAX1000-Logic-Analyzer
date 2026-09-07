@@ -207,7 +207,7 @@ async function listLiveSessions(page: any) {
   return Array.isArray(data.sessions) ? data.sessions : [];
 }
 
-async function openLiveSession(page: any, query: string) {
+async function openLiveSession(page: any, query: string, requireDecoder = true) {
   const sessions = await listLiveSessions(page);
   const pick = sessions.find((s: any) => String(s.name) === query)
     ?? sessions.find((s: any) => String(s.name).includes(query));
@@ -220,8 +220,12 @@ async function openLiveSession(page: any, query: string) {
   const row = nameBox.locator('xpath=ancestor::tr');
   await row.scrollIntoViewIfNeeded();
   await row.getByRole('button', { name: 'Open' }).click({ force: true });
-  await expect(page.locator('canvas.waveform-canvas')).toBeVisible({ timeout: 15_000 });
-  await expect(page.locator('.decoder-table')).toBeVisible({ timeout: 15_000 });
+  const canvas = page.getByLabel(`Waveform for ${pick.name}`);
+  await expect(canvas).toBeVisible({ timeout: 15_000 });
+  await expect(canvas).toHaveAttribute('aria-busy', 'false', { timeout: 15_000 });
+  if (requireDecoder) {
+    await expect(page.locator('.decoder-table')).toBeVisible({ timeout: 15_000 });
+  }
 }
 
 test.beforeEach(async ({ page }) => {
@@ -319,7 +323,7 @@ test('capture controls reflect MAX1000 modes', async ({ page }) => {
   await expect(page.getByRole('option', { name: '24 kHz' })).toBeAttached();
 
   await page.locator('.mode-tile', { hasText: 'Mixed scan' }).click();
-  await expect(page.getByText('Mixed mode captures 16 digital bits plus the 4 analog scan channels, sampled together at a shared scan frame rate.')).toBeVisible();
+  await expect(page.getByText('Mixed mode captures 16 digital bits plus two packed ADC results, sampled together at a shared scan frame rate.')).toBeVisible();
   await expect(page.getByText('Analog and mixed captures use raw readback.')).toBeVisible();
   await expect(page.getByRole('option', { name: '125 kHz' })).toBeAttached();
 
@@ -793,34 +797,21 @@ test('live hardware sessions show waveform screenshots across digital and analog
 
   const sessions = await listLiveSessions(page);
   const picks = [
-    { query: 'Generator self-test (uart)', shot: 'live-generator-session-waveform.png' },
-    { query: 'MIL transaction - Modbus RTU demo', shot: 'live-mil-session-waveform.png' },
-    { query: 'HW smoke test capture', shot: 'live-hw-smoke-session-waveform.png' },
-    { query: 'LIS3DH WHO_AM_I live', shot: 'live-accelerometer-session-waveform.png' },
-    { query: 'README HW analog fast live', shot: 'live-analog-fast-waveform.png' },
-    { query: 'README HW dual analog live', shot: 'live-dual-analog-waveform.png' },
-    { query: 'README HW mixed analog live', shot: 'live-mixed-analog-waveform.png' },
-  ].filter((pick) => sessions.some((s: any) => String(s.name).includes(pick.query)));
-  expect(picks.length).toBeGreaterThan(0);
-
-  await page.getByRole('button', { name: 'Sessions' }).click();
-  await expect(page.getByRole('heading', { name: 'Sessions' })).toBeVisible();
+    { query: 'Generator self-test (uart)', shot: 'live-generator-session-waveform.png', decoder: true },
+    { query: 'MIL transaction - Modbus RTU demo', shot: 'live-mil-session-waveform.png', decoder: true },
+    { query: 'LIS3DH WHO_AM_I live', shot: 'live-accelerometer-session-waveform.png', decoder: true },
+    { query: 'HW validated Analog fast single 1000000', shot: 'live-analog-fast-waveform.png', decoder: false },
+    { query: 'HW validated Maximum analog single 24000', shot: 'live-maximum-analog-waveform.png', decoder: false },
+    { query: 'HW validated Mixed scan single 125000', shot: 'live-mixed-analog-waveform.png', decoder: false },
+  ];
+  expect(sessions.some((s: any) => String(s.name).includes('HW validated Analog fast single 1000000')),
+    'run hardware-features.spec.ts with PLAYWRIGHT_HARDWARE_MATRIX=1 before refreshing live screenshots').toBeTruthy();
 
   const failures: string[] = [];
   for (const pick of picks) {
-    // Session names render in an editable <input class="ch-name">, so match
-    // the row by input value (hasText never sees input values).
-    const row = page.locator('tr').filter({
-      has: page.locator(`input[value="${pick.query}"]`),
-    }).first();
     try {
-      await expect(row).toBeVisible({ timeout: 15_000 });
-      await row.scrollIntoViewIfNeeded();
-      await row.getByRole('button', { name: 'Open' }).click({ force: true });
-      await expect(page.locator('canvas.waveform-canvas')).toBeVisible({ timeout: 15_000 });
+      await openLiveSession(page, pick.query, pick.decoder);
       await takeScreenshot(page, pick.shot);
-      await page.getByRole('button', { name: 'Sessions' }).click();
-      await expect(page.getByRole('heading', { name: 'Sessions' })).toBeVisible();
     } catch (err: unknown) {
       // Collect per-session failures instead of silently swallowing them: a
       // partial render regression must fail the test, not just skip a shot.
@@ -845,6 +836,9 @@ test.describe('mock fixture sessions', () => {
     await page.getByRole('button', { name: 'Channels' }).click();
     await expect(page.getByRole('option', { name: 'a1 (analog)' })).toBeAttached();
     await expect(page.getByRole('option', { name: 'a2 (analog)' })).toBeAttached();
+    const canvas = page.getByLabel('Waveform for MAX1000 mixed analog sweep');
+    await expect(canvas).toHaveAttribute('aria-busy', 'false');
+    await page.getByRole('button', { name: 'Capture', exact: true }).click();
 
     await takeScreenshot(page, 'analog-session-waveform.png', { fullPage: true });
   });

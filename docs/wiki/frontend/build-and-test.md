@@ -49,9 +49,9 @@ statement/branch/function/line thresholds are unchanged.
 
 The initial full-source audit on 2026-09-04 found only 110/3,362 statements
 (3.27%) and 43/2,512 branches (1.71%); the former 100% report measured only
-three transport modules. The completed strict suite now has **275 passing
-tests** and literal 100% coverage: 3,379/3,379 statements, 2,470/2,470
-branches, 941/941 functions, and 2,868/2,868 lines. Playwright and real-board
+three transport modules. The completed strict suite now has **277 passing
+tests** and literal 100% coverage: 3,382/3,382 statements, 2,475/2,475
+branches, 941/941 functions, and 2,871/2,871 lines. Playwright and real-board
 passes remain complementary evidence, not unmeasured coverage credit.
 
 This tranche found and fixed stale asynchronous results crossing session or
@@ -112,6 +112,11 @@ Durable screenshots live in `frontend/test-results/screenshots/`. Key files:
 | `capture-live-50mhz-latest.png` | Live rolling waveform |
 | `capture-start-failure-toast.png` / `capture-ws-error-toast.png` | Error handling |
 | `generator-page-latest.png` | Capability-driven generator routes |
+| `live-generator-session-waveform.png` | Attached-board UART waveform and decode |
+| `live-accelerometer-session-waveform.png` | Attached LIS3DH waveform and decoded response |
+| `live-analog-fast-waveform.png` | One-lane attached-board analog-fast capture |
+| `live-maximum-analog-waveform.png` | Four-lane attached-board analog capture |
+| `live-mixed-analog-waveform.png` | Attached-board digital and analog mixed frame |
 | `bit-banger-preview-sweep.png` | Preset/script preview and sweep |
 | `settings-control-denial.png` | Control-lock denial |
 | `decoder-builder.png` | Decoder creation/run |
@@ -120,3 +125,10 @@ Durable screenshots live in `frontend/test-results/screenshots/`. Key files:
 
 The current matrix index is [Hardware Screenshot Matrix](../hardware-screenshot-matrix.md).
 Decoder interaction details remain on [Decoder UI](decoder-ui.md).
+
+Documentation screenshots use a 1440×1400 viewport. The live gallery locates
+the requested session by name, verifies the canvas accessibility label names
+that session, and waits for `aria-busy="false"`. The matrix additionally
+checks completion, channel shape, sample count, and effective-rate error for
+every case. These assertions prevent a visible canvas from passing when it
+still contains the preceding session.

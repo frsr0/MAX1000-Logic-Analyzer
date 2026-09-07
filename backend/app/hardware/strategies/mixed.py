@@ -24,7 +24,7 @@ ADC_SCAN_FRAME_RATE_HZ = 125_000.0
 
 
 class MixedCaptureStrategy(CaptureStrategy):
-    """Time-correlated mixed digital+analog capture (16 digital + ADC0..ADC3)."""
+    """Time-correlated mixed capture (16 digital + two packed ADC results)."""
 
     modes = {"mixed", "mixed_continuous"}
 

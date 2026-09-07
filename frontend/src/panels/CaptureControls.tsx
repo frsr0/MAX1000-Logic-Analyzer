@@ -61,8 +61,8 @@ const SOURCES: {
   {
     source: 'mixed',
     label: 'Mixed scan',
-    detail: '16 digital + ADC0-ADC3, time-correlated at the scan frame rate',
-    channels: 'D0-D15 + ADC0-ADC3',
+    detail: '16 digital + two packed ADC results, time-correlated at the scan frame rate',
+    channels: 'D0-D15 + a0/a1',
   },
   {
     source: 'digital_narrow',
@@ -187,7 +187,7 @@ function hardwareSummary(mode: CaptureMode) {
       return 'Packed narrow mode keeps one line at 200 MHz and stretches it to a much longer logical stream.';
     case 'mixed':
     case 'mixed_continuous':
-      return 'Mixed mode captures 16 digital bits plus the 4 analog scan channels, sampled together at a shared scan frame rate.';
+      return 'Mixed mode captures 16 digital bits plus two packed ADC results, sampled together at a shared scan frame rate.';
     case 'analog':
     case 'analog_fast':
     case 'analog_continuous':

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-07T14:32:05.326Z",
+  "generated_at": "2026-09-07T19:14:45.777Z",
   "cases": [
     {
       "status": "passed",
@@ -11,7 +11,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_6e262801f0"
+      "session_id": "ses_f9d76e679d"
     },
     {
       "status": "passed",
@@ -23,7 +23,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_5bc0a929cc"
+      "session_id": "ses_0dd42b9624"
     },
     {
       "status": "passed",
@@ -35,7 +35,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_39528852c5"
+      "session_id": "ses_2a5ad3e4a5"
     },
     {
       "status": "passed",
@@ -47,7 +47,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_3900944e6d"
+      "session_id": "ses_f52f313062"
     },
     {
       "status": "passed",
@@ -59,7 +59,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_8f8141cfd3"
+      "session_id": "ses_beac3f3bf0"
     },
     {
       "status": "passed",
@@ -71,7 +71,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_65f09e7182"
+      "session_id": "ses_bdd615961d"
     },
     {
       "status": "passed",
@@ -83,7 +83,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_b3629f82d8"
+      "session_id": "ses_49091d1f57"
     },
     {
       "status": "passed",
@@ -95,7 +95,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_9dfdf390e5"
+      "session_id": "ses_91e300bec6"
     },
     {
       "status": "passed",
@@ -107,7 +107,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_2ab5dfe279"
+      "session_id": "ses_28cf31a21c"
     },
     {
       "status": "passed",
@@ -119,7 +119,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_ab68f6aacf"
+      "session_id": "ses_5e139b0c42"
     },
     {
       "status": "passed",
@@ -131,7 +131,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_0cb453a2ad"
+      "session_id": "ses_a808756518"
     },
     {
       "status": "passed",
@@ -143,7 +143,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_9e88101d61"
+      "session_id": "ses_b9e4a46f19"
     },
     {
       "status": "passed",
@@ -155,7 +155,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_935dab524a"
+      "session_id": "ses_318e302567"
     },
     {
       "status": "passed",
@@ -167,7 +167,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_758c8f7a7c"
+      "session_id": "ses_b22fdde668"
     },
     {
       "status": "passed",
@@ -179,7 +179,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_7e6f527186"
+      "session_id": "ses_e388d5e3aa"
     },
     {
       "status": "passed",
@@ -191,7 +191,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_079ec2cdfb"
+      "session_id": "ses_6574088e06"
     },
     {
       "status": "passed",
@@ -203,7 +203,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_28883af52e"
+      "session_id": "ses_949214e5c7"
     },
     {
       "status": "passed",
@@ -215,7 +215,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_8639fd1496"
+      "session_id": "ses_468ba86601"
     },
     {
       "status": "passed",
@@ -227,7 +227,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_5e7c3277df"
+      "session_id": "ses_1610daed82"
     },
     {
       "status": "passed",
@@ -239,7 +239,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_0756373336"
+      "session_id": "ses_04d711d4f5"
     },
     {
       "status": "passed",
@@ -251,7 +251,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_c6982b14d3"
+      "session_id": "ses_da7d3b8181"
     },
     {
       "status": "passed",
@@ -263,7 +263,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_0557421b91"
+      "session_id": "ses_97c0ad31ee"
     },
     {
       "status": "passed",
@@ -275,7 +275,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_436392ecae"
+      "session_id": "ses_e7ecb5e09f"
     },
     {
       "status": "passed",
@@ -287,7 +287,7 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_7f2efd970e"
+      "session_id": "ses_c8e69ec5aa"
     },
     {
       "status": "passed",
@@ -299,7 +299,7 @@
       "samples": 4096,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_ae1e933acc"
+      "session_id": "ses_1fb0f29ebf"
     },
     {
       "status": "passed",
@@ -313,7 +313,7 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_dad48c3124"
+      "session_id": "ses_154e0c8ced"
     },
     {
       "status": "passed",
@@ -327,7 +327,7 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_31bcf327aa"
+      "session_id": "ses_e86b1c3097"
     },
     {
       "status": "passed",
@@ -341,7 +341,7 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_43794e9c59"
+      "session_id": "ses_e09b4afb14"
     },
     {
       "status": "passed",
@@ -355,7 +355,7 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_19a667579e"
+      "session_id": "ses_112e97e0e4"
     },
     {
       "status": "passed",
@@ -369,7 +369,7 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_206d9cebdc"
+      "session_id": "ses_4ef5eb1232"
     },
     {
       "status": "passed",
@@ -383,7 +383,7 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_88822d27e5"
+      "session_id": "ses_9426fbf899"
     },
     {
       "status": "passed",
@@ -397,7 +397,7 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_1250e39c8c"
+      "session_id": "ses_9c10b43d99"
     },
     {
       "status": "passed",
@@ -411,7 +411,7 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_2f7c03db0a"
+      "session_id": "ses_20bd13e072"
     },
     {
       "status": "passed",
@@ -420,7 +420,7 @@
       "api_mode": "analog_all",
       "requested_rate_hz": 24000,
       "effective_rate_hz": 24000,
-      "samples": 552,
+      "samples": 512,
       "digital_channels": 0,
       "analog_channels": [
         "a1",
@@ -428,7 +428,7 @@
         "a3",
         "a4"
       ],
-      "session_id": "ses_c35dfab455"
+      "session_id": "ses_31ad2ba509"
     },
     {
       "status": "passed",
@@ -437,7 +437,7 @@
       "api_mode": "analog_all_continuous",
       "requested_rate_hz": 24000,
       "effective_rate_hz": 24000,
-      "samples": 544,
+      "samples": 516,
       "digital_channels": 0,
       "analog_channels": [
         "a1",
@@ -445,7 +445,7 @@
         "a3",
         "a4"
       ],
-      "session_id": "ses_bf9e62ee23"
+      "session_id": "ses_4602ce8bc7"
     },
     {
       "status": "passed",
@@ -460,7 +460,7 @@
         "a0",
         "a1"
       ],
-      "session_id": "ses_c57c16f1e4"
+      "session_id": "ses_6cf8682484"
     },
     {
       "status": "passed",
@@ -475,7 +475,7 @@
         "a0",
         "a1"
       ],
-      "session_id": "ses_04aa10ed6a"
+      "session_id": "ses_ef61b3a4b1"
     }
   ],
   "passed": 37,
