@@ -7,5 +7,5 @@ malformed-input cases. The schema is in `protocol_fixture.schema.json`.
 
 Fixture consumers validate the schema and compare complete expected events;
 malformed-input fixtures are expected to state the precise error behavior.
-They are part of the 540-test backend gate, which currently has 100% statement
+They are part of the 541-test backend gate, which currently has 100% statement
 and branch coverage.

@@ -1372,6 +1372,29 @@ def test_diagnostics_qrcode_svg_fallback(monkeypatch):
     assert response.media_type == "image/svg+xml" and response.body == b"svg"
 
 
+def test_diagnostics_qrcode_png_success_without_optional_image_backend(monkeypatch):
+    import app.api.diagnostics as diagnostics_api
+
+    class Image:
+        def save(self, buf, format=None):
+            assert format == "PNG"
+            buf.write(b"png")
+
+    qr = types.ModuleType("qrcode")
+    qr.make = MagicMock(return_value=Image())
+    monkeypatch.setitem(sys.modules, "qrcode", qr)
+    monkeypatch.setattr(
+        diagnostics_api,
+        "_lan_urls",
+        lambda: ["http://localhost:8000", "http://192.0.2.10:8000"],
+    )
+
+    response = diagnostics_api.qr_code()
+
+    qr.make.assert_called_once_with("http://192.0.2.10:8000")
+    assert response.media_type == "image/png" and response.body == b"png"
+
+
 def test_generator_self_test_hardware_error_and_real_device_config(monkeypatch):
     import app.api.generator as generator_api
     from app.hardware.base import HardwareError

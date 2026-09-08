@@ -39,7 +39,7 @@ inside the read-only packaged executable.
 
 The packaged app uses the same production frontend and backend covered by the
 repository gates. As of 2026-09-07 those suites pass at literal 100% source
-coverage (540 backend tests and 277 frontend tests), while the live browser
+coverage (541 backend tests and 277 frontend tests), while the live browser
 suite passes 33/33 against the attached MAX1000. Packaging still needs a
 Windows launch smoke check because source coverage does not prove a generated
 installer or local FTDI driver installation.

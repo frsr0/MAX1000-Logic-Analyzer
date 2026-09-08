@@ -2,7 +2,7 @@ import os
 import runpy
 from contextlib import ExitStack
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -112,11 +112,27 @@ def test_uart_cmd_id_import_ports_success_nonmatch_and_error():
     serial = SimpleNamespace(Serial=MagicMock())
     good = MagicMock(); good.read.return_value = b'1ALS'
     empty = MagicMock(); empty.read.return_value = b''
-    serial.Serial.side_effect = [OSError('busy'), empty, good]
-    with patch.dict('sys.modules', {'serial': serial}), patch('glob.glob', return_value=['COM3', 'COM1', 'COM2']), \
-         patch.object(hv.time, 'sleep'), patch.object(hv, 'check') as check:
-        hv.test_uart_cmd_id()
-    check.assert_called_once_with(True, 'UART ID match on COM3')
+    for platform, glob_results in (
+        ('win32', [['COM3', 'COM1', 'COM2']]),
+        ('linux', [['COM3', 'COM1', 'COM2'], []]),
+    ):
+        serial.Serial.reset_mock()
+        serial.Serial.side_effect = [OSError('busy'), empty, good]
+        with patch.object(hv.sys, 'platform', platform), \
+             patch.dict('sys.modules', {'serial': serial}), \
+             patch('glob.glob', side_effect=glob_results) as glob, \
+             patch.object(hv.time, 'sleep'), \
+             patch.object(hv, 'check') as check:
+            hv.test_uart_cmd_id()
+        expected_globs = ([call('COM*')] if platform == 'win32' else
+                          [call('/dev/ttyUSB*'), call('/dev/ttyACM*')])
+        assert glob.call_args_list == expected_globs
+        assert serial.Serial.call_args_list == [
+            call('COM1', 115200, timeout=1),
+            call('COM2', 115200, timeout=1),
+            call('COM3', 115200, timeout=1),
+        ]
+        check.assert_called_once_with(True, 'UART ID match on COM3')
 
     serial.Serial.side_effect = OSError('none')
     with patch.dict('sys.modules', {'serial': serial}), patch('glob.glob', return_value=['COM1']), \

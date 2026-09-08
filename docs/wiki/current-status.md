@@ -116,7 +116,7 @@ configured production TypeScript/TSX scope. See
 
 The latest host run passed **983 tests**, with all **8,241 statements** and
 **2,482 branches** covered (zero missing or partial branches). The backend
-run passed **540 tests**, covering all **8,800 statements** and **2,624
+run passed **541 tests**, covering all **8,800 statements** and **2,624
 branches**. Coverage is
 execution evidence, not proof of all possible behavior or electrical setups.
 

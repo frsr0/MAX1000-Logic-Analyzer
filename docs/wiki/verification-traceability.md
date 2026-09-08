@@ -30,7 +30,7 @@ flowchart LR
 
 | Field | Current evidence |
 |---|---|
-| Source baseline | 2026-09-07 working tree; current coverage, screenshot, and HDL repair set |
+| Source baseline | 2026-09-08 working tree; current coverage, screenshot, and HDL repair set |
 | Build | Quartus Prime Lite 25.1, full mixed-signal profile, fitter seed 10 |
 | Image | Programmed to volatile SRAM on 2026-09-07; SOF checksum `0x00504799`; persistent CFM unchanged |
 | Timing | Slow-85C setup: fast +0.253 ns, SDRAM +0.178 ns, system +0.278 ns; all setup/hold/recovery/removal/min-pulse checks positive |
@@ -38,7 +38,7 @@ flowchart LR
 | Changed-path hardware suite | 117/117, 0 failed, 0 skipped; strict codec/rate rerun 26/26 |
 | Full hardware suite | 403/403, 0 failed, 0 skipped; includes both strict 60-second stress runs |
 | Host coverage | 983 tests; 8,241 statements and 2,482 branches at 100%, zero partial branches |
-| Backend coverage | 540 tests; 8,800 statements and 2,624 branches at 100%, zero partial branches |
+| Backend coverage | 541 tests; 8,800 statements and 2,624 branches at 100%, zero partial branches |
 | Frontend coverage | 277 tests; 3,382 statements, 2,475 branches, 941 functions, and 2,871 lines at 100% |
 | Browser hardware matrix | 5/5 feature tests, including 37/37 advertised mode/rate combinations; broader hardware-aligned suite 33/33; screenshots regenerated and visually checked at 1440×1400 |
 | Rate sweep | Historical persistent image: 1,200-115,200 baud within +0.79% |
