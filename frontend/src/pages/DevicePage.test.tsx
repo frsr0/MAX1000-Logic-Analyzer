@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { DevicePage } from './DevicePage';
+import { clientId } from '../api/client';
 import { useApp } from '../state/appStore';
 
 const devices = [
@@ -124,4 +125,47 @@ it('renders mock/known-protocol/free-control metadata and a failed self-test', a
   fireEvent.click(screen.getByRole('button', { name: 'Run self-test' }));
   expect(await screen.findByText('FAIL')).toBeTruthy();
   expect(screen.getByText(/loopback absent/)).toBeTruthy();
+});
+
+it('lets the operator request, take, and recover control ownership', async () => {
+  let acquireResult = true;
+  const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === '/api/devices') return Response.json({ devices });
+    if (url === '/api/status') return Response.json({ ...status, control: { ...status.control, held: false } });
+    if (url === '/api/control/acquire') return Response.json({ acquired: acquireResult });
+    return Response.json({});
+  });
+  vi.stubGlobal('fetch', fetcher);
+  useApp.setState({ status: { ...status, control: { ...status.control, held: false } } as never, controlMode: false });
+  render(<DevicePage />);
+
+  fireEvent.click(screen.getByRole('button', { name: 'Enable control mode' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Request control' }));
+  await waitFor(() => expect(useApp.getState().toasts.some((toast) => toast.message.includes('Control acquired'))).toBe(true));
+  acquireResult = false;
+  fireEvent.click(screen.getByRole('button', { name: 'Take control' }));
+  await waitFor(() => expect(useApp.getState().toasts.some((toast) => toast.message.includes('Another client'))).toBe(true));
+
+  fetcher.mockImplementationOnce(async () => { throw new Error('lock offline'); });
+  fireEvent.click(screen.getByRole('button', { name: 'Request control' }));
+  await waitFor(() => expect(useApp.getState().toasts.some((toast) => toast.message === 'lock offline')).toBe(true));
+});
+
+it('uses the stable client id to identify the current control owner', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) =>
+    String(input) === '/api/devices' ? Response.json({ devices }) : Response.json({})),
+  );
+  const owned = { ...status, control: { ...status.control, held: true, holder: clientId(), holder_name: 'Another display name' } };
+  useApp.setState({ status: owned as never, controlMode: true });
+  const { rerender } = render(<DevicePage />);
+
+  expect(screen.getByText('controlled by Another display name (you)')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Refresh control' }).hasAttribute('disabled')).toBe(false);
+  expect(screen.getByRole('button', { name: 'Take control' }).hasAttribute('disabled')).toBe(true);
+
+  useApp.setState({ status: { ...owned, control: { ...owned.control, holder: 'different-client' } } as never });
+  rerender(<DevicePage />);
+  expect(screen.getByRole('button', { name: 'Refresh control' }).hasAttribute('disabled')).toBe(true);
+  expect(screen.getByRole('button', { name: 'Take control' }).hasAttribute('disabled')).toBe(false);
 });

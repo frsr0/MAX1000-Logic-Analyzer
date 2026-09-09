@@ -1433,6 +1433,25 @@ class TestOLSDeviceSPICapture:
         assert decoded[0]["digital"] == 0xAABB
         assert decoded[0]["adc"] == [0x123, 0x456]
 
+    def test_capture_analog_mixed_drops_leading_stale_word(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'capture_status': ST_CAPTURE_DONE, 'fifo_level': 0, 'gen_busy': False}
+        frames = b''.join(
+            bytes([0xFF, 0xFF]) + _pack_pair(0x5F3, 0x061)
+            for _ in range(3))
+        wire = b'\xFF\xFF' + payload_to_wire(frames, MODE_MIXED)
+        device_spi._stream_readback = MagicMock(return_value=wire)
+
+        result, decoded = device_spi.capture_analog(
+            rate_hz=100000, frames=3, mode=MODE_MIXED)
+
+        assert len(result) == 15
+        assert len(decoded) == 3
+        assert all(row["adc"] == [0x5F3, 0x061] for row in decoded)
+
     def test_capture_analog_only_roundtrip(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi.pkt.write_register.return_value = True

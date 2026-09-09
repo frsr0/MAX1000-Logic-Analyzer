@@ -16,6 +16,7 @@ from driver.wire_format import (
     MODE_MIXED,
     analog_frame_stride,
     analog_wire_stride,
+    align_mixed_wire,
     decode_analog_frames,
     wire_to_payload,
 )
@@ -47,7 +48,10 @@ class MixedCaptureStrategy(CaptureStrategy):
         # (Analog_Frame_Len + 1) / 2.  For mixed mode Analog_Frame_Len=5
         # this gives 3 words per frame.
         words_per_frame = wstride // 2
-        sdram_words = nsamp * words_per_frame
+        # Read two guard words: a stale leading SDRAM word has been observed
+        # rotating mixed frames by one word.  The wire-format seam uses the
+        # guaranteed zero high byte of each third word to recover alignment.
+        sdram_words = nsamp * words_per_frame + 2
         # The ADC scan rate is fixed (~125 kHz); words_per_frame scales it
         # up to the SDRAM word request rate the capture hardware expects.
         request_rate_hz = ADC_SCAN_FRAME_RATE_HZ * words_per_frame
@@ -63,6 +67,7 @@ class MixedCaptureStrategy(CaptureStrategy):
         if not wire:
             raise HardwareError("Mixed capture returned 0 bytes — FPGA not responding")
 
+        wire, _, _ = align_mixed_wire(wire, frame_count=nsamp)
         payload = wire_to_payload(wire, MODE_MIXED)[: nsamp * fstride]
         frames = decode_analog_frames(payload, MODE_MIXED)
         if not frames:
@@ -71,8 +76,12 @@ class MixedCaptureStrategy(CaptureStrategy):
         digital = np.array([fr["digital"] for fr in frames], dtype=np.uint16)
         analog = {}
         adc = np.array([fr["adc"] for fr in frames], dtype=np.uint16)
+        # Keep the ADC number in the channel id.  Mixed mode's two packed
+        # lanes are the physical MAX1000 ADC1/ADC2 inputs (AIN3/AIN1), so
+        # shifting them to a0/a1 would silently associate the wrong board
+        # input with every waveform and downstream measurement.
         for ch in range(adc.shape[1]):
-            analog[f"a{ch}"] = adc_to_volts(adc[:, ch])
+            analog[f"a{ch + 1}"] = adc_to_volts(adc[:, ch])
 
         actual_rate = float(dev.sample_clk) / float(
             max(1, round(dev.sample_clk / request_rate_hz) - 1) + 1

@@ -18,7 +18,7 @@ try:
         OLSDeviceSPI, find_spi_device,
         MODE_DIGITAL, MODE_MIXED,
         decode_analog_frames, analog_frame_stride, analog_wire_stride,
-        wire_to_payload, decompress_delta_block, decompress_delta_stream,
+        align_mixed_wire, wire_to_payload, decompress_delta_block, decompress_delta_stream,
     )
     from driver.ols_spi import CMD_GEN_PROTO, CMD_GEN_BAUD
     HAS_SPI = True
@@ -30,6 +30,8 @@ except ImportError:
     CMD_GEN_PROTO = 0xA4
     def analog_wire_stride(_mode):
         return 2
+    def align_mixed_wire(data, frame_count=None):
+        return data, 0, (0, 0, 0)
     def wire_to_payload(data):
         return b''.join(data[i:i + 2] for i in range(0, len(data) - 1, 4))
 
@@ -415,7 +417,7 @@ class OLScope:
         row += 1
 
         # Mixed mode now captures 2 ADC channels on the reduced analogue path.
-        self._analog_info = ttk.Label(cap_f, text="Analog: A0-A1 (2 ADC channels)")
+        self._analog_info = ttk.Label(cap_f, text="Analog: ADC1/AIN3 + ADC2/AIN1 (2 channels)")
         self._analog_info.grid(row=row, column=1, columnspan=3, sticky='w')
         row += 1
 
@@ -1165,7 +1167,7 @@ class OLScope:
                         payload_stride = analog_frame_stride(self.capture_mode)
                         words_per_frame = analog_wire_stride(self.capture_mode) // 2
                         self.dev.set_analog_config(self.capture_mode)
-                        sdram_words = nsamp * words_per_frame
+                        sdram_words = nsamp * words_per_frame + 2
                         # capture() reads one dense 16-bit word per 'sample'
                         # (2 wire bytes) since the pump fix.
                         wire = self.dev.capture(
@@ -1174,6 +1176,7 @@ class OLScope:
                             progress_cb=self._capture_progress,
                             trigger=trigger, stop_evt=self.stop_evt
                         )
+                        wire, _, _ = align_mixed_wire(wire, frame_count=nsamp)
                         payload = wire_to_payload(wire, self.capture_mode)[:nsamp * payload_stride]
                         frames = decode_analog_frames(payload, self.capture_mode)
                         self.capture_result = (payload, rate, nsamp, payload_stride, frames, self.capture_mode)

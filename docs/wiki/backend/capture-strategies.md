@@ -93,7 +93,7 @@ Readback compression is digital-only. `delta_rle` expands packed delta words
 after RLE; `rle` expands full words directly. Mixed/analog readback remains raw.
 
 - Configures: `MODE_MIXED`, ADC scan profile
-- Captures: 16 digital channels + two ADC results (`a0` and `a1`)
+- Captures: 16 digital channels + two physical ADC results (`a1` = ADC1/AIN3 and `a2` = ADC2/AIN1)
 - Frame rate: 125 kframes/s (ADC-limited)
 - Readback: raw (no compression on analog frames)
 

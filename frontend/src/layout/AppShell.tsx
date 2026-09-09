@@ -14,9 +14,9 @@ import { waveformView } from '../state/waveformStore';
 const NAV: { id: Page; icon: string; label: string }[] = [
   { id: 'capture', icon: 'CAP', label: 'Capture' },
   { id: 'sessions', icon: 'SES', label: 'Sessions' },
-  { id: 'device', icon: 'DEV', label: 'Device' },
+  { id: 'device', icon: 'HW', label: 'Hardware' },
   { id: 'generator', icon: 'GEN', label: 'Generator' },
-  { id: 'mil', icon: 'MIL', label: 'MIL' },
+  { id: 'mil', icon: 'LAB', label: 'Hardware lab' },
   { id: 'diagnostics', icon: 'DIA', label: 'Diagnostics' },
   { id: 'settings', icon: 'SET', label: 'Settings' },
 ];
@@ -132,7 +132,7 @@ export function AppShell() {
         <div className="logo" title="MAX1000 Logic Analyzer">MAX1000</div>
         {NAV.map((n) => (
           <button key={n.id} className={page === n.id ? 'active' : ''}
-            onClick={() => setPage(n.id)} title={n.label}>
+            aria-label={n.label} onClick={() => setPage(n.id)} title={n.label}>
             <span className="nav-icon">{n.icon}</span>
             <span className="nav-label">{n.label}</span>
           </button>
@@ -170,7 +170,7 @@ export function AppShell() {
         </main>
         <footer className="statusbar">
           <span className={`ws-dot ${wsConnected ? 'on' : 'off'}`} />
-          <span>{wsConnected ? 'live' : 'reconnecting...'}</span>
+          <span>{wsConnected ? 'backend connected' : 'reconnecting...'}</span>
           <span>·</span>
           <span>{status?.session_count ?? 0} sessions</span>
           <span>·</span>

@@ -18,6 +18,7 @@ from .wire_format import (
     MODE_NARROW_DIGITAL, MODE_PACKED_MSO,
     NUM_CHANNELS,
     analog_frame_stride, analog_wire_stride,
+    align_mixed_wire,
     payload_to_wire, wire_to_payload,
     narrow_digital_flags, unpack_narrow_digital_words,
     apply_glitch_filter,
@@ -2300,15 +2301,22 @@ class OLSDeviceSPI:
         try:
             # capture(nsamples=N) returns N dense 16-bit words (2 bytes each);
             # odd-sized analog frames are rounded up to whole words on the wire.
+            # A mixed frame is three 16-bit words.  Read two guard words so a
+            # stale leading SDRAM word can be identified from the guaranteed
+            # zero high byte of every third word without losing a requested
+            # frame.
             sdram_words = frames * words_per_frame
+            alignment_guard_words = 2 if mode == MODE_MIXED else 0
             wire = self.capture(
                 rate_hz=rate_hz * words_per_frame,
-                nsamples=sdram_words,
+                nsamples=sdram_words + alignment_guard_words,
                 timeout=timeout,
                 trigger=None,
                 progress_cb=progress_cb,
                 stop_evt=stop_evt,
             )
+            if mode == MODE_MIXED:
+                wire, _, _ = align_mixed_wire(wire, frame_count=frames)
             payload = wire_to_payload(wire, mode)[:frames * payload_stride]
             return payload, decode_analog_frames(payload, mode)
         finally:

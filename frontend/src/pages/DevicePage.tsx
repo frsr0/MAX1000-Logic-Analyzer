@@ -1,7 +1,7 @@
 // Device view: discovery, connect/disconnect, hardware overview, pin maps,
 // raw debug inspector, self-test.
 import { useEffect, useMemo, useState } from 'react';
-import { api } from '../api/client';
+import { api, clientId } from '../api/client';
 import type { DeviceDescriptor } from '../api/types';
 import { useApp } from '../state/appStore';
 
@@ -60,6 +60,22 @@ export function DevicePage() {
 
   const meta = status?.device;
   const connected = Boolean(status?.device_connected);
+  const control = status?.control;
+  const iAmHolder = control?.holder === clientId();
+  const acquireControl = async (force = false) => {
+    setBusy(true);
+    try {
+      const result = await api.acquireControl('me', force);
+      toast(result.acquired ? 'success' : 'warning', result.acquired
+        ? 'Control acquired — the device is ready to use'
+        : 'Another client is using the device');
+      await refreshStatus();
+    } catch (e: any) {
+      toast('error', e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const keyFacts = useMemo(() => {
     if (!capabilities) return [];
@@ -77,10 +93,34 @@ export function DevicePage() {
     <div className="page device-page">
       <div className="page-head">
         <div>
-          <h2>Device</h2>
-          <p className="hint">What is actually on the bench: MAX1000 pin map, ADC inputs, generator support, and live capability data.</p>
+          <h2>Hardware</h2>
+          <p className="hint">Connect a board and choose who can control it. Pin maps, capabilities, and diagnostics are below.</p>
         </div>
         <button onClick={scan}>Rescan</button>
+      </div>
+
+      <div className="card control-ownership-card">
+        <div className="card-head">
+          <div>
+            <h3>Control ownership</h3>
+            <p className="hint">Only the client with control can connect, capture, or drive the generator.</p>
+          </div>
+          <span className={`badge ${control?.held ? 'badge-hw' : 'badge-soft'}`}>
+            {control?.held ? `controlled by ${control.holder_name}${iAmHolder ? ' (you)' : ''}` : 'available'}
+          </span>
+        </div>
+        <div className="control-ownership-row">
+          <span>{controlMode ? 'This browser can issue hardware commands.' : 'This browser is in read-only mode.'}</span>
+          <div className="button-row">
+            {!controlMode && <button onClick={() => useApp.getState().setControlMode(true)}>Enable control mode</button>}
+            <button className="primary" disabled={busy || Boolean(control?.held && !iAmHolder)}
+              onClick={() => void acquireControl()}>
+              {control?.held ? 'Refresh control' : 'Request control'}
+            </button>
+            <button className="warning" disabled={busy || Boolean(control?.held && iAmHolder)}
+              onClick={() => void acquireControl(true)}>Take control</button>
+          </div>
+        </div>
       </div>
 
       <div className="card-grid device-grid">

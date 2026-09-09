@@ -48,7 +48,7 @@ be rebuilt and re-swept before it inherits this timing claim.
 | Packed narrow | Live | One selected channel at 200.4 MHz; up to 16x the SDRAM logical depth |
 | Analog fast | Single/live | One physical ADC lane, 100 kHz-1 MHz |
 | Maximum analog | Single/live | Four physical lanes (`AIN3`, `AIN1`, `AIN4`, `AIN6`) at about 24 kS/s per lane |
-| Mixed scan | Single/live | 16 digital plus two packed ADC results (`a0`, `a1`) at about 125 kframes/s |
+| Mixed scan | Single/live | 16 digital plus physical ADC1/ADC2 results (`a1`/`a2`, AIN3/AIN1) at about 125 kframes/s |
 
 Digital readback supports `raw`, direct full-word `rle`, and packed
 `delta_rle` (`delta` remains a compatibility spelling). Analog and mixed

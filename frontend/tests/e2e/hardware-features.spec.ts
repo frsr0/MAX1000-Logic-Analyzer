@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
+import { writeArtifactWithRetry } from '../../src/test/artifactWrite';
 
 const screenshots = path.resolve(process.cwd(), 'test-results/screenshots');
 const clientId = 'codex-hardware-features';
@@ -65,6 +66,10 @@ async function pollHardwareStatus(page: Page, timeoutMs = 15_000, intervalMs = 5
 
 
 test.beforeEach(async ({ page }) => {
+  if (process.env.PLAYWRIGHT_USE_MOCK === '1') {
+    test.skip(true, 'hardware-only suite is not part of the forced mock run');
+    return;
+  }
   if (test.info().title.includes('validates every advertised mode and rate') && !runHardwareMatrix) {
     test.skip(true, 'set PLAYWRIGHT_HARDWARE_MATRIX=1 to run the 37-capture physical hardware matrix');
   }
@@ -132,7 +137,7 @@ test.afterEach(async ({ page }) => {
 test('hardware capture controls expose the real pre-trigger path', async ({ page }) => {
   await page.locator('.sidebar button[title="Capture"]').click();
   await page.getByRole('button', { name: 'Trigger', exact: true }).click();
-  await page.getByLabel('Trigger type').selectOption('rising');
+  await page.getByLabel('Start capture when').selectOption('rising');
   await expect(page.getByText(/Trigger position:/)).toBeVisible();
 
   // Drive the range input through React's onChange (native value setter +
@@ -168,7 +173,7 @@ test('hardware capture controls expose the real pre-trigger path', async ({ page
 test('hardware queue captures a real MAX1000 session', async ({ page }) => {
   await page.locator('.sidebar button[title="Capture"]').click();
   await page.getByLabel('Capture name').fill('HW Playwright queued capture');
-  await page.getByRole('button', { name: 'Queue capture job' }).click();
+  await page.getByRole('button', { name: 'Run in background' }).click();
   await expect(page.getByText(/Headless job done/)).toBeVisible({ timeout: 45_000 });
   await expect(page.getByText(/session ses_/)).toBeVisible();
   await takeScreenshot(page, 'hardware-capture-job.png', { fullPage: true });
@@ -236,7 +241,7 @@ test('hardware capture controls screenshot matrix covers every advertised rate',
   const slug = (label: string) => label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   const screenshotRates = async (mode: string, acquisition: 'single' | 'live' = 'single') => {
     await page.locator('.mode-tile', { hasText: mode }).click();
-    if (acquisition === 'live') await page.getByRole('button', { name: 'Live ring' }).click();
+    if (acquisition === 'live') await page.getByRole('button', { name: 'Continuous view' }).click();
     const options = await rateSelect.locator('option').evaluateAll((items) => items.map((item) => ({
       value: (item as HTMLOptionElement).value,
       label: item.textContent?.trim() ?? '',
@@ -249,23 +254,23 @@ test('hardware capture controls screenshot matrix covers every advertised rate',
   };
 
   const matrix: { mode: string; acquisition?: 'single' | 'live' }[] = [
-    { mode: 'Digital deep' },
-    { mode: 'Digital deep', acquisition: 'live' },
-    { mode: 'Packed narrow', acquisition: 'live' },
-    { mode: 'Analog fast' },
-    { mode: 'Maximum analog' },
-    { mode: 'Mixed scan' },
+    { mode: 'Digital capture' },
+    { mode: 'Digital capture', acquisition: 'live' },
+    { mode: 'High-speed single channel', acquisition: 'live' },
+    { mode: 'Analog — one channel' },
+    { mode: 'Analog — four channels' },
+    { mode: 'Digital + analog' },
   ];
   const coverage: Record<string, string[]> = {};
   for (const item of matrix) {
     coverage[`${item.mode} / ${item.acquisition ?? 'single'}`] = await screenshotRates(item.mode, item.acquisition ?? 'single');
   }
-  expect(coverage['Digital deep / single']).toContain('200 MHz');
-  expect(coverage['Digital deep / live']).toContain('50 MHz');
-  expect(coverage['Packed narrow / live']).toContain('200 MHz');
-  expect(coverage['Analog fast / single']).toContain('1 MHz');
-  expect(coverage['Maximum analog / single']).toEqual(['24 kHz']);
-  expect(coverage['Mixed scan / single']).toEqual(['125 kHz']);
+  expect(coverage['Digital capture / single']).toContain('200 MHz');
+  expect(coverage['Digital capture / live']).toContain('50 MHz');
+  expect(coverage['High-speed single channel / live']).toContain('200 MHz');
+  expect(coverage['Analog — one channel / single']).toContain('1 MHz');
+  expect(coverage['Analog — four channels / single']).toEqual(['24 kHz']);
+  expect(coverage['Digital + analog / single']).toEqual(['125 kHz']);
 });
 
 test('hardware capture matrix validates every advertised mode and rate before evidence screenshots', async ({ page }) => {
@@ -282,41 +287,41 @@ test('hardware capture matrix validates every advertised mode and rate before ev
 
   const matrix: MatrixCase[] = [
     {
-      mode: 'Digital deep', acquisition: 'single', apiMode: 'single',
+      mode: 'Digital capture', acquisition: 'single', apiMode: 'single',
       rates: [10e3, 100e3, 500e3, 1e6, 2e6, 5e6, 10e6, 12.5e6, 14e6, 20e6, 50e6, 100e6, 200e6],
       analog: false, digital: true,
     },
     {
-      mode: 'Digital deep', acquisition: 'live', apiMode: 'rolling',
+      mode: 'Digital capture', acquisition: 'live', apiMode: 'rolling',
       rates: [10e3, 100e3, 500e3, 1e6, 2e6, 5e6, 10e6, 12.5e6, 14e6, 20e6, 50e6],
       analog: false, digital: true,
     },
     {
-      mode: 'Packed narrow', acquisition: 'live', apiMode: 'digital_narrow',
+      mode: 'High-speed single channel', acquisition: 'live', apiMode: 'digital_narrow',
       rates: [200e6], analog: false, digital: true,
     },
     {
-      mode: 'Analog fast', acquisition: 'single', apiMode: 'analog_fast',
+      mode: 'Analog — one channel', acquisition: 'single', apiMode: 'analog_fast',
       rates: [100e3, 200e3, 500e3, 1e6], analog: true, digital: false,
     },
     {
-      mode: 'Analog fast', acquisition: 'live', apiMode: 'analog_continuous',
+      mode: 'Analog — one channel', acquisition: 'live', apiMode: 'analog_continuous',
       rates: [100e3, 200e3, 500e3, 1e6], analog: true, digital: false,
     },
     {
-      mode: 'Maximum analog', acquisition: 'single', apiMode: 'analog_all',
+      mode: 'Analog — four channels', acquisition: 'single', apiMode: 'analog_all',
       rates: [24e3], analog: true, digital: false,
     },
     {
-      mode: 'Maximum analog', acquisition: 'live', apiMode: 'analog_all_continuous',
+      mode: 'Analog — four channels', acquisition: 'live', apiMode: 'analog_all_continuous',
       rates: [24e3], analog: true, digital: false,
     },
     {
-      mode: 'Mixed scan', acquisition: 'single', apiMode: 'mixed',
+      mode: 'Digital + analog', acquisition: 'single', apiMode: 'mixed',
       rates: [125e3], analog: true, digital: true,
     },
     {
-      mode: 'Mixed scan', acquisition: 'live', apiMode: 'mixed_continuous',
+      mode: 'Digital + analog', acquisition: 'live', apiMode: 'mixed_continuous',
       rates: [125e3], analog: true, digital: true,
     },
   ];
@@ -339,9 +344,9 @@ test('hardware capture matrix validates every advertised mode and rate before ev
   for (const item of matrix) {
     await page.locator('.mode-tile', { hasText: item.mode }).click();
     if (item.acquisition === 'live') {
-      await page.getByRole('button', { name: 'Live ring' }).click();
+      await page.getByRole('button', { name: 'Continuous view' }).click();
     } else {
-      await page.getByRole('button', { name: 'Single-shot' }).click();
+      await page.getByRole('button', { name: 'One capture' }).click();
     }
 
     for (const rate of item.rates) {
@@ -404,6 +409,20 @@ test('hardware capture matrix validates every advertised mode and rate before ev
         const digitalCount = channels.filter((channel: { type?: string }) => channel.type === 'digital').length;
         if (item.digital) expect(digitalCount, `${caseLabel} digital channels`).toBeGreaterThan(0);
         if (item.analog) expect(metadata.analog_channels.length, `${caseLabel} analog channels`).toBeGreaterThan(0);
+        if (item.apiMode === 'mixed' || item.apiMode === 'mixed_continuous') {
+          expect(metadata.analog_channels, `${caseLabel} physical mixed channels`).toEqual(['a1', 'a2']);
+          expect(metadata.analog_channels, `${caseLabel} must reject unmapped analogue channels`)
+            .not.toContain('a0');
+          const physical = channels
+            .filter((channel: { type?: string }) => channel.type === 'analog')
+            .map((channel: { id?: string; adc_channel?: number; board_label?: string }) => ({
+              id: channel.id, adc: channel.adc_channel, board: channel.board_label,
+            }));
+          expect(physical).toEqual([
+            expect.objectContaining({ id: 'a1', adc: 1, board: 'AIN3' }),
+            expect.objectContaining({ id: 'a2', adc: 2, board: 'AIN1' }),
+          ]);
+        }
 
         evidence.push({
           status: 'passed',
@@ -443,9 +462,10 @@ test('hardware capture matrix validates every advertised mode and rate before ev
     }
   }
 
-  fs.writeFileSync(
+  await writeArtifactWithRetry(
     path.join(screenshots, 'hardware-validated-matrix.json'),
     `${JSON.stringify({ generated_at: new Date().toISOString(), cases: [...evidence, ...failures], passed: evidence.length, failed: failures.length }, null, 2)}\n`,
+    { write: (filePath, data) => fs.promises.writeFile(filePath, data).then(() => undefined) },
   );
   expect([...evidence, ...failures]).toHaveLength(37);
   expect(failures, JSON.stringify(failures, null, 2)).toHaveLength(0);

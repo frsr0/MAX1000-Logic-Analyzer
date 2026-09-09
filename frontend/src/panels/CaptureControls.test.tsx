@@ -29,31 +29,31 @@ it('maps every hardware source across single and live acquisition', () => {
   render(<CaptureControls />);
   expect(screen.getByText(/full 16-channel probe pool/)).toBeTruthy();
 
-  fireEvent.click(screen.getByRole('button', { name: 'Live ring' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Continuous view' }));
   expect(useApp.getState().captureSettings).toMatchObject({ mode: 'rolling', auto_rearm: true, sample_rate: 50e6 });
   expect(screen.getByText(/SDRAM ring/)).toBeTruthy();
-  fireEvent.click(screen.getByRole('button', { name: 'Single-shot' }));
+  fireEvent.click(screen.getByRole('button', { name: 'One capture' }));
   expect(useApp.getState().captureSettings.mode).toBe('single');
 
-  fireEvent.click(screen.getByRole('button', { name: /Packed narrow/ }));
+  fireEvent.click(screen.getByRole('button', { name: /High-speed single channel/ }));
   expect(useApp.getState().captureSettings).toMatchObject({ mode: 'digital_narrow', enabled_digital: [0], sample_rate: 200e6 });
-  expect(screen.getByText('Packed narrow is live-only.')).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Single-shot' }).hasAttribute('disabled')).toBe(true);
+  expect(screen.getByText(/High-speed single-channel capture runs continuously/)).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'One capture' }).hasAttribute('disabled')).toBe(true);
 
-  fireEvent.click(screen.getByRole('button', { name: /Mixed scan/ }));
+  fireEvent.click(screen.getByRole('button', { name: /Digital \+ analog/ }));
   expect(useApp.getState().captureSettings.mode).toBe('mixed_continuous');
-  expect(screen.getByText(/16 digital bits plus two packed ADC results/)).toBeTruthy();
-  fireEvent.click(screen.getByRole('button', { name: 'Single-shot' }));
+  expect(screen.getByText(/16 digital bits plus ADC1\/AIN3 and ADC2\/AIN1/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'One capture' }));
   expect(useApp.getState().captureSettings).toMatchObject({ mode: 'mixed', analog_enabled: true, readback_compression: 'raw' });
 
-  fireEvent.click(screen.getByRole('button', { name: /Analog fast/ }));
+  fireEvent.click(screen.getByRole('button', { name: /Analog — one channel/ }));
   expect(useApp.getState().captureSettings).toMatchObject({ mode: 'analog_fast', enabled_digital: [] });
-  fireEvent.click(screen.getByRole('button', { name: 'Live ring' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Continuous view' }));
   expect(useApp.getState().captureSettings.mode).toBe('analog_continuous');
 
-  fireEvent.click(screen.getByRole('button', { name: /Maximum analog/ }));
+  fireEvent.click(screen.getByRole('button', { name: /Analog — four channels/ }));
   expect(useApp.getState().captureSettings.mode).toBe('analog_all_continuous');
-  fireEvent.click(screen.getByRole('button', { name: 'Single-shot' }));
+  fireEvent.click(screen.getByRole('button', { name: 'One capture' }));
   expect(useApp.getState().captureSettings.mode).toBe('analog_all');
   expect(screen.getByText(/physical MAX1000 analog profile/)).toBeTruthy();
 });
@@ -62,24 +62,25 @@ it('updates rates, live windows, depth, compression, packing, repeat and name', 
   useApp.setState({ captureSettings: settings({ mode: 'rolling', sample_rate: 10e3,
     num_samples: 1, auto_rearm: true, readback_compression: 'delta_rle' }) });
   render(<CaptureControls />);
+  fireEvent.click(screen.getByText('Advanced transfer options'));
   expect(screen.getByText(/Live compression buffer: ready/)).toBeTruthy();
   expect(screen.getByRole('option', { name: /^5 s / })).toBeTruthy();
   expect(screen.getByRole('option', { name: /100 us/ })).toBeTruthy();
   fireEvent.change(screen.getByLabelText('Sample rate'), { target: { value: '100000' } });
   expect(useApp.getState().captureSettings.sample_rate).toBe(100e3);
-  fireEvent.change(screen.getByLabelText('Live window'), { target: { value: '0.01' } });
+  fireEvent.change(screen.getByLabelText('Window duration'), { target: { value: '0.01' } });
   expect(useApp.getState().captureSettings.num_samples).toBe(1000);
-  fireEvent.click(screen.getByRole('button', { name: 'RAW' }));
-  fireEvent.click(screen.getByRole('button', { name: 'DELTA RLE' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Uncompressed' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Compressed' }));
   expect(useApp.getState().captureSettings.readback_compression).toBe('delta_rle');
-  fireEvent.click(screen.getByRole('checkbox', { name: /Packed mode/ }));
+  fireEvent.click(screen.getByRole('checkbox', { name: /Use packed rolling transfer/ }));
   expect(screen.getByText(/Rolling ceiling raised/)).toBeTruthy();
   fireEvent.change(screen.getByLabelText('Capture name'), { target: { value: 'bench run' } });
 
-  fireEvent.click(screen.getByRole('button', { name: /Digital deep/ }));
-  fireEvent.click(screen.getByRole('button', { name: 'Single-shot' }));
+  fireEvent.click(screen.getByRole('button', { name: /Digital capture/ }));
+  fireEvent.click(screen.getByRole('button', { name: 'One capture' }));
   fireEvent.change(screen.getByLabelText('Sample rate'), { target: { value: '100000000' } });
-  fireEvent.change(screen.getByLabelText('Samples'), { target: { value: '1024' } });
+  fireEvent.change(screen.getByLabelText('Capture length'), { target: { value: '1024' } });
   fireEvent.change(screen.getByLabelText('Repeat N'), { target: { value: '0' } });
   expect(useApp.getState().captureSettings).toMatchObject({ num_samples: 1024, repeat_count: 1 });
 });
@@ -94,6 +95,7 @@ it('loads mock scenarios, validates settings, and blocks invalid/read-only captu
   ] } as never);
   useApp.setState({ status: status({ device_kind: 'mock' }) as never });
   render(<CaptureControls />);
+  fireEvent.click(screen.getByText('Advanced transfer options'));
   await act(async () => { await Promise.resolve(); });
   expect(screen.getByRole('option', { name: 'UART demo' })).toBeTruthy();
   fireEvent.change(screen.getByLabelText('Mock scenario'), { target: { value: 'uart' } });
@@ -101,11 +103,11 @@ it('loads mock scenarios, validates settings, and blocks invalid/read-only captu
   expect(screen.getByText('slow readback')).toBeTruthy();
   expect(screen.getByText('unsupported rate')).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Capture' }).hasAttribute('disabled')).toBe(true);
-  expect(screen.getByRole('button', { name: 'Queue capture job' }).hasAttribute('disabled')).toBe(true);
+  expect(screen.getByRole('button', { name: 'Run in background' }).hasAttribute('disabled')).toBe(true);
 
   act(() => useApp.setState({ controlMode: false }));
-  expect(screen.getByRole('button', { name: 'RAW' }).hasAttribute('disabled')).toBe(true);
-  expect(screen.getByRole('checkbox', { name: /Packed mode/ }).hasAttribute('disabled')).toBe(true);
+  expect(screen.getByRole('button', { name: 'Uncompressed' }).hasAttribute('disabled')).toBe(true);
+  expect(screen.getByRole('checkbox', { name: /Use packed rolling transfer/ }).hasAttribute('disabled')).toBe(true);
 });
 
 it('shows persisted out-of-profile options and the default mock scenario', async () => {
@@ -153,7 +155,7 @@ it('polls queued jobs through running, done and error displays', async () => {
     .mockResolvedValueOnce({ id: 'j1', state: 'running' } as never)
     .mockResolvedValueOnce({ id: 'j1', state: 'done', session_id: 's2' } as never);
   const { rerender } = render(<CaptureControls />);
-  fireEvent.click(screen.getByRole('button', { name: 'Queue capture job' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Run in background' }));
   await act(async () => { await Promise.resolve(); });
   expect(screen.getByText('Headless job queued')).toBeTruthy();
   await act(async () => { await vi.advanceTimersByTimeAsync(100); });
@@ -162,7 +164,7 @@ it('polls queued jobs through running, done and error displays', async () => {
   expect(screen.getByText(/Headless job done/).parentElement?.textContent).toContain('session s2');
 
   rerender(<CaptureControls />);
-  fireEvent.click(screen.getByRole('button', { name: 'Queue capture job' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Run in background' }));
   await act(async () => { await Promise.resolve(); });
   expect(screen.getByText(/Headless job error/).parentElement?.textContent).toContain('worker died');
   expect(submit).toHaveBeenCalledTimes(2);
@@ -176,7 +178,7 @@ it('reports queue errors and tolerates scenario/validation service failures', as
   const toast = vi.fn(); useApp.setState({ toast, status: status({ device_kind: 'mock' }) as never });
   render(<CaptureControls />);
   await act(async () => { await vi.advanceTimersByTimeAsync(300); });
-  fireEvent.click(screen.getByRole('button', { name: 'Queue capture job' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Run in background' }));
   await act(async () => { await Promise.resolve(); });
   expect(toast).toHaveBeenCalledWith('error', 'queue down');
   expect(screen.queryByText('validator down')).toBeNull();

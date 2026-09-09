@@ -21,6 +21,7 @@ vi.mock('../waveform/WaveformCanvas', () => ({
 }));
 
 import { CapturePage } from './CapturePage';
+import { api } from '../api/client';
 import { useApp } from '../state/appStore';
 import { waveformView } from '../state/waveformStore';
 import { session } from '../test/session';
@@ -46,9 +47,62 @@ it('renders an empty narrow capture and automatically opens the first saved sess
   useApp.setState({ sessions: [{ id: 'first' }] as never[], openSession });
   render(<CapturePage />);
 
-  expect(screen.getByRole('heading', { name: 'No capture loaded' })).toBeTruthy();
+  expect(screen.getByRole('heading', { name: 'Connect a device to begin' })).toBeTruthy();
   expect(screen.queryByText('capture controls')).toBeNull();
   await waitFor(() => expect(openSession).toHaveBeenCalledWith('first'));
+});
+
+it('groups the capture workflow and makes disconnected setup actionable', () => {
+  setWidth(1200);
+  useApp.setState({ status: { device_connected: false } as never });
+  const { rerender } = render(<CapturePage />);
+
+  expect(screen.getByText('Configure')).toBeTruthy();
+  expect(screen.getByText('Analyze')).toBeTruthy();
+  expect(screen.getByText('Advanced')).toBeTruthy();
+  expect(screen.getByRole('heading', { name: 'Connect a device to begin' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Connect device' }));
+  expect(useApp.getState().page).toBe('device');
+});
+
+it('opens capture setup from the ready state on a narrow layout', () => {
+  setWidth(800);
+  useApp.setState({ status: { device_connected: true } as never, controlMode: true });
+  render(<CapturePage />);
+
+  expect(screen.queryByText('capture controls')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Open capture setup' }));
+  expect(screen.getByText('capture controls')).toBeTruthy();
+});
+
+it('offers control handoff and capture setup when a device is already connected', async () => {
+  const refreshStatus = vi.fn().mockResolvedValue(undefined);
+  const acquireControl = vi.spyOn(api, 'acquireControl').mockResolvedValue({ acquired: true });
+  useApp.setState({
+    status: { device_connected: true, control: { held: false } } as never,
+    controlMode: false,
+    refreshStatus,
+  });
+  const { rerender } = render(<CapturePage />);
+
+  fireEvent.click(screen.getByRole('button', { name: 'Request control' }));
+  await waitFor(() => expect(acquireControl).toHaveBeenCalledWith('me'));
+  expect(refreshStatus).toHaveBeenCalled();
+
+  acquireControl.mockResolvedValueOnce({ acquired: false });
+  fireEvent.click(screen.getByRole('button', { name: 'Request control' }));
+  await waitFor(() => expect(useApp.getState().toasts.some((toast) => toast.message.includes('Another client'))).toBe(true));
+
+  acquireControl.mockRejectedValueOnce(new Error('control offline'));
+  useApp.setState({ controlMode: false });
+  rerender(<CapturePage />);
+  fireEvent.click(screen.getByRole('button', { name: 'Request control' }));
+  await waitFor(() => expect(useApp.getState().toasts.some((toast) => toast.message === 'control offline')).toBe(true));
+
+  useApp.setState({ controlMode: true });
+  rerender(<CapturePage />);
+  fireEvent.click(screen.getByRole('button', { name: 'Open capture setup' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Open saved sessions' }));
 });
 
 it('opens the backend capture for both active capture states and ignores unrelated status', async () => {
@@ -108,12 +162,12 @@ it('renders a loaded capture and exercises every side-panel tab', () => {
   expect(notify).toHaveBeenCalledOnce();
 
   const tabs: [string, string][] = [
-    ['Channels', 'channel panel'], ['Trigger', 'trigger panel'],
+    ['Inputs', 'channel panel'], ['Trigger', 'trigger panel'],
     ['Decoders', 'decoder panel'], ['Measure', 'measurement panel'],
     ['Analog', 'analog panel'], ['Dashboard', 'dashboard panel'],
-    ['Eye', 'eye panel'], ['Markers', 'marker panel'],
-    ['Export', 'export panel'], ['Raw', 'raw inspector'],
-    ['Capture', 'capture controls'],
+    ['Eye diagram', 'eye panel'], ['Markers', 'marker panel'],
+    ['Export', 'export panel'], ['Raw data', 'raw inspector'],
+    ['Capture setup', 'capture controls'],
   ];
   for (const [tab, content] of tabs) {
     fireEvent.click(screen.getByRole('button', { name: tab }));

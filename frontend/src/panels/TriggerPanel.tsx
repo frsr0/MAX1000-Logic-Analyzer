@@ -10,6 +10,23 @@ const EXEC_BADGE: Record<string, { label: string; cls: string }> = {
   unavailable: { label: 'unavailable', cls: 'badge-na' },
 };
 
+const TRIGGER_LABELS: Record<string, string> = {
+  none: 'Immediately',
+  pattern: 'Digital pattern',
+  generic_pattern: 'Protocol pattern',
+  bus_value: 'Bus value',
+  uart_byte: 'UART byte',
+  spi_byte: 'SPI byte',
+  i2c_address: 'I²C address',
+  i2c_nack: 'I²C NACK',
+  pulse_wider: 'Pulse longer than',
+  pulse_narrower: 'Pulse shorter than',
+  timeout: 'No activity for',
+  glitch: 'Glitch detected',
+  sequence: 'Event sequence',
+  decoder_error: 'Decoder error',
+};
+
 export function TriggerPanel() {
   const { capabilities, captureSettings, setCaptureSettings, activeSession, toast } = useApp();
   const trig = captureSettings.trigger;
@@ -54,7 +71,7 @@ export function TriggerPanel() {
   return (
     <div className="panel-body">
       <label className="field">
-        <span>Trigger type</span>
+        <span>Start capture when</span>
         <select value={trig.type} onChange={(e) => {
           const t = e.target.value;
           const ex = matrix.find((m) => m.type === t)?.execution ?? 'unavailable';
@@ -62,8 +79,7 @@ export function TriggerPanel() {
         }}>
           {matrix.map((m) => (
             <option key={m.type} value={m.type} disabled={m.execution === 'unavailable'}>
-              {m.type.replace(/_/g, ' ')} {m.execution === 'hardware' ? '· HW'
-                : m.execution === 'post_capture' ? '· post' : '· n/a'}
+              {TRIGGER_LABELS[m.type] ?? m.type.replace(/_/g, ' ')}
             </option>
           ))}
         </select>
@@ -90,7 +106,7 @@ export function TriggerPanel() {
       )}
       {needsChannels && (
         <div className="field">
-          <span>{trig.type === 'generic_pattern' ? 'Channels (hardware coarse + software refine, 0-15)' : 'Channels'}</span>
+          <span>{trig.type === 'generic_pattern' ? 'Input lines for this protocol' : 'Input channels'}</span>
           <div className="bus-members">
             {Array.from({ length: capabilities?.digital_channels ?? 16 }, (_, i) => (
               <label key={i} className="chip">
@@ -108,23 +124,23 @@ export function TriggerPanel() {
         </div>
       )}
       {needsPattern && (
-        <label className="field">
-          <span>Pattern (1/0/x per channel)</span>
+          <label className="field">
+            <span>Bit pattern (1, 0, or x per channel)</span>
           <input value={trig.pattern ?? ''} placeholder="1x0x"
             onChange={(e) => setTrig({ pattern: e.target.value })} />
         </label>
       )}
       {needsValue && (
-        <label className="field">
-          <span>Match value (hex)</span>
+          <label className="field">
+            <span>Value to match (hex)</span>
           <input value={trig.value != null ? trig.value.toString(16) : ''}
             placeholder="3c"
             onChange={(e) => setTrig({ value: parseInt(e.target.value, 16) || 0 })} />
         </label>
       )}
       {needsWidth && (
-        <label className="field">
-          <span>Width (us)</span>
+          <label className="field">
+            <span>Pulse width (µs)</span>
           <input type="number" step="0.1"
             value={trig.width_s != null ? trig.width_s * 1e6 : 1}
             onChange={(e) => setTrig({ width_s: Number(e.target.value) / 1e6 })} />
@@ -138,7 +154,9 @@ export function TriggerPanel() {
         </label>
       )}
       {trig.type === 'generic_pattern' && (
-        <>
+        <details className="advanced-options">
+          <summary>Advanced protocol matching</summary>
+          <div className="advanced-options-body">
           <label className="field">
             <span>Protocol preset</span>
             <select value={trig.clock_source === 'internal_baud' ? 'uart' : trig.start_mode === 'none' ? 'parallel' : 'spi'}
@@ -161,7 +179,8 @@ export function TriggerPanel() {
           <label className="field"><span>Start channel</span><input type="number" min={0} max={15} value={trig.start_channel ?? 0} onChange={(e) => setTrig({ start_channel: Number(e.target.value) })} /></label>
           <label className="field"><span>Start condition</span><select value={trig.start_mode ?? 'edge_on_channel'} onChange={(e) => setTrig({ start_mode: e.target.value as any })}><option value="edge_on_channel">Edge on channel</option><option value="none">None</option></select></label>
           <label className="field"><span>Start polarity</span><select value={trig.start_polarity ?? 0} onChange={(e) => setTrig({ start_polarity: Number(e.target.value) })}><option value={0}>Falling / low</option><option value={1}>Rising / high</option></select></label>
-        </>
+          </div>
+        </details>
       )}
       {needsOccurrence && (
         <label className="field">
@@ -170,7 +189,9 @@ export function TriggerPanel() {
             onChange={(e) => setTrig({ occurrence: Math.max(1, Number(e.target.value)) })} />
         </label>
       )}
-      {needsTimingQualifier && <>
+      {needsTimingQualifier && <details className="advanced-options">
+        <summary>Timing and repeat rules</summary>
+        <div className="advanced-options-body">
         <label className="field">
           <span>Minimum duration (µs)</span>
           <input type="number" min={0} step={0.1}
@@ -199,9 +220,12 @@ export function TriggerPanel() {
             onChange={(e) => setTrig({ rearm: e.target.checked })} />
           <span>Re-arm for repeated captures</span>
         </label>
-      </>}
+        </div>
+      </details>}
       {needsSequence && (
-        <>
+        <details className="advanced-options">
+          <summary>Sequence details</summary>
+          <div className="advanced-options-body">
           <label className="field">
             <span>Sequence steps (JSON)</span>
             <input value={JSON.stringify(trig.sequence_steps ?? [])}
@@ -216,7 +240,8 @@ export function TriggerPanel() {
               value={(trig.window_s ?? 0) * 1e6}
               onChange={(e) => setTrig({ window_s: Number(e.target.value) / 1e6 })} />
           </label>
-        </>
+          </div>
+        </details>
       )}
       {activeSession && exec === 'post_capture' && (
         <div className="button-row">

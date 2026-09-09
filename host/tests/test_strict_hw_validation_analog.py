@@ -60,9 +60,29 @@ def test_full_width_capture_empty(quiet_hardware):
     [],
 ])
 def test_mixed_analog_frame_shapes(frames):
-    value = dev(); value.capture_analog.return_value = (b'x' * (len(frames) * 5), frames)
+    baseline = [{'digital': None, 'adc': [10]} for _ in range(8)]
+    value = dev(); value.capture_analog.side_effect = [
+        (b'b', baseline), (b'b', baseline),
+        (b'x' * (len(frames) * 5), frames),
+    ]
     hv.test_mixed_analog_mode(value, debug_on=True)
     value.set_analog_enable.assert_called_with(False)
+
+
+def test_mixed_lane_comparison_rejects_stale_rail_value():
+    """A legal 12-bit value is still invalid when it disagrees with its pin."""
+    mixed = [{'digital': 0, 'adc': [4095, 88]} for _ in range(8)]
+    baselines = {
+        1: [{'digital': None, 'adc': [82]} for _ in range(8)],
+        2: [{'digital': None, 'adc': [91]} for _ in range(8)],
+    }
+
+    result = hv.compare_mixed_analog_lanes(mixed, baselines)
+
+    assert result["ok"] is False
+    assert result["lanes"][0]["label"] == "ADC1/AIN3"
+    assert result["lanes"][0]["mixed_median"] == 4095
+    assert "disagrees" in result["lanes"][0]["reason"]
 
 
 @pytest.mark.parametrize('frames', [[{'digital': None, 'adc': [123]}], [{'digital': None, 'adc': []}], []])

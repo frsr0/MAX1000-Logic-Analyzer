@@ -254,27 +254,27 @@ it('sends, streams and captures with bounded payloads and navigates results', as
   vi.spyOn(api, 'generatorStop').mockRejectedValue(new Error('ignored'));
   await renderReady();
   fireEvent.change(screen.getByLabelText('Baud'), { target: { value: '0' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Send pattern' }));
   await waitFor(() => expect(useApp.getState().toast).toHaveBeenCalledWith('success', 'Pattern sent'));
   fireEvent.change(screen.getByLabelText('Expected hex for compare'), { target: { value: 'aa-zz' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Send live' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Stream continuously' }));
   await waitFor(() => expect(useApp.getState().toast).toHaveBeenCalledWith('success', expect.stringContaining('Live stream started')));
-  fireEvent.click(screen.getByRole('button', { name: 'Send + capture' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Send and capture' }));
   expect(await screen.findByText('PASS')).toBeTruthy();
   expect(useApp.getState().toast).toHaveBeenCalledWith('success', 'Loopback captured');
   fireEvent.click(screen.getByRole('button', { name: 'Open loopback capture' }));
   await waitFor(() => expect(useApp.getState().openSession).toHaveBeenCalledWith('loop'));
   expect(useApp.getState().setPage).toHaveBeenCalledWith('capture');
 
-  fireEvent.click(screen.getByRole('button', { name: 'Send + capture' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Send and capture' }));
   expect(await screen.findByText('FAIL')).toBeTruthy();
-  fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Send pattern' }));
   await waitFor(() => expect(useApp.getState().toast).toHaveBeenCalledWith('error', 'send failed'));
-  fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Stop output' }));
   expect(send).toHaveBeenCalledTimes(5);
 
   fireEvent.change(screen.getByLabelText('Data hex'), { target: { value: 'aa'.repeat(257) } });
-  fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Send pattern' }));
   await waitFor(() => expect(useApp.getState().toast).toHaveBeenCalledWith('error', expect.stringContaining('Generator FIFO holds 256 bytes')));
 });
 
@@ -291,21 +291,21 @@ it('runs preview/capture sweeps, opens captures and handles sweep errors', async
     .mockResolvedValueOnce({ passed: 1, count: 1, failed: 0, rows: [] } as never)
     .mockRejectedValueOnce(new Error('capture sweep failed'));
   await renderReady();
-  fireEvent.click(screen.getByRole('button', { name: 'Preview parameter sweep' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Preview sweep' }));
   expect(await screen.findByText('1/2 variants valid')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Open capture' }));
   await waitFor(() => expect(useApp.getState().openSession).toHaveBeenCalledWith('sweep-session'));
-  fireEvent.click(screen.getByRole('button', { name: 'Run capture-backed sweep' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Run sweep + capture' }));
   expect(await screen.findByText('2/2 variants valid')).toBeTruthy();
   expect(useApp.getState().toast).toHaveBeenCalledWith('success', 'Capture-backed sweep complete');
   act(() => useApp.setState({ status: connected('mock') as never }));
   choose('bitbang');
-  fireEvent.click(screen.getByRole('button', { name: 'Preview parameter sweep' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Preview sweep' }));
   await waitFor(() => expect(preview).toHaveBeenCalledTimes(2));
-  fireEvent.click(screen.getByRole('button', { name: 'Run capture-backed sweep' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Run sweep + capture' }));
   await waitFor(() => expect(capture).toHaveBeenCalledTimes(2));
-  fireEvent.click(screen.getByRole('button', { name: 'Preview parameter sweep' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Run capture-backed sweep' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Preview sweep' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Run sweep + capture' }));
   await waitFor(() => expect(useApp.getState().toast).toHaveBeenCalledWith('error', 'capture sweep failed'));
   expect(preview).toHaveBeenCalledTimes(3); expect(capture).toHaveBeenCalledTimes(3);
 });
@@ -316,6 +316,7 @@ it('runs generator self-test and enforces busy/read-only/protocol button gates',
     .mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }))
     .mockRejectedValueOnce(new Error('self-test failed'));
   await renderReady();
+  fireEvent.click(screen.getByText('Advanced diagnostics'));
   fireEvent.click(screen.getByRole('button', { name: 'Run generator self-test' }));
   expect(screen.getByRole('button', { name: 'Run generator self-test' }).hasAttribute('disabled')).toBe(true);
   await act(async () => finish({ passed: true, sent_hex: '01', decoded_hex: '01', detail: 'healthy' }));
@@ -324,10 +325,10 @@ it('runs generator self-test and enforces busy/read-only/protocol button gates',
   await waitFor(() => expect(useApp.getState().toast).toHaveBeenCalledWith('error', 'self-test failed'));
 
   choose('spi');
-  expect(screen.getByRole('button', { name: 'Send' }).hasAttribute('disabled')).toBe(true);
+  expect(screen.getByRole('button', { name: 'Send pattern' }).hasAttribute('disabled')).toBe(true);
   choose('pattern');
-  expect(screen.getByRole('button', { name: 'Send + capture' }).hasAttribute('disabled')).toBe(true);
+  expect(screen.getByRole('button', { name: 'Send and capture' }).hasAttribute('disabled')).toBe(true);
   act(() => useApp.setState({ controlMode: false }));
-  expect(screen.getByRole('button', { name: 'Stop' }).hasAttribute('disabled')).toBe(true);
+  expect(screen.getByRole('button', { name: 'Stop output' }).hasAttribute('disabled')).toBe(true);
   expect(selfTest).toHaveBeenCalledTimes(2);
 });

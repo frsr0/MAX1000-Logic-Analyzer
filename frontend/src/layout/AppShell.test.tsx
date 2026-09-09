@@ -42,7 +42,7 @@ it('renders status, navigation, read-only and toast chrome and dismisses notific
   expect(screen.getAllByText('MAX1000')).toHaveLength(2);
   expect(screen.getByText('200.0 MHz sample clock')).toBeTruthy();
   expect(screen.getByText('read-only')).toBeTruthy(); expect(screen.getByText('capture failed')).toBeTruthy();
-  expect(screen.getByText('live')).toBeTruthy(); expect(screen.getByText('2 sessions')).toBeTruthy();
+  expect(screen.getByText('backend connected')).toBeTruthy(); expect(screen.getByText('2 sessions')).toBeTruthy();
   fireEvent.click(screen.getByText('check cable'));
   expect(screen.queryByText('check cable')).toBeNull();
 });
@@ -129,7 +129,7 @@ it('covers navigation, disconnected chrome, ignored shortcuts, and missing-sessi
   fireEvent.keyDown(window, { key: ' ', target: document.body });
   fireEvent.keyDown(window, { key: 's', ctrlKey: true, target: document.body });
   fireEvent.keyDown(window, { key: 'Escape', target: document.body });
-  for (const [name, page] of [[/Sessions$/, 'sessions'], [/Device$/, 'device'], [/Generator$/, 'generator'], [/MILMIL$/, 'mil'], [/Capture$/, 'capture']] as const) {
+  for (const [name, page] of [[/Sessions$/, 'sessions'], [/Hardware$/, 'device'], [/Generator$/, 'generator'], [/Hardware lab$/, 'mil'], [/Capture$/, 'capture']] as const) {
     fireEvent.click(screen.getByRole('button', { name }));
     expect(useApp.getState().page).toBe(page);
   }

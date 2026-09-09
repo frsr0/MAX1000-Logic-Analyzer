@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
+import { writeArtifactWithRetry } from '../../src/test/artifactWrite';
 import { installMockApp, screenshotsDir } from './mockApp';
 
 /** True when the backend reports a MAX1000 available via /api/devices. */
@@ -112,7 +113,7 @@ async function ensureConnected(page: any) {
     localStorage.setItem('msa_client_id', id);
   }, liveClientId);
   await page.goto('/');
-  await page.getByRole('button', { name: 'Device' }).click();
+  await page.getByRole('button', { name: 'Hardware', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'MAX1000 OLS Logic Analyzer' }).first()).toBeVisible();
   await page.evaluate(async () => {
     const clientId = localStorage.getItem('msa_client_id') ?? '';
@@ -147,7 +148,7 @@ async function ensureConnected(page: any) {
     }
   });
   await page.reload();
-  await page.getByRole('button', { name: 'Device' }).click();
+  await page.getByRole('button', { name: 'Hardware', exact: true }).click();
   await expect.poll(async () => {
     return page.evaluate(async () => {
       const res = await fetch('/api/status');
@@ -213,7 +214,7 @@ async function openLiveSession(page: any, query: string, requireDecoder = true) 
     ?? sessions.find((s: any) => String(s.name).includes(query));
   expect(pick, `expected a live session matching ${query}`).toBeTruthy();
 
-  await page.getByRole('button', { name: 'Sessions' }).click();
+  await page.getByRole('button', { name: 'Sessions', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Sessions' })).toBeVisible();
   const nameBox = page.locator(`input.ch-name[value="${pick.name}"]`).first();
   await expect(nameBox).toBeVisible({ timeout: 15_000 });
@@ -282,8 +283,8 @@ test.afterEach(async ({ page }) => {
 });
 
 test('hardware-aligned device page', async ({ page }) => {
-  await page.getByRole('button', { name: 'Device' }).click();
-  await expect(page.getByRole('heading', { name: 'Device' })).toBeVisible();
+  await page.getByRole('button', { name: 'Hardware', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Hardware', exact: true })).toBeVisible();
   await expect(page.getByText('held by playwright')).toBeVisible();
   await expect(page.locator('.hero-badges .badge-hw')).toContainText('200.4 MHz sample clock');
   await expect(page.getByRole('button', { name: 'Raw debug inspector' })).toBeVisible();
@@ -293,42 +294,43 @@ test('hardware-aligned device page', async ({ page }) => {
 
 test('capture controls reflect MAX1000 modes', async ({ page }) => {
   await page.locator('.sidebar button[title="Capture"]').click();
-  await expect(page.getByText('Hardware mode')).toBeVisible();
-  await expect(page.getByText('Readback codec')).toBeVisible();
-  await expect(page.locator('.mode-tile', { hasText: 'Digital deep' }).first()).toBeVisible();
-  await expect(page.locator('.mode-tile', { hasText: 'Mixed scan' }).first()).toBeVisible();
-  await expect(page.locator('.mode-tile', { hasText: 'Packed narrow' }).first()).toBeVisible();
-  await expect(page.locator('.mode-tile', { hasText: 'Analog fast' }).first()).toBeVisible();
-  await expect(page.locator('.mode-tile', { hasText: 'Maximum analog' }).first()).toBeVisible();
+  await expect(page.getByText('Capture source')).toBeVisible();
+  await expect(page.getByText('Advanced transfer options')).toBeVisible();
+  await expect(page.locator('.mode-tile', { hasText: 'Digital capture' }).first()).toBeVisible();
+  await expect(page.locator('.mode-tile', { hasText: 'Digital + analog' }).first()).toBeVisible();
+  await expect(page.locator('.mode-tile', { hasText: 'High-speed single channel' }).first()).toBeVisible();
+  await expect(page.locator('.mode-tile', { hasText: 'Analog — one channel' }).first()).toBeVisible();
+  await expect(page.locator('.mode-tile', { hasText: 'Analog — four channels' }).first()).toBeVisible();
   await expect(page.getByRole('option', { name: '200 MHz' })).toBeAttached();
 
-  await page.locator('.mode-tile', { hasText: 'Digital deep' }).click();
-  await page.getByRole('button', { name: 'DELTA RLE' }).click();
-  await expect(page.getByRole('button', { name: 'DELTA RLE' })).toHaveClass(/active/);
+  await page.locator('.mode-tile', { hasText: 'Digital capture' }).click();
+  await page.getByText('Advanced transfer options').click();
+  await page.getByRole('button', { name: 'Compressed', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Compressed', exact: true })).toHaveClass(/active/);
   await takeScreenshot(page, 'capture-compression-delta-rle.png', { fullPage: true });
 
-  await page.getByRole('button', { name: 'Live ring' }).click();
+  await page.getByRole('button', { name: 'Continuous view' }).click();
   await expect(page.getByRole('option', { name: '50 MHz' })).toBeAttached();
   await expect(page.getByText('Live compression buffer: ready')).toBeVisible();
   await takeScreenshot(page, 'capture-live-50mhz-latest.png', { fullPage: true });
 
-  await page.locator('.mode-tile', { hasText: 'Analog fast' }).click();
+  await page.locator('.mode-tile', { hasText: 'Analog — one channel' }).click();
   await expect(page.getByText('High-speed analog captures one analog input (AIN3) at the best ADC rate.')).toBeVisible();
   await expect(page.getByRole('option', { name: '1 MHz' })).toBeAttached();
-  await expect(page.getByText('Analog and mixed captures use raw readback.')).toBeVisible();
+  await expect(page.getByText('Analog and mixed captures transfer without compression.')).toBeVisible();
   await takeScreenshot(page, 'capture-analog-fast.png', { fullPage: true });
 
-  await page.locator('.mode-tile', { hasText: 'Maximum analog' }).click();
+  await page.locator('.mode-tile', { hasText: 'Analog — four channels' }).click();
   await expect(page.getByText('Maximum analog captures the physical MAX1000 analog profile: AIN3, AIN1, AIN4, and AIN6.')).toBeVisible();
   await expect(page.getByRole('option', { name: '24 kHz' })).toBeAttached();
 
-  await page.locator('.mode-tile', { hasText: 'Mixed scan' }).click();
-  await expect(page.getByText('Mixed mode captures 16 digital bits plus two packed ADC results, sampled together at a shared scan frame rate.')).toBeVisible();
-  await expect(page.getByText('Analog and mixed captures use raw readback.')).toBeVisible();
+  await page.locator('.mode-tile', { hasText: 'Digital + analog' }).click();
+  await expect(page.getByText('Mixed mode captures 16 digital bits plus ADC1/AIN3 and ADC2/AIN1, sampled together at a shared scan frame rate.')).toBeVisible();
+  await expect(page.getByText('Analog and mixed captures transfer without compression.')).toBeVisible();
   await expect(page.getByRole('option', { name: '125 kHz' })).toBeAttached();
 
-  await page.locator('.mode-tile', { hasText: 'Packed narrow' }).click();
-  await expect(page.getByText('Packed narrow is live-only.')).toBeVisible();
+  await page.locator('.mode-tile', { hasText: 'High-speed single channel' }).click();
+  await expect(page.getByText('High-speed single-channel capture runs continuously (packed narrow hardware path).')).toBeVisible();
   await takeScreenshot(page, 'capture-controls.png', { fullPage: true });
 });
 
@@ -415,8 +417,9 @@ test('compression sweep shows raw and delta_rle throughput differences', async (
   }> = [];
 
   await page.locator('.sidebar button[title="Capture"]').click();
-  await page.locator('.mode-tile', { hasText: 'Digital deep' }).click();
-  await page.getByLabel('Samples').selectOption(String(sampleCount));
+  await page.locator('.mode-tile', { hasText: 'Digital capture' }).click();
+  await page.getByLabel('Capture length').selectOption(String(sampleCount));
+  await page.getByText('Advanced transfer options').click();
   const compressionGroup = page.locator('.panel-body .seg-toggle[aria-label="Digital readback compression"]');
 
   for (const rate of sweepRates) {
@@ -424,7 +427,7 @@ test('compression sweep shows raw and delta_rle throughput differences', async (
     await expect(page.getByLabel('Sample rate')).toHaveValue(String(rate));
     for (const codec of codecs) {
       await compressionGroup.getByRole('button', {
-        name: codec === 'raw' ? 'RAW' : 'DELTA RLE',
+        name: codec === 'raw' ? 'Uncompressed' : 'Compressed',
         exact: true,
       }).click();
       const startedAt = Date.now();
@@ -466,8 +469,10 @@ test('compression sweep shows raw and delta_rle throughput differences', async (
     '',
     'Higher throughput means the hardware returned the capture faster for the same waveform window.',
   ];
-  fs.writeFileSync(path.join(shots, 'compression-sweep-results.md'), lines.join('\n'));
-  fs.writeFileSync(path.join(shots, 'compression-sweep-results.json'), `${JSON.stringify(results, null, 2)}\n`);
+  const writeArtifact = (filePath: string, data: string) =>
+    fs.promises.writeFile(filePath, data).then(() => undefined);
+  await writeArtifactWithRetry(path.join(shots, 'compression-sweep-results.md'), lines.join('\n'), { write: writeArtifact });
+  await writeArtifactWithRetry(path.join(shots, 'compression-sweep-results.json'), `${JSON.stringify(results, null, 2)}\n`, { write: writeArtifact });
 
   const byRate = new Map<number, Record<string, number>>();
   for (const row of results) {
@@ -504,7 +509,7 @@ test('compression sweep shows raw and delta_rle throughput differences', async (
 test('generator page matches supported board protocols', async ({ page }) => {
   await page.getByRole('button', { name: 'Generator' }).click();
   await expect(page.getByRole('heading', { name: 'Signal generator' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Send + capture' })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole('button', { name: 'Send and capture' })).toBeVisible({ timeout: 15_000 });
   const protocolCount = await waitForGeneratorProtocolOptions(page);
   // A generator-capabilities regression must FAIL this test, not silently
   // convert it into a skip that keeps CI green.
@@ -534,11 +539,11 @@ test('mock generator exposes Bit Banger templates and bounded preview controls',
   await expect(page.getByLabel('Preset symbols')).toHaveValue('32');
   await page.getByRole('button', { name: 'Preview waveform' }).click();
   await expect(page.getByText(/symbols/).last()).toBeVisible();
-  await page.getByRole('button', { name: 'Preview parameter sweep' }).click();
+  await page.getByRole('button', { name: 'Preview sweep' }).click();
   await expect(page.getByText('3/3 variants valid')).toBeVisible();
   await takeScreenshot(page, 'bit-banger-preview-sweep.png', { fullPage: true });
   await protocol.selectOption('uart');
-  await page.getByRole('button', { name: 'Run capture-backed sweep' }).click();
+  await page.getByRole('button', { name: 'Run sweep + capture' }).click();
   await expect(page.getByText('2/2 variants valid')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Open capture' })).toHaveCount(2);
 });
@@ -547,13 +552,13 @@ test('mock SWD generator captures and reports decoded transactions', async ({ pa
   await page.getByRole('button', { name: 'Generator' }).click();
   await page.getByLabel('Generator protocol').selectOption('swd');
   await expect(page.getByLabel('SWD requests (JSON)')).toBeVisible();
-  await page.getByRole('button', { name: 'Send + capture' }).click();
+  await page.getByRole('button', { name: 'Send and capture' }).click();
   await expect(page.locator('.toast').filter({ hasText: 'decoded 1 SWD transaction' })).toBeVisible();
   await takeScreenshot(page, 'swd-generator-capture.png', { fullPage: true });
 });
 
 test('mock capture dashboard shows protocol activity and errors', async ({ page }) => {
-  await page.getByRole('button', { name: 'Sessions' }).click();
+  await page.getByRole('button', { name: 'Sessions', exact: true }).click();
   const row = page.locator('tr').filter({ has: page.locator('input[value="MAX1000 mixed analog sweep"]') }).first();
   await row.getByRole('button', { name: 'Open' }).click();
   await page.getByRole('button', { name: 'Dashboard' }).click();
@@ -570,8 +575,8 @@ test('mock capture dashboard shows protocol activity and errors', async ({ page 
 test('mock trigger builder previews pattern qualifiers', async ({ page }) => {
   await page.locator('.sidebar button[title="Capture"]').click();
   await page.getByRole('button', { name: 'Trigger', exact: true }).click();
-  await page.getByLabel('Trigger type').selectOption('pattern');
-  await page.getByLabel('Pattern (1/0/x per channel)').fill('1x01');
+  await page.getByLabel('Start capture when').selectOption('pattern');
+  await page.getByLabel('Bit pattern (1, 0, or x per channel)').fill('1x01');
   await expect(page.getByLabel('Trigger preview')).toBeVisible();
   await expect(page.getByLabel('Trigger preview')).toContainText('1x01');
   await expect(page.getByLabel('Trigger preview')).toContainText("don't care");
@@ -593,7 +598,7 @@ test('mock decoder builder adds and runs a decoder instance', async ({ page }) =
 test('mock raw inspector loads packed samples and supports paging', async ({ page }) => {
   // The raw inspector needs an active session (it renders 'No session open'
   // otherwise), so open the mixed-sweep fixture session first.
-  await page.getByRole('button', { name: 'Sessions' }).click();
+  await page.getByRole('button', { name: 'Sessions', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Sessions' })).toBeVisible();
   const sessionRow = page.locator('tr').filter({
     has: page.locator('input[value="MAX1000 mixed analog sweep"]'),
@@ -602,7 +607,7 @@ test('mock raw inspector loads packed samples and supports paging', async ({ pag
   await expect(page.locator('canvas.waveform-canvas')).toBeVisible();
 
   await page.locator('.sidebar button[title="Capture"]').click();
-  await page.getByRole('button', { name: 'Raw', exact: true }).click();
+  await page.getByRole('button', { name: 'Raw data', exact: true }).click();
   // Scope to the raw inspector's table (header row sample|hex|bits) — other
   // tables on the page also match '.table-scroll table.data-table'.
   const rawTable = page.locator('table.data-table').filter({
@@ -639,10 +644,10 @@ test('mock marker panel adds a named bookmark from waveform hover', async ({ pag
 });
 
 test('mock eye diagram folds a digital channel at a configured rate', async ({ page }) => {
-  await page.getByRole('button', { name: 'Sessions' }).click();
+  await page.getByRole('button', { name: 'Sessions', exact: true }).click();
   const row = page.locator('tr').filter({ has: page.locator('input[value="MAX1000 mixed analog sweep"]') }).first();
   await row.getByRole('button', { name: 'Open' }).click();
-  await page.getByRole('button', { name: 'Eye', exact: true }).click();
+  await page.getByRole('button', { name: 'Eye diagram', exact: true }).click();
   await page.getByRole('button', { name: 'Compute eye diagram' }).click();
   await expect(page.getByText(/24 folded traces/)).toBeVisible();
   await expect(page.getByLabel('Eye diagram')).toBeVisible();
@@ -651,7 +656,7 @@ test('mock eye diagram folds a digital channel at a configured rate', async ({ p
 
 test('mock channel panel saves a visibility layout and exposes drag ordering', async ({ page }) => {
   await page.locator('.sidebar button[title="Capture"]').click();
-  await page.getByRole('button', { name: 'Channels', exact: true }).click();
+  await page.getByRole('button', { name: 'Inputs', exact: true }).click();
   await expect(page.locator('.channel-row[draggable="true"]').first()).toBeVisible();
   await page.getByLabel('Channel layout name').fill('smoke');
   await page.getByRole('button', { name: 'Save layout' }).click();
@@ -681,16 +686,16 @@ test('command palette exposes capture, decode, trigger, and export actions', asy
 
 test('signal generator loopback shows waveform and decode', async ({ page }) => {
   await page.getByRole('button', { name: 'Generator' }).click();
-  await expect(page.getByRole('button', { name: 'Send + capture' })).toBeEnabled({ timeout: 15_000 });
+  await expect(page.getByRole('button', { name: 'Send and capture' })).toBeEnabled({ timeout: 15_000 });
   const protocolCount = await waitForGeneratorProtocolOptions(page);
   // A generator-capabilities regression must FAIL this test, not silently
   // convert it into a skip that keeps CI green.
   expect(protocolCount, 'generator protocol options must render; a capabilities regression should fail, not skip').toBeGreaterThan(0);
-  // Self-sufficient in BOTH modes: run the real Send + capture (mock harness
+  // Self-sufficient in BOTH modes: run the real Send and capture (mock harness
   // or live hardware) instead of opening a pre-existing session — the backend
   // creates the 'Generator self-test (uart)' session this flow produces.
   await page.getByLabel('TX pin').fill('3');
-  await page.getByRole('button', { name: 'Send + capture' }).click({ timeout: 15_000 });
+  await page.getByRole('button', { name: 'Send and capture' }).click({ timeout: 15_000 });
   const generatorResult = page.locator('.card').filter({
     has: page.getByRole('heading', { name: 'Result' }),
   });
@@ -705,7 +710,7 @@ test('signal generator loopback shows waveform and decode', async ({ page }) => 
 });
 
 test('machine-in-loop transaction shows request and response waveforms', async ({ page }) => {
-  await page.getByRole('button', { name: 'MIL' }).click();
+  await page.getByRole('button', { name: 'Hardware lab' }).click();
   await page.getByRole('button', { name: 'Load' }).click();
   await expect(page.getByRole('button', { name: 'Start emulator' })).toBeEnabled({ timeout: 15_000 });
   await page.getByRole('button', { name: 'Start emulator' }).click();
@@ -764,14 +769,14 @@ test('live hardware sessions show waveform screenshots across digital and analog
   test.skip(await effectiveMock(page), 'real hardware sessions only exist in live mode');
   test.setTimeout(240_000);
 
-  await page.getByRole('button', { name: 'Device' }).click();
-  await expect(page.getByRole('heading', { name: 'Device' })).toBeVisible();
+  await page.getByRole('button', { name: 'Hardware', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Hardware', exact: true })).toBeVisible();
   await expect(page.getByText('held by playwright')).toBeVisible();
   await takeScreenshot(page, 'live-device-page.png', { fullPage: true });
 
   await page.locator('.sidebar button[title="Capture"]').click();
-  await expect(page.getByText('Hardware mode')).toBeVisible();
-  await expect(page.getByText('Readback codec')).toBeVisible();
+  await expect(page.getByText('Capture source')).toBeVisible();
+  await expect(page.getByText('Advanced transfer options')).toBeVisible();
   await takeScreenshot(page, 'live-capture-controls.png', { fullPage: true });
 
   // The generator loopback session is created by the 'signal generator
@@ -800,11 +805,11 @@ test('live hardware sessions show waveform screenshots across digital and analog
     { query: 'Generator self-test (uart)', shot: 'live-generator-session-waveform.png', decoder: true },
     { query: 'MIL transaction - Modbus RTU demo', shot: 'live-mil-session-waveform.png', decoder: true },
     { query: 'LIS3DH WHO_AM_I live', shot: 'live-accelerometer-session-waveform.png', decoder: true },
-    { query: 'HW validated Analog fast single 1000000', shot: 'live-analog-fast-waveform.png', decoder: false },
-    { query: 'HW validated Maximum analog single 24000', shot: 'live-maximum-analog-waveform.png', decoder: false },
-    { query: 'HW validated Mixed scan single 125000', shot: 'live-mixed-analog-waveform.png', decoder: false },
+    { query: 'HW validated Analog — one channel single 1000000', shot: 'live-analog-fast-waveform.png', decoder: false },
+    { query: 'HW validated Analog — four channels single 24000', shot: 'live-maximum-analog-waveform.png', decoder: false },
+    { query: 'HW validated Digital + analog single 125000', shot: 'live-mixed-analog-waveform.png', decoder: false },
   ];
-  expect(sessions.some((s: any) => String(s.name).includes('HW validated Analog fast single 1000000')),
+  expect(sessions.some((s: any) => String(s.name).includes('HW validated Analog — one channel single 1000000')),
     'run hardware-features.spec.ts with PLAYWRIGHT_HARDWARE_MATRIX=1 before refreshing live screenshots').toBeTruthy();
 
   const failures: string[] = [];
@@ -823,7 +828,7 @@ test('live hardware sessions show waveform screenshots across digital and analog
 
 test.describe('mock fixture sessions', () => {
   test('analog session renders waveforms and decode on the mock fixture', async ({ page }) => {
-    await page.getByRole('button', { name: 'Sessions' }).click();
+    await page.getByRole('button', { name: 'Sessions', exact: true }).click();
     const analogRow = page.locator('tr').filter({
       has: page.locator('input[value="MAX1000 mixed analog sweep"]'),
     }).first();
@@ -833,18 +838,25 @@ test.describe('mock fixture sessions', () => {
     await expect(page.locator('.decoder-table')).toBeVisible();
     await expect(page.locator('.decoder-table tbody tr').first()).toContainText('START');
 
-    await page.getByRole('button', { name: 'Channels' }).click();
+    await page.getByRole('button', { name: 'Inputs', exact: true }).click();
     await expect(page.getByRole('option', { name: 'a1 (analog)' })).toBeAttached();
     await expect(page.getByRole('option', { name: 'a2 (analog)' })).toBeAttached();
+    await expect(page.getByRole('option', { name: 'a0 (analog)' })).toHaveCount(0);
     const canvas = page.getByLabel('Waveform for MAX1000 mixed analog sweep');
     await expect(canvas).toHaveAttribute('aria-busy', 'false');
-    await page.getByRole('button', { name: 'Capture', exact: true }).click();
+    await page.getByRole('button', { name: 'Capture setup', exact: true }).click();
+    await expect(page.getByLabel('Loaded session metadata')).toContainText('Digital + analog');
+    await expect(page.getByLabel('Loaded session metadata')).toContainText('125.0 kHz');
+    await expect(page.getByLabel('Loaded session metadata')).toContainText('ADC1/AIN3');
+    await expect(page.getByLabel('Loaded session metadata')).toContainText('ADC2/AIN1');
+    await expect(page.getByLabel('Next capture configuration')).toContainText('Next capture');
+    await expect(page.getByLabel('Sample rate')).toHaveValue('1000000');
 
     await takeScreenshot(page, 'analog-session-waveform.png', { fullPage: true });
   });
 
   test('mock analog panel computes a spectrum from the mixed capture', async ({ page }) => {
-    await page.getByRole('button', { name: 'Sessions' }).click();
+    await page.getByRole('button', { name: 'Sessions', exact: true }).click();
     const analogRow = page.locator('tr').filter({ has: page.locator('input[value="MAX1000 mixed analog sweep"]') }).first();
     await analogRow.getByRole('button', { name: 'Open' }).click();
     await page.getByRole('button', { name: 'Analog', exact: true }).click();
@@ -854,7 +866,7 @@ test.describe('mock fixture sessions', () => {
   });
 
   test('accelerometer session renders waveform and decode on the mock fixture', async ({ page }) => {
-    await page.getByRole('button', { name: 'Sessions' }).click();
+    await page.getByRole('button', { name: 'Sessions', exact: true }).click();
     const accelRow = page.locator('tr').filter({
       has: page.locator('input[value="LIS3DH WHO_AM_I dialogue"]'),
     }).first();
@@ -869,7 +881,7 @@ test.describe('mock fixture sessions', () => {
   });
 
   test('session comparison shows alignment and first divergence on the mock fixture', async ({ page }) => {
-    await page.getByRole('button', { name: 'Sessions' }).click();
+    await page.getByRole('button', { name: 'Sessions', exact: true }).click();
     const rows = page.locator('.sessions-table tbody tr');
     await expect(rows).toHaveCount(3);
 
@@ -886,7 +898,7 @@ test.describe('mock fixture sessions', () => {
   test('mock trigger search auto-scopes the decoder window', async ({ page }) => {
     await page.locator('.sidebar button[title="Capture"]').click();
     await page.getByRole('button', { name: 'Trigger', exact: true }).click();
-    await page.getByLabel('Trigger type').selectOption('any_edge');
+    await page.getByLabel('Start capture when').selectOption('any_edge');
     await page.getByRole('button', { name: 'Search existing capture' }).click();
   await expect(page.getByText(/scoped decoder to 1 event/)).toBeVisible();
     await expect(page.getByText(/pre-trigger 0 samples/)).toBeVisible();
@@ -895,14 +907,14 @@ test.describe('mock fixture sessions', () => {
 
   test('mock capture queue submits, polls, and reports the resulting session', async ({ page }) => {
     await page.locator('.sidebar button[title="Capture"]').click();
-    await page.getByRole('button', { name: 'Queue capture job' }).click();
+    await page.getByRole('button', { name: 'Run in background' }).click();
     await expect(page.getByText(/Headless job done/)).toBeVisible();
     await expect(page.getByText(/session session-demo/)).toBeVisible();
     await takeScreenshot(page, 'capture-job-queue.png', { fullPage: true });
   });
 
   test('mock dashboard exposes CAN and LIN health summaries', async ({ page }) => {
-    await page.getByRole('button', { name: 'Sessions' }).click();
+    await page.getByRole('button', { name: 'Sessions', exact: true }).click();
     const row = page.locator('tr').filter({ has: page.locator('input[value="MAX1000 mixed analog sweep"]') }).first();
     await row.getByRole('button', { name: 'Open' }).click();
     await page.getByRole('button', { name: 'Dashboard', exact: true }).click();

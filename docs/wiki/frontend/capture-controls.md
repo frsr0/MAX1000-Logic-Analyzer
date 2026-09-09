@@ -18,7 +18,7 @@ type Acquisition = 'single' | 'live';
 | Source | Modes | Max Rate | Notes |
 |---|---|---|---|
 | Digital (16ch) | single, live | 200 MHz / 50 MHz live | Full 16-channel |
-| Mixed (16+analog) | single, live | 125 kframes/s | 16 digital + two ADC lanes (`a0`/`a1`) |
+| Mixed (16+analog) | single, live | 125 kframes/s | 16 digital + two physical ADC lanes (`a1`/`a2`: AIN3/AIN1) |
 | Digital Narrow | live only | 200.4 MHz | One line, up to 16× SDRAM logical depth |
 | Analog Fast | single, live | 1 MHz | `AIN3`, one ADC lane |
 | Maximum Analog | single, live | 24 kS/s/lane | Four physical lanes: `AIN3`, `AIN1`, `AIN4`, `AIN6` |

@@ -54,32 +54,32 @@ const SOURCES: {
 }[] = [
   {
     source: 'digital',
-    label: 'Digital deep',
+    label: 'Digital capture',
     detail: '16 inputs, up to 200 MHz, deep SDRAM reads up to 4,194,304 samples',
     channels: 'D0-D15',
   },
   {
     source: 'mixed',
-    label: 'Mixed scan',
+    label: 'Digital + analog',
     detail: '16 digital + two packed ADC results, time-correlated at the scan frame rate',
-    channels: 'D0-D15 + a0/a1',
+    channels: 'D0-D15 + ADC1/AIN3, ADC2/AIN1',
   },
   {
     source: 'digital_narrow',
-    label: 'Packed narrow',
+    label: 'High-speed single channel',
     detail: 'One digital line packed into a 16x deeper logical stream',
     channels: 'one digital line',
     liveOnly: true,
   },
   {
     source: 'analog_fast',
-    label: 'Analog fast',
+    label: 'Analog — one channel',
     detail: 'One analog input (AIN3) at the highest ADC rate',
     channels: 'AIN3 (1 lane)',
   },
   {
     source: 'analog_all',
-    label: 'Maximum analog',
+    label: 'Analog — four channels',
     detail: 'Four physical analog inputs captured together at the scan rate',
     channels: 'AIN3, AIN1, AIN4, AIN6',
   },
@@ -187,7 +187,7 @@ function hardwareSummary(mode: CaptureMode) {
       return 'Packed narrow mode keeps one line at 200 MHz and stretches it to a much longer logical stream.';
     case 'mixed':
     case 'mixed_continuous':
-      return 'Mixed mode captures 16 digital bits plus two packed ADC results, sampled together at a shared scan frame rate.';
+      return 'Mixed mode captures 16 digital bits plus ADC1/AIN3 and ADC2/AIN1, sampled together at a shared scan frame rate.';
     case 'analog':
     case 'analog_fast':
     case 'analog_continuous':
@@ -393,6 +393,11 @@ export function CaptureControls() {
 
   return (
     <div className="panel-body">
+      <div className="next-capture-context" aria-label="Next capture configuration">
+        <span className="context-label">Next capture</span>
+        <strong>Settings for the next capture</strong>
+        <span>Opening a saved session does not change these settings.</span>
+      </div>
       <div className="hardware-note">
         <strong>{activeModeLabel}</strong>
         <span>{hardwareSummary(captureSettings.mode as CaptureMode)}</span>
@@ -404,7 +409,7 @@ export function CaptureControls() {
       </label>
 
       <div className="field">
-        <span>Hardware mode</span>
+        <span>Capture source</span>
         <div className="mode-grid">
           {SOURCES.map((opt) => (
             <button
@@ -423,7 +428,7 @@ export function CaptureControls() {
       </div>
 
       <div className="field">
-        <span>Acquisition</span>
+        <span>Capture timing</span>
         <div className="seg-toggle" role="group" aria-label="Acquisition">
           <button
             type="button"
@@ -432,7 +437,7 @@ export function CaptureControls() {
             disabled={currentSourceLiveOnly}
             title="Capture a fixed number of samples once, then read back"
           >
-            Single-shot
+            One capture
           </button>
           <button
             type="button"
@@ -440,11 +445,11 @@ export function CaptureControls() {
             onClick={() => selectAcquisition('live')}
             title="Continuously capture into the SDRAM ring for a live rolling view"
           >
-            Live ring
+            Continuous view
           </button>
         </div>
         {currentSourceLiveOnly && (
-          <span className="mode-detail">Packed narrow is live-only.</span>
+          <span className="mode-detail">High-speed single-channel capture runs continuously (packed narrow hardware path).</span>
         )}
       </div>
 
@@ -475,7 +480,7 @@ export function CaptureControls() {
 
       {rollingMode ? (
         <label className="field">
-          <span>Live window</span>
+          <span>Window duration</span>
           <select value={nearestWindowSeconds(
             captureSettings.num_samples,
             captureSettings.sample_rate,
@@ -498,7 +503,7 @@ export function CaptureControls() {
         </label>
       ) : (
         <label className="field">
-          <span>Samples</span>
+          <span>Capture length</span>
           <select value={captureSettings.num_samples}
             onChange={(e) => setCaptureSettings({ num_samples: Number(e.target.value) })}>
             {depthOptions.map((depth) => <option key={depth} value={depth}>{depth.toLocaleString()}</option>)}
@@ -506,47 +511,52 @@ export function CaptureControls() {
         </label>
       )}
 
-      <div className="field">
-        <span>Readback codec</span>
-        {digitalCompressionMode ? (
-          <div className="seg-toggle" role="group" aria-label="Digital readback compression">
-            {(['raw', 'delta_rle'] as ReadbackCompression[]).map((codec) => (
-              <button
-                key={codec}
-                type="button"
-                className={`seg ${captureSettings.readback_compression === codec ? 'active' : ''}`}
-                onClick={() => setCaptureSettings({ readback_compression: codec })}
-                disabled={!controlMode}
-                title={
-                  codec === 'raw'
-                    ? 'No compression'
-                    : 'Merged delta packing followed by RLE'
-                }
-              >
-                {codec === 'raw' ? 'RAW' : 'DELTA RLE'}
-              </button>
-            ))}
+      <details className="advanced-options">
+        <summary>Advanced transfer options</summary>
+        <div className="advanced-options-body">
+          <div className="field">
+            <span>Transfer optimization</span>
+            {digitalCompressionMode ? (
+              <div className="seg-toggle" role="group" aria-label="Digital readback compression">
+                {(['raw', 'delta_rle'] as ReadbackCompression[]).map((codec) => (
+                  <button
+                    key={codec}
+                    type="button"
+                    className={`seg ${captureSettings.readback_compression === codec ? 'active' : ''}`}
+                    onClick={() => setCaptureSettings({ readback_compression: codec })}
+                    disabled={!controlMode}
+                    title={
+                      codec === 'raw'
+                        ? 'No compression'
+                        : 'Merge transitions and run-length encode them before transfer'
+                    }
+                  >
+                    {codec === 'raw' ? 'Uncompressed' : 'Compressed'}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <span className="mode-detail">Analog and mixed captures transfer without compression.</span>
+            )}
+            {liveCompressionActive && (
+              <span className="mode-detail">{liveCompressionStatus}</span>
+            )}
           </div>
-        ) : (
-          <span className="mode-detail">Analog and mixed captures use raw readback.</span>
-        )}
-        {liveCompressionActive && (
-          <span className="mode-detail">{liveCompressionStatus}</span>
-        )}
-      </div>
-      <div className="field">
-        <label className="checkbox-label">
-          <input type="checkbox"
-            checked={captureSettings.packed_mode}
-            onChange={(e) => setCaptureSettings({ packed_mode: e.target.checked })}
-            disabled={!controlMode || analogMode}
-          />
-          <span>Packed mode (200 MHz rolling)</span>
-        </label>
-        {captureSettings.packed_mode && (
-          <span className="mode-detail">Capture-side MSO compression active. Rolling ceiling raised to 200 MHz.</span>
-        )}
-      </div>
+          <div className="field">
+            <label className="checkbox-label">
+              <input type="checkbox"
+                checked={captureSettings.packed_mode}
+                onChange={(e) => setCaptureSettings({ packed_mode: e.target.checked })}
+                disabled={!controlMode || analogMode}
+              />
+              <span>Use packed rolling transfer</span>
+            </label>
+            {captureSettings.packed_mode && (
+              <span className="mode-detail">Capture-side packing is active; Rolling ceiling raised to 200 MHz.</span>
+            )}
+          </div>
+        </div>
+      </details>
 
       <div className="capture-summary">
         <span>{activeModeLabel}</span>
@@ -588,7 +598,7 @@ export function CaptureControls() {
           <button className="danger big" onClick={stop}>Stop</button>
         )}
         <button disabled={!connected || !controlMode || hasErrors} onClick={queue}>
-          Queue capture job
+          Run in background
         </button>
       </div>
       {job && <div className={`finding ${job.state === 'done' ? 'success' : job.state === 'error' ? 'error' : 'info'}`}>

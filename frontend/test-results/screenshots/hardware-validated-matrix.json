@@ -1,9 +1,9 @@
 {
-  "generated_at": "2026-09-07T19:14:45.777Z",
+  "generated_at": "2026-09-09T10:06:38.936Z",
   "cases": [
     {
       "status": "passed",
-      "mode": "Digital deep",
+      "mode": "Digital capture",
       "acquisition": "single",
       "api_mode": "single",
       "requested_rate_hz": 10000,
@@ -11,11 +11,11 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_f9d76e679d"
+      "session_id": "ses_552f1116a2"
     },
     {
       "status": "passed",
-      "mode": "Digital deep",
+      "mode": "Digital capture",
       "acquisition": "single",
       "api_mode": "single",
       "requested_rate_hz": 100000,
@@ -23,11 +23,11 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_0dd42b9624"
+      "session_id": "ses_d7757b48d1"
     },
     {
       "status": "passed",
-      "mode": "Digital deep",
+      "mode": "Digital capture",
       "acquisition": "single",
       "api_mode": "single",
       "requested_rate_hz": 500000,
@@ -35,11 +35,11 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_2a5ad3e4a5"
+      "session_id": "ses_ff3cc9ca48"
     },
     {
       "status": "passed",
-      "mode": "Digital deep",
+      "mode": "Digital capture",
       "acquisition": "single",
       "api_mode": "single",
       "requested_rate_hz": 1000000,
@@ -47,11 +47,11 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_f52f313062"
+      "session_id": "ses_3b511b2ada"
     },
     {
       "status": "passed",
-      "mode": "Digital deep",
+      "mode": "Digital capture",
       "acquisition": "single",
       "api_mode": "single",
       "requested_rate_hz": 2000000,
@@ -59,11 +59,11 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_beac3f3bf0"
+      "session_id": "ses_922be3024a"
     },
     {
       "status": "passed",
-      "mode": "Digital deep",
+      "mode": "Digital capture",
       "acquisition": "single",
       "api_mode": "single",
       "requested_rate_hz": 5000000,
@@ -71,11 +71,11 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_bdd615961d"
+      "session_id": "ses_778332f8de"
     },
     {
       "status": "passed",
-      "mode": "Digital deep",
+      "mode": "Digital capture",
       "acquisition": "single",
       "api_mode": "single",
       "requested_rate_hz": 10000000,
@@ -83,11 +83,11 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_49091d1f57"
+      "session_id": "ses_86754348e5"
     },
     {
       "status": "passed",
-      "mode": "Digital deep",
+      "mode": "Digital capture",
       "acquisition": "single",
       "api_mode": "single",
       "requested_rate_hz": 12500000,
@@ -95,11 +95,11 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_91e300bec6"
+      "session_id": "ses_0326781340"
     },
     {
       "status": "passed",
-      "mode": "Digital deep",
+      "mode": "Digital capture",
       "acquisition": "single",
       "api_mode": "single",
       "requested_rate_hz": 14000000,
@@ -107,11 +107,11 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_28cf31a21c"
+      "session_id": "ses_9e922ffba3"
     },
     {
       "status": "passed",
-      "mode": "Digital deep",
+      "mode": "Digital capture",
       "acquisition": "single",
       "api_mode": "single",
       "requested_rate_hz": 20000000,
@@ -119,11 +119,11 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_5e139b0c42"
+      "session_id": "ses_1e22977201"
     },
     {
       "status": "passed",
-      "mode": "Digital deep",
+      "mode": "Digital capture",
       "acquisition": "single",
       "api_mode": "single",
       "requested_rate_hz": 50000000,
@@ -131,11 +131,11 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_a808756518"
+      "session_id": "ses_9f6da84857"
     },
     {
       "status": "passed",
-      "mode": "Digital deep",
+      "mode": "Digital capture",
       "acquisition": "single",
       "api_mode": "single",
       "requested_rate_hz": 100000000,
@@ -143,11 +143,11 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_b9e4a46f19"
+      "session_id": "ses_3304248058"
     },
     {
       "status": "passed",
-      "mode": "Digital deep",
+      "mode": "Digital capture",
       "acquisition": "single",
       "api_mode": "single",
       "requested_rate_hz": 200000000,
@@ -155,11 +155,11 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_318e302567"
+      "session_id": "ses_16e0db3ba8"
     },
     {
       "status": "passed",
-      "mode": "Digital deep",
+      "mode": "Digital capture",
       "acquisition": "live",
       "api_mode": "rolling",
       "requested_rate_hz": 10000,
@@ -167,11 +167,11 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_b22fdde668"
+      "session_id": "ses_66b798b149"
     },
     {
       "status": "passed",
-      "mode": "Digital deep",
+      "mode": "Digital capture",
       "acquisition": "live",
       "api_mode": "rolling",
       "requested_rate_hz": 100000,
@@ -179,11 +179,11 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_e388d5e3aa"
+      "session_id": "ses_cb1b8e0cf9"
     },
     {
       "status": "passed",
-      "mode": "Digital deep",
+      "mode": "Digital capture",
       "acquisition": "live",
       "api_mode": "rolling",
       "requested_rate_hz": 500000,
@@ -191,11 +191,11 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_6574088e06"
+      "session_id": "ses_117ff5d227"
     },
     {
       "status": "passed",
-      "mode": "Digital deep",
+      "mode": "Digital capture",
       "acquisition": "live",
       "api_mode": "rolling",
       "requested_rate_hz": 1000000,
@@ -203,11 +203,11 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_949214e5c7"
+      "session_id": "ses_0708454464"
     },
     {
       "status": "passed",
-      "mode": "Digital deep",
+      "mode": "Digital capture",
       "acquisition": "live",
       "api_mode": "rolling",
       "requested_rate_hz": 2000000,
@@ -215,11 +215,11 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_468ba86601"
+      "session_id": "ses_94ef306561"
     },
     {
       "status": "passed",
-      "mode": "Digital deep",
+      "mode": "Digital capture",
       "acquisition": "live",
       "api_mode": "rolling",
       "requested_rate_hz": 5000000,
@@ -227,11 +227,11 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_1610daed82"
+      "session_id": "ses_889cff92f7"
     },
     {
       "status": "passed",
-      "mode": "Digital deep",
+      "mode": "Digital capture",
       "acquisition": "live",
       "api_mode": "rolling",
       "requested_rate_hz": 10000000,
@@ -239,11 +239,11 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_04d711d4f5"
+      "session_id": "ses_263d54d534"
     },
     {
       "status": "passed",
-      "mode": "Digital deep",
+      "mode": "Digital capture",
       "acquisition": "live",
       "api_mode": "rolling",
       "requested_rate_hz": 12500000,
@@ -251,11 +251,11 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_da7d3b8181"
+      "session_id": "ses_398affa222"
     },
     {
       "status": "passed",
-      "mode": "Digital deep",
+      "mode": "Digital capture",
       "acquisition": "live",
       "api_mode": "rolling",
       "requested_rate_hz": 14000000,
@@ -263,11 +263,11 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_97c0ad31ee"
+      "session_id": "ses_8dc5a04fd5"
     },
     {
       "status": "passed",
-      "mode": "Digital deep",
+      "mode": "Digital capture",
       "acquisition": "live",
       "api_mode": "rolling",
       "requested_rate_hz": 20000000,
@@ -275,11 +275,11 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_e7ecb5e09f"
+      "session_id": "ses_a3b7bd4d9c"
     },
     {
       "status": "passed",
-      "mode": "Digital deep",
+      "mode": "Digital capture",
       "acquisition": "live",
       "api_mode": "rolling",
       "requested_rate_hz": 50000000,
@@ -287,11 +287,11 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_c8e69ec5aa"
+      "session_id": "ses_c1c3542001"
     },
     {
       "status": "passed",
-      "mode": "Packed narrow",
+      "mode": "High-speed single channel",
       "acquisition": "live",
       "api_mode": "digital_narrow",
       "requested_rate_hz": 200000000,
@@ -299,11 +299,11 @@
       "samples": 4096,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_1fb0f29ebf"
+      "session_id": "ses_691b88f7af"
     },
     {
       "status": "passed",
-      "mode": "Analog fast",
+      "mode": "Analog — one channel",
       "acquisition": "single",
       "api_mode": "analog_fast",
       "requested_rate_hz": 100000,
@@ -313,11 +313,11 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_154e0c8ced"
+      "session_id": "ses_ec70c25a78"
     },
     {
       "status": "passed",
-      "mode": "Analog fast",
+      "mode": "Analog — one channel",
       "acquisition": "single",
       "api_mode": "analog_fast",
       "requested_rate_hz": 200000,
@@ -327,11 +327,11 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_e86b1c3097"
+      "session_id": "ses_24c7d343ad"
     },
     {
       "status": "passed",
-      "mode": "Analog fast",
+      "mode": "Analog — one channel",
       "acquisition": "single",
       "api_mode": "analog_fast",
       "requested_rate_hz": 500000,
@@ -341,11 +341,11 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_e09b4afb14"
+      "session_id": "ses_b06e6ed085"
     },
     {
       "status": "passed",
-      "mode": "Analog fast",
+      "mode": "Analog — one channel",
       "acquisition": "single",
       "api_mode": "analog_fast",
       "requested_rate_hz": 1000000,
@@ -355,11 +355,11 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_112e97e0e4"
+      "session_id": "ses_e3715791a7"
     },
     {
       "status": "passed",
-      "mode": "Analog fast",
+      "mode": "Analog — one channel",
       "acquisition": "live",
       "api_mode": "analog_continuous",
       "requested_rate_hz": 100000,
@@ -369,11 +369,11 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_4ef5eb1232"
+      "session_id": "ses_deb7ef0e00"
     },
     {
       "status": "passed",
-      "mode": "Analog fast",
+      "mode": "Analog — one channel",
       "acquisition": "live",
       "api_mode": "analog_continuous",
       "requested_rate_hz": 200000,
@@ -383,11 +383,11 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_9426fbf899"
+      "session_id": "ses_3f7d19921a"
     },
     {
       "status": "passed",
-      "mode": "Analog fast",
+      "mode": "Analog — one channel",
       "acquisition": "live",
       "api_mode": "analog_continuous",
       "requested_rate_hz": 500000,
@@ -397,11 +397,11 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_9c10b43d99"
+      "session_id": "ses_2581a6828e"
     },
     {
       "status": "passed",
-      "mode": "Analog fast",
+      "mode": "Analog — one channel",
       "acquisition": "live",
       "api_mode": "analog_continuous",
       "requested_rate_hz": 1000000,
@@ -411,11 +411,11 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_20bd13e072"
+      "session_id": "ses_3f524e6b21"
     },
     {
       "status": "passed",
-      "mode": "Maximum analog",
+      "mode": "Analog — four channels",
       "acquisition": "single",
       "api_mode": "analog_all",
       "requested_rate_hz": 24000,
@@ -428,16 +428,16 @@
         "a3",
         "a4"
       ],
-      "session_id": "ses_31ad2ba509"
+      "session_id": "ses_f6b069f2fd"
     },
     {
       "status": "passed",
-      "mode": "Maximum analog",
+      "mode": "Analog — four channels",
       "acquisition": "live",
       "api_mode": "analog_all_continuous",
       "requested_rate_hz": 24000,
       "effective_rate_hz": 24000,
-      "samples": 516,
+      "samples": 512,
       "digital_channels": 0,
       "analog_channels": [
         "a1",
@@ -445,11 +445,11 @@
         "a3",
         "a4"
       ],
-      "session_id": "ses_4602ce8bc7"
+      "session_id": "ses_e8498d1966"
     },
     {
       "status": "passed",
-      "mode": "Mixed scan",
+      "mode": "Digital + analog",
       "acquisition": "single",
       "api_mode": "mixed",
       "requested_rate_hz": 125000,
@@ -457,14 +457,14 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [
-        "a0",
-        "a1"
+        "a1",
+        "a2"
       ],
-      "session_id": "ses_6cf8682484"
+      "session_id": "ses_61cf37f9f1"
     },
     {
       "status": "passed",
-      "mode": "Mixed scan",
+      "mode": "Digital + analog",
       "acquisition": "live",
       "api_mode": "mixed_continuous",
       "requested_rate_hz": 125000,
@@ -472,10 +472,10 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [
-        "a0",
-        "a1"
+        "a1",
+        "a2"
       ],
-      "session_id": "ses_ef61b3a4b1"
+      "session_id": "ses_323d49ed01"
     }
   ],
   "passed": 37,

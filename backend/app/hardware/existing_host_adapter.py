@@ -242,7 +242,7 @@ class ExistingHostAdapter(HardwareDevice):
                 "Maximum analog scans AIN3, AIN1, AIN4, and AIN6 at ~24 kS/s "
                 "per lane via the packed MSO path. "
                 "Mixed mode streams 16 digital bits plus the reduced two-result "
-                "ADC frame (a0 and a1) at ~125 kframes/s.",
+                "ADC frame (ADC1/AIN3 and ADC2/AIN1) at ~125 kframes/s.",
             ],
             digital_pin_map=DIGITAL_PIN_MAP,
             analog_pin_map=BOARD_ANALOG_INPUTS,

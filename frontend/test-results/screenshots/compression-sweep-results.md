@@ -2,9 +2,9 @@
 
 | rate Hz | codec | elapsed ms | throughput Msps | capture ms | wait ms | readback ms | blocks ms | decode ms | retry ms | session |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| 1,000,000 | raw | 433 | 0.115 | 223.3 | 1.3 | 45.9 | 45.7 | 0.0 | 0.0 | ses_ecb36cfa23 |
-| 1,000,000 | delta_rle | 247 | 0.202 | 2769.4 | 1.4 | 46.7 | 20.9 | 25.7 | 16.3 | ses_ecb36cfa23 |
-| 10,000,000 | raw | 645 | 0.078 | 186.0 | 1.6 | 42.7 | 42.5 | 0.0 | 0.0 | ses_5ef7242f42 |
-| 10,000,000 | delta_rle | 2147 | 0.023 | 1692.1 | 1.9 | 29.9 | 20.4 | 9.4 | 0.0 | ses_002bef8000 |
+| 1,000,000 | raw | 419 | 0.119 | 223.6 | 1.8 | 43.2 | 43.0 | 0.0 | 0.0 | ses_53da3ecf41 |
+| 1,000,000 | delta_rle | 265 | 0.189 | 241.5 | 1.8 | 56.6 | 20.3 | 36.1 | 27.5 | ses_53da3ecf41 |
+| 10,000,000 | raw | 247 | 0.202 | 2745.5 | 1.8 | 44.6 | 44.4 | 0.0 | 0.0 | ses_07eabe9b4a |
+| 10,000,000 | delta_rle | 265 | 0.189 | 189.9 | 2.5 | 50.4 | 21.2 | 29.1 | 20.6 | ses_e352c9a818 |
 
 Higher throughput means the hardware returned the capture faster for the same waveform window.

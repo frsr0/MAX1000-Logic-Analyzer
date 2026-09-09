@@ -1,3 +1,5 @@
+import struct
+
 from driver.ols_spi_device import (
     MODE_ANALOG_ALL,
     MODE_ANALOG_FAST,
@@ -6,6 +8,7 @@ from driver.ols_spi_device import (
     analog_frame_stride,
     analog_wire_stride,
     decode_analog_frames,
+    align_mixed_wire,
     payload_to_wire,
     wire_to_payload,
 )
@@ -57,6 +60,55 @@ def test_wire_to_payload_is_identity_for_even_mixed_frames():
     payload = bytes([0xBB, 0xAA]) + _pack_pair(0x100, 0x200)
     wire = payload + b'\x00'
     assert wire_to_payload(wire, MODE_MIXED) == payload
+
+
+def test_align_mixed_wire_recovers_from_leading_stale_word():
+    payload = b''.join(
+        bytes([0xFF, 0xFF]) + _pack_pair(0x5F3, 0x061)
+        for _ in range(3))
+    wire = b'\xFF\xFF' + payload_to_wire(payload, MODE_MIXED)
+
+    aligned, offset, scores = align_mixed_wire(wire, frame_count=3)
+
+    assert offset == 1
+    assert scores[1] > scores[0]
+    assert aligned == wire[2:2 + 3 * analog_wire_stride(MODE_MIXED)]
+
+
+def test_align_mixed_wire_matches_observed_rotated_sdram_words():
+    # Captured on hardware: the first stale word rotates two otherwise valid
+    # frames. The zero high byte on words 3 and 6 identifies the boundary.
+    wire = struct.pack("<7H", 0xFFFF, 0xFFFF, 0x95F3, 0x0061,
+                       0xFFFF, 0xB302, 0x0033)
+
+    aligned, offset, _ = align_mixed_wire(wire, frame_count=2)
+    rows = decode_analog_frames(
+        wire_to_payload(aligned, MODE_MIXED), MODE_MIXED)
+
+    assert offset == 1
+    assert [row["adc"] for row in rows] == [[0x5F3, 0x619], [0x302, 0x33B]]
+
+
+def test_align_mixed_wire_keeps_already_aligned_data():
+    payload = bytes([0x34, 0x12]) + _pack_pair(0x100, 0x200)
+    wire = payload_to_wire(payload, MODE_MIXED)
+
+    aligned, offset, scores = align_mixed_wire(wire, frame_count=1)
+
+    assert offset == 0
+    assert aligned == wire[:2 * 3 * 2]
+    assert scores[0] == 1
+
+
+def test_align_mixed_wire_keeps_offset_zero_when_padding_evidence_ties():
+    # Every candidate has the same padding score; shifting would be a guess.
+    wire = b'\x00' * 18
+
+    aligned, offset, scores = align_mixed_wire(wire, frame_count=2)
+
+    assert offset == 0
+    assert scores == (2, 2, 2)
+    assert aligned == wire[:12]
 
 
 def test_wire_to_payload_is_identity_for_even_maximum_analog_frames():

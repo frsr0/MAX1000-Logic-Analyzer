@@ -13,20 +13,19 @@ The FPGA has three ADC scan profiles:
 |---|---|---|---|
 | Digital-only | 2-byte frames, 16 digital channels | Used for digital single/continuous/rolling captures | Good; reaches full digital rate |
 | Narrow digital | 2-byte packed words; one selected digital channel, 16 time samples per word | Used for 200 MHz narrow rolling mode | Works in finite and continuous hardware validation |
-| Mixed | 5-byte frames: 16 digital bits plus ADC0-ADC1 packed as two 12-bit values | Used for mixed mode | Works at 125 kframes/s; digital is sampled once per ADC frame |
+| Mixed | 5-byte frames: 16 digital bits plus ADC1-ADC2 packed as two 12-bit values | Used for mixed mode | Works at 125 kframes/s; digital is sampled once per ADC frame |
 | High-speed analog | 2-byte frames: one selected 12-bit ADC mux result | Used for high-speed analog mode | Works at 1 MSPS; default host selection is ADC1/AIN3 |
 | Maximum analog | Packed MSO stream with ADC1-ADC4 round-robin samples | Used for maximum analog mode | Four distinct physical lanes at about 24 kS/s per lane |
 
 Board-guide mapping is not a linear `AIN0..AIN7` sequence. The reduced mixed
-frame exposes `a0` (an unmapped mux result) and `a1` (`AIN3`). Maximum analog
-uses the separate packed MSO path and scans the four documented physical
-inputs:
+frame exposes the physical ADC1/ADC2 lanes as `a1` (`AIN3`) and `a2` (`AIN1`).
+Maximum analog uses the separate packed MSO path and scans the four documented
+physical inputs:
 
-| Board pin/result | ADC mux channel | Mixed ADC0-ADC1 | Maximum analog |
+| Board pin/result | ADC mux channel | Mixed ADC1-ADC2 | Maximum analog |
 |---|---:|---|---|
-| Unmapped result | ADC0 | Yes (`a0`) | No |
 | AIN3 | ADC1 | Yes (`a1`) | Yes |
-| AIN1 | ADC2 | No | Yes |
+| AIN1 | ADC2 | Yes (`a2`) | Yes |
 | AIN4 | ADC3 | No | Yes |
 | AIN6 | ADC4 | No | Yes |
 
@@ -43,7 +42,7 @@ digital mode is a digital-only rolling optimization, not a fifth analog mode.
 | User mode | Goal | Current support | Required fix |
 |---|---|---|---|
 | Full digital | 16 digital inputs at maximum digital speed, up to 200 MHz in speed builds | Supported | Keep existing digital path |
-| Mixed | A mix of analog and digital at the best practical combined speed | Supported via 16 digital + ADC0-ADC1 frame at 125 kframes/s | Keep pin-map/noise validation current |
+| Mixed | A mix of analog and digital at the best practical combined speed | Supported via 16 digital + ADC1-ADC2 frame at 125 kframes/s | Keep pin-map/noise validation current |
 | High-speed analog | Maximum analog detail for one selected physical analog input | Implemented as a one-slot ADC profile | Add UI channel selector beyond default ADC1/AIN3 |
 | Maximum analog | All four current physical analog inputs at best per-channel detail | Packed MSO profile with ADC1-ADC4 at about 24 kS/s per lane | Keep physical-input validation current |
 

@@ -150,12 +150,12 @@ function makeAnalogSessionSummary(): Json {
     num_samples: 50_000,
     sample_rate: 125_000,
     duration_s: 0.4,
-    channel_count: 20,
+     channel_count: 18,
     has_analog: true,
     decoder_count: 1,
     marker_count: 1,
     tags: ['playwright', 'analog', 'mixed'],
-    notes: 'Fixture session with mixed digital + 4 analog rows',
+     notes: 'Fixture session with mixed digital + ADC1/ADC2 analog rows',
     device: 'MAX1000 OLS Logic Analyzer',
     mock: true,
   };
@@ -352,7 +352,7 @@ function makeAnalogSession(): Json {
       pin_index: i,
     })),
     {
-      id: 'a0',
+      id: 'a1',
       name: 'AIN3',
       type: 'analog',
       enabled: true,
@@ -374,7 +374,7 @@ function makeAnalogSession(): Json {
       physical_available: true,
     },
     {
-      id: 'a1',
+      id: 'a2',
       name: 'AIN1',
       type: 'analog',
       enabled: true,
@@ -393,50 +393,6 @@ function makeAnalogSession(): Json {
       fpga_pin: 'PIN_C2',
       header: 'J1 / 3',
       adc_channel: 2,
-      physical_available: true,
-    },
-    {
-      id: 'a2',
-      name: 'AIN4',
-      type: 'analog',
-      enabled: true,
-      color: undefined,
-      units: 'V',
-      volts_per_div: 0.5,
-      offset: 1.65,
-      probe_attenuation: 1,
-      cal_gain: 1,
-      cal_offset: 0,
-      threshold: 1.65,
-      coupling: 'DC',
-      members: [],
-      display_base: 'hex',
-      board_label: 'AIN4',
-      fpga_pin: 'PIN_E3',
-      header: 'J1 / 6',
-      adc_channel: 3,
-      physical_available: true,
-    },
-    {
-      id: 'a3',
-      name: 'AIN6',
-      type: 'analog',
-      enabled: true,
-      color: undefined,
-      units: 'V',
-      volts_per_div: 0.5,
-      offset: 1.65,
-      probe_attenuation: 1,
-      cal_gain: 1,
-      cal_offset: 0,
-      threshold: 1.65,
-      coupling: 'DC',
-      members: [],
-      display_base: 'hex',
-      board_label: 'AIN6',
-      fpga_pin: 'PIN_E4',
-      header: 'J1 / 8',
-      adc_channel: 4,
       physical_available: true,
     },
   ];
@@ -729,7 +685,11 @@ function buildMixedAnalogBuffer(mode: 'lod' | 'overview' = 'lod') {
   const rawSamples = 50_000;
   const bins = mode === 'overview' ? 512 : 2048;
   const digital = buildDigitalSeries(rawSamples);
-  const analog = buildAnalogSeries(rawSamples);
+  const syntheticAnalog = buildAnalogSeries(rawSamples);
+  // Mixed MAX1000 frames expose only physical ADC1/ADC2. Keep generic a0..a7
+  // series available for synthetic fixtures, but map this hardware-shaped
+  // fixture to the physical channel ids explicitly.
+  const analog = { a1: syntheticAnalog.a0, a2: syntheticAnalog.a1 };
   const header: Json = {
     session_id: 'session-analog',
     start: 0,

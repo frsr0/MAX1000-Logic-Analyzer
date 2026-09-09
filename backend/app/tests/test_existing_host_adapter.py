@@ -1247,10 +1247,13 @@ def test_mixed_capture_uses_single_packed_pass():
     dev = adapter._dev
     # One pass: the packed frame carries digital + ADC together.
     dev.capture.assert_called_once()
-    assert dev.capture.call_args.kwargs["nsamples"] == 128 * 3
+    assert dev.capture.call_args.kwargs["nsamples"] == 128 * 3 + 2
     dev.set_analog_config.assert_any_call(0x08)   # MODE_MIXED
     assert len(result.digital) == 128
-    assert sorted(result.analog) == ["a0", "a1"]
+    # Mixed mode returns the two physical ADC lanes using their ADC identity:
+    # ADC1 -> a1 (AIN3), ADC2 -> a2 (AIN1).  Generic synthetic fixtures may
+    # still use a0, but a MAX1000 mixed capture must not shift physical lanes.
+    assert sorted(result.analog) == ["a1", "a2"]
     assert np.isclose(result.sample_rate, 200_000_000 / 533 / 3)
 
 
@@ -1267,10 +1270,10 @@ def test_mixed_continuous_packs_and_skips_recovery_reset():
     dev = adapter._dev
     # Same single packed pass as mixed...
     dev.capture.assert_called_once()
-    assert dev.capture.call_args.kwargs["nsamples"] == 128 * 3
+    assert dev.capture.call_args.kwargs["nsamples"] == 128 * 3 + 2
     dev.set_analog_config.assert_any_call(0x08)
     assert len(result.digital) == 128
-    assert sorted(result.analog) == ["a0", "a1"]
+    assert sorted(result.analog) == ["a1", "a2"]
     # ...but the per-capture anti-wedge recovery (disable analog + reopen) is
     # skipped so the continuous loop streams without a reset gap.
     dev.close.assert_not_called()

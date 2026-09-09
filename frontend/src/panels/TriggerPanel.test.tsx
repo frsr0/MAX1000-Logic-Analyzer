@@ -31,6 +31,7 @@ it('selects trigger execution modes and renders pattern/channel/timing/pre-trigg
   setTrigger({ type: 'pattern', channels: [2], pattern: '10x10101010101010101', execution: 'hardware', position_pct: 10,
     pre_trigger_samples: 100, min_duration_s: 2e-6, max_duration_s: 5e-6, consecutive: 2, holdoff_s: 3e-6 });
   render(<TriggerPanel />);
+  fireEvent.click(screen.getByText('Timing and repeat rules'));
   expect(screen.getByText('Supported in hardware')).toBeTruthy();
   expect(screen.getByText(/20 steps; first 16 shown/)).toBeTruthy();
   expect(screen.getByLabelText('Trigger preview').textContent).toContain('10x');
@@ -48,7 +49,7 @@ it('selects trigger execution modes and renders pattern/channel/timing/pre-trigg
   fireEvent.click(screen.getByRole('checkbox', { name: 'Re-arm for repeated captures' }));
   fireEvent.change(screen.getByRole('slider'), { target: { value: '25' } });
   expect(useApp.getState().captureSettings.trigger).toMatchObject({ rearm: true, position_pct: 25, pre_trigger_samples: 250 });
-  fireEvent.change(screen.getByRole('combobox', { name: 'Trigger type' }), { target: { value: 'decoder_error' } });
+  fireEvent.change(screen.getByRole('combobox', { name: 'Start capture when' }), { target: { value: 'decoder_error' } });
   expect(useApp.getState().captureSettings.trigger.execution).toBe('unavailable');
 });
 
@@ -57,6 +58,7 @@ it('configures every generic-pattern protocol field and clamps frame width', () 
     clock_source: undefined, clock_edge: undefined, baud: undefined, frame_width: undefined, match_mask: undefined,
     bit_order: undefined, start_channel: undefined, start_mode: undefined, start_polarity: undefined, execution: 'post_capture' });
   render(<TriggerPanel />);
+  fireEvent.click(screen.getByText('Advanced protocol matching'));
   expect(screen.getByText('Post-capture only (software search)')).toBeTruthy();
   expect((screen.getAllByRole('checkbox')[3] as HTMLInputElement).disabled).toBe(true);
   const transport = screen.getByRole('combobox', { name: 'Protocol preset' });
@@ -90,7 +92,7 @@ it('configures value, width, baud and occurrence trigger fields', () => {
   fireEvent.change(screen.getByRole('spinbutton', { name: 'Match occurrence' }), { target: { value: '0' } });
   expect(useApp.getState().captureSettings.trigger).toMatchObject({ value: 255, baud: 57600, occurrence: 1 });
   setTrigger({ type: 'pulse_wider', width_s: undefined, execution: 'post_capture' }); rerender(<TriggerPanel />);
-  fireEvent.change(screen.getByRole('spinbutton', { name: 'Width (us)' }), { target: { value: '2.5' } });
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'Pulse width (µs)' }), { target: { value: '2.5' } });
   expect(useApp.getState().captureSettings.trigger.width_s).toBe(2.5e-6);
   setTrigger({ type: 'timeout', width_s: 4e-6, execution: 'post_capture' }); rerender(<TriggerPanel />);
   expect(screen.queryByText('Channels')).toBeNull(); expect(screen.queryByText('Minimum duration (µs)')).toBeNull();
@@ -100,6 +102,7 @@ it('edits sequence JSON while tolerating incomplete JSON and limits its preview'
   setTrigger({ type: 'sequence', sequence_steps: Array.from({ length: 17 }, (_, index) => ({ type: index ? 'event' : 'uart_byte' })),
     window_s: 2e-6, execution: 'post_capture' });
   render(<TriggerPanel />);
+  fireEvent.click(screen.getByText('Sequence details'));
   expect(screen.getByText(/17 steps; first 16 shown/)).toBeTruthy();
   const input = screen.getByPlaceholderText(/uart_byte/);
   fireEvent.change(input, { target: { value: '[' } });
@@ -115,7 +118,7 @@ it('uses safe defaults when capabilities and optional trigger values are absent'
   const { rerender } = render(<TriggerPanel />);
   expect(screen.getAllByRole('checkbox')).toHaveLength(17);
   expect(screen.getByLabelText('Trigger preview').textContent).toContain('Preview');
-  fireEvent.change(screen.getByRole('combobox', { name: 'Trigger type' }), { target: { value: 'missing' } });
+  fireEvent.change(screen.getByRole('combobox', { name: 'Start capture when' }), { target: { value: 'missing' } });
   expect(useApp.getState().captureSettings.trigger.execution).toBe('unavailable');
   useApp.setState({ capabilities });
   setTrigger({ type: 'sequence', sequence_steps: undefined, window_s: undefined, execution: 'post_capture', occurrence: undefined });
@@ -151,4 +154,14 @@ it('searches previous/current/next matches and handles scopes, misses and errors
   await waitFor(() => expect(toast).toHaveBeenCalledWith('warning', 'No match for occurrence 2'));
   fireEvent.click(screen.getByRole('button', { name: 'Next match' }));
   await waitFor(() => expect(toast).toHaveBeenCalledWith('error', 'search failed'));
+});
+
+it('falls back to a readable label for a trigger added by a newer backend', () => {
+  useApp.setState({ capabilities: {
+    ...capabilities,
+    trigger_matrix: [...capabilities.trigger_matrix, { type: 'new_backend_trigger', execution: 'post_capture', description: '' }],
+  } });
+  setTrigger({ type: 'new_backend_trigger', execution: 'post_capture' });
+  render(<TriggerPanel />);
+  expect(screen.getByRole('option', { name: 'new backend trigger' })).toBeTruthy();
 });

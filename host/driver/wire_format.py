@@ -56,6 +56,51 @@ def analog_wire_stride(mode: int) -> int:
     return 2 * ((analog_frame_stride(mode) + 1) // 2)
 
 
+def align_mixed_wire(data: bytes, frame_count: Optional[int] = None):
+    """Align raw mixed captures to the three-word frame boundary.
+
+    Mixed frames are a digital word, a word containing the packed ADC low
+    bytes, followed by an ADC high-byte word whose upper byte is guaranteed
+    padding zero.  A stale SDRAM read can
+    prepend one or two 16-bit words, rotating the otherwise valid stream.
+    Score the three possible word offsets using that padding contract.  A
+    shift is applied only when one non-zero offset is the *unique* winner and
+    has at least two padding observations; ties intentionally retain offset
+    zero rather than guessing.
+
+    Returns ``(aligned_wire, offset_words, scores)``.  ``frame_count`` limits
+    the returned stream to the requested number of complete frames.
+    """
+    words = len(data) // 2
+    if words < 3:
+        return data, 0, (0, 0, 0)
+    requested = None if frame_count is None else max(0, int(frame_count))
+    scores = []
+    counts = []
+    for offset in range(3):
+        available = max(0, (words - offset) // 3)
+        if requested is not None:
+            available = min(available, requested)
+        counts.append(available)
+        scores.append(sum(
+            1 for n in range(available)
+            if data[(offset + 2 + n * 3) * 2 + 1] == 0
+        ))
+
+    offset = 0
+    best = max(scores)
+    winners = [i for i, score in enumerate(scores) if score == best]
+    if best >= 2 and len(winners) == 1 and winners[0] != 0:
+        offset = winners[0]
+
+    start = offset * 2
+    if requested is None:
+        end = start + counts[offset] * 6
+    else:
+        end = start + requested * 6
+    return data[start:min(len(data), end)], offset, tuple(scores)
+
+
 def payload_to_wire(data: bytes, mode: int = MODE_DIGITAL) -> bytes:
     """Convert dense payload bytes to padded wire representation."""
     payload_stride = analog_frame_stride(mode)

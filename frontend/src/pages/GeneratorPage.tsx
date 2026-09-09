@@ -606,9 +606,9 @@ export function GeneratorPage() {
           </label>
 
           <div className="button-row">
-            <button onClick={runSweep}>Preview parameter sweep</button>
-            <button disabled={busy || !controlMode || !canLoopbackCapture}
-              onClick={runCaptureSweep}>Run capture-backed sweep</button>
+            <button onClick={runSweep}>Preview sweep</button>
+            <button className="primary" disabled={busy || !controlMode || !canLoopbackCapture}
+              onClick={runCaptureSweep}>Run sweep + capture</button>
             {sweepResult && <span className={`badge ${sweepResult.failed ? 'badge-na' : 'badge-soft'}`}>
               {sweepResult.passed}/{sweepResult.count} variants valid
             </span>}
@@ -624,14 +624,14 @@ export function GeneratorPage() {
           </div>}
 
           <div className="button-row">
-            <button className="primary" disabled={busy || !controlMode || !canStandaloneSend} onClick={() => send(false)}>Send</button>
+            <button className="primary" disabled={busy || !controlMode || !canStandaloneSend} onClick={() => send(false)}>Send pattern</button>
             <button disabled={busy || !controlMode || !canLiveStream}
               title="Repeats the pattern continuously; the driver re-arms it every capture chunk, so a rolling/live capture shows it"
-              onClick={() => send(false, true)}>Send live</button>
+              onClick={() => send(false, true)}>Stream continuously</button>
             <button className="primary" disabled={busy || !controlMode || !canLoopbackCapture} onClick={() => send(true)}>
-              Send + capture
+              Send and capture
             </button>
-            <button disabled={!controlMode} onClick={() => api.generatorStop().catch(() => {})}>Stop</button>
+            <button disabled={!controlMode} onClick={() => api.generatorStop().catch(() => {})}>Stop output</button>
           </div>
 
           <label className="field">
@@ -640,6 +640,9 @@ export function GeneratorPage() {
               onChange={(e) => setExpected(e.target.value.replace(/[^0-9a-fA-F]/g, ''))} />
           </label>
 
+          <details className="advanced-options">
+            <summary>Advanced diagnostics</summary>
+            <div className="advanced-options-body">
           <button disabled={busy || !controlMode} onClick={async () => {
             setBusy(true);
             try {
@@ -650,6 +653,8 @@ export function GeneratorPage() {
               setBusy(false);
             }
           }}>Run generator self-test</button>
+            </div>
+          </details>
         </div>
 
         <div className="card">

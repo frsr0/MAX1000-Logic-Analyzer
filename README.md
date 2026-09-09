@@ -50,7 +50,7 @@ The current hardware exposes two analog capture profiles plus the mixed scan.
 
 - `analog_fast`: 1 ADC lane, currently `ADC1 -> AIN3`
 - `analog_all` / "Maximum analog": `ADC1,2,3,4 -> AIN3, AIN1, AIN4, AIN6`
-- `mixed`: 16 digital bits plus two ADC results (`a0` and `a1`) in one time-correlated frame
+- `mixed`: 16 digital bits plus physical ADC1/ADC2 results (`a1`/`a2`, AIN3/AIN1) in one time-correlated frame
 
 On MAX1000, the current mixed wire format is the reduced two-result path. The
 maximum-analog profile is the separate four-input physical scan over `AIN3`,

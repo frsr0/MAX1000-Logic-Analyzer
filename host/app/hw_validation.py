@@ -25,6 +25,7 @@ Requires:
 """
 
 import sys, time, os, json, threading, subprocess
+from statistics import median
 from typing import Optional
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -202,6 +203,54 @@ def check(cond, msg):
     else:
         log(f"  >>> FAIL: {msg}")
         FAIL += 1
+
+
+_MIXED_ANALOG_LANES = ((1, "ADC1/AIN3"), (2, "ADC2/AIN1"))
+
+
+def _adc_lane_values(frames):
+    """Return present 12-bit values for one decoded ADC lane."""
+    return [int(frame["adc"][0]) for frame in frames
+            if isinstance(frame, dict)
+            and len(frame.get("adc", ())) > 0]
+
+
+def compare_mixed_analog_lanes(mixed_frames, fast_baselines):
+    """Compare mixed lanes with immediate same-pin analog-fast captures.
+
+    A value being in the 12-bit range is not evidence that it belongs to the
+    requested pin: a rotated/stale word can decode as a convincing rail. This
+    check is intentionally a bench diagnostic for static inputs. It uses
+    medians so individual conversion noise cannot hide a lane-wide mismatch.
+    """
+    lanes = []
+    for index, (adc, label) in enumerate(_MIXED_ANALOG_LANES):
+        mixed_values = [int(frame["adc"][index]) for frame in mixed_frames
+                        if isinstance(frame, dict)
+                        and len(frame.get("adc", ())) > index]
+        baseline_values = _adc_lane_values(fast_baselines.get(adc, []))
+        if not mixed_values or not baseline_values:
+            lanes.append({"adc": adc, "label": label, "ok": False,
+                          "mixed_median": None, "baseline_median": None,
+                          "reason": "missing samples for comparison"})
+            continue
+        mixed_median = int(median(mixed_values))
+        baseline_median = int(median(baseline_values))
+        delta = abs(mixed_median - baseline_median)
+        tolerance = max(128, int(max(1, baseline_median) * 0.35))
+        rail_mismatch = ((baseline_median <= 512 and mixed_median >= 3968)
+                         or (baseline_median >= 3584 and mixed_median <= 512))
+        ok = not rail_mismatch and delta <= tolerance
+        reason = ("matches baseline" if ok else
+                  f"mixed median {mixed_median} disagrees with "
+                  f"baseline {baseline_median} (delta {delta}, "
+                  f"tolerance {tolerance})")
+        lanes.append({"adc": adc, "label": label, "ok": ok,
+                      "mixed_median": mixed_median,
+                      "baseline_median": baseline_median,
+                      "reason": reason})
+    return {"ok": bool(lanes) and all(lane["ok"] for lane in lanes),
+            "lanes": lanes}
 
 def check_channels_clean(ch_data, ns, except_ch=None, max_trans=5, label=""):
     """Verify all channels (except except_ch) have <= max_trans transitions.
@@ -1066,6 +1115,18 @@ def test_23ch_capture(dev):
 def test_mixed_analog_mode(dev, debug_on=False):
     print_header("Test 12c: Mixed digital + analog mode")
     log(f"debug CH0 = {debug_on}")
+    # Capture each physical mixed input immediately beforehand in the
+    # single-channel profile. This is a hardware-aware identity check: the
+    # mixed stream must agree with the same pin, rather than merely producing
+    # values that happen to fit in 12 bits.
+    fast_baselines = {}
+    for adc, label in _MIXED_ANALOG_LANES:
+        dev.set_analog_config(MODE_ANALOG_FAST, adc_channel=adc)
+        _, baseline = dev.capture_analog(
+            rate_hz=800_000, frames=64, mode=MODE_ANALOG_FAST, timeout=8)
+        fast_baselines[adc] = baseline
+        log(f"{label} baseline: {len(baseline)} frames")
+    dev.set_analog_config(MODE_MIXED)
     # capture_analog reads the 32-bit wire format and de-interleaves to dense
     # 5-byte frames (16 digital + 2 ADC).
     data, frames = dev.capture_analog(rate_hz=125_000, frames=256, mode=MODE_MIXED)
@@ -1086,8 +1147,16 @@ def test_mixed_analog_mode(dev, debug_on=False):
             check(True, "Some ADC channels show non-zero values")
         else:
             log("  [INFO] All ADC values are zero (no analog input driven)")
+        comparison = compare_mixed_analog_lanes(frames, fast_baselines)
+        for lane in comparison["lanes"]:
+            check(lane["ok"], f"{lane['label']} mixed lane {lane['reason']}")
+    else:
+        check(False, "mixed lane identity check has no mixed frames")
     check(nf > 0, f"Received {nf} analog frames (need > 0)")
-    save_result(f"test12c_mixed_analog_debug_{debug_on}", data, {"mode": "mixed"})
+    save_result(f"test12c_mixed_analog_debug_{debug_on}", data,
+                {"mode": "mixed", "baseline_frames":
+                 {str(adc): len(fast_baselines.get(adc, []))
+                  for adc, _ in _MIXED_ANALOG_LANES}})
     dev.set_analog_enable(False)
 
 
