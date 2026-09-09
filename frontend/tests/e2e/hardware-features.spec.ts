@@ -146,6 +146,7 @@ test.afterEach(async ({ page }) => {
       'X-Client-Id': localStorage.getItem('msa_client_id') ?? '',
     };
     await fetch('/api/capture/stop', { method: 'POST', headers }).catch(() => {});
+    await fetch('/api/generator/stop', { method: 'POST', headers }).catch(() => {});
   }).catch(() => {});
 });
 
@@ -359,6 +360,37 @@ test('hardware capture matrix validates every advertised mode and rate before ev
     const res = await fetch('/api/capture/stop', { method: 'POST', headers });
     return { ok: res.ok, body: await res.json().catch(() => ({})) };
   });
+  const startJumperStimulus = async () => page.evaluate(async () => {
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-Client-Id': localStorage.getItem('msa_client_id') ?? '',
+    };
+    const res = await fetch('/api/generator/send', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        config: {
+          protocol: 'uart',
+          data_hex: '55aa55aa55aa55aa',
+          baud: 1_000_000,
+          tx_pin: 22,
+          scl_pin: 25,
+          continuous: true,
+        },
+        capture: false,
+        live: true,
+      }),
+    });
+    return { ok: res.ok, status: res.status, body: await res.json().catch(() => ({})) };
+  });
+  const stopJumperStimulus = async () => page.evaluate(async () => {
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-Client-Id': localStorage.getItem('msa_client_id') ?? '',
+    };
+    const res = await fetch('/api/generator/stop', { method: 'POST', headers });
+    return { ok: res.ok, status: res.status, body: await res.json().catch(() => ({})) };
+  });
 
   for (const item of matrix) {
     await page.locator('.mode-tile', { hasText: item.mode }).click();
@@ -381,10 +413,20 @@ test('hardware capture matrix validates every advertised mode and rate before ev
         num_samples: item.apiMode === 'digital_narrow' ? 4096 : 1024,
         mode: item.apiMode,
         analog_enabled: item.analog,
-        enabled_digital: item.digital ? Array.from({ length: 16 }, (_, index) => index) : [],
+        enabled_digital: item.digital
+          ? (item.apiMode === 'digital_narrow' ? [0] : Array.from({ length: 16 }, (_, index) => index))
+          : [],
         readback_compression: 'raw',
       };
       try {
+        const jumperDriven = item.digital && item.apiMode !== 'digital_narrow';
+        if (jumperDriven) {
+          await stopJumperStimulus().catch(() => {});
+          const stimulus = await startJumperStimulus();
+          expect(stimulus.ok,
+            `${caseLabel} pool-pin-22 jumper stimulus failed: ${JSON.stringify(stimulus.body)}`)
+            .toBeTruthy();
+        }
         const started = await page.evaluate(async (payload) => {
           const headers = {
             'Content-Type': 'application/json',
@@ -443,6 +485,60 @@ test('hardware capture matrix validates every advertised mode and rate before ev
           ]);
         }
 
+        // Metadata can look perfect while the stored waveform is empty,
+        // truncated, mis-keyed, or corrupt. Inspect the same raw payload the
+        // renderer consumes and retain compact content statistics as evidence.
+        const rawEnd = Math.min(Number(metadata.num_samples), 4096);
+        const raw = await page.evaluate(async ({ sessionId, end }) => {
+          const res = await fetch(`/api/sessions/${sessionId}/raw?start=0&end=${end}`);
+          return { ok: res.ok, status: res.status, body: await res.json().catch(() => ({})) };
+        }, { sessionId: finished.last_session_id, end: rawEnd });
+        expect(raw.ok, `${caseLabel} raw waveform endpoint returned ${raw.status}`).toBeTruthy();
+
+        const content: Record<string, unknown> = {};
+        if (item.digital) {
+          const packed = raw.body.digital_packed;
+          expect(Array.isArray(packed), `${caseLabel} digital payload is missing`).toBeTruthy();
+          expect(packed.length, `${caseLabel} digital payload is empty`).toBeGreaterThan(0);
+          expect(packed.length, `${caseLabel} digital payload is truncated`).toBe(rawEnd);
+          expect(packed.every((value: unknown) => Number.isInteger(value)
+            && Number(value) >= 0 && Number(value) <= 0xffff),
+          `${caseLabel} digital payload contains invalid words`).toBeTruthy();
+          const ch13Transitions = packed.slice(1).reduce((count: number, word: number, index: number) => (
+            count + ((((word >> 13) & 1) !== ((packed[index] >> 13) & 1)) ? 1 : 0)
+          ), 0);
+          if (jumperDriven) {
+            expect(ch13Transitions,
+              `${caseLabel} CH13 did not observe the installed pool-pin-22 jumper`).toBeGreaterThan(0);
+          }
+          content.digital = {
+            samples: packed.length,
+            min: Math.min(...packed),
+            max: Math.max(...packed),
+            distinct_words: new Set(packed).size,
+            ...(jumperDriven ? { ch13_transitions: ch13Transitions } : {}),
+          };
+        }
+        if (item.analog) {
+          const analogStats: Record<string, unknown> = {};
+          for (const channel of metadata.analog_channels as string[]) {
+            const values = raw.body[`analog_${channel}`];
+            expect(Array.isArray(values), `${caseLabel} ${channel} payload is missing`).toBeTruthy();
+            expect(values.length, `${caseLabel} ${channel} payload is empty`).toBeGreaterThan(0);
+            expect(values.length, `${caseLabel} ${channel} payload is truncated`).toBe(rawEnd);
+            expect(values.every((value: unknown) => Number.isFinite(Number(value))
+              && Number(value) >= -0.05 && Number(value) <= 3.5),
+            `${caseLabel} ${channel} contains invalid voltage samples`).toBeTruthy();
+            analogStats[channel] = {
+              samples: values.length,
+              min_v: Math.min(...values),
+              max_v: Math.max(...values),
+              distinct_values: new Set(values).size,
+            };
+          }
+          content.analog = analogStats;
+        }
+
         evidence.push({
           status: 'passed',
           mode: item.mode,
@@ -453,6 +549,7 @@ test('hardware capture matrix validates every advertised mode and rate before ev
           samples: metadata.num_samples,
           digital_channels: digitalCount,
           analog_channels: metadata.analog_channels,
+          waveform_content: content,
           session_id: finished.last_session_id,
         });
       } catch (error) {
@@ -487,5 +584,7 @@ test('hardware capture matrix validates every advertised mode and rate before ev
     { write: (filePath, data) => fs.promises.writeFile(filePath, data).then(() => undefined) },
   );
   expect([...evidence, ...failures]).toHaveLength(37);
+  const stopped = await stopJumperStimulus();
+  expect(stopped.ok, `pool-pin-22 jumper stimulus did not stop: ${JSON.stringify(stopped.body)}`).toBeTruthy();
   expect(failures, JSON.stringify(failures, null, 2)).toHaveLength(0);
 });

@@ -101,9 +101,9 @@ PyFtdi-based SPI path used by programmer and recovery utilities.
 The repo includes unit and integration coverage in `tests/` and
 `driver/tests/`.
 
-Current 2026-09-07 baseline: **983/983 tests pass**, covering all 8,241
+Current 2026-09-09 baseline: **1,010/1,010 tests pass**, covering all 8,342
 statements and 2,482 branches (100%, with no partial branches). The attached
-seed-10 MAX1000 also passes the strict **403/403** full hardware checks with
+seed-10 MAX1000 also passes the strict **436/436** full hardware checks with
 zero failures or skips.
 
 Run:

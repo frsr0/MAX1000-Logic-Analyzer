@@ -114,10 +114,9 @@ must be represented by host symbols and external wiring.
 
 `POST /api/generator/send` accepts `live: true` for UART, RS-485, and Bit
 Banger. The bounded FIFO pattern repeats in FPGA hardware. Rolling captures
-reset the generator-facing capture state at each chunk, so the driver records
-the live configuration and re-kicks the pattern after every reset. This keeps
-the output visible throughout the live session instead of placing a one-shot
-burst in an inter-chunk gap. `POST /api/generator/stop` clears the repeat.
+may reset capture-facing state, but the FPGA repeat flag keeps generator output
+continuous without a host-timed restart. `POST /api/generator/stop` clears the
+repeat.
 
 Previews report exact symbol rate, periodic output frequency, divider width,
 and whether a request is below the representable floor of the connected image.

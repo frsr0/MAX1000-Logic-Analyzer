@@ -36,6 +36,11 @@ def sampled(ns=4096, active_channels=(0,)):
     return rows, ns
 
 
+def pwm_sampled(ns=1024, half_period=5):
+    row = [(index // half_period) & 1 for index in range(ns)]
+    return [row[:] if channel == 0 else [0] * ns for channel in range(23)], ns
+
+
 @pytest.fixture(autouse=True)
 def quiet_runtime():
     old = (hv.PASS, hv.FAIL, hv.TOTAL, hv.SKIPPED,
@@ -122,7 +127,7 @@ def test_max_rate_ring_validates_metadata_and_always_restores_device(overruns, r
     value.read_capture_range.return_value = ring_data
     with patch.object(hv.time, "time", Clock(0.1)):
         hv.test_continuous_max_rate_overrun(value)
-    assert hv.FAIL == 0
+    assert hv.FAIL == (0 if overruns else 1)
     assert value.pkt.write_register.call_args_list[-1].args == (hv.REG_CONT_MODE, 0)
     value.set_debug_ch0.assert_called_with(False)
 
@@ -217,7 +222,7 @@ def test_noise_floor_reports_clean_or_debug_activity(debug, active):
                       return_value=sampled(128, (0,) if active else ())), \
          patch.object(hv, "check_channels_clean"):
         hv.test_noise_floor(value, debug_on=debug)
-    assert hv.FAIL == 0
+    assert hv.FAIL == (1 if debug and not active else 0)
 
 
 def test_noise_floor_empty_capture_is_a_failure():
@@ -257,14 +262,14 @@ def test_falling_trigger_handles_visible_missing_and_floating_edges(debug, signa
     with patch.object(hv, "samples_to_channels", return_value=(channels, len(signal))), \
          patch.object(hv, "check_channels_clean"):
         hv.test_trigger_edge_falling(value, debug_on=debug)
-    assert hv.FAIL == 0
+    assert hv.FAIL == (1 if debug and signal == [1, 1, 1, 1] else 0)
 
 
-def test_falling_trigger_accepts_no_data_as_informational():
+def test_falling_trigger_accepts_no_data_only_with_debug_disabled():
     value = device()
     value.capture.return_value = b""
     hv.test_trigger_edge_falling(value)
-    assert hv.TOTAL == 0
+    assert hv.PASS == 1
 
 
 def test_abort_capture_accepts_idle_and_fails_if_status_never_settles():
@@ -333,6 +338,15 @@ def test_crosstalk_sweep_characterises_present_and_missing_captures():
     with patch.object(hv, "samples_to_channels", return_value=sampled(16, tuple(range(16)))):
         hv.test_crosstalk_characterisation(value)
     assert value.capture_with_gen.call_count == 75
+    assert hv.FAIL == 2
+
+
+def test_crosstalk_sweep_rejects_inactive_transmitters():
+    value = device()
+    value.capture_with_gen.return_value = b"data"
+    with patch.object(hv, "samples_to_channels", return_value=sampled(16, ())):
+        hv.test_crosstalk_characterisation(value)
+    assert hv.FAIL == 1
 
 
 def test_pretrigger_handles_active_quiet_and_missing_capture():
@@ -342,8 +356,8 @@ def test_pretrigger_handles_active_quiet_and_missing_capture():
                       side_effect=[sampled(2048, (0,)), sampled(2048, ())]):
         hv.test_pre_trigger(value)
         hv.test_pre_trigger(value)
-        hv.test_pre_trigger(value)
-    assert hv.FAIL == 0
+    hv.test_pre_trigger(value)
+    assert hv.FAIL == 2
     assert hv.PASS == 3
 
 
@@ -381,10 +395,19 @@ def test_back_to_back_capture_requires_three_complete_readbacks():
         b"z" * 1024, b"z" * 1024,
     ]
     with patch.object(hv, "_wait_capture_done", return_value=True), \
-         patch.object(hv, "samples_to_channels", return_value=sampled(1024, (0,))):
+         patch.object(hv, "samples_to_channels", return_value=pwm_sampled()):
         hv.test_back_to_back_capture(value)
     assert hv.FAIL == 0
     assert value.pkt.arm_capture.call_count == 4
+
+
+def test_back_to_back_capture_rejects_static_readbacks():
+    value = device()
+    value.pkt.read_capture_block.return_value = b"x" * 1024
+    with patch.object(hv, "_wait_capture_done", return_value=True), \
+         patch.object(hv, "samples_to_channels", return_value=sampled(1024, ())):
+        hv.test_back_to_back_capture(value)
+    assert hv.FAIL == 1
 
 
 def test_capture_survives_concurrent_status_and_block_readback():

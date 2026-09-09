@@ -17,9 +17,8 @@ pulse-width checks are positive.
 | Suite | Result | Scope |
 |---|---:|---|
 | `backend/hw_smoke_test.py` | **10/10** | Discovery, metadata, SDRAM capture, sanity, UART/RS-485/SPI/SWD exact loopback decode |
-| `python host/app/hw_validation.py new` | **117/117**, 0 failed, 0 skipped | Continuous overrun, 200.4 MHz narrow capture, packed MSO, analogue profiles and both installed jumpers, pre-trigger, full-depth boundary, back-to-back capture, codec matrix, active read stress, lifecycle |
-| `python host/app/hw_validation.py codec` | **26/26**, 0 failed, 0 skipped | Five-rate bit-exact codec matrix plus strict all-rate transport-integrity checks |
-| `python host/app/hw_validation.py` | **403/403**, 0 failed, 0 skipped | Full suite, including LIS3DH, physical-jumper generic trigger, generator protocols, analogue/MSO, lifecycle, concurrent readout, live codec ceilings, and both strict 60-second stress runs |
+| Cold-power-cycle `python host/app/hw_validation.py` | **436/436**, 0 failed, 0 skipped | Unplug/replug boot followed by the full suite, including active five-rate bit-exact codecs, 75-case crosstalk sweep, LIS3DH, physical-jumper generic trigger and exact protocols, analogue/MSO, lifecycle, concurrent readout, live codec ceilings, and both strict 60-second stress runs |
+| Two-run repeat validation | **842/842**, 0 failed, 0 skipped | Two consecutive full runs, 57 artifacts each, from 17:45:56–18:04:26 on 2026-09-09 |
 | Browser hardware suites | **5/5** feature tests and **34/34** hardware-aligned UI tests | Includes all 37 advertised acquisition mode/rate combinations against the attached board |
 | `bash hdl/tb/run_all_tbs.sh` | **57/57** | Every HDL bench, zero XFAIL/XPASS/exclusions |
 
@@ -29,6 +28,19 @@ image now proves the named session is active and its waveform payload has
 loaded. The 1440×1400 captures were visually checked for distinct UART, MIL,
 LIS3DH, analog-fast, maximum-analog, and mixed traces; the current files and
 manifest are indexed in [Hardware Screenshot Matrix](hardware-screenshot-matrix.md).
+The 26 ordinary digital and mixed cases also start a 1 MHz alternating UART
+pattern on pool pin 22 and require transitions on CH13 in the stored waveform;
+the observed range was 40–875 transitions. Packed-live capture is checked as
+its own one-channel hardware path, but cannot use that same FPGA Bit Engine as
+an independent electrical source because arming the packed ring clears it.
+
+The board was physically unplugged and replugged on 2026-09-09, then discovered
+from a fresh USB connection without reprogramming. The complete validation ran
+from 18:20:44 to 18:29:38 and passed 436/436 checks. It rediscovered digital
+pin 22 -> CH13 and both analogue jumpers, completed both 60-second stress halves
+without exceptions, observed 60,795 driven-CH0 transitions, and passed the final
+concurrent capture/readout test. The local evidence is preserved as
+`run-summary-cold-power-cycle.json`.
 
 The first live-rate run exposed a host cancellation race: a watchdog could be
 set after the ring loop condition but before stream transport entry. The
@@ -47,15 +59,36 @@ case with initially zero failures. The stress test also used only 10 seconds
 despite longer-duration comments. Its default is now 60 seconds, with an
 explicit elapsed-time check and no suppression of stalled-read timeouts.
 Fault-injection tests reject short streams and stalled reads. The corrected
-60-second checks now run as required parts of the 403-check full suite.
+60-second checks now run as required parts of the 421-check full suite.
 
-The stress reruns observed quiet channels, including zero CH0 transitions
-with debug enabled. Debug activity is informational in this test, so these
-results establish sustained transport and channel stability, not successful
-debug waveform generation or lossless live capture at every rate. The full
-suite discovered digital pool pin 22 to capture channel 13 and both analogue
-paths (pool pin 20 to ADC7 and pin 21 to ADC3); each analogue path reached
-4095 codes with 728 detected edges.
+The debug-enabled stress oracle now requires driven CH0 activity. The two
+repeat runs captured more than 12.6 million samples in every 60-second half,
+with 95,473 and 88,219 driven-CH0 transitions respectively. All four stress
+halves completed without an exception. The suite discovered digital pool pin 22 to capture channel 13,
+identified CH5 as a 100%-matching physical mirror of driven CH3, and found
+both analogue paths (pool pin 20 to ADC7/AIN5 and pin 21 to ADC3/AIN4). Each
+analogue path reached the full 4095-code span. Mixed ADC1/AIN3 and ADC2/AIN1
+lanes also matched immediate independent analog-fast baselines.
+
+A preliminary repeat completed 435/436 checks before these two clean runs.
+That older summary format retained only the failure count, so the individual
+failed check could not be recovered from truncated console output. This is why
+the manifest now records the exact failure messages. The two fully attributable
+repeat runs performed after that instrumentation change are the 842/842 result
+reported above; the preliminary run is not included in that total.
+
+The authoritative machine-readable record is generated locally as
+`hdl/hw_test/hw_results/run-summary-full.json` (the hardware-results directory
+is intentionally git-ignored). Focused modes write separate manifests so they
+cannot overwrite the full-suite evidence. Run summaries now include the exact
+failure messages as well as counts, so an intermittent failure remains
+attributable even when console output is truncated. The two repeat manifests
+were preserved locally as `run-summary-full-repeat-1.json` and
+`run-summary-full-repeat-2.json`.
+
+The current image's direct on-wire generator sweep also passed **7/7** at
+1,200, 2,400, 4,800, 9,600, 19,200, 57,600, and 115,200 baud. Every measured
+rate was within +0.79% of its request.
 
 ## Historical exact-image result — 2026-08-27 to 2026-08-30
 
@@ -80,7 +113,7 @@ generator traffic during rolling capture, and clean live stop/recovery. The
 historical matrix run recorded `failed=0`; its PNGs remain under the older
 `hardware-matrix-*` names. The machine-readable `hardware-validated-matrix`
 manifest is intentionally regenerated by the current run and now records the
-2026-09-07 volatile image.
+2026-09-09 persistent image.
 
 Test 12g no longer assumes fixed analogue jumper wiring. It drives UART from
 each generator pool pin, watches each ADC lane in analog-fast mode, discovers

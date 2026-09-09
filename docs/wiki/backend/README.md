@@ -110,9 +110,9 @@ Client (browser / curl)
 
 ## Current verification
 
-The 2026-09-08 backend gate passes **541/541** tests with all 8,800 statements
-and 2,624 branches covered (100%, with no partial branches). Its real-hardware
-adapter is also exercised by the 10/10 smoke test, 403/403 connected-board
+The 2026-09-09 backend gate passes **542/542** tests with all 8,822 statements
+and 2,630 branches covered (100%, with no partial branches). Its real-hardware
+adapter is also exercised by the 10/10 smoke test, 436/436 connected-board
 suite, and the current browser hardware runs. Source coverage and attached-
 board evidence remain separate claims; see
 [Verification and Change Traceability](../verification-traceability.md).

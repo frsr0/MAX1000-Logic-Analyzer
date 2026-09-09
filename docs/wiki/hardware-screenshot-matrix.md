@@ -1,8 +1,8 @@
 # Hardware Screenshot Matrix
 
 These screenshots were regenerated from completed acquisitions on the
-connected MAX1000 on 2026-09-09, using the volatile seed-10 image with SOF
-checksum `0x00504799`. The run completed **37/37 cases** with `failed=0`.
+connected MAX1000 on 2026-09-09, using the persistent seed-10 image with SOF
+checksum `0x0050492F`. The run completed **37/37 cases** with `failed=0`.
 Each case records requested/effective rate, sample count, channel metadata,
 and session ID in the
 [machine-readable manifest](../../frontend/test-results/screenshots/hardware-validated-matrix.json).
@@ -12,13 +12,19 @@ their digital and analog lanes together. Before each screenshot the test
 checks the exact session identity and waits for a completed waveform payload.
 Visual review confirmed digital activity where present, a one-lane
 analog-fast trace, four distinct maximum-analog lanes, and both digital and
-two-result analog data in the mixed captures. Quiet digital inputs may
-legitimately render as flat lines; the manifest and API assertions validate
-the acquisition metadata independently of visible edge density.
+two-result analog data in the mixed captures. The 26 ordinary digital and
+mixed cases are no longer allowed to pass on metadata or a flat payload: each
+restarts a 1 MHz alternating UART source on pool pin 22, observes it through
+the installed jumper on CH13, and records `ch13_transitions` in the manifest.
+The current run measured 40–875 transitions per driven case.
 
 The matrix is an acquisition/UI integration check. Electrical quality claims
 and the broader register/codec/generator suite are documented in
 [Hardware Validation](hardware-validation.md).
+Packed-live is the exception to the CH13 stimulus rule: it captures only one
+selected line, and its ring and the on-board generator share the FPGA Bit
+Engine. It is hardware-path validated here and by the full suite, but a driven
+packed-live electrical check requires an independent external source.
 
 ## Digital deep — single
 

@@ -78,7 +78,9 @@ def test_uart_generator_completes_fsm_decodes_payload_and_sweeps_outputs(debug):
     value._wait_gen_idle.return_value = True
     expected_bits = [symbol & 1 for symbol in hv.bit_bang.uart_symbols(b"Hello" * 20)]
     value.gen_rx_read.return_value = pack_lsb(expected_bits)
-    with patch.object(hv, "samples_to_channels", return_value=sampled(active=(0, 1, 3, 7))), \
+    with patch.object(hv, "samples_to_channels",
+                      side_effect=lambda *_a, **_kw: sampled(
+                          active=(0, 1, 3, 7, int(value._gen_tx_pin)))), \
          patch.object(hv, "decode_uart", return_value=uart_bytes(b"Hello")), \
          patch.object(hv, "log_floating_channel_activity"):
         hv.test_gen_uart(value, debug_on=debug)
@@ -116,7 +118,7 @@ def test_uart_generator_reports_rejected_capture_timeout_empty_and_sweep_failure
          patch.object(hv, "decode_uart", return_value=[]), \
          patch.object(hv, "log_floating_channel_activity"):
         hv.test_gen_uart(value, debug_on=True)
-    assert hv.FAIL == 5
+    assert hv.FAIL == 7
 
 
 def test_decode_i2c_best_selects_offset_with_most_non_idle_bytes():
@@ -313,7 +315,7 @@ def test_live_generator_decodes_each_frame_and_handles_missing_frames_or_fixture
     with patch.object(hv, "_get_jumper_pair", return_value=(20, 7)), \
          patch.object(hv, "_restore_pin_map"):
         hv.test_live_generator_decode(value)
-    assert hv.FAIL == 0
+    assert hv.FAIL == 1
 
 
 def test_repeating_uart_ring_accepts_sustained_decode_and_handles_no_fixture():
@@ -333,6 +335,21 @@ def test_repeating_uart_ring_accepts_sustained_decode_and_handles_no_fixture():
         hv.test_repeating_uart_continuous_ring(value)
     assert hv.FAIL == 0
     assert hv.PASS == 1
+
+
+def test_live_generator_decode_requires_every_frame_to_decode():
+    value = device()
+    value.capture_with_gen.return_value = b"chunk"
+    rows, ns = sampled(64, (7,))
+    decodes = [uart_bytes(f"live-{n}".encode()) for n in range(5)] + [[]]
+    with patch.object(hv, "_get_jumper_pair", return_value=(20, 7)), \
+         patch.object(hv, "samples_to_channels", return_value=(rows, ns)), \
+         patch.object(hv, "decode_uart_safe", side_effect=decodes), \
+         patch.object(hv, "_uart_waveform_match_fraction", return_value=(1.0, 0)), \
+         patch.object(hv, "_restore_pin_map"):
+        hv.test_live_generator_decode(value)
+    assert hv.PASS == 0
+    assert hv.FAIL == 1
 
 
 def test_repeating_uart_ring_counts_misses_and_tolerates_stream_without_close():
@@ -372,7 +389,7 @@ def test_accelerometer_dialogue_reports_missing_slave_and_empty_mirrors():
     value.accel_whoami_spi.return_value = None
     value.accel_capture_dialogue.return_value = b""
     hv.test_accelerometer_whoami(value)
-    assert hv.FAIL == 4
+    assert hv.FAIL == 6
 
 
 def test_codec_matrix_covers_completed_exact_mismatch_and_incomplete_rates():
@@ -380,11 +397,11 @@ def test_codec_matrix_covers_completed_exact_mismatch_and_incomplete_rates():
     raw = bytes((index // 2) & 0xFF for index in range(262_144 * 2))
     mismatch = bytearray(raw)
     mismatch[10] ^= 1
+    value.capture.side_effect = [raw, b"", b"", b"", b""]
     value.read_capture_range.side_effect = [raw, raw, bytes(mismatch)]
-    with patch.object(hv, "_wait_capture_done", side_effect=[True, False, False, False, False]), \
-         patch.object(hv.time, "time", Clock(0.1)):
+    with patch.object(hv.time, "time", Clock(0.1)):
         hv.test_codec_readback_matrix(value)
-    assert hv.FAIL == 1
+    assert hv.FAIL == 4
     assert hv.PASS == 3
 
 

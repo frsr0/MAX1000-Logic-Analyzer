@@ -1,3 +1,4 @@
+import json
 import os
 import runpy
 from contextlib import ExitStack
@@ -10,13 +11,16 @@ from app import hw_validation as hv
 
 
 @pytest.fixture(autouse=True)
-def reset_counts():
-    old = hv.PASS, hv.FAIL, hv.TOTAL, hv.SKIPPED, hv._JUMPER_PAIR_CACHE, hv._JUMPER_PAIR_SEARCHED
+def reset_counts(tmp_path):
+    old = (hv.PASS, hv.FAIL, hv.TOTAL, hv.SKIPPED,
+           hv._JUMPER_PAIR_CACHE, hv._JUMPER_PAIR_SEARCHED, hv.RESULTS_DIR)
     hv.PASS = hv.FAIL = hv.TOTAL = hv.SKIPPED = 0
     hv._JUMPER_PAIR_CACHE = None
     hv._JUMPER_PAIR_SEARCHED = False
+    hv.RESULTS_DIR = str(tmp_path)
     yield
-    hv.PASS, hv.FAIL, hv.TOTAL, hv.SKIPPED, hv._JUMPER_PAIR_CACHE, hv._JUMPER_PAIR_SEARCHED = old
+    (hv.PASS, hv.FAIL, hv.TOTAL, hv.SKIPPED,
+     hv._JUMPER_PAIR_CACHE, hv._JUMPER_PAIR_SEARCHED, hv.RESULTS_DIR) = old
 
 
 def test_floating_exclusions_include_new_cached_rx_once():
@@ -87,6 +91,35 @@ def test_save_result_writes_binary_json_and_empty_payload(tmp_path):
     assert (tmp_path / 'one.bin').read_bytes() == b'abc'
     assert (tmp_path / 'empty.bin').read_bytes() == b''
     assert '"x": 1' in (tmp_path / 'one.json').read_text()
+
+
+def test_run_summary_preserves_mode_specific_evidence_and_latest_pointer(tmp_path):
+    with patch.object(hv, 'RESULTS_DIR', str(tmp_path)), patch.object(hv, 'log'):
+        hv.RUN_STARTED_AT = '2026-09-09T12:00:00+0100'
+        hv.RUN_ARTIFACTS[:] = ['capture']
+        hv.RUN_FAILURES[:] = ['measured output mismatch']
+        hv.PASS, hv.FAIL, hv.TOTAL, hv.SKIPPED = 3, 1, 4, 0
+        hv.write_run_summary('full')
+
+    expected = json.loads((tmp_path / 'run-summary-full.json').read_text())
+    latest = json.loads((tmp_path / 'run-summary.json').read_text())
+    assert latest == expected
+    assert expected['mode'] == 'full'
+    assert expected['exit_ok'] is False
+    assert expected['artifacts'] == ['capture']
+    assert expected['failures'] == ['measured output mismatch']
+
+
+def test_begin_run_resets_all_counters_and_artifacts():
+    hv.PASS, hv.FAIL, hv.TOTAL, hv.SKIPPED = 7, 6, 13, 5
+    hv.RUN_ARTIFACTS[:] = ['stale']
+    hv.RUN_FAILURES[:] = ['stale failure']
+    with patch.object(hv.time, 'strftime', return_value='fresh'):
+        hv.begin_run()
+    assert (hv.PASS, hv.FAIL, hv.TOTAL, hv.SKIPPED) == (0, 0, 0, 0)
+    assert hv.RUN_ARTIFACTS == []
+    assert hv.RUN_FAILURES == []
+    assert hv.RUN_STARTED_AT == 'fresh'
 
 
 def test_decode_uart_safe_rejects_low_margin_and_delegates_valid_margin():
@@ -161,13 +194,14 @@ def _device():
     return dev
 
 
-@pytest.mark.parametrize('pair,skipped,failed,expected', [((3, 4), 0, 0, 0), (None, 1, 0, 0), (None, 0, 1, 1)])
+@pytest.mark.parametrize('pair,skipped,failed,expected', [((3, 4), 0, 0, 0), (None, 1, 0, 1), (None, 0, 1, 1)])
 def test_main_orchestrates_full_suite_and_summary_branches(pair, skipped, failed, expected, capsys):
     dev = _device()
-    hv.SKIPPED = skipped
-    hv.FAIL = failed
     with ExitStack() as stack:
         tests = _patched_hardware_tests(stack)
+        tests['test_spi_handoff'].side_effect = lambda _dev: (
+            setattr(hv, 'SKIPPED', skipped), setattr(hv, 'FAIL', failed)
+        )
         stack.enter_context(patch.object(hv, 'OLSDeviceSPI', return_value=dev))
         stack.enter_context(patch.object(hv, '_get_jumper_pair', return_value=pair))
         assert hv.main() == expected
@@ -211,6 +245,18 @@ def test_specialized_mains_success_and_failure_cleanup(entry):
         stack.enter_context(patch.object(hv, 'OLSDeviceSPI', return_value=dev))
         assert fn() == 1
     assert hv.FAIL == 1
+
+
+@pytest.mark.parametrize('entry', ['main_new_only', 'main_codec_only', 'main_jumper_only', 'main_analog_only'])
+def test_specialized_mains_fail_when_fixture_checks_skip(entry):
+    fn = getattr(hv, entry)
+    dev = _device()
+    with ExitStack() as stack:
+        tests = _patched_hardware_tests(stack)
+        for test in tests.values():
+            test.side_effect = lambda *_args, **_kwargs: setattr(hv, 'SKIPPED', 1)
+        stack.enter_context(patch.object(hv, 'OLSDeviceSPI', return_value=dev))
+        assert fn() == 1
 
 
 def test_module_uart_entrypoint_is_safe_without_ports(capsys):

@@ -75,6 +75,15 @@ def test_align_mixed_wire_recovers_from_leading_stale_word():
     assert aligned == wire[2:2 + 3 * analog_wire_stride(MODE_MIXED)]
 
 
+def test_align_mixed_wire_handles_short_unbounded_and_zero_frame_requests():
+    assert align_mixed_wire(b'\x01\x02') == (b'\x01\x02', 0, (0, 0, 0))
+    wire = b'\x00' * 18
+    aligned, offset, scores = align_mixed_wire(wire)
+    assert (aligned, offset, scores) == (wire, 0, (3, 2, 2))
+    aligned, offset, scores = align_mixed_wire(wire, frame_count=0)
+    assert (aligned, offset, scores) == (b'', 0, (0, 0, 0))
+
+
 def test_align_mixed_wire_matches_observed_rotated_sdram_words():
     # Captured on hardware: the first stale word rotates two otherwise valid
     # frames. The zero high byte on words 3 and 6 identifies the boundary.

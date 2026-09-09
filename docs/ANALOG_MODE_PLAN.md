@@ -87,7 +87,7 @@ Remaining:
 Completed on the current bitstream:
 
 1. Quartus timing closes for the 100/200 MHz speed build.
-2. Hardware validation passes `403/403`, including mixed, high-speed analog,
+2. Hardware validation passes `436/436`, including mixed, high-speed analog,
    maximum analog, mixed/digital recovery, and 200 MHz narrow packed digital
    finite/continuous capture.
 3. Rate measurement confirms about 1 MSPS for high-speed single-channel analog

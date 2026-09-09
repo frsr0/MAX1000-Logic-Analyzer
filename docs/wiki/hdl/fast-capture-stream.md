@@ -57,8 +57,8 @@ A later timing pass (2026-07-23) registered the Packed_Ready five-term AND
   reports **+0.253 ns** slow-85C FAST setup slack and **+0.178 ns** for the
   SDRAM core. See [Capture Engine](capture-engine.md) for the detailed stages.
 
-The current board validation is the 2026-09-07 seed-10 image with
-SOF checksum `0x00504799`; see
+The current board validation is the 2026-09-09 seed-10 image with
+SOF checksum `0x0050492F`; see
 [Verification and Change Traceability](../verification-traceability.md).
 
 The budget is represented as a modular carry-chain accumulator. Carry is the

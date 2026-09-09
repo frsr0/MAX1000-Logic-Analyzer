@@ -78,6 +78,9 @@ PASS = 0
 FAIL = 0
 TOTAL = 0
 SKIPPED = 0
+RUN_ARTIFACTS = []
+RUN_FAILURES = []
+RUN_STARTED_AT = None
 
 def _floating_except():
     """Channels excluded from noise-floor / cleanliness checks.
@@ -192,7 +195,47 @@ def save_result(name, data, meta):
         f.write(data if data else b"")
     with open(path + ".json", "w") as f:
         json.dump(meta, f, indent=2)
+    if name not in RUN_ARTIFACTS:
+        RUN_ARTIFACTS.append(name)
     log(f"saved {path}.bin ({len(data) if data else 0} bytes) + .json")
+
+
+def begin_run():
+    """Start an authoritative result set without deleting historical files."""
+    global RUN_STARTED_AT, PASS, FAIL, TOTAL, SKIPPED
+    PASS = FAIL = TOTAL = SKIPPED = 0
+    RUN_ARTIFACTS.clear()
+    RUN_FAILURES.clear()
+    RUN_STARTED_AT = time.strftime('%Y-%m-%dT%H:%M:%S%z')
+
+
+def write_run_summary(mode):
+    """Identify exactly which artifacts and checks belong to this invocation.
+
+    Keep a mode-specific manifest as durable evidence: a quick focused run must
+    not erase the last full-suite result.  ``run-summary.json`` remains the
+    convenient pointer to the most recent invocation.
+    """
+    summary = {
+        "mode": mode,
+        "started_at": RUN_STARTED_AT,
+        "finished_at": time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+        "passed": PASS,
+        "failed": FAIL,
+        "total": TOTAL,
+        "skipped": SKIPPED,
+        "exit_ok": FAIL == 0 and SKIPPED == 0,
+        "artifacts": list(RUN_ARTIFACTS),
+        "failures": list(RUN_FAILURES),
+    }
+    paths = (
+        os.path.join(RESULTS_DIR, f"run-summary-{mode}.json"),
+        os.path.join(RESULTS_DIR, "run-summary.json"),
+    )
+    for path in paths:
+        with open(path, "w") as f:
+            json.dump(summary, f, indent=2)
+    log(f"saved authoritative run manifests {paths[0]} and {paths[1]}")
 
 def check(cond, msg):
     global PASS, FAIL, TOTAL
@@ -203,6 +246,7 @@ def check(cond, msg):
     else:
         log(f"  >>> FAIL: {msg}")
         FAIL += 1
+        RUN_FAILURES.append(str(msg))
 
 
 _MIXED_ANALOG_LANES = ((1, "ADC1/AIN3"), (2, "ADC2/AIN1"))
@@ -476,13 +520,8 @@ def test_single_capture(dev, debug_on=False):
         tr0 = sum(1 for i in range(1, len(ch[0])) if ch[0][i] != ch[0][i - 1])
         if debug_on:
             exp_tr0 = round(2 * ns * tc_hz / 1_000_000)
-            if tr0 > 10:
-                # +/-30%: real jitter is a few percent; the historic sample-
-                # duplication bug shows up as exactly 0.5x, which must FAIL.
-                check(exp_tr0 * 0.7 <= tr0 <= exp_tr0 * 1.5,
-                      f"CH0 debug PWM transitions in range ({tr0} vs ~{exp_tr0})")
-            else:
-                log(f"  [INFO] CH0 debug configured but not visibly toggling on this bench ({tr0} transitions)")
+            check(exp_tr0 * 0.7 <= tr0 <= exp_tr0 * 1.5,
+                  f"CH0 debug PWM transitions in range ({tr0} vs ~{exp_tr0})")
             check_channels_clean(ch, ns, except_ch=[0] + _floating_except(), label="single")
         else:
             check(tr0 <= 100, f"CH0 debug OFF: quiet ({tr0} transitions)")
@@ -512,6 +551,12 @@ def test_fast_capture(dev, debug_on=False):
     dev.pkt.write_register(REG_TRIGGER_VALUE, 0)
     dev.pkt.write_register(REG_FAST_MODE, 1)
 
+    # reset() above stops the shared Bit Engine. Re-arm the requested source
+    # after the capture registers are configured so a full-length payload is
+    # never mistaken for proof that the sampled signal path works.
+    if debug_on:
+        dev.set_debug_ch0(True, freq_hz=dev.sys_clk / 1024)
+
     dev.spi.flush()
     dev.pkt.arm_capture()
     dev.spi.flush()
@@ -536,14 +581,8 @@ def test_fast_capture(dev, debug_on=False):
             log(f"  CH{c}: {tr} transitions")
         if debug_on:
             exp_tr0 = round(2 * ns * tc_hz / 1_000_000)
-            if tr0 > 10:
-                if exp_tr0 * 0.7 <= tr0 <= exp_tr0 * 1.5:
-                    check(True, f"fast CH0 debug PWM transitions in range ({tr0} vs ~{exp_tr0})")
-                else:
-                    log(f"  [INFO] fast CH0 debug PWM out of range on this bench "
-                        f"({tr0} vs ~{exp_tr0})")
-            else:
-                log(f"  [INFO] fast CH0 debug not visibly toggling on this bench ({tr0} transitions)")
+            check(exp_tr0 * 0.7 <= tr0 <= exp_tr0 * 1.5,
+                  f"fast CH0 debug PWM transitions in range ({tr0} vs ~{exp_tr0})")
             check(len(data) == need,
                   f"fast mode returned full BRAM capture ({len(data)}/{need} bytes)")
             log_floating_channel_activity(ch, ns, except_ch=[0], label="fast")
@@ -567,7 +606,15 @@ def test_max_speed_capture(dev):
     print_header("Test 5b: 200 MHz max-speed capture (BRAM, div=0)")
     dev.reset()
     dev.spi.flush()
+    # A known repeating symbol stream proves the 200 MHz path contains the
+    # expected waveform; sample count and payload size alone only prove
+    # readback. The capture is only 5.12 us long, and generator start latency
+    # is deliberately not used as a frequency oracle here; the independent
+    # narrow-mode test validates the full 200 MHz timebase.
+    source_symbol_rate = 1_000_000
     dev.set_debug_ch0(False)
+    dev.set_live_gen(bit_bang.pack_symbols([1, 0] * 512),
+                     symbol_rate=source_symbol_rate, tx_pin=0)
     rc = 1024
     div = 0  # Rate_Div = 0 â†’ reload = 0 â†’ tick every FAST_CLK cycle
 
@@ -602,6 +649,8 @@ def test_max_speed_capture(dev):
         log(f"  max transitions across all channels: {max_tr}")
         log(f"  CH0 transitions: {tr_counts[0]}")
         check(ns == rc, f"max-speed sample count: {ns} vs expected {rc}")
+        check(4 <= tr_counts[0] < ns - 4,
+              f"max-speed CH0 source is non-static ({tr_counts[0]} transitions)")
         # At 200 MHz the undriven LA pins float and pick up noise; like
         # test_fast_capture, characterize that activity rather than asserting a
         # quiet fixture. Correctness is the exact sample count above plus a full
@@ -613,6 +662,7 @@ def test_max_speed_capture(dev):
         check(False, "max-speed capture returned no data")
 
     dev.pkt.write_register(REG_FAST_MODE, 0)
+    dev.clear_live_gen()
     dev.spi.flush()
     save_result("test5b_max_speed_capture", data if data else b"",
                {"mode": "fast_max", "div": 0, "rate_hz": "max", "nsamples": rc})
@@ -632,6 +682,10 @@ def test_continuous_capture(dev, debug_on=False):
     # Continuous mode uses fixed 512-sample (1024-byte) triple buffers; budget
     # several buffer fills so a completed buffer is available to read.
     # Divider counts on the sample clock (see test_fast_capture note).
+    if debug_on:
+        # Start the source before CONT_MODE begins producing buffers. Starting
+        # it after the mode switch can leave the first readable buffer static.
+        dev.set_debug_ch0(True, freq_hz=dev.sys_clk / 1024)
     dev.pkt.write_register(REG_DIVIDER, dev.sample_clk // 1_000_000 - 1)
     dev.pkt.write_register(REG_SAMPLE_COUNT, 2048)
     dev.pkt.write_register(REG_DELAY_COUNT, 2048)
@@ -640,6 +694,10 @@ def test_continuous_capture(dev, debug_on=False):
     dev.pkt.write_register(REG_FAST_MODE, 1)
     dev.pkt.write_register(REG_CONT_MODE, 1)
     dev.spi.flush()
+    # CONT_MODE begins producing immediately. Allow one whole 512-sample
+    # buffer to fill after changing the source so readback cannot return the
+    # preceding test's completed buffer.
+    time.sleep(0.02)
     time.sleep(0.02)
 
     # A completed buffer becomes readable once it fills (~512 samples). Poll a
@@ -660,11 +718,8 @@ def test_continuous_capture(dev, debug_on=False):
         floating_except = [0, 10, 11, 13, 14]
         if debug_on:
             exp_tr0 = round(2 * ns * tc_hz / 1_000_000)
-            if tr0 > 10:
-                check(exp_tr0 * 0.7 <= tr0 <= exp_tr0 * 1.5,
-                      f"continuous CH0 debug PWM transitions in range ({tr0} vs ~{exp_tr0})")
-            else:
-                log(f"  [INFO] continuous CH0 debug not visibly toggling on this bench ({tr0} transitions)")
+            check(exp_tr0 * 0.7 <= tr0 <= exp_tr0 * 1.5,
+                  f"continuous CH0 debug PWM transitions in range ({tr0} vs ~{exp_tr0})")
             log_floating_channel_activity(ch, ns, except_ch=floating_except, label="cont")
             check_channels_clean(ch, ns, except_ch=floating_except, label="cont")
         else:
@@ -676,7 +731,8 @@ def test_continuous_capture(dev, debug_on=False):
 
     dev.pkt.write_register(REG_CONT_MODE, 0)
     dev.spi.flush()
-    save_result(f"test6_continuous_debug_{debug_on}", b"", {"mode": "continuous", "nsamples": 2048})
+    save_result(f"test6_continuous_debug_{debug_on}", bytes(data),
+                {"mode": "continuous", "nsamples": len(data) // 2})
 
 # ====================================================================
 # Test 7: Trigger edge
@@ -702,14 +758,18 @@ def test_trigger_edge(dev, debug_on=False):
                 log(f"  first rising edge at sample {rising[0]} (of {ns})")
                 check(rising[0] <= ns * 0.75, f"trigger fired before last 25% (sample {rising[0]})")
             else:
-                log("  [INFO] rising edge not visible on this bench even with debug CH0 enabled")
+                check(False, "rising trigger capture contains the driven CH0 edge")
             check_channels_clean(ch, ns, except_ch=[0], label="trig")
         else:
-            check(tr <= 100, f"trigger CH0 debug OFF: quiet ({tr} transitions)")
+            # With the debug source disabled CH0 is expected to remain pulled
+            # high. Some FPGA revisions return the completed static window,
+            # while others time out without a trigger; both mean the undriven
+            # input stayed quiet.
+            check(tr <= 5, f"rising trigger stayed quiet with debug OFF ({tr} transitions)")
             check_channels_clean(ch, ns, except_ch=[0], label="trig")
     else:
         if debug_on:
-            log("  [INFO] trigger capture returned data even with debug CH0 enabled")
+            check(False, "rising trigger returned no data with debug CH0 enabled")
         else:
             log("  [INFO] no trigger data with debug OFF; physical pin is expected to be quiet")
             check(True, "trigger capture stayed idle with debug OFF")
@@ -780,10 +840,8 @@ def test_gen_uart(dev, debug_on=False):
         dec = decode_uart(ch, 1_000_000, ch_idx=gen_ch, baud=115200)
         dec_bytes = bytes(b.value for b in dec)
         log(f"  decoded {len(dec_bytes)} bytes on CH{gen_ch}")
-        if b'Hello' in dec_bytes:
-            check(True, f"UART gen payload decodes on CH{gen_ch} ({dec_bytes[:20]!r})")
-        else:
-            log(f"  [INFO] UART gen payload did not align to exact 'Hello' on this bench (got {dec_bytes[:20]!r})")
+        check(b'Hello' in dec_bytes,
+              f"UART gen payload decodes on CH{gen_ch} ({dec_bytes[:20]!r})")
         log_floating_channel_activity(ch, ns, except_ch=[gen_ch], label="gen_uart")
     else:
         log("  [INFO] direct gen_first capture has no physical return loopback; "
@@ -836,10 +894,8 @@ def test_gen_uart(dev, debug_on=False):
             tr = (sum(1 for i in range(1, len(ch[tx_pin]))
                       if ch[tx_pin][i] != ch[tx_pin][i - 1]) if ns else 0)
             log(f"  CH{tx_pin}: {tr} transitions (debug ON smoke test)")
-            if tr > 3:
-                check(True, f"gen smoke test: CH{tx_pin} carries gen activity ({tr} transitions)")
-            else:
-                log(f"  [INFO] gen smoke test CH{tx_pin} did not visibly toggle on this bench ({tr} transitions)")
+            check(tr > 3,
+                  f"gen smoke test: CH{tx_pin} carries gen activity ({tr} transitions)")
         save_result(f"test8_gen_uart_sweep_debug_{debug_on}", None, {"baud": 115200})
     else:
         log("testing UART gen on all gen_tx_pin values...")
@@ -855,10 +911,8 @@ def test_gen_uart(dev, debug_on=False):
                 ch_tx = ch[tx_pin] if tx_pin < len(ch) else ch[0]
                 tr = sum(1 for i in range(1, len(ch_tx)) if ch_tx[i] != ch_tx[i - 1])
                 log(f"  CH{tx_pin}: {tr} transitions")
-                if tr > 3:
-                    check(True, f"UART gen on CH{tx_pin}: {tr} transitions (expected >3)")
-                else:
-                    log(f"  [INFO] UART gen on CH{tx_pin} did not visibly toggle on this bench ({tr} transitions)")
+                check(tr > 3,
+                      f"UART gen on CH{tx_pin}: {tr} transitions (expected >3)")
                 log_floating_channel_activity(ch, ns, except_ch=[tx_pin] + sweep_except,
                                               label=f"gen_sweep_CH{tx_pin}")
                 sweep_except.append(tx_pin)
@@ -898,11 +952,9 @@ def test_i2c_sweep(dev):
         dec = decode_i2c(ch, cap_rate, scl_idx=sclk, sda_idx=rx) if ns else []
         databytes = bytes(v for t, v in dec if t == "DATA")
         log(f"  I2C decoded bytes={databytes.hex()} (sent {frame.hex()})")
-        if frame == databytes[:len(frame)]:
-            check(True,
-                  f"I2C generator frame decoded across loopback (sent {frame.hex()}, got {databytes.hex()})")
-        else:
-            log(f"  [INFO] I2C generator frame did not decode exactly on this bench (got {databytes.hex()})")
+        check(frame == databytes[:len(frame)],
+              f"I2C generator frame decoded across loopback "
+              f"(sent {frame.hex()}, got {databytes.hex()})")
     else:
         check(False, "I2C generator capture returned no data")
     _restore_pin_map(dev)
@@ -948,12 +1000,9 @@ def test_gen_spi_loopback(dev):
     scl_tr = sum(1 for i in range(1, ns) if ch[sclk][i] != ch[sclk][i - 1])
     dec = bytes(decode_spi(ch, 8_000_000, miso_idx=rx, sclk_idx=sclk))[:len(payload)]
     log(f"  SCLK transitions={scl_tr}, decoded MOSI={dec.hex()} (sent {payload.hex()})")
-    if dec == payload:
-        check(True,
-              f"SPI generator payload decoded across loopback "
-              f"(sent {payload.hex()}, got {dec.hex()})")
-    else:
-        log(f"  [INFO] SPI generator payload did not decode exactly on this bench (got {dec.hex()})")
+    check(dec == payload,
+          f"SPI generator payload decoded across loopback "
+          f"(sent {payload.hex()}, got {dec.hex()})")
     _restore_pin_map(dev)
     save_result("test10_spi_loopback", data,
                 {"sent": payload.hex(), "decoded": dec.hex(), "scl_transitions": scl_tr})
@@ -1005,10 +1054,8 @@ def test_device_lifecycle_sanity(dev):
         ch, ns = samples_to_channels(first)
         tr0 = sum(1 for i in range(1, min(ns, len(ch[0])))
                   if ch[0][i] != ch[0][i - 1])
-        if tr0 > 10:
-            check(True, f"pre-reopen capture sees debug CH0 activity ({tr0} transitions)")
-        else:
-            log(f"  [INFO] pre-reopen capture shows no visible CH0 toggling ({tr0} transitions)")
+        check(tr0 > 10,
+              f"pre-reopen capture sees debug CH0 activity ({tr0} transitions)")
         log_floating_channel_activity(ch, ns, except_ch=[0, 10, 11, 13, 14], label="lifecycle pre")
         check_channels_clean(ch, ns, except_ch=[0, 10, 11, 13, 14], label="lifecycle pre")
     else:
@@ -1032,10 +1079,8 @@ def test_device_lifecycle_sanity(dev):
         ch, ns = samples_to_channels(second)
         tr0 = sum(1 for i in range(1, min(ns, len(ch[0])))
                   if ch[0][i] != ch[0][i - 1])
-        if tr0 > 10:
-            check(True, f"post-reopen capture sees debug CH0 activity ({tr0} transitions)")
-        else:
-            log(f"  [INFO] post-reopen capture shows no visible CH0 toggling ({tr0} transitions)")
+        check(tr0 > 10,
+              f"post-reopen capture sees debug CH0 activity ({tr0} transitions)")
         log_floating_channel_activity(ch, ns, except_ch=[0, 10, 11, 13, 14], label="lifecycle post")
         check_channels_clean(ch, ns, except_ch=[0, 10, 11, 13, 14], label="lifecycle post")
     else:
@@ -1061,16 +1106,10 @@ def test_divider_accuracy(dev, debug_on=False):
         if debug_on:
             edges = [i for i in range(1, len(ch[0])) if ch[0][i] != ch[0][i - 1]]
             log(f"CH0 toggles: {len(edges)} edges in {ns} samples")
-            # Divider accuracy only makes sense if the debug waveform is
-            # actually visible on this bench.
-            if len(edges) > 10:
-                # 2 edges per period -> expected = 2 * ns * tc_hz / rate.
-                exp_edges = 2 * ns * tc_hz / rate_hz
-                check(exp_edges * 0.75 <= len(edges) <= exp_edges * 1.25,
-                      f"measured sample rate within 25% of configured "
-                      f"({len(edges)} edges vs expected ~{exp_edges:.0f})")
-            else:
-                log(f"  [INFO] divider CH0 debug not visibly toggling on this bench ({len(edges)} edges)")
+            exp_edges = 2 * ns * tc_hz / rate_hz
+            check(exp_edges * 0.75 <= len(edges) <= exp_edges * 1.25,
+                  f"measured sample rate within 25% of configured "
+                  f"({len(edges)} edges vs expected ~{exp_edges:.0f})")
             log_floating_channel_activity(ch, ns, except_ch=floating_except, label="divider")
             check_channels_clean(ch, ns, except_ch=floating_except, label="divider")
         else:
@@ -1101,10 +1140,8 @@ def test_23ch_capture(dev):
         log(f"Captured {ns} samples across {len(ch)} channels")
         check(ns == 512, f"dense stride-2 decode returns all samples ({ns}/512)")
         tr0 = sum(1 for i in range(1, ns) if ch[0][i] != ch[0][i - 1])
-        if tr0 > 10:
-            check(True, f"CH0 debug PWM present in full-width decode ({tr0} transitions)")
-        else:
-            log(f"  [INFO] CH0 debug not visibly toggling in full-width decode ({tr0} transitions)")
+        check(tr0 > 10,
+              f"CH0 debug PWM present in full-width decode ({tr0} transitions)")
     else:
         check(False, "full-width capture returned no data")
     save_result("test12b_23ch", data, {"nsamples": 512})
@@ -1289,10 +1326,8 @@ def test_mixed_digital_mixed_back_to_back(dev):
     check(ns > 0, f"digital capture after mixed returned samples ({ns})")
     if ns:
         tr0 = sum(1 for i in range(1, ns) if ch[0][i] != ch[0][i - 1])
-        if tr0 > 10:
-            check(True, f"digital capture after mixed has CH0 activity ({tr0} transitions)")
-        else:
-            log(f"  [INFO] digital capture after mixed has no visible CH0 toggling ({tr0} transitions)")
+        check(tr0 > 10,
+              f"digital capture after mixed has CH0 activity ({tr0} transitions)")
 
     mixed2_data, mixed2 = dev.capture_analog(
         rate_hz=125_000, frames=128, mode=MODE_MIXED, timeout=5)
@@ -1392,10 +1427,8 @@ def test_analog_profiles_digital_recovery(dev):
     check(ns > 0, f"digital capture after analog profiles returned samples ({ns})")
     if ns:
         tr0 = sum(1 for i in range(1, ns) if ch[0][i] != ch[0][i - 1])
-        if tr0 > 10:
-            check(True, f"digital capture after analog profiles has CH0 activity ({tr0} transitions)")
-        else:
-            log(f"  [INFO] digital capture after analog profiles has no visible CH0 toggling ({tr0} transitions)")
+        check(tr0 > 10,
+              f"digital capture after analog profiles has CH0 activity ({tr0} transitions)")
         check(len(ch) == 16, f"digital recovery exposes 16 channels ({len(ch)})")
 
     dev.set_debug_ch0(False)
@@ -1577,10 +1610,7 @@ def test_continuous_max_rate_overrun(dev):
     overruns = st.get('overrun_count', 0)
     log(f"producer={producer} oldest={oldest} newest={newest} overruns={overruns}")
     check(producer > 0, f"continuous producer advanced ({producer})")
-    if overruns > 0:
-        check(True, f"overrun counter incremented at max rate ({overruns})")
-    else:
-        log("  [INFO] overrun counter stayed at zero on this board/session")
+    check(overruns > 0, f"overrun counter incremented at max rate ({overruns})")
     check(oldest <= newest <= producer, "ring indexes are ordered")
 
     start = max(oldest, newest - 511)
@@ -1608,7 +1638,13 @@ def test_narrow_digital_200m(dev):
     dev.reset()
     dev.spi.flush()
     dev.set_analog_config(0)
-    dev.set_debug_ch0(True, freq_hz=1_000_000, duty_pct=50)
+    dev.set_debug_ch0(False)
+    # Use the live-generator representation directly. The PWM compatibility
+    # helper requests 32 symbols per waveform cycle and its high symbol rate
+    # can park the current Bit Engine high; this 1 MHz symbol stream is a
+    # stable 500 kHz square wave in both finite and continuous captures.
+    narrow_symbols = bit_bang.pack_symbols([1, 0] * 512)
+    dev.set_live_gen(narrow_symbols, symbol_rate=1_000_000, tx_pin=0)
     old_flags = dev._raw_flags
     dev._raw_flags = (old_flags & ~0x3E000) | narrow_digital_flags(0)
     raw = b""
@@ -1626,16 +1662,15 @@ def test_narrow_digital_200m(dev):
             f"{tr} CH0 transitions, {ones} high samples")
         check(len(raw) >= max(0, word_count - 8) * 2,
               f"finite narrow returned near-full packed words ({len(raw)//2}/{word_count})")
-        if tr > 0 and ones > 0:
-            check(True,
-                  f"finite narrow contains packed CH0 activity ({tr} transitions, {ones} high samples)")
-        else:
-            log(f"  [INFO] finite narrow has no visible CH0 activity ({tr} transitions, {ones} high samples)")
+        check(tr > 0 and ones > 0,
+              f"finite narrow contains packed CH0 activity "
+              f"({tr} transitions, {ones} high samples)")
 
         stop = threading.Event()
         gen = dev.continuous_ring_capture(
             rate_hz=200_000_000, chunk_nsamp=256, buffer_nsamp=2048,
-            stop_evt=stop, fast_mode=True, yield_full_buffer=False)
+            stop_evt=stop, fast_mode=True, yield_full_buffer=False,
+            manage_debug_source=False)
         try:
             for data, seq, total in gen:
                 expanded_chunk = unpack_narrow_digital_words(
@@ -1652,12 +1687,11 @@ def test_narrow_digital_200m(dev):
         log(f"continuous narrow chunks: {chunks}")
         check(len(chunks) >= 2,
               f"continuous narrow produced chunks ({len(chunks)})")
-        if any(ctr > 0 for _ln, _seq, ctr in chunks):
-            check(True, "continuous narrow chunks contain CH0 activity")
-        else:
-            log("  [INFO] continuous narrow chunks have no visible CH0 activity")
+        check(any(ctr > 0 for _ln, _seq, ctr in chunks),
+              "continuous narrow chunks contain CH0 activity")
     finally:
         dev._raw_flags = old_flags
+        dev.clear_live_gen()
         dev.set_debug_ch0(False)
         dev.set_analog_config(0)
     save_result("test5d_narrow_digital_200m", raw[:1024],
@@ -1807,7 +1841,7 @@ def test_rolling_gen_uart(dev, debug_on=False):
             log(f"  gen CH3 (TX pin): {tr} transitions in {ns} samples")
             check(tr > 50,
                   f"rolling gen: CH3 TX transitions ({tr}, expected >50 — "
-                  "driver re-fires the one-shot Bit_Engine every chunk)")
+                  "FPGA repeat mode remains active across chunks)")
             clean_except = [0, 3]
             if debug_on:
                 # Bench mirrors debug CH0 onto CH7; do not count it as bleed.
@@ -1818,17 +1852,39 @@ def test_rolling_gen_uart(dev, debug_on=False):
             text = ''.join(chr(b.value) if 32 <= b.value < 127 else '.' for b in decoded[:20])
             if decoded:
                 log(f"  first decoded: {text}")
-            if b'Hello' in bytes(b.value for b in decoded):
-                check(True, f"rolling gen UART decode contains 'Hello' (got '{text}')")
-            else:
-                log(f"  [INFO] rolling gen UART did not decode exact 'Hello' on this bench (got '{text}')")
+            check(b'Hello' in bytes(b.value for b in decoded),
+                  f"rolling gen UART decode contains 'Hello' (got '{text}')")
+
+            # A second active lane can be an installed physical jumper, but it
+            # must reproduce the TX waveform (or its inversion) nearly exactly.
+            # Anything else is unexplained activity and therefore a failure.
+            mirrors = []
+            for ci, lane in enumerate(ch):
+                if ci in clean_except or ci == 3 or len(lane) < 2:
+                    continue
+                lane_tr = sum(lane[i] != lane[i - 1] for i in range(1, min(ns, len(lane))))
+                if lane_tr <= 50:
+                    continue
+                count = min(ns, len(gen_ch), len(lane))
+                same = sum(lane[i] == gen_ch[i] for i in range(count)) / max(1, count)
+                inv = sum(lane[i] != gen_ch[i] for i in range(count)) / max(1, count)
+                match = max(same, inv)
+                check(match >= 0.95,
+                      f"rolling gen unexpected CH{ci} activity is a coherent physical mirror "
+                      f"of CH3 ({match:.1%} match, {lane_tr} transitions)")
+                if match >= 0.95:
+                    mirrors.append(ci)
+            if mirrors:
+                log(f"  physical jumper mirror(s) of CH3 detected on channels {mirrors}")
         else:
             check(False, "rolling gen returned no chunks")
     except Exception as e:
         check(False, f"rolling gen exception: {e}")
     finally:
         stop_evt.set()
-    save_result(f"test13_rolling_gen_uart_debug_{debug_on}", bytes(captured), {"mode": "rolling_gen_uart"})
+    save_result(f"test13_rolling_gen_uart_debug_{debug_on}", bytes(captured), {
+        "mode": "rolling_gen_uart", "physical_mirror_channels": locals().get("mirrors", []),
+    })
 
 # ====================================================================
 # Test 14: Protocol trigger (UART byte match)
@@ -1911,10 +1967,8 @@ def test_noise_floor(dev, debug_on=False):
                 considered_trans += tr
             log(f"  CH{c}: {tr} transitions")
         if debug_on:
-            if total_trans > 50:
-                check(True, f"Noise floor debug ON: CH0 toggling ({total_trans} total)")
-            else:
-                log(f"  [INFO] Noise floor debug ON has no visible CH0 toggling ({total_trans} total)")
+            check(total_trans > 50,
+                  f"Noise floor debug ON: CH0 toggling ({total_trans} total)")
             check_channels_clean(ch, ns, except_ch=fe, label="noise")
         else:
             check(considered_trans <= 80,
@@ -1943,7 +1997,7 @@ def test_trigger_edge_falling(dev, debug_on=False):
                 log(f"  first falling edge at sample {falling[0]} (of {ns})")
                 check(falling[0] < ns * 0.75, f"falling trigger fired before last 25% (sample {falling[0]})")
             else:
-                log("  [INFO] falling edge not visible on this bench even with debug CH0 enabled")
+                check(False, "falling trigger capture contains the driven CH0 edge")
             check_channels_clean(ch, ns, except_ch=[0, 7], label="trig_fall")
         else:
             # debug OFF: CH0 is undriven (pulled up). A falling trigger has no
@@ -1955,7 +2009,9 @@ def test_trigger_edge_falling(dev, debug_on=False):
             log(f"  CH0 (floating, no driven falling edge): {tr} transitions")
             check_channels_clean(ch, ns, except_ch=[0], label="trig_fall")
     else:
-        log("  [INFO] falling trigger capture returned no data; floating input may not hit an edge")
+        check(not debug_on,
+              "falling trigger stayed idle with debug OFF" if not debug_on
+              else "falling trigger returned no data with debug CH0 enabled")
     save_result(f"test14b_trigger_edge_falling_debug_{debug_on}", data, {"trigger": "falling"})
 
 # ====================================================================
@@ -2034,10 +2090,7 @@ def test_i2c_gen_output(dev):
         tr0 = sum(1 for i in range(1, min(ns, len(ch[0]))) if ch[0][i] != ch[0][i-1])
         ch1_bleed = sum(1 for i in range(1, min(ns, len(ch[1]))) if ch[1][i] != ch[1][i-1])
         log(f"  CH0(debug): {tr0} trans, CH1: {ch1_bleed} trans")
-        if tr0 > 10:
-            check(True, f"Debug CH0 toggling: {tr0} trans")
-        else:
-            log(f"  [INFO] Debug CH0 not visibly toggling on this bench ({tr0} trans)")
+        check(tr0 > 10, f"Debug CH0 toggling: {tr0} trans")
         check(ch1_bleed <= 10, f"CH1 quiet (no gen): {ch1_bleed} trans")
     else:
         check(False, "gen routing capture returned no data")
@@ -2154,6 +2207,10 @@ def test_crosstalk_characterisation(dev):
     hdr = f"{'Pair':>8} {'Baud':>7} {'tx':>6} {'bleed':>6} {'%':>5}"
     log(hdr)
     log("-" * len(hdr))
+    missing = []
+    inactive = []
+    excessive_bleed = []
+    results = []
     for tx_pin in range(1, 16):
         dev._gen_data = bytes([0x55]) * 200
         for baud in [9600, 19200, 38400, 57600, 115200]:
@@ -2162,13 +2219,29 @@ def test_crosstalk_characterisation(dev):
             data = dev.capture_with_gen(rate_hz=baud * 10, nsamples=5000, timeout=5)
             if not data:
                 log(f"  {tx_pin:>3}â†’{tx_pin-1:<3} {baud:>7}  no data")
+                missing.append((tx_pin, baud))
                 continue
             ch, ns = samples_to_channels(data)
             tr_tx = sum(1 for i in range(1, min(ns, len(ch[tx_pin]))) if ch[tx_pin][i] != ch[tx_pin][i-1])
             tr_bleed = sum(1 for i in range(1, min(ns, len(ch[tx_pin-1]))) if ch[tx_pin-1][i] != ch[tx_pin-1][i-1])
             pct = 100 * tr_bleed // max(tr_tx, 1)
             log(f"  CH{tx_pin}->CH{tx_pin-1}  {baud:>5}  {tr_tx:>4}  {tr_bleed:>4}  {pct:>3}%")
-    save_result("test15b_crosstalk_char", None, {"bauds": [9600,19200,38400,57600,115200], "pins": "1-15"})
+            results.append({"tx_pin": tx_pin, "baud": baud,
+                            "tx_transitions": tr_tx, "bleed_transitions": tr_bleed,
+                            "bleed_percent": pct})
+            if tr_tx <= 3:
+                inactive.append((tx_pin, baud, tr_tx))
+            if pct > 5:
+                excessive_bleed.append((tx_pin, baud, pct))
+    check(not missing, f"crosstalk sweep returned all 75 captures (missing={missing})")
+    check(not inactive, f"crosstalk sweep drove every TX lane (inactive={inactive})")
+    check(not excessive_bleed,
+          f"adjacent-lane activity stayed <=5% of TX transitions "
+          f"(excessive={excessive_bleed})")
+    save_result("test15b_crosstalk_char", None, {
+        "bauds": [9600,19200,38400,57600,115200], "pins": "1-15",
+        "results": results,
+    })
 
 # ====================================================================
 # Test 16: Long-duration stress test (60 seconds at 1 MHz)
@@ -2243,10 +2316,8 @@ def test_long_stress(dev, debug_on=False):
             floating_except = [0, 10, 11, 13, 14]
             if debug_on:
                 tr0 = sum(1 for i in range(1, min(ns, len(ch[0]))) if ch[0][i] != ch[0][i - 1])
-                if tr0 > 100:
-                    check(True, f"Stress test CH0 debug ON: activity ({tr0} transitions)")
-                else:
-                    log(f"  [INFO] Stress test CH0 debug ON: {tr0} transitions")
+                check(tr0 > 100,
+                      f"Stress test CH0 debug ON: activity ({tr0} transitions)")
             # CH0 is the debug pin and may float when debug is off; the stress
             # signal of interest here is that the capture path stays stable and
             # all other channels remain quiet.
@@ -2288,12 +2359,10 @@ def test_pre_trigger(dev):
         check(ns >= rc * 0.9, f"pre-trigger capture near-full ({ns}/{rc} samples)")
         tr0 = sum(1 for i in range(1, ns) if ch[0][i] != ch[0][i - 1])
         log(f"CH0 transitions: {tr0}")
-        if tr0 > 10:
-            check(True, f"signal present with pre-trigger enabled ({tr0} transitions)")
-        else:
-            log(f"  [INFO] pre-trigger capture has no visible CH0 toggling ({tr0} transitions)")
+        check(tr0 > 10,
+              f"signal present with pre-trigger enabled ({tr0} transitions)")
     else:
-        log("  [INFO] pre-trigger capture returned no data on this bench")
+        check(False, "pre-trigger capture returned data")
     save_result("test26_pre_trigger", data if data else b"",
                 {"rate_hz": 1_000_000, "nsamples": rc, "pre_trigger": pre})
 
@@ -2354,14 +2423,8 @@ def test_full_depth_capture(dev):
         tr_first = sum(1 for i in range(2, len(first), 2) if first[i] != first[i - 2])
         tr_last = sum(1 for i in range(2, len(last), 2) if last[i] != last[i - 2])
         log(f"activity: first block {tr_first} byte-changes, last block {tr_last}")
-        if tr_first > 0:
-            check(True, "PWM activity in first block")
-        else:
-            log("  [INFO] no visible CH0 activity in first block")
-        if tr_last > 0:
-            check(True, "PWM activity in last block (buffer filled to boundary)")
-        else:
-            log("  [INFO] no visible CH0 activity in last block")
+        check(tr_first > 0, "PWM activity in first block")
+        check(tr_last > 0, "PWM activity in last block (buffer filled to boundary)")
     save_result("test27_full_depth", (first or b"") + (last or b""),
                 {"nsamples": MAX_SAMPLES, "rate_hz": 10_000_000})
 
@@ -2401,6 +2464,10 @@ def test_back_to_back_capture(dev):
     # latch, so require three fresh captures within four attempts.
     successes = 0
     for n in range(4):
+        # Readback can leave the shared Bit Engine idle. Reload the same known
+        # source before every arm; the capture engine itself is intentionally
+        # not reset, which is the state transition this test exercises.
+        dev.set_debug_ch0(True, freq_hz=100_000)
         dev.pkt.arm_capture()
         dev.spi.flush()
         _wait_capture_done(dev, timeout=2.0)
@@ -2414,7 +2481,9 @@ def test_back_to_back_capture(dev):
         ch, ns = samples_to_channels(data, stride=2)
         tr0 = sum(1 for i in range(1, ns) if ch[0][i] != ch[0][i - 1]) if ns else 0
         log(f"capture #{n + 1}: {len(data)} bytes, {ns} samples, CH0 {tr0} trans")
-        if len(data) == need:
+        # A stale/static BRAM image has the right length. Count a capture only
+        # when the known 100 kHz CH0 source is present in that readback.
+        if len(data) == need and 100 <= tr0 <= 300:
             successes += 1
         if successes >= 3:
             break
@@ -2584,7 +2653,22 @@ def _get_jumper_pair(dev):
     global _JUMPER_PAIR_CACHE, _JUMPER_PAIR_SEARCHED
     if not _JUMPER_PAIR_SEARCHED:
         log("discovering wired jumper pair from the physical pin pool...")
-        _JUMPER_PAIR_CACHE = _discover_jumper_pair(dev)
+        # Atomic generator/capture startup can occasionally miss a short
+        # probe on USB.  A fixture is only declared absent after three fresh
+        # sweeps; otherwise a transient miss silently turns hardware coverage
+        # into skips.
+        for attempt in range(3):
+            _JUMPER_PAIR_CACHE = _discover_jumper_pair(dev)
+            if _JUMPER_PAIR_CACHE is not None:
+                break
+            if attempt < 2:
+                log(f"  [INFO] jumper discovery attempt {attempt + 1}/3 missed; retrying")
+                try:
+                    dev.reset()
+                    dev.spi.flush()
+                except Exception:
+                    pass
+                time.sleep(0.02)
         _JUMPER_PAIR_SEARCHED = True
     elif _JUMPER_PAIR_CACHE is not None:
         log(f"reusing cached wired jumper pair: {_JUMPER_PAIR_CACHE[0]} -> "
@@ -2901,6 +2985,8 @@ def test_live_generator_decode(dev):
         log(f"  live frame {i}: sent {payload!r} decoded {dec!r} "
             f"{'OK' if ok else 'MISS'}; waveform {frac * 100:.1f}% @ {off}")
     log(f"  [INFO] generator live frames decoded ({good}/{len(frames)})")
+    check(good == len(frames),
+          f"every live generator frame decoded ({good}/{len(frames)})")
     _restore_pin_map(dev)
     save_result("test32_live_generator", b"", {"frames": len(frames), "decoded": good})
 
@@ -3050,12 +3136,9 @@ def test_accelerometer_whoami(dev):
     db = bytes(v for t, v in ev if t == "DATA")
     log(f"  attach-capture I2C decode: {db.hex()} "
         f"(events {[t for t, _ in ev][:3]}...)")
-    if bytes([dev_w, 0x0F, dev_r, 0x33]) == db[:4]:
-        check(True,
-              f"attach-mirrored capture decodes the full I2C WHO_AM_I dialogue "
-              f"(got {db.hex()})")
-    else:
-        log(f"  [INFO] attach-mirrored I2C dialogue did not decode exactly on this bench (got {db.hex()})")
+    check(bytes([dev_w, 0x0F, dev_r, 0x33]) == db[:4],
+          f"attach-mirrored capture decodes the full I2C WHO_AM_I dialogue "
+          f"(got {db.hex()})")
 
     spi_syms = _bb.spi3_read_symbols(bytes([0x8F]), 1)
     sdiv = max(1, int(round(dev.sys_clk / (2 * 500_000) - 1.25)))
@@ -3064,11 +3147,8 @@ def test_accelerometer_whoami(dev):
     ch, ns = samples_to_channels(data, stride=2) if data else ([], 0)
     dec = bytes(decode_spi(ch, 8_000_000, miso_idx=15, sclk_idx=14)) if ns else b""
     log(f"  attach-capture SPI decode (MISO): {dec.hex()}")
-    if 0x33 in dec:
-        check(True,
-              f"attach-mirrored capture decodes SPI WHO_AM_I on CH15 (got {dec.hex()})")
-    else:
-        log(f"  [INFO] attach-mirrored SPI dialogue did not decode exactly on this bench (got {dec.hex()})")
+    check(0x33 in dec,
+          f"attach-mirrored capture decodes SPI WHO_AM_I on CH15 (got {dec.hex()})")
 
     save_result("test36_accel_whoami", data if data else b"", {
         "spi_offsets": hits, "ctrl_reg1": ctrl,
@@ -3087,26 +3167,21 @@ def test_codec_readback_matrix(dev):
     nsamp = 262_144
     rates = [1_000_000, 10_000_000, 50_000_000, 100_000_000, int(dev.sample_clk)]
     def record_matrix(ok, msg):
-        if ok:
-            check(True, msg)
-        else:
-            log(f"  [INFO] {msg}")
+        check(ok, msg)
     for rate in rates:
         dev.reset(); dev.spi.flush()
+        dev.set_analog_config(MODE_DIGITAL)
+        dev._raw_flags = 0
+        dev.fast_mode_enabled = False
         dev.set_debug_ch0(True, freq_hz=100_000)
         dev.set_readback_compression('raw')
-        div = max(0, int(dev.sample_clk // rate) - 1)
-        dev.pkt.write_register(REG_DIVIDER, div & 0xFFFFFF)
-        dev.pkt.write_register(REG_SAMPLE_COUNT, nsamp)
-        dev.pkt.write_register(REG_DELAY_COUNT, nsamp)
-        dev.pkt.write_register(REG_TRIGGER_MASK, 0)
-        dev.pkt.write_register(REG_TRIGGER_VALUE, 0)
-        dev.pkt.write_register(REG_FLAGS, 0)
-        dev.pkt.write_register(REG_FAST_MODE, 0)   # SDRAM single-shot
-        dev.spi.flush()
-        dev.pkt.arm_capture()
-        dev.spi.flush()
-        done = _wait_capture_done(dev, timeout=max(3.0, 2 * nsamp / rate + 1))
+        # Use the production capture path to create the reference. It re-arms
+        # the known PWM source after reset and keeps SPI silent throughout the
+        # SDRAM write window. The former hand-rolled arm/poll sequence could
+        # return a full-size but entirely stale 0xFFFF buffer.
+        seeded = dev.capture(rate_hz=rate, nsamples=nsamp,
+                             timeout=max(3.0, 2 * nsamp / rate + 1))
+        done = len(seeded) >= nsamp * 2
         is_max = rate >= int(dev.sample_clk)
         if not done:
             if is_max:
@@ -3114,7 +3189,7 @@ def test_codec_readback_matrix(dev):
                     "above the SDRAM write-pump ceiling (characterisation)")
                 dev.reset()
                 continue
-            log(f"  [INFO] codec matrix capture completed @{rate//1000}kS/s")
+            check(False, f"codec matrix capture did not complete @{rate//1000}kS/s")
             dev.reset()
             continue
         t0 = time.time()
@@ -3282,6 +3357,7 @@ def test_live_rate_ceiling(dev):
 
 def main():
     global PASS, FAIL, TOTAL, _JUMPER_PAIR_CACHE, _JUMPER_PAIR_SEARCHED
+    begin_run()
     print("=" * 60)
     print("  OLS Logic Analyzer â€” Hardware Validation Suite")
     print("=" * 60)
@@ -3382,7 +3458,8 @@ def main():
         test_jumper_loopback(dev)
         test_jumper_generator_matrix(dev)
         test_live_generator_decode(dev)
-        # test_repeating_uart_continuous_ring has its own internal watchdog
+        # Own internal watchdog; remains part of the exhaustive gate.
+        test_repeating_uart_continuous_ring(dev)
 
         log("\n--- On-board accelerometer (LIS3DH) ---")
         test_accelerometer_whoami(dev)
@@ -3452,11 +3529,13 @@ def main():
     else:
         print(f"  {FAIL} TEST(S) FAILED")
 
-    return 0 if FAIL == 0 else 1
+    write_run_summary("full")
+    return 0 if FAIL == 0 and SKIPPED == 0 else 1
 
 def main_new_only():
     """Run only the newer regression tests (argv: 'new')."""
     global PASS, FAIL, TOTAL
+    begin_run()
     dev = OLSDeviceSPI()
     try:
         dev.open()
@@ -3490,12 +3569,14 @@ def main_new_only():
         except:
             pass
     print(f"\n  RESULTS: {PASS}/{TOTAL} passed, {FAIL} failed, {SKIPPED} skipped")
-    return 0 if FAIL == 0 else 1
+    write_run_summary("new")
+    return 0 if FAIL == 0 and SKIPPED == 0 else 1
 
 
 def main_codec_only():
     """Run only the codec matrix + live rate ceiling tests (argv: 'codec')."""
     global PASS, FAIL, TOTAL
+    begin_run()
     dev = OLSDeviceSPI()
     try:
         dev.open()
@@ -3515,7 +3596,8 @@ def main_codec_only():
         except:
             pass
     print(f"\n  RESULTS: {PASS}/{TOTAL} passed, {FAIL} failed, {SKIPPED} skipped")
-    return 0 if FAIL == 0 else 1
+    write_run_summary("codec")
+    return 0 if FAIL == 0 and SKIPPED == 0 else 1
 
 
 def main_jumper_only():
@@ -3525,6 +3607,7 @@ def main_jumper_only():
     fixture, without sitting through the full suite.
     """
     global PASS, FAIL, TOTAL
+    begin_run()
     dev = OLSDeviceSPI()
     try:
         dev.open()
@@ -3546,12 +3629,14 @@ def main_jumper_only():
         except:
             pass
     print(f"\n  RESULTS: {PASS}/{TOTAL} passed, {FAIL} failed, {SKIPPED} skipped")
-    return 0 if FAIL == 0 else 1
+    write_run_summary("jumper")
+    return 0 if FAIL == 0 and SKIPPED == 0 else 1
 
 
 def main_analog_only():
     """Run the physical two-jumper analog fixture validation."""
     global PASS, FAIL, TOTAL
+    begin_run()
     dev = OLSDeviceSPI()
     try:
         dev.open()
@@ -3570,7 +3655,8 @@ def main_analog_only():
         except Exception:
             pass
     print(f"\n  RESULTS: {PASS}/{TOTAL} passed, {FAIL} failed, {SKIPPED} skipped")
-    return 0 if FAIL == 0 else 1
+    write_run_summary("analog")
+    return 0 if FAIL == 0 and SKIPPED == 0 else 1
 
 
 def cli(argv=None):
@@ -3600,11 +3686,11 @@ def cli(argv=None):
             except Exception:
                 pass
         print(f"\n  RESULTS: {PASS}/{TOTAL} passed, {FAIL} failed, {SKIPPED} skipped")
-        return 0 if FAIL == 0 else 1
+        return 0 if FAIL == 0 and SKIPPED == 0 else 1
     if command == 'uart':
         test_uart_cmd_id()
         print(f"\n  RESULTS: {PASS}/{TOTAL} passed, {FAIL} failed, {SKIPPED} skipped")
-        return 0 if FAIL == 0 else 1
+        return 0 if FAIL == 0 and SKIPPED == 0 else 1
     return main()
 
 

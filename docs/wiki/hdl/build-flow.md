@@ -96,7 +96,7 @@ The signoff artifacts are under `hdl/proj/output_files/`:
 | `OLS_Logic_Analyzer.sof` | Volatile SRAM image |
 | `OLS_Logic_Analyzer.pof` | Persistent CFM image |
 
-The current assembler checksum is `0x00504799`. A checksum identifies a build
+The current assembler checksum is `0x0050492F`. A checksum identifies a build
 for bench records; it is not a cryptographic integrity proof. The current SOF
 SHA-256 is recorded in [Current Status](../current-status.md).
 

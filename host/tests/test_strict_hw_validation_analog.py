@@ -85,6 +85,13 @@ def test_mixed_lane_comparison_rejects_stale_rail_value():
     assert "disagrees" in result["lanes"][0]["reason"]
 
 
+def test_mixed_lane_comparison_rejects_missing_lane_samples():
+    result = hv.compare_mixed_analog_lanes([], {1: [], 2: []})
+    assert result["ok"] is False
+    assert all(lane["reason"] == "missing samples for comparison"
+               for lane in result["lanes"])
+
+
 @pytest.mark.parametrize('frames', [[{'digital': None, 'adc': [123]}], [{'digital': None, 'adc': []}], []])
 def test_high_speed_analog_frame_shapes(frames):
     value = dev(); value.capture_analog.return_value = (b'x' * (len(frames) * 2), frames)

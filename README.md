@@ -27,10 +27,10 @@ This repository is currently verified for:
 
 Latest validation baseline (software and hardware rerun 2026-09-09):
 
-- `backend/app/tests`: `541/541` passed at 100% statement/branch coverage
-- `host/tests/` + `host/driver/tests/`: `983/983` passed at 100% statement/branch coverage
-- `frontend`: `277/277` passed at 100% statement/branch/function/line coverage; production build passed
-- Full connected-fixture hardware regression: **403/403 passed, 0 failed, 0 skipped**
+- `backend/app/tests`: `542/542` passed at 100% statement/branch coverage
+- `host/tests/` + `host/driver/tests/`: `1,010/1,010` passed at 100% statement/branch coverage
+- `frontend`: `292/292` passed at 100% statement/branch/function/line coverage; production build passed
+- Cold-power-cycle connected-fixture hardware regression: **436/436 passed, 0 failed, 0 skipped**
 - Native GHDL regression: **57/57 passed**, with zero XFAIL/XPASS/exclusions
 - Real-browser hardware validation: **5/5 feature tests** (including all 37 advertised mode/rate combinations) and **34/34 hardware-aligned UI tests**
 
@@ -90,7 +90,7 @@ Main storage paths:
 ## UI Screenshots
 
 All screenshots below were regenerated on 2026-09-09 from the attached
-MAX1000 and the current volatile seed-10 image. The browser tests require the
+MAX1000 and the current persistent seed-10 image. The browser tests require the
 named session to be active and its waveform payload to finish loading before
 writing each PNG.
 
@@ -227,8 +227,7 @@ python -m app.hw_validation
 ## Rebuilding The FPGA Image
 The validated full-feature speed build uses Quartus seed `10`; use the current
 project scripts and timing reports in [`hdl/proj/`](hdl/proj/). The current
-validation image was loaded into volatile SRAM; persistent CFM was deliberately
-left at the 2026-08-27 baseline.
+validation image was programmed into MAX 10 configuration flash on 2026-09-09.
 
 ```powershell
 cd hdl\proj

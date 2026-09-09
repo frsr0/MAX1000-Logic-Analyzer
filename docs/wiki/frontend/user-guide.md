@@ -1,7 +1,7 @@
 # OLS Logic Analyzer — User Guide
 
 This page is a visual tour of the React/FastAPI application. The screenshots
-were regenerated on 2026-09-07 at 1440×1400. Live images use the attached
+were regenerated on 2026-09-09 at 1440×1400. Live images use the attached
 MAX1000; workflow-only images use the deterministic Playwright fixture. The
 live gallery asserts the exact selected session and a completed waveform load
 before capture, preventing an older or still-loading canvas from being

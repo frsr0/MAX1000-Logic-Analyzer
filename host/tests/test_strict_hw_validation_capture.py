@@ -19,6 +19,7 @@ def device():
     dev.spi = MagicMock()
     dev.pkt = MagicMock()
     dev.pkt.write_register.return_value = True
+    dev.pkt.arm_capture.return_value = 0
     dev.pkt.get_status.return_value = {'capture_status': 1}
     dev.get_metadata.return_value = b'123456789'
     dev.capture.return_value = b'data'
@@ -74,7 +75,7 @@ def test_single_capture_empty_reports_failure(isolate_hardware_side_effects):
 
 
 @pytest.mark.parametrize('debug,active', [(False, True), (True, True), (True, False)])
-def test_fast_capture_full_payload_paths(debug, active):
+def test_fast_capture_full_payload_paths(debug, active, isolate_hardware_side_effects):
     dev = device()
     dev.pkt.read_capture_block.side_effect = [b'x' * 1024, b'y' * 1024]
     with patch.object(hv, 'samples_to_channels', return_value=channels(1024, active)), \
@@ -82,6 +83,10 @@ def test_fast_capture_full_payload_paths(debug, active):
         hv.test_fast_capture(dev, debug_on=debug)
     assert activity.called
     assert dev.pkt.read_capture_block.call_count == 2
+    if debug:
+        dev.set_debug_ch0.assert_called_with(True, freq_hz=pytest.approx(dev.sys_clk / 1024))
+        assert any("fast CH0 debug PWM transitions" in call.args[1]
+                   for call in isolate_hardware_side_effects.check.call_args_list)
 
 
 def test_fast_capture_empty_and_partial_blocks(isolate_hardware_side_effects):
@@ -95,18 +100,25 @@ def test_max_speed_capture_full_and_empty(isolate_hardware_side_effects):
     with patch.object(hv, 'samples_to_channels', return_value=channels(1024)), \
          patch.object(hv, 'log_floating_channel_activity'):
         hv.test_max_speed_capture(dev)
+    dev.set_live_gen.assert_called_once()
+    dev.clear_live_gen.assert_called_once()
+    assert any("max-speed CH0 source is non-static" in call.args[1]
+               for call in isolate_hardware_side_effects.check.call_args_list)
     dev = device(); dev.pkt.read_capture_block.return_value = b''
     hv.test_max_speed_capture(dev)
     isolate_hardware_side_effects.check.assert_called_with(False, 'max-speed capture returned no data')
 
 
 @pytest.mark.parametrize('debug,active', [(False, True), (True, True), (True, False)])
-def test_continuous_capture_retries_and_processes_buffer(debug, active):
+def test_continuous_capture_retries_and_processes_buffer(debug, active, isolate_hardware_side_effects):
     dev = device(); dev.pkt.read_capture_block.side_effect = [b'', b'x' * 1024]
     with patch.object(hv, 'samples_to_channels', return_value=channels(512, active)), \
          patch.object(hv, 'log_floating_channel_activity'), patch.object(hv, 'check_channels_clean'):
         hv.test_continuous_capture(dev, debug_on=debug)
     assert dev.pkt.read_capture_block.call_count == 2
+    if debug:
+        assert any("continuous CH0 debug PWM transitions" in call.args[1]
+                   for call in isolate_hardware_side_effects.check.call_args_list)
 
 
 def test_continuous_capture_empty_reports_failure(isolate_hardware_side_effects):
@@ -115,12 +127,19 @@ def test_continuous_capture_empty_reports_failure(isolate_hardware_side_effects)
     isolate_hardware_side_effects.check.assert_any_call(False, 'continuous capture returned no data')
 
 
-@pytest.mark.parametrize('debug,active', [(False, True), (True, True), (True, False)])
-def test_trigger_edge_capture_paths(debug, active):
+@pytest.mark.parametrize('debug,active,expected', [
+    (False, False, True),
+    (False, True, False),
+    (True, True, True),
+    (True, False, False),
+])
+def test_trigger_edge_capture_paths(debug, active, expected, isolate_hardware_side_effects):
     dev = device()
     with patch.object(hv, 'samples_to_channels', return_value=channels(512, active)), \
          patch.object(hv, 'check_channels_clean'):
         hv.test_trigger_edge(dev, debug_on=debug)
+    assertions = [call.args[0] for call in isolate_hardware_side_effects.check.call_args_list]
+    assert expected in assertions
 
 
 @pytest.mark.parametrize('debug', [False, True])

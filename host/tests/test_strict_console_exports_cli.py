@@ -509,6 +509,7 @@ def test_module_spi_and_tk_import_fallbacks_are_executable():
         values = runpy.run_path(console.__file__, run_name='console_spi_fallback')
     assert values['HAS_SPI'] is False
     assert values['analog_wire_stride'](99) == 2
+    assert values['align_mixed_wire'](b'raw', frame_count=1) == (b'raw', 0, (0, 0, 0))
     assert values['wire_to_payload'](bytes(range(8))) == b'\x00\x01\x04\x05'
 
     with patch('builtins.__import__', side_effect=_import_failing_on('tkinter')):

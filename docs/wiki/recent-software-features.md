@@ -94,8 +94,8 @@ CS/MISO controls are shown. The backend validates routes before writing FPGA
 registers. See [Generator Routing](generator-routing.md).
 
 `POST /api/generator/send` accepts `live: true` for UART, RS-485, and Bit
-Banger. This arms a repeating FPGA pattern and re-kicks it after each rolling
-capture chunk reset, so generated traffic remains visible in a live session.
+Banger. This arms the FPGA repeat flag so the bounded FIFO pattern continues
+through rolling-capture resets without host-timed re-kicks.
 `POST /api/generator/stop` clears the repeating pattern.
 
 ## Waveform analysis and derived views

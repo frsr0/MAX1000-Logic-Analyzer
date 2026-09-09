@@ -89,7 +89,7 @@ matrix and measured ratios.
 
 ## Current timing note
 
-The current Quartus 25.1 seed-10 full-feature build (2026-09-07) closes
+The current Quartus 25.1 seed-10 full-feature build (2026-09-09) closes
 slow-85C setup with `fast_clk` **+0.253 ns**, `sdram_core_clk` **+0.178 ns**,
 and `sys_clk` **+0.278 ns**; every reported timing check is positive. It
 includes the 24-bit generator divider and carry-chain fast capture budget.
@@ -101,5 +101,5 @@ See [Build Flow](build-flow.md).
 | Speed grade | C8 |
 | Build profile | FAST_SPEED (200 MHz sample clock) |
 | Toolchain / seed | Quartus Prime Lite 25.1 / seed 10 |
-| Current board validation | 2026-09-07; SOF `0x00504799`; full suite 403/403, browser hardware 5/5 and 33/33 |
+| Current board validation | 2026-09-09; SOF `0x0050492F`; unplug/replug full suite 436/436, browser hardware 5/5 and 34/34 |
 | Utilisation | 7,713/8,064 LEs (96%); 4,802 registers |

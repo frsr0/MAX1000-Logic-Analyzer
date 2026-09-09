@@ -115,12 +115,11 @@ bench must terminate explicitly rather than timing out at `--stop-time`.
 ## Notes
 
 - The generated wrapper in `proj/` is overwritten by `compile.ps1`.
-- `seed 10` is the current validated full-feature placement (2026-09-07).
+- `seed 10` is the current validated full-feature placement (2026-09-09).
   Slow-85C setup slack is **+0.253 ns** on `fast_clk`, **+0.178 ns** on
   `sdram_core_clk`, and **+0.278 ns** on `sys_clk`; all reported timing checks
-  are positive. The exact SOF checksum is `0x00504799` and its SHA-256 is
-  `2C33472F5C07F60CF41ED155EB0EAAA58D7C23320EC9A861C86ED82764F9FE50`.
-  The image is currently loaded in volatile SRAM; the 2026-08-27 CFM image
-  remains the persistent baseline.
+  are positive. The exact SOF checksum is `0x0050492F` and its SHA-256 is
+  `2028A05F689EA966B359359D8F0F4000A19298B8CEE98AF6A76A52003108C7D1`.
+  The image was programmed into MAX 10 configuration flash on 2026-09-09.
 - No feature removals are implied by the timing work; the current build keeps
   the full digital, mixed-signal, generator, and pattern trigger paths.

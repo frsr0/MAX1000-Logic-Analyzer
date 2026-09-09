@@ -98,15 +98,14 @@ graph TB
 - Readback compression (`raw` / direct `rle` / packed `delta_rle` modes)
 - Built with Quartus, targeting Intel MAX 10 `10M08SAU169C8G`, FAST_SPEED build
 - The current full mixed-signal image was built with Quartus 25.1 and fitter
-  **seed 10**, then programmed to volatile SRAM on 2026-09-07. Slow-85C setup
+  **seed 10**, then programmed into configuration flash on 2026-09-09. Slow-85C setup
   slack is `fast_clk +0.253 ns`, `sdram_core_clk +0.178 ns`, and
   `sys_clk +0.278 ns`; every reported timing check is clean. The image has SOF
-  checksum `0x00504799`.
-- That exact image passed the 10-check smoke test, the 117-check changed-path
-  suite, a 26-check strict codec/rate rerun, the 403-check full suite, all 57
-  GHDL benches, and browser runs of 5/5 feature plus 33/33 hardware-aligned UI
+  checksum `0x0050492F`.
+- That exact image passed the 10-check smoke test, the 421-check full suite, all 57
+  GHDL benches, and browser runs of 5/5 feature plus 34/34 hardware-aligned UI
   tests. The 37-case screenshot matrix was regenerated and visually reviewed
-  on 2026-09-07. Live readback throughput remains transport- and
+  on 2026-09-09. Live readback throughput remains transport- and
   compressibility-dependent; see
   [`hdl/mso-capture.md`](hdl/mso-capture.md#rate-behavior-and-livecontinuous-capture)
   and [Verification and Change Traceability](verification-traceability.md).

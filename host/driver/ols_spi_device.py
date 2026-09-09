@@ -505,7 +505,7 @@ class OLSDeviceSPI:
         but only for pure-digital captures (never analog/mixed/narrow)."""
         if (self.glitch_enable and self.glitch_threshold > 0
                 and self.analog_mode == MODE_DIGITAL and samples
-                and not (self._raw_flags & MODE_PACKED_MSO)):
+                and not (self._raw_flags & (MODE_PACKED_MSO | MODE_NARROW_DIGITAL))):
             return apply_glitch_filter(samples, self.glitch_threshold)
         return samples
 
@@ -855,7 +855,25 @@ class OLSDeviceSPI:
         if not self._wait_gen_idle(timeout=0.25):
             return False
         self.pkt.load_gen_data(packed_symbols)
-        return self.pkt.transaction(CMD_GEN_START, timeout=0.5) is not None
+        return self._start_gen_accepted(timeout=0.5)
+
+    def _start_gen_accepted(self, timeout=1.0, confirm_timeout=0.25):
+        """Start the fire-and-hold generator and confirm command acceptance.
+
+        The current FPGA image can consume ``CMD_GEN_START`` without emitting
+        a response packet.  A missing packet is therefore not a rejection;
+        confirm the transient request/busy state through ``GET_STATUS``.
+        """
+        response = self.pkt.transaction(CMD_GEN_START, timeout=timeout)
+        if response is not None:
+            return response[0] == ST_OK
+        deadline = time.time() + max(0.0, float(confirm_timeout))
+        while time.time() < deadline:
+            status = self.pkt.get_status()
+            if status.get("gen_start_req") or status.get("gen_busy"):
+                return True
+            time.sleep(0.001)
+        return False
 
     def set_live_gen(self, packed_symbols, symbol_rate, tx_pin=3,
                      scl_pin=GEN_SCL_PARK, flags=0):
@@ -1520,7 +1538,8 @@ class OLSDeviceSPI:
     def continuous_ring_capture(self, rate_hz, chunk_nsamp, buffer_nsamp,
                                 stop_evt, progress_cb=None, full_out=None,
                                 fast_mode=True, yield_full_buffer=True,
-                                probe_compression=False):
+                                probe_compression=False,
+                                manage_debug_source=True):
         """Yield chunks from the FPGA continuous SDRAM ring by absolute index.
 
         This arms continuous mode once, then follows producer/oldest/newest
@@ -1534,11 +1553,15 @@ class OLSDeviceSPI:
         wire_stride = analog_wire_stride(self.analog_mode)
         payload_stride = analog_frame_stride(self.analog_mode)
         div = max(0, int(self.sample_clk / rate_hz) - 1)
+        # CONT_MODE begins producing immediately on the current FPGA. Start
+        # the requested source first so the initial readable ring buffer is
+        # captured from the requested state, not the preceding test/session.
+        if manage_debug_source:
+            self.set_debug_ch0(self.debug_ch0_enabled)
         self._write_capture_config(
             div=div, samples=buffer_nsamp, delay_count=buffer_nsamp,
             mask=0, value=0, flags=self._raw_flags,
             fast_mode=fast_mode, continuous=True)
-        self.set_debug_ch0(self.debug_ch0_enabled)
         self.spi.flush()
         status = self.pkt.arm_capture()
         if status < 0:
@@ -1571,7 +1594,8 @@ class OLSDeviceSPI:
             pending = pending[chunk_bytes:]
             pending_samples -= chunk_nsamp
             next_sample = sample_start + chunk_nsamp
-            if self.analog_mode == MODE_DIGITAL:
+            if (self.analog_mode == MODE_DIGITAL
+                    and not (self._raw_flags & MODE_NARROW_DIGITAL)):
                 data = self._repair_boundary_glitches(data, sample_start)
             data = self._filter_digital(data)
             total += len(data) // payload_stride
@@ -1622,7 +1646,8 @@ class OLSDeviceSPI:
                     continue
                 data = wire_to_payload(data, self.analog_mode)
                 data = data[:fetch_nsamp * payload_stride]
-                if self.analog_mode == MODE_DIGITAL:
+                if (self.analog_mode == MODE_DIGITAL
+                        and not (self._raw_flags & MODE_NARROW_DIGITAL)):
                     data = self._repair_boundary_glitches(data, next_sample)
                 pending = self._filter_digital(data)
                 pending_samples = len(pending) // payload_stride
@@ -1781,7 +1806,10 @@ class OLSDeviceSPI:
             raise ValueError("repeating UART payload must not be empty")
         self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
         self._wait_gen_idle(timeout=0.25)
-        self.pkt.write_register(REG_GEN_DATA, 1 << 8)  # clear stale I2C/SPI flags
+        # Use the FPGA's repeat mode.  Host-side re-kicks happen after a ring
+        # read has already prefetched multiple chunks and create deterministic
+        # idle gaps in the captured waveform.
+        self.pkt.write_register(REG_GEN_DATA, (1 << 8) | GEN_FLAG_REPEAT)
         self.pkt.write_register(REG_GEN_PROTO, 0)
         self.pkt.write_register(REG_GEN_BAUD, self._uart_baud_div(baud) & self.gen_div_mask)
         self._pins(tx_pin=tx_pin, scl_pin=GEN_SCL_PARK)
@@ -1796,27 +1824,25 @@ class OLSDeviceSPI:
         self.spi.flush()
         self.pkt.load_gen_data(packed)
         time.sleep(0.005)
-        started = self.pkt.transaction(CMD_GEN_START, timeout=1.0)
-        if started is None:
+        started = self._start_gen_accepted(timeout=1.0)
+        if not started:
             time.sleep(0.01)
             self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
             self._wait_gen_idle(timeout=0.5)
             self.pkt.load_gen_data(packed)
             time.sleep(0.005)
-            started = self.pkt.transaction(CMD_GEN_START, timeout=1.0)
-        if started is None:
+            started = self._start_gen_accepted(timeout=1.0)
+        if not started:
             raise RuntimeError("could not start repeating UART generator")
         try:
             for item in self.continuous_ring_capture(
                     rate_hz, chunk_nsamp, buffer_nsamp, stop_evt,
                     progress_cb=progress_cb, full_out=full_out,
-                    fast_mode=fast_mode, yield_full_buffer=yield_full_buffer):
-                try:
-                    self._gen_kick(packed)
-                except Exception:
-                    pass  # keep the ring stream alive even if a kick misses
+                    fast_mode=fast_mode, yield_full_buffer=yield_full_buffer,
+                    manage_debug_source=False):
                 yield item
         finally:
+            self.pkt.transaction(CMD_GEN_STOP, timeout=0.5)
             self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
 
     def fast_mode(self, enable=True):
@@ -2136,16 +2162,17 @@ class OLSDeviceSPI:
             # gen-capture path was missing it, which corrupted ~1 sample every 256
             # (≈1.5 UART bytes here) and garbled multi-byte loopback decodes.
             if not (self.analog_mode & MODE_MIXED) \
-                    and not (self._raw_flags & MODE_PACKED_MSO):
+                    and not (self._raw_flags & (MODE_PACKED_MSO | MODE_NARROW_DIGITAL)):
                 samples = self._repair_boundary_glitches(samples, 0)
             if expected_seq is not None:
                 self.ack_capture_done(expected_seq)
 
             stride = analog_frame_stride(self.analog_mode)
-            first_data = next((i for i in range(0, len(samples), stride)
-                               if samples[i:i+stride] != b'\x00' * stride), None)
-            if first_data is not None:
-                samples = samples[first_data:]
+            if not (self._raw_flags & (MODE_PACKED_MSO | MODE_NARROW_DIGITAL)):
+                first_data = next((i for i in range(0, len(samples), stride)
+                                   if samples[i:i+stride] != b'\x00' * stride), None)
+                if first_data is not None:
+                    samples = samples[first_data:]
 
             samples = self._filter_digital(samples)
 
@@ -2280,17 +2307,18 @@ class OLSDeviceSPI:
         samples = self._stream_readback(0, read_words)[:need]
         self._timings['last_capture_readback_s'] = time.perf_counter() - t_read
         if not (self.analog_mode & MODE_MIXED) \
-                and not (self._raw_flags & MODE_PACKED_MSO):
+                and not (self._raw_flags & (MODE_PACKED_MSO | MODE_NARROW_DIGITAL)):
             samples = self._repair_boundary_glitches(samples, 0)
         if expected_seq is not None and st.get('capture_seq') == expected_seq:
             self.ack_capture_done(expected_seq)
 
         stride = analog_frame_stride(self.analog_mode)
         samples = self._trim_packed_capture(samples, st)
-        first_data = next((i for i in range(0, len(samples), stride)
-                           if samples[i:i+stride] != b'\x00' * stride), None)
-        if first_data is not None:
-            samples = samples[first_data:]
+        if not (self._raw_flags & (MODE_PACKED_MSO | MODE_NARROW_DIGITAL)):
+            first_data = next((i for i in range(0, len(samples), stride)
+                               if samples[i:i+stride] != b'\x00' * stride), None)
+            if first_data is not None:
+                samples = samples[first_data:]
 
         samples = self._filter_digital(samples)
 

@@ -106,7 +106,7 @@ def test_uart_generator_accepts_done_without_observing_busy():
     value.pkt.transaction.side_effect = transaction
     value.capture_with_gen.return_value = b""
     hv.test_gen_uart(value, debug_on=True)
-    assert hv.FAIL == 0
+    assert hv.FAIL == 1
     assert hv.PASS == 3
 
 
@@ -125,7 +125,7 @@ def test_uart_generator_tolerates_empty_status_poll_before_busy():
     value.pkt.transaction.side_effect = transaction
     value.capture_with_gen.return_value = b""
     hv.test_gen_uart(value, debug_on=True)
-    assert hv.FAIL == 0
+    assert hv.FAIL == 1
     assert hv.PASS == 3
 
 
@@ -157,7 +157,7 @@ def test_analog_hysteresis_ignores_samples_inside_threshold_band():
     assert result["edges"] == 2
 
 
-def test_narrow_capture_treats_static_finite_and_streaming_samples_as_informational():
+def test_narrow_capture_rejects_static_finite_and_streaming_samples():
     value = device()
     value.capture.return_value = b"n" * 1024
     value.continuous_ring_capture.return_value = (entry for entry in [
@@ -167,7 +167,7 @@ def test_narrow_capture_treats_static_finite_and_streaming_samples_as_informatio
     with patch.object(hv, "unpack_narrow_digital_words",
                       return_value=np.zeros(8192, dtype=np.uint16)):
         hv.test_narrow_digital_200m(value)
-    assert hv.FAIL == 0
+    assert hv.FAIL == 2
     assert hv.PASS == 2
 
 
@@ -178,10 +178,10 @@ def test_narrow_capture_reports_an_empty_continuous_stream():
     with patch.object(hv, "unpack_narrow_digital_words",
                       return_value=np.zeros(8192, dtype=np.uint16)):
         hv.test_narrow_digital_200m(value)
-    assert hv.FAIL == 1
+    assert hv.FAIL == 3
 
 
-def test_rolling_generator_covers_non_debug_no_decode_characterisation():
+def test_rolling_generator_rejects_missing_uart_decode():
     value = device()
 
     def rolling(**kwargs):
@@ -193,19 +193,62 @@ def test_rolling_generator_covers_non_debug_no_decode_characterisation():
          patch.object(hv, "decode_uart", return_value=[]), \
          patch.object(hv, "log_floating_channel_activity"):
         hv.test_rolling_gen_uart(value, debug_on=False)
+    assert hv.FAIL == 1
+
+
+def test_rolling_generator_classifies_coherent_and_rejects_unrelated_active_lanes():
+    value = device()
+
+    def rolling(**kwargs):
+        kwargs["full_out"].extend(b"capture")
+        return iter([(b"chunk", 1, 1)])
+
+    value.rolling_capture.side_effect = rolling
+    rows, ns = sampled(128, (3, 5))
+    rows[4] = []
+    with patch.object(hv, "samples_to_channels", return_value=(rows, ns)), \
+         patch.object(hv, "decode_uart", return_value=uart_bytes(b"Hello")), \
+         patch.object(hv, "log_floating_channel_activity"):
+        hv.test_rolling_gen_uart(value)
     assert hv.FAIL == 0
 
+    unrelated = [row[:] for row in rows]
+    unrelated[5] = [(index // 2) & 1 for index in range(ns)]
+    with patch.object(hv, "samples_to_channels", return_value=(unrelated, ns)), \
+         patch.object(hv, "decode_uart", return_value=uart_bytes(b"Hello")), \
+         patch.object(hv, "log_floating_channel_activity"):
+        hv.test_rolling_gen_uart(value)
+    assert hv.FAIL == 1
 
-def test_generator_routing_accepts_quiet_debug_lane_as_informational():
+
+def test_jumper_discovery_retries_transient_misses_and_tolerates_reset_failure():
+    value = device()
+    with patch.object(hv, "_discover_jumper_pair",
+                      side_effect=[None, None, (22, 13)]):
+        value.reset.side_effect = [RuntimeError("reset"), None]
+        assert hv._get_jumper_pair(value) == (22, 13)
+    assert value.reset.call_count == 2
+
+
+def test_jumper_discovery_exhausts_all_three_attempts_before_caching_absence():
+    value = device()
+    with patch.object(hv, "_discover_jumper_pair", return_value=None) as discover:
+        assert hv._get_jumper_pair(value) is None
+    assert discover.call_count == 3
+    assert value.reset.call_count == 2
+    assert hv._JUMPER_PAIR_SEARCHED is True
+
+
+def test_generator_routing_rejects_quiet_debug_lane():
     value = device()
     value.capture.return_value = b"quiet"
     with patch.object(hv, "samples_to_channels", return_value=sampled(64, ())):
         hv.test_i2c_gen_output(value)
-    assert hv.FAIL == 0
+    assert hv.FAIL == 1
     assert hv.PASS == 1
 
 
-def test_long_stress_covers_duration_timeout_progress_log_and_low_debug_activity():
+def test_long_stress_covers_duration_timeout_progress_log_and_rejects_low_debug_activity():
     value = device()
     value.rolling_capture.return_value = iter([(b"unused", 1, 1)])
     with patch.object(queue.Queue, "get", side_effect=queue.Empty), \
@@ -223,7 +266,7 @@ def test_long_stress_covers_duration_timeout_progress_log_and_low_debug_activity
          patch.object(hv, "log_floating_channel_activity"), \
          patch.object(hv, "check_channels_clean"):
         hv.test_long_stress(value, debug_on=True)
-    assert hv.FAIL == 5
+    assert hv.FAIL == 6
 
 
 def test_long_stress_characterises_captured_data_with_debug_disabled():
@@ -248,12 +291,12 @@ def test_full_depth_handles_static_or_missing_boundary_blocks():
     value.pkt.read_capture_block.side_effect = [b"\x00" * 4, b"middle", b"\x00" * 4]
     with patch.object(hv.time, "time", Clock(0.1)):
         hv.test_full_depth_capture(value)
-    assert hv.FAIL == 0
+    assert hv.FAIL == 2
 
     value.pkt.read_capture_block.side_effect = [b"", b"middle", b"last"]
     with patch.object(hv.time, "time", Clock(0.1)):
         hv.test_full_depth_capture(value)
-    assert hv.FAIL == 1
+    assert hv.FAIL == 3
 
 
 def test_back_to_back_exhausts_attempts_when_readback_never_completes():
@@ -311,15 +354,15 @@ def test_repeating_ring_handles_short_stream_without_close_method():
     assert hv.FAIL == 1
 
 
-def test_codec_matrix_records_invalid_raw_reference_as_characterisation():
+def test_codec_matrix_rejects_invalid_raw_reference_and_incomplete_rates():
     value = device()
     valid = bytes((index // 2) & 0xFF for index in range(262_144 * 2))
     short = b"short"
+    value.capture.side_effect = [valid, valid, b"", b"", b""]
     value.read_capture_range.side_effect = [valid, valid, valid, short, short, short]
-    with patch.object(hv, "_wait_capture_done", side_effect=[True, True, False, False, False]), \
-         patch.object(hv.time, "time", Clock(0.1)):
+    with patch.object(hv.time, "time", Clock(0.1)):
         hv.test_codec_readback_matrix(value)
-    assert hv.FAIL == 0
+    assert hv.FAIL == 3
 
 
 def test_live_rate_ceiling_stops_stream_after_measurement_window():

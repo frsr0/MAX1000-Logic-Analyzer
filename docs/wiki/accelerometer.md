@@ -63,8 +63,8 @@ as a device-level self-test and as a realistic protocol waveform source.
 
 ## Hardware validation status
 
-The 2026-09-07 volatile seed-10 image (SOF `0x00504799`) passed the on-board
-accelerometer checks as part of the **403/403** connected-board regression.
+The 2026-09-09 persistent seed-10 image (SOF `0x0050492F`) passed the on-board
+accelerometer checks as part of the **436/436** connected-board regression.
 The persistent 2026-08-27 image retains its historical **383/383** evidence.
 The test covers:
 

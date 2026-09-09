@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-09T11:20:15.783Z",
+  "generated_at": "2026-09-09T17:10:51.778Z",
   "cases": [
     {
       "status": "passed",
@@ -11,7 +11,16 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_804dcd8f30"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 466
+        }
+      },
+      "session_id": "ses_307370a62a"
     },
     {
       "status": "passed",
@@ -23,7 +32,16 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_b24f95e87d"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 810
+        }
+      },
+      "session_id": "ses_388e26b15b"
     },
     {
       "status": "passed",
@@ -35,7 +53,16 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_56e5845d4c"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 195
+        }
+      },
+      "session_id": "ses_aef9d0eb9d"
     },
     {
       "status": "passed",
@@ -47,7 +74,16 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_5413d22bcd"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 875
+        }
+      },
+      "session_id": "ses_d3d3d37443"
     },
     {
       "status": "passed",
@@ -59,7 +95,16 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_73a80fe85b"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 438
+        }
+      },
+      "session_id": "ses_eb658ad315"
     },
     {
       "status": "passed",
@@ -71,7 +116,16 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_5bef380c4a"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 173
+        }
+      },
+      "session_id": "ses_301cc4e841"
     },
     {
       "status": "passed",
@@ -83,7 +137,16 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_d213a0774c"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 89
+        }
+      },
+      "session_id": "ses_f061a7ec74"
     },
     {
       "status": "passed",
@@ -95,7 +158,16 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_bed30ffc40"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 70
+        }
+      },
+      "session_id": "ses_24e40ff72c"
     },
     {
       "status": "passed",
@@ -107,7 +179,16 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_3e524b14db"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 60
+        }
+      },
+      "session_id": "ses_5979c43405"
     },
     {
       "status": "passed",
@@ -119,7 +200,16 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_5adde02ccc"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 45
+        }
+      },
+      "session_id": "ses_9f43dbf84f"
     },
     {
       "status": "passed",
@@ -131,7 +221,16 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_b72ba91a8d"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 41
+        }
+      },
+      "session_id": "ses_a2eb717333"
     },
     {
       "status": "passed",
@@ -143,7 +242,16 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_15569ff94c"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 41
+        }
+      },
+      "session_id": "ses_2dbec324f4"
     },
     {
       "status": "passed",
@@ -155,7 +263,16 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_ae2d732109"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 41
+        }
+      },
+      "session_id": "ses_99cb3710f6"
     },
     {
       "status": "passed",
@@ -167,7 +284,16 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_49a3a4eba0"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 459
+        }
+      },
+      "session_id": "ses_6081b89e73"
     },
     {
       "status": "passed",
@@ -179,7 +305,16 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_d5050de31c"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 792
+        }
+      },
+      "session_id": "ses_9052499454"
     },
     {
       "status": "passed",
@@ -191,7 +326,16 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_7142c03765"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 194
+        }
+      },
+      "session_id": "ses_68a33e94b8"
     },
     {
       "status": "passed",
@@ -203,7 +347,16 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_a7dc8b54a0"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 875
+        }
+      },
+      "session_id": "ses_74277f02e9"
     },
     {
       "status": "passed",
@@ -215,7 +368,16 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_b8ed0adca2"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 437
+        }
+      },
+      "session_id": "ses_6fc5c57b1f"
     },
     {
       "status": "passed",
@@ -227,7 +389,16 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_4a58347280"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 176
+        }
+      },
+      "session_id": "ses_aefccd691b"
     },
     {
       "status": "passed",
@@ -239,7 +410,16 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_c64a1251a5"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 88
+        }
+      },
+      "session_id": "ses_f1540d8021"
     },
     {
       "status": "passed",
@@ -251,7 +431,16 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_4317b81b5f"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 72
+        }
+      },
+      "session_id": "ses_7c647e597e"
     },
     {
       "status": "passed",
@@ -263,7 +452,16 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_f648222b6e"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 61
+        }
+      },
+      "session_id": "ses_6f292bb01b"
     },
     {
       "status": "passed",
@@ -275,7 +473,16 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_e4579ca453"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 43
+        }
+      },
+      "session_id": "ses_cd4e0108a7"
     },
     {
       "status": "passed",
@@ -287,7 +494,16 @@
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_3f799140de"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 40
+        }
+      },
+      "session_id": "ses_10eecc1d40"
     },
     {
       "status": "passed",
@@ -299,7 +515,15 @@
       "samples": 4096,
       "digital_channels": 16,
       "analog_channels": [],
-      "session_id": "ses_0c88b5b3b1"
+      "waveform_content": {
+        "digital": {
+          "samples": 4096,
+          "min": 1,
+          "max": 1,
+          "distinct_words": 1
+        }
+      },
+      "session_id": "ses_7c109dc803"
     },
     {
       "status": "passed",
@@ -313,7 +537,17 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_73a051a15f"
+      "waveform_content": {
+        "analog": {
+          "a1": {
+            "samples": 1024,
+            "min_v": 0.04593406617641449,
+            "max_v": 1.2200732231140137,
+            "distinct_values": 47
+          }
+        }
+      },
+      "session_id": "ses_d78134049d"
     },
     {
       "status": "passed",
@@ -327,7 +561,17 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_f3c5f8eab7"
+      "waveform_content": {
+        "analog": {
+          "a1": {
+            "samples": 1024,
+            "min_v": 0.04512820392847061,
+            "max_v": 1.2289377450942993,
+            "distinct_values": 47
+          }
+        }
+      },
+      "session_id": "ses_6a8de685b7"
     },
     {
       "status": "passed",
@@ -341,7 +585,17 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_3de28d7a1a"
+      "waveform_content": {
+        "analog": {
+          "a1": {
+            "samples": 1024,
+            "min_v": 0.04754578694701195,
+            "max_v": 1.2216849327087402,
+            "distinct_values": 46
+          }
+        }
+      },
+      "session_id": "ses_b750576dc8"
     },
     {
       "status": "passed",
@@ -355,7 +609,17 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_f2df784bce"
+      "waveform_content": {
+        "analog": {
+          "a1": {
+            "samples": 1024,
+            "min_v": 0.04754578694701195,
+            "max_v": 1.2265201807022095,
+            "distinct_values": 44
+          }
+        }
+      },
+      "session_id": "ses_f265650129"
     },
     {
       "status": "passed",
@@ -369,7 +633,17 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_27da99fea7"
+      "waveform_content": {
+        "analog": {
+          "a1": {
+            "samples": 1024,
+            "min_v": 0.04593406617641449,
+            "max_v": 1.2232966423034668,
+            "distinct_values": 45
+          }
+        }
+      },
+      "session_id": "ses_11e38efedd"
     },
     {
       "status": "passed",
@@ -383,7 +657,17 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_42c38af41b"
+      "waveform_content": {
+        "analog": {
+          "a1": {
+            "samples": 1024,
+            "min_v": 0.04673992469906807,
+            "max_v": 1.2249083518981934,
+            "distinct_values": 47
+          }
+        }
+      },
+      "session_id": "ses_72d1afd33d"
     },
     {
       "status": "passed",
@@ -397,7 +681,17 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_24e8e61685"
+      "waveform_content": {
+        "analog": {
+          "a1": {
+            "samples": 1024,
+            "min_v": 0.04593406617641449,
+            "max_v": 1.2265201807022095,
+            "distinct_values": 46
+          }
+        }
+      },
+      "session_id": "ses_9cc13f7221"
     },
     {
       "status": "passed",
@@ -411,7 +705,17 @@
       "analog_channels": [
         "a1"
       ],
-      "session_id": "ses_d3a9339d4f"
+      "waveform_content": {
+        "analog": {
+          "a1": {
+            "samples": 1024,
+            "min_v": 0.04673992469906807,
+            "max_v": 1.2249083518981934,
+            "distinct_values": 47
+          }
+        }
+      },
+      "session_id": "ses_273fdd3ac0"
     },
     {
       "status": "passed",
@@ -420,7 +724,7 @@
       "api_mode": "analog_all",
       "requested_rate_hz": 24000,
       "effective_rate_hz": 24000,
-      "samples": 516,
+      "samples": 520,
       "digital_channels": 0,
       "analog_channels": [
         "a1",
@@ -428,7 +732,35 @@
         "a3",
         "a4"
       ],
-      "session_id": "ses_e4e27fdb6a"
+      "waveform_content": {
+        "analog": {
+          "a1": {
+            "samples": 520,
+            "min_v": 0.002417582320049405,
+            "max_v": 3.299999952316284,
+            "distinct_values": 169
+          },
+          "a2": {
+            "samples": 520,
+            "min_v": 0.09347984939813614,
+            "max_v": 3.2846884727478027,
+            "distinct_values": 141
+          },
+          "a3": {
+            "samples": 520,
+            "min_v": 0,
+            "max_v": 3.299194097518921,
+            "distinct_values": 312
+          },
+          "a4": {
+            "samples": 520,
+            "min_v": 0.0008058607927523553,
+            "max_v": 3.299999952316284,
+            "distinct_values": 182
+          }
+        }
+      },
+      "session_id": "ses_ce88d60fd4"
     },
     {
       "status": "passed",
@@ -437,7 +769,7 @@
       "api_mode": "analog_all_continuous",
       "requested_rate_hz": 24000,
       "effective_rate_hz": 24000,
-      "samples": 516,
+      "samples": 520,
       "digital_channels": 0,
       "analog_channels": [
         "a1",
@@ -445,7 +777,35 @@
         "a3",
         "a4"
       ],
-      "session_id": "ses_95a23f8958"
+      "waveform_content": {
+        "analog": {
+          "a1": {
+            "samples": 520,
+            "min_v": 0,
+            "max_v": 3.283076763153076,
+            "distinct_values": 155
+          },
+          "a2": {
+            "samples": 520,
+            "min_v": 0.008864468894898891,
+            "max_v": 3.2806591987609863,
+            "distinct_values": 164
+          },
+          "a3": {
+            "samples": 520,
+            "min_v": 0,
+            "max_v": 3.2983882427215576,
+            "distinct_values": 291
+          },
+          "a4": {
+            "samples": 520,
+            "min_v": 0.018534798175096512,
+            "max_v": 3.279853343963623,
+            "distinct_values": 170
+          }
+        }
+      },
+      "session_id": "ses_767327d05b"
     },
     {
       "status": "passed",
@@ -460,7 +820,30 @@
         "a1",
         "a2"
       ],
-      "session_id": "ses_f481a60ec2"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 176
+        },
+        "analog": {
+          "a1": {
+            "samples": 1024,
+            "min_v": 0.07010988891124725,
+            "max_v": 1.2216849327087402,
+            "distinct_values": 50
+          },
+          "a2": {
+            "samples": 1024,
+            "min_v": 0.07252746820449829,
+            "max_v": 1.2555310726165771,
+            "distinct_values": 45
+          }
+        }
+      },
+      "session_id": "ses_386c0835c2"
     },
     {
       "status": "passed",
@@ -475,7 +858,30 @@
         "a1",
         "a2"
       ],
-      "session_id": "ses_d3997bdebc"
+      "waveform_content": {
+        "digital": {
+          "samples": 1024,
+          "min": 57343,
+          "max": 65535,
+          "distinct_words": 2,
+          "ch13_transitions": 184
+        },
+        "analog": {
+          "a1": {
+            "samples": 1024,
+            "min_v": 0.07091575115919113,
+            "max_v": 1.2160439491271973,
+            "distinct_values": 48
+          },
+          "a2": {
+            "samples": 1024,
+            "min_v": 0.07091575115919113,
+            "max_v": 1.2498900890350342,
+            "distinct_values": 47
+          }
+        }
+      },
+      "session_id": "ses_84217da742"
     }
   ],
   "passed": 37,

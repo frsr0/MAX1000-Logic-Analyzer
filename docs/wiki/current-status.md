@@ -19,9 +19,9 @@ map, build result, or connected-board baseline changes.
 | Generator FIFO | 256 bytes = 1,024 two-bit symbols |
 | Generator divider | 24 bits when metadata feature bit 0 is set; legacy 16-bit images remain supported |
 | Programmed image | Current full mixed-signal seed-10 image in configuration flash, 2026-09-09 |
-| Persistent image | 2026-08-27 CFM image; unchanged by the current validation run |
+| Persistent image | Current seed-10 image, programmed into CFM on 2026-09-09 |
 | SOF checksum | `0x0050492F` (Quartus Assembler report) |
-| SOF SHA-256 | `2C33472F5C07F60CF41ED155EB0EAAA58D7C23320EC9A861C86ED82764F9FE50` |
+| SOF SHA-256 | `2028A05F689EA966B359359D8F0F4000A19298B8CEE98AF6A76A52003108C7D1` |
 
 The image was built by Quartus Prime Lite 25.1. The slow 1200 mV, 85 C
 post-fit timing gate is fully clean:
@@ -71,26 +71,29 @@ preset alternates every symbol, so its output frequency is half its symbol
 rate.
 
 UART, RS-485, and Bit Banger patterns can be armed with `live: true`. The
-driver re-kicks the repeating pattern after each rolling-capture reset until
-`POST /api/generator/stop`, allowing generator traffic to remain visible in
-live captures.
+FPGA repeat flag keeps the FIFO pattern running across rolling-capture resets
+until `POST /api/generator/stop`; the host does not schedule per-chunk restarts.
 
 ## Verification baseline
 
-The current volatile image has the following connected-board evidence:
+The current persistent image has the following connected-board evidence:
 
 - backend hardware smoke test: **10/10 passed**;
-- focused changed-path hardware validation: **117/117 passed, 0 failed,
-  0 skipped**, including both physical analogue jumpers;
-- strict codec/rate rerun after the cancellation-race repair: **26/26
-  passed**, with no suppressed transport errors;
-- full connected-board suite: **403/403 passed, 0 failed, 0 skipped**,
-  including LIS3DH and physical-jumper generic-trigger checks;
+- two consecutive full connected-board suites: **421/421 passed** each
+  (**842/842 combined, 0 failed, 0 skipped**), including LIS3DH and
+  physical-jumper generic-trigger checks;
+- a subsequent physical unplug/replug followed by fresh USB discovery and the
+  complete suite: **436/436 passed, 0 failed, 0 skipped**; both 60-second stress
+  halves and final concurrent capture/readout passed;
 - both strict 60-second rolling stress runs passed inside the full suite, with
   debug disabled and enabled, over 10 million samples captured in each run;
 - all 57 HDL testbenches pass with zero expected failures and zero exclusions;
 - browser hardware validation passes **5/5** feature tests (all **37/37**
-  advertised mode/rate cases) and **34/34** hardware-aligned UI tests;
+  advertised mode/rate cases) and **34/34** hardware-aligned UI tests; all 26
+  ordinary digital/mixed cases require physical 22→CH13 activity, with 40–875
+  transitions observed;
+- the current on-wire rate sweep passes **7/7** from 1,200 through 115,200
+  baud, with every measured rate within +0.79%;
 - the 2026-09-09 screenshot refresh checks exact session identity and loaded
   waveform state; visual review confirmed the expected UART, MIL, LIS3DH,
   analog-fast, four-lane analog, and mixed digital/analog traces;
@@ -98,9 +101,9 @@ The current volatile image has the following connected-board evidence:
   200.4 MHz narrow capture, packed MSO, pre-trigger, codec, readout-stress,
   and close/reopen lifecycle checks.
 
-The persistent 2026-08-27 image retains its historical 383/383 full-suite,
-37/37 browser-matrix, 200 MHz million-sample, generator-rate, and LIS3DH
-evidence. Those results are not attributed to the newer volatile image.
+The 2026-08-27 image retains its historical 383/383 full-suite, 37/37
+browser-matrix, 200 MHz million-sample, generator-rate, and LIS3DH evidence.
+Those historical results are not used as evidence for the current image.
 
 Software CI requires 100% statement and branch coverage for backend and host,
 and 100% statement, branch, function, and line coverage for all production
@@ -109,14 +112,14 @@ Playwright mock E2E, and all 57 GHDL benches. The self-hosted hardware workflow 
 its required MAX1000 is unavailable; it does not silently treat absence as a
 pass.
 
-The whole-frontend coverage requirement is met: **277 tests** cover all
-**3,382 statements, 2,475 branches, 941 functions, and 2,871 lines** in the
+The whole-frontend coverage requirement is met: **292 tests** cover all
+**3,421 statements, 2,540 branches, 958 functions, and 2,906 lines** in the
 configured production TypeScript/TSX scope. See
 [Frontend Build and Test](frontend/build-and-test.md).
 
-The latest host run passed **983 tests**, with all **8,241 statements** and
-**2,482 branches** covered (zero missing or partial branches). The backend
-run passed **541 tests**, covering all **8,800 statements** and **2,624
+The latest host run passed **1,010 tests**, with all **8,342 statements** and
+**2,488 branches** covered (zero missing or partial branches). The backend
+run passed **542 tests**, covering all **8,822 statements** and **2,630
 branches**. Coverage is
 execution evidence, not proof of all possible behavior or electrical setups.
 
@@ -160,11 +163,25 @@ on-board FTDI JTAG interface. See [Build Flow](hdl/build-flow.md).
 
 - The generator pattern is bounded to 1,024 two-bit symbols. Large arbitrary
   waveforms must be shortened, chunked, or rejected.
-- RS-485 DE is an FPGA-timed output, not a transceiver or arbitration layer.
-- I2C, SWD, CAN, LIN, MIL, and similar protocols need suitable external
-  electrical partners before software decoding becomes board-level evidence.
+- RS-485 loopback validates the generated data/DE timing and decode path, not
+  differential voltage, termination, loading, or interoperability through a
+  physical transceiver.
+- CAN, LIN, SWD/JTAG target response, MIL, I2S, MIDI, PS/2, and 1-Wire still
+  need suitable external electrical partners before decode or open-loop
+  generation becomes board-level interoperability evidence.
+- The installed analogue jumpers prove full-scale activity and cross-lane
+  isolation on ADC3/AIN4 and ADC7/AIN5. They do not provide calibrated voltage,
+  linearity, bandwidth, or all-lane stimulus. ADC1/AIN3 and ADC2/AIN1 are
+  validated by independent-versus-mixed baseline agreement, not a calibrated
+  driven source.
 - Live readback capacity depends on USB transport and signal compressibility;
   the ring reports overwrite loss and retains the newest samples.
+- Packed-live and the on-board generator share the FPGA Bit Engine/capture-arm
+  state, so a driven packed-live electrical test needs an independent external
+  source; the current on-board proof covers the packed hardware path and data
+  contract.
+- Cold USB/power-cycle persistence is now recorded: the board was physically
+  unplugged/replugged, rediscovered without reprogramming, and passed 436/436.
 - The HDL gate requires every one of the 57 `tb_*.vhd` benches; there are no
   exclusion or expected-failure lists. See [HDL Testbenches](hdl/testbenches.md).
 

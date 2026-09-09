@@ -107,10 +107,10 @@ for the physical and register contract.
 
 ## Current verification
 
-As of 2026-09-07, **277/277** Vitest tests cover all 3,382 statements, 2,475
-branches, 941 functions, and 2,871 lines in the production TypeScript/TSX
+As of 2026-09-09, **292/292** Vitest tests cover all 3,421 statements, 2,540
+branches, 958 functions, and 2,906 lines in the production TypeScript/TSX
 scope (100% in every metric). The attached-board Playwright runs pass 5/5
-feature tests—including all 37 advertised mode/rate combinations—and 33/33
+feature tests—including all 37 advertised mode/rate combinations—and 34/34
 hardware-aligned UI tests. Documentation PNGs are generated at 1440×1400 and
 live waveforms must identify the requested session and report a completed load
 before capture. See [Build & Test](build-and-test.md) and the

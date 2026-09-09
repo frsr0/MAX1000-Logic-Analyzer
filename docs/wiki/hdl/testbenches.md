@@ -24,9 +24,15 @@ scenarios without weakening those rules.
 CI pins `ghdl/ghdl:6.0.0-llvm-ubuntu-22.04`, so local and hosted runs use the
 same compiler and VHDL-2008 semantics.
 
+On this workstation GHDL 6.0 LLVM is installed in WSL at
+`/home/fraser/.local/opt/ghdl-6.0.0-llvm/bin/ghdl`, with
+`GHDL_PREFIX=/home/fraser/.local/opt/ghdl-6.0.0-llvm/lib/ghdl`. Both settings
+are exported from `/home/fraser/.profile`, so a fresh login shell can run the
+gate without a one-off path override.
+
 ## Current result
 
-The 2026-09-07 signoff run reports:
+The current signoff run reports:
 
 ```text
 HDL TB SUMMARY: 57 passed, 0 expected failures, 0 failed

@@ -158,9 +158,9 @@ finite FIFO limit still applies to the pattern itself; one-shot helpers retain
 their existing host-side burst behavior.
 
 The web API's `live: true` mode builds on this repeat path. The host remembers
-the armed UART/RS-485/Bit Banger pattern and re-kicks it after each rolling
-capture chunk reset, keeping generated traffic present across the live
-session. Generator stop clears both the FPGA repeat and remembered live state.
+the armed UART/RS-485/Bit Banger state, while the FPGA repeats the FIFO pattern
+across rolling-capture resets without host-timed re-kicks. Generator stop
+clears both the FPGA repeat and remembered live state.
 
 ## Dependencies
 

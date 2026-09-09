@@ -25,6 +25,7 @@ from driver.spi_protocol import (
     REG_FLAGS,
     REG_FLAGS_COMPRESS_MASK,
     REG_GEN_BAUD,
+    REG_GEN_DATA,
     REG_GEN_RX_DATA,
     REG_PATTERN_CTRL,
     ST_CAPTURE_ARMED,
@@ -288,6 +289,7 @@ def test_live_generator_kick_clear_and_idle_timeout(monkeypatch):
     assert dev._gen_kick(b"x") is False
     dev._wait_gen_idle.return_value = True
     dev.pkt.transaction.return_value = None
+    dev.pkt.get_status.return_value = {}
     assert dev._gen_kick(b"x") is False
 
     with pytest.raises(ValueError, match="empty"):
@@ -554,34 +556,51 @@ def test_repeating_uart_capture_validates_retries_kicks_and_aborts(monkeypatch):
     dev._ensure_open = MagicMock()
     dev._wait_gen_idle = MagicMock(return_value=True)
     dev.continuous_ring_capture = MagicMock(return_value=iter([(b"data", 2, 4)]))
-    dev._gen_kick = MagicMock(side_effect=OSError("missed kick"))
+    dev._gen_kick = MagicMock(side_effect=OSError("must not be used"))
     monkeypatch.setattr(device_module.time, "sleep", lambda _: None)
 
     with pytest.raises(ValueError, match="must not be empty"):
         list(dev.continuous_ring_capture_with_repeating_uart(1, 1, 1, object(), b""))
 
-    dev.pkt.transaction.side_effect = [
-        (ST_OK, 0, b""),
-        None,
-        (ST_OK, 0, b""),
-        (ST_OK, 0, b""),
-        (ST_OK, 0, b""),
-    ]
+    dev._start_gen_accepted = MagicMock(side_effect=[False, True])
     stop = SimpleNamespace(is_set=lambda: False)
     assert list(
         dev.continuous_ring_capture_with_repeating_uart(
             1_000_000, 2, 4, stop, b"A"
         )
     ) == [(b"data", 2, 4)]
-    dev._gen_kick.assert_called_once()
+    dev._gen_kick.assert_not_called()
+    assert call(REG_GEN_DATA, (1 << 8) | device_module.GEN_FLAG_REPEAT) in \
+        dev.pkt.write_register.call_args_list
 
-    dev.pkt.transaction.side_effect = [(ST_OK, 0, b""), None, (ST_OK, 0, b""), None]
+    dev._start_gen_accepted = MagicMock(side_effect=[False, False])
     with pytest.raises(RuntimeError, match="could not start"):
         list(
             dev.continuous_ring_capture_with_repeating_uart(
                 1_000_000, 2, 4, stop, b"A"
             )
         )
+
+
+def test_start_gen_accepts_packet_response_or_fire_and_hold_status(monkeypatch):
+    dev = _device()
+    dev.pkt.transaction.return_value = (ST_OK, 0, b"")
+    assert dev._start_gen_accepted() is True
+
+    dev.pkt.transaction.return_value = None
+    dev.pkt.get_status.side_effect = [
+        {"gen_busy": False, "gen_start_req": False},
+        {"gen_busy": True, "gen_start_req": False},
+    ]
+    monkeypatch.setattr(device_module.time, "sleep", lambda _: None)
+    assert dev._start_gen_accepted(confirm_timeout=1.0) is True
+
+    dev.pkt.get_status.side_effect = None
+    dev.pkt.get_status.return_value = {
+        "gen_busy": False,
+        "gen_start_req": False,
+    }
+    assert dev._start_gen_accepted(confirm_timeout=0.0) is False
 
 
 def test_i2c_capture_sets_auto_increment_only_for_multi_byte_read():
@@ -707,6 +726,27 @@ def test_accelerometer_capture_forces_digital_framing_and_restores_mode(monkeypa
     assert configured_modes == [MODE_DIGITAL]
     assert dev.analog_mode == MODE_MIXED
     dev.set_debug_ch0.assert_called_once_with(False)
+
+
+def test_accelerometer_capture_waits_while_hardware_is_busy(monkeypatch):
+    dev = _device()
+    dev._ensure_open = MagicMock()
+    dev._pins = MagicMock()
+    dev.set_debug_ch0 = MagicMock()
+    dev._write_capture_config = MagicMock()
+    dev._stream_readback = MagicMock(return_value=b"\x34\x12")
+    dev.pkt.transaction.side_effect = [(ST_OK, 0, b""), (ST_CAPTURE_ARMED, 0, b"")]
+    dev.pkt.get_status.side_effect = [
+        {"capture_status": 0},
+        {"capture_status": ST_CAPTURE_DONE},
+    ]
+    times = iter((1.0, 1.0, 1.01, 1.02))
+    monkeypatch.setattr(device_module.time, "time", lambda: next(times))
+    sleep = MagicMock()
+    monkeypatch.setattr(device_module.time, "sleep", sleep)
+
+    assert dev.accel_capture_dialogue([1], 2, nsamples=1) == b"\x34\x12"
+    assert call(0.002) in sleep.call_args_list
 
 
 def test_protocol_decoder_import_failure_returns_none(monkeypatch):
@@ -854,6 +894,19 @@ def test_continuous_ring_arm_retry_failure_and_recovery(monkeypatch):
     _prepare_ring(dev)
     dev.pkt.arm_capture.side_effect = [-1, ST_OK]
     assert list(dev.continuous_ring_capture(1_000_000, 1, 2, _SequenceStop([True]))) == []
+
+
+def test_continuous_ring_can_leave_debug_source_unmanaged():
+    dev = _device()
+    _prepare_ring(dev)
+    assert list(dev.continuous_ring_capture(
+        1_000_000,
+        1,
+        2,
+        _SequenceStop([True]),
+        manage_debug_source=False,
+    )) == []
+    dev.set_debug_ch0.assert_not_called()
 
 
 def test_continuous_ring_callbacks_buffer_trim_pending_and_metadata_errors(monkeypatch):
@@ -1087,6 +1140,30 @@ def test_capture_pending_arm_stop_and_ack_paths(monkeypatch):
     dev.pkt.get_status.return_value = {"capture_seq": 1}
     assert dev.capture(nsamples=2, timeout=0.01, trigger="rising") == b"\x01\x00"
     dev.ack_capture_done.assert_called_once_with(2)
+
+
+def test_capture_packed_mode_preserves_leading_zero_samples(monkeypatch):
+    monkeypatch.setattr(device_module.time, "sleep", lambda _: None)
+    dev = _device()
+    dev._ensure_open = MagicMock()
+    dev.reset = MagicMock()
+    dev.set_debug_ch0 = MagicMock()
+    dev._kick_live_gen = MagicMock()
+    dev._write_capture_config = MagicMock()
+    dev.raw_flags = device_module.MODE_PACKED_MSO
+    dev.pkt.get_status.return_value = {"capture_seq": 1}
+    dev.pkt.arm_capture.return_value = ST_OK
+    dev._wait_capture_done = MagicMock(return_value={
+        "capture_status": ST_CAPTURE_DONE,
+        "capture_seq": 2,
+        "producer_index": 2,
+    })
+    dev._stream_readback = MagicMock(return_value=b"\x00\x00\x01\x00")
+    dev._trim_packed_capture = MagicMock(side_effect=lambda samples, status: samples)
+    dev._filter_digital = MagicMock(side_effect=lambda samples: samples)
+    dev.ack_capture_done = MagicMock()
+
+    assert dev.capture(nsamples=2, timeout=0.01, trigger="rising") == b"\x00\x00\x01\x00"
 
 
 def test_i2c_rolling_stop_empty_and_callbacks(monkeypatch):

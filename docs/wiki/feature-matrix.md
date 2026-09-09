@@ -88,8 +88,8 @@ has an explicit scope boundary.
 | Timing | Slow-85C setup: `fast_clk` **+0.253 ns**, `sdram_core_clk` **+0.178 ns**, `sys_clk` **+0.278 ns**; all timing checks clean |
 | Logic use | 7,713/8,064 LEs (96%); 4,802 registers |
 | Generator divider | 24-bit `REG_GEN_BAUD`; feature-advertised through metadata |
-| Current SOF | `0x00504799`, programmed to volatile SRAM 2026-09-07 |
-| Hardware regression | 403/403 full suite; 57/57 GHDL; browser hardware suites 5/5 and 33/33 |
+| Current SOF | `0x0050492F`, programmed into configuration flash 2026-09-09 |
+| Hardware regression | 436/436 cold-power-cycle full suite; 57/57 GHDL; browser hardware suites 5/5 and 34/34 |
 
 ## How to interpret coverage
 

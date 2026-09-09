@@ -49,9 +49,9 @@ statement/branch/function/line thresholds are unchanged.
 
 The initial full-source audit on 2026-09-04 found only 110/3,362 statements
 (3.27%) and 43/2,512 branches (1.71%); the former 100% report measured only
-three transport modules. The completed strict suite now has **277 passing
-tests** and literal 100% coverage: 3,382/3,382 statements, 2,475/2,475
-branches, 941/941 functions, and 2,871/2,871 lines. Playwright and real-board
+three transport modules. The completed strict suite now has **292 passing
+tests** and literal 100% coverage: 3,421/3,421 statements, 2,540/2,540
+branches, 958/958 functions, and 2,906/2,906 lines. Playwright and real-board
 passes remain complementary evidence, not unmeasured coverage credit.
 
 This tranche found and fixed stale asynchronous results crossing session or
