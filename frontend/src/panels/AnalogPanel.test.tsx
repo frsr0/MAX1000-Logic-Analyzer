@@ -209,7 +209,9 @@ it('plots XY data for whole/cursor ranges and rejects missing or empty arrays', 
     await waitFor(() => expect(worker.fetchWindow).toHaveBeenCalledTimes(call));
   }
   expect(worker.fetchWindow).toHaveBeenNthCalledWith(2, 'mixed', 10, 70, 2000, ['a0', 'a1']);
-  expect(useApp.getState().toasts.filter((toast) => toast.message.includes('No analog samples'))).toHaveLength(4);
+  // Repeated analysis failures share one user-facing message and are
+  // intentionally deduplicated by the toast store.
+  expect(useApp.getState().toasts.filter((toast) => toast.message.includes('No analog samples'))).toHaveLength(1);
 
   fireEvent.change(screen.getByLabelText('Y channel'), { target: { value: 'a0' } });
   expect(screen.getByText('Pick two different channels for an XY plot.')).toBeTruthy();

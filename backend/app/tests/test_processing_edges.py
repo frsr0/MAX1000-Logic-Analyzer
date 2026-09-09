@@ -1273,6 +1273,42 @@ def test_swd_decoder_can_mark_open_loop_no_target_as_expected():
     assert "expected no target" in expected_xfer["label"]
 
 
+def _lis3dh_who_am_i_capture(address=0x19):
+    """A sampled I2C register-read transaction on capture bits 13/14."""
+    levels = []
+
+    def level(sda, scl):
+        levels.extend([(sda, scl)] * 4)
+
+    def byte(value, ack):
+        for bit in range(7, -1, -1):
+            sda = (value >> bit) & 1
+            level(sda, 0)
+            level(sda, 1)
+            level(sda, 0)
+        level(ack, 0)
+        level(ack, 1)
+        level(ack, 0)
+
+    level(1, 1)
+    level(0, 1)  # START
+    level(0, 0)
+    byte(address << 1, 0)
+    byte(0x0F, 0)
+    level(1, 0)
+    level(1, 1)
+    level(0, 1)  # repeated START
+    level(0, 0)
+    byte((address << 1) | 1, 0)
+    byte(0x33, 1)
+    level(0, 0)
+    level(0, 1)
+    level(1, 1)  # STOP
+    words = np.asarray([(sda << 13) | (scl << 14) for sda, scl in levels],
+                       dtype="<u2")
+    return words.tobytes()
+
+
 def test_live_accelerometer_diagnostics_builds_session_and_handles_empty_capture(monkeypatch):
     import app.api.diagnostics as diagnostics_api
     from app.capture.session import DeviceMetadata
@@ -1280,7 +1316,7 @@ def test_live_accelerometer_diagnostics_builds_session_and_handles_empty_capture
 
     raw = MagicMock(sys_clk=100_000_000, sample_clk=2_000_000)
     raw.accel_read_i2c.side_effect = [0, 0x33]
-    raw.accel_capture_dialogue.return_value = b"\x01\x00\x02\x00"
+    raw.accel_capture_dialogue.return_value = _lis3dh_who_am_i_capture(0x18)
     dev = MagicMock(_dev=raw)
     dev.get_metadata.return_value = DeviceMetadata(driver="fake", device_name="fake",
                                                    connection="test", port="p",
@@ -1294,6 +1330,14 @@ def test_live_accelerometer_diagnostics_builds_session_and_handles_empty_capture
     result = diagnostics_api.live_accel_session("test")
     assert result["session_id"].startswith("ses_")
     assert raw.accel_read_i2c.call_count == 2
+    session = diagnostics_api.store.get(result["session_id"])
+    assert [channel.id for channel in session.channels if channel.enabled] == [
+        "d13", "d14", "d15"
+    ]
+    events = diagnostics_api.store.load_decoder_events(result["session_id"], "dec-accel")
+    assert any(e["type"] == "i2c_byte" and e["fields"].get("byte") == 0x33
+               for e in events)
+    diagnostics_api.store.delete(result["session_id"])
 
     raw.accel_capture_dialogue.return_value = b""
     with pytest.raises(HTTPException, match="returned no data"):
@@ -1307,7 +1351,7 @@ def test_live_accelerometer_diagnostics_retries_one_empty_hardware_capture(monke
 
     raw = MagicMock(sys_clk=100_000_000, sample_clk=2_000_000)
     raw.accel_read_i2c.return_value = 0x33
-    raw.accel_capture_dialogue.side_effect = [b"", b"\x01\x00\x02\x00"]
+    raw.accel_capture_dialogue.side_effect = [b"", _lis3dh_who_am_i_capture()]
     dev = MagicMock(_dev=raw)
     dev.get_metadata.return_value = DeviceMetadata(
         driver="fake", device_name="fake", connection="test", port="p",
@@ -1323,6 +1367,26 @@ def test_live_accelerometer_diagnostics_retries_one_empty_hardware_capture(monke
 
     assert result["session_id"].startswith("ses_")
     assert raw.accel_capture_dialogue.call_count == 2
+    diagnostics_api.store.delete(result["session_id"])
+
+
+def test_live_accelerometer_diagnostics_rejects_non_i2c_capture(monkeypatch):
+    import app.api.diagnostics as diagnostics_api
+    from app.capture.session import DeviceMetadata
+    from fastapi import HTTPException
+
+    raw = MagicMock(sys_clk=100_000_000, sample_clk=2_000_000)
+    raw.accel_read_i2c.return_value = 0x33
+    raw.accel_capture_dialogue.return_value = b"\xFE\xBF" * 4096
+    dev = MagicMock(_dev=raw)
+    dev.get_metadata.return_value = DeviceMetadata(driver="fake", device_name="fake")
+    manager = MagicMock(device_kind="hardware")
+    manager.require_device.return_value = dev
+    monkeypatch.setattr(diagnostics_api, "capture_manager", manager)
+    monkeypatch.setattr(diagnostics_api, "require_control", lambda _: None)
+
+    with pytest.raises(HTTPException, match="valid WHO_AM_I"):
+        diagnostics_api.live_accel_session("test")
 
 
 def test_diagnostics_self_test_and_mock_capture_error_mapping(monkeypatch):

@@ -148,6 +148,7 @@ export const useApp = create<AppState>((set, getState) => ({
 
   toasts: [],
   toast: (level, message) => {
+    if (getState().toasts.some((toast) => toast.level === level && toast.message === message)) return;
     const id = toastSeq++;
     set((st) => ({ toasts: [...st.toasts, { id, level, message }] }));
     setTimeout(() => getState().dismissToast(id),

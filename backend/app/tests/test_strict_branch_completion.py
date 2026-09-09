@@ -1,6 +1,7 @@
 """Behavioral closure for uncommon but supported branch combinations."""
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import ANY, Mock
 
 import numpy as np
@@ -90,8 +91,25 @@ def test_accelerometer_probe_keeps_default_address_when_no_alternate_matches(
     dev.get_metadata.return_value = DeviceMetadata(driver="fake", device_name="fake")
     manager = Mock(device_kind="hardware")
     manager.require_device.return_value = dev
+    class ValidI2cDecoder:
+        def defaults(self):
+            return {}
+
+        def decode(self, _context, _settings):
+            return SimpleNamespace(warnings=[], events=[
+                {"type": "i2c_address", "severity": "normal",
+                 "fields": {"address": 0x19, "rw": "write", "ack": True}},
+                {"type": "i2c_byte", "severity": "normal",
+                 "fields": {"byte": 0x0F}},
+                {"type": "i2c_address", "severity": "normal",
+                 "fields": {"address": 0x19, "rw": "read", "ack": True}},
+                {"type": "i2c_byte", "severity": "warning",
+                 "fields": {"byte": 0x33}},
+            ])
+
     monkeypatch.setattr(diagnostics_api, "capture_manager", manager)
     monkeypatch.setattr(diagnostics_api, "require_control", lambda client: None)
+    monkeypatch.setattr(diagnostics_api, "I2cDecoder", ValidI2cDecoder)
     result = diagnostics_api.live_accel_session("owner")
     try:
         symbols = raw.accel_capture_dialogue.call_args.args[0]

@@ -15,6 +15,8 @@ from ..capture.session import (CaptureSettings, DecoderInstance, Session,
 from ..config import APP_NAME, APP_VERSION, PORT
 from ..diagnostics.debug_bundle import build_debug_bundle
 from ..diagnostics.logger import get_logs
+from ..decoders.base import DecodeContext
+from ..decoders.i2c import I2cDecoder
 from ..hardware.base import HardwareError
 from ..state import capture_manager, store
 from .deps import client_id_header, require_control
@@ -107,6 +109,43 @@ def live_accel_session(client_id: str = Depends(client_id_header)):
         raise HTTPException(502, "Live accelerometer capture returned no data")
 
     digital = payload_to_digital(data)
+    waveform = WaveformData(sample_rate=2_000_000, digital=digital)
+    decoder = I2cDecoder()
+    decoded = decoder.decode(
+        DecodeContext(waveform, {"sda": "d13", "scl": "d14"}),
+        decoder.defaults(),
+    )
+    for event in decoded.events:
+        event["decoder_id"] = "dec-accel"
+    address_events = [
+        event["fields"] for event in decoded.events
+        if event["type"] == "i2c_address"
+    ]
+    data_bytes = [
+        event["fields"].get("byte") for event in decoded.events
+        if event["type"] == "i2c_byte"
+    ]
+    has_write = any(
+        event.get("address") == addr and event.get("rw") == "write"
+        and event.get("ack") is True
+        for event in address_events
+    )
+    has_read = any(
+        event.get("address") == addr and event.get("rw") == "read"
+        and event.get("ack") is True
+        for event in address_events
+    )
+    try:
+        register_index = data_bytes.index(0x0F)
+        has_identity = 0x33 in data_bytes[register_index + 1:]
+    except ValueError:
+        has_identity = False
+    if not (has_write and has_read and has_identity):
+        raise HTTPException(
+            502, "Live accelerometer capture did not contain a valid WHO_AM_I transaction")
+
+    warning_count = len(decoded.warnings) + sum(
+        event.get("severity") == "warning" for event in decoded.events)
     session_id = new_id("ses")
     session = Session(
         id=session_id,
@@ -138,8 +177,8 @@ def live_accel_session(client_id: str = Depends(client_id_header)):
                 region=None,
                 status="done",
                 error=None,
-                event_count=4,
-                warning_count=0,
+                event_count=len(decoded.events),
+                warning_count=warning_count,
             )
         ],
         measurements=[],
@@ -152,58 +191,11 @@ def live_accel_session(client_id: str = Depends(client_id_header)):
     session.channels[13].name = "SEN_SDI"
     session.channels[14].name = "SEN_SPC"
     session.channels[15].name = "SEN_SDO"
+    for channel in session.channels:
+        channel.enabled = channel.id in {"d13", "d14", "d15"}
     store.save(session)
-    store.save_waveform(session_id, WaveformData(sample_rate=2_000_000, digital=digital))
-    store.save_decoder_events(session_id, "dec-accel", [
-        {
-            "id": "evt-1",
-            "decoder_id": "dec-accel",
-            "type": "start",
-            "start_sample": 1800,
-            "end_sample": 1800,
-            "start_time": 0.0009,
-            "end_time": 0.0009,
-            "label": "START",
-            "severity": "normal",
-            "fields": {"value": 0x19},
-        },
-        {
-            "id": "evt-2",
-            "decoder_id": "dec-accel",
-            "type": "byte",
-            "start_sample": 3800,
-            "end_sample": 3800,
-            "start_time": 0.0019,
-            "end_time": 0.0019,
-            "label": "0x0F",
-            "severity": "normal",
-            "fields": {"value": 0x0F},
-        },
-        {
-            "id": "evt-3",
-            "decoder_id": "dec-accel",
-            "type": "byte",
-            "start_sample": 7600,
-            "end_sample": 7600,
-            "start_time": 0.0038,
-            "end_time": 0.0038,
-            "label": "0x33",
-            "severity": "normal",
-            "fields": {"value": 0x33, "ascii": "3"},
-        },
-        {
-            "id": "evt-4",
-            "decoder_id": "dec-accel",
-            "type": "stop",
-            "start_sample": 11200,
-            "end_sample": 11200,
-            "start_time": 0.0056,
-            "end_time": 0.0056,
-            "label": "STOP",
-            "severity": "normal",
-            "fields": {"value": 0x33},
-        },
-    ])
+    store.save_waveform(session_id, waveform)
+    store.save_decoder_events(session_id, "dec-accel", decoded.events)
     return {"session_id": session_id, "session": session.summary()}
 
 

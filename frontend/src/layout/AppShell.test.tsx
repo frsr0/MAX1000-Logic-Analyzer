@@ -106,7 +106,7 @@ it('supports global capture/save shortcuts and reports command failures', async 
   render(<AppShell />);
   fireEvent.keyDown(window, { key: ' ', target: document.body });
   fireEvent.keyDown(window, { key: 's', ctrlKey: true, target: document.body });
-  await waitFor(() => expect(useApp.getState().toasts.filter((toast) => toast.level === 'error').length).toBe(2));
+  await waitFor(() => expect(useApp.getState().toasts.filter((toast) => toast.level === 'error').length).toBe(1));
   const select = document.createElement('select'); document.body.append(select);
   fireEvent.keyDown(select, { key: ' ' });
   expect(fetcher).toHaveBeenCalledTimes(2);

@@ -680,34 +680,49 @@ class OLSDeviceSPI:
             raise ValueError("rate_hz must be positive")
         self._ensure_open()
         self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)  # flush FIFOs
+        previous_analog_mode = self.analog_mode
+        # A prior validation capture may have left the compatibility PWM
+        # source repeating on CH0. Stop it before loading the sensor symbols;
+        # CMD_GEN_STOP also resets generator state on the FPGA.
+        self.set_debug_ch0(False)
         flags = (1 << 8) | GEN_FLAG_ACCEL_ATTACH | \
             (GEN_FLAG_SPI_TEST if spi_test else 0)
-        self.pkt.write_register(REG_GEN_DATA, flags)
-        self.pkt.write_register(REG_GEN_PROTO, 0)
-        self._pins(tx_pin=24, scl_pin=GEN_SCL_PARK)
-        self.pkt.write_register(REG_GEN_BAUD, bit_div & self.gen_div_mask)
-        self.pkt.load_gen_data(bit_bang.pack_symbols(syms))
-        div = max(0, int(self.sample_clk / rate_hz) - 1)
-        self._write_capture_config(
-            div=div, samples=nsamples, delay_count=nsamples, mask=0, value=0,
-            flags=0, fast_mode=True, continuous=False)
-        self.spi.flush()
-        r = self.pkt.transaction(CMD_GEN_CAPTURE, timeout=1.0)
-        if r is None or r[0] not in (0, ST_CAPTURE_ARMED):
-            return b''
-        # No SPI traffic during the capture window: status polls disturb the
-        # SDRAM write pump and drop writes (stale cells). Sleep the fixed
-        # capture duration out, then poll for DONE.
-        time.sleep(min(timeout, nsamples / float(rate_hz) + 0.05))
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            st = self.pkt.get_status()
-            if st.get('capture_status', -1) == ST_CAPTURE_DONE:
-                break
-            time.sleep(0.002)
-        data = self._stream_readback(0, nsamples)[:nsamples * 2]
-        self.pkt.write_register(REG_GEN_DATA, 1 << 8)  # drop attach flag
-        return data
+        try:
+            self.pkt.write_register(REG_GEN_DATA, flags)
+            self.pkt.write_register(REG_GEN_PROTO, 0)
+            self._pins(tx_pin=24, scl_pin=GEN_SCL_PARK)
+            self.pkt.write_register(REG_GEN_BAUD, bit_div & self.gen_div_mask)
+            self.pkt.load_gen_data(bit_bang.pack_symbols(syms))
+            div = max(0, int(self.sample_clk / rate_hz) - 1)
+            # Capture readback below is one 16-bit digital word per sample.
+            # Never inherit mixed/analog framing from a preceding UI capture.
+            self.analog_mode = MODE_DIGITAL
+            self._write_capture_config(
+                div=div, samples=nsamples, delay_count=nsamples, mask=0, value=0,
+                flags=0, fast_mode=True, continuous=False)
+            self.spi.flush()
+            r = self.pkt.transaction(CMD_GEN_CAPTURE, timeout=1.0)
+            if r is None or r[0] not in (0, ST_CAPTURE_ARMED):
+                return b''
+            # No SPI traffic during the capture window: status polls disturb
+            # the SDRAM write pump and drop writes (stale cells). Sleep the
+            # fixed capture duration out, then poll for DONE.
+            time.sleep(min(timeout, nsamples / float(rate_hz) + 0.05))
+            deadline = time.time() + timeout
+            capture_done = False
+            while time.time() < deadline:
+                st = self.pkt.get_status()
+                if st.get('capture_status', -1) == ST_CAPTURE_DONE:
+                    capture_done = True
+                    break
+                time.sleep(0.002)
+            if not capture_done:
+                self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+                return b''
+            return self._stream_readback(0, nsamples)[:nsamples * 2]
+        finally:
+            self.pkt.write_register(REG_GEN_DATA, 1 << 8)  # drop attach flag
+            self.analog_mode = previous_analog_mode
 
     def _gen_run_and_rx(self, syms, bit_div, spi_test=False, timeout=2.0):
         """Run one Bit_Engine burst on the accelerometer bus and return the

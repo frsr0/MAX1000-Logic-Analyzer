@@ -25,14 +25,14 @@ This repository is currently verified for:
 - UART, RS-485, I2C, SPI, SWD transaction capture, and raw two-output Bit Banger generation
 - Browser UI, backend API, and classic host-driver workflow
 
-Latest validation baseline (software rerun 2026-09-08; hardware 2026-09-07):
+Latest validation baseline (software and hardware rerun 2026-09-09):
 
 - `backend/app/tests`: `541/541` passed at 100% statement/branch coverage
 - `host/tests/` + `host/driver/tests/`: `983/983` passed at 100% statement/branch coverage
 - `frontend`: `277/277` passed at 100% statement/branch/function/line coverage; production build passed
 - Full connected-fixture hardware regression: **403/403 passed, 0 failed, 0 skipped**
 - Native GHDL regression: **57/57 passed**, with zero XFAIL/XPASS/exclusions
-- Real-browser hardware validation: **5/5 feature tests** (including all 37 advertised mode/rate combinations) and **33/33 hardware-aligned UI tests**
+- Real-browser hardware validation: **5/5 feature tests** (including all 37 advertised mode/rate combinations) and **34/34 hardware-aligned UI tests**
 
 ## What The Current Bitstream Actually Does
 
@@ -89,7 +89,7 @@ Main storage paths:
 
 ## UI Screenshots
 
-All screenshots below were regenerated on 2026-09-07 from the attached
+All screenshots below were regenerated on 2026-09-09 from the attached
 MAX1000 and the current volatile seed-10 image. The browser tests require the
 named session to be active and its waveform payload to finish loading before
 writing each PNG.

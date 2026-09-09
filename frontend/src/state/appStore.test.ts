@@ -115,6 +115,15 @@ it('expires ordinary toasts at four seconds and errors at eight, with manual dis
   expect(useApp.getState().toasts).toEqual([]);
 });
 
+it('deduplicates repeated warning toasts while still expiring them', async () => {
+  const { useApp } = await import('./appStore');
+  useApp.getState().toast('warning', 'Packed 1-channel narrow digital mode on d0');
+  useApp.getState().toast('warning', 'Packed 1-channel narrow digital mode on d0');
+  expect(useApp.getState().toasts).toHaveLength(1);
+  await vi.advanceTimersByTimeAsync(4000);
+  expect(useApp.getState().toasts).toEqual([]);
+});
+
 it('refreshes backend state through HTTP and keeps useful state across transient failures', async () => {
   const { useApp } = await import('./appStore');
   const fetcher = vi.fn()

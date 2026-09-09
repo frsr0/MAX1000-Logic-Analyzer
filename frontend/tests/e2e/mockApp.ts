@@ -921,8 +921,17 @@ export async function installMockApp(page: Page, options: { mockDevice?: boolean
         ] }));
     }
     if (req.method() === 'GET' && /\/api\/sessions\/[^/]+\/eye$/.test(new URL(req.url()).pathname)) {
-      return route.fulfill(okJson({ channel: 'd0', baud: 115200, unit_samples: 8.68, traces: 24,
-        grid: Array.from({ length: 64 }, (_, y) => Array.from({ length: 160 }, (_, x) => (x + y) % 7 === 0 ? 1 : 0)) }));
+      const eyeUrl = new URL(req.url());
+      const baud = Number(eyeUrl.searchParams.get('baud')) || 115200;
+      // A deterministic open-eye fixture: stable high/low rails with short
+      // transitions at the UI boundaries, rather than a diagonal stripe that
+      // can look like a barber pole while still producing a visible canvas.
+      const grid = Array.from({ length: 64 }, (_, y) => Array.from({ length: 160 }, (_, x) => {
+        const rail = (y >= 10 && y <= 14) || (y >= 49 && y <= 53);
+        const transition = (x < 16 || x >= 144) && y >= 14 && y <= 49;
+        return rail ? 8 : transition ? 4 : 0;
+      }));
+      return route.fulfill(okJson({ channel: 'd0', baud, unit_samples: 125000 / baud, traces: 24, grid }));
     }
     if (req.method() === 'GET' && /\/api\/sessions\/[^/]+\/timing-suspects$/.test(new URL(req.url()).pathname)) {
       return route.fulfill(okJson({ channel: 'd0', median_samples: 10, mad_samples: 0, threshold_samples: 5,

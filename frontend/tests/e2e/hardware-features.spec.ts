@@ -26,6 +26,21 @@ async function takeScreenshot(page: any, name: string, opts: { fullPage?: boolea
   await page.screenshot({ path: path.join(screenshots, name), ...opts });
 }
 
+async function takeElementScreenshot(page: any, selector: string, name: string) {
+  await page.waitForTimeout(150);
+  const element = page.locator(selector);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await element.screenshot({ path: path.join(screenshots, name) });
+      return;
+    } catch (err: any) {
+      if (!/UNKNOWN/.test(String(err?.message ?? err))) throw err;
+      await page.waitForTimeout(300 * (attempt + 1));
+    }
+  }
+  await element.screenshot({ path: path.join(screenshots, name) });
+}
+
 type HardwareStatus = {
   device_connected?: boolean;
   device_kind?: string | null;
@@ -181,7 +196,7 @@ test('hardware queue captures a real MAX1000 session', async ({ page }) => {
 
 type TriggerSearchResult = {
   sample: number | null;
-  event: { type: string } | null;
+  event: { type: string; start_sample: number; end_sample: number } | null;
   scopes: Array<{ decoder_id: string; start_sample: number; end_sample: number; event_count: number }>;
 };
 
@@ -204,7 +219,7 @@ test('hardware accelerometer sequence trigger scopes the I2C decoder', async ({ 
       auto_scope: true,
       trigger: {
         type: 'sequence',
-        sequence_steps: [{ type: 'start', value: 25 }, { type: 'byte', value: 15 }],
+        sequence_steps: [{ type: 'i2c_start' }, { type: 'i2c_byte', value: 15 }],
         window_s: 0.01,
         occurrence: 1,
         pre_trigger_samples: 0,
@@ -226,11 +241,11 @@ test('hardware accelerometer sequence trigger scopes the I2C decoder', async ({ 
   // matched at a real sample, the event is an I2C START, and the decoder is
   // auto-scoped to exactly that sample.
   expect(result.sample).toEqual(expect.any(Number));
-  expect(result.event?.type).toBe('start');
+  expect(result.event?.type).toBe('i2c_start');
   expect(result.scopes).toEqual([{
     decoder_id: 'dec-accel',
-    start_sample: result.sample,
-    end_sample: result.sample,
+    start_sample: result.event?.start_sample,
+    end_sample: result.event?.end_sample,
     event_count: 1,
   }]);
 });
@@ -242,13 +257,17 @@ test('hardware capture controls screenshot matrix covers every advertised rate',
   const screenshotRates = async (mode: string, acquisition: 'single' | 'live' = 'single') => {
     await page.locator('.mode-tile', { hasText: mode }).click();
     if (acquisition === 'live') await page.getByRole('button', { name: 'Continuous view' }).click();
+    await expect(page.locator('.side-panel')).toContainText('Capture source');
     const options = await rateSelect.locator('option').evaluateAll((items) => items.map((item) => ({
       value: (item as HTMLOptionElement).value,
       label: item.textContent?.trim() ?? '',
     })));
     for (const option of options) {
       await rateSelect.selectOption(option.value);
-      await takeScreenshot(page, `hardware-matrix-${slug(mode)}-${acquisition}-${slug(option.label)}.png`, { fullPage: true });
+      // This matrix documents configuration coverage. Capture only the setup
+      // panel so an unrelated previously loaded session cannot masquerade as
+      // evidence for the selected mode/rate.
+      await takeElementScreenshot(page, '.side-panel', `hardware-matrix-${slug(mode)}-${acquisition}-${slug(option.label)}.png`);
     }
     return options.map((option) => option.label);
   };

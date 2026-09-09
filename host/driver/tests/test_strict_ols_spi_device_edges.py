@@ -231,6 +231,7 @@ def test_accelerometer_capture_rejects_arm_and_completes_success(monkeypatch):
     dev = _device()
     dev._ensure_open = MagicMock()
     dev._pins = MagicMock()
+    dev.set_debug_ch0 = MagicMock()
     dev._write_capture_config = MagicMock()
     dev._stream_readback = MagicMock(return_value=b"abcd")
     monkeypatch.setattr(device_module.time, "sleep", lambda _: None)
@@ -241,7 +242,9 @@ def test_accelerometer_capture_rejects_arm_and_completes_success(monkeypatch):
     dev.pkt.transaction.side_effect = [(ST_OK, 0, b""), None]
     assert dev.accel_capture_dialogue([1], 2) == b""
 
-    dev.pkt.transaction.side_effect = [(ST_OK, 0, b""), (ST_CAPTURE_ARMED, 0, b"")]
+    dev.pkt.transaction.side_effect = [
+        (ST_OK, 0, b""), (ST_CAPTURE_ARMED, 0, b""), (ST_OK, 0, b"")
+    ]
     dev.pkt.get_status.return_value = {"capture_status": ST_CAPTURE_DONE}
     assert dev.accel_capture_dialogue([1], 2, rate_hz=1, nsamples=2) == b"abcd"
 
@@ -659,18 +662,51 @@ def test_generator_fifo_exhaustion_empty_i2c_symbols_and_direct_start(monkeypatc
     assert dev._gen_run_and_rx([1], 2)[:1] == [1]
 
 
-def test_accelerometer_capture_timeout_still_reads_buffer(monkeypatch):
+def test_accelerometer_capture_timeout_does_not_read_stale_buffer(monkeypatch):
     dev = _device()
+    dev.analog_mode = MODE_MIXED
     dev._ensure_open = MagicMock()
     dev._pins = MagicMock()
+    dev.set_debug_ch0 = MagicMock()
     dev._write_capture_config = MagicMock()
     dev._stream_readback = MagicMock(return_value=b"ok")
-    dev.pkt.transaction.side_effect = [(ST_OK, 0, b""), (ST_CAPTURE_ARMED, 0, b"")]
+    dev.pkt.transaction.side_effect = [
+        (ST_OK, 0, b""), (ST_CAPTURE_ARMED, 0, b""), (ST_OK, 0, b"")
+    ]
     dev.pkt.get_status.return_value = {"capture_status": 0}
     times = iter((1.0, 1.1, 2.0))
     monkeypatch.setattr(device_module.time, "time", lambda: next(times))
     monkeypatch.setattr(device_module.time, "sleep", lambda _: None)
-    assert dev.accel_capture_dialogue([1], 2, rate_hz=1, nsamples=1, timeout=0.1) == b"ok"
+    assert dev.accel_capture_dialogue([1], 2, rate_hz=1, nsamples=1, timeout=0.1) == b""
+    dev._stream_readback.assert_not_called()
+    assert dev.analog_mode == MODE_MIXED
+    assert call(device_module.REG_GEN_DATA, 1 << 8) in dev.pkt.write_register.call_args_list
+
+
+def test_accelerometer_capture_forces_digital_framing_and_restores_mode(monkeypatch):
+    dev = _device()
+    dev.analog_mode = MODE_MIXED
+    dev.debug_ch0_enabled = True
+    dev._ensure_open = MagicMock()
+    dev._pins = MagicMock()
+    dev.set_debug_ch0 = MagicMock()
+    configured_modes = []
+
+    def record_capture_config(**_kwargs):
+        configured_modes.append(dev.analog_mode)
+
+    dev._write_capture_config = MagicMock(side_effect=record_capture_config)
+    dev._stream_readback = MagicMock(return_value=b"\x34\x12")
+    dev.pkt.transaction.side_effect = [(ST_OK, 0, b""), (ST_CAPTURE_ARMED, 0, b"")]
+    dev.pkt.get_status.return_value = {"capture_status": ST_CAPTURE_DONE}
+    times = iter((1.0, 1.0))
+    monkeypatch.setattr(device_module.time, "time", lambda: next(times))
+    monkeypatch.setattr(device_module.time, "sleep", lambda _: None)
+
+    assert dev.accel_capture_dialogue([1], 2, nsamples=1) == b"\x34\x12"
+    assert configured_modes == [MODE_DIGITAL]
+    assert dev.analog_mode == MODE_MIXED
+    dev.set_debug_ch0.assert_called_once_with(False)
 
 
 def test_protocol_decoder_import_failure_returns_none(monkeypatch):
@@ -959,12 +995,13 @@ def test_last_small_metadata_open_and_trace_branches(monkeypatch):
 
     dev = _device()
     dev.pkt.transaction.side_effect = [(ST_OK, 0, b""), (ST_CAPTURE_ARMED, 0, b"")]
-    dev.pkt.get_status.return_value = {"capture_status": 0}
+    dev.pkt.get_status.return_value = {"capture_status": ST_CAPTURE_DONE}
     dev._ensure_open = MagicMock()
     dev._pins = MagicMock()
+    dev.set_debug_ch0 = MagicMock()
     dev._write_capture_config = MagicMock()
     dev._stream_readback = MagicMock(return_value=b"x")
-    times = iter((1.0, 1.05, 1.2))
+    times = iter((1.0, 1.05))
     monkeypatch.setattr(device_module.time, "time", lambda: next(times))
     monkeypatch.setattr(device_module.time, "sleep", lambda _: None)
     assert dev.accel_capture_dialogue([1], 1, rate_hz=1, nsamples=1, timeout=0.1) == b"x"

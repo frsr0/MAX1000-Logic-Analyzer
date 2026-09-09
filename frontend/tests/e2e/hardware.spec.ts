@@ -93,6 +93,57 @@ async function takeScreenshot(page: any, name: string, opts: { fullPage?: boolea
   await page.screenshot({ path: shot(name), ...opts });
 }
 
+/** Capture a scrollable app page after expanding its internal content scroller.
+ * Playwright's fullPage mode cannot see content hidden behind .content's
+ * overflow:auto, which otherwise truncates the lower hardware cards. */
+async function takeExpandedPageScreenshot(page: any, name: string) {
+  await page.evaluate(() => {
+    const content = document.querySelector('.content') as HTMLElement | null;
+    const target = document.querySelector('.device-page') as HTMLElement | null;
+    if (!content || !target) return;
+    content.dataset.screenshotOverflow = content.style.overflow;
+    content.dataset.screenshotHeight = content.style.height;
+    target.dataset.screenshotHeight = target.style.height;
+    target.dataset.screenshotOverflow = target.style.overflow;
+    content.style.overflow = 'visible';
+    content.style.height = 'auto';
+    target.style.height = `${target.scrollHeight}px`;
+    target.style.overflow = 'visible';
+  });
+  try {
+    await takeScreenshot(page, name, { fullPage: true });
+  } finally {
+    await page.evaluate(() => {
+      const content = document.querySelector('.content') as HTMLElement | null;
+      const target = document.querySelector('.device-page') as HTMLElement | null;
+      if (!content || !target) return;
+      content.style.overflow = content.dataset.screenshotOverflow ?? '';
+      content.style.height = content.dataset.screenshotHeight ?? '';
+      target.style.height = target.dataset.screenshotHeight ?? '';
+      target.style.overflow = target.dataset.screenshotOverflow ?? '';
+      delete content.dataset.screenshotOverflow;
+      delete content.dataset.screenshotHeight;
+      delete target.dataset.screenshotHeight;
+      delete target.dataset.screenshotOverflow;
+    });
+  }
+}
+
+async function takeElementScreenshot(page: any, selector: string, name: string) {
+  await page.waitForTimeout(150);
+  const element = page.locator(selector);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await element.screenshot({ path: shot(name) });
+      return;
+    } catch (err: any) {
+      if (!/UNKNOWN/.test(String(err?.message ?? err))) throw err;
+      await page.waitForTimeout(300 * (attempt + 1));
+    }
+  }
+  await element.screenshot({ path: shot(name) });
+}
+
 async function captureState(page: any) {
   return page.evaluate(async () => {
     const res = await fetch('/api/capture/state');
@@ -289,7 +340,9 @@ test('hardware-aligned device page', async ({ page }) => {
   await expect(page.locator('.hero-badges .badge-hw')).toContainText('200.4 MHz sample clock');
   await expect(page.getByRole('button', { name: 'Raw debug inspector' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Run self-test' })).toBeVisible();
-  await takeScreenshot(page, 'device-page.png', { fullPage: true });
+  await expect(page.getByRole('heading', { name: 'Digital pin pool' })).toBeVisible();
+  await expect(page.getByText('D0-D14, PMOD, sensor bus')).toBeVisible();
+  await takeExpandedPageScreenshot(page, 'device-page.png');
 });
 
 test('capture controls reflect MAX1000 modes', async ({ page }) => {
@@ -400,6 +453,21 @@ test('mock capture websocket emits a capture error toast', async ({ page }) => {
   await takeScreenshot(page, 'capture-ws-error-toast.png', { fullPage: true });
 });
 
+test('mock capture websocket deduplicates and expires repeated narrow-mode warnings', async ({ page }) => {
+  const emitted = await page.evaluate(() => {
+    type EmitterWindow = Window & { __mockWsEmit?: (urlSuffix: string, message: unknown) => boolean };
+    const message = { type: 'warning', data: { message: 'Packed 1-channel narrow digital mode on d0' } };
+    const emit = (window as unknown as EmitterWindow).__mockWsEmit;
+    return [emit?.('/ws/capture', message), emit?.('/ws/capture', message)];
+  });
+  expect(emitted).toEqual([true, true]);
+  const toast = page.locator('.toast.toast-warning').filter({ hasText: 'Packed 1-channel narrow digital mode on d0' });
+  await expect(toast).toHaveCount(1);
+  await expect(toast).toBeVisible();
+  await page.waitForTimeout(4200);
+  await expect(toast).toHaveCount(0);
+});
+
 test('compression sweep shows raw and delta_rle throughput differences', async ({ page }) => {
   test.skip(await effectiveMock(page), 'live hardware only');
   test.setTimeout(240_000);
@@ -503,7 +571,6 @@ test('compression sweep shows raw and delta_rle throughput differences', async (
     expect(rawRow!.timings.decode_s, `raw codec unexpectedly ran a decode at ${rate.toLocaleString()} Hz`).toBeNull();
   }
 
-  await takeScreenshot(page, 'compression-sweep-summary.png', { fullPage: true });
 });
 
 test('generator page matches supported board protocols', async ({ page }) => {
@@ -569,6 +636,7 @@ test('mock capture dashboard shows protocol activity and errors', async ({ page 
   await expect(page.getByText('framing error')).toBeVisible();
   await expect(page.getByText('Suspect timing annotations')).toBeVisible();
   await expect(page.getByText('40 samples')).toBeVisible();
+  await expect(page.getByRole('region', { name: 'CAN and LIN bus health summaries' })).toBeVisible();
   await takeScreenshot(page, 'session-dashboard.png', { fullPage: true });
 });
 
@@ -648,8 +716,19 @@ test('mock eye diagram folds a digital channel at a configured rate', async ({ p
   const row = page.locator('tr').filter({ has: page.locator('input[value="MAX1000 mixed analog sweep"]') }).first();
   await row.getByRole('button', { name: 'Open' }).click();
   await page.getByRole('button', { name: 'Eye diagram', exact: true }).click();
+  await page.getByLabel('Bit/clock rate (baud)').fill('10000');
   await page.getByRole('button', { name: 'Compute eye diagram' }).click();
   await expect(page.getByText(/24 folded traces/)).toBeVisible();
+  const eye = await page.evaluate(async () => {
+    const response = await fetch('/api/sessions/session-analog/eye?channel=d0&baud=10000');
+    return response.json() as Promise<{ baud: number; unit_samples: number; grid: number[][] }>;
+  });
+  expect(eye.baud).toBe(10_000);
+  expect(eye.unit_samples).toBeGreaterThan(8);
+  const rails = eye.grid.slice(8, 18).flat().reduce((sum, value) => sum + value, 0)
+    + eye.grid.slice(46, 56).flat().reduce((sum, value) => sum + value, 0);
+  const center = eye.grid.slice(25, 40).flat().reduce((sum, value) => sum + value, 0);
+  expect(rails, 'eye fixture should show stable high/low rails').toBeGreaterThan(center * 2);
   await expect(page.getByLabel('Eye diagram')).toBeVisible();
   await takeScreenshot(page, 'eye-diagram.png', { fullPage: true });
 });
@@ -772,7 +851,7 @@ test('live hardware sessions show waveform screenshots across digital and analog
   await page.getByRole('button', { name: 'Hardware', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Hardware', exact: true })).toBeVisible();
   await expect(page.getByText('held by playwright')).toBeVisible();
-  await takeScreenshot(page, 'live-device-page.png', { fullPage: true });
+  await takeExpandedPageScreenshot(page, 'live-device-page.png');
 
   await page.locator('.sidebar button[title="Capture"]').click();
   await expect(page.getByText('Capture source')).toBeVisible();
@@ -921,7 +1000,8 @@ test.describe('mock fixture sessions', () => {
     await expect(page.getByText(/CAN health 3 frame/)).toBeVisible();
     await expect(page.getByText(/LIN health 2 frame/)).toBeVisible();
     await expect(page.getByText(/checksum error/)).toBeVisible();
-    await takeScreenshot(page, 'can-lin-health.png', { fullPage: true });
+    await expect(page.getByRole('region', { name: 'CAN and LIN bus health summaries' })).toBeVisible();
+    await takeElementScreenshot(page, '[role="region"][aria-label="CAN and LIN bus health summaries"]', 'can-lin-health.png');
   });
 
   test('mock measurement panel renders a fixture result and recomputes it', async ({ page }) => {

@@ -18,9 +18,9 @@ map, build result, or connected-board baseline changes.
 | Generator pin pool | 26 entries: MKR D0-D14, PMOD PIO1-PIO8, `SEN_SDO`, `SEN_SDI`, `SEN_SPC` |
 | Generator FIFO | 256 bytes = 1,024 two-bit symbols |
 | Generator divider | 24 bits when metadata feature bit 0 is set; legacy 16-bit images remain supported |
-| Programmed image | Current full mixed-signal seed-10 SOF in volatile SRAM, 2026-09-07 |
+| Programmed image | Current full mixed-signal seed-10 image in configuration flash, 2026-09-09 |
 | Persistent image | 2026-08-27 CFM image; unchanged by the current validation run |
-| SOF checksum | `0x00504799` (Quartus Assembler report) |
+| SOF checksum | `0x0050492F` (Quartus Assembler report) |
 | SOF SHA-256 | `2C33472F5C07F60CF41ED155EB0EAAA58D7C23320EC9A861C86ED82764F9FE50` |
 
 The image was built by Quartus Prime Lite 25.1. The slow 1200 mV, 85 C
@@ -90,8 +90,8 @@ The current volatile image has the following connected-board evidence:
   debug disabled and enabled, over 10 million samples captured in each run;
 - all 57 HDL testbenches pass with zero expected failures and zero exclusions;
 - browser hardware validation passes **5/5** feature tests (all **37/37**
-  advertised mode/rate cases) and **33/33** hardware-aligned UI tests;
-- the 2026-09-07 screenshot refresh checks exact session identity and loaded
+  advertised mode/rate cases) and **34/34** hardware-aligned UI tests;
+- the 2026-09-09 screenshot refresh checks exact session identity and loaded
   waveform state; visual review confirmed the expected UART, MIL, LIS3DH,
   analog-fast, four-lane analog, and mixed digital/analog traces;
 - auto-discovered analogue jumpers on both installed paths, full-depth SDRAM,

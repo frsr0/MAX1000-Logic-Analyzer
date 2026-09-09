@@ -32,7 +32,7 @@ flowchart LR
 |---|---|
 | Source baseline | 2026-09-08 working tree; current coverage, screenshot, and HDL repair set |
 | Build | Quartus Prime Lite 25.1, full mixed-signal profile, fitter seed 10 |
-| Image | Programmed to volatile SRAM on 2026-09-07; SOF checksum `0x00504799`; persistent CFM unchanged |
+| Image | Programmed into configuration flash on 2026-09-09; SOF checksum `0x0050492F` |
 | Timing | Slow-85C setup: fast +0.253 ns, SDRAM +0.178 ns, system +0.278 ns; all setup/hold/recovery/removal/min-pulse checks positive |
 | Hardware smoke | 10/10 |
 | Changed-path hardware suite | 117/117, 0 failed, 0 skipped; strict codec/rate rerun 26/26 |
@@ -40,7 +40,7 @@ flowchart LR
 | Host coverage | 983 tests; 8,241 statements and 2,482 branches at 100%, zero partial branches |
 | Backend coverage | 541 tests; 8,800 statements and 2,624 branches at 100%, zero partial branches |
 | Frontend coverage | 277 tests; 3,382 statements, 2,475 branches, 941 functions, and 2,871 lines at 100% |
-| Browser hardware matrix | 5/5 feature tests, including 37/37 advertised mode/rate combinations; broader hardware-aligned suite 33/33; screenshots regenerated and visually checked at 1440×1400 |
+| Browser hardware matrix | 5/5 feature tests, including 37/37 advertised mode/rate combinations; broader hardware-aligned suite 34/34; 114 screenshots regenerated and visually checked using the 1440px documentation viewport plus targeted panel/full-content captures |
 | Rate sweep | Historical persistent image: 1,200-115,200 baud within +0.79% |
 
 The complete matrix manifest and per-case session IDs are in
@@ -71,7 +71,7 @@ The fit, STA, and assembler reports are in `hdl/proj/output_files/`.
 | 2026-08-07 | pin-map/pull-up image, SOF `0x0051801E` | smoke 10/10 | Historical |
 | 2026-08-27 | seed 10 wide-divider, SOF `0x0050ADC8` | 383/383 + 37/37 | Persistent historical baseline |
 | 2026-09-04 | repaired seed 10, SOF `0x00504799` | full suite 396/396; corrected 60-second stress 29/29; smoke 10/10; changed paths 117/117; strict codec/rate 26/26 | Historical volatile baseline |
-| 2026-09-07 | seed 10, SOF `0x00504799` | full suite 403/403; 57/57 GHDL; browser hardware 5/5 and 33/33; 37-case screenshot matrix refreshed | Current volatile image |
+| 2026-09-09 | seed 10, SOF `0x0050492F` | full suite 403/403; browser hardware 5/5 and 34/34; 37-case screenshot matrix and all 114 PNGs refreshed | Current persistent image |
 
 Historical results remain useful regression evidence, but they do not prove a
 later RTL image. The current claim always follows the newest programmed image

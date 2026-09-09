@@ -4,13 +4,12 @@ Hardware validation runs against the FPGA image flashed on the MAX1000. These
 tests exercise register writes, capture timing, SDRAM readback, SPI transport,
 and lossless decompression on the real board.
 
-## Current exact-image result — 2026-09-07
+## Current exact-image result — 2026-09-09
 
 The current full mixed-signal image was built with Quartus Prime Lite 25.1,
-fitter seed 10, and programmed to volatile SRAM. The persistent CFM image was
-left unchanged. The assembler reports SOF checksum `0x00504799` and the SOF
-SHA-256 is
-`2C33472F5C07F60CF41ED155EB0EAAA58D7C23320EC9A861C86ED82764F9FE50`.
+fitter seed 10, and programmed into configuration flash. The assembler reports
+SOF checksum `0x0050492F` and the SOF SHA-256 is
+`2028A05F689EA966B359359D8F0F4000A19298B8CEE98AF6A76A52003108C7D1`.
 Slow-85C setup slack is `fast_clk +0.253 ns`, `sdram_core_clk +0.178 ns`, and
 `sys_clk +0.278 ns`; all reported setup, hold, recovery, removal, and minimum
 pulse-width checks are positive.
@@ -21,11 +20,11 @@ pulse-width checks are positive.
 | `python host/app/hw_validation.py new` | **117/117**, 0 failed, 0 skipped | Continuous overrun, 200.4 MHz narrow capture, packed MSO, analogue profiles and both installed jumpers, pre-trigger, full-depth boundary, back-to-back capture, codec matrix, active read stress, lifecycle |
 | `python host/app/hw_validation.py codec` | **26/26**, 0 failed, 0 skipped | Five-rate bit-exact codec matrix plus strict all-rate transport-integrity checks |
 | `python host/app/hw_validation.py` | **403/403**, 0 failed, 0 skipped | Full suite, including LIS3DH, physical-jumper generic trigger, generator protocols, analogue/MSO, lifecycle, concurrent readout, live codec ceilings, and both strict 60-second stress runs |
-| Browser hardware suites | **5/5** feature tests and **33/33** hardware-aligned UI tests | Includes all 37 advertised acquisition mode/rate combinations against the attached board |
+| Browser hardware suites | **5/5** feature tests and **34/34** hardware-aligned UI tests | Includes all 37 advertised acquisition mode/rate combinations against the attached board |
 | `bash hdl/tb/run_all_tbs.sh` | **57/57** | Every HDL bench, zero XFAIL/XPASS/exclusions |
 
 The browser suites and all 37 hardware-matrix acquisitions were rerun on
-2026-09-07 after strengthening the screenshot contract. Each live gallery
+2026-09-09 after strengthening the screenshot contract. Each live gallery
 image now proves the named session is active and its waveform payload has
 loaded. The 1440×1400 captures were visually checked for distinct UART, MIL,
 LIS3DH, analog-fast, maximum-analog, and mixed traces; the current files and

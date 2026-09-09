@@ -49,7 +49,9 @@ it('exports every supported artifact with exact region and decoder bodies', asyn
   expect(screen.getAllByRole('row')).toHaveLength(13);
   expect(screen.getByText('f13')).toBeTruthy();
   expect(screen.queryByText('f1')).toBeNull();
-  expect(useApp.getState().toasts.filter((toast) => toast.level === 'success')).toHaveLength(10);
+  // Several exports share the same success copy (for example all CSV
+  // variants), so the toast store keeps one notification per unique message.
+  expect(useApp.getState().toasts.filter((toast) => toast.level === 'success')).toHaveLength(7);
 });
 
 it('reports failed downloads and handles absent, empty and valid waveform screenshots', async () => {

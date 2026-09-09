@@ -32,16 +32,18 @@ export function DashboardPanel() {
       {data.timeline.map((count: number, i: number) => <i key={i}
         style={{ opacity: Math.max(0.08, count / timeMax), background: data.error_timeline[i] ? '#ef5350' : '#4fc3f7' }} />)}
     </div>
-    {(['can', 'lin'] as const).map((protocol) => {
-      const health = data.bus_health?.[protocol];
-      if (!health || !health.frames) return null;
-      return <div key={protocol} className="finding info">
-        <strong>{protocol.toUpperCase()} health</strong>{' '}
-        {health.frames} frame(s), {health.error_frames} error(s), {Number(health.load_pct).toFixed(1)}% bus load
-        {protocol === 'can' && ` · ${health.crc_errors} CRC · ${health.ack_errors} ACK error(s)`}
-        {protocol === 'lin' && ` · ${health.checksum_errors} checksum error(s)`}
-      </div>;
-    })}
+    <div className="dashboard-bus-health" role="region" aria-label="CAN and LIN bus health summaries">
+      {(['can', 'lin'] as const).map((protocol) => {
+        const health = data.bus_health?.[protocol];
+        if (!health || !health.frames) return null;
+        return <div key={protocol} className="finding info">
+          <strong>{protocol.toUpperCase()} health</strong>{' '}
+          {health.frames} frame(s), {health.error_frames} error(s), {Number(health.load_pct).toFixed(1)}% bus load
+          {protocol === 'can' && ` · ${health.crc_errors} CRC · ${health.ack_errors} ACK error(s)`}
+          {protocol === 'lin' && ` · ${health.checksum_errors} checksum error(s)`}
+        </div>;
+      })}
+    </div>
     <h4>Bus transaction timeline</h4>
     <div className="dashboard-timeline">
       {(data.events ?? []).map((event: any) => (

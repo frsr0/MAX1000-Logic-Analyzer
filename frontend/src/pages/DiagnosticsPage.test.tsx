@@ -61,6 +61,6 @@ it('reports tool failures while treating unavailable startup diagnostics as opti
   fireEvent.click(screen.getByRole('button', { name: 'Run capture sanity checks' }));
   fireEvent.click(screen.getByRole('button', { name: 'UART' }));
   fireEvent.click(screen.getByRole('button', { name: 'Debug bundle (ZIP)' }));
-  await waitFor(() => expect(useApp.getState().toasts.filter((toast) => toast.level === 'error')).toHaveLength(3));
+  await waitFor(() => expect(useApp.getState().toasts.filter((toast) => toast.level === 'error')).toHaveLength(1));
   expect(useApp.getState().toasts.every((toast) => toast.message === 'backend offline')).toBe(true);
 });

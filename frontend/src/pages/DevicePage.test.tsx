@@ -100,7 +100,7 @@ it('reports connect, debug and self-test failures and tolerates scan/disconnect 
   fireEvent.click(screen.getByRole('button', { name: 'Raw debug inspector' }));
   fireEvent.click(screen.getByRole('button', { name: 'Run self-test' }));
   fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
-  await waitFor(() => expect(useApp.getState().toasts.filter((toast) => toast.message === 'transport lost').length).toBeGreaterThanOrEqual(2));
+  await waitFor(() => expect(useApp.getState().toasts.filter((toast) => toast.message === 'transport lost').length).toBe(1));
   useApp.setState({ status: { ...status, device_connected: false, device: null } as never });
   rerender(<DevicePage />);
   fireEvent.click((await screen.findAllByRole('button', { name: 'Connect' }))[0]);
