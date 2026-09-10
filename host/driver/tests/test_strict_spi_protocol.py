@@ -357,6 +357,24 @@ def test_chunked_rle_waits_for_ack_and_rejects_missing_ack():
     ) == (0, 0, b"")
 
 
+def test_rle_stream_clamps_negative_start_sample_before_packing():
+    requests = []
+
+    class NegativeStartSPI:
+        speed_hz = 30_000_000
+
+        def stream_command_chunks(self, request, **kwargs):
+            requests.append(request)
+            yield _stream_ack(request[3]) + struct.pack("<2H", 1, 0x1234)
+
+    result = protocol.SPIDevice(NegativeStartSPI()).start_rle_stream_read(-1, 1)
+
+    assert result == (17, 9, b"\x34\x12")
+    # The request wraps the 8-byte payload with sync/header and CRC; inspect
+    # the payload itself rather than the final eight bytes of the packet.
+    assert struct.unpack("<II", requests[0][6:14]) == (0, 1)
+
+
 def test_fixed_rle_requires_ack_and_read_stream_delegates():
     bad = SimpleNamespace(
         speed_hz=30_000_000,

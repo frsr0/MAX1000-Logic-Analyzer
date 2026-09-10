@@ -2232,6 +2232,13 @@ class OLSDeviceSPI:
         service can fall back to its one-shot reader and report that fact.
         """
         self._ensure_open()
+        # RLE support is a per-stream capability probe, not a permanent
+        # device property. MIL traffic can leave the FPGA readback path in a
+        # transient state where the first probe fails (for example while a
+        # prior capture is being torn down). Re-probe on every fresh
+        # accelerometer stream so one such failure cannot permanently pin all
+        # later streams to the slow raw fallback.
+        self._rle_stream_supported = None
         if int(read_len) <= 0:
             raise ValueError("read_len must be positive")
         dev_w = (int(dev_addr) << 1) & 0xFE

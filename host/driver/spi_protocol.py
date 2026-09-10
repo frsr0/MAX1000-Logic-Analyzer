@@ -650,6 +650,12 @@ class SPIDevice:
         chunked transport stops early on compressible data (the win) and keeps
         reading on incompressible data (no truncation).
         """
+        # Ring cursors are supplied by a status packet and can briefly be
+        # invalid while a previous capture is being torn down.  Do not let a
+        # negative cursor wrap when it is converted to the FPGA's byte
+        # address; that can make the stream start at the end of SDRAM and
+        # leave the caller waiting forever for a producer advance.
+        start_sample = max(0, int(start_sample))
         sample_count = max(0, int(sample_count))
         if sample_count == 0:
             return 0, 0, b''

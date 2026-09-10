@@ -87,25 +87,28 @@ export function MilAccelerometerCard() {
   useEffect(() => {
     if (!status?.running) return undefined;
     let alive = true;
-    let timer: number | undefined;
+    let inFlight = false;
 
     const poll = () => {
+      // Keep a steady UI cadence without allowing a slow request to pile up
+      // stale responses. A completion-chained timeout adds request latency to
+      // every interval (and is especially visible through the dev proxy).
+      if (inFlight) return;
+      inFlight = true;
       api.milAccelerometerStatus()
         .then((next) => { if (alive) { setStatus(next); setRequestError(null); } })
         .catch((error: unknown) => {
           if (alive) setRequestError(error instanceof Error ? error.message : 'Accelerometer update failed');
         })
         .finally(() => {
-          // Queue from completion rather than using setInterval so a slow
-          // hardware read can never overlap the next status request.
-          if (alive) timer = window.setTimeout(poll, POLL_INTERVAL_MS);
+          inFlight = false;
         });
     };
 
-    timer = window.setTimeout(poll, POLL_INTERVAL_MS);
+    const timer = window.setInterval(poll, POLL_INTERVAL_MS);
     return () => {
       alive = false;
-      window.clearTimeout(timer);
+      window.clearInterval(timer);
     };
   }, [status?.running]);
 

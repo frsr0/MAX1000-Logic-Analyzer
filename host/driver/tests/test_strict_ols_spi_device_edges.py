@@ -763,6 +763,28 @@ def test_repeating_i2c_capture_falls_back_to_raw_after_rle_iteration_failure():
             ]
 
 
+def test_repeating_i2c_capture_reprobes_rle_after_a_previous_stream_failure():
+    dev = _device()
+    dev._ensure_open = MagicMock()
+    dev._rle_stream_supported = False
+    dev._start_gen_accepted = MagicMock(return_value=True)
+    dev._wait_gen_idle = MagicMock()
+    dev.clear_live_gen = MagicMock()
+    dev._pins = MagicMock()
+    dev.set_readback_compression = MagicMock(return_value=True)
+    dev.stream_ring_capture = MagicMock(return_value=iter([
+        (b"rle", 4, 4, 0),
+    ]))
+    dev.pkt.transaction.return_value = (ST_OK, 0, b"")
+
+    result = list(dev.continuous_ring_capture_with_repeating_i2c(
+        2_000_000, 4, 16, SimpleNamespace(is_set=lambda: False)))
+
+    assert result == [(b"rle", 4, 4, 0)]
+    assert [item.args[0] for item in
+            dev.set_readback_compression.call_args_list] == ["rle", "raw"]
+
+
 def test_repeating_i2c_capture_cleans_up_when_raw_fallback_fails():
     dev = _device()
     dev._ensure_open = MagicMock()

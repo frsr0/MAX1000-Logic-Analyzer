@@ -79,6 +79,24 @@ it('does not overlap a slow poll and cleans up its pending schedule on unmount',
   expect(status).toHaveBeenCalledTimes(3);
 });
 
+it('keeps the live poll cadence independent of response latency', async () => {
+  vi.useFakeTimers();
+  const delayed = () => new Promise<MilAccelerometerStatus>((resolve) => {
+    window.setTimeout(() => resolve({ ...sample(), running: true, samples_read: 43 }), 80);
+  });
+  const status = vi.spyOn(api, 'milAccelerometerStatus')
+    .mockResolvedValueOnce({ ...sample(), running: true })
+    .mockImplementation(delayed);
+  render(<MilAccelerometerCard />);
+  await act(async () => { await Promise.resolve(); });
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(350); });
+
+  // A fixed 100 ms cadence gets three opportunities by 350 ms even though
+  // each request takes 80 ms. The implementation must still be single-flight.
+  expect(status).toHaveBeenCalledTimes(4);
+});
+
 it('reports a structured start failure instead of claiming tracking began', async () => {
   const toast = vi.fn();
   useApp.setState({ toast });
