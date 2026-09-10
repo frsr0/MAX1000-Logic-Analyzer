@@ -1,9 +1,25 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
-import type { MilAccelerometerStatus } from '../api/types';
+import type { MilAccelerometerConfig, MilAccelerometerStatus } from '../api/types';
 import { useApp } from '../state/appStore';
 
 const POLL_INTERVAL_MS = 100;
+
+const DEFAULT_CONFIG: MilAccelerometerConfig = {
+  output_data_rate_hz: 10,
+  full_scale_g: 2,
+  operating_mode: 'high_resolution',
+  bdu: true,
+  endian: 'little',
+  self_test: 'normal',
+  x_enabled: true,
+  y_enabled: true,
+  z_enabled: true,
+};
+
+const ODR_OPTIONS: MilAccelerometerConfig['output_data_rate_hz'][] =
+  [1, 10, 25, 50, 100, 200, 400];
+const SCALE_OPTIONS: MilAccelerometerConfig['full_scale_g'][] = [2, 4, 8, 16];
 
 interface Orientation {
   pitch: number;
@@ -25,6 +41,17 @@ function signed(value: number, digits = 3): string {
   return `${value >= 0 ? '+' : ''}${value.toFixed(digits)}`;
 }
 
+function rate(value: number | undefined, unit: string): string {
+  if (!Number.isFinite(value) || !value) return '—';
+  return `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })} ${unit}`;
+}
+
+function sampleAge(timestamp: number | null | undefined): string {
+  if (!timestamp || !Number.isFinite(timestamp)) return '—';
+  const age = Math.max(0, (Date.now() / 1000) - timestamp);
+  return age < 1 ? `${Math.round(age * 1000)} ms ago` : `${age.toFixed(1)} s ago`;
+}
+
 function relativeOrientation(current: Orientation, zero: Orientation | null): Orientation {
   return {
     pitch: current.pitch - (zero?.pitch ?? 0),
@@ -35,7 +62,9 @@ function relativeOrientation(current: Orientation, zero: Orientation | null): Or
 export function MilAccelerometerCard() {
   const { controlMode, toast } = useApp();
   const [status, setStatus] = useState<MilAccelerometerStatus | null>(null);
+  const [config, setConfig] = useState<MilAccelerometerConfig>(DEFAULT_CONFIG);
   const [busy, setBusy] = useState(false);
+  const [configBusy, setConfigBusy] = useState(false);
   const [zero, setZero] = useState<Orientation | null>(null);
   const [requestError, setRequestError] = useState<string | null>(null);
 
@@ -46,6 +75,12 @@ export function MilAccelerometerCard() {
       .catch((error: unknown) => {
         if (alive) setRequestError(error instanceof Error ? error.message : 'Unable to read accelerometer status');
       });
+    // Configuration is a separate resource so status polling remains cheap;
+    // older backends may not expose it, in which case the documented defaults
+    // keep the controls usable.
+    api.milAccelerometerConfig()
+      .then((next) => { if (alive) setConfig(next); })
+      .catch(() => { /* configuration is optional on older backends */ });
     return () => { alive = false; };
   }, []);
 
@@ -106,6 +141,28 @@ export function MilAccelerometerCard() {
     }
   };
 
+  const updateConfig = async (patch: Partial<MilAccelerometerConfig>) => {
+    if (running || configBusy || !controlMode) return;
+    const next = { ...config, ...patch };
+    setConfigBusy(true);
+    try {
+      const saved = await api.milAccelerometerUpdateConfig(next);
+      setConfig(saved);
+      setStatus((currentStatus) => currentStatus
+        ? { ...currentStatus, sample_rate_hz: saved.output_data_rate_hz }
+        : currentStatus);
+      setRequestError(null);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unable to update accelerometer configuration';
+      setRequestError(message);
+      toast('error', message);
+    } finally {
+      setConfigBusy(false);
+    }
+  };
+
+  const controlsDisabled = running || busy || configBusy || !controlMode;
+
   const setZeroOrientation = () => {
     setZero(current);
   };
@@ -155,8 +212,83 @@ export function MilAccelerometerCard() {
             <div><span className="axis-dot axis-z" />Z</div><strong>{signed(status?.sample?.z_g ?? NaN)} <small>g</small></strong>
           </div>
           <div className="mil-accel-meta">
-            <span>Sample rate</span><strong>{(status?.sample_rate_hz ?? 0).toLocaleString()} Hz</strong>
+            <span>Requested ODR</span><strong>{rate(config.output_data_rate_hz, 'Hz')}</strong>
+            <span>Measured XYZ rate</span><strong>{rate(status?.measured_rate_hz, 'samples/s')}</strong>
+            <span>Measured data rate</span><strong>{rate(status?.data_rate_bytes_per_s, 'bytes/s')}</strong>
             <span>Samples read</span><strong>{(status?.samples_read ?? 0).toLocaleString()}</strong>
+            <span>Last sample</span><strong>{sampleAge(status?.last_sample_at ?? status?.sample?.timestamp)}</strong>
+          </div>
+          <div className="mil-accel-readback" aria-label="Accelerometer hardware readback">
+            <div className="mil-accel-readback-head">
+              <span>Hardware readback</span>
+              <small>{status?.register_readback
+                ? `CTRL1 0x${status.register_readback.ctrl1.toString(16).padStart(2, '0').toUpperCase()} · CTRL4 0x${status.register_readback.ctrl4.toString(16).padStart(2, '0').toUpperCase()}`
+                : 'not available until tracking starts'}</small>
+            </div>
+            {status?.effective_config ? (
+              <div className="mil-accel-readback-values">
+                <span>ODR <b>{rate(status.effective_config.output_data_rate_hz, 'Hz')}</b></span>
+                <span>Scale <b>±{status.effective_config.full_scale_g} g</b></span>
+                <span>Mode <b>{status.effective_config.operating_mode.replace('_', ' ')}</b></span>
+                <span>Bytes <b>{status.effective_config.endian}-endian</b></span>
+                <span>BDU <b>{status.effective_config.bdu ? 'on' : 'off'}</b></span>
+                <span>Axes <b>{['x', 'y', 'z'].filter((axis) => status.effective_config?.[`${axis}_enabled` as 'x_enabled' | 'y_enabled' | 'z_enabled']).join('').toUpperCase() || 'none'}</b></span>
+              </div>
+            ) : <div className="hint">Start tracking to verify the settings applied to the sensor.</div>}
+          </div>
+          <div className="mil-accel-config" aria-label="Accelerometer settings">
+            <label className="field"><span>Output data rate</span>
+              <select aria-label="Output data rate" value={config.output_data_rate_hz}
+                      disabled={controlsDisabled}
+                      onChange={(e) => void updateConfig({ output_data_rate_hz: Number(e.target.value) as MilAccelerometerConfig['output_data_rate_hz'] })}>
+                {ODR_OPTIONS.map((value) => <option key={value} value={value}>{value.toLocaleString()} Hz</option>)}
+              </select>
+            </label>
+            <label className="field"><span>Full-scale range</span>
+              <select aria-label="Full-scale range" value={config.full_scale_g}
+                      disabled={controlsDisabled}
+                      onChange={(e) => void updateConfig({ full_scale_g: Number(e.target.value) as MilAccelerometerConfig['full_scale_g'] })}>
+                {SCALE_OPTIONS.map((value) => <option key={value} value={value}>±{value} g</option>)}
+              </select>
+            </label>
+            <label className="field"><span>Operating mode</span>
+              <select aria-label="Operating mode" value={config.operating_mode}
+                      disabled={controlsDisabled}
+                      onChange={(e) => void updateConfig({ operating_mode: e.target.value as MilAccelerometerConfig['operating_mode'] })}>
+                <option value="normal">Normal</option>
+                <option value="high_resolution">High resolution</option>
+                <option value="low_power">Low power</option>
+              </select>
+            </label>
+            <label className="field"><span>Byte order</span>
+              <select aria-label="Byte order" value={config.endian}
+                      disabled={controlsDisabled}
+                      onChange={(e) => void updateConfig({ endian: e.target.value as MilAccelerometerConfig['endian'] })}>
+                <option value="little">Little-endian</option>
+                <option value="big">Big-endian</option>
+              </select>
+            </label>
+            <label className="field"><span>Self-test</span>
+              <select aria-label="Self-test" value={config.self_test}
+                      disabled={controlsDisabled}
+                      onChange={(e) => void updateConfig({ self_test: e.target.value as MilAccelerometerConfig['self_test'] })}>
+                <option value="normal">Disabled</option>
+                <option value="positive">Positive</option>
+                <option value="negative">Negative</option>
+              </select>
+            </label>
+            <label className="field checkbox"><input type="checkbox" aria-label="Block data update (BDU)"
+                      checked={config.bdu} disabled={controlsDisabled}
+                      onChange={(e) => void updateConfig({ bdu: e.target.checked })} /><span>Block data update (BDU)</span></label>
+            <label className="field checkbox"><input type="checkbox" aria-label="Enable X axis"
+                      checked={config.x_enabled} disabled={controlsDisabled}
+                      onChange={(e) => void updateConfig({ x_enabled: e.target.checked })} /><span>Enable X axis</span></label>
+            <label className="field checkbox"><input type="checkbox" aria-label="Enable Y axis"
+                      checked={config.y_enabled} disabled={controlsDisabled}
+                      onChange={(e) => void updateConfig({ y_enabled: e.target.checked })} /><span>Enable Y axis</span></label>
+            <label className="field checkbox"><input type="checkbox" aria-label="Enable Z axis"
+                      checked={config.z_enabled} disabled={controlsDisabled}
+                      onChange={(e) => void updateConfig({ z_enabled: e.target.checked })} /><span>Enable Z axis</span></label>
           </div>
           <div className="button-row wrap">
             {!running ? (

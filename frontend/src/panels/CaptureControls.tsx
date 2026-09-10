@@ -204,6 +204,8 @@ export function CaptureControls() {
   const { status, captureSettings, setCaptureSettings, toast, controlMode } = useApp();
   const [scenarios, setScenarios] = useState<{ id: string; name: string }[]>([]);
   const [findings, setFindings] = useState<{ level: string; message: string }[]>([]);
+  const [milRunning, setMilRunning] = useState(false);
+  const [accelerometerRunning, setAccelerometerRunning] = useState(false);
   const [name, setName] = useState('');
   const [job, setJob] = useState<any>(null);
   const validationRequest = useRef(0);
@@ -246,6 +248,38 @@ export function CaptureControls() {
     if (isMock) api.mockScenarios().then((r) => setScenarios(r.scenarios)).catch(() => {});
     else setScenarios([]);
   }, [isMock, connected]);
+
+  // MIL is a separate control-plane service, so its running state is not
+  // part of the hardware capture status snapshot.  Poll just while this
+  // panel is mounted so arriving at Capture after starting MIL immediately
+  // explains what the Live capture button will do.
+  useEffect(() => {
+    let alive = true;
+    const refreshMil = () => {
+      api.milStatus().then((next) => {
+        if (alive) setMilRunning(next.running);
+      }).catch(() => {
+        if (alive) setMilRunning(false);
+      });
+    };
+    refreshMil();
+    const timer = window.setInterval(refreshMil, 2000);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    const refreshAccelerometer = () => {
+      api.milAccelerometerStatus().then((next) => {
+        if (alive) setAccelerometerRunning(next.running);
+      }).catch(() => {
+        if (alive) setAccelerometerRunning(false);
+      });
+    };
+    refreshAccelerometer();
+    const timer = window.setInterval(refreshAccelerometer, 2000);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, []);
 
   useEffect(() => {
     const request = ++validationRequest.current;
@@ -402,6 +436,18 @@ export function CaptureControls() {
         <strong>{activeModeLabel}</strong>
         <span>{hardwareSummary(captureSettings.mode as CaptureMode)}</span>
       </div>
+      {accelerometerRunning && rollingMode && !analogMode ? (
+        <div className="finding info" role="status">
+          Accelerometer tracking is active — Capture will open a live LIS3DH
+          I²C bus waveform on CH13/CH14/CH15.
+        </div>
+      ) : milRunning && rollingMode && !analogMode && (
+        <div className="finding info" role="status">
+          MIL emulator is running — Capture will open a live RX/TX digital
+          waveform fed by MIL transactions. It does not reserve the hardware
+          capture engine, so the accelerometer can keep streaming.
+        </div>
+      )}
 
       <label className="field">
         <span>Capture name</span>

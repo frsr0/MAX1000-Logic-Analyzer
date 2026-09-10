@@ -84,6 +84,7 @@ class CaptureManager:
         self._accelerometer_reserved = False
         self._cap_thread: Optional[threading.Thread] = None
         self._stop_evt = threading.Event()
+        self._mil_live_active = False
         self.capture_state = "idle"
         self.capture_progress = {"samples_read": 0, "samples_total": 0,
                                  "message": "", "repeat": 0}
@@ -91,6 +92,10 @@ class CaptureManager:
         self.last_error: Optional[str] = None
 
         self._decoder_cancels: Dict[str, threading.Event] = {}
+        # Coalesce rolling notifications while one decoder pass is running.
+        self._live_decode_lock = threading.Lock()
+        self._live_decode_active: set[str] = set()
+        self._live_decode_pending: set[str] = set()
         self._jobs: Dict[str, dict] = {}
         self._job_queue: List[str] = []
         self._job_lock = threading.Lock()
@@ -180,9 +185,89 @@ class CaptureManager:
 
     # ── capture ──────────────────────────────────────────────────────
 
+    def _live_accelerometer(self):
+        """Return the process accelerometer service for this manager.
+
+        The service normally registers itself during module import.  That
+        registration is deliberately best-effort, though, because importing
+        ``mil.accelerometer`` also imports the process state and can cross the
+        state/capture-manager import boundary.  A server started through a
+        different API import order can therefore have a running global sensor
+        service without the back-reference being present here.  Resolve the
+        singleton lazily as a fallback so Live capture cannot fall through to
+        the stale reservation error in that case.
+        """
+        service = getattr(self, "_accelerometer_service", None)
+        if service is not None and (
+                getattr(service, "manager", self) is self):
+            return service
+        try:
+            from ..mil.accelerometer import accelerometer
+        except (ImportError, AttributeError):
+            return None
+        if getattr(accelerometer, "manager", None) is self:
+            return accelerometer
+        return None
+
     def start_capture(self, settings: CaptureSettings,
                       name: str = "") -> None:
         with self._cap_lock:
+            # A running LIS3DH worker owns the shared FTDI/Bit_Engine link.
+            # Route Live requests to its real bus-dialogue rolling session
+            # before considering MIL's synthetic fallback or reporting the
+            # reservation as a generic hardware-busy error.
+            accel = self._live_accelerometer()
+            if accel is not None:
+                try:
+                    accel_running = bool(accel.status().get("running"))
+                except Exception:
+                    accel_running = False
+                if accel_running and settings.mode in (
+                        "continuous", "rolling", "digital_narrow"):
+                    if getattr(accel, "live_capture_active", False):
+                        raise HardwareError(
+                            "An accelerometer live capture is already running")
+                    self._stop_evt.clear()
+                    session = accel.start_live_capture(settings, name, self.store)
+                    self.capture_state = "capturing"
+                    self.last_session_id = session.id
+                    self.last_error = None
+                    self.capture_progress = {
+                        "samples_read": session.num_samples,
+                        "samples_total": settings.num_samples,
+                        "message": "Accelerometer live",
+                        "repeat": 0,
+                    }
+                    manager.publish_threadsafe("capture", "capture_armed", {
+                        "settings": settings.model_dump(),
+                        "accelerometer": True,
+                    })
+                    return
+            # MIL's current bridge is control-plane only.  When its emulator
+            # is listening, a digital Live request is served by the emulator's
+            # rolling synthetic session instead of competing for the FPGA/FTDI
+            # capture engine (and the accelerometer can continue polling).
+            from ..mil.service import emulator
+            if (emulator.status().running
+                    and settings.mode in ("continuous", "rolling", "digital_narrow")):
+                if self._mil_live_active:
+                    raise HardwareError("A capture is already running")
+                self._stop_evt.clear()
+                session = emulator.start_live_capture(settings, name, self.store)
+                self._mil_live_active = True
+                self.capture_state = "capturing"
+                self.last_session_id = session.id
+                self.last_error = None
+                self.capture_progress = {
+                    "samples_read": session.num_samples,
+                    "samples_total": settings.num_samples,
+                    "message": "MIL live",
+                    "repeat": 0,
+                }
+                manager.publish_threadsafe("capture", "capture_armed", {
+                    "settings": settings.model_dump(), "mil": True,
+                })
+                return
             if self._accelerometer_reserved:
                 raise HardwareError("Accelerometer stream is using the hardware")
             if self.capture_state in ("capturing", "armed"):
@@ -222,10 +307,31 @@ class CaptureManager:
             self._accelerometer_reserved = False
 
     def stop_capture(self) -> bool:
+        if self._mil_live_active:
+            return self.stop_mil_live_capture()
+        accel = self._live_accelerometer()
+        if accel is not None and getattr(accel, "live_capture_active", False):
+            stopped = bool(accel.stop_live_capture())
+            if stopped:
+                self.capture_state = "cancelled"
+            return stopped
         if self.capture_state in ("capturing", "armed"):
             self._stop_evt.set()
             return True
         return False
+
+    def stop_mil_live_capture(self) -> bool:
+        """Stop the synthetic MIL rolling session, if one is active."""
+        if not self._mil_live_active:
+            return False
+        from ..mil.service import emulator
+        emulator.stop_live_capture()
+        self._mil_live_active = False
+        self._stop_evt.set()
+        self.capture_state = "cancelled"
+        manager.publish_threadsafe("capture", "capture_cancelled",
+                                   {"message": "MIL live stopped", "mil": True})
+        return True
 
     def submit_capture_job(self, settings: CaptureSettings, name: str = "") -> dict:
         """Queue a capture for unattended clients and return immediately."""
@@ -310,6 +416,7 @@ class CaptureManager:
                                                 "sample_rate": result.sample_rate,
                                                 "repeat": run,
                                                 "rolling": True})
+                    self.schedule_live_decode(session.id)
                 self.capture_state = "cancelled" if self._stop_evt.is_set() else "done"
                 return
             while run < repeat and not self._stop_evt.is_set():
@@ -361,6 +468,8 @@ class CaptureManager:
                                             "sample_rate": result.sample_rate,
                                             "repeat": run,
                                             "rolling": settings.mode in continuous_modes})
+                if settings.mode in continuous_modes:
+                    self.schedule_live_decode(session.id)
                 # Without auto-rearm, continuous modes are a single bounded
                 # capture using the configured window. With auto-rearm, the
                 # smaller chunks above are appended into that same window.
@@ -528,6 +637,68 @@ class CaptureManager:
         return session
 
     # ── decoders ─────────────────────────────────────────────────────
+
+    def schedule_live_decode(self, session_id: str) -> None:
+        """Refresh configured raw decoders against the newest live window."""
+        with self._live_decode_lock:
+            if session_id in self._live_decode_active:
+                self._live_decode_pending.add(session_id)
+                return
+            self._live_decode_active.add(session_id)
+        threading.Thread(target=self._live_decode_worker, args=(session_id,),
+                         daemon=True, name=f"live-decoder-{session_id}").start()
+
+    def _live_decode_worker(self, session_id: str) -> None:
+        try:
+            session = self.store.get(session_id)
+            wf = self.store.load_waveform(session_id)
+            if session is None or wf is None:
+                return
+            for inst in session.decoders:
+                if not inst.enabled:
+                    continue
+                decoder = decoder_registry.get(inst.decoder_id)
+                if decoder is None or decoder.consumes:
+                    continue
+                if any(role.required and not inst.channels.get(role.role)
+                       for role in decoder.channel_roles()):
+                    continue
+                try:
+                    result = decoder.decode(
+                        DecodeContext(wf, inst.channels, inst.region),
+                        {**decoder.defaults(), **inst.settings})
+                    for event in result.events:
+                        event["decoder_id"] = inst.id
+                    self.store.save_decoder_events(session_id, inst.id,
+                                                   result.events)
+                    inst.status = "done"
+                    inst.error = None
+                    inst.event_count = len(result.events)
+                    inst.warning_count = len(result.warnings) + sum(
+                        1 for e in result.events if e.get("severity") == "warning")
+                    errors = sum(1 for e in result.events
+                                 if e.get("severity") == "error")
+                    denom = max(1, inst.event_count + inst.warning_count)
+                    inst.quality_score = max(0.0, min(1.0,
+                        1.0 - (inst.warning_count + errors) / denom))
+                    manager.publish_threadsafe(
+                        f"decoder:{session_id}", "decoder_progress", {
+                            "decoder_id": inst.id,
+                            "event_count": inst.event_count, "live": True,
+                        })
+                except Exception as exc:
+                    inst.status = "error"
+                    inst.error = str(exc)
+            self.store.save(session)
+        finally:
+            with self._live_decode_lock:
+                if session_id in self._live_decode_pending:
+                    self._live_decode_pending.remove(session_id)
+                    threading.Thread(target=self._live_decode_worker,
+                                     args=(session_id,), daemon=True,
+                                     name=f"live-decoder-{session_id}").start()
+                else:
+                    self._live_decode_active.discard(session_id)
 
     def run_decoder(self, session: Session, inst: DecoderInstance) -> None:
         """Run one decoder asynchronously, publishing progress and results."""

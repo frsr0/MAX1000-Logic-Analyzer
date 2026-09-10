@@ -7,7 +7,7 @@ import type { ChannelInfo, DecoderDescription, DecoderInstance } from '../api/ty
 import { useApp } from '../state/appStore';
 import { waveformView } from '../state/waveformStore';
 import { session } from '../test/session';
-import { DecoderPanel } from './DecoderPanel';
+import { DecoderPanel, suggestProtocol } from './DecoderPanel';
 
 const channel = (id: string, type: ChannelInfo['type']): ChannelInfo => ({ id, name: id.toUpperCase(), type,
   enabled: true, color: null, units: '', volts_per_div: 1, offset: 0, probe_attenuation: 1,
@@ -30,6 +30,21 @@ const custom: DecoderDescription = { id: 'custom', name: 'Custom', description: 
   { key: 'mode', name: 'Mode', type: 'enum', default: 'legacy', options: null, help: '' },
   { key: 'note', name: 'Note', type: 'str', default: undefined, help: '' },
 ] };
+
+const payload = (samples: number[]) => ({
+  header: { session_id: 's', start: 0, end: samples.length, num_samples: samples.length,
+    sample_rate: 1_000_000, mode: 'raw' as const, samples_per_bin: 1, arrays: [] },
+  arrays: new Map([['digital', new Uint16Array(samples)]]) as any,
+});
+
+const lodPayload = (and: number[], or: number[]) => ({
+  header: { session_id: 's', start: 0, end: and.length * 16, num_samples: and.length * 16,
+    sample_rate: 1_000_000, mode: 'lod' as const, samples_per_bin: 16, arrays: [] },
+  arrays: new Map([
+    ['digital_and', new Uint16Array(and)],
+    ['digital_or', new Uint16Array(or)],
+  ]) as any,
+});
 
 const nativeSetInterval = globalThis.setInterval;
 const nativeClearInterval = globalThis.clearInterval;
@@ -54,6 +69,44 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); waveformView.selectionStart =
 
 it('shows the empty state', () => {
   render(<DecoderPanel />); expect(screen.getByText('No session open.')).toBeTruthy();
+});
+
+it('suggests from observed waveform evidence, not channel names or session tags', () => {
+  const i2cSession = { channels: [
+    { id: 'd0', name: 'arbitrary data line', type: 'digital' },
+    { id: 'd1', name: 'arbitrary clock line', type: 'digital' },
+  ], tags: ['accelerometer'] };
+  const i2cSamples = [3, 2, 0, 2, 1, 3, 0, 2, 1, 3, 0, 2, 1, 3, 1, 3, 0, 2, 3];
+  const i2c = suggestProtocol(i2cSession, payload(i2cSamples));
+  expect(i2c).toMatchObject({ id: 'i2c', name: 'I²C', channels: { sda: 'd0', scl: 'd1' } });
+  expect(i2c?.reason).toContain('clock edges');
+
+  // A running accelerometer, empty payload, or idle bus is not protocol
+  // evidence.  Suggestions must follow the waveform currently on screen.
+  expect(suggestProtocol(i2cSession)).toBeNull();
+  expect(suggestProtocol(i2cSession, payload(new Array(20).fill(3)))).toBeNull();
+
+  const spi = suggestProtocol({ channels: [
+    { id: 'd0', name: 'line 0', type: 'digital' }, { id: 'd1', name: 'line 1', type: 'digital' },
+  ] }, payload([0, 1, 3, 2, 0, 1, 3, 2, 0, 1, 3, 2]));
+  expect(spi?.id).toBe('spi');
+
+  expect(suggestProtocol({ channels: [{ id: 'd0', name: 'DATA', type: 'digital' }] })).toBeNull();
+});
+
+it('infers I²C from a wide LOD payload when the live window has no raw array', () => {
+  const i2cSession = { channels: [
+    { id: 'd0', name: 'SEN_SDI', type: 'digital' },
+    { id: 'd1', name: 'SEN_SPC', type: 'digital' },
+  ] };
+  // Each bin contains only its digital AND/OR bounds.  The first bins carry
+  // bus activity and the trailing bins are idle-high, like the live sensor
+  // window once it exceeds the raw-payload resolution.
+  const and = [0, 0, 2, 0, 1, 0, 3, 3, 3, 3, ...new Array(16).fill(3)];
+  const or = [3, 2, 2, 2, 3, 3, 3, 3, 3, 3, ...new Array(16).fill(3)];
+  expect(suggestProtocol(i2cSession, lodPayload(and, or))).toMatchObject({
+    id: 'i2c', channels: { sda: 'd0', scl: 'd1' },
+  });
 });
 
 it('manages existing decoders, selection runs, presets, polling and errors', async () => {

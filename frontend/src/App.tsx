@@ -101,7 +101,18 @@ export default function App() {
     if (!activeId) return;
     const ws = new ReconnectingSocket(`/ws/decoder/${activeId}`);
     const unsub = ws.subscribe((msg) => {
-      if (msg.type === 'decoder_complete') {
+      if (msg.type === 'decoder_progress') {
+        // Rolling captures re-run enabled decoders against each new window.
+        // Refresh both the instance counters (used by the packet table) and
+        // the annotation layer; live progress is intentionally quiet so a
+        // packet stream does not fill the toast queue.
+        const s = useApp.getState().activeSession;
+        if (s?.id === activeId && msg.data?.live) {
+          void useApp.getState().refreshActiveSession();
+          waveformView.decodersVersion++;
+          waveformView.requestAnnotations(0);
+        }
+      } else if (msg.type === 'decoder_complete') {
         useApp.getState().refreshActiveSession();
         waveformView.requestAnnotations(0);
         if (msg.data.error) toast('error', `Decoder failed: ${msg.data.error}`);
@@ -117,17 +128,18 @@ export default function App() {
       } else if (msg.type === 'waveform_ready') {
         const s = useApp.getState().activeSession;
         if (s?.id === activeId) {
+          const rolling = Boolean(msg.data?.rolling);
           await waveformView.updateLive(
             Number(msg.data?.num_samples ?? s.num_samples),
             Number(msg.data?.sample_rate ?? s.sample_rate),
             s.trigger_sample ?? null,
-            Boolean(msg.data?.rolling),
+            rolling,
             Number(msg.data?.chunk_samples ?? 0),
           );
-          // Metadata is not on the critical drawing path. Refresh it after
-          // scheduling the new waveform so a slow session request cannot make
-          // live frames queue up or stall the canvas.
-          void useApp.getState().refreshActiveSession();
+          // Rolling decoder runs append events to the same session. Refresh
+          // the session metadata so the packet table picks up new counts;
+          // ordinary waveform updates do not need this extra request.
+          if (rolling) void useApp.getState().refreshActiveSession();
         }
       }
     });

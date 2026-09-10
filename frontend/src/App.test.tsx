@@ -154,6 +154,7 @@ it('rebinds session sockets and handles decoder and live-waveform messages', asy
   expect(refreshActiveSession).toHaveBeenCalledTimes(5);
   await message('/ws/session/one', 'waveform_ready');
   expect(updateLive).toHaveBeenLastCalledWith(50, 2000, 8, false, 0);
+  expect(refreshActiveSession).toHaveBeenCalledTimes(5);
   await message('/ws/session/one', 'ignored');
 
   const oldDecoder = socket('/ws/decoder/one');

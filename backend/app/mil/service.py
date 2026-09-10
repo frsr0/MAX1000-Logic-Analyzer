@@ -7,6 +7,7 @@ scope/generator path delivers decoded packets.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Dict, Iterable, Optional
@@ -83,6 +84,15 @@ BUILTIN_PRESETS: Dict[str, MilConfig] = {
 class MilEmulator:
     def __init__(self) -> None:
         self._status = MilRuntimeStatus()
+        # The MIL emulator is a control-plane service today.  A live capture
+        # therefore records the emulator's RX/TX symbols into the same rolling
+        # session format as a hardware capture, without claiming the FTDI
+        # capture engine (which may be serving the accelerometer).
+        self._live_lock = threading.RLock()
+        self._live_session_id: Optional[str] = None
+        self._live_settings: Optional[CaptureSettings] = None
+        self._live_store = None
+        self._live_repeat = 0
 
     def list_presets(self) -> list[MilPresetSummary]:
         presets = [
@@ -133,8 +143,192 @@ class MilEmulator:
 
     def stop(self) -> MilRuntimeStatus:
         self._status.running = False
+        self.stop_live_capture()
         self._event("stopped", "Emulator stopped")
         return self.status()
+
+    def start_live_capture(self, settings: CaptureSettings,
+                           name: str = "", store=None) -> Session:
+        """Start a rolling session fed by MIL transactions.
+
+        MIL has no physical scope bridge yet, so this is intentionally a
+        synthetic digital session.  It uses the configured UART/Modbus timing
+        and pins to produce the exact RX/TX line shapes used by the evidence
+        captures.  ``store`` is supplied by CaptureManager so tests can use an
+        isolated session directory.
+        """
+        if not self._status.running or not self._status.config:
+            raise ValueError("Machine-in-loop emulator is not running")
+        if settings.mode not in ("continuous", "rolling", "digital_narrow"):
+            raise ValueError("MIL live view requires a digital continuous capture")
+        if store is None:
+            from ..state import store as default_store
+            store = default_store
+        cfg = self._status.config
+        with self._live_lock:
+            if self._live_session_id is not None:
+                raise ValueError("A MIL live capture is already running")
+            live_settings = settings.model_copy(update={
+                "mode": "rolling", "auto_rearm": True,
+                "sample_rate": max(float(settings.sample_rate),
+                                   float(cfg.trigger.baud) * 16.0),
+                "analog_enabled": False,
+                "enabled_digital": sorted(set([
+                    cfg.trigger.rx_pin, cfg.trigger.tx_pin,
+                    *cfg.capture.extra_digital_channels,
+                ])),
+                "readback_compression": "raw",
+            })
+            # Seed the window with idle-high lines.  This gives Capture a
+            # valid session immediately after Live is pressed, before the
+            # first MIL request arrives.
+            seed_count = max(1, min(int(live_settings.num_samples), 1024))
+            digital = self._idle_digital(cfg, seed_count)
+            session = self._new_live_session(cfg, live_settings, name, seed_count)
+            store.save(session)
+            store.save_waveform(session.id,
+                                WaveformData(sample_rate=session.sample_rate,
+                                             digital=digital))
+            self._live_session_id = session.id
+            self._live_settings = live_settings
+            self._live_store = store
+            self._live_repeat = 0
+        manager.publish_threadsafe("status", "session_created", session.summary())
+        manager.publish_threadsafe("capture", "capture_started", {
+            "repeat": 0, "mil": True, "session_id": session.id,
+        })
+        manager.publish_threadsafe(f"session:{session.id}", "waveform_ready", {
+            "session_id": session.id, "num_samples": seed_count,
+            "chunk_samples": seed_count, "sample_rate": session.sample_rate,
+            "repeat": 0, "rolling": True, "mil": True,
+        })
+        return session
+
+    def stop_live_capture(self) -> bool:
+        with self._live_lock:
+            active = self._live_session_id is not None
+            self._live_session_id = None
+            self._live_settings = None
+            self._live_store = None
+            self._live_repeat = 0
+        return active
+
+    @property
+    def live_capture_active(self) -> bool:
+        with self._live_lock:
+            return self._live_session_id is not None
+
+    def _new_live_session(self, cfg: MilConfig, settings: CaptureSettings,
+                          name: str, num_samples: int) -> Session:
+        session = Session(
+            name=name or f"MIL live - {cfg.name}",
+            device=DeviceMetadata(
+                driver="mil",
+                device_name=cfg.name,
+                connection="machine-in-loop emulator (synthetic live)",
+                mock=True,
+                extra={"protocol": cfg.protocol, "mil_live": True,
+                       "rx_pin": cfg.trigger.rx_pin,
+                       "tx_pin": cfg.trigger.tx_pin},
+            ),
+            settings=settings,
+            sample_rate=settings.sample_rate,
+            sample_clk_hz=settings.sample_rate,
+            num_samples=num_samples,
+            trigger_sample=None,
+            tags=["mil", "live", cfg.protocol],
+            notes=("Synthetic MIL live view. RX/TX samples are generated from "
+                   "emulator transactions until a physical scope bridge is "
+                   "available."),
+        )
+        session.channels = default_digital_channels(16)
+        for channel in session.channels:
+            channel.enabled = channel.id in {
+                f"d{cfg.trigger.rx_pin}", f"d{cfg.trigger.tx_pin}",
+                *(f"d{ch}" for ch in cfg.capture.extra_digital_channels),
+            }
+        session.channels[cfg.trigger.rx_pin].name = (
+            f"MIL RX CH{cfg.trigger.rx_pin}")
+        session.channels[cfg.trigger.tx_pin].name = (
+            f"MIL TX CH{cfg.trigger.tx_pin}")
+        for ch in cfg.capture.extra_digital_channels:
+            if 0 <= ch < len(session.channels):
+                session.channels[ch].name = f"MIL extra CH{ch}"
+                session.channels[ch].display_height_scale = 0.75
+        return session
+
+    @staticmethod
+    def _idle_digital(cfg: MilConfig, count: int) -> np.ndarray:
+        digital = np.zeros(max(1, count), dtype=np.uint16)
+        pins = [cfg.trigger.rx_pin, cfg.trigger.tx_pin,
+                *cfg.capture.extra_digital_channels]
+        for pin in pins:
+            if 0 <= pin < 16:
+                digital |= np.uint16(1 << pin)
+        return digital
+
+    def _append_live_transaction(self, result: MilTransactionResponse) -> None:
+        with self._live_lock:
+            session_id = self._live_session_id
+            settings = self._live_settings
+            cfg = self._status.config
+            if not session_id or settings is None or cfg is None:
+                return
+            store = self._live_store
+            if store is None:
+                return
+            current = store.get(session_id)
+            wf = store.load_waveform(session_id)
+            if current is None or wf is None:
+                return
+            sample_rate = max(float(settings.sample_rate),
+                              float(cfg.trigger.baud) * 16.0)
+            samples_per_bit = max(8, int(round(sample_rate / cfg.trigger.baud)))
+            byte_gap = max(0, int(round(
+                sample_rate * cfg.timing.inter_byte_gap_us / 1_000_000.0)))
+            response_delay = max(0, int(round(
+                sample_rate * cfg.timing.response_delay_us / 1_000_000.0)))
+            rx = _uart_samples(result.request_hex, samples_per_bit, byte_gap)
+            tx = _uart_samples(result.response_hex, samples_per_bit, byte_gap)
+            tx_start = len(rx) + response_delay
+            response_budget = _uart_samples(
+                "00" * max(0, int(cfg.capture.max_response_bytes)),
+                samples_per_bit, byte_gap)
+            response_window = max(len(tx), len(response_budget))
+            post = max(0, int(round(
+                sample_rate * cfg.capture.manual_post_packet_us / 1_000_000.0)))
+            if cfg.capture.mode == "auto":
+                post = max(post, samples_per_bit * 8)
+            total = max(len(rx), tx_start + response_window) + post
+            fragment = self._idle_digital(cfg, total)
+            _apply_line(fragment, cfg.trigger.rx_pin, rx, 0)
+            _apply_line(fragment, cfg.trigger.tx_pin, tx, tx_start)
+            if cfg.trigger.rs485_de_pin is not None:
+                # Direction-enable follows the TX response interval.
+                de = cfg.trigger.rs485_de_pin
+                if 0 <= de < 16:
+                    fragment[tx_start: min(len(fragment), tx_start + len(tx))] |= np.uint16(1 << de)
+            keep = max(1, int(settings.num_samples))
+            merged = np.concatenate((wf.digital if wf.digital is not None else np.zeros(0, dtype=np.uint16), fragment))[-keep:]
+            wf = WaveformData(sample_rate=sample_rate, digital=merged)
+            current.num_samples = len(merged)
+            current.sample_rate = sample_rate
+            current.sample_clk_hz = sample_rate
+            self._live_repeat += 1
+            repeat = self._live_repeat
+            store.save(current)
+            store.save_waveform(session_id, wf)
+        manager.publish_threadsafe("capture", "capture_complete", {
+            "session_id": session_id, "num_samples": len(merged),
+            "repeat": repeat, "mil": True,
+        })
+        manager.publish_threadsafe(f"session:{session_id}", "waveform_ready", {
+            "session_id": session_id, "num_samples": len(merged),
+            "chunk_samples": len(fragment), "sample_rate": sample_rate,
+            "repeat": repeat, "rolling": True, "mil": True,
+        })
+        from ..state import capture_manager
+        capture_manager.schedule_live_decode(session_id)
 
     def status(self) -> MilRuntimeStatus:
         return MilRuntimeStatus(**self._status.model_dump())
@@ -176,6 +370,7 @@ class MilEmulator:
             "manual_post_packet_us": cfg.capture.manual_post_packet_us,
             "extra_digital_channels": cfg.capture.extra_digital_channels,
         })
+        self._append_live_transaction(result)
         return result
 
     def _handle_uart(self, cfg: MilConfig, data: bytes) -> MilTransactionResponse:

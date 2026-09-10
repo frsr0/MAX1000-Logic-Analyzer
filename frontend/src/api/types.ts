@@ -412,13 +412,30 @@ export interface MilAccelerometerSample {
   timestamp: number;
 }
 
+export interface MilAccelerometerConfig {
+  output_data_rate_hz: 1 | 10 | 25 | 50 | 100 | 200 | 400 | 1620 | 5376;
+  full_scale_g: 2 | 4 | 8 | 16;
+  operating_mode: 'normal' | 'high_resolution' | 'low_power';
+  bdu: boolean;
+  endian: 'little' | 'big';
+  self_test: 'normal' | 'positive' | 'negative';
+  x_enabled: boolean;
+  y_enabled: boolean;
+  z_enabled: boolean;
+}
+
 export interface MilAccelerometerStatus {
   running: boolean;
   available: boolean;
   sample_rate_hz: number;
+  measured_rate_hz?: number;
+  data_rate_bytes_per_s?: number;
   sample: MilAccelerometerSample | null;
+  last_sample_at?: number | null;
   samples_read: number;
   last_error: string | null;
+  effective_config?: MilAccelerometerConfig | null;
+  register_readback?: { ctrl1: number; ctrl4: number } | null;
 }
 
 export interface MilTransactionResponse {

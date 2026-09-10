@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
-import type { MilAccelerometerStatus } from '../api/types';
+import type { MilAccelerometerConfig, MilAccelerometerStatus } from '../api/types';
 import { useApp } from '../state/appStore';
 import { MilAccelerometerCard } from './MilAccelerometerCard';
 
@@ -10,11 +10,23 @@ const sample = (x_g = 0, y_g = 0, z_g = 1): MilAccelerometerStatus => ({
   running: false, available: true, sample_rate_hz: 100, sample: { x_g, y_g, z_g, timestamp: 1 },
   samples_read: 42, last_error: null,
 });
+const accelerometerConfig: MilAccelerometerConfig = {
+  output_data_rate_hz: 10,
+  full_scale_g: 2,
+  operating_mode: 'high_resolution',
+  bdu: true,
+  endian: 'little',
+  self_test: 'normal',
+  x_enabled: true,
+  y_enabled: true,
+  z_enabled: true,
+};
 
 beforeEach(() => {
   localStorage.clear();
   useApp.setState(useApp.getInitialState(), true);
   useApp.setState({ controlMode: true, toast: vi.fn() });
+  vi.spyOn(api, 'milAccelerometerConfig').mockResolvedValue(accelerometerConfig);
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
@@ -194,6 +206,65 @@ it('shows axis readings and lets the operator establish a zero orientation', asy
   fireEvent.click(screen.getByRole('button', { name: 'Re-zero board' }));
   fireEvent.click(screen.getByRole('button', { name: 'Clear zero' }));
   expect(screen.getByRole('button', { name: 'Set current as zero' })).toBeTruthy();
+});
+
+it('shows measured sample/data rates and hardware configuration readback', async () => {
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({
+    ...sample(), running: true, samples_read: 1234, measured_rate_hz: 97.5,
+    data_rate_bytes_per_s: 585, last_sample_at: Date.now() / 1000,
+    effective_config: { ...accelerometerConfig, output_data_rate_hz: 100, full_scale_g: 8,
+      operating_mode: 'low_power', endian: 'big', bdu: false, x_enabled: true,
+      y_enabled: false, z_enabled: true },
+    register_readback: { ctrl1: 0x5d, ctrl4: 0x62 },
+  });
+  render(<MilAccelerometerCard />);
+  expect(await screen.findByText('97.5 samples/s')).toBeTruthy();
+  expect(screen.getByText('585 bytes/s')).toBeTruthy();
+  expect(screen.getByText(/CTRL1 0x5D · CTRL4 0x62/)).toBeTruthy();
+  expect(screen.getByLabelText('Accelerometer hardware readback').textContent).toContain('±8 g');
+  expect(screen.getByText('low power')).toBeTruthy();
+});
+
+it('loads and saves the complete accelerometer configuration while stopped', async () => {
+  const update = vi.spyOn(api, 'milAccelerometerUpdateConfig')
+    .mockImplementation(async (next) => next);
+  render(<MilAccelerometerCard />);
+
+  const odr = await screen.findByRole('combobox', { name: 'Output data rate' });
+  expect(odr).toHaveProperty('value', '10');
+  expect(screen.queryByRole('option', { name: '5,376 Hz' })).toBeNull();
+  fireEvent.change(odr, { target: { value: '100' } });
+  await waitFor(() => expect(update).toHaveBeenNthCalledWith(1, {
+    ...accelerometerConfig, output_data_rate_hz: 100,
+  }));
+
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Block data update (BDU)' }));
+  await waitFor(() => expect(update).toHaveBeenNthCalledWith(2, {
+    ...accelerometerConfig, output_data_rate_hz: 100, bdu: false,
+  }));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Enable X axis' }));
+  await waitFor(() => expect(update).toHaveBeenNthCalledWith(3, {
+    ...accelerometerConfig, output_data_rate_hz: 100, bdu: false, x_enabled: false,
+  }));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Y axis' }));
+  await waitFor(() => expect(update).toHaveBeenNthCalledWith(4, {
+    ...accelerometerConfig, output_data_rate_hz: 100, bdu: false, x_enabled: false, y_enabled: false,
+  }));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Enable Z axis' }));
+  await waitFor(() => expect(update).toHaveBeenNthCalledWith(5, {
+    ...accelerometerConfig, output_data_rate_hz: 100, bdu: false,
+    x_enabled: false, y_enabled: false, z_enabled: false,
+  }));
+});
+
+it('disables accelerometer configuration controls while tracking', async () => {
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({ ...sample(), running: true });
+  render(<MilAccelerometerCard />);
+  const controls = await screen.findAllByRole('combobox');
+  expect(controls.length).toBeGreaterThanOrEqual(5);
+  controls.forEach((control) => expect(control).toHaveProperty('disabled', true));
+  ['Block data update (BDU)', 'Enable X axis', 'Enable Y axis', 'Enable Z axis']
+    .forEach((name) => expect(screen.getByRole('checkbox', { name })).toHaveProperty('disabled', true));
 });
 
 it('disables hardware controls in read-only mode and reports backend errors', async () => {

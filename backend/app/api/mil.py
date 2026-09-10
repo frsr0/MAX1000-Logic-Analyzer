@@ -4,8 +4,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..mil.model import MilLoadRequest, MilTransactionRequest
-from ..mil.accelerometer import accelerometer
+from ..mil.accelerometer import AccelerometerConfig, accelerometer
+from ..hardware.base import HardwareError
 from ..mil.service import emulator
+from ..state import capture_manager
 from .deps import client_id_header, require_control
 
 router = APIRouter(tags=["machine-in-loop"])
@@ -26,6 +28,22 @@ def mil_accelerometer_start(client_id: str = Depends(client_id_header)):
 def mil_accelerometer_stop(client_id: str = Depends(client_id_header)):
     require_control(client_id)
     return accelerometer.stop()
+
+
+@router.get("/api/mil/accelerometer/config")
+def mil_accelerometer_config():
+    return accelerometer.config()
+
+
+@router.put("/api/mil/accelerometer/config")
+def mil_accelerometer_config_update(
+        config: AccelerometerConfig,
+        client_id: str = Depends(client_id_header)):
+    require_control(client_id)
+    try:
+        return accelerometer.update_config(config)
+    except (ValueError, HardwareError) as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.get("/api/mil/presets")
@@ -59,6 +77,7 @@ def mil_start(client_id: str = Depends(client_id_header)):
 @router.post("/api/mil/stop")
 def mil_stop(client_id: str = Depends(client_id_header)):
     require_control(client_id)
+    capture_manager.stop_mil_live_capture()
     return emulator.stop().model_dump()
 
 

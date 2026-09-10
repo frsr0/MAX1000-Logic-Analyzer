@@ -19,6 +19,7 @@ beforeEach(() => {
   localStorage.clear(); useApp.setState(useApp.getInitialState(), true);
   useApp.setState({ status: status() as never, captureSettings: settings(), controlMode: true });
   vi.spyOn(api, 'validateSettings').mockResolvedValue({ valid: true, findings: [] } as never);
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({ running: false } as never);
 });
 
 afterEach(() => {
@@ -144,6 +145,91 @@ it('starts and stops captures and reports both failures', async () => {
   start.mockRejectedValueOnce(new Error('start failed'));
   fireEvent.click(screen.getByRole('button', { name: 'Capture' }));
   await waitFor(() => expect(toast).toHaveBeenCalledWith('error', 'start failed'));
+});
+
+it('explains and starts the MIL-backed live digital path', async () => {
+  vi.spyOn(api, 'milStatus').mockResolvedValue({ running: true } as never);
+  const start = vi.spyOn(api, 'startCapture').mockResolvedValue({} as never);
+  useApp.setState({ captureSettings: settings({ mode: 'rolling', auto_rearm: true }) });
+  render(<CaptureControls />);
+
+  expect((await screen.findByRole('status')).textContent).toContain(
+    'MIL emulator is running — Capture will open a live RX/TX digital waveform fed by MIL transactions',
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Capture' }));
+  await waitFor(() => expect(start).toHaveBeenCalledWith(
+    expect.objectContaining({ mode: 'rolling', auto_rearm: true }), '',
+  ));
+});
+
+it('explains accelerometer bus precedence over MIL live RX/TX', async () => {
+  vi.spyOn(api, 'milStatus').mockResolvedValue({ running: true } as never);
+  vi.mocked(api.milAccelerometerStatus).mockResolvedValue({ running: true } as never);
+  useApp.setState({ captureSettings: settings({ mode: 'rolling', auto_rearm: true }) });
+  render(<CaptureControls />);
+
+  expect((await screen.findByRole('status')).textContent).toContain(
+    'Accelerometer tracking is active — Capture will open a live LIS3DH I²C bus waveform on CH13/CH14/CH15',
+  );
+  expect(screen.queryByText(/MIL emulator is running/)).toBeNull();
+});
+
+it('quietly falls back when MIL status polling is unavailable', async () => {
+  const milStatus = vi.spyOn(api, 'milStatus').mockRejectedValue('status unavailable');
+  useApp.setState({ captureSettings: settings({ mode: 'rolling', auto_rearm: true }) });
+  render(<CaptureControls />);
+
+  await waitFor(() => expect(milStatus).toHaveBeenCalled());
+  expect(screen.queryByRole('status')).toBeNull();
+});
+
+it('quietly falls back when accelerometer status polling is unavailable', async () => {
+  let rejectStatus!: (reason?: unknown) => void;
+  const accelerometerStatus = vi.mocked(api.milAccelerometerStatus).mockImplementation(
+    () => new Promise((_resolve, reject) => { rejectStatus = reject; }) as never,
+  );
+  useApp.setState({ captureSettings: settings({ mode: 'rolling', auto_rearm: true }) });
+  render(<CaptureControls />);
+
+  await waitFor(() => expect(accelerometerStatus).toHaveBeenCalled());
+  await act(async () => {
+    rejectStatus('accelerometer status unavailable');
+    await Promise.resolve();
+  });
+  expect(screen.queryByRole('status')).toBeNull();
+});
+
+it('ignores a late accelerometer status failure after the panel unmounts', async () => {
+  let rejectStatus!: (reason?: unknown) => void;
+  const accelerometerStatus = vi.mocked(api.milAccelerometerStatus).mockImplementation(
+    () => new Promise((_resolve, reject) => { rejectStatus = reject; }) as never,
+  );
+  const { unmount } = render(<CaptureControls />);
+  expect(accelerometerStatus).toHaveBeenCalled();
+  unmount();
+  await act(async () => rejectStatus('accelerometer status unavailable'));
+});
+
+it('ignores a late MIL status response after the panel unmounts', async () => {
+  let resolveStatus!: (value: any) => void;
+  vi.spyOn(api, 'milStatus').mockImplementation(
+    () => new Promise((resolve) => { resolveStatus = resolve; }) as never,
+  );
+  const { unmount } = render(<CaptureControls />);
+  expect(resolveStatus).toBeTypeOf('function');
+  unmount();
+  await act(async () => resolveStatus({ running: true }));
+});
+
+it('ignores a late MIL status failure after the panel unmounts', async () => {
+  let rejectStatus!: (reason?: unknown) => void;
+  vi.spyOn(api, 'milStatus').mockImplementation(
+    () => new Promise((_resolve, reject) => { rejectStatus = reject; }) as never,
+  );
+  const { unmount } = render(<CaptureControls />);
+  expect(rejectStatus).toBeTypeOf('function');
+  unmount();
+  await act(async () => rejectStatus('status unavailable'));
 });
 
 it('polls queued jobs through running, done and error displays', async () => {

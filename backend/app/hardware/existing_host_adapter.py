@@ -177,7 +177,7 @@ class ExistingHostAdapter(HardwareDevice):
                     continue
             return None
 
-    def accelerometer_configure(self, address: int) -> None:
+    def accelerometer_configure(self, address: int, config=None) -> None:
         """Configure the LIS3DH atomically with respect to captures."""
         with self._lock:
             if self._dev is None:
@@ -185,8 +185,27 @@ class ExistingHostAdapter(HardwareDevice):
             writer = getattr(self._dev, "accel_write_i2c", None)
             if not callable(writer):
                 raise HardwareError("Connected hardware cannot configure LIS3DH")
-            # 10 Hz, high-resolution XYZ output, BDU enabled, +/-2 g range.
-            for register, value in ((0x20, 0x27), (0x23, 0x88)):
+            if config is None:
+                ctrl1, ctrl4 = 0x27, 0x88
+            else:
+                odr_code = {1: 0x1, 10: 0x2, 25: 0x3, 50: 0x4,
+                            100: 0x5, 200: 0x6, 400: 0x7,
+                            1620: 0x8, 5376: 0x9}[int(config.output_data_rate_hz)]
+                axes = ((0x01 if config.x_enabled else 0)
+                        | (0x02 if config.y_enabled else 0)
+                        | (0x04 if config.z_enabled else 0))
+                low_power = (config.operating_mode == "low_power"
+                             or int(config.output_data_rate_hz) > 400)
+                ctrl1 = (odr_code << 4) | (0x08 if low_power else 0) | axes
+                scale_code = {2: 0x0, 4: 0x1, 8: 0x2, 16: 0x3}[int(config.full_scale_g)]
+                self_test = {"normal": 0x0, "positive": 0x2,
+                             "negative": 0x4}[config.self_test]
+                ctrl4 = ((0x80 if config.bdu else 0)
+                         | (0x40 if config.endian == "big" else 0)
+                         | (scale_code << 4)
+                         | (0x08 if config.operating_mode == "high_resolution" else 0)
+                         | self_test)
+            for register, value in ((0x20, ctrl1), (0x23, ctrl4)):
                 if writer(register, value, dev_addr=address) is False:
                     raise HardwareError(
                         f"Failed to configure LIS3DH register 0x{register:02x}")
@@ -206,6 +225,20 @@ class ExistingHostAdapter(HardwareDevice):
             if not isinstance(payload, (bytes, bytearray)) or len(payload) != 6:
                 raise HardwareError("LIS3DH returned an invalid XYZ sample")
             return bytes(payload)
+
+    def accelerometer_read_config(self, address: int) -> dict[str, int]:
+        """Read back LIS3DH control registers after configuration."""
+        with self._lock:
+            if self._dev is None:
+                raise HardwareError("Device not connected")
+            reader = getattr(self._dev, "accel_read_i2c", None)
+            if not callable(reader):
+                raise HardwareError("Connected hardware cannot read LIS3DH config")
+            ctrl1 = reader(0x20, dev_addr=address)
+            ctrl4 = reader(0x23, dev_addr=address)
+            if not isinstance(ctrl1, int) or not isinstance(ctrl4, int):
+                raise HardwareError("LIS3DH returned invalid configuration registers")
+            return {"ctrl1": ctrl1 & 0xFF, "ctrl4": ctrl4 & 0xFF}
 
     def get_capabilities(self) -> DeviceCapabilities:
         sample_clk = float(self._dev.sample_clk) if self._dev else 200e6

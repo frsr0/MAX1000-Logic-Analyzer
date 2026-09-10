@@ -5,7 +5,7 @@ import type {
   DecoderEvent, DecoderInstance, DeviceCapabilities, DeviceDescriptor,
   DeviceMetadata, GeneratorConfig, GeneratorRouteCapability, LogEntry, Marker, MeasurementInstance,
   MeasurementType, MilConfig, MilPresetSummary, MilRuntimeStatus,
-  MilTransactionResponse, MilAccelerometerStatus, Session, SessionSummary, VirtualBridgeStatus,
+  MilTransactionResponse, MilAccelerometerConfig, MilAccelerometerStatus, Session, SessionSummary, VirtualBridgeStatus,
   VirtualComPairCreateResponse,
 } from './types';
 import { parseWaveformPayload, WaveformPayload } from './binary';
@@ -51,6 +51,7 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
 
 const get = <T,>(p: string) => req<T>('GET', p);
 const post = <T,>(p: string, b?: unknown) => req<T>('POST', p, b);
+const put = <T,>(p: string, b?: unknown) => req<T>('PUT', p, b);
 const patch = <T,>(p: string, b?: unknown) => req<T>('PATCH', p, b);
 const del = <T,>(p: string) => req<T>('DELETE', p);
 
@@ -228,6 +229,9 @@ export const api = {
   milTransaction: (body: { request_hex: string; protocol?: string; capture_evidence?: boolean }) =>
     post<MilTransactionResponse>('/api/mil/transaction', body),
   milAccelerometerStatus: () => get<MilAccelerometerStatus>('/api/mil/accelerometer/status'),
+  milAccelerometerConfig: () => get<MilAccelerometerConfig>('/api/mil/accelerometer/config'),
+  milAccelerometerUpdateConfig: (config: MilAccelerometerConfig) =>
+    put<MilAccelerometerConfig>('/api/mil/accelerometer/config', config),
   milAccelerometerStart: () => post<MilAccelerometerStatus>('/api/mil/accelerometer/start'),
   milAccelerometerStop: () => post<MilAccelerometerStatus>('/api/mil/accelerometer/stop'),
 

@@ -112,6 +112,16 @@ const cases: Case[] = [
   { name: 'mil stop', call: api.milStop, method: 'POST', url: '/api/mil/stop' },
   { name: 'mil transaction', call: () => api.milTransaction({ request_hex: '55' }), method: 'POST', url: '/api/mil/transaction', body: { request_hex: '55' } },
   { name: 'mil accelerometer status', call: api.milAccelerometerStatus, method: 'GET', url: '/api/mil/accelerometer/status' },
+  { name: 'mil accelerometer config', call: api.milAccelerometerConfig, method: 'GET', url: '/api/mil/accelerometer/config' },
+  { name: 'mil accelerometer config update', call: () => api.milAccelerometerUpdateConfig({
+    output_data_rate_hz: 10, full_scale_g: 2, operating_mode: 'high_resolution',
+    bdu: true, endian: 'little', self_test: 'normal',
+    x_enabled: true, y_enabled: true, z_enabled: true,
+  }), method: 'PUT', url: '/api/mil/accelerometer/config', body: {
+    output_data_rate_hz: 10, full_scale_g: 2, operating_mode: 'high_resolution',
+    bdu: true, endian: 'little', self_test: 'normal',
+    x_enabled: true, y_enabled: true, z_enabled: true,
+  } },
   { name: 'mil accelerometer start', call: api.milAccelerometerStart, method: 'POST', url: '/api/mil/accelerometer/start' },
   { name: 'mil accelerometer stop', call: api.milAccelerometerStop, method: 'POST', url: '/api/mil/accelerometer/stop' },
   { name: 'logs', call: () => api.logs(), method: 'GET', url: '/api/logs?limit=500' },
