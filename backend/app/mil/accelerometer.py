@@ -814,9 +814,8 @@ class AccelerometerService:
             frames = self._capture_live_trace(
                 adapter, raw, address, live_stop_evt,
                 nsamples=LIVE_FALLBACK_TRACE_SAMPLES,
-                repeat_count=LIVE_FALLBACK_REPEAT_COUNT)
-            for sample in frames:
-                self._record_sample(sample)
+                repeat_count=LIVE_FALLBACK_REPEAT_COUNT,
+                sample_callback=self._record_sample)
             # Keep status tracking alive when a short trace ends between I2C
             # frames (or when the legacy capture has no attach mirror).
             if not frames:
@@ -960,7 +959,10 @@ class AccelerometerService:
     def _capture_live_trace(self, adapter: Any, raw: Any, address: int,
                             stop_evt: threading.Event, *,
                             nsamples: int | None = None,
-                            repeat_count: int = 3) -> list[tuple[float, float, float]]:
+                            repeat_count: int = 3,
+                            sample_callback: Callable[
+                                [tuple[float, float, float]], None] | None = None
+                            ) -> list[tuple[float, float, float]]:
         with self._lock:
             session = self._live_session
             store = self._live_store
@@ -978,10 +980,21 @@ class AccelerometerService:
             digital = clean_live_trace(payload_to_digital(payload))
             if digital.size == 0:
                 return []
+            frames = self._decode_live_i2c_frames(digital, address)
             with self._lock:
                 # stop_live_capture can race with a completed bus transaction.
                 if self._live_session is not session or self._live_store is not store:
                     return []
+            # Publish decoded XYZ as soon as the capture bytes are available.
+            # Waveform persistence and decoder scheduling can involve a much
+            # larger rolling buffer; keeping them after this callback prevents
+            # storage latency from inflating the physical-sample age.
+            if sample_callback is not None:
+                for frame in frames:
+                    sample_callback(frame)
+            with self._lock:
+                if self._live_session is not session or self._live_store is not store:
+                    return frames
                 current = store.load_waveform(session.id)
                 previous = (current.digital if current is not None
                             and current.digital is not None else np.zeros(0, dtype=np.uint16))
@@ -1001,7 +1014,7 @@ class AccelerometerService:
             schedule = getattr(self.manager, "schedule_live_decode", None)
             if callable(schedule):
                 schedule(session.id)
-            return self._decode_live_i2c_frames(digital, address)
+            return frames
         except Exception as exc:
             # A failed optional trace must not terminate the regular XYZ
             # service; status polling remains useful even if capture is not.

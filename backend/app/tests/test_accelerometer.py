@@ -565,6 +565,47 @@ def test_live_ring_i2c_decoder_extracts_xyz_frame():
     assert frames == [(0.001, -0.001, 0.002)]
 
 
+def test_live_trace_publishes_xyz_before_waveform_persistence():
+    """A slow rolling-store write must not delay the physical sample."""
+    events = []
+
+    class TraceStore:
+        def __init__(self):
+            self.waveform = None
+
+        def load_waveform(self, _session_id):
+            return self.waveform
+
+        def save_waveform(self, _session_id, waveform):
+            events.append("persist")
+            self.waveform = waveform
+
+        def save(self, _session):
+            pass
+
+    class TraceRaw:
+        sys_clk = 100_000_000
+
+        def accel_capture_dialogue(self, _syms, _bit_div, **_kwargs):
+            return _synthetic_lis3dh_i2c_trace().tobytes()
+
+    service = AccelerometerService(FakeManager(FakeRaw()), sample_rate_hz=100)
+    service._status.running = True
+    service._live_session = SimpleNamespace(
+        id="trace", num_samples=0, sample_rate=0)
+    service._live_store = TraceStore()
+    service._live_settings = CaptureSettings(
+        mode="rolling", auto_rearm=True, num_samples=1024)
+
+    frames = service._capture_live_trace(
+        SimpleNamespace(), TraceRaw(), 0x19, threading.Event(),
+        nsamples=768, repeat_count=1,
+        sample_callback=lambda _frame: events.append("sample"))
+
+    assert frames
+    assert events.index("sample") < events.index("persist")
+
+
 def test_live_ring_throughput_updates_status_without_fifo_contention(tmp_path):
     """Live waveform capture must not steal the XYZ path's Bit_Engine polls."""
     class RingRaw(FakeRaw):
