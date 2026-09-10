@@ -130,7 +130,12 @@ architecture rtl of SDRAM_Controller is
     signal cnt   : integer range 0 to 63 := 0;
     signal init_cnt : integer range 0 to 32767 := 0;  -- ST_INIT power-up wait only
     signal init_cnt_done : std_logic := '0';  -- registered init_cnt >= 19998
-    signal timer : integer range 0 to 65535 := 0;
+    -- The refresh timer never exceeds REF_CYCLES-1: the registered compare
+    -- clears it on the first cycle at the terminal count, and the refresh
+    -- precharge delay only loads TRP_CYCLES-1.  Constraining the range lets
+    -- Quartus implement an 11-bit counter (for the 1308-cycle 167 MHz
+    -- refresh interval) instead of a 16-bit adder on the SDRAM clock path.
+    signal timer : integer range 0 to REF_CYCLES - 1 := 0;
     -- Registered versions of wide comparator outputs to reduce combinational depth
     signal timer_ge_ref   : std_logic := '0';  -- timer >= REF_CYCLES - 1
     signal timer_eq_zero  : std_logic := '0';  -- timer = 0

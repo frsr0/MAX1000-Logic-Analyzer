@@ -965,7 +965,14 @@ begin
         -- exclusive, so priority order here only resolves impossible overlaps.
         if narrow_word_pending_r = '1' then
           fifo_wdata <= narrow_word_data_r;
-        elsif astream_f = '1' then
+        elsif analog_burst_active = '1' then
+          -- The data mux only needs to select the frame while a burst is
+          -- actually being emitted.  Using the mode level (astream_f) here
+          -- put the slow CDC/control fanout on every fifo_wdata bit and was
+          -- the final 200 MHz setup path.  analog_burst_active is registered
+          -- in this same FAST_CLK process and is exactly the qualifier used
+          -- by the write strobe below, so this preserves the consumed data
+          -- sequence while removing the mode-level path from fifo_wdata.
           case aword_idx is
             when 0      => fifo_wdata <= aframe_shift(15 downto 0);
             when 1      => fifo_wdata <= aframe_shift(31 downto 16);
