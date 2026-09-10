@@ -214,7 +214,10 @@ begin
               end if;
             end if;
 
-            if sym_cnt = 0 and tick = '1' then
+            -- Num_Syms is a finite per-burst guard.  In repeat mode the
+            -- loaded FIFO is intentionally unbounded in time; stopping when
+            -- the guard expires defeats GEN_FLAG_REPEAT after ~65k symbols.
+            if repeat_active = '0' and sym_cnt = 0 and tick = '1' then
               Done   <= '1';
               out0_r <= '1';
               out1_r <= '1';

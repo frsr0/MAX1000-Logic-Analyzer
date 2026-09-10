@@ -226,6 +226,62 @@ class ExistingHostAdapter(HardwareDevice):
                 raise HardwareError("LIS3DH returned an invalid XYZ sample")
             return bytes(payload)
 
+    def accelerometer_fifo_configure(self, address: int, enabled: bool = True,
+                                     mode: str = "stream",
+                                     threshold: int = 31,
+                                     speed: int = 400_000):
+        """Configure the optional LIS3DH FIFO through the host driver.
+
+        Older host driver images do not expose this seam.  Returning ``None``
+        in that case lets the MIL service retain its atomic six-byte fallback
+        instead of treating an optional acceleration feature as a hard device
+        failure.
+        """
+        with self._lock:
+            if self._dev is None:
+                raise HardwareError("Device not connected")
+            configure = getattr(self._dev, "accel_fifo_configure", None)
+            if not callable(configure):
+                return None
+            return configure(
+                enabled=bool(enabled), dev_addr=int(address), mode=mode,
+                threshold=int(threshold), speed=int(speed))
+
+    def accelerometer_read_fifo(self, address: int, max_samples: int = 4,
+                                speed: int = 400_000):
+        """Drain a bounded batch of FIFO XYZ frames, if supported."""
+        with self._lock:
+            if self._dev is None:
+                raise HardwareError("Device not connected")
+            reader = getattr(self._dev, "accel_read_fifo", None)
+            if not callable(reader):
+                return None
+            try:
+                payload = reader(
+                    dev_addr=int(address), max_samples=max(1, int(max_samples)),
+                    speed=int(speed))
+            except TypeError:
+                # Older out-of-tree host drivers may not accept the optional
+                # speed keyword; preserve their original FIFO seam.
+                payload = reader(
+                    dev_addr=int(address), max_samples=max(1, int(max_samples)))
+            if payload is None:
+                return None
+            if not isinstance(payload, (bytes, bytearray)) \
+                    or len(payload) % 6:
+                raise HardwareError("LIS3DH returned an invalid FIFO payload")
+            return bytes(payload)
+
+    def accelerometer_fifo_status(self, address: int):
+        """Return the last/read LIS3DH FIFO status when the seam exists."""
+        with self._lock:
+            if self._dev is None:
+                raise HardwareError("Device not connected")
+            reader = getattr(self._dev, "accel_fifo_status", None)
+            if not callable(reader):
+                return None
+            return reader(dev_addr=int(address))
+
     def accelerometer_read_config(self, address: int) -> dict[str, int]:
         """Read back LIS3DH control registers after configuration."""
         with self._lock:
@@ -979,6 +1035,15 @@ class ExistingHostAdapter(HardwareDevice):
                         timings.update(child_timings)
                     extra["readback_codec"] = getattr(self._dev, "_readback_codec",
                                                        lambda: "unknown")()
+                    fifo_config = getattr(self._dev, "last_accel_fifo_config", None)
+                    fifo_status = getattr(self._dev, "last_accel_fifo_status", None)
+                    fifo_stats = getattr(self._dev, "accel_fifo_stats", None)
+                    if fifo_config is not None or fifo_status is not None or fifo_stats is not None:
+                        extra["accelerometer_fifo"] = {
+                            "config": fifo_config,
+                            "status": fifo_status,
+                            "stats": dict(fifo_stats) if isinstance(fifo_stats, dict) else fifo_stats,
+                        }
                 except Exception as e:
                     self._last_error = str(e)
         return DebugInfo(raw_metadata=raw_meta, raw_status=raw_status,

@@ -427,7 +427,14 @@ export interface MilAccelerometerConfig {
 export interface MilAccelerometerStatus {
   running: boolean;
   available: boolean;
+  /** Requested sensor ODR, retained under the legacy API name. */
   sample_rate_hz: number;
+  /** ODR read back from the LIS3DH CTRL_REG1 after tracking starts. */
+  effective_odr_hz?: number;
+  /** Completed host-side six-byte XYZ transactions, not sensor ODR. */
+  host_read_rate_hz?: number;
+  host_data_rate_bytes_per_s?: number;
+  /** Deprecated aliases for older backends. */
   measured_rate_hz?: number;
   data_rate_bytes_per_s?: number;
   sample: MilAccelerometerSample | null;

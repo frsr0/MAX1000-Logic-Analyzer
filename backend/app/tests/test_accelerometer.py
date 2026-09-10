@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import threading
 import time
+import itertools
 from types import SimpleNamespace
 
 import pytest
@@ -12,9 +13,29 @@ from app.capture.capture_manager import CaptureManager
 from app.capture.session import CaptureSettings
 from app.capture.session_store import SessionStore
 from app.hardware.base import HardwareError
+import app.mil.accelerometer as accelerometer_module
 from app.mil.accelerometer import (AccelerometerConfig, AccelerometerService,
                                    clean_live_trace)
 from app.api import mil as mil_api
+
+
+def test_all_supported_configuration_permutations_round_trip_register_readback():
+    """Every selectable LIS3DH field survives register encode/decode."""
+    rates = (1, 10, 25, 50, 100, 200, 400)
+    modes = ("normal", "high_resolution", "low_power")
+    scales = (2, 4, 8, 16)
+    axes = tuple(itertools.product((False, True), repeat=3))
+    for rate, mode, scale, bdu, endian, self_test, axis in itertools.product(
+            rates, modes, scales, (False, True), ("little", "big"),
+            ("normal", "positive", "negative"), axes):
+        config = AccelerometerConfig(
+            output_data_rate_hz=rate, operating_mode=mode,
+            full_scale_g=scale, bdu=bdu, endian=endian,
+            self_test=self_test, x_enabled=axis[0], y_enabled=axis[1],
+            z_enabled=axis[2])
+        ctrl1, ctrl4 = accelerometer_module._config_registers(config)
+        assert AccelerometerService._decode_config(
+            {"ctrl1": ctrl1, "ctrl4": ctrl4}) == config
 
 
 class FakeRaw:
@@ -90,6 +111,87 @@ def test_worker_configures_detected_address_and_decodes_xyz():
     assert raw.first_sample.is_set() and not service.manager.reserved
 
 
+def test_worker_drains_fifo_frames_and_updates_latest_status_sample():
+    class FifoRaw(FakeRaw):
+        def __init__(self):
+            super().__init__()
+            self.fifo_configured = []
+            self.fifo_reads = []
+
+        def accel_fifo_configure(self, enabled=True, dev_addr=0x19, mode="stream",
+                                 threshold=31, **_kwargs):
+            self.fifo_configured.append((enabled, dev_addr, mode, threshold))
+            return {"enabled": enabled}
+
+        def accel_read_fifo(self, dev_addr=0x19, max_samples=4, **_kwargs):
+            self.fifo_reads.append((dev_addr, max_samples))
+            self.first_sample.set()
+            return self.payload + b"\x30\x00\xd0\xff\x40\x00"
+
+    class FifoDevice:
+        def __init__(self, raw):
+            self._dev = raw
+
+        def is_connected(self):
+            return True
+
+        def accelerometer_fifo_configure(self, address, enabled=True, mode="stream",
+                                         threshold=31):
+            return self._dev.accel_fifo_configure(
+                enabled=enabled, dev_addr=address, mode=mode,
+                threshold=threshold)
+
+        def accelerometer_read_fifo(self, address, max_samples=4):
+            return self._dev.accel_read_fifo(
+                dev_addr=address, max_samples=max_samples)
+
+    raw = FifoRaw()
+    manager = FakeManager(raw)
+    manager.device = FifoDevice(raw)
+    service = AccelerometerService(manager, sample_rate_hz=100)
+
+    assert service.start()["running"] is True
+    assert raw.first_sample.wait(1.0)
+    status = service.status()
+    service.stop()
+
+    assert raw.fifo_configured == [(True, 0x18, "stream", 31)]
+    assert raw.fifo_reads and raw.fifo_reads[0] == (0x18, 25)
+    assert status["samples_read"] >= 2
+    assert status["sample"]["x_g"] == 0.003
+    assert status["sample"]["y_g"] == -0.003
+    assert status["sample"]["z_g"] == 0.004
+
+
+def test_status_distinguishes_sensor_odr_from_slow_host_readback():
+    """A slow bus transaction must not be reported as the sensor's ODR."""
+
+    class SlowRaw(FakeRaw):
+        def accel_read_i2c(self, reg, dev_addr=0x19, read_len=1):
+            if reg == 0x28:
+                # Simulate the USB/I2C transaction cost of the real adapter.
+                time.sleep(0.05)
+            return super().accel_read_i2c(reg, dev_addr, read_len)
+
+    raw = SlowRaw()
+    service = AccelerometerService(FakeManager(raw), sample_rate_hz=400)
+    service.update_config({"output_data_rate_hz": 400})
+    assert service.start()["running"] is True
+    assert raw.first_sample.wait(1.0)
+
+    deadline = time.time() + 1.0
+    status = service.status()
+    while time.time() < deadline and status["host_read_rate_hz"] == 0:
+        time.sleep(0.02)
+        status = service.status()
+    service.stop()
+
+    assert status["effective_odr_hz"] == 400
+    assert 0 < status["host_read_rate_hz"] < 100
+    assert status["host_data_rate_bytes_per_s"] == pytest.approx(
+        status["host_read_rate_hz"] * 6.0)
+
+
 def test_stopped_configuration_is_applied_before_next_tracking_run():
     raw = FakeRaw()
     service = AccelerometerService(FakeManager(raw), sample_rate_hz=100)
@@ -130,6 +232,9 @@ def test_start_without_real_hardware_is_structured_and_non_blocking():
         "running": False,
         "available": False,
         "sample_rate_hz": 10.0,
+        "effective_odr_hz": 0.0,
+        "host_read_rate_hz": 0.0,
+        "host_data_rate_bytes_per_s": 0.0,
         "measured_rate_hz": 0.0,
         "data_rate_bytes_per_s": 0.0,
         "sample": None,
@@ -281,6 +386,186 @@ def test_live_capture_appends_real_accelerometer_bus_samples(tmp_path):
     finally:
         service.stop_live_capture()
         service.stop()
+
+
+def test_live_capture_uses_continuous_ring_producer_and_stops_cleanly(tmp_path):
+    """A live view is fed continuously, independently of the XYZ poll ODR."""
+
+    class RingRaw(FakeRaw):
+        def __init__(self):
+            super().__init__()
+            self.ring_started = threading.Event()
+            self.ring_chunks = 0
+
+        def continuous_ring_capture_with_repeating_i2c(self, **kwargs):
+            self.ring_started.set()
+            stop_evt = kwargs["stop_evt"]
+            chunk = np.asarray([
+                (1 << 13) | (1 << 14),
+                (1 << 13),
+                (1 << 14),
+                (1 << 13) | (1 << 14),
+            ], dtype="<u2").tobytes()
+            while not stop_evt.is_set():
+                self.ring_chunks += 1
+                yield chunk
+                stop_evt.wait(0.01)
+
+    raw = RingRaw()
+    manager = FakeManager(raw)
+    service = AccelerometerService(manager, sample_rate_hz=1)
+    assert service.start()["running"] is True
+    assert raw.first_sample.wait(1.0)
+
+    store = SessionStore(tmp_path)
+    session = service.start_live_capture(
+        CaptureSettings(mode="rolling", auto_rearm=True, num_samples=32),
+        "Accelerometer ring live", store)
+    try:
+        assert raw.ring_started.wait(1.0)
+        deadline = time.time() + 1.0
+        waveform = None
+        while time.time() < deadline:
+            waveform = store.load_waveform(session.id)
+            if waveform is not None and waveform.num_samples >= 8:
+                break
+            time.sleep(0.01)
+        assert waveform is not None and waveform.num_samples >= 8
+        assert raw.ring_chunks >= 2
+        assert not raw.configured or raw.reads >= 1
+    finally:
+        service.stop_live_capture()
+        service.stop(wait_timeout=1.0)
+
+    assert service._live_worker is not None
+    assert not service._live_worker.is_alive()
+
+
+def test_live_capture_falls_back_when_ring_is_static(tmp_path, monkeypatch):
+    """A stale image must not leave live view pinned to an idle ring."""
+    monkeypatch.setattr(accelerometer_module, "LIVE_STREAM_WATCHDOG_S", 0.01)
+
+    class StaticRingRaw(FakeRaw):
+        def __init__(self):
+            super().__init__()
+            self.ring_started = threading.Event()
+            self.burst_calls = 0
+
+        def accel_capture_dialogue(self, *args, **kwargs):
+            self.burst_calls += 1
+            return super().accel_capture_dialogue(*args, **kwargs)
+
+        def continuous_ring_capture_with_repeating_i2c(self, **kwargs):
+            self.ring_started.set()
+            stop_evt = kwargs["stop_evt"]
+            static = np.asarray(
+                [((1 << 13) | (1 << 14) | (1 << 15))] * 64,
+                dtype="<u2").tobytes()
+            while not stop_evt.is_set():
+                yield static
+
+    raw = StaticRingRaw()
+    manager = FakeManager(raw)
+    service = AccelerometerService(manager, sample_rate_hz=100)
+    assert service.start()["running"] is True
+    assert raw.first_sample.wait(1.0)
+    store = SessionStore(tmp_path)
+    session = service.start_live_capture(
+        CaptureSettings(mode="rolling", auto_rearm=True, num_samples=256),
+        "Static ring fallback", store)
+    try:
+        deadline = time.time() + 1.0
+        while time.time() < deadline and raw.burst_calls == 0:
+            time.sleep(0.01)
+        assert raw.ring_started.is_set()
+        assert raw.burst_calls > 0
+        assert any("no bus transitions" in item["message"]
+                   for item in session.diagnostics)
+    finally:
+        service.stop_live_capture()
+        service.stop(wait_timeout=1.0)
+
+
+def _synthetic_lis3dh_i2c_trace(address: int = 0x19) -> np.ndarray:
+    """Build one complete attach-mirror read at a deliberately slow clock."""
+    def add_byte(words, value, ack=0):
+        for bit in range(7, -1, -1):
+            level = (value >> bit) & 1
+            words.extend([(0, level)] * 3)
+            words.extend([(1, level)] * 3)
+        words.extend([(0, ack)] * 3)
+        words.extend([(1, ack)] * 3)
+
+    words = [(1, 1), (1, 0)]  # idle, START
+    add_byte(words, (address << 1) | 0)
+    add_byte(words, 0xA8)
+    words.extend([(0, 1)] * 3 + [(1, 1)] * 3)
+    words.extend([(1, 0)] * 3)  # repeated START
+    add_byte(words, (address << 1) | 1)
+    payload = b"\x10\x00\xf0\xff\x20\x00"
+    for index, value in enumerate(payload):
+        add_byte(words, value, ack=1 if index == len(payload) - 1 else 0)
+    words.extend([(0, 0)] * 3 + [(1, 0)] * 3 + [(1, 1)] * 3)
+    return np.asarray(
+        [(scl << 14) | (sda << 13) for scl, sda in words], dtype=np.uint16)
+
+
+def test_live_ring_i2c_decoder_extracts_xyz_frame():
+    """The attach mirror contains enough data to update XYZ status."""
+    digital = _synthetic_lis3dh_i2c_trace()
+
+    frames = AccelerometerService._decode_live_i2c_frames(digital, 0x19)
+    assert frames == [(0.001, -0.001, 0.002)]
+
+
+def test_live_ring_throughput_updates_status_without_fifo_contention(tmp_path):
+    """Live waveform capture must not steal the XYZ path's Bit_Engine polls."""
+    class RingRaw(FakeRaw):
+        def __init__(self):
+            super().__init__()
+            self.fifo_calls = 0
+            self.ring_started = threading.Event()
+            self.trace = _synthetic_lis3dh_i2c_trace(0x18).tobytes()
+
+        def continuous_ring_capture_with_repeating_i2c(self, **kwargs):
+            self.ring_started.set()
+            stop_evt = kwargs["stop_evt"]
+            while not stop_evt.is_set():
+                yield self.trace
+                stop_evt.wait(0.005)
+
+    raw = RingRaw()
+    manager = FakeManager(raw)
+    device = manager.device
+    device.accelerometer_read_fifo = lambda *_args, **_kwargs: (
+        setattr(raw, "fifo_calls", raw.fifo_calls + 1) or raw.payload)
+    service = AccelerometerService(manager, sample_rate_hz=100)
+    assert service.start()["running"] is True
+    store = SessionStore(tmp_path)
+    session = service.start_live_capture(
+        CaptureSettings(mode="rolling", auto_rearm=True, num_samples=4096),
+        "Accelerometer throughput", store)
+    try:
+        assert raw.ring_started.wait(1.0)
+        deadline = time.time() + 1.5
+        status = service.status()
+        while time.time() < deadline and status["host_read_rate_hz"] < 50:
+            time.sleep(0.02)
+            status = service.status()
+        print("throughput status", status, session.diagnostics, raw.ring_started.is_set(), service._live_worker.is_alive(), service._live_worker, getattr(raw, 'ring_chunks', None))
+        assert status["samples_read"] >= 3
+        assert status["host_read_rate_hz"] >= 50
+        assert status["host_data_rate_bytes_per_s"] == pytest.approx(
+            status["host_read_rate_hz"] * 6.0)
+        # A service poll can win the scheduling race immediately after
+        # start(); once the ring owns live capture, no further FIFO polls are
+        # permitted.
+        assert raw.fifo_calls <= 1
+        waveform = store.load_waveform(session.id)
+        assert waveform is not None and waveform.num_samples > 0
+    finally:
+        service.stop_live_capture()
+        service.stop(wait_timeout=1.0)
 
 
 def test_mil_accelerometer_routes_require_control(monkeypatch):

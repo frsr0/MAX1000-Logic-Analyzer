@@ -49,6 +49,7 @@ begin
 
   process
     variable saw_busy : boolean := false;
+    variable saw_low : boolean := false;
   begin
     tx_data <= x"01";
     tx_we <= '1';
@@ -58,12 +59,17 @@ begin
     wait until rising_edge(clk);
     start <= '0';
 
-    for i in 0 to 80 loop
+    -- Exercise past the 16-bit Num_Syms guard.  Repeat must remain active
+    -- instead of terminating when the counter wraps/expires.
+    for i in 0 to 70000 loop
       wait until rising_edge(clk);
       saw_busy := saw_busy or (busy = '1');
+      saw_low := saw_low or (out_0 = '0');
       assert done = '0' report "repeat mode asserted Done" severity failure;
     end loop;
     assert saw_busy report "repeat mode never became busy" severity failure;
+    assert saw_low report "repeat mode produced no output activity" severity failure;
+    assert busy = '1' report "repeat mode stopped at Num_Syms limit" severity failure;
 
     clear <= '1';
     wait until rising_edge(clk);

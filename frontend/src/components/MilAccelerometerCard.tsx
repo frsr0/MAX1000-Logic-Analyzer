@@ -212,11 +212,13 @@ export function MilAccelerometerCard() {
             <div><span className="axis-dot axis-z" />Z</div><strong>{signed(status?.sample?.z_g ?? NaN)} <small>g</small></strong>
           </div>
           <div className="mil-accel-meta">
-            <span>Requested ODR</span><strong>{rate(config.output_data_rate_hz, 'Hz')}</strong>
-            <span>Measured XYZ rate</span><strong>{rate(status?.measured_rate_hz, 'samples/s')}</strong>
-            <span>Measured data rate</span><strong>{rate(status?.data_rate_bytes_per_s, 'bytes/s')}</strong>
+            <span>Requested sensor ODR</span><strong>{rate(config.output_data_rate_hz, 'Hz')}</strong>
+            <span>Effective sensor ODR</span><strong>{rate(status?.effective_odr_hz ?? status?.effective_config?.output_data_rate_hz, 'Hz')}</strong>
+            <span>Host XYZ read rate</span><strong>{rate(status?.host_read_rate_hz ?? status?.measured_rate_hz, 'samples/s')}</strong>
+            <span>Host payload rate</span><strong>{rate(status?.host_data_rate_bytes_per_s ?? status?.data_rate_bytes_per_s, 'bytes/s')}</strong>
             <span>Samples read</span><strong>{(status?.samples_read ?? 0).toLocaleString()}</strong>
             <span>Last sample</span><strong>{sampleAge(status?.last_sample_at ?? status?.sample?.timestamp)}</strong>
+            <small className="hint mil-accel-rate-note">Host rates measure completed USB/I²C reads and can be lower than the sensor ODR.</small>
           </div>
           <div className="mil-accel-readback" aria-label="Accelerometer hardware readback">
             <div className="mil-accel-readback-head">

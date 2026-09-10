@@ -210,14 +210,16 @@ it('shows axis readings and lets the operator establish a zero orientation', asy
 
 it('shows measured sample/data rates and hardware configuration readback', async () => {
   vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({
-    ...sample(), running: true, samples_read: 1234, measured_rate_hz: 97.5,
-    data_rate_bytes_per_s: 585, last_sample_at: Date.now() / 1000,
+    ...sample(), running: true, samples_read: 1234, effective_odr_hz: 100,
+    host_read_rate_hz: 97.5, host_data_rate_bytes_per_s: 585,
+    last_sample_at: Date.now() / 1000,
     effective_config: { ...accelerometerConfig, output_data_rate_hz: 100, full_scale_g: 8,
       operating_mode: 'low_power', endian: 'big', bdu: false, x_enabled: true,
       y_enabled: false, z_enabled: true },
     register_readback: { ctrl1: 0x5d, ctrl4: 0x62 },
   });
   render(<MilAccelerometerCard />);
+  expect(await screen.findByText('Effective sensor ODR')).toBeTruthy();
   expect(await screen.findByText('97.5 samples/s')).toBeTruthy();
   expect(screen.getByText('585 bytes/s')).toBeTruthy();
   expect(screen.getByText(/CTRL1 0x5D · CTRL4 0x62/)).toBeTruthy();

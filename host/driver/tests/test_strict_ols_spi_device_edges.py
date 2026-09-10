@@ -22,6 +22,7 @@ from driver.ols_spi_device import (
 )
 from driver.spi_protocol import (
     CMD_GEN_START,
+    CMD_GEN_STOP,
     REG_FLAGS,
     REG_FLAGS_COMPRESS_MASK,
     REG_GEN_BAUD,
@@ -248,6 +249,27 @@ def test_accelerometer_capture_rejects_arm_and_completes_success(monkeypatch):
     ]
     dev.pkt.get_status.return_value = {"capture_status": ST_CAPTURE_DONE}
     assert dev.accel_capture_dialogue([1], 2, rate_hz=1, nsamples=2) == b"abcd"
+
+
+def test_accelerometer_capture_batches_host_repeats_within_generator_fifo(monkeypatch):
+    dev = _device()
+    dev._ensure_open = MagicMock()
+    dev._pins = MagicMock()
+    dev.set_debug_ch0 = MagicMock()
+    dev._write_capture_config = MagicMock()
+    dev._stream_readback = MagicMock(return_value=b"abcd")
+    dev.pkt.transaction.side_effect = [
+        (ST_OK, 0, b""), (ST_CAPTURE_ARMED, 0, b""), (ST_OK, 0, b"")
+    ]
+    dev.pkt.get_status.return_value = {"capture_status": ST_CAPTURE_DONE}
+    loaded = []
+    monkeypatch.setattr(device_module.bit_bang, "pack_symbols",
+                        lambda symbols: loaded.append(list(symbols)) or b"packed")
+    monkeypatch.setattr(device_module.time, "sleep", lambda _: None)
+
+    assert dev.accel_capture_dialogue(
+        [1, 2], 2, rate_hz=1, nsamples=2, repeat_count=3) == b"abcd"
+    assert loaded == [[1, 2, 1, 2, 1, 2]]
 
 
 def test_generator_run_accepts_fire_and_hold_status_or_rejects_timeout(monkeypatch):
@@ -611,10 +633,182 @@ def test_repeating_uart_capture_validates_retries_kicks_and_aborts(monkeypatch):
         )
 
 
+def test_repeating_i2c_capture_arms_ring_and_cleans_up_generator():
+    dev = _device()
+    dev._ensure_open = MagicMock()
+    dev.stream_ring_capture = MagicMock(return_value=iter([
+        (b"digital", 4, 4, 0),
+    ]))
+    dev.pkt.transaction.return_value = (ST_OK, 0, b"")
+    stop = SimpleNamespace(is_set=lambda: False)
+
+    result = list(dev.continuous_ring_capture_with_repeating_i2c(
+        rate_hz=2_000_000,
+        chunk_nsamp=4,
+        buffer_nsamp=16,
+        stop_evt=stop,
+        dev_addr=0x19,
+        reg_addr=0x28,
+        read_len=6,
+        i2c_speed=50_000,
+    ))
+
+    assert result == [(b"digital", 4, 4, 0)]
+    assert call(REG_GEN_DATA, (1 << 8) | device_module.GEN_FLAG_REPEAT |
+                 device_module.GEN_FLAG_ACCEL_ATTACH) in \
+        dev.pkt.write_register.call_args_list
+    assert dev.pkt.load_gen_data.call_count == 1
+    assert call(device_module.CMD_GEN_STOP, timeout=0.5) in \
+        dev.pkt.transaction.call_args_list
+    # The ring arm must not run the debug-source hook: with debug disabled,
+    # that hook emits CMD_GEN_STOP and would kill the just-armed I2C replay.
+    assert dev.stream_ring_capture.call_args.kwargs[
+        "manage_debug_source"] is False
+
+
+def test_stream_ring_unmanaged_source_does_not_stop_generator():
+    """An owner-provided generator survives the ring setup transaction."""
+    dev = _device()
+    _prepare_ring(dev)
+    dev.readback_compression_mode = "delta_rle"
+    dev._get_ring_status = MagicMock(return_value={
+        "producer_index": 1, "oldest_index": 0,
+    })
+    dev.read_capture_range = MagicMock(return_value=b"\x34\x12")
+    stop = _SequenceStop([False, False, True])
+
+    assert list(dev.stream_ring_capture(
+        1_000_000, 1, stop, manage_debug_source=False,
+    )) == [(b"\x34\x12", 1, 1, 0)]
+    dev.set_debug_ch0.assert_not_called()
+    assert call(CMD_GEN_STOP, timeout=0.5) not in \
+        dev.pkt.transaction.call_args_list
+
+
+def test_repeating_i2c_capture_retries_atomic_generator_capture_when_start_ack_is_missing():
+    dev = _device()
+    dev._ensure_open = MagicMock()
+    dev._start_gen_accepted = MagicMock(return_value=False)
+    dev._stream_ring_capture_with_rle_fallback = MagicMock(return_value=iter([
+        (b"digital", 4, 4, 0),
+    ]))
+    dev.pkt.transaction.return_value = (ST_OK, 0, b"")
+    stop = SimpleNamespace(is_set=lambda: False)
+
+    assert list(dev.continuous_ring_capture_with_repeating_i2c(
+        2_000_000, 4, 16, stop)) == [(b"digital", 4, 4, 0)]
+    assert dev._stream_ring_capture_with_rle_fallback.call_args.kwargs[
+        "generator_capture"] is True
+
+
+def test_repeating_i2c_capture_rejects_empty_read():
+    dev = _device()
+    dev._ensure_open = MagicMock()
+    with pytest.raises(ValueError, match="read_len"):
+        list(dev.continuous_ring_capture_with_repeating_i2c(
+            1_000_000, 1, 4, _SequenceStop([True]), read_len=0))
+
+
+def test_repeating_i2c_capture_selects_rle_and_restores_codec():
+    dev = _device()
+    dev._ensure_open = MagicMock()
+    dev._start_gen_accepted = MagicMock(return_value=True)
+    dev._wait_gen_idle = MagicMock()
+    dev.clear_live_gen = MagicMock()
+    dev._pins = MagicMock()
+    dev.set_readback_compression = MagicMock(return_value=True)
+    dev.stream_ring_capture = MagicMock(return_value=iter([
+        (b"rle", 4, 4, 0),
+    ]))
+    dev.pkt.transaction.return_value = (ST_OK, 0, b"")
+
+    result = list(dev.continuous_ring_capture_with_repeating_i2c(
+        2_000_000, 4, 16, SimpleNamespace(is_set=lambda: False)))
+
+    assert result == [(b"rle", 4, 4, 0)]
+    assert dev.set_readback_compression.call_args_list == [
+        call("rle", force_hardware=True),
+        call("raw", force_hardware=True),
+    ]
+    assert dev.stream_ring_capture.call_args.kwargs["window_samples"] == 4
+
+
+def test_repeating_i2c_capture_falls_back_to_raw_after_rle_iteration_failure():
+    dev = _device()
+    dev._ensure_open = MagicMock()
+    dev._start_gen_accepted = MagicMock(return_value=True)
+    dev._wait_gen_idle = MagicMock()
+    dev.clear_live_gen = MagicMock()
+    dev._pins = MagicMock()
+    dev.set_readback_compression = MagicMock(return_value=True)
+
+    def failing_stream():
+        raise OSError("RLE stream unavailable")
+        yield  # pragma: no cover - keeps this a generator function
+
+    dev.stream_ring_capture = MagicMock(side_effect=[
+        failing_stream(),
+        iter([(b"raw", 4, 4, 0)]),
+    ])
+    dev.pkt.transaction.return_value = (ST_OK, 0, b"")
+
+    result = list(dev.continuous_ring_capture_with_repeating_i2c(
+        2_000_000, 4, 16, SimpleNamespace(is_set=lambda: False)))
+
+    assert result == [(b"raw", 4, 4, 0)]
+    assert dev._rle_stream_supported is False
+    assert [item.args[0] for item in
+            dev.set_readback_compression.call_args_list] == [
+                "rle", "raw", "raw",
+            ]
+
+
+def test_repeating_i2c_capture_cleans_up_when_raw_fallback_fails():
+    dev = _device()
+    dev._ensure_open = MagicMock()
+    dev._start_gen_accepted = MagicMock(return_value=True)
+    dev._wait_gen_idle = MagicMock()
+    dev.clear_live_gen = MagicMock()
+    dev._pins = MagicMock()
+    dev.set_readback_compression = MagicMock(return_value=True)
+
+    def failing_stream():
+        raise OSError("RLE stream unavailable")
+        yield  # pragma: no cover - keeps this a generator function
+
+    dev.stream_ring_capture = MagicMock(side_effect=[
+        failing_stream(), failing_stream(),
+    ])
+    dev.pkt.transaction.return_value = (ST_OK, 0, b"")
+
+    with pytest.raises(OSError, match="RLE stream unavailable"):
+        list(dev.continuous_ring_capture_with_repeating_i2c(
+            2_000_000, 4, 16, SimpleNamespace(is_set=lambda: False)))
+
+    assert call(device_module.CMD_GEN_STOP, timeout=0.5) in \
+        dev.pkt.transaction.call_args_list
+    assert call(device_module.CMD_ABORT_CAPTURE, timeout=0.5) in \
+        dev.pkt.transaction.call_args_list
+    dev._wait_gen_idle.assert_called_once_with(timeout=0.5)
+
+
 def test_start_gen_accepts_packet_response_or_fire_and_hold_status(monkeypatch):
     dev = _device()
     dev.pkt.transaction.return_value = (ST_OK, 0, b"")
     assert dev._start_gen_accepted() is True
+
+    # A packet ACK alone is not enough for a repeating capture: verify that
+    # the generator actually reports active before declaring the start usable.
+    dev.pkt.get_status.return_value = {
+        "gen_busy": False, "gen_start_req": False,
+    }
+    assert dev._start_gen_accepted(
+        require_active=True, confirm_timeout=0.0) is False
+    dev.pkt.get_status.return_value = {
+        "gen_busy": True, "gen_start_req": False,
+    }
+    assert dev._start_gen_accepted(
+        require_active=True, confirm_timeout=1.0) is True
 
     dev.pkt.transaction.return_value = None
     dev.pkt.get_status.side_effect = [
@@ -630,6 +824,53 @@ def test_start_gen_accepts_packet_response_or_fire_and_hold_status(monkeypatch):
         "gen_start_req": False,
     }
     assert dev._start_gen_accepted(confirm_timeout=0.0) is False
+
+
+def test_lis3dh_fifo_configure_resets_and_enables_stream_mode():
+    dev = _device()
+    dev.accel_read_i2c = MagicMock(return_value=0xA0)
+    dev.accel_write_i2c = MagicMock(return_value=True)
+
+    result = dev.accel_fifo_configure(
+        enabled=True, dev_addr=0x19, mode="stream", threshold=31)
+
+    assert result == {
+        "ctrl5": 0xE0, "fifo_ctrl": 0x9F, "enabled": True,
+        "mode": "stream", "threshold": 31,
+    }
+    assert dev.accel_write_i2c.call_args_list == [
+        call(0x24, 0xA0, dev_addr=0x19, speed=100_000),
+        call(0x2E, 0x00, dev_addr=0x19, speed=100_000),
+        call(0x24, 0xE0, dev_addr=0x19, speed=100_000),
+        call(0x2E, 0x9F, dev_addr=0x19, speed=100_000),
+    ]
+
+
+def test_lis3dh_fifo_status_decodes_full_overrun_slot_count():
+    dev = _device()
+    dev.accel_read_i2c = MagicMock(return_value=0xE7)
+
+    assert dev.accel_fifo_status(dev_addr=0x18) == {
+        "raw": 0xE7, "level": 7, "empty": True,
+        "overrun": True, "watermark": True,
+    }
+
+
+def test_lis3dh_fifo_read_batches_whole_xyz_samples_to_fit_generator_fifo():
+    dev = _device()
+    dev.accel_fifo_status = MagicMock(return_value={
+        "raw": 0x09, "level": 9, "empty": False,
+        "overrun": False, "watermark": False,
+    })
+    payloads = [bytes(range(24)), bytes(range(24, 48)), bytes(range(48, 54))]
+    dev.accel_read_i2c = MagicMock(side_effect=payloads)
+
+    result = dev.accel_read_fifo(dev_addr=0x19, max_samples=9)
+
+    assert result == b"".join(payloads)
+    assert [c.kwargs["read_len"] for c in dev.accel_read_i2c.call_args_list] == [
+        24, 24, 6,
+    ]
 
 
 def test_i2c_capture_sets_auto_increment_only_for_multi_byte_read():
@@ -1036,6 +1277,27 @@ def test_stream_ring_retry_metadata_wait_rle_and_cleanup(monkeypatch):
     )
     assert results == [(b"\x34\x12", 1, 1, 0)]
     assert full == b"\x34\x12" and progress.called
+
+
+def test_stream_ring_generator_capture_arms_ring_and_generator_atomically():
+    dev = _device()
+    _prepare_ring(dev)
+    dev.pkt.arm_capture.reset_mock()
+    dev.pkt.transaction.return_value = (ST_CAPTURE_ARMED, 0, b"")
+    dev._get_ring_status = MagicMock(return_value={
+        "producer_index": 2, "oldest_index": 0,
+    })
+    dev.read_capture_range = MagicMock(return_value=b"\x34\x12")
+
+    result = list(dev.stream_ring_capture(
+        1_000_000, 1, _SequenceStop([False, False, True]),
+        generator_capture=True,
+    ))
+
+    assert result == [(b"\x34\x12", 1, 1, 0)]
+    dev.pkt.arm_capture.assert_not_called()
+    assert call(device_module.CMD_GEN_CAPTURE, timeout=1.0) in \
+        dev.pkt.transaction.call_args_list
 
 
 def test_stream_ring_wait_and_empty_block_read_paths(monkeypatch):

@@ -58,6 +58,14 @@ DEFAULT_SAMPLE_RATE_HZ = 10.0
 LIVE_TRACE_RATE_HZ = 2_000_000.0
 LIVE_TRACE_SAMPLES = 4096
 LIVE_TRACE_CHANNEL_MASK = np.uint16((1 << 13) | (1 << 14) | (1 << 15))
+# A broken/stale FPGA image can acknowledge the stream command while leaving
+# the generator idle.  Do not leave the UI looking at a static ring forever;
+# switch to the bounded host-burst reader after this startup grace period.
+LIVE_STREAM_WATCHDOG_S = 1.0
+# LIS3DH supports Fast-mode I²C (400 kHz).  FIFO reads are the high-volume
+# path, so use it to reduce the wire time of each four-sample burst.  The
+# one-shot diagnostic/legacy path remains at its conservative 100 kHz default.
+FIFO_I2C_SPEED_HZ = 400_000
 
 
 def _config_registers(config: AccelerometerConfig) -> tuple[int, int]:
@@ -107,11 +115,19 @@ def clean_live_trace(digital: np.ndarray) -> np.ndarray:
 class AccelerometerStatus(BaseModel):
     running: bool = False
     available: bool = False
-    # ``sample_rate_hz`` is retained as the requested host polling rate for
-    # API compatibility.  The measured fields below are based on completed
-    # XYZ transactions, so they expose bus/host performance rather than just
-    # echoing the LIS3DH ODR setting.
+    # ``sample_rate_hz`` is retained as the requested sensor ODR for API
+    # compatibility.  It is not a measurement of host read throughput.
     sample_rate_hz: float = DEFAULT_SAMPLE_RATE_HZ
+    # The ODR read back from CTRL_REG1 (or the applied request when the
+    # adapter cannot expose register reads).  This is the sensor's configured
+    # output rate, not the rate at which the host can fetch samples.
+    effective_odr_hz: float = 0.0
+    # Completed six-byte XYZ transactions measured at the host boundary.
+    # These can be substantially lower than the sensor ODR when USB/I2C
+    # latency or a live trace capture limits polling throughput.
+    host_read_rate_hz: float = 0.0
+    host_data_rate_bytes_per_s: float = 0.0
+    # Deprecated aliases retained for older clients.
     measured_rate_hz: float = 0.0
     data_rate_bytes_per_s: float = 0.0
     sample: Optional[dict[str, float]] = None
@@ -144,6 +160,9 @@ class AccelerometerService:
         self._live_session: Optional[Session] = None
         self._live_store: Any = None
         self._live_settings: Optional[CaptureSettings] = None
+        self._live_stop_evt: Optional[threading.Event] = None
+        self._live_worker: Optional[threading.Thread] = None
+        self._accelerometer_address: Optional[int] = None
         self._rate_window_started: Optional[float] = None
         self._rate_window_samples = 0
         # CaptureManager uses this back-reference to route a normal Live
@@ -329,6 +348,24 @@ class AccelerometerService:
             self._live_session = session
             self._live_store = store
             self._live_settings = live_settings
+            address = self._accelerometer_address
+            if address is None:
+                raise HardwareError("LIS3DH address is not ready")
+            live_stop_evt = threading.Event()
+            self._live_stop_evt = live_stop_evt
+            try:
+                self._live_worker = threading.Thread(
+                    target=self._run_live_producer,
+                    args=(device, raw, address, live_stop_evt),
+                    daemon=True, name="lis3dh-live-capture")
+                self._live_worker.start()
+            except Exception:
+                self._live_session = None
+                self._live_store = None
+                self._live_settings = None
+                self._live_stop_evt = None
+                self._live_worker = None
+                raise
             try:
                 self.manager.capture_state = "capturing"
             except Exception:
@@ -344,11 +381,18 @@ class AccelerometerService:
         """Stop appending to the accelerometer rolling session."""
         with self._lock:
             active = self._live_session is not None
+            live_stop_evt = self._live_stop_evt
+            live_worker = self._live_worker
+            if live_stop_evt is not None:
+                live_stop_evt.set()
             self._live_session = None
             self._live_store = None
             self._live_settings = None
             if active and getattr(self.manager, "capture_state", None) == "capturing":
                 self.manager.capture_state = "cancelled"
+        if (live_worker is not None and live_worker is not threading.current_thread()
+                and live_worker.is_alive()):
+            live_worker.join(timeout=1.0)
         if active:
             websocket_manager.publish_threadsafe(
                 "capture", "capture_cancelled",
@@ -383,7 +427,27 @@ class AccelerometerService:
             address = self._find_address(adapter, raw)
             if address is None:
                 raise HardwareError("LIS3DH accelerometer not detected")
+            with self._lock:
+                self._accelerometer_address = address
             self._configure(adapter, raw, address, self._config)
+            # FIFO support is optional: older adapters can still provide the
+            # atomic six-byte read path.  Keep setup failures non-fatal so a
+            # partially upgraded host driver does not make tracking unusable.
+            fifo_configure = getattr(adapter, "accelerometer_fifo_configure", None)
+            if callable(fifo_configure):
+                try:
+                    fifo_configure(address, enabled=True, mode="stream",
+                                   threshold=31, speed=FIFO_I2C_SPEED_HZ)
+                except TypeError:
+                    # Compatibility with adapters that predate the optional
+                    # FIFO speed argument.
+                    try:
+                        fifo_configure(address, enabled=True, mode="stream",
+                                       threshold=31)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
             register_readback = self._read_config(adapter, raw, address)
             effective_config = self._decode_config(register_readback)
             with self._lock:
@@ -394,14 +458,51 @@ class AccelerometerService:
                 self._status.effective_config = (
                     effective_config.model_dump() if effective_config else
                     self._config.model_dump())
+                self._status.effective_odr_hz = float(
+                    self._status.effective_config["output_data_rate_hz"])
                 self._status.register_readback = register_readback
 
             period = 1.0 / max(self.sample_rate_hz, 0.1)
             next_read = time.monotonic()
             invalid_reads = 0
+            fifo_reader = getattr(adapter, "accelerometer_read_fifo", None)
             while not stop_evt.is_set():
+                # The continuous live ring owns the Bit_Engine while it is
+                # active.  Do not issue competing FIFO/status transactions;
+                # the live producer decodes XYZ frames from the same ring.
+                with self._lock:
+                    live_active = self._live_session is not None
+                if live_active:
+                    if stop_evt.wait(min(period, 0.05)):
+                        return
+                    next_read = time.monotonic()
+                    continue
                 try:
-                    sample = self._read_xyz(adapter, raw, address)
+                    samples = []
+                    if callable(fifo_reader):
+                        try:
+                            try:
+                                fifo_payload = fifo_reader(
+                                    address, max_samples=25,
+                                    speed=FIFO_I2C_SPEED_HZ)
+                            except TypeError:
+                                fifo_payload = fifo_reader(address, max_samples=25)
+                            if (isinstance(fifo_payload, (bytes, bytearray))
+                                    and fifo_payload):
+                                if len(fifo_payload) % 6:
+                                    raise HardwareError(
+                                        "LIS3DH returned an invalid FIFO payload")
+                                samples = [self._decode_xyz(
+                                    fifo_payload[offset:offset + 6])
+                                    for offset in range(0, len(fifo_payload), 6)]
+                        except Exception:
+                            # FIFO is an optimization, not a prerequisite for
+                            # tracking.  Fall back to the proven single-read
+                            # path on unsupported, empty, or malformed FIFO
+                            # responses.
+                            samples = []
+                    if not samples:
+                        samples = [self._read_xyz(adapter, raw, address)]
                     invalid_reads = 0
                 except HardwareError:
                     # A capture-visible generator burst briefly shares the
@@ -421,33 +522,38 @@ class AccelerometerService:
                         return
                     next_read = time.monotonic()
                     continue
-                self._capture_live_trace(adapter, raw, address, stop_evt)
-                timestamp = self._clock()
-                measured_at = time.monotonic()
-                with self._lock:
-                    if generation != self._generation or stop_evt.is_set():
-                        return
-                    self._status.sample = {
-                        "x_g": sample[0], "y_g": sample[1], "z_g": sample[2],
-                        "timestamp": timestamp,
-                    }
-                    self._status.last_sample_at = timestamp
-                    self._status.last_error = None
-                    self._status.samples_read += 1
-                    if self._rate_window_started is None:
-                        self._rate_window_started = measured_at
-                        self._rate_window_samples = 1
-                    else:
-                        self._rate_window_samples += 1
-                        elapsed = measured_at - self._rate_window_started
-                        # A short rolling window gives a useful readback
-                        # quickly while smoothing individual USB/I2C stalls.
-                        if elapsed >= 0.25:
-                            rate = self._rate_window_samples / elapsed
-                            self._status.measured_rate_hz = rate
-                            self._status.data_rate_bytes_per_s = rate * 6.0
+                for sample in samples:
+                    timestamp = self._clock()
+                    measured_at = time.monotonic()
+                    with self._lock:
+                        if generation != self._generation or stop_evt.is_set():
+                            return
+                        self._status.sample = {
+                            "x_g": sample[0], "y_g": sample[1], "z_g": sample[2],
+                            "timestamp": timestamp,
+                        }
+                        self._status.last_sample_at = timestamp
+                        self._status.last_error = None
+                        self._status.samples_read += 1
+                        if self._rate_window_started is None:
                             self._rate_window_started = measured_at
-                            self._rate_window_samples = 0
+                            self._rate_window_samples = 1
+                        else:
+                            self._rate_window_samples += 1
+                            elapsed = measured_at - self._rate_window_started
+                            # A short rolling window gives a useful readback
+                            # quickly while smoothing individual USB/I2C stalls.
+                            if elapsed >= 0.25:
+                                rate = self._rate_window_samples / elapsed
+                                self._status.host_read_rate_hz = rate
+                                self._status.host_data_rate_bytes_per_s = rate * 6.0
+                                # Keep the pre-distinction fields populated for
+                                # older frontend clients while making the new
+                                # names explicit about what is being measured.
+                                self._status.measured_rate_hz = rate
+                                self._status.data_rate_bytes_per_s = rate * 6.0
+                                self._rate_window_started = measured_at
+                                self._rate_window_samples = 0
                 next_read += period
                 delay = max(0.0, next_read - time.monotonic())
                 if stop_evt.wait(delay):
@@ -583,6 +689,11 @@ class AccelerometerService:
                         raw.accel_read_i2c(LIS3DH_OUT_X_L + offset,
                                            dev_addr=address)
                         for offset in range(6))
+        return AccelerometerService._decode_xyz(payload)
+
+    @staticmethod
+    def _decode_xyz(payload: Any) -> tuple[float, float, float]:
+        """Decode one six-byte little-endian LIS3DH XYZ frame."""
         if not isinstance(payload, (bytes, bytearray)) or len(payload) != 6:
             raise HardwareError("LIS3DH returned an invalid XYZ sample")
         values = []
@@ -590,6 +701,245 @@ class AccelerometerService:
             raw_value = int.from_bytes(payload[offset:offset + 2], "little", signed=True)
             values.append((raw_value >> 4) / 1000.0)
         return values[0], values[1], values[2]
+
+    def _run_live_producer(self, adapter: Any, raw: Any, address: int,
+                           live_stop_evt: threading.Event) -> None:
+        """Feed the live session from the FPGA ring, with a legacy fallback."""
+        stream = None
+        stream_started_at = None
+        stream_transitions = 0
+        stream_frames = 0
+        stream_watchdog = False
+        try:
+            capture = getattr(raw, "continuous_ring_capture_with_repeating_i2c", None)
+            if callable(capture):
+                stream = capture(
+                    rate_hz=LIVE_TRACE_RATE_HZ,
+                    chunk_nsamp=LIVE_TRACE_SAMPLES,
+                    buffer_nsamp=32768,
+                    stop_evt=live_stop_evt,
+                    dev_addr=address,
+                    reg_addr=LIS3DH_OUT_X_L | 0x80,
+                    read_len=6,
+                    i2c_speed=FIFO_I2C_SPEED_HZ)
+                # The hardware ring may yield very small chunks (especially
+                # on older bitstreams).  Persisting every chunk serializes
+                # the producer on the session store and throttles decoding.
+                # Batch waveform writes while retaining immediate XYZ status
+                # updates; the UI still receives rolling updates at ~20 Hz.
+                pending: list[np.ndarray] = []
+                pending_samples = 0
+                last_flush = time.monotonic()
+
+                def flush_pending() -> None:
+                    nonlocal pending, pending_samples, last_flush
+                    if pending:
+                        self._append_live_digital(np.concatenate(pending))
+                        pending = []
+                        pending_samples = 0
+                    last_flush = time.monotonic()
+
+                for item in stream:
+                    if live_stop_evt.is_set():
+                        break
+                    if stream_started_at is None:
+                        stream_started_at = time.monotonic()
+                    chunk = item[0] if isinstance(item, tuple) else item
+                    if isinstance(chunk, (bytes, bytearray)):
+                        digital = payload_to_digital(chunk)
+                    else:
+                        digital = np.asarray(chunk, dtype=np.uint16).reshape(-1)
+                    digital = clean_live_trace(digital)
+                    if digital.size:
+                        stream_transitions += int(np.count_nonzero(
+                            digital[1:] != digital[:-1]))
+                        pending.append(digital)
+                        pending_samples += int(digital.size)
+                        decoded = self._decode_live_i2c_frames(digital, address)
+                        stream_frames += len(decoded)
+                        for sample in decoded:
+                            self._record_sample(sample)
+                        if (pending_samples >= LIVE_TRACE_SAMPLES
+                                or time.monotonic() - last_flush >= 0.25):
+                            flush_pending()
+                        if (stream_transitions == 0 and stream_frames == 0
+                                and stream_started_at is not None
+                                and time.monotonic() - stream_started_at
+                                >= LIVE_STREAM_WATCHDOG_S):
+                            stream_watchdog = True
+                            break
+                flush_pending()
+                if live_stop_evt.is_set():
+                    return
+        except Exception as exc:
+            with self._lock:
+                session = self._live_session
+                if session is not None:
+                    session.diagnostics.append({"level": "warning",
+                                                "message": str(exc),
+                                                "ts": self._clock()})
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+        if stream_watchdog:
+            with self._lock:
+                session = self._live_session
+                if session is not None:
+                    session.diagnostics.append({
+                        "level": "warning",
+                        "message": (
+                            "Accelerometer stream produced no bus transitions; "
+                            "using bounded host-burst fallback"),
+                        "ts": self._clock(),
+                    })
+        # Older images, and images without the repeating-I2C capability, use
+        # the existing one-shot reader on this producer thread.  This keeps
+        # the FIFO/XYZ status worker independent of waveform capture.
+        period = 1.0 / max(self.sample_rate_hz, 0.1)
+        while not live_stop_evt.is_set():
+            self._capture_live_trace(adapter, raw, address, live_stop_evt)
+            # Legacy one-shot capture does not expose the ring payload. Keep
+            # status tracking alive through the existing coherent XYZ read.
+            try:
+                self._record_sample(self._read_xyz(adapter, raw, address))
+            except HardwareError:
+                pass
+            live_stop_evt.wait(period)
+
+    @staticmethod
+    def _decode_live_i2c_frames(digital: np.ndarray,
+                                address: int) -> list[tuple[float, float, float]]:
+        """Decode complete six-byte LIS3DH reads from an attach-ring chunk.
+
+        The generator repeats ``addrW, register, addrR, X..Z``.  SDA/SCL are
+        mirrored on CH13/CH14.  Sampling SDA in the middle of each SCL-high
+        plateau matches the normal I2C decoder and avoids edge settling.
+        """
+        values = np.asarray(digital, dtype=np.uint16).reshape(-1)
+        if values.size < 2:
+            return []
+        scl = ((values >> 14) & 1).astype(np.uint8)
+        sda = ((values >> 13) & 1).astype(np.uint8)
+        # Accept both legal LIS3DH addresses. Some bridge adapters report the
+        # alternate SA0 address during discovery while the attach mirror
+        # retains the address used by the generator.
+        expected_reads = {((int(address) << 1) | 1) & 0xFF, 0x31, 0x33}
+        in_txn = False
+        bits: list[int] = []
+        data: list[int] = []
+        frames: list[tuple[float, float, float]] = []
+
+        def finalize() -> None:
+            """Publish a complete read even when the ring has no STOP edge."""
+            if len(data) >= 7 and data[0] in expected_reads:
+                frames.append(AccelerometerService._decode_xyz(bytes(data[1:7])))
+
+        for index in range(1, len(values)):
+            if scl[index]:
+                if sda[index - 1] and not sda[index]:
+                    # Repeated START terminates the preceding write phase and
+                    # starts the read phase without an intervening STOP.
+                    if in_txn:
+                        finalize()
+                    in_txn = True
+                    bits = []
+                    data = []
+                    continue
+                if not sda[index - 1] and sda[index]:
+                    if in_txn:
+                        finalize()
+                    in_txn = False
+                    bits = []
+                    data = []
+                    continue
+            if not in_txn or not scl[index] or scl[index - 1]:
+                continue
+            end = index
+            while end < len(values) and scl[end]:
+                end += 1
+            # An unfinished high plateau belongs to the next ring chunk.
+            if end >= len(values):
+                continue
+            middle = min(len(values) - 1, (index + end) // 2)
+            bits.append(int(sda[middle]))
+            if len(bits) == 9:
+                value = 0
+                for bit in bits[:8]:
+                    value = (value << 1) | bit
+                data.append(value)
+                bits = []
+        # A ring chunk is an arbitrary slice of the capture stream.  It can
+        # end immediately after the final read byte's ACK clock, before the
+        # master emits a STOP (or when SDA is already high so no STOP edge is
+        # observable).  A complete repeated-read frame is still valid in that
+        # case; do not make publication depend on seeing the trailing SDA
+        # transition.  The length/address checks prevent an incomplete frame
+        # or the preceding write phase from being emitted.
+        if in_txn:
+            finalize()
+        return frames
+
+    def _record_sample(self, sample: tuple[float, float, float]) -> None:
+        """Publish a decoded XYZ sample and update host-throughput counters."""
+        timestamp = self._clock()
+        measured_at = time.monotonic()
+        with self._lock:
+            if not self._status.running:
+                return
+            self._status.sample = {
+                "x_g": sample[0], "y_g": sample[1], "z_g": sample[2],
+                "timestamp": timestamp,
+            }
+            self._status.last_sample_at = timestamp
+            self._status.last_error = None
+            self._status.samples_read += 1
+            if self._rate_window_started is None:
+                self._rate_window_started = measured_at
+                self._rate_window_samples = 1
+            else:
+                self._rate_window_samples += 1
+                elapsed = measured_at - self._rate_window_started
+                if elapsed >= 0.25:
+                    rate = self._rate_window_samples / elapsed
+                    self._status.host_read_rate_hz = rate
+                    self._status.host_data_rate_bytes_per_s = rate * 6.0
+                    self._status.measured_rate_hz = rate
+                    self._status.data_rate_bytes_per_s = rate * 6.0
+                    self._rate_window_started = measured_at
+                    self._rate_window_samples = 0
+
+    def _append_live_digital(self, digital: np.ndarray) -> None:
+        with self._lock:
+            session = self._live_session
+            store = self._live_store
+            settings = self._live_settings
+            if session is None or store is None or settings is None:
+                return
+            current = store.load_waveform(session.id)
+            previous = (current.digital if current is not None
+                        and current.digital is not None else
+                        np.zeros(0, dtype=np.uint16))
+            merged = np.concatenate((previous, digital))[-int(settings.num_samples):]
+            store.save_waveform(session.id, WaveformData(
+                sample_rate=LIVE_TRACE_RATE_HZ, digital=merged))
+            session.num_samples = int(len(merged))
+            session.sample_rate = LIVE_TRACE_RATE_HZ
+            store.save(session)
+            session_id = session.id
+        websocket_manager.publish_threadsafe(
+            f"session:{session_id}", "waveform_ready", {
+                "session_id": session_id, "num_samples": int(len(merged)),
+                "chunk_samples": int(len(digital)),
+                "sample_rate": LIVE_TRACE_RATE_HZ, "rolling": True,
+                "accelerometer": True,
+            })
+        schedule = getattr(self.manager, "schedule_live_decode", None)
+        if callable(schedule):
+            schedule(session_id)
 
     def _capture_live_trace(self, adapter: Any, raw: Any, address: int,
                             stop_evt: threading.Event) -> None:
@@ -600,9 +950,10 @@ class AccelerometerService:
         if session is None or store is None or settings is None or stop_evt.is_set():
             return
         try:
-            payload = self._read_dialogue(adapter, raw, address,
-                                          min(LIVE_TRACE_SAMPLES,
-                                              max(1, int(settings.num_samples))))
+            payload = self._read_dialogue(
+                adapter, raw, address,
+                min(LIVE_TRACE_SAMPLES, max(1, int(settings.num_samples))),
+                repeat_count=3)
             digital = clean_live_trace(payload_to_digital(payload))
             if digital.size == 0:
                 return
@@ -640,11 +991,18 @@ class AccelerometerService:
 
     @staticmethod
     def _read_dialogue(adapter: Any, raw: Any, address: int,
-                       nsamples: int) -> bytes:
+                       nsamples: int, repeat_count: int = 1) -> bytes:
         capture_trace = getattr(adapter, "accelerometer_capture_trace", None)
         if callable(capture_trace):
-            return capture_trace(address, rate_hz=LIVE_TRACE_RATE_HZ,
-                                 nsamples=nsamples)
+            try:
+                return capture_trace(address, rate_hz=LIVE_TRACE_RATE_HZ,
+                                     nsamples=nsamples,
+                                     repeat_count=repeat_count)
+            except TypeError:
+                # Keep out-of-tree adapters compatible while the bundled raw
+                # driver gains the bounded host-burst argument.
+                return capture_trace(address, rate_hz=LIVE_TRACE_RATE_HZ,
+                                     nsamples=nsamples)
         capture = getattr(raw, "accel_capture_dialogue", None)
         if not callable(capture):
             raise HardwareError("Connected hardware cannot capture LIS3DH dialogue")
@@ -661,10 +1019,12 @@ class AccelerometerService:
         syms = bit_bang.i2c_read_symbols(
             bytes([dev_w, LIS3DH_OUT_X_L | 0x80]), 6, dev_w | 1)
         sys_clk = float(getattr(raw, "sys_clk", 100_000_000) or 100_000_000)
-        bit_div = max(1, int(round(sys_clk / (4 * 50_000) - 1.25)))
+        bit_div = max(1, int(round(
+            sys_clk / (4 * FIFO_I2C_SPEED_HZ) - 1.25)))
         with _adapter_lock(adapter):
             data = capture(syms, bit_div, spi_test=False,
-                           rate_hz=LIVE_TRACE_RATE_HZ, nsamples=nsamples)
+                           rate_hz=LIVE_TRACE_RATE_HZ, nsamples=nsamples,
+                           repeat_count=repeat_count)
         if not isinstance(data, (bytes, bytearray)):
             raise HardwareError("LIS3DH dialogue returned invalid data")
         return bytes(data)

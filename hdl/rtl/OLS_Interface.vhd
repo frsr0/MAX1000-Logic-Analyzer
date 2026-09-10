@@ -1566,6 +1566,12 @@ BEGIN
 
             when CMD_GEN_START =>
               disp_gen_start <= '1';
+              -- GEN_START is a normal framed command.  The old fire-and-hold
+              -- implementation pulsed the generator but left the response
+              -- state in EXEC, so the host saw no ACK and could not reliably
+              -- distinguish acceptance from a stale/empty FIFO.
+              rsp_stat_v := ST_OK;
+              st := BUILD_RSP;
             when CMD_GEN_STOP =>
               disp_gen_stop <= '1';
               st := BUILD_RSP;

@@ -214,6 +214,25 @@ class OLSDeviceSPI:
         # REG_GEN_BAUD width reported by the bitstream (16-bit legacy or
         # 24-bit wide-divider image). Detected from metadata byte 9 on open.
         self._gen_div_width = 16
+        # Cached one-shot LIS3DH I2C setup.  A sensor poll repeats the same
+        # short frame many times; retaining the static generator registers
+        # avoids reprogramming the Bit_Engine on every XYZ transaction.  The
+        # FIFO is still reloaded for each read because one-shot generation
+        # consumes its symbols.
+        self._accel_i2c_setup = None
+        # Last LIS3DH FIFO transactions are retained for diagnostics.  The
+        # application can inspect these without issuing an extra sensor read,
+        # which is important while measuring the bus throughput.
+        self.last_accel_fifo_status = None
+        self.last_accel_fifo_config = None
+        self.last_accel_fifo_readback = None
+        self.accel_fifo_stats = {
+            "status_reads": 0,
+            "empty_reads": 0,
+            "batches": 0,
+            "samples": 0,
+            "errors": 0,
+        }
         self.spi = None
         self._pkt = None
         self.analog_mode = MODE_DIGITAL
@@ -669,7 +688,8 @@ class OLSDeviceSPI:
         return bits
 
     def accel_capture_dialogue(self, syms, bit_div, spi_test=False,
-                               rate_hz=2_000_000, nsamples=4096, timeout=6):
+                               rate_hz=2_000_000, nsamples=4096, timeout=6,
+                               repeat_count=1):
         """Run an accel-bus burst with the ATTACH mirror on and capture it.
 
         The attach toggle (REG_GEN_DATA bit 4) copies SEN_SDI/SEN_SPC/SEN_SDO
@@ -679,6 +699,19 @@ class OLSDeviceSPI:
         if rate_hz <= 0:
             raise ValueError("rate_hz must be positive")
         self._ensure_open()
+        # This path reconfigures the generator/capture engine and therefore
+        # cannot leave a direct-read setup cached across the trace capture.
+        self._accel_i2c_setup = None
+        # Older FPGA images do not implement the generator repeat flag.  A
+        # bounded host-side burst still lets one atomic capture contain several
+        # sensor reads, avoiding the per-sample load/start/readback round trip.
+        # Keep the default at one for existing callers and clamp to FIFO size so
+        # this remains safe for arbitrary symbol streams.
+        syms = list(syms or [])
+        repeat_count = max(1, int(repeat_count))
+        if syms and repeat_count > 1:
+            repeat_count = min(repeat_count, bit_bang.MAX_SYMBOLS // len(syms))
+            syms = syms * max(1, repeat_count)
         self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)  # flush FIFOs
         previous_analog_mode = self.analog_mode
         # A prior validation capture may have left the compatibility PWM
@@ -723,24 +756,34 @@ class OLSDeviceSPI:
         finally:
             self.pkt.write_register(REG_GEN_DATA, 1 << 8)  # drop attach flag
             self.analog_mode = previous_analog_mode
+            self._accel_i2c_setup = None
 
-    def _gen_run_and_rx(self, syms, bit_div, spi_test=False, timeout=2.0):
+    def _gen_run_and_rx(self, syms, bit_div, spi_test=False, timeout=2.0,
+                        reuse_accel_setup=False):
         """Run one Bit_Engine burst on the accelerometer bus and return the
         RX line samples (one bit per symbol, trailing partial byte lost)."""
-        self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)  # flush FIFOs
-        # Keep the accelerometer attach route enabled for direct RX reads as
-        # well as capture-visible dialogue. Without it the Bit_Engine sees
-        # its own idle level even though the mirrored capture path can decode
-        # the sensor response.
-        flags = (1 << 8) | GEN_FLAG_ACCEL_ATTACH | \
-            (GEN_FLAG_SPI_TEST if spi_test else 0)
-        self.pkt.write_register(REG_GEN_DATA, flags)
-        self.pkt.write_register(REG_GEN_PROTO, 0)
-        # Park both routing pins on unmapped pool entries so the burst does
-        # not toggle any MKR/PMOD pad (SEN_* are driven unconditionally).
-        self._pins(tx_pin=24, scl_pin=GEN_SCL_PARK)
-        self.pkt.write_register(REG_GEN_BAUD, bit_div & self.gen_div_mask)
-        self.pkt.load_gen_data(bit_bang.pack_symbols(syms))
+        packed = bit_bang.pack_symbols(syms)
+        setup_key = (bytes(packed), int(bit_div), bool(spi_test))
+        if not reuse_accel_setup or self._accel_i2c_setup != setup_key:
+            self._accel_i2c_setup = None
+            self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)  # flush FIFOs
+            # Keep the accelerometer attach route enabled for direct RX reads
+            # as well as capture-visible dialogue. Without it the Bit_Engine
+            # sees its own idle level even though the mirrored capture path
+            # can decode the sensor response.
+            flags = (1 << 8) | GEN_FLAG_ACCEL_ATTACH | \
+                (GEN_FLAG_SPI_TEST if spi_test else 0)
+            self.pkt.write_register(REG_GEN_DATA, flags)
+            self.pkt.write_register(REG_GEN_PROTO, 0)
+            # Park both routing pins on unmapped pool entries so the burst
+            # does not toggle any MKR/PMOD pad (SEN_* are driven unconditionally).
+            self._pins(tx_pin=24, scl_pin=GEN_SCL_PARK)
+            self.pkt.write_register(REG_GEN_BAUD, bit_div & self.gen_div_mask)
+            self._accel_i2c_setup = setup_key
+        # One-shot generation consumes the FIFO, so reload symbols even when
+        # the static setup is unchanged.  This is the only setup transaction
+        # needed between consecutive XYZ samples.
+        self.pkt.load_gen_data(packed)
         self.spi.flush()
         start_rsp = self.pkt.transaction(CMD_GEN_START, timeout=1.0)
         if start_rsp is None:
@@ -756,6 +799,7 @@ class OLSDeviceSPI:
                     break
                 time.sleep(0.001)
             if not accepted:
+                self._accel_i2c_setup = None
                 return []
         self._wait_gen_idle(timeout=timeout)
         return self._rx_bits(self.gen_rx_read())
@@ -818,7 +862,8 @@ class OLSDeviceSPI:
         syms = bit_bang.i2c_read_symbols(
             bytes([dev_w, reg_byte]), read_len, dev_r)
         div = max(1, int(round(self.sys_clk / (4 * max(1, int(speed))) - 1.25)))
-        rx = self._gen_run_and_rx(syms, div, spi_test=False)
+        rx = self._gen_run_and_rx(syms, div, spi_test=False,
+                                  reuse_accel_setup=True)
         if not rx:
             return None
         data, acks = self._i2c_rx_decode(
@@ -830,6 +875,164 @@ class OLSDeviceSPI:
             return None
         result = bytes(data[3:3 + read_len])
         return result[0] if read_len == 1 else result
+
+    def accel_fifo_configure(self, enabled=True, dev_addr=0x19,
+                             mode="stream", threshold=31,
+                             speed=100_000):
+        """Enable or disable the LIS3DH's 32-sample XYZ FIFO.
+
+        The FIFO is deliberately configured in stream mode for live tracking:
+        new samples continue to arrive while the host drains the oldest ones.
+        The bypass write resets the FIFO pointer before every enable, as
+        required by the LIS3DH register semantics.  ``threshold`` is retained
+        in the register for readback/watermark users, but no interrupt pin is
+        required by this host-polled path.
+
+        Returns a small register snapshot.  A driver built against an older
+        FPGA image can report ``None`` from the underlying I2C operations; the
+        accelerometer service then keeps using its single-sample fallback.
+        """
+        modes = {"bypass": 0x00, "fifo": 0x40, "stream": 0x80,
+                 "stream_to_fifo": 0xC0}
+        try:
+            fifo_mode = modes[str(mode).lower()]
+        except KeyError as exc:
+            raise ValueError(f"unsupported LIS3DH FIFO mode: {mode}") from exc
+        threshold = max(0, min(31, int(threshold)))
+        reader = getattr(self, "accel_read_i2c", None)
+        ctrl5 = 0
+        if callable(reader):
+            try:
+                value = reader(0x24, dev_addr=dev_addr, speed=speed)
+                if isinstance(value, int):
+                    ctrl5 = value & 0xFF
+            except Exception:
+                # Some older sensor/driver combinations do not expose a
+                # reliable CTRL_REG5 read.  FIFO_EN is the only bit touched by
+                # this helper, so a zero baseline remains safe.
+                ctrl5 = 0
+        writer = getattr(self, "accel_write_i2c", None)
+        if not callable(writer):
+            raise RuntimeError("accelerometer I2C writes are unavailable")
+
+        # FIFO bypass is the documented reset sequence.  Disable first so a
+        # mode change cannot leave stale slots visible as fresh samples.
+        disabled_ctrl5 = ctrl5 & ~0x40
+        if writer(0x24, disabled_ctrl5, dev_addr=dev_addr,
+                  speed=speed) is False:
+            raise RuntimeError("failed to disable LIS3DH FIFO")
+        if writer(0x2E, 0x00, dev_addr=dev_addr, speed=speed) is False:
+            raise RuntimeError("failed to reset LIS3DH FIFO")
+        if not enabled:
+            result = {"ctrl5": disabled_ctrl5, "fifo_ctrl": 0x00,
+                      "enabled": False, "mode": "bypass",
+                      "threshold": 0}
+            self.last_accel_fifo_config = result
+            return result
+
+        enabled_ctrl5 = disabled_ctrl5 | 0x40
+        fifo_ctrl = fifo_mode | threshold
+        if writer(0x24, enabled_ctrl5, dev_addr=dev_addr,
+                  speed=speed) is False:
+            raise RuntimeError("failed to enable LIS3DH FIFO")
+        if writer(0x2E, fifo_ctrl, dev_addr=dev_addr,
+                  speed=speed) is False:
+            raise RuntimeError("failed to configure LIS3DH FIFO mode")
+        result = {"ctrl5": enabled_ctrl5, "fifo_ctrl": fifo_ctrl,
+                  "enabled": True, "mode": str(mode).lower(),
+                  "threshold": threshold}
+        # Read both write-side registers back once at setup.  Keep this
+        # diagnostic separate from the historical return shape: callers and
+        # host-driver integrations rely on the compact configuration mapping.
+        # The application can inspect the readback via the cached attribute.
+        try:
+            ctrl5_readback = reader(0x24, dev_addr=dev_addr, speed=speed)
+            fifo_ctrl_readback = reader(0x2E, dev_addr=dev_addr, speed=speed)
+            readback = {}
+            if isinstance(ctrl5_readback, int):
+                readback["ctrl5"] = ctrl5_readback & 0xFF
+            if isinstance(fifo_ctrl_readback, int):
+                readback["fifo_ctrl"] = fifo_ctrl_readback & 0xFF
+            self.last_accel_fifo_readback = readback or None
+        except Exception:
+            # The writes have already succeeded; readback is diagnostic only.
+            self.last_accel_fifo_readback = None
+        self.last_accel_fifo_config = result
+        return result
+
+    def accel_fifo_status(self, dev_addr=0x19, speed=100_000):
+        """Read and decode LIS3DH FIFO_SRC_REG (2Fh)."""
+        value = self.accel_read_i2c(0x2F, dev_addr=dev_addr, speed=speed)
+        if not isinstance(value, int):
+            self.last_accel_fifo_status = None
+            self.accel_fifo_stats["errors"] += 1
+            return None
+        value &= 0xFF
+        result = {
+            "raw": value,
+            "level": value & 0x1F,
+            "empty": bool(value & 0x20),
+            "overrun": bool(value & 0x40),
+            "watermark": bool(value & 0x80),
+        }
+        self.last_accel_fifo_status = result
+        self.accel_fifo_stats["status_reads"] += 1
+        if result["empty"]:
+            self.accel_fifo_stats["empty_reads"] += 1
+        return result
+
+    def accel_read_fifo(self, dev_addr=0x19, max_samples=None,
+                        speed=100_000):
+        """Read available FIFO XYZ samples as a packed bytes object.
+
+        The LIS3DH FIFO holds 32 XYZ slots (192 bytes), but the Bit_Engine's
+        symbol FIFO limits a single I2C dialogue to roughly 25 data bytes.
+        This method therefore drains in the largest whole-sample bursts that
+        fit (normally four XYZ samples / 24 bytes), reducing setup/USB
+        overhead by about 4x without requiring an HDL change.
+
+        ``b''`` means the FIFO was enabled but currently empty; ``None`` means
+        the status read was unavailable and lets callers select their legacy
+        one-sample fallback.  ``last_accel_fifo_status`` is updated for the
+        service/status readback without adding another status transaction.
+        """
+        status = self.accel_fifo_status(dev_addr=dev_addr, speed=speed)
+        self.last_accel_fifo_status = status
+        if status is None:
+            return None
+        available = max(0, int(status.get("level", 0)))
+        # FSS is a five-bit field (0..31); OVRN_FIFO is the explicit encoding
+        # for a full 32-slot stream FIFO.  Preserve the full slot count when
+        # draining after an overrun instead of silently dropping one sample.
+        if status.get("overrun"):
+            available = 32
+        if status.get("empty"):
+            available = 0
+        if max_samples is not None:
+            available = min(available, max(0, int(max_samples)))
+        if available <= 0:
+            return b""
+
+        max_bytes = bit_bang.max_i2c_read_bytes(2)
+        samples_per_burst = max(1, int(max_bytes) // 6)
+        out = bytearray()
+        remaining = available
+        while remaining > 0:
+            count = min(remaining, samples_per_burst)
+            payload = self.accel_read_i2c(
+                0x28, dev_addr=dev_addr, speed=speed,
+                read_len=count * 6)
+            if not isinstance(payload, (bytes, bytearray)):
+                raise RuntimeError("LIS3DH FIFO returned an invalid payload")
+            if len(payload) != count * 6:
+                raise RuntimeError(
+                    f"LIS3DH FIFO returned {len(payload)} bytes; "
+                    f"expected {count * 6}")
+            out.extend(payload)
+            remaining -= count
+        self.accel_fifo_stats["batches"] += 1
+        self.accel_fifo_stats["samples"] += len(out) // 6
+        return bytes(out)
 
     def accel_write_i2c(self, reg, value, dev_addr=0x19, speed=100_000):
         """Write one LIS3DH register over I2C.
@@ -890,7 +1093,8 @@ class OLSDeviceSPI:
         self.pkt.load_gen_data(packed_symbols)
         return self._start_gen_accepted(timeout=0.5)
 
-    def _start_gen_accepted(self, timeout=1.0, confirm_timeout=0.25):
+    def _start_gen_accepted(self, timeout=1.0, confirm_timeout=0.25,
+                            require_active=False):
         """Start the fire-and-hold generator and confirm command acceptance.
 
         The current FPGA image can consume ``CMD_GEN_START`` without emitting
@@ -899,7 +1103,15 @@ class OLSDeviceSPI:
         """
         response = self.pkt.transaction(CMD_GEN_START, timeout=timeout)
         if response is not None:
-            return response[0] == ST_OK
+            if response[0] != ST_OK:
+                return False
+            # A framed ST_OK only proves that the dispatcher accepted the
+            # command.  On some images the Bit_Engine can still reject an
+            # empty/stale FIFO on the following clock.  Repeating captures
+            # must verify that the engine actually became active; one-shot
+            # callers retain the historical ACK-only behavior by default.
+            if not require_active:
+                return True
         deadline = time.time() + max(0.0, float(confirm_timeout))
         while time.time() < deadline:
             status = self.pkt.get_status()
@@ -1690,7 +1902,9 @@ class OLSDeviceSPI:
             self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
 
     def stream_ring_capture(self, rate_hz, window_samples, stop_evt,
-                            progress_cb=None, full_out=None):
+                            progress_cb=None, full_out=None,
+                            fetch_multiplier=32, generator_capture=False,
+                            manage_debug_source=True):
         """Yield raw data chunks from the continuous SDRAM ring (caller must
         configure flags/analog before calling, restore after).
 
@@ -1707,9 +1921,22 @@ class OLSDeviceSPI:
             div=div, samples=4194304, delay_count=4194304,
             mask=0, value=0, flags=flags,
             fast_mode=True, continuous=True)
-        self.set_debug_ch0(self.debug_ch0_enabled)
+        # A caller that owns an active generator (for example the repeating
+        # accelerometer I2C path) must keep it running while this method arms
+        # the ring.  set_debug_ch0(False) sends CMD_GEN_STOP, which otherwise
+        # silently kills that source immediately before the first ring read.
+        if manage_debug_source:
+            self.set_debug_ch0(self.debug_ch0_enabled)
         self.spi.flush()
-        status = self.pkt.arm_capture()
+        # CMD_GEN_CAPTURE is the atomic arm+generator-start path.  It avoids a
+        # separate CMD_GEN_START handshake when the target image does not expose
+        # a reliable generator-start response, while still using the same
+        # continuous ring configuration above.
+        if generator_capture:
+            response = self.pkt.transaction(CMD_GEN_CAPTURE, timeout=1.0)
+            status = (response[0] if response is not None else -1)
+        else:
+            status = self.pkt.arm_capture()
         if status < 0:
             try:
                 self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
@@ -1717,7 +1944,11 @@ class OLSDeviceSPI:
                 time.sleep(0.005)
             except Exception:
                 pass
-            status = self.pkt.arm_capture()
+            if generator_capture:
+                response = self.pkt.transaction(CMD_GEN_CAPTURE, timeout=1.0)
+                status = (response[0] if response is not None else -1)
+            else:
+                status = self.pkt.arm_capture()
         if status < 0:
             return
 
@@ -1811,7 +2042,7 @@ class OLSDeviceSPI:
                         f"overrun={overrun_total} rx_buf={len(getattr(self.pkt, '_rx_buf', b''))}")
                     yield data, total, window_samples, overrun_total
                 else:
-                    fetch_multiplier = 32
+                    fetch_multiplier = max(1, int(fetch_multiplier))
                     fetch_nsamp = min(available,
                                       max(window_samples, window_samples * fetch_multiplier))
                     data = self.read_capture_range(
@@ -1877,6 +2108,188 @@ class OLSDeviceSPI:
         finally:
             self.pkt.transaction(CMD_GEN_STOP, timeout=0.5)
             self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+
+    def _stream_ring_capture_with_rle_fallback(
+            self, rate_hz, window_samples, stop_evt, progress_cb=None,
+            full_out=None, fetch_multiplier=32, raw_capture=None,
+            require_raw_mode=True, generator_capture=False,
+            manage_debug_source=True):
+        """Stream a ring with the guarded RLE path and a raw fallback.
+
+        RLE streaming is a transport capability rather than a user-visible
+        compression preference.  Probe it once, mark the capability when the
+        first stream item is decoded, and fall back to the established raw
+        block-read ring if setup or iteration fails.  The readback mode is
+        restored when this generator is closed, including when the fallback
+        itself raises.  Keeping this state machine in one place is important:
+        repeating-generator captures must have exactly the same cleanup and
+        old-bitstream behavior as ordinary rolling captures.
+        """
+        window_samples = max(1, int(window_samples))
+        restore_mode = self.readback_compression_mode
+        live_codec = self._readback_codec()
+        stream_mode_changed = live_codec != 'rle'
+        fallback_used = False
+        stream_failed = False
+        stream_iter = None
+
+        try:
+            if stream_mode_changed:
+                try:
+                    if not self.set_readback_compression(
+                            'rle', force_hardware=True):
+                        stream_failed = True
+                except Exception:
+                    stream_failed = True
+            if self._rle_stream_supported is False:
+                stream_failed = True
+
+            if not stream_failed:
+                # The FPGA's RLE run counter is 10 bits wide.  The lower-level
+                # packet reader can stitch larger requests, but keeping each
+                # live request below the wrap point avoids a needless second
+                # command and makes this path safe for flat signals.
+                live_window = max(
+                    1, min(window_samples, MAX_RLE_STREAM_SAMPLES))
+                try:
+                    stream_iter = iter(self.stream_ring_capture(
+                        rate_hz=rate_hz,
+                        window_samples=live_window,
+                        stop_evt=stop_evt,
+                        progress_cb=progress_cb,
+                        full_out=full_out,
+                        fetch_multiplier=fetch_multiplier,
+                        manage_debug_source=manage_debug_source))
+                except Exception:
+                    stream_failed = True
+
+            if not stream_failed:
+                while True:
+                    try:
+                        item = next(stream_iter)
+                    except StopIteration:
+                        break
+                    except Exception:
+                        stream_failed = True
+                        break
+                    self._rle_stream_supported = True
+                    yield item
+
+            if stream_failed:
+                self._rle_stream_supported = False
+                if stop_evt.is_set():
+                    return
+                fallback_used = True
+                try:
+                    raw_enabled = self.set_readback_compression(
+                        'raw', force_hardware=True)
+                except Exception as exc:
+                    if require_raw_mode:
+                        raise RuntimeError(
+                            "unable to enable raw live fallback") from exc
+                    raw_enabled = True
+                if not raw_enabled and require_raw_mode:
+                    raise RuntimeError("unable to enable raw live fallback")
+                if raw_capture is None:
+                    yield from self.stream_ring_capture(
+                        rate_hz=rate_hz,
+                        window_samples=window_samples,
+                        stop_evt=stop_evt,
+                        progress_cb=progress_cb,
+                        full_out=full_out,
+                        fetch_multiplier=fetch_multiplier,
+                        generator_capture=generator_capture,
+                        manage_debug_source=manage_debug_source)
+                else:
+                    yield from raw_capture()
+        finally:
+            # If the helper changed the selected codec, or had to switch to
+            # raw for fallback, restore the caller's mode in hardware too.
+            # ``force_hardware`` is deliberate: a known unsupported RLE codec
+            # must not cause restoration to silently leave the FPGA in raw.
+            if stream_mode_changed or fallback_used:
+                try:
+                    self.set_readback_compression(
+                        restore_mode, force_hardware=True)
+                except Exception:
+                    pass
+
+    def continuous_ring_capture_with_repeating_i2c(
+            self, rate_hz, chunk_nsamp, buffer_nsamp, stop_evt,
+            dev_addr=0x19, reg_addr=0x28, read_len=6, i2c_speed=50_000,
+            progress_cb=None, full_out=None):
+        """Capture a continuously repeated LIS3DH I2C read into the ring.
+
+        The existing Bit_Engine repeat flag is sufficient for this path: the
+        host loads one complete register read (including the repeated START)
+        and the FPGA replays it while the normal continuous SDRAM ring
+        samples the attach mirror on CH13/CH14/CH15.  No HDL or per-sample USB
+        round trip is involved.  The yielded values have the same dense
+        16-bit digital payload format as :meth:`stream_ring_capture`.
+
+        ``HardwareError``/``RuntimeError`` from an image without the repeat
+        or attach capability are intentionally allowed to propagate so the
+        service can fall back to its one-shot reader and report that fact.
+        """
+        self._ensure_open()
+        if int(read_len) <= 0:
+            raise ValueError("read_len must be positive")
+        dev_w = (int(dev_addr) << 1) & 0xFE
+        dev_r = dev_w | 1
+        syms = bit_bang.i2c_read_symbols(
+            bytes([dev_w, int(reg_addr) & 0xFF]), int(read_len), dev_r)
+        packed = bit_bang.pack_symbols(syms)
+        div = max(1, int(round(
+            self.sys_clk / (4 * max(1, int(i2c_speed))) - 1.25)))
+        if div > self.gen_div_mask:
+            raise ValueError(
+                f"I2C speed {i2c_speed} Hz is below the Bit_Engine floor")
+
+        # Abort only the previous capture; do not reset the board because a
+        # reset would also clear the attach/repeat state before arming ring.
+        self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+        self.clear_live_gen()
+        flags = (1 << 8) | GEN_FLAG_REPEAT | GEN_FLAG_ACCEL_ATTACH
+        self.pkt.write_register(REG_GEN_DATA, flags)
+        self.pkt.write_register(REG_GEN_PROTO, 0)
+        self._pins(tx_pin=24, scl_pin=GEN_SCL_PARK)
+        self.pkt.write_register(REG_GEN_BAUD, div & self.gen_div_mask)
+        self.pkt.load_gen_data(packed)
+        self.spi.flush()
+        generator_capture = False
+        if not self._start_gen_accepted(timeout=1.0, require_active=True):
+            # Some deployed images consume CMD_GEN_START but do not return a
+            # trustworthy acceptance indication.  Retry through the atomic
+            # generator-capture FSM: it arms the continuous ring and starts the
+            # same repeating pattern after its guard period, so no host polling
+            # occurs while the capture write pump is active.
+            try:
+                self.pkt.transaction(CMD_GEN_STOP, timeout=0.5)
+            except Exception:
+                pass
+            self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+            self.pkt.write_register(REG_GEN_DATA, flags)
+            self.pkt.load_gen_data(packed)
+            self.spi.flush()
+            generator_capture = True
+        try:
+            yield from self._stream_ring_capture_with_rle_fallback(
+                rate_hz, chunk_nsamp, stop_evt,
+                progress_cb=progress_cb, full_out=full_out,
+                fetch_multiplier=4, require_raw_mode=False,
+                generator_capture=generator_capture,
+                manage_debug_source=False)
+        finally:
+            try:
+                self.pkt.transaction(CMD_GEN_STOP, timeout=0.5)
+            finally:
+                # Keep the attach route out of subsequent normal captures.
+                self.pkt.write_register(REG_GEN_DATA, 1 << 8)
+                try:
+                    self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+                except Exception:
+                    pass
+            self._wait_gen_idle(timeout=0.5)
 
     def fast_mode(self, enable=True):
         self.pkt.write_register(REG_FAST_MODE, 1 if enable else 0)
@@ -2521,6 +2934,33 @@ class OLSDeviceSPI:
                     progress_cb(snapshot, total, buffer_nsamp)
                 yield snapshot, total, buffer_nsamp
 
+        def raw_ring_capture():
+            """Return the established raw rolling ring iterator."""
+            return self.continuous_ring_capture(
+                rate_hz=rate_hz,
+                chunk_nsamp=chunk_nsamp,
+                buffer_nsamp=buffer_nsamp,
+                stop_evt=stop_evt,
+                progress_cb=None,
+                full_out=full_out,
+                fast_mode=False,
+                yield_full_buffer=False)
+
+        def yield_continuous_rle():
+            buf = bytearray()
+            for item in self._stream_ring_capture_with_rle_fallback(
+                    rate_hz, chunk_nsamp, stop_evt, progress_cb=None,
+                    full_out=full_out, raw_capture=raw_ring_capture):
+                data, total = item[0], item[1]
+                data = self._filter_digital(data)
+                buf.extend(data)
+                if len(buf) > max_bytes:
+                    del buf[:-max_bytes]
+                snapshot = bytes(buf)
+                if progress_cb:
+                    progress_cb(snapshot, total, buffer_nsamp)
+                yield snapshot, total, buffer_nsamp
+
         if (use_continuous and not payload_stride and not gen_data
                 and stride == 2 and self.analog_mode == MODE_DIGITAL):
             live_codec = self._readback_codec()
@@ -2537,73 +2977,7 @@ class OLSDeviceSPI:
                         restore_mode, force_hardware=True)
                 return
 
-            restore_mode = self.readback_compression_mode
-            stream_mode_changed = live_codec != 'rle'
-            fallback_used = False
-            try:
-                stream_failed = False
-                if stream_mode_changed:
-                    try:
-                        if not self.set_readback_compression(
-                                'rle', force_hardware=True):
-                            stream_failed = True
-                    except Exception:
-                        stream_failed = True
-                if self._rle_stream_supported is False:
-                    stream_failed = True
-
-                if not stream_failed:
-                    # The FPGA RLE counter is 10 bits wide, so keep each live
-                    # request below the 1024-sample wrap point. Larger host
-                    # chunk sizes are satisfied by stitching together multiple
-                    # safe sub-reads.
-                    live_window = max(1, min(int(chunk_nsamp), MAX_RLE_STREAM_SAMPLES))
-                    try:
-                        stream_iter = iter(self.stream_ring_capture(
-                            rate_hz=rate_hz,
-                            window_samples=live_window,
-                            stop_evt=stop_evt,
-                            progress_cb=None,
-                            full_out=full_out))
-                    except Exception:
-                        stream_failed = True
-
-                if not stream_failed:
-                    buf = bytearray()
-                    while True:
-                        try:
-                            item = next(stream_iter)
-                        except StopIteration:
-                            break
-                        except Exception:
-                            stream_failed = True
-                            break
-                        data, total, _window, _overrun = item
-                        self._rle_stream_supported = True
-                        data = self._filter_digital(data)
-                        buf.extend(data)
-                        if len(buf) > max_bytes:
-                            del buf[:-max_bytes]
-                        snapshot = bytes(buf)
-                        if progress_cb:
-                            progress_cb(snapshot, total, buffer_nsamp)
-                        yield snapshot, total, buffer_nsamp
-
-                if stream_failed:
-                    self._rle_stream_supported = False
-                    if stop_evt.is_set():
-                        return
-                    fallback_used = True
-                    if not self.set_readback_compression(
-                            'raw', force_hardware=True):
-                        raise RuntimeError("unable to enable raw live fallback")
-                    yield from yield_continuous_raw()
-            finally:
-                if stream_mode_changed:
-                    self.set_readback_compression(restore_mode)
-                elif fallback_used:
-                    self.set_readback_compression(
-                        restore_mode, force_hardware=True)
+            yield from yield_continuous_rle()
             return
         if (use_continuous and payload_stride and not gen_data
                 and self.analog_mode != MODE_DIGITAL):
