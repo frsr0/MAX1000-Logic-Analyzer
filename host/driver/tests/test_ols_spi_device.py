@@ -1708,12 +1708,11 @@ class TestOLSDeviceSPIRolling:
             (8, 0, b'\x34\x12' * 4),
             (16, 0, b'\x78\x56' * 4),
         ]
-        # The RLE stream path requires 2x window headroom before each read
-        # (required_available = window_samples * 2), so the producer must be
-        # at least 8 ahead for a 4-sample window.
+        # Ring producer/oldest cursors are source-sample indices.  RLE only
+        # changes wire length, so one window of source samples is sufficient.
         device_spi.pkt.get_status.side_effect = [
+            {'producer_index': 4, 'oldest_index': 0, 'overrun_count': 0},
             {'producer_index': 8, 'oldest_index': 0, 'overrun_count': 0},
-            {'producer_index': 16, 'oldest_index': 0, 'overrun_count': 0},
         ]
         device_spi.spi.flush = MagicMock()
 

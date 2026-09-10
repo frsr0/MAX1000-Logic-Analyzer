@@ -62,6 +62,12 @@ LIVE_TRACE_CHANNEL_MASK = np.uint16((1 << 13) | (1 << 14) | (1 << 15))
 # the generator idle.  Do not leave the UI looking at a static ring forever;
 # switch to the bounded host-burst reader after this startup grace period.
 LIVE_STREAM_WATCHDOG_S = 1.0
+# The legacy capture path is retained for bitstreams without a working
+# repeating-generator attach route. Keep each fallback transaction short
+# enough that the model never waits behind a large readback, while replaying
+# several I2C reads so one host burst still yields a useful batch of frames.
+LIVE_FALLBACK_TRACE_SAMPLES = 768
+LIVE_FALLBACK_REPEAT_COUNT = 1
 # LIS3DH supports Fast-mode I²C (400 kHz).  FIFO reads are the high-volume
 # path, so use it to reduce the wire time of each four-sample burst.  The
 # one-shot diagnostic/legacy path remains at its conservative 100 kHz default.
@@ -797,17 +803,27 @@ class AccelerometerService:
                         "ts": self._clock(),
                     })
         # Older images, and images without the repeating-I2C capability, use
-        # the existing one-shot reader on this producer thread.  This keeps
-        # the FIFO/XYZ status worker independent of waveform capture.
+        # a bounded one-shot reader on this producer thread. Decode every
+        # complete frame in the burst (rather than publishing only one sample
+        # per trace). The capture trace is deliberately the only bus
+        # transaction in this degraded mode: draining the LIS3DH FIFO would
+        # add a status read plus one RX-register transaction per returned byte
+        # and can hold the shared link for more than a second.
         period = 1.0 / max(self.sample_rate_hz, 0.1)
         while not live_stop_evt.is_set():
-            self._capture_live_trace(adapter, raw, address, live_stop_evt)
-            # Legacy one-shot capture does not expose the ring payload. Keep
-            # status tracking alive through the existing coherent XYZ read.
-            try:
-                self._record_sample(self._read_xyz(adapter, raw, address))
-            except HardwareError:
-                pass
+            frames = self._capture_live_trace(
+                adapter, raw, address, live_stop_evt,
+                nsamples=LIVE_FALLBACK_TRACE_SAMPLES,
+                repeat_count=LIVE_FALLBACK_REPEAT_COUNT)
+            for sample in frames:
+                self._record_sample(sample)
+            # Keep status tracking alive when a short trace ends between I2C
+            # frames (or when the legacy capture has no attach mirror).
+            if not frames:
+                try:
+                    self._record_sample(self._read_xyz(adapter, raw, address))
+                except HardwareError:
+                    pass
             live_stop_evt.wait(period)
 
     @staticmethod
@@ -942,25 +958,30 @@ class AccelerometerService:
             schedule(session_id)
 
     def _capture_live_trace(self, adapter: Any, raw: Any, address: int,
-                            stop_evt: threading.Event) -> None:
+                            stop_evt: threading.Event, *,
+                            nsamples: int | None = None,
+                            repeat_count: int = 3) -> list[tuple[float, float, float]]:
         with self._lock:
             session = self._live_session
             store = self._live_store
             settings = self._live_settings
         if session is None or store is None or settings is None or stop_evt.is_set():
-            return
+            return []
         try:
+            capture_samples = min(
+                LIVE_TRACE_SAMPLES,
+                max(1, int(nsamples if nsamples is not None
+                            else int(settings.num_samples))))
             payload = self._read_dialogue(
                 adapter, raw, address,
-                min(LIVE_TRACE_SAMPLES, max(1, int(settings.num_samples))),
-                repeat_count=3)
+                capture_samples, repeat_count=max(1, int(repeat_count)))
             digital = clean_live_trace(payload_to_digital(payload))
             if digital.size == 0:
-                return
+                return []
             with self._lock:
                 # stop_live_capture can race with a completed bus transaction.
                 if self._live_session is not session or self._live_store is not store:
-                    return
+                    return []
                 current = store.load_waveform(session.id)
                 previous = (current.digital if current is not None
                             and current.digital is not None else np.zeros(0, dtype=np.uint16))
@@ -980,6 +1001,7 @@ class AccelerometerService:
             schedule = getattr(self.manager, "schedule_live_decode", None)
             if callable(schedule):
                 schedule(session.id)
+            return self._decode_live_i2c_frames(digital, address)
         except Exception as exc:
             # A failed optional trace must not terminate the regular XYZ
             # service; status polling remains useful even if capture is not.
@@ -988,6 +1010,7 @@ class AccelerometerService:
                     session.diagnostics.append({"level": "warning",
                                                 "message": str(exc),
                                                 "ts": self._clock()})
+            return []
 
     @staticmethod
     def _read_dialogue(adapter: Any, raw: Any, address: int,

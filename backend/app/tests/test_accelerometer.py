@@ -486,6 +486,53 @@ def test_live_capture_falls_back_when_ring_is_static(tmp_path, monkeypatch):
         service.stop(wait_timeout=1.0)
 
 
+def test_static_ring_fallback_decodes_batched_trace_frames(tmp_path, monkeypatch):
+    """Legacy fallback publishes every frame from a short repeated burst."""
+    monkeypatch.setattr(accelerometer_module, "LIVE_STREAM_WATCHDOG_S", 0.01)
+
+    class BatchedFallbackRaw(FakeRaw):
+        def __init__(self):
+            super().__init__()
+            self.capture_calls = []
+
+        def continuous_ring_capture_with_repeating_i2c(self, **kwargs):
+            stop_evt = kwargs["stop_evt"]
+            idle = np.asarray(
+                [((1 << 13) | (1 << 14) | (1 << 15))] * 64,
+                dtype="<u2").tobytes()
+            while not stop_evt.is_set():
+                yield idle
+
+        def accel_capture_dialogue(self, _syms, _bit_div, **kwargs):
+            self.capture_calls.append(kwargs)
+            # Return several complete attach-mirror transactions in one
+            # bounded host burst; the fallback must publish all of them.
+            return np.tile(
+                _synthetic_lis3dh_i2c_trace(0x18), 4).astype("<u2").tobytes()
+
+    raw = BatchedFallbackRaw()
+    manager = FakeManager(raw)
+    service = AccelerometerService(manager, sample_rate_hz=400)
+    assert service.start()["running"] is True
+    store = SessionStore(tmp_path)
+    session = service.start_live_capture(
+        CaptureSettings(mode="rolling", auto_rearm=True, num_samples=2048),
+        "Batched fallback", store)
+    try:
+        deadline = time.time() + 1.0
+        while time.time() < deadline and service.status()["samples_read"] < 4:
+            time.sleep(0.01)
+        assert service.status()["samples_read"] >= 4
+        assert raw.capture_calls
+        assert raw.capture_calls[0]["nsamples"] == 768
+        assert raw.capture_calls[0]["repeat_count"] == 1
+        assert any("using bounded host-burst fallback" in item["message"]
+                   for item in session.diagnostics)
+    finally:
+        service.stop_live_capture()
+        service.stop(wait_timeout=1.0)
+
+
 def _synthetic_lis3dh_i2c_trace(address: int = 0x19) -> np.ndarray:
     """Build one complete attach-mirror read at a deliberately slow clock."""
     def add_byte(words, value, ack=0):

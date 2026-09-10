@@ -726,6 +726,7 @@ def test_repeating_i2c_capture_selects_rle_and_restores_codec():
         2_000_000, 4, 16, SimpleNamespace(is_set=lambda: False)))
 
     assert result == [(b"rle", 4, 4, 0)]
+    assert dev.stream_ring_capture.call_args.kwargs["generator_capture"] is True
     assert dev.set_readback_compression.call_args_list == [
         call("rle", force_hardware=True),
         call("raw", force_hardware=True),

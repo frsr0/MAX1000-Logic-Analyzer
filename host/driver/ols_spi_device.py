@@ -1966,7 +1966,13 @@ class OLSDeviceSPI:
         # delta-packed codec has a second host-side reconstruction stage and
         # therefore stays on block reads where codec selection is explicit.
         use_raw_stream = self._readback_codec() == 'rle'
-        required_available = window_samples * (2 if use_raw_stream else 1)
+        # Ring metadata cursors count source samples, regardless of the
+        # selected readback codec.  RLE changes the number of bytes on the
+        # wire, not the number of samples needed before a request can be
+        # issued.  Waiting for ``window_samples * 2`` here made the live RLE
+        # path wait forever on a ring that had exactly one window available,
+        # forcing accelerometer tracking into the much slower burst fallback.
+        required_available = window_samples
         pending = b''
         pending_samples = 0
         try:
@@ -2159,6 +2165,7 @@ class OLSDeviceSPI:
                         progress_cb=progress_cb,
                         full_out=full_out,
                         fetch_multiplier=fetch_multiplier,
+                        generator_capture=generator_capture,
                         manage_debug_source=manage_debug_source))
                 except Exception:
                     stream_failed = True
@@ -2263,22 +2270,14 @@ class OLSDeviceSPI:
         self.pkt.write_register(REG_GEN_BAUD, div & self.gen_div_mask)
         self.pkt.load_gen_data(packed)
         self.spi.flush()
-        generator_capture = False
-        if not self._start_gen_accepted(timeout=1.0, require_active=True):
-            # Some deployed images consume CMD_GEN_START but do not return a
-            # trustworthy acceptance indication.  Retry through the atomic
-            # generator-capture FSM: it arms the continuous ring and starts the
-            # same repeating pattern after its guard period, so no host polling
-            # occurs while the capture write pump is active.
-            try:
-                self.pkt.transaction(CMD_GEN_STOP, timeout=0.5)
-            except Exception:
-                pass
-            self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
-            self.pkt.write_register(REG_GEN_DATA, flags)
-            self.pkt.load_gen_data(packed)
-            self.spi.flush()
-            generator_capture = True
+        # Arm the ring and start the repeating generator atomically.  Starting
+        # the generator first appears to work on images that briefly report
+        # ``gen_busy``, but the one-shot start can finish before the ring arm
+        # reaches the FPGA.  That leaves a valid-looking ring containing only
+        # idle samples; the live decoder then falls back to slow host bursts.
+        # CMD_GEN_CAPTURE keeps the generator alive for the complete
+        # continuous capture and avoids status traffic during the handoff.
+        generator_capture = True
         try:
             yield from self._stream_ring_capture_with_rle_fallback(
                 rate_hz, chunk_nsamp, stop_evt,
