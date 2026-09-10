@@ -524,7 +524,9 @@ def test_static_ring_fallback_decodes_batched_trace_frames(tmp_path, monkeypatch
             time.sleep(0.01)
         assert service.status()["samples_read"] >= 4
         assert raw.capture_calls
-        assert raw.capture_calls[0]["nsamples"] == 768
+        # 448 samples includes the ~421-sample frame and the
+        # CMD_GEN_CAPTURE startup guard at the 2 MHz live clock.
+        assert raw.capture_calls[0]["nsamples"] == 448
         assert raw.capture_calls[0]["repeat_count"] == 1
         assert any("using bounded host-burst fallback" in item["message"]
                    for item in session.diagnostics)

@@ -66,8 +66,19 @@ LIVE_STREAM_WATCHDOG_S = 1.0
 # repeating-generator attach route. Keep each fallback transaction short
 # enough that the model never waits behind a large readback, while replaying
 # several I2C reads so one host burst still yields a useful batch of frames.
-LIVE_FALLBACK_TRACE_SAMPLES = 768
+# One complete 400 kHz LIS3DH read occupies roughly 420 samples at the
+# 2 MHz capture clock. Include the CMD_GEN_CAPTURE startup guard (~11
+# samples) plus a small settling margin, while keeping readback bounded.
+LIVE_FALLBACK_TRACE_SAMPLES = 448
 LIVE_FALLBACK_REPEAT_COUNT = 1
+# A live fallback read is a transport freshness path, not the sensor ODR
+# scheduler. Cap the idle gap so a low configured ODR cannot make the UI's
+# last-sample age exceed the live target between host bursts.
+LIVE_FALLBACK_MAX_INTERVAL_S = 0.01
+# Waveform persistence is deliberately decoupled from the physical sample
+# callback.  Browser live-window requests can rebuild/read the same rolling
+# file, so flushing every short fallback burst can otherwise add 50+ ms gaps.
+LIVE_WAVEFORM_PERSIST_INTERVAL_S = 0.05
 # LIS3DH supports Fast-mode I²C (400 kHz).  FIFO reads are the high-volume
 # path, so use it to reduce the wire time of each four-sample burst.  The
 # one-shot diagnostic/legacy path remains at its conservative 100 kHz default.
@@ -168,6 +179,12 @@ class AccelerometerService:
         self._live_settings: Optional[CaptureSettings] = None
         self._live_stop_evt: Optional[threading.Event] = None
         self._live_worker: Optional[threading.Thread] = None
+        self._live_persist_stop_evt: Optional[threading.Event] = None
+        self._live_persist_evt: Optional[threading.Event] = None
+        self._live_persist_worker: Optional[threading.Thread] = None
+        self._live_digital = np.zeros(0, dtype=np.uint16)
+        self._live_persist_dirty = False
+        self._live_dialogue_setup_ready = False
         self._accelerometer_address: Optional[int] = None
         self._rate_window_started: Optional[float] = None
         self._rate_window_samples = 0
@@ -354,6 +371,9 @@ class AccelerometerService:
             self._live_session = session
             self._live_store = store
             self._live_settings = live_settings
+            self._live_digital = np.zeros(0, dtype=np.uint16)
+            self._live_persist_dirty = False
+            self._live_dialogue_setup_ready = False
             address = self._accelerometer_address
             if address is None:
                 raise HardwareError("LIS3DH address is not ready")
@@ -391,14 +411,34 @@ class AccelerometerService:
             live_worker = self._live_worker
             if live_stop_evt is not None:
                 live_stop_evt.set()
-            self._live_session = None
-            self._live_store = None
-            self._live_settings = None
             if active and getattr(self.manager, "capture_state", None) == "capturing":
                 self.manager.capture_state = "cancelled"
         if (live_worker is not None and live_worker is not threading.current_thread()
                 and live_worker.is_alive()):
             live_worker.join(timeout=1.0)
+        with self._lock:
+            persist_stop_evt = self._live_persist_stop_evt
+            persist_evt = self._live_persist_evt
+            persist_worker = self._live_persist_worker
+            if persist_stop_evt is not None:
+                persist_stop_evt.set()
+            if persist_evt is not None:
+                persist_evt.set()
+        if (persist_worker is not None
+                and persist_worker is not threading.current_thread()
+                and persist_worker.is_alive()):
+            persist_worker.join(timeout=1.0)
+        with self._lock:
+            self._live_session = None
+            self._live_store = None
+            self._live_settings = None
+            self._live_stop_evt = None
+            self._live_persist_stop_evt = None
+            self._live_persist_evt = None
+            self._live_persist_worker = None
+            self._live_digital = np.zeros(0, dtype=np.uint16)
+            self._live_persist_dirty = False
+            self._live_dialogue_setup_ready = False
         if active:
             websocket_manager.publish_threadsafe(
                 "capture", "capture_cancelled",
@@ -802,6 +842,10 @@ class AccelerometerService:
                             "using bounded host-burst fallback"),
                         "ts": self._clock(),
                     })
+        # Only the one-shot fallback needs asynchronous persistence. The
+        # genuine ring path already batches waveform chunks and starting a
+        # writer thread there steals CPU from its tight decode loop.
+        self._start_live_persister()
         # Older images, and images without the repeating-I2C capability, use
         # a bounded one-shot reader on this producer thread. Decode every
         # complete frame in the burst (rather than publishing only one sample
@@ -809,7 +853,8 @@ class AccelerometerService:
         # transaction in this degraded mode: draining the LIS3DH FIFO would
         # add a status read plus one RX-register transaction per returned byte
         # and can hold the shared link for more than a second.
-        period = 1.0 / max(self.sample_rate_hz, 0.1)
+        period = min(1.0 / max(self.sample_rate_hz, 0.1),
+                     LIVE_FALLBACK_MAX_INTERVAL_S)
         while not live_stop_evt.is_set():
             frames = self._capture_live_trace(
                 adapter, raw, address, live_stop_evt,
@@ -934,6 +979,15 @@ class AccelerometerService:
             settings = self._live_settings
             if session is None or store is None or settings is None:
                 return
+            if self._live_persist_worker is not None:
+                merged = np.concatenate((self._live_digital, digital))[
+                    -int(settings.num_samples):]
+                self._live_digital = merged
+                self._live_persist_dirty = True
+                persist_evt = self._live_persist_evt
+                if persist_evt is not None:
+                    persist_evt.set()
+                return
             current = store.load_waveform(session.id)
             previous = (current.digital if current is not None
                         and current.digital is not None else
@@ -956,6 +1010,74 @@ class AccelerometerService:
         if callable(schedule):
             schedule(session_id)
 
+    def _start_live_persister(self) -> None:
+        """Start coalesced waveform persistence for the one-shot fallback."""
+        with self._lock:
+            if (self._live_session is None
+                    or self._live_persist_worker is not None):
+                return
+            stop_evt = threading.Event()
+            wake_evt = threading.Event()
+            self._live_persist_stop_evt = stop_evt
+            self._live_persist_evt = wake_evt
+            self._live_persist_worker = threading.Thread(
+                target=self._run_live_persister,
+                args=(stop_evt, wake_evt), daemon=True,
+                name="lis3dh-live-persister")
+            self._live_persist_worker.start()
+
+    def _run_live_persister(self, stop_evt: threading.Event,
+                            wake_evt: threading.Event) -> None:
+        """Flush the newest rolling waveform without blocking bus sampling."""
+        deadline = 0.0
+        while True:
+            timeout = max(0.0, deadline - time.monotonic())
+            wake_evt.wait(timeout)
+            wake_evt.clear()
+            if time.monotonic() < deadline and not stop_evt.is_set():
+                continue
+            with self._lock:
+                session = self._live_session
+                store = self._live_store
+                if (session is None or store is None
+                        or not self._live_persist_dirty):
+                    if stop_evt.is_set():
+                        return
+                    continue
+                settings = self._live_settings
+                digital = self._live_digital.copy()
+                self._live_persist_dirty = False
+                session_copy = session.model_copy(deep=True)
+                session_copy.num_samples = int(digital.size)
+                session_copy.sample_rate = LIVE_TRACE_RATE_HZ
+                session_id = session.id
+            try:
+                store.save_waveform(session_id, WaveformData(
+                    sample_rate=LIVE_TRACE_RATE_HZ, digital=digital))
+                store.save(session_copy)
+                websocket_manager.publish_threadsafe(
+                    f"session:{session_id}", "waveform_ready", {
+                        "session_id": session_id,
+                        "num_samples": int(digital.size),
+                        "chunk_samples": int(digital.size),
+                        "sample_rate": LIVE_TRACE_RATE_HZ, "rolling": True,
+                        "accelerometer": True,
+                    })
+                schedule = getattr(self.manager, "schedule_live_decode", None)
+                if callable(schedule):
+                    schedule(session_id)
+            except Exception as exc:
+                with self._lock:
+                    if self._live_session is session:
+                        session.diagnostics.append({
+                            "level": "warning", "message": str(exc),
+                            "ts": self._clock()})
+            deadline = time.monotonic() + LIVE_WAVEFORM_PERSIST_INTERVAL_S
+            if stop_evt.is_set():
+                # The snapshot above is the final one after the producer has
+                # stopped; do not wait for another interval during teardown.
+                return
+
     def _capture_live_trace(self, adapter: Any, raw: Any, address: int,
                             stop_evt: threading.Event, *,
                             nsamples: int | None = None,
@@ -974,9 +1096,15 @@ class AccelerometerService:
                 LIVE_TRACE_SAMPLES,
                 max(1, int(nsamples if nsamples is not None
                             else int(settings.num_samples))))
+            with self._lock:
+                reuse_setup = self._live_dialogue_setup_ready
             payload = self._read_dialogue(
                 adapter, raw, address,
-                capture_samples, repeat_count=max(1, int(repeat_count)))
+                capture_samples, repeat_count=max(1, int(repeat_count)),
+                reuse_setup=reuse_setup)
+            with self._lock:
+                if self._live_session is session:
+                    self._live_dialogue_setup_ready = True
             digital = clean_live_trace(payload_to_digital(payload))
             if digital.size == 0:
                 return []
@@ -992,28 +1120,7 @@ class AccelerometerService:
             if sample_callback is not None:
                 for frame in frames:
                     sample_callback(frame)
-            with self._lock:
-                if self._live_session is not session or self._live_store is not store:
-                    return frames
-                current = store.load_waveform(session.id)
-                previous = (current.digital if current is not None
-                            and current.digital is not None else np.zeros(0, dtype=np.uint16))
-                merged = np.concatenate((previous, digital))[-int(settings.num_samples):]
-                store.save_waveform(session.id, WaveformData(
-                    sample_rate=LIVE_TRACE_RATE_HZ, digital=merged))
-                session.num_samples = int(len(merged))
-                session.sample_rate = LIVE_TRACE_RATE_HZ
-                store.save(session)
-            websocket_manager.publish_threadsafe(
-                f"session:{session.id}", "waveform_ready", {
-                    "session_id": session.id, "num_samples": int(len(merged)),
-                    "chunk_samples": int(len(digital)),
-                    "sample_rate": LIVE_TRACE_RATE_HZ, "rolling": True,
-                    "accelerometer": True,
-                })
-            schedule = getattr(self.manager, "schedule_live_decode", None)
-            if callable(schedule):
-                schedule(session.id)
+            self._append_live_digital(digital)
             return frames
         except Exception as exc:
             # A failed optional trace must not terminate the regular XYZ
@@ -1025,15 +1132,16 @@ class AccelerometerService:
                                                 "ts": self._clock()})
             return []
 
-    @staticmethod
-    def _read_dialogue(adapter: Any, raw: Any, address: int,
-                       nsamples: int, repeat_count: int = 1) -> bytes:
+    def _read_dialogue(self, adapter: Any, raw: Any, address: int,
+                       nsamples: int, repeat_count: int = 1,
+                       reuse_setup: bool = False) -> bytes:
         capture_trace = getattr(adapter, "accelerometer_capture_trace", None)
         if callable(capture_trace):
             try:
                 return capture_trace(address, rate_hz=LIVE_TRACE_RATE_HZ,
                                      nsamples=nsamples,
-                                     repeat_count=repeat_count)
+                                     repeat_count=repeat_count,
+                                     reuse_setup=reuse_setup)
             except TypeError:
                 # Keep out-of-tree adapters compatible while the bundled raw
                 # driver gains the bounded host-burst argument.
@@ -1060,7 +1168,8 @@ class AccelerometerService:
         with _adapter_lock(adapter):
             data = capture(syms, bit_div, spi_test=False,
                            rate_hz=LIVE_TRACE_RATE_HZ, nsamples=nsamples,
-                           repeat_count=repeat_count)
+                           repeat_count=repeat_count,
+                           reuse_setup=reuse_setup)
         if not isinstance(data, (bytes, bytearray)):
             raise HardwareError("LIS3DH dialogue returned invalid data")
         return bytes(data)

@@ -1039,7 +1039,33 @@ def test_accelerometer_capture_waits_while_hardware_is_busy(monkeypatch):
     monkeypatch.setattr(device_module.time, "sleep", sleep)
 
     assert dev.accel_capture_dialogue([1], 2, nsamples=1) == b"\x34\x12"
-    assert call(0.002) in sleep.call_args_list
+    # A one-sample 2 MHz capture needs only the short USB/CDC settling
+    # margin; the old 50 ms grace made the live fallback miss its freshness
+    # target by construction.
+    assert sleep.call_args_list[0].args[0] == pytest.approx(0.0010005)
+
+
+def test_accelerometer_live_burst_reuses_static_capture_setup(monkeypatch):
+    dev = _device()
+    dev._ensure_open = MagicMock()
+    dev._pins = MagicMock()
+    dev.set_debug_ch0 = MagicMock()
+    dev._write_capture_config = MagicMock()
+    dev._stream_readback = MagicMock(return_value=b"abcd")
+    dev.pkt.transaction.side_effect = [
+        (ST_OK, 0, b""), (ST_CAPTURE_ARMED, 0, b""),
+        (ST_OK, 0, b""), (ST_CAPTURE_ARMED, 0, b""),
+    ]
+    dev.pkt.get_status.return_value = {"capture_status": ST_CAPTURE_DONE}
+    monkeypatch.setattr(device_module.time, "sleep", lambda _: None)
+
+    assert dev.accel_capture_dialogue([1, 2], 2, rate_hz=1, nsamples=2) == b"abcd"
+    assert dev.accel_capture_dialogue(
+        [1, 2], 2, rate_hz=1, nsamples=2, reuse_setup=True) == b"abcd"
+    dev.set_debug_ch0.assert_called_once_with(False)
+    dev._write_capture_config.assert_called_once()
+    assert sum(1 for item in dev.pkt.write_register.call_args_list
+               if item.args[0] == device_module.REG_GEN_BAUD) == 1
 
 
 def test_protocol_decoder_import_failure_returns_none(monkeypatch):

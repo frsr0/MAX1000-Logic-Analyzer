@@ -689,7 +689,7 @@ class OLSDeviceSPI:
 
     def accel_capture_dialogue(self, syms, bit_div, spi_test=False,
                                rate_hz=2_000_000, nsamples=4096, timeout=6,
-                               repeat_count=1):
+                               repeat_count=1, reuse_setup=False):
         """Run an accel-bus burst with the ATTACH mirror on and capture it.
 
         The attach toggle (REG_GEN_DATA bit 4) copies SEN_SDI/SEN_SPC/SEN_SDO
@@ -701,7 +701,7 @@ class OLSDeviceSPI:
         self._ensure_open()
         # This path reconfigures the generator/capture engine and therefore
         # cannot leave a direct-read setup cached across the trace capture.
-        self._accel_i2c_setup = None
+        reuse_setup = bool(reuse_setup)
         # Older FPGA images do not implement the generator repeat flag.  A
         # bounded host-side burst still lets one atomic capture contain several
         # sensor reads, avoiding the per-sample load/start/readback round trip.
@@ -714,33 +714,44 @@ class OLSDeviceSPI:
             syms = syms * max(1, repeat_count)
         self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)  # flush FIFOs
         previous_analog_mode = self.analog_mode
-        # A prior validation capture may have left the compatibility PWM
-        # source repeating on CH0. Stop it before loading the sensor symbols;
-        # CMD_GEN_STOP also resets generator state on the FPGA.
-        self.set_debug_ch0(False)
         flags = (1 << 8) | GEN_FLAG_ACCEL_ATTACH | \
             (GEN_FLAG_SPI_TEST if spi_test else 0)
         try:
-            self.pkt.write_register(REG_GEN_DATA, flags)
-            self.pkt.write_register(REG_GEN_PROTO, 0)
-            self._pins(tx_pin=24, scl_pin=GEN_SCL_PARK)
-            self.pkt.write_register(REG_GEN_BAUD, bit_div & self.gen_div_mask)
+            if not reuse_setup:
+                # A prior validation capture may have left the compatibility
+                # PWM source repeating on CH0. Stop it before loading the
+                # sensor symbols; CMD_GEN_STOP also resets generator state.
+                self.set_debug_ch0(False)
+                self.pkt.write_register(REG_GEN_DATA, flags)
+                self.pkt.write_register(REG_GEN_PROTO, 0)
+                self._pins(tx_pin=24, scl_pin=GEN_SCL_PARK)
+                self.pkt.write_register(REG_GEN_BAUD,
+                                        bit_div & self.gen_div_mask)
+            else:
+                # The previous burst drops ATTACH in its cleanup; restoring
+                # this one flag is sufficient when all static setup remains
+                # unchanged.
+                self.pkt.write_register(REG_GEN_DATA, flags)
             self.pkt.load_gen_data(bit_bang.pack_symbols(syms))
             div = max(0, int(self.sample_clk / rate_hz) - 1)
             # Capture readback below is one 16-bit digital word per sample.
             # Never inherit mixed/analog framing from a preceding UI capture.
             self.analog_mode = MODE_DIGITAL
-            self._write_capture_config(
-                div=div, samples=nsamples, delay_count=nsamples, mask=0, value=0,
-                flags=0, fast_mode=True, continuous=False)
+            if not reuse_setup:
+                self._write_capture_config(
+                    div=div, samples=nsamples, delay_count=nsamples, mask=0,
+                    value=0, flags=0, fast_mode=True, continuous=False)
             self.spi.flush()
             r = self.pkt.transaction(CMD_GEN_CAPTURE, timeout=1.0)
             if r is None or r[0] not in (0, ST_CAPTURE_ARMED):
                 return b''
             # No SPI traffic during the capture window: status polls disturb
             # the SDRAM write pump and drop writes (stale cells). Sleep the
-            # fixed capture duration out, then poll for DONE.
-            time.sleep(min(timeout, nsamples / float(rate_hz) + 0.05))
+            # fixed capture duration out, then poll for DONE.  The old 50 ms
+            # safety margin dominated the live fallback window (~0.23 ms at
+            # 2 MHz), so keep only a short USB/CDC settling margin and let
+            # the DONE poll provide the remaining guard.
+            time.sleep(min(timeout, nsamples / float(rate_hz) + 0.001))
             deadline = time.time() + timeout
             capture_done = False
             while time.time() < deadline:
