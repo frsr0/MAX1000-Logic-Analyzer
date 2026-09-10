@@ -4,10 +4,28 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..mil.model import MilLoadRequest, MilTransactionRequest
+from ..mil.accelerometer import accelerometer
 from ..mil.service import emulator
 from .deps import client_id_header, require_control
 
 router = APIRouter(tags=["machine-in-loop"])
+
+
+@router.get("/api/mil/accelerometer/status")
+def mil_accelerometer_status():
+    return accelerometer.status()
+
+
+@router.post("/api/mil/accelerometer/start")
+def mil_accelerometer_start(client_id: str = Depends(client_id_header)):
+    require_control(client_id)
+    return accelerometer.start()
+
+
+@router.post("/api/mil/accelerometer/stop")
+def mil_accelerometer_stop(client_id: str = Depends(client_id_header)):
+    require_control(client_id)
+    return accelerometer.stop()
 
 
 @router.get("/api/mil/presets")

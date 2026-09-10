@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import type { MilCaptureConfig, MilConfig, MilPresetSummary, MilRuntimeStatus, MilTransactionResponse } from '../api/types';
 import { useApp } from '../state/appStore';
+import { MilAccelerometerCard } from '../components/MilAccelerometerCard';
 
 const READ_MODBUS_1_0000_0002 = '010300000002c40b';
 const READ_UART_0001 = '030001';
@@ -303,6 +304,8 @@ export function MachineInLoopPage() {
         </span>
         {cfg && <span className="badge badge-soft">{cfg.protocol.replace('_', ' ')}</span>}
       </div>
+
+      <MilAccelerometerCard />
 
       <div className="mil-layout">
         <div className="card">

@@ -162,6 +162,51 @@ class ExistingHostAdapter(HardwareDevice):
             raise HardwareError("Device not connected")
         return self._meta
 
+    # ── accelerometer bus seam ─────────────────────────────────────
+
+    def accelerometer_probe(self) -> Optional[int]:
+        """Find the LIS3DH address while owning the shared SPI link."""
+        with self._lock:
+            if self._dev is None:
+                raise HardwareError("Device not connected")
+            for address in (0x19, 0x18):
+                try:
+                    if self._dev.accel_read_i2c(0x0F, dev_addr=address) == 0x33:
+                        return address
+                except Exception:
+                    continue
+            return None
+
+    def accelerometer_configure(self, address: int) -> None:
+        """Configure the LIS3DH atomically with respect to captures."""
+        with self._lock:
+            if self._dev is None:
+                raise HardwareError("Device not connected")
+            writer = getattr(self._dev, "accel_write_i2c", None)
+            if not callable(writer):
+                raise HardwareError("Connected hardware cannot configure LIS3DH")
+            # 10 Hz, high-resolution XYZ output, BDU enabled, +/-2 g range.
+            for register, value in ((0x20, 0x27), (0x23, 0x88)):
+                if writer(register, value, dev_addr=address) is False:
+                    raise HardwareError(
+                        f"Failed to configure LIS3DH register 0x{register:02x}")
+
+    def accelerometer_read_xyz(self, address: int) -> bytes:
+        """Read one coherent six-byte XYZ burst while holding the link lock."""
+        with self._lock:
+            if self._dev is None:
+                raise HardwareError("Device not connected")
+            try:
+                payload = self._dev.accel_read_i2c(
+                    0x28, dev_addr=address, read_len=6)
+            except TypeError:
+                payload = bytes(
+                    self._dev.accel_read_i2c(0x28 + offset, dev_addr=address)
+                    for offset in range(6))
+            if not isinstance(payload, (bytes, bytearray)) or len(payload) != 6:
+                raise HardwareError("LIS3DH returned an invalid XYZ sample")
+            return bytes(payload)
+
     def get_capabilities(self) -> DeviceCapabilities:
         sample_clk = float(self._dev.sample_clk) if self._dev else 200e6
         trig = [

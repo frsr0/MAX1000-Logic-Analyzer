@@ -587,6 +587,31 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .device-stack { display: flex; flex-direction: column; gap: 12px; margin-bottom: 12px; }
 
 .mil-layout { margin-bottom: 12px; }
+.mil-accelerometer-card { margin-bottom: 12px; }
+.mil-accelerometer-body { display: grid; grid-template-columns: minmax(260px, 0.9fr) minmax(280px, 1.1fr); gap: 18px; align-items: center; }
+.mil-accelerometer-visual { min-width: 0; }
+.mil-accel-stage {
+  min-height: 212px; display: grid; place-items: center; perspective: 900px; overflow: hidden;
+  border: 1px solid var(--border-soft); border-radius: 14px;
+  background: radial-gradient(circle at 50% 44%, rgba(122, 217, 255, 0.12), transparent 58%), rgba(8, 12, 22, 0.34);
+}
+.mil-accel-board {
+  position: relative; width: min(230px, 72%); aspect-ratio: 1.42; border-radius: 15px;
+  transform-style: preserve-3d; transition: transform 180ms cubic-bezier(.22,.61,.36,1);
+  background: linear-gradient(135deg, #19536d, #123b51 65%, #0d2b3a); border: 2px solid #4ca5c5;
+  box-shadow: 12px 15px 0 -5px rgba(5, 14, 22, .32), 0 18px 34px rgba(0, 0, 0, .4), inset 0 0 0 1px rgba(255,255,255,.14);
+}
+.mil-accel-board::before, .mil-accel-board::after { content: ''; position: absolute; width: 10px; height: 10px; border: 1px solid #8edbf3; border-radius: 50%; background: #0b2330; box-shadow: 0 0 0 2px rgba(10, 39, 52, .8); }
+.mil-accel-board::before { top: 12px; left: 12px; }.mil-accel-board::after { bottom: 12px; right: 12px; }
+.mil-accel-board-edge { position: absolute; inset: 5px; border: 1px dashed rgba(181, 235, 250, .38); border-radius: 10px; transform: translateZ(2px); }
+.mil-accel-silk { position: absolute; color: rgba(194, 242, 255, .72); font-size: 9px; letter-spacing: .13em; transform: translateZ(4px); }
+.mil-accel-silk-a { top: 16px; right: 20px; }.mil-accel-chip { position: absolute; top: 38%; left: 39%; width: 50px; height: 40px; display: grid; place-items: center; border: 1px solid #88d7e9; border-radius: 5px; background: #1a2534; color: #c8f4ff; font-size: 7px; transform: translateZ(8px); box-shadow: 0 4px 0 #081923; }.mil-accel-chip i { width: 24px; height: 3px; background: #6ad0e8; opacity: .7; }
+.mil-accel-axis { position: absolute; padding: 2px 5px; border-radius: 4px; background: rgba(5, 20, 29, .65); color: #d8f8ff; font: 700 10px/1 Consolas, monospace; transform: translateZ(6px); }.mil-accel-axis-x { left: 22px; bottom: 22px; color: #ff9a9a; }.mil-accel-axis-y { right: 24px; bottom: 22px; color: #a5eca9; }.mil-accel-axis-z { top: 45%; left: 18px; color: #a9ceff; }
+.mil-accel-led { position: absolute; top: 18px; left: 50%; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 12px var(--ok); transform: translateZ(7px); }
+.mil-accel-orientation { display: flex; justify-content: center; gap: 18px; margin-top: 8px; color: var(--text-dim); font-size: 12px; }.mil-accel-orientation b { color: var(--text); margin-right: 4px; }
+.mil-accelerometer-readings { display: flex; flex-direction: column; gap: 12px; }.mil-accel-axis-readout { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px 16px; padding: 12px; border: 1px solid var(--border-soft); border-radius: 12px; background: rgba(255,255,255,.025); }.mil-accel-axis-readout > div { color: var(--text-dim); }.mil-accel-axis-readout strong { font: 600 20px/1.1 Consolas, monospace; }.mil-accel-axis-readout small { color: var(--text-dim); font: 11px/1 inherit; }.axis-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 7px; }.axis-dot.axis-x { background: #ff8989; }.axis-dot.axis-y { background: #8be39a; }.axis-dot.axis-z { background: #92bfff; }.mil-accel-meta { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; font-size: 12px; }.mil-accel-meta span { color: var(--text-dim); }.mil-accel-meta strong { font-weight: 600; }.mil-accelerometer-card .finding { margin: 0; }
+@media (max-width: 680px) { .mil-accelerometer-body { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .mil-accel-board { transition: none; } }
 .mil-summary {
   display: grid;
   grid-template-columns: 92px 1fr;

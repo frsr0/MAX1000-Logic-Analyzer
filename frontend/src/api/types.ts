@@ -405,6 +405,22 @@ export interface MilRuntimeStatus {
   events: Record<string, any>[];
 }
 
+export interface MilAccelerometerSample {
+  x_g: number;
+  y_g: number;
+  z_g: number;
+  timestamp: number;
+}
+
+export interface MilAccelerometerStatus {
+  running: boolean;
+  available: boolean;
+  sample_rate_hz: number;
+  sample: MilAccelerometerSample | null;
+  samples_read: number;
+  last_error: string | null;
+}
+
 export interface MilTransactionResponse {
   request_hex: string;
   response_hex: string;

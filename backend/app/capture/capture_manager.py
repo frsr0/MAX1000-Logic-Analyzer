@@ -81,6 +81,7 @@ class CaptureManager:
         self.started_at = time.time()
 
         self._cap_lock = threading.Lock()
+        self._accelerometer_reserved = False
         self._cap_thread: Optional[threading.Thread] = None
         self._stop_evt = threading.Event()
         self.capture_state = "idle"
@@ -130,6 +131,15 @@ class CaptureManager:
         return meta.model_dump()
 
     def disconnect(self) -> None:
+        # The LIS3DH worker shares the same FTDI/Bit_Engine device.  Signal it
+        # before closing the driver so a background poll cannot use a stale
+        # handle during device teardown.  Keep this import local to avoid a
+        # state -> capture_manager -> accelerometer import cycle at startup.
+        try:
+            from ..mil.accelerometer import accelerometer
+            accelerometer.stop(wait_timeout=0.5)
+        except Exception:
+            log.exception("accelerometer stop during disconnect failed")
         self.stop_capture()
         if self.device is not None:
             try:
@@ -173,6 +183,8 @@ class CaptureManager:
     def start_capture(self, settings: CaptureSettings,
                       name: str = "") -> None:
         with self._cap_lock:
+            if self._accelerometer_reserved:
+                raise HardwareError("Accelerometer stream is using the hardware")
             if self.capture_state in ("capturing", "armed"):
                 raise HardwareError("A capture is already running")
             dev = self.require_device()
@@ -191,6 +203,23 @@ class CaptureManager:
             self._cap_thread = threading.Thread(
                 target=self._capture_worker, args=(settings, name), daemon=True)
             self._cap_thread.start()
+
+    def reserve_accelerometer(self) -> bool:
+        """Reserve the hardware for the live sensor worker.
+
+        This check and the reservation share ``_cap_lock`` with
+        ``start_capture`` so a capture cannot begin in the gap between the
+        accelerometer start request and its worker's first bus transaction.
+        """
+        with self._cap_lock:
+            if self._accelerometer_reserved or self.capture_state in ("capturing", "armed"):
+                return False
+            self._accelerometer_reserved = True
+            return True
+
+    def release_accelerometer(self) -> None:
+        with self._cap_lock:
+            self._accelerometer_reserved = False
 
     def stop_capture(self) -> bool:
         if self.capture_state in ("capturing", "armed"):

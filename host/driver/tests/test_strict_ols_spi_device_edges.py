@@ -329,6 +329,35 @@ def test_accelerometer_i2c_success_and_whoami_wrapper():
     assert dev.accel_whoami_i2c() == 0xAB
 
 
+def test_accelerometer_i2c_burst_sets_auto_increment_and_extracts_xyz(monkeypatch):
+    dev = _device()
+    dev._gen_run_and_rx = MagicMock(return_value=[1])
+    dev._i2c_rx_decode = MagicMock(
+        return_value=([0x32, 0xA8, 0x33, 0x10, 0x00, 0xF0, 0xFF, 0x20, 0x00],
+                      [0, 0, 0, 0, 0, 0, 1,]))
+
+    payload = dev.accel_read_i2c(0x28, read_len=6)
+
+    assert payload == b"\x10\x00\xf0\xff\x20\x00"
+    assert dev._i2c_rx_decode.call_args.kwargs["expect_echo"] == [0x32, 0xA8, 0x33]
+def test_accelerometer_i2c_burst_rejects_driver_fifo_limit(monkeypatch):
+    dev = _device()
+    monkeypatch.setattr(bit_bang, "max_i2c_read_bytes", lambda _length: 2)
+    with pytest.raises(ValueError, match="FIFO"):
+        dev.accel_read_i2c(0x28, read_len=6)
+
+
+def test_accelerometer_i2c_write_requires_acknowledged_dialogue():
+    dev = _device()
+    dev._gen_run_and_rx = MagicMock(return_value=[1])
+    dev._i2c_rx_decode = MagicMock(
+        return_value=([0x32, 0x20, 0x27], [0, 0, 0]))
+    assert dev.accel_write_i2c(0x20, 0x27) is True
+
+    dev._i2c_rx_decode.return_value = ([0x32, 0x20, 0x27], [0, 1, 0])
+    assert dev.accel_write_i2c(0x20, 0x27) is False
+
+
 def test_trigger_configuration_validation_encoding_and_disable():
     dev = _device()
     dev.trigger_decode(match_byte=0x157, channel=99, baud=0)

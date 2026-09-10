@@ -796,25 +796,58 @@ class OLSDeviceSPI:
                 return data, acks
         return None, None
 
-    def accel_read_i2c(self, reg, dev_addr=0x19, speed=100_000):
-        """Read one LIS3DH register over I2C. Returns the byte or None.
+    def accel_read_i2c(self, reg, dev_addr=0x19, speed=100_000,
+                       read_len=1):
+        """Read LIS3DH register bytes over I2C.
+
+        The historical one-byte API returns an integer for compatibility.
+        Passing ``read_len`` greater than one returns the requested bytes and
+        sets the LIS3DH auto-increment bit, which is needed for an atomic XYZ
+        sample.
 
         Requires the RX-enabled bitstream (Bit_Engine In_0/RX wired,
         SEN_CS held high for non-SPI bursts, SEN_SDI open-drain)."""
         dev_w = (dev_addr << 1) & 0xFE
         dev_r = dev_w | 1
-        syms = bit_bang.i2c_read_symbols(bytes([dev_w, reg & 0xFF]), 1, dev_r)
+        read_len = max(1, int(read_len))
+        if read_len > bit_bang.max_i2c_read_bytes(2):
+            raise ValueError("read_len exceeds the I2C generator FIFO")
+        reg_byte = reg & 0xFF
+        if read_len > 1:
+            reg_byte |= 0x80  # LIS3DH register auto-increment
+        syms = bit_bang.i2c_read_symbols(
+            bytes([dev_w, reg_byte]), read_len, dev_r)
         div = max(1, int(round(self.sys_clk / (4 * max(1, int(speed))) - 1.25)))
         rx = self._gen_run_and_rx(syms, div, spi_test=False)
         if not rx:
             return None
         data, acks = self._i2c_rx_decode(
-            syms, rx, expect_echo=[dev_w, reg & 0xFF, dev_r])
+            syms, rx, expect_echo=[dev_w, reg_byte, dev_r])
         # Frame layout: dev_w, reg, dev_r, value; slave must ACK (0) the
         # three addressed bytes or nothing real answered.
-        if not data or len(data) < 4 or acks[:3] != [0, 0, 0]:
+        if (not data or len(data) < 3 + read_len
+                or acks[:3] != [0, 0, 0]):
             return None
-        return data[3]
+        result = bytes(data[3:3 + read_len])
+        return result[0] if read_len == 1 else result
+
+    def accel_write_i2c(self, reg, value, dev_addr=0x19, speed=100_000):
+        """Write one LIS3DH register over I2C.
+
+        A write is considered successful when the generator completed the
+        dialogue.  The read path remains responsible for validating the
+        device identity and observing the configured values.
+        """
+        dev_w = (dev_addr << 1) & 0xFE
+        syms = bit_bang.i2c_symbols(
+            bytes([dev_w, reg & 0xFF, int(value) & 0xFF]))
+        div = max(1, int(round(self.sys_clk / (4 * max(1, int(speed))) - 1.25)))
+        rx = self._gen_run_and_rx(syms, div, spi_test=False)
+        if not rx:
+            return False
+        data, acks = self._i2c_rx_decode(
+            syms, rx, expect_echo=[dev_w, reg & 0xFF, int(value) & 0xFF])
+        return bool(data and len(data) >= 3 and acks[:3] == [0, 0, 0])
 
     def accel_read_spi(self, reg, sclk_hz=1_000_000):
         """Read one LIS3DH register over SPI mode 3. Returns byte or None."""

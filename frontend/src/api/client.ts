@@ -5,7 +5,7 @@ import type {
   DecoderEvent, DecoderInstance, DeviceCapabilities, DeviceDescriptor,
   DeviceMetadata, GeneratorConfig, GeneratorRouteCapability, LogEntry, Marker, MeasurementInstance,
   MeasurementType, MilConfig, MilPresetSummary, MilRuntimeStatus,
-  MilTransactionResponse, Session, SessionSummary, VirtualBridgeStatus,
+  MilTransactionResponse, MilAccelerometerStatus, Session, SessionSummary, VirtualBridgeStatus,
   VirtualComPairCreateResponse,
 } from './types';
 import { parseWaveformPayload, WaveformPayload } from './binary';
@@ -227,6 +227,9 @@ export const api = {
   milStop: () => post<MilRuntimeStatus>('/api/mil/stop'),
   milTransaction: (body: { request_hex: string; protocol?: string; capture_evidence?: boolean }) =>
     post<MilTransactionResponse>('/api/mil/transaction', body),
+  milAccelerometerStatus: () => get<MilAccelerometerStatus>('/api/mil/accelerometer/status'),
+  milAccelerometerStart: () => post<MilAccelerometerStatus>('/api/mil/accelerometer/start'),
+  milAccelerometerStop: () => post<MilAccelerometerStatus>('/api/mil/accelerometer/stop'),
 
   // diagnostics
   logs: (limit = 500) => get<{ logs: LogEntry[] }>(`/api/logs?limit=${limit}`),

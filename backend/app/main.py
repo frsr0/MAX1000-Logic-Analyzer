@@ -22,6 +22,7 @@ from .config import APP_NAME, APP_VERSION, FRONTEND_DIST, PORT
 from .diagnostics.logger import setup_logging
 from .hardware.base import HardwareError
 from .state import capture_manager
+from .mil.accelerometer import accelerometer
 from .serial import virtual_com_manager
 from .websocket import status_ws
 from .websocket.manager import manager
@@ -73,6 +74,7 @@ async def lifespan(app: FastAPI):
             yield
     else:
         yield
+    accelerometer.stop()
     virtual_com_manager.stop()
     capture_manager.disconnect()
     log.info("Backend stopped")
