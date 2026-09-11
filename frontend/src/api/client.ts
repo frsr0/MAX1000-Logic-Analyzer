@@ -9,6 +9,7 @@ import type {
   VirtualComPairCreateResponse,
 } from './types';
 import { parseWaveformPayload, WaveformPayload } from './binary';
+import { backendUrl } from './endpoint';
 
 export function clientId(): string {
   let id = localStorage.getItem('msa_client_id');
@@ -29,7 +30,7 @@ export class ApiError extends Error {
 
 async function req<T>(method: string, path: string, body?: unknown,
                       cache?: RequestCache): Promise<T> {
-  const res = await fetch(path, {
+  const res = await fetch(backendUrl(path), {
     method,
     headers: {
       'Content-Type': 'application/json',
@@ -110,14 +111,14 @@ export const api = {
                          resolution: number, channels?: string[],
                          signal?: AbortSignal): Promise<WaveformPayload> => {
     const ch = channels?.length ? `&channels=${channels.join(',')}` : '';
-    const res = await fetch(
-      `/api/sessions/${id}/waveform?start=${Math.floor(start)}&end=${Math.ceil(end)}&resolution=${resolution}${ch}`,
+    const res = await fetch(backendUrl(
+      `/api/sessions/${id}/waveform?start=${Math.floor(start)}&end=${Math.ceil(end)}&resolution=${resolution}${ch}`),
       { signal, headers: { 'X-Client-Id': clientId() } });
     if (!res.ok) throw new ApiError(res.status, await res.text());
     return parseWaveformPayload(await res.arrayBuffer());
   },
   overview: async (id: string, bins = 1024): Promise<WaveformPayload> => {
-    const res = await fetch(`/api/sessions/${id}/overview?bins=${bins}`);
+    const res = await fetch(backendUrl(`/api/sessions/${id}/overview?bins=${bins}`));
     if (!res.ok) throw new ApiError(res.status, await res.text());
     return parseWaveformPayload(await res.arrayBuffer());
   },
@@ -250,7 +251,7 @@ export const api = {
 
 // Exports trigger a browser download via a hidden form post.
 export async function downloadExport(sessionId: string, format: string, body: unknown = {}) {
-  const res = await fetch(`/api/sessions/${sessionId}/export/${format}`, {
+  const res = await fetch(backendUrl(`/api/sessions/${sessionId}/export/${format}`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Client-Id': clientId() },
     body: JSON.stringify(body),
@@ -267,7 +268,7 @@ export async function downloadExport(sessionId: string, format: string, body: un
 }
 
 export async function downloadDebugBundle() {
-  const res = await fetch('/api/diagnostics/debug-bundle', { method: 'POST' });
+  const res = await fetch(backendUrl('/api/diagnostics/debug-bundle'), { method: 'POST' });
   if (!res.ok) throw new ApiError(res.status, res.statusText);
   const blob = await res.blob();
   const a = document.createElement('a');

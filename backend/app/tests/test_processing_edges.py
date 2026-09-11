@@ -231,6 +231,64 @@ def test_websocket_manager_connect_broadcast_dead_clients_and_publish():
         await asyncio.sleep(0.01)
         assert latest and latest[-1][2] == {"n": 99}
         assert len(latest) == 1
+
+        # Even if each send immediately queues another sample, unrelated
+        # async work must run before a long high-rate drain completes.
+        mgr3 = ConnectionManager()
+        mgr3.set_loop(asyncio.get_running_loop())
+        sends = 0
+        drain_finished = False
+        marker_seen_before_finish = False
+        drain_done = asyncio.Event()
+        async def marker():
+            nonlocal marker_seen_before_finish
+            marker_seen_before_finish = not drain_finished
+        async def continuous(topic, type_, data):
+            nonlocal sends, drain_finished
+            sends += 1
+            if sends == 1:
+                asyncio.create_task(marker())
+            # The assertion is about yielding between queued sends, not
+            # throughput. Keep the chain short so the test stays deterministic
+            # on a busy worker while still catching a monopolizing drain loop.
+            if sends < 64:
+                with mgr3._latest_lock:
+                    mgr3._latest_pending[topic] = (type_, {"n": sends})
+            else:
+                drain_finished = True
+                drain_done.set()
+        mgr3.broadcast = continuous
+        mgr3.publish_threadsafe("accelerometer", "accelerometer_sample", {"n": 0})
+        await asyncio.wait_for(drain_done.wait(), timeout=1.0)
+        assert sends == 64
+        assert marker_seen_before_finish
+
+        # Stale browser sockets are isolated and removed in parallel. A
+        # blocked client must not turn a 10 ms sample send into a multi-second
+        # serial walk or delay unrelated status work.
+        class SlowWs:
+            def __init__(self): self.messages = []
+            async def accept(self): pass
+            async def send_text(self, text):
+                await asyncio.sleep(1.0)
+                self.messages.append(text)
+        mgr4 = ConnectionManager()
+        good_ws = Ws()
+        slow_ws = [SlowWs() for _ in range(8)]
+        await mgr4.connect(good_ws, "accelerometer")
+        for ws in slow_ws:
+            await mgr4.connect(ws, "accelerometer")
+        marker_at = None
+        async def status_like_work():
+            nonlocal marker_at
+            marker_at = asyncio.get_running_loop().time()
+        started = asyncio.get_running_loop().time()
+        status_task = asyncio.create_task(status_like_work())
+        await mgr4.broadcast("accelerometer", "accelerometer_sample", {"n": 1})
+        await status_task
+        assert marker_at is not None and marker_at - started < 0.05
+        assert len(good_ws.messages) == 1
+        assert mgr4.client_count == 1
     asyncio.run(exercise())
 
 

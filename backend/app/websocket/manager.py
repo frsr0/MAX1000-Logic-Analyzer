@@ -20,6 +20,7 @@ from typing import Dict, Optional, Set
 from fastapi import WebSocket
 
 log = logging.getLogger("msa.ws")
+ACCELEROMETER_SEND_TIMEOUT_S = 0.01
 
 
 class ConnectionManager:
@@ -52,6 +53,9 @@ class ConnectionManager:
 
     async def broadcast(self, topic: str, type_: str, data: dict) -> None:
         msg = json.dumps({"type": type_, "ts": time.time(), "data": data})
+        if topic == "accelerometer":
+            await self._broadcast_accelerometer(msg)
+            return
         dead = []
         for ws in list(self._topics.get(topic, ())):
             try:
@@ -60,6 +64,24 @@ class ConnectionManager:
                 dead.append(ws)
         for ws in dead:
             self._topics[topic].discard(ws)
+
+    async def _broadcast_accelerometer(self, msg: str) -> None:
+        """Fan out live samples without letting one socket block the rest."""
+        clients = list(self._topics.get("accelerometer", ()))
+        if not clients:
+            return
+        tasks = {
+            asyncio.create_task(ws.send_text(msg)): ws for ws in clients}
+        done, pending = await asyncio.wait(
+            tasks, timeout=ACCELEROMETER_SEND_TIMEOUT_S)
+        for task in pending:
+            task.cancel()
+            self._topics["accelerometer"].discard(tasks[task])
+        for task in done:
+            try:
+                task.result()
+            except Exception:
+                self._topics["accelerometer"].discard(tasks[task])
 
     def publish_threadsafe(self, topic: str, type_: str, data: dict) -> None:
         """Publish from any thread; no-op if the loop isn't running yet."""
@@ -93,6 +115,11 @@ class ConnectionManager:
                 if item is None:
                     return
                 await self.broadcast(topic, item[0], item[1])
+                # ``send_text`` can complete immediately (especially for a
+                # local browser). Yield explicitly so a high-rate producer
+                # cannot monopolize the event loop and starve REST/status
+                # requests or other websocket topics.
+                await asyncio.sleep(0)
         finally:
             with self._latest_lock:
                 self._latest_draining.discard(topic)

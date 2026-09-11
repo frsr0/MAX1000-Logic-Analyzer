@@ -6,10 +6,10 @@ export default defineConfig({
   server: {
     host: true,
     proxy: {
-      '/api': 'http://localhost:8000',
-      '/connect': 'http://localhost:8000',
-      '/mcp': 'http://localhost:8000',
-      '/ws': { target: 'ws://localhost:8000', ws: true },
+      '/api': 'http://127.0.0.1:8000',
+      '/connect': 'http://127.0.0.1:8000',
+      '/mcp': 'http://127.0.0.1:8000',
+      '/ws': { target: 'ws://127.0.0.1:8000', ws: true },
     },
   },
   build: { chunkSizeWarningLimit: 800 },

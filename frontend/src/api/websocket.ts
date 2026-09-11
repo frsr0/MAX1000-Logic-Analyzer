@@ -1,5 +1,6 @@
 // Auto-reconnecting WebSocket wrapper with typed message handlers.
 import type { WsMessage } from './types';
+import { backendWebSocketUrl } from './endpoint';
 
 type Handler = (msg: WsMessage) => void;
 
@@ -13,8 +14,7 @@ export class ReconnectingSocket {
   onStateChange?: (connected: boolean) => void;
 
   constructor(path: string) {
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    this.url = `${proto}://${location.host}${path}`;
+    this.url = backendWebSocketUrl(path);
     this.connect();
   }
 

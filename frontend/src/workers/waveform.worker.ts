@@ -7,6 +7,7 @@
  */
 
 import { parseWaveformPayload } from '../api/binary';
+import { backendUrl } from '../api/endpoint';
 import type { WaveformHeader } from '../api/binary';
 
 interface FetchWindowRequest {
@@ -42,9 +43,9 @@ interface WorkerError {
 self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
   const req = e.data;
   try {
-    const url = req.type === 'window'
+    const url = backendUrl(req.type === 'window'
       ? buildWindowUrl(req.sessionId, req.start, req.end, req.resolution, req.channels)
-      : buildOverviewUrl(req.sessionId, req.bins);
+      : buildOverviewUrl(req.sessionId, req.bins));
 
     const res = await fetch(url);
     if (!res.ok) {

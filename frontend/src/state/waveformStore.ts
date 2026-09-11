@@ -4,6 +4,7 @@
 
 import { WaveformClient } from '../workers/waveformClient';
 import { api } from '../api/client';
+import { backendUrl } from '../api/endpoint';
 import type { WaveformPayload } from '../api/binary';
 import type { ChannelInfo, DecoderEvent, Marker } from '../api/types';
 export type ViewListener = () => void;
@@ -363,8 +364,8 @@ export class WaveformView {
     if (!this.sessionId) return;
     const loadGen = this.loadGen;
     try {
-      const res = await fetch(
-        `/api/sessions/${this.sessionId}/decoder-events?start=${Math.floor(this.start)}&end=${Math.ceil(this.end)}&limit=3000`);
+      const res = await fetch(backendUrl(
+        `/api/sessions/${this.sessionId}/decoder-events?start=${Math.floor(this.start)}&end=${Math.ceil(this.end)}&limit=3000`));
       if (res.ok) {
         const j = await res.json();
         if (loadGen !== this.loadGen) return;
