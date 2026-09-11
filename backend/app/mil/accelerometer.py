@@ -58,6 +58,11 @@ DEFAULT_SAMPLE_RATE_HZ = 10.0
 LIVE_TRACE_RATE_HZ = 2_000_000.0
 LIVE_TRACE_SAMPLES = 4096
 LIVE_TRACE_CHANNEL_MASK = np.uint16((1 << 13) | (1 << 14) | (1 << 15))
+# A failed generator/capture handoff must not hold the live producer behind
+# the driver's legacy multi-second timeout. A complete 400 kHz I2C read is
+# only a few milliseconds, so 250 ms leaves ample USB/FPGA margin while
+# bounding sample age during recovery.
+LIVE_TRACE_TIMEOUT_S = 0.25
 # A broken/stale FPGA image can acknowledge the stream command while leaving
 # the generator idle.  Do not leave the UI looking at a static ring forever;
 # switch to the bounded host-burst reader after this startup grace period.
@@ -74,7 +79,10 @@ LIVE_FALLBACK_REPEAT_COUNT = 1
 # A live fallback read is a transport freshness path, not the sensor ODR
 # scheduler. Cap the idle gap so a low configured ODR cannot make the UI's
 # last-sample age exceed the live target between host bursts.
-LIVE_FALLBACK_MAX_INTERVAL_S = 0.01
+# The atomic XYZ read is already serialized on the FTDI link; a 10 ms sleep
+# after each read needlessly became the dominant part of the live sample age.
+# Keep only a 1 ms cooperative yield for the backend worker.
+LIVE_FALLBACK_MAX_INTERVAL_S = 0.001
 # Waveform persistence is deliberately decoupled from the physical sample
 # callback.  Browser live-window requests can rebuild/read the same rolling
 # file, so flushing every short fallback burst can otherwise add 50+ ms gaps.
@@ -773,7 +781,11 @@ class AccelerometerService:
             if callable(capture):
                 stream = capture(
                     rate_hz=LIVE_TRACE_RATE_HZ,
-                    chunk_nsamp=LIVE_TRACE_SAMPLES,
+                    # A complete 400 kHz I2C frame is ~421 samples at the
+                    # 2 MHz capture clock.  Keep ring chunks bounded to one
+                    # decoder-safe frame so a working attach route does not
+                    # wait for the 4096-sample UI window before publishing.
+                    chunk_nsamp=LIVE_FALLBACK_TRACE_SAMPLES,
                     buffer_nsamp=32768,
                     stop_evt=live_stop_evt,
                     dev_addr=address,
@@ -1155,6 +1167,7 @@ class AccelerometerService:
                                      nsamples=nsamples,
                                      repeat_count=repeat_count,
                                      reuse_setup=reuse_setup,
+                                     timeout=LIVE_TRACE_TIMEOUT_S,
                                      keep_attached=keep_attached)
             except TypeError:
                 # Keep out-of-tree adapters compatible while the bundled raw
@@ -1184,6 +1197,7 @@ class AccelerometerService:
                            rate_hz=LIVE_TRACE_RATE_HZ, nsamples=nsamples,
                            repeat_count=repeat_count,
                            reuse_setup=reuse_setup,
+                           timeout=LIVE_TRACE_TIMEOUT_S,
                            keep_attached=keep_attached)
         if not isinstance(data, (bytes, bytearray)):
             raise HardwareError("LIS3DH dialogue returned invalid data")

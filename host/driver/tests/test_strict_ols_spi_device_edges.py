@@ -348,6 +348,7 @@ def test_accelerometer_i2c_success_and_whoami_wrapper():
     dev._gen_run_and_rx = MagicMock(return_value=[1])
     dev._i2c_rx_decode = MagicMock(return_value=([0x32, 0x0F, 0x33, 0xAB], [0, 0, 0, 1]))
     assert dev.accel_read_i2c(0x0F) == 0xAB
+    assert dev._gen_run_and_rx.call_args.kwargs["timeout"] == pytest.approx(0.25)
     assert dev.accel_whoami_i2c() == 0xAB
 
 
@@ -1043,6 +1044,7 @@ def test_accelerometer_capture_waits_while_hardware_is_busy(monkeypatch):
     # margin; the old 50 ms grace made the live fallback miss its freshness
     # target by construction.
     assert sleep.call_args_list[0].args[0] == pytest.approx(0.0010005)
+    assert sleep.call_args_list[1].args[0] == pytest.approx(0.0005)
 
 
 def test_accelerometer_live_burst_reuses_static_capture_setup(monkeypatch):

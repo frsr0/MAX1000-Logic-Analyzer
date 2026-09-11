@@ -761,7 +761,11 @@ class OLSDeviceSPI:
                 if st.get('capture_status', -1) == ST_CAPTURE_DONE:
                     capture_done = True
                     break
-                time.sleep(0.002)
+                # The fixed capture/USB settling margin above has elapsed by
+                # the first poll.  Use a short retry interval so a delayed
+                # DONE response does not add a multi-millisecond freshness
+                # step to each live burst.
+                time.sleep(0.0005)
             if not capture_done:
                 self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
                 return b''
@@ -861,7 +865,7 @@ class OLSDeviceSPI:
         return None, None
 
     def accel_read_i2c(self, reg, dev_addr=0x19, speed=100_000,
-                       read_len=1):
+                       read_len=1, timeout=0.25):
         """Read LIS3DH register bytes over I2C.
 
         The historical one-byte API returns an integer for compatibility.
@@ -883,6 +887,7 @@ class OLSDeviceSPI:
             bytes([dev_w, reg_byte]), read_len, dev_r)
         div = max(1, int(round(self.sys_clk / (4 * max(1, int(speed))) - 1.25)))
         rx = self._gen_run_and_rx(syms, div, spi_test=False,
+                                  timeout=max(0.05, float(timeout)),
                                   reuse_accel_setup=True)
         if not rx:
             return None

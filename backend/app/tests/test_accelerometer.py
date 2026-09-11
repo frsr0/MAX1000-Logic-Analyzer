@@ -396,8 +396,10 @@ def test_live_capture_uses_continuous_ring_producer_and_stops_cleanly(tmp_path):
             super().__init__()
             self.ring_started = threading.Event()
             self.ring_chunks = 0
+            self.ring_kwargs = None
 
         def continuous_ring_capture_with_repeating_i2c(self, **kwargs):
+            self.ring_kwargs = kwargs
             self.ring_started.set()
             stop_evt = kwargs["stop_evt"]
             chunk = np.asarray([
@@ -423,6 +425,7 @@ def test_live_capture_uses_continuous_ring_producer_and_stops_cleanly(tmp_path):
         "Accelerometer ring live", store)
     try:
         assert raw.ring_started.wait(1.0)
+        assert raw.ring_kwargs["chunk_nsamp"] == 448
         deadline = time.time() + 1.0
         waveform = None
         while time.time() < deadline:
@@ -489,6 +492,7 @@ def test_live_capture_falls_back_when_ring_is_static(tmp_path, monkeypatch):
 def test_static_ring_fallback_decodes_batched_trace_frames(tmp_path, monkeypatch):
     """Legacy fallback publishes every frame from a short repeated burst."""
     monkeypatch.setattr(accelerometer_module, "LIVE_STREAM_WATCHDOG_S", 0.01)
+    assert accelerometer_module.LIVE_FALLBACK_MAX_INTERVAL_S <= 0.001
 
     class BatchedFallbackRaw(FakeRaw):
         def __init__(self):
@@ -529,6 +533,7 @@ def test_static_ring_fallback_decodes_batched_trace_frames(tmp_path, monkeypatch
         assert raw.capture_calls[0]["nsamples"] == 448
         assert raw.capture_calls[0]["repeat_count"] == 1
         assert raw.capture_calls[0]["keep_attached"] is True
+        assert raw.capture_calls[0]["timeout"] == pytest.approx(0.25)
         assert any("using bounded host-burst fallback" in item["message"]
                    for item in session.diagnostics)
     finally:
