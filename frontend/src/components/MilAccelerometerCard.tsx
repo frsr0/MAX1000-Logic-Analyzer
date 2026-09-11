@@ -284,7 +284,12 @@ export function MilAccelerometerCard() {
           >
             <div
               className="mil-accel-board"
-              style={{ transform: `perspective(520px) rotateX(${orientation.pitch}deg) rotateY(${orientation.roll}deg)` }}
+              style={{
+                transform: `perspective(520px) rotateX(${orientation.pitch}deg) rotateY(${orientation.roll}deg)`,
+                // Never interpolate sensor poses in CSS: a 180 ms transition
+                // makes a live board visibly trail the newest decoded sample.
+                transition: running ? 'none' : undefined,
+              }}
             >
               <div className="mil-accel-board-edge" />
               <div className="mil-accel-silk mil-accel-silk-a">MAX1000</div>

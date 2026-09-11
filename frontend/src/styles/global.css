@@ -597,7 +597,7 @@ input[type="checkbox"] { accent-color: var(--accent); }
 }
 .mil-accel-board {
   position: relative; width: min(230px, 72%); aspect-ratio: 1.42; border-radius: 15px;
-  transform-style: preserve-3d; transition: transform 180ms cubic-bezier(.22,.61,.36,1);
+  transform-style: preserve-3d; transition: none; will-change: transform;
   background: linear-gradient(135deg, #19536d, #123b51 65%, #0d2b3a); border: 2px solid #4ca5c5;
   box-shadow: 12px 15px 0 -5px rgba(5, 14, 22, .32), 0 18px 34px rgba(0, 0, 0, .4), inset 0 0 0 1px rgba(255,255,255,.14);
 }

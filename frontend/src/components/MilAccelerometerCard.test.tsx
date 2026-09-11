@@ -104,6 +104,7 @@ it('updates the orientation from each pushed decoded sample', async () => {
   vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({ ...sample(), running: true });
   render(<MilAccelerometerCard />);
   await waitFor(() => expect(screen.getAllByText('+0.000', { exact: true })).toHaveLength(2));
+  expect((document.querySelector('.mil-accel-board') as HTMLElement).style.transition).toBe('none');
   expect(FakeAccelerometerWebSocket.instances).toHaveLength(1);
   expect(FakeAccelerometerWebSocket.instances[0].url).toContain('/ws/accelerometer');
 
