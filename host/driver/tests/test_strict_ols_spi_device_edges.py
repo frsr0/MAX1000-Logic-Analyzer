@@ -1068,6 +1068,31 @@ def test_accelerometer_live_burst_reuses_static_capture_setup(monkeypatch):
                if item.args[0] == device_module.REG_GEN_BAUD) == 1
 
 
+def test_accelerometer_live_burst_keeps_attach_until_explicit_cleanup(monkeypatch):
+    dev = _device()
+    dev._ensure_open = MagicMock()
+    dev._pins = MagicMock()
+    dev.set_debug_ch0 = MagicMock()
+    dev._write_capture_config = MagicMock()
+    dev._stream_readback = MagicMock(return_value=b"abcd")
+    dev.pkt.transaction.side_effect = [
+        (ST_OK, 0, b""), (ST_CAPTURE_ARMED, 0, b""),
+        (ST_OK, 0, b""), (ST_CAPTURE_ARMED, 0, b""),
+    ]
+    dev.pkt.get_status.return_value = {"capture_status": ST_CAPTURE_DONE}
+    monkeypatch.setattr(device_module.time, "sleep", lambda _: None)
+
+    dev.accel_capture_dialogue([1, 2], 2, rate_hz=1, nsamples=2,
+                               keep_attached=True)
+    dev.accel_capture_dialogue([1, 2], 2, rate_hz=1, nsamples=2,
+                               reuse_setup=True, keep_attached=True)
+    assert not any(item.args == (device_module.REG_GEN_DATA, 1 << 8)
+                   for item in dev.pkt.write_register.call_args_list)
+    dev.accel_capture_cleanup()
+    dev.pkt.write_register.assert_called_with(device_module.REG_GEN_DATA,
+                                               1 << 8)
+
+
 def test_protocol_decoder_import_failure_returns_none(monkeypatch):
     dev = _device()
     dev.trigger_decode()

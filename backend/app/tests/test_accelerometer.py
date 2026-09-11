@@ -528,6 +528,7 @@ def test_static_ring_fallback_decodes_batched_trace_frames(tmp_path, monkeypatch
         # CMD_GEN_CAPTURE startup guard at the 2 MHz live clock.
         assert raw.capture_calls[0]["nsamples"] == 448
         assert raw.capture_calls[0]["repeat_count"] == 1
+        assert raw.capture_calls[0]["keep_attached"] is True
         assert any("using bounded host-burst fallback" in item["message"]
                    for item in session.diagnostics)
     finally:

@@ -247,6 +247,15 @@ class ExistingHostAdapter(HardwareDevice):
                 enabled=bool(enabled), dev_addr=int(address), mode=mode,
                 threshold=int(threshold), speed=int(speed))
 
+    def accelerometer_capture_cleanup(self) -> None:
+        """Clear the persistent live-capture attach route after teardown."""
+        with self._lock:
+            if self._dev is None:
+                return
+            cleanup = getattr(self._dev, "accel_capture_cleanup", None)
+            if callable(cleanup):
+                cleanup()
+
     def accelerometer_read_fifo(self, address: int, max_samples: int = 4,
                                 speed: int = 400_000):
         """Drain a bounded batch of FIFO XYZ frames, if supported."""

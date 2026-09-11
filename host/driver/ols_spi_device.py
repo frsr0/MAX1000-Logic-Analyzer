@@ -689,7 +689,8 @@ class OLSDeviceSPI:
 
     def accel_capture_dialogue(self, syms, bit_div, spi_test=False,
                                rate_hz=2_000_000, nsamples=4096, timeout=6,
-                               repeat_count=1, reuse_setup=False):
+                               repeat_count=1, reuse_setup=False,
+                               keep_attached=False):
         """Run an accel-bus burst with the ATTACH mirror on and capture it.
 
         The attach toggle (REG_GEN_DATA bit 4) copies SEN_SDI/SEN_SPC/SEN_SDO
@@ -702,6 +703,7 @@ class OLSDeviceSPI:
         # This path reconfigures the generator/capture engine and therefore
         # cannot leave a direct-read setup cached across the trace capture.
         reuse_setup = bool(reuse_setup)
+        keep_attached = bool(keep_attached)
         # Older FPGA images do not implement the generator repeat flag.  A
         # bounded host-side burst still lets one atomic capture contain several
         # sensor reads, avoiding the per-sample load/start/readback round trip.
@@ -727,7 +729,7 @@ class OLSDeviceSPI:
                 self._pins(tx_pin=24, scl_pin=GEN_SCL_PARK)
                 self.pkt.write_register(REG_GEN_BAUD,
                                         bit_div & self.gen_div_mask)
-            else:
+            elif not keep_attached:
                 # The previous burst drops ATTACH in its cleanup; restoring
                 # this one flag is sufficient when all static setup remains
                 # unchanged.
@@ -765,9 +767,16 @@ class OLSDeviceSPI:
                 return b''
             return self._stream_readback(0, nsamples)[:nsamples * 2]
         finally:
-            self.pkt.write_register(REG_GEN_DATA, 1 << 8)  # drop attach flag
+            if not keep_attached:
+                self.pkt.write_register(REG_GEN_DATA, 1 << 8)  # drop attach flag
             self.analog_mode = previous_analog_mode
-            self._accel_i2c_setup = None
+            if not keep_attached:
+                self._accel_i2c_setup = None
+
+    def accel_capture_cleanup(self):
+        """Drop the live attach mirror after a persistent live session."""
+        self.pkt.write_register(REG_GEN_DATA, 1 << 8)
+        self._accel_i2c_setup = None
 
     def _gen_run_and_rx(self, syms, bit_div, spi_test=False, timeout=2.0,
                         reuse_accel_setup=False):
