@@ -78,7 +78,9 @@ LIVE_FALLBACK_MAX_INTERVAL_S = 0.01
 # Waveform persistence is deliberately decoupled from the physical sample
 # callback.  Browser live-window requests can rebuild/read the same rolling
 # file, so flushing every short fallback burst can otherwise add 50+ ms gaps.
-LIVE_WAVEFORM_PERSIST_INTERVAL_S = 0.05
+# Five waveform refreshes per second are sufficient for the rolling view while
+# keeping its API/LOD work from competing with the physical read path.
+LIVE_WAVEFORM_PERSIST_INTERVAL_S = 0.2
 # LIS3DH supports Fast-mode I²C (400 kHz).  FIFO reads are the high-volume
 # path, so use it to reduce the wire time of each four-sample burst.  The
 # one-shot diagnostic/legacy path remains at its conservative 100 kHz default.
@@ -439,6 +441,16 @@ class AccelerometerService:
             self._live_digital = np.zeros(0, dtype=np.uint16)
             self._live_persist_dirty = False
             self._live_dialogue_setup_ready = False
+        # A persistent attach mirror avoids a register write on every live
+        # fallback burst. Clear it once, after the producer has stopped, so
+        # ordinary captures never inherit the accelerometer routing.
+        device = getattr(self.manager, "device", None)
+        cleanup = getattr(device, "accelerometer_capture_cleanup", None)
+        if callable(cleanup):
+            try:
+                cleanup()
+            except Exception:
+                pass
         if active:
             websocket_manager.publish_threadsafe(
                 "capture", "capture_cancelled",
@@ -1101,7 +1113,7 @@ class AccelerometerService:
             payload = self._read_dialogue(
                 adapter, raw, address,
                 capture_samples, repeat_count=max(1, int(repeat_count)),
-                reuse_setup=reuse_setup)
+                reuse_setup=reuse_setup, keep_attached=True)
             with self._lock:
                 if self._live_session is session:
                     self._live_dialogue_setup_ready = True
@@ -1134,14 +1146,16 @@ class AccelerometerService:
 
     def _read_dialogue(self, adapter: Any, raw: Any, address: int,
                        nsamples: int, repeat_count: int = 1,
-                       reuse_setup: bool = False) -> bytes:
+                       reuse_setup: bool = False,
+                       keep_attached: bool = False) -> bytes:
         capture_trace = getattr(adapter, "accelerometer_capture_trace", None)
         if callable(capture_trace):
             try:
                 return capture_trace(address, rate_hz=LIVE_TRACE_RATE_HZ,
                                      nsamples=nsamples,
                                      repeat_count=repeat_count,
-                                     reuse_setup=reuse_setup)
+                                     reuse_setup=reuse_setup,
+                                     keep_attached=keep_attached)
             except TypeError:
                 # Keep out-of-tree adapters compatible while the bundled raw
                 # driver gains the bounded host-burst argument.
@@ -1169,7 +1183,8 @@ class AccelerometerService:
             data = capture(syms, bit_div, spi_test=False,
                            rate_hz=LIVE_TRACE_RATE_HZ, nsamples=nsamples,
                            repeat_count=repeat_count,
-                           reuse_setup=reuse_setup)
+                           reuse_setup=reuse_setup,
+                           keep_attached=keep_attached)
         if not isinstance(data, (bytes, bytearray)):
             raise HardwareError("LIS3DH dialogue returned invalid data")
         return bytes(data)
