@@ -135,7 +135,21 @@ export function MilAccelerometerCard() {
     let animationFrame: number | null = null;
     let flushTimer: number | null = null;
     let pending: Record<string, any> | null = null;
-    const socket = new ReconnectingSocket('/ws/accelerometer');
+
+    const handleMessage = (message: Record<string, any>) => {
+      if (!alive || message.type !== 'accelerometer_sample' || !message.data?.sample) return;
+      // This mailbox is intentionally only one item deep. The worker can
+      // continue receiving and parsing every sample while React is busy; a
+      // saturated display consumes the newest reading on its next paint.
+      pending = message.data;
+      if (animationFrame === null) {
+        animationFrame = window.requestAnimationFrame(flush);
+        // A 60 Hz display can leave RAF waiting almost one full frame when a
+        // packet lands just after paint. Bound that tail latency while still
+        // coalescing bursts to at most one React update per 8 ms.
+        flushTimer = window.setTimeout(flush, SAMPLE_FLUSH_DEADLINE_MS);
+      }
+    };
 
     const flush = () => {
       if (animationFrame !== null) {
@@ -166,24 +180,26 @@ export function MilAccelerometerCard() {
       } : previous);
     };
 
-    const unsubscribe = socket.subscribe((message) => {
-      if (!alive || message.type !== 'accelerometer_sample' || !message.data?.sample) return;
-      // Preserve command/lifecycle state from REST. A sample can be queued in
-      // the websocket just as Stop completes, so it must not resurrect the
-      // running badge; it only replaces the decoded sample and counters.
-      pending = message.data;
-      if (animationFrame === null) {
-        animationFrame = window.requestAnimationFrame(flush);
-        // A 60 Hz display can leave RAF waiting almost one full frame when a
-        // packet lands just after paint. Bound that tail latency while still
-        // coalescing bursts to at most one React update per 8 ms.
-        flushTimer = window.setTimeout(flush, SAMPLE_FLUSH_DEADLINE_MS);
-      }
-    });
+    let cleanupStream: () => void;
+    if (typeof Worker !== 'undefined') {
+      const worker = new Worker(
+        new URL('../workers/accelerometerStream.worker.ts', import.meta.url),
+        { type: 'module' },
+      );
+      worker.onmessage = (event: MessageEvent<Record<string, any>>) => {
+        handleMessage(event.data);
+      };
+      cleanupStream = () => worker.terminate();
+    } else {
+      // Keep the test/legacy-browser fallback functional. Modern browsers use
+      // the worker above, so socket parsing cannot compete with React renders.
+      const socket = new ReconnectingSocket('/ws/accelerometer');
+      const unsubscribe = socket.subscribe(handleMessage);
+      cleanupStream = () => { unsubscribe(); socket.close(); };
+    }
     return () => {
       alive = false;
-      unsubscribe();
-      socket.close();
+      cleanupStream();
       if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
       if (flushTimer !== null) window.clearTimeout(flushTimer);
     };

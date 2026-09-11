@@ -129,6 +129,58 @@ it('updates the orientation from each pushed decoded sample', async () => {
   expect(document.querySelector('.mil-accelerometer-card')?.textContent).toContain('44');
 });
 
+it('keeps high-rate worker ingestion independent from a slow render', async () => {
+  class FakeAccelerometerWorker {
+    static instances: FakeAccelerometerWorker[] = [];
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    readonly url: string;
+    received = 0;
+
+    constructor(url: URL | string) {
+      this.url = String(url);
+      FakeAccelerometerWorker.instances.push(this);
+    }
+
+    emit(data: unknown) {
+      this.received += 1;
+      this.onmessage?.({ data } as MessageEvent);
+    }
+
+    terminate() {}
+  }
+
+  vi.stubGlobal('Worker', FakeAccelerometerWorker);
+  const frames: FrameRequestCallback[] = [];
+  vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+    frames.push(callback);
+    return frames.length;
+  });
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({ ...sample(), running: true });
+
+  render(<MilAccelerometerCard />);
+  await waitFor(() => expect(FakeAccelerometerWorker.instances).toHaveLength(1));
+
+  const worker = FakeAccelerometerWorker.instances[0];
+  for (let i = 0; i < 120; i += 1) {
+    worker.emit({
+      type: 'accelerometer_sample',
+      data: {
+        sample: { x_g: i / 100, y_g: 0, z_g: 0.866, timestamp: i },
+        last_sample_at: i,
+        samples_read: i + 1,
+      },
+    });
+  }
+
+  // All 120 messages were accepted without waiting for React, while the
+  // bounded mailbox schedules only one paint and keeps the newest reading.
+  expect(worker.received).toBe(120);
+  expect(frames).toHaveLength(1);
+  await act(async () => { frames[0](0); });
+  expect(screen.getByText('+1.190', { exact: true })).toBeTruthy();
+  expect(document.querySelector('.mil-accelerometer-card')?.textContent).toContain('120');
+});
+
 it('does not overlap a slow poll and cleans up its pending schedule on unmount', async () => {
   vi.useFakeTimers();
   let resolvePoll: ((value: MilAccelerometerStatus) => void) | undefined;
