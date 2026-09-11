@@ -425,8 +425,11 @@ def test_live_capture_uses_continuous_ring_producer_and_stops_cleanly(tmp_path):
         "Accelerometer ring live", store)
     try:
         assert raw.ring_started.wait(1.0)
-        assert raw.ring_kwargs["chunk_nsamp"] == 448
+        # Gap-delimited tail-follow windows need two complete I2C frames so
+        # decoder reset at each skipped ring region does not lose the sample.
+        assert raw.ring_kwargs["chunk_nsamp"] == 896
         assert raw.ring_kwargs["use_rle"] is False
+        assert raw.ring_kwargs["prefer_raw_stream"] is True
         deadline = time.time() + 1.0
         waveform = None
         while time.time() < deadline:
@@ -443,6 +446,37 @@ def test_live_capture_uses_continuous_ring_producer_and_stops_cleanly(tmp_path):
 
     assert service._live_worker is not None
     assert not service._live_worker.is_alive()
+
+
+def test_live_start_waits_for_inflight_poll_claim(tmp_path):
+    """Live start hands the adapter to the stream after the older poll ends."""
+    raw = FakeRaw()
+    manager = FakeManager(raw)
+    service = AccelerometerService(manager, sample_rate_hz=100)
+    service._status.running = True
+    service._accelerometer_address = 0x18
+    store = SessionStore(tmp_path)
+    result = []
+    with service._lock:
+        service._polling_io = True
+
+    starter = threading.Thread(
+        target=lambda: result.append(service.start_live_capture(
+            CaptureSettings(mode="rolling", auto_rearm=True, num_samples=32),
+            "in-flight poll", store)))
+    starter.start()
+    time.sleep(0.05)
+    with service._lock:
+        service._polling_io = False
+        service._poll_condition.notify_all()
+    starter.join(timeout=1.0)
+    try:
+        assert len(result) == 1
+        assert service._live_session is result[0]
+    finally:
+        service.stop_live_capture()
+        with service._lock:
+            service._poll_condition.notify_all()
 
 
 def test_live_capture_falls_back_when_ring_is_static(tmp_path, monkeypatch):
@@ -576,6 +610,26 @@ def test_live_ring_i2c_decoder_extracts_xyz_frame():
 
     frames = AccelerometerService._decode_live_i2c_frames(digital, 0x19)
     assert frames == [(0.001, -0.001, 0.002)]
+
+
+def test_live_ring_i2c_decoder_carries_frame_across_chunks():
+    """A frame split at an arbitrary ring-window boundary is not lost."""
+    digital = _synthetic_lis3dh_i2c_trace()
+    decoder = accelerometer_module._LiveI2CFrameDecoder(0x19)
+
+    assert decoder.feed(digital[:100]) == []
+    assert decoder.feed(digital[100:]) == [(0.001, -0.001, 0.002)]
+
+
+def test_live_ring_i2c_decoder_reset_discards_sample_boundary_context():
+    """An overrun reset must not decode across the discontinuity."""
+    digital = _synthetic_lis3dh_i2c_trace()
+    decoder = accelerometer_module._LiveI2CFrameDecoder(0x19)
+
+    decoder.feed(digital[:116])
+    decoder.reset()
+
+    assert decoder.feed(digital[116:]) == []
 
 
 def test_live_trace_publishes_xyz_before_waveform_persistence():

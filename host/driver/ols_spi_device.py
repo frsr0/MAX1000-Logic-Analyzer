@@ -260,6 +260,11 @@ class OLSDeviceSPI:
         self.glitch_threshold = 3
         # Ring metadata seeding for fast re-poll after first successful read
         self._ring_seeded = False
+        # ``prefer_raw_stream`` follows the moving ring tail.  When the host
+        # cannot consume every source sample, the next window is deliberately
+        # discontinuous; expose that fact to decoders instead of letting a
+        # partial I2C transaction span an unobserved gap.
+        self._stream_gap = False
         self._timings = {}
 
     def set_compression_enabled(self, enable: bool):
@@ -1455,6 +1460,19 @@ class OLSDeviceSPI:
         if os.environ.get("OLS_RING_TRACE"):
             print(f"[RINGTRACE] {msg}")
 
+    def consume_stream_gap(self) -> bool:
+        """Return and clear the discontinuity flag from the raw stream.
+
+        Tail-following live streams intentionally skip ring samples between
+        transport windows.  A decoder must reset its carry state at that
+        boundary; otherwise the end of one transaction can be joined to the
+        middle of a later transaction and produce plausible-looking but
+        incorrect sensor values.
+        """
+        gap = bool(self._stream_gap)
+        self._stream_gap = False
+        return gap
+
     def _wait_capture_done(self, timeout, stop_evt=None, expected_seq=None):
         deadline = time.time() + timeout
         last_status = {}
@@ -1983,6 +2001,7 @@ class OLSDeviceSPI:
         overrun_total = 0
         producer_hint = None
         oldest_hint = None
+        self._stream_gap = False
         # True held-CS streaming is production-safe only for the merged
         # delta_rle path.
         # The legacy raw stream still leaves the shared readback state dirty on
@@ -1998,6 +2017,10 @@ class OLSDeviceSPI:
         # historically been less tolerant on old images.
         use_rle_stream = self._readback_codec() == 'rle'
         use_raw_stream = use_rle_stream or bool(prefer_raw_stream)
+        # Only the explicit uncompressed held-CS transport needs the newest
+        # window.  Keep the established cursor semantics for RLE, whose
+        # variable-length stream and overrun handling are separate paths.
+        use_newest_stream = bool(prefer_raw_stream) and not use_rle_stream
         # Ring metadata cursors count source samples, regardless of the
         # selected readback codec.  RLE changes the number of bytes on the
         # wire, not the number of samples needed before a request can be
@@ -2007,6 +2030,8 @@ class OLSDeviceSPI:
         required_available = window_samples
         pending = b''
         pending_samples = 0
+        previous_stream_end = None
+        stream_retry_count = 0
         try:
             iteration = 0
             while not stop_evt.is_set():
@@ -2045,8 +2070,47 @@ class OLSDeviceSPI:
                         overrun_total = overrun
                         next_sample = None  # writer lapped us: resync to oldest
 
-                if next_sample is None or next_sample < int(oldest_hint):
-                    next_sample = int(oldest_hint)
+                if next_sample is None:
+                    # A held-CS stream must start at the newest complete
+                    # window.  Starting at ``oldest`` can be millions of
+                    # samples behind a live ring; the serializer then spends
+                    # its entire lifetime reading stale history and never
+                    # reaches the current accelerometer frames.  Keep the
+                    # established oldest-cursor behavior for block reads.
+                    if use_newest_stream:
+                        next_sample = max(
+                            int(oldest_hint),
+                            int(producer_hint) - window_samples)
+                    else:
+                        next_sample = int(oldest_hint)
+                elif next_sample < int(oldest_hint):
+                    # On an overrun, resync a held-CS stream to the newest
+                    # decoder-safe window rather than replaying stale data.
+                    if use_newest_stream:
+                        next_sample = max(
+                            int(oldest_hint),
+                            int(producer_hint) - window_samples)
+                    else:
+                        next_sample = int(oldest_hint)
+
+                if use_newest_stream:
+                    # The capture clock runs much faster than the host can
+                    # transfer a 448-sample window. Follow the ring tail on
+                    # every status refresh; otherwise the next request can
+                    # already be behind Oldest and the FPGA has no valid
+                    # window to serve.
+                    tail_sample = max(
+                        int(oldest_hint), int(producer_hint) - window_samples)
+                    if tail_sample > int(next_sample):
+                        # Tail-follow intentionally skips the samples which
+                        # arrived while the previous USB transaction was in
+                        # flight.  Surface that discontinuity through the
+                        # existing overrun field so incremental consumers do
+                        # not continue an I2C transaction across unrelated
+                        # ring locations (which can manufacture a bad XYZ
+                        # frame at the window boundary).
+                        overrun_total += 1
+                        next_sample = tail_sample
 
                 available = int(producer_hint) - int(next_sample)
                 if available < required_available:
@@ -2059,20 +2123,94 @@ class OLSDeviceSPI:
                     continue
 
                 if use_raw_stream:
+                    # Record whether this request starts after an unobserved
+                    # region of the ring.  The producer is much faster than
+                    # the USB/SPI reader, so this is expected for tail-follow
+                    # mode and is not itself an overrun.
+                    if use_newest_stream:
+                        self._stream_gap = (
+                            previous_stream_end is not None
+                            and int(next_sample) != int(previous_stream_end))
                     if use_rle_stream:
-                        producer_hint, oldest_hint, data = \
-                            self.pkt.start_rle_stream_read(
-                                next_sample, window_samples, stop_evt=stop_evt)
+                        try:
+                            producer_hint, oldest_hint, data = \
+                                self.pkt.start_rle_stream_read(
+                                    next_sample, window_samples,
+                                    stop_evt=stop_evt)
+                        except (RuntimeError, OSError):
+                            if not use_newest_stream or stream_retry_count >= 2:
+                                raise
+                            stream_retry_count += 1
+                            producer_hint = None
+                            oldest_hint = None
+                            next_sample = None
+                            # A failed held-CS transaction has already raised
+                            # CS and discarded the partial wire response. The
+                            # next request must be seeded from fresh metadata,
+                            # not retried at the stale tail cursor.
+                            if stop_evt.wait(0.001):
+                                break
+                            continue
                     else:
-                        producer_hint, oldest_hint, data = \
-                            self.pkt.start_raw_stream_read(
-                                next_sample, window_samples, stop_evt=stop_evt)
+                        try:
+                            producer_hint, oldest_hint, data = \
+                                self.pkt.start_raw_stream_read(
+                                    next_sample, window_samples,
+                                    stop_evt=stop_evt)
+                        except (RuntimeError, OSError) as exc:
+                            if not use_newest_stream or stream_retry_count >= 2:
+                                raise
+                            stream_retry_count += 1
+                            if ("no stream ack" in str(exc).lower()
+                                    and stream_retry_count >= 2):
+                                # A just-released capture can leave the
+                                # read-FIFO serializer between transactions.
+                                # Retry the held-CS command once in place
+                                # first (the common case is a delayed ACK).
+                                # Re-arm only after two consecutive misses so
+                                # recovery itself cannot create a >30 ms age
+                                # spike for a transient USB response delay.
+                                self._ring_trace(
+                                    "raw stream ACK missing; aborting and "
+                                    "re-arming once")
+                                self.pkt.transaction(
+                                    CMD_ABORT_CAPTURE, timeout=0.5)
+                                self.spi.flush()
+                                if generator_capture:
+                                    response = self.pkt.transaction(
+                                        CMD_GEN_CAPTURE, timeout=1.0)
+                                    restart_status = (
+                                        response[0]
+                                        if response is not None else -1)
+                                else:
+                                    restart_status = self.pkt.arm_capture()
+                                if restart_status < 0:
+                                    raise
+                            producer_hint = None
+                            oldest_hint = None
+                            next_sample = None
+                            if stop_evt.wait(0.001):
+                                break
+                            continue
                     if next_sample < int(oldest_hint):
                         next_sample = int(oldest_hint)
                         continue
                     if not data:
+                        if use_newest_stream:
+                            # A moving ring can briefly report an empty
+                            # window while the producer cursor crosses the
+                            # requested tail. Resync on the next poll rather
+                            # than silently ending MIL live capture.
+                            next_sample = None
+                            producer_hint = None
+                            oldest_hint = None
+                            if stop_evt.wait(0.0005):
+                                break
+                            continue
                         break
                     valid_samples = len(data) // 2
+                    stream_retry_count = 0
+                    previous_stream_end = int(next_sample) + valid_samples
                     next_sample += valid_samples
                     total += valid_samples
                     if progress_cb:
@@ -2273,7 +2411,8 @@ class OLSDeviceSPI:
     def continuous_ring_capture_with_repeating_i2c(
             self, rate_hz, chunk_nsamp, buffer_nsamp, stop_evt,
             dev_addr=0x19, reg_addr=0x28, read_len=6, i2c_speed=50_000,
-            progress_cb=None, full_out=None, use_rle=True):
+            progress_cb=None, full_out=None, use_rle=True,
+            prefer_raw_stream=False):
         """Capture a continuously repeated LIS3DH I2C read into the ring.
 
         The existing Bit_Engine repeat flag is sufficient for this path: the
@@ -2283,9 +2422,10 @@ class OLSDeviceSPI:
         round trip is involved.  The yielded values have the same dense
         16-bit digital payload format as :meth:`stream_ring_capture`.
 
-        ``use_rle=False`` selects the established raw block-read ring path;
-        this is useful for live owners that must not risk a held-CS probe on
-        an older image. ``HardwareError``/``RuntimeError`` from an image without the repeat
+        ``use_rle=False`` selects raw ring readback.  By default it uses the
+        established block-read transport; ``prefer_raw_stream=True`` selects
+        the held-CS raw serializer for live owners on images with the
+        read-FIFO teardown fix.  ``HardwareError``/``RuntimeError`` from an image without the repeat
         or attach capability are intentionally allowed to propagate so the
         service can fall back to its one-shot reader and report that fact.
         """
@@ -2344,7 +2484,7 @@ class OLSDeviceSPI:
                 # Accelerometer live capture requests the established raw
                 # block-read path explicitly so a failed RLE probe cannot
                 # stall the producer before it publishes any frames.
-                if restore_mode != 'raw':
+                if prefer_raw_stream or restore_mode != 'raw':
                     self.set_readback_compression(
                         'raw', force_hardware=True)
                 yield from self.stream_ring_capture(
@@ -2363,12 +2503,13 @@ class OLSDeviceSPI:
                     fetch_multiplier=1,
                     generator_capture=generator_capture,
                     manage_debug_source=False,
-                    # The held-CS raw serializer is retained as an explicit
-                    # diagnostic option, but it is not compatible with the
-                    # current flashed image's continuous ring request path.
-                    # Use the validated bounded block-read path for MIL so a
-                    # failed speculative stream cannot delay live samples.
-                    prefer_raw_stream=False)
+                    # Use the held-CS raw serializer for the live path.  The
+                    # FPGA waits for the residual read-FIFO drain before
+                    # issuing this block request, so each decoder-safe frame
+                    # is transferred without a second block-read transaction.
+                    # If the transport cannot return a framed ACK, the
+                    # caller's existing bounded fallback remains available.
+                    prefer_raw_stream=prefer_raw_stream)
         finally:
             try:
                 self.pkt.transaction(CMD_GEN_STOP, timeout=0.5)

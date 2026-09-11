@@ -1745,8 +1745,8 @@ class TestOLSDeviceSPIRolling:
         ]
         device_spi.read_capture_range = MagicMock()
         device_spi.pkt.get_status.side_effect = [
-            {'producer_index': 4, 'oldest_index': 0, 'overrun_count': 0},
-            {'producer_index': 8, 'oldest_index': 0, 'overrun_count': 0},
+            {'producer_index': 12, 'oldest_index': 0, 'overrun_count': 0},
+            {'producer_index': 16, 'oldest_index': 0, 'overrun_count': 0},
         ]
         device_spi.spi.flush = MagicMock()
 
@@ -1758,10 +1758,128 @@ class TestOLSDeviceSPIRolling:
 
         assert [item[1] for item in results] == [4, 8]
         device_spi.pkt.start_raw_stream_read.assert_has_calls([
-            call(0, 4, stop_evt=stop_evt),
-            call(4, 4, stop_evt=stop_evt),
+            call(8, 4, stop_evt=stop_evt),
+            call(12, 4, stop_evt=stop_evt),
         ])
         device_spi.read_capture_range.assert_not_called()
+
+    def test_stream_ring_capture_retries_empty_held_cs_window(self, device_spi):
+        """A transient empty tail read must not terminate live capture."""
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.start_raw_stream_read.side_effect = [
+            (12, 0, b''),
+            (16, 0, b'\x34\x12' * 4),
+        ]
+        device_spi.pkt.get_status.side_effect = [
+            {'producer_index': 12, 'oldest_index': 0, 'overrun_count': 0},
+            {'producer_index': 16, 'oldest_index': 0, 'overrun_count': 0},
+        ]
+        device_spi.spi.flush = MagicMock()
+
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False, False, True]
+        stop_evt.wait.return_value = False
+        results = list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, prefer_raw_stream=True))
+
+        assert [item[1] for item in results] == [4]
+        assert device_spi.pkt.start_raw_stream_read.call_count == 2
+
+    def test_stream_ring_capture_rearms_after_missing_raw_stream_ack(self, device_spi):
+        """A transient held-CS ACK loss must not force the slow fallback."""
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.start_raw_stream_read.side_effect = [
+            RuntimeError("start_raw_stream_read failed: no stream ack"),
+            RuntimeError("start_raw_stream_read failed: no stream ack"),
+            (8, 0, b'\x34\x12' * 4),
+        ]
+        device_spi.pkt.get_status.return_value = {
+            'producer_index': 8, 'oldest_index': 0, 'overrun_count': 0,
+        }
+        device_spi.spi.flush = MagicMock()
+
+        stop_evt = MagicMock()
+        # The retry loop checks the stop event once per failed transaction
+        # before returning to the outer stream loop.
+        stop_evt.is_set.side_effect = [False, False, False, True]
+        stop_evt.wait.return_value = False
+        results = list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, prefer_raw_stream=True))
+
+        assert [item[1] for item in results] == [4]
+        assert device_spi.pkt.arm_capture.call_count == 2
+        device_spi.pkt.transaction.assert_any_call(
+            CMD_ABORT_CAPTURE, timeout=0.5)
+
+    def test_held_cs_tail_follow_marks_unobserved_ring_gap(self, device_spi):
+        """Tail-follow consumers can reset decoders at skipped samples."""
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.analog_mode = MODE_DIGITAL
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.transaction.return_value = (ST_OK, 0, b"")
+        device_spi.pkt.start_raw_stream_read.side_effect = [
+            (12, 0, b'\x34\x12' * 4),
+            (20, 0, b'\x78\x56' * 4),
+        ]
+        device_spi.pkt.get_status.side_effect = [
+            {'producer_index': 12, 'oldest_index': 0, 'overrun_count': 0},
+            {'producer_index': 20, 'oldest_index': 0, 'overrun_count': 0},
+        ]
+        device_spi.spi.flush = MagicMock()
+        gaps = []
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False, False, True]
+        stop_evt.wait.return_value = False
+
+        def observe(*_args, **_kwargs):
+            gaps.append(device_spi.consume_stream_gap())
+
+        list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, progress_cb=observe,
+            prefer_raw_stream=True))
+
+        assert gaps == [False, True]
+        assert device_spi.consume_stream_gap() is False
+
+    def test_held_cs_tail_follow_retries_transient_stream_ack_failure(
+            self, device_spi):
+        """A transient FPGA stream ACK miss must not force slow fallback."""
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.analog_mode = MODE_DIGITAL
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.transaction.return_value = (ST_OK, 0, b"")
+        device_spi.pkt.start_raw_stream_read.side_effect = [
+            RuntimeError('start_raw_stream_read failed: no stream ack'),
+            (12, 0, b'\x34\x12' * 4),
+        ]
+        device_spi.pkt.get_status.side_effect = [
+            {'producer_index': 12, 'oldest_index': 0, 'overrun_count': 0},
+            {'producer_index': 12, 'oldest_index': 0, 'overrun_count': 0},
+        ]
+        device_spi.spi.flush = MagicMock()
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False, False, True]
+        stop_evt.wait.return_value = False
+
+        results = list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, prefer_raw_stream=True))
+
+        assert [item[1] for item in results] == [4]
+        assert device_spi.pkt.start_raw_stream_read.call_count == 2
 
     def test_continuous_ring_capture_arms_once_and_reads_by_producer_index(self, device_spi):
         device_spi.pkt = MagicMock()

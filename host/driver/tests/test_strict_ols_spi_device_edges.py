@@ -748,13 +748,14 @@ def test_repeating_i2c_capture_can_use_raw_ring_without_rle_probe():
     stop = SimpleNamespace(is_set=lambda: False)
 
     assert list(dev.continuous_ring_capture_with_repeating_i2c(
-        2_000_000, 4, 16, stop, use_rle=False)) == [
+        2_000_000, 4, 16, stop, use_rle=False,
+        prefer_raw_stream=True)) == [
             (b"raw", 4, 4, 0),
         ]
     assert dev.stream_ring_capture.call_args.kwargs["generator_capture"] is True
     assert dev.stream_ring_capture.call_args.kwargs["manage_debug_source"] is False
     assert dev.stream_ring_capture.call_args.kwargs["fetch_multiplier"] == 1
-    assert dev.stream_ring_capture.call_args.kwargs["prefer_raw_stream"] is False
+    assert dev.stream_ring_capture.call_args.kwargs["prefer_raw_stream"] is True
     assert [item.args[0] for item in
             dev.set_readback_compression.call_args_list] == ["raw", "rle"]
 

@@ -1157,7 +1157,7 @@ BEGIN
   -- Block read data is streamed directly from block_buf to the TX.
   spi_pkt_dispatch: process(CLK)
     type state_t is (IDLE, EXEC, WAIT_BLOCK, BUILD_RSP, FEED_TX, WAIT_TX,
-                     RAW_WAIT_READY, RAW_STREAM);
+                     RAW_WAIT_DRAIN, RAW_WAIT_READY, RAW_STREAM);
     variable st : state_t := IDLE;
     variable rsp_seq_v : std_logic_vector(7 downto 0) := (others => '0');
     variable rsp_stat_v : std_logic_vector(7 downto 0) := ST_OK;
@@ -1412,7 +1412,6 @@ BEGIN
                 else
                   raw_stream_comp_mode <= '0';
                 end if;
-                raw_blk_req_fire <= '1';
                 raw_words_rem := TO_INTEGER(UNSIGNED(reg_val(14 downto 0)));
                 raw_start_pending := (raw_words_rem /= 0);
                 raw_have_word := false;
@@ -1433,12 +1432,22 @@ BEGIN
                 rsp_stat_v := ST_STREAM_ACTIVE;
                 raw_ready_wd := 0;
                 -- In uncompressed mode the first FIFO word is the stream's
-                -- first byte.  Wait for it before building the ACK; the
-                -- compressed path deliberately emits explicit idle words and
-                -- retains its existing immediate handoff behavior.
+                -- first byte.  A CS rise from the previous command may still
+                -- be draining residual read-FIFO words; wait for that drain
+                -- before toggling a new SDRAM request so the two rdreq paths
+                -- cannot consume one another's data.  Then wait for the first
+                -- real word before building the ACK.  The compressed path
+                -- deliberately emits explicit idle words and keeps its
+                -- existing immediate handoff behavior.
                 if comp_enable_i = '0' and raw_words_rem /= 0 then
-                  st := RAW_WAIT_READY;
+                  if raw_fifo_drain_active = '1' then
+                    st := RAW_WAIT_DRAIN;
+                  else
+                    raw_blk_req_fire <= '1';
+                    st := RAW_WAIT_READY;
+                  end if;
                 else
+                  raw_blk_req_fire <= '1';
                   st := BUILD_RSP;
                 end if;
               else
@@ -1744,6 +1753,28 @@ BEGIN
             else
               st := IDLE;
             end if;
+          end if;
+
+        when RAW_WAIT_DRAIN =>
+          -- CS teardown and the next command can be only a few system-clock
+          -- cycles apart.  Do not let the residual FIFO drain share a read
+          -- request with this stream's block; either wait until it is idle or
+          -- return a bounded BUSY response so the host can use its safe
+          -- block-read fallback.
+          if raw_fifo_drain_active = '0' then
+            raw_blk_req_fire <= '1';
+            raw_ready_wd := 0;
+            st := RAW_WAIT_READY;
+          elsif raw_ready_wd >= RAW_READY_WD_MAX then
+            rsp_stat_v := ST_BUSY;
+            rsp_len_v := 0;
+            raw_start_pending := false;
+            raw_words_rem := 0;
+            raw_stream_req_active <= '0';
+            raw_stream_comp_mode <= '0';
+            st := BUILD_RSP;
+          else
+            raw_ready_wd := raw_ready_wd + 1;
           end if;
 
         when RAW_WAIT_READY =>

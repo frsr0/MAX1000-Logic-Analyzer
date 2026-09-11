@@ -75,6 +75,13 @@ LIVE_STREAM_WATCHDOG_S = 1.0
 # 2 MHz capture clock. Include the CMD_GEN_CAPTURE startup guard (~11
 # samples) plus a small settling margin, while keeping readback bounded.
 LIVE_FALLBACK_TRACE_SAMPLES = 448
+# A tail-follow raw ring window is discontinuous by design: the host skips
+# samples produced while the previous USB transaction is in flight.  448
+# samples is just one 400 kHz I2C read at the 2 MHz trace clock, so resetting
+# the decoder at every tail jump would usually discard that one frame.  Keep
+# enough room for a partial frame followed by a complete transaction; this
+# preserves the gap-safe decoder reset without falling back to host bursts.
+LIVE_STREAM_WINDOW_SAMPLES = 896
 LIVE_FALLBACK_REPEAT_COUNT = 1
 # A live fallback read is a transport freshness path, not the sensor ODR
 # scheduler. Cap the idle gap so a low configured ODR cannot make the UI's
@@ -142,6 +149,117 @@ def clean_live_trace(digital: np.ndarray) -> np.ndarray:
     return values
 
 
+class _LiveI2CFrameDecoder:
+    """Incremental decoder for arbitrary slices of the attach-mirror ring.
+
+    A ring read almost never ends on an I2C STOP edge.  Keeping the current
+    transaction, bit group, and SCL plateau across calls prevents the live
+    path from dropping every frame whose read window straddles two chunks.
+    The bounded transaction budget makes a damaged/noisy mirror recover on its
+    own instead of retaining unbounded waveform state.
+    """
+
+    MAX_CARRY_SAMPLES = 1024  # a little over two 2 MHz / 400 kHz frames
+
+    def __init__(self, address: int):
+        self.expected_reads = {((int(address) << 1) | 1) & 0xFF, 0x31, 0x33}
+        self._previous: tuple[int, int] | None = None
+        self._await_clean_start = False
+        self._reset_transaction()
+
+    def reset(self) -> None:
+        """Discard a partial transaction, preserving no stale decoder state."""
+        # An overrun can leave the next chunk in the middle of a transaction.
+        # Ignore the remainder until a clean STOP has been observed, so a
+        # repeated START from that partial transaction cannot be mistaken for
+        # a fresh frame.
+        self._await_clean_start = True
+        self._previous = None
+        self._reset_transaction()
+
+    def _reset_transaction(self) -> None:
+        self._in_txn = False
+        self._bits = []
+        self._data = []
+        self._frame_emitted = False
+        self._plateau = []
+        self._plateau_control = False
+        self._txn_samples = 0
+
+    def _start_transaction(self) -> None:
+        self._in_txn = True
+        self._bits = []
+        self._data = []
+        self._frame_emitted = False
+        self._plateau = []
+        self._plateau_control = True
+        self._txn_samples = 0
+
+    def _finish_byte(self, frames: list[tuple[float, float, float]]) -> None:
+        if len(self._bits) < 9:
+            return
+        value = 0
+        for bit in self._bits[:8]:
+            value = (value << 1) | bit
+        self._data.append(value)
+        self._bits = []
+        # A complete read is publishable before STOP. This is essential for a
+        # chunk ending mid-transaction and prevents duplicate publication on
+        # the next chunk when the trailing STOP is eventually observed.
+        if (not self._frame_emitted and len(self._data) >= 7
+                and self._data[0] in self.expected_reads):
+            frames.append(AccelerometerService._decode_xyz(
+                bytes(self._data[1:7])))
+            self._frame_emitted = True
+
+    def feed(self, digital: np.ndarray) -> list[tuple[float, float, float]]:
+        values = np.asarray(digital, dtype=np.uint16).reshape(-1)
+        if values.size == 0:
+            return []
+        frames: list[tuple[float, float, float]] = []
+        for value in values:
+            scl = int((value >> 14) & 1)
+            sda = int((value >> 13) & 1)
+            if self._previous is None:
+                self._previous = (scl, sda)
+                continue
+            previous_scl, previous_sda = self._previous
+            if self._await_clean_start:
+                if scl and not previous_sda and sda:
+                    self._await_clean_start = False
+                self._previous = (scl, sda)
+                continue
+            if self._in_txn:
+                self._txn_samples += 1
+                if self._txn_samples > self.MAX_CARRY_SAMPLES:
+                    self._reset_transaction()
+
+            if scl:
+                # START/STOP are SDA transitions while SCL is high. A
+                # control plateau must not be counted as a data bit.
+                if previous_sda and not sda:
+                    self._start_transaction()
+                elif not previous_sda and sda:
+                    if self._in_txn:
+                        self._reset_transaction()
+                    else:
+                        self._plateau = []
+                        self._plateau_control = True
+                elif self._in_txn and not self._plateau_control:
+                    self._plateau.append(sda)
+                elif self._in_txn and previous_scl == 0:
+                    self._plateau.append(sda)
+            elif previous_scl:
+                if self._in_txn and not self._plateau_control:
+                    if self._plateau:
+                        self._bits.append(self._plateau[len(self._plateau) // 2])
+                        self._finish_byte(frames)
+                self._plateau = []
+                self._plateau_control = False
+            self._previous = (scl, sda)
+        return frames
+
+
 class AccelerometerStatus(BaseModel):
     running: bool = False
     available: bool = False
@@ -182,6 +300,12 @@ class AccelerometerService:
         self._config = AccelerometerConfig()
         self._clock = clock
         self._lock = threading.RLock()
+        # Polling and live capture share the adapter's Bit_Engine.  The
+        # condition closes the small race between the polling worker's
+        # live-owner check and its next FIFO/XYZ transaction.
+        self._poll_condition = threading.Condition(self._lock)
+        self._polling_io = False
+        self._live_starting = False
         self._stop_evt: Optional[threading.Event] = None
         self._worker: Optional[threading.Thread] = None
         self._generation = 0
@@ -381,34 +505,60 @@ class AccelerometerService:
             store.save_waveform(session.id,
                                 WaveformData(sample_rate=LIVE_TRACE_RATE_HZ,
                                              digital=np.zeros(0, dtype=np.uint16)))
-            self._live_session = session
-            self._live_store = store
-            self._live_settings = live_settings
-            self._live_digital = np.zeros(0, dtype=np.uint16)
-            self._live_persist_dirty = False
-            self._live_dialogue_setup_ready = False
-            address = self._accelerometer_address
-            if address is None:
-                raise HardwareError("LIS3DH address is not ready")
-            live_stop_evt = threading.Event()
-            self._live_stop_evt = live_stop_evt
+            # The polling worker checks ``_live_session`` before each read,
+            # but that check alone cannot stop a read already in flight.  An
+            # XYZ/FIFO read rewrites the Bit_Engine and sends CMD_ABORT_CAPTURE
+            # on the shared adapter, which would kill the stream immediately
+            # after this method starts it.  Publish ownership without waiting
+            # on the adapter: the producer acquires adapter._lock before its
+            # first hardware operation, so any in-flight poll finishes before
+            # the stream touches the Bit_Engine.  This keeps the HTTP start
+            # request bounded even if a legacy poll is slow to return.
+            self._live_starting = True
             try:
-                self._live_worker = threading.Thread(
-                    target=self._run_live_producer,
-                    args=(device, raw, address, live_stop_evt),
-                    daemon=True, name="lis3dh-live-capture")
-                self._live_worker.start()
-            except Exception:
-                self._live_session = None
-                self._live_store = None
-                self._live_settings = None
-                self._live_stop_evt = None
-                self._live_worker = None
-                raise
-            try:
-                self.manager.capture_state = "capturing"
-            except Exception:
-                pass
+                self._live_session = session
+                self._live_store = store
+                self._live_settings = live_settings
+                self._live_digital = np.zeros(0, dtype=np.uint16)
+                self._live_persist_dirty = False
+                self._live_dialogue_setup_ready = False
+                address = self._accelerometer_address
+                if address is None:
+                    raise HardwareError("LIS3DH address is not ready")
+                # Do not launch the ring owner into the adapter lock while a
+                # polling FIFO transaction is already in flight.  The FIFO
+                # path can legitimately take several USB round trips; making
+                # the stream wait here gives that operation a bounded,
+                # observable handoff instead of leaving the producer blocked
+                # behind a stale poll while the browser sees an empty live
+                # session.
+                handoff_deadline = time.monotonic() + 1.0
+                while self._polling_io and time.monotonic() < handoff_deadline:
+                    self._poll_condition.wait(
+                        timeout=max(0.001,
+                                   handoff_deadline - time.monotonic()))
+                live_stop_evt = threading.Event()
+                self._live_stop_evt = live_stop_evt
+                try:
+                    self._live_worker = threading.Thread(
+                        target=self._run_live_producer,
+                        args=(device, raw, address, live_stop_evt),
+                        daemon=True, name="lis3dh-live-capture")
+                    self._live_worker.start()
+                except Exception:
+                    self._live_session = None
+                    self._live_store = None
+                    self._live_settings = None
+                    self._live_stop_evt = None
+                    self._live_worker = None
+                    raise
+                try:
+                    self.manager.capture_state = "capturing"
+                except Exception:
+                    pass
+            finally:
+                self._live_starting = False
+                self._poll_condition.notify_all()
         websocket_manager.publish_threadsafe("status", "session_created",
                                               session.summary())
         websocket_manager.publish_threadsafe("capture", "capture_started", {
@@ -540,38 +690,18 @@ class AccelerometerService:
                 # active.  Do not issue competing FIFO/status transactions;
                 # the live producer decodes XYZ frames from the same ring.
                 with self._lock:
-                    live_active = self._live_session is not None
+                    live_active = (self._live_session is not None
+                                   or self._live_starting)
+                    if not live_active:
+                        self._polling_io = True
                 if live_active:
                     if stop_evt.wait(min(period, 0.05)):
                         return
                     next_read = time.monotonic()
                     continue
                 try:
-                    samples = []
-                    if callable(fifo_reader):
-                        try:
-                            try:
-                                fifo_payload = fifo_reader(
-                                    address, max_samples=25,
-                                    speed=FIFO_I2C_SPEED_HZ)
-                            except TypeError:
-                                fifo_payload = fifo_reader(address, max_samples=25)
-                            if (isinstance(fifo_payload, (bytes, bytearray))
-                                    and fifo_payload):
-                                if len(fifo_payload) % 6:
-                                    raise HardwareError(
-                                        "LIS3DH returned an invalid FIFO payload")
-                                samples = [self._decode_xyz(
-                                    fifo_payload[offset:offset + 6])
-                                    for offset in range(0, len(fifo_payload), 6)]
-                        except Exception:
-                            # FIFO is an optimization, not a prerequisite for
-                            # tracking.  Fall back to the proven single-read
-                            # path on unsupported, empty, or malformed FIFO
-                            # responses.
-                            samples = []
-                    if not samples:
-                        samples = [self._read_xyz(adapter, raw, address)]
+                    samples = self._poll_xyz_samples(
+                        adapter, raw, address, fifo_reader)
                     invalid_reads = 0
                 except HardwareError:
                     # A capture-visible generator burst briefly shares the
@@ -591,6 +721,10 @@ class AccelerometerService:
                         return
                     next_read = time.monotonic()
                     continue
+                finally:
+                    with self._lock:
+                        self._polling_io = False
+                        self._poll_condition.notify_all()
                 for sample in samples:
                     timestamp = self._clock()
                     measured_at = time.monotonic()
@@ -760,6 +894,39 @@ class AccelerometerService:
                         for offset in range(6))
         return AccelerometerService._decode_xyz(payload)
 
+    def _poll_xyz_samples(self, adapter: Any, raw: Any, address: int,
+                          fifo_reader: Any) -> list[tuple[float, float, float]]:
+        """Read one polling batch after claiming the shared bus.
+
+        ``_run`` marks ``_polling_io`` before entering this helper.  Live
+        startup waits for that claim to clear, so this operation cannot race
+        the stream's generator setup and abort it underneath the producer.
+        """
+        samples: list[tuple[float, float, float]] = []
+        if callable(fifo_reader):
+            try:
+                try:
+                    fifo_payload = fifo_reader(
+                        address, max_samples=25, speed=FIFO_I2C_SPEED_HZ)
+                except TypeError:
+                    fifo_payload = fifo_reader(address, max_samples=25)
+                if (isinstance(fifo_payload, (bytes, bytearray))
+                        and fifo_payload):
+                    if len(fifo_payload) % 6:
+                        raise HardwareError(
+                            "LIS3DH returned an invalid FIFO payload")
+                    samples = [self._decode_xyz(
+                        fifo_payload[offset:offset + 6])
+                        for offset in range(0, len(fifo_payload), 6)]
+            except Exception:
+                # FIFO is an optimization, not a prerequisite for tracking.
+                # Fall back to the proven single-read path on unsupported,
+                # empty, or malformed FIFO responses.
+                samples = []
+        if not samples:
+            samples = [self._read_xyz(adapter, raw, address)]
+        return samples
+
     @staticmethod
     def _decode_xyz(payload: Any) -> tuple[float, float, float]:
         """Decode one six-byte little-endian LIS3DH XYZ frame."""
@@ -785,22 +952,22 @@ class AccelerometerService:
                 stream = capture(
                     rate_hz=LIVE_TRACE_RATE_HZ,
                     # A complete 400 kHz I2C frame is ~421 samples at the
-                    # 2 MHz capture clock. Keep ring chunks bounded to one
-                    # decoder-safe frame so a working attach route does not
-                    # wait for the 4096-sample UI window before publishing.
-                    chunk_nsamp=LIVE_FALLBACK_TRACE_SAMPLES,
+                    # 2 MHz capture clock. Tail-follow windows are reset at
+                    # each producer gap, so include two frames to ensure a
+                    # fresh START and a complete read remain in every window.
+                    chunk_nsamp=LIVE_STREAM_WINDOW_SAMPLES,
                     buffer_nsamp=32768,
                     stop_evt=live_stop_evt,
                     dev_addr=address,
                     reg_addr=LIS3DH_OUT_X_L | 0x80,
                     read_len=6,
                     i2c_speed=FIFO_I2C_SPEED_HZ,
-                    # Keep RLE and held-CS raw as optional diagnostics. MIL
-                    # uses the validated raw block-read ring path on the
-                    # current image; if the ring/attach handshake is
-                    # unavailable, the producer remains protected by its
-                    # bounded host-burst fallback.
-                    use_rle=False)
+                    # Use the held-CS raw stream for the live path. If the
+                    # image or transport cannot sustain it, the existing
+                    # exception/watchdog path below falls back to bounded
+                    # host-burst capture without changing sample timestamps.
+                    use_rle=False,
+                    prefer_raw_stream=True)
                 # The hardware ring may yield very small chunks (especially
                 # on older bitstreams).  Persisting every chunk serializes
                 # the producer on the session store and throttles decoding.
@@ -809,6 +976,19 @@ class AccelerometerService:
                 pending: list[np.ndarray] = []
                 pending_samples = 0
                 last_flush = time.monotonic()
+                stream_decoder = _LiveI2CFrameDecoder(address)
+                # Waveform writes can rebuild a 4096-sample rolling file and
+                # publish websocket work. Start the coalescing persister
+                # before consuming the held-CS stream so those operations do
+                # not block the physical sample reader.
+                self._start_live_persister()
+                # The stream uses the raw driver directly, while the normal
+                # adapter seams serialize through ``adapter._lock``. Hold
+                # that same lock for the complete producer lifetime so a
+                # late poll (or another adapter operation) cannot interleave
+                # a CMD_ABORT_CAPTURE between two stream windows.
+                stream_io_lock = _adapter_lock(adapter)
+                stream_io_lock.__enter__()
 
                 def flush_pending() -> None:
                     nonlocal pending, pending_samples, last_flush
@@ -818,36 +998,68 @@ class AccelerometerService:
                         pending_samples = 0
                     last_flush = time.monotonic()
 
-                for item in stream:
-                    if live_stop_evt.is_set():
-                        break
-                    if stream_started_at is None:
-                        stream_started_at = time.monotonic()
-                    chunk = item[0] if isinstance(item, tuple) else item
-                    if isinstance(chunk, (bytes, bytearray)):
-                        digital = payload_to_digital(chunk)
-                    else:
-                        digital = np.asarray(chunk, dtype=np.uint16).reshape(-1)
-                    digital = clean_live_trace(digital)
-                    if digital.size:
-                        stream_transitions += int(np.count_nonzero(
-                            digital[1:] != digital[:-1]))
-                        pending.append(digital)
-                        pending_samples += int(digital.size)
-                        decoded = self._decode_live_i2c_frames(digital, address)
-                        stream_frames += len(decoded)
-                        for sample in decoded:
-                            self._record_sample(sample)
-                        if (pending_samples >= LIVE_TRACE_SAMPLES
-                                or time.monotonic() - last_flush >= 0.25):
-                            flush_pending()
-                        if (stream_transitions == 0 and stream_frames == 0
-                                and stream_started_at is not None
-                                and time.monotonic() - stream_started_at
-                                >= LIVE_STREAM_WATCHDOG_S):
-                            stream_watchdog = True
+                try:
+                    stream_overrun = 0
+                    for item in stream:
+                        if live_stop_evt.is_set():
                             break
-                flush_pending()
+                        if stream_started_at is None:
+                            stream_started_at = time.monotonic()
+                        if isinstance(item, tuple):
+                            # Raw tail-follow windows are deliberately not
+                            # contiguous: the ring advances several windows
+                            # while one SPI transaction is in flight.  Reset
+                            # the incremental decoder at that boundary so a
+                            # partial I2C transaction cannot be completed
+                            # with bits from a later window.
+                            item_overrun = int(item[3]) if len(item) > 3 else 0
+                            if item_overrun > stream_overrun:
+                                stream_decoder.reset()
+                                stream_overrun = item_overrun
+                            chunk = item[0]
+                        else:
+                            chunk = item
+                        if isinstance(chunk, (bytes, bytearray)):
+                            digital = payload_to_digital(chunk)
+                        else:
+                            digital = np.asarray(chunk, dtype=np.uint16).reshape(-1)
+                        # Held-CS tail-follow windows are not contiguous when
+                        # USB/SPI cannot consume the 2 MHz source ring in
+                        # real time. Never carry an I2C transaction across
+                        # samples that were not observed: joining unrelated
+                        # windows can create believable but incorrect XYZ
+                        # jumps even though the bus waveform looks healthy.
+                        consume_gap = getattr(raw, "consume_stream_gap", None)
+                        if callable(consume_gap):
+                            try:
+                                if consume_gap():
+                                    stream_decoder.reset()
+                            except Exception:
+                                # Advisory metadata must never take down the
+                                # live capture on older driver implementations.
+                                pass
+                        digital = clean_live_trace(digital)
+                        if digital.size:
+                            stream_transitions += int(np.count_nonzero(
+                                digital[1:] != digital[:-1]))
+                            pending.append(digital)
+                            pending_samples += int(digital.size)
+                            decoded = stream_decoder.feed(digital)
+                            stream_frames += len(decoded)
+                            for sample in decoded:
+                                self._record_sample(sample)
+                            if (pending_samples >= LIVE_TRACE_SAMPLES
+                                    or time.monotonic() - last_flush >= 0.25):
+                                flush_pending()
+                            if (stream_transitions == 0 and stream_frames == 0
+                                    and stream_started_at is not None
+                                    and time.monotonic() - stream_started_at
+                                    >= LIVE_STREAM_WATCHDOG_S):
+                                stream_watchdog = True
+                                break
+                    flush_pending()
+                finally:
+                    stream_io_lock.__exit__(None, None, None)
                 if live_stop_evt.is_set():
                     return
         except Exception as exc:
@@ -875,9 +1087,9 @@ class AccelerometerService:
                             "using bounded host-burst fallback"),
                         "ts": self._clock(),
                     })
-        # Only the one-shot fallback needs asynchronous persistence. The
-        # genuine ring path already batches waveform chunks and starting a
-        # writer thread there steals CPU from its tight decode loop.
+        # The persister is normally already running for the ring path. This
+        # call is idempotent and also covers a stream implementation that
+        # exits before the setup block above can start it.
         self._start_live_persister()
         # Older images, and images without the repeating-I2C capability, use
         # a bounded one-shot reader on this producer thread. Decode every
@@ -912,69 +1124,7 @@ class AccelerometerService:
         mirrored on CH13/CH14.  Sampling SDA in the middle of each SCL-high
         plateau matches the normal I2C decoder and avoids edge settling.
         """
-        values = np.asarray(digital, dtype=np.uint16).reshape(-1)
-        if values.size < 2:
-            return []
-        scl = ((values >> 14) & 1).astype(np.uint8)
-        sda = ((values >> 13) & 1).astype(np.uint8)
-        # Accept both legal LIS3DH addresses. Some bridge adapters report the
-        # alternate SA0 address during discovery while the attach mirror
-        # retains the address used by the generator.
-        expected_reads = {((int(address) << 1) | 1) & 0xFF, 0x31, 0x33}
-        in_txn = False
-        bits: list[int] = []
-        data: list[int] = []
-        frames: list[tuple[float, float, float]] = []
-
-        def finalize() -> None:
-            """Publish a complete read even when the ring has no STOP edge."""
-            if len(data) >= 7 and data[0] in expected_reads:
-                frames.append(AccelerometerService._decode_xyz(bytes(data[1:7])))
-
-        for index in range(1, len(values)):
-            if scl[index]:
-                if sda[index - 1] and not sda[index]:
-                    # Repeated START terminates the preceding write phase and
-                    # starts the read phase without an intervening STOP.
-                    if in_txn:
-                        finalize()
-                    in_txn = True
-                    bits = []
-                    data = []
-                    continue
-                if not sda[index - 1] and sda[index]:
-                    if in_txn:
-                        finalize()
-                    in_txn = False
-                    bits = []
-                    data = []
-                    continue
-            if not in_txn or not scl[index] or scl[index - 1]:
-                continue
-            end = index
-            while end < len(values) and scl[end]:
-                end += 1
-            # An unfinished high plateau belongs to the next ring chunk.
-            if end >= len(values):
-                continue
-            middle = min(len(values) - 1, (index + end) // 2)
-            bits.append(int(sda[middle]))
-            if len(bits) == 9:
-                value = 0
-                for bit in bits[:8]:
-                    value = (value << 1) | bit
-                data.append(value)
-                bits = []
-        # A ring chunk is an arbitrary slice of the capture stream.  It can
-        # end immediately after the final read byte's ACK clock, before the
-        # master emits a STOP (or when SDA is already high so no STOP edge is
-        # observable).  A complete repeated-read frame is still valid in that
-        # case; do not make publication depend on seeing the trailing SDA
-        # transition.  The length/address checks prevent an incomplete frame
-        # or the preceding write phase from being emitted.
-        if in_txn:
-            finalize()
-        return frames
+        return _LiveI2CFrameDecoder(address).feed(digital)
 
     def _record_sample(self, sample: tuple[float, float, float]) -> None:
         """Publish a decoded XYZ sample and update host-throughput counters."""
