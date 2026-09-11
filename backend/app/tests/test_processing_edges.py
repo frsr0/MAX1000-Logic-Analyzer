@@ -218,6 +218,19 @@ def test_websocket_manager_connect_broadcast_dead_clients_and_publish():
         mgr.publish_threadsafe("x", "event", {})
         await asyncio.sleep(0)
         mgr.set_loop(asyncio.get_event_loop())
+
+        # A slow sensor client must not create one pending task per sample.
+        latest = []
+        async def record(topic, type_, data):
+            latest.append((topic, type_, data))
+        mgr2 = ConnectionManager()
+        mgr2.broadcast = record
+        mgr2.set_loop(asyncio.get_running_loop())
+        for n in range(100):
+            mgr2.publish_threadsafe("accelerometer", "accelerometer_sample", {"n": n})
+        await asyncio.sleep(0.01)
+        assert latest and latest[-1][2] == {"n": 99}
+        assert len(latest) == 1
     asyncio.run(exercise())
 
 

@@ -27,7 +27,8 @@ export class ApiError extends Error {
   }
 }
 
-async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function req<T>(method: string, path: string, body?: unknown,
+                      cache?: RequestCache): Promise<T> {
   const res = await fetch(path, {
     method,
     headers: {
@@ -35,6 +36,7 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
       'X-Client-Id': clientId(),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
+    ...(cache ? { cache } : {}),
   });
   if (!res.ok) {
     let detail = res.statusText;
@@ -50,6 +52,7 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
 }
 
 const get = <T,>(p: string) => req<T>('GET', p);
+const getNoStore = <T,>(p: string) => req<T>('GET', p, undefined, 'no-store');
 const post = <T,>(p: string, b?: unknown) => req<T>('POST', p, b);
 const put = <T,>(p: string, b?: unknown) => req<T>('PUT', p, b);
 const patch = <T,>(p: string, b?: unknown) => req<T>('PATCH', p, b);
@@ -228,7 +231,10 @@ export const api = {
   milStop: () => post<MilRuntimeStatus>('/api/mil/stop'),
   milTransaction: (body: { request_hex: string; protocol?: string; capture_evidence?: boolean }) =>
     post<MilTransactionResponse>('/api/mil/transaction', body),
-  milAccelerometerStatus: () => get<MilAccelerometerStatus>('/api/mil/accelerometer/status'),
+  // This endpoint contains a live sample timestamp. Explicitly bypass the
+  // browser/proxy HTTP cache so a cached response cannot make the card show
+  // seconds-old data while the transport is healthy.
+  milAccelerometerStatus: () => getNoStore<MilAccelerometerStatus>('/api/mil/accelerometer/status'),
   milAccelerometerConfig: () => get<MilAccelerometerConfig>('/api/mil/accelerometer/config'),
   milAccelerometerUpdateConfig: (config: MilAccelerometerConfig) =>
     put<MilAccelerometerConfig>('/api/mil/accelerometer/config', config),

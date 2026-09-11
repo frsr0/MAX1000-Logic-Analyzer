@@ -262,6 +262,26 @@ def test_zero_and_large_raw_stream_requests_are_exactly_chunked():
     assert data == b"\x5a\xa5" * total
 
 
+def test_raw_stream_start_address_wraps_at_32_bit_wire_boundary():
+    requests = []
+
+    class WrapSPI:
+        speed_hz = 30_000_000
+
+        def stream_command(self, request, n_bytes, **kwargs):
+            requests.append(request)
+            return _stream_ack(request[3]) + b"\x5a\xa5" * 2
+
+    pkt = protocol.SPIDevice(WrapSPI())
+    # 0x80000000 samples is the first cursor whose byte offset no longer fits
+    # in a signed 32-bit range.  The protocol field itself is unsigned and
+    # must wrap rather than raising struct.error.
+    producer, oldest, data = pkt.start_raw_stream_read(0x80000000, 2)
+
+    assert (producer, oldest, data) == (17, 9, b"\x5a\xa5" * 2)
+    assert struct.unpack("<I", requests[0][6:10])[0] == 0
+
+
 def test_raw_stream_requires_transport_and_complete_ack_data():
     with pytest.raises(RuntimeError, match="requires stream_command"):
         protocol.SPIDevice(object()).start_raw_stream_read(0, 1)

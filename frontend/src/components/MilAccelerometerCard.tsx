@@ -1,9 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
+import { ReconnectingSocket } from '../api/websocket';
 import type { MilAccelerometerConfig, MilAccelerometerStatus } from '../api/types';
 import { useApp } from '../state/appStore';
 
 const POLL_INTERVAL_MS = 100;
+const SAMPLE_FLUSH_DEADLINE_MS = 8;
+// Keep a low-rate health poll while stopped so reconnects, another panel's
+// Start action, or a backend restart can resynchronize this card. Once the
+// service reports tracking, switch back to the responsive live cadence.
+const IDLE_POLL_INTERVAL_MS = 1000;
 
 const DEFAULT_CONFIG: MilAccelerometerConfig = {
   output_data_rate_hz: 10,
@@ -85,7 +91,6 @@ export function MilAccelerometerCard() {
   }, []);
 
   useEffect(() => {
-    if (!status?.running) return undefined;
     let alive = true;
     let inFlight = false;
 
@@ -96,7 +101,19 @@ export function MilAccelerometerCard() {
       if (inFlight) return;
       inFlight = true;
       api.milAccelerometerStatus()
-        .then((next) => { if (alive) { setStatus(next); setRequestError(null); } })
+        .then((next) => { if (alive) {
+          setStatus((previous) => {
+            // A REST response can have started before a newer websocket sample
+            // arrived. Never move the model backwards to that older sample.
+            if (previous?.sample?.timestamp && next.sample?.timestamp
+                && next.sample.timestamp < previous.sample.timestamp) {
+              return { ...next, sample: previous.sample,
+                last_sample_at: previous.last_sample_at };
+            }
+            return next;
+          });
+          setRequestError(null);
+        } })
         .catch((error: unknown) => {
           if (alive) setRequestError(error instanceof Error ? error.message : 'Accelerometer update failed');
         })
@@ -105,12 +122,72 @@ export function MilAccelerometerCard() {
         });
     };
 
-    const timer = window.setInterval(poll, POLL_INTERVAL_MS);
+    const timer = window.setInterval(
+      poll, status?.running ? POLL_INTERVAL_MS : IDLE_POLL_INTERVAL_MS);
     return () => {
       alive = false;
       window.clearInterval(timer);
     };
   }, [status?.running]);
+
+  useEffect(() => {
+    let alive = true;
+    let animationFrame: number | null = null;
+    let flushTimer: number | null = null;
+    let pending: Record<string, any> | null = null;
+    const socket = new ReconnectingSocket('/ws/accelerometer');
+
+    const flush = () => {
+      if (animationFrame !== null) {
+        window.cancelAnimationFrame(animationFrame);
+        animationFrame = null;
+      }
+      if (flushTimer !== null) {
+        window.clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      const next = pending;
+      pending = null;
+      if (!alive || !next) return;
+      // Coalesce a burst of decoded samples into the browser's paint cadence.
+      // The socket remains lossless enough for status (the newest sample wins)
+      // while React only renders once per animation frame.
+      setStatus((previous) => previous ? {
+        ...previous,
+        sample: next.sample,
+        last_sample_at: next.last_sample_at ?? next.sample.timestamp,
+        samples_read: next.samples_read ?? previous.samples_read,
+        host_read_rate_hz: next.host_read_rate_hz ?? previous.host_read_rate_hz,
+        host_data_rate_bytes_per_s: next.host_data_rate_bytes_per_s
+          ?? previous.host_data_rate_bytes_per_s,
+        measured_rate_hz: next.measured_rate_hz ?? previous.measured_rate_hz,
+        data_rate_bytes_per_s: next.data_rate_bytes_per_s
+          ?? previous.data_rate_bytes_per_s,
+      } : previous);
+    };
+
+    const unsubscribe = socket.subscribe((message) => {
+      if (!alive || message.type !== 'accelerometer_sample' || !message.data?.sample) return;
+      // Preserve command/lifecycle state from REST. A sample can be queued in
+      // the websocket just as Stop completes, so it must not resurrect the
+      // running badge; it only replaces the decoded sample and counters.
+      pending = message.data;
+      if (animationFrame === null) {
+        animationFrame = window.requestAnimationFrame(flush);
+        // A 60 Hz display can leave RAF waiting almost one full frame when a
+        // packet lands just after paint. Bound that tail latency while still
+        // coalescing bursts to at most one React update per 8 ms.
+        flushTimer = window.setTimeout(flush, SAMPLE_FLUSH_DEADLINE_MS);
+      }
+    });
+    return () => {
+      alive = false;
+      unsubscribe();
+      socket.close();
+      if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
+      if (flushTimer !== null) window.clearTimeout(flushTimer);
+    };
+  }, []);
 
   const current = useMemo(() => orientationFor(status?.sample ?? null), [status?.sample]);
   const orientation = useMemo(() => relativeOrientation(current, zero), [current, zero]);
@@ -175,7 +252,7 @@ export function MilAccelerometerCard() {
       <div className="card-head">
         <div>
           <h3 id="mil-accelerometer-title">Live accelerometer</h3>
-          <div className="hint">Gravity orientation · updates at 10 Hz</div>
+          <div className="hint">Gravity orientation · live decoded samples</div>
         </div>
         <span className={`badge ${running ? 'badge-hw' : 'badge-soft'}`}>
           {status === null && !requestError ? 'checking' : running ? 'tracking' : available ? 'ready' : 'unavailable'}

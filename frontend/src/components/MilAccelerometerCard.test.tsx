@@ -6,6 +6,9 @@ import type { MilAccelerometerConfig, MilAccelerometerStatus } from '../api/type
 import { useApp } from '../state/appStore';
 import { MilAccelerometerCard } from './MilAccelerometerCard';
 
+const POLL_INTERVAL_MS = 100;
+const IDLE_POLL_INTERVAL_MS = 1000;
+
 const sample = (x_g = 0, y_g = 0, z_g = 1): MilAccelerometerStatus => ({
   running: false, available: true, sample_rate_hz: 100, sample: { x_g, y_g, z_g, timestamp: 1 },
   samples_read: 42, last_error: null,
@@ -30,7 +33,7 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
-it('starts and stops tracking, and polls at 10 Hz only while running', async () => {
+it('starts and stops tracking, polling fast while running and slowly while idle', async () => {
   vi.useFakeTimers();
   const status = vi.spyOn(api, 'milAccelerometerStatus')
     .mockResolvedValueOnce(sample())
@@ -52,6 +55,78 @@ it('starts and stops tracking, and polls at 10 Hz only while running', async () 
   await act(async () => { await vi.advanceTimersByTimeAsync(500); });
   expect(status.mock.calls.length).toBe(callsAfterStop);
   expect(stop).toHaveBeenCalledOnce();
+});
+
+it('resynchronizes after an external start while the card was initially idle', async () => {
+  vi.useFakeTimers();
+  const status = vi.spyOn(api, 'milAccelerometerStatus')
+    .mockResolvedValueOnce(sample())
+    .mockResolvedValueOnce({ ...sample(), running: true, samples_read: 99 });
+  render(<MilAccelerometerCard />);
+  await act(async () => { await Promise.resolve(); });
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(IDLE_POLL_INTERVAL_MS); });
+  expect(status).toHaveBeenCalledTimes(2);
+  // Fake timers do not advance Testing Library's polling loop. Flush the
+  // resolved status promise directly before checking the resynchronised UI.
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+  expect(screen.getByText('tracking')).toBeTruthy();
+  await act(async () => { await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 2); });
+  expect(status).toHaveBeenCalledTimes(4);
+});
+
+it('updates the orientation from each pushed decoded sample', async () => {
+  class FakeAccelerometerWebSocket {
+    static instances: FakeAccelerometerWebSocket[] = [];
+    onopen: (() => void) | null = null;
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onclose: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    readonly url: string;
+
+    constructor(url: string) {
+      this.url = url;
+      FakeAccelerometerWebSocket.instances.push(this);
+    }
+
+    close() { this.onclose?.(); }
+
+    emit(data: unknown) {
+      this.onmessage?.({ data: JSON.stringify(data) } as MessageEvent);
+    }
+  }
+  vi.stubGlobal('WebSocket', FakeAccelerometerWebSocket);
+  const frames: FrameRequestCallback[] = [];
+  vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+    frames.push(callback);
+    return frames.length;
+  });
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({ ...sample(), running: true });
+  render(<MilAccelerometerCard />);
+  await waitFor(() => expect(screen.getAllByText('+0.000', { exact: true })).toHaveLength(2));
+  expect(FakeAccelerometerWebSocket.instances).toHaveLength(1);
+  expect(FakeAccelerometerWebSocket.instances[0].url).toContain('/ws/accelerometer');
+
+  const push = (x_g: number, samples_read: number) => {
+    FakeAccelerometerWebSocket.instances[0].emit({
+      type: 'accelerometer_sample',
+      ts: Date.now() / 1000,
+      data: {
+        sample: { x_g, y_g: 0, z_g: 0.866, timestamp: Date.now() / 1000 },
+        last_sample_at: Date.now() / 1000,
+        samples_read,
+      },
+    });
+  };
+  await act(async () => {
+    push(0.5, 43);
+    push(0.75, 44);
+  });
+  expect(frames).toHaveLength(1);
+  await act(async () => { frames[0](0); });
+  expect(screen.getByText('+0.750', { exact: true })).toBeTruthy();
+  expect(screen.queryByText('+0.500', { exact: true })).toBeNull();
+  expect(document.querySelector('.mil-accelerometer-card')?.textContent).toContain('44');
 });
 
 it('does not overlap a slow poll and cleans up its pending schedule on unmount', async () => {

@@ -122,6 +122,15 @@ ST_GEN_BUSY      = 0x30
 MAX_PAYLOAD = 4096
 BLOCK_SIZE  = 1024
 MAX_RAW_STREAM_SAMPLES = 16384
+# Stream start addresses are carried as 32-bit byte offsets on the wire.  The
+# continuous producer index is also a modulo-32-bit counter, so arithmetic in
+# the host must wrap before struct.pack rather than overflowing after a long
+# 2 MHz run (roughly 36 minutes for a 32-bit sample cursor).
+RING_BYTE_ADDRESS_MASK = 0xFFFFFFFF
+
+
+def _ring_byte_address(start_sample: int) -> int:
+    return (max(0, int(start_sample)) * 2) & RING_BYTE_ADDRESS_MASK
 # The RLE run counter is 10 bits wide in the FPGA compressor, so live RLE
 # requests must stay below the 1024-sample wrap point. Keep one sample of head-
 # room so the host never asks the hardware to encode a run that can overflow
@@ -532,7 +541,7 @@ class SPIDevice:
         Legacy two-step helper. Prefer start_stream_read(), which holds CS
         across command, ack, and stream data.
         """
-        payload = struct.pack('<I', start_sample * 2)
+        payload = struct.pack('<I', _ring_byte_address(start_sample))
         result = self.transaction(CMD_START_STREAM, payload)
         if result is None or result[0] != ST_STREAM_ACTIVE or len(result[2]) < 8:
             raise RuntimeError("start_stream failed")
@@ -568,7 +577,7 @@ class SPIDevice:
                 data.extend(chunk)
                 done += take
             return producer or 0, oldest or 0, bytes(data)
-        payload = struct.pack('<II', start_sample * 2, sample_count)
+        payload = struct.pack('<II', _ring_byte_address(start_sample), sample_count)
         seq = self._next_seq()
         req = build_packet(CMD_START_RAW_STREAM, seq, payload)
         if (hasattr(self.spi, "stream_command_begin")
@@ -676,7 +685,7 @@ class SPIDevice:
                 data.extend(chunk)
                 done += take
             return producer or 0, oldest or 0, bytes(data)
-        payload = struct.pack('<II', start_sample * 2, sample_count)
+        payload = struct.pack('<II', _ring_byte_address(start_sample), sample_count)
         seq = self._next_seq()
         req = build_packet(CMD_START_RAW_STREAM, seq, payload)
         # RLE streaming needs a longer post-request guard than the raw path

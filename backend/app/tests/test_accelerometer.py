@@ -111,6 +111,28 @@ def test_worker_configures_detected_address_and_decodes_xyz():
     assert raw.first_sample.is_set() and not service.manager.reserved
 
 
+def test_record_sample_publishes_lightweight_decoded_xyz_event(monkeypatch):
+    """Live UI samples use a dedicated topic rather than waveform payloads."""
+    service = AccelerometerService(FakeManager(FakeRaw()), sample_rate_hz=400)
+    service._status.running = True
+    service._clock = lambda: 123.456
+    published = []
+    monkeypatch.setattr(
+        accelerometer_module.websocket_manager, "publish_threadsafe",
+        lambda topic, type_, data: published.append((topic, type_, data)))
+
+    service._record_sample((0.125, -0.25, 0.875))
+
+    assert len(published) == 1
+    topic, type_, data = published[0]
+    assert topic == "accelerometer"
+    assert type_ == "accelerometer_sample"
+    assert data["sample"] == {
+        "x_g": 0.125, "y_g": -0.25, "z_g": 0.875, "timestamp": 123.456}
+    assert data["last_sample_at"] == 123.456
+    assert data["samples_read"] == 1
+
+
 def test_worker_drains_fifo_frames_and_updates_latest_status_sample():
     class FifoRaw(FakeRaw):
         def __init__(self):

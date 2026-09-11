@@ -71,6 +71,32 @@ MIXED_COMPRESSED_BLOCK_WORDS = MIXED_COMPRESSED_BLOCK_FRAMES * 7
 MIXED_ADC_LANE_DELTA8 = 0
 MIXED_ADC_LANE_RAW12 = 1
 
+# Ring metadata and the held-CS stream command use 32-bit sample addresses.
+# Keep the logical cursor in that same domain: an unbounded host cursor works
+# until the FPGA producer wraps, then ``<I`` rejects the next byte address and
+# MIL drops to its slow fallback path.
+RING_INDEX_MASK = 0xFFFFFFFF
+RING_INDEX_HALF = 0x80000000
+
+
+def _ring_u32(value: int) -> int:
+    return int(value) & RING_INDEX_MASK
+
+
+def _ring_distance(newer: int, older: int) -> int:
+    """Return forward distance in the modulo-32-bit ring domain."""
+    return (_ring_u32(newer) - _ring_u32(older)) & RING_INDEX_MASK
+
+
+def _ring_is_before(first: int, second: int) -> bool:
+    """Whether ``first`` is behind ``second`` within the active ring span."""
+    return _ring_distance(first, second) > RING_INDEX_HALF
+
+
+def _ring_is_ahead(first: int, second: int) -> bool:
+    distance = _ring_distance(first, second)
+    return 0 < distance < RING_INDEX_HALF
+
 
 # SPI readout wire format: the capture datapath is 32-bit per word (built for
 # up to 32 channels). With 16 channels every word is [data_lo, data_hi, 0, 0] —
@@ -1549,7 +1575,11 @@ class OLSDeviceSPI:
             rem = batch_remaining
             while rem > 0 and len(addrs) < batch_blocks:
                 if s > 0:
-                    addrs.append((s - 1) * 2)
+                    # CMD_READ_CAPTURE carries a modulo-u32 byte address.
+                    # Keep the block-read fallback valid after the producer
+                    # cursor crosses 0xffffffff; otherwise a transient raw
+                    # stream failure can turn into struct.error here.
+                    addrs.append(_ring_u32((s - 1) * 2))
                     drops.append(1)
                     take = min(rem, 511)
                 else:
@@ -2046,7 +2076,7 @@ class OLSDeviceSPI:
                     data = pending[:window_samples * 2]
                     pending = pending[window_samples * 2:]
                     pending_samples -= window_samples
-                    next_sample += window_samples
+                    next_sample = _ring_u32(next_sample + window_samples)
                     total += window_samples
                     if progress_cb:
                         progress_cb(data, total, window_samples)
@@ -2059,7 +2089,10 @@ class OLSDeviceSPI:
                     continue
 
                 if (producer_hint is None or oldest_hint is None
-                        or int(producer_hint) - int(next_sample or 0) < required_available):
+                        or _ring_distance(producer_hint, next_sample or 0)
+                        <= required_available
+                        or _ring_distance(producer_hint, next_sample or 0)
+                        > RING_INDEX_HALF):
                     st = self._get_ring_status()
                     producer_hint = st.get('producer_index')
                     oldest_hint = st.get('oldest_index')
@@ -2078,20 +2111,18 @@ class OLSDeviceSPI:
                     # reaches the current accelerometer frames.  Keep the
                     # established oldest-cursor behavior for block reads.
                     if use_newest_stream:
-                        next_sample = max(
-                            int(oldest_hint),
+                        next_sample = _ring_u32(
                             int(producer_hint) - window_samples)
                     else:
-                        next_sample = int(oldest_hint)
-                elif next_sample < int(oldest_hint):
+                        next_sample = _ring_u32(oldest_hint)
+                elif _ring_is_before(next_sample, int(oldest_hint)):
                     # On an overrun, resync a held-CS stream to the newest
                     # decoder-safe window rather than replaying stale data.
                     if use_newest_stream:
-                        next_sample = max(
-                            int(oldest_hint),
+                        next_sample = _ring_u32(
                             int(producer_hint) - window_samples)
                     else:
-                        next_sample = int(oldest_hint)
+                        next_sample = _ring_u32(oldest_hint)
 
                 if use_newest_stream:
                     # The capture clock runs much faster than the host can
@@ -2099,9 +2130,9 @@ class OLSDeviceSPI:
                     # every status refresh; otherwise the next request can
                     # already be behind Oldest and the FPGA has no valid
                     # window to serve.
-                    tail_sample = max(
-                        int(oldest_hint), int(producer_hint) - window_samples)
-                    if tail_sample > int(next_sample):
+                    tail_sample = _ring_u32(
+                        int(producer_hint) - window_samples)
+                    if _ring_is_ahead(tail_sample, next_sample):
                         # Tail-follow intentionally skips the samples which
                         # arrived while the previous USB transaction was in
                         # flight.  Surface that discontinuity through the
@@ -2112,7 +2143,12 @@ class OLSDeviceSPI:
                         overrun_total += 1
                         next_sample = tail_sample
 
-                available = int(producer_hint) - int(next_sample)
+                available = _ring_distance(producer_hint, next_sample)
+                if available > RING_INDEX_HALF:
+                    next_sample = None
+                    producer_hint = None
+                    oldest_hint = None
+                    continue
                 if available < required_available:
                     self._ring_trace(
                         f"iter={iteration} wait: available={available} "
@@ -2192,8 +2228,8 @@ class OLSDeviceSPI:
                             if stop_evt.wait(0.001):
                                 break
                             continue
-                    if next_sample < int(oldest_hint):
-                        next_sample = int(oldest_hint)
+                    if _ring_is_before(next_sample, int(oldest_hint)):
+                        next_sample = _ring_u32(oldest_hint)
                         continue
                     if not data:
                         if use_newest_stream:
@@ -2210,8 +2246,9 @@ class OLSDeviceSPI:
                         break
                     valid_samples = len(data) // 2
                     stream_retry_count = 0
-                    previous_stream_end = int(next_sample) + valid_samples
-                    next_sample += valid_samples
+                    previous_stream_end = _ring_u32(
+                        int(next_sample) + valid_samples)
+                    next_sample = _ring_u32(next_sample + valid_samples)
                     total += valid_samples
                     if progress_cb:
                         progress_cb(data, total, window_samples)

@@ -1130,6 +1130,7 @@ class AccelerometerService:
         """Publish a decoded XYZ sample and update host-throughput counters."""
         timestamp = self._clock()
         measured_at = time.monotonic()
+        pushed: dict[str, Any] | None = None
         with self._lock:
             if not self._status.running:
                 return
@@ -1154,6 +1155,22 @@ class AccelerometerService:
                     self._status.data_rate_bytes_per_s = rate * 6.0
                     self._rate_window_started = measured_at
                     self._rate_window_samples = 0
+            # Keep sample delivery separate from waveform_ready notifications.
+            # The latter can be relatively expensive for a rolling session and
+            # is intentionally coalesced; this tiny message drives the live
+            # orientation model at the decoder's actual cadence.
+            pushed = {
+                "sample": dict(self._status.sample),
+                "last_sample_at": timestamp,
+                "samples_read": self._status.samples_read,
+                "host_read_rate_hz": self._status.host_read_rate_hz,
+                "host_data_rate_bytes_per_s": self._status.host_data_rate_bytes_per_s,
+                "measured_rate_hz": self._status.measured_rate_hz,
+                "data_rate_bytes_per_s": self._status.data_rate_bytes_per_s,
+            }
+        if pushed is not None:
+            websocket_manager.publish_threadsafe(
+                "accelerometer", "accelerometer_sample", pushed)
 
     def _append_live_digital(self, digital: np.ndarray) -> None:
         with self._lock:

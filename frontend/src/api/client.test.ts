@@ -21,7 +21,7 @@ it('preserves HTTP status and message in API errors', () => {
     .toEqual({ name: 'Error', message: 'held by another client', status: 409 });
 });
 
-type Case = { name: string; call: () => Promise<unknown>; method: string; url: string; body?: unknown };
+type Case = { name: string; call: () => Promise<unknown>; method: string; url: string; body?: unknown; cache?: RequestCache };
 const cfg = defaultCaptureSettings();
 const gen = { protocol: 'uart', data_hex: '', baud: 9600, tx_pin: 0, scl_pin: 1,
   i2c_address: 0x20, i2c_register: 0, i2c_read_len: 1, freq_hz: 1000,
@@ -111,7 +111,7 @@ const cases: Case[] = [
   { name: 'mil start', call: api.milStart, method: 'POST', url: '/api/mil/start' },
   { name: 'mil stop', call: api.milStop, method: 'POST', url: '/api/mil/stop' },
   { name: 'mil transaction', call: () => api.milTransaction({ request_hex: '55' }), method: 'POST', url: '/api/mil/transaction', body: { request_hex: '55' } },
-  { name: 'mil accelerometer status', call: api.milAccelerometerStatus, method: 'GET', url: '/api/mil/accelerometer/status' },
+  { name: 'mil accelerometer status', call: api.milAccelerometerStatus, method: 'GET', url: '/api/mil/accelerometer/status', cache: 'no-store' },
   { name: 'mil accelerometer config', call: api.milAccelerometerConfig, method: 'GET', url: '/api/mil/accelerometer/config' },
   { name: 'mil accelerometer config update', call: () => api.milAccelerometerUpdateConfig({
     output_data_rate_hz: 10, full_scale_g: 2, operating_mode: 'high_resolution',
@@ -129,7 +129,7 @@ const cases: Case[] = [
   { name: 'mock capture', call: () => api.mockCapture('demo'), method: 'POST', url: '/api/diagnostics/mock-capture', body: { scenario: 'demo', sample_rate: 1_000_000, num_samples: 50_000, analog: false } },
 ];
 
-it.each(cases)('$name maps to its documented HTTP contract', async ({ call, method, url, body }) => {
+it.each(cases)('$name maps to its documented HTTP contract', async ({ call, method, url, body, cache }) => {
   localStorage.setItem('msa_client_id', 'strict-client');
   const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => json({ ok: true }));
   vi.stubGlobal('fetch', fetcher);
@@ -138,7 +138,7 @@ it.each(cases)('$name maps to its documented HTTP contract', async ({ call, meth
   expect(fetcher.mock.calls[0][0]).toBe(url);
   expect(fetcher.mock.calls[0][1]).toEqual({ method, headers: {
     'Content-Type': 'application/json', 'X-Client-Id': 'strict-client',
-  }, body: body === undefined ? undefined : JSON.stringify(body) });
+  }, body: body === undefined ? undefined : JSON.stringify(body), ...(cache ? { cache } : {}) });
 });
 
 it('parses text success and all structured HTTP error forms', async () => {

@@ -507,6 +507,20 @@ class TestOLSDeviceSPI:
         ])
         assert len(data) == 1200
 
+    def test_read_capture_range_wraps_block_address_after_ring_rollover(
+            self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.read_capture_blocks.side_effect = (
+            lambda addrs, compressed=False: [b'\x00\x00' * 512
+                                              for _ in addrs])
+
+        data = device_spi.read_capture_range(
+            start_sample=0x80000000, sample_count=1)
+
+        assert len(data) == 2
+        assert device_spi.pkt.read_capture_blocks.call_args.args[0] == [
+            0xFFFFFFFE]
+
     def test_read_capture_range_looks_ahead_to_next_raw_batch(self, device_spi):
         class PipelinedPacket:
             def __init__(self):
@@ -1818,6 +1832,35 @@ class TestOLSDeviceSPIRolling:
         assert device_spi.pkt.arm_capture.call_count == 2
         device_spi.pkt.transaction.assert_any_call(
             CMD_ABORT_CAPTURE, timeout=0.5)
+
+    def test_held_cs_raw_stream_wraps_32bit_ring_cursor(self, device_spi):
+        """A producer rollover must keep stream addresses inside u32."""
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.start_raw_stream_read.side_effect = [
+            (0x00000010, 0xFFFFFF00, b'\x34\x12' * 4),
+            (0x00000020, 0xFFFFFF00, b'\x78\x56' * 4),
+        ]
+        device_spi.pkt.get_status.side_effect = [
+            {'producer_index': 0xFFFFFFF0, 'oldest_index': 0xFFFFFF00,
+             'overrun_count': 0},
+        ]
+        device_spi.spi.flush = MagicMock()
+
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False, False, True]
+        stop_evt.wait.return_value = False
+        results = list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, prefer_raw_stream=True))
+
+        assert [item[1] for item in results] == [4, 8]
+        assert device_spi.pkt.start_raw_stream_read.call_args_list[0] == call(
+            0xFFFFFFEC, 4, stop_evt=stop_evt)
+        assert device_spi.pkt.start_raw_stream_read.call_args_list[1] == call(
+            0x0000000C, 4, stop_evt=stop_evt)
 
     def test_held_cs_tail_follow_marks_unobserved_ring_gap(self, device_spi):
         """Tail-follow consumers can reset decoders at skipped samples."""
