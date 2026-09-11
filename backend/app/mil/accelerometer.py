@@ -82,6 +82,9 @@ LIVE_FALLBACK_REPEAT_COUNT = 1
 # The atomic XYZ read is already serialized on the FTDI link; a 10 ms sleep
 # after each read needlessly became the dominant part of the live sample age.
 # Keep only a 1 ms cooperative yield for the backend worker.
+# Keep a small cooperative yield after each host burst.  A zero-delay loop can
+# monopolize the Python/FTDI worker when the browser is also polling status,
+# causing multi-second freshness stalls despite fast individual reads.
 LIVE_FALLBACK_MAX_INTERVAL_S = 0.001
 # Waveform persistence is deliberately decoupled from the physical sample
 # callback.  Browser live-window requests can rebuild/read the same rolling
@@ -782,7 +785,7 @@ class AccelerometerService:
                 stream = capture(
                     rate_hz=LIVE_TRACE_RATE_HZ,
                     # A complete 400 kHz I2C frame is ~421 samples at the
-                    # 2 MHz capture clock.  Keep ring chunks bounded to one
+                    # 2 MHz capture clock. Keep ring chunks bounded to one
                     # decoder-safe frame so a working attach route does not
                     # wait for the 4096-sample UI window before publishing.
                     chunk_nsamp=LIVE_FALLBACK_TRACE_SAMPLES,
@@ -791,7 +794,13 @@ class AccelerometerService:
                     dev_addr=address,
                     reg_addr=LIS3DH_OUT_X_L | 0x80,
                     read_len=6,
-                    i2c_speed=FIFO_I2C_SPEED_HZ)
+                    i2c_speed=FIFO_I2C_SPEED_HZ,
+                    # Keep RLE and held-CS raw as optional diagnostics. MIL
+                    # uses the validated raw block-read ring path on the
+                    # current image; if the ring/attach handshake is
+                    # unavailable, the producer remains protected by its
+                    # bounded host-burst fallback.
+                    use_rle=False)
                 # The hardware ring may yield very small chunks (especially
                 # on older bitstreams).  Persisting every chunk serializes
                 # the producer on the session store and throttles decoding.

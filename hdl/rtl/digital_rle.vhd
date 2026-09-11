@@ -85,12 +85,19 @@ architecture rtl of digital_rle is
 
   -- Combinational per-slice change flags (fed to the tracking process).
   signal changed : std_logic_vector(3 downto 0);
+  -- Split each 4-bit comparison into two 2-bit terms so the registered
+  -- detector is not driven by a long equality cone on fast_clk.
+  signal changed_half : std_logic_vector(7 downto 0);
   signal changed_r : std_logic_vector(3 downto 0) := (others => '0');
 begin
   packet_valid <= packet_valid_r;
 
   gen_changed : for i in 0 to 3 generate
-    changed(i) <= '1' when digital_in(i*4+3 downto i*4) /= prev(i) else '0';
+    changed_half(i*2) <= '1' when digital_in(i*4+1 downto i*4) /= prev(i)(1 downto 0)
+                        else '0';
+    changed_half(i*2+1) <= '1' when digital_in(i*4+3 downto i*4+2) /= prev(i)(3 downto 2)
+                          else '0';
+    changed(i) <= changed_half(i*2) or changed_half(i*2+1);
   end generate;
 
   process(clk)

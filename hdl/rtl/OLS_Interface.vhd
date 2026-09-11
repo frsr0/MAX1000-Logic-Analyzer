@@ -182,7 +182,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL gen_start_pulse     : STD_LOGIC := '0';
   SIGNAL gen_capture_guard   : NATURAL range 0 to 255 := 0;
   SIGNAL gen_capture_start   : STD_LOGIC := '0';
-  type gen_cap_state_t is (GENCAP_IDLE, GENCAP_LOOPBACK_ON, GENCAP_ARM, GENCAP_GUARD, GENCAP_WAIT_BUSY, GENCAP_RUNNING, GENCAP_WAIT_FULL, GENCAP_DONE, GENCAP_ERROR);
+  type gen_cap_state_t is (GENCAP_IDLE, GENCAP_LOOPBACK_ON, GENCAP_ARM, GENCAP_GUARD, GENCAP_WAIT_BUSY, GENCAP_RUNNING, GENCAP_RUNNING_REPEAT, GENCAP_WAIT_FULL, GENCAP_DONE, GENCAP_ERROR);
   SIGNAL gen_cap_state : gen_cap_state_t := GENCAP_IDLE;
 
   -- Synthesis preserve: prevent Quartus from optimizing away gen start chain
@@ -881,12 +881,17 @@ BEGIN
       disp_gen_load_d <= disp_gen_load;
       gen_reg_load_req_d <= gen_reg_load_req;
 
-      -- Hold start through the full transmission; clear after Gen_Busy falls.
+      -- Keep Start asserted long enough for the Bit_Engine to leave IDLE,
+      -- then release it on the first busy edge.  Repeat-mode generators stay
+      -- busy for the lifetime of a live ring, so waiting for Busy to fall
+      -- would hold a level-sensitive Start command high indefinitely.
       IF disp_abort = '1' THEN
         gen_start_req <= '0';
         gen_load_events <= (others => '0');
       ELSIF disp_gen_start = '1' OR gen_start_pulse = '1' OR (pkt_ok = '1' AND pkt_cmd_active = CMD_GEN_START) THEN
         gen_start_req <= '1';
+      ELSIF Gen_Busy = '1' AND gen_busy_d = '0' THEN
+        gen_start_req <= '0';
       ELSIF Gen_Busy = '0' AND gen_busy_d = '1' THEN
         gen_start_req <= '0';
       END IF;
@@ -936,7 +941,14 @@ BEGIN
             gen_start_pulse <= '1';
             IF Gen_Busy = '1' OR Gen_Start_Ack = '1' THEN
               timeout_var := 5000000;
-              gen_cap_state <= GENCAP_RUNNING;
+              -- Select the terminal behavior once, at start acknowledgment.
+              -- The repeat-running state has no timeout/busy-fall predicate,
+              -- keeping the ordinary running path and its timing cone small.
+              IF gen_repeat_int = '1' THEN
+                gen_cap_state <= GENCAP_RUNNING_REPEAT;
+              ELSE
+                gen_cap_state <= GENCAP_RUNNING;
+              END IF;
             ELSIF Gen_Start_Reject = '1' OR timeout_var = 0 THEN
               gen_cap_state <= GENCAP_ERROR;
             ELSE
@@ -951,6 +963,11 @@ BEGIN
             ELSE
               timeout_var := timeout_var - 1;
             END IF;
+          WHEN GENCAP_RUNNING_REPEAT =>
+            -- A repeating generator is deliberately busy for the lifetime
+            -- of a continuous ring capture.  Abort is the explicit teardown
+            -- path, handled by the enclosing disp_abort branch.
+            gen_start_pulse <= '0';
           WHEN GENCAP_WAIT_FULL =>
             gen_start_pulse <= '0';
             IF Full = '1' THEN
@@ -1139,7 +1156,8 @@ BEGIN
   -- All control registers are small (no wide payload buses).
   -- Block read data is streamed directly from block_buf to the TX.
   spi_pkt_dispatch: process(CLK)
-    type state_t is (IDLE, EXEC, WAIT_BLOCK, BUILD_RSP, FEED_TX, WAIT_TX, RAW_STREAM);
+    type state_t is (IDLE, EXEC, WAIT_BLOCK, BUILD_RSP, FEED_TX, WAIT_TX,
+                     RAW_WAIT_READY, RAW_STREAM);
     variable st : state_t := IDLE;
     variable rsp_seq_v : std_logic_vector(7 downto 0) := (others => '0');
     variable rsp_stat_v : std_logic_vector(7 downto 0) := ST_OK;
@@ -1172,6 +1190,14 @@ BEGIN
     variable raw_word : std_logic_vector(15 downto 0) := (others => '0');
     variable raw_have_word : boolean := false;
     variable raw_byte_hi_next : boolean := false;
+    -- The raw FIFO is fed by an asynchronous block-read request.  Do not
+    -- advertise ST_STREAM_ACTIVE until the first word has crossed into this
+    -- clock domain: the SPI master starts clocking sample bytes immediately
+    -- after the response frame, and an early response otherwise shifts stale
+    -- bytes into the first sample.  The watchdog keeps a genuinely empty or
+    -- wedged request from monopolising the command dispatcher.
+    constant RAW_READY_WD_MAX : natural := 100000; -- 1 ms at 100 MHz
+    variable raw_ready_wd : natural range 0 to RAW_READY_WD_MAX := 0;
     -- Compressed-stream byte serializer state: which byte of the current
     -- output word is next, and whether that word is a 0x0000 idle filler
     -- (FIFO was empty at the word boundary) rather than a real FIFO word.
@@ -1405,12 +1431,22 @@ BEGIN
                 rsp_buf_len := 8;
                 rsp_len_v := 8;
                 rsp_stat_v := ST_STREAM_ACTIVE;
+                raw_ready_wd := 0;
+                -- In uncompressed mode the first FIFO word is the stream's
+                -- first byte.  Wait for it before building the ACK; the
+                -- compressed path deliberately emits explicit idle words and
+                -- retains its existing immediate handoff behavior.
+                if comp_enable_i = '0' and raw_words_rem /= 0 then
+                  st := RAW_WAIT_READY;
+                else
+                  st := BUILD_RSP;
+                end if;
               else
                 rsp_stat_v := ST_BAD_LEN;
                 raw_start_pending := false;
                 raw_words_rem := 0;
+                st := BUILD_RSP;
               end if;
-              st := BUILD_RSP;
 
             when CMD_ACK_CAPTURE_DONE =>
               disp_ack_seq <= (others => '0');
@@ -1708,6 +1744,29 @@ BEGIN
             else
               st := IDLE;
             end if;
+          end if;
+
+        when RAW_WAIT_READY =>
+          -- raw_have_word is set by the small two-cycle Rd_Fifo fetch sequencer
+          -- above.  Keeping this wait ahead of BUILD_RSP guarantees that the
+          -- response CRC/bytes and the first raw sample cannot overlap on the
+          -- held-CS SPI transaction.
+          if raw_have_word then
+            st := BUILD_RSP;
+          elsif raw_ready_wd >= RAW_READY_WD_MAX then
+            -- Return a normal framed error instead of entering RAW_STREAM with
+            -- no source word (which would leave MISO idle forever).  The host
+            -- can then use its bounded block-read fallback and the CS rise
+            -- teardown path still drains any late FIFO entries.
+            rsp_stat_v := ST_BUSY;
+            rsp_len_v := 0;
+            raw_start_pending := false;
+            raw_words_rem := 0;
+            raw_stream_req_active <= '0';
+            raw_stream_comp_mode <= '0';
+            st := BUILD_RSP;
+          else
+            raw_ready_wd := raw_ready_wd + 1;
           end if;
 
         when RAW_STREAM =>

@@ -45,6 +45,10 @@ GPIO_CS_HI  = 0x08
 GPIO_CS_LO  = 0x00
 SLEEP_TICK  = 0.003
 READ_CHUNK  = 16384
+# Held-CS live streams are speculative: if the FPGA does not produce bytes,
+# their read must yield quickly so the caller can tear down and use its bounded
+# fallback.  Ordinary packet reads retain the longer 0.5 s transport timeout.
+STREAM_CHUNK_READ_TIMEOUT_S = 0.050
 
 
 class OLS:
@@ -668,7 +672,10 @@ class OLS:
             self._stream_open = True
             yield self._read_n(
                 len(prefix),
-                timeout=max(0.5, len(prefix) / max(self.speed_hz / 8, 1) + 0.5))
+                timeout=max(
+                    STREAM_CHUNK_READ_TIMEOUT_S,
+                    len(prefix) / max(self.speed_hz / 8, 1)
+                    + STREAM_CHUNK_READ_TIMEOUT_S))
             while True:
                 if stop_evt is not None and stop_evt.is_set():
                     break
@@ -676,7 +683,10 @@ class OLS:
                                + bytes([0x87]))
                 yield self._read_n(
                     chunk_bytes,
-                    timeout=max(0.5, chunk_bytes / max(self.speed_hz / 8, 1) + 0.5))
+                    timeout=max(
+                        STREAM_CHUNK_READ_TIMEOUT_S,
+                        chunk_bytes / max(self.speed_hz / 8, 1)
+                        + STREAM_CHUNK_READ_TIMEOUT_S))
         finally:
             if opened:
                 self.stream_command_end()

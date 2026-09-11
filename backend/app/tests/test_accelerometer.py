@@ -426,6 +426,7 @@ def test_live_capture_uses_continuous_ring_producer_and_stops_cleanly(tmp_path):
     try:
         assert raw.ring_started.wait(1.0)
         assert raw.ring_kwargs["chunk_nsamp"] == 448
+        assert raw.ring_kwargs["use_rle"] is False
         deadline = time.time() + 1.0
         waveform = None
         while time.time() < deadline:
@@ -492,7 +493,10 @@ def test_live_capture_falls_back_when_ring_is_static(tmp_path, monkeypatch):
 def test_static_ring_fallback_decodes_batched_trace_frames(tmp_path, monkeypatch):
     """Legacy fallback publishes every frame from a short repeated burst."""
     monkeypatch.setattr(accelerometer_module, "LIVE_STREAM_WATCHDOG_S", 0.01)
-    assert accelerometer_module.LIVE_FALLBACK_MAX_INTERVAL_S <= 0.001
+    # A cooperative millisecond yield is required; zero spins can starve
+    # the producer and HTTP/UI threads under active browser polling.
+    assert accelerometer_module.LIVE_FALLBACK_MAX_INTERVAL_S == pytest.approx(
+        0.001)
 
     class BatchedFallbackRaw(FakeRaw):
         def __init__(self):
@@ -531,6 +535,7 @@ def test_static_ring_fallback_decodes_batched_trace_frames(tmp_path, monkeypatch
         # 448 samples includes the ~421-sample frame and the
         # CMD_GEN_CAPTURE startup guard at the 2 MHz live clock.
         assert raw.capture_calls[0]["nsamples"] == 448
+        assert raw.capture_calls[0]["rate_hz"] == pytest.approx(2_000_000.0)
         assert raw.capture_calls[0]["repeat_count"] == 1
         assert raw.capture_calls[0]["keep_attached"] is True
         assert raw.capture_calls[0]["timeout"] == pytest.approx(0.25)

@@ -1929,7 +1929,8 @@ class OLSDeviceSPI:
     def stream_ring_capture(self, rate_hz, window_samples, stop_evt,
                             progress_cb=None, full_out=None,
                             fetch_multiplier=32, generator_capture=False,
-                            manage_debug_source=True):
+                            manage_debug_source=True,
+                            prefer_raw_stream=False):
         """Yield raw data chunks from the continuous SDRAM ring (caller must
         configure flags/analog before calling, restore after).
 
@@ -1990,7 +1991,13 @@ class OLSDeviceSPI:
         # The FPGA held-CS stream command decodes direct full-word RLE. The
         # delta-packed codec has a second host-side reconstruction stage and
         # therefore stays on block reads where codec selection is explicit.
-        use_raw_stream = self._readback_codec() == 'rle'
+        # RLE uses the held-CS variable-length transport.  A caller that has
+        # already selected raw readback may also opt into the held-CS raw
+        # transport: this avoids a CMD_READ_CAPTURE block transaction per
+        # live window without changing the default path, whose teardown has
+        # historically been less tolerant on old images.
+        use_rle_stream = self._readback_codec() == 'rle'
+        use_raw_stream = use_rle_stream or bool(prefer_raw_stream)
         # Ring metadata cursors count source samples, regardless of the
         # selected readback codec.  RLE changes the number of bytes on the
         # wire, not the number of samples needed before a request can be
@@ -2052,8 +2059,14 @@ class OLSDeviceSPI:
                     continue
 
                 if use_raw_stream:
-                    producer_hint, oldest_hint, data = self.pkt.start_rle_stream_read(
-                        next_sample, window_samples, stop_evt=stop_evt)
+                    if use_rle_stream:
+                        producer_hint, oldest_hint, data = \
+                            self.pkt.start_rle_stream_read(
+                                next_sample, window_samples, stop_evt=stop_evt)
+                    else:
+                        producer_hint, oldest_hint, data = \
+                            self.pkt.start_raw_stream_read(
+                                next_sample, window_samples, stop_evt=stop_evt)
                     if next_sample < int(oldest_hint):
                         next_sample = int(oldest_hint)
                         continue
@@ -2144,7 +2157,7 @@ class OLSDeviceSPI:
             self, rate_hz, window_samples, stop_evt, progress_cb=None,
             full_out=None, fetch_multiplier=32, raw_capture=None,
             require_raw_mode=True, generator_capture=False,
-            manage_debug_source=True):
+            manage_debug_source=True, fallback_to_raw=True):
         """Stream a ring with the guarded RLE path and a raw fallback.
 
         RLE streaming is a transport capability rather than a user-visible
@@ -2222,7 +2235,15 @@ class OLSDeviceSPI:
                     raw_enabled = True
                 if not raw_enabled and require_raw_mode:
                     raise RuntimeError("unable to enable raw live fallback")
-                if raw_capture is None:
+                # A caller that owns a repeating generator may not safely use
+                # the generic raw-ring fallback: the failed compressed stream
+                # has already torn down the capture command, and a raw ring
+                # read can then wait for a large SDRAM window while the
+                # generator/attach source is idle.  Let that owner recover at
+                # its higher level (the accelerometer service uses bounded
+                # one-shot bursts) instead of hiding the failure in a second
+                # potentially multi-second iterator.
+                if raw_capture is None and fallback_to_raw:
                     yield from self.stream_ring_capture(
                         rate_hz=rate_hz,
                         window_samples=window_samples,
@@ -2232,8 +2253,11 @@ class OLSDeviceSPI:
                         fetch_multiplier=fetch_multiplier,
                         generator_capture=generator_capture,
                         manage_debug_source=manage_debug_source)
-                else:
+                elif raw_capture is not None:
                     yield from raw_capture()
+                else:
+                    raise RuntimeError(
+                        "RLE live ring unavailable; caller must use bounded fallback")
         finally:
             # If the helper changed the selected codec, or had to switch to
             # raw for fallback, restore the caller's mode in hardware too.
@@ -2249,7 +2273,7 @@ class OLSDeviceSPI:
     def continuous_ring_capture_with_repeating_i2c(
             self, rate_hz, chunk_nsamp, buffer_nsamp, stop_evt,
             dev_addr=0x19, reg_addr=0x28, read_len=6, i2c_speed=50_000,
-            progress_cb=None, full_out=None):
+            progress_cb=None, full_out=None, use_rle=True):
         """Capture a continuously repeated LIS3DH I2C read into the ring.
 
         The existing Bit_Engine repeat flag is sufficient for this path: the
@@ -2259,7 +2283,9 @@ class OLSDeviceSPI:
         round trip is involved.  The yielded values have the same dense
         16-bit digital payload format as :meth:`stream_ring_capture`.
 
-        ``HardwareError``/``RuntimeError`` from an image without the repeat
+        ``use_rle=False`` selects the established raw block-read ring path;
+        this is useful for live owners that must not risk a held-CS probe on
+        an older image. ``HardwareError``/``RuntimeError`` from an image without the repeat
         or attach capability are intentionally allowed to propagate so the
         service can fall back to its one-shot reader and report that fact.
         """
@@ -2303,13 +2329,46 @@ class OLSDeviceSPI:
         # CMD_GEN_CAPTURE keeps the generator alive for the complete
         # continuous capture and avoids status traffic during the handoff.
         generator_capture = True
+        restore_mode = self.readback_compression_mode
         try:
-            yield from self._stream_ring_capture_with_rle_fallback(
-                rate_hz, chunk_nsamp, stop_evt,
-                progress_cb=progress_cb, full_out=full_out,
-                fetch_multiplier=4, require_raw_mode=False,
-                generator_capture=generator_capture,
-                manage_debug_source=False)
+            if use_rle:
+                yield from self._stream_ring_capture_with_rle_fallback(
+                    rate_hz, chunk_nsamp, stop_evt,
+                    progress_cb=progress_cb, full_out=full_out,
+                    fetch_multiplier=4, require_raw_mode=False,
+                    generator_capture=generator_capture,
+                    manage_debug_source=False, fallback_to_raw=False)
+            else:
+                # The held-CS RLE transport is optional and can wedge on an
+                # older image even when the SDRAM ring itself is healthy.
+                # Accelerometer live capture requests the established raw
+                # block-read path explicitly so a failed RLE probe cannot
+                # stall the producer before it publishes any frames.
+                if restore_mode != 'raw':
+                    self.set_readback_compression(
+                        'raw', force_hardware=True)
+                yield from self.stream_ring_capture(
+                    rate_hz=rate_hz,
+                    window_samples=chunk_nsamp,
+                    stop_evt=stop_evt,
+                    progress_cb=progress_cb,
+                    full_out=full_out,
+                    # Read one decoder-safe frame per poll. Fetching four
+                    # frames amortises command overhead but delivers XYZ in
+                    # bursts, making the newest sample age jump by tens of
+                    # milliseconds even when the average rate is healthy.
+                    # The 2 MHz/448-sample live window is bounded to one
+                    # decoder-safe frame, so a single block keeps cadence
+                    # smooth without starving the ring.
+                    fetch_multiplier=1,
+                    generator_capture=generator_capture,
+                    manage_debug_source=False,
+                    # The held-CS raw serializer is retained as an explicit
+                    # diagnostic option, but it is not compatible with the
+                    # current flashed image's continuous ring request path.
+                    # Use the validated bounded block-read path for MIL so a
+                    # failed speculative stream cannot delay live samples.
+                    prefer_raw_stream=False)
         finally:
             try:
                 self.pkt.transaction(CMD_GEN_STOP, timeout=0.5)
@@ -2321,6 +2380,12 @@ class OLSDeviceSPI:
                 except Exception:
                     pass
             self._wait_gen_idle(timeout=0.5)
+            if not use_rle and restore_mode != 'raw':
+                try:
+                    self.set_readback_compression(
+                        restore_mode, force_hardware=True)
+                except Exception:
+                    pass
 
     def fast_mode(self, enable=True):
         self.pkt.write_register(REG_FAST_MODE, 1 if enable else 0)

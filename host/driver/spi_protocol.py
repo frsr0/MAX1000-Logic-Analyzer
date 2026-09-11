@@ -128,6 +128,10 @@ MAX_RAW_STREAM_SAMPLES = 16384
 # the counter on a flat signal.
 MAX_RLE_STREAM_SAMPLES = 1023
 MAX_RLE_STREAM_BYTES_PER_SAMPLE = 4
+# A broken/unsupported RLE stream must not hold the accelerometer worker while
+# it clocks filler forever.  The live path falls back to bounded raw bursts
+# after this deadline; a healthy 448-sample window completes well inside it.
+RLE_STREAM_TIMEOUT_S = 0.20
 
 
 # 256-entry lookup table for the reflected 0xA001 polynomial. The old
@@ -681,12 +685,15 @@ class SPIDevice:
         # for the rolling live-readback harness.
         pad = ack_pad if ack_pad is not None else max(self._default_ack_pad(), 96)
         if hasattr(self.spi, "stream_command_chunks"):
-            return self._rle_stream_via_chunks(req, seq, sample_count, pad, stop_evt)
+            return self._rle_stream_via_chunks(
+                req, seq, sample_count, pad, stop_evt,
+                timeout=RLE_STREAM_TIMEOUT_S)
         if hasattr(self.spi, "stream_command"):
             return self._rle_stream_via_fixed(req, seq, sample_count, pad, stop_evt)
         raise RuntimeError("RLE stream path requires stream_command(_chunks)")
 
-    def _rle_stream_via_chunks(self, req, seq, sample_count, pad, stop_evt):
+    def _rle_stream_via_chunks(self, req, seq, sample_count, pad, stop_evt,
+                               timeout=RLE_STREAM_TIMEOUT_S):
         """Preferred path: read variable-length stream until ``sample_count``
         samples decode, then break (which raises CS)."""
         gen = self.spi.stream_command_chunks(req, ack_pad=pad, stop_evt=stop_evt)
@@ -695,8 +702,11 @@ class SPIDevice:
         out = bytearray()
         pending = bytearray()   # undecoded stream bytes (partial pair carry-over)
         total = 0
+        deadline = time.monotonic() + max(0.01, float(timeout))
         try:
             for chunk in gen:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("RLE stream timed out before decoding window")
                 if producer is None:
                     acc.extend(chunk)
                     found = self._find_stream_ack(acc, seq)

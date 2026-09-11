@@ -143,6 +143,11 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
 
   -- Pipeline registers: pre-compute buf_rem decrements
   signal brem_single_dec : natural range 0 to Max_Samples := 0;
+  -- Registered predicates keep the wide single-shot remaining-count compares
+  -- out of the pclk write-pump decision cone.  They are deliberately derived
+  -- beside brem_single_dec so the accept path only consumes one-bit enables.
+  signal brem_single_nonzero : std_logic := '0';
+  signal brem_single_last    : std_logic := '0';
 
   -- Registered run-edge event detection: breaks run_r → process_5~0 → burst_rem →
   -- fifo_tail → fifo_head → Add18 → LessThan18 → fifo_head_r critical path.
@@ -643,7 +648,18 @@ begin
     if rising_edge(pclk) then
       -- The decremented value is only consumed while the counter is > 0;
       -- guard the natural subtraction so simulation doesn't trap at 0.
-      if buf_rem_single > 0 then brem_single_dec <= buf_rem_single - 1; else brem_single_dec <= 0; end if;
+      if buf_rem_single > 0 then
+        brem_single_dec <= buf_rem_single - 1;
+        brem_single_nonzero <= '1';
+      else
+        brem_single_dec <= 0;
+        brem_single_nonzero <= '0';
+      end if;
+      if buf_rem_single = 1 then
+        brem_single_last <= '1';
+      else
+        brem_single_last <= '0';
+      end if;
     end if;
   end process;
 
@@ -2020,7 +2036,7 @@ begin
           cap_stream_addr <= write_addr;
           cap_stream_data <= prefetch_data_r;
 
-          if Continuous_Mode = '1' or buf_rem_single > 0 then
+          if Continuous_Mode = '1' or brem_single_nonzero = '1' then
             -- Registered valid/ack handshake. cap_stream_ready is a 2-stage
             -- pipelined ack OF cap_stream_valid (ready_now needs valid; see
             -- SDRAM_Controller_Custom r_pipe_stream_ready), so it arrives
@@ -2045,7 +2061,7 @@ begin
               else
                 buf_rem_single <= brem_single_dec;
                 waddr_0 := waddr_0 + 1;
-                if buf_rem_single = 1 then
+                if brem_single_last = '1' then
                   pump_budget_done_q <= '1';
                 end if;
               end if;

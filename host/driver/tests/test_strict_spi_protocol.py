@@ -357,6 +357,20 @@ def test_chunked_rle_waits_for_ack_and_rejects_missing_ack():
     ) == (0, 0, b"")
 
 
+def test_chunked_rle_aborts_a_stream_that_never_decodes(monkeypatch):
+    class Stalled:
+        def stream_command_chunks(self, request, **kwargs):
+            yield _stream_ack(request[3])
+            while True:
+                # A wedged FPGA can return idle words forever.  The live
+                # reader must hand control back to its bounded fallback.
+                yield b"\x00\x00"
+
+    monkeypatch.setattr(protocol, "RLE_STREAM_TIMEOUT_S", 0.001)
+    with pytest.raises(RuntimeError, match="RLE stream timed out"):
+        protocol.SPIDevice(Stalled()).start_rle_stream_read(0, 8)
+
+
 def test_rle_stream_clamps_negative_start_sample_before_packing():
     requests = []
 

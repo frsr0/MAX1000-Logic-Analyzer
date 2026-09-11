@@ -637,6 +637,7 @@ def test_repeating_uart_capture_validates_retries_kicks_and_aborts(monkeypatch):
 def test_repeating_i2c_capture_arms_ring_and_cleans_up_generator():
     dev = _device()
     dev._ensure_open = MagicMock()
+    dev.set_readback_compression = MagicMock(return_value=True)
     dev.stream_ring_capture = MagicMock(return_value=iter([
         (b"digital", 4, 4, 0),
     ]))
@@ -735,7 +736,30 @@ def test_repeating_i2c_capture_selects_rle_and_restores_codec():
     assert dev.stream_ring_capture.call_args.kwargs["window_samples"] == 4
 
 
-def test_repeating_i2c_capture_falls_back_to_raw_after_rle_iteration_failure():
+def test_repeating_i2c_capture_can_use_raw_ring_without_rle_probe():
+    dev = _device()
+    dev._ensure_open = MagicMock()
+    dev.readback_compression_mode = "rle"
+    dev.compress_readback_enabled = True
+    dev.set_readback_compression = MagicMock(return_value=True)
+    dev.stream_ring_capture = MagicMock(return_value=iter([
+        (b"raw", 4, 4, 0),
+    ]))
+    stop = SimpleNamespace(is_set=lambda: False)
+
+    assert list(dev.continuous_ring_capture_with_repeating_i2c(
+        2_000_000, 4, 16, stop, use_rle=False)) == [
+            (b"raw", 4, 4, 0),
+        ]
+    assert dev.stream_ring_capture.call_args.kwargs["generator_capture"] is True
+    assert dev.stream_ring_capture.call_args.kwargs["manage_debug_source"] is False
+    assert dev.stream_ring_capture.call_args.kwargs["fetch_multiplier"] == 1
+    assert dev.stream_ring_capture.call_args.kwargs["prefer_raw_stream"] is False
+    assert [item.args[0] for item in
+            dev.set_readback_compression.call_args_list] == ["raw", "rle"]
+
+
+def test_repeating_i2c_capture_fails_fast_after_rle_iteration_failure():
     dev = _device()
     dev._ensure_open = MagicMock()
     dev._start_gen_accepted = MagicMock(return_value=True)
@@ -748,21 +772,43 @@ def test_repeating_i2c_capture_falls_back_to_raw_after_rle_iteration_failure():
         raise OSError("RLE stream unavailable")
         yield  # pragma: no cover - keeps this a generator function
 
-    dev.stream_ring_capture = MagicMock(side_effect=[
-        failing_stream(),
-        iter([(b"raw", 4, 4, 0)]),
-    ])
+    dev.stream_ring_capture = MagicMock(return_value=failing_stream())
     dev.pkt.transaction.return_value = (ST_OK, 0, b"")
 
-    result = list(dev.continuous_ring_capture_with_repeating_i2c(
-        2_000_000, 4, 16, SimpleNamespace(is_set=lambda: False)))
+    with pytest.raises(RuntimeError, match="bounded fallback"):
+        list(dev.continuous_ring_capture_with_repeating_i2c(
+            2_000_000, 4, 16, SimpleNamespace(is_set=lambda: False)))
 
-    assert result == [(b"raw", 4, 4, 0)]
     assert dev._rle_stream_supported is False
+    assert dev.stream_ring_capture.call_count == 1
     assert [item.args[0] for item in
             dev.set_readback_compression.call_args_list] == [
                 "rle", "raw", "raw",
             ]
+
+
+def test_ring_rle_helper_keeps_generic_raw_fallback_enabled():
+    dev = _device()
+    dev._ensure_open = MagicMock()
+    dev.set_readback_compression = MagicMock(return_value=True)
+
+    def failing_stream():
+        raise OSError("RLE stream unavailable")
+        yield  # pragma: no cover - keeps this a generator function
+
+    dev.stream_ring_capture = MagicMock(side_effect=[
+        failing_stream(),
+        iter([(b"raw", 4, 4, 0)]),
+    ])
+    stop = SimpleNamespace(is_set=lambda: False)
+
+    # The generic helper remains backward-compatible for ordinary rolling
+    # captures; only the repeating-I2C owner opts out because it has a
+    # bounded host-burst recovery path of its own.
+    result = list(dev._stream_ring_capture_with_rle_fallback(
+        2_000_000, 4, stop, require_raw_mode=False))
+    assert result == [(b"raw", 4, 4, 0)]
+    assert dev.stream_ring_capture.call_count == 2
 
 
 def test_repeating_i2c_capture_reprobes_rle_after_a_previous_stream_failure():
@@ -787,7 +833,7 @@ def test_repeating_i2c_capture_reprobes_rle_after_a_previous_stream_failure():
             dev.set_readback_compression.call_args_list] == ["rle", "raw"]
 
 
-def test_repeating_i2c_capture_cleans_up_when_raw_fallback_fails():
+def test_repeating_i2c_capture_cleans_up_when_ring_probe_fails():
     dev = _device()
     dev._ensure_open = MagicMock()
     dev._start_gen_accepted = MagicMock(return_value=True)
@@ -800,12 +846,10 @@ def test_repeating_i2c_capture_cleans_up_when_raw_fallback_fails():
         raise OSError("RLE stream unavailable")
         yield  # pragma: no cover - keeps this a generator function
 
-    dev.stream_ring_capture = MagicMock(side_effect=[
-        failing_stream(), failing_stream(),
-    ])
+    dev.stream_ring_capture = MagicMock(return_value=failing_stream())
     dev.pkt.transaction.return_value = (ST_OK, 0, b"")
 
-    with pytest.raises(OSError, match="RLE stream unavailable"):
+    with pytest.raises(RuntimeError, match="bounded fallback"):
         list(dev.continuous_ring_capture_with_repeating_i2c(
             2_000_000, 4, 16, SimpleNamespace(is_set=lambda: False)))
 
