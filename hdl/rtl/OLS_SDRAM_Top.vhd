@@ -3,7 +3,6 @@ use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.numeric_std.all;
 library altera_mf;
 use altera_mf.altera_mf_components.all;
-use work.led_controller_pkg.all;
 
 ENTITY OLS_SDRAM_Top IS
   generic (
@@ -76,10 +75,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   constant SAMPLE_CLK_HZ : natural := get_sample_clk_freq;
   constant ENABLE_RUNTIME_INPUT_MUX : boolean := true;
   constant ENABLE_SIGNAL_GEN : boolean := true;
-  -- Timing-closure aid: gate the LED PWM/controller subsystem to free LEs and
-  -- pull its logic/pins out of the congested SDRAM I/O cone (X10_Y0-X20_Y12).
-  -- Set true to restore the LED bank.
-  constant ENABLE_LED : boolean := false;
   constant LA_CHANNELS : natural := 16;
   constant PIN_POOL_SIZE : natural := 26;
 
@@ -117,10 +112,10 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal gen_rx_data   : std_logic_vector(7 downto 0) := (others => '0');
   signal gen_rx_used   : std_logic_vector(7 downto 0) := (others => '0');
   signal gen_rx_re     : std_logic := '0';
-  signal gen_busy_latch : std_logic := '0';
-  -- LED7 gen-activity stretch: ~0.25 s at 100 MHz so a brief pulse stays seen.
-  constant GEN_LED_STRETCH_TOP : natural := 25000000;
-  signal gen_led_stretch : natural range 0 to 25000000 := 0;
+  -- RX FIFO level changes are converted to a one-system-clock receive event
+  -- for the LED controller. The controller itself stretches it to human time.
+  signal gen_rx_used_prev : std_logic_vector(7 downto 0) := (others => '0');
+  signal gen_rx_activity  : std_logic := '0';
   signal fast_clk       : std_logic := '0';
   signal armed_i        : std_logic := '0';
   signal sdram_core_clk      : std_logic := '0';
@@ -141,6 +136,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal pin_map_wr_toggle : std_logic := '0';
 
   signal core_status   : std_logic_vector(7 downto 0) := (others => '0');
+  signal continuous_mode_i : std_logic := '0';
   signal sen_sdi_meta : std_logic := '1';
   signal sen_sdi_sync : std_logic := '1';
   signal sen_sdo_meta : std_logic := '1';
@@ -271,13 +267,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_SDRAM_Top IS
   signal pin_map_pin_f1 : natural range 0 to 31 := 0;
   signal pin_map_pin_f2 : natural range 0 to 31 := 0;
 
-  -- PWM engine (shared by LED controller)
-  signal pwm_cnt       : integer range 0 to 256 := 0;
-  signal fade_cnt      : integer range 0 to 511 := 0;
-  signal fade_tick     : std_logic := '0';
-  signal led_bright    : led_bright_array := (others => 0);
-  signal led_target    : led_bright_array := (others => 0);
-  signal led_fade_step : led_step_array := (others => 1);
+  signal led_pattern   : std_logic_vector(7 downto 0) := (others => '0');
 
 
   COMPONENT OLS_Logic_Analyzer IS
@@ -1098,7 +1088,7 @@ BEGIN
     Analog_Profile => analog_profile,
     Analog_Channel => analog_channel,
     Status        => core_status,
-    Continuous_Mode => open,
+    Continuous_Mode => continuous_mode_i,
     Analog_Frame_Data => analog_frame_data,
     Analog_Frame_Len  => analog_frame_len,
     Analog_Stream_Mode => analog_stream_mode,
@@ -1131,99 +1121,32 @@ BEGIN
     Pump_Overflow_Count => open
   );
 
-  -- PWM carrier counter
+  -- A rise in RX FIFO occupancy means the Bit_Engine accepted a complete
+  -- received byte. Reads reduce the count and intentionally do not animate.
   process(sys_clk)
   begin
     if rising_edge(sys_clk) then
-      if pwm_cnt = 256 then pwm_cnt <= 0;
-      else pwm_cnt <= pwm_cnt + 1;
+      gen_rx_activity <= '0';
+      if unsigned(gen_rx_used) > unsigned(gen_rx_used_prev) then
+        gen_rx_activity <= '1';
       end if;
-      if pwm_cnt = 255 then
-        if fade_cnt < 511 then fade_cnt <= fade_cnt + 1;
-        else fade_cnt <= 0;
-        end if;
-      end if;
-      fade_tick <= '0';
-      if pwm_cnt = 255 and fade_cnt = 511 then
-        fade_tick <= '1';
-      end if;
+      gen_rx_used_prev <= gen_rx_used;
     end if;
   end process;
 
-  -- Brightness tracking with per-LED configurable step size
-  process(sys_clk)
-  begin
-    if rising_edge(sys_clk) then
-      if fade_tick = '1' then
-        for i in 0 to 7 loop
-          if led_bright(i) < led_target(i) then
-            if led_bright(i) + led_fade_step(i) >= led_target(i) then
-              led_bright(i) <= led_target(i);
-            else
-              led_bright(i) <= led_bright(i) + led_fade_step(i);
-            end if;
-          elsif led_bright(i) > led_target(i) then
-            if led_bright(i) <= led_fade_step(i) then
-              led_bright(i) <= led_target(i);
-            elsif led_bright(i) - led_fade_step(i) <= led_target(i) then
-              led_bright(i) <= led_target(i);
-            else
-              led_bright(i) <= led_bright(i) - led_fade_step(i);
-            end if;
-          end if;
-        end loop;
-      end if;
-    end if;
-  end process;
-
-  led_out: for i in 0 to 6 generate
-    LED(i) <= '1' when pwm_cnt < led_bright(i) else '0';
-  end generate;
-  -- LED7: generator-activity indicator. A brief gen_start pulse is stretched so
-  -- it stays visible, but the indicator clears once the generator goes idle
-  -- (previously it latched on the first gen activity and never cleared).
-  process(sys_clk)
-  begin
-    if rising_edge(sys_clk) then
-      if gen_busy = '1' or gen_active = '1' then
-        -- Active: hold lit and reload the stretch so post-activity it lingers.
-        gen_busy_latch <= '1';
-        gen_led_stretch <= GEN_LED_STRETCH_TOP;
-      elsif gen_start = '1' then
-        -- Catch a start pulse even if busy/active haven't asserted yet.
-        gen_busy_latch <= '1';
-        gen_led_stretch <= GEN_LED_STRETCH_TOP;
-      elsif gen_led_stretch /= 0 then
-        gen_led_stretch <= gen_led_stretch - 1;
-      else
-        gen_busy_latch <= '0';
-      end if;
-    end if;
-  end process;
-  LED(7) <= gen_busy_latch;
-
-  gen_led_on : if ENABLE_LED generate
-    LED_CTRL: entity work.LED_Controller
-      port map (
-        clk            => sys_clk,
-        rst            => '0',
-        armed          => armed_i,
-        capture_run    => core_status(0),
-        capture_full   => core_status(3),
-        host_connected => '1',
-        fade_tick      => fade_tick,
-        led_target     => led_target,
-        fade_step      => led_fade_step
-      );
-  end generate gen_led_on;
-
-  gen_led_off : if not ENABLE_LED generate
-    -- LED_Controller gated out (timing closure). Hold the fade targets at safe
-    -- constants; the surrounding PWM/brightness logic then constant-propagates
-    -- to a dark LED bank, freeing LEs and routing near the SDRAM I/O cone.
-    led_target    <= (others => 0);
-    led_fade_step <= (others => 1);
-  end generate gen_led_off;
+  LED_CTRL: entity work.LED_Controller
+    port map (
+      clk             => sys_clk,
+      rst             => '0',
+      armed           => armed_i,
+      capture_run     => core_status(0),
+      capture_full    => core_status(3),
+      continuous_mode => continuous_mode_i,
+      generator_tx    => gen_busy,
+      generator_rx    => gen_rx_activity,
+      led             => led_pattern
+    );
+  LED <= led_pattern;
 
   gen_signal_gen_on : if ENABLE_SIGNAL_GEN generate
   begin
