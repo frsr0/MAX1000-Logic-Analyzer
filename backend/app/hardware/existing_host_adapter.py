@@ -188,23 +188,13 @@ class ExistingHostAdapter(HardwareDevice):
             if config is None:
                 ctrl1, ctrl4 = 0x27, 0x88
             else:
-                odr_code = {1: 0x1, 10: 0x2, 25: 0x3, 50: 0x4,
-                            100: 0x5, 200: 0x6, 400: 0x7,
-                            1620: 0x8, 5376: 0x9}[int(config.output_data_rate_hz)]
-                axes = ((0x01 if config.x_enabled else 0)
-                        | (0x02 if config.y_enabled else 0)
-                        | (0x04 if config.z_enabled else 0))
-                low_power = (config.operating_mode == "low_power"
-                             or int(config.output_data_rate_hz) > 400)
-                ctrl1 = (odr_code << 4) | (0x08 if low_power else 0) | axes
-                scale_code = {2: 0x0, 4: 0x1, 8: 0x2, 16: 0x3}[int(config.full_scale_g)]
-                self_test = {"normal": 0x0, "positive": 0x2,
-                             "negative": 0x4}[config.self_test]
-                ctrl4 = ((0x80 if config.bdu else 0)
-                         | (0x40 if config.endian == "big" else 0)
-                         | (scale_code << 4)
-                         | (0x08 if config.operating_mode == "high_resolution" else 0)
-                         | self_test)
+                # Keep the adapter's hardware write path identical to the
+                # service's readback decoder. In particular, CTRL_REG1 code 9
+                # is 1.344 kHz in normal/HR mode but 5.376 kHz in low power.
+                # Import lazily to avoid coupling host adapter construction to
+                # the MIL service module's process-global instance.
+                from ..mil.accelerometer import _config_registers
+                ctrl1, ctrl4 = _config_registers(config)
             for register, value in ((0x20, ctrl1), (0x23, ctrl4)):
                 if writer(register, value, dev_addr=address) is False:
                     raise HardwareError(

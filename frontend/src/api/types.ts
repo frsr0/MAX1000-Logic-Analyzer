@@ -413,7 +413,7 @@ export interface MilAccelerometerSample {
 }
 
 export interface MilAccelerometerConfig {
-  output_data_rate_hz: 1 | 10 | 25 | 50 | 100 | 200 | 400 | 1620 | 5376;
+  output_data_rate_hz: 1 | 10 | 25 | 50 | 100 | 200 | 400 | 1344 | 1620 | 5376;
   full_scale_g: 2 | 4 | 8 | 16;
   operating_mode: 'normal' | 'high_resolution' | 'low_power';
   bdu: boolean;
@@ -443,6 +443,12 @@ export interface MilAccelerometerStatus {
   last_error: string | null;
   effective_config?: MilAccelerometerConfig | null;
   register_readback?: { ctrl1: number; ctrl4: number } | null;
+  last_sample_sequence?: number;
+  source_sample_index?: number | null;
+  source_backlog_samples?: number;
+  capture_to_publish_latency_ms?: number;
+  decoded_to_publish_latency_ms?: number;
+  live_timing?: Record<string, any> | null;
 }
 
 export interface MilTransactionResponse {

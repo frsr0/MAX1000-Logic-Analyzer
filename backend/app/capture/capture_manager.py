@@ -81,6 +81,7 @@ class CaptureManager:
         self.started_at = time.time()
 
         self._cap_lock = threading.Lock()
+        self._device_lock = threading.RLock()
         self._accelerometer_reserved = False
         self._cap_thread: Optional[threading.Thread] = None
         self._stop_evt = threading.Event()
@@ -119,45 +120,134 @@ class CaptureManager:
         return devices
 
     def connect(self, device_id: str) -> dict:
-        if self.device is not None:
-            self.disconnect()
-        if device_id == "mock":
-            self.device = MockDevice()
-        elif device_id == "hardware":
-            self.device = ExistingHostAdapter()
-        else:
-            raise HardwareError(f"Unknown device id: {device_id}")
-        meta = self.device.connect()
-        self.device_kind = device_id
-        log.info("Connected to %s", meta.device_name)
-        manager.publish_threadsafe("status", "device_connected",
-                                   meta.model_dump())
-        return meta.model_dump()
+        with self._device_lock:
+            if self.device is not None:
+                self.disconnect()
+            if device_id == "mock":
+                self.device = MockDevice()
+            elif device_id == "hardware":
+                self.device = ExistingHostAdapter()
+            else:
+                raise HardwareError(f"Unknown device id: {device_id}")
+            try:
+                meta = self.device.connect()
+            except Exception:
+                # Leave the manager in a known disconnected state. The retry
+                # endpoint can then create a fresh adapter instead of trying
+                # to reuse a partially opened FTDI handle.
+                try:
+                    self.device.disconnect()
+                except Exception:
+                    log.exception("failed to unwind connect error")
+                self.device = None
+                self.device_kind = None
+                raise
+            self.device_kind = device_id
+            self.last_error = None
+            log.info("Connected to %s", meta.device_name)
+            manager.publish_threadsafe("status", "device_connected",
+                                       meta.model_dump())
+            return meta.model_dump()
 
-    def disconnect(self) -> None:
+    def disconnect(self, wait_timeout: float = 0.5) -> None:
         # The LIS3DH worker shares the same FTDI/Bit_Engine device.  Signal it
         # before closing the driver so a background poll cannot use a stale
         # handle during device teardown.  Keep this import local to avoid a
         # state -> capture_manager -> accelerometer import cycle at startup.
-        try:
-            from ..mil.accelerometer import accelerometer
-            accelerometer.stop(wait_timeout=0.5)
-        except Exception:
-            log.exception("accelerometer stop during disconnect failed")
-        self.stop_capture()
-        if self.device is not None:
+        with self._device_lock:
+            accel = self._live_accelerometer()
             try:
-                self.device.disconnect()
+                if accel is not None:
+                    accel.stop(wait_timeout=wait_timeout)
             except Exception:
-                log.exception("disconnect failed")
-            self.device = None
-            self.device_kind = None
-            log.info("Device disconnected")
-            manager.publish_threadsafe("status", "device_disconnected", {})
-        # A disconnected device cannot remain exclusively controlled by a
-        # stale client; the next connection must be able to acquire control.
-        if self.control.holder is not None:
-            self.control.release(self.control.holder)
+                log.exception("accelerometer stop during disconnect failed")
+            self.stop_capture()
+            if self.device is not None:
+                try:
+                    self.device.disconnect()
+                except Exception:
+                    log.exception("disconnect failed")
+                self.device = None
+                self.device_kind = None
+                log.info("Device disconnected")
+                manager.publish_threadsafe("status", "device_disconnected", {})
+            # A disconnected device cannot remain exclusively controlled by a
+            # stale client; the next connection must be able to acquire
+            # control.
+            if self.control.holder is not None:
+                self.control.release(self.control.holder)
+
+    def reconnect_hardware(self, client_id: str, device_id: str = "hardware",
+                           wait_timeout: float = 2.0,
+                           health_timeout: float = 5.0) -> dict:
+        """Reclaim a failed hardware transport and restart accelerometer IO.
+
+        The operation is intentionally idempotent: it always tears down the
+        old capture/ring owner first, then opens a new adapter, reapplies the
+        pending sensor configuration, and waits for the first decoded point.
+        A failed attempt leaves no device or control owner behind, so the
+        visible Retry action can be pressed again after the board is replugged.
+        """
+        with self._device_lock:
+            holder = self.control.holder
+            if holder not in (None, client_id):
+                raise HardwareError("Hardware control is held by another client")
+            accel = self._live_accelerometer()
+            saved_config = accel.config() if accel is not None else None
+            try:
+                self.disconnect(wait_timeout=wait_timeout)
+                if not self.control.acquire(client_id, name=client_id[:8]):
+                    raise HardwareError("Hardware control was taken by another client")
+                self.connect(device_id)
+                if accel is None:
+                    raise HardwareError("Accelerometer service is unavailable")
+                if saved_config is not None:
+                    accel.update_config(saved_config)
+                started = accel.start()
+                if not started.get("running"):
+                    raise HardwareError(
+                        started.get("last_error")
+                        or "Accelerometer tracking did not start")
+                deadline = time.monotonic() + max(0.1, health_timeout)
+                status = started
+                while True:
+                    status = accel.status()
+                    if not status.get("running"):
+                        raise HardwareError(
+                            status.get("last_error")
+                            or "Accelerometer tracking stopped during reconnect")
+                    # Availability/effective_config prove setup completed;
+                    # requiring a point also proves that the reopened bus and
+                    # ring owner are actually producing data.
+                    if (status.get("available")
+                            and status.get("effective_config") is not None
+                            and status.get("sample") is not None):
+                        self.last_error = None
+                        return status
+                    if time.monotonic() >= deadline:
+                        raise HardwareError(
+                            status.get("last_error")
+                            or "Accelerometer did not produce a sample after reconnect")
+                    time.sleep(0.05)
+            except Exception as exc:
+                self.last_error = str(exc)
+                try:
+                    if accel is not None:
+                        with getattr(accel, "_lock", threading.RLock()):
+                            status_obj = getattr(accel, "_status", None)
+                            if status_obj is not None:
+                                status_obj.last_error = str(exc)
+                    if accel is not None:
+                        accel.stop(wait_timeout=wait_timeout)
+                except Exception:
+                    log.exception("accelerometer stop during reconnect failure failed")
+                try:
+                    self.disconnect(wait_timeout=wait_timeout)
+                except Exception:
+                    log.exception("transport cleanup after reconnect failure failed")
+                if isinstance(exc, HardwareError):
+                    raise
+                raise HardwareError(f"Reconnect failed: {exc}") from exc
 
     def require_device(self) -> HardwareDevice:
         if self.device is None or not self.device.is_connected():

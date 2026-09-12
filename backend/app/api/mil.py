@@ -30,6 +30,16 @@ def mil_accelerometer_stop(client_id: str = Depends(client_id_header)):
     return accelerometer.stop()
 
 
+@router.post("/api/mil/accelerometer/reconnect")
+def mil_accelerometer_reconnect(client_id: str = Depends(client_id_header)):
+    """Tear down and reopen the hardware owner after an I/O failure."""
+    require_control(client_id)
+    try:
+        return capture_manager.reconnect_hardware(client_id)
+    except HardwareError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
 @router.get("/api/mil/accelerometer/config")
 def mil_accelerometer_config():
     return accelerometer.config()

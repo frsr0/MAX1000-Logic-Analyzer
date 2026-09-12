@@ -1,9 +1,29 @@
 # On-board LIS3DH Accelerometer
 
-The MAX1000 validation board carries an on-board LIS3DH accelerometer. It is
+The validation hardware targets the 8kLE MAX1000 build (Intel MAX 10
+`10M08SAU169C8G`, 8 MB SDRAM, 8 MB flash), matching the currently offered
+Trenz Electronic **TEI0001-04-DBC87A** variant. It carries an on-board LIS3DH
+accelerometer. It is
 an actual protocol partner for the analyzer, not a simulated peripheral: the
 Bit Banger can talk to it over I²C or SPI, and the capture path can mirror the
 bus dialogue into normal logic-analyzer channels.
+
+## Board orientation
+
+The live-pose drawing is a top-side view of the physical MAX1000: the Pmod is
+at left and the Micro USB connector at right. Its axis key is anchored to U4,
+the LIS3DH location in the upper-left section of the board:
+
+| LIS3DH axis | Direction in the top-side drawing |
+|---|---|
+| `+X` | toward the lower board edge |
+| `+Y` | toward the Micro USB connector (right) |
+| `+Z` | out of the component side of the PCB |
+
+This is derived from U4's pin-1 position in Trenz's top-side assembly drawing
+and the LIS3DH package-axis drawing. The renderer uses `X` for rotation about
+the USB axis and `Y` for rotation about the header axis, matching the physical
+sensor-to-board frame rather than the browser's screen axes.
 
 ## Physical wiring
 
@@ -44,6 +64,24 @@ The same `WHO_AM_I` check expects `0x33` at a stable response offset. The
 validation repeats the read to ensure the result is stable rather than a
 floating-line artifact.
 
+## Data-rate and word-layout contract
+
+The LIS3DH high-rate `CTRL_REG1` codes are mode-dependent. The application
+therefore validates the mode/rate pair before writing registers and reports
+both the sensor ODR and the measured host decoded rate:
+
+| Operating mode | Highest ODR choices | Output word | Unused low bits |
+|---|---:|---:|---:|
+| Normal | 1.344 kHz | 10-bit | 6 |
+| High resolution | 1.344 kHz | 12-bit | 4 |
+| Low power | 1.620 or 5.376 kHz | 8-bit | 8 |
+
+The host rate is a transport measurement, not a claim about the sensor’s
+configured ODR. It includes only complete, structurally validated I²C XYZ
+transactions and exposes the USB/ring transport ceiling when it is lower than
+the sensor rate. The implementation follows ST’s [LIS3DH datasheet](https://www.st.com/resource/en/datasheet/CD00274221.pdf),
+including the mode-dependent ODR table and full-scale sensitivities.
+
 ## Host and application surfaces
 
 | Layer | Implementation |
@@ -60,6 +98,42 @@ The live diagnostic creates a normal persisted session named `LIS3DH WHO_AM_I
 live`, captures the dialogue at 2 MHz, maps SDA/SCL to the sensor channels,
 and attaches the standard I²C decoder. This makes the peripheral useful both
 as a device-level self-test and as a realistic protocol waveform source.
+
+## Live pose timing and recovery
+
+The live decoder publishes a complete, structurally validated XYZ point as
+soon as its final I²C byte is observed. The display target consumes that point
+immediately; its `requestAnimationFrame` smoothing is presentation only and
+does not delay acquisition or publication.
+
+The raw decoded point is retained on the FIFO history stream. The pose mailbox
+also applies a causal physical-plausibility check, so a complete but
+protocol-shaped/misaligned frame cannot flip the board orientation; the check
+drops that one pose update without waiting for a later confirmation point.
+The live tail read is 1,024 source samples (about two 400 kHz sensor
+transactions at the 2 MHz ring rate), rather than a multi-window prefetch.
+
+The application keeps two WebSocket contracts so presentation cannot hold up
+history:
+
+| Endpoint | Contract |
+|---|---|
+| `/ws/accelerometer` | FIFO stream of every validated point for archival/history consumers |
+| `/ws/accelerometer/pose` | Replaceable latest-value stream for the visualization target; stale pending poses are dropped |
+
+Each sample trace carries the decoder sequence, ring source index and
+producer/oldest pointers, source backlog, `decoded_at`, `gate_accepted_at`,
+`published_at`, WebSocket enqueue/send timestamps, and browser receive,
+target-selection, state-update, and render timestamps. The Hardware lab shows
+the resulting backlog and capture→publish, decode→publish, and
+WebSocket→render latencies.
+
+If the board is unplugged, the failed owner can be reclaimed from the visible
+`Retry / reconnect` action. Reconnect stops the live worker and ring capture,
+closes the old transport, reacquires control, reopens the device, restores the
+pending LIS3DH configuration, and waits for a fresh decoded point before
+reporting success. A failed attempt leaves the transport and control ownership
+clean for another retry after the board is replugged.
 
 ## Hardware validation status
 

@@ -219,7 +219,8 @@ def test_websocket_manager_connect_broadcast_dead_clients_and_publish():
         await asyncio.sleep(0)
         mgr.set_loop(asyncio.get_event_loop())
 
-        # A slow sensor client must not create one pending task per sample.
+        # A live sensor stream is a data path, not a latest-value status path:
+        # every validated sample must survive the thread-to-event-loop hop.
         latest = []
         async def record(topic, type_, data):
             latest.append((topic, type_, data))
@@ -228,9 +229,28 @@ def test_websocket_manager_connect_broadcast_dead_clients_and_publish():
         mgr2.set_loop(asyncio.get_running_loop())
         for n in range(100):
             mgr2.publish_threadsafe("accelerometer", "accelerometer_sample", {"n": n})
-        await asyncio.sleep(0.01)
-        assert latest and latest[-1][2] == {"n": 99}
-        assert len(latest) == 1
+        deadline = asyncio.get_running_loop().time() + 1.0
+        while len(latest) < 100 and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+        assert [item[2] for item in latest] == [{"n": n} for n in range(100)]
+
+        # Pose delivery is a separate latest-value channel. A slow browser
+        # must not spend seconds draining archival history before it sees the
+        # newest orientation target.
+        pose_sent = []
+        async def record_pose(topic, type_, data):
+            await asyncio.sleep(0.01)
+            pose_sent.append((topic, type_, data))
+        pose_mgr = ConnectionManager()
+        pose_mgr.broadcast = record_pose
+        pose_mgr.set_loop(asyncio.get_running_loop())
+        for n in range(100):
+            pose_mgr.publish_latest_threadsafe(
+                "accelerometer_pose", "accelerometer_sample", {"n": n})
+        await asyncio.sleep(0.05)
+        assert pose_sent
+        assert pose_sent[-1][2] == {"n": 99}
+        assert len(pose_sent) < 100
 
         # Even if each send immediately queues another sample, unrelated
         # async work must run before a long high-rate drain completes.
@@ -252,8 +272,8 @@ def test_websocket_manager_connect_broadcast_dead_clients_and_publish():
             # throughput. Keep the chain short so the test stays deterministic
             # on a busy worker while still catching a monopolizing drain loop.
             if sends < 64:
-                with mgr3._latest_lock:
-                    mgr3._latest_pending[topic] = (type_, {"n": sends})
+                mgr3.publish_threadsafe(
+                    topic, type_, {"n": sends})
             else:
                 drain_finished = True
                 drain_done.set()

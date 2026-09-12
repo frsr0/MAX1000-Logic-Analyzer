@@ -11,6 +11,7 @@ import numpy as np
 
 from app.capture.capture_manager import CaptureManager
 from app.capture.session import CaptureSettings
+from app.capture.session import DeviceMetadata
 from app.capture.session_store import SessionStore
 from app.hardware.base import HardwareError
 import app.mil.accelerometer as accelerometer_module
@@ -36,6 +37,45 @@ def test_all_supported_configuration_permutations_round_trip_register_readback()
         ctrl1, ctrl4 = accelerometer_module._config_registers(config)
         assert AccelerometerService._decode_config(
             {"ctrl1": ctrl1, "ctrl4": ctrl4}) == config
+
+
+def test_lis3dh_high_odr_values_are_mode_dependent():
+    """The shared ODR code has different legal rates by power mode."""
+    cases = (
+        (1344, "normal"),
+        (1344, "high_resolution"),
+        (1620, "low_power"),
+        (5376, "low_power"),
+    )
+    for rate, mode in cases:
+        config = AccelerometerConfig(
+            output_data_rate_hz=rate, operating_mode=mode)
+        ctrl1, ctrl4 = accelerometer_module._config_registers(config)
+        assert AccelerometerService._decode_config(
+            {"ctrl1": ctrl1, "ctrl4": ctrl4}) == config
+
+    with pytest.raises(ValueError, match="mode"):
+        AccelerometerConfig(output_data_rate_hz=1344,
+                            operating_mode="low_power")
+    with pytest.raises(ValueError, match="low-power"):
+        AccelerometerConfig(output_data_rate_hz=1620,
+                            operating_mode="normal")
+
+
+def test_lis3dh_xyz_decode_uses_mode_and_full_scale_sensitivity():
+    """LIS3DH output words are left-justified at 12/10/8-bit resolution."""
+    assert AccelerometerService._decode_xyz(
+        b"\x80\x3e\x80\x3e\x80\x3e",
+        AccelerometerConfig(operating_mode="high_resolution")) == (
+            1.0, 1.0, 1.0)
+    assert AccelerometerService._decode_xyz(
+        b"\x40\x00\x40\x00\x40\x00",
+        AccelerometerConfig(operating_mode="normal")) == (
+            0.004, 0.004, 0.004)
+    assert AccelerometerService._decode_xyz(
+        b"\x00\x01\x00\x01\x00\x01",
+        AccelerometerConfig(operating_mode="low_power")) == (
+            0.016, 0.016, 0.016)
 
 
 class FakeRaw:
@@ -137,6 +177,144 @@ def test_record_sample_publishes_lightweight_decoded_xyz_event(monkeypatch):
         "x_g": 0.125, "y_g": -0.25, "z_g": 0.875, "timestamp": 123.456}
     assert data["last_sample_at"] == 123.456
     assert data["samples_read"] == 1
+
+
+def test_record_sample_can_retain_raw_frame_without_pose_publish(monkeypatch):
+    service = AccelerometerService(FakeManager(FakeRaw()), sample_rate_hz=400)
+    service._status.running = True
+    archived = []
+    poses = []
+    monkeypatch.setattr(
+        accelerometer_module.websocket_manager, "publish_threadsafe",
+        lambda *args: archived.append(args))
+    monkeypatch.setattr(
+        accelerometer_module.websocket_manager, "publish_latest_threadsafe",
+        lambda *args: poses.append(args), raising=False)
+
+    service._record_sample((0.2, 0.98, -0.05), pose_accepted=False)
+
+    assert archived
+    assert not poses
+    assert archived[0][2]["sample"]["y_g"] == pytest.approx(0.98)
+
+
+def test_record_sample_preserves_ring_backlog_and_point_timing(monkeypatch):
+    """A decoded point carries honest ring-to-UI timing metadata."""
+    service = AccelerometerService(FakeManager(FakeRaw()), sample_rate_hz=400)
+    service._status.running = True
+    service._clock = lambda: 100.020
+    archived = []
+    poses = []
+    monkeypatch.setattr(
+        accelerometer_module.websocket_manager, "publish_threadsafe",
+        lambda *args: archived.append(args))
+    monkeypatch.setattr(
+        accelerometer_module.websocket_manager, "publish_latest_threadsafe",
+        lambda *args: poses.append(args), raising=False)
+
+    service._record_sample(
+        (0.125, -0.25, 0.875), source_index=0,
+        timestamp=98.020,
+        decoded_at=100.011, gate_accepted_at=100.012,
+        ring_timing={
+                "producer_index": 1_000_000,
+            "oldest_index": 0,
+            "read_started_at": 100.000,
+            "read_completed_at": 100.010,
+        })
+
+    assert archived and poses
+    trace = archived[0][2]["trace"]
+    assert trace["sequence"] == 1
+    assert trace["source_sample_index"] == 0
+    assert trace["source_backlog_samples"] == 1_000_000
+    assert trace["decoded_at"] == pytest.approx(100.011)
+    assert trace["gate_accepted_at"] == pytest.approx(100.012)
+    assert trace["published_at"] == pytest.approx(100.020)
+    assert trace["capture_to_publish_latency_ms"] >= 2000.0
+    assert trace["decoded_to_publish_latency_ms"] == pytest.approx(9.0)
+    assert poses[0][0:2] == ("accelerometer_pose", "accelerometer_sample")
+
+
+def test_capture_manager_reconnect_releases_failed_owner_and_restores_config(
+        tmp_path, monkeypatch):
+    """Retry is a full idempotent transport teardown/reacquire operation."""
+    from app.capture import capture_manager as capture_manager_module
+
+    manager = CaptureManager(SessionStore(tmp_path))
+    saved_config = AccelerometerConfig(output_data_rate_hz=400).model_dump()
+
+    manager_ref = manager
+    class FakeAccelerometer:
+        manager = manager_ref
+
+        def __init__(self):
+            self.running = False
+            self.stop_calls = 0
+            self.updated = []
+
+        def config(self):
+            return dict(saved_config)
+
+        def stop(self, wait_timeout=0.0):
+            self.stop_calls += 1
+            self.running = False
+            return self.status()
+
+        def update_config(self, config):
+            self.updated.append(config.model_dump() if hasattr(config, "model_dump") else dict(config))
+            return dict(saved_config)
+
+        def start(self):
+            self.running = True
+            return self.status()
+
+        def status(self):
+            return {
+                "running": self.running,
+                "available": self.running,
+                "effective_config": saved_config if self.running else None,
+                "sample": {"x_g": 0.0, "y_g": 0.0, "z_g": 1.0,
+                            "timestamp": 100.0} if self.running else None,
+                "last_error": None,
+            }
+
+    accel = FakeAccelerometer()
+    manager._accelerometer_service = accel
+    attempts = []
+
+    class FakeAdapter:
+        def __init__(self):
+            self.connected = False
+            attempts.append(self)
+
+        def connect(self):
+            if len(attempts) == 1:
+                raise HardwareError("FTDI I/O error")
+            self.connected = True
+            return DeviceMetadata(driver="fake", device_name="MAX1000",
+                                  connection="fake")
+
+        def disconnect(self):
+            self.connected = False
+
+        def is_connected(self):
+            return self.connected
+
+    monkeypatch.setattr(capture_manager_module, "ExistingHostAdapter", FakeAdapter)
+    assert manager.control.acquire("owner") is True
+
+    with pytest.raises(HardwareError, match="FTDI I/O error"):
+        manager.reconnect_hardware("owner")
+    assert manager.device is None
+    assert manager.control.holder is None
+    assert accel.stop_calls >= 1
+
+    status = manager.reconnect_hardware("owner")
+    assert status["running"] is True
+    assert manager.device_kind == "hardware"
+    assert manager.control.holder == "owner"
+    assert accel.updated == [saved_config]
 
 
 def test_stale_live_worker_cannot_publish_into_new_session(monkeypatch):
@@ -289,6 +467,12 @@ def test_start_without_real_hardware_is_structured_and_non_blocking():
         "last_error": "No connected real hardware",
         "effective_config": None,
         "register_readback": None,
+        "last_sample_sequence": 0,
+        "source_sample_index": None,
+        "source_backlog_samples": 0,
+        "capture_to_publish_latency_ms": 0.0,
+        "decoded_to_publish_latency_ms": 0.0,
+        "live_timing": None,
     }
 
 
@@ -454,6 +638,7 @@ def test_live_capture_uses_continuous_ring_producer_and_stops_cleanly(tmp_path):
                 (1 << 14),
                 (1 << 13) | (1 << 14),
             ], dtype="<u2").tobytes()
+            self.first_sample.set()
             while not stop_evt.is_set():
                 self.ring_chunks += 1
                 yield chunk
@@ -471,9 +656,13 @@ def test_live_capture_uses_continuous_ring_producer_and_stops_cleanly(tmp_path):
         "Accelerometer ring live", store)
     try:
         assert raw.ring_started.wait(1.0)
-        # Gap-delimited tail-follow windows need two complete I2C frames so
-        # decoder reset at each skipped ring region does not lose the sample.
-        assert raw.ring_kwargs["chunk_nsamp"] == 896
+        # The producer reads a multi-block sequential window; the cursor is
+        # carried so source-time spacing survives the transport batch while
+        # each decoded FIFO slot is still published immediately.
+        assert raw.ring_kwargs["chunk_nsamp"] == 4096
+        assert raw.ring_kwargs["read_len"] == 24
+        assert raw.ring_kwargs["repeat_transactions"] == 1
+        assert raw.ring_kwargs["compact_i2c"] is True
         assert raw.ring_kwargs["use_rle"] is False
         # The flashed image's held-CS raw serializer can return an idle ring
         # window after CMD_GEN_CAPTURE. Keep MIL on the validated block-read
@@ -481,6 +670,8 @@ def test_live_capture_uses_continuous_ring_producer_and_stops_cleanly(tmp_path):
         # optional raw serializer transport.
         assert raw.ring_kwargs["prefer_raw_stream"] is False
         assert raw.ring_kwargs["follow_tail"] is True
+        assert raw.ring_kwargs["fetch_multiplier"] == 8
+        assert raw.ring_kwargs["include_cursor"] is True
         deadline = time.time() + 1.0
         waveform = None
         while time.time() < deadline:
@@ -490,13 +681,16 @@ def test_live_capture_uses_continuous_ring_producer_and_stops_cleanly(tmp_path):
             time.sleep(0.01)
         assert waveform is not None and waveform.num_samples >= 8
         assert raw.ring_chunks >= 2
-        assert not raw.configured or raw.reads >= 1
+        # The continuous tracking owner did not fall back to an XYZ read; its
+        # setup writes are the only raw calls in this fake.
+        assert raw.reads == 0
     finally:
         service.stop_live_capture()
         service.stop(wait_timeout=1.0)
 
-    assert service._live_worker is not None
-    assert not service._live_worker.is_alive()
+    # The rolling session attached to the ordinary tracking producer; no
+    # second live worker was allowed to compete for the adapter.
+    assert service._live_worker is None
 
 
 def test_live_start_waits_for_inflight_poll_claim(tmp_path):
@@ -568,7 +762,7 @@ def test_live_capture_falls_back_when_ring_is_static(tmp_path, monkeypatch):
             time.sleep(0.01)
         assert raw.ring_started.is_set()
         assert raw.burst_calls > 0
-        assert any("no bus transitions" in item["message"]
+        assert any("no validated bus frames" in item["message"]
                    for item in session.diagnostics)
     finally:
         service.stop_live_capture()
@@ -617,10 +811,10 @@ def test_static_ring_fallback_decodes_batched_trace_frames(tmp_path, monkeypatch
             time.sleep(0.01)
         assert service.status()["samples_read"] >= 4
         assert raw.capture_calls
-        # 448 samples includes the ~421-sample frame and the
-        # CMD_GEN_CAPTURE startup guard at the 2 MHz live clock.
-        assert raw.capture_calls[0]["nsamples"] == 448
-        assert raw.capture_calls[0]["rate_hz"] == pytest.approx(2_000_000.0)
+        # 768 samples includes the ~270-sample frame and the
+        # CMD_GEN_CAPTURE startup guard at the 80 kHz live clock.
+        assert raw.capture_calls[0]["nsamples"] == 768
+        assert raw.capture_calls[0]["rate_hz"] == pytest.approx(75_000.0)
         assert raw.capture_calls[0]["repeat_count"] == 1
         assert raw.capture_calls[0]["keep_attached"] is True
         assert raw.capture_calls[0]["timeout"] == pytest.approx(0.25)
@@ -631,7 +825,9 @@ def test_static_ring_fallback_decodes_batched_trace_frames(tmp_path, monkeypatch
         service.stop(wait_timeout=1.0)
 
 
-def _synthetic_lis3dh_i2c_trace(address: int = 0x19) -> np.ndarray:
+def _synthetic_lis3dh_i2c_trace(
+        address: int = 0x19,
+        payload: bytes = b"\x10\x00\xf0\xff\x20\x00") -> np.ndarray:
     """Build one complete attach-mirror read at a deliberately slow clock."""
     def add_byte(words, value, ack=0):
         for bit in range(7, -1, -1):
@@ -647,12 +843,65 @@ def _synthetic_lis3dh_i2c_trace(address: int = 0x19) -> np.ndarray:
     words.extend([(0, 1)] * 3 + [(1, 1)] * 3)
     words.extend([(1, 0)] * 3)  # repeated START
     add_byte(words, (address << 1) | 1)
-    payload = b"\x10\x00\xf0\xff\x20\x00"
     for index, value in enumerate(payload):
         add_byte(words, value, ack=1 if index == len(payload) - 1 else 0)
     words.extend([(0, 0)] * 3 + [(1, 0)] * 3 + [(1, 1)] * 3)
     return np.asarray(
         [(scl << 14) | (sda << 13) for scl, sda in words], dtype=np.uint16)
+
+
+def test_tracking_uses_continuous_ring_decoder_for_board_samples():
+    """Ordinary tracking consumes every validated ring frame, not FIFO polls."""
+
+    class TrackingRingRaw(FakeRaw):
+        def __init__(self):
+            super().__init__()
+            self.ring_started = threading.Event()
+            self.ring_kwargs = None
+            self.ring_chunks = 0
+
+        def continuous_ring_capture_with_repeating_i2c(self, **kwargs):
+            self.ring_kwargs = kwargs
+            self.ring_started.set()
+            self.first_sample.set()
+            stop_evt = kwargs["stop_evt"]
+            trace = _synthetic_lis3dh_i2c_trace(
+                0x18, payload=b"\x10\x00\xf0\xff\x20\x00" * 4,
+            ).astype("<u2").tobytes()
+            source_index = 0
+            while not stop_evt.is_set():
+                count = len(trace) // 2
+                self.ring_chunks += 1
+                yield (trace, source_index + count, count, 0, source_index)
+                source_index += count
+                stop_evt.wait(0.005)
+
+    raw = TrackingRingRaw()
+    manager = FakeManager(raw)
+    service = AccelerometerService(manager)
+    service.update_config({"output_data_rate_hz": 400})
+    assert service.start()["running"] is True
+
+    try:
+        assert raw.ring_started.wait(1.0)
+        deadline = time.time() + 1.0
+        status = service.status()
+        while (time.time() < deadline
+               and (status["samples_read"] < 4
+                    or status["host_read_rate_hz"] <= 0)):
+            time.sleep(0.01)
+            status = service.status()
+        assert status["samples_read"] >= 4
+        assert status["effective_odr_hz"] == 400
+        assert status["host_read_rate_hz"] > 0
+        assert raw.ring_kwargs["include_cursor"] is True
+        assert raw.ring_kwargs["follow_tail"] is True
+        assert raw.ring_kwargs["fetch_multiplier"] == 8
+        # The normal board path did not issue an atomic XYZ/FIFO data read;
+        # setup may still have performed WHO_AM_I/register operations.
+        assert raw.ring_chunks >= 4
+    finally:
+        service.stop(wait_timeout=1.0)
 
 
 def test_live_ring_i2c_decoder_extracts_xyz_frame():
@@ -663,6 +912,20 @@ def test_live_ring_i2c_decoder_extracts_xyz_frame():
     assert frames == [(0.001, -0.001, 0.002)]
 
 
+def test_live_ring_i2c_decoder_extracts_all_frames_from_fifo_burst():
+    """A 24-byte FIFO dialogue publishes its four XYZ slots in order."""
+    payload = b"\x10\x00\xf0\xff\x20\x00" * 4
+    digital = _synthetic_lis3dh_i2c_trace(payload=payload)
+    decoder = accelerometer_module._LiveI2CFrameDecoder(0x19, read_len=24)
+
+    assert decoder.feed(digital) == [
+        (0.001, -0.001, 0.002),
+        (0.001, -0.001, 0.002),
+        (0.001, -0.001, 0.002),
+        (0.001, -0.001, 0.002),
+    ]
+
+
 def test_live_ring_i2c_decoder_carries_frame_across_chunks():
     """A frame split at an arbitrary ring-window boundary is not lost."""
     digital = _synthetic_lis3dh_i2c_trace()
@@ -670,6 +933,16 @@ def test_live_ring_i2c_decoder_carries_frame_across_chunks():
 
     assert decoder.feed(digital[:100]) == []
     assert decoder.feed(digital[100:]) == [(0.001, -0.001, 0.002)]
+
+
+def test_live_ring_i2c_decoder_reports_source_completion_index():
+    """Batched transport can reconstruct physical frame timing."""
+    digital = _synthetic_lis3dh_i2c_trace()
+    decoder = accelerometer_module._LiveI2CFrameDecoder(0x19)
+
+    indexed = decoder.feed_indexed(digital, 100)
+
+    assert indexed == [(597, (0.001, -0.001, 0.002))]
 
 
 def test_live_ring_i2c_decoder_reset_discards_sample_boundary_context():
@@ -688,6 +961,38 @@ def test_live_ring_i2c_decoder_rejects_other_sensor_address():
     digital = _synthetic_lis3dh_i2c_trace(address=0x18)
 
     assert AccelerometerService._decode_live_i2c_frames(digital, 0x19) == []
+
+
+def test_live_ring_i2c_decoder_rejects_misaligned_sensor_words():
+    """A valid-looking bus frame with non-zero LIS3DH padding is not a sample."""
+    digital = _synthetic_lis3dh_i2c_trace(
+        payload=b"\x80\xe4\x23\x03\x88\x00")
+
+    assert AccelerometerService._decode_live_i2c_frames(digital, 0x19) == []
+
+
+def test_live_ring_sample_gate_drops_isolated_spike_but_keeps_motion():
+    gate = accelerometer_module._LiveI2CFrameGate()
+    steady = (0.0, 0.0, 1.0)
+    spike = (0.0, 0.0, 1.29)
+    moved = (0.0, 0.0, 0.7)
+
+    assert gate.feed([steady]) == []
+    assert gate.feed([spike, steady]) == [steady]
+
+    gate = accelerometer_module._LiveI2CFrameGate()
+    assert gate.feed([steady, moved, moved]) == [steady, moved]
+
+
+def test_live_pose_gate_rejects_impossible_branch_without_lookahead():
+    gate = accelerometer_module._LiveI2CPoseGate()
+    steady = (0.2, 0.0, 0.98)
+    branch_flip = (0.2, 0.98, -0.05)
+    recovered = (0.2, 0.02, 0.98)
+
+    assert gate.accept(steady) == steady
+    assert gate.accept(branch_flip) is None
+    assert gate.accept(recovered) == recovered
 
 
 def test_live_trace_publishes_xyz_before_waveform_persistence():
@@ -738,7 +1043,9 @@ def test_live_ring_throughput_updates_status_without_fifo_contention(tmp_path):
             super().__init__()
             self.fifo_calls = 0
             self.ring_started = threading.Event()
-            self.trace = _synthetic_lis3dh_i2c_trace(0x18).tobytes()
+            self.trace = _synthetic_lis3dh_i2c_trace(
+                0x18, payload=b"\x10\x00\xf0\xff\x20\x00" * 4,
+            ).tobytes()
 
         def continuous_ring_capture_with_repeating_i2c(self, **kwargs):
             self.ring_started.set()
@@ -765,7 +1072,9 @@ def test_live_ring_throughput_updates_status_without_fifo_contention(tmp_path):
         while time.time() < deadline and status["host_read_rate_hz"] < 50:
             time.sleep(0.02)
             status = service.status()
-        print("throughput status", status, session.diagnostics, raw.ring_started.is_set(), service._live_worker.is_alive(), service._live_worker, getattr(raw, 'ring_chunks', None))
+        print("throughput status", status, session.diagnostics,
+              raw.ring_started.is_set(), service._live_worker,
+              getattr(raw, 'ring_chunks', None))
         assert status["samples_read"] >= 3
         assert status["host_read_rate_hz"] >= 50
         assert status["host_data_rate_bytes_per_s"] == pytest.approx(
@@ -811,3 +1120,17 @@ def test_mil_accelerometer_routes_require_control(monkeypatch):
     assert mil_api.mil_accelerometer_start("owner") == {"running": True}
     assert mil_api.mil_accelerometer_stop("owner") == {"running": False}
     assert calls == ["owner", "owner", "owner"]
+
+
+def test_mil_accelerometer_reconnect_route_requires_control(monkeypatch):
+    calls = []
+    monkeypatch.setattr(mil_api, "require_control",
+                        lambda client: calls.append(client))
+    monkeypatch.setattr(
+        mil_api.capture_manager, "reconnect_hardware",
+        lambda client: {"running": True, "available": True,
+                         "reconnected_by": client})
+
+    assert mil_api.mil_accelerometer_reconnect("owner") == {
+        "running": True, "available": True, "reconnected_by": "owner"}
+    assert calls == ["owner"]

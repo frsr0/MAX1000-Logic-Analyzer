@@ -253,6 +253,9 @@ it('does not let an older REST response overwrite a newer stream pose', async ()
   });
   const board = document.querySelector('.mil-accel-board') as HTMLElement;
   const freshTransform = board.style.transform;
+  // U4 is mounted with LIS3DH +X toward the lower board edge.  In the
+  // USB-right top view, an X-only sample therefore rotates the board around
+  // its USB axis (CSS X), not around the header axis (CSS Y).
   expect(freshTransform).toContain('rotateX(-53.13010235415598deg)');
 
   const stale = sample();
@@ -342,6 +345,7 @@ it('falls back to the direct socket when a module worker fails before delivery',
   FailingWorker.instances[0].fail();
   await waitFor(() => expect(FakeSocket.instances).toHaveLength(1));
   expect(FailingWorker.instances[0].terminated).toBe(true);
+  expect(FakeSocket.instances[0].url).toContain('/ws/accelerometer/pose');
   FakeSocket.instances[0].emit({
     type: 'accelerometer_sample',
     data: { sample: { x_g: 0.2, y_g: 0, z_g: 1, timestamp: 50 }, last_sample_at: 50 },
@@ -349,6 +353,21 @@ it('falls back to the direct socket when a module worker fails before delivery',
   const transform = (document.querySelector('.mil-accel-board') as HTMLElement).style.transform;
   expect(transform).toContain('rotateX');
   expect(transform).not.toBe('');
+});
+
+it('offers retry and reconnect after an accelerometer I/O failure', async () => {
+  const failed = { ...sample(), available: false, last_error: 'FTDI I/O error' };
+  const healthy = { ...sample(0.2, 0, 0.98), running: true, available: true };
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue(failed);
+  const reconnect = vi.spyOn(api, 'milAccelerometerReconnect').mockResolvedValue(healthy);
+
+  render(<MilAccelerometerCard />);
+  const retry = await screen.findByRole('button', { name: /Retry \/ reconnect/i });
+  fireEvent.click(retry);
+
+  await waitFor(() => expect(reconnect).toHaveBeenCalledOnce());
+  expect(screen.getByRole('button', { name: 'Stop tracking' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Start tracking' })).toBeNull();
 });
 
 it('does not overlap a slow poll and cleans up its pending schedule on unmount', async () => {
@@ -523,6 +542,19 @@ it('shows axis readings and lets the operator establish a zero orientation', asy
   expect(screen.getByRole('button', { name: 'Set current as zero' })).toBeTruthy();
 });
 
+it('renders the MAX1000 top-side board map with the sensor axes anchored at U4', async () => {
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue(sample());
+  render(<MilAccelerometerCard />);
+  await screen.findAllByText('+0.000', { exact: true });
+  expect(screen.getByLabelText('U4 LIS3DH sensor axes: positive X toward the lower board edge, positive Y toward USB, positive Z out of the board')).toBeTruthy();
+  expect(document.querySelector('.mil-accel-pmod')).toBeTruthy();
+  expect(document.querySelector('.mil-accel-usb')).toBeTruthy();
+  expect(document.querySelector('.mil-accel-led-bank')).toBeTruthy();
+  expect(document.querySelector('.mil-accel-axis-x')?.textContent).toBe('+X');
+  expect(document.querySelector('.mil-accel-axis-y')?.textContent).toBe('+Y');
+  expect(document.querySelector('.mil-accel-axis-z')?.textContent).toBe('+Z');
+});
+
 it('shows measured sample/data rates and hardware configuration readback', async () => {
   vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({
     ...sample(), running: true, samples_read: 1234, effective_odr_hz: 100,
@@ -571,6 +603,34 @@ it('loads and saves the complete accelerometer configuration while stopped', asy
   await waitFor(() => expect(update).toHaveBeenNthCalledWith(5, {
     ...accelerometerConfig, output_data_rate_hz: 100, bdu: false,
     x_enabled: false, y_enabled: false, z_enabled: false,
+  }));
+});
+
+it('offers the LIS3DH mode-specific high ODRs and normalizes mode switches', async () => {
+  const update = vi.spyOn(api, 'milAccelerometerUpdateConfig')
+    .mockImplementation(async (next) => next);
+  render(<MilAccelerometerCard />);
+
+  const odr = await screen.findByRole('combobox', { name: 'Output data rate' });
+  const mode = screen.getByRole('combobox', { name: 'Operating mode' });
+  expect(screen.getByRole('option', { name: '1,344 Hz' })).toBeTruthy();
+  expect(screen.queryByRole('option', { name: '1,620 Hz' })).toBeNull();
+  fireEvent.change(odr, { target: { value: '1344' } });
+  await waitFor(() => expect(update).toHaveBeenNthCalledWith(1, {
+    ...accelerometerConfig, output_data_rate_hz: 1344,
+  }));
+
+  fireEvent.change(mode, { target: { value: 'low_power' } });
+  await waitFor(() => expect(update).toHaveBeenNthCalledWith(2, {
+    ...accelerometerConfig, output_data_rate_hz: 5376,
+    operating_mode: 'low_power',
+  }));
+  expect(screen.getByRole('option', { name: '5,376 Hz' })).toBeTruthy();
+  expect(screen.queryByRole('option', { name: '1,344 Hz' })).toBeNull();
+
+  fireEvent.change(mode, { target: { value: 'high_resolution' } });
+  await waitFor(() => expect(update).toHaveBeenNthCalledWith(3, {
+    ...accelerometerConfig, output_data_rate_hz: 1344,
   }));
 });
 

@@ -9,11 +9,9 @@ const POLL_INTERVAL_MS = 100;
 // The sensor stream can be several hundred samples per second. Present the
 // newest pose once per display frame instead of restarting a CSS transition
 // for every sample (which makes the compositor look like it is jumping).
-// The normal hardware read path is intentionally bounded rather than
-// unbounded FIFO-drained, so it can still deliver samples around 8–15 Hz on
-// some adapters. Keep the presentation time constant longer than one such
-// interval so the board keeps coalescing between samples instead of visibly
-// settling, pausing, and stepping.
+// The transport reports its measured decoded rate separately. Keep the board
+// on a display-frame target while the worker can ingest every validated sample
+// from a faster sensor stream.
 const BOARD_POSE_SMOOTHING_MS = 80;
 const BOARD_POSE_SETTLE_EPSILON_DEG = 0.01;
 // A real hand sweep can be fast, but a decoded outlier should never rotate
@@ -37,9 +35,26 @@ const DEFAULT_CONFIG: MilAccelerometerConfig = {
   z_enabled: true,
 };
 
-const ODR_OPTIONS: MilAccelerometerConfig['output_data_rate_hz'][] =
-  [1, 10, 25, 50, 100, 200, 400];
+const STANDARD_ODR_OPTIONS: MilAccelerometerConfig['output_data_rate_hz'][] =
+  [1, 10, 25, 50, 100, 200, 400, 1344];
+const LOW_POWER_ODR_OPTIONS: MilAccelerometerConfig['output_data_rate_hz'][] =
+  [1, 10, 25, 50, 100, 200, 400, 1620, 5376];
 const SCALE_OPTIONS: MilAccelerometerConfig['full_scale_g'][] = [2, 4, 8, 16];
+
+function odrOptionsFor(mode: MilAccelerometerConfig['operating_mode']) {
+  return mode === 'low_power' ? LOW_POWER_ODR_OPTIONS : STANDARD_ODR_OPTIONS;
+}
+
+function normalizeConfigForMode(config: MilAccelerometerConfig): MilAccelerometerConfig {
+  const options = odrOptionsFor(config.operating_mode);
+  if (options.includes(config.output_data_rate_hz)) return config;
+  return {
+    ...config,
+    // Preserve the highest trustworthy ODR when a mode switch changes the
+    // meaning of CTRL_REG1 code 9 (1.344 kHz ↔ 5.376 kHz).
+    output_data_rate_hz: config.operating_mode === 'low_power' ? 5376 : 1344,
+  };
+}
 
 function signed(value: number, digits = 3): string {
   if (!Number.isFinite(value)) return '—';
@@ -57,6 +72,23 @@ function sampleAge(timestamp: number | null | undefined): string {
   return age < 1 ? `${Math.round(age * 1000)} ms ago` : `${age.toFixed(1)} s ago`;
 }
 
+function latency(value: number | undefined): string {
+  if (!Number.isFinite(value) || value === undefined) return '—';
+  return `${value.toFixed(1)} ms`;
+}
+
+function backlog(value: number | undefined): string {
+  if (!Number.isFinite(value) || value === undefined) return '—';
+  return `${value.toLocaleString()} samples`;
+}
+
+function frontendRenderLatency(timing: Record<string, any> | null | undefined): string {
+  const received = timing?.frontend_received_at_ms;
+  const rendered = timing?.frontend_rendered_at_ms;
+  return latency(Number.isFinite(received) && Number.isFinite(rendered)
+    ? rendered - received : undefined);
+}
+
 function relativeOrientation(current: Orientation, zero: Orientation | null): Orientation {
   return {
     pitch: current.pitch - (zero?.pitch ?? 0),
@@ -65,6 +97,11 @@ function relativeOrientation(current: Orientation, zero: Orientation | null): Or
 }
 
 function boardTransform(orientation: Orientation): string {
+  // U4's pin-1 corner is at the lower-left in this USB-right top view.  From
+  // the LIS3DH package axis diagram, +X therefore faces the lower board edge
+  // and +Y faces USB.  `pitch` is derived from sensor X and rotates about the
+  // USB axis (CSS X); `roll` is derived from sensor Y and rotates about the
+  // header axis (CSS Y).
   return `perspective(520px) rotateX(${orientation.pitch}deg) rotateY(${orientation.roll}deg)`;
 }
 
@@ -118,6 +155,7 @@ export function MilAccelerometerCard() {
   const renderedBoardOrientation = useRef<Orientation | null>(null);
   const boardAnimationFrame = useRef<number | null>(null);
   const lastBoardFrameAt = useRef<number | null>(null);
+  const latestFrontendTiming = useRef<Record<string, any> | null>(null);
 
   const writeBoardPose = (next: Orientation) => {
     if (boardRef.current) boardRef.current.style.transform = boardTransform(next);
@@ -140,6 +178,10 @@ export function MilAccelerometerCard() {
       <= BOARD_POSE_SETTLE_EPSILON_DEG;
     renderedBoardOrientation.current = settled ? target : next;
     writeBoardPose(renderedBoardOrientation.current);
+    if (latestFrontendTiming.current
+        && latestFrontendTiming.current.frontend_rendered_at_ms == null) {
+      latestFrontendTiming.current.frontend_rendered_at_ms = performance.now();
+    }
 
     if (!settled) boardAnimationFrame.current = window.requestAnimationFrame(renderBoardFrame);
   };
@@ -150,7 +192,10 @@ export function MilAccelerometerCard() {
     }
   };
 
-  const applyBoardPose = (sample: MilAccelerometerStatus['sample'], force = false) => {
+  const applyBoardPose = (
+    sample: MilAccelerometerStatus['sample'], force = false,
+    timing?: Record<string, any>,
+  ) => {
     if (!sample || !boardRef.current) return;
     if (!Number.isFinite(sample.timestamp)) return;
     if (!force && lastAppliedTimestamp.current !== null
@@ -160,6 +205,11 @@ export function MilAccelerometerCard() {
     if (!Number.isFinite(next.pitch) || !Number.isFinite(next.roll)) return;
     targetBoardOrientation.current = next;
     lastAppliedTimestamp.current = sample.timestamp;
+    if (timing) {
+      latestFrontendTiming.current = {
+        ...timing, frontend_target_selected_at_ms: performance.now(),
+      };
+    }
     if (force || renderedBoardOrientation.current === null) {
       if (boardAnimationFrame.current !== null) {
         window.cancelAnimationFrame(boardAnimationFrame.current);
@@ -168,6 +218,10 @@ export function MilAccelerometerCard() {
       renderedBoardOrientation.current = next;
       lastBoardFrameAt.current = null;
       writeBoardPose(next);
+      if (latestFrontendTiming.current
+          && latestFrontendTiming.current.frontend_rendered_at_ms == null) {
+        latestFrontendTiming.current.frontend_rendered_at_ms = performance.now();
+      }
       return;
     }
     scheduleBoardRender();
@@ -220,12 +274,14 @@ export function MilAccelerometerCard() {
           setStatus((previous) => {
             // A REST response can have started before a newer websocket sample
             // arrived. Never move the model backwards to that older sample.
+            const frontendTiming = latestFrontendTiming.current;
             if (previous?.sample?.timestamp && next.sample?.timestamp
                 && next.sample.timestamp <= previous.sample.timestamp) {
               return { ...next, sample: previous.sample,
-                last_sample_at: previous.last_sample_at };
+                last_sample_at: previous.last_sample_at,
+                live_timing: frontendTiming ?? previous.live_timing };
             }
-            return next;
+            return frontendTiming ? { ...next, live_timing: frontendTiming } : next;
           });
           setPoseSample((previous) => {
             const timestamp = next.sample?.timestamp;
@@ -276,11 +332,14 @@ export function MilAccelerometerCard() {
           && sample.timestamp <= lastStreamTimestamp.current) return;
       const nextPose = poseFilter.current.update(sample);
       latestPoseSample.current = nextPose;
+      const trace = message.data.trace && typeof message.data.trace === 'object'
+        ? { ...message.data.trace, frontend_received_at_ms: performance.now() }
+        : undefined;
       // The raw sample remains visible in the diagnostic readout, but the
       // board target must use the causal pose filter too. A corrupted I2C
       // frame can otherwise rotate the model by several degrees for one
       // display frame before the next good sample arrives.
-      applyBoardPose(nextPose);
+      applyBoardPose(nextPose, false, trace);
       pending = {
         ...message.data,
         // Publish the newest filtered value for the React readout at the next
@@ -288,6 +347,7 @@ export function MilAccelerometerCard() {
         // by its independent display-frame loop.
         poseSample: nextPose,
         sample,
+        trace,
       };
       lastStreamTimestamp.current = sample.timestamp;
       if (animationFrame === null) {
@@ -303,6 +363,8 @@ export function MilAccelerometerCard() {
       const next = pending;
       pending = null;
       if (!alive || !next) return;
+      const timing = latestFrontendTiming.current ?? next.trace;
+      if (timing) timing.frontend_state_updated_at_ms = performance.now();
       setPoseSample((previous) => {
         const nextPose = next.poseSample ?? next.sample;
         if (!nextPose) return previous;
@@ -311,8 +373,8 @@ export function MilAccelerometerCard() {
         return nextPose;
       });
       // Coalesce a burst of decoded samples into the browser's paint cadence.
-      // The socket remains lossless enough for status (the newest sample wins)
-      // while React only renders once per animation frame.
+      // The worker and backend retain the full validated stream; React only
+      // needs to render the newest filtered target once per animation frame.
       setStatus((previous) => previous ? {
         ...previous,
         // A delayed REST response must not put the model behind the newest
@@ -331,6 +393,17 @@ export function MilAccelerometerCard() {
         measured_rate_hz: next.measured_rate_hz ?? previous.measured_rate_hz,
         data_rate_bytes_per_s: next.data_rate_bytes_per_s
           ?? previous.data_rate_bytes_per_s,
+        last_sample_sequence: next.last_sample_sequence
+          ?? previous.last_sample_sequence,
+        source_sample_index: next.source_sample_index
+          ?? previous.source_sample_index,
+        source_backlog_samples: next.source_backlog_samples
+          ?? previous.source_backlog_samples,
+        capture_to_publish_latency_ms: next.capture_to_publish_latency_ms
+          ?? previous.capture_to_publish_latency_ms,
+        decoded_to_publish_latency_ms: next.decoded_to_publish_latency_ms
+          ?? previous.decoded_to_publish_latency_ms,
+        live_timing: timing ?? previous.live_timing,
       } : previous);
     };
 
@@ -339,7 +412,7 @@ export function MilAccelerometerCard() {
     let unsubscribe: (() => void) | null = null;
     const startFallbackSocket = () => {
       if (socket) return;
-      socket = new ReconnectingSocket('/ws/accelerometer');
+      socket = new ReconnectingSocket('/ws/accelerometer/pose');
       unsubscribe = socket.subscribe(handleMessage);
     };
     if (typeof Worker !== 'undefined') {
@@ -395,6 +468,7 @@ export function MilAccelerometerCard() {
       // command response is the authoritative pose for that transition.
       lastAppliedTimestamp.current = null;
       latestPoseSample.current = next.sample;
+      latestFrontendTiming.current = null;
       applyBoardPose(next.sample, true);
       setPoseSample(next.sample);
       const completed = action === 'start' ? next.running : !next.running;
@@ -416,9 +490,37 @@ export function MilAccelerometerCard() {
     }
   };
 
+  const reconnectAccelerometer = async () => {
+    if (busy || !controlMode) return;
+    setBusy(true);
+    try {
+      const next = await api.milAccelerometerReconnect();
+      setStatus(next);
+      if (next.effective_config) setConfig(next.effective_config);
+      poseFilter.current.reset();
+      lastStreamTimestamp.current = next.sample?.timestamp ?? null;
+      lastAppliedTimestamp.current = null;
+      latestPoseSample.current = next.sample;
+      latestFrontendTiming.current = null;
+      applyBoardPose(next.sample, true);
+      setPoseSample(next.sample);
+      if (!next.running) {
+        throw new Error(next.last_error || 'Accelerometer reconnect did not start tracking');
+      }
+      setRequestError(null);
+      toast('success', 'Accelerometer reconnected and tracking restarted');
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Accelerometer reconnect failed';
+      setRequestError(message);
+      toast('error', message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const updateConfig = async (patch: Partial<MilAccelerometerConfig>) => {
     if (running || configBusy || !controlMode) return;
-    const next = { ...config, ...patch };
+    const next = normalizeConfigForMode({ ...config, ...patch });
     setConfigBusy(true);
     try {
       const saved = await api.milAccelerometerUpdateConfig(next);
@@ -437,6 +539,7 @@ export function MilAccelerometerCard() {
   };
 
   const controlsDisabled = running || busy || configBusy || !controlMode;
+  const retryVisible = !running && Boolean(requestError || status?.last_error);
 
   const setZeroOrientation = () => {
     const latest = latestPoseSample.current ?? poseSample ?? status?.sample ?? null;
@@ -476,17 +579,30 @@ export function MilAccelerometerCard() {
               className="mil-accel-board"
             >
               <div className="mil-accel-board-edge" />
+              <div className="mil-accel-pmod" aria-hidden="true" />
+              <div className="mil-accel-header mil-accel-header-top" aria-hidden="true" />
+              <div className="mil-accel-header mil-accel-header-bottom" aria-hidden="true" />
+              <div className="mil-accel-usb" aria-hidden="true"><span>USB</span></div>
+              <div className="mil-accel-buttons" aria-hidden="true"><i /><i /></div>
               <div className="mil-accel-silk mil-accel-silk-a">MAX1000</div>
-              <div className="mil-accel-chip"><span>ACCEL</span><i /></div>
-              <div className="mil-accel-axis mil-accel-axis-x">X</div>
-              <div className="mil-accel-axis mil-accel-axis-y">Y</div>
-              <div className="mil-accel-axis mil-accel-axis-z">Z</div>
-              <div className="mil-accel-led" />
+              <div className="mil-accel-sdram">SDRAM</div>
+              <div className="mil-accel-fpga">MAX<br />10</div>
+              <div className="mil-accel-flash">FLASH</div>
+              <div className="mil-accel-ftdi">FTDI</div>
+              <div className="mil-accel-osc">OSC</div>
+              <div className="mil-accel-led-bank" aria-hidden="true" />
+              <div className="mil-accel-sensor" aria-label="U4 LIS3DH sensor axes: positive X toward the lower board edge, positive Y toward USB, positive Z out of the board">
+                <span className="mil-accel-sensor-mark" />
+                <span className="mil-accel-sensor-name">U4<br />LIS3DH</span>
+                <span className="mil-accel-axis mil-accel-axis-x">+X</span>
+                <span className="mil-accel-axis mil-accel-axis-y">+Y</span>
+                <span className="mil-accel-axis mil-accel-axis-z">+Z</span>
+              </div>
             </div>
           </div>
           <div className="mil-accel-orientation" aria-live="polite">
-            <span><b>Pitch</b> {signed(orientation.pitch, 1)}°</span>
-            <span><b>Roll</b> {signed(orientation.roll, 1)}°</span>
+            <span><b>U4 X / lower edge</b> {signed(orientation.pitch, 1)}°</span>
+            <span><b>U4 Y / USB</b> {signed(orientation.roll, 1)}°</span>
           </div>
         </div>
 
@@ -503,6 +619,10 @@ export function MilAccelerometerCard() {
             <span>Host payload rate</span><strong>{rate(status?.host_data_rate_bytes_per_s ?? status?.data_rate_bytes_per_s, 'bytes/s')}</strong>
             <span>Samples read</span><strong>{(status?.samples_read ?? 0).toLocaleString()}</strong>
             <span>Last sample</span><strong>{sampleAge(status?.last_sample_at ?? status?.sample?.timestamp)}</strong>
+            <span>Ring source backlog</span><strong>{backlog(status?.source_backlog_samples)}</strong>
+            <span>Capture → publish</span><strong>{latency(status?.capture_to_publish_latency_ms)}</strong>
+            <span>Decode → publish</span><strong>{latency(status?.decoded_to_publish_latency_ms)}</strong>
+            <span>WebSocket → render</span><strong>{frontendRenderLatency(status?.live_timing)}</strong>
             <small className="hint mil-accel-rate-note">Host rates measure completed USB/I²C reads and can be lower than the sensor ODR.</small>
           </div>
           <div className="mil-accel-readback" aria-label="Accelerometer hardware readback">
@@ -528,7 +648,7 @@ export function MilAccelerometerCard() {
               <select aria-label="Output data rate" value={config.output_data_rate_hz}
                       disabled={controlsDisabled}
                       onChange={(e) => void updateConfig({ output_data_rate_hz: Number(e.target.value) as MilAccelerometerConfig['output_data_rate_hz'] })}>
-                {ODR_OPTIONS.map((value) => <option key={value} value={value}>{value.toLocaleString()} Hz</option>)}
+                {odrOptionsFor(config.operating_mode).map((value) => <option key={value} value={value}>{value.toLocaleString()} Hz</option>)}
               </select>
             </label>
             <label className="field"><span>Full-scale range</span>
@@ -585,6 +705,12 @@ export function MilAccelerometerCard() {
             ) : (
               <button className="danger" disabled={busy || !controlMode} onClick={() => void startStop('stop')}>
                 Stop tracking
+              </button>
+            )}
+            {retryVisible && (
+              <button className="primary" disabled={busy || !controlMode}
+                      onClick={() => void reconnectAccelerometer()}>
+                {busy ? 'Reconnecting…' : 'Retry / reconnect'}
               </button>
             )}
             <button disabled={!hasSample} onClick={setZeroOrientation}>

@@ -241,6 +241,7 @@ export const api = {
     put<MilAccelerometerConfig>('/api/mil/accelerometer/config', config),
   milAccelerometerStart: () => post<MilAccelerometerStatus>('/api/mil/accelerometer/start'),
   milAccelerometerStop: () => post<MilAccelerometerStatus>('/api/mil/accelerometer/stop'),
+  milAccelerometerReconnect: () => post<MilAccelerometerStatus>('/api/mil/accelerometer/reconnect'),
 
   // diagnostics
   logs: (limit = 500) => get<{ logs: LogEntry[] }>(`/api/logs?limit=${limit}`),

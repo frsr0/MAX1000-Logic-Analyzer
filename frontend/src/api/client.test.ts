@@ -124,6 +124,7 @@ const cases: Case[] = [
   } },
   { name: 'mil accelerometer start', call: api.milAccelerometerStart, method: 'POST', url: '/api/mil/accelerometer/start' },
   { name: 'mil accelerometer stop', call: api.milAccelerometerStop, method: 'POST', url: '/api/mil/accelerometer/stop' },
+  { name: 'mil accelerometer reconnect', call: api.milAccelerometerReconnect, method: 'POST', url: '/api/mil/accelerometer/reconnect' },
   { name: 'logs', call: () => api.logs(), method: 'GET', url: '/api/logs?limit=500' },
   { name: 'diagnostics', call: api.diagnostics, method: 'GET', url: '/api/diagnostics' },
   { name: 'mock capture', call: () => api.mockCapture('demo'), method: 'POST', url: '/api/diagnostics/mock-capture', body: { scenario: 'demo', sample_rate: 1_000_000, num_samples: 50_000, analog: false } },

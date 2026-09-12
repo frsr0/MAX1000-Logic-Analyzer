@@ -14,6 +14,18 @@ type AccelerometerSample = NonNullable<MilAccelerometerStatus['sample']>;
 // movement-response budget.
 export const POSE_FILTER_CUTOFF_HZ = 12;
 const MAX_SAMPLE_GAP_S = 0.25;
+// Tail-follow deliberately skips source samples while the host is reading a
+// fresh ring window. Do not let that capture-time gap turn the next valid
+// point into a one-update presentation snap. The display-frame renderer keeps
+// advancing toward the target while this cap preserves a causal, responsive
+// pose update.
+const MAX_FILTER_STEP_S = 1 / 60;
+// A hand-held board cannot change its gravity-derived pose by this much in a
+// single live update. This is a causal semantic guard for a complete but
+// misaligned/protocol-shaped frame; it drops only that pose point and never
+// delays the next valid point. The raw waveform/history topic still receives
+// every decoded frame.
+const MAX_POSE_STEP_DEG = 75;
 
 export function orientationFor(sample: MilAccelerometerStatus['sample']): Orientation {
   if (!sample) return { pitch: 0, roll: 0 };
@@ -23,6 +35,11 @@ export function orientationFor(sample: MilAccelerometerStatus['sample']): Orient
     pitch: Math.atan2(-sample.x_g, Math.hypot(sample.y_g, sample.z_g)) * 180 / Math.PI,
     roll: Math.atan2(sample.y_g, sample.z_g) * 180 / Math.PI,
   };
+}
+
+function angularDistanceDegrees(left: number, right: number): number {
+  const wrapped = Math.abs(left - right) % 360;
+  return wrapped > 180 ? 360 - wrapped : wrapped;
 }
 
 /**
@@ -69,10 +86,27 @@ export class AdaptivePoseFilter {
       return { ...robust };
     }
 
+    const previousOrientation = orientationFor(previous);
+    const robustOrientation = orientationFor(robust);
+    const poseStep = Math.max(
+      angularDistanceDegrees(previousOrientation.pitch, robustOrientation.pitch),
+      angularDistanceDegrees(previousOrientation.roll, robustOrientation.roll),
+    );
+    if (poseStep > MAX_POSE_STEP_DEG) {
+      // The source timestamp has still been consumed. Advancing it here keeps
+      // a rejected frame from turning the next valid point into a stale-gap
+      // reset, while holding the displayed pose at the last causal value.
+      this.history = [{ ...previous, timestamp: sample.timestamp }];
+      this.previous = { ...previous, timestamp: sample.timestamp };
+      return { ...previous, timestamp: sample.timestamp };
+    }
+
     // Exact-timestamp updates are commonly REST/WebSocket duplicates. Keep
     // the latest source sample rather than repeatedly filtering it as if time
     // had advanced.
-    const alpha = 1 - Math.exp(-2 * Math.PI * POSE_FILTER_CUTOFF_HZ * dt);
+    const presentationDt = Math.min(dt, MAX_FILTER_STEP_S);
+    const alpha = 1 - Math.exp(
+      -2 * Math.PI * POSE_FILTER_CUTOFF_HZ * presentationDt);
     const filtered = {
       ...sample,
       x_g: previous.x_g + alpha * (robust.x_g - previous.x_g),

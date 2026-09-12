@@ -1,7 +1,8 @@
 """WebSocket endpoints. Topics map 1:1 to the manager's broadcast topics:
 
   /ws/status              device + session lifecycle events
-  /ws/accelerometer       decoded live XYZ samples
+  /ws/accelerometer       lossless decoded live XYZ samples
+  /ws/accelerometer/pose  latest decoded pose target
   /ws/capture             capture progress
   /ws/logs                live log stream
   /ws/session/{id}        waveform_ready / measurement_updated for a session
@@ -59,8 +60,14 @@ async def ws_capture(ws: WebSocket):
 
 @router.websocket("/ws/accelerometer")
 async def ws_accelerometer(ws: WebSocket):
-    """Stream decoded LIS3DH samples without mixing them into status events."""
+    """Stream the lossless decoded LIS3DH history."""
     await _serve(ws, "accelerometer")
+
+
+@router.websocket("/ws/accelerometer/pose")
+async def ws_accelerometer_pose(ws: WebSocket):
+    """Stream the newest LIS3DH pose target without an archival backlog."""
+    await _serve(ws, "accelerometer_pose")
 
 
 @router.websocket("/ws/logs")

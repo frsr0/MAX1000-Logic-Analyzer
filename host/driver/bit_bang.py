@@ -231,6 +231,64 @@ def i2c_read_symbols(write_frame, read_len, dev_r):
     return syms
 
 
+def i2c_read_symbols_compact(write_frame, read_len, dev_r):
+    """Encode one I²C read with two symbols per SCL period.
+
+    The normal encoder uses four symbols per clock so offline captures have a
+    generous high plateau.  A live FIFO burst instead needs several complete
+    six-byte transactions to fit in the 1,024-symbol generator FIFO.  This
+    compact form still changes SDA while SCL is low and leaves one full
+    symbol for the sampled high phase; the live ring capture runs without the
+    non-causal majority filter when this encoder is selected.
+    """
+    read_len = int(read_len)
+    if read_len <= 0:
+        raise ValueError("compact I2C reads require at least one byte")
+
+    syms = [_IDLE, _IDLE, 0b10, 0b10]
+    sda = 0
+
+    def add_driven_byte(value):
+        nonlocal sda
+        for bit in range(7, -1, -1):
+            sda = (int(value) >> bit) & 1
+            syms.extend((sda, 0b10 | sda))
+        # Release SDA for the slave ACK. The attach mirror supplies the real
+        # response on the high phase.
+        syms.extend((0b01, 0b11))
+        sda = 1
+
+    for value in bytes(write_frame or b''):
+        add_driven_byte(value)
+
+    # Release the write ACK, then create a repeated START after the slave has
+    # had a low SCL phase in which to release SDA.
+    syms.extend((0b01, 0b01, 0b11, 0b10, 0b10))
+    sda = 0
+    add_driven_byte(dev_r & 0xFF)
+
+    # ``add_driven_byte`` emitted a write-style ACK slot for the read address;
+    # its released SDA/high phase is exactly the slave ACK phase on the wire.
+    for index in range(read_len):
+        for _ in range(8):
+            # Master releases SDA; the slave drives the data bit on the
+            # attach mirror during the high phase.
+            syms.extend((0b01, 0b11))
+            sda = 1
+        is_last = index == read_len - 1
+        syms.extend((0b01 if is_last else 0b00,
+                     0b11 if is_last else 0b10))
+        sda = 1 if is_last else 0
+
+    # STOP: keep SDA low while SCL is low, raise SCL, then release SDA.
+    syms.extend((0b00, 0b00, 0b10, 0b11))
+    if len(syms) > MAX_SYMBOLS:
+        raise ValueError(
+            f"compact I2C pattern is {len(syms)} symbols; generator FIFO "
+            f"holds {MAX_SYMBOLS}")
+    return syms
+
+
 # ── SWD (ARM Serial Wire Debug, host role, open-loop) ────────────────
 # bit 0 = SWDIO (gen_tx pin), bit 1 = SWCLK (gen_scl pin).  Two symbols
 # per SWCLK cycle, like the SPI encoder: SWCLK low with SWDIO set, then

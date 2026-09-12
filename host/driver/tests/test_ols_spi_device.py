@@ -55,12 +55,18 @@ from driver.ols_spi_device import (
     decompress_rle_stream,
     narrow_digital_flags,
     OLSDeviceSPI,
+    RING_SAMPLE_COUNT,
     find_spi_device,
     payload_to_wire,
     wire_to_payload,
     unpack_narrow_digital_words,
 )
-from driver.bit_bang import i2c_read_symbols, max_i2c_read_bytes, pack_symbols
+from driver.bit_bang import (
+    i2c_read_symbols,
+    i2c_read_symbols_compact,
+    max_i2c_read_bytes,
+    pack_symbols,
+)
 from app.gui_decoders import parse_i2c_read_payload
 
 
@@ -1749,24 +1755,154 @@ class TestOLSDeviceSPIRolling:
         device_spi.read_capture_range = MagicMock(
             side_effect=[b'\x34\x12' * 4, b'\x78\x56' * 4])
         device_spi.pkt.get_status.side_effect = [
-            {'producer_index': 100, 'oldest_index': 0, 'overrun_count': 0},
-            {'producer_index': 108, 'oldest_index': 0, 'overrun_count': 0},
-            {'producer_index': 108, 'oldest_index': 0, 'overrun_count': 0},
+            # This is the FPGA's cumulative write-side counter. It can grow
+            # while the reader remains exactly on its sequential cursor.
+            {'producer_index': 100, 'oldest_index': 0,
+             'overrun_count': 1_000_000},
+            {'producer_index': 108, 'oldest_index': 0,
+             'overrun_count': 1_000_008},
         ]
         device_spi.spi.flush = MagicMock()
 
         stop_evt = MagicMock()
-        stop_evt.is_set.side_effect = [False, False, False, False, False, True]
+        # The second block begins exactly where the first ended. A sequential
+        # reader must stop here rather than re-seeking to the newer tail.
+        stop_evt.is_set.side_effect = [False, False, False, False, True]
         stop_evt.wait.return_value = False
         results = list(device_spi.stream_ring_capture(
-            1_000_000, 4, stop_evt, follow_tail=True))
+            1_000_000, 4, stop_evt, fetch_multiplier=1, follow_tail=True))
 
         assert [item[1] for item in results] == [4, 8]
         device_spi.read_capture_range.assert_has_calls([
             call(96, 4, probe_compression=False),
-            call(104, 4, probe_compression=False),
+            call(100, 4, probe_compression=False),
         ])
-        assert [item[3] for item in results] == [1, 2]
+        assert [item[3] for item in results] == [1, 1]
+
+    def test_stream_ring_tail_batches_multiple_output_windows_per_read(
+            self, device_spi):
+        """Tail-follow keeps freshness while amortising block-read latency."""
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.read_capture_range = MagicMock(side_effect=[
+            b'\x34\x12' * 16,
+            b'\x78\x56' * 16,
+        ])
+        device_spi.pkt.get_status.side_effect = [
+            {'producer_index': 100, 'oldest_index': 0, 'overrun_count': 0},
+            {'producer_index': 116, 'oldest_index': 0, 'overrun_count': 0},
+        ]
+        device_spi.spi.flush = MagicMock()
+
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False] * 10 + [True]
+        stop_evt.wait.return_value = False
+        results = list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, fetch_multiplier=4, follow_tail=True))
+
+        assert [item[1] for item in results] == [4, 8, 12, 16, 20, 24, 28, 32]
+        device_spi.read_capture_range.assert_has_calls([
+            call(96, 4, probe_compression=False),
+            call(112, 4, probe_compression=False),
+        ])
+
+    def test_stream_ring_tail_advances_after_short_block_read(
+            self, device_spi):
+        """A short fetch must not be appended again from the same cursor."""
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.read_capture_range = MagicMock(side_effect=[
+            b'\x34\x12' * 2,
+            b'\x78\x56' * 2,
+        ])
+        device_spi.pkt.get_status.side_effect = [
+            {'producer_index': 100, 'oldest_index': 0, 'overrun_count': 0},
+            {'producer_index': 102, 'oldest_index': 0, 'overrun_count': 0},
+        ]
+        device_spi.spi.flush = MagicMock()
+
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False] * 3 + [True]
+        stop_evt.wait.return_value = False
+        results = list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, fetch_multiplier=1, follow_tail=True))
+
+        assert [item[1] for item in results] == [4]
+        device_spi.read_capture_range.assert_has_calls([
+            call(96, 4, probe_compression=False),
+            call(98, 4, probe_compression=False),
+        ])
+
+    def test_stream_ring_keeps_logical_cursor_across_sdram_wrap(
+            self, device_spi):
+        """A physical SDRAM wrap must not make the reader replay its tail."""
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.read_capture_range = MagicMock(
+            side_effect=[b'\x34\x12' * 4, b'\x78\x56' * 4])
+        device_spi.pkt.get_status.side_effect = [
+            {'producer_index': RING_SAMPLE_COUNT + 4096,
+             'oldest_index': 0, 'overrun_count': 0},
+            {'producer_index': RING_SAMPLE_COUNT + 4100,
+             'oldest_index': 0, 'overrun_count': 0},
+        ]
+        device_spi.spi.flush = MagicMock()
+
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False] * 4 + [True]
+        stop_evt.wait.return_value = False
+        results = list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, fetch_multiplier=1,
+            follow_tail=True))
+
+        assert [item[1] for item in results] == [4, 8]
+        device_spi.read_capture_range.assert_has_calls([
+            call(RING_SAMPLE_COUNT + 4092, 4, probe_compression=False),
+            call(RING_SAMPLE_COUNT + 4096, 4, probe_compression=False),
+        ])
+
+    def test_stream_ring_tail_carries_write_pointer_timing_for_two_second_backlog(
+            self, device_spi):
+        """A newest-tail read must expose the producer cursor, not fake age."""
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        ring_depth = 4_194_304
+        device_spi.read_capture_range = MagicMock(
+            return_value=b'\x34\x12' * 16)
+        status_calls = []
+        def ring_status():
+            status_calls.append(True)
+            producer = ring_depth if len(status_calls) == 1 else ring_depth + 16
+            return {'producer_index': producer, 'oldest_index': 0,
+                    'overrun_count': 0}
+        device_spi.pkt.get_status.side_effect = ring_status
+        device_spi.spi.flush = MagicMock()
+
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False] * 12 + [True]
+        stop_evt.wait.return_value = False
+        results = list(device_spi.stream_ring_capture(
+            2_000_000, 4, stop_evt, fetch_multiplier=4,
+            follow_tail=True, include_cursor=True))
+
+        assert results
+        first = results[0]
+        assert first[4] == ring_depth - 4
+        assert first[5]['producer_index'] == ring_depth
+        assert first[5]['oldest_index'] == 0
+        assert first[5]['source_backlog_samples'] <= 16
 
     def test_stream_ring_capture_uses_true_rle_stream_in_rle_mode(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -2450,6 +2586,22 @@ class TestI2CReadSymbols:
         """Empty write frame should not crash (defensive)."""
         syms = i2c_read_symbols(b'', 1, 0x31)
         assert len(syms) > 10, "should still produce START+dev_r+STOP"
+
+    def test_i2c_read_symbols_compact_keeps_long_reads_inside_fifo(self):
+        """The compact encoder must fit a 24-byte sensor read in the FIFO."""
+        write_frame = bytes([0x30, 0x28 | 0x80])
+        syms_6 = i2c_read_symbols_compact(write_frame, 6, 0x31)
+        syms_24 = i2c_read_symbols_compact(write_frame, 24, 0x31)
+
+        assert len(syms_6) == 175
+        assert len(syms_24) == 499
+        assert len(pack_symbols(syms_24)) == 125
+
+    def test_i2c_read_symbols_compact_rejects_zero_length(self):
+        """Compact mode is reserved for complete sensor read transactions."""
+        write_frame = bytes([0xA6, 0x2D])
+        with pytest.raises(ValueError, match="at least one byte"):
+            i2c_read_symbols_compact(write_frame, 0, 0x31)
 
 
 class TestParseI2CReadPayload:
