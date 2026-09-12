@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api, clientId } from '../api/client';
 import type { DeviceDescriptor } from '../api/types';
 import { useApp } from '../state/appStore';
+import { SettingsPage } from './SettingsPage';
 
 function formatRate(rate: number) {
   return rate >= 1e6 ? `${(rate / 1e6).toFixed(1)} MHz` : `${(rate / 1e3).toFixed(0)} kHz`;
@@ -94,7 +95,7 @@ export function DevicePage() {
       <div className="page-head">
         <div>
           <h2>Hardware</h2>
-          <p className="hint">Connect a board and choose who can control it. Pin maps, capabilities, and diagnostics are below.</p>
+          <p className="hint">Connect a board and choose who can control it. Settings, pin maps, capabilities, and diagnostics are below.</p>
         </div>
         <button onClick={scan}>Rescan</button>
       </div>
@@ -125,7 +126,7 @@ export function DevicePage() {
 
       <div className="card-grid device-grid">
         {devices.map((d) => (
-          <div key={d.id} className={`card device-card ${d.available ? '' : 'unavailable'}`}>
+          <div key={d.id} className={`card device-card ${d.available ? '' : 'unavailable'}${d.mock ? ' mock-device-card' : ''}`}>
             <div className="card-head">
               <div>
                 <h3>{d.name}{d.mock ? ' (mock)' : ''}</h3>
@@ -139,7 +140,7 @@ export function DevicePage() {
             {connected && status?.device_kind === d.id ? (
               <button className="danger" onClick={disconnect} disabled={!controlMode}>Disconnect</button>
             ) : (
-              <button className="primary" disabled={!d.available || busy || !controlMode}
+              <button className={d.mock ? '' : 'primary'} disabled={!d.available || busy || !controlMode}
                 onClick={() => connect(d.id)}>Connect</button>
             )}
           </div>
@@ -275,6 +276,10 @@ export function DevicePage() {
           {debug && <pre className="debug-pre">{JSON.stringify(debug, null, 2)}</pre>}
         </div>
       )}
+
+      <section className="settings-section" aria-labelledby="settings-heading">
+        <SettingsPage embedded />
+      </section>
     </div>
   );
 }

@@ -1,6 +1,7 @@
 // Root component: wires WebSockets to the stores, loads catalogs, renders shell.
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { ReconnectingSocket } from './api/websocket';
+import { api } from './api/client';
 import { AppShell } from './layout/AppShell';
 import { useApp } from './state/appStore';
 import { waveformView } from './state/waveformStore';
@@ -8,9 +9,33 @@ import { waveformView } from './state/waveformStore';
 export default function App() {
   const { refreshStatus, refreshSessions, refreshCapabilities, loadCatalogs,
           setWsConnected, pushLog, toast } = useApp();
+  const autoConnectInFlight = useRef(false);
+
+  const connectHardwareIfAvailable = async (statusPromise?: ReturnType<typeof refreshStatus>) => {
+    // The mock backend remains available for explicit test/demo flows, but it
+    // must never win the normal startup path over a real MAX1000 board.
+    if (autoConnectInFlight.current) return;
+    autoConnectInFlight.current = true;
+    try {
+      const current = await (statusPromise ?? refreshStatus());
+      if (!current || current.device_connected || !useApp.getState().controlMode) return;
+      const { devices } = await api.devices();
+      const hardware = devices.find((device) => device.id === 'hardware');
+      if (!hardware?.available) return;
+      await api.connect('hardware');
+      await Promise.all([refreshStatus(), refreshCapabilities()]);
+      toast('success', 'Connected to the available MAX1000 hardware scope');
+    } catch {
+      // A board can disappear between discovery and connect, or another
+      // browser can own the control lock. Leave the app disconnected rather
+      // than silently substituting the mock scope.
+    } finally {
+      autoConnectInFlight.current = false;
+    }
+  };
 
   useEffect(() => {
-    refreshStatus();
+    void connectHardwareIfAvailable();
     refreshSessions();
     refreshCapabilities();
     loadCatalogs();
@@ -20,7 +45,10 @@ export default function App() {
     const statusWs = new ReconnectingSocket('/ws/status');
     statusWs.onStateChange = (ok) => {
       setWsConnected(ok);
-      if (ok) { refreshStatus(); refreshSessions(); }
+      if (ok) {
+        void connectHardwareIfAvailable(Promise.resolve(refreshStatus()));
+        refreshSessions();
+      }
     };
     const unsubStatus = statusWs.subscribe((msg) => {
       switch (msg.type) {

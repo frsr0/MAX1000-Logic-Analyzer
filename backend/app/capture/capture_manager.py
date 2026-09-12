@@ -104,19 +104,18 @@ class CaptureManager:
     # ── device lifecycle ─────────────────────────────────────────────
 
     def list_devices(self) -> List[dict]:
-        devices = [{
-            "id": "mock", "name": "Mock MAX1000 Analyser", "driver": "mock",
-            "connection": "mock", "available": True, "mock": True,
-            "detail": "Synthetic device for UI/backend testing",
-        }]
         hw_ok = hardware_available()
-        devices.append({
+        devices = [{
             "id": "hardware", "name": "MAX1000 OLS Logic Analyzer",
             "driver": "ols_spi", "connection": "FTDI FT2232H MPSSE SPI",
             "available": hw_ok, "mock": False,
             "detail": "" if hw_ok else "No FTDI SPI device found "
                                        "(ftd2xx driver + hardware required)",
-        })
+        }, {
+            "id": "mock", "name": "Mock MAX1000 Analyser", "driver": "mock",
+            "connection": "mock", "available": True, "mock": True,
+            "detail": "Synthetic device for explicit UI/backend testing only",
+        }]
         return devices
 
     def connect(self, device_id: str) -> dict:

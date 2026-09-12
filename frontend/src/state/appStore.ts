@@ -10,7 +10,7 @@ import { defaultCaptureSettings } from '../api/types';
 import { waveformView } from './waveformStore';
 
 export type Page = 'capture' | 'sessions' | 'device' | 'generator' | 'mil'
-  | 'diagnostics' | 'settings';
+  | 'diagnostics';
 
 export interface Toast {
   id: number;
@@ -26,7 +26,7 @@ interface AppState {
   setWsConnected: (v: boolean) => void;
 
   status: BackendStatus | null;
-  refreshStatus: () => Promise<void>;
+  refreshStatus: () => Promise<BackendStatus | null>;
 
   capabilities: DeviceCapabilities | null;
   refreshCapabilities: () => Promise<void>;
@@ -76,8 +76,13 @@ export const useApp = create<AppState>((set, getState) => ({
   status: null,
   refreshStatus: async () => {
     try {
-      set({ status: await api.status() });
-    } catch { /* backend down; ws reconnect will retry */ }
+      const status = await api.status();
+      set({ status });
+      return status;
+    } catch {
+      /* backend down; ws reconnect will retry */
+      return null;
+    }
   },
 
   capabilities: null,

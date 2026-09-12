@@ -20,7 +20,7 @@ def list_devices():
 
 
 class ConnectRequest(BaseModel):
-    device_id: str = "mock"
+    device_id: str = "hardware"
 
 
 @router.post("/api/connect")

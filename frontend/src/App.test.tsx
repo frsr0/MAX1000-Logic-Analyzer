@@ -27,6 +27,7 @@ vi.mock('./api/websocket', () => ({ ReconnectingSocket: socketHarness.Socket }))
 vi.mock('./layout/AppShell', () => ({ AppShell: () => <div>shell</div> }));
 
 import App from './App';
+import { api } from './api/client';
 import { useApp } from './state/appStore';
 import { waveformView } from './state/waveformStore';
 import { session } from './test/session';
@@ -96,6 +97,48 @@ it('initializes sockets, catalogs, status messages, logs, and cleans up', async 
   }
 });
 
+it('automatically connects the real hardware scope without selecting the mock', async () => {
+  const refreshStatus = vi.fn()
+    .mockResolvedValueOnce({ device_connected: false } as never)
+    .mockResolvedValue({ device_connected: true } as never);
+  const refreshCapabilities = vi.fn();
+  const toast = vi.fn();
+  useApp.setState({ refreshStatus, refreshCapabilities, refreshSessions: vi.fn(),
+    loadCatalogs: vi.fn(), toast, controlMode: true });
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === '/api/devices') return Response.json({ devices: [
+      { id: 'mock', available: true, mock: true },
+      { id: 'hardware', available: true, mock: false },
+    ] });
+    if (url === '/api/connect') return Response.json({ connected: true });
+    return Response.json({});
+  });
+  vi.stubGlobal('fetch', fetcher);
+
+  render(<App />);
+  await waitFor(() => expect(fetcher).toHaveBeenCalledWith('/api/connect', expect.objectContaining({
+    body: JSON.stringify({ device_id: 'hardware' }),
+  })));
+  expect(toast).toHaveBeenCalledWith('success', 'Connected to the available MAX1000 hardware scope');
+  expect(refreshCapabilities).toHaveBeenCalledTimes(2);
+});
+
+it('leaves the app disconnected when no real hardware is available', async () => {
+  const refreshStatus = vi.fn().mockResolvedValue({ device_connected: false } as never);
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => String(input) === '/api/devices'
+    ? Response.json({ devices: [{ id: 'mock', available: true, mock: true },
+      { id: 'hardware', available: false, mock: false }] })
+    : Response.json({}));
+  vi.stubGlobal('fetch', fetcher);
+  useApp.setState({ refreshStatus, refreshSessions: vi.fn(), refreshCapabilities: vi.fn(),
+    loadCatalogs: vi.fn(), controlMode: true });
+
+  render(<App />);
+  await waitFor(() => expect(fetcher).toHaveBeenCalledWith('/api/devices', expect.anything()));
+  expect(fetcher.mock.calls.some(([url]) => String(url) === '/api/connect')).toBe(false);
+});
+
 it('handles every capture event including progress with and without status', async () => {
   const refreshStatus = vi.fn();
   const refreshSessions = vi.fn();
@@ -138,23 +181,24 @@ it('rebinds session sockets and handles decoder and live-waveform messages', asy
   const view = render(<App />);
   await waitFor(() => expect(socket('/ws/decoder/one')).toBeTruthy());
 
+  await message('/ws/decoder/one', 'decoder_progress', { live: true });
   await message('/ws/decoder/one', 'decoder_complete', { error: 'decode failed', cancelled: false, event_count: 0 });
   await message('/ws/decoder/one', 'decoder_complete', { error: '', cancelled: true, event_count: 1 });
   await message('/ws/decoder/one', 'decoder_complete', { error: '', cancelled: false, event_count: 12 });
   await message('/ws/decoder/one', 'ignored');
-  expect(refreshActiveSession).toHaveBeenCalledTimes(3);
-  expect(requestAnnotations).toHaveBeenCalledTimes(3);
+  expect(refreshActiveSession).toHaveBeenCalledTimes(4);
+  expect(requestAnnotations).toHaveBeenCalledTimes(4);
   expect(toast).toHaveBeenNthCalledWith(1, 'error', 'Decoder failed: decode failed');
   expect(toast).toHaveBeenNthCalledWith(2, 'success', 'Decoder finished: 12 events');
 
   await message('/ws/session/one', 'measurement_updated');
-  expect(refreshActiveSession).toHaveBeenCalledTimes(4);
+  expect(refreshActiveSession).toHaveBeenCalledTimes(5);
   await message('/ws/session/one', 'waveform_ready', { num_samples: 80, sample_rate: 4000, rolling: true, chunk_samples: 16 });
   expect(updateLive).toHaveBeenCalledWith(80, 4000, 8, true, 16);
-  expect(refreshActiveSession).toHaveBeenCalledTimes(5);
+  expect(refreshActiveSession).toHaveBeenCalledTimes(6);
   await message('/ws/session/one', 'waveform_ready');
   expect(updateLive).toHaveBeenLastCalledWith(50, 2000, 8, false, 0);
-  expect(refreshActiveSession).toHaveBeenCalledTimes(5);
+  expect(refreshActiveSession).toHaveBeenCalledTimes(6);
   await message('/ws/session/one', 'ignored');
 
   const oldDecoder = socket('/ws/decoder/one');

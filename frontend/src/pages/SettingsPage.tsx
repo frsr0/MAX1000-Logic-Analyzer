@@ -6,7 +6,7 @@ import { useApp } from '../state/appStore';
 
 const COM0COM_DOWNLOAD = 'https://sourceforge.net/projects/com0com/files/com0com/3.0.0.0/';
 
-export function SettingsPage() {
+export function SettingsPage({ embedded = false }: { embedded?: boolean }) {
   const { viewerSettings, setViewerSettings, status, refreshStatus,
           controlMode, setControlMode, toast, setCaptureSettings } = useApp();
   const [presets, setPresets] = useState<any[]>(
@@ -18,19 +18,34 @@ export function SettingsPage() {
   const [bridgeBusy, setBridgeBusy] = useState(false);
 
   const refreshVirtual = () => api.virtualSerialStatus().then(setVirtual).catch(() => {});
-  useEffect(() => { refreshVirtual(); }, []);
+  useEffect(() => {
+    // Let the parent Hardware page issue its device scan first. This keeps
+    // discovery deterministic when both panels mount together.
+    const timer = window.setTimeout(refreshVirtual, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   const lock = status?.control;
   const iAmHolder = lock?.holder === clientId();
 
   return (
-    <div className="page">
-      <div className="page-head">
-        <div>
-          <h2>Settings</h2>
-          <p className="hint">These settings only affect the web UI and the current control lock, not the underlying hardware image.</p>
+    <div className={embedded ? 'settings-content' : 'page'}>
+      {embedded && (
+        <div className="page-head">
+          <div>
+            <h2 id="settings-heading">Settings</h2>
+            <p className="hint">Viewer defaults, control preferences, decoder presets, and debug tools.</p>
+          </div>
         </div>
-      </div>
+      )}
+      {!embedded && (
+        <div className="page-head">
+          <div>
+            <h2>Settings</h2>
+            <p className="hint">These settings only affect the web UI and the current control lock, not the underlying hardware image.</p>
+          </div>
+        </div>
+      )}
 
       <div className="gen-grid">
         <div className="card">
@@ -63,7 +78,7 @@ export function SettingsPage() {
           }}>Apply now</button>
         </div>
 
-        <div className="card">
+        {!embedded && <div className="card">
           <h3>Hardware control</h3>
           <p className="hint">Client id: <span className="mono">{clientId()}</span></p>
           <p className="hint">Acquire the control lock before sending capture or generator commands to the hardware.</p>
@@ -98,6 +113,9 @@ export function SettingsPage() {
             }}>Release</button>
           </div>
 
+        </div>}
+
+        <div className="card">
           <h3>Decoder presets</h3>
           {!presets.length && <div className="hint">Save presets from the Decoders panel.</div>}
           {presets.map((p, i) => (
@@ -144,20 +162,20 @@ export function SettingsPage() {
             not reconfigure JTAG, MPSSE, FTDI EEPROM, or board wiring.
           </p>
           {!virtual && <div className="hint">Checking virtual-port support…</div>}
-          {virtual && !virtual.driver.available && (
+          {virtual && !virtual.driver?.available && (
             <div className="finding warning">
               No com0com driver is installed. The TCP bridge works now; paired
               Windows COMx ports require a separately installed signed virtual-COM driver.{' '}
               <a href={COM0COM_DOWNLOAD} target="_blank" rel="noreferrer">Install the signed driver</a>
             </div>
           )}
-          {virtual?.driver.available && virtual.driver.error && (
+          {virtual?.driver?.available && virtual.driver.error && (
             <div className="finding warning">
               The driver is detected, but Windows requires elevation to enumerate or create pairs.
               Open SetupG as Administrator once to create the pair, then refresh this page.
             </div>
           )}
-          {virtual?.driver.available && (
+          {virtual?.driver?.available && (
             <>
               <div className="hint">Driver: <span className="mono">{virtual.driver.setup_path}</span></div>
               <label className="field">
@@ -182,13 +200,13 @@ export function SettingsPage() {
           )}
           <label className="field">
             <span>Bridge transport</span>
-            <select value={virtual?.driver.available && bridgePort ? 'com' : 'tcp'}
+            <select value={virtual?.driver?.available && bridgePort ? 'com' : 'tcp'}
               onChange={(e) => setBridgePort(e.target.value === 'com' ? portA : '')}>
               <option value="tcp">TCP localhost (driver-free)</option>
-              <option value="com" disabled={!virtual?.driver.available}>Virtual COM pair</option>
+              <option value="com" disabled={!virtual?.driver?.available}>Virtual COM pair</option>
             </select>
           </label>
-          {virtual?.driver.available && (
+          {virtual?.driver?.available && (
             <label className="field">
               <span>App-side COM endpoint</span>
               <input value={bridgePort} onChange={(e) => setBridgePort(e.target.value)} placeholder={portA} />
@@ -199,7 +217,7 @@ export function SettingsPage() {
               <button className="primary" disabled={bridgeBusy} onClick={async () => {
                 setBridgeBusy(true);
                 try {
-                  const transport = virtual?.driver.available && bridgePort ? 'com' : 'tcp';
+                  const transport = virtual?.driver?.available && bridgePort ? 'com' : 'tcp';
                   const result = await api.startVirtualBridge({ transport, app_port: bridgePort });
                   setVirtual(result);
                   toast('success', result.tcp_endpoint ? `Bridge listening at ${result.tcp_endpoint}` : `Bridge opened ${result.app_port}`);

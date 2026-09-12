@@ -104,17 +104,19 @@ it('updates the orientation from each pushed decoded sample', async () => {
   vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({ ...sample(), running: true });
   render(<MilAccelerometerCard />);
   await waitFor(() => expect(screen.getAllByText('+0.000', { exact: true })).toHaveLength(2));
-  expect((document.querySelector('.mil-accel-board') as HTMLElement).style.transition).toBe('none');
+  expect((document.querySelector('.mil-accel-board') as HTMLElement).style.transition)
+    .toBe('');
   expect(FakeAccelerometerWebSocket.instances).toHaveLength(1);
   expect(FakeAccelerometerWebSocket.instances[0].url).toContain('/ws/accelerometer');
 
   const push = (x_g: number, samples_read: number) => {
+    const timestamp = Date.now() / 1000 + (samples_read - 43) * 0.0025;
     FakeAccelerometerWebSocket.instances[0].emit({
       type: 'accelerometer_sample',
       ts: Date.now() / 1000,
       data: {
-        sample: { x_g, y_g: 0, z_g: 0.866, timestamp: Date.now() / 1000 },
-        last_sample_at: Date.now() / 1000,
+        sample: { x_g, y_g: 0, z_g: 0.866, timestamp },
+        last_sample_at: timestamp,
         samples_read,
       },
     });
@@ -123,8 +125,8 @@ it('updates the orientation from each pushed decoded sample', async () => {
     push(0.5, 43);
     push(0.75, 44);
   });
-  expect(frames).toHaveLength(1);
-  await act(async () => { frames[0](0); });
+  expect(frames.length).toBeGreaterThanOrEqual(2);
+  await act(async () => { frames[0](16); frames[1](16); });
   expect(screen.getByText('+0.750', { exact: true })).toBeTruthy();
   expect(screen.queryByText('+0.500', { exact: true })).toBeNull();
   expect(document.querySelector('.mil-accelerometer-card')?.textContent).toContain('44');
@@ -176,10 +178,177 @@ it('keeps high-rate worker ingestion independent from a slow render', async () =
   // All 120 messages were accepted without waiting for React, while the
   // bounded mailbox schedules only one paint and keeps the newest reading.
   expect(worker.received).toBe(120);
-  expect(frames).toHaveLength(1);
-  await act(async () => { frames[0](0); });
+  expect(frames).toHaveLength(2);
+  await act(async () => { frames[0](16); frames[1](16); });
   expect(screen.getByText('+1.190', { exact: true })).toBeTruthy();
   expect(document.querySelector('.mil-accelerometer-card')?.textContent).toContain('120');
+});
+
+it('coalesces successive worker samples into the display frame', async () => {
+  class FakeAccelerometerWorker {
+    static instances: FakeAccelerometerWorker[] = [];
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    constructor(_url: URL | string) { FakeAccelerometerWorker.instances.push(this); }
+    emit(data: unknown) { this.onmessage?.({ data } as MessageEvent); }
+    terminate() {}
+  }
+
+  vi.stubGlobal('Worker', FakeAccelerometerWorker);
+  const frames: FrameRequestCallback[] = [];
+  vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+    frames.push(callback);
+    return frames.length;
+  });
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({ ...sample(), running: true });
+
+  render(<MilAccelerometerCard />);
+  await waitFor(() => expect(FakeAccelerometerWorker.instances).toHaveLength(1));
+  const worker = FakeAccelerometerWorker.instances[0];
+  const board = document.querySelector('.mil-accel-board') as HTMLElement;
+  const initialTransform = board.style.transform;
+  for (let i = 0; i < 12; i += 1) {
+    worker.emit({
+      type: 'accelerometer_sample',
+      data: {
+        sample: { x_g: i / 20, y_g: 0, z_g: 1, timestamp: 100 + i * 0.01 },
+        last_sample_at: 100 + i * 0.01,
+        samples_read: i + 1,
+      },
+    });
+  }
+
+  // Sensor messages only move the target. The board is rendered once by the
+  // display-frame loop, so a burst cannot restart an animation per sample.
+  expect(board.style.transform).toBe(initialTransform);
+  expect(frames.length).toBeGreaterThanOrEqual(2);
+  await act(async () => { frames[0](16); });
+  expect(board.style.transform).not.toBe(initialTransform);
+});
+
+it('does not let an older REST response overwrite a newer stream pose', async () => {
+  class FakeAccelerometerWorker {
+    static instances: FakeAccelerometerWorker[] = [];
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    constructor(_url: URL | string) { FakeAccelerometerWorker.instances.push(this); }
+    emit(data: unknown) { this.onmessage?.({ data } as MessageEvent); }
+    terminate() {}
+  }
+
+  let resolveStatus: ((value: MilAccelerometerStatus) => void) | undefined;
+  vi.stubGlobal('Worker', FakeAccelerometerWorker);
+  vi.spyOn(api, 'milAccelerometerStatus').mockReturnValue(new Promise((resolve) => {
+    resolveStatus = resolve;
+  }));
+
+  render(<MilAccelerometerCard />);
+  await waitFor(() => expect(FakeAccelerometerWorker.instances).toHaveLength(1));
+  const worker = FakeAccelerometerWorker.instances[0];
+  worker.emit({
+    type: 'accelerometer_sample',
+    data: {
+      sample: { x_g: 0.8, y_g: 0, z_g: 0.6, timestamp: 200 },
+      last_sample_at: 200,
+      samples_read: 200,
+    },
+  });
+  const board = document.querySelector('.mil-accel-board') as HTMLElement;
+  const freshTransform = board.style.transform;
+  expect(freshTransform).toContain('rotateX(-53.13010235415598deg)');
+
+  const stale = sample();
+  stale.sample = { ...stale.sample!, x_g: 0, y_g: 0, z_g: 1, timestamp: 100 };
+  resolveStatus?.(stale);
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+  // The delayed status request may update readouts, but it cannot move the
+  // board backwards after the stream has already written a newer pose.
+  expect(board.style.transform).toBe(freshTransform);
+});
+
+it('filters a newer REST sample through the same pose path as the stream', async () => {
+  class FakeAccelerometerWorker {
+    static instances: FakeAccelerometerWorker[] = [];
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    constructor(_url: URL | string) { FakeAccelerometerWorker.instances.push(this); }
+    emit(data: unknown) { this.onmessage?.({ data } as MessageEvent); }
+    terminate() {}
+  }
+
+  const frames: FrameRequestCallback[] = [];
+  vi.stubGlobal('Worker', FakeAccelerometerWorker);
+  vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+    frames.push(callback);
+    return frames.length;
+  });
+  let resolveStatus: ((value: MilAccelerometerStatus) => void) | undefined;
+  vi.spyOn(api, 'milAccelerometerStatus').mockImplementation(() => new Promise((resolve) => {
+    resolveStatus = resolve;
+  }));
+
+  render(<MilAccelerometerCard />);
+  await waitFor(() => expect(FakeAccelerometerWorker.instances).toHaveLength(1));
+  const worker = FakeAccelerometerWorker.instances[0];
+  const board = document.querySelector('.mil-accel-board') as HTMLElement;
+  const good = { x_g: 0.2, y_g: 0, z_g: 0.98 };
+  worker.emit({
+    type: 'accelerometer_sample',
+    data: { sample: { ...good, timestamp: 200 }, last_sample_at: 200 },
+  });
+  worker.emit({
+    type: 'accelerometer_sample',
+    data: { sample: { ...good, timestamp: 201 }, last_sample_at: 201 },
+  });
+  while (frames.length) frames.shift()?.(16);
+  const stableTransform = board.style.transform;
+
+  const corrupt = sample(1.8, 0, -0.7);
+  corrupt.running = true;
+  corrupt.sample = { ...corrupt.sample!, timestamp: 202,
+    x_g: 1.8, y_g: 0, z_g: -0.7 };
+  resolveStatus?.(corrupt);
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+  while (frames.length) frames.shift()?.(16);
+
+  expect(board.style.transform).toBe(stableTransform);
+  expect(screen.getByRole('img').getAttribute('aria-label')).toContain('pitch -11.5 degrees');
+});
+
+it('falls back to the direct socket when a module worker fails before delivery', async () => {
+  class FailingWorker {
+    static instances: FailingWorker[] = [];
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onerror: ((event: ErrorEvent) => void) | null = null;
+    terminated = false;
+    constructor(_url: URL | string) { FailingWorker.instances.push(this); }
+    terminate() { this.terminated = true; }
+    fail() { this.onerror?.({} as ErrorEvent); }
+  }
+  class FakeSocket {
+    static instances: FakeSocket[] = [];
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onclose: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    constructor(readonly url: string) { FakeSocket.instances.push(this); }
+    close() { this.onclose?.(); }
+    emit(data: unknown) { this.onmessage?.({ data: JSON.stringify(data) } as MessageEvent); }
+  }
+
+  vi.stubGlobal('Worker', FailingWorker);
+  vi.stubGlobal('WebSocket', FakeSocket);
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({ ...sample(), running: true });
+  render(<MilAccelerometerCard />);
+  await waitFor(() => expect(FailingWorker.instances).toHaveLength(1));
+
+  FailingWorker.instances[0].fail();
+  await waitFor(() => expect(FakeSocket.instances).toHaveLength(1));
+  expect(FailingWorker.instances[0].terminated).toBe(true);
+  FakeSocket.instances[0].emit({
+    type: 'accelerometer_sample',
+    data: { sample: { x_g: 0.2, y_g: 0, z_g: 1, timestamp: 50 }, last_sample_at: 50 },
+  });
+  const transform = (document.querySelector('.mil-accel-board') as HTMLElement).style.transform;
+  expect(transform).toContain('rotateX');
+  expect(transform).not.toBe('');
 });
 
 it('does not overlap a slow poll and cleans up its pending schedule on unmount', async () => {

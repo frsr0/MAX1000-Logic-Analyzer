@@ -162,7 +162,10 @@ class _LiveI2CFrameDecoder:
     MAX_CARRY_SAMPLES = 1024  # a little over two 2 MHz / 400 kHz frames
 
     def __init__(self, address: int):
-        self.expected_reads = {((int(address) << 1) | 1) & 0xFF, 0x31, 0x33}
+        address = int(address) & 0x7F
+        self.expected_write = (address << 1) & 0xFE
+        self.expected_read = self.expected_write | 1
+        self.expected_register = LIS3DH_OUT_X_L | 0x80
         self._previous: tuple[int, int] | None = None
         self._await_clean_start = False
         self._reset_transaction()
@@ -179,17 +182,40 @@ class _LiveI2CFrameDecoder:
 
     def _reset_transaction(self) -> None:
         self._in_txn = False
+        self._phase = "idle"
         self._bits = []
         self._data = []
+        self._acks = []
         self._frame_emitted = False
         self._plateau = []
         self._plateau_control = False
         self._txn_samples = 0
 
     def _start_transaction(self) -> None:
+        # The generator uses a repeated START between the register write and
+        # the data read. Preserve and validate the write phase before allowing
+        # the following bytes to become an XYZ frame. Previously any repeated
+        # START discarded the prefix and the decoder only checked that the
+        # first read byte looked like *either* possible LIS3DH address.
+        if self._in_txn:
+            if (self._phase == "write"
+                    and self._data == [self.expected_write,
+                                       self.expected_register]
+                    and self._acks == [0, 0]):
+                self._phase = "read"
+                self._bits = []
+                self._data = []
+                self._acks = []
+                self._frame_emitted = False
+                self._plateau = []
+                self._plateau_control = True
+                self._txn_samples = 0
+                return
         self._in_txn = True
+        self._phase = "write"
         self._bits = []
         self._data = []
+        self._acks = []
         self._frame_emitted = False
         self._plateau = []
         self._plateau_control = True
@@ -202,12 +228,17 @@ class _LiveI2CFrameDecoder:
         for bit in self._bits[:8]:
             value = (value << 1) | bit
         self._data.append(value)
+        self._acks.append(self._bits[8])
         self._bits = []
         # A complete read is publishable before STOP. This is essential for a
         # chunk ending mid-transaction and prevents duplicate publication on
         # the next chunk when the trailing STOP is eventually observed.
-        if (not self._frame_emitted and len(self._data) >= 7
-                and self._data[0] in self.expected_reads):
+        if (not self._frame_emitted and self._phase == "read"
+                and len(self._data) == 7
+                and self._data[0] == self.expected_read
+                # The read address and the first five data bytes are ACKed;
+                # the master NACKs the final byte to terminate the read.
+                and self._acks == [0, 0, 0, 0, 0, 0, 1]):
             frames.append(AccelerometerService._decode_xyz(
                 bytes(self._data[1:7])))
             self._frame_emitted = True
@@ -542,7 +573,7 @@ class AccelerometerService:
                 try:
                     self._live_worker = threading.Thread(
                         target=self._run_live_producer,
-                        args=(device, raw, address, live_stop_evt),
+                        args=(device, raw, address, live_stop_evt, session),
                         daemon=True, name="lis3dh-live-capture")
                     self._live_worker.start()
                 except Exception:
@@ -700,8 +731,18 @@ class AccelerometerService:
                     next_read = time.monotonic()
                     continue
                 try:
-                    samples = self._poll_xyz_samples(
-                        adapter, raw, address, fifo_reader)
+                    # FIFO draining is useful for low-rate compatibility
+                    # paths, but at a high configured ODR it turns one status
+                    # iteration into a large, slow transaction. That made the
+                    # websocket publisher emit only the final value of a
+                    # batch every ~2 seconds. High-rate presentation needs a
+                    # bounded atomic read instead, so each iteration produces
+                    # one current sample for the render loop.
+                    if self.sample_rate_hz > 100:
+                        samples = [self._read_xyz(adapter, raw, address)]
+                    else:
+                        samples = self._poll_xyz_samples(
+                            adapter, raw, address, fifo_reader)
                     invalid_reads = 0
                 except HardwareError:
                     # A capture-visible generator burst briefly shares the
@@ -726,37 +767,15 @@ class AccelerometerService:
                         self._polling_io = False
                         self._poll_condition.notify_all()
                 for sample in samples:
-                    timestamp = self._clock()
-                    measured_at = time.monotonic()
-                    with self._lock:
-                        if generation != self._generation or stop_evt.is_set():
-                            return
-                        self._status.sample = {
-                            "x_g": sample[0], "y_g": sample[1], "z_g": sample[2],
-                            "timestamp": timestamp,
-                        }
-                        self._status.last_sample_at = timestamp
-                        self._status.last_error = None
-                        self._status.samples_read += 1
-                        if self._rate_window_started is None:
-                            self._rate_window_started = measured_at
-                            self._rate_window_samples = 1
-                        else:
-                            self._rate_window_samples += 1
-                            elapsed = measured_at - self._rate_window_started
-                            # A short rolling window gives a useful readback
-                            # quickly while smoothing individual USB/I2C stalls.
-                            if elapsed >= 0.25:
-                                rate = self._rate_window_samples / elapsed
-                                self._status.host_read_rate_hz = rate
-                                self._status.host_data_rate_bytes_per_s = rate * 6.0
-                                # Keep the pre-distinction fields populated for
-                                # older frontend clients while making the new
-                                # names explicit about what is being measured.
-                                self._status.measured_rate_hz = rate
-                                self._status.data_rate_bytes_per_s = rate * 6.0
-                                self._rate_window_started = measured_at
-                                self._rate_window_samples = 0
+                    if generation != self._generation or stop_evt.is_set():
+                        return
+                    # Keep the normal polling path and the rolling live path
+                    # on one publication seam. Previously this path updated
+                    # only REST status, leaving the presentation loop to poll
+                    # at 100 ms even when the sensor was producing promptly.
+                    # _record_sample also publishes the immediate websocket
+                    # event consumed by the board renderer.
+                    self._record_sample(sample)
                 next_read += period
                 delay = max(0.0, next_read - time.monotonic())
                 if stop_evt.wait(delay):
@@ -939,7 +958,8 @@ class AccelerometerService:
         return values[0], values[1], values[2]
 
     def _run_live_producer(self, adapter: Any, raw: Any, address: int,
-                           live_stop_evt: threading.Event) -> None:
+                           live_stop_evt: threading.Event,
+                           owner_session: Session) -> None:
         """Feed the live session from the FPGA ring, with a legacy fallback."""
         stream = None
         stream_started_at = None
@@ -962,12 +982,18 @@ class AccelerometerService:
                     reg_addr=LIS3DH_OUT_X_L | 0x80,
                     read_len=6,
                     i2c_speed=FIFO_I2C_SPEED_HZ,
-                    # Use the held-CS raw stream for the live path. If the
-                    # image or transport cannot sustain it, the existing
-                    # exception/watchdog path below falls back to bounded
-                    # host-burst capture without changing sample timestamps.
+                    # Use the validated block-read ring transport for the
+                    # live path. The optional held-CS raw serializer is not
+                    # supported reliably by the flashed image: it can return
+                    # an idle window even though CMD_GEN_CAPTURE accepted the
+                    # repeating source, which trips the watchdog and drops
+                    # live mode to the slow host-burst reader. Follow the
+                    # newest block-read tail explicitly: starting at the
+                    # ring's oldest sample replays roughly 2 seconds of
+                    # stale history before the board catches up.
                     use_rle=False,
-                    prefer_raw_stream=True)
+                    prefer_raw_stream=False,
+                    follow_tail=True)
                 # The hardware ring may yield very small chunks (especially
                 # on older bitstreams).  Persisting every chunk serializes
                 # the producer on the session store and throttles decoding.
@@ -993,7 +1019,8 @@ class AccelerometerService:
                 def flush_pending() -> None:
                     nonlocal pending, pending_samples, last_flush
                     if pending:
-                        self._append_live_digital(np.concatenate(pending))
+                        self._append_live_digital(
+                            np.concatenate(pending), expected_session=owner_session)
                         pending = []
                         pending_samples = 0
                     last_flush = time.monotonic()
@@ -1047,7 +1074,7 @@ class AccelerometerService:
                             decoded = stream_decoder.feed(digital)
                             stream_frames += len(decoded)
                             for sample in decoded:
-                                self._record_sample(sample)
+                                self._record_sample(sample, owner_session=owner_session)
                             if (pending_samples >= LIVE_TRACE_SAMPLES
                                     or time.monotonic() - last_flush >= 0.25):
                                 flush_pending()
@@ -1064,11 +1091,10 @@ class AccelerometerService:
                     return
         except Exception as exc:
             with self._lock:
-                session = self._live_session
-                if session is not None:
-                    session.diagnostics.append({"level": "warning",
-                                                "message": str(exc),
-                                                "ts": self._clock()})
+                if self._live_session is owner_session:
+                    owner_session.diagnostics.append({
+                        "level": "warning", "message": str(exc),
+                        "ts": self._clock()})
         finally:
             close = getattr(stream, "close", None)
             if callable(close):
@@ -1078,9 +1104,8 @@ class AccelerometerService:
                     pass
         if stream_watchdog:
             with self._lock:
-                session = self._live_session
-                if session is not None:
-                    session.diagnostics.append({
+                if self._live_session is owner_session:
+                    owner_session.diagnostics.append({
                         "level": "warning",
                         "message": (
                             "Accelerometer stream produced no bus transitions; "
@@ -1105,12 +1130,16 @@ class AccelerometerService:
                 adapter, raw, address, live_stop_evt,
                 nsamples=LIVE_FALLBACK_TRACE_SAMPLES,
                 repeat_count=LIVE_FALLBACK_REPEAT_COUNT,
-                sample_callback=self._record_sample)
+                expected_session=owner_session,
+                sample_callback=lambda sample: self._record_sample(
+                    sample, owner_session=owner_session))
             # Keep status tracking alive when a short trace ends between I2C
             # frames (or when the legacy capture has no attach mirror).
             if not frames:
                 try:
-                    self._record_sample(self._read_xyz(adapter, raw, address))
+                    self._record_sample(
+                        self._read_xyz(adapter, raw, address),
+                        owner_session=owner_session)
                 except HardwareError:
                     pass
             live_stop_evt.wait(period)
@@ -1126,13 +1155,23 @@ class AccelerometerService:
         """
         return _LiveI2CFrameDecoder(address).feed(digital)
 
-    def _record_sample(self, sample: tuple[float, float, float]) -> None:
-        """Publish a decoded XYZ sample and update host-throughput counters."""
+    def _record_sample(self, sample: tuple[float, float, float],
+                       owner_session: Session | None = None) -> None:
+        """Publish a decoded XYZ sample and update host-throughput counters.
+
+        A live producer can outlive ``stop_live_capture`` while a hardware
+        readback call unwinds. Tie its samples to the session that created the
+        worker so a late frame cannot leak into a later capture or the normal
+        tracking stream.
+        """
         timestamp = self._clock()
         measured_at = time.monotonic()
         pushed: dict[str, Any] | None = None
         with self._lock:
             if not self._status.running:
+                return
+            if (owner_session is not None
+                    and self._live_session is not owner_session):
                 return
             self._status.sample = {
                 "x_g": sample[0], "y_g": sample[1], "z_g": sample[2],
@@ -1172,12 +1211,16 @@ class AccelerometerService:
             websocket_manager.publish_threadsafe(
                 "accelerometer", "accelerometer_sample", pushed)
 
-    def _append_live_digital(self, digital: np.ndarray) -> None:
+    def _append_live_digital(self, digital: np.ndarray,
+                             expected_session: Session | None = None) -> None:
         with self._lock:
             session = self._live_session
             store = self._live_store
             settings = self._live_settings
             if session is None or store is None or settings is None:
+                return
+            if (expected_session is not None
+                    and session is not expected_session):
                 return
             if self._live_persist_worker is not None:
                 merged = np.concatenate((self._live_digital, digital))[
@@ -1282,6 +1325,7 @@ class AccelerometerService:
                             stop_evt: threading.Event, *,
                             nsamples: int | None = None,
                             repeat_count: int = 3,
+                            expected_session: Session | None = None,
                             sample_callback: Callable[
                                 [tuple[float, float, float]], None] | None = None
                             ) -> list[tuple[float, float, float]]:
@@ -1289,7 +1333,10 @@ class AccelerometerService:
             session = self._live_session
             store = self._live_store
             settings = self._live_settings
-        if session is None or store is None or settings is None or stop_evt.is_set():
+        if (session is None or store is None or settings is None
+                or stop_evt.is_set()
+                or (expected_session is not None
+                    and session is not expected_session)):
             return []
         try:
             capture_samples = min(
@@ -1320,7 +1367,7 @@ class AccelerometerService:
             if sample_callback is not None:
                 for frame in frames:
                     sample_callback(frame)
-            self._append_live_digital(digital)
+            self._append_live_digital(digital, expected_session=expected_session)
             return frames
         except Exception as exc:
             # A failed optional trace must not terminate the regular XYZ

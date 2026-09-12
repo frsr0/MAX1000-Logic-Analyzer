@@ -8,7 +8,6 @@ import { DiagnosticsPage } from '../pages/DiagnosticsPage';
 import { GeneratorPage } from '../pages/GeneratorPage';
 import { MachineInLoopPage } from '../pages/MachineInLoopPage';
 import { SessionsPage } from '../pages/SessionsPage';
-import { SettingsPage } from '../pages/SettingsPage';
 import { waveformView } from '../state/waveformStore';
 
 const NAV: { id: Page; icon: string; label: string }[] = [
@@ -18,7 +17,6 @@ const NAV: { id: Page; icon: string; label: string }[] = [
   { id: 'generator', icon: 'GEN', label: 'Generator' },
   { id: 'mil', icon: 'LAB', label: 'Hardware lab' },
   { id: 'diagnostics', icon: 'DIA', label: 'Diagnostics' },
-  { id: 'settings', icon: 'SET', label: 'Settings' },
 ];
 
 type Command = { label: string; action: () => void | Promise<void> };
@@ -166,7 +164,6 @@ export function AppShell() {
           {page === 'generator' && <GeneratorPage />}
           {page === 'mil' && <MachineInLoopPage />}
           {page === 'diagnostics' && <DiagnosticsPage />}
-          {page === 'settings' && <SettingsPage />}
         </main>
         <footer className="statusbar">
           <span className={`ws-dot ${wsConnected ? 'on' : 'off'}`} />

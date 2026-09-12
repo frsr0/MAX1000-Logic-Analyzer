@@ -55,9 +55,9 @@ it('opens, searches, runs and closes command-palette navigation', async () => {
   fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
   expect(screen.getByRole('dialog', { name: 'Command palette' })).toBeTruthy();
   expect(document.activeElement).toBe(screen.getByLabelText('Command search'));
-  fireEvent.change(screen.getByLabelText('Command search'), { target: { value: 'go to settings' } });
+  fireEvent.change(screen.getByLabelText('Command search'), { target: { value: 'go to hardware' } });
   fireEvent.keyDown(screen.getByLabelText('Command search'), { key: 'Enter' });
-  await waitFor(() => expect(useApp.getState().page).toBe('settings'));
+  await waitFor(() => expect(useApp.getState().page).toBe('device'));
   fireEvent.keyDown(window, { key: 'k', metaKey: true });
   fireEvent.change(screen.getByLabelText('Command search'), { target: { value: 'not a command' } });
   expect(screen.getByText('No matching commands')).toBeTruthy();

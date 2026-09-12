@@ -1,11 +1,25 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { ReconnectingSocket } from '../api/websocket';
 import type { MilAccelerometerConfig, MilAccelerometerStatus } from '../api/types';
 import { useApp } from '../state/appStore';
+import { AdaptivePoseFilter, orientationFor, type Orientation } from './accelerometerPose';
 
 const POLL_INTERVAL_MS = 100;
-const SAMPLE_FLUSH_DEADLINE_MS = 8;
+// The sensor stream can be several hundred samples per second. Present the
+// newest pose once per display frame instead of restarting a CSS transition
+// for every sample (which makes the compositor look like it is jumping).
+// The normal hardware read path is intentionally bounded rather than
+// unbounded FIFO-drained, so it can still deliver samples around 8–15 Hz on
+// some adapters. Keep the presentation time constant longer than one such
+// interval so the board keeps coalescing between samples instead of visibly
+// settling, pausing, and stepping.
+const BOARD_POSE_SMOOTHING_MS = 80;
+const BOARD_POSE_SETTLE_EPSILON_DEG = 0.01;
+// A real hand sweep can be fast, but a decoded outlier should never rotate
+// the model by tens of degrees in one paint. Cap presentation motion without
+// changing the raw XYZ values shown in the diagnostic readout.
+const BOARD_POSE_MAX_RATE_DPS = 540;
 // Keep a low-rate health poll while stopped so reconnects, another panel's
 // Start action, or a backend restart can resynchronize this card. Once the
 // service reports tracking, switch back to the responsive live cadence.
@@ -26,21 +40,6 @@ const DEFAULT_CONFIG: MilAccelerometerConfig = {
 const ODR_OPTIONS: MilAccelerometerConfig['output_data_rate_hz'][] =
   [1, 10, 25, 50, 100, 200, 400];
 const SCALE_OPTIONS: MilAccelerometerConfig['full_scale_g'][] = [2, 4, 8, 16];
-
-interface Orientation {
-  pitch: number;
-  roll: number;
-}
-
-function orientationFor(sample: MilAccelerometerStatus['sample']): Orientation {
-  if (!sample) return { pitch: 0, roll: 0 };
-  // A stationary accelerometer measures gravity. Keep the board level when
-  // gravity is +Z, and use X/Y to tilt it around its two screen axes.
-  return {
-    pitch: Math.atan2(-sample.x_g, Math.hypot(sample.y_g, sample.z_g)) * 180 / Math.PI,
-    roll: Math.atan2(sample.y_g, sample.z_g) * 180 / Math.PI,
-  };
-}
 
 function signed(value: number, digits = 3): string {
   if (!Number.isFinite(value)) return '—';
@@ -65,19 +64,135 @@ function relativeOrientation(current: Orientation, zero: Orientation | null): Or
   };
 }
 
+function boardTransform(orientation: Orientation): string {
+  return `perspective(520px) rotateX(${orientation.pitch}deg) rotateY(${orientation.roll}deg)`;
+}
+
+function shortestAngleDelta(target: number, current: number): number {
+  let delta = target - current;
+  while (delta > 180) delta -= 360;
+  while (delta < -180) delta += 360;
+  return delta;
+}
+
+function advanceBoardOrientation(
+  current: Orientation,
+  target: Orientation,
+  elapsedMs: number,
+): Orientation {
+  const alpha = 1 - Math.exp(-elapsedMs / BOARD_POSE_SMOOTHING_MS);
+  const maxStep = BOARD_POSE_MAX_RATE_DPS * elapsedMs / 1000;
+  const advance = (value: number, destination: number) => {
+    const desiredStep = shortestAngleDelta(destination, value) * alpha;
+    const step = Math.sign(desiredStep) * Math.min(Math.abs(desiredStep), maxStep);
+    return value + step;
+  };
+  return {
+    pitch: advance(current.pitch, target.pitch),
+    roll: advance(current.roll, target.roll),
+  };
+}
+
 export function MilAccelerometerCard() {
   const { controlMode, toast } = useApp();
   const [status, setStatus] = useState<MilAccelerometerStatus | null>(null);
+  // Keep raw XYZ in the diagnostic readout. The separate pose sample is the
+  // causal low-pass value used for the displayed orientation and 3D model.
+  const [poseSample, setPoseSample] = useState<MilAccelerometerStatus['sample']>(null);
   const [config, setConfig] = useState<MilAccelerometerConfig>(DEFAULT_CONFIG);
   const [busy, setBusy] = useState(false);
   const [configBusy, setConfigBusy] = useState(false);
   const [zero, setZero] = useState<Orientation | null>(null);
   const [requestError, setRequestError] = useState<string | null>(null);
+  const poseFilter = useRef(new AdaptivePoseFilter());
+  const lastStreamTimestamp = useRef<number | null>(null);
+  // The REST status poll and the worker are independent producers. A status
+  // response may have started before a newer stream sample arrived, so keep a
+  // monotonic watermark at the actual DOM write seam as the final guard
+  // against displaying an older pose after a fresh one.
+  const lastAppliedTimestamp = useRef<number | null>(null);
+  const boardRef = useRef<HTMLDivElement | null>(null);
+  const latestPoseSample = useRef<MilAccelerometerStatus['sample']>(null);
+  const zeroRef = useRef<Orientation | null>(null);
+  const targetBoardOrientation = useRef<Orientation | null>(null);
+  const renderedBoardOrientation = useRef<Orientation | null>(null);
+  const boardAnimationFrame = useRef<number | null>(null);
+  const lastBoardFrameAt = useRef<number | null>(null);
+
+  const writeBoardPose = (next: Orientation) => {
+    if (boardRef.current) boardRef.current.style.transform = boardTransform(next);
+  };
+
+  const renderBoardFrame = (timestamp: number) => {
+    boardAnimationFrame.current = null;
+    const target = targetBoardOrientation.current;
+    if (!target || !boardRef.current) return;
+
+    const current = renderedBoardOrientation.current ?? target;
+    const elapsed = lastBoardFrameAt.current === null
+      ? 16.67
+      : Math.min(100, Math.max(0, timestamp - lastBoardFrameAt.current));
+    lastBoardFrameAt.current = timestamp;
+    const next = advanceBoardOrientation(current, target, elapsed);
+    const settled = Math.abs(shortestAngleDelta(target.pitch, next.pitch))
+      <= BOARD_POSE_SETTLE_EPSILON_DEG
+      && Math.abs(shortestAngleDelta(target.roll, next.roll))
+      <= BOARD_POSE_SETTLE_EPSILON_DEG;
+    renderedBoardOrientation.current = settled ? target : next;
+    writeBoardPose(renderedBoardOrientation.current);
+
+    if (!settled) boardAnimationFrame.current = window.requestAnimationFrame(renderBoardFrame);
+  };
+
+  const scheduleBoardRender = () => {
+    if (boardAnimationFrame.current === null) {
+      boardAnimationFrame.current = window.requestAnimationFrame(renderBoardFrame);
+    }
+  };
+
+  const applyBoardPose = (sample: MilAccelerometerStatus['sample'], force = false) => {
+    if (!sample || !boardRef.current) return;
+    if (!Number.isFinite(sample.timestamp)) return;
+    if (!force && lastAppliedTimestamp.current !== null
+        && sample.timestamp <= lastAppliedTimestamp.current) return;
+    const current = orientationFor(sample);
+    const next = relativeOrientation(current, zeroRef.current);
+    if (!Number.isFinite(next.pitch) || !Number.isFinite(next.roll)) return;
+    targetBoardOrientation.current = next;
+    lastAppliedTimestamp.current = sample.timestamp;
+    if (force || renderedBoardOrientation.current === null) {
+      if (boardAnimationFrame.current !== null) {
+        window.cancelAnimationFrame(boardAnimationFrame.current);
+        boardAnimationFrame.current = null;
+      }
+      renderedBoardOrientation.current = next;
+      lastBoardFrameAt.current = null;
+      writeBoardPose(next);
+      return;
+    }
+    scheduleBoardRender();
+  };
+
+  useEffect(() => () => {
+    if (boardAnimationFrame.current !== null) {
+      window.cancelAnimationFrame(boardAnimationFrame.current);
+      boardAnimationFrame.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     let alive = true;
     api.milAccelerometerStatus()
-      .then((next) => { if (alive) { setStatus(next); setRequestError(null); } })
+      .then((next) => { if (alive) {
+        setStatus(next);
+        setPoseSample((previous) => {
+          if (previous || !next.sample) return previous;
+          latestPoseSample.current = next.sample;
+          applyBoardPose(next.sample);
+          return next.sample;
+        });
+        setRequestError(null);
+      } })
       .catch((error: unknown) => {
         if (alive) setRequestError(error instanceof Error ? error.message : 'Unable to read accelerometer status');
       });
@@ -106,11 +221,26 @@ export function MilAccelerometerCard() {
             // A REST response can have started before a newer websocket sample
             // arrived. Never move the model backwards to that older sample.
             if (previous?.sample?.timestamp && next.sample?.timestamp
-                && next.sample.timestamp < previous.sample.timestamp) {
+                && next.sample.timestamp <= previous.sample.timestamp) {
               return { ...next, sample: previous.sample,
                 last_sample_at: previous.last_sample_at };
             }
             return next;
+          });
+          setPoseSample((previous) => {
+            const timestamp = next.sample?.timestamp;
+            if (!next.sample || !timestamp || !Number.isFinite(timestamp)) return previous;
+            if (lastStreamTimestamp.current !== null
+                && timestamp <= lastStreamTimestamp.current) return previous;
+            // REST is a fallback/status producer, but it can still win the
+            // timestamp race with the stream. Feed it through the exact same
+            // causal filter before it can reach either React or the board;
+            // otherwise one corrupt newer REST frame bypasses the stream
+            // median and becomes the visible multi-degree step.
+            const nextPose = poseFilter.current.update(next.sample);
+            latestPoseSample.current = nextPose;
+            applyBoardPose(nextPose);
+            return nextPose;
           });
           setRequestError(null);
         } })
@@ -133,7 +263,6 @@ export function MilAccelerometerCard() {
   useEffect(() => {
     let alive = true;
     let animationFrame: number | null = null;
-    let flushTimer: number | null = null;
     let pending: Record<string, any> | null = null;
 
     const handleMessage = (message: Record<string, any>) => {
@@ -141,13 +270,28 @@ export function MilAccelerometerCard() {
       // This mailbox is intentionally only one item deep. The worker can
       // continue receiving and parsing every sample while React is busy; a
       // saturated display consumes the newest reading on its next paint.
-      pending = message.data;
+      const sample = message.data.sample as MilAccelerometerStatus['sample'];
+      if (!sample) return;
+      if (lastStreamTimestamp.current !== null
+          && sample.timestamp <= lastStreamTimestamp.current) return;
+      const nextPose = poseFilter.current.update(sample);
+      latestPoseSample.current = nextPose;
+      // The raw sample remains visible in the diagnostic readout, but the
+      // board target must use the causal pose filter too. A corrupted I2C
+      // frame can otherwise rotate the model by several degrees for one
+      // display frame before the next good sample arrives.
+      applyBoardPose(nextPose);
+      pending = {
+        ...message.data,
+        // Publish the newest filtered value for the React readout at the next
+        // paint. The board itself follows the raw target above and is rendered
+        // by its independent display-frame loop.
+        poseSample: nextPose,
+        sample,
+      };
+      lastStreamTimestamp.current = sample.timestamp;
       if (animationFrame === null) {
         animationFrame = window.requestAnimationFrame(flush);
-        // A 60 Hz display can leave RAF waiting almost one full frame when a
-        // packet lands just after paint. Bound that tail latency while still
-        // coalescing bursts to at most one React update per 8 ms.
-        flushTimer = window.setTimeout(flush, SAMPLE_FLUSH_DEADLINE_MS);
       }
     };
 
@@ -156,19 +300,29 @@ export function MilAccelerometerCard() {
         window.cancelAnimationFrame(animationFrame);
         animationFrame = null;
       }
-      if (flushTimer !== null) {
-        window.clearTimeout(flushTimer);
-        flushTimer = null;
-      }
       const next = pending;
       pending = null;
       if (!alive || !next) return;
+      setPoseSample((previous) => {
+        const nextPose = next.poseSample ?? next.sample;
+        if (!nextPose) return previous;
+        if (previous?.timestamp && nextPose.timestamp <= previous.timestamp) return previous;
+        latestPoseSample.current = nextPose;
+        return nextPose;
+      });
       // Coalesce a burst of decoded samples into the browser's paint cadence.
       // The socket remains lossless enough for status (the newest sample wins)
       // while React only renders once per animation frame.
       setStatus((previous) => previous ? {
         ...previous,
-        sample: next.sample,
+        // A delayed REST response must not put the model behind the newest
+        // sample already delivered by the stream. Equal timestamps are also
+        // preserved because the stream sample may be filtered while REST is
+        // the unfiltered duplicate.
+        ...(previous.sample?.timestamp && next.sample?.timestamp
+          && next.sample.timestamp <= previous.sample.timestamp
+          ? {}
+          : { sample: next.sample }),
         last_sample_at: next.last_sample_at ?? next.sample.timestamp,
         samples_read: next.samples_read ?? previous.samples_read,
         host_read_rate_hz: next.host_read_rate_hz ?? previous.host_read_rate_hz,
@@ -180,32 +334,49 @@ export function MilAccelerometerCard() {
       } : previous);
     };
 
-    let cleanupStream: () => void;
+    let worker: Worker | null = null;
+    let socket: ReconnectingSocket | null = null;
+    let unsubscribe: (() => void) | null = null;
+    const startFallbackSocket = () => {
+      if (socket) return;
+      socket = new ReconnectingSocket('/ws/accelerometer');
+      unsubscribe = socket.subscribe(handleMessage);
+    };
     if (typeof Worker !== 'undefined') {
-      const worker = new Worker(
-        new URL('../workers/accelerometerStream.worker.ts', import.meta.url),
-        { type: 'module' },
-      );
-      worker.onmessage = (event: MessageEvent<Record<string, any>>) => {
-        handleMessage(event.data);
-      };
-      cleanupStream = () => worker.terminate();
+      try {
+        worker = new Worker(
+          new URL('../workers/accelerometerStream.worker.ts', import.meta.url),
+          { type: 'module' },
+        );
+        worker.onmessage = (event: MessageEvent<Record<string, any>>) => {
+          handleMessage(event.data);
+        };
+        worker.onerror = () => {
+          // Module workers can fail before their first message in embedded
+          // WebViews. Keep live pose delivery working through the tested
+          // direct socket path instead of silently freezing the board.
+          worker?.terminate();
+          worker = null;
+          startFallbackSocket();
+        };
+      } catch {
+        startFallbackSocket();
+      }
     } else {
       // Keep the test/legacy-browser fallback functional. Modern browsers use
       // the worker above, so socket parsing cannot compete with React renders.
-      const socket = new ReconnectingSocket('/ws/accelerometer');
-      const unsubscribe = socket.subscribe(handleMessage);
-      cleanupStream = () => { unsubscribe(); socket.close(); };
+      startFallbackSocket();
     }
     return () => {
       alive = false;
-      cleanupStream();
+      worker?.terminate();
+      unsubscribe?.();
+      socket?.close();
       if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
-      if (flushTimer !== null) window.clearTimeout(flushTimer);
     };
   }, []);
 
-  const current = useMemo(() => orientationFor(status?.sample ?? null), [status?.sample]);
+  const current = useMemo(() => orientationFor(poseSample ?? status?.sample ?? null), [poseSample, status?.sample]);
   const orientation = useMemo(() => relativeOrientation(current, zero), [current, zero]);
   const hasSample = Boolean(status?.sample);
   const available = status?.available ?? false;
@@ -218,6 +389,14 @@ export function MilAccelerometerCard() {
         ? await api.milAccelerometerStart()
         : await api.milAccelerometerStop();
       setStatus(next);
+      poseFilter.current.reset();
+      lastStreamTimestamp.current = next.sample?.timestamp ?? null;
+      // Starting/stopping deliberately establishes a new stream epoch. The
+      // command response is the authoritative pose for that transition.
+      lastAppliedTimestamp.current = null;
+      latestPoseSample.current = next.sample;
+      applyBoardPose(next.sample, true);
+      setPoseSample(next.sample);
       const completed = action === 'start' ? next.running : !next.running;
       if (!completed) {
         const message = next.last_error
@@ -260,8 +439,18 @@ export function MilAccelerometerCard() {
   const controlsDisabled = running || busy || configBusy || !controlMode;
 
   const setZeroOrientation = () => {
-    setZero(current);
+    const latest = latestPoseSample.current ?? poseSample ?? status?.sample ?? null;
+    const latestOrientation = orientationFor(latest);
+    zeroRef.current = latestOrientation;
+    setZero(latestOrientation);
+    // The timestamp is intentionally unchanged when zeroing; force this one
+    // write so the currently displayed board is re-based immediately.
+    applyBoardPose(latest, true);
   };
+
+  useLayoutEffect(() => {
+    applyBoardPose(latestPoseSample.current ?? poseSample ?? status?.sample ?? null);
+  }, [poseSample, status?.sample, zero]);
 
   return (
     <section className="card mil-accelerometer-card" aria-labelledby="mil-accelerometer-title">
@@ -283,13 +472,8 @@ export function MilAccelerometerCard() {
             aria-label={`Accelerometer board, pitch ${orientation.pitch.toFixed(1)} degrees, roll ${orientation.roll.toFixed(1)} degrees`}
           >
             <div
+              ref={boardRef}
               className="mil-accel-board"
-              style={{
-                transform: `perspective(520px) rotateX(${orientation.pitch}deg) rotateY(${orientation.roll}deg)`,
-                // Never interpolate sensor poses in CSS: a 180 ms transition
-                // makes a live board visibly trail the newest decoded sample.
-                transition: running ? 'none' : undefined,
-              }}
             >
               <div className="mil-accel-board-edge" />
               <div className="mil-accel-silk mil-accel-silk-a">MAX1000</div>

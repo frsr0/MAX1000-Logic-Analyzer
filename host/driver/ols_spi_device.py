@@ -1978,7 +1978,7 @@ class OLSDeviceSPI:
                             progress_cb=None, full_out=None,
                             fetch_multiplier=32, generator_capture=False,
                             manage_debug_source=True,
-                            prefer_raw_stream=False):
+                            prefer_raw_stream=False, follow_tail=False):
         """Yield raw data chunks from the continuous SDRAM ring (caller must
         configure flags/analog before calling, restore after).
 
@@ -2047,10 +2047,15 @@ class OLSDeviceSPI:
         # historically been less tolerant on old images.
         use_rle_stream = self._readback_codec() == 'rle'
         use_raw_stream = use_rle_stream or bool(prefer_raw_stream)
-        # Only the explicit uncompressed held-CS transport needs the newest
-        # window.  Keep the established cursor semantics for RLE, whose
-        # variable-length stream and overrun handling are separate paths.
-        use_newest_stream = bool(prefer_raw_stream) and not use_rle_stream
+        # Live consumers must start at the newest complete window.  The ring
+        # is several seconds deep at accelerometer trace rates; starting at
+        # ``oldest`` would replay that history before the UI sees the sensor.
+        # ``follow_tail`` keeps the stable block-read transport while opting
+        # into the same tail cursor semantics as the held-CS raw transport.
+        # RLE retains its established cursor semantics because its variable-
+        # length transport has separate overrun handling.
+        use_newest_stream = (
+            bool(prefer_raw_stream) or bool(follow_tail)) and not use_rle_stream
         # Ring metadata cursors count source samples, regardless of the
         # selected readback codec.  RLE changes the number of bytes on the
         # wire, not the number of samples needed before a request can be
@@ -2111,6 +2116,11 @@ class OLSDeviceSPI:
                     # reaches the current accelerometer frames.  Keep the
                     # established oldest-cursor behavior for block reads.
                     if use_newest_stream:
+                        # The first tail window is also discontinuous from
+                        # whatever preceded this capture. Mark it so an
+                        # incremental protocol decoder will not carry a
+                        # partial transaction into the live stream.
+                        overrun_total += 1
                         next_sample = _ring_u32(
                             int(producer_hint) - window_samples)
                     else:
@@ -2122,6 +2132,13 @@ class OLSDeviceSPI:
                         next_sample = _ring_u32(
                             int(producer_hint) - window_samples)
                     else:
+                        # The FPGA's overrun counter is not guaranteed to
+                        # change for this host-side cursor resync.  It is
+                        # still a discontinuity in the returned waveform, so
+                        # expose it to incremental protocol decoders instead
+                        # of allowing bytes from two unrelated transactions
+                        # to be joined across the skipped ring region.
+                        overrun_total += 1
                         next_sample = _ring_u32(oldest_hint)
 
                 if use_newest_stream:
@@ -2229,6 +2246,7 @@ class OLSDeviceSPI:
                                 break
                             continue
                     if _ring_is_before(next_sample, int(oldest_hint)):
+                        overrun_total += 1
                         next_sample = _ring_u32(oldest_hint)
                         continue
                     if not data:
@@ -2449,7 +2467,7 @@ class OLSDeviceSPI:
             self, rate_hz, chunk_nsamp, buffer_nsamp, stop_evt,
             dev_addr=0x19, reg_addr=0x28, read_len=6, i2c_speed=50_000,
             progress_cb=None, full_out=None, use_rle=True,
-            prefer_raw_stream=False):
+            prefer_raw_stream=False, follow_tail=False):
         """Capture a continuously repeated LIS3DH I2C read into the ring.
 
         The existing Bit_Engine repeat flag is sufficient for this path: the
@@ -2546,7 +2564,8 @@ class OLSDeviceSPI:
                     # is transferred without a second block-read transaction.
                     # If the transport cannot return a framed ACK, the
                     # caller's existing bounded fallback remains available.
-                    prefer_raw_stream=prefer_raw_stream)
+                    prefer_raw_stream=prefer_raw_stream,
+                    follow_tail=follow_tail)
         finally:
             try:
                 self.pkt.transaction(CMD_GEN_STOP, timeout=0.5)

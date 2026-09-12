@@ -101,7 +101,7 @@ def release_analyser_control() -> dict:
 
 
 @mcp.tool()
-def connect_analyser(device_id: str = "mock", force_control: bool = False) -> dict:
+def connect_analyser(device_id: str = "hardware", force_control: bool = False) -> dict:
     """Connect ``mock`` for synthetic work or ``hardware`` for a MAX1000 board."""
     _claim_control(force_control)
     return {"connected": True, "metadata": capture_manager.connect(device_id)}

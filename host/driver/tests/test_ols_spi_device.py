@@ -1686,6 +1686,34 @@ class TestOLSDeviceSPIRolling:
         device_spi.read_capture_range.assert_called_with(
             0, 4, probe_compression=False)
 
+    def test_stream_ring_capture_marks_implicit_cursor_jump_as_gap(self, device_spi):
+        """A cursor resync is a decoder discontinuity even without FPGA overrun."""
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.side_effect = [
+            {'producer_index': 4, 'oldest_index': 0, 'overrun_count': 0},
+            *([{'producer_index': 300, 'oldest_index': 128,
+                'overrun_count': 0}] * 5),
+        ]
+        device_spi.read_capture_range = MagicMock(
+            side_effect=lambda start, count, **_kwargs:
+            (b'\x01\x00' if start == 0 else b'\x02\x00') * count)
+        device_spi.spi.flush = MagicMock()
+
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False, False, False, False, True]
+        stop_evt.wait.return_value = False
+        results = list(device_spi.stream_ring_capture(1_000_000, 4, stop_evt))
+
+        assert [item[3] for item in results] == [0, 1]
+        device_spi.read_capture_range.assert_has_calls([
+            call(0, 4, probe_compression=False),
+            call(128, 128, probe_compression=False),
+        ])
+
     def test_stream_ring_capture_uses_block_reads_in_raw_mode(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi.readback_compression_mode = 'raw'
@@ -1710,6 +1738,35 @@ class TestOLSDeviceSPIRolling:
         assert [item[1] for item in results] == [4]
         device_spi.read_capture_range.assert_has_calls(
             [call(0, 4, probe_compression=False)])
+
+    def test_stream_ring_capture_can_follow_tail_with_block_reads(self, device_spi):
+        """A live block reader starts at the newest ring window, not history."""
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.read_capture_range = MagicMock(
+            side_effect=[b'\x34\x12' * 4, b'\x78\x56' * 4])
+        device_spi.pkt.get_status.side_effect = [
+            {'producer_index': 100, 'oldest_index': 0, 'overrun_count': 0},
+            {'producer_index': 108, 'oldest_index': 0, 'overrun_count': 0},
+            {'producer_index': 108, 'oldest_index': 0, 'overrun_count': 0},
+        ]
+        device_spi.spi.flush = MagicMock()
+
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False, False, False, False, False, True]
+        stop_evt.wait.return_value = False
+        results = list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, follow_tail=True))
+
+        assert [item[1] for item in results] == [4, 8]
+        device_spi.read_capture_range.assert_has_calls([
+            call(96, 4, probe_compression=False),
+            call(104, 4, probe_compression=False),
+        ])
+        assert [item[3] for item in results] == [1, 2]
 
     def test_stream_ring_capture_uses_true_rle_stream_in_rle_mode(self, device_spi):
         device_spi.pkt = MagicMock()

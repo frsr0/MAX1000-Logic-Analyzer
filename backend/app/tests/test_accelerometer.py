@@ -88,9 +88,13 @@ class FakeManager:
         self.reserved = False
 
 
-def test_worker_configures_detected_address_and_decodes_xyz():
+def test_worker_configures_detected_address_and_decodes_xyz(monkeypatch):
     raw = FakeRaw()
     service = AccelerometerService(FakeManager(raw), sample_rate_hz=100)
+    published = []
+    monkeypatch.setattr(
+        accelerometer_module.websocket_manager, "publish_threadsafe",
+        lambda *args: published.append(args))
 
     assert service.status()["available"] is True
     started = service.start()
@@ -104,6 +108,8 @@ def test_worker_configures_detected_address_and_decodes_xyz():
     assert status["sample"]["x_g"] == 0.001
     assert status["sample"]["y_g"] == -0.001
     assert status["sample"]["z_g"] == 0.002
+    assert any(item[0:2] == ("accelerometer", "accelerometer_sample")
+               for item in published)
     assert raw.configured == [(0x20, 0x27, 0x18), (0x23, 0x88, 0x18)]
     deadline = time.time() + 1
     while time.time() < deadline and service._worker is not None:
@@ -131,6 +137,24 @@ def test_record_sample_publishes_lightweight_decoded_xyz_event(monkeypatch):
         "x_g": 0.125, "y_g": -0.25, "z_g": 0.875, "timestamp": 123.456}
     assert data["last_sample_at"] == 123.456
     assert data["samples_read"] == 1
+
+
+def test_stale_live_worker_cannot_publish_into_new_session(monkeypatch):
+    """A timed-out old ring worker must not leak samples into a new run."""
+    service = AccelerometerService(FakeManager(FakeRaw()), sample_rate_hz=400)
+    service._status.running = True
+    current = SimpleNamespace(id="current")
+    stale = SimpleNamespace(id="stale")
+    service._live_session = current
+    published = []
+    monkeypatch.setattr(
+        accelerometer_module.websocket_manager, "publish_threadsafe",
+        lambda *args: published.append(args))
+
+    service._record_sample((0.125, -0.25, 0.875), owner_session=stale)
+
+    assert published == []
+    assert service._status.samples_read == 0
 
 
 def test_worker_drains_fifo_frames_and_updates_latest_status_sample():
@@ -451,7 +475,12 @@ def test_live_capture_uses_continuous_ring_producer_and_stops_cleanly(tmp_path):
         # decoder reset at each skipped ring region does not lose the sample.
         assert raw.ring_kwargs["chunk_nsamp"] == 896
         assert raw.ring_kwargs["use_rle"] is False
-        assert raw.ring_kwargs["prefer_raw_stream"] is True
+        # The flashed image's held-CS raw serializer can return an idle ring
+        # window after CMD_GEN_CAPTURE. Keep MIL on the validated block-read
+        # ring path; this is still a continuous FPGA producer, just not the
+        # optional raw serializer transport.
+        assert raw.ring_kwargs["prefer_raw_stream"] is False
+        assert raw.ring_kwargs["follow_tail"] is True
         deadline = time.time() + 1.0
         waveform = None
         while time.time() < deadline:
@@ -652,6 +681,13 @@ def test_live_ring_i2c_decoder_reset_discards_sample_boundary_context():
     decoder.reset()
 
     assert decoder.feed(digital[116:]) == []
+
+
+def test_live_ring_i2c_decoder_rejects_other_sensor_address():
+    """A frame for the other LIS3DH address is not this sensor's sample."""
+    digital = _synthetic_lis3dh_i2c_trace(address=0x18)
+
+    assert AccelerometerService._decode_live_i2c_frames(digital, 0x19) == []
 
 
 def test_live_trace_publishes_xyz_before_waveform_persistence():

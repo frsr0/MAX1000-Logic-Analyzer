@@ -809,8 +809,8 @@ test('machine-in-loop transaction shows request and response waveforms', async (
   await takeScreenshot(page, 'mil-transaction.png', { fullPage: true });
 });
 
-test('settings page keeps control lock and viewer settings clear', async ({ page }) => {
-  await page.getByRole('button', { name: 'Settings' }).click();
+test('hardware page includes control lock and viewer settings', async ({ page }) => {
+  await page.getByRole('button', { name: 'Hardware', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
   // Lock state comes from /api/status control.holder_name (backend data),
   // not static copy: mock fixture reports 'Playwright', live 'playwright'
@@ -824,11 +824,11 @@ test('mock control lock denial toasts when acquire is denied', async ({ page }) 
   // Mock-only: the 'control lock denial' title makes beforeEach install the
   // harness with denyAcquire, so POST /api/control/acquire answers
   // { acquired: false } (the backend shape from backend/app/api/status.py)
-  // and SettingsPage toasts the rendered denial.
-  await page.getByRole('button', { name: 'Settings' }).click();
+  // and the merged Hardware page toasts the rendered denial.
+  await page.getByRole('button', { name: 'Hardware', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
-  await page.getByRole('button', { name: 'Acquire control' }).click();
-  const toast = page.locator('.toast.toast-warning').filter({ hasText: 'Another client holds control' });
+  await page.getByRole('button', { name: 'Request control' }).click();
+  const toast = page.locator('.toast.toast-warning').filter({ hasText: 'Another client is using the device' });
   await expect(toast).toBeVisible();
   await takeScreenshot(page, 'settings-control-denial.png', { fullPage: true });
 });

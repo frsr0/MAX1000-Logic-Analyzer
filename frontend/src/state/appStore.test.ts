@@ -83,10 +83,10 @@ it.each([null, '{broken', '{"theme":"light","defaultSampleRate":5000}'])('loads 
 
 it('updates navigation, connection and control modes through public actions', async () => {
   const { useApp } = await import('./appStore');
-  useApp.getState().setPage('settings');
+  useApp.getState().setPage('device');
   useApp.getState().setWsConnected(true);
   useApp.getState().setControlMode(false);
-  expect(useApp.getState()).toMatchObject({ page: 'settings', wsConnected: true, controlMode: false });
+  expect(useApp.getState()).toMatchObject({ page: 'device', wsConnected: true, controlMode: false });
 });
 
 it('retains only the newest 500 log entries in arrival order', async () => {
