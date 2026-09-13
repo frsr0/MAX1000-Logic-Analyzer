@@ -64,7 +64,7 @@ The SPI dispatch process decodes `pkt_cmd_active` and routes to sub-handlers:
 | `CMD_READ_STREAM_BLOCK` | 0x14 | Read one stream block |
 | `CMD_ACK_CAPTURE_DONE` | 0x15 | ACK done and latch |
 | `CMD_START_RAW_STREAM` | 0x16 | Start raw compressed streaming |
-| `CMD_START_LIVE_STREAM` | 0x17 | Start raw streaming from the direct live capture FIFO |
+| `CMD_START_LIVE_STREAM` | 0x17 | Start ordered streaming from the direct live capture FIFO; compact mode packs eight CH13/14/15 samples into three LSB-first bytes and ACKs only after the requested window is staged |
 | `CMD_WRITE_REG` | 0x20 | Write register (disp_reg_write) |
 | `CMD_READ_REG` | 0x21 | Read register value |
 | `CMD_GEN_CONFIG` | 0x30 | Configure generator |
@@ -150,9 +150,9 @@ GENCAP_WAIT_BUSY → GENCAP_RUNNING → GENCAP_WAIT_FULL → GENCAP_DONE | GENCA
 ### 8. Metadata feature flags
 
 The current metadata payload has a tenth byte (index 9). Bit 0 advertises the
-24-bit generator divider. Hosts that receive a shorter payload or a clear bit
-retain the legacy 16-bit divider mask, so the protocol remains backward
-compatible with older programmed images.
+24-bit generator divider, bit 1 the direct live FIFO, bit 2 the held-CS framed
+live stream, and bit 3 the packed framed variant. Hosts that receive a shorter
+payload or clear bits retain the corresponding legacy path.
 
 ## Key Constants
 

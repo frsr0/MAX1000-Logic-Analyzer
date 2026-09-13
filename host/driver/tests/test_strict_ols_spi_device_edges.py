@@ -741,9 +741,10 @@ def test_repeating_i2c_capture_uses_direct_live_fifo_when_advertised():
     dev._wait_gen_idle = MagicMock()
     dev.stream_ring_capture = MagicMock()
     dev.pkt.transaction.return_value = (ST_OK, 0, b"")
+    # Four compact 3-bit samples are packed into two wire bytes per chunk.
     dev.pkt.start_live_stream_read.side_effect = [
-        (1, 0, b"\x01\x02\x03\x04"),
-        (2, 0, b"\x04\x03\x02\x01"),
+        (1, 0, b"\xd1\x08"),
+        (2, 0, b"\x9c\x02"),
     ]
 
     result = list(dev.continuous_ring_capture_with_repeating_i2c(

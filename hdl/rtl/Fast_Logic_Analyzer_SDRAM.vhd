@@ -291,6 +291,15 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   -- fifo_wr_skid_data_r drives afifo_wdata; fifo_wr_skid_req_r drives afifo_wr.
   signal fifo_wr_skid_data_r : std_logic_vector(AFIFO_WIDTH-1 downto 0) := (others => '0');
   signal fifo_wr_skid_req_r  : std_logic := '0';
+  -- Independent live-tap sample seam.  This is deliberately driven from the
+  -- capture tick, not from fifo_wr: fifo_wr is allowed to stop when the
+  -- SDRAM write FIFO is almost full, but a direct live consumer must not
+  -- inherit that backpressure or silently turn into stale/idle waveform data.
+  -- The direct accelerometer transport only consumes CH13..CH15. Keep the
+  -- internal tap narrow; OLS_Interface expands it back to the normal 16-bit
+  -- waveform word at the protocol boundary.
+  signal live_tap_data_r : std_logic_vector(2 downto 0) := (others => '0');
+  signal live_tap_valid_r : std_logic := '0';
   -- Registered almost-full for packed-mode backpressure. Same 256-word cushion
   -- as afull_r in the digital writer; keeps the wrusedw compare off the path
   -- from producer -> Packed_Ready -> mso_capture -> analog_packer.
@@ -755,6 +764,7 @@ begin
     signal bram_cnt_r     : natural range 0 to BRAM_SIZE := 0;
     signal sample_div_cnt_r : natural range 0 to FAST_MAX_RATE_DIV := 0;
     signal fast_rate_reload_r : natural range 0 to FAST_MAX_RATE_DIV := 0;
+    signal sample_due_r : std_logic := '0';
     signal fast_sample_tick_r  : std_logic := '0';
     signal sample_rem_nonzero_r : std_logic := '0';
     -- Modular sample-budget accumulator. It starts at -cfg_samples and adds
@@ -878,12 +888,18 @@ begin
       end if;
     end process;
 
-    -- Stage 2a: rate divider counter (free-running when capture active)
+    -- Stage 2a: rate divider counter (free-running while Run is active).
+    -- This clock/tap cadence must not inherit pump_live_f: that signal is the
+    -- SDRAM writer's backpressure/flush state, not the live capture clock.
+    -- Direct live streaming has its own FIFO and must keep sampling through an
+    -- SDRAM pump pause; ordinary SDRAM writes remain gated below by
+    -- capture_en_r.
     process(FAST_CLK)
     begin
       if rising_edge(FAST_CLK) then
         if cfg_valid_edge = '1' then
           sample_div_cnt_r <= 0;
+          sample_due_r <= '0';
           if cfg_rate_div > FAST_MAX_RATE_DIV then
             fast_rate_reload_r <= FAST_MAX_RATE_DIV;
           elsif cfg_rate_div > 1 then
@@ -891,12 +907,16 @@ begin
           else
             fast_rate_reload_r <= 0;
           end if;
-        elsif capture_en_r = '1' and sample_rem_nonzero_r = '1' then
+        elsif run_f_level = '1' and sample_rem_nonzero_r = '1' then
           if sample_div_cnt_r = 0 then
             sample_div_cnt_r <= fast_rate_reload_r;
+            sample_due_r <= '1';
           else
             sample_div_cnt_r <= sample_div_cnt_r - 1;
+            sample_due_r <= '0';
           end if;
+        else
+          sample_due_r <= '0';
         end if;
       end if;
     end process;
@@ -906,17 +926,24 @@ begin
     begin
       if rising_edge(FAST_CLK) then
         fast_sample_tick_r <= '0';
+        live_tap_valid_r <= '0';
         if cfg_valid_edge = '1' then
           start_gate_r <= 2;
-        elsif capture_en_r = '1' and start_gate_r > 0 then
+        elsif run_f_level = '1' and start_gate_r > 0 then
           start_gate_r <= start_gate_r - 1;
         end if;
-        if capture_en_r = '1' and sample_rem_nonzero_r = '1'
-           and sample_div_cnt_r = 0 and start_gate_r = 0 then
+        if run_f_level = '1' and sample_rem_nonzero_r = '1'
+           and sample_due_r = '1' and start_gate_r = 0 then
           fast_sample_tick_r <= '1';
+          -- Hold the sampled tap value beside its one-cycle valid pulse. The
+          -- live FIFO writer consumes both on the following FAST_CLK edge,
+          -- so a divider tick cannot be paired with a later pin sample.
+          live_tap_data_r <= sample_word_r(15 downto 13);
+          live_tap_valid_r <= '1';
         end if;
       end if;
     end process;
+
 
     -- Stage 2c: registered budget-active flag. The write process emits a
     -- one-cycle terminal carry pulse, so no wide terminal comparison feeds
@@ -1516,11 +1543,21 @@ begin
                   else fifo_wr_skid_data_r;
   afifo_wr     <= (packed_buf_out_valid and packed_buf_out_ready)
                   or fifo_wr_skid_req_r;
-  -- fifo_wr_skid_* are registered in FAST_CLK. Exposing the same registered
-  -- word/strobe gives the direct FIFO an ordered tap without putting its CDC
-  -- or SPI backpressure into the SDRAM write path.
-  Live_Stream_Data  <= fifo_wr_skid_data_r;
-  Live_Stream_Valid <= fifo_wr_skid_req_r;
+  -- fifo_wr_skid_* remain the SDRAM writer's input. FAST_SPEED builds expose
+  -- the independent capture-tick seam to the direct live FIFO instead of
+  -- reusing the SDRAM writer's ready/valid strobe.
+  gen_live_tap_fast : if FAST_SPEED generate
+  begin
+    -- Keep the public tap layout unchanged: CH13..CH15 occupy bits 15..13.
+    Live_Stream_Data  <= live_tap_data_r & "0000000000000";
+    Live_Stream_Valid <= live_tap_valid_r;
+  end generate;
+
+  gen_live_tap_normal : if not FAST_SPEED generate
+  begin
+    Live_Stream_Data  <= fifo_wr_skid_data_r;
+    Live_Stream_Valid <= fifo_wr_skid_req_r;
+  end generate;
 
   -- Async FIFO (dcfifo) bridging FAST_CLK (write) to pclk (read).
   -- Sync depths increased to 4 for safer CDC across the ~200 MHz / ~167 MHz

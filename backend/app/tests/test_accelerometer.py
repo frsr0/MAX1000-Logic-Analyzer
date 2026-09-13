@@ -722,6 +722,48 @@ def test_live_capture_uses_continuous_ring_producer_and_stops_cleanly(tmp_path):
     assert service._live_worker is None
 
 
+def test_direct_stream_failure_retries_waveform_ring_not_atomic_xyz():
+    """A direct-FIFO ACK miss must preserve the real waveform data path."""
+
+    class DirectThenRingRaw(FakeRaw):
+        supports_direct_live_stream = True
+
+        def __init__(self):
+            super().__init__()
+            self.capture_modes = []
+
+        def continuous_ring_capture_with_repeating_i2c(self, **kwargs):
+            force_ring = bool(kwargs.get("force_ring"))
+            self.capture_modes.append(force_ring)
+            stop_evt = kwargs["stop_evt"]
+            if not force_ring:
+                raise RuntimeError("start_live_stream_read failed: no stream ack")
+            trace = _synthetic_lis3dh_i2c_trace(0x18).astype("<u2").tobytes()
+            self.first_sample.set()
+            while not stop_evt.is_set():
+                yield trace
+                stop_evt.wait(0.005)
+
+    raw = DirectThenRingRaw()
+    service = AccelerometerService(FakeManager(raw), sample_rate_hz=400)
+    assert service.start()["running"] is True
+    try:
+        assert raw.first_sample.wait(1.0)
+        deadline = time.time() + 1.0
+        while time.time() < deadline and service.status()["samples_read"] < 2:
+            time.sleep(0.01)
+        status = service.status()
+        assert status["samples_read"] >= 2
+        assert raw.capture_modes[:2] == [False, True]
+        transport = status["live_timing"]["transport"]
+        assert transport["mode"] == "ring"
+        assert transport["fallback"] is True
+        assert "no stream ack" in transport["error"]
+        assert raw.reads == 0
+    finally:
+        service.stop(wait_timeout=1.0)
+
+
 def test_highest_lis3dh_odr_uses_four_sample_400khz_fifo_burst():
     """The 5.376 kHz low-power fallback uses the fastest legal bus profile."""
 

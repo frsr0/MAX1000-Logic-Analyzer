@@ -264,6 +264,12 @@ set_multicycle_path 2 -setup \
 set_multicycle_path 1 -hold \
   -from [get_registers {*afifo*ws_dgrp*dffpipe*}] \
   -to   [get_registers {*afifo*wrptr_g1p*counter*}]
+
+# The direct live FIFO overflow latch is diagnostic state only; it is sampled
+# into CLK and reported on the next stream ACK. It must not add a one-cycle
+# requirement from the DCFIFO Gray-pointer comparator to the FAST_CLK writer.
+# The sample data/write request remains fully single-cycle constrained.
+set_false_path -to [get_keepers {*live_fifo_overflow*}]
  
  # DELETED: old multicycle for afifo portb -> cap_stream_data. The prefetch
  # register (prefetch_data_r) now captures fifo_rdata one cycle before the

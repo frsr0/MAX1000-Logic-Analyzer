@@ -112,10 +112,10 @@ LIVE_STREAM_WINDOW_SAMPLES = 1792
 LIVE_STREAM_FETCH_MULTIPLIER = 1
 LIVE_HIGH_ODR_READ_LEN = 24
 # A standard 24-byte FIFO burst occupies roughly 1.2 k capture samples at
-# 400 kHz. High-ODR delivery needs a larger ring window to amortise the
-# fixed USB/block-read setup while still remaining only a few milliseconds
-# behind the physical bus and with no unread source backlog.
-LIVE_HIGH_ODR_STREAM_WINDOW_SAMPLES = 65_536
+# 400 kHz. High-ODR delivery still batches several bursts to amortise the
+# fixed USB/block-read setup, but keeps the tail window to about 4 ms at the
+# 2 MHz capture tap so transport batching cannot become visible UI latency.
+LIVE_HIGH_ODR_STREAM_WINDOW_SAMPLES = 8_192
 LIVE_FALLBACK_REPEAT_COUNT = 1
 # A live fallback read is a transport freshness path, not the sensor ODR
 # scheduler. Cap the idle gap so a low configured ODR cannot make the UI's
@@ -662,6 +662,10 @@ class AccelerometerService:
         # instead of launching a second generator on the shared Bit_Engine.
         self._continuous_stream_active = False
         self._continuous_stream_watchdog = False
+        # Transport provenance is deliberately separate from decoded pose
+        # status. A valid later sample must not erase evidence that the live
+        # source fell back from direct FIFO to atomic reads.
+        self._live_transport: dict[str, Any] | None = None
         self._live_attached_to_tracking = False
         self._live_capture_accepting = False
         self._live_digital = np.zeros(0, dtype=np.uint16)
@@ -727,6 +731,10 @@ class AccelerometerService:
                 if self._last_fifo_error:
                     fifo_diag["error"] = self._last_fifo_error
                 timing["fifo"] = fifo_diag
+                status.live_timing = timing
+            if self._live_transport is not None:
+                timing = dict(status.live_timing or {})
+                timing["transport"] = dict(self._live_transport)
                 status.live_timing = timing
             # The UI uses availability to enable Start.  Being connected to
             # the real adapter is enough to make the asynchronous probe
@@ -1397,7 +1405,9 @@ class AccelerometerService:
     def _run_live_producer(self, adapter: Any, raw: Any, address: int,
                            live_stop_evt: threading.Event,
                            owner_session: Session | None,
-                           decoder_config: AccelerometerConfig | None = None
+                           decoder_config: AccelerometerConfig | None = None,
+                           *, force_ring: bool = False,
+                           transport_fallback_error: str | None = None
                            ) -> None:
         """Feed tracking or a live session from the FPGA ring.
 
@@ -1419,6 +1429,17 @@ class AccelerometerService:
         stream_transitions = 0
         stream_frames = 0
         stream_watchdog = False
+        transport_error = transport_fallback_error
+        direct_capable = (not force_ring and bool(
+            getattr(raw, "supports_direct_live_stream", False)))
+        with self._lock:
+            self._live_transport = {
+                "mode": "direct" if direct_capable else "ring",
+                "state": "starting",
+                "fallback": bool(transport_fallback_error),
+                "error": transport_fallback_error,
+                "started_at": self._clock(),
+            }
         try:
             capture = getattr(raw, "continuous_ring_capture_with_repeating_i2c", None)
             if callable(capture):
@@ -1443,6 +1464,7 @@ class AccelerometerService:
                     i2c_speed=LIVE_TRACE_I2C_SPEED_HZ,
                     repeat_transactions=LIVE_TRACE_REPEAT_TRANSACTIONS,
                     compact_i2c=LIVE_TRACE_COMPACT_I2C,
+                    force_ring=force_ring,
                     # Use the validated block-read ring transport for the
                     # live path. The optional held-CS raw serializer is not
                     # supported reliably by the flashed image: it can return
@@ -1575,6 +1597,9 @@ class AccelerometerService:
                             break
                         if stream_started_at is None:
                             stream_started_at = time.monotonic()
+                            with self._lock:
+                                if self._live_transport is not None:
+                                    self._live_transport["state"] = "streaming"
                         if isinstance(item, tuple):
                             # Raw tail-follow windows are deliberately not
                             # contiguous: the ring advances several windows
@@ -1700,7 +1725,14 @@ class AccelerometerService:
                 if live_stop_evt.is_set():
                     return
         except Exception as exc:
+            transport_error = str(exc)
             with self._lock:
+                if self._live_transport is not None:
+                    self._live_transport.update({
+                        "state": "fallback",
+                        "fallback": True,
+                        "error": str(exc),
+                    })
                 diagnostic_session = None
                 if owner_session is not None:
                     if self._live_session is owner_session:
@@ -1719,9 +1751,17 @@ class AccelerometerService:
                 except Exception:
                     pass
         if stream_watchdog:
+            transport_error = "stream produced no validated bus frames"
             with self._lock:
                 if owner_session is None:
                     self._continuous_stream_watchdog = True
+                if self._live_transport is not None:
+                    self._live_transport.update({
+                        "state": "fallback",
+                        "fallback": True,
+                        "error": (
+                            "stream produced no validated bus frames"),
+                    })
                 diagnostic_session = None
                 if owner_session is not None:
                     if self._live_session is owner_session:
@@ -1736,6 +1776,17 @@ class AccelerometerService:
                             "using bounded host-burst fallback"),
                         "ts": self._clock(),
                     })
+        if (direct_capable and not force_ring
+                and not live_stop_evt.is_set()):
+            # A direct-FIFO setup/ACK failure must not silently turn the live
+            # view into atomic XYZ polling. Retry through the continuous
+            # waveform ring so the decoder still sees the actual bus trace;
+            # retain the direct failure in transport diagnostics.
+            self._run_live_producer(
+                adapter, raw, address, live_stop_evt, owner_session,
+                decoder_config, force_ring=True,
+                transport_fallback_error=transport_error)
+            return
         # The persister is normally already running for a session-owned ring
         # path. This call is idempotent and also covers a stream implementation
         # that exits before the setup block above can start it. Ordinary

@@ -35,7 +35,30 @@ entity Generic_Pattern_Trigger is
 end Generic_Pattern_Trigger;
 
 architecture rtl of Generic_Pattern_Trigger is
+  -- The channel selectors are configuration state, but indexing Inputs
+  -- directly in the matcher creates a wide mux feeding the frame compare and
+  -- timer clear in the same sys_clk cycle. Register the selected lanes first.
+  -- This adds one deterministic observation cycle and keeps the trigger
+  -- sample order unchanged; it does not decimate or debounce the input.
+  signal data_bit_q       : std_logic := '0';
+  signal prev_data_bit_q  : std_logic := '0';
+  signal clock_bit_q      : std_logic := '0';
+  signal prev_clock_bit_q : std_logic := '0';
+  signal start_bit_q      : std_logic := '0';
+  signal prev_start_bit_q : std_logic := '0';
 begin
+  process (CLK)
+  begin
+    if rising_edge(CLK) then
+      data_bit_q       <= Inputs(Data_Channel_0);
+      prev_data_bit_q  <= Prev_Inputs(Data_Channel_0);
+      clock_bit_q      <= Inputs(Clock_Channel);
+      prev_clock_bit_q <= Prev_Inputs(Clock_Channel);
+      start_bit_q      <= Inputs(Start_Channel);
+      prev_start_bit_q <= Prev_Inputs(Start_Channel);
+    end if;
+  end process;
+
   process (CLK)
     variable frame       : std_logic_vector(31 downto 0) := (others => '0');
     variable bit_count   : natural range 0 to 32 := 0;
@@ -57,11 +80,9 @@ begin
       else
         start_edge := false;
         if Start_Polarity = '1' then
-          start_edge := Inputs(Start_Channel) = '1' and
-                       Prev_Inputs(Start_Channel) = '0';
+          start_edge := start_bit_q = '1' and prev_start_bit_q = '0';
         else
-          start_edge := Inputs(Start_Channel) = '0' and
-                       Prev_Inputs(Start_Channel) = '1';
+          start_edge := start_bit_q = '0' and prev_start_bit_q = '1';
         end if;
 
         if Start_Mode = '1' and not started and start_edge then
@@ -75,11 +96,9 @@ begin
         sample_edge := false;
         if Clock_Source = '1' then
           if Clock_Edge = '0' then
-            sample_edge := Inputs(Clock_Channel) = '1' and
-                           Prev_Inputs(Clock_Channel) = '0';
+            sample_edge := clock_bit_q = '1' and prev_clock_bit_q = '0';
           else
-            sample_edge := Inputs(Clock_Channel) = '0' and
-                           Prev_Inputs(Clock_Channel) = '1';
+            sample_edge := clock_bit_q = '0' and prev_clock_bit_q = '1';
           end if;
         elsif started then
           -- A start-qualified internal-baud frame begins at the centre of the
@@ -111,7 +130,7 @@ begin
           -- configured pattern has more channels, the host projects it onto
           -- Data_Channel_0 and the backend refines the full capture.
           frame := std_logic_vector(shift_left(unsigned(frame), 1));
-          frame(0) := Inputs(Data_Channel_0);
+          frame(0) := data_bit_q;
 
           -- The compare register is a fixed left-shifting register. The
           -- The register's MSB-to-LSB order is always the wire order. For

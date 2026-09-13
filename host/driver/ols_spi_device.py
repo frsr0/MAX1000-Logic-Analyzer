@@ -540,14 +540,28 @@ class OLSDeviceSPI:
         if len(meta) >= 10:
             self._gen_div_width = 24 if (meta[9] & 0x01) else 16
             self._direct_live_stream = bool(meta[9] & 0x02)
+            self._continuous_live_stream = bool(meta[9] & 0x04)
+            self._continuous_live_packed = bool(meta[9] & 0x08)
         elif len(meta) >= 9:
             self._gen_div_width = 16
             self._direct_live_stream = False
+            self._continuous_live_stream = False
+            self._continuous_live_packed = False
 
     @property
     def supports_direct_live_stream(self):
         """Whether the attached FPGA exposes the direct capture-tap FIFO."""
         return bool(getattr(self, "_direct_live_stream", False))
+
+    @property
+    def supports_continuous_live_stream(self):
+        """Whether the FPGA supports the framed held-CS live stream."""
+        return bool(getattr(self, "_continuous_live_stream", False))
+
+    @property
+    def supports_packed_continuous_live_stream(self):
+        """Whether continuous live frames pack eight three-bit samples."""
+        return bool(getattr(self, "_continuous_live_packed", False))
 
     def raw_mode(self, enable=True):
         self._stride = 1 if enable else 2
@@ -2913,7 +2927,20 @@ class OLSDeviceSPI:
         self.pkt.load_gen_data(packed)
 
         restore_mode = self.readback_compression_mode
-        direct_chunk = max(1, min(4096, int(chunk_nsamp)))
+        # The FPGA stages a full bounded burst before acknowledging it. Larger
+        # bursts amortise the USB/SPI transaction overhead that otherwise caps
+        # the compact stream well below the capture clock rate.
+        # LIVE_FIFO_DEPTH is 4096 and its usable count range is 0..4095;
+        # request at most one complete FIFO window. The FPGA ACKs only after
+        # this window is staged, so a short read can never be padded with an
+        # old MISO value.
+        # The FPGA admits a fixed-length direct response only after the full
+        # window has reached its capture FIFO. Keep the request below the
+        # one-ms readiness watchdog at low waveform rates; faster protocols
+        # still use the whole 4095-sample FIFO window. This is a transport
+        # bound, not a decimation: every accepted sample is still returned.
+        ready_window = max(1, int(max(1.0, float(rate_hz)) * 0.0008))
+        direct_chunk = max(1, min(4095, int(chunk_nsamp), ready_window))
         div = max(0, int(self.sample_clk / max(1.0, float(rate_hz))) - 1)
         try:
             # The direct FIFO is always raw 16-bit capture-tap words. Keep the
@@ -2930,6 +2957,68 @@ class OLSDeviceSPI:
                 status = response[0] if response is not None else 'timeout'
                 raise RuntimeError(f"direct live capture arm failed: {status}")
 
+            if self.supports_continuous_live_stream:
+                # The framed endpoint remains under one CS assertion until
+                # the caller stops. Decode valid low-nibble tokens as they
+                # arrive; explicit zero tokens are source-starved idle and
+                # are never forwarded to the waveform decoder.
+                wire_stream = self.pkt.start_live_stream_continuous(
+                    stop_evt=stop_evt,
+                    packed_tokens=self.supports_packed_continuous_live_stream)
+                decoded = bytearray()
+                packed_frame = bytearray()
+                total = 0
+                try:
+                    for wire_chunk in wire_stream:
+                        for token in wire_chunk:
+                            if self.supports_packed_continuous_live_stream:
+                                if packed_frame:
+                                    packed_frame.append(token)
+                                    if len(packed_frame) == 4:
+                                        packed_value = (packed_frame[1]
+                                                        | (packed_frame[2] << 8)
+                                                        | (packed_frame[3] << 16))
+                                        for sample_idx in range(8):
+                                            decoded.extend(struct.pack(
+                                                '<H', ((packed_value
+                                                        >> (sample_idx * 3))
+                                                       & 0x07) << 13))
+                                        packed_frame.clear()
+                                elif token == 0x07:
+                                    raise RuntimeError(
+                                        "continuous live stream FIFO overflow")
+                                elif token == 0xA5:
+                                    packed_frame.append(token)
+                                elif token != 0x00:
+                                    # The source-synchronous SPI shifter can
+                                    # repeat the final payload byte at a byte
+                                    # boundary.  Outside an A5-delimited
+                                    # frame it is not a sample; discard it and
+                                    # resynchronise on the next marker.
+                                    continue
+                                continue
+                            if token & 0x08:
+                                decoded.extend(struct.pack(
+                                    '<H', (token & 0x07) << 13))
+                        window_bytes = int(chunk_nsamp) * 2
+                        while len(decoded) >= window_bytes:
+                            data = bytes(decoded[:window_bytes])
+                            del decoded[:window_bytes]
+                            total += int(chunk_nsamp)
+                            if full_out is not None:
+                                full_out.extend(data)
+                            if progress_cb:
+                                progress_cb(data, total, int(chunk_nsamp))
+                            if include_cursor:
+                                yield data, total, int(chunk_nsamp), 0, None, {}
+                            else:
+                                yield data, total, int(chunk_nsamp), 0
+                        if stop_evt.is_set():
+                            break
+                finally:
+                    wire_stream.close()
+                return
+
             total = 0
             while not stop_evt.is_set():
                 _sequence, fifo_flags, compact_data = \
@@ -2939,17 +3028,26 @@ class OLSDeviceSPI:
                 if fifo_flags:
                     raise RuntimeError(
                         f"direct live capture FIFO overflow (flags=0x{fifo_flags:x})")
-                if len(compact_data) != direct_chunk:
+                expected_wire_bytes = (int(direct_chunk) * 3 + 7) // 8
+                if len(compact_data) != expected_wire_bytes:
                     raise RuntimeError(
                         f"direct live stream returned {len(compact_data)} bytes; "
-                        f"expected {direct_chunk}")
+                        f"expected {expected_wire_bytes}")
                 # The FPGA compact serializer maps CH13/14/15 to bits 0/1/2.
+                # The packed wire format places sample i at bit offset 3*i.
                 # Restore the normal dense 16-bit digital sample layout used
                 # by the backend decoder and waveform websocket.
                 expanded = bytearray(direct_chunk * 2)
-                for idx, sample in enumerate(compact_data):
-                    expanded[idx * 2:idx * 2 + 2] = \
-                        struct.pack('<H', (sample & 0x07) << 13)
+                for idx in range(direct_chunk):
+                    bit_offset = idx * 3
+                    byte_offset = bit_offset >> 3
+                    shift = bit_offset & 7
+                    packed_word = compact_data[byte_offset]
+                    if byte_offset + 1 < len(compact_data):
+                        packed_word |= compact_data[byte_offset + 1] << 8
+                    value = (packed_word >> shift) & 0x07
+                    expanded[idx * 2:idx * 2 + 2] = struct.pack(
+                        '<H', value << 13)
                 data = bytes(expanded)
                 total += direct_chunk
                 if full_out is not None:
@@ -3016,7 +3114,7 @@ class OLSDeviceSPI:
             progress_cb=None, full_out=None, use_rle=True,
             prefer_raw_stream=False, follow_tail=False,
             fetch_multiplier=1, include_cursor=False,
-            repeat_transactions=1, compact_i2c=False):
+            repeat_transactions=1, compact_i2c=False, force_ring=False):
         """Capture a continuously repeated LIS3DH I2C read into the ring.
 
         The existing Bit_Engine repeat flag is sufficient for this path: the
@@ -3078,7 +3176,7 @@ class OLSDeviceSPI:
         if div > self.gen_div_mask:
             raise ValueError(
                 f"I2C speed {i2c_speed} Hz is below the Bit_Engine floor")
-        if self.supports_direct_live_stream:
+        if self.supports_direct_live_stream and not force_ring:
             # New images expose the capture tap through a small FPGA FIFO.
             # Use it as the source of truth; the legacy SDRAM ring remains a
             # capability-gated fallback for older images.

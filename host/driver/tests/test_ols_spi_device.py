@@ -1003,7 +1003,7 @@ class TestDigitalGlitchFilter:
 
 
 class TestSPIDeviceStatusMetadata:
-    def test_compact_live_stream_uses_one_wire_byte_per_sample(self):
+    def test_compact_live_stream_uses_packed_three_bit_samples(self):
         class Transport:
             def __init__(self):
                 self.stream_command = MagicMock()
@@ -1013,17 +1013,21 @@ class TestSPIDeviceStatusMetadata:
         response = (SYNC_RSP + bytes([ST_STREAM_ACTIVE, 0])
                     + struct.pack('<H', len(ack_payload)) + ack_payload)
         response += struct.pack('<H', crc16(response[2:]))
-        transport.stream_command.return_value = response + b'\x01\x02\x04'
+        # Three 3-bit samples (1, 2, 4) occupy nine bits: 0x11, 0x01.
+        transport.stream_command.return_value = response + b'\x11\x01' + b'\x00' * 4094
 
         pkt = SPIDevice(transport)
         sequence, flags, data = pkt.start_live_stream_read(
             3, compact_3bit=True)
 
-        assert (sequence, flags, data) == (0x1234, 0, b'\x01\x02\x04')
+        assert (sequence, flags, data) == (0x1234, 0, b'\x11\x01')
         request, n_bytes = transport.stream_command.call_args.args[:2]
         assert request[2] == CMD_START_LIVE_STREAM
         assert struct.unpack('<I', request[6:10])[0] == 0x80000003
-        assert n_bytes == 3
+        # The direct FIFO may take up to 0.8 ms to stage its window. The
+        # production transport therefore clocks one bulk 4096-byte budget,
+        # then the protocol parser takes only the bytes after the ACK.
+        assert n_bytes == 4096
 
     def test_legacy_short_status_still_parses(self):
         pkt = SPIDevice(MagicMock())

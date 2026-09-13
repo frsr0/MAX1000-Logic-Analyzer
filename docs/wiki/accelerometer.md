@@ -97,10 +97,12 @@ including the mode-dependent ODR table and full-scale sensitivities.
 The live diagnostic creates a normal persisted session named `LIS3DH WHO_AM_I
 live`, captures the dialogue at 2 MHz, maps SDA/SCL to the sensor channels,
 and attaches the standard I²C decoder. Direct-live-capable FPGA images feed
-that waveform through the ordered capture-tap FIFO (the three sensor bits are
-transport-packed to one byte/sample); older images retain the SDRAM-ring
-fallback. This makes the peripheral useful both as a device-level self-test
-and as a realistic protocol waveform source.
+that waveform through an ordered capture-tap FIFO; only CH13/CH14/CH15 cross
+the direct FIFO, and the SPI payload packs eight three-bit samples into three
+bytes. A direct chunk is acknowledged only after its complete bounded FIFO
+window is staged. Older images retain the SDRAM-ring fallback. This makes the
+peripheral useful both as a device-level self-test and as a realistic protocol
+waveform source.
 
 ## Live pose timing and recovery
 
@@ -119,17 +121,20 @@ drops that one pose update without waiting for a later confirmation point.
 The normal/high-resolution path uses a 2 MHz capture ring, standard 400 kHz
 I²C, a 1,792-sample tail window, and no host prefetch. For the low-power
 5.376 kHz setting, the generator reads 24 bytes from the LIS3DH FIFO per
-dialogue and uses a larger ring window to amortise fixed USB block-read setup.
+dialogue and uses an 8,192-sample ring window to amortise fixed USB block-read
+setup without turning the batching window into visible UI latency.
 `source_backlog_samples` is the unread source queue after the returned window;
 it must remain zero or near zero. `source_age_samples` is a separate point-age
 measurement and may be non-zero even when the queue is empty.
 
 The sensor ODR and host decoded rate are intentionally reported separately.
-The flashed FPGA image currently sustains the 1.344 kHz normal/high-resolution
-limit, but its block-read endpoint does not yet sustain the 5.376 kHz
-low-power maximum. Reaching that absolute setting at full rate requires an
-FPGA-side bulk FIFO/stream endpoint; enlarging browser buffers would only add
-latency.
+The direct held-CS stream now carries eight CH13/CH14/CH15 samples in three
+payload bytes plus an explicit frame marker, so the flashed image sustains a
+2 MHz waveform tap with no FIFO overflow in a five-second hardware run. A
+3 MHz request delivered 2.33 MS/s in the same test, establishing the current
+USB/MPSSE drain ceiling rather than silently switching to SDRAM history or
+invented XYZ values. Higher rates require a concurrently drained USB endpoint;
+larger browser buffers would only add latency.
 
 The application keeps separate WebSocket contracts so presentation cannot hold
 up history or raw decoding:
@@ -142,10 +147,11 @@ up history or raw decoding:
 
 The waveform WebSocket is the board's live source of truth. If a chunk is lost,
 its sequence gap resets the incremental decoder instead of allowing unrelated
-waveform sections to complete a plausible-looking fake frame. The current
-hardware producer still obtains those chunks from the SDRAM ring; replacing
-that final ring readback with a direct FPGA bulk FIFO is the remaining hardware
-transport step needed to remove the ring from the live path entirely.
+waveform sections to complete a plausible-looking fake frame. Direct transport
+status is reported separately from pose data: `mode`, `state`, `fallback`, and
+`error` identify whether the waveform came from the ordered FPGA FIFO, the
+legacy SDRAM ring, or a bounded atomic-read recovery path. A direct FIFO
+overrun or incomplete window is a transport error, not valid waveform data.
 
 Each sample trace carries the decoder sequence, ring source index and
 producer/oldest pointers, source backlog, `decoded_at`, `gate_accepted_at`,

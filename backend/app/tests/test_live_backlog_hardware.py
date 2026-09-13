@@ -64,9 +64,15 @@ def test_live_hardware_ring_backlog_stays_at_most_one_sample():
         "live backlog test requires the accelerometer tracking worker to be "
         f"running and available; got {initial!r}")
     initial_timing = initial.get("live_timing") or {}
-    assert isinstance(initial_timing.get("ring"), dict), (
-        "live backlog test requires the continuous ring reader, not the "
-        "atomic-read fallback")
+    transport = initial_timing.get("transport") or {}
+    assert transport.get("fallback") is not True, (
+        "live backlog test requires the primary ordered transport; got "
+        f"{transport!r}")
+    direct_transport = transport.get("mode") == "direct"
+    if not direct_transport:
+        assert isinstance(initial_timing.get("ring"), dict), (
+            "live backlog test requires either the direct FIFO transport or "
+            "the continuous ring reader, not the atomic-read fallback")
 
     backlogs: list[int] = []
     ring_backlogs: list[int] = []
@@ -83,9 +89,19 @@ def test_live_hardware_ring_backlog_stays_at_most_one_sample():
         backlogs.append(value)
         ring = (status.get("live_timing") or {}).get("ring") or {}
         ring_value = ring.get("source_backlog_samples")
-        assert isinstance(ring_value, int) and ring_value >= 0, (
-            f"invalid ring source_backlog_samples={ring_value!r} in {status!r}")
-        ring_backlogs.append(ring_value)
+        if direct_transport:
+            # Direct FIFO samples have no SDRAM cursor by design. Their
+            # transport backlog is represented by the service-level metric,
+            # which must remain zero because the FPGA stages one bounded
+            # window before acknowledging it.
+            assert ring_value in (None, 0), (
+                f"direct transport exposed ring backlog={ring_value!r} "
+                f"in {status!r}")
+        else:
+            assert isinstance(ring_value, int) and ring_value >= 0, (
+                f"invalid ring source_backlog_samples={ring_value!r} "
+                f"in {status!r}")
+            ring_backlogs.append(ring_value)
         host_rate = status.get("host_read_rate_hz")
         effective_rate = status.get("effective_odr_hz")
         if isinstance(host_rate, (int, float)) and host_rate >= 0:
@@ -105,13 +121,14 @@ def test_live_hardware_ring_backlog_stays_at_most_one_sample():
     max_backlog = max(backlogs)
     above_limit = sum(value > MAX_ALLOWED_BACKLOG_SAMPLES
                       for value in backlogs)
-    max_ring_backlog = max(ring_backlogs)
+    max_ring_backlog = max(ring_backlogs or [0])
     effective_rate = max(effective_rates or [
         float(initial.get("effective_odr_hz") or 0.0),
         float(initial.get("sample_rate_hz") or 0.0),
     ])
     final_host_rate = host_rates[-1] if host_rates else 0.0
     assert max_backlog <= MAX_ALLOWED_BACKLOG_SAMPLES and (
+            direct_transport or
             max_ring_backlog <= MAX_ALLOWED_BACKLOG_SAMPLES), (
         "ring source backlog exceeded the hard live limit: "
         f"max={max_backlog}, median={statistics.median(backlogs)}, "

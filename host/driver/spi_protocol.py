@@ -123,6 +123,14 @@ ST_GEN_BUSY      = 0x30
 MAX_PAYLOAD = 4096
 BLOCK_SIZE  = 1024
 MAX_RAW_STREAM_SAMPLES = 16384
+
+
+def packed_3bit_wire_bytes(sample_count: int) -> int:
+    """Return bytes needed for ``sample_count`` densely packed 3-bit values."""
+    count = max(0, int(sample_count))
+    return (count * 3 + 7) // 8
+
+
 # Stream start addresses are carried as 32-bit byte offsets on the wire.  The
 # continuous producer index is also a modulo-32-bit counter, so arithmetic in
 # the host must wrap before struct.pack rather than overflowing after a long
@@ -610,8 +618,8 @@ class SPIDevice:
         intentionally identical: ``(sequence, fifo_flags, data_bytes)``.
         ``fifo_flags`` is reserved for a future overflow bit; a non-zero value
         means the caller must treat the stream as discontinuous. With
-        ``compact_3bit``, the FPGA sends one byte per sample containing the
-        selected three waveform bits.
+        ``compact_3bit``, the FPGA sends the selected three waveform bits
+        densely packed, eight samples into three wire bytes (LSB-first).
         """
         sample_count = max(0, int(sample_count))
         if sample_count == 0:
@@ -633,7 +641,21 @@ class SPIDevice:
         payload = struct.pack('<I', payload_count)
         seq = self._next_seq()
         req = build_packet(CMD_START_LIVE_STREAM, seq, payload)
-        n_bytes = sample_count if compact_3bit else sample_count * 2
+        n_bytes = (packed_3bit_wire_bytes(sample_count)
+                   if compact_3bit else sample_count * 2)
+        # A direct FIFO ACK is intentionally delayed until the requested
+        # source window is staged.  Cover that wait with one bulk held-CS
+        # transfer; the old precise path polled in 16-byte USB round trips,
+        # which could take tens of milliseconds at a MHz-rate source and let
+        # the FPGA FIFO overflow before the ACK was found.  The fixed bulk
+        # primitive is used first because it performs one MPSSE write/read
+        # exchange and does not wait for an exact-size FTDI queue fill.
+        if hasattr(self.spi, "stream_command"):
+            return self._live_stream_via_bulk(
+                req, seq, n_bytes, stop_evt=stop_evt)
+        if hasattr(self.spi, "stream_command_chunks"):
+            return self._live_stream_via_chunks(
+                req, seq, n_bytes, stop_evt=stop_evt)
         if (hasattr(self.spi, "stream_command_begin")
                 and hasattr(self.spi, "stream_command_clock")
                 and hasattr(self.spi, "stream_command_end")):
@@ -651,6 +673,108 @@ class SPIDevice:
             if len(data) == n_bytes:
                 return sequence, flags, data
         raise RuntimeError("start_live_stream_read failed")
+
+    def start_live_stream_continuous(self, stop_evt=None, packed_tokens=False):
+        """Yield bytes from the framed held-CS live waveform stream.
+
+        Each byte contains one low-nibble token: bit 3 marks a real sample
+        and bits 2:0 carry CH13..CH15. Zero tokens are explicit source-starved
+        idle, so a USB/MPSSE chunk boundary cannot become fake waveform data.
+        """
+        if not hasattr(self.spi, "stream_command_chunks"):
+            raise RuntimeError("continuous live stream requires chunked transport")
+        # bit30 selects framed mode; bit29 requests the bandwidth-efficient
+        # marker + three-byte frame carrying eight 3-bit samples.
+        payload = struct.pack('<I', 0x60000000 if packed_tokens else 0x40000000)
+        seq = self._next_seq()
+        req = build_packet(CMD_START_LIVE_STREAM, seq, payload)
+        gen = self.spi.stream_command_chunks(
+            req, ack_pad=max(self._default_ack_pad(), 64),
+            chunk_bytes=4096, stop_evt=stop_evt)
+        acc = bytearray()
+        active = False
+        try:
+            for chunk in gen:
+                if stop_evt is not None and stop_evt.is_set():
+                    break
+                if not active:
+                    acc.extend(chunk)
+                    found = self._find_stream_ack(acc, seq)
+                    if found is None:
+                        continue
+                    _sequence, flags, end = found
+                    if flags:
+                        raise RuntimeError(
+                            f"continuous live stream FIFO overflow (flags=0x{flags:x})")
+                    active = True
+                    if len(acc) > end:
+                        tail = bytes(acc[end:])
+                        if not packed_tokens and 0x07 in tail:
+                            raise RuntimeError(
+                                "continuous live stream FIFO overflow")
+                        yield tail
+                else:
+                    if not packed_tokens and 0x07 in chunk:
+                        raise RuntimeError(
+                            "continuous live stream FIFO overflow")
+                    yield bytes(chunk)
+        finally:
+            gen.close()
+        if not active and not (stop_evt is not None and stop_evt.is_set()):
+            raise RuntimeError("continuous live stream failed: no stream ack")
+
+    def _live_stream_via_bulk(self, req, seq, n_bytes, stop_evt=None):
+        """Read one finite live window in a single held-CS bulk transfer."""
+        pad = max(self._default_ack_pad(), 64)
+        # The FPGA direct path stages at most 0.8 ms before acknowledging. At
+        # 30 MHz, 4096 dummy clocks cover that interval while still leaving
+        # room for the requested payload after the ACK.
+        wire_budget = max(4096, int(n_bytes) + 128)
+        raw = self.spi.stream_command(
+            req, wire_budget, ack_pad=pad, stop_evt=stop_evt)
+        found = self._find_stream_ack(bytearray(raw), seq)
+        if found is None:
+            raise RuntimeError("start_live_stream_read failed: no stream ack")
+        sequence, flags, end = found
+        data = raw[end:end + n_bytes]
+        if len(data) < n_bytes:
+            raise RuntimeError("start_live_stream_read failed: truncated live stream")
+        return sequence, flags, data
+
+    def _live_stream_via_chunks(self, req, seq, n_bytes, stop_evt=None):
+        """Read one finite live window using bulk held-CS clocking."""
+        pad = max(self._default_ack_pad(), 64)
+        gen = self.spi.stream_command_chunks(
+            req, ack_pad=pad,
+            # Keep the first post-guard transfer bounded.  A 4 KiB MPSSE
+            # read can wait for the FTDI queue to fill even though the FPGA
+            # has already produced the ACK and requested window.
+            chunk_bytes=max(1024, int(n_bytes) + 128), stop_evt=stop_evt)
+        acc = bytearray()
+        sequence = flags = None
+        data = bytearray()
+        try:
+            for chunk in gen:
+                if stop_evt is not None and stop_evt.is_set():
+                    break
+                if sequence is None:
+                    acc.extend(chunk)
+                    found = self._find_stream_ack(acc, seq)
+                    if found is None:
+                        continue
+                    sequence, flags, end = found
+                    data.extend(acc[end:])
+                else:
+                    data.extend(chunk)
+                if len(data) >= n_bytes:
+                    break
+        finally:
+            gen.close()
+        if sequence is None:
+            raise RuntimeError("start_live_stream_read failed: no stream ack")
+        if len(data) < n_bytes:
+            raise RuntimeError("start_live_stream_read failed: truncated live stream")
+        return sequence, flags, bytes(data[:n_bytes])
 
     def _live_stream_via_precise_clocking(self, req, seq, n_bytes, stop_evt):
         """Clock only the live-stream ACK and requested sample payload."""
