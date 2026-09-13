@@ -2,6 +2,8 @@
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.numeric_std.all;
+library lpm;
+use lpm.lpm_components.all;
 use work.spi_protocol_pkg.all; 
 
 
@@ -15,6 +17,11 @@ ENTITY OLS_Interface IS
 PORT (
   CLK : IN STD_LOGIC;
   FAST_CLK : IN STD_LOGIC := '0';
+  -- Ordered live capture tap. The source is written in FAST_CLK and is
+  -- consumed directly by CMD_START_LIVE_STREAM; it is intentionally separate
+  -- from the SDRAM response FIFO.
+  Live_Stream_Data  : IN STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  Live_Stream_Valid : IN STD_LOGIC := '0';
   SPI_CS       : IN  STD_LOGIC := '1';
   SPI_SCK      : IN  STD_LOGIC := '0';
   SPI_MOSI     : IN  STD_LOGIC := '0';
@@ -168,6 +175,23 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL spi_preamble        : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL spi_preamble_r      : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL spi_tx_ready_i      : STD_LOGIC := '0';
+
+  -- Direct live waveform FIFO: FAST_CLK capture tap -> CLK/SPI dispatcher.
+  -- The depth is deliberately small. A full FIFO is an explicit transport
+  -- overrun, never an excuse to accumulate seconds of hidden latency.
+  CONSTANT LIVE_FIFO_DEPTH : NATURAL := 4096;
+  CONSTANT LIVE_FIFO_WIDTHU : NATURAL := 12;
+  SIGNAL live_fifo_q       : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  SIGNAL live_fifo_empty   : STD_LOGIC := '1';
+  SIGNAL live_fifo_full    : STD_LOGIC := '0';
+  SIGNAL live_fifo_wrreq   : STD_LOGIC := '0';
+  SIGNAL live_fifo_rdreq   : STD_LOGIC := '0';
+  SIGNAL live_fifo_wrusedw : STD_LOGIC_VECTOR(LIVE_FIFO_WIDTHU-1 downto 0) := (others => '0');
+  SIGNAL live_fifo_rdusedw : STD_LOGIC_VECTOR(LIVE_FIFO_WIDTHU-1 downto 0) := (others => '0');
+  SIGNAL live_stream_arm   : STD_LOGIC := '0';
+  SIGNAL live_stream_arm_s1 : STD_LOGIC := '0';
+  SIGNAL live_stream_arm_s2 : STD_LOGIC := '0';
+  SIGNAL live_fifo_overflow : STD_LOGIC := '0';
 
   SIGNAL ch_mode             : STD_LOGIC := '0';  -- 0=8ch/500k, 1=4ch/4M
   SIGNAL gen_capture_tx_channel_i  : NATURAL range 0 to 15 := 0;
@@ -397,7 +421,80 @@ SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
   );
   END COMPONENT;
 
+  COMPONENT dcfifo IS
+  GENERIC (
+    lpm_width       : NATURAL;
+    lpm_widthu      : NATURAL;
+    lpm_numwords    : NATURAL;
+    lpm_showahead   : STRING;
+    lpm_type        : STRING;
+    rdsync_delaypipe : NATURAL;
+    wrsync_delaypipe : NATURAL;
+    intended_device_family : STRING
+  );
+  PORT (
+    aclr     : IN STD_LOGIC;
+    data     : IN STD_LOGIC_VECTOR(lpm_width-1 downto 0);
+    wrreq    : IN STD_LOGIC;
+    wrclk    : IN STD_LOGIC;
+    rdreq    : IN STD_LOGIC;
+    rdclk    : IN STD_LOGIC;
+    q        : OUT STD_LOGIC_VECTOR(lpm_width-1 downto 0);
+    rdempty  : OUT STD_LOGIC;
+    wrfull   : OUT STD_LOGIC;
+    wrusedw  : OUT STD_LOGIC_VECTOR(lpm_widthu-1 downto 0);
+    rdusedw  : OUT STD_LOGIC_VECTOR(lpm_widthu-1 downto 0)
+  );
+  END COMPONENT;
+
 BEGIN
+  -- The live FIFO is written only while a direct stream is armed. It is
+  -- drained whenever idle, so an interrupted CS-held transaction cannot
+  -- poison the next one with stale waveform words.
+  live_fifo_writer : PROCESS (FAST_CLK)
+  BEGIN
+    IF RISING_EDGE(FAST_CLK) THEN
+      live_stream_arm_s1 <= live_stream_arm;
+      live_stream_arm_s2 <= live_stream_arm_s1;
+      live_fifo_wrreq <= '0';
+      IF live_stream_arm_s2 = '1' AND Live_Stream_Valid = '1' THEN
+        IF live_fifo_full = '0' THEN
+          live_fifo_wrreq <= '1';
+        ELSE
+          live_fifo_overflow <= '1';
+        END IF;
+      END IF;
+      IF live_stream_arm_s2 = '0' THEN
+        live_fifo_overflow <= '0';
+      END IF;
+    END IF;
+  END PROCESS;
+
+  live_fifo : dcfifo
+  GENERIC MAP (
+    lpm_width => 16,
+    lpm_widthu => LIVE_FIFO_WIDTHU,
+    lpm_numwords => LIVE_FIFO_DEPTH,
+    lpm_showahead => "ON",
+    lpm_type => "dcfifo",
+    rdsync_delaypipe => 4,
+    wrsync_delaypipe => 4,
+    intended_device_family => "MAX 10"
+  )
+  PORT MAP (
+    aclr => '0',
+    data => Live_Stream_Data,
+    wrreq => live_fifo_wrreq,
+    wrclk => FAST_CLK,
+    rdreq => live_fifo_rdreq,
+    rdclk => CLK,
+    q => live_fifo_q,
+    rdempty => live_fifo_empty,
+    wrfull => live_fifo_full,
+    wrusedw => live_fifo_wrusedw,
+    rdusedw => live_fifo_rdusedw
+  );
+
   Generic_Trigger : entity work.Generic_Pattern_Trigger
     port map (
       CLK               => CLK,
@@ -1157,7 +1254,8 @@ BEGIN
   -- Block read data is streamed directly from block_buf to the TX.
   spi_pkt_dispatch: process(CLK)
     type state_t is (IDLE, EXEC, WAIT_BLOCK, BUILD_RSP, FEED_TX, WAIT_TX,
-                     RAW_WAIT_DRAIN, RAW_WAIT_READY, RAW_STREAM);
+                     RAW_WAIT_DRAIN, RAW_WAIT_READY, LIVE_WAIT_DRAIN,
+                     RAW_STREAM);
     variable st : state_t := IDLE;
     variable rsp_seq_v : std_logic_vector(7 downto 0) := (others => '0');
     variable rsp_stat_v : std_logic_vector(7 downto 0) := ST_OK;
@@ -1190,6 +1288,8 @@ BEGIN
     variable raw_word : std_logic_vector(15 downto 0) := (others => '0');
     variable raw_have_word : boolean := false;
     variable raw_byte_hi_next : boolean := false;
+    variable raw_live_source : boolean := false;
+    variable raw_live_compact : boolean := false;
     -- The raw FIFO is fed by an asynchronous block-read request.  Do not
     -- advertise ST_STREAM_ACTIVE until the first word has crossed into this
     -- clock domain: the SPI master starts clocking sample bytes immediately
@@ -1220,6 +1320,7 @@ BEGIN
       disp_ack_done <= '0';
       raw_blk_req_fire <= '0';
       raw_fifo_rdreq <= '0';
+      live_fifo_rdreq <= '0';
       raw_comp_pop <= '0';
       disp_gen_stop <= '0';
 
@@ -1237,12 +1338,18 @@ BEGIN
         raw_stream_comp_mode <= '0';
         raw_start_pending := false;
         raw_words_rem := 0;
+        live_stream_arm <= '0';
+        raw_live_source := false;
+        raw_live_compact := false;
       elsif disp_abort = '1' then
         raw_stream_tx_sel <= '0';
         raw_stream_req_active <= '0';
         raw_stream_comp_mode <= '0';
         raw_start_pending := false;
         raw_words_rem := 0;
+        live_stream_arm <= '0';
+        raw_live_source := false;
+        raw_live_compact := false;
       end if;
         -- Clear streaming mode on CS rise (host drops SPI chip select).
         -- Also flag the residual Rd_Fifo entries so the drain logic below
@@ -1253,24 +1360,49 @@ BEGIN
           raw_stream_comp_mode <= '0';
         raw_start_pending := false;
         raw_words_rem := 0;
+        -- A direct live stream is made of several CS-held chunks. Preserve
+        -- the capture-tap arm between those chunks; CMD_ABORT_CAPTURE (or a
+        -- subsequent non-live stream command) explicitly disarms it.
+        if not raw_live_source then
+          live_stream_arm <= '0';
+          raw_live_source := false;
+          raw_live_compact := false;
+        end if;
         if st = RAW_STREAM then
           st := IDLE;
         end if;
         raw_fifo_drain_active <= '1';
       end if;
 
-      if (raw_start_pending or st = RAW_STREAM) and raw_stream_comp_mode = '0' then
+      -- Keep the live FIFO empty between direct sessions. While a session is
+      -- armed, only the RAW fetch state may consume it.
+      if live_stream_arm = '0' and live_fifo_empty = '0' then
+        live_fifo_rdreq <= '1';
+      end if;
+
+      if (raw_start_pending or st = RAW_STREAM)
+         and raw_stream_comp_mode = '0'
+         and (not raw_live_source or live_stream_arm = '1') then
         if (not raw_have_word) and raw_words_rem > 0 then
           case raw_fetch_state is
             when 0 =>
-              if Rd_Fifo_Empty = '0' then
+              if raw_live_source then
+                if live_fifo_empty = '0' then
+                  live_fifo_rdreq <= '1';
+                  raw_fetch_state := 1;
+                end if;
+              elsif Rd_Fifo_Empty = '0' then
                 raw_fifo_rdreq <= '1';
                 raw_fetch_state := 1;
               end if;
             when 1 =>
               raw_fetch_state := 2;
             when others =>
-              raw_word := Rd_Fifo_Q;
+              if raw_live_source then
+                raw_word := live_fifo_q;
+              else
+                raw_word := Rd_Fifo_Q;
+              end if;
               raw_have_word := true;
               raw_fetch_state := 0;
           end case;
@@ -1380,7 +1512,7 @@ BEGIN
               -- byte 9: feature flags. bit0 = 24-bit REG_GEN_BAUD divider
               -- (Bit_Engine supports symbol rates down to ~6 Hz at 100 MHz;
               -- without it the divider is 16-bit with a ~1.5 kHz floor).
-              rsp_buf(9) := x"01";
+              rsp_buf(9) := x"03";
               rsp_buf_len := 10;
               rsp_len_v := 10;
               st := BUILD_RSP;
@@ -1397,6 +1529,9 @@ BEGIN
 
             when CMD_START_RAW_STREAM =>
               if rx_header_len >= 8 then
+                raw_live_source := false;
+                raw_live_compact := false;
+                live_stream_arm <= '0';
                 reg_val(7 downto 0)   := rx_payload_header(0);
                 reg_val(15 downto 8)  := rx_payload_header(1);
                 block_rd_issue_addr   <= reg_val(15 downto 0);
@@ -1456,6 +1591,58 @@ BEGIN
                 raw_words_rem := 0;
                 st := BUILD_RSP;
               end if;
+
+            when CMD_START_LIVE_STREAM =>
+              -- The direct stream has no ring cursor. It arms the small
+              -- FAST_CLK->CLK FIFO only after stale words have drained, then
+              -- reuses the proven CS-held byte serializer below.
+              IF rx_header_len >= 4 THEN
+                reg_val := (others => '0');
+                reg_val(7 downto 0) := rx_payload_header(0);
+                reg_val(15 downto 8) := rx_payload_header(1);
+                reg_val(23 downto 16) := rx_payload_header(2);
+                reg_val(31 downto 24) := rx_payload_header(3);
+                IF unsigned(reg_val(30 downto 0)) = to_unsigned(0, 31)
+                   OR unsigned(reg_val(30 downto 0)) > to_unsigned(16384, 31) THEN
+                  rsp_stat_v := ST_BAD_LEN;
+                  st := BUILD_RSP;
+                ELSE
+                  raw_live_source := true;
+                  raw_live_compact := (reg_val(31) = '1');
+                  raw_stream_req_active <= '0';
+                  raw_stream_comp_mode <= '0';
+                  raw_words_rem := TO_INTEGER(UNSIGNED(reg_val(14 downto 0)));
+                  raw_start_pending := (raw_words_rem /= 0);
+                  raw_have_word := false;
+                  raw_fetch_state := 0;
+                  raw_byte_hi_next := false;
+                  raw_ready_wd := 0;
+                  -- A direct stream reports zeroed reserved cursor fields.
+                  -- The host uses the same ACK parser as the SDRAM stream.
+                  rsp_buf(0) := x"00";
+                  rsp_buf(1) := x"00";
+                  rsp_buf(2) := x"00";
+                  rsp_buf(3) := x"00";
+                  rsp_buf(4) := x"00";
+                  rsp_buf(5) := x"00";
+                  rsp_buf(6) := x"00";
+                  rsp_buf(7) := x"00";
+                  rsp_buf_len := 8;
+                  rsp_len_v := 8;
+                  rsp_stat_v := ST_STREAM_ACTIVE;
+                  if live_stream_arm = '1' then
+                    -- Consecutive direct chunks share the same armed FIFO;
+                    -- do not drain the samples that arrived between CS
+                    -- transactions.
+                    st := RAW_WAIT_READY;
+                  else
+                    st := LIVE_WAIT_DRAIN;
+                  end if;
+                END IF;
+              ELSE
+                rsp_stat_v := ST_BAD_LEN;
+                st := BUILD_RSP;
+              END IF;
 
             when CMD_ACK_CAPTURE_DONE =>
               disp_ack_seq <= (others => '0');
@@ -1800,6 +1987,25 @@ BEGIN
             raw_ready_wd := raw_ready_wd + 1;
           end if;
 
+        when LIVE_WAIT_DRAIN =>
+          -- The direct FIFO is drained whenever its arm level is low. Do not
+          -- start writing new capture words until its read-side empty flag is
+          -- observed, otherwise a stopped CS session can replay stale bus
+          -- samples at the head of the next session.
+          if live_fifo_empty = '1' then
+            live_stream_arm <= '1';
+            st := RAW_WAIT_READY;
+          elsif raw_ready_wd >= RAW_READY_WD_MAX then
+            rsp_stat_v := ST_BUSY;
+            rsp_len_v := 0;
+            raw_start_pending := false;
+            raw_words_rem := 0;
+            raw_live_source := false;
+            st := BUILD_RSP;
+          else
+            raw_ready_wd := raw_ready_wd + 1;
+          end if;
+
         when RAW_STREAM =>
           if raw_stream_comp_mode = '1' then
             -- Serialize output words low-byte-first. At each word boundary
@@ -1836,6 +2042,31 @@ BEGIN
                 raw_comp_bhi := '0';
               end if;
             end if;
+          elsif raw_live_source and raw_live_compact
+                and spi_tx_ready_i = '1' and raw_have_word then
+            -- Accelerometer live mode only needs CH13/CH14/CH15. Pack those
+            -- three bits into one wire byte: bit 0=SDA, bit 1=SCL, bit
+            -- 2=SDO. The host expands it back to the normal 16-bit channel
+            -- word, while the wire rate stays below the 30 MHz SPI limit.
+            raw_stream_tx_sel <= '1';
+            raw_stream_tx_byte <= "00000" & raw_word(15 downto 13);
+            raw_have_word := false;
+            raw_byte_hi_next := false;
+            if raw_words_rem > 0 then
+              raw_words_rem := raw_words_rem - 1;
+            end if;
+            if raw_words_rem = 0 then
+              raw_start_pending := false;
+              st := IDLE;
+            end if;
+          elsif raw_live_source and live_fifo_overflow = '1' then
+            -- Do not continue after a direct FIFO overrun. The host sees a
+            -- truncated CS-held response and resets its waveform decoder;
+            -- sending old words would be indistinguishable from real time.
+            raw_start_pending := false;
+            raw_words_rem := 0;
+            live_stream_arm <= '0';
+            st := IDLE;
           elsif spi_tx_ready_i = '1' and raw_have_word then
             if raw_stream_tx_sel = '0' then
               raw_stream_tx_sel <= '1';

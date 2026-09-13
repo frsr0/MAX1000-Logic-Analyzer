@@ -3,6 +3,7 @@
   /ws/status              device + session lifecycle events
   /ws/accelerometer       lossless decoded live XYZ samples
   /ws/accelerometer/pose  latest decoded pose target
+  /ws/accelerometer/waveform ordered raw accelerometer bus waveform chunks
   /ws/capture             capture progress
   /ws/logs                live log stream
   /ws/session/{id}        waveform_ready / measurement_updated for a session
@@ -68,6 +69,12 @@ async def ws_accelerometer(ws: WebSocket):
 async def ws_accelerometer_pose(ws: WebSocket):
     """Stream the newest LIS3DH pose target without an archival backlog."""
     await _serve(ws, "accelerometer_pose")
+
+
+@router.websocket("/ws/accelerometer/waveform")
+async def ws_accelerometer_waveform(ws: WebSocket):
+    """Stream ordered raw accelerometer bus waveform chunks."""
+    await _serve(ws, "accelerometer_waveform")
 
 
 @router.websocket("/ws/logs")

@@ -217,7 +217,8 @@ def test_record_sample_preserves_ring_backlog_and_point_timing(monkeypatch):
         timestamp=98.020,
         decoded_at=100.011, gate_accepted_at=100.012,
         ring_timing={
-                "producer_index": 1_000_000,
+            "producer_index": 1_000_000,
+            "consumer_index": 999_999,
             "oldest_index": 0,
             "read_started_at": 100.000,
             "read_completed_at": 100.010,
@@ -227,11 +228,12 @@ def test_record_sample_preserves_ring_backlog_and_point_timing(monkeypatch):
     trace = archived[0][2]["trace"]
     assert trace["sequence"] == 1
     assert trace["source_sample_index"] == 0
-    assert trace["source_backlog_samples"] == 1_000_000
+    assert trace["source_backlog_samples"] == 1
+    assert trace["source_age_samples"] == 1_000_000
     assert trace["decoded_at"] == pytest.approx(100.011)
     assert trace["gate_accepted_at"] == pytest.approx(100.012)
     assert trace["published_at"] == pytest.approx(100.020)
-    assert trace["capture_to_publish_latency_ms"] >= 2000.0
+    assert trace["capture_to_publish_latency_ms"] >= 500.0
     assert trace["decoded_to_publish_latency_ms"] == pytest.approx(9.0)
     assert poses[0][0:2] == ("accelerometer_pose", "accelerometer_sample")
 
@@ -470,6 +472,7 @@ def test_start_without_real_hardware_is_structured_and_non_blocking():
         "last_sample_sequence": 0,
         "source_sample_index": None,
         "source_backlog_samples": 0,
+        "source_age_samples": 0,
         "capture_to_publish_latency_ms": 0.0,
         "decoded_to_publish_latency_ms": 0.0,
         "live_timing": None,
@@ -618,6 +621,29 @@ def test_live_capture_appends_real_accelerometer_bus_samples(tmp_path):
         service.stop()
 
 
+def test_live_capture_preserves_requested_duration_when_trace_rate_is_overridden(
+        tmp_path):
+    """A 1 ms UI window stays 1 ms at the live trace sample rate."""
+    raw = FakeRaw()
+    manager = FakeManager(raw)
+    service = AccelerometerService(manager, sample_rate_hz=100)
+    service._status.running = True
+    service._accelerometer_address = 0x18
+    store = SessionStore(tmp_path)
+    settings = CaptureSettings(
+        mode="rolling", auto_rearm=True, sample_rate=50_000_000,
+        num_samples=50_000)
+
+    session = service.start_live_capture(settings, "1 ms live", store)
+    try:
+        assert session.sample_rate == accelerometer_module.LIVE_TRACE_RATE_HZ
+        assert session.settings.num_samples == 2_000
+        assert session.settings.num_samples / session.sample_rate == pytest.approx(0.001)
+    finally:
+        service.stop_live_capture()
+        service.stop(wait_timeout=1.0)
+
+
 def test_live_capture_uses_continuous_ring_producer_and_stops_cleanly(tmp_path):
     """A live view is fed continuously, independently of the XYZ poll ODR."""
 
@@ -652,17 +678,20 @@ def test_live_capture_uses_continuous_ring_producer_and_stops_cleanly(tmp_path):
 
     store = SessionStore(tmp_path)
     session = service.start_live_capture(
-        CaptureSettings(mode="rolling", auto_rearm=True, num_samples=32),
+        CaptureSettings(mode="rolling", auto_rearm=True,
+                        sample_rate=accelerometer_module.LIVE_TRACE_RATE_HZ,
+                        num_samples=32),
         "Accelerometer ring live", store)
     try:
         assert raw.ring_started.wait(1.0)
-        # The producer reads a multi-block sequential window; the cursor is
-        # carried so source-time spacing survives the transport batch while
-        # each decoded FIFO slot is still published immediately.
-        assert raw.ring_kwargs["chunk_nsamp"] == 4096
-        assert raw.ring_kwargs["read_len"] == 24
+        # The 400 Hz path uses the b1c decoder-safe transport: oversampled
+        # standard I2C, one XYZ dialogue per block, and no host prefetch.
+        assert raw.ring_kwargs["rate_hz"] == pytest.approx(2_000_000.0)
+        assert raw.ring_kwargs["chunk_nsamp"] == 1792
+        assert raw.ring_kwargs["read_len"] == 6
+        assert raw.ring_kwargs["i2c_speed"] == 400_000
         assert raw.ring_kwargs["repeat_transactions"] == 1
-        assert raw.ring_kwargs["compact_i2c"] is True
+        assert raw.ring_kwargs["compact_i2c"] is False
         assert raw.ring_kwargs["use_rle"] is False
         # The flashed image's held-CS raw serializer can return an idle ring
         # window after CMD_GEN_CAPTURE. Keep MIL on the validated block-read
@@ -670,7 +699,7 @@ def test_live_capture_uses_continuous_ring_producer_and_stops_cleanly(tmp_path):
         # optional raw serializer transport.
         assert raw.ring_kwargs["prefer_raw_stream"] is False
         assert raw.ring_kwargs["follow_tail"] is True
-        assert raw.ring_kwargs["fetch_multiplier"] == 8
+        assert raw.ring_kwargs["fetch_multiplier"] == 1
         assert raw.ring_kwargs["include_cursor"] is True
         deadline = time.time() + 1.0
         waveform = None
@@ -691,6 +720,60 @@ def test_live_capture_uses_continuous_ring_producer_and_stops_cleanly(tmp_path):
     # The rolling session attached to the ordinary tracking producer; no
     # second live worker was allowed to compete for the adapter.
     assert service._live_worker is None
+
+
+def test_highest_lis3dh_odr_uses_four_sample_400khz_fifo_burst():
+    """The 5.376 kHz low-power fallback uses the fastest legal bus profile."""
+
+    class ProfileRaw(FakeRaw):
+        def __init__(self):
+            super().__init__()
+            self.fifo_configured = []
+            self.fifo_reads = []
+
+        def accel_fifo_configure(self, **kwargs):
+            self.fifo_configured.append(kwargs)
+            return {"enabled": True}
+
+        def accel_read_fifo(self, **kwargs):
+            self.fifo_reads.append(kwargs)
+            self.first_sample.set()
+            return self.payload + b"\x30\x00\xd0\xff\x40\x00"
+
+    class ProfileDevice:
+        def __init__(self, raw):
+            self._dev = raw
+
+        def is_connected(self):
+            return True
+
+        def accelerometer_fifo_configure(self, address, **kwargs):
+            return self._dev.accel_fifo_configure(
+                dev_addr=address, **kwargs)
+
+        def accelerometer_read_fifo(self, address, **kwargs):
+            return self._dev.accel_read_fifo(
+                dev_addr=address, **kwargs)
+
+    raw = ProfileRaw()
+    manager = FakeManager(raw)
+    manager.device = ProfileDevice(raw)
+    service = AccelerometerService(manager)
+    service.update_config({
+        "output_data_rate_hz": 5376,
+        "operating_mode": "low_power",
+    })
+    assert service.start()["running"] is True
+    try:
+        assert raw.first_sample.wait(1.0)
+        assert raw.fifo_configured
+        assert raw.fifo_configured[0]["speed"] == 400_000
+        assert raw.fifo_reads
+        assert raw.fifo_reads[0]["max_samples"] == 25
+        assert raw.fifo_reads[0]["speed"] == 400_000
+        assert service.status()["effective_odr_hz"] == 5376
+    finally:
+        service.stop(wait_timeout=1.0)
 
 
 def test_live_start_waits_for_inflight_poll_claim(tmp_path):
@@ -811,10 +894,10 @@ def test_static_ring_fallback_decodes_batched_trace_frames(tmp_path, monkeypatch
             time.sleep(0.01)
         assert service.status()["samples_read"] >= 4
         assert raw.capture_calls
-        # 768 samples includes the ~270-sample frame and the
-        # CMD_GEN_CAPTURE startup guard at the 80 kHz live clock.
+        # 768 samples includes the frame and the CMD_GEN_CAPTURE startup
+        # guard at the oversampled live clock.
         assert raw.capture_calls[0]["nsamples"] == 768
-        assert raw.capture_calls[0]["rate_hz"] == pytest.approx(75_000.0)
+        assert raw.capture_calls[0]["rate_hz"] == pytest.approx(2_000_000.0)
         assert raw.capture_calls[0]["repeat_count"] == 1
         assert raw.capture_calls[0]["keep_attached"] is True
         assert raw.capture_calls[0]["timeout"] == pytest.approx(0.25)
@@ -865,9 +948,7 @@ def test_tracking_uses_continuous_ring_decoder_for_board_samples():
             self.ring_started.set()
             self.first_sample.set()
             stop_evt = kwargs["stop_evt"]
-            trace = _synthetic_lis3dh_i2c_trace(
-                0x18, payload=b"\x10\x00\xf0\xff\x20\x00" * 4,
-            ).astype("<u2").tobytes()
+            trace = _synthetic_lis3dh_i2c_trace(0x18).astype("<u2").tobytes()
             source_index = 0
             while not stop_evt.is_set():
                 count = len(trace) // 2
@@ -894,9 +975,14 @@ def test_tracking_uses_continuous_ring_decoder_for_board_samples():
         assert status["samples_read"] >= 4
         assert status["effective_odr_hz"] == 400
         assert status["host_read_rate_hz"] > 0
+        assert raw.ring_kwargs["rate_hz"] == pytest.approx(2_000_000.0)
+        assert raw.ring_kwargs["chunk_nsamp"] == 1792
+        assert raw.ring_kwargs["read_len"] == 6
+        assert raw.ring_kwargs["i2c_speed"] == 400_000
+        assert raw.ring_kwargs["compact_i2c"] is False
         assert raw.ring_kwargs["include_cursor"] is True
         assert raw.ring_kwargs["follow_tail"] is True
-        assert raw.ring_kwargs["fetch_multiplier"] == 8
+        assert raw.ring_kwargs["fetch_multiplier"] == 1
         # The normal board path did not issue an atomic XYZ/FIFO data read;
         # setup may still have performed WHO_AM_I/register operations.
         assert raw.ring_chunks >= 4
@@ -1043,9 +1129,7 @@ def test_live_ring_throughput_updates_status_without_fifo_contention(tmp_path):
             super().__init__()
             self.fifo_calls = 0
             self.ring_started = threading.Event()
-            self.trace = _synthetic_lis3dh_i2c_trace(
-                0x18, payload=b"\x10\x00\xf0\xff\x20\x00" * 4,
-            ).tobytes()
+            self.trace = _synthetic_lis3dh_i2c_trace(0x18).tobytes()
 
         def continuous_ring_capture_with_repeating_i2c(self, **kwargs):
             self.ring_started.set()

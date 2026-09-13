@@ -8,6 +8,7 @@ return a snapshot; they never wait for a bus transaction.
 from __future__ import annotations
 
 import math
+import base64
 import threading
 import time
 from typing import Any, Callable, Literal, Optional
@@ -76,22 +77,19 @@ class AccelerometerConfig(BaseModel):
 # 10 Hz is the lowest useful LIS3DH output data rate and keeps the polling
 # worker lightweight while still feeling live in the UI.
 DEFAULT_SAMPLE_RATE_HZ = 10.0
-# The live accelerometer path is a sequential waveform reader, not a
-# best-effort sampler of a multi-megahertz retention ring.  The dense raw
-# block transport sustains about 75 kS/s on the FTDI link. A compact I²C clock
-# at 30 kHz produces a 60 ksymbol/s waveform, leaving 1.25 capture samples per
-# symbol while keeping the reader at the sensor's 400 Hz output rate. This is
-# intentionally a sequential reader, not a tail sampler.
-LIVE_TRACE_RATE_HZ = 75_000.0
+# The pose path needs a genuinely oversampled bus waveform.  At 2 MHz capture
+# and 400 kHz standard I²C there are five capture samples per SCL period, which
+# leaves the decoder margin for edge settling and its causal majority filter.
+# The LIS3DH's absolute maximum ODR is 5.376 kHz in low-power mode; that mode
+# uses a four-slot FIFO burst below so the bus can carry the sensor rate.
+LIVE_TRACE_RATE_HZ = 2_000_000.0
 LIVE_TRACE_SAMPLES = 4096
 LIVE_TRACE_CHANNEL_MASK = np.uint16((1 << 13) | (1 << 14) | (1 << 15))
-# The LIS3DH FIFO is enabled during tracking setup. Read four complete XYZ
-# slots in one 24-byte compact transaction; it fits the 1,024-symbol
-# generator FIFO and removes the per-slot bus overhead that limited the
-# decoded rate to roughly half of the sensor ODR.
-LIVE_TRACE_READ_LEN = 24
+# The normal/high-resolution path follows the proven b1c single-frame
+# dialogue. High ODR low-power mode switches to a four-slot FIFO burst.
+LIVE_TRACE_READ_LEN = 6
 LIVE_TRACE_REPEAT_TRANSACTIONS = 1
-LIVE_TRACE_COMPACT_I2C = True
+LIVE_TRACE_COMPACT_I2C = False
 # A failed generator/capture handoff must not hold the live producer behind
 # the driver's legacy multi-second timeout. A complete 400 kHz I2C read is
 # only a few milliseconds, so 250 ms leaves ample USB/FPGA margin while
@@ -105,16 +103,19 @@ LIVE_STREAM_WATCHDOG_S = 1.0
 # repeating-generator attach route. Keep each fallback transaction short
 # enough that the model never waits behind a large readback.
 LIVE_FALLBACK_TRACE_SAMPLES = 768
-# Each sequential output window is smaller than one generated I²C transaction;
-# the decoder carries the partial frame across windows.  The
-# decoder carries a partial transaction across block boundaries, so every
-# complete frame is observed in order and the pose mailbox never waits behind
-# a multi-window prefetch.
-# The block reader needs a multi-block window to amortise FTDI transaction
-# overhead. The backend still publishes each decoded FIFO slot immediately;
-# this is only the sequential waveform transfer size.
-LIVE_STREAM_WINDOW_SAMPLES = 4096
-LIVE_STREAM_FETCH_MULTIPLIER = 8
+# A 6-byte standard-I²C read is about 420 capture samples at this rate. Four
+# dialogues per block amortise the FTDI read overhead while tail-follow still
+# discards stale history at each status refresh.
+LIVE_STREAM_WINDOW_SAMPLES = 1792
+# Do not prefetch pose data. One ring window becomes one decoder delivery, as
+# in b1c; the browser has its own latest-value mailbox for paint coalescing.
+LIVE_STREAM_FETCH_MULTIPLIER = 1
+LIVE_HIGH_ODR_READ_LEN = 24
+# A standard 24-byte FIFO burst occupies roughly 1.2 k capture samples at
+# 400 kHz. High-ODR delivery needs a larger ring window to amortise the
+# fixed USB/block-read setup while still remaining only a few milliseconds
+# behind the physical bus and with no unread source backlog.
+LIVE_HIGH_ODR_STREAM_WINDOW_SAMPLES = 65_536
 LIVE_FALLBACK_REPEAT_COUNT = 1
 # A live fallback read is a transport freshness path, not the sensor ODR
 # scheduler. Cap the idle gap so a low configured ODR cannot make the UI's
@@ -137,7 +138,7 @@ LIVE_WAVEFORM_PERSIST_INTERVAL_S = 0.2
 # still fast enough to read four FIFO slots at the sensor's 400 Hz ODR while
 # leaving enough waveform samples for reliable edge decoding.
 FIFO_I2C_SPEED_HZ = 400_000
-LIVE_TRACE_I2C_SPEED_HZ = 30_000
+LIVE_TRACE_I2C_SPEED_HZ = 400_000
 # The flashed capture image exposes the SDRAM ring cursors in the physical
 # four-million-sample address domain. Keep source-age arithmetic in that same
 # domain so a producer/source pair straddling the physical wrap is still a
@@ -145,6 +146,16 @@ LIVE_TRACE_I2C_SPEED_HZ = 30_000
 LIVE_TRACE_RING_SAMPLES = 4_194_304
 LIVE_TRACE_RING_MASK = LIVE_TRACE_RING_SAMPLES - 1
 LIVE_TRACE_RING_HALF = LIVE_TRACE_RING_SAMPLES // 2
+
+
+def _live_window_samples(settings: CaptureSettings) -> int:
+    """Convert the requested UI duration into live-trace sample points."""
+    requested_duration_s = (
+        max(0, int(settings.num_samples))
+        / max(float(settings.sample_rate), 1.0))
+    return max(1, min(
+        int(round(requested_duration_s * LIVE_TRACE_RATE_HZ)),
+        LIVE_TRACE_SAMPLES * 256))
 
 
 def _live_ring_distance(newer: int, older: int) -> int:
@@ -600,7 +611,13 @@ class AccelerometerStatus(BaseModel):
     register_readback: Optional[dict[str, int]] = None
     last_sample_sequence: int = 0
     source_sample_index: Optional[int] = None
+    # Samples still waiting to be transferred from the FPGA ring after the
+    # decoded transport window. This is the queue-health metric, not the age
+    # of the point within that window.
     source_backlog_samples: int = 0
+    # Raw source samples between the producer and the decoded point. A point
+    # can have non-zero age while the transport backlog is zero.
+    source_age_samples: int = 0
     capture_to_publish_latency_ms: float = 0.0
     decoded_to_publish_latency_ms: float = 0.0
     live_timing: Optional[dict[str, Any]] = None
@@ -651,6 +668,7 @@ class AccelerometerService:
         self._live_persist_dirty = False
         self._live_dialogue_setup_ready = False
         self._accelerometer_address: Optional[int] = None
+        self._last_fifo_error: str | None = None
         self._rate_window_started: Optional[float] = None
         self._rate_window_samples = 0
         self._sample_sequence = 0
@@ -692,6 +710,24 @@ class AccelerometerService:
     def status(self) -> dict:
         with self._lock:
             status = self._status.model_copy(deep=True)
+            # FIFO transport diagnostics are read from the already-cached
+            # host-driver state. Do not issue another I2C transaction from a
+            # status poll while the high-ODR worker owns the bus.
+            raw = getattr(getattr(self.manager, "device", None), "_dev", None)
+            fifo_status = getattr(raw, "last_accel_fifo_status", None)
+            fifo_stats = getattr(raw, "accel_fifo_stats", None)
+            if isinstance(fifo_status, dict) or isinstance(fifo_stats, dict):
+                timing = dict(status.live_timing or {})
+                fifo_diag = {
+                    "status": dict(fifo_status)
+                    if isinstance(fifo_status, dict) else None,
+                    "stats": dict(fifo_stats)
+                    if isinstance(fifo_stats, dict) else None,
+                }
+                if self._last_fifo_error:
+                    fifo_diag["error"] = self._last_fifo_error
+                timing["fifo"] = fifo_diag
+                status.live_timing = timing
             # The UI uses availability to enable Start.  Being connected to
             # the real adapter is enough to make the asynchronous probe
             # eligible; the worker will clear it if no LIS3DH answers.
@@ -795,13 +831,16 @@ class AccelerometerService:
             if store is None:
                 from ..state import store as default_store
                 store = default_store
+            live_window_samples = _live_window_samples(settings)
             live_settings = settings.model_copy(update={
                 "mode": "rolling",
                 "sample_rate": LIVE_TRACE_RATE_HZ,
                 "analog_enabled": False,
                 "enabled_digital": [13, 14, 15],
-                "num_samples": max(1, min(int(settings.num_samples),
-                                            LIVE_TRACE_SAMPLES * 256)),
+                # The live bus waveform has its own fixed trace rate. Keep
+                # the duration selected in Capture setup when converting the
+                # UI's sample count to that rate.
+                "num_samples": live_window_samples,
             })
             raw = getattr(getattr(self.manager, "device", None), "_dev", None)
             device = getattr(self.manager, "device", None)
@@ -1046,6 +1085,8 @@ class AccelerometerService:
                         pass
                 except Exception:
                     pass
+            with self._lock:
+                self._last_fifo_error = None
             register_readback = self._read_config(adapter, raw, address)
             effective_config = self._decode_config(register_readback)
             decode_config = effective_config or self._config
@@ -1070,7 +1111,12 @@ class AccelerometerService:
             # background generator competing with a later capture.
             continuous_capture = getattr(
                 raw, "continuous_ring_capture_with_repeating_i2c", None)
-            if callable(continuous_capture):
+            # The capture ring is the single source for both pose and
+            # waveform. At high ODRs the repeated read is a FIFO burst (the
+            # live producer selects a 24-byte read), so the FPGA samples the
+            # complete bus dialogue without a host round trip per XYZ point.
+            use_continuous_stream = callable(continuous_capture)
+            if use_continuous_stream:
                 with self._lock:
                     self._continuous_stream_active = True
                 try:
@@ -1101,14 +1147,11 @@ class AccelerometerService:
                     next_read = time.monotonic()
                     continue
                 try:
-                    # FIFO draining is useful for low-rate compatibility
-                    # paths, but at a high configured ODR it turns one status
-                    # iteration into a large, slow transaction. That made the
-                    # websocket publisher emit only the final value of a
-                    # batch every ~2 seconds. High-rate presentation needs a
-                    # bounded atomic read instead, so each iteration produces
-                    # one current sample for the render loop.
-                    if self.sample_rate_hz > 100:
+                    # Drain the FIFO in whole XYZ bursts at the fastest legal
+                    # I²C speed. This preserves every available sensor point
+                    # and is required for the 1.344 kHz normal/HR and 5.376
+                    # kHz low-power ODRs.
+                    if self.sample_rate_hz > 100 and not callable(fifo_reader):
                         samples = [self._read_xyz(
                             adapter, raw, address, decode_config)]
                     else:
@@ -1322,10 +1365,13 @@ class AccelerometerService:
                     samples = [self._decode_xyz(
                         fifo_payload[offset:offset + 6], config)
                         for offset in range(0, len(fifo_payload), 6)]
-            except Exception:
+            except Exception as exc:
                 # FIFO is an optimization, not a prerequisite for tracking.
                 # Fall back to the proven single-read path on unsupported,
                 # empty, or malformed FIFO responses.
+                with self._lock:
+                    self._last_fifo_error = (
+                        f"{type(exc).__name__}: {exc}" or type(exc).__name__)
                 samples = []
         if not samples:
             samples = [self._read_xyz(adapter, raw, address, config)]
@@ -1376,20 +1422,24 @@ class AccelerometerService:
         try:
             capture = getattr(raw, "continuous_ring_capture_with_repeating_i2c", None)
             if callable(capture):
+                high_odr = float(decoder_config.output_data_rate_hz) > 400.0
+                live_read_len = (
+                    LIVE_HIGH_ODR_READ_LEN if high_odr else LIVE_TRACE_READ_LEN)
+                live_window_samples = (
+                    LIVE_HIGH_ODR_STREAM_WINDOW_SAMPLES
+                    if high_odr else LIVE_STREAM_WINDOW_SAMPLES)
                 stream = capture(
                     rate_hz=LIVE_TRACE_RATE_HZ,
-                    # Keep each tail read to roughly two decoder frames. The
-                    # source ring is much faster than the host link, but a
-                    # multi-window prefetch becomes visible as a pose burst.
-                    # Each returned block is still decoded sequentially at
-                    # the frame boundary, so this does not synthesize or
-                    # decimate the physical stream.
-                    chunk_nsamp=LIVE_STREAM_WINDOW_SAMPLES,
+                    # Use one decoder-safe tail window per delivery. The
+                    # source ring is deliberately oversampled; the browser's
+                    # latest-value mailbox, rather than host prefetch, is the
+                    # place where presentation work is coalesced.
+                    chunk_nsamp=live_window_samples,
                     buffer_nsamp=32768,
                     stop_evt=live_stop_evt,
                     dev_addr=address,
                     reg_addr=LIS3DH_OUT_X_L | 0x80,
-                    read_len=LIVE_TRACE_READ_LEN,
+                    read_len=live_read_len,
                     i2c_speed=LIVE_TRACE_I2C_SPEED_HZ,
                     repeat_transactions=LIVE_TRACE_REPEAT_TRANSACTIONS,
                     compact_i2c=LIVE_TRACE_COMPACT_I2C,
@@ -1416,11 +1466,11 @@ class AccelerometerService:
                 pending_samples = 0
                 pending_session: Session | None = None
                 last_flush = time.monotonic()
+                waveform_sequence = 0
                 stream_decoder = _LiveI2CFrameDecoder(
                     address, sample_lsb_mask, decoder_config,
-                    clock=self._clock, read_len=LIVE_TRACE_READ_LEN)
+                    clock=self._clock, read_len=live_read_len)
                 sample_gate = _LiveI2CFrameGate()
-                pose_gate = _LiveI2CPoseGate()
                 # Waveform writes can rebuild a 4096-sample rolling file and
                 # publish websocket work. Start the coalescing persister
                 # before consuming the held-CS stream so those operations do
@@ -1501,15 +1551,14 @@ class AccelerometerService:
                                 min(source_span, LIVE_TRACE_RING_HALF)
                                 / LIVE_TRACE_RATE_HZ)
                         gate_accepted_at = self._clock()
-                        pose_sample = pose_gate.accept(sample)
                         self._record_sample(
                             sample, owner_session=owner_session,
                             timestamp=timestamp, source_index=source_index,
                             decoded_at=decoded_at,
                             gate_accepted_at=gate_accepted_at,
                             ring_timing=ring_timing,
-                            pose_sample=pose_sample,
-                            pose_accepted=pose_sample is not None)
+                            pose_sample=sample,
+                            pose_accepted=True)
 
                 def reset_stream_state() -> None:
                     # A tail jump is a transport boundary, not permission to
@@ -1518,7 +1567,6 @@ class AccelerometerService:
                     publish_gate_items(sample_gate.flush_indexed())
                     stream_decoder.reset()
                     sample_gate.reset()
-                    pose_gate.reset()
 
                 try:
                     stream_overrun = 0
@@ -1574,6 +1622,25 @@ class AccelerometerService:
                             majority=LIVE_TRACE_RATE_HZ
                             >= 4 * LIVE_TRACE_I2C_SPEED_HZ)
                         if digital.size:
+                            waveform_sequence += 1
+                            # The frontend decoder consumes this exact packed
+                            # waveform stream. Keep it separate from the
+                            # backend's decoded pose topic and from waveform
+                            # persistence; neither is allowed to become the
+                            # live decoder's source of truth.
+                            websocket_manager.publish_threadsafe(
+                                "accelerometer_waveform",
+                                "accelerometer_waveform", {
+                                    "sequence": waveform_sequence,
+                                    "sample_rate": LIVE_TRACE_RATE_HZ,
+                                    "sample_count": int(digital.size),
+                                    "source_index": chunk_start,
+                                    "samples_b64": base64.b64encode(
+                                        np.asarray(digital, dtype="<u2").tobytes()
+                                    ).decode("ascii"),
+                                    "ring_timing": ring_timing,
+                                    "config": decoder_config.model_dump(),
+                                })
                             received_at = self._clock()
                             chunk_end = (_live_ring_distance(
                                          int(chunk_start) + int(digital.size), 0)
@@ -1792,10 +1859,20 @@ class AccelerometerService:
             self._sample_sequence += 1
 
             source_backlog = 0
+            source_age = 0
             if (source_index is not None and isinstance(ring_timing, dict)
                     and ring_timing.get("producer_index") is not None):
-                source_backlog = _live_ring_age(
-                    int(ring_timing["producer_index"]), int(source_index))
+                producer_index = int(ring_timing["producer_index"])
+                source_age = _live_ring_age(
+                    producer_index, int(source_index))
+                consumer_index = ring_timing.get("consumer_index")
+                if consumer_index is not None:
+                    source_backlog = _live_ring_age(
+                        producer_index, int(consumer_index))
+                else:
+                    # Compatibility with older raw drivers that did not
+                    # report the end of the transferred window.
+                    source_backlog = source_age
             read_started_at = (
                 ring_timing.get("read_started_at")
                 if isinstance(ring_timing, dict) else None)
@@ -1806,7 +1883,7 @@ class AccelerometerService:
             if read_started_at is not None:
                 capture_to_publish_ms = (
                     max(0.0, float(published_at) - float(read_started_at))
-                    + source_backlog / max(ring_rate, 1.0)) * 1000.0
+                    + source_age / max(ring_rate, 1.0)) * 1000.0
             elif decoded_at is not None and np.isfinite(decoded_at):
                 capture_to_publish_ms = max(
                     0.0, float(published_at) - float(decoded_at)) * 1000.0
@@ -1821,6 +1898,7 @@ class AccelerometerService:
                 "gate_accepted_at": gate_accepted_at,
                 "published_at": float(published_at),
                 "source_backlog_samples": source_backlog,
+                "source_age_samples": source_age,
                 "capture_to_publish_latency_ms": capture_to_publish_ms,
                 "decoded_to_publish_latency_ms": decoded_to_publish_ms,
             }
@@ -1829,6 +1907,7 @@ class AccelerometerService:
             self._status.last_sample_sequence = self._sample_sequence
             self._status.source_sample_index = source_index
             self._status.source_backlog_samples = source_backlog
+            self._status.source_age_samples = source_age
             self._status.capture_to_publish_latency_ms = capture_to_publish_ms
             self._status.decoded_to_publish_latency_ms = decoded_to_publish_ms
             self._status.live_timing = dict(trace)
@@ -1861,6 +1940,7 @@ class AccelerometerService:
                 "last_sample_sequence": self._status.last_sample_sequence,
                 "source_sample_index": self._status.source_sample_index,
                 "source_backlog_samples": self._status.source_backlog_samples,
+                "source_age_samples": self._status.source_age_samples,
                 "capture_to_publish_latency_ms": (
                     self._status.capture_to_publish_latency_ms),
                 "decoded_to_publish_latency_ms": (

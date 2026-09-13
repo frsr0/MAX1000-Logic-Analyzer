@@ -445,6 +445,9 @@ export interface MilAccelerometerStatus {
   register_readback?: { ctrl1: number; ctrl4: number } | null;
   last_sample_sequence?: number;
   source_sample_index?: number | null;
+  /** Raw source age of the decoded point within its transport window. */
+  source_age_samples?: number;
+  /** Unread samples remaining in the FPGA ring after the transport window. */
   source_backlog_samples?: number;
   capture_to_publish_latency_ms?: number;
   decoded_to_publish_latency_ms?: number;

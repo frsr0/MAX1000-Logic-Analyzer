@@ -36,6 +36,7 @@ CMD_START_STREAM      = 0x13
 CMD_READ_STREAM_BLOCK = 0x14
 CMD_ACK_CAPTURE_DONE  = 0x15
 CMD_START_RAW_STREAM  = 0x16
+CMD_START_LIVE_STREAM = 0x17
 CMD_WRITE_REG         = 0x20
 CMD_READ_REG          = 0x21
 CMD_GEN_CONFIG        = 0x30
@@ -597,6 +598,87 @@ class SPIDevice:
             if len(data) == n_bytes:
                 return producer, oldest, data
         raise RuntimeError("start_raw_stream_read failed")
+
+    def start_live_stream_read(self, sample_count: int, stop_evt=None,
+                               ack_pad: int | None = None,
+                               compact_3bit: bool = False) -> tuple:
+        """Read ordered samples from the FPGA live-tap FIFO.
+
+        Unlike :meth:`start_raw_stream_read`, this command carries no SDRAM
+        address and the returned words are the samples accepted by the live
+        capture tap after the command was armed. The CS-held response shape is
+        intentionally identical: ``(sequence, fifo_flags, data_bytes)``.
+        ``fifo_flags`` is reserved for a future overflow bit; a non-zero value
+        means the caller must treat the stream as discontinuous. With
+        ``compact_3bit``, the FPGA sends one byte per sample containing the
+        selected three waveform bits.
+        """
+        sample_count = max(0, int(sample_count))
+        if sample_count == 0:
+            return 0, 0, b''
+        if sample_count > MAX_RAW_STREAM_SAMPLES:
+            out = bytearray()
+            sequence = flags = 0
+            done = 0
+            while done < sample_count:
+                take = min(MAX_RAW_STREAM_SAMPLES, sample_count - done)
+                sequence, flags, chunk = self.start_live_stream_read(
+                    take, stop_evt=stop_evt, ack_pad=ack_pad,
+                    compact_3bit=compact_3bit)
+                out.extend(chunk)
+                done += take
+            return sequence, flags, bytes(out)
+
+        payload_count = sample_count | (0x80000000 if compact_3bit else 0)
+        payload = struct.pack('<I', payload_count)
+        seq = self._next_seq()
+        req = build_packet(CMD_START_LIVE_STREAM, seq, payload)
+        n_bytes = sample_count if compact_3bit else sample_count * 2
+        if (hasattr(self.spi, "stream_command_begin")
+                and hasattr(self.spi, "stream_command_clock")
+                and hasattr(self.spi, "stream_command_end")):
+            return self._live_stream_via_precise_clocking(
+                req, seq, n_bytes, stop_evt)
+        if not hasattr(self.spi, "stream_command"):
+            raise RuntimeError("live stream path requires stream_command")
+        pad = ack_pad if ack_pad is not None else self._default_ack_pad()
+        raw = self.spi.stream_command(
+            req, n_bytes, ack_pad=pad, stop_evt=stop_evt)
+        found = self._find_stream_ack(bytearray(raw), seq)
+        if found is not None:
+            sequence, flags, end = found
+            data = raw[end:end + n_bytes]
+            if len(data) == n_bytes:
+                return sequence, flags, data
+        raise RuntimeError("start_live_stream_read failed")
+
+    def _live_stream_via_precise_clocking(self, req, seq, n_bytes, stop_evt):
+        """Clock only the live-stream ACK and requested sample payload."""
+        acc = bytearray(self.spi.stream_command_begin(req, stop_evt=stop_evt))
+        sequence = flags = None
+        data = bytearray()
+        try:
+            for _ in range(256):
+                found = self._find_stream_ack(acc, seq)
+                if found is not None:
+                    sequence, flags, end = found
+                    data.extend(acc[end:])
+                    break
+                if stop_evt is not None and stop_evt.is_set():
+                    break
+                acc.extend(self.spi.stream_command_clock(16, stop_evt=stop_evt))
+            while sequence is not None and len(data) < n_bytes:
+                if stop_evt is not None and stop_evt.is_set():
+                    break
+                data.extend(self.spi.stream_command_clock(
+                    min(4096, n_bytes - len(data)), stop_evt=stop_evt))
+        finally:
+            self.spi.stream_command_end()
+        if sequence is None:
+            raise RuntimeError("start_live_stream_read failed: no stream ack")
+        if len(data) < n_bytes:
+            raise RuntimeError("start_live_stream_read failed: truncated live stream")
+        return sequence, flags, bytes(data[:n_bytes])
 
     def _raw_stream_via_precise_clocking(self, req, seq, sample_count, stop_evt):
         """Clock only the bytes needed for a raw stream: enough to parse the

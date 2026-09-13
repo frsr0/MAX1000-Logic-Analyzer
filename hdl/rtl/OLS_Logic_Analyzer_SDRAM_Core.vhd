@@ -127,6 +127,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL rd_fifo_q_i      : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   SIGNAL rd_fifo_empty_i  : STD_LOGIC := '1';
   SIGNAL rd_fifo_rdreq_i  : STD_LOGIC := '0';
+  SIGNAL live_stream_data_i  : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  SIGNAL live_stream_valid_i : STD_LOGIC := '0';
   SIGNAL producer_index_i : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL oldest_index_i   : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL newest_index_i   : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
@@ -197,6 +199,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   PORT (
     CLK : IN STD_LOGIC;
     FAST_CLK : IN STD_LOGIC := '0';
+    Live_Stream_Data  : IN STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+    Live_Stream_Valid : IN STD_LOGIC := '0';
     SPI_CS       : IN  STD_LOGIC := '1';
     SPI_SCK      : IN  STD_LOGIC := '0';
     SPI_MOSI     : IN  STD_LOGIC := '0';
@@ -334,6 +338,8 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
      Packed_Data  : IN  STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
      Packed_Valid : IN  STD_LOGIC := '0';
      Packed_Ready : OUT STD_LOGIC := '0';
+     Live_Stream_Data  : OUT STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+     Live_Stream_Valid : OUT STD_LOGIC := '0';
      Blk_Rd_Req_Tog : IN  STD_LOGIC := '0';
      Blk_Rd_Base    : IN  NATURAL range 0 to Max_Samples := 0;
      Blk_Rd_Count   : IN  NATURAL range 0 to Max_Samples := 0;
@@ -422,6 +428,8 @@ BEGIN
   ) PORT MAP (
     CLK           => CLK,
     FAST_CLK      => FAST_CLK,
+    Live_Stream_Data  => live_stream_data_i,
+    Live_Stream_Valid => live_stream_valid_i,
     SPI_CS        => SPI_CS,SPI_SCK       => SPI_SCK,SPI_MOSI      => SPI_MOSI,SPI_MISO      => SPI_MISO,Interface_Mode=> Interface_Mode,Inputs        => OLS_Interface_Inputs,Rate_Div      => OLS_Interface_Rate_Div,Samples       => OLS_Interface_Samples,Start_Offset  => OLS_Interface_Start_Offset,Run           => OLS_Interface_Run,Full          => OLS_Interface_Full,Address       => OLS_Interface_Address,Outputs       => OLS_Interface_Outputs,
     Gen_Load_Byte => Gen_Load_Byte_i,Gen_Load_We   => Gen_Load_We_i,Gen_Start     => Gen_Start_i,Gen_Baud_Div  => Gen_Baud_Div_i,Gen_Busy      => Gen_Busy_i,Gen_Fifo_Count => Gen_Fifo_Count,Gen_Proto     => Gen_Proto_i,
     Gen_TX_Pin    => Gen_TX_Pin_i,Gen_SCL_Pin   => Gen_SCL_Pin_i,
@@ -505,6 +513,8 @@ BEGIN
     Packed_Data  => Packed_Data,
     Packed_Valid => Packed_Valid,
     Packed_Ready => Packed_Ready,
+    Live_Stream_Data  => live_stream_data_i,
+    Live_Stream_Valid => live_stream_valid_i,
     Blk_Rd_Req_Tog    => blk_rd_req_tog_i,
     Blk_Rd_Base       => blk_rd_base_i,
     Blk_Rd_Count      => blk_rd_count_i,

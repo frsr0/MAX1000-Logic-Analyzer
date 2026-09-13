@@ -21,6 +21,15 @@ from fastapi import WebSocket
 
 log = logging.getLogger("msa.ws")
 ACCELEROMETER_SEND_TIMEOUT_S = 0.01
+# The pose mailbox already replaces stale values.  Let the event loop forward
+# the newest decoded point immediately; the browser's requestAnimationFrame
+# coalesces paints without adding a fixed 16.7 ms acquisition delay.
+POSE_SEND_INTERVAL_S = 0.0
+# Raw waveform is an ordered live transport, but it must not become an
+# unbounded second ring in the asyncio thread. If the browser cannot drain
+# two chunks promptly, discard the oldest queued chunk; its sequence number
+# makes the gap explicit and the frontend decoder waits for a clean START.
+MAX_WAVEFORM_PENDING_CHUNKS = 2
 
 
 class ConnectionManager:
@@ -58,6 +67,12 @@ class ConnectionManager:
         self._topics[topic].discard(ws)
 
     async def broadcast(self, topic: str, type_: str, data: dict) -> None:
+        if topic in ("accelerometer", "accelerometer_pose", "accelerometer_waveform") \
+                and not self._topics.get(topic):
+            # Avoid building a large traced sensor payload when the optional
+            # topic has no consumers. This also covers the small race where a
+            # client disconnects after a producer enqueues a message.
+            return
         payload = data
         trace = data.get("trace") if isinstance(data, dict) else None
         if isinstance(trace, dict):
@@ -66,7 +81,7 @@ class ConnectionManager:
             payload = {**data, "trace": {
                 **trace, "websocket_send_started_at": time.time()}}
         msg = json.dumps({"type": type_, "ts": time.time(), "data": payload})
-        if topic in ("accelerometer", "accelerometer_pose"):
+        if topic in ("accelerometer", "accelerometer_pose", "accelerometer_waveform"):
             await self._broadcast_accelerometer(msg, topic)
             return
         dead = []
@@ -109,10 +124,19 @@ class ConnectionManager:
         """Publish from any thread; no-op if the loop isn't running yet."""
         if self._loop is None or self._loop.is_closed():
             return
-        if topic == "accelerometer":
+        if topic in ("accelerometer", "accelerometer_waveform"):
+            # The archival history socket is optional. Ordinary tracking has
+            # no reason to enqueue or JSON-serialize every sample when nobody
+            # is consuming that history; doing so can starve the separate
+            # latest-value pose mailbox on the event loop.
+            if not self._topics.get(topic):
+                return
             with self._latest_lock:
                 queue = self._latest_pending.setdefault(topic, deque())
                 queue.append((type_, self._copy_with_enqueue_trace(data)))
+                if topic == "accelerometer_waveform":
+                    while len(queue) > MAX_WAVEFORM_PENDING_CHUNKS:
+                        queue.popleft()
                 if topic in self._latest_draining:
                     return
                 self._latest_draining.add(topic)
@@ -139,6 +163,8 @@ class ConnectionManager:
         """
         if self._loop is None or self._loop.is_closed():
             return
+        if not self._topics.get(topic):
+            return
         with self._latest_lock:
             self._latest_value_pending[topic] = (
                 type_, self._copy_with_enqueue_trace(data))
@@ -153,7 +179,7 @@ class ConnectionManager:
                 self._latest_value_draining.discard(topic)
 
     async def _drain_latest(self, topic: str) -> None:
-        """Drain every validated sensor sample in FIFO order."""
+        """Drain every ordered live item in FIFO order."""
         fairness_budget = 32
         try:
             while True:
@@ -198,9 +224,9 @@ class ConnectionManager:
                 if item is None:
                     return
                 await self.broadcast(topic, item[0], item[1])
-                # Give producer threads and unrelated async work an
-                # opportunity to replace the mailbox between sends.
-                await asyncio.sleep(0)
+                # Yield so producers can replace the one-item mailbox without
+                # adding a fixed display-period delay to acquisition.
+                await asyncio.sleep(POSE_SEND_INTERVAL_S)
         finally:
             with self._latest_lock:
                 self._latest_value_draining.discard(topic)

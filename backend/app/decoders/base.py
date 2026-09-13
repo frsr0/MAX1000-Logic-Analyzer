@@ -129,6 +129,19 @@ class Decoder(ABC):
     @abstractmethod
     def decode(self, ctx: DecodeContext, settings: Dict[str, Any]) -> DecoderResult: ...
 
+    def live_window_samples(self, sample_rate: float,
+                            settings: Dict[str, Any]) -> int:
+        """Return the bounded lookback used by rolling/live decode.
+
+        Live decoding is fed by a moving waveform.  Re-decoding that entire
+        waveform for every refresh makes protocol latency grow with capture
+        duration and lets decoder work compete with the acquisition reader.
+        The scheduler decodes only this newest tail; a protocol may override
+        the value when its framing requires a longer incomplete transaction.
+        """
+        del sample_rate, settings
+        return 65_536
+
     def defaults(self) -> Dict[str, Any]:
         return {f.key: f.default for f in self.settings_schema()}
 

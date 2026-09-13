@@ -23,6 +23,7 @@ from driver.ols_spi_device import (
 from driver.spi_protocol import (
     CMD_GEN_START,
     CMD_GEN_STOP,
+    SYNC_RSP,
     REG_FLAGS,
     REG_FLAGS_COMPRESS_MASK,
     REG_GEN_BAUD,
@@ -32,6 +33,7 @@ from driver.spi_protocol import (
     ST_CAPTURE_ARMED,
     ST_CAPTURE_DONE,
     ST_OK,
+    crc16,
 )
 from driver.wire_format import analog_frame_stride
 
@@ -39,6 +41,7 @@ from driver.wire_format import analog_frame_stride
 def _device():
     dev = OLSDeviceSPI()
     dev.spi = MagicMock()
+    dev.spi.stream_payload = None
     dev.pkt = MagicMock()
     return dev
 
@@ -227,6 +230,26 @@ def test_generator_rx_fifo_stops_on_error_empty_or_last_byte(values, expected):
     dev.pkt.read_register.side_effect = values
     assert dev.gen_rx_read() == expected
     assert OLSDeviceSPI._rx_bits(b"\x05") == [1, 0, 1, 0, 0, 0, 0, 0]
+
+
+def test_generator_rx_fifo_batches_register_reads_over_stream_transport():
+    dev = _device()
+    dev.spi.stream_payload = MagicMock()
+    dev.pkt._next_seq.side_effect = [7, 8]
+
+    def response(seq, value):
+        body = bytes([ST_OK, seq]) + struct.pack("<H", 2)
+        body += struct.pack("<H", value)
+        return SYNC_RSP + body + struct.pack("<H", crc16(body))
+
+    dev.spi.stream_payload.side_effect = lambda payload: (
+        b"\xff" * 11 + response(7, (2 << 8) | 0xAA)
+        + b"\xff" * 5 + response(8, (1 << 8) | 0xBB)
+    )
+
+    assert dev.gen_rx_read(max_bytes=2) == b"\xaa\xbb"
+    dev.spi.stream_payload.assert_called_once()
+    assert len(dev.spi.stream_payload.call_args.args[0]) == 2 * (9 + 160)
 
 
 def test_accelerometer_capture_rejects_arm_and_completes_success(monkeypatch):
@@ -634,6 +657,46 @@ def test_repeating_uart_capture_validates_retries_kicks_and_aborts(monkeypatch):
         )
 
 
+def test_repeating_spi_capture_uses_the_shared_ring_source_seam():
+    dev = _device()
+    dev._ensure_open = MagicMock()
+    dev.clear_live_gen = MagicMock()
+    dev._wait_gen_idle = MagicMock()
+    dev._pins = MagicMock()
+    dev.set_readback_compression = MagicMock(return_value=True)
+    dev.stream_ring_capture = MagicMock(return_value=iter([
+        (b"digital", 4, 4, 0),
+    ]))
+    dev.pkt.transaction.return_value = (ST_OK, 0, b"")
+    stop = SimpleNamespace(is_set=lambda: False)
+
+    result = list(dev.continuous_ring_capture_with_repeating_spi(
+        rate_hz=2_000_000, chunk_nsamp=4, buffer_nsamp=16,
+        stop_evt=stop, data_bytes=b"\xA5", spi_clock_hz=1_000_000,
+        tx_pin=3, sclk_pin=1))
+
+    assert result == [(b"digital", 4, 4, 0)]
+    assert call(REG_GEN_DATA, (1 << 8) | device_module.GEN_FLAG_REPEAT |
+                 device_module.GEN_FLAG_SPI_TEST) in \
+        dev.pkt.write_register.call_args_list
+    assert dev.pkt.load_gen_data.call_count == 1
+    assert dev.stream_ring_capture.call_args.kwargs == {
+        "rate_hz": 2_000_000,
+        "window_samples": 4,
+        "stop_evt": stop,
+        "progress_cb": None,
+        "full_out": None,
+        "fetch_multiplier": 1,
+        "generator_capture": True,
+        "manage_debug_source": False,
+        "prefer_raw_stream": False,
+        "follow_tail": False,
+        "include_cursor": False,
+    }
+    assert call(device_module.CMD_GEN_STOP, timeout=0.5) in \
+        dev.pkt.transaction.call_args_list
+
+
 def test_repeating_i2c_capture_arms_ring_and_cleans_up_generator():
     dev = _device()
     dev._ensure_open = MagicMock()
@@ -666,6 +729,45 @@ def test_repeating_i2c_capture_arms_ring_and_cleans_up_generator():
     # that hook emits CMD_GEN_STOP and would kill the just-armed I2C replay.
     assert dev.stream_ring_capture.call_args.kwargs[
         "manage_debug_source"] is False
+
+
+def test_repeating_i2c_capture_uses_direct_live_fifo_when_advertised():
+    dev = _device()
+    dev._direct_live_stream = True
+    dev._ensure_open = MagicMock()
+    dev.clear_live_gen = MagicMock()
+    dev._pins = MagicMock()
+    dev._write_capture_config = MagicMock()
+    dev._wait_gen_idle = MagicMock()
+    dev.stream_ring_capture = MagicMock()
+    dev.pkt.transaction.return_value = (ST_OK, 0, b"")
+    dev.pkt.start_live_stream_read.side_effect = [
+        (1, 0, b"\x01\x02\x03\x04"),
+        (2, 0, b"\x04\x03\x02\x01"),
+    ]
+
+    result = list(dev.continuous_ring_capture_with_repeating_i2c(
+        rate_hz=2_000_000,
+        chunk_nsamp=4,
+        buffer_nsamp=16,
+        stop_evt=_SequenceStop([False, False, True]),
+        read_len=6,
+        i2c_speed=50_000,
+        use_rle=False,
+        include_cursor=True,
+    ))
+
+    assert result == [
+        (b"\x00\x20\x00\x40\x00\x60\x00\x80", 4, 4, 0, None, {}),
+        (b"\x00\x80\x00\x60\x00\x40\x00\x20", 8, 4, 0, None, {}),
+    ]
+    assert dev.pkt.start_live_stream_read.call_args_list[0].args[0] == 4
+    assert dev.pkt.start_live_stream_read.call_args_list[0].kwargs[
+        "compact_3bit"] is True
+    dev.stream_ring_capture.assert_not_called()
+    dev._write_capture_config.assert_called_once()
+    assert call(device_module.CMD_GEN_CAPTURE, timeout=1.0) in \
+        dev.pkt.transaction.call_args_list
 
 
 def test_stream_ring_unmanaged_source_does_not_stop_generator():

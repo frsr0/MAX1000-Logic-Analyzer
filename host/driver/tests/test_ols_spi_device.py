@@ -10,6 +10,7 @@ from driver.spi_protocol import (
     CMD_GEN_LOAD,
     CMD_GEN_START,
     CMD_GEN_STOP,
+    CMD_START_LIVE_STREAM,
     GEN_FIFO_DEPTH,
     REG_DIVIDER,
     REG_FLAGS,
@@ -30,6 +31,7 @@ from driver.spi_protocol import (
     ST_CAPTURE_DONE,
     ST_CAPTURE_BUSY,
     ST_CAPTURE_IDLE,
+    ST_STREAM_ACTIVE,
     SYNC_REQ,
     SYNC_RSP,
     crc16,
@@ -879,6 +881,11 @@ class TestOLSDeviceSPI:
         device_spi._detect_gen_div_width()
         assert device_spi._gen_div_width == 24
         assert device_spi.gen_div_mask == 0xFFFFFF
+        assert device_spi.supports_direct_live_stream is False
+        device_spi.pkt.transaction.return_value = (
+            0, 0, b"\x10\x10\x00\xf0\x01" + b"\x00" * 4 + b"\x03")
+        device_spi._detect_gen_div_width()
+        assert device_spi.supports_direct_live_stream is True
 
     def test_live_gen_accepts_1200_baud_on_wide_divider(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -996,6 +1003,28 @@ class TestDigitalGlitchFilter:
 
 
 class TestSPIDeviceStatusMetadata:
+    def test_compact_live_stream_uses_one_wire_byte_per_sample(self):
+        class Transport:
+            def __init__(self):
+                self.stream_command = MagicMock()
+
+        transport = Transport()
+        ack_payload = struct.pack('<II', 0x1234, 0)
+        response = (SYNC_RSP + bytes([ST_STREAM_ACTIVE, 0])
+                    + struct.pack('<H', len(ack_payload)) + ack_payload)
+        response += struct.pack('<H', crc16(response[2:]))
+        transport.stream_command.return_value = response + b'\x01\x02\x04'
+
+        pkt = SPIDevice(transport)
+        sequence, flags, data = pkt.start_live_stream_read(
+            3, compact_3bit=True)
+
+        assert (sequence, flags, data) == (0x1234, 0, b'\x01\x02\x04')
+        request, n_bytes = transport.stream_command.call_args.args[:2]
+        assert request[2] == CMD_START_LIVE_STREAM
+        assert struct.unpack('<I', request[6:10])[0] == 0x80000003
+        assert n_bytes == 3
+
     def test_legacy_short_status_still_parses(self):
         pkt = SPIDevice(MagicMock())
         pkt.transaction = MagicMock(return_value=(ST_CAPTURE_DONE, 0, bytes([4, 0, 9])))
@@ -1753,7 +1782,8 @@ class TestOLSDeviceSPIRolling:
         device_spi.pkt.write_register.return_value = True
         device_spi.pkt.arm_capture.return_value = ST_OK
         device_spi.read_capture_range = MagicMock(
-            side_effect=[b'\x34\x12' * 4, b'\x78\x56' * 4])
+            side_effect=[b'\x34\x12' * 4, b'\x78\x56' * 4,
+                         b'\x9a\xbc' * 4])
         device_spi.pkt.get_status.side_effect = [
             # This is the FPGA's cumulative write-side counter. It can grow
             # while the reader remains exactly on its sequential cursor.
@@ -1765,8 +1795,8 @@ class TestOLSDeviceSPIRolling:
         device_spi.spi.flush = MagicMock()
 
         stop_evt = MagicMock()
-        # The second block begins exactly where the first ended. A sequential
-        # reader must stop here rather than re-seeking to the newer tail.
+        # Tail-follow re-anchors the second block at the newest decoder-safe
+        # window when the producer advances, preserving freshness.
         stop_evt.is_set.side_effect = [False, False, False, False, True]
         stop_evt.wait.return_value = False
         results = list(device_spi.stream_ring_capture(
@@ -1775,9 +1805,9 @@ class TestOLSDeviceSPIRolling:
         assert [item[1] for item in results] == [4, 8]
         device_spi.read_capture_range.assert_has_calls([
             call(96, 4, probe_compression=False),
-            call(100, 4, probe_compression=False),
+            call(104, 4, probe_compression=False),
         ])
-        assert [item[3] for item in results] == [1, 1]
+        assert [item[3] for item in results] == [1, 2]
 
     def test_stream_ring_tail_batches_multiple_output_windows_per_read(
             self, device_spi):
@@ -1809,6 +1839,41 @@ class TestOLSDeviceSPIRolling:
             call(112, 4, probe_compression=False),
         ])
 
+    def test_stream_ring_tail_resyncs_after_live_reader_stall(self, device_spi):
+        """A live block reader must not drain a stale source backlog."""
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.read_capture_range = MagicMock(
+            side_effect=[b'\x34\x12' * 4, b'\x78\x56' * 4,
+                         b'\x9a\xbc' * 4])
+        status_calls = []
+        def ring_status():
+            status_calls.append(True)
+            producer = (100 if len(status_calls) == 1
+                        else 10_000 if len(status_calls) == 2 else 10_004)
+            return {'producer_index': producer, 'oldest_index': 0,
+                    'overrun_count': 0}
+        device_spi.pkt.get_status.side_effect = ring_status
+        device_spi.spi.flush = MagicMock()
+
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False] * 6 + [True]
+        stop_evt.wait.return_value = False
+        results = list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, fetch_multiplier=1,
+            follow_tail=True))
+
+        assert [item[1] for item in results] == [4, 8, 12]
+        device_spi.read_capture_range.assert_has_calls([
+            call(96, 4, probe_compression=False),
+            call(9_996, 4, probe_compression=False),
+            call(10_000, 4, probe_compression=False),
+        ])
+        assert [item[3] for item in results] == [1, 2, 2]
+
     def test_stream_ring_tail_advances_after_short_block_read(
             self, device_spi):
         """A short fetch must not be appended again from the same cursor."""
@@ -1837,6 +1902,40 @@ class TestOLSDeviceSPIRolling:
         device_spi.read_capture_range.assert_has_calls([
             call(96, 4, probe_compression=False),
             call(98, 4, probe_compression=False),
+        ])
+
+    def test_stream_ring_prefetch_does_not_reread_pending_tail(
+            self, device_spi):
+        """Prefetch advances independently of the emitted output window."""
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        # The first response leaves two samples pending after the first
+        # emitted four-sample window. The next fetch must begin at 102, not at
+        # the output cursor 100, or those two samples are decoded twice.
+        device_spi.read_capture_range = MagicMock(side_effect=[
+            b'\x01\x00' * 6,
+            b'\x02\x00' * 4,
+        ])
+        device_spi.pkt.get_status.side_effect = [
+            {'producer_index': 100, 'oldest_index': 0, 'overrun_count': 0},
+            {'producer_index': 106, 'oldest_index': 0, 'overrun_count': 0},
+        ]
+        device_spi.spi.flush = MagicMock()
+
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False, False, False, False, True]
+        stop_evt.wait.return_value = False
+        results = list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, fetch_multiplier=4,
+            follow_tail=True, include_cursor=True))
+
+        assert [item[4] for item in results] == [96, 100]
+        device_spi.read_capture_range.assert_has_calls([
+            call(96, 4, probe_compression=False),
+            call(102, 4, probe_compression=False),
         ])
 
     def test_stream_ring_keeps_logical_cursor_across_sdram_wrap(

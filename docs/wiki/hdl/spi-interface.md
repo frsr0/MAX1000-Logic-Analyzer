@@ -64,6 +64,7 @@ The SPI dispatch process decodes `pkt_cmd_active` and routes to sub-handlers:
 | `CMD_READ_STREAM_BLOCK` | 0x14 | Read one stream block |
 | `CMD_ACK_CAPTURE_DONE` | 0x15 | ACK done and latch |
 | `CMD_START_RAW_STREAM` | 0x16 | Start raw compressed streaming |
+| `CMD_START_LIVE_STREAM` | 0x17 | Start raw streaming from the direct live capture FIFO |
 | `CMD_WRITE_REG` | 0x20 | Write register (disp_reg_write) |
 | `CMD_READ_REG` | 0x21 | Read register value |
 | `CMD_GEN_CONFIG` | 0x30 | Configure generator |

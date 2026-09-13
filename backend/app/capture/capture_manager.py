@@ -753,9 +753,25 @@ class CaptureManager:
                        for role in decoder.channel_roles()):
                     continue
                 try:
+                    settings = {**decoder.defaults(), **inst.settings}
+                    live_window = getattr(decoder, "live_window_samples", None)
+                    region = inst.region
+                    if callable(live_window):
+                        try:
+                            lookback = max(1, int(live_window(
+                                wf.sample_rate, settings)))
+                        except (TypeError, ValueError):
+                            lookback = 65_536
+                        region_start = max(
+                            0, int(region[0])) if region else 0
+                        region_end = min(
+                            wf.num_samples, int(region[1])) if region else wf.num_samples
+                        region = [
+                            max(region_start, region_end - lookback),
+                            region_end,
+                        ]
                     result = decoder.decode(
-                        DecodeContext(wf, inst.channels, inst.region),
-                        {**decoder.defaults(), **inst.settings})
+                        DecodeContext(wf, inst.channels, region), settings)
                     for event in result.events:
                         event["decoder_id"] = inst.id
                     self.store.save_decoder_events(session_id, inst.id,

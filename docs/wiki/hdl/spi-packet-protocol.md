@@ -60,6 +60,7 @@ Every SPI transaction carries exactly one packet:
 | `CMD_READ_STREAM_BLOCK` | 0x14 | — | Read next stream block |
 | `CMD_ACK_CAPTURE_DONE` | 0x15 | seq | ACK done with sequence matching |
 | `CMD_START_RAW_STREAM` | 0x16 | settings | Start raw compressed streaming |
+| `CMD_START_LIVE_STREAM` | 0x17 | `sample_count:u32` | Start raw streaming from the live capture FIFO; no SDRAM address. Bit 31 requests compact 3-bit samples (CH13/14/15 in bits 0/1/2) |
 | `CMD_WRITE_REG` | 0x20 | addr + value | Write configuration register |
 | `CMD_READ_REG` | 0x21 | addr | Read configuration register |
 | `CMD_GEN_CONFIG` | 0x30 | config | Configure generator |

@@ -4,6 +4,7 @@ import { ReconnectingSocket } from '../api/websocket';
 import type { MilAccelerometerConfig, MilAccelerometerStatus } from '../api/types';
 import { useApp } from '../state/appStore';
 import { AdaptivePoseFilter, orientationFor, type Orientation } from './accelerometerPose';
+import { LiveI2cDecoder } from '../workers/liveI2cDecoder';
 
 const POLL_INTERVAL_MS = 100;
 // The sensor stream can be several hundred samples per second. Present the
@@ -156,6 +157,7 @@ export function MilAccelerometerCard() {
   const boardAnimationFrame = useRef<number | null>(null);
   const lastBoardFrameAt = useRef<number | null>(null);
   const latestFrontendTiming = useRef<Record<string, any> | null>(null);
+  const hasFrontendWaveformSample = useRef(false);
 
   const writeBoardPose = (next: Orientation) => {
     if (boardRef.current) boardRef.current.style.transform = boardTransform(next);
@@ -240,7 +242,10 @@ export function MilAccelerometerCard() {
       .then((next) => { if (alive) {
         setStatus(next);
         setPoseSample((previous) => {
-          if (previous || !next.sample) return previous;
+          // A running status sample is backend-owned and may be a delayed
+          // duplicate. The board waits for the frontend's raw-waveform
+          // decoder instead of taking that sample as a live pose.
+          if (previous || !next.sample || next.running) return previous;
           latestPoseSample.current = next.sample;
           applyBoardPose(next.sample);
           return next.sample;
@@ -284,6 +289,7 @@ export function MilAccelerometerCard() {
             return frontendTiming ? { ...next, live_timing: frontendTiming } : next;
           });
           setPoseSample((previous) => {
+            if (next.running || hasFrontendWaveformSample.current) return previous;
             const timestamp = next.sample?.timestamp;
             if (!next.sample || !timestamp || !Number.isFinite(timestamp)) return previous;
             if (lastStreamTimestamp.current !== null
@@ -320,9 +326,72 @@ export function MilAccelerometerCard() {
     let alive = true;
     let animationFrame: number | null = null;
     let pending: Record<string, any> | null = null;
+    let fallbackDecoder = new LiveI2cDecoder();
+    let fallbackDecoderConfigKey = '';
+    let fallbackWaveformSequence: number | null = null;
+    let fallbackDecodedSamples = 0;
+    let fallbackLastTimestamp = 0;
+
+    const handleWaveformMessage = (message: Record<string, any>) => {
+      const data = message.data;
+      if (!data || typeof data.samples_b64 !== 'string') return;
+      const sequence = Number(data.sequence);
+      if (Number.isFinite(sequence)
+          && fallbackWaveformSequence !== null
+          && sequence !== fallbackWaveformSequence + 1) {
+        fallbackDecoder.reset();
+      }
+      if (Number.isFinite(sequence)) fallbackWaveformSequence = sequence;
+      const config = data.config && typeof data.config === 'object'
+        ? data.config : {};
+      const nextKey = JSON.stringify(config);
+      if (nextKey !== fallbackDecoderConfigKey) {
+        fallbackDecoder = new LiveI2cDecoder(
+          Number(data.address ?? 0x19), config,
+          Number(data.read_length ?? 6));
+        fallbackDecoderConfigKey = nextKey;
+      }
+      const sampleRate = Number(data.sample_rate);
+      const sampleCount = Number(data.sample_count);
+      const messageTimestamp = Number(message.ts);
+      const sourceIndex = Number.isFinite(Number(data.source_index))
+        ? Number(data.source_index) : null;
+      for (const sample of fallbackDecoder.feedBase64(
+        data.samples_b64, sourceIndex)) {
+        fallbackDecodedSamples += 1;
+        let timestamp = messageTimestamp - (
+          Math.max(0, sampleCount - sample.sample_offset) / sampleRate);
+        if (!Number.isFinite(timestamp) || timestamp <= fallbackLastTimestamp) {
+          timestamp = fallbackLastTimestamp + 1e-6;
+        }
+        fallbackLastTimestamp = timestamp;
+        handleMessage({
+          type: 'accelerometer_sample',
+          ts: message.ts,
+          data: {
+            sample: { ...sample, timestamp },
+            last_sample_at: timestamp,
+            samples_read: fallbackDecodedSamples,
+            last_sample_sequence: fallbackDecodedSamples,
+            source_sample_index: sample.source_index,
+            source_backlog_samples: 0,
+            source_age_samples: 0,
+            trace: {
+              decoder_source: 'frontend_waveform_fallback',
+              waveform_sequence: sequence,
+              waveform_source_index: sourceIndex,
+              waveform_sample_count: sampleCount,
+              waveform_sample_rate_hz: sampleRate,
+              frontend_decoded_at_ms: performance.now(),
+            },
+          },
+        });
+      }
+    };
 
     const handleMessage = (message: Record<string, any>) => {
       if (!alive || message.type !== 'accelerometer_sample' || !message.data?.sample) return;
+      hasFrontendWaveformSample.current = true;
       // This mailbox is intentionally only one item deep. The worker can
       // continue receiving and parsing every sample while React is busy; a
       // saturated display consumes the newest reading on its next paint.
@@ -397,6 +466,8 @@ export function MilAccelerometerCard() {
           ?? previous.last_sample_sequence,
         source_sample_index: next.source_sample_index
           ?? previous.source_sample_index,
+        source_age_samples: next.source_age_samples
+          ?? previous.source_age_samples,
         source_backlog_samples: next.source_backlog_samples
           ?? previous.source_backlog_samples,
         capture_to_publish_latency_ms: next.capture_to_publish_latency_ms
@@ -412,8 +483,11 @@ export function MilAccelerometerCard() {
     let unsubscribe: (() => void) | null = null;
     const startFallbackSocket = () => {
       if (socket) return;
-      socket = new ReconnectingSocket('/ws/accelerometer/pose');
-      unsubscribe = socket.subscribe(handleMessage);
+      socket = new ReconnectingSocket('/ws/accelerometer/waveform');
+      unsubscribe = socket.subscribe((message) => {
+        if (message.type === 'accelerometer_waveform') handleWaveformMessage(message);
+        else handleMessage(message);
+      });
     };
     if (typeof Worker !== 'undefined') {
       try {
@@ -463,14 +537,21 @@ export function MilAccelerometerCard() {
         : await api.milAccelerometerStop();
       setStatus(next);
       poseFilter.current.reset();
-      lastStreamTimestamp.current = next.sample?.timestamp ?? null;
+      hasFrontendWaveformSample.current = false;
+      lastStreamTimestamp.current = null;
       // Starting/stopping deliberately establishes a new stream epoch. The
-      // command response is the authoritative pose for that transition.
+      // raw waveform stream is authoritative once tracking starts. The start
+      // response is status only; using its sample here reintroduces a second
+      // pose producer and makes the board appear detached from the waveform.
       lastAppliedTimestamp.current = null;
-      latestPoseSample.current = next.sample;
+      latestPoseSample.current = action === 'stop' ? next.sample : null;
       latestFrontendTiming.current = null;
-      applyBoardPose(next.sample, true);
-      setPoseSample(next.sample);
+      if (action === 'stop') {
+        applyBoardPose(next.sample, true);
+        setPoseSample(next.sample);
+      } else {
+        setPoseSample(null);
+      }
       const completed = action === 'start' ? next.running : !next.running;
       if (!completed) {
         const message = next.last_error
@@ -552,7 +633,13 @@ export function MilAccelerometerCard() {
   };
 
   useLayoutEffect(() => {
-    applyBoardPose(latestPoseSample.current ?? poseSample ?? status?.sample ?? null);
+    // Seed the initial frame if the card mounted while tracking was already
+    // active, then stop accepting REST pose updates as soon as the first raw
+    // waveform sample has crossed the frontend decoder seam.
+    const fallback = status?.sample
+      && (!status.running || !hasFrontendWaveformSample.current)
+      ? status.sample : null;
+    applyBoardPose(latestPoseSample.current ?? poseSample ?? fallback);
   }, [poseSample, status?.sample, zero]);
 
   return (
@@ -619,7 +706,8 @@ export function MilAccelerometerCard() {
             <span>Host payload rate</span><strong>{rate(status?.host_data_rate_bytes_per_s ?? status?.data_rate_bytes_per_s, 'bytes/s')}</strong>
             <span>Samples read</span><strong>{(status?.samples_read ?? 0).toLocaleString()}</strong>
             <span>Last sample</span><strong>{sampleAge(status?.last_sample_at ?? status?.sample?.timestamp)}</strong>
-            <span>Ring source backlog</span><strong>{backlog(status?.source_backlog_samples)}</strong>
+            <span>Ring unread backlog</span><strong>{backlog(status?.source_backlog_samples)}</strong>
+            <span>Decoded source age</span><strong>{backlog(status?.source_age_samples)}</strong>
             <span>Capture → publish</span><strong>{latency(status?.capture_to_publish_latency_ms)}</strong>
             <span>Decode → publish</span><strong>{latency(status?.decoded_to_publish_latency_ms)}</strong>
             <span>WebSocket → render</span><strong>{frontendRenderLatency(status?.live_timing)}</strong>

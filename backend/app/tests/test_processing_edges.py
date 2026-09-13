@@ -225,6 +225,7 @@ def test_websocket_manager_connect_broadcast_dead_clients_and_publish():
         async def record(topic, type_, data):
             latest.append((topic, type_, data))
         mgr2 = ConnectionManager()
+        await mgr2.connect(Ws(), "accelerometer")
         mgr2.broadcast = record
         mgr2.set_loop(asyncio.get_running_loop())
         for n in range(100):
@@ -234,6 +235,42 @@ def test_websocket_manager_connect_broadcast_dead_clients_and_publish():
             await asyncio.sleep(0.01)
         assert [item[2] for item in latest] == [{"n": n} for n in range(100)]
 
+        # Raw waveform is ordered, but its event-loop handoff is deliberately
+        # bounded. A stalled browser may create a visible sequence gap; it
+        # must never create a hidden multi-second JSON backlog.
+        waveform_mgr = ConnectionManager()
+        await waveform_mgr.connect(Ws(), "accelerometer_waveform")
+        waveform_mgr.set_loop(asyncio.get_running_loop())
+        waveform_started = asyncio.Event()
+        async def blocked_waveform(topic, type_, data):
+            waveform_started.set()
+            await asyncio.sleep(0.1)
+        waveform_mgr.broadcast = blocked_waveform
+        for n in range(100):
+            waveform_mgr.publish_threadsafe(
+                "accelerometer_waveform", "accelerometer_waveform", {"n": n})
+        await asyncio.wait_for(waveform_started.wait(), timeout=1.0)
+        with waveform_mgr._latest_lock:
+            assert len(waveform_mgr._latest_pending["accelerometer_waveform"]) <= 2
+            queued = [item[1]["n"] for item in
+                      waveform_mgr._latest_pending["accelerometer_waveform"]]
+        assert queued[-1] == 99
+
+        # The history socket is optional. With no history subscriber, a
+        # high-rate tracking producer must not enqueue/serialize every sample
+        # on the event loop and starve the separate latest pose mailbox.
+        idle_history = ConnectionManager()
+        idle_history.set_loop(asyncio.get_running_loop())
+        idle_history_calls = []
+        async def record_idle_history(topic, type_, data):
+            idle_history_calls.append((topic, type_, data))
+        idle_history.broadcast = record_idle_history
+        for n in range(100):
+            idle_history.publish_threadsafe(
+                "accelerometer", "accelerometer_sample", {"n": n})
+        await asyncio.sleep(0.05)
+        assert idle_history_calls == []
+
         # Pose delivery is a separate latest-value channel. A slow browser
         # must not spend seconds draining archival history before it sees the
         # newest orientation target.
@@ -242,6 +279,7 @@ def test_websocket_manager_connect_broadcast_dead_clients_and_publish():
             await asyncio.sleep(0.01)
             pose_sent.append((topic, type_, data))
         pose_mgr = ConnectionManager()
+        await pose_mgr.connect(Ws(), "accelerometer_pose")
         pose_mgr.broadcast = record_pose
         pose_mgr.set_loop(asyncio.get_running_loop())
         for n in range(100):
@@ -278,6 +316,7 @@ def test_websocket_manager_connect_broadcast_dead_clients_and_publish():
                 drain_finished = True
                 drain_done.set()
         mgr3.broadcast = continuous
+        await mgr3.connect(Ws(), "accelerometer")
         mgr3.publish_threadsafe("accelerometer", "accelerometer_sample", {"n": 0})
         await asyncio.wait_for(drain_done.wait(), timeout=1.0)
         assert sends == 64
@@ -656,6 +695,55 @@ def test_decoder_service_orders_dependencies_and_filters_events(monkeypatch):
     assert svc.cancel("u") == fake_capture.cancel_decoder.return_value
     with pytest.raises(ValueError, match="Unknown decoder"):
         svc.run(type("S", (), {"decoders": []})(), DecoderInstance(id="x", decoder_id="missing"))
+
+
+def test_live_decoder_scheduler_limits_each_protocol_to_newest_window(
+        tmp_path, monkeypatch):
+    """Rolling decode uses the shared bounded live-window seam."""
+    import app.capture.capture_manager as manager_module
+
+    seen = []
+
+    class FakeDecoder:
+        id = "fake"
+        consumes = None
+
+        def channel_roles(self):
+            return []
+
+        def defaults(self):
+            return {}
+
+        def live_window_samples(self, sample_rate, settings):
+            assert sample_rate == 1_000_000.0
+            assert settings == {}
+            return 7
+
+        def decode(self, ctx, settings):
+            seen.append((ctx.start, ctx.end, ctx.wf.num_samples))
+            return type("Result", (), {"events": [], "warnings": []})()
+
+    monkeypatch.setattr(manager_module.decoder_registry, "get",
+                        lambda decoder_id: FakeDecoder()
+                        if decoder_id == "fake" else None)
+    mgr = CaptureManager(SessionStore(tmp_path))
+    session = Session(
+        id="live-window", name="live", sample_rate=1_000_000.0,
+        num_samples=200, settings=CaptureSettings(
+            mode="rolling", sample_rate=1_000_000.0, num_samples=200),
+        channels=default_digital_channels(1),
+        decoders=[DecoderInstance(id="d", decoder_id="fake")])
+    mgr.store.save(session)
+    mgr.store.save_waveform(session.id,
+                            _wf(digital=np.zeros(200, dtype=np.uint16),
+                                rate=1_000_000.0))
+
+    mgr.schedule_live_decode(session.id)
+    deadline = time.time() + 1.0
+    while time.time() < deadline and not seen:
+        time.sleep(0.01)
+
+    assert seen == [(193, 200, 200)]
 
 
 def test_decoder_service_runs_dependencies_reruns_and_cancels(monkeypatch):

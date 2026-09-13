@@ -71,6 +71,11 @@ port (
     Packed_Data  : in  std_logic_vector(15 downto 0) := (others => '0');
     Packed_Valid : in  std_logic := '0';
     Packed_Ready : out std_logic := '0';
+    -- Registered tap of the accepted capture words. OLS_Interface uses this
+    -- for CMD_START_LIVE_STREAM; the SDRAM writer remains an independent
+    -- consumer of the same capture stream.
+    Live_Stream_Data  : out std_logic_vector(15 downto 0) := (others => '0');
+    Live_Stream_Valid : out std_logic := '0';
     -- Single-shot block readout via a response FIFO. The OLS side (CLK domain)
     -- requests a stream and drains the FIFO; the FLA walks the addresses on pclk
     -- and pushes each valid sample in. The dcfifo is a proper CDC between the
@@ -1511,6 +1516,11 @@ begin
                   else fifo_wr_skid_data_r;
   afifo_wr     <= (packed_buf_out_valid and packed_buf_out_ready)
                   or fifo_wr_skid_req_r;
+  -- fifo_wr_skid_* are registered in FAST_CLK. Exposing the same registered
+  -- word/strobe gives the direct FIFO an ordered tap without putting its CDC
+  -- or SPI backpressure into the SDRAM write path.
+  Live_Stream_Data  <= fifo_wr_skid_data_r;
+  Live_Stream_Valid <= fifo_wr_skid_req_r;
 
   -- Async FIFO (dcfifo) bridging FAST_CLK (write) to pclk (read).
   -- Sync depths increased to 4 for safer CDC across the ~200 MHz / ~167 MHz

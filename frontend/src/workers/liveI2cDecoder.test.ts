@@ -1,0 +1,71 @@
+import { describe, expect, it } from 'vitest';
+import { LiveI2cDecoder } from './liveI2cDecoder';
+
+const busWord = (scl: number, sda: number) =>
+  ((scl & 1) << 14) | ((sda & 1) << 13);
+
+function hold(scl: number, sda: number, count = 3): number[] {
+  return Array.from({ length: count }, () => busWord(scl, sda));
+}
+
+function byteTrace(value: number, ack: number): number[] {
+  const result: number[] = [];
+  for (let bit = 7; bit >= 0; bit -= 1) {
+    const sda = (value >> bit) & 1;
+    result.push(...hold(0, sda, 2), ...hold(1, sda, 4));
+  }
+  result.push(...hold(0, ack, 2), ...hold(1, ack, 4));
+  return result;
+}
+
+function transaction(payload: number[]): number[] {
+  const result = [
+    ...hold(1, 1), // idle
+    ...hold(1, 0), // START
+  ];
+  result.push(...byteTrace(0x32, 0));
+  result.push(...byteTrace(0xA8, 0));
+  result.push(...hold(0, 1, 2), ...hold(1, 1));
+  result.push(...hold(1, 0)); // repeated START
+  result.push(...byteTrace(0x33, 0));
+  payload.forEach((value, index) => {
+    result.push(...byteTrace(value, index === payload.length - 1 ? 1 : 0));
+  });
+  result.push(...hold(0, 1, 2), ...hold(1, 1)); // STOP
+  return result;
+}
+
+function sampleBytes(x: number, y: number, z: number): number[] {
+  const words = [x << 4, y << 4, z << 4];
+  return words.flatMap((word) => [word & 0xff, (word >> 8) & 0xff]);
+}
+
+describe('LiveI2cDecoder', () => {
+  it('decodes an ordered waveform even when every chunk splits the transaction', () => {
+    const waveform = transaction(sampleBytes(128, -64, 1000));
+    const decoder = new LiveI2cDecoder(0x19, {
+      operating_mode: 'high_resolution', full_scale_g: 2, endian: 'little',
+    });
+    const decoded = [
+      decoder.feed(Uint16Array.from(waveform.slice(0, 37)), 1000),
+      decoder.feed(Uint16Array.from(waveform.slice(37, 113)), 1037),
+      decoder.feed(Uint16Array.from(waveform.slice(113)), 1113),
+    ].flat();
+
+    expect(decoded).toHaveLength(1);
+    expect(decoded[0].x_g).toBeCloseTo(0.128, 6);
+    expect(decoded[0].y_g).toBeCloseTo(-0.064, 6);
+    expect(decoded[0].z_g).toBeCloseTo(1, 6);
+    expect(decoded[0].source_index).toBeGreaterThan(1000);
+    expect(decoded[0].sample_offset).toBeGreaterThan(0);
+  });
+
+  it('does not emit a frame for a register/address-shaped false match', () => {
+    const bytes = sampleBytes(128, -64, 1000);
+    bytes[0] |= 1; // non-zero low padding bit in the first LIS3DH word
+    const waveform = transaction(bytes);
+    const decoder = new LiveI2cDecoder(0x19, { operating_mode: 'high_resolution' });
+
+    expect(decoder.feed(Uint16Array.from(waveform))).toHaveLength(0);
+  });
+});

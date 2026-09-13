@@ -96,30 +96,56 @@ including the mode-dependent ODR table and full-scale sensitivities.
 
 The live diagnostic creates a normal persisted session named `LIS3DH WHO_AM_I
 live`, captures the dialogue at 2 MHz, maps SDA/SCL to the sensor channels,
-and attaches the standard I²C decoder. This makes the peripheral useful both
-as a device-level self-test and as a realistic protocol waveform source.
+and attaches the standard I²C decoder. Direct-live-capable FPGA images feed
+that waveform through the ordered capture-tap FIFO (the three sensor bits are
+transport-packed to one byte/sample); older images retain the SDRAM-ring
+fallback. This makes the peripheral useful both as a device-level self-test
+and as a realistic protocol waveform source.
 
 ## Live pose timing and recovery
 
-The live decoder publishes a complete, structurally validated XYZ point as
-soon as its final I²C byte is observed. The display target consumes that point
-immediately; its `requestAnimationFrame` smoothing is presentation only and
-does not delay acquisition or publication.
+The live path now publishes the ordered packed bus waveform separately from
+the backend's legacy decoded-pose messages. `frontend/src/workers/liveI2cDecoder.ts`
+keeps the I²C transaction state across WebSocket chunk boundaries, validates
+the address/register/ACK layout and LIS3DH word padding, and emits a complete
+XYZ point as soon as its final byte is observed. The display target consumes
+those frontend-decoded points; its `requestAnimationFrame` smoothing is
+presentation only and does not delay acquisition or publication.
 
 The raw decoded point is retained on the FIFO history stream. The pose mailbox
 also applies a causal physical-plausibility check, so a complete but
 protocol-shaped/misaligned frame cannot flip the board orientation; the check
 drops that one pose update without waiting for a later confirmation point.
-The live tail read is 1,024 source samples (about two 400 kHz sensor
-transactions at the 2 MHz ring rate), rather than a multi-window prefetch.
+The normal/high-resolution path uses a 2 MHz capture ring, standard 400 kHz
+I²C, a 1,792-sample tail window, and no host prefetch. For the low-power
+5.376 kHz setting, the generator reads 24 bytes from the LIS3DH FIFO per
+dialogue and uses a larger ring window to amortise fixed USB block-read setup.
+`source_backlog_samples` is the unread source queue after the returned window;
+it must remain zero or near zero. `source_age_samples` is a separate point-age
+measurement and may be non-zero even when the queue is empty.
 
-The application keeps two WebSocket contracts so presentation cannot hold up
-history:
+The sensor ODR and host decoded rate are intentionally reported separately.
+The flashed FPGA image currently sustains the 1.344 kHz normal/high-resolution
+limit, but its block-read endpoint does not yet sustain the 5.376 kHz
+low-power maximum. Reaching that absolute setting at full rate requires an
+FPGA-side bulk FIFO/stream endpoint; enlarging browser buffers would only add
+latency.
+
+The application keeps separate WebSocket contracts so presentation cannot hold
+up history or raw decoding:
 
 | Endpoint | Contract |
 |---|---|
 | `/ws/accelerometer` | FIFO stream of every validated point for archival/history consumers |
 | `/ws/accelerometer/pose` | Replaceable latest-value stream for the visualization target; stale pending poses are dropped |
+| `/ws/accelerometer/waveform` | Ordered packed CH13/CH14/CH15 waveform chunks for frontend protocol decoding; at most two chunks may wait in the event-loop handoff |
+
+The waveform WebSocket is the board's live source of truth. If a chunk is lost,
+its sequence gap resets the incremental decoder instead of allowing unrelated
+waveform sections to complete a plausible-looking fake frame. The current
+hardware producer still obtains those chunks from the SDRAM ring; replacing
+that final ring readback with a direct FPGA bulk FIFO is the remaining hardware
+transport step needed to remove the ring from the live path entirely.
 
 Each sample trace carries the decoder sequence, ring source index and
 producer/oldest pointers, source backlog, `decoded_at`, `gate_accepted_at`,
