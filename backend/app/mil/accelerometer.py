@@ -1642,10 +1642,21 @@ class AccelerometerService:
                                 # Advisory metadata must never take down the
                                 # live capture on older driver implementations.
                                 pass
+                        # At the 2 MHz live tap the normal four-symbol I2C
+                        # encoder has only a couple of capture points in
+                        # each high plateau.  Applying the non-causal
+                        # three-point filter to a long FIFO burst can move
+                        # the first/last edge of each burst and destroy the
+                        # ACK/STOP sequence even though the raw waveform is
+                        # valid.  High-ODR bursts are already protocol-
+                        # validated by the incremental decoder; preserve
+                        # those samples verbatim.  The short 400 Hz path
+                        # retains the historical glitch filter.
                         digital = clean_live_trace(
                             digital,
-                            majority=LIVE_TRACE_RATE_HZ
-                            >= 4 * LIVE_TRACE_I2C_SPEED_HZ)
+                            majority=(LIVE_TRACE_RATE_HZ
+                                      >= 4 * LIVE_TRACE_I2C_SPEED_HZ
+                                      and not high_odr))
                         if digital.size:
                             waveform_sequence += 1
                             # The frontend decoder consumes this exact packed

@@ -1032,6 +1032,48 @@ def test_tracking_uses_continuous_ring_decoder_for_board_samples():
         service.stop(wait_timeout=1.0)
 
 
+def test_high_odr_live_trace_preserves_burst_edges(monkeypatch):
+    """High-ODR FIFO bursts bypass the edge-moving majority filter."""
+    majority_values = []
+
+    def record_clean(values, majority=True):
+        majority_values.append(majority)
+        return values
+
+    monkeypatch.setattr(
+        accelerometer_module, "clean_live_trace", record_clean)
+
+    class HighRateRingRaw(FakeRaw):
+        def continuous_ring_capture_with_repeating_i2c(self, **kwargs):
+            stop_evt = kwargs["stop_evt"]
+            trace = np.tile(
+                _synthetic_lis3dh_i2c_trace(
+                    0x18,
+                    payload=b"\x10\x00\xf0\xff\x20\x00" * 4),
+                2).astype("<u2").tobytes()
+            self.first_sample.set()
+            while not stop_evt.is_set():
+                yield trace
+                stop_evt.wait(0.005)
+
+    raw = HighRateRingRaw()
+    service = AccelerometerService(FakeManager(raw))
+    service.update_config({
+        "output_data_rate_hz": 1344,
+        "operating_mode": "high_resolution",
+    })
+    assert service.start()["running"] is True
+    try:
+        assert raw.first_sample.wait(1.0)
+        deadline = time.time() + 1.0
+        while time.time() < deadline and not majority_values:
+            time.sleep(0.01)
+        assert majority_values
+        assert majority_values[-1] is False
+    finally:
+        service.stop(wait_timeout=1.0)
+
+
 def test_live_ring_i2c_decoder_extracts_xyz_frame():
     """The attach mirror contains enough data to update XYZ status."""
     digital = _synthetic_lis3dh_i2c_trace()
