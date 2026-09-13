@@ -1593,6 +1593,26 @@ def test_stream_ring_successful_retry_trace_and_no_callback(monkeypatch):
     ]
 
 
+def test_stream_ring_rle_failure_recovers_through_compressed_blocks():
+    dev = _device()
+    _prepare_ring(dev)
+    dev.readback_compression_mode = "rle"
+    dev.compress_readback_enabled = True
+    dev.pkt.get_status.side_effect = [
+        {"producer_index": 4, "oldest_index": 0, "overrun_count": 0},
+        {"producer_index": 4, "oldest_index": 0, "overrun_count": 0},
+    ]
+    dev.pkt.start_rle_stream_read.side_effect = RuntimeError("transient")
+    dev.read_capture_range = MagicMock(return_value=b"\x34\x12" * 4)
+
+    result = list(dev.stream_ring_capture(
+        1_000_000, 4, _SequenceStop([False, False, False, False, True])))
+
+    assert result == [(b"\x34\x12" * 4, 4, 4, 0)]
+    dev.read_capture_range.assert_called_once_with(
+        0, 4, probe_compression=True)
+
+
 def test_generated_capture_abort_pending_no_generator_invalid_command_and_trace(monkeypatch, tmp_path):
     dev = _device()
     _prepare_generated_capture(dev)

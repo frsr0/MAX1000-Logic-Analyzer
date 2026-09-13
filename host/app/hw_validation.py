@@ -3298,7 +3298,9 @@ def test_live_rate_ceiling(dev):
             "throughput": thr,
             "overruns": over,
             "lossless": lossless,
-            "error": failed,
+            # Exceptions are diagnostic data; keep the result manifest JSON
+            # serializable even when a transport case fails.
+            "error": str(failed) if failed is not None else None,
         }
 
     for freq_hz in source_freqs:

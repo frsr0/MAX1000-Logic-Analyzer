@@ -2190,6 +2190,14 @@ class OLSDeviceSPI:
         # historically been less tolerant on old images.
         use_rle_stream = self._readback_codec() == 'rle'
         use_raw_stream = use_rle_stream or bool(prefer_raw_stream)
+        # A held-CS RLE read can fail transiently after a codec/rate change.
+        # Keep the selected RLE codec, but recover through the established
+        # block reader instead of surfacing a dead live stream to the caller.
+        rle_block_fallback = (
+            use_rle_stream and self._rle_stream_supported is False)
+        if rle_block_fallback:
+            use_rle_stream = False
+            use_raw_stream = False
         # The FPGA reports producer/oldest as logical 32-bit sample counters;
         # only the SDRAM address inside the block-read command is physical.
         # Keep the reader cursor in that logical domain so crossing the
@@ -2516,7 +2524,19 @@ class OLSDeviceSPI:
                                 self.pkt.start_rle_stream_read(
                                     next_sample, window_samples,
                                     stop_evt=stop_evt)
+                            self._rle_stream_supported = True
                         except (RuntimeError, OSError):
+                            if not stop_evt.is_set():
+                                self._rle_stream_supported = False
+                                use_rle_stream = False
+                                use_raw_stream = False
+                                rle_block_fallback = True
+                                producer_hint = None
+                                oldest_hint = None
+                                next_sample = None
+                                fetch_cursor = None
+                                discard_pending()
+                                continue
                             if not use_newest_stream or stream_retry_count >= 2:
                                 raise
                             stream_retry_count += 1
@@ -2628,7 +2648,8 @@ class OLSDeviceSPI:
                     oldest_at_read = oldest_hint
                     read_started_at = time.time()
                     data = self.read_capture_range(
-                        fetch_start, fetch_nsamp, probe_compression=False)
+                        fetch_start, fetch_nsamp,
+                        probe_compression=rle_block_fallback)
                     read_completed_at = time.time()
                     if not data:
                         break
