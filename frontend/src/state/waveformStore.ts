@@ -44,6 +44,8 @@ export class WaveformView {
   liveRolling = false;
   liveChunkSamples = 0;
   liveUpdatedAt = 0;
+  private liveRawSamples: Uint16Array | null = null;
+  private liveRawActive = false;
 
   private listeners = new Set<ViewListener>();
   private fetchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -88,6 +90,8 @@ export class WaveformView {
     this.liveRolling = false;
     this.liveChunkSamples = 0;
     this.liveUpdatedAt = 0;
+    this.liveRawSamples = null;
+    this.liveRawActive = false;
     this.cursorA = this.cursorB = null;
     this.selectionStart = this.selectionEnd = null;
     this.heightScale.clear();
@@ -133,6 +137,14 @@ export class WaveformView {
     } else {
       this.clampView();
     }
+    // A live raw waveform socket is the authoritative source for an active
+    // rolling view. The persisted session is intentionally refreshed less
+    // often, so fetching it here would replace a current packet with an older
+    // snapshot and make the canvas visibly jump in bursts.
+    if (this.liveRawActive && followEnd) {
+      this.notify();
+      return;
+    }
     // Overview refresh is fire-and-forget and throttled: chunks arrive faster
     // than the minimap needs, and awaiting it here delayed the viewport fetch
     // behind a queue of per-chunk overview requests.
@@ -149,6 +161,65 @@ export class WaveformView {
     this.requestFetch(0);
     this.requestAnnotations();
     this.notify();
+  }
+
+  /**
+   * Append one ordered raw waveform packet to the live rolling viewport.
+   * This deliberately bypasses the persisted-session refresh path: the
+   * capture file is history, while this packet is the live display source.
+   */
+  appendLiveRaw(sessionId: string, samples: Uint16Array,
+               sampleRate: number): void {
+    if (sessionId !== this.sessionId || samples.length === 0
+        || !Number.isFinite(sampleRate) || sampleRate <= 0) return;
+
+    const capacity = Math.max(1, Math.floor(this.numSamples || samples.length));
+    const previous = this.liveRawSamples ?? new Uint16Array(0);
+    const count = Math.min(capacity, previous.length + samples.length);
+    const next = new Uint16Array(count);
+    const incoming = samples.length >= count
+      ? samples.subarray(samples.length - count)
+      : samples;
+    const previousCount = count - incoming.length;
+    if (previousCount > 0) {
+      next.set(previous.subarray(previous.length - previousCount), 0);
+    }
+    next.set(incoming, previousCount);
+
+    this.liveRawSamples = next;
+    this.liveRawActive = true;
+    this.liveRolling = true;
+    this.sampleRate = sampleRate;
+    this.liveChunkSamples = Math.min(count, samples.length);
+    this.liveUpdatedAt = performance.now();
+    this.payload = {
+      header: {
+        session_id: sessionId,
+        start: 0,
+        end: count,
+        num_samples: count,
+        sample_rate: sampleRate,
+        mode: 'raw',
+        samples_per_bin: 1,
+        arrays: [{ name: 'digital', dtype: 'u2', count }],
+      },
+      arrays: new Map([['digital', next]]),
+    };
+    if (this.liveFollow) {
+      const span = Math.min(Math.max(this.span(), 8), Math.max(8, count));
+      this.start = Math.max(0, count - span);
+      this.end = Math.max(1, count);
+    } else {
+      this.clampView();
+    }
+    this.notify();
+  }
+
+  /** Fall back to persisted history after the raw live socket disconnects. */
+  setLiveRawActive(sessionId: string, active: boolean): void {
+    if (sessionId !== this.sessionId || this.liveRawActive === active) return;
+    this.liveRawActive = active;
+    if (!active) this.requestFetch(0);
   }
 
   setLiveFollow(enabled: boolean) {
@@ -330,7 +401,8 @@ export class WaveformView {
       const p = await this.workerClient.fetchWindow(
         this.sessionId, fetchStart, fetchEnd, res,
         this.channelFilter);
-      if (gen === this.fetchGen && loadGen === this.loadGen) {
+      if (gen === this.fetchGen && loadGen === this.loadGen
+          && !(this.liveRawActive && this.liveRolling)) {
         this.payload = p;
         this.error = null;
         if (this.liveRolling && this.liveFollow) {

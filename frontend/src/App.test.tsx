@@ -7,18 +7,26 @@ const socketHarness = vi.hoisted(() => {
   const instances: Array<{
     url: string;
     handler?: Handler;
+    binaryHandler?: (buffer: ArrayBuffer) => any;
     onStateChange?: (connected: boolean) => void;
     unsubscribe: ReturnType<typeof vi.fn>;
+    unsubscribeBinary: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
   }> = [];
   class Socket {
     url: string;
     handler?: Handler;
+    binaryHandler?: (buffer: ArrayBuffer) => any;
     onStateChange?: (connected: boolean) => void;
     unsubscribe = vi.fn();
+    unsubscribeBinary = vi.fn();
     close = vi.fn();
     constructor(url: string) { this.url = url; instances.push(this); }
     subscribe(handler: Handler) { this.handler = handler; return this.unsubscribe; }
+    subscribeBinary(handler: (buffer: ArrayBuffer) => any) {
+      this.binaryHandler = handler;
+      return this.unsubscribeBinary;
+    }
   }
   return { instances, Socket };
 });
@@ -176,10 +184,35 @@ it('rebinds session sockets and handles decoder and live-waveform messages', asy
   const toast = vi.fn();
   const requestAnnotations = vi.spyOn(waveformView, 'requestAnnotations').mockResolvedValue();
   const updateLive = vi.spyOn(waveformView, 'updateLive').mockResolvedValue();
-  useApp.setState({ activeSession: session('one', { num_samples: 50, sample_rate: 2000, trigger_sample: 8 }),
+  const appendLiveRaw = vi.spyOn(waveformView, 'appendLiveRaw');
+  useApp.setState({ activeSession: session('one', {
+    num_samples: 50, sample_rate: 2000, trigger_sample: 8,
+    tags: ['accelerometer'],
+    settings: { ...session('one').settings, mode: 'rolling' },
+  }),
     refreshActiveSession, toast });
   const view = render(<App />);
   await waitFor(() => expect(socket('/ws/decoder/one')).toBeTruthy());
+  const raw = socket('/ws/accelerometer/waveform-binary');
+  expect(raw).toBeTruthy();
+  act(() => raw.onStateChange?.(true));
+  const rawBytes = Uint8Array.from([0x34, 0x12, 0xcd, 0xab]);
+  let rawBinary = '';
+  for (const byte of rawBytes) rawBinary += String.fromCharCode(byte);
+  await message('/ws/accelerometer/waveform-binary', 'accelerometer_waveform', {
+    samples_b64: btoa(rawBinary), sample_rate: 2_000_000,
+  });
+  expect(appendLiveRaw).toHaveBeenCalledWith(
+    'one', expect.any(Uint16Array), 2_000_000);
+  const binaryHeader = new TextEncoder().encode(JSON.stringify({
+    sample_count: 1, sample_rate: 2_000_000,
+  }));
+  const binaryPacket = new ArrayBuffer(4 + binaryHeader.length + 2);
+  new DataView(binaryPacket).setUint32(0, binaryHeader.length, true);
+  new Uint8Array(binaryPacket, 4, binaryHeader.length).set(binaryHeader);
+  new Uint16Array(binaryPacket, 4 + binaryHeader.length)[0] = 0x1234;
+  await act(async () => { raw.binaryHandler?.(binaryPacket); });
+  expect(appendLiveRaw).toHaveBeenCalledTimes(2);
 
   await message('/ws/decoder/one', 'decoder_progress', { live: true });
   await message('/ws/decoder/one', 'decoder_complete', { error: 'decode failed', cancelled: false, event_count: 0 });

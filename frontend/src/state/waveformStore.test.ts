@@ -230,6 +230,26 @@ it('coalesces rapid live chunks and fetches the newest window without starvation
   expect(view.liveChunkSamples).toBe(0);
 });
 
+it('renders sequential raw live chunks without waiting for rolling persistence', () => {
+  const view = new WaveformView();
+  view.sessionId = 'live';
+  view.numSamples = 8;
+  view.sampleRate = 2_000_000;
+  view.liveRolling = true;
+  view.liveFollow = true;
+
+  view.appendLiveRaw('live', Uint16Array.from([1, 2, 3, 4]), 2_000_000);
+  expect(view.payload?.header.mode).toBe('raw');
+  expect(Array.from(view.payload?.arrays.get('digital') as Uint16Array))
+    .toEqual([1, 2, 3, 4]);
+
+  view.appendLiveRaw('live', Uint16Array.from([5, 6, 7, 8, 9, 10]), 2_000_000);
+  expect(Array.from(view.payload?.arrays.get('digital') as Uint16Array))
+    .toEqual([3, 4, 5, 6, 7, 8, 9, 10]);
+  expect(view.payload?.header.end).toBe(8);
+  expect(view.liveChunkSamples).toBe(6);
+});
+
 it('preserves a manually panned live window but follows the previous right edge', async () => {
   const view = new WaveformView();
   await view.load('s', 0, 1000, null);
