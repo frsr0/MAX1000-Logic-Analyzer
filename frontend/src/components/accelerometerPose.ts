@@ -7,6 +7,20 @@ export interface Orientation {
 
 type AccelerometerSample = NonNullable<MilAccelerometerStatus['sample']>;
 
+// Euler orientation is undefined when the accelerometer vector is close to
+// zero (for example because the sensor payload is invalid or the board is in
+// free fall). Do not turn that undefined vector into an arbitrary board
+// rotation. This is a validity check, not a pose step limit: every usable
+// decoded packet is still applied immediately.
+export const MIN_GRAVITY_VECTOR_G = 0.25;
+
+export function hasUsableGravity(sample: MilAccelerometerStatus['sample']): boolean {
+  if (!sample) return false;
+  const { x_g, y_g, z_g } = sample;
+  return Number.isFinite(x_g) && Number.isFinite(y_g) && Number.isFinite(z_g)
+    && Math.hypot(x_g, y_g, z_g) >= MIN_GRAVITY_VECTOR_G;
+}
+
 // A hand-held board moves much more slowly than this cutoff, while LIS3DH
 // quantisation/noise is visible in the Euler angles. At the normal ~400 Hz
 // stream cadence this is a ~13 ms one-pole time constant (about 40 ms to
@@ -17,22 +31,14 @@ const MAX_SAMPLE_GAP_S = 0.25;
 // Tail-follow can skip source samples between fresh windows. Do not let that
 // capture-time gap turn the next valid point into a presentation snap.
 const MAX_FILTER_STEP_S = 1 / 60;
-// A complete but misaligned/protocol-shaped frame must not rotate the board
-// by an impossible amount in one update.
-const MAX_POSE_STEP_DEG = 75;
-
-function angularDistanceDegrees(left: number, right: number): number {
-  const wrapped = Math.abs(left - right) % 360;
-  return wrapped > 180 ? 360 - wrapped : wrapped;
-}
-
 export function orientationFor(sample: MilAccelerometerStatus['sample']): Orientation {
-  if (!sample) return { pitch: 0, roll: 0 };
+  if (!sample || !hasUsableGravity(sample)) return { pitch: 0, roll: 0 };
+  const { x_g, y_g, z_g } = sample;
   // A stationary accelerometer measures gravity. Keep the board level when
   // gravity is +Z, and use X/Y to tilt it around its two screen axes.
   return {
-    pitch: Math.atan2(-sample.x_g, Math.hypot(sample.y_g, sample.z_g)) * 180 / Math.PI,
-    roll: Math.atan2(sample.y_g, sample.z_g) * 180 / Math.PI,
+    pitch: Math.atan2(-x_g, Math.hypot(y_g, z_g)) * 180 / Math.PI,
+    roll: Math.atan2(y_g, z_g) * 180 / Math.PI,
   };
 }
 
@@ -78,19 +84,6 @@ export class AdaptivePoseFilter {
     if (!previous) {
       this.previous = { ...robust };
       return { ...robust };
-    }
-
-    const previousOrientation = orientationFor(previous);
-    const robustOrientation = orientationFor(robust);
-    const poseStep = Math.max(
-      angularDistanceDegrees(previousOrientation.pitch, robustOrientation.pitch),
-      angularDistanceDegrees(previousOrientation.roll, robustOrientation.roll),
-    );
-    if (poseStep > MAX_POSE_STEP_DEG) {
-      // Consume the source timestamp while holding the causal display pose.
-      this.history = [{ ...previous, timestamp: sample.timestamp }];
-      this.previous = { ...previous, timestamp: sample.timestamp };
-      return { ...previous, timestamp: sample.timestamp };
     }
 
     // Exact-timestamp updates are commonly REST/WebSocket duplicates. Keep

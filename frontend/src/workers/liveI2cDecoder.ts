@@ -61,7 +61,7 @@ export class LiveI2cDecoder {
   private bits: number[] = [];
   private data: number[] = [];
   private acks: number[] = [];
-  private plateau: number[] = [];
+  private plateauRuns: Array<[number, number]> = [];
   private controlPlateau = true;
   private frameEmitted = false;
   private transactionSamples = 0;
@@ -82,7 +82,7 @@ export class LiveI2cDecoder {
     this.bits = [];
     this.data = [];
     this.acks = [];
-    this.plateau = [];
+    this.plateauRuns = [];
     this.controlPlateau = true;
     this.frameEmitted = false;
     this.transactionSamples = 0;
@@ -99,7 +99,7 @@ export class LiveI2cDecoder {
       this.bits = [];
       this.data = [];
       this.acks = [];
-      this.plateau = [];
+      this.plateauRuns = [];
       this.controlPlateau = true;
       this.frameEmitted = false;
       this.transactionSamples = 0;
@@ -110,10 +110,28 @@ export class LiveI2cDecoder {
     this.bits = [];
     this.data = [];
     this.acks = [];
-    this.plateau = [];
+    this.plateauRuns = [];
     this.controlPlateau = true;
     this.frameEmitted = false;
     this.transactionSamples = 0;
+  }
+
+  private appendPlateau(sda: number, count = 1) {
+    if (count <= 0) return;
+    const last = this.plateauRuns[this.plateauRuns.length - 1];
+    if (last && last[0] === sda) last[1] += count;
+    else this.plateauRuns.push([sda, count]);
+  }
+
+  private plateauCenter(): number {
+    let target = 0;
+    for (const [, length] of this.plateauRuns) target += length;
+    target = Math.floor(target / 2);
+    for (const [level, length] of this.plateauRuns) {
+      if (target < length) return level;
+      target -= length;
+    }
+    return 0;
   }
 
   private finishByte(out: LiveDecodedSample[], offset: number) {
@@ -156,50 +174,73 @@ export class LiveI2cDecoder {
 
   feed(values: Uint16Array, sourceIndex: number | null = null): LiveDecodedSample[] {
     const out: LiveDecodedSample[] = [];
-    for (let offset = 0; offset < values.length; offset += 1) {
-      const value = values[offset];
-      const scl = (value >> 14) & 1;
-      const sda = (value >> 13) & 1;
+    // The 2 MHz tap repeats each I2C level for several samples. Process
+    // identical runs as a unit so this worker remains a real-time consumer
+    // of the ordered waveform. The midpoint and transition offset remain
+    // unchanged from the sample-by-sample decoder.
+    const levels = new Uint8Array(values.length);
+    for (let i = 0; i < values.length; i += 1) levels[i] = (values[i] >> 13) & 3;
+    let runStart = 0;
+    while (runStart < levels.length) {
+      let runEnd = runStart + 1;
+      while (runEnd < levels.length && levels[runEnd] === levels[runStart]) runEnd += 1;
+      const level = levels[runStart];
+      const scl = (level >> 1) & 1;
+      const sda = level & 1;
+      let count = runEnd - runStart;
+      let offset = runStart;
+      let transition = true;
       if (!this.previous) {
         this.previous = [scl, sda];
-        continue;
+        count -= 1;
+        offset += 1;
+        transition = false;
+      } else {
+        transition = this.previous[0] !== scl || this.previous[1] !== sda;
       }
-      const [previousScl, previousSda] = this.previous;
-      if (this.inTransaction) {
-        this.transactionSamples += 1;
-        if (this.transactionSamples > 8192) this.reset();
-      }
-      if (scl) {
-        const ackEdge = this.inTransaction && !this.controlPlateau
-          && this.bits.length === 8 && previousScl === 0;
-        if (ackEdge) this.plateau.push(sda);
-        else if (previousScl && previousSda && !sda) this.startTransaction();
-        else if (previousScl && !previousSda && sda) {
-          this.inTransaction = false;
-          this.phase = 'idle';
-          this.bits = [];
-          this.data = [];
-          this.acks = [];
-          this.plateau = [];
-          this.controlPlateau = true;
-          this.frameEmitted = false;
-        } else if (this.inTransaction && !this.controlPlateau) this.plateau.push(sda);
-        else if (this.inTransaction && previousScl === 0) this.plateau.push(sda);
-      } else if (previousScl) {
-        if (this.inTransaction && !this.controlPlateau && this.plateau.length) {
-          this.bits.push(this.plateau[Math.floor(this.plateau.length / 2)]);
-          const before = out.length;
-          this.finishByte(out, offset);
-          for (const sample of out.slice(before)) {
-            if (sample.source_index === null && sourceIndex !== null) {
-              sample.source_index = sourceIndex + offset;
+      if (count > 0) {
+        const [previousScl, previousSda] = this.previous;
+        if (this.inTransaction) {
+          this.transactionSamples += count;
+          if (this.transactionSamples > 8192) this.reset();
+        }
+        if (scl) {
+          if (transition) {
+            const ackEdge = this.inTransaction && !this.controlPlateau
+              && this.bits.length === 8 && previousScl === 0;
+            if (ackEdge) this.appendPlateau(sda, count);
+            else if (previousScl && previousSda && !sda) this.startTransaction();
+            else if (previousScl && !previousSda && sda) {
+              this.inTransaction = false;
+              this.phase = 'idle';
+              this.bits = [];
+              this.data = [];
+              this.acks = [];
+              this.plateauRuns = [];
+              this.controlPlateau = true;
+              this.frameEmitted = false;
+            } else if (this.inTransaction && !this.controlPlateau) this.appendPlateau(sda, count);
+            else if (this.inTransaction && previousScl === 0) this.appendPlateau(sda, count);
+          } else if (this.inTransaction && !this.controlPlateau) {
+            this.appendPlateau(sda, count);
+          }
+        } else if (transition && previousScl) {
+          if (this.inTransaction && !this.controlPlateau && this.plateauRuns.length) {
+            this.bits.push(this.plateauCenter());
+            const before = out.length;
+            this.finishByte(out, offset);
+            for (const sample of out.slice(before)) {
+              if (sample.source_index === null && sourceIndex !== null) {
+                sample.source_index = sourceIndex + offset;
+              }
             }
           }
+          this.plateauRuns = [];
+          this.controlPlateau = false;
         }
-        this.plateau = [];
-        this.controlPlateau = false;
       }
       this.previous = [scl, sda];
+      runStart = runEnd;
     }
     return out;
   }

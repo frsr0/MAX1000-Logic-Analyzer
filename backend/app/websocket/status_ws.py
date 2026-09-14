@@ -13,6 +13,7 @@ Clients may send {"type": "ping"} keepalives; everything else is ignored —
 hardware is only controllable via REST (with the control lock)."""
 from __future__ import annotations
 
+import asyncio
 import json
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -21,6 +22,8 @@ from ..state import capture_manager
 from .manager import manager
 
 router = APIRouter()
+WEBSOCKET_HEARTBEAT_S = 1.0
+WEBSOCKET_MAX_MISSED_HEARTBEATS = 3
 
 
 async def _serve(ws: WebSocket, topic: str, hello: dict | None = None) -> None:
@@ -28,8 +31,23 @@ async def _serve(ws: WebSocket, topic: str, hello: dict | None = None) -> None:
     try:
         if hello is not None:
             await ws.send_text(json.dumps(hello))
+        missed_heartbeats = 0
         while True:
-            msg = await ws.receive_text()
+            try:
+                msg = await asyncio.wait_for(
+                    ws.receive_text(), timeout=WEBSOCKET_HEARTBEAT_S)
+            except asyncio.TimeoutError:
+                # Browser navigation does not always deliver the close event
+                # to the ASGI receive task promptly. A small server-side send
+                # makes dead sockets observable and keeps the topic sets from
+                # accumulating stale waveform consumers.
+                missed_heartbeats += 1
+                if missed_heartbeats >= WEBSOCKET_MAX_MISSED_HEARTBEATS:
+                    await ws.close(code=1000)
+                    break
+                await ws.send_text('{"type":"ping"}')
+                continue
+            missed_heartbeats = 0
             try:
                 data = json.loads(msg)
                 if data.get("type") == "ping":
@@ -75,6 +93,12 @@ async def ws_accelerometer_pose(ws: WebSocket):
 async def ws_accelerometer_waveform(ws: WebSocket):
     """Stream ordered raw accelerometer bus waveform chunks."""
     await _serve(ws, "accelerometer_waveform")
+
+
+@router.websocket("/ws/accelerometer/waveform-binary")
+async def ws_accelerometer_waveform_binary(ws: WebSocket):
+    """Stream ordered raw accelerometer samples without JSON/base64."""
+    await _serve(ws, "accelerometer_waveform_binary")
 
 
 @router.websocket("/ws/logs")

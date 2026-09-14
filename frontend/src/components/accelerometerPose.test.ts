@@ -1,8 +1,21 @@
 import { expect, it } from 'vitest';
-import { AdaptivePoseFilter, orientationFor, POSE_FILTER_CUTOFF_HZ } from './accelerometerPose';
+import {
+  AdaptivePoseFilter,
+  hasUsableGravity,
+  orientationFor,
+  POSE_FILTER_CUTOFF_HZ,
+} from './accelerometerPose';
 
 const sample = (x_g: number, timestamp: number) => ({
   x_g, y_g: 0, z_g: 1, timestamp,
+});
+
+it('does not derive an arbitrary pose from an unusable gravity vector', () => {
+  const invalid = { x_g: -0.008, y_g: -0.012, z_g: -0.016, timestamp: 1 };
+
+  expect(hasUsableGravity(invalid)).toBe(false);
+  expect(orientationFor(invalid)).toEqual({ pitch: 0, roll: 0 });
+  expect(hasUsableGravity(sample(0, 1))).toBe(true);
 });
 
 it('suppresses a one-sample XYZ spike without adding a long tail', () => {
@@ -40,22 +53,14 @@ it('does not turn a skipped-tail source gap into a full presentation step', () =
   expect(filtered.x_g).toBeLessThan(0.9);
 });
 
-it('does not move the pose on an impossible orientation branch flip', () => {
+it('does not clamp a decoded orientation step', () => {
   const filter = new AdaptivePoseFilter();
-  const steady = filter.update({ x_g: 0.2, y_g: 0, z_g: 0.98, timestamp: 20 });
-
-  // The vector still has a perfectly plausible gravity magnitude, but a
-  // hand-held board cannot rotate this far between adjacent live points.
-  // This is the semantic check needed after a protocol-shaped false frame:
-  // it must not become a visible pose step while the raw history remains
-  // lossless.
-  const filtered = filter.update({
+  filter.update({ x_g: 0.2, y_g: 0, z_g: 0.98, timestamp: 20 });
+  const decoded = filter.update({
     x_g: 0.2, y_g: 0.98, z_g: -0.05, timestamp: 20.02,
   });
 
-  expect(Math.abs(
-    orientationFor(filtered).roll - orientationFor(steady).roll,
-  )).toBeLessThan(45);
+  expect(orientationFor(decoded).roll).toBeGreaterThan(70);
 });
 
 it('reduces realistic 0.1 g tilt noise while following a movement step', () => {

@@ -319,6 +319,17 @@ class OLS:
                 pass
             self.dev = None
 
+    def set_speed(self, speed_hz):
+        """Change the MPSSE clock while no CS-held stream is active."""
+        if self.dev is None:
+            raise RuntimeError("SPI device is not open")
+        speed = max(1, int(speed_hz))
+        div = max(0, 60_000_000 // (2 * speed) - 1)
+        self.dev.write(bytes([
+            0x86, div & 0xFF, (div >> 8) & 0xFF, 0x87,
+        ]))
+        self.speed_hz = speed
+
     # ── SPI transaction methods ──────────────────────────────────────
 
     def _xfer(self, data, read_len=None):
@@ -641,7 +652,7 @@ class OLS:
         self._stream_open = False
 
     def stream_command_chunks(self, request, ack_pad=96, chunk_bytes=4096,
-                              stop_evt=None):
+                              stop_evt=None, overlap_io=False):
         """Yield stream bytes from one CS-held request+stream transaction.
 
         Unlike :meth:`stream_command`, which clocks a fixed ``n_bytes``, this
@@ -676,17 +687,40 @@ class OLS:
                     STREAM_CHUNK_READ_TIMEOUT_S,
                     len(prefix) / max(self.speed_hz / 8, 1)
                     + STREAM_CHUNK_READ_TIMEOUT_S))
-            while True:
-                if stop_evt is not None and stop_evt.is_set():
-                    break
-                self.dev.write(self._mpsse_clock_out(bytes([0x11] * chunk_bytes))
-                               + bytes([0x87]))
-                yield self._read_n(
-                    chunk_bytes,
-                    timeout=max(
-                        STREAM_CHUNK_READ_TIMEOUT_S,
-                        chunk_bytes / max(self.speed_hz / 8, 1)
-                        + STREAM_CHUNK_READ_TIMEOUT_S))
+            if not overlap_io:
+                while True:
+                    if stop_evt is not None and stop_evt.is_set():
+                        break
+                    self.dev.write(
+                        self._mpsse_clock_out(bytes([0x11] * chunk_bytes))
+                        + bytes([0x87]))
+                    yield self._read_n(
+                        chunk_bytes,
+                        timeout=max(
+                            STREAM_CHUNK_READ_TIMEOUT_S,
+                            chunk_bytes / max(self.speed_hz / 8, 1)
+                            + STREAM_CHUNK_READ_TIMEOUT_S))
+            else:
+                # Keep exactly one MPSSE transfer queued ahead of the read.
+                # An unbounded writer thread saturates the FTDI command/RX
+                # queues and, on Windows, reduces the effective held-CS rate
+                # to roughly 7 Mb/s. A two-transfer window keeps SCK running
+                # through the read while bounding device-side backlog.
+                stream_cmd = (self._mpsse_clock_out(
+                    bytes([0x11] * chunk_bytes)) + bytes([0x87]))
+                self.dev.write(stream_cmd)
+                while True:
+                    if stop_evt is not None and stop_evt.is_set():
+                        break
+                    self.dev.write(stream_cmd)
+                    chunk = self._read_n(
+                        chunk_bytes,
+                        timeout=max(
+                            STREAM_CHUNK_READ_TIMEOUT_S,
+                            chunk_bytes / max(self.speed_hz / 8, 1)
+                            + STREAM_CHUNK_READ_TIMEOUT_S))
+                    if chunk:
+                        yield chunk
         finally:
             if opened:
                 self.stream_command_end()

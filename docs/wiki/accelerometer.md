@@ -74,7 +74,7 @@ both the sensor ODR and the measured host decoded rate:
 |---|---:|---:|---:|
 | Normal | 1.344 kHz | 10-bit | 6 |
 | High resolution | 1.344 kHz | 12-bit | 4 |
-| Low power | 1.620 or 5.376 kHz | 8-bit | 8 |
+| Low power | 1.60 or 5.376 kHz | 8-bit | 8 |
 
 The host rate is a transport measurement, not a claim about the sensor’s
 configured ODR. It includes only complete, structurally validated I²C XYZ

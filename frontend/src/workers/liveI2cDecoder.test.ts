@@ -68,4 +68,52 @@ describe('LiveI2cDecoder', () => {
 
     expect(decoder.feed(Uint16Array.from(waveform))).toHaveLength(0);
   });
+
+  it('decodes the 24-byte high-ODR FIFO burst across chunk boundaries', () => {
+    const payload = Array.from({ length: 24 }, () => 0);
+    const waveform = transaction(payload);
+    const decoder = new LiveI2cDecoder(0x19, {
+      output_data_rate_hz: 5376,
+      operating_mode: 'low_power', full_scale_g: 2, endian: 'little',
+    }, 24);
+    const decoded = [
+      decoder.feed(Uint16Array.from(waveform.slice(0, 41)), 2000),
+      decoder.feed(Uint16Array.from(waveform.slice(41, 197)), 2041),
+      decoder.feed(Uint16Array.from(waveform.slice(197)), 2197),
+    ].flat();
+
+    expect(decoded).toHaveLength(4);
+    expect(decoded.every((sample) => sample.x_g === 0
+      && sample.y_g === 0 && sample.z_g === 0)).toBe(true);
+  });
+
+  it.skipIf(!(globalThis as any).process?.env?.LIVE_HW_TEST)(
+    'decodes a live high-ODR binary waveform packet', async () => {
+      const packet = await new Promise<ArrayBuffer>((resolve, reject) => {
+        const ws = new WebSocket(
+          'ws://127.0.0.1:8002/ws/accelerometer/waveform-binary');
+        ws.binaryType = 'arraybuffer';
+        ws.onerror = () => reject(new Error('live waveform websocket failed'));
+        ws.onmessage = (event) => {
+          if (typeof event.data === 'string') return;
+          resolve(event.data as ArrayBuffer);
+          ws.close();
+        };
+      });
+      const packetBytes = packet instanceof ArrayBuffer
+        ? new Uint8Array(packet)
+        : Uint8Array.from(packet as any);
+      const packetBuffer = packetBytes.buffer;
+      const view = new DataView(packetBuffer);
+      const headerLength = view.getUint32(0, true);
+      const header = JSON.parse(new TextDecoder().decode(
+        new Uint8Array(packetBuffer, 4, headerLength)));
+      const samples = new Uint16Array(
+        packetBuffer, 4 + headerLength, header.sample_count);
+      const decoder = new LiveI2cDecoder(
+        header.address, header.config, header.read_length);
+
+      expect(decoder.feed(samples).length).toBeGreaterThan(0);
+    },
+  );
 });

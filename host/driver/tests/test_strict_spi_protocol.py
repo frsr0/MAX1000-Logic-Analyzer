@@ -391,6 +391,29 @@ def test_chunked_rle_aborts_a_stream_that_never_decodes(monkeypatch):
         protocol.SPIDevice(Stalled()).start_rle_stream_read(0, 8)
 
 
+def test_continuous_live_stream_uses_sustained_non_overlapped_mpsse_chunks():
+    calls = []
+
+    class SPI:
+        speed_hz = 30_000_000
+
+        def stream_command_chunks(self, request, **kwargs):
+            calls.append(kwargs)
+            yield _stream_ack(request[3], producer=0, oldest=0)
+            yield b"\xA0\xB0\xA0\xB0"
+
+    result = list(protocol.SPIDevice(SPI()).start_live_stream_continuous(
+        packed_tokens=True, sparse_sample_bits=2, tagged_packed=True))
+
+    assert result == [b"\xA0\xB0\xA0\xB0"]
+    assert calls == [{
+        "ack_pad": 64,
+        "chunk_bytes": 1024,
+        "stop_evt": None,
+        "overlap_io": True,
+    }]
+
+
 def test_rle_stream_clamps_negative_start_sample_before_packing():
     requests = []
 

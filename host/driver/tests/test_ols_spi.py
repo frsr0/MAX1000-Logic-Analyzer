@@ -2,10 +2,155 @@ import struct
 from unittest.mock import MagicMock
 import pytest
 
+from driver.ols_spi_device import (
+    _decode_packed_live_frames, _decode_sparse_packed_live_frames,
+    _decode_sparse_rle_live_frames, _decode_tagged_packed_live_frames,
+)
 from driver.spi_protocol import (
     CMD_START_RAW_STREAM, MAX_RLE_STREAM_SAMPLES, ST_OK, ST_STREAM_ACTIVE,
     SYNC_REQ, SYNC_RSP, SPIDevice, crc16, parse_response,
 )
+
+
+def test_decode_packed_live_frames_batches_and_reassembles_usb_chunks():
+    def frame(samples):
+        packed = sum((sample & 0x07) << (idx * 3)
+                     for idx, sample in enumerate(samples))
+        return b"\xA5" + packed.to_bytes(3, "little")
+
+    pending = bytearray()
+    first = frame(range(8))
+    second = frame(reversed(range(8)))
+    assert _decode_packed_live_frames(b"\x00\x00" + first[:2], pending) == b""
+    decoded = _decode_packed_live_frames(first[2:] + second, pending)
+    expected = bytes().join(
+        struct.pack("<H", (sample & 0x07) << 13)
+        for sample in list(range(8)) + list(reversed(range(8)))
+    )
+    assert decoded == expected
+    assert pending == bytearray()
+
+
+def test_decode_packed_live_frames_rejects_overflow_marker_outside_frame():
+    with pytest.raises(RuntimeError, match="FIFO overflow"):
+        _decode_packed_live_frames(b"\x07\x07\x07\x07", bytearray())
+
+
+def test_decode_sparse_packed_live_frames_uses_one_sync_and_reassembles_chunks():
+    def group(samples):
+        packed = sum((sample & 0x07) << (idx * 3)
+                     for idx, sample in enumerate(samples))
+        return packed.to_bytes(3, "little")
+
+    pending = bytearray()
+    started = False
+    first = group(range(8))
+    second = group(reversed(range(8)))
+    decoded, started, escaped = _decode_sparse_packed_live_frames(
+        b"\x00\x00\xA5" + first[:1], pending, started)
+    assert decoded == b""
+    assert started is True
+    assert escaped is False
+    decoded, started, escaped = _decode_sparse_packed_live_frames(
+        first[1:] + second, pending, started, escaped)
+    expected = bytes().join(
+        struct.pack("<H", (sample & 0x07) << 13)
+        for sample in list(range(8)) + list(reversed(range(8)))
+    )
+    assert decoded == expected
+    assert pending == bytearray()
+
+
+def test_decode_sparse_packed_live_frames_discards_idle_and_unescapes_payload():
+    pending = bytearray()
+    decoded, started, escaped = _decode_sparse_packed_live_frames(
+        b"\xA5\xFE\x00\xFE", pending, False)
+    assert decoded == b""
+    assert (started, escaped) == (True, True)
+    decoded, started, escaped = _decode_sparse_packed_live_frames(
+        b"\xFE\x01\x02\x00", pending, started, escaped)
+    packed = int.from_bytes(b"\x00\xFE\x01", "little")
+    expected = b"".join(
+        struct.pack("<H", ((packed >> (idx * 3)) & 0x07) << 13)
+        for idx in range(8)
+    )
+    assert decoded == expected
+    assert (started, escaped, pending) == (True, False, bytearray(b"\x02"))
+
+
+def test_decode_sparse_packed_live_frames_supports_two_bit_i2c_samples():
+    samples = [0, 1, 2, 3, 3, 2, 1, 0]
+    packed = sum((sample & 0x03) << (idx * 2)
+                 for idx, sample in enumerate(samples))
+    decoded, started, escaped = _decode_sparse_packed_live_frames(
+        b"\xA5" + packed.to_bytes(2, "little"), bytearray(), False,
+        sample_bits=2)
+    expected = b"".join(
+        struct.pack("<H", sample << 13) for sample in samples)
+    assert decoded == expected
+    assert (started, escaped) == (True, False)
+
+
+def test_decode_sparse_packed_live_frames_rejects_overflow_marker():
+    with pytest.raises(RuntimeError, match="FIFO overflow"):
+        _decode_sparse_packed_live_frames(
+            b"\xA5\xFE\x07", bytearray(), False)
+
+
+def test_decode_sparse_rle_live_frames_expands_records_and_idle_pairs():
+    pending = bytearray()
+    records = b"\xA5\x00\x03\x82\xC1"
+    decoded, started = _decode_sparse_rle_live_frames(
+        records[:1], pending, False)
+    assert decoded == b""
+    assert started is True
+    decoded, started = _decode_sparse_rle_live_frames(
+        records[1:], pending, started)
+    expected_levels = [0] * 3 + [2] * 2 + [3]
+    expected = b"".join(struct.pack("<H", level << 13)
+                         for level in expected_levels)
+    assert decoded == expected
+    assert pending == bytearray()
+
+
+def test_decode_sparse_rle_live_frames_rejects_reserved_overflow_record():
+    with pytest.raises(RuntimeError, match="FIFO overflow"):
+        _decode_sparse_rle_live_frames(b"\xA5\xC3", bytearray(), False)
+
+
+def test_decode_tagged_packed_live_frames_reassembles_split_records_and_reserved_payload():
+    samples = [0, 1, 2, 3, 3, 2, 1, 0]
+    packed = sum((sample & 0x03) << (idx * 2)
+                 for idx, sample in enumerate(samples))
+    # The encoded payload is made from nonzero tagged nibbles; arbitrary raw
+    # values therefore cannot collide with the idle/control bytes.
+    payload = packed.to_bytes(2, "little")
+    # Keep the expected wire construction explicit: idle bytes may occur
+    # between any record bytes, while the nibble tags remain unambiguous.
+    encoded = bytes((0xA0 | (payload[0] >> 4), 0xB0 | (payload[0] & 0x0F),
+                     0xA0 | (payload[1] >> 4), 0xB0 | (payload[1] & 0x0F)))
+    wire = b"\xA5\x00" + encoded[:2] + b"\x00" + encoded[2:]
+    pending = bytearray()
+    decoded, started = _decode_tagged_packed_live_frames(
+        wire[:2], pending, False)
+    assert decoded == b""
+    assert started is True
+    decoded, started = _decode_tagged_packed_live_frames(
+        wire[2:], pending, started)
+    expected = b"".join(struct.pack("<H", sample << 13)
+                         for sample in samples)
+    assert decoded == expected
+    assert (started, pending) == (True, bytearray())
+
+
+def test_decode_tagged_packed_live_frames_ignores_idle_and_reports_overflow():
+    pending = bytearray()
+    decoded, started = _decode_tagged_packed_live_frames(
+        b"\xA5\x00", pending, False)
+    assert decoded == b""
+    assert started is True
+    with pytest.raises(RuntimeError, match="FIFO overflow"):
+        _decode_tagged_packed_live_frames(b"\x00\xC3", pending, started)
 
 
 class TestOLSInit:

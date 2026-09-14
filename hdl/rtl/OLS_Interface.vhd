@@ -162,7 +162,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL gen_i2c_dev_r_int  : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
    SIGNAL gen_i2c_test_int   : STD_LOGIC := '0';
    SIGNAL gen_spi_test_int   : STD_LOGIC := '0';
-   SIGNAL gen_repeat_int     : STD_LOGIC := '0';
+  SIGNAL gen_repeat_int     : STD_LOGIC := '0';
    SIGNAL gen_rs485_pair_int : STD_LOGIC := '0';
    SIGNAL gen_accel_attach_int : STD_LOGIC := '0';
   SIGNAL compress_mode_i    : STD_LOGIC_VECTOR(1 downto 0) := "00";
@@ -177,15 +177,21 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL spi_tx_ready_i      : STD_LOGIC := '0';
 
   -- Direct live waveform FIFO: FAST_CLK capture tap -> CLK/SPI dispatcher.
-  -- Keep the staging FIFO bounded and small enough for the existing MAX10
-  -- timing closure. The host must request no more than the staged window.
-  CONSTANT LIVE_FIFO_DEPTH : NATURAL := 4096;
-  CONSTANT LIVE_FIFO_WIDTHU : NATURAL := 12;
-  -- Keep the complete capture word in the CDC FIFO. The wire serializer
-  -- narrows it to CH13..CH15 after the clock-domain crossing; doing that at
-  -- the read side preserves the exact capture-tap word and avoids a narrow
-  -- CDC payload being mistaken for a channel remap.
-  SIGNAL live_fifo_q       : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  -- Keep a bounded staging cushion for USB scheduling jitter, not waveform
+  -- history. At the 1 MHz tap this is about 16 ms; the host still consumes
+  -- every word sequentially and exposes zero source backlog to the UI.
+  -- A 32K x 2-bit live FIFO gives 32 ms of capture-tap elasticity at the
+  -- 1 MHz waveform rate. It remains a bounded handoff buffer, not history;
+  -- the host must still drain it continuously and reports overflow rather
+  -- than replaying stale samples.
+  CONSTANT LIVE_FIFO_DEPTH : NATURAL := 32768;
+  CONSTANT LIVE_FIFO_WIDTHU : NATURAL := 15;
+  -- The live LIS decoder consumes only CH13/CH14 (SDA/SCL). Store those two
+  -- bits directly in the CDC FIFO; the read-side serializer restores them to
+  -- the normal capture-word positions, so the host waveform contract remains
+  -- unchanged while the FIFO can be much deeper on this resource-constrained
+  -- MAX10 device.
+  SIGNAL live_fifo_q       : STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
   SIGNAL live_fifo_empty   : STD_LOGIC := '1';
   SIGNAL live_fifo_full    : STD_LOGIC := '0';
   SIGNAL live_fifo_wrreq   : STD_LOGIC := '0';
@@ -492,7 +498,7 @@ BEGIN
 
   live_fifo : dcfifo
   GENERIC MAP (
-    lpm_width => 16,
+    lpm_width => 2,
     lpm_widthu => LIVE_FIFO_WIDTHU,
     lpm_numwords => LIVE_FIFO_DEPTH,
     lpm_showahead => "ON",
@@ -510,7 +516,7 @@ BEGIN
   )
   PORT MAP (
     aclr => '0',
-    data => Live_Stream_Data,
+    data => Live_Stream_Data(14 downto 13),
     wrreq => live_fifo_wrreq,
     wrclk => FAST_CLK,
     rdreq => live_fifo_rdreq,
@@ -1331,15 +1337,20 @@ BEGIN
     variable raw_live_framed : boolean := false;
     variable raw_live_continuous : boolean := false;
     variable raw_live_packed : boolean := false;
+    variable raw_live_two_bit : boolean := false;
+    variable raw_live_tagged : boolean := false;
     -- Direct live compact transport packs eight 3-bit capture words into
     -- three SPI bytes. The capture FIFO still stores one word per accepted
     -- sample; these variables only reduce the wire representation.
     variable raw_live_pack_value : std_logic_vector(23 downto 0) :=
       (others => '0');
     variable raw_live_pack_count : natural range 0 to 8 := 0;
-    variable raw_live_pack_bytes : natural range 0 to 3 := 0;
-    variable raw_live_pack_byte_idx : natural range 0 to 2 := 0;
+    variable raw_live_pack_bytes : natural range 0 to 4 := 0;
+    variable raw_live_pack_byte_idx : natural range 0 to 3 := 0;
     variable raw_live_pack_marker : boolean := false;
+    variable raw_live_pack_sync_sent : boolean := false;
+    variable raw_live_pack_current_byte : std_logic_vector(7 downto 0) :=
+      (others => '0');
     -- The raw FIFO is fed by an asynchronous block-read request.  Do not
     -- advertise ST_STREAM_ACTIVE until the first word has crossed into this
     -- clock domain: the SPI master starts clocking sample bytes immediately
@@ -1347,10 +1358,24 @@ BEGIN
     -- bytes into the first sample.  The watchdog keeps a genuinely empty or
     -- wedged request from monopolising the command dispatcher.
     -- A full direct compact window is staged before its fixed-length SPI
-    -- response is admitted. The host sizes the window below this one-ms
-    -- bound, so a missing source still fails fast without producing filler.
-    constant RAW_READY_WD_MAX : natural := 100000; -- 1 ms at 100 MHz
+    -- response is admitted. A missing source must still fail within a
+    -- bounded interval, but lower-rate windows need more than one millisecond
+    -- to fill. Keep the timing-critical counter at its original width and
+    -- advance it once per 20 CLK cycles: 100,000 counts represents 20 ms.
+    constant RAW_READY_WD_MAX : natural := 100000;
     variable raw_ready_wd : natural range 0 to RAW_READY_WD_MAX := 0;
+    variable raw_ready_sub : natural range 0 to 19 := 0;
+    procedure advance_ready_watchdog(
+      variable watchdog : inout natural;
+      variable subcycle : inout natural) is
+    begin
+      if subcycle = 19 then
+        subcycle := 0;
+        watchdog := watchdog + 1;
+      else
+        subcycle := subcycle + 1;
+      end if;
+    end procedure;
     -- Compressed-stream byte serializer state: which byte of the current
     -- output word is next, and whether that word is a 0x0000 idle filler
     -- (FIFO was empty at the word boundary) rather than a real FIFO word.
@@ -1398,11 +1423,14 @@ BEGIN
         raw_live_framed := false;
         raw_live_continuous := false;
         raw_live_packed := false;
+        raw_live_two_bit := false;
+        raw_live_tagged := false;
         raw_live_pack_value := (others => '0');
         raw_live_pack_count := 0;
         raw_live_pack_bytes := 0;
         raw_live_pack_byte_idx := 0;
         raw_live_pack_marker := false;
+        raw_live_pack_sync_sent := false;
       elsif disp_abort = '1' then
         raw_stream_tx_sel <= '0';
         raw_stream_req_active <= '0';
@@ -1416,11 +1444,14 @@ BEGIN
         raw_live_framed := false;
         raw_live_continuous := false;
         raw_live_packed := false;
+        raw_live_two_bit := false;
+        raw_live_tagged := false;
         raw_live_pack_value := (others => '0');
         raw_live_pack_count := 0;
         raw_live_pack_bytes := 0;
         raw_live_pack_byte_idx := 0;
         raw_live_pack_marker := false;
+        raw_live_pack_sync_sent := false;
       end if;
         -- Clear streaming mode on CS rise (host drops SPI chip select).
         -- Also flag the residual Rd_Fifo entries so the drain logic below
@@ -1442,11 +1473,14 @@ BEGIN
           raw_live_framed := false;
           raw_live_continuous := false;
           raw_live_packed := false;
+          raw_live_two_bit := false;
+          raw_live_tagged := false;
           raw_live_pack_value := (others => '0');
           raw_live_pack_count := 0;
           raw_live_pack_bytes := 0;
           raw_live_pack_byte_idx := 0;
           raw_live_pack_marker := false;
+          raw_live_pack_sync_sent := false;
         end if;
         if st = RAW_STREAM then
           st := IDLE;
@@ -1482,7 +1516,8 @@ BEGIN
                   -- sampled the post-pop q, skipping the real word and
                   -- occasionally capturing the empty/stale value at the
                   -- producer boundary.
-                  raw_word := live_fifo_q;
+                  raw_word := (others => '0');
+                  raw_word(14 downto 13) := live_fifo_q;
                   raw_have_word := true;
                   live_fifo_rdreq <= '1';
                 end if;
@@ -1666,6 +1701,7 @@ BEGIN
                 rsp_len_v := 8;
                 rsp_stat_v := ST_STREAM_ACTIVE;
                 raw_ready_wd := 0;
+                raw_ready_sub := 0;
                 -- In uncompressed mode the first FIFO word is the stream's
                 -- first byte.  A CS rise from the previous command may still
                 -- be draining residual read-FIFO words; wait for that drain
@@ -1718,6 +1754,10 @@ BEGIN
                   raw_live_framed := (reg_val(30) = '1');
                   raw_live_packed := raw_live_framed and
                                      (reg_val(29) = '1');
+                  raw_live_two_bit := raw_live_packed and
+                                      (reg_val(27) = '1');
+                  raw_live_tagged := raw_live_packed and raw_live_two_bit and
+                                     (reg_val(25) = '1');
                   raw_live_continuous := raw_live_framed and
                                          (unsigned(reg_val(14 downto 0)) =
                                           to_unsigned(0, 15));
@@ -1726,6 +1766,7 @@ BEGIN
                   raw_live_pack_bytes := 0;
                   raw_live_pack_byte_idx := 0;
                   raw_live_pack_marker := false;
+                  raw_live_pack_sync_sent := false;
                   raw_stream_req_active <= '0';
                   raw_stream_comp_mode <= '0';
                   raw_live_words_rem := TO_INTEGER(UNSIGNED(reg_val(14 downto 0)));
@@ -1739,6 +1780,7 @@ BEGIN
                   raw_fetch_state := 0;
                   raw_byte_hi_next := false;
                   raw_ready_wd := 0;
+                  raw_ready_sub := 0;
                   -- A direct stream reports zeroed reserved cursor fields.
                   -- The host uses the same ACK parser as the SDRAM stream.
                   rsp_buf(0) := x"00";
@@ -2095,7 +2137,7 @@ BEGIN
             raw_stream_comp_mode <= '0';
             st := BUILD_RSP;
           else
-            raw_ready_wd := raw_ready_wd + 1;
+            advance_ready_watchdog(raw_ready_wd, raw_ready_sub);
           end if;
 
         when RAW_WAIT_READY =>
@@ -2117,7 +2159,7 @@ BEGIN
               live_stream_arm <= '0';
               st := BUILD_RSP;
             else
-              raw_ready_wd := raw_ready_wd + 1;
+              advance_ready_watchdog(raw_ready_wd, raw_ready_sub);
             end if;
           elsif raw_live_source and raw_live_compact then
             if unsigned(live_fifo_rdusedw) >=
@@ -2131,7 +2173,7 @@ BEGIN
               live_stream_arm <= '0';
               st := BUILD_RSP;
             else
-              raw_ready_wd := raw_ready_wd + 1;
+              advance_ready_watchdog(raw_ready_wd, raw_ready_sub);
             end if;
           elsif raw_have_word then
             st := BUILD_RSP;
@@ -2148,7 +2190,7 @@ BEGIN
             raw_stream_comp_mode <= '0';
             st := BUILD_RSP;
           else
-            raw_ready_wd := raw_ready_wd + 1;
+            advance_ready_watchdog(raw_ready_wd, raw_ready_sub);
           end if;
 
         when LIVE_WAIT_DRAIN =>
@@ -2167,7 +2209,7 @@ BEGIN
             raw_live_source := false;
             st := BUILD_RSP;
           else
-            raw_ready_wd := raw_ready_wd + 1;
+            advance_ready_watchdog(raw_ready_wd, raw_ready_sub);
           end if;
 
         when RAW_STREAM =>
@@ -2235,35 +2277,99 @@ BEGIN
             end if;
           elsif raw_live_source and raw_live_compact then
             -- Accelerometer live mode only needs CH13/CH14/CH15. Accumulate
-            -- eight 3-bit words, then emit their 24 bits as three bytes.
+            -- eight two-bit words, then emit their 16 bits as four tagged
+            -- nibbles. The A0/B0 nibble tags keep every payload byte nonzero,
+            -- so source-starved 00 bytes can be discarded anywhere by the
+            -- host without making the record ambiguous.
             -- This preserves the exact logical waveform while reducing the
             -- direct-stream wire volume by 2.67x.
-            if raw_live_packed and raw_live_pack_marker then
+            -- Report an overrun only at a packed-frame boundary.  The host
+            -- parser can then see the reserved 0x07 token outside A5 + 3
+            -- payload bytes and fail closed instead of silently decoding a
+            -- waveform with missing FIFO words.
+            if raw_live_packed and live_fifo_overflow_s2 = '1'
+                  and raw_live_pack_bytes = 0
+                  and (not raw_live_pack_marker) then
               if spi_tx_ready_i = '1' then
                 raw_stream_tx_sel <= '1';
-                raw_stream_tx_byte <= x"A5";
-                raw_live_pack_marker := false;
-                raw_live_pack_bytes := 3;
-                raw_live_pack_byte_idx := 0;
+                -- C3 is outside the A0/B0 tagged payload alphabet.
+                raw_stream_tx_byte <= x"C3";
+                raw_start_pending := false;
+                raw_live_words_rem := 0;
+                live_stream_arm <= '0';
+                st := IDLE;
+              end if;
+            elsif raw_live_packed and raw_live_pack_marker then
+              if spi_tx_ready_i = '1' then
+                raw_stream_tx_sel <= '1';
+                if raw_live_tagged and (not raw_live_pack_sync_sent) then
+                  -- A5 is the one-time stream sync. The following cycle
+                  -- emits the first tagged data record.
+                  raw_stream_tx_byte <= x"A5";
+                  raw_live_pack_sync_sent := true;
+                  raw_live_pack_marker := false;
+                  raw_live_pack_bytes := 4;
+                  raw_live_pack_byte_idx := 0;
+                else
+                  if raw_live_tagged then
+                    -- Subsequent tagged groups are headerless. Consume the
+                    -- first A0/B0 byte in this ready cycle so no placeholder
+                    -- byte is inserted between packed records.
+                    raw_live_pack_current_byte :=
+                      x"A0" or ("0000" & raw_live_pack_value(7 downto 4));
+                    raw_stream_tx_byte <= raw_live_pack_current_byte;
+                    raw_live_pack_byte_idx := 1;
+                  else
+                    raw_stream_tx_byte <= x"A5";
+                    raw_live_pack_byte_idx := 0;
+                  end if;
+                  raw_live_pack_marker := false;
+                  raw_live_pack_sync_sent := true;
+                  if raw_live_tagged then
+                    raw_live_pack_bytes := 4;
+                  elsif raw_live_two_bit then
+                    raw_live_pack_bytes := 2;
+                  else
+                    raw_live_pack_bytes := 3;
+                  end if;
+                  if not raw_live_tagged then
+                    raw_live_pack_byte_idx := 0;
+                  end if;
+                end if;
               end if;
             elsif raw_live_pack_bytes > 0 then
               if spi_tx_ready_i = '1' then
                 raw_stream_tx_sel <= '1';
-                case raw_live_pack_byte_idx is
-                  when 0 =>
-                    raw_stream_tx_byte <= raw_live_pack_value(7 downto 0);
-                  when 1 =>
-                    raw_stream_tx_byte <= raw_live_pack_value(15 downto 8);
-                when others =>
-                  raw_stream_tx_byte <= raw_live_pack_value(23 downto 16);
-                end case;
+                if raw_live_tagged then
+                  -- Turn each packed byte into A0|high-nibble and
+                  -- B0|low-nibble. This reserves no payload value and makes
+                  -- 00 a safe idle byte even between record bytes.
+                  case raw_live_pack_byte_idx is
+                    when 0 =>
+                      raw_live_pack_current_byte :=
+                        x"A0" or ("0000" & raw_live_pack_value(7 downto 4));
+                    when 1 =>
+                      raw_live_pack_current_byte :=
+                        x"B0" or ("0000" & raw_live_pack_value(3 downto 0));
+                    when 2 =>
+                      raw_live_pack_current_byte :=
+                        x"A0" or ("0000" & raw_live_pack_value(15 downto 12));
+                    when others =>
+                      raw_live_pack_current_byte :=
+                        x"B0" or ("0000" & raw_live_pack_value(11 downto 8));
+                  end case;
+                else
+                  case raw_live_pack_byte_idx is
+                    when 0 =>
+                      raw_live_pack_current_byte := raw_live_pack_value(7 downto 0);
+                    when 1 =>
+                      raw_live_pack_current_byte := raw_live_pack_value(15 downto 8);
+                  when others =>
+                    raw_live_pack_current_byte := raw_live_pack_value(23 downto 16);
+                  end case;
+                end if;
+                raw_stream_tx_byte <= raw_live_pack_current_byte;
                 if raw_live_pack_byte_idx + 1 >= raw_live_pack_bytes then
-                  -- Do not overwrite the final payload assignment here.
-                  -- The source-synchronous shifter may still use this value
-                  -- for the current byte.  A repeated final byte, if any,
-                  -- appears outside the A5-delimited frame and is discarded
-                  -- by the host parser while it resynchronises on the next
-                  -- marker.
                   raw_live_pack_value := (others => '0');
                   raw_live_pack_count := 0;
                   raw_live_pack_bytes := 0;
@@ -2278,24 +2384,33 @@ BEGIN
               end if;
             elsif raw_live_pack_count < 8 and raw_live_words_rem > 0
                   and raw_have_word then
-              case raw_live_pack_count is
-                when 0 =>
-                  raw_live_pack_value(2 downto 0) := raw_word(15 downto 13);
-                when 1 =>
-                  raw_live_pack_value(5 downto 3) := raw_word(15 downto 13);
-                when 2 =>
-                  raw_live_pack_value(8 downto 6) := raw_word(15 downto 13);
-                when 3 =>
-                  raw_live_pack_value(11 downto 9) := raw_word(15 downto 13);
-                when 4 =>
-                  raw_live_pack_value(14 downto 12) := raw_word(15 downto 13);
-                when 5 =>
-                  raw_live_pack_value(17 downto 15) := raw_word(15 downto 13);
-                when 6 =>
-                  raw_live_pack_value(20 downto 18) := raw_word(15 downto 13);
-                when others =>
-                  raw_live_pack_value(23 downto 21) := raw_word(15 downto 13);
-              end case;
+              if raw_live_two_bit then
+                -- Shift older two-bit I2C samples down and insert the newest
+                -- sample at the top. After eight samples, the low bits are
+                -- again in chronological order for the host decoder.
+                raw_live_pack_value := std_logic_vector(
+                  shift_right(unsigned(raw_live_pack_value), 2));
+                raw_live_pack_value(15 downto 14) := raw_word(14 downto 13);
+              else
+                case raw_live_pack_count is
+                  when 0 =>
+                    raw_live_pack_value(2 downto 0) := raw_word(15 downto 13);
+                  when 1 =>
+                    raw_live_pack_value(5 downto 3) := raw_word(15 downto 13);
+                  when 2 =>
+                    raw_live_pack_value(8 downto 6) := raw_word(15 downto 13);
+                  when 3 =>
+                    raw_live_pack_value(11 downto 9) := raw_word(15 downto 13);
+                  when 4 =>
+                    raw_live_pack_value(14 downto 12) := raw_word(15 downto 13);
+                  when 5 =>
+                    raw_live_pack_value(17 downto 15) := raw_word(15 downto 13);
+                  when 6 =>
+                    raw_live_pack_value(20 downto 18) := raw_word(15 downto 13);
+                  when others =>
+                    raw_live_pack_value(23 downto 21) := raw_word(15 downto 13);
+                end case;
+              end if;
               raw_live_pack_count := raw_live_pack_count + 1;
               raw_have_word := false;
               if not raw_live_continuous then
@@ -2306,7 +2421,11 @@ BEGIN
               if raw_live_packed then
                 raw_live_pack_marker := true;
               else
-                raw_live_pack_bytes := (raw_live_pack_count * 3 + 7) / 8;
+                if raw_live_two_bit then
+                  raw_live_pack_bytes := (raw_live_pack_count * 2 + 7) / 8;
+                else
+                  raw_live_pack_bytes := (raw_live_pack_count * 3 + 7) / 8;
+                end if;
                 raw_live_pack_byte_idx := 0;
               end if;
             elsif raw_live_packed and spi_tx_ready_i = '1' then

@@ -27,7 +27,11 @@ def mil_accelerometer_start(client_id: str = Depends(client_id_header)):
 @router.post("/api/mil/accelerometer/stop")
 def mil_accelerometer_stop(client_id: str = Depends(client_id_header)):
     require_control(client_id)
-    return accelerometer.stop()
+    # The worker owns the FTDI/FPGA bus. Do not report a completed stop while
+    # its continuous-stream teardown is still releasing that owner; the next
+    # mode change would otherwise probe the LIS3DH mid-teardown and
+    # intermittently report it as unavailable.
+    return accelerometer.stop(wait_timeout=2.0)
 
 
 @router.post("/api/mil/accelerometer/reconnect")

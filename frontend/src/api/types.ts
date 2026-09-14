@@ -413,7 +413,7 @@ export interface MilAccelerometerSample {
 }
 
 export interface MilAccelerometerConfig {
-  output_data_rate_hz: 1 | 10 | 25 | 50 | 100 | 200 | 400 | 1344 | 1620 | 5376;
+  output_data_rate_hz: 1 | 10 | 25 | 50 | 100 | 200 | 400 | 1344 | 1600 | 5376;
   full_scale_g: 2 | 4 | 8 | 16;
   operating_mode: 'normal' | 'high_resolution' | 'low_power';
   bdu: boolean;

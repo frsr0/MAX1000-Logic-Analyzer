@@ -30,6 +30,7 @@ beforeEach(() => {
   useApp.setState(useApp.getInitialState(), true);
   useApp.setState({ controlMode: true, toast: vi.fn() });
   vi.spyOn(api, 'milAccelerometerConfig').mockResolvedValue(accelerometerConfig);
+  vi.spyOn(api, 'milAccelerometerUpdateConfig').mockResolvedValue(accelerometerConfig);
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
@@ -125,8 +126,8 @@ it('updates the orientation from each pushed decoded sample', async () => {
     push(0.5, 43);
     push(0.75, 44);
   });
-  expect(frames.length).toBeGreaterThanOrEqual(2);
-  await act(async () => { frames[0](16); frames[1](16); });
+  expect(frames.length).toBeGreaterThanOrEqual(1);
+  await act(async () => { frames[0](16); });
   expect(screen.getByText('+0.750', { exact: true })).toBeTruthy();
   expect(screen.queryByText('+0.500', { exact: true })).toBeNull();
   expect(document.querySelector('.mil-accelerometer-card')?.textContent).toContain('44');
@@ -175,11 +176,11 @@ it('keeps high-rate worker ingestion independent from a slow render', async () =
     });
   }
 
-  // All 120 messages were accepted without waiting for React, while the
-  // bounded mailbox schedules only one paint and keeps the newest reading.
+  // All 120 messages were accepted and published without waiting for a
+  // display frame. The board still schedules only one CSS paint.
   expect(worker.received).toBe(120);
-  expect(frames).toHaveLength(2);
-  await act(async () => { frames[0](16); frames[1](16); });
+  expect(frames).toHaveLength(1);
+  await act(async () => { frames[0](16); });
   expect(screen.getByText('+1.190', { exact: true })).toBeTruthy();
   expect(document.querySelector('.mil-accelerometer-card')?.textContent).toContain('120');
 });
@@ -220,9 +221,51 @@ it('coalesces successive worker samples into the display frame', async () => {
   // Sensor messages only move the target. The board is rendered once by the
   // display-frame loop, so a burst cannot restart an animation per sample.
   expect(board.style.transform).toBe(initialTransform);
-  expect(frames.length).toBeGreaterThanOrEqual(2);
+  expect(frames.length).toBeGreaterThanOrEqual(1);
   await act(async () => { frames[0](16); });
   expect(board.style.transform).not.toBe(initialTransform);
+});
+
+it('publishes the pose readout for every decoded worker packet', async () => {
+  class FakeAccelerometerWorker {
+    static instances: FakeAccelerometerWorker[] = [];
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    constructor(_url: URL | string) { FakeAccelerometerWorker.instances.push(this); }
+    emit(data: unknown) { this.onmessage?.({ data } as MessageEvent); }
+    terminate() {}
+  }
+
+  vi.stubGlobal('Worker', FakeAccelerometerWorker);
+  vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({ ...sample(), running: true });
+
+  render(<MilAccelerometerCard />);
+  await waitFor(() => expect(FakeAccelerometerWorker.instances).toHaveLength(1));
+  const worker = FakeAccelerometerWorker.instances[0];
+
+  await act(async () => {
+    worker.emit({
+      type: 'accelerometer_sample',
+      data: { sample: { x_g: 0.11, y_g: 0, z_g: 1, timestamp: 101 }, samples_read: 1 },
+    });
+  });
+  expect(screen.getByText('+0.110', { exact: true })).toBeTruthy();
+
+  await act(async () => {
+    worker.emit({
+      type: 'accelerometer_sample',
+      data: { sample: { x_g: 0.22, y_g: 0, z_g: 1, timestamp: 102 }, samples_read: 2 },
+    });
+  });
+  expect(screen.getByText('+0.220', { exact: true })).toBeTruthy();
+
+  await act(async () => {
+    worker.emit({
+      type: 'accelerometer_sample',
+      data: { sample: { x_g: 0.33, y_g: 0, z_g: 1, timestamp: 103 }, samples_read: 3 },
+    });
+  });
+  expect(screen.getByText('+0.330', { exact: true })).toBeTruthy();
 });
 
 it('does not let an older REST response overwrite a newer stream pose', async () => {
@@ -353,6 +396,49 @@ it('falls back to the direct socket when a module worker fails before delivery',
   const transform = (document.querySelector('.mil-accel-board') as HTMLElement).style.transform;
   expect(transform).toContain('rotateX');
   expect(transform).not.toBe('');
+});
+
+it('does not let a late worker compete with the fallback pose stream', async () => {
+  class SlowWorker {
+    static instances: SlowWorker[] = [];
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onerror: ((event: ErrorEvent) => void) | null = null;
+    constructor(_url: URL | string) { SlowWorker.instances.push(this); }
+    emit(data: unknown) { this.onmessage?.({ data } as MessageEvent); }
+    terminate() {}
+  }
+  class FakeSocket {
+    static instances: FakeSocket[] = [];
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onclose: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    constructor(readonly url: string) { FakeSocket.instances.push(this); }
+    close() { this.onclose?.(); }
+    emit(data: unknown) { this.onmessage?.({ data: JSON.stringify(data) } as MessageEvent); }
+  }
+
+  vi.useFakeTimers();
+  vi.stubGlobal('Worker', SlowWorker);
+  vi.stubGlobal('WebSocket', FakeSocket);
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({ ...sample(), running: true });
+  render(<MilAccelerometerCard />);
+  expect(SlowWorker.instances).toHaveLength(1);
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  expect(FakeSocket.instances).toHaveLength(1);
+  await act(async () => { FakeSocket.instances[0].emit({
+      type: 'accelerometer_sample',
+      data: { sample: { x_g: 0.2, y_g: 0, z_g: 1, timestamp: 10 }, samples_read: 1 },
+    });
+    SlowWorker.instances[0].emit({
+      type: 'accelerometer_sample',
+      data: { sample: { x_g: 0.8, y_g: 0, z_g: 1, timestamp: 11 }, samples_read: 900 },
+    });
+  });
+
+  expect(screen.getByText('+0.200', { exact: true })).toBeTruthy();
+  expect(screen.queryByText('+0.800', { exact: true })).toBeNull();
+  expect(document.querySelector('.mil-accelerometer-card')?.textContent).toContain('1');
 });
 
 it('offers retry and reconnect after an accelerometer I/O failure', async () => {
@@ -614,7 +700,7 @@ it('offers the LIS3DH mode-specific high ODRs and normalizes mode switches', asy
   const odr = await screen.findByRole('combobox', { name: 'Output data rate' });
   const mode = screen.getByRole('combobox', { name: 'Operating mode' });
   expect(screen.getByRole('option', { name: '1,344 Hz' })).toBeTruthy();
-  expect(screen.queryByRole('option', { name: '1,620 Hz' })).toBeNull();
+  expect(screen.queryByRole('option', { name: '1,600 Hz' })).toBeNull();
   fireEvent.change(odr, { target: { value: '1344' } });
   await waitFor(() => expect(update).toHaveBeenNthCalledWith(1, {
     ...accelerometerConfig, output_data_rate_hz: 1344,

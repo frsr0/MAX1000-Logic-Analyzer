@@ -1,10 +1,13 @@
 import { ReconnectingSocket } from '../api/websocket';
 import { LiveI2cDecoder } from './liveI2cDecoder';
 
+// Keep the direct waveform worker asset fingerprinted when its transport
+// contract changes; a running lab tab must not retain an older decoder bundle.
+
 // Keep the socket, waveform parsing, and protocol decoding off the React/main
 // thread. The board must be driven by this raw ordered stream; the backend's
 // decoded pose topic remains available for legacy consumers only.
-const socket = new ReconnectingSocket('/ws/accelerometer/waveform');
+const socket = new ReconnectingSocket('/ws/accelerometer/waveform-binary', true);
 let decoder = new LiveI2cDecoder();
 let decoderConfigKey = '';
 let lastWaveformSequence: number | null = null;
@@ -17,7 +20,9 @@ function configKey(config: Record<string, unknown> | undefined): string {
 
 function decodeWaveform(message: any) {
   const data = message.data;
-  if (!data || typeof data.samples_b64 !== 'string') return;
+  if (!data
+      || (typeof data.samples_b64 !== 'string'
+          && !(data.samples_values instanceof Uint16Array))) return;
 
   const sequence = Number(data.sequence);
   if (Number.isFinite(sequence)
@@ -45,7 +50,9 @@ function decodeWaveform(message: any) {
   const receivedAtMs = performance.now();
   const sourceIndex = Number.isFinite(Number(data.source_index))
     ? Number(data.source_index) : null;
-  const decoded = decoder.feedBase64(data.samples_b64, sourceIndex);
+  const decoded = data.samples_values instanceof Uint16Array
+    ? decoder.feed(data.samples_values, sourceIndex)
+    : decoder.feedBase64(data.samples_b64, sourceIndex);
   const sampleRate = Number(data.sample_rate);
   const sampleCount = Number(data.sample_count);
   const messageTimestamp = Number(message.ts);
@@ -61,6 +68,9 @@ function decodeWaveform(message: any) {
       timestamp = lastTimestamp + 1e-6;
     }
     lastTimestamp = timestamp;
+    // A decoded packet is the pose update. Publish every packet in decoder
+    // order; any display-frame throttling belongs to painting, never to the
+    // waveform/decoder seam.
     self.postMessage({
       type: 'accelerometer_sample',
       ts: message.ts,
@@ -102,6 +112,21 @@ socket.subscribe((message) => {
       } }
       : message);
   }
+});
+
+socket.subscribeBinary((buffer) => {
+  if (buffer.byteLength < 4) return;
+  const view = new DataView(buffer);
+  const headerLength = view.getUint32(0, true);
+  const headerStart = 4;
+  const payloadStart = headerStart + headerLength;
+  if (payloadStart > buffer.byteLength || (buffer.byteLength - payloadStart) % 2) return;
+  try {
+    const header = JSON.parse(new TextDecoder().decode(
+      new Uint8Array(buffer, headerStart, headerLength)));
+    const samples = new Uint16Array(buffer, payloadStart);
+    decodeWaveform({ data: { ...header, samples_values: samples } });
+  } catch { /* ignore malformed binary frames */ }
 });
 
 self.addEventListener('unload', () => socket.close());

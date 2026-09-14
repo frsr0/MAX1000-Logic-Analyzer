@@ -3,18 +3,22 @@ import type { WsMessage } from './types';
 import { backendWebSocketUrl } from './endpoint';
 
 type Handler = (msg: WsMessage) => void;
+type BinaryHandler = (data: ArrayBuffer) => void;
 
 export class ReconnectingSocket {
   private url: string;
   private ws: WebSocket | null = null;
   private handlers = new Set<Handler>();
+  private binaryHandlers = new Set<BinaryHandler>();
+  private binaryMode: boolean;
   private closed = false;
   private retryMs = 500;
   private timer: ReturnType<typeof setTimeout> | null = null;
   onStateChange?: (connected: boolean) => void;
 
-  constructor(path: string) {
+  constructor(path: string, binaryMode = false) {
     this.url = backendWebSocketUrl(path);
+    this.binaryMode = binaryMode;
     this.connect();
   }
 
@@ -22,6 +26,7 @@ export class ReconnectingSocket {
     if (this.closed) return;
     try {
       this.ws = new WebSocket(this.url);
+      if (this.binaryMode) this.ws.binaryType = 'arraybuffer';
     } catch {
       this.scheduleReconnect();
       return;
@@ -31,8 +36,24 @@ export class ReconnectingSocket {
       this.onStateChange?.(true);
     };
     this.ws.onmessage = (ev) => {
+      if (this.binaryMode) {
+        if (ev.data instanceof ArrayBuffer) {
+          this.binaryHandlers.forEach((h) => h(ev.data));
+          return;
+        }
+        if (ev.data instanceof Blob) {
+          ev.data.arrayBuffer().then((data) => {
+            if (!this.closed) this.binaryHandlers.forEach((h) => h(data));
+          }).catch(() => {});
+          return;
+        }
+      }
       try {
         const msg = JSON.parse(ev.data) as WsMessage;
+        if ((msg as any).type === 'ping') {
+          this.ws?.send(JSON.stringify({ type: 'pong' }));
+          return;
+        }
         this.handlers.forEach((h) => h(msg));
       } catch { /* ignore malformed */ }
     };
@@ -41,6 +62,11 @@ export class ReconnectingSocket {
       this.scheduleReconnect();
     };
     this.ws.onerror = () => this.ws?.close();
+  }
+
+  subscribeBinary(h: BinaryHandler): () => void {
+    this.binaryHandlers.add(h);
+    return () => this.binaryHandlers.delete(h);
   }
 
   private scheduleReconnect() {

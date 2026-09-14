@@ -44,7 +44,7 @@ def test_lis3dh_high_odr_values_are_mode_dependent():
     cases = (
         (1344, "normal"),
         (1344, "high_resolution"),
-        (1620, "low_power"),
+        (1600, "low_power"),
         (5376, "low_power"),
     )
     for rate, mode in cases:
@@ -58,7 +58,7 @@ def test_lis3dh_high_odr_values_are_mode_dependent():
         AccelerometerConfig(output_data_rate_hz=1344,
                             operating_mode="low_power")
     with pytest.raises(ValueError, match="low-power"):
-        AccelerometerConfig(output_data_rate_hz=1620,
+        AccelerometerConfig(output_data_rate_hz=1600,
                             operating_mode="normal")
 
 
@@ -686,10 +686,10 @@ def test_live_capture_uses_continuous_ring_producer_and_stops_cleanly(tmp_path):
         assert raw.ring_started.wait(1.0)
         # The 400 Hz path uses the b1c decoder-safe transport: oversampled
         # standard I2C, one XYZ dialogue per block, and no host prefetch.
-        assert raw.ring_kwargs["rate_hz"] == pytest.approx(2_000_000.0)
-        assert raw.ring_kwargs["chunk_nsamp"] == 1792
+        assert raw.ring_kwargs["rate_hz"] == pytest.approx(accelerometer_module.LIVE_TRACE_RATE_HZ)
+        assert raw.ring_kwargs["chunk_nsamp"] == accelerometer_module.LIVE_STREAM_WINDOW_SAMPLES
         assert raw.ring_kwargs["read_len"] == 6
-        assert raw.ring_kwargs["i2c_speed"] == 400_000
+        assert raw.ring_kwargs["i2c_speed"] == 150_000
         assert raw.ring_kwargs["repeat_transactions"] == 1
         assert raw.ring_kwargs["compact_i2c"] is False
         assert raw.ring_kwargs["use_rle"] is False
@@ -760,6 +760,36 @@ def test_direct_stream_failure_retries_waveform_ring_not_atomic_xyz():
         assert transport["fallback"] is True
         assert "no stream ack" in transport["error"]
         assert raw.reads == 0
+    finally:
+        service.stop(wait_timeout=1.0)
+
+
+def test_direct_stream_uses_fifo_sized_decoder_quantum():
+    """The direct FIFO is delivered incrementally, not as a 32K burst."""
+
+    class DirectRaw(FakeRaw):
+        supports_direct_live_stream = True
+
+        def __init__(self):
+            super().__init__()
+            self.stream_kwargs = None
+
+        def continuous_ring_capture_with_repeating_i2c(self, **kwargs):
+            self.stream_kwargs = kwargs
+            self.first_sample.set()
+            trace = _synthetic_lis3dh_i2c_trace(0x18).astype("<u2").tobytes()
+            stop_evt = kwargs["stop_evt"]
+            while not stop_evt.is_set():
+                yield trace
+                stop_evt.wait(0.005)
+
+    raw = DirectRaw()
+    service = AccelerometerService(FakeManager(raw), sample_rate_hz=400)
+    assert service.start()["running"] is True
+    try:
+        assert raw.first_sample.wait(1.0)
+        assert raw.stream_kwargs["chunk_nsamp"] == (
+            accelerometer_module.LIVE_DIRECT_STREAM_WINDOW_SAMPLES)
     finally:
         service.stop(wait_timeout=1.0)
 
@@ -939,7 +969,7 @@ def test_static_ring_fallback_decodes_batched_trace_frames(tmp_path, monkeypatch
         # 768 samples includes the frame and the CMD_GEN_CAPTURE startup
         # guard at the oversampled live clock.
         assert raw.capture_calls[0]["nsamples"] == 768
-        assert raw.capture_calls[0]["rate_hz"] == pytest.approx(2_000_000.0)
+        assert raw.capture_calls[0]["rate_hz"] == pytest.approx(accelerometer_module.LIVE_TRACE_RATE_HZ)
         assert raw.capture_calls[0]["repeat_count"] == 1
         assert raw.capture_calls[0]["keep_attached"] is True
         assert raw.capture_calls[0]["timeout"] == pytest.approx(0.25)
@@ -1017,10 +1047,10 @@ def test_tracking_uses_continuous_ring_decoder_for_board_samples():
         assert status["samples_read"] >= 4
         assert status["effective_odr_hz"] == 400
         assert status["host_read_rate_hz"] > 0
-        assert raw.ring_kwargs["rate_hz"] == pytest.approx(2_000_000.0)
-        assert raw.ring_kwargs["chunk_nsamp"] == 1792
+        assert raw.ring_kwargs["rate_hz"] == pytest.approx(accelerometer_module.LIVE_TRACE_RATE_HZ)
+        assert raw.ring_kwargs["chunk_nsamp"] == accelerometer_module.LIVE_STREAM_WINDOW_SAMPLES
         assert raw.ring_kwargs["read_len"] == 6
-        assert raw.ring_kwargs["i2c_speed"] == 400_000
+        assert raw.ring_kwargs["i2c_speed"] == 150_000
         assert raw.ring_kwargs["compact_i2c"] is False
         assert raw.ring_kwargs["include_cursor"] is True
         assert raw.ring_kwargs["follow_tail"] is True
@@ -1032,8 +1062,8 @@ def test_tracking_uses_continuous_ring_decoder_for_board_samples():
         service.stop(wait_timeout=1.0)
 
 
-def test_high_odr_live_trace_preserves_burst_edges(monkeypatch):
-    """High-ODR FIFO bursts bypass the edge-moving majority filter."""
+def test_1344hz_live_trace_uses_fifo_bursts(monkeypatch):
+    """1.344 kHz drains one fresh XYZ slot per paced I2C dialogue."""
     majority_values = []
 
     def record_clean(values, majority=True):
@@ -1045,6 +1075,7 @@ def test_high_odr_live_trace_preserves_burst_edges(monkeypatch):
 
     class HighRateRingRaw(FakeRaw):
         def continuous_ring_capture_with_repeating_i2c(self, **kwargs):
+            self.ring_kwargs = kwargs
             stop_evt = kwargs["stop_evt"]
             trace = np.tile(
                 _synthetic_lis3dh_i2c_trace(
@@ -1070,8 +1101,34 @@ def test_high_odr_live_trace_preserves_burst_edges(monkeypatch):
             time.sleep(0.01)
         assert majority_values
         assert majority_values[-1] is False
+        assert raw.ring_kwargs["read_len"] == 6
+        assert raw.ring_kwargs["i2c_speed"] == 400_000
+        assert raw.ring_kwargs["compact_i2c"] is True
+        assert raw.ring_kwargs["repeat_rate_hz"] == pytest.approx(1_344.0)
+        assert raw.ring_kwargs["chunk_nsamp"] == accelerometer_module.LIVE_HIGH_ODR_STREAM_WINDOW_SAMPLES
     finally:
         service.stop(wait_timeout=1.0)
+
+
+@pytest.mark.parametrize(
+    ("odr", "read_len", "speed", "compact", "repeat_rate"),
+    [
+            (10, 6, 150_000, False, None),
+            (400, 6, 150_000, False, None),
+        (1344, 6, 400_000, True, 1_344.0),
+        (1600, 12, 400_000, True, 800.0),
+        (5376, 24, 400_000, True, None),
+    ],
+)
+def test_live_i2c_schedule_covers_supported_odr_paths(
+        odr, read_len, speed, compact, repeat_rate):
+    schedule = accelerometer_module._live_i2c_schedule(odr)
+    assert schedule == {
+        "read_len": read_len,
+        "i2c_speed": speed,
+        "compact_i2c": compact,
+        "repeat_rate_hz": repeat_rate,
+    }
 
 
 def test_live_ring_i2c_decoder_extracts_xyz_frame():
@@ -1152,17 +1209,6 @@ def test_live_ring_sample_gate_drops_isolated_spike_but_keeps_motion():
 
     gate = accelerometer_module._LiveI2CFrameGate()
     assert gate.feed([steady, moved, moved]) == [steady, moved]
-
-
-def test_live_pose_gate_rejects_impossible_branch_without_lookahead():
-    gate = accelerometer_module._LiveI2CPoseGate()
-    steady = (0.2, 0.0, 0.98)
-    branch_flip = (0.2, 0.98, -0.05)
-    recovered = (0.2, 0.02, 0.98)
-
-    assert gate.accept(steady) == steady
-    assert gate.accept(branch_flip) is None
-    assert gate.accept(recovered) == recovered
 
 
 def test_live_trace_publishes_xyz_before_waveform_persistence():
@@ -1262,6 +1308,8 @@ def test_mil_accelerometer_routes_require_control(monkeypatch):
     calls = []
 
     class FakeService:
+        stop_timeout = None
+
         def status(self):
             return {"running": False}
 
@@ -1274,10 +1322,12 @@ def test_mil_accelerometer_routes_require_control(monkeypatch):
         def start(self):
             return {"running": True}
 
-        def stop(self):
+        def stop(self, wait_timeout=0.0):
+            self.stop_timeout = wait_timeout
             return {"running": False}
 
-    monkeypatch.setattr(mil_api, "accelerometer", FakeService())
+    fake_service = FakeService()
+    monkeypatch.setattr(mil_api, "accelerometer", fake_service)
     monkeypatch.setattr(mil_api, "require_control", lambda client: calls.append(client))
 
     assert mil_api.mil_accelerometer_status() == {"running": False}
@@ -1287,6 +1337,7 @@ def test_mil_accelerometer_routes_require_control(monkeypatch):
             **AccelerometerConfig(output_data_rate_hz=100).model_dump()}
     assert mil_api.mil_accelerometer_start("owner") == {"running": True}
     assert mil_api.mil_accelerometer_stop("owner") == {"running": False}
+    assert fake_service.stop_timeout == 2.0
     assert calls == ["owner", "owner", "owner"]
 
 

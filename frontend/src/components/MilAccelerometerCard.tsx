@@ -3,22 +3,15 @@ import { api } from '../api/client';
 import { ReconnectingSocket } from '../api/websocket';
 import type { MilAccelerometerConfig, MilAccelerometerStatus } from '../api/types';
 import { useApp } from '../state/appStore';
-import { AdaptivePoseFilter, orientationFor, type Orientation } from './accelerometerPose';
+import { hasUsableGravity, orientationFor, type Orientation } from './accelerometerPose';
 import { LiveI2cDecoder } from '../workers/liveI2cDecoder';
 
 const POLL_INTERVAL_MS = 100;
-// The sensor stream can be several hundred samples per second. Present the
-// newest pose once per display frame instead of restarting a CSS transition
-// for every sample (which makes the compositor look like it is jumping).
-// The transport reports its measured decoded rate separately. Keep the board
-// on a display-frame target while the worker can ingest every validated sample
-// from a faster sensor stream.
-const BOARD_POSE_SMOOTHING_MS = 80;
+// The sensor stream can be several thousand samples per second. Decode and
+// publish every packet; only the board's CSS paint is naturally bounded by
+// the display refresh rate. The transport reports its measured decoded rate
+// separately.
 const BOARD_POSE_SETTLE_EPSILON_DEG = 0.01;
-// A real hand sweep can be fast, but a decoded outlier should never rotate
-// the model by tens of degrees in one paint. Cap presentation motion without
-// changing the raw XYZ values shown in the diagnostic readout.
-const BOARD_POSE_MAX_RATE_DPS = 540;
 // Keep a low-rate health poll while stopped so reconnects, another panel's
 // Start action, or a backend restart can resynchronize this card. Once the
 // service reports tracking, switch back to the responsive live cadence.
@@ -39,7 +32,7 @@ const DEFAULT_CONFIG: MilAccelerometerConfig = {
 const STANDARD_ODR_OPTIONS: MilAccelerometerConfig['output_data_rate_hz'][] =
   [1, 10, 25, 50, 100, 200, 400, 1344];
 const LOW_POWER_ODR_OPTIONS: MilAccelerometerConfig['output_data_rate_hz'][] =
-  [1, 10, 25, 50, 100, 200, 400, 1620, 5376];
+  [1, 10, 25, 50, 100, 200, 400, 1600, 5376];
 const SCALE_OPTIONS: MilAccelerometerConfig['full_scale_g'][] = [2, 4, 8, 16];
 
 function odrOptionsFor(mode: MilAccelerometerConfig['operating_mode']) {
@@ -118,31 +111,22 @@ function advanceBoardOrientation(
   target: Orientation,
   elapsedMs: number,
 ): Orientation {
-  const alpha = 1 - Math.exp(-elapsedMs / BOARD_POSE_SMOOTHING_MS);
-  const maxStep = BOARD_POSE_MAX_RATE_DPS * elapsedMs / 1000;
-  const advance = (value: number, destination: number) => {
-    const desiredStep = shortestAngleDelta(destination, value) * alpha;
-    const step = Math.sign(desiredStep) * Math.min(Math.abs(desiredStep), maxStep);
-    return value + step;
-  };
-  return {
-    pitch: advance(current.pitch, target.pitch),
-    roll: advance(current.roll, target.roll),
-  };
+  void current;
+  void elapsedMs;
+  return target;
 }
 
 export function MilAccelerometerCard() {
   const { controlMode, toast } = useApp();
   const [status, setStatus] = useState<MilAccelerometerStatus | null>(null);
-  // Keep raw XYZ in the diagnostic readout. The separate pose sample is the
-  // causal low-pass value used for the displayed orientation and 3D model.
+  // Keep the decoded XYZ sample as the pose source. The display frame may
+  // coalesce paints, but it must not alter or rate-limit the decoded value.
   const [poseSample, setPoseSample] = useState<MilAccelerometerStatus['sample']>(null);
   const [config, setConfig] = useState<MilAccelerometerConfig>(DEFAULT_CONFIG);
   const [busy, setBusy] = useState(false);
   const [configBusy, setConfigBusy] = useState(false);
   const [zero, setZero] = useState<Orientation | null>(null);
   const [requestError, setRequestError] = useState<string | null>(null);
-  const poseFilter = useRef(new AdaptivePoseFilter());
   const lastStreamTimestamp = useRef<number | null>(null);
   // The REST status poll and the worker are independent producers. A status
   // response may have started before a newer stream sample arrived, so keep a
@@ -200,6 +184,10 @@ export function MilAccelerometerCard() {
   ) => {
     if (!sample || !boardRef.current) return;
     if (!Number.isFinite(sample.timestamp)) return;
+    // A zero/near-zero XYZ vector has no defined gravity orientation. Keep
+    // the last valid target until the decoder supplies a usable packet; raw
+    // axes remain visible below for diagnosing the sensor/input path.
+    if (!hasUsableGravity(sample)) return;
     if (!force && lastAppliedTimestamp.current !== null
         && sample.timestamp <= lastAppliedTimestamp.current) return;
     const current = orientationFor(sample);
@@ -280,6 +268,20 @@ export function MilAccelerometerCard() {
             // A REST response can have started before a newer websocket sample
             // arrived. Never move the model backwards to that older sample.
             const frontendTiming = latestFrontendTiming.current;
+            if (hasFrontendWaveformSample.current && previous?.sample) {
+              // Once the direct waveform decoder has delivered a packet, REST
+              // is status-only. It must not become a second pose producer.
+              return { ...next, sample: previous.sample,
+                last_sample_at: previous.last_sample_at,
+                samples_read: previous.samples_read,
+                last_sample_sequence: previous.last_sample_sequence,
+                source_sample_index: previous.source_sample_index,
+                source_backlog_samples: previous.source_backlog_samples,
+                source_age_samples: previous.source_age_samples,
+                capture_to_publish_latency_ms: previous.capture_to_publish_latency_ms,
+                decoded_to_publish_latency_ms: previous.decoded_to_publish_latency_ms,
+                live_timing: frontendTiming ?? previous.live_timing };
+            }
             if (previous?.sample?.timestamp && next.sample?.timestamp
                 && next.sample.timestamp <= previous.sample.timestamp) {
               return { ...next, sample: previous.sample,
@@ -294,15 +296,11 @@ export function MilAccelerometerCard() {
             if (!next.sample || !timestamp || !Number.isFinite(timestamp)) return previous;
             if (lastStreamTimestamp.current !== null
                 && timestamp <= lastStreamTimestamp.current) return previous;
-            // REST is a fallback/status producer, but it can still win the
-            // timestamp race with the stream. Feed it through the exact same
-            // causal filter before it can reach either React or the board;
-            // otherwise one corrupt newer REST frame bypasses the stream
-            // median and becomes the visible multi-degree step.
-            const nextPose = poseFilter.current.update(next.sample);
-            latestPoseSample.current = nextPose;
-            applyBoardPose(nextPose);
-            return nextPose;
+            // REST is only a fallback/status producer while stopped. Feed its
+            // value directly when no live waveform sample exists.
+            latestPoseSample.current = next.sample;
+            applyBoardPose(next.sample);
+            return next.sample;
           });
           setRequestError(null);
         } })
@@ -324,8 +322,12 @@ export function MilAccelerometerCard() {
 
   useEffect(() => {
     let alive = true;
-    let animationFrame: number | null = null;
-    let pending: Record<string, any> | null = null;
+    type FrontendStreamOwner = 'worker' | 'fallback';
+    // The fallback is only for browsers where the module worker fails or
+    // stalls before its first packet. Once either path delivers a packet,
+    // reject the other path so two independent decoders cannot fight over
+    // the pose or make the packet counter move backwards.
+    let streamOwner: FrontendStreamOwner | null = null;
     let fallbackDecoder = new LiveI2cDecoder();
     let fallbackDecoderConfigKey = '';
     let fallbackWaveformSequence: number | null = null;
@@ -385,109 +387,145 @@ export function MilAccelerometerCard() {
               frontend_decoded_at_ms: performance.now(),
             },
           },
-        });
+        }, 'fallback');
       }
     };
 
-    const handleMessage = (message: Record<string, any>) => {
+    const handleMessage = (message: Record<string, any>, source: FrontendStreamOwner) => {
       if (!alive || message.type !== 'accelerometer_sample' || !message.data?.sample) return;
+      if (streamOwner !== null && streamOwner !== source) return;
+      streamOwner = source;
       hasFrontendWaveformSample.current = true;
-      // This mailbox is intentionally only one item deep. The worker can
-      // continue receiving and parsing every sample while React is busy; a
-      // saturated display consumes the newest reading on its next paint.
       const sample = message.data.sample as MilAccelerometerStatus['sample'];
       if (!sample) return;
-      if (lastStreamTimestamp.current !== null
-          && sample.timestamp <= lastStreamTimestamp.current) return;
-      const nextPose = poseFilter.current.update(sample);
+      const nextPose = sample;
       latestPoseSample.current = nextPose;
       const trace = message.data.trace && typeof message.data.trace === 'object'
         ? { ...message.data.trace, frontend_received_at_ms: performance.now() }
         : undefined;
-      // The raw sample remains visible in the diagnostic readout, but the
-      // board target must use the causal pose filter too. A corrupted I2C
-      // frame can otherwise rotate the model by several degrees for one
-      // display frame before the next good sample arrives.
+      // The raw sample remains visible in the diagnostic readout. The board
+      // target follows the decoded sample directly. Any I2C frame
+      // rejection belongs in the incremental decoder, not in pose motion.
       applyBoardPose(nextPose, false, trace);
-      pending = {
-        ...message.data,
-        // Publish the newest filtered value for the React readout at the next
-        // paint. The board itself follows the raw target above and is rendered
-        // by its independent display-frame loop.
-        poseSample: nextPose,
-        sample,
-        trace,
-      };
-      lastStreamTimestamp.current = sample.timestamp;
-      if (animationFrame === null) {
-        animationFrame = window.requestAnimationFrame(flush);
-      }
-    };
 
-    const flush = () => {
-      if (animationFrame !== null) {
-        window.cancelAnimationFrame(animationFrame);
-        animationFrame = null;
-      }
-      const next = pending;
-      pending = null;
-      if (!alive || !next) return;
-      const timing = latestFrontendTiming.current ?? next.trace;
+      // Every decoded packet is a pose update. Keep the full ordered packet
+      // stream visible to the card; only CSS painting is limited by refresh.
+      const timing = latestFrontendTiming.current ?? trace;
       if (timing) timing.frontend_state_updated_at_ms = performance.now();
-      setPoseSample((previous) => {
-        const nextPose = next.poseSample ?? next.sample;
-        if (!nextPose) return previous;
-        if (previous?.timestamp && nextPose.timestamp <= previous.timestamp) return previous;
-        latestPoseSample.current = nextPose;
-        return nextPose;
-      });
-      // Coalesce a burst of decoded samples into the browser's paint cadence.
-      // The worker and backend retain the full validated stream; React only
-      // needs to render the newest filtered target once per animation frame.
+      setPoseSample(nextPose);
       setStatus((previous) => previous ? {
         ...previous,
-        // A delayed REST response must not put the model behind the newest
-        // sample already delivered by the stream. Equal timestamps are also
-        // preserved because the stream sample may be filtered while REST is
-        // the unfiltered duplicate.
-        ...(previous.sample?.timestamp && next.sample?.timestamp
-          && next.sample.timestamp <= previous.sample.timestamp
-          ? {}
-          : { sample: next.sample }),
-        last_sample_at: next.last_sample_at ?? next.sample.timestamp,
-        samples_read: next.samples_read ?? previous.samples_read,
-        host_read_rate_hz: next.host_read_rate_hz ?? previous.host_read_rate_hz,
-        host_data_rate_bytes_per_s: next.host_data_rate_bytes_per_s
+        sample: nextPose,
+        last_sample_at: message.data.last_sample_at ?? nextPose.timestamp,
+        samples_read: message.data.samples_read ?? previous.samples_read,
+        host_read_rate_hz: message.data.host_read_rate_hz ?? previous.host_read_rate_hz,
+        host_data_rate_bytes_per_s: message.data.host_data_rate_bytes_per_s
           ?? previous.host_data_rate_bytes_per_s,
-        measured_rate_hz: next.measured_rate_hz ?? previous.measured_rate_hz,
-        data_rate_bytes_per_s: next.data_rate_bytes_per_s
+        measured_rate_hz: message.data.measured_rate_hz ?? previous.measured_rate_hz,
+        data_rate_bytes_per_s: message.data.data_rate_bytes_per_s
           ?? previous.data_rate_bytes_per_s,
-        last_sample_sequence: next.last_sample_sequence
+        last_sample_sequence: message.data.last_sample_sequence
           ?? previous.last_sample_sequence,
-        source_sample_index: next.source_sample_index
+        source_sample_index: message.data.source_sample_index
           ?? previous.source_sample_index,
-        source_age_samples: next.source_age_samples
+        source_age_samples: message.data.source_age_samples
           ?? previous.source_age_samples,
-        source_backlog_samples: next.source_backlog_samples
+        source_backlog_samples: message.data.source_backlog_samples
           ?? previous.source_backlog_samples,
-        capture_to_publish_latency_ms: next.capture_to_publish_latency_ms
+        capture_to_publish_latency_ms: message.data.capture_to_publish_latency_ms
           ?? previous.capture_to_publish_latency_ms,
-        decoded_to_publish_latency_ms: next.decoded_to_publish_latency_ms
+        decoded_to_publish_latency_ms: message.data.decoded_to_publish_latency_ms
           ?? previous.decoded_to_publish_latency_ms,
         live_timing: timing ?? previous.live_timing,
       } : previous);
     };
 
+    let handleBinaryWaveformMessage = (_buffer: ArrayBuffer) => {};
+    handleBinaryWaveformMessage = (buffer: ArrayBuffer) => {
+      if (buffer.byteLength < 4) return;
+      const view = new DataView(buffer);
+      const headerLength = view.getUint32(0, true);
+      const payloadOffset = 4 + headerLength;
+      if (payloadOffset > buffer.byteLength
+          || payloadOffset % 2 !== 0
+          || (buffer.byteLength - payloadOffset) % 2 !== 0) return;
+      try {
+        const data = JSON.parse(new TextDecoder().decode(
+          new Uint8Array(buffer, 4, headerLength))) as Record<string, any>;
+        const sequence = Number(data.sequence);
+        if (Number.isFinite(sequence)
+            && fallbackWaveformSequence !== null
+            && sequence !== fallbackWaveformSequence + 1) {
+          fallbackDecoder.reset();
+        }
+        if (Number.isFinite(sequence)) fallbackWaveformSequence = sequence;
+        const config = data.config && typeof data.config === 'object'
+          ? data.config : {};
+        const nextKey = JSON.stringify(config);
+        if (nextKey !== fallbackDecoderConfigKey) {
+          fallbackDecoder = new LiveI2cDecoder(
+            Number(data.address ?? 0x19), config,
+            Number(data.read_length ?? 6));
+          fallbackDecoderConfigKey = nextKey;
+        }
+        const sampleRate = Number(data.sample_rate);
+        const sampleCount = Number(data.sample_count);
+        const messageTimestamp = Date.now() / 1000;
+        const sourceIndex = Number.isFinite(Number(data.source_index))
+          ? Number(data.source_index) : null;
+        for (const sample of fallbackDecoder.feed(
+          new Uint16Array(buffer, payloadOffset), sourceIndex)) {
+          fallbackDecodedSamples += 1;
+          let timestamp = messageTimestamp - (
+            Math.max(0, sampleCount - sample.sample_offset) / sampleRate);
+          if (!Number.isFinite(timestamp) || timestamp <= fallbackLastTimestamp) {
+            timestamp = fallbackLastTimestamp + 1e-6;
+          }
+          fallbackLastTimestamp = timestamp;
+          handleMessage({
+            type: 'accelerometer_sample',
+            ts: messageTimestamp,
+            data: {
+              sample: { ...sample, timestamp },
+              last_sample_at: timestamp,
+              samples_read: fallbackDecodedSamples,
+              last_sample_sequence: fallbackDecodedSamples,
+              source_sample_index: sample.source_index,
+              source_backlog_samples: 0,
+              source_age_samples: 0,
+              trace: {
+                decoder_source: 'frontend_waveform_fallback_binary',
+                waveform_sequence: sequence,
+                waveform_source_index: sourceIndex,
+                waveform_sample_count: sampleCount,
+                waveform_sample_rate_hz: sampleRate,
+                frontend_decoded_at_ms: performance.now(),
+              },
+            },
+          }, 'fallback');
+        }
+      } catch { /* ignore malformed binary packets */ }
+    };
+
     let worker: Worker | null = null;
     let socket: ReconnectingSocket | null = null;
     let unsubscribe: (() => void) | null = null;
+    let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
     const startFallbackSocket = () => {
       if (socket) return;
-      socket = new ReconnectingSocket('/ws/accelerometer/waveform');
-      unsubscribe = socket.subscribe((message) => {
+      // A direct stream publishes binary packets. Falling back to the legacy
+      // text/ring endpoint here silently produced no pose when a module
+      // worker failed, even though the FPGA stream was healthy.
+      socket = new ReconnectingSocket('/ws/accelerometer/waveform-binary', true);
+      const unsubscribeBinary = socket.subscribeBinary(handleBinaryWaveformMessage);
+      const unsubscribeText = socket.subscribe((message) => {
         if (message.type === 'accelerometer_waveform') handleWaveformMessage(message);
-        else handleMessage(message);
+        else handleMessage(message, 'fallback');
       });
+      unsubscribe = () => {
+        unsubscribeBinary();
+        unsubscribeText();
+      };
     };
     if (typeof Worker !== 'undefined') {
       try {
@@ -496,7 +534,7 @@ export function MilAccelerometerCard() {
           { type: 'module' },
         );
         worker.onmessage = (event: MessageEvent<Record<string, any>>) => {
-          handleMessage(event.data);
+          handleMessage(event.data, 'worker');
         };
         worker.onerror = () => {
           // Module workers can fail before their first message in embedded
@@ -514,29 +552,47 @@ export function MilAccelerometerCard() {
       // the worker above, so socket parsing cannot compete with React renders.
       startFallbackSocket();
     }
+    // A module worker can remain alive without delivering an error when a
+    // browser rejects its upgrade or loses the first stream epoch. Do not let
+    // that silent state freeze the board: use the same binary decoder on the
+    // page if no waveform sample has arrived shortly after startup.
+    if (!socket) {
+      fallbackTimer = setTimeout(() => {
+        if (!hasFrontendWaveformSample.current) startFallbackSocket();
+      }, 1500);
+    }
     return () => {
       alive = false;
       worker?.terminate();
       unsubscribe?.();
       socket?.close();
-      if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
+      if (fallbackTimer !== null) clearTimeout(fallbackTimer);
     };
   }, []);
 
   const current = useMemo(() => orientationFor(poseSample ?? status?.sample ?? null), [poseSample, status?.sample]);
   const orientation = useMemo(() => relativeOrientation(current, zero), [current, zero]);
-  const hasSample = Boolean(status?.sample);
+  const poseInput = poseSample ?? status?.sample ?? null;
+  const hasSample = Boolean(poseInput);
+  const poseUsable = hasUsableGravity(poseInput);
   const available = status?.available ?? false;
   const running = status?.running ?? false;
 
   const startStop = async (action: 'start' | 'stop') => {
     setBusy(true);
     try {
+      // The controls can retain a pending selection while the backend has
+      // restarted or another card changed the hardware. Apply the displayed
+      // configuration immediately before the run edge so CTRL1/CTRL4
+      // readback and the live waveform always describe the same session.
+      if (action === 'start') {
+        const saved = await api.milAccelerometerUpdateConfig(config);
+        setConfig(saved);
+      }
       const next = action === 'start'
         ? await api.milAccelerometerStart()
         : await api.milAccelerometerStop();
       setStatus(next);
-      poseFilter.current.reset();
       hasFrontendWaveformSample.current = false;
       lastStreamTimestamp.current = null;
       // Starting/stopping deliberately establishes a new stream epoch. The
@@ -578,7 +634,6 @@ export function MilAccelerometerCard() {
       const next = await api.milAccelerometerReconnect();
       setStatus(next);
       if (next.effective_config) setConfig(next.effective_config);
-      poseFilter.current.reset();
       lastStreamTimestamp.current = next.sample?.timestamp ?? null;
       lastAppliedTimestamp.current = null;
       latestPoseSample.current = next.sample;
@@ -695,9 +750,9 @@ export function MilAccelerometerCard() {
 
         <div className="mil-accelerometer-readings">
           <div className="mil-accel-axis-readout">
-            <div><span className="axis-dot axis-x" />X</div><strong>{signed(status?.sample?.x_g ?? NaN)} <small>g</small></strong>
-            <div><span className="axis-dot axis-y" />Y</div><strong>{signed(status?.sample?.y_g ?? NaN)} <small>g</small></strong>
-            <div><span className="axis-dot axis-z" />Z</div><strong>{signed(status?.sample?.z_g ?? NaN)} <small>g</small></strong>
+            <div><span className="axis-dot axis-x" />X</div><strong>{signed(poseSample?.x_g ?? status?.sample?.x_g ?? NaN)} <small>g</small></strong>
+            <div><span className="axis-dot axis-y" />Y</div><strong>{signed(poseSample?.y_g ?? status?.sample?.y_g ?? NaN)} <small>g</small></strong>
+            <div><span className="axis-dot axis-z" />Z</div><strong>{signed(poseSample?.z_g ?? status?.sample?.z_g ?? NaN)} <small>g</small></strong>
           </div>
           <div className="mil-accel-meta">
             <span>Requested sensor ODR</span><strong>{rate(config.output_data_rate_hz, 'Hz')}</strong>
@@ -812,6 +867,9 @@ export function MilAccelerometerCard() {
             <div className="finding warning" role="alert">{status.last_error}</div>
           )}
           {!status?.sample && !requestError && <div className="hint">No sample yet. Start tracking with the board connected.</div>}
+          {status?.sample && !poseUsable && !requestError && (
+            <div className="hint">Pose paused: decoded XYZ vector is too small to determine gravity orientation.</div>
+          )}
         </div>
       </div>
     </section>

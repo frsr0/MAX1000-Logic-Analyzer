@@ -7,8 +7,9 @@ return a snapshot; they never wait for a bus transaction.
 """
 from __future__ import annotations
 
-import math
 import base64
+import json
+import struct
 import threading
 import time
 from typing import Any, Callable, Literal, Optional
@@ -32,7 +33,7 @@ LIS3DH_CTRL_REG4 = 0x23
 LIS3DH_OUT_X_L = 0x28
 LIS3DH_ADDRESSES = (0x19, 0x18)
 
-LIS3DH_ODR_VALUES = (1, 10, 25, 50, 100, 200, 400, 1344, 1620, 5376)
+LIS3DH_ODR_VALUES = (1, 10, 25, 50, 100, 200, 400, 1344, 1600, 5376)
 LIS3DH_SCALE_VALUES = (2, 4, 8, 16)
 
 # LIS3DH output words are left-justified.  The number of meaningful bits and
@@ -49,12 +50,12 @@ _LIS3DH_SENSITIVITY_MG = {
 class AccelerometerConfig(BaseModel):
     """User-selectable LIS3DH settings from the CTRL register map.
 
-    The high-rate CTRL_REG1 codes are mode-dependent: code 8 is 1.620 kHz
+    The high-rate CTRL_REG1 codes are mode-dependent: code 8 is 1.60 kHz
     only in low-power mode, while code 9 is 1.344 kHz in normal/high-resolution
     mode and 5.376 kHz in low-power mode.
     """
 
-    output_data_rate_hz: Literal[1, 10, 25, 50, 100, 200, 400, 1344, 1620, 5376] = 10
+    output_data_rate_hz: Literal[1, 10, 25, 50, 100, 200, 400, 1344, 1600, 5376] = 10
     full_scale_g: Literal[2, 4, 8, 16] = 2
     operating_mode: Literal["normal", "high_resolution", "low_power"] = "high_resolution"
     bdu: bool = True
@@ -69,24 +70,26 @@ class AccelerometerConfig(BaseModel):
         if self.output_data_rate_hz == 1344 and self.operating_mode == "low_power":
             raise ValueError(
                 "1.344 kHz ODR is only valid in normal or high-resolution mode")
-        if self.output_data_rate_hz in (1620, 5376) and self.operating_mode != "low_power":
+        if self.output_data_rate_hz in (1600, 5376) and self.operating_mode != "low_power":
             raise ValueError(
-                "1.620 and 5.376 kHz ODRs are low-power-only modes")
+                "1.60 and 5.376 kHz ODRs are low-power-only modes")
         return self
 
 # 10 Hz is the lowest useful LIS3DH output data rate and keeps the polling
 # worker lightweight while still feeling live in the UI.
 DEFAULT_SAMPLE_RATE_HZ = 10.0
-# The pose path needs a genuinely oversampled bus waveform.  At 2 MHz capture
-# and 400 kHz standard I²C there are five capture samples per SCL period, which
-# leaves the decoder margin for edge settling and its causal majority filter.
+# The pose path needs a genuinely oversampled bus waveform.  At the 2 MHz live
+# tap and 150 kHz I²C there are more than six capture samples per SCL period,
+# which leaves the decoder margin for edge settling without filtering away
+# phase-sensitive ACK/STOP edges.
 # The LIS3DH's absolute maximum ODR is 5.376 kHz in low-power mode; that mode
 # uses a four-slot FIFO burst below so the bus can carry the sensor rate.
 LIVE_TRACE_RATE_HZ = 2_000_000.0
 LIVE_TRACE_SAMPLES = 4096
 LIVE_TRACE_CHANNEL_MASK = np.uint16((1 << 13) | (1 << 14) | (1 << 15))
-# The normal/high-resolution path follows the proven b1c single-frame
-# dialogue. High ODR low-power mode switches to a four-slot FIFO burst.
+# The normal/high-resolution path uses a single-frame dialogue at ordinary
+# ODRs. High ODR modes use paced four-slot FIFO bursts sized to one sensor
+# period, so every decoded frame comes from a sequential FIFO slot.
 LIVE_TRACE_READ_LEN = 6
 LIVE_TRACE_REPEAT_TRANSACTIONS = 1
 LIVE_TRACE_COMPACT_I2C = False
@@ -103,19 +106,31 @@ LIVE_STREAM_WATCHDOG_S = 1.0
 # repeating-generator attach route. Keep each fallback transaction short
 # enough that the model never waits behind a large readback.
 LIVE_FALLBACK_TRACE_SAMPLES = 768
-# A 6-byte standard-I²C read is about 420 capture samples at this rate. Four
-# dialogues per block amortise the FTDI read overhead while tail-follow still
-# discards stale history at each status refresh.
-LIVE_STREAM_WINDOW_SAMPLES = 1792
+# Ring readback can amortise its SDRAM/SPI setup over a larger window because
+# the producer is not blocked by the host decoder. Direct FIFO readback has a
+# different constraint: the FIFO reader must keep draining while the decoder
+# publishes the frames from the previous delivery. Keep the direct delivery
+# at one FIFO-sized quantum so the decoder never holds the physical reader
+# behind a 32K-sample batch.
+LIVE_STREAM_WINDOW_SAMPLES = 32_768
+LIVE_DIRECT_STREAM_WINDOW_SAMPLES = 16_384
+# Deliver bounded waveform quanta; the browser worker decodes and publishes
+# every packet from each ordered quantum immediately.
+# Binary waveform frames no longer pay base64/JSON overhead. Keep each frame
+# small enough that one WebSocket send cannot monopolize the event loop or
+# hold the USB reader behind a coarse presentation batch.
+# Publish each direct FIFO quantum as soon as it has been drained.  Batching
+# eight quanta made the raw waveform—and therefore the browser-owned decoder—
+# wait 131 ms at the old 1 MHz tap before seeing any bytes.
+LIVE_DIRECT_WAVEFORM_BATCH_SAMPLES = LIVE_DIRECT_STREAM_WINDOW_SAMPLES
 # Do not prefetch pose data. One ring window becomes one decoder delivery, as
-# in b1c; the browser has its own latest-value mailbox for paint coalescing.
+# in b1c; only the board's CSS paint is naturally display-frame bounded.
 LIVE_STREAM_FETCH_MULTIPLIER = 1
 LIVE_HIGH_ODR_READ_LEN = 24
-# A standard 24-byte FIFO burst occupies roughly 1.2 k capture samples at
-# 400 kHz. High-ODR delivery still batches several bursts to amortise the
-# fixed USB/block-read setup, but keeps the tail window to about 4 ms at the
-# 2 MHz capture tap so transport batching cannot become visible UI latency.
-LIVE_HIGH_ODR_STREAM_WINDOW_SAMPLES = 8_192
+# A compact 24-byte FIFO burst is used only at 5.376 kHz. The 1 MHz capture
+# tap still publishes bounded waveform windows, while the decoder publishes
+# each complete XYZ frame without waiting for a history buffer.
+LIVE_HIGH_ODR_STREAM_WINDOW_SAMPLES = 32_768
 LIVE_FALLBACK_REPEAT_COUNT = 1
 # A live fallback read is a transport freshness path, not the sensor ODR
 # scheduler. Cap the idle gap so a low configured ODR cannot make the UI's
@@ -133,12 +148,19 @@ LIVE_FALLBACK_MAX_INTERVAL_S = 0.001
 # Five waveform refreshes per second are sufficient for the rolling view while
 # keeping its API/LOD work from competing with the physical read path.
 LIVE_WAVEFORM_PERSIST_INTERVAL_S = 0.2
-# LIS3DH supports Fast-mode I²C (400 kHz), but the logic-analyzer ring must be
-# drained sequentially over the FTDI link. A compact 30 kHz generated bus is
-# still fast enough to read four FIFO slots at the sensor's 400 Hz ODR while
-# leaving enough waveform samples for reliable edge decoding.
+# The LIS3DH supports Fast-mode I²C (400 kHz), but the live decoder uses a
+# capture-safe 150 kHz bus clock so the 1 MHz tap sees more than six waveform
+# points per generated symbol. Use a
+# capture-safe 150 kHz bus clock for the ordinary live dialogue: it gives the
+# decoder several points per symbol and makes the direct RLE stream transport-
+# limited only by real transitions, not by a one-byte record per sample.
 FIFO_I2C_SPEED_HZ = 400_000
-LIVE_TRACE_I2C_SPEED_HZ = 400_000
+# A stop/start mode change can leave one I²C transaction completing just as
+# the next worker probes WHO_AM_I. Treat that boundary as transient; a real
+# missing sensor still fails after the bounded retry window.
+LIS3DH_PROBE_ATTEMPTS = 5
+LIS3DH_PROBE_RETRY_S = 0.05
+LIVE_TRACE_I2C_SPEED_HZ = 150_000
 # The flashed capture image exposes the SDRAM ring cursors in the physical
 # four-million-sample address domain. Keep source-age arithmetic in that same
 # domain so a producer/source pair straddling the physical wrap is still a
@@ -146,6 +168,56 @@ LIVE_TRACE_I2C_SPEED_HZ = 400_000
 LIVE_TRACE_RING_SAMPLES = 4_194_304
 LIVE_TRACE_RING_MASK = LIVE_TRACE_RING_SAMPLES - 1
 LIVE_TRACE_RING_HALF = LIVE_TRACE_RING_SAMPLES // 2
+
+
+def _live_i2c_schedule(output_data_rate_hz: float) -> dict[str, Any]:
+    """Select a bounded FIFO dialogue that only consumes fresh LIS3DH data.
+
+    The generator is open-loop, so an unpaced repeated read can drain the
+    sensor FIFO before the next sample exists.  Use a transaction that fits in
+    the 1,024-symbol generator FIFO and repeat it at a rate matched to the
+    number of XYZ slots read.  The low-rate path intentionally retains the
+    established single-register dialogue; its output register remains stable
+    between reads and does not need a FIFO burst.
+    """
+    odr = int(round(float(output_data_rate_hz)))
+    if odr == 1344:
+        return {
+            # One FIFO slot per transaction keeps the padded repeat pattern
+            # below the FPGA generator FIFO limit while matching the
+            # datasheet's 1.344 kHz HR/normal ODR exactly.  A four-slot
+            # pattern would need more than 2,000 symbols once paced.
+            "read_len": 6,
+            "i2c_speed": 400_000,
+            "compact_i2c": True,
+            "repeat_rate_hz": 1_344.0,
+        }
+    if odr == 1600:
+        return {
+            "read_len": 12,
+            "i2c_speed": 400_000,
+            "compact_i2c": True,
+            # Two FIFO slots per transaction at the datasheet's 1.600 kHz
+            # ODR require an 800 Hz transaction cadence.
+            "repeat_rate_hz": 800.0,
+        }
+    if odr == 5376:
+        return {
+            # At 5.376 kHz the 4-slot burst is intentionally unpaced.  Its
+            # compact 400 kHz wire time is shorter than the four-sample ODR
+            # interval, so it can drain the sensor FIFO without exceeding
+            # the 1,024-symbol generator FIFO.
+            "read_len": 24,
+            "i2c_speed": 400_000,
+            "compact_i2c": True,
+            "repeat_rate_hz": None,
+        }
+    return {
+        "read_len": LIVE_TRACE_READ_LEN,
+        "i2c_speed": LIVE_TRACE_I2C_SPEED_HZ,
+        "compact_i2c": LIVE_TRACE_COMPACT_I2C,
+        "repeat_rate_hz": None,
+    }
 
 
 def _live_window_samples(settings: CaptureSettings) -> int:
@@ -172,7 +244,7 @@ def _config_registers(config: AccelerometerConfig) -> tuple[int, int]:
     """Encode the public configuration into LIS3DH CTRL_REG1/4 values."""
     odr_code = {
         1: 0x1, 10: 0x2, 25: 0x3, 50: 0x4, 100: 0x5,
-        200: 0x6, 400: 0x7, 1344: 0x9, 1620: 0x8, 5376: 0x9,
+        200: 0x6, 400: 0x7, 1344: 0x9, 1600: 0x8, 5376: 0x9,
     }[config.output_data_rate_hz]
     axes = ((0x01 if config.x_enabled else 0)
             | (0x02 if config.y_enabled else 0)
@@ -271,7 +343,7 @@ class _LiveI2CFrameDecoder:
         self._data_positions = []
         self._data_times = []
         self._frame_emitted = False
-        self._plateau = []
+        self._plateau_runs: list[tuple[int, int]] = []
         self._plateau_control = False
         self._txn_samples = 0
 
@@ -293,7 +365,7 @@ class _LiveI2CFrameDecoder:
                 self._data_positions = []
                 self._data_times = []
                 self._frame_emitted = False
-                self._plateau = []
+                self._plateau_runs = []
                 self._plateau_control = True
                 self._txn_samples = 0
                 return
@@ -305,9 +377,30 @@ class _LiveI2CFrameDecoder:
         self._data_positions = []
         self._data_times = []
         self._frame_emitted = False
-        self._plateau = []
+        self._plateau_runs = []
         self._plateau_control = True
         self._txn_samples = 0
+
+    def _append_plateau(self, sda: int, count: int = 1) -> None:
+        """Record a stable SDA run without expanding oversampled points."""
+        if count <= 0:
+            return
+        if self._plateau_runs and self._plateau_runs[-1][0] == sda:
+            level, length = self._plateau_runs[-1]
+            self._plateau_runs[-1] = (level, length + count)
+        else:
+            self._plateau_runs.append((sda, count))
+
+    def _plateau_center(self) -> int:
+        """Return the same temporal midpoint as the old expanded list."""
+        if len(self._plateau_runs) == 1:
+            return self._plateau_runs[0][0]
+        target = sum(length for _level, length in self._plateau_runs) // 2
+        for level, length in self._plateau_runs:
+            if target < length:
+                return level
+            target -= length
+        return 0
 
     def _finish_byte(
             self, frames: list[tuple[float, float, float]],
@@ -321,9 +414,10 @@ class _LiveI2CFrameDecoder:
             value = (value << 1) | bit
         self._data.append(value)
         self._acks.append(self._bits[8])
-        self._data_positions.append(sample_index)
-        self._data_times.append(
-            float(self._clock()) if frame_times is not None else None)
+        if frame_positions is not None:
+            self._data_positions.append(sample_index)
+        if frame_times is not None:
+            self._data_times.append(float(self._clock()))
         self._bits = []
         # A complete read is publishable before STOP. This is essential for a
         # chunk ending mid-transaction and prevents duplicate publication on
@@ -352,7 +446,9 @@ class _LiveI2CFrameDecoder:
                 frames.append(AccelerometerService._decode_xyz(
                     payload[offset:offset + 6], self.decode_config))
                 byte_index = 1 + offset + 5
-                position = self._data_positions[byte_index]
+                position = (
+                    self._data_positions[byte_index]
+                    if frame_positions is not None else None)
                 if frame_positions is not None and position is not None:
                     frame_positions.append(position)
                 if frame_times is not None:
@@ -372,20 +468,44 @@ class _LiveI2CFrameDecoder:
         frames: list[tuple[float, float, float]] = []
         frame_positions: list[int] = []
         frame_times: list[float] = []
-        for offset, value in enumerate(values):
-            scl = int((value >> 14) & 1)
-            sda = int((value >> 13) & 1)
+        # The capture clock oversamples each generated I2C plateau many
+        # times. Walking every sample in Python made the decoder itself the
+        # consumer bottleneck at high ODR: the direct FIFO then filled while
+        # the host was still visiting identical values. Reduce the waveform
+        # to runs of identical SCL/SDA levels and account for each run's
+        # length. This preserves the same plateau median and transition
+        # positions while making the hot path proportional to bus edges.
+        levels = ((values >> 13) & 0x03).astype(np.uint8, copy=False)
+        starts = np.r_[0, np.flatnonzero(levels[1:] != levels[:-1]) + 1]
+        ends = np.r_[starts[1:], levels.size]
+        for run_start, run_end in zip(starts, ends):
+            level = int(levels[run_start])
+            scl = (level >> 1) & 1
+            sda = level & 1
+            count = int(run_end - run_start)
             if self._previous is None:
                 self._previous = (scl, sda)
-                continue
-            previous_scl, previous_sda = self._previous
+                count -= 1
+                if count <= 0:
+                    continue
+                previous_scl, previous_sda = scl, sda
+                transition = False
+                offset = int(run_start) + 1
+            else:
+                previous_scl, previous_sda = self._previous
+                transition = (scl, sda) != self._previous
+                offset = int(run_start)
+
             if self._await_clean_start:
-                if scl and not previous_sda and sda:
+                if transition and scl and not previous_sda and sda:
                     self._await_clean_start = False
-                self._previous = (scl, sda)
+                    self._previous = (scl, sda)
+                else:
+                    self._previous = (scl, sda)
                 continue
+
             if self._in_txn:
-                self._txn_samples += 1
+                self._txn_samples += count
                 if self._txn_samples > self.MAX_CARRY_SAMPLES:
                     self._reset_transaction()
 
@@ -396,34 +516,37 @@ class _LiveI2CFrameDecoder:
                 # after the master released it during SCL-low. That ninth
                 # bit is not a START/STOP, even though it is an SDA edge
                 # while SCL is high; collect it as the ACK plateau first.
-                ack_edge = (
-                    self._in_txn and not self._plateau_control
-                    and len(self._bits) == 8 and previous_scl == 0)
-                if ack_edge:
-                    self._plateau.append(sda)
-                elif previous_scl and previous_sda and not sda:
-                    self._start_transaction()
-                elif previous_scl and not previous_sda and sda:
-                    if self._in_txn:
-                        self._reset_transaction()
-                    else:
-                        self._plateau = []
-                        self._plateau_control = True
+                if transition:
+                    ack_edge = (
+                        self._in_txn and not self._plateau_control
+                        and len(self._bits) == 8 and previous_scl == 0)
+                    if ack_edge:
+                        self._append_plateau(sda, count)
+                    elif previous_scl and previous_sda and not sda:
+                        self._start_transaction()
+                    elif previous_scl and not previous_sda and sda:
+                        if self._in_txn:
+                            self._reset_transaction()
+                        else:
+                            self._plateau_runs = []
+                            self._plateau_control = True
+                    elif self._in_txn and not self._plateau_control:
+                        self._append_plateau(sda, count)
+                    elif self._in_txn and previous_scl == 0:
+                        self._append_plateau(sda, count)
                 elif self._in_txn and not self._plateau_control:
-                    self._plateau.append(sda)
-                elif self._in_txn and previous_scl == 0:
-                    self._plateau.append(sda)
-            elif previous_scl:
+                    self._append_plateau(sda, count)
+            elif transition and previous_scl:
                 if self._in_txn and not self._plateau_control:
-                    if self._plateau:
-                        self._bits.append(self._plateau[len(self._plateau) // 2])
+                    if self._plateau_runs:
+                        self._bits.append(self._plateau_center())
                         self._finish_byte(
                             frames,
                             frame_positions if start_sample is not None else None,
                             (int(start_sample) + offset
                              if start_sample is not None else None),
                             frame_times if collect_times else None)
-                self._plateau = []
+                self._plateau_runs = []
                 self._plateau_control = False
             self._previous = (scl, sda)
         if start_sample is None:
@@ -538,51 +661,6 @@ class _LiveI2CFrameGate:
 
     def flush(self) -> list[tuple[float, float, float]]:
         return [sample for _metadata, sample in self.flush_indexed()]
-
-
-class _LiveI2CPoseGate:
-    """Causally reject impossible pose jumps while retaining raw frames."""
-
-    MAX_POSE_STEP_DEG = 75.0
-
-    def __init__(self):
-        self._previous: tuple[float, float, float] | None = None
-
-    def reset(self) -> None:
-        self._previous = None
-
-    @staticmethod
-    def _orientation(sample: tuple[float, float, float]) -> tuple[float, float]:
-        x, y, z = (float(value) for value in sample)
-        return (
-            math.degrees(math.atan2(-x, math.hypot(y, z))),
-            math.degrees(math.atan2(y, z)),
-        )
-
-    @staticmethod
-    def _angular_distance(left: float, right: float) -> float:
-        wrapped = abs(left - right) % 360.0
-        return 360.0 - wrapped if wrapped > 180.0 else wrapped
-
-    def accept(self, sample: tuple[float, float, float]
-               ) -> tuple[float, float, float] | None:
-        if not all(math.isfinite(float(value)) for value in sample):
-            return None
-        previous = self._previous
-        if previous is not None:
-            previous_orientation = self._orientation(previous)
-            next_orientation = self._orientation(sample)
-            pose_step = max(
-                self._angular_distance(previous_orientation[0], next_orientation[0]),
-                self._angular_distance(previous_orientation[1], next_orientation[1]),
-            )
-            if pose_step > self.MAX_POSE_STEP_DEG:
-                # Do not advance the baseline on a rejected frame. A later
-                # valid point can therefore move immediately from the last
-                # known pose without waiting for a confirmation sample.
-                return None
-        self._previous = sample
-        return sample
 
 
 class AccelerometerStatus(BaseModel):
@@ -1069,7 +1147,13 @@ class AccelerometerService:
         try:
             adapter = self.manager.device
             raw = self._raw_device()
-            address = self._find_address(adapter, raw)
+            address = None
+            for _ in range(LIS3DH_PROBE_ATTEMPTS):
+                address = self._find_address(adapter, raw)
+                if address is not None:
+                    break
+                if stop_evt.wait(LIS3DH_PROBE_RETRY_S):
+                    return
             if address is None:
                 raise HardwareError("LIS3DH accelerometer not detected")
             with self._lock:
@@ -1275,8 +1359,8 @@ class AccelerometerService:
         ctrl4 = int(registers.get("ctrl4", 0))
         odr_code = (ctrl1 >> 4) & 0x0F
         if odr_code == 8:
-            # CTRL_REG1 code 8 is only defined at 1.620 kHz with LPen set.
-            odr = 1620 if ctrl1 & 0x08 else None
+            # CTRL_REG1 code 8 is only defined at 1.60 kHz with LPen set.
+            odr = 1600 if ctrl1 & 0x08 else None
         elif odr_code == 9:
             # Code 9 is 1.344 kHz in normal/high-resolution mode and
             # 5.376 kHz in low-power mode.
@@ -1428,6 +1512,7 @@ class AccelerometerService:
         stream_started_at = None
         stream_transitions = 0
         stream_frames = 0
+        stream_waveform_samples = 0
         stream_watchdog = False
         transport_error = transport_fallback_error
         direct_capable = (not force_ring and bool(
@@ -1443,12 +1528,16 @@ class AccelerometerService:
         try:
             capture = getattr(raw, "continuous_ring_capture_with_repeating_i2c", None)
             if callable(capture):
-                high_odr = float(decoder_config.output_data_rate_hz) > 400.0
-                live_read_len = (
-                    LIVE_HIGH_ODR_READ_LEN if high_odr else LIVE_TRACE_READ_LEN)
-                live_window_samples = (
-                    LIVE_HIGH_ODR_STREAM_WINDOW_SAMPLES
-                    if high_odr else LIVE_STREAM_WINDOW_SAMPLES)
+                live_schedule = _live_i2c_schedule(
+                    decoder_config.output_data_rate_hz)
+                live_read_len = int(live_schedule["read_len"])
+                fifo_burst = live_read_len > LIVE_TRACE_READ_LEN
+                if direct_capable:
+                    live_window_samples = LIVE_DIRECT_STREAM_WINDOW_SAMPLES
+                else:
+                    live_window_samples = (
+                        LIVE_HIGH_ODR_STREAM_WINDOW_SAMPLES
+                        if fifo_burst else LIVE_STREAM_WINDOW_SAMPLES)
                 stream = capture(
                     rate_hz=LIVE_TRACE_RATE_HZ,
                     # Use one decoder-safe tail window per delivery. The
@@ -1461,9 +1550,10 @@ class AccelerometerService:
                     dev_addr=address,
                     reg_addr=LIS3DH_OUT_X_L | 0x80,
                     read_len=live_read_len,
-                    i2c_speed=LIVE_TRACE_I2C_SPEED_HZ,
+                    i2c_speed=int(live_schedule["i2c_speed"]),
                     repeat_transactions=LIVE_TRACE_REPEAT_TRANSACTIONS,
-                    compact_i2c=LIVE_TRACE_COMPACT_I2C,
+                    compact_i2c=bool(live_schedule["compact_i2c"]),
+                    repeat_rate_hz=live_schedule["repeat_rate_hz"],
                     force_ring=force_ring,
                     # Use the validated block-read ring transport for the
                     # live path. The optional held-CS raw serializer is not
@@ -1489,6 +1579,73 @@ class AccelerometerService:
                 pending_session: Session | None = None
                 last_flush = time.monotonic()
                 waveform_sequence = 0
+                waveform_pending: list[np.ndarray] = []
+                waveform_pending_samples = 0
+                persist_quantum = (LIVE_DIRECT_WAVEFORM_BATCH_SAMPLES
+                                   if direct_capable else LIVE_TRACE_SAMPLES)
+
+                def flush_waveform_pending() -> None:
+                    nonlocal waveform_pending, waveform_pending_samples
+                    nonlocal waveform_sequence
+                    if not waveform_pending:
+                        return
+                    waveform = (waveform_pending[0]
+                                if len(waveform_pending) == 1 else
+                                np.concatenate(waveform_pending))
+                    waveform_pending = []
+                    waveform_pending_samples = 0
+                    waveform_sequence += 1
+                    raw_samples = np.asarray(
+                        waveform, dtype="<u2").tobytes()
+                    header = json.dumps({
+                            "sequence": waveform_sequence,
+                            "sample_rate": LIVE_TRACE_RATE_HZ,
+                            "sample_count": int(waveform.size),
+                            "source_index": None,
+                            "ring_timing": None,
+                            "config": decoder_config.model_dump(),
+                            "address": address,
+                            "read_length": live_read_len,
+                        }, separators=(",", ":")).encode("utf-8")
+                    # Keep the raw sample payload 16-bit aligned after the
+                    # four-byte header-length prefix.
+                    if len(header) & 1:
+                        header += b" "
+                    packet = struct.pack("<I", len(header)) + header + raw_samples
+                    has_binary_consumer = getattr(
+                        websocket_manager, "has_subscribers", None)
+                    binary_published = False
+                    if (callable(has_binary_consumer)
+                            and has_binary_consumer(
+                                "accelerometer_waveform_binary")):
+                        publish_binary = getattr(
+                            websocket_manager, "publish_binary_threadsafe", None)
+                        if callable(publish_binary):
+                            publish_binary(
+                                "accelerometer_waveform_binary", packet)
+                            binary_published = True
+                    # Direct mode has one canonical waveform transport. The
+                    # worker subscribes to both endpoints for compatibility,
+                    # so sending the same quantum on text and binary would
+                    # decode the physical waveform twice.
+                    if (not binary_published and (
+                            not callable(has_binary_consumer)
+                            or has_binary_consumer("accelerometer_waveform"))):
+                        websocket_manager.publish_threadsafe(
+                            "accelerometer_waveform",
+                            "accelerometer_waveform", {
+                                "sequence": waveform_sequence,
+                                "sample_rate": LIVE_TRACE_RATE_HZ,
+                                "sample_count": int(waveform.size),
+                                "source_index": None,
+                                "samples_b64": base64.b64encode(
+                                    raw_samples).decode("ascii"),
+                                "ring_timing": None,
+                                "config": decoder_config.model_dump(),
+                                "address": address,
+                                "read_length": live_read_len,
+                            })
+
                 stream_decoder = _LiveI2CFrameDecoder(
                     address, sample_lsb_mask, decoder_config,
                     clock=self._clock, read_len=live_read_len)
@@ -1586,6 +1743,7 @@ class AccelerometerService:
                     # A tail jump is a transport boundary, not permission to
                     # throw away a complete validated frame; flush it before
                     # resetting decoder and both live gates.
+                    flush_waveform_pending()
                     publish_gate_items(sample_gate.flush_indexed())
                     stream_decoder.reset()
                     sample_gate.reset()
@@ -1628,7 +1786,7 @@ class AccelerometerService:
                         else:
                             digital = np.asarray(chunk, dtype=np.uint16).reshape(-1)
                         # Held-CS tail-follow windows are not contiguous when
-                        # USB/SPI cannot consume the 2 MHz source ring in
+                        # USB/SPI cannot consume the source ring in
                         # real time. Never carry an I2C transaction across
                         # samples that were not observed: joining unrelated
                         # windows can create believable but incorrect XYZ
@@ -1642,7 +1800,7 @@ class AccelerometerService:
                                 # Advisory metadata must never take down the
                                 # live capture on older driver implementations.
                                 pass
-                        # At the 2 MHz live tap the normal four-symbol I2C
+                        # At the 1 MHz live tap the normal four-symbol I2C
                         # encoder has only a couple of capture points in
                         # each high plateau.  Applying the non-causal
                         # three-point filter to a long FIFO burst can move
@@ -1654,35 +1812,57 @@ class AccelerometerService:
                         # retains the historical glitch filter.
                         digital = clean_live_trace(
                             digital,
-                            majority=(LIVE_TRACE_RATE_HZ
+                            # Direct capture is always the 1 MHz tap,
+                            # regardless of the sensor ODR. Its I2C plateaus
+                            # are only a few points wide, so the historical
+                            # non-causal majority filter can erase ACK/STOP
+                            # edges and make a valid direct waveform
+                            # undecodable. Ring fallback retains the filter
+                            # for the legacy low-rate path.
+                            majority=(not direct_capable
+                                      and LIVE_TRACE_RATE_HZ
                                       >= 4 * LIVE_TRACE_I2C_SPEED_HZ
-                                      and not high_odr))
+                                      and float(decoder_config.output_data_rate_hz)
+                                      <= 400.0))
                         if digital.size:
-                            waveform_sequence += 1
+                            stream_waveform_samples += int(digital.size)
+                            with self._lock:
+                                if self._live_transport is not None:
+                                    self._live_transport[
+                                        "waveform_samples"] = stream_waveform_samples
                             # The frontend decoder consumes this exact packed
                             # waveform stream. Keep it separate from the
                             # backend's decoded pose topic and from waveform
                             # persistence; neither is allowed to become the
                             # live decoder's source of truth.
-                            websocket_manager.publish_threadsafe(
-                                "accelerometer_waveform",
-                                "accelerometer_waveform", {
-                                    "sequence": waveform_sequence,
-                                    "sample_rate": LIVE_TRACE_RATE_HZ,
-                                    "sample_count": int(digital.size),
-                                    "source_index": chunk_start,
-                                    "samples_b64": base64.b64encode(
-                                        np.asarray(digital, dtype="<u2").tobytes()
-                                    ).decode("ascii"),
-                                    "ring_timing": ring_timing,
-                                    "config": decoder_config.model_dump(),
-                                })
                             received_at = self._clock()
+                            if direct_capable:
+                                waveform_pending.append(digital)
+                                waveform_pending_samples += int(digital.size)
+                                if (waveform_pending_samples
+                                        >= LIVE_DIRECT_WAVEFORM_BATCH_SAMPLES):
+                                    flush_waveform_pending()
+                            else:
+                                waveform_sequence += 1
+                                websocket_manager.publish_threadsafe(
+                                    "accelerometer_waveform",
+                                    "accelerometer_waveform", {
+                                        "sequence": waveform_sequence,
+                                        "sample_rate": LIVE_TRACE_RATE_HZ,
+                                        "sample_count": int(digital.size),
+                                        "source_index": chunk_start,
+                                        "samples_b64": base64.b64encode(
+                                            np.asarray(digital, dtype="<u2").tobytes()
+                                        ).decode("ascii"),
+                                        "ring_timing": ring_timing,
+                                        "config": decoder_config.model_dump(),
+                                    })
                             chunk_end = (_live_ring_distance(
                                          int(chunk_start) + int(digital.size), 0)
                                          if chunk_start is not None else None)
-                            stream_transitions += int(np.count_nonzero(
-                                digital[1:] != digital[:-1]))
+                            if not direct_capable:
+                                stream_transitions += int(np.count_nonzero(
+                                    digital[1:] != digital[:-1]))
                             waveform_session = current_waveform_session()
                             if waveform_session is not pending_session:
                                 # Do not let bytes observed before a rolling
@@ -1694,7 +1874,24 @@ class AccelerometerService:
                             if waveform_session is not None:
                                 pending.append(digital)
                                 pending_samples += int(digital.size)
-                            if chunk_start is not None:
+                            # In direct mode the browser worker owns the raw
+                            # waveform decode. Running a second Python I2C
+                            # decoder here at the 1 MHz tap only contends for
+                            # the GIL with the USB reader and can make the
+                            # FPGA FIFO overflow when a browser is connected.
+                            # Keep the backend decoder for ring mode and for
+                            # headless direct/status consumers; never duplicate
+                            # it while the ordered waveform topic is active.
+                            # Direct mode is always owned by the ordered
+                            # waveform consumer. Subscriber presence is a
+                            # connection-time race and must not decide
+                            # whether the backend duplicates the 1 MHz
+                            # decoder; ring mode is the only backend-decoded
+                            # path.
+                            frontend_decodes = direct_capable
+                            if frontend_decodes:
+                                indexed = []
+                            elif chunk_start is not None:
                                 decoded_indexed = stream_decoder.feed_indexed_timed(
                                     digital, chunk_start)
                                 indexed = [
@@ -1708,27 +1905,36 @@ class AccelerometerService:
                                     for position, sample, decoded_at
                                     in decoded_indexed]
                             else:
-                                decoded_timed = stream_decoder.feed_timed(digital)
+                                # Direct FIFO samples do not carry a ring
+                                # cursor.  Timestamping every I2C byte inside
+                                # ``feed_timed`` adds a wall-clock call to the
+                                # hot path for no useful ordering information;
+                                # the batch was observed at ``received_at``
+                                # and the waveform itself remains lossless.
+                                decoded_plain = stream_decoder.feed(digital)
                                 indexed = [
                                     ({
                                         "source_index": None,
                                         "received_at": received_at,
                                         "chunk_end": None,
-                                        "decoded_at": decoded_at,
+                                        "decoded_at": received_at,
                                         "ring_timing": None,
                                     }, sample)
-                                    for sample, decoded_at in decoded_timed]
+                                    for sample in decoded_plain]
                             stream_frames += len(indexed)
-                            publish_gate_items(indexed)
-                            if (pending_samples >= LIVE_TRACE_SAMPLES
+                            if indexed:
+                                publish_gate_items(indexed)
+                            if (pending_samples >= persist_quantum
                                     or time.monotonic() - last_flush >= 0.25):
                                 flush_pending()
-                            if (stream_frames == 0
+                            frontend_decodes = direct_capable
+                            if (stream_frames == 0 and not frontend_decodes
                                     and stream_started_at is not None
                                     and time.monotonic() - stream_started_at
                                     >= LIVE_STREAM_WATCHDOG_S):
                                 stream_watchdog = True
                                 break
+                    flush_waveform_pending()
                     publish_gate_items(sample_gate.flush_indexed())
                     flush_pending()
                 finally:
@@ -2017,10 +2223,20 @@ class AccelerometerService:
                         "z_g": pose_sample[2], "timestamp": timestamp,
                     }
         if pushed is not None:
-            websocket_manager.publish_threadsafe(
-                "accelerometer", "accelerometer_sample", pushed)
             publish_latest = getattr(
                 websocket_manager, "publish_latest_threadsafe", None)
+            # Direct FIFO samples have no ring cursor and are a presentation
+            # stream, not archival history. When the asyncio loop is active,
+            # replace stale board targets instead of making the live decoder
+            # compete with a second ordered JSON queue at ~1 kHz. The raw
+            # waveform topic remains the lossless ordered source.
+            if (source_index is None and callable(publish_latest)
+                    and getattr(websocket_manager, "_loop", None) is not None):
+                publish_latest(
+                    "accelerometer", "accelerometer_sample", pushed)
+            else:
+                websocket_manager.publish_threadsafe(
+                    "accelerometer", "accelerometer_sample", pushed)
             if callable(publish_latest) and pose_pushed is not None:
                 publish_latest(
                     "accelerometer_pose", "accelerometer_sample", pose_pushed)

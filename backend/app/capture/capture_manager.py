@@ -216,12 +216,21 @@ class CaptureManager:
                         raise HardwareError(
                             status.get("last_error")
                             or "Accelerometer tracking stopped during reconnect")
-                    # Availability/effective_config prove setup completed;
-                    # requiring a point also proves that the reopened bus and
-                    # ring owner are actually producing data.
+                    # Availability/effective_config prove setup completed.
+                    # Direct waveform mode deliberately leaves per-sample
+                    # decoding to the browser worker, so its backend sample
+                    # field remains empty even while the direct transport is
+                    # streaming correctly.
+                    transport = (status.get("live_timing") or {}).get(
+                        "transport") or {}
+                    direct_streaming = (
+                        transport.get("mode") == "direct"
+                        and transport.get("state") == "streaming"
+                        and not transport.get("fallback"))
                     if (status.get("available")
                             and status.get("effective_config") is not None
-                            and status.get("sample") is not None):
+                            and (status.get("sample") is not None
+                                 or direct_streaming)):
                         self.last_error = None
                         return status
                     if time.monotonic() >= deadline:

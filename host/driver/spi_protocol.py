@@ -121,6 +121,13 @@ ST_STREAM_ACTIVE = 0x20
 ST_GEN_BUSY      = 0x30
 
 MAX_PAYLOAD = 4096
+# The direct accelerometer stream is packed at four wire bytes per eight
+# source samples. The chunked MPSSE reader queues one transfer ahead, so a
+# 16 KiB wire chunk would represent 32K source samples plus another queued
+# 32K and overrun the 32K-sample FPGA FIFO at the 2 MHz capture tap. Keep each
+# wire quantum at 1 KiB: two queued transfers are only 4K source samples,
+# leaving roughly 14 ms of headroom for Windows USB scheduling jitter.
+DIRECT_LIVE_WIRE_CHUNK_BYTES = 1024
 BLOCK_SIZE  = 1024
 MAX_RAW_STREAM_SAMPLES = 16384
 
@@ -650,6 +657,12 @@ class SPIDevice:
         # the FPGA FIFO overflow before the ACK was found.  The fixed bulk
         # primitive is used first because it performs one MPSSE write/read
         # exchange and does not wait for an exact-size FTDI queue fill.
+        if compact_3bit and hasattr(self.spi, "stream_command_chunks"):
+            # A compact window can take several milliseconds to stage at the
+            # capture clock. The chunked reader keeps clocking while waiting
+            # for the ACK instead of imposing a fixed 4 KiB/1 ms budget.
+            return self._live_stream_via_chunks(
+                req, seq, n_bytes, stop_evt=stop_evt)
         if hasattr(self.spi, "stream_command"):
             return self._live_stream_via_bulk(
                 req, seq, n_bytes, stop_evt=stop_evt)
@@ -674,7 +687,9 @@ class SPIDevice:
                 return sequence, flags, data
         raise RuntimeError("start_live_stream_read failed")
 
-    def start_live_stream_continuous(self, stop_evt=None, packed_tokens=False):
+    def start_live_stream_continuous(self, stop_evt=None, packed_tokens=False,
+                                     sparse_packed=False, sparse_sample_bits=3,
+                                     sparse_rle=False, tagged_packed=False):
         """Yield bytes from the framed held-CS live waveform stream.
 
         Each byte contains one low-nibble token: bit 3 marks a real sample
@@ -683,14 +698,37 @@ class SPIDevice:
         """
         if not hasattr(self.spi, "stream_command_chunks"):
             raise RuntimeError("continuous live stream requires chunked transport")
-        # bit30 selects framed mode; bit29 requests the bandwidth-efficient
-        # marker + three-byte frame carrying eight 3-bit samples.
-        payload = struct.pack('<I', 0x60000000 if packed_tokens else 0x40000000)
+        # bit30 selects framed mode; bit29 requests packed 3-bit samples.
+        # bit28 requests sparse packed framing: one A5 sync byte starts the
+        # stream, then each following three bytes carry eight samples. This
+        # removes the per-group marker from the USB budget while retaining a
+        # deterministic alignment seam at stream start.
+        # bit25 requests tagged packed framing: A5 starts the stream, 00 is
+        # idle, 80 starts a fixed-size packed record, and FF is overflow.
+        mode = 0x40000000
+        if packed_tokens:
+            mode |= 0x20000000
+            if int(sparse_sample_bits) == 2:
+                mode |= 0x08000000
+            if sparse_packed:
+                mode |= 0x10000000
+            if sparse_rle:
+                mode |= 0x04000000
+            if tagged_packed:
+                mode |= 0x02000000
+        payload = struct.pack('<I', mode)
         seq = self._next_seq()
         req = build_packet(CMD_START_LIVE_STREAM, seq, payload)
         gen = self.spi.stream_command_chunks(
             req, ack_pad=max(self._default_ack_pad(), 64),
-            chunk_bytes=4096, stop_evt=stop_evt)
+            # Keep each MPSSE quantum below the compact FPGA FIFO's source
+            # time. A large read takes milliseconds on the held-CS link while
+            # the capture tap continues at 1 MHz, so a USB scheduling pause
+            # can overrun the FIFO before the next read is issued. Short
+            # quanta preserve the same continuous ordered stream while
+            # bounding the capture time exposed to each host-side gap.
+            chunk_bytes=DIRECT_LIVE_WIRE_CHUNK_BYTES,
+            stop_evt=stop_evt, overlap_io=True)
         acc = bytearray()
         active = False
         try:

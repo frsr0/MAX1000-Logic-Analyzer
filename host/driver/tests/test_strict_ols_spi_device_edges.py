@@ -138,6 +138,24 @@ def test_open_retries_then_configures_latency_and_detection(monkeypatch):
     dev._detect_gen_div_width.assert_called_once()
 
 
+def test_capture_configuration_arms_continuous_mode_after_fast_mode():
+    dev = _device()
+    dev.pkt.write_register.return_value = True
+
+    dev._write_capture_config(
+        div=199, samples=4096, delay_count=4096,
+        flags=0, fast_mode=True, continuous=True)
+
+    writes = dev.pkt.write_register.call_args_list
+    addresses = [entry.args[0] for entry in writes]
+    assert addresses[-1] == device_module.REG_CONT_MODE
+    assert addresses.index(device_module.REG_FAST_MODE) < addresses.index(
+        device_module.REG_CONT_MODE)
+    flags_write = next(entry for entry in writes
+                       if entry.args[0] == device_module.REG_FLAGS)
+    assert flags_write.args[1] & 0x01
+
+
 def test_open_reraises_third_failure_and_latency_query_is_optional(monkeypatch):
     class BrokenSPI:
         def __init__(self, speed_hz):
@@ -769,6 +787,36 @@ def test_repeating_i2c_capture_uses_direct_live_fifo_when_advertised():
     dev._write_capture_config.assert_called_once()
     assert call(device_module.CMD_GEN_CAPTURE, timeout=1.0) in \
         dev.pkt.transaction.call_args_list
+
+
+@pytest.mark.parametrize(
+    ("read_len", "i2c_speed", "compact", "repeat_rate", "symbols"),
+    [
+        (6, 150_000, False, 1_344.0, 448),
+        (12, 150_000, False, 672.0, 896),
+        (24, 400_000, True, 1_344.0, 596),
+    ],
+)
+def test_repeating_i2c_can_pace_fifo_dialogues_to_sensor_rate(
+        read_len, i2c_speed, compact, repeat_rate, symbols):
+    dev = _device()
+    dev._ensure_open = MagicMock()
+    dev.set_readback_compression = MagicMock(return_value=True)
+    dev.stream_ring_capture = MagicMock(return_value=iter([]))
+    dev.pkt.transaction.return_value = (ST_OK, 0, b"")
+
+    list(dev.continuous_ring_capture_with_repeating_i2c(
+        rate_hz=2_000_000,
+        chunk_nsamp=4,
+        buffer_nsamp=16,
+        stop_evt=SimpleNamespace(is_set=lambda: True),
+        read_len=read_len,
+        i2c_speed=i2c_speed,
+        compact_i2c=compact,
+        repeat_rate_hz=repeat_rate,
+    ))
+
+    assert len(dev.pkt.load_gen_data.call_args.args[0]) * 4 == symbols
 
 
 def test_stream_ring_unmanaged_source_does_not_stop_generator():
