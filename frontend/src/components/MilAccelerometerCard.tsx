@@ -4,7 +4,7 @@ import { ReconnectingSocket } from '../api/websocket';
 import type { MilAccelerometerConfig, MilAccelerometerStatus } from '../api/types';
 import { useApp } from '../state/appStore';
 import { hasUsableGravity, orientationFor, type Orientation } from './accelerometerPose';
-import { LiveI2cDecoder } from '../workers/liveI2cDecoder';
+import { inferLiveReadLength, LiveI2cDecoder } from '../workers/liveI2cDecoder';
 
 const POLL_INTERVAL_MS = 100;
 // The sensor stream can be several thousand samples per second. Decode and
@@ -350,7 +350,7 @@ export function MilAccelerometerCard() {
       if (nextKey !== fallbackDecoderConfigKey) {
         fallbackDecoder = new LiveI2cDecoder(
           Number(data.address ?? 0x19), config,
-          Number(data.read_length ?? 6));
+          inferLiveReadLength(data));
         fallbackDecoderConfigKey = nextKey;
       }
       const sampleRate = Number(data.sample_rate);
@@ -465,7 +465,7 @@ export function MilAccelerometerCard() {
         if (nextKey !== fallbackDecoderConfigKey) {
           fallbackDecoder = new LiveI2cDecoder(
             Number(data.address ?? 0x19), config,
-            Number(data.read_length ?? 6));
+            inferLiveReadLength(data));
           fallbackDecoderConfigKey = nextKey;
         }
         const sampleRate = Number(data.sample_rate);
@@ -509,6 +509,7 @@ export function MilAccelerometerCard() {
 
     let worker: Worker | null = null;
     let socket: ReconnectingSocket | null = null;
+    let textSocket: ReconnectingSocket | null = null;
     let unsubscribe: (() => void) | null = null;
     let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
     const startFallbackSocket = () => {
@@ -518,12 +519,19 @@ export function MilAccelerometerCard() {
       // worker failed, even though the FPGA stream was healthy.
       socket = new ReconnectingSocket('/ws/accelerometer/waveform-binary', true);
       const unsubscribeBinary = socket.subscribeBinary(handleBinaryWaveformMessage);
-      const unsubscribeText = socket.subscribe((message) => {
+      const unsubscribeBinaryText = socket.subscribe((message) => {
+        if (message.type !== 'accelerometer_waveform') {
+          handleMessage(message, 'fallback');
+        }
+      });
+      textSocket = new ReconnectingSocket('/ws/accelerometer/waveform');
+      const unsubscribeText = textSocket.subscribe((message) => {
         if (message.type === 'accelerometer_waveform') handleWaveformMessage(message);
         else handleMessage(message, 'fallback');
       });
       unsubscribe = () => {
         unsubscribeBinary();
+        unsubscribeBinaryText();
         unsubscribeText();
       };
     };
@@ -566,6 +574,7 @@ export function MilAccelerometerCard() {
       worker?.terminate();
       unsubscribe?.();
       socket?.close();
+      textSocket?.close();
       if (fallbackTimer !== null) clearTimeout(fallbackTimer);
     };
   }, []);

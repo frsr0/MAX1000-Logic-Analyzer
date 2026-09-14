@@ -180,6 +180,7 @@ export default function App() {
     // waveform as well and let the browser update the live viewport from the
     // packet stream instead of waiting for the next file snapshot.
     let rawWs: ReconnectingSocket | null = null;
+    let rawTextWs: ReconnectingSocket | null = null;
     let unsubRawBinary: (() => void) | null = null;
     let unsubRawText: (() => void) | null = null;
     if (activeIsAccelerometer) {
@@ -192,6 +193,16 @@ export default function App() {
         if (chunk) waveformView.appendLiveRaw(activeId, chunk.samples, chunk.sampleRate);
       });
       unsubRawText = rawWs.subscribe((message) => {
+        if (message.type === 'accelerometer_waveform') {
+          const data = message.data as Record<string, any> | undefined;
+          const chunk = data && typeof data.samples_b64 === 'string'
+            ? decodeLiveWaveformBase64(data.samples_b64, Number(data.sample_rate))
+            : null;
+          if (chunk) waveformView.appendLiveRaw(activeId, chunk.samples, chunk.sampleRate);
+        }
+      });
+      rawTextWs = new ReconnectingSocket('/ws/accelerometer/waveform');
+      const unsubRawTextTopic = rawTextWs.subscribe((message) => {
         if (message.type !== 'accelerometer_waveform') return;
         const data = message.data as Record<string, any> | undefined;
         const chunk = data && typeof data.samples_b64 === 'string'
@@ -199,12 +210,18 @@ export default function App() {
           : null;
         if (chunk) waveformView.appendLiveRaw(activeId, chunk.samples, chunk.sampleRate);
       });
+      const previousUnsubRawText = unsubRawText;
+      unsubRawText = () => {
+        previousUnsubRawText?.();
+        unsubRawTextTopic();
+      };
     }
     return () => {
       unsub(); ws.close(); unsubSes(); sesWs.close();
       unsubRawBinary?.();
       unsubRawText?.();
       rawWs?.close();
+      rawTextWs?.close();
       waveformView.setLiveRawActive(activeId, false);
     };
   }, [activeId, activeIsAccelerometer]);

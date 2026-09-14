@@ -1,5 +1,5 @@
 import { ReconnectingSocket } from '../api/websocket';
-import { LiveI2cDecoder } from './liveI2cDecoder';
+import { inferLiveReadLength, LiveI2cDecoder } from './liveI2cDecoder';
 
 // Keep the direct waveform worker asset fingerprinted when its transport
 // contract changes; a running lab tab must not retain an older decoder bundle.
@@ -8,6 +8,10 @@ import { LiveI2cDecoder } from './liveI2cDecoder';
 // thread. The board must be driven by this raw ordered stream; the backend's
 // decoded pose topic remains available for legacy consumers only.
 const socket = new ReconnectingSocket('/ws/accelerometer/waveform-binary', true);
+// The backend keeps the legacy text topic as the raw-waveform transport when
+// direct FIFO delivery falls back to the SDRAM ring. Subscribe to both topics;
+// direct mode publishes only binary, while ring mode publishes only text.
+const textSocket = new ReconnectingSocket('/ws/accelerometer/waveform');
 let decoder = new LiveI2cDecoder();
 let decoderConfigKey = '';
 let lastWaveformSequence: number | null = null;
@@ -42,7 +46,7 @@ function decodeWaveform(message: any) {
     decoder = new LiveI2cDecoder(
       Number(data.address ?? 0x19),
       config as any,
-      Number(data.read_length ?? 6),
+      inferLiveReadLength(data),
     );
     decoderConfigKey = nextConfigKey;
   }
@@ -114,6 +118,10 @@ socket.subscribe((message) => {
   }
 });
 
+textSocket.subscribe((message) => {
+  if (message.type === 'accelerometer_waveform') decodeWaveform(message);
+});
+
 socket.subscribeBinary((buffer) => {
   if (buffer.byteLength < 4) return;
   const view = new DataView(buffer);
@@ -129,4 +137,7 @@ socket.subscribeBinary((buffer) => {
   } catch { /* ignore malformed binary frames */ }
 });
 
-self.addEventListener('unload', () => socket.close());
+self.addEventListener('unload', () => {
+  socket.close();
+  textSocket.close();
+});

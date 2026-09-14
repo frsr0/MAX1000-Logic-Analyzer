@@ -194,12 +194,14 @@ it('rebinds session sockets and handles decoder and live-waveform messages', asy
   const view = render(<App />);
   await waitFor(() => expect(socket('/ws/decoder/one')).toBeTruthy());
   const raw = socket('/ws/accelerometer/waveform-binary');
+  const rawText = socket('/ws/accelerometer/waveform');
   expect(raw).toBeTruthy();
+  expect(rawText).toBeTruthy();
   act(() => raw.onStateChange?.(true));
   const rawBytes = Uint8Array.from([0x34, 0x12, 0xcd, 0xab]);
   let rawBinary = '';
   for (const byte of rawBytes) rawBinary += String.fromCharCode(byte);
-  await message('/ws/accelerometer/waveform-binary', 'accelerometer_waveform', {
+  await message('/ws/accelerometer/waveform', 'accelerometer_waveform', {
     samples_b64: btoa(rawBinary), sample_rate: 2_000_000,
   });
   expect(appendLiveRaw).toHaveBeenCalledWith(

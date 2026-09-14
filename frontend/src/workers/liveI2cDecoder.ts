@@ -13,6 +13,24 @@ export interface LiveDecodedSample {
   sample_offset: number;
 }
 
+/**
+ * Ring-fallback waveform packets from older backends do not carry the
+ * generator read length. Infer the FIFO burst size from the active LIS3DH
+ * ODR so the browser decoder still consumes the complete transaction.
+ */
+export function inferLiveReadLength(data: Record<string, unknown>): number {
+  const explicit = Number(data.read_length);
+  if (Number.isInteger(explicit) && explicit >= 6 && explicit % 6 === 0) {
+    return explicit;
+  }
+  const config = data.config && typeof data.config === 'object'
+    ? data.config as Record<string, unknown> : {};
+  const odr = Number(config.output_data_rate_hz);
+  if (odr === 5376) return 24;
+  if (odr === 1600) return 12;
+  return 6;
+}
+
 const SENSOR_REGISTER = 0xA8;
 const LIS3DH_SENSITIVITY_MG: Record<string, Record<number, number>> = {
   normal: { 2: 4, 4: 8, 8: 16, 16: 48 },

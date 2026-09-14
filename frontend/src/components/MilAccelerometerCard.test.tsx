@@ -92,6 +92,10 @@ it('updates the orientation from each pushed decoded sample', async () => {
 
     close() { this.onclose?.(); }
 
+    subscribeBinary(_handler: (buffer: ArrayBuffer) => void) {
+      return () => {};
+    }
+
     emit(data: unknown) {
       this.onmessage?.({ data: JSON.stringify(data) } as MessageEvent);
     }
@@ -107,7 +111,7 @@ it('updates the orientation from each pushed decoded sample', async () => {
   await waitFor(() => expect(screen.getAllByText('+0.000', { exact: true })).toHaveLength(2));
   expect((document.querySelector('.mil-accel-board') as HTMLElement).style.transition)
     .toBe('');
-  expect(FakeAccelerometerWebSocket.instances).toHaveLength(1);
+  expect(FakeAccelerometerWebSocket.instances).toHaveLength(2);
   expect(FakeAccelerometerWebSocket.instances[0].url).toContain('/ws/accelerometer');
 
   const push = (x_g: number, samples_read: number) => {
@@ -376,6 +380,7 @@ it('falls back to the direct socket when a module worker fails before delivery',
     onerror: (() => void) | null = null;
     constructor(readonly url: string) { FakeSocket.instances.push(this); }
     close() { this.onclose?.(); }
+    subscribeBinary(_handler: (buffer: ArrayBuffer) => void) { return () => {}; }
     emit(data: unknown) { this.onmessage?.({ data: JSON.stringify(data) } as MessageEvent); }
   }
 
@@ -386,7 +391,7 @@ it('falls back to the direct socket when a module worker fails before delivery',
   await waitFor(() => expect(FailingWorker.instances).toHaveLength(1));
 
   FailingWorker.instances[0].fail();
-  await waitFor(() => expect(FakeSocket.instances).toHaveLength(1));
+  await waitFor(() => expect(FakeSocket.instances).toHaveLength(2));
   expect(FailingWorker.instances[0].terminated).toBe(true);
   expect(FakeSocket.instances[0].url).toContain('/ws/accelerometer/waveform');
   FakeSocket.instances[0].emit({
@@ -414,6 +419,7 @@ it('does not let a late worker compete with the fallback pose stream', async () 
     onerror: (() => void) | null = null;
     constructor(readonly url: string) { FakeSocket.instances.push(this); }
     close() { this.onclose?.(); }
+    subscribeBinary(_handler: (buffer: ArrayBuffer) => void) { return () => {}; }
     emit(data: unknown) { this.onmessage?.({ data: JSON.stringify(data) } as MessageEvent); }
   }
 
@@ -425,7 +431,7 @@ it('does not let a late worker compete with the fallback pose stream', async () 
   expect(SlowWorker.instances).toHaveLength(1);
 
   await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
-  expect(FakeSocket.instances).toHaveLength(1);
+  expect(FakeSocket.instances).toHaveLength(2);
   await act(async () => { FakeSocket.instances[0].emit({
       type: 'accelerometer_sample',
       data: { sample: { x_g: 0.2, y_g: 0, z_g: 1, timestamp: 10 }, samples_read: 1 },

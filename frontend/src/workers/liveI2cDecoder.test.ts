@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LiveI2cDecoder } from './liveI2cDecoder';
+import { inferLiveReadLength, LiveI2cDecoder } from './liveI2cDecoder';
 
 const busWord = (scl: number, sda: number) =>
   ((scl & 1) << 14) | ((sda & 1) << 13);
@@ -41,6 +41,21 @@ function sampleBytes(x: number, y: number, z: number): number[] {
 }
 
 describe('LiveI2cDecoder', () => {
+  it('infers ring-fallback burst lengths from the LIS3DH ODR', () => {
+    expect(inferLiveReadLength({
+      config: { output_data_rate_hz: 1600 },
+    })).toBe(12);
+    expect(inferLiveReadLength({
+      config: { output_data_rate_hz: 5376 },
+    })).toBe(24);
+    expect(inferLiveReadLength({
+      config: { output_data_rate_hz: 1344 },
+    })).toBe(6);
+    expect(inferLiveReadLength({
+      read_length: 18, config: { output_data_rate_hz: 1600 },
+    })).toBe(18);
+  });
+
   it('decodes an ordered waveform even when every chunk splits the transaction', () => {
     const waveform = transaction(sampleBytes(128, -64, 1000));
     const decoder = new LiveI2cDecoder(0x19, {
