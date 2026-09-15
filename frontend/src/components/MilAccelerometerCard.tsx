@@ -3,6 +3,7 @@ import { api } from '../api/client';
 import { ReconnectingSocket } from '../api/websocket';
 import type { MilAccelerometerConfig, MilAccelerometerStatus } from '../api/types';
 import { useApp } from '../state/appStore';
+import { waveformView } from '../state/waveformStore';
 import { hasUsableGravity, orientationFor, type Orientation } from './accelerometerPose';
 import { inferLiveReadLength, LiveI2cDecoder } from '../workers/liveI2cDecoder';
 
@@ -142,13 +143,57 @@ export function MilAccelerometerCard() {
   const lastBoardFrameAt = useRef<number | null>(null);
   const latestFrontendTiming = useRef<Record<string, any> | null>(null);
   const hasFrontendWaveformSample = useRef(false);
+  const pendingLiveUi = useRef<{
+    sample: NonNullable<MilAccelerometerStatus['sample']>;
+    data: Record<string, any>;
+    timing?: Record<string, any>;
+  } | null>(null);
+  const activeSession = useApp((state) => state.activeSession);
+  const activeSessionRef = useRef(activeSession);
+  activeSessionRef.current = activeSession;
 
   const writeBoardPose = (next: Orientation) => {
     if (boardRef.current) boardRef.current.style.transform = boardTransform(next);
   };
 
+  const flushPendingLiveUi = () => {
+    const pending = pendingLiveUi.current;
+    pendingLiveUi.current = null;
+    if (!pending) return;
+    if (pending.timing) {
+      pending.timing.frontend_state_updated_at_ms = performance.now();
+    }
+    setPoseSample(pending.sample);
+    setStatus((previous) => previous ? {
+      ...previous,
+      sample: pending.sample,
+      last_sample_at: pending.data.last_sample_at ?? pending.sample.timestamp,
+      samples_read: pending.data.samples_read ?? previous.samples_read,
+      host_read_rate_hz: pending.data.host_read_rate_hz ?? previous.host_read_rate_hz,
+      host_data_rate_bytes_per_s: pending.data.host_data_rate_bytes_per_s
+        ?? previous.host_data_rate_bytes_per_s,
+      measured_rate_hz: pending.data.measured_rate_hz ?? previous.measured_rate_hz,
+      data_rate_bytes_per_s: pending.data.data_rate_bytes_per_s
+        ?? previous.data_rate_bytes_per_s,
+      last_sample_sequence: pending.data.last_sample_sequence
+        ?? previous.last_sample_sequence,
+      source_sample_index: pending.data.source_sample_index
+        ?? previous.source_sample_index,
+      source_age_samples: pending.data.source_age_samples
+        ?? previous.source_age_samples,
+      source_backlog_samples: pending.data.source_backlog_samples
+        ?? previous.source_backlog_samples,
+      capture_to_publish_latency_ms: pending.data.capture_to_publish_latency_ms
+        ?? previous.capture_to_publish_latency_ms,
+      decoded_to_publish_latency_ms: pending.data.decoded_to_publish_latency_ms
+        ?? previous.decoded_to_publish_latency_ms,
+      live_timing: pending.timing ?? previous.live_timing,
+    } : previous);
+  };
+
   const renderBoardFrame = (timestamp: number) => {
     boardAnimationFrame.current = null;
+    flushPendingLiveUi();
     const target = targetBoardOrientation.current;
     if (!target || !boardRef.current) return;
 
@@ -408,36 +453,17 @@ export function MilAccelerometerCard() {
       // rejection belongs in the incremental decoder, not in pose motion.
       applyBoardPose(nextPose, false, trace);
 
-      // Every decoded packet is a pose update. Keep the full ordered packet
-      // stream visible to the card; only CSS painting is limited by refresh.
+      // The decoder and pose target still receive every packet above. React
+      // state is presentation only: committing 1,344+ state updates/second
+      // makes the card compete with the worker and eventually causes the
+      // browser socket to stop draining. Publish the newest decoded packet
+      // once per paint frame while retaining the exact packet order in the
+      // worker and the board target ref.
       const timing = latestFrontendTiming.current ?? trace;
-      if (timing) timing.frontend_state_updated_at_ms = performance.now();
-      setPoseSample(nextPose);
-      setStatus((previous) => previous ? {
-        ...previous,
-        sample: nextPose,
-        last_sample_at: message.data.last_sample_at ?? nextPose.timestamp,
-        samples_read: message.data.samples_read ?? previous.samples_read,
-        host_read_rate_hz: message.data.host_read_rate_hz ?? previous.host_read_rate_hz,
-        host_data_rate_bytes_per_s: message.data.host_data_rate_bytes_per_s
-          ?? previous.host_data_rate_bytes_per_s,
-        measured_rate_hz: message.data.measured_rate_hz ?? previous.measured_rate_hz,
-        data_rate_bytes_per_s: message.data.data_rate_bytes_per_s
-          ?? previous.data_rate_bytes_per_s,
-        last_sample_sequence: message.data.last_sample_sequence
-          ?? previous.last_sample_sequence,
-        source_sample_index: message.data.source_sample_index
-          ?? previous.source_sample_index,
-        source_age_samples: message.data.source_age_samples
-          ?? previous.source_age_samples,
-        source_backlog_samples: message.data.source_backlog_samples
-          ?? previous.source_backlog_samples,
-        capture_to_publish_latency_ms: message.data.capture_to_publish_latency_ms
-          ?? previous.capture_to_publish_latency_ms,
-        decoded_to_publish_latency_ms: message.data.decoded_to_publish_latency_ms
-          ?? previous.decoded_to_publish_latency_ms,
-        live_timing: timing ?? previous.live_timing,
-      } : previous);
+      pendingLiveUi.current = { sample: nextPose, data: message.data, timing };
+      // Reuse the board's existing display frame for the one presentation
+      // commit; this adds no second animation queue.
+      scheduleBoardRender();
     };
 
     let handleBinaryWaveformMessage = (_buffer: ArrayBuffer) => {};
@@ -511,7 +537,6 @@ export function MilAccelerometerCard() {
     let socket: ReconnectingSocket | null = null;
     let textSocket: ReconnectingSocket | null = null;
     let unsubscribe: (() => void) | null = null;
-    let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
     const startFallbackSocket = () => {
       if (socket) return;
       // A direct stream publishes binary packets. Falling back to the legacy
@@ -542,6 +567,19 @@ export function MilAccelerometerCard() {
           { type: 'module' },
         );
         worker.onmessage = (event: MessageEvent<Record<string, any>>) => {
+          if (event.data.type === 'accelerometer_waveform_chunk') {
+            const session = activeSessionRef.current;
+            const data = event.data.data;
+            const samples = data?.samples_values;
+            if (session?.tags.includes('accelerometer')
+                && samples instanceof Uint16Array) {
+              waveformView.setLiveRawActive(session.id, true);
+              waveformView.appendLiveRaw(
+                session.id, samples, Number(data.sample_rate));
+              hasFrontendWaveformSample.current = true;
+            }
+            return;
+          }
           handleMessage(event.data, 'worker');
         };
         worker.onerror = () => {
@@ -560,22 +598,16 @@ export function MilAccelerometerCard() {
       // the worker above, so socket parsing cannot compete with React renders.
       startFallbackSocket();
     }
-    // A module worker can remain alive without delivering an error when a
-    // browser rejects its upgrade or loses the first stream epoch. Do not let
-    // that silent state freeze the board: use the same binary decoder on the
-    // page if no waveform sample has arrived shortly after startup.
-    if (!socket) {
-      fallbackTimer = setTimeout(() => {
-        if (!hasFrontendWaveformSample.current) startFallbackSocket();
-      }, 1500);
-    }
     return () => {
       alive = false;
       worker?.terminate();
       unsubscribe?.();
       socket?.close();
       textSocket?.close();
-      if (fallbackTimer !== null) clearTimeout(fallbackTimer);
+      const session = activeSessionRef.current;
+      if (session?.tags.includes('accelerometer')) {
+        waveformView.setLiveRawActive(session.id, false);
+      }
     };
   }, []);
 

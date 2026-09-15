@@ -250,6 +250,21 @@ it('renders sequential raw live chunks without waiting for rolling persistence',
   expect(view.liveChunkSamples).toBe(6);
 });
 
+it('keeps the live paint window bounded as the rolling session grows', () => {
+  const view = new WaveformView();
+  view.sessionId = 'live';
+  view.numSamples = 10_000_000;
+  view.liveRolling = true;
+  view.liveFollow = true;
+
+  view.appendLiveRaw('live', new Uint16Array(100_000), 2_000_000);
+
+  expect(view.numSamples).toBe(65_536);
+  expect(view.payload?.header.num_samples).toBe(65_536);
+  expect((view.payload?.arrays.get('digital') as Uint16Array).length)
+    .toBe(65_536);
+});
+
 it('preserves a manually panned live window but follows the previous right edge', async () => {
   const view = new WaveformView();
   await view.load('s', 0, 1000, null);

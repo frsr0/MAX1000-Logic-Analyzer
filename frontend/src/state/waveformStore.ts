@@ -10,6 +10,11 @@ import type { ChannelInfo, DecoderEvent, Marker } from '../api/types';
 export type ViewListener = () => void;
 
 const MAX_DECODER_ROWS = 6;
+// The live decoder consumes the complete ordered waveform in its worker.
+// This array is only the paint window; tying it to a growing rolling-session
+// length makes every packet allocate/copy the whole session and eventually
+// stalls the browser behind the physical transport.
+const MAX_LIVE_RAW_DISPLAY_SAMPLES = 65_536;
 
 export class WaveformView {
   sessionId = '';
@@ -173,7 +178,10 @@ export class WaveformView {
     if (sessionId !== this.sessionId || samples.length === 0
         || !Number.isFinite(sampleRate) || sampleRate <= 0) return;
 
-    const capacity = Math.max(1, Math.floor(this.numSamples || samples.length));
+    const capacity = Math.max(1, Math.min(
+      MAX_LIVE_RAW_DISPLAY_SAMPLES,
+      Math.floor(this.numSamples || samples.length),
+    ));
     const previous = this.liveRawSamples ?? new Uint16Array(0);
     const count = Math.min(capacity, previous.length + samples.length);
     const next = new Uint16Array(count);
@@ -189,6 +197,13 @@ export class WaveformView {
     this.liveRawSamples = next;
     this.liveRawActive = true;
     this.liveRolling = true;
+    // The retained live payload is a rolling coordinate space. Bound the
+    // coordinate space once it is known, rather than leaving it indexed
+    // against an unbounded persisted session.
+    this.numSamples = Math.min(
+      Math.max(1, Math.floor(this.numSamples || count)),
+      MAX_LIVE_RAW_DISPLAY_SAMPLES,
+    );
     this.sampleRate = sampleRate;
     this.liveChunkSamples = Math.min(count, samples.length);
     this.liveUpdatedAt = performance.now();

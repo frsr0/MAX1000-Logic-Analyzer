@@ -722,8 +722,8 @@ def test_live_capture_uses_continuous_ring_producer_and_stops_cleanly(tmp_path):
     assert service._live_worker is None
 
 
-def test_direct_stream_failure_retries_waveform_ring_not_atomic_xyz():
-    """A direct-FIFO ACK miss must preserve the real waveform data path."""
+def test_direct_stream_failure_is_fail_closed_and_never_falls_back():
+    """A direct-FIFO failure must not make stale ring data look live."""
 
     class DirectThenRingRaw(FakeRaw):
         supports_direct_live_stream = True
@@ -748,16 +748,17 @@ def test_direct_stream_failure_retries_waveform_ring_not_atomic_xyz():
     service = AccelerometerService(FakeManager(raw), sample_rate_hz=400)
     assert service.start()["running"] is True
     try:
-        assert raw.first_sample.wait(1.0)
         deadline = time.time() + 1.0
-        while time.time() < deadline and service.status()["samples_read"] < 2:
+        while time.time() < deadline and service.status()["running"]:
             time.sleep(0.01)
         status = service.status()
-        assert status["samples_read"] >= 2
-        assert raw.capture_modes[:2] == [False, True]
+        assert status["running"] is False
+        assert status["samples_read"] == 0
+        assert raw.capture_modes == [False]
         transport = status["live_timing"]["transport"]
-        assert transport["mode"] == "ring"
-        assert transport["fallback"] is True
+        assert transport["mode"] == "direct"
+        assert transport["state"] == "fault"
+        assert transport["fallback"] is False
         assert "no stream ack" in transport["error"]
         assert raw.reads == 0
     finally:

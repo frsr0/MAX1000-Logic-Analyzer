@@ -2,6 +2,7 @@
 SPI-based OLS device backend using packet protocol.
 """
 import logging
+import math
 import os
 import time
 import struct
@@ -79,18 +80,30 @@ MIXED_ADC_LANE_RAW12 = 1
 DIRECT_LIVE_DECODE_QUEUE_CHUNKS = 4
 
 
+def direct_live_capture_divider(sample_clk_hz: float,
+                                requested_rate_hz: float) -> int:
+    """Choose a divider whose realised live-tap rate never exceeds target.
+
+    The FPGA's fast-clock divider register is the *period* value; the HDL
+    subtracts one when loading its down-counter. The MAX10 fast clock is
+    200.4 MHz, so a register value of 101 gives 200.4/101 = 1.984 MS/s for
+    a nominal 2 MHz request. Returning 100 here would make the HDL run at
+    2.004 MS/s, slowly filling the bounded direct FIFO faster than the FTDI
+    reader can drain it.
+    """
+    return max(1, math.ceil(
+        float(sample_clk_hz) / max(1.0, float(requested_rate_hz))))
+
+
 def _decode_packed_live_frames(wire_chunk: bytes,
                                pending: bytearray,
                                sample_bits: int = 3) -> bytes:
-    """Decode complete A5 + 3-byte live waveform frames efficiently.
+    """Decode fixed A5 + packed live waveform frames efficiently.
 
-    The packed direct stream carries eight 3-bit waveform samples in each
-    four-byte frame.  Keeping the frame assembly state in a bytearray is
-    necessary because USB chunks may split a frame, but expanding each
-    sample with ``struct.pack`` made the acquisition thread spend most of its
-    time in Python while the FPGA FIFO continued filling.  Decode complete
-    frames in NumPy batches instead; the returned bytes retain the normal
-    little-endian 16-bit capture-tap layout.
+    A5 is a frame marker followed by a fixed packed payload for eight
+    samples. Payload bytes may themselves equal A5, 00, or C3, so framing is
+    consumed by fixed width rather than scanning for a delimiter inside the
+    payload. USB chunks may split a frame; ``pending`` preserves it.
     """
     sample_bits = int(sample_bits)
     if sample_bits not in (2, 3):
@@ -99,61 +112,51 @@ def _decode_packed_live_frames(wire_chunk: bytes,
     frame_bytes = group_bytes + 1
     pending.extend(wire_chunk)
     decoded = bytearray()
+    data = bytes(pending)
+    pos = 0
+    payload = bytearray()
 
-    def overflow() -> RuntimeError:
+    def overflow(context: bytes) -> RuntimeError:
         return RuntimeError(
             "continuous live stream FIFO overflow "
-            f"wire={bytes(pending[:64]).hex()}")
+            f"wire={context[:64].hex()}")
 
-    def has_overflow_marker(data: bytes | bytearray) -> bool:
-        # A packed payload byte may legitimately be 0x07, and the
-        # source-synchronous shifter can repeat the final payload byte once at
-        # a chunk boundary. The RTL leaves a terminated overflow stream
-        # holding 0x07, so require a short run before declaring a fault.
-        return b"\x07\x07\x07\x07" in data
-
+    # Idle bytes may occur between records. Parse from one marker to the next
+    # without ever treating a marker-like value inside a fixed payload as a
+    # new record. The previous implementation repeatedly reshaped the whole
+    # pending buffer at each idle run, making a 64 KiB FTDI quantum take over
+    # 100 ms to decode on the live path.
     while True:
-        marker = pending.find(b"\xA5")
+        marker = data.find(b"\xA5", pos)
         if marker < 0:
-            if has_overflow_marker(pending):
-                raise overflow()
-            pending.clear()
+            tail = data[pos:]
+            if b"\xC3" in tail:
+                raise overflow(tail)
+            pos = len(data)
             break
-        if marker:
-            prefix = pending[:marker]
-            if has_overflow_marker(prefix):
-                raise overflow()
-            del pending[:marker]
-        complete_bytes = (len(pending) // frame_bytes) * frame_bytes
-        if complete_bytes < frame_bytes:
+        prefix = data[pos:marker]
+        if b"\xC3" in prefix:
+            raise overflow(prefix)
+        if len(data) - marker < frame_bytes:
+            pos = marker
             break
-        raw = np.frombuffer(bytes(pending[:complete_bytes]),
-                            dtype=np.uint8).reshape(-1, frame_bytes)
-        invalid = np.flatnonzero(raw[:, 0] != 0xA5)
-        frame_count = (int(invalid[0]) if invalid.size
-                       else int(raw.shape[0]))
-        if frame_count == 0:
-            # A malformed boundary cannot be a valid sample. Drop one byte
-            # and resynchronise on the next A5 marker.
-            if has_overflow_marker(pending):
-                raise overflow()
-            del pending[0]
-            continue
-        frames = raw[:frame_count, 1:].astype(np.uint32, copy=False)
-        packed = np.zeros(frame_count, dtype=np.uint32)
+        payload.extend(data[marker + 1:marker + frame_bytes])
+        pos = marker + frame_bytes
+
+    if payload:
+        frames = np.frombuffer(bytes(payload), dtype=np.uint8).reshape(
+            -1, group_bytes).astype(np.uint32, copy=False)
+        packed = np.zeros(frames.shape[0], dtype=np.uint32)
         for byte_idx in range(group_bytes):
             packed |= frames[:, byte_idx] << (byte_idx * 8)
         shifts = np.arange(8, dtype=np.uint32) * sample_bits
         samples = ((packed[:, None] >> shifts)
                    & ((1 << sample_bits) - 1)).astype(np.uint16)
-        samples = (samples.reshape(-1) << 13).astype("<u2", copy=False)
-        decoded.extend(samples.tobytes())
-        del pending[:frame_count * frame_bytes]
-        if frame_count < raw.shape[0]:
-            # Leave the malformed row for the next pass, where the parser
-            # will search for a fresh frame marker and preserve overflow
-            # detection outside A5-delimited payloads.
-            continue
+        decoded.extend((samples.reshape(-1) << 13).astype(
+            "<u2", copy=False).tobytes())
+
+    pending.clear()
+    pending.extend(data[pos:])
     return bytes(decoded)
 
 
@@ -3253,7 +3256,7 @@ class OLSDeviceSPI:
         # read-side used-word counter can otherwise top out one count below a
         # 4095-word request on some MAX 10 builds.
         direct_chunk = max(1, min(4094, int(chunk_nsamp)))
-        div = max(0, int(self.sample_clk / max(1.0, float(rate_hz))) - 1)
+        div = direct_live_capture_divider(self.sample_clk, rate_hz)
         restore_spi_speed = None
         try:
             # The direct FIFO is always raw 16-bit capture-tap words. Keep the
@@ -3290,24 +3293,20 @@ class OLSDeviceSPI:
                 # appears to stop producing samples.
                 packed_tokens = bool(
                     self.supports_packed_continuous_live_stream)
-                # Use deterministic tagged 2-bit records for the direct
-                # accelerometer stream. RLE is smaller on a quiet bus, but
-                # its reserved overflow byte shares the source alphabet on
-                # older flashed images and can turn a sustained stream into
-                # a false FIFO-overflow teardown. Tagged records are fixed at
-                # four wire bytes per eight source samples, so the 30 MHz
-                # held-CS link still has ample margin at the 1 MHz tap while
-                # preserving every source sample and an unambiguous parser.
-                tagged_packed = True
+                # Use fixed-width packed 2-bit records for the direct
+                # accelerometer stream. Each eight-sample record is A5 plus
+                # its two payload bytes, so the parser never searches inside
+                # a payload and can safely preserve payload values such as
+                # A5, 00, and C3. This removes the extra A0/B0 nibble tags
+                # and leaves 25% more wire/CPU margin for sustained 2 MS/s.
+                tagged_packed = False
                 sparse_rle = False
-                # Keep sparse packing disabled: tagged framing already makes
-                # every payload byte nonzero and self-synchronizing.
                 sparse_packed = False
                 requested_sparse_sample_bits = int(sparse_sample_bits)
                 # The FPGA and FTDI MPSSE support a 30 MHz held-CS clock.
-                # Tagged records are fixed at 0.5 wire bytes per source
-                # sample, so the 30 MHz clock leaves ample margin at the
-                # 1 MHz live tap even for a transition-dense I2C waveform.
+                # Tagged 2-bit records use 0.5 wire bytes per source sample;
+                # the 30 MHz held-CS link still has ample margin over the
+                # 2 MHz capture tap, while preserving every source sample.
                 # Restore the normal command speed later.
                 if packed_tokens:
                     set_speed = getattr(self.spi, "set_speed", None)
@@ -3319,10 +3318,9 @@ class OLSDeviceSPI:
                             set_speed(stream_speed)
                 wire_stream = self.pkt.start_live_stream_continuous(
                     stop_evt=reader_stop,
-                    # Prefer the packed A5/A0/B0 framing when the image
-                    # supports it. Each eight-sample group is four tagged
-                    # bytes, so the wire rate is fixed and the payload cannot
-                    # be confused with source-starved idle bytes.
+                    # Prefer the fixed packed A5 + payload framing. The
+                    # payload length is derived from sample_bits, so a USB
+                    # chunk boundary cannot alter sample alignment.
                      packed_tokens=packed_tokens,
                      sparse_packed=sparse_packed,
                      sparse_sample_bits=requested_sparse_sample_bits,

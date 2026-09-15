@@ -4,7 +4,6 @@ import { ReconnectingSocket } from './api/websocket';
 import { api } from './api/client';
 import { AppShell } from './layout/AppShell';
 import { useApp } from './state/appStore';
-import { decodeLiveWaveformBase64, parseLiveWaveformBinary } from './state/liveWaveform';
 import { waveformView } from './state/waveformStore';
 
 export default function App() {
@@ -175,54 +174,8 @@ export default function App() {
         }
       }
     });
-    // The persisted rolling session is intentionally refreshed in coarse
-    // batches. For an accelerometer session, subscribe to the ordered raw
-    // waveform as well and let the browser update the live viewport from the
-    // packet stream instead of waiting for the next file snapshot.
-    let rawWs: ReconnectingSocket | null = null;
-    let rawTextWs: ReconnectingSocket | null = null;
-    let unsubRawBinary: (() => void) | null = null;
-    let unsubRawText: (() => void) | null = null;
-    if (activeIsAccelerometer) {
-      rawWs = new ReconnectingSocket('/ws/accelerometer/waveform-binary', true);
-      rawWs.onStateChange = (connected) => {
-        waveformView.setLiveRawActive(activeId, connected);
-      };
-      unsubRawBinary = rawWs.subscribeBinary((buffer) => {
-        const chunk = parseLiveWaveformBinary(buffer);
-        if (chunk) waveformView.appendLiveRaw(activeId, chunk.samples, chunk.sampleRate);
-      });
-      unsubRawText = rawWs.subscribe((message) => {
-        if (message.type === 'accelerometer_waveform') {
-          const data = message.data as Record<string, any> | undefined;
-          const chunk = data && typeof data.samples_b64 === 'string'
-            ? decodeLiveWaveformBase64(data.samples_b64, Number(data.sample_rate))
-            : null;
-          if (chunk) waveformView.appendLiveRaw(activeId, chunk.samples, chunk.sampleRate);
-        }
-      });
-      rawTextWs = new ReconnectingSocket('/ws/accelerometer/waveform');
-      const unsubRawTextTopic = rawTextWs.subscribe((message) => {
-        if (message.type !== 'accelerometer_waveform') return;
-        const data = message.data as Record<string, any> | undefined;
-        const chunk = data && typeof data.samples_b64 === 'string'
-          ? decodeLiveWaveformBase64(data.samples_b64, Number(data.sample_rate))
-          : null;
-        if (chunk) waveformView.appendLiveRaw(activeId, chunk.samples, chunk.sampleRate);
-      });
-      const previousUnsubRawText = unsubRawText;
-      unsubRawText = () => {
-        previousUnsubRawText?.();
-        unsubRawTextTopic();
-      };
-    }
     return () => {
       unsub(); ws.close(); unsubSes(); sesWs.close();
-      unsubRawBinary?.();
-      unsubRawText?.();
-      rawWs?.close();
-      rawTextWs?.close();
-      waveformView.setLiveRawActive(activeId, false);
     };
   }, [activeId, activeIsAccelerometer]);
 

@@ -1,5 +1,5 @@
 import { ReconnectingSocket } from '../api/websocket';
-import { inferLiveReadLength, LiveI2cDecoder } from './liveI2cDecoder';
+import { decodeBase64, inferLiveReadLength, LiveI2cDecoder } from './liveI2cDecoder';
 
 // Keep the direct waveform worker asset fingerprinted when its transport
 // contract changes; a running lab tab must not retain an older decoder bundle.
@@ -17,6 +17,41 @@ let decoderConfigKey = '';
 let lastWaveformSequence: number | null = null;
 let decodedSamples = 0;
 let lastTimestamp = 0;
+const LIVE_VIEW_POST_INTERVAL_MS = 16;
+let pendingWaveformChunk: {
+  sequence: number;
+  sample_rate: number;
+  sample_count: number;
+  samples_values: Uint16Array;
+} | null = null;
+let waveformPostTimer: ReturnType<typeof setTimeout> | null = null;
+
+function postLatestWaveformChunk(): void {
+  waveformPostTimer = null;
+  const pending = pendingWaveformChunk;
+  pendingWaveformChunk = null;
+  if (!pending) return;
+  (self.postMessage as (message: unknown, transfer: Transferable[]) => void)({
+    type: 'accelerometer_waveform_chunk',
+    data: pending,
+  }, [pending.samples_values.buffer]);
+}
+
+function queueWaveformChunk(chunk: {
+  sequence: number;
+  sample_rate: number;
+  sample_count: number;
+  samples_values: Uint16Array;
+}): void {
+  // The worker has already decoded every source chunk. The main thread only
+  // needs the newest paint payload; keeping older display payloads queued
+  // makes the browser a second waveform backlog and can starve the socket.
+  pendingWaveformChunk = chunk;
+  if (waveformPostTimer === null) {
+    waveformPostTimer = setTimeout(
+      postLatestWaveformChunk, LIVE_VIEW_POST_INTERVAL_MS);
+  }
+}
 
 function configKey(config: Record<string, unknown> | undefined): string {
   return JSON.stringify(config ?? {});
@@ -27,6 +62,10 @@ function decodeWaveform(message: any) {
   if (!data
       || (typeof data.samples_b64 !== 'string'
           && !(data.samples_values instanceof Uint16Array))) return;
+
+  const samples = data.samples_values instanceof Uint16Array
+    ? data.samples_values
+    : decodeBase64(data.samples_b64);
 
   const sequence = Number(data.sequence);
   if (Number.isFinite(sequence)
@@ -54,9 +93,18 @@ function decodeWaveform(message: any) {
   const receivedAtMs = performance.now();
   const sourceIndex = Number.isFinite(Number(data.source_index))
     ? Number(data.source_index) : null;
-  const decoded = data.samples_values instanceof Uint16Array
-    ? decoder.feed(data.samples_values, sourceIndex)
-    : decoder.feedBase64(data.samples_b64, sourceIndex);
+  const decoded = decoder.feed(samples, sourceIndex);
+  // The decoder and live waveform view must consume the same physical
+  // ordered chunk.  Forward a copy after decoding so the main thread does
+  // not open a second WebSocket (and therefore does not make the backend
+  // transmit/decode the 2 MHz stream twice).
+  const waveformSamples = samples.slice();
+  queueWaveformChunk({
+    sequence,
+    sample_rate: Number(data.sample_rate),
+    sample_count: Number(data.sample_count),
+    samples_values: waveformSamples,
+  });
   const sampleRate = Number(data.sample_rate);
   const sampleCount = Number(data.sample_count);
   const messageTimestamp = Number(message.ts);

@@ -1510,32 +1510,32 @@ BEGIN
             when 0 =>
               if raw_live_source then
                 if live_fifo_empty = '0' then
-                  -- The direct FIFO is show-ahead: q is the current head
-                  -- before rdreq is accepted.  Latch that word first, then
-                  -- pop it.  Waiting for the old two-cycle read pipeline
-                  -- sampled the post-pop q, skipping the real word and
-                  -- occasionally capturing the empty/stale value at the
-                  -- producer boundary.
-                  raw_word := (others => '0');
-                  raw_word(14 downto 13) := live_fifo_q;
-                  raw_have_word := true;
+                  -- The direct FIFO is show-ahead, but rdreq is a registered
+                  -- signal.  Request the pop first and latch q in the next
+                  -- dispatcher cycle; latching here sees the current head
+                  -- again on the cycle the FIFO accepts rdreq and duplicates
+                  -- every live sample on the wire.
                   live_fifo_rdreq <= '1';
+                  raw_fetch_state := 1;
                 end if;
               elsif Rd_Fifo_Empty = '0' then
                 raw_fifo_rdreq <= '1';
                 raw_fetch_state := 1;
               end if;
             when 1 =>
-              raw_fetch_state := 2;
-            when others =>
               if raw_live_source then
-                -- Direct live words are latched in state 0 from the
-                -- show-ahead output; this state is retained for the SDRAM
-                -- read FIFO's registered-latency path only.
-                null;
+                -- The show-ahead q value is the word popped by the request
+                -- from the previous cycle.  Capture it before issuing the
+                -- next request so the direct FIFO is consumed exactly once.
+                raw_word := (others => '0');
+                raw_word(14 downto 13) := live_fifo_q;
+                raw_have_word := true;
+                raw_fetch_state := 0;
               else
-                raw_word := Rd_Fifo_Q;
+                raw_fetch_state := 2;
               end if;
+            when others =>
+              raw_word := Rd_Fifo_Q;
               raw_have_word := true;
               raw_fetch_state := 0;
           end case;

@@ -121,13 +121,12 @@ ST_STREAM_ACTIVE = 0x20
 ST_GEN_BUSY      = 0x30
 
 MAX_PAYLOAD = 4096
-# The direct accelerometer stream is packed at four wire bytes per eight
-# source samples. The chunked MPSSE reader queues one transfer ahead, so a
-# 16 KiB wire chunk would represent 32K source samples plus another queued
-# 32K and overrun the 32K-sample FPGA FIFO at the 2 MHz capture tap. Keep each
-# wire quantum at 1 KiB: two queued transfers are only 4K source samples,
-# leaving roughly 14 ms of headroom for Windows USB scheduling jitter.
-DIRECT_LIVE_WIRE_CHUNK_BYTES = 1024
+# The direct accelerometer stream is packed at four tagged wire bytes per
+# eight source samples. Keep each receive quantum at 8 KiB: fixed-width
+# decoding produces one 16K-sample delivery per quantum, while four queued
+# MPSSE commands remain a bounded USB scheduling cushion. This reduces Python
+# per-read overhead without creating an unbounded live-history queue.
+DIRECT_LIVE_WIRE_CHUNK_BYTES = 8_192
 BLOCK_SIZE  = 1024
 MAX_RAW_STREAM_SAMPLES = 16384
 

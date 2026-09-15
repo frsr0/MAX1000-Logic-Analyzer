@@ -408,7 +408,7 @@ def test_continuous_live_stream_uses_sustained_non_overlapped_mpsse_chunks():
     assert result == [b"\xA0\xB0\xA0\xB0"]
     assert calls == [{
         "ack_pad": 64,
-        "chunk_bytes": 1024,
+        "chunk_bytes": 8192,
         "stop_evt": None,
         "overlap_io": True,
     }]

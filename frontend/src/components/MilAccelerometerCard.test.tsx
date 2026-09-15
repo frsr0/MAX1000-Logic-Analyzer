@@ -240,7 +240,11 @@ it('publishes the pose readout for every decoded worker packet', async () => {
   }
 
   vi.stubGlobal('Worker', FakeAccelerometerWorker);
-  vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
+  const frames: FrameRequestCallback[] = [];
+  vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+    frames.push(callback);
+    return frames.length;
+  });
   vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({ ...sample(), running: true });
 
   render(<MilAccelerometerCard />);
@@ -252,6 +256,7 @@ it('publishes the pose readout for every decoded worker packet', async () => {
       type: 'accelerometer_sample',
       data: { sample: { x_g: 0.11, y_g: 0, z_g: 1, timestamp: 101 }, samples_read: 1 },
     });
+    frames.shift()?.(16);
   });
   expect(screen.getByText('+0.110', { exact: true })).toBeTruthy();
 
@@ -260,6 +265,7 @@ it('publishes the pose readout for every decoded worker packet', async () => {
       type: 'accelerometer_sample',
       data: { sample: { x_g: 0.22, y_g: 0, z_g: 1, timestamp: 102 }, samples_read: 2 },
     });
+    frames.shift()?.(16);
   });
   expect(screen.getByText('+0.220', { exact: true })).toBeTruthy();
 
@@ -268,6 +274,7 @@ it('publishes the pose readout for every decoded worker packet', async () => {
       type: 'accelerometer_sample',
       data: { sample: { x_g: 0.33, y_g: 0, z_g: 1, timestamp: 103 }, samples_read: 3 },
     });
+    frames.shift()?.(16);
   });
   expect(screen.getByText('+0.330', { exact: true })).toBeTruthy();
 });
@@ -403,7 +410,7 @@ it('falls back to the direct socket when a module worker fails before delivery',
   expect(transform).not.toBe('');
 });
 
-it('does not let a late worker compete with the fallback pose stream', async () => {
+it('uses the worker as the sole live pose stream', async () => {
   class SlowWorker {
     static instances: SlowWorker[] = [];
     onmessage: ((event: MessageEvent) => void) | null = null;
@@ -426,25 +433,24 @@ it('does not let a late worker compete with the fallback pose stream', async () 
   vi.useFakeTimers();
   vi.stubGlobal('Worker', SlowWorker);
   vi.stubGlobal('WebSocket', FakeSocket);
+  const frames: FrameRequestCallback[] = [];
+  vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+    frames.push(callback);
+    return frames.length;
+  });
   vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({ ...sample(), running: true });
   render(<MilAccelerometerCard />);
   expect(SlowWorker.instances).toHaveLength(1);
 
-  await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
-  expect(FakeSocket.instances).toHaveLength(2);
-  await act(async () => { FakeSocket.instances[0].emit({
-      type: 'accelerometer_sample',
-      data: { sample: { x_g: 0.2, y_g: 0, z_g: 1, timestamp: 10 }, samples_read: 1 },
-    });
-    SlowWorker.instances[0].emit({
+  await act(async () => { SlowWorker.instances[0].emit({
       type: 'accelerometer_sample',
       data: { sample: { x_g: 0.8, y_g: 0, z_g: 1, timestamp: 11 }, samples_read: 900 },
     });
+    frames.shift()?.(16);
   });
 
-  expect(screen.getByText('+0.200', { exact: true })).toBeTruthy();
-  expect(screen.queryByText('+0.800', { exact: true })).toBeNull();
-  expect(document.querySelector('.mil-accelerometer-card')?.textContent).toContain('1');
+  expect(screen.getByText('+0.800', { exact: true })).toBeTruthy();
+  expect(FakeSocket.instances).toHaveLength(0);
 });
 
 it('offers retry and reconnect after an accelerometer I/O failure', async () => {

@@ -17,6 +17,7 @@ from driver.ols_spi_device import (
     MODE_MIXED,
     OLSDeviceSPI,
     compress_mixed_group,
+    direct_live_capture_divider,
     decompress_mixed_group,
     decompress_mixed_stream,
 )
@@ -53,6 +54,12 @@ def _mixed_prefix(mode):
     return int(mode).to_bytes(header_bytes, "little") + b"\x00" * (
         MIXED_COMPRESSED_GROUP_FRAMES * 2
     )
+
+
+def test_direct_live_capture_divider_does_not_overshoot_requested_rate():
+    assert direct_live_capture_divider(200_000_000, 2_000_000) == 100
+    assert direct_live_capture_divider(200_400_000, 2_000_000) == 101
+    assert direct_live_capture_divider(200_400_000, 5_000_000) == 41
 
 
 def test_mixed_codec_rejects_all_malformed_group_shapes():

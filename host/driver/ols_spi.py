@@ -4,6 +4,7 @@ Fixed MPSSE driver: batched writes, 0x87, correct init, drain.
 """
 import threading
 import time
+from queue import Empty, Full, Queue
 
 # ftd2xx wraps the native FTDI D2XX library and is only needed to talk to real
 # hardware. Import it lazily so the module (and the pure helpers that pull it in
@@ -49,6 +50,18 @@ READ_CHUNK  = 16384
 # their read must yield quickly so the caller can tear down and use its bounded
 # fallback.  Ordinary packet reads retain the longer 0.5 s transport timeout.
 STREAM_CHUNK_READ_TIMEOUT_S = 0.050
+# Keep exactly two MPSSE transfers in flight: one being clocked/drained and
+# one queued behind it.  This overlaps FTDI USB IN/OUT scheduling without
+# allowing the device RX queue or the Python waveform queue to become a
+# hidden live-history buffer.
+STREAM_PIPELINE_DEPTH = 2
+STREAM_PIPELINE_BACKPRESSURE_TIMEOUT_S = 0.010
+# A D2XX write is itself a USB OUT scheduling boundary.  Keep several MPSSE
+# read commands in one bounded bulk write so the FTDI can keep clocking while
+# the reader drains the corresponding IN data.  Four 64 KiB commands are
+# 256 KiB of command/data, below the practical Windows D2XX bulk-write size,
+# and represent only ~87 ms on a 30 MHz wire.
+STREAM_COMMAND_BATCH_DEPTH = 4
 
 
 class OLS:
@@ -701,26 +714,114 @@ class OLS:
                             chunk_bytes / max(self.speed_hz / 8, 1)
                             + STREAM_CHUNK_READ_TIMEOUT_S))
             else:
-                # Keep exactly one MPSSE transfer queued ahead of the read.
-                # An unbounded writer thread saturates the FTDI command/RX
-                # queues and, on Windows, reduces the effective held-CS rate
-                # to roughly 7 Mb/s. A two-transfer window keeps SCK running
-                # through the read while bounding device-side backlog.
+                # Read a complete FTDI receive quantum in one call. On
+                # Windows/D2XX, several small reads can each pay an ~8 ms USB
+                # completion delay even while the receive queue is populated.
+                # A single write/read loop therefore leaves the FPGA FIFO
+                # exposed to an occasional scheduling gap. Keep a reader
+                # draining FTDI while a writer maintains exactly two bounded
+                # transfers in flight. This is overlap, not an unbounded
+                # producer queue: the writer cannot get ahead of the reader,
+                # and the reader fails explicitly if the caller stops
+                # consuming the two returned quanta.
                 stream_cmd = (self._mpsse_clock_out(
                     bytes([0x11] * chunk_bytes)) + bytes([0x87]))
-                self.dev.write(stream_cmd)
-                while True:
-                    if stop_evt is not None and stop_evt.is_set():
-                        break
-                    self.dev.write(stream_cmd)
-                    chunk = self._read_n(
-                        chunk_bytes,
-                        timeout=max(
-                            STREAM_CHUNK_READ_TIMEOUT_S,
-                            chunk_bytes / max(self.speed_hz / 8, 1)
-                            + STREAM_CHUNK_READ_TIMEOUT_S))
-                    if chunk:
-                        yield chunk
+                stream_batch = stream_cmd * STREAM_COMMAND_BATCH_DEPTH
+                chunks: Queue[bytes] = Queue(maxsize=STREAM_PIPELINE_DEPTH)
+                pipeline_stop = threading.Event()
+                pipeline_error: list[BaseException] = []
+                pipeline_condition = threading.Condition()
+                submitted = 0
+                completed = 0
+                pipeline_inflight_limit = STREAM_COMMAND_BATCH_DEPTH
+                read_timeout = max(
+                    STREAM_CHUNK_READ_TIMEOUT_S,
+                    chunk_bytes / max(self.speed_hz / 8, 1)
+                    + STREAM_CHUNK_READ_TIMEOUT_S)
+
+                def stop_pipeline(exc: BaseException | None = None) -> None:
+                    if exc is not None and not pipeline_error:
+                        pipeline_error.append(exc)
+                    pipeline_stop.set()
+                    with pipeline_condition:
+                        pipeline_condition.notify_all()
+
+                def write_pipeline() -> None:
+                    nonlocal submitted
+                    try:
+                        while not pipeline_stop.is_set():
+                            with pipeline_condition:
+                                while (submitted - completed
+                                       >= pipeline_inflight_limit
+                                       and not pipeline_stop.is_set()):
+                                    pipeline_condition.wait(0.005)
+                                if pipeline_stop.is_set():
+                                    return
+                                # One D2XX write contains several complete
+                                # MPSSE read commands. Account for every wire
+                                # quantum, not for the single host call, or a
+                                # new bulk write can be submitted while the
+                                # previous batch is still clocking.
+                                submitted += STREAM_COMMAND_BATCH_DEPTH
+                            self.dev.write(stream_batch)
+                    except BaseException as exc:
+                        stop_pipeline(exc)
+
+                def read_pipeline() -> None:
+                    nonlocal completed
+                    try:
+                        while not pipeline_stop.is_set():
+                            chunk = self._read_n(
+                                chunk_bytes, timeout=read_timeout)
+                            if len(chunk) != chunk_bytes:
+                                raise RuntimeError(
+                                    "continuous live stream short FTDI read "
+                                    f"{len(chunk)} of {chunk_bytes} bytes")
+                            deadline = (time.monotonic()
+                                        + STREAM_PIPELINE_BACKPRESSURE_TIMEOUT_S)
+                            while not pipeline_stop.is_set():
+                                try:
+                                    chunks.put(chunk, timeout=0.002)
+                                    break
+                                except Full:
+                                    if time.monotonic() >= deadline:
+                                        raise RuntimeError(
+                                            "continuous live stream consumer "
+                                            "backpressure")
+                            if pipeline_stop.is_set():
+                                return
+                            with pipeline_condition:
+                                completed += 1
+                                pipeline_condition.notify_all()
+                    except BaseException as exc:
+                        stop_pipeline(exc)
+
+                writer = threading.Thread(
+                    target=write_pipeline, daemon=True,
+                    name="ols-live-ftdi-writer")
+                reader = threading.Thread(
+                    target=read_pipeline, daemon=True,
+                    name="ols-live-ftdi-reader")
+                writer.start()
+                reader.start()
+                try:
+                    while not (stop_evt is not None and stop_evt.is_set()):
+                        if pipeline_error:
+                            raise pipeline_error[0]
+                        try:
+                            yield chunks.get(timeout=0.005)
+                        except Empty:
+                            if pipeline_error:
+                                raise pipeline_error[0]
+                            if not reader.is_alive():
+                                break
+                finally:
+                    stop_pipeline()
+                    reader.join(read_timeout + 0.25)
+                    writer.join(read_timeout + 0.25)
+                if pipeline_error and not (
+                        stop_evt is not None and stop_evt.is_set()):
+                    raise pipeline_error[0]
         finally:
             if opened:
                 self.stream_command_end()

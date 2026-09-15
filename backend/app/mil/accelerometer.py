@@ -119,9 +119,11 @@ LIVE_DIRECT_STREAM_WINDOW_SAMPLES = 16_384
 # Binary waveform frames no longer pay base64/JSON overhead. Keep each frame
 # small enough that one WebSocket send cannot monopolize the event loop or
 # hold the USB reader behind a coarse presentation batch.
-# Publish each direct FIFO quantum as soon as it has been drained.  Batching
-# eight quanta made the raw waveform—and therefore the browser-owned decoder—
-# wait 131 ms at the old 1 MHz tap before seeing any bytes.
+# Publish one ordered FPGA window at a time. This keeps the browser's live
+# decoder fed continuously and prevents a large coalesced WebSocket packet
+# from creating a consumer pause that can fill the bounded transport queue.
+# The worker still decodes every sample and emits every completed sensor packet
+# in order; this is only a delivery boundary, not a source/history buffer.
 LIVE_DIRECT_WAVEFORM_BATCH_SAMPLES = LIVE_DIRECT_STREAM_WINDOW_SAMPLES
 # Do not prefetch pose data. One ring window becomes one decoder delivery, as
 # in b1c; only the board's CSS paint is naturally display-frame bounded.
@@ -1677,6 +1679,17 @@ class AccelerometerService:
 
                 def flush_pending() -> None:
                     nonlocal pending, pending_samples, pending_session, last_flush
+                    # Direct mode's ordered binary waveform is the live
+                    # source of truth.  Do not concatenate it into the
+                    # rolling session while the same worker is draining the
+                    # FPGA FIFO: at a 2 MHz tap that copy/lock path can stall
+                    # the physical reader and turn into a FIFO overrun.
+                    if direct_capable:
+                        pending = []
+                        pending_samples = 0
+                        pending_session = None
+                        last_flush = time.monotonic()
+                        return
                     if pending and pending_session is not None:
                         self._append_live_digital(
                             np.concatenate(pending),
@@ -1781,7 +1794,15 @@ class AccelerometerService:
                             chunk = item
                             chunk_start = None
                             ring_timing = None
-                        if isinstance(chunk, (bytes, bytearray)):
+                        if direct_capable and isinstance(chunk, (bytes, bytearray)):
+                            # The direct parser has already produced dense
+                            # little-endian 16-bit words containing only
+                            # CH13..CH15.  Keep this seam zero-copy: making a
+                            # second NumPy copy for every 16K window adds
+                            # avoidable GIL/allocator pressure at the 2 MHz
+                            # tap and can starve the bounded wire reader.
+                            digital = np.frombuffer(chunk, dtype="<u2")
+                        elif isinstance(chunk, (bytes, bytearray)):
                             digital = payload_to_digital(chunk)
                         else:
                             digital = np.asarray(chunk, dtype=np.uint16).reshape(-1)
@@ -1810,20 +1831,17 @@ class AccelerometerService:
                         # validated by the incremental decoder; preserve
                         # those samples verbatim.  The short 400 Hz path
                         # retains the historical glitch filter.
-                        digital = clean_live_trace(
-                            digital,
-                            # Direct capture is always the 1 MHz tap,
-                            # regardless of the sensor ODR. Its I2C plateaus
-                            # are only a few points wide, so the historical
-                            # non-causal majority filter can erase ACK/STOP
-                            # edges and make a valid direct waveform
-                            # undecodable. Ring fallback retains the filter
-                            # for the legacy low-rate path.
-                            majority=(not direct_capable
-                                      and LIVE_TRACE_RATE_HZ
-                                      >= 4 * LIVE_TRACE_I2C_SPEED_HZ
-                                      and float(decoder_config.output_data_rate_hz)
-                                      <= 400.0))
+                        if not direct_capable:
+                            digital = clean_live_trace(
+                                digital,
+                                # Ring fallback retains the historical filter
+                                # for the legacy low-rate path. Direct words
+                                # are already reduced to the three capture
+                                # lines above and must remain phase-exact.
+                                majority=(LIVE_TRACE_RATE_HZ
+                                          >= 4 * LIVE_TRACE_I2C_SPEED_HZ
+                                          and float(decoder_config.output_data_rate_hz)
+                                          <= 400.0))
                         if digital.size:
                             stream_waveform_samples += int(digital.size)
                             with self._lock:
@@ -1863,17 +1881,18 @@ class AccelerometerService:
                             if not direct_capable:
                                 stream_transitions += int(np.count_nonzero(
                                     digital[1:] != digital[:-1]))
-                            waveform_session = current_waveform_session()
-                            if waveform_session is not pending_session:
-                                # Do not let bytes observed before a rolling
-                                # session attached (or after it stopped) leak
-                                # into a later session.
-                                pending = []
-                                pending_samples = 0
-                                pending_session = waveform_session
-                            if waveform_session is not None:
-                                pending.append(digital)
-                                pending_samples += int(digital.size)
+                            if not direct_capable:
+                                waveform_session = current_waveform_session()
+                                if waveform_session is not pending_session:
+                                    # Do not let bytes observed before a
+                                    # rolling session attached (or after it
+                                    # stopped) leak into a later session.
+                                    pending = []
+                                    pending_samples = 0
+                                    pending_session = waveform_session
+                                if waveform_session is not None:
+                                    pending.append(digital)
+                                    pending_samples += int(digital.size)
                             # In direct mode the browser worker owns the raw
                             # waveform decode. Running a second Python I2C
                             # decoder here at the 1 MHz tap only contends for
@@ -1924,8 +1943,9 @@ class AccelerometerService:
                             stream_frames += len(indexed)
                             if indexed:
                                 publish_gate_items(indexed)
-                            if (pending_samples >= persist_quantum
-                                    or time.monotonic() - last_flush >= 0.25):
+                            if (not direct_capable and (
+                                    pending_samples >= persist_quantum
+                                    or time.monotonic() - last_flush >= 0.25)):
                                 flush_pending()
                             frontend_decodes = direct_capable
                             if (stream_frames == 0 and not frontend_decodes
@@ -1995,14 +2015,23 @@ class AccelerometerService:
                     })
         if (direct_capable and not force_ring
                 and not live_stop_evt.is_set()):
-            # A direct-FIFO setup/ACK failure must not silently turn the live
-            # view into atomic XYZ polling. Retry through the continuous
-            # waveform ring so the decoder still sees the actual bus trace;
-            # retain the direct failure in transport diagnostics.
-            self._run_live_producer(
-                adapter, raw, address, live_stop_evt, owner_session,
-                decoder_config, force_ring=True,
-                transport_fallback_error=transport_error)
+            # Direct capture is the live decoder's source of truth. Never
+            # retry it through the SDRAM ring: that would make a transport
+            # failure look like a healthy pose stream while decoding stale
+            # history. Leave the service in an explicit fault state so the
+            # hardware/transport defect can be fixed and measured.
+            with self._lock:
+                if self._live_transport is not None:
+                    self._live_transport.update({
+                        "mode": "direct",
+                        "state": "fault",
+                        "fallback": False,
+                        "error": transport_error,
+                    })
+                if self._status.running:
+                    self._status.last_error = (
+                        "Direct live waveform transport failed: "
+                        f"{transport_error}")
             return
         # The persister is normally already running for a session-owned ring
         # path. This call is idempotent and also covers a stream implementation
