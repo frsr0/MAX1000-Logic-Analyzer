@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-09T17:10:51.778Z",
+  "generated_at": "2026-09-16T08:48:32.915Z",
   "cases": [
     {
       "status": "passed",
@@ -17,10 +17,10 @@
           "min": 57343,
           "max": 65535,
           "distinct_words": 2,
-          "ch13_transitions": 466
+          "ch13_transitions": 483
         }
       },
-      "session_id": "ses_307370a62a"
+      "session_id": "ses_40810a9069"
     },
     {
       "status": "passed",
@@ -41,7 +41,7 @@
           "ch13_transitions": 810
         }
       },
-      "session_id": "ses_388e26b15b"
+      "session_id": "ses_c39f68c205"
     },
     {
       "status": "passed",
@@ -62,7 +62,7 @@
           "ch13_transitions": 195
         }
       },
-      "session_id": "ses_aef9d0eb9d"
+      "session_id": "ses_2d4e63aee1"
     },
     {
       "status": "passed",
@@ -83,7 +83,7 @@
           "ch13_transitions": 875
         }
       },
-      "session_id": "ses_d3d3d37443"
+      "session_id": "ses_d2ba317567"
     },
     {
       "status": "passed",
@@ -101,10 +101,10 @@
           "min": 57343,
           "max": 65535,
           "distinct_words": 2,
-          "ch13_transitions": 438
+          "ch13_transitions": 437
         }
       },
-      "session_id": "ses_eb658ad315"
+      "session_id": "ses_3dba038f64"
     },
     {
       "status": "passed",
@@ -122,10 +122,10 @@
           "min": 57343,
           "max": 65535,
           "distinct_words": 2,
-          "ch13_transitions": 173
+          "ch13_transitions": 176
         }
       },
-      "session_id": "ses_301cc4e841"
+      "session_id": "ses_ce4bcb05b5"
     },
     {
       "status": "passed",
@@ -143,10 +143,10 @@
           "min": 57343,
           "max": 65535,
           "distinct_words": 2,
-          "ch13_transitions": 89
+          "ch13_transitions": 87
         }
       },
-      "session_id": "ses_f061a7ec74"
+      "session_id": "ses_8d5c73ffcb"
     },
     {
       "status": "passed",
@@ -164,10 +164,10 @@
           "min": 57343,
           "max": 65535,
           "distinct_words": 2,
-          "ch13_transitions": 70
+          "ch13_transitions": 69
         }
       },
-      "session_id": "ses_24e40ff72c"
+      "session_id": "ses_0949040187"
     },
     {
       "status": "passed",
@@ -185,10 +185,10 @@
           "min": 57343,
           "max": 65535,
           "distinct_words": 2,
-          "ch13_transitions": 60
+          "ch13_transitions": 62
         }
       },
-      "session_id": "ses_5979c43405"
+      "session_id": "ses_2c9ba2cfc7"
     },
     {
       "status": "passed",
@@ -206,10 +206,10 @@
           "min": 57343,
           "max": 65535,
           "distinct_words": 2,
-          "ch13_transitions": 45
+          "ch13_transitions": 46
         }
       },
-      "session_id": "ses_9f43dbf84f"
+      "session_id": "ses_c3ba98ff48"
     },
     {
       "status": "passed",
@@ -227,10 +227,10 @@
           "min": 57343,
           "max": 65535,
           "distinct_words": 2,
-          "ch13_transitions": 41
+          "ch13_transitions": 44
         }
       },
-      "session_id": "ses_a2eb717333"
+      "session_id": "ses_58387d0a63"
     },
     {
       "status": "passed",
@@ -248,10 +248,10 @@
           "min": 57343,
           "max": 65535,
           "distinct_words": 2,
-          "ch13_transitions": 41
+          "ch13_transitions": 44
         }
       },
-      "session_id": "ses_2dbec324f4"
+      "session_id": "ses_247daaf4ec"
     },
     {
       "status": "passed",
@@ -269,10 +269,10 @@
           "min": 57343,
           "max": 65535,
           "distinct_words": 2,
-          "ch13_transitions": 41
+          "ch13_transitions": 45
         }
       },
-      "session_id": "ses_99cb3710f6"
+      "session_id": "ses_c66da2765f"
     },
     {
       "status": "passed",
@@ -280,20 +280,19 @@
       "acquisition": "live",
       "api_mode": "rolling",
       "requested_rate_hz": 10000,
-      "effective_rate_hz": 10000,
+      "effective_rate_hz": 307200,
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
       "waveform_content": {
         "digital": {
           "samples": 1024,
-          "min": 57343,
-          "max": 65535,
-          "distinct_words": 2,
-          "ch13_transitions": 459
+          "min": 3,
+          "max": 3,
+          "distinct_words": 1
         }
       },
-      "session_id": "ses_6081b89e73"
+      "session_id": "ses_1ab4086b96"
     },
     {
       "status": "passed",
@@ -301,20 +300,19 @@
       "acquisition": "live",
       "api_mode": "rolling",
       "requested_rate_hz": 100000,
-      "effective_rate_hz": 100000,
+      "effective_rate_hz": 307200,
       "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
       "waveform_content": {
         "digital": {
           "samples": 1024,
-          "min": 57343,
-          "max": 65535,
-          "distinct_words": 2,
-          "ch13_transitions": 792
+          "min": 3,
+          "max": 3,
+          "distinct_words": 1
         }
       },
-      "session_id": "ses_9052499454"
+      "session_id": "ses_07b91885db"
     },
     {
       "status": "passed",
@@ -329,13 +327,12 @@
       "waveform_content": {
         "digital": {
           "samples": 1024,
-          "min": 57343,
-          "max": 65535,
-          "distinct_words": 2,
-          "ch13_transitions": 194
+          "min": 3,
+          "max": 3,
+          "distinct_words": 1
         }
       },
-      "session_id": "ses_68a33e94b8"
+      "session_id": "ses_401e13dc1e"
     },
     {
       "status": "passed",
@@ -350,13 +347,12 @@
       "waveform_content": {
         "digital": {
           "samples": 1024,
-          "min": 57343,
-          "max": 65535,
-          "distinct_words": 2,
-          "ch13_transitions": 875
+          "min": 3,
+          "max": 3,
+          "distinct_words": 1
         }
       },
-      "session_id": "ses_74277f02e9"
+      "session_id": "ses_9c226fc3a7"
     },
     {
       "status": "passed",
@@ -371,13 +367,12 @@
       "waveform_content": {
         "digital": {
           "samples": 1024,
-          "min": 57343,
-          "max": 65535,
-          "distinct_words": 2,
-          "ch13_transitions": 437
+          "min": 3,
+          "max": 3,
+          "distinct_words": 1
         }
       },
-      "session_id": "ses_6fc5c57b1f"
+      "session_id": "ses_d093b18aab"
     },
     {
       "status": "passed",
@@ -392,13 +387,12 @@
       "waveform_content": {
         "digital": {
           "samples": 1024,
-          "min": 57343,
-          "max": 65535,
-          "distinct_words": 2,
-          "ch13_transitions": 176
+          "min": 3,
+          "max": 3,
+          "distinct_words": 1
         }
       },
-      "session_id": "ses_aefccd691b"
+      "session_id": "ses_34d53f81d1"
     },
     {
       "status": "passed",
@@ -413,13 +407,12 @@
       "waveform_content": {
         "digital": {
           "samples": 1024,
-          "min": 57343,
-          "max": 65535,
-          "distinct_words": 2,
-          "ch13_transitions": 88
+          "min": 3,
+          "max": 3,
+          "distinct_words": 1
         }
       },
-      "session_id": "ses_f1540d8021"
+      "session_id": "ses_97dab32e45"
     },
     {
       "status": "passed",
@@ -434,13 +427,12 @@
       "waveform_content": {
         "digital": {
           "samples": 1024,
-          "min": 57343,
-          "max": 65535,
-          "distinct_words": 2,
-          "ch13_transitions": 72
+          "min": 3,
+          "max": 3,
+          "distinct_words": 1
         }
       },
-      "session_id": "ses_7c647e597e"
+      "session_id": "ses_241c79d3f0"
     },
     {
       "status": "passed",
@@ -455,13 +447,12 @@
       "waveform_content": {
         "digital": {
           "samples": 1024,
-          "min": 57343,
-          "max": 65535,
-          "distinct_words": 2,
-          "ch13_transitions": 61
+          "min": 3,
+          "max": 3,
+          "distinct_words": 1
         }
       },
-      "session_id": "ses_6f292bb01b"
+      "session_id": "ses_f0b487f04c"
     },
     {
       "status": "passed",
@@ -476,13 +467,12 @@
       "waveform_content": {
         "digital": {
           "samples": 1024,
-          "min": 57343,
-          "max": 65535,
-          "distinct_words": 2,
-          "ch13_transitions": 43
+          "min": 3,
+          "max": 3,
+          "distinct_words": 1
         }
       },
-      "session_id": "ses_cd4e0108a7"
+      "session_id": "ses_ca59e4f8e8"
     },
     {
       "status": "passed",
@@ -497,13 +487,12 @@
       "waveform_content": {
         "digital": {
           "samples": 1024,
-          "min": 57343,
-          "max": 65535,
-          "distinct_words": 2,
-          "ch13_transitions": 40
+          "min": 3,
+          "max": 3,
+          "distinct_words": 1
         }
       },
-      "session_id": "ses_10eecc1d40"
+      "session_id": "ses_ee0105d972"
     },
     {
       "status": "passed",
@@ -511,19 +500,19 @@
       "acquisition": "live",
       "api_mode": "digital_narrow",
       "requested_rate_hz": 200000000,
-      "effective_rate_hz": 200400000,
-      "samples": 4096,
+      "effective_rate_hz": 200000000,
+      "samples": 1024,
       "digital_channels": 16,
       "analog_channels": [],
       "waveform_content": {
         "digital": {
-          "samples": 4096,
-          "min": 1,
-          "max": 1,
+          "samples": 1024,
+          "min": 3,
+          "max": 3,
           "distinct_words": 1
         }
       },
-      "session_id": "ses_7c109dc803"
+      "session_id": "ses_3d334138a3"
     },
     {
       "status": "passed",
@@ -532,30 +521,6 @@
       "api_mode": "analog_fast",
       "requested_rate_hz": 100000,
       "effective_rate_hz": 100000,
-      "samples": 1024,
-      "digital_channels": 0,
-      "analog_channels": [
-        "a1"
-      ],
-      "waveform_content": {
-        "analog": {
-          "a1": {
-            "samples": 1024,
-            "min_v": 0.04593406617641449,
-            "max_v": 1.2200732231140137,
-            "distinct_values": 47
-          }
-        }
-      },
-      "session_id": "ses_d78134049d"
-    },
-    {
-      "status": "passed",
-      "mode": "Analog — one channel",
-      "acquisition": "single",
-      "api_mode": "analog_fast",
-      "requested_rate_hz": 200000,
-      "effective_rate_hz": 200000,
       "samples": 1024,
       "digital_channels": 0,
       "analog_channels": [
@@ -566,12 +531,36 @@
           "a1": {
             "samples": 1024,
             "min_v": 0.04512820392847061,
-            "max_v": 1.2289377450942993,
+            "max_v": 1.2095969915390015,
+            "distinct_values": 46
+          }
+        }
+      },
+      "session_id": "ses_edb46ee78a"
+    },
+    {
+      "status": "passed",
+      "mode": "Analog — one channel",
+      "acquisition": "single",
+      "api_mode": "analog_fast",
+      "requested_rate_hz": 200000,
+      "effective_rate_hz": 200000,
+      "samples": 1024,
+      "digital_channels": 0,
+      "analog_channels": [
+        "a1"
+      ],
+      "waveform_content": {
+        "analog": {
+          "a1": {
+            "samples": 1024,
+            "min_v": 0.04432234540581703,
+            "max_v": 1.2176556587219238,
             "distinct_values": 47
           }
         }
       },
-      "session_id": "ses_6a8de685b7"
+      "session_id": "ses_2deae5abcd"
     },
     {
       "status": "passed",
@@ -589,13 +578,13 @@
         "analog": {
           "a1": {
             "samples": 1024,
-            "min_v": 0.04754578694701195,
-            "max_v": 1.2216849327087402,
-            "distinct_values": 46
+            "min_v": 0.04593406617641449,
+            "max_v": 1.215238094329834,
+            "distinct_values": 45
           }
         }
       },
-      "session_id": "ses_b750576dc8"
+      "session_id": "ses_eb1931ba1a"
     },
     {
       "status": "passed",
@@ -613,13 +602,13 @@
         "analog": {
           "a1": {
             "samples": 1024,
-            "min_v": 0.04754578694701195,
-            "max_v": 1.2265201807022095,
-            "distinct_values": 44
+            "min_v": 0.04432234540581703,
+            "max_v": 1.2128205299377441,
+            "distinct_values": 48
           }
         }
       },
-      "session_id": "ses_f265650129"
+      "session_id": "ses_f940ede707"
     },
     {
       "status": "passed",
@@ -637,13 +626,13 @@
         "analog": {
           "a1": {
             "samples": 1024,
-            "min_v": 0.04593406617641449,
-            "max_v": 1.2232966423034668,
+            "min_v": 0.04512820392847061,
+            "max_v": 1.2168498039245605,
             "distinct_values": 45
           }
         }
       },
-      "session_id": "ses_11e38efedd"
+      "session_id": "ses_cc2771333b"
     },
     {
       "status": "passed",
@@ -661,13 +650,13 @@
         "analog": {
           "a1": {
             "samples": 1024,
-            "min_v": 0.04673992469906807,
-            "max_v": 1.2249083518981934,
-            "distinct_values": 47
+            "min_v": 0.04432234540581703,
+            "max_v": 1.2224907875061035,
+            "distinct_values": 46
           }
         }
       },
-      "session_id": "ses_72d1afd33d"
+      "session_id": "ses_92a4086e48"
     },
     {
       "status": "passed",
@@ -685,13 +674,13 @@
         "analog": {
           "a1": {
             "samples": 1024,
-            "min_v": 0.04593406617641449,
-            "max_v": 1.2265201807022095,
-            "distinct_values": 46
+            "min_v": 0.04512820392847061,
+            "max_v": 1.2257142066955566,
+            "distinct_values": 45
           }
         }
       },
-      "session_id": "ses_9cc13f7221"
+      "session_id": "ses_db58f87050"
     },
     {
       "status": "passed",
@@ -709,13 +698,13 @@
         "analog": {
           "a1": {
             "samples": 1024,
-            "min_v": 0.04673992469906807,
-            "max_v": 1.2249083518981934,
-            "distinct_values": 47
+            "min_v": 0.043516483157873154,
+            "max_v": 1.2265201807022095,
+            "distinct_values": 45
           }
         }
       },
-      "session_id": "ses_273fdd3ac0"
+      "session_id": "ses_16433a951b"
     },
     {
       "status": "passed",
@@ -736,31 +725,31 @@
         "analog": {
           "a1": {
             "samples": 520,
-            "min_v": 0.002417582320049405,
-            "max_v": 3.299999952316284,
-            "distinct_values": 169
+            "min_v": 0.11120878905057907,
+            "max_v": 1.2160439491271973,
+            "distinct_values": 45
           },
           "a2": {
             "samples": 520,
-            "min_v": 0.09347984939813614,
-            "max_v": 3.2846884727478027,
-            "distinct_values": 141
+            "min_v": 0.11120878905057907,
+            "max_v": 1.252307653427124,
+            "distinct_values": 45
           },
           "a3": {
             "samples": 520,
-            "min_v": 0,
-            "max_v": 3.299194097518921,
-            "distinct_values": 312
+            "min_v": 0.6954578757286072,
+            "max_v": 1.3465933799743652,
+            "distinct_values": 282
           },
           "a4": {
             "samples": 520,
-            "min_v": 0.0008058607927523553,
-            "max_v": 3.299999952316284,
-            "distinct_values": 182
+            "min_v": 0.12007325887680054,
+            "max_v": 1.3667398691177368,
+            "distinct_values": 64
           }
         }
       },
-      "session_id": "ses_ce88d60fd4"
+      "session_id": "ses_b53b1e09c6"
     },
     {
       "status": "passed",
@@ -781,31 +770,31 @@
         "analog": {
           "a1": {
             "samples": 520,
-            "min_v": 0,
-            "max_v": 3.283076763153076,
-            "distinct_values": 155
+            "min_v": 0.11040292680263519,
+            "max_v": 1.2200732231140137,
+            "distinct_values": 46
           },
           "a2": {
             "samples": 520,
-            "min_v": 0.008864468894898891,
-            "max_v": 3.2806591987609863,
-            "distinct_values": 164
+            "min_v": 0.11040292680263519,
+            "max_v": 1.259560465812683,
+            "distinct_values": 46
           },
           "a3": {
             "samples": 520,
-            "min_v": 0,
-            "max_v": 3.2983882427215576,
+            "min_v": 0.4827106297016144,
+            "max_v": 1.0258607864379883,
             "distinct_values": 291
           },
           "a4": {
             "samples": 520,
-            "min_v": 0.018534798175096512,
-            "max_v": 3.279853343963623,
-            "distinct_values": 170
+            "min_v": 0.11684981733560562,
+            "max_v": 1.3723809719085693,
+            "distinct_values": 66
           }
         }
       },
-      "session_id": "ses_767327d05b"
+      "session_id": "ses_8dcc723b71"
     },
     {
       "status": "passed",
@@ -826,24 +815,24 @@
           "min": 57343,
           "max": 65535,
           "distinct_words": 2,
-          "ch13_transitions": 176
+          "ch13_transitions": 185
         },
         "analog": {
           "a1": {
             "samples": 1024,
-            "min_v": 0.07010988891124725,
-            "max_v": 1.2216849327087402,
-            "distinct_values": 50
+            "min_v": 0.06769230961799622,
+            "max_v": 1.2192673683166504,
+            "distinct_values": 48
           },
           "a2": {
             "samples": 1024,
-            "min_v": 0.07252746820449829,
-            "max_v": 1.2555310726165771,
-            "distinct_values": 45
+            "min_v": 0.06930402666330338,
+            "max_v": 1.2458608150482178,
+            "distinct_values": 46
           }
         }
       },
-      "session_id": "ses_386c0835c2"
+      "session_id": "ses_9c270d8853"
     },
     {
       "status": "passed",
@@ -863,25 +852,24 @@
           "samples": 1024,
           "min": 57343,
           "max": 65535,
-          "distinct_words": 2,
-          "ch13_transitions": 184
+          "distinct_words": 2
         },
         "analog": {
           "a1": {
             "samples": 1024,
-            "min_v": 0.07091575115919113,
-            "max_v": 1.2160439491271973,
-            "distinct_values": 48
+            "min_v": 0.06688644737005234,
+            "max_v": 1.2095969915390015,
+            "distinct_values": 49
           },
           "a2": {
             "samples": 1024,
-            "min_v": 0.07091575115919113,
+            "min_v": 0.0684981644153595,
             "max_v": 1.2498900890350342,
-            "distinct_values": 47
+            "distinct_values": 46
           }
         }
       },
-      "session_id": "ses_84217da742"
+      "session_id": "ses_48872ca6c8"
     }
   ],
   "passed": 37,

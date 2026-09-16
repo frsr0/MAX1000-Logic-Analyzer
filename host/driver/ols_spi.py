@@ -54,10 +54,10 @@ STREAM_CHUNK_READ_TIMEOUT_S = 0.050
 # reader maintain a continuous SPI clock through short Python/WebSocket
 # scheduling stalls without making the browser queue or decoder backlog grow.
 STREAM_PIPELINE_DEPTH = 32
-# Keep two bounded quanta in one D2XX write. This removes an avoidable
-# scheduling gap between 4K-byte MPSSE clock commands while the reader still
-# drains each quantum separately into the bounded handoff queue.
-STREAM_COMMAND_BATCH_DEPTH = 2
+# Keep each writer submission to one quantum. The pipeline watermark is
+# expressed in individual quanta, so batching two commands can overshoot the
+# bounded handoff queue before the reader has drained the first response.
+STREAM_COMMAND_BATCH_DEPTH = 1
 
 
 class OLS:

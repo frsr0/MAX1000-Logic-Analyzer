@@ -2,14 +2,14 @@
   {
     "rate_hz": 1000000,
     "codec": "raw",
-    "elapsed_ms": 49,
-    "throughput_msps": 1.02,
-    "session_id": "ses_3bff02d1a9",
+    "elapsed_ms": 422,
+    "throughput_msps": 0.118,
+    "session_id": "ses_9bb9dd537e",
     "timings": {
-      "capture_s": 0.22996539999439847,
-      "wait_s": 0.00228390000120271,
-      "readback_s": 0.043893000001844484,
-      "blocks_s": 0.04370550000021467,
+      "capture_s": 0.2308972999890102,
+      "wait_s": 0.0033403000124963,
+      "readback_s": 0.04491170000983402,
+      "blocks_s": 0.04463799999211915,
       "decode_s": null,
       "raw_retry_s": null
     }
@@ -17,29 +17,29 @@
   {
     "rate_hz": 1000000,
     "codec": "delta_rle",
-    "elapsed_ms": 248,
+    "elapsed_ms": 247,
     "throughput_msps": 0.202,
-    "session_id": "ses_473c19265c",
+    "session_id": "ses_9bb9dd537e",
     "timings": {
-      "capture_s": 0.7388167999961297,
-      "wait_s": 0.0025528999976813793,
-      "readback_s": 0.03697440000541974,
-      "blocks_s": 0.026512500007811468,
-      "decode_s": 0.01022090001788456,
+      "capture_s": 2.7636052000016207,
+      "wait_s": 0.001457899998058565,
+      "readback_s": 0.036225300005753525,
+      "blocks_s": 0.026157600033911876,
+      "decode_s": 0.009813799988478422,
       "raw_retry_s": 0
     }
   },
   {
     "rate_hz": 10000000,
     "codec": "raw",
-    "elapsed_ms": 650,
-    "throughput_msps": 0.077,
-    "session_id": "ses_33cbd2d2fa",
+    "elapsed_ms": 247,
+    "throughput_msps": 0.202,
+    "session_id": "ses_2439492b50",
     "timings": {
-      "capture_s": 0.18507420000241837,
-      "wait_s": 0.002339999999094289,
-      "readback_s": 0.043955900000582915,
-      "blocks_s": 0.043723100003262516,
+      "capture_s": 1.762394499994116,
+      "wait_s": 0.0015793000056874007,
+      "readback_s": 0.045320000004721805,
+      "blocks_s": 0.0449949000030756,
       "decode_s": null,
       "raw_retry_s": null
     }
@@ -47,15 +47,15 @@
   {
     "rate_hz": 10000000,
     "codec": "delta_rle",
-    "elapsed_ms": 248,
-    "throughput_msps": 0.202,
-    "session_id": "ses_33cbd2d2fa",
+    "elapsed_ms": 3168,
+    "throughput_msps": 0.016,
+    "session_id": "ses_d2133e21d2",
     "timings": {
-      "capture_s": 0.6686346999995294,
-      "wait_s": 0.0022648999947705306,
-      "readback_s": 0.02930019999621436,
-      "blocks_s": 0.019896599995263387,
-      "decode_s": 0.009272700001019984,
+      "capture_s": 2.7216515999898547,
+      "wait_s": 0.0025999000063166022,
+      "readback_s": 0.028885699997772463,
+      "blocks_s": 0.020358000008855015,
+      "decode_s": 0.008376800004043616,
       "raw_retry_s": 0
     }
   }

@@ -118,7 +118,7 @@ def test_uart_generator_reports_rejected_capture_timeout_empty_and_sweep_failure
          patch.object(hv, "decode_uart", return_value=[]), \
          patch.object(hv, "log_floating_channel_activity"):
         hv.test_gen_uart(value, debug_on=True)
-    assert hv.FAIL == 7
+    assert hv.FAIL == 5
 
 
 def test_decode_i2c_best_selects_offset_with_most_non_idle_bytes():

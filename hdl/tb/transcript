@@ -1,0 +1,135 @@
+# if {[file exists work]} {vdel -lib work -all}
+#  vlib work
+#  vcom -2008 ../rtl/delta_calc.vhd
+# Questa Altera Starter FPGA Edition-64 vcom 2025.2 Compiler 2025.05 May 31 2025
+# Start time: 21:34:26 on Sep 15,2026
+# vcom -2008 ../rtl/delta_calc.vhd 
+# ** Note: (vcom-220) 'C:/altera_lite/25.1std/questa_fse/win64/../modelsim.ini' is used as the ini file.
+# -- Loading package STANDARD
+# -- Loading package TEXTIO
+# -- Loading package std_logic_1164
+# -- Loading package NUMERIC_STD
+# -- Compiling entity delta_calc
+# -- Compiling architecture rtl of delta_calc
+# End time: 21:34:26 on Sep 15,2026, Elapsed time: 0:00:00
+# Errors: 0, Warnings: 0
+#  vcom -2008 ../rtl/analog_packer.vhd
+# Questa Altera Starter FPGA Edition-64 vcom 2025.2 Compiler 2025.05 May 31 2025
+# Start time: 21:34:27 on Sep 15,2026
+# vcom -2008 ../rtl/analog_packer.vhd 
+# ** Note: (vcom-220) 'C:/altera_lite/25.1std/questa_fse/win64/../modelsim.ini' is used as the ini file.
+# -- Loading package STANDARD
+# -- Loading package TEXTIO
+# -- Loading package std_logic_1164
+# -- Loading package NUMERIC_STD
+# -- Compiling entity analog_packer
+# -- Compiling architecture rtl of analog_packer
+# End time: 21:34:27 on Sep 15,2026, Elapsed time: 0:00:00
+# Errors: 0, Warnings: 0
+#  vcom -2008 ../rtl/digital_rle.vhd
+# Questa Altera Starter FPGA Edition-64 vcom 2025.2 Compiler 2025.05 May 31 2025
+# Start time: 21:34:27 on Sep 15,2026
+# vcom -2008 ../rtl/digital_rle.vhd 
+# ** Note: (vcom-220) 'C:/altera_lite/25.1std/questa_fse/win64/../modelsim.ini' is used as the ini file.
+# -- Loading package STANDARD
+# -- Loading package TEXTIO
+# -- Loading package std_logic_1164
+# -- Loading package NUMERIC_STD
+# -- Compiling entity digital_rle
+# -- Compiling architecture rtl of digital_rle
+# End time: 21:34:27 on Sep 15,2026, Elapsed time: 0:00:00
+# Errors: 0, Warnings: 0
+#  vcom -2008 ../rtl/mso_stream_mux.vhd
+# Questa Altera Starter FPGA Edition-64 vcom 2025.2 Compiler 2025.05 May 31 2025
+# Start time: 21:34:28 on Sep 15,2026
+# vcom -2008 ../rtl/mso_stream_mux.vhd 
+# ** Note: (vcom-220) 'C:/altera_lite/25.1std/questa_fse/win64/../modelsim.ini' is used as the ini file.
+# -- Loading package STANDARD
+# -- Loading package TEXTIO
+# -- Loading package std_logic_1164
+# -- Compiling entity mso_stream_mux
+# -- Compiling architecture rtl of mso_stream_mux
+# End time: 21:34:28 on Sep 15,2026, Elapsed time: 0:00:00
+# Errors: 0, Warnings: 0
+#  vcom -2008 ../rtl/mso_capture.vhd
+# Questa Altera Starter FPGA Edition-64 vcom 2025.2 Compiler 2025.05 May 31 2025
+# Start time: 21:34:29 on Sep 15,2026
+# vcom -2008 ../rtl/mso_capture.vhd 
+# ** Note: (vcom-220) 'C:/altera_lite/25.1std/questa_fse/win64/../modelsim.ini' is used as the ini file.
+# -- Loading package STANDARD
+# -- Loading package TEXTIO
+# -- Loading package std_logic_1164
+# -- Loading package NUMERIC_STD
+# -- Compiling entity mso_capture
+# -- Compiling architecture rtl of mso_capture
+# -- Loading entity delta_calc
+# -- Loading entity analog_packer
+# -- Loading entity digital_rle
+# -- Loading entity mso_stream_mux
+# End time: 21:34:30 on Sep 15,2026, Elapsed time: 0:00:01
+# Errors: 0, Warnings: 0
+#  vcom -2008 tb_mso_full_roundtrip.vhd
+# Questa Altera Starter FPGA Edition-64 vcom 2025.2 Compiler 2025.05 May 31 2025
+# Start time: 21:34:30 on Sep 15,2026
+# vcom -2008 tb_mso_full_roundtrip.vhd 
+# ** Note: (vcom-220) 'C:/altera_lite/25.1std/questa_fse/win64/../modelsim.ini' is used as the ini file.
+# -- Loading package STANDARD
+# -- Loading package TEXTIO
+# -- Loading package std_logic_1164
+# -- Loading package NUMERIC_STD
+# -- Compiling entity tb_mso_full_roundtrip
+# -- Compiling architecture sim of tb_mso_full_roundtrip
+# -- Loading entity mso_capture
+# -- Loading package ENV
+# End time: 21:34:31 on Sep 15,2026, Elapsed time: 0:00:01
+# Errors: 0, Warnings: 0
+#  vsim -c work.tb_mso_full_roundtrip
+# ** Note: (vsim-220) 'C:/altera_lite/25.1std/questa_fse/win64/../modelsim.ini' is used as the ini file.
+# vsim -c work.tb_mso_full_roundtrip 
+# Start time: 21:34:32 on Sep 15,2026
+# ** Note: (vsim-3812) Design is being optimized...
+# ** Note: (vopt-220) 'C:/altera_lite/25.1std/questa_fse/win64/../modelsim.ini' is used as the ini file.
+# //  Questa Altera Starter FPGA Edition-64
+# //  Version 2025.2 win64 May 31 2025
+# //
+# // Unpublished work. Copyright 2025 Siemens
+# //
+# // This material contains trade secrets or otherwise confidential information
+# // owned by Siemens Industry Software Inc. or its affiliates (collectively,
+# // "SISW"), or its licensors. Access to and use of this information is strictly
+# // limited as set forth in the Customer's applicable agreements with SISW.
+# //
+# // This material may not be copied, distributed, or otherwise disclosed outside
+# // of the Customer's facilities without the express written permission of SISW,
+# // and may not be used in any way not expressly authorized by SISW.
+# //
+# Loading std.standard
+# Loading std.textio(body)
+# Loading ieee.std_logic_1164(body)
+# Loading ieee.numeric_std(body)
+# Loading std.env(body)
+# Loading work.tb_mso_full_roundtrip(sim)#1
+# Loading work.mso_capture(rtl)#1
+#  run -all
+# ** Note: === Section 1: IDLE ===
+#    Time: 200 ns  Iteration: 0  Instance: /tb_mso_full_roundtrip
+# ** Note: IDLE capture words: 160
+#    Time: 21625 ns  Iteration: 0  Instance: /tb_mso_full_roundtrip
+# ** Note: === Section 2: TOGGLE ===
+#    Time: 21625 ns  Iteration: 0  Instance: /tb_mso_full_roundtrip
+# ** Note: TOGGLE capture words: 1519
+#    Time: 41625 ns  Iteration: 0  Instance: /tb_mso_full_roundtrip
+# ** Note: === Section 3: CYCLE ===
+#    Time: 41625 ns  Iteration: 0  Instance: /tb_mso_full_roundtrip
+# ** Note: CYCLE capture words: 3495
+#    Time: 62125 ns  Iteration: 0  Instance: /tb_mso_full_roundtrip
+# ** Note: Total captured packed words: 3495
+#    Time: 62125 ns  Iteration: 0  Instance: /tb_mso_full_roundtrip
+# ** Note: Per-section analog words: IDLE=30 TOGGLE=50 CYCLE=45 verified
+#    Time: 62125 ns  Iteration: 0  Instance: /tb_mso_full_roundtrip
+# ** Note: Writing mso_capture_words.txt...
+#    Time: 62125 ns  Iteration: 0  Instance: /tb_mso_full_roundtrip
+# ** Note: mso_capture_words.txt written with 3495 words
+#    Time: 62125 ns  Iteration: 1  Instance: /tb_mso_full_roundtrip
+# End time: 21:34:38 on Sep 15,2026, Elapsed time: 0:00:06
+# Errors: 0, Warnings: 0
