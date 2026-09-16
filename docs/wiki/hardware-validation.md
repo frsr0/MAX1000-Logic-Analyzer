@@ -23,7 +23,7 @@ pulse-width checks are positive.
 | `bash hdl/tb/run_all_tbs.sh` | **57/57** | Every HDL bench, zero XFAIL/XPASS/exclusions |
 
 The browser suites and all 37 hardware-matrix acquisitions were rerun on
-2026-09-09 after strengthening the screenshot contract. Each live gallery
+2026-09-16 after strengthening the screenshot contract. Each live gallery
 image now proves the named session is active and its waveform payload has
 loaded. The 1440×1400 captures were visually checked for distinct UART, MIL,
 LIS3DH, analog-fast, maximum-analog, and mixed traces; the current files and

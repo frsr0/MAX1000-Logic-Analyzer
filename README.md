@@ -89,7 +89,7 @@ Main storage paths:
 
 ## UI Screenshots
 
-All screenshots below were regenerated on 2026-09-09 from the attached
+All screenshots below were regenerated on 2026-09-16 from the attached
 MAX1000 and the current persistent seed-10 image. The browser tests require the
 named session to be active and its waveform payload to finish loading before
 writing each PNG.

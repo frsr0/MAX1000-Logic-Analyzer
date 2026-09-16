@@ -1,7 +1,7 @@
 # Hardware Screenshot Matrix
 
 These screenshots were regenerated from completed acquisitions on the
-connected MAX1000 on 2026-09-09, using the persistent seed-10 image with SOF
+connected MAX1000 on 2026-09-16, using the persistent seed-10 image with SOF
 checksum `0x0050492F`. The run completed **37/37 cases** with `failed=0`.
 Each case records requested/effective rate, sample count, channel metadata,
 and session ID in the

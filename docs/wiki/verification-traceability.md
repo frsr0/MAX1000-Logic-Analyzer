@@ -73,7 +73,7 @@ The fit, STA, and assembler reports are in `hdl/proj/output_files/`.
 | 2026-08-07 | pin-map/pull-up image, SOF `0x0051801E` | smoke 10/10 | Historical |
 | 2026-08-27 | seed 10 wide-divider, SOF `0x0050ADC8` | 383/383 + 37/37 | Persistent historical baseline |
 | 2026-09-04 | repaired seed 10, SOF `0x00504799` | full suite 396/396; corrected 60-second stress 29/29; smoke 10/10; changed paths 117/117; strict codec/rate 26/26 | Historical volatile baseline |
-| 2026-09-09 | seed 10, SOF `0x0050492F` | unplug/replug discovery and full suite 436/436; browser hardware 5/5 and 34/34; 37-case screenshot matrix and all 114 PNGs refreshed | Current persistent image; cold-boot persistence recorded |
+| 2026-09-09 | seed 10, SOF `0x0050492F` | unplug/replug discovery and full suite 436/436; browser hardware 5/5 and 34/34; 37-case screenshot matrix and all 114 PNGs refreshed again on 2026-09-16 | Current persistent image; cold-boot persistence recorded |
 
 Historical results remain useful regression evidence, but they do not prove a
 later RTL image. The current claim always follows the newest programmed image
