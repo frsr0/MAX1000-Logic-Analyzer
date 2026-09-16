@@ -11,7 +11,6 @@ const POLL_INTERVAL_MS = 100;
 // publish every packet; only the board's CSS paint is naturally bounded by
 // the display refresh rate. The transport reports its measured decoded rate
 // separately.
-const BOARD_POSE_SETTLE_EPSILON_DEG = 0.01;
 // Keep a low-rate health poll while stopped so reconnects, another panel's
 // Start action, or a backend restart can resynchronize this card. Once the
 // service reports tracking, switch back to the responsive live cadence.
@@ -99,23 +98,6 @@ function boardTransform(orientation: Orientation): string {
   return `perspective(520px) rotateX(${orientation.pitch}deg) rotateY(${orientation.roll}deg)`;
 }
 
-function shortestAngleDelta(target: number, current: number): number {
-  let delta = target - current;
-  while (delta > 180) delta -= 360;
-  while (delta < -180) delta += 360;
-  return delta;
-}
-
-function advanceBoardOrientation(
-  current: Orientation,
-  target: Orientation,
-  elapsedMs: number,
-): Orientation {
-  void current;
-  void elapsedMs;
-  return target;
-}
-
 export function MilAccelerometerCard() {
   const { controlMode, toast } = useApp();
   const [status, setStatus] = useState<MilAccelerometerStatus | null>(null);
@@ -139,7 +121,6 @@ export function MilAccelerometerCard() {
   const targetBoardOrientation = useRef<Orientation | null>(null);
   const renderedBoardOrientation = useRef<Orientation | null>(null);
   const boardAnimationFrame = useRef<number | null>(null);
-  const lastBoardFrameAt = useRef<number | null>(null);
   const latestFrontendTiming = useRef<Record<string, any> | null>(null);
   const hasFrontendWaveformSample = useRef(false);
   const pendingLiveUi = useRef<{
@@ -152,7 +133,7 @@ export function MilAccelerometerCard() {
   activeSessionRef.current = activeSession;
 
   const writeBoardPose = (next: Orientation) => {
-    if (boardRef.current) boardRef.current.style.transform = boardTransform(next);
+    boardRef.current!.style.transform = boardTransform(next);
   };
 
   const flushPendingLiveUi = () => {
@@ -204,24 +185,14 @@ export function MilAccelerometerCard() {
     const target = targetBoardOrientation.current;
     if (!target || !boardRef.current) return;
 
-    const current = renderedBoardOrientation.current ?? target;
-    const elapsed = lastBoardFrameAt.current === null
-      ? 16.67
-      : Math.min(100, Math.max(0, timestamp - lastBoardFrameAt.current));
-    lastBoardFrameAt.current = timestamp;
-    const next = advanceBoardOrientation(current, target, elapsed);
-    const settled = Math.abs(shortestAngleDelta(target.pitch, next.pitch))
-      <= BOARD_POSE_SETTLE_EPSILON_DEG
-      && Math.abs(shortestAngleDelta(target.roll, next.roll))
-      <= BOARD_POSE_SETTLE_EPSILON_DEG;
-    renderedBoardOrientation.current = settled ? target : next;
+    void timestamp;
+    renderedBoardOrientation.current = target;
     writeBoardPose(renderedBoardOrientation.current);
     if (latestFrontendTiming.current
         && latestFrontendTiming.current.frontend_rendered_at_ms == null) {
       latestFrontendTiming.current.frontend_rendered_at_ms = performance.now();
     }
 
-    if (!settled) boardAnimationFrame.current = window.requestAnimationFrame(renderBoardFrame);
   };
 
   const scheduleBoardRender = () => {
@@ -244,7 +215,6 @@ export function MilAccelerometerCard() {
         && sample.timestamp <= lastAppliedTimestamp.current) return;
     const current = orientationFor(sample);
     const next = relativeOrientation(current, zeroRef.current);
-    if (!Number.isFinite(next.pitch) || !Number.isFinite(next.roll)) return;
     targetBoardOrientation.current = next;
     lastAppliedTimestamp.current = sample.timestamp;
     if (timing) {
@@ -258,7 +228,6 @@ export function MilAccelerometerCard() {
         boardAnimationFrame.current = null;
       }
       renderedBoardOrientation.current = next;
-      lastBoardFrameAt.current = null;
       writeBoardPose(next);
       if (latestFrontendTiming.current
           && latestFrontendTiming.current.frontend_rendered_at_ms == null) {
@@ -389,8 +358,7 @@ export function MilAccelerometerCard() {
       if (streamOwner !== null && streamOwner !== source) return;
       streamOwner = source;
       hasFrontendWaveformSample.current = true;
-      const sample = message.data.sample as MilAccelerometerStatus['sample'];
-      if (!sample) return;
+      const sample = message.data.sample as NonNullable<MilAccelerometerStatus['sample']>;
       const nextPose = sample;
       latestPoseSample.current = nextPose;
       const trace = message.data.trace && typeof message.data.trace === 'object'

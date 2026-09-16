@@ -62,18 +62,23 @@ class FakeWebSocket {
   onclose: (() => void) | null = null;
   onerror: (() => void) | null = null;
   binaryType = '';
+  sent: string[] = [];
 
   constructor(readonly url: string) {
     FakeWebSocket.instances.push(this);
   }
 
-  send(_message: string) {}
+  send(message: string) { this.sent.push(message); }
 
   close() {
     this.onclose?.();
   }
 
   emitBinary(data: ArrayBuffer) {
+    this.onmessage?.({ data } as MessageEvent);
+  }
+
+  emit(data: unknown) {
     this.onmessage?.({ data } as MessageEvent);
   }
 }
@@ -139,5 +144,89 @@ describe('accelerometerStream worker binary transport', () => {
     expect(lastPoseMessage.data.frontend_decode_latency_ms).toBeGreaterThanOrEqual(0);
 
     workerScope.dispatch(new MessageEvent('message', { data: { type: 'shutdown' } }));
+  });
+
+  it('handles legacy text frames, malformed binary frames, acknowledgements, and unload', async () => {
+    const timerSpy = vi.spyOn(globalThis, 'setTimeout');
+    await import('./accelerometerStream.worker');
+    const binarySocket = FakeWebSocket.instances[0];
+    const textSocket = FakeWebSocket.instances[1];
+    textSocket.emit(JSON.stringify({
+      type: 'accelerometer_waveform',
+      ts: 10,
+      data: {
+        sequence: 1, sample_rate: 2_000_000,
+        sample_count: transaction(sampleBytes(64, 0, 1000)).length,
+        samples_b64: btoa(String.fromCharCode(...transaction(sampleBytes(64, 0, 1000)).flatMap((value) => [value & 0xff, value >> 8]))),
+      },
+    }));
+    textSocket.emit(JSON.stringify({
+      type: 'accelerometer_waveform',
+      data: {
+        sample_rate: 2_000_000,
+        samples_b64: btoa(String.fromCharCode(...transaction(sampleBytes(32, 0, 1000)).flatMap((value) => [value & 0xff, value >> 8]))),
+      },
+    }));
+    textSocket.emit(JSON.stringify({
+      type: 'accelerometer_waveform',
+      ts: 10,
+      data: {
+        sequence: 1, sample_rate: 2_000_000, sample_count: 0,
+        samples_b64: btoa(String.fromCharCode(0, 0)),
+      },
+    }));
+    textSocket.emit(JSON.stringify({ type: 'accelerometer_waveform', data: {} }));
+    binarySocket.emit(JSON.stringify({ type: 'accelerometer_sample', data: { sample: { x_g: 0 } } }));
+    binarySocket.emit(JSON.stringify({ type: 'accelerometer_sample', data: {
+      sample: { x_g: 0, y_g: 0, z_g: 1 }, trace: { source: 'legacy' },
+    } }));
+    binarySocket.emit(JSON.stringify({
+      type: 'accelerometer_waveform',
+      data: { sequence: 1, sample_rate: 2_000_000,
+        samples_b64: btoa(String.fromCharCode(0, 0)) },
+    }));
+    binarySocket.emit(JSON.stringify({ type: 'other' }));
+    textSocket.emit(JSON.stringify({ type: 'other' }));
+    binarySocket.emitBinary(new ArrayBuffer(2));
+    const malformed = new ArrayBuffer(6);
+    new DataView(malformed).setUint32(0, 8, true);
+    binarySocket.emitBinary(malformed);
+    const invalidJson = new ArrayBuffer(8);
+    new DataView(invalidJson).setUint32(0, 2, true);
+    new Uint8Array(invalidJson, 4, 2).set([0x7b, 0x2d]);
+    binarySocket.emitBinary(invalidJson);
+
+    binarySocket.emitBinary(binaryPacket(2));
+    const waveformTimer = timerSpy.mock.calls
+      .find(([, delay]) => delay === 32)?.[0];
+    if (typeof waveformTimer === 'function') {
+      waveformTimer();
+      waveformTimer();
+      binarySocket.emitBinary(binaryPacket(3));
+      workerScope.dispatch(new MessageEvent('message', {
+        data: { type: 'accelerometer_waveform_ack' },
+      }));
+      waveformTimer();
+    }
+    const poseTimer = timerSpy.mock.calls
+      .find(([, delay]) => delay === 16)?.[0];
+    if (typeof poseTimer === 'function') {
+      poseTimer();
+      poseTimer();
+    }
+    // The acknowledgement above schedules the queued packet without creating
+    // a second unbounded display queue.
+    workerScope.dispatch(new MessageEvent('message', {
+      data: { type: 'accelerometer_waveform_ack' },
+    }));
+    await vi.advanceTimersByTimeAsync(32);
+    workerScope.dispatch(new MessageEvent('message', {
+      data: { type: 'accelerometer_waveform_ack' },
+    }));
+    binarySocket.emitBinary(binaryPacket(5));
+    workerScope.dispatch(new MessageEvent('message', { data: { type: 'noop' } }));
+    workerScope.dispatch(new MessageEvent('message', { data: { type: 'shutdown' } }));
+    workerScope.dispatch(new MessageEvent('unload'));
+    expect(binarySocket.sent).toEqual([]);
   });
 });

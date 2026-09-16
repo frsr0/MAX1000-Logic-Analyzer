@@ -109,6 +109,52 @@ it('infers I²C from a wide LOD payload when the live window has no raw array', 
   });
 });
 
+it('offers a UART suggestion and preconfigures its decoder form', () => {
+  const toast = vi.fn();
+  useApp.setState({ activeSession: session('s', {
+    channels: [channel('d0', 'digital')], decoders: [],
+  }), decoderTypes: [uart], toast });
+  waveformView.payload = payload([1, 0, 1, 0, 1, 0, 1, 0, 1, 1]);
+  render(<DecoderPanel />);
+  expect(screen.getByText(/Suggested protocol: UART/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Configure UART' }));
+  expect(screen.getByRole('combobox', { name: 'Decoder' })).toHaveProperty('value', 'uart');
+  expect(screen.getByRole('combobox', { name: 'RX *' })).toHaveProperty('value', 'd0');
+  expect(toast).not.toHaveBeenCalled();
+});
+
+it('rejects incomplete bus evidence and ignores invalid channel identifiers', () => {
+  const channels = [
+    { id: 'd0', name: 'data', type: 'digital' },
+    { id: 'd1', name: 'clock', type: 'digital' },
+    { id: 'bad', name: 'bad', type: 'digital' },
+  ];
+  expect(suggestProtocol({ channels }, payload([3, 2, 3, 2, 3, 2]))).toBeNull();
+  expect(suggestProtocol({ channels: [{ id: 'bad', name: 'bad', type: 'digital' }] }, payload([1, 0, 1, 0, 1, 1]))).toBeNull();
+  expect(suggestProtocol({ channels: [
+    { id: 'bad', name: 'bad', type: 'digital' },
+    { id: 'd0', name: 'data', type: 'digital' }, { id: 'd1', name: 'clock', type: 'digital' },
+  ] }, payload([3, 1, 3, 1, 3, 1, 3, 1, 3, 1]))).toBeNull();
+  expect(suggestProtocol({ channels: [
+    { id: 'd0', name: 'flat', type: 'digital' }, { id: 'd1', name: 'flat clock', type: 'digital' },
+  ] }, payload([3, 3, 3, 3, 3, 3, 3, 3]))).toBeNull();
+  expect(suggestProtocol({ channels: [
+    { id: 'd0', name: 'data', type: 'digital' }, { id: 'd1', name: 'clock', type: 'digital' },
+  ] }, payload([0, 1, 1, 1]))).toBeNull();
+  expect(suggestProtocol({ channels: [
+    { id: 'd0', name: 'data', type: 'digital' }, { id: 'd1', name: 'clock', type: 'digital' },
+  ] }, payload([3, 1, 3, 2, 0, 2, 3, 1, 3, 1, 3]))).toMatchObject({ id: 'spi' });
+});
+
+it('rejects an I²C-shaped waveform when SDA changes on every clock rise', () => {
+  const channels = [
+    { id: 'd0', name: 'data', type: 'digital' },
+    { id: 'd1', name: 'clock', type: 'digital' },
+  ];
+  const unstable = [3, 1, 0, 3, 2, 0, 3, 2, 0, 3, 3];
+  expect(suggestProtocol({ channels }, payload(unstable))).not.toMatchObject({ id: 'i2c' });
+});
+
 it('manages existing decoders, selection runs, presets, polling and errors', async () => {
   waveformView.selectionStart = 20.8; waveformView.selectionEnd = 5.2;
   const decoders = [decoder('run', { name: 'Serial', status: 'running', quality_score: .87,
@@ -119,6 +165,7 @@ it('manages existing decoders, selection runs, presets, polling and errors', asy
   const annotations = vi.spyOn(waveformView, 'requestAnnotations').mockResolvedValue();
   render(<DecoderPanel />);
   expect(screen.getByText('Serial')).toBeTruthy(); expect(screen.getByText(/quality 87%/)).toBeTruthy();
+  waveformView.notify();
   expect(screen.getByText(/region 2–9/)).toBeTruthy(); expect(screen.getByText('framing')).toBeTruthy();
   const cards = screen.getAllByText(/events/).map((node) => node.closest('.decoder-card') as HTMLElement);
   fireEvent.click(within(cards[0]).getByTitle('enable/disable'));

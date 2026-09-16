@@ -101,7 +101,7 @@ export function DecoderPanel() {
           {!activeSession.decoders.some((d) => d.decoder_id === suggestion.id) && (
             <button className="link-button" onClick={() => {
               setTypeId(suggestion.id);
-              setChannels(suggestion.channels ?? {});
+              setChannels(suggestion.channels);
               setSettings(suggestion.settings ?? {});
               setAdding(true);
             }}>Configure {suggestion.name}</button>
@@ -359,7 +359,7 @@ function findI2cPair(channels: { id: string; name: string }[], samples: ArrayLik
           previousSda = currentSda;
           previousScl = currentScl;
         }
-        if (clockRises < 2 || stableAtClockRise < Math.ceil(clockRises * 0.6)) continue;
+        if (stableAtClockRise < Math.ceil(clockRises * 0.6)) continue;
         // A bin only preserves its bounds, not the exact edge ordering.  It
         // therefore under-counts SDA changes while SCL is low; retain the
         // stricter threshold for raw samples and use a conservative lower

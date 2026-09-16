@@ -2303,24 +2303,23 @@ class AccelerometerService:
                         "x_g": pose_sample[0], "y_g": pose_sample[1],
                         "z_g": pose_sample[2], "timestamp": timestamp,
                     }
-        if pushed is not None:
-            publish_latest = getattr(
-                websocket_manager, "publish_latest_threadsafe", None)
-            # Direct FIFO samples have no ring cursor and are a presentation
-            # stream, not archival history. When the asyncio loop is active,
-            # replace stale board targets instead of making the live decoder
-            # compete with a second ordered JSON queue at ~1 kHz. The raw
-            # waveform topic remains the lossless ordered source.
-            if (source_index is None and callable(publish_latest)
-                    and getattr(websocket_manager, "_loop", None) is not None):
-                publish_latest(
-                    "accelerometer", "accelerometer_sample", pushed)
-            else:
-                websocket_manager.publish_threadsafe(
-                    "accelerometer", "accelerometer_sample", pushed)
-            if callable(publish_latest) and pose_pushed is not None:
-                publish_latest(
-                    "accelerometer_pose", "accelerometer_sample", pose_pushed)
+        publish_latest = getattr(
+            websocket_manager, "publish_latest_threadsafe", None)
+        # Direct FIFO samples have no ring cursor and are a presentation
+        # stream, not archival history. When the asyncio loop is active,
+        # replace stale board targets instead of making the live decoder
+        # compete with a second ordered JSON queue at ~1 kHz. The raw
+        # waveform topic remains the lossless ordered source.
+        if (source_index is None and callable(publish_latest)
+                and getattr(websocket_manager, "_loop", None) is not None):
+            publish_latest(
+                "accelerometer", "accelerometer_sample", pushed)
+        else:
+            websocket_manager.publish_threadsafe(
+                "accelerometer", "accelerometer_sample", pushed)
+        if callable(publish_latest) and pose_pushed is not None:
+            publish_latest(
+                "accelerometer_pose", "accelerometer_sample", pose_pushed)
 
     def _append_live_digital(self, digital: np.ndarray,
                              expected_session: Session | None = None) -> None:

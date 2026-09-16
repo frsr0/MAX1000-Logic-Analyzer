@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { api } from '../api/client';
 import type { MilAccelerometerConfig, MilAccelerometerStatus } from '../api/types';
 import { useApp } from '../state/appStore';
+import { waveformView } from '../state/waveformStore';
 import { MilAccelerometerCard } from './MilAccelerometerCard';
 
 const POLL_INTERVAL_MS = 100;
@@ -106,7 +107,7 @@ it('updates the orientation from each pushed decoded sample', async () => {
     frames.push(callback);
     return frames.length;
   });
-  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({ ...sample(), running: true });
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue(sample());
   render(<MilAccelerometerCard />);
   await waitFor(() => expect(screen.getAllByText('+0.000', { exact: true })).toHaveLength(2));
   expect((document.querySelector('.mil-accel-board') as HTMLElement).style.transition)
@@ -163,7 +164,7 @@ it('keeps high-rate worker ingestion independent from a slow render', async () =
     frames.push(callback);
     return frames.length;
   });
-  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({ ...sample(), running: true });
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue(sample());
 
   render(<MilAccelerometerCard />);
   await waitFor(() => expect(FakeAccelerometerWorker.instances).toHaveLength(1));
@@ -187,6 +188,188 @@ it('keeps high-rate worker ingestion independent from a slow render', async () =
   await act(async () => { frames[0](16); });
   expect(screen.getByText('+1.190', { exact: true })).toBeTruthy();
   expect(document.querySelector('.mil-accelerometer-card')?.textContent).toContain('120');
+});
+
+it('handles an invalid worker pose, an untagged raw chunk, and fallback ownership', async () => {
+  class GuardWorker {
+    static instances: GuardWorker[] = [];
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onerror: (() => void) | null = null;
+    postMessage = vi.fn();
+    terminate = vi.fn();
+    constructor(_url: URL | string) { GuardWorker.instances.push(this); }
+  }
+  class GuardSocket {
+    static instances: GuardSocket[] = [];
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onclose: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    constructor(readonly url: string) { GuardSocket.instances.push(this); }
+    close = vi.fn();
+    send = vi.fn();
+  }
+  vi.stubGlobal('Worker', GuardWorker);
+  vi.stubGlobal('WebSocket', GuardSocket);
+  useApp.setState({ activeSession: { id: 'untagged', tags: ['other'] } as any });
+  const frames: FrameRequestCallback[] = [];
+  vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+    frames.push(callback);
+    return frames.length;
+  });
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({
+    ...sample(), running: true,
+  });
+  const view = render(<MilAccelerometerCard />);
+  await waitFor(() => expect(GuardWorker.instances).toHaveLength(1));
+  const worker = GuardWorker.instances[0];
+  worker.onmessage?.({ data: {
+    type: 'accelerometer_waveform_chunk',
+    data: { samples_values: new Uint16Array([1]), sample_rate: 1_000_000 },
+  } } as MessageEvent);
+  expect(worker.postMessage).toHaveBeenCalledWith({ type: 'accelerometer_waveform_ack' });
+
+  worker.onerror?.();
+  worker.onerror?.();
+  expect(GuardSocket.instances).toHaveLength(1);
+  const fallback = GuardSocket.instances[0];
+  fallback.onmessage?.({ data: JSON.stringify({
+    type: 'accelerometer_sample',
+    data: { sample: { x_g: 0, y_g: 0, z_g: 1, timestamp: Number.NaN } },
+  }) } as MessageEvent);
+  expect(frames).toHaveLength(1);
+  await act(async () => { frames.shift()?.(16); });
+  fallback.onmessage?.({ data: JSON.stringify({
+    type: 'accelerometer_sample',
+    data: { sample: { x_g: 0, y_g: 0, z_g: 1, timestamp: 2 },
+      waveform_packet_count: 1, waveform_sequence_gaps: 0,
+      waveform_disconnects: 0, frontend_decode_latency_ms: 1,
+      capture_to_publish_latency_ms: 2, decoded_to_publish_latency_ms: 3,
+      source_sample_index: 4, source_age_samples: 5,
+      source_backlog_samples: 6, last_sample_sequence: 7 },
+  }) } as MessageEvent);
+  expect(frames.length).toBeGreaterThan(0);
+  worker.onmessage?.({ data: {
+    type: 'accelerometer_sample',
+    data: { sample: { x_g: 0, y_g: 0, z_g: 1, timestamp: 3 } },
+  } } as MessageEvent);
+  const pendingFrame = frames.shift();
+  view.unmount();
+  pendingFrame?.(16);
+  fallback.onmessage?.({ data: JSON.stringify({
+    type: 'accelerometer_sample', data: { sample: { x_g: 0, y_g: 0, z_g: 1, timestamp: 4 } },
+  }) } as MessageEvent);
+  worker.onmessage?.({ data: {
+    type: 'accelerometer_sample',
+    data: { sample: { x_g: 0, y_g: 0, z_g: 1, timestamp: 5 } },
+  } } as MessageEvent);
+});
+
+it('exercises command guards when control is unavailable and no sample exists', async () => {
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({
+    ...sample(), sample: null, last_error: 'offline',
+  });
+  render(<MilAccelerometerCard />);
+  const invoke = (element: HTMLElement, name: string, event: unknown) => {
+    const key = Object.keys(element).find((candidate) => candidate.startsWith('__reactProps'));
+    (element as any)[key!][name](event);
+  };
+  await screen.findByRole('button', { name: /Retry \/ reconnect/i });
+  useApp.setState({ controlMode: false });
+  invoke(screen.getByRole('button', { name: /Retry \/ reconnect/i }), 'onClick', {});
+  invoke(screen.getByRole('combobox', { name: 'Output data rate' }), 'onChange', {
+    target: { value: '25' },
+  });
+  invoke(screen.getByRole('button', { name: 'Set current as zero' }), 'onClick', {});
+});
+
+it('ignores a zero-timestamp REST fallback sample', async () => {
+  vi.useFakeTimers();
+  vi.spyOn(api, 'milAccelerometerStatus')
+    .mockResolvedValueOnce({ ...sample(), sample: null })
+    .mockResolvedValue({ ...sample(), sample: { x_g: 0, y_g: 0, z_g: 1, timestamp: 0 } });
+  vi.stubGlobal('Worker', class { constructor(_url: URL | string) {} terminate() {} });
+  vi.stubGlobal('WebSocket', class {
+    onopen: (() => void) | null = null; onmessage: ((event: MessageEvent) => void) | null = null;
+    onclose: (() => void) | null = null; onerror: (() => void) | null = null;
+    constructor(readonly url: string) {} close() {}
+  });
+  render(<MilAccelerometerCard />);
+  await act(async () => { await Promise.resolve(); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+});
+
+it('keeps worker timing when a REST poll completes before the paint frame', async () => {
+  vi.useFakeTimers();
+  vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
+  class TimingWorker {
+    static instance: TimingWorker | undefined;
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    constructor(_url: URL | string) { TimingWorker.instance = this; }
+    terminate() {}
+    emit(data: unknown) { this.onmessage?.({ data } as MessageEvent); }
+  }
+  vi.stubGlobal('Worker', TimingWorker);
+  vi.stubGlobal('WebSocket', class {
+    onopen: (() => void) | null = null; onmessage: ((event: MessageEvent) => void) | null = null;
+    onclose: (() => void) | null = null; onerror: (() => void) | null = null;
+    constructor(readonly url: string) {} close() {}
+  });
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({
+    ...sample(), running: false, sample: null,
+  });
+  render(<MilAccelerometerCard />);
+  await act(async () => { await Promise.resolve(); });
+  TimingWorker.instance!.emit({ type: 'accelerometer_sample', data: {
+    sample: { x_g: 0.1, y_g: 0, z_g: 1, timestamp: 2 },
+    trace: { frontend_received_at_ms: 1 },
+  } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+});
+
+it('keeps a REST status response unchanged when no frontend timing exists', async () => {
+  vi.useFakeTimers();
+  vi.spyOn(api, 'milAccelerometerStatus')
+    .mockResolvedValueOnce({ ...sample(), sample: { x_g: 0, y_g: 0, z_g: 1, timestamp: 1 } })
+    .mockResolvedValue({ ...sample(), running: false,
+      sample: { x_g: 0, y_g: 0, z_g: 1, timestamp: 2 } });
+  vi.stubGlobal('Worker', class { constructor(_url: URL | string) {} terminate() {} });
+  vi.stubGlobal('WebSocket', class {
+    onopen: (() => void) | null = null; onmessage: ((event: MessageEvent) => void) | null = null;
+    onclose: (() => void) | null = null; onerror: (() => void) | null = null;
+    constructor(readonly url: string) {} close() {}
+  });
+  render(<MilAccelerometerCard />);
+  await act(async () => { await Promise.resolve(); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+});
+
+it('rejects overlapping reconnects and config changes while busy', async () => {
+  let resolveReconnect!: (value: any) => void;
+  const reconnect = vi.spyOn(api, 'milAccelerometerReconnect').mockReturnValue(
+    new Promise((resolve) => { resolveReconnect = resolve; }) as any);
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({
+    ...sample(), available: false, last_error: 'offline',
+  });
+  render(<MilAccelerometerCard />);
+  const invoke = (element: HTMLElement, name: string, event: unknown) => {
+    const key = Object.keys(element).find((candidate) => candidate.startsWith('__reactProps'));
+    (element as any)[key!][name](event);
+  };
+  const retry = await screen.findByRole('button', { name: /Retry \/ reconnect/i });
+  invoke(retry, 'onClick', {});
+  await act(async () => { await Promise.resolve(); });
+  invoke(screen.getByRole('button', { name: /Reconnecting/i }), 'onClick', {});
+  expect(reconnect).toHaveBeenCalledOnce();
+  resolveReconnect({ ...sample(), running: false });
+  await act(async () => { await Promise.resolve(); });
+
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({ ...sample(), running: true });
+  cleanup();
+  render(<MilAccelerometerCard />);
+  await screen.findByRole('button', { name: 'Stop tracking' });
+  invoke(screen.getByRole('combobox', { name: 'Output data rate' }), 'onChange', {
+    target: { value: '25' },
+  });
 });
 
 it('coalesces successive worker samples into the display frame', async () => {
@@ -641,6 +824,25 @@ it('shows axis readings and lets the operator establish a zero orientation', asy
   expect(screen.getByRole('button', { name: 'Set current as zero' })).toBeTruthy();
 });
 
+it('can zero from a running REST sample before the raw worker delivers', async () => {
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({
+    ...sample(0.5, 0, 0.866), running: true,
+  });
+  render(<MilAccelerometerCard />);
+  await screen.findByText('+0.500', { exact: true });
+  fireEvent.click(screen.getByRole('button', { name: 'Set current as zero' }));
+  expect(screen.getByRole('button', { name: 'Re-zero board' })).toBeTruthy();
+});
+
+it('renders the true BDU readback label', async () => {
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({
+    ...sample(), running: true,
+    effective_config: { ...accelerometerConfig, bdu: true },
+  });
+  render(<MilAccelerometerCard />);
+  expect(await screen.findByText('on')).toBeTruthy();
+});
+
 it('renders the MAX1000 top-side board map with the sensor axes anchored at U4', async () => {
   vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue(sample());
   render(<MilAccelerometerCard />);
@@ -671,6 +873,19 @@ it('shows measured sample/data rates and hardware configuration readback', async
   expect(screen.getByText(/CTRL1 0x5D · CTRL4 0x62/)).toBeTruthy();
   expect(screen.getByLabelText('Accelerometer hardware readback').textContent).toContain('±8 g');
   expect(screen.getByText('low power')).toBeTruthy();
+});
+
+it('reports disabled axes and pauses pose rendering for a zero gravity vector', async () => {
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({
+    ...sample(0, 0, 0),
+    effective_config: {
+      ...accelerometerConfig, bdu: false, x_enabled: false,
+      y_enabled: false, z_enabled: false,
+    },
+  });
+  render(<MilAccelerometerCard />);
+  expect(await screen.findByText('none')).toBeTruthy();
+  expect(screen.getByText(/Pose paused/)).toBeTruthy();
 });
 
 it('loads and saves the complete accelerometer configuration while stopped', async () => {
@@ -756,4 +971,263 @@ it('disables hardware controls in read-only mode and reports backend errors', as
   fireEvent.click(button);
   expect(start).not.toHaveBeenCalled();
   await waitFor(() => expect(screen.getByText('unavailable')).toBeTruthy());
+});
+
+it('accepts worker waveform paint messages and exercises the remaining configuration controls', async () => {
+  class WorkerWithWaveform {
+    static instances: WorkerWithWaveform[] = [];
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onerror: ((event: ErrorEvent) => void) | null = null;
+    constructor(_url: URL | string) { WorkerWithWaveform.instances.push(this); }
+    postMessage = vi.fn();
+    terminate() {}
+    emit(data: unknown) { this.onmessage?.({ data } as MessageEvent); }
+  }
+  vi.stubGlobal('Worker', WorkerWithWaveform);
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue(sample());
+  useApp.setState({ activeSession: {
+    tags: ['accelerometer'], id: 'live',
+  } as never });
+  const active = vi.spyOn(waveformView, 'setLiveRawActive');
+  const append = vi.spyOn(waveformView, 'appendLiveRaw');
+  render(<MilAccelerometerCard />);
+  await waitFor(() => expect(WorkerWithWaveform.instances).toHaveLength(1));
+
+  WorkerWithWaveform.instances[0].emit({ type: 'accelerometer_waveform_chunk', data: {
+    samples_values: Uint16Array.from([1, 2]), sample_rate: 2_000_000,
+  } });
+  expect(active).toHaveBeenCalledWith('live', true);
+  expect(append).toHaveBeenCalledWith('live', expect.any(Uint16Array), 2_000_000);
+  expect(WorkerWithWaveform.instances[0].postMessage).toHaveBeenCalledWith({
+    type: 'accelerometer_waveform_ack',
+  });
+
+  fireEvent.change(screen.getByRole('combobox', { name: 'Full-scale range' }), {
+    target: { value: '4' },
+  });
+  await waitFor(() => expect(api.milAccelerometerUpdateConfig).toHaveBeenCalledTimes(1));
+  fireEvent.change(screen.getByRole('combobox', { name: 'Byte order' }), {
+    target: { value: 'big' },
+  });
+  await waitFor(() => expect(api.milAccelerometerUpdateConfig).toHaveBeenCalledTimes(2));
+  fireEvent.change(screen.getByRole('combobox', { name: 'Self-test' }), {
+    target: { value: 'positive' },
+  });
+  await waitFor(() => expect(api.milAccelerometerUpdateConfig).toHaveBeenCalledTimes(3));
+});
+
+it('falls back when the module worker fails and reports unknown recovery errors', async () => {
+  class FailingWorker {
+    static instances: FailingWorker[] = [];
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onerror: ((event: ErrorEvent) => void) | null = null;
+    constructor(_url: URL | string) { FailingWorker.instances.push(this); }
+    terminate = vi.fn();
+    postMessage = vi.fn();
+  }
+  class FallbackSocket {
+    static instances: FallbackSocket[] = [];
+    onopen: (() => void) | null = null;
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onclose: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    constructor(readonly url: string) { FallbackSocket.instances.push(this); }
+    close = vi.fn();
+  }
+  vi.stubGlobal('Worker', FailingWorker);
+  vi.stubGlobal('WebSocket', FallbackSocket);
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({
+    ...sample(), available: false, last_error: 'sensor lost',
+  });
+  const reconnect = vi.spyOn(api, 'milAccelerometerReconnect').mockRejectedValue('reconnect unavailable');
+  const toast = vi.fn();
+  useApp.setState({ toast });
+  render(<MilAccelerometerCard />);
+  await waitFor(() => expect(FailingWorker.instances).toHaveLength(1));
+  FailingWorker.instances[0].onerror?.(new ErrorEvent('error'));
+  expect(FailingWorker.instances[0].terminate).toHaveBeenCalledOnce();
+  expect(FallbackSocket.instances[0].url).toContain('/ws/accelerometer/pose');
+
+  fireEvent.click(await screen.findByRole('button', { name: /Retry \/ reconnect/i }));
+  await waitFor(() => expect(reconnect).toHaveBeenCalledOnce());
+  expect(toast).toHaveBeenCalledWith('error', 'Accelerometer reconnect failed');
+
+  vi.mocked(api.milAccelerometerUpdateConfig).mockRejectedValueOnce('config unavailable');
+  fireEvent.change(screen.getByRole('combobox', { name: 'Full-scale range' }), {
+    target: { value: '4' },
+  });
+  await waitFor(() => expect(toast).toHaveBeenCalledWith('error', 'Unable to update accelerometer configuration'));
+
+  vi.mocked(api.milAccelerometerUpdateConfig).mockRejectedValueOnce(
+    new Error('config failed'));
+  fireEvent.change(screen.getByRole('combobox', { name: 'Full-scale range' }), {
+    target: { value: '8' },
+  });
+  await waitFor(() => expect(toast).toHaveBeenCalledWith('error', 'config failed'));
+});
+
+it('records frontend timing and transport diagnostics on the live pose path', async () => {
+  class TimingWorker {
+    static instances: TimingWorker[] = [];
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    constructor(_url: URL | string) { TimingWorker.instances.push(this); }
+    postMessage = vi.fn();
+    terminate() {}
+    emit(data: unknown) { this.onmessage?.({ data } as MessageEvent); }
+  }
+  vi.useFakeTimers();
+  vi.stubGlobal('Worker', TimingWorker);
+  const frames: FrameRequestCallback[] = [];
+  vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+    frames.push(callback);
+    return frames.length;
+  });
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({
+    ...sample(), running: false, sample: null, last_sample_at: 0,
+    source_backlog_samples: 3, source_age_samples: 4,
+    capture_to_publish_latency_ms: 1.2, decoded_to_publish_latency_ms: 0.8,
+    frontend_decode_latency_ms: 0.4,
+  });
+  render(<MilAccelerometerCard />);
+  await act(async () => { await Promise.resolve(); });
+  expect(TimingWorker.instances).toHaveLength(1);
+  TimingWorker.instances[0].emit({
+    type: 'accelerometer_sample',
+    data: {
+      sample: { x_g: 0.2, y_g: 0, z_g: 1, timestamp: 2 },
+      last_sample_at: 2, samples_read: 5, source_backlog_samples: 3,
+      source_age_samples: 4, capture_to_publish_latency_ms: 1.2,
+      decoded_to_publish_latency_ms: 0.8, frontend_decode_latency_ms: 0.4,
+    },
+  });
+  while (frames.length) frames.shift()?.(16);
+  vi.mocked(api.milAccelerometerStatus).mockResolvedValueOnce({
+    ...sample(), running: false, sample: null,
+  });
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  TimingWorker.instances[0].emit({
+    type: 'accelerometer_sample',
+    data: {
+      sample: { x_g: 0.4, y_g: 0, z_g: 0.9, timestamp: 3 },
+      last_sample_at: 3, samples_read: 6,
+      trace: { decoder: 'worker', frontend_received_at_ms: 11 },
+    },
+  });
+  frames.shift()?.(32);
+  TimingWorker.instances[0].emit({
+    type: 'accelerometer_sample',
+    data: {
+      sample: { x_g: -0.4, y_g: 0, z_g: 0.9, timestamp: 4 },
+      last_sample_at: 4, samples_read: 7,
+      trace: { decoder: 'worker', frontend_received_at_ms: 12 },
+    },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Set current as zero' }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+  while (frames.length) frames.shift()?.(32);
+  expect(screen.getByText('3 samples')).toBeTruthy();
+  expect(screen.getByText('4 samples')).toBeTruthy();
+  expect(screen.getByText('1.2 ms')).toBeTruthy();
+  expect(screen.getByText('0.8 ms')).toBeTruthy();
+  expect(screen.getByText('0.4 ms')).toBeTruthy();
+  expect(screen.getByText('WebSocket → render').parentElement?.textContent).toMatch(/ms/);
+
+  vi.mocked(api.milAccelerometerStatus).mockResolvedValueOnce({
+    ...sample(), running: false, sample: { x_g: 0, y_g: 0, z_g: 1, timestamp: 1 },
+  });
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+});
+
+it('uses the constructor fallback and handles a reconnect response that is not running', async () => {
+  class ThrowingWorker {
+    constructor(_url: URL | string) { throw new Error('worker construction failed'); }
+  }
+  vi.stubGlobal('Worker', ThrowingWorker);
+  vi.stubGlobal('WebSocket', class {
+    onopen: (() => void) | null = null;
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onclose: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    constructor(readonly url: string) {}
+    close() {}
+  });
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({
+    ...sample(), available: false, last_error: 'sensor lost',
+  });
+  const reconnect = vi.spyOn(api, 'milAccelerometerReconnect').mockResolvedValue({
+    ...sample(), running: false, last_error: null,
+  });
+  const toast = vi.fn();
+  useApp.setState({ toast });
+  render(<MilAccelerometerCard />);
+  fireEvent.click(await screen.findByRole('button', { name: /Retry \/ reconnect/i }));
+  await waitFor(() => expect(reconnect).toHaveBeenCalledOnce());
+  expect(toast).toHaveBeenCalledWith('error', 'Accelerometer reconnect did not start tracking');
+
+  reconnect.mockResolvedValueOnce({
+    ...sample(), running: true, available: true, sample: null,
+    effective_config: accelerometerConfig,
+  });
+  fireEvent.click(screen.getByRole('button', { name: /Retry \/ reconnect/i }));
+  await waitFor(() => expect(toast).toHaveBeenCalledWith(
+    'success', 'Accelerometer reconnected and tracking restarted'));
+});
+
+it('keeps an older REST sample from moving the stopped pose backwards', async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal('Worker', class {
+    constructor(_url: URL | string) {}
+    terminate() {}
+  });
+  vi.stubGlobal('WebSocket', class {
+    onopen: (() => void) | null = null;
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onclose: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    constructor(readonly url: string) {}
+    close() {}
+  });
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue({
+    ...sample(), last_error: 'stale status',
+  });
+  vi.spyOn(api, 'milAccelerometerReconnect').mockResolvedValue({
+    ...sample(), running: false, sample: { x_g: 0, y_g: 0, z_g: 1, timestamp: 10 },
+  });
+  render(<MilAccelerometerCard />);
+  await act(async () => { await Promise.resolve(); });
+  fireEvent.click(screen.getByRole('button', { name: /Retry \/ reconnect/i }));
+  await act(async () => { await Promise.resolve(); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(api.milAccelerometerStatus).toHaveBeenCalled();
+});
+
+it('cancels a pending board frame when a forced zero is applied', async () => {
+  class WorkerStub {
+    static instance: WorkerStub;
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    constructor(_url: URL | string) { WorkerStub.instance = this; }
+    postMessage() {}
+    terminate() {}
+  }
+  vi.stubGlobal('Worker', WorkerStub);
+  vi.stubGlobal('WebSocket', class {
+    onopen: (() => void) | null = null;
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onclose: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    constructor(readonly url: string) {}
+    close() {}
+  });
+  const frame = vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(7);
+  const cancel = vi.spyOn(window, 'cancelAnimationFrame');
+  vi.spyOn(api, 'milAccelerometerStatus').mockResolvedValue(sample());
+  render(<MilAccelerometerCard />);
+  await act(async () => { await Promise.resolve(); });
+  WorkerStub.instance.onmessage?.({ data: {
+    type: 'accelerometer_sample',
+    data: { sample: { x_g: 0.5, y_g: 0, z_g: 0.86, timestamp: 2 }, trace: {} },
+  } } as MessageEvent);
+  expect(frame).toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Set current as zero' }));
+  expect(cancel).toHaveBeenCalledWith(7);
 });

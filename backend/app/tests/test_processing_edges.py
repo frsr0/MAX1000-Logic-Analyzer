@@ -10,6 +10,7 @@ import sys
 import types
 import logging
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock
 
 from app.capture.chunk_store import (clamp_window, raw_analog_window,
@@ -412,6 +413,400 @@ def test_binary_waveform_slow_client_isolated_without_dropping_healthy_stream():
         assert slow.closed
 
     asyncio.run(exercise())
+
+
+def test_websocket_manager_ordered_mailbox_cleanup_and_send_error_paths():
+    async def exercise():
+        mgr = ConnectionManager()
+
+        class Ws:
+            def __init__(self, fail=False):
+                self.fail = fail
+                self.text = []
+                self.binary = []
+                self.closed = []
+
+            async def accept(self):
+                pass
+
+            async def send_text(self, value):
+                if self.fail:
+                    raise RuntimeError("send failed")
+                self.text.append(value)
+
+            async def send_bytes(self, value):
+                if self.fail:
+                    raise RuntimeError("send failed")
+                self.binary.append(value)
+
+            async def close(self, **kwargs):
+                self.closed.append(kwargs)
+
+        good = Ws()
+        bad = Ws(True)
+        await mgr.connect(good, "accelerometer_waveform")
+        await mgr.connect(bad, "accelerometer_waveform")
+        await mgr.broadcast("accelerometer_waveform", "wave", {
+            "value": 1, "trace": {"source": "test"},
+        })
+        assert len(good.text) == 1 and bad not in mgr._topics["accelerometer_waveform"]
+        assert "websocket_send_started_at" in json.loads(good.text[0])["data"]["trace"]
+
+        await mgr._broadcast_accelerometer("unused", "accelerometer_sample")
+        mgr._topics["accelerometer"] = {bad}
+        await mgr._broadcast_accelerometer("accelerometer_sample")
+        assert bad not in mgr._topics["accelerometer"]
+
+        mgr.set_loop(asyncio.get_running_loop())
+        assert mgr._copy_with_enqueue_trace({"trace": {}})["trace"]
+        assert mgr._copy_with_enqueue_trace({"value": 1}) == {"value": 1}
+        await mgr._close_evicted_socket(bad)
+
+        binary = Ws()
+        topic = "accelerometer_waveform_binary"
+        await mgr.connect(binary, topic)
+        mgr._binary_pending[topic] = {binary: __import__("collections").deque([b"a", b"b"])}
+        await mgr._drain_binary(topic)
+        assert binary.binary == [b"a", b"b"]
+
+        text = Ws()
+        text_topic = "accelerometer_waveform"
+        await mgr.connect(text, text_topic)
+        mgr._text_waveform_pending[text_topic] = {
+            text: __import__("collections").deque([("wave", {"n": 1})]),
+        }
+        await mgr._drain_text_waveform_client(text_topic, text)
+        assert json.loads(text.text[-1])["data"]["n"] == 1
+
+        failing = Ws(True)
+        await mgr.connect(failing, topic)
+        mgr._binary_pending[topic] = {failing: __import__("collections").deque([b"x"])}
+        await mgr._drain_binary_client(topic, failing)
+        await asyncio.sleep(0)
+        assert failing not in mgr._topics[topic]
+
+    asyncio.run(exercise())
+
+
+def test_websocket_manager_threadsafe_noop_and_scheduler_failure_branches():
+    import app.websocket.manager as module
+
+    async def exercise():
+        class Ws:
+            def __init__(self):
+                self.text = []
+                self.closed = []
+
+            async def accept(self):
+                pass
+
+            async def send_text(self, value):
+                self.text.append(value)
+
+            async def close(self, **kwargs):
+                self.closed.append(kwargs)
+
+        mgr = ConnectionManager()
+        assert mgr.has_subscribers("missing") is False
+        await mgr.broadcast("accelerometer_pose", "sample", {"n": 1})
+        mgr.publish_threadsafe("unused", "event", {})
+        mgr.publish_latest_threadsafe("accelerometer_pose", "sample", {})
+        mgr.publish_binary_threadsafe("accelerometer_waveform_binary", b"x")
+
+        no_kwargs = type("NoKwargs", (), {
+            "close": lambda self: asyncio.sleep(0),
+        })()
+        await mgr._close_evicted_socket(no_kwargs)
+
+        class ExplodingClose:
+            async def close(self, **_kwargs):
+                raise RuntimeError("already gone")
+
+        await mgr._close_evicted_socket(ExplodingClose())
+        closed_loop = asyncio.new_event_loop()
+        mgr.set_loop(closed_loop)
+        closed_loop.close()
+        mgr._schedule_socket_close(ExplodingClose())
+
+        mgr.set_loop(asyncio.get_running_loop())
+        good = Ws()
+        await mgr.connect(good, "accelerometer")
+        await mgr.broadcast("accelerometer", "sample", {"n": 1})
+        await asyncio.sleep(0)
+
+        original_run = module.asyncio.run_coroutine_threadsafe
+
+        def fail_run(coro, _loop):
+            coro.close()
+            raise RuntimeError("loop closed")
+
+        module.asyncio.run_coroutine_threadsafe = fail_run
+        mgr._latest_pending.clear()
+        mgr._latest_draining.clear()
+        mgr.publish_threadsafe("accelerometer", "sample", {"n": 2})
+        mgr.publish_threadsafe("generic", "event", {})
+
+        text = Ws()
+        await mgr.connect(text, "accelerometer_waveform")
+        mgr.publish_threadsafe("accelerometer_waveform", "wave", {"n": 1})
+        mgr._text_waveform_draining.clear()
+        mgr.publish_threadsafe("accelerometer_waveform", "wave", {"n": 2})
+
+        mgr.publish_latest_threadsafe("accelerometer_pose", "sample", {"n": 2})
+        await mgr.connect(good, "accelerometer_pose")
+        mgr.publish_latest_threadsafe("accelerometer_pose", "sample", {"n": 3})
+
+        module.asyncio.run_coroutine_threadsafe = original_run
+
+    asyncio.run(exercise())
+
+
+def test_websocket_manager_binary_text_and_latest_cleanup_edges(monkeypatch):
+    import app.websocket.manager as module
+    from collections import deque
+
+    async def exercise():
+        class Ws:
+            def __init__(self, fail=False):
+                self.fail = fail
+                self.text = []
+                self.binary = []
+                self.closed = []
+
+            async def accept(self):
+                pass
+
+            async def send_text(self, value):
+                if self.fail:
+                    raise RuntimeError("text failed")
+                self.text.append(value)
+
+            async def send_bytes(self, value):
+                if self.fail:
+                    raise RuntimeError("binary failed")
+                self.binary.append(value)
+
+            async def close(self, **kwargs):
+                self.closed.append(kwargs)
+
+        class CloseTwice:
+            def __init__(self):
+                self.calls = 0
+
+            async def close(self, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    raise TypeError("old close shape")
+                raise RuntimeError("already closed")
+
+        mgr = ConnectionManager()
+        mgr.set_loop(asyncio.get_running_loop())
+        await mgr._close_evicted_socket(CloseTwice())
+        pending_ws = Ws()
+        other_pending_ws = Ws()
+        await mgr.connect(pending_ws, "cleanup")
+        await mgr.connect(other_pending_ws, "cleanup")
+        mgr._binary_pending["cleanup"] = {pending_ws: deque([b"x"])}
+        mgr._binary_pending["cleanup"][other_pending_ws] = deque([b"y"])
+        mgr._text_waveform_pending["cleanup"] = {
+            pending_ws: deque([("wave", {})])}
+        mgr._text_waveform_pending["cleanup"][other_pending_ws] = deque([("wave", {})])
+        mgr.disconnect(pending_ws, "cleanup")
+        assert "cleanup" in mgr._binary_pending
+        assert "cleanup" in mgr._text_waveform_pending
+        mgr.disconnect(other_pending_ws, "cleanup")
+        assert "cleanup" not in mgr._binary_pending
+        assert "cleanup" not in mgr._text_waveform_pending
+
+        class StaleSet(set):
+            def __contains__(self, _item):
+                return False
+
+        stale = Ws()
+        mgr._topics["stale"] = StaleSet([stale])
+        mgr._publish_text_waveform_threadsafe("stale", "wave", {})
+        mgr._topics["stale-binary"] = StaleSet([stale])
+        mgr.publish_binary_threadsafe("stale-binary", b"none")
+        mgr.publish_binary_threadsafe("accelerometer_waveform_binary", b"none")
+        mgr.publish_binary_threadsafe("accelerometer_waveform_binary", b"none")
+        mgr.publish_threadsafe("accelerometer_waveform", "wave", {})
+
+        text_slow = Ws()
+        text_slow.send_text = lambda _value: asyncio.sleep(1)
+        text_topic = "accelerometer_waveform"
+        await mgr.connect(text_slow, text_topic)
+        for n in range(module.MAX_WAVEFORM_PENDING_CHUNKS + 1):
+            mgr.publish_threadsafe(text_topic, "wave", {"n": n})
+            await asyncio.sleep(0)
+        await asyncio.sleep(0.05)
+        assert text_slow not in mgr._topics[text_topic]
+
+        binary = Ws()
+        binary_topic = "accelerometer_waveform_binary"
+        await mgr.connect(binary, binary_topic)
+        no_clients = ConnectionManager()
+        await no_clients._broadcast_binary("empty", b"none")
+        slow_binary = Ws()
+        slow_binary.send_bytes = lambda _value: asyncio.sleep(1)
+        await mgr.connect(slow_binary, binary_topic)
+        await mgr._broadcast_binary(binary_topic, b"timeout")
+        assert slow_binary not in mgr._topics[binary_topic]
+        queued_binary = Ws()
+        queued_topic = "queued-binary"
+        await mgr.connect(queued_binary, queued_topic)
+        for n in range(module.MAX_WAVEFORM_PENDING_CHUNKS + 1):
+            mgr.publish_binary_threadsafe(queued_topic, bytes([n]))
+        await asyncio.sleep(0.05)
+        assert queued_binary not in mgr._topics[queued_topic]
+        original_run = module.asyncio.run_coroutine_threadsafe
+
+        def fail_run(coro, _loop):
+            coro.close()
+            raise RuntimeError("closed")
+
+        module.asyncio.run_coroutine_threadsafe = fail_run
+        try:
+            mgr.publish_binary_threadsafe(binary_topic, b"x")
+            mgr.publish_threadsafe(text_topic, "wave", {"n": 9})
+        finally:
+            module.asyncio.run_coroutine_threadsafe = original_run
+
+        original_run = module.asyncio.run_coroutine_threadsafe
+        module.asyncio.run_coroutine_threadsafe = fail_run
+        try:
+            mgr._schedule_socket_close(binary)
+        finally:
+            module.asyncio.run_coroutine_threadsafe = original_run
+
+        await mgr._broadcast_binary(binary_topic, b"ok")
+        bad = Ws(True)
+        await mgr.connect(bad, binary_topic)
+        await mgr._broadcast_binary(binary_topic, b"bad")
+        assert bad not in mgr._topics[binary_topic]
+
+        pending_tasks = []
+        original_create = module.asyncio.create_task
+        module.asyncio.create_task = lambda coro: (coro.close(), pending_tasks.append(True))[1]
+        try:
+            for kind, topic in (("binary", binary_topic), ("text", text_topic)):
+                isolated = ConnectionManager()
+                isolated.set_loop(asyncio.get_running_loop())
+                ws = Ws()
+                async def abort_send(*_args):
+                    raise asyncio.CancelledError()
+                if kind == "binary":
+                    ws.send_bytes = abort_send
+                else:
+                    ws.send_text = abort_send
+                try:
+                    await isolated.connect(ws, topic)
+                    if kind == "binary":
+                        isolated._binary_pending[topic] = {ws: deque([b"a", b"b"])}
+                        with pytest.raises(asyncio.CancelledError):
+                            await isolated._drain_binary_client(topic, ws)
+                    else:
+                        isolated._text_waveform_pending[topic] = {
+                            ws: deque([("wave", {"n": 1}), ("wave", {"n": 2})])}
+                        with pytest.raises(asyncio.CancelledError):
+                            await isolated._drain_text_waveform_client(topic, ws)
+                finally:
+                    pass
+        finally:
+            module.asyncio.create_task = original_create
+        assert pending_tasks
+
+        def fail_create(coro):
+            coro.close()
+            raise RuntimeError("task scheduling failed")
+
+        module.asyncio.create_task = fail_create
+        try:
+            drain_map = ConnectionManager()
+            drain_map.set_loop(asyncio.get_running_loop())
+            first = Ws(); second = Ws()
+            await drain_map.connect(first, "drain-binary")
+            await drain_map.connect(second, "drain-binary")
+            drain_map._binary_pending["drain-binary"] = {
+                first: deque([b"a"]), second: deque([b"b"])}
+            await drain_map._drain_binary_client("drain-binary", first)
+            await drain_map._drain_binary_client("drain-binary", second)
+            first = Ws(); second = Ws()
+            await drain_map.connect(first, "drain-text")
+            await drain_map.connect(second, "drain-text")
+            drain_map._text_waveform_pending["drain-text"] = {
+                first: deque([("wave", {})]), second: deque([("wave", {})])}
+            await drain_map._drain_text_waveform_client("drain-text", first)
+            await drain_map._drain_text_waveform_client("drain-text", second)
+
+            isolated = ConnectionManager()
+            isolated.set_loop(asyncio.get_running_loop())
+            ws = Ws()
+            async def cancel_send(*_args):
+                raise asyncio.CancelledError()
+            ws.send_bytes = cancel_send
+            await isolated.connect(ws, binary_topic)
+            isolated._binary_pending[binary_topic] = {ws: deque([b"a", b"b"])}
+            with pytest.raises(asyncio.CancelledError):
+                await isolated._drain_binary_client(binary_topic, ws)
+
+            isolated = ConnectionManager()
+            isolated.set_loop(asyncio.get_running_loop())
+            ws = Ws()
+            ws.send_text = cancel_send
+            await isolated.connect(ws, text_topic)
+            isolated._text_waveform_pending[text_topic] = {
+                ws: deque([("wave", {}), ("wave", {})])}
+            with pytest.raises(asyncio.CancelledError):
+                await isolated._drain_text_waveform_client(text_topic, ws)
+
+            latest = ConnectionManager()
+            latest.set_loop(asyncio.get_running_loop())
+            latest._latest_pending["latest"] = deque([("event", {}), ("event", {})])
+            async def cancel_broadcast(*_args):
+                raise asyncio.CancelledError()
+            latest.broadcast = cancel_broadcast
+            with pytest.raises(asyncio.CancelledError):
+                await latest._drain_latest("latest")
+
+            latest._latest_value_pending["pose"] = ("event", {})
+            async def cancel_latest_value(*_args):
+                latest._latest_value_pending["pose"] = ("event", {"replacement": True})
+                raise asyncio.CancelledError()
+            latest.broadcast = cancel_latest_value
+            with pytest.raises(asyncio.CancelledError):
+                await latest._drain_latest_value("pose")
+        finally:
+            module.asyncio.create_task = original_create
+
+    asyncio.run(exercise())
+
+
+def test_capture_manager_decoder_without_live_window_and_import_fallback(tmp_path, monkeypatch):
+    import builtins
+    import app.capture.capture_manager as module
+
+    manager = CaptureManager(SessionStore(tmp_path / "decoder"))
+    session = Session(
+        name="decode", id="decode", sample_rate=1_000,
+        num_samples=16, channels=default_digital_channels(1),
+        decoders=[DecoderInstance(
+            id="uart", decoder_id="uart", enabled=True,
+            channels={"rx": "d0"}, settings={})],
+    )
+    manager.store.save(session)
+    manager.store.save_waveform(session.id, _wf(
+        digital=np.array([1, 0] * 8, dtype=np.uint16), rate=1_000))
+    manager._live_decode_worker(session.id)
+    assert manager.store.get(session.id).decoders[0].status == "done"
+
+    original_import = builtins.__import__
+    def missing_accelerometer(name, *args, **kwargs):
+        if name.endswith("mil.accelerometer"):
+            raise ImportError("optional accelerometer unavailable")
+        return original_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, "__import__", missing_accelerometer)
+    fallback = CaptureManager(SessionStore(tmp_path / "import"))
+    assert fallback._live_accelerometer() is None
 
 
 def test_sanity_checks_detect_empty_stuck_noisy_fast_and_flat_channels():
@@ -1119,6 +1514,254 @@ def test_capture_manager_connect_disconnect_stop_stream_break_and_analog_fallbac
                            analog={"bad": np.ones(2, dtype=np.float32)})
     session = mgr._result_to_session(CaptureSettings(mode="mixed"), result, "", 1)
     assert any(ch.id == "bad" for ch in session.channels)
+
+
+def test_capture_manager_lifecycle_error_and_live_decode_branches(tmp_path, monkeypatch):
+    import app.capture.capture_manager as module
+    from types import SimpleNamespace
+
+    class Broken:
+        def connect(self):
+            raise RuntimeError("open failed")
+
+        def disconnect(self):
+            raise RuntimeError("unwind failed")
+
+    monkeypatch.setattr(module, "ExistingHostAdapter", Broken)
+    manager = CaptureManager(SessionStore(tmp_path))
+    with pytest.raises(RuntimeError, match="open failed"):
+        manager.connect("hardware")
+    assert manager.device is None
+
+    class Accel:
+        live_capture_active = True
+
+        def stop(self, **_kwargs):
+            raise RuntimeError("stop failed")
+
+        def stop_live_capture(self):
+            return True
+
+    manager._accelerometer_service = Accel()
+    manager.device = Broken()
+    manager.control.acquire("owner")
+    manager.disconnect()
+    assert manager.control.holder is None
+
+    manager.control.acquire("owner")
+    with pytest.raises(HardwareError, match="another client"):
+        manager.reconnect_hardware("other")
+    manager.control.release("owner")
+
+    session = Session(name="live", id="decode", sample_rate=1000, num_samples=100,
+                      channels=default_digital_channels(1),
+                      decoders=[
+                          DecoderInstance(id="disabled", decoder_id="good", enabled=False),
+                          DecoderInstance(id="unknown", decoder_id="unknown"),
+                          DecoderInstance(id="consumes", decoder_id="consumes"),
+                          DecoderInstance(id="missing", decoder_id="missing"),
+                          DecoderInstance(id="fallback", decoder_id="fallback", channels={"rx": "d0"}),
+                          DecoderInstance(id="bad", decoder_id="bad", channels={"rx": "d0"}),
+                          DecoderInstance(id="plain", decoder_id="good", channels={"rx": "d0"}),
+                      ])
+    wf = _wf(digital=np.zeros(100, dtype=np.uint16), rate=1000)
+    manager.store.save(session)
+    manager.store.save_waveform(session.id, wf)
+
+    class Decoder:
+        def __init__(self, name, consumes=None, failure=None):
+            self.id = name
+            self.consumes = consumes
+            self.failure = failure
+
+        def channel_roles(self):
+            return [SimpleNamespace(required=True, role="rx")]
+
+        def defaults(self):
+            return {}
+
+        def live_window_samples(self, _rate, _settings):
+            if self.failure == "window":
+                raise TypeError("bad window")
+            return 20
+
+        def decode(self, _ctx, _settings):
+            if self.failure == "decode":
+                raise RuntimeError("decode failed")
+            return SimpleNamespace(events=[{"severity": "warning"}], warnings=[])
+
+    decoders = {
+        "good": Decoder("good"),
+        "consumes": Decoder("consumes", consumes="source"),
+        "missing": Decoder("missing"),
+        "fallback": Decoder("fallback", failure="window"),
+        "bad": Decoder("bad", failure="decode"),
+    }
+    decoders["good"].live_window_samples = None
+    monkeypatch.setattr(module.decoder_registry, "get", lambda name: decoders.get(name))
+    published = []
+    monkeypatch.setattr(module.manager, "publish_threadsafe",
+                        lambda *args: published.append(args))
+    manager._live_decode_worker(session.id)
+    assert session.decoders[4].status == "done"
+    assert session.decoders[5].status == "error"
+    assert any(item[0].startswith("decoder:") for item in published)
+
+    started = []
+    monkeypatch.setattr(module.threading, "Thread",
+                        lambda **kwargs: SimpleNamespace(start=lambda: started.append(kwargs)))
+    manager._live_decode_active.add(session.id)
+    manager._live_decode_pending.add(session.id)
+    manager._live_decode_worker(session.id)
+    assert started
+
+
+def test_capture_manager_reconnect_and_live_route_failures(tmp_path, monkeypatch):
+    import app.capture.capture_manager as module
+
+    class Accel:
+        def __init__(self, start, statuses=()):
+            self._start = start
+            self._statuses = iter(statuses)
+            self._status = SimpleNamespace(last_error=None)
+            self.live_capture_active = False
+            self.stop_calls = 0
+
+        def config(self):
+            return {}
+
+        def update_config(self, _config):
+            return {}
+
+        def start(self):
+            return self._start
+
+        def status(self):
+            return next(self._statuses)
+
+        def stop(self, **_kwargs):
+            self.stop_calls += 1
+            return {}
+
+    def manager_for(accel, name):
+        mgr = CaptureManager(SessionStore(tmp_path / name))
+        mgr._accelerometer_service = accel
+        mgr.disconnect = lambda **_kwargs: None
+        mgr.connect = lambda _device_id: None
+        return mgr
+
+    held = manager_for(Accel({"running": True}), "held")
+    held.control.acquire("other")
+    with pytest.raises(HardwareError, match="another client"):
+        held.reconnect_hardware("mine")
+
+    unavailable = manager_for(None, "unavailable")
+    with pytest.raises(HardwareError, match="unavailable"):
+        unavailable.reconnect_hardware("mine")
+
+    not_started = manager_for(Accel({"running": False}), "not-started")
+    with pytest.raises(HardwareError, match="did not start"):
+        not_started.reconnect_hardware("mine")
+
+    stopped = manager_for(Accel(
+        {"running": True}, [{"running": False, "last_error": "stopped"}]),
+        "stopped")
+    with pytest.raises(HardwareError, match="stopped"):
+        stopped.reconnect_hardware("mine")
+
+    timed_out = manager_for(Accel(
+        {"running": True}, [{"running": True, "available": False,
+                              "effective_config": {}}]), "timeout")
+    real_monotonic = module.time.monotonic
+    clock = iter((0.0, 1.0))
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(clock))
+    with pytest.raises(HardwareError, match="did not produce"):
+        timed_out.reconnect_hardware("mine", health_timeout=0.1)
+    monkeypatch.setattr(module.time, "monotonic", real_monotonic)
+
+    taken = manager_for(Accel({"running": True}), "taken")
+    taken.control.acquire = lambda *_args, **_kwargs: False
+    with pytest.raises(HardwareError, match="taken"):
+        taken.reconnect_hardware("mine")
+
+    healthy = Accel(
+        {"running": True, "available": True, "effective_config": {},
+         "sample": {"x_g": 0}},
+        [{"running": True, "available": True,
+          "effective_config": {}, "sample": {"x_g": 0}}])
+    assert manager_for(healthy, "healthy").reconnect_hardware("mine")["available"]
+
+    no_saved_config = manager_for(Accel(
+        {"running": True, "available": True, "effective_config": {},
+         "sample": {"x_g": 0}},
+        [{"running": True, "available": True,
+          "effective_config": {}, "sample": {"x_g": 0}}]), "no-config")
+    no_saved_config._accelerometer_service.config = lambda: None
+    assert no_saved_config.reconnect_hardware("mine")["available"]
+
+    delayed = manager_for(Accel(
+        {"running": True},
+        [{"running": True, "available": False, "effective_config": {}},
+         {"running": True, "available": True, "effective_config": {},
+          "sample": {"x_g": 0}}]), "delayed")
+    delayed_clock = iter((0.0, 0.0))
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(delayed_clock))
+    assert delayed.reconnect_hardware("mine", health_timeout=0.1)["available"]
+    monkeypatch.setattr(module.time, "monotonic", real_monotonic)
+
+    cleanup_error = manager_for(Accel({"running": True}), "cleanup-error")
+    cleanup_error.disconnect = lambda **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("disconnect failed"))
+    cleanup_error._accelerometer_service.stop = lambda **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("stop failed"))
+    with pytest.raises(HardwareError, match="Reconnect failed"):
+        cleanup_error.reconnect_hardware("mine")
+
+    broken = CaptureManager(SessionStore(tmp_path / "route-error"))
+    broken._accelerometer_service = Mock(
+        status=Mock(side_effect=RuntimeError("poll")), manager=broken)
+    with pytest.raises(HardwareError, match="No device"):
+        broken.start_capture(CaptureSettings(num_samples=4))
+
+    active = CaptureManager(SessionStore(tmp_path / "route-active"))
+    active_accel = Mock(status=Mock(return_value={"running": True}),
+                        live_capture_active=True, manager=active)
+    active._accelerometer_service = active_accel
+    with pytest.raises(HardwareError, match="already running"):
+        active.start_capture(CaptureSettings(mode="rolling", num_samples=4))
+
+    import app.mil.service as mil_service
+    mil_active = CaptureManager(SessionStore(tmp_path / "mil-active"))
+    mil_active._mil_live_active = True
+    original_status = mil_service.emulator.status
+    mil_service.emulator.status = lambda: SimpleNamespace(running=True)
+    try:
+        with pytest.raises(HardwareError, match="already running"):
+            mil_active.start_capture(CaptureSettings(mode="rolling", num_samples=4))
+    finally:
+        mil_service.emulator.status = original_status
+
+    stopping = CaptureManager(SessionStore(tmp_path / "stop-accel"))
+    stopping._accelerometer_service = Mock(
+        manager=stopping, live_capture_active=True,
+        stop_live_capture=Mock(return_value=True),
+        status=Mock(return_value={"running": True}))
+    assert stopping.stop_capture() is True
+    assert stopping.capture_state == "cancelled"
+
+    active._live_decode_active.add("session")
+    active.schedule_live_decode("session")
+    assert "session" in active._live_decode_pending
+    active._live_decode_active.clear()
+    started = []
+    monkeypatch.setattr(module.threading, "Thread", lambda **kwargs:
+                        SimpleNamespace(start=lambda: started.append(kwargs)))
+    active.schedule_live_decode("session")
+    assert started
+
+
+def test_base_decoder_live_window_default_is_bounded():
+    assert UartDecoder().live_window_samples(1_000_000, {}) == 65_536
 
 
 def test_capture_manager_decoder_validation_and_stacked_failure(tmp_path):
@@ -1939,6 +2582,13 @@ def test_api_error_mapping_and_import_branches(monkeypatch):
     with pytest.raises(HTTPException):
         diagnostics.live_accel_session("test-client")
 
+    monkeypatch.setattr(mil, "require_control", lambda _client: None)
+    monkeypatch.setattr(capture_manager, "reconnect_hardware",
+                        Mock(side_effect=HardwareError("reconnect failed")))
+    with pytest.raises(HTTPException) as exc:
+        mil.mil_accelerometer_reconnect("test-client")
+    assert exc.value.status_code == 502
+
 
 def test_remaining_api_decoder_compare_and_waveform_branches(monkeypatch):
     from fastapi import HTTPException
@@ -2553,3 +3203,44 @@ def test_websocket_and_debug_bundle_exception_paths(monkeypatch):
         def status(self): return {}
     bundle = build_debug_bundle(Mgr())
     assert bundle[:2] == b"PK"
+
+
+def test_websocket_heartbeat_timeout_and_all_endpoint_hello_messages():
+    from app.websocket import status_ws
+    from starlette.websockets import WebSocketDisconnect
+
+    class WS:
+        def __init__(self):
+            self.receives = 0
+            self.sent = []
+
+        async def accept(self):
+            pass
+
+        async def receive_text(self):
+            self.receives += 1
+            if self.receives <= 3:
+                raise asyncio.TimeoutError()
+            raise WebSocketDisconnect()
+
+        async def send_text(self, text):
+            self.sent.append(text)
+
+        async def close(self, **_kwargs):
+            self.sent.append("closed")
+
+    for endpoint, hello_type in (
+        (status_ws.ws_status, "status_snapshot"),
+        (status_ws.ws_capture, "capture_state"),
+    ):
+        ws = WS()
+        asyncio.run(endpoint(ws))
+        assert json.loads(ws.sent[0])["type"] == hello_type
+        assert '{"type":"ping"}' in ws.sent
+
+    for endpoint in (status_ws.ws_accelerometer, status_ws.ws_accelerometer_pose,
+                     status_ws.ws_accelerometer_waveform,
+                     status_ws.ws_accelerometer_waveform_binary, status_ws.ws_logs):
+        ws = WS()
+        asyncio.run(endpoint(ws))
+        assert ws.sent[-1] == "closed"

@@ -139,6 +139,115 @@ def test_hardware_swd_capture_parses_json_requests_and_rejects_bad_entries():
         adapter.capture_with_generator(CaptureSettings(num_samples=4), bad)
 
 
+def test_accelerometer_adapter_seam_supports_old_and_new_host_drivers():
+    adapter = ExistingHostAdapter()
+    with pytest.raises(HardwareError):
+        adapter.accelerometer_probe()
+
+    dev = FakeHostDevice()
+    probe = Mock(side_effect=[RuntimeError("missing"), 0x33])
+    dev.accel_read_i2c = probe
+    dev.accel_write_i2c = Mock(return_value=True)
+    dev.accel_fifo_configure = Mock(return_value={"configured": True})
+    dev.accel_capture_cleanup = Mock()
+    dev.accel_read_fifo = Mock(return_value=b"\x01\x02\x03\x04\x05\x06")
+    dev.accel_fifo_status = Mock(return_value={"unread": 1})
+    adapter._dev = dev
+
+    assert adapter.accelerometer_probe() == 0x18
+    adapter.accelerometer_configure(0x18)
+    from app.mil.accelerometer import AccelerometerConfig
+    adapter.accelerometer_configure(0x18, AccelerometerConfig(output_data_rate_hz=100))
+    assert dev.accel_write_i2c.call_count == 4
+
+    # Old drivers reject read_len and expose byte-at-a-time reads instead.
+    def old_read(register, *, dev_addr):
+        assert dev_addr == 0x18
+        return register - 0x28
+    dev.accel_read_i2c = Mock(side_effect=old_read)
+    assert adapter.accelerometer_read_xyz(0x18) == bytes(range(6))
+
+    assert adapter.accelerometer_fifo_configure(0x18, threshold=2) == {"configured": True}
+    adapter.accelerometer_capture_cleanup()
+    assert adapter.accelerometer_read_fifo(0x18, max_samples=0) == b"\x01\x02\x03\x04\x05\x06"
+    assert adapter.accelerometer_fifo_status(0x18) == {"unread": 1}
+
+    dev.accel_capture_cleanup = None
+    adapter.accelerometer_capture_cleanup()
+
+    dev.accel_read_fifo = Mock(side_effect=lambda **_kwargs: None)
+    assert adapter.accelerometer_read_fifo(0x18) is None
+    dev.accel_fifo_configure = None
+    assert adapter.accelerometer_fifo_configure(0x18) is None
+    dev.accel_fifo_status = None
+    assert adapter.accelerometer_fifo_status(0x18) is None
+
+    dev.accel_read_i2c = Mock(side_effect=[0x20, 0x23])
+    assert adapter.accelerometer_read_config(0x18) == {"ctrl1": 0x20, "ctrl4": 0x23}
+
+    # All optional seams have explicit disconnected errors.
+    adapter._dev = None
+    for call in (
+        adapter.accelerometer_configure,
+        adapter.accelerometer_read_xyz,
+        adapter.accelerometer_fifo_configure,
+        adapter.accelerometer_read_fifo,
+        adapter.accelerometer_fifo_status,
+        adapter.accelerometer_read_config,
+    ):
+        with pytest.raises(HardwareError):
+            call(0x18)
+    adapter.accelerometer_capture_cleanup()
+
+
+def test_accelerometer_adapter_rejects_missing_and_malformed_optional_seams():
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+    dev.accel_read_i2c = Mock(return_value=0)
+    adapter._dev = dev
+    assert adapter.accelerometer_probe() is None
+
+    dev.accel_write_i2c = Mock(return_value=False)
+    with pytest.raises(HardwareError, match="configure"):
+        adapter.accelerometer_configure(0x18)
+    dev.accel_write_i2c = None
+    with pytest.raises(HardwareError, match="configure"):
+        adapter.accelerometer_configure(0x18)
+
+    dev.accel_read_i2c = Mock(return_value=b"bad")
+    with pytest.raises(HardwareError, match="invalid XYZ"):
+        adapter.accelerometer_read_xyz(0x18)
+    dev.accel_read_i2c = Mock(side_effect=["bad", 1])
+    with pytest.raises(HardwareError, match="configuration"):
+        adapter.accelerometer_read_config(0x18)
+
+    dev.accel_read_fifo = Mock(side_effect=lambda **_kwargs: b"bad")
+    with pytest.raises(HardwareError, match="invalid FIFO"):
+        adapter.accelerometer_read_fifo(0x18)
+    dev.accel_read_fifo = Mock(side_effect=lambda **_kwargs: (_ for _ in ()).throw(TypeError()))
+    with pytest.raises(TypeError):
+        adapter.accelerometer_read_fifo(0x18)
+    dev.accel_read_fifo = None
+    assert adapter.accelerometer_read_fifo(0x18) is None
+
+    dev.accel_fifo_configure = Mock(return_value=None)
+    assert adapter.accelerometer_fifo_configure(0x18) is None
+    dev.accel_capture_cleanup = Mock(side_effect=RuntimeError("cleanup"))
+    with pytest.raises(RuntimeError):
+        adapter.accelerometer_capture_cleanup()
+
+    dev.accel_read_i2c = None
+    with pytest.raises(HardwareError, match="read LIS3DH config"):
+        adapter.accelerometer_read_config(0x18)
+
+    dev._readback_codec = lambda: "raw"
+    dev.last_accel_fifo_config = {"enabled": True}
+    dev.last_accel_fifo_status = {"unread": 0}
+    dev.accel_fifo_stats = {"reads": 1}
+    info = adapter.get_debug_info()
+    assert info.extra["accelerometer_fifo"]["stats"] == {"reads": 1}
+
+
 def test_bitbang_generator_capture_is_explicitly_unsupported():
     adapter = ExistingHostAdapter()
     adapter._dev = FakeHostDevice()

@@ -102,6 +102,108 @@ describe('LiveI2cDecoder', () => {
       && sample.y_g === 0 && sample.z_g === 0)).toBe(true);
   });
 
+  it('supports base64 chunks, big-endian/normal decoding, and reset', () => {
+    const waveform = transaction(sampleBytes(128, -64, 1000));
+    let binary = '';
+    for (const value of waveform) {
+      binary += String.fromCharCode(value & 0xff, (value >> 8) & 0xff);
+    }
+    const decoder = new LiveI2cDecoder(0x19, {
+      operating_mode: 'normal', full_scale_g: 4, endian: 'big',
+    });
+    expect(decoder.feedBase64(btoa(binary))).toEqual([]);
+    decoder.reset();
+    expect(decoder.feed(Uint16Array.from(waveform))).toHaveLength(0);
+    expect(new LiveI2cDecoder(0x19, { operating_mode: 'normal', full_scale_g: 2 })
+      .feed(Uint16Array.from(transaction(sampleBytes(4, -4, 8))))).toHaveLength(1);
+  });
+
+  it('clears an in-flight transaction on STOP and handles a control plateau', () => {
+    const decoder = new LiveI2cDecoder();
+    const internals = decoder as unknown as {
+      inTransaction: boolean;
+      controlPlateau: boolean;
+      previous: [number, number] | null;
+    };
+    internals.inTransaction = true;
+    internals.controlPlateau = true;
+    internals.previous = [1, 0];
+    decoder.feed(Uint16Array.from([busWord(1, 1)]));
+    expect(internals.inTransaction).toBe(false);
+
+    internals.inTransaction = true;
+    internals.controlPlateau = true;
+    internals.previous = [0, 0];
+    decoder.feed(Uint16Array.from([busWord(1, 0)]));
+
+    const center = decoder as unknown as {
+      plateauRuns: Array<[number, number]>;
+      plateauCenter: () => number;
+    };
+    center.plateauRuns = [[0, 0]];
+    expect(center.plateauCenter()).toBe(0);
+  });
+
+  it('drops overlong transactions and accepts zero-length plateau calls', () => {
+    const decoder = new LiveI2cDecoder();
+    const internals = decoder as unknown as {
+      inTransaction: boolean;
+      transactionSamples: number;
+      previous: [number, number] | null;
+      appendPlateau: (sda: number, count?: number) => void;
+    };
+    internals.appendPlateau(1, 0);
+    internals.inTransaction = true;
+    internals.transactionSamples = 8192;
+    internals.previous = [0, 0];
+    decoder.feed(Uint16Array.from([busWord(0, 0), busWord(0, 1)]));
+    expect(internals.inTransaction).toBe(false);
+  });
+
+  it('takes the control plateau branch after an SCL-low transition', () => {
+    const decoder = new LiveI2cDecoder();
+    const internals = decoder as unknown as {
+      inTransaction: boolean;
+      controlPlateau: boolean;
+      previous: [number, number] | null;
+    };
+    internals.inTransaction = true;
+    internals.controlPlateau = true;
+    internals.previous = [0, 0];
+    decoder.feed(Uint16Array.from([busWord(1, 1)]));
+    expect(internals.inTransaction).toBe(true);
+
+    internals.inTransaction = false;
+    internals.previous = [0, 0];
+    decoder.feed(Uint16Array.from([busWord(1, 0)]));
+  });
+
+  it('covers low-power axis scaling and the non-ack transition path', () => {
+    const waveform = transaction(sampleBytes(128, -64, 1000));
+    const decoder = new LiveI2cDecoder(0x19, {
+      operating_mode: 'low_power', full_scale_g: 16, endian: 'big',
+    });
+    expect(decoder.feed(Uint16Array.from(waveform))).toHaveLength(0);
+    const internals = decoder as unknown as {
+      inTransaction: boolean;
+      controlPlateau: boolean;
+      previous: [number, number] | null;
+    };
+    internals.inTransaction = true;
+    internals.controlPlateau = false;
+    internals.previous = [1, 0];
+    decoder.feed(Uint16Array.from([busWord(1, 0), busWord(1, 1)]));
+    expect(internals.inTransaction).toBe(false);
+  });
+
+  it('uses the defensive sensitivity fallback for unknown legacy configs', () => {
+    const waveform = transaction(sampleBytes(128, -64, 1000));
+    const decoder = new LiveI2cDecoder(0x19, {
+      operating_mode: 'legacy' as any, full_scale_g: 99 as any,
+    });
+    expect(decoder.feed(Uint16Array.from(waveform))).toHaveLength(1);
+  });
+
   it.skipIf(!(globalThis as any).process?.env?.LIVE_HW_TEST)(
     'decodes a live high-ODR binary waveform packet', async () => {
       const packet = await new Promise<ArrayBuffer>((resolve, reject) => {

@@ -130,4 +130,53 @@ describe('ReconnectingSocket', () => {
     socket.close();
     expect(connected.closeCalls).toBe(1);
   });
+
+  it('delivers binary ArrayBuffer and Blob payloads, answers pings, and unsubscribes binary handlers', async () => {
+    const socket = new ReconnectingSocket('/ws/accelerometer/waveform-binary', true);
+    const ws = FakeWebSocket.instances[0];
+    const binary: ArrayBuffer[] = [];
+    const unsubscribe = socket.subscribeBinary((data) => binary.push(data));
+    ws.emitMessage(JSON.stringify({ type: 'ping' }));
+    expect(ws.closeCalls).toBe(0);
+
+    ws.emitMessage({ type: 'not-json' } as unknown as string);
+    ws.onmessage?.({ data: new ArrayBuffer(2) } as never);
+    ws.onmessage?.({ data: new Blob([new Uint8Array([1, 2, 3])]) } as never);
+    await vi.waitFor(() => expect(binary).toHaveLength(2));
+    expect(binary).toHaveLength(2);
+    unsubscribe();
+    ws.onmessage?.({ data: new ArrayBuffer(1) } as never);
+    expect(binary).toHaveLength(2);
+    socket.close();
+  });
+
+  it('ignores Blob conversion failures and does not deliver after close', async () => {
+    const socket = new ReconnectingSocket('/ws/accelerometer/waveform-binary', true);
+    const ws = FakeWebSocket.instances[0];
+    const binary: ArrayBuffer[] = [];
+    socket.subscribeBinary((data) => binary.push(data));
+    const original = Blob.prototype.arrayBuffer;
+    Blob.prototype.arrayBuffer = vi.fn().mockRejectedValue(new Error('blob failed'));
+    ws.onmessage?.({ data: new Blob([new Uint8Array([1, 2])]) } as never);
+    socket.close();
+    Blob.prototype.arrayBuffer = original;
+    await Promise.resolve();
+    expect(binary).toEqual([]);
+
+    const second = new ReconnectingSocket('/ws/accelerometer/waveform-binary', true);
+    const secondWs = FakeWebSocket.instances[1];
+    let resolveBuffer!: (buffer: ArrayBuffer) => void;
+    const originalAgain = Blob.prototype.arrayBuffer;
+    Blob.prototype.arrayBuffer = vi.fn(() => new Promise<ArrayBuffer>((resolve) => {
+      resolveBuffer = resolve;
+    }));
+    const delivered: ArrayBuffer[] = [];
+    second.subscribeBinary((data) => delivered.push(data));
+    secondWs.onmessage?.({ data: new Blob([new Uint8Array([1])]) } as never);
+    second.close();
+    resolveBuffer(new ArrayBuffer(1));
+    Blob.prototype.arrayBuffer = originalAgain;
+    await Promise.resolve();
+    expect(delivered).toEqual([]);
+  });
 });

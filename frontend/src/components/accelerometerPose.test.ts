@@ -102,3 +102,10 @@ it('rejects a single corrupted frame between valid readings', () => {
   const recovered = filter.update(sample(0.2, 20.0075));
   expect(recovered.x_g).toBeCloseTo(0.2, 8);
 });
+
+it('resets filter state explicitly between stream epochs', () => {
+  const filter = new AdaptivePoseFilter();
+  filter.update(sample(1, 1));
+  filter.reset();
+  expect(filter.update(sample(0.4, 2)).x_g).toBe(0.4);
+});

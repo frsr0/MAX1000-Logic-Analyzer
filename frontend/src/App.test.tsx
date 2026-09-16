@@ -105,6 +105,17 @@ it('initializes sockets, catalogs, status messages, logs, and cleans up', async 
   }
 });
 
+it('opens an accelerometer session announced by the status stream', async () => {
+  const openSession = vi.fn();
+  useApp.setState({ openSession, refreshStatus: vi.fn(), refreshSessions: vi.fn(),
+    refreshCapabilities: vi.fn(), loadCatalogs: vi.fn() });
+  render(<App />);
+  await message('/ws/status', 'session_created', {
+    id: 'accelerometer-live', tags: ['mil', 'accelerometer'],
+  });
+  expect(openSession).toHaveBeenCalledWith('accelerometer-live');
+});
+
 it('automatically connects the real hardware scope without selecting the mock', async () => {
   const refreshStatus = vi.fn()
     .mockResolvedValueOnce({ device_connected: false } as never)
@@ -193,23 +204,25 @@ it('rebinds session sockets and handles decoder and live-waveform messages', asy
   const view = render(<App />);
   await waitFor(() => expect(socket('/ws/decoder/one')).toBeTruthy());
   await message('/ws/decoder/one', 'decoder_progress', { live: true });
+  await message('/ws/decoder/one', 'decoder_progress', { live: true });
+  await message('/ws/decoder/one', 'decoder_progress', { live: false });
   await message('/ws/decoder/one', 'decoder_complete', { error: 'decode failed', cancelled: false, event_count: 0 });
   await message('/ws/decoder/one', 'decoder_complete', { error: '', cancelled: true, event_count: 1 });
   await message('/ws/decoder/one', 'decoder_complete', { error: '', cancelled: false, event_count: 12 });
   await message('/ws/decoder/one', 'ignored');
-  expect(refreshActiveSession).toHaveBeenCalledTimes(4);
-  expect(requestAnnotations).toHaveBeenCalledTimes(4);
+  expect(refreshActiveSession).toHaveBeenCalledTimes(5);
+  expect(requestAnnotations).toHaveBeenCalledTimes(5);
   expect(toast).toHaveBeenNthCalledWith(1, 'error', 'Decoder failed: decode failed');
   expect(toast).toHaveBeenNthCalledWith(2, 'success', 'Decoder finished: 12 events');
 
   await message('/ws/session/one', 'measurement_updated');
-  expect(refreshActiveSession).toHaveBeenCalledTimes(5);
+  expect(refreshActiveSession).toHaveBeenCalledTimes(6);
   await message('/ws/session/one', 'waveform_ready', { num_samples: 80, sample_rate: 4000, rolling: true, chunk_samples: 16 });
   expect(updateLive).toHaveBeenCalledWith(80, 4000, 8, true, 16);
-  expect(refreshActiveSession).toHaveBeenCalledTimes(6);
+  expect(refreshActiveSession).toHaveBeenCalledTimes(7);
   await message('/ws/session/one', 'waveform_ready');
   expect(updateLive).toHaveBeenLastCalledWith(50, 2000, 8, false, 0);
-  expect(refreshActiveSession).toHaveBeenCalledTimes(6);
+  expect(refreshActiveSession).toHaveBeenCalledTimes(7);
   await message('/ws/session/one', 'ignored');
 
   const oldDecoder = socket('/ws/decoder/one');

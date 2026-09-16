@@ -175,3 +175,27 @@ it('clips offscreen geometry and uses safe axis and LOD defaults', () => {
   render(ctx, view, layout, 220, 400);
   expect(operations.some((op) => op.name === 'stroke')).toBe(true);
 });
+
+it('aggregates dense raw digital and derived samples into visible pixel buckets', () => {
+  const view = new WaveformView();
+  view.start = 0; view.end = 128;
+  const channels = [channel('d0', 'digital'), channel('f0', 'derived')];
+  view.payload = payload('raw', new Map<string, any>([
+    ['digital', Uint16Array.from({ length: 128 }, (_, i) => (i >= 10 ? 1 : 0))],
+    ['derived:f0', Uint8Array.from({ length: 128 }, (_, i) => i % 2)],
+  ]));
+  const layout = buildLayout(channels, view, 120);
+  render(ctx, view, layout, 140, 300);
+  expect(operations.filter((op) => op.name === 'moveTo').length).toBeGreaterThan(0);
+  expect(operations.filter((op) => op.name === 'lineTo').length).toBeGreaterThan(0);
+});
+
+it('draws a falling stable digital edge after a high bucket', () => {
+  const view = new WaveformView();
+  view.start = 0; view.end = 128;
+  view.payload = payload('raw', new Map([['digital', Uint16Array.from(
+    Array.from({ length: 128 }, (_, i) => i < 64 ? 1 : 0))]]));
+  const layout = buildLayout([channel('d0', 'digital')], view, 120);
+  render(ctx, view, layout, 140, 300);
+  expect(operations.some((op) => op.name === 'lineTo')).toBe(true);
+});

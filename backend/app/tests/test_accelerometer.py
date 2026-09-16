@@ -4,13 +4,15 @@ from __future__ import annotations
 import threading
 import time
 import itertools
+import sys
+import types
 from types import SimpleNamespace
 
 import pytest
 import numpy as np
 
 from app.capture.capture_manager import CaptureManager
-from app.capture.session import CaptureSettings
+from app.capture.session import CaptureSettings, Session
 from app.capture.session import DeviceMetadata
 from app.capture.session_store import SessionStore
 from app.hardware.base import HardwareError
@@ -78,6 +80,733 @@ def test_lis3dh_xyz_decode_uses_mode_and_full_scale_sensitivity():
             0.016, 0.016, 0.016)
 
 
+def test_live_decoder_helpers_cover_empty_timed_and_plateau_edge_paths():
+    assert np.array_equal(
+        accelerometer_module.clean_live_trace(np.array([], dtype=np.uint16)),
+        np.array([], dtype=np.uint16))
+    assert np.array_equal(
+        accelerometer_module.clean_live_trace(
+            np.array([0xFFFF], dtype=np.uint16), majority=False),
+        np.array([accelerometer_module.LIVE_TRACE_CHANNEL_MASK], dtype=np.uint16))
+    decoder = accelerometer_module._LiveI2CFrameDecoder(0x19)
+    assert decoder.feed(np.array([], dtype=np.uint16)) == []
+    assert decoder.feed_timed(np.array([], dtype=np.uint16)) == []
+    assert decoder.feed_indexed_timed(np.array([], dtype=np.uint16), 10) == []
+    decoder._append_plateau(1, 0)
+    decoder._append_plateau(1, 2)
+    decoder._append_plateau(1, 3)
+    decoder._append_plateau(0, 1)
+    assert decoder._plateau_center() == 1
+    decoder._plateau_runs = [(1, 0), (0, 0)]
+    assert decoder._plateau_center() == 0
+    with pytest.raises(ValueError, match="multiple"):
+        accelerometer_module._LiveI2CFrameDecoder(0x19, read_len=7)
+
+
+def test_live_sample_gate_flush_and_reset_paths():
+    gate = accelerometer_module._LiveI2CFrameGate()
+    assert gate.flush_indexed() == []
+    assert gate.accept_indexed_immediately([]) == []
+    candidate = ("source", (0.0, 0.0, 1.0))
+    gate.accept_indexed_immediately([candidate])
+    assert gate.flush_indexed() == []
+    gate.feed_indexed([candidate])
+    assert gate.flush_indexed() == [candidate]
+    gate.reset()
+    assert gate.flush() == []
+
+
+def test_live_decoder_and_service_defensive_edges(monkeypatch, tmp_path):
+    # Force the carry limit and the control-plateau branches of the
+    # incremental decoder without depending on a particular USB chunk size.
+    decoder = accelerometer_module._LiveI2CFrameDecoder(0x18)
+    decoder._in_txn = True
+    decoder._txn_samples = decoder.MAX_CARRY_SAMPLES
+    decoder.feed(np.zeros(4, dtype=np.uint16))
+    decoder._await_clean_start = True
+    decoder.feed(np.zeros(2, dtype=np.uint16))
+    assert decoder.feed_timed(_synthetic_lis3dh_i2c_trace(0x18))
+    assert decoder.feed_indexed_timed(
+        _synthetic_lis3dh_i2c_trace(0x18), 10)
+
+    gate = accelerometer_module._LiveI2CFrameGate()
+    steady = (None, (0.0, 0.0, 1.0))
+    spike = (None, (0.0, 0.0, 1.4))
+    gate.accept_indexed_immediately([steady])
+    gate.feed_indexed([spike])
+    assert gate.flush_indexed() == []
+
+    class RaisingManager:
+        device = None
+        device_kind = None
+        capture_state = "idle"
+
+        def __setattr__(self, name, value):
+            if name == "_accelerometer_service":
+                raise RuntimeError("registration unavailable")
+            object.__setattr__(self, name, value)
+
+    service = AccelerometerService(RaisingManager())
+    assert service._live_decoder_padding_mask() >= 0
+    service._status.effective_config = {"invalid": True}
+    assert service._live_decoder_config() == service._config
+    service._status.effective_config = {"operating_mode": "invalid"}
+    assert service._live_decoder_config() == service._config
+    with pytest.raises(HardwareError, match="No connected"):
+        service._raw_device()
+    with pytest.raises(HardwareError, match="not running"):
+        service.start_live_capture(CaptureSettings(mode="rolling"))
+
+    raw = FakeRaw()
+    manager = FakeManager(raw)
+    service = AccelerometerService(manager)
+    service._status.running = True
+    service._live_session = Session(name="cleanup", id="cleanup")
+    service._live_store = SessionStore(tmp_path)
+    service._live_settings = CaptureSettings(mode="rolling", num_samples=32)
+    service._live_capture_accepting = True
+    cleanup_calls = []
+    manager.device.accelerometer_capture_cleanup = lambda: cleanup_calls.append(True)
+    service.stop_live_capture()
+    assert cleanup_calls == [True]
+
+    # Worker construction failure must release the reservation and leave a
+    # retryable status rather than leaking a half-started thread.
+    monkeypatch.setattr(accelerometer_module.threading, "Thread",
+                        lambda **_kwargs: (_ for _ in ()).throw(
+                            RuntimeError("thread unavailable")))
+    failing = AccelerometerService(FakeManager(FakeRaw()))
+    assert failing.start()["last_error"] == "Unable to start accelerometer worker"
+
+
+def test_live_startup_metadata_wait_and_cleanup_edges(monkeypatch, tmp_path):
+    raw = FakeRaw()
+    manager = FakeManager(raw)
+    service = AccelerometerService(manager)
+    service._status.running = True
+    service._live_session = Session(name="already", id="already")
+    with pytest.raises(HardwareError, match="already running"):
+        service.start_live_capture(CaptureSettings(mode="rolling"), store=SessionStore(tmp_path))
+    service._live_session = None
+    service._accelerometer_address = None
+    with pytest.raises(HardwareError, match="address is not ready"):
+        service.start_live_capture(CaptureSettings(mode="rolling"), store=SessionStore(tmp_path))
+    service._live_session = None
+    service._live_store = None
+    service._live_settings = None
+
+    class QuietThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+        def is_alive(self):
+            return False
+
+    manager.device.get_metadata = lambda: (_ for _ in ()).throw(
+        RuntimeError("metadata unavailable"))
+    monkeypatch.setattr(accelerometer_module.threading, "Thread", QuietThread)
+    service._accelerometer_address = 0x18
+    session = service.start_live_capture(
+        CaptureSettings(mode="rolling", num_samples=16), store=None)
+    assert session.device.driver == "ols_spi"
+    service.stop_live_capture()
+
+    manager.device.accelerometer_capture_cleanup = lambda: (_ for _ in ()).throw(
+        RuntimeError("cleanup failed"))
+    service._live_session = Session(name="cleanup", id="cleanup")
+    service._live_store = SessionStore(tmp_path)
+    service._live_settings = CaptureSettings(mode="rolling", num_samples=16)
+    service._live_capture_accepting = True
+    service.stop_live_capture()
+
+    waiting = AccelerometerService(FakeManager(FakeRaw()))
+    waiting._status.running = True
+    waiting._worker = SimpleNamespace(is_alive=lambda: True)
+    waiting._continuous_stream_active = False
+    real_monotonic = accelerometer_module.time.monotonic
+    clock = iter((10_001.0, 10_020.0))
+    monkeypatch.setattr(accelerometer_module.time, "monotonic",
+                        lambda: next(clock))
+    with waiting._lock:
+        with pytest.raises(HardwareError, match="still starting"):
+            waiting._wait_for_continuous_stream_start_locked(
+                SimpleNamespace(continuous_ring_capture_with_repeating_i2c=lambda: None))
+
+
+def test_live_producer_binary_flush_and_ring_metadata_edges(monkeypatch):
+    published_binary = []
+    published_text = []
+    monkeypatch.setattr(
+        accelerometer_module.websocket_manager, "has_subscribers",
+        lambda topic: topic == "accelerometer_waveform_binary")
+    monkeypatch.setattr(
+        accelerometer_module.websocket_manager, "publish_binary_threadsafe",
+        lambda topic, packet: published_binary.append((topic, packet)))
+    monkeypatch.setattr(
+        accelerometer_module.websocket_manager, "publish_threadsafe",
+        lambda *args: published_text.append(args))
+
+    class DirectRaw(FakeRaw):
+        supports_direct_live_stream = True
+
+        def continuous_ring_capture_with_repeating_i2c(self, **kwargs):
+            yield np.zeros(
+                accelerometer_module.LIVE_DIRECT_WAVEFORM_BATCH_SAMPLES,
+                dtype="<u2").tobytes()
+            kwargs["stop_evt"].set()
+
+    direct = AccelerometerService(FakeManager(DirectRaw()))
+    direct._status.running = True
+    direct._status.effective_config = direct._config.model_dump()
+    direct._run_live_producer(
+        direct.manager.device, direct.manager.device._dev, 0x18,
+        threading.Event(), None)
+    assert published_binary and published_binary[0][0] == (
+        "accelerometer_waveform_binary")
+    assert not published_text
+
+    class TimedRingRaw(FakeRaw):
+        def continuous_ring_capture_with_repeating_i2c(self, **kwargs):
+            yield (_synthetic_lis3dh_i2c_trace(0x18).tobytes(), 1000, 600,
+                   1, 400, {"producer_index": 1000,
+                            "read_started_at": 10.0})
+            kwargs["stop_evt"].set()
+
+    ring = AccelerometerService(FakeManager(TimedRingRaw()))
+    ring._status.running = True
+    ring._status.effective_config = ring._config.model_dump()
+    ring._start_live_persister = lambda: None
+    ring._run_live_producer(
+        ring.manager.device, ring.manager.device._dev, 0x18,
+        threading.Event(), None)
+    assert ring.status()["live_timing"]["transport"]["waveform_samples"] > 0
+
+    class GapRingRaw(FakeRaw):
+        def consume_stream_gap(self):
+            raise RuntimeError("gap metadata unavailable")
+
+        def continuous_ring_capture_with_repeating_i2c(self, **kwargs):
+            yield np.zeros(4, dtype="<u2").tobytes()
+            kwargs["stop_evt"].set()
+
+    gap = AccelerometerService(FakeManager(GapRingRaw()))
+    gap._status.running = True
+    gap._status.effective_config = gap._config.model_dump()
+    gap._start_live_persister = lambda: None
+    gap._run_live_producer(
+        gap.manager.device, gap.manager.device._dev, 0x18,
+        threading.Event(), None)
+
+
+def test_live_remaining_decoder_record_and_persistence_seams(monkeypatch, tmp_path):
+    # Cover the decoder's control-plateau and carry-reset alternatives.
+    decoder = accelerometer_module._LiveI2CFrameDecoder(0x18)
+    decoder._previous = (1, 0)
+    decoder.feed(np.asarray([1 << 14, (1 << 14) | (1 << 13)], dtype=np.uint16))
+    decoder._in_txn = True
+    decoder._previous = (0, 0)
+    decoder._plateau_control = True
+    decoder.feed(np.asarray([(1 << 14) | (1 << 13)], dtype=np.uint16))
+    decoder._plateau_control = False
+    decoder._previous = (1, 1)
+    decoder.feed(np.asarray([1 << 14 | 1 << 13], dtype=np.uint16))
+    decoder._plateau_runs = [(1, 2)]
+    decoder._previous = (1, 1)
+    decoder.feed(np.asarray([1 << 13], dtype=np.uint16))
+    decoder._in_txn = False
+    decoder._previous = (0, 0)
+    decoder.feed(np.asarray([1 << 14], dtype=np.uint16))
+    decoder._in_txn = True
+    decoder._plateau_control = False
+    decoder._plateau_runs = []
+    decoder._previous = (1, 1)
+    decoder.feed(np.asarray([1 << 13], dtype=np.uint16))
+
+    service = AccelerometerService(FakeManager(FakeRaw()))
+    service._status.running = False
+    service._record_sample((0.0, 0.0, 1.0))
+    service._status.running = True
+    service._last_fifo_error = None
+    service.manager.device._dev.last_accel_fifo_status = {"unread": 0}
+    service.status()
+    assert service._poll_xyz_samples(
+        SimpleNamespace(), service.manager.device._dev, 0x18,
+        lambda *_args, **_kwargs: b"")
+    with pytest.raises(HardwareError, match="configure"):
+        service._configure(SimpleNamespace(), object(), 0x18)
+    service.manager.device._dev = SimpleNamespace()
+    with pytest.raises(HardwareError, match="support LIS3DH"):
+        service._raw_device()
+
+    raw = SimpleNamespace(accel_read_i2c=lambda *_args, **_kwargs:
+                          (_ for _ in ()).throw(RuntimeError("probe")))
+    assert AccelerometerService._find_address(SimpleNamespace(), raw) is None
+    assert AccelerometerService._read_config(
+        SimpleNamespace(accelerometer_read_config=lambda _address: {"ctrl1": "bad"}),
+        raw, 0x18) is None
+
+    published = []
+    monkeypatch.setattr(
+        accelerometer_module.websocket_manager, "publish_threadsafe",
+        lambda *args: published.append(args))
+    monkeypatch.setattr(
+        accelerometer_module.websocket_manager, "publish_latest_threadsafe",
+        lambda *args: published.append(args), raising=False)
+    service.manager.device._dev.last_accel_fifo_status = None
+    service._clock = lambda: 20.0
+    service._record_sample(
+        (0.1, 0.2, 0.9), source_index=4,
+        timestamp=19.0, ring_timing={"producer_index": 20,
+                                     "read_started_at": 20.0})
+    assert published
+
+    service.manager.schedule_live_decode = lambda _sid: published.append(("scheduled",))
+    service._live_session = Session(name="append", id="append")
+    service._live_store = SessionStore(tmp_path)
+    service._live_settings = CaptureSettings(mode="rolling", num_samples=8)
+    service._live_capture_accepting = True
+    service._append_live_digital(np.ones(2, dtype=np.uint16))
+    assert ("scheduled",) in published
+
+    class BadStore:
+        def save_waveform(self, *_args):
+            raise RuntimeError("persist failed")
+
+        def save(self, *_args):
+            pass
+
+    service._live_store = BadStore()
+    service._live_digital = np.ones(2, dtype=np.uint16)
+    service._live_persist_dirty = True
+    stop_evt = threading.Event()
+    stop_evt.set()
+    service._run_live_persister(stop_evt, threading.Event())
+    assert any(item.get("message") == "persist failed"
+               for item in service._live_session.diagnostics)
+
+    latest = []
+    monkeypatch.setattr(accelerometer_module.websocket_manager,
+                        "_loop", object())
+    monkeypatch.setattr(
+        accelerometer_module.websocket_manager, "publish_latest_threadsafe",
+        lambda *args: latest.append(args), raising=False)
+    service._record_sample((0.2, 0.0, 0.8), source_index=None)
+    assert latest
+
+    class GoodStore:
+        def save_waveform(self, *_args):
+            pass
+        def save(self, *_args):
+            pass
+
+    persister = AccelerometerService(FakeManager(FakeRaw()))
+    persister._live_session = Session(name="persist", id="persist")
+    persister._live_store = GoodStore()
+    persister._live_digital = np.ones(2, dtype=np.uint16)
+    persister._live_persist_dirty = True
+    persister._live_persist_evt = threading.Event()
+    persister._live_settings = CaptureSettings(mode="rolling", num_samples=8)
+    class StopAfterPersist:
+        def __init__(self):
+            self.checks = 0
+        def is_set(self):
+            self.checks += 1
+            return self.checks > 1
+        def wait(self, _timeout):
+            return True
+    wake = threading.Event()
+    wake.set()
+    persister._run_live_persister(StopAfterPersist(), wake)
+
+
+def test_live_worker_retry_and_compatibility_error_edges(monkeypatch):
+    # A cancelled probe exits cleanly, while repeated transient reads keep
+    # the reservation and expose a retryable status.
+    raw = FakeRaw()
+    service = AccelerometerService(FakeManager(raw), sample_rate_hz=400)
+    stop = threading.Event()
+    stop.set()
+    service._status.running = True
+    service._generation = 1
+    service._run(1, stop)
+
+    class FailingDevice:
+        _dev = raw
+        is_connected = lambda self: True
+        def accelerometer_read_xyz(self, _address):
+            raise HardwareError("temporary read")
+
+    manager = FakeManager(raw)
+    manager.device = FailingDevice()
+    retry = AccelerometerService(manager, sample_rate_hz=400)
+    retry._status.running = True
+    retry._generation = 1
+
+    class StopAfter:
+        def __init__(self):
+            self.calls = 0
+        def is_set(self):
+            return self.calls >= 6
+        def wait(self, _timeout):
+            self.calls += 1
+            return self.calls >= 6
+
+    retry._run(1, StopAfter())
+    assert retry.status()["last_error"] is not None
+
+    # A setup exception updates the status, and the finalizer releases the
+    # hardware reservation even though setup never reached the poll loop.
+    class SetupFailure(FakeRaw):
+        def accel_write_i2c(self, *_args, **_kwargs):
+            raise RuntimeError("configure failed")
+
+    failed_manager = FakeManager(SetupFailure())
+    failed = AccelerometerService(failed_manager)
+    failed._status.running = True
+    failed._generation = 1
+    failed._run(1, threading.Event())
+    assert "configure failed" in (failed.status()["last_error"] or "")
+
+    # Exercise old adapters that reject the optional FIFO speed and the
+    # explicit no-reader fallback.
+    class OldFifo:
+        def __call__(self, *_args, **kwargs):
+            if "speed" in kwargs:
+                raise TypeError("old fifo")
+            return b""
+
+    old = AccelerometerService(FakeManager(FakeRaw()))
+    assert old._poll_xyz_samples(SimpleNamespace(), raw, 0x18, OldFifo())
+
+    class StopOnWait:
+        def __init__(self):
+            self.calls = 0
+        def is_set(self):
+            return False
+        def wait(self, _timeout):
+            self.calls += 1
+            return True
+
+    class NoSensor(FakeRaw):
+        def accel_read_i2c(self, reg, dev_addr=0x19, read_len=1):
+            if reg == accelerometer_module.LIS3DH_WHO_AM_I:
+                return None
+            return super().accel_read_i2c(reg, dev_addr, read_len)
+
+    cancelled = AccelerometerService(FakeManager(NoSensor()))
+    cancelled._status.running = True
+    cancelled._generation = 1
+    wait = StopOnWait()
+    cancelled._run(1, wait)
+    assert wait.calls == 1
+
+    class FifoSetupRaw(FakeRaw):
+        def __init__(self, stop_evt):
+            super().__init__()
+            self.stop_evt = stop_evt
+
+        def accel_read_i2c(self, reg, dev_addr=0x19, read_len=1):
+            value = super().accel_read_i2c(reg, dev_addr, read_len)
+            if reg == accelerometer_module.LIS3DH_OUT_X_L:
+                self.stop_evt.set()
+            return value
+
+    setup_stop = threading.Event()
+    setup_raw = FifoSetupRaw(setup_stop)
+    setup_adapter = SimpleNamespace(
+        _dev=setup_raw, is_connected=lambda: True,
+        accelerometer_fifo_configure=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("fifo setup unavailable")),
+    )
+    setup_manager = FakeManager(setup_raw)
+    setup_manager.device = setup_adapter
+    setup_service = AccelerometerService(setup_manager)
+    setup_service._status.running = True
+    setup_service._generation = 1
+    setup_service._run(1, setup_stop)
+    assert setup_service.status()["available"] is True
+
+    mismatch = AccelerometerService(FakeManager(NoSensor()))
+    mismatch._status.running = True
+    mismatch._generation = 2
+    mismatch._run(1, StopOnWait())
+    assert mismatch.status()["running"] is True
+
+
+def test_live_producer_owner_failure_and_fallback_edges(tmp_path):
+    class OneWait:
+        def __init__(self):
+            self.done = False
+        def is_set(self):
+            return self.done
+        def set(self):
+            self.done = True
+        def wait(self, _timeout):
+            self.done = True
+            return True
+
+    class BrokenRing(FakeRaw):
+        def continuous_ring_capture_with_repeating_i2c(self, **_kwargs):
+            raise RuntimeError("owner ring failed")
+
+    raw = BrokenRing()
+    manager = FakeManager(raw)
+    service = AccelerometerService(manager)
+    owner = Session(name="owner", id="owner")
+    service._status.running = True
+    service._live_session = owner
+    service._live_store = SessionStore(tmp_path)
+    service._live_settings = CaptureSettings(mode="rolling", num_samples=64)
+    service._live_capture_accepting = True
+    service._start_live_persister = lambda: None
+    service._run_live_producer(
+        manager.device, raw, 0x18, OneWait(), owner)
+    assert owner.diagnostics
+    assert "owner ring failed" in owner.diagnostics[0]["message"]
+
+
+def test_live_producer_ring_metadata_watchdog_and_owner_edges(monkeypatch, tmp_path):
+    published = []
+    monkeypatch.setattr(
+        accelerometer_module.websocket_manager, "has_subscribers",
+        lambda _topic: False)
+    monkeypatch.setattr(
+        accelerometer_module.websocket_manager, "publish_threadsafe",
+        lambda *args: published.append(args))
+
+    class VariantRaw(FakeRaw):
+        def __init__(self, items):
+            super().__init__()
+            self.items = items
+
+        def continuous_ring_capture_with_repeating_i2c(self, **kwargs):
+            for item in self.items:
+                yield item
+            kwargs["stop_evt"].set()
+
+    # Exercise tuple metadata without a cursor, non-bytes NumPy chunks, and a
+    # gap reset while an attached owner session is accepting waveform data.
+    owner = Session(name="owner", id="owner")
+    raw = VariantRaw([
+        (_synthetic_lis3dh_i2c_trace(0x18).tobytes(), 10, 20),
+        np.asarray([], dtype=np.uint16),
+    ])
+    service = AccelerometerService(FakeManager(raw))
+    service._status.running = True
+    service._status.effective_config = service._config.model_dump()
+    service._live_session = owner
+    service._live_store = SessionStore(tmp_path / "owner")
+    service._live_settings = CaptureSettings(mode="rolling", num_samples=64)
+    service._live_capture_accepting = True
+    service._start_live_persister = lambda: None
+    service._run_live_producer(
+        service.manager.device, raw, 0x18, threading.Event(), owner)
+    assert service.status()["live_timing"]["transport"]["mode"] == "ring"
+
+    class GapRaw(VariantRaw):
+        def consume_stream_gap(self):
+            return True
+
+    gap = AccelerometerService(FakeManager(GapRaw([
+        np.zeros(4, dtype=np.uint16),
+    ])))
+    gap._status.running = True
+    gap._status.effective_config = gap._config.model_dump()
+    gap._start_live_persister = lambda: None
+    gap._run_live_producer(
+        gap.manager.device, gap.manager.device._dev, 0x18, threading.Event(), None)
+
+    real_monotonic = accelerometer_module.time.monotonic
+    watchdog_clock = iter((0.0, 0.0, 0.0, float(accelerometer_module.LIVE_STREAM_WATCHDOG_S + 1)))
+    monkeypatch.setattr(accelerometer_module.time, "monotonic",
+                        lambda: next(watchdog_clock))
+    watchdog_raw = VariantRaw([np.zeros(4, dtype=np.uint16)])
+    watchdog = AccelerometerService(FakeManager(watchdog_raw))
+    watchdog._status.running = True
+    watchdog._status.effective_config = watchdog._config.model_dump()
+    watchdog._start_live_persister = lambda: None
+    class StopAfterStream:
+        def __init__(self):
+            self.checks = 0
+        def is_set(self):
+            self.checks += 1
+            return self.checks > 1
+        def wait(self, _timeout):
+            return True
+    watchdog._run_live_producer(
+        watchdog.manager.device, watchdog_raw, 0x18, StopAfterStream(), None)
+    assert watchdog.status()["live_timing"]["transport"]["fallback"] is True
+    monkeypatch.setattr(accelerometer_module.time, "monotonic", real_monotonic)
+
+    monkeypatch.setattr(
+        accelerometer_module._LiveI2CFrameDecoder, "feed",
+        lambda *_args: [(0.0, 0.0, 1.0)])
+    gate_metadata = {"source_index": 4, "received_at": 10.0,
+                     "chunk_end": 20, "ring_timing": {
+                         "producer_index": 20, "read_started_at": 10.0}}
+    monkeypatch.setattr(
+        accelerometer_module._LiveI2CFrameGate, "accept_indexed_immediately",
+        lambda _self, items: [(gate_metadata, items[0][1])] if items else [])
+    metadata_service = AccelerometerService(FakeManager(VariantRaw([
+        np.zeros(4, dtype=np.uint16)])))
+    metadata_service._status.running = True
+    metadata_service._status.effective_config = metadata_service._config.model_dump()
+    metadata_service._start_live_persister = lambda: None
+    metadata_service._run_live_producer(
+        metadata_service.manager.device, metadata_service.manager.device._dev,
+        0x18, threading.Event(), None)
+
+    tuple_metadata = (4, 10.0, 20)
+    monkeypatch.setattr(
+        accelerometer_module._LiveI2CFrameGate, "accept_indexed_immediately",
+        lambda _self, items: [(tuple_metadata, items[0][1])] if items else [])
+    tuple_service = AccelerometerService(FakeManager(VariantRaw([
+        np.zeros(4, dtype=np.uint16)])))
+    tuple_service._status.running = True
+    tuple_service._status.effective_config = tuple_service._config.model_dump()
+    tuple_service._start_live_persister = lambda: None
+    tuple_service._run_live_producer(
+        tuple_service.manager.device, tuple_service.manager.device._dev,
+        0x18, threading.Event(), None)
+
+    short_tuple_service = AccelerometerService(FakeManager(VariantRaw([
+        np.zeros(4, dtype=np.uint16)])))
+    monkeypatch.setattr(
+        accelerometer_module._LiveI2CFrameGate, "accept_indexed_immediately",
+        lambda _self, items: [((4, 10), items[0][1])] if items else [])
+    short_tuple_service._status.running = True
+    short_tuple_service._status.effective_config = short_tuple_service._config.model_dump()
+    short_tuple_service._start_live_persister = lambda: None
+    short_tuple_service._run_live_producer(
+        short_tuple_service.manager.device, short_tuple_service.manager.device._dev,
+        0x18, threading.Event(), None)
+
+    class FalseGapRaw(VariantRaw):
+        def consume_stream_gap(self):
+            return False
+
+    false_gap = AccelerometerService(FakeManager(FalseGapRaw([
+        np.zeros(4, dtype=np.uint16)])))
+    false_gap._status.running = True
+    false_gap._status.effective_config = false_gap._config.model_dump()
+    false_gap._start_live_persister = lambda: None
+    false_gap._run_live_producer(
+        false_gap.manager.device, false_gap.manager.device._dev, 0x18,
+        threading.Event(), None)
+
+    mismatch_owner = Session(name="different", id="different")
+    owner_session = Session(name="requested", id="requested")
+    mismatch_service = AccelerometerService(FakeManager(VariantRaw([
+        np.zeros(4, dtype=np.uint16)])))
+    mismatch_service._status.running = True
+    mismatch_service._status.effective_config = mismatch_service._config.model_dump()
+    mismatch_service._live_session = mismatch_owner
+    mismatch_service._live_capture_accepting = True
+    mismatch_service._start_live_persister = lambda: None
+    mismatch_service._run_live_producer(
+        mismatch_service.manager.device, mismatch_service.manager.device._dev,
+        0x18, threading.Event(), owner_session)
+
+
+def test_live_capture_trace_race_callback_and_persist_worker_edges(monkeypatch, tmp_path):
+    service = AccelerometerService(FakeManager(FakeRaw()))
+    session = Session(name="trace", id="trace")
+    service._status.running = True
+    service._live_session = session
+    service._live_store = SessionStore(tmp_path)
+    service._live_settings = CaptureSettings(mode="rolling", num_samples=64)
+    service._live_capture_accepting = True
+    service._read_dialogue = lambda *_args, **_kwargs: b"\x00\x00"
+    monkeypatch.setattr(service, "_decode_live_i2c_frames",
+                        lambda *_args: [(0.0, 0.0, 1.0)])
+    callbacks = []
+    assert service._capture_live_trace(
+        service.manager.device, service.manager.device._dev, 0x18,
+        threading.Event(), sample_callback=callbacks.append)
+    assert callbacks
+
+    service._live_persist_worker = object()
+    service._live_persist_evt = None
+    service._append_live_digital(np.ones(2, dtype=np.uint16), expected_session=session)
+
+    service._read_dialogue = lambda *_args, **_kwargs: b"\x00\x00"
+    original_session = session
+    def replace_session(*_args):
+        service._live_session = Session(name="new", id="new")
+        return [(0.0, 0.0, 1.0)]
+    monkeypatch.setattr(service, "_decode_live_i2c_frames", replace_session)
+    assert service._capture_live_trace(
+        service.manager.device, service.manager.device._dev, 0x18,
+        threading.Event(), expected_session=original_session) == []
+
+    service._live_session = session
+    service._read_dialogue = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("trace failed"))
+    assert service._capture_live_trace(
+        service.manager.device, service.manager.device._dev, 0x18,
+        threading.Event()) == []
+    assert any(item["message"] == "trace failed" for item in session.diagnostics)
+
+
+def test_live_worker_startup_metadata_and_generation_edge_paths(monkeypatch, tmp_path):
+    class NoReleaseManager(FakeManager):
+        release_accelerometer = None
+
+    monkeypatch.setattr(
+        accelerometer_module.threading, "Thread",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("thread unavailable")))
+    no_release = AccelerometerService(NoReleaseManager(FakeRaw()))
+    assert no_release.start()["last_error"] == "Unable to start accelerometer worker"
+
+    metadata_raw = FakeRaw()
+    metadata_manager = FakeManager(metadata_raw)
+    metadata_manager.device.get_metadata = lambda: DeviceMetadata(
+        driver="test", device_name="test", connection="test", mock=True,
+        sys_clk_hz=1, sample_clk_hz=1)
+    service = AccelerometerService(metadata_manager)
+    service._status.running = True
+    service._accelerometer_address = 0x18
+    class QuietThread:
+        def __init__(self, *args, **kwargs): pass
+        def start(self): pass
+        def is_alive(self): return False
+    monkeypatch.setattr(accelerometer_module.threading, "Thread", QuietThread)
+    session = service.start_live_capture(
+        CaptureSettings(mode="rolling", num_samples=4), store=SessionStore(tmp_path / "metadata"))
+    assert session.device.driver == "test"
+
+    class FailingCaptureStateManager(FakeManager):
+        @property
+        def capture_state(self):
+            return "idle"
+        @capture_state.setter
+        def capture_state(self, _value):
+            raise RuntimeError("capture state unavailable")
+
+    state_service = AccelerometerService(FailingCaptureStateManager(FakeRaw()))
+    state_service._status.running = True
+    state_service._accelerometer_address = 0x18
+    state_service.start_live_capture(
+        CaptureSettings(mode="rolling", num_samples=4),
+        store=SessionStore(tmp_path / "state"))
+
+    waiting = AccelerometerService(FakeManager(FakeRaw()))
+    waiting._status.running = True
+    class DiesDuringWait:
+        def __init__(self): self.calls = 0
+        def is_alive(self):
+            self.calls += 1
+            return self.calls < 3
+    waiting._worker = DiesDuringWait()
+    with waiting._lock:
+        with pytest.raises(HardwareError, match="failed during startup"):
+            waiting._wait_for_continuous_stream_start_locked(
+                SimpleNamespace(continuous_ring_capture_with_repeating_i2c=lambda: None))
+
+
 def test_idle_live_persister_waits_instead_of_spinning():
     """An attached direct stream must not burn the CPU without dirty data."""
     service = AccelerometerService(FakeManager(FakeRaw()))
@@ -103,6 +832,653 @@ def test_idle_live_persister_waits_instead_of_spinning():
     worker.join(timeout=0.5)
     assert not worker.is_alive()
     assert stop.wait_calls == 1
+
+
+def test_accelerometer_service_status_and_start_busy_guards(monkeypatch):
+    service = AccelerometerService(FakeManager(FakeRaw()), sample_rate_hz=100)
+    raw = service.manager.device._dev
+    raw.last_accel_fifo_status = {"unread": 2}
+    raw.accel_fifo_stats = {"reads": 3}
+    service._last_fifo_error = "fifo failed"
+    assert service.status()["live_timing"]["fifo"] == {
+        "status": {"unread": 2}, "stats": {"reads": 3}, "error": "fifo failed",
+    }
+
+    service.manager.capture_state = "capturing"
+    assert service.start()["last_error"] == "Cannot start accelerometer while a capture is running"
+    service.manager.capture_state = "idle"
+    service.manager.reserved = True
+    assert service.start()["last_error"] == "Hardware is busy"
+    service.manager.reserved = False
+
+    service._worker = SimpleNamespace(is_alive=lambda: True)
+    assert service.start()["last_error"] == "Accelerometer is still stopping"
+    service._worker = SimpleNamespace(is_alive=lambda: True)
+    service._status.running = True
+    assert service.start()["running"] is True
+
+    service._worker = SimpleNamespace(is_alive=lambda: True)
+    service._status.running = False
+    with pytest.raises(HardwareError, match="finish stopping"):
+        service.update_config(AccelerometerConfig())
+
+
+def test_live_producer_marks_direct_failures_and_starts_legacy_fallback(monkeypatch):
+    class BrokenStream:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            raise RuntimeError("stream unavailable")
+
+        def close(self):
+            raise RuntimeError("close failed")
+
+    raw = FakeRaw()
+    raw.supports_direct_live_stream = True
+    raw.continuous_ring_capture_with_repeating_i2c = lambda **_kwargs: BrokenStream()
+    service = AccelerometerService(FakeManager(raw))
+    service._status.running = True
+    service._status.effective_config = service._config.model_dump()
+    service._run_live_producer(
+        service.manager.device, raw, 0x18, threading.Event(), None)
+    assert service.status()["live_timing"]["transport"]["state"] == "fault"
+    assert "stream unavailable" in service.status()["last_error"]
+
+    fallback = AccelerometerService(FakeManager(FakeRaw()))
+    fallback._start_live_persister = lambda: None
+    stop = threading.Event()
+    stop.set()
+    fallback._run_live_producer(
+        fallback.manager.device, fallback.manager.device._dev, 0x18, stop, None)
+
+    invalid = AccelerometerService(FakeManager(FakeRaw()))
+    invalid._status.running = True
+    invalid._status.effective_config = {"operating_mode": "invalid"}
+    invalid_stop = threading.Event()
+    invalid_stop.set()
+    invalid._run_live_producer(
+        invalid.manager.device, invalid.manager.device._dev, 0x18,
+        invalid_stop, None)
+
+
+def test_live_producer_uses_text_fallback_when_binary_publish_is_unavailable(monkeypatch):
+    published = []
+    monkeypatch.setattr(
+        accelerometer_module.websocket_manager, "has_subscribers",
+        lambda _topic: True)
+    monkeypatch.setattr(
+        accelerometer_module.websocket_manager, "publish_binary_threadsafe", None)
+    monkeypatch.setattr(
+        accelerometer_module.websocket_manager, "publish_threadsafe",
+        lambda *args: published.append(args))
+    original_dumps = accelerometer_module.json.dumps
+    monkeypatch.setattr(accelerometer_module.json, "dumps",
+                        lambda *args, **kwargs: '{"x":1}')
+
+    class Direct(FakeRaw):
+        supports_direct_live_stream = True
+        def continuous_ring_capture_with_repeating_i2c(self, **kwargs):
+            yield np.zeros(
+                accelerometer_module.LIVE_DIRECT_WAVEFORM_BATCH_SAMPLES,
+                dtype="<u2").tobytes()
+            kwargs["stop_evt"].set()
+
+    service = AccelerometerService(FakeManager(Direct()))
+    service._status.running = True
+    service._status.effective_config = service._config.model_dump()
+    service._run_live_producer(
+        service.manager.device, service.manager.device._dev, 0x18,
+        threading.Event(), None)
+    assert published
+    monkeypatch.setattr(accelerometer_module.json, "dumps", original_dumps)
+
+
+def test_accelerometer_compatibility_helpers_cover_old_adapter_shapes():
+    raw = SimpleNamespace()
+    raw.accel_read_i2c = lambda reg, dev_addr: 0x33 if dev_addr == 0x18 else None
+    assert AccelerometerService._find_address(SimpleNamespace(), raw) == 0x18
+    assert AccelerometerService._read_config(
+        SimpleNamespace(accelerometer_read_config=lambda _address: {"ctrl1": 1}),
+        raw, 0x18) is None
+    assert AccelerometerService._read_config(
+        SimpleNamespace(accelerometer_read_config=lambda _address: {"ctrl1": 1, "ctrl4": 2}),
+        raw, 0x18) == {"ctrl1": 1, "ctrl4": 2}
+    assert AccelerometerService._read_config(
+        SimpleNamespace(accelerometer_read_config=lambda _address: (_ for _ in ()).throw(RuntimeError("bad"))),
+        raw, 0x18) is None
+
+    configured = []
+    old_adapter = SimpleNamespace(accelerometer_configure=lambda address: configured.append(address))
+    AccelerometerService._configure(old_adapter, raw, 0x18)
+    assert configured == [0x18]
+    writer = lambda _reg, _value, **_kwargs: False
+    with pytest.raises(HardwareError, match="Failed to configure"):
+        AccelerometerService._configure(SimpleNamespace(), SimpleNamespace(accel_write_i2c=writer), 0x18)
+
+    def old_read(_reg, *, dev_addr):
+        return 0
+    assert AccelerometerService._read_xyz(SimpleNamespace(), SimpleNamespace(accel_read_i2c=old_read), 0x18) == (0.0, 0.0, 0.0)
+    service = AccelerometerService(FakeManager(FakeRaw()))
+    fifo = lambda *_args, **_kwargs: b"\x00" * 7
+    assert service._poll_xyz_samples(SimpleNamespace(), raw, 0x18, fifo)
+    assert service._last_fifo_error
+
+
+def test_accelerometer_worker_error_and_compatibility_lifecycles(tmp_path, monkeypatch):
+    """Exercise setup, cancellation, and older-driver failure seams directly."""
+    class NoSensor(FakeRaw):
+        def accel_read_i2c(self, reg, dev_addr=0x19, read_len=1):
+            if reg == accelerometer_module.LIS3DH_WHO_AM_I:
+                return None
+            return super().accel_read_i2c(reg, dev_addr, read_len)
+
+    monkeypatch.setattr(accelerometer_module, "LIS3DH_PROBE_ATTEMPTS", 2)
+    monkeypatch.setattr(accelerometer_module, "LIS3DH_PROBE_RETRY_S", 0.0)
+    service = AccelerometerService(FakeManager(NoSensor()))
+    service._status.running = True
+    service._generation = 1
+    service._run(1, threading.Event())
+    assert service.status()["last_error"] == "LIS3DH accelerometer not detected"
+
+    class SetupRaw(FakeRaw):
+        def __init__(self, stop_evt):
+            super().__init__()
+            self.stop_evt = stop_evt
+            self.fifo_calls = 0
+
+        def accel_read_i2c(self, reg, dev_addr=0x19, read_len=1):
+            value = super().accel_read_i2c(reg, dev_addr, read_len)
+            if reg == accelerometer_module.LIS3DH_OUT_X_L:
+                self.stop_evt.set()
+            return value
+
+    stop_evt = threading.Event()
+    raw = SetupRaw(stop_evt)
+    adapter = SimpleNamespace(
+        _dev=raw,
+        is_connected=lambda: True,
+        accelerometer_fifo_configure=lambda *args, **kwargs: (_ for _ in ()).throw(TypeError("old fifo")),
+    )
+    manager = FakeManager(raw)
+    manager.device = adapter
+    service = AccelerometerService(manager)
+    service._status.running = True
+    service._generation = 1
+    service._run(1, stop_evt)
+    assert service.status()["running"] is False
+
+    probe_adapter = SimpleNamespace(accelerometer_probe=lambda: 0x18)
+    assert AccelerometerService._find_address(probe_adapter, object()) == 0x18
+    assert AccelerometerService._decode_config({"ctrl1": 0x10, "ctrl4": 0x00}) is not None
+    assert AccelerometerService._decode_config({"ctrl1": 0xF0, "ctrl4": 0x00}) is None
+    assert AccelerometerService._read_xyz(
+        SimpleNamespace(accelerometer_read_xyz=lambda _address: b"\x00" * 6),
+        object(), 0x18) == (0.0, 0.0, 0.0)
+
+    class BadThread:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("thread unavailable")
+
+    live_service = AccelerometerService(FakeManager(FakeRaw()))
+    live_service._status.running = True
+    live_service._accelerometer_address = 0x18
+    monkeypatch.setattr(accelerometer_module.threading, "Thread", BadThread)
+    with pytest.raises(RuntimeError, match="thread unavailable"):
+        live_service.start_live_capture(
+            CaptureSettings(mode="rolling", num_samples=32),
+            "failed live", SessionStore(tmp_path / "failed-live"))
+    assert live_service._live_session is None
+
+
+def test_accelerometer_dialogue_and_trace_failure_paths(tmp_path, monkeypatch):
+    service = AccelerometerService(FakeManager(FakeRaw()))
+    stop = threading.Event()
+    assert service._capture_live_trace(
+        service.manager.device, service.manager.device._dev, 0x18, stop) == []
+
+    store = SessionStore(tmp_path)
+    service._status.running = True
+    service._live_session = Session(name="live", id="trace")
+    service._live_store = store
+    service._live_settings = CaptureSettings(mode="rolling", num_samples=32)
+    service._live_capture_accepting = True
+    empty_raw = SimpleNamespace(accel_capture_dialogue=lambda *args, **kwargs: b"")
+    assert service._capture_live_trace(
+        service.manager.device, empty_raw, 0x18, threading.Event()) == []
+
+    class TraceAdapter:
+        def accelerometer_capture_trace(self, address, rate_hz, nsamples):
+            assert address == 0x18 and rate_hz > 0 and nsamples > 0
+            return _synthetic_lis3dh_i2c_trace(0x18).astype("<u2").tobytes()
+
+    frames = service._capture_live_trace(
+        TraceAdapter(), object(), 0x18, threading.Event(),
+        nsamples=1, repeat_count=0, sample_callback=lambda _frame: None)
+    assert frames
+
+    class OldTrace:
+        def accelerometer_capture_trace(self, *args, **kwargs):
+            if "repeat_count" in kwargs:
+                raise TypeError("legacy signature")
+            return b"legacy"
+
+        def accelerometer_capture_cleanup(self):
+            return None
+
+    assert service._read_dialogue(OldTrace(), object(), 0x18, 8) == b"legacy"
+    with pytest.raises(HardwareError, match="cannot capture"):
+        service._read_dialogue(SimpleNamespace(), object(), 0x18, 8)
+
+    raw = SimpleNamespace(accel_capture_dialogue=lambda *args, **kwargs: "bad")
+    driver = types.ModuleType("driver")
+    driver.bit_bang = SimpleNamespace(i2c_read_symbols=lambda *args: b"symbols")
+    monkeypatch.setitem(sys.modules, "driver", driver)
+    with pytest.raises(HardwareError, match="invalid data"):
+        service._read_dialogue(SimpleNamespace(), raw, 0x18, 8)
+
+    import builtins
+    from app.hardware.protocol import HOST_DIR
+    monkeypatch.setattr(sys, "path", [path for path in sys.path
+                                        if path != str(HOST_DIR)])
+    monkeypatch.delitem(sys.modules, "driver", raising=False)
+    fallback_driver = types.ModuleType("driver")
+    fallback_driver.bit_bang = SimpleNamespace(
+        i2c_read_symbols=lambda *_args: b"symbols")
+    original_import = builtins.__import__
+    first_driver_import = True
+    force_driver_fallback = False
+    def import_with_legacy_fallback(name, *args, **kwargs):
+        nonlocal first_driver_import, force_driver_fallback
+        if name == "driver" and (first_driver_import or force_driver_fallback):
+            first_driver_import = False
+            force_driver_fallback = False
+            sys.modules["driver"] = fallback_driver
+            raise ImportError("driver not on path yet")
+        return original_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, "__import__", import_with_legacy_fallback)
+    assert service._read_dialogue(SimpleNamespace(), FakeRaw(), 0x18, 8)
+    sys.path.append(str(HOST_DIR))
+    force_driver_fallback = True
+    monkeypatch.delitem(sys.modules, "driver", raising=False)
+    assert service._read_dialogue(SimpleNamespace(), FakeRaw(), 0x18, 8)
+
+
+def test_live_worker_and_producer_statement_edges(monkeypatch, tmp_path):
+    # The normal polling worker can be cancelled after setup but before its
+    # first read.  This is distinct from a failed probe and must still clean
+    # up its reservation.
+    class StopAfterSetup:
+        def __init__(self):
+            self.checks = 0
+
+        def is_set(self):
+            self.checks += 1
+            return self.checks >= 2
+
+        def wait(self, _timeout):
+            return True
+
+    worker = AccelerometerService(FakeManager(FakeRaw()))
+    worker._run(0, StopAfterSetup())
+    assert worker._worker is None
+
+    # A transient read can race with generation replacement.  The old worker
+    # still waits/tears down, but must not update the new generation's status.
+    class GenerationChangingRaw(FakeRaw):
+        def accel_read_i2c(self, reg, dev_addr=0x19, read_len=1):
+            if reg == accelerometer_module.LIS3DH_OUT_X_L:
+                service._generation = 1
+                raise HardwareError("temporary read")
+            return super().accel_read_i2c(reg, dev_addr, read_len)
+
+    class RetryStop:
+        def __init__(self):
+            self.waits = 0
+
+        def is_set(self):
+            return False
+
+        def wait(self, _timeout):
+            self.waits += 1
+            return self.waits >= 5
+
+    service = AccelerometerService(FakeManager(GenerationChangingRaw()),
+                                   sample_rate_hz=400)
+    service._status.running = True
+    service._generation = 0
+    service._run(0, RetryStop())
+    assert service.status()["samples_read"] == 0
+
+    class NoReleaseManager(FakeManager):
+        release_accelerometer = None
+
+    no_release = AccelerometerService(NoReleaseManager(FakeRaw()))
+    stopped = threading.Event()
+    stopped.set()
+    no_release._run(0, stopped)
+
+    # Older adapters may omit register readback entirely.
+    assert AccelerometerService._read_config(SimpleNamespace(), FakeRaw(), 0x18) is None
+    assert AccelerometerService._read_config(
+        SimpleNamespace(accelerometer_read_config=lambda _address: None),
+        FakeRaw(), 0x18) is None
+
+    # A producer can stop between two source windows, and transport metadata
+    # is optional on that compatibility path.
+    class StopBetweenWindows(FakeRaw):
+        def continuous_ring_capture_with_repeating_i2c(self, **kwargs):
+            service_ref._live_transport = None
+            yield np.zeros(4, dtype=np.uint16)
+            kwargs["stop_evt"].set()
+            yield np.zeros(4, dtype=np.uint16)
+
+    service_ref = AccelerometerService(FakeManager(StopBetweenWindows()))
+    service_ref._status.running = True
+    service_ref._status.effective_config = service_ref._config.model_dump()
+    service_ref._start_live_persister = lambda: None
+    service_ref._run_live_producer(
+        service_ref.manager.device, service_ref.manager.device._dev, 0x18,
+        threading.Event(), None)
+
+    # Exercise diagnostics for an unowned attached stream and for a stale
+    # owner, including the case where the transport record disappeared.
+    class ExplodingStream(FakeRaw):
+        def continuous_ring_capture_with_repeating_i2c(self, **kwargs):
+            service_ref._live_transport = None
+            kwargs["stop_evt"].set()
+            raise RuntimeError("stream exploded")
+
+    attached = AccelerometerService(FakeManager(ExplodingStream()))
+    attached._status.running = True
+    attached._status.effective_config = attached._config.model_dump()
+    attached._live_session = Session(name="attached", id="attached")
+    attached._start_live_persister = lambda: None
+    attached._run_live_producer(
+        attached.manager.device, attached.manager.device._dev, 0x18,
+        threading.Event(), None)
+    assert attached._live_session.diagnostics
+
+    stale = AccelerometerService(FakeManager(ExplodingStream()))
+    stale._status.running = True
+    stale._status.effective_config = stale._config.model_dump()
+    stale._live_session = Session(name="current", id="current")
+    stale._start_live_persister = lambda: None
+    stale._run_live_producer(
+        stale.manager.device, stale.manager.device._dev, 0x18,
+        threading.Event(), Session(name="stale", id="stale"))
+
+    # A watchdog owned by a live session records its warning on that session.
+    owner = Session(name="watchdog", id="watchdog")
+    class WatchdogStream(FakeRaw):
+        def __init__(self, target=None):
+            super().__init__()
+            self.target = target
+        def continuous_ring_capture_with_repeating_i2c(self, **_kwargs):
+            if self.target is not None:
+                self.target._live_transport = None
+            yield np.zeros(4, dtype=np.uint16)
+
+    class WatchdogStop:
+        def __init__(self):
+            self.checks = 0
+        def is_set(self):
+            self.checks += 1
+            return self.checks >= 3
+        def wait(self, _timeout):
+            return True
+
+    watchdog_raw = WatchdogStream()
+    watchdog = AccelerometerService(FakeManager(watchdog_raw))
+    watchdog._status.running = True
+    watchdog._status.effective_config = watchdog._config.model_dump()
+    watchdog._live_session = owner
+    watchdog._start_live_persister = lambda: None
+    watchdog_raw.target = watchdog
+    monkeypatch.setattr(accelerometer_module.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(accelerometer_module, "LIVE_STREAM_WATCHDOG_S", -1.0)
+    watchdog._run_live_producer(
+        watchdog.manager.device, watchdog.manager.device._dev, 0x18,
+        WatchdogStop(), owner)
+    assert owner.diagnostics
+
+    ordinary_watchdog = AccelerometerService(FakeManager(WatchdogStream()))
+    ordinary_watchdog._status.running = True
+    ordinary_watchdog._status.effective_config = ordinary_watchdog._config.model_dump()
+    ordinary_watchdog._live_session = Session(name="attached", id="attached")
+    ordinary_watchdog._start_live_persister = lambda: None
+    ordinary_watchdog._run_live_producer(
+        ordinary_watchdog.manager.device, ordinary_watchdog.manager.device._dev,
+        0x18, WatchdogStop(), None)
+    assert ordinary_watchdog._live_session.diagnostics
+
+    mismatch_raw = WatchdogStream()
+    mismatch_watchdog = AccelerometerService(FakeManager(mismatch_raw))
+    mismatch_watchdog._status.running = True
+    mismatch_watchdog._status.effective_config = mismatch_watchdog._config.model_dump()
+    mismatch_watchdog._live_session = Session(name="current", id="current")
+    mismatch_watchdog._start_live_persister = lambda: None
+    mismatch_watchdog._run_live_producer(
+        mismatch_watchdog.manager.device, mismatch_watchdog.manager.device._dev,
+        0x18, WatchdogStop(), Session(name="stale", id="stale"))
+
+    # The fallback reader swallows a transient XYZ error in both ordinary and
+    # session-owned modes, keeping the worker alive for its next interval.
+    class BrokenRead(FakeRaw):
+        def accel_read_i2c(self, reg, dev_addr=0x19, read_len=1):
+            if reg == accelerometer_module.LIS3DH_OUT_X_L:
+                raise HardwareError("read unavailable")
+            return super().accel_read_i2c(reg, dev_addr, read_len)
+
+        def continuous_ring_capture_with_repeating_i2c(self, **_kwargs):
+            raise RuntimeError("ring unavailable")
+
+    class OneFallbackWait:
+        def __init__(self):
+            self.waits = 0
+        def is_set(self):
+            return self.waits > 0
+        def wait(self, _timeout):
+            self.waits += 1
+            return True
+
+    fallback = AccelerometerService(FakeManager(BrokenRead()))
+    fallback._start_live_persister = lambda: None
+    fallback._run_live_producer(
+        fallback.manager.device, fallback.manager.device._dev, 0x18,
+        OneFallbackWait(), None, fallback._config)
+
+    owned_fallback = AccelerometerService(FakeManager(BrokenRead()))
+    owned_session = Session(name="fallback", id="fallback")
+    owned_fallback._live_session = owned_session
+    owned_fallback._live_store = SessionStore(tmp_path / "fallback")
+    owned_fallback._live_settings = CaptureSettings(mode="rolling", num_samples=32)
+    owned_fallback._live_capture_accepting = True
+    owned_fallback._capture_live_trace = lambda *_args, **_kwargs: []
+    owned_fallback._start_live_persister = lambda: None
+    owned_fallback._run_live_producer(
+        owned_fallback.manager.device, owned_fallback.manager.device._dev, 0x18,
+        OneFallbackWait(), owned_session, owned_fallback._config)
+
+    # No attached session means this append is intentionally a no-op.
+    owned_fallback._live_session = None
+    owned_fallback._append_live_digital(np.ones(2, dtype=np.uint16))
+    owned_fallback._live_session = owned_session
+    owned_fallback._live_capture_accepting = False
+    owned_fallback._append_live_digital(
+        np.ones(2, dtype=np.uint16), expected_session=owned_session)
+
+    scheduled = []
+    persister = AccelerometerService(FakeManager(FakeRaw()))
+    persister.manager.schedule_live_decode = lambda session_id: scheduled.append(session_id)
+    persister._live_session = Session(name="persist", id="persist")
+    persister._live_store = SimpleNamespace(
+        save_waveform=lambda *_args: None,
+        save=lambda *_args: None)
+    persister._live_digital = np.ones(2, dtype=np.uint16)
+    persister._live_persist_dirty = True
+    persister._live_settings = CaptureSettings(mode="rolling", num_samples=8)
+    stop = threading.Event()
+    stop.set()
+    persister._run_live_persister(stop, threading.Event())
+    assert scheduled == ["persist"]
+
+
+def test_live_worker_schedule_and_fault_branch_edges(monkeypatch):
+    # The polling loop re-synchronizes its deadline after a slow transaction.
+    class SlowStop:
+        def __init__(self):
+            self.checks = 0
+        def is_set(self):
+            self.checks += 1
+            return self.checks >= 3
+        def wait(self, _timeout):
+            return False
+
+    slow = AccelerometerService(FakeManager(FakeRaw()), sample_rate_hz=400)
+    slow._status.running = True
+    slow._record_sample = lambda *_args, **_kwargs: None
+    real_monotonic = accelerometer_module.time.monotonic
+    monkeypatch.setattr(accelerometer_module.time, "monotonic",
+                        iter((0.0, 0.0, 10.0, 10.0)).__next__)
+    slow._run(0, SlowStop())
+    monkeypatch.setattr(accelerometer_module.time, "monotonic", real_monotonic)
+
+    class StopDuringFailure(threading.Event):
+        pass
+
+    stop = StopDuringFailure()
+    class FailingRaw(FakeRaw):
+        def accel_read_i2c(self, reg, dev_addr=0x19, read_len=1):
+            if reg == accelerometer_module.LIS3DH_OUT_X_L:
+                stop.set()
+                raise RuntimeError("poll failed")
+            return super().accel_read_i2c(reg, dev_addr, read_len)
+    failing = AccelerometerService(FakeManager(FailingRaw()))
+    failing._status.running = True
+    failing._run(0, stop)
+
+    # Exercise the no-op side of the optional persister callback after a
+    # session is replaced while the store write is failing.
+    class ReplacingStore:
+        def save_waveform(self, *_args):
+            failing._live_session = Session(name="new", id="new")
+            raise RuntimeError("late persist")
+        def save(self, *_args):
+            pass
+    old = Session(name="old", id="old")
+    failing._live_session = old
+    failing._live_store = ReplacingStore()
+    failing._live_digital = np.ones(2, dtype=np.uint16)
+    failing._live_persist_dirty = True
+    failing._live_settings = CaptureSettings(mode="rolling", num_samples=8)
+    done = threading.Event()
+    done.set()
+    failing._run_live_persister(done, threading.Event())
+
+    # The trace path supports an adapter without a callback and ignores a
+    # session replacement after the read has completed.
+    trace = AccelerometerService(FakeManager(FakeRaw()))
+    trace._status.running = True
+    trace._live_session = Session(name="trace", id="trace")
+    trace._live_store = SimpleNamespace()
+    trace._live_settings = CaptureSettings(mode="rolling", num_samples=8)
+    trace._append_live_digital = lambda *_args, **_kwargs: None
+    trace._read_dialogue = lambda *_args, **_kwargs: b"\x00\x00"
+    trace._decode_live_i2c_frames = lambda *_args: [(0.0, 0.0, 1.0)]
+    monkeypatch.setattr(
+        accelerometer_module, "payload_to_digital",
+        lambda _payload: np.ones(4, dtype=np.uint16))
+    monkeypatch.setattr(
+        accelerometer_module, "clean_live_trace",
+        lambda digital, **_kwargs: digital)
+    assert trace._capture_live_trace(
+        trace.manager.device, trace.manager.device._dev, 0x18,
+        threading.Event())
+
+    replacement = Session(name="replacement", id="replacement")
+    def replace_before_setup(*_args, **_kwargs):
+        trace._live_session = replacement
+        return b"\x00\x00"
+    trace._read_dialogue = replace_before_setup
+    trace._capture_live_trace(
+        trace.manager.device, trace.manager.device._dev, 0x18,
+        threading.Event())
+    assert trace._live_session is replacement
+
+    def replace_and_raise(*_args, **_kwargs):
+        trace._live_session = Session(name="last", id="last")
+        raise RuntimeError("replacement failure")
+    trace._read_dialogue = replace_and_raise
+    trace._capture_live_trace(
+        trace.manager.device, trace.manager.device._dev, 0x18,
+        threading.Event())
+
+
+def test_live_transport_fault_and_owned_fallback_branch_edges(tmp_path):
+    class Exploding(FakeRaw):
+        def __init__(self, target=None, direct=False):
+            super().__init__()
+            self.target = target
+            self.supports_direct_live_stream = direct
+        def continuous_ring_capture_with_repeating_i2c(self, **kwargs):
+            if self.target is not None:
+                self.target._live_transport = None
+            raise RuntimeError("transport exploded")
+
+    # A failed direct stream is fail-closed even when the transport record was
+    # already cleared by a concurrent disconnect.
+    direct = AccelerometerService(FakeManager(Exploding(direct=True)))
+    direct._status.running = True
+    direct._status.effective_config = direct._config.model_dump()
+    direct.manager.device._dev.target = direct
+    direct._run_live_producer(
+        direct.manager.device, direct.manager.device._dev, 0x18,
+        threading.Event(), None)
+
+    stopped_direct = AccelerometerService(FakeManager(Exploding(direct=True)))
+    stopped_direct._status.running = False
+    stopped_direct._status.effective_config = stopped_direct._config.model_dump()
+    stopped_direct._run_live_producer(
+        stopped_direct.manager.device, stopped_direct.manager.device._dev, 0x18,
+        threading.Event(), None)
+
+    attached_raw = Exploding()
+    attached = AccelerometerService(FakeManager(attached_raw))
+    attached._status.running = True
+    attached._status.effective_config = attached._config.model_dump()
+    attached._live_session = Session(name="attached", id="attached")
+    attached._start_live_persister = lambda: None
+    attached_raw.target = attached
+    attached_stop = threading.Event()
+    attached_stop.set()
+    attached._run_live_producer(
+        attached.manager.device, attached.manager.device._dev, 0x18,
+        attached_stop, None)
+    assert attached._live_session.diagnostics
+
+    class OwnedWait:
+        def __init__(self):
+            self.checks = 0
+        def is_set(self):
+            self.checks += 1
+            return self.checks >= 3
+        def wait(self, _timeout):
+            return True
+
+    owned = AccelerometerService(FakeManager(Exploding()))
+    owner = Session(name="owner", id="owner")
+    owned._status.running = True
+    owned._status.effective_config = owned._config.model_dump()
+    owned._live_session = owner
+    owned._live_store = SessionStore(tmp_path / "owned")
+    owned._live_settings = CaptureSettings(mode="rolling", num_samples=32)
+    owned._live_capture_accepting = True
+    owned._start_live_persister = lambda: None
+    owned._capture_live_trace = lambda *_args, **_kwargs: [(0.0, 0.0, 1.0)]
+    owned._run_live_producer(
+        owned.manager.device, owned.manager.device._dev, 0x18,
+        OwnedWait(), owner)
 
 
 class FakeRaw:
@@ -579,11 +1955,20 @@ def test_cancel_before_probe_does_not_leave_connected_hardware_unavailable():
 def test_capture_manager_reservation_blocks_racing_capture(tmp_path):
     manager = CaptureManager(SessionStore(tmp_path))
     assert manager.reserve_accelerometer() is True
+    assert manager.reserve_accelerometer() is False
 
     with pytest.raises(HardwareError, match="Accelerometer stream"):
         manager.start_capture(CaptureSettings(num_samples=2))
 
     manager.release_accelerometer()
+
+    class InactiveAccelerometer:
+        live_capture_active = True
+        def stop_live_capture(self):
+            return False
+
+    manager._accelerometer_service = InactiveAccelerometer()
+    assert manager.stop_capture() is False
 
 
 def test_capture_manager_resolves_process_accelerometer_when_backref_missing(
@@ -1440,3 +2825,29 @@ def test_mil_accelerometer_reconnect_route_requires_control(monkeypatch):
     assert mil_api.mil_accelerometer_reconnect("owner") == {
         "running": True, "available": True, "reconnected_by": "owner"}
     assert calls == ["owner"]
+
+
+def test_mil_accelerometer_config_route_maps_service_errors_to_conflict(monkeypatch):
+    class FailingService:
+        def config(self):
+            return {"output_data_rate_hz": 10}
+
+        def update_config(self, _config):
+            raise ValueError("invalid setting")
+
+    monkeypatch.setattr(mil_api, "accelerometer", FailingService())
+    monkeypatch.setattr(mil_api, "require_control", lambda _client: None)
+    with pytest.raises(Exception) as value_error:
+        mil_api.mil_accelerometer_config_update(
+            AccelerometerConfig(output_data_rate_hz=10), "owner")
+    assert getattr(value_error.value, "status_code", None) == 409
+
+    class HardwareFailingService(FailingService):
+        def update_config(self, _config):
+            raise HardwareError("sensor unavailable")
+
+    monkeypatch.setattr(mil_api, "accelerometer", HardwareFailingService())
+    with pytest.raises(Exception) as hardware_error:
+        mil_api.mil_accelerometer_config_update(
+            AccelerometerConfig(output_data_rate_hz=10), "owner")
+    assert getattr(hardware_error.value, "status_code", None) == 409

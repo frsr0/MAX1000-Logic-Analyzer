@@ -177,3 +177,16 @@ it('opens a session with both cursors and refreshes its metadata without disturb
   await useApp.getState().refreshActiveSession();
   expect(useApp.getState().activeSession?.name).toBe('renamed');
 });
+
+it('opens an empty rolling accelerometer session without fetching waveform history', async () => {
+  const { useApp } = await import('./appStore');
+  const { waveformView } = await import('./waveformStore');
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json(session('live', {
+    num_samples: 0,
+    tags: ['accelerometer'],
+    settings: { ...session('live').settings, mode: 'rolling' },
+  }))));
+  await useApp.getState().openSession('live');
+  expect(waveformView.sessionId).toBe('live');
+  expect(ControlledWorker.instances).toHaveLength(0);
+});

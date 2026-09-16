@@ -256,6 +256,66 @@ it('renders sequential raw live chunks without waiting for rolling persistence',
     .toEqual([3, 4, 5, 6, 7, 8, 9, 10]);
   expect(view.payload?.header.end).toBe(8);
   expect(view.liveChunkSamples).toBe(6);
+
+  const unbounded = new WaveformView();
+  unbounded.sessionId = 'unbounded';
+  unbounded.numSamples = 0;
+  unbounded.appendLiveRaw('unbounded', Uint16Array.from([9, 10]), 2_000_000);
+  expect(unbounded.numSamples).toBe(2);
+});
+
+it('ignores invalid raw chunks and restores persisted history when raw mode ends', async () => {
+  const view = new WaveformView();
+  view.sessionId = 'live';
+  view.numSamples = 10;
+  const fetch = vi.spyOn(view, 'requestFetch');
+  view.appendLiveRaw('other', Uint16Array.from([1]), 1000);
+  view.appendLiveRaw('live', new Uint16Array(), 1000);
+  view.appendLiveRaw('live', Uint16Array.from([1]), 0);
+  expect(view.payload).toBeNull();
+  view.setLiveRawActive('live', true);
+  view.setLiveRawActive('live', false);
+  expect(fetch).toHaveBeenCalledWith(0);
+  view.setLiveRawActive('other', true);
+});
+
+it('keeps the authoritative raw live payload during follow-end updates', async () => {
+  const view = new WaveformView();
+  view.sessionId = 'live';
+  view.numSamples = 10;
+  view.appendLiveRaw('live', Uint16Array.from([1, 2]), 1_000);
+  const fetch = vi.spyOn(view, 'requestFetch');
+  await view.updateLive(20, 1_000, null, true, 2);
+  expect(fetch).not.toHaveBeenCalled();
+  expect(view.payload?.header.mode).toBe('raw');
+});
+
+it('accepts a persisted window when raw mode is marked active but not rolling', async () => {
+  const view = new WaveformView();
+  const loading = view.load('s', 100, 1000, null);
+  const worker = ControlledWorker.instances[0];
+  worker.reply(0, 's');
+  await loading;
+  await vi.advanceTimersByTimeAsync(1);
+  (view as unknown as { liveRawActive: boolean }).liveRawActive = true;
+  view.liveRolling = false;
+  view.requestFetch(0);
+  await vi.advanceTimersByTimeAsync(1);
+  worker.reply(1, 's');
+  await vi.advanceTimersByTimeAsync(1);
+  expect(view.payload?.header.session_id).toBe('s');
+});
+
+it('clamps a raw live window when follow mode is disabled', () => {
+  const view = new WaveformView();
+  view.sessionId = 'live';
+  view.numSamples = 10;
+  view.liveFollow = false;
+  view.start = 50;
+  view.end = 60;
+  view.appendLiveRaw('live', Uint16Array.from([1, 2]), 1_000);
+  expect(view.start).toBeGreaterThanOrEqual(0);
+  expect(view.end).toBeLessThanOrEqual(view.numSamples);
 });
 
 it('keeps the live paint window bounded as the rolling session grows', () => {
