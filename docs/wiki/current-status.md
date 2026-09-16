@@ -76,6 +76,31 @@ until `POST /api/generator/stop`; the host does not schedule per-chunk restarts.
 
 ## Verification baseline
 
+### Software baseline — 2026-09-16
+
+The current software baseline is commit `47bce3d`, following the live
+accelerometer transport hardening in `a84501e`. The global coverage gates now
+pass over the complete configured production scope rather than only the
+accelerometer or transport modules:
+
+| Scope | Result | Coverage scope |
+|---|---:|---|
+| Backend | **633 passed, 1 opt-in hardware skip** | 10,968 statements and 3,386 branches; 100%, zero partial branches |
+| Frontend | **391 passed, 1 opt-in hardware skip** | 4,412 statements, 3,359 branches, 1,110 functions, 3,780 lines; 100% in every metric |
+| Frontend build | **Passed** | TypeScript check plus Vite production bundle |
+
+The one normal-run skip in each suite is deliberately hardware-gated. The
+backend test requires `MAX1000_LIVE_BACKLOG_TEST=1` and a running real-board
+server; the frontend test requires `LIVE_HW_TEST=1` and a live binary waveform
+WebSocket. Enabling those flags makes the checks execute; they are not
+coverage exclusions.
+
+The completed coverage work added worker-level binary-stream tests, exercised
+the main-thread fallback and reconnect/error paths, and closed pre-existing
+backend gaps in the WebSocket manager, capture manager, host adapter, MIL
+service, and accelerometer service. Coverage is still execution evidence: it
+does not replace FPGA simulation, timing analysis, or connected-board tests.
+
 The current persistent image has the following connected-board evidence:
 
 - backend hardware smoke test: **10/10 passed**;
@@ -112,16 +137,16 @@ Playwright mock E2E, and all 57 GHDL benches. The self-hosted hardware workflow 
 its required MAX1000 is unavailable; it does not silently treat absence as a
 pass.
 
-The whole-frontend coverage requirement is met: **292 tests** cover all
-**3,421 statements, 2,540 branches, 958 functions, and 2,906 lines** in the
+The whole-frontend coverage requirement is met: **391 tests passed** cover all
+**4,412 statements, 3,359 branches, 1,110 functions, and 3,780 lines** in the
 configured production TypeScript/TSX scope. See
 [Frontend Build and Test](frontend/build-and-test.md).
 
 The latest host run passed **1,010 tests**, with all **8,342 statements** and
-**2,488 branches** covered (zero missing or partial branches). The backend
-run passed **542 tests**, covering all **8,822 statements** and **2,630
-branches**. Coverage is
-execution evidence, not proof of all possible behavior or electrical setups.
+**2,488 branches** covered (zero missing or partial branches). The current
+backend run passes **633 tests**, covering all **10,968 statements** and
+**3,386 branches**. Coverage is execution evidence, not proof of all possible
+behavior or electrical setups.
 
 Run the normal software checks from the repository root:
 

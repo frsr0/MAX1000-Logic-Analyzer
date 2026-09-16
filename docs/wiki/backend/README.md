@@ -110,9 +110,10 @@ Client (browser / curl)
 
 ## Current verification
 
-The 2026-09-09 backend gate passes **542/542** tests with all 8,822 statements
-and 2,630 branches covered (100%, with no partial branches). Its real-hardware
-adapter is also exercised by the 10/10 smoke test, 436/436 connected-board
-suite, and the current browser hardware runs. Source coverage and attached-
-board evidence remain separate claims; see
+The 2026-09-16 backend gate passes **633/633** tests, with one additional
+hardware-gated test skipped unless `MAX1000_LIVE_BACKLOG_TEST=1` is set. The
+coverage report contains 10,968 statements and 3,386 branches at 100%, with no
+partial branches. Its real-hardware adapter is also exercised by the 10/10
+smoke test, the 436/436 connected-board suite, and the focused live-backlog
+watch. Source coverage and attached-board evidence remain separate claims; see
 [Verification and Change Traceability](../verification-traceability.md).

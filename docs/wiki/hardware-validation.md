@@ -90,6 +90,33 @@ The current image's direct on-wire generator sweep also passed **7/7** at
 1,200, 2,400, 4,800, 9,600, 19,200, 57,600, and 115,200 baud. Every measured
 rate was within +0.79% of its request.
 
+## Software and live-transport validation — 2026-09-16
+
+With the same board connected through the backend at `127.0.0.1:8002`, the
+focused live-transport checks reported:
+
+| Check | Result | Scope |
+|---|---:|---|
+| Backend live backlog watch | **1/1 passed** in about 5.07 s | `MAX1000_LIVE_BACKLOG_TEST=1`; connected binary stream, bounded backlog observation |
+| Frontend connected binary-packet test | **11/11 reported passing** | Worker decoder exercised against the live board stream |
+| Backend software gate | **633 passed**, 1 opt-in hardware skip | 10,968 statements and 3,386 branches at 100% |
+| Frontend software gate | **391 passed**, 1 opt-in hardware skip | 4,412 statements, 3,359 branches, 1,110 functions, and 3,780 lines at 100% |
+| Frontend production build | **Passed** | TypeScript/Vite production build |
+
+The hardware-gated tests are opt-in (`MAX1000_LIVE_BACKLOG_TEST=1` for the
+backend and `LIVE_HW_TEST=1` for the frontend), so an ordinary software run
+reports them as skipped rather than silently claiming board coverage. These
+focused checks complement the 436/436 connected-board regression; they do not
+replace a full-duration FIFO/USB soak or sensor calibration test.
+
+The temporary live server was stopped and disconnected after validation. A
+later teardown status reported a direct FIFO-overflow fault from the
+long-running stream. That observation is recorded as an operational boundary,
+not claimed as a pass for indefinite direct streaming. The browser and backend
+diagnostics must therefore be read by layer: `source_backlog_samples=0` proves
+the FPGA/ring source is clear, while packet counts, sequence gaps, disconnects,
+and decode latency measure the browser transport separately.
+
 ## Historical exact-image result — 2026-08-27 to 2026-08-30
 
 That historical full mixed-signal image was built with Quartus Prime Lite 25.1,

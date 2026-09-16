@@ -111,7 +111,7 @@ the backend's legacy decoded-pose messages. `frontend/src/workers/liveI2cDecoder
 keeps the I²C transaction state across WebSocket chunk boundaries, validates
 the address/register/ACK layout and LIS3DH word padding, and emits a complete
 XYZ point as soon as its final byte is observed. The display target consumes
-those frontend-decoded points; its `requestAnimationFrame` smoothing is
+those frontend-decoded points; its `requestAnimationFrame` paint coalescing is
 presentation only and does not delay acquisition or publication.
 
 The raw decoded point is retained on the FIFO history stream. The pose mailbox
@@ -129,12 +129,14 @@ measurement and may be non-zero even when the queue is empty.
 
 The sensor ODR and host decoded rate are intentionally reported separately.
 The direct held-CS stream now carries eight CH13/CH14/CH15 samples in three
-payload bytes plus an explicit frame marker, so the flashed image sustains a
-2 MHz waveform tap with no FIFO overflow in a five-second hardware run. A
-3 MHz request delivered 2.33 MS/s in the same test, establishing the current
-USB/MPSSE drain ceiling rather than silently switching to SDRAM history or
-invented XYZ values. Higher rates require a concurrently drained USB endpoint;
-larger browser buffers would only add latency.
+payload bytes plus an explicit frame marker. The bounded hardware check
+validated the 2 MHz waveform tap with no FIFO overflow; a 3 MHz request
+delivered 2.33 MS/s in the same test, establishing the current USB/MPSSE drain
+ceiling rather than silently switching to SDRAM history or invented XYZ
+values. This is a bounded throughput result, not a guarantee of indefinite
+operation: direct transport health must still be watched through its explicit
+state/error and waveform metrics. Higher rates require a concurrently drained
+USB endpoint; larger browser buffers would only add latency.
 
 The application keeps separate WebSocket contracts so presentation cannot hold
 up history or raw decoding:
@@ -170,6 +172,36 @@ pending LIS3DH configuration, and waits for a fresh decoded point before
 reporting success. A failed attempt leaves the transport and control ownership
 clean for another retry after the board is replugged.
 
+### Worker and fallback rules
+
+`accelerometerStream.worker.ts` owns the normal binary waveform path. It
+decodes every ordered packet and keeps the incremental I²C decoder state across
+packet boundaries. A missing sequence number resets the decoder so a damaged
+section cannot produce a plausible point. The worker's ACK mailbox and
+`requestAnimationFrame` scheduling limit pending UI paints only; they do not
+drop waveform packets or raw decoded samples.
+
+The fallback `/ws/accelerometer/pose` path is intentionally different: it is a
+latest-value visualization stream, so stale poses may be replaced. It does not
+duplicate the raw waveform decoder on the main thread. The binary and legacy
+text waveform endpoints use the same per-client bounded, lossless handoff:
+healthy clients receive chunks in order; a client with two pending chunks or a
+send that exceeds the 10 ms handoff budget is removed and explicitly closed
+with WebSocket code 1013, allowing the frontend `onclose` handler to reconnect.
+The legacy text path does not use a shared drop-oldest queue.
+
+The live diagnostics keep these measurements separate:
+
+| Layer | Measurements |
+|---|---|
+| FPGA/source | `source_backlog_samples`, `source_age_samples`, direct state/error |
+| Backend transport | publish/enqueue/send latency, slow-client disconnects |
+| Browser waveform | packet count, sequence gaps, reconnects/disconnects, decode latency |
+| Browser presentation | target selection, state-update, and render latency |
+
+Therefore `source_backlog_samples=0` proves only that the FPGA/ring source is
+clear; it does not prove that a browser transport queue is empty.
+
 ## Hardware validation status
 
 The 2026-09-09 persistent seed-10 image (SOF `0x0050492F`) passed the on-board
@@ -197,6 +229,17 @@ This validates the analyzer-to-LIS3DH connection and protocol handling. It is
 not a full accelerometer functional-characterization suite: it does not claim
 calibration accuracy, motion performance, interrupt behavior, or every LIS3DH
 register mode.
+
+The current software transport checks were also run on 2026-09-16 with the
+board connected: the backend five-second live-backlog watch passed, and the
+frontend connected binary-packet decoder test reported 11/11 passing cases.
+These focused checks complement the 436/436 board regression; they do not
+replace a full-duration FIFO/USB soak or sensor calibration test.
+
+The temporary live server was stopped and disconnected after validation. A
+later teardown status reported a direct FIFO-overflow fault from the
+long-running stream; this is recorded as an operational boundary, not claimed
+as a pass for indefinite direct streaming.
 
 ## Related documentation
 

@@ -96,6 +96,12 @@ graph TB
 - Hardware route capabilities advertise optional RS-485 DE and SPI CS/MISO auxiliary routes
 - Bit Engine/Bit Banger PWM loopback for hardware self-test
 - Readback compression (`raw` / direct `rle` / packed `delta_rle` modes)
+- Current software baseline is commit `47bce3d` (`Close global coverage gaps`)
+  atop `a84501e` (`Harden accelerometer live transport`). Backend coverage is
+  100% across 10,968 statements and 3,386 branches with 633 passing tests plus
+  one opt-in hardware skip; frontend coverage is 100% across 4,412 statements,
+  3,359 branches, 1,110 functions, and 3,780 lines with 391 passing tests plus
+  one opt-in hardware skip. The frontend production build also passes.
 - Built with Quartus, targeting Intel MAX 10 `10M08SAU169C8G`, FAST_SPEED build
 - The current full mixed-signal image was built with Quartus 25.1 and fitter
   **seed 10**, then programmed into configuration flash on 2026-09-09. Slow-85C setup

@@ -42,6 +42,8 @@ transport tests include:
 | `src/api/binary.test.ts` | MSAW framing, typed arrays, malformed/truncated payloads |
 | `src/api/websocket.test.ts` | URL construction, subscriptions, reconnect/close behavior |
 | `src/workers/waveformClient.test.ts` | Request IDs, concurrent responses, cancellation/termination behavior |
+| `src/workers/accelerometerStream.worker.test.ts` | Binary/text live-stream selection, packet order, sequence-gap reset, reconnect, and UI ACK mailbox behavior |
+| `src/workers/liveI2cDecoder.test.ts` | Incremental LIS3DH I²C frame decoding plus opt-in connected binary-packet validation |
 
 Coverage uses V8 and now inventories **all** production `src/**/*.ts` and
 `src/**/*.tsx` files, excluding only tests and test fixtures. The 100%
@@ -49,10 +51,18 @@ statement/branch/function/line thresholds are unchanged.
 
 The initial full-source audit on 2026-09-04 found only 110/3,362 statements
 (3.27%) and 43/2,512 branches (1.71%); the former 100% report measured only
-three transport modules. The completed strict suite now has **292 passing
-tests** and literal 100% coverage: 3,421/3,421 statements, 2,540/2,540
-branches, 958/958 functions, and 2,906/2,906 lines. Playwright and real-board
-passes remain complementary evidence, not unmeasured coverage credit.
+three transport modules. The completed strict suite now has **391 passing
+tests** plus one explicitly skipped hardware test and literal 100% coverage:
+4,412/4,412 statements, 3,359/3,359 branches, 1,110/1,110 functions, and
+3,780/3,780 lines. Playwright and real-board passes remain complementary
+evidence, not unmeasured coverage credit.
+
+The accelerometer split is intentional. The worker decodes every ordered
+waveform packet and preserves packet order; only the React state commit and
+canvas paint are coalesced to the display cadence. The main-thread fallback
+does not duplicate raw waveform decoding: it consumes the backend pose stream
+when a module worker cannot start. A sequence gap resets the incremental I²C
+decoder so a partial transaction cannot be completed with unrelated samples.
 
 This tranche found and fixed stale asynchronous results crossing session or
 page changes in waveform overviews, viewport payloads, decoder annotations,
@@ -101,6 +111,24 @@ is `frontend/test-results/screenshots/hardware-validated-matrix.json`.
 a self-hosted runner labeled `max1000`. The workflow attempts a real connect
 and fails when the board or native D2XX stack is unavailable. It runs manually,
 on relevant pull requests, and weekly.
+
+The focused live hardware checks are opt-in because they require an already
+running backend and exclusive board ownership:
+
+```powershell
+$env:LIVE_HW_TEST='1'
+.\node_modules\.bin\vitest.cmd run src/workers/liveI2cDecoder.test.ts --testTimeout=20000
+
+$env:MAX1000_LIVE_BACKLOG_TEST='1'
+cd ..
+.\.venv\Scripts\python.exe -m pytest backend/app/tests/test_live_backlog_hardware.py -q -rs
+```
+
+The backend hardware watch distinguishes the FPGA source backlog from browser
+transport health. It checks the direct transport mode, waveform sample count,
+host/effective rates, source age, and zero/near-zero source backlog. The
+frontend live test validates that a binary packet reaches the worker and
+decodes to at least one LIS3DH point.
 
 ## Screenshot evidence
 

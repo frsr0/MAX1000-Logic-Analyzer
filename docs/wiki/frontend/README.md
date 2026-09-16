@@ -66,6 +66,8 @@ for the physical and register contract.
 │  ┌─────────────────────────────┐  ┌────────────────────────┐ │
 │  │ waveform.worker.ts           │  │ waveformClient.ts      │ │
 │  │ (Web Worker message handler)│  │ (worker proxy + cache) │ │
+│  │ accelerometerStream.worker  │  │ liveI2cDecoder.ts      │ │
+│  │ (ordered live binary stream)│  │ (incremental I²C)     │ │
 │  └─────────────────────────────┘  └────────────────────────┘ │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -98,8 +100,11 @@ for the physical and register contract.
 - Waveform sample data (large TypedArrays) lives **outside React state** in a plain class (`WaveformView`) that emits change events — React subscribes only for label/metadata changes
 - Canvas-based waveform rendering with transition-density shading when zoomed out
 - Captures never enter React state as large objects; the API serves binary MSAW payloads parsed into zero-copy TypedArray views
-- ReconnectingSocket handles backoff reconnection for three app-wide topics
-  plus active-session decoder and waveform topics
+- ReconnectingSocket handles backoff reconnection for app-wide topics, active
+  session topics, and the main-thread accelerometer fallback
+- `accelerometerStream.worker.ts` owns the ordered binary/text live waveform
+  sockets and decodes every packet; the React card only coalesces state and
+  paint commits
 - Waveform Worker requests carry correlation IDs; live viewport fetches are
   coalesced and overview refreshes are throttled so chunk updates cannot starve
   rendering
@@ -107,9 +112,10 @@ for the physical and register contract.
 
 ## Current verification
 
-As of 2026-09-09, **292/292** Vitest tests cover all 3,421 statements, 2,540
-branches, 958 functions, and 2,906 lines in the production TypeScript/TSX
-scope (100% in every metric). The attached-board Playwright runs pass 5/5
+As of 2026-09-16, **391/391** normal Vitest tests pass and cover all 4,412
+statements, 3,359 branches, 1,110 functions, and 3,780 lines in the
+production TypeScript/TSX scope (100% in every metric). One additional test is
+hardware-gated in the normal run. The attached-board Playwright runs pass 5/5
 feature tests—including all 37 advertised mode/rate combinations—and 34/34
 hardware-aligned UI tests. Documentation PNGs are generated at 1440×1400 and
 live waveforms must identify the requested session and report a completed load

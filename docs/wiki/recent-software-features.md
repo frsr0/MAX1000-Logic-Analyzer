@@ -156,6 +156,50 @@ completed.
 This is intended for regression, generator loopback, and before/after signal
 investigation rather than analog calibration certification.
 
+## Accelerometer live transport hardening
+
+The accelerometer live path has one acquisition contract and two presentation
+surfaces. The normal worker path decodes every ordered waveform packet. Only
+React state commits and canvas paints are coalesced; packet decoding, sequence
+tracking, and pose publication are not decimated. A module-worker failure uses
+the backend's decoded pose stream as a fallback, so the main thread does not
+duplicate the raw I²C decoder at high rates.
+
+The primary endpoint is `/ws/accelerometer/waveform-binary`. The legacy
+`/ws/accelerometer/waveform` JSON/base64 endpoint remains supported for older
+clients and follows the same policy. Both endpoints maintain a bounded FIFO
+per client (two pending chunks), preserve packet order for healthy clients,
+remove slow clients, and explicitly close evicted sockets with retryable code
+1013. This makes the frontend `onclose` reconnect path reliable and prevents a
+shared drop-oldest queue from creating gaps for unrelated clients.
+
+The live status model separates source health from browser transport health:
+`source_backlog_samples` and `source_age_samples` describe FPGA/ring data;
+packet count, sequence gaps, disconnects, frontend decode latency,
+capture-to-publish, decode-to-publish, and WebSocket-to-render timing describe
+the software path. These values must be reviewed independently when diagnosing
+latency or loss.
+
+Worker tests now exercise binary preference, legacy text fallback, packet order,
+sequence-gap reset, reconnect behavior, and the waveform ACK mailbox. The
+connected hardware checks are opt-in because they require an exclusive running
+backend: `LIVE_HW_TEST=1` enables the frontend binary-packet check and
+`MAX1000_LIVE_BACKLOG_TEST=1` enables the backend live backlog watch. See
+[On-board LIS3DH Accelerometer](accelerometer.md),
+[Frontend Workers](frontend/workers.md), and
+[WebSocket & Diagnostics](backend/websocket-diagnostics.md).
+
+## Coverage gate closure
+
+The strict production coverage scope is now fully exercised. The backend gate
+passes 633 tests with 10,968 statements and 3,386 branches at 100%, including
+the WebSocket manager, capture manager, host adapter, MIL service, and
+accelerometer service. The frontend gate passes 391 normal tests plus one
+hardware-gated test, covering 4,412 statements, 3,359 branches, 1,110
+functions, and 3,780 lines at 100%. The frontend TypeScript/Vite production
+build also passes. These numbers are software evidence and do not replace the
+separate HDL, timing, or physical-board gates.
+
 ## Trigger search and navigation
 
 Hardware triggering covers the basic capture-engine edge/value controls and

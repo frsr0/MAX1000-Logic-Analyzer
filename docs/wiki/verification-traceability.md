@@ -30,15 +30,15 @@ flowchart LR
 
 | Field | Current evidence |
 |---|---|
-| Source baseline | 2026-09-09 working tree; current validation and screenshot repair set |
+| Source baseline | 2026-09-16; commit `47bce3d` (`Close global coverage gaps`) atop `a84501e` (`Harden accelerometer live transport`) |
 | Build | Quartus Prime Lite 25.1, full mixed-signal profile, fitter seed 10 |
 | Image | Programmed into configuration flash on 2026-09-09; SOF checksum `0x0050492F` |
 | Timing | Slow-85C setup: fast +0.253 ns, SDRAM +0.178 ns, system +0.278 ns; all setup/hold/recovery/removal/min-pulse checks positive |
 | Hardware smoke | 10/10 |
 | Full hardware suite | Cold-power-cycle run 436/436 with 0 failed and 0 skipped; preceded by two consecutive 421/421 runs, 842/842 combined; includes active codec references, all 75 crosstalk cases, exact jumper protocol payloads, both strict 60-second stress runs, and final concurrent capture/readout |
 | Host coverage | 1,010 tests; 8,342 statements and 2,488 branches at 100%, zero partial branches |
-| Backend coverage | 542 tests; 8,822 statements and 2,630 branches at 100%, zero partial branches |
-| Frontend coverage | 292 tests; 3,421 statements, 2,540 branches, 958 functions, and 2,906 lines at 100% |
+| Backend coverage | 633 passed, 1 opt-in hardware skip; 10,968 statements and 3,386 branches at 100%, zero partial branches |
+| Frontend coverage | 391 passed, 1 opt-in hardware skip; 4,412 statements, 3,359 branches, 1,110 functions, and 3,780 lines at 100% |
 | Browser hardware matrix | 5/5 feature tests, including 37/37 advertised mode/rate combinations; 26 digital/mixed cases require physical 22→CH13 transitions (40–875 observed); broader hardware-aligned suite 34/34; 114 screenshots regenerated and visually checked using the 1440px documentation viewport plus targeted panel/full-content captures |
 | Rate sweep | Current image: 7/7 from 1,200-115,200 baud, every case within +0.79% |
 
@@ -50,6 +50,9 @@ The fit, STA, and assembler reports are in `hdl/proj/output_files/`.
 
 | Change | Primary implementation | Evidence | Level |
 |---|---|---|---|
+| Ordered accelerometer waveform transport | `backend/app/websocket/manager.py`, `accelerometer.py`, `frontend/src/workers/accelerometerStream.worker.ts` | Per-client binary/text queue tests, worker packet-order/reconnect tests, connected binary-stream test, live backlog watch | **SW + HW** |
+| Slow-client eviction and recovery | WebSocket manager and `ReconnectingSocket` | Slow-client isolation, explicit socket close, reconnect, and legacy text-fallback tests | **SW** |
+| Separate source, transport, and browser timing metrics | Accelerometer status model, worker messages, `MilAccelerometerCard` | Status/worker/UI tests; live backlog observation | **SW + HW** |
 | Live waveform request correlation and coalescing | `frontend/src/workers/`, `waveformStore.ts`, session persistence | Worker unit tests, frontend build/E2E, live hardware captures | **SW + HW** |
 | Manual-session selection versus newest-capture updates | `CapturePage`, waveform canvas identity/loading contract | Rendered regression test plus exact-session live screenshot gallery | **SW + HW** |
 | Generator output during rolling capture | backend adapter, host driver, Generator page | Backend/host tests; live generator capture and clean stop | **SW + HW** |
@@ -58,7 +61,7 @@ The fit, STA, and assembler reports are in `hdl/proj/output_files/`.
 | SDRAM init comparator register | `SDRAM_Controller_Custom.vhd` | Post-fit STA, full hardware regression | **BUILD + HW** |
 | Auto-discovered analogue jumper fixture | `host/app/hw_validation.py` | Current 421-check suite; missing fixture makes the suite fail via a nonzero skip result | **HW** |
 | Bounded final SPI plateau decode | `host/app/gui_decoders.py` | Host tests and full connected-board suite | **SW + HW** |
-| Expanded regression/coverage gates | CI workflows, backend/host/frontend tests, HDL runner | Backend, host, and full production frontend scopes at literal 100%; 57/57 HDL benches with no exclusions | **SW + SIM** |
+| Expanded regression/coverage gates | CI workflows, backend/host/frontend tests, HDL runner | Backend 633-test and frontend 391-test production scopes at literal 100%; 57/57 HDL benches with no exclusions | **SW + SIM** |
 
 ## Historical image records
 
@@ -82,7 +85,7 @@ that has both a clean build and a complete relevant board run.
 |---|---|---|
 | Backend | `python -m pytest backend/app/tests` | 100% statement and branch coverage |
 | Host | `python -m pytest host/tests host/driver/tests` | 100% statement and branch coverage |
-| Frontend unit | `npm run test:unit` | 100% statement, branch, function, and line coverage for all production TS/TSX |
+| Frontend unit | `npm run test:unit` | 100% statement, branch, function, and line coverage for all production TS/TSX; the normal run leaves only the explicitly hardware-gated live test skipped |
 | Frontend E2E | `PLAYWRIGHT_USE_MOCK=1 npm run test:e2e -- hardware.spec.ts` | Browser workflows without hardware |
 | HDL gate | `bash hdl/tb/run_all_tbs.sh` | All 57 `tb_*.vhd` benches must terminate explicitly and pass; no exclusions/XFAILs |
 | Hardware matrix | `.github/workflows/hardware-matrix.yml` | Self-hosted `max1000` runner; board absence is a failure |
@@ -103,6 +106,16 @@ that has both a clean build and a complete relevant board run.
   electrical stimulus because both paths share capture-arm state. Its current
   proof is structural/functional; driven electrical proof needs an external
   source.
+- `source_backlog_samples` measures unread FPGA/ring source data only. It is
+  not a browser queue metric. Use the separate waveform packet count, sequence
+  gaps, disconnect count, frontend decode latency, capture-to-publish latency,
+  decode-to-publish latency, and WebSocket-to-render timing when diagnosing
+  live transport health.
+- Ordered waveform clients are lossless while healthy. Binary and legacy text
+  waveform queues are per-client and bounded to two pending chunks; a slow
+  client is removed from the topic and its socket is explicitly closed with a
+  retryable close so the frontend can reconnect. The pose topic remains a
+  replaceable latest-value mailbox by design.
 - Do not add silent HDL exclusions or expected failures. A new `tb_*.vhd`
   bench must explicitly terminate and pass in the required gate.
 - Update [Current Status](current-status.md), the

@@ -14,6 +14,7 @@ has an explicit scope boundary.
 | Deep SDRAM capture | Depth selector, capture strategies | SDRAM controller and write pump | **HW**; 4,194,304 × 16-bit words |
 | BRAM fast capture | Fast/narrow strategy | 1,024-word BRAM path | **HW** |
 | Continuous/ring capture | Live capture and session streaming | Triple-buffer ring path | **HW**; lifecycle and recovery checks |
+| Accelerometer direct live waveform | Live accelerometer card and worker | Ordered binary FPGA FIFO tap with legacy text fallback | **SW + HW**; per-client lossless transport, sequence-gap reset, and separate queue/timing metrics |
 | Narrow packed capture | Narrow live mode control and decoder | 16 time samples from one selected channel per word | **HW** at 200.4 MHz; maintained simulation coverage |
 | Analog-fast | Analog-fast mode and analog waveform | One MAX10 ADC lane | **HW**; ADC1/AIN3 profile and physical analog checks |
 | Maximum analog | Maximum-analog single/live modes | Packed MSO path, ADC1-ADC4 (`AIN3`, `AIN1`, `AIN4`, `AIN6`) | **HW**; four distinct lanes at about 24 kS/s each |
@@ -71,6 +72,7 @@ has an explicit scope boundary.
 | Frontend screenshot/e2e suite | [Build and Test](frontend/build-and-test.md) | Typecheck/build pass; hardware scenario includes real-board sessions |
 | Bit Banger scripts and presets | [Recent Software Features](recent-software-features.md) | **SW/HW**; 1,024-symbol FIFO boundary |
 | Exact generator rate reporting | [Generator Controller](backend/generator-controller.md) | **HW/SW**; metadata-selected 16/24-bit divider and periodic output frequency |
+| Global production coverage gate | [Frontend Build and Test](frontend/build-and-test.md), [Verification](verification-traceability.md) | **SW**; backend and frontend literal 100% statement/branch gates, frontend function/line gate |
 | Live generator output | [Generator Routing](generator-routing.md) | **HW** for UART/RS-485/Bit Banger during rolling capture |
 | CSV/VCD waveform import | [Recent Software Features](recent-software-features.md) | **SW** importer and session tests |
 | Session comparison | [Recent Software Features](recent-software-features.md) | **SW** alignment/divergence tests |
@@ -98,5 +100,8 @@ board-level contract, not every possible external electrical configuration.
 In particular, SWD requires a real target for response validation; MIL tests
 need their external device fixtures; and accelerometer validation is a
 protocol/connection check rather than a sensor calibration characterization.
+For accelerometer live transport, source backlog, browser packet continuity,
+disconnects, and decode/render latency are separate signals; a zero FPGA
+backlog is not a claim that the browser transport queue is empty.
 The authoritative current snapshot is [Current Status](current-status.md),
 while the detailed test evidence is in [Hardware Validation](hardware-validation.md).
