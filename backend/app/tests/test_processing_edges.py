@@ -351,6 +351,49 @@ def test_websocket_manager_connect_broadcast_dead_clients_and_publish():
     asyncio.run(exercise())
 
 
+def test_binary_waveform_slow_client_isolated_without_dropping_healthy_stream():
+    class Ws:
+        def __init__(self, delay=0.0):
+            self.delay = delay
+            self.messages = []
+
+        async def accept(self):
+            pass
+
+        async def send_bytes(self, data):
+            if self.delay:
+                await asyncio.sleep(self.delay)
+            self.messages.append(bytes(data))
+
+    async def exercise():
+        mgr = ConnectionManager()
+        good = Ws()
+        slow = Ws(delay=1.0)
+        topic = "accelerometer_waveform_binary"
+        await mgr.connect(good, topic)
+        await mgr.connect(slow, topic)
+        mgr.set_loop(asyncio.get_running_loop())
+
+        packets = [bytes((n,)) for n in range(8)]
+        for packet in packets:
+            mgr.publish_binary_threadsafe(topic, packet)
+            # Model the direct stream's packet cadence and let the event loop
+            # start the per-client drains between producer packets.
+            await asyncio.sleep(0)
+
+        deadline = asyncio.get_running_loop().time() + 1.0
+        while len(good.messages) < len(packets) and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.005)
+
+        # A stalled browser must not make the healthy browser lose waveform
+        # packets, and it must be removed on the transport deadline rather
+        # than holding the FPGA producer for hundreds of milliseconds.
+        assert good.messages == packets
+        assert slow not in mgr._topics[topic]
+
+    asyncio.run(exercise())
+
+
 def test_sanity_checks_detect_empty_stuck_noisy_fast_and_flat_channels():
     empty = Session(name="empty")
     assert run_sanity_checks(empty, _wf(digital=np.zeros(0, dtype=np.uint16)))[0]["check"] == "samples"

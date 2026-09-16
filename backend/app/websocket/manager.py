@@ -22,11 +22,12 @@ from fastapi import WebSocket
 log = logging.getLogger("msa.ws")
 ACCELEROMETER_SEND_TIMEOUT_S = 0.01
 # A binary waveform packet is currently one 32K-sample direct-FIFO quantum
-# (~65 KB).  The short decoded-sample deadline is appropriate for tiny JSON
-# messages but can classify a healthy browser socket as dead while the event
-# loop is copying one packet into its send buffer.  Keep the binary queue
-# bounded, but give a packet a bounded transport-sized deadline.
-BINARY_WAVEFORM_SEND_TIMEOUT_S = 0.25
+# (~65 KB).  A stalled browser must be removed within the FPGA live FIFO's
+# headroom; waiting 250 ms here lets the producer outrun that FIFO and turns
+# the transport into a source overrun.  Healthy local/browser sockets queue
+# the packet in the kernel immediately, while a genuinely blocked socket is
+# isolated by this deadline.
+BINARY_WAVEFORM_SEND_TIMEOUT_S = 0.01
 # The pose/status mailbox replaces stale values, so it must not attempt to
 # serialize and send every decoded sensor frame.  At the direct tap rate that
 # would make JSON/WebSocket work compete with the USB reader for the GIL and
@@ -59,8 +60,13 @@ class ConnectionManager:
         # a slow client can never make a new pose wait behind old samples.
         self._latest_value_pending: dict[str, tuple[str, dict]] = {}
         self._latest_value_draining: set[str] = set()
-        self._binary_pending: dict[str, deque[bytes]] = {}
-        self._binary_draining: set[str] = set()
+        # Binary waveform delivery is lossless for each healthy subscriber.
+        # Queues are per client so one blocked browser cannot make the shared
+        # topic drop packets for every other browser.  A queue reaching the
+        # small bound means that client is no longer a live consumer; it is
+        # removed instead of silently delivering a sequence gap.
+        self._binary_pending: dict[str, dict[WebSocket, deque[bytes]]] = {}
+        self._binary_draining: set[tuple[str, WebSocket]] = set()
 
     def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -80,6 +86,12 @@ class ConnectionManager:
 
     def disconnect(self, ws: WebSocket, topic: str) -> None:
         self._topics[topic].discard(ws)
+        with self._latest_lock:
+            clients = self._binary_pending.get(topic)
+            if clients is not None:
+                clients.pop(ws, None)
+                if not clients:
+                    self._binary_pending.pop(topic, None)
 
     async def broadcast(self, topic: str, type_: str, data: dict) -> None:
         if topic in ("accelerometer", "accelerometer_pose", "accelerometer_waveform") \
@@ -194,25 +206,46 @@ class ConnectionManager:
                 self._latest_value_draining.discard(topic)
 
     def publish_binary_threadsafe(self, topic: str, data: bytes) -> None:
-        """Publish a bounded ordered binary stream from a worker thread."""
+        """Publish an ordered binary stream from a worker thread.
+
+        Each binary subscriber gets its own tiny FIFO.  Do not use a shared
+        latest-value queue here: dropping an old waveform packet creates a
+        sequence gap that makes the frontend decoder discard the stream.
+        """
         if self._loop is None or self._loop.is_closed():
             return
-        if not self._topics.get(topic):
+        clients = list(self._topics.get(topic, ()))
+        if not clients:
             return
+        to_schedule: list[tuple[str, WebSocket]] = []
         with self._latest_lock:
-            queue = self._binary_pending.setdefault(topic, deque())
-            queue.append(bytes(data))
-            while len(queue) > MAX_WAVEFORM_PENDING_CHUNKS:
-                queue.popleft()
-            if topic in self._binary_draining:
-                return
-            self._binary_draining.add(topic)
-        try:
-            asyncio.run_coroutine_threadsafe(
-                self._drain_binary(topic), self._loop)
-        except RuntimeError:
-            with self._latest_lock:
-                self._binary_draining.discard(topic)
+            pending_by_client = self._binary_pending.setdefault(topic, {})
+            for ws in clients:
+                # The client may have disconnected after the snapshot.
+                if ws not in self._topics.get(topic, ()):
+                    continue
+                queue = pending_by_client.setdefault(ws, deque())
+                if len(queue) >= MAX_WAVEFORM_PENDING_CHUNKS:
+                    # This client has stopped consuming.  Removing it now is
+                    # preferable to dropping an arbitrary waveform packet and
+                    # pretending the remaining stream is still contiguous.
+                    self._topics[topic].discard(ws)
+                    pending_by_client.pop(ws, None)
+                    continue
+                queue.append(bytes(data))
+                key = (topic, ws)
+                if key not in self._binary_draining:
+                    self._binary_draining.add(key)
+                    to_schedule.append(key)
+            if not pending_by_client:
+                self._binary_pending.pop(topic, None)
+        for drain_topic, drain_ws in to_schedule:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._drain_binary_client(drain_topic, drain_ws), self._loop)
+            except RuntimeError:
+                with self._latest_lock:
+                    self._binary_draining.discard((drain_topic, drain_ws))
 
     async def _broadcast_binary(self, topic: str, data: bytes) -> None:
         clients = list(self._topics.get(topic, ()))
@@ -232,30 +265,54 @@ class ConnectionManager:
                 self._topics[topic].discard(tasks[task])
 
     async def _drain_binary(self, topic: str) -> None:
+        """Compatibility drain for callers from before per-client queues."""
+        with self._latest_lock:
+            clients = list(self._binary_pending.get(topic, {}))
+        for ws in clients:
+            await self._drain_binary_client(topic, ws)
+
+    async def _drain_binary_client(self, topic: str, ws: WebSocket) -> None:
         pending = False
+        key = (topic, ws)
         try:
             while True:
                 with self._latest_lock:
-                    queue = self._binary_pending.get(topic)
+                    pending_by_client = self._binary_pending.get(topic)
+                    queue = pending_by_client.get(ws) if pending_by_client else None
                     item = queue.popleft() if queue else None
                     if queue is not None and not queue:
-                        self._binary_pending.pop(topic, None)
+                        pending_by_client.pop(ws, None)
+                        if not pending_by_client:
+                            self._binary_pending.pop(topic, None)
                 if item is None:
                     return
-                await self._broadcast_binary(topic, item)
+                try:
+                    await asyncio.wait_for(
+                        ws.send_bytes(item),
+                        timeout=BINARY_WAVEFORM_SEND_TIMEOUT_S,
+                    )
+                except Exception:
+                    self._topics[topic].discard(ws)
+                    return
+                # Keep a busy local socket fair to the rest of the event loop.
                 await asyncio.sleep(0)
         finally:
             with self._latest_lock:
-                self._binary_draining.discard(topic)
-                pending = bool(self._binary_pending.get(topic))
-                if pending and self._loop is not None and not self._loop.is_closed():
-                    self._binary_draining.add(topic)
-            if pending and self._loop is not None and not self._loop.is_closed():
+                self._binary_draining.discard(key)
+                pending_by_client = self._binary_pending.get(topic)
+                pending = bool(
+                    pending_by_client
+                    and ws in pending_by_client
+                    and ws in self._topics.get(topic, ())
+                )
+                if pending:
+                    self._binary_draining.add(key)
+            if pending:
                 try:
-                    asyncio.create_task(self._drain_binary(topic))
+                    asyncio.create_task(self._drain_binary_client(topic, ws))
                 except RuntimeError:
                     with self._latest_lock:
-                        self._binary_draining.discard(topic)
+                        self._binary_draining.discard(key)
 
     async def _drain_latest(self, topic: str) -> None:
         """Drain every ordered live item in FIFO order."""
