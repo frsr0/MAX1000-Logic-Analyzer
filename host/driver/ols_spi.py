@@ -50,18 +50,14 @@ READ_CHUNK  = 16384
 # their read must yield quickly so the caller can tear down and use its bounded
 # fallback.  Ordinary packet reads retain the longer 0.5 s transport timeout.
 STREAM_CHUNK_READ_TIMEOUT_S = 0.050
-# Keep exactly two MPSSE transfers in flight: one being clocked/drained and
-# one queued behind it.  This overlaps FTDI USB IN/OUT scheduling without
-# allowing the device RX queue or the Python waveform queue to become a
-# hidden live-history buffer.
-STREAM_PIPELINE_DEPTH = 2
-STREAM_PIPELINE_BACKPRESSURE_TIMEOUT_S = 0.010
-# A D2XX write is itself a USB OUT scheduling boundary.  Keep several MPSSE
-# read commands in one bounded bulk write so the FTDI can keep clocking while
-# the reader drains the corresponding IN data.  Four 64 KiB commands are
-# 256 KiB of command/data, below the practical Windows D2XX bulk-write size,
-# and represent only ~87 ms on a 30 MHz wire.
-STREAM_COMMAND_BATCH_DEPTH = 4
+# Keep a small bounded run-ahead in the FTDI transport. This lets the physical
+# reader maintain a continuous SPI clock through short Python/WebSocket
+# scheduling stalls without making the browser queue or decoder backlog grow.
+STREAM_PIPELINE_DEPTH = 32
+# Keep two bounded quanta in one D2XX write. This removes an avoidable
+# scheduling gap between 4K-byte MPSSE clock commands while the reader still
+# drains each quantum separately into the bounded handoff queue.
+STREAM_COMMAND_BATCH_DEPTH = 2
 
 
 class OLS:
@@ -722,8 +718,7 @@ class OLS:
                 # draining FTDI while a writer maintains exactly two bounded
                 # transfers in flight. This is overlap, not an unbounded
                 # producer queue: the writer cannot get ahead of the reader,
-                # and the reader fails explicitly if the caller stops
-                # consuming the two returned quanta.
+                # and the handoff queue remains finite if the caller pauses.
                 stream_cmd = (self._mpsse_clock_out(
                     bytes([0x11] * chunk_bytes)) + bytes([0x87]))
                 stream_batch = stream_cmd * STREAM_COMMAND_BATCH_DEPTH
@@ -732,8 +727,12 @@ class OLS:
                 pipeline_error: list[BaseException] = []
                 pipeline_condition = threading.Condition()
                 submitted = 0
-                completed = 0
-                pipeline_inflight_limit = STREAM_COMMAND_BATCH_DEPTH
+                received = 0
+                # Keep exactly two quanta either submitted to FTDI or already
+                # drained into the bounded handoff. The explicit batch-size
+                # check below prevents a writer wake-up from overshooting this
+                # watermark by an entire USB command batch.
+                pipeline_inflight_limit = STREAM_PIPELINE_DEPTH
                 read_timeout = max(
                     STREAM_CHUNK_READ_TIMEOUT_S,
                     chunk_bytes / max(self.speed_hz / 8, 1)
@@ -751,48 +750,55 @@ class OLS:
                     try:
                         while not pipeline_stop.is_set():
                             with pipeline_condition:
-                                while (submitted - completed
-                                       >= pipeline_inflight_limit
+                                while (submitted - received
+                                       + STREAM_COMMAND_BATCH_DEPTH
+                                       > pipeline_inflight_limit
                                        and not pipeline_stop.is_set()):
                                     pipeline_condition.wait(0.005)
                                 if pipeline_stop.is_set():
                                     return
-                                # One D2XX write contains several complete
-                                # MPSSE read commands. Account for every wire
-                                # quantum, not for the single host call, or a
-                                # new bulk write can be submitted while the
-                                # previous batch is still clocking.
+                                # Account for every wire quantum before the
+                                # write. The exact <= watermark is important:
+                                # a queued batch clocks the FPGA even before
+                                # the reader has drained its first byte.
                                 submitted += STREAM_COMMAND_BATCH_DEPTH
                             self.dev.write(stream_batch)
                     except BaseException as exc:
                         stop_pipeline(exc)
 
                 def read_pipeline() -> None:
-                    nonlocal completed
+                    nonlocal received
                     try:
                         while not pipeline_stop.is_set():
+                            with pipeline_condition:
+                                while (received >= submitted
+                                       and not pipeline_stop.is_set()):
+                                    pipeline_condition.wait(0.005)
+                                if pipeline_stop.is_set():
+                                    return
                             chunk = self._read_n(
                                 chunk_bytes, timeout=read_timeout)
                             if len(chunk) != chunk_bytes:
                                 raise RuntimeError(
                                     "continuous live stream short FTDI read "
                                     f"{len(chunk)} of {chunk_bytes} bytes")
-                            deadline = (time.monotonic()
-                                        + STREAM_PIPELINE_BACKPRESSURE_TIMEOUT_S)
+                            with pipeline_condition:
+                                received += 1
+                                pipeline_condition.notify_all()
                             while not pipeline_stop.is_set():
                                 try:
                                     chunks.put(chunk, timeout=0.002)
                                     break
                                 except Full:
-                                    if time.monotonic() >= deadline:
-                                        raise RuntimeError(
-                                            "continuous live stream consumer "
-                                            "backpressure")
+                                    # The handoff queue is deliberately
+                                    # bounded, but a slow consumer must not
+                                    # turn a temporary scheduling pause into a
+                                    # transport fault. The writer watermark is
+                                    # based on bytes already drained from FTDI,
+                                    # so this wait cannot grow the wire queue.
+                                    continue
                             if pipeline_stop.is_set():
                                 return
-                            with pipeline_condition:
-                                completed += 1
-                                pipeline_condition.notify_all()
                     except BaseException as exc:
                         stop_pipeline(exc)
 

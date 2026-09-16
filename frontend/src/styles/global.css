@@ -39,6 +39,7 @@
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
+.mil-page-host-hidden { display: none; }
 body {
   color: var(--text);
   font: 13px/1.45 Inter, "Segoe UI", Arial, sans-serif;

@@ -63,6 +63,15 @@ export default function App() {
         case 'session_created':
           refreshSessions();
           refreshStatus();
+          // A live accelerometer run creates its rolling session after the
+          // Hardware Lab card has mounted. Make that session the active
+          // waveform immediately so Capture renders the same direct stream
+          // when the user switches views.
+          if (msg.data?.id
+              && Array.isArray(msg.data.tags)
+              && msg.data.tags.includes('accelerometer')) {
+            void useApp.getState().openSession(msg.data.id);
+          }
           break;
       }
     });

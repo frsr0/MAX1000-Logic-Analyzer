@@ -102,6 +102,11 @@ LIVE_TRACE_TIMEOUT_S = 0.25
 # the generator idle.  Do not leave the UI looking at a static ring forever;
 # switch to the bounded host-burst reader after this startup grace period.
 LIVE_STREAM_WATCHDOG_S = 1.0
+# Capture can be opened immediately after Start, while the tracking worker is
+# still probing/configuring the sensor.  Wait for that worker to publish its
+# continuous-stream ownership instead of starting a second producer on the
+# shared FTDI/Bit_Engine link.
+LIVE_STREAM_STARTUP_WAIT_S = 10.0
 # The legacy capture path is retained for bitstreams without a working
 # repeating-generator attach route. Keep each fallback transaction short
 # enough that the model never waits behind a large readback.
@@ -113,7 +118,7 @@ LIVE_FALLBACK_TRACE_SAMPLES = 768
 # at one FIFO-sized quantum so the decoder never holds the physical reader
 # behind a 32K-sample batch.
 LIVE_STREAM_WINDOW_SAMPLES = 32_768
-LIVE_DIRECT_STREAM_WINDOW_SAMPLES = 16_384
+LIVE_DIRECT_STREAM_WINDOW_SAMPLES = 32_768
 # Deliver bounded waveform quanta; the browser worker decodes and publishes
 # every packet from each ordered quantum immediately.
 # Binary waveform frames no longer pay base64/JSON overhead. Keep each frame
@@ -932,6 +937,7 @@ class AccelerometerService:
             })
             raw = getattr(getattr(self.manager, "device", None), "_dev", None)
             device = getattr(self.manager, "device", None)
+            attach_to_tracking = self._wait_for_continuous_stream_start_locked(raw)
             metadata = None
             get_metadata = getattr(device, "get_metadata", None)
             if callable(get_metadata):
@@ -970,7 +976,7 @@ class AccelerometerService:
             # A running continuous tracking producer already owns the
             # adapter. Attach the session to it rather than starting a second
             # generator that would abort the first one.
-            attach_to_tracking = self._continuous_stream_active
+            direct_live = bool(getattr(raw, "supports_direct_live_stream", False))
             self._live_starting = not attach_to_tracking
             try:
                 self._live_session = session
@@ -990,9 +996,14 @@ class AccelerometerService:
                                 "using bounded host-burst fallback"),
                             "ts": self._clock(),
                         })
-                    # The ring producer may have started before this session
-                    # existed, so start persistence at attachment time.
-                    self._start_live_persister()
+                    # Direct FIFO waveform data is already published in order
+                    # to the frontend decoder. Do not start the legacy rolling
+                    # persistence worker for that path: Capture is attaching
+                    # to the existing producer, and an extra worker only
+                    # competes with its USB reader. Ring/fallback sessions
+                    # still use the coalescing persistence mirror.
+                    if not direct_live:
+                        self._start_live_persister()
                 else:
                     # The polling worker checks ``_live_session`` before each
                     # read, but that check alone cannot stop a read already in
@@ -1049,6 +1060,45 @@ class AccelerometerService:
             "session_id": session.id, "accelerometer": True, "rolling": True,
         })
         return session
+
+    def _wait_for_continuous_stream_start_locked(self, raw: Any) -> bool:
+        """Attach Capture only after the tracking stream owns the adapter.
+
+        ``start()`` reports running as soon as it schedules the worker.  The
+        worker still has to probe and configure the LIS3DH before entering
+        ``_run_live_producer``.  Starting Capture during that interval used to
+        create a second producer because ``_continuous_stream_active`` was
+        still false.  Both producers then touched the shared held-CS stream.
+
+        The caller holds ``self._lock``.  ``Condition.wait`` temporarily
+        releases it so the tracking worker can publish its ownership state.
+        """
+        if self._continuous_stream_active:
+            return True
+        continuous_capture = getattr(
+            raw, "continuous_ring_capture_with_repeating_i2c", None)
+        worker = self._worker
+        if (not callable(continuous_capture)
+                or not self._status.running
+                or worker is None
+                or not worker.is_alive()):
+            return False
+
+        deadline = time.monotonic() + LIVE_STREAM_STARTUP_WAIT_S
+        while (not self._continuous_stream_active
+               and self._status.running
+               and worker.is_alive()):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            self._poll_condition.wait(timeout=min(0.05, remaining))
+        if self._continuous_stream_active:
+            return True
+        if not self._status.running or not worker.is_alive():
+            raise HardwareError(
+                "Accelerometer live stream failed during startup")
+        raise HardwareError(
+            "Accelerometer live stream is still starting; retry Capture")
 
     def stop_live_capture(self) -> bool:
         """Stop appending to the accelerometer rolling session."""
@@ -1213,6 +1263,7 @@ class AccelerometerService:
             if use_continuous_stream:
                 with self._lock:
                     self._continuous_stream_active = True
+                    self._poll_condition.notify_all()
                 try:
                     self._run_live_producer(
                         adapter, raw, address, stop_evt, None, decode_config)
@@ -1656,7 +1707,8 @@ class AccelerometerService:
                 # publish websocket work. Start the coalescing persister
                 # before consuming the held-CS stream so those operations do
                 # not block the physical sample reader.
-                self._start_live_persister()
+                if not direct_capable:
+                    self._start_live_persister()
                 # The stream uses the raw driver directly, while the normal
                 # adapter seams serialize through ``adapter._lock``. Hold
                 # that same lock for the complete producer lifetime so a
@@ -2345,6 +2397,14 @@ class AccelerometerService:
                 if (session is None or store is None
                         or not self._live_persist_dirty):
                     if stop_evt.is_set():
+                        return
+                    # A direct FIFO session does not use the persistence
+                    # mirror: its ordered waveform is published straight to
+                    # the frontend decoder. Do not turn that intentionally
+                    # idle worker into a busy loop while it waits for a
+                    # future fallback append. Spinning here competes with
+                    # the USB reader for the GIL and can fill the FPGA FIFO.
+                    if stop_evt.wait(0.05):
                         return
                     continue
                 settings = self._live_settings

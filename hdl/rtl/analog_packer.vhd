@@ -99,7 +99,14 @@ architecture rtl of analog_packer is
   signal anc_lat  : anchor_array := (others => (others => '0'));
   signal acc      : unsigned(ACC_W-1 downto 0) := (others => '0');
   signal held     : natural range 0 to 14 := 0;                        -- bits queued in acc
-  signal pcount   : natural range 0 to BLOCK_SAMPLES := 0;             -- reused across phases
+  -- Keep the phase-local indexes separate.  Reusing one wide counter for
+  -- fill, anchor selection, and payload replay made Quartus build a large
+  -- state-dependent mux around the 200 MHz counter feedback path.  It also
+  -- left the fill index at the final payload slot after DRAIN, preventing a
+  -- second packed block from starting at buf(0).
+  signal fill_count   : natural range 0 to BLOCK_SAMPLES-1 := 0;
+  signal anchor_count : unsigned(1 downto 0) := (others => '0');
+  signal pack_count   : natural range 0 to BLOCK_SAMPLES-1 := 0;
 
   -- LOAD -> SHIFT -> ACC pipeline registers
   signal sample_r : unsigned(10 downto 0) := (others => '0'); -- registered buffer read
@@ -110,7 +117,7 @@ architecture rtl of analog_packer is
   signal anchor_word_r : std_logic_vector(15 downto 0) := (others => '0');
   signal sample_hold_r : unsigned(10 downto 0) := (others => '0');    -- extra register stage for RAM output
   signal pack_last_r : std_logic := '0';                              -- latched end-of-block flag
-  signal pack_commit_r : std_logic := '0';                            -- advance pcount/state next cycle
+  signal pack_commit_r : std_logic := '0';                            -- advance pack_count/state next cycle
 
   signal out_valid_r : std_logic := '0';
   signal pending_data_r  : std_logic_vector(15 downto 0) := (others => '0');
@@ -131,7 +138,9 @@ begin
       if rst = '1' then
         state     <= FILL;
         held      <= 0;
-        pcount    <= 0;
+        fill_count   <= 0;
+        anchor_count <= (others => '0');
+        pack_count   <= 0;
         acc       <= (others => '0');
         out_valid_r <= '0';
         pending_valid_r <= '0';
@@ -153,15 +162,15 @@ begin
         case state is
 
           -- FILL: shift each delta into the buffer. block_done arrives with the
-          -- last (BLOCK_SAMPLES-th) delta, which is buffered at pcount.
+          -- last (BLOCK_SAMPLES-th) delta, which is buffered at fill_count.
           when FILL =>
             if delta_valid = '1' then
-              buf(pcount) <= delta_in;
+              buf(fill_count) <= delta_in;
               if block_done = '1' and anchor_valid = '1' then
                 assert unsigned(block_width) <= MAX_WIDTH
                   report "analog_packer: block_width exceeds MAX_WIDTH"
                   severity error;
-                assert pcount = BLOCK_SAMPLES - 1
+                assert fill_count = BLOCK_SAMPLES - 1
                   report "analog_packer: block_done before BLOCK_SAMPLES buffered"
                   severity error;
                 w_lat  <= unsigned(block_width);
@@ -170,11 +179,12 @@ begin
                 anc_lat(2) <= anchor_ch2;
                 anc_lat(3) <= anchor_ch3;
                 held   <= 0;
-                pcount <= 0;
+                fill_count   <= 0;
+                anchor_count <= (others => '0');
                 acc    <= (others => '0');
                 state  <= EMIT_HEADER;
-              elsif pcount < BLOCK_SAMPLES - 1 then
-                pcount <= pcount + 1;
+              elsif fill_count < BLOCK_SAMPLES - 1 then
+                fill_count <= fill_count + 1;
               end if;
             end if;
 
@@ -190,25 +200,25 @@ begin
             end if;
 
           -- Select the next anchor in its own cycle.  Keeping the variable
-          -- anc_lat(pcount) mux off the output-register edge removes the
-          -- pcount -> out_data timing path in the 200 MHz FAST_CLK domain.
+          -- Keep the anchor-array mux off the output-register edge so the
+          -- anchor index does not sit on the 200 MHz output-data path.
           when EMIT_ANCHOR_LOAD =>
-            anchor_word_r <= "0000" & anc_lat(pcount);
+            anchor_word_r <= "0000" & anc_lat(to_integer(anchor_count));
             state <= EMIT_ANCHOR;
 
           when EMIT_ANCHOR =>
             if pending_valid_r = '0' then
               pending_data_r <= anchor_word_r;
               pending_valid_r <= '1';
-              if pcount = 3 then
-                pcount <= 0;
+              if anchor_count = "11" then
+                pack_count <= 0;
                 if w_lat = 0 then
                   state <= FILL;             -- flat block: anchors only after header
                 else
                   state <= PACK_LOAD;
                 end if;
               else
-                pcount <= pcount + 1;
+                anchor_count <= anchor_count + 1;
                 state <= EMIT_ANCHOR_LOAD;
               end if;
             end if;
@@ -218,9 +228,9 @@ begin
           -- output plus mask cone from landing on chunk_r in one fast_clk cycle.
           when PACK_LOAD =>
             wi      := to_integer(w_lat);
-            sample_r <= unsigned(buf(pcount));
+            sample_r <= unsigned(buf(pack_count));
             hs_r    <= held;
-            if pcount = BLOCK_SAMPLES - 1 then
+            if pack_count = BLOCK_SAMPLES - 1 then
               pack_last_r <= '1';
             else
               pack_last_r <= '0';
@@ -274,7 +284,7 @@ begin
               if pack_last_r = '1' then
                 state <= DRAIN;
               else
-                pcount <= pcount + 1;
+                pack_count <= pack_count + 1;
                 state  <= PACK_LOAD;
               end if;
             end if;
@@ -285,7 +295,8 @@ begin
               if pending_valid_r = '0' then
                 pending_data_r <= '0' & std_logic_vector(acc(14 downto 0));
                 pending_valid_r <= '1';
-                held <= 0;
+                held      <= 0;
+                fill_count <= 0;
                 state <= FILL;
               end if;
             else

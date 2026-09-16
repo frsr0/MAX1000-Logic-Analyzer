@@ -126,7 +126,13 @@ if FRONTEND_DIST.exists():
         candidate = FRONTEND_DIST / path
         if path and candidate.is_file():
             return FileResponse(candidate)
-        return FileResponse(FRONTEND_DIST / "index.html")
+        # Hashed assets are cacheable, but the SPA entry point must always be
+        # revalidated. Otherwise a browser can retain an older index that
+        # points at a worker bundle already removed by the next build.
+        return FileResponse(
+            FRONTEND_DIST / "index.html",
+            headers={"Cache-Control": "no-store"},
+        )
 else:
     @app.get("/", include_in_schema=False)
     async def root():

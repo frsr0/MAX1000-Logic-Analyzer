@@ -74,10 +74,10 @@ MIXED_COMPRESSED_BLOCK_WORDS = MIXED_COMPRESSED_BLOCK_FRAMES * 7
 MIXED_ADC_LANE_DELTA8 = 0
 MIXED_ADC_LANE_RAW12 = 1
 # The direct FIFO reader must absorb only a short handoff pause while the
-# backend consumes the next 16K-sample quantum. Keep this finite: it is not a
+# backend consumes the next wire quantum. Keep this finite: it is not a
 # hidden live-history queue, and it must not turn a transport stall into
 # seconds of pose latency before the FPGA reports an overrun.
-DIRECT_LIVE_DECODE_QUEUE_CHUNKS = 4
+DIRECT_LIVE_DECODE_QUEUE_CHUNKS = 8
 
 
 def direct_live_capture_divider(sample_clk_hz: float,
@@ -97,7 +97,9 @@ def direct_live_capture_divider(sample_clk_hz: float,
 
 def _decode_packed_live_frames(wire_chunk: bytes,
                                pending: bytearray,
-                               sample_bits: int = 3) -> bytes:
+                               sample_bits: int = 3,
+                               started: bool = False
+                               ) -> tuple[bytes, bool]:
     """Decode fixed A5 + packed live waveform frames efficiently.
 
     A5 is a frame marker followed by a fixed packed payload for eight
@@ -113,8 +115,8 @@ def _decode_packed_live_frames(wire_chunk: bytes,
     pending.extend(wire_chunk)
     decoded = bytearray()
     data = bytes(pending)
+    wire = np.frombuffer(data, dtype=np.uint8)
     pos = 0
-    payload = bytearray()
 
     def overflow(context: bytes) -> RuntimeError:
         return RuntimeError(
@@ -123,29 +125,58 @@ def _decode_packed_live_frames(wire_chunk: bytes,
 
     # Idle bytes may occur between records. Parse from one marker to the next
     # without ever treating a marker-like value inside a fixed payload as a
-    # new record. The previous implementation repeatedly reshaped the whole
-    # pending buffer at each idle run, making a 64 KiB FTDI quantum take over
-    # 100 ms to decode on the live path.
-    while True:
-        marker = data.find(b"\xA5", pos)
-        if marker < 0:
-            tail = data[pos:]
-            if b"\xC3" in tail:
-                raise overflow(tail)
-            pos = len(data)
-            break
-        prefix = data[pos:marker]
-        if b"\xC3" in prefix:
-            raise overflow(prefix)
-        if len(data) - marker < frame_bytes:
+    # new record. Find marker candidates in one vectorised pass, then retain
+    # only candidates at or after the previous fixed-width frame. The old
+    # bytearray/find/extend loop was the dominant cost on the held-CS reader.
+    marker_candidates = np.flatnonzero(wire == 0xA5)
+    if not started:
+        # The first clocks after the stream ACK can return the previous MISO
+        # byte while the FPGA accumulates its first packed group. Ignore that
+        # pre-sync region; C3 is an overflow marker only after A5 framing has
+        # established the stream.
+        if marker_candidates.size == 0:
+            pending.clear()
+            return b"", False
+        pos = int(marker_candidates[0])
+        started = True
+    overflow_candidates = np.flatnonzero(wire == 0xC3)
+    overflow_index = 0
+    selected: list[int] = []
+    candidate_index = 0
+    while candidate_index < marker_candidates.size:
+        marker = int(marker_candidates[candidate_index])
+        candidate_index += 1
+        if marker < pos:
+            continue
+        while (overflow_index < overflow_candidates.size
+               and int(overflow_candidates[overflow_index]) < pos):
+            overflow_index += 1
+        if (overflow_index < overflow_candidates.size
+                and int(overflow_candidates[overflow_index]) < marker):
+            overflow_at = int(overflow_candidates[overflow_index])
+            raise overflow(bytes(wire[max(0, overflow_at - 32):
+                                      min(wire.size, overflow_at + 32)]))
+        if wire.size - marker < frame_bytes:
             pos = marker
             break
-        payload.extend(data[marker + 1:marker + frame_bytes])
+        selected.append(marker)
         pos = marker + frame_bytes
+    else:
+        while (overflow_index < overflow_candidates.size
+               and int(overflow_candidates[overflow_index]) < pos):
+            overflow_index += 1
+        if overflow_index < overflow_candidates.size:
+            raise overflow(bytes(wire[max(0, pos - 32):]))
+        pos = wire.size
 
-    if payload:
-        frames = np.frombuffer(bytes(payload), dtype=np.uint8).reshape(
-            -1, group_bytes).astype(np.uint32, copy=False)
+    if selected:
+        markers = np.asarray(selected, dtype=np.intp)
+        payload = np.empty(len(selected) * group_bytes, dtype=np.uint8)
+        for byte_index in range(group_bytes):
+            payload[byte_index::group_bytes] = wire[
+                markers + 1 + byte_index]
+        frames = payload.reshape(-1, group_bytes).astype(
+            np.uint32, copy=False)
         packed = np.zeros(frames.shape[0], dtype=np.uint32)
         for byte_idx in range(group_bytes):
             packed |= frames[:, byte_idx] << (byte_idx * 8)
@@ -156,8 +187,8 @@ def _decode_packed_live_frames(wire_chunk: bytes,
             "<u2", copy=False).tobytes())
 
     pending.clear()
-    pending.extend(data[pos:])
-    return bytes(decoded)
+    pending.extend(wire[pos:].tobytes())
+    return bytes(decoded), started
 
 
 def _decode_sparse_packed_live_frames(wire_chunk: bytes,
@@ -3299,6 +3330,10 @@ class OLSDeviceSPI:
                 # a payload and can safely preserve payload values such as
                 # A5, 00, and C3. This removes the extra A0/B0 nibble tags
                 # and leaves 25% more wire/CPU margin for sustained 2 MS/s.
+                # Use fixed-width A5 + packed payload framing. The decoder
+                # treats C3 as an overflow marker only outside a complete
+                # fixed-width frame, so a valid C3 payload byte is preserved
+                # without paying the extra A0/B0 wire and FPGA cost.
                 tagged_packed = False
                 sparse_rle = False
                 sparse_packed = False
@@ -3373,9 +3408,12 @@ class OLSDeviceSPI:
                                             requested_sparse_sample_bits))
                                     decoded.extend(data)
                                 else:
-                                    decoded.extend(_decode_packed_live_frames(
-                                        wire_chunk, packed_pending,
-                                        requested_sparse_sample_bits))
+                                    data, packed_started = (
+                                        _decode_packed_live_frames(
+                                            wire_chunk, packed_pending,
+                                            requested_sparse_sample_bits,
+                                            packed_started))
+                                    decoded.extend(data)
                             else:
                                 for token in wire_chunk:
                                     if token & 0x08:

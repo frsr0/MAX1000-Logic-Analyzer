@@ -78,6 +78,33 @@ def test_lis3dh_xyz_decode_uses_mode_and_full_scale_sensitivity():
             0.016, 0.016, 0.016)
 
 
+def test_idle_live_persister_waits_instead_of_spinning():
+    """An attached direct stream must not burn the CPU without dirty data."""
+    service = AccelerometerService(FakeManager(FakeRaw()))
+
+    class StopProbe:
+        def __init__(self):
+            self.stopped = False
+            self.wait_calls = 0
+
+        def is_set(self):
+            return self.stopped
+
+        def wait(self, _timeout):
+            self.wait_calls += 1
+            self.stopped = True
+            return True
+
+    stop = StopProbe()
+    wake = threading.Event()
+    worker = threading.Thread(
+        target=service._run_live_persister, args=(stop, wake), daemon=True)
+    worker.start()
+    worker.join(timeout=0.5)
+    assert not worker.is_alive()
+    assert stop.wait_calls == 1
+
+
 class FakeRaw:
     def __init__(self, payload: bytes = b"\x10\x00\xf0\xff\x20\x00"):
         self.payload = payload
@@ -878,6 +905,65 @@ def test_live_start_waits_for_inflight_poll_claim(tmp_path):
         service.stop_live_capture()
         with service._lock:
             service._poll_condition.notify_all()
+
+
+def test_live_capture_attaches_during_continuous_stream_startup(tmp_path):
+    """Capture must not launch a second producer during tracking startup."""
+
+    class StartingRingRaw(FakeRaw):
+        supports_direct_live_stream = True
+
+        def __init__(self):
+            super().__init__()
+            self.configure_started = threading.Event()
+            self.configure_release = threading.Event()
+            self.producer_started = threading.Event()
+            self.producer_calls = 0
+
+        def accel_write_i2c(self, reg, value, dev_addr=0x19):
+            if reg == accelerometer_module.LIS3DH_CTRL_REG1:
+                self.configure_started.set()
+                assert self.configure_release.wait(1.0)
+            return super().accel_write_i2c(reg, value, dev_addr)
+
+        def continuous_ring_capture_with_repeating_i2c(self, **kwargs):
+            self.producer_calls += 1
+            self.producer_started.set()
+            self.first_sample.set()
+            trace = _synthetic_lis3dh_i2c_trace(0x18).astype("<u2").tobytes()
+            stop_evt = kwargs["stop_evt"]
+            while not stop_evt.is_set():
+                yield trace
+                stop_evt.wait(0.001)
+
+    raw = StartingRingRaw()
+    service = AccelerometerService(FakeManager(raw), sample_rate_hz=400)
+    assert service.start()["running"] is True
+    assert raw.configure_started.wait(1.0)
+    store = SessionStore(tmp_path)
+    result = []
+    errors = []
+    starter = threading.Thread(
+        target=lambda: result.append(service.start_live_capture(
+            CaptureSettings(mode="rolling", auto_rearm=True, num_samples=64),
+            "startup attach", store)),
+    )
+
+    starter.start()
+    time.sleep(0.05)
+    assert not result
+    assert not errors
+    raw.configure_release.set()
+    starter.join(timeout=2.0)
+    try:
+        assert not starter.is_alive()
+        assert len(result) == 1
+        assert raw.producer_started.wait(1.0)
+        assert raw.producer_calls == 1
+        assert service._live_attached_to_tracking is True
+    finally:
+        service.stop_live_capture()
+        service.stop(wait_timeout=1.0)
 
 
 def test_live_capture_falls_back_when_ring_is_static(tmp_path, monkeypatch):

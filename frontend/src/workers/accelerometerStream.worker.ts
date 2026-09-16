@@ -17,7 +17,12 @@ let decoderConfigKey = '';
 let lastWaveformSequence: number | null = null;
 let decodedSamples = 0;
 let lastTimestamp = 0;
-const LIVE_VIEW_POST_INTERVAL_MS = 16;
+const LIVE_POSE_POST_INTERVAL_MS = 16;
+// The decoder consumes every waveform packet immediately, but the Capture
+// canvas only needs a fresh paint window at display cadence. Keeping this
+// mailbox a little below 30 fps prevents a 65K-sample canvas redraw from
+// monopolising the browser's websocket receive path at multi-kHz ODRs.
+const LIVE_WAVEFORM_POST_INTERVAL_MS = 32;
 let pendingWaveformChunk: {
   sequence: number;
   sample_rate: number;
@@ -25,12 +30,17 @@ let pendingWaveformChunk: {
   samples_values: Uint16Array;
 } | null = null;
 let waveformPostTimer: ReturnType<typeof setTimeout> | null = null;
+let waveformPostInFlight = false;
+let pendingPoseMessage: Record<string, any> | null = null;
+let posePostTimer: ReturnType<typeof setTimeout> | null = null;
 
 function postLatestWaveformChunk(): void {
   waveformPostTimer = null;
+  if (waveformPostInFlight) return;
   const pending = pendingWaveformChunk;
   pendingWaveformChunk = null;
   if (!pending) return;
+  waveformPostInFlight = true;
   (self.postMessage as (message: unknown, transfer: Transferable[]) => void)({
     type: 'accelerometer_waveform_chunk',
     data: pending,
@@ -47,9 +57,27 @@ function queueWaveformChunk(chunk: {
   // needs the newest paint payload; keeping older display payloads queued
   // makes the browser a second waveform backlog and can starve the socket.
   pendingWaveformChunk = chunk;
-  if (waveformPostTimer === null) {
+  if (waveformPostTimer === null && !waveformPostInFlight) {
     waveformPostTimer = setTimeout(
-      postLatestWaveformChunk, LIVE_VIEW_POST_INTERVAL_MS);
+      postLatestWaveformChunk, LIVE_WAVEFORM_POST_INTERVAL_MS);
+  }
+}
+
+function postLatestPose(): void {
+  posePostTimer = null;
+  const pending = pendingPoseMessage;
+  pendingPoseMessage = null;
+  if (pending) self.postMessage(pending);
+}
+
+function queuePoseMessage(message: Record<string, any>): void {
+  // The worker has already accepted and decoded every packet in order. The
+  // main thread only needs the newest pose target; queueing thousands of
+  // individual React/DOM messages per second eventually starves the browser
+  // websocket receive path and makes the FPGA FIFO overrun upstream.
+  pendingPoseMessage = message;
+  if (posePostTimer === null) {
+    posePostTimer = setTimeout(postLatestPose, LIVE_POSE_POST_INTERVAL_MS);
   }
 }
 
@@ -94,16 +122,15 @@ function decodeWaveform(message: any) {
   const sourceIndex = Number.isFinite(Number(data.source_index))
     ? Number(data.source_index) : null;
   const decoded = decoder.feed(samples, sourceIndex);
-  // The decoder and live waveform view must consume the same physical
-  // ordered chunk.  Forward a copy after decoding so the main thread does
-  // not open a second WebSocket (and therefore does not make the backend
-  // transmit/decode the 2 MHz stream twice).
-  const waveformSamples = samples.slice();
+  // The decoder and live waveform view consume the same physical ordered
+  // chunk. The binary socket owns a fresh ArrayBuffer for each message, so
+  // retain that view and transfer it at the next paint tick instead of
+  // allocating a second full copy for every 2 MHz packet.
   queueWaveformChunk({
     sequence,
     sample_rate: Number(data.sample_rate),
     sample_count: Number(data.sample_count),
-    samples_values: waveformSamples,
+    samples_values: samples,
   });
   const sampleRate = Number(data.sample_rate);
   const sampleCount = Number(data.sample_count);
@@ -123,7 +150,7 @@ function decodeWaveform(message: any) {
     // A decoded packet is the pose update. Publish every packet in decoder
     // order; any display-frame throttling belongs to painting, never to the
     // waveform/decoder seam.
-    self.postMessage({
+    queuePoseMessage({
       type: 'accelerometer_sample',
       ts: message.ts,
       data: {
@@ -183,6 +210,31 @@ socket.subscribeBinary((buffer) => {
     const samples = new Uint16Array(buffer, payloadStart);
     decodeWaveform({ data: { ...header, samples_values: samples } });
   } catch { /* ignore malformed binary frames */ }
+});
+
+self.addEventListener('message', (event: MessageEvent) => {
+  if (event.data?.type === 'accelerometer_waveform_ack') {
+    waveformPostInFlight = false;
+    if (pendingWaveformChunk && waveformPostTimer === null) {
+      waveformPostTimer = setTimeout(
+        postLatestWaveformChunk, LIVE_WAVEFORM_POST_INTERVAL_MS);
+    }
+    return;
+  }
+  if (event.data?.type !== 'shutdown') return;
+  if (waveformPostTimer !== null) {
+    clearTimeout(waveformPostTimer);
+    waveformPostTimer = null;
+  }
+  if (posePostTimer !== null) {
+    clearTimeout(posePostTimer);
+    posePostTimer = null;
+  }
+  pendingWaveformChunk = null;
+  waveformPostInFlight = false;
+  pendingPoseMessage = null;
+  socket.close();
+  textSocket.close();
 });
 
 self.addEventListener('unload', () => {

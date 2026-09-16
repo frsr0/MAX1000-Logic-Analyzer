@@ -568,15 +568,23 @@ export function MilAccelerometerCard() {
         );
         worker.onmessage = (event: MessageEvent<Record<string, any>>) => {
           if (event.data.type === 'accelerometer_waveform_chunk') {
-            const session = activeSessionRef.current;
-            const data = event.data.data;
-            const samples = data?.samples_values;
-            if (session?.tags.includes('accelerometer')
-                && samples instanceof Uint16Array) {
-              waveformView.setLiveRawActive(session.id, true);
-              waveformView.appendLiveRaw(
-                session.id, samples, Number(data.sample_rate));
-              hasFrontendWaveformSample.current = true;
+            try {
+              const session = activeSessionRef.current;
+              const data = event.data.data;
+              const samples = data?.samples_values;
+              if (session?.tags.includes('accelerometer')
+                  && samples instanceof Uint16Array) {
+                waveformView.setLiveRawActive(session.id, true);
+                waveformView.appendLiveRaw(
+                  session.id, samples, Number(data.sample_rate));
+                hasFrontendWaveformSample.current = true;
+              }
+            } finally {
+              // The worker keeps decoding the physical stream independently;
+              // this acknowledgement gates only the UI paint mailbox. It
+              // prevents a slow Capture canvas from accumulating transferred
+              // 32K/65K-sample buffers in the main-thread message queue.
+              worker?.postMessage({ type: 'accelerometer_waveform_ack' });
             }
             return;
           }
@@ -600,6 +608,7 @@ export function MilAccelerometerCard() {
     }
     return () => {
       alive = false;
+      worker?.postMessage?.({ type: 'shutdown' });
       worker?.terminate();
       unsubscribe?.();
       socket?.close();

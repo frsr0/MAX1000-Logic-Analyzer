@@ -1,6 +1,7 @@
 """Strict transport, discovery, timeout, and cleanup tests for ``OLS``."""
 
 import sys
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -288,8 +289,33 @@ def test_chunk_generator_overlap_mode_drains_one_full_quantum_before_next_write(
     # history buffer.
     writes = [call.args[0] for call in instance.dev.write.call_args_list]
     assert len(writes) >= 3
+    # The writer must submit no more quanta than the bounded handoff queue
+    # can retain; a larger burst causes false consumer-backpressure faults.
+    assert writes[1].count(b"\x31") == ols_spi.STREAM_COMMAND_BATCH_DEPTH
+    assert ols_spi.STREAM_COMMAND_BATCH_DEPTH == 1
     assert instance._read_n.call_args_list[0].args[0] == 11
     assert instance._read_n.call_args_list[1].args[0] == 64
+
+
+def test_chunk_generator_overlap_mode_does_not_fail_when_consumer_pauses():
+    stop = SimpleNamespace(value=False, is_set=lambda: stop.value)
+    instance = _ols_with()
+    instance._drain = MagicMock()
+    instance._read_n = MagicMock(side_effect=lambda n, timeout: b"x" * n)
+    gen = instance.stream_command_chunks(
+        b"request", ack_pad=4, chunk_bytes=64, stop_evt=stop,
+        overlap_io=True)
+
+    assert next(gen) == b"x" * 11
+    assert next(gen) == b"x" * 64
+    # The consumer is deliberately slower than the USB reader. The bounded
+    # transport must stop submitting quanta at the consumed watermark rather
+    # than raising false backpressure while the two handoff slots are full.
+    time.sleep(0.025)
+    assert next(gen) == b"x" * 64
+    stop.value = True
+    with pytest.raises(StopIteration):
+        next(gen)
 
 
 def test_stream_payload_returns_empty_if_reader_does_not_finish(monkeypatch):

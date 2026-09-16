@@ -78,6 +78,7 @@ def test_spa_returns_existing_asset_or_index(monkeypatch, tmp_path):
     fallback = asyncio.run(main.spa("missing"))
     assert Path(existing.path) == asset
     assert Path(fallback.path) == index
+    assert fallback.headers["cache-control"] == "no-store"
 
 
 def test_main_module_loads_api_fallback_when_optional_mcp_import_fails(monkeypatch):

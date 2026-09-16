@@ -80,7 +80,8 @@ export class WaveformView {
   }
 
   async load(sessionId: string, numSamples: number, sampleRate: number,
-             trigSample: number | null, channels?: ChannelInfo[]) {
+             trigSample: number | null, channels?: ChannelInfo[],
+             liveSession = false) {
     const loadGen = ++this.loadGen;
     this.sessionId = sessionId;
     this.numSamples = numSamples;
@@ -107,6 +108,14 @@ export class WaveformView {
     }
     this.error = null;
     this.notify();
+    // A physical accelerometer live session is created before its first
+    // waveform packet, so it deliberately has no persisted samples yet.
+    // Do not issue overview/window/annotation reads for that empty rolling
+    // session: those reads compete with the direct waveform transport at
+    // the exact moment Capture is opened. The worker remains the sole raw
+    // waveform/decoder source and will populate the paint window as packets
+    // arrive.
+    if (liveSession) return;
     if (!sessionId || !numSamples) return;
     try {
       const overview = await this.workerClient.fetchOverview(sessionId);

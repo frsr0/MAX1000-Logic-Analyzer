@@ -756,6 +756,9 @@ begin
   -- Speed mode (200 MHz): 3-stage pipeline, no divider, no flush
   -- ============================================================
   gen_fast_speed : if FAST_SPEED generate
+    -- Direct waveform transport runs at 2 MS/s, so its divider fits in the
+    -- timing-clean 16-bit fast counter. The normal/ring path retains the
+    -- wider divider implementation in its non-fast clock domain.
     constant FAST_MAX_RATE_DIV : natural := 65535;
     signal sample_word_r  : std_logic_vector(Channels-1 downto 0) := (others => '0');
     signal capture_en_r   : std_logic := '0';

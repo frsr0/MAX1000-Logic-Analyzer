@@ -182,6 +182,53 @@ function drawDigitalRow(ctx: CanvasRenderingContext2D, view: WaveformView,
     ctx.beginPath();
     let prevY: number | null = null;
     const n = arr.length;
+    const first = Math.max(0, Math.floor(view.start - h.start));
+    const last = Math.min(n, Math.ceil(view.end - h.start));
+    const visible = Math.max(0, last - first);
+    const pixelWidth = Math.max(1, width - layout.labelWidth);
+    // A live 2 MHz window can contain tens of thousands of samples while the
+    // canvas has only about a thousand columns. Preserve the exact waveform
+    // in the worker, but aggregate each screen bucket here so the Capture
+    // renderer does not issue one path operation per hidden sample.
+    if (visible > pixelWidth * 4) {
+      const valueAt = (index: number) => isDerived
+        ? (arr as Uint8Array)[index]
+        : digitalBit(arr as Uint16Array, index, bit);
+      let previousLevel: number | null = null;
+      for (let px = 0; px < pixelWidth; px += 1) {
+        const i0 = first + Math.floor(px * visible / pixelWidth);
+        const i1 = Math.min(last,
+          first + Math.max(1, Math.floor((px + 1) * visible / pixelWidth)));
+        let and = 1;
+        let or = 0;
+        for (let i = i0; i < i1; i += 1) {
+          const value = valueAt(i);
+          and &= value;
+          or |= value;
+        }
+        const x = layout.labelWidth + px;
+        if (and === or) {
+          const level = and;
+          const y = level ? yHi : yLo;
+          if (previousLevel === null) ctx.moveTo(x, y);
+          else if (level !== previousLevel) {
+            ctx.lineTo(x, previousLevel ? yHi : yLo);
+            ctx.lineTo(x, y);
+          }
+          ctx.lineTo(x + 1, y);
+          previousLevel = level;
+        } else {
+          // At least one transition is inside this pixel bucket. Draw the
+          // full vertical range so a narrow pulse remains visible.
+          if (previousLevel === null) ctx.moveTo(x, yLo);
+          ctx.lineTo(x, yHi);
+          ctx.lineTo(x + 1, yLo);
+          previousLevel = 0;
+        }
+      }
+      ctx.stroke();
+      return;
+    }
     for (let i = 0; i < n; i++) {
       const sample = h.start + i;
       const x = sampleToX(view, layout, width, sample);

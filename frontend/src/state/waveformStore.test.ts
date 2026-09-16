@@ -33,6 +33,14 @@ it('does not publish an old viewport while a new session is opening', async () =
   expect(view.payload?.header.session_id).toBe('current');
   expect(view.loading).toBe(false);
 });
+
+it('does not fetch persisted waveform data for an empty accelerometer live session', async () => {
+  const view = new WaveformView();
+  await view.load('live', 0, 2_000_000, null, [], true);
+  expect(ControlledWorker.instances).toHaveLength(0);
+  expect(view.sessionId).toBe('live');
+  expect(view.payload).toBeNull();
+});
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 it('keeps the newest session overview when an earlier load finishes late', async () => {

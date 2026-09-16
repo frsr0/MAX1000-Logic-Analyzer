@@ -162,7 +162,21 @@ export function AppShell() {
           {page === 'sessions' && <SessionsPage />}
           {page === 'device' && <DevicePage />}
           {page === 'generator' && <GeneratorPage />}
-          {page === 'mil' && <MachineInLoopPage />}
+          {/*
+           * The MIL card owns the direct waveform worker. Keep that owner
+           * mounted while another page is visible: switching to Capture is
+           * a view change, not a request to stop the accelerometer stream.
+           * The worker continues to decode the ordered waveform into the
+           * shared waveform view, which is what Capture renders.
+           */}
+          <div
+            className={page === 'mil'
+              ? 'mil-page-host'
+              : 'mil-page-host mil-page-host-hidden'}
+            aria-hidden={page !== 'mil'}
+          >
+            <MachineInLoopPage />
+          </div>
           {page === 'diagnostics' && <DiagnosticsPage />}
         </main>
         <footer className="statusbar">

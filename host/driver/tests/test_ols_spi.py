@@ -21,8 +21,12 @@ def test_decode_packed_live_frames_batches_and_reassembles_usb_chunks():
     pending = bytearray()
     first = frame(range(8))
     second = frame(reversed(range(8)))
-    assert _decode_packed_live_frames(b"\x00\x00" + first[:2], pending) == b""
-    decoded = _decode_packed_live_frames(first[2:] + second, pending)
+    decoded, started = _decode_packed_live_frames(
+        b"\x00\x00" + first[:2], pending)
+    assert decoded == b""
+    assert started is True
+    decoded, started = _decode_packed_live_frames(first[2:] + second, pending,
+                                                  started=started)
     expected = bytes().join(
         struct.pack("<H", (sample & 0x07) << 13)
         for sample in list(range(8)) + list(reversed(range(8)))
@@ -32,12 +36,17 @@ def test_decode_packed_live_frames_batches_and_reassembles_usb_chunks():
 
 
 def test_decode_packed_live_frames_rejects_overflow_marker_outside_frame():
+    pending = bytearray()
+    decoded, started = _decode_packed_live_frames(b"\xC3", pending)
+    assert decoded == b""
+    assert started is False
     with pytest.raises(RuntimeError, match="FIFO overflow"):
-        _decode_packed_live_frames(b"\xC3", bytearray())
+        _decode_packed_live_frames(b"\xA5\x00\x00\x00\xC3", pending,
+                                   started=started)
 
 
 def test_decode_packed_live_frames_keeps_marker_like_payload_bytes_in_frame():
-    decoded = _decode_packed_live_frames(
+    decoded, _started = _decode_packed_live_frames(
         b"\xA5\x55\xA5", bytearray(), sample_bits=2)
     expected = b"".join(struct.pack("<H", sample << 13)
                          for sample in [1, 1, 1, 1, 1, 1, 2, 2])
@@ -47,7 +56,8 @@ def test_decode_packed_live_frames_keeps_marker_like_payload_bytes_in_frame():
 def test_decode_packed_live_frames_skips_idle_runs_without_rescanning_frames():
     pending = bytearray()
     wire = b"\xA5\x55\xA5" + b"\x00" * 19 + b"\xA5\xC3\x00"
-    decoded = _decode_packed_live_frames(wire, pending, sample_bits=2)
+    decoded, _started = _decode_packed_live_frames(
+        wire, pending, sample_bits=2)
     expected = b"".join(struct.pack("<H", sample << 13) for sample in (
         [1] * 6 + [2] * 2 + [3, 0, 0, 3, 0, 0, 0, 0]))
     assert decoded == expected

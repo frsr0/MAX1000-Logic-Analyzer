@@ -16,7 +16,7 @@ set_global_assignment -name LAST_QUARTUS_VERSION "25.1std.0 Lite Edition"
 set_global_assignment -name FAMILY "MAX 10"
 set_global_assignment -name DEVICE 10M08SAU169C8G
 set_global_assignment -name TOP_LEVEL_ENTITY OLS_Logic_Analyzer_wrapper
-set_global_assignment -name SEED 10
+set_global_assignment -name SEED 12
 set_global_assignment -name INTERNAL_FLASH_UPDATE_MODE "SINGLE IMAGE WITH ERAM"
 set_global_assignment -name OPTIMIZE_MULTI_CORNER_TIMING ON
 
@@ -27,10 +27,10 @@ set_global_assignment -name FITTER_EFFORT "STANDARD FIT"
 # synthesis area bloat in the 100 MHz command/readout domain (>1.1 ns
 # slack there) so the full mixed-signal build still fits.
 set_global_assignment -name OPTIMIZATION_MODE "BALANCED"
-# Physical synthesis OFF: register duplication/retiming inflate area, and
-# historical sweeps showed physical synthesis ERODED clk[1]/clk[2] slack
-# at this density (placement noise dominates).
-set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC OFF
+# Physical synthesis is enabled for both profiles.  The full image now
+# fits after the live CDC queue and MSO packer counter were reduced, and
+# this is required to close the 200 MHz capture path.
+set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC ON
 set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION OFF
 set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING OFF
 # Fast domains (200 MHz capture, 167 MHz SDRAM): keep the critical blocks
@@ -38,7 +38,6 @@ set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING OFF
 set_global_assignment -name OPTIMIZATION_TECHNIQUE SPEED -entity Fast_Logic_Analyzer_SDRAM
 set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity SDRAM_Interface
 set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity SDRAM_Controller
-set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity mso_capture
 set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity OLS_Logic_Analyzer
 set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity OLS_SDRAM_Top
 # 100 MHz command/readout domain: synthesize for area.

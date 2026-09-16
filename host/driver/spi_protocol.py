@@ -123,10 +123,14 @@ ST_GEN_BUSY      = 0x30
 MAX_PAYLOAD = 4096
 # The direct accelerometer stream is packed at four tagged wire bytes per
 # eight source samples. Keep each receive quantum at 8 KiB: fixed-width
-# decoding produces one 16K-sample delivery per quantum, while four queued
-# MPSSE commands remain a bounded USB scheduling cushion. This reduces Python
-# per-read overhead without creating an unbounded live-history queue.
-DIRECT_LIVE_WIRE_CHUNK_BYTES = 8_192
+# decoding produces one bounded wire-quantum delivery, while the transport
+# keeps only one additional command in flight. This reduces USB scheduling
+# gaps without creating an unbounded live-history queue.
+# Keep each held-CS quantum short enough that a Windows USB scheduling gap
+# cannot consume the entire direct-FIFO headroom. The bounded overlap pipeline
+# keeps the FTDI clock continuous between these quanta, so this is a wire
+# scheduling boundary, not a decoder/history buffer.
+DIRECT_LIVE_WIRE_CHUNK_BYTES = 4_096
 BLOCK_SIZE  = 1024
 MAX_RAW_STREAM_SAMPLES = 16384
 

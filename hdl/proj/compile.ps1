@@ -15,6 +15,7 @@ param(
 
 $FastRawBuild = if ($RawOnly) { 'true' } else { 'false' }
 $UseDdioClkForward = if ($LegacyClkForward) { 'false' } else { 'true' }
+$PhysicalSynthesisCombo = 'ON'
 
 
 # Quartus install: env override, else the default install location.
@@ -211,10 +212,10 @@ $qsfLines = @(
     '# synthesis area bloat in the 100 MHz command/readout domain (>1.1 ns',
     '# slack there) so the full mixed-signal build still fits.',
     'set_global_assignment -name OPTIMIZATION_MODE "BALANCED"',
-    '# Physical synthesis OFF: register duplication/retiming inflate area, and',
-    '# historical sweeps showed physical synthesis ERODED clk[1]/clk[2] slack',
-    '# at this density (placement noise dominates).',
-    'set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC OFF',
+    '# Physical synthesis is enabled for both profiles.  The full image now',
+    '# fits after the live CDC queue and MSO packer counter were reduced, and',
+    '# this is required to close the 200 MHz capture path.',
+    "set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC $PhysicalSynthesisCombo",
     'set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION OFF',
     'set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING OFF',
     '# Fast domains (200 MHz capture, 167 MHz SDRAM): keep the critical blocks',
@@ -222,7 +223,6 @@ $qsfLines = @(
     'set_global_assignment -name OPTIMIZATION_TECHNIQUE SPEED -entity Fast_Logic_Analyzer_SDRAM',
     'set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity SDRAM_Interface',
     'set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity SDRAM_Controller',
-    'set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity mso_capture',
     'set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity OLS_Logic_Analyzer',
     'set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity OLS_SDRAM_Top',
     '# 100 MHz command/readout domain: synthesize for area.',

@@ -177,15 +177,15 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL spi_tx_ready_i      : STD_LOGIC := '0';
 
   -- Direct live waveform FIFO: FAST_CLK capture tap -> CLK/SPI dispatcher.
-  -- Keep a bounded staging cushion for USB scheduling jitter, not waveform
-  -- history. At the 1 MHz tap this is about 16 ms; the host still consumes
-  -- every word sequentially and exposes zero source backlog to the UI.
-  -- A 32K x 2-bit live FIFO gives 32 ms of capture-tap elasticity at the
-  -- 1 MHz waveform rate. It remains a bounded handoff buffer, not history;
-  -- the host must still drain it continuously and reports overflow rather
-  -- than replaying stale samples.
-  CONSTANT LIVE_FIFO_DEPTH : NATURAL := 32768;
-  CONSTANT LIVE_FIFO_WIDTHU : NATURAL := 15;
+  -- This is an elastic CDC queue, not capture history. The live producer is
+  -- backpressured by the stream-session contract and the host drains four
+  -- packed samples per SPI byte, so a multi-tens-of-thousands entry history
+  -- queue only hides a stalled consumer and consumes scarce MAX10 resources.
+  -- Keep a bounded 8K-entry cushion (~4 ms at 2 MS/s) for clock-domain and
+  -- USB scheduling jitter; an actual sustained consumer stall is reported as
+  -- an overrun instead of silently replaying stale waveform history.
+  CONSTANT LIVE_FIFO_DEPTH : NATURAL := 8192;
+  CONSTANT LIVE_FIFO_WIDTHU : NATURAL := 13;
   -- The live LIS decoder consumes only CH13/CH14 (SDA/SCL). Store those two
   -- bits directly in the CDC FIFO; the read-side serializer restores them to
   -- the normal capture-word positions, so the host waveform contract remains
@@ -196,7 +196,6 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL live_fifo_full    : STD_LOGIC := '0';
   SIGNAL live_fifo_wrreq   : STD_LOGIC := '0';
   SIGNAL live_fifo_rdreq   : STD_LOGIC := '0';
-  SIGNAL live_fifo_wrusedw : STD_LOGIC_VECTOR(LIVE_FIFO_WIDTHU-1 downto 0) := (others => '0');
   SIGNAL live_fifo_rdusedw : STD_LOGIC_VECTOR(LIVE_FIFO_WIDTHU-1 downto 0) := (others => '0');
   SIGNAL live_stream_arm   : STD_LOGIC := '0';
   SIGNAL live_stream_arm_s1 : STD_LOGIC := '0';
@@ -524,7 +523,7 @@ BEGIN
     q => live_fifo_q,
     rdempty => live_fifo_empty,
     wrfull => live_fifo_full,
-    wrusedw => live_fifo_wrusedw,
+    wrusedw => OPEN,
     rdusedw => live_fifo_rdusedw
   );
 
@@ -1756,8 +1755,11 @@ BEGIN
                                      (reg_val(29) = '1');
                   raw_live_two_bit := raw_live_packed and
                                       (reg_val(27) = '1');
-                  raw_live_tagged := raw_live_packed and raw_live_two_bit and
-                                     (reg_val(25) = '1');
+                  -- Fixed-width packed records are the live transport
+                  -- contract.  Keep bit 25 reserved for compatibility, but
+                  -- do not synthesize the optional nibble-expansion path: it
+                  -- doubles wire traffic and costs scarce MAX10 logic.
+                  raw_live_tagged := false;
                   raw_live_continuous := raw_live_framed and
                                          (unsigned(reg_val(14 downto 0)) =
                                           to_unsigned(0, 15));
