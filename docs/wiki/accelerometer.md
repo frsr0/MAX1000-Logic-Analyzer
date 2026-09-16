@@ -143,7 +143,8 @@ up history or raw decoding:
 |---|---|
 | `/ws/accelerometer` | FIFO stream of every validated point for archival/history consumers |
 | `/ws/accelerometer/pose` | Replaceable latest-value stream for the visualization target; stale pending poses are dropped |
-| `/ws/accelerometer/waveform` | Ordered packed CH13/CH14/CH15 waveform chunks for frontend protocol decoding; at most two chunks may wait in the event-loop handoff |
+| `/ws/accelerometer/waveform` | Legacy ordered JSON/base64 waveform chunks for frontend protocol decoding; each client has a two-chunk lossless handoff and is disconnected when it cannot keep up |
+| `/ws/accelerometer/waveform-binary` | Ordered binary waveform chunks for the worker; each client has the same two-chunk lossless handoff and slow-client eviction policy |
 
 The waveform WebSocket is the board's live source of truth. If a chunk is lost,
 its sequence gap resets the incremental decoder instead of allowing unrelated
@@ -158,7 +159,9 @@ producer/oldest pointers, source backlog, `decoded_at`, `gate_accepted_at`,
 `published_at`, WebSocket enqueue/send timestamps, and browser receive,
 target-selection, state-update, and render timestamps. The Hardware lab shows
 the resulting backlog and capture→publish, decode→publish, and
-WebSocket→render latencies.
+WebSocket→render latencies. The browser separately reports waveform packet
+count, sequence gaps, disconnects, and frontend decode latency; these are
+transport metrics and must not be inferred from `source_backlog_samples`.
 
 If the board is unplugged, the failed owner can be reclaimed from the visible
 `Retry / reconnect` action. Reconnect stops the live worker and ring capture,

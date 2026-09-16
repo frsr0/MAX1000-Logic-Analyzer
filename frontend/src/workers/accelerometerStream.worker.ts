@@ -15,6 +15,10 @@ const textSocket = new ReconnectingSocket('/ws/accelerometer/waveform');
 let decoder = new LiveI2cDecoder();
 let decoderConfigKey = '';
 let lastWaveformSequence: number | null = null;
+let waveformPacketsReceived = 0;
+let waveformSequenceGaps = 0;
+let waveformDisconnects = 0;
+let shuttingDown = false;
 let decodedSamples = 0;
 let lastTimestamp = 0;
 const LIVE_POSE_POST_INTERVAL_MS = 16;
@@ -96,6 +100,7 @@ function decodeWaveform(message: any) {
     : decodeBase64(data.samples_b64);
 
   const sequence = Number(data.sequence);
+  waveformPacketsReceived += 1;
   if (Number.isFinite(sequence)
       && lastWaveformSequence !== null
       && sequence !== lastWaveformSequence + 1) {
@@ -103,6 +108,7 @@ function decodeWaveform(message: any) {
     // valid START keeps a missing waveform visible as a gap rather than as a
     // fabricated board position.
     decoder.reset();
+    waveformSequenceGaps += 1;
   }
   if (Number.isFinite(sequence)) lastWaveformSequence = sequence;
 
@@ -122,6 +128,8 @@ function decodeWaveform(message: any) {
   const sourceIndex = Number.isFinite(Number(data.source_index))
     ? Number(data.source_index) : null;
   const decoded = decoder.feed(samples, sourceIndex);
+  const decodedAtMs = performance.now();
+  const decodeLatencyMs = decodedAtMs - receivedAtMs;
   // The decoder and live waveform view consume the same physical ordered
   // chunk. The binary socket owns a fresh ArrayBuffer for each message, so
   // retain that view and transfer it at the next paint tick instead of
@@ -161,13 +169,17 @@ function decodeWaveform(message: any) {
         source_sample_index: sample.source_index,
         source_backlog_samples: 0,
         source_age_samples: 0,
+        waveform_packet_count: waveformPacketsReceived,
+        waveform_sequence_gaps: waveformSequenceGaps,
+        waveform_disconnects: waveformDisconnects,
+        frontend_decode_latency_ms: decodeLatencyMs,
         trace: {
           decoder_source: 'frontend_waveform',
           waveform_sequence: sequence,
           waveform_source_index: sourceIndex,
           waveform_sample_count: sampleCount,
           waveform_sample_rate_hz: sampleRate,
-          frontend_decoded_at_ms: performance.now(),
+          frontend_decoded_at_ms: decodedAtMs,
           frontend_received_at_ms: receivedAtMs,
         },
       },
@@ -212,6 +224,10 @@ socket.subscribeBinary((buffer) => {
   } catch { /* ignore malformed binary frames */ }
 });
 
+socket.onStateChange = (connected) => {
+  if (!connected && !shuttingDown) waveformDisconnects += 1;
+};
+
 self.addEventListener('message', (event: MessageEvent) => {
   if (event.data?.type === 'accelerometer_waveform_ack') {
     waveformPostInFlight = false;
@@ -222,6 +238,7 @@ self.addEventListener('message', (event: MessageEvent) => {
     return;
   }
   if (event.data?.type !== 'shutdown') return;
+  shuttingDown = true;
   if (waveformPostTimer !== null) {
     clearTimeout(waveformPostTimer);
     waveformPostTimer = null;

@@ -9,6 +9,7 @@ import socket
 import sys
 import types
 import logging
+import json
 from unittest.mock import MagicMock, Mock
 
 from app.capture.chunk_store import (clamp_window, raw_analog_window,
@@ -235,26 +236,40 @@ def test_websocket_manager_connect_broadcast_dead_clients_and_publish():
             await asyncio.sleep(0.01)
         assert [item[2] for item in latest] == [{"n": n} for n in range(100)]
 
-        # Raw waveform is ordered, but its event-loop handoff is deliberately
-        # bounded. A stalled browser may create a visible sequence gap; it
-        # must never create a hidden multi-second JSON backlog.
+        # Raw waveform is ordered per client. A stalled browser is evicted
+        # rather than causing a sequence gap for healthy subscribers.
         waveform_mgr = ConnectionManager()
-        await waveform_mgr.connect(Ws(), "accelerometer_waveform")
+        class WaveformWs:
+            def __init__(self, delay=0.0):
+                self.delay = delay
+                self.messages = []
+                self.closed = False
+
+            async def accept(self): pass
+
+            async def send_text(self, text):
+                if self.delay:
+                    await asyncio.sleep(self.delay)
+                self.messages.append(text)
+
+            async def close(self, **_kwargs):
+                self.closed = True
+
+        waveform_good = WaveformWs()
+        waveform_slow = WaveformWs(delay=1.0)
+        await waveform_mgr.connect(waveform_good, "accelerometer_waveform")
+        await waveform_mgr.connect(waveform_slow, "accelerometer_waveform")
         waveform_mgr.set_loop(asyncio.get_running_loop())
-        waveform_started = asyncio.Event()
-        async def blocked_waveform(topic, type_, data):
-            waveform_started.set()
-            await asyncio.sleep(0.1)
-        waveform_mgr.broadcast = blocked_waveform
         for n in range(100):
             waveform_mgr.publish_threadsafe(
                 "accelerometer_waveform", "accelerometer_waveform", {"n": n})
-        await asyncio.wait_for(waveform_started.wait(), timeout=1.0)
-        with waveform_mgr._latest_lock:
-            assert len(waveform_mgr._latest_pending["accelerometer_waveform"]) <= 2
-            queued = [item[1]["n"] for item in
-                      waveform_mgr._latest_pending["accelerometer_waveform"]]
-        assert queued[-1] == 99
+            await asyncio.sleep(0)
+        deadline = asyncio.get_running_loop().time() + 1.0
+        while len(waveform_good.messages) < 100 and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.005)
+        assert [json.loads(item)["data"]["n"] for item in waveform_good.messages] == list(range(100))
+        assert waveform_slow not in waveform_mgr._topics["accelerometer_waveform"]
+        assert waveform_slow.closed
 
         # The history socket is optional. With no history subscriber, a
         # high-rate tracking producer must not enqueue/serialize every sample
@@ -356,6 +371,7 @@ def test_binary_waveform_slow_client_isolated_without_dropping_healthy_stream():
         def __init__(self, delay=0.0):
             self.delay = delay
             self.messages = []
+            self.closed = False
 
         async def accept(self):
             pass
@@ -364,6 +380,9 @@ def test_binary_waveform_slow_client_isolated_without_dropping_healthy_stream():
             if self.delay:
                 await asyncio.sleep(self.delay)
             self.messages.append(bytes(data))
+
+        async def close(self, **_kwargs):
+            self.closed = True
 
     async def exercise():
         mgr = ConnectionManager()
@@ -390,6 +409,7 @@ def test_binary_waveform_slow_client_isolated_without_dropping_healthy_stream():
         # than holding the FPGA producer for hundreds of milliseconds.
         assert good.messages == packets
         assert slow not in mgr._topics[topic]
+        assert slow.closed
 
     asyncio.run(exercise())
 

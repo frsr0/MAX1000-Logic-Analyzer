@@ -79,6 +79,7 @@ def test_live_hardware_ring_backlog_stays_at_most_one_sample():
     decoded_ages: list[int] = []
     host_rates: list[float] = []
     effective_rates: list[float] = []
+    direct_waveform_samples: list[int] = []
     started = time.monotonic()
     deadline = started + WATCH_SECONDS
     while time.monotonic() < deadline:
@@ -88,6 +89,7 @@ def test_live_hardware_ring_backlog_stays_at_most_one_sample():
             f"invalid source_backlog_samples={value!r} in {status!r}")
         backlogs.append(value)
         ring = (status.get("live_timing") or {}).get("ring") or {}
+        transport = (status.get("live_timing") or {}).get("transport") or {}
         ring_value = ring.get("source_backlog_samples")
         if direct_transport:
             # Direct FIFO samples have no SDRAM cursor by design. Their
@@ -97,6 +99,11 @@ def test_live_hardware_ring_backlog_stays_at_most_one_sample():
             assert ring_value in (None, 0), (
                 f"direct transport exposed ring backlog={ring_value!r} "
                 f"in {status!r}")
+            waveform_samples = transport.get("waveform_samples")
+            assert isinstance(waveform_samples, int) and waveform_samples >= 0, (
+                f"invalid direct waveform_samples={waveform_samples!r} "
+                f"in {status!r}")
+            direct_waveform_samples.append(waveform_samples)
         else:
             assert isinstance(ring_value, int) and ring_value >= 0, (
                 f"invalid ring source_backlog_samples={ring_value!r} "
@@ -138,10 +145,16 @@ def test_live_hardware_ring_backlog_stays_at_most_one_sample():
         f"decoded_age_max={max(decoded_ages) if decoded_ages else 'n/a'}, "
         f"above_limit={above_limit}/{len(backlogs)}, "
         f"watch_seconds={WATCH_SECONDS}")
-    assert effective_rate <= 0 or final_host_rate >= (
-            effective_rate * MIN_HOST_RATE_FRACTION), (
-        "decoded host rate fell below the live sensor-rate target: "
-        f"host={final_host_rate:.1f} samples/s, effective_odr="
-        f"{effective_rate:.1f} Hz, required>="
-        f"{effective_rate * MIN_HOST_RATE_FRACTION:.1f}, "
-        f"rates_tail={host_rates[-10:]}, watch_seconds={WATCH_SECONDS}")
+    if direct_transport:
+        assert direct_waveform_samples[-1] > direct_waveform_samples[0], (
+            "direct waveform transport did not advance: "
+            f"samples_tail={direct_waveform_samples[-10:]}, "
+            f"watch_seconds={WATCH_SECONDS}")
+    else:
+        assert effective_rate <= 0 or final_host_rate >= (
+                effective_rate * MIN_HOST_RATE_FRACTION), (
+            "decoded host rate fell below the live sensor-rate target: "
+            f"host={final_host_rate:.1f} samples/s, effective_odr="
+            f"{effective_rate:.1f} Hz, required>="
+            f"{effective_rate * MIN_HOST_RATE_FRACTION:.1f}, "
+            f"rates_tail={host_rates[-10:]}, watch_seconds={WATCH_SECONDS}")

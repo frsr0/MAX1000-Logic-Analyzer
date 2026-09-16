@@ -5,7 +5,6 @@ import type { MilAccelerometerConfig, MilAccelerometerStatus } from '../api/type
 import { useApp } from '../state/appStore';
 import { waveformView } from '../state/waveformStore';
 import { hasUsableGravity, orientationFor, type Orientation } from './accelerometerPose';
-import { inferLiveReadLength, LiveI2cDecoder } from '../workers/liveI2cDecoder';
 
 const POLL_INTERVAL_MS = 100;
 // The sensor stream can be several thousand samples per second. Decode and
@@ -183,6 +182,14 @@ export function MilAccelerometerCard() {
         ?? previous.source_age_samples,
       source_backlog_samples: pending.data.source_backlog_samples
         ?? previous.source_backlog_samples,
+      waveform_packet_count: pending.data.waveform_packet_count
+        ?? previous.waveform_packet_count,
+      waveform_sequence_gaps: pending.data.waveform_sequence_gaps
+        ?? previous.waveform_sequence_gaps,
+      waveform_disconnects: pending.data.waveform_disconnects
+        ?? previous.waveform_disconnects,
+      frontend_decode_latency_ms: pending.data.frontend_decode_latency_ms
+        ?? previous.frontend_decode_latency_ms,
       capture_to_publish_latency_ms: pending.data.capture_to_publish_latency_ms
         ?? previous.capture_to_publish_latency_ms,
       decoded_to_publish_latency_ms: pending.data.decoded_to_publish_latency_ms
@@ -322,6 +329,10 @@ export function MilAccelerometerCard() {
                 last_sample_sequence: previous.last_sample_sequence,
                 source_sample_index: previous.source_sample_index,
                 source_backlog_samples: previous.source_backlog_samples,
+                waveform_packet_count: previous.waveform_packet_count,
+                waveform_sequence_gaps: previous.waveform_sequence_gaps,
+                waveform_disconnects: previous.waveform_disconnects,
+                frontend_decode_latency_ms: previous.frontend_decode_latency_ms,
                 source_age_samples: previous.source_age_samples,
                 capture_to_publish_latency_ms: previous.capture_to_publish_latency_ms,
                 decoded_to_publish_latency_ms: previous.decoded_to_publish_latency_ms,
@@ -373,69 +384,6 @@ export function MilAccelerometerCard() {
     // reject the other path so two independent decoders cannot fight over
     // the pose or make the packet counter move backwards.
     let streamOwner: FrontendStreamOwner | null = null;
-    let fallbackDecoder = new LiveI2cDecoder();
-    let fallbackDecoderConfigKey = '';
-    let fallbackWaveformSequence: number | null = null;
-    let fallbackDecodedSamples = 0;
-    let fallbackLastTimestamp = 0;
-
-    const handleWaveformMessage = (message: Record<string, any>) => {
-      const data = message.data;
-      if (!data || typeof data.samples_b64 !== 'string') return;
-      const sequence = Number(data.sequence);
-      if (Number.isFinite(sequence)
-          && fallbackWaveformSequence !== null
-          && sequence !== fallbackWaveformSequence + 1) {
-        fallbackDecoder.reset();
-      }
-      if (Number.isFinite(sequence)) fallbackWaveformSequence = sequence;
-      const config = data.config && typeof data.config === 'object'
-        ? data.config : {};
-      const nextKey = JSON.stringify(config);
-      if (nextKey !== fallbackDecoderConfigKey) {
-        fallbackDecoder = new LiveI2cDecoder(
-          Number(data.address ?? 0x19), config,
-          inferLiveReadLength(data));
-        fallbackDecoderConfigKey = nextKey;
-      }
-      const sampleRate = Number(data.sample_rate);
-      const sampleCount = Number(data.sample_count);
-      const messageTimestamp = Number(message.ts);
-      const sourceIndex = Number.isFinite(Number(data.source_index))
-        ? Number(data.source_index) : null;
-      for (const sample of fallbackDecoder.feedBase64(
-        data.samples_b64, sourceIndex)) {
-        fallbackDecodedSamples += 1;
-        let timestamp = messageTimestamp - (
-          Math.max(0, sampleCount - sample.sample_offset) / sampleRate);
-        if (!Number.isFinite(timestamp) || timestamp <= fallbackLastTimestamp) {
-          timestamp = fallbackLastTimestamp + 1e-6;
-        }
-        fallbackLastTimestamp = timestamp;
-        handleMessage({
-          type: 'accelerometer_sample',
-          ts: message.ts,
-          data: {
-            sample: { ...sample, timestamp },
-            last_sample_at: timestamp,
-            samples_read: fallbackDecodedSamples,
-            last_sample_sequence: fallbackDecodedSamples,
-            source_sample_index: sample.source_index,
-            source_backlog_samples: 0,
-            source_age_samples: 0,
-            trace: {
-              decoder_source: 'frontend_waveform_fallback',
-              waveform_sequence: sequence,
-              waveform_source_index: sourceIndex,
-              waveform_sample_count: sampleCount,
-              waveform_sample_rate_hz: sampleRate,
-              frontend_decoded_at_ms: performance.now(),
-            },
-          },
-        }, 'fallback');
-      }
-    };
-
     const handleMessage = (message: Record<string, any>, source: FrontendStreamOwner) => {
       if (!alive || message.type !== 'accelerometer_sample' || !message.data?.sample) return;
       if (streamOwner !== null && streamOwner !== source) return;
@@ -466,99 +414,16 @@ export function MilAccelerometerCard() {
       scheduleBoardRender();
     };
 
-    let handleBinaryWaveformMessage = (_buffer: ArrayBuffer) => {};
-    handleBinaryWaveformMessage = (buffer: ArrayBuffer) => {
-      if (buffer.byteLength < 4) return;
-      const view = new DataView(buffer);
-      const headerLength = view.getUint32(0, true);
-      const payloadOffset = 4 + headerLength;
-      if (payloadOffset > buffer.byteLength
-          || payloadOffset % 2 !== 0
-          || (buffer.byteLength - payloadOffset) % 2 !== 0) return;
-      try {
-        const data = JSON.parse(new TextDecoder().decode(
-          new Uint8Array(buffer, 4, headerLength))) as Record<string, any>;
-        const sequence = Number(data.sequence);
-        if (Number.isFinite(sequence)
-            && fallbackWaveformSequence !== null
-            && sequence !== fallbackWaveformSequence + 1) {
-          fallbackDecoder.reset();
-        }
-        if (Number.isFinite(sequence)) fallbackWaveformSequence = sequence;
-        const config = data.config && typeof data.config === 'object'
-          ? data.config : {};
-        const nextKey = JSON.stringify(config);
-        if (nextKey !== fallbackDecoderConfigKey) {
-          fallbackDecoder = new LiveI2cDecoder(
-            Number(data.address ?? 0x19), config,
-            inferLiveReadLength(data));
-          fallbackDecoderConfigKey = nextKey;
-        }
-        const sampleRate = Number(data.sample_rate);
-        const sampleCount = Number(data.sample_count);
-        const messageTimestamp = Date.now() / 1000;
-        const sourceIndex = Number.isFinite(Number(data.source_index))
-          ? Number(data.source_index) : null;
-        for (const sample of fallbackDecoder.feed(
-          new Uint16Array(buffer, payloadOffset), sourceIndex)) {
-          fallbackDecodedSamples += 1;
-          let timestamp = messageTimestamp - (
-            Math.max(0, sampleCount - sample.sample_offset) / sampleRate);
-          if (!Number.isFinite(timestamp) || timestamp <= fallbackLastTimestamp) {
-            timestamp = fallbackLastTimestamp + 1e-6;
-          }
-          fallbackLastTimestamp = timestamp;
-          handleMessage({
-            type: 'accelerometer_sample',
-            ts: messageTimestamp,
-            data: {
-              sample: { ...sample, timestamp },
-              last_sample_at: timestamp,
-              samples_read: fallbackDecodedSamples,
-              last_sample_sequence: fallbackDecodedSamples,
-              source_sample_index: sample.source_index,
-              source_backlog_samples: 0,
-              source_age_samples: 0,
-              trace: {
-                decoder_source: 'frontend_waveform_fallback_binary',
-                waveform_sequence: sequence,
-                waveform_source_index: sourceIndex,
-                waveform_sample_count: sampleCount,
-                waveform_sample_rate_hz: sampleRate,
-                frontend_decoded_at_ms: performance.now(),
-              },
-            },
-          }, 'fallback');
-        }
-      } catch { /* ignore malformed binary packets */ }
-    };
-
     let worker: Worker | null = null;
     let socket: ReconnectingSocket | null = null;
-    let textSocket: ReconnectingSocket | null = null;
     let unsubscribe: (() => void) | null = null;
     const startFallbackSocket = () => {
       if (socket) return;
-      // A direct stream publishes binary packets. Falling back to the legacy
-      // text/ring endpoint here silently produced no pose when a module
-      // worker failed, even though the FPGA stream was healthy.
-      socket = new ReconnectingSocket('/ws/accelerometer/waveform-binary', true);
-      const unsubscribeBinary = socket.subscribeBinary(handleBinaryWaveformMessage);
-      const unsubscribeBinaryText = socket.subscribe((message) => {
-        if (message.type !== 'accelerometer_waveform') {
-          handleMessage(message, 'fallback');
-        }
-      });
-      textSocket = new ReconnectingSocket('/ws/accelerometer/waveform');
-      const unsubscribeText = textSocket.subscribe((message) => {
-        if (message.type === 'accelerometer_waveform') handleWaveformMessage(message);
-        else handleMessage(message, 'fallback');
-      });
-      unsubscribe = () => {
-        unsubscribeBinary();
-        unsubscribeBinaryText();
-        unsubscribeText();
-      };
+      // If a module worker is unavailable, use the backend's replaceable pose
+      // topic. The main thread must not become a second raw-waveform decoder
+      // or receive an archival high-rate stream while rendering React.
+      socket = new ReconnectingSocket('/ws/accelerometer/pose');
+      unsubscribe = socket.subscribe((message) => handleMessage(message, 'fallback'));
     };
     if (typeof Worker !== 'undefined') {
       try {
@@ -612,7 +477,6 @@ export function MilAccelerometerCard() {
       worker?.terminate();
       unsubscribe?.();
       socket?.close();
-      textSocket?.close();
       const session = activeSessionRef.current;
       if (session?.tags.includes('accelerometer')) {
         waveformView.setLiveRawActive(session.id, false);
@@ -812,6 +676,10 @@ export function MilAccelerometerCard() {
             <span>Samples read</span><strong>{(status?.samples_read ?? 0).toLocaleString()}</strong>
             <span>Last sample</span><strong>{sampleAge(status?.last_sample_at ?? status?.sample?.timestamp)}</strong>
             <span>Ring unread backlog</span><strong>{backlog(status?.source_backlog_samples)}</strong>
+            <span>Waveform packets</span><strong>{(status?.waveform_packet_count ?? 0).toLocaleString()}</strong>
+            <span>Waveform sequence gaps</span><strong>{(status?.waveform_sequence_gaps ?? 0).toLocaleString()}</strong>
+            <span>Waveform disconnects</span><strong>{(status?.waveform_disconnects ?? 0).toLocaleString()}</strong>
+            <span>Frontend decode latency</span><strong>{latency(status?.frontend_decode_latency_ms)}</strong>
             <span>Decoded source age</span><strong>{backlog(status?.source_age_samples)}</strong>
             <span>Capture → publish</span><strong>{latency(status?.capture_to_publish_latency_ms)}</strong>
             <span>Decode → publish</span><strong>{latency(status?.decoded_to_publish_latency_ms)}</strong>

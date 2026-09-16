@@ -449,6 +449,11 @@ export interface MilAccelerometerStatus {
   source_age_samples?: number;
   /** Unread samples remaining in the FPGA ring after the transport window. */
   source_backlog_samples?: number;
+  /** Frontend raw-stream transport counters, independent of FPGA ring age. */
+  waveform_packet_count?: number;
+  waveform_sequence_gaps?: number;
+  waveform_disconnects?: number;
+  frontend_decode_latency_ms?: number;
   capture_to_publish_latency_ms?: number;
   decoded_to_publish_latency_ms?: number;
   live_timing?: Record<string, any> | null;

@@ -36,9 +36,9 @@ BINARY_WAVEFORM_SEND_TIMEOUT_S = 0.01
 # targets.
 POSE_SEND_INTERVAL_S = 1.0 / 60.0
 # Raw waveform is an ordered live transport, but it must not become an
-# unbounded second ring in the asyncio thread. If the browser cannot drain
-# two chunks promptly, discard the oldest queued chunk; its sequence number
-# makes the gap explicit and the frontend decoder waits for a clean START.
+# unbounded second ring in the asyncio thread. If one browser cannot drain
+# two chunks promptly, evict that client instead of dropping a packet for
+# every subscriber. The sequence remains lossless for each healthy client.
 MAX_WAVEFORM_PENDING_CHUNKS = 2
 
 
@@ -67,6 +67,12 @@ class ConnectionManager:
         # removed instead of silently delivering a sequence gap.
         self._binary_pending: dict[str, dict[WebSocket, deque[bytes]]] = {}
         self._binary_draining: set[tuple[str, WebSocket]] = set()
+        # The legacy JSON/base64 waveform endpoint has the same ordered
+        # transport contract as the binary endpoint. Keep its queues per
+        # client so a slow fallback browser cannot create gaps for others.
+        self._text_waveform_pending: dict[
+            str, dict[WebSocket, deque[tuple[str, dict]]]] = {}
+        self._text_waveform_draining: set[tuple[str, WebSocket]] = set()
 
     def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -87,11 +93,55 @@ class ConnectionManager:
     def disconnect(self, ws: WebSocket, topic: str) -> None:
         self._topics[topic].discard(ws)
         with self._latest_lock:
-            clients = self._binary_pending.get(topic)
-            if clients is not None:
-                clients.pop(ws, None)
-                if not clients:
-                    self._binary_pending.pop(topic, None)
+            self._remove_pending_client(topic, ws)
+            if not self._binary_pending.get(topic):
+                self._binary_pending.pop(topic, None)
+            if not self._text_waveform_pending.get(topic):
+                self._text_waveform_pending.pop(topic, None)
+
+    def _remove_pending_client(self, topic: str, ws: WebSocket) -> None:
+        """Remove a client from every ordered mailbox (caller holds the lock)."""
+        self._topics[topic].discard(ws)
+        for pending_by_client in (
+            self._binary_pending.get(topic),
+            self._text_waveform_pending.get(topic),
+        ):
+            if pending_by_client is None:
+                continue
+            pending_by_client.pop(ws, None)
+
+    async def _close_evicted_socket(self, ws: WebSocket) -> None:
+        try:
+            await ws.close(code=1013, reason="slow websocket consumer")
+        except TypeError:
+            # Keep small test doubles and older ASGI adapters compatible with
+            # the standard close() shape.
+            try:
+                await ws.close()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _schedule_socket_close(self, ws: WebSocket) -> None:
+        """Close an evicted socket without blocking its publishing thread."""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        close_coro = self._close_evicted_socket(ws)
+        try:
+            asyncio.run_coroutine_threadsafe(close_coro, loop)
+        except RuntimeError:
+            close_coro.close()
+
+    @staticmethod
+    def _encode_message(type_: str, data: dict) -> str:
+        payload = data
+        trace = data.get("trace") if isinstance(data, dict) else None
+        if isinstance(trace, dict):
+            payload = {**data, "trace": {
+                **trace, "websocket_send_started_at": time.time()}}
+        return json.dumps({"type": type_, "ts": time.time(), "data": payload})
 
     async def broadcast(self, topic: str, type_: str, data: dict) -> None:
         if topic in ("accelerometer", "accelerometer_pose", "accelerometer_waveform") \
@@ -100,14 +150,9 @@ class ConnectionManager:
             # topic has no consumers. This also covers the small race where a
             # client disconnects after a producer enqueues a message.
             return
-        payload = data
-        trace = data.get("trace") if isinstance(data, dict) else None
-        if isinstance(trace, dict):
-            # Copy the nested trace so an archival send and a pose send can
-            # carry their own send timestamp without racing on one dict.
-            payload = {**data, "trace": {
-                **trace, "websocket_send_started_at": time.time()}}
-        msg = json.dumps({"type": type_, "ts": time.time(), "data": payload})
+        # Copy the nested trace so an archival send and a pose send can carry
+        # their own send timestamp without racing on one dict.
+        msg = self._encode_message(type_, data)
         if topic in ("accelerometer", "accelerometer_pose", "accelerometer_waveform"):
             await self._broadcast_accelerometer(msg, topic)
             return
@@ -151,7 +196,10 @@ class ConnectionManager:
         """Publish from any thread; no-op if the loop isn't running yet."""
         if self._loop is None or self._loop.is_closed():
             return
-        if topic in ("accelerometer", "accelerometer_waveform"):
+        if topic == "accelerometer_waveform":
+            self._publish_text_waveform_threadsafe(topic, type_, data)
+            return
+        if topic == "accelerometer":
             # The archival history socket is optional. Ordinary tracking has
             # no reason to enqueue or JSON-serialize every sample when nobody
             # is consuming that history; doing so can starve the separate
@@ -161,9 +209,6 @@ class ConnectionManager:
             with self._latest_lock:
                 queue = self._latest_pending.setdefault(topic, deque())
                 queue.append((type_, self._copy_with_enqueue_trace(data)))
-                if topic == "accelerometer_waveform":
-                    while len(queue) > MAX_WAVEFORM_PENDING_CHUNKS:
-                        queue.popleft()
                 if topic in self._latest_draining:
                     return
                 self._latest_draining.add(topic)
@@ -179,6 +224,42 @@ class ConnectionManager:
                 self.broadcast(topic, type_, data), self._loop)
         except RuntimeError:
             pass
+
+    def _publish_text_waveform_threadsafe(self, topic: str, type_: str,
+                                           data: dict) -> None:
+        clients = list(self._topics.get(topic, ()))
+        if not clients:
+            return
+        item = (type_, self._copy_with_enqueue_trace(data))
+        to_schedule: list[tuple[str, WebSocket]] = []
+        evicted: list[WebSocket] = []
+        with self._latest_lock:
+            pending_by_client = self._text_waveform_pending.setdefault(topic, {})
+            for ws in clients:
+                if ws not in self._topics.get(topic, ()):
+                    continue
+                queue = pending_by_client.setdefault(ws, deque())
+                if len(queue) >= MAX_WAVEFORM_PENDING_CHUNKS:
+                    self._remove_pending_client(topic, ws)
+                    evicted.append(ws)
+                    continue
+                queue.append(item)
+                key = (topic, ws)
+                if key not in self._text_waveform_draining:
+                    self._text_waveform_draining.add(key)
+                    to_schedule.append(key)
+            if not pending_by_client:
+                self._text_waveform_pending.pop(topic, None)
+        for ws in evicted:
+            self._schedule_socket_close(ws)
+        for drain_topic, drain_ws in to_schedule:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._drain_text_waveform_client(drain_topic, drain_ws),
+                    self._loop)
+            except RuntimeError:
+                with self._latest_lock:
+                    self._text_waveform_draining.discard((drain_topic, drain_ws))
 
     def publish_latest_threadsafe(self, topic: str, type_: str,
                                   data: dict) -> None:
@@ -218,6 +299,7 @@ class ConnectionManager:
         if not clients:
             return
         to_schedule: list[tuple[str, WebSocket]] = []
+        evicted: list[WebSocket] = []
         with self._latest_lock:
             pending_by_client = self._binary_pending.setdefault(topic, {})
             for ws in clients:
@@ -229,8 +311,8 @@ class ConnectionManager:
                     # This client has stopped consuming.  Removing it now is
                     # preferable to dropping an arbitrary waveform packet and
                     # pretending the remaining stream is still contiguous.
-                    self._topics[topic].discard(ws)
-                    pending_by_client.pop(ws, None)
+                    self._remove_pending_client(topic, ws)
+                    evicted.append(ws)
                     continue
                 queue.append(bytes(data))
                 key = (topic, ws)
@@ -239,6 +321,8 @@ class ConnectionManager:
                     to_schedule.append(key)
             if not pending_by_client:
                 self._binary_pending.pop(topic, None)
+        for ws in evicted:
+            self._schedule_socket_close(ws)
         for drain_topic, drain_ws in to_schedule:
             try:
                 asyncio.run_coroutine_threadsafe(
@@ -257,12 +341,16 @@ class ConnectionManager:
             tasks, timeout=BINARY_WAVEFORM_SEND_TIMEOUT_S)
         for task in pending:
             task.cancel()
-            self._topics[topic].discard(tasks[task])
+            ws = tasks[task]
+            self._topics[topic].discard(ws)
+            self._schedule_socket_close(ws)
         for task in done:
             try:
                 task.result()
             except Exception:
-                self._topics[topic].discard(tasks[task])
+                ws = tasks[task]
+                self._topics[topic].discard(ws)
+                self._schedule_socket_close(ws)
 
     async def _drain_binary(self, topic: str) -> None:
         """Compatibility drain for callers from before per-client queues."""
@@ -292,7 +380,9 @@ class ConnectionManager:
                         timeout=BINARY_WAVEFORM_SEND_TIMEOUT_S,
                     )
                 except Exception:
-                    self._topics[topic].discard(ws)
+                    with self._latest_lock:
+                        self._remove_pending_client(topic, ws)
+                    self._schedule_socket_close(ws)
                     return
                 # Keep a busy local socket fair to the rest of the event loop.
                 await asyncio.sleep(0)
@@ -313,6 +403,52 @@ class ConnectionManager:
                 except RuntimeError:
                     with self._latest_lock:
                         self._binary_draining.discard(key)
+
+    async def _drain_text_waveform_client(self, topic: str, ws: WebSocket) -> None:
+        """Drain one legacy JSON waveform subscriber in packet order."""
+        pending = False
+        key = (topic, ws)
+        try:
+            while True:
+                with self._latest_lock:
+                    pending_by_client = self._text_waveform_pending.get(topic)
+                    queue = pending_by_client.get(ws) if pending_by_client else None
+                    item = queue.popleft() if queue else None
+                    if queue is not None and not queue:
+                        pending_by_client.pop(ws, None)
+                        if not pending_by_client:
+                            self._text_waveform_pending.pop(topic, None)
+                if item is None:
+                    return
+                try:
+                    await asyncio.wait_for(
+                        ws.send_text(self._encode_message(item[0], item[1])),
+                        timeout=BINARY_WAVEFORM_SEND_TIMEOUT_S,
+                    )
+                except Exception:
+                    with self._latest_lock:
+                        self._remove_pending_client(topic, ws)
+                    self._schedule_socket_close(ws)
+                    return
+                await asyncio.sleep(0)
+        finally:
+            with self._latest_lock:
+                self._text_waveform_draining.discard(key)
+                pending_by_client = self._text_waveform_pending.get(topic)
+                pending = bool(
+                    pending_by_client
+                    and ws in pending_by_client
+                    and ws in self._topics.get(topic, ())
+                )
+                if pending:
+                    self._text_waveform_draining.add(key)
+            if pending:
+                try:
+                    asyncio.create_task(
+                        self._drain_text_waveform_client(topic, ws))
+                except RuntimeError:
+                    with self._latest_lock:
+                        self._text_waveform_draining.discard(key)
 
     async def _drain_latest(self, topic: str) -> None:
         """Drain every ordered live item in FIFO order."""
