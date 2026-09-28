@@ -102,11 +102,27 @@ waveform and decoded `0x0f` register / `0x33` response transaction.
 
 ![Live LIS3DH waveform and decode](../../../frontend/test-results/screenshots/live-accelerometer-session-waveform.png)
 
+## Test a wired MCP4725 DAC
+
+Open **MIL → MCP4725 DAC and signal generator**. The verified wiring uses SDA
+D4 (J1/13), SCL D3 (J1/12), VOUT AIN4 (J1/6), 3.3 V, and common ground. Set
+the actual address (verified board: `0x60`) and match the selected I²C and
+analogue pins to your wiring. Run **Run three-point test** to check voltages and
+physical ACKs; then choose a shape and **Run waveform and save trace**.
+
+![Wired 24-step DAC sine check](../../evidence/mcp4725-fast-2026-09-28/02-twentyfour-steps-0_25hz.png)
+
+**Open scope trace** loads the saved session. On hardware its displayed levels
+were measured before the timed run and replayed at the measured write cadence;
+the trace is not a simultaneous fast analogue capture. Mock mode labels its
+synthetic results **SIMULATED**. See the [wiring and limits guide](../mcp4725.md)
+and [physical screenshots](../../evidence/mcp4725-fast-2026-09-28/README.md).
+
 ## Other pages
 
 | Page | Purpose |
 |---|---|
-| **MIL** | Run the machine-in-loop protocol emulator and optionally save evidence captures |
+| **MIL** | Run protocol tests and the wired MCP4725 DAC/analogue generator workflow |
 | **Diagnostics** | Inspect backend logs, device state, debug information, and self-tests |
 | **Settings** | Manage control lock, virtual serial bridge, layouts, and app preferences |
 

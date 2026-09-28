@@ -827,7 +827,7 @@ test('mock control lock denial toasts when acquire is denied', async ({ page }) 
   // and the merged Hardware page toasts the rendered denial.
   await page.getByRole('button', { name: 'Hardware', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
-  await page.getByRole('button', { name: 'Request control' }).click();
+  await page.getByRole('button', { name: 'Take control' }).click();
   const toast = page.locator('.toast.toast-warning').filter({ hasText: 'Another client is using the device' });
   await expect(toast).toBeVisible();
   await takeScreenshot(page, 'settings-control-denial.png', { fullPage: true });

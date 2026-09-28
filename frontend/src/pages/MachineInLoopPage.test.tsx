@@ -85,8 +85,10 @@ it('builds read, write, bad-CRC and custom commands for Modbus and UART maps', a
 
   fireEvent.change(screen.getByLabelText('Preset path (.json)'), { target: { value: 'uart.json' } });
   fireEvent.click(screen.getByRole('button', { name: 'Load' }));
-  await screen.findByText('uart');
-  expect(screen.queryByRole('option', { name: 'Bad CRC / error path' })).toBeNull();
+  await waitFor(() => {
+    expect(load).toHaveBeenNthCalledWith(2, { path: 'uart.json' });
+    expect(screen.queryByRole('option', { name: 'Bad CRC / error path' })).toBeNull();
+  });
   fireEvent.change(screen.getByLabelText('Command'), { target: { value: 'write' } });
   expect(screen.getByLabelText('Request hex')).toHaveProperty('value', '06010001');
   fireEvent.change(screen.getByLabelText('Command'), { target: { value: 'read' } });

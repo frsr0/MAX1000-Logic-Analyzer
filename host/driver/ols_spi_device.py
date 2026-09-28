@@ -1548,6 +1548,42 @@ class OLSDeviceSPI:
             syms, rx, expect_echo=[dev_w, reg & 0xFF, int(value) & 0xFF])
         return bool(data and len(data) >= 3 and acks[:3] == [0, 0, 0])
 
+    def external_i2c_prepare(self, sda_pin, scl_pin, speed=100_000):
+        """Route the Bit Engine and RX sampler to an external I2C bus.
+
+        A waveform may send many short writes after this setup. The RX FIFO
+        captures the electrical SDA line, including each slave ACK, without
+        an SDRAM capture and its USB readback on every update.
+        """
+        self._ensure_open()
+        self.set_analog_config(0)
+        self.raw_mode(False)
+        self.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+        self.pkt.write_register(REG_GEN_DATA, 1 << 8)
+        self.pkt.write_register(REG_GEN_PROTO, 1)
+        self._pins(tx_pin=sda_pin, scl_pin=scl_pin)
+        self._aux_pins(miso_pin=sda_pin)
+        div = max(1, int(round(self.sys_clk / (4 * max(1, int(speed))) - 1.25)))
+        self.pkt.write_register(REG_GEN_BAUD, div & self.gen_div_mask)
+        self.spi.flush()
+
+    def external_i2c_write(self, frame):
+        """Send one prepared external write and return its physical ACK bits."""
+        frame = bytes(frame)
+        symbols = bit_bang.i2c_symbols(frame)
+        self.pkt.load_gen_data(bit_bang.pack_symbols(symbols))
+        self.spi.flush()
+        if not self._start_gen_accepted(timeout=0.05, confirm_timeout=0.05):
+            raise RuntimeError("External I2C generator did not start")
+        if not self._wait_gen_idle(timeout=0.1):
+            raise RuntimeError("External I2C generator did not finish")
+        rx_bytes = self.gen_rx_read(max_bytes=(len(symbols) + 7) // 8)
+        data, acks = self._i2c_rx_decode(
+            symbols, self._rx_bits(rx_bytes), expect_echo=frame)
+        if data != list(frame) or acks is None or len(acks) < len(frame):
+            raise RuntimeError("External I2C RX capture was incomplete")
+        return tuple(ack == 0 for ack in acks[:len(frame)])
+
     def accel_read_spi(self, reg, sclk_hz=1_000_000):
         """Read one LIS3DH register over SPI mode 3. Returns byte or None."""
         cmd = 0x80 | (reg & 0x3F)          # read, no auto-increment
@@ -3893,10 +3929,19 @@ class OLSDeviceSPI:
             self.pkt.write_register(REG_GEN_DATA, (1 << 8) | GEN_FLAG_RS485_PAIR)
             self._gen_load_uart(self._gen_data, self._gen_baud)
         elif proto == 'I2C':
-            self._set_gen_capture_aux()
-            self._set_gen_capture_channels(tx_channel=i2c_tx_pin,
-                                           scl_channel=i2c_scl_pin)
+            # Capture the electrical SDA level on a spare channel. The normal
+            # TX/SCL capture lanes are generator loopback, so they cannot show
+            # a slave ACK or clock stretching on the physical bus.
+            physical_channels = {pin for pin in (i2c_tx_pin, i2c_scl_pin)
+                                 if pin < 16}
+            spare_channels = [ch for ch in range(16)
+                              if ch not in physical_channels]
+            tx_channel, scl_channel, miso_channel = spare_channels[:3]
+            self._set_gen_capture_aux(miso_channel=miso_channel)
+            self._set_gen_capture_channels(tx_channel=tx_channel,
+                                           scl_channel=scl_channel)
             self._pins(tx_pin=i2c_tx_pin, scl_pin=i2c_scl_pin)
+            self._aux_pins(miso_pin=i2c_tx_pin)
             self.pkt.write_register(REG_GEN_PROTO, 1)
             dev_r = 1 if i2c_dev_r is None else i2c_dev_r & 0xFF
             flags = 1 | ((i2c_read_len & 0xFF) << 8) | (dev_r << 16)

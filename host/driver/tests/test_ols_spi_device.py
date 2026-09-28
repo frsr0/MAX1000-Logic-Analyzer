@@ -1242,9 +1242,79 @@ class TestOLSDeviceSPIGenerator:
 
         assert data
         device_spi.pkt.write_register.assert_any_call(
-            REG_GEN_CAPTURE_TX_CHAN, 2)
+            REG_GEN_CAPTURE_TX_CHAN, 0)
         device_spi.pkt.write_register.assert_any_call(
-            REG_GEN_CAPTURE_SCL_CHAN, 1)
+            REG_GEN_CAPTURE_SCL_CHAN, 3)
+
+    def test_external_i2c_prepare_routes_physical_sda_and_speed(self,
+                                                                device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.spi.flush = MagicMock()
+        device_spi._ensure_open = MagicMock()
+        device_spi.set_analog_config = MagicMock()
+        device_spi.raw_mode = MagicMock()
+        device_spi._pins = MagicMock()
+        device_spi._aux_pins = MagicMock()
+
+        device_spi.external_i2c_prepare(sda_pin=4, scl_pin=5, speed=400_000)
+
+        device_spi._ensure_open.assert_called_once()
+        device_spi.set_analog_config.assert_called_once_with(0)
+        device_spi.raw_mode.assert_called_once_with(False)
+        device_spi.pkt.transaction.assert_called_once_with(
+            CMD_ABORT_CAPTURE, timeout=0.5)
+        device_spi._pins.assert_called_once_with(tx_pin=4, scl_pin=5)
+        device_spi._aux_pins.assert_called_once_with(miso_pin=4)
+        device_spi.pkt.write_register.assert_any_call(REG_GEN_PROTO, 1)
+        device_spi.pkt.write_register.assert_any_call(REG_GEN_BAUD, 61)
+        device_spi.spi.flush.assert_called_once()
+
+    @pytest.mark.parametrize(
+        ("acks", "expected"),
+        [([0, 0], (True, True)), ([0, 1], (True, False))],
+    )
+    def test_external_i2c_write_returns_physical_ack_bits(
+            self, device_spi, acks, expected):
+        frame = b"\x32\x0f"
+        device_spi.pkt = MagicMock()
+        device_spi.spi.flush = MagicMock()
+        device_spi._start_gen_accepted = MagicMock(return_value=True)
+        device_spi._wait_gen_idle = MagicMock(return_value=True)
+        device_spi.gen_rx_read = MagicMock(return_value=b"\xff")
+        device_spi._i2c_rx_decode = MagicMock(
+            return_value=(list(frame), acks))
+
+        assert device_spi.external_i2c_write(frame) == expected
+        device_spi.pkt.load_gen_data.assert_called_once()
+        device_spi._start_gen_accepted.assert_called_once_with(
+            timeout=0.05, confirm_timeout=0.05)
+        device_spi._wait_gen_idle.assert_called_once_with(timeout=0.1)
+        device_spi._i2c_rx_decode.assert_called_once()
+
+    def test_external_i2c_write_rejects_incomplete_rx(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.spi.flush = MagicMock()
+        device_spi._start_gen_accepted = MagicMock(return_value=True)
+        device_spi._wait_gen_idle = MagicMock(return_value=True)
+        device_spi.gen_rx_read = MagicMock(return_value=b"")
+        device_spi._i2c_rx_decode = MagicMock(return_value=(None, None))
+
+        with pytest.raises(RuntimeError, match="RX capture was incomplete"):
+            device_spi.external_i2c_write(b"\x32\x0f")
+
+    @pytest.mark.parametrize(
+        ("start_ok", "idle_ok", "message"),
+        [(False, True, "did not start"), (True, False, "did not finish")],
+    )
+    def test_external_i2c_write_reports_generator_timeouts(
+            self, device_spi, start_ok, idle_ok, message):
+        device_spi.pkt = MagicMock()
+        device_spi.spi.flush = MagicMock()
+        device_spi._start_gen_accepted = MagicMock(return_value=start_ok)
+        device_spi._wait_gen_idle = MagicMock(return_value=idle_ok)
+
+        with pytest.raises(RuntimeError, match=message):
+            device_spi.external_i2c_write(b"\x32\x0f")
 
     def test_capture_with_gen_trims_packed_readback_to_producer_index(
             self, device_spi):

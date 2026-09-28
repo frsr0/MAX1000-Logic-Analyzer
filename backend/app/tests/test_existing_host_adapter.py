@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import Mock, call
 import threading
 
@@ -902,6 +903,74 @@ def test_adapter_lifecycle_and_generator_validation_errors():
     assert adapter._strategy_for(CaptureSettings(mode="analog")) is not None
     assert adapter._strategy_for(CaptureSettings(mode="analog_all")) is not None
     assert adapter._strategy_for(CaptureSettings(mode="digital_narrow")) is not None
+
+
+def test_mcp4725_measurement_rejects_disconnected_invalid_route_and_missing_adc():
+    adapter = ExistingHostAdapter()
+    with pytest.raises(HardwareError, match="Device not connected"):
+        adapter.mcp4725_write_and_measure(0x60, 100)
+
+    adapter._dev = FakeHostDevice()
+    adapter._dev.raw_mode = Mock()
+    with pytest.raises(HardwareError, match="different external"):
+        adapter.mcp4725_write_and_measure(0x60, 100, 4, 4, 3)
+    with pytest.raises(HardwareError, match="different external"):
+        adapter.mcp4725_write_and_measure(0x60, 100, 23, 3, 3)
+    with pytest.raises(HardwareError, match="ADC channel"):
+        adapter.mcp4725_write_and_measure(0x60, 100, 4, 3, 5)
+
+    adapter._dev.capture_with_gen = Mock(return_value=b"\x00\x00" * 64)
+    adapter.capture = Mock(return_value=SimpleNamespace(analog={"a1": np.array([])}))
+    with pytest.raises(HardwareError, match="returned no analog samples"):
+        adapter.mcp4725_write_and_measure(0x60, 100, adc_channel=1)
+
+
+def test_mcp4725_measurement_retries_truncated_capture_and_keeps_partial_acks():
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+    adapter._dev.raw_mode = Mock()
+    # Three attempts each contain fewer than 27 SCL rising edges. The adapter
+    # still performs the voltage measurement and reports the ACKs it observed.
+    adapter._dev.capture_with_gen = Mock(
+        return_value=b"\x00\x00\x02\x00" * 10)
+    adapter.capture = Mock(return_value=SimpleNamespace(
+        analog={"a3": np.ones(32, dtype=np.float32)}))
+
+    result = adapter.mcp4725_write_and_measure(0x60, 100)
+
+    assert len(result) == 32
+    assert adapter._dev.capture_with_gen.call_count == 3
+    assert adapter.mcp4725_last_acknowledgements() == ()
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("prepare failed"),
+                                     ValueError("bad pins")])
+def test_mcp4725_fast_i2c_wraps_driver_errors(failure):
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+    adapter._dev.external_i2c_prepare = Mock(side_effect=failure)
+    with pytest.raises(HardwareError, match="failed|pins"):
+        adapter.mcp4725_prepare_fast(4, 3)
+
+    adapter._dev.external_i2c_prepare = Mock()
+    adapter.mcp4725_prepare_fast(4, 3)
+    adapter._dev.external_i2c_write = Mock(side_effect=failure)
+    with pytest.raises(HardwareError, match="failed|pins"):
+        adapter.mcp4725_write_fast(0x60, 100)
+
+
+def test_mcp4725_fast_i2c_requires_connection_and_rejects_invalid_pins():
+    adapter = ExistingHostAdapter()
+    with pytest.raises(HardwareError, match="Device not connected"):
+        adapter.mcp4725_prepare_fast(4, 3)
+    with pytest.raises(HardwareError, match="Device not connected"):
+        adapter.mcp4725_write_fast(0x60, 100)
+
+    adapter._dev = FakeHostDevice()
+    with pytest.raises(HardwareError, match="different external"):
+        adapter.mcp4725_prepare_fast(4, 4)
+    with pytest.raises(HardwareError, match="different external"):
+        adapter.mcp4725_prepare_fast(23, 3)
 
 
 @pytest.mark.parametrize("trigger, expected", [

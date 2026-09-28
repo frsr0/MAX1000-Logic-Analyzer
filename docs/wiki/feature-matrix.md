@@ -68,6 +68,7 @@ has an explicit scope boundary.
 | Cursor, markers, zoom, density shading | [Waveform Viewer](frontend/waveform-viewer.md) | **SW** Playwright coverage |
 | Generator page and route capability gating | [Generator Controller](backend/generator-controller.md), [Generator Routing](generator-routing.md) | **HW/SW** |
 | Machine-in-loop testing | [Machine-In-Loop](backend/machine-in-loop.md) | **SW** service/API coverage; external fixtures required for device claims |
+| MCP4725 DAC test and stepped signal generator | [MCP4725 guide](mcp4725.md), MIL card | **HW** on SDA D4/SCL D3/VOUT AIN4 at `0x60`; **SW** for 506 selectable ordered pin pairs; saved trace replays preflight voltages, with host-timed rate and physical ACKs. [Evidence](../evidence/mcp4725-fast-2026-09-28/README.md) |
 | Debug bundles and sanity checks | [WebSocket Diagnostics](backend/websocket-diagnostics.md) | **SW** |
 | Frontend screenshot/e2e suite | [Build and Test](frontend/build-and-test.md) | Typecheck/build pass; hardware scenario includes real-board sessions |
 | Bit Banger scripts and presets | [Recent Software Features](recent-software-features.md) | **SW/HW**; 1,024-symbol FIFO boundary |
@@ -90,8 +91,8 @@ has an explicit scope boundary.
 | Timing | Slow-85C setup: `fast_clk` **+0.253 ns**, `sdram_core_clk` **+0.178 ns**, `sys_clk` **+0.278 ns**; all timing checks clean |
 | Logic use | 7,713/8,064 LEs (96%); 4,802 registers |
 | Generator divider | 24-bit `REG_GEN_BAUD`; feature-advertised through metadata |
-| Current SOF | `0x0050492F`, programmed into configuration flash 2026-09-09 |
-| Hardware regression | 436/436 cold-power-cycle full suite; 57/57 GHDL; browser hardware suites 5/5 and 34/34 |
+| Full-device reference SOF | `0x0050492F`, programmed into configuration flash 2026-09-09 |
+| Full-device reference regression | 436/436 cold-power-cycle full suite; 57/57 GHDL; browser hardware suites 5/5 and 34/34. Later MCP4725 pin-map work has [focused evidence](../evidence/mcp4725-fast-2026-09-28/README.md), not this full-suite signoff. |
 
 ## How to interpret coverage
 

@@ -5,6 +5,7 @@ import { api } from '../api/client';
 import type { MilCaptureConfig, MilConfig, MilPresetSummary, MilRuntimeStatus, MilTransactionResponse } from '../api/types';
 import { useApp } from '../state/appStore';
 import { MilAccelerometerCard } from '../components/MilAccelerometerCard';
+import { MilMcp4725Card } from '../components/MilMcp4725Card';
 
 const READ_MODBUS_1_0000_0002 = '010300000002c40b';
 const READ_UART_0001 = '030001';
@@ -306,6 +307,7 @@ export function MachineInLoopPage() {
       </div>
 
       <MilAccelerometerCard />
+      <MilMcp4725Card />
 
       <div className="mil-layout">
         <div className="card">

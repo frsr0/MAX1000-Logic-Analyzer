@@ -624,8 +624,10 @@ BEGIN
 
       if gen_busy = '1' then
         if gen_tx_pin < PIN_POOL_SIZE then
-          pin_out(gen_tx_pin) <= gen_tx;
-          pin_dir(gen_tx_pin) <= '1';
+          -- I2C releases data-high/ACK bits and pulls low bits down. For all
+          -- other protocols gen_proto=0, so TX remains push-pull.
+          pin_out(gen_tx_pin) <= gen_tx and not gen_proto;
+          pin_dir(gen_tx_pin) <= not (gen_proto and gen_tx);
         end if;
       end if;
 
@@ -653,9 +655,14 @@ BEGIN
             pin_dir(gen_scl_pin) <= '1';
           end if;
         elsif gen_proto = '1' or gen_spi_test = '1' then
+          -- I2C SCL is open-drain too. Releasing its high phase lets the
+          -- external pull-up set the bus voltage to the slave's VDD. This
+          -- matters on the MKR bank, whose FPGA I/O standard is 2.5 V while
+          -- external I2C boards may be powered at 3.3 V. SPI remains
+          -- push-pull (gen_proto=0, gen_spi_test=1).
           if gen_scl_pin < PIN_POOL_SIZE then
-            pin_out(gen_scl_pin) <= gen_scl;
-            pin_dir(gen_scl_pin) <= '1';
+            pin_out(gen_scl_pin) <= gen_scl and not gen_proto;
+            pin_dir(gen_scl_pin) <= not gen_proto or not gen_scl;
           end if;
         end if;
       end if;
@@ -822,9 +829,6 @@ BEGIN
           elsif gen_capture_active_f2 = '1' and gen_capture_cs_enable_f2 = '1'
                 and i = gen_capture_cs_channel_f2 then
             capture_data_fast_normal_r(i) <= gen_cs_fastclk_f2;
-          elsif gen_capture_active_f2 = '1' and gen_capture_miso_enable_f2 = '1'
-                and i = gen_capture_miso_channel_f2 then
-            capture_data_fast_normal_r(i) <= gen_miso_fastclk_f2;
           elsif gen_capture_active_f2 = '1' and gen_tx_pin_f2 = pin_map_fast(i) then
             capture_data_fast_normal_r(i) <= gen_tx_f2;
           elsif gen_capture_active_f2 = '1' and gen_rs485_pair_f2 = '1' and gen_scl_pin_f2 = pin_map_fast(i) then
@@ -1185,12 +1189,10 @@ BEGIN
   process(gen_spi_test, gen_miso_enable, gen_miso_pin, pin_pool,
           sen_sdo_sync, sen_sdi_sync)
   begin
-    if gen_spi_test = '1' then
-      if gen_miso_enable = '1' and gen_miso_pin < PIN_POOL_SIZE then
-        gen_miso_in <= pin_pool(gen_miso_pin);
-      else
-        gen_miso_in <= sen_sdo_sync;
-      end if;
+    if gen_miso_enable = '1' and gen_miso_pin < PIN_POOL_SIZE then
+      gen_miso_in <= pin_pool(gen_miso_pin);
+    elsif gen_spi_test = '1' then
+      gen_miso_in <= sen_sdo_sync;
     else
       gen_miso_in <= sen_sdi_sync;
     end if;

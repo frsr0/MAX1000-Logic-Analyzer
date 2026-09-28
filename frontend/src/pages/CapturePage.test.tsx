@@ -195,3 +195,12 @@ it('expands a narrow non-mock capture and formats a sub-MHz sample rate', () => 
   fireEvent.click(screen.getByRole('button', { name: 'Expand' }));
   expect(screen.getByText('capture controls')).toBeTruthy();
 });
+
+it('formats sample rates below one kilohertz in hertz', () => {
+  useApp.setState({ activeSession: session('very-slow', {
+    sample_rate: 500,
+  }) });
+  render(<CapturePage />);
+
+  expect(screen.getByText(/0 samples @ 500\.0 Hz/)).toBeTruthy();
+});

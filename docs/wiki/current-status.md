@@ -1,12 +1,31 @@
 # Current Implementation Status
 
-This is the authoritative snapshot of the `master` branch and the FPGA image
-programmed on the MAX1000. Update it whenever the hardware contract, register
-map, build result, or connected-board baseline changes.
+The full-device reference signoff below describes the 2026-09-09 seed-10 image.
+The current image was rebuilt and flashed on 2026-09-28 with seed `7`; the
+compile's timing gate passed **66/66**. Slow 85 °C post-fit setup slack is
+`fast_clk` **+0.046 ns**, `sys_clk` **+0.183 ns**, and SDRAM **+0.396 ns**.
+Quartus verify-only passed at 17:46:54, before the physical retests. The POF
+SHA-256 is `C65DDA0E8042156024F1170EF967316D072CBF9BADFA67A735EC51BE7FFEC18C`,
+Programmer checksum `0x01DE1DE1`; the fit uses 8,021/8,064 logic elements.
 
-## Validated target
+The retested MCP4725 cases all passed voltage, timing, and ACK checks at 0.5 Hz
+/ 8 steps, 0.25 Hz / 24 steps, 2 Hz / 8 steps, and 2 Hz / 10 steps. Wrong
+address produced the expected NACK and failure. The codec validation passed
+31/31 with no skips; targeted narrow digital 200 MHz, packed MSO, high-speed
+analog, and mixed compressed rolling checks passed 27/27, including four packed
+ADC channels and 512 analog-fast frames. The source-level Questa
+`tb_mso_full_roundtrip.vhd` simulation passed in native Questa 2025.2 on
+2026-09-28 at 17:56: 15 analog frames across idle, toggle, and cycle sections,
+with four anchors verified per frame. Focused software checks passed: backend 96,
+host 195, and frontend 110 tests. Backend hardware self-test passed. These are
+targeted results, not full-suite reruns. See the
+[final image and board evidence](../evidence/mcp4725-fast-timing-clean/README.md)
+and [MCP4725 guide](mcp4725.md). The earlier timing-failing image's verification
+record remains [historical](../evidence/max10-flash-verify-2026-09-28.md).
 
-| Item | Current value |
+## Full-device reference target (2026-09-09)
+
+| Item | Reference value (2026-09-09) |
 |---|---|
 | Board | Arrow MAX1000, Intel MAX 10 `10M08SAU169C8G` |
 | Transport | FT2232H Channel B, MPSSE SPI |
@@ -18,13 +37,12 @@ map, build result, or connected-board baseline changes.
 | Generator pin pool | 26 entries: MKR D0-D14, PMOD PIO1-PIO8, `SEN_SDO`, `SEN_SDI`, `SEN_SPC` |
 | Generator FIFO | 256 bytes = 1,024 two-bit symbols |
 | Generator divider | 24 bits when metadata feature bit 0 is set; legacy 16-bit images remain supported |
-| Programmed image | Current full mixed-signal seed-10 image in configuration flash, 2026-09-09 |
-| Persistent image | Current seed-10 image, programmed into CFM on 2026-09-09 |
-| SOF checksum | `0x0050492F` (Quartus Assembler report) |
-| SOF SHA-256 | `2028A05F689EA966B359359D8F0F4000A19298B8CEE98AF6A76A52003108C7D1` |
+| Historical image | Full mixed-signal seed-10 image programmed on 2026-09-09 (superseded by the 2026-09-28 seed-7 image) |
+| Reference SOF checksum | `0x0050492F` (Quartus Assembler report) |
+| Reference SOF SHA-256 | `2028A05F689EA966B359359D8F0F4000A19298B8CEE98AF6A76A52003108C7D1` |
 
-The image was built by Quartus Prime Lite 25.1. The slow 1200 mV, 85 C
-post-fit timing gate is fully clean:
+The reference image was built by Quartus Prime Lite 25.1. Its slow 1200 mV,
+85 C post-fit timing gate was clean:
 
 | Domain | Setup slack | Hold slack |
 |---|---:|---:|
@@ -34,7 +52,7 @@ post-fit timing gate is fully clean:
 | `SDRAM_CHIP_CLK_OUT` | +1.098 ns | +1.808 ns |
 | `SPI_SCK_EXT` | +12.025 ns | +0.394 ns |
 
-The fit uses 7,713/8,064 logic elements (96%), 4,802 registers, and
+That fit used 7,713/8,064 logic elements (96%), 4,802 registers, and
 38,020/387,072 memory bits. The design remains placement-sensitive: a
 48-seed sweep found seed 10 best, so any RTL, QSF, SDC, or fitter change must
 be rebuilt and re-swept before it inherits this timing claim.
@@ -57,6 +75,13 @@ decoders, measurements, and exports are stored as analysis state.
 
 ## Generator support
 
+The MIL tab also exposes the [MCP4725 DAC test and stepped waveform
+generator](mcp4725.md). It can route SDA/SCL across 23 external digital pins,
+select one of four analogue inputs, check a 12-bit output against VOUT, and
+save a preflight-measured scope reconstruction. D4/D3/AIN4 is the physically
+verified route; software routing tests cover all 506 ordered pin pairs,
+including that route.
+
 The hardware exposes UART, RS-485, I2C, SPI, SWD, and raw Bit Banger routes.
 The base engine produces data and clock symbols; optional FPGA-timed routes
 provide RS-485 DE and SPI CS/MISO. Route descriptors from
@@ -78,10 +103,10 @@ until `POST /api/generator/stop`; the host does not schedule per-chunk restarts.
 
 ### Software baseline — 2026-09-16
 
-The current software baseline is commit `47bce3d`, following the live
-accelerometer transport hardening in `a84501e`. The global coverage gates now
-pass over the complete configured production scope rather than only the
-accelerometer or transport modules:
+The software baseline recorded here is commit `47bce3d`, following the live
+accelerometer transport hardening in `a84501e`. At that baseline, global
+coverage gates passed over the complete configured production scope rather
+than only the accelerometer or transport modules:
 
 | Scope | Result | Coverage scope |
 |---|---:|---|
@@ -101,7 +126,7 @@ backend gaps in the WebSocket manager, capture manager, host adapter, MIL
 service, and accelerometer service. Coverage is still execution evidence: it
 does not replace FPGA simulation, timing analysis, or connected-board tests.
 
-The current persistent image has the following connected-board evidence:
+The 2026-09-09 reference image has the following connected-board evidence:
 
 - backend hardware smoke test: **10/10 passed**;
 - two consecutive full connected-board suites: **421/421 passed** each
@@ -112,12 +137,12 @@ The current persistent image has the following connected-board evidence:
   halves and final concurrent capture/readout passed;
 - both strict 60-second rolling stress runs passed inside the full suite, with
   debug disabled and enabled, over 10 million samples captured in each run;
-- all 57 HDL testbenches pass with zero expected failures and zero exclusions;
-- browser hardware validation passes **5/5** feature tests (all **37/37**
+- all 57 HDL testbenches passed with zero expected failures and zero exclusions;
+- browser hardware validation passed **5/5** feature tests (all **37/37**
   advertised mode/rate cases) and **34/34** hardware-aligned UI tests; all 26
   ordinary digital/mixed cases require physical 22→CH13 activity, with 40–875
   transitions observed;
-- the current on-wire rate sweep passes **7/7** from 1,200 through 115,200
+- that image's on-wire rate sweep passed **7/7** from 1,200 through 115,200
   baud, with every measured rate within +0.79%;
 - the 2026-09-09 screenshot refresh checks exact session identity and loaded
   waveform state; visual review confirmed the expected UART, MIL, LIS3DH,
@@ -128,7 +153,7 @@ The current persistent image has the following connected-board evidence:
 
 The 2026-08-27 image retains its historical 383/383 full-suite, 37/37
 browser-matrix, 200 MHz million-sample, generator-rate, and LIS3DH evidence.
-Those historical results are not used as evidence for the current image.
+Those historical results are not evidence for the later MCP4725 pin-map change.
 
 Software CI requires 100% statement and branch coverage for backend and host,
 and 100% statement, branch, function, and line coverage for all production
@@ -137,16 +162,16 @@ Playwright mock E2E, and all 57 GHDL benches. The self-hosted hardware workflow 
 its required MAX1000 is unavailable; it does not silently treat absence as a
 pass.
 
-The whole-frontend coverage requirement is met: **391 tests passed** cover all
+At the 2026-09-16 baseline, **391 frontend tests passed**, covering all
 **4,412 statements, 3,359 branches, 1,110 functions, and 3,780 lines** in the
 configured production TypeScript/TSX scope. See
 [Frontend Build and Test](frontend/build-and-test.md).
 
-The latest host run passed **1,010 tests**, with all **8,342 statements** and
-**2,488 branches** covered (zero missing or partial branches). The current
-backend run passes **633 tests**, covering all **10,968 statements** and
-**3,386 branches**. Coverage is execution evidence, not proof of all possible
-behavior or electrical setups.
+At the 2026-09-16 software baseline, the host run passed **1,010 tests**, with
+all **8,342 statements** and **2,488 branches** covered (zero missing or partial
+branches). The backend run passed **633 tests**, covering all **10,968 statements**
+and **3,386 branches**. These baseline results are execution evidence, not proof
+of all possible behavior or electrical setups.
 
 Run the normal software checks from the repository root:
 
@@ -205,7 +230,7 @@ on-board FTDI JTAG interface. See [Build Flow](hdl/build-flow.md).
   state, so a driven packed-live electrical test needs an independent external
   source; the current on-board proof covers the packed hardware path and data
   contract.
-- Cold USB/power-cycle persistence is now recorded: the board was physically
+- The reference-board cold USB/power-cycle check recorded that the board was physically
   unplugged/replugged, rediscovered without reprogramming, and passed 436/436.
 - The HDL gate requires every one of the 57 `tb_*.vhd` benches; there are no
   exclusion or expected-failure lists. See [HDL Testbenches](hdl/testbenches.md).

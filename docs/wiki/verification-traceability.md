@@ -26,7 +26,13 @@ flowchart LR
     HW --> CLAIM
 ```
 
-## Current signoff record
+## Full-device reference signoff record (2026-09-09)
+
+The later MCP4725 pin-order change has focused wired-board evidence and is not
+covered by this full-device signoff. A local 2026-09-28 Quartus timing summary
+has negative setup slack for `fast_clk` and `sys_clk`; see
+[Current Status](current-status.md). Do not inherit the earlier clean STA or
+436/436 full-suite claim for the changed source.
 
 | Field | Current evidence |
 |---|---|
@@ -62,6 +68,7 @@ The fit, STA, and assembler reports are in `hdl/proj/output_files/`.
 | Auto-discovered analogue jumper fixture | `host/app/hw_validation.py` | Current 421-check suite; missing fixture makes the suite fail via a nonzero skip result | **HW** |
 | Bounded final SPI plateau decode | `host/app/gui_decoders.py` | Host tests and full connected-board suite | **SW + HW** |
 | Expanded regression/coverage gates | CI workflows, backend/host/frontend tests, HDL runner | Backend 633-test and frontend 391-test production scopes at literal 100%; 57/57 HDL benches with no exclusions | **SW + SIM** |
+| MCP4725 selectable bus, analogue test, and bounded waveform | `backend/app/mil/mcp4725.py`, host fast I²C RX FIFO, MIL card, corrected MKR/PMOD pin map | [2026-09-28 physical results](../evidence/mcp4725-fast-2026-09-28/README.md): D4/D3/AIN4 at `0x60`, three-point levels and ACKs, 20 writes/s pass, wrong-address NACK; 506 pin pairs covered in software only | **SW + focused HW** |
 
 ## Historical image records
 
@@ -73,11 +80,12 @@ The fit, STA, and assembler reports are in `hdl/proj/output_files/`.
 | 2026-08-07 | pin-map/pull-up image, SOF `0x0051801E` | smoke 10/10 | Historical |
 | 2026-08-27 | seed 10 wide-divider, SOF `0x0050ADC8` | 383/383 + 37/37 | Persistent historical baseline |
 | 2026-09-04 | repaired seed 10, SOF `0x00504799` | full suite 396/396; corrected 60-second stress 29/29; smoke 10/10; changed paths 117/117; strict codec/rate 26/26 | Historical volatile baseline |
-| 2026-09-09 | seed 10, SOF `0x0050492F` | unplug/replug discovery and full suite 436/436; browser hardware 5/5 and 34/34; 37-case screenshot matrix and all 114 PNGs refreshed again on 2026-09-16 | Current persistent image; cold-boot persistence recorded |
+| 2026-09-09 | seed 10, SOF `0x0050492F` | unplug/replug discovery and full suite 436/436; browser hardware 5/5 and 34/34; 37-case screenshot matrix and all 114 PNGs refreshed again on 2026-09-16 | Historical full-device reference; cold-boot persistence recorded |
+| 2026-09-28 | MCP4725 pin-map and fast I²C work | [Focused DAC electrical and waveform checks](../evidence/mcp4725-fast-2026-09-28/README.md); latest local STA summary has negative setup slack | Focused board evidence only; full-device signoff pending |
 
 Historical results remain useful regression evidence, but they do not prove a
-later RTL image. The current claim always follows the newest programmed image
-that has both a clean build and a complete relevant board run.
+later RTL image. The MCP4725 board checks prove the narrower wiring, voltage,
+ACK, and host-timed waveform behavior documented in their own record.
 
 ## CI and local gates
 

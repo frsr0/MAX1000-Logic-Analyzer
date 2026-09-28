@@ -14,6 +14,7 @@ Automated Machine-In-Loop subsystem for running predefined test scenarios. Confi
 |---|---|
 | `service.py` (18.3 KB) | MIL orchestration logic, preset definitions |
 | `model.py` (2.5 KB) | MIL Pydantic models and configuration |
+| `mcp4725.py` | External DAC voltage tests and bounded waveform runs |
 
 ## Protocol Support
 
@@ -22,6 +23,12 @@ Automated Machine-In-Loop subsystem for running predefined test scenarios. Confi
 | `uart` | UART loopback: generate bytes → capture → verify |
 | `modbus_uart` | Modbus RTU query/response: generate frame → capture → decode → validate CRC |
 | `rs485_modbus` | RS-485 half-duplex Modbus: generate with direction control → capture → validate |
+
+The separate [MCP4725 DAC workflow](../mcp4725.md) uses direct MIL endpoints
+and is not a `MilConfig` protocol preset. It checks a wired I²C DAC against
+the selected analogue input, or runs a short stepped waveform with a saved
+scope session. The hardware trace replays preflight measured levels at the
+timed write cadence.
 
 ## Models
 
@@ -105,6 +112,8 @@ POST /api/mil/configure             ← preset_id or MilConfig
 POST /api/mil/start                 → start MIL run
 POST /api/mil/stop                  → abort running test
 GET  /api/mil/status                → runtime status
+POST /api/mil/mcp4725/test           → one-code or three-point DAC voltage/ACK test
+POST /api/mil/mcp4725/waveform       → bounded waveform and saved trace session
 ```
 
 ## Dependencies

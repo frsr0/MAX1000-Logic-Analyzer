@@ -6,11 +6,12 @@ param(
     [switch]$RawOnly,
     # Keep the old direct PLL c4 forward instead of the DDIO clock forward.
     [switch]$LegacyClkForward,
-    # Best measured full mixed-signal seed under Quartus 25.1: 10 (min setup
-    # slack +0.083 ns, all domains positive). The design is fitter-seed
-    # sensitive at 95-97% density; a 48-seed sweep found no better seed.
+    # Verified full mixed-signal seed under Quartus 25.1: 7 (slow 85C min
+    # setup slack +0.046 ns; 8,021/8,064 LEs and 5,005 registers). All 66
+    # setup/hold/recovery/removal/pulse checks passed. This is a dense,
+    # fitter-seed-sensitive build; recheck timing after RTL or pin changes.
     # Re-sweep (seed_sweep.ps1) after RTL or pin changes.
-    [int]$Seed = 10
+    [int]$Seed = 7
 )
 
 $FastRawBuild = if ($RawOnly) { 'true' } else { 'false' }
@@ -83,9 +84,10 @@ if ($pinMap.ContainsKey("UART_RX")) {
 if ($pinMap.ContainsKey("UART_TX")) {
     $attrLines += "    attribute chip_pin of SPI_MOSI : signal is `"$($pinMap["UART_TX"][-1])`";"
 }
-# Hardcoded pin assignments for MKR_D and PMOD (match physical board)
-$attrLines += "    attribute chip_pin of MKR_D : signal is `"H8,K10,H5,H4,J1,J2,L12,J12,J13,K11,K12,J10,H10,H13,G12`";"
-$attrLines += "    attribute chip_pin of PMOD : signal is `"M3,L3,M2,M1,N3,N2,K2,K1`";"
+# chip_pin lists follow the declared downto vector order (MSB first).
+# MKR_D[3]/[4] must land on the physical H4/J1 pads.
+$attrLines += "    attribute chip_pin of MKR_D : signal is `"G12,H13,H10,J10,K12,K11,J13,J12,L12,J2,J1,H4,H5,K10,H8`";"
+$attrLines += "    attribute chip_pin of PMOD : signal is `"K1,K2,N2,N3,M1,M2,L3,M3`";"
 
 # Build io_standard attributes (only for LED currently, but catch any with explicit standard)
 $ioLines = @()
@@ -163,7 +165,11 @@ end rtl;
 "@
 
 # Write wrapper
-Set-Content -Path $WRAPPER -Value $wrapperContent -Encoding ASCII
+[System.IO.File]::WriteAllText(
+    (Join-Path $PWD $WRAPPER),
+    (($wrapperContent -replace "`r`n", "`n") + "`n"),
+    [System.Text.Encoding]::ASCII
+)
 Write-Host "Updated $WRAPPER with pin assignments from $CSV"
 
 # Ensure QPF exists
@@ -320,6 +326,44 @@ if ($compileOk) {
     exit 1
 }
 
+# Require a complete, nonnegative timing summary from this compile before any
+# image can be programmed.  A stale or missing report is a hard failure.
+. (Join-Path $PSScriptRoot 'timing_gate.ps1')
+$timingSummaryPath = Join-Path 'output_files' "$PROJECT.sta.summary"
+try {
+    Assert-QuartusTimingSummary -Path $timingSummaryPath
+} catch {
+    Write-Host "ERROR: $($_.Exception.Message)"
+    exit 1
+}
+
+# A successful fit can still wire a descending vector backward. Catch that
+# before programming hardware, using the fitter's actual pad assignments.
+$pinReportPath = "output_files\$PROJECT.pin"
+if (-not (Test-Path $pinReportPath)) {
+    Write-Host "ERROR: Quartus did not produce $pinReportPath"
+    exit 1
+}
+$pinReport = Get-Content $pinReportPath
+$expectedPads = [ordered]@{
+    'MKR_D[0]' = 'H8'
+    'MKR_D[3]' = 'H4'
+    'MKR_D[4]' = 'J1'
+    'MKR_D[5]' = 'J2'
+    'MKR_D[14]' = 'G12'
+    'PMOD[0]' = 'M3'
+    'PMOD[7]' = 'K1'
+}
+foreach ($signal in $expectedPads.Keys) {
+    $pad = $expectedPads[$signal]
+    $pattern = '^' + [regex]::Escape($signal) + '\s+:\s+' + $pad + '\s+:'
+    if (-not ($pinReport | Select-String -Quiet -Pattern $pattern)) {
+        Write-Host "ERROR: fitted $signal is not on physical pad $pad"
+        exit 1
+    }
+}
+Write-Host "Physical pin map: VERIFIED"
+
 if ($Flash) {
     Write-Host ""
     Write-Host "=== Flashing ==="
@@ -327,7 +371,14 @@ if ($Flash) {
     # power cycles. A .sof "P;" is only a volatile SRAM load on MAX 10.
     $pof = "output_files\$PROJECT.pof"
     if (Test-Path $pof) {
-        & $PROGRAMMER -c 1 -m JTAG -o "P;$pof" 2>&1 | Select-String "successful|Success"
+        $programmerOutput = & $PROGRAMMER -c 1 -m JTAG -o "P;$pof" 2>&1
+        $programmerExitCode = $LASTEXITCODE
+        if ($programmerExitCode -ne 0) {
+            Write-Host "ERROR: Programmer failed with exit code $programmerExitCode"
+            Write-Host $programmerOutput
+            exit 1
+        }
+        $programmerOutput | Select-String "successful|Success"
         Write-Host "Flash: SUCCESS"
     } else {
         Write-Host "ERROR: $pof not found"

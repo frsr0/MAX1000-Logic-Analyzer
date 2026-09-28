@@ -59,6 +59,10 @@ architecture bench of tb_gen_loopback is
   signal sen_sdo : std_logic := '0';
   signal led : std_logic_vector(7 downto 0);
   signal tx_pin_edges : natural := 0;
+  signal i2c_scl_monitor_enable : std_logic := '0';
+  signal i2c_scl_low_seen : std_logic := '0';
+  signal i2c_scl_released_rise_seen : std_logic := '0';
+  signal i2c_scl_push_high_seen : std_logic := '0';
 
 
   function flatten(b : byte_array; n : natural) return std_logic_vector is
@@ -167,6 +171,22 @@ begin
         tx_pin_edges <= tx_pin_edges + 1;
       end if;
       previous := mkr_d(TX_CH);
+    end if;
+  end process;
+
+  -- The weak 'H' pull-up models the external 3.3 V I2C pull-up. On SCL,
+  -- distinguish a released high ('H') from the FPGA actively driving high
+  -- ('1') after a clock low phase.
+  i2c_scl_drive_monitor : process(mkr_d(5))
+  begin
+    if i2c_scl_monitor_enable = '1' then
+      if mkr_d(5) = '0' then
+        i2c_scl_low_seen <= '1';
+      elsif i2c_scl_low_seen = '1' and mkr_d(5) = 'H' then
+        i2c_scl_released_rise_seen <= '1';
+      elsif i2c_scl_low_seen = '1' and mkr_d(5) = '1' then
+        i2c_scl_push_high_seen <= '1';
+      end if;
     end if;
   end process;
 
@@ -426,6 +446,36 @@ begin
       wait for 20 us;
     end loop;
     gen_capture_and_check("B-after-plain");
+
+    -- Generic I2C routes must release SCL high so the external pull-up sets
+    -- the high level. With the previous push-pull implementation, this sees
+    -- '1' instead of the weak pull-up 'H' and fails the assertion below.
+    report "=== Generic I2C open-drain SCL ===";
+    i2c_scl_low_seen <= '0';
+    i2c_scl_released_rise_seen <= '0';
+    i2c_scl_push_high_seen <= '0';
+    wreg(spi_cs, sck, spi_mosi, spi_miso, REG_GEN_PROTO, 1);
+    wreg(spi_cs, sck, spi_mosi, spi_miso, REG_GEN_DATA, 16#10001#);
+    wreg(spi_cs, sck, spi_mosi, spi_miso, REG_GEN_PINS, 16#0504#);
+    wreg(spi_cs, sck, spi_mosi, spi_miso, REG_GEN_BAUD, 100);
+    i2c_scl_monitor_enable <= '1';
+    pkt_cmd(spi_cs, sck, spi_mosi, spi_miso, CMD_GEN_LOAD,
+            byte_array'(x"AF", x"F4", x"F5", x"A1", x"A0", x"A0",
+                        x"A0", x"A0", x"A0", x"F4", x"E1"),
+            11, st);
+    pkt_cmd(spi_cs, sck, spi_mosi, spi_miso, CMD_GEN_START, empty, 0, st);
+    wait for 1 ms;
+    i2c_scl_monitor_enable <= '0';
+    if i2c_scl_low_seen = '1' and i2c_scl_released_rise_seen = '1' and
+       i2c_scl_push_high_seen = '0' then
+      report "Generic I2C SCL PASS (low-driven, high-released)" severity note;
+    else
+      report "Generic I2C SCL FAIL (low=" & std_logic'image(i2c_scl_low_seen) &
+             ", released-rise=" & std_logic'image(i2c_scl_released_rise_seen) &
+             ", push-high=" & std_logic'image(i2c_scl_push_high_seen) & ")"
+             severity error;
+      fails := fails + 1;
+    end if;
 
     report "======================================================";
     if fails = 0 then

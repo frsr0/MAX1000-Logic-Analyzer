@@ -5,7 +5,7 @@ import type {
   DecoderEvent, DecoderInstance, DeviceCapabilities, DeviceDescriptor,
   DeviceMetadata, GeneratorConfig, GeneratorRouteCapability, LogEntry, Marker, MeasurementInstance,
   MeasurementType, MilConfig, MilPresetSummary, MilRuntimeStatus,
-  MilTransactionResponse, MilAccelerometerConfig, MilAccelerometerStatus, Session, SessionSummary, VirtualBridgeStatus,
+  MilTransactionResponse, MilAccelerometerConfig, MilAccelerometerStatus, Mcp4725TestResult, Mcp4725WaveformConfig, Mcp4725WaveformResult, Session, SessionSummary, VirtualBridgeStatus,
   VirtualComPairCreateResponse,
 } from './types';
 import { parseWaveformPayload, WaveformPayload } from './binary';
@@ -232,6 +232,10 @@ export const api = {
   milStop: () => post<MilRuntimeStatus>('/api/mil/stop'),
   milTransaction: (body: { request_hex: string; protocol?: string; capture_evidence?: boolean }) =>
     post<MilTransactionResponse>('/api/mil/transaction', body),
+  milMcp4725Test: (body: { address: number; sda_pin: number; scl_pin: number; adc_channel: 1 | 2 | 3 | 4; codes: number[]; tolerance_v: number }) =>
+    post<Mcp4725TestResult>('/api/mil/mcp4725/test', body),
+  milMcp4725Waveform: (body: Mcp4725WaveformConfig) =>
+    post<Mcp4725WaveformResult>('/api/mil/mcp4725/waveform', body),
   // This endpoint contains a live sample timestamp. Explicitly bypass the
   // browser/proxy HTTP cache so a cached response cannot make the card show
   // seconds-old data while the transport is healthy.

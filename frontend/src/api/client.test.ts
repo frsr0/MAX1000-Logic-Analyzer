@@ -111,6 +111,8 @@ const cases: Case[] = [
   { name: 'mil start', call: api.milStart, method: 'POST', url: '/api/mil/start' },
   { name: 'mil stop', call: api.milStop, method: 'POST', url: '/api/mil/stop' },
   { name: 'mil transaction', call: () => api.milTransaction({ request_hex: '55' }), method: 'POST', url: '/api/mil/transaction', body: { request_hex: '55' } },
+  { name: 'mil MCP4725 test', call: () => api.milMcp4725Test({ address: 0x60, sda_pin: 22, scl_pin: 0, adc_channel: 3, codes: [2048], tolerance_v: 0.2 }), method: 'POST', url: '/api/mil/mcp4725/test', body: { address: 0x60, sda_pin: 22, scl_pin: 0, adc_channel: 3, codes: [2048], tolerance_v: 0.2 } },
+  { name: 'mil MCP4725 waveform', call: () => api.milMcp4725Waveform({ address: 0x60, sda_pin: 22, scl_pin: 0, adc_channel: 3, waveform: 'sine', frequency_hz: 1, steps_per_cycle: 16, cycles: 2, min_v: 0.2, max_v: 3.1, tolerance_v: 0.2 }), method: 'POST', url: '/api/mil/mcp4725/waveform', body: { address: 0x60, sda_pin: 22, scl_pin: 0, adc_channel: 3, waveform: 'sine', frequency_hz: 1, steps_per_cycle: 16, cycles: 2, min_v: 0.2, max_v: 3.1, tolerance_v: 0.2 } },
   { name: 'mil accelerometer status', call: api.milAccelerometerStatus, method: 'GET', url: '/api/mil/accelerometer/status', cache: 'no-store' },
   { name: 'mil accelerometer config', call: api.milAccelerometerConfig, method: 'GET', url: '/api/mil/accelerometer/config' },
   { name: 'mil accelerometer config update', call: () => api.milAccelerometerUpdateConfig({

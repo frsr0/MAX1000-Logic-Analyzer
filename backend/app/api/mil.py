@@ -4,13 +4,58 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..mil.model import MilLoadRequest, MilTransactionRequest
+from ..mil.mcp4725 import (Mcp4725TestRequest, Mcp4725WaveformRequest,
+                           run_waveform, test_mcp4725)
 from ..mil.accelerometer import AccelerometerConfig, accelerometer
 from ..hardware.base import HardwareError
 from ..mil.service import emulator
 from ..state import capture_manager
+from ..websocket.manager import manager as websocket_manager
 from .deps import client_id_header, require_control
 
 router = APIRouter(tags=["machine-in-loop"])
+
+
+def _check_dac_available() -> None:
+    if capture_manager.capture_state in ("armed", "capturing"):
+        raise HTTPException(409, "Stop the current capture before using the DAC")
+    if capture_manager._accelerometer_reserved:
+        raise HTTPException(409, "Stop the live accelerometer before using the DAC")
+
+
+@router.post("/api/mil/mcp4725/test")
+def mil_mcp4725_test(req: Mcp4725TestRequest,
+                     client_id: str = Depends(client_id_header)):
+    require_control(client_id)
+    if accelerometer.status().get("running"):
+        raise HTTPException(409, "Stop the live accelerometer before testing the DAC")
+    with capture_manager._cap_lock:
+        _check_dac_available()
+        try:
+            return test_mcp4725(capture_manager.require_device(), req)
+        except HardwareError as exc:
+            raise HTTPException(502, str(exc)) from exc
+
+
+@router.post("/api/mil/mcp4725/waveform")
+def mil_mcp4725_waveform(req: Mcp4725WaveformRequest,
+                         client_id: str = Depends(client_id_header)):
+    require_control(client_id)
+    if accelerometer.status().get("running"):
+        raise HTTPException(409, "Stop the live accelerometer before using the DAC")
+    with capture_manager._cap_lock:
+        _check_dac_available()
+        try:
+            device = capture_manager.require_device()
+            result = run_waveform(device, req, capture_manager.store)
+        except HardwareError as exc:
+            raise HTTPException(502, str(exc)) from exc
+        capture_manager.last_session_id = result["session_id"]
+        session = capture_manager.store.get(result["session_id"])
+        if session is not None:
+            websocket_manager.publish_threadsafe(
+                "status", "session_created", session.summary())
+        return result
 
 
 @router.get("/api/mil/accelerometer/status")

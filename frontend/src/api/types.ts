@@ -412,6 +412,66 @@ export interface MilAccelerometerSample {
   timestamp: number;
 }
 
+export interface Mcp4725TestResult {
+  mock: boolean;
+  address: number;
+  sda: string;
+  scl: string;
+  sda_pin: number;
+  scl_pin: number;
+  adc_channel: 1 | 2 | 3 | 4;
+  analog_input: string;
+  tolerance_v: number;
+  passed: boolean;
+  bus_passed: boolean;
+  steps: {
+    code: number;
+    expected_v: number;
+    measured_v: number;
+    error_v: number;
+    acknowledgements: boolean[] | null;
+    voltage_passed: boolean;
+    bus_passed: boolean;
+    passed: boolean;
+  }[];
+}
+
+export interface Mcp4725WaveformConfig {
+  address: number;
+  sda_pin: number;
+  scl_pin: number;
+  adc_channel: 1 | 2 | 3 | 4;
+  waveform: 'sine' | 'triangle' | 'sawtooth' | 'square';
+  frequency_hz: number;
+  steps_per_cycle: number;
+  cycles: number;
+  min_v: number;
+  max_v: number;
+  tolerance_v: number;
+}
+
+export interface Mcp4725WaveformResult {
+  mock: boolean;
+  passed: boolean;
+  voltage_passed: boolean;
+  timing_passed: boolean;
+  bus_passed: boolean;
+  trace_source: 'synthetic' | 'preflight_measured_levels';
+  session_id: string;
+  waveform: Mcp4725WaveformConfig['waveform'];
+  sda: string;
+  scl: string;
+  adc_channel: 1 | 2 | 3 | 4;
+  analog_input: string;
+  requested_frequency_hz: number;
+  actual_frequency_hz: number;
+  measured_min_v: number;
+  measured_max_v: number;
+  max_error_v: number;
+  sample_rate_hz: number;
+  trace_v: number[];
+}
+
 export interface MilAccelerometerConfig {
   output_data_rate_hz: 1 | 10 | 25 | 50 | 100 | 200 | 400 | 1344 | 1600 | 5376;
   full_scale_g: 2 | 4 | 8 | 16;

@@ -70,6 +70,7 @@ graph TB
 - [Hardware Screenshot Matrix](hardware-screenshot-matrix.md) - linked MAX1000 capture-mode and sample-rate screenshots
 - [Feature and Coverage Matrix](feature-matrix.md) - cross-layer feature inventory, implementation locations, and evidence
 - [On-board LIS3DH Accelerometer](accelerometer.md) - physical wiring, I²C/SPI access, live capture, and validation
+- [MCP4725 DAC and Signal Generator](mcp4725.md) - MIL wiring, selectable I²C and analogue routes, waveform limits, and physical evidence
 - [Recent Software Features](recent-software-features.md) - expanded decoders, Bit Banger scripts, analysis, imports, comparisons, triggers, and UI tools
 - [Verification and Change Traceability](verification-traceability.md) - commit-to-evidence matrix, validation boundaries, and audit rules
 
@@ -95,6 +96,8 @@ graph TB
   UART/RS-485/Bit Banger output during live capture
 - Hardware route capabilities advertise optional RS-485 DE and SPI CS/MISO auxiliary routes
 - Bit Engine/Bit Banger PWM loopback for hardware self-test
+- MCP4725 MIL DAC voltage test and bounded stepped waveform generation; see
+  [the focused 2026-09-28 physical record](../evidence/mcp4725-fast-2026-09-28/README.md)
 - Readback compression (`raw` / direct `rle` / packed `delta_rle` modes)
 - Current software baseline is commit `47bce3d` (`Close global coverage gaps`)
   atop `a84501e` (`Harden accelerometer live transport`). Backend coverage is
@@ -103,18 +106,22 @@ graph TB
   3,359 branches, 1,110 functions, and 3,780 lines with 391 passing tests plus
   one opt-in hardware skip. The frontend production build also passes.
 - Built with Quartus, targeting Intel MAX 10 `10M08SAU169C8G`, FAST_SPEED build
-- The current full mixed-signal image was built with Quartus 25.1 and fitter
+- The 2026-09-09 full mixed-signal image was built with Quartus 25.1 and fitter
   **seed 10**, then programmed into configuration flash on 2026-09-09. Slow-85C setup
   slack is `fast_clk +0.253 ns`, `sdram_core_clk +0.178 ns`, and
   `sys_clk +0.278 ns`; every reported timing check is clean. The image has SOF
   checksum `0x0050492F`.
-- That exact image passed the 10-check smoke test, the 421-check full suite, all 57
+- That 2026-09-09 image passed the 10-check smoke test, the 421-check full suite, all 57
   GHDL benches, and browser runs of 5/5 feature plus 34/34 hardware-aligned UI
   tests. The 37-case screenshot matrix was regenerated and visually reviewed
   on 2026-09-09. Live readback throughput remains transport- and
   compressibility-dependent; see
   [`hdl/mso-capture.md`](hdl/mso-capture.md#rate-behavior-and-livecontinuous-capture)
   and [Verification and Change Traceability](verification-traceability.md).
+
+The later MCP4725 pin-map change and software have focused physical evidence.
+The September full-device regression and post-fit timing figures above do not
+transfer to that change; see [Current Status](current-status.md).
 
 For the distinction between source coverage, simulation, build/timing evidence,
 and exact-image board validation, see

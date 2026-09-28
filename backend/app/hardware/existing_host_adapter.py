@@ -894,6 +894,115 @@ class ExistingHostAdapter(HardwareDevice):
             # finish on their own, so only live mode needs the explicit stop.
             self._dev.clear_live_gen()
 
+    def mcp4725_write_and_measure(self, address: int, code: int,
+                                  sda_pin: int = 4, scl_pin: int = 3,
+                                  adc_channel: int = 3) -> np.ndarray:
+        """Write the external DAC, then sample its held analog output.
+
+        The ordinary I2C generator route is a LIS3DH register read and does
+        not send ``data_hex``. Use the driver's write-only Bit Engine frame
+        explicitly so the two DAC data bytes reach the wired board.
+        """
+        with self._lock:
+            if self._dev is None:
+                raise HardwareError("Device not connected")
+            if (sda_pin == scl_pin or not 0 <= sda_pin <= 22
+                    or not 0 <= scl_pin <= 22):
+                raise HardwareError("SDA and SCL must be different external digital pins")
+            if adc_channel not in (1, 2, 3, 4):
+                raise HardwareError("Analog input must use ADC channel 1, 2, 3, or 4")
+            dev = self._dev
+            frame = bytes([(address << 1) & 0xFE, (code >> 8) & 0x0F,
+                           code & 0xFF])
+            physical_channels = {pin for pin in (sda_pin, scl_pin)
+                                 if pin < 16}
+            spare_channels = [ch for ch in range(16)
+                              if ch not in physical_channels]
+            _tx_capture_channel, scl_capture_channel, sda_capture_channel = \
+                spare_channels[:3]
+            dev.set_analog_config(0)
+            # Analog capture selects an analog-only raw flag in the driver.
+            # Clear that cached mode before the next digital generator
+            # capture, or subsequent writes return only a short trace.
+            dev.raw_mode(False)
+            # SDA on the TX lane is a generator echo. The spare MISO lane is
+            # routed from the physical pin, allowing the real ACK slots to be
+            # distinguished from the master releasing SDA high.
+            scl_channel = (scl_pin if scl_pin < 16
+                           else scl_capture_channel)
+            sda_channel = (sda_pin if sda_pin < 16
+                           else sda_capture_channel)
+            rising_scl_sda = []
+            for _attempt in range(3):
+                raw = dev.capture_with_gen(
+                    rate_hz=1_000_000, nsamples=2048, timeout=6,
+                    proto="I2C", i2c_speed=100_000, i2c_frame=frame,
+                    i2c_tx_pin=sda_pin, i2c_scl_pin=scl_pin, i2c_read_len=0,
+                    fast_mode=True,
+                )
+                samples_digital = [
+                    int.from_bytes(raw[index:index + 2], "little")
+                    for index in range(0, len(raw) - 1, 2)]
+                rising_scl_sda = []
+                for previous, current in zip(samples_digital,
+                                             samples_digital[1:]):
+                    if (not (previous & (1 << scl_channel))
+                            and current & (1 << scl_channel)):
+                        rising_scl_sda.append(
+                            bool(current & (1 << sda_channel)))
+                # A three-byte write has 27 data/ACK clocks plus one STOP
+                # cleanup edge. Retry truncated captures, not a real NACK.
+                if len(rising_scl_sda) >= 27:
+                    break
+            ack_indices = (8, 17, 26)
+            self._mcp4725_last_acknowledgements = tuple(
+                not rising_scl_sda[index] for index in ack_indices
+                if index < len(rising_scl_sda))
+            self._mcp4725_last_ack_count = len(rising_scl_sda)
+            # The DAC retains the volatile output after the I2C STOP. Capture
+            # after the write because this bitstream's analog capture uses a
+            # separate ADC mode from the atomic digital generator capture.
+            result = self.capture(CaptureSettings(
+                mode="analog_all", analog_enabled=True,
+                sample_rate=24_000, num_samples=64,
+            ))
+            samples = result.analog.get(f"a{adc_channel}")
+            if samples is None or len(samples) == 0:
+                raise HardwareError(
+                    f"ADC{adc_channel} returned no analog samples")
+            return samples
+
+    def mcp4725_last_acknowledgements(self) -> tuple[bool, ...]:
+        """Return physical SDA ACK bits captured during the last DAC write."""
+        return tuple(getattr(self, "_mcp4725_last_acknowledgements", ()))
+
+    def mcp4725_prepare_fast(self, sda_pin: int, scl_pin: int) -> None:
+        """Set up the external I2C RX path for timed DAC writes."""
+        with self._lock:
+            if self._dev is None:
+                raise HardwareError("Device not connected")
+            if (sda_pin == scl_pin or not 0 <= sda_pin <= 22
+                    or not 0 <= scl_pin <= 22):
+                raise HardwareError("SDA and SCL must be different external digital pins")
+            try:
+                self._dev.external_i2c_prepare(sda_pin, scl_pin)
+            except (RuntimeError, ValueError) as exc:
+                raise HardwareError(str(exc)) from exc
+
+    def mcp4725_write_fast(self, address: int, code: int) -> tuple[bool, ...]:
+        """Send one DAC code and read ACKs without a full scope capture."""
+        with self._lock:
+            if self._dev is None:
+                raise HardwareError("Device not connected")
+            frame = bytes([(address << 1) & 0xFE, (code >> 8) & 0x0F,
+                           code & 0xFF])
+            try:
+                acks = self._dev.external_i2c_write(frame)
+            except (RuntimeError, ValueError) as exc:
+                raise HardwareError(str(exc)) from exc
+            self._mcp4725_last_acknowledgements = tuple(acks)
+            return tuple(acks)
+
     def capture_with_generator(self, settings: CaptureSettings, cfg: GeneratorConfig,
                                progress: Optional[ProgressCb] = None,
                                stop_evt: Optional[threading.Event] = None) -> CaptureResult:

@@ -28,10 +28,12 @@ DIGITAL_PIN_MAP: List[Dict[str, Any]] = [
     {"pin_index": 16, "board_label": "PIO_02", "fpga_pin": "PIN_L3", "header": "PMOD / 2"},
     {"pin_index": 17, "board_label": "PIO_03", "fpga_pin": "PIN_M2", "header": "PMOD / 3"},
     {"pin_index": 18, "board_label": "PIO_04", "fpga_pin": "PIN_M1", "header": "PMOD / 4"},
-    {"pin_index": 19, "board_label": "PIO_05", "fpga_pin": "PIN_N3", "header": "PMOD / 5"},
-    {"pin_index": 20, "board_label": "PIO_06", "fpga_pin": "PIN_N2", "header": "PMOD / 6"},
-    {"pin_index": 21, "board_label": "PIO_07", "fpga_pin": "PIN_K2", "header": "PMOD / 7"},
-    {"pin_index": 22, "board_label": "PIO_08", "fpga_pin": "PIN_K1", "header": "PMOD / 8"},
+    # The connector signal numbering skips physical pins 5-6 for GND/3.3 V.
+    # PIO_05..PIO_08 land on connector positions 7..10 per the MAX1000 guide.
+    {"pin_index": 19, "board_label": "PIO_05", "fpga_pin": "PIN_N3", "header": "PMOD / 7"},
+    {"pin_index": 20, "board_label": "PIO_06", "fpga_pin": "PIN_N2", "header": "PMOD / 8"},
+    {"pin_index": 21, "board_label": "PIO_07", "fpga_pin": "PIN_K2", "header": "PMOD / 9"},
+    {"pin_index": 22, "board_label": "PIO_08", "fpga_pin": "PIN_K1", "header": "PMOD / 10"},
     {"pin_index": 23, "board_label": "SEN_SDO", "fpga_pin": "PIN_K5", "header": "Accelerometer SDO"},
     {"pin_index": 24, "board_label": "SEN_SDI", "fpga_pin": "PIN_J7", "header": "Accelerometer SDA"},
     {"pin_index": 25, "board_label": "SEN_SPC", "fpga_pin": "PIN_J6", "header": "Accelerometer SCL"},

@@ -39,7 +39,9 @@ function sessionModeLabel(mode: string) {
 }
 
 function sessionRateLabel(rate: number) {
-  return rate >= 1e6 ? `${(rate / 1e6).toFixed(1)} MHz` : `${(rate / 1e3).toFixed(1)} kHz`;
+  if (rate >= 1e6) return `${(rate / 1e6).toFixed(1)} MHz`;
+  if (rate >= 1e3) return `${(rate / 1e3).toFixed(1)} kHz`;
+  return `${rate.toFixed(1)} Hz`;
 }
 
 function sessionChannelsLabel(channels: { type: string; board_label?: string | null; adc_channel?: number | null }[]) {
@@ -125,9 +127,7 @@ export function CapturePage() {
               <strong>{activeSession.name}</strong>
               <span className="hint">
                 {activeSession.num_samples.toLocaleString()} samples @{' '}
-                {activeSession.sample_rate >= 1e6
-                  ? `${(activeSession.sample_rate / 1e6).toFixed(1)} MHz`
-                  : `${(activeSession.sample_rate / 1e3).toFixed(1)} kHz`}
+                {sessionRateLabel(activeSession.sample_rate)}
                 {activeSession.device.mock ? ' · MOCK' : ''}
               </span>
               <span className="badge badge-soft">{deviceName}</span>

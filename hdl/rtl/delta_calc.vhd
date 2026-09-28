@@ -69,6 +69,10 @@ architecture rtl of delta_calc is
   type prev_array is array(0 to 3) of unsigned(11 downto 0);
   signal prev : prev_array := (others => (others => '0'));
   signal count   : natural range 0 to FRAME_SAMPLES-1 := 0;  -- samples into current frame
+  -- Separates first-frame anchor routing from the wide rolling sample count.
+  -- This one-bit phase avoids putting the count compare in the anchor data
+  -- register enable path at 200 MHz.
+  signal anchor_phase : std_logic := '1';
   signal run_max : unsigned(3 downto 0) := (others => '0');  -- running max width (S3)
 
   -- S1 -> S2 pipeline registers
@@ -122,6 +126,7 @@ begin
       if rst = '1' then
         prev        <= (others => (others => '0'));
         count       <= 0;
+        anchor_phase <= '1';
         run_max     <= (others => '0');
         v1 <= '0'; v2 <= '0';
         anchor_valid <= '0';
@@ -138,7 +143,7 @@ begin
         -- ---------------- Stage 1: channel-relative subtract ----------------
         if sample_valid = '1' then
           ch    := to_integer(unsigned(sample_ch));
-          if count < CHANNELS then
+          if anchor_phase = '1' then
             case ch is
               when 0 => anchor_ch0 <= sample_in;
               when 1 => anchor_ch1 <= sample_in;
@@ -157,6 +162,11 @@ begin
           if count = CHANNELS then first1 <= '1'; else first1 <= '0'; end if;
           if count = FRAME_SAMPLES - 1 then last1 <= '1'; else last1 <= '0'; end if;
           if count = FRAME_SAMPLES - 1 then count <= 0; else count <= count + 1; end if;
+          if count = CHANNELS - 1 then
+            anchor_phase <= '0';
+          elsif count = FRAME_SAMPLES - 1 then
+            anchor_phase <= '1';
+          end if;
         else
           v1 <= '0';
         end if;
