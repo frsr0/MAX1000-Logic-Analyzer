@@ -36,7 +36,30 @@ architecture rtl of spi_packet_tx is
   signal busy    : std_logic := '0';
   signal payload_pending : std_logic := '0';
   signal payload_hold    : std_logic_vector(7 downto 0) := (others => '0');
+  signal len_lo          : std_logic_vector(7 downto 0) := (others => '0');
+  signal len_hi          : std_logic_vector(7 downto 0) := (others => '0');
+  signal crc_in          : std_logic_vector(7 downto 0) := (others => '0');
+  signal crc_nxt         : std_logic_vector(15 downto 0) := (others => '1');
 begin
+
+  -- Length bytes are emitted as payload and also folded into the CRC; derive
+  -- them once instead of re-evaluating the division at each use.
+  len_lo <= std_logic_vector(to_unsigned(rsp_len mod 256, 8));
+  len_hi <= std_logic_vector(to_unsigned(rsp_len / 256, 8));
+
+  -- One shared CRC-16 cone.  The FSM folds exactly one byte per CRC state, so
+  -- selecting the input byte by state is equivalent to the five separate
+  -- crc16() calls it replaces -- one cone plus a byte mux instead of five
+  -- unshared cones, which is a material area saving at 96% device fill.
+  with state select crc_in <=
+    rsp_status   when SEND_STATUS,
+    req_seq      when SEND_SEQ,
+    len_lo       when SEND_LEN_L,
+    len_hi       when SEND_LEN_H,
+    payload_hold when SEND_PAYLOAD,
+    (others => '0') when others;
+
+  crc_nxt <= crc16(crc_in, crc_acc);
 
   process(clk)
   begin
@@ -80,30 +103,28 @@ begin
           when SEND_STATUS =>
             if tx_ready = '1' then
               tx_byte <= rsp_status;
-              crc_acc <= crc16(rsp_status, crc_acc);
+              crc_acc <= crc_nxt;
               state <= SEND_SEQ;
             end if;
 
           when SEND_SEQ =>
             if tx_ready = '1' then
               tx_byte <= req_seq;
-              crc_acc <= crc16(req_seq, crc_acc);
+              crc_acc <= crc_nxt;
               state <= SEND_LEN_L;
             end if;
 
           when SEND_LEN_L =>
             if tx_ready = '1' then
-              tx_byte <= std_logic_vector(to_unsigned(rsp_len mod 256, 8));
-              crc_acc <= crc16(
-                std_logic_vector(to_unsigned(rsp_len mod 256, 8)), crc_acc);
+              tx_byte <= len_lo;
+              crc_acc <= crc_nxt;
               state <= SEND_LEN_H;
             end if;
 
           when SEND_LEN_H =>
             if tx_ready = '1' then
-              tx_byte <= std_logic_vector(to_unsigned(rsp_len / 256, 8));
-              crc_acc <= crc16(
-                std_logic_vector(to_unsigned(rsp_len / 256, 8)), crc_acc);
+              tx_byte <= len_hi;
+              crc_acc <= crc_nxt;
               if rsp_len = 0 then
                 state <= SEND_CRC_L;
               else
@@ -121,7 +142,7 @@ begin
               end if;
             elsif tx_ready = '1' then
               tx_byte <= payload_hold;
-              crc_acc <= crc16(payload_hold, crc_acc);
+              crc_acc <= crc_nxt;
               payload_pending <= '0';
               if cnt + 1 >= rsp_len then
                 state <= SEND_CRC_L;
