@@ -209,6 +209,15 @@ export function CaptureControls() {
   const [name, setName] = useState('');
   const [job, setJob] = useState<any>(null);
   const validationRequest = useRef(0);
+  const jobPollTimer = useRef<number | null>(null);
+  const jobPollMounted = useRef(true);
+  useEffect(() => {
+    jobPollMounted.current = true;
+    return () => {
+      jobPollMounted.current = false;
+      if (jobPollTimer.current !== null) window.clearTimeout(jobPollTimer.current);
+    };
+  }, []);
 
   const connected = status?.device_connected ?? false;
   const capturing = status?.capture_state === 'capturing' || status?.capture_state === 'armed';
@@ -414,12 +423,14 @@ export function CaptureControls() {
       setJob(created);
       const poll = async () => {
         const current = await api.captureJob(created.id);
+        // The panel may have unmounted while the poll was in flight.
+        if (!jobPollMounted.current) return;
         setJob(current);
         if (['queued', 'starting', 'running'].includes(current.state)) {
-          window.setTimeout(poll, 400);
+          jobPollTimer.current = window.setTimeout(poll, 400);
         }
       };
-      window.setTimeout(poll, 100);
+      jobPollTimer.current = window.setTimeout(poll, 100);
     } catch (e: any) { toast('error', e.message); }
   };
 

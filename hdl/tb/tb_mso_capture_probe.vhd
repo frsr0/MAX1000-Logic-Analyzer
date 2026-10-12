@@ -7,7 +7,7 @@ end tb_mso_capture_probe;
 
 architecture bench of tb_mso_capture_probe is
   constant FAST_PERIOD : time := 5 ns;
-  constant ADC_PERIOD  : time := 10 ns;
+  constant ADC_PERIOD  : time := 250 ns;  -- 4 MHz ADC scan rate (realistic)
 
   signal fast_clk : std_logic := '0';
   signal adc_clk  : std_logic := '0';

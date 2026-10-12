@@ -13,11 +13,14 @@ def test_pack_symbols_pads_partial_byte_and_rejects_fifo_overflow():
 
 
 def test_spi_symbol_budget_and_exact_msb_first_clock_shape():
-    assert bit_bang.max_spi_bytes() == bit_bang.MAX_SYMBOLS // 16
+    assert bit_bang.max_spi_bytes() == (bit_bang.MAX_SYMBOLS - 1) // 16
     symbols = bit_bang.spi_symbols(bytes([0x80]))
     assert symbols[:4] == [1, 3, 0, 2]
     assert symbols[-1] == 3
     assert len(symbols) == 17
+    # The advertised maximum must actually fit the symbol FIFO.
+    assert bit_bang.pack_symbols(
+        bit_bang.spi_symbols(bytes(bit_bang.max_spi_bytes())))
 
 
 def test_swd_budget_supports_line_reset_without_switch_sequence():

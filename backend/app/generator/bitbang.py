@@ -17,7 +17,13 @@ def preset_symbols(name: str, count: int = 32) -> List[int]:
     if name == "idle":
         return [3] * count
     if name == "pulse":
-        return [3] * max(1, count // 4) + [0] * max(1, count // 2) + [3] * max(1, count - (count // 4) - (count // 2))
+        low = max(1, count // 4)
+        high = max(1, count // 2)
+        if low + high > count:
+            # Small counts: keep the pulse from overshooting the request.
+            high = max(0, count - low)
+        tail = count - low - high
+        return [3] * low + [0] * high + [3] * tail
     if name == "square":
         # One symbol per level: a square wave at symbol_rate/2 (0,3,0,3,...).
         # The previous two-symbol-per-level encoding emitted symbol_rate/4.

@@ -1815,6 +1815,106 @@ def test_capture_manager_decoder_cancel_and_upstream_event_paths(tmp_path, monke
     assert mgr.cancel_decoder("manual") is True
 
 
+def _stacked_session(tmp_path, upstream_status):
+    mgr = CaptureManager(SessionStore(tmp_path))
+    upstream = DecoderInstance(id="u", decoder_id="uart", status=upstream_status)
+    session = Session(id="s", name="decode", sample_rate=10_000, num_samples=20,
+                      channels=default_digital_channels(1), decoders=[upstream])
+    mgr.store.save(session)
+    mgr.store.save_waveform(session.id, _wf(digital=np.zeros(20, dtype=np.uint16)))
+    mgr.store.save_decoder_events(session.id, "u", [{"id": "u"}])
+    return mgr, session, upstream
+
+
+def _wait_status(inst, target, timeout=0.5):
+    deadline = time.time() + timeout
+    while time.time() < deadline and inst.status != target:
+        time.sleep(0.01)
+
+
+def test_capture_manager_stacked_decoder_waits_for_running_upstream(tmp_path, monkeypatch):
+    import app.capture.capture_manager as manager_module
+
+    class FakeDecoder:
+        id = "fake"
+        consumes = "uart"
+
+        def defaults(self): return {}
+
+        def decode(self, ctx, settings):
+            assert ctx.upstream_events == [{"id": "u"}]
+            return type("R", (), {"events": [{"type": "ok"}], "warnings": []})()
+
+    monkeypatch.setattr(manager_module.decoder_registry, "get", lambda _: FakeDecoder())
+    mgr, session, upstream = _stacked_session(tmp_path, "running")
+
+    # The upstream finishes shortly after the downstream starts waiting on it.
+    def finish():
+        time.sleep(0.05)
+        upstream.status = "done"
+
+    threading.Thread(target=finish, daemon=True).start()
+    inst = DecoderInstance(id="dst", decoder_id="fake")
+    session.decoders.append(inst)
+    mgr.run_decoder(session, inst)
+    _wait_status(inst, "done")
+    assert inst.status == "done"
+    assert mgr.store.load_decoder_events(session.id, "dst") == [
+        {"type": "ok", "decoder_id": "dst"}]
+
+
+def test_capture_manager_stacked_decoder_cancel_while_waiting(tmp_path, monkeypatch):
+    import app.capture.capture_manager as manager_module
+
+    class FakeDecoder:
+        id = "fake"
+        consumes = "uart"
+
+        def defaults(self): return {}
+
+        def decode(self, ctx, settings):
+            return type("R", (), {"events": [], "warnings": []})()
+
+    monkeypatch.setattr(manager_module.decoder_registry, "get", lambda _: FakeDecoder())
+    mgr, session, _ = _stacked_session(tmp_path, "running")
+    inst = DecoderInstance(id="dst", decoder_id="fake")
+    session.decoders.append(inst)
+
+    def cancel_soon():
+        time.sleep(0.05)
+        mgr._decoder_cancels[inst.id].set()
+
+    threading.Thread(target=cancel_soon, daemon=True).start()
+    mgr.run_decoder(session, inst)
+    _wait_status(inst, "cancelled")
+    assert inst.status == "cancelled"
+
+
+def test_capture_manager_stacked_decoder_errors_when_upstream_never_finishes(
+        tmp_path, monkeypatch):
+    import app.capture.capture_manager as manager_module
+
+    class FakeDecoder:
+        id = "fake"
+        consumes = "uart"
+
+        def defaults(self): return {}
+
+        def decode(self, ctx, settings):
+            return type("R", (), {"events": [], "warnings": []})()
+
+    monkeypatch.setattr(manager_module.decoder_registry, "get", lambda _: FakeDecoder())
+    # Zero wait budget exercises the deadline branch without sleeping.
+    monkeypatch.setattr(manager_module, "_UPSTREAM_WAIT_S", 0.0)
+    mgr, session, _ = _stacked_session(tmp_path, "running")
+    inst = DecoderInstance(id="dst", decoder_id="fake")
+    session.decoders.append(inst)
+    mgr.run_decoder(session, inst)
+    _wait_status(inst, "error")
+    assert inst.status == "error"
+    assert "completed" in inst.error
+
+
 def test_parallel_decoder_clocked_unclocked_and_missing_bus_paths():
     decoder = ParallelDecoder()
     empty_wf = _wf(digital=np.zeros(4, dtype=np.uint16))

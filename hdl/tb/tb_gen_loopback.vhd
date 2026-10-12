@@ -60,6 +60,10 @@ architecture bench of tb_gen_loopback is
   signal led : std_logic_vector(7 downto 0);
   signal tx_pin_edges : natural := 0;
   signal i2c_scl_monitor_enable : std_logic := '0';
+  -- Flag clearing is owned by the monitor process (its single driver): the
+  -- stimulus pulses this instead of assigning the flags itself, which would
+  -- create a second driver and resolve '0'/'1' to 'X'.
+  signal i2c_scl_monitor_clear : std_logic := '0';
   signal i2c_scl_low_seen : std_logic := '0';
   signal i2c_scl_released_rise_seen : std_logic := '0';
   signal i2c_scl_push_high_seen : std_logic := '0';
@@ -161,6 +165,12 @@ architecture bench of tb_gen_loopback is
 begin
   gen_clk(clk_12, CLK_PERIOD / 2);
 
+  -- External board pull-ups. mkr_d is an INOUT tied to the DUT's open-drain
+  -- MKR_D pins, which drive 'Z' when released; a signal initialiser is NOT a
+  -- source, so without this weak 'H' driver a released pin resolves to 'Z' and
+  -- the open-drain SCL check below can never observe a real pull-up high.
+  mkr_d <= (others => 'H');
+
   -- Independent generator-side observation: distinguishes a generator that
   -- never toggles from a capture/readback path that loses real pin activity.
   pin_edge_monitor : process(mkr_d(TX_CH))
@@ -177,9 +187,13 @@ begin
   -- The weak 'H' pull-up models the external 3.3 V I2C pull-up. On SCL,
   -- distinguish a released high ('H') from the FPGA actively driving high
   -- ('1') after a clock low phase.
-  i2c_scl_drive_monitor : process(mkr_d(5))
+  i2c_scl_drive_monitor : process(mkr_d(5), i2c_scl_monitor_enable, i2c_scl_monitor_clear)
   begin
-    if i2c_scl_monitor_enable = '1' then
+    if i2c_scl_monitor_clear = '1' then
+      i2c_scl_low_seen <= '0';
+      i2c_scl_released_rise_seen <= '0';
+      i2c_scl_push_high_seen <= '0';
+    elsif i2c_scl_monitor_enable = '1' then
       if mkr_d(5) = '0' then
         i2c_scl_low_seen <= '1';
       elsif i2c_scl_low_seen = '1' and mkr_d(5) = 'H' then
@@ -451,9 +465,10 @@ begin
     -- the high level. With the previous push-pull implementation, this sees
     -- '1' instead of the weak pull-up 'H' and fails the assertion below.
     report "=== Generic I2C open-drain SCL ===";
-    i2c_scl_low_seen <= '0';
-    i2c_scl_released_rise_seen <= '0';
-    i2c_scl_push_high_seen <= '0';
+    i2c_scl_monitor_clear <= '1';
+    wait for 10 ns;
+    i2c_scl_monitor_clear <= '0';
+    wait for 10 ns;
     wreg(spi_cs, sck, spi_mosi, spi_miso, REG_GEN_PROTO, 1);
     wreg(spi_cs, sck, spi_mosi, spi_miso, REG_GEN_DATA, 16#10001#);
     wreg(spi_cs, sck, spi_mosi, spi_miso, REG_GEN_PINS, 16#0504#);

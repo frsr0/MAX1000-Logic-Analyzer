@@ -205,7 +205,13 @@ export function AnalogPanel() {
       ctx.fillText(`delay: ${correlationData.delay_s == null ? 'n/a' : `${(correlationData.delay_s * 1e6).toFixed(3)} µs`}`, 12, 80);
       ctx.fillText(`correlation: ${(correlationData.correlation ?? 0).toFixed(5)}`, 12, 110);
     } else if (mode === 'envelope' && envelopeData) {
-      const lo = Math.min(...envelopeData.min), hi = Math.max(...envelopeData.max);
+      // Reduce instead of spreading: a large envelope would overflow the
+      // argument list and throw RangeError.
+      let lo = Infinity, hi = -Infinity;
+      for (const v of envelopeData.min) if (v < lo) lo = v;
+      for (const v of envelopeData.max) if (v > hi) hi = v;
+      if (!Number.isFinite(lo)) lo = 0;
+      if (!Number.isFinite(hi)) hi = 0;
       const range = hi - lo || 1;
       ctx.fillStyle = 'rgba(79,195,247,0.28)'; ctx.beginPath();
       envelopeData.max.forEach((v, i) => {
@@ -246,7 +252,13 @@ export function AnalogPanel() {
       ctx.stroke();
     } else if (mode === 'event-correlation' && eventCorrelationData) {
       const pairs = eventCorrelationData.pairs ?? [];
-      const maxAbs = Math.max(1, ...pairs.map((p: any) => Math.abs(Number(p.lag_samples))));
+      // Reduce instead of spreading: pairing many edges would overflow the
+      // argument list and throw RangeError.
+      let maxAbs = 1;
+      for (const p of pairs) {
+        const v = Math.abs(Number((p as { lag_samples?: unknown }).lag_samples));
+        if (Number.isFinite(v) && v > maxAbs) maxAbs = v;
+      }
       ctx.fillStyle = '#d5dbe3'; ctx.font = '13px monospace';
       ctx.fillText(`paired edges: ${pairs.length}`, 12, 60);
       ctx.fillText(`threshold: ${Number(eventCorrelationData.threshold).toPrecision(5)}`, 12, 84);

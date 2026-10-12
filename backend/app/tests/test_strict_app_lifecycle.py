@@ -79,6 +79,10 @@ def test_spa_returns_existing_asset_or_index(monkeypatch, tmp_path):
     assert Path(existing.path) == asset
     assert Path(fallback.path) == index
     assert fallback.headers["cache-control"] == "no-store"
+    # An empty path and any traversal outside FRONTEND_DIST both fall back to
+    # index.html instead of serving arbitrary files.
+    assert Path(asyncio.run(main.spa("")).path) == index
+    assert Path(asyncio.run(main.spa("../escape.txt")).path) == index
 
 
 def test_main_module_loads_api_fallback_when_optional_mcp_import_fails(monkeypatch):

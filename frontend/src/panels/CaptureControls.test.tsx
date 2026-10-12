@@ -256,6 +256,24 @@ it('polls queued jobs through running, done and error displays', async () => {
   expect(submit).toHaveBeenCalledTimes(2);
 });
 
+
+it('clears its pending poll on unmount and skips the update when already gone', async () => {
+  vi.useFakeTimers();
+  vi.spyOn(api, 'submitCaptureJob')
+    .mockResolvedValue({ id: 'j1', state: 'queued' } as never);
+  let resolveJob!: (value: unknown) => void;
+  vi.spyOn(api, 'captureJob').mockImplementationOnce(
+    () => new Promise((resolve) => { resolveJob = resolve; }) as never);
+  const view = render(<CaptureControls />);
+  fireEvent.click(screen.getByRole('button', { name: 'Run in background' }));
+  await act(async () => { await Promise.resolve(); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+  view.unmount();
+  await act(async () => { resolveJob({ id: 'j1', state: 'running' }); });
+  expect(api.captureJob).toHaveBeenCalledOnce();
+  expect(screen.queryByText('Headless job running')).toBeNull();
+});
+
 it('reports queue errors and tolerates scenario/validation service failures', async () => {
   vi.useFakeTimers();
   vi.spyOn(api, 'mockScenarios').mockRejectedValue(new Error('catalog down'));

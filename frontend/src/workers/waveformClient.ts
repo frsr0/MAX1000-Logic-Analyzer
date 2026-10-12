@@ -95,17 +95,33 @@ export class WaveformClient {
     const buf = data.buf as ArrayBuffer | undefined;
     if (!header || !buf) return;
 
-    // Reconstruct WaveformPayload on the transferred buffer
-    const payload = parseWaveformPayload(buf);
     const id = typeof data.id === 'string' ? data.id : '';
     const entry = id ? this.pending.get(id) : undefined;
-    if (entry) {
-      entry.resolve(payload);
-      this.pending.delete(id);
+    try {
+      // Reconstruct WaveformPayload on the transferred buffer
+      const payload = parseWaveformPayload(buf);
+      if (entry) {
+        entry.resolve(payload);
+      }
+    } catch (err) {
+      // A parse failure must settle the request instead of leaving its promise
+      // pending (and its entry leaked) forever.
+      if (entry) {
+        entry.reject(err);
+      }
+    } finally {
+      if (entry) this.pending.delete(id);
     }
   }
 
   private handleError(e: ErrorEvent): void {
+    // A worker-level error typically means the worker is unusable. Drop it so
+    // the next request spawns a fresh worker instead of hanging forever on a
+    // dead instance.
+    if (this.worker) {
+      this.worker.terminate();
+      this.worker = null;
+    }
     for (const [, { reject }] of this.pending) {
       reject(new Error(e.message ?? 'Worker error'));
     }

@@ -220,13 +220,18 @@ it('rebinds session sockets and handles decoder and live-waveform messages', asy
   await message('/ws/session/one', 'trigger_resolved', { trigger_sample: 42 });
   expect(waveformView.trigSample).toBe(42);
   expect(refreshActiveSession).toHaveBeenCalledTimes(7);
+  // A non-numeric trigger sample must not poison the marker position.
+  waveformView.trigSample = 7;
+  await message('/ws/session/one', 'trigger_resolved', {});
+  expect(waveformView.trigSample).toBe(7);
+  expect(refreshActiveSession).toHaveBeenCalledTimes(8);
   waveformView.trigSample = 8;
   await message('/ws/session/one', 'waveform_ready', { num_samples: 80, sample_rate: 4000, rolling: true, chunk_samples: 16 });
   expect(updateLive).toHaveBeenCalledWith(80, 4000, 8, true, 16);
-  expect(refreshActiveSession).toHaveBeenCalledTimes(8);
+  expect(refreshActiveSession).toHaveBeenCalledTimes(9);
   await message('/ws/session/one', 'waveform_ready');
   expect(updateLive).toHaveBeenLastCalledWith(50, 2000, 8, false, 0);
-  expect(refreshActiveSession).toHaveBeenCalledTimes(8);
+  expect(refreshActiveSession).toHaveBeenCalledTimes(9);
   await message('/ws/session/one', 'ignored');
 
   const oldDecoder = socket('/ws/decoder/one');

@@ -71,6 +71,7 @@ class OLS:
         self.speed_hz = speed_hz
         self.dev = None
         self._stream_open = False
+        self._pending_reader = None
 
     # ── Low-level helpers ────────────────────────────────────────────
 
@@ -85,6 +86,13 @@ class OLS:
         """
         if not self.dev:
             return
+        # A previous streaming read that timed out may still be touching the
+        # device; let it finish before we drain reads behind its back.
+        reader = self._pending_reader
+        if reader is not None:
+            reader.join(timeout)
+            if not reader.is_alive():
+                self._pending_reader = None
         deadline = time.time() + timeout
         while time.time() < deadline:
             q = self.dev.getQueueStatus()
@@ -862,7 +870,10 @@ class OLS:
         reader = threading.Thread(
             target=lambda: result.append(self._read_n(len(payload), timeout=timeout)),
             daemon=True)
+        self._pending_reader = reader
         reader.start()
         self.dev.write(buf)
         reader.join(timeout + 1.0)
+        if not reader.is_alive():
+            self._pending_reader = None
         return result[0] if result else b''

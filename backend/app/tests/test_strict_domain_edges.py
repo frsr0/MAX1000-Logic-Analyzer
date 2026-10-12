@@ -119,6 +119,14 @@ def test_importers_limit_digital_width_and_ignore_unknown_or_late_vcd_changes():
     assert len(session.channels) == 16
     assert int(waveform.digital[0]) == 0xFFFF
 
+    # A multi-bit digital cell (0/1/2 from some exporters) must clamp to a
+    # single channel bit; 2 and 3 would otherwise spill into neighbouring
+    # channel positions via the shift.
+    rows = "sample,time_s,d0,d1\n0,0.0,2,3\n1,0.0005,1,0\n"
+    _, clamped = csv_session(rows, 2_000)
+    assert clamped.digital_channel(0).tolist() == [0, 1]
+    assert clamped.digital_channel(1).tolist() == [1, 0]
+
     variables = "\n".join(
         f"$var wire 1 {chr(33 + index)} D{index} $end" for index in range(17)
     )

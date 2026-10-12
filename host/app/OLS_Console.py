@@ -932,9 +932,20 @@ class OLScope:
 
     def _get_rate(self):
         try:
-            rate_str = self.rate_cb.get()
-            return max(1, int(rate_str.replace('kHz','000').replace('MHz','000000')))
-        except (ValueError, AttributeError):
+            raw = self.rate_cb.get()
+            if raw is None:
+                return 1_000_000
+            s = str(raw).strip().lower().replace(',', '')
+            if s.endswith('mhz'):
+                rate = float(s[:-3]) * 1_000_000
+            elif s.endswith('khz'):
+                rate = float(s[:-3]) * 1_000
+            elif s.endswith('hz'):
+                rate = float(s[:-2])
+            else:
+                rate = float(s)
+            return max(1, int(rate))
+        except (ValueError, TypeError, AttributeError):
             return 1_000_000
 
     def _get_samples(self):

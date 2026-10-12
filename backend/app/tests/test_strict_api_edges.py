@@ -88,6 +88,15 @@ def test_validation_api_selects_done_decoders_and_optionally_returns_junit(persi
     assert "junit_xml" not in all_decoders
 
 
+def test_validation_api_rejects_unknown_decoder_instance(persisted_session):
+    session, _, _ = persisted_session
+    with pytest.raises(HTTPException) as excinfo:
+        validation_api.validate_session(
+            session.id,
+            validation_api.ValidationRequest(decoder_instance="missing"))
+    assert excinfo.value.status_code == 404
+
+
 def test_serial_api_maps_services_and_conflicts(monkeypatch):
     monkeypatch.setattr(serial_api, "list_serial_ports", lambda: [{"port": "COM1"}])
     monkeypatch.setattr(serial_api, "list_ftdi_devices", lambda: [{"serial": "FT1"}])

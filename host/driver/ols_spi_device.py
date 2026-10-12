@@ -3833,7 +3833,9 @@ class OLSDeviceSPI:
         # Capture rate divider counts on the sample clock (FAST_CLK domain),
         # not sys_clk — they differ on FAST_SPEED firmware (200 vs 100 MHz).
         payload_stride = analog_frame_stride(self.analog_mode)
-        words_per_frame = max(1, payload_stride // 2)
+        # Frames are padded to whole 16-bit words on the wire (mixed frames are
+        # 5 dense bytes -> 3 words), so round up before dividing.
+        words_per_frame = max(1, (payload_stride + 1) // 2)
         div = max(0, int(self.sample_clk / (rate_hz * words_per_frame)) - 1)
         rc = max(1, nsamples * words_per_frame)
 

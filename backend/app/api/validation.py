@@ -1,5 +1,5 @@
 """Session assertion endpoint for automated sweeps and CI."""
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ..state import store
@@ -18,8 +18,15 @@ class ValidationRequest(BaseModel):
 @router.post("/api/sessions/{session_id}/validate")
 def validate_session(session_id: str, req: ValidationRequest):
     session = get_session_or_404(session_id)
-    decoders = ([next(d for d in session.decoders if d.id == req.decoder_instance)]
-                if req.decoder_instance else session.decoders)
+    if req.decoder_instance:
+        match = next((d for d in session.decoders
+                      if d.id == req.decoder_instance), None)
+        if match is None:
+            raise HTTPException(
+                404, f"Decoder instance not found: {req.decoder_instance}")
+        decoders = [match]
+    else:
+        decoders = session.decoders
     events = []
     for decoder in decoders:
         if decoder.status == "done":

@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { parseWaveformPayload } from '../api/binary';
 import { buildWaveformPayload } from '../test/waveformPayload';
 import { WaveformClient } from './waveformClient';
+
+vi.mock('../api/binary', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/binary')>();
+  return { ...actual, parseWaveformPayload: vi.fn(actual.parseWaveformPayload) };
+});
 
 class FakeWorker {
   static instances: FakeWorker[] = [];
@@ -110,5 +116,26 @@ describe('WaveformClient', () => {
     await expect(pending).rejects.toThrow('Worker error');
 
     new WaveformClient().dispose();
+  });
+
+  it('rejects the matching request when the transferred payload cannot be parsed', async () => {
+    const client = new WaveformClient();
+    const request = client.fetchOverview('corrupt');
+    vi.mocked(parseWaveformPayload)
+      .mockImplementationOnce(() => { throw new Error('bad uncorrelated'); })
+      .mockImplementationOnce(() => { throw new Error('bad payload'); });
+    // An uncorrelated corrupt reply has no pending entry to reject.
+    FakeWorker.instances[0].emit({ id: 'unknown', header: {}, buf: buildWaveformPayload('x') });
+    FakeWorker.instances[0].emit({ id: '0', header: {}, buf: buildWaveformPayload('corrupt') });
+    await expect(request).rejects.toThrow('bad payload');
+  });
+
+  it('ignores a worker error that arrives after the client was disposed', () => {
+    const client = new WaveformClient();
+    void client.fetchOverview('after-dispose').catch(() => {});
+    const worker = FakeWorker.instances[0];
+    client.dispose();
+    worker.onerror?.({ message: 'late crash' } as ErrorEvent);
+    expect(worker.terminated).toBe(true);
   });
 });

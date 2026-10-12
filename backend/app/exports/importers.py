@@ -22,7 +22,9 @@ def csv_session(text: str, sample_rate: float) -> Tuple[Session, WaveformData]:
     analog = [h for h in signal_headers if h.endswith(" (V)")]
     packed = np.zeros(len(rows), dtype=np.uint16)
     for index, name in enumerate(digital[:16]):
-        packed |= np.array([int(float(row.get(name, 0) or 0)) for row in rows],
+        # Clamp to a single bit: a stray value like 2 would otherwise set two
+        # channel bits via the shift.
+        packed |= np.array([int(float(row.get(name, 0) or 0)) & 1 for row in rows],
                            dtype=np.uint16) << index
     analog_data = {name[:-4]: np.array(
         [float(row.get(name, 0) or 0) for row in rows], dtype=np.float32)

@@ -57,6 +57,9 @@ export function MeasurementPanel() {
       } catch { /* ignore */ }
     }, 400);
   };
+  useEffect(() => () => {
+    if (recomputeTimer.current) clearTimeout(recomputeTimer.current);
+  }, []);
 
   if (!activeSession) return <div className="panel-body hint">No session open.</div>;
 

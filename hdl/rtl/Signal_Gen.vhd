@@ -158,7 +158,9 @@ begin
   Busy   <= tx_active;
   Tx_Out <= tx_out_r;
   Scl_Out <= scl_out_r;
-  Fifo_Count <= std_logic_vector(to_unsigned(used_count, 8));
+  -- Saturated: used_count can reach FIFO_DEPTH (256), which does not fit an
+  -- 8-bit port.
+  Fifo_Count <= x"FF" when used_count > 255 else std_logic_vector(to_unsigned(used_count, 8));
   Done_Pulse <= done_pulse_i;
 
   -- Shared baud tick for SPI/I2C. The tick is registered one cycle before the
@@ -233,9 +235,12 @@ begin
       start_d <= Start;
 
       if start_rise = '1' and tx_active = '0' then
-        baud_limit_v := to_integer(unsigned(Baud_Div)) - 1;
+        -- Check for the zero divider BEFORE subtracting: Baud_Div = 0 would
+        -- otherwise evaluate 0-1 and go out of range.
         if Baud_Div = x"0000" then
           baud_limit_v := to_integer(unsigned(FIXED_BAUD_DIV)) - 1;
+        else
+          baud_limit_v := to_integer(unsigned(Baud_Div)) - 1;
         end if;
 
         baud_limit_s <= baud_limit_v;

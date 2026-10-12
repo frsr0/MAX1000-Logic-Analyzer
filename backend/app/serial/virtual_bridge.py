@@ -280,12 +280,18 @@ class VirtualComManager:
                     if not chunk:
                         break
                     buffer += chunk
+                    send_failed = False
                     while b"\n" in buffer:
                         raw, buffer = buffer.split(b"\n", 1)
                         try:
                             conn.sendall(self._response_bytes(raw))
                         except OSError:
-                            return
+                            # A broken client must not tear down the bridge:
+                            # drop this connection and keep accepting.
+                            send_failed = True
+                            break
+                    if send_failed:
+                        break
 
     def _serve_serial(self) -> None:
         while not self._stop.is_set():

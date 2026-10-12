@@ -74,7 +74,9 @@ def uart_symbols(data, idle_bits=2):
 # create another rising edge while CS is still asserted.
 
 def max_spi_bytes():
-    return MAX_SYMBOLS // 16
+    # spi_symbols emits 16 symbols per byte plus one trailing high guard, so
+    # N bytes needs 16*N + 1 <= MAX_SYMBOLS.
+    return (MAX_SYMBOLS - 1) // 16
 
 
 def spi_symbols(data):

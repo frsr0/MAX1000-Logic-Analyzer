@@ -9,6 +9,7 @@ from app.decoders.base import DecodeContext
 from app.decoders.can import CanDecoder, can_crc15
 from app.decoders.lin import LinDecoder, lin_checksum, lin_pid
 from app.decoders.uart import UartDecoder
+from app.generator.protocols import lin_symbols
 from app.hardware.mock_device import MockDevice
 from app.hardware.strategies.digital import DigitalCaptureStrategy
 from app.api import sessions as sessions_api
@@ -188,6 +189,29 @@ def test_lin_decode_flags_bad_checksum():
     assert len(frames) == 1
     assert frames[0]["fields"]["checksum_ok"] is False
     assert frames[0]["severity"] == "error"
+
+
+def test_generator_lin_checksum_matches_decoder_after_multiple_carry_folds():
+    # pid 0 plus 0xFF + 0xFF + 0x01 = 0x1FF, which needs TWO carry folds.
+    # A single-fold checksum (the old bug) disagrees with the decoder here.
+    identifier = 0x00
+    data = bytes([0xFF, 0xFF, 0x01])
+    symbols = lin_symbols(data, identifier=identifier, baud=100_000)
+    bits = np.repeat(np.array([s & 1 for s in symbols], dtype=np.uint8), 10)
+    sig = np.concatenate([np.ones(20, dtype=np.uint8), bits,
+                          np.ones(40, dtype=np.uint8)])
+    wf = WaveformData(sample_rate=1_000_000, digital=sig.astype(np.uint16))
+    uart = UartDecoder()
+    up = uart.decode(DecodeContext(wf, {"rx": "d0"}),
+                     {**uart.defaults(), "baud": 100_000})
+    lin = LinDecoder()
+    result = lin.decode(DecodeContext(wf, {}, upstream_events=up.events),
+                        {"data_length": 3, "checksum": "auto"})
+    frames = [e for e in result.events if e["type"] == "lin_frame"]
+    assert len(frames) == 1
+    assert frames[0]["fields"]["checksum_ok"] is True
+    assert frames[0]["fields"]["expected_checksum"] == lin_checksum(
+        data, lin_pid(identifier), enhanced=True)
 
 
 def test_pretrigger_positions_reach_driver_and_mark_session_sample():

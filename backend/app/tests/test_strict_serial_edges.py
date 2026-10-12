@@ -328,7 +328,9 @@ def test_tcp_loop_handles_missing_server_receive_errors_and_send_failure():
     connection.sendall.side_effect = OSError("peer closed")
     manager._server = Mock(accept=Mock(return_value=(connection, None)))
     manager._stop = Mock()
-    manager._stop.is_set.side_effect = [False, False]
+    # After the failed send the bridge drops just this connection and loops
+    # back to accept, so the stop flag is polled a third time.
+    manager._stop.is_set.side_effect = [False, False, True]
     manager._serve_tcp()
     connection.sendall.assert_called_once()
 

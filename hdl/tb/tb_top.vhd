@@ -296,8 +296,15 @@ begin
     ------------------------------------------------------------------
     -- Test 1: PLL lock and basic clock
     ------------------------------------------------------------------
-    report "Test 1: PLL lock";
-    wait_until(clk_12, led(0), '0', 10 us, "LED should toggle after PLL lock");
+    report "Test 1: PLL lock / idle LED";
+    -- LED_Controller is a free-running activity display: its reset/idle pattern
+    -- is a single comet head ("00000001", LED0 lit) that advances one position
+    -- per ~0.7 s frame at the 12 MHz Sim sys_clk. led(0) is therefore HIGH
+    -- while idle, so the old "wait for led(0)='0'" check could never pass.
+    -- Confirm the expected idle pattern instead; Test 1c below proves sys_clk
+    -- and the core are alive via a real packet-protocol register round-trip.
+    check(led = "00000001",
+          "FAIL: expected idle LED comet after reset, got " & to_hstring(led));
     report "LEDs: " & to_hstring(led);
     report "Test 1: PASS";
 

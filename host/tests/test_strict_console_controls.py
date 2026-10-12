@@ -448,6 +448,20 @@ def test_rate_buffer_and_time_parsers_cover_invalid_and_plain_values():
     assert scope.time_var.value == '2.000 s'
 
 
+def test_get_rate_parses_hz_fractional_mhz_and_plain_forms():
+    scope = bare_scope()
+    scope.rate_cb = Var('250Hz')
+    assert scope._get_rate() == 250
+    scope.rate_cb = Var('13.3MHz')
+    assert scope._get_rate() == 13_300_000
+    scope.rate_cb = Var('1.5kHz')
+    assert scope._get_rate() == 1_500
+    scope.rate_cb = Var('200000')
+    assert scope._get_rate() == 200_000
+    scope.rate_cb = Var(0)
+    assert scope._get_rate() == 1
+
+
 def test_build_capture_tab_falls_back_when_tk_variable_creation_fails():
     scope = bare_scope()
     scope.win = MagicMock()

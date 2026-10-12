@@ -1,6 +1,6 @@
 // Decoder management: add instance (type → channel roles → settings),
 // run / cancel / region decode, status, presets.
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
 import type { WaveformPayload } from '../api/binary';
 import type { DecoderDescription } from '../api/types';
@@ -19,6 +19,11 @@ export function DecoderPanel() {
   // arrays. Subscribe here so a rolling/live chunk causes the suggestion to
   // be recomputed from the same payload the user is looking at.
   useEffect(() => waveformView.subscribe(() => setWaveformVersion((v) => v + 1)), []);
+
+  const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => () => {
+    if (pollTimer.current) clearInterval(pollTimer.current);
+  }, []);
 
   if (!activeSession) return <div className="panel-body hint">No session open.</div>;
 
@@ -63,6 +68,7 @@ export function DecoderPanel() {
 
   const pollUntilDone = () => {
     // decoder_complete also arrives via WS; poll as a fallback
+    if (pollTimer.current) clearInterval(pollTimer.current);
     let n = 0;
     const t = setInterval(async () => {
       await refreshActiveSession();
@@ -71,8 +77,10 @@ export function DecoderPanel() {
       const s = useApp.getState().activeSession;
       if (!s || !s.decoders.some((d) => d.status === 'running') || ++n > 60) {
         clearInterval(t);
+        if (pollTimer.current === t) pollTimer.current = null;
       }
     }, 700);
+    pollTimer.current = t;
   };
 
   const run = async (decId: string, region?: number[]) => {

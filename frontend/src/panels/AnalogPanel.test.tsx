@@ -218,6 +218,30 @@ it('plots XY data for whole/cursor ranges and rejects missing or empty arrays', 
   expect(screen.getByRole('button', { name: 'Plot XY' }).hasAttribute('disabled')).toBe(true);
 });
 
+it('draws envelope and event-correlation edge cases without spreading arrays', async () => {
+  vi.spyOn(api, 'envelope')
+    .mockResolvedValueOnce({ channel: 'a0', min: [1, 5], max: [3, 1] })
+    .mockResolvedValueOnce({ channel: 'a0', min: [], max: [] });
+  vi.spyOn(api, 'eventCorrelation')
+    .mockResolvedValueOnce({ threshold: 1, pairs: [
+      { lag_samples: 2 }, { lag_samples: -3 }, { lag_samples: 1 }, { lag_samples: 'bad' }] });
+  useApp.setState({ activeSession: mixedSession() });
+  render(<AnalogPanel />);
+  await waitFor(() => expect(screen.getByLabelText('Analog channel')).toHaveProperty('value', 'a0'));
+
+  fireEvent.click(screen.getByRole('button', { name: 'Envelope' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Compute envelope' }));
+  await waitFor(() => expect(api.envelope).toHaveBeenCalledOnce());
+  // An empty envelope must fall back to a zeroed range instead of Infinity.
+  fireEvent.click(screen.getByRole('button', { name: 'Compute envelope' }));
+  await waitFor(() => expect(api.envelope).toHaveBeenCalledTimes(2));
+
+  fireEvent.click(screen.getByRole('button', { name: 'Event correlation' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Correlate events' }));
+  await waitFor(() => expect(api.eventCorrelation).toHaveBeenCalledOnce());
+  expect(draw.mock.calls).toContainEqual(['fillText', 'paired edges: 4', 12, 60]);
+});
+
 it('shows busy/errors and suppresses stale success and failure after a session change', async () => {
   let resolveOld!: (value: { freqs: number[]; magnitude: number[] }) => void;
   let rejectOld!: (error: Error) => void;

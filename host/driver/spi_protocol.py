@@ -1002,8 +1002,6 @@ class SPIDevice:
         # RLE data begins right after the ack packet (see _rle_stream_via_chunks).
         decoded = self._decode_rle_stream_bytes(
             raw[end:], sample_count, allow_short=bool(stop_evt is not None and stop_evt.is_set()))
-        if len(decoded) != sample_count * 2 and stop_evt is not None and stop_evt.is_set():
-            return producer, oldest, decoded
         return producer, oldest, decoded
 
     @staticmethod

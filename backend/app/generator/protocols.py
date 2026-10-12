@@ -287,7 +287,12 @@ def lin_symbols(data: bytes, **options: Any) -> List[int]:
     pid |= p1 << 7
     enhanced = bool(options.get("enhanced_checksum", True))
     checksum_sum = (pid if enhanced else 0) + sum(data)
-    checksum = 0xFF - ((checksum_sum & 0xFF) + (checksum_sum >> 8))
+    # LIN carry-fold is repeated until the sum fits in one byte, matching the
+    # decoder (decoders/lin.py) — a single fold differs when the carry itself
+    # overflows, which made generated frames fail to decode.
+    while checksum_sum > 0xFF:
+        checksum_sum = (checksum_sum & 0xFF) + (checksum_sum >> 8)
+    checksum = 0xFF - checksum_sum
     if options.get("fault") == "malformed_checksum":
         checksum ^= 0x01
     frame = bytes([0x55, pid, *data, checksum & 0xFF])

@@ -551,7 +551,59 @@ def test_stream_payload_returns_empty_if_reader_does_not_finish(monkeypatch):
         def join(self, timeout):
             pass
 
+        def is_alive(self):
+            return True
+
     instance = _ols_with()
     instance._drain = MagicMock()
     monkeypatch.setattr(ols_spi.threading, "Thread", NonRunningThread)
     assert instance.stream_payload(b"payload") == b""
+    # The stalled reader is retained so the next _drain joins it before
+    # touching the device again.
+    assert instance._pending_reader is not None
+
+
+def test_drain_joins_and_clears_finished_pending_reader():
+    joined = []
+
+    class FinishedThread:
+        def __init__(self, target, daemon):
+            self.target = target
+
+        def start(self):
+            pass
+
+        def join(self, timeout):
+            joined.append(timeout)
+
+        def is_alive(self):
+            return False
+
+    instance = _ols_with()
+    instance.dev.getQueueStatus.return_value = 0
+    instance._pending_reader = FinishedThread(lambda: None, daemon=True)
+    instance._drain(timeout=0.1)
+    assert joined == [0.1]
+    assert instance._pending_reader is None
+
+
+def test_drain_keeps_live_pending_reader():
+    class LiveThread:
+        def __init__(self, target, daemon):
+            self.target = target
+
+        def start(self):
+            pass
+
+        def join(self, timeout):
+            pass
+
+        def is_alive(self):
+            return True
+
+    instance = _ols_with()
+    instance.dev.getQueueStatus.return_value = 0
+    live = LiveThread(lambda: None, daemon=True)
+    instance._pending_reader = live
+    instance._drain(timeout=0.1)
+    assert instance._pending_reader is live

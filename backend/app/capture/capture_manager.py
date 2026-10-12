@@ -28,6 +28,12 @@ from .session_store import SessionStore
 
 log = logging.getLogger("msa.capture")
 
+# How long a stacked decoder waits for its upstream decoder to finish before
+# reporting a missing-upstream error.  Stacked decoders are launched right
+# after their upstream, so a short wait closes the launch race without
+# blocking indefinitely if the upstream thread died.
+_UPSTREAM_WAIT_S = 300.0
+
 
 class ControlLock:
     """One client controls the hardware at a time; others are read-only
@@ -843,10 +849,28 @@ class CaptureManager:
             try:
                 upstream = None
                 if decoder.consumes:
-                    src = next((d for d in session.decoders
-                                if d.decoder_id == decoder.consumes
-                                and d.status == "done"), None)
+                    def find_src(*statuses: str):
+                        return next((d for d in session.decoders
+                                     if d.decoder_id == decoder.consumes
+                                     and d.id != inst.id
+                                     and d.status in statuses), None)
+
+                    # Prefer an already-finished upstream; a stacked decoder is
+                    # usually dispatched immediately after its upstream though,
+                    # so it is often still running and must be waited for
+                    # instead of racing it (which would spuriously report a
+                    # missing-upstream error).
+                    src = find_src("done") or find_src("running")
                     if src is None:
+                        raise ValueError(
+                            f"Stacked decoder '{decoder.id}' needs a completed "
+                            f"'{decoder.consumes}' decoder on this session")
+                    deadline = time.time() + _UPSTREAM_WAIT_S
+                    while src.status == "running" and time.time() < deadline:
+                        if cancel.is_set():
+                            raise DecodeCancelled()
+                        time.sleep(0.02)
+                    if src.status != "done":
                         raise ValueError(
                             f"Stacked decoder '{decoder.id}' needs a completed "
                             f"'{decoder.consumes}' decoder on this session")

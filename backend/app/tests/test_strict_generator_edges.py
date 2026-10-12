@@ -29,6 +29,11 @@ def test_every_bitbang_preset_is_bounded_and_deterministic():
         preset_symbols("missing")
 
 
+def test_pulse_preset_never_exceeds_requested_count():
+    for count in (1, 2, 3, 4, 5, 6, 8, 32, 1024):
+        assert len(preset_symbols("pulse", count)) == count
+
+
 def test_bitbang_rejects_bad_symbol_and_script_shapes():
     with pytest.raises(ValueError, match="symbols must be a list"):
         _symbols("01")

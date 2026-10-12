@@ -1510,7 +1510,13 @@ BEGIN
          -- requested window is staged. Otherwise the SPI master clocks a
          -- fixed byte count while the FIFO is empty and MISO retains an old
          -- byte, which is indistinguishable from a real waveform sample.
-         and st /= RAW_WAIT_READY
+         -- Their RAW_WAIT_READY branch gates on live_fifo_rdusedw, so the
+         -- fetch must stay parked while the window accumulates. Every other
+         -- path (notably the SDRAM raw stream) must keep fetching during
+         -- RAW_WAIT_READY, whose readiness test IS raw_have_word; excluding it
+         -- unconditionally wedged that path until the 1 ms BUSY watchdog.
+         and (st /= RAW_WAIT_READY
+              or not (raw_live_source and raw_live_compact))
          and (not raw_live_source or live_stream_arm = '1') then
         if (not raw_have_word)
            and ((raw_live_source and raw_live_words_rem > 0)

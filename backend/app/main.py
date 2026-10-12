@@ -123,9 +123,13 @@ if FRONTEND_DIST.exists():
 
     @app.get("/{path:path}", include_in_schema=False)
     async def spa(path: str):
-        candidate = FRONTEND_DIST / path
-        if path and candidate.is_file():
-            return FileResponse(candidate)
+        if path:
+            # Confine to FRONTEND_DIST: resolve both sides and reject any
+            # escape (e.g. "../" or an absolute path) before touching disk.
+            root = FRONTEND_DIST.resolve()
+            candidate = (root / path).resolve()
+            if candidate.is_relative_to(root) and candidate.is_file():
+                return FileResponse(candidate)
         # Hashed assets are cacheable, but the SPA entry point must always be
         # revalidated. Otherwise a browser can retain an older index that
         # points at a worker bundle already removed by the next build.

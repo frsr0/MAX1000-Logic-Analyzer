@@ -437,14 +437,22 @@ begin
                             state <= ST_RFSH;
                         end if;
                     elsif pend_rn = '1' then
-                        pend_rn <= '0';
                         is_read <= '1';
                         bank_r <= buf_a(21 downto 20); row_r <= buf_a(19 downto 8); col_r <= buf_a(7 downto 0);
                         sdram_s_waitrequest <= '1';
-                        state <= ST_ACT;
+                        if row_open = '1' then
+                            -- Another row is open: precharge first, then
+                            -- service this read from ST_DEASSERT (keep pend_rn
+                            -- asserted across the precharge so it is not lost).
+                            state <= ST_PRE2;
+                        else
+                            pend_rn <= '0';
+                            state <= ST_ACT;
+                        end if;
                     elsif pend_wn = '1' then
                         pend_wn <= '0';
                         is_read <= '0';
+                        last_op_was_stream <= '0';
                         bank_r <= buf_a(21 downto 20); row_r <= buf_a(19 downto 8); col_r <= buf_a(7 downto 0);
                         sdram_s_waitrequest <= '1';
                         v_depth := v_depth - 1;
@@ -469,6 +477,7 @@ begin
                         pend_wn <= '1';
                         pend_wn_next <= '0';
                         is_read <= '0';
+                        last_op_was_stream <= '0';
                         sdram_s_waitrequest <= '1';
                         v_depth := v_depth - 1;
                         if row_open = '1' and same_row_buf_next = '1' then
@@ -675,6 +684,7 @@ begin
                     elsif pend_wn = '1' then
                         pend_wn <= '0';
                         is_read <= '0';
+                        last_op_was_stream <= '0';
                         bank_r <= buf_a(21 downto 20); row_r <= buf_a(19 downto 8); col_r <= buf_a(7 downto 0);
                         sdram_s_waitrequest <= '1';
                         v_depth := v_depth - 1;
@@ -706,6 +716,7 @@ begin
                         pend_wn_same_row <= pend_wn_next_same_row;
                         pend_wn_next_same_row <= '0';
                         is_read <= '0';
+                        last_op_was_stream <= '0';
                         sdram_s_waitrequest <= '1';
                         v_depth := v_depth - 1;
                         if row_open = '1' and pend_wn_next_same_row = '1' then
@@ -732,14 +743,17 @@ begin
                         sdram_s_waitrequest <= '1';
                         state <= ST_ACT;
                 elsif pend_rn = '1' then
-                        pend_rn <= '0';
                         is_read <= '1';
                         bank_r <= buf_a(21 downto 20); row_r <= buf_a(19 downto 8); col_r <= buf_a(7 downto 0);
                         sdram_s_waitrequest <= '1';
                         if row_open = '1' then
-                            -- Close row before read, then activate new row
+                            -- Close row before read, then activate new row.
+                            -- Keep pend_rn asserted across the precharge so the
+                            -- read is not dropped: ST_PRE2 -> ST_TRP2 ->
+                            -- ST_DEASSERT re-runs this arm with row_open=0.
                             state <= ST_PRE2;
                         else
+                            pend_rn <= '0';
                             state <= ST_ACT;
                         end if;
                     else

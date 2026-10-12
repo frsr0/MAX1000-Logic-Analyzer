@@ -81,8 +81,10 @@ architecture rtl of Bit_Engine is
   end function;
 
 begin
-  TX_Used <= std_logic_vector(to_unsigned(tx_count, 8));
-  RX_Used <= std_logic_vector(to_unsigned(rx_count, 8));
+  -- Saturated: the counters can reach FIFO_DEPTH (256), which does not fit an
+  -- 8-bit port; pin the reported level rather than going out of range.
+  TX_Used <= x"FF" when tx_count > 255 else std_logic_vector(to_unsigned(tx_count, 8));
+  RX_Used <= x"FF" when rx_count > 255 else std_logic_vector(to_unsigned(rx_count, 8));
   RX_Overflow <= rx_overflow_i;
   Out_0 <= out0_r;
   Out_1 <= out1_r;
