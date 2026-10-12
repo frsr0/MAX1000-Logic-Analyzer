@@ -39,6 +39,13 @@ def test_crc_uses_optional_accelerator_when_available(monkeypatch):
     assert calls == [((0x18005,), {"initCrc": 0xFFFF, "rev": True, "xorOut": 0})]
 
 
+def test_conftest_respects_preloaded_ftd2xx_module(monkeypatch):
+    sentinel = object()
+    monkeypatch.setitem(sys.modules, "ftd2xx", sentinel)
+    runpy.run_path(str(Path(__file__).parents[2] / "conftest.py"))
+    assert sys.modules["ftd2xx"] is sentinel
+
+
 @pytest.mark.parametrize("speed, expected", [(1, 32), (10_000_001, 48), (20_000_001, 64)])
 def test_ack_padding_tracks_spi_clock(speed, expected):
     assert protocol.SPIDevice(SimpleNamespace(speed_hz=speed))._default_ack_pad() == expected
@@ -444,3 +451,263 @@ def test_fixed_rle_requires_ack_and_read_stream_delegates():
     stop = object()
     assert protocol.SPIDevice(spi).read_stream(4, stop) == b"data"
     spi.stream_read.assert_called_once_with(4, stop)
+
+
+def test_live_stream_read_handles_empty_chunking_and_transport_selection(monkeypatch):
+    pkt = protocol.SPIDevice(object())
+    assert pkt.start_live_stream_read(0) == (0, 0, b"")
+    with pytest.raises(RuntimeError, match="requires stream_command"):
+        pkt.start_live_stream_read(1)
+
+    monkeypatch.setattr(protocol, "MAX_RAW_STREAM_SAMPLES", 2)
+    class ChunkSPI:
+        speed_hz = 30_000_000
+
+        def stream_command_chunks(self, request, **kwargs):
+            sample_count = struct.unpack("<I", request[6:10])[0] & 0x7FFFFFFF
+            yield _stream_ack(request[3], producer=request[3], oldest=0)
+            yield b"a" if sample_count == 2 else b"b"
+
+    pkt = protocol.SPIDevice(ChunkSPI())
+    assert pkt.start_live_stream_read(3, ack_pad=9, compact_3bit=True) == (
+        1, 0, b"ab"
+    )
+
+    ack_then_data = _stream_ack(0, producer=7, oldest=3) + b"xy"
+    bulk_spi = SimpleNamespace(
+        speed_hz=30_000_000,
+        stream_command=lambda request, size, **kwargs: ack_then_data,
+    )
+    assert protocol.SPIDevice(bulk_spi).start_live_stream_read(1) == (
+        7, 3, b"xy"
+    )
+
+    class ChunkSPI:
+        speed_hz = 30_000_000
+
+        def stream_command_chunks(self, request, **kwargs):
+            yield b"noise"
+            yield _stream_ack(request[3], producer=8, oldest=2) + b"zz"
+
+    assert protocol.SPIDevice(ChunkSPI()).start_live_stream_read(1) == (
+        8, 2, b"zz"
+    )
+
+
+@pytest.mark.parametrize("raw", [b"noise", _stream_ack(1) + b"x"])
+def test_live_stream_bulk_errors_on_missing_ack_or_short_data(raw):
+    spi = SimpleNamespace(
+        speed_hz=30_000_000,
+        stream_command=lambda request, size, **kwargs: raw,
+    )
+    with pytest.raises(RuntimeError, match="no stream ack|truncated live stream"):
+        protocol.SPIDevice(spi).start_live_stream_read(2)
+
+
+def test_live_bulk_and_chunk_paths_report_truncation_and_obey_stop():
+    bulk = SimpleNamespace(
+        speed_hz=30_000_000,
+        stream_command=lambda request, size, **kwargs: _stream_ack(request[3]),
+    )
+    with pytest.raises(RuntimeError, match="truncated live stream"):
+        protocol.SPIDevice(bulk).start_live_stream_read(1)
+
+    class StopAfterOnePoll:
+        def __init__(self):
+            self.calls = 0
+
+        def is_set(self):
+            self.calls += 1
+            return self.calls > 1
+
+    class ChunkSPI:
+        speed_hz = 30_000_000
+
+        def stream_command_chunks(self, request, **kwargs):
+            yield b"noise"
+            yield b"more noise"
+
+    with pytest.raises(RuntimeError, match="no stream ack"):
+        protocol.SPIDevice(ChunkSPI()).start_live_stream_read(
+            1, stop_evt=StopAfterOnePoll())
+
+
+def test_live_stream_precise_clocking_and_cleanup_paths():
+    class PreciseSPI:
+        speed_hz = 30_000_000
+
+        def __init__(self, initial, fail_ack=False):
+            self.initial = initial
+            self.fail_ack = fail_ack
+            self.closed = False
+            self.calls = 0
+            self.seq = None
+
+        def stream_command_begin(self, request, stop_evt=None):
+            self.seq = request[3]
+            return self.initial
+
+        def stream_command_clock(self, count, stop_evt=None):
+            self.calls += 1
+            if self.fail_ack:
+                return b"noise"
+            return (_stream_ack(self.seq, producer=9, oldest=4) + b"ab") if self.calls == 1 else b""
+
+        def stream_command_end(self):
+            self.closed = True
+
+    spi = PreciseSPI(b"noise")
+    assert protocol.SPIDevice(spi).start_live_stream_read(1) == (9, 4, b"ab")
+    assert spi.closed
+
+    spi = PreciseSPI(b"noise", fail_ack=True)
+    with pytest.raises(RuntimeError, match="no stream ack"):
+        protocol.SPIDevice(spi).start_live_stream_read(1)
+    assert spi.closed
+
+
+def test_precise_live_stream_honors_stop_before_ack_and_during_payload():
+    class StopEvent:
+        def __init__(self, stop_after):
+            self.calls = 0
+            self.stop_after = stop_after
+
+        def is_set(self):
+            self.calls += 1
+            return self.calls >= self.stop_after
+
+    class PreciseSPI:
+        speed_hz = 30_000_000
+
+        def __init__(self, ack_in_begin=False):
+            self.ack_in_begin = ack_in_begin
+            self.seq = None
+            self.closed = False
+            self.clock_calls = 0
+
+        def stream_command_begin(self, request, stop_evt=None):
+            self.seq = request[3]
+            return _stream_ack(self.seq) if self.ack_in_begin else b"noise"
+
+        def stream_command_clock(self, count, stop_evt=None):
+            self.clock_calls += 1
+            if self.ack_in_begin:
+                return b""
+            if self.clock_calls == 1:
+                return _stream_ack(self.seq)
+            return b""
+
+        def stream_command_end(self):
+            self.closed = True
+
+    spi = PreciseSPI()
+    with pytest.raises(RuntimeError, match="no stream ack"):
+        protocol.SPIDevice(spi).start_live_stream_read(
+            1, stop_evt=StopEvent(stop_after=1))
+    assert spi.closed
+
+    spi = PreciseSPI(ack_in_begin=True)
+    with pytest.raises(RuntimeError, match="truncated live stream"):
+        protocol.SPIDevice(spi).start_live_stream_read(
+            1, stop_evt=StopEvent(stop_after=2))
+    assert spi.closed
+
+
+def test_continuous_live_stream_checks_overflow_in_later_chunk():
+    class SPI:
+        speed_hz = 30_000_000
+
+        def stream_command_chunks(self, request, **kwargs):
+            yield _stream_ack(request[3], producer=0, oldest=0)
+            yield b"\x07"
+
+    with pytest.raises(RuntimeError, match="FIFO overflow"):
+        list(protocol.SPIDevice(SPI()).start_live_stream_continuous())
+
+
+def test_live_chunked_reader_stops_after_ack_and_rejects_incomplete_stream():
+    class Chunks:
+        speed_hz = 30_000_000
+
+        def __init__(self, chunks):
+            self.chunks = chunks
+            self.closed = False
+
+        def stream_command_chunks(self, request, **kwargs):
+            try:
+                yield from self.chunks(request)
+            finally:
+                self.closed = True
+
+    spi = Chunks(lambda req: iter([
+        _stream_ack(req[3], producer=5, oldest=1) + b"ab", b"cd"
+    ]))
+    assert protocol.SPIDevice(spi).start_live_stream_read(2) == (5, 1, b"abcd")
+    assert spi.closed
+
+    for chunks, error in [
+        (lambda req: iter([b"noise"]), "no stream ack"),
+        (lambda req: iter([_stream_ack(req[3]) + b"x"]), "truncated live stream"),
+    ]:
+        spi = Chunks(chunks)
+        with pytest.raises(RuntimeError, match=error):
+            protocol.SPIDevice(spi).start_live_stream_read(1)
+        assert spi.closed
+
+
+def test_continuous_live_stream_handles_tokens_stop_overflow_and_missing_ack():
+    class ContinuousSPI:
+        speed_hz = 30_000_000
+
+        def __init__(self, chunks):
+            self.chunks = chunks
+            self.closed = False
+            self.request = None
+
+        def stream_command_chunks(self, request, **kwargs):
+            self.request = request
+            try:
+                yield from self.chunks(request)
+            finally:
+                self.closed = True
+
+    spi = ContinuousSPI(lambda req: iter([
+        b"noise", _stream_ack(req[3], producer=0, oldest=0) + b"\x08", b"\x00"
+    ]))
+    pkt = protocol.SPIDevice(spi)
+    assert list(pkt.start_live_stream_continuous(packed_tokens=True)) == [
+        b"\x08", b"\x00"
+    ]
+    assert struct.unpack("<I", spi.request[6:10])[0] & 0x60000000 == 0x60000000
+    assert spi.closed
+
+    spi = ContinuousSPI(lambda req: iter([_stream_ack(req[3], producer=0, oldest=0) + b"\x00\x07"]))
+    with pytest.raises(RuntimeError, match="FIFO overflow"):
+        list(protocol.SPIDevice(spi).start_live_stream_continuous())
+    assert spi.closed
+
+    spi = ContinuousSPI(lambda req: iter([b"noise"]))
+    with pytest.raises(RuntimeError, match="no stream ack"):
+        list(protocol.SPIDevice(spi).start_live_stream_continuous())
+    assert spi.closed
+
+    stop = SimpleNamespace(is_set=lambda: True)
+    spi = ContinuousSPI(lambda req: iter([b"noise"]))
+    assert list(protocol.SPIDevice(spi).start_live_stream_continuous(stop_evt=stop)) == []
+
+    with pytest.raises(RuntimeError, match="requires chunked transport"):
+        list(protocol.SPIDevice(object()).start_live_stream_continuous())
+
+    spi = ContinuousSPI(lambda req: iter([
+        _stream_ack(req[3], producer=0, oldest=1)
+    ]))
+    with pytest.raises(RuntimeError, match="overflow.*flags=0x1"):
+        list(protocol.SPIDevice(spi).start_live_stream_continuous())
+
+    stop = SimpleNamespace(is_set=lambda: True)
+    spi = ContinuousSPI(lambda req: iter([_stream_ack(req[3])]))
+    assert list(protocol.SPIDevice(spi).start_live_stream_continuous(
+        stop_evt=stop, packed_tokens=True, sparse_sample_bits=2,
+        sparse_packed=True, sparse_rle=True, tagged_packed=True)) == []
+    mode = struct.unpack("<I", spi.request[6:10])[0]
+    assert mode & 0x1E000000 == 0x1E000000

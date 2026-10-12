@@ -1,6 +1,7 @@
 """Strict transport, discovery, timeout, and cleanup tests for ``OLS``."""
 
 import sys
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -14,6 +15,18 @@ def _ols_with(dev=None):
     instance = ols_spi.OLS(speed_hz=12_000_000)
     instance.dev = dev if dev is not None else MagicMock()
     return instance
+
+
+def test_set_speed_requires_open_device_and_programs_clock_divider():
+    instance = _ols_with()
+    instance.dev = None
+    with pytest.raises(RuntimeError, match="not open"):
+        instance.set_speed(1_000_000)
+
+    instance = _ols_with()
+    instance.set_speed(12_000_000)
+    instance.dev.write.assert_called_once_with(bytes([0x86, 1, 0, 0x87]))
+    assert instance.speed_hz == 12_000_000
 
 
 def test_ftd2xx_is_loaded_once_on_first_hardware_use(monkeypatch):
@@ -297,7 +310,8 @@ def test_chunk_generator_overlap_mode_drains_one_full_quantum_before_next_write(
     assert instance._read_n.call_args_list[1].args[0] == 64
 
 
-def test_chunk_generator_overlap_mode_does_not_fail_when_consumer_pauses():
+def test_chunk_generator_overlap_mode_does_not_fail_when_consumer_pauses(monkeypatch):
+    monkeypatch.setattr(ols_spi, "STREAM_PIPELINE_DEPTH", 1)
     stop = SimpleNamespace(value=False, is_set=lambda: stop.value)
     instance = _ols_with()
     instance._drain = MagicMock()
@@ -316,6 +330,214 @@ def test_chunk_generator_overlap_mode_does_not_fail_when_consumer_pauses():
     stop.value = True
     with pytest.raises(StopIteration):
         next(gen)
+
+
+def test_chunk_generator_overlap_stops_reader_when_handoff_queue_is_full(monkeypatch):
+    RealEvent = threading.Event
+    events = []
+
+    class PipelineEvent(RealEvent):
+        def __init__(self):
+            super().__init__()
+            events.append(self)
+
+    class StopAfterHandoffQueue:
+        def __init__(self, maxsize):
+            from queue import Queue as RealQueue
+            self.queue = RealQueue(maxsize=maxsize)
+
+        def put(self, item, timeout=None):
+            events[0].set()
+            raise ols_spi.Full
+
+        def get(self, timeout=None):
+            return self.queue.get(timeout=timeout)
+
+    monkeypatch.setattr(ols_spi.threading, "Event", PipelineEvent)
+    monkeypatch.setattr(ols_spi, "Queue", StopAfterHandoffQueue)
+    instance = _ols_with()
+    instance._drain = MagicMock()
+    instance._read_n = MagicMock(side_effect=lambda n, timeout: b"x" * n)
+    gen = instance.stream_command_chunks(
+        b"request", ack_pad=4, chunk_bytes=64, overlap_io=True)
+
+    assert next(gen) == b"x" * 11
+    with pytest.raises(StopIteration):
+        next(gen)
+
+
+def test_chunk_generator_overlap_exits_if_stop_is_set_before_threads_start(monkeypatch):
+    RealEvent = threading.Event
+    RealThread = threading.Thread
+    events = []
+
+    class TrackEvent(RealEvent):
+        def __init__(self):
+            super().__init__()
+            events.append(self)
+
+    class StopBeforeWriterStarts(RealThread):
+        def start(self):
+            if self.name == "ols-live-ftdi-writer":
+                events[0].set()
+            super().start()
+
+    monkeypatch.setattr(ols_spi.threading, "Event", TrackEvent)
+    monkeypatch.setattr(ols_spi.threading, "Thread", StopBeforeWriterStarts)
+    instance = _ols_with()
+    instance._drain = MagicMock()
+    instance._read_n = MagicMock(side_effect=lambda n, timeout: b"x" * n)
+    gen = instance.stream_command_chunks(
+        b"request", ack_pad=4, chunk_bytes=64, overlap_io=True)
+
+    assert next(gen) == b"x" * 11
+    with pytest.raises(StopIteration):
+        next(gen)
+
+
+def test_chunk_generator_overlap_reports_error_after_empty_handoff_poll(monkeypatch):
+    RealEvent = threading.Event
+    RealThread = threading.Thread
+    from queue import Queue as RealQueue
+    pipeline_events = []
+    read_gate = RealEvent()
+    error_ready = RealEvent()
+
+    class PipelineEvent(RealEvent):
+        def __init__(self):
+            super().__init__()
+            pipeline_events.append(self)
+
+        def set(self):
+            super().set()
+            if pipeline_events and self is pipeline_events[0]:
+                error_ready.set()
+
+    class ReaderAliveOnceThread(RealThread):
+        def is_alive(self):
+            if self.name == "ols-live-ftdi-reader" and not getattr(
+                    self, "_reported_alive", False):
+                self._reported_alive = True
+                return True
+            return super().is_alive()
+
+    class WaitForReadErrorQueue:
+        def __init__(self, maxsize):
+            self.queue = RealQueue(maxsize=maxsize)
+            self.get_calls = 0
+
+        def get(self, timeout=None):
+            self.get_calls += 1
+            if self.get_calls == 1:
+                read_gate.set()
+                raise ols_spi.Empty
+            assert error_ready.wait(timeout=1)
+            raise ols_spi.Empty
+
+        def put(self, item, timeout=None):
+            self.queue.put(item, timeout=timeout)
+
+    monkeypatch.setattr(ols_spi.threading, "Event", PipelineEvent)
+    monkeypatch.setattr(ols_spi.threading, "Thread", ReaderAliveOnceThread)
+    monkeypatch.setattr(ols_spi, "Queue", WaitForReadErrorQueue)
+    instance = _ols_with()
+    instance._drain = MagicMock()
+
+    def read(size, timeout):
+        if size == 11:
+            return b"x" * size
+        assert read_gate.wait(timeout=1)
+        return b"short"
+
+    instance._read_n = MagicMock(side_effect=read)
+    gen = instance.stream_command_chunks(
+        b"request", ack_pad=4, chunk_bytes=64, overlap_io=True)
+
+    assert next(gen) == b"x" * 11
+    with pytest.raises(RuntimeError, match="short FTDI read"):
+        next(gen)
+
+
+def test_chunk_generator_overlap_reports_late_reader_failure_after_empty_exit(monkeypatch):
+    RealEvent = threading.Event
+    RealThread = threading.Thread
+    pipeline_events = []
+
+    class TrackEvent(RealEvent):
+        def __init__(self):
+            super().__init__()
+            pipeline_events.append(self)
+
+    class ReaderExitThread(RealThread):
+        def is_alive(self):
+            if self.name == "ols-live-ftdi-reader":
+                return False
+            return super().is_alive()
+
+    class EmptyQueue:
+        def __init__(self, maxsize):
+            pass
+
+        def get(self, timeout=None):
+            raise ols_spi.Empty
+
+        def put(self, item, timeout=None):
+            raise AssertionError("reader should fail before queueing data")
+
+    monkeypatch.setattr(ols_spi.threading, "Event", TrackEvent)
+    monkeypatch.setattr(ols_spi.threading, "Thread", ReaderExitThread)
+    monkeypatch.setattr(ols_spi, "Queue", EmptyQueue)
+    instance = _ols_with()
+    instance._drain = MagicMock()
+
+    def read(size, timeout):
+        if size == 11:
+            return b"x" * size
+        assert pipeline_events[0].wait(timeout=1)
+        raise RuntimeError("late reader failure")
+
+    instance._read_n = MagicMock(side_effect=read)
+    gen = instance.stream_command_chunks(
+        b"request", ack_pad=4, chunk_bytes=64, overlap_io=True)
+
+    assert next(gen) == b"x" * 11
+    with pytest.raises(RuntimeError, match="late reader failure"):
+        next(gen)
+
+
+def test_chunk_generator_overlap_mode_reports_short_usb_reads():
+    instance = _ols_with()
+    instance._drain = MagicMock()
+    instance._read_n = MagicMock(side_effect=lambda n, timeout: b"x" * (n - 1))
+    gen = instance.stream_command_chunks(
+        b"request", ack_pad=4, chunk_bytes=64, overlap_io=True)
+
+    assert next(gen) == b"x" * (len(b"request") + 3)
+    with pytest.raises(RuntimeError, match="short FTDI read"):
+        next(gen)
+    assert instance._stream_open is False
+
+
+def test_chunk_generator_overlap_mode_propagates_writer_failures():
+    instance = _ols_with()
+    instance._drain = MagicMock()
+    writes = 0
+
+    def write(_data):
+        nonlocal writes
+        writes += 1
+        if writes == 2:
+            raise OSError("clock write failed")
+
+    instance.dev.write.side_effect = write
+    instance._read_n = MagicMock(side_effect=lambda n, timeout: b"x" * n)
+    gen = instance.stream_command_chunks(
+        b"request", ack_pad=4, chunk_bytes=64, overlap_io=True)
+
+    assert next(gen) == b"x" * 11
+    with pytest.raises(OSError, match="clock write failed"):
+        next(gen)
+    assert instance._stream_open is False
 
 
 def test_stream_payload_returns_empty_if_reader_does_not_finish(monkeypatch):

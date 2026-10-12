@@ -45,3 +45,9 @@ def test_spi3_read_symbols_and_positions_cover_tx_and_read_phases():
     assert symbols[16:] == [1, 3] * 8
     assert bit_bang.spi3_read_bit_positions(1, 1) == [17, 19, 21, 23, 25, 27, 29, 31]
     assert bit_bang.spi3_read_symbols(b"", 0) == []
+
+
+def test_compact_i2c_read_checks_the_hardware_fifo_budget(monkeypatch):
+    monkeypatch.setattr(bit_bang, "MAX_SYMBOLS", 8)
+    with pytest.raises(ValueError, match="compact I2C pattern.*generator FIFO"):
+        bit_bang.i2c_read_symbols_compact(b"\x32\x28", 2, 0x33)

@@ -91,9 +91,8 @@ export function MilMcp4725Card() {
   };
 
   const openScope = async () => {
-    if (!waveResult) return;
     try {
-      await openSession(waveResult.session_id);
+      await openSession(waveResult!.session_id);
       setPage('capture');
     } catch (error: any) {
       toast('error', error.message);

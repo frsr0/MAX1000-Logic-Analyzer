@@ -7,6 +7,7 @@ import pytest
 from driver.spi_protocol import (
     CMD_ACK_CAPTURE_DONE,
     CMD_ABORT_CAPTURE,
+    CMD_GEN_CAPTURE,
     CMD_GEN_LOAD,
     CMD_GEN_START,
     CMD_GEN_STOP,
@@ -19,6 +20,7 @@ from driver.spi_protocol import (
     REG_GEN_CAPTURE_TX_CHAN,
     REG_GEN_DATA,
     REG_GEN_PROTO,
+    REG_GEN_RX_DATA,
     REG_CONT_MODE,
     REG_IFACE_MODE,
     REG_SAMPLE_COUNT,
@@ -1083,6 +1085,12 @@ class TestSPIDeviceStatusMetadata:
 
 
 class TestOLSDeviceSPIGenerator:
+    def test_start_gen_rejects_explicit_non_ok_response(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.transaction.return_value = (1, 0, b'')
+
+        assert device_spi._start_gen_accepted() is False
+
     def test_pins_defaults(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi._stream_readback = MagicMock(return_value=b'\x01\x00' * 100)
@@ -1947,6 +1955,186 @@ class TestOLSDeviceSPIRolling:
             call(10_000, 4, probe_compression=False),
         ])
         assert [item[3] for item in results] == [1, 2, 2]
+
+    def test_stream_ring_rejects_ambiguous_half_range_status(self, device_spi):
+        """A status jump beyond half the counter range is resampled."""
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.read_capture_range = MagicMock(return_value=b'\x34\x12' * 4)
+        device_spi.pkt.get_status.side_effect = [
+            {'producer_index': 0x80000001, 'oldest_index': 0,
+             'overrun_count': 0},
+            *([{'producer_index': 4, 'oldest_index': 0,
+                'overrun_count': 0}] * 8),
+        ]
+        device_spi.spi.flush = MagicMock()
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False] * 5 + [True]
+        stop_evt.wait.return_value = False
+
+        results = list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, fetch_multiplier=1))
+
+        assert [item[1] for item in results] == [4]
+        device_spi.read_capture_range.assert_called_once_with(
+            0, 4, probe_compression=False)
+        assert device_spi.pkt.get_status.call_count >= 2
+
+    def test_stream_ring_follow_tail_handles_equal_cursors_with_overrun(
+            self, device_spi):
+        """Equal logical cursors plus a writer overrun represent a full ring."""
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.read_capture_range = MagicMock(return_value=b'\x34\x12' * 4)
+        device_spi.pkt.get_status.return_value = {
+            'producer_index': 16, 'oldest_index': 16, 'overrun_count': 1,
+        }
+        device_spi.spi.flush = MagicMock()
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False, False, True]
+        stop_evt.wait.return_value = True
+
+        results = list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, fetch_multiplier=1, follow_tail=True))
+
+        assert [item[1] for item in results] == [4]
+        device_spi.read_capture_range.assert_called_once_with(
+            12, 4, probe_compression=False)
+
+    def test_stream_ring_follow_tail_waits_for_first_complete_window(
+            self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'producer_index': 2, 'oldest_index': 0, 'overrun_count': 0,
+        }
+        device_spi.read_capture_range = MagicMock()
+        device_spi.spi.flush = MagicMock()
+        stop_evt = MagicMock()
+        stop_evt.is_set.return_value = False
+        stop_evt.wait.return_value = True
+
+        assert list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, follow_tail=True)) == []
+        device_spi.read_capture_range.assert_not_called()
+
+    def test_stream_ring_tail_overrun_waits_until_new_window_is_complete(
+            self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        status_count = 0
+
+        def ring_status():
+            nonlocal status_count
+            status_count += 1
+            producer, oldest, overrun = (8, 0, 0) if status_count == 1 else (
+                14, 12, 1)
+            return {'producer_index': producer, 'oldest_index': oldest,
+                    'overrun_count': overrun}
+
+        device_spi.pkt.get_status.side_effect = ring_status
+        device_spi.read_capture_range = MagicMock(return_value=b'\x34\x12' * 4)
+        device_spi.spi.flush = MagicMock()
+        stop_evt = MagicMock()
+        stop_evt.is_set.return_value = False
+        stop_evt.wait.side_effect = [False, True]
+
+        items = list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, follow_tail=True))
+
+        assert len(items) == 1
+        device_spi.read_capture_range.assert_called_once_with(
+            4, 4, probe_compression=False)
+
+    def test_rle_stream_error_after_stop_is_propagated(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'rle'
+        device_spi.compress_readback_enabled = True
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'producer_index': 4, 'oldest_index': 0, 'overrun_count': 0,
+        }
+        device_spi.pkt.start_rle_stream_read.side_effect = OSError(
+            'RLE stream stopped')
+        device_spi.spi.flush = MagicMock()
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False, True]
+
+        with pytest.raises(OSError, match='RLE stream stopped'):
+            list(device_spi.stream_ring_capture(
+                1_000_000, 4, stop_evt))
+
+    def test_raw_stream_restart_failure_propagates_original_ack_error(
+            self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.side_effect = [ST_OK, -1]
+        device_spi.pkt.get_status.return_value = {
+            'producer_index': 8, 'oldest_index': 0, 'overrun_count': 0,
+        }
+        device_spi.pkt.start_raw_stream_read.side_effect = [
+            RuntimeError('no stream ack'), RuntimeError('no stream ack')]
+        device_spi.spi.flush = MagicMock()
+        stop_evt = MagicMock()
+        stop_evt.is_set.return_value = False
+        stop_evt.wait.return_value = False
+
+        with pytest.raises(RuntimeError, match='no stream ack'):
+            list(device_spi.stream_ring_capture(
+                1_000_000, 4, stop_evt, prefer_raw_stream=True))
+
+    def test_raw_stream_retry_stops_when_wait_requests_shutdown(
+            self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'producer_index': 4, 'oldest_index': 0, 'overrun_count': 0,
+        }
+        device_spi.pkt.start_raw_stream_read.side_effect = OSError('USB reset')
+        device_spi.spi.flush = MagicMock()
+        stop_evt = MagicMock()
+        stop_evt.is_set.return_value = False
+        stop_evt.wait.return_value = True
+
+        assert list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, prefer_raw_stream=True)) == []
+
+    def test_raw_stream_empty_tail_stops_when_wait_requests_shutdown(
+            self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'producer_index': 4, 'oldest_index': 0, 'overrun_count': 0,
+        }
+        device_spi.pkt.start_raw_stream_read.return_value = (4, 0, b'')
+        device_spi.spi.flush = MagicMock()
+        stop_evt = MagicMock()
+        stop_evt.is_set.return_value = False
+        stop_evt.wait.return_value = True
+
+        assert list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, prefer_raw_stream=True)) == []
 
     def test_stream_ring_tail_advances_after_short_block_read(
             self, device_spi):
@@ -2910,3 +3098,1192 @@ class TestSwdSymbols:
         assert (wr['apndp'], wr['addr']) == (1, 0xC)
         assert wr['data'] == 0x7
         assert wr['parity_ok'] is True
+
+
+class TestGeneratorRxRead:
+    @staticmethod
+    def response(seq, payload, status=ST_OK):
+        resp = SYNC_RSP + bytes([status, seq]) + struct.pack('<H', len(payload)) + payload
+        return resp + struct.pack('<H', crc16(resp[2:]))
+
+    def test_batched_reads_stop_when_fifo_marks_last_byte(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt._next_seq.side_effect = [10, 11, 12]
+        device_spi.spi.stream_payload = MagicMock(return_value=b''.join((
+            self.response(10, b'\x34\x02'),
+            self.response(11, b'\x56\x01'),
+            self.response(12, b'\x78\x00'),
+        )))
+
+        assert device_spi.gen_rx_read(3) == b'\x34\x56'
+        assert device_spi.pkt.read_register.call_count == 0
+
+    def test_batched_reads_skip_bad_responses_and_empty_fifo(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt._next_seq.side_effect = [20, 21, 22]
+        invalid_crc = bytearray(self.response(20, b'\xAA\x02'))
+        invalid_crc[-1] ^= 0x01
+        oversized = SYNC_RSP + b'\x00\x21\xff\xff'
+        device_spi.spi.stream_payload = MagicMock(return_value=(
+            oversized + bytes(invalid_crc)
+            + self.response(21, b'\xBB\x00')
+            + self.response(22, b'\xCC\x02', status=1)
+        ))
+
+        assert device_spi.gen_rx_read(3) == b''
+
+    def test_batched_transport_failure_uses_single_read_fallback(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt._next_seq.side_effect = [30, 31]
+        device_spi.spi.stream_payload = MagicMock(side_effect=OSError('offline'))
+        device_spi.pkt.read_register.side_effect = [0x0212, 0x0134, 0x0000]
+
+        assert device_spi.gen_rx_read(2) == b'\x12\x34'
+        assert device_spi.pkt.read_register.call_count == 2
+
+    def test_single_read_path_stops_on_empty_or_error(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.read_register.side_effect = [0x0012]
+        assert device_spi.gen_rx_read(1) == b''
+        device_spi.pkt.read_register.assert_called_once_with(REG_GEN_RX_DATA)
+
+        device_spi.pkt.read_register.side_effect = [-1]
+        assert device_spi.gen_rx_read(1) == b''
+
+    def test_batched_parser_stops_at_truncated_response_header(self,
+                                                              device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt._next_seq.side_effect = [40, 41]
+        device_spi.spi.stream_payload = MagicMock(
+            return_value=SYNC_RSP + b'\x00\x28')
+
+        assert device_spi.gen_rx_read(2) == b''
+
+    def test_gen_run_reuses_matching_accelerometer_setup(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.transaction.return_value = (ST_OK, 0, b'')
+        device_spi._pins = MagicMock()
+        device_spi._wait_gen_idle = MagicMock()
+        device_spi.gen_rx_read = MagicMock(return_value=b'\x01')
+        device_spi._rx_bits = MagicMock(return_value=[1] * 8)
+        device_spi.spi.flush = MagicMock()
+
+        device_spi._gen_run_and_rx([1, 0, 1], 8)
+        device_spi._gen_run_and_rx([1, 0, 1], 8, reuse_accel_setup=True)
+
+        device_spi.pkt.transaction.assert_has_calls([
+            call(CMD_ABORT_CAPTURE, timeout=0.5),
+            call(CMD_GEN_START, timeout=1.0),
+            call(CMD_GEN_START, timeout=1.0),
+        ])
+        device_spi.pkt.write_register.assert_any_call(REG_GEN_BAUD, 8)
+        assert device_spi.pkt.load_gen_data.call_count == 2
+
+    def test_gen_run_accepts_missing_start_response_when_status_is_busy(
+            self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.transaction.side_effect = [(ST_OK, 0, b''), None]
+        device_spi.pkt.get_status.return_value = {'gen_busy': True}
+        device_spi._pins = MagicMock()
+        device_spi._wait_gen_idle = MagicMock()
+        device_spi.gen_rx_read = MagicMock(return_value=b'\x01')
+        device_spi._rx_bits = MagicMock(return_value=[1] * 8)
+        device_spi.spi.flush = MagicMock()
+
+        result = device_spi._gen_run_and_rx([1, 0, 1], 8)
+
+        assert result == [1] * 8
+        device_spi.pkt.get_status.assert_called_once()
+
+
+class TestAccelerometerFifo:
+    def test_fifo_configure_writes_bypass_then_stream_and_caches_readback(
+            self, device_spi):
+        device_spi.accel_read_i2c = MagicMock(
+            side_effect=[0xA5, 0xE5, 0xDF])
+        device_spi.accel_write_i2c = MagicMock(return_value=True)
+
+        result = device_spi.accel_fifo_configure(
+            mode='STREAM_TO_FIFO', threshold=99, dev_addr=0x18,
+            speed=400_000)
+
+        assert result == {
+            'ctrl5': 0xE5, 'fifo_ctrl': 0xDF, 'enabled': True,
+            'mode': 'stream_to_fifo', 'threshold': 31,
+        }
+        assert [c.args[:2] for c in device_spi.accel_write_i2c.call_args_list] == [
+            (0x24, 0xA5), (0x2E, 0), (0x24, 0xE5), (0x2E, 0xDF),
+        ]
+        assert device_spi.last_accel_fifo_readback == {
+            'ctrl5': 0xE5, 'fifo_ctrl': 0xDF,
+        }
+
+    def test_fifo_configure_disable_and_invalid_mode(self, device_spi):
+        device_spi.accel_read_i2c = MagicMock(return_value=0xFF)
+        device_spi.accel_write_i2c = MagicMock(return_value=True)
+
+        result = device_spi.accel_fifo_configure(enabled=False)
+
+        assert result == {
+            'ctrl5': 0xBF, 'fifo_ctrl': 0, 'enabled': False,
+            'mode': 'bypass', 'threshold': 0,
+        }
+        assert device_spi.accel_write_i2c.call_count == 2
+        with pytest.raises(ValueError, match='unsupported LIS3DH FIFO mode'):
+            device_spi.accel_fifo_configure(mode='invalid')
+
+    @pytest.mark.parametrize('failed_write', [1, 2, 3, 4])
+    def test_fifo_configure_reports_each_failed_write(
+            self, device_spi, failed_write):
+        device_spi.accel_read_i2c = MagicMock(return_value=0x40)
+        device_spi.accel_write_i2c = MagicMock(
+            side_effect=[i != failed_write for i in range(1, 5)])
+
+        with pytest.raises(RuntimeError, match='failed to'):
+            device_spi.accel_fifo_configure()
+
+    def test_fifo_configure_handles_optional_and_failed_readback(self,
+                                                                 device_spi):
+        device_spi.accel_read_i2c = MagicMock(
+            side_effect=[None, None, None])
+        device_spi.accel_write_i2c = MagicMock(return_value=True)
+        device_spi.accel_fifo_configure()
+        assert device_spi.last_accel_fifo_readback is None
+
+        device_spi.accel_read_i2c = MagicMock(
+            side_effect=[OSError('read unavailable')])
+        device_spi.accel_fifo_configure()
+        assert device_spi.last_accel_fifo_readback is None
+
+        device_spi.accel_write_i2c = None
+        with pytest.raises(RuntimeError, match='writes are unavailable'):
+            device_spi.accel_fifo_configure()
+
+        device_spi.accel_read_i2c = None
+        device_spi.accel_write_i2c = MagicMock(return_value=True)
+        device_spi.accel_fifo_configure()
+        assert device_spi.last_accel_fifo_readback is None
+
+    def test_fifo_status_decodes_flags_and_records_empty_reads(self,
+                                                              device_spi):
+        device_spi.accel_read_i2c = MagicMock(side_effect=[0xE5, None])
+        status = device_spi.accel_fifo_status()
+        assert status == {
+            'raw': 0xE5, 'level': 5, 'empty': True,
+            'overrun': True, 'watermark': True,
+        }
+        assert device_spi.accel_fifo_stats['status_reads'] == 1
+        assert device_spi.accel_fifo_stats['empty_reads'] == 1
+        assert device_spi.accel_fifo_status() is None
+        assert device_spi.accel_fifo_stats['errors'] == 1
+        assert device_spi.last_accel_fifo_status is None
+
+        device_spi.accel_read_i2c.side_effect = None
+        device_spi.accel_read_i2c.return_value = 0x1A
+        status = device_spi.accel_fifo_status()
+        assert status['empty'] is False
+        assert device_spi.accel_fifo_stats['empty_reads'] == 1
+
+    def test_fifo_read_handles_empty_unavailable_overrun_and_bursting(
+            self, device_spi):
+        device_spi.accel_fifo_status = MagicMock(return_value=None)
+        assert device_spi.accel_read_fifo() is None
+        device_spi.accel_fifo_status.return_value = {
+            'level': 12, 'empty': True, 'overrun': False,
+        }
+        assert device_spi.accel_read_fifo() == b''
+        device_spi.accel_fifo_status.return_value = {
+            'level': 2, 'empty': False, 'overrun': True,
+        }
+        device_spi.accel_read_i2c = MagicMock(
+            side_effect=lambda _reg, read_len, **_kwargs: b'x' * read_len)
+        with patch('driver.ols_spi_device.bit_bang.max_i2c_read_bytes',
+                   return_value=12):
+            data = device_spi.accel_read_fifo(max_samples=3)
+        assert data == b'x' * 18
+        assert [c.kwargs['read_len'] for c in
+                device_spi.accel_read_i2c.call_args_list] == [12, 6]
+        assert device_spi.accel_fifo_stats['samples'] == 3
+        assert device_spi.accel_fifo_stats['batches'] == 1
+
+    @pytest.mark.parametrize('bad_payload', [None, b'abc'])
+    def test_fifo_read_rejects_invalid_or_short_burst(self, device_spi,
+                                                      bad_payload):
+        device_spi.accel_fifo_status = MagicMock(return_value={
+            'level': 1, 'empty': False, 'overrun': False,
+        })
+        device_spi.accel_read_i2c = MagicMock(return_value=bad_payload)
+        with pytest.raises(RuntimeError, match='LIS3DH FIFO returned'):
+            device_spi.accel_read_fifo()
+
+    @pytest.mark.parametrize(
+        ('rx', 'decoded', 'expected'),
+        [(b'', None, False),
+         (b'ack', ([0x32, 0x0F, 0xAA], [0, 0, 0]), True),
+         (b'ack', ([0x32, 0x0F, 0xAA], [0, 1, 0]), False)],
+    )
+    def test_i2c_write_reports_generator_and_ack_failures(
+            self, device_spi, rx, decoded, expected):
+        device_spi._gen_run_and_rx = MagicMock(return_value=rx)
+        device_spi._i2c_rx_decode = MagicMock(return_value=decoded)
+
+        assert device_spi.accel_write_i2c(0x0F, 0xAA, dev_addr=0x19) is expected
+        if rx:
+            device_spi._i2c_rx_decode.assert_called_once()
+        else:
+            device_spi._i2c_rx_decode.assert_not_called()
+
+
+class TestDirectLiveCapture:
+    def setup_device(self, device_spi, *, continuous=False):
+        device_spi._direct_live_stream = True
+        device_spi._continuous_live_stream = continuous
+        device_spi._continuous_live_packed = False
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.transaction.return_value = (ST_OK, 0, b'')
+        device_spi._write_capture_config = MagicMock()
+        device_spi.spi.flush = MagicMock()
+        device_spi.clear_live_gen = MagicMock()
+        device_spi._wait_gen_idle = MagicMock()
+
+    def test_repeating_sources_reject_empty_patterns_and_out_of_range_spi_rate(
+            self, device_spi):
+        with pytest.raises(ValueError, match='generator pattern must not be empty'):
+            list(device_spi._continuous_ring_capture_with_repeating_symbols(
+                rate_hz=1_000_000, chunk_nsamp=1, stop_evt=MagicMock(),
+                packed_symbols=b'', symbol_div=1, tx_pin=3, scl_pin=1))
+
+        with pytest.raises(ValueError, match='SPI payload must not be empty'):
+            list(device_spi.continuous_ring_capture_with_repeating_spi(
+                1_000_000, 1, 1, MagicMock(), b''))
+
+        with pytest.raises(ValueError, match='below the Bit_Engine floor'):
+            list(device_spi.continuous_ring_capture_with_repeating_spi(
+                1_000_000, 1, 1, MagicMock(), b'\x55', spi_clock_hz=1))
+
+    def test_repeating_ring_cleanup_continues_after_abort_failure(
+            self, device_spi):
+        item = (b'\x01\x00', 1, 1, 0)
+        device_spi.pkt = MagicMock()
+        abort_calls = 0
+
+        def transaction(command, **_kwargs):
+            nonlocal abort_calls
+            if command == CMD_ABORT_CAPTURE:
+                abort_calls += 1
+                if abort_calls == 2:
+                    raise OSError('cleanup abort failed')
+            return (ST_OK, 0, b'')
+
+        device_spi.pkt.transaction.side_effect = transaction
+        device_spi.readback_compression_mode = 'rle'
+        device_spi.set_readback_compression = MagicMock(return_value=True)
+        device_spi._wait_gen_idle = MagicMock()
+        device_spi.stream_ring_capture = MagicMock(return_value=iter([item]))
+
+        result = list(device_spi._continuous_ring_capture_with_repeating_symbols(
+            rate_hz=1_000_000, chunk_nsamp=1, stop_evt=MagicMock(),
+            packed_symbols=b'\x12', symbol_div=8, tx_pin=3, scl_pin=1))
+
+        assert result == [item]
+        device_spi.pkt.transaction.assert_any_call(CMD_GEN_STOP, timeout=0.5)
+        device_spi._wait_gen_idle.assert_called_once_with(timeout=0.5)
+        device_spi.set_readback_compression.assert_has_calls([
+            call('raw', force_hardware=True),
+            call('rle', force_hardware=True),
+        ])
+
+    def test_repeating_ring_cleanup_swallows_compression_restore_failure(
+            self, device_spi):
+        item = (b'\x01\x00', 1, 1, 0)
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.transaction.return_value = (ST_OK, 0, b'')
+        device_spi.readback_compression_mode = 'rle'
+        device_spi.set_readback_compression = MagicMock(
+            side_effect=[True, OSError('compression restore failed')])
+        device_spi._wait_gen_idle = MagicMock()
+        device_spi.stream_ring_capture = MagicMock(return_value=iter([item]))
+
+        result = list(device_spi._continuous_ring_capture_with_repeating_symbols(
+            rate_hz=1_000_000, chunk_nsamp=1, stop_evt=MagicMock(),
+            packed_symbols=b'\x12', symbol_div=8, tx_pin=3, scl_pin=1))
+
+        assert result == [item]
+        device_spi.pkt.transaction.assert_any_call(CMD_GEN_STOP, timeout=0.5)
+        device_spi._wait_gen_idle.assert_called_once_with(timeout=0.5)
+        device_spi.pkt.write_register.assert_any_call(REG_GEN_DATA, 1 << 8)
+
+    def test_repeating_spi_uses_ring_capture_at_supported_rate(self,
+                                                               device_spi):
+        device_spi._continuous_ring_capture_with_repeating_symbols = MagicMock(
+            return_value=iter([(b'data', 1, 1, 0)]))
+
+        result = list(device_spi.continuous_ring_capture_with_repeating_spi(
+            1_000_000, 1, 8, MagicMock(), b'\x55', spi_clock_hz=1_000_000))
+
+        assert result == [(b'data', 1, 1, 0)]
+        kwargs = device_spi._continuous_ring_capture_with_repeating_symbols.call_args.kwargs
+        assert kwargs['generator_flags'] != 0
+        assert kwargs['symbol_div'] > 0
+
+    def test_legacy_direct_stream_expands_words_and_restores_controls(
+            self, device_spi):
+        self.setup_device(device_spi)
+        device_spi.pkt.start_live_stream_read.return_value = (
+            7, 0, b'\xD1\x02')
+        device_spi.readback_compression_mode = 'rle'
+        device_spi.set_readback_compression = MagicMock(return_value=True)
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False, True]
+        full_out = bytearray()
+        progress = MagicMock()
+
+        items = list(device_spi._continuous_live_capture_with_repeating_symbols(
+            rate_hz=1_000_000, chunk_nsamp=4, stop_evt=stop_evt,
+            packed_symbols=b'\x12', symbol_div=10, tx_pin=3, scl_pin=1,
+            progress_cb=progress, full_out=full_out, include_cursor=True))
+
+        assert len(items) == 1, (device_spi.pkt.get_status.call_count,
+                                 device_spi.read_capture_range.call_args_list)
+        assert items[0][1:] == (4, 4, 0, None, {})
+        assert len(items[0][0]) == 8
+        assert full_out == items[0][0]
+        progress.assert_called_once_with(items[0][0], 4, 4)
+        device_spi.pkt.start_live_stream_read.assert_called_once_with(
+            4, stop_evt=stop_evt, compact_3bit=True)
+        device_spi.set_readback_compression.assert_has_calls([
+            call('raw', force_hardware=True),
+            call('rle', force_hardware=True),
+        ])
+        device_spi.pkt.write_register.assert_any_call(REG_GEN_DATA, 1 << 8)
+
+    def test_framed_direct_stream_decodes_byte_tokens(self, device_spi):
+        self.setup_device(device_spi, continuous=True)
+        device_spi.pkt.start_live_stream_continuous.return_value = (
+            chunk for chunk in [bytes([0x09, 0x0A])])
+        stop_evt = MagicMock()
+        stop_evt.is_set.return_value = False
+        full_out = bytearray()
+
+        items = list(device_spi._continuous_live_capture_with_repeating_symbols(
+            rate_hz=1_000_000, chunk_nsamp=2, stop_evt=stop_evt,
+            packed_symbols=b'\x12', symbol_div=10, tx_pin=3, scl_pin=1,
+            full_out=full_out))
+
+        assert len(items) == 1
+        data, total, count, overrun = items[0]
+        assert len(data) == 4
+        assert (total, count, overrun) == (2, 2, 0)
+        assert full_out == data
+        kwargs = device_spi.pkt.start_live_stream_continuous.call_args.kwargs
+        assert kwargs['packed_tokens'] is False
+        assert 'sparse_packed' not in kwargs
+
+    @pytest.mark.parametrize('speed_hz', [None, 30_000_000])
+    def test_fixed_packed_stream_handles_unmodified_spi_speed(
+            self, device_spi, speed_hz):
+        self.setup_device(device_spi, continuous=True)
+        device_spi._continuous_live_packed = True
+        device_spi.spi.speed_hz = speed_hz
+        device_spi.spi.set_speed = MagicMock()
+        device_spi.pkt.start_live_stream_continuous.return_value = (
+            chunk for chunk in [b'\xA5\x01\x02'])
+        stop_evt = MagicMock()
+        stop_evt.is_set.return_value = False
+
+        items = list(device_spi._continuous_live_capture_with_repeating_symbols(
+            rate_hz=1_000_000, chunk_nsamp=8, stop_evt=stop_evt,
+            packed_symbols=b'\x12', symbol_div=10, tx_pin=3, scl_pin=1))
+
+        assert len(items) == 1
+        assert len(items[0][0]) == 16
+        if speed_hz is None:
+            device_spi.spi.set_speed.assert_not_called()
+        else:
+            device_spi.spi.set_speed.assert_called_once_with(30_000_000)
+
+    def test_framed_reader_skips_non_sample_tokens_and_emits_cursor(
+            self, device_spi):
+        self.setup_device(device_spi, continuous=True)
+        device_spi.pkt.start_live_stream_continuous.return_value = (
+            chunk for chunk in [b'\x01\x02\x09'])
+        stop_evt = MagicMock()
+        stop_evt.is_set.return_value = False
+        progress = MagicMock()
+
+        items = list(device_spi._continuous_live_capture_with_repeating_symbols(
+            rate_hz=1_000_000, chunk_nsamp=1, stop_evt=stop_evt,
+            packed_symbols=b'\x12', symbol_div=10, tx_pin=3, scl_pin=1,
+            progress_cb=progress, include_cursor=True))
+
+        assert items == [(b'\x00\x20', 1, 1, 0, None, {})]
+        progress.assert_called_once_with(b'\x00\x20', 1, 1)
+
+    def test_framed_reader_retries_full_queue_and_stops_cleanly(
+            self, device_spi, monkeypatch):
+        from queue import Full as QueueFull, Queue as StdQueue
+        import driver.ols_spi_device as device_module
+
+        self.setup_device(device_spi, continuous=True)
+        device_spi.pkt.start_live_stream_continuous.return_value = (
+            chunk for chunk in [b'\x09'])
+        real_queue = StdQueue
+
+        class FullOnceQueue(real_queue):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.raised_full = False
+
+            def put(self, item, *args, **kwargs):
+                if not self.raised_full:
+                    self.raised_full = True
+                    raise QueueFull
+                return super().put(item, *args, **kwargs)
+
+        monkeypatch.setattr(device_module, 'Queue', FullOnceQueue)
+        stop_evt = MagicMock()
+        stop_evt.is_set.return_value = False
+
+        items = list(device_spi._continuous_live_capture_with_repeating_symbols(
+            rate_hz=1_000_000, chunk_nsamp=1, stop_evt=stop_evt,
+            packed_symbols=b'\x12', symbol_div=10, tx_pin=3, scl_pin=1))
+
+        assert items == [(b'\x00\x20', 1, 1, 0)]
+
+    def test_framed_reader_exits_after_stop_during_full_queue_retry(
+            self, device_spi, monkeypatch):
+        from queue import Full as QueueFull
+        import driver.ols_spi_device as device_module
+
+        self.setup_device(device_spi, continuous=True)
+
+        class StopEvent:
+            stopped = False
+
+            def is_set(self):
+                return self.stopped
+
+        stop_evt = StopEvent()
+
+        class FullQueue:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def put(self, _item, **_kwargs):
+                stop_evt.stopped = True
+                raise QueueFull
+
+        monkeypatch.setattr(device_module, 'Queue', FullQueue)
+        device_spi.pkt.start_live_stream_continuous.return_value = (
+            chunk for chunk in [b'\x09'])
+
+        items = list(device_spi._continuous_live_capture_with_repeating_symbols(
+            rate_hz=1_000_000, chunk_nsamp=1, stop_evt=stop_evt,
+            packed_symbols=b'\x12', symbol_div=10, tx_pin=3, scl_pin=1))
+
+        assert items == []
+
+    def test_framed_reader_returns_when_stop_arrives_mid_chunk(
+            self, device_spi):
+        self.setup_device(device_spi, continuous=True)
+
+        class StopEvent:
+            stopped = False
+
+            def is_set(self):
+                return self.stopped
+
+        stop_evt = StopEvent()
+
+        def stopped_wire():
+            stop_evt.stopped = True
+            yield b'\x01'
+
+        device_spi.pkt.start_live_stream_continuous.return_value = stopped_wire()
+        items = list(device_spi._continuous_live_capture_with_repeating_symbols(
+            rate_hz=1_000_000, chunk_nsamp=1, stop_evt=stop_evt,
+            packed_symbols=b'\x12', symbol_div=10, tx_pin=3, scl_pin=1))
+
+        assert items == []
+
+    def test_framed_reader_waits_for_delayed_chunk_and_emits_cursor(
+            self, device_spi):
+        import time
+
+        self.setup_device(device_spi, continuous=True)
+
+        def delayed_wire():
+            time.sleep(0.075)
+            yield b'\x09'
+
+        device_spi.pkt.start_live_stream_continuous.return_value = delayed_wire()
+        stop_evt = MagicMock()
+        stop_evt.is_set.return_value = False
+        items = list(device_spi._continuous_live_capture_with_repeating_symbols(
+            rate_hz=1_000_000, chunk_nsamp=1, stop_evt=stop_evt,
+            packed_symbols=b'\x12', symbol_div=10, tx_pin=3, scl_pin=1,
+            include_cursor=True))
+
+        assert items == [(b'\x00\x20', 1, 1, 0, None, {})]
+
+    def test_framed_reader_joins_and_propagates_shutdown_error(
+            self, device_spi, monkeypatch):
+        import threading
+        import driver.ols_spi_device as device_module
+
+        self.setup_device(device_spi, continuous=True)
+        release = threading.Event()
+
+        class StopEvent:
+            stopped = False
+
+            def is_set(self):
+                return self.stopped
+
+        stop_evt = StopEvent()
+
+        def blocked_wire():
+            yield b'\x09'
+            release.wait(timeout=2)
+            raise OSError('reader shutdown failed')
+
+        device_spi.pkt.start_live_stream_continuous.return_value = blocked_wire()
+        real_event = threading.Event
+        event_count = 0
+
+        class ReaderStopEvent:
+            def __init__(self):
+                self.event = real_event()
+
+            def set(self):
+                self.event.set()
+                release.set()
+
+            def is_set(self):
+                return self.event.is_set()
+
+        def event_factory():
+            nonlocal event_count
+            event_count += 1
+            return ReaderStopEvent() if event_count == 1 else real_event()
+
+        monkeypatch.setattr(device_module.threading, 'Event', event_factory)
+
+        def stop_after_sample(*_args):
+            stop_evt.stopped = True
+
+        with pytest.raises(OSError, match='reader shutdown failed'):
+            list(device_spi._continuous_live_capture_with_repeating_symbols(
+                rate_hz=1_000_000, chunk_nsamp=1, stop_evt=stop_evt,
+                packed_symbols=b'\x12', symbol_div=10, tx_pin=3, scl_pin=1,
+                progress_cb=stop_after_sample))
+
+    def test_framed_reader_checks_error_after_worker_finishes(
+            self, device_spi, monkeypatch):
+        import driver.ols_spi_device as device_module
+
+        self.setup_device(device_spi, continuous=True)
+
+        def broken_wire():
+            raise OSError('reader failed before consumer loop')
+            yield b''
+
+        class InlineThread:
+            def __init__(self, *, target, **_kwargs):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+            def is_alive(self):
+                return False
+
+            def join(self, timeout=None):
+                del timeout
+
+        monkeypatch.setattr(device_module.threading, 'Thread', InlineThread)
+        device_spi.pkt.start_live_stream_continuous.return_value = broken_wire()
+        stop_evt = MagicMock()
+        stop_evt.is_set.return_value = True
+
+        with pytest.raises(OSError, match='reader failed before consumer loop'):
+            list(device_spi._continuous_live_capture_with_repeating_symbols(
+                rate_hz=1_000_000, chunk_nsamp=1, stop_evt=stop_evt,
+                packed_symbols=b'\x12', symbol_div=10, tx_pin=3, scl_pin=1))
+
+    def test_legacy_compact_stream_emits_standard_tuple(self, device_spi):
+        self.setup_device(device_spi)
+        device_spi.pkt.start_live_stream_read.side_effect = [
+            (1, 0, b'\x01'), (2, 0, b'\x01')]
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False, True]
+
+        items = list(device_spi._continuous_live_capture_with_repeating_symbols(
+            rate_hz=1_000_000, chunk_nsamp=1, stop_evt=stop_evt,
+            packed_symbols=b'\x12', symbol_div=10, tx_pin=3, scl_pin=1))
+
+        assert items == [(b'\x00\x20', 1, 1, 0)]
+
+    def test_direct_stream_cleanup_swallows_abort_failure(self, device_spi):
+        self.setup_device(device_spi)
+        device_spi.pkt.transaction.side_effect = [
+            (ST_OK, 0, b''), (ST_OK, 0, b''), (ST_OK, 0, b''),
+            OSError('abort during cleanup failed'),
+        ]
+        device_spi.pkt.start_live_stream_read.return_value = (1, 0, b'\x01')
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False, True]
+
+        items = list(device_spi._continuous_live_capture_with_repeating_symbols(
+            rate_hz=1_000_000, chunk_nsamp=1, stop_evt=stop_evt,
+            packed_symbols=b'\x12', symbol_div=10, tx_pin=3, scl_pin=1))
+
+        assert items == [(b'\x00\x20', 1, 1, 0)]
+
+    def test_framed_direct_stream_decodes_fixed_packed_frames(self, device_spi):
+        self.setup_device(device_spi, continuous=True)
+        device_spi._continuous_live_packed = True
+        device_spi.spi.speed_hz = 12_000_000
+        device_spi.spi.set_speed = MagicMock(
+            side_effect=[None, OSError('restore speed failed')])
+        device_spi.readback_compression_mode = 'rle'
+        device_spi.set_readback_compression = MagicMock(
+            side_effect=[True, RuntimeError('restore mode failed')])
+        device_spi.pkt.start_live_stream_continuous.return_value = (
+            chunk for chunk in [b'\xA5\x01\x02'])
+        stop_evt = MagicMock()
+        stop_evt.is_set.return_value = False
+
+        items = list(device_spi._continuous_live_capture_with_repeating_symbols(
+            rate_hz=1_000_000, chunk_nsamp=8, stop_evt=stop_evt,
+            packed_symbols=b'\x12', symbol_div=10, tx_pin=3, scl_pin=1))
+
+        assert len(items) == 1
+        assert len(items[0][0]) == 16
+        assert items[0][1:] == (8, 8, 0)
+        device_spi.pkt.start_live_stream_continuous.assert_called_once()
+        device_spi.spi.set_speed.assert_has_calls([call(30_000_000),
+                                                   call(12_000_000)])
+
+    @pytest.mark.parametrize(
+        ('fifo_flags', 'compact_data', 'error'),
+        [(1, b'\x00', 'FIFO overflow'),
+         (0, b'', 'returned 0 bytes; expected 1')],
+    )
+    def test_legacy_direct_stream_rejects_fifo_overflow_or_short_data(
+            self, device_spi, fifo_flags, compact_data, error):
+        self.setup_device(device_spi)
+        device_spi.pkt.start_live_stream_read.return_value = (
+            1, fifo_flags, compact_data)
+        stop_evt = MagicMock()
+        stop_evt.is_set.return_value = False
+
+        with pytest.raises(RuntimeError, match=error):
+            list(device_spi._continuous_live_capture_with_repeating_symbols(
+                rate_hz=1_000_000, chunk_nsamp=1, stop_evt=stop_evt,
+                packed_symbols=b'\x12', symbol_div=10, tx_pin=3, scl_pin=1))
+
+    def test_framed_direct_stream_propagates_reader_errors(self, device_spi):
+        self.setup_device(device_spi, continuous=True)
+
+        def broken_wire_stream():
+            raise OSError('USB stream failed')
+            yield b''
+
+        device_spi.pkt.start_live_stream_continuous.return_value = (
+            broken_wire_stream())
+        stop_evt = MagicMock()
+        stop_evt.is_set.return_value = False
+
+        with pytest.raises(OSError, match='USB stream failed'):
+            list(device_spi._continuous_live_capture_with_repeating_symbols(
+                rate_hz=1_000_000, chunk_nsamp=2, stop_evt=stop_evt,
+                packed_symbols=b'\x12', symbol_div=10, tx_pin=3, scl_pin=1))
+
+    def test_direct_capture_capability_and_pattern_guards(self, device_spi):
+        self.setup_device(device_spi)
+        device_spi._direct_live_stream = False
+        with pytest.raises(RuntimeError, match='lacks direct live-stream FIFO'):
+            list(device_spi._continuous_live_capture_with_repeating_symbols(
+                rate_hz=1_000_000, chunk_nsamp=1, stop_evt=MagicMock(),
+                packed_symbols=b'\x12', symbol_div=10, tx_pin=3, scl_pin=1))
+
+        device_spi._direct_live_stream = True
+        with pytest.raises(ValueError, match='must not be empty'):
+            list(device_spi._continuous_live_capture_with_repeating_symbols(
+                rate_hz=1_000_000, chunk_nsamp=1, stop_evt=MagicMock(),
+                packed_symbols=b'', symbol_div=10, tx_pin=3, scl_pin=1))
+
+    @pytest.mark.parametrize('response', [None, (1, 0, b'')])
+    def test_direct_capture_rejects_arm_failures(self, device_spi, response):
+        self.setup_device(device_spi)
+        device_spi.pkt.transaction.side_effect = [
+            (ST_OK, 0, b''), response,
+            (ST_OK, 0, b''), (ST_OK, 0, b''),
+        ]
+        with pytest.raises(RuntimeError, match='direct live capture arm failed'):
+            list(device_spi._continuous_live_capture_with_repeating_symbols(
+                rate_hz=1_000_000, chunk_nsamp=1, stop_evt=MagicMock(),
+                packed_symbols=b'\x12', symbol_div=10, tx_pin=3, scl_pin=1))
+
+    def test_repeating_i2c_selects_direct_capture_and_validates_rate(
+            self, device_spi):
+        device_spi._direct_live_stream = True
+        device_spi._detect_gen_div_width = MagicMock(side_effect=OSError)
+        device_spi._continuous_live_capture_with_repeating_symbols = MagicMock(
+            return_value=iter([(b'data', 1, 1, 0)]))
+        stop_evt = MagicMock()
+
+        items = list(device_spi.continuous_ring_capture_with_repeating_i2c(
+            1_000_000, 1, 8, stop_evt, compact_i2c=True,
+            repeat_transactions=0))
+        assert items == [(b'data', 1, 1, 0)]
+        kwargs = device_spi._continuous_live_capture_with_repeating_symbols.call_args.kwargs
+        assert kwargs['generator_flags'] != 0
+        assert 'sparse_packed' not in kwargs
+        with pytest.raises(ValueError, match='read_len must be positive'):
+            list(device_spi.continuous_ring_capture_with_repeating_i2c(
+                1_000_000, 1, 8, stop_evt, read_len=0))
+        with pytest.raises(ValueError, match='repeat_rate_hz must be positive'):
+            list(device_spi.continuous_ring_capture_with_repeating_i2c(
+                1_000_000, 1, 8, stop_evt, repeat_rate_hz=0))
+
+    def test_repeating_i2c_can_select_ring_fallback_and_reject_bad_period(
+            self, device_spi):
+        device_spi._direct_live_stream = True
+        device_spi._continuous_ring_capture_with_repeating_symbols = MagicMock(
+            return_value=iter([]))
+        device_spi._continuous_live_capture_with_repeating_symbols = MagicMock(
+            return_value=iter([]))
+        list(device_spi.continuous_ring_capture_with_repeating_i2c(
+            1_000_000, 1, 8, MagicMock(), force_ring=True,
+            use_rle=False))
+        device_spi._continuous_ring_capture_with_repeating_symbols.assert_called_once()
+        device_spi._continuous_live_capture_with_repeating_symbols.assert_not_called()
+        with pytest.raises(ValueError, match='repeat period only has'):
+            list(device_spi.continuous_ring_capture_with_repeating_i2c(
+                1_000_000, 1, 8, MagicMock(), repeat_rate_hz=100_000))
+
+    def test_repeating_i2c_rejects_oversized_compact_burst_and_low_rate(
+            self, device_spi):
+        with pytest.raises(ValueError, match='compact I2C burst'):
+            list(device_spi.continuous_ring_capture_with_repeating_i2c(
+                1_000_000, 1, 8, MagicMock(), compact_i2c=True,
+                repeat_transactions=10_000))
+
+        with pytest.raises(ValueError, match='below the Bit_Engine floor'):
+            list(device_spi.continuous_ring_capture_with_repeating_i2c(
+                1_000_000, 1, 8, MagicMock(), i2c_speed=1))
+
+    def test_repeating_i2c_pads_symbols_for_supported_repeat_period(
+            self, device_spi):
+        device_spi._continuous_ring_capture_with_repeating_symbols = MagicMock(
+            return_value=iter([]))
+
+        list(device_spi.continuous_ring_capture_with_repeating_i2c(
+            1_000_000, 1, 8, MagicMock(), force_ring=True,
+            use_rle=False, repeat_rate_hz=250))
+
+        kwargs = device_spi._continuous_ring_capture_with_repeating_symbols.call_args.kwargs
+        assert len(kwargs['packed_symbols']) > 1
+
+    def test_stream_ring_generator_capture_retries_failed_arm(
+            self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi._write_capture_config = MagicMock()
+        device_spi.spi.flush = MagicMock()
+        gen_capture_calls = []
+        abort_calls = []
+
+        def transaction(command, **_kwargs):
+            if command == CMD_GEN_CAPTURE:
+                gen_capture_calls.append(command)
+                return (-1 if len(gen_capture_calls) == 1 else ST_OK, 0, b'')
+            if command == CMD_ABORT_CAPTURE:
+                abort_calls.append(command)
+                if len(abort_calls) == 1:
+                    raise OSError('abort acknowledgement lost')
+            return (ST_OK, 0, b'')
+
+        device_spi.pkt.transaction.side_effect = transaction
+        stop_evt = MagicMock()
+        stop_evt.is_set.return_value = True
+
+        assert list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, generator_capture=True)) == []
+        assert len(gen_capture_calls) == 2
+        assert len(abort_calls) == 2
+
+    def test_stream_ring_rearms_generator_after_two_missing_stream_acks(
+            self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi._write_capture_config = MagicMock()
+        device_spi.spi.flush = MagicMock()
+        device_spi.pkt.transaction.return_value = (ST_OK, 0, b'')
+        device_spi.pkt.start_raw_stream_read.side_effect = [
+            RuntimeError('no stream ack'), RuntimeError('no stream ack'),
+            (8, 0, b'\x06\x00' * 4),
+        ]
+        device_spi.pkt.get_status.return_value = {
+            'producer_index': 8, 'oldest_index': 0, 'overrun_count': 0,
+        }
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False, False, False, True]
+        stop_evt.wait.return_value = False
+
+        items = list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, generator_capture=True,
+            prefer_raw_stream=True))
+
+        assert len(items) == 1
+        device_spi.pkt.transaction.assert_any_call(CMD_GEN_CAPTURE,
+                                                  timeout=1.0)
+        assert device_spi.pkt.transaction.call_args_list.count(
+            call(CMD_GEN_CAPTURE, timeout=1.0)) == 2
+
+    def test_stream_ring_propagates_exhausted_raw_stream_retries(
+            self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi._write_capture_config = MagicMock()
+        device_spi.spi.flush = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.start_raw_stream_read.side_effect = OSError(
+            'USB link disconnected')
+        device_spi.pkt.get_status.return_value = {
+            'producer_index': 8, 'oldest_index': 0, 'overrun_count': 0,
+        }
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False, False, False]
+        stop_evt.wait.return_value = False
+
+        with pytest.raises(OSError, match='USB link disconnected'):
+            list(device_spi.stream_ring_capture(
+                1_000_000, 4, stop_evt, prefer_raw_stream=True))
+
+    def test_stream_ring_follow_tail_stops_when_ring_is_empty(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi._write_capture_config = MagicMock()
+        device_spi.spi.flush = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        empty_status = {
+            'producer_index': 0, 'oldest_index': 0, 'overrun_count': 0,
+        }
+        device_spi.pkt.get_status.side_effect = [empty_status, empty_status]
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False, False]
+        stop_evt.wait.side_effect = [False, True]
+
+        items = list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, follow_tail=True))
+
+        assert items == []
+        assert stop_evt.wait.call_count == 2
+
+    def test_stream_ring_uses_block_reader_after_rle_probe_failure(
+            self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'rle'
+        device_spi.compress_readback_enabled = True
+        device_spi._rle_stream_supported = False
+        device_spi._write_capture_config = MagicMock()
+        device_spi.spi.flush = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'producer_index': 4, 'oldest_index': 0, 'overrun_count': 0,
+        }
+        device_spi.read_capture_range = MagicMock(return_value=b'\x03\x00' * 4)
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False, False, True]
+
+        items = list(device_spi.stream_ring_capture(1_000_000, 4, stop_evt))
+
+        assert len(items) == 1
+        device_spi.pkt.start_rle_stream_read.assert_not_called()
+        device_spi.read_capture_range.assert_called_once_with(
+            0, 4, probe_compression=True)
+
+    def test_stream_ring_falls_back_to_block_reads_after_rle_error(
+            self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'rle'
+        device_spi.compress_readback_enabled = True
+        device_spi._write_capture_config = MagicMock()
+        device_spi.spi.flush = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'producer_index': 4, 'oldest_index': 0, 'overrun_count': 0,
+        }
+        device_spi.pkt.start_rle_stream_read.side_effect = RuntimeError(
+            'RLE endpoint unavailable')
+        device_spi.read_capture_range = MagicMock(return_value=b'\x05\x00' * 4)
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False] * 5 + [True]
+
+        items = list(device_spi.stream_ring_capture(1_000_000, 4, stop_evt))
+
+        assert len(items) == 1
+        assert device_spi._rle_stream_supported is False
+        device_spi.read_capture_range.assert_called_once_with(
+            0, 4, probe_compression=True)
+
+    def test_stream_ring_follow_tail_handles_full_wrapped_ring(self,
+                                                              device_spi):
+        from driver.ols_spi_device import RING_SAMPLE_COUNT
+
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi._write_capture_config = MagicMock()
+        device_spi.spi.flush = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.return_value = {
+            'producer_index': RING_SAMPLE_COUNT + 9,
+            'oldest_index': 9, 'overrun_count': 1,
+        }
+        device_spi.read_capture_range = MagicMock(return_value=b'\x04\x00' * 4)
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False, False, True]
+
+        items = list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, follow_tail=True, include_cursor=True))
+
+        assert len(items) == 1
+        assert items[0][4] == RING_SAMPLE_COUNT + 5
+
+    def test_stream_ring_follow_tail_resyncs_when_oldest_passes_cursor(
+            self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi._write_capture_config = MagicMock()
+        device_spi.spi.flush = MagicMock()
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        device_spi.pkt.get_status.side_effect = [
+            {'producer_index': 8, 'oldest_index': 0, 'overrun_count': 0},
+            {'producer_index': 13, 'oldest_index': 10, 'overrun_count': 0},
+        ]
+        device_spi.read_capture_range = MagicMock(return_value=b'\x04\x00' * 4)
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False, False, False]
+        stop_evt.wait.return_value = True
+
+        items = list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, follow_tail=True))
+
+        assert len(items) == 1
+        assert items[0][1] == 4
+        assert device_spi.read_capture_range.call_count == 1
+
+    def test_rle_wrapper_restores_mode_after_successful_stream(self,
+                                                              device_spi):
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.set_readback_compression = MagicMock(
+            side_effect=[True, True])
+        item = (b'\x01\x00', 1, 1, 0)
+        device_spi.stream_ring_capture = MagicMock(return_value=iter([item]))
+
+        assert list(device_spi._stream_ring_capture_with_rle_fallback(
+            1_000_000, 1, MagicMock())) == [item]
+        assert device_spi._rle_stream_supported is True
+        device_spi.set_readback_compression.assert_has_calls([
+            call('rle', force_hardware=True),
+            call('raw', force_hardware=True),
+        ])
+
+    def test_rle_wrapper_falls_back_to_raw_after_setup_failure(self,
+                                                              device_spi):
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.set_readback_compression = MagicMock(
+            side_effect=[False, True, RuntimeError('restore unavailable')])
+        item = (b'\x02\x00', 1, 1, 0)
+        device_spi.stream_ring_capture = MagicMock(return_value=iter([item]))
+        stop_evt = MagicMock()
+        stop_evt.is_set.return_value = False
+
+        assert list(device_spi._stream_ring_capture_with_rle_fallback(
+            1_000_000, 1, stop_evt)) == [item]
+        assert device_spi._rle_stream_supported is False
+        device_spi.stream_ring_capture.assert_called_once_with(
+            rate_hz=1_000_000, window_samples=1, stop_evt=ANY,
+            progress_cb=None, full_out=None, fetch_multiplier=32,
+            generator_capture=False, manage_debug_source=True,
+            include_cursor=False)
+
+    def test_rle_wrapper_reports_failed_raw_fallback(self, device_spi):
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.set_readback_compression = MagicMock(
+            side_effect=[OSError('rle setup failed'), OSError('raw failed'),
+                         True])
+        stop_evt = MagicMock()
+        stop_evt.is_set.return_value = False
+
+        with pytest.raises(RuntimeError, match='unable to enable raw live fallback'):
+            list(device_spi._stream_ring_capture_with_rle_fallback(
+                1_000_000, 1, stop_evt))
+
+    def test_rle_wrapper_uses_caller_fallback_when_raw_mode_is_optional(
+            self, device_spi):
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.set_readback_compression = MagicMock(
+            side_effect=[OSError('rle setup failed'), OSError('raw failed'),
+                         True])
+        item = (b'\x03\x00', 1, 1, 0)
+        raw_capture = MagicMock(return_value=iter([item]))
+        stop_evt = MagicMock()
+        stop_evt.is_set.return_value = False
+
+        items = list(device_spi._stream_ring_capture_with_rle_fallback(
+            1_000_000, 1, stop_evt, raw_capture=raw_capture,
+            require_raw_mode=False, fallback_to_raw=False))
+
+        assert items == [item]
+        raw_capture.assert_called_once()
+
+
+class TestLiveStreamHelperEdges:
+    def test_packed_decoder_validates_and_handles_marker_edges(self):
+        from driver.ols_spi_device import _decode_packed_live_frames
+
+        with pytest.raises(ValueError, match='2 or 3 bits'):
+            _decode_packed_live_frames(b'', bytearray(), 4)
+        pending = bytearray(b'old')
+        assert _decode_packed_live_frames(b'\x01\x02', pending) == (b'', False)
+        assert pending == b''
+
+        pending = bytearray()
+        data, started = _decode_packed_live_frames(
+            b'\xA5\x12', pending, 2)
+        assert (data, started, pending) == (b'', True, b'\xA5\x12')
+        data, started = _decode_packed_live_frames(
+            b'\x34', pending, 2, started)
+        assert len(data) == 16
+        assert started is True and pending == b''
+
+        data, started = _decode_packed_live_frames(
+            b'\xA5\xC3\x01\xA5\x02\x03', bytearray(), 2, True)
+        assert len(data) == 32 and started
+
+        with pytest.raises(RuntimeError, match='FIFO overflow'):
+            _decode_packed_live_frames(b'\xC3\xA5\x01\x02',
+                                       bytearray(), 2, True)
+        with pytest.raises(RuntimeError, match='FIFO overflow'):
+            _decode_packed_live_frames(b'\xA5\x01\x02\xC3',
+                                       bytearray(), 2, True)
+
+    def test_sparse_packed_decoder_handles_split_escapes_and_overflow(self):
+        from driver.ols_spi_device import _decode_sparse_packed_live_frames
+
+        with pytest.raises(ValueError, match='2 or 3 bits'):
+            _decode_sparse_packed_live_frames(b'', bytearray(), False,
+                                              sample_bits=1)
+        assert _decode_sparse_packed_live_frames(
+            b'noise', bytearray(), False) == (b'', False, False)
+        assert _decode_sparse_packed_live_frames(
+            b'', bytearray(), True) == (b'', True, False)
+        pending = bytearray()
+        assert _decode_sparse_packed_live_frames(
+            b'\xA5\xFE\x01\x02', pending, False, sample_bits=3) == (
+                b'', True, False)
+        assert pending == b'\x01\x02'
+        with pytest.raises(RuntimeError, match='FIFO overflow'):
+            _decode_sparse_packed_live_frames(
+                b'\xFE\x07', bytearray(), False)
+
+        pending = bytearray()
+        first = _decode_sparse_packed_live_frames(
+            b'\xA5\xFE', pending, False)
+        assert first == (b'', True, True)
+        _, started, escaped = first
+        data, started, escaped = _decode_sparse_packed_live_frames(
+            b'\x00\x11\x22', pending, started, escaped, 3)
+        assert len(data) == 16
+        assert started and not escaped and pending == b''
+        with pytest.raises(RuntimeError, match='FIFO overflow'):
+            _decode_sparse_packed_live_frames(
+                b'\xA5\xFE\x07', bytearray(), False)
+        with pytest.raises(RuntimeError, match='FIFO overflow'):
+            _decode_sparse_packed_live_frames(
+                b'\x07', bytearray(), True, escaped=True)
+
+    def test_tagged_packed_decoder_skips_bad_tags_and_waits_for_full_group(self):
+        from driver.ols_spi_device import _decode_tagged_packed_live_frames
+
+        with pytest.raises(ValueError, match='2 or 3 bits'):
+            _decode_tagged_packed_live_frames(b'', bytearray(), False, 1)
+        assert _decode_tagged_packed_live_frames(
+            b'noise', bytearray(), False) == (b'', False)
+        with pytest.raises(RuntimeError, match='FIFO overflow'):
+            _decode_tagged_packed_live_frames(
+                b'\xA5\xC3', bytearray(), False)
+
+        pending = bytearray([0])
+        assert _decode_tagged_packed_live_frames(b'', pending, True) == (
+            b'', True)
+        pending = bytearray()
+        first = _decode_tagged_packed_live_frames(
+            b'\xA5\xA1\xB2', pending, False)
+        assert first == (b'', True) and pending == b'\xA1\xB2'
+        _, started = first
+        data, started = _decode_tagged_packed_live_frames(
+            b'\xA3\xB4', pending, started, 2)
+        assert len(data) == 16 and started and pending == b''
+
+        pending = bytearray()
+        data, _ = _decode_tagged_packed_live_frames(
+            b'\xA5\x01\x02\x03\x04\xA1\xB2\xA3\xB4',
+            pending, False, 2)
+        assert len(data) == 16
+
+    def test_sparse_rle_decoder_handles_idle_empty_and_valid_runs(self):
+        from driver.ols_spi_device import _decode_sparse_rle_live_frames
+
+        assert _decode_sparse_rle_live_frames(b'noise', bytearray(), False) == (
+            b'', False)
+        assert _decode_sparse_rle_live_frames(b'', bytearray(), True) == (
+            b'', True)
+        assert _decode_sparse_rle_live_frames(
+            b'\xA5\x00\xFF', bytearray(), False) == (b'', True)
+        data, started = _decode_sparse_rle_live_frames(
+            b'\xA5\x42\x81', bytearray(), False)
+        assert len(data) == 6 and started
+        with pytest.raises(RuntimeError, match='FIFO overflow'):
+            _decode_sparse_rle_live_frames(
+                b'\xA5\xC3', bytearray(), False)
+
+    def test_ring_cursor_helpers_cover_normal_and_wraparound_distances(self):
+        from driver.ols_spi_device import (
+            RING_SAMPLE_COUNT, _ring_distance, _ring_is_ahead,
+            _ring_is_before, _ring_sample_cursor, _ring_sample_distance,
+            _ring_sample_is_ahead, _ring_sample_is_before, _ring_u32,
+        )
+
+        assert _ring_u32(-1) == 0xFFFFFFFF
+        assert _ring_distance(2, 0xFFFFFFFE) == 4
+        assert _ring_is_before(0xFFFFFFFE, 2)
+        assert _ring_is_ahead(2, 0xFFFFFFFE)
+        assert not _ring_is_ahead(2, 2)
+        assert _ring_sample_cursor(RING_SAMPLE_COUNT + 3) == 3
+        assert _ring_sample_distance(10, 4) == 6
+        assert _ring_sample_distance(2, RING_SAMPLE_COUNT - 2) == 4
+        assert _ring_sample_distance(RING_SAMPLE_COUNT, 0) == RING_SAMPLE_COUNT
+        assert _ring_sample_is_before(RING_SAMPLE_COUNT - 2, 2)
+        assert _ring_sample_is_ahead(2, RING_SAMPLE_COUNT - 2)
+        assert not _ring_sample_is_ahead(2, 2)

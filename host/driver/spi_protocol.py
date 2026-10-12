@@ -677,18 +677,7 @@ class SPIDevice:
                 and hasattr(self.spi, "stream_command_end")):
             return self._live_stream_via_precise_clocking(
                 req, seq, n_bytes, stop_evt)
-        if not hasattr(self.spi, "stream_command"):
-            raise RuntimeError("live stream path requires stream_command")
-        pad = ack_pad if ack_pad is not None else self._default_ack_pad()
-        raw = self.spi.stream_command(
-            req, n_bytes, ack_pad=pad, stop_evt=stop_evt)
-        found = self._find_stream_ack(bytearray(raw), seq)
-        if found is not None:
-            sequence, flags, end = found
-            data = raw[end:end + n_bytes]
-            if len(data) == n_bytes:
-                return sequence, flags, data
-        raise RuntimeError("start_live_stream_read failed")
+        raise RuntimeError("live stream path requires stream_command")
 
     def start_live_stream_continuous(self, stop_evt=None, packed_tokens=False,
                                      sparse_packed=False, sparse_sample_bits=3,

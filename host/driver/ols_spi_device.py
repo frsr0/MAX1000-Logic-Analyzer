@@ -2584,16 +2584,6 @@ class OLSDeviceSPI:
         # consumed in source order and is not initial ring backlog. The fetch
         # cursor is kept separately from the pending output cursor below.
         tail_window_samples = window_samples
-        # A live consumer must never drain a stale history burst after a
-        # transport stall. Keep the recovery threshold bounded to a few
-        # output windows; once exceeded, discard that stale region and seek
-        # directly to the newest decoder-safe tail. With the sequential fetch
-        # cursor above, three windows absorb normal USB scheduling jitter
-        # without hiding a growing source backlog. At the
-        # accelerometer's 75 ksample/s source rate this is only about 10 ms
-        # for the 256-sample live window, far below the seconds of stale
-        # history this guard is intended to prevent.
-        tail_lag_limit = max(window_samples * 3, 2)
         # Ring metadata cursors count source samples, regardless of the
         # selected readback codec.  RLE changes the number of bytes on the
         # wire, not the number of samples needed before a request can be
@@ -2774,12 +2764,10 @@ class OLSDeviceSPI:
                         next_sample = cursor(oldest_hint)
                     if not use_raw_stream:
                         fetch_cursor = next_sample
+                # next_sample is initialized or the loop has continued above;
+                # fetch_cursor is optional only on the raw held-CS path.
                 ring_cursor = (fetch_cursor if not use_raw_stream
                                and fetch_cursor is not None else next_sample)
-                if ring_cursor is None:
-                    if stop_evt.wait(0.0005):
-                        break
-                    continue
                 if is_before(ring_cursor, int(oldest_hint)):
                     # On an overrun, resync a held-CS stream to the newest
                     # decoder-safe window rather than replaying stale data.
@@ -2827,10 +2815,6 @@ class OLSDeviceSPI:
 
                 ring_cursor = (fetch_cursor if not use_raw_stream
                                and fetch_cursor is not None else next_sample)
-                if ring_cursor is None:
-                    if stop_evt.wait(0.0005):
-                        break
-                    continue
                 available = distance(producer_hint, ring_cursor)
                 if available > (RING_INDEX_HALF if use_raw_stream
                                 else RING_SAMPLE_HALF):
@@ -2840,20 +2824,10 @@ class OLSDeviceSPI:
                     producer_hint = None
                     oldest_hint = None
                     continue
-                if (use_newest_stream and not use_raw_stream
-                        and available > tail_lag_limit):
-                    # The block reader fell behind far enough that draining
-                    # the old cursor would turn a transient USB stall into a
-                    # visible live delay. Treat this as a transport gap and
-                    # re-anchor at the current ring tail; the caller resets
-                    # its incremental decoder when overrun_total changes.
-                    overrun_total += 1
-                    discard_pending()
-                    next_sample = None
-                    fetch_cursor = None
-                    producer_hint = None
-                    oldest_hint = None
-                    continue
+                # In newest-tail block mode, the cursor has just been
+                # re-anchored to the latest complete window above. Therefore
+                # available cannot exceed that window here; a second stale
+                # backlog threshold check would be unreachable.
                 if available < required_now:
                     self._ring_trace(
                         f"iter={iteration} wait: available={available} "
@@ -2883,30 +2857,21 @@ class OLSDeviceSPI:
                                     stop_evt=stop_evt)
                             self._rle_stream_supported = True
                         except (RuntimeError, OSError):
-                            if not stop_evt.is_set():
-                                self._rle_stream_supported = False
-                                use_rle_stream = False
-                                use_raw_stream = False
-                                rle_block_fallback = True
-                                producer_hint = None
-                                oldest_hint = None
-                                next_sample = None
-                                fetch_cursor = None
-                                discard_pending()
-                                continue
-                            if not use_newest_stream or stream_retry_count >= 2:
+                            # RLE uses its oldest-cursor policy, so it cannot
+                            # enter the newest-tail retry path below. Recover
+                            # through block reads while live; propagate errors
+                            # if the caller has already stopped the stream.
+                            if stop_evt.is_set():
                                 raise
-                            stream_retry_count += 1
+                            self._rle_stream_supported = False
+                            use_rle_stream = False
+                            use_raw_stream = False
+                            rle_block_fallback = True
                             producer_hint = None
                             oldest_hint = None
                             next_sample = None
                             fetch_cursor = None
-                            # A failed held-CS transaction has already raised
-                            # CS and discarded the partial wire response. The
-                            # next request must be seeded from fresh metadata,
-                            # not retried at the stale tail cursor.
-                            if stop_evt.wait(0.001):
-                                break
+                            discard_pending()
                             continue
                     else:
                         try:
@@ -3281,7 +3246,7 @@ class OLSDeviceSPI:
             self, *, rate_hz, chunk_nsamp, stop_evt, packed_symbols,
             symbol_div, tx_pin, scl_pin, generator_flags=0,
             progress_cb=None, full_out=None, include_cursor=False,
-            sparse_sample_bits=2, sparse_packed=True, sparse_rle=False):
+            sparse_sample_bits=2):
         """Capture the live tap directly, bypassing SDRAM readback.
 
         The Bit_Engine and capture tap remain in the FPGA.  The host only
@@ -3370,10 +3335,7 @@ class OLSDeviceSPI:
                 # treats C3 as an overflow marker only outside a complete
                 # fixed-width frame, so a valid C3 payload byte is preserved
                 # without paying the extra A0/B0 wire and FPGA cost.
-                tagged_packed = False
-                sparse_rle = False
-                sparse_packed = False
-                requested_sparse_sample_bits = int(sparse_sample_bits)
+                packed_sample_bits = int(sparse_sample_bits)
                 # The FPGA and FTDI MPSSE support a 30 MHz held-CS clock.
                 # Tagged 2-bit records use 0.5 wire bytes per source sample;
                 # the 30 MHz held-CS link still has ample margin over the
@@ -3393,10 +3355,7 @@ class OLSDeviceSPI:
                     # payload length is derived from sample_bits, so a USB
                     # chunk boundary cannot alter sample alignment.
                      packed_tokens=packed_tokens,
-                     sparse_packed=sparse_packed,
-                     sparse_sample_bits=requested_sparse_sample_bits,
-                     sparse_rle=sparse_rle,
-                     tagged_packed=tagged_packed)
+                     sparse_sample_bits=packed_sample_bits)
                 # The wire reader must absorb short backend scheduling stalls
                 # without pausing the held-CS SPI clock. Three 8k-sample
                 # deliveries was only ~12 ms of source time and allowed a
@@ -3406,7 +3365,7 @@ class OLSDeviceSPI:
                 # Each delivery is 32.8 ms at the 1 MHz tap. Four deliveries
                 # are enough to absorb scheduler jitter without allowing a
                 # hidden seconds-long waveform backlog to build.
-                decoded_queue: Queue[bytes | None] = Queue(
+                decoded_queue: Queue[bytes] = Queue(
                     maxsize=DIRECT_LIVE_DECODE_QUEUE_CHUNKS)
                 reader_error: list[BaseException] = []
                 reader_done = threading.Event()
@@ -3417,39 +3376,14 @@ class OLSDeviceSPI:
                     decoded = bytearray()
                     packed_pending = bytearray()
                     packed_started = False
-                    packed_escaped = False
-                    rle_started = False
-                    tagged_started = False
                     try:
                         for wire_chunk in wire_stream:
                             if packed_tokens:
-                                if tagged_packed:
-                                    data, tagged_started = (
-                                        _decode_tagged_packed_live_frames(
-                                            wire_chunk, packed_pending,
-                                            tagged_started,
-                                            requested_sparse_sample_bits))
-                                    decoded.extend(data)
-                                elif sparse_rle:
-                                    data, rle_started = (
-                                        _decode_sparse_rle_live_frames(
-                                            wire_chunk, packed_pending,
-                                            rle_started))
-                                    decoded.extend(data)
-                                elif sparse_packed:
-                                    data, packed_started, packed_escaped = (
-                                        _decode_sparse_packed_live_frames(
-                                            wire_chunk, packed_pending,
-                                            packed_started, packed_escaped,
-                                            requested_sparse_sample_bits))
-                                    decoded.extend(data)
-                                else:
-                                    data, packed_started = (
-                                        _decode_packed_live_frames(
-                                            wire_chunk, packed_pending,
-                                            requested_sparse_sample_bits,
-                                            packed_started))
-                                    decoded.extend(data)
+                                data, packed_started = (
+                                    _decode_packed_live_frames(
+                                        wire_chunk, packed_pending,
+                                        packed_sample_bits, packed_started))
+                                decoded.extend(data)
                             else:
                                 for token in wire_chunk:
                                     if token & 0x08:
@@ -3487,8 +3421,6 @@ class OLSDeviceSPI:
                             if reader_done.is_set():
                                 break
                             continue
-                        if data is None:
-                            break
                         total += int(chunk_nsamp)
                         if full_out is not None:
                             full_out.extend(data)
@@ -3704,8 +3636,7 @@ class OLSDeviceSPI:
                 symbol_div=div, tx_pin=24, scl_pin=GEN_SCL_PARK,
                 generator_flags=GEN_FLAG_ACCEL_ATTACH,
                 progress_cb=progress_cb, full_out=full_out,
-                include_cursor=include_cursor, sparse_sample_bits=2,
-                sparse_packed=True, sparse_rle=False)
+                include_cursor=include_cursor, sparse_sample_bits=2)
             return
         yield from self._continuous_ring_capture_with_repeating_symbols(
             rate_hz=rate_hz, chunk_nsamp=chunk_nsamp, stop_evt=stop_evt,

@@ -208,3 +208,19 @@ it('explains missing ACK capture and displays each failed waveform check', async
   expect(result?.textContent).toContain('timing fail');
   expect(result?.textContent).toContain('I²C ACK fail');
 });
+
+it('shows fallback labels for pins and ADC channels outside the supported options', () => {
+  useApp.setState({ status: { device_kind: 'hardware' } as never });
+  render(<MilMcp4725Card />);
+  const sda = screen.getByLabelText('SDA output pin') as HTMLSelectElement;
+  const adc = screen.getByLabelText('VOUT analog input') as HTMLSelectElement;
+  sda.add(new Option('Unknown pin', '99'));
+  adc.add(new Option('Unknown channel', '99'));
+
+  fireEvent.change(sda, { target: { value: '99' } });
+  fireEvent.change(adc, { target: { value: '99' } });
+
+  expect(screen.getByText(/Connect DAC SDA to Pin 99/)).toBeTruthy();
+  expect(screen.getByText(/VOUT to ADC99/)).toBeTruthy();
+  expect(screen.getByText(/ADC99 verifies each distinct level/)).toBeTruthy();
+});
