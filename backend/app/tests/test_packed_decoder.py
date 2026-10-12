@@ -390,3 +390,31 @@ class TestRoundTrip:
         _, ana = decode(words, 1)
         assert ana["adc0"][0] == 0x123
         assert ana["adc3"][0] == 0xABC
+
+
+def test_analog_decoder_resyncs_after_dropped_word():
+    """A word lost upstream must not shift every later block."""
+    flat = lambda v: [0x0400, v, v, v, v]           # W=0 block: header + anchors
+    words = flat(10)[1:] + flat(20)                  # first block lost its header
+    ana = decode_analog(words)
+    # Orphan anchor words are skipped, not misread as a header.
+    assert list(ana["adc0"]) == [20] * 4      # anchor + 3 zero-delta samples
+
+
+def test_uart_protocol_trigger_resolves_without_user_decoder():
+    """uart_byte must be located post-capture; it used to resolve to None."""
+    from app.capture.sample_format import WaveformData
+    from app.capture.session import TriggerConfig
+    from app.triggers.software_trigger import (find_software_trigger,
+                                               trigger_decoder_events)
+    spb = 10                                    # 1 MS/s, 100 kBd
+    bits = [1] * 50
+    for byte in (0x41, 0x55):
+        frame = [0] + [(byte >> i) & 1 for i in range(8)] + [1, 1]
+        bits += [b for b in frame for _ in range(spb)]
+    bits += [1] * 50
+    wf = WaveformData(sample_rate=1e6, digital=np.array(bits, dtype=np.uint16))
+    trig = TriggerConfig(type="uart_byte", channels=[0], value=0x55, baud=100_000)
+    assert find_software_trigger(wf, trig) is None          # old behaviour
+    pos = find_software_trigger(wf, trig, trigger_decoder_events(wf, trig))
+    assert pos == 50 + 11 * spb

@@ -122,9 +122,10 @@ export const api = {
     if (!res.ok) throw new ApiError(res.status, await res.text());
     return parseWaveformPayload(await res.arrayBuffer());
   },
-  edges: (id: string, channel: string, kind: string, start = 0, end = -1, limit = 5000) =>
+  edges: (id: string, channel: string, kind: string, start = 0, end = -1, limit = 5000,
+          last = false) =>
     get<{ edges: number[]; times: number[]; count: number; truncated: boolean }>(
-      `/api/sessions/${id}/edges?channel=${channel}&kind=${kind}&start=${start}&end=${end}&limit=${limit}`),
+      `/api/sessions/${id}/edges?channel=${channel}&kind=${kind}&start=${start}&end=${end}&limit=${limit}${last ? '&last=true' : ''}`),
   valueAt: (id: string, sample: number, channels: string[]) =>
     get<{ sample: number; time_s: number; values: Record<string, number | null>; buses: Record<string, any> }>(
       `/api/sessions/${id}/value-at?sample=${sample}&channels=${channels.join(',')}`),

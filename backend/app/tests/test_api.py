@@ -962,3 +962,21 @@ def test_generator_bitbang_presets(client):
     assert r.json() == {"presets": list(PRESETS)}
     assert set(PRESETS) == {"idle", "pulse", "square", "alternating",
                             "counter", "walking", "prbs"}
+
+
+def test_edges_window_and_last(monkeypatch):
+    import numpy as np
+    from app.api import waveform as waveform_api
+    from app.capture.sample_format import WaveformData
+    dig = np.zeros(100, dtype=np.uint16)
+    dig[10:20] = 1
+    dig[50:51] = 1
+    wf = WaveformData(sample_rate=1e6, digital=dig)
+    monkeypatch.setattr(waveform_api, "get_session_or_404", lambda sid: object())
+    monkeypatch.setattr(waveform_api, "get_waveform_or_404", lambda sid: wf)
+    # an edge landing exactly on `start` is reported
+    assert waveform_api.waveform_edges("s", "d0", start=10, limit=1)["edges"] == [10]
+    # last=True returns the nearest edge before `end`, not the first in window
+    assert waveform_api.waveform_edges("s", "d0", start=0, end=50, limit=1,
+                                       last=True)["edges"] == [20]
+    assert waveform_api.waveform_edges("s", "d0", start=21, limit=2)["edges"] == [50, 51]

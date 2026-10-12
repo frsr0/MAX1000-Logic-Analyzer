@@ -193,6 +193,34 @@ def _sequence_trigger(trig: TriggerConfig,
     return None
 
 
+# Triggers resolved from decoded protocol events rather than raw samples.
+PROTOCOL_TRIGGER_TYPES = ("uart_byte", "i2c_address", "i2c_nack", "spi_byte",
+                          "decoder_error", "sequence")
+
+
+def trigger_decoder_events(wf: WaveformData, trig: TriggerConfig) -> list[dict]:
+    """Decode just enough to resolve a protocol trigger straight after capture.
+
+    Only UART is unambiguous from the trigger config alone (one channel plus
+    a baud). I2C/SPI need SCL/SDA (or SCLK/MOSI/CS) role assignments, which
+    come from the session's decoders; those triggers are resolved when a
+    decoder completes (see CaptureManager.run_decoder)."""
+    if trig.type != "uart_byte" or not trig.channels:
+        return []
+    from ..decoders import registry
+    from ..decoders.base import DecodeContext
+    decoder = registry.get("uart")
+    if decoder is None:
+        return []
+    settings = {**decoder.defaults(), "baud": int(trig.baud or 115200)}
+    try:
+        result = decoder.decode(
+            DecodeContext(wf, {"rx": f"d{int(trig.channels[0])}"}), settings)
+    except Exception:
+        return []
+    return result.events
+
+
 def find_software_trigger(wf: WaveformData, trig: TriggerConfig,
                           decoder_events: Optional[list[dict]] = None) -> Optional[int]:
     if trig.type == "none":

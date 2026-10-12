@@ -192,13 +192,14 @@ it.each([1, -1] as const)('jumps to the nearest edge in direction %s', async (di
   view.numSamples = 100;
   view.setView(40, 60);
   vi.stubGlobal('localStorage', { getItem: () => 'viewer' });
-  const fetcher = vi.fn(async (_url: string) => Response.json({ edges: direction === 1 ? [70, 90] : [10, 30] }));
+  // The backend returns just the nearest edge (first after / last before).
+  const fetcher = vi.fn(async (_url: string) => Response.json({ edges: direction === 1 ? [70] : [30] }));
   vi.stubGlobal('fetch', fetcher);
   expect(await view.jumpToEdge('d0', 50.9, direction)).toBe(direction === 1 ? 70 : 30);
   expect([view.start, view.end]).toEqual(direction === 1 ? [60, 80] : [20, 40]);
   expect(fetcher.mock.calls[0][0]).toBe(direction === 1
-    ? '/api/sessions/s/edges?channel=d0&kind=any&start=51&end=-1&limit=50000'
-    : '/api/sessions/s/edges?channel=d0&kind=any&start=0&end=50&limit=50000');
+    ? '/api/sessions/s/edges?channel=d0&kind=any&start=51&end=-1&limit=1'
+    : '/api/sessions/s/edges?channel=d0&kind=any&start=0&end=50&limit=1&last=true');
   fetcher.mockResolvedValueOnce(Response.json({ edges: [] }));
   expect(await view.jumpToEdge('d0', 50, direction)).toBeNull();
   fetcher.mockRejectedValueOnce(new Error('offline'));

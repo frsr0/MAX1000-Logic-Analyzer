@@ -165,6 +165,11 @@ export default function App() {
     const unsubSes = sesWs.subscribe(async (msg) => {
       if (msg.type === 'measurement_updated') {
         useApp.getState().refreshActiveSession();
+      } else if (msg.type === 'trigger_resolved') {
+        // Protocol triggers are placed once decoder events exist.
+        waveformView.trigSample = Number(msg.data?.trigger_sample);
+        waveformView.notify();
+        void useApp.getState().refreshActiveSession();
       } else if (msg.type === 'waveform_ready') {
         const s = useApp.getState().activeSession;
         if (s?.id === activeId) {

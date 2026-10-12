@@ -501,9 +501,10 @@ export class WaveformView {
     const start = direction > 0 ? Math.floor(fromSample) + 1 : 0;
     const end = direction > 0 ? -1 : Math.floor(fromSample);
     try {
-      const r = await api.edges(this.sessionId, channel, kind, start, end, 50000);
+      // One edge is enough: the first after, or (last=true) the last before.
+      const r = await api.edges(this.sessionId, channel, kind, start, end, 1, direction < 0);
       if (!r.edges.length) return null;
-      const target = direction > 0 ? r.edges[0] : r.edges[r.edges.length - 1];
+      const target = r.edges[0];
       this.jumpTo(target);
       return target;
     } catch {

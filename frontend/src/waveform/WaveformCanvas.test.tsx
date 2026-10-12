@@ -286,6 +286,16 @@ it('handles navigation shortcuts, edge/error jumps and ignores form typing', asy
   fireEvent.keyDown(window, { key: 'e' });
   await waitFor(() => expect(toast).toHaveBeenCalledWith('error', 'offline'));
   expect(jump).toHaveBeenCalled();
+  // Jumps ask the API for the single nearest edge on each side of centre.
+  expect(edges.mock.calls[0].slice(2)).toEqual(['any', expect.any(Number), -1, 1]);
+  expect(edges.mock.calls[1].slice(2)).toEqual(['any', 0, expect.any(Number), 1, true]);
+  edges.mockReset();
+  edges.mockResolvedValue({ edges: [], times: [], count: 0, truncated: false });
+  jump.mockClear();
+  fireEvent.keyDown(window, { key: 'e' });
+  await waitFor(() => expect(edges).toHaveBeenCalledTimes(1));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(jump).not.toHaveBeenCalled();
 });
 
 it('keeps optional navigation and persistence paths safe when data is absent', async () => {

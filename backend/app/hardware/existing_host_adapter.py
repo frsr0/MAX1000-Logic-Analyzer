@@ -301,7 +301,7 @@ class ExistingHostAdapter(HardwareDevice):
             ("none", "hardware", ""),
             ("rising", "hardware", "REG_TRIGGER_MASK edge trigger, any channel set"),
             ("falling", "hardware", "REG_TRIGGER_MASK edge trigger, any channel set"),
-            ("uart_byte", "hardware", "Protocol trigger (byte match at baud)"),
+            ("uart_byte", "post_capture", "UART byte match, decoded after capture (no FPGA protocol-trigger block)"),
             ("generic_pattern", "hardware", "Selectable coarse hardware trigger with full-channel software refinement"),
             ("any_edge", "post_capture", "Software search after capture"),
             ("high", "hardware", "REG_TRIGGER_MASK level trigger: all selected channels high"),

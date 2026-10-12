@@ -195,6 +195,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL live_fifo_empty   : STD_LOGIC := '1';
   SIGNAL live_fifo_full    : STD_LOGIC := '0';
   SIGNAL live_fifo_wrreq   : STD_LOGIC := '0';
+  -- Registered almost-full (wrusedw >= DEPTH-8). overflow_checking is OFF, so
+  -- the FIFO does NOT reject writes at full; writing past full wraps the
+  -- pointers and corrupts the queue. The 8-word margin covers the two
+  -- register stages between wrusedw and wrreq.
+  SIGNAL live_fifo_wrusedw : STD_LOGIC_VECTOR(LIVE_FIFO_WIDTHU-1 downto 0) := (others => '0');
+  SIGNAL live_fifo_afull   : STD_LOGIC := '0';
   SIGNAL live_fifo_rdreq   : STD_LOGIC := '0';
   SIGNAL live_fifo_rdusedw : STD_LOGIC_VECTOR(LIVE_FIFO_WIDTHU-1 downto 0) := (others => '0');
   SIGNAL live_stream_arm   : STD_LOGIC := '0';
@@ -469,14 +475,19 @@ BEGIN
       live_stream_arm_s1 <= live_stream_arm;
       live_stream_arm_s2 <= live_stream_arm_s1;
       live_fifo_wrreq <= '0';
+      IF live_fifo_wrusedw(LIVE_FIFO_WIDTHU-1 downto 3) = (LIVE_FIFO_WIDTHU-4 downto 0 => '1') THEN
+        live_fifo_afull <= '1';
+      ELSE
+        live_fifo_afull <= '0';
+      END IF;
       IF live_stream_arm_s2 = '1' AND Live_Stream_Valid = '1' THEN
-        -- Let the vendor FIFO reject a write at full. Keeping wrreq
-        -- independent of wrfull removes the full-comparator feedback from
-        -- the 200 MHz write-enable path; the diagnostic latch still records
-        -- the same overflow condition for the next stream ACK.
-        live_fifo_wrreq <= '1';
-        IF live_fifo_full = '1' THEN
+        -- overflow_checking is OFF (timing), so the megafunction will NOT
+        -- reject a write at full. Gate on the registered almost-full instead;
+        -- a dropped word is still latched as an overrun for the stream ACK.
+        IF live_fifo_afull = '1' THEN
           live_fifo_overflow <= '1';
+        ELSE
+          live_fifo_wrreq <= '1';
         END IF;
       END IF;
       IF live_stream_arm_s2 = '0' THEN
@@ -523,7 +534,7 @@ BEGIN
     q => live_fifo_q,
     rdempty => live_fifo_empty,
     wrfull => live_fifo_full,
-    wrusedw => OPEN,
+    wrusedw => live_fifo_wrusedw,
     rdusedw => live_fifo_rdusedw
   );
 

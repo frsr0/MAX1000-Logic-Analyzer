@@ -17,7 +17,9 @@ from ..hardware.base import CaptureResult, HardwareDevice, HardwareError
 from ..hardware.existing_host_adapter import (ExistingHostAdapter,
                                               hardware_available)
 from ..hardware.mock_device import MockDevice
-from ..triggers.software_trigger import find_software_trigger
+from ..triggers.software_trigger import (PROTOCOL_TRIGGER_TYPES,
+                                         find_software_trigger,
+                                         trigger_decoder_events)
 from ..websocket.manager import manager
 from .sample_format import WaveformData
 from .session import (CaptureSettings, DecoderInstance, Session,
@@ -727,6 +729,12 @@ class CaptureManager:
                                     and len(trig.channels) > 1)
         if needs_pattern_refinement:
             session.trigger_sample = find_software_trigger(wf, trig)
+        elif session.trigger_sample is None and trig.type in PROTOCOL_TRIGGER_TYPES:
+            # No FPGA protocol-trigger block exists, whatever ``execution``
+            # says: these always resolve from decoded events. Without events
+            # find_software_trigger() can only return None.
+            session.trigger_sample = find_software_trigger(
+                wf, trig, trigger_decoder_events(wf, trig))
         elif (session.trigger_sample is None and trig.type != "none"
               and trig.execution != "hardware"):
             session.trigger_sample = find_software_trigger(wf, trig)
@@ -873,6 +881,7 @@ class CaptureManager:
                 denominator = max(1, inst.event_count + inst.warning_count)
                 inst.quality_score = max(0.0, min(1.0,
                     1.0 - (inst.warning_count + errors) / denominator))
+                self._resolve_protocol_trigger(session, wf)
                 self.store.save(session)
                 manager.publish_threadsafe(topic, "decoder_complete", {
                     "decoder_id": inst.id,
@@ -899,6 +908,26 @@ class CaptureManager:
                 self._decoder_cancels.pop(inst.id, None)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _resolve_protocol_trigger(self, session: Session, wf: WaveformData) -> None:
+        """Place a still-unresolved protocol trigger once decoder events exist."""
+        trig = session.settings.trigger
+        if session.trigger_sample is not None or trig.type not in PROTOCOL_TRIGGER_TYPES:
+            return
+        events: list[dict] = []
+        for d in session.decoders:
+            if d.status == "done":
+                events.extend(self.store.load_decoder_events(session.id, d.id) or [])
+        try:
+            sample = find_software_trigger(wf, trig, events)
+        except Exception:
+            log.exception("protocol trigger resolution failed")
+            return
+        if sample is not None:
+            session.trigger_sample = sample
+            manager.publish_threadsafe(f"session:{session.id}", "trigger_resolved",
+                                       {"session_id": session.id,
+                                        "trigger_sample": sample})
 
     def cancel_decoder(self, instance_id: str) -> bool:
         evt = self._decoder_cancels.get(instance_id)

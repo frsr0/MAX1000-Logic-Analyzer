@@ -54,30 +54,32 @@ def decode_digital(packets: List[int], total_samples: int) -> np.ndarray:
 
     Returns shape (16, total_samples), dtype uint8.
     """
-    # Per-slice value sequences (4-bit values, reconstructed from packets)
-    slice_seq: List[List[int]] = [[] for _ in range(SLICES)]
-
-    for w in packets:
-        s = (w >> 13) & 0x3
-        val = (w >> 9) & 0xF
-        dwell = w & 0x1FF
-        run_len = dwell + 1
-        slice_seq[s].extend([val] * run_len)
-
-    # Pad tail and trim to exact sample count
-    for seq in slice_seq:
-        if len(seq) < total_samples:
-            last_val = seq[-1] if seq else 0
-            seq.extend([last_val] * (total_samples - len(seq)))
-        del seq[total_samples:]
-
-    # Expand 4-bit slices into 16 individual digital channels
+    # Vectorised: one np.repeat per slice instead of a Python loop per sample
+    # (the old loop was O(16 * N) interpreted ops -- seconds for deep captures).
     ch = np.zeros((DIGITAL_CHANNELS, total_samples), dtype=np.uint8)
+    if total_samples <= 0:
+        return ch
+    pk = np.asarray(packets, dtype=np.uint16)
+    slice_id = (pk >> 13) & 0x3
+    vals_all = ((pk >> 9) & 0xF).astype(np.uint8)
+    runs_all = (pk & 0x1FF).astype(np.int64) + 1
     for s in range(SLICES):
-        for i, v in enumerate(slice_seq[s]):
-            for b in range(4):
-                ch[s * 4 + b, i] = (v >> b) & 1
+        sel = slice_id == s
+        vals = vals_all[sel]
+        runs = runs_all[sel]
+        seq = np.repeat(vals, runs)[:total_samples]
+        if len(seq) < total_samples:
+            last_val = seq[-1] if len(seq) else 0
+            seq = np.concatenate(
+                [seq, np.full(total_samples - len(seq), last_val, dtype=np.uint8)])
+        for b in range(4):
+            ch[s * 4 + b] = (seq >> b) & 1
     return ch
+
+
+def _is_header(w: int) -> bool:
+    """analog_packer header: bit15=0, W in 0..11, bit10=1, bits[9:0]=0."""
+    return (w & 0x87FF) == 0x0400 and ((w >> 11) & 0xF) <= 11
 
 
 def decode_analog(words: List[int]) -> Dict[str, np.ndarray]:
@@ -96,6 +98,11 @@ def decode_analog(words: List[int]) -> Dict[str, np.ndarray]:
 
     while i < n:
         w = words[i]
+        if not _is_header(w):
+            # Lost alignment (a dropped analog word upstream): skip to the next
+            # plausible header instead of decoding every later block shifted.
+            i += 1
+            continue
         width_idx = (w >> 11) & 0xF  # W = bits per delta (0..11)
         i += 1  # consume header
 

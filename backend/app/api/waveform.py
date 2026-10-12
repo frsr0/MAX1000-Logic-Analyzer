@@ -88,19 +88,27 @@ def waveform_overview(session_id: str, bins: int = Query(default=1024, le=8192))
 @router.get("/api/sessions/{session_id}/edges")
 def waveform_edges(session_id: str, channel: str,
                    start: int = 0, end: int = -1,
-                   kind: str = "any", limit: int = Query(default=5000, le=50000)):
+                   kind: str = "any", limit: int = Query(default=5000, le=50000),
+                   last: bool = False):
+    """Edges landing in [start, end). ``last=True`` returns the final
+    ``limit`` edges of the window instead of the first ones, so callers can
+    find the edge nearest *before* a position without paging."""
     get_session_or_404(session_id)
     wf = get_waveform_or_404(session_id)
     if end < 0:
         end = wf.num_samples
     start, end = clamp_window(wf, start, end)
+    # Include one sample of left context so an edge landing exactly on
+    # ``start`` is reported (find_edges needs the preceding sample).
+    lo = max(0, start - 1)
     try:
-        bits = wf.channel_bits(channel)[start:end]
+        bits = wf.channel_bits(channel)[lo:end]
     except KeyError as e:
         raise HTTPException(404, str(e))
-    edges = find_edges(bits, kind) + start
+    edges = find_edges(bits, kind) + lo
+    edges = edges[edges >= start]
     truncated = len(edges) > limit
-    edges = edges[:limit]
+    edges = edges[-limit:] if (last and limit > 0) else edges[:limit]
     rate = wf.sample_rate
     return {"channel": channel, "kind": kind, "count": int(len(edges)),
             "truncated": truncated,

@@ -3083,7 +3083,7 @@ def test_last_hardware_and_fallback_lines(monkeypatch):
 
     analog_only = LodPyramid(_wf(analog={"a0": np.ones(10_000, dtype=np.float32)}))
     assert analog_only.pick_level(10_000_000, 1) is not None
-    assert decode_analog([1 << 11, 1, 2, 3, 4])
+    assert decode_analog([(1 << 11) | 0x400, 1, 2, 3, 4])
 
     adapter = ExistingHostAdapter.__new__(ExistingHostAdapter)
     assert adapter._requires_unavailable_high_rate_deep_path(

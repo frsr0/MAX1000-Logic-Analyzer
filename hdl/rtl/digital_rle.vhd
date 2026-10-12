@@ -89,13 +89,19 @@ architecture rtl of digital_rle is
   -- detector is not driven by a long equality cone on fast_clk.
   signal changed_half : std_logic_vector(7 downto 0);
   signal changed_r : std_logic_vector(3 downto 0) := (others => '0');
+  -- Input sample registered alongside changed_r. Change detection compares
+  -- consecutive input samples (digital_in vs din_r), not digital_in vs prev:
+  -- prev is updated one cycle after the change is seen, so a prev-based
+  -- registered detector re-fires on the following cycle (spurious overflow
+  -- strobe + every new run reported one sample short).
+  signal din_r     : std_logic_vector(15 downto 0) := (others => '0');
 begin
   packet_valid <= packet_valid_r;
 
   gen_changed : for i in 0 to 3 generate
-    changed_half(i*2) <= '1' when digital_in(i*4+1 downto i*4) /= prev(i)(1 downto 0)
+    changed_half(i*2) <= '1' when digital_in(i*4+1 downto i*4) /= din_r(i*4+1 downto i*4)
                         else '0';
-    changed_half(i*2+1) <= '1' when digital_in(i*4+3 downto i*4+2) /= prev(i)(3 downto 2)
+    changed_half(i*2+1) <= '1' when digital_in(i*4+3 downto i*4+2) /= din_r(i*4+3 downto i*4+2)
                           else '0';
     changed(i) <= changed_half(i*2) or changed_half(i*2+1);
   end generate;
@@ -126,8 +132,10 @@ begin
         cap_val_r <= (others => '0');
         cap_dur_r <= (others => '0');
         changed_r  <= (others => '0');
+        din_r      <= (others => '0');
       elsif clk_en = '1' then
         changed_r  <= changed;                 -- register change flags for timing
+        din_r      <= digital_in;              -- sample that changed_r refers to
         overflow <= '0';                       -- single-cycle strobe
         pend_v   := pend;
         capd_v   := cap_dur;
@@ -145,7 +153,7 @@ begin
               pend_v(i) := '1';
               cnt(i)    <= (others => '0');
               if changed_r(i) = '1' then
-                prev(i) <= digital_in(i*4+3 downto i*4);  -- adopt new value
+                prev(i) <= din_r(i*4+3 downto i*4);  -- adopt new value
               end if;
             else
               -- Previous packet for this slice not yet drained.
@@ -154,7 +162,7 @@ begin
                 -- do not spin re-detecting the same change forever. Only this
                 -- one segment is lost; later packets still decode.
                 overflow <= '1';
-                prev(i)  <= digital_in(i*4+3 downto i*4);
+                prev(i)  <= din_r(i*4+3 downto i*4);
                 cnt(i)   <= (others => '0');
               end if;
               -- Saturate-while-pending: hold at max (no data lost); re-queues

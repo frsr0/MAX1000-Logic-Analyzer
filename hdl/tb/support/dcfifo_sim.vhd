@@ -26,7 +26,11 @@ entity dcfifo is
     lpm_type         : string := "dcfifo";
     rdsync_delaypipe : natural := 4;
     wrsync_delaypipe : natural := 4;
-    intended_device_family : string := "MAX 10"
+    intended_device_family : string := "MAX 10";
+    -- Accepted for port-compatibility with the Quartus dcfifo. The model
+    -- always protects against over/underflow.
+    overflow_checking  : string := "ON";
+    underflow_checking : string := "ON"
   );
   port (
     aclr     : in  std_logic := '0';
