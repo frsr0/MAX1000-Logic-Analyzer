@@ -11,9 +11,9 @@
 | Speed grade | C8 |
 | Toolchain | Quartus Prime Lite 25.1 |
 | Default profile | `FAST_SPEED=true`, `FAST_RAW_BUILD=false` |
-| Default fitter seed | 10 |
-| Logic use | 7,713/8,064 LEs (96%) |
-| Registers / memory | 4,802 registers; 38,020/387,072 memory bits |
+| Default fitter seed | 1 |
+| Logic use | 8,027/8,064 LEs (100%) |
+| Registers / memory | 5,048 registers; 54,404/387,072 memory bits |
 
 ## Project inputs
 
@@ -35,15 +35,15 @@
 
 ```powershell
 cd hdl\proj
-.\compile.ps1 -NoFlash -Seed 10
-.\compile.ps1 -Flash -Seed 10
+.\compile.ps1 -NoFlash -Seed 1
+.\compile.ps1 -Flash -Seed 1
 ```
 
 Parameters:
 
 | Parameter | Meaning |
 |---|---|
-| `-Seed` | Fitter seed; default 10, the best current full-build result |
+| `-Seed` | Fitter seed; default 1, the first seed that closes timing on the current RTL |
 | `-NoFlash` | Compile without programming |
 | `-Flash` | Program `output_files\OLS_Logic_Analyzer.pof` into CFM |
 | `-RawOnly` | Set `FAST_RAW_BUILD=true` and omit the packed MSO pipeline |
@@ -57,24 +57,36 @@ Arrow USB Programmer2.
 
 ## Timing gate
 
-The current seed-10 result is from the slow 1200 mV, 85 C setup corner:
+The current RTL (fitter seed 1) passes every post-fit timing check at the slow
+1200 mV, 85 C corner:
 
 | Domain | Setup slack | Hold slack |
 |---|---:|---:|
-| `fast_clk` | +0.253 ns | +0.291 ns |
-| `sdram_core_clk` | +0.178 ns | +0.340 ns |
-| `sys_clk` | +0.278 ns | +0.223 ns |
+| `fast_clk` | +0.024 ns | +0.289 ns |
+| `sdram_core_clk` | +0.226 ns | +0.268 ns |
+| `sys_clk` | +0.194 ns | +0.338 ns |
 | `SDRAM_CHIP_CLK_OUT` | +1.098 ns | +1.808 ns |
-| `SPI_SCK_EXT` | +12.025 ns | +0.394 ns |
+| `SPI_SCK_EXT` | +10.769 ns | +0.394 ns |
+
+`fast_clk` is the minimum-slack domain; its critical path is the
+`analog_burst_active` → `fifo_wdata` priority mux inside
+`Fast_Logic_Analyzer_SDRAM`. The design is at 100% logic-element utilization,
+so the margin is thin and the fit is highly placement-sensitive.
+
+For comparison, the 2026-09-09 reference fit (seed 10, 7,713 LEs) closed at
+`fast_clk` +0.253/+0.291 ns, `sdram_core_clk` +0.178/+0.340 ns, `sys_clk`
++0.278/+0.223 ns, `SDRAM_CHIP_CLK_OUT` +1.098/+1.808 ns, and `SPI_SCK_EXT`
++12.025/+0.394 ns.
 
 The latest timing fix represents the fast capture sample budget as a modular
 carry-chain accumulator, keeps packed ready registered, and separates the
 continuous-budget reload pulse from the wide seed mux. This removes the live
 22-bit equality/control cone from the 200.4 MHz capture path.
 
-The build is seed-sensitive. A 48-seed sweep found seed 10 best; seed 39 was
-next at only +0.014 ns overall and most placements failed timing. Re-run a
-seed sweep after any RTL, pin, SDC, QSF, tool-version, or fitter-option change:
+The build is seed-sensitive. On the current RTL, only seed 1 closes timing;
+every other placement tested failed by −0.082 ns or worse and seed 3 cannot
+fit at all (506 LABs required vs. 504 available). Re-run a seed sweep after
+any RTL, pin, SDC, QSF, tool-version, or fitter-option change:
 
 ```powershell
 .\seed_sweep.ps1 -Seeds @(1,2,3,4,5,6,7,8,9,10)
@@ -96,9 +108,10 @@ The signoff artifacts are under `hdl/proj/output_files/`:
 | `OLS_Logic_Analyzer.sof` | Volatile SRAM image |
 | `OLS_Logic_Analyzer.pof` | Persistent CFM image |
 
-The current assembler checksum is `0x0050492F`. A checksum identifies a build
-for bench records; it is not a cryptographic integrity proof. The current SOF
-SHA-256 is recorded in [Current Status](../current-status.md).
+The current build's assembler checksum is `0x0057C698` (the 2026-09-09
+reference SOF was `0x0050492F`). A checksum identifies a build for bench
+records; it is not a cryptographic integrity proof. The current SOF and POF
+SHA-256 hashes are recorded in [Current Status](../current-status.md).
 
 ## Verification sequence
 

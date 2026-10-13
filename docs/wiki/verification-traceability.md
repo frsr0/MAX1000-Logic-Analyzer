@@ -95,7 +95,7 @@ ACK, and host-timed waveform behavior documented in their own record.
 | Host | `python -m pytest host/tests host/driver/tests` | 100% statement and branch coverage |
 | Frontend unit | `npm run test:unit` | 100% statement, branch, function, and line coverage for all production TS/TSX; the normal run leaves only the explicitly hardware-gated live test skipped |
 | Frontend E2E | `PLAYWRIGHT_USE_MOCK=1 npm run test:e2e -- hardware.spec.ts` | Browser workflows without hardware |
-| HDL gate | `bash hdl/tb/run_all_tbs.sh` | All 57 `tb_*.vhd` benches must terminate explicitly and pass; no exclusions/XFAILs |
+| HDL gate | `bash hdl/tb/run_all_tbs.sh` | All 58 `tb_*.vhd` benches must terminate explicitly and pass; no exclusions/XFAILs |
 | Hardware matrix | `.github/workflows/hardware-matrix.yml` | Self-hosted `max1000` runner; board absence is a failure |
 
 ## Audit rules

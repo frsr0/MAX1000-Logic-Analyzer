@@ -87,9 +87,9 @@ has an explicit scope boundary.
 | Item | Current validated value |
 |---|---|
 | FPGA | Intel MAX 10 `10M08SAU169C8G` |
-| Full build | `FAST_SPEED=true`, `FAST_RAW_BUILD=false`, Quartus 25.1, seed 10 |
-| Timing | Slow-85C setup: `fast_clk` **+0.253 ns**, `sdram_core_clk` **+0.178 ns**, `sys_clk` **+0.278 ns**; all timing checks clean |
-| Logic use | 7,713/8,064 LEs (96%); 4,802 registers |
+| Full build | `FAST_SPEED=true`, `FAST_RAW_BUILD=false`, Quartus 25.1, seed 1 |
+| Timing | Slow-85C setup: `fast_clk` **+0.024 ns**, `sdram_core_clk` **+0.226 ns**, `sys_clk` **+0.194 ns**; all timing checks clean (69/69) |
+| Logic use | 8,027/8,064 LEs (100%); 5,048 registers |
 | Generator divider | 24-bit `REG_GEN_BAUD`; feature-advertised through metadata |
 | Full-device reference SOF | `0x0050492F`, programmed into configuration flash 2026-09-09 |
 | Full-device reference regression | 436/436 cold-power-cycle full suite; 57/57 GHDL; browser hardware suites 5/5 and 34/34. Later MCP4725 pin-map work has [focused evidence](../evidence/mcp4725-fast-2026-09-28/README.md), not this full-suite signoff. |

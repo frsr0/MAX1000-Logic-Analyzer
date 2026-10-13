@@ -1,12 +1,48 @@
 # Current Implementation Status
 
-The full-device reference signoff below describes the 2026-09-09 seed-10 image.
-The current image was rebuilt and flashed on 2026-09-28 with seed `7`; the
-compile's timing gate passed **66/66**. Slow 85 °C post-fit setup slack is
-`fast_clk` **+0.046 ns**, `sys_clk` **+0.183 ns**, and SDRAM **+0.396 ns**.
-Quartus verify-only passed at 17:46:54, before the physical retests. The POF
-SHA-256 is `C65DDA0E8042156024F1170EF967316D072CBF9BADFA67A735EC51BE7FFEC18C`,
-Programmer checksum `0x01DE1DE1`; the fit uses 8,021/8,064 logic elements.
+The full-device reference signoff below describes the 2026-09-09 seed-10 image
+(kept as a historical benchmark). The board now runs the current checked-in RTL:
+fitter seed **`1`**, post-fit timing gate **69/69**, slow 85 °C setup slack
+`fast_clk` **+0.024 ns**, `sys_clk` **+0.194 ns**, and `sdram_core_clk`
+**+0.226 ns**; the fit uses **8,027/8,064** logic elements, 5,048 registers,
+and 54,404 memory bits. Flashed into configuration flash on 2026-10-13. The
+assembler reports SOF checksum `0x0057C698`; the POF SHA-256 is
+`373C6C40CAEF54095B106142A4263C803AD3ABC0FC56B2F19AAA556B77A5D86E` (SOF
+`94777E2131B6E1459DAED8DEC5AA156270F9B4190E84C5A9939A62CD3CE61D75`) and the
+Programmer checksum is `0x01DDD65A`.
+
+The previous image flashed on 2026-09-28 (fitter seed `7`; timing gate 66/66,
+`fast_clk` **+0.046 ns**, `sys_clk` **+0.183 ns**, SDRAM **+0.396 ns**,
+8,021/8,064 LEs, POF SHA-256
+`C65DDA0E8042156024F1170EF967316D072CBF9BADFA67A735EC51BE7FFEC18C`, Programmer
+checksum `0x01DE1DE1`) remains the historical record; it is byte-matched by a
+rebuild of the checked-out `bf1ade3` tree.
+
+Hardware validation on the flashed seed-1 image (2026-10-13):
+`backend/hw_smoke_test.py` **10/10**; `host/app/hw_validation.py` full suite
+**400/427 passed, 27 failed, 1 skipped**. An A/B run of the identical suite
+against the byte-matched 09-28 seed-7 image reproduces the **same 400/427** on
+this bench, so none of the 27 failures is attributable to the reviewed RTL bug
+fixes, the shared CRC-16 cone, or the seed change. The failures group as:
+
+- **15 bench-state crosstalk/cleanliness failures** — rolling-gen mirrors
+  (CH1/2/4/5 partial coupling, 50–68% below the 95% coherent-mirror gate),
+  `trig_fall` clean, and rolling-gen UART decode — caused by floating adjacent
+  wires on the current bench (the 2026-09-09 reference bench used a different
+  physical layout with analogue jumpers installed).
+- **6 physical-jumper SPI/I2C fixture failures** — I2C loopback + matrix and
+  SPI loopback + matrix decode nothing or only a 1-byte `af` fraction through
+  the 16→15 fly-wire. Fail identically on a fresh 09-28 image; I2C over the
+  wire needs a pull-up on the open-drain SDA, which this fixture lacks.
+- **6 post-full-suite Bit_Engine RX / LIS3DH direct-read failures** (test8 ×2,
+  test36 ×4) — appear after a full-suite run on **both** images. A freshly
+  booted board passes `test36` **6/6** on the seed-1 image, exactly as on the
+  fresh 08-27 and 09-28 images; the attach-capture decode still passes in the
+  full-suite state (`320f3333`), so the sensor and on-wire dialogue are intact.
+- **1 skip** — `test12g` analogue jumpers: no analogue jumpers installed on the
+  current bench, so that fixture-dependent test skips.
+
+See [Hardware Validation](hardware-validation.md) for the full record.
 
 The retested MCP4725 cases all passed voltage, timing, and ACK checks at 0.5 Hz
 / 8 steps, 0.25 Hz / 24 steps, 2 Hz / 8 steps, and 2 Hz / 10 steps. Wrong
@@ -158,7 +194,7 @@ Those historical results are not evidence for the later MCP4725 pin-map change.
 Software CI requires 100% statement and branch coverage for backend and host,
 and 100% statement, branch, function, and line coverage for all production
 frontend TypeScript/TSX, plus frontend build/typecheck,
-Playwright mock E2E, and all 57 GHDL benches. The self-hosted hardware workflow fails when
+Playwright mock E2E, and all 58 GHDL benches. The self-hosted hardware workflow fails when
 its required MAX1000 is unavailable; it does not silently treat absence as a
 pass.
 
@@ -202,7 +238,7 @@ Build and persist a new image from `hdl/proj/`:
 
 ```powershell
 $env:QUARTUS_DIR='C:\altera_lite\25.1std\quartus\bin64'
-.\compile.ps1 -Flash -Seed 10
+.\compile.ps1 -Flash -Seed 1
 ```
 
 `-Flash` programs the POF/CFM image so it survives power cycles. Quartus 25.1
@@ -219,11 +255,23 @@ on-board FTDI JTAG interface. See [Build Flow](hdl/build-flow.md).
 - CAN, LIN, SWD/JTAG target response, MIL, I2S, MIDI, PS/2, and 1-Wire still
   need suitable external electrical partners before decode or open-loop
   generation becomes board-level interoperability evidence.
-- The installed analogue jumpers prove full-scale activity and cross-lane
-  isolation on ADC3/AIN4 and ADC7/AIN5. They do not provide calibrated voltage,
-  linearity, bandwidth, or all-lane stimulus. ADC1/AIN3 and ADC2/AIN1 are
-  validated by independent-versus-mixed baseline agreement, not a calibrated
-  driven source.
+- The analogue-jumper checks (ADC3/AIN4, ADC7/AIN5 full-scale activity and
+  cross-lane isolation) apply **when the analogue jumpers are installed**. The
+  2026-10-13 bench has no analogue jumpers, so `test12g` skips and the
+  uncalibrated stimulus/ADC1·ADC2 baseline caveats below are not asserted on
+  that run: analogue jumpers do not provide calibrated voltage, linearity,
+  bandwidth, or all-lane stimulus, and ADC1/AIN3 and ADC2/AIN1 are validated by
+  independent-versus-mixed baseline agreement, not a calibrated driven source.
+- The digital fly-wire jumper is a bench fixture: a 16→15 single-wire loopback
+  without a pull-up cannot carry open-drain I2C SDA (the generator dialogue
+  decodes on the internal mirror while the wire holds SDA low), and SPI master
+  loopback through the same route recovers only a truncated frame. UART and
+  live/ring paths through the same wire pass.
+- Four LIS3DH direct checks and two Bit_Engine RX FIFO checks fail only in the
+  post-full-suite board state on the 2026-10-13 bench (reproduced on both the
+  seed-1 and 09-28 seed-7 images); a freshly booted board passes them 6/6.
+  Root-causing the post-suite state is tracked as hardware-fixture work, not
+  an RTL defect.
 - Live readback capacity depends on USB transport and signal compressibility;
   the ring reports overwrite loss and retains the newest samples.
 - Packed-live and the on-board generator share the FPGA Bit Engine/capture-arm
@@ -232,7 +280,7 @@ on-board FTDI JTAG interface. See [Build Flow](hdl/build-flow.md).
   contract.
 - The reference-board cold USB/power-cycle check recorded that the board was physically
   unplugged/replugged, rediscovered without reprogramming, and passed 436/436.
-- The HDL gate requires every one of the 57 `tb_*.vhd` benches; there are no
+- The HDL gate requires every one of the 58 `tb_*.vhd` benches; there are no
   exclusion or expected-failure lists. See [HDL Testbenches](hdl/testbenches.md).
 
 ## Contract change checklist

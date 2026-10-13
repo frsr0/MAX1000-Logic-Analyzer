@@ -1,5 +1,13 @@
 # Final timing-clean MAX10 image and MCP4725 retest — 2026-09-28
 
+> **Historical record.** This page documents the 2026-09-28 image (fitter seed
+> `7`), still programmed on the board but **predating** the reviewed RTL bug
+> fixes and the shared CRC-16 cone now checked in. The current RTL builds at
+> seed `1` and passes the timing gate with `fast_clk` **+0.024 ns** setup slack
+> at 85 °C using **8,027/8,064** logic elements; see
+> [Current Status](../../wiki/current-status.md) and
+> [Build Flow](../../wiki/hdl/build-flow.md).
+
 The final FPGA build used Quartus seed `7` and was compiled and programmed with
 `hdl/proj/compile.ps1 -Flash -Seed 7`. Compilation passed the post-fit timing
 gate **66/66**. At slow 85 °C, setup slack was `fast_clk` **+0.046 ns**,

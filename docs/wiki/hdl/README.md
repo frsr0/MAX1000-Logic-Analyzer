@@ -84,7 +84,7 @@ matrix and measured ratios.
 
 ### Project
 - [Build Flow](build-flow.md) — Quartus project, constraints, compile/seed-sweep scripts, timing
-- [Testbenches](testbenches.md) — all 57 HDL benches in one required gate,
+- [Testbenches](testbenches.md) — all 58 HDL benches in one required gate,
   with explicit completion and no exclusions or expected failures
 
 ## Current timing note

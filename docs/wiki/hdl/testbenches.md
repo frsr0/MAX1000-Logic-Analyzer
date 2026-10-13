@@ -2,7 +2,7 @@
 
 **Directory:** `hdl/tb/`
 
-All 57 `tb_*.vhd` files are part of the required GHDL 6.0 gate. There are no
+All 58 `tb_*.vhd` files are part of the required GHDL 6.0 gate. There are no
 orphan, toolchain-blocked, expected-failure, or ignored testbench lists.
 
 ## Run the gate

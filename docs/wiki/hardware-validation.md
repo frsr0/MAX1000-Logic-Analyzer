@@ -4,15 +4,61 @@ Hardware validation runs against the FPGA image flashed on the MAX1000. These
 tests exercise register writes, capture timing, SDRAM readback, SPI transport,
 and lossless decompression on the real board.
 
-## Current exact-image result — 2026-09-09
+## Current exact-image result — 2026-10-13 (fitter seed 1)
 
-The current full mixed-signal image was built with Quartus Prime Lite 25.1,
-fitter seed 10, and programmed into configuration flash. The assembler reports
-SOF checksum `0x0050492F` and the SOF SHA-256 is
-`2028A05F689EA966B359359D8F0F4000A19298B8CEE98AF6A76A52003108C7D1`.
-Slow-85C setup slack is `fast_clk +0.253 ns`, `sdram_core_clk +0.178 ns`, and
-`sys_clk +0.278 ns`; all reported setup, hold, recovery, removal, and minimum
-pulse-width checks are positive.
+The board now runs the current checked-in RTL built with Quartus Prime Lite
+25.1, fitter seed `1` (the selected closing seed), programmed into
+configuration flash on 2026-10-13. Post-fit timing gate **69/69**; slow-85C
+setup slack is `fast_clk` **+0.024 ns**, `sys_clk` **+0.194 ns**, and
+`sdram_core_clk` **+0.226 ns**; all setup, hold, recovery, removal, and
+minimum pulse-width checks are positive (TNS 0.000). The fit uses
+**8,027/8,064** logic elements, 5,048 registers, and 54,404 memory bits. The
+assembler reports SOF checksum `0x0057C698`; POF SHA-256
+`373C6C40CAEF54095B106142A4263C803AD3ABC0FC56B2F19AAA556B77A5D86E`; Programmer
+checksum `0x01DDD65A`.
+
+| Suite | Result | Scope |
+|---|---:|---|
+| `backend/hw_smoke_test.py` | **10/10** | Discovery, metadata, SDRAM capture, sanity, UART/RS-485/SPI/SWD exact loopback decode |
+| `host/app/hw_validation.py` full suite | **400/427 passed, 27 failed, 1 skipped** | Cold reflash followed by the complete suite on the 2026-10-13 bench (16→15 fly-wire, no analogue jumpers) |
+| Fresh-boot `host/app/hw_validation.py accel` | **6/6** on seed-1, 09-28 and 08-27 images | LIS3DH I2C @50k/@100k WHO_AM_I, CTRL_REG1, SPI mode-3, attach-capture I2C/SPI |
+| Fresh-boot `host/app/hw_validation.py jumper` | **8/12** (SPI/I2C matrix fail) | Identical on the seed-1 and 09-28 images; UART/live/ring all pass |
+
+**Attribution of the 27 full-suite failures.** The identical full suite run
+against the byte-matched 09-28 seed-7 image (a rebuild of the checked-out
+`bf1ade3` tree, POF checksum `0x01DE1DE1`) reproduces the same **400/427** on
+this bench — same failure set, run-to-run-only variation in the crosstalk
+percentages. None of the 27 failures is therefore attributable to the reviewed
+RTL bug fixes (`3f64bc0`, `759adc4`), the shared CRC-16 cone (`173e0a5`), or
+the seed change; the reference-era 436/436 was achieved on a different bench
+(layout 22→CH13 with analogue jumpers installed).
+
+- **15 bench-state crosstalk/cleanliness failures** — rolling-gen mirrors on
+  CH1/2/4/5 (50–68% partial coupling, below the 95% coherent-mirror gate),
+  `trig_fall` clean checks, and rolling-gen UART decode — from floating
+  adjacent wires on the current bench.
+- **6 physical-jumper SPI/I2C fixture failures** — I2C loopback + matrix
+  decode nothing; SPI loopback + matrix decode only a 1-byte `af` fraction —
+  fail identically on a fresh 09-28 image. I2C over the fly-wire lacks the
+  required pull-up on the open-drain SDA (raw capture shows SDA held low on
+  the wire while the generator's own dialogue `a62d08` decodes perfectly).
+- **6 post-full-suite Bit_Engine RX / LIS3DH direct-read failures** (test8 ×2,
+  test36 ×4) — appear only after a full-suite run, on both the seed-1 and
+  09-28 images; a freshly booted board passes `test36` 6/6 on all three
+  images tested (08-27, 09-28, seed-1), and the attach-capture checks still
+  decode the full dialogue in the post-suite state (`320f3333`).
+- **1 skip** — `test12g` analogue jumpers (not installed on this bench).
+
+## Historical exact-image result — 2026-09-09 (seed 10 reference)
+
+That image was built with Quartus Prime Lite 25.1, fitter seed 10, and
+programmed into configuration flash. The assembler reported SOF checksum
+`0x0050492F` (SOF SHA-256
+`2028A05F689EA966B359359D8F0F4000A19298B8CEE98AF6A76A52003108C7D1`).
+Slow-85C setup slack was `fast_clk +0.253 ns`, `sdram_core_clk +0.178 ns`, and
+`sys_clk +0.278 ns`. That run's bench used a different physical layout
+(digital pool pin 22 → capture channel 13) with both analogue jumpers
+installed, which the 2026-10-13 bench does not.
 
 | Suite | Result | Scope |
 |---|---:|---|

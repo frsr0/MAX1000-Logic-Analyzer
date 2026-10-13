@@ -105,7 +105,7 @@ is `frontend/test-results/screenshots/hardware-validated-matrix.json`.
 - frontend typecheck/build and 100% statement, branch, function, and line
   coverage for all production TypeScript/TSX;
 - Playwright mock E2E on Chromium;
-- all 57 GHDL testbenches with no expected failures or exclusions.
+- all 58 GHDL testbenches with no expected failures or exclusions.
 
 `.github/workflows/hardware-matrix.yml` runs the two live Playwright suites on
 a self-hosted runner labeled `max1000`. The workflow attempts a real connect
