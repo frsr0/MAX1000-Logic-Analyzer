@@ -20,7 +20,7 @@ checksum `0x01DDD65A`.
 | Suite | Result | Scope |
 |---|---:|---|
 | `backend/hw_smoke_test.py` | **10/10** | Discovery, metadata, SDRAM capture, sanity, UART/RS-485/SPI/SWD exact loopback decode |
-| `host/app/hw_validation.py` full suite | **400/427 passed, 27 failed, 1 skipped** | Cold reflash followed by the complete suite on the 2026-10-13 bench (16→15 fly-wire, no analogue jumpers) |
+| `host/app/hw_validation.py` full suite (pre-fix) | **400/427 passed, 27 failed, 1 skipped** | Cold reflash followed by the complete suite on the 2026-10-13 bench (16→15 fly-wire, no analogue jumpers); 4 of the 27 (LIS3DH direct reads) are the state leak fixed on 2026-10-13 — see the attribution bullets |
 | Fresh-boot `host/app/hw_validation.py accel` | **6/6** on seed-1, 09-28 and 08-27 images | LIS3DH I2C @50k/@100k WHO_AM_I, CTRL_REG1, SPI mode-3, attach-capture I2C/SPI |
 | Fresh-boot `host/app/hw_validation.py jumper` | **8/12** (SPI/I2C matrix fail) | Identical on the seed-1 and 09-28 images; UART/live/ring all pass |
 
@@ -42,11 +42,25 @@ the seed change; the reference-era 436/436 was achieved on a different bench
   fail identically on a fresh 09-28 image. I2C over the fly-wire lacks the
   required pull-up on the open-drain SDA (raw capture shows SDA held low on
   the wire while the generator's own dialogue `a62d08` decodes perfectly).
-- **6 post-full-suite Bit_Engine RX / LIS3DH direct-read failures** (test8 ×2,
-  test36 ×4) — appear only after a full-suite run, on both the seed-1 and
-  09-28 images; a freshly booted board passes `test36` 6/6 on all three
-  images tested (08-27, 09-28, seed-1), and the attach-capture checks still
-  decode the full dialogue in the post-suite state (`320f3333`).
+- **2 Bit_Engine RX FIFO oracle failures** (test8 ×2) — the oracle compares
+  the RX FIFO samples against the UART TX pattern, but the on-board UART
+  pins have no physical return loopback into the Bit_Engine RX input, so the
+  FIFO captures the idle line. The test's own design comment marks these
+  checks informational for UART, not a generator-correctness gate.
+- **4 LIS3DH direct-read failures** (test36: I2C @50k/@100k, CTRL_REG1, SPI) —
+  root-caused and fixed on 2026-10-13 as a **host-side state leak, not an RTL
+  defect**. The jumper SPI/I2C generator matrix latches the `REG_GEN_AUX_PINS`
+  MISO route (bit 21 → pool pin 16) and never disarms it; the Bit_Engine RX
+  input mux then samples that idle external pin instead of `SEN_SDI`, so every
+  sensor direct-read burst fills the RX FIFO with all-`0xFF` (decode reports
+  "no response/NACK") even though the attach-mirror capture proves both
+  directions toggle on the wire. The attach-capture checks were therefore
+  unaffected in every failing run (`320f3333` still decoded). Fix:
+  `ols_spi_device._gen_run_and_rx` now clears `REG_GEN_AUX_PINS` on every full
+  burst setup. Post-fix, with the leaked register still armed (`0x35=0x300000`),
+  `python app/hw_validation.py accel` directly after a jumper-mode run goes
+  from **2/6 to 6/6**, and a burst-level FIFO drain shows the real dialogue
+  bytes (tail `…0x33`) instead of all-`0xFF`.
 - **1 skip** — `test12g` analogue jumpers (not installed on this bench).
 
 ## Historical exact-image result — 2026-09-09 (seed 10 reference)

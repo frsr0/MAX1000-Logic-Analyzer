@@ -34,11 +34,16 @@ fixes, the shared CRC-16 cone, or the seed change. The failures group as:
   SPI loopback + matrix decode nothing or only a 1-byte `af` fraction through
   the 16→15 fly-wire. Fail identically on a fresh 09-28 image; I2C over the
   wire needs a pull-up on the open-drain SDA, which this fixture lacks.
-- **6 post-full-suite Bit_Engine RX / LIS3DH direct-read failures** (test8 ×2,
-  test36 ×4) — appear after a full-suite run on **both** images. A freshly
-  booted board passes `test36` **6/6** on the seed-1 image, exactly as on the
-  fresh 08-27 and 09-28 images; the attach-capture decode still passes in the
-  full-suite state (`320f3333`), so the sensor and on-wire dialogue are intact.
+- **2 Bit_Engine RX FIFO oracle failures** (test8 ×2) — the UART RX oracle
+  compares the RX FIFO against the TX pattern, but the UART pins have no
+  physical return loopback into the RX input on this board, so the FIFO
+  captures the idle line; informational by the oracle's design.
+- **4 LIS3DH direct-read failures** (test36: I2C @50k/@100k, CTRL_REG1, SPI) —
+  root-caused and fixed on 2026-10-13 as a host state leak (see the note
+  below): the jumper SPI/I2C matrix leaves the `REG_GEN_AUX_PINS` MISO aux
+  route latched, redirecting the RX sampler to an idle external pin. The
+  attach-capture decode still passed in the failing state (`320f3333`), which
+  is what pinned the fault to the RX input routing, not the sensor or RTL.
 - **1 skip** — `test12g` analogue jumpers: no analogue jumpers installed on the
   current bench, so that fixture-dependent test skips.
 
@@ -267,11 +272,18 @@ on-board FTDI JTAG interface. See [Build Flow](hdl/build-flow.md).
   decodes on the internal mirror while the wire holds SDA low), and SPI master
   loopback through the same route recovers only a truncated frame. UART and
   live/ring paths through the same wire pass.
-- Four LIS3DH direct checks and two Bit_Engine RX FIFO checks fail only in the
-  post-full-suite board state on the 2026-10-13 bench (reproduced on both the
-  seed-1 and 09-28 seed-7 images); a freshly booted board passes them 6/6.
-  Root-causing the post-suite state is tracked as hardware-fixture work, not
-  an RTL defect.
+- The four LIS3DH direct checks and two Bit_Engine RX FIFO oracle checks that
+  failed in the post-full-suite state on the 2026-10-13 bench were root-caused
+  on that date: the jumper SPI/I2C generator matrix leaves the `REG_GEN_AUX_PINS`
+  MISO aux route latched (bit 21, pool pin 16), which redirects the Bit_Engine
+  RX sampler away from `SEN_SDI` to an idle external pin (all-`0xFF` FIFO → the
+  direct reads report "no response/NACK" while the attach mirror still decodes
+  the dialogue). Fixed in the driver (`_gen_run_and_rx` clears the aux route on
+  every full burst setup); post-fix `accel` runs immediately after a jumper-mode
+  run go 6/6 with the leaked register still armed. The test8 RX FIFO oracle
+  checks remain bench-informational: the on-board UART pins have no return
+  loopback into the RX input, by the design of that oracle. No RTL defect was
+  involved.
 - Live readback capacity depends on USB transport and signal compressibility;
   the ring reports overwrite loss and retains the newest samples.
 - Packed-live and the on-board generator share the FPGA Bit Engine/capture-arm

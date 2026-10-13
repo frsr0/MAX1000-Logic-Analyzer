@@ -1262,6 +1262,15 @@ class OLSDeviceSPI:
                 (GEN_FLAG_SPI_TEST if spi_test else 0)
             self.pkt.write_register(REG_GEN_DATA, flags)
             self.pkt.write_register(REG_GEN_PROTO, 0)
+            # The Bit_Engine RX sampler follows the MISO mux whenever an
+            # auxiliary route is armed.  Generator captures over the jumper
+            # (SPI/I2C matrix) latch that route and never disarm it, which
+            # silently redirects every later sensor direct-read burst's RX
+            # samples to an idle external pool pin (all-0xFF FIFO -> decode
+            # reports "no response/NACK" even though the attach mirror shows
+            # both directions toggling on the wire).  The accel burst owns the
+            # RX input, so clear any leftover aux route before configuring.
+            self.pkt.write_register(REG_GEN_AUX_PINS, 0)
             # Park both routing pins on unmapped pool entries so the burst
             # does not toggle any MKR/PMOD pad (SEN_* are driven unconditionally).
             self._pins(tx_pin=24, scl_pin=GEN_SCL_PARK)

@@ -16,6 +16,7 @@ from driver.spi_protocol import (
     REG_DIVIDER,
     REG_FLAGS,
     REG_GEN_BAUD,
+    REG_GEN_AUX_PINS,
     REG_GEN_CAPTURE_SCL_CHAN,
     REG_GEN_CAPTURE_TX_CHAN,
     REG_GEN_DATA,
@@ -3178,6 +3179,39 @@ class TestGeneratorRxRead:
         ])
         device_spi.pkt.write_register.assert_any_call(REG_GEN_BAUD, 8)
         assert device_spi.pkt.load_gen_data.call_count == 2
+
+    def test_gen_run_full_setup_clears_stale_aux_route(self, device_spi):
+        # A prior SPI/I2C generator capture over the jumper leaves the MISO
+        # aux route armed (REG_GEN_AUX_PINS bit 21) with an external pool pin.
+        # Without this clear, the Bit_Engine RX sampler redirects to that idle
+        # pin and every sensor direct read decodes all-0xFF ("no response").
+        device_spi.pkt = MagicMock()
+        device_spi.pkt.transaction.return_value = (ST_OK, 0, b'')
+        device_spi._pins = MagicMock()
+        device_spi._wait_gen_idle = MagicMock()
+        device_spi.gen_rx_read = MagicMock(return_value=b'\x01')
+        device_spi._rx_bits = MagicMock(return_value=[1] * 8)
+        device_spi.spi.flush = MagicMock()
+
+        # Fresh setup (no matching reuse key) must disarm the aux route
+        # during configuration, before the burst is started.
+        device_spi._gen_run_and_rx([1, 0, 1], 8)
+
+        writes = [c.args for c in device_spi.pkt.write_register.call_args_list]
+        assert (REG_GEN_AUX_PINS, 0) in writes
+        timeline = device_spi.pkt.mock_calls
+        clear_call = call.write_register(REG_GEN_AUX_PINS, 0)
+        assert clear_call in timeline
+        assert timeline.index(clear_call) < timeline.index(
+            call.transaction(CMD_GEN_START, timeout=1.0))
+
+        # The reuse path skips the full setup entirely, so it must not issue
+        # a second aux clear (the armed route only influenced the previous
+        # context; here the sentence above guards the real regression).
+        device_spi.pkt.reset_mock()
+        device_spi._gen_run_and_rx([1, 0, 1], 8, reuse_accel_setup=True)
+        assert not any(c.args == (REG_GEN_AUX_PINS, 0)
+                       for c in device_spi.pkt.write_register.call_args_list)
 
     def test_gen_run_accepts_missing_start_response_when_status_is_busy(
             self, device_spi):
