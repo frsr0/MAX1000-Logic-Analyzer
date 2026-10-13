@@ -206,6 +206,12 @@ def test_jumper_helpers_score_waveform_restore_mapping_and_cache_discovery():
 
     hv._restore_pin_map(value)
     assert value.set_pin_map.call_count == 16
+    # The aux route (DE/CS/MISO) survives dev.reset() like the pin map; the
+    # SPI/I2C jumper matrix leaves MISO armed on an external pin and would
+    # redirect later Bit_Engine RX readbacks to that idle line. Restoring
+    # routing defaults must disarm it.
+    assert (hv.REG_GEN_AUX_PINS, 0) in [
+        c.args for c in value.pkt.write_register.call_args_list]
 
     with patch.object(hv, "_discover_jumper_pair", return_value=(20, 7)) as discover:
         assert hv._get_jumper_pair(value) == (20, 7)

@@ -58,6 +58,7 @@ try:
         REG_TRIGGER_MASK, REG_TRIGGER_VALUE,
         REG_FLAGS, REG_FAST_MODE, REG_CONT_MODE,
         REG_GEN_PROTO, REG_GEN_BAUD, REG_GEN_PINS, REG_GEN_DATA,
+        REG_GEN_AUX_PINS,
         REG_IFACE_MODE,
         GEN_FLAG_I2C_TEST, GEN_FLAG_SPI_TEST, GEN_FLAG_REPEAT,
         ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_BUSY, ST_CAPTURE_DONE, ST_CAPTURE_IDLE,
@@ -2665,16 +2666,24 @@ def _uart_waveform_match_fraction(sig, payload, rate_hz, baud, invert=False):
 
 
 def _restore_pin_map(dev):
-    """Restore the identity channel->pin mapping.
+    """Restore the identity channel->pin mapping and the generator aux route.
 
     Jumper discovery and the pair tests remap channels to arbitrary pool
     pins; the mapping SURVIVES dev.reset(), so a stale map silently corrupts
     every later test — e.g. debug CH0's PWM is driven out on pin_map(0), and
     a collision mirrors it onto an unrelated channel (the historic "bench
     mirrors debug onto CH7" artifact was exactly this).
+
+    The generator auxiliary route register (DE/CS/MISO) has the same
+    survives-reset property: the SPI/I2C jumper matrix leaves the MISO route
+    armed on an external pool pin, which silently redirects every later
+    Bit_Engine RX readback (LIS3DH direct reads and the UART RX oracle) to
+    that idle line. Clear it here so restoring routing defaults restores the
+    RX input as well.
     """
     for ch_i in range(16):
         dev.set_pin_map(ch_i, ch_i)
+    dev.pkt.write_register(REG_GEN_AUX_PINS, 0)
     dev.spi.flush()
 
 
