@@ -21,7 +21,7 @@ checksum `0x01DDD65A`.
 |---|---:|---|
 | `backend/hw_smoke_test.py` | **10/10** | Discovery, metadata, SDRAM capture, sanity, UART/RS-485/SPI/SWD exact loopback decode |
 | `host/app/hw_validation.py` full suite (pre-fix) | **400/427 passed, 27 failed, 1 skipped** | Cold reflash followed by the complete suite on the 2026-10-13 bench (16→15 fly-wire, no analogue jumpers); 6 of the 27 (LIS3DH direct reads + UART RX oracle) were the aux-route state leak fixed on 2026-10-13 — see the attribution bullets |
-| `host/app/hw_validation.py` full suite (post-fix) | **406/427 passed, 21 failed, 1 skipped** | Warm re-run of the complete suite after the driver fix (`14fe006`) + routing-restore teardown (`cdcb1f6`); the 6 RX-leak failures are gone, the residual 21 are the same bench fixtures reproduced on the fresh 09-28 image |
+| `host/app/hw_validation.py` full suite (post-fix) | **406/427 passed, 21 failed, 1 skipped** | Warm re-run of the complete suite after the driver fix (`14fe006`) + routing-restore teardown (`cdcb1f6`); the 6 RX-leak failures are gone, the residual 21 are the same bench fixtures reproduced on the fresh 09-28 image. Reproduced run-to-run (14:04–14:15 on 2026-10-13) — same 21, same TEST SET; the teardown perturbs nothing |
 | Fresh-boot `host/app/hw_validation.py accel` | **6/6** on seed-1, 09-28 and 08-27 images | LIS3DH I2C @50k/@100k WHO_AM_I, CTRL_REG1, SPI mode-3, attach-capture I2C/SPI |
 | Fresh-boot `host/app/hw_validation.py jumper` | **8/12** (SPI/I2C matrix fail) | Identical on the seed-1 and 09-28 images; UART/live/ring all pass |
 
