@@ -20,10 +20,12 @@ rebuild of the checked-out `bf1ade3` tree.
 
 Hardware validation on the flashed seed-1 image (2026-10-13):
 `backend/hw_smoke_test.py` **10/10**; `host/app/hw_validation.py` full suite
-**400/427 passed, 27 failed, 1 skipped**. An A/B run of the identical suite
-against the byte-matched 09-28 seed-7 image reproduces the **same 400/427** on
-this bench, so none of the 27 failures is attributable to the reviewed RTL bug
-fixes, the shared CRC-16 cone, or the seed change. The failures group as:
+**400/427 passed, 27 failed, 1 skipped** pre-fix and **406/427 passed, 21
+failed, 1 skipped** after the two-layer aux-route fix (`14fe006`, `cdcb1f6`).
+An A/B run of the identical suite against the byte-matched 09-28 seed-7 image
+reproduces the **same 400/427** on this bench, so none of the 27 failures is
+attributable to the reviewed RTL bug fixes, the shared CRC-16 cone, or the seed
+change. The failures group as:
 
 - **15 bench-state crosstalk/cleanliness failures** — rolling-gen mirrors
   (CH1/2/4/5 partial coupling, 50–68% below the 95% coherent-mirror gate),
@@ -34,16 +36,21 @@ fixes, the shared CRC-16 cone, or the seed change. The failures group as:
   SPI loopback + matrix decode nothing or only a 1-byte `af` fraction through
   the 16→15 fly-wire. Fail identically on a fresh 09-28 image; I2C over the
   wire needs a pull-up on the open-drain SDA, which this fixture lacks.
-- **2 Bit_Engine RX FIFO oracle failures** (test8 ×2) — the UART RX oracle
-  compares the RX FIFO against the TX pattern, but the UART pins have no
-  physical return loopback into the RX input on this board, so the FIFO
-  captures the idle line; informational by the oracle's design.
+- **2 Bit_Engine RX FIFO oracle failures** (test8 ×2) — root-caused to the
+  same aux-route leak as the LIS3DH direct reads: the oracle drains the RX
+  FIFO whose input the stale `REG_GEN_AUX_PINS` route had redirected to an
+  idle external pin (`0x35` state maps 1:1 to the outcome). Fixed by the
+  routing-restore teardown (`cdcb1f6`) and now entry-state independent; both
+  passed in the post-fix suite.
 - **4 LIS3DH direct-read failures** (test36: I2C @50k/@100k, CTRL_REG1, SPI) —
   root-caused and fixed on 2026-10-13 as a host state leak (see the note
   below): the jumper SPI/I2C matrix leaves the `REG_GEN_AUX_PINS` MISO aux
   route latched, redirecting the RX sampler to an idle external pin. The
   attach-capture decode still passed in the failing state (`320f3333`), which
   is what pinned the fault to the RX input routing, not the sensor or RTL.
+  Post-fix the four direct reads pass in the full suite, in a direct `accel`
+  run with `0x35` re-armed (2/6 → 6/6), and in a targeted run from the armed
+  state.
 - **1 skip** — `test12g` analogue jumpers: no analogue jumpers installed on the
   current bench, so that fixture-dependent test skips.
 
@@ -278,12 +285,16 @@ on-board FTDI JTAG interface. See [Build Flow](hdl/build-flow.md).
   MISO aux route latched (bit 21, pool pin 16), which redirects the Bit_Engine
   RX sampler away from `SEN_SDI` to an idle external pin (all-`0xFF` FIFO → the
   direct reads report "no response/NACK" while the attach mirror still decodes
-  the dialogue). Fixed in the driver (`_gen_run_and_rx` clears the aux route on
-  every full burst setup); post-fix `accel` runs immediately after a jumper-mode
-  run go 6/6 with the leaked register still armed. The test8 RX FIFO oracle
-  checks remain bench-informational: the on-board UART pins have no return
-  loopback into the RX input, by the design of that oracle. No RTL defect was
-  involved.
+  the dialogue). No RTL defect was involved. Fixed in two layers:
+  `_gen_run_and_rx` clears the aux route on every full burst setup (`14fe006`),
+  and `_restore_pin_map` clears it when restoring routing defaults (`cdcb1f6`),
+  making both the direct reads and the test8 RX oracle entry-state independent.
+  Post-fix evidence: full suite **406/427** (all four direct reads + both RX
+  oracles pass); `accel` immediately after a jumper-mode run goes 2/6 → 6/6
+  with the leaked register re-armed; a targeted `test_gen_uart` +
+  `test_accelerometer_whoami` run from the armed `0x35=0x300000` state passes
+  and disarms the register itself; a FIFO burst drain shows `…0x33` dialogue
+  bytes instead of all-`0xFF`.
 - Live readback capacity depends on USB transport and signal compressibility;
   the ring reports overwrite loss and retains the newest samples.
 - Packed-live and the on-board generator share the FPGA Bit Engine/capture-arm

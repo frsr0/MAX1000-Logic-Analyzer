@@ -20,18 +20,21 @@ checksum `0x01DDD65A`.
 | Suite | Result | Scope |
 |---|---:|---|
 | `backend/hw_smoke_test.py` | **10/10** | Discovery, metadata, SDRAM capture, sanity, UART/RS-485/SPI/SWD exact loopback decode |
-| `host/app/hw_validation.py` full suite (pre-fix) | **400/427 passed, 27 failed, 1 skipped** | Cold reflash followed by the complete suite on the 2026-10-13 bench (16→15 fly-wire, no analogue jumpers); 4 of the 27 (LIS3DH direct reads) are the state leak fixed on 2026-10-13 — see the attribution bullets |
+| `host/app/hw_validation.py` full suite (pre-fix) | **400/427 passed, 27 failed, 1 skipped** | Cold reflash followed by the complete suite on the 2026-10-13 bench (16→15 fly-wire, no analogue jumpers); 6 of the 27 (LIS3DH direct reads + UART RX oracle) were the aux-route state leak fixed on 2026-10-13 — see the attribution bullets |
+| `host/app/hw_validation.py` full suite (post-fix) | **406/427 passed, 21 failed, 1 skipped** | Warm re-run of the complete suite after the driver fix (`14fe006`) + routing-restore teardown (`cdcb1f6`); the 6 RX-leak failures are gone, the residual 21 are the same bench fixtures reproduced on the fresh 09-28 image |
 | Fresh-boot `host/app/hw_validation.py accel` | **6/6** on seed-1, 09-28 and 08-27 images | LIS3DH I2C @50k/@100k WHO_AM_I, CTRL_REG1, SPI mode-3, attach-capture I2C/SPI |
 | Fresh-boot `host/app/hw_validation.py jumper` | **8/12** (SPI/I2C matrix fail) | Identical on the seed-1 and 09-28 images; UART/live/ring all pass |
 
-**Attribution of the 27 full-suite failures.** The identical full suite run
+**Attribution of the pre-fix 27 full-suite failures.** The identical full suite run
 against the byte-matched 09-28 seed-7 image (a rebuild of the checked-out
 `bf1ade3` tree, POF checksum `0x01DE1DE1`) reproduces the same **400/427** on
 this bench — same failure set, run-to-run-only variation in the crosstalk
 percentages. None of the 27 failures is therefore attributable to the reviewed
 RTL bug fixes (`3f64bc0`, `759adc4`), the shared CRC-16 cone (`173e0a5`), or
 the seed change; the reference-era 436/436 was achieved on a different bench
-(layout 22→CH13 with analogue jumpers installed).
+(layout 22→CH13 with analogue jumpers installed). Six of the 27 were a
+host-side generator routing leak (below); after the fix the post-fix suite is
+**406/427**, with the residual 21 + 1 skip being the same bench fixtures:
 
 - **15 bench-state crosstalk/cleanliness failures** — rolling-gen mirrors on
   CH1/2/4/5 (50–68% partial coupling, below the 95% coherent-mirror gate),
@@ -42,11 +45,14 @@ the seed change; the reference-era 436/436 was achieved on a different bench
   fail identically on a fresh 09-28 image. I2C over the fly-wire lacks the
   required pull-up on the open-drain SDA (raw capture shows SDA held low on
   the wire while the generator's own dialogue `a62d08` decodes perfectly).
-- **2 Bit_Engine RX FIFO oracle failures** (test8 ×2) — the oracle compares
-  the RX FIFO samples against the UART TX pattern, but the on-board UART
-  pins have no physical return loopback into the Bit_Engine RX input, so the
-  FIFO captures the idle line. The test's own design comment marks these
-  checks informational for UART, not a generator-correctness gate.
+- **2 Bit_Engine RX FIFO oracle failures** (test8 ×2) — root-caused to the
+  same aux-route leak (see below) and now fixed. The oracle drains the
+  Bit_Engine RX FIFO, whose input mux a stale `REG_GEN_AUX_PINS` route had
+  redirected to an idle external pin (all-`0xFF`). A controlled probe maps the
+  outcome 1:1 to the register: `0x35=0` → PASS with real sampled bytes
+  (`2155165b…`), armed (`0x300000`/`0x300003`) → FAIL all-`0xFF`. The test's
+  own design comment marks the raw decode informational for UART; the exact
+  oracle gate is now inherited-state independent.
 - **4 LIS3DH direct-read failures** (test36: I2C @50k/@100k, CTRL_REG1, SPI) —
   root-caused and fixed on 2026-10-13 as a **host-side state leak, not an RTL
   defect**. The jumper SPI/I2C generator matrix latches the `REG_GEN_AUX_PINS`
@@ -55,12 +61,17 @@ the seed change; the reference-era 436/436 was achieved on a different bench
   sensor direct-read burst fills the RX FIFO with all-`0xFF` (decode reports
   "no response/NACK") even though the attach-mirror capture proves both
   directions toggle on the wire. The attach-capture checks were therefore
-  unaffected in every failing run (`320f3333` still decoded). Fix:
-  `ols_spi_device._gen_run_and_rx` now clears `REG_GEN_AUX_PINS` on every full
-  burst setup. Post-fix, with the leaked register still armed (`0x35=0x300000`),
-  `python app/hw_validation.py accel` directly after a jumper-mode run goes
-  from **2/6 to 6/6**, and a burst-level FIFO drain shows the real dialogue
-  bytes (tail `…0x33`) instead of all-`0xFF`.
+  unaffected in every failing run (`320f3333` still decoded). Two-layer fix:
+  `ols_spi_device._gen_run_and_rx` clears `REG_GEN_AUX_PINS` on every full
+  burst setup (`14fe006`), and `hw_validation._restore_pin_map` clears the
+  aux route along with recovering the identity pin map (`cdcb1f6`), so the
+  UART RX oracle is also entry-state independent. Post-fix, with the leaked
+  register manually re-armed (`0x35=0x300000`): the full-suite re-run scores
+  **406/427** (all 4 direct reads + both RX oracles pass), a direct `accel`
+  run goes **2/6 → 6/6**, a burst-level FIFO drain shows the real dialogue
+  bytes (tail `…0x33`) instead of all-`0xFF`, and a targeted run of
+  `test_gen_uart` + `test_accelerometer_whoami` from the armed state passes
+  (with `0x35` disarmed to `0x0` as a side effect).
 - **1 skip** — `test12g` analogue jumpers (not installed on this bench).
 
 ## Historical exact-image result — 2026-09-09 (seed 10 reference)
