@@ -8,7 +8,7 @@ and lossless decompression on the real board.
 
 The board now runs the current checked-in RTL built with Quartus Prime Lite
 25.1, fitter seed `1` (the selected closing seed), programmed into
-configuration flash on 2026-10-13. Post-fit timing gate **69/69**; slow-85C
+configuration flash on 2026-10-13. Post-fit timing gate **66/66**; slow-85C
 setup slack is `fast_clk` **+0.024 ns**, `sys_clk` **+0.194 ns**, and
 `sdram_core_clk` **+0.226 ns**; all setup, hold, recovery, removal, and
 minimum pulse-width checks are positive (TNS 0.000). The fit uses
@@ -22,6 +22,7 @@ checksum `0x01DDD65A`.
 | `backend/hw_smoke_test.py` | **10/10** | Discovery, metadata, SDRAM capture, sanity, UART/RS-485/SPI/SWD exact loopback decode |
 | `host/app/hw_validation.py` full suite (pre-fix) | **400/427 passed, 27 failed, 1 skipped** | Cold reflash followed by the complete suite on the 2026-10-13 bench (16→15 fly-wire, no analogue jumpers); 6 of the 27 (LIS3DH direct reads + UART RX oracle) were the aux-route state leak fixed on 2026-10-13 — see the attribution bullets |
 | `host/app/hw_validation.py` full suite (post-fix) | **406/427 passed, 21 failed, 1 skipped** | Warm re-run of the complete suite after the driver fix (`14fe006`) + routing-restore teardown (`cdcb1f6`); the 6 RX-leak failures are gone, the residual 21 are the same bench fixtures reproduced on the fresh 09-28 image. Reproduced run-to-run (14:04–14:15 on 2026-10-13) — same 21, same TEST SET; the teardown perturbs nothing |
+| `host/app/hw_validation.py` full suite (2026-10-14, test12g teardown fix) | **415/421 passed, 6 failed, 1 skipped** | Same seed-1 image (clean rebuild reproduces SOF checksum `0x0057C698`, so no reflash) and same bench; the test12g skip path now disables the analog-fast mode its discovery leaves armed. All rolling-gen and `trig_fall` failures are gone; only the 6 SPI/I2C fly-wire fixture failures remain. The as-committed suite immediately before the fix scored 405/427 (an extra `trig_fall` CH6 failure in the same leak class). Smoke 10/10 |
 | Fresh-boot `host/app/hw_validation.py accel` | **6/6** on seed-1, 09-28 and 08-27 images | LIS3DH I2C @50k/@100k WHO_AM_I, CTRL_REG1, SPI mode-3, attach-capture I2C/SPI |
 | Fresh-boot `host/app/hw_validation.py jumper` | **8/12** (SPI/I2C matrix fail) | Identical on the seed-1 and 09-28 images; UART/live/ring all pass |
 
@@ -34,12 +35,28 @@ RTL bug fixes (`3f64bc0`, `759adc4`), the shared CRC-16 cone (`173e0a5`), or
 the seed change; the reference-era 436/436 was achieved on a different bench
 (layout 22→CH13 with analogue jumpers installed). Six of the 27 were a
 host-side generator routing leak (below); after the fix the post-fix suite is
-**406/427**, with the residual 21 + 1 skip being the same bench fixtures:
+**406/427**. The residual 21 + 1 skip were then thought to be bench
+fixtures, but 15 of them were a second host-side leak, fixed on 2026-10-14
+(**415/421**):
 
-- **15 bench-state crosstalk/cleanliness failures** — rolling-gen mirrors on
-  CH1/2/4/5 (50–68% partial coupling, below the 95% coherent-mirror gate),
-  `trig_fall` clean checks, and rolling-gen UART decode — from floating
-  adjacent wires on the current bench.
+- **15 rolling-gen/`trig_fall` failures** — rolling-gen mirrors on CH1/2/4/5
+  (50–68% partial match, below the 95% coherent-mirror gate), `trig_fall`
+  clean checks, and rolling-gen UART decode. Originally attributed to floating
+  adjacent wires; root-caused on 2026-10-14 as a **host-side state leak, not
+  bench crosstalk or an RTL defect**. test12g's analogue jumper discovery
+  drives `_capture_physical_analog_activity`, which arms analog-fast mode
+  (`analog_mode=24`); when no pair is found the test returned before its
+  `set_analog_enable(False)` teardown, and the mode survives `dev.reset()`.
+  Every later digital capture then carried ADC frame bits, seen as activity
+  on CH1–CH10 and as a garbage UART decode on CH3 (3,598 vs 450 transitions).
+  Evidence: in isolation the rolling-gen test decodes `HelloHello…` and
+  `trig_fall` is clean 5/5; running each test between test8 and test13 ahead
+  of rolling-gen isolates test12g as the only one that breaks it; a single
+  `set_analog_enable(False)` restores a clean pass. Fix: the skip path now
+  runs inside the same `try/finally` teardown (unit test
+  `test_analog_jumper_skip_still_disables_discovery_analog_mode`). Post-fix
+  the coherent-mirror checks are only emitted for the genuine CH3→CH5 mirror
+  (100% match), so the suite total drops from 427 to 421.
 - **6 physical-jumper SPI/I2C fixture failures** — I2C loopback + matrix
   decode nothing; SPI loopback + matrix decode only a 1-byte `af` fraction —
   fail identically on a fresh 09-28 image. I2C over the fly-wire lacks the

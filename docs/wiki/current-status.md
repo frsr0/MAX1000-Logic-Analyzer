@@ -2,7 +2,7 @@
 
 The full-device reference signoff below describes the 2026-09-09 seed-10 image
 (kept as a historical benchmark). The board now runs the current checked-in RTL:
-fitter seed **`1`**, post-fit timing gate **69/69**, slow 85 °C setup slack
+fitter seed **`1`**, post-fit timing gate **66/66**, slow 85 °C setup slack
 `fast_clk` **+0.024 ns**, `sys_clk` **+0.194 ns**, and `sdram_core_clk`
 **+0.226 ns**; the fit uses **8,027/8,064** logic elements, 5,048 registers,
 and 54,404 memory bits. Flashed into configuration flash on 2026-10-13. The
@@ -22,16 +22,27 @@ Hardware validation on the flashed seed-1 image (2026-10-13):
 `backend/hw_smoke_test.py` **10/10**; `host/app/hw_validation.py` full suite
 **400/427 passed, 27 failed, 1 skipped** pre-fix and **406/427 passed, 21
 failed, 1 skipped** after the two-layer aux-route fix (`14fe006`, `cdcb1f6`).
-An A/B run of the identical suite against the byte-matched 09-28 seed-7 image
-reproduces the **same 400/427** on this bench, so none of the 27 failures is
-attributable to the reviewed RTL bug fixes, the shared CRC-16 cone, or the seed
-change. The failures group as:
+On 2026-10-14 a clean rebuild of the checked-in tree reproduced SOF checksum
+`0x0057C698` (66/66 timing checks), and after the test12g analogue-mode
+teardown fix the full suite on the same board and bench scores **415/421
+passed, 6 failed, 1 skipped** — only the 6 SPI/I2C fly-wire fixture failures
+remain. An A/B run of the identical suite against the byte-matched 09-28
+seed-7 image reproduces the **same 400/427** on this bench, so none of the 27
+failures is attributable to the reviewed RTL bug fixes, the shared CRC-16
+cone, or the seed change. The failures group as:
 
-- **15 bench-state crosstalk/cleanliness failures** — rolling-gen mirrors
-  (CH1/2/4/5 partial coupling, 50–68% below the 95% coherent-mirror gate),
-  `trig_fall` clean, and rolling-gen UART decode — caused by floating adjacent
-  wires on the current bench (the 2026-09-09 reference bench used a different
-  physical layout with analogue jumpers installed).
+- **15–16 rolling-gen/`trig_fall` failures** (rolling-gen mirrors on CH1/2/4/5,
+  rolling-gen UART decode, `trig_fall` clean on CH1–CH5/6) — originally
+  attributed to floating adjacent wires, but root-caused on 2026-10-14 as a
+  **host-side state leak**: when test12g finds no analogue jumpers it skipped
+  before its teardown, leaving the device in analog-fast mode
+  (`analog_mode=24`), which survives `dev.reset()`. Every later digital
+  capture then read ADC frame bits as channel activity. Run in isolation both
+  tests pass; bisecting the suite order isolates test12g; disabling analogue
+  mode restores a clean pass. Fixed by routing the test12g skip path through
+  its `set_analog_enable(False)` teardown; the total check count drops to 421
+  because the coherent-mirror checks are only emitted for channels with
+  unexpected activity (only the genuine CH3→CH5 100% mirror remains).
 - **6 physical-jumper SPI/I2C fixture failures** — I2C loopback + matrix and
   SPI loopback + matrix decode nothing or only a 1-byte `af` fraction through
   the 16→15 fly-wire. Fail identically on a fresh 09-28 image; I2C over the

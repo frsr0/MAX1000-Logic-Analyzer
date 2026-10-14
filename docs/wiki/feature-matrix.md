@@ -88,7 +88,7 @@ has an explicit scope boundary.
 |---|---|
 | FPGA | Intel MAX 10 `10M08SAU169C8G` |
 | Full build | `FAST_SPEED=true`, `FAST_RAW_BUILD=false`, Quartus 25.1, seed 1 |
-| Timing | Slow-85C setup: `fast_clk` **+0.024 ns**, `sdram_core_clk` **+0.226 ns**, `sys_clk` **+0.194 ns**; all timing checks clean (69/69) |
+| Timing | Slow-85C setup: `fast_clk` **+0.024 ns**, `sdram_core_clk` **+0.226 ns**, `sys_clk` **+0.194 ns**; all timing checks clean (66/66) |
 | Logic use | 8,027/8,064 LEs (100%); 5,048 registers |
 | Generator divider | 24-bit `REG_GEN_BAUD`; feature-advertised through metadata |
 | Full-device reference SOF | `0x0050492F`, programmed into configuration flash 2026-09-09 |
