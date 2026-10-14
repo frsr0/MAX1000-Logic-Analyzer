@@ -148,6 +148,17 @@ def test_analog_discovery_exhausts_all_candidates_and_uses_another_detected_cros
     assert hv.PASS == 6
 
 
+def test_analog_jumper_skip_still_disables_discovery_analog_mode():
+    # Discovery leaves the device in analog-fast mode, which survives
+    # dev.reset(); a skipped 12g must still restore digital capture or every
+    # later digital test reads ADC frame bits as channel activity.
+    value = device()
+    with patch.object(hv, "_get_analog_jumper_pairs", return_value=[]):
+        hv.test_physical_analog_jumpers(value)
+    assert hv.SKIPPED == 1
+    value.set_analog_enable.assert_called_once_with(False)
+
+
 def test_analog_hysteresis_ignores_samples_inside_threshold_band():
     value = device()
     value.capture_with_gen.return_value = b"raw"

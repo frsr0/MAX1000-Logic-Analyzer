@@ -1569,15 +1569,17 @@ def test_physical_analog_jumpers(dev):
     print_header("Test 12g: Physical analog jumper paths (auto-discovered)")
     dev.reset(); dev.spi.flush(); dev.set_debug_ch0(False)
     time.sleep(0.02)
-    pairs = _get_analog_jumper_pairs(dev)
-    if not pairs:
-        skip("physical analog jumpers: no wired pair discovered on this bench")
-        save_result("test12g_physical_analog_jumpers", b"",
-                    {"skipped": True,
-                     "reason": "no analog jumper pair discovered"})
-        return
     results = []
     try:
+        # Discovery leaves analog-fast mode armed and it survives dev.reset(),
+        # so the skip path must also fall through the finally below.
+        pairs = _get_analog_jumper_pairs(dev)
+        if not pairs:
+            skip("physical analog jumpers: no wired pair discovered on this bench")
+            save_result("test12g_physical_analog_jumpers", b"",
+                        {"skipped": True,
+                         "reason": "no analog jumper pair discovered"})
+            return
         for tx_pin, target_adc, label in pairs:
             # Cross-check isolation on another ADC: the other discovered pair
             # if present, else a known-live lane that is not the target.
