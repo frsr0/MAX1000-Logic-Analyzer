@@ -895,7 +895,7 @@ class ExistingHostAdapter(HardwareDevice):
             self._dev.clear_live_gen()
 
     def mcp4725_write_and_measure(self, address: int, code: int,
-                                  sda_pin: int = 4, scl_pin: int = 3,
+                                  sda_pin: int = 5, scl_pin: int = 4,
                                   adc_channel: int = 3) -> np.ndarray:
         """Write the external DAC, then sample its held analog output.
 
@@ -928,18 +928,27 @@ class ExistingHostAdapter(HardwareDevice):
             # SDA on the TX lane is a generator echo. The spare MISO lane is
             # routed from the physical pin, allowing the real ACK slots to be
             # distinguished from the master releasing SDA high.
-            scl_channel = (scl_pin if scl_pin < 16
-                           else scl_capture_channel)
-            sda_channel = (sda_pin if sda_pin < 16
-                           else sda_capture_channel)
+            # capture_with_gen writes the generator's internal SCL echo and
+            # physical SDA sampler to the configured spare capture channels.
+            # The user pin numbers are FPGA output selectors, not capture
+            # channel numbers; reading those lanes would inspect mapped/raw
+            # inputs (or the TX echo) instead of the real bus response.
+            scl_channel = scl_capture_channel
+            sda_channel = sda_capture_channel
             rising_scl_sda = []
             for _attempt in range(3):
-                raw = dev.capture_with_gen(
-                    rate_hz=1_000_000, nsamples=2048, timeout=6,
-                    proto="I2C", i2c_speed=100_000, i2c_frame=frame,
-                    i2c_tx_pin=sda_pin, i2c_scl_pin=scl_pin, i2c_read_len=0,
-                    fast_mode=True,
-                )
+                try:
+                    raw = dev.capture_with_gen(
+                        rate_hz=1_000_000, nsamples=2048, timeout=6,
+                        proto="I2C", i2c_speed=100_000, i2c_frame=frame,
+                        i2c_tx_pin=sda_pin, i2c_scl_pin=scl_pin,
+                        i2c_read_len=0, fast_mode=True,
+                    )
+                except HardwareError:
+                    raise
+                except Exception as exc:
+                    raise HardwareError(
+                        f"MCP4725 I2C capture failed: {exc}") from exc
                 samples_digital = [
                     int.from_bytes(raw[index:index + 2], "little")
                     for index in range(0, len(raw) - 1, 2)]
@@ -962,10 +971,16 @@ class ExistingHostAdapter(HardwareDevice):
             # The DAC retains the volatile output after the I2C STOP. Capture
             # after the write because this bitstream's analog capture uses a
             # separate ADC mode from the atomic digital generator capture.
-            result = self.capture(CaptureSettings(
-                mode="analog_all", analog_enabled=True,
-                sample_rate=24_000, num_samples=64,
-            ))
+            try:
+                result = self.capture(CaptureSettings(
+                    mode="analog_all", analog_enabled=True,
+                    sample_rate=24_000, num_samples=64,
+                ))
+            except HardwareError:
+                raise
+            except Exception as exc:
+                raise HardwareError(
+                    f"MCP4725 analog measurement failed: {exc}") from exc
             samples = result.analog.get(f"a{adc_channel}")
             if samples is None or len(samples) == 0:
                 raise HardwareError(

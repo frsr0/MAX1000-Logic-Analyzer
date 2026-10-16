@@ -940,7 +940,19 @@ def test_mcp4725_measurement_retries_truncated_capture_and_keeps_partial_acks():
 
     assert len(result) == 32
     assert adapter._dev.capture_with_gen.call_count == 3
-    assert adapter.mcp4725_last_acknowledgements() == ()
+    # The first nine rising edges are present, so one ACK slot can be decoded
+    # even though the truncated capture is retried for the full frame.
+    assert adapter.mcp4725_last_acknowledgements() == (True,)
+
+
+def test_mcp4725_measurement_wraps_host_driver_capture_errors():
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+    adapter._dev.raw_mode = Mock()
+    adapter._dev.capture_with_gen = Mock(side_effect=RuntimeError("FTDI read failed"))
+
+    with pytest.raises(HardwareError, match="MCP4725 I2C capture failed: FTDI read failed"):
+        adapter.mcp4725_write_and_measure(0x60, 2048, 4, 5, 3)
 
 
 @pytest.mark.parametrize("failure", [RuntimeError("prepare failed"),

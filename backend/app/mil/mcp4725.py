@@ -24,10 +24,11 @@ EXTERNAL_PIN_BY_INDEX = {
 
 class Mcp4725Route(BaseModel):
     address: int = Field(default=0x60, ge=0x60, le=0x67)
-    # Hardware-verified route: SDA on J1/13 (D4), SCL on J1/12 (D3).
+    # Current reported route: SCL on FPGA J1 (D4/J1-13), SDA on FPGA J2
+    # (D5/J1-14). Keep both selectable for alternate wiring.
     # Every external digital pin remains selectable.
-    sda_pin: int = Field(default=4, ge=0, le=22)
-    scl_pin: int = Field(default=3, ge=0, le=22)
+    sda_pin: int = Field(default=5, ge=0, le=22)
+    scl_pin: int = Field(default=4, ge=0, le=22)
     adc_channel: Literal[1, 2, 3, 4] = 3
 
     @model_validator(mode="after")
@@ -53,6 +54,18 @@ class Mcp4725TestRequest(Mcp4725Route):
     tolerance_v: float = Field(default=0.20, gt=0, le=0.5)
 
 
+def _write_and_measure(device, request: Mcp4725Route, code: int) -> np.ndarray:
+    """Convert host I2C transport failures into actionable hardware errors."""
+    try:
+        return device.mcp4725_write_and_measure(
+            request.address, code, request.sda_pin, request.scl_pin,
+            request.adc_channel)
+    except HardwareError:
+        raise
+    except Exception as exc:
+        raise HardwareError(f"MCP4725 I2C capture failed: {exc}") from exc
+
+
 def test_mcp4725(device, request: Mcp4725TestRequest) -> dict:
     mock = bool(device.get_metadata().mock)
     if not mock and not callable(getattr(device, "mcp4725_write_and_measure", None)):
@@ -64,9 +77,7 @@ def test_mcp4725(device, request: Mcp4725TestRequest) -> dict:
             voltage = round((code * 3.3 / 4096) * 4095 / 3.3) * (3.3 / 4095)
             samples = np.full(256, voltage, dtype=np.float32)
         else:
-            samples = device.mcp4725_write_and_measure(
-                request.address, code, request.sda_pin, request.scl_pin,
-                request.adc_channel)
+            samples = _write_and_measure(device, request, code)
             get_acks = getattr(type(device),
                                "mcp4725_last_acknowledgements", None)
             if callable(get_acks):
@@ -173,9 +184,7 @@ def run_waveform(device, request: Mcp4725WaveformRequest, store) -> dict:
         # generated cadence, rather than claiming an ADC capture happened
         # concurrently with the fast I2C waveform.
         for code in dict.fromkeys(codes):
-            samples = device.mcp4725_write_and_measure(
-                request.address, code, request.sda_pin, request.scl_pin,
-                request.adc_channel)
+            samples = _write_and_measure(device, request, code)
             get_acks = getattr(type(device),
                                "mcp4725_last_acknowledgements", None)
             if callable(get_acks):

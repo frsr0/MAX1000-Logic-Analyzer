@@ -184,11 +184,13 @@ The Vite server runs at `http://localhost:5173` and proxies API/WebSocket
 traffic to the backend. For a no-hardware check, open **Device**, connect
 **Mock MAX1000 Analyser**, then choose a demo on **Capture**.
 
-To test an MCP4725, open **MIL** after connecting the board. The verified wiring
-is SDA to D4 (J1/13), SCL to D3 (J1/12), VOUT to AIN4 (J1/6), plus 3.3 V and
-common ground. Select the actual address, I²C pins, and analogue input in the
-card. The I²C lines need pull-ups to 3.3 V. Run **Run three-point test** before
-**Run waveform and save trace**. Mock mode exercises the controls and saves a
+To test an MCP4725, open **MIL** after connecting the board. The current
+reported wiring is SDA to FPGA pin J2 (D5, J1/14), SCL to FPGA pin J1 (D4,
+J1/13), VOUT to AIN4 (J1/6), plus 3.3 V and common ground. The card defaults to
+that route; select the actual address and analogue input. The I²C lines need
+pull-ups to 3.3 V. Run **Run three-point test** before **Run waveform and save
+trace**. The historical successful run used SDA D4/SCL D3; the swapped-board
+route has not yet received an ACK. Mock mode exercises the controls and saves a
 synthetic scope session; it does not verify external wiring.
 
 For the attached MAX1000, install the FTDI D2XX driver, connect the board, and

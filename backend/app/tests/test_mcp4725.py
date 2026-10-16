@@ -71,6 +71,25 @@ class Mcp4725Tests(unittest.TestCase):
                 self.assertEqual(raised.exception.status_code, 502)
                 self.assertEqual(raised.exception.detail, "offline")
 
+        device = Mock()
+        device.get_metadata.return_value = SimpleNamespace(mock=False)
+        device.mcp4725_write_and_measure.side_effect = RuntimeError(
+            "FTDI read failed")
+        with patch.object(mil_api, "require_control"), \
+                patch.object(mil_api.accelerometer, "status",
+                             return_value={"running": False}), \
+                patch.object(mil_api.capture_manager, "capture_state", "idle"), \
+                patch.object(mil_api.capture_manager,
+                             "_accelerometer_reserved", False), \
+                patch.object(mil_api.capture_manager, "require_device",
+                             return_value=device):
+            with self.assertRaises(HTTPException) as raised:
+                mil_api.mil_mcp4725_test(
+                    Mcp4725TestRequest(codes=[2048]), "owner")
+        self.assertEqual(raised.exception.status_code, 502)
+        self.assertIn("MCP4725 I2C capture failed", raised.exception.detail)
+        self.assertIn("FTDI read failed", raised.exception.detail)
+
     def test_mil_dac_routes_return_results_and_publish_created_waveform(self):
         session = Mock()
         session.summary.return_value = {"id": "session-1"}
@@ -187,9 +206,9 @@ class Mcp4725Tests(unittest.TestCase):
         result = run_dac_test(device, Mcp4725TestRequest())
         self.assertTrue(result["mock"])
         self.assertTrue(result["passed"])
-        self.assertEqual((result["sda_pin"], result["scl_pin"]), (4, 3))
+        self.assertEqual((result["sda_pin"], result["scl_pin"]), (5, 4))
         self.assertEqual((result["sda"], result["scl"]),
-                         ("D4 (J1/13)", "D3 (J1/12)"))
+                         ("D5 (J1/14)", "D4 (J1/13)"))
 
     def test_wrong_voltage_fails_even_when_i2c_send_returns(self):
         device = Mock()
@@ -276,8 +295,10 @@ class Mcp4725Tests(unittest.TestCase):
                     continue
                 occupied = {pin for pin in (sda_pin, scl_pin) if pin < 16}
                 spare = [pin for pin in range(16) if pin not in occupied]
-                scl_capture = scl_pin if scl_pin < 16 else spare[1]
-                sda_capture = sda_pin if sda_pin < 16 else spare[2]
+                # capture_with_gen routes SCL echo and physical SDA onto its
+                # spare capture channels, regardless of the selected pins.
+                scl_capture = spare[1]
+                sda_capture = spare[2]
                 digital = ((sda.astype(np.uint16) << sda_capture)
                            | (scl.astype(np.uint16) << scl_capture))
                 adapter._dev.capture_with_gen.return_value = digital.tobytes()

@@ -35,8 +35,8 @@ function tracePath(values: number[]): string {
 export function MilMcp4725Card() {
   const { controlMode, toast, status, openSession, setPage } = useApp();
   const [address, setAddress] = useState(0x60);
-  const [sdaPin, setSdaPin] = useState(4);
-  const [sclPin, setSclPin] = useState(3);
+  const [sdaPin, setSdaPin] = useState(5);
+  const [sclPin, setSclPin] = useState(4);
   const [adcChannel, setAdcChannel] = useState<1 | 2 | 3 | 4>(3);
   const [code, setCode] = useState(2048);
   const [tolerance, setTolerance] = useState(0.2);

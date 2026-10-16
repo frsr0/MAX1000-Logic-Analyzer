@@ -15,7 +15,7 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 it('sends the three DAC codes and displays measured failures', async () => {
   const test = vi.spyOn(api, 'milMcp4725Test').mockResolvedValue({
-    mock: false, address: 0x60, sda: 'D4 (J1/13)', scl: 'D3 (J1/12)', sda_pin: 4, scl_pin: 3,
+    mock: false, address: 0x60, sda: 'D5 (J1/14)', scl: 'D4 (J1/13)', sda_pin: 5, scl_pin: 4,
     adc_channel: 3, analog_input: 'AIN4 (J1/6)',
     tolerance_v: 0.2, passed: false, bus_passed: false,
     steps: [{ code: 2048, expected_v: 1.65, measured_v: 0.1, error_v: -1.55,
@@ -24,11 +24,31 @@ it('sends the three DAC codes and displays measured failures', async () => {
   render(<MilMcp4725Card />);
   fireEvent.click(screen.getByRole('button', { name: 'Run three-point test' }));
   await waitFor(() => expect(test).toHaveBeenCalledWith({
-    address: 0x60, sda_pin: 4, scl_pin: 3, adc_channel: 3, codes: [0, 2048, 4095], tolerance_v: 0.2,
+    address: 0x60, sda_pin: 5, scl_pin: 4, adc_channel: 3, codes: [0, 2048, 4095], tolerance_v: 0.2,
   }));
   expect((await screen.findByRole('status')).textContent).toContain('FAIL');
   expect(screen.getByRole('status').textContent).toContain('0.100 V');
   expect(screen.getByRole('status').textContent).toContain('NACK · NACK · NACK');
+});
+
+it('defaults to the current SCL D4 and SDA D5 wiring', async () => {
+  const test = vi.spyOn(api, 'milMcp4725Test').mockResolvedValue({
+    mock: true, address: 0x60, sda: 'D5 (J1/14)', scl: 'D4 (J1/13)',
+    sda_pin: 5, scl_pin: 4, adc_channel: 3, analog_input: 'AIN4 (J1/6)',
+    tolerance_v: 0.2, passed: true, bus_passed: true,
+    steps: [{ code: 2048, expected_v: 1.65, measured_v: 1.65, error_v: 0,
+      acknowledgements: null, voltage_passed: true, bus_passed: true, passed: true }],
+  });
+  render(<MilMcp4725Card />);
+
+  expect((screen.getByLabelText('SDA output pin') as HTMLSelectElement).value).toBe('5');
+  expect((screen.getByLabelText('SCL output pin') as HTMLSelectElement).value).toBe('4');
+  expect(screen.getByText(/Connect DAC SDA to D5 \(J1\/14\), SCL to D4 \(J1\/13\)/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Run three-point test' }));
+  await waitFor(() => expect(test).toHaveBeenCalledWith({
+    address: 0x60, sda_pin: 5, scl_pin: 4, adc_channel: 3,
+    codes: [0, 2048, 4095], tolerance_v: 0.2,
+  }));
 });
 
 it('routes mock waveform output to selected pins and opens the scope session', async () => {
@@ -59,7 +79,7 @@ it('routes mock waveform output to selected pins and opens the scope session', a
 
 it('prevents selecting the same I2C output twice', () => {
   render(<MilMcp4725Card />);
-  fireEvent.change(screen.getByLabelText('SCL output pin'), { target: { value: '4' } });
+  fireEvent.change(screen.getByLabelText('SCL output pin'), { target: { value: '5' } });
   expect((screen.getByRole('button', { name: 'Run waveform and save trace' }) as HTMLButtonElement).disabled).toBe(true);
   expect((screen.getByRole('button', { name: 'Run three-point test' }) as HTMLButtonElement).disabled).toBe(true);
 });
@@ -99,7 +119,7 @@ it('reports DAC test and waveform request errors through the app toast', async (
 
 it('shows a passing three-point result with successful acknowledgements', async () => {
   const test = vi.spyOn(api, 'milMcp4725Test').mockResolvedValue({
-    mock: false, address: 0x60, sda: 'D4 (J1/13)', scl: 'D3 (J1/12)', sda_pin: 4, scl_pin: 3,
+    mock: false, address: 0x60, sda: 'D5 (J1/14)', scl: 'D4 (J1/13)', sda_pin: 5, scl_pin: 4,
     adc_channel: 3, analog_input: 'AIN4 (J1/6)', tolerance_v: 0.2, passed: true, bus_passed: true,
     steps: [{ code: 2048, expected_v: 1.65, measured_v: 1.64, error_v: -0.01,
       acknowledgements: [true, true, true], voltage_passed: true, bus_passed: true, passed: true }],
@@ -114,7 +134,7 @@ it('shows a passing three-point result with successful acknowledgements', async 
 
 it('sets a boundary DAC code and renders mock measurements without captured ACK data', async () => {
   const test = vi.spyOn(api, 'milMcp4725Test').mockResolvedValue({
-    mock: true, address: 0x63, sda: 'D4 (J1/13)', scl: 'D3 (J1/12)', sda_pin: 4, scl_pin: 3,
+    mock: true, address: 0x63, sda: 'D5 (J1/14)', scl: 'D4 (J1/13)', sda_pin: 5, scl_pin: 4,
     adc_channel: 3, analog_input: 'AIN4 (J1/6)', tolerance_v: 0.5, passed: true, bus_passed: true,
     steps: [{ code: 4095, expected_v: 3.3, measured_v: 3.28, error_v: -0.02,
       acknowledgements: null, voltage_passed: true, bus_passed: true, passed: true }],
@@ -126,7 +146,7 @@ it('sets a boundary DAC code and renders mock measurements without captured ACK 
   fireEvent.click(screen.getByRole('button', { name: 'Set code and measure' }));
 
   await waitFor(() => expect(test).toHaveBeenCalledWith({
-    address: 0x63, sda_pin: 4, scl_pin: 3, adc_channel: 3, codes: [4095], tolerance_v: 0.5,
+    address: 0x63, sda_pin: 5, scl_pin: 4, adc_channel: 3, codes: [4095], tolerance_v: 0.5,
   }));
   expect((await screen.findByRole('status')).textContent).toContain('SIMULATED PASS');
   expect(screen.getByRole('status').textContent).toContain('n/a');
@@ -136,7 +156,7 @@ it('sends alternate waveform settings including the full voltage range', async (
   const generate = vi.spyOn(api, 'milMcp4725Waveform').mockResolvedValue({
     mock: false, passed: false, voltage_passed: true, timing_passed: false, bus_passed: true,
     trace_source: 'preflight_measured_levels', session_id: 'triangle-scope', waveform: 'triangle',
-    sda: 'D4 (J1/13)', scl: 'D3 (J1/12)', adc_channel: 3, analog_input: 'AIN4 (J1/6)',
+    sda: 'D5 (J1/14)', scl: 'D4 (J1/13)', adc_channel: 3, analog_input: 'AIN4 (J1/6)',
     requested_frequency_hz: 0.5, actual_frequency_hz: 0.48,
     measured_min_v: 0, measured_max_v: 3.3, max_error_v: 0.02,
     sample_rate_hz: 9.6, trace_v: [0, 1.65, 3.3],
@@ -151,7 +171,7 @@ it('sends alternate waveform settings including the full voltage range', async (
   fireEvent.click(screen.getByRole('button', { name: 'Run waveform and save trace' }));
 
   await waitFor(() => expect(generate).toHaveBeenCalledWith({
-    address: 0x60, sda_pin: 4, scl_pin: 3, adc_channel: 3, waveform: 'triangle',
+    address: 0x60, sda_pin: 5, scl_pin: 4, adc_channel: 3, waveform: 'triangle',
     frequency_hz: 0.5, steps_per_cycle: 10, cycles: 3,
     min_v: 0, max_v: 3.3, tolerance_v: 0.2,
   }));
@@ -181,7 +201,7 @@ it('reports an error when opening the saved scope trace fails', async () => {
 
 it('explains missing ACK capture and displays each failed waveform check', async () => {
   vi.spyOn(api, 'milMcp4725Test').mockResolvedValue({
-    mock: false, address: 0x60, sda: 'D4 (J1/13)', scl: 'D3 (J1/12)', sda_pin: 4, scl_pin: 3,
+    mock: false, address: 0x60, sda: 'D5 (J1/14)', scl: 'D4 (J1/13)', sda_pin: 5, scl_pin: 4,
     adc_channel: 3, analog_input: 'AIN4 (J1/6)', tolerance_v: 0.2, passed: false, bus_passed: false,
     steps: [{ code: 2048, expected_v: 1.65, measured_v: 1.65, error_v: 0,
       acknowledgements: [], voltage_passed: true, bus_passed: true, passed: true }],
@@ -189,7 +209,7 @@ it('explains missing ACK capture and displays each failed waveform check', async
   vi.spyOn(api, 'milMcp4725Waveform').mockResolvedValue({
     mock: false, passed: false, voltage_passed: false, timing_passed: false, bus_passed: false,
     trace_source: 'preflight_measured_levels', session_id: 'failed-scope', waveform: 'sine',
-    sda: 'D4 (J1/13)', scl: 'D3 (J1/12)', adc_channel: 3, analog_input: 'AIN4 (J1/6)',
+    sda: 'D5 (J1/14)', scl: 'D4 (J1/13)', adc_channel: 3, analog_input: 'AIN4 (J1/6)',
     requested_frequency_hz: 0.25, actual_frequency_hz: 0,
     measured_min_v: 0, measured_max_v: 0, max_error_v: 3.1,
     sample_rate_hz: 0, trace_v: [],
