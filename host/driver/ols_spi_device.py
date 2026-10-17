@@ -3693,6 +3693,28 @@ class OLSDeviceSPI:
         if scl_channel is not None:
             self.pkt.write_register(REG_GEN_CAPTURE_SCL_CHAN, int(scl_channel) & 0x0F)
 
+    @staticmethod
+    def _gen_capture_output_channels(tx_pin, scl_pin):
+        """Map generator outputs to distinct capture lanes.
+
+        Physical pin numbers above 15 cannot directly name a capture lane.
+        Preserve direct pin-to-lane mappings when possible, then use a free
+        lane for an output whose low four bits would otherwise collide.
+        """
+        pins = (int(tx_pin), int(scl_pin))
+        channels = [None, None]
+        used = set()
+        order = sorted(range(2), key=lambda i: not (0 <= pins[i] < 16))
+        for index in order:
+            preferred = pins[index] & 0x0F
+            if preferred not in used:
+                channel = preferred
+            else:
+                channel = next(ch for ch in range(16) if ch not in used)
+            channels[index] = channel
+            used.add(channel)
+        return tuple(channels)
+
     def _set_gen_capture_aux(self, cs_channel=None, miso_channel=None):
         """Select optional fast-path capture channels for SPI CS/MISO."""
         value = 0
@@ -3896,10 +3918,13 @@ class OLSDeviceSPI:
                 # Write-only (legacy loopback path)
                 i2c_frame = self._gen_load_i2c(i2c_frame, i2c_speed)
         elif proto == 'SPI':
-            self._set_gen_capture_channels(tx_channel=spi_mosi_pin,
-                                           scl_channel=spi_sclk_pin)
+            tx_channel, scl_channel = self._gen_capture_output_channels(
+                spi_mosi_pin, spi_sclk_pin)
+            self._set_gen_capture_channels(tx_channel=tx_channel,
+                                           scl_channel=scl_channel)
             # MOSI (Out_0) and SCLK (Out_1) are looped into the capture
-            # stream on the channels mapped to spi_mosi_pin / spi_sclk_pin.
+            # stream on distinct capture lanes. The physical pin routes below
+            # remain independent from these 4-bit capture lane selectors.
             # The SPI-test bit must be set HERE (after the reset() above
             # clears it) and only latches when REG_GEN_DATA bits 31:8 are
             # non-zero, so bit 8 is set as well.

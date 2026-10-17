@@ -31,6 +31,89 @@ def test_floating_exclusions_include_new_cached_rx_once():
     assert hv._floating_except().count(15) == 1
 
 
+def test_jumper_fixture_preflight_asks_before_discovery_and_uses_found_route(monkeypatch):
+    dev = _device()
+    prompts = []
+    monkeypatch.setattr(hv.sys.stdin, 'isatty', lambda: True)
+    monkeypatch.setattr('builtins.input', lambda prompt: prompts.append(prompt) or 'y')
+    monkeypatch.setattr(hv, '_discover_jumper_pair', lambda _dev: (12, 4))
+
+    assert hv._prepare_jumper_fixture(dev) == (12, 4)
+    assert prompts and 'jumper' in prompts[0].lower()
+    assert hv._JUMPER_PAIR_CACHE == (12, 4)
+    assert hv._JUMPER_PAIR_SEARCHED is True
+
+
+def test_jumper_fixture_preflight_no_skips_discovery(monkeypatch):
+    dev = _device()
+    monkeypatch.setattr(hv.sys.stdin, 'isatty', lambda: True)
+    monkeypatch.setattr('builtins.input', lambda _prompt: 'n')
+    monkeypatch.setattr(hv, '_discover_jumper_pair', lambda _dev: pytest.fail('must not sweep'))
+
+    assert hv._prepare_jumper_fixture(dev) is None
+    assert hv._JUMPER_PAIR_CACHE is None
+    assert hv._JUMPER_PAIR_SEARCHED is True
+
+
+def test_jumper_fixture_preflight_eof_defaults_to_skip(monkeypatch):
+    dev = _device()
+    monkeypatch.setattr(hv.sys.stdin, 'isatty', lambda: True)
+    monkeypatch.setattr('builtins.input', lambda _prompt: (_ for _ in ()).throw(EOFError()))
+    monkeypatch.setattr(hv, '_discover_jumper_pair', lambda _dev: pytest.fail('must not sweep'))
+
+    assert hv._prepare_jumper_fixture(dev) is None
+    assert hv._JUMPER_PAIR_SEARCHED is True
+
+
+@pytest.mark.parametrize('present,expected', [('1', True), ('0', False), ('yes', True), ('no', False)])
+def test_jumper_fixture_preflight_environment_is_noninteractive(monkeypatch, present, expected):
+    dev = _device()
+    monkeypatch.setenv(hv.JUMPER_PRESENT_ENV, present)
+    monkeypatch.setattr(hv.sys.stdin, 'isatty', lambda: pytest.fail('must not prompt'))
+    discovered = []
+    monkeypatch.setattr(hv, '_discover_jumper_pair', lambda _dev: discovered.append(True) or (8, 2))
+
+    pair = hv._prepare_jumper_fixture(dev)
+    assert (pair == (8, 2)) is expected
+    assert bool(discovered) is expected
+
+
+def test_jumper_fixture_preflight_unattended_unset_skips_without_discovery(monkeypatch):
+    dev = _device()
+    monkeypatch.delenv(hv.JUMPER_PRESENT_ENV, raising=False)
+    monkeypatch.setattr(hv.sys.stdin, 'isatty', lambda: False)
+    monkeypatch.setattr(hv, '_discover_jumper_pair', lambda _dev: pytest.fail('must not sweep'))
+
+    assert hv._prepare_jumper_fixture(dev) is None
+    assert hv._JUMPER_PAIR_SEARCHED is True
+
+
+@pytest.mark.parametrize('stdin', [None, SimpleNamespace()])
+def test_jumper_fixture_preflight_missing_or_broken_stdin_skips(monkeypatch, stdin):
+    dev = _device()
+    monkeypatch.delenv(hv.JUMPER_PRESENT_ENV, raising=False)
+    if stdin is not None:
+        stdin.isatty = lambda: (_ for _ in ()).throw(OSError('stdin unavailable'))
+    monkeypatch.setattr(hv.sys, 'stdin', stdin)
+    monkeypatch.setattr(hv, '_discover_jumper_pair', lambda _dev: pytest.fail('must not sweep'))
+
+    assert hv._prepare_jumper_fixture(dev) is None
+    assert hv._JUMPER_PAIR_SEARCHED is True
+
+
+def test_jumper_fixture_preflight_yes_without_detected_pair_fails(monkeypatch):
+    dev = _device()
+    monkeypatch.setenv(hv.JUMPER_PRESENT_ENV, '1')
+    monkeypatch.setattr(hv.sys.stdin, 'isatty', lambda: False)
+    monkeypatch.setattr(hv, '_discover_jumper_pair', lambda _dev: None)
+    checks = []
+    monkeypatch.setattr(hv, 'check', lambda passed, message: checks.append((passed, message)))
+
+    assert hv._prepare_jumper_fixture(dev) is None
+    assert checks and checks[0][0] is False
+    assert 'jumper' in checks[0][1].lower()
+
+
 @pytest.mark.parametrize('argv,mode', [(['p'], 'full'), (['p', 'new'], 'new'), (['p', 'codec'], 'codec'), (['p', 'unknown'], 'full')])
 def test_suite_mode(argv, mode):
     assert hv._suite_mode(argv) == mode
@@ -202,6 +285,9 @@ def test_main_orchestrates_full_suite_and_summary_branches(pair, skipped, failed
         tests['test_spi_handoff'].side_effect = lambda _dev: (
             setattr(hv, 'SKIPPED', skipped), setattr(hv, 'FAIL', failed)
         )
+        stack.enter_context(patch.dict(os.environ, {
+            hv.JUMPER_PRESENT_ENV: '1' if pair else '0',
+        }))
         stack.enter_context(patch.object(hv, 'OLSDeviceSPI', return_value=dev))
         stack.enter_context(patch.object(hv, '_get_jumper_pair', return_value=pair))
         assert hv.main() == expected
@@ -226,6 +312,30 @@ def test_main_reports_abort_and_tolerates_reset_close_cleanup_errors():
          patch.object(hv, 'log'), patch.object(hv.time, 'sleep'):
         assert hv.main() == 1
     assert hv.FAIL == 1
+
+
+def test_full_suite_runs_internal_tests_when_jumper_fixture_declined():
+    dev = _device()
+    with ExitStack() as stack:
+        tests = _patched_hardware_tests(stack)
+        stack.enter_context(patch.dict(os.environ, {hv.JUMPER_PRESENT_ENV: '0'}))
+        stack.enter_context(patch.object(hv, 'OLSDeviceSPI', return_value=dev))
+        stack.enter_context(patch.object(hv, '_discover_jumper_pair', side_effect=AssertionError('must not probe')))
+        assert hv.main() == 0
+    tests['test_spi_handoff'].assert_called_once_with(dev)
+    tests['test_capture_during_readout'].assert_called_once_with(dev)
+
+
+def test_jumper_only_entrypoint_preflights_before_jumper_tests():
+    dev = _device()
+    events = []
+    with ExitStack() as stack:
+        tests = _patched_hardware_tests(stack)
+        tests['test_jumper_loopback'].side_effect = lambda *_args: events.append('loopback')
+        stack.enter_context(patch.object(hv, 'OLSDeviceSPI', return_value=dev))
+        stack.enter_context(patch.object(hv, '_prepare_jumper_fixture', side_effect=lambda *_args: events.append('preflight')))
+        assert hv.main_jumper_only() == 0
+    assert events == ['preflight', 'loopback']
 
 
 @pytest.mark.parametrize('entry', ['main_new_only', 'main_codec_only', 'main_jumper_only', 'main_analog_only'])

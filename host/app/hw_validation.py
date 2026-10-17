@@ -17,6 +17,8 @@ Usage:
 
 Set HW_VALIDATION_TIMEOUT=<seconds> to override the outer watchdog. Set it to
 0 to disable the watchdog while debugging.
+Set HW_VALIDATION_JUMPER_PRESENT=1 or 0 to enable or skip digital jumper
+discovery in unattended runs. Interactive runs ask before probing pins.
 
 Requires:
     - MAX1000 board connected via USB (FTDI FT2232H)
@@ -2244,6 +2246,7 @@ def test_crosstalk_characterisation(dev):
     inactive = []
     excessive_bleed = []
     results = []
+    jumper_pair = _get_jumper_pair(dev)
     for tx_pin in range(1, 16):
         dev._gen_data = bytes([0x55]) * 200
         for baud in [9600, 19200, 38400, 57600, 115200]:
@@ -2264,7 +2267,10 @@ def test_crosstalk_characterisation(dev):
                             "bleed_percent": pct})
             if tr_tx <= 3:
                 inactive.append((tx_pin, baud, tr_tx))
-            if pct > 5:
+            # A discovered wire between adjacent pins is expected to mirror
+            # the generator onto the neighbouring capture lane. Keep measuring
+            # and reporting it, but do not call the fixture crosstalk.
+            if pct > 5 and not _is_expected_adjacent_jumper_bleed(jumper_pair, tx_pin):
                 excessive_bleed.append((tx_pin, baud, pct))
     check(not missing, f"crosstalk sweep returned all 75 captures (missing={missing})")
     check(not inactive, f"crosstalk sweep drove every TX lane (inactive={inactive})")
@@ -2621,11 +2627,70 @@ JUMPER_BAUD = 115200
 JUMPER_RATE = 2_000_000        # ~17.4 samples/bit, well above UART_MIN_SPB
 _JUMPER_PAIR_CACHE = None
 _JUMPER_PAIR_SEARCHED = False
+JUMPER_PRESENT_ENV = "HW_VALIDATION_JUMPER_PRESENT"
+
+
+def _prepare_jumper_fixture(dev):
+    """Ask once whether the digital loopback jumper is fitted, then discover it.
+
+    Interactive runs prompt before driving any candidate pin. Unattended runs
+    can set HW_VALIDATION_JUMPER_PRESENT=1/0; when unset, jumper checks are
+    skipped without probing the board.
+    """
+    global _JUMPER_PAIR_CACHE, _JUMPER_PAIR_SEARCHED
+    configured = os.environ.get(JUMPER_PRESENT_ENV)
+    if configured is not None:
+        value = configured.strip().lower()
+        if value in ("1", "y", "yes", "true", "on"):
+            present = True
+            log(f"digital jumper fixture enabled by {JUMPER_PRESENT_ENV}={configured!r}")
+        elif value in ("0", "n", "no", "false", "off"):
+            present = False
+            log(f"digital jumper fixture skipped by {JUMPER_PRESENT_ENV}={configured!r}")
+        else:
+            present = False
+            log(f"[INFO] unrecognized {JUMPER_PRESENT_ENV}={configured!r}; skipping jumper checks")
+    else:
+        try:
+            interactive = sys.stdin is not None and sys.stdin.isatty()
+        except Exception:
+            interactive = False
+
+    if configured is None and interactive:
+        try:
+            answer = input("Is the two-pin digital jumper fixture installed? [y/N] ").strip().lower()
+        except EOFError:
+            answer = ""
+        present = answer in ("y", "yes")
+        if not present:
+            log("digital jumper fixture not selected; jumper-dependent checks will skip")
+    elif configured is None:
+        present = False
+        log(f"[INFO] non-interactive run with {JUMPER_PRESENT_ENV} unset; "
+            "skipping jumper-dependent checks without pin discovery")
+
+    if not present:
+        _JUMPER_PAIR_CACHE = None
+        _JUMPER_PAIR_SEARCHED = True
+        return None
+
+    pair = _get_jumper_pair(dev)
+    if pair is None:
+        check(False, "digital jumper fixture was selected but no connected pin pair was discovered")
+        log("[ERROR] jumper fixture was reported present, but discovery found no route")
+    else:
+        log(f"digital jumper fixture discovered: {pair[0]} -> {pair[1]}")
+    return pair
 
 
 def _channel_transitions(ch, ns):
     return [sum(1 for i in range(1, min(ns, len(ch[c]))) if ch[c][i] != ch[c][i - 1])
             for c in range(min(len(ch), 16))]
+
+
+def _is_expected_adjacent_jumper_bleed(pair, tx_pin):
+    """Whether this measured lower-lane activity is the discovered jumper."""
+    return pair is not None and pair[0] == tx_pin and pair[1] == tx_pin - 1
 
 
 def _uart_waveform_match_fraction(sig, payload, rate_hz, baud, invert=False):
@@ -2873,10 +2938,12 @@ def _discover_jumper_pair(dev, deadline_s=20.0):
     """
     pattern = b"PinProbe!"
     deadline = time.time() + deadline_s
-    # PMOD pins first (bench convention: PMOD -> MKR jumpers), known bench
-    # pairs 21->11 / 20->10 up front.
-    candidates = [21, 20] + [p for p in range(15, 23) if p not in (20, 21)] \
-        + list(range(0, 15))
+    # Search capture-visible MKR pins first. Rank results after the sweep so a
+    # stale/legacy PMOD route cannot win merely because it was enumerated first.
+    # Adjacent descending routes (TX n -> RX n-1) are especially useful: the
+    # capture fixture can validate every generator protocol on that route.
+    candidates = list(range(14, -1, -1)) + [p for p in range(15, 23)]
+    found = []
     for tx in candidates:
         if time.time() >= deadline:
             break
@@ -2903,7 +2970,17 @@ def _discover_jumper_pair(dev, deadline_s=20.0):
         for rx in hits:
             dec = decode_uart_safe(ch, JUMPER_RATE, ch_idx=rx, baud=JUMPER_BAUD)
             if pattern in bytes(d.value for d in dec):
-                return (tx, rx)
+                # Prefer direct MKR loopbacks, then PMOD routes; among MKR
+                # routes prefer an adjacent descending pair, which is the
+                # useful direction for this board's generator/capture mapping.
+                rank = (0 if tx < 15 and rx < 15 else 1,
+                        0 if tx == rx + 1 else 1,
+                        abs(tx - rx), tx, rx)
+                found.append((rank, tx, rx))
+    if found:
+        _, tx, rx = min(found)
+        log(f"  [INFO] selected generator-compatible jumper route {tx} -> CH{rx}")
+        return (tx, rx)
     log("  [INFO] jumper sweep found no decoding pair on the direct path")
     return None
 
@@ -3423,7 +3500,8 @@ def main():
         # wired channel from noise-floor / cleanliness checks.
         jumper_rx = None
         _JUMPER_PAIR_SEARCHED = False
-        pair = _get_jumper_pair(dev)
+        _JUMPER_PAIR_CACHE = None
+        pair = _prepare_jumper_fixture(dev)
         if pair:
             _, jumper_rx = pair
             log(f"jumper pair discovered early: {pair[0]} -> {pair[1]}")
@@ -3649,7 +3727,7 @@ def main_jumper_only():
     Use this on the bench while iterating on the two-pins-wired-together
     fixture, without sitting through the full suite.
     """
-    global PASS, FAIL, TOTAL
+    global PASS, FAIL, TOTAL, _JUMPER_PAIR_CACHE, _JUMPER_PAIR_SEARCHED
     begin_run()
     dev = OLSDeviceSPI()
     try:
@@ -3657,6 +3735,9 @@ def main_jumper_only():
         log(f"SPI device opened, sys_clk={dev.sys_clk / 1e6:.0f} MHz")
         dev.reset()
         time.sleep(0.5)
+        _JUMPER_PAIR_CACHE = None
+        _JUMPER_PAIR_SEARCHED = False
+        _prepare_jumper_fixture(dev)
         test_jumper_loopback(dev)
         test_jumper_generator_matrix(dev)
         test_live_generator_decode(dev)

@@ -335,7 +335,8 @@ def test_jumper_pattern_trigger_skips_without_fixture_or_uses_detected_pair():
 def test_crosstalk_sweep_characterises_present_and_missing_captures():
     value = device()
     value.capture_with_gen.side_effect = [b"data", b""] * 38
-    with patch.object(hv, "samples_to_channels", return_value=sampled(16, tuple(range(16)))):
+    with patch.object(hv, "_get_jumper_pair", return_value=None), \
+         patch.object(hv, "samples_to_channels", return_value=sampled(16, tuple(range(16)))):
         hv.test_crosstalk_characterisation(value)
     assert value.capture_with_gen.call_count == 75
     assert hv.FAIL == 2
@@ -344,7 +345,8 @@ def test_crosstalk_sweep_characterises_present_and_missing_captures():
 def test_crosstalk_sweep_rejects_inactive_transmitters():
     value = device()
     value.capture_with_gen.return_value = b"data"
-    with patch.object(hv, "samples_to_channels", return_value=sampled(16, ())):
+    with patch.object(hv, "_get_jumper_pair", return_value=None), \
+         patch.object(hv, "samples_to_channels", return_value=sampled(16, ())):
         hv.test_crosstalk_characterisation(value)
     assert hv.FAIL == 1
 

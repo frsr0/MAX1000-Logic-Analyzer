@@ -226,12 +226,30 @@ def test_jumper_discovery_ignores_mirror_noise_and_returns_decoded_partner():
     value.capture_with_gen.return_value = b"probe"
     rows, ns = sampled(128, (5, 7))
     transitions = [0] * 16
-    transitions[5] = transitions[7] = 50
+    transitions[1] = transitions[5] = transitions[7] = 50
+
+    def decoded_route(_channels, _rate, ch_idx, **_kwargs):
+        # Both routes decode, but the direct MKR pair should outrank the
+        # legacy PMOD route even if that route is also physically connected.
+        pair = (value._gen_tx_pin, ch_idx)
+        return uart_bytes(b"PinProbe!") if pair in {(2, 1), (21, 7)} else []
+
     with patch.object(hv.time, "time", Clock(0.01)), \
          patch.object(hv, "samples_to_channels", return_value=(rows, ns)), \
          patch.object(hv, "_channel_transitions", return_value=transitions), \
-         patch.object(hv, "decode_uart_safe", return_value=uart_bytes(b"PinProbe!")):
-        assert hv._discover_jumper_pair(value, deadline_s=1) == (21, 7)
+         patch.object(hv, "decode_uart_safe", side_effect=decoded_route):
+        assert hv._discover_jumper_pair(value, deadline_s=1) == (2, 1)
+
+
+@pytest.mark.parametrize("pair,tx,expected", [
+    ((2, 1), 2, True),
+    ((2, 1), 1, False),
+    ((2, 3), 2, False),
+    (None, 2, False),
+])
+def test_expected_adjacent_jumper_echo_is_exempted_only_for_discovered_direction(
+        pair, tx, expected):
+    assert hv._is_expected_adjacent_jumper_bleed(pair, tx) is expected
 
 
 def test_jumper_discovery_handles_abort_errors_empty_captures_and_deadline():

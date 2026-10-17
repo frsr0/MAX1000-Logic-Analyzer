@@ -620,6 +620,32 @@ def test_generated_capture_protocol_routes_complete(proto, monkeypatch):
     assert result == b"\x01\x00" * 4
 
 
+def test_spi_capture_pin_16_uses_free_echo_lane_without_changing_pin_route(
+        monkeypatch):
+    dev = _device()
+    _prepare_generated_capture(dev)
+    dev._gen_data = b"payload"
+    dev._gen_load_spi = MagicMock(return_value=b"symbols")
+    dev._pins = MagicMock()
+    monkeypatch.setattr(device_module.time, "sleep", lambda _: None)
+
+    result = dev.capture_with_gen(
+        nsamples=4,
+        timeout=0.01,
+        proto="SPI",
+        spi_mosi_pin=16,
+        spi_sclk_pin=0,
+        reset_board=False,
+    )
+
+    assert result == b"\x01\x00" * 4
+    dev._pins.assert_called_once_with(tx_pin=16, scl_pin=0)
+    dev.pkt.write_register.assert_any_call(
+        device_module.REG_GEN_CAPTURE_TX_CHAN, 1)
+    dev.pkt.write_register.assert_any_call(
+        device_module.REG_GEN_CAPTURE_SCL_CHAN, 0)
+
+
 def test_generated_capture_gen_first_rejects_start_arm_and_stop(monkeypatch):
     dev = _device()
     _prepare_generated_capture(dev)
