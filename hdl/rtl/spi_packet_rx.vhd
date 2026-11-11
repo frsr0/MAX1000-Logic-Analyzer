@@ -25,6 +25,7 @@ entity spi_packet_rx is
     -- Packet completion flags
     packet_ok      : out std_logic;  -- pulse on valid complete packet
     packet_err     : out std_logic;  -- pulse on CRC mismatch / bad frame
+    in_packet      : out std_logic;  -- high from frame sync recognised until packet ok/err/abort
 
     -- Error diagnostics
     err_bad_crc  : out std_logic;
@@ -158,6 +159,10 @@ begin
     end if;
   end process;
 
+  -- High while a frame body is being received (sync recognised, packet not yet
+  -- complete). Pure decode of the registered state, so it falls on the same
+  -- edge packet_ok/packet_err pulse, or on CS rise abort.
+  in_packet  <= '0' when (state = WAIT_SYNC0 or state = WAIT_SYNC1) else '1';
   packet_ok  <= packet_ok_int;
   packet_err <= packet_err_int;
 

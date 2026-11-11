@@ -57,6 +57,9 @@ port (
     Narrow_Channel : in natural range 0 to 15 := 0;
     -- Double-buffer control
     Continuous_Mode : in std_logic := '0';
+    -- CLK-domain level: freeze the Producer/Oldest/Newest/Overrun/Overflow output
+    -- snapshot while high (set by OLS_Interface across a packet's execution).
+    Index_Hold      : in std_logic := '0';
     Buffer_Full     : out std_logic_vector(2 downto 0) := (others => '0');
     Buffer_Ack      : in std_logic_vector(2 downto 0) := (others => '0');
     Analog_Frame_Data : in std_logic_vector(127 downto 0) := (others => '0');
@@ -133,12 +136,6 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   constant CONT_BUF    : natural := 512;
   constant CONT_RING_WORDS : natural := Max_Samples;
 
-  -- Triple-buffer state
-  signal buf_sel    : std_logic_vector(1 downto 0) := "00";
-  signal buf_full   : std_logic_vector(2 downto 0) := (others => '0');
-  signal full_pending : std_logic := '0';
-  signal full_clr_pending : std_logic := '0';
-
   signal buf_rem_single : natural range 0 to Max_Samples := 0;
   signal single_count_load_q : std_logic := '0';
   -- Single-shot drain-complete counter: number of consecutive pclk cycles the pump
@@ -214,9 +211,10 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal status_overflow   : std_logic := '0';
   signal overflow_readout_q : std_logic := '0';
   signal producer_index_u  : unsigned(31 downto 0) := (others => '0');
+  -- oldest_index_u also drives Overrun_Count: the two were always reset and
+  -- incremented together, so they held identical values.
   signal oldest_index_u    : unsigned(31 downto 0) := (others => '0');
   signal newest_index_u    : unsigned(31 downto 0) := (others => '0');
-  signal overrun_count_u   : unsigned(31 downto 0) := (others => '0');
   -- Write-pump utilisation counters (host regs 0x60..0x64). Diagnostic only
   -- (read by host/debug/_deep_rate_sweep.py); compiled out by default to
   -- reclaim five 32-bit counters (~200 LEs) from the congested 167 MHz cone
@@ -229,10 +227,27 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal pump_accept_cycles_u  : unsigned(31 downto 0) := (others => '0');
   signal pump_stall_cycles_u   : unsigned(31 downto 0) := (others => '0');
   signal pump_nodata_cycles_u  : unsigned(31 downto 0) := (others => '0');
-  signal pump_overflow_count_u : unsigned(31 downto 0) := (others => '0');
+  -- 8-bit saturating: counts capture-overflow events within one run.
+  signal pump_overflow_count_u : unsigned(7 downto 0) := (others => '0');
+  -- pclk-domain snapshot of the ring counters that the CLK-domain dispatcher
+  -- reads. They follow the live counters every pclk cycle unless the
+  -- synchronised Index_Hold is high.
+  signal index_hold_s1    : std_logic := '0';
+  signal index_hold_p     : std_logic := '0';
+  signal producer_snap_r  : unsigned(31 downto 0) := (others => '0');
+  signal oldest_snap_r    : unsigned(31 downto 0) := (others => '0');
+  signal newest_snap_r    : unsigned(31 downto 0) := (others => '0');
+  signal overflow_snap_r  : unsigned(7 downto 0) := (others => '0');
+  -- pclk-domain 2FF copy of the CLK-domain Continuous_Mode level.
+  signal continuous_p_s1  : std_logic := '0';
+  signal continuous_p     : std_logic := '0';
+  attribute altera_attribute of index_hold_s1   : signal is "-name AUTO_SHIFT_REGISTER_RECOGNITION OFF";
+  attribute altera_attribute of index_hold_p    : signal is "-name AUTO_SHIFT_REGISTER_RECOGNITION OFF";
+  attribute altera_attribute of continuous_p_s1 : signal is "-name AUTO_SHIFT_REGISTER_RECOGNITION OFF";
+  attribute altera_attribute of continuous_p    : signal is "-name AUTO_SHIFT_REGISTER_RECOGNITION OFF";
   -- Registered (1-cycle) copies of the per-cycle pump condition flags. The wide
   -- counters increment from these short registered enables instead of directly
-  -- from the combinational pump_*_v (which carry the buf_rem/cur_full producer
+  -- from the combinational pump_*_v (which carry the buf_rem producer
   -- gating and, in series with the 32-bit counter carry, violated clk[2] setup).
   signal pump_valid_q  : boolean := false;
   signal pump_ready_q  : boolean := false;
@@ -242,7 +257,11 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal producer_accept_q : boolean := false;
   signal cont_accept_q : boolean := false;
   signal cont_meta_reset_q : std_logic := '0';
-  signal ring_used         : natural range 0 to CONT_RING_WORDS := 0;
+  -- Registered "this continuous accept wrapped the ring write address"
+  -- pulse (paired with cont_accept_q) and the sticky "ring has filled once
+  -- since run start" flag it sets.
+  signal cont_wrap_q       : boolean := false;
+  signal ring_filled       : std_logic := '0';
   attribute altera_attribute of run_f_s1 : signal is "-name AUTO_SHIFT_REGISTER_RECOGNITION OFF";
   attribute altera_attribute of run_f_s2 : signal is "-name AUTO_SHIFT_REGISTER_RECOGNITION OFF";
   attribute altera_attribute of run_f_level : signal is "-name AUTO_SHIFT_REGISTER_RECOGNITION OFF";
@@ -581,6 +600,35 @@ begin
       end if;
       fifo_afull_r     <= fifo_afull_cmp_r;
       fifo_wralmost_full <= fifo_afull_r;  -- legacy alias, used by afull_r in FAST_CLK
+    end if;
+  end process;
+
+  -- 2FF synchronisers: Continuous_Mode and Index_Hold (CLK domain levels) into pclk.
+  -- Continuous_Mode is written by the host well before Run; even if both change
+  -- in the same CLK cycle, continuous_p (2 stages) is valid before run_start_r
+  -- (run_sync1, run_sync2, then the run_start_r register = 3 stages).
+  process(pclk)
+  begin
+    if rising_edge(pclk) then
+      continuous_p_s1 <= Continuous_Mode;
+      continuous_p    <= continuous_p_s1;
+      index_hold_s1   <= Index_Hold;
+      index_hold_p    <= index_hold_s1;
+    end if;
+  end process;
+
+  -- Ring-index snapshot: all four registers load in the same pclk cycle, so
+  -- Producer/Oldest/Newest/Overflow are mutually consistent and are never
+  -- sampled mid-increment while the CLK-domain dispatcher holds Index_Hold.
+  process(pclk)
+  begin
+    if rising_edge(pclk) then
+      if index_hold_p = '0' then
+        producer_snap_r <= producer_index_u;
+        oldest_snap_r   <= oldest_index_u;
+        newest_snap_r   <= newest_index_u;
+        overflow_snap_r <= pump_overflow_count_u;
+      end if;
     end if;
   end process;
 
@@ -1648,12 +1696,11 @@ begin
   process (pclk)
     variable rd_mode : boolean := true;
     variable read_addr : natural := 0;
-    variable waddr_0   : natural range 0 to Max_Samples := 0;
-    variable waddr_1   : natural range 0 to Max_Samples := 0;
-    variable waddr_2   : natural range 0 to Max_Samples := 0;
+    -- Single write-address counter shared by single-shot and continuous mode
+    -- (only one mode advances it per run; reset on run start only).
+    variable waddr     : natural range 0 to Max_Samples - 1 := 0;
     variable a_reg   : natural range 0 to Max_Samples := Max_Samples;
     variable rd_pend : std_logic := '0';
-    variable write_addr : std_logic_vector(21 downto 0) := (others => '0');
     -- Streaming block-readout state (single-shot CMD_READ_CAPTURE path)
     variable stream_active : boolean := false;
     variable stream_addr_u : unsigned(21 downto 0) := (others => '0');
@@ -1698,10 +1745,7 @@ begin
     -- registered pop and the show-ahead q/empty outputs.)
     -- Continuous-mode readout: a host block read temporarily enters rd_mode to
     -- stream the rolling SDRAM window, then returns to capture.
-    -- cur_full backpressures the write pump off a full buffer.
-    variable cur_full      : boolean := false;
     variable cont_base_v   : natural range 0 to Max_Samples - 1 := 0;
-    variable ring_waddr    : natural range 0 to Max_Samples - 1 := 0;
     -- Snapshot the persistent readout state at the start of each pclk tick so
     -- current-cycle updates do not feed back into the same cycle's mux tree.
     variable rd_mode_cur       : boolean := false;
@@ -1716,6 +1760,7 @@ begin
     variable pump_nodata_v : boolean := false;
     variable producer_accept_v : boolean := false;
     variable cont_accept_v : boolean := false;
+    variable cont_wrap_v   : boolean := false;
   begin
     if rising_edge(pclk) then
       rd_mode_cur := rd_mode;
@@ -1730,6 +1775,7 @@ begin
       pump_nodata_v := false;
       producer_accept_v := false;
       cont_accept_v := false;
+      cont_wrap_v := false;
       fifo_rd <= '0';
       s_wr <= '0';
       cap_stream_valid <= '0';
@@ -1773,10 +1819,12 @@ begin
       end if;
       overflow_count_en_q <= overflow_clk;
       if overflow_count_en_q = '1' then
-        pump_overflow_count_u <= pump_overflow_count_u + 1;
+        if pump_overflow_count_u /= 255 then
+          pump_overflow_count_u <= pump_overflow_count_u + 1;
+        end if;
       end if;
       if stream_addr_inc_pending then
-        if Continuous_Mode = '1' and stream_at_ring_end = '1' then
+        if continuous_p = '1' and stream_at_ring_end = '1' then
           stream_addr_u := (others => '0');
         else
           -- Registered pre-increment: no adder in this mux (see declaration)
@@ -1808,7 +1856,7 @@ begin
         -- Snapshot as at run start. Overflow only latches in single-shot
         -- mode, where the producer has already stopped, so the fill can only
         -- shrink and a re-snapshot on repeated overflow pulses stays correct.
-        if Continuous_Mode = '0' and full_i = '0' then
+        if continuous_p = '0' and full_i = '0' then
           full_i <= '1';
           overflow_readout_q <= '1';
         end if;
@@ -1818,52 +1866,7 @@ begin
         overflow_readout_q <= '0';
       end if;
 
-      -- Buffer ack handling (evaluated every cycle)
-      if Buffer_Ack(0) = '1' then
-        buf_full(0) <= '0';
-        if buf_sel = "00" and buf_full(1) = '1' then
-          -- A was waiting to be written (B is full), reset pointer now
-          waddr_0 := 0;
-        end if;
-      end if;
-      if Buffer_Ack(1) = '1' then
-        buf_full(1) <= '0';
-        if buf_sel = "01" and buf_full(0) = '1' then
-          -- B was waiting to be written (A is full), reset pointer now
-          waddr_1 := 0;
-        end if;
-      end if;
-      if Buffer_Ack(2) = '1' then
-        buf_full(2) <= '0';
-        if buf_sel = "10" and buf_full(1) = '1' then
-          -- C was waiting to be written (B is full), reset pointer now
-          waddr_2 := 0;
-        end if;
-      end if;
-      -- Continuous mode status/backpressure flag.
-      -- full_i just reports "all three buffers full" (host can read). rd_mode is
-      -- owned by the host-read path below, NOT here: the old code flipped it on
-      -- a quiet-pipeline window the async host read never coincided with, so a
-      -- completed buffer was never streamed and continuous readout returned 0.
-      if Continuous_Mode = '1' then
-        if full_i = '1' and (Buffer_Ack(0) = '1' or Buffer_Ack(1) = '1' or Buffer_Ack(2) = '1') then
-          full_clr_pending <= '1';
-        end if;
-        if full_clr_pending = '1' then
-          full_i <= '0';
-          full_pending <= '0';
-          full_clr_pending <= '0';
-        end if;
-        if full_pending = '1' and prefetch_valid_r = '0'
-           and fifo_rdempty_r = '1' and rdempty_q = '1'
-           and cap_stream_valid = '0' then
-          full_i <= '1';
-          full_pending <= '0';
-        end if;
-      end if;
-
       if run_edge_r = '1' then
-        waddr_0 := 0; waddr_1 := 0; waddr_2 := 0;
         drain_pending_r <= '1';
         drain_snapshot_pending_r <= '1';
         -- Snapshot the stale-word count. usedw is fill mod DEPTH: a full FIFO
@@ -1877,10 +1880,7 @@ begin
         buf_rem_single <= 0;
         single_drain_cnt <= 0;
         rd_pend := '0';
-        buf_sel <= "00";
-        buf_full(0) <= '0'; buf_full(1) <= '0'; buf_full(2) <= '0';
         full_i <= '0';
-        full_pending <= '0'; full_clr_pending <= '0';
         run_stop_overflow <= '0';
         status_overflow <= '0';
         overflow_readout_q <= '0';
@@ -1893,7 +1893,7 @@ begin
           pump_nodata_cycles_u <= (others => '0');
           pump_overflow_count_u <= (others => '0');
           overflow_count_en_q <= '0';
-          ring_waddr := 0;
+          waddr := 0;
         end if;
         if run_stop_r = '1' then
           rd_mode := true;
@@ -1904,7 +1904,6 @@ begin
         cap_stream_valid <= '0';
         stream_active := false; rd_pend2 := '0';
         stream_addr_inc_pending := false;
-        cur_full := false;
 
       else
       -- Normal capture/readout/write-pump logic (skipped on run-edge cycle)
@@ -1945,7 +1944,7 @@ begin
           stream_prime  := STREAM_PRIME_N;
           stream_active := (Blk_Rd_Count /= 0);
           s_rd          <= '0';
-        elsif Continuous_Mode = '1' then
+        elsif continuous_p = '1' then
           -- Continuous indexed read: host byte address names an absolute sample
           -- index; physical storage is the full SDRAM rolling window.
           cont_base_v := Blk_Rd_Base mod CONT_RING_WORDS;
@@ -1999,7 +1998,7 @@ begin
                   stream_rem    := 0;
                   -- Continuous mode: hand the SDRAM bus back to the write pump
                   -- after the host has streamed its requested block.
-                  if Continuous_Mode = '1' then
+                  if continuous_p = '1' then
                     rd_mode      := false;
                   end if;
                 end if;
@@ -2050,43 +2049,18 @@ begin
         -- CAPTURE: SDRAM write pump — drains async FIFO (live + flushed
         -- pre-trigger samples arrive via a single FIFO stream).
 
-        -- Single-shot uses the old buffer fullness bookkeeping. Continuous
-        -- mode is a true SDRAM ring: never backpressure on the legacy 3x512
-        -- buffer flags, because indexed reads use producer/oldest/newest
-        -- metadata and the whole SDRAM window is the retention boundary.
-        cur_full := false;
-        if Continuous_Mode = '0' then
-          if (buf_sel = "00" and buf_full(0) = '1')
-             or (buf_sel = "01" and buf_full(1) = '1')
-             or (buf_sel = "10" and buf_full(2) = '1') then
-            cur_full := true;
-            if buf_full(0) = '0' then
-              buf_sel <= "00"; waddr_0 := 0;
-            elsif buf_full(1) = '0' then
-              buf_sel <= "01"; waddr_1 := 0;
-            elsif buf_full(2) = '0' then
-              buf_sel <= "10"; waddr_2 := 0;
-            end if;
-          end if;
-        end if;
-
         cap_stream_valid <= '0';
         if drain_pending_r = '1' then
           -- Drain owns the skid buffer this cycle (block above); committing
           -- here would leak stale words from the previous run into SDRAM.
           null;
-        elsif prefetch_valid_r = '1' and not cur_full then
+        elsif prefetch_valid_r = '1' then
           single_drain_cnt <= 0;
-          if Continuous_Mode = '1' then
-            write_addr := std_logic_vector(to_unsigned(ring_waddr, 22));
-          else
-            write_addr := std_logic_vector(to_unsigned(waddr_0, 22));
-          end if;
 
-          cap_stream_addr <= write_addr;
+          cap_stream_addr <= std_logic_vector(to_unsigned(waddr, 22));
           cap_stream_data <= prefetch_data_r;
 
-          if Continuous_Mode = '1' or brem_single_nonzero = '1' then
+          if continuous_p = '1' or brem_single_nonzero = '1' then
             -- Registered valid/ack handshake. cap_stream_ready is a 2-stage
             -- pipelined ack OF cap_stream_valid (ready_now needs valid; see
             -- SDRAM_Controller_Custom r_pipe_stream_ready), so it arrives
@@ -2101,19 +2075,23 @@ begin
               pump_accept_v := true;
               producer_accept_v := true;
               prefetch_valid_r <= '0';
-              if Continuous_Mode = '1' then
+              if continuous_p = '1' then
                 cont_accept_v := true;
-                if ring_waddr = Max_Samples - 1 then
-                  ring_waddr := 0;
-                else
-                  ring_waddr := ring_waddr + 1;
+                if waddr = Max_Samples - 1 then
+                  cont_wrap_v := true;
                 end if;
               else
                 buf_rem_single <= brem_single_dec;
-                waddr_0 := waddr_0 + 1;
                 if brem_single_last = '1' then
                   pump_budget_done_q <= '1';
                 end if;
+              end if;
+              -- Shared write address; in single-shot the sample budget is
+              -- <= Max_Samples so the wrap is never legitimately reached.
+              if waddr = Max_Samples - 1 then
+                waddr := 0;
+              else
+                waddr := waddr + 1;
               end if;
             else
               cap_stream_valid <= '1';
@@ -2125,19 +2103,18 @@ begin
           elsif producer_done_q = '1' or pump_budget_done_q = '1' then
             -- Budget exhausted and producer finished: discard remaining words
             -- so the drain-completion logic (elsif below) can count the empty
-            -- window and assert full_i. Without this, cur_full blocks SDRAM
-            -- writes and cap_stream_ready never fires, so the pump stops
+            -- window and assert full_i. Without this, the pump would stop
             -- draining.
             prefetch_valid_r <= '0';
           end if;
 
         elsif (producer_done_q = '1' or pump_budget_done_q = '1')
               and prefetch_valid_r = '1' then
-          -- Fallback flush: when the main path was blocked by cur_full but the
+          -- Fallback flush: when the main path was blocked but the
           -- FIFO still has items. Discard.
           prefetch_valid_r <= '0';
           single_drain_cnt <= 0;
-        elsif Continuous_Mode = '0' and run_level_r = '1' and not rd_mode
+        elsif continuous_p = '0' and run_level_r = '1' and not rd_mode
               and (producer_done_q = '1' or pump_budget_done_q = '1') then
           if prefetch_valid_r = '0' then
             if single_drain_cnt = 2047 then
@@ -2168,7 +2145,7 @@ begin
       Status(5) <= run_stop_overflow;
       Status(7 downto 6) <= (others => '0');
 
-      -- Register the gated condition flags (short path off buf_rem/cur_full),
+      -- Register the gated condition flags (short path off buf_rem),
       -- then advance the wide counters from those 1-bit registered enables on the
       -- next cycle. All five lag by one cycle uniformly, so the throughput ratios
       -- and window deltas the bench reads are unaffected.
@@ -2197,22 +2174,25 @@ begin
         producer_index_u <= (others => '0');
         oldest_index_u <= (others => '0');
         newest_index_u <= (others => '0');
-        overrun_count_u <= (others => '0');
-        ring_used <= 0;
+        ring_filled <= '0';
       elsif producer_accept_q then
         newest_index_u <= producer_index_u;
         producer_index_u <= producer_index_u + 1;
         if cont_accept_q then
-          if ring_used < CONT_RING_WORDS then
-            ring_used <= ring_used + 1;
-          else
+          -- ring_filled is set by the accept that wrapped the ring (the
+          -- Max_Samples-th), so it is still '0' while that accept is processed
+          -- and '1' for every later one.
+          if cont_wrap_q then
+            ring_filled <= '1';
+          end if;
+          if ring_filled = '1' then
             oldest_index_u <= oldest_index_u + 1;
-            overrun_count_u <= overrun_count_u + 1;
           end if;
         end if;
       end if;
       producer_accept_q <= producer_accept_v;
       cont_accept_q <= cont_accept_v;
+      cont_wrap_q <= cont_wrap_v;
       -- Off the REGISTERED address mirror on purpose — see the declaration
       -- comment for the two-cycle-lag validity argument.
       stream_addr_nxt_r <= unsigned(stream_addr_r) + 1;
@@ -2225,19 +2205,18 @@ begin
   end process;
 
   Full <= full_i;
-  Buffer_Full(0) <= buf_full(0);
-  Buffer_Full(2) <= buf_full(2);
-  Buffer_Full(1) <= buf_full(1);
-  Producer_Index <= std_logic_vector(producer_index_u);
-  Oldest_Index <= std_logic_vector(oldest_index_u);
-  Newest_Index <= std_logic_vector(newest_index_u);
-  Overrun_Count <= std_logic_vector(overrun_count_u);
+  Buffer_Full <= (others => '0');
+  Producer_Index <= std_logic_vector(producer_snap_r);
+  Oldest_Index <= std_logic_vector(oldest_snap_r);
+  Newest_Index <= std_logic_vector(newest_snap_r);
+  Overrun_Count <= std_logic_vector(oldest_snap_r);
+  -- NOTE: the Pump_*_Cycles diagnostics below are NOT snapshot-protected (compiled out in production).
   Pump_Valid_Cycles <= std_logic_vector(pump_valid_cycles_u);
   Pump_Ready_Cycles <= std_logic_vector(pump_ready_cycles_u);
   Pump_Accept_Cycles <= std_logic_vector(pump_accept_cycles_u);
   Pump_Stall_Cycles <= std_logic_vector(pump_stall_cycles_u);
   Pump_NoData_Cycles <= std_logic_vector(pump_nodata_cycles_u);
-  Pump_Overflow_Count <= std_logic_vector(pump_overflow_count_u);
+  Pump_Overflow_Count <= std_logic_vector(resize(overflow_snap_r, 32));
 
   SDRAM_Interface1 : SDRAM_Interface
   generic map (Sim => Sim, CLK_Frequency => SDRAM_CLK_HZ, Write_Latency => Write_Latency, Read_Latency => Read_Latency, Page_Latency => Page_Latency)
