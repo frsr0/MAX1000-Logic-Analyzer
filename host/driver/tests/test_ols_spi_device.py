@@ -929,6 +929,19 @@ class TestOLSDeviceSPI:
         assert device_spi._capture_read_words(
             10, {'producer_index': 0}) == 10
 
+    def test_capture_read_words_truncates_digital_overflow_to_committed_prefix(
+            self, device_spi):
+        # Single-shot overflow: DONE with Producer_Index short of the request.
+        device_spi._raw_flags = 0
+        assert device_spi._capture_read_words(
+            1024, {'producer_index': 19}) == 19
+        assert device_spi.last_capture_truncated is True
+        assert device_spi._capture_read_words(
+            1024, {'producer_index': 1024}) == 1024
+        assert device_spi.last_capture_truncated is False
+        assert device_spi._capture_read_words(1024, {}) == 1024
+        assert device_spi.last_capture_truncated is False
+
     def test_set_bitbang_pwm_disable(self, device_spi):
         device_spi.pkt = MagicMock()
         device_spi._stream_readback = MagicMock(return_value=b'\x01\x00' * 100)
@@ -1312,6 +1325,17 @@ class TestOLSDeviceSPIGenerator:
 
         with pytest.raises(RuntimeError, match="RX capture was incomplete"):
             device_spi.external_i2c_write(b"\x32\x0f")
+
+    def test_external_i2c_write_flags_sda_stuck_low(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.spi.flush = MagicMock()
+        device_spi._start_gen_accepted = MagicMock(return_value=True)
+        device_spi._wait_gen_idle = MagicMock(return_value=True)
+        # Only the pre-START idle samples are high, then SDA stays low.
+        device_spi.gen_rx_read = MagicMock(return_value=b"\x07\x00\x00")
+
+        with pytest.raises(RuntimeError, match="never read high"):
+            device_spi.external_i2c_write(b"\xc0")
 
     @pytest.mark.parametrize(
         ("start_ok", "idle_ok", "message"),

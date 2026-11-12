@@ -427,7 +427,9 @@ def test_codec_matrix_covers_completed_exact_mismatch_and_incomplete_rates():
     value.read_capture_range.side_effect = [raw, raw, bytes(mismatch)]
     with patch.object(hv.time, "time", Clock(0.1)):
         hv.test_codec_readback_matrix(value)
-    assert hv.FAIL == 4
+    # 50M/100M/200M incomplete captures are above the 20 MS/s pump ceiling and
+    # are characterised, not failed.
+    assert hv.FAIL == 2
     assert hv.PASS == 3
 
 

@@ -651,6 +651,7 @@ class OLSDeviceSPI:
         # partial I2C transaction span an unobserved gap.
         self._stream_gap = False
         self._timings = {}
+        self.last_capture_truncated = False
 
     def set_compression_enabled(self, enable: bool):
         return self.set_readback_compression('delta_rle' if enable else 'raw')
@@ -1607,9 +1608,15 @@ class OLSDeviceSPI:
         if not self._wait_gen_idle(timeout=0.1):
             raise RuntimeError("External I2C generator did not finish")
         rx_bytes = self.gen_rx_read(max_bytes=(len(symbols) + 7) // 8)
-        data, acks = self._i2c_rx_decode(
-            symbols, self._rx_bits(rx_bytes), expect_echo=frame)
+        rx = self._rx_bits(rx_bytes)
+        data, acks = self._i2c_rx_decode(symbols, rx, expect_echo=frame)
         if data != list(frame) or acks is None or len(acks) < len(frame):
+            if rx and not any(rx[4:]):
+                # Measured on the bench: SDA on a PMOD pad (pool 15..22) has no
+                # weak pull-up, so the released line never reads high after START.
+                raise RuntimeError(
+                    "External I2C RX capture was incomplete: SDA never read high "
+                    "after START (no pull-up on this pin?)")
             raise RuntimeError("External I2C RX capture was incomplete")
         return tuple(ack == 0 for ack in acks[:len(frame)])
 
@@ -1815,12 +1822,23 @@ class OLSDeviceSPI:
         return samples[:valid_words * 2]
 
     def _capture_read_words(self, requested_words, status):
-        """Return the number of SDRAM words that should be read back."""
-        if not (self._raw_flags & MODE_PACKED_MSO):
-            return requested_words
+        """Return the number of SDRAM words that should be read back.
+
+        A single-shot capture that outruns the SDRAM write pump (raw 16-bit
+        capture above ~20 MS/s on the bench) aborts with an overflow: DONE is
+        still reported but Producer_Index is only the committed prefix, and
+        the remaining cells hold whatever the previous capture left behind.
+        Never hand those stale cells back as if they were samples.
+        """
+        self.last_capture_truncated = False
         producer = status.get('producer_index') if status else None
         if producer is None or int(producer) <= 0:
             return requested_words
+        if int(producer) < requested_words:
+            self.last_capture_truncated = True
+            LOG.warning("capture overflowed the SDRAM write pump: %d of %d "
+                        "samples committed; returning the committed prefix",
+                        int(producer), requested_words)
         return min(requested_words, int(producer))
 
     def trigger_decode(self, match_byte=0x57, channel=0, baud=115200, enable=True):
