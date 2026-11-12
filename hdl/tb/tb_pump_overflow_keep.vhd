@@ -14,7 +14,7 @@
 -- Expected committed count: the FIFO fills at (1.2 - drain) words per pclk
 -- cycle, with drain ~0.9 words/pclk (tb_pump_tput_max), so
 --   committed ~ (DEPTH-16) * 1.2 / (1.2 - 0.9) ~ 4 * (DEPTH-16)
--- (about 2,000 for DEPTH 512). The bound asserted is +-30 % of that.
+-- (about 2,000 for DEPTH 512, 16,000 for DEPTH 4096). The bound asserted is +-30 % of that.
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.numeric_std.all;
@@ -22,7 +22,7 @@ use work.sim_pkg.all;
 
 entity tb_pump_overflow_keep is
   generic (
-    FIFO_DEPTH : natural := 512;      -- AFIFO_DEPTH of the DUT
+    FIFO_DEPTH : natural := 4096;     -- AFIFO_DEPTH of the DUT
     RATE_DIV   : natural := 1
   );
 end tb_pump_overflow_keep;
@@ -53,7 +53,7 @@ architecture bench of tb_pump_overflow_keep is
   signal rd_q : std_logic_vector(15 downto 0);
   signal rd_empty : std_logic;
   signal rd_req : std_logic := '0';
-  type word_arr is array (0 to 16383) of std_logic_vector(15 downto 0);
+  type word_arr is array (0 to 65535) of std_logic_vector(15 downto 0);
 begin
   clk    <= not clk    after SYS_CLK_HALF;
   fastclk <= not fastclk after FAST_CLK_HALF;
@@ -94,7 +94,7 @@ begin
     fast_mode <= '1'; armed <= '1';
     wait_cycles(clk, 40);
     run <= '1';
-    wait until full = '1' for 2 ms;
+    wait until full = '1' for 6 ms;
     assert full = '1' report "FAIL: capture never completed after the overflow" severity failure;
     wait_cycles(clk, 20);
     pidx := to_integer(unsigned(producer_idx));
@@ -110,7 +110,7 @@ begin
       report "FAIL: committed no more than the FIFO capacity" severity failure;
     assert pidx >= expected * 70 / 100 and pidx <= expected * 130 / 100
       report "FAIL: committed count outside the expected bound" severity failure;
-    assert pidx <= 16384 report "TB word array too small" severity failure;
+    assert pidx <= 65536 report "TB word array too small" severity failure;
     -- Read every committed word back through the normal readout path.
     blk_base <= 0; blk_count <= pidx;
     wait_cycles(clk, 2);

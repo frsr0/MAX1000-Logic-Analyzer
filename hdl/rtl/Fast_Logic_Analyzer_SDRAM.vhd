@@ -209,6 +209,10 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal keep_clk          : std_logic := '0';
   signal overflow_keep_r   : std_logic := '0';
   signal fifo_rawfull_cmp_r : std_logic := '0';
+  -- wrusedw register stage: the dcfifo's usedw subtractor (write pointer minus
+  -- the synchronised read pointer) is a long path at 13 bits, so the almost-
+  -- full and raw-full compares start from this register, not from the megafunction
+  -- output.
   signal raw_full_r        : std_logic := '0';
   signal overflow_count_en_q : std_logic := '0';
   signal sample_remaining : natural range 0 to Max_Samples := 0;
@@ -269,24 +273,24 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   attribute altera_attribute of run_f_s2 : signal is "-name AUTO_SHIFT_REGISTER_RECOGNITION OFF";
   attribute altera_attribute of run_f_level : signal is "-name AUTO_SHIFT_REGISTER_RECOGNITION OFF";
 
-  -- 512 (was 1024, originally 2048/4096): trims another afifo pointer bit and
-  -- the associated full/used-word compare logic from the 167 MHz cone.
-  -- Functionally the FIFO only has to ride out SDRAM drain stalls (refresh +
-  -- page turnaround, ~120 words at 200 MW/s); the DEPTH-320 almost-full
-  -- cushion still leaves ~200 words of normal fill headroom, which is enough
-  -- for the observed burstiness.
-  constant AFIFO_DEPTH : natural := 512;
+  -- Stage 2b: capture FIFO depth. History: 512 (was 1024, originally
+  -- 2048/4096) to trim pointer bits from the 167 MHz cone. A raw single-shot
+  -- capture that outruns the pump now keeps everything pushed before the
+  -- FIFO fills, so a deeper FIFO directly lengthens the prefix kept at
+  -- 200.4 MS/s (~4 x (DEPTH - 16) samples). Packed/MSO/narrow/analog still
+  -- use the DEPTH-320 almost-full cushion.
+  constant AFIFO_DEPTH : natural := 4096;
   -- Raw single-shot capture stops the sampler when wrusedw >= DEPTH - 16.
   -- Words that can still arrive after the threshold is crossed: sampler
   -- decision -> fifo_wr (1) -> skid register (1) -> dcfifo write edge (1),
-  -- wrusedw register (1..2), compare register (1), raw_full_r (1), decision (1)
-  -- is ~7 cycles at one word per clock (RATE_DIV 1, the worst case). wrusedw
+  -- wrusedw register (1..2), wrusedw_q (1), compare register (1), raw_full_r (1),
+  -- decision (1) is ~8 cycles at one word per clock (RATE_DIV 1, the worst case). wrusedw
   -- never under-reports occupancy (reads are seen late, writes promptly), so
-  -- a margin of 16 leaves ~9 words of slack: the FIFO never reaches full, so
+  -- a margin of 16 leaves ~8 words of slack: the FIFO never reaches full, so
   -- no word is ever dropped inside the stored run.
   constant RAW_FULL_MARGIN : natural := 16;
   constant AFIFO_WIDTH : natural := 16;
-  constant AFIFO_WIDTHU : natural := 9;
+  constant AFIFO_WIDTHU : natural := 12;
   signal fifo_wdata : std_logic_vector(AFIFO_WIDTH-1 downto 0) := (others => '0');
   signal fifo_wr    : std_logic := '0';
   -- Parallel packed-mode write mux: the afifo is fed from afifo_wdata/afifo_wr,
@@ -311,6 +315,7 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal packed_mode_f    : std_logic := '0';
   signal packed_mode_path_f : std_logic := '0';
   signal fifo_wrusedw : std_logic_vector(AFIFO_WIDTHU-1 downto 0) := (others => '0');
+  signal fifo_wrusedw_q : std_logic_vector(AFIFO_WIDTHU-1 downto 0) := (others => '0');
   -- Pipelined almost-full compare (two-stage): fifo_afull_cmp_r is the
   -- wrusedw >= threshold comparison; fifo_afull_r is one more register stage
   -- so the compare result has a full cycle to settle before gating producers.
@@ -539,7 +544,8 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
     lpm_type        : string;
     rdsync_delaypipe : natural;
     wrsync_delaypipe : natural;
-    intended_device_family : string
+    intended_device_family : string;
+    overflow_checking : string
   );
   port (
     aclr     : in  std_logic;
@@ -636,7 +642,8 @@ begin
   process(FAST_CLK)
   begin
     if rising_edge(FAST_CLK) then
-      if unsigned(fifo_wrusedw) >= to_unsigned(AFIFO_DEPTH - 320, AFIFO_WIDTHU) then
+      fifo_wrusedw_q <= fifo_wrusedw;
+      if unsigned(fifo_wrusedw_q) >= to_unsigned(AFIFO_DEPTH - 320, AFIFO_WIDTHU) then
         fifo_afull_cmp_r <= '1';
       else
         fifo_afull_cmp_r <= '0';
@@ -647,7 +654,7 @@ begin
       -- below the real depth (see the margin derivation at the constant).
       -- Continuous mode keeps the original almost-full flag (and its drop-
       -- the-sample behaviour); that path never flags overflow.
-      if unsigned(fifo_wrusedw) >= to_unsigned(AFIFO_DEPTH - RAW_FULL_MARGIN, AFIFO_WIDTHU) then
+      if unsigned(fifo_wrusedw_q) >= to_unsigned(AFIFO_DEPTH - RAW_FULL_MARGIN, AFIFO_WIDTHU) then
         fifo_rawfull_cmp_r <= '1';
       else
         fifo_rawfull_cmp_r <= '0';
@@ -1666,7 +1673,16 @@ begin
       lpm_type        => "dcfifo",
       rdsync_delaypipe => 4,
       wrsync_delaypipe => 4,
-      intended_device_family => "MAX 10"
+      intended_device_family => "MAX 10",
+      -- overflow_checking OFF: wrreq no longer passes through the wrfull
+      -- comparator (write pointer vs the synchronised read pointer) before the
+      -- write-pointer counter and RAM address. That comparator is the 200 MHz
+      -- critical path once the FIFO is deep. Safe because no producer ever
+      -- writes into a full FIFO: raw single-shot stops RAW_FULL_MARGIN words
+      -- below full, every other producer is gated by the DEPTH-320
+      -- almost-full flag (the simulation model asserts if a write ever
+      -- reaches a full FIFO).
+      overflow_checking => "OFF"
     )
     port map (
       aclr     => fifo_aclr,
@@ -1694,7 +1710,8 @@ begin
       lpm_type        => "dcfifo",
       rdsync_delaypipe => 4,
       wrsync_delaypipe => 4,
-      intended_device_family => "MAX 10"
+      intended_device_family => "MAX 10",
+      overflow_checking => "ON"
     )
     port map (
       aclr     => rdfifo_aclr,
@@ -1819,6 +1836,10 @@ begin
       ring_wrap_v := false;
       s_wr <= '0';
       rdfifo_wr <= '0';
+      -- Response-FIFO data is loaded every cycle (it is only consumed when
+      -- rdfifo_wr is set, in the same cycle the old code loaded it), which keeps
+      -- rd_mode / s_rvalid out of the 16-bit data enable cone (167 MHz path).
+      rdfifo_wdata <= s_rdata;
       fifo_rdempty_r <= fifo_rdempty;
       -- wrusedw wraps to 0 at full on dcfifo, so OR in wrfull; both cones
       -- terminate in this FF instead of fanning out to the issue logic.
@@ -2217,7 +2238,6 @@ begin
               -- Discard the throwaway prime read(s); the real stream starts next.
               stream_prime := stream_prime - 1;
             else
-              rdfifo_wdata <= s_rdata;
               rdfifo_wr    <= '1';
               -- Advance the address on COMPLETION (not issue) so a timed-out
               -- read can be reissued at the same address without skipping.

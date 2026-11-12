@@ -86,7 +86,20 @@ begin
       wptr <= 0;
       rptr_to_wr <= (others => 0);
     elsif rising_edge(wrclk) then
-      if wrreq = '1' and (wptr - rptr_seen_by_wr) < lpm_numwords then
+      if overflow_checking = "OFF" then
+        -- No full gating in the megafunction: the write lands in the RAM as
+        -- long as the FIFO is TRULY not full (real read pointer, not the
+        -- synchronised one the wrfull flag uses). A write into a truly full
+        -- FIFO corrupts it on silicon -> always a producer bug.
+        if wrreq = '1' then
+          if (wptr - rptr) < lpm_numwords then
+            mem(wptr mod lpm_numwords) <= data;
+            wptr <= wptr + 1;
+          else
+            report "dcfifo: write into a full FIFO with overflow_checking OFF" severity error;
+          end if;
+        end if;
+      elsif wrreq = '1' and (wptr - rptr_seen_by_wr) < lpm_numwords then
         mem(wptr mod lpm_numwords) <= data;
         wptr <= wptr + 1;
       end if;
