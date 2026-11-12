@@ -17,6 +17,7 @@ from driver.spi_protocol import (
     REG_FLAGS,
     REG_GEN_BAUD,
     REG_GEN_AUX_PINS,
+    REG_GEN_CAPTURE_AUX,
     REG_GEN_CAPTURE_SCL_CHAN,
     REG_GEN_CAPTURE_TX_CHAN,
     REG_GEN_DATA,
@@ -32,6 +33,7 @@ from driver.spi_protocol import (
     SPIDevice,
     ST_OK,
     ST_CAPTURE_DONE,
+    ST_CAPTURE_ARMED,
     ST_CAPTURE_BUSY,
     ST_CAPTURE_IDLE,
     ST_STREAM_ACTIVE,
@@ -4321,3 +4323,86 @@ class TestLiveStreamHelperEdges:
         assert _ring_sample_is_before(RING_SAMPLE_COUNT - 2, 2)
         assert _ring_sample_is_ahead(2, RING_SAMPLE_COUNT - 2)
         assert not _ring_sample_is_ahead(2, 2)
+
+
+class TestGenCaptureLaneOverrides:
+    """Generator-capture lane registers must never be inherited."""
+
+    @staticmethod
+    def _writes(dev):
+        return [c.args for c in dev.pkt.write_register.call_args_list]
+
+    def test_reset_restores_power_on_lane_defaults(self, device_spi):
+        device_spi.spi.dev = MagicMock()
+        device_spi.spi.flush = MagicMock()
+        device_spi.pkt = MagicMock()
+        device_spi._ensure_open = MagicMock()
+        device_spi.reset()
+        writes = self._writes(device_spi)
+        assert (REG_GEN_CAPTURE_TX_CHAN, 0) in writes
+        assert (REG_GEN_CAPTURE_SCL_CHAN, 1) in writes
+        assert (REG_GEN_CAPTURE_AUX, 0) in writes
+
+    def _arm_gen_capture(self, dev):
+        dev.pkt = MagicMock()
+        dev.spi.flush = MagicMock()
+        dev.reset = MagicMock()
+        dev._wait_gen_idle = MagicMock()
+        dev.set_debug_ch0 = MagicMock()
+        dev._stream_readback = MagicMock(return_value=b"\x01\x00" * 32)
+        dev.pkt.transaction = MagicMock(return_value=(0x10, 0, b""))
+        dev.pkt.get_status = MagicMock(side_effect=[
+            {"capture_status": ST_CAPTURE_IDLE, "capture_seq": 6},
+            {"capture_seq": 7},
+            {"capture_status": ST_CAPTURE_DONE, "capture_seq": 7},
+        ])
+        dev.ack_capture_done = MagicMock()
+
+    def test_uart_capture_shadows_scl_overlay_behind_tx_lane(self, device_spi):
+        self._arm_gen_capture(device_spi)
+        device_spi._gen_data = b'Hello'
+        device_spi._gen_baud = 115200
+        device_spi._gen_tx_pin = 2
+        assert device_spi.capture_with_gen(rate_hz=2_000_000, nsamples=32)
+        writes = self._writes(device_spi)
+        assert (REG_GEN_CAPTURE_TX_CHAN, 2) in writes
+        assert (REG_GEN_CAPTURE_SCL_CHAN, 2) in writes
+        assert (REG_GEN_CAPTURE_AUX, 0) in writes
+
+    def test_raw_symbol_capture_rewrites_all_three_lane_registers(
+            self, device_spi):
+        self._arm_gen_capture(device_spi)
+        device_spi.pkt.transaction.return_value = (ST_OK, 0, b"")
+        device_spi.pkt.get_status.side_effect = [
+            {"capture_seq": 12},
+            {"capture_status": ST_CAPTURE_DONE, "capture_seq": 13,
+             "producer_index": 5},
+        ]
+        device_spi.capture_with_gen(
+            rate_hz=2_000_000, nsamples=32, raw_symbols=[1, 0] * 8,
+            raw_symbol_rate=2_000_000, raw_tx_pin=4)
+        writes = self._writes(device_spi)
+        assert (REG_GEN_CAPTURE_TX_CHAN, 4) in writes
+        assert (REG_GEN_CAPTURE_SCL_CHAN, 4) in writes
+        assert (REG_GEN_CAPTURE_AUX, 0) in writes
+
+    def test_accel_dialogue_keeps_overlays_off_mirror_lanes(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi._ensure_open = MagicMock()
+        device_spi.set_debug_ch0 = MagicMock()
+        device_spi._pins = MagicMock()
+        device_spi._write_capture_config = MagicMock()
+        device_spi._stream_readback = MagicMock(return_value=b"\x34\x12")
+        device_spi.pkt.transaction.side_effect = [
+            (ST_OK, 0, b""), (ST_CAPTURE_ARMED, 0, b"")]
+        device_spi.pkt.get_status.return_value = {
+            "capture_status": ST_CAPTURE_DONE}
+        with patch("driver.ols_spi_device.time.sleep"):
+            assert device_spi.accel_capture_dialogue(
+                [1], 2, nsamples=1) == b"\x34\x12"
+        writes = self._writes(device_spi)
+        tx = [v for r, v in writes if r == REG_GEN_CAPTURE_TX_CHAN]
+        scl = [v for r, v in writes if r == REG_GEN_CAPTURE_SCL_CHAN]
+        assert tx and scl
+        assert all(v < 13 for v in tx + scl)
+        assert (REG_GEN_CAPTURE_AUX, 0) in writes

@@ -68,6 +68,14 @@ from driver.ols_spi import GPIO_CS_LO, GPIO_CS_HI, PIN_DIR
 # (SEN_SPC, driven separately) keeps it off the MKR/PMOD capture pins, where
 # it would otherwise override the TX data (Out_1 idles high during UART).
 GEN_SCL_PARK = 25
+# Power-on defaults of the generator-capture lane registers.  They are plain
+# registers (CMD_ABORT does not restore them), so reset() rewrites them.
+GEN_CAPTURE_DEFAULT_TX_LANE = 0
+GEN_CAPTURE_DEFAULT_SCL_LANE = 1
+# Lanes parked for the accelerometer attach capture: lanes 13-15 carry the
+# SEN_SDI/SPC/SDO mirror and must not be overlaid by generator loopback.
+GEN_CAPTURE_ACCEL_TX_LANE = 8
+GEN_CAPTURE_ACCEL_SCL_LANE = 9
 MIXED_COMPRESSED_GROUP_FRAMES = 16
 MIXED_COMPRESSED_BLOCK_FRAMES = 160
 MIXED_COMPRESSED_BLOCK_WORDS = MIXED_COMPRESSED_BLOCK_FRAMES * 7
@@ -800,6 +808,12 @@ class OLSDeviceSPI:
         self.pkt.write_register(REG_TRIGGER_VALUE, 0)
         self.pkt.write_register(REG_FLAGS, 0)
         self.pkt.write_register(REG_IFACE_MODE, 1)
+        # Generator-capture lane overlays survive CMD_ABORT; restore the
+        # power-on routing so an earlier test cannot leave e.g. MOSI on lane 15.
+        self._set_gen_capture_aux()
+        self._set_gen_capture_channels(
+            tx_channel=GEN_CAPTURE_DEFAULT_TX_LANE,
+            scl_channel=GEN_CAPTURE_DEFAULT_SCL_LANE)
         self.spi.flush()
         self._ring_seeded = False
         time.sleep(0.02)
@@ -1189,6 +1203,12 @@ class OLSDeviceSPI:
                 self.set_debug_ch0(False)
                 self.pkt.write_register(REG_GEN_DATA, flags)
                 self.pkt.write_register(REG_GEN_PROTO, 0)
+                # Keep every generator overlay off lanes 13-15 (the attach
+                # mirror) whatever an earlier capture left behind.
+                self._set_gen_capture_aux()
+                self._set_gen_capture_channels(
+                    tx_channel=GEN_CAPTURE_ACCEL_TX_LANE,
+                    scl_channel=GEN_CAPTURE_ACCEL_SCL_LANE)
                 self._pins(tx_pin=24, scl_pin=GEN_SCL_PARK)
                 self.pkt.write_register(REG_GEN_BAUD,
                                         bit_div & self.gen_div_mask)
@@ -3951,7 +3971,11 @@ class OLSDeviceSPI:
             swd_loaded = self._gen_load_swd(
                 swd_ops, swd_clk_hz, connect=swd_connect)
         elif raw_symbols is not None:
-            self._set_gen_capture_channels(tx_channel=raw_tx_pin)
+            self._set_gen_capture_aux()
+            # No second output: shadow the SCL overlay behind the TX lane
+            # (TX has priority) instead of inheriting a stale lane.
+            self._set_gen_capture_channels(tx_channel=raw_tx_pin,
+                                           scl_channel=raw_tx_pin)
             self._pins(tx_pin=raw_tx_pin, scl_pin=GEN_SCL_PARK)
             self.pkt.write_register(REG_GEN_PROTO, 0)
             self.pkt.write_register(REG_GEN_DATA, 1 << 8)
@@ -3961,7 +3985,10 @@ class OLSDeviceSPI:
             self.pkt.load_gen_data(bit_bang.pack_symbols(raw_symbols))
         elif self._gen_data is not None:
             self._set_gen_capture_aux()
-            self._set_gen_capture_channels(tx_channel=self._gen_tx_pin)
+            # UART has no second output: park the SCL overlay on the TX lane
+            # (TX has priority) so no unrelated lane is overlaid.
+            self._set_gen_capture_channels(tx_channel=self._gen_tx_pin,
+                                           scl_channel=self._gen_tx_pin)
             # Clear any leftover I2C/SPI test-mode flags (bit0/bit1) from a prior
             # capture — they are not cleared on reset, and a stale SPI-test bit
             # would drive SCLK onto a pin and corrupt this UART capture. Upper
