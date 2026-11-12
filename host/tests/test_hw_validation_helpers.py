@@ -329,3 +329,19 @@ def test_analog_discovery_tries_every_pin_on_streamed_channels_before_deadline()
     assert pairs == [(0, 4, "pin0 -> AIN6/ADC4")]
     assert {tx for tx, _ in tried} == set(range(23))
     assert all(adc in (1, 2, 3, 4) for _, adc in tried)
+
+def test_prefix_run_lengths_accepts_exact_square_wave_and_flags_a_dropped_sample():
+    wave = [1] * 7 + ([0] * 104 + [1] * 104) * 4
+    mode, bad, inner = hv._prefix_run_lengths(wave[:-30])
+    assert (mode, bad) == (104, [])
+    assert inner >= 6
+    broken = wave[:300] + wave[301:]          # one dropped sample inside a run
+    mode, bad, _ = hv._prefix_run_lengths(broken)
+    assert mode == 104 and len(bad) == 1 and bad[0][1] == 103
+    dup = wave[:300] + [wave[300]] + wave[300:]   # one duplicated sample
+    mode, bad, _ = hv._prefix_run_lengths(dup)
+    assert mode == 104 and bad[0][1] == 105
+
+
+def test_prefix_run_lengths_needs_interior_runs():
+    assert hv._prefix_run_lengths([1, 1, 0, 0]) == (None, [], 0)

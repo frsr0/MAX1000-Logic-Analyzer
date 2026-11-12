@@ -61,6 +61,7 @@ try:
         REG_FLAGS, REG_FAST_MODE, REG_CONT_MODE,
         REG_GEN_PROTO, REG_GEN_BAUD, REG_GEN_PINS, REG_GEN_DATA,
         REG_GEN_AUX_PINS,
+        REG_PUMP_OVERFLOW_COUNT,
         REG_IFACE_MODE,
         GEN_FLAG_I2C_TEST, GEN_FLAG_SPI_TEST, GEN_FLAG_REPEAT,
         ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_BUSY, ST_CAPTURE_DONE, ST_CAPTURE_IDLE,
@@ -1628,6 +1629,68 @@ def test_physical_analog_jumpers(dev):
 
 # Backward-compatible name for older ad-hoc invocations.
 test_analog4_mode = test_mixed_analog_mode
+
+
+# ====================================================================
+# Test 5f: 200.4 MS/s overflow keeps a committed, run-length-exact prefix
+# ====================================================================
+# Raw 16-channel capture at the full sample clock outruns the SDRAM write
+# pump. The FPGA must report the overflow and KEEP the words already in the
+# capture FIFO (Producer_Index = committed words) instead of discarding them;
+# the driver then returns exactly that prefix. A corrupt prefix (dropped,
+# duplicated or overwritten FIFO words) changes a run length of the square wave.
+MAX_RATE_PREFIX_MIN_SAMPLES = 8000     # 4096-deep FIFO image; 512-deep image gives ~1.8k
+
+
+def _prefix_run_lengths(bits):
+    """(mode, bad_runs, interior_count) of a 0/1 sequence; first/last runs are partial."""
+    runs = []
+    for b in bits:
+        if runs and runs[-1][0] == b:
+            runs[-1][1] += 1
+        else:
+            runs.append([b, 1])
+    inner = [r[1] for r in runs[1:-1]]
+    if not inner:
+        return None, [], 0
+    mode = max(set(inner), key=inner.count)
+    pos = runs[0][1]
+    bad = []
+    for r in runs[1:-1]:
+        if r[1] != mode:
+            bad.append((pos, r[1]))
+        pos += r[1]
+    return mode, bad, len(inner)
+
+
+def test_max_rate_kept_prefix(dev):
+    print_header("Test 5f: 200 MS/s overflow keeps an exact committed prefix")
+    dev.reset(); dev.spi.flush()
+    dev.set_analog_config(MODE_DIGITAL)
+    dev._raw_flags = 0
+    dev.set_debug_ch0(True, freq_hz=1_000_000)
+    time.sleep(0.02)
+    requested = 100_000
+    try:
+        data = dev.capture(rate_hz=int(dev.sample_clk), nsamples=requested, timeout=10)
+        overflow = dev.pkt.read_register(REG_PUMP_OVERFLOW_COUNT)
+    finally:
+        dev.set_debug_ch0(False)
+    if not data:
+        check(False, "200 MS/s capture returned no data")
+        return
+    ch, ns = samples_to_channels(data, stride=2)
+    log(f"  committed {ns} of {requested} requested; overflow count {overflow}")
+    check(getattr(dev, "last_capture_truncated", False) and overflow > 0,
+          f"200 MS/s capture reports the overflow (truncated, pump overflow count {overflow})")
+    check(ns >= MAX_RATE_PREFIX_MIN_SAMPLES,
+          f"committed prefix keeps the FIFO contents ({ns} >= {MAX_RATE_PREFIX_MIN_SAMPLES} samples)")
+    mode, bad, inner = _prefix_run_lengths(ch[0][:ns])
+    log(f"  CH0 square wave: {inner} interior runs, run length {mode}, {len(bad)} off-length runs")
+    check(inner >= 20 and mode is not None and 100 <= mode <= 108,
+          f"prefix carries the 1 MHz wave ({inner} runs of {mode} samples)")
+    check(not bad, f"every run in the committed prefix has the exact length {mode} "
+                   f"(off-length runs at {bad[:5]})")
 
 
 def test_continuous_max_rate_overrun(dev):
@@ -3659,6 +3722,7 @@ def main():
 
         log("\n--- Max-speed test (200 MHz) ---")
         test_max_speed_capture(dev)
+        test_max_rate_kept_prefix(dev)
         test_continuous_max_rate_overrun(dev)
         test_narrow_digital_200m(dev)
         test_mso_packed_capture(dev)
