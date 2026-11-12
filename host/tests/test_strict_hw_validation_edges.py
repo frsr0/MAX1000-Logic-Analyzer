@@ -375,10 +375,9 @@ def test_codec_matrix_rejects_invalid_raw_reference_and_incomplete_rates():
     value.read_capture_range.side_effect = [valid, valid, valid, short, short, short]
     with patch.object(hv.time, "time", Clock(0.1)):
         hv.test_codec_readback_matrix(value)
-    # Incomplete captures above the 20 MS/s pump ceiling (50M, 100M, 200M) are
-    # characterisation, not failures; only the 10M rate and the bad raw
-    # reference fail.
-    assert hv.FAIL == 1
+    # Only the 200 MS/s rate is above the 100.2 MS/s pump ceiling and is
+    # characterised; the incomplete 10M/50M/100M captures all fail.
+    assert hv.FAIL == 3
 
 
 def test_live_rate_ceiling_stops_stream_after_measurement_window():

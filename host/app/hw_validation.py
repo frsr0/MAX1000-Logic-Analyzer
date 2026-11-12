@@ -633,7 +633,13 @@ def test_max_speed_capture(dev):
     dev.spi.flush()
     time.sleep(rc / 1_000_000 + 0.02)
 
-    need = rc * dev._stride
+    # Raw 16-bit capture at div=0 (200 MS/s) outruns the SDRAM write pump and
+    # aborts with a short committed prefix; Producer_Index says how many samples
+    # are real. Reading the full request would hand back stale cells.
+    produced = int(dev.pkt.get_status().get('producer_index') or 0)
+    committed = min(rc, produced) if produced > 0 else rc
+    log(f"committed samples: {committed} of {rc} requested")
+    need = committed * dev._stride
     data = bytearray()
     for block_addr in range(0, need, 1024):
         block = dev.pkt.read_capture_block(block_addr)
@@ -643,7 +649,7 @@ def test_max_speed_capture(dev):
 
     if data:
         ch, ns = samples_to_channels(data)
-        log(f"captured {len(data)} bytes, {ns} samples (expected {rc})")
+        log(f"captured {len(data)} bytes, {ns} samples (committed {committed} of {rc})")
         tr_counts = []
         for c in range(min(NUM_CHANNELS, 16)):
             tr = sum(1 for i in range(1, len(ch[c])) if ch[c][i] != ch[c][i - 1])
@@ -651,9 +657,12 @@ def test_max_speed_capture(dev):
         max_tr = max(tr_counts)
         log(f"  max transitions across all channels: {max_tr}")
         log(f"  CH0 transitions: {tr_counts[0]}")
-        check(ns == rc, f"max-speed sample count: {ns} vs expected {rc}")
-        check(4 <= tr_counts[0] < ns - 4,
-              f"max-speed CH0 source is non-static ({tr_counts[0]} transitions)")
+        check(ns == committed, f"max-speed sample count: {ns} vs committed {committed}")
+        check(committed >= 64,
+              f"max-speed capture committed a usable prefix ({committed} of {rc})")
+        check(2 <= tr_counts[0] < ns - 2,
+              f"max-speed CH0 source is non-static in the committed prefix "
+              f"({tr_counts[0]} transitions)")
         # At 200 MHz the undriven LA pins float and pick up noise; like
         # test_fast_capture, characterize that activity rather than asserting a
         # quiet fixture. Correctness is the exact sample count above plus a full
@@ -2960,6 +2969,70 @@ def test_jumper_loopback(dev):
 # Test 31: Generator matrix over the jumper — every protocol, decoded
 # across sample rates and capture modes (BRAM fast path vs SDRAM).
 # ====================================================================
+# ====================================================================
+# Test 37: Deep-capture address uniqueness (> 65,536 samples)
+# ====================================================================
+# Regression for the block-read address aliasing (efba78b narrowed the
+# OLS_Interface block-read address to 16 bits): every read beyond sample
+# 32,767 returned the first 32,768 samples again. A periodic source and an
+# idle line hide that, so this uses a long, non-repeating UART burst over the
+# wired jumper and checks the payload appears exactly once and that windows
+# 32,768 samples apart are different.
+DEEP_CAPTURE_SAMPLES = 262_144
+DEEP_CAPTURE_RATE = 1_002_000
+DEEP_CAPTURE_BAUD = 2400            # 57 bytes ~ 0.24 s ~ 240k samples: spans > 7 windows
+
+
+def _window_equal_fraction(sig, lag, width=16384):
+    a = sig[lag:lag + width]
+    b = sig[:width]
+    n = min(len(a), len(b))
+    return sum(1 for i in range(n) if a[i] == b[i]) / max(1, n)
+
+
+def test_deep_capture_address_uniqueness(dev):
+    print_header("Test 37: Deep-capture address uniqueness (> 65,536 samples)")
+    dev.reset(); dev.spi.flush(); dev.set_debug_ch0(False)
+    time.sleep(0.02)
+    _restore_pin_map(dev)
+    pair = _get_jumper_pair(dev)
+    if pair is None:
+        skip("deep-capture address uniqueness: no wired pair on this bench")
+        save_result("test37_deep_capture_unique", b"", {"skipped": True})
+        return
+    tx, rx = pair
+    payload = bytes(range(33, 90))              # non-repeating ramp
+    dev._gen_data = payload
+    dev._gen_baud = DEEP_CAPTURE_BAUD
+    dev._gen_tx_pin = tx
+    data = dev.capture_with_gen(rate_hz=DEEP_CAPTURE_RATE, nsamples=DEEP_CAPTURE_SAMPLES,
+                                timeout=20, fast_mode=False, reset_board=False)
+    if not data:
+        check(False, "deep capture returned no data")
+        return
+    ch, ns = samples_to_channels(data, stride=2)
+    check(ns == DEEP_CAPTURE_SAMPLES,
+          f"deep capture returned every sample ({ns} of {DEEP_CAPTURE_SAMPLES})")
+    sig = ch[rx]
+    decoded = bytes(d.value for d in decode_uart_safe(
+        ch, DEEP_CAPTURE_RATE, ch_idx=rx, baud=DEEP_CAPTURE_BAUD))
+    check(decoded.count(payload) == 1,
+          f"non-repeating {len(payload)}-byte burst appears exactly once "
+          f"(found {decoded.count(payload)} times in {len(decoded)} decoded bytes)")
+    edges = [i for i in range(1, ns) if sig[i] != sig[i - 1]]
+    span = (edges[-1] - edges[0]) if edges else 0
+    log(f"  burst spans samples {edges[0] if edges else '-'}..{edges[-1] if edges else '-'} "
+        f"({span} samples, {span / 32768:.1f} x 32768)")
+    check(span > 3 * 32768, f"burst spans several 32,768-sample windows ({span} samples)")
+    for lag in (32768, 65536, 131072):
+        frac = _window_equal_fraction(sig, lag)
+        check(frac < 0.95,
+              f"CH{rx} window at +{lag} differs from the first window ({frac * 100:.1f}% equal; "
+              ">= 95% means the readback address aliases)")
+    save_result("test37_deep_capture_unique", data,
+                {"pair": [tx, rx], "samples": ns, "rate_hz": DEEP_CAPTURE_RATE})
+
+
 def _group_jumper_wires(routes):
     """Group (tx, rx) routes into physical wires: 2 -> 1 and 1 -> 2 are one wire."""
     wires = {}
@@ -3336,7 +3409,7 @@ def test_accelerometer_whoami(dev):
 #   Raw is the reference. The merged delta_rle codec should round-trip
 #   bit-exactly against it.
 # ====================================================================
-SINGLE_SHOT_PUMP_CEILING_HZ = 20_000_000
+SINGLE_SHOT_PUMP_CEILING_HZ = 100_200_000
 
 
 def test_codec_readback_matrix(dev):
@@ -3361,10 +3434,10 @@ def test_codec_readback_matrix(dev):
         seeded = dev.capture(rate_hz=rate, nsamples=nsamp,
                              timeout=max(3.0, 2 * nsamp / rate + 1))
         done = len(seeded) >= nsamp * 2
-        # Raw 16-bit single-shot capture overflows the SDRAM write pump above
-        # ~20 MS/s (measured: 2020 samples committed at 20 MS/s, 110 at 50,
-        # 19 at 200). The driver now returns only the committed prefix, so those
-        # rates are characterised instead of compared against stale cells.
+        # With the burst-mode SDRAM writer, raw 16-bit single-shot capture runs
+        # to full depth through 100.2 MS/s and still overflows at 200.4 MS/s
+        # (measured: ~470-520 samples committed). The driver returns only the
+        # committed prefix, so that rate is characterised, not compared.
         is_max = rate > SINGLE_SHOT_PUMP_CEILING_HZ
         if not done:
             if is_max:
@@ -3643,6 +3716,7 @@ def main():
 
         log("\n--- Jumper-pair loopback (requires two pins wired together) ---")
         test_jumper_loopback(dev)
+        test_deep_capture_address_uniqueness(dev)
         test_jumper_generator_matrix(dev)
         test_live_generator_decode(dev)
         # Own internal watchdog; remains part of the exhaustive gate.
@@ -3805,6 +3879,7 @@ def main_jumper_only():
         _JUMPER_PAIR_SEARCHED = False
         _prepare_jumper_fixture(dev)
         test_jumper_loopback(dev)
+        test_deep_capture_address_uniqueness(dev)
         test_jumper_generator_matrix(dev)
         test_live_generator_decode(dev)
         test_repeating_uart_continuous_ring(dev)
