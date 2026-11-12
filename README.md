@@ -11,14 +11,19 @@ current repository includes:
 - A wired MCP4725 DAC test and bounded analogue signal generator in the MIL tab
 
 The full-device reference image and host stack have the validation recorded
-below. The current seed-7 image also passed timing, was verified in flash, and
-passed focused MCP4725 and capture-path board checks on 2026-09-28.
+below. The seed-7 image also passed timing, was verified in flash, and
+passed focused MCP4725 and capture-path board checks on 2026-09-28. The
+capture path was reworked on 2026-11-12 (seed-16 image); see
+[Rebuilding The FPGA Image](#rebuilding-the-fpga-image).
 
 ## Current Status
 
 This repository is currently verified for:
 
-- 16-channel digital capture up to the full 200.4 MHz sample clock
+- 16-channel digital capture to the full SDRAM depth at up to 100.2 MS/s
+- 16-channel capture at the full 200.4 MHz sample clock keeps a contiguous
+  prefix of about `15,000` samples and reports the overflow (the SDRAM write
+  pump runs at 167 MHz and cannot sustain 200.4 M words/s)
 - Deep SDRAM single-shot capture up to `4,194,304` 16-bit words
 - Packed narrow digital capture at 200 MHz for one selected channel
 - Mixed capture with 16 digital bits plus the reduced two-result ADC frame
@@ -92,7 +97,7 @@ The validated FAST build uses one PLL with these main domains:
 Main storage paths:
 
 - `1,024`-word BRAM capture path
-- `512`-word async FIFO between capture and SDRAM
+- `4,096`-word async FIFO between capture and SDRAM
 - `4,194,304` 16-bit SDRAM words for deep capture / bounded ring workflows
 
 ## UI Screenshots
@@ -273,6 +278,22 @@ Programmer checksum is `0x01DE1DE1`. Slow 85 °C post-fit setup slack is
 ```powershell
 cd hdl\proj
 .\compile.ps1 -Seed 7
+```
+
+The 2026-11-12 capture-path rework (burst SDRAM write pump, full block-read
+address, overflow that keeps the FIFO contents, 4,096-word capture FIFO) is
+built with seed `16`, which is what the project file now selects. That image
+uses 8,007 of 8,064 logic elements and 19 of 42 M9K blocks. Its POF SHA-256 is
+`4AA9277B210927F0DA00E445C30FBAC80A77A36C29A22DDE159960F99022E9D8`, and slow
+85 °C setup slack is `sys_clk` +0.031 ns, `fast_clk` +0.107 ns, and SDRAM
++0.244 ns. Timing is seed-sensitive: of seeds 1 to 16 only seed 16 passed the
+timing gate, so re-sweep seeds after any RTL change. On the attached board the
+image passed the hardware validation suite (427/427) and the 66-testbench GHDL
+regression on 2026-11-12; the dated baselines above predate it.
+
+```powershell
+cd hdl\proj
+.\compile.ps1 -Seed 16
 ```
 
 For more detail, see:
