@@ -69,7 +69,8 @@ The core capture engine: registered input sampling, sample rate division, BRAM p
 
 - `AFIFO_DEPTH=4096`, `AFIFO_WIDTH=16`
 - Dual-clock FIFO (dcfifo IP): write side = FAST_CLK, read side = pclk (SDRAM_CLK_IN)
-- `fifo_afull_r` — asserts at 192 used words, reserving a 320-word stall cushion
+- `fifo_afull_r` — asserts at `AFIFO_DEPTH-320` (3,776) used words, reserving a 320-word stall cushion
+- `raw_full_r` — raw single-shot capture stops the sampler at `AFIFO_DEPTH-16` and keeps the FIFO contents
 - Packed mode: `packed_mode_f` muxes the FIFO write source between analog frame writer and packed stream
 
 ### 4. SDRAM Write Pump (pclk / SDRAM_CLK_IN domain)
