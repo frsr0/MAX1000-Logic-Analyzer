@@ -1503,25 +1503,35 @@ def _discover_analog_jumper_pairs(dev, deadline_s=45.0):
     pairs = []
     deadline = time.time() + deadline_s
     candidates = [p for p in range(15, 23)] + list(range(0, 15))
-    for tx in candidates:
-        if time.time() >= deadline:
-            break
-        for adc in _ANALOG_JUMPER_ADC_CHANNELS:
-            if time.time() >= deadline:
+    # Probes cost ~0.4 s each, so a single pass over all 16 mux channels per pin
+    # used up the whole deadline on the PMOD pins and never reached D0 (the
+    # D0 -> AIN6 wire went undetected). Pass 1 therefore tries every pin on the
+    # four streamed ADC channels with no deadline (23 x 4 probes); pass 2 sweeps
+    # the remaining mux channels of still-unpaired pins within the deadline.
+    streamed = [a for a in _ANALOG_JUMPER_ADC_CHANNELS if a in (1, 2, 3, 4)]
+    others = [a for a in _ANALOG_JUMPER_ADC_CHANNELS if a not in streamed]
+    for adcs, bounded in ((streamed, False), (others, True)):
+        for tx in candidates:
+            if bounded and time.time() >= deadline:
                 break
-            try:
-                act = _capture_physical_analog_activity(dev, tx, adc)
-            except Exception as e:
-                log(f"  [INFO] pin {tx} ADC{adc} probe error: {e}")
+            if any(p[0] == tx for p in pairs):
                 continue
-            if act["samples"] > 100 and act["amplitude"] >= 3000 \
-                    and act["edges"] >= 8:
-                ain = _ANALOG_ADC_AIN.get(adc, f"ADC{adc}")
-                label = f"pin{tx} -> {ain}/ADC{adc}"
-                log(f"  [INFO] discovered analog jumper: {label} "
-                    f"(amp {act['amplitude']} codes, {act['edges']} edges)")
-                pairs.append((tx, adc, label))
-                break  # this pin is wired; move to the next pin
+            for adc in adcs:
+                if bounded and time.time() >= deadline:
+                    break
+                try:
+                    act = _capture_physical_analog_activity(dev, tx, adc)
+                except Exception as e:
+                    log(f"  [INFO] pin {tx} ADC{adc} probe error: {e}")
+                    continue
+                if act["samples"] > 100 and act["amplitude"] >= 3000 \
+                        and act["edges"] >= 8:
+                    ain = _ANALOG_ADC_AIN.get(adc, f"ADC{adc}")
+                    label = f"pin{tx} -> {ain}/ADC{adc}"
+                    log(f"  [INFO] discovered analog jumper: {label} "
+                        f"(amp {act['amplitude']} codes, {act['edges']} edges)")
+                    pairs.append((tx, adc, label))
+                    break  # this pin is wired; move to the next pin
     if not pairs:
         log("  [INFO] no analog jumper pair found on this bench")
     return pairs
@@ -2627,6 +2637,9 @@ JUMPER_BAUD = 115200
 JUMPER_RATE = 2_000_000        # ~17.4 samples/bit, well above UART_MIN_SPB
 _JUMPER_PAIR_CACHE = None
 _JUMPER_PAIR_SEARCHED = False
+# Every decoding (tx, rx) route the last discovery sweep found, best-ranked
+# first. The cache above only keeps the winner; tests for further wires use this.
+_JUMPER_ROUTES: list = []
 JUMPER_PRESENT_ENV = "HW_VALIDATION_JUMPER_PRESENT"
 
 
@@ -2912,6 +2925,31 @@ def test_jumper_loopback(dev):
     else:
         check(False, "triggered UART loopback capture returned no data")
 
+    # --- Phase 5: every additional wire, exact-payload UART loopback -----
+    # capture_with_gen's UART path re-writes both overlay lanes to tx & 0x0F
+    # and clears the accel-attach bit, so a stale lane cannot hide the receiver
+    # (for tx 16 the overlay is lane 0; the wire lands on CH15). Measured
+    # 30/30 exact decodes at this baud/rate on the PMOD wire.
+    for extra_tx, extra_rx in _additional_jumper_routes(_JUMPER_ROUTES, pair):
+        dev.reset(); dev.spi.flush(); time.sleep(0.02)
+        got = b""
+        for _attempt in range(2):
+            dev._gen_data = payload
+            dev._gen_baud = JUMPER_BAUD
+            dev._gen_tx_pin = extra_tx
+            extra = dev.capture_with_gen(rate_hz=JUMPER_RATE, nsamples=20000,
+                                         timeout=8, fast_mode=False,
+                                         reset_board=False)
+            if extra:
+                ech, _ens = samples_to_channels(extra, stride=2)
+                got = bytes(d.value for d in decode_uart_safe(
+                    ech, JUMPER_RATE, ch_idx=extra_rx, baud=JUMPER_BAUD))
+                if payload in got:
+                    break
+        check(payload in got,
+              f"additional wire: exact UART payload {extra_tx} -> CH{extra_rx} "
+              f"(got {got!r})")
+
     save_result("test30_jumper_loopback", data if data else b"",
                 {"pair": [tx, rx], "skew": best_shift,
                  "match": round(best_match, 4),
@@ -2922,6 +2960,21 @@ def test_jumper_loopback(dev):
 # Test 31: Generator matrix over the jumper — every protocol, decoded
 # across sample rates and capture modes (BRAM fast path vs SDRAM).
 # ====================================================================
+def _group_jumper_wires(routes):
+    """Group (tx, rx) routes into physical wires: 2 -> 1 and 1 -> 2 are one wire."""
+    wires = {}
+    for tx, rx in routes:
+        wires.setdefault(frozenset((tx, rx)), []).append((tx, rx))
+    return list(wires.values())
+
+
+def _additional_jumper_routes(routes, pair):
+    """Best route of every wire other than the primary pair's wire."""
+    primary = frozenset(pair) if pair else None
+    return [wire[0] for wire in _group_jumper_wires(routes)
+            if frozenset(wire[0]) != primary]
+
+
 def _discover_jumper_pair(dev, deadline_s=20.0):
     """Find two physically wired pins using the DIRECT capture path.
 
@@ -2977,8 +3030,13 @@ def _discover_jumper_pair(dev, deadline_s=20.0):
                         0 if tx == rx + 1 else 1,
                         abs(tx - rx), tx, rx)
                 found.append((rank, tx, rx))
+    _JUMPER_ROUTES[:] = [(tx, rx) for _, tx, rx in sorted(found)]
     if found:
         _, tx, rx = min(found)
+        wires = _group_jumper_wires(_JUMPER_ROUTES)
+        log("  [INFO] detected jumper routes: "
+            + ", ".join(f"{t} -> CH{r}" for t, r in _JUMPER_ROUTES)
+            + f" ({len(wires)} distinct wire{'s' if len(wires) != 1 else ''})")
         log(f"  [INFO] selected generator-compatible jumper route {tx} -> CH{rx}")
         return (tx, rx)
     log("  [INFO] jumper sweep found no decoding pair on the direct path")

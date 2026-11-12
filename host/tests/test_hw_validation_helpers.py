@@ -279,3 +279,53 @@ class TestCheckChannelsClean:
         hv.check_channels_clean(ch, ns=2, max_trans=1)
         assert hv.PASS == 1
         assert hv.FAIL == 0
+
+def test_group_jumper_wires_merges_both_directions_of_one_wire():
+    routes = [(2, 1), (1, 2), (16, 15)]
+    assert hv._group_jumper_wires(routes) == [[(2, 1), (1, 2)], [(16, 15)]]
+
+
+def test_additional_jumper_routes_excludes_the_primary_wire():
+    routes = [(2, 1), (1, 2), (16, 15)]
+    assert hv._additional_jumper_routes(routes, (2, 1)) == [(16, 15)]
+    assert hv._additional_jumper_routes([(2, 1), (1, 2)], (2, 1)) == []
+    assert hv._additional_jumper_routes([], None) == []
+
+
+def test_discovery_records_every_decoding_route_and_logs_wire_count():
+    value = MagicMock()
+    value.capture_with_gen.return_value = b"probe"
+    rows = [[0, 1] * 64 for _ in range(16)]
+    transitions = [50] * 16
+    wired = {(2, 1), (1, 2), (16, 15)}
+
+    def decoded(_channels, _rate, ch_idx, **_kwargs):
+        if (value._gen_tx_pin, ch_idx) in wired:
+            return [MagicMock(value=b) for b in b"PinProbe!"]
+        return []
+
+    with patch.object(hv, "samples_to_channels", return_value=(rows, 128)),          patch.object(hv, "_channel_transitions", return_value=transitions),          patch.object(hv, "decode_uart_safe", side_effect=decoded),          patch.object(hv, "log") as log:
+        assert hv._discover_jumper_pair(value, deadline_s=60) == (2, 1)
+    assert hv._JUMPER_ROUTES == [(2, 1), (1, 2), (16, 15)]
+    lines = [call.args[0] for call in log.call_args_list]
+    assert any("detected jumper routes: 2 -> CH1, 1 -> CH2, 16 -> CH15 "
+               "(2 distinct wires)" in line for line in lines)
+    hv._JUMPER_ROUTES.clear()
+
+
+def test_analog_discovery_tries_every_pin_on_streamed_channels_before_deadline():
+    value = MagicMock()
+    tried = []
+
+    def probe(_dev, tx, adc):
+        tried.append((tx, adc))
+        if (tx, adc) == (0, 4):
+            return {"samples": 200, "amplitude": 4095, "edges": 20}
+        return {"samples": 200, "amplitude": 100, "edges": 0}
+
+    # Deadline already expired: only the unbounded streamed-channel pass runs.
+    with patch.object(hv.time, "time", return_value=0),          patch.object(hv, "_capture_physical_analog_activity", side_effect=probe):
+        pairs = hv._discover_analog_jumper_pairs(value, deadline_s=-1)
+    assert pairs == [(0, 4, "pin0 -> AIN6/ADC4")]
+    assert {tx for tx, _ in tried} == set(range(23))
+    assert all(adc in (1, 2, 3, 4) for _, adc in tried)

@@ -44,9 +44,11 @@ def quiet_generator():
     hv.PASS = hv.FAIL = hv.TOTAL = hv.SKIPPED = 0
     hv._JUMPER_PAIR_CACHE = None
     hv._JUMPER_PAIR_SEARCHED = False
+    hv._JUMPER_ROUTES.clear()
     with patch.object(hv, "save_result"), patch.object(hv, "print_header"), \
          patch.object(hv, "log"), patch.object(hv.time, "sleep"):
         yield
+    hv._JUMPER_ROUTES.clear()
     (hv.PASS, hv.FAIL, hv.TOTAL, hv.SKIPPED,
      hv._JUMPER_PAIR_CACHE, hv._JUMPER_PAIR_SEARCHED) = old
 

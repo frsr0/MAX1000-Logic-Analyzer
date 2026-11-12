@@ -23,9 +23,11 @@ def quiet_edges():
     hv._ANALOG_JUMPER_SEARCHED = False
     hv._JUMPER_PAIR_CACHE = None
     hv._JUMPER_PAIR_SEARCHED = False
+    hv._JUMPER_ROUTES.clear()
     with patch.object(hv, "save_result"), patch.object(hv, "print_header"), \
          patch.object(hv, "log"), patch.object(hv.time, "sleep"):
         yield
+    hv._JUMPER_ROUTES.clear()
     (hv.PASS, hv.FAIL, hv.TOTAL, hv.SKIPPED,
      hv._ANALOG_JUMPER_CACHE, hv._ANALOG_JUMPER_SEARCHED,
      hv._JUMPER_PAIR_CACHE, hv._JUMPER_PAIR_SEARCHED) = old
