@@ -27,10 +27,29 @@ architecture bench of tb_sdram_controller is
   signal readdata   : std_logic_vector(15 downto 0);
   signal readvalid  : std_logic;
   signal waitreq    : std_logic;
-  signal stream_valid : std_logic := '0';
-  signal stream_ready : std_logic;
-  signal stream_addr  : std_logic_vector(21 downto 0) := (others => '0');
-  signal stream_data  : std_logic_vector(15 downto 0) := (others => '0');
+  -- Capture burst interface + a model of the pump side: a word queue standing
+  -- in for the afifo (normal mode: popped word on q one cycle after pop) and
+  -- the registered pop-grant logic.
+  signal b_req    : std_logic := '0';
+  signal b_addr   : std_logic_vector(21 downto 0) := (others => '0');
+  signal b_len    : std_logic_vector(8 downto 0) := (others => '0');
+  signal b_stop   : std_logic := '0';
+  signal b_pop_ok : std_logic := '0';
+  signal b_q      : std_logic_vector(15 downto 0) := (others => '0');
+  signal b_pop    : std_logic;
+  signal b_wr     : std_logic;
+  signal b_busy   : std_logic;
+  signal push_valid : std_logic := '0';
+  signal push_data  : std_logic_vector(15 downto 0) := (others => '0');
+  type word_arr is array (0 to 4095) of std_logic_vector(15 downto 0);
+  signal q_mem    : word_arr := (others => (others => '0'));
+  signal q_wr_idx : natural := 0;
+  signal q_rd_idx : natural := 0;
+  signal n_wr_cmds : natural := 0;  -- WRITE words observed on capture_wr
+  signal fpush_valid : std_logic := '0';
+  signal fpush_data  : std_logic_vector(15 downto 0) := (others => '0');
+  signal feed_start  : std_logic := '0';
+  signal feed_base, feed_cnt, feed_gap : natural := 0;
 
   signal sdram_addr : std_logic_vector(11 downto 0);
   signal sdram_ba   : std_logic_vector(1 downto 0);
@@ -42,29 +61,56 @@ architecture bench of tb_sdram_controller is
   signal sdram_ras_n : std_logic;
   signal sdram_we_n  : std_logic;
 
-  procedure stream_write(
-    signal valid : out std_logic;
+  -- Push `count` words (first_data, first_data+1, ...) into the model FIFO,
+  -- request one burst at `address`, wait for the controller to take it and
+  -- finish, then check it wrote exactly `count` words (unless an abort is
+  -- expected, count_expected = false).
+  procedure burst_write(
+    signal req : out std_logic;
     signal a : out std_logic_vector(21 downto 0);
-    signal d : out std_logic_vector(15 downto 0);
-    signal ready : in std_logic;
+    signal l : out std_logic_vector(8 downto 0);
+    signal pv : out std_logic;
+    signal pd : out std_logic_vector(15 downto 0);
+    signal busy : in std_logic;
+    signal wrs : in natural;
     signal sclk : in std_logic;
     constant address : in natural;
-    constant data : in std_logic_vector(15 downto 0)
+    constant count : in natural;
+    constant first_data : in natural;
+    constant gap : in natural := 0   -- idle clocks between pushed words
   ) is
+    variable w0 : natural;
   begin
-    a <= std_logic_vector(to_unsigned(address, 22));
-    d <= data;
-    valid <= '1';
-    loop
+    w0 := wrs;
+    for i in 0 to count - 1 loop
+      pd <= std_logic_vector(to_unsigned(first_data + i, 16));
+      pv <= '1';
       wait until rising_edge(sclk);
-      exit when ready = '1';
+      pv <= '0';
+      for g in 1 to gap loop
+        wait until rising_edge(sclk);
+      end loop;
     end loop;
-    report "stream_accept addr=" & integer'image(address) &
-           " data=" & to_hstring(data);
-    wait until rising_edge(sclk);
-    valid <= '0';
-    wait until rising_edge(sclk);
-    wait until rising_edge(sclk);
+    -- A refresh can end the burst early; request the remainder (as the pump does).
+    while wrs - w0 < count loop
+      a <= std_logic_vector(to_unsigned(address + (wrs - w0), 22));
+      l <= std_logic_vector(to_unsigned(count - (wrs - w0), 9));
+      req <= '1';
+      loop
+        wait until rising_edge(sclk);
+        exit when busy = '1';
+      end loop;
+      req <= '0';
+      loop
+        wait until rising_edge(sclk);
+        exit when busy = '0';
+      end loop;
+      wait until rising_edge(sclk);
+      wait until rising_edge(sclk);
+    end loop;
+    check(wrs - w0 = count, "burst at " & integer'image(address) & ": wrote " &
+          integer'image(wrs - w0) & " words, expected " & integer'image(count));
+    report "burst_done addr=" & integer'image(address) & " words=" & integer'image(count);
   end procedure;
 
   procedure avalon_write(
@@ -164,11 +210,69 @@ begin
       sdram_s_readdatavalid => readvalid,
       sdram_s_waitrequest   => waitreq,
       sdram_s_idle          => open,
-      capture_stream_valid  => stream_valid,
-      capture_stream_ready  => stream_ready,
-      capture_stream_addr   => stream_addr,
-      capture_stream_data   => stream_data
+      capture_burst_req     => b_req,
+      capture_burst_addr    => b_addr,
+      capture_burst_len     => b_len,
+      capture_burst_stop    => b_stop,
+      capture_pop_ok        => b_pop_ok,
+      capture_data          => b_q,
+      capture_pop           => b_pop,
+      capture_wr            => b_wr,
+      capture_busy          => b_busy
     );
+
+  -- FIFO model: words pushed by the bench, popped by the controller. q takes
+  -- the popped word at the edge that samples pop (data one cycle later).
+  -- pop_ok follows the same grant rules as the real pump (fast grant while
+  -- plenty of words are queued, otherwise a single grant every fifth cycle).
+  feeder : process
+  begin
+    wait until rising_edge(clk) and feed_start = '1';
+    for i in 0 to feed_cnt - 1 loop
+      fpush_data <= std_logic_vector(to_unsigned(feed_base + i, 16));
+      fpush_valid <= '1';
+      wait until rising_edge(clk);
+      fpush_valid <= '0';
+      for g in 1 to feed_gap loop
+        wait until rising_edge(clk);
+      end loop;
+    end loop;
+  end process;
+
+  fifo_model : process(clk)
+    variable g1, g2, g3 : std_logic := '0';
+    variable avail : natural;
+    variable wi, ri : natural := 0;
+  begin
+    if rising_edge(clk) then
+      if push_valid = '1' then
+        q_mem(wi mod 4096) <= push_data;
+        wi := wi + 1;
+      elsif fpush_valid = '1' then
+        q_mem(wi mod 4096) <= fpush_data;
+        wi := wi + 1;
+      end if;
+      if b_pop = '1' then
+        check(ri < wi, "controller popped an empty FIFO");
+        b_q <= q_mem(ri mod 4096);
+        ri := ri + 1;
+      end if;
+      q_wr_idx <= wi;
+      q_rd_idx <= ri;
+      avail := wi - ri;
+      g3 := g2; g2 := g1; g1 := b_pop_ok;
+      if avail >= 8 then
+        b_pop_ok <= '1';
+      elsif avail >= 1 and b_pop_ok = '0' and g1 = '0' and g2 = '0' and g3 = '0' then
+        b_pop_ok <= '1';
+      else
+        b_pop_ok <= '0';
+      end if;
+      if b_wr = '1' then
+        n_wr_cmds <= n_wr_cmds + 1;
+      end if;
+    end if;
+  end process;
 
   SDRAM_CHIP : entity work.sdram_pin_model
     generic map (CL => 3)
@@ -187,6 +291,7 @@ begin
 
   process
     variable rd : std_logic_vector(15 downto 0);
+    variable n6, r6, done6, bursts6 : natural;
   begin
     reset_n <= '0';
     wait_cycles(clk, 10);
@@ -213,10 +318,11 @@ begin
 
     -- Test 3: Capture stream crosses the 256-column boundary cleanly
     report "Test 3: Streaming writes across page boundary";
-    for i in 0 to 11 loop
-      stream_write(stream_valid, stream_addr, stream_data, stream_ready, clk,
-                   16#00FE# + i, std_logic_vector(to_unsigned(16#1000# + i, 16)));
-    end loop;
+    -- 12 words from column 0xFE: 2 words finish row 0, 10 start row 1.
+    burst_write(b_req, b_addr, b_len, push_valid, push_data, b_busy, n_wr_cmds, clk,
+                16#00FE#, 2, 16#1000#);
+    burst_write(b_req, b_addr, b_len, push_valid, push_data, b_busy, n_wr_cmds, clk,
+                16#0100#, 10, 16#1002#);
     wait_cycles(clk, 200);
     for i in 0 to 11 loop
       avalon_read(addr, byteenable, chipselect, read_n, write_n,
@@ -231,12 +337,12 @@ begin
 
     -- Test 4: Touch first/middle/last addresses of the 64 Mbit range
     report "Test 4: First/middle/last address readback";
-    stream_write(stream_valid, stream_addr, stream_data, stream_ready, clk,
-                 0, x"A001");
-    stream_write(stream_valid, stream_addr, stream_data, stream_ready, clk,
-                 2_097_152, x"B002");
-    stream_write(stream_valid, stream_addr, stream_data, stream_ready, clk,
-                 4_194_303, x"C003");
+    burst_write(b_req, b_addr, b_len, push_valid, push_data, b_busy, n_wr_cmds, clk,
+                0, 1, 16#A001#);
+    burst_write(b_req, b_addr, b_len, push_valid, push_data, b_busy, n_wr_cmds, clk,
+                2_097_152, 1, 16#B002#);
+    burst_write(b_req, b_addr, b_len, push_valid, push_data, b_busy, n_wr_cmds, clk,
+                4_194_303, 1, 16#C003#);
     wait_cycles(clk, 200);
     avalon_read(addr, byteenable, chipselect, read_n, write_n,
                 waitreq, readvalid, rd, clk, std_logic_vector(to_unsigned(0, 22)));
@@ -257,9 +363,9 @@ begin
 
     -- Test 5: Long streaming burst forces at least one refresh window
     report "Test 5: Refresh-safe streaming burst";
-    for i in 0 to 1023 loop
-      stream_write(stream_valid, stream_addr, stream_data, stream_ready, clk,
-                   16#20000# + i, std_logic_vector(to_unsigned(i, 16)));
+    for r in 0 to 3 loop
+      burst_write(b_req, b_addr, b_len, push_valid, push_data, b_busy, n_wr_cmds, clk,
+                  16#20000# + r * 256, 256, r * 256);
     end loop;
     wait_cycles(clk, 400);
     avalon_read(addr, byteenable, chipselect, read_n, write_n,
@@ -274,6 +380,74 @@ begin
                 waitreq, readvalid, rd, clk, std_logic_vector(to_unsigned(16#203FF#, 22)));
     check(rd = x"03FF", "Refresh burst last word mismatch");
     report "Test 5: PASS";
+
+    -- Test 6: a sparse burst (one word per 12 clocks, longer than the refresh
+    -- interval) is cut short by refresh; the remainder is requested again.
+    -- Every word must land exactly once at the right address.
+    report "Test 6: Refresh pre-empts a sparse burst";
+    n6 := n_wr_cmds;
+    done6 := 0;
+    bursts6 := 0;
+    feed_base <= 16#4000#; feed_cnt <= 256; feed_gap <= 11; feed_start <= '1';
+    wait_cycles(clk, 1);
+    feed_start <= '0';
+    while done6 < 256 loop
+      b_addr <= std_logic_vector(to_unsigned(16#30000# + done6, 22));
+      b_len  <= std_logic_vector(to_unsigned(256 - done6, 9));
+      b_req  <= '1';
+      loop wait until rising_edge(clk); exit when b_busy = '1'; end loop;
+      b_req <= '0';
+      loop wait until rising_edge(clk); exit when b_busy = '0'; end loop;
+      wait_cycles(clk, 3);
+      done6 := n_wr_cmds - n6;
+      bursts6 := bursts6 + 1;
+      check(bursts6 < 50, "Test 6: burst loop does not converge");
+    end loop;
+    report "Test 6: 256 words in " & integer'image(bursts6) & " bursts";
+    check(bursts6 >= 2, "Test 6: a sparse burst longer than the refresh interval must be split");
+    for i in 0 to 255 loop
+      avalon_read(addr, byteenable, chipselect, read_n, write_n,
+                  waitreq, readvalid, rd, clk,
+                  std_logic_vector(to_unsigned(16#30000# + i, 22)));
+      check(rd = std_logic_vector(to_unsigned(16#4000# + i, 16)),
+            "Test 6: mismatch at " & integer'image(i) & " got " & to_hstring(rd));
+      wait_cycles(clk, 4);
+    end loop;
+    report "Test 6: PASS";
+
+    -- Test 7: abort (stop) mid-burst: no popped word may be lost.
+    report "Test 7: stop mid-burst";
+    for i in 0 to 63 loop
+      push_data <= std_logic_vector(to_unsigned(16#5000# + i, 16));
+      push_valid <= '1';
+      wait until rising_edge(clk);
+      push_valid <= '0';
+    end loop;
+    n6 := n_wr_cmds;
+    r6 := q_rd_idx;
+    b_addr <= std_logic_vector(to_unsigned(16#38000#, 22));
+    b_len  <= std_logic_vector(to_unsigned(64, 9));
+    b_req  <= '1';
+    loop wait until rising_edge(clk); exit when b_busy = '1'; end loop;
+    b_req <= '0';
+    wait_cycles(clk, 14);
+    b_stop <= '1';
+    loop wait until rising_edge(clk); exit when b_busy = '0'; end loop;
+    b_stop <= '0';
+    wait_cycles(clk, 4);
+    check(n_wr_cmds - n6 = q_rd_idx - r6, "Test 7: popped " & integer'image(q_rd_idx - r6) &
+          " words but wrote " & integer'image(n_wr_cmds - n6));
+    check(n_wr_cmds - n6 > 0 and n_wr_cmds - n6 < 64, "Test 7: burst should have been cut short");
+    report "Test 7: stopped after " & integer'image(n_wr_cmds - n6) & " words, PASS";
+    -- Read back the written prefix.
+    for i in 0 to (n_wr_cmds - n6) - 1 loop
+      avalon_read(addr, byteenable, chipselect, read_n, write_n,
+                  waitreq, readvalid, rd, clk,
+                  std_logic_vector(to_unsigned(16#38000# + i, 22)));
+      check(rd = std_logic_vector(to_unsigned(16#5000# + i, 16)),
+            "Test 7: prefix mismatch at " & integer'image(i) & " got " & to_hstring(rd));
+      wait_cycles(clk, 8);
+    end loop;
 
 
     report "=== ALL SDRAM CONTROLLER TESTS PASSED ===";

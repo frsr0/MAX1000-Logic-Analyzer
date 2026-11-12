@@ -203,6 +203,7 @@ for tb in "${TBS[@]}"; do
     tb_continuous_wedge)  stop_time="30ms" ;;  # four complete full-block stream scenarios
     tb_gen_loopback)      stop_time="30ms" ;;  # real-pin SDRAM model, two capture scenarios
     tb_ols_rle_raw_stream) stop_time="30ms" ;; # complete 16K-sample compressed stream
+    tb_pump_integrity)    stop_time="30ms" ;;  # six parallel capture/readback cases (5 ms SDRAM power-up each)
     tb_top)               stop_time="30ms" ;;  # 16-pin UART loopback, ~1.3 ms per pin
     *)                    stop_time="$STOP_TIME" ;;
   esac

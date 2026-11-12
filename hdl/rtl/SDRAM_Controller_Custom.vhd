@@ -27,10 +27,17 @@ port (
     sdram_s_readdatavalid : out std_logic;
     sdram_s_waitrequest   : out std_logic;
     sdram_s_idle          : out std_logic;
-    capture_stream_valid  : in std_logic := '0';
-    capture_stream_ready  : out std_logic;
-    capture_stream_addr   : in std_logic_vector(21 downto 0) := (others => '0');
-    capture_stream_data   : in std_logic_vector(15 downto 0) := (others => '0');
+    -- Pull-based capture burst interface (see the block comment below the
+    -- architecture declarations for the full protocol).
+    capture_burst_req     : in std_logic := '0';
+    capture_burst_addr    : in std_logic_vector(21 downto 0) := (others => '0');
+    capture_burst_len     : in std_logic_vector(8 downto 0) := (others => '0');
+    capture_burst_stop    : in std_logic := '0';
+    capture_pop_ok        : in std_logic := '0';
+    capture_data          : in std_logic_vector(15 downto 0) := (others => '0');
+    capture_pop           : out std_logic;
+    capture_wr            : out std_logic;
+    capture_busy          : out std_logic;
 
     reset_reset_n         : in std_logic;
     clk_in_clk            : in std_logic
@@ -116,7 +123,7 @@ architecture rtl of SDRAM_Controller is
         ST_ACT, ST_TRCD,
         ST_RD, ST_CL_WAIT, ST_RD_DATA,
         ST_WR, ST_TWR,
-        ST_STREAM_WR,
+        ST_STREAM_WR, ST_BPEND,
         ST_PRE2, ST_TRP2,
         ST_RFSH_PRE, ST_RFSH, ST_TRFC,
         ST_DEASSERT
@@ -189,14 +196,42 @@ architecture rtl of SDRAM_Controller is
     signal active_bank : std_logic_vector(1 downto 0) := (others => '0');
     signal row_open    : std_logic := '0';
     signal last_op_was_stream : std_logic := '0';
-    signal capture_stream_ready_now : std_logic := '0';
-    signal stream_ready_r        : std_logic := '0';
-    signal r_pipe_stream_ready : std_logic := '0';
     -- Registered is_same_row comparator outputs decouple 14-bit address
     -- comparisons from command/address output timing.
     signal same_row_buf_a      : std_logic := '0';
     signal same_row_buf_next   : std_logic := '0';
-    signal same_row_cap_stream : std_logic := '0';
+    signal same_row_burst      : std_logic := '0';
+
+    -- ---------------------------------------------------------------------
+    -- Capture burst (pull) interface.
+    --   Pump -> controller (all registered in the pump):
+    --     capture_burst_req   request level; held until capture_busy rises
+    --     capture_burst_addr  start address (bank/row/col); stable from req
+    --                         until capture_busy falls again
+    --     capture_burst_len   1..256 words; never crosses the 256-column row
+    --     capture_burst_stop  abort the burst (no new pops, in-flight words
+    --                         are still written)
+    --     capture_pop_ok      the FIFO holds at least one word that has not been
+    --                         popped yet (the pump accounts for words in flight)
+    --     capture_data        FIFO q: the word popped by capture_pop is on it
+    --                         ONE cycle after the pop
+    --   Controller -> pump (registered):
+    --     capture_pop         FIFO read request (one word per asserted cycle)
+    --     capture_wr          a popped word is being written this cycle
+    --     capture_busy        a burst is latched / running / draining
+    --   Pop at cycle c -> data on capture_data at c+1 (wv) -> WRITE command is
+    --   decided at c+1, reaches the pins at c+3 together with dq_out (d1 is
+    --   the extra register that aligns the data with the registered command).
+    -- ---------------------------------------------------------------------
+    signal bp          : std_logic := '0';  -- burst latched, row not yet ready
+    signal busy_r      : std_logic := '0';
+    signal in_stream   : std_logic := '0';  -- mirror of state = ST_STREAM_WR
+    signal pop_r       : std_logic := '0';
+    signal wv          : std_logic := '0';  -- popped word is on capture_data
+    signal d1          : std_logic_vector(15 downto 0) := (others => '0');
+    signal d1_v        : std_logic := '0';
+    signal brem        : unsigned(8 downto 0) := (others => '0');
+    signal brem_nz     : std_logic := '0';
 
     -- Mode register: A2:0 burst length 1, A3 sequential, A6:4 CAS latency,
     -- A9:7 standard operating mode. CAS latency is "011" (CL3): at 167 MHz (6 ns)
@@ -237,17 +272,9 @@ begin
     timer_eq_zero <= '1' when timer = 0 else '0';
 
     sdram_s_idle <= '1' when state = ST_IDLE else '0';
-    -- capture_stream_ready_now is combinational (state + registered same_row signal).
-    -- stream_ready_r registers it for timing closure; the one-cycle latency is
-    -- absorbed by the write pump's buf_a/buf_wd double-buffer.
-    capture_stream_ready_now <= '1'
-        when state = ST_STREAM_WR
-         and capture_stream_valid = '1'
-         and ref_req = '0'
-         and pend_rn = '0'
-         and same_row_cap_stream = '1'
-        else '0';
-    capture_stream_ready <= r_pipe_stream_ready;
+    capture_pop  <= pop_r;
+    capture_wr   <= wv;
+    capture_busy <= busy_r;
 
     -- synthesis translate_off
     process(max_write_depth)
@@ -285,8 +312,10 @@ begin
             s_addr_r <= (others => '0');
             write_depth <= 0; max_write_depth <= 0;
             row_open <= '0'; active_row <= (others => '0'); active_bank <= (others => '0');
-            same_row_buf_a <= '0'; same_row_buf_next <= '0'; same_row_cap_stream <= '0';
-            r_pipe_stream_ready <= '0';
+            same_row_buf_a <= '0'; same_row_buf_next <= '0'; same_row_burst <= '0';
+            bp <= '0'; busy_r <= '0'; in_stream <= '0'; pop_r <= '0'; wv <= '0';
+            d1 <= (others => '0'); d1_v <= '0';
+            brem <= (others => '0'); brem_nz <= '0';
 
             last_op_was_stream <= '0';
 
@@ -304,10 +333,10 @@ begin
             else
                 same_row_buf_next <= '0';
             end if;
-            if is_same_row(capture_stream_addr, active_row, active_bank) then
-                same_row_cap_stream <= '1';
+            if is_same_row(capture_burst_addr, active_row, active_bank) then
+                same_row_burst <= '1';
             else
-                same_row_cap_stream <= '0';
+                same_row_burst <= '0';
             end if;
 
             -- Refresh timer
@@ -321,9 +350,30 @@ begin
                 timer <= timer + 1;
             end if;
 
-            -- Register stream ready (one cycle latency absorbed by write pump double-buffer)
-            stream_ready_r <= capture_stream_ready_now;
-            r_pipe_stream_ready <= stream_ready_r;
+            -- Capture burst datapath (see the interface comment above).
+            -- A popped word returns on capture_data one cycle after the pop.
+            -- d1 is a free-running copy; dq_out takes it when the word is
+            -- valid so the data reaches the pins in the same cycle as the
+            -- registered WRITE command (command: decide at wv, s_*, s_*_r;
+            -- data: d1, dq_out -> both visible two cycles after wv).
+            wv   <= pop_r;
+            d1   <= capture_data;
+            d1_v <= wv;
+            if d1_v = '1' then
+                dq_out <= d1;
+            end if;
+            -- Pop control: every term is a register (no FIFO flag logic here;
+            -- capture_pop_ok is the pump's registered permission).
+            if in_stream = '1' and brem_nz = '1' and capture_pop_ok = '1'
+               and ref_req = '0' and pend_rn = '0' and capture_burst_stop = '0' then
+                pop_r <= '1';
+                brem  <= brem - 1;
+                if brem = 1 then
+                    brem_nz <= '0';
+                end if;
+            else
+                pop_r <= '0';
+            end if;
 
             v_depth := write_depth;
 
@@ -487,24 +537,13 @@ begin
                             pend_wn_same_row <= '0';
                             state <= ST_ACT;
                         end if;
-                    elsif capture_stream_valid = '1' and row_open = '1'
-                          and same_row_cap_stream = '1' then
-                        is_read <= '0';
-                        last_op_was_stream <= '1';
+                    elsif bp = '1' or (capture_burst_req = '1' and capture_burst_stop = '0') then
+                        -- Capture burst: latch the request (the pump holds the
+                        -- address/length stable until busy falls) and let
+                        -- ST_BPEND pick activate / precharge / straight-in.
+                        bp <= '1'; busy_r <= '1'; cnt <= 0;
                         sdram_s_waitrequest <= '1';
-                        state <= ST_STREAM_WR;
-                    elsif capture_stream_valid = '1' and row_open = '1' then
-                        last_op_was_stream <= '1';
-                        sdram_s_waitrequest <= '1';
-                        state <= ST_PRE2;
-                    elsif capture_stream_valid = '1' then
-                        is_read <= '0';
-                        last_op_was_stream <= '1';
-                        bank_r <= capture_stream_addr(21 downto 20);
-                        row_r <= capture_stream_addr(19 downto 8);
-                        col_r <= capture_stream_addr(7 downto 0);
-                        sdram_s_waitrequest <= '1';
-                        state <= ST_ACT;
+                        state <= ST_BPEND;
                     end if;
 
                 -- READ/WRITE SEQUENCE
@@ -519,7 +558,8 @@ begin
                     else cnt <= 0;
                         if is_read = '1' then
                             state <= ST_RD;
-                        elsif last_op_was_stream = '1' then
+                        elsif bp = '1' then
+                            in_stream <= '1';
                             state <= ST_STREAM_WR;
                         else
                             state <= ST_WR;
@@ -551,56 +591,62 @@ begin
                     dq_out <= buf_wd;
                     state <= ST_TWR;
 
+                when ST_BPEND =>
+                    -- Burst latched. Two cycles let same_row_burst (registered
+                    -- compare of the burst address against the open row) settle,
+                    -- then: row closed -> ACT; same row open -> straight in;
+                    -- other row open -> precharge first (re-enters via DEASSERT).
+                    if capture_burst_stop = '1' then
+                        bp <= '0'; busy_r <= '0'; cnt <= 0;
+                        state <= ST_DEASSERT;
+                    elsif ref_req = '1' or pend_rn = '1' then
+                        -- Let refresh / a pending read go first; bp stays set.
+                        cnt <= 0;
+                        state <= ST_DEASSERT;
+                    elsif cnt < 1 then
+                        cnt <= cnt + 1;
+                    else
+                        cnt <= 0;
+                        is_read <= '0';
+                        last_op_was_stream <= '1';
+                        bank_r <= capture_burst_addr(21 downto 20);
+                        row_r  <= capture_burst_addr(19 downto 8);
+                        col_r  <= capture_burst_addr(7 downto 0);
+                        brem   <= unsigned(capture_burst_len);
+                        if unsigned(capture_burst_len) = 0 then
+                            brem_nz <= '0';
+                        else
+                            brem_nz <= '1';
+                        end if;
+                        if row_open = '0' then
+                            state <= ST_ACT;
+                        elsif same_row_burst = '1' then
+                            in_stream <= '1';
+                            state <= ST_STREAM_WR;
+                        else
+                            state <= ST_PRE2;
+                        end if;
+                    end if;
+
                 when ST_STREAM_WR =>
                     last_op_was_stream <= '1';
-                    -- TIMING CLOSURE (clk[2]=167 MHz, -0.161 ns setup): pre-load
-                    -- buf_a/buf_wd from the incoming sample whenever it is valid,
-                    -- BEFORE (and independent of) the defer decision. Previously
-                    -- these registers loaded only inside the defer branch, so their
-                    -- data-load mux select carried the full defer condition --
-                    -- including is_same_row(capture_stream_addr,...). That put a
-                    -- 14-bit row/bank compare in series with the buf_a address mux
-                    -- (cap_stream_addr -> is_same_row -> Selectors -> buf_a), the
-                    -- worst intra-167MHz path. Decoupling the load to a single
-                    -- capture_stream_valid gate removes is_same_row from buf_a's
-                    -- select. buf_a is unused in the write-now branch (that branch
-                    -- drives s_addr directly from capture_stream_addr), and when the
-                    -- defer branch sets pend_wn buf_a still holds this same address,
-                    -- so the pending-write path is unchanged.
-                    if capture_stream_valid = '1' then
-                        buf_a  <= capture_stream_addr;
-                        buf_wd <= capture_stream_data;
-                        s_addr <= "0000" & capture_stream_addr(7 downto 0);
-                        s_ba   <= capture_stream_addr(21 downto 20);
-                        dq_out <= capture_stream_data;
-                    end if;
-                    if ref_req = '1' or pend_rn = '1'
-                    or capture_stream_valid = '0'
-                    or same_row_cap_stream = '0' then
-                        -- DEFER (page boundary, pending refresh/read, or producer
-                        -- idle). READY is combinational in this clock domain now,
-                        -- so the producer no longer over-advances into a deferred
-                        -- cycle. Keep routing the deferred sample through the
-                        -- normal pending-write path so row/refresh/read conflicts
-                        -- preserve ordering. Do NOT ack here.
-                        if capture_stream_valid = '1' then
-                            -- buf_a/buf_wd already loaded above (valid-gated).
-                            pend_wn <= '1';
-                            if same_row_cap_stream = '1' then
-                                pend_wn_same_row <= '1';
-                            else
-                                pend_wn_same_row <= '0';
-                            end if;
-                            last_op_was_stream <= '0';
-                            -- Balance the write-depth counter that the pend_wn
-                            -- handler decrements when it services this write.
-                            v_depth := v_depth + 1;
-                        end if;
-                        state <= ST_TWR;
-                    else
+                    bp <= '0';
+                    -- One WRITE per valid word, column from col_r (loaded at
+                    -- burst start, +1 per write; s_addr defaults to col_r).
+                    if wv = '1' then
                         dq_oe <= '1';
                         s_cas <= '0'; s_we <= '0';
-                        state <= ST_STREAM_WR;
+                        col_r <= std_logic_vector(unsigned(col_r) + 1);
+                    end if;
+                    -- End of burst: length used up, or an early stop (refresh,
+                    -- pending read, pump abort) -- but only once nothing is in
+                    -- flight (no pop this cycle, none returning), so no popped
+                    -- word is ever left unwritten.
+                    if (brem_nz = '0' or ref_req = '1' or pend_rn = '1'
+                        or capture_burst_stop = '1')
+                       and pop_r = '0' and wv = '0' then
+                        busy_r <= '0'; in_stream <= '0';
+                        state <= ST_TWR;
                     end if;
 
                 when ST_TWR =>
@@ -660,11 +706,16 @@ begin
                     dq_oe <= '0';
                     sdram_s_waitrequest <= '0';
                     if ref_req = '1' and pend_rn = '0' and pend_wn = '0' and pend_wn_next = '0' then
-                        ref_req <= '0';
                         sdram_s_waitrequest <= '1';
                         if row_open = '1' then
+                            -- Close the open row first and KEEP ref_req set:
+                            -- ST_PRE2 -> ST_TRP2 -> ST_DEASSERT re-runs this
+                            -- arm with row_open = 0 and refreshes. (Clearing
+                            -- ref_req here dropped the refresh whenever a
+                            -- capture burst was cut short by it.)
                             state <= ST_PRE2;
                         else
+                            ref_req <= '0';
                             state <= ST_RFSH;
                         end if;
                     elsif pend_wn = '1' and row_open = '1'
@@ -724,25 +775,7 @@ begin
                         else
                             state <= ST_ACT;
                         end if;
-                    elsif capture_stream_valid = '1' and row_open = '1'
-                          and same_row_cap_stream = '0' then
-                        last_op_was_stream <= '1';
-                        sdram_s_waitrequest <= '1';
-                        state <= ST_PRE2;
-                    elsif capture_stream_valid = '1' and row_open = '1' then
-                        is_read <= '0';
-                        last_op_was_stream <= '1';
-                        sdram_s_waitrequest <= '1';
-                        state <= ST_STREAM_WR;
-                    elsif capture_stream_valid = '1' then
-                        is_read <= '0';
-                        last_op_was_stream <= '1';
-                        bank_r <= capture_stream_addr(21 downto 20);
-                        row_r <= capture_stream_addr(19 downto 8);
-                        col_r <= capture_stream_addr(7 downto 0);
-                        sdram_s_waitrequest <= '1';
-                        state <= ST_ACT;
-                elsif pend_rn = '1' then
+                    elsif pend_rn = '1' then
                         is_read <= '1';
                         bank_r <= buf_a(21 downto 20); row_r <= buf_a(19 downto 8); col_r <= buf_a(7 downto 0);
                         sdram_s_waitrequest <= '1';
@@ -756,6 +789,10 @@ begin
                             pend_rn <= '0';
                             state <= ST_ACT;
                         end if;
+                    elsif bp = '1' or (capture_burst_req = '1' and capture_burst_stop = '0') then
+                        bp <= '1'; busy_r <= '1'; cnt <= 0;
+                        sdram_s_waitrequest <= '1';
+                        state <= ST_BPEND;
                     else
                         -- No pending work: OPEN-PAGE policy. Keep the row OPEN and
                         -- go idle, so the next (typically same-row) streaming write

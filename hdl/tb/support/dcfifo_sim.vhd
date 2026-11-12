@@ -13,6 +13,18 @@
 --
 -- Supports both lpm_showahead = "OFF" (registered q, updates on pop) and
 -- lpm_showahead = "ON" (combinational q, presents head word continuously).
+--
+-- lpm_showahead = "OFF" (normal mode) follows Intel's dcfifo_async behavioural
+-- model (altera_mf.vhd, the model used for the MAX 10 family):
+--   * rdreq sampled at a rdclk edge loads q with the POPPED word (the word at
+--     the old read pointer), so q holds it from the cycle after rdreq until the
+--     next accepted rdreq: "request, data next cycle", one word per clock.
+--   * rdempty is a registered flag that reflects every read up to and including
+--     the edge that sampled rdreq (no combinational dependence on rdreq).
+--   * rdusedw is registered one more cycle (DELAY_RDUSEDW = 1 in the Intel
+--     model) so it lags the read pointer by one cycle.
+--   * rdreq on an empty FIFO is ignored (underflow_checking ON); the model
+--     reports it as an error because it is always a producer-side protocol bug.
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.numeric_std.all;
@@ -61,6 +73,7 @@ architecture sim of dcfifo is
 
   signal wptr_seen_by_rd : natural := 0;  -- = wptr_to_rd(rdsync_delaypipe)
   signal rptr_seen_by_wr : natural := 0;  -- = rptr_to_wr(wrsync_delaypipe)
+  signal rdusedw_off : std_logic_vector(lpm_widthu-1 downto 0) := (others => '0');
 begin
 
   wptr_seen_by_rd <= wptr_to_rd(rdsync_delaypipe);
@@ -95,10 +108,15 @@ begin
         q <= (others => '0');
         wptr_to_rd <= (others => 0);
       elsif rising_edge(rdclk) then
-        if rdreq = '1' and rptr < wptr_seen_by_rd then
-          q <= mem(rptr mod lpm_numwords);
-          rptr <= rptr + 1;
+        if rdreq = '1' then
+          if rptr < wptr_seen_by_rd then
+            q <= mem(rptr mod lpm_numwords);
+            rptr <= rptr + 1;
+          else
+            report "dcfifo (showahead OFF): rdreq while empty (underflow)" severity error;
+          end if;
         end if;
+        rdusedw_off <= std_logic_vector(to_unsigned((wptr_seen_by_rd - rptr) mod 2**lpm_widthu, lpm_widthu));
         wptr_to_rd(0) <= wptr;
         for i in 1 to rdsync_delaypipe loop
           wptr_to_rd(i) <= wptr_to_rd(i-1);
@@ -132,9 +150,14 @@ begin
   -- reflects the post-pop level. Without this the level-held read-enable of the
   -- write pump advances its address while rdempty still shows data, duplicating
   -- words into consecutive addresses in simulation only.
-  rdempty <= '1' when rptr >= wptr_seen_by_rd
-                  or (rdreq = '1' and (rptr + 1) >= wptr_seen_by_rd)
-             else '0';
+  gen_empty_off : if lpm_showahead = "OFF" generate
+    rdempty <= '1' when rptr >= wptr_seen_by_rd else '0';
+  end generate;
+  gen_empty_on : if lpm_showahead /= "OFF" generate
+    rdempty <= '1' when rptr >= wptr_seen_by_rd
+                    or (rdreq = '1' and (rptr + 1) >= wptr_seen_by_rd)
+               else '0';
+  end generate;
   wrfull  <= '1' when (wptr - rptr_seen_by_wr) >= lpm_numwords else '0';
   wrusedw <= std_logic_vector(to_unsigned((wptr - rptr_seen_by_wr) mod 2**lpm_widthu, lpm_widthu));
   -- rdusedw must be the READ-domain view (wptr as seen through the read-side
@@ -148,6 +171,11 @@ begin
   -- (found 2026-07-11 via tb_fifo_bridge TEST 3: a capture immediately after
   -- an overflow came back exactly one word short, with a perfectly uniform
   -- step sequence -- i.e. genuinely dropped, not corrupted).
-  rdusedw <= std_logic_vector(to_unsigned((wptr_seen_by_rd - rptr) mod 2**lpm_widthu, lpm_widthu));
+  gen_usedw_off : if lpm_showahead = "OFF" generate
+    rdusedw <= rdusedw_off;
+  end generate;
+  gen_usedw_on : if lpm_showahead /= "OFF" generate
+    rdusedw <= std_logic_vector(to_unsigned((wptr_seen_by_rd - rptr) mod 2**lpm_widthu, lpm_widthu));
+  end generate;
 
 end sim;

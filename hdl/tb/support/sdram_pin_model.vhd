@@ -17,7 +17,12 @@ entity sdram_pin_model is
     -- REPORTED -- this reproduces the real-silicon "never written = 0xFFFF" drop
     -- that the lax model (PRECHARGE/REFRESH ignored, write always commits to the
     -- last-activated row) hides. Default false keeps existing testbenches intact.
-    STRICT    : boolean := false
+    STRICT    : boolean := false;
+    -- FAIL_ON_VIOLATION: every STRICT timing/bank-state violation (tRCD, tRP,
+    -- tRAS, tRC, tWR, tRFC, closed-bank access, refresh with an open bank,
+    -- WRITE with an undriven DQ) is reported at severity failure instead of
+    -- warning, so a protocol bug in the controller fails the testbench.
+    FAIL_ON_VIOLATION : boolean := false
   );
   port (
     clk   : in    std_logic;
@@ -34,6 +39,11 @@ entity sdram_pin_model is
 end sdram_pin_model;
 
 architecture sim of sdram_pin_model is
+  function vio_level(f : boolean) return severity_level is
+  begin
+    if f then return failure; else return warning; end if;
+  end function;
+  constant VIO_SEV : severity_level := vio_level(FAIL_ON_VIOLATION);
   -- 4 banks x 4096 rows x 256 cols = 4M words
   type mem_t is array (natural range <>) of std_logic_vector(15 downto 0);
   constant MEM_WORDS : natural := 4 * (2**ROW_WIDTH) * (2**COL_WIDTH);
@@ -107,16 +117,16 @@ begin
               if now_cyc - t_pre(bank) < TRP then
                 report "SDRAM tRP VIOLATION: ACT bank " & integer'image(bank) &
                   " only " & integer'image(now_cyc - t_pre(bank)) & " cyc after PRE (need " &
-                  integer'image(TRP) & ")" severity warning; viol := viol + 1;
+                  integer'image(TRP) & ")" severity VIO_SEV; viol := viol + 1;
               end if;
               if now_cyc - t_act(bank) < TRC then
                 report "SDRAM tRC VIOLATION: ACT-ACT bank " & integer'image(bank) &
                   " gap " & integer'image(now_cyc - t_act(bank)) & " cyc (need " &
-                  integer'image(TRC) & ")" severity warning; viol := viol + 1;
+                  integer'image(TRC) & ")" severity VIO_SEV; viol := viol + 1;
               end if;
               if t_ref >= 0 and now_cyc - t_ref < TRFC then
                 report "SDRAM tRFC VIOLATION: ACT only " & integer'image(now_cyc - t_ref) &
-                  " cyc after REFRESH (need " & integer'image(TRFC) & ")" severity warning;
+                  " cyc after REFRESH (need " & integer'image(TRFC) & ")" severity VIO_SEV;
                 viol := viol + 1;
               end if;
             end if;
@@ -131,14 +141,24 @@ begin
             if STRICT and now_cyc - t_act(bank) < TRCD and active(bank) then
               report "SDRAM tRCD VIOLATION: WRITE bank " & integer'image(bank) &
                 " only " & integer'image(now_cyc - t_act(bank)) & " cyc after ACT (need " &
-                integer'image(TRCD) & ")" severity warning; viol := viol + 1;
+                integer'image(TRCD) & ")" severity VIO_SEV; viol := viol + 1;
+            end if;
+            if STRICT and dqm = "00" then
+              for i in dq'range loop
+                if dq(i) /= '0' and dq(i) /= '1' then
+                  report "SDRAM STRICT: WRITE bank " & integer'image(bank) &
+                    " col " & integer'image(col) & " with undriven/unknown DQ"
+                    severity VIO_SEV;
+                  exit;
+                end if;
+              end loop;
             end if;
             t_wr_b(bank) := now_cyc;
             n_wr <= n_wr + 1;
             if STRICT and not active(bank) then
               report "SDRAM STRICT: WRITE to CLOSED bank " & integer'image(bank) &
                      " col " & integer'image(col) & " DROPPED (cell stays idle)"
-                     severity warning;
+                     severity VIO_SEV;
             elsif dqm = "00" then
               mem(widx) := dq;
             end if;
@@ -147,7 +167,7 @@ begin
             widx := (bank * (2**ROW_WIDTH) + open_row(bank)) * (2**COL_WIDTH) + col;
             if STRICT and not active(bank) then
               report "SDRAM STRICT: READ from CLOSED bank " & integer'image(bank) &
-                     " col " & integer'image(col) severity warning;
+                     " col " & integer'image(col) severity VIO_SEV;
               rd_data := (others => '1');  -- idle/undriven bus reads as 0xFFFF
             else
               rd_data := mem(widx);
@@ -160,13 +180,13 @@ begin
                   if now_cyc - t_act(b) < TRAS then
                     report "SDRAM tRAS VIOLATION: PRE bank " & integer'image(b) &
                       " only " & integer'image(now_cyc - t_act(b)) & " cyc after ACT (need " &
-                      integer'image(TRAS) & ") -- page-mode not held open" severity warning;
+                      integer'image(TRAS) & ") -- page-mode not held open" severity VIO_SEV;
                     viol := viol + 1;
                   end if;
                   if now_cyc - t_wr_b(b) < TWR then
                     report "SDRAM tWR VIOLATION: PRE bank " & integer'image(b) &
                       " only " & integer'image(now_cyc - t_wr_b(b)) & " cyc after WRITE (need " &
-                      integer'image(TWR) & ")" severity warning; viol := viol + 1;
+                      integer'image(TWR) & ")" severity VIO_SEV; viol := viol + 1;
                   end if;
                   t_pre(b) := now_cyc;
                 end if;
@@ -181,7 +201,7 @@ begin
           when "001" =>  -- AUTO REFRESH: all banks must be precharged; closes all
             if STRICT and (active(0) or active(1) or active(2) or active(3)) then
               report "SDRAM STRICT: AUTO-REFRESH with an OPEN bank (illegal)"
-                     severity warning;
+                     severity VIO_SEV;
             end if;
             t_ref := now_cyc;
             active := (others => false);
