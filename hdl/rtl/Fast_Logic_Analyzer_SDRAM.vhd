@@ -198,6 +198,18 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal overflow_t_s2    : std_logic := '0';
   signal overflow_t_s3    : std_logic := '0';
   signal overflow_clk     : std_logic := '0';
+  -- Raw single-shot "keep" overflow (stage 2a): the sampler stopped because the
+  -- afifo is genuinely about to fill; the words already in the FIFO are KEPT
+  -- and written to SDRAM. It crosses to pclk on its own toggle synchroniser.
+  signal ovf_keep_f        : std_logic := '0';
+  signal ovf_keep_toggle   : std_logic := '0';
+  signal ovf_k_s1          : std_logic := '0';
+  signal ovf_k_s2          : std_logic := '0';
+  signal ovf_k_s3          : std_logic := '0';
+  signal keep_clk          : std_logic := '0';
+  signal overflow_keep_r   : std_logic := '0';
+  signal fifo_rawfull_cmp_r : std_logic := '0';
+  signal raw_full_r        : std_logic := '0';
   signal overflow_count_en_q : std_logic := '0';
   signal sample_remaining : natural range 0 to Max_Samples := 0;
   signal run_stop_overflow : std_logic := '0';
@@ -264,6 +276,15 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   -- cushion still leaves ~200 words of normal fill headroom, which is enough
   -- for the observed burstiness.
   constant AFIFO_DEPTH : natural := 512;
+  -- Raw single-shot capture stops the sampler when wrusedw >= DEPTH - 16.
+  -- Words that can still arrive after the threshold is crossed: sampler
+  -- decision -> fifo_wr (1) -> skid register (1) -> dcfifo write edge (1),
+  -- wrusedw register (1..2), compare register (1), raw_full_r (1), decision (1)
+  -- is ~7 cycles at one word per clock (RATE_DIV 1, the worst case). wrusedw
+  -- never under-reports occupancy (reads are seen late, writes promptly), so
+  -- a margin of 16 leaves ~9 words of slack: the FIFO never reaches full, so
+  -- no word is ever dropped inside the stored run.
+  constant RAW_FULL_MARGIN : natural := 16;
   constant AFIFO_WIDTH : natural := 16;
   constant AFIFO_WIDTHU : natural := 9;
   signal fifo_wdata : std_logic_vector(AFIFO_WIDTH-1 downto 0) := (others => '0');
@@ -622,6 +643,20 @@ begin
       end if;
       fifo_afull_r     <= fifo_afull_cmp_r;
       fifo_wralmost_full <= fifo_afull_r;  -- legacy alias, used by afull_r in FAST_CLK
+      -- Raw digital producer stop flag. Single-shot: only RAW_FULL_MARGIN words
+      -- below the real depth (see the margin derivation at the constant).
+      -- Continuous mode keeps the original almost-full flag (and its drop-
+      -- the-sample behaviour); that path never flags overflow.
+      if unsigned(fifo_wrusedw) >= to_unsigned(AFIFO_DEPTH - RAW_FULL_MARGIN, AFIFO_WIDTHU) then
+        fifo_rawfull_cmp_r <= '1';
+      else
+        fifo_rawfull_cmp_r <= '0';
+      end if;
+      if continuous_f = '1' then
+        raw_full_r <= fifo_wralmost_full;
+      else
+        raw_full_r <= fifo_rawfull_cmp_r;
+      end if;
     end if;
   end process;
 
@@ -794,7 +829,11 @@ begin
     if rising_edge(FAST_CLK) then
       fifo_overflow_f_q <= fifo_overflow_f;
       if fifo_overflow_f = '1' and fifo_overflow_f_q = '0' then
-        overflow_toggle <= not overflow_toggle;
+        if ovf_keep_f = '1' then
+          ovf_keep_toggle <= not ovf_keep_toggle;
+        else
+          overflow_toggle <= not overflow_toggle;
+        end if;
       end if;
     end if;
   end process;
@@ -1093,6 +1132,7 @@ begin
           -- completed instantly and read back as full-length flat data.
           budget_count_r <= budget_seed(cfg_samples);
         fifo_overflow_f <= '0';
+        ovf_keep_f <= '0';
         bram_wp_r <= 0;
         bram_cnt_r <= 0;
         aword_idx <= 0;
@@ -1240,12 +1280,16 @@ begin
             -- fifo_wdata (= sample_word_r) is driven by the decoupled data mux
             -- above; this branch only asserts the write strobe and decrements
             -- the sample budget, keeping capture_en_r off the fifo_wdata cone.
-            if afull_r = '0' then
+            if raw_full_r = '0' then
               fifo_wr <= '1';
               budget_consume_v := (sample_rem_nonzero_r = '1');
             end if;
-            if afull_r = '1' and continuous_f = '0' then
+            if raw_full_r = '1' and continuous_f = '0' then
+              -- Stop the sampler here: every earlier sample was pushed, this
+              -- one and all later ones are not, so the stored words are one
+              -- contiguous run from the first sample.
               fifo_overflow_f <= '1';
+              ovf_keep_f <= '1';
             end if;
           end if;
         end if;
@@ -1472,6 +1516,10 @@ begin
       overflow_t_s2 <= overflow_t_s1;
       overflow_t_s3 <= overflow_t_s2;
       overflow_clk <= overflow_t_s2 xor overflow_t_s3;
+      ovf_k_s1 <= ovf_keep_toggle;
+      ovf_k_s2 <= ovf_k_s1;
+      ovf_k_s3 <= ovf_k_s2;
+      keep_clk <= ovf_k_s2 xor ovf_k_s3;
     end if;
   end process;
 
@@ -1811,7 +1859,7 @@ begin
       else
         fifo_rdusedw_r <= to_integer(unsigned(fifo_rdusedw));
       end if;
-      overflow_count_en_q <= overflow_clk;
+      overflow_count_en_q <= overflow_clk or keep_clk;
       if overflow_count_en_q = '1' then
         if pump_overflow_count_u /= 255 then
           pump_overflow_count_u <= pump_overflow_count_u + 1;
@@ -2029,7 +2077,8 @@ begin
       -- FIFO has been empty and idle for 2047 consecutive pclk cycles.
       if drain_pending_r = '0' and continuous_p = '0' and run_level_r = '1'
          and (not rd_mode_cur)
-         and (producer_done_q = '1' or pump_budget_done_q = '1') then
+         and (producer_done_q = '1' or pump_budget_done_q = '1'
+              or overflow_keep_r = '1') then
         if fifo_rdempty_r = '1' and quiet_v and cap_wr = '0' then
           if single_drain_cnt = 2047 then
             full_i <= '1';
@@ -2058,6 +2107,16 @@ begin
           overflow_readout_q <= '1';
         end if;
       end if;
+      -- Keep-overflow (raw single-shot, stage 2a): the sampler has stopped and
+      -- everything already pushed is still in the FIFO. Flag the overflow but do
+      -- NOT drain or end the capture: the pump keeps writing the FIFO contents
+      -- and the normal end-of-capture window (below) completes the capture when
+      -- the FIFO has stayed empty.
+      if keep_clk = '1' then
+        run_stop_overflow <= '1';
+        status_overflow <= '1';
+        overflow_keep_r <= '1';
+      end if;
       if overflow_readout_q = '1' then
         rd_mode := true;
         overflow_readout_q <= '0';
@@ -2077,6 +2136,7 @@ begin
         full_i <= '0';
         run_stop_overflow <= '0';
         status_overflow <= '0';
+        overflow_keep_r <= '0';
         overflow_readout_q <= '0';
         pump_budget_done_q <= '0';
         if run_start_r = '1' then
