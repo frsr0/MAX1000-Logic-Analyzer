@@ -284,9 +284,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL disp_gen_stop       : STD_LOGIC := '0';
   SIGNAL block_rd_pending     : STD_LOGIC := '0';
   SIGNAL block_rd_ack         : STD_LOGIC := '0';
-  SIGNAL block_rd_addr        : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  -- 23-bit BYTE address = 22-bit sample index: the whole 4,194,304-sample
+  -- SDRAM. (A 16-bit address here made every read beyond sample 32,767 alias
+  -- back onto the first 32,768 samples.)
+  SIGNAL block_rd_addr        : STD_LOGIC_VECTOR(22 downto 0) := (others => '0');
   SIGNAL block_rd_issue_req   : STD_LOGIC := '0';
-  SIGNAL block_rd_issue_addr  : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  SIGNAL block_rd_issue_addr  : STD_LOGIC_VECTOR(22 downto 0) := (others => '0');
   SIGNAL block_rd_release     : STD_LOGIC := '0';
   SIGNAL block_rd_state       : NATURAL range 0 to 8 := 0;
   -- Watchdog kill: forces the block-read FSM back to idle when the dispatch
@@ -1250,7 +1253,7 @@ BEGIN
   Fast_Mode      <= fast_mode_i;
   Blk_Rd_Req_Tog <= blk_req_tog_i;
   Blk_Rd_Base    <= raw_blk_rd_base_cfg when raw_stream_req_active = '1'
-                    else TO_INTEGER(UNSIGNED(block_rd_addr(15 downto 1)));
+                    else TO_INTEGER(UNSIGNED(block_rd_addr(22 downto 1)));
   Blk_Rd_Count   <= raw_blk_rd_count_cfg when raw_stream_req_active = '1'
                     else blk_rd_samples;
   Continuous_Mode <= continuous_mode_i;
@@ -1756,8 +1759,9 @@ BEGIN
                 live_stream_arm <= '0';
                 reg_val(7 downto 0)   := rx_payload_header(0);
                 reg_val(15 downto 8)  := rx_payload_header(1);
-                block_rd_issue_addr   <= reg_val(15 downto 0);
-                raw_blk_rd_base_cfg   <= TO_INTEGER(UNSIGNED(reg_val(15 downto 1)));
+                reg_val(23 downto 16) := rx_payload_header(2);
+                block_rd_issue_addr   <= reg_val(22 downto 0);
+                raw_blk_rd_base_cfg   <= TO_INTEGER(UNSIGNED(reg_val(22 downto 1)));
                 reg_val(7 downto 0) := rx_payload_header(4);
                 reg_val(15 downto 8) := rx_payload_header(5);
                 reg_val(23 downto 16) := rx_payload_header(6);
@@ -1920,6 +1924,7 @@ BEGIN
               if rx_header_len >= 4 then
                 block_rd_issue_addr(7 downto 0)   <= rx_payload_header(0);
                 block_rd_issue_addr(15 downto 8)  <= rx_payload_header(1);
+                block_rd_issue_addr(22 downto 16) <= rx_payload_header(2)(6 downto 0);
                 block_rd_issue_req <= '1';
                 block_wd := 0;
                 st := WAIT_BLOCK;
