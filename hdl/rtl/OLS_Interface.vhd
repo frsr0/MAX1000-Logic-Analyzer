@@ -796,10 +796,10 @@ BEGIN
             END IF;
           END IF;
         END IF;
-        IF Run_OLS = '1' THEN
-          inputs_prev <= Inputs;
-        END IF;
     END IF;
+    -- Track the previous sample every clock (not only while armed) so the first
+    -- edge compare after arm never sees a stale value from an earlier capture.
+    inputs_prev <= Inputs;
     -- ── Block read state machine (for CMD_READ_CAPTURE) ──────────────
     -- Request a BLOCK_SAMPLES-long raw stream from the FLA and drain it
     -- through the response FIFO (a true pclk->CLK CDC), feeding every popped
