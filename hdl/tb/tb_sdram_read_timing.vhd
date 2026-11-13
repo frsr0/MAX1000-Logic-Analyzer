@@ -184,16 +184,8 @@ begin
     end loop;
     report "block pre-filled at " & integer'image(BASE);
 
-    -- Two throwaway prime reads at the block base, exactly like the readout
-    -- stream (STREAM_PRIME_N = 2): the first read of a block comes back stale
-    -- on the real chip, so the readout discards this many.
-    for p in 0 to 1 loop
-      avalon_read(addr, byteenable, chipselect, read_n, write_n,
-                  waitreq, readvalid, rd, clk,
-                  std_logic_vector(to_unsigned(BASE, 22)));
-    end loop;
-
-    -- Read the block back-to-back, exactly like the readout stream.
+    -- Read the block back-to-back. The design no longer issues prime reads, so
+    -- the first read of the block is covered here directly.
     for i in 0 to N_WORDS - 1 loop
       avalon_read(addr, byteenable, chipselect, read_n, write_n,
                   waitreq, readvalid, rd, clk,

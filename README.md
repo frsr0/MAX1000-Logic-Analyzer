@@ -12,8 +12,8 @@ current repository includes:
 
 The full-device reference image and host stack have the validation recorded
 below. The seed-7 image also passed timing, was verified in flash, and
-passed focused MCP4725 and capture-path board checks on 2026-09-28. The
-capture path was reworked on 2026-11-12 (seed-16 image); see
+passed focused MCP4725 and capture-path board checks on 2026-09-28.
+The SDRAM read path was fixed on 2026-11-13 (seed-4 image); see
 [Rebuilding The FPGA Image](#rebuilding-the-fpga-image).
 
 ## Current Status
@@ -280,16 +280,16 @@ cd hdl\proj
 .\compile.ps1 -Seed 7
 ```
 
-The 2026-11-13 SDRAM read-timing fix is built with seed `19`, which is what the
+The 2026-11-13 SDRAM read-timing fix is built with seed `4`, which is what the
 project file now selects. The controller latches DQ inside the chip's CL3 data
 window (`RD_WAIT_EXTRA_CYCLES = 3` in `hdl/rtl/SDRAM_Controller_Custom.vhd`),
 the throwaway prime reads are gone, and the host `SDRAM_READ_LEAD_WORDS` is 0.
-The image uses 8,007 of 8,064 logic elements and 19 of 42 M9K blocks. Its POF
+The image uses 7,976 of 8,064 logic elements and 19 of 42 M9K blocks. Its POF
 SHA-256 is
-`394EC9657F1A7BAE2C56F345876F8A621ADC368D6CEBDDB3E634B8090FE0049C`, and slow
-85 °C post-fit setup slack is `sys_clk` +0.417 ns, `fast_clk` +0.133 ns, and
-`sdram_core_clk` +0.330 ns. Timing is seed-sensitive: of seeds 1 to 20 only
-seed 19 passed the timing gate for this RTL. On the attached board the image
+`0B9483598900C427DAAFEB6FB3F5CDD2493ECE4A66BE7852BAE884F5DDC1577E`, and slow
+85 °C post-fit setup slack is `sys_clk` +0.034 ns, `fast_clk` +0.009 ns, and
+`sdram_core_clk` +0.466 ns. Timing is seed-sensitive: of seeds 1 to 20 only
+seed 4 passed the timing gate for this RTL. On the attached board the image
 passed the hardware validation suite (434/434), the 67-testbench GHDL
 regression, and 10,000 block-pair first-word checks across idle gaps.
 
