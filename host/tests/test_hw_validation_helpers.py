@@ -345,3 +345,27 @@ def test_prefix_run_lengths_accepts_exact_square_wave_and_flags_a_dropped_sample
 
 def test_prefix_run_lengths_needs_interior_runs():
     assert hv._prefix_run_lengths([1, 1, 0, 0]) == (None, [], 0)
+
+def test_expected_jumper_wire_count_parses_environment(monkeypatch):
+    monkeypatch.delenv(hv.JUMPER_EXPECT_WIRES_ENV, raising=False)
+    assert hv._expected_jumper_wire_count() is None
+    monkeypatch.setenv(hv.JUMPER_EXPECT_WIRES_ENV, " 2 ")
+    assert hv._expected_jumper_wire_count() == 2
+    monkeypatch.setenv(hv.JUMPER_EXPECT_WIRES_ENV, "two")
+    assert hv._expected_jumper_wire_count() is None
+
+
+def test_expected_jumper_wires_fails_when_a_wire_is_missing(monkeypatch):
+    routes = [(2, 1), (1, 2)]                   # one distinct wire
+    monkeypatch.setenv(hv.JUMPER_EXPECT_WIRES_ENV, "2")
+    with patch.object(hv, "check") as check, patch.object(hv, "log"):
+        hv._check_expected_jumper_wires(routes)
+    assert check.call_args.args[0] is False
+    assert "found 1 distinct" in check.call_args.args[1]
+    with patch.object(hv, "check") as check:
+        hv._check_expected_jumper_wires(routes + [(16, 15)])
+    assert check.call_args.args[0] is True
+    monkeypatch.delenv(hv.JUMPER_EXPECT_WIRES_ENV)
+    with patch.object(hv, "check") as check:
+        hv._check_expected_jumper_wires(routes)
+    check.assert_not_called()

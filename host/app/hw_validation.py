@@ -2713,6 +2713,33 @@ _JUMPER_PAIR_SEARCHED = False
 # first. The cache above only keeps the winner; tests for further wires use this.
 _JUMPER_ROUTES: list = []
 JUMPER_PRESENT_ENV = "HW_VALIDATION_JUMPER_PRESENT"
+# Optional guard against silently losing a wire: when set to N the suite FAILs
+# if discovery finds fewer than N distinct physical wires.
+JUMPER_EXPECT_WIRES_ENV = "HW_VALIDATION_EXPECT_JUMPER_WIRES"
+
+
+def _expected_jumper_wire_count():
+    """HW_VALIDATION_EXPECT_JUMPER_WIRES as an int, or None when unset/invalid."""
+    raw = os.environ.get(JUMPER_EXPECT_WIRES_ENV)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        return max(0, int(raw.strip()))
+    except ValueError:
+        log(f"[INFO] ignoring non-integer {JUMPER_EXPECT_WIRES_ENV}={raw!r}")
+        return None
+
+
+def _check_expected_jumper_wires(routes):
+    """FAIL when fewer distinct wires were detected than the bench declares."""
+    expected = _expected_jumper_wire_count()
+    if expected is None:
+        return
+    found = len(_group_jumper_wires(routes))
+    listing = ", ".join(f"{t} -> CH{r}" for t, r in routes) or "none"
+    check(found >= expected,
+          f"discovery found {found} distinct jumper wire(s), expected {expected} "
+          f"(detected routes: {listing})")
 
 
 def _prepare_jumper_fixture(dev):
@@ -2765,6 +2792,7 @@ def _prepare_jumper_fixture(dev):
         log("[ERROR] jumper fixture was reported present, but discovery found no route")
     else:
         log(f"digital jumper fixture discovered: {pair[0]} -> {pair[1]}")
+    _check_expected_jumper_wires(_JUMPER_ROUTES)
     return pair
 
 
