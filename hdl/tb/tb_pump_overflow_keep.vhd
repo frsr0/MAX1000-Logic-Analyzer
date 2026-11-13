@@ -54,7 +54,29 @@ architecture bench of tb_pump_overflow_keep is
   signal rd_empty : std_logic;
   signal rd_req : std_logic := '0';
   type word_arr is array (0 to 65535) of std_logic_vector(15 downto 0);
+  -- Pin-level WRITE accounting: every WRITE command on the SDRAM pins, and the
+  -- highest linear address written (bank/row/column tracked from ACTIVATE).
+  signal pin_writes : natural := 0;
+  signal pin_max_addr : integer := -1;
 begin
+  write_monitor : process(pclk_model)
+    variable act_row : integer_vector(0 to 3) := (others => 0);
+    variable cmd : std_logic_vector(2 downto 0);
+    variable b, lin : integer;
+  begin
+    if rising_edge(pclk_model) and sdram_cs_n = '0' then
+      cmd := sdram_ras_n & sdram_cas_n & sdram_we_n;
+      b := to_integer(unsigned(sdram_ba));
+      if cmd = "011" then
+        act_row(b) := to_integer(unsigned(sdram_addr));
+      elsif cmd = "100" and run = '1' then
+        lin := b * 1048576 + act_row(b) * 256 + to_integer(unsigned(sdram_addr(7 downto 0)));
+        pin_writes <= pin_writes + 1;
+        if lin > pin_max_addr then pin_max_addr <= lin; end if;
+      end if;
+    end if;
+  end process;
+
   clk    <= not clk    after SYS_CLK_HALF;
   fastclk <= not fastclk after FAST_CLK_HALF;
   pclk   <= not pclk   after SDRAM_CLK_HALF;
@@ -139,6 +161,14 @@ begin
                " after " & to_hstring(words(i-1))
         severity failure;
     end loop;
+    -- No SDRAM WRITE may exist that Producer_Index does not account for: one
+    -- WRITE command per committed word, none at or beyond address Producer_Index.
+    assert pin_writes = pidx
+      report "FAIL: " & integer'image(pin_writes) & " WRITE commands reached the SDRAM pins for " &
+             integer'image(pidx) & " committed words" severity failure;
+    assert pin_max_addr = pidx - 1
+      report "FAIL: highest address written is " & integer'image(pin_max_addr) &
+             ", expected Producer_Index-1 = " & integer'image(pidx - 1) severity failure;
     report "OVERFLOW KEEP: " & integer'image(pidx) & " committed words are one exact run from the first sample";
     std.env.finish;
     wait;
