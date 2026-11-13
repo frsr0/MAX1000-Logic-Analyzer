@@ -1,3 +1,4 @@
+import pytest
 """Compressed live ring-capture streaming (delta codec) — no hardware.
 
 Replaces the root-level ``test_compressed_streaming.py``, which opened a real
@@ -115,14 +116,9 @@ class TestOLSDeviceSPICompressedStreaming:
             assert total == 8 * k
             assert window == 8
             assert overrun == 0
-            if k <= 32:
-                # First fetch starts at absolute sample 0 (no prime/drain
-                # drop): chunks are the ramp 0x1000..0x10FF.
-                base = 0x1000 + 8 * (k - 1)
-            else:
-                # Second fetch drops each block's offset-0 sample (prime/drain
-                # glitch guard), so its ramp restarts at 0x1001.
-                base = 0x1001 + 8 * (k - 33)
+            # Every fetch, the first included, drops each block's duplicated
+            # offset-0 word, so each fetch's ramp starts at 0x1001.
+            base = 0x1001 + 8 * ((k - 1) % 32)
             assert list(struct.unpack('<8H', data)) == [
                 base + i for i in range(8)
             ]
@@ -135,8 +131,16 @@ class TestOLSDeviceSPICompressedStreaming:
         # (block byte addresses: (sample - 1) * 2 for the prime/drain overlap).
         device_spi.pkt.read_capture_blocks.assert_has_calls([
             call([0], compressed=True),
-            call([510], compressed=True),
+            call([512], compressed=True),
         ])
         # Teardown aborts the ring capture.
         device_spi.pkt.transaction.assert_called_with(
             CMD_ABORT_CAPTURE, timeout=0.5)
+
+@pytest.fixture(autouse=True)
+def _stream_mechanics_without_read_lead(monkeypatch):
+    """These tests exercise stream framing/decoding, not the FPGA's duplicated
+    first SDRAM word; run them with the read lead switched off (the lead rule
+    itself is covered by test_sdram_read_lead.py)."""
+    import driver.spi_protocol as _proto
+    monkeypatch.setattr(_proto, "SDRAM_READ_LEAD_WORDS", 0)

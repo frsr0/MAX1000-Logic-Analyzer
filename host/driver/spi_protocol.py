@@ -150,6 +150,18 @@ RING_BYTE_ADDRESS_MASK = 0xFFFFFFFF
 
 def _ring_byte_address(start_sample: int) -> int:
     return (max(0, int(start_sample)) * 2) & RING_BYTE_ADDRESS_MASK
+
+
+# SDRAM read alignment of the current FPGA image. The controller latches DQ
+# before the chip drives the new word, so every read returns the PREVIOUS
+# read's data. With the two throwaway prime reads a block/stream that starts
+# at sample ``s`` therefore returns
+#     [mem[s], mem[s], mem[s+1], mem[s+2], ...]
+# i.e. the first word is duplicated and nothing is lost after it. Every host
+# path that turns block or stream words into samples requests ``lead`` extra
+# word(s) and drops them. Set to 0 once the RTL read timing is fixed (the
+# prime/duplicate disappears); this is the single place to switch it.
+SDRAM_READ_LEAD_WORDS = 1
 # The RLE run counter is 10 bits wide in the FPGA compressor, so live RLE
 # requests must stay below the 1024-sample wrap point. Keep one sample of head-
 # room so the host never asks the hardware to encode a run that can overflow
@@ -576,6 +588,32 @@ class SPIDevice:
 
     def start_raw_stream_read(self, start_sample: int, sample_count: int,
                               stop_evt=None, ack_pad: int | None = None) -> tuple:
+        """Read ``sample_count`` samples starting at ``start_sample`` as a raw stream.
+
+        Returns (producer_index, oldest_index, data_bytes) with exactly the
+        samples mem[start_sample .. start_sample+sample_count-1]: the FPGA's
+        duplicated first word (see SDRAM_READ_LEAD_WORDS) is requested and
+        dropped here, so callers never see it.
+        """
+        sample_count = max(0, int(sample_count))
+        if sample_count == 0:
+            return 0, 0, b''
+        lead = SDRAM_READ_LEAD_WORDS
+        per = MAX_RAW_STREAM_SAMPLES - lead
+        producer = oldest = 0
+        data = bytearray()
+        done = 0
+        while done < sample_count:
+            take = min(per, sample_count - done)
+            producer, oldest, chunk = self._start_raw_stream_words(
+                start_sample + done, take + lead,
+                stop_evt=stop_evt, ack_pad=ack_pad)
+            data.extend(chunk[lead * 2:])
+            done += take
+        return producer, oldest, bytes(data)
+
+    def _start_raw_stream_words(self, start_sample: int, sample_count: int,
+                                stop_evt=None, ack_pad: int | None = None) -> tuple:
         """Start a true raw sample stream and read it under one CS-held transaction.
 
         Returns (producer_index, oldest_index, data_bytes), where ``data_bytes``
@@ -590,7 +628,7 @@ class SPIDevice:
             done = 0
             while done < sample_count:
                 take = min(MAX_RAW_STREAM_SAMPLES, sample_count - done)
-                pi, oi, chunk = self.start_raw_stream_read(
+                pi, oi, chunk = self._start_raw_stream_words(
                     start_sample + done, take, stop_evt=stop_evt, ack_pad=ack_pad)
                 producer, oldest = pi, oi
                 data.extend(chunk)
@@ -890,6 +928,29 @@ class SPIDevice:
 
     def start_rle_stream_read(self, start_sample: int, sample_count: int,
                               stop_evt=None, ack_pad: int | None = None) -> tuple:
+        """RLE stream of exactly mem[start_sample .. +sample_count-1] (decoded).
+
+        Requests SDRAM_READ_LEAD_WORDS extra leading word(s) and drops them
+        after decoding, like start_raw_stream_read.
+        """
+        sample_count = max(0, int(sample_count))
+        if sample_count == 0:
+            return 0, 0, b''
+        lead = SDRAM_READ_LEAD_WORDS
+        per = min(MAX_RAW_STREAM_SAMPLES, MAX_RLE_STREAM_SAMPLES) - lead
+        producer = oldest = 0
+        data = bytearray()
+        done = 0
+        while done < sample_count:
+            take = min(per, sample_count - done)
+            producer, oldest, chunk = self._start_rle_stream_words(
+                start_sample + done, take + lead, stop_evt=stop_evt, ack_pad=ack_pad)
+            data.extend(chunk[lead * 2:])
+            done += take
+        return producer, oldest, bytes(data)
+
+    def _start_rle_stream_words(self, start_sample: int, sample_count: int,
+                                stop_evt=None, ack_pad: int | None = None) -> tuple:
         """Start an RLE-compressed stream and return decoded raw sample bytes.
 
         The FPGA encodes exactly ``sample_count`` source samples and streams the
@@ -915,7 +976,7 @@ class SPIDevice:
             done = 0
             while done < sample_count:
                 take = min(max_chunk, sample_count - done)
-                pi, oi, chunk = self.start_rle_stream_read(
+                pi, oi, chunk = self._start_rle_stream_words(
                     start_sample + done, take, stop_evt=stop_evt, ack_pad=ack_pad)
                 producer, oldest = pi, oi
                 data.extend(chunk)

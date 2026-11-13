@@ -77,12 +77,12 @@ def test_single_capture_empty_reports_failure(isolate_hardware_side_effects):
 @pytest.mark.parametrize('debug,active', [(False, True), (True, True), (True, False)])
 def test_fast_capture_full_payload_paths(debug, active, isolate_hardware_side_effects):
     dev = device()
-    dev.pkt.read_capture_block.side_effect = [b'x' * 1024, b'y' * 1024]
+    dev.read_capture_range.return_value = b'x' * 1024 + b'y' * 1024
     with patch.object(hv, 'samples_to_channels', return_value=channels(1024, active)), \
          patch.object(hv, 'log_floating_channel_activity') as activity:
         hv.test_fast_capture(dev, debug_on=debug)
     assert activity.called
-    assert dev.pkt.read_capture_block.call_count == 2
+    dev.read_capture_range.assert_called_once_with(0, 1024)
     if debug:
         dev.set_debug_ch0.assert_called_with(True, freq_hz=pytest.approx(dev.sys_clk / 1024))
         assert any("fast CH0 debug PWM transitions" in call.args[1]
@@ -90,13 +90,14 @@ def test_fast_capture_full_payload_paths(debug, active, isolate_hardware_side_ef
 
 
 def test_fast_capture_empty_and_partial_blocks(isolate_hardware_side_effects):
-    dev = device(); dev.pkt.read_capture_block.return_value = b''
+    dev = device(); dev.read_capture_range.return_value = b''
     hv.test_fast_capture(dev)
     isolate_hardware_side_effects.check.assert_any_call(False, 'fast mode capture returned data')
 
 
 def test_max_speed_capture_full_and_empty(isolate_hardware_side_effects):
-    dev = device(); dev.pkt.read_capture_block.side_effect = [b'x' * 1024, b'y' * 1024]
+    dev = device(); dev.read_capture_range.return_value = b'x' * 1024 + b'y' * 1024
+    dev.pkt.get_status.return_value = {}
     with patch.object(hv, 'samples_to_channels', return_value=channels(1024)), \
          patch.object(hv, 'log_floating_channel_activity'):
         hv.test_max_speed_capture(dev)
@@ -104,7 +105,8 @@ def test_max_speed_capture_full_and_empty(isolate_hardware_side_effects):
     dev.clear_live_gen.assert_called_once()
     assert any("max-speed CH0 source is non-static" in call.args[1]
                for call in isolate_hardware_side_effects.check.call_args_list)
-    dev = device(); dev.pkt.read_capture_block.return_value = b''
+    dev = device(); dev.read_capture_range.return_value = b''
+    dev.pkt.get_status.return_value = {}
     hv.test_max_speed_capture(dev)
     isolate_hardware_side_effects.check.assert_called_with(False, 'max-speed capture returned no data')
 

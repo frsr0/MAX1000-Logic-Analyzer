@@ -369,3 +369,13 @@ def test_expected_jumper_wires_fails_when_a_wire_is_missing(monkeypatch):
     with patch.object(hv, "check") as check:
         hv._check_expected_jumper_wires(routes)
     check.assert_not_called()
+
+def test_changed_word_indices_reports_differing_16bit_words():
+    before = bytes([1, 0, 2, 0, 3, 0, 4, 0])
+    after = bytes([1, 0, 9, 0, 3, 0, 8, 1])
+    assert hv._changed_word_indices(before, after) == [1, 3]
+    assert hv._changed_word_indices(before, before) == []
+
+
+def test_oracle_constants_cover_three_dividers():
+    assert hv.ORACLE_FIRST_LOW_INDEX == {9: 1105, 99: 110, 195: 56}

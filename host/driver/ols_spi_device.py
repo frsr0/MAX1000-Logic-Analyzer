@@ -48,7 +48,7 @@ from driver.spi_protocol import (
     REG_GEN_CAPTURE_TX_CHAN, REG_GEN_CAPTURE_SCL_CHAN,
     REG_IFACE_MODE,
     ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_DONE,
-    MAX_RLE_STREAM_SAMPLES,
+    MAX_RLE_STREAM_SAMPLES, SDRAM_READ_LEAD_WORDS,
     GEN_FLAG_SPI_TEST, GEN_FLAG_REPEAT, GEN_FLAG_RS485_PAIR,
     GEN_FLAG_ACCEL_ATTACH,
 )
@@ -404,6 +404,19 @@ RING_INDEX_HALF = 0x80000000
 RING_SAMPLE_COUNT = 4_194_304
 RING_SAMPLE_MASK = RING_SAMPLE_COUNT - 1
 RING_SAMPLE_HALF = RING_SAMPLE_COUNT // 2
+
+
+def plan_range_block(sample: int, remaining: int, block_samples: int = 512):
+    """Plan one CMD_READ_CAPTURE block for read_capture_range.
+
+    Returns (byte_address, words_to_drop, samples_taken). The block is read at
+    the sample's own address; its leading SDRAM_READ_LEAD_WORDS word(s) are the
+    FPGA's duplicated first word and are dropped, so a block yields
+    ``block_samples - lead`` samples.
+    """
+    lead = SDRAM_READ_LEAD_WORDS
+    take = min(int(remaining), block_samples - lead)
+    return _ring_u32(int(sample) * 2), lead, take
 
 
 def _ring_u32(value: int) -> int:
@@ -2049,14 +2062,13 @@ class OLSDeviceSPI:
                            probe_compression=True):
         """Read a dense 16-bit sample range by absolute sample index.
 
-        The FPGA block readout's FIRST sample (offset 0 of each CMD_READ_CAPTURE
-        block) is the one exposed to the cold/inter-block stale-read glitch (it
-        reads back 0xFFFF when the SDRAM bus has idled across the block gap). The
-        FPGA-side prime read fixes the systematic case, but a rare intermittent
-        residual remains. Mirror the legacy prime/drain: request one sample early
-        and discard that offset-0 sample so a glitched first read is never
-        consumed. At absolute index 0 there is nothing earlier to drop, so the
-        FPGA prime read alone covers it.
+        A CMD_READ_CAPTURE block at sample ``s`` returns
+        ``[mem[s], mem[s], mem[s+1], ...]``: the SDRAM controller latches DQ
+        before the chip drives the new word, so each read returns the previous
+        read's data, and the two throwaway prime reads leave the first word
+        duplicated (see spi_protocol.SDRAM_READ_LEAD_WORDS). Every chunk, the
+        first one included, is therefore requested at its own address and its
+        first word is dropped, leaving 511 samples per block.
         """
         start_sample = max(0, int(start_sample))
         remaining = max(0, int(sample_count))
@@ -2105,18 +2117,13 @@ class OLSDeviceSPI:
             s = batch_sample
             rem = batch_remaining
             while rem > 0 and len(addrs) < batch_blocks:
-                if s > 0:
-                    # CMD_READ_CAPTURE carries a modulo-u32 byte address.
-                    # Keep the block-read fallback valid after the producer
-                    # cursor crosses 0xffffffff; otherwise a transient raw
-                    # stream failure can turn into struct.error here.
-                    addrs.append(_ring_u32((s - 1) * 2))
-                    drops.append(1)
-                    take = min(rem, 511)
-                else:
-                    addrs.append(0)
-                    drops.append(0)
-                    take = min(rem, 512)
+                # CMD_READ_CAPTURE carries a modulo-u32 byte address. Keep the
+                # block-read fallback valid after the producer cursor crosses
+                # 0xffffffff; otherwise a transient raw stream failure can
+                # turn into struct.error here.
+                addr, drop, take = plan_range_block(s, rem)
+                addrs.append(addr)
+                drops.append(drop)
                 s += take
                 rem -= take
             return addrs, drops, s, rem

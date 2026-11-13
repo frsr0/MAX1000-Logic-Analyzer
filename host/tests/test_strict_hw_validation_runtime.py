@@ -366,7 +366,8 @@ def test_pretrigger_handles_active_quiet_and_missing_capture():
 def test_full_depth_capture_reads_both_boundaries_or_recovers_after_timeout():
     value = device()
     value.pkt.get_status.return_value = {"capture_status": hv.ST_CAPTURE_DONE}
-    value.pkt.read_capture_block.side_effect = [b"\x00\x00\x01\x00", b"middle", b"\x00\x00\x01\x00"]
+    # each block's first word is the FPGA's duplicated one and is dropped
+    value.pkt.read_capture_block.side_effect = [b"\x00\x00\x00\x00\x01\x00", b"..middle", b"\x00\x00\x00\x00\x01\x00"]
     with patch.object(hv.time, "time", Clock(0.1)):
         hv.test_full_depth_capture(value)
     assert hv.FAIL == 0
@@ -390,11 +391,11 @@ def test_wait_capture_done_observes_done_or_times_out():
 
 def test_back_to_back_capture_requires_three_complete_readbacks():
     value = device()
-    value.pkt.read_capture_block.side_effect = [
-        b"x" * 1024, b"x" * 1024,
-        b"", b"",
-        b"y" * 1024, b"y" * 1024,
-        b"z" * 1024, b"z" * 1024,
+    value.read_capture_range.side_effect = [
+        b"x" * 2048,
+        b"",
+        b"y" * 2048,
+        b"z" * 2048,
     ]
     with patch.object(hv, "_wait_capture_done", return_value=True), \
          patch.object(hv, "samples_to_channels", return_value=pwm_sampled()):
@@ -405,7 +406,7 @@ def test_back_to_back_capture_requires_three_complete_readbacks():
 
 def test_back_to_back_capture_rejects_static_readbacks():
     value = device()
-    value.pkt.read_capture_block.return_value = b"x" * 1024
+    value.read_capture_range.return_value = b"x" * 2048
     with patch.object(hv, "_wait_capture_done", return_value=True), \
          patch.object(hv, "samples_to_channels", return_value=sampled(1024, ())):
         hv.test_back_to_back_capture(value)

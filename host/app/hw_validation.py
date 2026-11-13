@@ -61,7 +61,7 @@ try:
         REG_FLAGS, REG_FAST_MODE, REG_CONT_MODE,
         REG_GEN_PROTO, REG_GEN_BAUD, REG_GEN_PINS, REG_GEN_DATA,
         REG_GEN_AUX_PINS,
-        REG_PUMP_OVERFLOW_COUNT,
+        REG_PUMP_OVERFLOW_COUNT, SDRAM_READ_LEAD_WORDS,
         REG_IFACE_MODE,
         GEN_FLAG_I2C_TEST, GEN_FLAG_SPI_TEST, GEN_FLAG_REPEAT,
         ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_BUSY, ST_CAPTURE_DONE, ST_CAPTURE_IDLE,
@@ -567,12 +567,8 @@ def test_fast_capture(dev, debug_on=False):
     time.sleep(rc / 1_000_000 + 0.02)
 
     need = rc * dev._stride
-    data = bytearray()
-    for block_addr in range(0, need, 1024):
-        block = dev.pkt.read_capture_block(block_addr)
-        if block:
-            data.extend(block)
-    data = bytes(data[:need])
+    # Through the driver, which knows the FPGA's duplicated first block word.
+    data = dev.read_capture_range(0, need // 2)[:need]
 
     if data:
         ch, ns = samples_to_channels(data)
@@ -641,12 +637,7 @@ def test_max_speed_capture(dev):
     committed = min(rc, produced) if produced > 0 else rc
     log(f"committed samples: {committed} of {rc} requested")
     need = committed * dev._stride
-    data = bytearray()
-    for block_addr in range(0, need, 1024):
-        block = dev.pkt.read_capture_block(block_addr)
-        if block:
-            data.extend(block)
-    data = bytes(data[:need])
+    data = dev.read_capture_range(0, need // 2)[:need]
 
     if data:
         ch, ns = samples_to_channels(data)
@@ -720,7 +711,7 @@ def test_continuous_capture(dev, debug_on=False):
     for _ in range(10):
         block = dev.pkt.read_capture_block(0)
         if block:
-            data.extend(block)
+            data.extend(block[SDRAM_READ_LEAD_WORDS * 2:])
             break
         time.sleep(0.02)
     if data:
@@ -1693,6 +1684,72 @@ def test_max_rate_kept_prefix(dev):
                    f"(off-length runs at {bad[:5]})")
 
 
+# ====================================================================
+# Test 5g/5h: readback alignment (relative: exactly N words; absolute: edge index)
+# ====================================================================
+# The FPGA's SDRAM read returns the PREVIOUS read's data, so a block at sample s
+# comes back as [mem[s], mem[s], mem[s+1], ...]; the driver requests each block
+# at its own address and drops the duplicated first word. A wrong alignment
+# either shows the last written sample one word late (an apparent extra word at
+# index N) or shifts every sample.
+def _changed_word_indices(before, after):
+    """Indices where two equal-length 16-bit little-endian buffers differ."""
+    n = min(len(before), len(after)) // 2
+    return [i for i in range(n) if before[2 * i:2 * i + 2] != after[2 * i:2 * i + 2]]
+
+
+def _prefill_capture_memory(dev, nwords=8192):
+    """Fill the capture memory with 12-bit ADC codes (never 0xFFFF, the idle digital word)."""
+    dev.set_analog_config(MODE_ANALOG_FAST, adc_channel=4)
+    dev._gen_data = b"\x55" * 10
+    dev._gen_baud = 115200
+    dev._gen_tx_pin = 22                      # unused PMOD pin
+    dev.capture_with_gen(rate_hz=1_000_000, nsamples=nwords, timeout=10,
+                         fast_mode=True, reset_board=False)
+    dev.set_analog_config(MODE_DIGITAL)
+
+
+def test_readback_alignment_exact_word_count(dev):
+    print_header("Test 5g: capture of N samples changes exactly N words")
+    for n in (2, 3000):
+        dev.reset(); dev.spi.flush(); dev.set_debug_ch0(False)
+        _prefill_capture_memory(dev)
+        before = dev.read_capture_range(0, n + 64)
+        dev.reset(); dev.spi.flush()
+        data = dev.capture(rate_hz=1_002_000, nsamples=n, timeout=10)
+        after = dev.read_capture_range(0, n + 64)
+        changed = _changed_word_indices(before, after)
+        got = len(data) // 2
+        check(got == n, f"N={n}: capture returned {got} samples")
+        check(changed == list(range(n)),
+              f"N={n}: exactly indices 0..{n - 1} changed (changed {len(changed)} words, "
+              f"first {changed[:1]}, last {changed[-1:]}); index {n} keeps its pre-fill")
+
+
+# Simulated true first-low sample index of the atomic generator burst (raw symbols
+# [HI]*4 + [LO]*40 at 100 kS/s from pin 8) at capture divider dv. Derived by
+# simulating the RTL with true read alignment (the board with the old plan read
+# exactly one more). Re-derive them if the capture start or generator timing changes.
+ORACLE_FIRST_LOW_INDEX = {9: 1105, 99: 110, 195: 56}
+
+
+def test_readback_absolute_time_oracle(dev):
+    print_header("Test 5h: absolute timing of readback (generator-edge oracle)")
+    dev.reset(); dev.spi.flush(); dev.set_debug_ch0(False)
+    symbols = [3] * 4 + [2] * 40 + [3] * 4
+    for dv, want in ORACLE_FIRST_LOW_INDEX.items():
+        rate = int(dev.sample_clk / (dv + 1))
+        raw = dev.capture_with_gen(rate_hz=rate, nsamples=1500, timeout=8,
+                                   raw_symbols=symbols, raw_symbol_rate=100_000,
+                                   raw_tx_pin=8, fast_mode=False, reset_board=False)
+        ch, ns = samples_to_channels(raw, stride=2) if raw else ([], 0)
+        low = [i for i in range(ns) if ch[8][i] == 0] if ns else []
+        got = low[0] if low else None
+        check(got == want,
+              f"divider {dv}: first low sample at index {got} (simulated true index {want})")
+    dev.reset()
+
+
 def test_continuous_max_rate_overrun(dev):
     print_header("Test 5c: Max-rate continuous ring overrun")
     dev.reset()
@@ -2533,9 +2590,10 @@ def test_full_depth_capture(dev):
     # Verify addressing at both ends of the SDRAM buffer without reading
     # back the whole 2 MB: first block, a middle block, and the last block.
     need = MAX_SAMPLES * 2
-    first = dev.pkt.read_capture_block(0)
-    mid = dev.pkt.read_capture_block((need // 2) & ~1023)
-    last = dev.pkt.read_capture_block(need - 1024)
+    lead = SDRAM_READ_LEAD_WORDS * 2     # bytes of the FPGA's duplicated first block word
+    first = dev.pkt.read_capture_block(0)[lead:]
+    mid = dev.pkt.read_capture_block((need // 2) & ~1023)[lead:]
+    last = dev.pkt.read_capture_block(need - 1024)[lead:]
     dev.set_debug_ch0(False)
     check(first is not None and len(first) > 0, f"first block read ({len(first) if first else 0} bytes)")
     check(mid is not None and len(mid) > 0, f"middle block read ({len(mid) if mid else 0} bytes)")
@@ -2593,12 +2651,7 @@ def test_back_to_back_capture(dev):
         dev.spi.flush()
         _wait_capture_done(dev, timeout=2.0)
         need = rc * 2
-        data = bytearray()
-        for block_addr in range(0, need, 1024):
-            block = dev.pkt.read_capture_block(block_addr)
-            if block:
-                data.extend(block)
-        data = bytes(data[:need])
+        data = dev.read_capture_range(0, rc)[:need]
         ch, ns = samples_to_channels(data, stride=2)
         tr0 = sum(1 for i in range(1, ns) if ch[0][i] != ch[0][i - 1]) if ns else 0
         log(f"capture #{n + 1}: {len(data)} bytes, {ns} samples, CH0 {tr0} trans")
@@ -3751,6 +3804,8 @@ def main():
         log("\n--- Max-speed test (200 MHz) ---")
         test_max_speed_capture(dev)
         test_max_rate_kept_prefix(dev)
+        test_readback_alignment_exact_word_count(dev)
+        test_readback_absolute_time_oracle(dev)
         test_continuous_max_rate_overrun(dev)
         test_narrow_digital_200m(dev)
         test_mso_packed_capture(dev)

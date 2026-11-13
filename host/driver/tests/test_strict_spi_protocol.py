@@ -711,3 +711,11 @@ def test_continuous_live_stream_handles_tokens_stop_overflow_and_missing_ack():
         sparse_packed=True, sparse_rle=True, tagged_packed=True)) == []
     mode = struct.unpack("<I", spi.request[6:10])[0]
     assert mode & 0x1E000000 == 0x1E000000
+
+@pytest.fixture(autouse=True)
+def _stream_mechanics_without_read_lead(monkeypatch):
+    """These tests exercise stream framing/decoding, not the FPGA's duplicated
+    first SDRAM word; run them with the read lead switched off (the lead rule
+    itself is covered by test_sdram_read_lead.py)."""
+    import driver.spi_protocol as _proto
+    monkeypatch.setattr(_proto, "SDRAM_READ_LEAD_WORDS", 0)

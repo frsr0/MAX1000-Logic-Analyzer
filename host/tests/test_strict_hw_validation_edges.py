@@ -81,7 +81,7 @@ def test_reporting_helpers_cover_quiet_channels_incomplete_progress_and_tied_i2c
 def test_fast_capture_accepts_debug_transition_count_inside_expected_window():
     value = device()
     value._stride = 2
-    value.pkt.read_capture_block.side_effect = [b"x" * 1024, b"y" * 1024]
+    value.read_capture_range.return_value = b"x" * 1024 + b"y" * 1024
     signal = [0] * 1024
     for edge in range(1, 201):
         signal[edge * 5] = 1 - signal[edge * 5 - 1]

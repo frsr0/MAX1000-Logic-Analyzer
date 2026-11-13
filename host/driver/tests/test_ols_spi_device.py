@@ -389,12 +389,13 @@ class TestOLSDeviceSPI:
     def test_stream_readback_batches_blocks_via_fake_transport(self, device_spi):
         # Drive the REAL _stream_readback -> read_capture_range -> batched
         # read_capture_blocks path over a packet-protocol fake transport.
-        # 1000 samples span two 512-sample blocks; the second block is
-        # requested one sample early (addr 1022) and its first sample dropped.
+        # 1000 samples span two blocks; every block (the first included) is
+        # read at its own start and its duplicated first word is dropped, so
+        # each yields 511 samples and the second block starts at sample 511.
         fake = _StreamReadbackFakeSPI()
         device_spi.spi = fake
         result = device_spi._stream_readback(0, 1000)
-        assert result == b'\x00' * 1024 + b'\xFE' * 976
+        assert result == b'\x00' * 1022 + b'\xFE' * 978
         assert len(result) == 2000
         assert fake.stream_payload_calls == 1
         assert fake.addrs == [0, 1022]
@@ -514,9 +515,10 @@ class TestOLSDeviceSPI:
             bytes([0xAA]) * 1024,
         ]
         data = device_spi.read_capture_range(start_sample=7, sample_count=600)
+        # block at the sample's own address (7*2), then the next chunk at 7+511
         device_spi.pkt.read_capture_block.assert_has_calls([
-            call(12, compressed=False),
-            call(1034, compressed=False),
+            call(14, compressed=False),
+            call(1036, compressed=False),
         ])
         assert len(data) == 1200
 
@@ -528,9 +530,10 @@ class TestOLSDeviceSPI:
                                               for _ in addrs])
 
         data = device_spi.read_capture_range(
-            start_sample=0x80000000, sample_count=1)
+            start_sample=0xFFFFFFFF, sample_count=1)
 
         assert len(data) == 2
+        # byte address = sample*2 modulo 2**32
         assert device_spi.pkt.read_capture_blocks.call_args.args[0] == [
             0xFFFFFFFE]
 
@@ -566,9 +569,10 @@ class TestOLSDeviceSPI:
 
         assert len(data) == 1040
         words = struct.unpack('<520H', data)
-        assert words[:256] == (0xFFFE,) * 256
-        assert words[256:512] == (0xFFFF,) * 256
-        assert words[512:] == (0x5678,) * 8
+        # each block's duplicated first word is dropped: 511 samples per block
+        assert words[:255] == (0xFFFE,) * 255
+        assert words[255:511] == (0xFFFF,) * 256
+        assert words[511:] == (0x5678,) * 9
         device_spi.pkt.read_capture_blocks.assert_called_once_with(
             [0, 1022], compressed=True)
 
@@ -584,9 +588,9 @@ class TestOLSDeviceSPI:
 
         assert len(data) == 1040
         words = struct.unpack('<520H', data)
-        assert words[:256] == (0xFFFE,) * 256
-        assert words[256:512] == (0xFFFF,) * 256
-        assert words[512:] == (0x1234,) * 8
+        assert words[:255] == (0xFFFE,) * 255
+        assert words[255:511] == (0xFFFF,) * 256
+        assert words[511:] == (0x1234,) * 9
         device_spi.pkt.read_capture_blocks.assert_called_once_with(
             [0, 1022], compressed=True)
 
@@ -603,8 +607,8 @@ class TestOLSDeviceSPI:
 
         assert len(data) == 1040
         words = struct.unpack('<520H', data)
-        assert words[:512] == (0x1234,) * 512
-        assert words[512:] == (0x5678,) * 8
+        assert words[:511] == (0x1234,) * 511
+        assert words[511:] == (0x5678,) * 9
         device_spi.pkt.read_capture_blocks.assert_called_once_with(
             [0, 1022], compressed=True)
 
