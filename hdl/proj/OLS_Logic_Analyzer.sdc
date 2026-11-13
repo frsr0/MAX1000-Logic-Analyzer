@@ -245,13 +245,13 @@ create_generated_clock -name adc_clk \
  # CAS-latency wait. The READ command reaches the pins two cycles after ST_RD
  # (s_cas_r) and a CL3 part drives DQ tAC after the CL-th pin clock edge, so the
  # latch lands 2.25 + RD_WAIT_EXTRA_CYCLES chip clocks after the command edge.
- # With RD_WAIT_EXTRA_CYCLES = 2 that is 4.25 cycles: relax the DQ input path by
- # the two extra cycles (setup 3 -> 5, hold 2 -> 4) so STA checks the real
+ # With RD_WAIT_EXTRA_CYCLES = 3 that is 5.25 cycles: relax the DQ input path by
+ # the three extra cycles (setup 3 -> 6, hold 2 -> 5) so STA checks the real
  # capture edge, not a fictitious earlier one.
- set_multicycle_path -setup 5 \
+ set_multicycle_path -setup 6 \
    -from [get_ports {sdram_dq[*]}] \
    -to   [get_registers {*sdram_s_readdata[*]}]
- set_multicycle_path -hold 4 \
+ set_multicycle_path -hold 5 \
    -from [get_ports {sdram_dq[*]}] \
    -to   [get_registers {*sdram_s_readdata[*]}]
 

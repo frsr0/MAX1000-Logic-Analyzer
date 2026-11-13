@@ -250,7 +250,7 @@ architecture rtl of SDRAM_Controller is
     -- placed from the pin-level command, not from ST_RD. 0 reproduces the
     -- original latch (which sampled the previous read's data on the board);
     -- the board-validated value is substituted here.
-    constant RD_WAIT_EXTRA_CYCLES : natural := 2;
+    constant RD_WAIT_EXTRA_CYCLES : natural := 3;
 
     function is_same_row(addr : std_logic_vector(21 downto 0);
                          row  : std_logic_vector(11 downto 0);
