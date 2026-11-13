@@ -116,9 +116,9 @@ class TestOLSDeviceSPICompressedStreaming:
             assert total == 8 * k
             assert window == 8
             assert overrun == 0
-            # Every fetch, the first included, drops each block's duplicated
-            # offset-0 word, so each fetch's ramp starts at 0x1001.
-            base = 0x1001 + 8 * ((k - 1) % 32)
+            # Every fetch, the first included, reads the block's true data,
+            # so each fetch's ramp starts at 0x1000.
+            base = 0x1000 + 8 * ((k - 1) % 32)
             assert list(struct.unpack('<8H', data)) == [
                 base + i for i in range(8)
             ]
@@ -143,4 +143,6 @@ def _stream_mechanics_without_read_lead(monkeypatch):
     first SDRAM word; run them with the read lead switched off (the lead rule
     itself is covered by test_sdram_read_lead.py)."""
     import driver.spi_protocol as _proto
+    import driver.ols_spi_device as _dev
     monkeypatch.setattr(_proto, "SDRAM_READ_LEAD_WORDS", 0)
+    monkeypatch.setattr(_dev, "SDRAM_READ_LEAD_WORDS", 0)

@@ -152,16 +152,13 @@ def _ring_byte_address(start_sample: int) -> int:
     return (max(0, int(start_sample)) * 2) & RING_BYTE_ADDRESS_MASK
 
 
-# SDRAM read alignment of the current FPGA image. The controller latches DQ
-# before the chip drives the new word, so every read returns the PREVIOUS
-# read's data. With the two throwaway prime reads a block/stream that starts
-# at sample ``s`` therefore returns
-#     [mem[s], mem[s], mem[s+1], mem[s+2], ...]
-# i.e. the first word is duplicated and nothing is lost after it. Every host
-# path that turns block or stream words into samples requests ``lead`` extra
-# word(s) and drops them. Set to 0 once the RTL read timing is fixed (the
-# prime/duplicate disappears); this is the single place to switch it.
-SDRAM_READ_LEAD_WORDS = 1
+# SDRAM read alignment. The pre-fix FPGA image latched DQ before the chip drove
+# the new word, so every read returned the previous read's data and a block at
+# sample ``s`` came back [mem[s], mem[s], mem[s+1], ...]. Every host path
+# compensated by requesting one extra leading word and dropping it. The read
+# timing is fixed in RTL, so the current image returns true data and this is 0.
+# The mechanism stays for older images; this is the single place to switch it.
+SDRAM_READ_LEAD_WORDS = 0
 # The RLE run counter is 10 bits wide in the FPGA compressor, so live RLE
 # requests must stay below the 1024-sample wrap point. Keep one sample of head-
 # room so the host never asks the hardware to encode a run that can overflow
@@ -591,9 +588,9 @@ class SPIDevice:
         """Read ``sample_count`` samples starting at ``start_sample`` as a raw stream.
 
         Returns (producer_index, oldest_index, data_bytes) with exactly the
-        samples mem[start_sample .. start_sample+sample_count-1]: the FPGA's
-        duplicated first word (see SDRAM_READ_LEAD_WORDS) is requested and
-        dropped here, so callers never see it.
+        samples mem[start_sample .. start_sample+sample_count-1]. When
+        SDRAM_READ_LEAD_WORDS is non-zero (older FPGA images), that many extra
+        leading words are requested and dropped here.
         """
         sample_count = max(0, int(sample_count))
         if sample_count == 0:
@@ -930,8 +927,8 @@ class SPIDevice:
                               stop_evt=None, ack_pad: int | None = None) -> tuple:
         """RLE stream of exactly mem[start_sample .. +sample_count-1] (decoded).
 
-        Requests SDRAM_READ_LEAD_WORDS extra leading word(s) and drops them
-        after decoding, like start_raw_stream_read.
+        Requests SDRAM_READ_LEAD_WORDS extra leading word(s) (older images only)
+        and drops them after decoding, like start_raw_stream_read.
         """
         sample_count = max(0, int(sample_count))
         if sample_count == 0:

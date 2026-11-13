@@ -1,7 +1,9 @@
-"""SDRAM read alignment: a block/stream at sample s returns [mem[s], mem[s], mem[s+1], ...].
+"""SDRAM read alignment: the lead-word mechanism for older FPGA images.
 
-Every host path requests the block at s and drops the duplicated first word
-(``SDRAM_READ_LEAD_WORDS``); these tests pin that rule in one place.
+The pre-fix image returned [mem[s], mem[s], mem[s+1], ...] for a block at s, so
+every host path requests the block at its own address and drops
+``SDRAM_READ_LEAD_WORDS`` leading words. The current image returns true data
+(lead 0); these tests pin the mechanism in one place.
 """
 import pytest
 
@@ -12,7 +14,7 @@ from driver.spi_protocol import SPIDevice, MAX_RAW_STREAM_SAMPLES
 
 
 def _block(mem, start, words=512):
-    """What the FPGA returns for a block at ``start``: first word duplicated."""
+    """What a pre-fix FPGA returns for a block at ``start``: first word duplicated."""
     return [mem[start]] + [mem[start + i] for i in range(words - 1)]
 
 
@@ -23,7 +25,8 @@ def lead1(monkeypatch):
 
 
 def test_lead_constant_matches_current_fpga():
-    assert proto.SDRAM_READ_LEAD_WORDS == 1
+    # The RTL read-timing fix makes the current image return true data.
+    assert proto.SDRAM_READ_LEAD_WORDS == 0
 
 
 def test_plan_range_block_reads_own_address_and_drops_the_lead_word(lead1):

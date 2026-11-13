@@ -1768,17 +1768,10 @@ begin
     variable stream_addr_inc_pending : boolean := false;
     variable stream_rem    : natural range 0 to Max_Samples := 0;
     variable rd_pend2      : std_logic := '0';
-    -- Prime read: the FIRST SDRAM read of each block stream comes back garbage
-    -- (un-driven DQ reads as 0xFFFF) because the controller is coming out of an
-    -- idle/refresh window and the first read's data is not yet valid when it is
-    -- latched. The legacy readout absorbed this with prime/drain padding that the
-    -- streaming refactor removed, reintroducing a stale first sample at the start
-    -- of every CMD_READ_CAPTURE block. Re-add throwaway reads of the base address
-    -- whose results are discarded; the real stream then starts clean. Two prime
-    -- reads (not one) are needed because the cold/refresh transition occasionally
-    -- leaves the SECOND read unsettled too.
-    constant STREAM_PRIME_N : natural := 2;
-    variable stream_prime  : natural range 0 to STREAM_PRIME_N := 0;
+    -- The read latch samples inside the chip's CL3 data window now, so the
+    -- throwaway prime reads that used to absorb the stale first read of a block
+    -- are gone; a block stream starts with real data. (Verified on the board
+    -- with 10k block reads across idle/refresh gaps.)
     -- Read watchdog: an SDRAM read issued concurrently with capture-stream
     -- writes occasionally goes unanswered on hardware (stochastic arbitration
     -- loss; s_rvalid never comes). Without a timeout the readout waits
@@ -2195,7 +2188,6 @@ begin
           stream_rem    := Blk_Rd_Count;
           stream_addr_inc_pending := false;
           rd_pend2      := '0';
-          stream_prime  := STREAM_PRIME_N;
           stream_active := (Blk_Rd_Count /= 0);
           s_rd          <= '0';
         elsif continuous_p = '1' then
@@ -2206,7 +2198,6 @@ begin
           stream_rem    := Blk_Rd_Count;
           stream_addr_inc_pending := false;
           rd_pend2      := '0';
-          stream_prime  := STREAM_PRIME_N;
           stream_active := (Blk_Rd_Count /= 0);
           rd_mode       := true;
           s_rd          <= '0';
@@ -2234,31 +2225,26 @@ begin
             s_rd         <= '0';
             rd_pend2     := '0';
             rd_gap       := '1';
-            if stream_prime /= 0 then
-              -- Discard the throwaway prime read(s); the real stream starts next.
-              stream_prime := stream_prime - 1;
-            else
-              rdfifo_wr    <= '1';
-              -- Advance the address on COMPLETION (not issue) so a timed-out
-              -- read can be reissued at the same address without skipping.
-              stream_addr_inc_pending := true;
-              if stream_rem_cur <= 1 then
-                if Auto_Renew = '1' then
-                  -- Auto-renew: reload and keep streaming
-                  stream_rem := Blk_Rd_Count;
-                else
-                  stream_active := false;
-                  stream_rem    := 0;
-                  -- Continuous mode: hand the SDRAM bus back to the write pump
-                  -- after the host has streamed its requested block.
-                  if continuous_p = '1' then
-                    rd_mode      := false;
-                  end if;
-                end if;
+            rdfifo_wr    <= '1';
+            -- Advance the address on COMPLETION (not issue) so a timed-out
+            -- read can be reissued at the same address without skipping.
+            stream_addr_inc_pending := true;
+            if stream_rem_cur <= 1 then
+              if Auto_Renew = '1' then
+                -- Auto-renew: reload and keep streaming
+                stream_rem := Blk_Rd_Count;
               else
-                stream_rem := stream_rem_dec_r;
+                stream_active := false;
+                stream_rem    := 0;
+                -- Continuous mode: hand the SDRAM bus back to the write pump
+                -- after the host has streamed its requested block.
+                if continuous_p = '1' then
+                  rd_mode      := false;
+                end if;
               end if;
-            end if;  -- closes stream_prime if/else
+            else
+              stream_rem := stream_rem_dec_r;
+            end if;
           elsif rd_wd_cnt = STREAM_RD_WD then
             -- Unanswered read: drop the request; the next cycle reissues the
             -- same address (see the watchdog comment at the declarations).

@@ -389,16 +389,15 @@ class TestOLSDeviceSPI:
     def test_stream_readback_batches_blocks_via_fake_transport(self, device_spi):
         # Drive the REAL _stream_readback -> read_capture_range -> batched
         # read_capture_blocks path over a packet-protocol fake transport.
-        # 1000 samples span two blocks; every block (the first included) is
-        # read at its own start and its duplicated first word is dropped, so
-        # each yields 511 samples and the second block starts at sample 511.
+        # 1000 samples span two blocks; each block is read at its own start
+        # and yields 512 samples, so the second block starts at sample 512.
         fake = _StreamReadbackFakeSPI()
         device_spi.spi = fake
         result = device_spi._stream_readback(0, 1000)
-        assert result == b'\x00' * 1022 + b'\xFE' * 978
+        assert result == b'\x00' * 2000
         assert len(result) == 2000
         assert fake.stream_payload_calls == 1
-        assert fake.addrs == [0, 1022]
+        assert fake.addrs == [0, 1024]
 
     def test_raw_mode_enable(self, device_spi):
         device_spi.raw_mode(True)
@@ -515,10 +514,10 @@ class TestOLSDeviceSPI:
             bytes([0xAA]) * 1024,
         ]
         data = device_spi.read_capture_range(start_sample=7, sample_count=600)
-        # block at the sample's own address (7*2), then the next chunk at 7+511
+        # block at the sample's own address (7*2), then the next chunk at 7+512
         device_spi.pkt.read_capture_block.assert_has_calls([
             call(14, compressed=False),
-            call(1036, compressed=False),
+            call(1038, compressed=False),
         ])
         assert len(data) == 1200
 
@@ -554,7 +553,7 @@ class TestOLSDeviceSPI:
         data = device_spi.read_capture_range(0, sample_count)
 
         assert len(data) == sample_count * 2
-        assert pkt.batch_sizes == [128, 2]
+        assert pkt.batch_sizes == [128, 1]
 
     def test_read_capture_range_decompresses_compressed_blocks(self, device_spi):
         # Pure RLE data: each block decompresses to 1024 bytes (512 samples)
@@ -569,12 +568,12 @@ class TestOLSDeviceSPI:
 
         assert len(data) == 1040
         words = struct.unpack('<520H', data)
-        # each block's duplicated first word is dropped: 511 samples per block
-        assert words[:255] == (0xFFFE,) * 255
-        assert words[255:511] == (0xFFFF,) * 256
-        assert words[511:] == (0x5678,) * 9
+        # each block yields its full 512 samples.
+        assert words[:256] == (0xFFFE,) * 256
+        assert words[256:512] == (0xFFFF,) * 256
+        assert words[512:] == (0x5678,) * 8
         device_spi.pkt.read_capture_blocks.assert_called_once_with(
-            [0, 1022], compressed=True)
+            [0, 1024], compressed=True)
 
     def test_read_capture_range_decompresses_rle_only_block_payloads(self, device_spi):
         block0 = struct.pack('<4H', 256, 0xFFFE, 256, 0xFFFF)
@@ -588,11 +587,11 @@ class TestOLSDeviceSPI:
 
         assert len(data) == 1040
         words = struct.unpack('<520H', data)
-        assert words[:255] == (0xFFFE,) * 255
-        assert words[255:511] == (0xFFFF,) * 256
-        assert words[511:] == (0x1234,) * 9
+        assert words[:256] == (0xFFFE,) * 256
+        assert words[256:512] == (0xFFFF,) * 256
+        assert words[512:] == (0x1234,) * 8
         device_spi.pkt.read_capture_blocks.assert_called_once_with(
-            [0, 1022], compressed=True)
+            [0, 1024], compressed=True)
 
     def test_read_capture_range_decompresses_rle_blocks(self, device_spi):
         # Pure RLE data: each block decompresses to 1024 bytes (512 samples)
@@ -607,10 +606,10 @@ class TestOLSDeviceSPI:
 
         assert len(data) == 1040
         words = struct.unpack('<520H', data)
-        assert words[:511] == (0x1234,) * 511
-        assert words[511:] == (0x5678,) * 9
+        assert words[:512] == (0x1234,) * 512
+        assert words[512:] == (0x5678,) * 8
         device_spi.pkt.read_capture_blocks.assert_called_once_with(
-            [0, 1022], compressed=True)
+            [0, 1024], compressed=True)
 
     def test_read_capture_range_disables_broken_delta_compressed_blocks_after_probe(self, device_spi):
         raw_block = b'\x00' * 1024
@@ -689,7 +688,7 @@ class TestOLSDeviceSPI:
 
         assert len(data) == 1040
         device_spi.pkt.read_capture_blocks.assert_called_once_with(
-            [0, 1022], compressed=False)
+            [0, 1024], compressed=False)
 
     def test_read_capture_range_decompresses_mixed_compressed_blocks(self, device_spi):
         payload = bytearray()
