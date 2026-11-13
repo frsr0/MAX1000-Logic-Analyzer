@@ -238,9 +238,19 @@ architecture rtl of SDRAM_Controller is
     -- CL2's DQ-valid window is too tight for the worst-case first read after the
     -- bus idled across the inter-block gap, which read back 0xFFFF (un-driven DQ)
     -- -> the deterministic block-boundary readback corruption. CL3 gives the chip
-    -- an extra cycle to drive DQ. The read FSM matches it: ST_RD -> ST_CL_WAIT (2)
-    -- -> ST_RD_DATA samples DQ 3 cycles after CAS.
+    -- an extra cycle to drive DQ. The read FSM matches it: the READ command
+    -- reaches the pins two cycles after ST_RD (the s_cas_r register stage), so
+    -- ST_CL_WAIT holds for 2 + RD_WAIT_EXTRA_CYCLES cycles and ST_RD_DATA
+    -- samples DQ inside the chip's CL3 data window.
     constant MR : std_logic_vector(11 downto 0) := "000000110000";
+
+    -- Extra sdram_core_clk cycles in ST_CL_WAIT, on top of the two that match
+    -- CL3. The command reaches the pins two cycles after ST_RD and a real CL3
+    -- part drives DQ tAC after the CL-th pin clock edge, so the latch must be
+    -- placed from the pin-level command, not from ST_RD. 0 reproduces the
+    -- original latch (which sampled the previous read's data on the board);
+    -- the board-validated value is substituted here.
+    constant RD_WAIT_EXTRA_CYCLES : natural := 2;
 
     function is_same_row(addr : std_logic_vector(21 downto 0);
                          row  : std_logic_vector(11 downto 0);
@@ -571,9 +581,11 @@ begin
                     state <= ST_CL_WAIT;
 
                 when ST_CL_WAIT =>
-                    -- CL3: wait two cycles after CAS so DQ is sampled 3 cycles
-                    -- after the read command (matches MR CAS latency "011").
-                    if cnt < 2 then cnt <= cnt + 1;
+                    -- CL3: the READ command reaches the pins two cycles after
+                    -- ST_RD (s_cas_r), and the chip drives DQ tAC after the
+                    -- CL-th pin clock edge. Hold 2 + RD_WAIT_EXTRA_CYCLES cycles
+                    -- so ST_RD_DATA samples DQ inside that data window.
+                    if cnt < 2 + RD_WAIT_EXTRA_CYCLES then cnt <= cnt + 1;
                     else cnt <= 0; state <= ST_RD_DATA;
                     end if;
 

@@ -22,7 +22,15 @@ entity sdram_pin_model is
     -- tRAS, tRC, tWR, tRFC, closed-bank access, refresh with an open bank,
     -- WRITE with an undriven DQ) is reported at severity failure instead of
     -- warning, so a protocol bug in the controller fails the testbench.
-    FAIL_ON_VIOLATION : boolean := false
+    FAIL_ON_VIOLATION : boolean := false;
+    -- REAL_READ_TIMING: model the real chip's CAS-latency data window instead
+    -- of the legacy lenient one. Data becomes valid TAC after the CL-th clock
+    -- edge following the READ command edge, is held until the next read's data
+    -- replaces it, and the bus is released on WRITE. Default false keeps every
+    -- existing testbench on the legacy window (drives DQ one cycle after READ
+    -- for CL+1 cycles), so their behaviour is unchanged.
+    REAL_READ_TIMING : boolean := false;
+    TAC : time := 5.4 ns
   );
   port (
     clk   : in    std_logic;
@@ -94,16 +102,38 @@ begin
     -- drives starting the cycle after it sees the READ and holds two cycles
     -- to robustly cover the sample.
     variable rd_data  : std_logic_vector(15 downto 0) := (others => '0');
-    variable rd_drive : natural range 0 to CL + 1 := 0;
+    -- Legacy window: data appears one clock after READ and is held for
+    -- CL + 4 clocks. The hold was CL + 1; the controller's corrected latch
+    -- sits a couple of clocks later, and the extra hold keeps every existing
+    -- lenient-mode bench sampling valid data (data appearance is unchanged).
+    variable rd_drive : natural range 0 to CL + 4 := 0;
+    variable rd_wait  : natural range 0 to 15 := 0;  -- REAL_READ_TIMING countdown
+    variable rd_held  : boolean := false;  -- REAL_READ_TIMING: driving held read data
   begin
     if rising_edge(clk) then
       now_cyc := now_cyc + 1;
-      -- drive DQ during the read window, tristate otherwise
-      if rd_drive > 0 then
-        dq <= rd_data;
-        rd_drive := rd_drive - 1;
+      if REAL_READ_TIMING then
+        -- Real chip: data appears TAC after the CL-th edge following READ and
+        -- is held until the next read's data replaces it. Until the first read
+        -- (and after a WRITE releases the bus) the model drives Z, so its
+        -- driver is never the uninitialised 'U' that would corrupt a WRITE.
+        if rd_wait > 0 then
+          rd_wait := rd_wait - 1;
+          if rd_wait = 0 then
+            dq <= transport rd_data after TAC;
+            rd_held := true;
+          end if;
+        elsif not rd_held then
+          dq <= (others => 'Z');
+        end if;
       else
-        dq <= (others => 'Z');
+        -- drive DQ during the read window, tristate otherwise
+        if rd_drive > 0 then
+          dq <= rd_data;
+          rd_drive := rd_drive - 1;
+        else
+          dq <= (others => 'Z');
+        end if;
       end if;
 
       if cke = '1' and cs_n = '0' then
@@ -136,6 +166,7 @@ begin
             t_act(bank) := now_cyc; t_act_any := now_cyc;
             n_act <= n_act + 1;
           when "100" =>  -- WRITE
+            if REAL_READ_TIMING then rd_held := false; dq <= (others => 'Z'); end if;
             col := to_integer(unsigned(addr(COL_WIDTH-1 downto 0)));
             widx := (bank * (2**ROW_WIDTH) + open_row(bank)) * (2**COL_WIDTH) + col;
             if STRICT and now_cyc - t_act(bank) < TRCD and active(bank) then
@@ -172,7 +203,8 @@ begin
             else
               rd_data := mem(widx);
             end if;
-            rd_drive := CL + 1;  -- drive a window that covers the CL-cycle sample
+            rd_drive := CL + 4;  -- hold the window across the corrected latch
+            rd_wait := CL;      -- REAL_READ_TIMING: data valid CL edges + TAC later
           when "010" =>  -- PRECHARGE: close the addressed bank (A10=1 -> all)
             if STRICT then
               for b in 0 to 3 loop
