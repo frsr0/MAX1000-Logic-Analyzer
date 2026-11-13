@@ -280,20 +280,22 @@ cd hdl\proj
 .\compile.ps1 -Seed 7
 ```
 
-The 2026-11-12 capture-path rework (burst SDRAM write pump, full block-read
-address, overflow that keeps the FIFO contents, 4,096-word capture FIFO) is
-built with seed `16`, which is what the project file now selects. That image
-uses 8,007 of 8,064 logic elements and 19 of 42 M9K blocks. Its POF SHA-256 is
-`4AA9277B210927F0DA00E445C30FBAC80A77A36C29A22DDE159960F99022E9D8`, and slow
-85 °C setup slack is `sys_clk` +0.031 ns, `fast_clk` +0.107 ns, and SDRAM
-+0.244 ns. Timing is seed-sensitive: of seeds 1 to 16 only seed 16 passed the
-timing gate, so re-sweep seeds after any RTL change. On the attached board the
-image passed the hardware validation suite (427/427) and the 66-testbench GHDL
-regression on 2026-11-12; the dated baselines above predate it.
+The 2026-11-13 SDRAM read-timing fix is built with seed `19`, which is what the
+project file now selects. The controller latches DQ inside the chip's CL3 data
+window (`RD_WAIT_EXTRA_CYCLES = 3` in `hdl/rtl/SDRAM_Controller_Custom.vhd`),
+the throwaway prime reads are gone, and the host `SDRAM_READ_LEAD_WORDS` is 0.
+The image uses 8,007 of 8,064 logic elements and 19 of 42 M9K blocks. Its POF
+SHA-256 is
+`394EC9657F1A7BAE2C56F345876F8A621ADC368D6CEBDDB3E634B8090FE0049C`, and slow
+85 °C post-fit setup slack is `sys_clk` +0.417 ns, `fast_clk` +0.133 ns, and
+`sdram_core_clk` +0.330 ns. Timing is seed-sensitive: of seeds 1 to 20 only
+seed 19 passed the timing gate for this RTL. On the attached board the image
+passed the hardware validation suite (434/434), the 67-testbench GHDL
+regression, and 10,000 block-pair first-word checks across idle gaps.
 
 ```powershell
 cd hdl\proj
-.\compile.ps1 -Seed 16
+.\compile.ps1 -Seed 19
 ```
 
 For more detail, see:
