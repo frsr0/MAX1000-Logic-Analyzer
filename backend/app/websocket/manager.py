@@ -28,6 +28,23 @@ ACCELEROMETER_SEND_TIMEOUT_S = 0.01
 # the packet in the kernel immediately, while a genuinely blocked socket is
 # isolated by this deadline.
 BINARY_WAVEFORM_SEND_TIMEOUT_S = 0.01
+
+
+if hasattr(asyncio, "timeout"):
+    async def _send_within(send, timeout_s: float) -> None:
+        """Await one socket send under a deadline, in the caller's own task.
+
+        asyncio.wait_for on Python 3.11 wraps the send in a new task, which
+        costs about three event-loop iterations per packet. A drain that slow
+        falls behind a publisher that yields once per packet, the pending
+        queue reaches its limit and a HEALTHY client is evicted as if it were
+        stalled. asyncio.timeout adds the deadline without a task switch.
+        """
+        async with asyncio.timeout(timeout_s):
+            await send
+else:  # pragma: no cover - Python 3.10 has no asyncio.timeout; keep the task-based deadline.
+    async def _send_within(send, timeout_s: float) -> None:
+        await asyncio.wait_for(send, timeout=timeout_s)
 # The pose/status mailbox replaces stale values, so it must not attempt to
 # serialize and send every decoded sensor frame.  At the direct tap rate that
 # would make JSON/WebSocket work compete with the USB reader for the GIL and
@@ -375,10 +392,8 @@ class ConnectionManager:
                 if item is None:
                     return
                 try:
-                    await asyncio.wait_for(
-                        ws.send_bytes(item),
-                        timeout=BINARY_WAVEFORM_SEND_TIMEOUT_S,
-                    )
+                    await _send_within(
+                        ws.send_bytes(item), BINARY_WAVEFORM_SEND_TIMEOUT_S)
                 except Exception:
                     with self._latest_lock:
                         self._remove_pending_client(topic, ws)
@@ -421,10 +436,9 @@ class ConnectionManager:
                 if item is None:
                     return
                 try:
-                    await asyncio.wait_for(
+                    await _send_within(
                         ws.send_text(self._encode_message(item[0], item[1])),
-                        timeout=BINARY_WAVEFORM_SEND_TIMEOUT_S,
-                    )
+                        BINARY_WAVEFORM_SEND_TIMEOUT_S)
                 except Exception:
                     with self._latest_lock:
                         self._remove_pending_client(topic, ws)
