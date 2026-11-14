@@ -1192,3 +1192,4 @@ def _stream_mechanics_without_read_lead(monkeypatch):
     itself is covered by test_sdram_read_lead.py)."""
     import driver.spi_protocol as _proto
     monkeypatch.setattr(_proto, "SDRAM_READ_LEAD_WORDS", 0)
+    monkeypatch.setattr(_proto, "RLE_STREAM_TAIL_GUARD", 0)

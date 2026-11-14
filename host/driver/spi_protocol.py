@@ -159,6 +159,17 @@ def _ring_byte_address(start_sample: int) -> int:
 # timing is fixed in RTL, so the current image returns true data and this is 0.
 # The mechanism stays for older images; this is the single place to switch it.
 SDRAM_READ_LEAD_WORDS = 0
+
+# RLE stream tail guard. The held-CS raw stream pulses the compressor's flush
+# for ONE cycle after the last sample is fed (OLS_Interface STATE 4), and
+# rle_compressor honours flush only in state RUN. When the last sample starts a
+# new run the compressor is still emitting the previous run, the pulse is lost,
+# and the final single-sample run is never sent (only 0x0000 filler follows) -
+# the stream then looks truncated by exactly one sample. Request this many extra
+# samples and accept the window as soon as the wanted count is decoded; the
+# lost run is always the last, single, extra sample. Set to 0 after the RTL
+# flush fix.
+RLE_STREAM_TAIL_GUARD = 1
 # The RLE run counter is 10 bits wide in the FPGA compressor, so live RLE
 # requests must stay below the 1024-sample wrap point. Keep one sample of head-
 # room so the host never asks the hardware to encode a run that can overflow
@@ -265,7 +276,8 @@ class SPIDevice:
 
     @staticmethod
     def _decode_rle_stream_bytes(data: bytes, sample_count: int,
-                                 allow_short: bool = False) -> bytes:
+                                 allow_short: bool = False,
+                                 min_count: int | None = None) -> bytes:
         """Decode little-endian (count, value) uint16 pairs to raw samples,
         skipping 0x0000 idle-filler words (see _decode_rle_into)."""
         sample_count = max(0, int(sample_count))
@@ -275,7 +287,8 @@ class SPIDevice:
         pos = 0
         total = 0
         limit = len(data)
-        while total < sample_count:
+        wanted = sample_count if min_count is None else int(min_count)
+        while total < wanted:
             # Skip 0x0000 idle fillers, plus (before the first run only) any
             # leading guard words that cannot be a valid count (> sample_count,
             # e.g. 0xFFFF), so decoding aligns to the first real (count, value).
@@ -294,7 +307,8 @@ class SPIDevice:
             if total > sample_count:
                 raise RuntimeError("RLE stream decode failed: decoded past requested sample count")
             out.extend(value * count)
-        if total != sample_count and not allow_short:
+        if (total < wanted or (min_count is None and total != sample_count)) \
+                and not allow_short:
             raise RuntimeError("RLE stream decode failed: truncated before requested sample count")
         return bytes(out)
 
@@ -934,20 +948,23 @@ class SPIDevice:
         if sample_count == 0:
             return 0, 0, b''
         lead = SDRAM_READ_LEAD_WORDS
-        per = min(MAX_RAW_STREAM_SAMPLES, MAX_RLE_STREAM_SAMPLES) - lead
+        guard = RLE_STREAM_TAIL_GUARD
+        per = min(MAX_RAW_STREAM_SAMPLES, MAX_RLE_STREAM_SAMPLES) - lead - guard
         producer = oldest = 0
         data = bytearray()
         done = 0
         while done < sample_count:
             take = min(per, sample_count - done)
             producer, oldest, chunk = self._start_rle_stream_words(
-                start_sample + done, take + lead, stop_evt=stop_evt, ack_pad=ack_pad)
+                start_sample + done, take + lead, stop_evt=stop_evt, ack_pad=ack_pad,
+                guard=guard)
             data.extend(chunk[lead * 2:])
             done += take
         return producer, oldest, bytes(data)
 
     def _start_rle_stream_words(self, start_sample: int, sample_count: int,
-                                stop_evt=None, ack_pad: int | None = None) -> tuple:
+                                stop_evt=None, ack_pad: int | None = None,
+                                guard: int = 0) -> tuple:
         """Start an RLE-compressed stream and return decoded raw sample bytes.
 
         The FPGA encodes exactly ``sample_count`` source samples and streams the
@@ -979,7 +996,9 @@ class SPIDevice:
                 data.extend(chunk)
                 done += take
             return producer or 0, oldest or 0, bytes(data)
-        payload = struct.pack('<II', _ring_byte_address(start_sample), sample_count)
+        guard = max(0, int(guard))
+        request_count = sample_count + guard
+        payload = struct.pack('<II', _ring_byte_address(start_sample), request_count)
         seq = self._next_seq()
         req = build_packet(CMD_START_RAW_STREAM, seq, payload)
         # RLE streaming needs a longer post-request guard than the raw path
@@ -989,14 +1008,15 @@ class SPIDevice:
         pad = ack_pad if ack_pad is not None else max(self._default_ack_pad(), 96)
         if hasattr(self.spi, "stream_command_chunks"):
             return self._rle_stream_via_chunks(
-                req, seq, sample_count, pad, stop_evt,
-                timeout=RLE_STREAM_TIMEOUT_S)
+                req, seq, request_count, pad, stop_evt,
+                timeout=RLE_STREAM_TIMEOUT_S, min_count=sample_count)
         if hasattr(self.spi, "stream_command"):
-            return self._rle_stream_via_fixed(req, seq, sample_count, pad, stop_evt)
+            return self._rle_stream_via_fixed(
+                req, seq, request_count, pad, stop_evt, min_count=sample_count)
         raise RuntimeError("RLE stream path requires stream_command(_chunks)")
 
     def _rle_stream_via_chunks(self, req, seq, sample_count, pad, stop_evt,
-                               timeout=RLE_STREAM_TIMEOUT_S):
+                               timeout=RLE_STREAM_TIMEOUT_S, min_count=None):
         """Preferred path: read variable-length stream until ``sample_count``
         samples decode, then break (which raises CS)."""
         gen = self.spi.stream_command_chunks(req, ack_pad=pad, stop_evt=stop_evt)
@@ -1024,8 +1044,9 @@ class SPIDevice:
                     pending.extend(acc[end:])
                 else:
                     pending.extend(chunk)
-                total = self._decode_rle_into(pending, out, total, sample_count)
-                if total >= sample_count:
+                total = self._decode_rle_into(
+                    pending, out, total, sample_count, min_count=min_count)
+                if total >= (sample_count if min_count is None else min_count):
                     break
                 if stop_evt is not None and stop_evt.is_set():
                     break
@@ -1039,14 +1060,16 @@ class SPIDevice:
             if stop_evt is not None and stop_evt.is_set():
                 return 0, 0, b''
             raise RuntimeError("start_rle_stream_read failed: no stream ack")
-        if total != sample_count:
+        wanted = sample_count if min_count is None else min_count
+        if total < wanted or (min_count is None and total != sample_count):
             if stop_evt is not None and stop_evt.is_set():
                 return producer, oldest, bytes(out)
             raise RuntimeError(
                 "RLE stream decode failed: truncated before requested sample count")
-        return producer, oldest, bytes(out)
+        return producer, oldest, bytes(out[:wanted * 2])
 
-    def _rle_stream_via_fixed(self, req, seq, sample_count, pad, stop_evt):
+    def _rle_stream_via_fixed(self, req, seq, sample_count, pad, stop_evt,
+                              min_count=None):
         """Fallback for backends without stream_command_chunks: clock a fixed
         worst-case-plus-margin budget in one transaction, then decode."""
         max_wire_bytes = (sample_count * MAX_RLE_STREAM_BYTES_PER_SAMPLE
@@ -1059,12 +1082,17 @@ class SPIDevice:
         producer, oldest, end = found
         # RLE data begins right after the ack packet (see _rle_stream_via_chunks).
         decoded = self._decode_rle_stream_bytes(
-            raw[end:], sample_count, allow_short=bool(stop_evt is not None and stop_evt.is_set()))
+            raw[end:], sample_count,
+            allow_short=bool(stop_evt is not None and stop_evt.is_set()),
+            min_count=min_count)
+        if min_count is not None:
+            decoded = decoded[:min_count * 2]
         return producer, oldest, decoded
 
     @staticmethod
     def _decode_rle_into(pending: bytearray, out: bytearray,
-                         total: int, sample_count: int) -> int:
+                         total: int, sample_count: int,
+                         min_count: int | None = None) -> int:
         """Decode as many complete (count, value) pairs as ``pending`` holds,
         appending expanded samples to ``out`` and consuming decoded bytes.
         Returns the running decoded-sample total. Safe across chunk boundaries:
@@ -1076,7 +1104,8 @@ class SPIDevice:
         boundary, so skipping them there keeps the stream word-aligned."""
         pos = 0
         n = len(pending)
-        while total < sample_count:
+        wanted = sample_count if min_count is None else int(min_count)
+        while total < wanted:
             # Skip idle-filler words at this pair boundary; before the first run
             # (total == 0) also skip leading guard words that cannot be a valid
             # count (> sample_count, e.g. 0xFFFF) so we align to the first pair.

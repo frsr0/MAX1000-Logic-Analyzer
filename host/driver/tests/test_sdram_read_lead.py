@@ -100,7 +100,7 @@ def test_rle_stream_drops_the_decoded_lead_word(lead1):
         def __init__(self):
             self.calls = []
 
-        def _start_rle_stream_words(self, start, count, stop_evt=None, ack_pad=None):
+        def _start_rle_stream_words(self, start, count, stop_evt=None, ack_pad=None, guard=0):
             self.calls.append((start, count))
             words = [mem[start]] + [mem[start + i] for i in range(count - 1)]
             return 1, 2, b"".join(w.to_bytes(2, "little") for w in words)
@@ -110,3 +110,51 @@ def test_rle_stream_drops_the_decoded_lead_word(lead1):
     got = [int.from_bytes(data[i:i + 2], "little") for i in range(0, len(data), 2)]
     assert got == mem[100:2100]
     assert all(count <= proto.MAX_RLE_STREAM_SAMPLES for _, count in pkt.calls)
+
+
+def test_rle_tail_guard_requests_one_extra_sample_and_trims_it():
+    """The compressor can lose the final single-sample run (flush pulse ignored
+    while it is emitting); the host asks for one extra sample and trims it."""
+    assert proto.RLE_STREAM_TAIL_GUARD == 1
+    seen = {}
+
+    class Pkt(SPIDevice):
+        def __init__(self):
+            pass
+
+        def _start_rle_stream_words(self, start, count, stop_evt=None, ack_pad=None, guard=0):
+            seen["args"] = (start, count, guard)
+            return 1, 2, b"".join(w.to_bytes(2, "little") for w in range(count))
+
+    _, _, data = Pkt().start_rle_stream_read(10, 100)
+    assert seen["args"] == (10, 100, 1)
+    assert len(data) == 200
+
+
+def _pairs(*runs):
+    out = bytearray()
+    for count, value in runs:
+        out += count.to_bytes(2, "little") + value.to_bytes(2, "little")
+    return bytes(out)
+
+
+def test_rle_decoder_accepts_stream_missing_the_final_single_sample_run():
+    # wanted 4 samples, requested 5: the FPGA sent (3, 0xFFFE) and lost (1, 0xFFFF)
+    wire = b"\x00\x00" + _pairs((3, 0xFFFE)) + b"\x00\x00" * 8
+    out = bytearray()
+    total = SPIDevice._decode_rle_into(bytearray(wire), out, 0, 5, min_count=3)
+    assert total == 3 and bytes(out) == b"\xfe\xff" * 3
+    # without the guard the same stream is just short
+    out = bytearray()
+    assert SPIDevice._decode_rle_into(bytearray(wire), out, 0, 4) == 3
+
+
+def test_rle_decoder_still_decodes_the_guard_sample_when_present():
+    wire = _pairs((3, 0xFFFE), (2, 0xFFFF))
+    out = bytearray()
+    total = SPIDevice._decode_rle_into(bytearray(wire), out, 0, 5, min_count=4)
+    assert total == 5 and len(out) == 10
+    data = SPIDevice._decode_rle_stream_bytes(wire, 5, min_count=4)
+    assert len(data) == 10
+    short = SPIDevice._decode_rle_stream_bytes(_pairs((3, 0xFFFE)), 4, min_count=3)
+    assert short == b"\xfe\xff" * 3
