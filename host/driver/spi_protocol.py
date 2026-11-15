@@ -294,6 +294,9 @@ class SPIDevice:
         # larger (about 252 B at <=10 MS/s, 610 B at 100.2 MS/s measured) than
         # the 154 B the fixed slot sizes below were tuned for.
         self._block_latency = None
+        # True when the last batched read got only "idle" error replies from the
+        # FPGA's block-read watchdog (readout starved, e.g. capture over-driven).
+        self.last_read_starved = False
 
     def note_block_latency(self, latency_bytes):
         """Record the observed request-to-response latency (bytes)."""
@@ -525,6 +528,8 @@ class SPIDevice:
             raw = self.spi.stream_payload(bytes(payload), stop_evt=stop_evt)
 
             blocks = {}
+            starved_replies = 0
+            self.last_read_starved = False
             idx = raw.find(SYNC_RSP)
             if idx >= 12:
                 # the request is 12 bytes: the rest is the response latency
@@ -544,10 +549,18 @@ class SPIDevice:
                     status, rsp_seq, rsp_payload = parsed
                     if status == ST_OK:
                         blocks.setdefault(rsp_seq, rsp_payload)
+                    elif status == ST_CAPTURE_IDLE and not rsp_payload:
+                        # The FPGA's block-read watchdog (OLS_Interface
+                        # BLOCK_WD_MAX, 500 us) gave up: the readout was
+                        # starved. Retrying cannot help.
+                        starved_replies += 1
                     idx = raw.find(SYNC_RSP, end)
                 else:
                     idx = raw.find(SYNC_RSP, idx + 1)
 
+            if starved_replies and not blocks:
+                self.last_read_starved = True
+                return [b''] * len(byte_addrs)
             lost = sum(1 for s in seqs if blocks.get(s) is None)
             if (self._block_latency is not None
                     and lost * 4 >= len(seqs) and lost > 0):

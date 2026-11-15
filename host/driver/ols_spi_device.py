@@ -3271,6 +3271,26 @@ class OLSDeviceSPI:
                         probe_compression=probe_blocks)
                     read_completed_at = time.time()
                     if not data:
+                        if stop_evt.is_set():
+                            break
+                        # An empty live read is not a normal end of stream. If
+                        # the FPGA says its readout was starved (block-read
+                        # watchdog replies) or it is dropping samples, the
+                        # capture is over-driven: the continuous-mode read
+                        # gate only starts a burst while the capture FIFO has
+                        # room, and past what the SDRAM pump can store that
+                        # never happens. Say so instead of ending silently.
+                        dropped = self._poll_dropped_samples(min_interval=0)
+                        starved = getattr(self.pkt, 'last_read_starved', False) is True
+                        if starved or (dropped is not None and dropped > 0):
+                            raise RuntimeError(
+                                "capture is over-driven: the FPGA cannot store "
+                                f"{rate_hz / 1e6:.1f} MS/s without loss "
+                                + ("(dropped-sample counter "
+                                   f"{dropped}{'+' if dropped == 0xFFFF else ''}) "
+                                   if dropped else "")
+                                + "and live reads are starved; lower the "
+                                "sample rate")
                         break
                     fetched_samples = len(data) // 2
                     read_elapsed = read_completed_at - read_started_at
@@ -4076,6 +4096,15 @@ class OLSDeviceSPI:
         div = max(1, int(round(self.sys_clk / max(1, int(symbol_rate)) - 1.25)))
         self._warn_div_overflow(symbol_rate, div)
         flags = GEN_FLAG_REPEAT if repeat else 0
+        # CMD_GEN_LOAD APPENDS to the generator FIFO (Signal_Gen.vhd only
+        # clears it on CMD_GEN_STOP / abort) and silently drops what does not
+        # fit in its 256 bytes. Loading a second waveform while a repeating one
+        # is stored therefore plays [old pattern][head of the new one] as one
+        # loop: with a 200-byte debug wave reloaded, the 56 bytes that fit make
+        # the loop 1,024 symbols long and end 24 symbols into a half period, so
+        # one run is 24 symbols too long once per loop. Always start from an
+        # empty FIFO.
+        self.pkt.transaction(CMD_GEN_STOP, timeout=0.5)
         self.pkt.write_register(REG_GEN_DATA, (1 << 8) | flags)
         self.pkt.write_register(REG_GEN_PROTO, 0)
         self._pins(tx_pin=tx_pin, scl_pin=scl_pin)
