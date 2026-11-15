@@ -13,7 +13,8 @@ current repository includes:
 The full-device reference image and host stack have the validation recorded
 below. The seed-7 image also passed timing, was verified in flash, and
 passed focused MCP4725 and capture-path board checks on 2026-09-28.
-The SDRAM read path was fixed on 2026-11-13 (seed-4 image); see
+The SDRAM read path was fixed on 2026-11-13 and continuous capture was made
+lossless under host reads on 2026-11-15 (seed-1 image, generation 3); see
 [Rebuilding The FPGA Image](#rebuilding-the-fpga-image).
 
 ## Current Status
@@ -26,6 +27,11 @@ This repository is currently verified for:
   pump runs at 167 MHz and cannot sustain 200.4 M words/s)
 - Deep SDRAM single-shot capture up to `4,194,304` 16-bit words
 - Packed narrow digital capture at 200 MHz for one selected channel
+- Continuous (live) capture that keeps storing every sample while the host
+  reads, up to 100.2 MS/s on 16 channels and 200 MHz on one channel, with a
+  dropped-sample counter the host can read. The USB link delivers about
+  1 MS/s to the host, so faster live streams are sampled, with the skipped
+  stretches flagged
 - Mixed capture with 16 digital bits plus the reduced two-result ADC frame
 - Analog-fast capture of 1 ADC lane
 - Maximum-analog capture of 4 physical analog inputs
@@ -280,22 +286,32 @@ cd hdl\proj
 .\compile.ps1 -Seed 7
 ```
 
-The 2026-11-13 SDRAM read-timing fix is built with seed `4`, which is what the
-project file now selects. The controller latches DQ inside the chip's CL3 data
-window (`RD_WAIT_EXTRA_CYCLES = 3` in `hdl/rtl/SDRAM_Controller_Custom.vhd`),
-the throwaway prime reads are gone, and the host `SDRAM_READ_LEAD_WORDS` is 0.
-The image uses 7,976 of 8,064 logic elements and 19 of 42 M9K blocks. Its POF
+The current image (generation 3, 2026-11-15) is built with seed `1`, which is
+what the project file selects. On top of the 2026-11-13 read-timing fix (the
+controller latches DQ inside the chip's CL3 data window,
+`RD_WAIT_EXTRA_CYCLES = 3` in `hdl/rtl/SDRAM_Controller_Custom.vhd`) it keeps
+the SDRAM write pump running between bursts of host reads in continuous mode,
+fixes the 1-in-17 word loss in narrow 200 MHz capture, adds a dropped-sample
+counter (register `0x60`, bits 15:0) and makes the RLE stream always send its
+last run. `CMD_GET_METADATA` returns 12 bytes: byte 10 holds feature flags and
+byte 11 the image generation, and the host driver selects its read
+compensations from them, so it also works with older images.
+
+The image uses 8,028 of 8,064 logic elements and 19 of 42 M9K blocks. Its POF
 SHA-256 is
-`0B9483598900C427DAAFEB6FB3F5CDD2493ECE4A66BE7852BAE884F5DDC1577E`, and slow
-85 °C post-fit setup slack is `sys_clk` +0.034 ns, `fast_clk` +0.009 ns, and
-`sdram_core_clk` +0.466 ns. Timing is seed-sensitive: of seeds 1 to 20 only
-seed 4 passed the timing gate for this RTL. On the attached board the image
-passed the hardware validation suite (434/434), the 67-testbench GHDL
-regression, and 10,000 block-pair first-word checks across idle gaps.
+`C37FCA4C6E37E7CF39D7F47048829DC844BAD340D6AD4E98E789E70EDE6BFB58`, and slow
+85 °C post-fit setup slack is `sdram_core_clk` +0.043 ns, `fast_clk` +0.075 ns,
+and `sys_clk` +0.132 ns. Timing is seed-sensitive: seed 1 passed the timing
+gate and the other seeds tried did not, so re-sweep seeds after any RTL change.
+On the attached board (2026-11-15) the image passed the hardware validation
+suite (433/433 with one bench jumper not decoding, so three checks did not
+run), the 72-testbench GHDL regression, and a 32-cell live matrix (four read
+paths at eight rates from 0.1 to 100.2 MS/s) with the producer rate within
+0.005 % of the requested rate and the dropped-sample counter at zero.
 
 ```powershell
 cd hdl\proj
-.\compile.ps1 -Seed 19
+.\compile.ps1 -Seed 1
 ```
 
 For more detail, see:
