@@ -1856,10 +1856,138 @@ class TestOLSDeviceSPIRolling:
         results = list(device_spi.stream_ring_capture(1_000_000, 4, stop_evt))
 
         assert [item[3] for item in results] == [0, 1]
+        # lapped reader (oldest 128 > cursor 4): restart at the producer
+        # minus min(quarter ring, backlog), here the oldest cell
         device_spi.read_capture_range.assert_has_calls([
             call(0, 4, probe_compression=False),
             call(128, 128, probe_compression=False),
         ])
+        assert device_spi.consume_stream_gap() is True
+
+    def _wrapped_ring_stream(self, device_spi, statuses, window=4,
+                             mode='raw'):
+        """Run the block path against scripted status words, return results."""
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = mode
+        device_spi.compress_readback_enabled = mode != 'raw'
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        sequence = list(statuses)
+        device_spi.pkt.get_status.side_effect = (
+            lambda *a, **k: sequence.pop(0) if len(sequence) > 1 else sequence[0])
+        device_spi.read_capture_range = MagicMock(
+            side_effect=lambda start, count, **_kw: b'\x01\x00' * count)
+        device_spi.spi.flush = MagicMock()
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False] * len(statuses) + [True]
+        stop_evt.wait.return_value = False
+        return list(device_spi.stream_ring_capture(
+            1_000_000, window, stop_evt, fetch_multiplier=1))
+
+    def test_stream_ring_capture_wrapped_ring_keeping_up_has_no_reset_or_gap(
+            self, device_spi):
+        """The climbing overrun/oldest counter alone must not reset the cursor."""
+        # tiny ring so the test wraps after a few windows
+        statuses = [
+            {'producer_index': 4 * n, 'oldest_index': max(0, 4 * n - 64),
+             'overrun_count': max(0, 4 * n - 64)}
+            for n in range(1, 40)
+        ]
+        with patch('driver.ols_spi_device.RING_SAMPLE_COUNT', 64),                 patch('driver.ols_spi_device.RING_SAMPLE_HALF', 32):
+            results = self._wrapped_ring_stream(device_spi, statuses)
+        starts = [c.args[0] for c in device_spi.read_capture_range.call_args_list]
+        assert len(starts) >= 18                       # past the wrap (64)
+        assert starts == [4 * i for i in range(len(starts))]   # contiguous
+        assert all(item[3] == 0 for item in results)
+        assert device_spi.consume_stream_gap() is False
+
+    def test_stream_ring_capture_lapped_reader_resyncs_once_and_flags_gap(
+            self, device_spi):
+        """A reader overtaken by the writer skips ahead once, flagged."""
+        statuses = [
+            {'producer_index': 4, 'oldest_index': 0, 'overrun_count': 0},
+            # the writer lapped the reader: oldest (136) is far beyond cursor 4
+            {'producer_index': 200, 'oldest_index': 136, 'overrun_count': 136},
+        ] + [
+            {'producer_index': 200 + 4 * n, 'oldest_index': 136 + 4 * n,
+             'overrun_count': 136 + 4 * n}
+            for n in range(1, 30)
+        ]
+        with patch('driver.ols_spi_device.RING_SAMPLE_COUNT', 64),                 patch('driver.ols_spi_device.RING_SAMPLE_HALF', 32):
+            results = self._wrapped_ring_stream(device_spi, statuses)
+        starts = [c.args[0] for c in device_spi.read_capture_range.call_args_list]
+        assert starts[0] == 0
+        # resync: producer 200 minus a quarter ring (16) = 184, inside the
+        # available data and far from the cell the writer overwrites next
+        assert starts[1] == 184
+        # exactly one resync: everything after it is contiguous
+        assert starts[1:] == [184 + 4 * i for i in range(len(starts) - 1)]
+        assert len(starts) >= 5
+        assert [item[3] for item in results] == (
+            [0] + [1] * (len(results) - 1))
+        assert device_spi.consume_stream_gap() is True
+
+    @pytest.mark.parametrize("mode,support,expect_probe", [
+        ("delta_rle", None, True),    # support unknown: must probe/decode
+        ("delta_rle", True, False),   # known good: normal compressed read
+        ("raw", None, False),         # raw readback needs no probe
+    ])
+    def test_stream_ring_capture_block_path_probes_unknown_compression(
+            self, device_spi, mode, support, expect_probe):
+        """A live block read must never return undecoded compressed words.
+
+        With a compressed codec selected and the support cache still unknown
+        the block reader has to probe (read_capture_range decodes or falls
+        back to raw); probe off would return the FPGA's compressed words.
+        """
+        device_spi.analog_mode = MODE_DIGITAL
+        device_spi._compressed_block_reads_supported['delta_rle'] = support
+        statuses = [
+            {'producer_index': 8, 'oldest_index': 0, 'overrun_count': 0}] * 4
+        self._wrapped_ring_stream(device_spi, statuses, mode=mode)
+        calls = device_spi.read_capture_range.call_args_list
+        assert calls
+        assert all(c.kwargs['probe_compression'] is expect_probe
+                   for c in calls)
+
+    def test_stream_ring_capture_follow_tail_crosses_32_bit_producer_rollover(
+            self, device_spi):
+        """Reader cursors stay valid logical indices across producer 2**32."""
+        ring = RING_SAMPLE_COUNT
+        top = 1 << 32
+        producers = [top - 24, top - 16, top - 8, top + 8, top + 16, top + 24]
+        statuses = [
+            {'producer_index': p & 0xFFFFFFFF,
+             'oldest_index': (p - ring) & 0xFFFFFFFF,
+             'overrun_count': (p - ring) & 0xFFFFFFFF}
+            for p in producers]
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        sequence = list(statuses)
+        device_spi.pkt.get_status.side_effect = (
+            lambda *a, **k: sequence.pop(0) if len(sequence) > 1 else sequence[0])
+        device_spi.read_capture_range = MagicMock(
+            side_effect=lambda start, count, **_kw: bytes([1, 0]) * count)
+        device_spi.spi.flush = MagicMock()
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False] * 12 + [True]
+        stop_evt.wait.return_value = False
+        results = list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, fetch_multiplier=1, follow_tail=True,
+            include_cursor=True))
+        starts = [c.args[0] for c in device_spi.read_capture_range.call_args_list]
+        assert len(starts) >= 4
+        assert all(0 <= s <= 0xFFFFFFFF for s in starts)
+        # chunk starts follow the producer through the rollover, in order
+        distances = [((b - a) & 0xFFFFFFFF) for a, b in zip(starts, starts[1:])]
+        assert all(0 < d < (1 << 31) for d in distances), starts
+        assert any(s >= 0xFFFFFF00 for s in starts)
+        assert any(s < 0x100 for s in starts)           # crossed the boundary
+        assert [r[4] for r in results] == starts[:len(results)]
+        assert device_spi.consume_stream_gap() is True      # tail re-anchor is flagged
 
     def test_stream_ring_capture_uses_block_reads_in_raw_mode(self, device_spi):
         device_spi.pkt = MagicMock()

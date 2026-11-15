@@ -399,6 +399,9 @@ def _decode_sparse_rle_live_frames(wire_chunk: bytes,
 # MIL drops to its slow fallback path.
 RING_INDEX_MASK = 0xFFFFFFFF
 RING_INDEX_HALF = 0x80000000
+# A held-CS stream reader that is lapped this many times in a row without
+# delivering one window is not making progress; fall back instead of spinning.
+MAX_RESYNCS_WITHOUT_DATA = 16
 # The SDRAM ring is a fixed 4 Mi-sample physical window. Keep this domain
 # separate from the 32-bit wire address used by the held-CS stream command.
 RING_SAMPLE_COUNT = 4_194_304
@@ -2586,6 +2589,7 @@ class OLSDeviceSPI:
         oldest_hint = None
         write_overrun_hint = 0
         self._stream_gap = False
+        resync_streak = 0
         # True held-CS streaming is production-safe only for the merged
         # delta_rle path.
         # The legacy raw stream still leaves the shared readback state dirty on
@@ -2651,6 +2655,34 @@ class OLSDeviceSPI:
         pending_segments = []
         previous_stream_end = None
         stream_retry_count = 0
+
+        def mark_gap():
+            """Count and flag a discontinuity for the consumer."""
+            nonlocal overrun_total
+            overrun_total += 1
+            self._stream_gap = True
+
+        def safe_resync_cursor(oldest, producer):
+            """Cursor to restart the block reader after a (possible) lapse.
+
+            A fresh ring that is less than half full starts at 0 (nothing
+            lost). Otherwise restart a quarter of a ring behind the producer:
+            that is far from the cell the writer overwrites next (Oldest, so
+            reading there would race it), and it leaves a backlog below the
+            half-ring limit that the loop treats as "reader hopelessly
+            behind" (a larger backlog would be resynced again at once and
+            the stream would never deliver a chunk).
+            """
+            oldest = int(oldest)
+            producer = int(producer)
+            backlog = distance(producer, oldest)
+            if backlog > RING_SAMPLE_COUNT:
+                # More than the ring holds: an inconsistent status read.
+                # Keep the cursor at Oldest; the caller resamples.
+                return cursor(oldest)
+            if oldest == 0 and backlog <= RING_SAMPLE_HALF:
+                return cursor(0)
+            return cursor(producer - min(RING_SAMPLE_COUNT // 4, backlog))
 
         def discard_pending():
             nonlocal pending, pending_samples, pending_start_sample
@@ -2781,20 +2813,12 @@ class OLSDeviceSPI:
                         raise RuntimeError("stream ring metadata not available")
                     overrun = int(st.get('overrun_count', 0) or 0)
                     write_overrun_hint = overrun
-                    # ``overrun_count`` is a cumulative write-side counter:
-                    # once a circular ring is full it increments for every
-                    # newly overwritten sample, even when this reader is
-                    # consuming the cursor in order.  Only a cursor that is
-                    # actually before Oldest proves that unread data was
-                    # lost.  The held-CS/raw legacy path keeps the historical
-                    # counter behavior; the sequential block path must not
-                    # reset its decoder on every normal ring wrap.
-                    if (not use_newest_stream
-                            and overrun > overrun_total):
-                        overrun_total = overrun
-                        next_sample = None  # writer lapped us: resync to oldest
-                        fetch_cursor = None
-                        discard_pending()
+                    # ``overrun_count`` is a cumulative write-side counter
+                    # (it equals Oldest): once the ring is full it rises with
+                    # every overwritten sample even while this reader keeps
+                    # up, so it must NOT reset the cursor. Only a cursor that
+                    # is actually before Oldest proves unread data was lost;
+                    # that is detected below and flagged exactly once.
 
                 if next_sample is None:
                     # A held-CS stream must start at the newest complete
@@ -2808,14 +2832,15 @@ class OLSDeviceSPI:
                         # whatever preceded this capture. Mark it so an
                         # incremental protocol decoder will not carry a
                         # partial transaction into the live stream.
-                        overrun_total += 1
+                        mark_gap()
                         next_sample = newest_tail_start()
                         if next_sample is None:
                             if stop_evt.wait(0.0005):
                                 break
                             continue
                     else:
-                        next_sample = cursor(oldest_hint)
+                        next_sample = safe_resync_cursor(
+                            oldest_hint, producer_hint)
                     if not use_raw_stream:
                         fetch_cursor = next_sample
                 # next_sample is initialized or the loop has continued above;
@@ -2826,7 +2851,7 @@ class OLSDeviceSPI:
                     # On an overrun, resync a held-CS stream to the newest
                     # decoder-safe window rather than replaying stale data.
                     if use_newest_stream:
-                        overrun_total += 1
+                        mark_gap()
                         next_sample = newest_tail_start()
                         fetch_cursor = (next_sample if not use_raw_stream
                                         else None)
@@ -2835,14 +2860,17 @@ class OLSDeviceSPI:
                                 break
                             continue
                     else:
-                        # The FPGA's overrun counter is not guaranteed to
-                        # change for this host-side cursor resync.  It is
-                        # still a discontinuity in the returned waveform, so
-                        # expose it to incremental protocol decoders instead
-                        # of allowing bytes from two unrelated transactions
-                        # to be joined across the skipped ring region.
-                        overrun_total += 1
-                        next_sample = cursor(oldest_hint)
+                        # The reader was lapped: the ring region it still
+                        # had to read has been overwritten. Skipping it is a
+                        # discontinuity, so flag it (overrun field and
+                        # consume_stream_gap) for incremental decoders, drop
+                        # any half-built window, and restart a quarter of a
+                        # ring after Oldest so the next reads do not race the
+                        # cell the writer is about to overwrite.
+                        mark_gap()
+                        discard_pending()
+                        next_sample = safe_resync_cursor(
+                            oldest_hint, producer_hint)
                         fetch_cursor = next_sample
 
                 if use_newest_stream:
@@ -2861,7 +2889,7 @@ class OLSDeviceSPI:
                                       else next_sample)
                     if (tail_sample is not None and current_cursor is not None
                             and is_ahead(tail_sample, current_cursor)):
-                        overrun_total += 1
+                        mark_gap()
                         next_sample = tail_sample
                         if not use_raw_stream:
                             fetch_cursor = tail_sample
@@ -2873,10 +2901,31 @@ class OLSDeviceSPI:
                 if available > (RING_INDEX_HALF if use_raw_stream
                                 else RING_SAMPLE_HALF):
                     discard_pending()
-                    next_sample = None
-                    fetch_cursor = None
-                    producer_hint = None
-                    oldest_hint = None
+                    if use_newest_stream or available > RING_INDEX_HALF:
+                        # Newest-tail mode re-anchors itself; a distance
+                        # beyond half the 32-bit counter range is an
+                        # ambiguous status read, not a slow reader, so
+                        # resample. Either way a cursor that already
+                        # delivered data is now unknown: flag it.
+                        if total > 0 and not use_newest_stream:
+                            mark_gap()
+                        next_sample = None
+                        fetch_cursor = None
+                        producer_hint = None
+                        oldest_hint = None
+                    else:
+                        # The reader is more than half a ring behind, so the
+                        # writer will lap it soon: skip ahead to a cursor a
+                        # quarter ring behind the producer and flag the
+                        # skipped region. Re-deriving the cursor from fresh
+                        # hints each poll (the old behaviour) made a reader
+                        # slower than the producer reset forever without
+                        # yielding.
+                        mark_gap()
+                        next_sample = safe_resync_cursor(
+                            oldest_hint, producer_hint)
+                        fetch_cursor = (None if use_raw_stream
+                                        else next_sample)
                     continue
                 # In newest-tail block mode, the cursor has just been
                 # re-anchored to the latest complete window above. Therefore
@@ -2923,8 +2972,10 @@ class OLSDeviceSPI:
                             rle_block_fallback = True
                             producer_hint = None
                             oldest_hint = None
-                            next_sample = None
-                            fetch_cursor = None
+                            # The failed stream read delivered nothing, so the
+                            # block reader simply resumes at the same cursor:
+                            # no skipped or replayed samples, no gap.
+                            fetch_cursor = next_sample
                             discard_pending()
                             continue
                     else:
@@ -2971,8 +3022,37 @@ class OLSDeviceSPI:
                             continue
                     read_completed_at = time.time()
                     if is_before(next_sample, int(oldest_hint)):
-                        overrun_total += 1
-                        next_sample = cursor(oldest_hint)
+                        mark_gap()
+                        resync_streak += 1
+                        if (resync_streak >= MAX_RESYNCS_WITHOUT_DATA
+                                and not use_newest_stream):
+                            # Repeated resyncs without delivering a window:
+                            # the stream cannot keep ahead of the writer
+                            # here. Never spin silently; recover through the
+                            # block reader (RLE) or surface the failure.
+                            if not use_rle_stream or stop_evt.is_set():
+                                raise RuntimeError(
+                                    "live stream made no progress after "
+                                    f"{resync_streak} consecutive resyncs")
+                            self._rle_stream_supported = False
+                            use_rle_stream = False
+                            use_raw_stream = False
+                            rle_block_fallback = True
+                            discard_pending()
+                            next_sample = safe_resync_cursor(
+                                oldest_hint, producer_hint)
+                            fetch_cursor = next_sample
+                            producer_hint = None
+                            oldest_hint = None
+                            resync_streak = 0
+                            continue
+                        # Restart far from the cell the writer overwrites
+                        # next. Resyncing exactly at Oldest is lapped again
+                        # by the time the next held-CS stream request is
+                        # acknowledged, so it never delivered a window.
+                        next_sample = (
+                            cursor(oldest_hint) if use_newest_stream
+                            else safe_resync_cursor(oldest_hint, producer_hint))
                         discard_pending()
                         continue
                     if not data:
@@ -3001,6 +3081,7 @@ class OLSDeviceSPI:
                         progress_cb(data, total, window_samples)
                     if full_out is not None:
                         full_out.extend(data)
+                    resync_streak = 0
                     self._ring_trace(
                         f"iter={iteration} yield rle: total={total} "
                         f"data_bytes={len(data)} next={next_sample} "
@@ -3023,9 +3104,20 @@ class OLSDeviceSPI:
                     producer_at_read = producer_hint
                     oldest_at_read = oldest_hint
                     read_started_at = time.time()
+                    # While a compressed codec is selected, the FPGA returns
+                    # compressed block words. Until the per-codec support
+                    # cache is known (None) read_capture_range must probe so
+                    # it decodes them (or discovers they are unsupported and
+                    # reads raw); with probe off it would hand the consumer
+                    # undecoded compressed words as if they were samples.
+                    block_codec = self._readback_codec()
+                    probe_blocks = rle_block_fallback or (
+                        block_codec != 'raw'
+                        and self._compressed_block_reads_supported.get(
+                            block_codec) is None)
                     data = self.read_capture_range(
                         fetch_start, fetch_nsamp,
-                        probe_compression=rle_block_fallback)
+                        probe_compression=probe_blocks)
                     read_completed_at = time.time()
                     if not data:
                         break
