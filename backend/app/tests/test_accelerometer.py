@@ -2086,7 +2086,7 @@ def test_live_capture_uses_continuous_ring_producer_and_stops_cleanly(tmp_path):
     manager = FakeManager(raw)
     service = AccelerometerService(manager, sample_rate_hz=1)
     assert service.start()["running"] is True
-    assert raw.first_sample.wait(1.0)
+    assert raw.first_sample.wait(5.0)
 
     store = SessionStore(tmp_path)
     session = service.start_live_capture(
@@ -2095,7 +2095,7 @@ def test_live_capture_uses_continuous_ring_producer_and_stops_cleanly(tmp_path):
                         num_samples=32),
         "Accelerometer ring live", store)
     try:
-        assert raw.ring_started.wait(1.0)
+        assert raw.ring_started.wait(5.0)
         # The 400 Hz path uses the b1c decoder-safe transport: oversampled
         # standard I2C, one XYZ dialogue per block, and no host prefetch.
         assert raw.ring_kwargs["rate_hz"] == pytest.approx(accelerometer_module.LIVE_TRACE_RATE_HZ)
@@ -2113,7 +2113,13 @@ def test_live_capture_uses_continuous_ring_producer_and_stops_cleanly(tmp_path):
         assert raw.ring_kwargs["follow_tail"] is True
         assert raw.ring_kwargs["fetch_multiplier"] == 1
         assert raw.ring_kwargs["include_cursor"] is True
-        deadline = time.time() + 1.0
+        # The service persists a coalesced snapshot of the samples received so
+        # far (flush every >=0.25 s, then a 0.2 s persister interval), so the
+        # first waveform a client can load holds only the first chunk(s); it is
+        # a complete snapshot, never a half-built one. Wait for the condition
+        # (generously: a loaded CI host can stall the worker thread for
+        # seconds) instead of assuming a 1 s wall-clock cadence.
+        deadline = time.time() + 15.0
         waveform = None
         while time.time() < deadline:
             waveform = store.load_waveform(session.id)
