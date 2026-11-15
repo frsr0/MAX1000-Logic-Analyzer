@@ -6,6 +6,16 @@ import { writeArtifactWithRetry } from '../../src/test/artifactWrite';
 const screenshots = path.resolve(process.cwd(), 'test-results/screenshots');
 const clientId = 'codex-hardware-features';
 const runHardwareMatrix = process.env.PLAYWRIGHT_HARDWARE_MATRIX === '1';
+// Bench wiring for the single-shot digital cases: a jumper from a generator
+// pool pin (TX) to a capture channel (RX). Defaults are the original
+// pool-pin-22 -> CH13 jumper; override for other benches, e.g.
+// PLAYWRIGHT_JUMPER_TX_PIN=2 PLAYWRIGHT_JUMPER_RX_CHANNEL=1.
+const jumperTxPin = Number(process.env.PLAYWRIGHT_JUMPER_TX_PIN ?? 22);
+const jumperRxChannel = Number(process.env.PLAYWRIGHT_JUMPER_RX_CHANNEL ?? 13);
+if (!Number.isInteger(jumperTxPin) || jumperTxPin < 0
+  || !Number.isInteger(jumperRxChannel) || jumperRxChannel < 0 || jumperRxChannel > 15) {
+  throw new Error('PLAYWRIGHT_JUMPER_TX_PIN must be a pool pin >= 0 and PLAYWRIGHT_JUMPER_RX_CHANNEL a capture channel 0-15');
+}
 /**
  * Screenshot with retry: Windows Defender briefly locks freshly-written PNGs
  * during rapid matrix runs ("UNKNOWN: unknown error, open ..."). Space writes
@@ -360,7 +370,7 @@ test('hardware capture matrix validates every advertised mode and rate before ev
     const res = await fetch('/api/capture/stop', { method: 'POST', headers });
     return { ok: res.ok, body: await res.json().catch(() => ({})) };
   });
-  const startJumperStimulus = async () => page.evaluate(async () => {
+  const startJumperStimulus = async () => page.evaluate(async (txPin) => {
     const headers = {
       'Content-Type': 'application/json',
       'X-Client-Id': localStorage.getItem('msa_client_id') ?? '',
@@ -373,7 +383,7 @@ test('hardware capture matrix validates every advertised mode and rate before ev
           protocol: 'uart',
           data_hex: '55aa55aa55aa55aa',
           baud: 1_000_000,
-          tx_pin: 22,
+          tx_pin: txPin,
           scl_pin: 25,
           continuous: true,
         },
@@ -382,7 +392,7 @@ test('hardware capture matrix validates every advertised mode and rate before ev
       }),
     });
     return { ok: res.ok, status: res.status, body: await res.json().catch(() => ({})) };
-  });
+  }, jumperTxPin);
   const stopJumperStimulus = async () => page.evaluate(async () => {
     const headers = {
       'Content-Type': 'application/json',
@@ -419,8 +429,8 @@ test('hardware capture matrix validates every advertised mode and rate before ev
         readback_compression: 'raw',
       };
       try {
-        // Single-shot captures are long enough to prove the installed pin-22
-        // jumper. A rolling capture is intentionally stopped after its first
+        // Single-shot captures are long enough to prove the installed
+        // pool-pin jumper. A rolling capture is intentionally stopped after its first
         // chunk, so an edge is phase-dependent and cannot be required at every
         // advertised rate; rolling still validates a non-empty, well-formed
         // digital payload below.
@@ -429,7 +439,7 @@ test('hardware capture matrix validates every advertised mode and rate before ev
           await stopJumperStimulus().catch(() => {});
           const stimulus = await startJumperStimulus();
           expect(stimulus.ok,
-            `${caseLabel} pool-pin-22 jumper stimulus failed: ${JSON.stringify(stimulus.body)}`)
+            `${caseLabel} pool-pin-${jumperTxPin} jumper stimulus failed: ${JSON.stringify(stimulus.body)}`)
             .toBeTruthy();
         }
         const started = await page.evaluate(async (payload) => {
@@ -517,19 +527,19 @@ test('hardware capture matrix validates every advertised mode and rate before ev
           expect(packed.every((value: unknown) => Number.isInteger(value)
             && Number(value) >= 0 && Number(value) <= 0xffff),
           `${caseLabel} digital payload contains invalid words`).toBeTruthy();
-          const ch13Transitions = packed.slice(1).reduce((count: number, word: number, index: number) => (
-            count + ((((word >> 13) & 1) !== ((packed[index] >> 13) & 1)) ? 1 : 0)
+          const rxTransitions = packed.slice(1).reduce((count: number, word: number, index: number) => (
+            count + ((((word >> jumperRxChannel) & 1) !== ((packed[index] >> jumperRxChannel) & 1)) ? 1 : 0)
           ), 0);
           if (jumperDriven) {
-            expect(ch13Transitions,
-              `${caseLabel} CH13 did not observe the installed pool-pin-22 jumper`).toBeGreaterThan(0);
+            expect(rxTransitions,
+              `${caseLabel} CH${jumperRxChannel} did not observe the installed pool-pin-${jumperTxPin} jumper`).toBeGreaterThan(0);
           }
           content.digital = {
             samples: packed.length,
             min: Math.min(...packed),
             max: Math.max(...packed),
             distinct_words: new Set(packed).size,
-            ...(jumperDriven ? { ch13_transitions: ch13Transitions } : {}),
+            ...(jumperDriven ? { jumper_rx_channel: jumperRxChannel, jumper_rx_transitions: rxTransitions } : {}),
           };
         }
         if (item.analog) {
@@ -598,6 +608,6 @@ test('hardware capture matrix validates every advertised mode and rate before ev
   );
   expect([...evidence, ...failures]).toHaveLength(37);
   const stopped = await stopJumperStimulus();
-  expect(stopped.ok, `pool-pin-22 jumper stimulus did not stop: ${JSON.stringify(stopped.body)}`).toBeTruthy();
+  expect(stopped.ok, `pool-pin-${jumperTxPin} jumper stimulus did not stop: ${JSON.stringify(stopped.body)}`).toBeTruthy();
   expect(failures, JSON.stringify(failures, null, 2)).toHaveLength(0);
 });

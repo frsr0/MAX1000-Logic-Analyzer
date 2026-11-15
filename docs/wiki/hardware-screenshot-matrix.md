@@ -14,8 +14,10 @@ Visual review confirmed digital activity where present, a one-lane
 analog-fast trace, four distinct maximum-analog lanes, and both digital and
 two-result analog data in the mixed captures. The 26 ordinary digital and
 mixed cases are no longer allowed to pass on metadata or a flat payload: each
-restarts a 1 MHz alternating UART source on pool pin 22, observes it through
-the installed jumper on CH13, and records `ch13_transitions` in the manifest.
+restarts a 1 MHz alternating UART source on pool pin 22 (override with
+`PLAYWRIGHT_JUMPER_TX_PIN`), observes it through the installed jumper on CH13
+(`PLAYWRIGHT_JUMPER_RX_CHANNEL`), and records `jumper_rx_channel` and
+`jumper_rx_transitions` in the manifest.
 The current run measured 40–875 transitions per driven case.
 
 The matrix is an acquisition/UI integration check. Electrical quality claims
