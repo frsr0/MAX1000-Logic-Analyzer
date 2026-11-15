@@ -298,7 +298,7 @@ begin
                    std_logic_vector(to_unsigned((b / 65536) mod 256, 8)),
                    std_logic_vector(to_unsigned((b / 16777216) mod 256, 8)));
       pkt_send(spi_cs, sck, spi_mosi, spi_miso, CMD_READ_CAPTURE, addr_pld, 4);
-      wait for 30 us;
+      wait for 250 us;   -- the reply is ready after the fetch latency (up to ~190 us at 100 MS/s)
       pkt_read_rsp(spi_cs, sck, spi_mosi, spi_miso, 1100, st, pay, pl);
       if pl >= 1024 then
         w0 := pay(1) & pay(0);

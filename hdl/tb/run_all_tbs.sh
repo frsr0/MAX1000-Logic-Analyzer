@@ -207,6 +207,7 @@ for tb in "${TBS[@]}"; do
     tb_cont_read)         stop_time="30ms" ;;  # three parallel continuous-capture-while-reading cases (5 ms SDRAM power-up each)
     tb_cont_top)          stop_time="40ms" ;;  # top-level continuous capture + block-read fetch latency (6 ms SDRAM power-up)
     tb_pump_integrity)    stop_time="30ms" ;;  # six parallel capture/readback cases (5 ms SDRAM power-up each)
+    tb_refresh_readback)  stop_time="100ms" ;; # refresh intervals over capture, idle and four readback paths (about 90 s)
     tb_top)               stop_time="30ms" ;;  # 16-pin UART loopback, ~1.3 ms per pin
     *)                    stop_time="$STOP_TIME" ;;
   esac
