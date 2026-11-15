@@ -711,7 +711,7 @@ def test_continuous_capture(dev, debug_on=False):
     for _ in range(10):
         block = dev.pkt.read_capture_block(0)
         if block:
-            data.extend(block[SDRAM_READ_LEAD_WORDS * 2:])
+            data.extend(block[_read_lead_words() * 2:])
             break
         time.sleep(0.02)
     if data:
@@ -2590,7 +2590,7 @@ def test_full_depth_capture(dev):
     # Verify addressing at both ends of the SDRAM buffer without reading
     # back the whole 2 MB: first block, a middle block, and the last block.
     need = MAX_SAMPLES * 2
-    lead = SDRAM_READ_LEAD_WORDS * 2     # bytes of the FPGA's duplicated first block word
+    lead = _read_lead_words() * 2     # bytes of the FPGA's duplicated first block word
     first = dev.pkt.read_capture_block(0)[lead:]
     mid = dev.pkt.read_capture_block((need // 2) & ~1023)[lead:]
     last = dev.pkt.read_capture_block(need - 1024)[lead:]
@@ -3756,6 +3756,12 @@ def test_live_rate_ceiling(dev):
             for freq, c in summary.items()))
     check(True, "live rate ceiling characterization completed")
     save_result("test35_live_rate_ceiling", b"", {"ceilings": summary})
+
+
+def _read_lead_words():
+    """Effective SDRAM read lead (follows the flashed image's metadata)."""
+    import driver.spi_protocol as _p
+    return _p.SDRAM_READ_LEAD_WORDS
 
 
 def main():

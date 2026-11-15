@@ -157,7 +157,10 @@ def _ring_byte_address(start_sample: int) -> int:
 # sample ``s`` came back [mem[s], mem[s], mem[s+1], ...]. Every host path
 # compensated by requesting one extra leading word and dropping it. The read
 # timing is fixed in RTL, so the current image returns true data and this is 0.
-# The mechanism stays for older images; this is the single place to switch it.
+# The mechanism stays for older images. This constant is the default for a
+# known-new image; OLSDeviceSPI.open() replaces it (here and in ols_spi_device)
+# with the value derived from the image's CMD_GET_METADATA, see
+# image_compensations(), so the host is correct against old AND new images.
 SDRAM_READ_LEAD_WORDS = 0
 
 # RLE stream tail guard. The held-CS raw stream pulses the compressor's flush
@@ -167,9 +170,44 @@ SDRAM_READ_LEAD_WORDS = 0
 # and the final single-sample run is never sent (only 0x0000 filler follows) -
 # the stream then looks truncated by exactly one sample. Request this many extra
 # samples and accept the window as soon as the wanted count is decoded; the
-# lost run is always the last, single, extra sample. Set to 0 after the RTL
-# flush fix.
-RLE_STREAM_TAIL_GUARD = 1
+# lost run is always the last, single, extra sample. The RTL flush fix
+# (image feature bit 2) makes this 0; image_compensations() selects 1 for an
+# image without it. This constant is the default for a known-new image.
+RLE_STREAM_TAIL_GUARD = 0
+
+# CMD_GET_METADATA reply layout (bytes): 0..8 identification and sample clock,
+# 9 generator/stream capability flags, 10 image feature flags, 11 image
+# generation. Images before the version field return only 10 bytes.
+META_FEATURE_FLAGS_INDEX = 10
+META_IMAGE_GENERATION_INDEX = 11
+IMAGE_FEATURE_TRUE_READ_DATA = 0x01      # SDRAM read data is true (read timing fix)
+IMAGE_FEATURE_DROP_COUNTER = 0x02        # register 0x60 = dropped-sample counter
+IMAGE_FEATURE_RLE_FLUSH_FIXED = 0x04     # RLE stream always sends the last run
+IMAGE_FEATURE_CONTINUOUS_NO_HOST_LOSS = 0x08   # host reads do not drop samples
+IMAGE_FEATURE_NARROW_NO_LOSS = 0x10      # narrow 200 MHz loses no samples
+REG_DROPPED_SAMPLES = 0x60               # REG_PUMP_VALID_CYCLES on this image
+
+
+def image_features_from_metadata(meta):
+    """(image_generation, feature_bits) from a metadata reply; (0, 0) if old."""
+    meta = bytes(meta or b'')
+    if len(meta) > META_IMAGE_GENERATION_INDEX:
+        return meta[META_IMAGE_GENERATION_INDEX], meta[META_FEATURE_FLAGS_INDEX]
+    return 0, 0
+
+
+def image_compensations(meta):
+    """(sdram_read_lead_words, rle_stream_tail_guard) for an image.
+
+    An image that predates the read-timing fix (10-byte metadata, or feature
+    bit 0 clear) returns the first word of every block twice: lead 1. An image
+    without the RLE flush fix (bit 2 clear) can lose the last single-sample
+    run: tail guard 1.
+    """
+    _generation, features = image_features_from_metadata(meta)
+    lead = 0 if features & IMAGE_FEATURE_TRUE_READ_DATA else 1
+    guard = 0 if features & IMAGE_FEATURE_RLE_FLUSH_FIXED else 1
+    return lead, guard
 # The RLE run counter is 10 bits wide in the FPGA compressor, so live RLE
 # requests must stay below the 1024-sample wrap point. Keep one sample of head-
 # room so the host never asks the hardware to encode a run that can overflow
@@ -250,6 +288,41 @@ class SPIDevice:
         self.spi = spi_port
         self._seq = 0
         self._rx_buf = b''
+        # Bytes between the end of a CMD_READ_CAPTURE request and the start of
+        # its response, as last observed (None = use the historical default).
+        # A continuous-capture image paces its SDRAM reads, so the latency is
+        # larger (about 252 B at <=10 MS/s, 610 B at 100.2 MS/s measured) than
+        # the 154 B the fixed slot sizes below were tuned for.
+        self._block_latency = None
+
+    def note_block_latency(self, latency_bytes):
+        """Record the observed request-to-response latency (bytes)."""
+        if latency_bytes is not None and latency_bytes >= 0:
+            self._block_latency = int(latency_bytes)
+
+    @property
+    def batch_gap_pad(self) -> int:
+        """Idle bytes between a block request and the next request slot."""
+        if self._block_latency is None:
+            return self.BATCH_GAP_PAD
+        # The historical slots work up to BLOCK_LATENCY_TOLERATED (single-shot
+        # readback measures 196 B on current images and was always read at the
+        # 160 B gap); only the excess latency widens the slot, so single-shot
+        # readback keeps its speed.
+        excess = self._block_latency - self.BLOCK_LATENCY_TOLERATED
+        if excess <= 0:
+            return self.BATCH_GAP_PAD
+        return self.BATCH_GAP_PAD + excess + 20
+
+    @property
+    def single_read_extra(self) -> int:
+        """Extra clocks after a single block response for a late response."""
+        if self._block_latency is None:
+            return 128
+        excess = self._block_latency - self.BLOCK_LATENCY_TOLERATED
+        if excess <= 0:
+            return 128
+        return 128 + excess + 32
 
     def _default_ack_pad(self) -> int:
         """Safe ack_pad in SPI bytes for the current SPI clock rate.
@@ -378,9 +451,24 @@ class SPIDevice:
         """Read one 1024-byte capture block at given address."""
         payload = struct.pack('<I', addr)
         need = 8 + BLOCK_SIZE + 32  # sync(2) + header(4) + crc(2) + padding
-        result = self._transaction_raw(CMD_READ_CAPTURE, payload, need, timeout)
-        if result and result[0] == ST_OK:
-            return result[2]
+        # A reply that starts later than the clocked window is cut off (and
+        # lost); never hand back a short block. Retry with progressively wider
+        # windows, each given only a short wait, and only the last one the full
+        # timeout. The first window is the learned one, so a steady session pays
+        # nothing for this.
+        windows = [self.single_read_extra, 1024, 2048]
+        for i, extra in enumerate(windows):
+            last = i == len(windows) - 1
+            result = self._transaction_raw(
+                CMD_READ_CAPTURE, payload, need,
+                timeout if last else min(timeout, 0.05), extra_clocks=extra)
+            if result and result[0] == ST_OK:
+                if extra > self.single_read_extra:
+                    # the wide window was needed: the latency has grown
+                    self._block_latency = max(
+                        self._block_latency or 0,
+                        extra - 128 - 32 + self.BLOCK_LATENCY_TOLERATED)
+                return result[2]
         return b''
 
     # Batched block-read slot sizing (bytes on the SPI wire per block):
@@ -401,8 +489,13 @@ class SPIDevice:
     # simply missing from the scan and gets the per-block raw retry below —
     # correctness never depends on the slot guess.
     BATCH_RSP_PAD_COMPRESSED = 430
+    # Upper bound for a learned/bumped response latency (bytes).
+    MAX_BLOCK_LATENCY = 2000
+    # Request-to-response latency (bytes) the fixed slots above handle.
+    BLOCK_LATENCY_TOLERATED = 197
 
-    def read_capture_blocks(self, byte_addrs, stop_evt=None, compressed=False):
+    def read_capture_blocks(self, byte_addrs, stop_evt=None, compressed=False,
+                            _retried=False):
         """Read multiple 1024-byte capture blocks in ONE CS-held transaction.
 
         Batches CMD_READ_CAPTURE requests with fixed response slots so the
@@ -427,12 +520,15 @@ class SPIDevice:
             seqs.append(seq)
             payload.extend(build_packet(CMD_READ_CAPTURE, seq,
                                         struct.pack('<I', addr)))
-            payload.extend(b"\xff" * (self.BATCH_GAP_PAD + rsp_pad))
+            payload.extend(b"\xff" * (self.batch_gap_pad + rsp_pad))
         try:
             raw = self.spi.stream_payload(bytes(payload), stop_evt=stop_evt)
 
             blocks = {}
             idx = raw.find(SYNC_RSP)
+            if idx >= 12:
+                # the request is 12 bytes: the rest is the response latency
+                self.note_block_latency(idx - 12)
             while idx >= 0:
                 if len(raw) < idx + 8:
                     break
@@ -452,6 +548,22 @@ class SPIDevice:
                 else:
                     idx = raw.find(SYNC_RSP, idx + 1)
 
+            lost = sum(1 for s in seqs if blocks.get(s) is None)
+            if (self._block_latency is not None
+                    and lost * 4 >= len(seqs) and lost > 0):
+                # A quarter or more of the batch was lost to a latency the slot
+                # did not cover (it grew since it was learned): widen the next
+                # batch. An occasional lost block (a rare CRC hit) is just
+                # retried singly and must not slow every later batch.
+                self._block_latency = min(
+                    self.MAX_BLOCK_LATENCY, self._block_latency + 100)
+                if not _retried and (stop_evt is None or not stop_evt.is_set()):
+                    # Redo the whole batch once with the slot that matches the
+                    # latency just observed instead of fetching each lost block
+                    # singly (hundreds of slow round trips).
+                    return self.read_capture_blocks(
+                        byte_addrs, stop_evt=stop_evt, compressed=compressed,
+                        _retried=True)
             result = []
             for addr, seq in zip(byte_addrs, seqs):
                 pl = blocks.get(seq)
@@ -491,7 +603,7 @@ class SPIDevice:
         return True
 
     def _transaction_raw(self, cmd: int, payload: bytes, read_extra: int,
-                         timeout: float = 2.0) -> tuple:
+                         timeout: float = 2.0, extra_clocks: int = 128) -> tuple:
         """Like transaction() but for large read responses."""
         seq = self._next_seq()
         req = build_packet(cmd, seq, payload)
@@ -501,7 +613,7 @@ class SPIDevice:
             # include the full response frame and trailing CRC.
             raw = self.spi.stream_command(
                 req,
-                max(132, read_extra + 128),
+                max(132, read_extra + extra_clocks),
                 ack_pad=self._default_ack_pad(),
             )
             if raw:

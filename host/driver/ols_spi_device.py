@@ -52,6 +52,7 @@ from driver.spi_protocol import (
     GEN_FLAG_SPI_TEST, GEN_FLAG_REPEAT, GEN_FLAG_RS485_PAIR,
     GEN_FLAG_ACCEL_ATTACH,
 )
+from driver import spi_protocol as _proto
 from driver import bit_bang
 
 # Legacy opcodes for hw_validation.py compat
@@ -409,6 +410,18 @@ RING_SAMPLE_MASK = RING_SAMPLE_COUNT - 1
 RING_SAMPLE_HALF = RING_SAMPLE_COUNT // 2
 
 
+def set_image_compensations(lead_words, tail_guard):
+    """Make the host read compensations follow the flashed image.
+
+    The two values live as module constants (defaults for a known-new image)
+    in spi_protocol and, for the block planner, in this module; rebind both.
+    """
+    global SDRAM_READ_LEAD_WORDS
+    SDRAM_READ_LEAD_WORDS = int(lead_words)
+    _proto.SDRAM_READ_LEAD_WORDS = int(lead_words)
+    _proto.RLE_STREAM_TAIL_GUARD = int(tail_guard)
+
+
 def plan_range_block(sample: int, remaining: int, block_samples: int = 512):
     """Plan one CMD_READ_CAPTURE block for read_capture_range.
 
@@ -654,6 +667,12 @@ class OLSDeviceSPI:
         # compression tax on every chunk of a long-running capture.
         self._compressed_block_reads_supported = {'delta_rle': None, 'rle': None}
         self._rle_stream_supported = None
+        # Image identity from CMD_GET_METADATA bytes 10/11 (0/0 for an image
+        # that predates the version field). See _detect_image_features().
+        self.image_generation = 0
+        self.image_features = 0
+        self._dropped_samples = None
+        self._dropped_polled_at = 0.0
         self._readback_hardware_is_raw = True
         # Software digital glitch / hysteresis filter (applied to captured
         # digital samples on the host; the FPGA captures raw pins).
@@ -796,6 +815,7 @@ class OLSDeviceSPI:
                 self._pkt = SPIDevice(self.spi)
                 self._detect_sample_clk()
                 self._detect_gen_div_width()
+                self._detect_image_features()
                 self._ring_seeded = False
                 return
             except Exception as e:
@@ -877,6 +897,108 @@ class OLSDeviceSPI:
     def gen_div_mask(self):
         """Bit mask for the REG_GEN_BAUD divider of the flashed bitstream."""
         return 0xFFFFFF if getattr(self, "_gen_div_width", 16) >= 24 else 0xFFFF
+
+    def _detect_image_features(self):
+        """Read the image generation / feature bits and select the host
+        compensations that depend on them (read-lead words, RLE tail guard)."""
+        meta = self.get_metadata()
+        if len(meta) < 9:
+            return
+        self.apply_image_metadata(meta)
+
+    def apply_image_metadata(self, meta):
+        """Adopt the image identity in ``meta`` (a CMD_GET_METADATA reply).
+
+        This is the single place where SDRAM_READ_LEAD_WORDS and
+        RLE_STREAM_TAIL_GUARD follow the flashed image. Environment overrides
+        OLS_SDRAM_READ_LEAD_WORDS / OLS_RLE_STREAM_TAIL_GUARD pin a value.
+
+        Rule: 10-byte metadata (no version byte) means the image predates the
+        read-timing fix (lead 1) and the RLE flush fix (guard 1); that is
+        right for every image outside the hdl-le-recovery branch. Two
+        intermediate builds from that branch (seed 19 and seed 4) have the
+        read-timing fix but still report 10 bytes: run them with
+        OLS_SDRAM_READ_LEAD_WORDS=0 (and OLS_RLE_STREAM_TAIL_GUARD=1).
+        """
+        self.image_generation, self.image_features =             _proto.image_features_from_metadata(meta)
+        lead, guard = _proto.image_compensations(meta)
+        lead_env = os.environ.get("OLS_SDRAM_READ_LEAD_WORDS")
+        guard_env = os.environ.get("OLS_RLE_STREAM_TAIL_GUARD")
+        if lead_env is not None:
+            lead = int(lead_env)
+        if guard_env is not None:
+            guard = int(guard_env)
+        set_image_compensations(lead, guard)
+        if self.image_features & _proto.IMAGE_FEATURE_CONTINUOUS_NO_HOST_LOSS:
+            # This image paces continuous-mode SDRAM reads (bursts + idle), so
+            # block responses start ~250 bytes after the request, not ~154.
+            # Start with a wide window; read_capture_blocks refines it.
+            try:
+                self.pkt.note_block_latency(252)
+            except Exception:
+                pass
+        if lead and lead_env is None:
+            LOG.warning(
+                "FPGA image generation %d predates the SDRAM read-timing fix; "
+                "reading blocks with %d lead word(s) dropped. Flash a current "
+                "image, or for a branch build that has the fix but reports "
+                "10-byte metadata (seed 19 / seed 4) set "
+                "OLS_SDRAM_READ_LEAD_WORDS=0.", self.image_generation, lead)
+        return lead, guard
+
+    @property
+    def has_true_read_data(self):
+        return bool(self.image_features & _proto.IMAGE_FEATURE_TRUE_READ_DATA)
+
+    @property
+    def has_drop_counter(self):
+        return bool(self.image_features & _proto.IMAGE_FEATURE_DROP_COUNTER)
+
+    @property
+    def rle_flush_fixed(self):
+        return bool(self.image_features & _proto.IMAGE_FEATURE_RLE_FLUSH_FIXED)
+
+    @property
+    def continuous_no_host_loss(self):
+        return bool(self.image_features
+                    & _proto.IMAGE_FEATURE_CONTINUOUS_NO_HOST_LOSS)
+
+    @property
+    def narrow_no_loss(self):
+        return bool(self.image_features & _proto.IMAGE_FEATURE_NARROW_NO_LOSS)
+
+    def read_dropped_samples(self):
+        """Samples the FPGA skipped in the current continuous capture.
+
+        16-bit saturating counter (register 0x60), cleared when a capture is
+        configured; in narrow mode it counts lost 16-sample words. Returns
+        None ("unknown") when the image has no counter or the read fails; 0 is
+        a real "no loss".
+        """
+        if not self.has_drop_counter:
+            return None
+        value = self.pkt.read_register(_proto.REG_DROPPED_SAMPLES)
+        if value is None or value < 0:
+            return None
+        self._dropped_samples = int(value) & 0xFFFF
+        self._dropped_polled_at = time.monotonic()
+        return self._dropped_samples
+
+    @property
+    def dropped_samples(self):
+        """Last drop count seen by the live stream (None = unknown)."""
+        return self._dropped_samples
+
+    def _poll_dropped_samples(self, min_interval=0.25):
+        """Rate-limited read_dropped_samples for the live stream loop."""
+        if not self.has_drop_counter:
+            return self._dropped_samples
+        if time.monotonic() - self._dropped_polled_at < min_interval:
+            return self._dropped_samples
+        try:
+            return self.read_dropped_samples()
+        except Exception:
+            return self._dropped_samples
 
     def _detect_gen_div_width(self):
         """Read generator and direct-stream features from metadata byte 9."""
@@ -2024,6 +2146,7 @@ class OLSDeviceSPI:
             if (st.get('producer_index') is not None
                     and st.get('oldest_index') is not None):
                 self._ring_seeded = True
+                self._poll_dropped_samples()
                 return st
             time.sleep(delay)
         return st
@@ -2590,6 +2713,9 @@ class OLSDeviceSPI:
         write_overrun_hint = 0
         self._stream_gap = False
         resync_streak = 0
+        # Measured block-read speed (samples/s) for sizing reads so the writer
+        # cannot lap them (see the fetch cap below).
+        read_rate_est = None
         # True held-CS streaming is production-safe only for the merged
         # delta_rle path.
         # The legacy raw stream still leaves the shared readback state dirty on
@@ -2655,6 +2781,11 @@ class OLSDeviceSPI:
         pending_segments = []
         previous_stream_end = None
         stream_retry_count = 0
+
+        def ring_rate_now(rate):
+            """Samples (words in narrow mode) the ring gains per second."""
+            return (rate / 16.0 if (self._raw_flags & MODE_NARROW_DIGITAL)
+                    else float(rate))
 
         def mark_gap():
             """Count and flag a discontinuity for the consumer."""
@@ -2731,6 +2862,10 @@ class OLSDeviceSPI:
                 "read_started_at": float(read_started_at),
                 "read_completed_at": float(read_completed_at),
                 "ring_sample_rate_hz": float(rate_hz),
+                # FPGA-side silent loss since the capture was armed (16-bit
+                # saturating counter, narrow mode counts 16-sample words);
+                # None = the image has no counter (unknown, not zero).
+                "dropped_samples": self._dropped_samples,
             }
 
         def newest_tail_start():
@@ -3099,6 +3234,22 @@ class OLSDeviceSPI:
                         available,
                         max(window_samples,
                             window_samples * fetch_multiplier))
+                    # The ring is overwritten at the capture rate while a read
+                    # proceeds at ``read_rate_est``: sample i of a read is
+                    # overwritten before it is read once
+                    # backlog + i * (ring_rate / read_rate - 1) >= ring size.
+                    # Cap the read so that cannot happen (a 131 k-sample read
+                    # at 100 MS/s takes ~120 ms, three ring laps).
+                    ring_rate = (rate_hz / 16.0
+                                 if (self._raw_flags & MODE_NARROW_DIGITAL)
+                                 else float(rate_hz))
+                    if read_rate_est and ring_rate / read_rate_est > 1.5:
+                        ratio = ring_rate / read_rate_est
+                        backlog_est = min(int(available), RING_SAMPLE_COUNT)
+                        safe = int((RING_SAMPLE_COUNT * 3 // 4 - backlog_est)
+                                   / (ratio - 1.0))
+                        fetch_nsamp = min(
+                            fetch_nsamp, max(window_samples, safe))
                     fetch_start = (fetch_cursor if fetch_cursor is not None
                                    else next_sample)
                     producer_at_read = producer_hint
@@ -3122,6 +3273,41 @@ class OLSDeviceSPI:
                     if not data:
                         break
                     fetched_samples = len(data) // 2
+                    read_elapsed = read_completed_at - read_started_at
+                    if read_elapsed > 0 and fetched_samples:
+                        inst_rate = fetched_samples / read_elapsed
+                        read_rate_est = (inst_rate if read_rate_est is None
+                                         else 0.5 * (read_rate_est + inst_rate))
+                    # Did the writer lap this read? Sample s is intact only if
+                    # Oldest never passed it, and Oldest only grows, so after
+                    # the read every sample before Oldest is suspect (it may
+                    # belong to a later lap). Check only when the read was
+                    # long enough for that to be possible.
+                    if (ring_rate_now(rate_hz) * read_elapsed
+                            >= RING_SAMPLE_COUNT // 8
+                            or distance(int(producer_hint), int(fetch_start))
+                            >= RING_SAMPLE_COUNT * 3 // 4):
+                        st_after = self._get_ring_status()
+                        oldest_after = st_after.get('oldest_index')
+                        producer_after = st_after.get('producer_index')
+                        if oldest_after is not None and producer_after is not None:
+                            producer_hint = producer_after
+                            oldest_hint = oldest_after
+                            if is_ahead(oldest_after, fetch_start):
+                                lost = min(
+                                    fetched_samples,
+                                    distance(oldest_after, fetch_start) + 16)
+                                mark_gap()
+                                discard_pending()
+                                data = data[lost * 2:]
+                                fetch_start = cursor(fetch_start + lost)
+                                fetched_samples -= lost
+                                if fetched_samples <= 0:
+                                    # the whole read was overwritten
+                                    next_sample = safe_resync_cursor(
+                                        oldest_after, producer_after)
+                                    fetch_cursor = next_sample
+                                    continue
                     if pending_samples == 0:
                         pending_start_sample = fetch_start
                     pending += data

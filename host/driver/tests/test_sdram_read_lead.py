@@ -112,10 +112,12 @@ def test_rle_stream_drops_the_decoded_lead_word(lead1):
     assert all(count <= proto.MAX_RLE_STREAM_SAMPLES for _, count in pkt.calls)
 
 
-def test_rle_tail_guard_requests_one_extra_sample_and_trims_it():
-    """The compressor can lose the final single-sample run (flush pulse ignored
-    while it is emitting); the host asks for one extra sample and trims it."""
-    assert proto.RLE_STREAM_TAIL_GUARD == 1
+def test_rle_tail_guard_requests_one_extra_sample_and_trims_it(monkeypatch):
+    """An image without the RLE flush fix can lose the final single-sample run
+    (flush pulse ignored while it is emitting); the host asks for one extra
+    sample and trims it. The current image has the fix, so default is 0."""
+    assert proto.RLE_STREAM_TAIL_GUARD == 0
+    monkeypatch.setattr(proto, "RLE_STREAM_TAIL_GUARD", 1)
     seen = {}
 
     class Pkt(SPIDevice):

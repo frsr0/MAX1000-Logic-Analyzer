@@ -136,6 +136,7 @@ def test_open_retries_then_configures_latency_and_detection(monkeypatch):
     dev = OLSDeviceSPI()
     dev._detect_sample_clk = MagicMock()
     dev._detect_gen_div_width = MagicMock()
+    dev._detect_image_features = MagicMock()
     dev.open()
 
     assert len(attempts) == 3
@@ -187,6 +188,7 @@ def test_open_reraises_third_failure_and_latency_query_is_optional(monkeypatch):
     dev = OLSDeviceSPI()
     dev._detect_sample_clk = MagicMock()
     dev._detect_gen_div_width = MagicMock()
+    dev._detect_image_features = MagicMock()
     dev.open()
     dev.close()
     assert dev.spi is None and dev.pkt is None
@@ -1641,6 +1643,7 @@ def test_last_small_metadata_open_and_trace_branches(monkeypatch):
     dev = OLSDeviceSPI()
     dev._detect_sample_clk = MagicMock()
     dev._detect_gen_div_width = MagicMock()
+    dev._detect_image_features = MagicMock()
     dev.open()
     dev.spi.dev.setLatencyTimer.assert_not_called()
 

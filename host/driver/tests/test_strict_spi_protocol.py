@@ -123,7 +123,8 @@ def test_transaction_accepts_request_phase_response_and_enforces_deadline(monkey
 
 def test_single_block_and_stream_block_report_success_and_failure():
     pkt = protocol.SPIDevice(object())
-    pkt._transaction_raw = MagicMock(side_effect=[None, (protocol.ST_OK, 0, b"capture"), None, (protocol.ST_OK, 0, b"stream")])
+    # a failed block read tries three window sizes before giving up
+    pkt._transaction_raw = MagicMock(side_effect=[None, None, None, (protocol.ST_OK, 0, b"capture"), None, (protocol.ST_OK, 0, b"stream")])
     assert pkt.read_capture_block(12) == b""
     assert pkt.read_capture_block(12) == b"capture"
     assert pkt.read_stream_block() == b""
