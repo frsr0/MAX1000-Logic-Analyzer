@@ -204,6 +204,8 @@ for tb in "${TBS[@]}"; do
     tb_gen_loopback)      stop_time="30ms" ;;  # real-pin SDRAM model, two capture scenarios
     tb_ols_rle_raw_stream) stop_time="30ms" ;; # complete 16K-sample compressed stream
     tb_pump_overflow_keep) stop_time="30ms" ;;  # 200.4 MS/s overflow, deep FIFO fill + readback of the kept prefix
+    tb_cont_read)         stop_time="30ms" ;;  # three parallel continuous-capture-while-reading cases (5 ms SDRAM power-up each)
+    tb_cont_top)          stop_time="40ms" ;;  # top-level continuous capture + block-read fetch latency (6 ms SDRAM power-up)
     tb_pump_integrity)    stop_time="30ms" ;;  # six parallel capture/readback cases (5 ms SDRAM power-up each)
     tb_top)               stop_time="30ms" ;;  # 16-pin UART loopback, ~1.3 ms per pin
     *)                    stop_time="$STOP_TIME" ;;

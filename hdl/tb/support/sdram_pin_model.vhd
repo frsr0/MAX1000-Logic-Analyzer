@@ -30,7 +30,13 @@ entity sdram_pin_model is
     -- existing testbench on the legacy window (drives DQ one cycle after READ
     -- for CL+1 cycles), so their behaviour is unchanged.
     REAL_READ_TIMING : boolean := false;
-    TAC : time := 5.4 ns
+    TAC : time := 5.4 ns;
+    -- READ_HOLD_CYCLES (REAL_READ_TIMING only): when > 0 the read data is
+    -- released (Z) that many clock edges after the CL-th edge instead of being
+    -- held until the next read. A real chip stops driving DQ after its burst;
+    -- the default hold-until-replaced keeps the bus driven and would contend
+    -- with the first write that follows a read (mixed read/write benches).
+    READ_HOLD_CYCLES : natural := 0
   );
   port (
     clk   : in    std_logic;
@@ -109,6 +115,7 @@ begin
     variable rd_drive : natural range 0 to CL + 4 := 0;
     variable rd_wait  : natural range 0 to 15 := 0;  -- REAL_READ_TIMING countdown
     variable rd_held  : boolean := false;  -- REAL_READ_TIMING: driving held read data
+    variable rd_rel   : natural range 0 to 15 := 0;  -- REAL_READ_TIMING: edges until release
   begin
     if rising_edge(clk) then
       now_cyc := now_cyc + 1;
@@ -122,6 +129,13 @@ begin
           if rd_wait = 0 then
             dq <= transport rd_data after TAC;
             rd_held := true;
+            rd_rel := READ_HOLD_CYCLES;
+          end if;
+        elsif rd_rel > 0 then
+          rd_rel := rd_rel - 1;
+          if rd_rel = 0 then
+            dq <= (others => 'Z');
+            rd_held := false;
           end if;
         elsif not rd_held then
           dq <= (others => 'Z');

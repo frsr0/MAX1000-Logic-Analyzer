@@ -372,6 +372,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL raw_comp_pop         : STD_LOGIC := '0';
   CONSTANT SAMPLE_CLK_KHZ_SLV : STD_LOGIC_VECTOR(31 downto 0) :=
     STD_LOGIC_VECTOR(TO_UNSIGNED(SAMPLE_CLK_HZ / 1000, 32));
+  -- Image identification returned by CMD_GET_METADATA bytes 10 and 11.
+  -- Generation 3: read-timing fix (bit0), dropped-sample counter (bit1), RLE
+  -- stream flush fix (bit2), continuous capture runs between host reads (bit3),
+  -- narrow 200 MHz loses no samples (bit4).
+  CONSTANT IMAGE_FEATURES2 : STD_LOGIC_VECTOR(7 downto 0) := x"1F";
+  CONSTANT IMAGE_GENERATION : STD_LOGIC_VECTOR(7 downto 0) := x"03";
   SIGNAL sig_rd_pend_d1       : STD_LOGIC := '0';
   -- Drives the OUT request toggle so the FSM can read/flip it (port is OUT).
   SIGNAL blk_req_tog_i        : STD_LOGIC := '0';
@@ -1738,8 +1744,21 @@ BEGIN
               -- bit0 = 24-bit generator divider, bit1 = direct live FIFO,
               -- bit2 = framed held-CS live stream (continuous waveform).
               rsp_buf(9) := x"0F";
-              rsp_buf_len := 10;
-              rsp_len_v := 10;
+              -- byte 10: image feature flags (second flag byte). Old hosts read
+              -- only bytes 0-9 (they check len >= 10), so the extra bytes are
+              -- backwards compatible.
+              --   bit0 = SDRAM read data is true (read-timing fix: data is
+              --          latched inside the chip's CL3 window)
+              --   bit1 = dropped-sample counter present (REG 0x60 bits 15:0)
+              --   bit2 = RLE stream flush fixed (the final run is always sent)
+              --   bit3 = continuous capture does not lose samples to host reads
+              --   bit4 = narrow 200 MHz capture loses no samples
+              rsp_buf(10) := IMAGE_FEATURES2;
+              -- byte 11: image generation (increments with each image that
+              -- changes host-visible behaviour).
+              rsp_buf(11) := IMAGE_GENERATION;
+              rsp_buf_len := 12;
+              rsp_len_v := 12;
               st := BUILD_RSP;
 
             when CMD_ARM_CAPTURE =>

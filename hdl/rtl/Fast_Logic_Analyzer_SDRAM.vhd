@@ -209,6 +209,22 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal keep_clk          : std_logic := '0';
   signal overflow_keep_r   : std_logic := '0';
   signal fifo_rawfull_cmp_r : std_logic := '0';
+  -- Dropped-sample counter (continuous mode). drop_ev_r is a one-cycle FAST_CLK
+  -- event for every sample / narrow word the sampler could not push because the
+  -- capture FIFO was not accepting. drop_cnt_f saturates at 0xFFFF; it is
+  -- crossed to pclk with a request/acknowledge snapshot (drop_snap_f is held
+  -- stable between request and acknowledge) and held by Index_Hold like the
+  -- ring indices. Host: REG_PUMP_VALID_CYCLES (0x60), bits 15:0.
+  signal drop_ev_r      : std_logic := '0';
+  signal drop_cnt_f     : unsigned(15 downto 0) := (others => '0');
+  signal drop_snap_f    : unsigned(15 downto 0) := (others => '0');
+  signal drop_ack_f     : std_logic := '0';
+  signal drop_req_s1    : std_logic := '0';
+  signal drop_req_s2    : std_logic := '0';
+  signal drop_req_p     : std_logic := '0';
+  signal drop_ack_s1    : std_logic := '0';
+  signal drop_ack_s2    : std_logic := '0';
+  signal drop_val_p     : std_logic_vector(15 downto 0) := (others => '0');
   -- wrusedw register stage: the dcfifo's usedw subtractor (write pointer minus
   -- the synchronised read pointer) is a long path at 13 bits, so the almost-
   -- full and raw-full compares start from this register, not from the megafunction
@@ -414,6 +430,18 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   -- outstanding (rd_pend2), so a 1-cycle-stale gate admits at most one extra
   -- in-flight write against 8 slots of reserved headroom.
   signal rdfifo_afull_r : std_logic := '0';
+  -- Continuous-mode reads run in bounded bursts of RD_BURST_N words so the write
+  -- pump keeps the bus in between: a burst starts only when the response FIFO
+  -- has room for the whole burst (rdfifo_room_r), and RD_COOL_N idle issue cycles
+  -- follow it (refresh and the pump get the bus; a burst of 16 reads is ~320
+  -- pclk cycles, far inside the capture FIFO's fill time at 100.2 MS/s).
+  constant RD_BURST_N : natural := 16;
+  constant RD_COOL_N  : natural := 80;
+  signal rdfifo_room_r  : std_logic := '0';
+  -- Capture FIFO read-side fill below 512 words (of AFIFO_DEPTH): a continuous
+  -- read burst only starts while the capture FIFO has plenty of room, so the
+  -- reader yields to the write pump whenever the pump is behind.
+  signal cap_low_r      : std_logic := '0';
   signal rdfifo_aclr   : std_logic := '0';
   -- Pipeline registers for readout address (breaks 22-bit comparator + conversion path)
   signal addr_is_wrap  : std_logic := '0';
@@ -461,7 +489,12 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal cap_busy  : std_logic := '0';
   signal cap_pop   : std_logic := '0';
   signal cap_wr    : std_logic := '0';
-  signal cap_addr  : std_logic_vector(21 downto 0) := (others => '0');
+  signal cap_addr  : std_logic_vector(21 downto 0);
+  -- Write address of the next burst. A signal (not a process variable) so the
+  -- controller's burst address port can be wired straight from it: it only
+  -- changes at the burst commit (P_M3) and at run start, never while a burst
+  -- request/burst is outstanding.
+  signal waddr : natural range 0 to Max_Samples - 1 := 0;
   signal cap_len   : std_logic_vector(8 downto 0) := (others => '0');
   -- Pump burst sequencer. P_C1..P_C4 compute the burst (row remainder,
   -- budget / ring remainder, length), P_REQ presents it, P_RUN waits for the
@@ -472,11 +505,12 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   signal pst        : pump_state_t := P_IDLE;
   signal wcnt       : natural range 0 to 256 := 0;  -- words written this burst
   signal row_rem_r  : natural range 0 to 256 := 0;
-  signal ring_rem_r : natural range 0 to Max_Samples := 0;
-  signal lim_r      : natural range 0 to Max_Samples := 0;
+  -- ra_r / rb_r are time-shared between the burst-compute states (P_C1..P_C4:
+  -- ring remainder, limit) and the commit states (P_M1..P_M3: new write address,
+  -- new budget); the two groups of states never overlap.
+  signal ra_r       : natural range 0 to Max_Samples := 0;
+  signal rb_r       : natural range 0 to Max_Samples := 0;
   signal len_r      : natural range 0 to 256 := 0;
-  signal wsum_r     : natural range 0 to Max_Samples := 0;
-  signal rem_r      : natural range 0 to Max_Samples := 0;
   signal wrap_r     : std_logic := '0';
   signal remz_r     : std_logic := '0';
   signal bnz_r      : std_logic := '0';
@@ -563,6 +597,8 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   end component;
 
 begin
+
+  cap_addr <= std_logic_vector(to_unsigned(waddr, 22));
 
   -- The raw-only profile deliberately has no packed producer. Keeping its
   -- path select at a constant lets Quartus remove the unused MSO branch and
@@ -1094,6 +1130,7 @@ begin
         packed_budget_last_r <= '0';
         packed_budget_reload_r <= '0';
         bram_wren <= '0';
+        drop_ev_r <= '0';
         afull_r <= fifo_wralmost_full;
 
         -- fifo_wdata datapath mux (DECOUPLED from capture_en_r).
@@ -1158,6 +1195,17 @@ begin
         end if;
 
         if fifo_overflow_f = '0' then
+          -- Narrow word write. Independent of the sample branches below: at
+          -- RATE_DIV 1 a sample tick arrives every FAST_CLK, and when this was a
+          -- branch of the priority chain the cycle that wrote a finished word
+          -- (1 in 17) consumed a tick without shifting its sample in, losing
+          -- 5.9 % of the samples at 200 MHz.
+          if narrow_word_pending_r = '1' and afull_r = '0'
+             and not (capture_en_r = '1' and packed_mode_path_f = '1') then
+            fifo_wr <= '1';
+            narrow_word_pending_r <= '0';
+            budget_consume_v := (sample_rem_nonzero_r = '1');
+          end if;
           if capture_en_r = '1' and packed_mode_path_f = '1' then
             -- Packed mode (mso_capture) samples digital_in unconditionally
             -- every fast_clk cycle -- no Rate_Div/sample_tick_r gating (see
@@ -1186,12 +1234,7 @@ begin
             -- continuous_f (synced), not the raw Continuous_Mode port --
             -- see the Stage 2c comment above for the bug this caused.
             budget_consume_v := (sample_rem_nonzero_r = '1');
-          elsif narrow_word_pending_r = '1' and afull_r = '0' then
-            -- fifo_wdata (= narrow_word_data_r) is driven by the decoupled data
-            -- mux above; here we only assert the write strobe and clear pending.
-            fifo_wr <= '1';
-            narrow_word_pending_r <= '0';
-            budget_consume_v := (sample_rem_nonzero_r = '1');
+          -- (narrow word write: see the independent block above)
           -- Pre-trigger BRAM is digital-only; skip it entirely in analog stream
           -- mode so only ADC frame words enter the FIFO.
           elsif pretrig_en_r = '1' and pretrig_tick_cnt < 8 and astream_f = '0' then
@@ -1256,6 +1299,10 @@ begin
             -- the shift-register update.
             if narrow_valid_v = '1' then
               if narrow_last_v = '1' then
+                -- A finished word still pending (FIFO not accepting) is lost.
+                if narrow_word_pending_r = '1' and afull_r = '1' and continuous_f = '1' then
+                  drop_ev_r <= '1';
+                end if;
                 narrow_word_data_r(14 downto 0) <= narrow_shift_r(14 downto 0);
                 narrow_word_data_r(15) <= narrow_bit_v;
                 narrow_word_pending_r <= '1';
@@ -1290,6 +1337,9 @@ begin
             if raw_full_r = '0' then
               fifo_wr <= '1';
               budget_consume_v := (sample_rem_nonzero_r = '1');
+            end if;
+            if raw_full_r = '1' and continuous_f = '1' then
+              drop_ev_r <= '1';
             end if;
             if raw_full_r = '1' and continuous_f = '0' then
               -- Stop the sampler here: every earlier sample was pushed, this
@@ -1515,6 +1565,38 @@ begin
       end if;
     end process;
   end generate;
+
+  -- Dropped-sample counter (FAST_CLK) with request/acknowledge snapshot.
+  process(FAST_CLK)
+  begin
+    if rising_edge(FAST_CLK) then
+      if cfg_valid_edge = '1' then
+        drop_cnt_f <= (others => '0');
+      elsif drop_ev_r = '1' and drop_cnt_f /= x"FFFF" then
+        drop_cnt_f <= drop_cnt_f + 1;
+      end if;
+      drop_req_s1 <= drop_req_p;
+      drop_req_s2 <= drop_req_s1;
+      if drop_req_s2 /= drop_ack_f then
+        drop_snap_f <= drop_cnt_f;
+        drop_ack_f  <= drop_req_s2;
+      end if;
+    end if;
+  end process;
+
+  process(pclk)
+  begin
+    if rising_edge(pclk) then
+      drop_ack_s1 <= drop_ack_f;
+      drop_ack_s2 <= drop_ack_s1;
+      -- Request answered (ack follows req): take the snapshot unless the host
+      -- is mid-packet (Index_Hold), then ask for the next one.
+      if drop_ack_s2 = drop_req_p and index_hold_p = '0' then
+        drop_val_p <= std_logic_vector(drop_snap_f);
+        drop_req_p <= not drop_req_p;
+      end if;
+    end if;
+  end process;
 
   process(pclk)
   begin
@@ -1759,7 +1841,6 @@ begin
     variable read_addr : natural := 0;
     -- Single write-address counter shared by single-shot and continuous mode
     -- (only one mode advances it per run; reset on run start only).
-    variable waddr     : natural range 0 to Max_Samples - 1 := 0;
     variable a_reg   : natural range 0 to Max_Samples := Max_Samples;
     variable rd_pend : std_logic := '0';
     -- Streaming block-readout state (single-shot CMD_READ_CAPTURE path)
@@ -1789,6 +1870,8 @@ begin
     -- address advance by one pclk, so an immediate reissue would re-read the
     -- same address and duplicate a sample.
     variable rd_gap        : std_logic := '0';
+    variable rd_burst_left : natural range 0 to RD_BURST_N := 0;
+    variable rd_cool       : natural range 0 to RD_COOL_N := 0;
     -- FIFO pops come from exactly two registers, never at the same time: the
     -- SDRAM controller's capture_pop (during a burst) and drain_rd_r (run-start
     -- stale-word drain / post-budget discard, only while no burst is
@@ -1841,6 +1924,17 @@ begin
         rdfifo_afull_r <= '1';
       else
         rdfifo_afull_r <= '0';
+      end if;
+      if rdfifo_wrfull = '0'
+         and unsigned(rdfifo_wrusedw) < RDFIFO_DEPTH - 8 - RD_BURST_N then
+        rdfifo_room_r <= '1';
+      else
+        rdfifo_room_r <= '0';
+      end if;
+      if unsigned(fifo_rdusedw(AFIFO_WIDTHU-1 downto 9)) = 0 then
+        cap_low_r <= '1';
+      else
+        cap_low_r <= '0';
       end if;
       -- FIFO pop permission (see the read-timing block comment above the
       -- process). pop_ok_r is a grant: "one more word may be popped one cycle
@@ -1968,9 +2062,8 @@ begin
           if abort_v then
             pst <= P_IDLE;
           else
-            cap_addr   <= std_logic_vector(to_unsigned(waddr, 22));
             row_rem_r  <= 256 - (waddr mod 256);
-            ring_rem_r <= Max_Samples - waddr;
+            ra_r <= Max_Samples - waddr;
             pst <= P_C2;
           end if;
         when P_C2 =>
@@ -1978,9 +2071,9 @@ begin
             pst <= P_IDLE;
           else
             if continuous_p = '1' then
-              lim_r <= ring_rem_r;
+              rb_r <= ra_r;
             else
-              lim_r <= buf_rem_single;
+              rb_r <= buf_rem_single;
             end if;
             pst <= P_C3;
           end if;
@@ -1988,10 +2081,10 @@ begin
           if abort_v then
             pst <= P_IDLE;
           else
-            if lim_r >= row_rem_r then
+            if rb_r >= row_rem_r then
               len_r <= row_rem_r;
             else
-              len_r <= lim_r;
+              len_r <= rb_r;
             end if;
             pst <= P_C4;
           end if;
@@ -2019,20 +2112,20 @@ begin
             pst <= P_M1;
           end if;
         when P_M1 =>
-          wsum_r <= waddr + wcnt;
+          ra_r <= waddr + wcnt;
           if continuous_p = '1' or wcnt >= buf_rem_single then
-            rem_r <= 0;
+            rb_r <= 0;
           else
-            rem_r <= buf_rem_single - wcnt;
+            rb_r <= buf_rem_single - wcnt;
           end if;
           pst <= P_M2;
         when P_M2 =>
-          if wsum_r = Max_Samples then
+          if ra_r = Max_Samples then
             wrap_r <= '1';
           else
             wrap_r <= '0';
           end if;
-          if rem_r = 0 then
+          if rb_r = 0 then
             remz_r <= '1';
           else
             remz_r <= '0';
@@ -2040,16 +2133,16 @@ begin
           pst <= P_M3;
         when P_M3 =>
           if wrap_r = '1' then
-            waddr := 0;
+            waddr <= 0;
           else
-            waddr := wsum_r;
+            waddr <= ra_r;
           end if;
           if continuous_p = '1' then
             if wrap_r = '1' then
               ring_wrap_v := true;
             end if;
           else
-            buf_rem_single <= rem_r;
+            buf_rem_single <= rb_r;
             if remz_r = '1' then
               pump_budget_done_q <= '1';
             end if;
@@ -2161,7 +2254,7 @@ begin
           pump_nodata_cycles_u <= (others => '0');
           pump_overflow_count_u <= (others => '0');
           overflow_count_en_q <= '0';
-          waddr := 0;
+          waddr <= 0;
           -- Any burst bookkeeping from before the run start is void.
           pst <= P_IDLE;
           cap_req <= '0';
@@ -2199,13 +2292,17 @@ begin
           stream_addr_inc_pending := false;
           rd_pend2      := '0';
           stream_active := (Blk_Rd_Count /= 0);
-          rd_mode       := true;
+          rd_burst_left := 0;
+          rd_cool       := 0;
+          -- rd_mode is NOT set: the write pump keeps running between the
+          -- bounded read bursts below, so capture does not stall while the
+          -- host drains the response FIFO at SPI speed.
           s_rd          <= '0';
         end if;
       end if;
 
       stream_addr_r <= std_logic_vector(stream_addr_u);
-      if rd_mode_cur then
+      if rd_mode_cur or stream_active_cur then
 
         if stream_active_cur then
           -- STREAMING READOUT: walk the block addresses, latch on the SDRAM
@@ -2215,6 +2312,27 @@ begin
           if rd_pend2_cur = '0' then
             if rd_gap_cur = '1' then
               rd_gap := '0';   -- let stream_addr_r catch up post-completion
+            elsif continuous_p = '1' and not rd_mode_cur then
+              -- Live (continuous) capture: bounded read bursts, then a cool-down
+              -- with no read pending so refresh and the capture pump get the bus.
+              if rd_burst_left /= 0 then
+                rd_burst_left := rd_burst_left - 1;
+                if rd_burst_left = 0 then
+                  rd_cool := RD_COOL_N;
+                end if;
+                s_addr <= stream_addr_r;
+                s_rd     <= '1';
+                rd_pend2 := '1';
+                rd_wd_cnt := 0;
+              elsif rd_cool /= 0 then
+                rd_cool := rd_cool - 1;
+              elsif rdfifo_room_r = '1' and cap_low_r = '1' then
+                rd_burst_left := RD_BURST_N - 1;
+                s_addr <= stream_addr_r;
+                s_rd     <= '1';
+                rd_pend2 := '1';
+                rd_wd_cnt := 0;
+              end if;
             elsif rdfifo_afull_r = '0' then
               s_addr <= stream_addr_r;
               s_rd     <= '1';
@@ -2366,7 +2484,10 @@ begin
   Newest_Index <= std_logic_vector(newest_snap_r);
   Overrun_Count <= std_logic_vector(oldest_snap_r);
   -- NOTE: the Pump_*_Cycles diagnostics below are NOT snapshot-protected (compiled out in production).
-  Pump_Valid_Cycles <= std_logic_vector(pump_valid_cycles_u);
+  -- Production images compile the pump metric counters out; register 0x60 then
+  -- returns the dropped-sample counter (bits 15:0, saturating).
+  Pump_Valid_Cycles <= std_logic_vector(pump_valid_cycles_u) when Enable_Pump_Metrics
+                       else x"0000" & drop_val_p;
   Pump_Ready_Cycles <= std_logic_vector(pump_ready_cycles_u);
   Pump_Accept_Cycles <= std_logic_vector(pump_accept_cycles_u);
   Pump_Stall_Cycles <= std_logic_vector(pump_stall_cycles_u);
