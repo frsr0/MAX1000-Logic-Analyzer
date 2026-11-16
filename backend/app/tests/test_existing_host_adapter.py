@@ -65,6 +65,8 @@ class FakeHostDevice:
         self.get_metadata = Mock(return_value=b"\x12\x34")
         self._readback_codec = Mock(return_value="raw")
         self.configure_pattern_trigger = Mock()
+        self.dropped_samples = None
+        self.read_dropped_samples = Mock(return_value=7)
 
     @property
     def raw_flags(self):
@@ -238,15 +240,42 @@ def test_small_single_capture_uses_bram_limit_1024():
 
 def test_real_hardware_capabilities_advertise_200mhz_digital_sampling():
     adapter = ExistingHostAdapter()
-    adapter._dev = FakeHostDevice()
+    dev = FakeHostDevice()
+    dev.image_generation = 4
+    dev.has_true_read_data = True
+    dev.has_drop_counter = True
+    dev.rle_flush_fixed = True
+    dev.continuous_no_host_loss = True
+    dev.narrow_no_loss = True
+    adapter._dev = dev
 
     caps = adapter.get_capabilities()
 
     assert caps.max_sample_rate == 200_000_000
     assert caps.sample_clk_hz == 200_000_000
     assert caps.max_samples == DIGITAL_SDRAM_WORDS
+    assert caps.image_generation == 4
+    assert caps.image_features == {
+        "has_true_read_data": True,
+        "has_drop_counter": True,
+        "rle_flush_fixed": True,
+        "continuous_no_host_loss": True,
+        "narrow_no_loss": True,
+    }
     assert any("64 Mbit SDRAM" in note for note in caps.notes)
     assert caps.generator_protocols == ["uart", "rs485", "i2c", "spi", "swd", "bitbang"]
+
+
+def test_adapter_capabilities_report_unknown_image_without_a_device():
+    caps = ExistingHostAdapter().get_capabilities()
+    assert caps.image_generation is None
+    assert caps.image_features == {
+        "has_true_read_data": False,
+        "has_drop_counter": False,
+        "rle_flush_fixed": False,
+        "continuous_no_host_loss": False,
+        "narrow_no_loss": False,
+    }
 
 
 def test_real_route_accepts_gpio_spi_cs_and_miso_requests():
@@ -860,6 +889,41 @@ def test_adapter_generator_capture_protocol_matrix(protocol):
         assert dev.set_pin_map.call_count == 4
     else:
         assert dev.set_analog_config.call_args_list[-1] == call(0)
+
+
+def test_adapter_stream_capture_reports_drop_deltas_and_gaps():
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+
+    def stream_ring_capture(**kwargs):
+        dev.dropped_samples = 5
+        yield b"\x01\x00", 16, 1, 0
+        dev.dropped_samples = 9
+        yield b"\x01\x00", 16, 1, 0
+        dev.dropped_samples = 2
+        yield b"\x01\x00", 16, 1, 3
+
+    dev.stream_ring_capture = Mock(side_effect=stream_ring_capture)
+    adapter._dev = dev
+    results = list(adapter.stream_capture(
+        CaptureSettings(mode="digital_narrow", sample_rate=1_000_000,
+                        num_samples=1, enabled_digital=[0])))
+    assert [r.dropped_samples for r in results] == [5, 4, 2]
+    assert [r.gaps for r in results] == [0, 0, 1]
+
+
+def test_adapter_finite_live_capture_reports_drop_counter_and_failure():
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+    adapter._dev = dev
+    rolling = adapter.capture(CaptureSettings(
+        mode="rolling", sample_rate=1_000_000, num_samples=2048))
+    assert rolling.dropped_samples == 7
+
+    dev.read_dropped_samples = Mock(side_effect=RuntimeError("counter read failed"))
+    failed = adapter.capture(CaptureSettings(
+        mode="continuous", sample_rate=1_000_000, num_samples=2048))
+    assert failed.dropped_samples is None
 
 
 def test_adapter_stream_capture_unpacks_narrow_ring_and_restores_flags():

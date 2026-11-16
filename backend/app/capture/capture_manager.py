@@ -97,6 +97,11 @@ class CaptureManager:
         self.capture_state = "idle"
         self.capture_progress = {"samples_read": 0, "samples_total": 0,
                                  "message": "", "repeat": 0}
+        self.capture_health = {
+            "mode": "", "dropped_samples": None, "gaps": 0,
+            "observed_seconds": 0.0, "elapsed_seconds": 0.0,
+            "observed_fraction": None,
+        }
         self.last_session_id: Optional[str] = None
         self.last_error: Optional[str] = None
 
@@ -282,6 +287,10 @@ class CaptureManager:
             if dev is not None and dev.is_connected() else None,
             "capture_state": self.capture_state,
             "capture_progress": self.capture_progress,
+            "capture_health": {
+                **self.capture_health,
+                "active": self.capture_state in ("capturing", "armed"),
+            },
             "last_session_id": self.last_session_id,
             "last_error": self.last_error,
             "control": self.control.info(),
@@ -315,6 +324,36 @@ class CaptureManager:
             return accelerometer
         return None
 
+    def _reset_capture_health(self, mode: str) -> None:
+        self.capture_health = {
+            "mode": mode, "dropped_samples": None, "gaps": 0,
+            "observed_seconds": 0.0, "elapsed_seconds": 0.0,
+            "observed_fraction": None,
+        }
+
+    def _record_live_result(self, live: dict, result: CaptureResult) -> None:
+        """Accumulate one live chunk into ``live`` and publish capture health."""
+        sample_rate = float(result.sample_rate or 0.0)
+        if sample_rate > 0:
+            live["observed_seconds"] += self._result_num_samples(result) / sample_rate
+        if result.dropped_samples is not None:
+            if live["dropped_samples"] is None:
+                live["dropped_samples"] = int(result.dropped_samples)
+            else:
+                live["dropped_samples"] = min(
+                    0xFFFF, live["dropped_samples"] + int(result.dropped_samples))
+        live["gaps"] += int(result.gaps or 0)
+        elapsed = max(0.0, time.monotonic() - live["started_at"])
+        self.capture_health = {
+            "mode": live["mode"],
+            "dropped_samples": live["dropped_samples"],
+            "gaps": live["gaps"],
+            "observed_seconds": live["observed_seconds"],
+            "elapsed_seconds": elapsed,
+            "observed_fraction": (live["observed_seconds"] / elapsed
+                                  if elapsed > 0 else None),
+        }
+
     def start_capture(self, settings: CaptureSettings,
                       name: str = "") -> None:
         with self._cap_lock:
@@ -333,6 +372,7 @@ class CaptureManager:
                     if getattr(accel, "live_capture_active", False):
                         raise HardwareError(
                             "An accelerometer live capture is already running")
+                    self._reset_capture_health(settings.mode)
                     self._stop_evt.clear()
                     session = accel.start_live_capture(settings, name, self.store)
                     self.capture_state = "capturing"
@@ -358,6 +398,7 @@ class CaptureManager:
                     and settings.mode in ("continuous", "rolling", "digital_narrow")):
                 if self._mil_live_active:
                     raise HardwareError("A capture is already running")
+                self._reset_capture_health(settings.mode)
                 self._stop_evt.clear()
                 session = emulator.start_live_capture(settings, name, self.store)
                 self._mil_live_active = True
@@ -383,6 +424,7 @@ class CaptureManager:
             errors = [f for f in findings if f["level"] == "error"]
             if errors:
                 raise HardwareError("; ".join(f["message"] for f in errors))
+            self._reset_capture_health(settings.mode)
             self._stop_evt.clear()
             self.capture_state = "armed"
             self.last_error = None
@@ -496,6 +538,9 @@ class CaptureManager:
         repeat = max(1, settings.repeat_count) if settings.mode in single_modes else \
             (10**9 if settings.mode in continuous_modes else 1)
         run = 0
+        self._reset_capture_health(settings.mode)
+        live = {"started_at": time.monotonic(), "mode": settings.mode,
+                "observed_seconds": 0.0, "dropped_samples": None, "gaps": 0}
         try:
             if settings.mode == "digital_narrow" and hasattr(dev, "stream_capture"):
                 streamed_samples = 0
@@ -504,6 +549,7 @@ class CaptureManager:
                     if self._stop_evt.is_set():
                         break
                     run += 1
+                    self._record_live_result(live, result)
                     session = self._result_to_live_session(
                         settings, result, name, run, live_session)
                     live_session = session
@@ -525,7 +571,8 @@ class CaptureManager:
                             "capture", "capture_progress",
                             {"samples_read": streamed_samples,
                              "samples_total": settings.num_samples,
-                             "phase": "streaming", "repeat": run})
+                             "phase": "streaming", "repeat": run,
+                             "health": self.capture_health})
                     manager.publish_threadsafe("capture", "capture_complete", {
                         "session_id": session.id,
                         "num_samples": session.num_samples,
@@ -558,7 +605,8 @@ class CaptureManager:
                     manager.publish_threadsafe(
                         "capture", "capture_progress",
                         {"samples_read": read, "samples_total": total,
-                         "phase": phase, "repeat": run})
+                         "phase": phase, "repeat": run,
+                         "health": self.capture_health})
 
                 capture_settings = settings
                 if settings.mode in continuous_modes and settings.auto_rearm:
@@ -572,6 +620,7 @@ class CaptureManager:
                 result = dev.capture(capture_settings, progress=progress,
                                      stop_evt=self._stop_evt)
                 if settings.mode in continuous_modes:
+                    self._record_live_result(live, result)
                     session = self._result_to_live_session(
                         settings, result, name, run, live_session)
                     live_session = session

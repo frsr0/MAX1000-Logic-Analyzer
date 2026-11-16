@@ -28,6 +28,8 @@ class CaptureResult:
     trigger_sample: Optional[int] = None
     divider: Optional[int] = None
     warnings: list = field(default_factory=list)
+    dropped_samples: Optional[int] = None  # lost during this chunk; None = unknown
+    gaps: int = 0                          # flagged discontinuities in this chunk
 
 
 class HardwareError(Exception):

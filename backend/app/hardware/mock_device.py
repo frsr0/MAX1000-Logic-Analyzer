@@ -96,6 +96,14 @@ class MockDevice(HardwareDevice):
             max_sample_rate=100e6, min_sample_rate=10.0,
             max_samples=2_000_000, bram_samples=1024,
             sample_clk_hz=self.SAMPLE_CLK,
+            image_generation=3,
+            image_features={
+                "has_true_read_data": True,
+                "has_drop_counter": True,
+                "rle_flush_fixed": True,
+                "continuous_no_host_loss": True,
+                "narrow_no_loss": True,
+            },
             supports_pre_trigger=True, supports_rolling=True,
             supports_continuous=True, supports_analog=True,
             analog_rate_note="Mock analog channels (real hardware: ~99.5 kS/s single-channel or ~24 kS/s per lane 4-input packed scan)",
@@ -191,7 +199,9 @@ class MockDevice(HardwareDevice):
         self._capture_count += 1
         return CaptureResult(sample_rate=rate, digital=digital, analog=analog,
                              trigger_sample=trigger_sample,
-                             divider=max(0, int(self.SAMPLE_CLK / rate / 2) - 1))
+                             divider=max(0, int(self.SAMPLE_CLK / rate / 2) - 1),
+                             dropped_samples=0 if settings.mode in (
+                                 "continuous", "rolling", "digital_narrow") else None)
 
     def _build_scenario(self, scenario: str, n: int, rate: float,
                         analog_enabled: bool):

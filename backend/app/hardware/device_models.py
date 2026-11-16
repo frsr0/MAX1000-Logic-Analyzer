@@ -49,6 +49,8 @@ class DeviceCapabilities(BaseModel):
     max_samples: int = 4_194_304
     bram_samples: int = 1024
     sample_clk_hz: float = 200e6
+    image_generation: Optional[int] = None
+    image_features: Dict[str, bool] = Field(default_factory=dict)
     supports_pre_trigger: bool = True
     supports_rolling: bool = True
     supports_continuous: bool = True

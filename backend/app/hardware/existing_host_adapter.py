@@ -320,6 +320,15 @@ class ExistingHostAdapter(HardwareDevice):
             max_sample_rate=sample_clk, min_sample_rate=6.0,
             max_samples=DIGITAL_SDRAM_WORDS, bram_samples=1024,
             sample_clk_hz=sample_clk,
+            image_generation=getattr(self._dev, "image_generation", None),
+            image_features={
+                "has_true_read_data": bool(getattr(self._dev, "has_true_read_data", False)),
+                "has_drop_counter": bool(getattr(self._dev, "has_drop_counter", False)),
+                "rle_flush_fixed": bool(getattr(self._dev, "rle_flush_fixed", False)),
+                "continuous_no_host_loss": bool(getattr(
+                    self._dev, "continuous_no_host_loss", False)),
+                "narrow_no_loss": bool(getattr(self._dev, "narrow_no_loss", False)),
+            },
             supports_pre_trigger=True, supports_rolling=True,
             supports_continuous=True, supports_analog=True,
             analog_rate_note="MAX10 ADC supports 1 MSPS single-channel "
@@ -513,6 +522,11 @@ class ExistingHostAdapter(HardwareDevice):
                 self._recover_after_failed_capture()
                 raise HardwareError(f"Capture failed: {e}") from e
             self._timings["last_capture_s"] = time.time() - t0
+            if settings.mode in ("continuous", "rolling"):
+                try:
+                    result.dropped_samples = dev.read_dropped_samples()
+                except Exception:
+                    result.dropped_samples = None
             # If packed capture mode was active, decode the compressed stream.
             # packed_decode returns (16, N) uint8 bit-planes and raw 12-bit ADC
             # codes; CaptureResult.digital is a 1-D bit-packed uint16 per
@@ -561,6 +575,7 @@ class ExistingHostAdapter(HardwareDevice):
                 window_samples=window_samples,
                 stop_evt=stop_evt or threading.Event(),
                 progress_cb=driver_progress)
+        previous_dropped: Optional[int] = None
         try:
             while True:
                 with self._lock:
@@ -578,12 +593,22 @@ class ExistingHostAdapter(HardwareDevice):
                 if overrun:
                     warnings.append(
                         f"Streaming ring overrun count is {overrun}")
+                dropped = getattr(dev, "dropped_samples", None)
+                chunk_dropped = None
+                if dropped is not None:
+                    chunk_dropped = (
+                        dropped - previous_dropped
+                        if previous_dropped is not None and dropped >= previous_dropped
+                        else dropped)
+                    previous_dropped = dropped
                 yield CaptureResult(
                     sample_rate=actual_rate,
                     digital=digital[:window_samples],
                     analog={},
                     divider=divider,
-                    warnings=warnings)
+                    warnings=warnings,
+                    dropped_samples=chunk_dropped,
+                    gaps=1 if overrun else 0)
         finally:
             with self._lock:
                 try:
