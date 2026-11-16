@@ -129,6 +129,11 @@ function samplesForWindow(sampleRate: number, seconds: number) {
   return Math.max(1, Math.round(sampleRate * seconds));
 }
 
+function formatDroppedSamples(value: number | null) {
+  if (value === null) return 'unknown';
+  return value >= 0xFFFF ? '65535+' : value.toLocaleString();
+}
+
 function maxWindowSamplesForMode(mode: CaptureMode) {
   if (mode === 'digital_narrow') return DIGITAL_NARROW_MAX_SAMPLES;
   return DIGITAL_SDRAM_DEPTH;
@@ -252,6 +257,9 @@ export function CaptureControls() {
         return 'Live compression buffer: ready';
       })()
     : '';
+  const captureHealth = status?.capture_health;
+  const healthAlert = Number(captureHealth?.dropped_samples ?? 0) > 0
+    || (captureHealth?.gaps ?? 0) > 0;
 
   useEffect(() => {
     if (isMock) api.mockScenarios().then((r) => setScenarios(r.scenarios)).catch(() => {});
@@ -447,6 +455,28 @@ export function CaptureControls() {
         <strong>{activeModeLabel}</strong>
         <span>{hardwareSummary(captureSettings.mode as CaptureMode)}</span>
       </div>
+      {capturing && rollingMode && captureHealth && (
+        <div className={`finding ${healthAlert ? 'warning' : 'info'}`} role="status">
+          <strong>Live capture health</strong><br />
+          Dropped samples: {formatDroppedSamples(captureHealth.dropped_samples)}<br />
+          Flagged gaps: {captureHealth.gaps}<br />
+          {captureHealth.observed_fraction !== null && (
+            <>
+              Recording {(captureHealth.observed_fraction * 100).toFixed(1)}% of real time
+              {' '}({captureHealth.observed_seconds.toFixed(3)} s observed /{' '}
+              {captureHealth.elapsed_seconds.toFixed(1)} s elapsed)
+            </>
+          )}
+        </div>
+      )}
+      {rollingMode && !analogOnlyMode && (
+        <div className="finding info">
+          <strong>Live sample coverage</strong><br />
+          16 channels store every sample up to 100.2 MS/s; one channel stores every
+          sample up to 200 MHz. The host receives about 1 MS/s, so faster live views
+          are a sample of the signal.
+        </div>
+      )}
       {accelerometerRunning && rollingMode && !analogMode ? (
         <div className="finding info" role="status">
           Accelerometer tracking is active — Capture will open a live LIS3DH
@@ -640,6 +670,10 @@ export function CaptureControls() {
             {scenarios.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
         </label>
+      )}
+
+      {status?.capture_state === 'error' && status.last_error && (
+        <div className="finding error" role="alert">{status.last_error}</div>
       )}
 
       {findings.map((f, i) => (

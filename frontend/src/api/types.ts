@@ -47,6 +47,8 @@ export interface DeviceCapabilities {
   max_samples: number;
   bram_samples: number;
   sample_clk_hz: number;
+  image_generation?: number | null;
+  image_features?: Record<string, boolean> | null;
   supports_pre_trigger: boolean;
   supports_rolling: boolean;
   supports_continuous: boolean;
@@ -258,6 +260,16 @@ export interface Session {
   diagnostics: { level: string; message: string; ts?: number }[];
 }
 
+export interface CaptureHealth {
+  active: boolean;
+  mode: string;
+  dropped_samples: number | null;
+  gaps: number;
+  observed_seconds: number;
+  elapsed_seconds: number;
+  observed_fraction: number | null;
+}
+
 export interface BackendStatus {
   app_version: string;
   uptime_s: number;
@@ -266,6 +278,7 @@ export interface BackendStatus {
   device: DeviceMetadata | null;
   capture_state: string;
   capture_progress: { samples_read: number; samples_total: number; message: string; repeat: number };
+  capture_health?: CaptureHealth;
   last_session_id: string | null;
   last_error: string | null;
   control: { held: boolean; holder: string | null; holder_name: string; acquired_at: number };

@@ -337,7 +337,7 @@ test('hardware-aligned device page', async ({ page }) => {
   await page.getByRole('button', { name: 'Hardware', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Hardware', exact: true })).toBeVisible();
   await expect(page.getByText('held by playwright')).toBeVisible();
-  await expect(page.locator('.hero-badges .badge-hw')).toContainText('200.4 MHz sample clock');
+  await expect(page.locator('.hero-badges').getByText('200.4 MHz sample clock')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Raw debug inspector' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Run self-test' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Digital pin pool' })).toBeVisible();

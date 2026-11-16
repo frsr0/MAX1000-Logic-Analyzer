@@ -42,6 +42,36 @@ it('scans and presents available, offline and mock devices in read-only mode', a
   fireEvent.click(screen.getByRole('button', { name: 'Rescan' }));
 });
 
+it('shows FPGA image generation and flags, warning for a compensated generation 0 image', () => {
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ devices })));
+  const imageFeatures = {
+    has_true_read_data: false, has_drop_counter: false, rle_flush_fixed: false,
+    continuous_no_host_loss: false, narrow_no_loss: false,
+  };
+  useApp.setState({
+    status: status as never,
+    capabilities: { ...caps, image_generation: 0, image_features: imageFeatures } as never,
+  });
+  const { rerender } = render(<DevicePage />);
+  expect(screen.getByText('generation 0')).toBeTruthy();
+  expect(screen.getByRole('alert').textContent).toMatch(/predates the SDRAM read-timing fix/);
+  expect(screen.getByText('True read data').className).toContain('badge-na');
+
+  useApp.setState({
+    capabilities: {
+      ...caps, image_generation: 4,
+      image_features: {
+        has_true_read_data: true, has_drop_counter: true, rle_flush_fixed: true,
+        continuous_no_host_loss: true, narrow_no_loss: true,
+      },
+    } as never,
+  });
+  rerender(<DevicePage />);
+  expect(screen.queryByText(/predates the SDRAM read-timing fix/)).toBeNull();
+  expect(screen.getByText('generation 4')).toBeTruthy();
+  expect(screen.getByText('True read data').className).toContain('badge-hw');
+});
+
 it('renders exact connected-board metadata, capability maps and successful diagnostics', async () => {
   const fetcher = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);

@@ -166,6 +166,7 @@ export function GeneratorPage() {
         expected_hex: expected || undefined,
       });
       setResult(r);
+      r.warnings?.forEach((warning: string) => toast('warning', warning));
       if (capture && r.session_id) toast('success', r.detail ?? 'Loopback captured');
       else if (live) toast('success', 'Live stream started — it repeats until Stop and shows in rolling captures');
       else toast('success', 'Pattern sent');
@@ -646,7 +647,9 @@ export function GeneratorPage() {
           <button disabled={busy || !controlMode} onClick={async () => {
             setBusy(true);
             try {
-              setResult(await api.generatorSelfTest());
+              const next = await api.generatorSelfTest();
+              setResult(next);
+              next.warnings?.forEach((warning: string) => toast('warning', warning));
             } catch (e: any) {
               toast('error', e.message);
             } finally {
@@ -685,6 +688,9 @@ export function GeneratorPage() {
               sent: <span className="mono">{result.sent_hex}</span><br />
               decoded: <span className="mono">{result.decoded_hex}</span><br />
               {result.detail}
+              {(result.warnings ?? []).map((warning: string, index: number) => (
+                <div key={`${index}-${warning}`} className="finding warning">{warning}</div>
+              ))}
             </div>
           )}
           {result?.session_id && (
