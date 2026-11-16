@@ -328,6 +328,8 @@ class ExistingHostAdapter(HardwareDevice):
                 "continuous_no_host_loss": bool(getattr(
                     self._dev, "continuous_no_host_loss", False)),
                 "narrow_no_loss": bool(getattr(self._dev, "narrow_no_loss", False)),
+                "gen_capture_unlimited": bool(getattr(
+                    self._dev, "gen_capture_unlimited", False)),
             },
             supports_pre_trigger=True, supports_rolling=True,
             supports_continuous=True, supports_analog=True,

@@ -247,6 +247,7 @@ def test_real_hardware_capabilities_advertise_200mhz_digital_sampling():
     dev.rle_flush_fixed = True
     dev.continuous_no_host_loss = True
     dev.narrow_no_loss = True
+    dev.gen_capture_unlimited = True
     adapter._dev = dev
 
     caps = adapter.get_capabilities()
@@ -261,6 +262,7 @@ def test_real_hardware_capabilities_advertise_200mhz_digital_sampling():
         "rle_flush_fixed": True,
         "continuous_no_host_loss": True,
         "narrow_no_loss": True,
+        "gen_capture_unlimited": True,
     }
     assert any("64 Mbit SDRAM" in note for note in caps.notes)
     assert caps.generator_protocols == ["uart", "rs485", "i2c", "spi", "swd", "bitbang"]
@@ -275,6 +277,7 @@ def test_adapter_capabilities_report_unknown_image_without_a_device():
         "rle_flush_fixed": False,
         "continuous_no_host_loss": False,
         "narrow_no_loss": False,
+        "gen_capture_unlimited": False,
     }
 
 

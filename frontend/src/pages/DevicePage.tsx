@@ -20,6 +20,7 @@ const IMAGE_FEATURE_LABELS = [
   ['rle_flush_fixed', 'RLE flush fix'],
   ['continuous_no_host_loss', 'Continuous no host loss'],
   ['narrow_no_loss', 'Narrow no loss'],
+  ['gen_capture_unlimited', 'Unlimited gen capture'],
 ] as const;
 
 export function DevicePage() {

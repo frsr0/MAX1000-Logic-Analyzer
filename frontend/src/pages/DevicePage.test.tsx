@@ -47,6 +47,7 @@ it('shows FPGA image generation and flags, warning for a compensated generation 
   const imageFeatures = {
     has_true_read_data: false, has_drop_counter: false, rle_flush_fixed: false,
     continuous_no_host_loss: false, narrow_no_loss: false,
+    gen_capture_unlimited: false,
   };
   useApp.setState({
     status: status as never,
@@ -56,6 +57,7 @@ it('shows FPGA image generation and flags, warning for a compensated generation 
   expect(screen.getByText('generation 0')).toBeTruthy();
   expect(screen.getByRole('alert').textContent).toMatch(/predates the SDRAM read-timing fix/);
   expect(screen.getByText('True read data').className).toContain('badge-na');
+  expect(screen.getByText('Unlimited gen capture').className).toContain('badge-na');
 
   useApp.setState({
     capabilities: {
@@ -63,6 +65,7 @@ it('shows FPGA image generation and flags, warning for a compensated generation 
       image_features: {
         has_true_read_data: true, has_drop_counter: true, rle_flush_fixed: true,
         continuous_no_host_loss: true, narrow_no_loss: true,
+        gen_capture_unlimited: true,
       },
     } as never,
   });
@@ -70,6 +73,7 @@ it('shows FPGA image generation and flags, warning for a compensated generation 
   expect(screen.queryByText(/predates the SDRAM read-timing fix/)).toBeNull();
   expect(screen.getByText('generation 4')).toBeTruthy();
   expect(screen.getByText('True read data').className).toContain('badge-hw');
+  expect(screen.getByText('Unlimited gen capture').className).toContain('badge-hw');
 });
 
 it('renders exact connected-board metadata, capability maps and successful diagnostics', async () => {
