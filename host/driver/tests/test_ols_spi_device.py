@@ -3787,17 +3787,47 @@ class TestDirectLiveCapture:
 
         assert items == []
 
-    def test_framed_reader_waits_for_delayed_chunk_and_emits_cursor(
-            self, device_spi):
-        import time
+    def test_framed_reader_continues_after_consumer_timeout(
+            self, device_spi, monkeypatch):
+        import threading
+        from queue import Empty as QueueEmpty, Queue as StdQueue
+        import driver.ols_spi_device as device_module
 
         self.setup_device(device_spi, continuous=True)
+        consumer_looped = threading.Event()
 
-        def delayed_wire():
-            time.sleep(0.075)
+        class TimeoutThenDelegateQueue(StdQueue):
+            """Report one consumer timeout, then let the reader proceed."""
+
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.get_calls = 0
+
+            def get(self, block=True, timeout=None):
+                self.get_calls += 1
+                if self.get_calls == 1:
+                    # This is the Empty -> reader_done not set -> continue
+                    # branch; the reader is still gated below, so the flag
+                    # cannot be set yet.
+                    raise QueueEmpty
+                if self.get_calls == 2:
+                    consumer_looped.set()
+                    # Block long enough that a scheduling stall cannot turn
+                    # this into a second forced timeout race; the chunk is
+                    # guaranteed to arrive once the event above is set.
+                    return super().get(block=block, timeout=5)
+                return super().get(block=block, timeout=timeout)
+
+        monkeypatch.setattr(device_module, 'Queue', TimeoutThenDelegateQueue)
+
+        def gated_wire():
+            # Only deliver the chunk after the consumer has gone round the
+            # loop through the timeout, so reader_done stays clear exactly
+            # while the loop re-checks it.
+            assert consumer_looped.wait(timeout=5), 'consumer never looped'
             yield b'\x09'
 
-        device_spi.pkt.start_live_stream_continuous.return_value = delayed_wire()
+        device_spi.pkt.start_live_stream_continuous.return_value = gated_wire()
         stop_evt = MagicMock()
         stop_evt.is_set.return_value = False
         items = list(device_spi._continuous_live_capture_with_repeating_symbols(
