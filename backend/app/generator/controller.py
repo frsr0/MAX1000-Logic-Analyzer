@@ -99,6 +99,8 @@ def loopback_self_test(mgr: CaptureManager, cfg: GeneratorConfig,
     outcome = _loopback_attempt(mgr, dev, cfg, settings, expected)
     if not outcome.passed:
         outcome = _loopback_attempt(mgr, dev, cfg, settings, expected)
+    for warning in outcome.warnings:
+        manager.publish_threadsafe("capture", "warning", {"message": warning})
     return outcome
 
 
@@ -107,6 +109,7 @@ def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
                       expected: bytes) -> GeneratorSelfTestResult:
     sent = generator_payload_bytes(cfg)
     result = dev.capture_with_generator(settings, cfg)
+    warnings = list(result.warnings)
     wf = WaveformData(sample_rate=result.sample_rate, digital=result.digital,
                       analog=result.analog)
     session = Session(name=f"Generator self-test ({cfg.protocol})",
@@ -118,6 +121,9 @@ def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
                                  "expected_hex": expected.hex(),
                                  "sent_hex": sent.hex()})
     session.channels = default_digital_channels(16)
+    for warning in warnings:
+        session.diagnostics.append(
+            {"level": "warning", "message": warning, "ts": time.time()})
     mgr.store.save(session)
     mgr.store.save_waveform(session.id, wf)
     mgr.last_session_id = session.id
@@ -129,7 +135,8 @@ def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
             passed=True, sent_hex=sent.hex(), decoded_hex="",
             session_id=session.id,
             detail=f"Pattern sent and captured; no decoder defined for "
-                   f"'{cfg.protocol}' — inspect the waveform manually")
+                   f"'{cfg.protocol}' — inspect the waveform manually",
+            warnings=warnings)
 
     dec_id, ch_fn, set_fn = spec
     decoder = decoder_registry.get(dec_id)
@@ -244,7 +251,8 @@ def _loopback_attempt(mgr: CaptureManager, dev, cfg: GeneratorConfig,
     log.info("Generator self-test %s: %s", cfg.protocol, detail)
     return GeneratorSelfTestResult(
         passed=passed, sent_hex=expected.hex(), decoded_hex=decoded.hex(),
-        detail=detail, session_id=session.id, mismatches=mismatches[:64])
+        detail=detail, session_id=session.id, mismatches=mismatches[:64],
+        warnings=warnings)
 
 
 def _compare_uart_loopback(expected: bytes, decoded: bytes) -> tuple[bool, list[int], str]:

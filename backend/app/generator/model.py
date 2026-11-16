@@ -26,3 +26,4 @@ class GeneratorSelfTestResult(BaseModel):
     detail: str = ""
     session_id: Optional[str] = None
     mismatches: List[int] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
