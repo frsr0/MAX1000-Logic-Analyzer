@@ -480,3 +480,56 @@ def test_live_rate_ceiling_characterises_lossless_lossy_overrun_and_exception(de
     # sweep; a degraded delta ceiling is an additional strict failure.
     assert hv.FAIL == (3 if delta_lossless else 4)
     assert value.codec == "raw"
+
+
+def test_jumper_loopback_checks_every_additional_wire_exactly():
+    """Phase 5 drives each extra wired pair and requires the exact payload,
+    so a stale overlay lane on a second wire cannot hide a broken route."""
+    value = device()
+    value.capture_with_gen.return_value = b"wire"
+    rows, ns = sampled(512, (3, 7))
+    with patch.object(hv, "_get_jumper_pair", return_value=(3, 7)), \
+         patch.object(hv, "_restore_pin_map"), \
+         patch.object(hv, "samples_to_channels", return_value=(rows, ns)), \
+         patch.object(hv, "decode_uart_safe",
+                      return_value=uart_bytes(b"MAX1000 jumper")), \
+         patch.object(hv, "_uart_waveform_match_fraction", return_value=(0.99, 0)), \
+         patch.object(hv, "_additional_jumper_routes",
+                      return_value=[(16, 15), (20, 7)]):
+        hv.test_jumper_loopback(value)
+
+    assert hv.FAIL == 0
+    assert hv.PASS == 7                      # 5 phases + two extra wires
+    assert value._gen_tx_pin == 20           # the last extra route was driven
+
+
+def test_jumper_loopback_reports_an_extra_wire_that_never_carries_the_payload():
+    """An extra route that returns no data on the first attempt and the wrong
+    bytes on the retry must fail, not silently pass."""
+    value = device()
+    attempts = {"extra": 0}
+
+    def capture_with_gen(**_kwargs):
+        if value._gen_tx_pin != 16:
+            return b"wire"
+        attempts["extra"] += 1
+        return b"" if attempts["extra"] == 1 else b"wire"
+
+    value.capture_with_gen.side_effect = capture_with_gen
+    rows, ns = sampled(512, (3, 7))
+
+    def decode(_channels, _rate, ch_idx, **_kwargs):
+        if value._gen_tx_pin == 16:
+            return []
+        return uart_bytes(b"MAX1000 jumper")
+
+    with patch.object(hv, "_get_jumper_pair", return_value=(3, 7)), \
+         patch.object(hv, "_restore_pin_map"), \
+         patch.object(hv, "samples_to_channels", return_value=(rows, ns)), \
+         patch.object(hv, "decode_uart_safe", side_effect=decode), \
+         patch.object(hv, "_uart_waveform_match_fraction", return_value=(0.99, 0)), \
+         patch.object(hv, "_additional_jumper_routes", return_value=[(16, 15)]):
+        hv.test_jumper_loopback(value)
+
+    assert attempts["extra"] == 2            # both attempts were spent
+    assert hv.FAIL == 1

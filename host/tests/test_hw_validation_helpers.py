@@ -379,3 +379,14 @@ def test_changed_word_indices_reports_differing_16bit_words():
 
 def test_oracle_constants_cover_three_dividers():
     assert hv.ORACLE_FIRST_LOW_INDEX == {9: 1105, 99: 110, 195: 56}
+
+
+def test_window_equal_fraction_scores_a_lagged_window():
+    flat = [0] * 100
+    assert hv._window_equal_fraction(flat, 0) == 1.0
+
+    split = [0] * 50 + [1] * 50
+    assert hv._window_equal_fraction(split, 50) == 0.0
+
+    # A lag past the end compares nothing, which must score 0, not divide by 0.
+    assert hv._window_equal_fraction(flat, 500) == 0.0

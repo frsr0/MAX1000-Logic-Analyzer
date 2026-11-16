@@ -198,3 +198,34 @@ def test_live_stream_reports_unknown_when_image_has_no_counter():
     dev, timings = _stream_timings(0x00, 123)
     assert timings and all(t["dropped_samples"] is None for t in timings)
     assert dev.dropped_samples is None
+
+
+def test_block_latency_hint_failure_does_not_break_metadata_adoption(
+        restore_compensations):
+    """note_block_latency is an optimisation hint on the packet layer; an old
+    or stubbed packet object without it must not abort open()."""
+    dev = _device()
+    dev.pkt.note_block_latency.side_effect = RuntimeError("no latency tracker")
+    assert dev.image_features == 0
+
+    assert dev.apply_image_metadata(NEW_12_BYTE) == (0, 0)
+    assert dev.continuous_no_host_loss
+    dev.pkt.note_block_latency.assert_called_once_with(252)
+
+
+def test_polled_dropped_samples_keeps_the_cached_value_when_the_read_fails():
+    dev = _device()
+    dev.image_features = proto.IMAGE_FEATURE_DROP_COUNTER
+    dev._dropped_samples = None
+    dev.read_dropped_samples = MagicMock(side_effect=RuntimeError("spi error"))
+    assert dev._poll_dropped_samples(min_interval=0) is None
+
+    dev._dropped_samples = 7
+    assert dev._poll_dropped_samples(min_interval=0) == 7
+
+
+def test_gen_capture_status_is_none_when_the_status_read_raises():
+    dev = _device()
+    dev.pkt.transaction.side_effect = RuntimeError("link down")
+    assert dev._note_gen_capture_status() is None
+    assert dev.last_gen_capture_error is None

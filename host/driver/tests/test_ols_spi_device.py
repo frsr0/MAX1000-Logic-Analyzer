@@ -282,6 +282,23 @@ class TestCompressionHelpers:
         assert out == bytes(payload)
         assert len(group) > 0
 
+    def test_mixed_stream_round_trips_whole_groups_and_drops_partials(self):
+        """compress_mixed_stream batches 16-frame groups; the stream decoder
+        walks them back with the per-group byte counts."""
+        stride = analog_frame_stride(MODE_MIXED)
+        frames = bytearray()
+        for i in range(16 * 3):
+            frames.extend(struct.pack('<H', 0x1000 + i))
+            frames.extend(_pack_pair(0x100 + i, 0x800 - i))
+        data = bytes(frames)
+        assert len(data) == stride * 16 * 3
+        compressed = compress_mixed_stream(data)
+        assert decompress_mixed_stream(compressed) == data
+        # A trailing partial group cannot be expressed in the group framing:
+        # it is dropped, and a buffer shorter than one group yields nothing.
+        assert compress_mixed_stream(data[:-1]) == compress_mixed_stream(data[:-stride])
+        assert compress_mixed_stream(data[:stride - 1]) == b""
+
 
 class TestDecodeAnalogFrames:
     def test_digital8_single(self):

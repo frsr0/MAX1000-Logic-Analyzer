@@ -1,7 +1,7 @@
 """Fast control transactions, batched register writes, register shadow and the
 shortened capture setup (rolling-mode dead time)."""
 import struct
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -9,8 +9,8 @@ import driver.spi_protocol as protocol
 from driver.ols_spi_device import OLSDeviceSPI
 from driver.spi_protocol import (
     CMD_ABORT_CAPTURE, CMD_ARM_CAPTURE, CMD_GET_STATUS, CMD_READ_REG, CMD_WRITE_REG,
-    REG_CONT_MODE, REG_FLAGS, REG_PATTERN_CTRL, SPIDevice, ST_CAPTURE_IDLE, ST_OK,
-    SYNC_REQ, SYNC_RSP, build_packet, crc16)
+    REG_CONT_MODE, REG_FLAGS, REG_PATTERN_CTRL, SPIDevice, ST_CAPTURE_ARMED,
+    ST_CAPTURE_IDLE, ST_OK, SYNC_REQ, SYNC_RSP, build_packet, crc16)
 
 
 def _reply(seq, status=ST_OK, payload=b""):
@@ -273,3 +273,93 @@ def test_concurrent_callers_never_overlap_on_the_link():
         t.join()
     assert not errors
     assert fpga.max_inside == 1
+
+
+def test_flags_read_and_write_through_the_shadow_on_a_fast_link():
+    """REG_FLAGS is cached on the fast link so unchanged bits cost nothing."""
+    dev = OLSDeviceSPI()
+    dev.pkt = MagicMock()
+    dev.pkt.fast_transactions = True
+    dev.pkt.read_register_cached.return_value = 5
+
+    assert dev._read_flags() == 5
+    dev.pkt.read_register_cached.assert_called_once_with(REG_FLAGS)
+
+    dev._write_flags(9)
+    dev.pkt.write_register_if_changed.assert_called_once_with(REG_FLAGS, 9)
+    dev.pkt.write_register.assert_not_called()
+
+
+def test_write_regs_on_a_classic_link_sends_first_payloads_and_bare_commands():
+    """The slow link runs one transaction per command, payload or not."""
+    dev = OLSDeviceSPI()
+    dev.pkt = MagicMock()
+    dev.pkt.fast_transactions = False
+    dev.pkt.transaction.return_value = (ST_OK, 0, b"")
+
+    out = dev._write_regs([(0x11, 1)],
+                          first=[(CMD_GET_STATUS, b"\xaa"), (CMD_ABORT_CAPTURE, b"")],
+                          tail=[(CMD_ARM_CAPTURE, b"")])
+
+    assert out == [(ST_OK, 0, b"")]
+    dev.pkt.write_register.assert_called_once_with(0x11, 1)
+    assert dev.pkt.transaction.call_args_list == [
+        call(CMD_GET_STATUS, b"\xaa"), call(CMD_ABORT_CAPTURE),
+        call(CMD_ARM_CAPTURE, b"")]
+
+
+def test_clearing_the_pattern_trigger_uses_the_shadowed_fast_write():
+    dev = OLSDeviceSPI()
+    dev.pkt = MagicMock()
+    dev.pkt.fast_transactions = True
+
+    dev.configure_pattern_trigger(None)
+
+    dev.pkt.write_register_if_changed.assert_called_once_with(REG_PATTERN_CTRL, 0)
+    dev.pkt.write_register.assert_not_called()
+
+
+def _capture_tail_device(tail):
+    """capture() with the arm frame's replies scripted, nothing else live."""
+    dev = OLSDeviceSPI()
+    dev.pkt = MagicMock()
+    dev.pkt.fast_transactions = True
+    dev.pkt.parse_status = MagicMock(return_value={'capture_seq': 41})
+    dev.spi = MagicMock()
+    dev._ensure_open = MagicMock()
+    dev.reset = MagicMock()
+    dev.set_debug_ch0 = MagicMock()
+    dev._kick_live_gen = MagicMock()
+    dev._write_regs = MagicMock(return_value=tail)
+    dev._wait_capture_done = MagicMock(return_value={})
+    dev.CAPTURE_QUIET_MARGIN_S = 0.0
+    return dev
+
+
+def test_capture_takes_the_capture_seq_from_the_combined_arm_frame():
+    """Both replies arrive in the config frame: no extra status round trip."""
+    dev = _capture_tail_device([(ST_CAPTURE_IDLE, 0, b''), (ST_CAPTURE_ARMED, 0, b'')])
+
+    assert dev.capture(rate_hz=1_000_000, nsamples=2, timeout=0.01) == b''
+    dev.pkt.get_status.assert_not_called()
+    dev.pkt.arm_capture.assert_not_called()
+
+
+def test_capture_recovers_the_sequence_when_the_status_reply_is_lost():
+    dev = _capture_tail_device([None, (ST_CAPTURE_ARMED, 0, b'')])
+    dev.pkt.get_status.return_value = {'capture_status': ST_CAPTURE_IDLE,
+                                       'capture_seq': 41}
+
+    assert dev.capture(rate_hz=1_000_000, nsamples=2, timeout=0.01) == b''
+    dev.pkt.get_status.assert_called_once_with()
+    dev.pkt.arm_capture.assert_not_called()
+
+
+def test_capture_does_not_rearm_when_the_arm_reply_is_lost_but_fpga_is_armed():
+    dev = _capture_tail_device([(ST_CAPTURE_IDLE, 0, b''), None])
+    dev.pkt.get_status.return_value = {'capture_status': ST_CAPTURE_ARMED,
+                                       'capture_seq': 41}
+
+    assert dev.capture(rate_hz=1_000_000, nsamples=2, timeout=0.01) == b''
+    dev.pkt.get_status.assert_called_once_with()
+    dev.pkt.arm_capture.assert_not_called()

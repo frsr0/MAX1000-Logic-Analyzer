@@ -1344,6 +1344,30 @@ def test_live_worker_schedule_and_fault_branch_edges(monkeypatch):
     slow._run(0, SlowStop())
     monkeypatch.setattr(accelerometer_module.time, "monotonic", real_monotonic)
 
+    # Both arcs of the catch-up test: the deadline holds on the first poll
+    # (next_read is still ahead of now) and is re-synchronised on the second,
+    # where the transaction already overran by more than one period.
+    class StopAfterTwoPolls:
+        def __init__(self):
+            self.waits = 0
+
+        def is_set(self):
+            return self.waits >= 2
+
+        def wait(self, _timeout):
+            self.waits += 1
+            return False
+
+    steady = AccelerometerService(FakeManager(FakeRaw()), sample_rate_hz=400)
+    steady._status.running = True
+    steady._record_sample = lambda *_args, **_kwargs: None
+    steady_clock = itertools.chain(
+        iter((0.0, 0.0, 0.0, 0.0, 10.0, 10.0)), itertools.repeat(10.0))
+    monkeypatch.setattr(accelerometer_module.time, "monotonic",
+                        steady_clock.__next__)
+    steady._run(0, StopAfterTwoPolls())
+    monkeypatch.setattr(accelerometer_module.time, "monotonic", real_monotonic)
+
     class StopDuringFailure(threading.Event):
         pass
 

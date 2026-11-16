@@ -1573,3 +1573,56 @@ def test_generator_capture_reports_the_fsm_error_flag(flag, expect_warning):
     assert bool(result.warnings) is expect_warning
     if expect_warning:
         assert "50 ms" in result.warnings[0]
+
+
+def test_build_trigger_without_configuration_never_touches_the_device():
+    """Pre-flight validation (configure=False) inspects the trigger only.
+
+    _build_trigger is called with configure=False from settings validation,
+    before any hardware access; it must not write the pattern-trigger
+    registers or the protocol-trigger decoder.
+    """
+    from app.capture.session import TriggerConfig
+
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+    dev.configure_pattern_trigger = Mock()
+    dev.trigger_decode = Mock()
+    adapter._dev = dev
+
+    generic = CaptureSettings(trigger=TriggerConfig(
+        type="generic_pattern", channels=[0], pattern="1x",
+        clock_source="internal_baud", baud=115200))
+    assert adapter._build_trigger(generic, configure=False) is None
+    dev.configure_pattern_trigger.assert_not_called()
+
+    uart = CaptureSettings(trigger=TriggerConfig(
+        type="uart_byte", value=0x57, channels=[3], baud=9600))
+    assert adapter._build_trigger(uart, configure=False) is None
+    dev.trigger_decode.assert_not_called()
+
+
+def test_mcp4725_measurement_propagates_hardware_errors_unchanged():
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+    adapter._dev.raw_mode = Mock()
+    adapter._dev.capture_with_gen = Mock(
+        side_effect=HardwareError("generator link is busy"))
+
+    with pytest.raises(HardwareError, match="generator link is busy"):
+        adapter.mcp4725_write_and_measure(0x60, 100)
+    assert adapter._dev.capture.call_count == 0
+    assert adapter._dev.capture_with_gen.call_count == 1
+
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+    adapter._dev.raw_mode = Mock()
+    adapter._dev.capture_with_gen = Mock(return_value=b"\x00\x00" * 64)
+    adapter.capture = Mock(side_effect=HardwareError("adc down"))
+    with pytest.raises(HardwareError, match="adc down"):
+        adapter.mcp4725_write_and_measure(0x60, 100)
+
+    adapter.capture = Mock(side_effect=RuntimeError("adc crash"))
+    with pytest.raises(HardwareError,
+                       match="MCP4725 analog measurement failed: adc crash"):
+        adapter.mcp4725_write_and_measure(0x60, 100)

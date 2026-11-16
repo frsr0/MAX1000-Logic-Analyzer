@@ -434,3 +434,15 @@ def test_capture_readout_retries_short_first_attempt_and_reports_spi_error():
         hv.test_capture_during_readout(value)
     assert hv.FAIL == 2
     value.reset.assert_called()
+
+
+def test_jumper_fixture_skips_an_unrecognized_environment_value(monkeypatch):
+    """HW_VALIDATION_JUMPER_PRESENT only accepts the documented words; a typo
+    must skip the jumper checks instead of probing the board."""
+    monkeypatch.setenv(hv.JUMPER_PRESENT_ENV, "maybe")
+    monkeypatch.setattr(hv, "_JUMPER_PAIR_CACHE", ("stale", "cache"))
+    monkeypatch.setattr(hv, "_JUMPER_PAIR_SEARCHED", False)
+
+    assert hv._prepare_jumper_fixture(MagicMock()) is None
+    assert hv._JUMPER_PAIR_CACHE is None
+    assert hv._JUMPER_PAIR_SEARCHED is True
