@@ -202,6 +202,7 @@ for tb in "${TBS[@]}"; do
   case "$tb" in
     tb_continuous_wedge)  stop_time="30ms" ;;  # four complete full-block stream scenarios
     tb_gen_loopback)      stop_time="30ms" ;;  # real-pin SDRAM model, two capture scenarios
+    tb_gen_capture_long)  stop_time="200ms" ;; # 75 ms + 20 ms generator-capture windows
     tb_ols_rle_raw_stream) stop_time="30ms" ;; # complete 16K-sample compressed stream
     tb_pump_overflow_keep) stop_time="30ms" ;;  # 200.4 MS/s overflow, deep FIFO fill + readback of the kept prefix
     tb_cont_read)         stop_time="30ms" ;;  # three parallel continuous-capture-while-reading cases (5 ms SDRAM power-up each)
