@@ -3837,6 +3837,57 @@ class TestDirectLiveCapture:
 
         assert items == [(b'\x00\x20', 1, 1, 0, None, {})]
 
+    def test_framed_reader_drains_final_chunk_after_reader_finishes(
+            self, device_spi, monkeypatch):
+        import threading
+        from queue import Empty as QueueEmpty, Queue as StdQueue
+        import driver.ols_spi_device as device_module
+
+        self.setup_device(device_spi, continuous=True)
+        real_thread = threading.Thread
+        reader_threads = []
+
+        def thread_factory(*args, **kwargs):
+            thread = real_thread(*args, **kwargs)
+            reader_threads.append(thread)
+            return thread
+
+        class TimeoutAfterReaderQueue(StdQueue):
+            """Report the timeout once the reader has enqueued and finished."""
+
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.get_calls = 0
+
+            def get(self, block=True, timeout=None):
+                self.get_calls += 1
+                if self.get_calls == 1:
+                    # Let the reader put its last chunk and set reader_done
+                    # before we report the timeout the loop is about to see.
+                    reader_threads[0].join(timeout=5)
+                    raise QueueEmpty
+                return super().get(block=block, timeout=timeout)
+
+        monkeypatch.setattr(device_module, 'Queue', TimeoutAfterReaderQueue)
+        monkeypatch.setattr(device_module.threading, 'Thread', thread_factory)
+
+        def fast_wire():
+            yield b'\x09'
+
+        device_spi.pkt.start_live_stream_continuous.return_value = fast_wire()
+        stop_evt = MagicMock()
+        stop_evt.is_set.return_value = False
+        full_out = bytearray()
+        progress = MagicMock()
+        items = list(device_spi._continuous_live_capture_with_repeating_symbols(
+            rate_hz=1_000_000, chunk_nsamp=1, stop_evt=stop_evt,
+            packed_symbols=b'\x12', symbol_div=10, tx_pin=3, scl_pin=1,
+            progress_cb=progress, full_out=full_out))
+
+        assert items == [(b'\x00\x20', 1, 1, 0)]
+        assert full_out == b'\x00\x20'
+        progress.assert_called_once_with(b'\x00\x20', 1, 1)
+
     def test_framed_reader_joins_and_propagates_shutdown_error(
             self, device_spi, monkeypatch):
         import threading

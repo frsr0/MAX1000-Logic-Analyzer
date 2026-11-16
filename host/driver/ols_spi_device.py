@@ -3824,6 +3824,18 @@ class OLSDeviceSPI:
                     target=read_live_wire, daemon=True,
                     name="ols-live-wire-reader")
                 reader.start()
+
+                def emit(data):
+                    nonlocal total
+                    total += int(chunk_nsamp)
+                    if full_out is not None:
+                        full_out.extend(data)
+                    if progress_cb:
+                        progress_cb(data, total, int(chunk_nsamp))
+                    if include_cursor:
+                        return (data, total, int(chunk_nsamp), 0, None, {})
+                    return (data, total, int(chunk_nsamp), 0)
+
                 try:
                     while not stop_evt.is_set():
                         if reader_error:
@@ -3831,18 +3843,20 @@ class OLSDeviceSPI:
                         try:
                             data = decoded_queue.get(timeout=0.05)
                         except Empty:
-                            if reader_done.is_set():
-                                break
-                            continue
-                        total += int(chunk_nsamp)
-                        if full_out is not None:
-                            full_out.extend(data)
-                        if progress_cb:
-                            progress_cb(data, total, int(chunk_nsamp))
-                        if include_cursor:
-                            yield data, total, int(chunk_nsamp), 0, None, {}
-                        else:
-                            yield data, total, int(chunk_nsamp), 0
+                            if not reader_done.is_set():
+                                continue
+                            # The reader can enqueue its last chunks and
+                            # set reader_done between the timeout above and
+                            # this check. Emit them through the normal
+                            # per-chunk path instead of dropping them.
+                            while True:
+                                try:
+                                    pending = decoded_queue.get_nowait()
+                                except Empty:
+                                    break
+                                yield emit(pending)
+                            break
+                        yield emit(data)
                     if reader_error:
                         raise reader_error[0]
                 finally:
