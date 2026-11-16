@@ -2076,13 +2076,16 @@ class OLSDeviceSPI:
         capture above ~20 MS/s on the bench) aborts with an overflow: DONE is
         still reported but Producer_Index is only the committed prefix, and
         the remaining cells hold whatever the previous capture left behind.
-        Never hand those stale cells back as if they were samples.
+        Never hand those stale cells back as if they were samples. Packed mode
+        writes a compressed stream, so a committed word count below the request
+        is expected and is not an overflow.
         """
         self.last_capture_truncated = False
         producer = status.get('producer_index') if status else None
         if producer is None or int(producer) <= 0:
             return requested_words
-        if int(producer) < requested_words:
+        if (int(producer) < requested_words
+                and not (self._raw_flags & MODE_PACKED_MSO)):
             self.last_capture_truncated = True
             LOG.warning("capture overflowed the SDRAM write pump: %d of %d "
                         "samples committed; returning the committed prefix",

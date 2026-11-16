@@ -1650,6 +1650,30 @@ def test_capture_reports_a_truncated_finite_capture_with_both_counts():
     assert "8 of 4096" in result.warnings[0]
 
 
+def test_capture_does_not_treat_packed_compression_as_truncation():
+    """Packed readback commits far fewer words than requested samples; that is
+    compression, not an SDRAM overflow, so no warning may be emitted."""
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+    words = [
+        0x8000 | (0 << 13) | (0b0001 << 9) | 3,
+        0x8000 | (1 << 13) | (0b0010 << 9) | 3,
+        0x8000 | (2 << 13) | (0b0000 << 9) | 3,
+        0x8000 | (3 << 13) | (0b0000 << 9) | 3,
+        0x0400, 100, 200, 300, 400,
+    ]
+    dev.capture = Mock(return_value=np.array(words, dtype="<u2").tobytes())
+    dev.last_capture_truncated = False
+    adapter._dev = dev
+
+    result = adapter.capture(CaptureSettings(
+        sample_rate=1_000_000, num_samples=16, packed_mode=True))
+
+    assert result.truncated is False
+    assert len(result.digital) == 16
+    assert result.warnings == []
+
+
 def test_capture_without_truncation_carries_no_truncation_warning():
     adapter = ExistingHostAdapter()
     dev = FakeHostDevice()

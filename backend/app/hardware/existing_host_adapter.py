@@ -535,13 +535,16 @@ class ExistingHostAdapter(HardwareDevice):
             # the FPGA: the driver returns only the committed prefix and sets
             # last_capture_truncated. The dropped-sample counter only counts in
             # continuous mode, so without this the user would see a short
-            # capture that looks healthy. Packed readback is excluded from the
-            # counts because packed_decode always yields the requested length.
+            # capture that looks healthy. Packed readback is a compressed
+            # stream: its committed word count is naturally below the requested
+            # sample count and the driver never flags it, so both comparisons
+            # are skipped there (packed_decode below yields the requested
+            # length).
             result.truncated = bool(getattr(dev, "last_capture_truncated", False))
-            if result.digital is not None:
+            if result.digital is not None and not settings.packed_mode:
                 requested = int(settings.num_samples)
                 committed = int(len(result.digital))
-                if result.truncated and not settings.packed_mode:
+                if result.truncated:
                     result.warnings.append(
                         f"Truncated capture: the FPGA committed {committed} of "
                         f"{requested} requested samples because the input "

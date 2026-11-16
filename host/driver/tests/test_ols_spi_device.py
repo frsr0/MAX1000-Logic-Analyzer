@@ -908,13 +908,27 @@ class TestOLSDeviceSPI:
         assert device_spi._capture_read_words(
             10, {'producer_index': 0}) == 10
 
+    def test_capture_read_words_packed_does_not_report_truncation(
+            self, device_spi, caplog):
+        # Packed SDRAM holds compressed words; a short producer is normal.
+        device_spi._raw_flags = MODE_PACKED_MSO
+        with caplog.at_level("WARNING", logger="ols_spi_device"):
+            assert device_spi._capture_read_words(
+                20000, {'producer_index': 160}) == 160
+        assert device_spi.last_capture_truncated is False
+        assert caplog.records == []
+
     def test_capture_read_words_truncates_digital_overflow_to_committed_prefix(
-            self, device_spi):
+            self, device_spi, caplog):
         # Single-shot overflow: DONE with Producer_Index short of the request.
         device_spi._raw_flags = 0
-        assert device_spi._capture_read_words(
-            1024, {'producer_index': 19}) == 19
+        with caplog.at_level("WARNING", logger="ols_spi_device"):
+            assert device_spi._capture_read_words(
+                1024, {'producer_index': 19}) == 19
         assert device_spi.last_capture_truncated is True
+        assert any(r.getMessage().startswith(
+            "capture overflowed the SDRAM write pump: 19 of 1024")
+            for r in caplog.records)
         assert device_spi._capture_read_words(
             1024, {'producer_index': 1024}) == 1024
         assert device_spi.last_capture_truncated is False
