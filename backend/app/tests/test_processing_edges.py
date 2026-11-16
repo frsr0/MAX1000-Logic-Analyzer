@@ -2851,7 +2851,10 @@ def test_hardware_helper_and_fallback_branches(monkeypatch):
         def capture(self, **kwargs): return b"\x01\x00"
         def set_analog_config(self, *a, **k): pass
     result = DigitalCaptureStrategy().capture(Short(), settings)
-    assert result.warnings
+    # A short read is returned as data; the adapter (which knows the requested
+    # count and the truncation flag) builds the user-facing warning.
+    assert result.digital is not None and len(result.digital) == 1
+    assert result.warnings == []
     class Empty(Short):
         def capture(self, **kwargs): return b""
     with pytest.raises(HardwareError):

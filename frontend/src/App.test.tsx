@@ -177,6 +177,7 @@ it('handles every capture event including progress with and without status', asy
   } });
   const health = {
     active: true, mode: 'rolling', dropped_samples: 12, gaps: 2,
+    truncated_captures: 0,
     observed_seconds: 0.1, elapsed_seconds: 1, observed_fraction: 0.1,
   };
   await message('/ws/capture', 'capture_progress', {

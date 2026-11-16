@@ -99,6 +99,7 @@ class CaptureManager:
                                  "message": "", "repeat": 0}
         self.capture_health = {
             "mode": "", "dropped_samples": None, "gaps": 0,
+            "truncated_captures": 0,
             "observed_seconds": 0.0, "elapsed_seconds": 0.0,
             "observed_fraction": None,
         }
@@ -327,6 +328,7 @@ class CaptureManager:
     def _reset_capture_health(self, mode: str) -> None:
         self.capture_health = {
             "mode": mode, "dropped_samples": None, "gaps": 0,
+            "truncated_captures": 0,
             "observed_seconds": 0.0, "elapsed_seconds": 0.0,
             "observed_fraction": None,
         }
@@ -343,11 +345,15 @@ class CaptureManager:
                 live["dropped_samples"] = min(
                     0xFFFF, live["dropped_samples"] + int(result.dropped_samples))
         live["gaps"] += int(result.gaps or 0)
+        if result.truncated:
+            live["truncated_captures"] = int(
+                live.get("truncated_captures") or 0) + 1
         elapsed = max(0.0, time.monotonic() - live["started_at"])
         self.capture_health = {
             "mode": live["mode"],
             "dropped_samples": live["dropped_samples"],
             "gaps": live["gaps"],
+            "truncated_captures": int(live.get("truncated_captures") or 0),
             "observed_seconds": live["observed_seconds"],
             "elapsed_seconds": elapsed,
             "observed_fraction": (live["observed_seconds"] / elapsed
@@ -540,7 +546,8 @@ class CaptureManager:
         run = 0
         self._reset_capture_health(settings.mode)
         live = {"started_at": time.monotonic(), "mode": settings.mode,
-                "observed_seconds": 0.0, "dropped_samples": None, "gaps": 0}
+                "observed_seconds": 0.0, "dropped_samples": None, "gaps": 0,
+                "truncated_captures": 0}
         try:
             if settings.mode == "digital_narrow" and hasattr(dev, "stream_capture"):
                 streamed_samples = 0
@@ -626,6 +633,13 @@ class CaptureManager:
                     live_session = session
                 else:
                     session = self._result_to_session(settings, result, name, run)
+                    if result.truncated:
+                        # capture_health is reset per run, so a single-shot
+                        # truncation is reported by the result warning and
+                        # counted here for the status snapshot.
+                        self.capture_health["truncated_captures"] = int(
+                            self.capture_health.get("truncated_captures") or 0
+                        ) + 1
                 self.last_session_id = session.id
                 manager.publish_threadsafe("capture", "capture_complete", {
                     "session_id": session.id,

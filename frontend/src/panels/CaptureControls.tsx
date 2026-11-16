@@ -259,7 +259,8 @@ export function CaptureControls() {
     : '';
   const captureHealth = status?.capture_health;
   const healthAlert = Number(captureHealth?.dropped_samples ?? 0) > 0
-    || (captureHealth?.gaps ?? 0) > 0;
+    || (captureHealth?.gaps ?? 0) > 0
+    || Number(captureHealth?.truncated_captures ?? 0) > 0;
 
   useEffect(() => {
     if (isMock) api.mockScenarios().then((r) => setScenarios(r.scenarios)).catch(() => {});
@@ -459,6 +460,7 @@ export function CaptureControls() {
         <div className={`finding ${healthAlert ? 'warning' : 'info'}`} role="status">
           <strong>Live capture health</strong><br />
           Dropped samples: {formatDroppedSamples(captureHealth.dropped_samples)}<br />
+          Truncated captures: {captureHealth.truncated_captures}<br />
           Flagged gaps: {captureHealth.gaps}<br />
           {captureHealth.observed_fraction !== null && (
             <>

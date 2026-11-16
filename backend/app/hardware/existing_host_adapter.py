@@ -531,6 +531,26 @@ class ExistingHostAdapter(HardwareDevice):
                     result.dropped_samples = dev.read_dropped_samples()
                 except Exception:
                     result.dropped_samples = None
+            # A finite capture that outruns the SDRAM write pump is aborted by
+            # the FPGA: the driver returns only the committed prefix and sets
+            # last_capture_truncated. The dropped-sample counter only counts in
+            # continuous mode, so without this the user would see a short
+            # capture that looks healthy. Packed readback is excluded from the
+            # counts because packed_decode always yields the requested length.
+            result.truncated = bool(getattr(dev, "last_capture_truncated", False))
+            if result.digital is not None:
+                requested = int(settings.num_samples)
+                committed = int(len(result.digital))
+                if result.truncated and not settings.packed_mode:
+                    result.warnings.append(
+                        f"Truncated capture: the FPGA committed {committed} of "
+                        f"{requested} requested samples because the input "
+                        "outran the SDRAM write pump; only the committed "
+                        "prefix is returned")
+                if not result.truncated and committed < requested:
+                    result.warnings.append(
+                        f"Device returned {committed} effective samples for "
+                        f"{requested} requested")
             # If packed capture mode was active, decode the compressed stream.
             # packed_decode returns (16, N) uint8 bit-planes and raw 12-bit ADC
             # codes; CaptureResult.digital is a 1-D bit-packed uint16 per

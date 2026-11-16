@@ -125,6 +125,7 @@ function makeStatus(mock = false): Json {
     capture_progress: { samples_read: 0, samples_total: 0, message: '', repeat: 1 },
     capture_health: {
       active: false, mode: '', dropped_samples: null, gaps: 0,
+      truncated_captures: 0,
       observed_seconds: 0, elapsed_seconds: 0, observed_fraction: null,
     },
     last_session_id: null,

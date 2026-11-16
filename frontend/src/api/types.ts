@@ -266,6 +266,7 @@ export interface CaptureHealth {
   mode: string;
   dropped_samples: number | null;
   gaps: number;
+  truncated_captures: number;
   observed_seconds: number;
   elapsed_seconds: number;
   observed_fraction: number | null;

@@ -1629,3 +1629,52 @@ def test_mcp4725_measurement_propagates_hardware_errors_unchanged():
     with pytest.raises(HardwareError,
                        match="MCP4725 analog measurement failed: adc crash"):
         adapter.mcp4725_write_and_measure(0x60, 100)
+
+
+def test_capture_reports_a_truncated_finite_capture_with_both_counts():
+    """A single-shot capture that outran the SDRAM write pump comes back short;
+    the result must say so instead of looking healthy."""
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+    dev.capture = Mock(return_value=b"\x01\x00" * 8)
+    dev.last_capture_truncated = True
+    adapter._dev = dev
+
+    result = adapter.capture(CaptureSettings(
+        mode="single", sample_rate=200_400_000, num_samples=4096))
+
+    assert result.truncated is True
+    assert len(result.digital) == 8
+    assert len(result.warnings) == 1
+    assert "Truncated capture" in result.warnings[0]
+    assert "8 of 4096" in result.warnings[0]
+
+
+def test_capture_without_truncation_carries_no_truncation_warning():
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+    dev.capture = Mock(return_value=b"\x01\x00" * 4)
+    dev.last_capture_truncated = False
+    adapter._dev = dev
+
+    result = adapter.capture(CaptureSettings(
+        mode="single", sample_rate=1_000_000, num_samples=4))
+
+    assert result.truncated is False
+    assert all("Truncated capture" not in w for w in result.warnings)
+
+
+def test_capture_reports_a_short_read_without_the_truncation_flag():
+    """A short read that the driver did not attribute to an overflow still has
+    to be visible; it just cannot claim a committed/requested truncation."""
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+    dev.capture = Mock(return_value=b"\x01\x00")
+    dev.last_capture_truncated = False
+    adapter._dev = dev
+
+    result = adapter.capture(CaptureSettings(
+        mode="single", sample_rate=1_000_000, num_samples=4))
+
+    assert result.truncated is False
+    assert result.warnings == ["Device returned 1 effective samples for 4 requested"]

@@ -313,6 +313,7 @@ it('shows each live compression progress state and normalizes legacy modes', () 
 it('shows live dropped samples, gaps and observed share without alarming at zero', () => {
   const health = (overrides: Record<string, unknown> = {}) => ({
     active: true, mode: 'rolling', dropped_samples: 12, gaps: 2,
+    truncated_captures: 0,
     observed_seconds: 0.1, elapsed_seconds: 1.0, observed_fraction: 0.1, ...overrides,
   });
   useApp.setState({
@@ -323,6 +324,7 @@ it('shows live dropped samples, gaps and observed share without alarming at zero
   });
   const { rerender } = render(<CaptureControls />);
   expect(screen.getByText(/Dropped samples: 12/)).toBeTruthy();
+  expect(screen.getByText(/Truncated captures: 0/)).toBeTruthy();
   expect(screen.getByText(/Flagged gaps: 2/)).toBeTruthy();
   expect(screen.getByText(/10.0% of real time/)).toBeTruthy();
   expect(screen.getByText('Live sample coverage')).toBeTruthy();
@@ -334,6 +336,17 @@ it('shows live dropped samples, gaps and observed share without alarming at zero
   }) as never });
   rerender(<CaptureControls />);
   expect(screen.getByText(/Dropped samples: 65535\+/)).toBeTruthy();
+
+  // A truncated capture is a health problem of its own: it must be counted
+  // next to the dropped samples and raise the warning even with zero drops.
+  useApp.setState({ status: status({
+    capture_state: 'capturing',
+    capture_health: health({ dropped_samples: 0, gaps: 0, truncated_captures: 3 }),
+  }) as never });
+  rerender(<CaptureControls />);
+  expect(screen.getByText(/Truncated captures: 3/)).toBeTruthy();
+  expect(screen.getByText(/Dropped samples: 0/)).toBeTruthy();
+  expect(screen.getByRole('status').className).toContain('finding warning');
 
   useApp.setState({ status: status({
     capture_state: 'capturing',

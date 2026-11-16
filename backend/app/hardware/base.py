@@ -30,6 +30,7 @@ class CaptureResult:
     warnings: list = field(default_factory=list)
     dropped_samples: Optional[int] = None  # lost during this chunk; None = unknown
     gaps: int = 0                          # flagged discontinuities in this chunk
+    truncated: bool = False                # input outran the SDRAM write pump
 
 
 class HardwareError(Exception):

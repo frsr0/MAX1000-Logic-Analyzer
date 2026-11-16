@@ -13,6 +13,7 @@ def test_status_reports_capture_health_and_active_live_state(tmp_path):
     health = manager.status()["capture_health"]
     assert health == {
         "mode": "", "dropped_samples": None, "gaps": 0,
+        "truncated_captures": 0,
         "observed_seconds": 0.0, "elapsed_seconds": 0.0,
         "observed_fraction": None, "active": False,
     }
@@ -35,6 +36,7 @@ def test_record_live_result_accumulates_dropped_samples_gaps_and_time(
         live, CaptureResult(sample_rate=0, digital=np.zeros(3, dtype=np.uint16)))
     assert manager.capture_health == {
         "mode": "rolling", "dropped_samples": None, "gaps": 0,
+        "truncated_captures": 0,
         "observed_seconds": 0.0, "elapsed_seconds": 0.0,
         "observed_fraction": None,
     }
@@ -125,3 +127,51 @@ def test_over_driven_stream_error_is_kept_as_user_readable_state(tmp_path):
     assert manager.capture_state == "error"
     assert "capture is over-driven" in manager.last_error
     assert "lower the sample rate" in manager.last_error
+
+
+def test_truncated_captures_are_counted_separately_from_dropped_samples(
+        monkeypatch, tmp_path):
+    """A finite capture that outran the SDRAM pump reported no dropped samples
+    (the counter is continuous-only), so truncation needs its own counter."""
+    import app.capture.capture_manager as manager_module
+    manager = CaptureManager(SessionStore(tmp_path / "health-truncated"))
+    live = {"started_at": 100.0, "mode": "rolling", "observed_seconds": 0.0,
+            "dropped_samples": None, "gaps": 0, "truncated_captures": 0}
+    monkeypatch.setattr(manager_module.time, "monotonic", lambda: 102.0)
+
+    manager._record_live_result(live, CaptureResult(
+        sample_rate=1000, digital=np.zeros(10, dtype=np.uint16),
+        dropped_samples=4, gaps=0, truncated=True))
+    assert manager.capture_health["truncated_captures"] == 1
+    assert manager.capture_health["dropped_samples"] == 4
+
+    manager._record_live_result(live, CaptureResult(
+        sample_rate=1000, digital=np.zeros(10, dtype=np.uint16),
+        truncated=True))
+    assert manager.capture_health["truncated_captures"] == 2
+
+    manager._record_live_result(live, CaptureResult(
+        sample_rate=1000, digital=np.zeros(10, dtype=np.uint16)))
+    assert manager.capture_health["truncated_captures"] == 2
+    assert manager.capture_health["dropped_samples"] == 4
+
+
+def test_single_shot_worker_counts_a_truncated_capture(tmp_path):
+    """Single-shot captures have no accumulated live window; the counter is
+    still reported for the run so the status snapshot is honest."""
+    class TruncatedDevice:
+        def get_metadata(self):
+            return MockDevice().get_metadata()
+
+        def capture(self, settings, progress=None, stop_evt=None):
+            return CaptureResult(sample_rate=1_000_000,
+                                 digital=np.ones(2, dtype=np.uint16),
+                                 truncated=True)
+
+    manager = CaptureManager(SessionStore(tmp_path / "health-single"))
+    manager.device = TruncatedDevice()
+    manager._capture_worker(CaptureSettings(mode="single", num_samples=4), "")
+
+    assert manager.capture_state == "done"
+    assert manager.capture_health["truncated_captures"] == 1
+    assert manager.capture_health["dropped_samples"] is None

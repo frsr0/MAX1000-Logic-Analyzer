@@ -50,17 +50,13 @@ class DigitalCaptureStrategy(CaptureStrategy):
         # Packed wire: contiguous 16-bit little-endian samples
         n2 = len(data) - (len(data) % 2)
         digital = np.frombuffer(data[:n2], dtype="<u2")
-        warnings: list = []
-        if len(digital) < nsamp:
-            warnings.append(
-                f"Device returned {len(digital)} effective samples "
-                f"for {nsamp} requested (existing host wire format)")
 
         capture_divider = max(0, round(dev.sample_clk / rate) - 1)
+        # A short read is reported by the adapter, which knows the requested
+        # count and whether the FPGA truncated the capture.
         return CaptureResult(
             sample_rate=rate,
             digital=digital,
             trigger_sample=min(pre, len(digital)) if pre else None,
             divider=capture_divider,
-            warnings=warnings,
         )
