@@ -230,6 +230,10 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL gen_capture_start   : STD_LOGIC := '0';
   type gen_cap_state_t is (GENCAP_IDLE, GENCAP_LOOPBACK_ON, GENCAP_ARM, GENCAP_GUARD, GENCAP_WAIT_BUSY, GENCAP_RUNNING, GENCAP_RUNNING_REPEAT, GENCAP_WAIT_FULL, GENCAP_DONE, GENCAP_ERROR);
   SIGNAL gen_cap_state : gen_cap_state_t := GENCAP_IDLE;
+  -- Watchdog for a generator that never finishes: 2 s at 100 MHz.  A running
+  -- burst is ended by Gen_Busy falling (or by the capture filling), not by a
+  -- fixed duration, so this only bounds a stuck generator.
+  CONSTANT GEN_CAPTURE_WATCHDOG : NATURAL := 200000000;
 
   -- Synthesis preserve: prevent Quartus from optimizing away gen start chain
   attribute preserve : boolean;
@@ -1130,9 +1134,13 @@ BEGIN
   -- gen_capture_active is set when Gen_Busy goes high and held until
   -- Full (capture buffer full), ensuring the loopback mux stays active
   -- until the capture completes — not tied to gen_busy duration alone.
+  -- A running burst has no fixed duration limit: GENCAP_RUNNING ends when
+  -- Gen_Busy falls and GENCAP_WAIT_FULL ends when the capture fills, so a
+  -- legitimate burst of any length survives intact.  The countdown is only a
+  -- watchdog for a generator that never finishes.
   gen_capture_fsm: PROCESS (CLK)
     VARIABLE guard_var : NATURAL range 0 to 1023 := 0;
-    VARIABLE timeout_var : NATURAL range 0 to 8388607 := 0;
+    VARIABLE timeout_var : NATURAL range 0 to 268435455 := 0;
     VARIABLE disp_gen_arm_d : STD_LOGIC := '0';
   BEGIN
     IF RISING_EDGE(CLK) THEN
@@ -1162,8 +1170,13 @@ BEGIN
             END IF;
           WHEN GENCAP_WAIT_BUSY =>
             gen_start_pulse <= '1';
-            IF Gen_Busy = '1' OR Gen_Start_Ack = '1' THEN
-              timeout_var := 5000000;
+            -- Enter RUNNING on Gen_Busy only.  Gen_Start_Ack is a
+            -- combinational "start issued and engine idle" level, so it also
+            -- rises when nothing is loaded and the engine never starts; a
+            -- start that never goes busy must fail the 2000-clock
+            -- acknowledge timeout so the error flag still reports it.
+            IF Gen_Busy = '1' THEN
+              timeout_var := GEN_CAPTURE_WATCHDOG;
               -- Select the terminal behavior once, at start acknowledgment.
               -- The repeat-running state has no timeout/busy-fall predicate,
               -- keeping the ordinary running path and its timing cone small.
