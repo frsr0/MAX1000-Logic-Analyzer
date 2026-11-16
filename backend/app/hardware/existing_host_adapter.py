@@ -1067,6 +1067,69 @@ class ExistingHostAdapter(HardwareDevice):
         """Return physical SDA ACK bits captured during the last DAC write."""
         return tuple(getattr(self, "_mcp4725_last_acknowledgements", ()))
 
+    def max6675_read(self, so_pin: int, cs_pin: int, sck_pin: int) -> dict:
+        """Clock one 16-bit frame out of a MAX6675 thermocouple converter.
+
+        Returns {"raw": int, "clocks": int}. "raw" is the first 16 bits sampled
+        on SCK rising edges, first bit as the most significant bit; "clocks" is
+        how many SCK rising edges were captured (16 for a complete frame).
+        """
+        with self._lock:
+            if self._dev is None:
+                raise HardwareError("Device not connected")
+            pins = (so_pin, cs_pin, sck_pin)
+            if (len(set(pins)) != 3
+                    or any(not isinstance(pin, int) or not 0 <= pin <= 22
+                           for pin in pins)):
+                raise HardwareError(
+                    "SO, CS and SCK must be different external digital pins")
+            dev = self._dev
+            dev.set_analog_config(0)
+            dev.raw_mode(False)
+            # Pin 31 drives no physical pin; it parks the unused MOSI output.
+            mosi_lane, sclk_lane = dev._gen_capture_output_channels(31, sck_pin)
+            free = [ch for ch in range(16) if ch not in (mosi_lane, sclk_lane)]
+            miso_lane, cs_lane = free[0], free[1]
+            dev._gen_data = b"\x00\x00"
+            try:
+                raw = dev.capture_with_gen(
+                    rate_hz=4_000_000, nsamples=1024, timeout=3, proto="SPI",
+                    spi_mosi_pin=31, spi_sclk_pin=sck_pin, spi_clk_div=100,
+                    spi_cs_pin=cs_pin, spi_miso_pin=so_pin,
+                    spi_cs_channel=cs_lane, spi_miso_channel=miso_lane,
+                    fast_mode=True, reset_board=False)
+            except HardwareError:
+                raise
+            except Exception as exc:
+                raise HardwareError(
+                    f"MAX6675 SPI capture failed: {exc}") from exc
+            finally:
+                # Leave no generator route enabled for later captures. A
+                # cleanup failure must not mask the real capture error.
+                try:
+                    dev._aux_pins()
+                    dev._set_gen_capture_aux()
+                except Exception:
+                    pass
+            if not raw:
+                return {"raw": 0, "clocks": 0}
+            words = [int.from_bytes(raw[i:i + 2], "little")
+                     for i in range(0, len(raw) - 1, 2)]
+            bits = []
+            for i in range(1, len(words)):
+                if (not (words[i - 1] >> sclk_lane) & 1
+                        and (words[i] >> sclk_lane) & 1):
+                    # The MISO bit is valid on the rising edge; sample the
+                    # following word so the decode is robust to edge timing.
+                    sample = words[min(i + 1, len(words) - 1)]
+                    bits.append((sample >> miso_lane) & 1)
+            value = 0
+            for bit in bits[:16]:
+                value = (value << 1) | bit
+            # Left-align short frames so the value always spans 16 bits.
+            value <<= 16 - len(bits[:16])
+            return {"raw": value, "clocks": len(bits)}
+
     def mcp4725_prepare_fast(self, sda_pin: int, scl_pin: int) -> None:
         """Set up the external I2C RX path for timed DAC writes."""
         with self._lock:

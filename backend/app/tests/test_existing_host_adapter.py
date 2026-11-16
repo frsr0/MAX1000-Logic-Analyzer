@@ -1702,3 +1702,121 @@ def test_capture_reports_a_short_read_without_the_truncation_flag():
 
     assert result.truncated is False
     assert result.warnings == ["Device returned 1 effective samples for 4 requested"]
+
+
+MAX6675_SCLK_LANE = 1
+MAX6675_MISO_LANE = 0
+
+
+def _max6675_capture_bytes(bits):
+    """Pack a MAX6675 frame as capture words: SCLK idles high, then each bit
+    gets two SCLK-low samples and four SCLK-high samples with MISO held."""
+    sclk = 1 << MAX6675_SCLK_LANE
+    samples = [sclk]
+    for bit in bits:
+        miso = bit << MAX6675_MISO_LANE
+        samples += [miso] * 2
+        samples += [sclk | miso] * 4
+    return b"".join(word.to_bytes(2, "little") for word in samples)
+
+
+def _max6675_adapter(raw=None, side_effect=None):
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+    dev.set_analog_config = Mock()
+    dev.raw_mode = Mock()
+    dev._gen_capture_output_channels = Mock(return_value=(15, MAX6675_SCLK_LANE))
+    dev._aux_pins = Mock()
+    dev._set_gen_capture_aux = Mock()
+    dev.capture_with_gen = Mock(return_value=raw, side_effect=side_effect)
+    adapter._dev = dev
+    return adapter, dev
+
+
+def _bits(value, width=16):
+    return [int(c) for c in format(value, f"0{width}b")]
+
+
+def test_max6675_good_frame_decodes_and_cleans_up():
+    adapter, dev = _max6675_adapter(_max6675_capture_bytes(_bits(0x02A8)))
+
+    result = adapter.max6675_read(so_pin=4, cs_pin=5, sck_pin=6)
+
+    assert result == {"raw": 0x02A8, "clocks": 16}
+    dev.capture_with_gen.assert_called_once_with(
+        rate_hz=4_000_000, nsamples=1024, timeout=3, proto="SPI",
+        spi_mosi_pin=31, spi_sclk_pin=6, spi_clk_div=100,
+        spi_cs_pin=5, spi_miso_pin=4, spi_cs_channel=2,
+        spi_miso_channel=MAX6675_MISO_LANE, fast_mode=True, reset_board=False)
+    assert dev._gen_data == b"\x00\x00"
+    dev._aux_pins.assert_called_once_with()
+    dev._set_gen_capture_aux.assert_called_once_with()
+
+
+def test_max6675_more_than_16_clocks_uses_only_the_first_16_bits():
+    bits = _bits(0x02A8) + [1]
+    adapter, _dev = _max6675_adapter(_max6675_capture_bytes(bits))
+
+    assert adapter.max6675_read(4, 5, 6) == {"raw": 0x02A8, "clocks": 17}
+
+
+def test_max6675_fewer_than_16_clocks_is_left_aligned():
+    adapter, _dev = _max6675_adapter(_max6675_capture_bytes([1, 0, 1, 1, 0, 0, 0, 0]))
+
+    assert adapter.max6675_read(4, 5, 6) == {"raw": 0xB000, "clocks": 8}
+
+
+def test_max6675_empty_capture_returns_zero_clocks():
+    adapter, _dev = _max6675_adapter(b"")
+
+    assert adapter.max6675_read(4, 5, 6) == {"raw": 0, "clocks": 0}
+
+
+def test_max6675_none_capture_returns_zero_clocks():
+    adapter, _dev = _max6675_adapter(None)
+
+    assert adapter.max6675_read(4, 5, 6) == {"raw": 0, "clocks": 0}
+
+
+def test_max6675_requires_a_connected_device():
+    adapter = ExistingHostAdapter()
+    with pytest.raises(HardwareError, match="Device not connected"):
+        adapter.max6675_read(4, 5, 6)
+
+
+@pytest.mark.parametrize("pins", [(4, 4, 6), (4, 6, 6), (23, 5, 6),
+                                  (4, -1, 6), (4, 5, 23)])
+def test_max6675_rejects_equal_or_out_of_range_pins(pins):
+    adapter, dev = _max6675_adapter(b"")
+
+    with pytest.raises(HardwareError,
+                       match="SO, CS and SCK must be different external digital pins"):
+        adapter.max6675_read(*pins)
+    dev.capture_with_gen.assert_not_called()
+
+
+def test_max6675_propagates_hardware_error_and_still_cleans_up():
+    adapter, dev = _max6675_adapter(
+        side_effect=HardwareError("device busy"))
+
+    with pytest.raises(HardwareError, match="device busy"):
+        adapter.max6675_read(4, 5, 6)
+    dev._aux_pins.assert_called_once_with()
+    dev._set_gen_capture_aux.assert_called_once_with()
+
+
+def test_max6675_wraps_driver_errors_and_still_cleans_up():
+    adapter, dev = _max6675_adapter(side_effect=RuntimeError("x"))
+
+    with pytest.raises(HardwareError, match="MAX6675 SPI capture failed: x"):
+        adapter.max6675_read(4, 5, 6)
+    dev._aux_pins.assert_called_once_with()
+    dev._set_gen_capture_aux.assert_called_once_with()
+
+
+def test_max6675_cleanup_failure_does_not_mask_the_decoded_result():
+    adapter, dev = _max6675_adapter(_max6675_capture_bytes(_bits(0x0123)))
+    dev._aux_pins = Mock(side_effect=RuntimeError("aux stuck"))
+
+    assert adapter.max6675_read(4, 5, 6) == {"raw": 0x0123, "clocks": 16}
+    dev._set_gen_capture_aux.assert_not_called()
