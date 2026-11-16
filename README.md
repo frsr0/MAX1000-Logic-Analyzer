@@ -286,32 +286,40 @@ cd hdl\proj
 .\compile.ps1 -Seed 7
 ```
 
-The current image (generation 3, 2026-11-15) is built with seed `1`, which is
+The current image (generation 4, 2026-11-16) is built with seed `17`, which is
 what the project file selects. On top of the 2026-11-13 read-timing fix (the
 controller latches DQ inside the chip's CL3 data window,
 `RD_WAIT_EXTRA_CYCLES = 3` in `hdl/rtl/SDRAM_Controller_Custom.vhd`) it keeps
 the SDRAM write pump running between bursts of host reads in continuous mode,
 fixes the 1-in-17 word loss in narrow 200 MHz capture, adds a dropped-sample
-counter (register `0x60`, bits 15:0) and makes the RLE stream always send its
-last run. `CMD_GET_METADATA` returns 12 bytes: byte 10 holds feature flags and
-byte 11 the image generation, and the host driver selects its read
+counter (register `0x60`, bits 15:0), makes the RLE stream always send its
+last run, and removes the fixed 50 ms limit on a generator-synchronised
+capture: a burst now ends when `Gen_Busy` falls or the capture fills, with a
+2 s watchdog instead of a 50 ms cut, so a legitimate burst of any length is
+mirrored and captured whole. `CMD_GET_METADATA` returns 12 bytes ending
+`3F 04`: byte 10 holds feature flags (bit 5 = no fixed generator-capture
+limit) and byte 11 the image generation, and the host driver selects its read
 compensations from them, so it also works with older images.
 
-The image uses 8,028 of 8,064 logic elements and 19 of 42 M9K blocks. Its POF
+The image uses 8,022 of 8,064 logic elements and 19 of 42 M9K blocks. Its POF
 SHA-256 is
-`C37FCA4C6E37E7CF39D7F47048829DC844BAD340D6AD4E98E789E70EDE6BFB58`, and slow
-85 °C post-fit setup slack is `sdram_core_clk` +0.043 ns, `fast_clk` +0.075 ns,
-and `sys_clk` +0.132 ns. Timing is seed-sensitive: seed 1 passed the timing
-gate and the other seeds tried did not, so re-sweep seeds after any RTL change.
-On the attached board (2026-11-15) the image passed the hardware validation
-suite (433/433 with one bench jumper not decoding, so three checks did not
-run), the 72-testbench GHDL regression, and a 32-cell live matrix (four read
-paths at eight rates from 0.1 to 100.2 MS/s) with the producer rate within
-0.005 % of the requested rate and the dropped-sample counter at zero.
+`59DBC40464DD95A4AD1869EBBD952D2B89ECC1CD0D4F2FF3E20326831FC168C0`, and slow
+85 °C post-fit setup slack is `sdram_core_clk` +0.038 ns, `fast_clk` +0.073 ns,
+and `sys_clk` +0.109 ns (the `sdram_dq[*]` to `sdram_s_readdata[*]` path keeps
++2.417 ns setup and +7.595 ns hold at slow 85 °C, and +6.200 ns setup and
++4.713 ns hold at fast 0 °C). Timing is seed-sensitive: seeds 1, 2, 3, 5, 7, 9,
+11 and 13 failed the timing gate for this RTL (seed 3 by 4 ps) and seed 17 is
+the first that passed, so re-sweep seeds after any RTL change. On the attached
+board (2026-11-16) the image passed the hardware validation suite (433/433,
+with the bench jumper not decoding so three checks did not run), the
+74-testbench GHDL regression, a 20 s live 16-channel stream at 100.2 MS/s
+(producer slope within 0.001 % of the request, dropped-sample counter at zero),
+and ten full-depth 4,194,304-sample captures at 100.2 MS/s with uniform run
+lengths and no dropped samples.
 
 ```powershell
 cd hdl\proj
-.\compile.ps1 -Seed 1
+.\compile.ps1 -Seed 17
 ```
 
 For more detail, see:
