@@ -1451,3 +1451,58 @@ def test_validate_settings_never_touches_the_hardware():
     adapter.capture(CaptureSettings(sample_rate=14_000_000, num_samples=2048,
                                     enabled_digital=list(range(16))))
     adapter._dev.configure_pattern_trigger.assert_called_once_with(None)
+
+
+def test_adapter_stream_capture_does_not_hold_the_lock_between_chunks():
+    """Generator start/stop/status and status polls must work during a live
+    stream: the adapter lock may only be held while the driver advances."""
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+
+    def stream_ring_capture(**kwargs):
+        for _ in range(3):
+            yield b"\x01\x00", 16, 1, 0
+    dev.stream_ring_capture = Mock(side_effect=stream_ring_capture)
+    adapter._dev = dev
+    settings = CaptureSettings(mode="digital_narrow", sample_rate=1_000_000,
+                               num_samples=1, enabled_digital=[0])
+    stream = adapter.stream_capture(settings)
+
+    def other_thread_can_lock():
+        result = []
+
+        def probe():
+            got = adapter._lock.acquire(blocking=False)   # re-entrant lock: must be another thread
+            if got:
+                adapter._lock.release()
+            result.append(got)
+        worker = threading.Thread(target=probe)
+        worker.start()
+        worker.join()
+        return result[0]
+
+    for _ in range(3):
+        next(stream)
+        assert other_thread_can_lock(), "adapter lock held while a chunk is with the consumer"
+    stream.close()
+    assert dev._raw_flags == 0
+
+
+@pytest.mark.parametrize("flag,expect_warning", [(True, True), (False, False), (None, False)])
+def test_generator_capture_reports_the_fsm_error_flag(flag, expect_warning):
+    """The FPGA gen-capture FSM gives a generator 50 ms; a longer burst cuts the
+    internal loopback lanes. The driver reads the flag; the adapter must not
+    hide it from the user."""
+    from app.hardware.device_models import GeneratorConfig
+
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+    dev.capture_with_gen = Mock(return_value=b"\x01\x00" * 8)
+    dev.last_gen_capture_error = flag
+    adapter._dev = dev
+    cfg = GeneratorConfig(protocol="uart", data_hex="4142", baud=1200, tx_pin=22, scl_pin=1)
+    result = adapter.capture_with_generator(
+        CaptureSettings(sample_rate=1_000_000, num_samples=8), cfg)
+    assert bool(result.warnings) is expect_warning
+    if expect_warning:
+        assert "50 ms" in result.warnings[0]

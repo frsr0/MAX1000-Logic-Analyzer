@@ -78,8 +78,6 @@ GEN_CAPTURE_DEFAULT_SCL_LANE = 1
 GEN_CAPTURE_ACCEL_TX_LANE = 8
 GEN_CAPTURE_ACCEL_SCL_LANE = 9
 MIXED_COMPRESSED_GROUP_FRAMES = 16
-MIXED_COMPRESSED_BLOCK_FRAMES = 160
-MIXED_COMPRESSED_BLOCK_WORDS = MIXED_COMPRESSED_BLOCK_FRAMES * 7
 MIXED_ADC_LANE_DELTA8 = 0
 MIXED_ADC_LANE_RAW12 = 1
 # The direct FIFO reader must absorb only a short handoff pause while the
@@ -1978,6 +1976,9 @@ class OLSDeviceSPI:
         g = self._live_gen
         if not g:
             return False
+        # CMD_GEN_LOAD appends to the generator FIFO: start from an empty one
+        # (this is also called while a copy of the pattern is still playing).
+        self.pkt.transaction(CMD_GEN_STOP, timeout=0.5)
         flags = g["flags"] | GEN_FLAG_REPEAT
         self.pkt.write_register(REG_GEN_DATA, (1 << 8) | flags)
         self.pkt.write_register(REG_GEN_PROTO, 0)
@@ -2506,73 +2507,6 @@ class OLSDeviceSPI:
             if restore:
                 self.pkt.write_register(REG_FLAGS, cur)
 
-    def _read_capture_range_mixed_compressed(self, start_sample, sample_count):
-        """Read a mixed-mode SDRAM word range via the lossless mixed codec."""
-        frame_words = analog_wire_stride(MODE_MIXED) // 2
-        start_sample = max(0, int(start_sample))
-        remaining = max(0, int(sample_count))
-        # Mixed frames are indivisible on the compressed block path. If the
-        # caller starts mid-frame, advance to the next whole frame because the
-        # decoder cannot return a partial mixed frame.
-        misalign = start_sample % frame_words
-        if misalign:
-            skip = frame_words - misalign
-            start_sample += skip
-            remaining = max(0, remaining - skip)
-        # Trim any trailing partial-frame request up front so a <frame_words
-        # remainder cannot survive the planning loop and spin forever.
-        remaining -= remaining % frame_words
-        out = bytearray()
-        sample = start_sample
-        batch_blocks = 128
-        while remaining > 0:
-            addrs = []
-            drops = []
-            takes = []
-            s = sample
-            rem = remaining
-            while rem > 0 and len(addrs) < batch_blocks:
-                if s >= frame_words:
-                    addrs.append((s - frame_words) * 2)
-                    drops.append(1)
-                    take = min(rem, MIXED_COMPRESSED_BLOCK_WORDS - frame_words)
-                else:
-                    addrs.append(0)
-                    drops.append(0)
-                    take = min(rem, MIXED_COMPRESSED_BLOCK_WORDS)
-                take -= take % frame_words
-                takes.append(take)
-                s += take
-                rem -= take
-
-            blocks = None
-            read_blocks = getattr(self.pkt, 'read_capture_blocks', None)
-            if callable(read_blocks):
-                blocks = read_blocks(addrs, compressed=True)
-            if not isinstance(blocks, list):
-                blocks = [self.pkt.read_capture_block(a, compressed=True)
-                          for a in addrs]
-
-            stop = False
-            for block, drop, take_words in zip(blocks, drops, takes):
-                if not block:
-                    stop = True
-                    break
-                payload = decompress_mixed_stream(block)
-                if drop:
-                    payload = payload[analog_frame_stride(MODE_MIXED):]
-                take_frames = take_words // frame_words
-                need = take_frames * analog_frame_stride(MODE_MIXED)
-                if len(payload) < need:
-                    stop = True
-                    break
-                out.extend(payload_to_wire(payload[:need], MODE_MIXED))
-                sample += take_words
-                remaining -= take_words
-            if stop:
-                break
-        return bytes(out)
-
     def _repair_boundary_glitches(self, data: bytes, start_sample: int = 0) -> bytes:
         """Repair the known single-sample readout inversion at 256-sample boundaries."""
         # The new dense 16-bit SDRAM streaming path does not use the legacy
@@ -2776,6 +2710,11 @@ class OLSDeviceSPI:
         # silently kills that source immediately before the first ring read.
         if manage_debug_source:
             self.set_debug_ch0(self.debug_ch0_enabled)
+            # set_debug_ch0(False) stops the generator; a live generator the
+            # user armed (set_live_gen) must keep running while the ring
+            # fills, exactly as capture() re-kicks it after its reset.
+            if self._live_gen:
+                self._kick_live_gen()
         self.spi.flush()
         # CMD_GEN_CAPTURE is the atomic arm+generator-start path.  It avoids a
         # separate CMD_GEN_START handshake when the target image does not expose
@@ -4267,6 +4206,34 @@ class OLSDeviceSPI:
         self._gen_load_i2c(bytes([dev_w, reg_addr]), speed)
         time.sleep(0.01)
 
+    def _note_gen_capture_status(self):
+        """Read the generator-capture FSM's error flag after a gen capture.
+
+        OLS_Interface gen_capture_fsm gives a generator 50 ms (5,000,000 CLK)
+        to finish; past that it enters GENCAP_ERROR, which sets this flag AND
+        drops the internal loopback mux, so the mirrored (internal) capture
+        lane goes back to the raw pad for the rest of the capture. A burst
+        longer than 50 ms (say 8 bytes at 1200 baud) is therefore silently cut
+        on an internal lane (measured: 6 of 8 bytes). The flag also rises when
+        nothing was loaded. Physical-pin lanes (a jumper) are not affected.
+        """
+        self.last_gen_capture_error = None
+        try:
+            reply = self.pkt.transaction(CMD_GEN_STATUS)
+        except Exception:
+            return None
+        payload = reply[2] if reply and len(reply) > 2 else b''
+        if not isinstance(payload, (bytes, bytearray)) or not payload:
+            return None
+        self.last_gen_capture_error = bool(payload[0] & 0x04)
+        if self.last_gen_capture_error:
+            LOG.warning(
+                "generator-capture FSM reported an error: the generator did "
+                "not finish within its 50 ms window (long burst) or nothing "
+                "was loaded; internal loopback lanes may be truncated "
+                "(physical-pin lanes are intact)")
+        return self.last_gen_capture_error
+
     def capture_with_gen(self, rate_hz=1000000, nsamples=5000, timeout=6,
                          trigger=None, capture_time=None, progress_cb=None,
                          stop_evt=None,
@@ -4486,6 +4453,7 @@ class OLSDeviceSPI:
             if progress_cb and samples:
                 progress_cb(samples, len(samples) // 2, rc)
 
+            self._note_gen_capture_status()
             return samples
 
         if gen_first:

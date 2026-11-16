@@ -92,3 +92,55 @@ def test_empty_live_read_on_a_healthy_capture_still_just_ends():
     dev.pkt.last_read_starved = False
     dev.read_capture_range = MagicMock(return_value=b"")
     assert list(dev.stream_ring_capture(1_000_000, 4096, _Stop(10))) == []
+
+
+def test_live_generator_is_restarted_after_the_stream_arms_the_ring():
+    """A live generator armed before the stream must survive arming: the arm
+    path used to end with set_debug_ch0(False) = CMD_GEN_STOP and never re-kick."""
+    dev = _device({"producer_index": 8, "oldest_index": 0, "overrun_count": 0})
+    dev._live_gen = {"packed": b"\x55", "div": 3, "flags": 0, "tx_pin": 0, "scl_pin": 25}
+    dev._kick_live_gen = MagicMock(return_value=True)
+    dev.read_capture_range = MagicMock(return_value=b"")
+    list(dev.stream_ring_capture(1_000_000, 4, _Stop(3)))
+    dev._kick_live_gen.assert_called_once()
+    # no live generator -> nothing to kick
+    dev2 = _device({"producer_index": 8, "oldest_index": 0, "overrun_count": 0})
+    dev2._kick_live_gen = MagicMock()
+    dev2.read_capture_range = MagicMock(return_value=b"")
+    list(dev2.stream_ring_capture(1_000_000, 4, _Stop(3)))
+    dev2._kick_live_gen.assert_not_called()
+
+
+def test_kick_live_gen_empties_the_generator_fifo_first():
+    from driver.spi_protocol import CMD_GEN_STOP
+    dev = OLSDeviceSPI()
+    dev.spi = MagicMock()
+    dev.pkt = MagicMock()
+    dev._live_gen = {"packed": b"\x55\xaa", "div": 3, "flags": 0, "tx_pin": 0, "scl_pin": 25}
+    dev.start_gen = MagicMock()
+    order = []
+    dev.pkt.transaction.side_effect = lambda cmd, *a, **k: order.append(("txn", cmd))
+    dev.pkt.load_gen_data.side_effect = lambda *a, **k: order.append(("load",))
+    assert dev._kick_live_gen() is True
+    assert order[0] == ("txn", CMD_GEN_STOP) and ("load",) in order
+
+
+def _gen_status_reply(byte0):
+    return (ST_OK, 0, bytes([byte0, 0, 0, 0]))
+
+
+def test_gen_capture_status_flag_is_read_and_warned(caplog):
+    import logging
+    dev = OLSDeviceSPI()
+    dev.pkt = MagicMock()
+    dev.pkt.transaction.return_value = _gen_status_reply(0b100)       # bit2 = error
+    with caplog.at_level(logging.WARNING, logger="ols_spi_device"):
+        assert dev._note_gen_capture_status() is True
+    assert dev.last_gen_capture_error is True
+    assert any("50 ms" in r.getMessage() for r in caplog.records)
+    caplog.clear()
+    dev.pkt.transaction.return_value = _gen_status_reply(0b10000)     # no error
+    assert dev._note_gen_capture_status() is False and not caplog.records
+    dev.pkt.transaction.return_value = None                            # unreadable: unknown
+    assert dev._note_gen_capture_status() is None
+    assert dev.last_gen_capture_error is None

@@ -535,6 +535,11 @@ class ExistingHostAdapter(HardwareDevice):
         if settings.mode != "digital_narrow":
             raise HardwareError(
                 "stream_capture is only implemented for digital_narrow")
+        # The adapter lock is held only while the driver advances the stream
+        # (and for setup/teardown), never while a chunk is handed to the
+        # consumer: holding it for the whole stream blocked every other
+        # adapter call (generator start/stop/status, status polls) until the
+        # stream ended.
         with self._lock:
             if self._dev is None:
                 raise HardwareError("Device not connected")
@@ -550,31 +555,43 @@ class ExistingHostAdapter(HardwareDevice):
             old_flags = getattr(dev, "_raw_flags", 0)
             dev._raw_flags = (old_flags & ~0x3E000) | narrow_digital_flags(channel)
             dev.set_analog_config(0)
-            try:
-                driver_progress = _adapt_driver_progress(progress)
-                for data, total, window_samp, overrun in dev.stream_ring_capture(
-                        rate_hz=float(settings.sample_rate),
-                        window_samples=window_samples,
-                        stop_evt=stop_evt or threading.Event(),
-                        progress_cb=driver_progress):
-                    sample_count = min(
-                        len(data) // 2 * 16, window_samp * 16)
-                    digital = unpack_narrow_digital_words(
-                        data, channel=channel,
-                        sample_count=sample_count)
-                    warnings = [
-                        f"Packed 1-channel narrow digital mode on d{channel}"]
-                    if overrun:
-                        warnings.append(
-                            f"Streaming ring overrun count is {overrun}")
-                    yield CaptureResult(
-                        sample_rate=actual_rate,
-                        digital=digital[:window_samples],
-                        analog={},
-                        divider=divider,
-                        warnings=warnings)
-            finally:
-                dev._raw_flags = old_flags
+            driver_progress = _adapt_driver_progress(progress)
+            stream = dev.stream_ring_capture(
+                rate_hz=float(settings.sample_rate),
+                window_samples=window_samples,
+                stop_evt=stop_evt or threading.Event(),
+                progress_cb=driver_progress)
+        try:
+            while True:
+                with self._lock:
+                    try:
+                        data, total, window_samp, overrun = next(stream)
+                    except StopIteration:
+                        break
+                sample_count = min(
+                    len(data) // 2 * 16, window_samp * 16)
+                digital = unpack_narrow_digital_words(
+                    data, channel=channel,
+                    sample_count=sample_count)
+                warnings = [
+                    f"Packed 1-channel narrow digital mode on d{channel}"]
+                if overrun:
+                    warnings.append(
+                        f"Streaming ring overrun count is {overrun}")
+                yield CaptureResult(
+                    sample_rate=actual_rate,
+                    digital=digital[:window_samples],
+                    analog={},
+                    divider=divider,
+                    warnings=warnings)
+        finally:
+            with self._lock:
+                try:
+                    close = getattr(stream, "close", None)
+                    if close is not None:
+                        close()
+                finally:
+                    dev._raw_flags = old_flags
 
     @staticmethod
     def _actual_sample_rate(dev, requested_rate: float) -> tuple[int, float]:
@@ -1146,7 +1163,17 @@ class ExistingHostAdapter(HardwareDevice):
                 raise HardwareError("Generator capture returned no data")
             n2 = len(raw) - (len(raw) % 2)
             digital = np.frombuffer(raw[:n2], dtype="<u2").astype(np.uint16)
-            return CaptureResult(sample_rate=rate, digital=digital)
+            warnings: list = []
+            if getattr(dev, "last_gen_capture_error", None) is True:
+                warnings.append(
+                    "The FPGA generator-capture state machine reported an "
+                    "error: the generator burst did not finish within its "
+                    "50 ms window (or nothing was loaded), so channels that "
+                    "mirror the generator internally may be cut off; channels "
+                    "wired to a physical pin are unaffected. Use a shorter "
+                    "burst or a faster baud rate.")
+            return CaptureResult(sample_rate=rate, digital=digital,
+                                 warnings=warnings)
 
     # ── diagnostics ──────────────────────────────────────────────────
 

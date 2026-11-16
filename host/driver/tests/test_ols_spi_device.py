@@ -42,7 +42,6 @@ from driver.spi_protocol import (
     crc16,
 )
 from driver.ols_spi_device import (
-    MIXED_COMPRESSED_BLOCK_WORDS,
     MODE_ANALOG,
     MODE_ANALOG_ALL,
     MODE_ANALOG_FAST,
@@ -689,46 +688,6 @@ class TestOLSDeviceSPI:
         assert len(data) == 1040
         device_spi.pkt.read_capture_blocks.assert_called_once_with(
             [0, 1024], compressed=False)
-
-    def test_read_capture_range_decompresses_mixed_compressed_blocks(self, device_spi):
-        payload = bytearray()
-        for i in range(160):
-            payload.extend(struct.pack('<H', 0x3000 + i))
-            payload.extend(_pack_pair(0x180 + (i % 16), 0x280 + (i % 16)))
-        block = compress_mixed_stream(bytes(payload))
-        def read_capture_blocks(byte_addrs, compressed=False):
-            return [block]
-        pkt = type('Pkt', (), {})()
-        pkt.read_capture_blocks = read_capture_blocks
-        device_spi.pkt = pkt
-        device_spi.analog_mode = MODE_MIXED
-        device_spi.compress_readback_enabled = True
-
-        data = device_spi._read_capture_range_mixed_compressed(
-            start_sample=0, sample_count=160 * (analog_wire_stride(MODE_MIXED) // 2))
-
-        assert len(data) == 160 * analog_wire_stride(MODE_MIXED)
-        assert wire_to_payload(data, MODE_MIXED) == bytes(payload)
-
-    def test_read_capture_range_decompresses_mixed_compressed_blocks_with_frame_drop(self, device_spi):
-        payload = bytearray()
-        for i in range(160):
-            payload.extend(struct.pack('<H', 0x4000 + i))
-            payload.extend(_pack_pair(0x200 + (i % 8), 0x300 + (i % 8)))
-        block = compress_mixed_stream(bytes(payload))
-        def read_capture_blocks(byte_addrs, compressed=False):
-            return [block]
-        pkt = type('Pkt', (), {})()
-        pkt.read_capture_blocks = read_capture_blocks
-        device_spi.pkt = pkt
-        device_spi.analog_mode = MODE_MIXED
-        device_spi.compress_readback_enabled = True
-
-        data = device_spi._read_capture_range_mixed_compressed(
-            start_sample=3,
-            sample_count=160 * (analog_wire_stride(MODE_MIXED) // 2) - 3)
-
-        assert wire_to_payload(data, MODE_MIXED) == bytes(payload[5:])
 
     def test_repair_boundary_glitches_only_at_256_sample_boundaries(self, device_spi):
         words = [0x0001] * 520

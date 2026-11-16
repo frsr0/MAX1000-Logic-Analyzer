@@ -525,23 +525,6 @@ def test_uncompressed_block_fallback_empty_restore_and_scalar_batch():
     )
 
 
-def test_mixed_compressed_range_handles_alignment_missing_and_short_blocks(monkeypatch):
-    dev = _device()
-    frame_words = device_module.analog_wire_stride(MODE_MIXED) // 2
-    assert dev._read_capture_range_mixed_compressed(1, 1) == b""
-
-    dev.pkt.read_capture_blocks.return_value = [b""]
-    assert dev._read_capture_range_mixed_compressed(0, frame_words) == b""
-
-    dev.pkt.read_capture_blocks.return_value = [b"encoded"]
-    monkeypatch.setattr(device_module, "decompress_mixed_stream", lambda block: b"x")
-    assert dev._read_capture_range_mixed_compressed(0, frame_words) == b""
-
-    del dev.pkt.read_capture_blocks
-    dev.pkt.read_capture_block.return_value = b""
-    assert dev._read_capture_range_mixed_compressed(0, frame_words) == b""
-
-
 def test_capture_helpers_cover_packed_metadata_fast_clock_and_ack_validation():
     dev = _device()
     samples = b"\x01\x00\x02\x00"

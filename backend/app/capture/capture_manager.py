@@ -498,6 +498,8 @@ class CaptureManager:
         run = 0
         try:
             if settings.mode == "digital_narrow" and hasattr(dev, "stream_capture"):
+                streamed_samples = 0
+                last_progress_event = 0.0
                 for result in dev.stream_capture(settings, stop_evt=self._stop_evt):
                     if self._stop_evt.is_set():
                         break
@@ -506,6 +508,24 @@ class CaptureManager:
                         settings, result, name, run, live_session)
                     live_session = session
                     self.last_session_id = session.id
+                    # A running stream is "capturing" with a real count, not
+                    # "armed" with nothing read: samples_read is the number of
+                    # samples delivered since the stream started, repeat the
+                    # number of chunks.
+                    streamed_samples += self._result_num_samples(result)
+                    self.capture_state = "capturing"
+                    self.capture_progress = {
+                        "samples_read": streamed_samples,
+                        "samples_total": settings.num_samples,
+                        "message": "streaming", "repeat": run}
+                    now = time.monotonic()
+                    if now - last_progress_event >= 0.25:
+                        last_progress_event = now
+                        manager.publish_threadsafe(
+                            "capture", "capture_progress",
+                            {"samples_read": streamed_samples,
+                             "samples_total": settings.num_samples,
+                             "phase": "streaming", "repeat": run})
                     manager.publish_threadsafe("capture", "capture_complete", {
                         "session_id": session.id,
                         "num_samples": session.num_samples,

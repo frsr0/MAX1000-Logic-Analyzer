@@ -3344,3 +3344,29 @@ def test_websocket_heartbeat_timeout_and_all_endpoint_hello_messages():
         ws = WS()
         asyncio.run(endpoint(ws))
         assert ws.sent[-1] == "closed"
+
+
+def test_narrow_stream_reports_a_running_stream_with_a_real_count(tmp_path):
+    """A live single-channel stream is 'capturing' with the streamed sample
+    count (it used to stay 'armed' with samples_read 0 for the whole run)."""
+    seen = []
+
+    class StreamDevice:
+        def get_metadata(self):
+            return MockDevice().get_metadata()
+
+        def stream_capture(self, settings, stop_evt=None):
+            for _ in range(3):
+                yield CaptureResult(sample_rate=settings.sample_rate,
+                                    digital=np.ones(settings.num_samples, dtype=np.uint16))
+                seen.append((manager.capture_state, dict(manager.capture_progress)))
+
+    manager = CaptureManager(SessionStore(tmp_path / "narrow-progress"))
+    manager.device = StreamDevice()
+    manager.capture_state = "armed"
+    manager._capture_worker(CaptureSettings(mode="digital_narrow", num_samples=4), "")
+    assert [s[0] for s in seen] == ["capturing"] * 3
+    assert [s[1]["samples_read"] for s in seen] == [4, 8, 12]
+    assert [s[1]["repeat"] for s in seen] == [1, 2, 3]
+    assert seen[0][1]["samples_total"] == 4 and seen[0][1]["message"] == "streaming"
+    assert manager.capture_state == "done"
