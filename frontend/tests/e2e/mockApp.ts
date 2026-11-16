@@ -64,6 +64,7 @@ function makeCap(): Json {
     bram_samples: 1024,
     sample_clk_hz: 200e6,
     image_generation: 4,
+    read_compensation_active: false,
     image_features: {
       has_true_read_data: true,
       has_drop_counter: true,

@@ -188,11 +188,12 @@ export function DevicePage() {
         </div>
       )}
 
-      {capabilities?.image_generation === 0 && (
+      {capabilities?.read_compensation_active && (
         <div className="finding warning" role="alert">
-          <strong>FPGA image generation 0 predates the SDRAM read-timing fix.</strong>{' '}
-          Captures from this image are handled with host-side compensation (one lead
-          word per SDRAM block is discarded). Flash a current image for uncompensated reads.
+          <strong>This FPGA image needs host-side SDRAM read compensation.</strong>{' '}
+          One lead word per SDRAM block is discarded while reading. Flash a current
+          image for uncompensated reads; a branch build that already has the fix can be
+          run with OLS_SDRAM_READ_LEAD_WORDS=0.
         </div>
       )}
 

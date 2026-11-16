@@ -321,6 +321,8 @@ class ExistingHostAdapter(HardwareDevice):
             max_samples=DIGITAL_SDRAM_WORDS, bram_samples=1024,
             sample_clk_hz=sample_clk,
             image_generation=getattr(self._dev, "image_generation", None),
+            read_compensation_active=bool(getattr(
+                self._dev, "read_compensation_active", False)),
             image_features={
                 "has_true_read_data": bool(getattr(self._dev, "has_true_read_data", False)),
                 "has_drop_counter": bool(getattr(self._dev, "has_drop_counter", False)),

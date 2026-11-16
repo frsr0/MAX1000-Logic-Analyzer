@@ -42,7 +42,7 @@ it('scans and presents available, offline and mock devices in read-only mode', a
   fireEvent.click(screen.getByRole('button', { name: 'Rescan' }));
 });
 
-it('shows FPGA image generation and flags, warning for a compensated generation 0 image', () => {
+it('shows FPGA image generation and flags, warning only when read compensation is active', () => {
   vi.stubGlobal('fetch', vi.fn(async () => Response.json({ devices })));
   const imageFeatures = {
     has_true_read_data: false, has_drop_counter: false, rle_flush_fixed: false,
@@ -51,17 +51,32 @@ it('shows FPGA image generation and flags, warning for a compensated generation 
   };
   useApp.setState({
     status: status as never,
-    capabilities: { ...caps, image_generation: 0, image_features: imageFeatures } as never,
+    capabilities: {
+      ...caps, image_generation: 0, read_compensation_active: true,
+      image_features: imageFeatures,
+    } as never,
   });
   const { rerender } = render(<DevicePage />);
   expect(screen.getByText('generation 0')).toBeTruthy();
-  expect(screen.getByRole('alert').textContent).toMatch(/predates the SDRAM read-timing fix/);
+  expect(screen.getByRole('alert').textContent).toMatch(/needs host-side SDRAM read compensation/);
   expect(screen.getByText('True read data').className).toContain('badge-na');
   expect(screen.getByText('Unlimited gen capture').className).toContain('badge-na');
 
+  // A generation-0 build that already has the fix: the host applies no
+  // compensation, so the warning must be gone while the identity stays visible.
   useApp.setState({
     capabilities: {
-      ...caps, image_generation: 4,
+      ...caps, image_generation: 0, read_compensation_active: false,
+      image_features: imageFeatures,
+    } as never,
+  });
+  rerender(<DevicePage />);
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.getByText('generation 0')).toBeTruthy();
+
+  useApp.setState({
+    capabilities: {
+      ...caps, image_generation: 4, read_compensation_active: false,
       image_features: {
         has_true_read_data: true, has_drop_counter: true, rle_flush_fixed: true,
         continuous_no_host_loss: true, narrow_no_loss: true,
@@ -70,7 +85,7 @@ it('shows FPGA image generation and flags, warning for a compensated generation 
     } as never,
   });
   rerender(<DevicePage />);
-  expect(screen.queryByText(/predates the SDRAM read-timing fix/)).toBeNull();
+  expect(screen.queryByRole('alert')).toBeNull();
   expect(screen.getByText('generation 4')).toBeTruthy();
   expect(screen.getByText('True read data').className).toContain('badge-hw');
   expect(screen.getByText('Unlimited gen capture').className).toContain('badge-hw');

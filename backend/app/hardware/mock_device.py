@@ -97,6 +97,7 @@ class MockDevice(HardwareDevice):
             max_samples=2_000_000, bram_samples=1024,
             sample_clk_hz=self.SAMPLE_CLK,
             image_generation=4,
+            read_compensation_active=False,
             image_features={
                 "has_true_read_data": True,
                 "has_drop_counter": True,

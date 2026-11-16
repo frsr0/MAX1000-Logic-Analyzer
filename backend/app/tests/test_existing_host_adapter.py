@@ -248,6 +248,7 @@ def test_real_hardware_capabilities_advertise_200mhz_digital_sampling():
     dev.continuous_no_host_loss = True
     dev.narrow_no_loss = True
     dev.gen_capture_unlimited = True
+    dev.read_compensation_active = True
     adapter._dev = dev
 
     caps = adapter.get_capabilities()
@@ -256,6 +257,7 @@ def test_real_hardware_capabilities_advertise_200mhz_digital_sampling():
     assert caps.sample_clk_hz == 200_000_000
     assert caps.max_samples == DIGITAL_SDRAM_WORDS
     assert caps.image_generation == 4
+    assert caps.read_compensation_active is True
     assert caps.image_features == {
         "has_true_read_data": True,
         "has_drop_counter": True,
@@ -271,6 +273,7 @@ def test_real_hardware_capabilities_advertise_200mhz_digital_sampling():
 def test_adapter_capabilities_report_unknown_image_without_a_device():
     caps = ExistingHostAdapter().get_capabilities()
     assert caps.image_generation is None
+    assert caps.read_compensation_active is False
     assert caps.image_features == {
         "has_true_read_data": False,
         "has_drop_counter": False,

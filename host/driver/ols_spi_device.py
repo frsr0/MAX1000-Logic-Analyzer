@@ -1062,6 +1062,18 @@ class OLSDeviceSPI:
         return bool(self.image_features
                     & _proto.IMAGE_FEATURE_GEN_CAPTURE_UNLIMITED)
 
+    @property
+    def read_compensation_active(self):
+        """True when block reads still drop a duplicated SDRAM lead word.
+
+        This is the effective value after open(): apply_image_metadata() sets
+        it from the image identity and the OLS_SDRAM_READ_LEAD_WORDS override,
+        so it answers what the host is actually doing rather than what the
+        image generation implies (the generation-0 seed 19 / seed 4 builds do
+        have the read-timing fix).
+        """
+        return int(SDRAM_READ_LEAD_WORDS) != 0
+
     def read_dropped_samples(self):
         """Samples the FPGA skipped in the current continuous capture.
 

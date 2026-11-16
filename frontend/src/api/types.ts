@@ -49,6 +49,7 @@ export interface DeviceCapabilities {
   sample_clk_hz: number;
   image_generation?: number | null;
   image_features?: Record<string, boolean> | null;
+  read_compensation_active?: boolean | null;
   supports_pre_trigger: boolean;
   supports_rolling: boolean;
   supports_continuous: boolean;

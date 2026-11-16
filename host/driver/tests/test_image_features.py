@@ -229,3 +229,20 @@ def test_gen_capture_status_is_none_when_the_status_read_raises():
     dev.pkt.transaction.side_effect = RuntimeError("link down")
     assert dev._note_gen_capture_status() is None
     assert dev.last_gen_capture_error is None
+
+
+def test_read_compensation_active_follows_the_effective_lead(
+        restore_compensations, monkeypatch):
+    """The Device page warns from this flag, so it must report the value the
+    host is really using, not the image generation."""
+    dev = _device()
+    assert dev.read_compensation_active is False        # current image
+
+    dev.apply_image_metadata(OLD_10_BYTE)               # predates the fix
+    assert dev.read_compensation_active is True
+
+    # A branch build with the fix but 10-byte metadata: the override wins.
+    monkeypatch.setenv("OLS_SDRAM_READ_LEAD_WORDS", "0")
+    assert dev.apply_image_metadata(OLD_10_BYTE) == (0, 1)
+    assert dev.read_compensation_active is False
+    assert dev.image_generation == 0                    # identity unchanged
