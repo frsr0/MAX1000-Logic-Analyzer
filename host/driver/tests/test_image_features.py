@@ -16,10 +16,10 @@ from driver.ols_spi_device import OLSDeviceSPI
 from driver.spi_protocol import ST_OK
 
 OLD_10_BYTE = bytes([0x10, 0x10, 0x00, 0xF0, 0x01, 0xD0, 0x0E, 0x03, 0x00, 0x0F])
-NEW_12_BYTE = OLD_10_BYTE + bytes([0x1F, 0x03])
+NEW_12_BYTE = OLD_10_BYTE + bytes([0x3F, 0x04])
 
 
-def _with_features(features, generation=3):
+def _with_features(features, generation=4):
     return OLD_10_BYTE + bytes([features, generation])
 
 
@@ -48,7 +48,7 @@ def test_defaults_are_the_known_new_image():
 def test_metadata_parsing_old_and_new():
     assert proto.image_features_from_metadata(OLD_10_BYTE) == (0, 0)
     assert proto.image_features_from_metadata(b"") == (0, 0)
-    assert proto.image_features_from_metadata(NEW_12_BYTE) == (3, 0x1F)
+    assert proto.image_features_from_metadata(NEW_12_BYTE) == (4, 0x3F)
     assert proto.image_features_from_metadata(_with_features(0x05, 7)) == (7, 0x05)
 
 
@@ -74,10 +74,10 @@ def test_new_image_metadata_sets_zero_compensations_and_flags(
         assert dev.apply_image_metadata(NEW_12_BYTE) == (0, 0)
     assert proto.SDRAM_READ_LEAD_WORDS == 0 == dev_mod.SDRAM_READ_LEAD_WORDS
     assert proto.RLE_STREAM_TAIL_GUARD == 0
-    assert dev.image_generation == 3 and dev.image_features == 0x1F
+    assert dev.image_generation == 4 and dev.image_features == 0x3F
     assert dev.has_true_read_data and dev.has_drop_counter
     assert dev.rle_flush_fixed and dev.continuous_no_host_loss
-    assert dev.narrow_no_loss
+    assert dev.narrow_no_loss and dev.gen_capture_unlimited
     assert not caplog.records                     # no warning on a current image
 
 
@@ -110,11 +110,20 @@ def test_detect_image_features_reads_metadata(restore_compensations):
     dev = _device()
     dev.pkt.transaction.return_value = (ST_OK, 0, NEW_12_BYTE)
     dev._detect_image_features()
-    assert dev.image_generation == 3 and dev.has_drop_counter
+    assert dev.image_generation == 4 and dev.has_drop_counter
     # a failed/short metadata read leaves the previous values alone
     dev.pkt.transaction.return_value = None
     dev._detect_image_features()
-    assert dev.image_generation == 3
+    assert dev.image_generation == 4
+
+
+def test_gen_capture_unlimited_needs_its_bit(restore_compensations):
+    dev = _device()
+    assert not dev.gen_capture_unlimited            # default: unknown image
+    dev.apply_image_metadata(_with_features(0x1F, 3))   # generation 3 image
+    assert not dev.gen_capture_unlimited
+    dev.apply_image_metadata(_with_features(0x3F, 4))   # generation 4 image
+    assert dev.gen_capture_unlimited
 
 
 def test_dropped_sample_counter_unknown_without_the_feature_bit():

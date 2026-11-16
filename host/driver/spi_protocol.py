@@ -187,6 +187,7 @@ IMAGE_FEATURE_DROP_COUNTER = 0x02        # register 0x60 = dropped-sample counte
 IMAGE_FEATURE_RLE_FLUSH_FIXED = 0x04     # RLE stream always sends the last run
 IMAGE_FEATURE_CONTINUOUS_NO_HOST_LOSS = 0x08   # host reads do not drop samples
 IMAGE_FEATURE_NARROW_NO_LOSS = 0x10      # narrow 200 MHz loses no samples
+IMAGE_FEATURE_GEN_CAPTURE_UNLIMITED = 0x20   # generator capture has no 50 ms cap
 REG_DROPPED_SAMPLES = 0x60               # REG_PUMP_VALID_CYCLES on this image
 
 

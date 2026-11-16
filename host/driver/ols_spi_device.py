@@ -1056,6 +1056,12 @@ class OLSDeviceSPI:
     def narrow_no_loss(self):
         return bool(self.image_features & _proto.IMAGE_FEATURE_NARROW_NO_LOSS)
 
+    @property
+    def gen_capture_unlimited(self):
+        """True when a generator burst ends on Gen_Busy, not a 50 ms cut."""
+        return bool(self.image_features
+                    & _proto.IMAGE_FEATURE_GEN_CAPTURE_UNLIMITED)
+
     def read_dropped_samples(self):
         """Samples the FPGA skipped in the current continuous capture.
 

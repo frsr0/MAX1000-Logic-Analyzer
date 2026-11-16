@@ -377,11 +377,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   CONSTANT SAMPLE_CLK_KHZ_SLV : STD_LOGIC_VECTOR(31 downto 0) :=
     STD_LOGIC_VECTOR(TO_UNSIGNED(SAMPLE_CLK_HZ / 1000, 32));
   -- Image identification returned by CMD_GET_METADATA bytes 10 and 11.
-  -- Generation 3: read-timing fix (bit0), dropped-sample counter (bit1), RLE
+  -- Generation 4: read-timing fix (bit0), dropped-sample counter (bit1), RLE
   -- stream flush fix (bit2), continuous capture runs between host reads (bit3),
-  -- narrow 200 MHz loses no samples (bit4).
-  CONSTANT IMAGE_FEATURES2 : STD_LOGIC_VECTOR(7 downto 0) := x"1F";
-  CONSTANT IMAGE_GENERATION : STD_LOGIC_VECTOR(7 downto 0) := x"03";
+  -- narrow 200 MHz loses no samples (bit4), generator capture has no fixed
+  -- 50 ms limit (bit5: a burst ends on Gen_Busy or Full, 2 s watchdog).
+  CONSTANT IMAGE_FEATURES2 : STD_LOGIC_VECTOR(7 downto 0) := x"3F";
+  CONSTANT IMAGE_GENERATION : STD_LOGIC_VECTOR(7 downto 0) := x"04";
   SIGNAL sig_rd_pend_d1       : STD_LOGIC := '0';
   -- Drives the OUT request toggle so the FSM can read/flip it (port is OUT).
   SIGNAL blk_req_tog_i        : STD_LOGIC := '0';
