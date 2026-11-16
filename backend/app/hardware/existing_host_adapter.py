@@ -443,8 +443,11 @@ class ExistingHostAdapter(HardwareDevice):
                            "channel; maximum analog captures the documented "
                            "physical analog profile.",
             })
+        # validation must not touch the hardware: it runs in an API thread,
+        # possibly while a capture owns the SPI link, and writing the pattern
+        # trigger registers here would also overwrite a running capture's setup
         if self._requires_unavailable_high_rate_deep_path(
-                settings, self._build_trigger(settings)):
+                settings, self._build_trigger(settings, configure=False)):
             findings.append({
                 "level": "warning",
                 "message": "Single-shot deep digital capture is clean up to the "
@@ -717,25 +720,29 @@ class ExistingHostAdapter(HardwareDevice):
             fixed += data[-1:]
         return fixed, repaired
 
-    def _build_trigger(self, settings: CaptureSettings):
+    def _build_trigger(self, settings: CaptureSettings, configure: bool = True):
+        """Trigger for ``settings``; with ``configure`` False no hardware access."""
         trig = settings.trigger
         dev = self._dev
         if trig.type == "generic_pattern":
             pattern = project_generic_pattern_for_hardware(trig).model_dump()
-            if pattern.get("clock_source") == "internal_baud":
+            if pattern.get("clock_source") == "internal_baud" and dev is not None:
                 pattern["baud_div"] = max(1, round(dev.sample_clk / max(1, trig.baud or 115200)))
-            dev.configure_pattern_trigger(pattern)
+            if configure:
+                dev.configure_pattern_trigger(pattern)
             return None
-        dev.configure_pattern_trigger(None)
+        if configure:
+            dev.configure_pattern_trigger(None)
         register_trigger = to_register_config(trig)
         if register_trigger is not None:
             return register_trigger
         if trig.type == "uart_byte" and trig.value is not None:
             # Configured via trigger_decode just before arm
-            dev = self._dev
-            ch = trig.channels[0] if trig.channels else 0
-            dev.trigger_decode(match_byte=trig.value & 0xFF, channel=ch,
-                               baud=trig.baud or 115200, enable=True)
+            if configure:
+                dev = self._dev
+                ch = trig.channels[0] if trig.channels else 0
+                dev.trigger_decode(match_byte=trig.value & 0xFF, channel=ch,
+                                   baud=trig.baud or 115200, enable=True)
             return None
         return None
 

@@ -1431,3 +1431,23 @@ def test_analog_continuous_streams_adc_only_no_recovery():
     assert result.digital is None
     assert list(result.analog) == ["a1"]
     dev.close.assert_not_called()
+
+
+def test_validate_settings_never_touches_the_hardware():
+    """Validation runs in an API thread, possibly while a capture owns the SPI
+    link: it must not write the pattern-trigger registers (that raced the
+    capture thread's transactions and also clobbered a running setup)."""
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+    adapter._dev.configure_pattern_trigger = Mock()
+    adapter._dev.trigger_decode = Mock()
+    findings = adapter.validate_settings(CaptureSettings(
+        sample_rate=14_000_000, num_samples=2048,
+        enabled_digital=list(range(16))))
+    assert isinstance(findings, list)
+    adapter._dev.configure_pattern_trigger.assert_not_called()
+    adapter._dev.trigger_decode.assert_not_called()
+    # a capture still configures it
+    adapter.capture(CaptureSettings(sample_rate=14_000_000, num_samples=2048,
+                                    enabled_digital=list(range(16))))
+    adapter._dev.configure_pattern_trigger.assert_called_once_with(None)

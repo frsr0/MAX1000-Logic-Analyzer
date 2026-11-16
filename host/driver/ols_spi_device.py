@@ -36,7 +36,7 @@ from driver.spi_protocol import (
     CMD_ABORT_CAPTURE, CMD_ACK_CAPTURE_DONE, CMD_START_STREAM,
     CMD_GEN_START, CMD_GEN_STOP, CMD_GEN_LOAD, CMD_GEN_CAPTURE, CMD_GEN_STATUS,
     CMD_READ_REG, SYNC_RSP, MAX_PAYLOAD, build_packet, parse_response,
-    CMD_GET_METADATA,
+    CMD_GET_METADATA, CMD_WRITE_REG, CMD_GET_STATUS, CMD_ARM_CAPTURE,
     REG_FLAGS_COMPRESS_MASK, REG_FLAGS_COMPRESS_DELTA, REG_FLAGS_COMPRESS_RLE,
     REG_DIVIDER, REG_SAMPLE_COUNT, REG_DELAY_COUNT,
     REG_TRIGGER_MASK, REG_TRIGGER_VALUE, REG_FLAGS,
@@ -47,7 +47,7 @@ from driver.spi_protocol import (
     REG_GEN_RX_DATA, REG_GEN_AUX_PINS, REG_GEN_CAPTURE_AUX,
     REG_GEN_CAPTURE_TX_CHAN, REG_GEN_CAPTURE_SCL_CHAN,
     REG_IFACE_MODE,
-    ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_DONE,
+    ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_DONE, ST_CAPTURE_IDLE,
     MAX_RLE_STREAM_SAMPLES, SDRAM_READ_LEAD_WORDS,
     GEN_FLAG_SPI_TEST, GEN_FLAG_REPEAT, GEN_FLAG_RS485_PAIR,
     GEN_FLAG_ACCEL_ATTACH,
@@ -605,6 +605,11 @@ class OLSDeviceSPI:
 
     def __init__(self, sys_clk_hz=100000000):
         self.sys_clk = sys_clk_hz
+        if os.environ.get("OLS_CAPTURE_WAITS", "").lower() == "legacy":
+            # escape hatch: the fixed waits the capture setup used before hw21
+            self.RESET_SETTLE_S = 0.02
+            self.CAPTURE_SETTLE_S = 0.02
+            self.CAPTURE_QUIET_MARGIN_S = 0.05
         self.sample_clk = sys_clk_hz  # updated by _detect_sample_clk
         self.fast_mode_enabled = True
         # Wire bytes per digital sample. The FPGA write pump used to store
@@ -727,7 +732,7 @@ class OLSDeviceSPI:
                     self.spi.flush()
                 except Exception:
                     pass
-        cur = self.pkt.read_register(REG_FLAGS)
+        cur = self._read_flags()
         if cur < 0:
             return False
         cur &= ~REG_FLAGS_COMPRESS_MASK
@@ -735,7 +740,7 @@ class OLSDeviceSPI:
             cur |= REG_FLAGS_COMPRESS_DELTA
         elif mode == 'rle':
             cur |= REG_FLAGS_COMPRESS_RLE
-        ok = self.pkt.write_register(REG_FLAGS, cur)
+        ok = self._write_flags(cur)
         if ok:
             self._readback_hardware_is_raw = (mode == 'raw')
         return ok
@@ -748,7 +753,7 @@ class OLSDeviceSPI:
         (no double-compression). MODE_PACKED_MSO flag is set in _raw_flags
         so the readback path can detect packed data.
         """
-        cur = self.pkt.read_register(REG_FLAGS)
+        cur = self._read_flags()
         if cur < 0:
             return False
         if enable:
@@ -757,7 +762,24 @@ class OLSDeviceSPI:
         else:
             cur &= ~(1 << 20)
             self._raw_flags &= ~MODE_PACKED_MSO
-        return self.pkt.write_register(REG_FLAGS, cur)
+        return self._write_flags(cur)
+
+    # The mode setters below run before every capture and usually change
+    # nothing. capture() rewrites REG_FLAGS completely (reset() writes 0, then
+    # the config frame writes the full value), so skipping a write that would
+    # leave the register as the host last wrote it loses nothing and avoids
+    # poking REG_FLAGS needlessly (see capture_analog: early pokes can disturb
+    # the ADC sequencer). The shadow is the last value this host wrote/read.
+    def _read_flags(self):
+        reader = getattr(self.pkt, 'read_register_cached', None)
+        if self.pkt.fast_transactions is True and reader is not None:
+            return reader(REG_FLAGS)
+        return self.pkt.read_register(REG_FLAGS)
+
+    def _write_flags(self, value):
+        if self.pkt.fast_transactions is True:
+            return self.pkt.write_register_if_changed(REG_FLAGS, value)
+        return self.pkt.write_register(REG_FLAGS, value)
 
     def _can_compress_readback(self):
         return self.compress_readback_enabled and self.analog_mode in (MODE_DIGITAL, MODE_MIXED)
@@ -813,6 +835,11 @@ class OLSDeviceSPI:
                 except Exception:
                     pass
                 self._pkt = SPIDevice(self.spi)
+                # One-round-trip control transactions on a real FTDI link
+                # (OLS_FAST_TX=0 restores the classic request/poll path).
+                self._pkt.fast_transactions = (
+                    os.environ.get("OLS_FAST_TX", "1") != "0"
+                    and hasattr(self.spi, "stream_payload"))
                 self._detect_sample_clk()
                 self._detect_gen_div_width()
                 self._detect_image_features()
@@ -836,24 +863,88 @@ class OLSDeviceSPI:
             self.spi = None
             self._pkt = None
 
+    # Fixed waits of the capture setup path, re-evaluated on the board for the
+    # current image (hw21): 200 consecutive rolling cycles per setting at
+    # 1.002 / 10.02 / 50 MS/s and single-shot at 100.2 MS/s with the wave
+    # frequency alternating every cycle (any stale or unwritten cell breaks a
+    # run length), plus captures right after a raw abort, a continuous stream,
+    # analog / mixed / analog_all captures, a generator burst and back-to-back
+    # captures of other rates, all with these waits at zero: no failure. The
+    # 0.02 s sleeps after reset were an unexplained settle from the first SPI
+    # build (git: e6f085c "spi build"); what they could guard is now a
+    # condition: reset() waits until the FPGA reports idle (RESET_IDLE_WAIT_S
+    # at most). The quiet window below stays: it keeps the SPI link silent
+    # while the pump streams the nominal capture time, but its extra 50 ms
+    # margin only delayed the first DONE poll (polling inside the capture was
+    # also tried and showed no loss, so a small margin suffices).
+    RESET_SETTLE_S = 0.0
+    CAPTURE_SETTLE_S = 0.0
+    CAPTURE_QUIET_MARGIN_S = 0.001
+    RESET_IDLE_WAIT_S = 0.1
+
+    @staticmethod
+    def _reg_write_cmd(addr, value):
+        return (CMD_WRITE_REG,
+                bytes([addr & 0xFF]) + struct.pack('<I', int(value) & 0xFFFFFFFF))
+
+    def _write_regs(self, writes, tail=(), first=()):
+        """Write several registers in one CS frame (one USB round trip).
+
+        ``writes`` is a list of ``(addr, value)``; ``first`` are extra
+        ``(cmd, payload)`` commands sent before them (for example an abort)
+        and ``tail`` extra commands after them (status read, arm). Every write
+        reply must be ST_OK; anything missing is redone one write at a time, so
+        the result is the same as the classic one-transaction-per-register
+        sequence, just faster. Returns the parsed replies of ``tail`` (None
+        entries for replies that were not seen).
+        """
+        if self.pkt.fast_transactions is not True:
+            # classic link (or a mocked packet layer): one transaction each
+            for cmd, payload in first:
+                if payload:
+                    self.pkt.transaction(cmd, payload)
+                else:
+                    self.pkt.transaction(cmd)
+            for a, v in writes:
+                self.pkt.write_register(a, v)
+            return [self.pkt.transaction(cmd, payload) for cmd, payload in tail]
+        cmds = list(first) + [self._reg_write_cmd(a, v) for a, v in writes] + list(tail)
+        replies = self.pkt.batch(cmds)
+        n_first = len(first)
+        for i, (a, v) in enumerate(writes):
+            r = replies[n_first + i] if n_first + i < len(replies) else None
+            if r and r[0] == ST_OK:
+                self.pkt.note_register_written(a, v)
+            else:
+                self.pkt.write_register(a, v)
+        return replies[n_first + len(writes):]
+
     def reset(self):
         self._ensure_open()
-        self.pkt.transaction(CMD_ABORT_CAPTURE)
-        self.pkt.write_register(REG_DIVIDER, 0)
-        self.pkt.write_register(REG_SAMPLE_COUNT, 2)
-        self.pkt.write_register(REG_TRIGGER_MASK, 0)
-        self.pkt.write_register(REG_TRIGGER_VALUE, 0)
-        self.pkt.write_register(REG_FLAGS, 0)
-        self.pkt.write_register(REG_IFACE_MODE, 1)
         # Generator-capture lane overlays survive CMD_ABORT; restore the
         # power-on routing so an earlier test cannot leave e.g. MOSI on lane 15.
-        self._set_gen_capture_aux()
-        self._set_gen_capture_channels(
-            tx_channel=GEN_CAPTURE_DEFAULT_TX_LANE,
-            scl_channel=GEN_CAPTURE_DEFAULT_SCL_LANE)
+        fast = self.pkt.fast_transactions is True
+        tail = self._write_regs(
+            [(REG_DIVIDER, 0), (REG_SAMPLE_COUNT, 2), (REG_TRIGGER_MASK, 0),
+             (REG_TRIGGER_VALUE, 0), (REG_FLAGS, 0), (REG_IFACE_MODE, 1),
+             (REG_GEN_CAPTURE_AUX, 0),
+             (REG_GEN_CAPTURE_TX_CHAN, GEN_CAPTURE_DEFAULT_TX_LANE & 0x0F),
+             (REG_GEN_CAPTURE_SCL_CHAN, GEN_CAPTURE_DEFAULT_SCL_LANE & 0x0F)],
+            first=[(CMD_ABORT_CAPTURE, b'')],
+            tail=[(CMD_GET_STATUS, b'')] if fast else ())
         self.spi.flush()
         self._ring_seeded = False
-        time.sleep(0.02)
+        if fast:
+            # instead of a blind sleep: the abort has taken effect once the FPGA
+            # reports idle (the reply to the status read in the same frame)
+            status = self.pkt.parse_status(tail[0]) if tail and tail[0] else {}
+            deadline = time.time() + self.RESET_IDLE_WAIT_S
+            while status.get('capture_status') not in (ST_CAPTURE_IDLE,):
+                if time.time() >= deadline:
+                    break
+                time.sleep(0.001)
+                status = self.pkt.get_status()
+        time.sleep(self.RESET_SETTLE_S)
 
     def get_metadata(self):
         self._ensure_open()
@@ -1049,7 +1140,7 @@ class OLSDeviceSPI:
         mode_flags = self.analog_mode
         if mode_flags & MODE_ANALOG_ONLY:
             mode_flags |= (self.analog_channel & 0x1F) << 8
-        self.pkt.write_register(REG_FLAGS, mode_flags)
+        self._write_flags(mode_flags)
 
     def set_analog_enable(self, enable=True):
         """Enable mixed capture: 16 digital + both ADC channels."""
@@ -1998,7 +2089,10 @@ class OLSDeviceSPI:
     def configure_pattern_trigger(self, config=None):
         """Write the protocol-independent FPGA pattern-trigger registers."""
         if not config:
-            self.pkt.write_register(REG_PATTERN_CTRL, 0)
+            if self.pkt.fast_transactions is True:
+                self.pkt.write_register_if_changed(REG_PATTERN_CTRL, 0)
+            else:
+                self.pkt.write_register(REG_PATTERN_CTRL, 0)
             return
         raw_channels = [int(c) for c in config.get("channels", [])]
         if len(raw_channels) != 1:
@@ -2082,8 +2176,13 @@ class OLSDeviceSPI:
             return 0
 
     def _write_capture_config(self, *, div, samples, delay_count, mask=0, value=0,
-                              flags=0, fast_mode=None, continuous=False):
-        """Write the full capture mode state before every arm."""
+                              flags=0, fast_mode=None, continuous=False,
+                              tail=()):
+        """Write the full capture mode state before every arm.
+
+        ``tail`` commands (``(cmd, payload)``) are sent in the same CS frame
+        right after the run-edge write; their parsed replies are returned.
+        """
         mode_flags = (flags | self.analog_mode) & 0xFFFFFFFF
         mode_flags &= ~REG_FLAGS_COMPRESS_MASK
         if self.readback_compression_mode in ('delta', 'delta_rle'):
@@ -2102,17 +2201,19 @@ class OLSDeviceSPI:
             # fast-mode write before asserting continuous run, so a capture
             # can never start with the previous mode or divider state.
             mode_flags = (mode_flags & ~0x01) | (1 if fast_mode else 0)
-        self.pkt.write_register(REG_DIVIDER, div & 0xFFFFFF)
-        self.pkt.write_register(REG_SAMPLE_COUNT, max(1, int(samples)))
-        self.pkt.write_register(REG_DELAY_COUNT, max(0, int(delay_count)))
-        self.pkt.write_register(REG_TRIGGER_MASK, mask & 0xFFFFFFFF)
-        self.pkt.write_register(REG_TRIGGER_VALUE, value & 0xFFFFFFFF)
-        self.pkt.write_register(REG_FLAGS, mode_flags)
+        writes = [
+            (REG_DIVIDER, div & 0xFFFFFF),
+            (REG_SAMPLE_COUNT, max(1, int(samples))),
+            (REG_DELAY_COUNT, max(0, int(delay_count))),
+            (REG_TRIGGER_MASK, mask & 0xFFFFFFFF),
+            (REG_TRIGGER_VALUE, value & 0xFFFFFFFF),
+            (REG_FLAGS, mode_flags)]
         if fast_mode is not None:
-            self.pkt.write_register(REG_FAST_MODE, 1 if fast_mode else 0)
+            writes.append((REG_FAST_MODE, 1 if fast_mode else 0))
         # This write is the run edge in the FPGA register interface; it must
         # be last so all capture configuration is stable before arming.
-        self.pkt.write_register(REG_CONT_MODE, 1 if continuous else 0)
+        writes.append((REG_CONT_MODE, 1 if continuous else 0))
+        return self._write_regs(writes, tail=tail)
 
     @staticmethod
     def _trigger_register_values(trigger):
@@ -4446,7 +4547,7 @@ class OLSDeviceSPI:
             nsamples = max(2, min(nsamples, 500000))
 
         self.reset()
-        time.sleep(0.02)
+        time.sleep(self.CAPTURE_SETTLE_S)
         self.spi.flush()
         if self._pending_debug_enable is not None:
             self.debug_ch0_enabled = self._pending_debug_enable
@@ -4464,9 +4565,15 @@ class OLSDeviceSPI:
         pre = max(0, min(pre_trigger, rc - 1))
 
         mask, value = self._trigger_register_values(trigger)
-        self._write_capture_config(
+        # The status read (for the capture sequence number) and the arm ride in
+        # the same CS frame as the configuration writes: one USB round trip
+        # instead of ten. The status reply is taken before the arm in frame
+        # order, exactly as when they were separate transactions.
+        tail = self._write_capture_config(
             div=div, samples=rc, delay_count=rc - pre, mask=mask, value=value,
-            flags=self._raw_flags, fast_mode=self.fast_mode_enabled, continuous=False)
+            flags=self._raw_flags, fast_mode=self.fast_mode_enabled, continuous=False,
+            tail=([(CMD_GET_STATUS, b''), (CMD_ARM_CAPTURE, b'')]
+                  if self.pkt.fast_transactions is True else ()))
 
         self.spi.flush()
 
@@ -4476,8 +4583,27 @@ class OLSDeviceSPI:
         # must not poll status during the active capture: capture_seq increments
         # by one on the arm, so we can predict expected_seq here and then wait the
         # capture out silently before the first (post-capture) status poll.
-        prev = self.pkt.get_status().get('capture_seq')
-        status = self.pkt.arm_capture()
+        if not tail:
+            prev = self.pkt.get_status().get('capture_seq')
+            status = self.pkt.arm_capture()
+        elif len(tail) == 2 and tail[0] and tail[1]:
+            prev = self.pkt.parse_status(tail[0]).get('capture_seq')
+            status = tail[1][0]
+        else:
+            # A reply of the combined frame was missed. Never arm twice: the
+            # arm may already have taken effect, so look at the status first.
+            st_now = self.pkt.get_status()
+            seq_now = st_now.get('capture_seq')
+            if len(tail) == 2 and tail[1]:
+                status = tail[1][0]
+                prev = ((seq_now - 1) & 0xFFFFFFFF if seq_now is not None else None)
+            elif (len(tail) == 2 and st_now.get('capture_status') in (
+                    ST_CAPTURE_ARMED, ST_CAPTURE_DONE, 0x11)):
+                status = ST_CAPTURE_ARMED
+                prev = ((seq_now - 1) & 0xFFFFFFFF if seq_now is not None else None)
+            else:
+                prev = seq_now
+                status = self.pkt.arm_capture()
         if status < 0:
             return b''
         expected_seq = ((prev + 1) & 0xFFFFFFFF) if prev is not None else None
@@ -4488,7 +4614,7 @@ class OLSDeviceSPI:
         # reason: the capture still has a deterministic fixed duration, and the
         # pre-trigger path is the one most sensitive to poll-induced pump stalls.
         if rate_hz > 0 and (trigger is None or pre > 0):
-            quiet = min(timeout, rc / float(rate_hz) + 0.05)
+            quiet = min(timeout, rc / float(rate_hz) + self.CAPTURE_QUIET_MARGIN_S)
             t_end = time.time() + quiet
             while time.time() < t_end:
                 if stop_evt and stop_evt.is_set():

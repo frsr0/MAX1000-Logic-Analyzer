@@ -18,7 +18,9 @@ Response (FPGA → host):
   CRC16   2 bytes
 """
 
+import functools
 import struct
+import threading
 import time
 
 SYNC_REQ = bytes([0x55, 0xAA])
@@ -281,6 +283,22 @@ def parse_response(data: bytes):
     return status, seq, payload
 
 
+# One FTDI link, one conversation at a time. The packet layer is called from
+# the capture thread and from API/status threads; two threads inside the link
+# at once corrupt each other's frames (and race the helper reader thread of
+# stream_payload: "cannot join thread before it is started"). Every public
+# entry that talks to the link takes this re-entrant lock.
+_LINK_LOCK = threading.RLock()
+
+
+def _serialised(method):
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with _LINK_LOCK:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class SPIDevice:
     """Low-level SPI device wrapper using packet protocol."""
 
@@ -294,6 +312,12 @@ class SPIDevice:
         # larger (about 252 B at <=10 MS/s, 610 B at 100.2 MS/s measured) than
         # the 154 B the fixed slot sizes below were tuned for.
         self._block_latency = None
+        # Last value this host knows the FPGA register holds (set by a
+        # successful write or read through this object, dropped on any failure
+        # or by invalidate_registers()). Only used to skip a write/read that
+        # would change nothing, never for the config registers that arm a
+        # capture (those are always written).
+        self._reg_shadow = {}
         # True when the last batched read got only "idle" error replies from the
         # FPGA's block-read watchdog (readout starved, e.g. capture over-driven).
         self.last_read_starved = False
@@ -416,11 +440,104 @@ class SPIDevice:
             self._rx_buf = self._rx_buf[1:]
         return None
 
+    # ── Fast control transactions ────────────────────────────────────────
+    # The classic transaction() sends the request in one CS frame and polls
+    # for the reply in later frames: two or three USB round trips (2.4 to
+    # 3.1 ms measured with the 1 ms FTDI latency timer). The dispatcher
+    # answers a short command ~2 bytes after the request ends, so the reply
+    # can be clocked out in the SAME CS frame behind the request, like block
+    # reads do: one round trip (0.6 to 0.9 ms). Enabled by the driver on a real
+    # FTDI link (``fast_transactions``); a missing/garbled reply falls back to
+    # the classic path.
+    fast_transactions = False
+    # Replies are at most 8 + 24 bytes (status); pad generously, bytes are
+    # cheap (0.27 us each at 30 MHz).
+    FAST_REPLY_PAD = 96
+    FAST_COMMANDS = frozenset((
+        CMD_WRITE_REG, CMD_READ_REG, CMD_GET_STATUS, CMD_GET_METADATA,
+        CMD_ARM_CAPTURE, CMD_ABORT_CAPTURE, CMD_ACK_CAPTURE_DONE,
+        CMD_GEN_START, CMD_GEN_STOP))
+    # Commands that must never be sent twice (a retry would re-arm / re-start).
+    FAST_NO_RESEND = frozenset((CMD_ARM_CAPTURE, CMD_GEN_START))
+    # Typical reply length (bytes) per command, for batch slot sizing.
+    FAST_REPLY_LEN = {CMD_GET_STATUS: 32, CMD_READ_REG: 12, CMD_GET_METADATA: 24}
+
+    @staticmethod
+    def _find_reply(raw, seq):
+        """Parse the reply for ``seq`` out of raw clocked-in bytes, or None."""
+        idx = raw.find(SYNC_RSP)
+        while idx >= 0:
+            if len(raw) < idx + 8:
+                return None
+            plen = struct.unpack('<H', raw[idx + 4:idx + 6])[0]
+            end = idx + 8 + plen
+            if plen <= MAX_PAYLOAD and len(raw) >= end:
+                parsed = parse_response(bytes(raw[idx:end]))
+                if parsed and parsed[1] == seq:
+                    return parsed
+            idx = raw.find(SYNC_RSP, idx + 1)
+        return None
+
+    def _fast_transaction(self, req, seq):
+        try:
+            raw = self.spi.stream_payload(req + b"\xff" * self.FAST_REPLY_PAD)
+        except Exception:
+            return None
+        return self._find_reply(raw, seq) if raw else None
+
+    @_serialised
+    def batch(self, commands):
+        """Send several short commands in ONE CS frame (one USB round trip).
+
+        ``commands`` is a list of ``(cmd, payload)``. Returns a list of parsed
+        ``(status, seq, payload)`` tuples, ``None`` for any command whose reply
+        was not seen. Each request is followed by enough idle clocks for the
+        previous reply to finish (the dispatcher drops a request that arrives
+        while it is still transmitting). Requires ``fast_transactions``;
+        otherwise the commands are simply run one by one.
+        """
+        if not commands:
+            return []
+        if any(cmd == CMD_ABORT_CAPTURE for cmd, _ in commands):
+            self._reg_shadow.clear()
+        if not (self.fast_transactions and hasattr(self.spi, "stream_payload")):
+            return [self.transaction(cmd, payload) for cmd, payload in commands]
+        frame = bytearray()
+        seqs = []
+        for cmd, payload in commands:
+            seq = self._next_seq()
+            seqs.append(seq)
+            frame += build_packet(cmd, seq, payload)
+            frame += b"\xff" * (self.FAST_REPLY_LEN.get(cmd, 8) + 32)
+        frame += b"\xff" * 16
+        try:
+            raw = self.spi.stream_payload(bytes(frame))
+        except Exception:
+            raw = b""
+        out = []
+        for seq in seqs:
+            out.append(self._find_reply(raw, seq) if raw else None)
+        return out
+
+    @_serialised
     def transaction(self, cmd: int, payload: bytes = b'',
                     timeout: float = 2.0) -> tuple:
         """Send a command, wait for and return (status, seq, payload)."""
+        if cmd == CMD_ABORT_CAPTURE:
+            # an abort clears run-level registers (REG_CONT_MODE reads 0
+            # afterwards); do not trust any remembered register value
+            self._reg_shadow.clear()
         seq = self._next_seq()
         req = build_packet(cmd, seq, payload)
+
+        if (self.fast_transactions and cmd in self.FAST_COMMANDS
+                and hasattr(self.spi, "stream_payload")):
+            parsed = self._fast_transaction(req, seq)
+            if parsed:
+                return parsed
+            if cmd in self.FAST_NO_RESEND:
+                # never resend ARM/START; only look for a late reply
+                return self._poll_reply(seq, timeout)
 
         # Phase 1: Send request (separate CS transaction)
         first = self.spi.tx_bytes(req)
@@ -445,6 +562,21 @@ class SPIDevice:
             parsed = self._pop_response(seq)
             if parsed:
                 return parsed
+            if time.time() > deadline:
+                break
+        return None
+
+    def _poll_reply(self, seq, timeout):
+        """Phase 2 of transaction(): only poll for the reply, never resend."""
+        deadline = time.time() + timeout
+        for _ in range(8):
+            time.sleep(0.0005)
+            r = self.spi.tx_read(132)
+            if r:
+                self._rx_buf += r[1:] if len(r) > 1 else r
+                parsed = self._pop_response(seq)
+                if parsed:
+                    return parsed
             if time.time() > deadline:
                 break
         return None
@@ -497,6 +629,7 @@ class SPIDevice:
     # Request-to-response latency (bytes) the fixed slots above handle.
     BLOCK_LATENCY_TOLERATED = 197
 
+    @_serialised
     def read_capture_blocks(self, byte_addrs, stop_evt=None, compressed=False,
                             _retried=False):
         """Read multiple 1024-byte capture blocks in ONE CS-held transaction.
@@ -615,6 +748,7 @@ class SPIDevice:
                 return False
         return True
 
+    @_serialised
     def _transaction_raw(self, cmd: int, payload: bytes, read_extra: int,
                          timeout: float = 2.0, extra_clocks: int = 128) -> tuple:
         """Like transaction() but for large read responses."""
@@ -672,7 +806,11 @@ class SPIDevice:
         return result is not None and result[0] == ST_OK
 
     def get_status(self) -> dict:
-        result = self.transaction(CMD_GET_STATUS)
+        return self.parse_status(self.transaction(CMD_GET_STATUS))
+
+    @staticmethod
+    def parse_status(result) -> dict:
+        """Status dict from a CMD_GET_STATUS reply tuple ({} if missing)."""
         if result:
             st, _, pl = result
             info = {
@@ -693,14 +831,40 @@ class SPIDevice:
     def write_register(self, addr: int, value: int) -> bool:
         payload = bytes([addr & 0xFF]) + struct.pack('<I', value)
         result = self.transaction(CMD_WRITE_REG, payload)
-        return result is not None and result[0] == ST_OK
+        ok = result is not None and result[0] == ST_OK
+        if ok:
+            self._reg_shadow[addr & 0xFF] = int(value) & 0xFFFFFFFF
+        else:
+            self._reg_shadow.pop(addr & 0xFF, None)
+        return ok
 
     def read_register(self, addr: int) -> int:
         payload = bytes([addr & 0xFF])
         result = self.transaction(CMD_READ_REG, payload)
         if result and result[0] == ST_OK:
-            return struct.unpack('<I', result[2][:4])[0]
+            value = struct.unpack('<I', result[2][:4])[0]
+            self._reg_shadow[addr & 0xFF] = value
+            return value
+        self._reg_shadow.pop(addr & 0xFF, None)
         return -1
+
+    def note_register_written(self, addr: int, value: int) -> None:
+        """Record a write that went out through a batch frame."""
+        self._reg_shadow[addr & 0xFF] = int(value) & 0xFFFFFFFF
+
+    def invalidate_registers(self) -> None:
+        self._reg_shadow.clear()
+
+    def read_register_cached(self, addr: int) -> int:
+        """Register value, from the shadow when this host wrote/read it last."""
+        value = self._reg_shadow.get(addr & 0xFF)
+        return value if value is not None else self.read_register(addr)
+
+    def write_register_if_changed(self, addr: int, value: int) -> bool:
+        """write_register, skipped when the register is known to hold ``value``."""
+        if self._reg_shadow.get(addr & 0xFF) == (int(value) & 0xFFFFFFFF):
+            return True
+        return self.write_register(addr, value)
 
     def start_stream(self, start_sample: int) -> tuple:
         """Start streaming from absolute sample index.
@@ -748,6 +912,7 @@ class SPIDevice:
             done += take
         return producer, oldest, bytes(data)
 
+    @_serialised
     def _start_raw_stream_words(self, start_sample: int, sample_count: int,
                                 stop_evt=None, ack_pad: int | None = None) -> tuple:
         """Start a true raw sample stream and read it under one CS-held transaction.
@@ -1087,6 +1252,7 @@ class SPIDevice:
             done += take
         return producer, oldest, bytes(data)
 
+    @_serialised
     def _start_rle_stream_words(self, start_sample: int, sample_count: int,
                                 stop_evt=None, ack_pad: int | None = None,
                                 guard: int = 0) -> tuple:
