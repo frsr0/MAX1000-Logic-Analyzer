@@ -462,6 +462,17 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   -- least CAS latency plus the rd_gap bubble, so this 1-cycle look-ahead is
   -- always settled before any consumer needs it.
   signal stream_rem_dec_r   : natural range 0 to Max_Samples := 0;
+  -- Registered "at most one sample left" predicate for the completion branch.
+  -- It is computed from the same pre-decrement snapshot (stream_rem_cur) as
+  -- stream_rem_dec_r, for the same spacing argument: read completions are
+  -- spaced by at least CAS latency plus the rd_gap bubble, and stream_rem only
+  -- changes on a completion or a stream start, so the flag is settled at least
+  -- two pclk cycles before a completion can consume it (the first completion
+  -- after a start/load is >= 3 cycles later). Replacing the inline 23-bit
+  -- compare (stream_rem spans 0..Max_Samples) with this one-bit register takes
+  -- that reduce out of the s_rvalid completion cone and gives it a full cycle
+  -- from register to register.
+  signal stream_rem_le1_r   : std_logic := '0';
 
   -- 2FF synchroniser for the block-read request toggle (CLK -> pclk)
   signal blk_req_s1    : std_logic := '0';
@@ -1982,6 +1993,11 @@ begin
         end if;
         stream_addr_inc_pending := false;
       end if;
+      if stream_rem_cur <= 1 then
+        stream_rem_le1_r <= '1';
+      else
+        stream_rem_le1_r <= '0';
+      end if;
       if stream_rem_cur /= 0 then
         stream_rem_dec_r <= stream_rem_cur - 1;
       else
@@ -2347,7 +2363,7 @@ begin
             -- Advance the address on COMPLETION (not issue) so a timed-out
             -- read can be reissued at the same address without skipping.
             stream_addr_inc_pending := true;
-            if stream_rem_cur <= 1 then
+            if stream_rem_le1_r = '1' then
               if Auto_Renew = '1' then
                 -- Auto-renew: reload and keep streaming
                 stream_rem := Blk_Rd_Count;
