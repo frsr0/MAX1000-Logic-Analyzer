@@ -590,12 +590,14 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .mil-layout { margin-bottom: 12px; }
 .max6675-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 12px; }
 .max6675-controls > .field { width: 200px; }
-.max6675-channels { display: grid; gap: 10px; margin-bottom: 12px; }
+.max6675-channels { display: grid; gap: 10px; margin-bottom: 12px; container-type: inline-size; }
 .max6675-channel {
   display: grid; grid-template-columns: minmax(150px, 0.9fr) minmax(140px, 1.2fr) repeat(3, minmax(130px, 1fr)) minmax(150px, 1fr);
   gap: 8px 12px; align-items: end;
 }
-@media (max-width: 900px) {
+/* The six-column row needs about 890px; below that, let the fields wrap. A container query
+   follows the card's own width, which the sidebar and page padding make narrower than the viewport. */
+@container (max-width: 920px) {
   .max6675-channel { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
 }
 .max6675-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; margin: 4px 0; }
