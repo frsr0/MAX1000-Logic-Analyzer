@@ -114,6 +114,10 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
   SIGNAL OLS_Interface_Start_Offset  : NATURAL          range 0 to Max_Samples := 0;
   SIGNAL OLS_Interface_Run           : STD_LOGIC := '0';
   SIGNAL OLS_Interface_Full          : STD_LOGIC := '0';
+  SIGNAL index_hold_i               : STD_LOGIC := '0';
+  -- FAST_SPEED never reads the pre-trigger RAM back, so the FLA must not add the
+  -- pre-trigger Start_Offset to block-read addresses in that build.
+  SIGNAL fla_start_offset           : NATURAL range 0 to Max_Samples := 0;
   SIGNAL OLS_Interface_Address       : NATURAL          range 0 to Max_Samples-1 := 0;
     SIGNAL OLS_Interface_Outputs       : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
     SIGNAL OLS_Interface_Inputs        : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
@@ -242,6 +246,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
       Narrow_Enable   : OUT STD_LOGIC := '0';
       Narrow_Channel  : OUT NATURAL range 0 to 15 := 0;
       Continuous_Mode : OUT STD_LOGIC := '0';
+      Index_Hold : OUT STD_LOGIC := '0';
       Analog_Enable   : OUT STD_LOGIC := '0';
       Analog_Only     : OUT STD_LOGIC := '0';
       Analog_Profile  : OUT STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
@@ -328,6 +333,7 @@ ARCHITECTURE BEHAVIORAL OF OLS_Logic_Analyzer IS
     Narrow_Channel : IN natural range 0 to 15 := 0;
      FAST_CLK    : IN  std_logic := '0';
      Continuous_Mode : IN  std_logic := '0';
+     Index_Hold : IN  std_logic := '0';
      Buffer_Full     : OUT STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
      Buffer_Ack      : IN  STD_LOGIC_VECTOR(2 downto 0) := (others => '0');
     Analog_Frame_Data : IN STD_LOGIC_VECTOR(127 downto 0) := (others => '0');
@@ -452,6 +458,7 @@ BEGIN
     Analog_Channel => analog_channel_i,
     Packed_Mode    => packed_mode_i,
     Continuous_Mode => continuous_mode_i,
+    Index_Hold => index_hold_i,
     Buffer_Full     => buffer_full_i,
     Buffer_Ack      => buffer_ack_i,
     Pin_Map_Write  => pin_map_write_i,
@@ -489,13 +496,14 @@ BEGIN
     Pump_Overflow_Count => pump_overflow_count_i
 
   );
+  fla_start_offset <= 0 when FAST_SPEED else OLS_Interface_Start_Offset;
   Fast_Logic_Analyzer_SDRAM1 : Fast_Logic_Analyzer_SDRAM
    GENERIC MAP (
       Max_Samples  => Max_Samples,Channels     => Channels,Sim          => Sim,FAST_SPEED   => FAST_SPEED,FAST_RAW_BUILD => FAST_RAW_BUILD,CLK_Frequency => CLK_Frequency,SDRAM_CLK_HZ => SDRAM_CLK_HZ,SAMPLE_CLK_HZ => SAMPLE_CLK_HZ
   ) PORT MAP (
     CLK => CLK,
     SDRAM_CLK_IN => SDRAM_CLK_IN,
-    CLK_150      => open,Rate_Div     => OLS_Interface_Rate_Div,Samples      => OLS_Interface_Samples,Start_Offset => OLS_Interface_Start_Offset,Run          => OLS_Interface_Run,Full         => OLS_Interface_Full,Inputs       => Inputs_Fast,Address      => LA_Address,Outputs      => LA_Out,sdram_addr   => sdram_addr,sdram_ba     => sdram_ba,sdram_cas_n  => sdram_cas_n,sdram_dq     => sdram_dq,sdram_dqm    => sdram_dqm,sdram_ras_n  => sdram_ras_n,sdram_we_n   => sdram_we_n,    sdram_cke    => sdram_cke,sdram_cs_n   => sdram_cs_n,sdram_clk    => sdram_clk,
+    CLK_150      => open,Rate_Div     => OLS_Interface_Rate_Div,Samples      => OLS_Interface_Samples,Start_Offset => fla_start_offset,Run          => OLS_Interface_Run,Full         => OLS_Interface_Full,Inputs       => Inputs_Fast,Address      => LA_Address,Outputs      => LA_Out,sdram_addr   => sdram_addr,sdram_ba     => sdram_ba,sdram_cas_n  => sdram_cas_n,sdram_dq     => sdram_dq,sdram_dqm    => sdram_dqm,sdram_ras_n  => sdram_ras_n,sdram_we_n   => sdram_we_n,    sdram_cke    => sdram_cke,sdram_cs_n   => sdram_cs_n,sdram_clk    => sdram_clk,
     Status       => fla_status,
     Armed        => armed_i,
     Fast_Mode    => fast_mode_i,

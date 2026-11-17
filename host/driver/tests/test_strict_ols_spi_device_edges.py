@@ -136,6 +136,7 @@ def test_open_retries_then_configures_latency_and_detection(monkeypatch):
     dev = OLSDeviceSPI()
     dev._detect_sample_clk = MagicMock()
     dev._detect_gen_div_width = MagicMock()
+    dev._detect_image_features = MagicMock()
     dev.open()
 
     assert len(attempts) == 3
@@ -187,6 +188,7 @@ def test_open_reraises_third_failure_and_latency_query_is_optional(monkeypatch):
     dev = OLSDeviceSPI()
     dev._detect_sample_clk = MagicMock()
     dev._detect_gen_div_width = MagicMock()
+    dev._detect_image_features = MagicMock()
     dev.open()
     dev.close()
     assert dev.spi is None and dev.pkt is None
@@ -521,23 +523,6 @@ def test_uncompressed_block_fallback_empty_restore_and_scalar_batch():
     assert dev.pkt.write_register.call_args_list[-1] == call(
         REG_FLAGS, REG_FLAGS_COMPRESS_MASK | 3
     )
-
-
-def test_mixed_compressed_range_handles_alignment_missing_and_short_blocks(monkeypatch):
-    dev = _device()
-    frame_words = device_module.analog_wire_stride(MODE_MIXED) // 2
-    assert dev._read_capture_range_mixed_compressed(1, 1) == b""
-
-    dev.pkt.read_capture_blocks.return_value = [b""]
-    assert dev._read_capture_range_mixed_compressed(0, frame_words) == b""
-
-    dev.pkt.read_capture_blocks.return_value = [b"encoded"]
-    monkeypatch.setattr(device_module, "decompress_mixed_stream", lambda block: b"x")
-    assert dev._read_capture_range_mixed_compressed(0, frame_words) == b""
-
-    del dev.pkt.read_capture_blocks
-    dev.pkt.read_capture_block.return_value = b""
-    assert dev._read_capture_range_mixed_compressed(0, frame_words) == b""
 
 
 def test_capture_helpers_cover_packed_metadata_fast_clock_and_ack_validation():
@@ -1560,8 +1545,10 @@ def test_stream_ring_retry_metadata_wait_rle_and_cleanup(monkeypatch):
         "oldest_index": 2,
         "overrun_count": 1,
     })
-    dev.pkt.start_rle_stream_read.side_effect = [(10, 3, b"x"), (10, 3, b"")]
-    assert list(dev.stream_ring_capture(1_000_000, 1, _SequenceStop([False, False]))) == []
+    dev.pkt.start_rle_stream_read.side_effect = [(10, 2, b"x"), (10, 2, b"")]
+    # a climbing write-side overrun counter alone no longer resets the cursor
+    result = list(dev.stream_ring_capture(1_000_000, 1, _SequenceStop([False, False])))
+    assert [item[0] for item in result] == [b"x"]
 
     dev = _device()
     _prepare_ring(dev)
@@ -1639,6 +1626,7 @@ def test_last_small_metadata_open_and_trace_branches(monkeypatch):
     dev = OLSDeviceSPI()
     dev._detect_sample_clk = MagicMock()
     dev._detect_gen_div_width = MagicMock()
+    dev._detect_image_features = MagicMock()
     dev.open()
     dev.spi.dev.setLatencyTimer.assert_not_called()
 
@@ -1692,6 +1680,34 @@ def test_stream_ring_rle_failure_recovers_through_compressed_blocks():
     assert result == [(b"\x34\x12" * 4, 4, 4, 0)]
     dev.read_capture_range.assert_called_once_with(
         0, 4, probe_compression=True)
+
+
+def test_stream_ring_rle_endless_resync_falls_back_instead_of_spinning():
+    """A stream lapped on every request must not loop forever without data.
+
+    Each acknowledgement reports Oldest just past the requested cursor (the
+    writer always wins the race). After MAX_RESYNCS_WITHOUT_DATA consecutive
+    resyncs the driver must stop using the held-CS stream, flag the gap, and
+    keep delivering through the block reader.
+    """
+    dev = _device()
+    _prepare_ring(dev)
+    dev.readback_compression_mode = "rle"
+    dev.compress_readback_enabled = True
+    dev.pkt.get_status.return_value = {
+        "producer_index": 100_000, "oldest_index": 1, "overrun_count": 1}
+    dev.pkt.start_rle_stream_read.side_effect = (
+        lambda start, count, stop_evt=None: (start + 1000, start + 1, b"x"))
+    dev.read_capture_range = MagicMock(return_value=b"\x34\x12" * 4)
+
+    result = list(dev.stream_ring_capture(
+        1_000_000, 4, _SequenceStop([False] * 80 + [True])))
+
+    calls = dev.pkt.start_rle_stream_read.call_count
+    assert calls == device_module.MAX_RESYNCS_WITHOUT_DATA
+    assert dev._rle_stream_supported is False
+    assert result and result[0][0] == b"\x34\x12" * 4
+    assert dev.consume_stream_gap() is True
 
 
 def test_generated_capture_abort_pending_no_generator_invalid_command_and_trace(monkeypatch, tmp_path):

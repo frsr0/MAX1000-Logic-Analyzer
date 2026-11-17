@@ -12,6 +12,7 @@ from app.hardware.existing_host_adapter import (
     DIGITAL_NARROW_LOGICAL_SAMPLES,
     DIGITAL_SDRAM_WORDS,
     ExistingHostAdapter,
+    _MAX6675_FRAME_SYMBOLS,
 )
 from app.triggers.hardware_support import to_register_config, to_register_mask
 
@@ -65,6 +66,8 @@ class FakeHostDevice:
         self.get_metadata = Mock(return_value=b"\x12\x34")
         self._readback_codec = Mock(return_value="raw")
         self.configure_pattern_trigger = Mock()
+        self.dropped_samples = None
+        self.read_dropped_samples = Mock(return_value=7)
 
     @property
     def raw_flags(self):
@@ -238,15 +241,48 @@ def test_small_single_capture_uses_bram_limit_1024():
 
 def test_real_hardware_capabilities_advertise_200mhz_digital_sampling():
     adapter = ExistingHostAdapter()
-    adapter._dev = FakeHostDevice()
+    dev = FakeHostDevice()
+    dev.image_generation = 4
+    dev.has_true_read_data = True
+    dev.has_drop_counter = True
+    dev.rle_flush_fixed = True
+    dev.continuous_no_host_loss = True
+    dev.narrow_no_loss = True
+    dev.gen_capture_unlimited = True
+    dev.read_compensation_active = True
+    adapter._dev = dev
 
     caps = adapter.get_capabilities()
 
     assert caps.max_sample_rate == 200_000_000
     assert caps.sample_clk_hz == 200_000_000
     assert caps.max_samples == DIGITAL_SDRAM_WORDS
+    assert caps.image_generation == 4
+    assert caps.read_compensation_active is True
+    assert caps.image_features == {
+        "has_true_read_data": True,
+        "has_drop_counter": True,
+        "rle_flush_fixed": True,
+        "continuous_no_host_loss": True,
+        "narrow_no_loss": True,
+        "gen_capture_unlimited": True,
+    }
     assert any("64 Mbit SDRAM" in note for note in caps.notes)
     assert caps.generator_protocols == ["uart", "rs485", "i2c", "spi", "swd", "bitbang"]
+
+
+def test_adapter_capabilities_report_unknown_image_without_a_device():
+    caps = ExistingHostAdapter().get_capabilities()
+    assert caps.image_generation is None
+    assert caps.read_compensation_active is False
+    assert caps.image_features == {
+        "has_true_read_data": False,
+        "has_drop_counter": False,
+        "rle_flush_fixed": False,
+        "continuous_no_host_loss": False,
+        "narrow_no_loss": False,
+        "gen_capture_unlimited": False,
+    }
 
 
 def test_real_route_accepts_gpio_spi_cs_and_miso_requests():
@@ -862,6 +898,41 @@ def test_adapter_generator_capture_protocol_matrix(protocol):
         assert dev.set_analog_config.call_args_list[-1] == call(0)
 
 
+def test_adapter_stream_capture_reports_drop_deltas_and_gaps():
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+
+    def stream_ring_capture(**kwargs):
+        dev.dropped_samples = 5
+        yield b"\x01\x00", 16, 1, 0
+        dev.dropped_samples = 9
+        yield b"\x01\x00", 16, 1, 0
+        dev.dropped_samples = 2
+        yield b"\x01\x00", 16, 1, 3
+
+    dev.stream_ring_capture = Mock(side_effect=stream_ring_capture)
+    adapter._dev = dev
+    results = list(adapter.stream_capture(
+        CaptureSettings(mode="digital_narrow", sample_rate=1_000_000,
+                        num_samples=1, enabled_digital=[0])))
+    assert [r.dropped_samples for r in results] == [5, 4, 2]
+    assert [r.gaps for r in results] == [0, 0, 1]
+
+
+def test_adapter_finite_live_capture_reports_drop_counter_and_failure():
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+    adapter._dev = dev
+    rolling = adapter.capture(CaptureSettings(
+        mode="rolling", sample_rate=1_000_000, num_samples=2048))
+    assert rolling.dropped_samples == 7
+
+    dev.read_dropped_samples = Mock(side_effect=RuntimeError("counter read failed"))
+    failed = adapter.capture(CaptureSettings(
+        mode="continuous", sample_rate=1_000_000, num_samples=2048))
+    assert failed.dropped_samples is None
+
+
 def test_adapter_stream_capture_unpacks_narrow_ring_and_restores_flags():
     adapter = ExistingHostAdapter()
     dev = FakeHostDevice()
@@ -1431,3 +1502,369 @@ def test_analog_continuous_streams_adc_only_no_recovery():
     assert result.digital is None
     assert list(result.analog) == ["a1"]
     dev.close.assert_not_called()
+
+
+def test_validate_settings_never_touches_the_hardware():
+    """Validation runs in an API thread, possibly while a capture owns the SPI
+    link: it must not write the pattern-trigger registers (that raced the
+    capture thread's transactions and also clobbered a running setup)."""
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+    adapter._dev.configure_pattern_trigger = Mock()
+    adapter._dev.trigger_decode = Mock()
+    findings = adapter.validate_settings(CaptureSettings(
+        sample_rate=14_000_000, num_samples=2048,
+        enabled_digital=list(range(16))))
+    assert isinstance(findings, list)
+    adapter._dev.configure_pattern_trigger.assert_not_called()
+    adapter._dev.trigger_decode.assert_not_called()
+    # a capture still configures it
+    adapter.capture(CaptureSettings(sample_rate=14_000_000, num_samples=2048,
+                                    enabled_digital=list(range(16))))
+    adapter._dev.configure_pattern_trigger.assert_called_once_with(None)
+
+
+def test_adapter_stream_capture_does_not_hold_the_lock_between_chunks():
+    """Generator start/stop/status and status polls must work during a live
+    stream: the adapter lock may only be held while the driver advances."""
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+
+    def stream_ring_capture(**kwargs):
+        for _ in range(3):
+            yield b"\x01\x00", 16, 1, 0
+    dev.stream_ring_capture = Mock(side_effect=stream_ring_capture)
+    adapter._dev = dev
+    settings = CaptureSettings(mode="digital_narrow", sample_rate=1_000_000,
+                               num_samples=1, enabled_digital=[0])
+    stream = adapter.stream_capture(settings)
+
+    def other_thread_can_lock():
+        result = []
+
+        def probe():
+            got = adapter._lock.acquire(blocking=False)   # re-entrant lock: must be another thread
+            if got:
+                adapter._lock.release()
+            result.append(got)
+        worker = threading.Thread(target=probe)
+        worker.start()
+        worker.join()
+        return result[0]
+
+    for _ in range(3):
+        next(stream)
+        assert other_thread_can_lock(), "adapter lock held while a chunk is with the consumer"
+    stream.close()
+    assert dev._raw_flags == 0
+
+
+@pytest.mark.parametrize("flag,expect_warning", [(True, True), (False, False), (None, False)])
+def test_generator_capture_reports_the_fsm_error_flag(flag, expect_warning):
+    """The FPGA gen-capture FSM gives a generator 50 ms; a longer burst cuts the
+    internal loopback lanes. The driver reads the flag; the adapter must not
+    hide it from the user."""
+    from app.hardware.device_models import GeneratorConfig
+
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+    dev.capture_with_gen = Mock(return_value=b"\x01\x00" * 8)
+    dev.last_gen_capture_error = flag
+    adapter._dev = dev
+    cfg = GeneratorConfig(protocol="uart", data_hex="4142", baud=1200, tx_pin=22, scl_pin=1)
+    result = adapter.capture_with_generator(
+        CaptureSettings(sample_rate=1_000_000, num_samples=8), cfg)
+    assert bool(result.warnings) is expect_warning
+    if expect_warning:
+        assert "50 ms" in result.warnings[0]
+
+
+def test_build_trigger_without_configuration_never_touches_the_device():
+    """Pre-flight validation (configure=False) inspects the trigger only.
+
+    _build_trigger is called with configure=False from settings validation,
+    before any hardware access; it must not write the pattern-trigger
+    registers or the protocol-trigger decoder.
+    """
+    from app.capture.session import TriggerConfig
+
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+    dev.configure_pattern_trigger = Mock()
+    dev.trigger_decode = Mock()
+    adapter._dev = dev
+
+    generic = CaptureSettings(trigger=TriggerConfig(
+        type="generic_pattern", channels=[0], pattern="1x",
+        clock_source="internal_baud", baud=115200))
+    assert adapter._build_trigger(generic, configure=False) is None
+    dev.configure_pattern_trigger.assert_not_called()
+
+    uart = CaptureSettings(trigger=TriggerConfig(
+        type="uart_byte", value=0x57, channels=[3], baud=9600))
+    assert adapter._build_trigger(uart, configure=False) is None
+    dev.trigger_decode.assert_not_called()
+
+
+def test_mcp4725_measurement_propagates_hardware_errors_unchanged():
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+    adapter._dev.raw_mode = Mock()
+    adapter._dev.capture_with_gen = Mock(
+        side_effect=HardwareError("generator link is busy"))
+
+    with pytest.raises(HardwareError, match="generator link is busy"):
+        adapter.mcp4725_write_and_measure(0x60, 100)
+    assert adapter._dev.capture.call_count == 0
+    assert adapter._dev.capture_with_gen.call_count == 1
+
+    adapter = ExistingHostAdapter()
+    adapter._dev = FakeHostDevice()
+    adapter._dev.raw_mode = Mock()
+    adapter._dev.capture_with_gen = Mock(return_value=b"\x00\x00" * 64)
+    adapter.capture = Mock(side_effect=HardwareError("adc down"))
+    with pytest.raises(HardwareError, match="adc down"):
+        adapter.mcp4725_write_and_measure(0x60, 100)
+
+    adapter.capture = Mock(side_effect=RuntimeError("adc crash"))
+    with pytest.raises(HardwareError,
+                       match="MCP4725 analog measurement failed: adc crash"):
+        adapter.mcp4725_write_and_measure(0x60, 100)
+
+
+def test_capture_reports_a_truncated_finite_capture_with_both_counts():
+    """A single-shot capture that outran the SDRAM write pump comes back short;
+    the result must say so instead of looking healthy."""
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+    dev.capture = Mock(return_value=b"\x01\x00" * 8)
+    dev.last_capture_truncated = True
+    adapter._dev = dev
+
+    result = adapter.capture(CaptureSettings(
+        mode="single", sample_rate=200_400_000, num_samples=4096))
+
+    assert result.truncated is True
+    assert len(result.digital) == 8
+    assert len(result.warnings) == 1
+    assert "Truncated capture" in result.warnings[0]
+    assert "8 of 4096" in result.warnings[0]
+
+
+def test_capture_does_not_treat_packed_compression_as_truncation():
+    """Packed readback commits far fewer words than requested samples; that is
+    compression, not an SDRAM overflow, so no warning may be emitted."""
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+    words = [
+        0x8000 | (0 << 13) | (0b0001 << 9) | 3,
+        0x8000 | (1 << 13) | (0b0010 << 9) | 3,
+        0x8000 | (2 << 13) | (0b0000 << 9) | 3,
+        0x8000 | (3 << 13) | (0b0000 << 9) | 3,
+        0x0400, 100, 200, 300, 400,
+    ]
+    dev.capture = Mock(return_value=np.array(words, dtype="<u2").tobytes())
+    dev.last_capture_truncated = False
+    adapter._dev = dev
+
+    result = adapter.capture(CaptureSettings(
+        sample_rate=1_000_000, num_samples=16, packed_mode=True))
+
+    assert result.truncated is False
+    assert len(result.digital) == 16
+    assert result.warnings == []
+
+
+def test_capture_without_truncation_carries_no_truncation_warning():
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+    dev.capture = Mock(return_value=b"\x01\x00" * 4)
+    dev.last_capture_truncated = False
+    adapter._dev = dev
+
+    result = adapter.capture(CaptureSettings(
+        mode="single", sample_rate=1_000_000, num_samples=4))
+
+    assert result.truncated is False
+    assert all("Truncated capture" not in w for w in result.warnings)
+
+
+def test_capture_reports_a_short_read_without_the_truncation_flag():
+    """A short read that the driver did not attribute to an overflow still has
+    to be visible; it just cannot claim a committed/requested truncation."""
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+    dev.capture = Mock(return_value=b"\x01\x00")
+    dev.last_capture_truncated = False
+    adapter._dev = dev
+
+    result = adapter.capture(CaptureSettings(
+        mode="single", sample_rate=1_000_000, num_samples=4))
+
+    assert result.truncated is False
+    assert result.warnings == ["Device returned 1 effective samples for 4 requested"]
+
+
+MAX6675_CS_LANE = 2
+MAX6675_SCLK_LANE = 1
+MAX6675_MISO_LANE = 0
+
+
+def _max6675_capture_bytes(bits, stray_pulses=False):
+    """Pack a MAX6675 frame as capture words.
+
+    CS idles high. The frame has CS low, with each bit getting two SCLK-low
+    samples and four SCLK-high samples while MISO holds the bit. CS returns
+    high afterwards. With ``stray_pulses`` set, two extra SCLK pulses are
+    driven with CS high before and after the frame, with MISO high.
+    """
+    sclk = 1 << MAX6675_SCLK_LANE
+    cs = 1 << MAX6675_CS_LANE
+    samples = [sclk | cs]
+
+    def pulse(miso, cs_high):
+        base = cs if cs_high else 0
+        samples.extend([base | miso] * 2)
+        samples.extend([base | sclk | miso] * 4)
+
+    stray_miso = 1 << MAX6675_MISO_LANE
+    if stray_pulses:
+        pulse(stray_miso, cs_high=True)
+    for bit in bits:
+        pulse(bit << MAX6675_MISO_LANE, cs_high=False)
+    if stray_pulses:
+        pulse(stray_miso, cs_high=True)
+    samples.append(sclk | cs)
+    return b"".join(word.to_bytes(2, "little") for word in samples)
+
+
+def _max6675_adapter(raw=None, side_effect=None):
+    adapter = ExistingHostAdapter()
+    dev = FakeHostDevice()
+    dev.set_analog_config = Mock()
+    dev.raw_mode = Mock()
+    dev.gen_capture_unlimited = True
+    dev._gen_capture_output_channels = Mock(
+        return_value=(MAX6675_CS_LANE, MAX6675_SCLK_LANE))
+    dev._aux_pins = Mock()
+    dev._set_gen_capture_aux = Mock()
+    dev.capture_with_gen = Mock(return_value=raw, side_effect=side_effect)
+    adapter._dev = dev
+    return adapter, dev
+
+
+def _bits(value, width=16):
+    return [int(c) for c in format(value, f"0{width}b")]
+
+
+def test_max6675_good_frame_decodes_and_cleans_up():
+    adapter, dev = _max6675_adapter(_max6675_capture_bytes(_bits(0x02A8)))
+
+    result = adapter.max6675_read(so_pin=4, cs_pin=5, sck_pin=6)
+
+    assert result == {"raw": 0x02A8, "clocks": 16}
+    dev.capture_with_gen.assert_called_once_with(
+        rate_hz=10_000, nsamples=3000, timeout=6, proto="SPI",
+        spi_mosi_pin=5, spi_sclk_pin=6, spi_clk_div=50_000,
+        spi_cs_pin=None, spi_miso_pin=4,
+        spi_miso_channel=MAX6675_MISO_LANE,
+        spi_symbols=_MAX6675_FRAME_SYMBOLS,
+        fast_mode=False, reset_board=False)
+    assert dev._gen_data == b"\x00\x00"
+    dev._aux_pins.assert_called_once_with()
+    dev._set_gen_capture_aux.assert_called_once_with()
+
+
+def test_max6675_more_than_16_clocks_uses_only_the_first_16_bits():
+    bits = _bits(0x02A8) + [1]
+    adapter, _dev = _max6675_adapter(_max6675_capture_bytes(bits))
+
+    assert adapter.max6675_read(4, 5, 6) == {"raw": 0x02A8, "clocks": 17}
+
+
+def test_max6675_fewer_than_16_clocks_is_left_aligned():
+    adapter, _dev = _max6675_adapter(_max6675_capture_bytes([1, 0, 1, 1, 0, 0, 0, 0]))
+
+    assert adapter.max6675_read(4, 5, 6) == {"raw": 0xB000, "clocks": 8}
+
+
+def test_max6675_ignores_sck_edges_while_cs_is_high():
+    adapter, _dev = _max6675_adapter(
+        _max6675_capture_bytes(_bits(0x02A8), stray_pulses=True))
+
+    assert adapter.max6675_read(4, 5, 6) == {"raw": 0x02A8, "clocks": 16}
+
+
+def test_max6675_empty_capture_returns_zero_clocks():
+    adapter, _dev = _max6675_adapter(b"")
+
+    assert adapter.max6675_read(4, 5, 6) == {"raw": 0, "clocks": 0}
+
+
+def test_max6675_none_capture_returns_zero_clocks():
+    adapter, _dev = _max6675_adapter(None)
+
+    assert adapter.max6675_read(4, 5, 6) == {"raw": 0, "clocks": 0}
+
+
+def test_max6675_requires_a_connected_device():
+    adapter = ExistingHostAdapter()
+    with pytest.raises(HardwareError, match="Device not connected"):
+        adapter.max6675_read(4, 5, 6)
+
+
+@pytest.mark.parametrize("unlimited", [False, "missing"])
+def test_max6675_requires_image_generation_4(unlimited):
+    adapter, dev = _max6675_adapter(_max6675_capture_bytes(_bits(0x02A8)))
+    if unlimited == "missing":
+        del dev.gen_capture_unlimited
+    else:
+        dev.gen_capture_unlimited = unlimited
+
+    with pytest.raises(HardwareError, match="image generation 4 or newer"):
+        adapter.max6675_read(4, 5, 6)
+    dev.capture_with_gen.assert_not_called()
+
+
+def test_max6675_frame_symbol_layout():
+    assert len(_MAX6675_FRAME_SYMBOLS) == 520 + 4 + 32 + 3
+    assert _MAX6675_FRAME_SYMBOLS[0] == 0b11
+    assert _MAX6675_FRAME_SYMBOLS[-1] == 0b11
+
+
+@pytest.mark.parametrize("pins", [(4, 4, 6), (4, 6, 6), (23, 5, 6),
+                                  (4, -1, 6), (4, 5, 23)])
+def test_max6675_rejects_equal_or_out_of_range_pins(pins):
+    adapter, dev = _max6675_adapter(b"")
+
+    with pytest.raises(HardwareError,
+                       match="SO, CS and SCK must be different external digital pins"):
+        adapter.max6675_read(*pins)
+    dev.capture_with_gen.assert_not_called()
+
+
+def test_max6675_propagates_hardware_error_and_still_cleans_up():
+    adapter, dev = _max6675_adapter(
+        side_effect=HardwareError("device busy"))
+
+    with pytest.raises(HardwareError, match="device busy"):
+        adapter.max6675_read(4, 5, 6)
+    dev._aux_pins.assert_called_once_with()
+    dev._set_gen_capture_aux.assert_called_once_with()
+
+
+def test_max6675_wraps_driver_errors_and_still_cleans_up():
+    adapter, dev = _max6675_adapter(side_effect=RuntimeError("x"))
+
+    with pytest.raises(HardwareError, match="MAX6675 SPI capture failed: x"):
+        adapter.max6675_read(4, 5, 6)
+    dev._aux_pins.assert_called_once_with()
+    dev._set_gen_capture_aux.assert_called_once_with()
+
+
+def test_max6675_cleanup_failure_does_not_mask_the_decoded_result():
+    adapter, dev = _max6675_adapter(_max6675_capture_bytes(_bits(0x0123)))
+    dev._aux_pins = Mock(side_effect=RuntimeError("aux stuck"))
+
+    assert adapter.max6675_read(4, 5, 6) == {"raw": 0x0123, "clocks": 16}
+    dev._set_gen_capture_aux.assert_not_called()

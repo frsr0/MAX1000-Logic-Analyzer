@@ -502,5 +502,15 @@ class Mcp4725Tests(unittest.TestCase):
         self.assertFalse(result["bus_passed"])
 
 
+class Mcp4725WriteAndMeasureTests(unittest.TestCase):
+    def test_hardware_errors_pass_through_unwrapped(self):
+        """A device-level HardwareError already carries the actionable text."""
+        device = Mock()
+        device.mcp4725_write_and_measure.side_effect = HardwareError("bus fault")
+        with self.assertRaises(HardwareError) as raised:
+            dac._write_and_measure(device, dac.Mcp4725Route(), 2048)
+        self.assertEqual(str(raised.exception), "bus fault")
+
+
 if __name__ == "__main__":
     unittest.main()

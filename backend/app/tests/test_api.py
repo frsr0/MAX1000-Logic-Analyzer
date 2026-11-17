@@ -93,6 +93,15 @@ def test_connect_mock(client):
     assert meta["mock"] is True
     caps = client.get("/api/device/capabilities").json()
     assert caps["digital_channels"] == 16
+    assert caps["image_generation"] == 4
+    assert caps["image_features"] == {
+        "has_true_read_data": True,
+        "has_drop_counter": True,
+        "rle_flush_fixed": True,
+        "continuous_no_host_loss": True,
+        "narrow_no_loss": True,
+        "gen_capture_unlimited": True,
+    }
     assert any(t["execution"] == "post_capture" for t in caps["trigger_matrix"])
 
 

@@ -28,18 +28,15 @@ architecture rtl of SPI_Slave2 is
   signal sck_prev    : std_logic := '0';
   signal cs_prev     : std_logic := '0';
   signal sck_rise    : std_logic := '0';
-  signal sck_fall    : std_logic := '0';
   signal cs_fall     : std_logic := '0';
   signal cs_rise_int : std_logic := '0';
   signal cs_active   : std_logic := '0';
 
   signal rx_shift    : std_logic_vector(7 downto 0) := (others => '0');
-  signal tx_shift    : std_logic_vector(7 downto 0) := (others => '0');
   signal bit_cnt     : natural range 0 to 7 := 0;
   signal rx_byte_f   : std_logic_vector(7 downto 0) := (others => '0');
   signal rx_valid_f  : std_logic := '0';
   signal rx_valid_cnt : natural range 0 to 127 := 0;
-  signal reload_pending : std_logic := '0';
 
   -- Pipeline MOSI one fast_clk cycle so sck_rise (~17 ns after real SCK
   -- edge) reads the value driven on the rising edge, before the SCK
@@ -91,14 +88,24 @@ begin
     if falling_edge(SCK) then
       if cs_active = '0' then
         sck_tx_shift <= preamble_f;
-        sck_tx_cnt   <= (others => '0');
       elsif sck_tx_cnt = "111" then
         sck_tx_shift <= tx_data_f;
-        sck_tx_cnt   <= (others => '0');
       else
         sck_tx_shift <= sck_tx_shift(6 downto 0) & '0';
-        sck_tx_cnt   <= sck_tx_cnt + 1;
       end if;
+    end if;
+  end process;
+
+  -- MISO bit counter: held at zero while the raw CS_n pin is high (async
+  -- clear), so a transaction truncated mid-byte cannot leave later
+  -- transactions framed on the wrong bit boundary.  CS_n is a false path in
+  -- the timing constraints.  The counter wraps 7 -> 0 on its own.
+  miso_cnt: process(SCK, CS_n)
+  begin
+    if CS_n = '1' then
+      sck_tx_cnt <= (others => '0');
+    elsif falling_edge(SCK) then
+      sck_tx_cnt <= sck_tx_cnt + 1;
     end if;
   end process;
 
@@ -113,8 +120,6 @@ begin
 
       if sck_sync = '1' and sck_prev = '0' then sck_rise <= '1';
       else sck_rise <= '0'; end if;
-      if sck_sync = '0' and sck_prev = '1' then sck_fall <= '1';
-      else sck_fall <= '0'; end if;
       if cs_sync = '0' and cs_prev = '1' then cs_fall <= '1';
       else cs_fall <= '0'; end if;
       if cs_sync = '1' and cs_prev = '0' then cs_rise_int <= '1';
@@ -136,18 +141,13 @@ begin
       if reset = '1' then
         bit_cnt <= 0;
         rx_shift <= (others => '0');
-        tx_shift <= (others => '0');
         rx_valid_cnt <= 0;
         rx_valid_f <= '0';
-        reload_pending <= '0';
       elsif cs_fall = '1' then
         bit_cnt <= 0;
-        tx_shift <= preamble_f;
         rx_valid_cnt <= 0;
-        reload_pending <= '0';
       elsif cs_rise_int = '1' then
         bit_cnt <= 0;
-        reload_pending <= '0';
       elsif cs_active = '1' then
         if sck_rise = '1' then
           rx_shift <= rx_shift(6 downto 0) & mosi_d;
@@ -155,17 +155,8 @@ begin
             rx_byte_f  <= rx_shift(6 downto 0) & mosi_d;
             rx_valid_cnt <= 24;
             bit_cnt    <= 0;
-            reload_pending <= '1';
           else
             bit_cnt <= bit_cnt + 1;
-          end if;
-        end if;
-        if sck_fall = '1' then
-          if reload_pending = '1' then
-            tx_shift       <= tx_data_f;
-            reload_pending <= '0';
-          else
-            tx_shift <= tx_shift(6 downto 0) & '0';
           end if;
         end if;
       end if;

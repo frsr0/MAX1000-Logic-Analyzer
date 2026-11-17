@@ -47,6 +47,9 @@ export interface DeviceCapabilities {
   max_samples: number;
   bram_samples: number;
   sample_clk_hz: number;
+  image_generation?: number | null;
+  image_features?: Record<string, boolean> | null;
+  read_compensation_active?: boolean | null;
   supports_pre_trigger: boolean;
   supports_rolling: boolean;
   supports_continuous: boolean;
@@ -258,6 +261,17 @@ export interface Session {
   diagnostics: { level: string; message: string; ts?: number }[];
 }
 
+export interface CaptureHealth {
+  active: boolean;
+  mode: string;
+  dropped_samples: number | null;
+  gaps: number;
+  truncated_captures: number;
+  observed_seconds: number;
+  elapsed_seconds: number;
+  observed_fraction: number | null;
+}
+
 export interface BackendStatus {
   app_version: string;
   uptime_s: number;
@@ -266,6 +280,7 @@ export interface BackendStatus {
   device: DeviceMetadata | null;
   capture_state: string;
   capture_progress: { samples_read: number; samples_total: number; message: string; repeat: number };
+  capture_health?: CaptureHealth;
   last_session_id: string | null;
   last_error: string | null;
   control: { held: boolean; holder: string | null; holder_name: string; acquired_at: number };
@@ -518,6 +533,40 @@ export interface MilAccelerometerStatus {
   decoded_to_publish_latency_ms?: number;
   live_timing?: Record<string, any> | null;
 }
+
+export type Max6675ReadingStatus = 'ok' | 'open' | 'bad_frame' | 'skipped' | 'error';
+export interface Max6675Reading { temp_c: number | null; raw_temp_c?: number | null; status: Max6675ReadingStatus; }   // temp_c includes the offset
+export interface Max6675ChannelConfig {
+  name: string; enabled: boolean; so_pin: number; cs_pin: number; sck_pin: number;
+  offset_c: number;                            // -20..20
+  alarm_high_c: number | null; alarm_low_c: number | null;   // -50..1100; low < high when both set
+  alarm_on_fault: boolean;
+}
+export interface Max6675Config {
+  interval_s: number; channels: Max6675ChannelConfig[];   // always 4 channels
+  stop_after_s: number | null; auto_resume: boolean; auto_reconnect: boolean;
+}
+export type Max6675AlarmKind = 'high' | 'low' | 'fault' | 'clear';
+export interface Max6675ChannelStatus extends Max6675ChannelConfig {
+  last: Max6675Reading | null;
+  alarm: 'high' | 'low' | 'fault' | null;
+  alarm_since: number | null;
+}
+export interface Max6675AlarmEvent { t: number; channel: number; name: string; kind: Max6675AlarmKind; temp_c: number | null; }
+export interface Max6675Status {
+  running: boolean; interval_s: number; paused_reason: string | null; last_error: string | null;
+  started_at: number | null; row_count: number; dropped_rows: number; next_seq: number;
+  channels: Max6675ChannelStatus[];            // always 4 entries
+  stop_after_s: number | null; auto_resume: boolean; auto_reconnect: boolean;
+  alarm_events: Max6675AlarmEvent[];           // newest 100, oldest first
+  stop_at: number | null; stopped_reason: string | null;
+  persistent: boolean; corrupt_lines: number;
+}
+export interface Max6675Note { t: number; text: string; }
+export interface Max6675NotesResponse { notes: Max6675Note[]; }
+export interface Max6675Row { seq: number; t: number; elapsed_s: number; readings: (Max6675Reading | null)[]; }  // 4 entries, null = channel disabled
+export interface Max6675Data { next_seq: number; dropped_rows: number; rows: Max6675Row[]; }
+export interface Max6675ReadResult { t: number; readings: (Max6675Reading | null)[]; }   // 4 entries
 
 export interface MilTransactionResponse {
   request_hex: string;

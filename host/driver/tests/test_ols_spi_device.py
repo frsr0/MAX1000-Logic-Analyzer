@@ -17,6 +17,7 @@ from driver.spi_protocol import (
     REG_FLAGS,
     REG_GEN_BAUD,
     REG_GEN_AUX_PINS,
+    REG_GEN_CAPTURE_AUX,
     REG_GEN_CAPTURE_SCL_CHAN,
     REG_GEN_CAPTURE_TX_CHAN,
     REG_GEN_DATA,
@@ -32,6 +33,7 @@ from driver.spi_protocol import (
     SPIDevice,
     ST_OK,
     ST_CAPTURE_DONE,
+    ST_CAPTURE_ARMED,
     ST_CAPTURE_BUSY,
     ST_CAPTURE_IDLE,
     ST_STREAM_ACTIVE,
@@ -40,7 +42,6 @@ from driver.spi_protocol import (
     crc16,
 )
 from driver.ols_spi_device import (
-    MIXED_COMPRESSED_BLOCK_WORDS,
     MODE_ANALOG,
     MODE_ANALOG_ALL,
     MODE_ANALOG_FAST,
@@ -281,6 +282,23 @@ class TestCompressionHelpers:
         assert out == bytes(payload)
         assert len(group) > 0
 
+    def test_mixed_stream_round_trips_whole_groups_and_drops_partials(self):
+        """compress_mixed_stream batches 16-frame groups; the stream decoder
+        walks them back with the per-group byte counts."""
+        stride = analog_frame_stride(MODE_MIXED)
+        frames = bytearray()
+        for i in range(16 * 3):
+            frames.extend(struct.pack('<H', 0x1000 + i))
+            frames.extend(_pack_pair(0x100 + i, 0x800 - i))
+        data = bytes(frames)
+        assert len(data) == stride * 16 * 3
+        compressed = compress_mixed_stream(data)
+        assert decompress_mixed_stream(compressed) == data
+        # A trailing partial group cannot be expressed in the group framing:
+        # it is dropped, and a buffer shorter than one group yields nothing.
+        assert compress_mixed_stream(data[:-1]) == compress_mixed_stream(data[:-stride])
+        assert compress_mixed_stream(data[:stride - 1]) == b""
+
 
 class TestDecodeAnalogFrames:
     def test_digital8_single(self):
@@ -387,15 +405,15 @@ class TestOLSDeviceSPI:
     def test_stream_readback_batches_blocks_via_fake_transport(self, device_spi):
         # Drive the REAL _stream_readback -> read_capture_range -> batched
         # read_capture_blocks path over a packet-protocol fake transport.
-        # 1000 samples span two 512-sample blocks; the second block is
-        # requested one sample early (addr 1022) and its first sample dropped.
+        # 1000 samples span two blocks; each block is read at its own start
+        # and yields 512 samples, so the second block starts at sample 512.
         fake = _StreamReadbackFakeSPI()
         device_spi.spi = fake
         result = device_spi._stream_readback(0, 1000)
-        assert result == b'\x00' * 1024 + b'\xFE' * 976
+        assert result == b'\x00' * 2000
         assert len(result) == 2000
         assert fake.stream_payload_calls == 1
-        assert fake.addrs == [0, 1022]
+        assert fake.addrs == [0, 1024]
 
     def test_raw_mode_enable(self, device_spi):
         device_spi.raw_mode(True)
@@ -512,9 +530,10 @@ class TestOLSDeviceSPI:
             bytes([0xAA]) * 1024,
         ]
         data = device_spi.read_capture_range(start_sample=7, sample_count=600)
+        # block at the sample's own address (7*2), then the next chunk at 7+512
         device_spi.pkt.read_capture_block.assert_has_calls([
-            call(12, compressed=False),
-            call(1034, compressed=False),
+            call(14, compressed=False),
+            call(1038, compressed=False),
         ])
         assert len(data) == 1200
 
@@ -526,9 +545,10 @@ class TestOLSDeviceSPI:
                                               for _ in addrs])
 
         data = device_spi.read_capture_range(
-            start_sample=0x80000000, sample_count=1)
+            start_sample=0xFFFFFFFF, sample_count=1)
 
         assert len(data) == 2
+        # byte address = sample*2 modulo 2**32
         assert device_spi.pkt.read_capture_blocks.call_args.args[0] == [
             0xFFFFFFFE]
 
@@ -549,7 +569,7 @@ class TestOLSDeviceSPI:
         data = device_spi.read_capture_range(0, sample_count)
 
         assert len(data) == sample_count * 2
-        assert pkt.batch_sizes == [128, 2]
+        assert pkt.batch_sizes == [128, 1]
 
     def test_read_capture_range_decompresses_compressed_blocks(self, device_spi):
         # Pure RLE data: each block decompresses to 1024 bytes (512 samples)
@@ -564,11 +584,12 @@ class TestOLSDeviceSPI:
 
         assert len(data) == 1040
         words = struct.unpack('<520H', data)
+        # each block yields its full 512 samples.
         assert words[:256] == (0xFFFE,) * 256
         assert words[256:512] == (0xFFFF,) * 256
         assert words[512:] == (0x5678,) * 8
         device_spi.pkt.read_capture_blocks.assert_called_once_with(
-            [0, 1022], compressed=True)
+            [0, 1024], compressed=True)
 
     def test_read_capture_range_decompresses_rle_only_block_payloads(self, device_spi):
         block0 = struct.pack('<4H', 256, 0xFFFE, 256, 0xFFFF)
@@ -586,7 +607,7 @@ class TestOLSDeviceSPI:
         assert words[256:512] == (0xFFFF,) * 256
         assert words[512:] == (0x1234,) * 8
         device_spi.pkt.read_capture_blocks.assert_called_once_with(
-            [0, 1022], compressed=True)
+            [0, 1024], compressed=True)
 
     def test_read_capture_range_decompresses_rle_blocks(self, device_spi):
         # Pure RLE data: each block decompresses to 1024 bytes (512 samples)
@@ -604,7 +625,7 @@ class TestOLSDeviceSPI:
         assert words[:512] == (0x1234,) * 512
         assert words[512:] == (0x5678,) * 8
         device_spi.pkt.read_capture_blocks.assert_called_once_with(
-            [0, 1022], compressed=True)
+            [0, 1024], compressed=True)
 
     def test_read_capture_range_disables_broken_delta_compressed_blocks_after_probe(self, device_spi):
         raw_block = b'\x00' * 1024
@@ -683,47 +704,7 @@ class TestOLSDeviceSPI:
 
         assert len(data) == 1040
         device_spi.pkt.read_capture_blocks.assert_called_once_with(
-            [0, 1022], compressed=False)
-
-    def test_read_capture_range_decompresses_mixed_compressed_blocks(self, device_spi):
-        payload = bytearray()
-        for i in range(160):
-            payload.extend(struct.pack('<H', 0x3000 + i))
-            payload.extend(_pack_pair(0x180 + (i % 16), 0x280 + (i % 16)))
-        block = compress_mixed_stream(bytes(payload))
-        def read_capture_blocks(byte_addrs, compressed=False):
-            return [block]
-        pkt = type('Pkt', (), {})()
-        pkt.read_capture_blocks = read_capture_blocks
-        device_spi.pkt = pkt
-        device_spi.analog_mode = MODE_MIXED
-        device_spi.compress_readback_enabled = True
-
-        data = device_spi._read_capture_range_mixed_compressed(
-            start_sample=0, sample_count=160 * (analog_wire_stride(MODE_MIXED) // 2))
-
-        assert len(data) == 160 * analog_wire_stride(MODE_MIXED)
-        assert wire_to_payload(data, MODE_MIXED) == bytes(payload)
-
-    def test_read_capture_range_decompresses_mixed_compressed_blocks_with_frame_drop(self, device_spi):
-        payload = bytearray()
-        for i in range(160):
-            payload.extend(struct.pack('<H', 0x4000 + i))
-            payload.extend(_pack_pair(0x200 + (i % 8), 0x300 + (i % 8)))
-        block = compress_mixed_stream(bytes(payload))
-        def read_capture_blocks(byte_addrs, compressed=False):
-            return [block]
-        pkt = type('Pkt', (), {})()
-        pkt.read_capture_blocks = read_capture_blocks
-        device_spi.pkt = pkt
-        device_spi.analog_mode = MODE_MIXED
-        device_spi.compress_readback_enabled = True
-
-        data = device_spi._read_capture_range_mixed_compressed(
-            start_sample=3,
-            sample_count=160 * (analog_wire_stride(MODE_MIXED) // 2) - 3)
-
-        assert wire_to_payload(data, MODE_MIXED) == bytes(payload[5:])
+            [0, 1024], compressed=False)
 
     def test_repair_boundary_glitches_only_at_256_sample_boundaries(self, device_spi):
         words = [0x0001] * 520
@@ -926,6 +907,33 @@ class TestOLSDeviceSPI:
             samples, {'producer_index': 0}) == samples
         assert device_spi._capture_read_words(
             10, {'producer_index': 0}) == 10
+
+    def test_capture_read_words_packed_does_not_report_truncation(
+            self, device_spi, caplog):
+        # Packed SDRAM holds compressed words; a short producer is normal.
+        device_spi._raw_flags = MODE_PACKED_MSO
+        with caplog.at_level("WARNING", logger="ols_spi_device"):
+            assert device_spi._capture_read_words(
+                20000, {'producer_index': 160}) == 160
+        assert device_spi.last_capture_truncated is False
+        assert caplog.records == []
+
+    def test_capture_read_words_truncates_digital_overflow_to_committed_prefix(
+            self, device_spi, caplog):
+        # Single-shot overflow: DONE with Producer_Index short of the request.
+        device_spi._raw_flags = 0
+        with caplog.at_level("WARNING", logger="ols_spi_device"):
+            assert device_spi._capture_read_words(
+                1024, {'producer_index': 19}) == 19
+        assert device_spi.last_capture_truncated is True
+        assert any(r.getMessage().startswith(
+            "capture overflowed the SDRAM write pump: 19 of 1024")
+            for r in caplog.records)
+        assert device_spi._capture_read_words(
+            1024, {'producer_index': 1024}) == 1024
+        assert device_spi.last_capture_truncated is False
+        assert device_spi._capture_read_words(1024, {}) == 1024
+        assert device_spi.last_capture_truncated is False
 
     def test_set_bitbang_pwm_disable(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -1310,6 +1318,17 @@ class TestOLSDeviceSPIGenerator:
 
         with pytest.raises(RuntimeError, match="RX capture was incomplete"):
             device_spi.external_i2c_write(b"\x32\x0f")
+
+    def test_external_i2c_write_flags_sda_stuck_low(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi.spi.flush = MagicMock()
+        device_spi._start_gen_accepted = MagicMock(return_value=True)
+        device_spi._wait_gen_idle = MagicMock(return_value=True)
+        # Only the pre-START idle samples are high, then SDA stays low.
+        device_spi.gen_rx_read = MagicMock(return_value=b"\x07\x00\x00")
+
+        with pytest.raises(RuntimeError, match="never read high"):
+            device_spi.external_i2c_write(b"\xc0")
 
     @pytest.mark.parametrize(
         ("start_ok", "idle_ok", "message"),
@@ -1827,10 +1846,143 @@ class TestOLSDeviceSPIRolling:
         results = list(device_spi.stream_ring_capture(1_000_000, 4, stop_evt))
 
         assert [item[3] for item in results] == [0, 1]
+        # lapped reader (oldest 128 > cursor 4): restart at the producer
+        # minus min(quarter ring, backlog), here the oldest cell
         device_spi.read_capture_range.assert_has_calls([
             call(0, 4, probe_compression=False),
             call(128, 128, probe_compression=False),
         ])
+        assert device_spi.consume_stream_gap() is True
+
+    def _wrapped_ring_stream(self, device_spi, statuses, window=4,
+                             mode='raw'):
+        """Run the block path against scripted status words, return results."""
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = mode
+        device_spi.compress_readback_enabled = mode != 'raw'
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        sequence = list(statuses)
+        device_spi.pkt.get_status.side_effect = (
+            lambda *a, **k: sequence.pop(0) if len(sequence) > 1 else sequence[0])
+        device_spi.read_capture_range = MagicMock(
+            side_effect=lambda start, count, **_kw: b'\x01\x00' * count)
+        device_spi.spi.flush = MagicMock()
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False] * len(statuses) + [True]
+        stop_evt.wait.return_value = False
+        # Freeze the wall clock so every mocked read takes 0 s. With a
+        # fine-grained clock (Linux) a read takes a few microseconds, which
+        # at the patched 64-sample ring triggers the post-read lap check and
+        # an extra status poll, shifting the scripted statuses by one.
+        with patch('driver.ols_spi_device.time.time', return_value=1_000_000.0):
+            return list(device_spi.stream_ring_capture(
+                1_000_000, window, stop_evt, fetch_multiplier=1))
+
+    def test_stream_ring_capture_wrapped_ring_keeping_up_has_no_reset_or_gap(
+            self, device_spi):
+        """The climbing overrun/oldest counter alone must not reset the cursor."""
+        # tiny ring so the test wraps after a few windows
+        statuses = [
+            {'producer_index': 4 * n, 'oldest_index': max(0, 4 * n - 64),
+             'overrun_count': max(0, 4 * n - 64)}
+            for n in range(1, 40)
+        ]
+        with patch('driver.ols_spi_device.RING_SAMPLE_COUNT', 64),                 patch('driver.ols_spi_device.RING_SAMPLE_HALF', 32):
+            results = self._wrapped_ring_stream(device_spi, statuses)
+        starts = [c.args[0] for c in device_spi.read_capture_range.call_args_list]
+        assert len(starts) >= 18                       # past the wrap (64)
+        assert starts == [4 * i for i in range(len(starts))]   # contiguous
+        assert all(item[3] == 0 for item in results)
+        assert device_spi.consume_stream_gap() is False
+
+    def test_stream_ring_capture_lapped_reader_resyncs_once_and_flags_gap(
+            self, device_spi):
+        """A reader overtaken by the writer skips ahead once, flagged."""
+        statuses = [
+            {'producer_index': 4, 'oldest_index': 0, 'overrun_count': 0},
+            # the writer lapped the reader: oldest (136) is far beyond cursor 4
+            {'producer_index': 200, 'oldest_index': 136, 'overrun_count': 136},
+        ] + [
+            {'producer_index': 200 + 4 * n, 'oldest_index': 136 + 4 * n,
+             'overrun_count': 136 + 4 * n}
+            for n in range(1, 30)
+        ]
+        with patch('driver.ols_spi_device.RING_SAMPLE_COUNT', 64),                 patch('driver.ols_spi_device.RING_SAMPLE_HALF', 32):
+            results = self._wrapped_ring_stream(device_spi, statuses)
+        starts = [c.args[0] for c in device_spi.read_capture_range.call_args_list]
+        assert starts[0] == 0
+        # resync: producer 200 minus a quarter ring (16) = 184, inside the
+        # available data and far from the cell the writer overwrites next
+        assert starts[1] == 184
+        # exactly one resync: everything after it is contiguous
+        assert starts[1:] == [184 + 4 * i for i in range(len(starts) - 1)]
+        assert len(starts) >= 5
+        assert [item[3] for item in results] == (
+            [0] + [1] * (len(results) - 1))
+        assert device_spi.consume_stream_gap() is True
+
+    @pytest.mark.parametrize("mode,support,expect_probe", [
+        ("delta_rle", None, True),    # support unknown: must probe/decode
+        ("delta_rle", True, False),   # known good: normal compressed read
+        ("raw", None, False),         # raw readback needs no probe
+    ])
+    def test_stream_ring_capture_block_path_probes_unknown_compression(
+            self, device_spi, mode, support, expect_probe):
+        """A live block read must never return undecoded compressed words.
+
+        With a compressed codec selected and the support cache still unknown
+        the block reader has to probe (read_capture_range decodes or falls
+        back to raw); probe off would return the FPGA's compressed words.
+        """
+        device_spi.analog_mode = MODE_DIGITAL
+        device_spi._compressed_block_reads_supported['delta_rle'] = support
+        statuses = [
+            {'producer_index': 8, 'oldest_index': 0, 'overrun_count': 0}] * 4
+        self._wrapped_ring_stream(device_spi, statuses, mode=mode)
+        calls = device_spi.read_capture_range.call_args_list
+        assert calls
+        assert all(c.kwargs['probe_compression'] is expect_probe
+                   for c in calls)
+
+    def test_stream_ring_capture_follow_tail_crosses_32_bit_producer_rollover(
+            self, device_spi):
+        """Reader cursors stay valid logical indices across producer 2**32."""
+        ring = RING_SAMPLE_COUNT
+        top = 1 << 32
+        producers = [top - 24, top - 16, top - 8, top + 8, top + 16, top + 24]
+        statuses = [
+            {'producer_index': p & 0xFFFFFFFF,
+             'oldest_index': (p - ring) & 0xFFFFFFFF,
+             'overrun_count': (p - ring) & 0xFFFFFFFF}
+            for p in producers]
+        device_spi.pkt = MagicMock()
+        device_spi.readback_compression_mode = 'raw'
+        device_spi.compress_readback_enabled = False
+        device_spi.pkt.write_register.return_value = True
+        device_spi.pkt.arm_capture.return_value = ST_OK
+        sequence = list(statuses)
+        device_spi.pkt.get_status.side_effect = (
+            lambda *a, **k: sequence.pop(0) if len(sequence) > 1 else sequence[0])
+        device_spi.read_capture_range = MagicMock(
+            side_effect=lambda start, count, **_kw: bytes([1, 0]) * count)
+        device_spi.spi.flush = MagicMock()
+        stop_evt = MagicMock()
+        stop_evt.is_set.side_effect = [False] * 12 + [True]
+        stop_evt.wait.return_value = False
+        results = list(device_spi.stream_ring_capture(
+            1_000_000, 4, stop_evt, fetch_multiplier=1, follow_tail=True,
+            include_cursor=True))
+        starts = [c.args[0] for c in device_spi.read_capture_range.call_args_list]
+        assert len(starts) >= 4
+        assert all(0 <= s <= 0xFFFFFFFF for s in starts)
+        # chunk starts follow the producer through the rollover, in order
+        distances = [((b - a) & 0xFFFFFFFF) for a, b in zip(starts, starts[1:])]
+        assert all(0 < d < (1 << 31) for d in distances), starts
+        assert any(s >= 0xFFFFFF00 for s in starts)
+        assert any(s < 0x100 for s in starts)           # crossed the boundary
+        assert [r[4] for r in results] == starts[:len(results)]
+        assert device_spi.consume_stream_gap() is True      # tail re-anchor is flagged
 
     def test_stream_ring_capture_uses_block_reads_in_raw_mode(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -3640,17 +3792,47 @@ class TestDirectLiveCapture:
 
         assert items == []
 
-    def test_framed_reader_waits_for_delayed_chunk_and_emits_cursor(
-            self, device_spi):
-        import time
+    def test_framed_reader_continues_after_consumer_timeout(
+            self, device_spi, monkeypatch):
+        import threading
+        from queue import Empty as QueueEmpty, Queue as StdQueue
+        import driver.ols_spi_device as device_module
 
         self.setup_device(device_spi, continuous=True)
+        consumer_looped = threading.Event()
 
-        def delayed_wire():
-            time.sleep(0.075)
+        class TimeoutThenDelegateQueue(StdQueue):
+            """Report one consumer timeout, then let the reader proceed."""
+
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.get_calls = 0
+
+            def get(self, block=True, timeout=None):
+                self.get_calls += 1
+                if self.get_calls == 1:
+                    # This is the Empty -> reader_done not set -> continue
+                    # branch; the reader is still gated below, so the flag
+                    # cannot be set yet.
+                    raise QueueEmpty
+                if self.get_calls == 2:
+                    consumer_looped.set()
+                    # Block long enough that a scheduling stall cannot turn
+                    # this into a second forced timeout race; the chunk is
+                    # guaranteed to arrive once the event above is set.
+                    return super().get(block=block, timeout=5)
+                return super().get(block=block, timeout=timeout)
+
+        monkeypatch.setattr(device_module, 'Queue', TimeoutThenDelegateQueue)
+
+        def gated_wire():
+            # Only deliver the chunk after the consumer has gone round the
+            # loop through the timeout, so reader_done stays clear exactly
+            # while the loop re-checks it.
+            assert consumer_looped.wait(timeout=5), 'consumer never looped'
             yield b'\x09'
 
-        device_spi.pkt.start_live_stream_continuous.return_value = delayed_wire()
+        device_spi.pkt.start_live_stream_continuous.return_value = gated_wire()
         stop_evt = MagicMock()
         stop_evt.is_set.return_value = False
         items = list(device_spi._continuous_live_capture_with_repeating_symbols(
@@ -3659,6 +3841,57 @@ class TestDirectLiveCapture:
             include_cursor=True))
 
         assert items == [(b'\x00\x20', 1, 1, 0, None, {})]
+
+    def test_framed_reader_drains_final_chunk_after_reader_finishes(
+            self, device_spi, monkeypatch):
+        import threading
+        from queue import Empty as QueueEmpty, Queue as StdQueue
+        import driver.ols_spi_device as device_module
+
+        self.setup_device(device_spi, continuous=True)
+        real_thread = threading.Thread
+        reader_threads = []
+
+        def thread_factory(*args, **kwargs):
+            thread = real_thread(*args, **kwargs)
+            reader_threads.append(thread)
+            return thread
+
+        class TimeoutAfterReaderQueue(StdQueue):
+            """Report the timeout once the reader has enqueued and finished."""
+
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.get_calls = 0
+
+            def get(self, block=True, timeout=None):
+                self.get_calls += 1
+                if self.get_calls == 1:
+                    # Let the reader put its last chunk and set reader_done
+                    # before we report the timeout the loop is about to see.
+                    reader_threads[0].join(timeout=5)
+                    raise QueueEmpty
+                return super().get(block=block, timeout=timeout)
+
+        monkeypatch.setattr(device_module, 'Queue', TimeoutAfterReaderQueue)
+        monkeypatch.setattr(device_module.threading, 'Thread', thread_factory)
+
+        def fast_wire():
+            yield b'\x09'
+
+        device_spi.pkt.start_live_stream_continuous.return_value = fast_wire()
+        stop_evt = MagicMock()
+        stop_evt.is_set.return_value = False
+        full_out = bytearray()
+        progress = MagicMock()
+        items = list(device_spi._continuous_live_capture_with_repeating_symbols(
+            rate_hz=1_000_000, chunk_nsamp=1, stop_evt=stop_evt,
+            packed_symbols=b'\x12', symbol_div=10, tx_pin=3, scl_pin=1,
+            progress_cb=progress, full_out=full_out))
+
+        assert items == [(b'\x00\x20', 1, 1, 0)]
+        assert full_out == b'\x00\x20'
+        progress.assert_called_once_with(b'\x00\x20', 1, 1)
 
     def test_framed_reader_joins_and_propagates_shutdown_error(
             self, device_spi, monkeypatch):
@@ -4321,3 +4554,154 @@ class TestLiveStreamHelperEdges:
         assert _ring_sample_is_before(RING_SAMPLE_COUNT - 2, 2)
         assert _ring_sample_is_ahead(2, RING_SAMPLE_COUNT - 2)
         assert not _ring_sample_is_ahead(2, 2)
+
+
+class TestGenCaptureLaneOverrides:
+    """Generator-capture lane registers must never be inherited."""
+
+    @staticmethod
+    def _writes(dev):
+        return [c.args for c in dev.pkt.write_register.call_args_list]
+
+    def test_reset_restores_power_on_lane_defaults(self, device_spi):
+        device_spi.spi.dev = MagicMock()
+        device_spi.spi.flush = MagicMock()
+        device_spi.pkt = MagicMock()
+        device_spi._ensure_open = MagicMock()
+        device_spi.reset()
+        writes = self._writes(device_spi)
+        assert (REG_GEN_CAPTURE_TX_CHAN, 0) in writes
+        assert (REG_GEN_CAPTURE_SCL_CHAN, 1) in writes
+        assert (REG_GEN_CAPTURE_AUX, 0) in writes
+
+    def _arm_gen_capture(self, dev):
+        dev.pkt = MagicMock()
+        dev.spi.flush = MagicMock()
+        dev.reset = MagicMock()
+        dev._wait_gen_idle = MagicMock()
+        dev.set_debug_ch0 = MagicMock()
+        dev._stream_readback = MagicMock(return_value=b"\x01\x00" * 32)
+        dev.pkt.transaction = MagicMock(return_value=(0x10, 0, b""))
+        dev.pkt.get_status = MagicMock(side_effect=[
+            {"capture_status": ST_CAPTURE_IDLE, "capture_seq": 6},
+            {"capture_seq": 7},
+            {"capture_status": ST_CAPTURE_DONE, "capture_seq": 7},
+        ])
+        dev.ack_capture_done = MagicMock()
+
+    def test_uart_capture_shadows_scl_overlay_behind_tx_lane(self, device_spi):
+        self._arm_gen_capture(device_spi)
+        device_spi._gen_data = b'Hello'
+        device_spi._gen_baud = 115200
+        device_spi._gen_tx_pin = 2
+        assert device_spi.capture_with_gen(rate_hz=2_000_000, nsamples=32)
+        writes = self._writes(device_spi)
+        assert (REG_GEN_CAPTURE_TX_CHAN, 2) in writes
+        assert (REG_GEN_CAPTURE_SCL_CHAN, 2) in writes
+        assert (REG_GEN_CAPTURE_AUX, 0) in writes
+
+    def test_raw_symbol_capture_rewrites_all_three_lane_registers(
+            self, device_spi):
+        self._arm_gen_capture(device_spi)
+        device_spi.pkt.transaction.return_value = (ST_OK, 0, b"")
+        device_spi.pkt.get_status.side_effect = [
+            {"capture_seq": 12},
+            {"capture_status": ST_CAPTURE_DONE, "capture_seq": 13,
+             "producer_index": 5},
+        ]
+        device_spi.capture_with_gen(
+            rate_hz=2_000_000, nsamples=32, raw_symbols=[1, 0] * 8,
+            raw_symbol_rate=2_000_000, raw_tx_pin=4)
+        writes = self._writes(device_spi)
+        assert (REG_GEN_CAPTURE_TX_CHAN, 4) in writes
+        assert (REG_GEN_CAPTURE_SCL_CHAN, 4) in writes
+        assert (REG_GEN_CAPTURE_AUX, 0) in writes
+
+    def test_accel_dialogue_keeps_overlays_off_mirror_lanes(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi._ensure_open = MagicMock()
+        device_spi.set_debug_ch0 = MagicMock()
+        device_spi._pins = MagicMock()
+        device_spi._write_capture_config = MagicMock()
+        device_spi._stream_readback = MagicMock(return_value=b"\x34\x12")
+        device_spi.pkt.transaction.side_effect = [
+            (ST_OK, 0, b""), (ST_CAPTURE_ARMED, 0, b"")]
+        device_spi.pkt.get_status.return_value = {
+            "capture_status": ST_CAPTURE_DONE}
+        with patch("driver.ols_spi_device.time.sleep"):
+            assert device_spi.accel_capture_dialogue(
+                [1], 2, nsamples=1) == b"\x34\x12"
+        writes = self._writes(device_spi)
+        tx = [v for r, v in writes if r == REG_GEN_CAPTURE_TX_CHAN]
+        scl = [v for r, v in writes if r == REG_GEN_CAPTURE_SCL_CHAN]
+        assert tx and scl
+        assert all(v < 13 for v in tx + scl)
+        assert (REG_GEN_CAPTURE_AUX, 0) in writes
+
+
+class TestSpiExplicitSymbols:
+    """SPI generator loads with explicit symbols replace the MOSI pattern."""
+
+    @staticmethod
+    def _arm(dev):
+        dev.pkt = MagicMock()
+        dev.spi.flush = MagicMock()
+        dev.reset = MagicMock()
+        dev._wait_gen_idle = MagicMock()
+        dev.set_debug_ch0 = MagicMock()
+        dev._stream_readback = MagicMock(return_value=b"\x01\x00" * 32)
+        dev.pkt.transaction = MagicMock(return_value=(ST_OK, 0, b""))
+        dev.pkt.get_status = MagicMock(side_effect=[
+            {"capture_status": ST_CAPTURE_IDLE, "capture_seq": 6},
+            {"capture_seq": 7},
+            {"capture_status": ST_CAPTURE_DONE, "capture_seq": 7},
+        ])
+        dev.ack_capture_done = MagicMock()
+
+    def test_explicit_symbols_are_packed_and_loaded(self, device_spi):
+        from driver.bit_bang import pack_symbols
+        device_spi.pkt = MagicMock()
+        syms = [0b01, 0b10, 0b11, 0b00]
+        device_spi._gen_load_spi(b'\xAA', 100, symbols=syms)
+        device_spi.pkt.load_gen_data.assert_called_once_with(pack_symbols(syms))
+
+    def test_explicit_symbols_are_truncated_to_fifo_depth(self, device_spi):
+        from driver.bit_bang import MAX_SYMBOLS, pack_symbols
+        device_spi.pkt = MagicMock()
+        syms = [0b11] * (MAX_SYMBOLS + 10)
+        device_spi._gen_load_spi(b'', 100, symbols=syms)
+        device_spi.pkt.load_gen_data.assert_called_once_with(
+            pack_symbols(syms[:MAX_SYMBOLS]))
+
+    def test_data_path_still_used_when_symbols_is_none(self, device_spi):
+        from driver.bit_bang import pack_symbols, spi_symbols
+        device_spi.pkt = MagicMock()
+        device_spi._gen_load_spi(b'\x81', 100)
+        device_spi.pkt.load_gen_data.assert_called_once_with(
+            pack_symbols(spi_symbols(b'\x81')))
+
+    def test_no_load_without_data_or_symbols(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi._gen_load_spi(b'', 100)
+        device_spi.pkt.load_gen_data.assert_not_called()
+
+    def test_empty_data_with_symbols_still_loads_symbols(self, device_spi):
+        from driver.bit_bang import pack_symbols
+        device_spi.pkt = MagicMock()
+        device_spi._gen_load_spi(b'', 100, symbols=[0b10, 0b11])
+        device_spi.pkt.load_gen_data.assert_called_once_with(
+            pack_symbols([0b10, 0b11]))
+
+    def test_capture_with_gen_passes_spi_symbols_through(self, device_spi):
+        self._arm(device_spi)
+        device_spi._gen_data = None
+        device_spi._gen_load_spi = MagicMock(return_value=b'')
+        syms = [0b01, 0b11]
+        result = device_spi.capture_with_gen(
+            rate_hz=2_000_000, nsamples=32, proto="SPI",
+            spi_mosi_pin=3, spi_sclk_pin=2, spi_symbols=syms)
+        device_spi._gen_load_spi.assert_called_once_with(
+            None, 100, symbols=syms)
+        # has_gen is true from spi_symbols alone, so the capture is not
+        # skipped even though no MOSI data was supplied.
+        assert result != b''

@@ -59,7 +59,7 @@ begin
       Pump_NoData_Cycles=>pump_nodata_cycles, Pump_Overflow_Count=>pump_overflow_count);
 
   SDRAM : entity work.sdram_pin_model
-    generic map (CL=>3, STRICT=>true)
+    generic map (CL=>3, STRICT=>true, FAIL_ON_VIOLATION=>true)
     port map (clk=>sdram_clk_model, cke=>sdram_cke, cs_n=>sdram_cs_n, ras_n=>sdram_ras_n,
       cas_n=>sdram_cas_n, we_n=>sdram_we_n, ba=>sdram_ba, addr=>sdram_addr,
       dqm=>sdram_dqm, dq=>sdram_dq);
@@ -111,10 +111,10 @@ begin
     assert ready = acc
       report "FAIL: ready/accept counters disagree"
       severity failure;
-    -- The controller's ready is a two-cycle acknowledgement. Each accepted
-    -- transfer therefore contributes one launch-valid and one ack-valid cycle.
-    assert abs(valid - (stall + 2 * acc)) <= 2
-      report "FAIL: valid cycles do not match launch/stall/ack accounting"
+    -- Burst pump accounting: every busy cycle is either a written word
+    -- (accept) or a stall; valid = accept + stall.
+    assert abs(valid - (stall + acc)) <= 2
+      report "FAIL: valid cycles do not match accept/stall accounting"
       severity failure;
     assert acc >= WIN / 12
       report "FAIL: write pump did not sustain the configured 20 MHz producer"

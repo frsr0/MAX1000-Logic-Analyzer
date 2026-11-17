@@ -64,6 +64,10 @@ FLAGS="--std=08 -fsynopsys"
 STOP_TIME="${STOP_TIME:-10ms}"
 # Wall-clock seconds per run, an anti-hang backstop for pathological delta
 # loops that never advance simulation time (timeout(1) from coreutils).
+# This is a machine-speed bound, not part of any assertion: a bench whose
+# scenario must cover a fixed amount of simulated time cannot be made faster
+# by tuning the DUT, so individual TBs raise it below next to their stop-time
+# override (tb_gen_capture_long needs >300 s here).
 RUN_TIMEOUT="${RUN_TIMEOUT:-300}"
 
 if ! command -v "$GHDL_BIN" >/dev/null 2>&1; then
@@ -199,10 +203,22 @@ for tb in "${TBS[@]}"; do
   log="$LOG_DIR/$tb.log"
 
   # Per-TB stop-time overrides (default STOP_TIME covers the rest).
+  run_timeout="$RUN_TIMEOUT"
   case "$tb" in
     tb_continuous_wedge)  stop_time="30ms" ;;  # four complete full-block stream scenarios
     tb_gen_loopback)      stop_time="30ms" ;;  # real-pin SDRAM model, two capture scenarios
+    # The generator-capture truncation scenario MUST exceed the RTL's
+    # 5,000,000-clock (50 ms) limit to prove a longer burst survives, so its
+    # simulated time is fixed by the test, not by the runner. GHDL needs
+    # >300 s of wall clock for it on this class of machine; only the backstop
+    # can move.
+    tb_gen_capture_long)  stop_time="200ms"; run_timeout=1800 ;; # 75 ms + 20 ms generator-capture windows
     tb_ols_rle_raw_stream) stop_time="30ms" ;; # complete 16K-sample compressed stream
+    tb_pump_overflow_keep) stop_time="30ms" ;;  # 200.4 MS/s overflow, deep FIFO fill + readback of the kept prefix
+    tb_cont_read)         stop_time="30ms" ;;  # three parallel continuous-capture-while-reading cases (5 ms SDRAM power-up each)
+    tb_cont_top)          stop_time="40ms" ;;  # top-level continuous capture + block-read fetch latency (6 ms SDRAM power-up)
+    tb_pump_integrity)    stop_time="30ms" ;;  # six parallel capture/readback cases (5 ms SDRAM power-up each)
+    tb_refresh_readback)  stop_time="100ms" ;; # refresh intervals over capture, idle and four readback paths (about 90 s)
     tb_top)               stop_time="30ms" ;;  # 16-pin UART loopback, ~1.3 ms per pin
     *)                    stop_time="$STOP_TIME" ;;
   esac
@@ -214,7 +230,7 @@ for tb in "${TBS[@]}"; do
     reason="elaboration"
   else
     if command -v timeout >/dev/null 2>&1; then
-      run_cmd=(timeout "$RUN_TIMEOUT" "$GHDL_BIN" -r $FLAGS "$tb" --assert-level=error --stop-time="$stop_time")
+      run_cmd=(timeout "$run_timeout" "$GHDL_BIN" -r $FLAGS "$tb" --assert-level=error --stop-time="$stop_time")
     else
       run_cmd=("$GHDL_BIN" -r $FLAGS "$tb" --assert-level=error --stop-time="$stop_time")
     fi
@@ -237,6 +253,8 @@ for tb in "${TBS[@]}"; do
     fi
   elif [ -n "$reason" ]; then
     echo "FAIL  $tb ($reason)"
+    # Show why: CI keeps only this console output, not the per-TB log files.
+    tail -n 15 "$log" | sed 's/^/      | /'
     failed=$((failed + 1)); failed_list+=("$tb")
   else
     echo "PASS  $tb"

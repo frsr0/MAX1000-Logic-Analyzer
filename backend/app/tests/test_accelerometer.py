@@ -1344,6 +1344,30 @@ def test_live_worker_schedule_and_fault_branch_edges(monkeypatch):
     slow._run(0, SlowStop())
     monkeypatch.setattr(accelerometer_module.time, "monotonic", real_monotonic)
 
+    # Both arcs of the catch-up test: the deadline holds on the first poll
+    # (next_read is still ahead of now) and is re-synchronised on the second,
+    # where the transaction already overran by more than one period.
+    class StopAfterTwoPolls:
+        def __init__(self):
+            self.waits = 0
+
+        def is_set(self):
+            return self.waits >= 2
+
+        def wait(self, _timeout):
+            self.waits += 1
+            return False
+
+    steady = AccelerometerService(FakeManager(FakeRaw()), sample_rate_hz=400)
+    steady._status.running = True
+    steady._record_sample = lambda *_args, **_kwargs: None
+    steady_clock = itertools.chain(
+        iter((0.0, 0.0, 0.0, 0.0, 10.0, 10.0)), itertools.repeat(10.0))
+    monkeypatch.setattr(accelerometer_module.time, "monotonic",
+                        steady_clock.__next__)
+    steady._run(0, StopAfterTwoPolls())
+    monkeypatch.setattr(accelerometer_module.time, "monotonic", real_monotonic)
+
     class StopDuringFailure(threading.Event):
         pass
 
@@ -1580,6 +1604,30 @@ def test_record_sample_publishes_lightweight_decoded_xyz_event(monkeypatch):
         "x_g": 0.125, "y_g": -0.25, "z_g": 0.875, "timestamp": 123.456}
     assert data["last_sample_at"] == 123.456
     assert data["samples_read"] == 1
+
+
+def test_record_sample_never_moves_the_timestamp_backwards(monkeypatch):
+    """A repeated or older timestamp is nudged just past the previous one.
+
+    With a coarse clock two samples can share a timestamp; with a fine one
+    they rarely do, so the case is driven explicitly here.
+    """
+    service = AccelerometerService(FakeManager(FakeRaw()), sample_rate_hz=400)
+    service._status.running = True
+    published = []
+    monkeypatch.setattr(
+        accelerometer_module.websocket_manager, "publish_threadsafe",
+        lambda topic, type_, data: published.append(data))
+
+    service._record_sample((0.0, 0.0, 1.0), timestamp=50.0)
+    service._record_sample((0.0, 0.0, 1.0), timestamp=50.0)
+    service._record_sample((0.0, 0.0, 1.0), timestamp=49.0)
+
+    stamps = [data["sample"]["timestamp"] for data in published]
+    assert stamps[0] == 50.0
+    assert stamps[1] == pytest.approx(50.0 + 1e-6)
+    assert stamps[2] == pytest.approx(50.0 + 2e-6)
+    assert stamps == sorted(stamps)
 
 
 def test_record_sample_can_retain_raw_frame_without_pose_publish(monkeypatch):
@@ -2086,7 +2134,7 @@ def test_live_capture_uses_continuous_ring_producer_and_stops_cleanly(tmp_path):
     manager = FakeManager(raw)
     service = AccelerometerService(manager, sample_rate_hz=1)
     assert service.start()["running"] is True
-    assert raw.first_sample.wait(1.0)
+    assert raw.first_sample.wait(5.0)
 
     store = SessionStore(tmp_path)
     session = service.start_live_capture(
@@ -2095,7 +2143,7 @@ def test_live_capture_uses_continuous_ring_producer_and_stops_cleanly(tmp_path):
                         num_samples=32),
         "Accelerometer ring live", store)
     try:
-        assert raw.ring_started.wait(1.0)
+        assert raw.ring_started.wait(5.0)
         # The 400 Hz path uses the b1c decoder-safe transport: oversampled
         # standard I2C, one XYZ dialogue per block, and no host prefetch.
         assert raw.ring_kwargs["rate_hz"] == pytest.approx(accelerometer_module.LIVE_TRACE_RATE_HZ)
@@ -2113,7 +2161,13 @@ def test_live_capture_uses_continuous_ring_producer_and_stops_cleanly(tmp_path):
         assert raw.ring_kwargs["follow_tail"] is True
         assert raw.ring_kwargs["fetch_multiplier"] == 1
         assert raw.ring_kwargs["include_cursor"] is True
-        deadline = time.time() + 1.0
+        # The service persists a coalesced snapshot of the samples received so
+        # far (flush every >=0.25 s, then a 0.2 s persister interval), so the
+        # first waveform a client can load holds only the first chunk(s); it is
+        # a complete snapshot, never a half-built one. Wait for the condition
+        # (generously: a loaded CI host can stall the worker thread for
+        # seconds) instead of assuming a 1 s wall-clock cadence.
+        deadline = time.time() + 15.0
         waveform = None
         while time.time() < deadline:
             waveform = store.load_waveform(session.id)

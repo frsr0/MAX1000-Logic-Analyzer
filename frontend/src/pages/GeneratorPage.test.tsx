@@ -248,7 +248,8 @@ it('sends, streams and captures with bounded payloads and navigates results', as
   const send = vi.spyOn(api, 'generatorSend')
     .mockResolvedValueOnce({ detail: 'sent' } as never)
     .mockResolvedValueOnce({ detail: 'streaming' } as never)
-    .mockResolvedValueOnce({ session_id: 'loop', detail: null, passed: true, sent_hex: 'aa', decoded_hex: 'aa' } as never)
+    .mockResolvedValueOnce({ session_id: 'loop', detail: null, passed: true, sent_hex: 'aa', decoded_hex: 'aa',
+      warnings: ['generator burst cut'] } as never)
     .mockResolvedValueOnce({ passed: false, sent_hex: 'aa', decoded_hex: 'bb', detail: 'mismatch' } as never)
     .mockRejectedValueOnce(new Error('send failed'));
   vi.spyOn(api, 'generatorStop').mockRejectedValue(new Error('ignored'));
@@ -261,6 +262,8 @@ it('sends, streams and captures with bounded payloads and navigates results', as
   await waitFor(() => expect(useApp.getState().toast).toHaveBeenCalledWith('success', expect.stringContaining('Live stream started')));
   fireEvent.click(screen.getByRole('button', { name: 'Send and capture' }));
   expect(await screen.findByText('PASS')).toBeTruthy();
+  expect(screen.getByText('generator burst cut')).toBeTruthy();
+  expect(useApp.getState().toast).toHaveBeenCalledWith('warning', 'generator burst cut');
   expect(useApp.getState().toast).toHaveBeenCalledWith('success', 'Loopback captured');
   fireEvent.click(screen.getByRole('button', { name: 'Open loopback capture' }));
   await waitFor(() => expect(useApp.getState().openSession).toHaveBeenCalledWith('loop'));
@@ -319,8 +322,11 @@ it('runs generator self-test and enforces busy/read-only/protocol button gates',
   fireEvent.click(screen.getByText('Advanced diagnostics'));
   fireEvent.click(screen.getByRole('button', { name: 'Run generator self-test' }));
   expect(screen.getByRole('button', { name: 'Run generator self-test' }).hasAttribute('disabled')).toBe(true);
-  await act(async () => finish({ passed: true, sent_hex: '01', decoded_hex: '01', detail: 'healthy' }));
+  await act(async () => finish({ passed: true, sent_hex: '01', decoded_hex: '01', detail: 'healthy',
+    warnings: ['self-test generator warning'] }));
   expect(screen.getByText('PASS')).toBeTruthy();
+  expect(screen.getByText('self-test generator warning')).toBeTruthy();
+  expect(useApp.getState().toast).toHaveBeenCalledWith('warning', 'self-test generator warning');
   fireEvent.click(screen.getByRole('button', { name: 'Run generator self-test' }));
   await waitFor(() => expect(useApp.getState().toast).toHaveBeenCalledWith('error', 'self-test failed'));
 

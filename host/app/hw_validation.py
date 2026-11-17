@@ -61,6 +61,7 @@ try:
         REG_FLAGS, REG_FAST_MODE, REG_CONT_MODE,
         REG_GEN_PROTO, REG_GEN_BAUD, REG_GEN_PINS, REG_GEN_DATA,
         REG_GEN_AUX_PINS,
+        REG_PUMP_OVERFLOW_COUNT, SDRAM_READ_LEAD_WORDS,
         REG_IFACE_MODE,
         GEN_FLAG_I2C_TEST, GEN_FLAG_SPI_TEST, GEN_FLAG_REPEAT,
         ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_BUSY, ST_CAPTURE_DONE, ST_CAPTURE_IDLE,
@@ -566,12 +567,8 @@ def test_fast_capture(dev, debug_on=False):
     time.sleep(rc / 1_000_000 + 0.02)
 
     need = rc * dev._stride
-    data = bytearray()
-    for block_addr in range(0, need, 1024):
-        block = dev.pkt.read_capture_block(block_addr)
-        if block:
-            data.extend(block)
-    data = bytes(data[:need])
+    # Through the driver, which knows the FPGA's duplicated first block word.
+    data = dev.read_capture_range(0, need // 2)[:need]
 
     if data:
         ch, ns = samples_to_channels(data)
@@ -633,17 +630,18 @@ def test_max_speed_capture(dev):
     dev.spi.flush()
     time.sleep(rc / 1_000_000 + 0.02)
 
-    need = rc * dev._stride
-    data = bytearray()
-    for block_addr in range(0, need, 1024):
-        block = dev.pkt.read_capture_block(block_addr)
-        if block:
-            data.extend(block)
-    data = bytes(data[:need])
+    # Raw 16-bit capture at div=0 (200 MS/s) outruns the SDRAM write pump and
+    # aborts with a short committed prefix; Producer_Index says how many samples
+    # are real. Reading the full request would hand back stale cells.
+    produced = int(dev.pkt.get_status().get('producer_index') or 0)
+    committed = min(rc, produced) if produced > 0 else rc
+    log(f"committed samples: {committed} of {rc} requested")
+    need = committed * dev._stride
+    data = dev.read_capture_range(0, need // 2)[:need]
 
     if data:
         ch, ns = samples_to_channels(data)
-        log(f"captured {len(data)} bytes, {ns} samples (expected {rc})")
+        log(f"captured {len(data)} bytes, {ns} samples (committed {committed} of {rc})")
         tr_counts = []
         for c in range(min(NUM_CHANNELS, 16)):
             tr = sum(1 for i in range(1, len(ch[c])) if ch[c][i] != ch[c][i - 1])
@@ -651,9 +649,12 @@ def test_max_speed_capture(dev):
         max_tr = max(tr_counts)
         log(f"  max transitions across all channels: {max_tr}")
         log(f"  CH0 transitions: {tr_counts[0]}")
-        check(ns == rc, f"max-speed sample count: {ns} vs expected {rc}")
-        check(4 <= tr_counts[0] < ns - 4,
-              f"max-speed CH0 source is non-static ({tr_counts[0]} transitions)")
+        check(ns == committed, f"max-speed sample count: {ns} vs committed {committed}")
+        check(committed >= 64,
+              f"max-speed capture committed a usable prefix ({committed} of {rc})")
+        check(2 <= tr_counts[0] < ns - 2,
+              f"max-speed CH0 source is non-static in the committed prefix "
+              f"({tr_counts[0]} transitions)")
         # At 200 MHz the undriven LA pins float and pick up noise; like
         # test_fast_capture, characterize that activity rather than asserting a
         # quiet fixture. Correctness is the exact sample count above plus a full
@@ -710,7 +711,7 @@ def test_continuous_capture(dev, debug_on=False):
     for _ in range(10):
         block = dev.pkt.read_capture_block(0)
         if block:
-            data.extend(block)
+            data.extend(block[_read_lead_words() * 2:])
             break
         time.sleep(0.02)
     if data:
@@ -1503,25 +1504,35 @@ def _discover_analog_jumper_pairs(dev, deadline_s=45.0):
     pairs = []
     deadline = time.time() + deadline_s
     candidates = [p for p in range(15, 23)] + list(range(0, 15))
-    for tx in candidates:
-        if time.time() >= deadline:
-            break
-        for adc in _ANALOG_JUMPER_ADC_CHANNELS:
-            if time.time() >= deadline:
+    # Probes cost ~0.4 s each, so a single pass over all 16 mux channels per pin
+    # used up the whole deadline on the PMOD pins and never reached D0 (the
+    # D0 -> AIN6 wire went undetected). Pass 1 therefore tries every pin on the
+    # four streamed ADC channels with no deadline (23 x 4 probes); pass 2 sweeps
+    # the remaining mux channels of still-unpaired pins within the deadline.
+    streamed = [a for a in _ANALOG_JUMPER_ADC_CHANNELS if a in (1, 2, 3, 4)]
+    others = [a for a in _ANALOG_JUMPER_ADC_CHANNELS if a not in streamed]
+    for adcs, bounded in ((streamed, False), (others, True)):
+        for tx in candidates:
+            if bounded and time.time() >= deadline:
                 break
-            try:
-                act = _capture_physical_analog_activity(dev, tx, adc)
-            except Exception as e:
-                log(f"  [INFO] pin {tx} ADC{adc} probe error: {e}")
+            if any(p[0] == tx for p in pairs):
                 continue
-            if act["samples"] > 100 and act["amplitude"] >= 3000 \
-                    and act["edges"] >= 8:
-                ain = _ANALOG_ADC_AIN.get(adc, f"ADC{adc}")
-                label = f"pin{tx} -> {ain}/ADC{adc}"
-                log(f"  [INFO] discovered analog jumper: {label} "
-                    f"(amp {act['amplitude']} codes, {act['edges']} edges)")
-                pairs.append((tx, adc, label))
-                break  # this pin is wired; move to the next pin
+            for adc in adcs:
+                if bounded and time.time() >= deadline:
+                    break
+                try:
+                    act = _capture_physical_analog_activity(dev, tx, adc)
+                except Exception as e:
+                    log(f"  [INFO] pin {tx} ADC{adc} probe error: {e}")
+                    continue
+                if act["samples"] > 100 and act["amplitude"] >= 3000 \
+                        and act["edges"] >= 8:
+                    ain = _ANALOG_ADC_AIN.get(adc, f"ADC{adc}")
+                    label = f"pin{tx} -> {ain}/ADC{adc}"
+                    log(f"  [INFO] discovered analog jumper: {label} "
+                        f"(amp {act['amplitude']} codes, {act['edges']} edges)")
+                    pairs.append((tx, adc, label))
+                    break  # this pin is wired; move to the next pin
     if not pairs:
         log("  [INFO] no analog jumper pair found on this bench")
     return pairs
@@ -1609,6 +1620,134 @@ def test_physical_analog_jumpers(dev):
 
 # Backward-compatible name for older ad-hoc invocations.
 test_analog4_mode = test_mixed_analog_mode
+
+
+# ====================================================================
+# Test 5f: 200.4 MS/s overflow keeps a committed, run-length-exact prefix
+# ====================================================================
+# Raw 16-channel capture at the full sample clock outruns the SDRAM write
+# pump. The FPGA must report the overflow and KEEP the words already in the
+# capture FIFO (Producer_Index = committed words) instead of discarding them;
+# the driver then returns exactly that prefix. A corrupt prefix (dropped,
+# duplicated or overwritten FIFO words) changes a run length of the square wave.
+MAX_RATE_PREFIX_MIN_SAMPLES = 8000     # 4096-deep FIFO image; 512-deep image gives ~1.8k
+
+
+def _prefix_run_lengths(bits):
+    """(mode, bad_runs, interior_count) of a 0/1 sequence; first/last runs are partial."""
+    runs = []
+    for b in bits:
+        if runs and runs[-1][0] == b:
+            runs[-1][1] += 1
+        else:
+            runs.append([b, 1])
+    inner = [r[1] for r in runs[1:-1]]
+    if not inner:
+        return None, [], 0
+    mode = max(set(inner), key=inner.count)
+    pos = runs[0][1]
+    bad = []
+    for r in runs[1:-1]:
+        if r[1] != mode:
+            bad.append((pos, r[1]))
+        pos += r[1]
+    return mode, bad, len(inner)
+
+
+def test_max_rate_kept_prefix(dev):
+    print_header("Test 5f: 200 MS/s overflow keeps an exact committed prefix")
+    dev.reset(); dev.spi.flush()
+    dev.set_analog_config(MODE_DIGITAL)
+    dev._raw_flags = 0
+    dev.set_debug_ch0(True, freq_hz=1_000_000)
+    time.sleep(0.02)
+    requested = 100_000
+    try:
+        data = dev.capture(rate_hz=int(dev.sample_clk), nsamples=requested, timeout=10)
+        overflow = dev.pkt.read_register(REG_PUMP_OVERFLOW_COUNT)
+    finally:
+        dev.set_debug_ch0(False)
+    if not data:
+        check(False, "200 MS/s capture returned no data")
+        return
+    ch, ns = samples_to_channels(data, stride=2)
+    log(f"  committed {ns} of {requested} requested; overflow count {overflow}")
+    check(getattr(dev, "last_capture_truncated", False) and overflow > 0,
+          f"200 MS/s capture reports the overflow (truncated, pump overflow count {overflow})")
+    check(ns >= MAX_RATE_PREFIX_MIN_SAMPLES,
+          f"committed prefix keeps the FIFO contents ({ns} >= {MAX_RATE_PREFIX_MIN_SAMPLES} samples)")
+    mode, bad, inner = _prefix_run_lengths(ch[0][:ns])
+    log(f"  CH0 square wave: {inner} interior runs, run length {mode}, {len(bad)} off-length runs")
+    check(inner >= 20 and mode is not None and 100 <= mode <= 108,
+          f"prefix carries the 1 MHz wave ({inner} runs of {mode} samples)")
+    check(not bad, f"every run in the committed prefix has the exact length {mode} "
+                   f"(off-length runs at {bad[:5]})")
+
+
+# ====================================================================
+# Test 5g/5h: readback alignment (relative: exactly N words; absolute: edge index)
+# ====================================================================
+# The FPGA's SDRAM read returns the PREVIOUS read's data, so a block at sample s
+# comes back as [mem[s], mem[s], mem[s+1], ...]; the driver requests each block
+# at its own address and drops the duplicated first word. A wrong alignment
+# either shows the last written sample one word late (an apparent extra word at
+# index N) or shifts every sample.
+def _changed_word_indices(before, after):
+    """Indices where two equal-length 16-bit little-endian buffers differ."""
+    n = min(len(before), len(after)) // 2
+    return [i for i in range(n) if before[2 * i:2 * i + 2] != after[2 * i:2 * i + 2]]
+
+
+def _prefill_capture_memory(dev, nwords=8192):
+    """Fill the capture memory with 12-bit ADC codes (never 0xFFFF, the idle digital word)."""
+    dev.set_analog_config(MODE_ANALOG_FAST, adc_channel=4)
+    dev._gen_data = b"\x55" * 10
+    dev._gen_baud = 115200
+    dev._gen_tx_pin = 22                      # unused PMOD pin
+    dev.capture_with_gen(rate_hz=1_000_000, nsamples=nwords, timeout=10,
+                         fast_mode=True, reset_board=False)
+    dev.set_analog_config(MODE_DIGITAL)
+
+
+def test_readback_alignment_exact_word_count(dev):
+    print_header("Test 5g: capture of N samples changes exactly N words")
+    for n in (2, 3000):
+        dev.reset(); dev.spi.flush(); dev.set_debug_ch0(False)
+        _prefill_capture_memory(dev)
+        before = dev.read_capture_range(0, n + 64)
+        dev.reset(); dev.spi.flush()
+        data = dev.capture(rate_hz=1_002_000, nsamples=n, timeout=10)
+        after = dev.read_capture_range(0, n + 64)
+        changed = _changed_word_indices(before, after)
+        got = len(data) // 2
+        check(got == n, f"N={n}: capture returned {got} samples")
+        check(changed == list(range(n)),
+              f"N={n}: exactly indices 0..{n - 1} changed (changed {len(changed)} words, "
+              f"first {changed[:1]}, last {changed[-1:]}); index {n} keeps its pre-fill")
+
+
+# Simulated true first-low sample index of the atomic generator burst (raw symbols
+# [HI]*4 + [LO]*40 at 100 kS/s from pin 8) at capture divider dv. Derived by
+# simulating the RTL with true read alignment (the board with the old plan read
+# exactly one more). Re-derive them if the capture start or generator timing changes.
+ORACLE_FIRST_LOW_INDEX = {9: 1105, 99: 110, 195: 56}
+
+
+def test_readback_absolute_time_oracle(dev):
+    print_header("Test 5h: absolute timing of readback (generator-edge oracle)")
+    dev.reset(); dev.spi.flush(); dev.set_debug_ch0(False)
+    symbols = [3] * 4 + [2] * 40 + [3] * 4
+    for dv, want in ORACLE_FIRST_LOW_INDEX.items():
+        rate = int(dev.sample_clk / (dv + 1))
+        raw = dev.capture_with_gen(rate_hz=rate, nsamples=1500, timeout=8,
+                                   raw_symbols=symbols, raw_symbol_rate=100_000,
+                                   raw_tx_pin=8, fast_mode=False, reset_board=False)
+        ch, ns = samples_to_channels(raw, stride=2) if raw else ([], 0)
+        low = [i for i in range(ns) if ch[8][i] == 0] if ns else []
+        got = low[0] if low else None
+        check(got == want,
+              f"divider {dv}: first low sample at index {got} (simulated true index {want})")
+    dev.reset()
 
 
 def test_continuous_max_rate_overrun(dev):
@@ -2451,9 +2590,10 @@ def test_full_depth_capture(dev):
     # Verify addressing at both ends of the SDRAM buffer without reading
     # back the whole 2 MB: first block, a middle block, and the last block.
     need = MAX_SAMPLES * 2
-    first = dev.pkt.read_capture_block(0)
-    mid = dev.pkt.read_capture_block((need // 2) & ~1023)
-    last = dev.pkt.read_capture_block(need - 1024)
+    lead = _read_lead_words() * 2     # bytes of the FPGA's duplicated first block word
+    first = dev.pkt.read_capture_block(0)[lead:]
+    mid = dev.pkt.read_capture_block((need // 2) & ~1023)[lead:]
+    last = dev.pkt.read_capture_block(need - 1024)[lead:]
     dev.set_debug_ch0(False)
     check(first is not None and len(first) > 0, f"first block read ({len(first) if first else 0} bytes)")
     check(mid is not None and len(mid) > 0, f"middle block read ({len(mid) if mid else 0} bytes)")
@@ -2511,12 +2651,7 @@ def test_back_to_back_capture(dev):
         dev.spi.flush()
         _wait_capture_done(dev, timeout=2.0)
         need = rc * 2
-        data = bytearray()
-        for block_addr in range(0, need, 1024):
-            block = dev.pkt.read_capture_block(block_addr)
-            if block:
-                data.extend(block)
-        data = bytes(data[:need])
+        data = dev.read_capture_range(0, rc)[:need]
         ch, ns = samples_to_channels(data, stride=2)
         tr0 = sum(1 for i in range(1, ns) if ch[0][i] != ch[0][i - 1]) if ns else 0
         log(f"capture #{n + 1}: {len(data)} bytes, {ns} samples, CH0 {tr0} trans")
@@ -2627,7 +2762,37 @@ JUMPER_BAUD = 115200
 JUMPER_RATE = 2_000_000        # ~17.4 samples/bit, well above UART_MIN_SPB
 _JUMPER_PAIR_CACHE = None
 _JUMPER_PAIR_SEARCHED = False
+# Every decoding (tx, rx) route the last discovery sweep found, best-ranked
+# first. The cache above only keeps the winner; tests for further wires use this.
+_JUMPER_ROUTES: list = []
 JUMPER_PRESENT_ENV = "HW_VALIDATION_JUMPER_PRESENT"
+# Optional guard against silently losing a wire: when set to N the suite FAILs
+# if discovery finds fewer than N distinct physical wires.
+JUMPER_EXPECT_WIRES_ENV = "HW_VALIDATION_EXPECT_JUMPER_WIRES"
+
+
+def _expected_jumper_wire_count():
+    """HW_VALIDATION_EXPECT_JUMPER_WIRES as an int, or None when unset/invalid."""
+    raw = os.environ.get(JUMPER_EXPECT_WIRES_ENV)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        return max(0, int(raw.strip()))
+    except ValueError:
+        log(f"[INFO] ignoring non-integer {JUMPER_EXPECT_WIRES_ENV}={raw!r}")
+        return None
+
+
+def _check_expected_jumper_wires(routes):
+    """FAIL when fewer distinct wires were detected than the bench declares."""
+    expected = _expected_jumper_wire_count()
+    if expected is None:
+        return
+    found = len(_group_jumper_wires(routes))
+    listing = ", ".join(f"{t} -> CH{r}" for t, r in routes) or "none"
+    check(found >= expected,
+          f"discovery found {found} distinct jumper wire(s), expected {expected} "
+          f"(detected routes: {listing})")
 
 
 def _prepare_jumper_fixture(dev):
@@ -2680,6 +2845,7 @@ def _prepare_jumper_fixture(dev):
         log("[ERROR] jumper fixture was reported present, but discovery found no route")
     else:
         log(f"digital jumper fixture discovered: {pair[0]} -> {pair[1]}")
+    _check_expected_jumper_wires(_JUMPER_ROUTES)
     return pair
 
 
@@ -2912,6 +3078,31 @@ def test_jumper_loopback(dev):
     else:
         check(False, "triggered UART loopback capture returned no data")
 
+    # --- Phase 5: every additional wire, exact-payload UART loopback -----
+    # capture_with_gen's UART path re-writes both overlay lanes to tx & 0x0F
+    # and clears the accel-attach bit, so a stale lane cannot hide the receiver
+    # (for tx 16 the overlay is lane 0; the wire lands on CH15). Measured
+    # 30/30 exact decodes at this baud/rate on the PMOD wire.
+    for extra_tx, extra_rx in _additional_jumper_routes(_JUMPER_ROUTES, pair):
+        dev.reset(); dev.spi.flush(); time.sleep(0.02)
+        got = b""
+        for _attempt in range(2):
+            dev._gen_data = payload
+            dev._gen_baud = JUMPER_BAUD
+            dev._gen_tx_pin = extra_tx
+            extra = dev.capture_with_gen(rate_hz=JUMPER_RATE, nsamples=20000,
+                                         timeout=8, fast_mode=False,
+                                         reset_board=False)
+            if extra:
+                ech, _ens = samples_to_channels(extra, stride=2)
+                got = bytes(d.value for d in decode_uart_safe(
+                    ech, JUMPER_RATE, ch_idx=extra_rx, baud=JUMPER_BAUD))
+                if payload in got:
+                    break
+        check(payload in got,
+              f"additional wire: exact UART payload {extra_tx} -> CH{extra_rx} "
+              f"(got {got!r})")
+
     save_result("test30_jumper_loopback", data if data else b"",
                 {"pair": [tx, rx], "skew": best_shift,
                  "match": round(best_match, 4),
@@ -2922,6 +3113,85 @@ def test_jumper_loopback(dev):
 # Test 31: Generator matrix over the jumper — every protocol, decoded
 # across sample rates and capture modes (BRAM fast path vs SDRAM).
 # ====================================================================
+# ====================================================================
+# Test 37: Deep-capture address uniqueness (> 65,536 samples)
+# ====================================================================
+# Regression for the block-read address aliasing (efba78b narrowed the
+# OLS_Interface block-read address to 16 bits): every read beyond sample
+# 32,767 returned the first 32,768 samples again. A periodic source and an
+# idle line hide that, so this uses a long, non-repeating UART burst over the
+# wired jumper and checks the payload appears exactly once and that windows
+# 32,768 samples apart are different.
+DEEP_CAPTURE_SAMPLES = 262_144
+DEEP_CAPTURE_RATE = 1_002_000
+DEEP_CAPTURE_BAUD = 2400            # 57 bytes ~ 0.24 s ~ 240k samples: spans > 7 windows
+
+
+def _window_equal_fraction(sig, lag, width=16384):
+    a = sig[lag:lag + width]
+    b = sig[:width]
+    n = min(len(a), len(b))
+    return sum(1 for i in range(n) if a[i] == b[i]) / max(1, n)
+
+
+def test_deep_capture_address_uniqueness(dev):
+    print_header("Test 37: Deep-capture address uniqueness (> 65,536 samples)")
+    dev.reset(); dev.spi.flush(); dev.set_debug_ch0(False)
+    time.sleep(0.02)
+    _restore_pin_map(dev)
+    pair = _get_jumper_pair(dev)
+    if pair is None:
+        skip("deep-capture address uniqueness: no wired pair on this bench")
+        save_result("test37_deep_capture_unique", b"", {"skipped": True})
+        return
+    tx, rx = pair
+    payload = bytes(range(33, 90))              # non-repeating ramp
+    dev._gen_data = payload
+    dev._gen_baud = DEEP_CAPTURE_BAUD
+    dev._gen_tx_pin = tx
+    data = dev.capture_with_gen(rate_hz=DEEP_CAPTURE_RATE, nsamples=DEEP_CAPTURE_SAMPLES,
+                                timeout=20, fast_mode=False, reset_board=False)
+    if not data:
+        check(False, "deep capture returned no data")
+        return
+    ch, ns = samples_to_channels(data, stride=2)
+    check(ns == DEEP_CAPTURE_SAMPLES,
+          f"deep capture returned every sample ({ns} of {DEEP_CAPTURE_SAMPLES})")
+    sig = ch[rx]
+    decoded = bytes(d.value for d in decode_uart_safe(
+        ch, DEEP_CAPTURE_RATE, ch_idx=rx, baud=DEEP_CAPTURE_BAUD))
+    check(decoded.count(payload) == 1,
+          f"non-repeating {len(payload)}-byte burst appears exactly once "
+          f"(found {decoded.count(payload)} times in {len(decoded)} decoded bytes)")
+    edges = [i for i in range(1, ns) if sig[i] != sig[i - 1]]
+    span = (edges[-1] - edges[0]) if edges else 0
+    log(f"  burst spans samples {edges[0] if edges else '-'}..{edges[-1] if edges else '-'} "
+        f"({span} samples, {span / 32768:.1f} x 32768)")
+    check(span > 3 * 32768, f"burst spans several 32,768-sample windows ({span} samples)")
+    for lag in (32768, 65536, 131072):
+        frac = _window_equal_fraction(sig, lag)
+        check(frac < 0.95,
+              f"CH{rx} window at +{lag} differs from the first window ({frac * 100:.1f}% equal; "
+              ">= 95% means the readback address aliases)")
+    save_result("test37_deep_capture_unique", data,
+                {"pair": [tx, rx], "samples": ns, "rate_hz": DEEP_CAPTURE_RATE})
+
+
+def _group_jumper_wires(routes):
+    """Group (tx, rx) routes into physical wires: 2 -> 1 and 1 -> 2 are one wire."""
+    wires = {}
+    for tx, rx in routes:
+        wires.setdefault(frozenset((tx, rx)), []).append((tx, rx))
+    return list(wires.values())
+
+
+def _additional_jumper_routes(routes, pair):
+    """Best route of every wire other than the primary pair's wire."""
+    primary = frozenset(pair) if pair else None
+    return [wire[0] for wire in _group_jumper_wires(routes)
+            if frozenset(wire[0]) != primary]
+
+
 def _discover_jumper_pair(dev, deadline_s=20.0):
     """Find two physically wired pins using the DIRECT capture path.
 
@@ -2977,8 +3247,13 @@ def _discover_jumper_pair(dev, deadline_s=20.0):
                         0 if tx == rx + 1 else 1,
                         abs(tx - rx), tx, rx)
                 found.append((rank, tx, rx))
+    _JUMPER_ROUTES[:] = [(tx, rx) for _, tx, rx in sorted(found)]
     if found:
         _, tx, rx = min(found)
+        wires = _group_jumper_wires(_JUMPER_ROUTES)
+        log("  [INFO] detected jumper routes: "
+            + ", ".join(f"{t} -> CH{r}" for t, r in _JUMPER_ROUTES)
+            + f" ({len(wires)} distinct wire{'s' if len(wires) != 1 else ''})")
         log(f"  [INFO] selected generator-compatible jumper route {tx} -> CH{rx}")
         return (tx, rx)
     log("  [INFO] jumper sweep found no decoding pair on the direct path")
@@ -3278,6 +3553,9 @@ def test_accelerometer_whoami(dev):
 #   Raw is the reference. The merged delta_rle codec should round-trip
 #   bit-exactly against it.
 # ====================================================================
+SINGLE_SHOT_PUMP_CEILING_HZ = 100_200_000
+
+
 def test_codec_readback_matrix(dev):
     # One SDRAM capture per rate, read back in all supported modes and compare
     # byte-for-byte. Raw is the reference; both compressed codecs are checked.
@@ -3300,10 +3578,15 @@ def test_codec_readback_matrix(dev):
         seeded = dev.capture(rate_hz=rate, nsamples=nsamp,
                              timeout=max(3.0, 2 * nsamp / rate + 1))
         done = len(seeded) >= nsamp * 2
-        is_max = rate >= int(dev.sample_clk)
+        # With the burst-mode SDRAM writer, raw 16-bit single-shot capture runs
+        # to full depth through 100.2 MS/s and still overflows at 200.4 MS/s
+        # (measured: ~470-520 samples committed). The driver returns only the
+        # committed prefix, so that rate is characterised, not compared.
+        is_max = rate > SINGLE_SHOT_PUMP_CEILING_HZ
         if not done:
             if is_max:
-                log(f"  [INFO] single-shot @{rate//1000}kS/s did not complete — "
+                log(f"  [INFO] single-shot @{rate//1000}kS/s committed "
+                    f"{len(seeded) // 2} of {nsamp} samples — "
                     "above the SDRAM write-pump ceiling (characterisation)")
                 dev.reset()
                 continue
@@ -3475,6 +3758,12 @@ def test_live_rate_ceiling(dev):
     save_result("test35_live_rate_ceiling", b"", {"ceilings": summary})
 
 
+def _read_lead_words():
+    """Effective SDRAM read lead (follows the flashed image's metadata)."""
+    import driver.spi_protocol as _p
+    return _p.SDRAM_READ_LEAD_WORDS
+
+
 def main():
     global PASS, FAIL, TOTAL, _JUMPER_PAIR_CACHE, _JUMPER_PAIR_SEARCHED
     begin_run()
@@ -3520,6 +3809,9 @@ def main():
 
         log("\n--- Max-speed test (200 MHz) ---")
         test_max_speed_capture(dev)
+        test_max_rate_kept_prefix(dev)
+        test_readback_alignment_exact_word_count(dev)
+        test_readback_absolute_time_oracle(dev)
         test_continuous_max_rate_overrun(dev)
         test_narrow_digital_200m(dev)
         test_mso_packed_capture(dev)
@@ -3577,6 +3869,7 @@ def main():
 
         log("\n--- Jumper-pair loopback (requires two pins wired together) ---")
         test_jumper_loopback(dev)
+        test_deep_capture_address_uniqueness(dev)
         test_jumper_generator_matrix(dev)
         test_live_generator_decode(dev)
         # Own internal watchdog; remains part of the exhaustive gate.
@@ -3739,6 +4032,7 @@ def main_jumper_only():
         _JUMPER_PAIR_SEARCHED = False
         _prepare_jumper_fixture(dev)
         test_jumper_loopback(dev)
+        test_deep_capture_address_uniqueness(dev)
         test_jumper_generator_matrix(dev)
         test_live_generator_decode(dev)
         test_repeating_uart_continuous_ring(dev)

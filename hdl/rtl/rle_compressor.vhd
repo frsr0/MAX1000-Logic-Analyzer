@@ -56,6 +56,10 @@ architecture rtl of rle_compressor is
   signal pend_val : std_logic_vector(15 downto 0) := (others => '0');
   signal pend_new : std_logic_vector(15 downto 0) := (others => '0');
   signal pend_flush : std_logic := '0';  -- emit is a flush (no new run after)
+  -- A one-cycle flush pulse can arrive while the compressor is emitting the
+  -- previous run (EMIT_CNT/EMIT_VAL) because the last sample started a new
+  -- run. The request is latched here until the held run can be emitted.
+  signal flush_req  : std_logic := '0';
 begin
   -- Busy whenever a run is held (unflushed) or an emit is in flight, so the
   -- drain's flush-wait does not complete until the final run is out.
@@ -73,13 +77,18 @@ begin
         have <= '0';
         cnt <= (others => '0');
         pend_flush <= '0';
+        flush_req <= '0';
       else
         comp_valid <= '0';  -- default
+        if flush = '1' and state /= PASSTHROUGH then
+          flush_req <= '1';
+        end if;
 
         case state is
 
           when PASSTHROUGH =>
             have <= '0';
+            flush_req <= '0';
             if compression_enable = '1' then
               -- Do not leak one unframed raw sample when compression is
               -- enabled immediately after reset. Capture the first sample as
@@ -96,11 +105,15 @@ begin
             end if;
 
           when RUN =>
-            if flush = '1' and have = '1' then
+            if (flush = '1' or flush_req = '1') and have = '1' then
               -- Block end: emit the final (count, value).
               pend_val <= prev;
               pend_flush <= '1';
+              flush_req <= '0';
               state <= EMIT_CNT;
+            elsif flush_req = '1' and have = '0' and sample_valid = '0' then
+              -- Flush with nothing held (empty block): nothing to emit.
+              flush_req <= '0';
             elsif compression_enable = '0' then
               -- Compression turned off between blocks: revert to raw.
               state <= PASSTHROUGH;

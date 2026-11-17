@@ -260,3 +260,40 @@ def test_mock_generator_output_round_trips_through_decoder(protocol, tmp_path):
                           scl_pin=1, baud=100_000, i2c_register=0x10)
     result = loopback_self_test(mgr, cfg, 2_000_000, 8_000, "41")
     assert result.passed, result.detail
+
+
+def test_loopback_capture_warning_is_saved_and_published(tmp_path, monkeypatch):
+    import app.generator.controller as controller
+    from app.capture.capture_manager import CaptureManager
+    from app.capture.session_store import SessionStore
+    from app.hardware.base import CaptureResult
+    from app.hardware.mock_device import MockDevice
+
+    class FakeDev:
+        def is_connected(self):
+            return True
+
+        def get_metadata(self):
+            return MockDevice().get_metadata()
+
+        def capture_with_generator(self, settings, cfg):
+            return CaptureResult(
+                sample_rate=settings.sample_rate,
+                digital=np.zeros(settings.num_samples, dtype=np.uint16),
+                warnings=["generator burst did not finish within 50 ms"])
+
+    mgr = CaptureManager(SessionStore(tmp_path / "generator-warning"))
+    mgr.device = FakeDev()
+    published = []
+    monkeypatch.setattr(controller.manager, "publish_threadsafe",
+                        lambda topic, type_, data: published.append(
+                            (topic, type_, data)))
+    result = controller.loopback_self_test(
+        mgr, GeneratorConfig(protocol="can", data_hex="41"), 1_000_000, 8)
+    warning = "generator burst did not finish within 50 ms"
+    assert result.passed is True
+    assert result.warnings == [warning]
+    saved = mgr.store.get(result.session_id)
+    assert saved.diagnostics[0]["level"] == "warning"
+    assert saved.diagnostics[0]["message"] == warning
+    assert ("capture", "warning", {"message": warning}) in published

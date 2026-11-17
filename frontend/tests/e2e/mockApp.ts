@@ -63,6 +63,16 @@ function makeCap(): Json {
     max_samples: 4_194_304,
     bram_samples: 1024,
     sample_clk_hz: 200e6,
+    image_generation: 4,
+    read_compensation_active: false,
+    image_features: {
+      has_true_read_data: true,
+      has_drop_counter: true,
+      rle_flush_fixed: true,
+      continuous_no_host_loss: true,
+      narrow_no_loss: true,
+      gen_capture_unlimited: true,
+    },
     supports_pre_trigger: true,
     supports_rolling: true,
     supports_continuous: true,
@@ -113,6 +123,11 @@ function makeStatus(mock = false): Json {
     device,
     capture_state: 'idle',
     capture_progress: { samples_read: 0, samples_total: 0, message: '', repeat: 1 },
+    capture_health: {
+      active: false, mode: '', dropped_samples: null, gaps: 0,
+      truncated_captures: 0,
+      observed_seconds: 0, elapsed_seconds: 0, observed_fraction: null,
+    },
     last_session_id: null,
     last_error: null,
     control: { held: true, holder: 'playwright', holder_name: 'Playwright', acquired_at: 1_725_000_000 },
@@ -817,6 +832,65 @@ export async function installMockApp(page: Page, options: { mockDevice?: boolean
   const denyAcquire = Boolean(options.denyAcquire);
   let addedDecoder: Json | null = null;
   const fixtureMarkers: Json[] = [];
+  // In-memory MAX6675 datalogger: channel 1 on SO 15 / CS 16 / SCK 17, the rest disabled.
+  const max6675 = {
+    interval_s: 1,
+    running: false,
+    stopAfter: null as number | null,
+    autoResume: true,
+    autoReconnect: true,
+    channels: [
+      { name: 'Channel 1', enabled: true, so_pin: 15, cs_pin: 16, sck_pin: 17, offset_c: 0, alarm_high_c: null, alarm_low_c: null, alarm_on_fault: true },
+      { name: 'Channel 2', enabled: false, so_pin: 15, cs_pin: 18, sck_pin: 17, offset_c: 0, alarm_high_c: null, alarm_low_c: null, alarm_on_fault: true },
+      { name: 'Channel 3', enabled: false, so_pin: 15, cs_pin: 19, sck_pin: 17, offset_c: 0, alarm_high_c: null, alarm_low_c: null, alarm_on_fault: true },
+      { name: 'Channel 4', enabled: false, so_pin: 15, cs_pin: 20, sck_pin: 17, offset_c: 0, alarm_high_c: null, alarm_low_c: null, alarm_on_fault: true },
+    ] as Json[],
+    rows: [] as Json[],
+    nextSeq: 0,
+    last: [null, null, null, null] as (Json | null)[],
+    alarmEvents: [] as Json[],
+    alarmState: [null, null, null, null] as (string | null)[],
+    notes: [] as Json[],
+  };
+  // A channel is in high alarm when its simulated temperature is above alarm_high_c (and low likewise).
+  const max6675Alarm = (index: number): string | null => {
+    const channel = max6675.channels[index];
+    const reading = max6675.last[index] as Json | null;
+    if (!channel.enabled || !reading || reading.status !== 'ok') return null;
+    if (channel.alarm_high_c !== null && reading.temp_c > channel.alarm_high_c) return 'high';
+    if (channel.alarm_low_c !== null && reading.temp_c < channel.alarm_low_c) return 'low';
+    return null;
+  };
+  const max6675Status = () => ({
+    running: max6675.running, interval_s: max6675.interval_s, paused_reason: null, last_error: null,
+    started_at: max6675.running ? 1_700_000_000 : null, row_count: max6675.rows.length,
+    dropped_rows: 0, next_seq: max6675.nextSeq,
+    channels: max6675.channels.map((channel, index) => {
+      const alarm = max6675Alarm(index);
+      return { ...channel, last: max6675.last[index], alarm, alarm_since: alarm ? 1_700_000_000 : null };
+    }),
+    stop_after_s: max6675.stopAfter, auto_resume: max6675.autoResume, auto_reconnect: max6675.autoReconnect,
+    alarm_events: max6675.alarmEvents.slice(-100), stop_at: null, stopped_reason: null,
+    persistent: false, corrupt_lines: 0,
+  });
+  const appendMax6675Row = () => {
+    const seq = max6675.nextSeq;
+    const t = 1_700_000_000 + seq * max6675.interval_s;
+    const readings = max6675.channels.map((channel) => (channel.enabled
+      ? { temp_c: Math.round((21 + ((seq * 0.37) % 2) + Number(channel.offset_c)) * 100) / 100, status: 'ok' }
+      : null));
+    max6675.rows.push({ seq, t, elapsed_s: seq * max6675.interval_s, readings });
+    max6675.nextSeq += 1;
+    max6675.last = readings;
+    max6675.channels.forEach((channel, index) => {
+      const alarm = max6675Alarm(index);
+      if (alarm === max6675.alarmState[index]) return;
+      max6675.alarmState[index] = alarm;
+      max6675.alarmEvents.push({
+        t, channel: index + 1, name: channel.name, kind: alarm ?? 'clear', temp_c: (readings[index] as Json | null)?.temp_c ?? null,
+      });
+    });
+  };
   await page.addInitScript(() => {
     const sockets: MockWebSocket[] = [];
     // Controllable fixture: tests can push backend-originated WS messages
@@ -1052,6 +1126,59 @@ export async function installMockApp(page: Page, options: { mockDevice?: boolean
     if (matches('POST', req, '/api/generator/start')) return route.fulfill(okJson({ ok: true }));
     if (matches('POST', req, '/api/generator/stop')) return route.fulfill(okJson({ ok: true }));
 
+    if (matches('GET', req, '/api/mil/max6675/status')) return route.fulfill(okJson(max6675Status()));
+    if (matches('PUT', req, '/api/mil/max6675/config')) {
+      if (max6675.running) return route.fulfill(okJson({ detail: 'Stop logging before changing the MAX6675 configuration' }, 409));
+      const body = req.postDataJSON() as { interval_s: number; channels: Json[]; stop_after_s?: number | null; auto_resume?: boolean; auto_reconnect?: boolean };
+      max6675.interval_s = body.interval_s;
+      max6675.channels = body.channels;
+      max6675.stopAfter = body.stop_after_s ?? null;
+      max6675.autoResume = body.auto_resume ?? true;
+      max6675.autoReconnect = body.auto_reconnect ?? true;
+      return route.fulfill(okJson(max6675Status()));
+    }
+    if (matches('GET', req, '/api/mil/max6675/notes')) return route.fulfill(okJson({ notes: max6675.notes }));
+    if (matches('POST', req, '/api/mil/max6675/notes')) {
+      const text = String((req.postDataJSON() as { text?: unknown }).text ?? '').trim();
+      if (text.length < 1 || text.length > 200) return route.fulfill(okJson({ detail: 'Note must be 1-200 characters' }, 422));
+      // Notes sit at the newest logged time so they fall inside the default graph window.
+      const note = { t: max6675.rows.length ? (max6675.rows[max6675.rows.length - 1] as Json).t : 1_700_000_000, text };
+      max6675.notes.push(note);
+      return route.fulfill(okJson(note));
+    }
+    if (matches('POST', req, '/api/mil/max6675/read')) {
+      max6675.last = [{ temp_c: 21.25, status: 'ok' }, null, null, null];
+      return route.fulfill(okJson({ t: 1_700_000_000, readings: max6675.last }));
+    }
+    if (matches('POST', req, '/api/mil/max6675/start')) {
+      max6675.running = true;
+      return route.fulfill(okJson(max6675Status()));
+    }
+    if (matches('POST', req, '/api/mil/max6675/stop')) {
+      max6675.running = false;
+      return route.fulfill(okJson(max6675Status()));
+    }
+    if (matches('POST', req, '/api/mil/max6675/clear')) {
+      max6675.rows = [];
+      max6675.nextSeq = 0;
+      max6675.last = [null, null, null, null];
+      max6675.alarmEvents = [];
+      max6675.alarmState = [null, null, null, null];
+      max6675.notes = [];
+      return route.fulfill(okJson(max6675Status()));
+    }
+    if (matches('GET', req, '/api/mil/max6675/data')) {
+      // While logging, each poll adds one or two rows so the graph grows.
+      if (max6675.running) {
+        for (let i = 0; i < 1 + (max6675.nextSeq % 2); i += 1) appendMax6675Row();
+      }
+      const since = Number(new URL(req.url()).searchParams.get('since') ?? 0);
+      const rows = max6675.rows.filter((row) => row.seq >= since);
+      return route.fulfill(okJson({ next_seq: max6675.nextSeq, dropped_rows: 0, rows }));
+    }
+    if (matches('GET', req, '/api/mil/max6675/export.csv')) {
+      return route.fulfill({ status: 200, contentType: 'text/csv', body: 'seq,t,channel_1_c\n' });
+    }
     if (matches('GET', req, '/api/mil/presets')) return route.fulfill(okJson({ presets: [
       { id: 'modbus-rtu-demo', name: 'Modbus RTU demo', protocol: 'modbus_uart', description: 'Fixture preset', source: 'tests' },
     ] }));

@@ -81,6 +81,8 @@ exclusive.
 | `PLAYWRIGHT_USE_MOCK=0` | Starts/reuses Vite and the real backend, then runs against hardware |
 | unset | Specs may probe the backend and choose their supported path |
 | `PLAYWRIGHT_HARDWARE_MATRIX=1` | Enables the strict 37-capture physical matrix |
+| `PLAYWRIGHT_JUMPER_TX_PIN` | Generator pool pin driving the matrix jumper (default `22`) |
+| `PLAYWRIGHT_JUMPER_RX_CHANNEL` | Capture channel 0-15 that must see that jumper (default `13`) |
 
 ```powershell
 # Real board

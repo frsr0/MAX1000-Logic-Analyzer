@@ -23,9 +23,11 @@ def quiet_edges():
     hv._ANALOG_JUMPER_SEARCHED = False
     hv._JUMPER_PAIR_CACHE = None
     hv._JUMPER_PAIR_SEARCHED = False
+    hv._JUMPER_ROUTES.clear()
     with patch.object(hv, "save_result"), patch.object(hv, "print_header"), \
          patch.object(hv, "log"), patch.object(hv.time, "sleep"):
         yield
+    hv._JUMPER_ROUTES.clear()
     (hv.PASS, hv.FAIL, hv.TOTAL, hv.SKIPPED,
      hv._ANALOG_JUMPER_CACHE, hv._ANALOG_JUMPER_SEARCHED,
      hv._JUMPER_PAIR_CACHE, hv._JUMPER_PAIR_SEARCHED) = old
@@ -79,7 +81,7 @@ def test_reporting_helpers_cover_quiet_channels_incomplete_progress_and_tied_i2c
 def test_fast_capture_accepts_debug_transition_count_inside_expected_window():
     value = device()
     value._stride = 2
-    value.pkt.read_capture_block.side_effect = [b"x" * 1024, b"y" * 1024]
+    value.read_capture_range.return_value = b"x" * 1024 + b"y" * 1024
     signal = [0] * 1024
     for edge in range(1, 201):
         signal[edge * 5] = 1 - signal[edge * 5 - 1]
@@ -373,6 +375,8 @@ def test_codec_matrix_rejects_invalid_raw_reference_and_incomplete_rates():
     value.read_capture_range.side_effect = [valid, valid, valid, short, short, short]
     with patch.object(hv.time, "time", Clock(0.1)):
         hv.test_codec_readback_matrix(value)
+    # Only the 200 MS/s rate is above the 100.2 MS/s pump ceiling and is
+    # characterised; the incomplete 10M/50M/100M captures all fail.
     assert hv.FAIL == 3
 
 

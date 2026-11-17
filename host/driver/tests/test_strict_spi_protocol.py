@@ -123,7 +123,8 @@ def test_transaction_accepts_request_phase_response_and_enforces_deadline(monkey
 
 def test_single_block_and_stream_block_report_success_and_failure():
     pkt = protocol.SPIDevice(object())
-    pkt._transaction_raw = MagicMock(side_effect=[None, (protocol.ST_OK, 0, b"capture"), None, (protocol.ST_OK, 0, b"stream")])
+    # a failed block read tries three window sizes before giving up
+    pkt._transaction_raw = MagicMock(side_effect=[None, None, None, (protocol.ST_OK, 0, b"capture"), None, (protocol.ST_OK, 0, b"stream")])
     assert pkt.read_capture_block(12) == b""
     assert pkt.read_capture_block(12) == b"capture"
     assert pkt.read_stream_block() == b""
@@ -711,3 +712,155 @@ def test_continuous_live_stream_handles_tokens_stop_overflow_and_missing_ack():
         sparse_packed=True, sparse_rle=True, tagged_packed=True)) == []
     mode = struct.unpack("<I", spi.request[6:10])[0]
     assert mode & 0x1E000000 == 0x1E000000
+
+@pytest.fixture(autouse=True)
+def _stream_mechanics_without_read_lead(monkeypatch):
+    """These tests exercise stream framing/decoding, not the FPGA's duplicated
+    first SDRAM word; run them with the read lead switched off (the lead rule
+    itself is covered by test_sdram_read_lead.py)."""
+    import driver.spi_protocol as _proto
+    monkeypatch.setattr(_proto, "SDRAM_READ_LEAD_WORDS", 0)
+    monkeypatch.setattr(_proto, "RLE_STREAM_TAIL_GUARD", 0)
+
+
+def _pkt(spi=None, fast=False):
+    return protocol.SPIDevice(spi if spi is not None else MagicMock(),
+                              ), fast
+
+
+def _fast_pkt(spi=None):
+    dev = protocol.SPIDevice(spi if spi is not None else MagicMock())
+    dev.fast_transactions = True
+    return dev
+
+
+def test_find_reply_rejects_short_oversized_and_foreign_replies():
+    """A truncated sync marker, an impossible length and a reply for another
+    sequence are all skipped instead of being parsed as data."""
+    short = protocol.SYNC_RSP + b"\x00\x00"                    # < header size
+    assert protocol.SPIDevice._find_reply(short, 0) is None
+
+    oversized = (protocol.SYNC_RSP + bytes((protocol.ST_OK, 0))
+                 + struct.pack("<H", protocol.MAX_PAYLOAD + 1) + b"\x00" * 4)
+    assert protocol.SPIDevice._find_reply(oversized, 0) is None
+
+    foreign = _response(seq=9) + _response(seq=4, payload=b"ab")
+    parsed = protocol.SPIDevice._find_reply(foreign, 4)
+    assert parsed is not None and parsed[1] == 4 and parsed[2] == b"ab"
+
+
+def test_fast_transaction_returns_none_when_the_link_raises():
+    spi = MagicMock()
+    spi.stream_payload.side_effect = RuntimeError("USB error")
+    assert _fast_pkt(spi)._fast_transaction(b"\x00", 1) is None
+
+
+def test_batch_edge_cases_on_the_classic_and_failing_links():
+    dev = protocol.SPIDevice(MagicMock())
+    assert dev.batch([]) == []
+
+    # classic link: one transaction per command, no CS-held frame
+    dev.transaction = MagicMock(side_effect=[('a',), ('b',)])
+    assert dev.batch([(protocol.CMD_GET_STATUS, b""),
+                      (protocol.CMD_READ_REG, b"\x00")]) == [('a',), ('b',)]
+    assert dev.transaction.call_count == 2
+
+    # fast link whose stream read fails: every command reports "no reply"
+    spi = MagicMock()
+    spi.stream_payload.side_effect = RuntimeError("USB error")
+    fast = _fast_pkt(spi)
+    assert fast.batch([(protocol.CMD_GET_STATUS, b""),
+                       (protocol.CMD_READ_REG, b"\x00")]) == [None, None]
+
+
+def test_poll_reply_times_out_and_parses_a_late_reply(monkeypatch):
+    class Clock:
+        def __init__(self):
+            self.now = 0.0
+
+        def time(self):
+            self.now += 0.5
+            return self.now
+
+    clock = Clock()
+    monkeypatch.setattr(protocol.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(protocol.time, "time", clock.time)
+
+    spi = MagicMock()
+    spi.tx_read.return_value = b""                 # nothing ever arrives
+    dev = protocol.SPIDevice(spi)
+    assert dev._poll_reply(0, timeout=1.0) is None
+
+    clock.now = 0.0
+    seq = 3
+    spi.tx_read.return_value = b"\x00" + _response(seq=seq, payload=b"ok")
+    parsed = dev._poll_reply(seq, timeout=1.0)
+    assert parsed is not None and parsed[2] == b"ok"
+
+
+def test_raw_stream_words_chunks_above_the_single_command_limit(monkeypatch):
+    dev = protocol.SPIDevice(MagicMock())
+    assert dev._start_raw_stream_words(0, 0) == (0, 0, b"")
+
+    monkeypatch.setattr(protocol, "MAX_RAW_STREAM_SAMPLES", 8)
+    dev._raw_stream_via_precise_clocking = MagicMock(
+        side_effect=lambda req, seq, count, stop_evt: (count, count, b"z" * count))
+    producer, oldest, data = dev._start_raw_stream_words(100, 20)
+    assert dev._raw_stream_via_precise_clocking.call_count == 3
+    assert data == b"z" * 20
+    # the last chunk wins the reported cursors (8 + 8 + the 4-sample remainder)
+    assert (producer, oldest) == (4, 4)
+
+
+def test_rle_stream_words_chunks_above_the_single_command_limit(monkeypatch):
+    dev = protocol.SPIDevice(MagicMock(speed_hz=30_000_000))
+    assert dev._start_rle_stream_words(0, 0) == (0, 0, b"")
+
+    monkeypatch.setattr(protocol, "MAX_RLE_STREAM_SAMPLES", 8)
+    monkeypatch.setattr(protocol, "MAX_RAW_STREAM_SAMPLES", 8)
+    dev._rle_stream_via_chunks = MagicMock(
+        side_effect=lambda req, seq, count, pad, stop_evt, **kw:
+        (count, count, b"y" * count))
+    producer, oldest, data = dev._start_rle_stream_words(0, 20)
+    assert dev._rle_stream_via_chunks.call_count == 3
+    assert data == b"y" * 20
+    assert (producer, oldest) == (4, 4)
+
+
+def test_poll_reply_exhausts_its_budget_and_skips_unparsable_reads(monkeypatch):
+    """A link that keeps answering with idle bytes must not raise or spin."""
+    ticks = iter([0.0] * 40)
+
+    monkeypatch.setattr(protocol.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(protocol.time, "time", lambda: next(ticks))
+
+    spi = MagicMock()
+    spi.tx_read.return_value = b"\xff" * 64       # no sync marker anywhere
+    dev = protocol.SPIDevice(spi)
+
+    assert dev._poll_reply(5, timeout=60.0) is None
+    assert spi.tx_read.call_count == 8
+
+
+def test_rle_fixed_path_keeps_the_decoded_stream_when_min_count_is_none():
+    """The fallback trims to min_count only when the caller asked for it; the
+    default returns the whole decoded window."""
+    transport = SimpleNamespace(speed_hz=30_000_000, stream_command=MagicMock())
+    seq = 7
+    ack_payload = struct.pack("<II", 0x40, 0)
+    ack = (protocol.SYNC_RSP + bytes((protocol.ST_STREAM_ACTIVE, seq))
+           + struct.pack("<H", len(ack_payload)) + ack_payload)
+    ack += struct.pack("<H", protocol.crc16(ack[2:]))
+    # two (count, value) records: 2x0x1234 then 2x0x00FF
+    rle = struct.pack("<4H", 2, 0x1234, 2, 0x00FF)
+    transport.stream_command.return_value = ack + rle + b"\x00" * 4096
+
+    dev = protocol.SPIDevice(transport)
+    req = protocol.build_packet(protocol.CMD_START_RAW_STREAM, seq,
+                                struct.pack("<II", 0, 4))
+
+    producer, oldest, data = dev._rle_stream_via_fixed(
+        req, seq, 4, 96, None)
+
+    assert (producer, oldest) == (0x40, 0)
+    assert struct.unpack("<4H", data) == (0x1234, 0x1234, 0x00FF, 0x00FF)

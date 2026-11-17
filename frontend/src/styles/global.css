@@ -588,6 +588,41 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .device-stack { display: flex; flex-direction: column; gap: 12px; margin-bottom: 12px; }
 
 .mil-layout { margin-bottom: 12px; }
+.max6675-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 12px; }
+.max6675-controls > .field { width: 200px; }
+.max6675-channels { display: grid; gap: 10px; margin-bottom: 12px; container-type: inline-size; }
+.max6675-channel {
+  display: grid; grid-template-columns: minmax(150px, 0.9fr) minmax(140px, 1.2fr) repeat(3, minmax(130px, 1fr)) minmax(150px, 1fr);
+  gap: 8px 12px; align-items: end;
+}
+/* The six-column row needs about 890px; below that, let the fields wrap. A container query
+   follows the card's own width, which the sidebar and page padding make narrower than the viewport. */
+@container (max-width: 920px) {
+  .max6675-channel { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+}
+.max6675-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; margin: 4px 0; }
+.max6675-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.max6675-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+.max6675-options { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 12px; }
+.max6675-options > .field:not(.checkbox) { width: 200px; }
+.max6675-channel.alarming { outline: 2px solid #e57373; outline-offset: 2px; border-radius: 6px; }
+.alarm-badge { background: rgba(109, 44, 50, 0.5); color: #ffaaaa; border-color: rgba(195, 100, 110, 0.4); }
+.max6675-steady { grid-column: 1 / -1; margin: 0; }
+.max6675-calibration-section { margin-bottom: 12px; }
+.max6675-calibration { display: grid; gap: 10px; margin-top: 8px; container-type: inline-size; }
+.max6675-calibration-channel {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px 12px; align-items: end;
+}
+.max6675-graph { position: relative; }
+.max6675-tooltip {
+  position: absolute; top: 4px; transform: translateX(-50%); pointer-events: none; max-width: 60%;
+  padding: 6px 8px; border-radius: 6px; font-size: 12px; white-space: nowrap; z-index: 1;
+  background: rgba(8, 12, 22, 0.92); border: 1px solid var(--border-soft);
+}
+.max6675-notes-input { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin: 8px 0; }
+.max6675-notes-input > .field { width: 320px; max-width: 100%; }
+.max6675-notes { font-size: 12px; margin: 4px 0 12px; padding-left: 18px; }
+.max6675-events { font-size: 12px; margin: 8px 0 12px; }
 .mil-accelerometer-card { margin-bottom: 12px; }
 .mil-accelerometer-body { display: grid; grid-template-columns: minmax(260px, 0.9fr) minmax(280px, 1.1fr); gap: 18px; align-items: center; }
 .mil-accelerometer-visual { min-width: 0; }

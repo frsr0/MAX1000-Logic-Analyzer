@@ -52,6 +52,18 @@ DIGITAL_FAST_BRAM_SAMPLES = 1024
 # of samples with 0 drops). 1M was the conservative pre-fix ceiling.
 DIGITAL_SDRAM_WORDS = 4_194_304
 DIGITAL_NARROW_LOGICAL_SAMPLES = DIGITAL_SDRAM_WORDS * 16
+# MAX6675 read timing. Symbols are (SCLK << 1) | CS.
+_MAX6675_SPI_CLK_DIV = 50_000          # generator symbol period about 0.5 ms
+_MAX6675_PREAMBLE_SYMBOLS = 520        # CS held high about 0.26 s: one full conversion (0.22 s max)
+_MAX6675_CAPTURE_RATE_HZ = 10_000      # 5 samples per symbol
+_MAX6675_CAPTURE_SAMPLES = 3000        # 0.3 s window covers the whole pattern (about 0.28 s)
+# The chip converts only while CS is high, so the frame starts with CS and SCLK
+# high for one conversion time. SCLK then falls while CS is still high (ignored
+# by the chip), CS goes low, 16 clocks are sent, and CS is driven high again.
+_MAX6675_FRAME_SYMBOLS = ([0b11] * _MAX6675_PREAMBLE_SYMBOLS
+                          + [0b01, 0b01, 0b00, 0b00]
+                          + [0b10, 0b00] * 16
+                          + [0b01, 0b01, 0b11])
 
 
 def _adapt_driver_progress(progress: Optional[ProgressCb]) -> Optional[Callable[..., None]]:
@@ -320,6 +332,19 @@ class ExistingHostAdapter(HardwareDevice):
             max_sample_rate=sample_clk, min_sample_rate=6.0,
             max_samples=DIGITAL_SDRAM_WORDS, bram_samples=1024,
             sample_clk_hz=sample_clk,
+            image_generation=getattr(self._dev, "image_generation", None),
+            read_compensation_active=bool(getattr(
+                self._dev, "read_compensation_active", False)),
+            image_features={
+                "has_true_read_data": bool(getattr(self._dev, "has_true_read_data", False)),
+                "has_drop_counter": bool(getattr(self._dev, "has_drop_counter", False)),
+                "rle_flush_fixed": bool(getattr(self._dev, "rle_flush_fixed", False)),
+                "continuous_no_host_loss": bool(getattr(
+                    self._dev, "continuous_no_host_loss", False)),
+                "narrow_no_loss": bool(getattr(self._dev, "narrow_no_loss", False)),
+                "gen_capture_unlimited": bool(getattr(
+                    self._dev, "gen_capture_unlimited", False)),
+            },
             supports_pre_trigger=True, supports_rolling=True,
             supports_continuous=True, supports_analog=True,
             analog_rate_note="MAX10 ADC supports 1 MSPS single-channel "
@@ -443,8 +468,11 @@ class ExistingHostAdapter(HardwareDevice):
                            "channel; maximum analog captures the documented "
                            "physical analog profile.",
             })
+        # validation must not touch the hardware: it runs in an API thread,
+        # possibly while a capture owns the SPI link, and writing the pattern
+        # trigger registers here would also overwrite a running capture's setup
         if self._requires_unavailable_high_rate_deep_path(
-                settings, self._build_trigger(settings)):
+                settings, self._build_trigger(settings, configure=False)):
             findings.append({
                 "level": "warning",
                 "message": "Single-shot deep digital capture is clean up to the "
@@ -510,6 +538,34 @@ class ExistingHostAdapter(HardwareDevice):
                 self._recover_after_failed_capture()
                 raise HardwareError(f"Capture failed: {e}") from e
             self._timings["last_capture_s"] = time.time() - t0
+            if settings.mode in ("continuous", "rolling"):
+                try:
+                    result.dropped_samples = dev.read_dropped_samples()
+                except Exception:
+                    result.dropped_samples = None
+            # A finite capture that outruns the SDRAM write pump is aborted by
+            # the FPGA: the driver returns only the committed prefix and sets
+            # last_capture_truncated. The dropped-sample counter only counts in
+            # continuous mode, so without this the user would see a short
+            # capture that looks healthy. Packed readback is a compressed
+            # stream: its committed word count is naturally below the requested
+            # sample count and the driver never flags it, so both comparisons
+            # are skipped there (packed_decode below yields the requested
+            # length).
+            result.truncated = bool(getattr(dev, "last_capture_truncated", False))
+            if result.digital is not None and not settings.packed_mode:
+                requested = int(settings.num_samples)
+                committed = int(len(result.digital))
+                if result.truncated:
+                    result.warnings.append(
+                        f"Truncated capture: the FPGA committed {committed} of "
+                        f"{requested} requested samples because the input "
+                        "outran the SDRAM write pump; only the committed "
+                        "prefix is returned")
+                if not result.truncated and committed < requested:
+                    result.warnings.append(
+                        f"Device returned {committed} effective samples for "
+                        f"{requested} requested")
             # If packed capture mode was active, decode the compressed stream.
             # packed_decode returns (16, N) uint8 bit-planes and raw 12-bit ADC
             # codes; CaptureResult.digital is a 1-D bit-packed uint16 per
@@ -532,6 +588,11 @@ class ExistingHostAdapter(HardwareDevice):
         if settings.mode != "digital_narrow":
             raise HardwareError(
                 "stream_capture is only implemented for digital_narrow")
+        # The adapter lock is held only while the driver advances the stream
+        # (and for setup/teardown), never while a chunk is handed to the
+        # consumer: holding it for the whole stream blocked every other
+        # adapter call (generator start/stop/status, status polls) until the
+        # stream ended.
         with self._lock:
             if self._dev is None:
                 raise HardwareError("Device not connected")
@@ -547,31 +608,54 @@ class ExistingHostAdapter(HardwareDevice):
             old_flags = getattr(dev, "_raw_flags", 0)
             dev._raw_flags = (old_flags & ~0x3E000) | narrow_digital_flags(channel)
             dev.set_analog_config(0)
-            try:
-                driver_progress = _adapt_driver_progress(progress)
-                for data, total, window_samp, overrun in dev.stream_ring_capture(
-                        rate_hz=float(settings.sample_rate),
-                        window_samples=window_samples,
-                        stop_evt=stop_evt or threading.Event(),
-                        progress_cb=driver_progress):
-                    sample_count = min(
-                        len(data) // 2 * 16, window_samp * 16)
-                    digital = unpack_narrow_digital_words(
-                        data, channel=channel,
-                        sample_count=sample_count)
-                    warnings = [
-                        f"Packed 1-channel narrow digital mode on d{channel}"]
-                    if overrun:
-                        warnings.append(
-                            f"Streaming ring overrun count is {overrun}")
-                    yield CaptureResult(
-                        sample_rate=actual_rate,
-                        digital=digital[:window_samples],
-                        analog={},
-                        divider=divider,
-                        warnings=warnings)
-            finally:
-                dev._raw_flags = old_flags
+            driver_progress = _adapt_driver_progress(progress)
+            stream = dev.stream_ring_capture(
+                rate_hz=float(settings.sample_rate),
+                window_samples=window_samples,
+                stop_evt=stop_evt or threading.Event(),
+                progress_cb=driver_progress)
+        previous_dropped: Optional[int] = None
+        try:
+            while True:
+                with self._lock:
+                    try:
+                        data, total, window_samp, overrun = next(stream)
+                    except StopIteration:
+                        break
+                sample_count = min(
+                    len(data) // 2 * 16, window_samp * 16)
+                digital = unpack_narrow_digital_words(
+                    data, channel=channel,
+                    sample_count=sample_count)
+                warnings = [
+                    f"Packed 1-channel narrow digital mode on d{channel}"]
+                if overrun:
+                    warnings.append(
+                        f"Streaming ring overrun count is {overrun}")
+                dropped = getattr(dev, "dropped_samples", None)
+                chunk_dropped = None
+                if dropped is not None:
+                    chunk_dropped = (
+                        dropped - previous_dropped
+                        if previous_dropped is not None and dropped >= previous_dropped
+                        else dropped)
+                    previous_dropped = dropped
+                yield CaptureResult(
+                    sample_rate=actual_rate,
+                    digital=digital[:window_samples],
+                    analog={},
+                    divider=divider,
+                    warnings=warnings,
+                    dropped_samples=chunk_dropped,
+                    gaps=1 if overrun else 0)
+        finally:
+            with self._lock:
+                try:
+                    close = getattr(stream, "close", None)
+                    if close is not None:
+                        close()
+                finally:
+                    dev._raw_flags = old_flags
 
     @staticmethod
     def _actual_sample_rate(dev, requested_rate: float) -> tuple[int, float]:
@@ -717,25 +801,29 @@ class ExistingHostAdapter(HardwareDevice):
             fixed += data[-1:]
         return fixed, repaired
 
-    def _build_trigger(self, settings: CaptureSettings):
+    def _build_trigger(self, settings: CaptureSettings, configure: bool = True):
+        """Trigger for ``settings``; with ``configure`` False no hardware access."""
         trig = settings.trigger
         dev = self._dev
         if trig.type == "generic_pattern":
             pattern = project_generic_pattern_for_hardware(trig).model_dump()
-            if pattern.get("clock_source") == "internal_baud":
+            if pattern.get("clock_source") == "internal_baud" and dev is not None:
                 pattern["baud_div"] = max(1, round(dev.sample_clk / max(1, trig.baud or 115200)))
-            dev.configure_pattern_trigger(pattern)
+            if configure:
+                dev.configure_pattern_trigger(pattern)
             return None
-        dev.configure_pattern_trigger(None)
+        if configure:
+            dev.configure_pattern_trigger(None)
         register_trigger = to_register_config(trig)
         if register_trigger is not None:
             return register_trigger
         if trig.type == "uart_byte" and trig.value is not None:
             # Configured via trigger_decode just before arm
-            dev = self._dev
-            ch = trig.channels[0] if trig.channels else 0
-            dev.trigger_decode(match_byte=trig.value & 0xFF, channel=ch,
-                               baud=trig.baud or 115200, enable=True)
+            if configure:
+                dev = self._dev
+                ch = trig.channels[0] if trig.channels else 0
+                dev.trigger_decode(match_byte=trig.value & 0xFF, channel=ch,
+                                   baud=trig.baud or 115200, enable=True)
             return None
         return None
 
@@ -991,6 +1079,89 @@ class ExistingHostAdapter(HardwareDevice):
         """Return physical SDA ACK bits captured during the last DAC write."""
         return tuple(getattr(self, "_mcp4725_last_acknowledgements", ()))
 
+    def max6675_read(self, so_pin: int, cs_pin: int, sck_pin: int) -> dict:
+        """Clock one 16-bit frame out of a MAX6675 thermocouple converter.
+
+        Returns {"raw": int, "clocks": int}. "raw" is the first 16 bits sampled
+        on SCK rising edges, first bit as the most significant bit; "clocks" is
+        how many SCK rising edges were captured (16 for a complete frame).
+
+        CS is driven by the generator data output through explicit symbols
+        (``_MAX6675_FRAME_SYMBOLS``). The auxiliary CS route only pulls CS low
+        and releases it without driving it high, which left the sensor
+        selected on pins without a pull-up. CS floats low on such pins when
+        the FPGA is not driving it, and the chip does not convert while CS is
+        low, so the read holds CS high for one conversion time (about 0.26 s)
+        before clocking the frame. A read therefore takes about 0.4 s. Only SCK
+        edges sampled while CS is low are counted.
+        """
+        with self._lock:
+            if self._dev is None:
+                raise HardwareError("Device not connected")
+            pins = (so_pin, cs_pin, sck_pin)
+            if (len(set(pins)) != 3
+                    or any(not isinstance(pin, int) or not 0 <= pin <= 22
+                           for pin in pins)):
+                raise HardwareError(
+                    "SO, CS and SCK must be different external digital pins")
+            dev = self._dev
+            if not getattr(dev, "gen_capture_unlimited", False):
+                raise HardwareError(
+                    "MAX6675 reads need FPGA image generation 4 or newer "
+                    "(the read holds chip-select high for a 0.26 s conversion)")
+            dev.set_analog_config(0)
+            dev.raw_mode(False)
+            # CS is the generator data output, so the explicit symbols frame
+            # the transaction: CS high, 16 SCK clocks with CS low, then CS high
+            # again before the outputs are released.
+            cs_lane, sclk_lane = dev._gen_capture_output_channels(cs_pin, sck_pin)
+            miso_lane = next(ch for ch in range(16)
+                             if ch not in (cs_lane, sclk_lane))
+            dev._gen_data = b"\x00\x00"
+            try:
+                raw = dev.capture_with_gen(
+                    rate_hz=_MAX6675_CAPTURE_RATE_HZ,
+                    nsamples=_MAX6675_CAPTURE_SAMPLES,
+                    timeout=6, proto="SPI",
+                    spi_mosi_pin=cs_pin, spi_sclk_pin=sck_pin,
+                    spi_clk_div=_MAX6675_SPI_CLK_DIV,
+                    spi_cs_pin=None, spi_miso_pin=so_pin,
+                    spi_miso_channel=miso_lane,
+                    spi_symbols=_MAX6675_FRAME_SYMBOLS,
+                    fast_mode=False, reset_board=False)
+            except HardwareError:
+                raise
+            except Exception as exc:
+                raise HardwareError(
+                    f"MAX6675 SPI capture failed: {exc}") from exc
+            finally:
+                # Leave no generator route enabled for later captures. A
+                # cleanup failure must not mask the real capture error.
+                try:
+                    dev._aux_pins()
+                    dev._set_gen_capture_aux()
+                except Exception:
+                    pass
+            if not raw:
+                return {"raw": 0, "clocks": 0}
+            words = [int.from_bytes(raw[i:i + 2], "little")
+                     for i in range(0, len(raw) - 1, 2)]
+            bits = []
+            for i in range(1, len(words)):
+                if (not (words[i - 1] >> sclk_lane) & 1
+                        and (words[i] >> sclk_lane) & 1
+                        and not (words[i] >> cs_lane) & 1):
+                    # The MISO bit is valid on the rising edge; sample the
+                    # following word so the decode is robust to edge timing.
+                    sample = words[min(i + 1, len(words) - 1)]
+                    bits.append((sample >> miso_lane) & 1)
+            value = 0
+            for bit in bits[:16]:
+                value = (value << 1) | bit
+            # Left-align short frames so the value always spans 16 bits.
+            value <<= 16 - len(bits[:16])
+            return {"raw": value, "clocks": len(bits)}
+
     def mcp4725_prepare_fast(self, sda_pin: int, scl_pin: int) -> None:
         """Set up the external I2C RX path for timed DAC writes."""
         with self._lock:
@@ -1139,7 +1310,17 @@ class ExistingHostAdapter(HardwareDevice):
                 raise HardwareError("Generator capture returned no data")
             n2 = len(raw) - (len(raw) % 2)
             digital = np.frombuffer(raw[:n2], dtype="<u2").astype(np.uint16)
-            return CaptureResult(sample_rate=rate, digital=digital)
+            warnings: list = []
+            if getattr(dev, "last_gen_capture_error", None) is True:
+                warnings.append(
+                    "The FPGA generator-capture state machine reported an "
+                    "error: the generator burst did not finish within its "
+                    "50 ms window (or nothing was loaded), so channels that "
+                    "mirror the generator internally may be cut off; channels "
+                    "wired to a physical pin are unaffected. Use a shorter "
+                    "burst or a faster baud rate.")
+            return CaptureResult(sample_rate=rate, digital=digital,
+                                 warnings=warnings)
 
     # ── diagnostics ──────────────────────────────────────────────────
 

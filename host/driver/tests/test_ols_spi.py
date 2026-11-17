@@ -1184,3 +1184,12 @@ class TestSPIPacketProtocol:
         assert fake.stream_command_calls == 1
         assert blocks[0] == b'\x11' * 1024      # recovered via retry
         assert blocks[1] == b'\x22' * 1024
+
+@pytest.fixture(autouse=True)
+def _stream_mechanics_without_read_lead(monkeypatch):
+    """These tests exercise stream framing/decoding, not the FPGA's duplicated
+    first SDRAM word; run them with the read lead switched off (the lead rule
+    itself is covered by test_sdram_read_lead.py)."""
+    import driver.spi_protocol as _proto
+    monkeypatch.setattr(_proto, "SDRAM_READ_LEAD_WORDS", 0)
+    monkeypatch.setattr(_proto, "RLE_STREAM_TAIL_GUARD", 0)

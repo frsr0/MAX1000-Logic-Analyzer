@@ -14,6 +14,15 @@ function formatSamples(samples: number) {
   return samples.toLocaleString();
 }
 
+const IMAGE_FEATURE_LABELS = [
+  ['has_true_read_data', 'True read data'],
+  ['has_drop_counter', 'Drop counter'],
+  ['rle_flush_fixed', 'RLE flush fix'],
+  ['continuous_no_host_loss', 'Continuous no host loss'],
+  ['narrow_no_loss', 'Narrow no loss'],
+  ['gen_capture_unlimited', 'Unlimited gen capture'],
+] as const;
+
 export function DevicePage() {
   const { status, refreshStatus, refreshCapabilities, capabilities, toast, controlMode } = useApp();
   const [devices, setDevices] = useState<DeviceDescriptor[]>([]);
@@ -85,6 +94,9 @@ export function DevicePage() {
       { label: 'Analog inputs', value: `${capabilities.analog_channels}` },
       { label: 'Max sample rate', value: formatRate(capabilities.max_sample_rate) },
       { label: 'Capture depth', value: `${formatSamples(capabilities.max_samples)} samples` },
+      ...(typeof capabilities.image_generation === 'number'
+        ? [{ label: 'FPGA image', value: `generation ${capabilities.image_generation}` }]
+        : []),
       { label: 'BRAM fast depth', value: formatSamples(capabilities.bram_samples) },
       { label: 'Generator', value: capabilities.generator_protocols.join(', ') || 'none' },
     ];
@@ -156,6 +168,15 @@ export function DevicePage() {
               <span className="badge badge-hw">{formatRate(meta.sample_clk_hz)} sample clock</span>
               <span className="badge badge-soft">{formatRate(meta.sys_clk_hz)} system clock</span>
               <span className="badge badge-soft">{meta.protocol_version === 'unknown' ? 'protocol unknown' : `protocol v${meta.protocol_version}`}</span>
+              {capabilities?.image_features && IMAGE_FEATURE_LABELS.map(([key, label]) => (
+                <span key={key}
+                  className={`badge ${capabilities.image_features![key] ? 'badge-hw' : 'badge-na'}`}
+                  title={capabilities.image_features![key]
+                    ? `${label} is supported by this FPGA image`
+                    : `${label} is not reported by this FPGA image`}>
+                  {label}
+                </span>
+              ))}
             </div>
           </div>
           <div className="hero-meta">
@@ -164,6 +185,15 @@ export function DevicePage() {
             <div><span>Connected clients</span><strong className="mono">{status!.ws_clients}</strong></div>
             <div><span>Control</span><strong>{status?.control?.held ? `held by ${status.control.holder_name}` : 'free'}</strong></div>
           </div>
+        </div>
+      )}
+
+      {capabilities?.read_compensation_active && (
+        <div className="finding warning" role="alert">
+          <strong>This FPGA image needs host-side SDRAM read compensation.</strong>{' '}
+          One lead word per SDRAM block is discarded while reading. Flash a current
+          image for uncompensated reads; a branch build that already has the fix can be
+          run with OLS_SDRAM_READ_LEAD_WORDS=0.
         </div>
       )}
 

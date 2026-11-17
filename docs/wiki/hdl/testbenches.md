@@ -21,8 +21,12 @@ Reaching `--stop-time`, hanging until the wall timeout, or merely producing no
 failure is not a pass. Per-bench stop-time overrides cover deliberately long
 scenarios without weakening those rules.
 
-CI pins `ghdl/ghdl:6.0.0-llvm-ubuntu-22.04`, so local and hosted runs use the
-same compiler and VHDL-2008 semantics.
+CI pins `ghdl/ghdl:6.0.0-mcode-ubuntu-22.04` (the mcode backend). The 6.0.0
+llvm and gcc images fail VHDL-2008 external names (`<<signal ...>>`) at run
+time with "NULL access dereferenced" or a core dump, even in a 20-line design
+(checked 2026-11-17). `tb_cont_read` and `tb_refresh_readback` use external
+names, so use an mcode build of GHDL to run them. The Windows GHDL 6.0.0 build
+used for the 2026-11 runs is mcode.
 
 On this workstation GHDL 6.0 LLVM is installed in WSL at
 `/home/fraser/.local/opt/ghdl-6.0.0-llvm/bin/ghdl`, with

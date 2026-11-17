@@ -30,6 +30,9 @@ beforeEach(() => {
   useApp.setState({ controlMode: true, toast: vi.fn(), openSession: vi.fn().mockResolvedValue(undefined), setPage: vi.fn() });
   vi.spyOn(api, 'milPresets').mockResolvedValue({ presets } as never);
   vi.spyOn(api, 'milStatus').mockResolvedValue(status());
+  vi.spyOn(api, 'milMax6675Status').mockResolvedValue({ running: false, interval_s: 1, paused_reason: null,
+    last_error: null, started_at: null, row_count: 0, dropped_rows: 0, next_seq: 0, channels: [] } as never);
+  vi.spyOn(api, 'milMax6675Data').mockResolvedValue({ next_seq: 0, dropped_rows: 0, rows: [] });
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
@@ -74,15 +77,20 @@ it('builds read, write, bad-CRC and custom commands for Modbus and UART maps', a
   fireEvent.change(command, { target: { value: 'custom' } });
   fireEvent.click(screen.getByRole('button', { name: 'Example read' }));
 
-  const load = vi.spyOn(api, 'milLoad')
-    .mockResolvedValueOnce(status(config('modbus_uart', { registers: [config().registers[0]] }), false))
-    .mockResolvedValueOnce(status(config('uart'), false));
+  // The page polls milStatus every 2 s and replaces its status with the reply. A real backend reports the
+  // preset it just loaded, so the polled status must follow each load, otherwise a slow (coverage) run lets the
+  // poll put the initial Modbus fixture back before the Command change is made.
+  const readOnly = status(config('modbus_uart', { registers: [config().registers[0]] }), false);
+  const uart = status(config('uart'), false);
+  const load = vi.spyOn(api, 'milLoad').mockResolvedValueOnce(readOnly).mockResolvedValueOnce(uart);
+  vi.mocked(api.milStatus).mockResolvedValue(readOnly);
   fireEvent.change(screen.getByLabelText('Preset path (.json)'), { target: { value: 'read-only.json' } });
   fireEvent.click(screen.getByRole('button', { name: 'Load' }));
   await waitFor(() => expect(load).toHaveBeenNthCalledWith(1, { path: 'read-only.json' }));
   fireEvent.change(screen.getByLabelText('Command'), { target: { value: 'write' } });
   expect(screen.getByLabelText('Request hex')).toHaveProperty('value', expect.stringMatching(/^010600000001/));
 
+  vi.mocked(api.milStatus).mockResolvedValue(uart);
   fireEvent.change(screen.getByLabelText('Preset path (.json)'), { target: { value: 'uart.json' } });
   fireEvent.click(screen.getByRole('button', { name: 'Load' }));
   await waitFor(() => {

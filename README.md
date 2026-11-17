@@ -9,18 +9,30 @@ current repository includes:
 - A FastAPI backend plus React frontend for browser-based capture and analysis
 - Hardware validation, smoke tests, and regression tests for host, backend, and UI
 - A wired MCP4725 DAC test and bounded analogue signal generator in the MIL tab
+- A MAX6675 thermocouple datalogger for up to four channels in the MIL tab
 
 The full-device reference image and host stack have the validation recorded
-below. The current seed-7 image also passed timing, was verified in flash, and
+below. The seed-7 image also passed timing, was verified in flash, and
 passed focused MCP4725 and capture-path board checks on 2026-09-28.
+The SDRAM read path was fixed on 2026-11-13 and continuous capture was made
+lossless under host reads on 2026-11-15 (seed-1 image, generation 3); see
+[Rebuilding The FPGA Image](#rebuilding-the-fpga-image).
 
 ## Current Status
 
 This repository is currently verified for:
 
-- 16-channel digital capture up to the full 200.4 MHz sample clock
+- 16-channel digital capture to the full SDRAM depth at up to 100.2 MS/s
+- 16-channel capture at the full 200.4 MHz sample clock keeps a contiguous
+  prefix of about `15,000` samples and reports the overflow (the SDRAM write
+  pump runs at 167 MHz and cannot sustain 200.4 M words/s)
 - Deep SDRAM single-shot capture up to `4,194,304` 16-bit words
 - Packed narrow digital capture at 200 MHz for one selected channel
+- Continuous (live) capture that keeps storing every sample while the host
+  reads, up to 100.2 MS/s on 16 channels and 200 MHz on one channel, with a
+  dropped-sample counter the host can read. The USB link delivers about
+  1 MS/s to the host, so faster live streams are sampled, with the skipped
+  stretches flagged
 - Mixed capture with 16 digital bits plus the reduced two-result ADC frame
 - Analog-fast capture of 1 ADC lane
 - Maximum-analog capture of 4 physical analog inputs
@@ -92,7 +104,7 @@ The validated FAST build uses one PLL with these main domains:
 Main storage paths:
 
 - `1,024`-word BRAM capture path
-- `512`-word async FIFO between capture and SDRAM
+- `4,096`-word async FIFO between capture and SDRAM
 - `4,194,304` 16-bit SDRAM words for deep capture / bounded ring workflows
 
 ## UI Screenshots
@@ -184,14 +196,23 @@ The Vite server runs at `http://localhost:5173` and proxies API/WebSocket
 traffic to the backend. For a no-hardware check, open **Device**, connect
 **Mock MAX1000 Analyser**, then choose a demo on **Capture**.
 
-To test an MCP4725, open **MIL** after connecting the board. The current
-reported wiring is SDA to FPGA pin J2 (D5, J1/14), SCL to FPGA pin J1 (D4,
-J1/13), VOUT to AIN4 (J1/6), plus 3.3 V and common ground. The card defaults to
-that route; select the actual address and analogue input. The I²C lines need
-pull-ups to 3.3 V. Run **Run three-point test** before **Run waveform and save
-trace**. The historical successful run used SDA D4/SCL D3; the swapped-board
-route has not yet received an ACK. Mock mode exercises the controls and saves a
+To test an MCP4725, open **MIL** after connecting the board. The wiring
+measured on 2026-11-16 is SDA to FPGA pin H4 (D3, J1/12), SCL to FPGA pin J1
+(D4, J1/13), VOUT to AIN4 (J1/6), plus 3.3 V and common ground. The card opens
+with SDA D5 and SCL D4, an earlier reported route that never received an ACK,
+so select SDA D3 along with the actual address and analogue input. The I²C
+lines need pull-ups to 3.3 V. Run **Run three-point test** before **Run
+waveform and save trace**. The [MCP4725 guide](docs/wiki/mcp4725.md) lists the
+measured header layout. Mock mode exercises the controls and saves a
 synthetic scope session; it does not verify external wiring.
+
+The MIL tab also has a MAX6675 thermocouple datalogger. It reads up to four
+converters at a set interval, shows live values, graphs them and exports CSV.
+It saves the log to disk, resumes after a backend restart, reconnects the board
+after a disconnect, and has per-channel offsets, high/low/fault alarms, notes
+and a run length. The tested wiring is two sensors: SO, CS and SCK on PMOD 1-3,
+and on D4, D3 and D2. A read takes about 0.4 s per channel. See the
+[MAX6675 guide](docs/wiki/max6675.md).
 
 For the attached MAX1000, install the FTDI D2XX driver, connect the board, and
 select **MAX1000 OLS Logic Analyzer** → **Connect**. Verify the complete device
@@ -273,6 +294,42 @@ Programmer checksum is `0x01DE1DE1`. Slow 85 °C post-fit setup slack is
 ```powershell
 cd hdl\proj
 .\compile.ps1 -Seed 7
+```
+
+The current image (generation 4, 2026-11-16) is built with seed `17`, which is
+what the project file selects. On top of the 2026-11-13 read-timing fix (the
+controller latches DQ inside the chip's CL3 data window,
+`RD_WAIT_EXTRA_CYCLES = 3` in `hdl/rtl/SDRAM_Controller_Custom.vhd`) it keeps
+the SDRAM write pump running between bursts of host reads in continuous mode,
+fixes the 1-in-17 word loss in narrow 200 MHz capture, adds a dropped-sample
+counter (register `0x60`, bits 15:0), makes the RLE stream always send its
+last run, and removes the fixed 50 ms limit on a generator-synchronised
+capture: a burst now ends when `Gen_Busy` falls or the capture fills, with a
+2 s watchdog instead of a 50 ms cut, so a legitimate burst of any length is
+mirrored and captured whole. `CMD_GET_METADATA` returns 12 bytes ending
+`3F 04`: byte 10 holds feature flags (bit 5 = no fixed generator-capture
+limit) and byte 11 the image generation, and the host driver selects its read
+compensations from them, so it also works with older images.
+
+The image uses 8,022 of 8,064 logic elements and 19 of 42 M9K blocks. Its POF
+SHA-256 is
+`59DBC40464DD95A4AD1869EBBD952D2B89ECC1CD0D4F2FF3E20326831FC168C0`, and slow
+85 °C post-fit setup slack is `sdram_core_clk` +0.038 ns, `fast_clk` +0.073 ns,
+and `sys_clk` +0.109 ns (the `sdram_dq[*]` to `sdram_s_readdata[*]` path keeps
++2.417 ns setup and +7.595 ns hold at slow 85 °C, and +6.200 ns setup and
++4.713 ns hold at fast 0 °C). Timing is seed-sensitive: seeds 1, 2, 3, 5, 7, 9,
+11 and 13 failed the timing gate for this RTL (seed 3 by 4 ps) and seed 17 is
+the first that passed, so re-sweep seeds after any RTL change. On the attached
+board (2026-11-16) the image passed the hardware validation suite (433/433,
+with the bench jumper not decoding so three checks did not run), the
+74-testbench GHDL regression, a 20 s live 16-channel stream at 100.2 MS/s
+(producer slope within 0.001 % of the request, dropped-sample counter at zero),
+and ten full-depth 4,194,304-sample captures at 100.2 MS/s with uniform run
+lengths and no dropped samples.
+
+```powershell
+cd hdl\proj
+.\compile.ps1 -Seed 17
 ```
 
 For more detail, see:

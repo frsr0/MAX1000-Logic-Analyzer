@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { api, ApiError, clientId, downloadDebugBundle, downloadExport } from './client';
+import { api, ApiError, clientId, downloadDebugBundle, downloadExport, max6675ExportUrl } from './client';
 import { buildWaveformPayload } from '../test/waveformPayload';
 import { defaultCaptureSettings } from './types';
 
@@ -127,6 +127,16 @@ const cases: Case[] = [
   { name: 'mil accelerometer start', call: api.milAccelerometerStart, method: 'POST', url: '/api/mil/accelerometer/start' },
   { name: 'mil accelerometer stop', call: api.milAccelerometerStop, method: 'POST', url: '/api/mil/accelerometer/stop' },
   { name: 'mil accelerometer reconnect', call: api.milAccelerometerReconnect, method: 'POST', url: '/api/mil/accelerometer/reconnect' },
+  { name: 'mil MAX6675 status', call: api.milMax6675Status, method: 'GET', url: '/api/mil/max6675/status' },
+  { name: 'mil MAX6675 config', call: () => api.milMax6675Config({ interval_s: 1, channels: [], stop_after_s: null, auto_resume: true, auto_reconnect: true }), method: 'PUT', url: '/api/mil/max6675/config', body: { interval_s: 1, channels: [], stop_after_s: null, auto_resume: true, auto_reconnect: true } },
+  { name: 'mil MAX6675 read', call: api.milMax6675Read, method: 'POST', url: '/api/mil/max6675/read' },
+  { name: 'mil MAX6675 start', call: api.milMax6675Start, method: 'POST', url: '/api/mil/max6675/start' },
+  { name: 'mil MAX6675 stop', call: api.milMax6675Stop, method: 'POST', url: '/api/mil/max6675/stop' },
+  { name: 'mil MAX6675 clear', call: api.milMax6675Clear, method: 'POST', url: '/api/mil/max6675/clear' },
+  { name: 'mil MAX6675 data', call: () => api.milMax6675Data(7), method: 'GET', url: '/api/mil/max6675/data?since=7&limit=5000' },
+  { name: 'mil MAX6675 data page', call: () => api.milMax6675Data(0, 10), method: 'GET', url: '/api/mil/max6675/data?since=0&limit=10' },
+  { name: 'mil MAX6675 notes', call: api.milMax6675Notes, method: 'GET', url: '/api/mil/max6675/notes' },
+  { name: 'mil MAX6675 add note', call: () => api.milMax6675AddNote('Fan on'), method: 'POST', url: '/api/mil/max6675/notes', body: { text: 'Fan on' } },
   { name: 'logs', call: () => api.logs(), method: 'GET', url: '/api/logs?limit=500' },
   { name: 'diagnostics', call: api.diagnostics, method: 'GET', url: '/api/diagnostics' },
   { name: 'mock capture', call: () => api.mockCapture('demo'), method: 'POST', url: '/api/diagnostics/mock-capture', body: { scenario: 'demo', sample_rate: 1_000_000, num_samples: 50_000, analog: false } },
@@ -203,4 +213,8 @@ it('downloads server-selected and fallback export filenames and always revokes o
   await expect(downloadDebugBundle()).rejects.toMatchObject({ status: 503, message: 'Unavailable' });
   expect(clicked).toEqual(['capture.vcd', 's.csv', 'debug_bundle.zip']);
   expect(URL.revokeObjectURL).toHaveBeenCalledTimes(3);
+});
+
+it('builds the MAX6675 CSV export URL through the backend endpoint helper', () => {
+  expect(max6675ExportUrl()).toBe('/api/mil/max6675/export.csv');
 });

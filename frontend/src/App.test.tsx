@@ -175,6 +175,15 @@ it('handles every capture event including progress with and without status', asy
   expect(useApp.getState().status).toMatchObject({ capture_state: 'capturing', capture_progress: {
     samples_read: 3, samples_total: 4, message: 'transfer', repeat: false,
   } });
+  const health = {
+    active: true, mode: 'rolling', dropped_samples: 12, gaps: 2,
+    truncated_captures: 0,
+    observed_seconds: 0.1, elapsed_seconds: 1, observed_fraction: 0.1,
+  };
+  await message('/ws/capture', 'capture_progress', {
+    samples_read: 5, samples_total: 8, phase: 'streaming', repeat: 2, health,
+  });
+  expect(useApp.getState().status?.capture_health).toEqual(health);
 
   await message('/ws/capture', 'capture_armed');
   await message('/ws/capture', 'capture_started');

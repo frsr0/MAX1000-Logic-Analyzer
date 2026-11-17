@@ -18,7 +18,9 @@ Response (FPGA → host):
   CRC16   2 bytes
 """
 
+import functools
 import struct
+import threading
 import time
 
 SYNC_REQ = bytes([0x55, 0xAA])
@@ -150,6 +152,65 @@ RING_BYTE_ADDRESS_MASK = 0xFFFFFFFF
 
 def _ring_byte_address(start_sample: int) -> int:
     return (max(0, int(start_sample)) * 2) & RING_BYTE_ADDRESS_MASK
+
+
+# SDRAM read alignment. The pre-fix FPGA image latched DQ before the chip drove
+# the new word, so every read returned the previous read's data and a block at
+# sample ``s`` came back [mem[s], mem[s], mem[s+1], ...]. Every host path
+# compensated by requesting one extra leading word and dropping it. The read
+# timing is fixed in RTL, so the current image returns true data and this is 0.
+# The mechanism stays for older images. This constant is the default for a
+# known-new image; OLSDeviceSPI.open() replaces it (here and in ols_spi_device)
+# with the value derived from the image's CMD_GET_METADATA, see
+# image_compensations(), so the host is correct against old AND new images.
+SDRAM_READ_LEAD_WORDS = 0
+
+# RLE stream tail guard. The held-CS raw stream pulses the compressor's flush
+# for ONE cycle after the last sample is fed (OLS_Interface STATE 4), and
+# rle_compressor honours flush only in state RUN. When the last sample starts a
+# new run the compressor is still emitting the previous run, the pulse is lost,
+# and the final single-sample run is never sent (only 0x0000 filler follows) -
+# the stream then looks truncated by exactly one sample. Request this many extra
+# samples and accept the window as soon as the wanted count is decoded; the
+# lost run is always the last, single, extra sample. The RTL flush fix
+# (image feature bit 2) makes this 0; image_compensations() selects 1 for an
+# image without it. This constant is the default for a known-new image.
+RLE_STREAM_TAIL_GUARD = 0
+
+# CMD_GET_METADATA reply layout (bytes): 0..8 identification and sample clock,
+# 9 generator/stream capability flags, 10 image feature flags, 11 image
+# generation. Images before the version field return only 10 bytes.
+META_FEATURE_FLAGS_INDEX = 10
+META_IMAGE_GENERATION_INDEX = 11
+IMAGE_FEATURE_TRUE_READ_DATA = 0x01      # SDRAM read data is true (read timing fix)
+IMAGE_FEATURE_DROP_COUNTER = 0x02        # register 0x60 = dropped-sample counter
+IMAGE_FEATURE_RLE_FLUSH_FIXED = 0x04     # RLE stream always sends the last run
+IMAGE_FEATURE_CONTINUOUS_NO_HOST_LOSS = 0x08   # host reads do not drop samples
+IMAGE_FEATURE_NARROW_NO_LOSS = 0x10      # narrow 200 MHz loses no samples
+IMAGE_FEATURE_GEN_CAPTURE_UNLIMITED = 0x20   # generator capture has no 50 ms cap
+REG_DROPPED_SAMPLES = 0x60               # REG_PUMP_VALID_CYCLES on this image
+
+
+def image_features_from_metadata(meta):
+    """(image_generation, feature_bits) from a metadata reply; (0, 0) if old."""
+    meta = bytes(meta or b'')
+    if len(meta) > META_IMAGE_GENERATION_INDEX:
+        return meta[META_IMAGE_GENERATION_INDEX], meta[META_FEATURE_FLAGS_INDEX]
+    return 0, 0
+
+
+def image_compensations(meta):
+    """(sdram_read_lead_words, rle_stream_tail_guard) for an image.
+
+    An image that predates the read-timing fix (10-byte metadata, or feature
+    bit 0 clear) returns the first word of every block twice: lead 1. An image
+    without the RLE flush fix (bit 2 clear) can lose the last single-sample
+    run: tail guard 1.
+    """
+    _generation, features = image_features_from_metadata(meta)
+    lead = 0 if features & IMAGE_FEATURE_TRUE_READ_DATA else 1
+    guard = 0 if features & IMAGE_FEATURE_RLE_FLUSH_FIXED else 1
+    return lead, guard
 # The RLE run counter is 10 bits wide in the FPGA compressor, so live RLE
 # requests must stay below the 1024-sample wrap point. Keep one sample of head-
 # room so the host never asks the hardware to encode a run that can overflow
@@ -223,6 +284,22 @@ def parse_response(data: bytes):
     return status, seq, payload
 
 
+# One FTDI link, one conversation at a time. The packet layer is called from
+# the capture thread and from API/status threads; two threads inside the link
+# at once corrupt each other's frames (and race the helper reader thread of
+# stream_payload: "cannot join thread before it is started"). Every public
+# entry that talks to the link takes this re-entrant lock.
+_LINK_LOCK = threading.RLock()
+
+
+def _serialised(method):
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with _LINK_LOCK:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class SPIDevice:
     """Low-level SPI device wrapper using packet protocol."""
 
@@ -230,6 +307,50 @@ class SPIDevice:
         self.spi = spi_port
         self._seq = 0
         self._rx_buf = b''
+        # Bytes between the end of a CMD_READ_CAPTURE request and the start of
+        # its response, as last observed (None = use the historical default).
+        # A continuous-capture image paces its SDRAM reads, so the latency is
+        # larger (about 252 B at <=10 MS/s, 610 B at 100.2 MS/s measured) than
+        # the 154 B the fixed slot sizes below were tuned for.
+        self._block_latency = None
+        # Last value this host knows the FPGA register holds (set by a
+        # successful write or read through this object, dropped on any failure
+        # or by invalidate_registers()). Only used to skip a write/read that
+        # would change nothing, never for the config registers that arm a
+        # capture (those are always written).
+        self._reg_shadow = {}
+        # True when the last batched read got only "idle" error replies from the
+        # FPGA's block-read watchdog (readout starved, e.g. capture over-driven).
+        self.last_read_starved = False
+
+    def note_block_latency(self, latency_bytes):
+        """Record the observed request-to-response latency (bytes)."""
+        if latency_bytes is not None and latency_bytes >= 0:
+            self._block_latency = int(latency_bytes)
+
+    @property
+    def batch_gap_pad(self) -> int:
+        """Idle bytes between a block request and the next request slot."""
+        if self._block_latency is None:
+            return self.BATCH_GAP_PAD
+        # The historical slots work up to BLOCK_LATENCY_TOLERATED (single-shot
+        # readback measures 196 B on current images and was always read at the
+        # 160 B gap); only the excess latency widens the slot, so single-shot
+        # readback keeps its speed.
+        excess = self._block_latency - self.BLOCK_LATENCY_TOLERATED
+        if excess <= 0:
+            return self.BATCH_GAP_PAD
+        return self.BATCH_GAP_PAD + excess + 20
+
+    @property
+    def single_read_extra(self) -> int:
+        """Extra clocks after a single block response for a late response."""
+        if self._block_latency is None:
+            return 128
+        excess = self._block_latency - self.BLOCK_LATENCY_TOLERATED
+        if excess <= 0:
+            return 128
+        return 128 + excess + 32
 
     def _default_ack_pad(self) -> int:
         """Safe ack_pad in SPI bytes for the current SPI clock rate.
@@ -256,7 +377,8 @@ class SPIDevice:
 
     @staticmethod
     def _decode_rle_stream_bytes(data: bytes, sample_count: int,
-                                 allow_short: bool = False) -> bytes:
+                                 allow_short: bool = False,
+                                 min_count: int | None = None) -> bytes:
         """Decode little-endian (count, value) uint16 pairs to raw samples,
         skipping 0x0000 idle-filler words (see _decode_rle_into)."""
         sample_count = max(0, int(sample_count))
@@ -266,7 +388,8 @@ class SPIDevice:
         pos = 0
         total = 0
         limit = len(data)
-        while total < sample_count:
+        wanted = sample_count if min_count is None else int(min_count)
+        while total < wanted:
             # Skip 0x0000 idle fillers, plus (before the first run only) any
             # leading guard words that cannot be a valid count (> sample_count,
             # e.g. 0xFFFF), so decoding aligns to the first real (count, value).
@@ -285,7 +408,8 @@ class SPIDevice:
             if total > sample_count:
                 raise RuntimeError("RLE stream decode failed: decoded past requested sample count")
             out.extend(value * count)
-        if total != sample_count and not allow_short:
+        if (total < wanted or (min_count is None and total != sample_count)) \
+                and not allow_short:
             raise RuntimeError("RLE stream decode failed: truncated before requested sample count")
         return bytes(out)
 
@@ -317,11 +441,104 @@ class SPIDevice:
             self._rx_buf = self._rx_buf[1:]
         return None
 
+    # ── Fast control transactions ────────────────────────────────────────
+    # The classic transaction() sends the request in one CS frame and polls
+    # for the reply in later frames: two or three USB round trips (2.4 to
+    # 3.1 ms measured with the 1 ms FTDI latency timer). The dispatcher
+    # answers a short command ~2 bytes after the request ends, so the reply
+    # can be clocked out in the SAME CS frame behind the request, like block
+    # reads do: one round trip (0.6 to 0.9 ms). Enabled by the driver on a real
+    # FTDI link (``fast_transactions``); a missing/garbled reply falls back to
+    # the classic path.
+    fast_transactions = False
+    # Replies are at most 8 + 24 bytes (status); pad generously, bytes are
+    # cheap (0.27 us each at 30 MHz).
+    FAST_REPLY_PAD = 96
+    FAST_COMMANDS = frozenset((
+        CMD_WRITE_REG, CMD_READ_REG, CMD_GET_STATUS, CMD_GET_METADATA,
+        CMD_ARM_CAPTURE, CMD_ABORT_CAPTURE, CMD_ACK_CAPTURE_DONE,
+        CMD_GEN_START, CMD_GEN_STOP))
+    # Commands that must never be sent twice (a retry would re-arm / re-start).
+    FAST_NO_RESEND = frozenset((CMD_ARM_CAPTURE, CMD_GEN_START))
+    # Typical reply length (bytes) per command, for batch slot sizing.
+    FAST_REPLY_LEN = {CMD_GET_STATUS: 32, CMD_READ_REG: 12, CMD_GET_METADATA: 24}
+
+    @staticmethod
+    def _find_reply(raw, seq):
+        """Parse the reply for ``seq`` out of raw clocked-in bytes, or None."""
+        idx = raw.find(SYNC_RSP)
+        while idx >= 0:
+            if len(raw) < idx + 8:
+                return None
+            plen = struct.unpack('<H', raw[idx + 4:idx + 6])[0]
+            end = idx + 8 + plen
+            if plen <= MAX_PAYLOAD and len(raw) >= end:
+                parsed = parse_response(bytes(raw[idx:end]))
+                if parsed and parsed[1] == seq:
+                    return parsed
+            idx = raw.find(SYNC_RSP, idx + 1)
+        return None
+
+    def _fast_transaction(self, req, seq):
+        try:
+            raw = self.spi.stream_payload(req + b"\xff" * self.FAST_REPLY_PAD)
+        except Exception:
+            return None
+        return self._find_reply(raw, seq) if raw else None
+
+    @_serialised
+    def batch(self, commands):
+        """Send several short commands in ONE CS frame (one USB round trip).
+
+        ``commands`` is a list of ``(cmd, payload)``. Returns a list of parsed
+        ``(status, seq, payload)`` tuples, ``None`` for any command whose reply
+        was not seen. Each request is followed by enough idle clocks for the
+        previous reply to finish (the dispatcher drops a request that arrives
+        while it is still transmitting). Requires ``fast_transactions``;
+        otherwise the commands are simply run one by one.
+        """
+        if not commands:
+            return []
+        if any(cmd == CMD_ABORT_CAPTURE for cmd, _ in commands):
+            self._reg_shadow.clear()
+        if not (self.fast_transactions and hasattr(self.spi, "stream_payload")):
+            return [self.transaction(cmd, payload) for cmd, payload in commands]
+        frame = bytearray()
+        seqs = []
+        for cmd, payload in commands:
+            seq = self._next_seq()
+            seqs.append(seq)
+            frame += build_packet(cmd, seq, payload)
+            frame += b"\xff" * (self.FAST_REPLY_LEN.get(cmd, 8) + 32)
+        frame += b"\xff" * 16
+        try:
+            raw = self.spi.stream_payload(bytes(frame))
+        except Exception:
+            raw = b""
+        out = []
+        for seq in seqs:
+            out.append(self._find_reply(raw, seq) if raw else None)
+        return out
+
+    @_serialised
     def transaction(self, cmd: int, payload: bytes = b'',
                     timeout: float = 2.0) -> tuple:
         """Send a command, wait for and return (status, seq, payload)."""
+        if cmd == CMD_ABORT_CAPTURE:
+            # an abort clears run-level registers (REG_CONT_MODE reads 0
+            # afterwards); do not trust any remembered register value
+            self._reg_shadow.clear()
         seq = self._next_seq()
         req = build_packet(cmd, seq, payload)
+
+        if (self.fast_transactions and cmd in self.FAST_COMMANDS
+                and hasattr(self.spi, "stream_payload")):
+            parsed = self._fast_transaction(req, seq)
+            if parsed:
+                return parsed
+            if cmd in self.FAST_NO_RESEND:
+                # never resend ARM/START; only look for a late reply
+                return self._poll_reply(seq, timeout)
 
         # Phase 1: Send request (separate CS transaction)
         first = self.spi.tx_bytes(req)
@@ -350,14 +567,44 @@ class SPIDevice:
                 break
         return None
 
+    def _poll_reply(self, seq, timeout):
+        """Phase 2 of transaction(): only poll for the reply, never resend."""
+        deadline = time.time() + timeout
+        for _ in range(8):
+            time.sleep(0.0005)
+            r = self.spi.tx_read(132)
+            if r:
+                self._rx_buf += r[1:] if len(r) > 1 else r
+                parsed = self._pop_response(seq)
+                if parsed:
+                    return parsed
+            if time.time() > deadline:
+                break
+        return None
+
     def read_capture_block(self, addr: int, timeout: float = 5.0,
                            compressed: bool = False) -> bytes:
         """Read one 1024-byte capture block at given address."""
         payload = struct.pack('<I', addr)
         need = 8 + BLOCK_SIZE + 32  # sync(2) + header(4) + crc(2) + padding
-        result = self._transaction_raw(CMD_READ_CAPTURE, payload, need, timeout)
-        if result and result[0] == ST_OK:
-            return result[2]
+        # A reply that starts later than the clocked window is cut off (and
+        # lost); never hand back a short block. Retry with progressively wider
+        # windows, each given only a short wait, and only the last one the full
+        # timeout. The first window is the learned one, so a steady session pays
+        # nothing for this.
+        windows = [self.single_read_extra, 1024, 2048]
+        for i, extra in enumerate(windows):
+            last = i == len(windows) - 1
+            result = self._transaction_raw(
+                CMD_READ_CAPTURE, payload, need,
+                timeout if last else min(timeout, 0.05), extra_clocks=extra)
+            if result and result[0] == ST_OK:
+                if extra > self.single_read_extra:
+                    # the wide window was needed: the latency has grown
+                    self._block_latency = max(
+                        self._block_latency or 0,
+                        extra - 128 - 32 + self.BLOCK_LATENCY_TOLERATED)
+                return result[2]
         return b''
 
     # Batched block-read slot sizing (bytes on the SPI wire per block):
@@ -378,8 +625,14 @@ class SPIDevice:
     # simply missing from the scan and gets the per-block raw retry below —
     # correctness never depends on the slot guess.
     BATCH_RSP_PAD_COMPRESSED = 430
+    # Upper bound for a learned/bumped response latency (bytes).
+    MAX_BLOCK_LATENCY = 2000
+    # Request-to-response latency (bytes) the fixed slots above handle.
+    BLOCK_LATENCY_TOLERATED = 197
 
-    def read_capture_blocks(self, byte_addrs, stop_evt=None, compressed=False):
+    @_serialised
+    def read_capture_blocks(self, byte_addrs, stop_evt=None, compressed=False,
+                            _retried=False):
         """Read multiple 1024-byte capture blocks in ONE CS-held transaction.
 
         Batches CMD_READ_CAPTURE requests with fixed response slots so the
@@ -404,12 +657,17 @@ class SPIDevice:
             seqs.append(seq)
             payload.extend(build_packet(CMD_READ_CAPTURE, seq,
                                         struct.pack('<I', addr)))
-            payload.extend(b"\xff" * (self.BATCH_GAP_PAD + rsp_pad))
+            payload.extend(b"\xff" * (self.batch_gap_pad + rsp_pad))
         try:
             raw = self.spi.stream_payload(bytes(payload), stop_evt=stop_evt)
 
             blocks = {}
+            starved_replies = 0
+            self.last_read_starved = False
             idx = raw.find(SYNC_RSP)
+            if idx >= 12:
+                # the request is 12 bytes: the rest is the response latency
+                self.note_block_latency(idx - 12)
             while idx >= 0:
                 if len(raw) < idx + 8:
                     break
@@ -425,10 +683,34 @@ class SPIDevice:
                     status, rsp_seq, rsp_payload = parsed
                     if status == ST_OK:
                         blocks.setdefault(rsp_seq, rsp_payload)
+                    elif status == ST_CAPTURE_IDLE and not rsp_payload:
+                        # The FPGA's block-read watchdog (OLS_Interface
+                        # BLOCK_WD_MAX, 500 us) gave up: the readout was
+                        # starved. Retrying cannot help.
+                        starved_replies += 1
                     idx = raw.find(SYNC_RSP, end)
                 else:
                     idx = raw.find(SYNC_RSP, idx + 1)
 
+            if starved_replies and not blocks:
+                self.last_read_starved = True
+                return [b''] * len(byte_addrs)
+            lost = sum(1 for s in seqs if blocks.get(s) is None)
+            if (self._block_latency is not None
+                    and lost * 4 >= len(seqs) and lost > 0):
+                # A quarter or more of the batch was lost to a latency the slot
+                # did not cover (it grew since it was learned): widen the next
+                # batch. An occasional lost block (a rare CRC hit) is just
+                # retried singly and must not slow every later batch.
+                self._block_latency = min(
+                    self.MAX_BLOCK_LATENCY, self._block_latency + 100)
+                if not _retried and (stop_evt is None or not stop_evt.is_set()):
+                    # Redo the whole batch once with the slot that matches the
+                    # latency just observed instead of fetching each lost block
+                    # singly (hundreds of slow round trips).
+                    return self.read_capture_blocks(
+                        byte_addrs, stop_evt=stop_evt, compressed=compressed,
+                        _retried=True)
             result = []
             for addr, seq in zip(byte_addrs, seqs):
                 pl = blocks.get(seq)
@@ -467,8 +749,9 @@ class SPIDevice:
                 return False
         return True
 
+    @_serialised
     def _transaction_raw(self, cmd: int, payload: bytes, read_extra: int,
-                         timeout: float = 2.0) -> tuple:
+                         timeout: float = 2.0, extra_clocks: int = 128) -> tuple:
         """Like transaction() but for large read responses."""
         seq = self._next_seq()
         req = build_packet(cmd, seq, payload)
@@ -478,7 +761,7 @@ class SPIDevice:
             # include the full response frame and trailing CRC.
             raw = self.spi.stream_command(
                 req,
-                max(132, read_extra + 128),
+                max(132, read_extra + extra_clocks),
                 ack_pad=self._default_ack_pad(),
             )
             if raw:
@@ -524,7 +807,11 @@ class SPIDevice:
         return result is not None and result[0] == ST_OK
 
     def get_status(self) -> dict:
-        result = self.transaction(CMD_GET_STATUS)
+        return self.parse_status(self.transaction(CMD_GET_STATUS))
+
+    @staticmethod
+    def parse_status(result) -> dict:
+        """Status dict from a CMD_GET_STATUS reply tuple ({} if missing)."""
         if result:
             st, _, pl = result
             info = {
@@ -545,14 +832,40 @@ class SPIDevice:
     def write_register(self, addr: int, value: int) -> bool:
         payload = bytes([addr & 0xFF]) + struct.pack('<I', value)
         result = self.transaction(CMD_WRITE_REG, payload)
-        return result is not None and result[0] == ST_OK
+        ok = result is not None and result[0] == ST_OK
+        if ok:
+            self._reg_shadow[addr & 0xFF] = int(value) & 0xFFFFFFFF
+        else:
+            self._reg_shadow.pop(addr & 0xFF, None)
+        return ok
 
     def read_register(self, addr: int) -> int:
         payload = bytes([addr & 0xFF])
         result = self.transaction(CMD_READ_REG, payload)
         if result and result[0] == ST_OK:
-            return struct.unpack('<I', result[2][:4])[0]
+            value = struct.unpack('<I', result[2][:4])[0]
+            self._reg_shadow[addr & 0xFF] = value
+            return value
+        self._reg_shadow.pop(addr & 0xFF, None)
         return -1
+
+    def note_register_written(self, addr: int, value: int) -> None:
+        """Record a write that went out through a batch frame."""
+        self._reg_shadow[addr & 0xFF] = int(value) & 0xFFFFFFFF
+
+    def invalidate_registers(self) -> None:
+        self._reg_shadow.clear()
+
+    def read_register_cached(self, addr: int) -> int:
+        """Register value, from the shadow when this host wrote/read it last."""
+        value = self._reg_shadow.get(addr & 0xFF)
+        return value if value is not None else self.read_register(addr)
+
+    def write_register_if_changed(self, addr: int, value: int) -> bool:
+        """write_register, skipped when the register is known to hold ``value``."""
+        if self._reg_shadow.get(addr & 0xFF) == (int(value) & 0xFFFFFFFF):
+            return True
+        return self.write_register(addr, value)
 
     def start_stream(self, start_sample: int) -> tuple:
         """Start streaming from absolute sample index.
@@ -576,6 +889,33 @@ class SPIDevice:
 
     def start_raw_stream_read(self, start_sample: int, sample_count: int,
                               stop_evt=None, ack_pad: int | None = None) -> tuple:
+        """Read ``sample_count`` samples starting at ``start_sample`` as a raw stream.
+
+        Returns (producer_index, oldest_index, data_bytes) with exactly the
+        samples mem[start_sample .. start_sample+sample_count-1]. When
+        SDRAM_READ_LEAD_WORDS is non-zero (older FPGA images), that many extra
+        leading words are requested and dropped here.
+        """
+        sample_count = max(0, int(sample_count))
+        if sample_count == 0:
+            return 0, 0, b''
+        lead = SDRAM_READ_LEAD_WORDS
+        per = MAX_RAW_STREAM_SAMPLES - lead
+        producer = oldest = 0
+        data = bytearray()
+        done = 0
+        while done < sample_count:
+            take = min(per, sample_count - done)
+            producer, oldest, chunk = self._start_raw_stream_words(
+                start_sample + done, take + lead,
+                stop_evt=stop_evt, ack_pad=ack_pad)
+            data.extend(chunk[lead * 2:])
+            done += take
+        return producer, oldest, bytes(data)
+
+    @_serialised
+    def _start_raw_stream_words(self, start_sample: int, sample_count: int,
+                                stop_evt=None, ack_pad: int | None = None) -> tuple:
         """Start a true raw sample stream and read it under one CS-held transaction.
 
         Returns (producer_index, oldest_index, data_bytes), where ``data_bytes``
@@ -590,7 +930,7 @@ class SPIDevice:
             done = 0
             while done < sample_count:
                 take = min(MAX_RAW_STREAM_SAMPLES, sample_count - done)
-                pi, oi, chunk = self.start_raw_stream_read(
+                pi, oi, chunk = self._start_raw_stream_words(
                     start_sample + done, take, stop_evt=stop_evt, ack_pad=ack_pad)
                 producer, oldest = pi, oi
                 data.extend(chunk)
@@ -890,6 +1230,33 @@ class SPIDevice:
 
     def start_rle_stream_read(self, start_sample: int, sample_count: int,
                               stop_evt=None, ack_pad: int | None = None) -> tuple:
+        """RLE stream of exactly mem[start_sample .. +sample_count-1] (decoded).
+
+        Requests SDRAM_READ_LEAD_WORDS extra leading word(s) (older images only)
+        and drops them after decoding, like start_raw_stream_read.
+        """
+        sample_count = max(0, int(sample_count))
+        if sample_count == 0:
+            return 0, 0, b''
+        lead = SDRAM_READ_LEAD_WORDS
+        guard = RLE_STREAM_TAIL_GUARD
+        per = min(MAX_RAW_STREAM_SAMPLES, MAX_RLE_STREAM_SAMPLES) - lead - guard
+        producer = oldest = 0
+        data = bytearray()
+        done = 0
+        while done < sample_count:
+            take = min(per, sample_count - done)
+            producer, oldest, chunk = self._start_rle_stream_words(
+                start_sample + done, take + lead, stop_evt=stop_evt, ack_pad=ack_pad,
+                guard=guard)
+            data.extend(chunk[lead * 2:])
+            done += take
+        return producer, oldest, bytes(data)
+
+    @_serialised
+    def _start_rle_stream_words(self, start_sample: int, sample_count: int,
+                                stop_evt=None, ack_pad: int | None = None,
+                                guard: int = 0) -> tuple:
         """Start an RLE-compressed stream and return decoded raw sample bytes.
 
         The FPGA encodes exactly ``sample_count`` source samples and streams the
@@ -915,13 +1282,15 @@ class SPIDevice:
             done = 0
             while done < sample_count:
                 take = min(max_chunk, sample_count - done)
-                pi, oi, chunk = self.start_rle_stream_read(
+                pi, oi, chunk = self._start_rle_stream_words(
                     start_sample + done, take, stop_evt=stop_evt, ack_pad=ack_pad)
                 producer, oldest = pi, oi
                 data.extend(chunk)
                 done += take
             return producer or 0, oldest or 0, bytes(data)
-        payload = struct.pack('<II', _ring_byte_address(start_sample), sample_count)
+        guard = max(0, int(guard))
+        request_count = sample_count + guard
+        payload = struct.pack('<II', _ring_byte_address(start_sample), request_count)
         seq = self._next_seq()
         req = build_packet(CMD_START_RAW_STREAM, seq, payload)
         # RLE streaming needs a longer post-request guard than the raw path
@@ -931,14 +1300,15 @@ class SPIDevice:
         pad = ack_pad if ack_pad is not None else max(self._default_ack_pad(), 96)
         if hasattr(self.spi, "stream_command_chunks"):
             return self._rle_stream_via_chunks(
-                req, seq, sample_count, pad, stop_evt,
-                timeout=RLE_STREAM_TIMEOUT_S)
+                req, seq, request_count, pad, stop_evt,
+                timeout=RLE_STREAM_TIMEOUT_S, min_count=sample_count)
         if hasattr(self.spi, "stream_command"):
-            return self._rle_stream_via_fixed(req, seq, sample_count, pad, stop_evt)
+            return self._rle_stream_via_fixed(
+                req, seq, request_count, pad, stop_evt, min_count=sample_count)
         raise RuntimeError("RLE stream path requires stream_command(_chunks)")
 
     def _rle_stream_via_chunks(self, req, seq, sample_count, pad, stop_evt,
-                               timeout=RLE_STREAM_TIMEOUT_S):
+                               timeout=RLE_STREAM_TIMEOUT_S, min_count=None):
         """Preferred path: read variable-length stream until ``sample_count``
         samples decode, then break (which raises CS)."""
         gen = self.spi.stream_command_chunks(req, ack_pad=pad, stop_evt=stop_evt)
@@ -966,8 +1336,9 @@ class SPIDevice:
                     pending.extend(acc[end:])
                 else:
                     pending.extend(chunk)
-                total = self._decode_rle_into(pending, out, total, sample_count)
-                if total >= sample_count:
+                total = self._decode_rle_into(
+                    pending, out, total, sample_count, min_count=min_count)
+                if total >= (sample_count if min_count is None else min_count):
                     break
                 if stop_evt is not None and stop_evt.is_set():
                     break
@@ -981,14 +1352,16 @@ class SPIDevice:
             if stop_evt is not None and stop_evt.is_set():
                 return 0, 0, b''
             raise RuntimeError("start_rle_stream_read failed: no stream ack")
-        if total != sample_count:
+        wanted = sample_count if min_count is None else min_count
+        if total < wanted or (min_count is None and total != sample_count):
             if stop_evt is not None and stop_evt.is_set():
                 return producer, oldest, bytes(out)
             raise RuntimeError(
                 "RLE stream decode failed: truncated before requested sample count")
-        return producer, oldest, bytes(out)
+        return producer, oldest, bytes(out[:wanted * 2])
 
-    def _rle_stream_via_fixed(self, req, seq, sample_count, pad, stop_evt):
+    def _rle_stream_via_fixed(self, req, seq, sample_count, pad, stop_evt,
+                              min_count=None):
         """Fallback for backends without stream_command_chunks: clock a fixed
         worst-case-plus-margin budget in one transaction, then decode."""
         max_wire_bytes = (sample_count * MAX_RLE_STREAM_BYTES_PER_SAMPLE
@@ -1001,12 +1374,17 @@ class SPIDevice:
         producer, oldest, end = found
         # RLE data begins right after the ack packet (see _rle_stream_via_chunks).
         decoded = self._decode_rle_stream_bytes(
-            raw[end:], sample_count, allow_short=bool(stop_evt is not None and stop_evt.is_set()))
+            raw[end:], sample_count,
+            allow_short=bool(stop_evt is not None and stop_evt.is_set()),
+            min_count=min_count)
+        if min_count is not None:
+            decoded = decoded[:min_count * 2]
         return producer, oldest, decoded
 
     @staticmethod
     def _decode_rle_into(pending: bytearray, out: bytearray,
-                         total: int, sample_count: int) -> int:
+                         total: int, sample_count: int,
+                         min_count: int | None = None) -> int:
         """Decode as many complete (count, value) pairs as ``pending`` holds,
         appending expanded samples to ``out`` and consuming decoded bytes.
         Returns the running decoded-sample total. Safe across chunk boundaries:
@@ -1018,7 +1396,8 @@ class SPIDevice:
         boundary, so skipping them there keeps the stream word-aligned."""
         pos = 0
         n = len(pending)
-        while total < sample_count:
+        wanted = sample_count if min_count is None else int(min_count)
+        while total < wanted:
             # Skip idle-filler words at this pair boundary; before the first run
             # (total == 0) also skip leading guard words that cannot be a valid
             # count (> sample_count, e.g. 0xFFFF) so we align to the first pair.

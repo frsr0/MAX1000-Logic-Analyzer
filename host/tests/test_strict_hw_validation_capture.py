@@ -77,12 +77,12 @@ def test_single_capture_empty_reports_failure(isolate_hardware_side_effects):
 @pytest.mark.parametrize('debug,active', [(False, True), (True, True), (True, False)])
 def test_fast_capture_full_payload_paths(debug, active, isolate_hardware_side_effects):
     dev = device()
-    dev.pkt.read_capture_block.side_effect = [b'x' * 1024, b'y' * 1024]
+    dev.read_capture_range.return_value = b'x' * 1024 + b'y' * 1024
     with patch.object(hv, 'samples_to_channels', return_value=channels(1024, active)), \
          patch.object(hv, 'log_floating_channel_activity') as activity:
         hv.test_fast_capture(dev, debug_on=debug)
     assert activity.called
-    assert dev.pkt.read_capture_block.call_count == 2
+    dev.read_capture_range.assert_called_once_with(0, 1024)
     if debug:
         dev.set_debug_ch0.assert_called_with(True, freq_hz=pytest.approx(dev.sys_clk / 1024))
         assert any("fast CH0 debug PWM transitions" in call.args[1]
@@ -90,13 +90,14 @@ def test_fast_capture_full_payload_paths(debug, active, isolate_hardware_side_ef
 
 
 def test_fast_capture_empty_and_partial_blocks(isolate_hardware_side_effects):
-    dev = device(); dev.pkt.read_capture_block.return_value = b''
+    dev = device(); dev.read_capture_range.return_value = b''
     hv.test_fast_capture(dev)
     isolate_hardware_side_effects.check.assert_any_call(False, 'fast mode capture returned data')
 
 
 def test_max_speed_capture_full_and_empty(isolate_hardware_side_effects):
-    dev = device(); dev.pkt.read_capture_block.side_effect = [b'x' * 1024, b'y' * 1024]
+    dev = device(); dev.read_capture_range.return_value = b'x' * 1024 + b'y' * 1024
+    dev.pkt.get_status.return_value = {}
     with patch.object(hv, 'samples_to_channels', return_value=channels(1024)), \
          patch.object(hv, 'log_floating_channel_activity'):
         hv.test_max_speed_capture(dev)
@@ -104,7 +105,8 @@ def test_max_speed_capture_full_and_empty(isolate_hardware_side_effects):
     dev.clear_live_gen.assert_called_once()
     assert any("max-speed CH0 source is non-static" in call.args[1]
                for call in isolate_hardware_side_effects.check.call_args_list)
-    dev = device(); dev.pkt.read_capture_block.return_value = b''
+    dev = device(); dev.read_capture_range.return_value = b''
+    dev.pkt.get_status.return_value = {}
     hv.test_max_speed_capture(dev)
     isolate_hardware_side_effects.check.assert_called_with(False, 'max-speed capture returned no data')
 
@@ -220,3 +222,130 @@ def test_device_lifecycle_empty_captures(isolate_hardware_side_effects):
     calls = [call.args for call in isolate_hardware_side_effects.check.call_args_list]
     assert (False, 'pre-reopen capture returned no data') in calls
     assert (False, 'post-reopen capture returned no data') in calls
+
+
+def _square_row(cycles=40, half=102, lead=4):
+    """1 MHz square wave at 200 MS/s: 100.4-sample half periods."""
+    row = [1] * lead
+    for _ in range(cycles):
+        row += [0] * half + [1] * half
+    return row
+
+
+def test_max_rate_kept_prefix_reports_truncation_and_a_clean_prefix(
+        isolate_hardware_side_effects):
+    dev = device()
+    dev.pkt.read_register.return_value = 3          # pump overflow observed
+    dev.last_capture_truncated = True
+    row = _square_row()
+    with patch.object(hv, "samples_to_channels",
+                      return_value=([row[:] for _ in range(hv.NUM_CHANNELS)],
+                                    len(row))):
+        hv.test_max_rate_kept_prefix(dev)
+
+    dev.set_debug_ch0.assert_any_call(False)        # always released
+    verdicts = [c.args[0] for c in
+                isolate_hardware_side_effects.check.call_args_list]
+    assert verdicts and all(verdicts)
+    assert len(verdicts) == 4
+
+
+def test_max_rate_kept_prefix_aborts_cleanly_without_data(
+        isolate_hardware_side_effects):
+    dev = device()
+    dev.capture.return_value = b""
+    hv.test_max_rate_kept_prefix(dev)
+    isolate_hardware_side_effects.check.assert_called_once_with(
+        False, "200 MS/s capture returned no data")
+
+
+def test_readback_alignment_checks_exactly_n_changed_words(
+        isolate_hardware_side_effects):
+    dev = device()
+    before = b"\xff\xff" * 4096
+    after_two = b"\x01\x00" * 2 + b"\xff\xff" * (4096 - 2)
+    after_three_thousand = b"\x02\x00" * 3000 + b"\xff\xff" * (4096 - 3000)
+    dev.read_capture_range.side_effect = [before, after_two,
+                                          before, after_three_thousand]
+    dev.capture.side_effect = [b"\x00\x00" * 2, b"\x00\x00" * 3000]
+
+    hv.test_readback_alignment_exact_word_count(dev)
+
+    verdicts = [c.args[0] for c in
+                isolate_hardware_side_effects.check.call_args_list]
+    assert verdicts == [True, True, True, True]
+    # the pre-fill helper leaves the device back in digital mode
+    dev.set_analog_config.assert_any_call(hv.MODE_DIGITAL)
+
+
+def test_readback_time_oracle_accepts_the_simulated_first_low_index(
+        isolate_hardware_side_effects):
+    dev = device()
+    dev.capture_with_gen.return_value = b"raw"
+    rows = []
+    for want in hv.ORACLE_FIRST_LOW_INDEX.values():
+        row = [1] * 1500
+        row[want] = 0
+        rows.append(([row[:] for _ in range(hv.NUM_CHANNELS)], 1500))
+    with patch.object(hv, "samples_to_channels", side_effect=rows):
+        hv.test_readback_absolute_time_oracle(dev)
+
+    verdicts = [c.args[0] for c in
+                isolate_hardware_side_effects.check.call_args_list]
+    assert verdicts == [True, True, True]
+    assert dev.capture_with_gen.call_count == 3
+
+
+def test_deep_capture_address_uniqueness_flags_aliasing(
+        isolate_hardware_side_effects):
+    """The payload must appear once and windows a multiple of 32,768 samples
+    apart must differ; a readback address that aliases repeats the first
+    window and the check fails."""
+    dev = device()
+    dev.capture_with_gen.return_value = b"deep"
+    ns = hv.DEEP_CAPTURE_SAMPLES
+    period = 2000
+    row = [0] * ns
+    for start in range(0, ns, period):
+        row[start:start + period // 2] = [1] * len(row[start:start + period // 2])
+    rows = [row[:] for _ in range(hv.NUM_CHANNELS)]
+    payload = bytes(range(33, 90))
+    decoded = [SimpleNamespace(value=b) for b in payload + b"\x00"]
+
+    with patch.object(hv, "_restore_pin_map"), \
+         patch.object(hv, "_get_jumper_pair", return_value=(3, 7)), \
+         patch.object(hv, "samples_to_channels", return_value=(rows, ns)), \
+         patch.object(hv, "decode_uart_safe", return_value=decoded), \
+         patch.object(hv.time, "sleep"):
+        hv.test_deep_capture_address_uniqueness(dev)
+
+    verdicts = [c.args[0] for c in
+                isolate_hardware_side_effects.check.call_args_list]
+    # sample count, "appears exactly once", span, and the three window lags
+    assert verdicts == [True] * 6
+    dev.capture_with_gen.assert_called_once()
+
+
+def test_deep_capture_address_uniqueness_skips_without_a_wired_pair(
+        isolate_hardware_side_effects):
+    dev = device()
+    with patch.object(hv, "_restore_pin_map"), \
+         patch.object(hv, "_get_jumper_pair", return_value=None), \
+         patch.object(hv.time, "sleep"):
+        hv.test_deep_capture_address_uniqueness(dev)
+
+    isolate_hardware_side_effects.check.assert_not_called()
+    dev.capture_with_gen.assert_not_called()
+
+
+def test_deep_capture_address_uniqueness_aborts_on_an_empty_capture(
+        isolate_hardware_side_effects):
+    dev = device()
+    dev.capture_with_gen.return_value = b""
+    with patch.object(hv, "_restore_pin_map"), \
+         patch.object(hv, "_get_jumper_pair", return_value=(3, 7)), \
+         patch.object(hv.time, "sleep"):
+        hv.test_deep_capture_address_uniqueness(dev)
+
+    isolate_hardware_side_effects.check.assert_called_once_with(
+        False, "deep capture returned no data")

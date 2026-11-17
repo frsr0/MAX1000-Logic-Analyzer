@@ -242,8 +242,11 @@ create_generated_clock -name adc_clk \
  set_input_delay -clock [get_clocks SDRAM_CHIP_CLK_OUT] -min 0.0 [get_ports {sdram_dq[*]}]
  
  # The SDRAM controller only samples read data in ST_RD_DATA, after the explicit
- # CAS-latency wait. Do not time DQ as if the controller captured the first
- # internal core-clock edge after every forwarded SDRAM clock edge.
+ # CAS-latency wait. The chip launches DQ CL clocks after the READ command and
+ # the corrected latch lands just under 3 sdram_core_clk cycles after that
+ # launch, so setup 3 / hold 2 matches the real capture edge. Do not scale this
+ # with RD_WAIT_EXTRA_CYCLES: a larger multicycle would let a data path several
+ # cycles too slow pass timing.
  set_multicycle_path -setup 3 \
    -from [get_ports {sdram_dq[*]}] \
    -to   [get_registers {*sdram_s_readdata[*]}]

@@ -279,3 +279,114 @@ class TestCheckChannelsClean:
         hv.check_channels_clean(ch, ns=2, max_trans=1)
         assert hv.PASS == 1
         assert hv.FAIL == 0
+
+def test_group_jumper_wires_merges_both_directions_of_one_wire():
+    routes = [(2, 1), (1, 2), (16, 15)]
+    assert hv._group_jumper_wires(routes) == [[(2, 1), (1, 2)], [(16, 15)]]
+
+
+def test_additional_jumper_routes_excludes_the_primary_wire():
+    routes = [(2, 1), (1, 2), (16, 15)]
+    assert hv._additional_jumper_routes(routes, (2, 1)) == [(16, 15)]
+    assert hv._additional_jumper_routes([(2, 1), (1, 2)], (2, 1)) == []
+    assert hv._additional_jumper_routes([], None) == []
+
+
+def test_discovery_records_every_decoding_route_and_logs_wire_count():
+    value = MagicMock()
+    value.capture_with_gen.return_value = b"probe"
+    rows = [[0, 1] * 64 for _ in range(16)]
+    transitions = [50] * 16
+    wired = {(2, 1), (1, 2), (16, 15)}
+
+    def decoded(_channels, _rate, ch_idx, **_kwargs):
+        if (value._gen_tx_pin, ch_idx) in wired:
+            return [MagicMock(value=b) for b in b"PinProbe!"]
+        return []
+
+    with patch.object(hv, "samples_to_channels", return_value=(rows, 128)),          patch.object(hv, "_channel_transitions", return_value=transitions),          patch.object(hv, "decode_uart_safe", side_effect=decoded),          patch.object(hv, "log") as log:
+        assert hv._discover_jumper_pair(value, deadline_s=60) == (2, 1)
+    assert hv._JUMPER_ROUTES == [(2, 1), (1, 2), (16, 15)]
+    lines = [call.args[0] for call in log.call_args_list]
+    assert any("detected jumper routes: 2 -> CH1, 1 -> CH2, 16 -> CH15 "
+               "(2 distinct wires)" in line for line in lines)
+    hv._JUMPER_ROUTES.clear()
+
+
+def test_analog_discovery_tries_every_pin_on_streamed_channels_before_deadline():
+    value = MagicMock()
+    tried = []
+
+    def probe(_dev, tx, adc):
+        tried.append((tx, adc))
+        if (tx, adc) == (0, 4):
+            return {"samples": 200, "amplitude": 4095, "edges": 20}
+        return {"samples": 200, "amplitude": 100, "edges": 0}
+
+    # Deadline already expired: only the unbounded streamed-channel pass runs.
+    with patch.object(hv.time, "time", return_value=0),          patch.object(hv, "_capture_physical_analog_activity", side_effect=probe):
+        pairs = hv._discover_analog_jumper_pairs(value, deadline_s=-1)
+    assert pairs == [(0, 4, "pin0 -> AIN6/ADC4")]
+    assert {tx for tx, _ in tried} == set(range(23))
+    assert all(adc in (1, 2, 3, 4) for _, adc in tried)
+
+def test_prefix_run_lengths_accepts_exact_square_wave_and_flags_a_dropped_sample():
+    wave = [1] * 7 + ([0] * 104 + [1] * 104) * 4
+    mode, bad, inner = hv._prefix_run_lengths(wave[:-30])
+    assert (mode, bad) == (104, [])
+    assert inner >= 6
+    broken = wave[:300] + wave[301:]          # one dropped sample inside a run
+    mode, bad, _ = hv._prefix_run_lengths(broken)
+    assert mode == 104 and len(bad) == 1 and bad[0][1] == 103
+    dup = wave[:300] + [wave[300]] + wave[300:]   # one duplicated sample
+    mode, bad, _ = hv._prefix_run_lengths(dup)
+    assert mode == 104 and bad[0][1] == 105
+
+
+def test_prefix_run_lengths_needs_interior_runs():
+    assert hv._prefix_run_lengths([1, 1, 0, 0]) == (None, [], 0)
+
+def test_expected_jumper_wire_count_parses_environment(monkeypatch):
+    monkeypatch.delenv(hv.JUMPER_EXPECT_WIRES_ENV, raising=False)
+    assert hv._expected_jumper_wire_count() is None
+    monkeypatch.setenv(hv.JUMPER_EXPECT_WIRES_ENV, " 2 ")
+    assert hv._expected_jumper_wire_count() == 2
+    monkeypatch.setenv(hv.JUMPER_EXPECT_WIRES_ENV, "two")
+    assert hv._expected_jumper_wire_count() is None
+
+
+def test_expected_jumper_wires_fails_when_a_wire_is_missing(monkeypatch):
+    routes = [(2, 1), (1, 2)]                   # one distinct wire
+    monkeypatch.setenv(hv.JUMPER_EXPECT_WIRES_ENV, "2")
+    with patch.object(hv, "check") as check, patch.object(hv, "log"):
+        hv._check_expected_jumper_wires(routes)
+    assert check.call_args.args[0] is False
+    assert "found 1 distinct" in check.call_args.args[1]
+    with patch.object(hv, "check") as check:
+        hv._check_expected_jumper_wires(routes + [(16, 15)])
+    assert check.call_args.args[0] is True
+    monkeypatch.delenv(hv.JUMPER_EXPECT_WIRES_ENV)
+    with patch.object(hv, "check") as check:
+        hv._check_expected_jumper_wires(routes)
+    check.assert_not_called()
+
+def test_changed_word_indices_reports_differing_16bit_words():
+    before = bytes([1, 0, 2, 0, 3, 0, 4, 0])
+    after = bytes([1, 0, 9, 0, 3, 0, 8, 1])
+    assert hv._changed_word_indices(before, after) == [1, 3]
+    assert hv._changed_word_indices(before, before) == []
+
+
+def test_oracle_constants_cover_three_dividers():
+    assert hv.ORACLE_FIRST_LOW_INDEX == {9: 1105, 99: 110, 195: 56}
+
+
+def test_window_equal_fraction_scores_a_lagged_window():
+    flat = [0] * 100
+    assert hv._window_equal_fraction(flat, 0) == 1.0
+
+    split = [0] * 50 + [1] * 50
+    assert hv._window_equal_fraction(split, 50) == 0.0
+
+    # A lag past the end compares nothing, which must score 0, not divide by 0.
+    assert hv._window_equal_fraction(flat, 500) == 0.0

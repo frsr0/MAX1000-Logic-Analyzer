@@ -82,6 +82,7 @@ export default function App() {
       switch (msg.type) {
         case 'capture_progress':
           if (st) {
+            const health = msg.data.health;
             useApp.setState({
               status: {
                 ...st, capture_state: 'capturing',
@@ -90,6 +91,7 @@ export default function App() {
                   samples_total: msg.data.samples_total,
                   message: msg.data.phase, repeat: msg.data.repeat,
                 },
+                ...(health ? { capture_health: health } : {}),
               },
             });
           }

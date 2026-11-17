@@ -19,10 +19,15 @@ PORT (
   Address               : IN    std_logic_vector(21 downto 0) := (others => '0'); 
   Write_Enable          : IN    std_logic                     := '0';             
   Write_Data            : IN    std_logic_vector(15 downto 0) := (others => '0'); 
-  Capture_Stream_Valid  : IN    std_logic                     := '0';
-  Capture_Stream_Ready  : OUT   std_logic                     := '0';
-  Capture_Stream_Address : IN   std_logic_vector(21 downto 0) := (others => '0');
-  Capture_Stream_Data   : IN    std_logic_vector(15 downto 0) := (others => '0');
+  Capture_Burst_Req     : IN    std_logic                     := '0';
+  Capture_Burst_Addr    : IN    std_logic_vector(21 downto 0) := (others => '0');
+  Capture_Burst_Len     : IN    std_logic_vector(8 downto 0)  := (others => '0');
+  Capture_Burst_Stop    : IN    std_logic                     := '0';
+  Capture_Pop_Ok        : IN    std_logic                     := '0';
+  Capture_Data          : IN    std_logic_vector(15 downto 0) := (others => '0');
+  Capture_Pop           : OUT   std_logic                     := '0';
+  Capture_Wr            : OUT   std_logic                     := '0';
+  Capture_Busy          : OUT   std_logic                     := '0';
   Read_Enable           : IN    std_logic                     := '0';             
   Read_Data             : OUT   std_logic_vector(15 downto 0) := (others => '0'); 
    Read_Valid            : OUT   std_logic                     := '0';             
@@ -68,10 +73,15 @@ ARCHITECTURE BEHAVIORAL OF SDRAM_Interface IS
    sdram_s_readdatavalid : out   std_logic;                                        
    sdram_s_waitrequest   : out   std_logic;                                        
    sdram_s_idle          : out   std_logic;                                        
-   capture_stream_valid  : in    std_logic                     := '0';
-   capture_stream_ready  : out   std_logic;
-   capture_stream_addr   : in    std_logic_vector(21 downto 0) := (others => '0');
-   capture_stream_data   : in    std_logic_vector(15 downto 0) := (others => '0');
+   capture_burst_req     : in    std_logic                     := '0';
+   capture_burst_addr    : in    std_logic_vector(21 downto 0) := (others => '0');
+   capture_burst_len     : in    std_logic_vector(8 downto 0)  := (others => '0');
+   capture_burst_stop    : in    std_logic                     := '0';
+   capture_pop_ok        : in    std_logic                     := '0';
+   capture_data          : in    std_logic_vector(15 downto 0) := (others => '0');
+   capture_pop           : out   std_logic;
+   capture_wr            : out   std_logic;
+   capture_busy          : out   std_logic;
    reset_reset_n         : in    std_logic                     := 'X';             
   clk_in_clk            : in    std_logic                     := 'X'              
   );
@@ -147,10 +157,15 @@ BEGIN
    sdram_s_readdatavalid => sdram_s_readdatavalid, 
    sdram_s_waitrequest   => sdram_s_waitrequest,   
    sdram_s_idle          => sdram_s_idle,
-   capture_stream_valid  => Capture_Stream_Valid,
-   capture_stream_ready  => Capture_Stream_Ready,
-   capture_stream_addr   => Capture_Stream_Address,
-   capture_stream_data   => Capture_Stream_Data,
+   capture_burst_req     => Capture_Burst_Req,
+   capture_burst_addr    => Capture_Burst_Addr,
+   capture_burst_len     => Capture_Burst_Len,
+   capture_burst_stop    => Capture_Burst_Stop,
+   capture_pop_ok        => Capture_Pop_Ok,
+   capture_data          => Capture_Data,
+   capture_pop           => Capture_Pop,
+   capture_wr            => Capture_Wr,
+   capture_busy          => Capture_Busy,
    reset_reset_n         => reset_reset_n,
   clk_in_clk            => CLK
   );
@@ -159,12 +174,47 @@ BEGIN
    reset_reset_n <= NOT Reset;
      CLK_150_Out <= CLK;
      sdram_clk <= CLK;
+     -- Behavioural capture-burst model (same pull protocol and latencies as
+     -- SDRAM_Controller: pop at c, popped word on Capture_Data at c+1, written
+     -- at c+1). Read / legacy-write requests pre-empt it like in the controller.
      PROCESS (CLK)
        VARIABLE wait_r : BOOLEAN := false;
+       VARIABLE b_busy : BOOLEAN := false;
+       VARIABLE b_addr : natural := 0;
+       VARIABLE b_rem  : natural := 0;
+       VARIABLE b_pop  : std_logic := '0';
+       VARIABLE b_wv   : std_logic := '0';
+       VARIABLE b_pre  : BOOLEAN := false;
      BEGIN
        IF (rising_edge(CLK)) THEN
          sdram_s_idle <= '0';
-         Capture_Stream_Ready <= '0';
+         b_pre := (sdram_s_read_n = '0') OR (sdram_s_write_n = '0');
+         -- burst engine
+         IF b_wv = '1' THEN
+           sdram_ram(b_addr mod 4096) <= Capture_Data;
+           b_addr := b_addr + 1;
+         END IF;
+         b_wv := b_pop;
+         b_pop := '0';
+         IF NOT b_busy THEN
+           IF Capture_Burst_Req = '1' AND Capture_Burst_Stop = '0' AND NOT b_pre THEN
+             b_busy := true;
+             b_addr := TO_INTEGER(UNSIGNED(Capture_Burst_Addr));
+             b_rem  := TO_INTEGER(UNSIGNED(Capture_Burst_Len));
+           END IF;
+         ELSE
+           IF b_rem > 0 AND Capture_Pop_Ok = '1' AND Capture_Burst_Stop = '0' AND NOT b_pre THEN
+             b_pop := '1';
+             b_rem := b_rem - 1;
+           ELSIF b_rem = 0 OR Capture_Burst_Stop = '1' OR b_pre THEN
+             IF b_wv = '0' THEN
+               b_busy := false;
+             END IF;
+           END IF;
+         END IF;
+         Capture_Pop  <= b_pop;
+         Capture_Wr   <= b_wv;
+         IF b_busy THEN Capture_Busy <= '1'; ELSE Capture_Busy <= '0'; END IF;
          IF (sdram_s_read_n = '0') THEN
            IF (not wait_r) THEN
              IF (sdram_s_waitrequest = '0') THEN
@@ -188,10 +238,6 @@ BEGIN
                wait_r := true;
              END IF;
            END IF;
-         ELSIF (Capture_Stream_Valid = '1') THEN
-           sdram_s_waitrequest <= '0';
-           sdram_ram(TO_INTEGER(UNSIGNED(Capture_Stream_Address)) mod 4096) <= Capture_Stream_Data;
-           Capture_Stream_Ready <= '1';
          ELSE
            sdram_s_readdatavalid <= '0';
            sdram_s_waitrequest <= '0';

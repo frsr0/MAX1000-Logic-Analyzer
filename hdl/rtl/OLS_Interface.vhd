@@ -33,6 +33,7 @@ PORT (
   Start_Offset : BUFFER NATURAL range 0 to Max_Samples   := 0;  
   Run          : BUFFER STD_LOGIC := '0'; 
   Full         : IN  STD_LOGIC := '0'; 
+  Index_Hold   : OUT STD_LOGIC := '0';
   Address      : BUFFER NATURAL range 0 to Max_Samples-1 := 0;
   Outputs      : IN STD_LOGIC_VECTOR(31 downto 0);
   Gen_Load_Byte : OUT STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
@@ -127,8 +128,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL pattern_trigger : STD_LOGIC := '0';
   SIGNAL inputs_prev    : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
   SIGNAL Divider : NATURAL range 0 to 16777215 := 0;
-  SIGNAL Read_Count  : NATURAL := 0;
-  SIGNAL Delay_Count : NATURAL := 0;
+  -- Count registers only ever need to represent values up to 2*Max_Samples-1
+  -- (larger writes saturate); a constrained range keeps them ~23 bits wide
+  -- instead of 31 and shrinks the compare/subtract logic below.
+  CONSTANT COUNT_MAX : NATURAL := 2*Max_Samples - 1;
+  SIGNAL Read_Count  : NATURAL range 0 to COUNT_MAX := 0;
+  SIGNAL Delay_Count : NATURAL range 0 to COUNT_MAX := 0;
   SIGNAL analog_enable_i  : STD_LOGIC := '0';
   SIGNAL analog_only_i    : STD_LOGIC := '0';
   SIGNAL analog_profile_i : STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
@@ -225,6 +230,10 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL gen_capture_start   : STD_LOGIC := '0';
   type gen_cap_state_t is (GENCAP_IDLE, GENCAP_LOOPBACK_ON, GENCAP_ARM, GENCAP_GUARD, GENCAP_WAIT_BUSY, GENCAP_RUNNING, GENCAP_RUNNING_REPEAT, GENCAP_WAIT_FULL, GENCAP_DONE, GENCAP_ERROR);
   SIGNAL gen_cap_state : gen_cap_state_t := GENCAP_IDLE;
+  -- Watchdog for a generator that never finishes: 2 s at 100 MHz.  A running
+  -- burst is ended by Gen_Busy falling (or by the capture filling), not by a
+  -- fixed duration, so this only bounds a stuck generator.
+  CONSTANT GEN_CAPTURE_WATCHDOG : NATURAL := 200000000;
 
   -- Synthesis preserve: prevent Quartus from optimizing away gen start chain
   attribute preserve : boolean;
@@ -240,6 +249,15 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL pkt_payload_byte     : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
   SIGNAL pkt_payload_valid    : STD_LOGIC := '0';
   SIGNAL pkt_ok               : STD_LOGIC := '0';
+  SIGNAL pkt_in_packet        : STD_LOGIC := '0';
+  -- CLK-domain hold request for the FLA index snapshot (see Index_Hold).
+  SIGNAL index_hold_r         : STD_LOGIC := '0';
+  -- Two-flop synchroniser for Full (FLA pclk domain -> CLK domain).
+  SIGNAL full_s1              : STD_LOGIC := '0';
+  SIGNAL full_sync            : STD_LOGIC := '0';
+  ATTRIBUTE altera_attribute : string;
+  ATTRIBUTE altera_attribute OF full_s1   : SIGNAL IS "-name AUTO_SHIFT_REGISTER_RECOGNITION OFF";
+  ATTRIBUTE altera_attribute OF full_sync : SIGNAL IS "-name AUTO_SHIFT_REGISTER_RECOGNITION OFF";
   SIGNAL pkt_err              : STD_LOGIC := '0';
   -- First 8 payload bytes captured for quick dispatch access
   TYPE payload_header_t IS ARRAY(0 TO 7) OF STD_LOGIC_VECTOR(7 DOWNTO 0);
@@ -270,9 +288,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL disp_gen_stop       : STD_LOGIC := '0';
   SIGNAL block_rd_pending     : STD_LOGIC := '0';
   SIGNAL block_rd_ack         : STD_LOGIC := '0';
-  SIGNAL block_rd_addr        : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  -- 23-bit BYTE address = 22-bit sample index: the whole 4,194,304-sample
+  -- SDRAM. (A 16-bit address here made every read beyond sample 32,767 alias
+  -- back onto the first 32,768 samples.)
+  SIGNAL block_rd_addr        : STD_LOGIC_VECTOR(22 downto 0) := (others => '0');
   SIGNAL block_rd_issue_req   : STD_LOGIC := '0';
-  SIGNAL block_rd_issue_addr  : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  SIGNAL block_rd_issue_addr  : STD_LOGIC_VECTOR(22 downto 0) := (others => '0');
   SIGNAL block_rd_release     : STD_LOGIC := '0';
   SIGNAL block_rd_state       : NATURAL range 0 to 8 := 0;
   -- Watchdog kill: forces the block-read FSM back to idle when the dispatch
@@ -322,16 +343,31 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   -- single write per emit -- half the entries and no per-entry dual-byte write
   -- mux, which matters on this ~full device. Bytes are split out at the SPI
   -- side (low byte first), like the raw-stream path. raw_comp_pop is the
-  -- SPI-side "byte consumed" handshake. Depth 8 words with the DEPTH-4 feed
-  -- gate below keeps the (up to two feeds x two words) in flight from
-  -- overflowing.
-  CONSTANT RAW_COMP_FIFO_DEPTH : NATURAL := 8;  -- words
+  -- SPI-side "byte consumed" handshake. Depth 16 words (block RAM, so depth
+  -- is free) with the DEPTH-4 feed gate below keeps the (up to two feeds x
+  -- two words) in flight from overflowing.
+  CONSTANT RAW_COMP_FIFO_DEPTH : NATURAL := 16;  -- words
   CONSTANT RAW_COMP_FIFO_LAST  : NATURAL := RAW_COMP_FIFO_DEPTH - 1;
   TYPE raw_comp_fifo_t IS ARRAY(0 TO RAW_COMP_FIFO_LAST) OF STD_LOGIC_VECTOR(15 downto 0);
+  -- Storage is an inferred M9K: ONE write site (raw_comp_ram_proc) and a
+  -- registered read. Process 1 only drives we/waddr/wdata and the pointers.
   SIGNAL raw_comp_fifo        : raw_comp_fifo_t := (others => (others => '0'));
+  SIGNAL raw_comp_fifo_we     : STD_LOGIC := '0';
+  SIGNAL raw_comp_fifo_waddr  : NATURAL range 0 to RAW_COMP_FIFO_LAST := 0;
+  SIGNAL raw_comp_fifo_wdata  : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+  SIGNAL raw_comp_fifo_q      : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
   SIGNAL raw_comp_fifo_wr_ptr : NATURAL range 0 to RAW_COMP_FIFO_LAST := 0;
   SIGNAL raw_comp_fifo_rd_ptr : NATURAL range 0 to RAW_COMP_FIFO_LAST := 0;
+  -- count: all unpopped words (incl. in flight to RAM and the head); used by
+  -- the feed gate, flush-when-empty and finish logic.
   SIGNAL raw_comp_fifo_count  : NATURAL range 0 to RAW_COMP_FIFO_DEPTH := 0;
+  -- avail: unpopped words whose RAM write has completed (safe to read).
+  SIGNAL raw_comp_fifo_avail  : NATURAL range 0 to RAW_COMP_FIFO_DEPTH := 0;
+  -- Head word = raw_comp_fifo_q, valid only while raw_comp_head_valid = '1'.
+  -- head_wait: rd_ptr was stable and the word committed one cycle ago, so q
+  -- now holds ram(rd_ptr).
+  SIGNAL raw_comp_head_wait   : STD_LOGIC := '0';
+  SIGNAL raw_comp_head_valid  : STD_LOGIC := '0';
   -- Byte serialization + idle framing live in the SPI dispatch process; process
   -- 1 only does whole-word pops via raw_comp_pop. When the FIFO is empty while
   -- streaming, the dispatch process shifts out 0x0000 filler WORDS (a count word
@@ -340,6 +376,13 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL raw_comp_pop         : STD_LOGIC := '0';
   CONSTANT SAMPLE_CLK_KHZ_SLV : STD_LOGIC_VECTOR(31 downto 0) :=
     STD_LOGIC_VECTOR(TO_UNSIGNED(SAMPLE_CLK_HZ / 1000, 32));
+  -- Image identification returned by CMD_GET_METADATA bytes 10 and 11.
+  -- Generation 4: read-timing fix (bit0), dropped-sample counter (bit1), RLE
+  -- stream flush fix (bit2), continuous capture runs between host reads (bit3),
+  -- narrow 200 MHz loses no samples (bit4), generator capture has no fixed
+  -- 50 ms limit (bit5: a burst ends on Gen_Busy or Full, 2 s watchdog).
+  CONSTANT IMAGE_FEATURES2 : STD_LOGIC_VECTOR(7 downto 0) := x"3F";
+  CONSTANT IMAGE_GENERATION : STD_LOGIC_VECTOR(7 downto 0) := x"04";
   SIGNAL sig_rd_pend_d1       : STD_LOGIC := '0';
   -- Drives the OUT request toggle so the FSM can read/flip it (port is OUT).
   SIGNAL blk_req_tog_i        : STD_LOGIC := '0';
@@ -373,14 +416,7 @@ SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
   -- inferred-RAM bypass network and use the M9K directly.
   ATTRIBUTE ramstyle : string;
   ATTRIBUTE ramstyle OF block_buf : SIGNAL IS "M9K, no_rw_check";
-  -- 21-cycle bit-serial divider for /3 (replaces 58-level lpm_divide)
-  SIGNAL div3_shift   : STD_LOGIC_VECTOR(20 downto 0) := (others => '0');
-  SIGNAL div3_acc     : NATURAL range 0 to 7 := 0;
-  SIGNAL div3_result  : NATURAL range 0 to Max_Samples := 0;
-  SIGNAL div3_count   : NATURAL range 0 to 31 := 0;
-  SIGNAL div3_busy    : STD_LOGIC := '0';
-  SIGNAL div3_pending : STD_LOGIC := '0';
-
+  ATTRIBUTE ramstyle OF raw_comp_fifo : SIGNAL IS "M9K, no_rw_check";
   COMPONENT spi_packet_rx IS
   PORT (
     clk         : IN  STD_LOGIC;
@@ -395,6 +431,7 @@ SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
     payload_valid  : OUT STD_LOGIC;
     packet_ok   : OUT STD_LOGIC;
     packet_err  : OUT STD_LOGIC;
+    in_packet   : OUT STD_LOGIC;
     err_bad_crc  : OUT STD_LOGIC;
     err_bad_sync : OUT STD_LOGIC;
     err_oversize : OUT STD_LOGIC
@@ -560,17 +597,21 @@ BEGIN
     );
 
   PROCESS (CLK)
-    variable fifo_v : raw_comp_fifo_t;
     variable fifo_wr_v : natural range 0 to RAW_COMP_FIFO_LAST;
     variable fifo_rd_v : natural range 0 to RAW_COMP_FIFO_LAST;
     variable fifo_count_v : natural range 0 to RAW_COMP_FIFO_DEPTH;
+    variable fifo_avail_v : natural range 0 to RAW_COMP_FIFO_DEPTH;
+    variable head_valid_v : std_logic;
+    variable head_wait_v  : std_logic;
   BEGIN
   IF RISING_EDGE(CLK) THEN
-    fifo_v := raw_comp_fifo;
     fifo_wr_v := raw_comp_fifo_wr_ptr;
     fifo_rd_v := raw_comp_fifo_rd_ptr;
     fifo_count_v := raw_comp_fifo_count;
-    div3_pending <= '0';
+    fifo_avail_v := raw_comp_fifo_avail;
+    head_valid_v := raw_comp_head_valid;
+    head_wait_v := raw_comp_head_wait;
+    raw_comp_fifo_we <= '0';
     Pin_Map_Write <= '0';
     gen_reg_load_req <= '0';
     if raw_blk_req_fire = '1' then
@@ -591,7 +632,7 @@ BEGIN
       IF disp_ack_seq = x"00000000" OR disp_ack_seq = capture_seq THEN
         done_latched <= '0';
       END IF;
-    ELSIF Full = '1' AND done_suppressed = '0' THEN
+    ELSIF full_sync = '1' AND done_suppressed = '0' THEN
       done_latched <= '1';
     END IF;
     IF disp_reg_write = '1' THEN
@@ -599,10 +640,17 @@ BEGIN
         WHEN REG_DIVIDER =>
           Divider <= TO_INTEGER(UNSIGNED(disp_reg_wdata(23 downto 0)));
         WHEN REG_SAMPLE_COUNT =>
-          Read_Count <= TO_INTEGER(UNSIGNED(disp_reg_wdata(29 downto 0)));
-          div3_pending <= '1';
+          IF UNSIGNED(disp_reg_wdata(29 downto 0)) > COUNT_MAX THEN
+            Read_Count <= COUNT_MAX;
+          ELSE
+            Read_Count <= TO_INTEGER(UNSIGNED(disp_reg_wdata(29 downto 0)));
+          END IF;
         WHEN REG_DELAY_COUNT =>
-          Delay_Count <= TO_INTEGER(UNSIGNED(disp_reg_wdata(29 downto 0)));
+          IF UNSIGNED(disp_reg_wdata(29 downto 0)) > COUNT_MAX THEN
+            Delay_Count <= COUNT_MAX;
+          ELSE
+            Delay_Count <= TO_INTEGER(UNSIGNED(disp_reg_wdata(29 downto 0)));
+          END IF;
         WHEN REG_TRIGGER_MASK =>
           Trigger_Mask <= disp_reg_wdata;
         WHEN REG_TRIGGER_VALUE =>
@@ -762,10 +810,10 @@ BEGIN
             END IF;
           END IF;
         END IF;
-        IF Run_OLS = '1' THEN
-          inputs_prev <= Inputs;
-        END IF;
     END IF;
+    -- Track the previous sample every clock (not only while armed) so the first
+    -- edge compare after arm never sees a stale value from an earlier capture.
+    inputs_prev <= Inputs;
     -- ── Block read state machine (for CMD_READ_CAPTURE) ──────────────
     -- Request a BLOCK_SAMPLES-long raw stream from the FLA and drain it
     -- through the response FIFO (a true pclk->CLK CDC), feeding every popped
@@ -780,18 +828,39 @@ BEGIN
     comp_flush_i <= '0';
     raw_comp_fifo_rdreq <= '0';
     -- The dispatch process consumed a whole output word: pop it off the FIFO.
-    if raw_comp_pop = '1' and fifo_count_v > 0 then
+    -- A word written last cycle is now in the RAM (readable from next cycle).
+    if raw_comp_fifo_we = '1' then
+      fifo_avail_v := fifo_avail_v + 1;
+    end if;
+    if raw_comp_pop = '1' and head_valid_v = '1' and fifo_count_v > 0 then
       if fifo_rd_v = RAW_COMP_FIFO_LAST then
         fifo_rd_v := 0;
       else
         fifo_rd_v := fifo_rd_v + 1;
       end if;
       fifo_count_v := fifo_count_v - 1;
+      fifo_avail_v := fifo_avail_v - 1;
+      head_valid_v := '0';
+      head_wait_v := '0';
+    elsif head_valid_v = '0' then
+      -- Head fetch. The decision uses the REGISTERED avail (not the variable
+      -- incremented above) so the RAM read edge never coincides with the write
+      -- edge of that word; rd_ptr is stable in this cycle (no pop).
+      if head_wait_v = '1' then
+        head_valid_v := '1';
+        head_wait_v := '0';
+      elsif raw_comp_fifo_avail > 0 then
+        head_wait_v := '1';
+      end if;
     end if;
     if raw_stream_comp_mode = '0' then
       fifo_wr_v := 0;
       fifo_rd_v := 0;
       fifo_count_v := 0;
+      fifo_avail_v := 0;
+      head_valid_v := '0';
+      head_wait_v := '0';
+      raw_comp_fifo_we <= '0';
       raw_comp_state <= 0;
       raw_comp_samples_read <= 0;
       raw_comp_samples_fed <= 0;
@@ -813,7 +882,9 @@ BEGIN
         -- Push one emitted word into the word FIFO. The FETCH feed gate leaves
         -- room for the (at most two feeds x two words) that can be in flight.
         if fifo_count_v < RAW_COMP_FIFO_DEPTH then
-          fifo_v(fifo_wr_v) := comp_out_data;
+          raw_comp_fifo_we <= '1';
+          raw_comp_fifo_waddr <= fifo_wr_v;
+          raw_comp_fifo_wdata <= comp_out_data;
           if fifo_wr_v = RAW_COMP_FIFO_LAST then
             fifo_wr_v := 0;
           else
@@ -929,6 +1000,10 @@ BEGIN
       fifo_wr_v := 0;
       fifo_rd_v := 0;
       fifo_count_v := 0;
+      fifo_avail_v := 0;
+      head_valid_v := '0';
+      head_wait_v := '0';
+      raw_comp_fifo_we <= '0';
     elsif raw_stream_comp_mode = '1' then
       case raw_comp_state is
         -- ── STATE 1: FETCH ───────────────────────────────────────────────
@@ -990,11 +1065,24 @@ BEGIN
       end case;
     end if;
 
-    raw_comp_fifo       <= fifo_v;
+    raw_comp_fifo_avail <= fifo_avail_v;
+    raw_comp_head_valid <= head_valid_v;
+    raw_comp_head_wait  <= head_wait_v;
     raw_comp_fifo_wr_ptr <= fifo_wr_v;
     raw_comp_fifo_rd_ptr <= fifo_rd_v;
     raw_comp_fifo_count <= fifo_count_v;
   END IF;
+  END PROCESS;
+
+  -- Word FIFO storage: single write site + registered read -> M9K.
+  raw_comp_ram_proc : PROCESS (CLK)
+  BEGIN
+    IF RISING_EDGE(CLK) THEN
+      IF raw_comp_fifo_we = '1' THEN
+        raw_comp_fifo(raw_comp_fifo_waddr) <= raw_comp_fifo_wdata;
+      END IF;
+      raw_comp_fifo_q <= raw_comp_fifo(raw_comp_fifo_rd_ptr);
+    END IF;
   END PROCESS;
 
   -- Generator load/start: dedicated process so FIFO writes and Start are not
@@ -1047,9 +1135,13 @@ BEGIN
   -- gen_capture_active is set when Gen_Busy goes high and held until
   -- Full (capture buffer full), ensuring the loopback mux stays active
   -- until the capture completes — not tied to gen_busy duration alone.
+  -- A running burst has no fixed duration limit: GENCAP_RUNNING ends when
+  -- Gen_Busy falls and GENCAP_WAIT_FULL ends when the capture fills, so a
+  -- legitimate burst of any length survives intact.  The countdown is only a
+  -- watchdog for a generator that never finishes.
   gen_capture_fsm: PROCESS (CLK)
     VARIABLE guard_var : NATURAL range 0 to 1023 := 0;
-    VARIABLE timeout_var : NATURAL range 0 to 8388607 := 0;
+    VARIABLE timeout_var : NATURAL range 0 to 268435455 := 0;
     VARIABLE disp_gen_arm_d : STD_LOGIC := '0';
   BEGIN
     IF RISING_EDGE(CLK) THEN
@@ -1079,8 +1171,13 @@ BEGIN
             END IF;
           WHEN GENCAP_WAIT_BUSY =>
             gen_start_pulse <= '1';
-            IF Gen_Busy = '1' OR Gen_Start_Ack = '1' THEN
-              timeout_var := 5000000;
+            -- Enter RUNNING on Gen_Busy only.  Gen_Start_Ack is a
+            -- combinational "start issued and engine idle" level, so it also
+            -- rises when nothing is loaded and the engine never starts; a
+            -- start that never goes busy must fail the 2000-clock
+            -- acknowledge timeout so the error flag still reports it.
+            IF Gen_Busy = '1' THEN
+              timeout_var := GEN_CAPTURE_WATCHDOG;
               -- Select the terminal behavior once, at start acknowledgment.
               -- The repeat-running state has no timeout/busy-fall predicate,
               -- keeping the ordinary running path and its timing cone small.
@@ -1110,7 +1207,7 @@ BEGIN
             gen_start_pulse <= '0';
           WHEN GENCAP_WAIT_FULL =>
             gen_start_pulse <= '0';
-            IF Full = '1' THEN
+            IF full_sync = '1' THEN
               gen_capture_active_i <= '0';
               gen_capture_done_i <= '1';
               gen_cap_state <= GENCAP_DONE;
@@ -1131,44 +1228,24 @@ BEGIN
     END IF;
   END PROCESS;
 
-  -- ─── 21-cycle bit-serial divider solves lpm_divide timing hole ─────
-  -- N/3 computed one bit at a time (MSB first). Takes 21 cycles = 0.44us.
-  -- Triggered by div3_pending pulse from main process when Read_Count changes.
-  divider_proc: process(CLK)
-    variable acc : natural range 0 to 6 := 0;
-  begin
-    if rising_edge(CLK) then
-      if div3_pending = '1' then
-        div3_shift <= std_logic_vector(to_unsigned(Read_Count, 21));
-        div3_acc   <= 0;
-        div3_result <= 0;
-        div3_count  <= 21;
-        div3_busy  <= '1';
-      elsif div3_busy = '1' and div3_count > 0 then
-        acc := div3_acc * 2;
-        if div3_shift(20) = '1' then acc := acc + 1; end if;
-        div3_shift <= div3_shift(19 downto 0) & '0';
-        div3_acc <= acc;
-        if acc >= 3 then
-          div3_result <= div3_result + 1;
-          div3_acc <= acc - 3;
-        end if;
-        div3_count <= div3_count - 1;
-        if div3_count = 1 then
-          div3_busy <= '0';
-        end if;
-      end if;
-    end if;
-  end process;
-
   -- Gen-FIFO depth invariant (simulation-only check)
   -- pragma translate_off
   assert GEN_FIFO_DEPTH > 0 report "GEN_FIFO_DEPTH must be > 0" severity failure;
   -- pragma translate_on
 
+  -- CDC: Full is a level generated in the FLA pclk domain and consumed here in
+  -- the CLK domain; synchronise it once and use full_sync everywhere.
+  full_sync_proc: process(CLK)
+  begin
+    if rising_edge(CLK) then
+      full_s1   <= Full;
+      full_sync <= full_s1;
+    end if;
+  end process;
+
   -- Bring-up/status preamble: run flags plus sticky SPI packet diagnostics.
   -- Registered on sys_clk before crossing to fast_clk SPI slave domain.
-  spi_preamble <= Run & Run_OLS & Full & '1' & "0000";
+  spi_preamble <= Run & Run_OLS & full_sync & '1' & "0000";
   process(CLK)
   begin
     if rising_edge(CLK) then
@@ -1196,7 +1273,7 @@ BEGIN
   Fast_Mode      <= fast_mode_i;
   Blk_Rd_Req_Tog <= blk_req_tog_i;
   Blk_Rd_Base    <= raw_blk_rd_base_cfg when raw_stream_req_active = '1'
-                    else TO_INTEGER(UNSIGNED(block_rd_addr(15 downto 1)));
+                    else TO_INTEGER(UNSIGNED(block_rd_addr(22 downto 1)));
   Blk_Rd_Count   <= raw_blk_rd_count_cfg when raw_stream_req_active = '1'
                     else blk_rd_samples;
   Continuous_Mode <= continuous_mode_i;
@@ -1263,10 +1340,27 @@ BEGIN
     cmd_active     => pkt_cmd_active,
     packet_ok   => pkt_ok,
     packet_err  => pkt_err,
+    in_packet   => pkt_in_packet,
     err_bad_crc  => open,
     err_bad_sync => open,
     err_oversize => open
   );
+
+  -- Index_Hold: freeze request for the FLA's pclk-domain index snapshot.
+  -- Asserted for the whole frame body (in_packet) and kept for one more cycle
+  -- by pkt_ok, which covers the cycle where in_packet has already fallen but
+  -- the dispatcher is still in IDLE (it sees pkt_ok in that cycle and is in
+  -- EXEC in the next). Because this register is a pure function of
+  -- (in_packet or pkt_ok) it is high through that EXEC cycle and low from the
+  -- following cycle: the dispatcher samples the index ports only in EXEC.
+  -- Idle bytes outside a frame never raise in_packet, so they never hold.
+  index_hold_proc: process(CLK)
+  begin
+    if rising_edge(CLK) then
+      index_hold_r <= pkt_in_packet or pkt_ok;
+    end if;
+  end process;
+  Index_Hold <= index_hold_r;
 
   -- ── RX payload header capture & GEN_LOAD streaming ───────────────
   -- Captures first 8 payload bytes for quick dispatch access.
@@ -1609,7 +1703,7 @@ BEGIN
                 rsp_stat_v := ST_CAPTURE_DONE;
               elsif Run_OLS = '1' and Run = '0' then
                 rsp_stat_v := ST_CAPTURE_ARMED;
-              elsif Run = '1' and Full = '0' then
+              elsif Run = '1' and full_sync = '0' then
                 rsp_stat_v := ST_CAPTURE_BUSY;
               else
                 rsp_stat_v := ST_CAPTURE_IDLE;
@@ -1664,8 +1758,21 @@ BEGIN
               -- bit0 = 24-bit generator divider, bit1 = direct live FIFO,
               -- bit2 = framed held-CS live stream (continuous waveform).
               rsp_buf(9) := x"0F";
-              rsp_buf_len := 10;
-              rsp_len_v := 10;
+              -- byte 10: image feature flags (second flag byte). Old hosts read
+              -- only bytes 0-9 (they check len >= 10), so the extra bytes are
+              -- backwards compatible.
+              --   bit0 = SDRAM read data is true (read-timing fix: data is
+              --          latched inside the chip's CL3 window)
+              --   bit1 = dropped-sample counter present (REG 0x60 bits 15:0)
+              --   bit2 = RLE stream flush fixed (the final run is always sent)
+              --   bit3 = continuous capture does not lose samples to host reads
+              --   bit4 = narrow 200 MHz capture loses no samples
+              rsp_buf(10) := IMAGE_FEATURES2;
+              -- byte 11: image generation (increments with each image that
+              -- changes host-visible behaviour).
+              rsp_buf(11) := IMAGE_GENERATION;
+              rsp_buf_len := 12;
+              rsp_len_v := 12;
               st := BUILD_RSP;
 
             when CMD_ARM_CAPTURE =>
@@ -1685,8 +1792,9 @@ BEGIN
                 live_stream_arm <= '0';
                 reg_val(7 downto 0)   := rx_payload_header(0);
                 reg_val(15 downto 8)  := rx_payload_header(1);
-                block_rd_issue_addr   <= reg_val(15 downto 0);
-                raw_blk_rd_base_cfg   <= TO_INTEGER(UNSIGNED(reg_val(15 downto 1)));
+                reg_val(23 downto 16) := rx_payload_header(2);
+                block_rd_issue_addr   <= reg_val(22 downto 0);
+                raw_blk_rd_base_cfg   <= TO_INTEGER(UNSIGNED(reg_val(22 downto 1)));
                 reg_val(7 downto 0) := rx_payload_header(4);
                 reg_val(15 downto 8) := rx_payload_header(5);
                 reg_val(23 downto 16) := rx_payload_header(6);
@@ -1849,6 +1957,7 @@ BEGIN
               if rx_header_len >= 4 then
                 block_rd_issue_addr(7 downto 0)   <= rx_payload_header(0);
                 block_rd_issue_addr(15 downto 8)  <= rx_payload_header(1);
+                block_rd_issue_addr(22 downto 16) <= rx_payload_header(2)(6 downto 0);
                 block_rd_issue_req <= '1';
                 block_wd := 0;
                 st := WAIT_BLOCK;
@@ -2242,12 +2351,13 @@ BEGIN
             -- the host word-aligned and lets it skip whole idle words.
             if spi_tx_ready_i = '1' then
               if raw_comp_bhi = '0' then
-                if raw_comp_fifo_count > 0 then
+                if raw_comp_head_valid = '1' then
                   raw_comp_word_idle := false;
                   raw_stream_tx_sel <= '1';
-                  raw_stream_tx_byte <= raw_comp_fifo(raw_comp_fifo_rd_ptr)(7 downto 0);
+                  raw_stream_tx_byte <= raw_comp_fifo_q(7 downto 0);
                   raw_comp_bhi := '1';
-                elsif raw_comp_done = '1' then
+                elsif raw_comp_done = '1' and raw_comp_fifo_count = 0 then
+                  -- done AND no word left in the FIFO or in flight to head
                   raw_start_pending := false;
                   st := IDLE;
                 else
@@ -2261,7 +2371,7 @@ BEGIN
                 if raw_comp_word_idle then
                   raw_stream_tx_byte <= x"00";
                 else
-                  raw_stream_tx_byte <= raw_comp_fifo(raw_comp_fifo_rd_ptr)(15 downto 8);
+                  raw_stream_tx_byte <= raw_comp_fifo_q(15 downto 8);
                   raw_comp_pop <= '1';  -- whole real word consumed
                 end if;
                 raw_comp_bhi := '0';

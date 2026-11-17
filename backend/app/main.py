@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from .api import (capture, decoders, devices, diagnostics, exports, generator,
                   measurements, mil, serial, sessions, status, validation,
                   waveform)
+from .api.mil import max6675_logger
 from .config import APP_NAME, APP_VERSION, FRONTEND_DIST, PORT
 from .diagnostics.logger import setup_logging
 from .hardware.base import HardwareError
@@ -69,11 +70,13 @@ async def lifespan(app: FastAPI):
         "",
     ])
     print(banner, flush=True)
+    max6675_logger.resume_if_needed()
     if MCP_SERVER is not None:
         async with MCP_SERVER.session_manager.run():
             yield
     else:
         yield
+    max6675_logger.shutdown()
     accelerometer.stop()
     virtual_com_manager.stop()
     capture_manager.disconnect()
