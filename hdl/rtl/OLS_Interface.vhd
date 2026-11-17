@@ -230,10 +230,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL gen_capture_start   : STD_LOGIC := '0';
   type gen_cap_state_t is (GENCAP_IDLE, GENCAP_LOOPBACK_ON, GENCAP_ARM, GENCAP_GUARD, GENCAP_WAIT_BUSY, GENCAP_RUNNING, GENCAP_RUNNING_REPEAT, GENCAP_WAIT_FULL, GENCAP_DONE, GENCAP_ERROR);
   SIGNAL gen_cap_state : gen_cap_state_t := GENCAP_IDLE;
-  -- Watchdog for a generator that never finishes: 2 s at 100 MHz.  A running
-  -- burst is ended by Gen_Busy falling (or by the capture filling), not by a
-  -- fixed duration, so this only bounds a stuck generator.
-  CONSTANT GEN_CAPTURE_WATCHDOG : NATURAL := 200000000;
+  -- Watchdog for a generator that never finishes: 12,500,000 wd_tick ticks
+  -- (x16 = 200,000,000 CLK cycles = 2 s at 100 MHz). A running burst is ended
+  -- by Gen_Busy falling (or by the capture filling), not by a fixed duration,
+  -- so this only bounds a stuck generator. The phase offset of the shared tick
+  -- bounds the real timeout at 2 s + at most 160 ns.
+  CONSTANT GEN_CAPTURE_WATCHDOG : NATURAL := 12_500_000;
 
   -- Synthesis preserve: prevent Quartus from optimizing away gen start chain
   attribute preserve : boolean;
@@ -387,6 +389,16 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   -- 50 ms limit (bit5: a burst ends on Gen_Busy or Full, 2 s watchdog).
   CONSTANT IMAGE_FEATURES2 : STD_LOGIC_VECTOR(7 downto 0) := x"3F";
   CONSTANT IMAGE_GENERATION : STD_LOGIC_VECTOR(7 downto 0) := x"04";
+  -- Shared watchdog tick: one free-running prescaler in the CLK domain. The
+  -- software timeouts that can tolerate a 16-cycle quantum count these ticks
+  -- instead of CLK cycles, so they need no second (sub)counter and their
+  -- counters are 4 bits narrower. Timeout bounds are unchanged to within one
+  -- tick (<0.05% for the 500 us/20 ms/2 s bounds). Timeouts that need
+  -- cycle resolution stay on their own CLK count (see the comments at
+  -- comp_wait_cnt and gen_capture_guard).
+  CONSTANT WD_TICK_DIV : NATURAL := 16;   -- 160 ns at 100 MHz
+  SIGNAL wd_tick_cnt   : NATURAL range 0 to WD_TICK_DIV - 1 := 0;
+  SIGNAL wd_tick       : STD_LOGIC := '0';
   SIGNAL sig_rd_pend_d1       : STD_LOGIC := '0';
   -- Drives the OUT request toggle so the FSM can read/flip it (port is OUT).
   SIGNAL blk_req_tog_i        : STD_LOGIC := '0';
@@ -397,6 +409,11 @@ SIGNAL blk_rsp_words : INTEGER range 0 to 512 := BLOCK_SAMPLES;
   -- 167 MHz cone). Passthrough when compression is disabled, so all block
   -- reads share one drain/store path.
   SIGNAL drain_in_cnt  : INTEGER range 0 to 512 := 0;
+  -- Compressor flush give-up bound. Deliberately NOT on wd_tick: today it is a
+  -- 64-CLK (640 ns) timeout, and a 16-cycle tick can only land at 33-48 or
+  -- 49-64 CLK depending on the tick phase, i.e. -48%..0% -- outside the +-10%
+  -- the tick conversion must respect. A 6-bit counter is cheaper than a
+  -- 1-clock-resolution tick, so this stays on its own CLK count.
   SIGNAL comp_wait_cnt : INTEGER range 0 to 63 := 0;
   SIGNAL pad_req       : STD_LOGIC := '0';
   SIGNAL comp_rst_i    : STD_LOGIC := '0';
@@ -599,6 +616,22 @@ BEGIN
       Bit_Order         => pattern_ctrl(5),
       Trigger           => pattern_trigger
     );
+
+  -- Free-running watchdog tick (see WD_TICK_DIV). Every tick-consuming
+  -- timeout advances on wd_tick, so the phase offset is at most 15 cycles and
+  -- at most one extra tick of latency.
+  wd_tick_gen : PROCESS (CLK)
+  BEGIN
+    IF RISING_EDGE(CLK) THEN
+      IF wd_tick_cnt = WD_TICK_DIV - 1 THEN
+        wd_tick_cnt <= 0;
+        wd_tick     <= '1';
+      ELSE
+        wd_tick_cnt <= wd_tick_cnt + 1;
+        wd_tick     <= '0';
+      END IF;
+    END IF;
+  END PROCESS;
 
   PROCESS (CLK)
     variable fifo_wr_v : natural range 0 to RAW_COMP_FIFO_LAST;
@@ -1155,7 +1188,7 @@ BEGIN
   -- watchdog for a generator that never finishes.
   gen_capture_fsm: PROCESS (CLK)
     VARIABLE guard_var : NATURAL range 0 to 1023 := 0;
-    VARIABLE timeout_var : NATURAL range 0 to 268435455 := 0;
+    VARIABLE timeout_var : NATURAL range 0 to GEN_CAPTURE_WATCHDOG := 0;
     VARIABLE disp_gen_arm_d : STD_LOGIC := '0';
   BEGIN
     IF RISING_EDGE(CLK) THEN
@@ -1177,10 +1210,13 @@ BEGIN
             END IF;
           WHEN GENCAP_GUARD =>
             IF guard_var > 0 THEN
+              -- Fixed settle delay, deliberately NOT on wd_tick: it decides
+              -- when Gen_Start is issued (512 CLK cycles = 5.12 us), and no
+              -- host-visible contract depends on quantising it.
               guard_var := guard_var - 1;
             ELSE
               gen_start_pulse <= '1';
-              timeout_var := 2000;
+              timeout_var := 125;   -- 125 wd_tick ticks = 2000 CLK cycles
               gen_cap_state <= GENCAP_WAIT_BUSY;
             END IF;
           WHEN GENCAP_WAIT_BUSY =>
@@ -1202,7 +1238,7 @@ BEGIN
               END IF;
             ELSIF Gen_Start_Reject = '1' OR timeout_var = 0 THEN
               gen_cap_state <= GENCAP_ERROR;
-            ELSE
+            ELSIF wd_tick = '1' THEN
               timeout_var := timeout_var - 1;
             END IF;
           WHEN GENCAP_RUNNING =>
@@ -1211,7 +1247,7 @@ BEGIN
               gen_cap_state <= GENCAP_WAIT_FULL;
             ELSIF timeout_var = 0 THEN
               gen_cap_state <= GENCAP_ERROR;
-            ELSE
+            ELSIF wd_tick = '1' THEN
               timeout_var := timeout_var - 1;
             END IF;
           WHEN GENCAP_RUNNING_REPEAT =>
@@ -1454,8 +1490,9 @@ BEGIN
     variable feed_wait_ready_low : boolean := false;
     variable block_last_v : boolean := false;
     -- A normal 512-sample block read completes in ~5000 CLK cycles (~50 us at
-    -- 100 MHz); 50000 gives ~10x margin before the watchdog declares a stall.
-    constant BLOCK_WD_MAX : natural := 50000;
+    -- 100 MHz); 3125 wd_tick ticks (x16 = 50000 CLK cycles, 500 us) gives ~10x
+    -- margin before the watchdog declares a stall.
+    constant BLOCK_WD_MAX : natural := 3125;
     -- Watchdog for WAIT_BLOCK. A healthy block read completes in a few thousand
     -- CLK cycles; if block_rd_ack has not arrived well past that the stream has
     -- stalled (read issued during continuous capture), so give up and recover
@@ -1506,22 +1543,11 @@ BEGIN
     -- A full direct compact window is staged before its fixed-length SPI
     -- response is admitted. A missing source must still fail within a
     -- bounded interval, but lower-rate windows need more than one millisecond
-    -- to fill. Keep the timing-critical counter at its original width and
-    -- advance it once per 20 CLK cycles: 100,000 counts represents 20 ms.
-    constant RAW_READY_WD_MAX : natural := 100000;
+    -- to fill. The bound is 20 ms: 125,000 wd_tick ticks (x16 = 2,000,000 CLK
+    -- cycles at 100 MHz). The old 20-cycle sub-counter and its procedure are
+    -- gone -- the shared tick provides the prescale.
+    constant RAW_READY_WD_MAX : natural := 125000;
     variable raw_ready_wd : natural range 0 to RAW_READY_WD_MAX := 0;
-    variable raw_ready_sub : natural range 0 to 19 := 0;
-    procedure advance_ready_watchdog(
-      variable watchdog : inout natural;
-      variable subcycle : inout natural) is
-    begin
-      if subcycle = 19 then
-        subcycle := 0;
-        watchdog := watchdog + 1;
-      else
-        subcycle := subcycle + 1;
-      end if;
-    end procedure;
     -- Compressed-stream byte serializer state: which byte of the current
     -- output word is next, and whether that word is a 0x0000 idle filler
     -- (FIFO was empty at the word boundary) rather than a real FIFO word.
@@ -1811,7 +1837,6 @@ BEGIN
                 rsp_len_v := 8;
                 rsp_stat_v := ST_STREAM_ACTIVE;
                 raw_ready_wd := 0;
-                raw_ready_sub := 0;
                 -- In uncompressed mode the first FIFO word is the stream's
                 -- first byte.  A CS rise from the previous command may still
                 -- be draining residual read-FIFO words; wait for that drain
@@ -1893,7 +1918,6 @@ BEGIN
                   raw_fetch_state := 0;
                   raw_byte_hi_next := false;
                   raw_ready_wd := 0;
-                  raw_ready_sub := 0;
                   -- A direct stream reports zeroed reserved cursor fields.
                   -- The host uses the same ACK parser as the SDRAM stream.
                   -- Direct streams use the second reserved cursor word as a
@@ -2134,7 +2158,7 @@ BEGIN
             rsp_stat_v := ST_CAPTURE_IDLE;
             rsp_len_v := 0;
             st := BUILD_RSP;
-          else
+          elsif wd_tick = '1' then
             block_wd := block_wd + 1;
           end if;
 
@@ -2324,7 +2348,7 @@ BEGIN
             raw_stream_comp_mode <= '0';
             st := BUILD_RSP;
           else
-            advance_ready_watchdog(raw_ready_wd, raw_ready_sub);
+            if wd_tick = '1' then raw_ready_wd := raw_ready_wd + 1; end if;
           end if;
 
         when RAW_WAIT_READY =>
@@ -2346,7 +2370,7 @@ BEGIN
               live_stream_arm <= '0';
               st := BUILD_RSP;
             else
-              advance_ready_watchdog(raw_ready_wd, raw_ready_sub);
+              if wd_tick = '1' then raw_ready_wd := raw_ready_wd + 1; end if;
             end if;
           elsif raw_live_source and raw_live_compact then
             if unsigned(live_fifo_rdusedw) >=
@@ -2360,7 +2384,7 @@ BEGIN
               live_stream_arm <= '0';
               st := BUILD_RSP;
             else
-              advance_ready_watchdog(raw_ready_wd, raw_ready_sub);
+              if wd_tick = '1' then raw_ready_wd := raw_ready_wd + 1; end if;
             end if;
           elsif raw_have_word then
             st := BUILD_RSP;
@@ -2377,7 +2401,7 @@ BEGIN
             raw_stream_comp_mode <= '0';
             st := BUILD_RSP;
           else
-            advance_ready_watchdog(raw_ready_wd, raw_ready_sub);
+            if wd_tick = '1' then raw_ready_wd := raw_ready_wd + 1; end if;
           end if;
 
         when LIVE_WAIT_DRAIN =>
@@ -2396,7 +2420,7 @@ BEGIN
             raw_live_source := false;
             st := BUILD_RSP;
           else
-            advance_ready_watchdog(raw_ready_wd, raw_ready_sub);
+            if wd_tick = '1' then raw_ready_wd := raw_ready_wd + 1; end if;
           end if;
 
         when RAW_STREAM =>
