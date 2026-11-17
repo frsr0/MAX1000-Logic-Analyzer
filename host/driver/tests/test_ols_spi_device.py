@@ -680,7 +680,7 @@ class TestOLSDeviceSPI:
         device_spi._compressed_block_reads_supported = {'delta_rle': None, 'rle': None}
         device_spi.pkt.read_register.return_value = 0
 
-        def fake_decompress(data, codec='rle'):
+        def fake_decompress(data, codec='rle', chained=False):
             return b'' if data == b'bad' else b'\x00' * 1024
 
         with patch('driver.ols_spi_device.decompress_block_readback_stream',

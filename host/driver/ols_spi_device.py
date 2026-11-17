@@ -1073,6 +1073,11 @@ class OLSDeviceSPI:
                     & _proto.IMAGE_FEATURE_GEN_CAPTURE_UNLIMITED)
 
     @property
+    def delta_anchors_chained(self):
+        """True when delta readback chains anchors across groups (image gen 5)."""
+        return bool(self.image_features & _proto.IMAGE_FEATURE_DELTA_CHAINED)
+
+    @property
     def read_compensation_active(self):
         """True when block reads still drop a duplicated SDRAM lead word.
 
@@ -2438,7 +2443,9 @@ class OLSDeviceSPI:
                     # raw with the FPGA compression flags cleared.
                     t_decode = time.perf_counter()
                     decoded = [decompress_block_readback_stream(
-                        b, codec=decode_codec) if b else b'' for b in blocks]
+                        b, codec=decode_codec,
+                        chained=self.delta_anchors_chained) if b else b''
+                        for b in blocks]
                     need_raw = [j for j, d in enumerate(decoded) if len(d) != 1024]
                     # A delta_rle batch where a quarter or more of the blocks
                     # overflow the 5-bit delta field is a signal that is too
@@ -2469,7 +2476,8 @@ class OLSDeviceSPI:
                                 if rb:
                                     try:
                                         decoded_rb = decompress_block_readback_stream(
-                                            rb, codec=decode_codec)
+                                            rb, codec=decode_codec,
+                                            chained=self.delta_anchors_chained)
                                     except Exception:
                                         decoded_rb = b''
                                     if len(decoded_rb) == 1024:

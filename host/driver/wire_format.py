@@ -283,16 +283,17 @@ def decode_analog_frames(data: bytes, mode: int) -> List[dict]:
 # ── delta / RLE decompression ────────────────────────────────────────
 
 
-def decompress_delta_block(data: bytes) -> bytes:
-    """Decompress a delta-packed block (6 words -> 16 samples)."""
-    words = struct.unpack('<6H', data)
+def _decode_delta_group(words, anchor: int):
+    """Decode one 6-word group whose absolute anchor is given.
+
+    Returns ``(samples_bytes, last_prev)``. ``last_prev`` is the running value
+    after the group: the carry into the next group of a chained stream.
+    """
     out = bytearray(32)
-    prev = words[0]
+    prev = anchor
     struct.pack_into('<H', out, 0, prev)
-    wi, si = 1, 1
-    for _ in range(5):
-        w = words[wi]
-        wi += 1
+    si = 1
+    for w in words[1:]:
         if w & 0x8000:
             prev = w & 0x7FFF
             struct.pack_into('<H', out, si * 2, prev)
@@ -305,7 +306,13 @@ def decompress_delta_block(data: bytes) -> bytes:
             prev = (prev + d) & 0xFFFF
             struct.pack_into('<H', out, si * 2, prev)
             si += 1
-    return bytes(out)
+    return bytes(out), prev
+
+
+def decompress_delta_block(data: bytes) -> bytes:
+    """Decompress a delta-packed block (6 words -> 16 samples)."""
+    words = struct.unpack('<6H', data)
+    return _decode_delta_group(words, words[0])[0]
 
 
 def _sign_extend_5(values):
@@ -335,10 +342,49 @@ def _decompress_delta_blocks_fast(blocks: np.ndarray) -> np.ndarray:
     return out
 
 
-def decompress_delta_stream(data: bytes) -> bytes:
+def _decompress_delta_chained_fast(blocks: np.ndarray) -> np.ndarray:
+    """Vectorized chained-anchor decoder for blocks without keyframes.
+
+    Every word0 is an increment: group 0's is the absolute start sample and
+    group g's is the wrapping difference from group g-1's last sample. One
+    cumulative sum over the flattened sample sequence therefore yields the
+    absolute samples.
+    """
+    n = blocks.shape[0]
+    inc = np.empty((n, 16), dtype=np.int64)
+    inc[:, 0] = blocks[:, 0]
+    w = blocks[:, 1:].astype(np.int64)
+    deltas = np.stack(
+        (_sign_extend_5(w), _sign_extend_5(w >> 5), _sign_extend_5(w >> 10)),
+        axis=2,
+    )
+    inc[:, 1:] = deltas.reshape(n, 15)
+    absolute = np.cumsum(inc.reshape(-1)) & 0xFFFF
+    return absolute.astype('<u2').reshape(n, 16)
+
+
+def _decompress_delta_chained_slow(blocks: np.ndarray) -> np.ndarray:
+    """Group-by-group chained decoder; handles keyframe words (bit 15 set).
+
+    The carry starts at 0, so group 0's anchor is its word0 unchanged.
+    """
+    n = blocks.shape[0]
+    out = np.empty((n, 16), dtype='<u2')
+    prev = 0
+    for g in range(n):
+        words = tuple(int(x) for x in blocks[g])
+        anchor = (prev + words[0]) & 0xFFFF
+        samples, prev = _decode_delta_group(words, anchor)
+        out[g] = np.frombuffer(samples, dtype='<u2', count=16)
+    return out
+
+
+def decompress_delta_stream(data: bytes, chained: bool = False) -> bytes:
     """Decompress a stream of packed 12-byte delta blocks.
 
-    Vectorized with numpy for the common keyframe-free case.
+    Vectorized with numpy for the common keyframe-free case. With ``chained``
+    (FPGA image generation 5+) only group 0's word0 is a verbatim sample; the
+    anchors of later groups are wrapping differences from the previous group.
     """
     BLOCK_SAMPLES = 16
     BLOCK_BYTES = 12
@@ -348,6 +394,13 @@ def decompress_delta_stream(data: bytes) -> bytes:
     payload = data[:n_full * BLOCK_BYTES]
     blocks = np.frombuffer(payload, dtype='<u2').reshape(-1, 6)
     key_mask = np.any(blocks[:, 1:] & 0x8000, axis=1)
+    if chained:
+        tail = data[n_full * BLOCK_BYTES:]
+        if key_mask.any():
+            out = _decompress_delta_chained_slow(blocks)
+        else:
+            out = _decompress_delta_chained_fast(blocks)
+        return out.tobytes() + tail
     if not key_mask.any():
         out = _decompress_delta_blocks_fast(blocks)
         tail = data[n_full * BLOCK_BYTES:]
@@ -381,9 +434,10 @@ def decompress_rle_stream(data: bytes) -> bytes:
     return np.repeat(values, counts).tobytes()
 
 
-def decompress_block_readback_stream(data: bytes, *, codec: str = 'rle') -> bytes:
+def decompress_block_readback_stream(data: bytes, *, codec: str = 'rle',
+                                     chained: bool = False) -> bytes:
     """Decompress one compressed CMD_READ_CAPTURE block."""
     decoded = decompress_rle_stream(data)
     if codec in ('delta', 'delta_rle'):
-        return decompress_delta_stream(decoded)
+        return decompress_delta_stream(decoded, chained=chained)
     return decoded

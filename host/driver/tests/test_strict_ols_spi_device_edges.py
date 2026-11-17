@@ -1339,7 +1339,7 @@ def test_capture_range_compressed_retry_failures_fall_back_raw(retry_mode, monke
     else:
         dev.pkt.read_capture_block.return_value = b"retry"
 
-    def decode(block, codec):
+    def decode(block, codec, chained=False):
         if block == b"bad":
             return b""
         if retry_mode == "decode_raises":
@@ -1374,7 +1374,7 @@ def test_capture_range_handles_missing_retry_api_partial_probe_and_empty_blocks(
     monkeypatch.setattr(
         device_module,
         "decompress_block_readback_stream",
-        lambda block, codec: b"\x04\x00" * 512 if block == b"good" else b"",
+        lambda block, codec, chained=False: b"\x04\x00" * 512 if block == b"good" else b"",
     )
     data = dev.read_capture_range(0, 520)
     assert data == b""
@@ -2114,7 +2114,7 @@ def test_partial_compression_failure_with_known_support_keeps_codec(monkeypatch)
     monkeypatch.setattr(
         device_module,
         "decompress_block_readback_stream",
-        lambda block, codec: b"\x01\x00" * 512 if block == b"good" else b"",
+        lambda block, codec, chained=False: b"\x01\x00" * 512 if block == b"good" else b"",
     )
     dev._read_blocks_uncompressed = MagicMock(return_value=[b"\x02\x00" * 512])
     assert len(dev.read_capture_range(0, 520)) == 1040

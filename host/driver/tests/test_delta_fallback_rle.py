@@ -55,12 +55,12 @@ def _device(overflow_blocks=()):
 
 @pytest.fixture
 def delta_decode(monkeypatch):
-    def decode(block, codec='rle'):
+    def decode(block, codec='rle', chained=False):
         if codec == 'delta_rle':
             if block.startswith(b'ok'):
                 return struct.pack('<H', 0x1000 + int(block[2:])) * 512
             return b''
-        return _REAL_DECODE(block, codec=codec)
+        return _REAL_DECODE(block, codec=codec, chained=chained)
 
     monkeypatch.setattr(device_module, 'decompress_block_readback_stream', decode)
 
