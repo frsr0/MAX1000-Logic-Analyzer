@@ -313,6 +313,9 @@ class SPIDevice:
         # larger (about 252 B at <=10 MS/s, 610 B at 100.2 MS/s measured) than
         # the 154 B the fixed slot sizes below were tuned for.
         self._block_latency = None
+        # Response slot (bytes) for compressed batches as adapted from the last
+        # clean batch (None = use BATCH_RSP_PAD_COMPRESSED).
+        self._compressed_slot = None
         # Last value this host knows the FPGA register holds (set by a
         # successful write or read through this object, dropped on any failure
         # or by invalidate_registers()). Only used to skip a write/read that
@@ -619,16 +622,31 @@ class SPIDevice:
     # for reliability margin over USB/scheduling jitter.
     BATCH_GAP_PAD = 160
     BATCH_RSP_PAD = 1056
-    # Compressed responses for compressible content are 8 + 384 + 2 = 394
-    # bytes (2.67x), so compressed batches use compact slots for the wire
-    # gain. A block whose (incompressible) response overruns its slot is
-    # simply missing from the scan and gets the per-block raw retry below —
+    # Compressed responses are small for most content (measured 4..12 bytes
+    # of payload for rle, so a fixed 430-byte slot wastes most of the wire
+    # time). The slot adapts: it starts at 430, and after a clean batch it is
+    # sized to cover where each response ENDS relative to its own request's
+    # gap. The FPGA's request-to-response latency can exceed BATCH_GAP_PAD, so
+    # the response starts past the gap and the slot must cover that part too,
+    # plus COMPRESSED_SLOT_MARGIN (never below COMPRESSED_SLOT_MIN). It falls
+    # back to 430 (redoing the batch once) if a batch loses blocks with a
+    # shrunken slot. A block whose response overruns its slot is simply
+    # missing from the scan and gets the per-block raw retry below —
     # correctness never depends on the slot guess.
     BATCH_RSP_PAD_COMPRESSED = 430
+    COMPRESSED_SLOT_MARGIN = 24   # bytes added to the largest response seen
+    COMPRESSED_SLOT_MIN = 48      # never go below this
     # Upper bound for a learned/bumped response latency (bytes).
     MAX_BLOCK_LATENCY = 2000
     # Request-to-response latency (bytes) the fixed slots above handle.
     BLOCK_LATENCY_TOLERATED = 197
+
+    @property
+    def compressed_rsp_pad(self) -> int:
+        """Response slot (bytes) used for compressed batched reads."""
+        if self._compressed_slot is not None:
+            return self._compressed_slot
+        return self.BATCH_RSP_PAD_COMPRESSED
 
     @_serialised
     def read_capture_blocks(self, byte_addrs, stop_evt=None, compressed=False,
@@ -648,8 +666,11 @@ class SPIDevice:
             return [self.read_capture_block(a, compressed=compressed)
                     for a in byte_addrs]
 
-        rsp_pad = (self.BATCH_RSP_PAD_COMPRESSED if compressed
+        rsp_pad = (self.compressed_rsp_pad if compressed
                    else self.BATCH_RSP_PAD)
+        gap = self.batch_gap_pad
+        # each request is 12 bytes; request i starts at offset i * stride
+        stride = 12 + gap + rsp_pad
         payload = bytearray()
         seqs = []
         for addr in byte_addrs:
@@ -657,12 +678,14 @@ class SPIDevice:
             seqs.append(seq)
             payload.extend(build_packet(CMD_READ_CAPTURE, seq,
                                         struct.pack('<I', addr)))
-            payload.extend(b"\xff" * (self.batch_gap_pad + rsp_pad))
+            payload.extend(b"\xff" * (gap + rsp_pad))
+        seq_index = {s: i for i, s in enumerate(seqs)}
         try:
             raw = self.spi.stream_payload(bytes(payload), stop_evt=stop_evt)
 
             blocks = {}
             starved_replies = 0
+            max_need = 0
             self.last_read_starved = False
             idx = raw.find(SYNC_RSP)
             if idx >= 12:
@@ -681,6 +704,11 @@ class SPIDevice:
                 parsed = parse_response(raw[idx:end])
                 if parsed:
                     status, rsp_seq, rsp_payload = parsed
+                    if rsp_seq in seq_index:
+                        # bytes this response needs past its gap (it may
+                        # start after the gap: the latency can exceed it)
+                        need = end - (seq_index[rsp_seq] * stride + 12 + gap)
+                        max_need = max(max_need, need)
                     if status == ST_OK:
                         blocks.setdefault(rsp_seq, rsp_payload)
                     elif status == ST_CAPTURE_IDLE and not rsp_payload:
@@ -696,7 +724,24 @@ class SPIDevice:
                 self.last_read_starved = True
                 return [b''] * len(byte_addrs)
             lost = sum(1 for s in seqs if blocks.get(s) is None)
-            if (self._block_latency is not None
+            shrink_fallback = False
+            if compressed:
+                if lost > 0 and rsp_pad < self.BATCH_RSP_PAD_COMPRESSED:
+                    # The shrunken slot was too small, not the latency: go back
+                    # to the default slot and redo the batch once.
+                    self._compressed_slot = None
+                    shrink_fallback = True
+                    if not _retried and (stop_evt is None
+                                         or not stop_evt.is_set()):
+                        return self.read_capture_blocks(
+                            byte_addrs, stop_evt=stop_evt, compressed=True,
+                            _retried=True)
+                elif lost == 0:
+                    self._compressed_slot = max(
+                        self.COMPRESSED_SLOT_MIN,
+                        min(self.BATCH_RSP_PAD_COMPRESSED,
+                            max_need + self.COMPRESSED_SLOT_MARGIN))
+            if (not shrink_fallback and self._block_latency is not None
                     and lost * 4 >= len(seqs) and lost > 0):
                 # A quarter or more of the batch was lost to a latency the slot
                 # did not cover (it grew since it was learned): widen the next

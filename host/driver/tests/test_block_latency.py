@@ -166,3 +166,139 @@ def test_latency_grows_mid_session_batch_widens_and_follows_the_rate():
     pkt.read_capture_blocks([0, 1024])
     pkt.read_capture_blocks([0, 1024])
     assert pkt._block_latency == 150 and pkt.batch_gap_pad == 160
+
+
+# --- adaptive compressed response slot -------------------------------------
+
+LAT = 40   # request-to-response latency of the fake link (below the tolerance)
+
+
+def _request_seqs(payload):
+    """Seq byte (index 3) of each 12-byte CMD_READ_CAPTURE request, in order."""
+    seqs, pos = [], 0
+    while True:
+        pos = payload.find(protocol.SYNC_REQ, pos)
+        if pos < 0:
+            return seqs
+        seqs.append(payload[pos + 3])
+        pos += 12
+
+
+def _batch_spi(size=4, drop=lambda call, i: False, latency=LAT, stray=False):
+    """Fake link. Request i occupies bytes [i*stride, i*stride+12) and its
+    reply starts `latency` bytes after the request ends, as on hardware.
+    `drop(call, i)` omits a reply; `stray` adds a reply with an unknown seq."""
+    class Spi:
+        def __init__(self):
+            self.sent = []
+
+        def stream_payload(self, payload, stop_evt=None):
+            self.sent.append(len(payload))
+            n = len(self.sent)
+            payload = bytes(payload)
+            seqs = _request_seqs(payload)
+            stride = len(payload) // len(seqs)
+            out = bytearray(FILL * len(payload))
+            for i, seq in enumerate(seqs):
+                if drop(n, i):
+                    continue
+                at = i * stride + 12 + latency
+                rsp = _response_bytes(seq, b"\x11" * size)
+                if len(out) < at + len(rsp):
+                    out.extend(FILL * (at + len(rsp) - len(out)))
+                out[at:at + len(rsp)] = rsp
+            if stray:
+                out.extend(_response_bytes(0xEE, b"\x22" * size))
+            return bytes(out)
+
+        def _drain(self):
+            pass
+
+    return Spi()
+
+
+def test_clean_compressed_batch_shrinks_the_slot_to_the_largest_response():
+    spi = _batch_spi(size=4)
+    pkt = SPIDevice(spi)
+    assert pkt.compressed_rsp_pad == 430
+    assert pkt.read_capture_blocks([0, 1024], compressed=True) == [b"\x11" * 4] * 2
+    # the response ends long before the gap: need is negative, floored to 48
+    assert pkt._compressed_slot == 48 and pkt.compressed_rsp_pad == 48
+    pkt.read_capture_blocks([0, 1024], compressed=True)
+    assert spi.sent[1] < spi.sent[0]
+    assert spi.sent[1] == 2 * (12 + pkt.batch_gap_pad + 48)
+
+
+def test_slot_covers_the_response_end_when_latency_exceeds_the_gap():
+    """Hardware: the reply starts gap + 36 bytes after the request, so the slot
+    must cover the reply's END past the gap, not just its length. A stray
+    reply with an unknown seq must not count."""
+    spi = _batch_spi(size=4, latency=160 + 36, stray=True)
+    pkt = SPIDevice(spi)
+    assert pkt.read_capture_blocks([0, 1024], compressed=True) == [b"\x11" * 4] * 2
+    assert pkt._block_latency == 196 and pkt.batch_gap_pad == 160
+    assert pkt._compressed_slot == max(48, 36 + 8 + 4 + 24) == 72
+    # a following batch built with that slot parses every block, no fallback
+    assert pkt.read_capture_blocks([0, 1024], compressed=True) == [b"\x11" * 4] * 2
+    assert spi.sent == [2 * (12 + 160 + 430), 2 * (12 + 160 + 72)]
+
+
+def test_raw_batches_never_change_the_compressed_slot():
+    spi = _batch_spi(size=1024)
+    pkt = SPIDevice(spi)
+    pkt._compressed_slot = 100
+    assert pkt.read_capture_blocks([0, 1024]) == [b"\x11" * 1024] * 2
+    assert pkt._compressed_slot == 100
+    assert spi.sent[0] == 2 * (12 + 160 + 1056)
+    pkt.read_capture_blocks([0, 1024])
+    assert pkt._compressed_slot == 100
+    assert spi.sent[1] == 2 * (12 + 160 + 1056)
+
+
+def test_lost_block_with_shrunken_slot_resets_and_redoes_once():
+    spi = _batch_spi(size=4, drop=lambda call, i: call == 1 and i == 1)
+    pkt = SPIDevice(spi)
+    pkt.note_block_latency(LAT)
+    pkt._compressed_slot = 48
+    blocks = pkt.read_capture_blocks([0, 1024], compressed=True)
+    assert blocks == [b"\x11" * 4] * 2
+    # exactly one redo, and it used the default 430-byte slot again
+    assert len(spi.sent) == 2
+    assert spi.sent[0] == 2 * (12 + pkt.batch_gap_pad + 48)
+    assert spi.sent[1] == 2 * (12 + 160 + 430)
+    assert pkt._block_latency == LAT                  # not bumped by this case
+
+
+def test_lost_block_with_shrunken_slot_and_stop_set_is_not_redone():
+    import threading
+    stop = threading.Event()
+    stop.set()
+    spi = _batch_spi(size=4, drop=lambda call, i: i == 1)
+    pkt = SPIDevice(spi)
+    pkt.note_block_latency(LAT)
+    pkt._compressed_slot = 48
+    blocks = pkt.read_capture_blocks([0, 1024], stop_evt=stop, compressed=True)
+    assert blocks == [b"\x11" * 4, b""]
+    assert len(spi.sent) == 1                         # no redo once stopping
+    assert pkt._compressed_slot is None
+    assert pkt._block_latency == LAT                  # latency path skipped
+
+
+def test_slot_clamps_at_the_default_for_a_large_response():
+    spi = _batch_spi(size=1000)
+    pkt = SPIDevice(spi)
+    pkt._compressed_slot = 100
+    assert pkt.read_capture_blocks([0], compressed=True) == [b"\x11" * 1000]
+    assert pkt._compressed_slot == 430                # need 888 + 24 clamped
+
+
+def test_loss_at_the_default_slot_takes_the_latency_path():
+    spi = _batch_spi(size=4, drop=lambda call, i: call == 1 and i == 1)
+    pkt = SPIDevice(spi)
+    pkt.note_block_latency(LAT)
+    blocks = pkt.read_capture_blocks([0, 1024], compressed=True)
+    assert blocks == [b"\x11" * 4] * 2
+    assert len(spi.sent) == 2                         # redone once, as before
+    assert spi.sent == [2 * (12 + 160 + 430)] * 2     # default slot kept
+    assert pkt._block_latency == LAT                  # the redo re-learned it
+    assert pkt._compressed_slot == 48                 # only the clean redo shrinks it
