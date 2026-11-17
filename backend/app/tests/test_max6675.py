@@ -3,6 +3,7 @@ import csv
 import io
 import threading
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -12,7 +13,7 @@ from pydantic import ValidationError
 from app.api import mil as mil_api
 from app.hardware.base import HardwareError
 from app.mil.max6675 import (Max6675Busy, Max6675Channel, Max6675Config,
-                             Max6675Logger, decode_frame)
+                             Max6675Logger, Max6675NoteRequest, decode_frame)
 
 
 class FakeManager:
@@ -107,6 +108,9 @@ def api_env(logger, device=None):
             patch.object(mil_api, "max6675_logger", logger), \
             patch.object(mil_api.capture_manager, "device", device):
         yield control
+
+
+EXPORT_BASE = 1_700_000_000.0  # local-time formatting needs a post-1970 timestamp on Windows
 
 
 class DecodeFrameTests(unittest.TestCase):
@@ -232,13 +236,17 @@ class LoggerStatusAndConfigTests(unittest.TestCase):
     def test_status_shape_and_empty_last_readings(self):
         status = make_logger().status()
         self.assertEqual(set(status), {
-            "running", "interval_s", "paused_reason", "last_error", "started_at",
-            "row_count", "dropped_rows", "next_seq", "channels"})
+            "running", "interval_s", "stop_after_s", "auto_resume", "auto_reconnect",
+            "paused_reason", "stopped_reason", "last_error", "started_at", "stop_at",
+            "row_count", "dropped_rows", "next_seq", "persistent", "corrupt_lines",
+            "alarm_events", "channels"})
         self.assertFalse(status["running"])
         self.assertEqual(status["next_seq"], 0)
         self.assertEqual(len(status["channels"]), 4)
         self.assertEqual(set(status["channels"][0]),
-                         {"name", "enabled", "so_pin", "cs_pin", "sck_pin", "last"})
+                         {"name", "enabled", "so_pin", "cs_pin", "sck_pin", "offset_c",
+                          "alarm_high_c", "alarm_low_c", "alarm_on_fault", "alarm",
+                          "alarm_since", "last"})
         self.assertTrue(all(ch["last"] is None for ch in status["channels"]))
 
     def test_set_config_resets_last_readings_but_keeps_rows(self):
@@ -299,7 +307,8 @@ class ReadOnceTests(unittest.TestCase):
         logger = make_logger(FakeManager(device))
         result = logger.read_once()
         device.max6675_read.assert_called_once_with(15, 16, 17)
-        self.assertEqual(result["readings"][0], {"temp_c": 21.25, "status": "ok"})
+        self.assertEqual(result["readings"][0],
+                         {"temp_c": 21.25, "raw_temp_c": 21.25, "status": "ok"})
 
     def test_default_accelerometer_probe_is_idle(self):
         logger = make_logger(FakeManager(mock_device()))
@@ -349,7 +358,8 @@ class GeneratorBusyTests(unittest.TestCase):
         logger = make_logger(FakeManager(generator_device(running=True)))
         logger._tick()
         row = logger.rows[0]
-        self.assertEqual(row["readings"][0], {"temp_c": None, "status": "skipped"})
+        self.assertEqual(row["readings"][0],
+                         {"temp_c": None, "raw_temp_c": None, "status": "skipped"})
         self.assertEqual(logger.status()["paused_reason"],
                          "the signal generator is running")
 
@@ -478,7 +488,7 @@ class TickTests(unittest.TestCase):
         logger = make_logger(manager)
         logger._tick()
         row = logger.rows[0]
-        self.assertEqual(row["readings"][0], {"temp_c": None, "status": "skipped"})
+        self.assertEqual(row["readings"][0]["status"], "skipped")
         self.assertIsNone(row["readings"][1])
         status = logger.status()
         self.assertEqual(status["paused_reason"], "a capture is running")
@@ -525,7 +535,7 @@ class TickTests(unittest.TestCase):
         device.get_metadata.return_value = SimpleNamespace(mock=False)
         logger = make_logger(FakeManager(device))
         logger._tick()
-        self.assertEqual(logger.rows[0]["readings"][0], {"temp_c": None, "status": "error"})
+        self.assertEqual(logger.rows[0]["readings"][0]["status"], "error")
         self.assertEqual(logger.status()["last_error"],
                          "The connected device does not support MAX6675 reads")
 
@@ -534,7 +544,8 @@ class TickTests(unittest.TestCase):
         device.max6675_read.side_effect = OSError("FTDI read failed")
         logger = make_logger(FakeManager(device))
         logger._tick()
-        self.assertEqual(logger.rows[0]["readings"][0], {"temp_c": None, "status": "error"})
+        self.assertEqual(logger.rows[0]["readings"][0],
+                         {"temp_c": None, "raw_temp_c": None, "status": "error"})
         self.assertEqual(logger.status()["last_error"], "FTDI read failed")
 
     def test_row_cap_drops_oldest_and_counts_them(self):
@@ -550,7 +561,7 @@ class TickTests(unittest.TestCase):
 
 class DataAndExportTests(unittest.TestCase):
     def setUp(self):
-        self.logger = make_logger(max_rows=100)
+        self.logger = make_logger(clock=FakeTime(EXPORT_BASE), max_rows=100)
         for _ in range(4):
             self.logger._tick()
 
@@ -578,25 +589,33 @@ class DataAndExportTests(unittest.TestCase):
         self.assertEqual(result["next_seq"], 0)
 
     def test_export_csv_header_and_values(self):
-        self.logger.rows[1]["readings"][0] = {"temp_c": None, "status": "open"}
+        self.logger.rows[1]["readings"][0] = {"temp_c": None, "raw_temp_c": None,
+                                              "status": "open"}
         self.logger.rows[2]["readings"][0] = None
         text = self.logger.export_csv()
-        self.assertTrue(text.startswith(
-            "time_iso,unix_time,elapsed_s,ch1_temp_c,ch1_status,ch2_temp_c,ch2_status,"
-            "ch3_temp_c,ch3_status,ch4_temp_c,ch4_status\n"))
-        self.assertNotIn("\r", text)
-        rows = list(csv.reader(io.StringIO(text)))
+        self.assertTrue(text.startswith("﻿"))
+        body = text[1:]
+        self.assertTrue(body.startswith(
+            "time_local,time_utc,unix_time,elapsed_s,"
+            "Channel 1 temp_c,Channel 1 raw_c,Channel 1 status,"
+            "Channel 2 temp_c,Channel 2 raw_c,Channel 2 status,"
+            "Channel 3 temp_c,Channel 3 raw_c,Channel 3 status,"
+            "Channel 4 temp_c,Channel 4 raw_c,Channel 4 status,note\n"))
+        self.assertNotIn("\r", body)
+        rows = list(csv.reader(io.StringIO(body)))
         self.assertEqual(len(rows), 5)
         first = rows[1]
-        self.assertEqual(first[0], "1970-01-01T00:16:40+00:00")
-        self.assertEqual(first[1], "1000.0")
-        self.assertEqual(first[3:5], ["22.0", "ok"])
-        self.assertEqual(first[5:7], ["", ""])
-        self.assertEqual(rows[2][3:5], ["", "open"])
-        self.assertEqual(rows[3][3:5], ["", ""])
+        self.assertEqual(first[0],
+                         datetime.fromtimestamp(EXPORT_BASE).astimezone().isoformat())
+        self.assertEqual(first[1], datetime.fromtimestamp(EXPORT_BASE, timezone.utc).isoformat())
+        self.assertEqual(first[2], str(EXPORT_BASE))
+        self.assertEqual(first[4:7], ["22.0", "22.0", "ok"])
+        self.assertEqual(first[7:10], ["", "", ""])
+        self.assertEqual(rows[2][4:7], ["", "", "open"])
+        self.assertEqual(rows[3][4:7], ["", "", ""])
 
     def test_export_csv_with_no_rows_is_header_only(self):
-        text = make_logger().export_csv()
+        text = make_logger(clock=FakeTime(EXPORT_BASE)).export_csv()
         self.assertEqual(len(text.splitlines()), 1)
         self.assertTrue(text.endswith("\n"))
 
@@ -731,7 +750,7 @@ class EndpointTests(unittest.TestCase):
             self.assertEqual(mil_api.mil_max6675_clear("owner")["row_count"], 0)
 
     def test_data_and_export_endpoints(self):
-        logger = make_logger()
+        logger = make_logger(clock=FakeTime(EXPORT_BASE))
         logger._tick()
         with api_env(logger):
             data = mil_api.mil_max6675_data(since=0, limit=5000)
@@ -740,7 +759,410 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(response.media_type, "text/csv")
         self.assertEqual(response.headers["content-disposition"],
                          'attachment; filename="max6675-log.csv"')
-        self.assertIn(b"time_iso,unix_time", response.body)
+        self.assertTrue(response.body.startswith(b"\xef\xbb\xbftime_local,time_utc,unix_time"))
+
+
+def temp_frame(temp):
+    """A frame that decodes to ``temp`` (a multiple of 0.25)."""
+    return {"raw": int(round(temp * 4)) << 3, "clocks": 16}
+
+
+OPEN_FRAME = {"raw": 0x0004, "clocks": 16}
+BAD_FRAME = {"raw": 0x0000, "clocks": 15}
+
+
+def alarm_setup(clock=None, **alarm):
+    """Logger with one enabled channel carrying the given alarm/offset fields."""
+    device = real_device(temp_frame(20.0))
+    logger = make_logger(FakeManager(device), clock=clock or FakeTime())
+    channels = four_channels(True)
+    channels[0] = Max6675Channel(name="Channel 1", enabled=True, so_pin=15,
+                                 cs_pin=16, sck_pin=17, **alarm)
+    logger.set_config(config_with(channels))
+    return logger, device
+
+
+def read_frame(logger, device, frame):
+    device.max6675_read.return_value = frame
+    logger.read_once()
+    return logger.status()["channels"][0]["alarm"]
+
+
+def read_temp(logger, device, temp):
+    return read_frame(logger, device, temp_frame(temp))
+
+
+def kinds(logger):
+    return [event["kind"] for event in logger.status()["alarm_events"]]
+
+
+class ChannelAndRunConfigTests(unittest.TestCase):
+    OLD = {"name": "Channel 1", "enabled": True, "so_pin": 15, "cs_pin": 16, "sck_pin": 17}
+
+    def test_new_fields_default_and_old_payloads_still_validate(self):
+        channel = Max6675Channel(**self.OLD)
+        self.assertEqual((channel.offset_c, channel.alarm_high_c, channel.alarm_low_c,
+                          channel.alarm_on_fault), (0.0, None, None, True))
+        payload = {"interval_s": 1.0, "channels": [self.OLD] + [
+            dict(self.OLD, enabled=False, cs_pin=18 + i) for i in range(3)]}
+        config = Max6675Config.model_validate(payload)
+        self.assertIsNone(config.stop_after_s)
+        self.assertTrue(config.auto_resume)
+        self.assertTrue(config.auto_reconnect)
+
+    def test_offset_bounds(self):
+        Max6675Channel(**dict(self.OLD, offset_c=20))
+        Max6675Channel(**dict(self.OLD, offset_c=-20))
+        with self.assertRaises(ValidationError):
+            Max6675Channel(**dict(self.OLD, offset_c=20.5))
+        with self.assertRaises(ValidationError):
+            Max6675Channel(**dict(self.OLD, offset_c=-20.5))
+
+    def test_alarm_threshold_bounds(self):
+        Max6675Channel(**dict(self.OLD, alarm_high_c=1100, alarm_low_c=-50))
+        with self.assertRaises(ValidationError):
+            Max6675Channel(**dict(self.OLD, alarm_high_c=1100.5))
+        with self.assertRaises(ValidationError):
+            Max6675Channel(**dict(self.OLD, alarm_low_c=-50.5))
+
+    def test_low_alarm_must_be_strictly_below_high(self):
+        with self.assertRaisesRegex(ValidationError,
+                                    "Channel 1: low alarm must be below the high alarm"):
+            Max6675Channel(**dict(self.OLD, alarm_high_c=50, alarm_low_c=50))
+        with self.assertRaisesRegex(ValidationError, "low alarm must be below"):
+            Max6675Channel(**dict(self.OLD, alarm_high_c=50, alarm_low_c=60))
+        Max6675Channel(**dict(self.OLD, alarm_high_c=50, alarm_low_c=49))
+        Max6675Channel(**dict(self.OLD, alarm_high_c=50))
+
+    def test_stop_after_bounds(self):
+        Max6675Config(stop_after_s=60)
+        Max6675Config(stop_after_s=2_592_000)
+        with self.assertRaises(ValidationError):
+            Max6675Config(stop_after_s=59.9)
+        with self.assertRaises(ValidationError):
+            Max6675Config(stop_after_s=2_592_001)
+
+
+class CalibrationTests(unittest.TestCase):
+    def test_offset_applies_to_ok_reading_and_raw_is_kept(self):
+        logger, device = alarm_setup(offset_c=-1.5)
+        device.max6675_read.return_value = temp_frame(21.25)
+        reading = logger.read_once()["readings"][0]
+        self.assertEqual(reading, {"temp_c": 19.75, "raw_temp_c": 21.25, "status": "ok"})
+
+    def test_non_ok_readings_have_no_temperature_even_with_offset(self):
+        logger, device = alarm_setup(offset_c=2.0)
+        device.max6675_read.return_value = OPEN_FRAME
+        self.assertEqual(logger.read_once()["readings"][0],
+                         {"temp_c": None, "raw_temp_c": None, "status": "open"})
+        device.max6675_read.return_value = BAD_FRAME
+        self.assertEqual(logger.read_once()["readings"][0],
+                         {"temp_c": None, "raw_temp_c": None, "status": "bad_frame"})
+        device.max6675_read.side_effect = OSError("bus")
+        self.assertEqual(logger.read_once()["readings"][0],
+                         {"temp_c": None, "raw_temp_c": None, "status": "error"})
+
+    def test_offset_applies_to_mock_readings(self):
+        logger = make_logger()
+        logger.set_config(config_with([
+            Max6675Channel(name="Channel 1", enabled=True, so_pin=15, cs_pin=16,
+                           sck_pin=17, offset_c=1.0),
+            *four_channels()[1:]]))
+        reading = logger.read_once()["readings"][0]
+        self.assertEqual(reading, {"temp_c": 23.0, "raw_temp_c": 22.0, "status": "ok"})
+
+    def test_offset_is_echoed_in_status(self):
+        logger, _ = alarm_setup(offset_c=0.5, alarm_high_c=80.0, alarm_low_c=10.0,
+                                alarm_on_fault=False)
+        status = logger.status()["channels"][0]
+        self.assertEqual((status["offset_c"], status["alarm_high_c"], status["alarm_low_c"],
+                          status["alarm_on_fault"]), (0.5, 80.0, 10.0, False))
+
+
+class AlarmTests(unittest.TestCase):
+    def test_high_alarm_triggers_at_threshold_and_clears_below_hysteresis(self):
+        clock = FakeTime(1000.0)
+        logger, device = alarm_setup(clock=clock, alarm_high_c=80.0)
+        self.assertIsNone(read_temp(logger, device, 79.75))
+        clock.now = 1005.0
+        self.assertEqual(read_temp(logger, device, 80.0), "high")
+        self.assertEqual(logger.status()["channels"][0]["alarm_since"], 1005.0)
+        clock.now = 1007.0
+        self.assertEqual(read_temp(logger, device, 79.5), "high")
+        self.assertEqual(logger.status()["channels"][0]["alarm_since"], 1005.0)
+        clock.now = 1010.0
+        self.assertIsNone(read_temp(logger, device, 79.25))
+        status = logger.status()
+        self.assertIsNone(status["channels"][0]["alarm_since"])
+        self.assertEqual(kinds(logger), ["high", "clear"])
+        self.assertEqual(status["alarm_events"][0],
+                         {"t": 1005.0, "channel": 1, "name": "Channel 1",
+                          "kind": "high", "temp_c": 80.0})
+        self.assertEqual(status["alarm_events"][1]["t"], 1010.0)
+
+    def test_low_alarm_triggers_at_threshold_and_clears_above_hysteresis(self):
+        logger, device = alarm_setup(alarm_low_c=10.0)
+        self.assertIsNone(read_temp(logger, device, 10.5 + 0.25))
+        self.assertEqual(read_temp(logger, device, 10.0), "low")
+        self.assertEqual(read_temp(logger, device, 10.5), "low")
+        self.assertIsNone(read_temp(logger, device, 10.75))
+        self.assertEqual(kinds(logger), ["low", "clear"])
+
+    def test_leaving_one_side_reevaluates_the_other_side(self):
+        logger, device = alarm_setup(alarm_high_c=80.0, alarm_low_c=10.0)
+        self.assertEqual(read_temp(logger, device, 85.0), "high")
+        self.assertEqual(read_temp(logger, device, 5.0), "low")
+        self.assertEqual(read_temp(logger, device, 85.0), "high")
+        self.assertIsNone(read_temp(logger, device, 50.0))
+        self.assertEqual(read_temp(logger, device, 5.0), "low")
+        self.assertIsNone(read_temp(logger, device, 50.0))
+        self.assertEqual(kinds(logger), ["high", "low", "high", "clear",
+                                         "low", "clear"])
+
+    def test_low_state_holds_until_hysteresis_then_reevaluates_high(self):
+        logger, device = alarm_setup(alarm_high_c=80.0, alarm_low_c=10.0)
+        self.assertEqual(read_temp(logger, device, 5.0), "low")
+        self.assertEqual(read_temp(logger, device, 10.5), "low")
+        self.assertEqual(read_temp(logger, device, 85.0), "high")
+
+    def test_fault_alarm_and_kind_change_from_high_to_fault(self):
+        clock = FakeTime(1000.0)
+        logger, device = alarm_setup(clock=clock, alarm_high_c=80.0)
+        self.assertEqual(read_temp(logger, device, 85.0), "high")
+        clock.now = 1002.0
+        self.assertEqual(read_frame(logger, device, OPEN_FRAME), "fault")
+        self.assertEqual(logger.status()["channels"][0]["alarm_since"], 1002.0)
+        self.assertEqual(read_frame(logger, device, BAD_FRAME), "fault")
+        self.assertIsNone(read_temp(logger, device, 70.0))
+        self.assertEqual(kinds(logger), ["high", "fault", "clear"])
+        self.assertIsNone(logger.status()["alarm_events"][1]["temp_c"])
+
+    def test_device_error_is_a_fault(self):
+        logger, device = alarm_setup()
+        device.max6675_read.side_effect = OSError("bus")
+        self.assertEqual(logger.read_once()["readings"][0]["status"], "error")
+        self.assertEqual(logger.status()["channels"][0]["alarm"], "fault")
+        device.max6675_read.side_effect = None
+
+    def test_fault_ignored_when_alarm_on_fault_is_false(self):
+        logger, device = alarm_setup(alarm_high_c=80.0, alarm_on_fault=False)
+        self.assertIsNone(read_frame(logger, device, OPEN_FRAME))
+        self.assertEqual(read_temp(logger, device, 85.0), "high")
+        self.assertEqual(read_frame(logger, device, OPEN_FRAME), "high")
+        self.assertEqual(read_frame(logger, device, BAD_FRAME), "high")
+        self.assertEqual(kinds(logger), ["high"])
+
+    def test_skipped_reading_leaves_alarm_unchanged(self):
+        logger, device = alarm_setup(alarm_high_c=80.0)
+        self.assertEqual(read_temp(logger, device, 85.0), "high")
+        logger._manager.capture_state = "capturing"
+        logger._tick()
+        self.assertEqual(logger.rows[-1]["readings"][0]["status"], "skipped")
+        self.assertEqual(logger.status()["channels"][0]["alarm"], "high")
+        self.assertEqual(kinds(logger), ["high"])
+
+    def test_disabled_channel_has_no_alarm(self):
+        logger, device = alarm_setup(alarm_high_c=80.0)
+        read_temp(logger, device, 85.0)
+        self.assertIsNone(logger.status()["channels"][1]["alarm"])
+
+    def test_alarm_uses_offset_corrected_temperature(self):
+        logger, device = alarm_setup(offset_c=2.0, alarm_high_c=80.0)
+        self.assertEqual(read_temp(logger, device, 78.0), "high")
+
+    def test_events_are_capped_at_one_hundred_oldest_first(self):
+        logger, device = alarm_setup(alarm_high_c=80.0)
+        for _ in range(105):
+            read_temp(logger, device, 85.0)
+            read_temp(logger, device, 70.0)
+        events = logger.status()["alarm_events"]
+        self.assertEqual(len(events), 100)
+        self.assertEqual(events[-1]["kind"], "clear")
+        self.assertEqual(events[0]["kind"], "high")
+
+    def test_set_config_resets_states_but_keeps_events(self):
+        logger, device = alarm_setup(alarm_high_c=80.0)
+        read_temp(logger, device, 85.0)
+        logger.set_config(logger.config)
+        status = logger.status()
+        self.assertIsNone(status["channels"][0]["alarm"])
+        self.assertIsNone(status["channels"][0]["alarm_since"])
+        self.assertEqual(kinds(logger), ["high"])
+
+    def test_clear_resets_states_and_empties_events(self):
+        logger, device = alarm_setup(alarm_high_c=80.0)
+        read_temp(logger, device, 85.0)
+        status = logger.clear()
+        self.assertIsNone(status["channels"][0]["alarm"])
+        self.assertEqual(status["alarm_events"], [])
+
+
+class StopAfterTests(unittest.TestCase):
+    def test_run_stops_on_the_first_sweep_at_or_after_stop_at(self):
+        clock = FakeTime(1000.0)
+        logger = make_logger(FakeManager(mock_device()), clock=clock)
+        logger.set_config(Max6675Config(stop_after_s=60.0))
+        status = logger.start()
+        self.assertEqual(status["stop_at"], 1060.0)
+        self.assertEqual(status["stop_after_s"], 60.0)
+        clock.now = 1059.0
+        logger._tick()
+        self.assertTrue(logger.status()["running"])
+        self.assertIsNone(logger.status()["stopped_reason"])
+        self.assertFalse(logger._stop_event.is_set())
+        clock.now = 1060.0
+        logger._tick()
+        status = logger.status()
+        self.assertFalse(status["running"])
+        self.assertIsNone(status["paused_reason"])
+        self.assertEqual(status["stopped_reason"], "Stopped after the set run length")
+        self.assertEqual(status["stop_at"], 1060.0)
+        self.assertTrue(logger._stop_event.is_set())
+
+    def test_no_run_length_never_sets_stop_at(self):
+        clock = FakeTime(1000.0)
+        logger = make_logger(clock=clock)
+        self.assertIsNone(logger.start()["stop_at"])
+        clock.now = 9_000_000.0
+        logger._tick()
+        status = logger.status()
+        self.assertTrue(status["running"])
+        self.assertIsNone(status["stopped_reason"])
+
+    def test_start_resets_stopped_reason_and_recomputes_stop_at(self):
+        clock = FakeTime(1000.0)
+        logger = make_logger(FakeManager(mock_device()), clock=clock)
+        logger.set_config(Max6675Config(stop_after_s=60.0))
+        logger.start()
+        clock.now = 1060.0
+        logger._tick()
+        self.assertIsNotNone(logger.status()["stopped_reason"])
+        clock.now = 2000.0
+        status = logger.start()
+        self.assertTrue(status["running"])
+        self.assertIsNone(status["stopped_reason"])
+        self.assertEqual(status["stop_at"], 2060.0)
+
+    def test_user_stop_leaves_stopped_reason_empty(self):
+        logger = make_logger()
+        logger.start()
+        status = logger.stop()
+        self.assertIsNone(status["stopped_reason"])
+
+
+class NoteTests(unittest.TestCase):
+    def test_notes_are_stripped_and_kept_while_running_and_stopped(self):
+        logger = make_logger()
+        logger.start()
+        self.assertEqual(logger.add_note("  first  "), {"t": 1000.0, "text": "first"})
+        logger.stop()
+        logger.add_note("second")
+        self.assertEqual([note["text"] for note in logger.notes()], ["first", "second"])
+
+    def test_note_text_must_be_one_to_two_hundred_characters(self):
+        logger = make_logger()
+        for bad in ("", "   ", "x" * 201, " " + "x" * 201):
+            with self.assertRaisesRegex(ValueError, "1 to 200 characters"):
+                logger.add_note(bad)
+        self.assertEqual(logger.add_note(" " + "x" * 200 + " ")["text"], "x" * 200)
+
+    def test_clear_removes_notes(self):
+        logger = make_logger()
+        logger.add_note("note")
+        logger.clear()
+        self.assertEqual(logger.notes(), [])
+
+    def test_note_endpoints_require_control_and_return_notes(self):
+        logger = make_logger()
+        with api_env(logger) as control:
+            result = mil_api.mil_max6675_note(Max6675NoteRequest(text=" hello "), "owner")
+            self.assertEqual(result, {"t": 1000.0, "text": "hello"})
+            control.assert_called_with("owner")
+            self.assertEqual(mil_api.mil_max6675_notes(),
+                             {"notes": [{"t": 1000.0, "text": "hello"}]})
+
+    def test_note_endpoint_refused_without_control_adds_nothing(self):
+        logger = make_logger()
+        with api_env(logger) as control:
+            control.side_effect = HTTPException(403, "Control required")
+            with self.assertRaises(HTTPException) as raised:
+                mil_api.mil_max6675_note(Max6675NoteRequest(text="hi"), "viewer")
+            self.assertEqual(raised.exception.status_code, 403)
+        self.assertEqual(logger.notes(), [])
+
+    def test_note_endpoint_rejects_bad_text_with_422(self):
+        logger = make_logger()
+        with api_env(logger):
+            with self.assertRaises(HTTPException) as raised:
+                mil_api.mil_max6675_note(Max6675NoteRequest(text="   "), "owner")
+            self.assertEqual(raised.exception.status_code, 422)
+        self.assertEqual(logger.notes(), [])
+
+
+class CsvLayoutTests(unittest.TestCase):
+    def test_duplicate_channel_names_get_channel_number_prefixes(self):
+        logger = make_logger(clock=FakeTime(EXPORT_BASE))
+        logger.set_config(config_with([
+            channel("Oven", True, 15, 16, 17), channel("Oven", False, 15, 18, 17),
+            channel("Probe 3", False, 15, 19, 17), channel("Probe 4", False, 15, 20, 17)]))
+        logger._tick()
+        header = next(csv.reader(io.StringIO(logger.export_csv()[1:])))
+        self.assertEqual(header[4:7], ["ch1 Oven temp_c", "ch1 Oven raw_c", "ch1 Oven status"])
+        self.assertEqual(header[7:10], ["ch2 Oven temp_c", "ch2 Oven raw_c", "ch2 Oven status"])
+        self.assertEqual(header[10:13], ["Probe 3 temp_c", "Probe 3 raw_c", "Probe 3 status"])
+        self.assertEqual(header[-1], "note")
+
+    def test_notes_land_on_first_row_at_or_after_their_time(self):
+        base = EXPORT_BASE
+        clock = FakeTime(base)
+        logger = make_logger(clock=clock)
+        logger._tick()
+        clock.now = base + 1.0
+        logger._tick()
+        clock.now = base + 2.0
+        logger._tick()
+        clock.now = base - 0.5
+        logger.add_note("before first")
+        clock.now = base + 1.0
+        logger.add_note("exact")
+        clock.now = base + 1.2
+        logger.add_note("a")
+        clock.now = base + 1.5
+        logger.add_note("b")
+        clock.now = base + 5.0
+        logger.add_note("later")
+        clock.now = base + 6.0
+        logger.add_note("latest")
+        rows = list(csv.reader(io.StringIO(logger.export_csv()[1:])))
+        self.assertEqual(len(rows), 6)
+        self.assertEqual(rows[1][-1], "before first")
+        self.assertEqual(rows[2][-1], "exact")
+        self.assertEqual(rows[3][-1], "a | b")
+        self.assertEqual(rows[1][2], str(base))
+        trailing = rows[4]
+        self.assertEqual(trailing[0],
+                         datetime.fromtimestamp(base + 5.0).astimezone().isoformat())
+        self.assertEqual(trailing[1],
+                         datetime.fromtimestamp(base + 5.0, timezone.utc).isoformat())
+        self.assertEqual(trailing[2], str(base + 5.0))
+        self.assertEqual(trailing[3:-1], [""] * 13)
+        self.assertEqual(trailing[-1], "later")
+        self.assertEqual(rows[5][-1], "latest")
+
+    def test_notes_with_no_rows_are_written_as_trailing_rows(self):
+        logger = make_logger(clock=FakeTime(EXPORT_BASE))
+        logger.add_note("only note")
+        rows = list(csv.reader(io.StringIO(logger.export_csv()[1:])))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[1][-1], "only note")
+        self.assertEqual(rows[1][3:-1], [""] * 13)
+
+    def test_old_rows_without_raw_temp_c_export_an_empty_raw_cell(self):
+        logger = make_logger(clock=FakeTime(EXPORT_BASE))
+        logger._tick()
+        logger.rows[0]["readings"][0] = {"temp_c": 22.0, "status": "ok"}
+        rows = list(csv.reader(io.StringIO(logger.export_csv()[1:])))
+        self.assertEqual(rows[1][4:7], ["22.0", "", "ok"])
 
 
 if __name__ == "__main__":

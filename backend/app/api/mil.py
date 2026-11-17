@@ -7,7 +7,8 @@ from ..mil.model import MilLoadRequest, MilTransactionRequest
 from ..mil.mcp4725 import (Mcp4725TestRequest, Mcp4725WaveformRequest,
                            run_waveform, test_mcp4725)
 from ..mil.accelerometer import AccelerometerConfig, accelerometer
-from ..mil.max6675 import Max6675Busy, Max6675Config, Max6675Logger
+from ..mil.max6675 import (Max6675Busy, Max6675Config, Max6675Logger,
+                             Max6675NoteRequest)
 from ..hardware.base import HardwareError
 from ..mil.service import emulator
 from ..state import capture_manager
@@ -206,6 +207,21 @@ def mil_max6675_stop(client_id: str = Depends(client_id_header)):
 def mil_max6675_clear(client_id: str = Depends(client_id_header)):
     require_control(client_id)
     return max6675_logger.clear()
+
+
+@router.post("/api/mil/max6675/notes")
+def mil_max6675_note(req: Max6675NoteRequest,
+                     client_id: str = Depends(client_id_header)):
+    require_control(client_id)
+    try:
+        return max6675_logger.add_note(req.text)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/api/mil/max6675/notes")
+def mil_max6675_notes():
+    return {"notes": max6675_logger.notes()}
 
 
 @router.get("/api/mil/max6675/data")

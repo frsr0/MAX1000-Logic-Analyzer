@@ -7,6 +7,7 @@ so a capture start can wait up to about 1.6 s with four channels enabled.
 """
 from __future__ import annotations
 
+import bisect
 import csv
 import io
 import math
@@ -21,10 +22,10 @@ from ..hardware.base import HardwareError
 
 
 CHANNEL_COUNT = 4
-CSV_HEADER = ["time_iso", "unix_time", "elapsed_s"] + [
-    f"ch{index}_{field}" for index in range(1, CHANNEL_COUNT + 1)
-    for field in ("temp_c", "status")
-]
+ALARM_EVENT_LIMIT = 100
+ALARM_HYSTERESIS_C = 0.5
+NOTE_MAX_LENGTH = 200
+STOP_AFTER_REASON = "Stopped after the set run length"
 
 
 class Max6675Busy(Exception):
@@ -46,6 +47,17 @@ class Max6675Channel(BaseModel):
     so_pin: int = Field(ge=0, le=22)
     cs_pin: int = Field(ge=0, le=22)
     sck_pin: int = Field(ge=0, le=22)
+    offset_c: float = Field(default=0.0, ge=-20, le=20)
+    alarm_high_c: Optional[float] = Field(default=None, ge=-50, le=1100)
+    alarm_low_c: Optional[float] = Field(default=None, ge=-50, le=1100)
+    alarm_on_fault: bool = True
+
+    @model_validator(mode="after")
+    def check_alarm_order(self):
+        high, low = self.alarm_high_c, self.alarm_low_c
+        if high is not None and low is not None and low >= high:
+            raise ValueError(f"{self.name}: low alarm must be below the high alarm")
+        return self
 
 
 def _default_channels() -> list:
@@ -66,6 +78,9 @@ class Max6675Config(BaseModel):
     channels: list[Max6675Channel] = Field(
         default_factory=_default_channels, min_length=CHANNEL_COUNT,
         max_length=CHANNEL_COUNT)
+    stop_after_s: Optional[float] = Field(default=None, ge=60, le=2_592_000)
+    auto_resume: bool = True
+    auto_reconnect: bool = True
 
     @model_validator(mode="after")
     def check_enabled_pins(self):
@@ -106,11 +121,63 @@ class Max6675Config(BaseModel):
         return self
 
 
+class Max6675NoteRequest(BaseModel):
+    text: str
+
+
+def _make_reading(decoded: dict, offset: float) -> dict:
+    """Shape a decoded frame as a reading; only an ok frame carries temperatures."""
+    if decoded["status"] != "ok":
+        return {"temp_c": None, "raw_temp_c": None, "status": decoded["status"]}
+    raw = decoded["temp_c"]
+    # Round so an offset such as 0.1 does not leave float noise in the log.
+    return {"temp_c": round(raw + offset, 4), "raw_temp_c": raw, "status": "ok"}
+
+
+def _next_alarm(current: Optional[str], reading: Optional[dict],
+                channel: Max6675Channel) -> Optional[str]:
+    """Return the alarm state after one reading (None, high, low or fault)."""
+    if reading is None:
+        return None
+    status = reading["status"]
+    if status == "skipped":
+        return current
+    if status != "ok":
+        return "fault" if channel.alarm_on_fault else current
+    temp = reading["temp_c"]
+    high, low = channel.alarm_high_c, channel.alarm_low_c
+    if current == "high" and temp >= high - ALARM_HYSTERESIS_C:
+        return "high"
+    if current == "low" and temp <= low + ALARM_HYSTERESIS_C:
+        return "low"
+    if high is not None and temp >= high:
+        return "high"
+    if low is not None and temp <= low:
+        return "low"
+    return None
+
+
+def _csv_header(channels: list) -> list:
+    names = [channel.name for channel in channels]
+    header = ["time_local", "time_utc", "unix_time", "elapsed_s"]
+    for index, name in enumerate(names):
+        label = f"ch{index + 1} {name}" if names.count(name) > 1 else name
+        header += [f"{label} temp_c", f"{label} raw_c", f"{label} status"]
+    return header + ["note"]
+
+
+def _time_cells(t: float) -> list:
+    return [datetime.fromtimestamp(t).astimezone().isoformat(),
+            datetime.fromtimestamp(t, timezone.utc).isoformat(), t]
+
+
 def _reading_cells(reading: Optional[dict]) -> list:
     if reading is None:
-        return ["", ""]
+        return ["", "", ""]
     temp = reading["temp_c"]
-    return ["" if temp is None else temp, reading["status"]]
+    raw = reading.get("raw_temp_c")
+    return ["" if temp is None else temp, "" if raw is None else raw,
+            reading["status"]]
 
 
 class Max6675Logger:
@@ -140,9 +207,15 @@ class Max6675Logger:
         self.dropped_rows = 0
         self.running = False
         self.paused_reason: Optional[str] = None
+        self.stopped_reason: Optional[str] = None
         self.last_error: Optional[str] = None
         self.started_at: Optional[float] = None
+        self.stop_at: Optional[float] = None
         self._last: list = [None] * CHANNEL_COUNT
+        self._alarm: list = [None] * CHANNEL_COUNT
+        self._alarm_since: list = [None] * CHANNEL_COUNT
+        self._alarm_events: list = []
+        self._notes: list = []
         self._mock_counter = 0
         self._stop_event: Any = None
 
@@ -156,17 +229,31 @@ class Max6675Logger:
                 "so_pin": channel.so_pin,
                 "cs_pin": channel.cs_pin,
                 "sck_pin": channel.sck_pin,
+                "offset_c": channel.offset_c,
+                "alarm_high_c": channel.alarm_high_c,
+                "alarm_low_c": channel.alarm_low_c,
+                "alarm_on_fault": channel.alarm_on_fault,
+                "alarm": self._alarm[index],
+                "alarm_since": self._alarm_since[index],
                 "last": None if last is None else dict(last),
             })
         return {
             "running": self.running,
             "interval_s": self.config.interval_s,
+            "stop_after_s": self.config.stop_after_s,
+            "auto_resume": self.config.auto_resume,
+            "auto_reconnect": self.config.auto_reconnect,
             "paused_reason": self.paused_reason,
+            "stopped_reason": self.stopped_reason,
             "last_error": self.last_error,
             "started_at": self.started_at,
+            "stop_at": self.stop_at,
             "row_count": len(self.rows),
             "dropped_rows": self.dropped_rows,
             "next_seq": self.next_seq,
+            "persistent": False,
+            "corrupt_lines": 0,
+            "alarm_events": [dict(event) for event in self._alarm_events],
             "channels": channels,
         }
 
@@ -180,7 +267,29 @@ class Max6675Logger:
                 raise Max6675Busy("Stop logging before changing the configuration")
             self.config = config
             self._last = [None] * CHANNEL_COUNT
+            self._reset_alarm_states_locked()
             return self._status_locked()
+
+    def _reset_alarm_states_locked(self) -> None:
+        self._alarm = [None] * CHANNEL_COUNT
+        self._alarm_since = [None] * CHANNEL_COUNT
+
+    def _apply_alarms_locked(self, readings: list, t: float) -> None:
+        for index, (channel, reading) in enumerate(zip(self.config.channels, readings)):
+            current = self._alarm[index]
+            new = _next_alarm(current, reading, channel)
+            if new == current:
+                continue
+            self._alarm[index] = new
+            self._alarm_since[index] = None if new is None else t
+            self._alarm_events.append({
+                "t": t,
+                "channel": index + 1,
+                "name": channel.name,
+                "kind": "clear" if new is None else new,
+                "temp_c": None if reading is None else reading["temp_c"],
+            })
+            del self._alarm_events[:-ALARM_EVENT_LIMIT]
 
     def _enabled_flags(self) -> list:
         with self._lock:
@@ -218,17 +327,19 @@ class Max6675Logger:
                 readings.append(None)
             elif mock:
                 temp = 22.0 + 3.0 * index + 0.5 * math.sin(counter / 10.0)
-                readings.append({"temp_c": round(temp * 4) / 4, "status": "ok"})
+                decoded = {"temp_c": round(temp * 4) / 4, "status": "ok"}
+                readings.append(_make_reading(decoded, channel.offset_c))
             elif not callable(getattr(device, "max6675_read", None)):
                 self._set_error("The connected device does not support MAX6675 reads")
-                readings.append({"temp_c": None, "status": "error"})
+                readings.append(_make_reading({"temp_c": None, "status": "error"}, 0.0))
             else:
                 try:
                     frame = device.max6675_read(channel.so_pin, channel.cs_pin, channel.sck_pin)
-                    readings.append(decode_frame(frame["raw"], frame["clocks"]))
+                    decoded = decode_frame(frame["raw"], frame["clocks"])
+                    readings.append(_make_reading(decoded, channel.offset_c))
                 except Exception as exc:
                     self._set_error(str(exc))
-                    readings.append({"temp_c": None, "status": "error"})
+                    readings.append(_make_reading({"temp_c": None, "status": "error"}, 0.0))
         return readings
 
     def read_once(self) -> dict:
@@ -243,9 +354,11 @@ class Max6675Logger:
             if reason:
                 raise Max6675Busy(reason)
             readings = self._read_channels(device)
-            with self._lock:
-                self._last = list(readings)
-        return {"t": self._clock(), "readings": readings}
+        with self._lock:
+            t = self._clock()
+            self._last = list(readings)
+            self._apply_alarms_locked(readings, t)
+        return {"t": t, "readings": readings}
 
     def start(self) -> dict:
         with self._lock:
@@ -258,8 +371,11 @@ class Max6675Logger:
             self.running = True
             self.last_error = None
             self.paused_reason = None
+            self.stopped_reason = None
             if self.started_at is None:
                 self.started_at = self._clock()
+            self.stop_at = (None if self.config.stop_after_s is None
+                            else self._clock() + self.config.stop_after_s)
             stop_event = self._event_factory()
             self._stop_event = stop_event
         thread = self._thread_factory(target=self._run, args=(stop_event,),
@@ -281,7 +397,23 @@ class Max6675Logger:
             self.dropped_rows = 0
             self.started_at = self._clock() if self.running else None
             self._last = [None] * CHANNEL_COUNT
+            self._reset_alarm_states_locked()
+            self._alarm_events = []
+            self._notes = []
             return self._status_locked()
+
+    def add_note(self, text: str) -> dict:
+        cleaned = text.strip()
+        if not 1 <= len(cleaned) <= NOTE_MAX_LENGTH:
+            raise ValueError(f"Note must be 1 to {NOTE_MAX_LENGTH} characters")
+        with self._lock:
+            note = {"t": self._clock(), "text": cleaned}
+            self._notes.append(note)
+            return dict(note)
+
+    def notes(self) -> list:
+        with self._lock:
+            return [dict(note) for note in self._notes]
 
     def data(self, since: int = 0, limit: int = 5000) -> dict:
         with self._lock:
@@ -298,16 +430,35 @@ class Max6675Logger:
     def export_csv(self) -> str:
         with self._lock:
             rows = list(self.rows)
+            notes = list(self._notes)
+            channels = list(self.config.channels)
+        # A note belongs to the first row at or after its time; later notes get
+        # their own rows after the last sample.
+        times = [row["t"] for row in rows]
+        note_text: dict = {}
+        trailing = []
+        for note in notes:
+            index = bisect.bisect_left(times, note["t"])
+            if index < len(rows):
+                note_text.setdefault(index, []).append(note["text"])
+            else:
+                trailing.append(note)
+        header = _csv_header(channels)
         buffer = io.StringIO()
         writer = csv.writer(buffer, lineterminator="\n")
-        writer.writerow(CSV_HEADER)
-        for row in rows:
-            cells = [datetime.fromtimestamp(row["t"], timezone.utc).isoformat(),
-                     row["t"], row["elapsed_s"]]
+        writer.writerow(header)
+        for index, row in enumerate(rows):
+            cells = _time_cells(row["t"]) + [row["elapsed_s"]]
             for reading in row["readings"]:
                 cells.extend(_reading_cells(reading))
+            cells.append(" | ".join(note_text.get(index, [])))
             writer.writerow(cells)
-        return buffer.getvalue()
+        for note in trailing:
+            cells = _time_cells(note["t"])
+            cells += [""] * (len(header) - len(cells) - 1)
+            cells.append(note["text"])
+            writer.writerow(cells)
+        return "﻿" + buffer.getvalue()
 
     def _tick(self) -> None:
         accel_running = self._accelerometer_running()
@@ -323,8 +474,8 @@ class Max6675Logger:
             reason = self._busy_reason(accel_running, device)
             enabled = self._enabled_flags()
             if reason:
-                readings = [{"temp_c": None, "status": "skipped"} if on else None
-                            for on in enabled]
+                readings = [{"temp_c": None, "raw_temp_c": None, "status": "skipped"}
+                            if on else None for on in enabled]
             else:
                 readings = self._read_channels(device)
         with self._lock:
@@ -335,9 +486,15 @@ class Max6675Logger:
                               "elapsed_s": t - started, "readings": readings})
             self.next_seq += 1
             self._last = list(readings)
+            self._apply_alarms_locked(readings, t)
             if len(self.rows) > self._max_rows:
                 del self.rows[0]
                 self.dropped_rows += 1
+            if self.stop_at is not None and t >= self.stop_at:
+                self.running = False
+                self.paused_reason = None
+                self.stopped_reason = STOP_AFTER_REASON
+                self._stop_event.set()
 
     def _run(self, stop_event) -> None:
         try:
