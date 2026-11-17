@@ -296,8 +296,9 @@ cd hdl\proj
 .\compile.ps1 -Seed 7
 ```
 
-The current image (generation 4, 2026-11-16) is built with seed `17`, which is
-what the project file selects. On top of the 2026-11-13 read-timing fix (the
+The current image is generation 4, rebuilt on 2026-11-17 with seed `7` (what
+the project file selects) for timing margin; host-visible behaviour is the
+same as the 2026-11-16 seed-17 build described below. On top of the 2026-11-13 read-timing fix (the
 controller latches DQ inside the chip's CL3 data window,
 `RD_WAIT_EXTRA_CYCLES = 3` in `hdl/rtl/SDRAM_Controller_Custom.vhd`) it keeps
 the SDRAM write pump running between bursts of host reads in continuous mode,
@@ -327,9 +328,21 @@ with the bench jumper not decoding so three checks did not run), the
 and ten full-depth 4,194,304-sample captures at 100.2 MS/s with uniform run
 lengths and no dropped samples.
 
+The 2026-11-17 rebuild takes three narrow compares out of the worst timing
+paths (the read loop's "one sample left" check, the analog packer's DRAIN
+step and the compressed-stream sample count) and runs the dispatcher timeouts
+off one shared tick. It uses 8,019 of 8,064 logic elements; slow 85 °C setup
+slack is `fast_clk` +0.161 ns, `sdram_core_clk` +0.163 ns and `sys_clk`
++0.215 ns, and all 66 timing checks pass. Its POF SHA-256 is
+`1CCF7E14DBECF4258C4FEEB33D9B7338BA26A711DD7A3FC1F83A9275ACB2619C`
+(Programmer checksum `0x01DDB7C1`). On the attached board it passed the smoke
+test (10/10), the hardware validation suite (415/415, with 8 jumper checks
+skipped because the jumper fixture was not selected), the codec suite (28/28)
+and the 75-testbench GHDL regression; `CMD_GET_METADATA` still ends `3F 04`.
+
 ```powershell
 cd hdl\proj
-.\compile.ps1 -Seed 17
+.\compile.ps1 -Seed 7
 ```
 
 For more detail, see:
