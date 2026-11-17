@@ -1,12 +1,13 @@
 """Machine-in-loop emulator endpoints."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from ..mil.model import MilLoadRequest, MilTransactionRequest
 from ..mil.mcp4725 import (Mcp4725TestRequest, Mcp4725WaveformRequest,
                            run_waveform, test_mcp4725)
 from ..mil.accelerometer import AccelerometerConfig, accelerometer
+from ..mil.max6675 import Max6675Busy, Max6675Config, Max6675Logger
 from ..hardware.base import HardwareError
 from ..mil.service import emulator
 from ..state import capture_manager
@@ -14,6 +15,10 @@ from ..websocket.manager import manager as websocket_manager
 from .deps import client_id_header, require_control
 
 router = APIRouter(tags=["machine-in-loop"])
+
+max6675_logger = Max6675Logger(
+    capture_manager,
+    accelerometer_running=lambda: bool(accelerometer.status().get("running")))
 
 
 def _check_dac_available() -> None:
@@ -148,3 +153,69 @@ def mil_transaction(req: MilTransactionRequest,
         return emulator.handle_transaction(req).model_dump()
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+@router.get("/api/mil/max6675/status")
+def mil_max6675_status():
+    return max6675_logger.status()
+
+
+@router.put("/api/mil/max6675/config")
+def mil_max6675_config(config: Max6675Config,
+                       client_id: str = Depends(client_id_header)):
+    require_control(client_id)
+    try:
+        return max6675_logger.set_config(config)
+    except Max6675Busy as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/api/mil/max6675/read")
+def mil_max6675_read(client_id: str = Depends(client_id_header)):
+    require_control(client_id)
+    if capture_manager.device is None:
+        raise HTTPException(409, "Connect a device first")
+    try:
+        return max6675_logger.read_once()
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Max6675Busy as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except HardwareError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@router.post("/api/mil/max6675/start")
+def mil_max6675_start(client_id: str = Depends(client_id_header)):
+    require_control(client_id)
+    try:
+        return max6675_logger.start()
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except HardwareError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/api/mil/max6675/stop")
+def mil_max6675_stop(client_id: str = Depends(client_id_header)):
+    require_control(client_id)
+    return max6675_logger.stop()
+
+
+@router.post("/api/mil/max6675/clear")
+def mil_max6675_clear(client_id: str = Depends(client_id_header)):
+    require_control(client_id)
+    return max6675_logger.clear()
+
+
+@router.get("/api/mil/max6675/data")
+def mil_max6675_data(since: int = Query(default=0, ge=0),
+                     limit: int = Query(default=5000, ge=1, le=20000)):
+    return max6675_logger.data(since=since, limit=limit)
+
+
+@router.get("/api/mil/max6675/export.csv")
+def mil_max6675_export():
+    return Response(
+        content=max6675_logger.export_csv(), media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="max6675-log.csv"'})
