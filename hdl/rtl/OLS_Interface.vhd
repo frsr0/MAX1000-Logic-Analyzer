@@ -1411,10 +1411,38 @@ BEGIN
     variable rsp_seq_v : std_logic_vector(7 downto 0) := (others => '0');
     variable rsp_stat_v : std_logic_vector(7 downto 0) := ST_OK;
     variable rsp_len_v : natural range 0 to MAX_TX_PAYLOAD_BYTES := 0;
-    -- Small response buffer (24 bytes covers status metadata responses)
-    type rspbuf_t is array(0 to 23) of std_logic_vector(7 downto 0);
-    variable rsp_buf : rspbuf_t;
-    variable rsp_buf_len : natural range 0 to 24 := 0;
+    -- Response encoding. EXEC stores a response KIND plus only the values that
+    -- must stay atomic across a multi-byte field; FEED_TX generates each byte
+    -- from (kind, rsp_buf_idx). This replaces the 24-byte rsp_buf register
+    -- file and its 24:1 byte read mux with five 32-bit snapshots and one
+    -- 8-bit mux. Responses are byte-for-byte identical to the rsp_buf build.
+    type rsp_kind_t is (KIND_NONE, KIND_PING, KIND_STATUS, KIND_META,
+                        KIND_RAWACK, KIND_LIVEACK, KIND_REGREAD, KIND_GENSTAT);
+    variable rsp_kind_v : rsp_kind_t := KIND_NONE;
+    -- Little-endian 4-byte fields held as arrays: a variable slice of a 32-bit
+    -- vector is not legal VHDL-93, and a 4-entry index is a cheap mux.
+    type quad_t is array(0 to 3) of std_logic_vector(7 downto 0);
+    variable seq_q  : quad_t := (others => (others => '0'));  -- capture_seq
+    variable prod_q : quad_t := (others => (others => '0'));  -- Producer_Index
+    variable old_q  : quad_t := (others => (others => '0'));  -- Oldest_Index
+    variable new_q  : quad_t := (others => (others => '0'));  -- Newest_Index
+    variable ovr_q  : quad_t := (others => (others => '0'));  -- Overrun_Count
+    variable reg_q  : quad_t := (others => (others => '0'));  -- register read
+    -- Single-byte snapshots: GET_STATUS bytes 0..2 and 23, the GEN_STATUS bit
+    -- field and the live-stream ACK transport word.
+    variable st_b0      : std_logic_vector(7 downto 0) := (others => '0');
+    variable st_b1      : std_logic_vector(7 downto 0) := (others => '0');
+    variable st_b2      : std_logic_vector(7 downto 0) := (others => '0');
+    variable st_done    : std_logic := '0';
+    variable live_ovf_b : std_logic_vector(7 downto 0) := (others => '0');
+    variable genstat_b  : std_logic_vector(7 downto 0) := (others => '0');
+    variable rsp_byte_v : std_logic_vector(7 downto 0) := (others => '0');
+    procedure load_quad(variable q : out quad_t;
+                        constant w : in  std_logic_vector(31 downto 0)) is
+    begin
+      q(0) := w(7 downto 0);   q(1) := w(15 downto 8);
+      q(2) := w(23 downto 16); q(3) := w(31 downto 24);
+    end procedure;
     variable rsp_buf_idx : natural range 0 to 24 := 0;
     variable reg_val : std_logic_vector(31 downto 0) := (others => '0');
     -- Block-read streaming state
@@ -1692,7 +1720,7 @@ BEGIN
             rsp_seq_v := pkt_seq;
             rsp_stat_v := ST_OK;
             rsp_len_v := 0;
-            rsp_buf_len := 0;
+            rsp_kind_v := KIND_NONE;
             feeding_block := false;
             feed_wait_ready_low := false;
             st := EXEC;
@@ -1701,10 +1729,7 @@ BEGIN
         when EXEC =>
           case pkt_cmd_active is
             when CMD_PING =>
-              rsp_buf(0) := x"01";
-              rsp_buf(1) := x"01";
-              rsp_buf(2) := x"00";
-              rsp_buf_len := 3;
+              rsp_kind_v := KIND_PING;
               rsp_len_v := 3;
               st := BUILD_RSP;
 
@@ -1722,70 +1747,23 @@ BEGIN
               else
                 rsp_stat_v := ST_CAPTURE_IDLE;
               end if;
-              rsp_buf(0) := Gen_Fifo_Count;
-              rsp_buf(2) := gen_load_events;
-              rsp_buf(1)(0) := Gen_Busy;
-              rsp_buf(1)(1) := gen_start_req;
-              rsp_buf(1)(7 downto 2) := (others => '0');
-              rsp_buf(3) := capture_seq(7 downto 0);
-              rsp_buf(4) := capture_seq(15 downto 8);
-              rsp_buf(5) := capture_seq(23 downto 16);
-              rsp_buf(6) := capture_seq(31 downto 24);
-              rsp_buf(7) := Producer_Index(7 downto 0);
-              rsp_buf(8) := Producer_Index(15 downto 8);
-              rsp_buf(9) := Producer_Index(23 downto 16);
-              rsp_buf(10) := Producer_Index(31 downto 24);
-              rsp_buf(11) := Oldest_Index(7 downto 0);
-              rsp_buf(12) := Oldest_Index(15 downto 8);
-              rsp_buf(13) := Oldest_Index(23 downto 16);
-              rsp_buf(14) := Oldest_Index(31 downto 24);
-              rsp_buf(15) := Newest_Index(7 downto 0);
-              rsp_buf(16) := Newest_Index(15 downto 8);
-              rsp_buf(17) := Newest_Index(23 downto 16);
-              rsp_buf(18) := Newest_Index(31 downto 24);
-              rsp_buf(19) := Overrun_Count(7 downto 0);
-              rsp_buf(20) := Overrun_Count(15 downto 8);
-              rsp_buf(21) := Overrun_Count(23 downto 16);
-              rsp_buf(22) := Overrun_Count(31 downto 24);
-              rsp_buf(23)(0) := done_latched;
-              rsp_buf(23)(7 downto 1) := (others => '0');
-              rsp_buf_len := 24;
+              rsp_kind_v := KIND_STATUS;
+              st_b0 := Gen_Fifo_Count;
+              st_b1 := "000000" & gen_start_req & Gen_Busy;
+              st_b2 := gen_load_events;
+              load_quad(seq_q, capture_seq);
+              load_quad(prod_q, Producer_Index);
+              load_quad(old_q, Oldest_Index);
+              load_quad(new_q, Newest_Index);
+              load_quad(ovr_q, Overrun_Count);
+              st_done := done_latched;
               rsp_len_v := 24;
               st := BUILD_RSP;
 
             when CMD_GET_METADATA =>
-              rsp_buf(0) := x"10";
-              rsp_buf(1) := x"10";  -- 16 channels
-              rsp_buf(2) := x"00";
-              rsp_buf(3) := x"F0";
-              rsp_buf(4) := x"01";
-              -- bytes 5-8: SAMPLE_CLK_HZ in kHz, little-endian uint32
-              -- (constant declared near the top; sliced type conversions are
-              -- not portable to GHDL)
-              rsp_buf(5) := SAMPLE_CLK_KHZ_SLV(7 downto 0);
-              rsp_buf(6) := SAMPLE_CLK_KHZ_SLV(15 downto 8);
-              rsp_buf(7) := SAMPLE_CLK_KHZ_SLV(23 downto 16);
-              rsp_buf(8) := SAMPLE_CLK_KHZ_SLV(31 downto 24);
-              -- byte 9: feature flags. bit0 = 24-bit REG_GEN_BAUD divider
-              -- (Bit_Engine supports symbol rates down to ~6 Hz at 100 MHz;
-              -- without it the divider is 16-bit with a ~1.5 kHz floor).
-              -- bit0 = 24-bit generator divider, bit1 = direct live FIFO,
-              -- bit2 = framed held-CS live stream (continuous waveform).
-              rsp_buf(9) := x"0F";
-              -- byte 10: image feature flags (second flag byte). Old hosts read
-              -- only bytes 0-9 (they check len >= 10), so the extra bytes are
-              -- backwards compatible.
-              --   bit0 = SDRAM read data is true (read-timing fix: data is
-              --          latched inside the chip's CL3 window)
-              --   bit1 = dropped-sample counter present (REG 0x60 bits 15:0)
-              --   bit2 = RLE stream flush fixed (the final run is always sent)
-              --   bit3 = continuous capture does not lose samples to host reads
-              --   bit4 = narrow 200 MHz capture loses no samples
-              rsp_buf(10) := IMAGE_FEATURES2;
-              -- byte 11: image generation (increments with each image that
-              -- changes host-visible behaviour).
-              rsp_buf(11) := IMAGE_GENERATION;
-              rsp_buf_len := 12;
+              -- The byte map lives in the KIND_META arm of FEED_TX; the
+              -- explanation of each field is kept there, next to the literals.
+              rsp_kind_v := KIND_META;
               rsp_len_v := 12;
               st := BUILD_RSP;
 
@@ -1827,15 +1805,9 @@ BEGIN
                 raw_byte_hi_next := false;
                 raw_comp_bhi := '0';
                 raw_comp_word_idle := false;
-                rsp_buf(0) := Producer_Index(7 downto 0);
-                rsp_buf(1) := Producer_Index(15 downto 8);
-                rsp_buf(2) := Producer_Index(23 downto 16);
-                rsp_buf(3) := Producer_Index(31 downto 24);
-                rsp_buf(4) := Oldest_Index(7 downto 0);
-                rsp_buf(5) := Oldest_Index(15 downto 8);
-                rsp_buf(6) := Oldest_Index(23 downto 16);
-                rsp_buf(7) := Oldest_Index(31 downto 24);
-                rsp_buf_len := 8;
+                load_quad(prod_q, Producer_Index);
+                load_quad(old_q, Oldest_Index);
+                rsp_kind_v := KIND_RAWACK;
                 rsp_len_v := 8;
                 rsp_stat_v := ST_STREAM_ACTIVE;
                 raw_ready_wd := 0;
@@ -1924,22 +1896,15 @@ BEGIN
                   raw_ready_sub := 0;
                   -- A direct stream reports zeroed reserved cursor fields.
                   -- The host uses the same ACK parser as the SDRAM stream.
-                  rsp_buf(0) := x"00";
-                  rsp_buf(1) := x"00";
-                  rsp_buf(2) := x"00";
-                  rsp_buf(3) := x"00";
                   -- Direct streams use the second reserved cursor word as a
                   -- transport-status word. Bit 0 means the bounded live FIFO
                   -- overflowed and the waveform is discontinuous.
-                  IF live_fifo_overflow_s2 = '1' THEN
-                    rsp_buf(4) := x"01";
-                  ELSE
-                    rsp_buf(4) := x"00";
-                  END IF;
-                  rsp_buf(5) := x"00";
-                  rsp_buf(6) := x"00";
-                  rsp_buf(7) := x"00";
-                  rsp_buf_len := 8;
+                  if live_fifo_overflow_s2 = '1' then
+                    live_ovf_b := x"01";
+                  else
+                    live_ovf_b := x"00";
+                  end if;
+                  rsp_kind_v := KIND_LIVEACK;
                   rsp_len_v := 8;
                   rsp_stat_v := ST_STREAM_ACTIVE;
                   if live_stream_arm = '1' then
@@ -2092,11 +2057,8 @@ BEGIN
                     reg_val := (others => '0');
                   when others => null;
                 end case;
-                rsp_buf(0) := reg_val(7 downto 0);
-                rsp_buf(1) := reg_val(15 downto 8);
-                rsp_buf(2) := reg_val(23 downto 16);
-                rsp_buf(3) := reg_val(31 downto 24);
-                rsp_buf_len := 4;
+                load_quad(reg_q, reg_val);
+                rsp_kind_v := KIND_REGREAD;
                 -- Pop the RX FIFO on the address being READ (NOT
                 -- disp_reg_addr, which only tracks register WRITES and
                 -- left the FIFO stuck at its head byte forever).
@@ -2137,15 +2099,15 @@ BEGIN
               st := BUILD_RSP;
 
             when CMD_GEN_STATUS =>
-              rsp_buf(0)(0) := Gen_Busy;
-              rsp_buf(0)(1) := Gen_Start_Ack;
-              rsp_buf(0)(2) := gen_capture_error_i;
-              rsp_buf(0)(3) := gen_capture_active_i;
-              rsp_buf(0)(4) := gen_capture_done_i;
-              rsp_buf(0)(5) := Gen_Start_Reject;
-              IF unsigned(Gen_Fifo_Count) > 0 THEN rsp_buf(0)(6) := '1'; ELSE rsp_buf(0)(6) := '0'; END IF;
-              rsp_buf(0)(7) := Gen_Done_Pulse;
-              rsp_buf_len := 1;
+              genstat_b(0) := Gen_Busy;
+              genstat_b(1) := Gen_Start_Ack;
+              genstat_b(2) := gen_capture_error_i;
+              genstat_b(3) := gen_capture_active_i;
+              genstat_b(4) := gen_capture_done_i;
+              genstat_b(5) := Gen_Start_Reject;
+              IF unsigned(Gen_Fifo_Count) > 0 THEN genstat_b(6) := '1'; ELSE genstat_b(6) := '0'; END IF;
+              genstat_b(7) := Gen_Done_Pulse;
+              rsp_kind_v := KIND_GENSTAT;
               rsp_len_v := 1;
               st := BUILD_RSP;
 
@@ -2215,14 +2177,97 @@ BEGIN
                 end if;
               end if;
             else
-              -- Stream from rsp_buf
-              if rsp_buf_idx < rsp_buf_len then
-                disp_tx_payload_in <= rsp_buf(rsp_buf_idx);
+              -- Generate this response byte from (kind, rsp_buf_idx).
+              if rsp_buf_idx < rsp_len_v then
+                rsp_byte_v := (others => '0');
+                case rsp_kind_v is
+                  when KIND_PING =>
+                    case rsp_buf_idx is
+                      when 0 | 1  => rsp_byte_v := x"01";
+                      when 2      => rsp_byte_v := x"00";
+                      when others => null;
+                    end case;
+
+                  when KIND_STATUS =>
+                    case rsp_buf_idx is
+                      when 0       => rsp_byte_v := st_b0;   -- Gen_Fifo_Count
+                      when 1       => rsp_byte_v := st_b1;   -- Busy / start_req
+                      when 2       => rsp_byte_v := st_b2;   -- gen_load_events
+                      when 3 to 6  => rsp_byte_v := seq_q(rsp_buf_idx - 3);
+                      when 7 to 10 => rsp_byte_v := prod_q(rsp_buf_idx - 7);
+                      when 11 to 14 => rsp_byte_v := old_q(rsp_buf_idx - 11);
+                      when 15 to 18 => rsp_byte_v := new_q(rsp_buf_idx - 15);
+                      when 19 to 22 => rsp_byte_v := ovr_q(rsp_buf_idx - 19);
+                      when 23      => rsp_byte_v := "0000000" & st_done;
+                      when others  => null;
+                    end case;
+
+                  when KIND_META =>
+                    -- Byte 0-1: 16 channels. Byte 2 reserved. Byte 3/4:
+                    -- identity. Bytes 5-8: SAMPLE_CLK_HZ in kHz, little-endian
+                    -- uint32 (constant declared near the top of the
+                    -- architecture; sliced type conversions are not portable to
+                    -- GHDL). Byte 9: transport feature flags -- bit0 = 24-bit
+                    -- generator divider (Bit_Engine supports symbol rates down
+                    -- to ~6 Hz at 100 MHz; without it the divider is 16-bit
+                    -- with a ~1.5 kHz floor), bit1 = direct live FIFO,
+                    -- bit2 = framed held-CS live stream (continuous waveform).
+                    -- Byte 10: image feature flags (second flag byte); old
+                    -- hosts read only bytes 0-9 (they check len >= 10), so the
+                    -- extra bytes are backwards compatible:
+                    --   bit0 = SDRAM read data is true (read-timing fix: data
+                    --          is latched inside the chip's CL3 window)
+                    --   bit1 = dropped-sample counter present (REG 0x60 15:0)
+                    --   bit2 = RLE stream flush fixed (final run always sent)
+                    --   bit3 = continuous capture loses no samples to host reads
+                    --   bit4 = narrow 200 MHz capture loses no samples
+                    -- Byte 11: image generation (increments with each image
+                    -- that changes host-visible behaviour).
+                    case rsp_buf_idx is
+                      when 0 | 1  => rsp_byte_v := x"10";
+                      when 2      => rsp_byte_v := x"00";
+                      when 3      => rsp_byte_v := x"F0";
+                      when 4      => rsp_byte_v := x"01";
+                      when 5      => rsp_byte_v := SAMPLE_CLK_KHZ_SLV(7 downto 0);
+                      when 6      => rsp_byte_v := SAMPLE_CLK_KHZ_SLV(15 downto 8);
+                      when 7      => rsp_byte_v := SAMPLE_CLK_KHZ_SLV(23 downto 16);
+                      when 8      => rsp_byte_v := SAMPLE_CLK_KHZ_SLV(31 downto 24);
+                      when 9      => rsp_byte_v := x"0F";
+                      when 10     => rsp_byte_v := IMAGE_FEATURES2;
+                      when 11     => rsp_byte_v := IMAGE_GENERATION;
+                      when others => null;
+                    end case;
+
+                  when KIND_RAWACK =>
+                    -- Producer_Index then Oldest_Index, little-endian.
+                    if rsp_buf_idx < 4 then
+                      rsp_byte_v := prod_q(rsp_buf_idx);
+                    else
+                      rsp_byte_v := old_q(rsp_buf_idx - 4);
+                    end if;
+
+                  when KIND_LIVEACK =>
+                    -- Zeroed reserved cursor fields; byte 4 carries the
+                    -- transport-status word, bytes 5-7 stay zero.
+                    if rsp_buf_idx = 4 then
+                      rsp_byte_v := live_ovf_b;
+                    end if;
+
+                  when KIND_REGREAD =>
+                    rsp_byte_v := reg_q(rsp_buf_idx);
+
+                  when KIND_GENSTAT =>
+                    rsp_byte_v := genstat_b;
+
+                  when KIND_NONE =>
+                    null;
+                end case;
+                disp_tx_payload_in <= rsp_byte_v;
                 disp_tx_payload_vld <= '1';
                 feed_wait_ready_low := true;
                 rsp_buf_idx := rsp_buf_idx + 1;
               end if;
-              if rsp_buf_idx >= rsp_buf_len then
+              if rsp_buf_idx >= rsp_len_v then
                 st := WAIT_TX;
               end if;
             end if;
