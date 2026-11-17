@@ -69,6 +69,7 @@ has an explicit scope boundary.
 | Generator page and route capability gating | [Generator Controller](backend/generator-controller.md), [Generator Routing](generator-routing.md) | **HW/SW** |
 | Machine-in-loop testing | [Machine-In-Loop](backend/machine-in-loop.md) | **SW** service/API coverage; external fixtures required for device claims |
 | MCP4725 DAC test and stepped signal generator | [MCP4725 guide](mcp4725.md), MIL card | **HW** on SDA D3/SCL D4/VOUT AIN4 at `0x60` (re-measured 2026-11-16; the 2026-09-28 record lists SDA D4/SCL D3); **SW** for 506 selectable ordered pin pairs; saved trace replays preflight voltages, with host-timed rate and physical ACKs. [Evidence](../evidence/mcp4725-fast-2026-09-28/README.md) |
+| MAX6675 thermocouple datalogger | [MAX6675 guide](max6675.md), MIL card | **HW** for one sensor on SO PIO_01 / CS PIO_02 / SCK PIO_03 (live readings, logging through a capture, CSV export); **SW** for four channels, the pin rules and shared SO/SCK, which were not tested with more than one sensor. |
 | Debug bundles and sanity checks | [WebSocket Diagnostics](backend/websocket-diagnostics.md) | **SW** |
 | Frontend screenshot/e2e suite | [Build and Test](frontend/build-and-test.md) | Typecheck/build pass; hardware scenario includes real-board sessions |
 | Bit Banger scripts and presets | [Recent Software Features](recent-software-features.md) | **SW/HW**; 1,024-symbol FIFO boundary |

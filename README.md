@@ -9,6 +9,7 @@ current repository includes:
 - A FastAPI backend plus React frontend for browser-based capture and analysis
 - Hardware validation, smoke tests, and regression tests for host, backend, and UI
 - A wired MCP4725 DAC test and bounded analogue signal generator in the MIL tab
+- A MAX6675 thermocouple datalogger for up to four channels in the MIL tab
 
 The full-device reference image and host stack have the validation recorded
 below. The seed-7 image also passed timing, was verified in flash, and
@@ -204,6 +205,12 @@ lines need pull-ups to 3.3 V. Run **Run three-point test** before **Run
 waveform and save trace**. The [MCP4725 guide](docs/wiki/mcp4725.md) lists the
 measured header layout. Mock mode exercises the controls and saves a
 synthetic scope session; it does not verify external wiring.
+
+The MIL tab also has a MAX6675 thermocouple datalogger. It reads up to four
+converters at a set interval, shows live values, graphs them and exports CSV.
+The tested wiring is one sensor with SO on PMOD 1, CS on PMOD 2 and SCK on
+PMOD 3. A read takes about 0.4 s per channel. See the
+[MAX6675 guide](docs/wiki/max6675.md).
 
 For the attached MAX1000, install the FTDI D2XX driver, connect the board, and
 select **MAX1000 OLS Logic Analyzer** → **Connect**. Verify the complete device
