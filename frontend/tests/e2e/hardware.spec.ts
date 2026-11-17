@@ -812,9 +812,18 @@ test('machine-in-loop transaction shows request and response waveforms', async (
 test('mock MAX6675 datalogger starts logging and plots channel 1', async ({ page }) => {
   await page.getByRole('button', { name: 'Hardware lab' }).click();
   await expect(page.getByRole('heading', { name: 'MAX6675 thermocouple datalogger' })).toBeVisible();
+  // The mock reads about 21-23 °C, so a 20 °C high alarm trips on the first logged rows.
+  await page.getByText('Calibration and alarms').click();
+  await page.getByLabel('Channel 1 high alarm (°C)').fill('20');
   await page.getByRole('button', { name: 'Start logging' }).click();
+  await expect(page.locator('.alarm-badge', { hasText: 'HIGH' })).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText(/\d+\.\d{2} °C/).first()).toBeVisible({ timeout: 15_000 });
   await expect(page.locator('[data-testid="max6675-line-1"]')).toHaveAttribute('d', /.+/, { timeout: 15_000 });
+  await page.getByLabel('Note text').fill('Fan on');
+  await page.getByRole('button', { name: 'Add note' }).click();
+  await expect(page.locator('[data-testid="max6675-note-marker"]')).toBeAttached({ timeout: 15_000 });
+  await page.getByLabel('Units').selectOption('F');
+  await expect(page.getByText(/\d+\.\d{2} °F/).first()).toBeVisible();
   await takeScreenshot(page, 'mil-max6675.png', { fullPage: true });
 });
 

@@ -836,30 +836,60 @@ export async function installMockApp(page: Page, options: { mockDevice?: boolean
   const max6675 = {
     interval_s: 1,
     running: false,
+    stopAfter: null as number | null,
+    autoResume: true,
+    autoReconnect: true,
     channels: [
-      { name: 'Channel 1', enabled: true, so_pin: 15, cs_pin: 16, sck_pin: 17 },
-      { name: 'Channel 2', enabled: false, so_pin: 15, cs_pin: 18, sck_pin: 17 },
-      { name: 'Channel 3', enabled: false, so_pin: 15, cs_pin: 19, sck_pin: 17 },
-      { name: 'Channel 4', enabled: false, so_pin: 15, cs_pin: 20, sck_pin: 17 },
+      { name: 'Channel 1', enabled: true, so_pin: 15, cs_pin: 16, sck_pin: 17, offset_c: 0, alarm_high_c: null, alarm_low_c: null, alarm_on_fault: true },
+      { name: 'Channel 2', enabled: false, so_pin: 15, cs_pin: 18, sck_pin: 17, offset_c: 0, alarm_high_c: null, alarm_low_c: null, alarm_on_fault: true },
+      { name: 'Channel 3', enabled: false, so_pin: 15, cs_pin: 19, sck_pin: 17, offset_c: 0, alarm_high_c: null, alarm_low_c: null, alarm_on_fault: true },
+      { name: 'Channel 4', enabled: false, so_pin: 15, cs_pin: 20, sck_pin: 17, offset_c: 0, alarm_high_c: null, alarm_low_c: null, alarm_on_fault: true },
     ] as Json[],
     rows: [] as Json[],
     nextSeq: 0,
     last: [null, null, null, null] as (Json | null)[],
+    alarmEvents: [] as Json[],
+    alarmState: [null, null, null, null] as (string | null)[],
+    notes: [] as Json[],
+  };
+  // A channel is in high alarm when its simulated temperature is above alarm_high_c (and low likewise).
+  const max6675Alarm = (index: number): string | null => {
+    const channel = max6675.channels[index];
+    const reading = max6675.last[index] as Json | null;
+    if (!channel.enabled || !reading || reading.status !== 'ok') return null;
+    if (channel.alarm_high_c !== null && reading.temp_c > channel.alarm_high_c) return 'high';
+    if (channel.alarm_low_c !== null && reading.temp_c < channel.alarm_low_c) return 'low';
+    return null;
   };
   const max6675Status = () => ({
     running: max6675.running, interval_s: max6675.interval_s, paused_reason: null, last_error: null,
     started_at: max6675.running ? 1_700_000_000 : null, row_count: max6675.rows.length,
     dropped_rows: 0, next_seq: max6675.nextSeq,
-    channels: max6675.channels.map((channel, index) => ({ ...channel, last: max6675.last[index] })),
+    channels: max6675.channels.map((channel, index) => {
+      const alarm = max6675Alarm(index);
+      return { ...channel, last: max6675.last[index], alarm, alarm_since: alarm ? 1_700_000_000 : null };
+    }),
+    stop_after_s: max6675.stopAfter, auto_resume: max6675.autoResume, auto_reconnect: max6675.autoReconnect,
+    alarm_events: max6675.alarmEvents.slice(-100), stop_at: null, stopped_reason: null,
+    persistent: false, corrupt_lines: 0,
   });
   const appendMax6675Row = () => {
     const seq = max6675.nextSeq;
-    const readings = max6675.channels.map((channel, index) => (channel.enabled
-      ? { temp_c: Math.round((21 + ((seq * 0.37) % 2)) * 100) / 100, status: 'ok' }
+    const t = 1_700_000_000 + seq * max6675.interval_s;
+    const readings = max6675.channels.map((channel) => (channel.enabled
+      ? { temp_c: Math.round((21 + ((seq * 0.37) % 2) + Number(channel.offset_c)) * 100) / 100, status: 'ok' }
       : null));
-    max6675.rows.push({ seq, t: 1_700_000_000 + seq * max6675.interval_s, elapsed_s: seq * max6675.interval_s, readings });
+    max6675.rows.push({ seq, t, elapsed_s: seq * max6675.interval_s, readings });
     max6675.nextSeq += 1;
     max6675.last = readings;
+    max6675.channels.forEach((channel, index) => {
+      const alarm = max6675Alarm(index);
+      if (alarm === max6675.alarmState[index]) return;
+      max6675.alarmState[index] = alarm;
+      max6675.alarmEvents.push({
+        t, channel: index + 1, name: channel.name, kind: alarm ?? 'clear', temp_c: (readings[index] as Json | null)?.temp_c ?? null,
+      });
+    });
   };
   await page.addInitScript(() => {
     const sockets: MockWebSocket[] = [];
@@ -1099,10 +1129,22 @@ export async function installMockApp(page: Page, options: { mockDevice?: boolean
     if (matches('GET', req, '/api/mil/max6675/status')) return route.fulfill(okJson(max6675Status()));
     if (matches('PUT', req, '/api/mil/max6675/config')) {
       if (max6675.running) return route.fulfill(okJson({ detail: 'Stop logging before changing the MAX6675 configuration' }, 409));
-      const body = req.postDataJSON() as { interval_s: number; channels: Json[] };
+      const body = req.postDataJSON() as { interval_s: number; channels: Json[]; stop_after_s?: number | null; auto_resume?: boolean; auto_reconnect?: boolean };
       max6675.interval_s = body.interval_s;
       max6675.channels = body.channels;
+      max6675.stopAfter = body.stop_after_s ?? null;
+      max6675.autoResume = body.auto_resume ?? true;
+      max6675.autoReconnect = body.auto_reconnect ?? true;
       return route.fulfill(okJson(max6675Status()));
+    }
+    if (matches('GET', req, '/api/mil/max6675/notes')) return route.fulfill(okJson({ notes: max6675.notes }));
+    if (matches('POST', req, '/api/mil/max6675/notes')) {
+      const text = String((req.postDataJSON() as { text?: unknown }).text ?? '').trim();
+      if (text.length < 1 || text.length > 200) return route.fulfill(okJson({ detail: 'Note must be 1-200 characters' }, 422));
+      // Notes sit at the newest logged time so they fall inside the default graph window.
+      const note = { t: max6675.rows.length ? (max6675.rows[max6675.rows.length - 1] as Json).t : 1_700_000_000, text };
+      max6675.notes.push(note);
+      return route.fulfill(okJson(note));
     }
     if (matches('POST', req, '/api/mil/max6675/read')) {
       max6675.last = [{ temp_c: 21.25, status: 'ok' }, null, null, null];
@@ -1120,6 +1162,9 @@ export async function installMockApp(page: Page, options: { mockDevice?: boolean
       max6675.rows = [];
       max6675.nextSeq = 0;
       max6675.last = [null, null, null, null];
+      max6675.alarmEvents = [];
+      max6675.alarmState = [null, null, null, null];
+      max6675.notes = [];
       return route.fulfill(okJson(max6675Status()));
     }
     if (matches('GET', req, '/api/mil/max6675/data')) {

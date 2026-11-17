@@ -6,7 +6,7 @@ import type {
   DeviceMetadata, GeneratorConfig, GeneratorRouteCapability, LogEntry, Marker, MeasurementInstance,
   MeasurementType, MilConfig, MilPresetSummary, MilRuntimeStatus,
   MilTransactionResponse, MilAccelerometerConfig, MilAccelerometerStatus, Mcp4725TestResult, Mcp4725WaveformConfig, Mcp4725WaveformResult, Session, SessionSummary, VirtualBridgeStatus,
-  VirtualComPairCreateResponse, Max6675Config, Max6675Data, Max6675ReadResult, Max6675Status,
+  VirtualComPairCreateResponse, Max6675Config, Max6675Data, Max6675Note, Max6675NotesResponse, Max6675ReadResult, Max6675Status,
 } from './types';
 import { parseWaveformPayload, WaveformPayload } from './binary';
 import { backendUrl } from './endpoint';
@@ -255,6 +255,8 @@ export const api = {
   milMax6675Clear: () => post<Max6675Status>('/api/mil/max6675/clear'),
   milMax6675Data: (since: number, limit = 5000) =>
     get<Max6675Data>(`/api/mil/max6675/data?since=${since}&limit=${limit}`),
+  milMax6675Notes: () => get<Max6675NotesResponse>('/api/mil/max6675/notes'),
+  milMax6675AddNote: (text: string) => post<Max6675Note>('/api/mil/max6675/notes', { text }),
 
   // diagnostics
   logs: (limit = 500) => get<{ logs: LogEntry[] }>(`/api/logs?limit=${limit}`),
