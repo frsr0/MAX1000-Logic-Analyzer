@@ -83,10 +83,23 @@ Digital readback supports:
 - `raw`
 - `delta_rle` packed-delta-plus-RLE and direct `rle` in the host/UI surface
 
-For the currently validated hardware block-read path, compressed capture blocks
-decode from exact RLE block payloads with zero raw-retry fallback on the tested
-board. On a recent hardware check with a compressible digital waveform, the
-compressed block-read path delivered about `1.81x` faster readback than raw.
+Reading back a 4,194,304-sample digital capture on the attached board
+(2026-11-17, all results bit-exact against raw):
+
+| Signal | `raw` | `rle` | `delta_rle` |
+| --- | --- | --- | --- |
+| Idle, 10 kHz or 100 kHz PWM at 100 MS/s | 3.6 s | 0.74-0.77 s | 2.0 s |
+| 1 MHz square wave at 10 MS/s | 3.7 s | 1.9 s | 3.5 s |
+
+Use `rle` for logic signals. `delta_rle` stores each 16-sample group as an
+anchor plus 5-bit deltas, so it never gets below about 256 bytes per
+512-sample block, and a change wider than ±15 between samples (any toggle on
+CH4 or above) makes the block fall back; when a quarter of a batch falls back
+the driver switches that session to `rle`. It only beats `rle` on numeric
+buses that change in small steps, such as counters. The host sizes each
+batched block's response slot from the responses it has seen (48 to 1100
+bytes), which is what makes compressed readback faster than raw on both quiet
+and busy signals.
 
 Analog and mixed captures use raw readback.
 
