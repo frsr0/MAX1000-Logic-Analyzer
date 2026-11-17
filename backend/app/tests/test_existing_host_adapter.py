@@ -12,6 +12,7 @@ from app.hardware.existing_host_adapter import (
     DIGITAL_NARROW_LOGICAL_SAMPLES,
     DIGITAL_SDRAM_WORDS,
     ExistingHostAdapter,
+    _MAX6675_FRAME_SYMBOLS,
 )
 from app.triggers.hardware_support import to_register_config, to_register_mask
 
@@ -1704,19 +1705,36 @@ def test_capture_reports_a_short_read_without_the_truncation_flag():
     assert result.warnings == ["Device returned 1 effective samples for 4 requested"]
 
 
+MAX6675_CS_LANE = 2
 MAX6675_SCLK_LANE = 1
 MAX6675_MISO_LANE = 0
 
 
-def _max6675_capture_bytes(bits):
-    """Pack a MAX6675 frame as capture words: SCLK idles high, then each bit
-    gets two SCLK-low samples and four SCLK-high samples with MISO held."""
+def _max6675_capture_bytes(bits, stray_pulses=False):
+    """Pack a MAX6675 frame as capture words.
+
+    CS idles high. The frame has CS low, with each bit getting two SCLK-low
+    samples and four SCLK-high samples while MISO holds the bit. CS returns
+    high afterwards. With ``stray_pulses`` set, two extra SCLK pulses are
+    driven with CS high before and after the frame, with MISO high.
+    """
     sclk = 1 << MAX6675_SCLK_LANE
-    samples = [sclk]
+    cs = 1 << MAX6675_CS_LANE
+    samples = [sclk | cs]
+
+    def pulse(miso, cs_high):
+        base = cs if cs_high else 0
+        samples.extend([base | miso] * 2)
+        samples.extend([base | sclk | miso] * 4)
+
+    stray_miso = 1 << MAX6675_MISO_LANE
+    if stray_pulses:
+        pulse(stray_miso, cs_high=True)
     for bit in bits:
-        miso = bit << MAX6675_MISO_LANE
-        samples += [miso] * 2
-        samples += [sclk | miso] * 4
+        pulse(bit << MAX6675_MISO_LANE, cs_high=False)
+    if stray_pulses:
+        pulse(stray_miso, cs_high=True)
+    samples.append(sclk | cs)
     return b"".join(word.to_bytes(2, "little") for word in samples)
 
 
@@ -1725,7 +1743,9 @@ def _max6675_adapter(raw=None, side_effect=None):
     dev = FakeHostDevice()
     dev.set_analog_config = Mock()
     dev.raw_mode = Mock()
-    dev._gen_capture_output_channels = Mock(return_value=(15, MAX6675_SCLK_LANE))
+    dev.gen_capture_unlimited = True
+    dev._gen_capture_output_channels = Mock(
+        return_value=(MAX6675_CS_LANE, MAX6675_SCLK_LANE))
     dev._aux_pins = Mock()
     dev._set_gen_capture_aux = Mock()
     dev.capture_with_gen = Mock(return_value=raw, side_effect=side_effect)
@@ -1744,10 +1764,12 @@ def test_max6675_good_frame_decodes_and_cleans_up():
 
     assert result == {"raw": 0x02A8, "clocks": 16}
     dev.capture_with_gen.assert_called_once_with(
-        rate_hz=4_000_000, nsamples=1024, timeout=3, proto="SPI",
-        spi_mosi_pin=31, spi_sclk_pin=6, spi_clk_div=100,
-        spi_cs_pin=5, spi_miso_pin=4, spi_cs_channel=2,
-        spi_miso_channel=MAX6675_MISO_LANE, fast_mode=True, reset_board=False)
+        rate_hz=10_000, nsamples=3000, timeout=6, proto="SPI",
+        spi_mosi_pin=5, spi_sclk_pin=6, spi_clk_div=50_000,
+        spi_cs_pin=None, spi_miso_pin=4,
+        spi_miso_channel=MAX6675_MISO_LANE,
+        spi_symbols=_MAX6675_FRAME_SYMBOLS,
+        fast_mode=False, reset_board=False)
     assert dev._gen_data == b"\x00\x00"
     dev._aux_pins.assert_called_once_with()
     dev._set_gen_capture_aux.assert_called_once_with()
@@ -1766,6 +1788,13 @@ def test_max6675_fewer_than_16_clocks_is_left_aligned():
     assert adapter.max6675_read(4, 5, 6) == {"raw": 0xB000, "clocks": 8}
 
 
+def test_max6675_ignores_sck_edges_while_cs_is_high():
+    adapter, _dev = _max6675_adapter(
+        _max6675_capture_bytes(_bits(0x02A8), stray_pulses=True))
+
+    assert adapter.max6675_read(4, 5, 6) == {"raw": 0x02A8, "clocks": 16}
+
+
 def test_max6675_empty_capture_returns_zero_clocks():
     adapter, _dev = _max6675_adapter(b"")
 
@@ -1782,6 +1811,25 @@ def test_max6675_requires_a_connected_device():
     adapter = ExistingHostAdapter()
     with pytest.raises(HardwareError, match="Device not connected"):
         adapter.max6675_read(4, 5, 6)
+
+
+@pytest.mark.parametrize("unlimited", [False, "missing"])
+def test_max6675_requires_image_generation_4(unlimited):
+    adapter, dev = _max6675_adapter(_max6675_capture_bytes(_bits(0x02A8)))
+    if unlimited == "missing":
+        del dev.gen_capture_unlimited
+    else:
+        dev.gen_capture_unlimited = unlimited
+
+    with pytest.raises(HardwareError, match="image generation 4 or newer"):
+        adapter.max6675_read(4, 5, 6)
+    dev.capture_with_gen.assert_not_called()
+
+
+def test_max6675_frame_symbol_layout():
+    assert len(_MAX6675_FRAME_SYMBOLS) == 520 + 4 + 32 + 3
+    assert _MAX6675_FRAME_SYMBOLS[0] == 0b11
+    assert _MAX6675_FRAME_SYMBOLS[-1] == 0b11
 
 
 @pytest.mark.parametrize("pins", [(4, 4, 6), (4, 6, 6), (23, 5, 6),

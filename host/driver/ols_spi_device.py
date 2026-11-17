@@ -1256,7 +1256,13 @@ class OLSDeviceSPI:
                 bit_bang.pack_symbols(bit_bang.uart_symbols(data)))
         return data
 
-    def _gen_load_spi(self, data, spi_clk_div):
+    def _gen_load_spi(self, data, spi_clk_div, symbols=None):
+        """Load SPI generator symbols.
+
+        ``symbols`` is an explicit list of 2-bit generator symbols (bit 0 =
+        data output, bit 1 = clock output). When given it replaces the
+        MOSI-derived pattern built from ``data``.
+        """
         data = bytes(data or b'')
         limit = bit_bang.max_spi_bytes()
         if len(data) > limit:
@@ -1265,7 +1271,10 @@ class OLSDeviceSPI:
         div = max(1, int(spi_clk_div) - 1)
         self._warn_div_overflow(spi_clk_div, div)
         self.pkt.write_register(REG_GEN_BAUD, div & self.gen_div_mask)
-        if data:
+        if symbols is not None:
+            self.pkt.load_gen_data(bit_bang.pack_symbols(
+                list(symbols)[:bit_bang.MAX_SYMBOLS]))
+        elif data:
             self.pkt.load_gen_data(
                 bit_bang.pack_symbols(bit_bang.spi_symbols(data)))
         return data
@@ -4279,6 +4288,7 @@ class OLSDeviceSPI:
                          rs485_b_pin=3, rs485_a_pin=1, rs485_de_pin=None,
                          spi_cs_pin=None, spi_miso_pin=None,
                          spi_cs_channel=None, spi_miso_channel=15,
+                         spi_symbols=None,
                          swd_ops=None, swd_clk_hz=1000000,
                          swd_swdio_pin=3, swd_swclk_pin=1, swd_connect=True,
                          raw_symbols=None, raw_symbol_rate=1_000_000,
@@ -4392,7 +4402,8 @@ class OLSDeviceSPI:
                 miso_channel=spi_miso_channel if spi_miso_pin is not None else None)
             self.pkt.write_register(REG_GEN_PROTO, 0)
             self.pkt.write_register(REG_GEN_DATA, GEN_FLAG_SPI_TEST | (1 << 8))
-            self._gen_load_spi(self._gen_data, spi_clk_div)
+            self._gen_load_spi(self._gen_data, spi_clk_div,
+                               symbols=spi_symbols)
         elif proto == 'SWD':
             self._set_gen_capture_aux()
             self._set_gen_capture_channels(tx_channel=swd_swdio_pin,
@@ -4438,7 +4449,8 @@ class OLSDeviceSPI:
         self.pkt.write_register(REG_FAST_MODE, 1 if fast_mode else 0)
 
         has_gen = ((proto == 'I2C' and i2c_frame) or swd_loaded
-                   or raw_symbols is not None or self._gen_data is not None)
+                   or raw_symbols is not None or self._gen_data is not None
+                   or spi_symbols is not None)
         if not has_gen:
             return b''
 

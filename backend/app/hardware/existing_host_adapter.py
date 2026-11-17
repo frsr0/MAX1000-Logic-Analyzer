@@ -52,6 +52,18 @@ DIGITAL_FAST_BRAM_SAMPLES = 1024
 # of samples with 0 drops). 1M was the conservative pre-fix ceiling.
 DIGITAL_SDRAM_WORDS = 4_194_304
 DIGITAL_NARROW_LOGICAL_SAMPLES = DIGITAL_SDRAM_WORDS * 16
+# MAX6675 read timing. Symbols are (SCLK << 1) | CS.
+_MAX6675_SPI_CLK_DIV = 50_000          # generator symbol period about 0.5 ms
+_MAX6675_PREAMBLE_SYMBOLS = 520        # CS held high about 0.26 s: one full conversion (0.22 s max)
+_MAX6675_CAPTURE_RATE_HZ = 10_000      # 5 samples per symbol
+_MAX6675_CAPTURE_SAMPLES = 3000        # 0.3 s window covers the whole pattern (about 0.28 s)
+# The chip converts only while CS is high, so the frame starts with CS and SCLK
+# high for one conversion time. SCLK then falls while CS is still high (ignored
+# by the chip), CS goes low, 16 clocks are sent, and CS is driven high again.
+_MAX6675_FRAME_SYMBOLS = ([0b11] * _MAX6675_PREAMBLE_SYMBOLS
+                          + [0b01, 0b01, 0b00, 0b00]
+                          + [0b10, 0b00] * 16
+                          + [0b01, 0b01, 0b11])
 
 
 def _adapt_driver_progress(progress: Optional[ProgressCb]) -> Optional[Callable[..., None]]:
@@ -1073,6 +1085,15 @@ class ExistingHostAdapter(HardwareDevice):
         Returns {"raw": int, "clocks": int}. "raw" is the first 16 bits sampled
         on SCK rising edges, first bit as the most significant bit; "clocks" is
         how many SCK rising edges were captured (16 for a complete frame).
+
+        CS is driven by the generator data output through explicit symbols
+        (``_MAX6675_FRAME_SYMBOLS``). The auxiliary CS route only pulls CS low
+        and releases it without driving it high, which left the sensor
+        selected on pins without a pull-up. CS floats low on such pins when
+        the FPGA is not driving it, and the chip does not convert while CS is
+        low, so the read holds CS high for one conversion time (about 0.26 s)
+        before clocking the frame. A read therefore takes about 0.4 s. Only SCK
+        edges sampled while CS is low are counted.
         """
         with self._lock:
             if self._dev is None:
@@ -1084,20 +1105,30 @@ class ExistingHostAdapter(HardwareDevice):
                 raise HardwareError(
                     "SO, CS and SCK must be different external digital pins")
             dev = self._dev
+            if not getattr(dev, "gen_capture_unlimited", False):
+                raise HardwareError(
+                    "MAX6675 reads need FPGA image generation 4 or newer "
+                    "(the read holds chip-select high for a 0.26 s conversion)")
             dev.set_analog_config(0)
             dev.raw_mode(False)
-            # Pin 31 drives no physical pin; it parks the unused MOSI output.
-            mosi_lane, sclk_lane = dev._gen_capture_output_channels(31, sck_pin)
-            free = [ch for ch in range(16) if ch not in (mosi_lane, sclk_lane)]
-            miso_lane, cs_lane = free[0], free[1]
+            # CS is the generator data output, so the explicit symbols frame
+            # the transaction: CS high, 16 SCK clocks with CS low, then CS high
+            # again before the outputs are released.
+            cs_lane, sclk_lane = dev._gen_capture_output_channels(cs_pin, sck_pin)
+            miso_lane = next(ch for ch in range(16)
+                             if ch not in (cs_lane, sclk_lane))
             dev._gen_data = b"\x00\x00"
             try:
                 raw = dev.capture_with_gen(
-                    rate_hz=4_000_000, nsamples=1024, timeout=3, proto="SPI",
-                    spi_mosi_pin=31, spi_sclk_pin=sck_pin, spi_clk_div=100,
-                    spi_cs_pin=cs_pin, spi_miso_pin=so_pin,
-                    spi_cs_channel=cs_lane, spi_miso_channel=miso_lane,
-                    fast_mode=True, reset_board=False)
+                    rate_hz=_MAX6675_CAPTURE_RATE_HZ,
+                    nsamples=_MAX6675_CAPTURE_SAMPLES,
+                    timeout=6, proto="SPI",
+                    spi_mosi_pin=cs_pin, spi_sclk_pin=sck_pin,
+                    spi_clk_div=_MAX6675_SPI_CLK_DIV,
+                    spi_cs_pin=None, spi_miso_pin=so_pin,
+                    spi_miso_channel=miso_lane,
+                    spi_symbols=_MAX6675_FRAME_SYMBOLS,
+                    fast_mode=False, reset_board=False)
             except HardwareError:
                 raise
             except Exception as exc:
@@ -1118,7 +1149,8 @@ class ExistingHostAdapter(HardwareDevice):
             bits = []
             for i in range(1, len(words)):
                 if (not (words[i - 1] >> sclk_lane) & 1
-                        and (words[i] >> sclk_lane) & 1):
+                        and (words[i] >> sclk_lane) & 1
+                        and not (words[i] >> cs_lane) & 1):
                     # The MISO bit is valid on the rising edge; sample the
                     # following word so the decode is robust to edge timing.
                     sample = words[min(i + 1, len(words) - 1)]

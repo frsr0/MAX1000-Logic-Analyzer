@@ -4632,3 +4632,71 @@ class TestGenCaptureLaneOverrides:
         assert tx and scl
         assert all(v < 13 for v in tx + scl)
         assert (REG_GEN_CAPTURE_AUX, 0) in writes
+
+
+class TestSpiExplicitSymbols:
+    """SPI generator loads with explicit symbols replace the MOSI pattern."""
+
+    @staticmethod
+    def _arm(dev):
+        dev.pkt = MagicMock()
+        dev.spi.flush = MagicMock()
+        dev.reset = MagicMock()
+        dev._wait_gen_idle = MagicMock()
+        dev.set_debug_ch0 = MagicMock()
+        dev._stream_readback = MagicMock(return_value=b"\x01\x00" * 32)
+        dev.pkt.transaction = MagicMock(return_value=(ST_OK, 0, b""))
+        dev.pkt.get_status = MagicMock(side_effect=[
+            {"capture_status": ST_CAPTURE_IDLE, "capture_seq": 6},
+            {"capture_seq": 7},
+            {"capture_status": ST_CAPTURE_DONE, "capture_seq": 7},
+        ])
+        dev.ack_capture_done = MagicMock()
+
+    def test_explicit_symbols_are_packed_and_loaded(self, device_spi):
+        from driver.bit_bang import pack_symbols
+        device_spi.pkt = MagicMock()
+        syms = [0b01, 0b10, 0b11, 0b00]
+        device_spi._gen_load_spi(b'\xAA', 100, symbols=syms)
+        device_spi.pkt.load_gen_data.assert_called_once_with(pack_symbols(syms))
+
+    def test_explicit_symbols_are_truncated_to_fifo_depth(self, device_spi):
+        from driver.bit_bang import MAX_SYMBOLS, pack_symbols
+        device_spi.pkt = MagicMock()
+        syms = [0b11] * (MAX_SYMBOLS + 10)
+        device_spi._gen_load_spi(b'', 100, symbols=syms)
+        device_spi.pkt.load_gen_data.assert_called_once_with(
+            pack_symbols(syms[:MAX_SYMBOLS]))
+
+    def test_data_path_still_used_when_symbols_is_none(self, device_spi):
+        from driver.bit_bang import pack_symbols, spi_symbols
+        device_spi.pkt = MagicMock()
+        device_spi._gen_load_spi(b'\x81', 100)
+        device_spi.pkt.load_gen_data.assert_called_once_with(
+            pack_symbols(spi_symbols(b'\x81')))
+
+    def test_no_load_without_data_or_symbols(self, device_spi):
+        device_spi.pkt = MagicMock()
+        device_spi._gen_load_spi(b'', 100)
+        device_spi.pkt.load_gen_data.assert_not_called()
+
+    def test_empty_data_with_symbols_still_loads_symbols(self, device_spi):
+        from driver.bit_bang import pack_symbols
+        device_spi.pkt = MagicMock()
+        device_spi._gen_load_spi(b'', 100, symbols=[0b10, 0b11])
+        device_spi.pkt.load_gen_data.assert_called_once_with(
+            pack_symbols([0b10, 0b11]))
+
+    def test_capture_with_gen_passes_spi_symbols_through(self, device_spi):
+        self._arm(device_spi)
+        device_spi._gen_data = None
+        device_spi._gen_load_spi = MagicMock(return_value=b'')
+        syms = [0b01, 0b11]
+        result = device_spi.capture_with_gen(
+            rate_hz=2_000_000, nsamples=32, proto="SPI",
+            spi_mosi_pin=3, spi_sclk_pin=2, spi_symbols=syms)
+        device_spi._gen_load_spi.assert_called_once_with(
+            None, 100, symbols=syms)
+        # has_gen is true from spi_symbols alone, so the capture is not
+        # skipped even though no MOSI data was supplied.
+        assert result != b''
