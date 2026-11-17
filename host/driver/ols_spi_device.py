@@ -669,6 +669,9 @@ class OLSDeviceSPI:
         # return decodable compressed blocks. This avoids paying the failed
         # compression tax on every chunk of a long-running capture.
         self._compressed_block_reads_supported = {'delta_rle': None, 'rle': None}
+        # Set when a delta_rle batch is mostly undecodable (sample deltas wider
+        # than the 5-bit field); readback then uses rle until the mode changes.
+        self._delta_fallback_rle = False
         self._rle_stream_supported = None
         # Image identity from CMD_GET_METADATA bytes 10/11 (0/0 for an image
         # that predates the version field). See _detect_image_features().
@@ -707,6 +710,8 @@ class OLSDeviceSPI:
         if mode not in ('raw', 'delta', 'rle', 'delta_rle'):
             raise ValueError(f"unsupported readback compression mode: {mode}")
         mode_changed = mode != self.readback_compression_mode
+        if mode_changed:
+            self._delta_fallback_rle = False
         self.readback_compression_mode = mode
         self.compress_readback_enabled = mode != 'raw'
         codec = self._readback_codec()
@@ -730,18 +735,23 @@ class OLSDeviceSPI:
                     self.spi.flush()
                 except Exception:
                     pass
+        ok = self._apply_compression_flags()
+        if ok:
+            self._readback_hardware_is_raw = (mode == 'raw')
+        return ok
+
+    def _apply_compression_flags(self):
+        """Write REG_FLAGS compression bits for the effective readback codec."""
         cur = self._read_flags()
         if cur < 0:
             return False
         cur &= ~REG_FLAGS_COMPRESS_MASK
-        if mode in ('delta', 'delta_rle'):
-            cur |= REG_FLAGS_COMPRESS_DELTA
-        elif mode == 'rle':
+        if self.readback_compression_mode in ('delta', 'delta_rle'):
+            cur |= (REG_FLAGS_COMPRESS_RLE if self._delta_fallback_rle
+                    else REG_FLAGS_COMPRESS_DELTA)
+        elif self.readback_compression_mode == 'rle':
             cur |= REG_FLAGS_COMPRESS_RLE
-        ok = self._write_flags(cur)
-        if ok:
-            self._readback_hardware_is_raw = (mode == 'raw')
-        return ok
+        return self._write_flags(cur)
 
     def set_packed_mode(self, enable: bool) -> bool:
         """Enable or disable capture-side MSO bit-packing (REG_FLAGS bit 20).
@@ -786,7 +796,7 @@ class OLSDeviceSPI:
         if not self._can_compress_readback():
             return 'raw'
         if self.readback_compression_mode in ('delta', 'delta_rle'):
-            return 'delta_rle'
+            return 'rle' if self._delta_fallback_rle else 'delta_rle'
         return self.readback_compression_mode
 
     def _use_compressed_live_readback(self, *, use_continuous, payload_stride,
@@ -2217,7 +2227,8 @@ class OLSDeviceSPI:
         mode_flags = (flags | self.analog_mode) & 0xFFFFFFFF
         mode_flags &= ~REG_FLAGS_COMPRESS_MASK
         if self.readback_compression_mode in ('delta', 'delta_rle'):
-            mode_flags |= REG_FLAGS_COMPRESS_DELTA
+            mode_flags |= (REG_FLAGS_COMPRESS_RLE if self._delta_fallback_rle
+                           else REG_FLAGS_COMPRESS_DELTA)
         elif self.readback_compression_mode == 'rle':
             mode_flags |= REG_FLAGS_COMPRESS_RLE
         if mode_flags & MODE_ANALOG_ONLY:
@@ -2429,6 +2440,18 @@ class OLSDeviceSPI:
                     decoded = [decompress_block_readback_stream(
                         b, codec=decode_codec) if b else b'' for b in blocks]
                     need_raw = [j for j, d in enumerate(decoded) if len(d) != 1024]
+                    # A delta_rle batch where a quarter or more of the blocks
+                    # overflow the 5-bit delta field is a signal that is too
+                    # busy for delta. Per-block raw retries are ~2.3x slower
+                    # than raw there, so switch the session to rle and re-fetch
+                    # this same batch (sample/remaining not advanced yet;
+                    # pending is always None here since pipeline needs not use_compress).
+                    if (decode_codec == 'delta_rle' and need_raw
+                            and len(need_raw) * 4 >= len(decoded)):
+                        self._delta_fallback_rle = True
+                        self._apply_compression_flags()
+                        codec = self._readback_codec()
+                        continue
                     if (not need_raw and codec in self._compressed_block_reads_supported
                             and self._compressed_block_reads_supported.get(codec) is None):
                         self._compressed_block_reads_supported[codec] = True

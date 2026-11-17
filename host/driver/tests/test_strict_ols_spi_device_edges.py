@@ -1333,6 +1333,7 @@ def test_capture_range_compressed_retry_failures_fall_back_raw(retry_mode, monke
     dev.readback_compression_mode = "delta_rle"
     dev.compress_readback_enabled = True
     dev.pkt.read_capture_blocks.return_value = [b"bad"]
+    dev.pkt.read_register.return_value = 0
     if retry_mode == "raises":
         dev.pkt.read_capture_block.side_effect = OSError("retry failed")
     else:
@@ -1352,6 +1353,14 @@ def test_capture_range_compressed_retry_failures_fall_back_raw(retry_mode, monke
 
 def test_capture_range_handles_missing_retry_api_partial_probe_and_empty_blocks(monkeypatch):
     class Packet:
+        fast_transactions = False
+
+        def read_register(self, reg):
+            return 0
+
+        def write_register(self, reg, value):
+            return True
+
         def read_capture_blocks(self, addrs, compressed=False):
             return [b"bad", b"good"]
 
@@ -1369,7 +1378,9 @@ def test_capture_range_handles_missing_retry_api_partial_probe_and_empty_blocks(
     )
     data = dev.read_capture_range(0, 520)
     assert data == b""
-    assert dev._compressed_block_reads_supported["delta_rle"] is True
+    # Half the batch overflowed delta, so the session switched to rle.
+    assert dev._delta_fallback_rle is True
+    assert dev._compressed_block_reads_supported["rle"] is True
 
     dev = _device()
     dev.pkt.read_capture_blocks.return_value = [b""]
@@ -2097,6 +2108,7 @@ def test_partial_compression_failure_with_known_support_keeps_codec(monkeypatch)
     dev.readback_compression_mode = "delta_rle"
     dev.compress_readback_enabled = True
     dev._compressed_block_reads_supported["delta_rle"] = True
+    dev.pkt.read_register.return_value = 0
     dev.pkt.read_capture_blocks.return_value = [b"bad", b"good"]
     dev.pkt.read_capture_block.return_value = b""
     monkeypatch.setattr(

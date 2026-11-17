@@ -647,10 +647,14 @@ class TestOLSDeviceSPI:
         assert len(first) == 1040
         assert len(second) == 1040
         calls = device_spi.pkt.read_capture_blocks.call_args_list
+        # Both blocks overflow delta, so the batch is re-fetched with rle; rle
+        # also fails, and the session then reads raw.
         assert calls[0].kwargs["compressed"] is True
-        assert calls[1].kwargs["compressed"] is False
+        assert calls[1].kwargs["compressed"] is True
         assert calls[2].kwargs["compressed"] is False
-        assert device_spi._compressed_block_reads_supported["delta_rle"] is False
+        assert calls[3].kwargs["compressed"] is False
+        assert device_spi._delta_fallback_rle is True
+        assert device_spi._compressed_block_reads_supported["rle"] is False
 
     def test_read_capture_range_marks_clean_delta_compression_supported(self, device_spi):
         device_spi.pkt = MagicMock()
@@ -689,7 +693,10 @@ class TestOLSDeviceSPI:
         assert len(data) == 4096
         assert device_spi.pkt.read_capture_blocks.call_args_list[0].kwargs["compressed"] is True
         assert len(device_spi.pkt.read_capture_blocks.call_args_list[0].args[0]) > 1
-        assert device_spi._compressed_block_reads_supported["delta_rle"] is True
+        # One of four blocks overflowed delta (a quarter of the batch), so the
+        # batch is re-fetched with rle instead of marking delta supported.
+        assert device_spi._delta_fallback_rle is True
+        assert device_spi._compressed_block_reads_supported["rle"] is True
 
     def test_read_capture_range_skips_compressed_batch_once_delta_is_known_bad(self, device_spi):
         raw_block = b'\x00' * 1024
