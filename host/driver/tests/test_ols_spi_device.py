@@ -1871,8 +1871,13 @@ class TestOLSDeviceSPIRolling:
         stop_evt = MagicMock()
         stop_evt.is_set.side_effect = [False] * len(statuses) + [True]
         stop_evt.wait.return_value = False
-        return list(device_spi.stream_ring_capture(
-            1_000_000, window, stop_evt, fetch_multiplier=1))
+        # Freeze the wall clock so every mocked read takes 0 s. With a
+        # fine-grained clock (Linux) a read takes a few microseconds, which
+        # at the patched 64-sample ring triggers the post-read lap check and
+        # an extra status poll, shifting the scripted statuses by one.
+        with patch('driver.ols_spi_device.time.time', return_value=1_000_000.0):
+            return list(device_spi.stream_ring_capture(
+                1_000_000, window, stop_evt, fetch_multiplier=1))
 
     def test_stream_ring_capture_wrapped_ring_keeping_up_has_no_reset_or_gap(
             self, device_spi):
