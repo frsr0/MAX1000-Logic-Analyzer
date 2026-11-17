@@ -208,8 +208,10 @@ synthetic scope session; it does not verify external wiring.
 
 The MIL tab also has a MAX6675 thermocouple datalogger. It reads up to four
 converters at a set interval, shows live values, graphs them and exports CSV.
-The tested wiring is one sensor with SO on PMOD 1, CS on PMOD 2 and SCK on
-PMOD 3. A read takes about 0.4 s per channel. See the
+It saves the log to disk, resumes after a backend restart, reconnects the board
+after a disconnect, and has per-channel offsets, high/low/fault alarms, notes
+and a run length. The tested wiring is two sensors: SO, CS and SCK on PMOD 1-3,
+and on D4, D3 and D2. A read takes about 0.4 s per channel. See the
 [MAX6675 guide](docs/wiki/max6675.md).
 
 For the attached MAX1000, install the FTDI D2XX driver, connect the board, and
