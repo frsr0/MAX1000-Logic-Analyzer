@@ -45,9 +45,10 @@ set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity OLS_Interface
 set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity Bit_Engine
 set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity LED_Controller
 set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity ADC_Controller
-set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA -entity Signal_Gen
+# Signal_Gen is instantiated only by the testbenches, never by the design,
+# so Quartus ignored its per-entity and per-instance OPTIMIZATION_TECHNIQUE
+# assignments (Warning 20014) on every compile. Dead lines removed.
 set_instance_assignment -name OPTIMIZATION_TECHNIQUE SPEED -to "|OLS_SDRAM_Top:core|OLS_Logic_Analyzer:SDRAM_Analyzer|Fast_Logic_Analyzer_SDRAM:Fast_Logic_Analyzer_SDRAM1"
-set_instance_assignment -name OPTIMIZATION_TECHNIQUE AREA -to "|OLS_SDRAM_Top:core|Signal_Gen:GEN"
 # Extra placement effort: at 99% LE the last ~20 ps of clk[2] slack is
 # placement noise; a 4x placement budget reliably buys it back.
 set_global_assignment -name PLACEMENT_EFFORT_MULTIPLIER 4
