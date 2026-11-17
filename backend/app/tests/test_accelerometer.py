@@ -1606,6 +1606,30 @@ def test_record_sample_publishes_lightweight_decoded_xyz_event(monkeypatch):
     assert data["samples_read"] == 1
 
 
+def test_record_sample_never_moves_the_timestamp_backwards(monkeypatch):
+    """A repeated or older timestamp is nudged just past the previous one.
+
+    With a coarse clock two samples can share a timestamp; with a fine one
+    they rarely do, so the case is driven explicitly here.
+    """
+    service = AccelerometerService(FakeManager(FakeRaw()), sample_rate_hz=400)
+    service._status.running = True
+    published = []
+    monkeypatch.setattr(
+        accelerometer_module.websocket_manager, "publish_threadsafe",
+        lambda topic, type_, data: published.append(data))
+
+    service._record_sample((0.0, 0.0, 1.0), timestamp=50.0)
+    service._record_sample((0.0, 0.0, 1.0), timestamp=50.0)
+    service._record_sample((0.0, 0.0, 1.0), timestamp=49.0)
+
+    stamps = [data["sample"]["timestamp"] for data in published]
+    assert stamps[0] == 50.0
+    assert stamps[1] == pytest.approx(50.0 + 1e-6)
+    assert stamps[2] == pytest.approx(50.0 + 2e-6)
+    assert stamps == sorted(stamps)
+
+
 def test_record_sample_can_retain_raw_frame_without_pose_publish(monkeypatch):
     service = AccelerometerService(FakeManager(FakeRaw()), sample_rate_hz=400)
     service._status.running = True
