@@ -253,6 +253,8 @@ for tb in "${TBS[@]}"; do
     fi
   elif [ -n "$reason" ]; then
     echo "FAIL  $tb ($reason)"
+    # Show why: CI keeps only this console output, not the per-TB log files.
+    tail -n 15 "$log" | sed 's/^/      | /'
     failed=$((failed + 1)); failed_list+=("$tb")
   else
     echo "PASS  $tb"

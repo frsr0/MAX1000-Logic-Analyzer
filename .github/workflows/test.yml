@@ -126,9 +126,13 @@ jobs:
     # Pinned GHDL toolchain (ubuntu-22.04 base with bash as the default
     # shell, so the plain `run` steps work unchanged). Running inside the
     # verified container removes the apt-version skew of a bare
-    # `apt-get install ghdl` and keeps the CI bit-for-bit on the same
-    # compiler as the local container runs (GHDL 6.0.0, --std=08).
-    container: ghdl/ghdl:6.0.0-llvm-ubuntu-22.04
+    # `apt-get install ghdl` (GHDL 6.0.0, --std=08).
+    # mcode backend, not llvm or gcc: in the 6.0.0 llvm and gcc images a
+    # VHDL-2008 external name (<<signal ...>>) fails at run time with
+    # "NULL access dereferenced" or a core dump, even in a 20-line design.
+    # tb_cont_read and tb_refresh_readback use external names. The mcode
+    # backend runs them, and matches the Windows GHDL build used locally.
+    container: ghdl/ghdl:6.0.0-mcode-ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - name: Run HDL testbench suite
