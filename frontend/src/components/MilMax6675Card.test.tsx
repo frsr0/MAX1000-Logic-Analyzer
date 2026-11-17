@@ -859,6 +859,40 @@ it('does not ask for permission when notifications are unsupported', async () =>
   expect(requestPermission).not.toHaveBeenCalled();
 });
 
+it('says so when desktop alerts are on but the browser blocks or lacks notifications', async () => {
+  localStorage.setItem(ALERTS_KEY, '1');
+  stubNotifications('denied');
+  await mount();
+  expect(screen.getByTestId('max6675-alert-hint').textContent).toContain('blocked for this page');
+  cleanup();
+  vi.stubGlobal('Notification', undefined);
+  await mount();
+  expect(screen.getByTestId('max6675-alert-hint').textContent).toContain('cannot show desktop notifications');
+});
+
+it('hides the alert hint once the browser grants permission', async () => {
+  stubNotifications('default');
+  requestPermission.mockImplementationOnce(async () => {
+    FakeNotification.permission = 'granted';
+    return 'granted';
+  });
+  await mount();
+  expect(screen.queryByTestId('max6675-alert-hint')).toBeNull();
+  fireEvent.click(input('Desktop alerts'));
+  expect(screen.getByTestId('max6675-alert-hint').textContent).toContain('Allow notifications');
+  await act(async () => {});
+  expect(screen.queryByTestId('max6675-alert-hint')).toBeNull();
+});
+
+it('keeps the alert hint when the permission request fails', async () => {
+  stubNotifications('default');
+  requestPermission.mockRejectedValueOnce(new Error('dismissed'));
+  await mount();
+  fireEvent.click(input('Desktop alerts'));
+  await act(async () => {});
+  expect(screen.getByTestId('max6675-alert-hint').textContent).toContain('Allow notifications');
+});
+
 it('edits channel settings and sends them with the next save', async () => {
   await mount();
   fireEvent.click(input('Channel 3 enabled'));

@@ -79,6 +79,17 @@ function notificationsAvailable(): boolean {
   return typeof Notification !== 'undefined';
 }
 
+/** 'granted', 'denied' or 'default' from the browser, or 'unsupported' without the Notification API. */
+function notificationPermission(): string {
+  return notificationsAvailable() ? Notification.permission : 'unsupported';
+}
+
+const ALERT_HINTS: Record<string, string> = {
+  unsupported: 'This browser cannot show desktop notifications. Alarms still show in the banner.',
+  denied: "Notifications are blocked for this page in the browser's site settings. Alarms still show in the banner.",
+  default: 'Allow notifications when the browser asks, or alarms only show in the banner.',
+};
+
 /** Config fields from a status row; older backends without the new fields get the defaults. */
 function channelConfig(channel: Max6675ChannelStatus): Max6675ChannelConfig {
   return {
@@ -144,6 +155,7 @@ export function MilMax6675Card() {
   const [windowValue, setWindowValue] = useState('600');
   const [unit, setUnit] = useState<TempUnit>(() => (readStored(UNIT_KEY) === 'F' ? 'F' : 'C'));
   const [desktopAlerts, setDesktopAlerts] = useState(() => readStored(ALERTS_KEY) === '1');
+  const [permission, setPermission] = useState<string>(() => notificationPermission());
   const [hoverT, setHoverT] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const seqRef = useRef(0);
@@ -308,7 +320,11 @@ export function MilMax6675Card() {
     setDesktopAlerts(checked);
     alertsRef.current = checked;
     writeStored(ALERTS_KEY, checked ? '1' : '0');
-    if (checked && notificationsAvailable()) void Notification.requestPermission();
+    if (checked && notificationsAvailable()) {
+      // Older Safari returns undefined and uses a callback, so read the permission back either way.
+      void Promise.resolve(Notification.requestPermission())
+        .then(() => setPermission(notificationPermission()), () => setPermission(notificationPermission()));
+    }
   };
 
   const pointerMoved = (event: ReactPointerEvent<SVGSVGElement>) => {
@@ -429,6 +445,9 @@ export function MilMax6675Card() {
           <input type="checkbox" checked={desktopAlerts} onChange={(event) => toggleAlerts(event.target.checked)} />
           <span>Desktop alerts</span>
         </label>
+        {desktopAlerts && permission !== 'granted' && (
+          <p className="hint" data-testid="max6675-alert-hint">{ALERT_HINTS[permission]}</p>
+        )}
       </div>
       <div className="max6675-channels">
         {channels.map((channel, index) => {
