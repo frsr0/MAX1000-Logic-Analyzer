@@ -534,6 +534,20 @@ export interface MilAccelerometerStatus {
   live_timing?: Record<string, any> | null;
 }
 
+export type Max6675ReadingStatus = 'ok' | 'open' | 'bad_frame' | 'skipped' | 'error';
+export interface Max6675Reading { temp_c: number | null; status: Max6675ReadingStatus; }
+export interface Max6675ChannelConfig { name: string; enabled: boolean; so_pin: number; cs_pin: number; sck_pin: number; }
+export interface Max6675Config { interval_s: number; channels: Max6675ChannelConfig[]; }   // always 4 channels
+export interface Max6675ChannelStatus extends Max6675ChannelConfig { last: Max6675Reading | null; }
+export interface Max6675Status {
+  running: boolean; interval_s: number; paused_reason: string | null; last_error: string | null;
+  started_at: number | null; row_count: number; dropped_rows: number; next_seq: number;
+  channels: Max6675ChannelStatus[];            // always 4 entries
+}
+export interface Max6675Row { seq: number; t: number; elapsed_s: number; readings: (Max6675Reading | null)[]; }  // 4 entries, null = channel disabled
+export interface Max6675Data { next_seq: number; dropped_rows: number; rows: Max6675Row[]; }
+export interface Max6675ReadResult { t: number; readings: (Max6675Reading | null)[]; }   // 4 entries
+
 export interface MilTransactionResponse {
   request_hex: string;
   response_hex: string;

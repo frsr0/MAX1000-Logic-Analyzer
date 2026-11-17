@@ -832,6 +832,35 @@ export async function installMockApp(page: Page, options: { mockDevice?: boolean
   const denyAcquire = Boolean(options.denyAcquire);
   let addedDecoder: Json | null = null;
   const fixtureMarkers: Json[] = [];
+  // In-memory MAX6675 datalogger: channel 1 on SO 15 / CS 16 / SCK 17, the rest disabled.
+  const max6675 = {
+    interval_s: 1,
+    running: false,
+    channels: [
+      { name: 'Channel 1', enabled: true, so_pin: 15, cs_pin: 16, sck_pin: 17 },
+      { name: 'Channel 2', enabled: false, so_pin: 15, cs_pin: 18, sck_pin: 17 },
+      { name: 'Channel 3', enabled: false, so_pin: 15, cs_pin: 19, sck_pin: 17 },
+      { name: 'Channel 4', enabled: false, so_pin: 15, cs_pin: 20, sck_pin: 17 },
+    ] as Json[],
+    rows: [] as Json[],
+    nextSeq: 0,
+    last: [null, null, null, null] as (Json | null)[],
+  };
+  const max6675Status = () => ({
+    running: max6675.running, interval_s: max6675.interval_s, paused_reason: null, last_error: null,
+    started_at: max6675.running ? 1_700_000_000 : null, row_count: max6675.rows.length,
+    dropped_rows: 0, next_seq: max6675.nextSeq,
+    channels: max6675.channels.map((channel, index) => ({ ...channel, last: max6675.last[index] })),
+  });
+  const appendMax6675Row = () => {
+    const seq = max6675.nextSeq;
+    const readings = max6675.channels.map((channel, index) => (channel.enabled
+      ? { temp_c: Math.round((21 + ((seq * 0.37) % 2)) * 100) / 100, status: 'ok' }
+      : null));
+    max6675.rows.push({ seq, t: 1_700_000_000 + seq * max6675.interval_s, elapsed_s: seq * max6675.interval_s, readings });
+    max6675.nextSeq += 1;
+    max6675.last = readings;
+  };
   await page.addInitScript(() => {
     const sockets: MockWebSocket[] = [];
     // Controllable fixture: tests can push backend-originated WS messages
@@ -1067,6 +1096,44 @@ export async function installMockApp(page: Page, options: { mockDevice?: boolean
     if (matches('POST', req, '/api/generator/start')) return route.fulfill(okJson({ ok: true }));
     if (matches('POST', req, '/api/generator/stop')) return route.fulfill(okJson({ ok: true }));
 
+    if (matches('GET', req, '/api/mil/max6675/status')) return route.fulfill(okJson(max6675Status()));
+    if (matches('PUT', req, '/api/mil/max6675/config')) {
+      if (max6675.running) return route.fulfill(okJson({ detail: 'Stop logging before changing the MAX6675 configuration' }, 409));
+      const body = req.postDataJSON() as { interval_s: number; channels: Json[] };
+      max6675.interval_s = body.interval_s;
+      max6675.channels = body.channels;
+      return route.fulfill(okJson(max6675Status()));
+    }
+    if (matches('POST', req, '/api/mil/max6675/read')) {
+      max6675.last = [{ temp_c: 21.25, status: 'ok' }, null, null, null];
+      return route.fulfill(okJson({ t: 1_700_000_000, readings: max6675.last }));
+    }
+    if (matches('POST', req, '/api/mil/max6675/start')) {
+      max6675.running = true;
+      return route.fulfill(okJson(max6675Status()));
+    }
+    if (matches('POST', req, '/api/mil/max6675/stop')) {
+      max6675.running = false;
+      return route.fulfill(okJson(max6675Status()));
+    }
+    if (matches('POST', req, '/api/mil/max6675/clear')) {
+      max6675.rows = [];
+      max6675.nextSeq = 0;
+      max6675.last = [null, null, null, null];
+      return route.fulfill(okJson(max6675Status()));
+    }
+    if (matches('GET', req, '/api/mil/max6675/data')) {
+      // While logging, each poll adds one or two rows so the graph grows.
+      if (max6675.running) {
+        for (let i = 0; i < 1 + (max6675.nextSeq % 2); i += 1) appendMax6675Row();
+      }
+      const since = Number(new URL(req.url()).searchParams.get('since') ?? 0);
+      const rows = max6675.rows.filter((row) => row.seq >= since);
+      return route.fulfill(okJson({ next_seq: max6675.nextSeq, dropped_rows: 0, rows }));
+    }
+    if (matches('GET', req, '/api/mil/max6675/export.csv')) {
+      return route.fulfill({ status: 200, contentType: 'text/csv', body: 'seq,t,channel_1_c\n' });
+    }
     if (matches('GET', req, '/api/mil/presets')) return route.fulfill(okJson({ presets: [
       { id: 'modbus-rtu-demo', name: 'Modbus RTU demo', protocol: 'modbus_uart', description: 'Fixture preset', source: 'tests' },
     ] }));

@@ -6,6 +6,7 @@ import type { MilCaptureConfig, MilConfig, MilPresetSummary, MilRuntimeStatus, M
 import { useApp } from '../state/appStore';
 import { MilAccelerometerCard } from '../components/MilAccelerometerCard';
 import { MilMcp4725Card } from '../components/MilMcp4725Card';
+import { MilMax6675Card } from '../components/MilMax6675Card';
 
 const READ_MODBUS_1_0000_0002 = '010300000002c40b';
 const READ_UART_0001 = '030001';
@@ -308,6 +309,7 @@ export function MachineInLoopPage() {
 
       <MilAccelerometerCard />
       <MilMcp4725Card />
+      <MilMax6675Card />
 
       <div className="mil-layout">
         <div className="card">

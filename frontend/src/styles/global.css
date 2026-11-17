@@ -588,6 +588,19 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .device-stack { display: flex; flex-direction: column; gap: 12px; margin-bottom: 12px; }
 
 .mil-layout { margin-bottom: 12px; }
+.max6675-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 12px; }
+.max6675-controls > .field { width: 200px; }
+.max6675-channels { display: grid; gap: 10px; margin-bottom: 12px; }
+.max6675-channel {
+  display: grid; grid-template-columns: minmax(150px, 0.9fr) minmax(140px, 1.2fr) repeat(3, minmax(130px, 1fr)) minmax(150px, 1fr);
+  gap: 8px 12px; align-items: end;
+}
+@media (max-width: 900px) {
+  .max6675-channel { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+}
+.max6675-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; margin: 4px 0; }
+.max6675-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.max6675-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
 .mil-accelerometer-card { margin-bottom: 12px; }
 .mil-accelerometer-body { display: grid; grid-template-columns: minmax(260px, 0.9fr) minmax(280px, 1.1fr); gap: 18px; align-items: center; }
 .mil-accelerometer-visual { min-width: 0; }

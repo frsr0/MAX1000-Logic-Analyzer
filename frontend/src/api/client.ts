@@ -6,7 +6,7 @@ import type {
   DeviceMetadata, GeneratorConfig, GeneratorRouteCapability, LogEntry, Marker, MeasurementInstance,
   MeasurementType, MilConfig, MilPresetSummary, MilRuntimeStatus,
   MilTransactionResponse, MilAccelerometerConfig, MilAccelerometerStatus, Mcp4725TestResult, Mcp4725WaveformConfig, Mcp4725WaveformResult, Session, SessionSummary, VirtualBridgeStatus,
-  VirtualComPairCreateResponse,
+  VirtualComPairCreateResponse, Max6675Config, Max6675Data, Max6675ReadResult, Max6675Status,
 } from './types';
 import { parseWaveformPayload, WaveformPayload } from './binary';
 import { backendUrl } from './endpoint';
@@ -247,6 +247,14 @@ export const api = {
   milAccelerometerStart: () => post<MilAccelerometerStatus>('/api/mil/accelerometer/start'),
   milAccelerometerStop: () => post<MilAccelerometerStatus>('/api/mil/accelerometer/stop'),
   milAccelerometerReconnect: () => post<MilAccelerometerStatus>('/api/mil/accelerometer/reconnect'),
+  milMax6675Status: () => get<Max6675Status>('/api/mil/max6675/status'),
+  milMax6675Config: (body: Max6675Config) => put<Max6675Status>('/api/mil/max6675/config', body),
+  milMax6675Read: () => post<Max6675ReadResult>('/api/mil/max6675/read'),
+  milMax6675Start: () => post<Max6675Status>('/api/mil/max6675/start'),
+  milMax6675Stop: () => post<Max6675Status>('/api/mil/max6675/stop'),
+  milMax6675Clear: () => post<Max6675Status>('/api/mil/max6675/clear'),
+  milMax6675Data: (since: number, limit = 5000) =>
+    get<Max6675Data>(`/api/mil/max6675/data?since=${since}&limit=${limit}`),
 
   // diagnostics
   logs: (limit = 500) => get<{ logs: LogEntry[] }>(`/api/logs?limit=${limit}`),
@@ -254,6 +262,10 @@ export const api = {
   mockCapture: (scenario: string, sample_rate = 1_000_000, num_samples = 50_000, analog = false) =>
     post('/api/diagnostics/mock-capture', { scenario, sample_rate, num_samples, analog }),
 };
+
+export function max6675ExportUrl(): string {
+  return backendUrl('/api/mil/max6675/export.csv');
+}
 
 // Exports trigger a browser download via a hidden form post.
 export async function downloadExport(sessionId: string, format: string, body: unknown = {}) {

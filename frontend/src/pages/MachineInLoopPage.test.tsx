@@ -30,6 +30,9 @@ beforeEach(() => {
   useApp.setState({ controlMode: true, toast: vi.fn(), openSession: vi.fn().mockResolvedValue(undefined), setPage: vi.fn() });
   vi.spyOn(api, 'milPresets').mockResolvedValue({ presets } as never);
   vi.spyOn(api, 'milStatus').mockResolvedValue(status());
+  vi.spyOn(api, 'milMax6675Status').mockResolvedValue({ running: false, interval_s: 1, paused_reason: null,
+    last_error: null, started_at: null, row_count: 0, dropped_rows: 0, next_seq: 0, channels: [] } as never);
+  vi.spyOn(api, 'milMax6675Data').mockResolvedValue({ next_seq: 0, dropped_rows: 0, rows: [] });
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); });
 

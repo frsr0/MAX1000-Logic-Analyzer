@@ -809,6 +809,15 @@ test('machine-in-loop transaction shows request and response waveforms', async (
   await takeScreenshot(page, 'mil-transaction.png', { fullPage: true });
 });
 
+test('mock MAX6675 datalogger starts logging and plots channel 1', async ({ page }) => {
+  await page.getByRole('button', { name: 'Hardware lab' }).click();
+  await expect(page.getByRole('heading', { name: 'MAX6675 thermocouple datalogger' })).toBeVisible();
+  await page.getByRole('button', { name: 'Start logging' }).click();
+  await expect(page.getByText(/\d+\.\d{2} °C/).first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('[data-testid="max6675-line-1"]')).toHaveAttribute('d', /.+/, { timeout: 15_000 });
+  await takeScreenshot(page, 'mil-max6675.png', { fullPage: true });
+});
+
 test('hardware page includes control lock and viewer settings', async ({ page }) => {
   await page.getByRole('button', { name: 'Hardware', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
