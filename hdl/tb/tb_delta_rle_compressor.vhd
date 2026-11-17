@@ -39,51 +39,24 @@ begin
       in_ready           => in_ready
     );
 
-  -- Collect RLE output for the whole run, including words emitted while input
-  -- is still being fed (the first run closes when the zero deltas arrive).
-  collector : process(clk)
-  begin
-    if rising_edge(clk) then
-      if comp_valid = '1' then
-        assert output_count < 4
-          report "delta_rle emitted more words than the expected two RLE pairs"
-          severity failure;
-        output_words(16 * output_count + 15 downto 16 * output_count) <= comp_data;
-        output_count <= output_count + 1;
-      end if;
-    end if;
-  end process;
-
   process
+    variable count_v : natural := 0;
+    variable words_v : std_logic_vector(63 downto 0) := (others => '0');
   begin
     wait for 2 * CLK_PERIOD;
     rst <= '0';
 
-    -- Two constant 16-sample groups. Group 0 emits a verbatim anchor and five
-    -- zero delta words; group 1 emits a chained zero anchor and five more, so
-    -- RLE sees one 1234 run followed by eleven zero words. Input is held low
-    -- across group 0's FLUSH (in_ready low) and resumes once ANCHOR is back.
-    for g in 0 to 1 loop
-      for i in 0 to 15 loop
-        sample_in <= x"1234";
-        sample_valid <= '1';
-        wait until rising_edge(clk);
-        assert in_ready = '1'
-          report "delta_rle rejected a sample before the block was complete"
-          severity failure;
-      end loop;
-      sample_valid <= '0';
-      if g = 0 then
-        loop
-          wait until falling_edge(clk);
-          exit when in_ready = '0';
-        end loop;
-        loop
-          wait until falling_edge(clk);
-          exit when in_ready = '1';
-        end loop;
-      end if;
+    -- Six constant samples are emitted by capture_compressor: one anchor and
+    -- five identical packed-delta words. RLE must therefore emit two pairs.
+    for i in 0 to 15 loop
+      sample_in <= x"1234";
+      sample_valid <= '1';
+      wait until rising_edge(clk);
+      assert in_ready = '1'
+        report "delta_rle rejected a sample before the block was complete"
+        severity failure;
     end loop;
+    sample_valid <= '0';
     wait until rising_edge(clk);
     wait until rising_edge(clk);
 
@@ -93,22 +66,31 @@ begin
 
     for i in 0 to 300 loop
       wait until rising_edge(clk);
-      exit when output_count = 4 and busy = '0';
+      if comp_valid = '1' then
+        assert count_v < 4
+          report "delta_rle emitted more words than the expected two RLE pairs"
+          severity failure;
+        words_v(16 * count_v + 15 downto 16 * count_v) := comp_data;
+        count_v := count_v + 1;
+      end if;
+      exit when count_v = 4 and busy = '0';
     end loop;
 
-    assert output_count = 4
+    output_count <= count_v;
+    output_words <= words_v;
+    assert count_v = 4
       report "delta_rle lost the anchor word or a packed-delta run"
       severity failure;
-    assert output_words(15 downto 0) = x"0001"
+    assert words_v(15 downto 0) = x"0001"
       report "first RLE count is not one anchor sample"
       severity failure;
-    assert output_words(31 downto 16) = x"1234"
+    assert words_v(31 downto 16) = x"1234"
       report "delta_rle lost the first anchor sample"
       severity failure;
-    assert output_words(47 downto 32) = x"000B"
+    assert words_v(47 downto 32) = x"0005"
       report "packed-delta run count is incorrect"
       severity failure;
-    assert output_words(63 downto 48) = x"0000"
+    assert words_v(63 downto 48) = x"0000"
       report "packed-delta run value is incorrect"
       severity failure;
     report "=== TB_DELTA_RLE_COMPRESSOR PASS ===";

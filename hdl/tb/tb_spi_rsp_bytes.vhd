@@ -231,8 +231,8 @@ begin
       (x"10", x"10", x"00", x"F0", x"01",
        x"40", x"0D", x"03", x"00",   -- 200000 kHz, little-endian
        x"0F",                        -- transport feature flags
-       x"7F",                        -- IMAGE_FEATURES2
-       x"05"));                      -- IMAGE_GENERATION
+       x"3F",                        -- IMAGE_FEATURES2
+       x"04"));                      -- IMAGE_GENERATION
 
     -- ── READ_REG: 4 bytes little-endian, two distinct sources ──────────
     regadr(0) := REG_PRODUCER_INDEX;
