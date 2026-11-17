@@ -190,6 +190,26 @@ class ConfigValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "used as SCK here and as SO"):
             config_with(channels)
 
+    def test_interval_minimum_scales_with_enabled_channels(self):
+        one = four_channels(True)
+        config_with(one, interval=0.5)
+        two = [
+            channel("Channel 1", True, 15, 16, 17),
+            channel("Channel 2", True, 15, 18, 17),
+            channel("Channel 3", False, 15, 19, 17),
+            channel("Channel 4", False, 15, 20, 17),
+        ]
+        with self.assertRaisesRegex(ValueError,
+                                    r"at least 1 s for 2 enabled channels \(each read"):
+            config_with(two, interval=0.5)
+        config_with(two, interval=1.0)
+        four = [channel(f"Channel {i + 1}", True, 15, 16 + i if i == 0 else 17 + i, 17)
+                for i in range(4)]
+        with self.assertRaisesRegex(ValueError, "at least 2 s for 4 enabled channels"):
+            config_with(four, interval=1.5)
+        config_with(four, interval=2.0)
+        config_with(four_channels(), interval=0.5)
+
     def test_shared_sck_and_shared_so_are_allowed(self):
         config = config_with([
             channel("Channel 1", True, 15, 16, 17),
@@ -203,7 +223,7 @@ class ConfigValidationTests(unittest.TestCase):
             channel("Channel 2", True, 15, 18, 17),
             channel("Channel 3", True, 15, 19, 17),
             channel("Channel 4", True, 15, 20, 17),
-        ])
+        ], interval=2.0)
         self.assertEqual({ch.so_pin for ch in config.channels}, {15})
         self.assertEqual({ch.sck_pin for ch in config.channels}, {17})
 

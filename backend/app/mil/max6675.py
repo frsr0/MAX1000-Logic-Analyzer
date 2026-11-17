@@ -1,4 +1,10 @@
-"""MAX6675 thermocouple datalogger: frame decoding, pin rules, polling and export."""
+"""MAX6675 thermocouple datalogger: frame decoding, pin rules, polling and export.
+
+Each enabled channel read takes about 0.4 s per sweep (chip-select is held high
+for the sensor's conversion time), so the configured interval must be at least
+0.5 s per enabled channel. The logger holds manager._cap_lock for a whole sweep,
+so a capture start can wait up to about 1.6 s with four channels enabled.
+"""
 from __future__ import annotations
 
 import csv
@@ -88,6 +94,15 @@ class Max6675Config(BaseModel):
                 raise ValueError(
                     f"{channel.name}: pin {channel.sck_pin} is used as SCK here and "
                     f"as SO by {_names(owners)}")
+        # Each enabled channel costs about 0.4 s per sweep (chip-select held high
+        # for the conversion), so the interval must leave room for all of them.
+        count = len(enabled)
+        minimum = 0.5 * max(1, count)
+        if self.interval_s < minimum:
+            plural = "" if count == 1 else "s"
+            raise ValueError(
+                f"Interval must be at least {minimum:g} s for {count} enabled "
+                f"channel{plural} (each read takes about 0.4 s)")
         return self
 
 
