@@ -3,7 +3,10 @@ use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.numeric_std.all;
 
 -- Delta-packing compressor: 16 samples -> 6 words (2.67x compression).
--- Word 0: verbatim anchor.
+-- Word 0: anchor. The first group after reset carries the verbatim sample.
+-- Later groups carry the 16-bit wrapping difference between their first sample
+-- and the previous group's last sample, so a constant input gives zero anchors
+-- that run-length encode across groups. Overflow handling is unchanged.
 -- Words 1..5: each packs 3 deltas (5-bit signed):
 --   bits 4:0 = d0, bits 9:5 = d1, bits 14:10 = d2, bit 15 = 0.
 -- Overflow (|delta| > 15): the fixed six-word format cannot represent all
@@ -45,6 +48,9 @@ architecture rtl of capture_compressor is
   signal overflow_flag : std_logic := '0';
   signal sample_pipe : std_logic_vector(15 downto 0) := (others => '0');
   signal sample_pipe_valid : std_logic := '0';
+  -- '1' once an anchor has been emitted since reset. Later group anchors are then
+  -- 16-bit deltas from prev instead of verbatim samples (see ANCHOR).
+  signal chain_valid : std_logic := '0';
 
   -- FLUSH output counter: which packed word (0..4) we are emitting
   signal out_idx : natural range 0 to 5 := 0;
@@ -64,6 +70,7 @@ begin
     if rising_edge(clk) then
       if rst = '1' then
         state <= PASSTHROUGH;
+        chain_valid <= '0';
         comp_valid <= '0';
         sample_pipe_valid <= '0';
       else
@@ -73,6 +80,7 @@ begin
 
           when PASSTHROUGH =>
             sample_pipe_valid <= '0';
+            chain_valid <= '0';
             if compression_enable = '1' then
               state <= ANCHOR;
               sample_cnt <= 0;
@@ -83,6 +91,7 @@ begin
               if sample_valid = '1' then
                 comp_data <= sample_in;
                 comp_valid <= '1';
+                chain_valid <= '1';
                 prev <= signed(sample_in);
                 sample_cnt <= 1;
                 state <= ACCUM;
@@ -92,11 +101,18 @@ begin
               comp_valid <= sample_valid;
             end if;
 
-          -- ANCHOR: wait for the first sample, emit verbatim anchor
+          -- ANCHOR: wait for the first sample of a group and emit its anchor.
+          -- Verbatim only while no anchor has been emitted since reset; otherwise
+          -- the 16-bit wrapping delta from the previous group's last sample.
           when ANCHOR =>
             if sample_valid = '1' then
-              comp_data <= sample_in;
+              if chain_valid = '1' then
+                comp_data <= std_logic_vector(signed(sample_in) - prev);
+              else
+                comp_data <= sample_in;
+              end if;
               comp_valid <= '1';
+              chain_valid <= '1';
               prev <= signed(sample_in);
               sample_cnt <= 1;
               delta_cnt <= 0;
