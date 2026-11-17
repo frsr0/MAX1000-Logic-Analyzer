@@ -328,8 +328,12 @@ ARCHITECTURE BEHAVIORAL OF OLS_Interface IS
   SIGNAL raw_fifo_drain_active : STD_LOGIC := '0';
   SIGNAL raw_comp_fifo_rdreq  : STD_LOGIC := '0';
   SIGNAL raw_comp_state       : NATURAL range 0 to 6 := 0;
-  SIGNAL raw_comp_samples_read : NATURAL range 0 to 16384 := 0;
-  SIGNAL raw_comp_samples_fed : NATURAL range 0 to 16384 := 0;
+  -- Samples the compressed raw stream still has to feed, down-counted from
+  -- raw_blk_rd_count_cfg, plus the registered "all requested samples fed" flag
+  -- that replaces the old count-up >= compare (15-bit counter and 15-bit
+  -- comparator become a counter and one flop).
+  SIGNAL raw_comp_rem         : NATURAL range 0 to 16384 := 0;
+  SIGNAL raw_comp_all_fed     : STD_LOGIC := '0';
   SIGNAL raw_comp_flush_issued : STD_LOGIC := '0';
   SIGNAL raw_comp_done        : STD_LOGIC := '0';
   SIGNAL comp_sample_in        : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
@@ -862,8 +866,8 @@ BEGIN
       head_wait_v := '0';
       raw_comp_fifo_we <= '0';
       raw_comp_state <= 0;
-      raw_comp_samples_read <= 0;
-      raw_comp_samples_fed <= 0;
+      raw_comp_rem <= 0;
+      raw_comp_all_fed <= '0';
       raw_comp_flush_issued <= '0';
       raw_comp_done <= '0';
     end if;
@@ -993,8 +997,14 @@ BEGIN
     if raw_blk_req_fire = '1' and raw_stream_comp_mode = '1' then
       comp_rst_i <= '1';
       raw_comp_state <= 1;
-      raw_comp_samples_read <= 0;
-      raw_comp_samples_fed <= 0;
+      raw_comp_rem <= raw_blk_rd_count_cfg;
+      -- A zero-length request feeds nothing, so all_fed is already true and
+      -- state 1 flushes immediately (matches the old 0 >= 0 compare).
+      if raw_blk_rd_count_cfg = 0 then
+        raw_comp_all_fed <= '1';
+      else
+        raw_comp_all_fed <= '0';
+      end if;
       raw_comp_flush_issued <= '0';
       raw_comp_done <= '0';
       fifo_wr_v := 0;
@@ -1014,13 +1024,18 @@ BEGIN
         -- cycles (mirror the block-read drain): rdreq here, WAIT (state 2), q
         -- valid in state 3, latched there, then fed in state 5.
         when 1 =>
-          if raw_comp_samples_read >= raw_blk_rd_count_cfg then
+          if raw_comp_all_fed = '1' then
             raw_comp_state <= 4;  -- all samples fed; go flush
           elsif Rd_Fifo_Empty = '0'
                 and comp_in_ready_i = '1'
                 and fifo_count_v <= RAW_COMP_FIFO_DEPTH - 4 then
             raw_comp_fifo_rdreq <= '1';
-            raw_comp_samples_read <= raw_comp_samples_read + 1;
+            raw_comp_rem <= raw_comp_rem - 1;
+            if raw_comp_rem = 1 then
+              raw_comp_all_fed <= '1';
+            else
+              raw_comp_all_fed <= '0';
+            end if;
             raw_comp_state <= 2;
           end if;
 
@@ -1043,7 +1058,6 @@ BEGIN
 
         when 6 =>
           comp_feed_i <= '1';
-          raw_comp_samples_fed <= raw_comp_samples_fed + 1;
           raw_comp_state <= 1;
 
         -- ── STATE 4: FLUSH ───────────────────────────────────────────────
