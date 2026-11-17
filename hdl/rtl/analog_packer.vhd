@@ -290,13 +290,20 @@ begin
             end if;
 
           -- DRAIN: flush any residual partial payload word (< 15 bits held).
+          -- pending_data_r is loaded whenever the pending slot is free: the
+          -- residual word does not depend on held, so only the "a word is
+          -- needed" decision, pending_valid_r, held and the state stay gated on
+          -- it. That keeps held off the pending_data_r enable/data cone.
+          -- fill_count needs no clear here: FILL already zeroed it at
+          -- block_done, and DRAIN is only reachable after a full block.
           when DRAIN =>
+            if pending_valid_r = '0' then
+              pending_data_r <= '0' & std_logic_vector(acc(14 downto 0));
+            end if;
             if held > 0 then
               if pending_valid_r = '0' then
-                pending_data_r <= '0' & std_logic_vector(acc(14 downto 0));
                 pending_valid_r <= '1';
-                held      <= 0;
-                fill_count <= 0;
+                held  <= 0;
                 state <= FILL;
               end if;
             else
