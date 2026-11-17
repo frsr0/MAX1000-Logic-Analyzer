@@ -29,10 +29,17 @@ def test_lifespan_without_mcp_initialises_and_always_stops_services(monkeypatch,
     set_loop = Mock()
     stop_bridge = Mock()
     disconnect = Mock()
+    logger = Mock()
+    order = []
+    logger.resume_if_needed.side_effect = lambda: order.append("resume") or False
+    logger.shutdown.side_effect = lambda: order.append("logger shutdown")
+    stop_bridge.side_effect = lambda: order.append("serial stop")
+    disconnect.side_effect = lambda: order.append("disconnect")
     monkeypatch.setattr(main, "setup_logging", setup)
     monkeypatch.setattr(main.manager, "set_loop", set_loop)
     monkeypatch.setattr(main, "lan_ip", lambda: "10.0.0.2")
     monkeypatch.setattr(main, "MCP_SERVER", None)
+    monkeypatch.setattr(main, "max6675_logger", logger)
     monkeypatch.setattr(main.virtual_com_manager, "stop", stop_bridge)
     monkeypatch.setattr(main.capture_manager, "disconnect", disconnect)
 
@@ -40,12 +47,19 @@ def test_lifespan_without_mcp_initialises_and_always_stops_services(monkeypatch,
         async with main.lifespan(main.app):
             assert setup.call_count == 1
             assert set_loop.call_args.args[0] is asyncio.get_running_loop()
+            # Resume runs at startup, before the app serves requests.
+            assert order == ["resume"]
+            logger.resume_if_needed.assert_called_once_with()
+            logger.shutdown.assert_not_called()
 
     asyncio.run(exercise())
     banner = capsys.readouterr().out
     assert "http://10.0.0.2" in banner
+    logger.shutdown.assert_called_once_with()
     stop_bridge.assert_called_once_with()
     disconnect.assert_called_once_with()
+    # The MAX6675 run thread stops before the device is disconnected.
+    assert order == ["resume", "logger shutdown", "serial stop", "disconnect"]
 
 
 def test_hardware_error_handler_maps_device_failure_to_502():
@@ -57,6 +71,7 @@ def test_hardware_error_handler_maps_device_failure_to_502():
 def test_lifespan_banner_uses_localhost_when_lan_address_is_unavailable(monkeypatch, capsys):
     monkeypatch.setattr(main, "lan_ip", lambda: None)
     monkeypatch.setattr(main, "MCP_SERVER", None)
+    monkeypatch.setattr(main, "max6675_logger", Mock())
     monkeypatch.setattr(main.virtual_com_manager, "stop", Mock())
     monkeypatch.setattr(main.capture_manager, "disconnect", Mock())
     async def exercise():

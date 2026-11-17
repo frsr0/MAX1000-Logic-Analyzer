@@ -1,7 +1,8 @@
 """Machine-in-loop emulator endpoints."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
 from ..mil.model import MilLoadRequest, MilTransactionRequest
 from ..mil.mcp4725 import (Mcp4725TestRequest, Mcp4725WaveformRequest,
@@ -9,6 +10,7 @@ from ..mil.mcp4725 import (Mcp4725TestRequest, Mcp4725WaveformRequest,
 from ..mil.accelerometer import AccelerometerConfig, accelerometer
 from ..mil.max6675 import (Max6675Busy, Max6675Config, Max6675Logger,
                              Max6675NoteRequest)
+from ..config import DATA_DIR
 from ..hardware.base import HardwareError
 from ..mil.service import emulator
 from ..state import capture_manager
@@ -19,7 +21,8 @@ router = APIRouter(tags=["machine-in-loop"])
 
 max6675_logger = Max6675Logger(
     capture_manager,
-    accelerometer_running=lambda: bool(accelerometer.status().get("running")))
+    accelerometer_running=lambda: bool(accelerometer.status().get("running")),
+    store_dir=DATA_DIR / "max6675")
 
 
 def _check_dac_available() -> None:
@@ -232,6 +235,6 @@ def mil_max6675_data(since: int = Query(default=0, ge=0),
 
 @router.get("/api/mil/max6675/export.csv")
 def mil_max6675_export():
-    return Response(
-        content=max6675_logger.export_csv(), media_type="text/csv",
+    return StreamingResponse(
+        max6675_logger.export_csv_chunks(), media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="max6675-log.csv"'})

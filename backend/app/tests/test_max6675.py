@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import csv
 import io
@@ -8,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
 from app.api import mil as mil_api
@@ -17,11 +19,26 @@ from app.mil.max6675 import (Max6675Busy, Max6675Channel, Max6675Config,
 
 
 class FakeManager:
-    def __init__(self, device=None):
+    """Stands in for CaptureManager; connect() installs a working hardware device."""
+
+    def __init__(self, device=None, hardware_available=False, connect_error=None):
         self._cap_lock = threading.Lock()
         self.capture_state = "idle"
         self._accelerometer_reserved = False
         self.device = device
+        self.hardware_available = hardware_available
+        self.connect_error = connect_error
+        self.connect_calls = []
+
+    def list_devices(self):
+        return [{"id": "hardware", "available": self.hardware_available},
+                {"id": "mock", "available": True}]
+
+    def connect(self, device_id):
+        self.connect_calls.append(device_id)
+        if self.connect_error is not None:
+            raise self.connect_error
+        self.device = real_device()
 
 
 class FakeTime:
@@ -464,23 +481,31 @@ class StartStopClearTests(unittest.TestCase):
 
 
 class TickTests(unittest.TestCase):
-    def test_device_removed_stops_logging_without_a_row(self):
+    def test_device_removed_while_running_logs_skipped_rows(self):
         manager = FakeManager(mock_device())
         logger = make_logger(manager)
         logger.start()
         manager.device = None
         logger._tick()
         status = logger.status()
-        self.assertEqual(status["last_error"], "Device disconnected")
-        self.assertFalse(status["running"])
-        self.assertTrue(logger._stop_event.is_set())
-        self.assertEqual(status["row_count"], 0)
+        self.assertTrue(status["running"])
+        self.assertFalse(logger._stop_event.is_set())
+        self.assertEqual(status["paused_reason"], "waiting for the device to reconnect")
+        self.assertIsNone(status["last_error"])
+        self.assertEqual(status["row_count"], 1)
+        row = logger.rows[0]
+        self.assertEqual(row["readings"][0],
+                         {"temp_c": None, "raw_temp_c": None, "status": "skipped"})
+        self.assertIsNone(row["readings"][1])
 
-    def test_device_removed_before_any_start_has_no_stop_event(self):
+    def test_device_removed_before_any_start_logs_without_a_stop_event(self):
         logger = make_logger(FakeManager(None))
         logger._tick()
-        self.assertEqual(logger.status()["last_error"], "Device disconnected")
         self.assertIsNone(logger._stop_event)
+        self.assertFalse(logger.status()["running"])
+        self.assertEqual(logger.status()["paused_reason"],
+                         "waiting for the device to reconnect")
+        self.assertEqual(logger.status()["row_count"], 1)
 
     def test_capture_skips_enabled_channels(self):
         manager = FakeManager(mock_device())
@@ -649,6 +674,28 @@ class RunLoopTests(unittest.TestCase):
         logger._run(FakeEvent(is_set=True))
         self.assertEqual(logger.rows, [])
 
+    def test_failed_sweep_is_reported_and_logging_continues(self):
+        clock = FakeTime(1000.0)
+        device = real_device()
+        calls = []
+
+        def metadata():
+            calls.append(1)
+            if len(calls) == 2:          # the first sweep's metadata query fails
+                raise RuntimeError("unplugged")
+            return SimpleNamespace(mock=False)
+
+        device.get_metadata.side_effect = metadata
+        logger = make_logger(FakeManager(device), clock=clock)
+        logger.start()
+        event = FakeEvent(clock=clock, ticks=3)
+        logger._stop_event = event
+        logger._run(event)
+        status = logger.status()
+        self.assertEqual(status["last_error"], "Sweep failed: unplugged")
+        self.assertEqual(len(logger.rows), 2)
+        self.assertEqual(len(event.timeouts), 3)
+
     def test_unexpected_error_is_stored_and_run_stops(self):
         clock = FakeTime()
         logger = make_logger(clock=clock)
@@ -756,10 +803,18 @@ class EndpointTests(unittest.TestCase):
             data = mil_api.mil_max6675_data(since=0, limit=5000)
             self.assertEqual(len(data["rows"]), 1)
             response = mil_api.mil_max6675_export()
+        self.assertIsInstance(response, StreamingResponse)
         self.assertEqual(response.media_type, "text/csv")
         self.assertEqual(response.headers["content-disposition"],
                          'attachment; filename="max6675-log.csv"')
-        self.assertTrue(response.body.startswith(b"\xef\xbb\xbftime_local,time_utc,unix_time"))
+        chunks = asyncio.run(collect_chunks(response))
+        self.assertEqual(len(chunks), 2)
+        self.assertTrue(chunks[0].startswith("\ufefftime_local,time_utc,unix_time"))
+        self.assertEqual("".join(chunks), logger.export_csv())
+
+
+async def collect_chunks(response):
+    return [chunk async for chunk in response.body_iterator]
 
 
 def temp_frame(temp):
@@ -1163,6 +1218,163 @@ class CsvLayoutTests(unittest.TestCase):
         logger.rows[0]["readings"][0] = {"temp_c": 22.0, "status": "ok"}
         rows = list(csv.reader(io.StringIO(logger.export_csv()[1:])))
         self.assertEqual(rows[1][4:7], ["22.0", "", "ok"])
+
+def lost_device_logger(device=None, hardware_available=True, auto_reconnect=True,
+                       connect_error=None, manager_cls=FakeManager):
+    """A running logger whose device has just been removed (clock starts at 1000)."""
+    clock = FakeTime(1000.0)
+    manager = manager_cls(device if device is not None else real_device(),
+                          hardware_available=hardware_available,
+                          connect_error=connect_error)
+    logger = make_logger(manager, clock=clock)
+    logger.set_config(Max6675Config(auto_reconnect=auto_reconnect))
+    logger.start()
+    manager.device = None
+    return logger, manager, clock
+
+
+class LockProbeManager(FakeManager):
+    """Records whether manager._cap_lock and the logger lock are free during connect()."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.logger = None
+        self.observed = []
+
+    def connect(self, device_id):
+        cap_free = self._cap_lock.acquire(blocking=False)
+        self._cap_lock.release()
+        logger_free = self.logger._lock.acquire(blocking=False)
+        self.logger._lock.release()
+        self.observed.append((cap_free, logger_free))
+        super().connect(device_id)
+
+
+class DisconnectTests(unittest.TestCase):
+    def test_run_length_still_ends_a_run_while_disconnected(self):
+        clock = FakeTime(1000.0)
+        manager = FakeManager(mock_device())
+        logger = make_logger(manager, clock=clock)
+        logger.set_config(Max6675Config(stop_after_s=60.0))
+        logger.start()
+        manager.device = None
+        clock.now = 1060.0
+        logger._tick()
+        status = logger.status()
+        self.assertFalse(status["running"])
+        self.assertIsNone(status["paused_reason"])
+        self.assertEqual(status["stopped_reason"], "Stopped after the set run length")
+        self.assertEqual(logger.rows[-1]["readings"][0]["status"], "skipped")
+
+    def test_skipped_disconnect_rows_keep_the_alarm_state(self):
+        channels = four_channels(True)
+        channels[0] = Max6675Channel(name="Channel 1", enabled=True, so_pin=15,
+                                     cs_pin=16, sck_pin=17, alarm_high_c=80.0)
+        manager = FakeManager(real_device(temp_frame(85.0)))
+        logger = make_logger(manager)
+        logger.set_config(config_with(channels))
+        logger.read_once()
+        logger.start()
+        manager.device = None
+        logger._tick()
+        status = logger.status()["channels"][0]
+        self.assertEqual(status["alarm"], "high")
+        self.assertEqual(status["last"]["status"], "skipped")
+
+
+class ReconnectTests(unittest.TestCase):
+    def test_no_reconnect_when_hardware_is_unavailable(self):
+        logger, manager, _ = lost_device_logger(hardware_available=False)
+        logger._tick()
+        self.assertEqual(manager.connect_calls, [])
+        self.assertIsNone(logger.status()["last_error"])
+        self.assertIsNone(manager.device)
+
+    def test_no_reconnect_when_auto_reconnect_is_off(self):
+        logger, manager, _ = lost_device_logger(auto_reconnect=False)
+        logger._tick()
+        self.assertEqual(manager.connect_calls, [])
+
+    def test_no_reconnect_after_the_mock_device(self):
+        logger, manager, _ = lost_device_logger(device=mock_device())
+        logger._tick()
+        self.assertEqual(manager.connect_calls, [])
+
+    def test_no_reconnect_when_not_running(self):
+        logger, manager, _ = lost_device_logger()
+        logger.stop()
+        logger._tick()
+        self.assertEqual(manager.connect_calls, [])
+
+    def test_reconnect_attempts_are_ten_seconds_apart(self):
+        logger, manager, clock = lost_device_logger(
+            connect_error=HardwareError("no FTDI"))
+        logger._tick()
+        self.assertEqual(manager.connect_calls, ["hardware"])
+        clock.now = 1009.9
+        logger._tick()
+        self.assertEqual(manager.connect_calls, ["hardware"])
+        clock.now = 1010.0
+        logger._tick()
+        self.assertEqual(manager.connect_calls, ["hardware", "hardware"])
+
+    def test_failed_reconnect_is_reported_and_logging_continues(self):
+        logger, _, _ = lost_device_logger(connect_error=HardwareError("no FTDI"))
+        logger._tick()
+        status = logger.status()
+        self.assertEqual(status["last_error"], "Reconnect failed: no FTDI")
+        self.assertTrue(status["running"])
+        self.assertEqual(status["row_count"], 1)
+
+    def test_successful_reconnect_clears_the_error_and_reads_again(self):
+        logger, manager, clock = lost_device_logger(connect_error=HardwareError("busy"))
+        logger._tick()
+        self.assertEqual(logger.status()["last_error"], "Reconnect failed: busy")
+        manager.connect_error = None
+        clock.now = 1010.0
+        logger._tick()
+        self.assertIsNone(logger.status()["last_error"])
+        self.assertIsNotNone(manager.device)
+        clock.now = 1011.0
+        logger._tick()
+        self.assertIsNone(logger.status()["paused_reason"])
+        self.assertEqual(logger.rows[-1]["readings"][0]["status"], "ok")
+
+    def test_three_error_sweeps_trigger_a_reconnect_of_the_present_device(self):
+        device = real_device()
+        device.max6675_read.side_effect = OSError("USB pulled")
+        manager = FakeManager(device, hardware_available=True)
+        logger = make_logger(manager)
+        logger.start()
+        logger._tick()
+        logger._tick()
+        self.assertEqual(manager.connect_calls, [])
+        logger._tick()
+        self.assertEqual(manager.connect_calls, ["hardware"])
+        self.assertIsNot(manager.device, device)
+        self.assertIsNone(logger.status()["last_error"])
+
+    def test_ok_sweep_resets_the_error_streak(self):
+        device = real_device()
+        error = OSError("glitch")
+        device.max6675_read.side_effect = [
+            error, error, {"raw": 0x02A8, "clocks": 16}, error, error, error]
+        manager = FakeManager(device, hardware_available=True)
+        logger = make_logger(manager)
+        logger.start()
+        for _ in range(5):
+            logger._tick()
+        self.assertEqual(manager.connect_calls, [])
+        logger._tick()
+        self.assertEqual(manager.connect_calls, ["hardware"])
+
+    def test_connect_runs_with_neither_lock_held(self):
+        logger, manager, _ = lost_device_logger(manager_cls=LockProbeManager,
+                                                hardware_available=True)
+        manager.logger = logger
+        logger._tick()
+        self.assertEqual(manager.observed, [(True, True)])
+        self.assertEqual(manager.connect_calls, ["hardware"])
 
 
 if __name__ == "__main__":
