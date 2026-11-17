@@ -133,7 +133,7 @@ it('lists configuration problems and blocks Read and Start', async () => {
 
   fireEvent.change(select('Channel 2 CS'), { target: { value: '18' } });
   fireEvent.change(input('Interval (s)'), { target: { value: '0.2' } });
-  expect(screen.getByText('Interval must be between 0.5 and 3600 s')).toBeTruthy();
+  expect(screen.getByText('Interval must be at least 1 s for 2 enabled channels (each read takes about 0.4 s)')).toBeTruthy();
   expect(button('Start logging').disabled).toBe(true);
 
   fireEvent.change(input('Interval (s)'), { target: { value: '1' } });
@@ -412,6 +412,7 @@ it('edits channel settings and sends them with the next save', async () => {
   fireEvent.change(select('Channel 3 SO'), { target: { value: '14' } });
   fireEvent.change(select('Channel 3 CS'), { target: { value: '19' } });
   fireEvent.change(select('Channel 3 SCK'), { target: { value: '13' } });
+  fireEvent.change(input('Interval (s)'), { target: { value: '2' } });
   fireEvent.click(button('Read once'));
   await flush();
 

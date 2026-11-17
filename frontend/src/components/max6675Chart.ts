@@ -98,12 +98,19 @@ export function formatClock(t: number): string {
 /** Client-side mirror of the backend pin and interval rules. Returns human-readable problems. */
 export function validateMax6675Config(config: Max6675Config): string[] {
   const problems: string[] = [];
-  if (!(config.interval_s >= 0.5 && config.interval_s <= 3600)) {
-    problems.push('Interval must be between 0.5 and 3600 s');
-  }
   const enabled = config.channels
     .map((channel, index) => ({ ...channel, number: index + 1 }))
     .filter((channel) => channel.enabled);
+  // Each sensor read holds chip-select high for about 0.4 s, so the floor scales with channels.
+  const enabledCount = enabled.length;
+  const minInterval = 0.5 * Math.max(1, enabledCount);
+  if (!Number.isFinite(config.interval_s)) {
+    problems.push('Interval must be a number');
+  } else if (config.interval_s < minInterval) {
+    problems.push(`Interval must be at least ${minInterval} s for ${enabledCount} enabled channel${enabledCount === 1 ? '' : 's'} (each read takes about 0.4 s)`);
+  } else if (config.interval_s > 3600) {
+    problems.push('Interval must be at most 3600 s');
+  }
   if (enabled.length === 0) problems.push('Enable at least one channel');
 
   for (const channel of enabled) {

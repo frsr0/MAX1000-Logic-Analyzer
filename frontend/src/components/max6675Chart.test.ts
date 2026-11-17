@@ -86,12 +86,32 @@ it('accepts a valid single-channel configuration', () => {
   expect(validateMax6675Config(config([one, channel(), channel(), channel()]))).toEqual([]);
 });
 
-it('rejects an out-of-range interval', () => {
-  const message = 'Interval must be between 0.5 and 3600 s';
-  expect(validateMax6675Config(config([one], 0.2))).toEqual([message]);
-  expect(validateMax6675Config(config([one], 3601))).toEqual([message]);
-  expect(validateMax6675Config(config([one], Number.NaN))).toEqual([message]);
+const two = [one, channel({ enabled: true, cs_pin: 18 })];
+const four = [one, channel({ enabled: true, cs_pin: 18 }), channel({ enabled: true, cs_pin: 19 }),
+  channel({ enabled: true, cs_pin: 20 })];
+
+it('scales the minimum interval with the number of enabled channels', () => {
+  expect(validateMax6675Config(config([one], 0.4)))
+    .toEqual(['Interval must be at least 0.5 s for 1 enabled channel (each read takes about 0.4 s)']);
+  expect(validateMax6675Config(config(two, 0.9)))
+    .toEqual(['Interval must be at least 1 s for 2 enabled channels (each read takes about 0.4 s)']);
+  expect(validateMax6675Config(config(four, 1.9)))
+    .toEqual(['Interval must be at least 2 s for 4 enabled channels (each read takes about 0.4 s)']);
+});
+
+it('accepts exactly the minimum interval for each enabled count', () => {
+  expect(validateMax6675Config(config([one], 0.5))).toEqual([]);
+  expect(validateMax6675Config(config(two, 1))).toEqual([]);
+  expect(validateMax6675Config(config(four, 2))).toEqual([]);
+});
+
+it('caps the interval at 3600 s', () => {
   expect(validateMax6675Config(config([one], 3600))).toEqual([]);
+  expect(validateMax6675Config(config([one], 3601))).toEqual(['Interval must be at most 3600 s']);
+});
+
+it('rejects a non-numeric interval', () => {
+  expect(validateMax6675Config(config([one], Number.NaN))).toEqual(['Interval must be a number']);
 });
 
 it('requires at least one enabled channel', () => {

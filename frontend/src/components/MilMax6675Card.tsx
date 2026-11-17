@@ -188,8 +188,13 @@ export function MilMax6675Card() {
     <section className="card" aria-labelledby="max6675-title">
       <h3 id="max6675-title">MAX6675 thermocouple datalogger</h3>
       <p className="hint">
-        Each enabled channel reads one MAX6675 on its own CS pin. SO and SCK may be shared by channels;
-        CS may not. Readings are logged at the interval below while logging runs.
+        Each enabled channel reads one MAX6675 on its own CS pin; SO and SCK may be shared. A read takes about
+        0.4 s per channel because chip-select is held high for the sensor's conversion time, so the shortest
+        interval is 0.5 s per enabled channel. Logging pauses while a capture, the accelerometer or the signal
+        generator is using the hardware.
+      </p>
+      <p className="hint">
+        Sharing one SO line between sensors needs a pull-up on each CS line (D0–D14 have one; the PMOD pins do not).
       </p>
       {loadError && <div className="finding error" role="alert">{loadError}</div>}
       {pollError && (
