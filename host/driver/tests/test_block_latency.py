@@ -255,50 +255,75 @@ def test_raw_batches_never_change_the_compressed_slot():
     assert spi.sent[1] == 2 * (12 + 160 + 1056)
 
 
-def test_lost_block_with_shrunken_slot_resets_and_redoes_once():
+def test_lost_block_with_shrunken_slot_grows_and_redoes_once():
     spi = _batch_spi(size=4, drop=lambda call, i: call == 1 and i == 1)
     pkt = SPIDevice(spi)
     pkt.note_block_latency(LAT)
     pkt._compressed_slot = 48
     blocks = pkt.read_capture_blocks([0, 1024], compressed=True)
-    assert blocks == [b"\x11" * 4] * 2
-    # exactly one redo, and it used the default 430-byte slot again
+    assert blocks == [b"" * 4] * 2
+    # exactly one redo, and it used the regrown 430-byte slot (max(430, 96))
     assert len(spi.sent) == 2
     assert spi.sent[0] == 2 * (12 + pkt.batch_gap_pad + 48)
     assert spi.sent[1] == 2 * (12 + 160 + 430)
     assert pkt._block_latency == LAT                  # not bumped by this case
 
 
-def test_lost_block_with_shrunken_slot_and_stop_set_is_not_redone():
+def test_shrunken_slot_of_72_that_loses_a_block_grows_to_430():
     import threading
     stop = threading.Event()
     stop.set()
     spi = _batch_spi(size=4, drop=lambda call, i: i == 1)
     pkt = SPIDevice(spi)
     pkt.note_block_latency(LAT)
-    pkt._compressed_slot = 48
+    pkt._compressed_slot = 72
     blocks = pkt.read_capture_blocks([0, 1024], stop_evt=stop, compressed=True)
-    assert blocks == [b"\x11" * 4, b""]
+    assert blocks == [b"" * 4, b""]
     assert len(spi.sent) == 1                         # no redo once stopping
-    assert pkt._compressed_slot is None
+    assert pkt._compressed_slot == 430                # max(430, 2 * 72)
     assert pkt._block_latency == LAT                  # latency path skipped
 
 
-def test_slot_clamps_at_the_default_for_a_large_response():
-    spi = _batch_spi(size=1000)
+def test_compressed_responses_of_450_bytes_lose_blocks_at_430_and_redo_at_860():
+    """Busy signals: each response needs ~450 bytes past its gap, more than
+    the 430-byte slot. Here the reply starts right after its request, so a
+    610-byte reply runs into the next one and block 0 is lost."""
+    size = 602                                        # 610-byte reply on the wire
+    spi = _batch_spi(size=size, latency=0)
     pkt = SPIDevice(spi)
-    pkt._compressed_slot = 100
-    assert pkt.read_capture_blocks([0], compressed=True) == [b"\x11" * 1000]
-    assert pkt._compressed_slot == 430                # need 888 + 24 clamped
+    blocks = pkt.read_capture_blocks([0, 1024], compressed=True)
+    assert blocks == [b"" * size] * 2
+    assert len(spi.sent) == 2                         # one redo, no more
+    assert spi.sent[0] == 2 * (12 + 160 + 430)
+    assert spi.sent[1] == 2 * (12 + 160 + 860)        # the regrown slot
+    # the redo's clean batch then learns its own need (450 + 24)
+    assert pkt._compressed_slot == 450 + 24
 
 
-def test_loss_at_the_default_slot_takes_the_latency_path():
+def test_clean_batch_needing_900_bytes_learns_924_not_430():
+    spi = _batch_spi(size=1012)                       # need = 900 at LAT 40
+    pkt = SPIDevice(spi)
+    pkt._compressed_slot = protocol.SPIDevice.MAX_COMPRESSED_SLOT
+    assert pkt.read_capture_blocks([0, 1024], compressed=True) == [b"" * 1012] * 2
+    assert pkt._compressed_slot == 924
+
+
+def test_slot_clamps_at_max_compressed_slot_for_a_large_response():
+    spi = _batch_spi(size=1200)                       # need = 1088 -> clamped
+    pkt = SPIDevice(spi)
+    pkt._compressed_slot = protocol.SPIDevice.MAX_COMPRESSED_SLOT
+    assert pkt.read_capture_blocks([0], compressed=True) == [b"" * 1200]
+    assert pkt._compressed_slot == 1100               # need 1088 + 24 clamped
+
+
+def test_loss_at_max_compressed_slot_takes_the_latency_path():
     spi = _batch_spi(size=4, drop=lambda call, i: call == 1 and i == 1)
     pkt = SPIDevice(spi)
     pkt.note_block_latency(LAT)
+    pkt._compressed_slot = protocol.SPIDevice.MAX_COMPRESSED_SLOT
     blocks = pkt.read_capture_blocks([0, 1024], compressed=True)
-    assert blocks == [b"\x11" * 4] * 2
+    assert blocks == [b"" * 4] * 2
     assert len(spi.sent) == 2                         # redone once, as before
-    assert spi.sent == [2 * (12 + 160 + 430)] * 2     # default slot kept
+    assert spi.sent == [2 * (12 + 160 + 1100)] * 2    # max slot kept, no regrow
     assert pkt._block_latency == LAT                  # the redo re-learned it
     assert pkt._compressed_slot == 48                 # only the clean redo shrinks it
