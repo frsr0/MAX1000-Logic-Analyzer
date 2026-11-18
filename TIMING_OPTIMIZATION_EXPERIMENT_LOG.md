@@ -321,3 +321,25 @@ Final post-fit STA result on the full mixed-signal build:
 - `sdram_core_clk`: **+0.316 ns**
 
 That is the actual product fix: full functionality preserved, no raw-only shortcut required, and timing now closes.
+
+## Rejected experiment (2026-11-18): fixing the two worst cones at seed 16
+
+Starting point: seed 16, 8,014/8,064 LEs, 504/504 LABs, worst slow-85C setup
+`sys_clk` +0.043 ns (`rx_payload_header[0] -> rsp_buf[2][3]`, CMD_READ_REG's
+register-address case; next path +0.237) and `fast_clk` +0.047 ns
+(`pretrig_tick_cnt -> narrow_shift_r`; next path +0.121).
+
+Changes tried together: a registered, cycle-exact `pretrig_tick_cnt < 8` flag
+computed from the counter's next value, and a 2-cycle setup multicycle from
+`rx_payload_header` to the dispatcher's registers (valid: EXEC runs only after
+pkt_ok, at least two SPI bytes after the header bytes are written).
+
+Result: both cones left the top of the report, but the critical paths moved
+elsewhere (analog_packer `delta_valid -> acc`, `aword_idx -> fifo_wdata`,
+`cap_stop -> row_r`). Twelve seeds (16, 7, 30, 23, 11, 21, 5, 17, 2, 20, 12,
+42) all failed; the best was -0.022 ns. Without the changes, 3 of 21 seeds had
+closed. Both changes were reverted.
+
+Lesson: at 504/504 LABs a narrow cone fix does not buy margin; any edit
+reshuffles placement and the slack distribution is dominated by the fitter
+seed. Margin has to come from freeing LABs, not from cone-by-cone fixes.
