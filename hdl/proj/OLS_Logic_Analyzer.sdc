@@ -177,6 +177,16 @@ create_generated_clock -name adc_clk \
  # Keep it out of the timed datapaths.
  set_false_path -from [get_ports {SPI_SCK SPI_CS}]
  set_false_path -to   [get_ports {SPI_SCK SPI_CS}]
+ # MOSI is not clocked by SCK: SPI_Slave2 oversamples SCK and MOSI on
+ # fast_clk (200.4 MHz), so STA cannot time it and it is a false path. Its
+ # margin is set by the RTL instead (analysis 2026-11-18): rx_shift takes
+ # mosi_d, i.e. MOSI as sampled at the fast_clk edge two cycles after the
+ # synchroniser first sees SCK high, about 10-15 ns after SCK rises (+-1 ns
+ # pin skew, +5 ns if the synchroniser resolves late). The FT2232H changes
+ # MOSI 1-7.15 ns after SCK falls (datasheet table 4.3), so at 30 MHz a bit is
+ # valid from 9.5 ns before to 17.67 ns after the rising edge: about 20 ns of
+ # early margin but only ~1.5-2.5 ns late. Sampling one fast_clk cycle earlier
+ # would centre it (see TIMING_REPORT_SUMMARY.md).
  set_false_path -from [get_ports {SPI_MOSI}]  -to [all_registers]
 
  # Board GPIO has no source or destination timing clock. MKR_D/PMOD and the

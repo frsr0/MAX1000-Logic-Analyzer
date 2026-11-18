@@ -28,6 +28,26 @@ change. Narrow cone fixes did not help at this fill (see
 `TIMING_OPTIMIZATION_EXPERIMENT_LOG.md`, 2026-11-18). The image record with
 POF hash and board results is in the README.
 
+### SPI MOSI sampling margin (analysis, 2026-11-18)
+
+MOSI is a false path in the SDC because SPI_Slave2 oversamples SCK and MOSI on
+`fast_clk` (200.4 MHz, 4.99 ns) instead of clocking MOSI with SCK, so STA does
+not check it. From the RTL: SCK passes a two-FF synchroniser (`sck_meta`,
+`sck_sync`); `sck_rise` is registered at e0+10 ns, where e0 is the first
+`fast_clk` edge after SCK rises; at e0+15 `rx_shift` takes `mosi_d`, which holds
+MOSI as sampled at e0+10. MOSI is therefore sampled about 10-15 ns after SCK
+rises at the pins (about +-1 ns of SCK/MOSI pin-to-register skew, and 5 ns
+later if the synchroniser resolves a cycle late).
+
+The FT2232H drives MOSI 1-7.15 ns after SCK falls (datasheet table 4.3). At
+30 MHz a bit is valid from 9.5 ns before to 17.67 ns after the rising edge, so
+the sample point has about 20 ns of early margin but only about 1.5-2.5 ns
+late margin against the datasheet minimum output delay (more in practice: the
+link has passed every hardware run). Taking MOSI from a second delay stage
+(`mosi_d2`, sampled at e0+5, about 5-10 ns after SCK rises) would centre the
+sample with roughly 7 ns of late margin for one extra register; it is a
+placement-changing RTL edit, so it needs a seed sweep.
+
 ## Earlier status (2026-07-29)
 
 A focused recompile on fitter seed 29 is timing-clean and is the best current
