@@ -441,3 +441,87 @@ def decompress_block_readback_stream(data: bytes, *, codec: str = 'rle',
     if codec in ('delta', 'delta_rle'):
         return decompress_delta_stream(decoded, chained=chained)
     return decoded
+
+
+_DELTA_GROUP_BYTES = 12
+
+
+def _decompress_delta_chained_blocks(words: np.ndarray,
+                                     group_counts: np.ndarray) -> np.ndarray:
+    """Chained fast decode of several blocks in one pass (no keyframes).
+
+    ``words`` is (sum(group_counts), 6): each block's groups back to back.
+    The running sum restarts at every block, so anchors chain within a block
+    and never across blocks, exactly as one ``decompress_delta_stream`` call
+    per block would produce.
+    """
+    n = words.shape[0]
+    inc = np.empty((n, 16), dtype=np.int64)
+    inc[:, 0] = words[:, 0]
+    w = words[:, 1:].astype(np.int64)
+    inc[:, 1:] = np.stack(
+        (_sign_extend_5(w), _sign_extend_5(w >> 5), _sign_extend_5(w >> 10)),
+        axis=2,
+    ).reshape(n, 15)
+    running = np.cumsum(inc.reshape(-1))
+    samples = group_counts * 16
+    first = np.concatenate(([0], np.cumsum(samples)[:-1]))
+    # Carry = running sum just before each block's first sample (0 for block 0).
+    carry = np.where(first > 0, running[np.maximum(first - 1, 0)], 0)
+    running -= np.repeat(carry, samples)
+    return (running & 0xFFFF).astype('<u2').reshape(n, 16)
+
+
+def decompress_block_readback_streams(blocks, *, codec: str = 'rle',
+                                      chained: bool = False) -> list:
+    """Batch form of ``decompress_block_readback_stream`` over many blocks.
+
+    Returns one ``bytes`` per input block, byte-identical to calling
+    ``decompress_block_readback_stream`` on each block. For the delta codecs
+    the RLE stage still runs per block (it is cheap), but the delta stage runs
+    once over every block whose RLE output is a whole number of 12-byte groups
+    and has no keyframe word. Those groups are decoded in one vectorised pass.
+    Any other block (keyframe, misaligned or empty output) takes the per-block
+    path unchanged, so its output length, and the raw-retry logic that keys on
+    it, is exactly what it was.
+    """
+    blocks = list(blocks)
+    if codec not in ('delta', 'delta_rle'):
+        return [decompress_block_readback_stream(b, codec=codec, chained=chained)
+                for b in blocks]
+    out = [None] * len(blocks)
+    decoded = [decompress_rle_stream(b) for b in blocks]
+    fast = []
+    for i, d in enumerate(decoded):
+        if d and len(d) % _DELTA_GROUP_BYTES == 0:
+            fast.append(i)
+        else:
+            out[i] = decompress_delta_stream(d, chained=chained)
+    if not fast:
+        return out
+    group_counts = np.array(
+        [len(decoded[i]) // _DELTA_GROUP_BYTES for i in fast], dtype=np.int64)
+    words = np.frombuffer(
+        b''.join(decoded[i] for i in fast), dtype='<u2').reshape(-1, 6)
+    first_group = np.concatenate(([0], np.cumsum(group_counts)[:-1]))
+    has_key_group = np.any(words[:, 1:] & 0x8000, axis=1)
+    keyed = np.logical_or.reduceat(has_key_group, first_group)
+    for k in np.flatnonzero(keyed):
+        i = fast[k]
+        out[i] = decompress_delta_stream(decoded[i], chained=chained)
+    clean = np.flatnonzero(~keyed)
+    if clean.size == 0:
+        return out
+    sel = words[np.repeat(~keyed, group_counts)]
+    sel_counts = group_counts[clean]
+    if chained:
+        res = _decompress_delta_chained_blocks(sel, sel_counts)
+    else:
+        res = _decompress_delta_blocks_fast(sel)
+    buf = res.astype('<u2').tobytes()
+    pos = 0
+    for k in clean:
+        nbytes = int(group_counts[k]) * 32  # 16 samples of 2 bytes per group
+        out[fast[k]] = buf[pos:pos + nbytes]
+        pos += nbytes
+    return out

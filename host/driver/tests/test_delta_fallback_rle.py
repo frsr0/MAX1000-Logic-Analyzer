@@ -63,6 +63,8 @@ def delta_decode(monkeypatch):
         return _REAL_DECODE(block, codec=codec, chained=chained)
 
     monkeypatch.setattr(device_module, 'decompress_block_readback_stream', decode)
+    monkeypatch.setattr(device_module, 'decompress_block_readback_streams',
+                        _per_block_batch)
 
 
 def test_delta_batch_with_heavy_overflow_switches_to_rle(delta_decode):
@@ -146,3 +148,11 @@ def test_apply_compression_flags_reports_failed_flag_read():
 
     assert dev._apply_compression_flags() is False
     dev.pkt.write_register.assert_not_called()
+
+
+def _per_block_batch(blocks, codec='rle', chained=False):
+    """Batch entry point that decodes each block through the per-block
+    decoder the test patched (resolved at call time)."""
+    return [device_module.decompress_block_readback_stream(
+        b, codec=codec, chained=chained) if b else b''
+        for b in blocks]

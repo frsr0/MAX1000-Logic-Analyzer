@@ -4,6 +4,8 @@ from unittest.mock import MagicMock, patch, call, ANY
 
 import pytest
 
+import driver.ols_spi_device as _ols_dev
+
 from driver.spi_protocol import (
     CMD_ACK_CAPTURE_DONE,
     CMD_ABORT_CAPTURE,
@@ -664,7 +666,9 @@ class TestOLSDeviceSPI:
         device_spi.pkt.read_register.return_value = 0
 
         with patch('driver.ols_spi_device.decompress_block_readback_stream',
-                   side_effect=[b'\x00' * 1024, b'\x00' * 1024]):
+                   side_effect=[b'\x00' * 1024, b'\x00' * 1024]), \
+                patch('driver.ols_spi_device.decompress_block_readback_streams',
+                      side_effect=_per_block_batch):
             device_spi.pkt.read_capture_blocks.side_effect = lambda addrs, compressed=False: [
                 b'compressed' for _addr in addrs
             ]
@@ -684,7 +688,9 @@ class TestOLSDeviceSPI:
             return b'' if data == b'bad' else b'\x00' * 1024
 
         with patch('driver.ols_spi_device.decompress_block_readback_stream',
-                   side_effect=fake_decompress):
+                   side_effect=fake_decompress), \
+                patch('driver.ols_spi_device.decompress_block_readback_streams',
+                      side_effect=_per_block_batch):
             device_spi.pkt.read_capture_blocks.side_effect = lambda addrs, compressed=False: [
                 b'bad' if i == 1 else b'good' for i, _addr in enumerate(addrs)
             ]
@@ -4712,3 +4718,11 @@ class TestSpiExplicitSymbols:
         # has_gen is true from spi_symbols alone, so the capture is not
         # skipped even though no MOSI data was supplied.
         assert result != b''
+
+
+def _per_block_batch(blocks, codec='rle', chained=False):
+    """Batch entry point that decodes each block through the per-block
+    decoder the test patched (resolved at call time)."""
+    return [_ols_dev.decompress_block_readback_stream(
+        b, codec=codec, chained=chained) if b else b''
+        for b in blocks]

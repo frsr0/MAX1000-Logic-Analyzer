@@ -236,6 +236,8 @@ def test_read_capture_range_passes_chained_flag_to_decoder(features, expected,
 
     monkeypatch.setattr(device_module, 'decompress_block_readback_stream',
                         fake_decode)
+    monkeypatch.setattr(device_module, 'decompress_block_readback_streams',
+                        _per_block_batch)
     dev = OLSDeviceSPI()
     dev.pkt = MagicMock()
     dev.pkt.read_register.return_value = 0
@@ -249,3 +251,11 @@ def test_read_capture_range_passes_chained_flag_to_decoder(features, expected,
 
     assert calls
     assert all(c == ('delta_rle', expected) for c in calls)
+
+
+def _per_block_batch(blocks, codec='rle', chained=False):
+    """Batch entry point that decodes each block through the per-block
+    decoder the test patched (resolved at call time)."""
+    return [device_module.decompress_block_readback_stream(
+        b, codec=codec, chained=chained) if b else b''
+        for b in blocks]
