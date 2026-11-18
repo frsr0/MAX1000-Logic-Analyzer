@@ -103,10 +103,15 @@ and busy signals.
 
 Live `rle` streaming sends each window as one held-CS stream request of up to
 16,384 samples on images that report a generation (older 10-byte-metadata
-images keep 1,023). On the attached board a 10 kHz square wave streams
-lossless at 4 MS/s with 16,384-sample windows and at 1 MS/s with 4,096-sample
-windows, against 1 MS/s for raw; the accelerometer's live trace keeps
-1,023-sample windows.
+images keep 1,023). On the attached board a 10 kHz square wave keeps pace
+with the source up to about 3.7 MS/s with 16,384-sample windows and 1 MS/s
+with 4,096-sample windows, against 1 MS/s for raw; the accelerometer's live
+trace keeps 1,023-sample windows. Below that ceiling the delivered rate is the
+source rate and the decoded data is identical run to run. Each window costs
+about 4 ms of USB round trips whose timing jitters on Windows, so above it
+(at 4.008 MS/s, for example) the reader delivers 3.8-3.96 MS/s, varies run to
+run, and slowly falls behind: the 4M-sample ring hides that for tens of
+seconds before it overruns.
 
 Analog and mixed captures use raw readback.
 
