@@ -13,7 +13,8 @@ import driver.ols_spi_device as dev_mod
 import driver.spi_protocol as proto
 from driver.ols_spi_device import OLSDeviceSPI
 from driver.spi_protocol import (
-    MAX_RAW_STREAM_SAMPLES, SPIDevice, ST_OK, ST_STREAM_ACTIVE, SYNC_RSP, crc16,
+    MAX_RAW_STREAM_SAMPLES, RLE_STREAM_CHUNK_BYTES, SPIDevice, ST_OK,
+    ST_STREAM_ACTIVE, SYNC_RSP, crc16,
 )
 
 OLD_10_BYTE = bytes([0x10, 0x10, 0x00, 0xF0, 0x01, 0xD0, 0x0E, 0x03, 0x00, 0x0F])
@@ -88,9 +89,12 @@ class _FakeRleTransport:
     def __init__(self):
         self.speed_hz = 30_000_000
         self.requests = []
+        self.chunk_bytes = []
 
-    def stream_command_chunks(self, request, ack_pad=96, stop_evt=None):
+    def stream_command_chunks(self, request, ack_pad=96, stop_evt=None,
+                              chunk_bytes=4096):
         self.requests.append(request)
+        self.chunk_bytes.append(chunk_bytes)
         sample_count = struct.unpack('<I', request[10:14])[0]
         seq = request[3]
         payload = struct.pack('<II', 0x12345678, 0x00000100)
@@ -108,6 +112,14 @@ def _rle_command_counts(cap, monkeypatch, sample_count):
     assert (producer, oldest) == (0x12345678, 0x100)
     assert data == b'\x34\x12' * sample_count
     return [struct.unpack('<I', req[10:14])[0] for req in fake.requests]
+
+
+def test_rle_stream_reads_in_the_rle_chunk_size(monkeypatch):
+    assert RLE_STREAM_CHUNK_BYTES == 1024
+    monkeypatch.setattr(proto, "MAX_RLE_STREAM_SAMPLES", 16384)
+    fake = _FakeRleTransport()
+    SPIDevice(fake).start_rle_stream_read(0x80, 4096)
+    assert fake.chunk_bytes == [RLE_STREAM_CHUNK_BYTES]
 
 
 def test_full_window_is_one_stream_command_under_the_new_cap(monkeypatch):

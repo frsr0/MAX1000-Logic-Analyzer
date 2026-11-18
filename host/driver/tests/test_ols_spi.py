@@ -998,7 +998,8 @@ class TestSPIPacketProtocol:
                 self.speed_hz = 30_000_000
                 self.requests = []
 
-            def stream_command_chunks(self, request, ack_pad=96, stop_evt=None):
+            def stream_command_chunks(self, request, ack_pad=96, stop_evt=None,
+                                      chunk_bytes=4096):
                 self.requests.append(request)
                 sample_count = struct.unpack('<I', request[10:14])[0]
                 seq = request[3]

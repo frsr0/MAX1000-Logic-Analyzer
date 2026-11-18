@@ -240,6 +240,14 @@ MAX_RLE_STREAM_BYTES_PER_SAMPLE = 4
 # it clocks filler forever.  The live path falls back to bounded raw bursts
 # after this deadline; a healthy 448-sample window completes well inside it.
 RLE_STREAM_TIMEOUT_S = 0.20
+# Chunk size for the held-CS RLE stream read (stream_command_chunks). Compressed
+# RLE windows are usually far shorter than the 4096-byte raw default, so a
+# smaller chunk stops the read sooner and wastes less filler. Measured on
+# hardware (peak live throughput, 10 kHz square wave): chunk 4096 gives
+# 1.74 MS/s with 4096-sample windows and 4.11 MS/s with 16384-sample windows;
+# chunk 1024 gives 2.32 and 4.19 MS/s; chunk 256 gives 2.25 and 3.41 MS/s.
+# 1024 is the best of the three for the RLE stream path.
+RLE_STREAM_CHUNK_BYTES = 1024
 
 
 # 256-entry lookup table for the reflected 0xA001 polynomial. The old
@@ -1383,7 +1391,9 @@ class SPIDevice:
                                timeout=RLE_STREAM_TIMEOUT_S, min_count=None):
         """Preferred path: read variable-length stream until ``sample_count``
         samples decode, then break (which raises CS)."""
-        gen = self.spi.stream_command_chunks(req, ack_pad=pad, stop_evt=stop_evt)
+        gen = self.spi.stream_command_chunks(
+            req, ack_pad=pad, stop_evt=stop_evt,
+            chunk_bytes=RLE_STREAM_CHUNK_BYTES)
         acc = bytearray()
         producer = oldest = None
         out = bytearray()
