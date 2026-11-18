@@ -93,7 +93,10 @@ def test_zero_length_stream_reads_nothing(lead1):
     assert pkt.calls == []
 
 
-def test_rle_stream_drops_the_decoded_lead_word(lead1):
+def test_rle_stream_drops_the_decoded_lead_word(lead1, monkeypatch):
+    # legacy cap so the 2000-sample request is split and the lead drop is
+    # exercised across chunks
+    monkeypatch.setattr(proto, "MAX_RLE_STREAM_SAMPLES", proto.LEGACY_RLE_STREAM_SAMPLES)
     mem = list(range(500, 3000))
 
     class Pkt(SPIDevice):

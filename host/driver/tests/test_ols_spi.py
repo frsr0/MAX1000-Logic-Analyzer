@@ -7,7 +7,7 @@ from driver.ols_spi_device import (
     _decode_sparse_rle_live_frames, _decode_tagged_packed_live_frames,
 )
 from driver.spi_protocol import (
-    CMD_START_RAW_STREAM, MAX_RLE_STREAM_SAMPLES, ST_OK, ST_STREAM_ACTIVE,
+    CMD_START_RAW_STREAM, LEGACY_RLE_STREAM_SAMPLES, ST_OK, ST_STREAM_ACTIVE,
     SYNC_REQ, SYNC_RSP, SPIDevice, crc16, parse_response,
 )
 
@@ -989,7 +989,10 @@ class TestSPIPacketProtocol:
         assert oldest == 0x100
         assert data == b'\x34\x12' * 3
 
-    def test_start_rle_stream_read_splits_large_requests_below_rle_counter_limit(self):
+    def test_start_rle_stream_read_splits_large_requests_below_rle_counter_limit(
+            self, monkeypatch):
+        monkeypatch.setattr("driver.spi_protocol.MAX_RLE_STREAM_SAMPLES",
+                            LEGACY_RLE_STREAM_SAMPLES)
         class FakeSPI:
             def __init__(self):
                 self.speed_hz = 30_000_000
@@ -1008,14 +1011,14 @@ class TestSPIPacketProtocol:
 
         fake = FakeSPI()
         pkt = SPIDevice(fake)
-        sample_count = MAX_RLE_STREAM_SAMPLES + 177
+        sample_count = LEGACY_RLE_STREAM_SAMPLES + 177
         producer, oldest, data = pkt.start_rle_stream_read(0x80, sample_count)
         assert producer == 0x12345678
         assert oldest == 0x100
         assert data == b'\x34\x12' * sample_count
         assert len(fake.requests) == 2
         assert [struct.unpack('<I', req[10:14])[0] for req in fake.requests] == [
-            MAX_RLE_STREAM_SAMPLES, 177
+            LEGACY_RLE_STREAM_SAMPLES, 177
         ]
 
     def test_transaction_raw_uses_stream_command_when_available(self):

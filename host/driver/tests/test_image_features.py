@@ -28,6 +28,7 @@ def restore_compensations(monkeypatch):
     """set_image_compensations rebinds module globals; undo it after the test."""
     monkeypatch.setattr(proto, "SDRAM_READ_LEAD_WORDS", proto.SDRAM_READ_LEAD_WORDS)
     monkeypatch.setattr(proto, "RLE_STREAM_TAIL_GUARD", proto.RLE_STREAM_TAIL_GUARD)
+    monkeypatch.setattr(proto, "MAX_RLE_STREAM_SAMPLES", proto.MAX_RLE_STREAM_SAMPLES)
     monkeypatch.setattr(dev_mod, "SDRAM_READ_LEAD_WORDS", dev_mod.SDRAM_READ_LEAD_WORDS)
     monkeypatch.delenv("OLS_SDRAM_READ_LEAD_WORDS", raising=False)
     monkeypatch.delenv("OLS_RLE_STREAM_TAIL_GUARD", raising=False)

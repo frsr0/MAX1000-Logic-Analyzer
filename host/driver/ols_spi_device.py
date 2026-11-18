@@ -48,7 +48,7 @@ from driver.spi_protocol import (
     REG_GEN_CAPTURE_TX_CHAN, REG_GEN_CAPTURE_SCL_CHAN,
     REG_IFACE_MODE,
     ST_OK, ST_CAPTURE_ARMED, ST_CAPTURE_DONE, ST_CAPTURE_IDLE,
-    MAX_RLE_STREAM_SAMPLES, SDRAM_READ_LEAD_WORDS,
+    SDRAM_READ_LEAD_WORDS,
     GEN_FLAG_SPI_TEST, GEN_FLAG_REPEAT, GEN_FLAG_RS485_PAIR,
     GEN_FLAG_ACCEL_ATTACH,
 )
@@ -406,18 +406,25 @@ MAX_RESYNCS_WITHOUT_DATA = 16
 RING_SAMPLE_COUNT = 4_194_304
 RING_SAMPLE_MASK = RING_SAMPLE_COUNT - 1
 RING_SAMPLE_HALF = RING_SAMPLE_COUNT // 2
+# Live RLE window for the accelerometer repeating I2C ring path. That trace was
+# tuned with 1023-sample RLE windows; larger windows add latency there, so this
+# caller keeps 1023 while other live RLE captures use the image's cap.
+ACCEL_LIVE_RLE_WINDOW = 1023
 
 
-def set_image_compensations(lead_words, tail_guard):
+def set_image_compensations(lead_words, tail_guard, rle_max_samples=None):
     """Make the host read compensations follow the flashed image.
 
-    The two values live as module constants (defaults for a known-new image)
-    in spi_protocol and, for the block planner, in this module; rebind both.
+    The values live as module constants (defaults for a known-new image) in
+    spi_protocol and, for the block planner, in this module; rebind both. The
+    RLE request cap is rebound only when ``rle_max_samples`` is given.
     """
     global SDRAM_READ_LEAD_WORDS
     SDRAM_READ_LEAD_WORDS = int(lead_words)
     _proto.SDRAM_READ_LEAD_WORDS = int(lead_words)
     _proto.RLE_STREAM_TAIL_GUARD = int(tail_guard)
+    if rle_max_samples is not None:
+        _proto.MAX_RLE_STREAM_SAMPLES = int(rle_max_samples)
 
 
 def plan_range_block(sample: int, remaining: int, block_samples: int = 512):
@@ -1018,16 +1025,23 @@ class OLSDeviceSPI:
         intermediate builds from that branch (seed 19 and seed 4) have the
         read-timing fix but still report 10 bytes: run them with
         OLS_SDRAM_READ_LEAD_WORDS=0 (and OLS_RLE_STREAM_TAIL_GUARD=1).
+        The RLE request cap follows the image the same way (16384 when a
+        generation is reported, else 1023), and OLS_RLE_STREAM_MAX_SAMPLES
+        pins it.
         """
         self.image_generation, self.image_features =             _proto.image_features_from_metadata(meta)
         lead, guard = _proto.image_compensations(meta)
+        rle_max = _proto.rle_stream_max_samples(meta)
         lead_env = os.environ.get("OLS_SDRAM_READ_LEAD_WORDS")
         guard_env = os.environ.get("OLS_RLE_STREAM_TAIL_GUARD")
+        rle_env = os.environ.get("OLS_RLE_STREAM_MAX_SAMPLES")
         if lead_env is not None:
             lead = int(lead_env)
         if guard_env is not None:
             guard = int(guard_env)
-        set_image_compensations(lead, guard)
+        if rle_env is not None:
+            rle_max = int(rle_env)
+        set_image_compensations(lead, guard, rle_max)
         if self.image_features & _proto.IMAGE_FEATURE_CONTINUOUS_NO_HOST_LOSS:
             # This image paces continuous-mode SDRAM reads (bursts + idle), so
             # block responses start ~250 bytes after the request, not ~154.
@@ -3514,7 +3528,7 @@ class OLSDeviceSPI:
             full_out=None, fetch_multiplier=32, raw_capture=None,
             require_raw_mode=True, generator_capture=False,
             manage_debug_source=True, fallback_to_raw=True,
-            include_cursor=False):
+            include_cursor=False, rle_window_cap=None):
         """Stream a ring with the guarded RLE path and a raw fallback.
 
         RLE streaming is a transport capability rather than a user-visible
@@ -3547,12 +3561,13 @@ class OLSDeviceSPI:
                 stream_failed = True
 
             if not stream_failed:
-                # The FPGA's RLE run counter is 10 bits wide.  The lower-level
-                # packet reader can stitch larger requests, but keeping each
-                # live request below the wrap point avoids a needless second
-                # command and makes this path safe for flat signals.
-                live_window = max(
-                    1, min(window_samples, MAX_RLE_STREAM_SAMPLES))
+                # One live request per window, capped at the image's RLE
+                # request cap (16384 on 16-bit-counter images, 1023 on legacy
+                # images), read at call time, unless the caller gives its own
+                # rle_window_cap.
+                cap = (_proto.MAX_RLE_STREAM_SAMPLES
+                       if rle_window_cap is None else rle_window_cap)
+                live_window = max(1, min(window_samples, cap))
                 try:
                     stream_iter = iter(self.stream_ring_capture(
                         rate_hz=rate_hz,
@@ -3635,7 +3650,7 @@ class OLSDeviceSPI:
             symbol_div, tx_pin, scl_pin, generator_flags=0,
             progress_cb=None, full_out=None, use_rle=False,
             prefer_raw_stream=False, follow_tail=False, fetch_multiplier=1,
-            include_cursor=False):
+            include_cursor=False, rle_window_cap=None):
         """Run one repeating Bit_Engine source through the common ring path.
 
         Protocol encoders only provide packed symbols and their pin-routing
@@ -3666,7 +3681,8 @@ class OLSDeviceSPI:
                     progress_cb=progress_cb, full_out=full_out,
                     fetch_multiplier=fetch_multiplier, require_raw_mode=False,
                     generator_capture=True, manage_debug_source=False,
-                    fallback_to_raw=False, include_cursor=include_cursor)
+                    fallback_to_raw=False, include_cursor=include_cursor,
+                    rle_window_cap=rle_window_cap)
             else:
                 if prefer_raw_stream or restore_mode != 'raw':
                     self.set_readback_compression(
@@ -4112,7 +4128,8 @@ class OLSDeviceSPI:
             progress_cb=progress_cb, full_out=full_out, use_rle=use_rle,
             prefer_raw_stream=prefer_raw_stream, follow_tail=follow_tail,
             fetch_multiplier=4 if use_rle else fetch_multiplier,
-            include_cursor=include_cursor)
+            include_cursor=include_cursor,
+            rle_window_cap=ACCEL_LIVE_RLE_WINDOW)
 
     def fast_mode(self, enable=True):
         self.pkt.write_register(REG_FAST_MODE, 1 if enable else 0)

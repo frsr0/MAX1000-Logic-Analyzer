@@ -212,11 +212,29 @@ def image_compensations(meta):
     lead = 0 if features & IMAGE_FEATURE_TRUE_READ_DATA else 1
     guard = 0 if features & IMAGE_FEATURE_RLE_FLUSH_FIXED else 1
     return lead, guard
-# The RLE run counter is 10 bits wide in the FPGA compressor, so live RLE
-# requests must stay below the 1024-sample wrap point. Keep one sample of head-
-# room so the host never asks the hardware to encode a run that can overflow
-# the counter on a flat signal.
-MAX_RLE_STREAM_SAMPLES = 1023
+
+
+def rle_stream_max_samples(meta) -> int:
+    """RLE stream request cap (samples) for the image that produced ``meta``.
+
+    An image that reports an image generation has the 16-bit RLE run counter;
+    10-byte metadata (generation 0) may have the legacy 10-bit counter.
+    """
+    generation, _features = image_features_from_metadata(meta)
+    if generation >= 1:
+        return MAX_RAW_STREAM_SAMPLES
+    return LEGACY_RLE_STREAM_SAMPLES
+
+
+# RLE stream request cap, in samples. The cap follows the flashed image: every
+# image that reports an image generation in CMD_GET_METADATA (12-byte metadata,
+# generation >= 1) has a 16-bit RLE run counter, and a request is already
+# bounded by MAX_RAW_STREAM_SAMPLES, so the counter cannot wrap. Only
+# 10-byte-metadata images may have the old 10-bit counter (wrap at 1024); they
+# get LEGACY_RLE_STREAM_SAMPLES. This is the default for a known-new image;
+# OLSDeviceSPI.apply_image_metadata() sets it from rle_stream_max_samples().
+MAX_RLE_STREAM_SAMPLES = 16384
+LEGACY_RLE_STREAM_SAMPLES = 1023
 MAX_RLE_STREAM_BYTES_PER_SAMPLE = 4
 # A broken/unsupported RLE stream must not hold the accelerometer worker while
 # it clocks filler forever.  The live path falls back to bounded raw bursts
