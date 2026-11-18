@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { CaptureControls } from './CaptureControls';
 import { api } from '../api/client';
@@ -59,6 +59,19 @@ it('maps every hardware source across single and live acquisition', () => {
   expect(screen.getByText(/physical MAX1000 analog profile/)).toBeTruthy();
 });
 
+it('offers RLE, then delta RLE, then uncompressed digital readback', () => {
+  useApp.setState({ captureSettings: settings({ mode: 'single', readback_compression: 'rle' }) });
+  render(<CaptureControls />);
+  fireEvent.click(screen.getByText('Advanced transfer options'));
+  const buttons = within(screen.getByRole('group', { name: 'Digital readback compression' }))
+    .getAllByRole('button');
+  expect(buttons.map((button) => button.textContent)).toEqual(['RLE', 'Delta + RLE', 'Uncompressed']);
+  expect(buttons[0].getAttribute('title')).toBe('Run-length encoding: fastest for logic signals (recommended)');
+  expect(buttons[1].getAttribute('title')).toBe('Delta + RLE: only for numeric buses that change in small steps, e.g. counters or parallel ADC data');
+  expect(buttons[2].getAttribute('title')).toBe('No compression');
+  expect(buttons[0].className).toContain('active');
+});
+
 it('updates rates, live windows, depth, compression, packing, repeat and name', () => {
   useApp.setState({ captureSettings: settings({ mode: 'rolling', sample_rate: 10e3,
     num_samples: 1, auto_rearm: true, readback_compression: 'delta_rle' }) });
@@ -72,7 +85,10 @@ it('updates rates, live windows, depth, compression, packing, repeat and name', 
   fireEvent.change(screen.getByLabelText('Window duration'), { target: { value: '0.01' } });
   expect(useApp.getState().captureSettings.num_samples).toBe(1000);
   fireEvent.click(screen.getByRole('button', { name: 'Uncompressed' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Compressed' }));
+  expect(useApp.getState().captureSettings.readback_compression).toBe('raw');
+  fireEvent.click(screen.getByRole('button', { name: 'RLE' }));
+  expect(useApp.getState().captureSettings.readback_compression).toBe('rle');
+  fireEvent.click(screen.getByRole('button', { name: 'Delta + RLE' }));
   expect(useApp.getState().captureSettings.readback_compression).toBe('delta_rle');
   fireEvent.click(screen.getByRole('checkbox', { name: /Use packed rolling transfer/ }));
   expect(screen.getByText(/Rolling ceiling raised/)).toBeTruthy();

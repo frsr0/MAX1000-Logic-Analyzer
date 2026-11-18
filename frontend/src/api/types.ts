@@ -594,7 +594,7 @@ export const defaultCaptureSettings = (): CaptureSettings => ({
   auto_rearm: false,
   repeat_count: 1,
   auto_save: false,
-  readback_compression: 'raw',
+  readback_compression: 'rle',
   packed_mode: false,
   mock_scenario: 'demo_mixed',
 });

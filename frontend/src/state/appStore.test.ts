@@ -57,15 +57,28 @@ it('does not replace a newly opened session with a late background refresh', asy
   expect(useApp.getState().activeSession?.id).toBe('new');
 });
 
-it.each(['delta', 'rle', 'raw'] as const)('normalizes legacy %s capture settings on load and save', async (compression) => {
-  localStorage.setItem('msa_capture_settings', JSON.stringify({ sample_rate: 20_000, readback_compression: compression }));
+it.each([
+  ['delta', 'delta_rle'],
+  ['delta_rle', 'delta_rle'],
+  ['rle', 'rle'],
+  ['raw', 'raw'],
+] as const)('keeps %s readback compression as %s on load and save', async (saved, expected) => {
+  localStorage.setItem('msa_capture_settings', JSON.stringify({ sample_rate: 20_000, readback_compression: saved }));
   const { useApp } = await import('./appStore');
   expect(useApp.getState().captureSettings).toMatchObject({ sample_rate: 20_000,
-    num_samples: 100_000, readback_compression: compression === 'raw' ? 'raw' : 'delta_rle' });
-  useApp.getState().setCaptureSettings({ readback_compression: compression, num_samples: 128 });
+    num_samples: 100_000, readback_compression: expected });
+  useApp.getState().setCaptureSettings({ readback_compression: saved, num_samples: 128 });
+  expect(useApp.getState().captureSettings.readback_compression).toBe(expected);
   expect(JSON.parse(localStorage.getItem('msa_capture_settings')!)).toMatchObject({
-    sample_rate: 20_000, num_samples: 128, readback_compression: compression === 'raw' ? 'raw' : 'delta_rle',
+    sample_rate: 20_000, num_samples: 128, readback_compression: expected,
   });
+});
+
+it('defaults digital readback to rle when no settings are saved', async () => {
+  const { useApp } = await import('./appStore');
+  expect(useApp.getState().captureSettings.readback_compression).toBe('rle');
+  useApp.getState().setCaptureSettings({ sample_rate: 20_000 });
+  expect(useApp.getState().captureSettings.readback_compression).toBe('rle');
 });
 
 it.each([null, '{broken', '{"theme":"light","defaultSampleRate":5000}'])('loads viewer preferences with safe JSON fallback: %s', async (raw) => {

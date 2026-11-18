@@ -1868,3 +1868,15 @@ def test_max6675_cleanup_failure_does_not_mask_the_decoded_result():
 
     assert adapter.max6675_read(4, 5, 6) == {"raw": 0x0123, "clocks": 16}
     dev._set_gen_capture_aux.assert_not_called()
+
+
+def test_digital_readback_defaults_to_rle_and_analog_or_packed_paths_force_raw():
+    adapter = ExistingHostAdapter()
+    assert CaptureSettings().readback_compression == "rle"
+    assert adapter._digital_readback_compression(CaptureSettings()) == "rle"
+    assert adapter._digital_readback_compression(
+        CaptureSettings(mode="rolling", readback_compression="delta_rle")) == "delta_rle"
+    assert adapter._digital_readback_compression(
+        CaptureSettings(mode="single", packed_mode=True)) == "raw"
+    assert adapter._digital_readback_compression(CaptureSettings(mode="mixed")) == "raw"
+    assert adapter._digital_readback_compression(CaptureSettings(mode="analog_fast")) == "raw"

@@ -27,7 +27,13 @@ const NO_DIGITAL: number[] = [];
 type CaptureMode = 'single' | 'continuous' | 'rolling' | 'digital_narrow' | 'triggered' | 'analog'
   | 'analog_fast' | 'analog_all' | 'mixed' | 'analog_continuous'
   | 'analog_all_continuous' | 'mixed_continuous';
-type ReadbackCompression = 'raw' | 'delta_rle' | 'delta' | 'rle';
+const READBACK_CHOICES = [
+  { codec: 'rle', label: 'RLE',
+    title: 'Run-length encoding: fastest for logic signals (recommended)' },
+  { codec: 'delta_rle', label: 'Delta + RLE',
+    title: 'Delta + RLE: only for numeric buses that change in small steps, e.g. counters or parallel ADC data' },
+  { codec: 'raw', label: 'Uncompressed', title: 'No compression' },
+] as const;
 
 const ANALOG_MODES: CaptureMode[] = [
   'analog', 'analog_fast', 'analog_all', 'mixed',
@@ -607,20 +613,16 @@ export function CaptureControls() {
             <span>Transfer optimization</span>
             {digitalCompressionMode ? (
               <div className="seg-toggle" role="group" aria-label="Digital readback compression">
-                {(['raw', 'delta_rle'] as ReadbackCompression[]).map((codec) => (
+                {READBACK_CHOICES.map(({ codec, label, title }) => (
                   <button
                     key={codec}
                     type="button"
                     className={`seg ${captureSettings.readback_compression === codec ? 'active' : ''}`}
                     onClick={() => setCaptureSettings({ readback_compression: codec })}
                     disabled={!controlMode}
-                    title={
-                      codec === 'raw'
-                        ? 'No compression'
-                        : 'Merge transitions and run-length encode them before transfer'
-                    }
+                    title={title}
                   >
-                    {codec === 'raw' ? 'Uncompressed' : 'Compressed'}
+                    {label}
                   </button>
                 ))}
               </div>

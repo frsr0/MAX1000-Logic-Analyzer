@@ -134,7 +134,7 @@ export const useApp = create<AppState>((set, getState) => ({
   captureSettings: loadSavedSettings(),
   setCaptureSettings: (s) => {
     const next = { ...getState().captureSettings, ...s };
-    if (next.readback_compression === 'delta' || next.readback_compression === 'rle') {
+    if (next.readback_compression === 'delta') {
       next.readback_compression = 'delta_rle';
     }
     localStorage.setItem('msa_capture_settings', JSON.stringify(next));
@@ -180,7 +180,7 @@ function loadSavedSettings(): CaptureSettings {
     const raw = localStorage.getItem('msa_capture_settings');
     if (raw) {
       const next = { ...defaultCaptureSettings(), ...JSON.parse(raw) };
-      if (next.readback_compression === 'delta' || next.readback_compression === 'rle') {
+      if (next.readback_compression === 'delta') {
         next.readback_compression = 'delta_rle';
       }
       return next;
