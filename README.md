@@ -360,6 +360,20 @@ test (10/10), the hardware validation suite (415/415, with 8 jumper checks
 skipped because the jumper fixture was not selected), the codec suite (28/28)
 and the 75-testbench GHDL regression; `CMD_GET_METADATA` still ends `3F 04`.
 
+The 2026-11-18 rebuild (still seed 7, same core slack) launches MISO on the
+SCK rising edge, the edge the FT2232H samples on, and the SDC now constrains
+the SPI link at the 30 MHz the host actually runs instead of 15 MHz. At
+30 MHz the FT2232H needs 11 ns MISO setup; the old falling-edge launch left
+about 4.7 ns for an 8 ns path and failed STA by 3.2 ns (it worked only because
+the FTDI samples better than its worst case). MISO now has +13.4 ns setup at
+slow 85 °C and at least +1.06 ns hold at fast 0 °C, and all 66 timing checks
+pass. Its POF SHA-256 is
+`63CD7FC007DC171EFB837B8051E102D4DF938982C1B28D26F7C82DA111EA1690`
+(Programmer checksum `0x01DDB91A`). On the attached board it passed the smoke
+test (10/10), the hardware validation suite (415/415, 8 jumper checks
+skipped), the codec suite (28/28), the 75-testbench GHDL regression and
+bit-exact live and readback checks.
+
 ```powershell
 cd hdl\proj
 .\compile.ps1 -Seed 7
