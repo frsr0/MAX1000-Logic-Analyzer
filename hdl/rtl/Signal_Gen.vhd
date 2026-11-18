@@ -1,3 +1,8 @@
+-- NOTE: The FPGA build does not use this entity. Signal_Gen.vhd is compiled
+-- into the project, but the design instantiates Bit_Engine
+-- (hdl/rtl/Bit_Engine.vhd) as the generator. Signal_Gen is used only by
+-- testbenches: tb_signal_gen, tb_gen_full, tb_gen_start_sim, tb_gen_spi_decode,
+-- tb_gen_uart_decode and tb_gen_uart_repeat_decode.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;

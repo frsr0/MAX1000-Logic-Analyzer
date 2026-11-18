@@ -1,4 +1,7 @@
   
+-- NOTE: This file is not part of the FPGA build. It is not listed in
+-- hdl/proj/OLS_Logic_Analyzer.qsf and no design file instantiates it.
+-- It is used only by tb_uart_interface (hdl/tb).
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.numeric_std.all; 

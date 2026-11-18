@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-11-18 - FPGA timing and readback throughput
+
+- FPGA: three narrow compares are taken out of the worst timing paths (the
+  read loop's "one sample left" check, the analog packer's DRAIN step and the
+  compressed-stream sample count), and the dispatcher timeouts run off one
+  shared tick. Closed at seed 7, then seed 16.
+- FPGA: MISO is launched on the SCK rising edge, the edge the FT2232H samples
+  on, and the SDC constrains the SPI link at its real 30 MHz instead of 15 MHz.
+  MISO setup goes from -3.2 ns to +13.4 ns at slow 85 °C.
+- FPGA: the continuous-read cool-down after each 16-read burst is cut from 80
+  to 16 cycles. The live `rle` ceiling rises from about 3.7 to about 4.5 MS/s,
+  with 0 dropped samples at 100 MS/s.
+- FPGA: the current image is seed 16 (slow 85 °C setup slack sys_clk +0.043 ns,
+  fast_clk +0.047 ns, sdram_core_clk +0.311 ns; 8,014 of 8,064 logic
+  elements). Earlier images are listed in `docs/fpga-images.md`.
+- Host: the batched compressed readback slot is sized from observed responses.
+  rle readback takes 0.74 s per 4M samples (was 1.6 s); busy signals take 1.9 s
+  (was 3.35 s).
+- Host: `delta_rle` falls back to `rle` on overflow.
+- Host: live `rle` requests up to 16384 samples on images with a generation
+  (0.25 -> 1+ MS/s at 4096-sample windows). Live read chunks are 1 KB, and the
+  request and first chunk share one USB round trip.
+- Host: the chained-delta decoder is in place, gated on feature bit 6, which
+  the current image does not set.
+- Tests: hardware tests 36-39 cover dropped samples, live bit-exact capture,
+  sustained rate and readback speed.
+- Rejected: a response-kind rsp_buf rework (larger than the gain), chained
+  delta anchors in RTL (did not fit), and seed-16 cone fixes (0 of 12 seeds
+  closed timing).
+
 ## Unreleased
 
 - Hardware validation Test 12g no longer hardcodes jumper wiring: the

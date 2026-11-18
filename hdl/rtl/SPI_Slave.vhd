@@ -170,6 +170,9 @@ begin
   end process;
 
   -- Source-synchronous MISO output: zero synchronizer latency on SCK rising edge
+  -- cs_active is registered on fast_clk from the 2-FF CS synchroniser (cs_meta,
+  -- cs_sync). It is used asynchronously in the SCK domain on purpose: it changes
+  -- only while SCK is idle (CS edges), so it never changes inside an SCK cycle.
   MISO <= sck_tx_shift(7) when cs_active = '1' else 'Z';
 
   rx_cdc: process(sys_clk)

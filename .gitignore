@@ -69,3 +69,28 @@ hdl/tb/.ghdl_logs/
 hdl/tb/.baseline.txt
 /.agents
 /.claude
+
+
+# Scratch run output (regression logs, sweep dumps, compile and timing logs)
+fullsuite_*.txt
+fullsuite_*.out
+newsuite_*.txt
+/compile_run.txt
+/output.txt
+/ack_pad_sweep_results.txt
+/tb_led_controller
+hdl/proj/compile_*.txt
+hdl/proj/current_worst_paths*.txt
+hdl/proj/timing_*.txt
+hdl/proj/clock_xfer.txt
+hdl/proj/seed_results/
+hdl/proj/seed_sweep_best.*
+hdl/proj/seed_sweep_results.txt
+hdl/proj/seed_sweep_best_seed.txt
+
+# Compiled objects and process pid files
+*.o
+*.pid
+
+# Backend service logs
+backend/*.log

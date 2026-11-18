@@ -196,7 +196,7 @@ Throughput gain: ~2-4%
 
 Documentation:
 ───────────────
-- Full workflow: ACK_PAD_OPTIMIZATION.md
+- Full workflow: docs/archive/ACK_PAD_OPTIMIZATION.md
 - Testbench guide: hdl/sim/RUN_TESTBENCH.md
 - Protocol analysis: hdl/sim/ACK_PAD_ANALYSIS.md
 "@
@@ -231,4 +231,4 @@ switch ($Step) {
 }
 
 Header "Done"
-Write-Host "See documentation in: ACK_PAD_OPTIMIZATION.md" -ForegroundColor Green
+Write-Host "See documentation in: docs/archive/ACK_PAD_OPTIMIZATION.md" -ForegroundColor Green
