@@ -1,25 +1,94 @@
 # Seed sweep for the full mixed-signal (FAST_RAW_BUILD=false) 200 MHz build.
-# Compiles each seed, extracts setup slacks for the four named PLL clocks
-# (sys_clk/fast_clk/sdram_core_clk/adc_clk) plus the forwarded SDRAM chip
+# Usage (from the repo root or hdl/proj; the script changes to its own folder):
+#   powershell -NoProfile -ExecutionPolicy Bypass -File hdl/proj/seed_sweep.ps1 -SeedList 1,2,3
+#   (-Seeds 1,2,3 still works via -Command; -SeedList is the -File-safe form.)
+# Compiles each seed one at a time, extracts setup slacks for the four named
+# PLL clocks (sys_clk/fast_clk/sdram_core_clk) plus the forwarded SDRAM chip
 # clock (SDRAM_CHIP_CLK_OUT) from the STA summary, and stops when all close
-# with margin. Clock names updated 2026-07-07 to match the SDC's explicit
-# create_generated_clock names (sys_clk/fast_clk/sdram_core_clk/adc_clk) --
-# the old 'clk\[(\d)\]' regex matched Quartus's auto-derived names and no
-# longer matches anything, so every field silently came back blank.
+# with margin. Every seed's sof/pof/sta.summary/fit.summary is archived to
+# seed_results/seed<N>.*. seed_sweep_best.* is replaced only when a seed's
+# worst slack beats the best recorded in seed_results/best.txt ("seed worst"),
+# so a later batch can never overwrite a better earlier result.
+# Use seed_sweep_parallel.ps1 to run several seeds at once.
 param(
     [int[]]$Seeds = @(21, 30, 5, 12, 42, 7, 3, 17),
+    # Comma-separated seed list (works with powershell -File). Overrides -Seeds when given.
+    [string]$SeedList = "",
     # stop as soon as every tracked domain has at least this much setup slack (ns)
     [double]$TargetSlack = 0.05,
     [switch]$RawOnly
 )
 
-# NB: no 'adc_clk' here — the SDC defines no such named clock, so tracking it
-# fed a permanent -999 sentinel into the worst-slack comparison and the
-# best-seed picker always kept the first seed tried regardless of results.
+Set-Location $PSScriptRoot
+
+if ($SeedList -ne "") {
+    $Seeds = @($SeedList -split ',' | ForEach-Object { $_.Trim() } |
+        Where-Object { $_ -ne '' } | ForEach-Object { [int]$_ })
+}
+
+# NB: no 'adc_clk' here -- the SDC defines no such named clock, so tracking it
+# fed a permanent -999 sentinel into the worst-slack comparison.
 $clockNames = @('sys_clk', 'fast_clk', 'sdram_core_clk', 'SDRAM_CHIP_CLK_OUT')
+$inv = [Globalization.CultureInfo]::InvariantCulture
+$resultsDir = Join-Path $PSScriptRoot 'seed_results'
+New-Item -ItemType Directory -Force -Path $resultsDir | Out-Null
+$archiveExts = @('sof', 'pof', 'sta.summary', 'fit.summary')
+
+function Get-SeedSlacks {
+    param([string]$OutDir)
+    $slk = @{}
+    $lines = Get-Content (Join-Path $OutDir 'OLS_Logic_Analyzer.sta.summary')
+    for ($i = 0; $i -lt $lines.Count - 1; $i++) {
+        if ($lines[$i] -match "Slow 1200mV 85C Model Setup '([^']+)'") {
+            $clk = $matches[1]
+            if ($clockNames -contains $clk -and $lines[$i+1] -match "Slack\s*:\s*(-?[\d.]+)") {
+                $slk[$clk] = [double]$matches[1]
+            }
+        }
+    }
+    $leLine = Select-String "Total logic elements" (Join-Path $OutDir 'OLS_Logic_Analyzer.fit.summary') | Select-Object -First 1
+    $le = if ($leLine) { $leLine.Line.Trim() } else { '' }
+    # Missing values (parse miss) sort last via a large negative sentinel, so a
+    # broken parse can't masquerade as "best".
+    $vals = foreach ($c in $clockNames) { if ($slk.ContainsKey($c)) { $slk[$c] } else { -999.0 } }
+    $worst = ($vals | Measure-Object -Minimum).Minimum
+    [pscustomobject]@{
+        Seed = $null
+        Sys = $slk['sys_clk']; Fast = $slk['fast_clk']; Sdram = $slk['sdram_core_clk']
+        ChipOut = $slk['SDRAM_CHIP_CLK_OUT']
+        Worst = [double]$worst
+        LE = $le
+    }
+}
+
+function Save-SeedArchive {
+    param([int]$Seed, [string]$OutDir)
+    foreach ($ext in $archiveExts) {
+        $src = Join-Path $OutDir "OLS_Logic_Analyzer.$ext"
+        if (Test-Path $src) { Copy-Item $src (Join-Path $resultsDir "seed$Seed.$ext") -Force }
+    }
+}
+
+# Returns $true when this seed became the new best (and seed_sweep_best.* was replaced).
+function Update-Best {
+    param([int]$Seed, [double]$Worst)
+    $bestFile = Join-Path $resultsDir 'best.txt'
+    $prev = $null
+    if (Test-Path $bestFile) {
+        $parts = (Get-Content $bestFile -Raw).Trim() -split '\s+'
+        if ($parts.Count -ge 2) { $prev = [double]::Parse($parts[1], $inv) }
+    }
+    if ($null -ne $prev -and -not ($Worst -gt $prev)) { return $false }
+    foreach ($ext in $archiveExts) {
+        $src = Join-Path $resultsDir "seed$Seed.$ext"
+        if (Test-Path $src) { Copy-Item $src (Join-Path $PSScriptRoot "seed_sweep_best.$ext") -Force }
+    }
+    Set-Content $bestFile ("{0} {1}" -f $Seed, $Worst.ToString('R', $inv))
+    Set-Content (Join-Path $PSScriptRoot 'seed_sweep_best_seed.txt') $Seed
+    return $true
+}
 
 $results = @()
-$best = $null
 
 foreach ($s in $Seeds) {
     Write-Host "=== seed $s ==="
@@ -32,52 +101,26 @@ foreach ($s in $Seeds) {
     } else {
         .\compile.ps1 -NoFlash -Seed $s | Out-Null
     }
-    if (-not (Test-Path "output_files\OLS_Logic_Analyzer.sta.summary")) {
+    $outDir = Join-Path $PSScriptRoot 'output_files'
+    if (-not (Test-Path (Join-Path $outDir 'OLS_Logic_Analyzer.sta.summary'))) {
         Write-Host "seed $s : compile FAILED (no sta.summary)"
+        $results += [pscustomobject]@{ Seed = $s; Sys = $null; Fast = $null; Sdram = $null; ChipOut = $null; Worst = -999.0; LE = 'FAILED' }
         continue
     }
 
-    # Parse setup slacks per clock from the STA summary (Slow 85C model).
-    $slk = @{}
-    $lines = Get-Content "output_files\OLS_Logic_Analyzer.sta.summary"
-    for ($i = 0; $i -lt $lines.Count - 1; $i++) {
-        if ($lines[$i] -match "Slow 1200mV 85C Model Setup '([^']+)'") {
-            $clk = $matches[1]
-            if ($clockNames -contains $clk -and $lines[$i+1] -match "Slack\s*:\s*(-?[\d.]+)") {
-                $slk[$clk] = [double]$matches[1]
-            }
-        }
-    }
-    $le = (Select-String "Total logic elements" "output_files\OLS_Logic_Analyzer.fit.summary").Line.Trim()
-    $r = [pscustomobject]@{
-        Seed = $s
-        Sys = $slk['sys_clk']; Fast = $slk['fast_clk']; Sdram = $slk['sdram_core_clk']
-        ChipOut = $slk['SDRAM_CHIP_CLK_OUT']
-        LE = $le
-    }
+    $r = Get-SeedSlacks -OutDir $outDir
+    $r.Seed = $s
+    Save-SeedArchive -Seed $s -OutDir $outDir
     $results += $r
-    Write-Host ("seed {0}: sys={1} fast={2} sdram={3} chip_out={4}  {5}" -f `
-        $s, $r.Sys, $r.Fast, $r.Sdram, $r.ChipOut, $le)
+    Write-Host ("seed {0}: sys={1} fast={2} sdram={3} chip_out={4} worst={5}  {6}" -f `
+        $s, $r.Sys, $r.Fast, $r.Sdram, $r.ChipOut, $r.Worst, $r.LE)
 
-    # Worst-case across every tracked clock. Missing values (parse miss) sort
-    # last via a large negative sentinel, so a broken parse can't masquerade
-    # as "best".
-    $vals = @($r.Sys, $r.Fast, $r.Sdram, $r.ChipOut) | ForEach-Object {
-        if ($null -eq $_) { -999.0 } else { $_ }
-    }
-    $worst = ($vals | Measure-Object -Minimum).Minimum
-    if ($null -eq $best -or $worst -gt $best.Worst) {
-        $best = [pscustomobject]@{ Seed=$s; Worst=$worst }
-        # archive this build's outputs
-        Copy-Item "output_files\OLS_Logic_Analyzer.pof" "seed_sweep_best.pof" -Force
-        Copy-Item "output_files\OLS_Logic_Analyzer.sof" "seed_sweep_best.sof" -Force
-        Copy-Item "output_files\OLS_Logic_Analyzer.sta.summary" "seed_sweep_best.sta.summary" -Force
-        Copy-Item "output_files\OLS_Logic_Analyzer.fit.summary" "seed_sweep_best.fit.summary" -Force
-        Set-Content "seed_sweep_best_seed.txt" $s
+    if (Update-Best -Seed $s -Worst $r.Worst) {
+        Write-Host ("new best: seed {0} (worst slack {1}) -> seed_sweep_best.*" -f $s, $r.Worst)
     }
 
-    $results | Format-Table -AutoSize | Out-String | Set-Content "seed_sweep_results.txt"
-    if ($worst -ge $TargetSlack) {
+    $results | Format-Table -AutoSize | Out-String | Set-Content (Join-Path $PSScriptRoot 'seed_sweep_results.txt')
+    if ($r.Worst -ge $TargetSlack) {
         Write-Host "seed $s closes timing with margin on every tracked clock -- stopping sweep"
         break
     }
@@ -86,4 +129,5 @@ foreach ($s in $Seeds) {
 Write-Host ""
 Write-Host "=== sweep done ==="
 $results | Format-Table -AutoSize
-if ($best) { Write-Host ("best: seed {0} (worst slack {1})" -f $best.Seed, $best.Worst) }
+$bestLine = Get-Content (Join-Path $resultsDir 'best.txt') -ErrorAction SilentlyContinue
+if ($bestLine) { Write-Host ("best recorded in seed_results: seed {0}" -f $bestLine) }
