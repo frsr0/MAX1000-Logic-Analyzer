@@ -1,5 +1,34 @@
 # Timing Report Summary
-## Current status (2026-07-29)
+## Current status (2026-11-18)
+
+The flashed image is generation 4, built with fitter seed 16 (QSF `SEED 16`,
+`compile.ps1` default). It is timing-clean at every corner: all 66
+setup/hold/recovery/removal/pulse checks pass.
+
+```text
+Total logic elements : 8,014 / 8,064 ( 99 % )   (504 / 504 LABs)
+Total registers      : 5,164
+Total memory bits    : 112,004 / 387,072 ( 29 % )
+```
+
+| Slow 1200 mV 85 C | Setup | Hold |
+| --- | --- | --- |
+| `sys_clk` (100.2 MHz) | +0.043 ns | +0.288 ns |
+| `fast_clk` (200.4 MHz) | +0.047 ns | +0.322 ns |
+| `sdram_core_clk` (167.0 MHz) | +0.311 ns | +0.272 ns |
+| `SDRAM_CHIP_CLK_OUT` | +1.098 ns | +1.808 ns |
+| `SPI_SCK_EXT` (30 MHz) | +11.8 ns | +0.394 ns |
+
+Since 2026-11-18 the SDC constrains the SPI link at the 30 MHz the host runs
+(it was 15 MHz) and MISO launches on the SCK rising edge, the edge the
+FT2232H samples on; MISO setup is about +13 ns against the FT2232H's 11 ns
+requirement. The design uses every LAB, so the slack mix is dominated by the
+fitter seed: re-sweep (`hdl/proj/seed_sweep.ps1`) after any RTL, SDC or pin
+change. Narrow cone fixes did not help at this fill (see
+`TIMING_OPTIMIZATION_EXPERIMENT_LOG.md`, 2026-11-18). The image record with
+POF hash and board results is in the README.
+
+## Earlier status (2026-07-29)
 
 A focused recompile on fitter seed 29 is timing-clean and is the best current
 local build in this neighborhood. The exact post-fit excerpts are:

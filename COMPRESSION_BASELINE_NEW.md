@@ -1,5 +1,25 @@
 # Compression Baseline and Jumper-Driven Validation (2026-07-30)
 
+> **Superseded for throughput (2026-11-18).** The compression ratios below
+> still hold, but the speed figures do not. Current measurements on the
+> attached board, all bit-exact against raw:
+>
+> - Readback of a 4,194,304-sample capture: raw 3.6 s, `rle` 0.74-0.77 s on
+>   idle/PWM signals and 1.9 s on a busy 1 MHz signal, `delta_rle` 2.0 s
+>   (3.5 s busy). The host now sizes each batched block's response slot from
+>   the responses it sees (48-1100 bytes).
+> - Live `rle`: keeps pace with the source to about 4.5 MS/s with
+>   16,384-sample windows and about 2 MS/s with 4,096-sample windows (raw:
+>   1 MS/s). The 1,023-sample request limit described below applied only to
+>   images built 2026-07-23 to 2026-09-07; current images use 16,384.
+> - `delta_rle` never compresses below about 256 bytes per 512-sample block
+>   (each 16-sample group restarts with an anchor) and falls back on any
+>   sample-to-sample change wider than +/-15 (a toggle on CH4 or above), so
+>   use `rle` for logic signals.
+>
+> See the README's "Readback Compression" section and the hardware suite's
+> Tests 36-39, which check these on every run.
+
 This supersedes the older 2026-07-03 note, which was written before the current
 timing/compression fixes landed. The current validated FPGA image has working
 digital `raw`, direct `rle`, and packed `delta_rle` readback. This document was
