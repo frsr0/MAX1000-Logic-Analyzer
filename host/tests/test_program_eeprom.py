@@ -107,5 +107,9 @@ def test_module_entrypoint_runs_main(monkeypatch):
     monkeypatch.setitem(sys.modules, "ftd2xx._ftd2xx", native)
     monkeypatch.setattr("time.sleep", lambda _: None)
     monkeypatch.setattr("random.randint", lambda lo, hi: 1)
+    # The module is already imported at the top of this file; runpy warns when
+    # it re-executes a module found in sys.modules, so drop the cached copy for
+    # this one run (monkeypatch restores it afterwards).
+    monkeypatch.delitem(sys.modules, "app.program_eeprom", raising=False)
     runpy.run_module("app.program_eeprom", run_name="__main__")
     device.eeProgram.assert_called_once()

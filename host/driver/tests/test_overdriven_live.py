@@ -70,7 +70,7 @@ def test_empty_live_read_with_dropping_fpga_raises_over_driven():
     dev.image_features = 0x1F                      # has the drop counter
     dev.pkt.read_register.return_value = 0xFFFF
     dev.read_capture_range = MagicMock(return_value=b"")
-    with pytest.raises(RuntimeError, match="over-driven.*65535\+"):
+    with pytest.raises(RuntimeError, match=r"over-driven.*65535\+"):
         list(dev.stream_ring_capture(200_400_000, 4096, _Stop(10)))
 
 

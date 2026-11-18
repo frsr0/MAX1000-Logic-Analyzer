@@ -122,3 +122,10 @@ jobs:
           if [ -f backend.pid ]; then
             kill "$(cat backend.pid)" 2>/dev/null || true
           fi
+
+      # After the backend has released the FTDI device: the codec suite opens
+      # the board directly (readback codecs, live rle, dropped samples).
+      - name: Run codec readback validation (hw_validation codec)
+        if: steps.probe.outputs.device_present == 'yes'
+        working-directory: host
+        run: python -m app.hw_validation codec

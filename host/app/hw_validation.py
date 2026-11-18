@@ -112,10 +112,11 @@ WATCHDOG_DEFAULTS = {
     "analog": 300,
     "codec": 600,
     "accel": 300,
+    "soak": 300,
 }
 
 def _suite_mode(argv):
-    if len(argv) > 1 and argv[1] in ("new", "jumper", "analog", "codec"):
+    if len(argv) > 1 and argv[1] in ("new", "jumper", "analog", "codec", "soak"):
         return argv[1]
     return "full"
 
@@ -3984,6 +3985,45 @@ def test_live_rle_bit_exact(dev):
 
 # ====================================================================
 
+def _sustained_rle_stream(dev, rate, window, *, watchdog_s, n_windows=None,
+                          duration_s=None, read_dropped=False):
+    """Stream the live rle ring at ``rate`` and record every window's arrival.
+
+    Stops after ``n_windows`` windows, or once ``duration_s`` has elapsed since
+    the first window. ``watchdog_s`` bounds a stalled stream read, which blocks
+    inside the driver where this loop cannot set ``stop``. Returns
+    ``(stamps, totals, overruns, dropped)``; ``dropped`` is read from the device
+    before the debug source is switched off, and is None unless
+    ``read_dropped`` is set.
+    """
+    dev.set_analog_config(MODE_DIGITAL)
+    dev.reset(); dev.spi.flush()
+    dev.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+    dev.set_debug_ch0(True, freq_hz=10_000)
+    dev.set_readback_compression('rle')
+    stop = threading.Event()
+    watchdog = threading.Timer(watchdog_s, stop.set)
+    watchdog.start()
+    stamps, totals, overruns = [], [], []
+    dropped = None
+    try:
+        for _data, total, _w, overrun in dev.stream_ring_capture(
+                rate, window, stop):
+            stamps.append(time.perf_counter())
+            totals.append(total)
+            overruns.append(overrun)
+            if n_windows is not None and len(stamps) >= n_windows:
+                stop.set()
+            if duration_s is not None and stamps[-1] - stamps[0] >= duration_s:
+                stop.set()
+        if read_dropped:
+            dropped = dev.read_dropped_samples()
+    finally:
+        watchdog.cancel()
+        dev.set_debug_ch0(False)
+    return stamps, totals, overruns, dropped
+
+
 def test_live_rle_sustained_rate(dev):
 
     # 3.34 MS/s is an exact divider of 200.4 MHz. The rate is measured from
@@ -4002,47 +4042,10 @@ def test_live_rle_sustained_rate(dev):
 
     actual = dev.sample_clk / round(dev.sample_clk / rate)
 
-    dev.set_analog_config(MODE_DIGITAL)
+    stamps, totals, overruns, _ = _sustained_rle_stream(
+        dev, rate, window, n_windows=n_windows, watchdog_s=30.0)
 
-    dev.reset(); dev.spi.flush()
-
-    dev.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
-
-    dev.set_debug_ch0(True, freq_hz=10_000)
-
-    dev.set_readback_compression('rle')
-
-    stop = threading.Event()
-
-    watchdog = threading.Timer(30.0, stop.set)
-
-    watchdog.start()
-
-    stamps, totals = [], []
-
-    over = 0
-
-    try:
-
-        for _data, total, _w, overrun in dev.stream_ring_capture(
-
-                rate, window, stop):
-
-            stamps.append(time.perf_counter())
-
-            totals.append(total)
-
-            over = overrun
-
-            if len(stamps) >= n_windows:
-
-                stop.set()
-
-    finally:
-
-        watchdog.cancel()
-
-        dev.set_debug_ch0(False)
+    over = overruns[-1] if overruns else 0
 
     if len(stamps) < 2:
 
@@ -4069,9 +4072,6 @@ def test_live_rle_sustained_rate(dev):
           f"live rle sustains >= 97% of {actual/1e6:.3f} MS/s from the first "
 
           f"window (measured {steady/1e6:.3f} MS/s, overruns={over})")
-
-
-
 
 
 # ====================================================================
@@ -4156,6 +4156,69 @@ def test_readback_codec_speed(dev):
 
 
 
+
+
+# ====================================================================
+# Soak: live rle at 3.34 MS/s for 60 s (lossless over the whole run)
+# ====================================================================
+SOAK_DURATION_S = 60.0
+
+def soak_live_rle_sustained(dev, duration_s=SOAK_DURATION_S):
+    """Hold live rle readback at 3.34 MS/s for ``duration_s`` seconds.
+
+    Why a soak: the 4M-sample SDRAM ring hides a reader that is slightly
+    slower than the source for about 40 s, so a short run (200 windows is
+    about 1 s) cannot prove sustained lossless streaming. Running for 60 s
+    exposes that reader lag as a steady rate below nominal, an overrun, or a
+    non-zero dropped-sample counter.
+    """
+
+    print_header(f"Soak: live rle sustained rate ({duration_s:.0f} s, lossless)")
+
+    rate = 3_340_000
+
+    window = 16384
+
+    actual = dev.sample_clk / round(dev.sample_clk / rate)
+
+    # The watchdog allows 30 s beyond the soak length for setup and the last window.
+    stamps, totals, overruns, dropped = _sustained_rle_stream(
+        dev, rate, window, watchdog_s=duration_s + 30.0,
+        duration_s=duration_s, read_dropped=True)
+
+    if len(stamps) < 2:
+        check(False, f"soak: only {len(stamps)} window(s) arrived")
+        return
+
+    elapsed = stamps[-1] - stamps[0]
+
+    steady = (totals[-1] - totals[0]) / elapsed
+
+    over = max(overruns)
+
+    log(f"  rle @{rate/1e6:.3f} MS/s (nominal {actual/1e6:.3f}): steady "
+
+        f"{steady/1e6:.3f} MS/s over {len(stamps)} windows in {elapsed:.1f} s; "
+
+        f"overruns={over}")
+
+    check(elapsed >= duration_s,
+
+          f"soak ran the full {duration_s:.0f} s (elapsed {elapsed:.1f} s)")
+
+    check(steady >= 0.97 * actual,
+
+          f"soak: steady rle rate >= 97% of {actual/1e6:.3f} MS/s over the "
+
+          f"whole run (measured {steady/1e6:.3f} MS/s)")
+
+    check(over == 0, f"soak: no overruns over {len(stamps)} windows (overruns={over})")
+
+    if dropped is None:
+        skip("soak: dropped-sample counter not present in this image or unreadable")
+    else:
+        check(dropped == 0, f"soak: dropped-sample counter is 0 at the end "
+              f"(counter={dropped})")
 
 
 def _read_lead_words():
@@ -4493,6 +4556,36 @@ def main_analog_only():
     return 0 if FAIL == 0 and SKIPPED == 0 else 1
 
 
+def main_soak_only():
+    """Run only the live rle soak (argv: 'soak').
+
+    Holds 3.34 MS/s rle readback for 60 s and checks that the stream stays
+    lossless for the whole run, which a short sustained-rate run cannot show.
+    """
+    global PASS, FAIL, TOTAL
+    begin_run()
+    dev = OLSDeviceSPI()
+    try:
+        dev.open()
+        log(f"SPI device opened, sys_clk={dev.sys_clk / 1e6:.0f} MHz")
+        dev.reset()
+        time.sleep(0.5)
+        soak_live_rle_sustained(dev)
+    except Exception as e:
+        log(f"\nERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        check(False, f"soak validation aborted: {e}")
+    finally:
+        try:
+            dev.close()
+        except Exception:
+            pass
+    print(f"\n  RESULTS: {PASS}/{TOTAL} passed, {FAIL} failed, {SKIPPED} skipped")
+    write_run_summary("soak")
+    return 0 if FAIL == 0 and SKIPPED == 0 else 1
+
+
 def cli(argv=None):
     """Dispatch the command-line validation mode and return an exit code."""
     argv = sys.argv if argv is None else argv
@@ -4508,6 +4601,8 @@ def cli(argv=None):
         return main_analog_only()
     if command == 'codec':
         return main_codec_only()
+    if command == 'soak':
+        return main_soak_only()
     if command == 'accel':
         dev = OLSDeviceSPI()
         try:
