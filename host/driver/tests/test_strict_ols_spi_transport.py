@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from driver import ols_spi
+import driver.spi_protocol as protocol
 
 
 def _ols_with(dev=None):
@@ -607,3 +608,106 @@ def test_drain_keeps_live_pending_reader():
     instance._pending_reader = live
     instance._drain(timeout=0.1)
     assert instance._pending_reader is live
+
+
+def test_merged_first_chunk_is_one_write_and_one_read_then_normal_rounds():
+    prefix = b"\x55\xaa\x13\x00" + b"\xff" * 4
+    instance = _ols_with()
+    instance._drain = MagicMock()
+    merged_buf = bytes(range(16))
+    instance._read_n = MagicMock(side_effect=[merged_buf, b"z" * 8])
+    gen = instance.stream_command_chunks(
+        b"\x55\xaa\x13\x00", ack_pad=4, chunk_bytes=8,
+        merge_first_chunk=True)
+
+    assert next(gen) == merged_buf[:8]
+    assert next(gen) == merged_buf[8:]
+    assert next(gen) == b"z" * 8
+    gen.close()
+
+    writes = [call.args[0] for call in instance.dev.write.call_args_list]
+    assert writes == [
+        bytes([0x80, 0x00, 0x0B])
+        + ols_spi.OLS._mpsse_clock_out(prefix)
+        + ols_spi.OLS._mpsse_clock_out(bytes([0x11] * 8))
+        + bytes([0x87]),
+        ols_spi.OLS._mpsse_clock_out(bytes([0x11] * 8))
+        + bytes([0x87]),
+        bytes([0x87, 0x80, 0x08, 0x0B, 0x87]),
+    ]
+    calls = instance._read_n.call_args_list
+    assert len(calls) == 2
+    assert calls[0].args == (16,)
+    assert calls[0].kwargs["timeout"] == pytest.approx(
+        ols_spi.STREAM_CHUNK_READ_TIMEOUT_S + 16 / (12_000_000 / 8))
+    assert calls[1].args == (8,)
+    assert instance._stream_open is False
+
+
+def test_unmerged_default_keeps_separate_prefix_round_trip():
+    instance = _ols_with()
+    instance._drain = MagicMock()
+    instance._read_n = MagicMock(side_effect=[b"p" * 8, b"c" * 8])
+    gen = instance.stream_command_chunks(
+        b"\x55\xaa\x13\x00", ack_pad=4, chunk_bytes=8)
+
+    assert next(gen) == b"p" * 8
+    assert next(gen) == b"c" * 8
+    gen.close()
+
+    writes = [call.args[0] for call in instance.dev.write.call_args_list]
+    assert writes[0] == (
+        bytes([0x80, 0x00, 0x0B])
+        + ols_spi.OLS._mpsse_clock_out(b"\x55\xaa\x13\x00" + b"\xff" * 4)
+        + bytes([0x87]))
+    assert len(writes) == 3
+    assert [c.args[0] for c in instance._read_n.call_args_list] == [8, 8]
+
+
+def test_overlap_io_ignores_merge_first_chunk():
+    instance = _ols_with()
+    instance._drain = MagicMock()
+    instance._read_n = MagicMock(side_effect=lambda n, timeout: b"x" * n)
+    gen = instance.stream_command_chunks(
+        b"\x55\xaa\x13\x00", ack_pad=4, chunk_bytes=8,
+        overlap_io=True, merge_first_chunk=True)
+
+    assert next(gen) == b"x" * 8
+    gen.close()
+
+    writes = [call.args[0] for call in instance.dev.write.call_args_list]
+    assert writes[0] == (
+        bytes([0x80, 0x00, 0x0B])
+        + ols_spi.OLS._mpsse_clock_out(b"\x55\xaa\x13\x00" + b"\xff" * 4)
+        + bytes([0x87]))
+    assert [c.args[0] for c in instance._read_n.call_args_list] == [8]
+
+
+def test_merged_first_chunk_short_read_yields_short_prefix_then_empty_chunk():
+    instance = _ols_with()
+    instance._drain = MagicMock()
+    instance._read_n = MagicMock(side_effect=[b"a" * 5, b"b" * 8])
+    gen = instance.stream_command_chunks(
+        b"\x55\xaa\x13\x00", ack_pad=4, chunk_bytes=8,
+        merge_first_chunk=True)
+
+    assert next(gen) == b"a" * 5
+    assert next(gen) == b""
+    assert next(gen) == b"b" * 8
+    gen.close()
+    assert instance._stream_open is False
+
+
+def test_rle_stream_via_chunks_requests_merged_first_chunk():
+    seen = {}
+
+    class SPI:
+        def stream_command_chunks(self, request, **kwargs):
+            seen.update(kwargs)
+            yield from ()
+
+    dev = protocol.SPIDevice(SPI())
+    with pytest.raises(RuntimeError, match="no stream ack"):
+        dev._rle_stream_via_chunks(b"request", 0, 1, 4, None)
+    assert seen["merge_first_chunk"] is True
+    assert seen["chunk_bytes"] == protocol.RLE_STREAM_CHUNK_BYTES

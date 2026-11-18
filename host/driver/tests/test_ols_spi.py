@@ -839,7 +839,7 @@ class TestSPIPacketProtocol:
             self.closed = False
 
         def stream_command_chunks(self, request, ack_pad=96, chunk_bytes=4096,
-                                  stop_evt=None):
+                                  stop_evt=None, merge_first_chunk=False):
             self.request = bytes(request)
             seq = request[3]
             payload = struct.pack('<II', 0x12345678, 0x00000100)
@@ -999,7 +999,7 @@ class TestSPIPacketProtocol:
                 self.requests = []
 
             def stream_command_chunks(self, request, ack_pad=96, stop_evt=None,
-                                      chunk_bytes=4096):
+                                      chunk_bytes=4096, merge_first_chunk=False):
                 self.requests.append(request)
                 sample_count = struct.unpack('<I', request[10:14])[0]
                 seq = request[3]

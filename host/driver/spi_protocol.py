@@ -1393,7 +1393,7 @@ class SPIDevice:
         samples decode, then break (which raises CS)."""
         gen = self.spi.stream_command_chunks(
             req, ack_pad=pad, stop_evt=stop_evt,
-            chunk_bytes=RLE_STREAM_CHUNK_BYTES)
+            chunk_bytes=RLE_STREAM_CHUNK_BYTES, merge_first_chunk=True)
         acc = bytearray()
         producer = oldest = None
         out = bytearray()

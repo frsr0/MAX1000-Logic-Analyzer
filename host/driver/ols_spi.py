@@ -669,7 +669,8 @@ class OLS:
         self._stream_open = False
 
     def stream_command_chunks(self, request, ack_pad=96, chunk_bytes=4096,
-                              stop_evt=None, overlap_io=False):
+                              stop_evt=None, overlap_io=False,
+                              merge_first_chunk=False):
         """Yield stream bytes from one CS-held request+stream transaction.
 
         Unlike :meth:`stream_command`, which clocks a fixed ``n_bytes``, this
@@ -683,6 +684,14 @@ class OLS:
         carries the packet ack); every later item is a ``chunk_bytes`` read of
         stream data. CS is raised in a ``finally`` so an early ``break`` still
         closes the transaction cleanly.
+
+        ``merge_first_chunk`` (non-overlap path only; ignored when
+        ``overlap_io`` is True) folds the first ``chunk_bytes`` clock into the
+        opening write and reads ``prefix + chunk`` with one ``_read_n``. The
+        consumer still sees the same two items, prefix then chunk, but the
+        first window pays one USB round trip instead of two. A short merged
+        read is yielded exactly as a short prefix or chunk read would be: the
+        prefix slice, then the (possibly short or empty) remainder.
         """
         request = bytes(request)
         ack_pad = int(ack_pad)
@@ -691,19 +700,36 @@ class OLS:
             return
         self._drain()
         prefix = request + bytes([0xFF] * ack_pad)
+        merged = bool(merge_first_chunk) and not overlap_io
         opened = False
         try:
-            self.dev.write(bytes([0x80, GPIO_CS_LO, PIN_DIR])
-                           + self._mpsse_clock_out(prefix)
-                           + bytes([0x87]))
+            head = (bytes([0x80, GPIO_CS_LO, PIN_DIR])
+                    + self._mpsse_clock_out(prefix))
+            if merged:
+                self.dev.write(head
+                               + self._mpsse_clock_out(bytes([0x11] * chunk_bytes))
+                               + bytes([0x87]))
+            else:
+                self.dev.write(head + bytes([0x87]))
             opened = True
             self._stream_open = True
-            yield self._read_n(
-                len(prefix),
-                timeout=max(
-                    STREAM_CHUNK_READ_TIMEOUT_S,
-                    len(prefix) / max(self.speed_hz / 8, 1)
-                    + STREAM_CHUNK_READ_TIMEOUT_S))
+            if merged:
+                total = len(prefix) + chunk_bytes
+                buf = self._read_n(
+                    total,
+                    timeout=max(
+                        STREAM_CHUNK_READ_TIMEOUT_S,
+                        total / max(self.speed_hz / 8, 1)
+                        + STREAM_CHUNK_READ_TIMEOUT_S))
+                yield buf[:len(prefix)]
+                yield buf[len(prefix):]
+            else:
+                yield self._read_n(
+                    len(prefix),
+                    timeout=max(
+                        STREAM_CHUNK_READ_TIMEOUT_S,
+                        len(prefix) / max(self.speed_hz / 8, 1)
+                        + STREAM_CHUNK_READ_TIMEOUT_S))
             if not overlap_io:
                 while True:
                     if stop_evt is not None and stop_evt.is_set():

@@ -92,7 +92,7 @@ class _FakeRleTransport:
         self.chunk_bytes = []
 
     def stream_command_chunks(self, request, ack_pad=96, stop_evt=None,
-                              chunk_bytes=4096):
+                              chunk_bytes=4096, merge_first_chunk=False):
         self.requests.append(request)
         self.chunk_bytes.append(chunk_bytes)
         sample_count = struct.unpack('<I', request[10:14])[0]
