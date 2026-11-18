@@ -101,6 +101,13 @@ batched block's response slot from the responses it has seen (48 to 1100
 bytes), which is what makes compressed readback faster than raw on both quiet
 and busy signals.
 
+Live `rle` streaming sends each window as one held-CS stream request of up to
+16,384 samples on images that report a generation (older 10-byte-metadata
+images keep 1,023). On the attached board a 10 kHz square wave streams
+lossless at 4 MS/s with 16,384-sample windows and at 1 MS/s with 4,096-sample
+windows, against 1 MS/s for raw; the accelerometer's live trace keeps
+1,023-sample windows.
+
 Analog and mixed captures use raw readback.
 
 ## Clock and Memory Summary
