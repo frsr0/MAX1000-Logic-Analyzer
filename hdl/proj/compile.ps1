@@ -6,13 +6,13 @@ param(
     [switch]$RawOnly,
     # Keep the old direct PLL c4 forward instead of the DDIO clock forward.
     [switch]$LegacyClkForward,
-    # Verified full mixed-signal seed under Quartus 25.1: 7 (sweep 5,17,7 on
-    # the current RTL; slow-85C setup slack fast_clk +0.161, sdram_core_clk
-    # +0.163, sys_clk +0.215; all 66 checks pass; 8,019/8,064 LEs). This is
-    # a dense, fitter-seed-sensitive build: at 99% occupancy every seed gives
-    # a different slack mix, so re-sweep (seed_sweep.ps1) after any RTL or
-    # pin change.
-    [int]$Seed = 7
+    # Verified full mixed-signal seed under Quartus 25.1: 16 (best of 21
+    # seeds swept on the current RTL; slow-85C setup slack sys_clk +0.043,
+    # fast_clk +0.047, sdram_core_clk +0.311; all 66 checks pass; 8,014/8,064
+    # LEs). This is a dense, fitter-seed-sensitive build: at 99% occupancy
+    # every seed gives a different slack mix, so re-sweep (seed_sweep.ps1)
+    # after any RTL or pin change.
+    [int]$Seed = 16
 )
 
 $FastRawBuild = if ($RawOnly) { 'true' } else { 'false' }

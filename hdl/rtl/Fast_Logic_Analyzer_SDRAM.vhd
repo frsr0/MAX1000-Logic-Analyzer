@@ -436,7 +436,13 @@ architecture rtl of Fast_Logic_Analyzer_SDRAM is
   -- follow it (refresh and the pump get the bus; a burst of 16 reads is ~320
   -- pclk cycles, far inside the capture FIFO's fill time at 100.2 MS/s).
   constant RD_BURST_N : natural := 16;
-  constant RD_COOL_N  : natural := 80;
+  -- 16 (was 80): the capture FIFO is protected by cap_low_r, which lets a
+  -- burst start only while that FIFO holds under 512 of its 4096 words; a
+  -- 16-read burst adds at most ~190 words at 100.2 MS/s, and if the pump
+  -- falls behind cap_low_r stops further bursts. The cool-down only has to
+  -- let a pending write burst or refresh take the bus. 80 idle cycles cost
+  -- ~20% of the continuous-mode readback rate that live streaming gets.
+  constant RD_COOL_N  : natural := 16;
   signal rdfifo_room_r  : std_logic := '0';
   -- Capture FIFO read-side fill below 512 words (of AFIFO_DEPTH): a continuous
   -- read burst only starts while the capture FIFO has plenty of room, so the
