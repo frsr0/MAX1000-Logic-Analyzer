@@ -154,12 +154,19 @@ create_generated_clock -name adc_clk \
  # - SPI_SCK is the FTDI-generated clock that times the slave interface.
  # - MOSI is captured relative to that clock.
  # - MISO is launched relative to that same clock.
- # The hardware validation suite treats 15 MHz as the validated ceiling.
+ # The host clocks SPI at 30 MHz (OLS_SPEED_HZ default in ols_spi_device.py),
+ # the FT2232H's MPSSE maximum, so constrain that period. MPSSE opcode 0x31
+ # samples MISO on the SCK rising edge with 11 ns setup and 0 ns hold
+ # (FT2232H datasheet table 4.3); SPI_Slave2 launches MISO on the rising
+ # edge, so the host samples each bit a full period after launch. The 12 ns
+ # output delay is that 11 ns setup plus ~1 ns of SCK and MISO board trace.
+ # (Before 2026-11-18 this clock was 66.667 ns / 15 MHz and MISO launched on
+ # the falling edge: at 30 MHz that half-period path failed setup by 3.2 ns.)
  # Restored 2026-07-07: dropped by the SDC-hardening pass (commit b378e212)
  # when the async clock-group block was narrowed to only the four named PLL
  # clocks. Without these, SPI_SCK/SPI_CS/SPI_MOSI/SPI_MISO are unconstrained
  # against every internal clock instead of explicitly excluded from them.
- create_clock -name SPI_SCK_EXT -period 66.667 [get_ports SPI_SCK]
+ create_clock -name SPI_SCK_EXT -period 33.333 [get_ports SPI_SCK]
  create_clock -name SPI_CS_QUAL -period 1000.000 [get_ports SPI_CS]
  set_input_delay -clock [get_clocks SPI_SCK_EXT] -max 12.0 [get_ports SPI_MOSI]
  set_input_delay -clock [get_clocks SPI_SCK_EXT] -min 0.0 [get_ports SPI_MOSI]

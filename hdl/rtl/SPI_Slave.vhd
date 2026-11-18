@@ -43,9 +43,15 @@ architecture rtl of SPI_Slave2 is
   -- falling edge changes MOSI.  Fixes sampling at 30 MHz SCK.
   signal mosi_d : std_logic := '0';
 
-  -- Source-synchronous MISO shifter: clocked by real SCK falling edge so
-  -- MISO changes with zero synchronizer latency.  Byte loads from tx_data_f
-  -- at byte boundaries (sck_tx_cnt = "111").  Required for 30 MHz SCK.
+  -- Source-synchronous MISO shifter, clocked by the real SCK RISING edge -
+  -- the edge on which the FT2232H samples MISO (MPSSE 0x31). The bit the
+  -- host samples at rising edge k was launched at rising edge k-1, a full
+  -- SCK period earlier. At 30 MHz the FT2232H needs 11 ns setup (datasheet
+  -- table 4.3) and the SCK-pin -> MISO-pin path is about 8 ns, which a
+  -- half-period falling-edge launch (16.7 ns) cannot cover; a full period
+  -- covers it with ~13 ns to spare, and the 0 ns host hold time is met by
+  -- the same ~8 ns path delay. The bit sequence on the wire is unchanged.
+  -- Byte loads from tx_data_f at byte boundaries (sck_tx_cnt = "111").
   signal sck_tx_shift : std_logic_vector(7 downto 0) := (others => '0');
   signal sck_tx_cnt   : unsigned(2 downto 0) := (others => '0');
 
@@ -82,10 +88,10 @@ begin
     end if;
   end process;
 
-  -- Source-synchronous MISO shifter: real SCK falling edge, zero latency.
+  -- Source-synchronous MISO shifter: real SCK rising edge (see above).
   miso_sck: process(SCK)
   begin
-    if falling_edge(SCK) then
+    if rising_edge(SCK) then
       if cs_active = '0' then
         sck_tx_shift <= preamble_f;
       elsif sck_tx_cnt = "111" then
@@ -104,7 +110,7 @@ begin
   begin
     if CS_n = '1' then
       sck_tx_cnt <= (others => '0');
-    elsif falling_edge(SCK) then
+    elsif rising_edge(SCK) then
       sck_tx_cnt <= sck_tx_cnt + 1;
     end if;
   end process;
@@ -163,7 +169,7 @@ begin
     end if;
   end process;
 
-  -- Source-synchronous MISO output: zero synchronizer latency on SCK falling edge
+  -- Source-synchronous MISO output: zero synchronizer latency on SCK rising edge
   MISO <= sck_tx_shift(7) when cs_active = '1' else 'Z';
 
   rx_cdc: process(sys_clk)
