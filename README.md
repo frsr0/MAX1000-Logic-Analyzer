@@ -104,14 +104,16 @@ and busy signals.
 Live `rle` streaming sends each window as one held-CS stream request of up to
 16,384 samples on images that report a generation (older 10-byte-metadata
 images keep 1,023). On the attached board a 10 kHz square wave keeps pace
-with the source up to about 3.7 MS/s with 16,384-sample windows and 1 MS/s
-with 4,096-sample windows, against 1 MS/s for raw; the accelerometer's live
-trace keeps 1,023-sample windows. Below that ceiling the delivered rate is the
-source rate and the decoded data is identical run to run. Each window costs
-about 4 ms of USB round trips whose timing jitters on Windows, so above it
-(at 4.008 MS/s, for example) the reader delivers 3.8-3.96 MS/s, varies run to
-run, and slowly falls behind: the 4M-sample ring hides that for tens of
-seconds before it overruns.
+with the source up to about 4.5 MS/s with 16,384-sample windows and about
+2 MS/s with 4,096-sample windows, against 1 MS/s for raw; the accelerometer's
+live trace keeps 1,023-sample windows. Below that ceiling the delivered rate
+is the source rate and the decoded data is identical run to run. Above it the
+reader runs at whatever pace USB timing on Windows allows (at 5.01 MS/s it
+delivers 4.6-4.9 MS/s, varying run to run) and slowly falls behind: the
+4M-sample ring hides that for tens of seconds before it overruns. Each window
+costs about 0.7-0.9 ms of host and USB overhead (one round trip opens the
+stream and returns its first 1 KB) plus the time the FPGA takes to read the
+samples from SDRAM during continuous capture, which is what sets the ceiling.
 
 Analog and mixed captures use raw readback.
 
@@ -379,9 +381,25 @@ test (10/10), the hardware validation suite (415/415, 8 jumper checks
 skipped), the codec suite (28/28), the 75-testbench GHDL regression and
 bit-exact live and readback checks.
 
+The current image (2026-11-18, seed 16) also shortens the idle gap after each
+16-read burst of continuous-capture SDRAM reads from 80 to 16 cycles. The
+capture FIFO stays protected by the existing gate that only starts a burst
+while it holds under 512 of 4096 words. Live `rle` with 16,384-sample windows
+rises from about 3.7 to about 4.5 MS/s. Timing is tighter: of 21 seeds swept,
+seed 16 is the best at slow 85 °C setup slack `sys_clk` +0.043 ns, `fast_clk`
++0.047 ns and `sdram_core_clk` +0.311 ns, with all 66 checks passing and
+8,014 of 8,064 logic elements used. Its POF SHA-256 is
+`DCA287B6528EEBE2FBB10055E8DDD9EA363E5EAB3DFAA0C5AF3DF9FCD6B7FE72`
+(Programmer checksum `0x01DE8153`). On the attached board it passed the smoke
+test (10/10), the hardware validation suite (415/415, 8 jumper checks
+skipped; one earlier run had a single LIS3DH I2C NACK at 50 kHz that did not
+recur in 7 later runs), the codec suite (28/28), the 75-testbench GHDL
+regression, bit-exact live checks, and continuous capture at 100.2, 50.1 and
+25.1 MS/s under maximum live readback with the dropped-sample counter at 0.
+
 ```powershell
 cd hdl\proj
-.\compile.ps1 -Seed 7
+.\compile.ps1 -Seed 16
 ```
 
 For more detail, see:
