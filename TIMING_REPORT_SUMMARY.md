@@ -48,6 +48,8 @@ link has passed every hardware run). Taking MOSI from a second delay stage
 sample with roughly 7 ns of late margin for one extra register; it is a
 placement-changing RTL edit, so it needs a seed sweep.
 
+Tried on 2026-11-18: it closed timing at seed 30 (+0.049 ns) but the image failed the codec suite's live-stream checks, so it was not adopted (see TIMING_OPTIMIZATION_EXPERIMENT_LOG.md). The shipped image keeps the original sampling point, which has passed every hardware run.
+
 ## Earlier status (2026-07-29)
 
 A focused recompile on fitter seed 29 is timing-clean and is the best current
