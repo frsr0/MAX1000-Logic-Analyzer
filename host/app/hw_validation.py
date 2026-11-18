@@ -3758,6 +3758,406 @@ def test_live_rate_ceiling(dev):
     save_result("test35_live_rate_ceiling", b"", {"ceilings": summary})
 
 
+# ====================================================================
+
+# Test 36: Live stream dropped-sample counter stays zero
+
+# ====================================================================
+
+def test_live_no_dropped_samples(dev):
+
+    # rle readback at the top live rates must not drop samples: the FPGA
+
+    # dropped-sample counter (reg 0x60, cleared at configure) has to read 0.
+
+    # An image without the counter reports None, which is a SKIP, not a pass.
+
+    print_header("Test 36: Live stream dropped-sample counter stays zero")
+
+    try:
+
+        for rate in (100_200_000, 50_100_000):
+
+            dev.reset(); dev.spi.flush()
+
+            dev.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+
+            dev.set_debug_ch0(True, freq_hz=100_000)
+
+            dev.set_readback_compression('rle')
+
+            stop = threading.Event()
+
+            # Hard watchdog: a stalled stream read blocks inside the driver
+
+            # where this loop cannot set stop.
+
+            watchdog = threading.Timer(15.0, stop.set)
+
+            watchdog.start()
+
+            windows = 0
+
+            t0 = time.time()
+
+            try:
+
+                for _data, _total, _w, _over in dev.stream_ring_capture(
+
+                        rate, 16384, stop):
+
+                    windows += 1
+
+                    if time.time() - t0 > 3.0:
+
+                        stop.set()
+
+            finally:
+
+                watchdog.cancel()
+
+            dropped = dev.read_dropped_samples()
+
+            if dropped is None:
+
+                skip(f"dropped-sample counter not present in this image "
+
+                     f"@{rate/1e6:.1f} MS/s")
+
+                continue
+
+            log(f"  rle @{rate/1e6:.1f} MS/s: {windows} windows in ~3 s, "
+
+                f"dropped samples={dropped}")
+
+            check(dropped == 0, f"no dropped samples under live rle readback "
+
+                  f"@{rate/1e6:.1f} MS/s (counter={dropped})")
+
+    finally:
+
+        dev.set_debug_ch0(False)
+
+
+
+
+
+# ====================================================================
+
+# Test 37: Live rle readback is bit-exact on a known square wave
+
+# ====================================================================
+
+def test_live_rle_bit_exact(dev):
+
+    # A 10 kHz square wave on CH0 is captured live with rle. Every interior
+
+    # CH0 run must match the half period (+-1 sample), no other bit may
+
+    # change, and the stream must have no gaps or overruns. Windows are joined
+
+    # for analysis but never across a stream gap.
+
+    import numpy as np
+
+    print_header("Test 37: Live rle readback bit-exact (10 kHz CH0 square wave)")
+
+    freq_hz = 10_000
+
+    dev.set_analog_config(MODE_DIGITAL)
+
+    try:
+
+        for rate, window in ((1_000_000, 4096), (2_000_000, 16384)):
+
+            # Same realised-rate expression as the driver's divider choice.
+
+            actual = dev.sample_clk / round(dev.sample_clk / rate)
+
+            half = actual / freq_hz / 2
+
+            dev.reset(); dev.spi.flush()
+
+            dev.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+
+            dev.set_debug_ch0(True, freq_hz=freq_hz)
+
+            dev.set_readback_compression('rle')
+
+            stop = threading.Event()
+
+            watchdog = threading.Timer(10.0, stop.set)
+
+            watchdog.start()
+
+            segments = [[]]
+
+            gaps = 0
+
+            over = 0
+
+            t0 = time.time()
+
+            try:
+
+                for data, _total, _w, overrun in dev.stream_ring_capture(
+
+                        rate, window, stop):
+
+                    over = overrun
+
+                    if getattr(dev, "_stream_gap", False):
+
+                        gaps += 1
+
+                        segments.append([])
+
+                    segments[-1].append(np.frombuffer(bytes(data), dtype="<u2"))
+
+                    if time.time() - t0 > 1.5:
+
+                        stop.set()
+
+            finally:
+
+                watchdog.cancel()
+
+            samples = runs = bad = other_changes = 0
+
+            for seg in segments:
+
+                if not seg:
+
+                    continue
+
+                words = np.concatenate(seg)
+
+                samples += words.size
+
+                other_changes += int(np.count_nonzero(np.diff(words & 0xFFFE)))
+
+                level = (words & 1).astype(np.int8)
+
+                edges = np.flatnonzero(np.diff(level)) + 1
+
+                lens = np.diff(edges)          # interior runs only
+
+                runs += lens.size
+
+                bad += int(np.count_nonzero(np.abs(lens - half) > 1.01))
+
+            log(f"  rle @{rate/1e6:.1f} MS/s win={window}: {samples} samples, "
+
+                f"{runs} CH0 runs (expect {half:.1f}), bad runs={bad}, "
+
+                f"other-bit changes={other_changes}, gaps={gaps}, overruns={over}")
+
+            check(samples > 0, f"live rle @{rate/1e6:.1f} MS/s received samples "
+
+                  f"({samples})")
+
+            check(gaps == 0 and over == 0,
+
+                  f"live rle @{rate/1e6:.1f} MS/s no gaps or overruns "
+
+                  f"(gaps={gaps}, overruns={over})")
+
+            check(bad == 0, f"live rle @{rate/1e6:.1f} MS/s CH0 runs within 1.01 "
+
+                  f"samples of {half:.1f} ({bad} bad of {runs})")
+
+            check(other_changes == 0, f"live rle @{rate/1e6:.1f} MS/s no other "
+
+                  f"bit changes ({other_changes})")
+
+    finally:
+
+        dev.set_debug_ch0(False)
+
+
+
+
+
+# ====================================================================
+
+# Test 38: Live rle sustained rate, timed from the first window
+
+# ====================================================================
+
+def test_live_rle_sustained_rate(dev):
+
+    # 3.34 MS/s is an exact divider of 200.4 MHz. The rate is measured from
+
+    # the first window, so arm and setup latency are excluded. It must hold at
+
+    # least 97% of nominal with no overruns across 200 windows.
+
+    print_header("Test 38: Live rle sustained rate (3.34 MS/s, 200 windows)")
+
+    rate = 3_340_000
+
+    window = 16384
+
+    n_windows = 200
+
+    actual = dev.sample_clk / round(dev.sample_clk / rate)
+
+    dev.set_analog_config(MODE_DIGITAL)
+
+    dev.reset(); dev.spi.flush()
+
+    dev.pkt.transaction(CMD_ABORT_CAPTURE, timeout=0.5)
+
+    dev.set_debug_ch0(True, freq_hz=10_000)
+
+    dev.set_readback_compression('rle')
+
+    stop = threading.Event()
+
+    watchdog = threading.Timer(30.0, stop.set)
+
+    watchdog.start()
+
+    stamps, totals = [], []
+
+    over = 0
+
+    try:
+
+        for _data, total, _w, overrun in dev.stream_ring_capture(
+
+                rate, window, stop):
+
+            stamps.append(time.perf_counter())
+
+            totals.append(total)
+
+            over = overrun
+
+            if len(stamps) >= n_windows:
+
+                stop.set()
+
+    finally:
+
+        watchdog.cancel()
+
+        dev.set_debug_ch0(False)
+
+    if len(stamps) < 2:
+
+        check(False, f"live rle sustained rate: only {len(stamps)} window(s) arrived")
+
+        return
+
+    steady = (totals[-1] - totals[0]) / (stamps[-1] - stamps[0])
+
+    gaps_ms = sorted((b - a) * 1e3 for a, b in zip(stamps, stamps[1:]))
+
+    med_ms = median(gaps_ms)
+
+    p95_ms = gaps_ms[min(len(gaps_ms) - 1, int(0.95 * len(gaps_ms)))]
+
+    log(f"  rle @{rate/1e6:.3f} MS/s (nominal {actual/1e6:.3f}): steady "
+
+        f"{steady/1e6:.3f} MS/s over {len(stamps)} windows; window ms "
+
+        f"median {med_ms:.2f} p95 {p95_ms:.2f}; overruns={over}")
+
+    check(steady >= 0.97 * actual and over == 0,
+
+          f"live rle sustains >= 97% of {actual/1e6:.3f} MS/s from the first "
+
+          f"window (measured {steady/1e6:.3f} MS/s, overruns={over})")
+
+
+
+
+
+# ====================================================================
+
+# Test 39: Readback codec speed (raw vs rle) on an idle capture
+
+# ====================================================================
+
+def test_readback_codec_speed(dev):
+
+    # One 1M-sample idle capture is read back raw and rle. rle must be
+
+    # byte-identical to raw and at least 3x faster (measured ~4.8x).
+
+    print_header("Test 39: Readback codec speed (raw vs rle, idle CH0)")
+
+    nsamp = 1_048_576
+
+    rate = 100_000_000
+
+    dev.reset(); dev.spi.flush()
+
+    dev.set_analog_config(MODE_DIGITAL)
+
+    dev._raw_flags = 0
+
+    dev.fast_mode_enabled = False
+
+    dev.set_debug_ch0(False)
+
+    dev.set_readback_compression('raw')
+
+    seeded = dev.capture(rate_hz=rate, nsamples=nsamp,
+
+                         timeout=max(3.0, 2 * nsamp / rate + 1))
+
+    if len(seeded) < nsamp * 2:
+
+        check(False, f"codec speed capture did not complete "
+
+              f"({len(seeded) // 2} of {nsamp} samples)")
+
+        return
+
+    dev.set_readback_compression('raw')
+
+    t0 = time.time()
+
+    raw = dev.read_capture_range(0, nsamp)[:nsamp * 2]
+
+    raw_dt = max(time.time() - t0, 1e-6)
+
+    dev.set_readback_compression('rle')
+
+    t0 = time.time()
+
+    got = dev.read_capture_range(0, nsamp)[:nsamp * 2]
+
+    rle_dt = max(time.time() - t0, 1e-6)
+
+    dev.set_readback_compression('raw')
+
+    raw_rate = nsamp / raw_dt
+
+    rle_rate = nsamp / rle_dt
+
+    log(f"  raw {raw_rate/1e6:.2f} MS/s ({raw_dt:.3f} s), rle "
+
+        f"{rle_rate/1e6:.2f} MS/s ({rle_dt:.3f} s), speedup "
+
+        f"{rle_rate/raw_rate:.2f}x")
+
+    check(len(raw) == nsamp * 2, f"raw reference read complete ({len(raw)} bytes)")
+
+    check(got == raw, f"rle readback byte-identical to raw "
+
+          f"({len(got)}/{len(raw)} bytes)")
+
+    check(rle_rate >= 3.0 * raw_rate, f"rle readback >= 3x raw speed "
+
+          f"(rle {rle_rate/1e6:.2f} vs raw {raw_rate/1e6:.2f} MS/s)")
+
+
+
+
+
 def _read_lead_words():
     """Effective SDRAM read lead (follows the flashed image's metadata)."""
     import driver.spi_protocol as _p
@@ -3883,6 +4283,14 @@ def main():
         test_codec_readback_matrix(dev)
         # test_live_rate_ceiling has its own internal watchdog per rung
         test_live_rate_ceiling(dev)
+        test_live_no_dropped_samples(dev)
+
+        test_live_rle_bit_exact(dev)
+
+        test_live_rle_sustained_rate(dev)
+
+        test_readback_codec_speed(dev)
+
 
         log("\n--- Noise floor test (debug OFF + ON) ---")
         run_with_debug(test_noise_floor, dev, "Noise floor")
@@ -3999,6 +4407,14 @@ def main_codec_only():
         time.sleep(0.5)
         test_codec_readback_matrix(dev)
         test_live_rate_ceiling(dev)
+        test_live_no_dropped_samples(dev)
+
+        test_live_rle_bit_exact(dev)
+
+        test_live_rle_sustained_rate(dev)
+
+        test_readback_codec_speed(dev)
+
     except Exception as e:
         log(f"\nERROR: {e}")
         import traceback
