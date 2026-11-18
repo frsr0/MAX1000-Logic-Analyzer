@@ -6,8 +6,8 @@
 # PLL clocks (sys_clk/fast_clk/sdram_core_clk) plus the forwarded SDRAM chip
 # clock (SDRAM_CHIP_CLK_OUT) from the STA summary, and stops when all close
 # with margin. Every seed's sof/pof/sta.summary/fit.summary is archived to
-# seed_results/seed<N>.*. seed_sweep_best.* is replaced only when a seed's
-# worst slack beats the best recorded in seed_results/best.txt ("seed worst"),
+# seed_results/<design tag>/seed<N>.*. seed_sweep_best.* is replaced only when a seed's
+# worst slack beats the best recorded in seed_results/<design tag>/best.txt ("seed worst"),
 # so a later batch can never overwrite a better earlier result.
 # Use seed_sweep_parallel.ps1 to run several seeds at once.
 param(
@@ -30,7 +30,19 @@ if ($SeedList -ne "") {
 # fed a permanent -999 sentinel into the worst-slack comparison.
 $clockNames = @('sys_clk', 'fast_clk', 'sdram_core_clk', 'SDRAM_CHIP_CLK_OUT')
 $inv = [Globalization.CultureInfo]::InvariantCulture
-$resultsDir = Join-Path $PSScriptRoot 'seed_results'
+# Results are kept per design: a hash of the RTL, SDC and pin map names the
+# folder, so sweeping changed RTL never overwrites an earlier design's images
+# (seed numbers alone collide across RTL versions).
+$designFiles = @(Get-ChildItem (Join-Path $PSScriptRoot '..\rtl') -Filter *.vhd | Sort-Object Name | ForEach-Object { $_.FullName }) +
+               @((Join-Path $PSScriptRoot 'OLS_Logic_Analyzer.sdc'), (Join-Path $PSScriptRoot 'pin_assignments.csv'))
+$designStream = New-Object System.IO.MemoryStream
+foreach ($f in $designFiles) {
+    if (Test-Path $f) { $b = [System.IO.File]::ReadAllBytes($f); $designStream.Write($b, 0, $b.Length) }
+}
+$designHash = [System.Security.Cryptography.SHA256]::Create().ComputeHash($designStream.ToArray())
+$designTag = (([BitConverter]::ToString($designHash)) -replace '-', '').Substring(0, 10).ToLower()
+$resultsDir = Join-Path (Join-Path $PSScriptRoot 'seed_results') $designTag
+Write-Host "design tag $designTag -> $resultsDir"
 New-Item -ItemType Directory -Force -Path $resultsDir | Out-Null
 $archiveExts = @('sof', 'pof', 'sta.summary', 'fit.summary')
 

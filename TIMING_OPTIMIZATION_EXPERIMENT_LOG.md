@@ -343,3 +343,64 @@ closed. Both changes were reverted.
 Lesson: at 504/504 LABs a narrow cone fix does not buy margin; any edit
 reshuffles placement and the slack distribution is dominated by the fitter
 seed. Margin has to come from freeing LABs, not from cone-by-cone fixes.
+
+
+## Rejected experiment (2026-11-18): page-mode SDRAM reads
+
+Idea: SDRAM_Controller precharged the row after every single read (ST_RD_DATA
+-> ST_PRE2), so sequential reads in one 256-word row paid activate + tRCD +
+precharge each time (~7 of ~18 cycles). Change tried: leave the row open after
+a read; on the next read with the row open, wait one cycle (ST_RD_CHK, because
+same_row_buf_a is registered one edge after buf_a and pend_rn are set) and go
+straight to ST_RD on a hit, else precharge as before. Refresh, cross-row reads
+and capture bursts already precharge an open row. The page-mode command was
+correct: s_addr defaults to col_r and s_ba to active_bank every cycle.
+
+Correctness was fine: all SDRAM/readback testbenches passed, and the board
+row-integrity probe (host/debug/readback_row_integrity_probe.py: a ~1 MHz CH0
+square wave captured at 100.2 MS/s, every run checked against the measured
+half period, so a wrong-row read breaks a run) passed for raw, rle and
+delta_rle on two 4M-sample captures.
+
+Throughput got worse on the same board minutes apart: live rle with
+16384-sample windows 4.4-4.9 -> 4.0-4.2 MS/s; 1M-sample readback rle 5.6 ->
+5.1-5.3 MS/s and raw 1.15 -> 0.83 MS/s. So read latency is not the limit; a
+plausible cause (not confirmed) is that open rows make every capture write
+burst and refresh precharge first. Timing also suffered: with the MOSI change
+it closed 0 of 6 seeds (best -0.030 ns). Reverted.
+
+Lesson: a full burst-read redesign (B1) is not justified by this data; the
+readback/live ceilings are not set by per-read SDRAM latency alone.
+
+## Rejected (2026-11-18): live rle read-ahead and the MOSI second stage
+
+Two changes passed their unit tests and testbenches and the short board probes,
+but failed the codec suite (Tests 34-39), so both were removed. Isolating
+them on the board (same codec suite each time):
+
+| Image | Driver without read-ahead | Driver with read-ahead |
+| --- | --- | --- |
+| seed 16 (shipped) | 42/42 pass | fails |
+| seed 30 + MOSI second stage | fails | fails |
+
+- Host read-ahead: when the ring held two or more windows, stream_ring_capture
+  asked for up to 16384 samples in one RLE stream and split them into windows.
+  It lifted 4096-sample windows from ~2 to 3.34 MS/s lossless on a healthy
+  stream, but past the ceiling (10 kHz source at 12 MS/s in Test 35) the
+  stream broke down and stayed broken for the rest of the session: later live
+  rle windows had every sample's bits changing (word misalignment) and
+  compressed readback was marked unsupported. A likely cause, not confirmed,
+  is long streams being cut short and leaving the FPGA readback/stream state
+  dirty (the teardown hazard the driver already documents for raw streams).
+  The batched delta_rle decode from the same commit is unaffected and kept.
+- MOSI second stage (`mosi_d2`, sampling MOSI one fast_clk cycle earlier for
+  more late margin; see TIMING_REPORT_SUMMARY.md): closed timing at seed 30
+  (+0.049 ns) and passed the full suite 428/429 (the 1 being the intermittent
+  LIS3DH I2C NACK seen on other images too), but the codec suite failed the
+  same way even without read-ahead. Whether the MOSI change or seed 30's
+  placement is responsible was not separated. The board was reflashed to the
+  seed-16 image (POF dca287b6...).
+
+Lesson: run the codec suite (it overloads the live stream on purpose) before
+accepting any change to the live path or the SPI front end; short probes at
+healthy rates do not exercise recovery from overload.

@@ -4,9 +4,9 @@
 # Runs up to -Jobs compiles at once. Quartus cannot share one project directory,
 # so each seed compiles in its own copy under %TEMP% (hdl/proj, hdl/rtl, hdl/ip
 # with the same relative layout the QSF uses; db/incremental_db/output_files are
-# not copied). Results are archived to seed_results/seed<N>.* and the best
+# not copied). Results are archived to seed_results/<design tag>/seed<N>.* and the best
 # result is kept in seed_sweep_best.* by the same rule as seed_sweep.ps1
-# (seed_results/best.txt holds "seed worst_slack"). The temp copies are removed.
+# (seed_results/<design tag>/best.txt holds "seed worst_slack"). The temp copies are removed.
 param(
     # Comma-separated seed list.
     [string]$SeedList = "21,30,5,12,42,7,3,17",
@@ -20,7 +20,19 @@ $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 $projDir = $PSScriptRoot
 $hdlDir = Split-Path $projDir -Parent
-$resultsDir = Join-Path $projDir 'seed_results'
+# Results are kept per design: a hash of the RTL, SDC and pin map names the
+# folder, so sweeping changed RTL never overwrites an earlier design's images
+# (seed numbers alone collide across RTL versions).
+$designFiles = @(Get-ChildItem (Join-Path $projDir '..\rtl') -Filter *.vhd | Sort-Object Name | ForEach-Object { $_.FullName }) +
+               @((Join-Path $projDir 'OLS_Logic_Analyzer.sdc'), (Join-Path $projDir 'pin_assignments.csv'))
+$designStream = New-Object System.IO.MemoryStream
+foreach ($f in $designFiles) {
+    if (Test-Path $f) { $b = [System.IO.File]::ReadAllBytes($f); $designStream.Write($b, 0, $b.Length) }
+}
+$designHash = [System.Security.Cryptography.SHA256]::Create().ComputeHash($designStream.ToArray())
+$designTag = (([BitConverter]::ToString($designHash)) -replace '-', '').Substring(0, 10).ToLower()
+$resultsDir = Join-Path (Join-Path $projDir 'seed_results') $designTag
+Write-Host "design tag $designTag -> $resultsDir"
 New-Item -ItemType Directory -Force -Path $resultsDir | Out-Null
 
 $seeds = @($SeedList -split ',' | ForEach-Object { $_.Trim() } |

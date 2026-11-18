@@ -3213,23 +3213,11 @@ class OLSDeviceSPI:
                     producer_at_read = producer_hint
                     oldest_at_read = oldest_hint
                     read_started_at = time.time()
-                    # Live RLE read-ahead. Each held-CS request costs a fixed
-                    # ~0.7-0.9 ms of host/USB overhead, so when the ring already
-                    # holds at least two windows, request k windows in ONE call.
-                    # k never exceeds the backlog (we never read past
-                    # ``available``) nor the image's per-request RLE limit.
-                    # Below two windows the request is one window, as before.
-                    rle_windows = 1
-                    if use_rle_stream and available >= 2 * window_samples:
-                        rle_windows = max(1, min(
-                            available // window_samples,
-                            max(1, _proto.MAX_RLE_STREAM_SAMPLES
-                                // window_samples)))
                     if use_rle_stream:
                         try:
                             producer_hint, oldest_hint, data = \
                                 self.pkt.start_rle_stream_read(
-                                    next_sample, rle_windows * window_samples,
+                                    next_sample, window_samples,
                                     stop_evt=stop_evt)
                             self._rle_stream_supported = True
                         except (RuntimeError, OSError):
@@ -3343,41 +3331,30 @@ class OLSDeviceSPI:
                                 break
                             continue
                         break
-                    # A batched RLE read holds k consecutive windows fetched
-                    # by one ACK; emit them as k windows, advancing the cursor
-                    # and totals exactly as k separate reads would. The raw
-                    # stream is always one piece, unchanged.
-                    if use_rle_stream:
-                        pieces = [data[off:off + window_samples * 2]
-                                  for off in range(0, len(data),
-                                                   window_samples * 2)]
-                    else:
-                        pieces = [data]
+                    valid_samples = len(data) // 2
+                    chunk_start = next_sample
                     stream_retry_count = 0
+                    previous_stream_end = cursor(
+                        int(next_sample) + valid_samples)
+                    next_sample = cursor(next_sample + valid_samples)
+                    total += valid_samples
+                    if progress_cb:
+                        progress_cb(data, total, window_samples)
+                    if full_out is not None:
+                        full_out.extend(data)
                     resync_streak = 0
-                    for piece in pieces:
-                        valid_samples = len(piece) // 2
-                        chunk_start = next_sample
-                        previous_stream_end = cursor(
-                            int(next_sample) + valid_samples)
-                        next_sample = cursor(next_sample + valid_samples)
-                        total += valid_samples
-                        if progress_cb:
-                            progress_cb(piece, total, window_samples)
-                        if full_out is not None:
-                            full_out.extend(piece)
-                        self._ring_trace(
-                            f"iter={iteration} yield rle: total={total} "
-                            f"data_bytes={len(piece)} next={next_sample} "
-                            f"producer={producer_hint} oldest={oldest_hint} "
-                            f"overrun={overrun_total} rx_buf={len(getattr(self.pkt, '_rx_buf', b''))}")
-                        yield make_stream_item(
-                            piece, total, window_samples, overrun_total,
-                            chunk_start,
-                            make_ring_timing(
-                                chunk_start, producer_at_read, oldest_at_read,
-                                read_started_at, read_completed_at,
-                                cursor(chunk_start + valid_samples)))
+                    self._ring_trace(
+                        f"iter={iteration} yield rle: total={total} "
+                        f"data_bytes={len(data)} next={next_sample} "
+                        f"producer={producer_hint} oldest={oldest_hint} "
+                        f"overrun={overrun_total} rx_buf={len(getattr(self.pkt, '_rx_buf', b''))}")
+                    yield make_stream_item(
+                        data, total, window_samples, overrun_total,
+                        chunk_start,
+                        make_ring_timing(
+                            chunk_start, producer_at_read, oldest_at_read,
+                            read_started_at, read_completed_at,
+                            cursor(chunk_start + valid_samples)))
                 else:
                     fetch_nsamp = min(
                         available,
